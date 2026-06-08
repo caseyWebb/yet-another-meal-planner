@@ -55,5 +55,5 @@
 ## 8. Verification
 
 - [x] 8.1 Run `npm run build:indexes` against the empty corpus and confirm clean empty indexes
-- [ ] 8.2 Push a fixture-derived recipe on a branch and confirm the Action regenerates, validates, and commits with `[skip ci]` without re-triggering — index/no-op logic verified locally; live CI run pending a real push (not done unprompted)
+- [x] 8.2 Push a fixture-derived recipe on a branch and confirm the Action regenerates, validates, and commits with `[skip ci]` without re-triggering — verified on PR #1: run 27169891237 succeeded, bot commit 3c01647 "Regenerate indexes [skip ci]" pushed, no re-trigger (total runs stayed 1)
 - [x] 8.3 Confirm `openspec validate` passes for the change
