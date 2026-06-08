@@ -1,0 +1,14 @@
+{
+  "breakfast": {
+    "items": [],
+    "variety_rules": {}
+  },
+  "dinner": {
+    "items": [],
+    "variety_rules": {}
+  },
+  "lunch": {
+    "items": [],
+    "variety_rules": {}
+  }
+}

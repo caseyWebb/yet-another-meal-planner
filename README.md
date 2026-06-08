@@ -54,3 +54,51 @@ a local clone for mobile recipe viewing while cooking. Edits to user-curated fil
 (`taste.md`, `preferences.toml`, etc.) are yours to make; the agent only touches
 them when explicitly directed. Everything else evolves as a side effect of normal
 conversational flow.
+
+## Indexes and validation
+
+The Worker reads aggregated JSON indexes instead of fetching every recipe file.
+`scripts/build-indexes.mjs` walks `recipes/` and `ready_to_eat/`, validates the
+corpus, and writes three files under `_indexes/`:
+
+- `recipes.json` — every recipe's frontmatter, keyed by slug (filename without `.md`), all statuses included.
+- `components.json` — `produced_by` / `used_by` adjacency for `suggest_sequencing`.
+- `ready_to_eat.json` — the breakfast/lunch/dinner catalogs plus their variety rules.
+
+Output is deterministic (sorted keys, dates normalized to `YYYY-MM-DD`), so an
+unchanged corpus regenerates byte-identically and produces no commit.
+
+### Fresh-clone setup
+
+```sh
+mise install        # Node 22 (pinned in mise.toml)
+npm install         # installs deps and wires the pre-commit hook via core.hooksPath
+npm run build:indexes
+```
+
+### Where validation runs
+
+- **Pre-commit hook** (`scripts/githooks/pre-commit`) runs `build-indexes.mjs --check`:
+  validation only, no file writes. A failure aborts the commit.
+- **GitHub Action** (`.github/workflows/build-indexes.yml`) runs on push to
+  `recipes/**` / `ready_to_eat/**`, regenerates the indexes, and commits them back
+  with `[skip ci]` (skipped entirely when nothing changed).
+
+### Validation failure modes
+
+**Hard failures** (block the commit / fail the Action):
+
+- A recipe's YAML frontmatter or any `.toml` file fails to parse.
+- A recipe is missing a non-empty `title`, or its `status` is outside
+  `active | draft | rejected | archived`.
+- Two recipe files derive the same slug.
+- A `uses_components` entry references a component no recipe produces.
+
+**Warnings** (printed, non-blocking) — a recipe is missing a recommended field
+(`protein`, `time_total`, `ingredients_key`). Genuinely optional fields
+(`last_cooked`, `rating`, `discovered_at`) may be null without warning.
+
+Non-index data files (`pantry.toml`, `preferences.toml`, etc.) are only
+parse-checked, not schema-validated — that's the Worker's responsibility.
+
+Run the test suite with `npm test`.

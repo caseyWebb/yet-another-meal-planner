@@ -1,0 +1,19 @@
+{
+  "name": "grocery-agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Index generation + validation tooling for the grocery-agent data repo.",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build:indexes": "node scripts/build-indexes.mjs",
+    "test": "node --test",
+    "prepare": "git config core.hooksPath scripts/githooks || true"
+  },
+  "dependencies": {
+    "gray-matter": "^4.0.3",
+    "smol-toml": "^1.3.1"
+  }
+}

@@ -1,0 +1,8 @@
+#!/bin/sh
+# pre-commit — validation only. Never regenerates or stages indexes; the
+# build-indexes Action owns regeneration. This hook just blocks a commit whose
+# data would fail validation. Installed via npm `prepare` (core.hooksPath).
+set -e
+
+# Run the build in --check mode: validates recipes + parses all TOML, writes nothing.
+exec node scripts/build-indexes.mjs --check

@@ -1,0 +1,45 @@
+name: build-indexes
+
+on:
+  push:
+    paths:
+      - 'recipes/**'
+      - 'ready_to_eat/**'
+      - 'scripts/build-indexes.mjs'
+      - '.github/workflows/build-indexes.yml'
+
+permissions:
+  contents: write
+
+# Serialize runs per ref so overlapping pushes don't race on the regen commit.
+concurrency:
+  group: build-indexes-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Validate + regenerate indexes
+        run: npm run build:indexes
+
+      - name: Commit regenerated indexes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git diff --quiet -- _indexes; then
+            echo "Indexes unchanged; nothing to commit."
+            exit 0
+          fi
+          git add _indexes
+          git commit -m "Regenerate indexes [skip ci]"
+          git push
