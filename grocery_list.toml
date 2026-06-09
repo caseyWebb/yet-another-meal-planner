@@ -56,3 +56,12 @@ source = "menu"
 for_recipes = [ "chicken-chile-verde" ]
 added_at = "2026-06-09"
 
+[[items]]
+name = "poblano peppers"
+quantity = "1"
+kind = "grocery"
+status = "active"
+source = "menu"
+for_recipes = [ "chicken-chile-verde" ]
+added_at = "2026-06-09"
+
