@@ -47,3 +47,12 @@ source = "menu"
 for_recipes = [ "chicken-chile-verde", "arroz-caldo" ]
 added_at = "2026-06-09"
 
+[[items]]
+name = "tomatillos"
+quantity = "1"
+kind = "grocery"
+status = "active"
+source = "menu"
+for_recipes = [ "chicken-chile-verde" ]
+added_at = "2026-06-09"
+
