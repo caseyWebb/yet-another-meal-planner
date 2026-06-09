@@ -297,14 +297,14 @@ The bucket name `have_fresh` goes away too (it asserts a freshness the tool isn'
 
 ## Change 09: Menu generation — full flow with Kroger context + LLM proposal
 
-**Scope:** Wire the full menu-request flow: pre-pass gathering of `kroger_flyer`, `kroger_prices`, `ready_to_eat_available`, `read_preferences`, `read_taste`. Update CLAUDE.md so Claude assembles all context and reasons about menus including freeform constraints ("comfort food one night"), meal-prep callouts, sale-based substitutions, ready-to-eat opportunity buys.
+**Scope:** Wire the full menu-request flow: pre-pass gathering of `kroger_flyer`, `kroger_prices`, `ready_to_eat_available`, `read_preferences`, `read_taste`. Update AGENT_INSTRUCTIONS.md so Claude assembles all context and reasons about menus including freeform constraints ("comfort food one night"), meal-prep callouts, sale-based substitutions, ready-to-eat opportunity buys.
 
-**Recipe-discovery thoroughness (observed 2026-06-09, Change 08 smoke test):** `list_recipes` has **no free-text search** — it filters by status/protein/tags only, so matching a user's named dish ("let's make chicken and rice") to the corpus is pure LLM judgment over the filtered list. In smoke testing, a recipe-seeded request listed the 15 active chicken recipes but surfaced only two ethnic-named chicken-rice dishes (Arroz Caldo, Galinhada Mineira), **under-counted** ("you've got two") and silently skipped the recipe literally titled "Chicken and Rice." The data and tools were correct; the gap is the selection/framing step. CLAUDE.md guidance here should make the agent scan titles/tags exhaustively when the user names a dish (don't vibe-match a couple), and either disambiguate among all genuine matches or confirm which one before walking the pantry. Consider whether a lightweight title/text match belongs in `list_recipes` or stays an LLM responsibility.
+**Recipe-discovery thoroughness (observed 2026-06-09, Change 08 smoke test):** `list_recipes` has **no free-text search** — it filters by status/protein/tags only, so matching a user's named dish ("let's make chicken and rice") to the corpus is pure LLM judgment over the filtered list. In smoke testing, a recipe-seeded request listed the 15 active chicken recipes but surfaced only two ethnic-named chicken-rice dishes (Arroz Caldo, Galinhada Mineira), **under-counted** ("you've got two") and silently skipped the recipe literally titled "Chicken and Rice." The data and tools were correct; the gap is the selection/framing step. AGENT_INSTRUCTIONS.md guidance here should make the agent scan titles/tags exhaustively when the user names a dish (don't vibe-match a couple), and either disambiguate among all genuine matches or confirm which one before walking the pantry. Consider whether a lightweight title/text match belongs in `list_recipes` or stays an LLM responsibility.
 
 **Dependencies:** Change 08.
 
 **Deliverables:**
-- Updated CLAUDE.md with full menu-generation orchestration
+- Updated AGENT_INSTRUCTIONS.md with full menu-generation orchestration
 - Conversational test of open-ended ("make me a menu") and recipe-seeded flows
 - Agreed-menu items appended to `grocery_list.toml` via `commit_changes` (06); cart populated via `place_order` (06b) when you're ready to order
 
@@ -314,7 +314,7 @@ The bucket name `have_fresh` goes away too (it asserts a freshness the tool isn'
 
 ## Change 10: Discovery + disposition
 
-**Scope:** Implement `fetch_rss_discoveries`, `fetch_flyer_featured`, `import_recipe` (with JSON-LD parsing via `recipe-scraper` or similar), and the draft-state import behavior. Update CLAUDE.md so discovery surfaces 1-2 recipes and 1-2 ready-to-eat items per menu request, always imported in draft state.
+**Scope:** Implement `fetch_rss_discoveries`, `fetch_flyer_featured`, `import_recipe` (with JSON-LD parsing via `recipe-scraper` or similar), and the draft-state import behavior. Update AGENT_INSTRUCTIONS.md so discovery surfaces 1-2 recipes and 1-2 ready-to-eat items per menu request, always imported in draft state.
 
 **Dependencies:** Change 09.
 
@@ -322,7 +322,7 @@ The bucket name `have_fresh` goes away too (it asserts a freshness the tool isn'
 - `feeds.toml` populated with 5-8 RSS feeds
 - Discovery tools per docs/TOOLS.md
 - JSON-LD recipe import pipeline
-- Draft-state behavior in CLAUDE.md
+- Draft-state behavior in AGENT_INSTRUCTIONS.md
 - Conversational test of disposition: "rate the Serious Eats one 4 stars", "remove that one"
 
 **Done when:** Menu proposals include opportunistic discoveries; you can disposition them in subsequent conversations; the corpus grows over weeks without manual import work.
@@ -331,14 +331,14 @@ The bucket name `have_fresh` goes away too (it asserts a freshness the tool isn'
 
 ## Change 11: Variety + retrospection
 
-**Scope:** Implement the `retrospective` tool. Add `diet_principles.md` with your variety rules. Update CLAUDE.md so menu generation honors principles softly, explaining tradeoffs when it can't satisfy all of them. Add a conversational pattern for retrospectives.
+**Scope:** Implement the `retrospective` tool. Add `diet_principles.md` with your variety rules. Update AGENT_INSTRUCTIONS.md so menu generation honors principles softly, explaining tradeoffs when it can't satisfy all of them. Add a conversational pattern for retrospectives.
 
 **Dependencies:** Change 09. (Change 10 helps but isn't strictly required.)
 
 **Deliverables:**
 - `retrospective` tool returning structured cooking-history aggregates
 - Populated `diet_principles.md`
-- Updated CLAUDE.md with variety reasoning patterns
+- Updated AGENT_INSTRUCTIONS.md with variety reasoning patterns
 - Conversational test of "how have I been eating this month?" and variety-aware menu requests
 
 **Done when:** Menu proposals show awareness of variety principles without being naggy. Retrospectives surface useful patterns.
@@ -355,7 +355,7 @@ The bucket name `have_fresh` goes away too (it asserts a freshness the tool isn'
 - Populated `ingredients.toml`
 - `verify_pantry_*` tools surface a `past_typical_fresh_life` hint from `ingredients.toml` (informs the LLM's prompting; does not classify or gate)
 - Cross-recipe waste callouts in menu generation
-- Updated CLAUDE.md
+- Updated AGENT_INSTRUCTIONS.md
 
 **Done when:** Less produce going bad in the fridge; occasional useful "consider swapping recipe X for Y, less waste" suggestions.
 
@@ -363,7 +363,7 @@ The bucket name `have_fresh` goes away too (it asserts a freshness the tool isn'
 
 ## Change 13: Component vocabulary registry + sequencing
 
-**Scope:** Introduce a canonical component vocabulary so `uses_components` / `produces_components` slugs stay consistent across recipes and over time, **and build `suggest_sequencing` on top of it** (moved here from Change 08 — see the data-readiness reframe under that change). `suggest_sequencing` matches components by exact slug, so drift (`fresh-pasta` in one recipe, `pasta-dough` in another) silently breaks sequencing links — which is precisely why the tool belongs with the vocabulary that prevents the drift, not before it. Add a source-of-truth registry file, document it in `docs/SCHEMAS.md`, extend validation to flag component references not in the registry, update CLAUDE.md so the agent consults the registry when wiring components (and may extend it when a genuinely new component appears), and seed the vocabulary by reconciling the corpus. **This modifies the `data-validation` capability** (new soft/hard rule for unknown component references).
+**Scope:** Introduce a canonical component vocabulary so `uses_components` / `produces_components` slugs stay consistent across recipes and over time, **and build `suggest_sequencing` on top of it** (moved here from Change 08 — see the data-readiness reframe under that change). `suggest_sequencing` matches components by exact slug, so drift (`fresh-pasta` in one recipe, `pasta-dough` in another) silently breaks sequencing links — which is precisely why the tool belongs with the vocabulary that prevents the drift, not before it. Add a source-of-truth registry file, document it in `docs/SCHEMAS.md`, extend validation to flag component references not in the registry, update AGENT_INSTRUCTIONS.md so the agent consults the registry when wiring components (and may extend it when a genuinely new component appears), and seed the vocabulary by reconciling the corpus. **This modifies the `data-validation` capability** (new soft/hard rule for unknown component references).
 
 **Why sequencing moved here (decided 2026-06-09, explore session):** Building `suggest_sequencing` in Change 08 would have shipped a dormant tool — only 1/63 recipes declare a non-empty component today, so it returns `[]` for essentially every real input. Change 13's own thesis is that the vocabulary should be *seeded by corpus reconciliation, not designed in the abstract*; the tool that consumes the vocabulary should land with it. Change 08's menu-request flow tolerates an absent/empty sequencing result (it's a soft preference), so deferring loses nothing in the interim.
 
@@ -374,7 +374,7 @@ The bucket name `have_fresh` goes away too (it asserts a freshness the tool isn'
 - A registry file (e.g. `components.toml`) listing canonical component slugs with descriptions
 - `docs/SCHEMAS.md` entry for the registry
 - Validation rule in `scripts/build-indexes.mjs`: warn (or fail) when a recipe references a component absent from the registry
-- CLAUDE.md guidance: consult the registry when setting `uses_components` / `produces_components`; extend it deliberately, don't coin variants; sequencing now live in the menu-request flow (step 3)
+- AGENT_INSTRUCTIONS.md guidance: consult the registry when setting `uses_components` / `produces_components`; extend it deliberately, don't coin variants; sequencing now live in the menu-request flow (step 3)
 - Existing corpus reconciled to the canonical vocabulary
 - `docs/TOOLS.md` sync (move `suggest_sequencing`'s "built in Change 13" tag to built)
 

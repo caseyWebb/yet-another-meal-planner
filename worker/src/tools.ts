@@ -45,6 +45,7 @@ const recipeFiltersShape = {
   status: z.string().optional(),
   protein: z.string().optional(),
   cuisine: z.string().optional(),
+  query: z.string().optional(),
   tags: z.array(z.string()).optional(),
   season: z.array(z.string()).optional(),
   dietary: z.array(z.string()).optional(),
@@ -208,7 +209,7 @@ export function buildServer(env: Env): McpServer {
     "list_recipes",
     {
       description:
-        "List recipes from the index, filtered. Array filters (tags/season/dietary) match ALL listed values. status defaults to 'active'; pass 'all' to include every status. exclude_cooked_within_days is a caller-supplied window.",
+        "List recipes from the index, filtered. Array filters (tags/season/dietary) match ALL listed values. status defaults to 'active'; pass 'all' to include every status. exclude_cooked_within_days is a caller-supplied window. query is a free-text filter that keeps recipes whose title or tags contain EVERY whitespace-separated token (case-insensitive substring) — use it to find a named dish without silently missing exact-title matches.",
       inputSchema: { filters: z.object(recipeFiltersShape).optional() },
     },
     ({ filters }) =>

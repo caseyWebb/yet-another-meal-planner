@@ -5,6 +5,7 @@ export interface RecipeFilters {
   status?: string;
   protein?: string;
   cuisine?: string;
+  query?: string;
   tags?: string[];
   season?: string[];
   dietary?: string[];
@@ -38,6 +39,8 @@ function isoDay(d: Date): string {
  * - status defaults to "active"; status "all" disables status filtering
  * - not_cooked_since admits recipes with null last_cooked (never cooked)
  * - exclude_cooked_within_days drops recipes cooked within N days of `now`
+ * - query matches when EVERY whitespace-separated token is a case-insensitive
+ *   substring of the title or any tag (token-AND; deterministic membership, no ranking)
  */
 export function filterRecipes(
   index: RecipeIndex,
@@ -45,6 +48,11 @@ export function filterRecipes(
   now: Date = new Date(),
 ): RecipeListItem[] {
   const wantStatus = filters.status === "all" ? null : (filters.status ?? "active");
+
+  const queryTokens = (filters.query ?? "")
+    .toLowerCase()
+    .split(/\s+/)
+    .filter(Boolean);
 
   let cutoffWithin: string | null = null;
   if (typeof filters.exclude_cooked_within_days === "number") {
@@ -71,6 +79,13 @@ export function filterRecipes(
     if (filters.dietary?.length) {
       const dietary = asArray(recipe.dietary);
       if (!filters.dietary.every((d) => dietary.includes(d))) continue;
+    }
+
+    if (queryTokens.length) {
+      const title = typeof recipe.title === "string" ? recipe.title.toLowerCase() : "";
+      const tags = asArray(recipe.tags).map((t) => String(t).toLowerCase());
+      const haystack = `${title} ${tags.join(" ")}`;
+      if (!queryTokens.every((tok) => haystack.includes(tok))) continue;
     }
 
     if (typeof filters.max_time_total === "number") {

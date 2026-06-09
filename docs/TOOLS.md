@@ -21,7 +21,7 @@ The complete tool surface exposed by `grocery-mcp` to Claude. Each tool encodes 
 List recipes matching filters. Reads from `_indexes/recipes.json` (single API call).
 
 **Params:**
-- `filters` (object, optional): `{ status?, protein?, cuisine?, tags?, season?, dietary?, max_time_total?, not_cooked_since?, exclude_cooked_within_days? }`
+- `filters` (object, optional): `{ status?, protein?, cuisine?, query?, tags?, season?, dietary?, max_time_total?, not_cooked_since?, exclude_cooked_within_days? }`
 
 **Returns:**
 - `{ recipes: [{ slug, title, frontmatter }] }` — array of matched recipes with frontmatter
@@ -29,6 +29,7 @@ List recipes matching filters. Reads from `_indexes/recipes.json` (single API ca
 **Notes:**
 - Default `status: active`. Use `status: draft` to see discoveries awaiting disposition, or `status: "all"` to opt out of status filtering entirely.
 - Array filters (`tags`, `dietary`, `season`) match **all** listed values (AND/narrowing).
+- `query` (string): free-text filter. Keeps a recipe when **every** whitespace-separated token is a case-insensitive substring of its `title` or any `tag` (token-AND). Deterministic membership only — no ranking, scoring, or fuzzy matching. Use it to surface a named dish ("chicken rice") without silently missing an exact-title match. ANDed with the other filters; absent/empty `query` is a no-op.
 - `exclude_cooked_within_days` (number): drop recipes cooked within the last N days. Caller-supplied window, not a stored default.
 - `not_cooked_since` (date): recipes with `last_cooked: null` (never cooked) **pass** this filter.
 
@@ -375,7 +376,7 @@ Return contents of `diet_principles.md`.
 
 ### `update_preferences(content)` / `update_taste(content)` / `update_diet_principles(content)` / `update_substitutions(content)` / `update_aliases(content)`
 
-Write to user-curated files. **Content-faithful:** each writes exactly the full file content supplied by the caller — no inferred merge. **These should only be called when the user explicitly directs an edit.** The tools exist; the discipline of when to call them lives in CLAUDE.md.
+Write to user-curated files. **Content-faithful:** each writes exactly the full file content supplied by the caller — no inferred merge. **These should only be called when the user explicitly directs an edit.** The tools exist; the discipline of when to call them lives in AGENT_INSTRUCTIONS.md.
 
 **Params:**
 - `content` (string, required) — the complete new file text

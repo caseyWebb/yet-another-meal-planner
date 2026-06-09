@@ -25,7 +25,8 @@ deterministic (matching, filtering, file I/O, commits) is the Worker's.
 
 | Path | What it holds |
 | --- | --- |
-| `CLAUDE.md` | Canonical agent instructions (consumed by Claude Code / Claude.ai project instructions). |
+| `AGENT_INSTRUCTIONS.md` | Canonical grocery-agent instructions (pasted into the Claude.ai project). |
+| `CLAUDE.md` | Claude Code development guide for working in this repo. |
 | `ROADMAP.md` | The sequence of OpenSpec changes that build this system. |
 | `recipes/` | Recipe markdown files with YAML frontmatter. |
 | `ready_to_eat/` | Ready-to-eat catalogs (`breakfast`/`lunch`/`dinner`). |
@@ -45,7 +46,8 @@ deterministic (matching, filtering, file I/O, commits) is the Worker's.
 - **What this is and why** → [docs/PROJECT.md](docs/PROJECT.md) (full proposal, architecture, phased roadmap).
 - **Data file schemas** → [docs/SCHEMAS.md](docs/SCHEMAS.md).
 - **MCP tool inventory** → [docs/TOOLS.md](docs/TOOLS.md).
-- **Agent behavior rules** → [CLAUDE.md](CLAUDE.md).
+- **Agent behavior rules** → [AGENT_INSTRUCTIONS.md](AGENT_INSTRUCTIONS.md).
+- **Developing in this repo** → [CLAUDE.md](CLAUDE.md).
 - **Build sequence** → [ROADMAP.md](ROADMAP.md).
 
 ## Using the repo

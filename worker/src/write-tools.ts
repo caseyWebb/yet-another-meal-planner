@@ -247,7 +247,7 @@ export function registerWriteTools(server: McpServer, gh: GitHubClient): void {
 
   // User-curated config writers — content-faithful: write exactly what the caller
   // supplies. The discipline of WHEN to call these (only on explicit user
-  // direction) lives in CLAUDE.md.
+  // direction) lives in AGENT_INSTRUCTIONS.md.
   for (const [key, path] of Object.entries(CURATED_FILES)) {
     server.registerTool(
       `update_${key}`,

@@ -57,7 +57,7 @@ The system SHALL validate every staged change structurally before committing —
 
 ### Requirement: User-curated config writes are content-faithful
 
-The user-curated `update_*` tools (`taste`, `diet_principles`, `preferences`, `substitutions`, `aliases`) SHALL write exactly the content supplied by the caller to the corresponding curated file and SHALL NOT infer or merge additional changes. The discipline of *when* these may be called (only on explicit user direction) is documented in `CLAUDE.md`; the tools themselves are unconditional writers of provided content.
+The user-curated `update_*` tools (`taste`, `diet_principles`, `preferences`, `substitutions`, `aliases`) SHALL write exactly the content supplied by the caller to the corresponding curated file and SHALL NOT infer or merge additional changes. The discipline of *when* these may be called (only on explicit user direction) is documented in `AGENT_INSTRUCTIONS.md`; the tools themselves are unconditional writers of provided content.
 
 #### Scenario: Curated write persists provided content verbatim
 

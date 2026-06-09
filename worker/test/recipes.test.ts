@@ -97,3 +97,74 @@ describe("filterRecipes", () => {
     expect(item.frontmatter.protein).toBe("beef");
   });
 });
+
+const queryIndex: RecipeIndex = {
+  "chicken-and-rice": {
+    slug: "chicken-and-rice",
+    title: "Chicken and Rice",
+    status: "active",
+    protein: "chicken",
+    tags: ["weeknight", "comfort-food"],
+    last_cooked: null,
+  },
+  "arroz-caldo": {
+    slug: "arroz-caldo",
+    title: "Arroz Caldo",
+    status: "active",
+    protein: "chicken",
+    tags: ["chicken", "rice", "filipino"],
+    last_cooked: null,
+  },
+  "lemon-chicken": {
+    slug: "lemon-chicken",
+    title: "Lemon Chicken",
+    status: "active",
+    protein: "chicken",
+    tags: ["weeknight"],
+    last_cooked: null,
+  },
+  "beef-stew": {
+    slug: "beef-stew",
+    title: "Beef Stew",
+    status: "draft",
+    protein: "beef",
+    tags: ["comfort-food"],
+    last_cooked: null,
+  },
+};
+
+describe("filterRecipes query", () => {
+  it("returns the exact-title named dish", () => {
+    const out = filterRecipes(queryIndex, { query: "chicken rice" }, NOW).map((r) => r.slug);
+    // "Chicken and Rice" (title has both tokens) and Arroz Caldo (tags have both) match.
+    expect(out.sort()).toEqual(["arroz-caldo", "chicken-and-rice"]);
+  });
+
+  it("requires every token (AND) across title or tags", () => {
+    // Lemon Chicken lacks the "rice" token in title and tags -> excluded.
+    const out = filterRecipes(queryIndex, { query: "chicken rice" }, NOW).map((r) => r.slug);
+    expect(out).not.toContain("lemon-chicken");
+  });
+
+  it("matches a token as a substring of a tag", () => {
+    const out = filterRecipes(queryIndex, { query: "comfort" }, NOW).map((r) => r.slug);
+    // comfort matches the comfort-food tag on chicken-and-rice (active default).
+    expect(out).toEqual(["chicken-and-rice"]);
+  });
+
+  it("composes with other filters (AND)", () => {
+    const out = filterRecipes(
+      queryIndex,
+      { query: "chicken", status: "active", protein: "chicken" },
+      NOW,
+    ).map((r) => r.slug);
+    expect(out.sort()).toEqual(["arroz-caldo", "chicken-and-rice", "lemon-chicken"]);
+  });
+
+  it("absent or empty query preserves prior behavior", () => {
+    const without = filterRecipes(queryIndex, {}, NOW).map((r) => r.slug).sort();
+    const emptyQuery = filterRecipes(queryIndex, { query: "   " }, NOW).map((r) => r.slug).sort();
+    expect(emptyQuery).toEqual(without);
+    expect(without).toEqual(["arroz-caldo", "chicken-and-rice", "lemon-chicken"]);
+  });
+});
