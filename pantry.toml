@@ -34,3 +34,9 @@
 # added_at = "2025-05-12"
 # last_verified_at = "2025-05-12"
 # prepared_from = "salmon-with-rice"
+
+[[items]]
+added_at = "2026-06-09"
+last_verified_at = "2026-06-09"
+name = "garlic"
+
