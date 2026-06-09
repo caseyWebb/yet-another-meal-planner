@@ -25,3 +25,10 @@
 # last_used = "2025-05-14"
 # reason = "default brand; best price-per-unit in deterministic narrowing"
 # ambiguity_resolved = false
+
+[[mappings]]
+ingredient = "whole milk"
+sku = "0001111040601"
+brand = "Kroger"
+size = "1/2 gal"
+
