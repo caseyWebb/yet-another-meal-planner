@@ -9,8 +9,8 @@
 
 - [x] 2.1 Add an `/oauth/*` route group in the Worker: `/oauth/init` (redirect to Kroger with PKCE+state) and `/oauth/callback` (verify `state`, exchange code, store refresh token)
 - [x] 2.2 Ensure `/oauth/*` is reachable without an Access JWT in-Worker (no JWT enforcement on those paths); keep `/mcp` and all else gated
-- [ ] 2.3 Add the Cloudflare Access **bypass** policy for `/oauth/*` on the gated hostname — **infra (dashboard)**
-- [ ] 2.4 Register the redirect URI (`https://grocery-mcp.<domain>/oauth/callback`) with the Kroger app; set `authorization_code` client ID/secret via `wrangler secret put` — **infra**
+- [x] 2.3 Add the Cloudflare Access **bypass** policy for `/oauth/*` on the gated hostname — **infra (dashboard)** <!-- done: path-scoped Bypass app on groceries-mcp.caseywebb.xyz/oauth/* -->
+- [x] 2.4 Register the redirect URI (`https://grocery-mcp.<domain>/oauth/callback`) with the Kroger app; set `authorization_code` client ID/secret via `wrangler secret put` — **infra** <!-- done: redirect URI https://groceries-mcp.caseywebb.xyz/oauth/callback registered; creds reuse the client_credentials app via fallback (no separate secrets) -->
 
 ## 3. Cart write
 
@@ -46,6 +46,6 @@
 
 ## 8. Deploy + verify
 
-- [ ] 8.1 Create KV namespace + Access bypass; deploy via CD — **infra**
-- [ ] 8.2 Run the one-time `/oauth/init` authorization to seed the refresh token — **infra (user)**
-- [ ] 8.3 `place_order` end-to-end against the live cart; confirm items added, SKU cache appended, list advanced to `in_cart` — **infra (user)**
+- [x] 8.1 Create KV namespace + Access bypass; deploy via CD — **infra** <!-- KV id aee060bb… bound; /oauth/* bypass added; CD deployed (commit fdd14aa, scope fix 6e2d33d) -->
+- [x] 8.2 Run the one-time `/oauth/init` authorization to seed the refresh token — **infra (user)** <!-- done: kroger:refresh_token present in prod KV -->
+- [x] 8.3 `place_order` end-to-end against the live cart; confirm items added, SKU cache appended, list advanced to `in_cart` — **infra (user)** <!-- done: whole milk (SKU 0001111040601) → cart.written; skus/kroger.toml commit 837e1b9; grocery_list.toml in_cart commit 1a3b590 -->
