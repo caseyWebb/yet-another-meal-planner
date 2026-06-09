@@ -1,6 +1,12 @@
 ---
 title: Corn Risotto
-tags: [italian, vegetarian, side, corn, risotto, summer]
+tags:
+  - italian
+  - vegetarian
+  - side
+  - corn
+  - risotto
+  - summer
 protein: vegetarian
 cuisine: italian
 style: one-pot
@@ -8,15 +14,24 @@ time_total: 30
 time_active: 15
 servings: 6
 difficulty: medium
-dietary: [vegetarian, gluten-free]
-season: [summer]
+dietary:
+  - vegetarian
+  - gluten-free
+season:
+  - summer
 veg_forward: true
 last_cooked: null
-rating: null
+rating: 5
 status: active
 discovered_at: null
 discovery_source: null
-ingredients_key: [arborio rice, corn, shallot, white wine, pecorino, thyme]
+ingredients_key:
+  - arborio rice
+  - corn
+  - shallot
+  - white wine
+  - pecorino
+  - thyme
 meal_preppable: false
 uses_components: []
 produces_components: []
