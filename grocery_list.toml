@@ -42,7 +42,7 @@
 name = "paper towels"
 quantity = "1"
 kind = "household"
-status = "in_cart"
+status = "active"
 source = "ad_hoc"
 for_recipes = []
 added_at = "2026-06-09"
