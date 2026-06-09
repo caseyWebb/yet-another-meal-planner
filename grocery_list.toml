@@ -37,3 +37,13 @@
 # source = "ad_hoc"
 # for_recipes = []
 # added_at = "2026-06-09"
+
+[[items]]
+name = "whole milk"
+quantity = "1"
+kind = "grocery"
+status = "in_cart"
+source = "menu"
+for_recipes = []
+added_at = "2026-06-09"
+
