@@ -157,15 +157,15 @@ Both follow the same shape: pantry verification first, then menu generation/elab
 
 1. **Inbound trigger:** I message Claude. Project instructions guide Claude to invoke the right tool sequence.
 
-2. **Pantry confirmation pass:** Claude calls a tool like `verify_pantry_for_recipe(slug)` or `verify_pantry_for_candidates()`. The Worker walks relevant ingredients deterministically and returns structured results: `have_fresh`, `have_stale`, `inventory_substitutes_available`, `not_in_pantry`.
-   - For staples (rice, salt, common spices), the tool lists them in `have_fresh` explicitly — drift catcher in case I forgot to mention I ran out.
-   - For items past their fresh-life since `last_verified_at`, included in `have_stale`.
-   - For items where `substitutions.toml` allows an inventory swap, included in `inventory_substitutes_available`.
+2. **Pantry confirmation pass:** Claude calls a tool like `verify_pantry_for_recipe(slug)` or `verify_pantry_for_candidates()`. The Worker parses the recipe ingredients and walks them against the pantry, returning **facts, not freshness verdicts**: `in_pantry` (exact matches, each with age metadata — `added_at`, `last_verified_at`, `days_since_verified`, `category`, `prepared_from`), `possible_matches` (fuzzy candidates for Claude to confirm), `not_in_pantry` (to-buy), `optional` (non-blocking), and `inventory_substitutes_available`.
+   - For staples (rice, salt, common spices), the tool lists them in `in_pantry` explicitly — drift catcher in case I forgot to mention I ran out. (This relies on the pantry file staying complete on staples; there is no assumed-present staple list.)
+   - There is **no `have_stale` bucket.** The tool surfaces age metadata; Claude decides which items warrant a "still good?" prompt (freshness depends on storage, not age alone, and isn't in the repo). Change 12 may add a `past_typical_fresh_life` hint from `ingredients.toml` to inform that judgment, without changing the shape.
+   - For items where `substitutions.toml` allows an inventory swap, included in `inventory_substitutes_available` (empty until rules are seeded).
    - Sale-based substitutions are NOT surfaced here — they wait until Kroger flyer is fetched.
 
-3. **Pantry check-in (conversational):** If anything was flagged, Claude asks me about it in chat. On my response, Claude calls `mark_pantry_verified(items)` to reset timestamps.
+3. **Pantry check-in (conversational):** If anything was flagged — a freshness prompt, a `possible_matches` candidate to confirm, or a missing `optional` ingredient to ask about — Claude raises it in chat. On my response, Claude calls `mark_pantry_verified(items)` to reset timestamps.
 
-4. **Sequencing pass:** Claude calls `suggest_sequencing(seed_recipes)`. The Worker walks the components graph and returns strong matches. Claude surfaces matches as conversational suggestions; on acceptance, the seed set grows and pantry confirmation reruns for the new recipes.
+4. **Sequencing pass:** Claude calls `suggest_sequencing(seed_recipes)` (**built in Change 13**, once the component vocabulary is seeded — until then this pass is a no-op and the flow proceeds without it). The Worker walks the components graph and returns strong matches; Claude surfaces them as conversational suggestions, and on acceptance the seed set grows and pantry confirmation reruns for the new recipes.
 
 5. **Main pre-pass:** Claude calls several tools in parallel:
    - `kroger_flyer()` — this week's sales

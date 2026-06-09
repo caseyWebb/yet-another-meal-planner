@@ -250,20 +250,48 @@ Each entry below contains enough description for the OpenSpec proposal skill to 
 
 ---
 
-## Change 08: Menu request flow — pantry verification + sequencing
+## Change 08: Menu request flow — pantry verification + substitution
 
-**Scope:** Implement the deterministic menu-request foundation: `verify_pantry_for_recipe`, `verify_pantry_for_candidates`, `suggest_sequencing`, `propose_substitutions` (inventory and sale modes). Update CLAUDE.md to specify the comprehensive pantry confirmation pass and the sequencing/substitution timing rules. Test conversationally: "I want to make salmon and rice tonight" should walk the pantry, surface any questions, and suggest sequencing if relevant.
+**Scope:** Implement the deterministic pantry side of the menu-request foundation: `verify_pantry_for_recipe`, `verify_pantry_for_candidates`, and `propose_substitutions` (inventory and sale modes), plus the recipe-ingredient parser both verify tools depend on. Update CLAUDE.md's menu-request orchestration (comprehensive pantry confirmation pass + substitution timing). **`suggest_sequencing` is cut from this change and moves to Change 13** (see below).
 
-**Dependencies:** Change 07.
+**Data-readiness reframe (decided 2026-06-09, explore session):** Of the original Change 08 tool set, only the *presence* half of pantry verification delivers value on today's corpus — the staleness source (`ingredients.toml`, Change 12), the component graph (1/63 recipes declare a non-empty component), and the substitution rules (`substitutions.toml` empty) are all deferred or unseeded. The cut and the decisions below align the change with what the data can actually support, rather than shipping tools that return ∅ against the real corpus. `suggest_sequencing` belongs with Change 13, the change that seeds the component vocabulary it walks.
+
+**Recipe-ingredient parser (decided — net-new, reuses a base):** Recipe ingredients are free-text, price-annotated lines, e.g. `1.25 lbs. boneless, skinless chicken thighs (4-5 thighs) ($4.59)`. The Change 05 matcher's `normalizeIngredient()` (in `worker/src/matching.ts`) already strips a single leading quantity+unit and applies `aliases.toml`, but is deliberately conservative — no prep/parenthetical/price stripping — because it was built for clean LLM-supplied terms and SKU-free grocery-list names, never raw recipe lines. So Change 08 adds a `parseRecipeIngredient()` layer (strip trailing/leading prep descriptors, `(...)` parentheticals, the `($x.xx)` price annotation) that yields a clean name, then feeds the existing `normalizeIngredient` + alias step. The parser is shared by both verify tools and reusable by `place_order`'s `menu_needs` path. The recipe-site change already enforces a `## Ingredients` H2 contract, so the parser has a guaranteed section to read.
+
+**Matching strategy (decided 2026-06-09 — Option C, tool surfaces, LLM confirms):** With `aliases.toml` empty, exact normalized-string equality would silently miss real matches (`chicken thighs` vs pantry `chicken`, `vegetable broth` vs `vegetable stock`, `long-grain white rice` vs `rice`) and a token-overlap heuristic would silently false-positive (`onion powder` matching `onion`, `coconut milk` matching `milk`). So the matcher does **not** guess. It returns three sets: `in_pantry` (exact normalized match — confident), `possible_matches` (fuzzy/token-overlap candidates pairing a recipe ingredient with a plausible pantry item — *the LLM confirms or rejects each*), and `not_in_pantry` (no candidate at all). This mirrors the staleness decision: the tool surfaces candidates and ambiguity, the LLM judges — never silent false-misses, never silent false-positives. Confirmed `possible_matches` are the natural place to *suggest seeding an `aliases.toml` entry* so the pair resolves automatically next time (suggest only — aliases is edit-when-directed config).
+
+**Optional ingredients (decided 2026-06-09):** Parentheticals aren't uniform — `(4-5 thighs)` is a quantity hint, `(optional garnish)` is a directive. The parser detects an `optional` marker and tags those ingredients **non-blocking**: they never auto-populate `not_in_pantry`/to-buy. They're surfaced separately, and when one isn't in the pantry the agent **asks** whether to add it to the order rather than dropping it silently or adding it unilaterally.
+
+**Staleness (decided 2026-06-09 — facts from the tool, judgment from the LLM, resolution by prompting):** There is **no `have_stale` bucket** and no tool-side freshness determination. The tool is the worst-positioned thing in the system to classify freshness: the deterministic shelf-life source (`ingredients.toml`) is Change 12 (and Change 04 already deferred `read_pantry(stale_only)` to `{error:"unsupported"}` for exactly this reason), categories are absent on 42/45 items, and — more fundamentally — freshness isn't a function of age. It depends on storage, whether the bag was opened, how it looked this morning; none of that is in the repo. The real resolution is a *prompt to go check* ("Basil added 9 days ago — still good?"), not a verdict.
+
+So verify returns **facts, not classifications**: matched items in a single `in_pantry` set, each carrying the metadata already tracked — `added_at`, `last_verified_at`, `days_since_verified`, `category` (when present), `prepared_from`. The LLM, guided by CLAUDE.md's spoilage prose, decides *which* items warrant a "still good?" prompt (perishables long-since-verified, `prepared_from` leftovers); the user confirms; `mark_pantry_verified` resets the timestamp. This is the existing verify→confirm→`mark_pantry_verified` loop, and it's exactly "LLM where it earns its keep" — judging "8-day-old fridge herbs are worth a check but canned beans never are" is contextual reasoning the tool can't do.
+
+The bucket name `have_fresh` goes away too (it asserts a freshness the tool isn't determining); it becomes `in_pantry`, the clean antonym of `not_in_pantry`. **Accepted tradeoff:** prompting is non-deterministic run-to-run — the same pantry may surface a slightly different set of "still good?" nudges. For a soft waste-prevention nudge that's the right failure mode (worst case: one unnecessary "yep"); a hard stale/fresh gate would be the wrong one.
+
+**Change 12's role shrinks accordingly:** `ingredients.toml` stops being "the thing that computes the stale bucket" and becomes a *hint that informs the prompt* — the tool may surface a `past_typical_fresh_life` flag to bias which items the LLM raises, but the prompt-or-not decision stays with the LLM (storage context still varies). Same return contract, richer hint.
+
+**Presence-only, no quantity sufficiency (decided):** verify reports have-it / don't-have-it, never "you have 1 onion but need 3." CLAUDE.md bans portion tracking and Change 06b already owns quantity reconciliation via partials at order time. `not_in_pantry` is presence-driven; netting required amounts is out of scope.
+
+**Candidate aggregation carries per-recipe attribution (decided):** `verify_pantry_for_candidates` tags `not_in_pantry` (and `inventory_substitutes_available`) entries with the recipe slug(s) that need them — mirroring `grocery_list.toml`'s `for_recipes` and what `place_order` already consumes. A flat union across candidates would lose the attribution the menu reasoner and order-time dedup need.
+
+**Substitution surface is dormant until seeded (decided — not a bug):** `propose_substitutions` applies `substitutions.toml` rules deterministically; verify's `inventory_substitutes_available` bucket draws on the *same* rule source. Both `substitutions.toml` and `aliases.toml` are empty user-curated config that fills only when Casey directs it — so in v1 both substitution paths return ∅, and matching relies on the `possible_matches` → LLM-confirm path (above) rather than alias expansion. This is expected: v1 drift-catching value lives in `in_pantry` (with age metadata, LLM-judged freshness) / `possible_matches` / `not_in_pantry`; the substitution and alias layers light up over time (and confirmed `possible_matches` are where alias seeding is suggested). **Sale-mode substitution fetches Kroger flyer/price data internally** (Change 05, available) — self-contained, not caller-supplied; if the menu flow already pulled `kroger_flyer` this is a small redundant fetch and that's acceptable.
+
+**Staples = data-hygiene, not a tool feature (decided 2026-06-09):** Pantry presence is authoritative, so a recipe's `1/4 tsp salt` surfaces in `not_in_pantry` whenever salt isn't in `pantry.toml`. The resolution is to keep `pantry.toml` reasonably complete on staples — **not** to give the tool an assumed-present staple list. The bet: making pantry updates easy and conversational, plus the routine "still good?" / "did you run out?" check-up prompts, keeps the staples list honest and turns drift into a caught-and-corrected loop rather than a silent gap. This is the drift-catcher working as designed (CLAUDE.md explicitly wants staples/spices surfaced).
+
+**Open questions for the proposal pass:**
+- **Return-shape contract sync.** The new shape (`in_pantry` with age metadata + `possible_matches` + `not_in_pantry` + `inventory_substitutes_available`, **`have_stale` dropped**, per-recipe attribution on the candidate aggregate) differs from `docs/TOOLS.md`'s current four-bucket `have_fresh`/`have_stale`/… shape — confirm and sync TOOLS.md in the same pass.
+
+**Dependencies:** Change 07. Reuses the Change 05 `normalizeIngredient`/alias base; no new Kroger work beyond sale-mode substitution reads.
 
 **Deliverables:**
-- Tools per docs/TOOLS.md
-- Updated CLAUDE.md with menu-request orchestration
-- Pantry confirmation pass surfacing have_fresh, have_stale, inventory_substitutes, not_in_pantry
-- Sequencing pass via `uses_components` / `produces_components` references
-- Inventory-mode substitutions surfaced during pantry pass; sale-mode held until later
+- `parseRecipeIngredient()` (strip qty/unit/prep/parenthetical/price; detect `optional` marker) + reuse of the existing `normalizeIngredient`/alias step, with unit tests over real corpus lines
+- `verify_pantry_for_recipe`, `verify_pantry_for_candidates` returning `in_pantry` (exact, with age metadata) + `possible_matches` (fuzzy candidates for LLM confirm) + `not_in_pantry` + `inventory_substitutes_available`; **no `have_stale` bucket** (freshness LLM-judged); optional ingredients tagged non-blocking; candidate aggregate carries per-recipe `for_recipes` attribution
+- `propose_substitutions` (inventory + sale modes) — deterministic rule application over `substitutions.toml`; sale mode fetches Kroger flyer/price internally
+- Updated CLAUDE.md menu-request orchestration: comprehensive pantry confirmation pass; confirm `possible_matches`; ask before adding missing optional ingredients; suggest `aliases.toml` seeding on confirmed fuzzy matches; inventory-mode substitutions surfaced during the pass, sale-mode held for the menu proposal; note sequencing arrives with Change 13
+- `docs/TOOLS.md` synced for the refined verify return shape; `suggest_sequencing` left as a contract entry tagged "built in Change 13"
+- Tests: parser (incl. optional detection), exact + fuzzy matching (`possible_matches`), age-metadata surfacing (no staleness classification), candidate aggregation/attribution, substitution rule application (seeded fixture rules)
 
-**Done when:** A recipe-seeded menu request walks the pantry comprehensively, surfaces drift, suggests sequencing, and produces a clean to-buy list — all without you having to invoke specific commands.
+**Done when:** A recipe-seeded menu request walks the pantry comprehensively (exact + fuzzy `possible_matches` for the LLM to confirm, age-surfaced freshness prompts, optional ingredients asked-not-assumed), produces a clean presence-based to-buy list, and applies any seeded substitution rules — all conversationally. Sequencing is explicitly **not** part of this change's done-criteria.
 
 ---
 
@@ -317,13 +345,13 @@ Each entry below contains enough description for the OpenSpec proposal skill to 
 
 ## Change 12 (Phase 7): Perishability refinement
 
-**Scope:** Populate `ingredients.toml` with shelf-life data. Refine pantry verification thresholds to use explicit data instead of LLM judgment. Add waste-tracking observation in menu generation ("this menu leaves 3/4 of a cilantro bunch unused — want a third recipe that uses it?").
+**Scope:** Populate `ingredients.toml` with shelf-life data, and use it to **inform** verify's freshness prompting — not replace the LLM judgment with it. Per the Change 08 staleness decision, freshness stays an LLM-judged, prompt-resolved concern (storage context isn't in the repo); Change 12 adds a `past_typical_fresh_life` hint to verify's `in_pantry` items so the LLM raises the right "still good?" prompts more reliably. The return contract is unchanged — no `have_stale` bucket is reintroduced. Also add waste-tracking observation in menu generation ("this menu leaves 3/4 of a cilantro bunch unused — want a third recipe that uses it?").
 
 **Dependencies:** Change 09. Change 11 helpful for context.
 
 **Deliverables:**
 - Populated `ingredients.toml`
-- Updated `verify_pantry_*` tools using `ingredients.toml` thresholds
+- `verify_pantry_*` tools surface a `past_typical_fresh_life` hint from `ingredients.toml` (informs the LLM's prompting; does not classify or gate)
 - Cross-recipe waste callouts in menu generation
 - Updated CLAUDE.md
 
@@ -331,22 +359,26 @@ Each entry below contains enough description for the OpenSpec proposal skill to 
 
 ---
 
-## Change 13: Component vocabulary registry
+## Change 13: Component vocabulary registry + sequencing
 
-**Scope:** Introduce a canonical component vocabulary so `uses_components` / `produces_components` slugs stay consistent across recipes and over time. `suggest_sequencing` (Change 08) matches these by exact slug, so drift (`fresh-pasta` in one recipe, `pasta-dough` in another) silently breaks sequencing links. Add a source-of-truth registry file, document it in `docs/SCHEMAS.md`, extend validation to flag component references not in the registry, and update CLAUDE.md so the agent consults the registry when wiring components (and may extend it when a genuinely new component appears). **This modifies the `data-validation` capability** (new soft/hard rule for unknown component references).
+**Scope:** Introduce a canonical component vocabulary so `uses_components` / `produces_components` slugs stay consistent across recipes and over time, **and build `suggest_sequencing` on top of it** (moved here from Change 08 — see the data-readiness reframe under that change). `suggest_sequencing` matches components by exact slug, so drift (`fresh-pasta` in one recipe, `pasta-dough` in another) silently breaks sequencing links — which is precisely why the tool belongs with the vocabulary that prevents the drift, not before it. Add a source-of-truth registry file, document it in `docs/SCHEMAS.md`, extend validation to flag component references not in the registry, update CLAUDE.md so the agent consults the registry when wiring components (and may extend it when a genuinely new component appears), and seed the vocabulary by reconciling the corpus. **This modifies the `data-validation` capability** (new soft/hard rule for unknown component references).
 
-**Dependencies:** A recipe corpus that actually declares components (the ReciMe import / `import-recime-corpus` change). Best **seeded by** that import's reconciliation pass rather than designed in the abstract — let the corpus reveal which components recur (realistically a small set, e.g. `fresh-pasta` feeding `lasagna-bolognese` / `uovo-in-raviolo`) before codifying the vocabulary. Consumed by Change 08 (`suggest_sequencing`).
+**Why sequencing moved here (decided 2026-06-09, explore session):** Building `suggest_sequencing` in Change 08 would have shipped a dormant tool — only 1/63 recipes declare a non-empty component today, so it returns `[]` for essentially every real input. Change 13's own thesis is that the vocabulary should be *seeded by corpus reconciliation, not designed in the abstract*; the tool that consumes the vocabulary should land with it. Change 08's menu-request flow tolerates an absent/empty sequencing result (it's a soft preference), so deferring loses nothing in the interim.
+
+**Dependencies:** Change 08 (menu-request orchestration that calls sequencing) and a recipe corpus that actually declares components (the ReciMe import / `import-recime-corpus` change). Best **seeded by** that import's reconciliation pass rather than designed in the abstract — let the corpus reveal which components recur (realistically a small set, e.g. `fresh-pasta` feeding `lasagna-bolognese` / `uovo-in-raviolo`) before codifying the vocabulary.
 
 **Deliverables:**
+- `suggest_sequencing` tool: walk `produces_components` / `uses_components`, return strong matches only (`[]` when nothing fits), per `docs/TOOLS.md`
 - A registry file (e.g. `components.toml`) listing canonical component slugs with descriptions
 - `docs/SCHEMAS.md` entry for the registry
 - Validation rule in `scripts/build-indexes.mjs`: warn (or fail) when a recipe references a component absent from the registry
-- CLAUDE.md guidance: consult the registry when setting `uses_components` / `produces_components`; extend it deliberately, don't coin variants
+- CLAUDE.md guidance: consult the registry when setting `uses_components` / `produces_components`; extend it deliberately, don't coin variants; sequencing now live in the menu-request flow (step 3)
 - Existing corpus reconciled to the canonical vocabulary
+- `docs/TOOLS.md` sync (move `suggest_sequencing`'s "built in Change 13" tag to built)
 
-**Done when:** Two recipes that should sequence together reliably share the same component slug, and a typo'd or off-vocabulary component reference is caught at build time instead of silently failing to link.
+**Done when:** Two recipes that should sequence together reliably share the same component slug, `suggest_sequencing` returns that pairing, and a typo'd or off-vocabulary component reference is caught at build time instead of silently failing to link.
 
-**Notes:** Low urgency — only earns its keep once recipes are actually sharing components. Worth capturing now because the `import-recime-corpus` reconcile pass is the natural place to harvest the initial vocabulary.
+**Notes:** Low urgency — only earns its keep once recipes are actually sharing components. Worth capturing now because the `import-recime-corpus` reconcile pass is the natural place to harvest the initial vocabulary, and because Change 08's reframe explicitly parks the sequencing tool here.
 
 ---
 
@@ -372,7 +404,7 @@ Each entry below contains enough description for the OpenSpec proposal skill to 
                   ↓
 07 Claude.ai connection + smoke test  ← milestone: agent live
     ↓
-08 Pantry verification + sequencing
+08 Pantry verification + substitution
     ↓
 09 Full menu generation flow  ← milestone: real cycles working
     ↓
@@ -381,12 +413,16 @@ Each entry below contains enough description for the OpenSpec proposal skill to 
 11 Variety + retrospection
     ↓
 12 Perishability refinement
+    ↓
+13 Component vocabulary registry + sequencing
+       (seeded by corpus reconciliation; builds suggest_sequencing, moved from 08)
 ```
 
 **Parallelization options:**
 - 02 and 03 can run in parallel after 01.
 - **05 and 06 can run in parallel after 04** — 06 is repo-data + the Access gate (no Kroger), so it doesn't depend on 05. 06b then needs both. (In the current repo 05 is already done, so 06 is simply next.)
 - 10 and 11 can run in parallel after 09.
+- **`suggest_sequencing` moved from 08 → 13** (decided 2026-06-09): it consumes the component vocabulary that 13 seeds, and would ship dormant if built earlier (1/63 recipes declare a component today). 08 is now pantry-verification + substitution only; the menu-request flow tolerates an absent sequencing result until 13 lands.
 
 **Natural pause points** (where you'd want to actually use the system for a few weeks before continuing):
 - After 07: confirm the architecture works end-to-end with simple flows

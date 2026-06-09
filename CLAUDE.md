@@ -61,11 +61,15 @@ Triggered on: "make me a menu", "let's do groceries", "I'm running low", "I want
 
 Two starting points: **open-ended** (you pick recipes) or **recipe-seeded** (I name a recipe and you work outward). The rest is identical.
 
-1. Call `verify_pantry_for_recipe(slug)` for recipe-seeded, or `verify_pantry_for_candidates()` for open-ended. The tool returns structured questions if any pantry items are stale or have inventory-substitute options.
+1. Call `verify_pantry_for_recipe(slug)` for recipe-seeded, or `verify_pantry_for_candidates(slugs)` for open-ended. The tool returns **facts, not verdicts** — five buckets: `in_pantry` (with age metadata per item), `possible_matches`, `not_in_pantry`, `optional`, and `inventory_substitutes_available`. It never classifies freshness; there is no stale bucket.
 
-2. If there are questions, ask me in chat. On my responses, call `mark_pantry_verified(items)` to reset timestamps. Skip this step if no questions.
+2. Work the buckets in chat, then `mark_pantry_verified(items)` for anything I confirm. Specifically:
+   - **Freshness is your judgment, not the tool's.** Scan `in_pantry` age metadata (`days_since_verified`, `category`, `prepared_from`) and prompt me about anything that looks like it may have drifted — perishables long-unverified, leftovers (`prepared_from`) more than a few days old ("basil verified 9 days ago — still good?"). Don't interrogate me about every item; nudge the genuinely questionable ones. If nothing looks off, skip this.
+   - **Confirm `possible_matches`.** These are fuzzy candidates the tool refuses to assume ("recipe wants `long-grain white rice`; you have `rice` — same thing?"). On a yes, treat it as in-pantry; on a no, it's to-buy. When a fuzzy pair is genuinely the same item, offer to add an `aliases.toml` entry so it resolves automatically next time (suggest only — don't write unless I say so).
+   - **Optional ingredients:** for an `optional` item I don't have, *ask* whether to add it ("the parsley garnish is optional and you're out — want it on the order?"). Never add it silently, never drop it silently.
+   - **Inventory substitutions:** surface `inventory_substitutes_available` here ("recipe calls for salmon, you have trout — sub it?"). This is the inventory-substitution moment; sale-based substitutions wait for step 5.
 
-3. Call `suggest_sequencing(seed_recipes)`. If strong matches surface, ask me about them ("want stir-fry tomorrow to use the extra rice?"). Accepted suggestions grow the seed set — rerun pantry confirmation for new recipes.
+3. **Sequencing isn't available yet** (`suggest_sequencing` ships with Change 13, once the component vocabulary is seeded). Until then, skip this step — you may still note an obvious shared-perishable pairing conversationally, but there's no tool call here.
 
 4. Call the context-gathering tools in parallel: `kroger_flyer()`, `kroger_prices(ingredients)`, `ready_to_eat_available()`, `fetch_rss_discoveries()`, `fetch_flyer_featured()`, `read_preferences()`, `read_taste()`.
 

@@ -94,20 +94,27 @@ function effectivePrice(c: KrogerCandidate): number {
 }
 
 /**
- * Step 1 — normalize: lowercase, strip a leading quantity/unit, then apply
- * `aliases.toml`. Conservative: it does not strip qualifiers beyond what an
- * alias entry collapses.
+ * Strip a single leading quantity token and optional unit, e.g. "2 lb ",
+ * "1 cup ", "16.9 fl oz ", "3 ". Expects already-lowercased input. Shared by
+ * `normalizeIngredient` and the recipe-line parser so the unit vocabulary stays
+ * single-sourced.
  */
-export function normalizeIngredient(ingredient: string, aliases: Record<string, string>): string {
-  let s = ingredient.toLowerCase().trim();
-  // Strip a single leading quantity token and optional unit, e.g. "2 lb ",
-  // "1 cup ", "16.9 fl oz ", "3 ".
-  s = s
+export function stripLeadingQuantity(s: string): string {
+  return s
     .replace(
       /^\d+(?:\.\d+)?(?:\/\d+)?\s*(?:fl\s*oz|oz|lb|lbs|g|kg|ml|l|cup|cups|tbsp|tsp|pt|qt|gal|ct|count|pack|cloves?|cans?|bunch(?:es)?|pieces?)?\.?\s+/,
       "",
     )
     .trim();
+}
+
+/**
+ * Step 1 — normalize: lowercase, strip a leading quantity/unit, then apply
+ * `aliases.toml`. Conservative: it does not strip qualifiers beyond what an
+ * alias entry collapses.
+ */
+export function normalizeIngredient(ingredient: string, aliases: Record<string, string>): string {
+  const s = stripLeadingQuantity(ingredient.toLowerCase().trim());
   // Alias map keys may be mixed-case (aliases.toml uses "EVOO"); match
   // case-insensitively. Fall back to the cleaned term when no alias applies.
   for (const [variant, canonical] of Object.entries(aliases)) {

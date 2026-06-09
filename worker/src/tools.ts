@@ -23,6 +23,21 @@ import {
   type MatchResult,
 } from "./matching.js";
 import { compareUnitPrice, type UnitPriceItem } from "./unit-price.js";
+import { parseRecipeIngredient, extractIngredientLines, type ParsedIngredient } from "./recipe-ingredients.js";
+import {
+  parseSubstitutionRules,
+  findRule,
+  proposeInventory,
+  proposeSale,
+  type SubRule,
+  type SubstitutionResult,
+} from "./substitutions.js";
+import {
+  verifyParsedIngredients,
+  aggregateVerifications,
+  type PantryItem,
+  type VerifyResult,
+} from "./pantry-verify.js";
 
 const SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
@@ -136,6 +151,34 @@ export function buildServer(env: Env): McpServer {
       }
     }
     return cache;
+  }
+
+  /** Read and parse pantry items; empty/comment-only pantry yields []. */
+  async function getPantryItems(): Promise<PantryItem[]> {
+    const text = await readFile(gh, "pantry.toml", "not_found", "pantry.toml is missing");
+    const parsed = parseToml(text, "pantry.toml");
+    return Array.isArray(parsed.items) ? (parsed.items as PantryItem[]) : [];
+  }
+
+  /** Read standing substitution rules; absent/empty file yields []. */
+  async function getSubstitutionRules(): Promise<SubRule[]> {
+    const text = await readOptional(gh, "substitutions.toml");
+    return text ? parseSubstitutionRules(parseToml(text, "substitutions.toml")) : [];
+  }
+
+  /** Parse a recipe's `## Ingredients` section into normalized ingredients. */
+  async function getRecipeIngredients(
+    slug: string,
+    aliases: Record<string, string>,
+  ): Promise<ParsedIngredient[]> {
+    if (!SLUG_RE.test(slug)) throw new ToolError("not_found", `Unknown recipe slug: ${slug}`, { slug });
+    const text = await readFile(gh, `recipes/${slug}.md`, "not_found", `Unknown recipe slug: ${slug}`);
+    const { body } = parseMarkdown(text, `recipes/${slug}.md`);
+    const lines = extractIngredientLines(body);
+    if (lines === null) {
+      throw new ToolError("malformed_data", `recipes/${slug}.md has no '## Ingredients' section`, { slug });
+    }
+    return lines.map((line) => parseRecipeIngredient(line, aliases));
   }
 
   /** Run the resolve-only matcher for one ingredient with the shared deps. */
@@ -457,6 +500,74 @@ export function buildServer(env: Env): McpServer {
     },
     ({ ingredient, context, bypass_cache }) =>
       runTool(() => resolveIngredient(ingredient, context ?? {}, bypass_cache ?? false)),
+  );
+
+  server.registerTool(
+    "verify_pantry_for_recipe",
+    {
+      description:
+        "Walk a recipe's parsed ingredients against the pantry. Returns facts, not freshness verdicts: in_pantry (exact matches, with age metadata for the agent's 'still good?' judgment), possible_matches (fuzzy candidates the agent confirms), not_in_pantry (to-buy), optional (non-blocking), inventory_substitutes_available. No have_stale bucket — the tool never classifies freshness, and never auto-matches a fuzzy candidate.",
+      inputSchema: { slug: z.string() },
+    },
+    ({ slug }) =>
+      runTool(async () => {
+        const aliases = await getAliases();
+        const [parsed, pantry, rules] = await Promise.all([
+          getRecipeIngredients(slug, aliases),
+          getPantryItems(),
+          getSubstitutionRules(),
+        ]);
+        return verifyParsedIngredients(parsed, pantry, rules, aliases);
+      }),
+  );
+
+  server.registerTool(
+    "verify_pantry_for_candidates",
+    {
+      description:
+        "Aggregate verify_pantry_for_recipe across several candidate recipes (open-ended menu requests). Same shape, deduped by ingredient name; not_in_pantry / possible_matches / inventory_substitutes_available carry for_recipes attribution.",
+      inputSchema: { slugs: z.array(z.string()) },
+    },
+    ({ slugs }) =>
+      runTool(async () => {
+        const aliases = await getAliases();
+        const [pantry, rules] = await Promise.all([getPantryItems(), getSubstitutionRules()]);
+        const perRecipe: { slug: string; result: VerifyResult }[] = [];
+        for (const slug of slugs) {
+          const parsed = await getRecipeIngredients(slug, aliases);
+          perRecipe.push({ slug, result: verifyParsedIngredients(parsed, pantry, rules, aliases) });
+        }
+        return aggregateVerifications(perRecipe);
+      }),
+  );
+
+  server.registerTool(
+    "propose_substitutions",
+    {
+      description:
+        "Apply substitutions.toml rules deterministically, returning { substitutes, unacceptable } for the agent to present for confirmation (never auto-applies). mode 'inventory' surfaces rule-acceptable substitutes present in the pantry; mode 'sale' fetches Kroger prices internally and surfaces rule-acceptable substitutes on sale. Empty result when no rule matches (dormant until substitutions.toml is seeded).",
+      inputSchema: { ingredient: z.string(), mode: z.enum(["inventory", "sale"]) },
+    },
+    ({ ingredient, mode }) =>
+      runTool(async (): Promise<SubstitutionResult> => {
+        const aliases = await getAliases();
+        const rules = await getSubstitutionRules();
+        const rule = findRule(rules, ingredient, aliases);
+        if (!rule) return { substitutes: [], unacceptable: [] };
+
+        if (mode === "inventory") {
+          const pantry = await getPantryItems();
+          const names = pantry.map((it) => (typeof it.name === "string" ? it.name : "")).filter(Boolean);
+          return proposeInventory(rule, names, aliases);
+        }
+
+        // sale: keep rule-acceptable substitutes that are on sale at the location.
+        const locationId = await getLocationId();
+        return proposeSale(rule, async (sub) => {
+          const candidates = await kroger.search(sub, { locationId, limit: 5 });
+          return candidates.filter(isFulfillable).some((c) => c.price.promo > 0);
+        });
+      }),
   );
 
   // Repo-data write tools + the grocery-list buy list. These persist via the

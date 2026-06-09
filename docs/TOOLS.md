@@ -85,7 +85,7 @@ Read pantry items, optionally filtered.
 
 ### `verify_pantry_for_recipe(slug)`
 
-Walk all ingredients in the named recipe against pantry. Surface what's there, what's stale, what substitutes are available in inventory.
+Parse the named recipe's `## Ingredients` and walk each against the pantry. Returns **facts, not freshness verdicts** — the tool reports what's present and surfaces age metadata; the agent decides which items warrant a "still good?" prompt (resolved via `mark_pantry_verified`). The tool never classifies items as fresh/stale (it has no shelf-life data and freshness depends on storage, not age) and never guesses ambiguous matches.
 
 **Params:**
 - `slug` (string, required)
@@ -93,21 +93,34 @@ Walk all ingredients in the named recipe against pantry. Surface what's there, w
 **Returns:**
 ```
 {
-  have_fresh: [...items],
-  have_stale: [...items],     // questions for the user about freshness
-  inventory_substitutes_available: [...{ recipe_calls_for, available_substitute }],
-  not_in_pantry: [...ingredients]    // to-buy list
+  in_pantry: [...{                  // exact normalized match — confident
+    recipe_calls_for,               // parsed ingredient name
+    pantry_item,                    // matched pantry entry name
+    added_at, last_verified_at,
+    days_since_verified,            // for the agent's freshness-prompt judgment
+    category,                       // when present on the pantry item
+    prepared_from                   // slug if a cooked/prepared leftover
+  }],
+  possible_matches: [...{           // fuzzy/token-overlap candidate — AGENT CONFIRMS
+    recipe_calls_for,
+    candidate_pantry_item           // confirm → treat as in_pantry (and suggest an aliases.toml entry)
+  }],
+  not_in_pantry: [...{ ingredient }],  // no candidate at all → to-buy list (presence-driven, never quantity-netted)
+  optional: [...ingredients],       // names of parsed "(optional ...)" ingredients — non-blocking; ask before adding to order
+  inventory_substitutes_available: [...{ recipe_calls_for, available_substitute }]  // ∅ until substitutions.toml seeded
 }
 ```
 
+**Notes:** No `have_stale` bucket — freshness is an agent judgment over the surfaced age metadata, not a tool output. Matching is exact for `in_pantry`; anything inexact goes to `possible_matches` for the agent to confirm or reject (no silent false-misses, no silent false-positives). `inventory_substitutes_available` applies `substitutions.toml` rules and is empty until rules are seeded. Change 12 may later add a `past_typical_fresh_life` hint per item (from `ingredients.toml`) without changing this shape.
+
 ### `verify_pantry_for_candidates(slugs)`
 
-Same as above but for multiple candidate recipes (for open-ended menu requests). Aggregates the picture.
+Same as above but for multiple candidate recipes (for open-ended menu requests). Aggregates the picture, deduped by parsed ingredient name.
 
 **Params:**
 - `slugs` (array of strings, required)
 
-**Returns:** Same shape as above, aggregated.
+**Returns:** Same shape as above, aggregated. Each `not_in_pantry`, `possible_matches`, and `inventory_substitutes_available` entry additionally carries `for_recipes: [...slugs]` — the candidate recipe(s) that need it — mirroring `grocery_list.toml`'s attribution and what `place_order` consumes.
 
 ### `update_pantry(operations)`
 
@@ -285,13 +298,15 @@ Apply `substitutions.toml` rules to surface acceptable alternatives.
 **Returns:**
 - `{ substitutes: [...], unacceptable: [...] }`
 
-**Notes:** Tool applies rules deterministically; LLM presents result to user for confirmation.
+**Notes:** Tool applies rules deterministically; LLM presents result to user for confirmation. `"sale"` mode fetches current Kroger flyer/price data **internally** (it does not require the caller to pre-pass `kroger_flyer`). Empty until `substitutions.toml` is seeded — the file is edit-when-directed user config.
 
 ---
 
 ## Sequencing tools
 
 ### `suggest_sequencing(seed_recipes)`
+
+> **Status: built in Change 13**, not Change 08. The tool walks the component vocabulary, which is unseeded in the corpus today (≈1/63 recipes declare a component), so it ships with Change 13 (the change that seeds that vocabulary via corpus reconciliation). The menu-request flow tolerates an absent/empty sequencing result until then. Contract below is the target.
 
 Walk `produces_components` / `uses_components` references to find recipe pairings.
 
