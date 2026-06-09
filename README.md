@@ -41,7 +41,7 @@ deterministic (matching, filtering, file I/O, commits) is the Worker's.
 
 ## Where to start
 
-- **Browse & cook the recipes** → **[the recipe site](http://caseywebb.xyz/groceries/)** — a static site built from `recipes/` (`scripts/build-site.mjs`) and deployed to GitHub Pages. Faceted filtering, checkable ingredients, tap-to-advance read-aloud, and offline/installable on a phone or tablet.
+- **Browse & cook the recipes** → **[the recipe site](https://caseywebb.github.io/groceries/)** — a static site built from `recipes/` (`scripts/build-site.mjs`) and deployed to GitHub Pages. Faceted filtering, checkable ingredients, tap-to-advance read-aloud, and offline/installable on a phone or tablet.
 - **What this is and why** → [docs/PROJECT.md](docs/PROJECT.md) (full proposal, architecture, phased roadmap).
 - **Data file schemas** → [docs/SCHEMAS.md](docs/SCHEMAS.md).
 - **MCP tool inventory** → [docs/TOOLS.md](docs/TOOLS.md).
