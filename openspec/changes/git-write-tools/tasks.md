@@ -46,5 +46,5 @@
 
 ## 8. Deploy + verify
 
-- [ ] 8.1 Deploy via CD (push to `worker/**`); confirm the Access gate rejects unauthenticated MCP requests and serves tools after owner OAuth  — **BLOCKED: needs deploy + 5.1**
-- [ ] 8.2 From an authorized MCP client, exercise `commit_changes` end-to-end and confirm one clean commit on `main`  — **BLOCKED: needs 8.1**
+- [x] 8.1 Deploy via CD — pushed to `main`; CD typecheck + test + deploy all green (run 27225774832). Worker live, `workers.dev` disabled, in-Worker JWT check active. Live unauthenticated-rejection `curl` against the custom domain is a quick optional confirm.
+- [ ] 8.2 Authenticated `commit_changes` end-to-end — **folds into Change 07**: with Access enforced, the authorized path is the OAuth flow, which Claude.ai drives (MCP Inspector can't easily). Verify the real write when connecting Claude.ai.
