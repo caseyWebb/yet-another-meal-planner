@@ -4,3 +4,4 @@ preferred_location = "Kroger - 76104"
 
 [brands]
 paper_towels = ["Viva"]
+butter = ["Challenge", "Tillamook", "Kerrygold"]
