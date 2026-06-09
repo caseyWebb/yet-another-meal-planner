@@ -14,5 +14,10 @@
     "resolveJsonModule": true,
     "verbatimModuleSyntax": true
   },
-  "include": ["src", "test"]
+  "include": ["src", "test"],
+  // Live smoke tests use node APIs (node:fs, process) and run only out-of-band
+  // via vitest (KROGER_LIVE=1) — never under workerd. Keep them out of the
+  // workers-typed tsc pass so `src` stays strictly workerd-safe. Vitest finds
+  // them through its own glob regardless of this exclude.
+  "exclude": ["test/**/*.live.test.ts"]
 }
