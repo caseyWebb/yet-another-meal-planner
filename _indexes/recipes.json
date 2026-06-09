@@ -516,7 +516,7 @@
     "meal_preppable": true,
     "produces_components": [],
     "protein": "chicken",
-    "rating": null,
+    "rating": 5,
     "season": [],
     "servings": 6,
     "slug": "chicken-chile-verde",
