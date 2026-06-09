@@ -21,6 +21,17 @@ const STATUS_ENUM = new Set(['active', 'draft', 'rejected', 'archived']);
 // last_cooked / rating / discovered_at are legitimately null by design and are NOT warned.
 const RECOMMENDED_FIELDS = ['protein', 'time_total', 'ingredients_key'];
 const MEALS = ['breakfast', 'lunch', 'dinner'];
+// Recipe bodies must carry these H2 sections so site generation can reliably
+// locate the ingredient list (for checkboxes) and the step list (for read-aloud).
+// Extra H2 sections (e.g. a future `## Notes`) are permitted and render generically.
+const REQUIRED_SECTIONS = ['Ingredients', 'Instructions'];
+
+// True when the markdown body contains an `## <name>` ATX H2 heading (any
+// surrounding whitespace, case-sensitive on the canonical label).
+export function hasH2Section(body, name) {
+  const re = new RegExp(`^[ \\t]*##[ \\t]+${name}[ \\t]*$`, 'm');
+  return re.test(body);
+}
 
 // --- pure helpers --------------------------------------------------------
 
@@ -87,9 +98,9 @@ export async function buildRecipeIndexes(recipesDir) {
   for (const file of files) {
     const rel = path.relative(REPO_ROOT, file);
     const slug = deriveSlug(file);
-    let data;
+    let data, content;
     try {
-      ({ data } = matter(await readFile(file, 'utf8')));
+      ({ data, content } = matter(await readFile(file, 'utf8')));
     } catch (err) {
       errors.push(`${rel}: frontmatter failed to parse — ${err.message}`);
       continue;
@@ -111,6 +122,12 @@ export async function buildRecipeIndexes(recipesDir) {
       (f) => data[f] == null || (Array.isArray(data[f]) && data[f].length === 0)
     );
     if (missing.length) warnings.push(`${rel}: missing recommended field(s): ${missing.join(', ')}`);
+
+    for (const section of REQUIRED_SECTIONS) {
+      if (!hasH2Section(content, section)) {
+        errors.push(`${rel}: missing required body section "## ${section}"`);
+      }
+    }
 
     recipes[slug] = normalizeValue({
       ...data,

@@ -12,6 +12,7 @@ import {
   stableStringify,
   normalizeValue,
   deriveSlug,
+  hasH2Section,
 } from '../scripts/build-indexes.mjs';
 
 const FIXTURES = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures', 'recipes');
@@ -26,7 +27,11 @@ async function tmpRecipes(files) {
   return dir;
 }
 
-const recipe = (fm) => `---\n${fm}\n---\nbody\n`;
+// Bodies carry the required `## Ingredients` / `## Instructions` sections by
+// default so a fixture exercises one validation axis at a time; pass `body` to
+// override (e.g. to test the missing-section rule).
+const SECTIONS = `\n## Ingredients\n\n- x\n\n## Instructions\n\n1. do it\n`;
+const recipe = (fm, body = SECTIONS) => `---\n${fm}\n---\n${body}`;
 
 // --- 4.2 index shapes from fixtures -------------------------------------
 
@@ -141,6 +146,52 @@ test('soft: missing recommended fields warns but does not fail', async () => {
 test('producing a component with no consumer is allowed', async () => {
   const dir = await tmpRecipes({
     'producer.md': recipe('title: P\nstatus: active\nprotein: fish\ntime_total: 10\ningredients_key: [x]\nproduces_components: [extra-rice]'),
+  });
+  const { errors } = await buildRecipeIndexes(dir);
+  assert.deepEqual(errors, []);
+  await rm(dir, { recursive: true, force: true });
+});
+
+// --- required body sections (structural contract) -----------------------
+
+test('hasH2Section detects ATX H2 headings, ignores other levels', () => {
+  assert.ok(hasH2Section('## Ingredients\n- a', 'Ingredients'));
+  assert.ok(hasH2Section('intro\n\n##   Instructions  \n1. go', 'Instructions'));
+  assert.ok(!hasH2Section('### Ingredients', 'Ingredients')); // H3, not H2
+  assert.ok(!hasH2Section('## Ingredients list', 'Ingredients')); // not an exact label
+  assert.ok(!hasH2Section('no headings here', 'Ingredients'));
+});
+
+test('hard-fail: missing Ingredients section reports file + section', async () => {
+  const dir = await tmpRecipes({
+    'noing.md': recipe('title: NoIng\nstatus: active', '\n## Instructions\n\n1. go\n'),
+  });
+  const { errors } = await buildRecipeIndexes(dir);
+  assert.ok(
+    errors.some((e) => e.includes('noing.md') && e.includes('## Ingredients')),
+    errors.join('\n')
+  );
+  await rm(dir, { recursive: true, force: true });
+});
+
+test('hard-fail: missing Instructions section reports file + section', async () => {
+  const dir = await tmpRecipes({
+    'noinstr.md': recipe('title: NoInstr\nstatus: active', '\n## Ingredients\n\n- x\n'),
+  });
+  const { errors } = await buildRecipeIndexes(dir);
+  assert.ok(
+    errors.some((e) => e.includes('noinstr.md') && e.includes('## Instructions')),
+    errors.join('\n')
+  );
+  await rm(dir, { recursive: true, force: true });
+});
+
+test('extra H2 sections beyond the required two are allowed', async () => {
+  const dir = await tmpRecipes({
+    'notes.md': recipe(
+      'title: Notes\nstatus: active\nprotein: fish\ntime_total: 10\ningredients_key: [x]',
+      '\n## Ingredients\n\n- x\n\n## Instructions\n\n1. go\n\n## Notes\n\nMake ahead.\n'
+    ),
   });
   const { errors } = await buildRecipeIndexes(dir);
   assert.deepEqual(errors, []);

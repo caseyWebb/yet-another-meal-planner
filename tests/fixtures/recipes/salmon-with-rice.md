@@ -24,3 +24,16 @@ source: null
 ---
 
 Cook extra rice for tomorrow.
+
+## Ingredients
+
+- 2 salmon fillets
+- 1 cup rice
+- 2 tbsp soy sauce
+- 2 scallions, sliced
+
+## Instructions
+
+1. Rinse the rice and start it cooking with 2 cups water.
+2. Sear the salmon skin-side down until crisp, then flip and finish.
+3. Serve the salmon over rice, drizzled with soy sauce and topped with scallions.

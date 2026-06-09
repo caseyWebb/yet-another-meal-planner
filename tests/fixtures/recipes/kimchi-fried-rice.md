@@ -24,3 +24,16 @@ source: null
 ---
 
 Uses yesterday's leftover rice.
+
+## Ingredients
+
+- 2 cups cooked rice, cold
+- 1 cup kimchi, chopped
+- 2 eggs
+- 2 scallions, sliced
+
+## Instructions
+
+1. Fry the kimchi in a hot pan until caramelized.
+2. Add the cold rice and stir-fry until heated through.
+3. Push aside, fry the eggs, and fold everything together. Top with scallions.

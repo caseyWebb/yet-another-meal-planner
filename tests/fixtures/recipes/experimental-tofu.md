@@ -24,3 +24,15 @@ source: https://www.seriouseats.com/crispy-tofu
 ---
 
 A draft discovery, not yet dispositioned.
+
+## Ingredients
+
+- 14 oz firm tofu, pressed and cubed
+- 2 tbsp cornstarch
+- 2 tbsp chili crisp
+
+## Instructions
+
+1. Toss the tofu cubes in cornstarch until evenly coated.
+2. Pan-fry over medium-high heat until golden and crisp on all sides.
+3. Drizzle with chili crisp and serve.

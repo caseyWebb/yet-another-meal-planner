@@ -1,0 +1,61 @@
+name: build-site
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'recipes/**'
+      - 'ready_to_eat/**'
+      - 'scripts/build-indexes.mjs'
+      - 'scripts/build-site.mjs'
+      - 'scripts/site-assets/**'
+      - '.github/workflows/build-site.yml'
+  workflow_dispatch:
+
+# Pages deploy needs no external secrets — the built-in GITHUB_TOKEN with these
+# permissions is sufficient.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Only one concurrent Pages deploy per ref; let an in-flight deploy finish.
+concurrency:
+  group: pages-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Indexes first — the site reads _indexes/components.json for cross-links.
+      - name: Build indexes
+        run: npm run build:indexes
+
+      - name: Build site
+        run: npm run build:site
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

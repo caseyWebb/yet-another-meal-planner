@@ -1,0 +1,429 @@
+/* style.css — the single hand-written stylesheet for the recipe site.
+ *
+ * Text-forward, system-font, warm-paper presentation. Leans on browser-native
+ * CSS: oklch() + light-dark() for automatic dark mode, fluid clamp() type,
+ * :has() for faceted filtering and checkable ingredients, container queries and
+ * a sticky ingredient rail for tablet, scroll-driven reveal and cross-document
+ * View Transitions — all motion gated by prefers-reduced-motion.
+ *
+ * Data-driven facet-hiding rules are generated per-build and injected inline in
+ * the index <head>; everything else lives here. */
+
+:root {
+  color-scheme: light dark;
+
+  /* Warm-paper light / warm-charcoal dark, expressed once via light-dark(). */
+  --bg:        light-dark(oklch(0.985 0.012 85),  oklch(0.205 0.012 60));
+  --surface:   light-dark(oklch(1    0.014 90),   oklch(0.255 0.014 60));
+  --ink:       light-dark(oklch(0.265 0.02 60),   oklch(0.92 0.012 85));
+  --ink-soft:  light-dark(oklch(0.48 0.02 60),    oklch(0.74 0.012 80));
+  --line:      light-dark(oklch(0.88 0.02 80),    oklch(0.36 0.014 60));
+  --accent:    light-dark(oklch(0.58 0.15 36),    oklch(0.7 0.14 40));
+  --accent-ink: oklch(0.98 0.01 40);
+  --focus:     light-dark(oklch(0.5 0.18 250),    oklch(0.78 0.14 240));
+
+  --serif: ui-serif, Georgia, "Iowan Old Style", "Palatino Linotype", serif;
+  --sans:  system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+
+  --measure: 62ch;
+  --radius: 0.7rem;
+  --gap: clamp(1rem, 2.5vw, 1.75rem);
+}
+
+* { box-sizing: border-box; }
+
+html { -webkit-text-size-adjust: 100%; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: clamp(1rem, 0.95rem + 0.3vw, 1.15rem);
+  line-height: 1.6;
+  text-wrap: pretty;
+}
+
+/* --- skip link + focus ------------------------------------------------- */
+
+.skip-link {
+  position: absolute;
+  left: 0.5rem;
+  top: -3rem;
+  z-index: 10;
+  padding: 0.5rem 0.9rem;
+  background: var(--accent);
+  color: var(--accent-ink);
+  border-radius: 0 0 var(--radius) var(--radius);
+  transition: top 0.15s ease;
+}
+.skip-link:focus { top: 0; }
+
+:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+
+/* --- layout ------------------------------------------------------------ */
+
+.page {
+  width: min(100% - 2rem, 72rem);
+  margin-inline: auto;
+}
+
+header.site {
+  padding-block: clamp(1.25rem, 4vw, 2.5rem) 1rem;
+}
+header.site h1 {
+  font-family: var(--serif);
+  font-size: clamp(2rem, 1.5rem + 2.5vw, 3rem);
+  margin: 0;
+  letter-spacing: -0.01em;
+}
+header.site p { color: var(--ink-soft); margin: 0.25rem 0 0; }
+
+footer.site {
+  margin-top: 3rem;
+  padding-block: 1.5rem 2.5rem;
+  border-top: 1px solid var(--line);
+  color: var(--ink-soft);
+  font-size: 0.9rem;
+}
+
+a { color: var(--accent); text-underline-offset: 0.15em; }
+
+/* --- index: filters ---------------------------------------------------- */
+
+.filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem 1.25rem;
+  align-items: flex-start;
+  margin-block: 1.5rem;
+  padding: var(--gap);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+.filters fieldset {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  min-inline-size: 0;
+}
+.filters legend {
+  font-weight: 600;
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--ink-soft);
+  padding: 0;
+  margin-bottom: 0.4rem;
+}
+.facet-options { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+
+/* Radio rendered as a pill. The native input stays for a11y/keyboard but is
+ * visually replaced by its label. */
+.facet-options label {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.3rem 0.7rem;
+  border: 1px solid var(--line);
+  border-radius: 2rem;
+  font-size: 0.9rem;
+  cursor: pointer;
+  background: var(--bg);
+  text-transform: capitalize;
+}
+.facet-options input {
+  position: absolute;
+  width: 1px; height: 1px;
+  margin: -1px; padding: 0; border: 0;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  overflow: hidden; white-space: nowrap;
+}
+.facet-options label:has(input:checked) {
+  background: var(--accent);
+  color: var(--accent-ink);
+  border-color: var(--accent);
+}
+.facet-options label:has(input:focus-visible) {
+  outline: 3px solid var(--focus);
+  outline-offset: 2px;
+}
+
+details.facet-cuisine { flex-basis: 100%; }
+details.facet-cuisine summary {
+  font-weight: 600;
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--ink-soft);
+  cursor: pointer;
+  margin-bottom: 0.4rem;
+}
+
+/* Search box is injected by search.js; styled here so it matches when present. */
+.search {
+  flex-basis: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+.search label {
+  font-weight: 600;
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--ink-soft);
+}
+.search input {
+  font: inherit;
+  padding: 0.55rem 0.8rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg);
+  color: inherit;
+}
+
+/* --- index: card grid -------------------------------------------------- */
+
+.recipes {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 18rem), 1fr));
+  gap: var(--gap);
+}
+.recipes > li { display: flex; }
+/* Hidden by the JS metadata search. More specific than the base rule above so
+ * it wins, and it stacks with the inline data-driven facet rules: a card hides
+ * if a facet OR the search excludes it (AND across all active filters). */
+.recipes > li.is-hidden { display: none; }
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  inline-size: 100%;
+  padding: 1.1rem 1.2rem 1.25rem;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  text-decoration: none;
+  color: inherit;
+  transition: border-color 0.15s ease, transform 0.15s ease;
+}
+.card:hover { border-color: var(--accent); }
+.card h2 {
+  font-family: var(--serif);
+  font-size: 1.25rem;
+  margin: 0;
+  line-height: 1.25;
+}
+.card .meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem 0.8rem;
+  font-size: 0.85rem;
+  color: var(--ink-soft);
+}
+.card .tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-top: auto;
+}
+.tag {
+  font-size: 0.72rem;
+  padding: 0.15rem 0.5rem;
+  border-radius: 1rem;
+  background: color-mix(in oklch, var(--accent) 14%, var(--surface));
+  color: var(--ink-soft);
+}
+.card[data-status="draft"] .draft-badge {
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--accent);
+}
+
+.empty {
+  display: none;
+  margin-block: 2rem;
+  padding: 1.5rem;
+  text-align: center;
+  color: var(--ink-soft);
+  border: 1px dashed var(--line);
+  border-radius: var(--radius);
+}
+/* Shown by search.js when zero cards are visible; the generated inline facet
+ * CSS also reveals it for single-axis empty selections with JS off. */
+.empty.visible { display: block; }
+
+/* --- recipe page ------------------------------------------------------- */
+
+.recipe { container-type: inline-size; }
+
+.recipe header.recipe-head { margin-block: 1.5rem 0.5rem; }
+.recipe h1 {
+  font-family: var(--serif);
+  font-size: clamp(1.8rem, 1.3rem + 2.4vw, 2.7rem);
+  margin: 0 0 0.5rem;
+  line-height: 1.15;
+}
+.recipe .meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1rem;
+  color: var(--ink-soft);
+  font-size: 0.95rem;
+}
+.recipe .tags { margin-top: 0.75rem; }
+.back { display: inline-block; margin-block: 1rem; font-size: 0.95rem; }
+
+.recipe-body {
+  display: grid;
+  gap: clamp(1.5rem, 4vw, 2.5rem);
+  max-inline-size: var(--measure);
+  margin-block: 1.5rem;
+}
+.recipe-body section { margin: 0; }
+.recipe-body h2 {
+  font-family: var(--serif);
+  font-size: 1.5rem;
+  margin: 0 0 0.6rem;
+  padding-bottom: 0.3rem;
+  border-bottom: 2px solid var(--line);
+}
+.recipe-body :is(p, li) { max-inline-size: var(--measure); }
+
+/* Ingredients: checkable list */
+ul.ingredients { list-style: none; margin: 0; padding: 0; }
+ul.ingredients li { margin: 0; }
+ul.ingredients label {
+  display: flex;
+  gap: 0.6rem;
+  align-items: baseline;
+  padding: 0.35rem 0.4rem;
+  border-radius: 0.4rem;
+  cursor: pointer;
+  font-family: var(--serif);
+}
+ul.ingredients label:hover { background: color-mix(in oklch, var(--accent) 8%, transparent); }
+ul.ingredients input { inline-size: 1.05rem; block-size: 1.05rem; accent-color: var(--accent); flex: none; }
+ul.ingredients li:has(:checked) {
+  color: var(--ink-soft);
+  text-decoration: line-through;
+  text-decoration-color: var(--accent);
+  opacity: 0.6;
+}
+
+/* Instructions: numbered steps */
+ol.instructions {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  counter-reset: step;
+  display: grid;
+  gap: 1rem;
+}
+ol.instructions li {
+  counter-increment: step;
+  display: grid;
+  grid-template-columns: 2rem 1fr;
+  gap: 0.75rem;
+  font-family: var(--serif);
+  line-height: 1.65;
+}
+ol.instructions li::before {
+  content: counter(step);
+  grid-row: 1 / 99;
+  inline-size: 2rem; block-size: 2rem;
+  display: grid; place-content: center;
+  font-family: var(--sans);
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--accent-ink);
+  background: var(--accent);
+  border-radius: 50%;
+}
+ol.instructions li[aria-current="step"] {
+  background: color-mix(in oklch, var(--accent) 12%, transparent);
+  border-radius: var(--radius);
+  padding: 0.4rem 0.6rem;
+  margin: -0.4rem -0.6rem;
+}
+
+/* Component cross-links + source */
+.components, .source {
+  max-inline-size: var(--measure);
+  font-size: 0.95rem;
+}
+.components h2 { font-size: 1.1rem; border: 0; }
+.components ul { margin: 0.3rem 0 0; padding-left: 1.2rem; }
+
+/* Read-aloud control injected by read-aloud.js */
+.read-aloud {
+  display: inline-flex;
+  gap: 0.5rem;
+  align-items: center;
+  margin-bottom: 1rem;
+}
+.read-aloud button {
+  font: inherit;
+  padding: 0.5rem 1rem;
+  border: 1px solid var(--accent);
+  border-radius: 2rem;
+  background: var(--accent);
+  color: var(--accent-ink);
+  cursor: pointer;
+}
+.read-aloud button.secondary { background: var(--bg); color: var(--accent); }
+
+/* Tablet landscape: ingredients become a sticky side rail beside steps. */
+@container (min-width: 48rem) {
+  .recipe-body.has-cook {
+    grid-template-columns: minmax(16rem, 22rem) 1fr;
+    align-items: start;
+  }
+  .recipe-body .section-ingredients {
+    position: sticky;
+    top: 1rem;
+    grid-column: 1;
+  }
+  .recipe-body .section-instructions { grid-column: 2; grid-row: 1 / 99; }
+  .recipe-body .section-generic, .recipe-body .components, .recipe-body .source {
+    grid-column: 1 / -1;
+  }
+}
+
+/* --- motion (all opt-in, reduced-motion gated) ------------------------- */
+
+@media (prefers-reduced-motion: no-preference) {
+  @view-transition { navigation: auto; }
+
+  @supports (animation-timeline: view()) {
+    .recipes > li {
+      animation: reveal linear both;
+      animation-timeline: view();
+      animation-range: entry 0% entry 40%;
+    }
+  }
+  @keyframes reveal {
+    from { opacity: 0; transform: translateY(0.75rem); }
+    to   { opacity: 1; transform: none; }
+  }
+
+  @supports (transition-behavior: allow-discrete) {
+    .empty {
+      transition: opacity 0.2s ease, display 0.2s allow-discrete;
+    }
+    @starting-style { .empty { opacity: 0; } }
+  }
+
+  .card:hover { transform: translateY(-2px); }
+}

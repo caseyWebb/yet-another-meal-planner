@@ -40,6 +40,14 @@ source: https://www.seriouseats.com/lemon-garlic-roasted-chicken
 - `uses_components` / `produces_components`: slugs of other recipes, optional. Used by `suggest_sequencing`.
 - `ingredients_key`: top 5–7 ingredients for filtering. Full ingredient list lives in the body.
 
+### Recipe body structural contract
+
+The markdown body below the frontmatter is freeform, with one **hard requirement**: it MUST contain both an `## Ingredients` H2 section and an `## Instructions` H2 section (exact labels, ATX `##` headings). Validation in `scripts/build-indexes.mjs` fails the build (non-zero exit) and names the offending file and missing section if either is absent.
+
+- **Ingredients** is conventionally a `-` bullet list; **Instructions** a numbered list. Site generation renders them as `<ul>` and `<ol>` respectively.
+- Additional H2 sections (e.g. `## Notes`) are permitted and render generically — no validator or generator change is needed to add one.
+- The contract exists so downstream site generation (`scripts/build-site.mjs`) can reliably locate the ingredient list (to inject checkboxes) and the step list (for numbering + read-aloud) without guessing.
+
 ## pantry.toml
 
 Live inventory. Agent-writable. Updated as side effect of menu generation and ad-hoc messages.
