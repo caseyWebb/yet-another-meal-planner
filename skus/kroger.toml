@@ -44,3 +44,9 @@ sku = "0007283008143"
 brand = "Tillamook"
 size = "48 oz"
 
+[[mappings]]
+ingredient = "butter"
+sku = "0007283090632"
+brand = "Tillamook"
+size = "4 sticks / 16 oz"
+
