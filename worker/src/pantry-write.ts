@@ -54,8 +54,8 @@ export function applyPantryOperations(
     const name = nameOf(op);
 
     if (op.op === "add") {
-      if (!op.item || typeof op.item.name !== "string") {
-        conflicts.push({ op: "add", name, reason: "add requires an item with a name" });
+      if (!name) {
+        conflicts.push({ op: "add", name, reason: "add requires a name (set `name` or `item.name`)" });
         continue;
       }
       const item: PantryItem = {
@@ -63,9 +63,10 @@ export function applyPantryOperations(
         last_verified_at: today,
         prepared_from: null,
         ...op.item,
+        name,
       };
       next.push(item);
-      applied.push({ op: "add", name: op.item.name });
+      applied.push({ op: "add", name });
       continue;
     }
 

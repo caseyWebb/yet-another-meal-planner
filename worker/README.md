@@ -246,6 +246,14 @@ One-time setup (Cloudflare **Zero Trust** dashboard, **manual** — not in CD):
 4. **Advanced settings → enable Managed OAuth** (Access emits `WWW-Authenticate`
    → `/.well-known/oauth-authorization-server` and runs registration + PKCE +
    token issuance). Copy the **AUD tag** from Additional settings.
+5. **Advanced settings → Allowed redirect URIs** → add the MCP client's callback,
+   `https://claude.ai/api/mcp/auth_callback` (or `https://claude.ai/api/mcp/*`).
+   **Required even with DCR:** dynamic client registration stores a client's
+   redirect URI, but the authorize endpoint *also* validates it against this
+   app-level allowlist. Without it the authorize request is rejected pre-login
+   with `invalid_request: Redirect URI not allowed by application configuration`,
+   and the connector reports "Authorization with the MCP server failed" with no
+   login screen ever shown.
 
 Access protects the whole hostname **except `/oauth/*`**, which is carved out by a
 Bypass policy so the Kroger OAuth callback (which carries no Access JWT) can reach
