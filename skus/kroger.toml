@@ -107,3 +107,15 @@ sku = "0001111050195"
 brand = "Kroger"
 size = "6 oz"
 
+[[mappings]]
+ingredient = "poblano peppers"
+sku = "0000000004705"
+
+[[mappings]]
+ingredient = "anaheim peppers"
+sku = "0000000004677"
+
+[[mappings]]
+ingredient = "serrano peppers"
+sku = "0000000004709"
+
