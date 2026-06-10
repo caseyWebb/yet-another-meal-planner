@@ -6,24 +6,29 @@ This file is for Claude Code (and humans) **working on** the grocery-agent backe
 
 ## What this repo is
 
-A personal grocery agent that runs in **Claude.ai** (not Claude Code). The repo is the agent's backend and database:
+A personal grocery agent that runs in **Claude.ai** (not Claude Code). This is the **code-only** repo — the agent's backend and build tooling. **The agent's data lives in a separate private data repo** (the multi-tenant split — see [`docs/SELF_HOSTING.md`](docs/SELF_HOSTING.md) and the `multi-tenant-friend-group` OpenSpec change). This repo holds:
 
-- **`worker/`** — a Cloudflare Worker (TypeScript) exposing the `grocery-mcp` MCP server. This is the domain tool surface (pantry, recipes, Kroger, substitutions, cart). Deployed to `grocery-mcp.<subdomain>.workers.dev`.
-- **Flat-file data** at the root — the agent's state, all human-inspectable: `pantry.toml`, `grocery_list.toml`, `meal_plan.toml`, `cooking_log.toml`, `stockup.toml`, `preferences.toml`, `substitutions.toml`, `aliases.toml`, `flyer_terms.toml`, `ingredients.toml`, `feeds.toml`, `recipes/*.md`, `ready_to_eat/*.toml`, `skus/`, plus narratives `taste.md` / `diet_principles.md`. (`meal_plan.toml` and `cooking_log.toml` are agent-writable side-effect files, NOT user-curated config.)
-- **`_indexes/`** — generated JSON indexes (recipes, components, ready_to_eat) built from the flat files.
-- **`docs/`** — `PROJECT.md` (architecture), `SCHEMAS.md` (file formats), `TOOLS.md` (the tool contract — keep in sync with `worker/` code).
+- **`worker/`** — a Cloudflare Worker (TypeScript) exposing the `grocery-mcp` MCP server. The domain tool surface (pantry, recipes, Kroger, substitutions, cart). Deployed to `grocery-mcp.<subdomain>.workers.dev`. It reads/writes the data repo via a GitHub App installation token; "which tenant" is a `users/<username>/` path prefix in that repo.
+- **`scripts/`** — index + static-site build tooling (`build-indexes.mjs`, `build-site.mjs`, `site-assets/`, `migrate/`). Data repos run these against their own content via the reusable CI workflows in `.github/workflows/data-build-*.yml` (`--root <dir>`).
+- **`docs/`** — `PROJECT.md` (architecture), `SCHEMAS.md` (file formats), `TOOLS.md` (the tool contract — keep in sync with `worker/` code), `SELF_HOSTING.md` (operator setup), `MIGRATION.md` (single-repo → data-repo).
 - **`openspec/`** — the change/spec workflow (see below).
 - **`ROADMAP.md`** — the sequence of OpenSpec changes building the system.
 
-### Three-store data model (don't conflate these)
+There is **no data at the root of this repo.** The data repo (created from `groceries-agent-data-template`) holds shared content at its root (`recipes/`, `aliases.toml`, `substitutions.toml`, `skus/`, `ready_to_eat/`, `_indexes/`) and per-tenant state under `users/<username>/`.
+
+### Data model — three categories + the three-store intent model
+
+Recipe data splits three ways (multi-tenant split): **content** (objective frontmatter + body, shared at the data-repo root), **overlay** (`rating`/`status`, per-tenant in `users/<username>/overlay.toml`), and **notes** (attributed, per-tenant). `last_cooked` is derived per-tenant from `cooking_log.toml`, not stored. The shared `_indexes/recipes.json` carries objective fields only; the Worker merges each caller's overlay + cooking-log `last_cooked` at read time.
+
+Within a tenant's `users/<username>/`, the intent model (don't conflate these):
 
 - `pantry.toml` — **observation**: what's physically in the kitchen.
 - `stockup.toml` — **conditional intent**: buy IF it drops below a threshold.
 - `grocery_list.toml` — **committed buy intent**: buy on the next order (ingredient-level, SKU-free).
-- `meal_plan.toml` — **committed cook intent**: recipes agreed to cook next (transient; cleared as they're cooked or abandoned).
+- `meal_plan.toml` — **committed cook intent**: recipes agreed to cook next (transient; cleared as cooked or abandoned).
 - `cooking_log.toml` — **realized history**: an append-only log of meals actually cooked (the spine `retrospective` reads; `last_cooked` is derived from it).
 
-The repo is freely mutable; the Kroger cart is append-only. Capture intent into `grocery_list.toml` continuously; flush to the cart once, at order time, via `place_order`. Details in `docs/PROJECT.md`.
+The data repo is freely mutable; the Kroger cart is append-only. Capture intent into `grocery_list.toml` continuously; flush to the cart once, at order time, via `place_order`. Details in `docs/PROJECT.md`.
 
 ## Toolchain
 
@@ -41,23 +46,25 @@ npm run typecheck  # tsc --noEmit
 npm run deploy      # wrangler deploy — normally NOT run by hand (see below)
 ```
 
-- **Deployment is CD**: pushing to `worker/**` triggers `.github/workflows/deploy-worker.yml`. The first deploy was manual (`wrangler deploy` + `wrangler secret put` for the GitHub PAT / Kroger creds); CD owns every deploy after. Worker secrets (PAT, Kroger tokens, KV) are set via `wrangler secret put` straight to Cloudflare — never in the repo or in Actions.
-- **Local dev/secrets**: the PAT lives in `worker/.dev.vars` for local runs (gitignored). See `worker/README.md` for the one-time setup and the Kroger `/oauth/init` flow.
+- **Deployment is CD**: pushing to `worker/**` triggers `.github/workflows/deploy-worker.yml` (runs `typecheck` + `test`, then `wrangler deploy`). Repo access is via a **GitHub App** (D3), not a PAT: the App private key is a Cloudflare secret (`wrangler secret put GITHUB_APP_PRIVATE_KEY`); the App id, installation id, and data-repo coords are non-secret `wrangler.jsonc` vars. Kroger creds + KV are likewise secret-put / bound to Cloudflare — never in the repo or in Actions.
+- **Local dev/secrets**: `GITHUB_APP_PRIVATE_KEY` + Kroger creds live in `worker/.dev.vars` for local runs (gitignored; see `worker/.dev.vars.example`). See `docs/SELF_HOSTING.md` for the one-time operator setup and the Kroger `/oauth/init?tenant=<id>` flow.
 - **Structured errors, not throws**: tools return `{ error: "...", message }` shapes the agent can reason over. Follow the existing convention in `worker/src/errors.ts`.
 - **`docs/TOOLS.md` is the contract** — when a tool's params/returns change, update `docs/TOOLS.md` in the same pass. No drift.
 
 ## Working on data tooling (root)
 
+The scripts build indexes/site for a **data repo**, not this one (no data lives here). Point them at a data checkout with `--root`:
+
 ```bash
-npm run build:indexes   # scripts/build-indexes.mjs → _indexes/*.json + validation
-npm run build:site      # scripts/build-site.mjs
-npm run build           # both
-npm test                # node --test (root tests/)
+node scripts/build-indexes.mjs --root /path/to/data-repo   # → <root>/_indexes/*.json + validation
+node scripts/build-site.mjs    --root /path/to/data-repo --out site
+node scripts/build-indexes.mjs --check                     # validate only, no write
+npm test                                                   # node --test (root tests/, fixture-based)
 ```
 
-- **Validation** runs in `build-indexes.mjs` (TOML parses, frontmatter well-formed, references resolve, status enums). The Worker reimplements a *structural* subset in TS for pre-commit validation (it can't run the Node validator on `workerd`).
-- **Git hooks**: `npm install` runs `prepare`, which sets `core.hooksPath` to `scripts/githooks` (pre-commit validation).
-- **Actions**: `build-indexes.yml` regenerates indexes on push to data dirs (`[skip ci]` to avoid loops); `build-site.yml` builds the site; `deploy-worker.yml` deploys the Worker.
+- **Validation** runs in `build-indexes.mjs` (TOML parses, frontmatter well-formed, references resolve, status enum *optional* now — it's per-tenant overlay). The Worker reimplements a *structural* subset in TS for write-time validation (it can't run the Node validator on `workerd`).
+- **No git hooks** in this repo anymore (data moved out). The Worker's CI (`deploy-worker.yml`) runs `typecheck` + `test` before deploying.
+- **Actions**: `deploy-worker.yml` deploys the Worker on push to `worker/**`. `data-build-indexes.yml` + `data-build-site.yml` are **reusable** (`on: workflow_call`) — a data repo's thin caller workflows invoke them (`uses: caseyWebb/groceries-agent/...@main`) to build its own indexes/site, billed to the data-repo owner. Tests/fixtures live in `tests/`.
 
 ## OpenSpec change workflow
 

@@ -53,7 +53,7 @@
 
 ## 9. Docs
 
-- [ ] 9.1 Write `docs/SELF_HOSTING.md`: one-time operator setup (register GitHub App, register Kroger app, create org + shared-corpus repo from template, set OAuth-provider + App + Kroger secrets, allowlist), and the per-friend onboarding runbook (provision repo, friend connects Claude.ai + Kroger consent, paste AGENT_INSTRUCTIONS). Note the unverified Kroger Acceptable-Use clause and the shared 5,000 cart-calls/day ceiling.
+- [x] 9.1 Write `docs/SELF_HOSTING.md`: one-time operator setup (register GitHub App, register Kroger app, create the data repo from the template, set App + Kroger secrets + KV, allowlist), Worker deploy, optional Pages site, Claude.ai connect + Kroger consent. Notes the unverified Kroger Acceptable-Use clause + the 5,000 cart-calls/day ceiling. The per-friend invite-code onboarding is marked PENDING §3 (OAuth provider not yet built). *(Also wrote `docs/MIGRATION.md` and updated `CLAUDE.md` for the code-only/multi-tenant model.)*
 - [ ] 9.2 Update `docs/PROJECT.md` (multi-tenant architecture, Model B, three-category data model), `docs/SCHEMAS.md` (overlay + note schemas, location-tagged SKU entries, shared vs per-tenant file placement), `docs/TOOLS.md` (read/write contract changes, note tools, group-signal read).
 - [ ] 9.3 Update `AGENT_INSTRUCTIONS.md`: surface group ratings/notes; capture spins as notes (not content edits); per-tenant connect + Kroger consent setup.
 
