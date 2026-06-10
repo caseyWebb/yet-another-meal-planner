@@ -1,135 +1,131 @@
 # SELF_HOSTING — run your own grocery-agent
 
-This is the operator's one-time setup. When you finish you'll have: a private **data repo**, a deployed **grocery-mcp Worker**, and (optionally) a public **cookbook site** — all wired together, and Claude.ai connected.
+The operator's one-time setup. When you finish you'll have a private **data repo**, a deployed **grocery-mcp Worker**, and Claude.ai connected — with everything **driven from the web UI + GitHub Actions**. The only local command in the whole flow is one `openssl` line to convert a key.
 
-> **Status note.** The Worker is its own OAuth 2.1 provider (`@cloudflare/workers-oauth-provider`): members connect their Claude.ai, complete an **invite-code** consent page, and get a token whose tenant rides every request. Operator and friends use the same path — no Cloudflare Access, no third-party login, no GitHub/Kroger Developer account for friends.
+> **How identity works.** The Worker is its own OAuth 2.1 provider (`@cloudflare/workers-oauth-provider`): members add the connector in Claude.ai, complete an **invite-code** consent page, and get a token whose tenant rides every request. Operator and friends use the same path — no Cloudflare Access, no third-party login, and friends need no GitHub or Kroger Developer account.
 
 ## Mental model
 
 | Piece | What it is | Yours? |
 |---|---|---|
-| **Code repo** (`caseyWebb/groceries-agent`) | the Worker + build tooling + reusable CI | clone it; don't fork-and-diverge — `git pull` to update |
+| **Code repo** (`caseyWebb/groceries-agent`) | the Worker + build tooling + CI | **fork it** — your fork is your control plane (deploy + provision via Actions); `git pull` upstream to update |
 | **Data repo** (`<you>/groceries-agent-data`, **private**) | `recipes/` + reference data + `users/<username>/` | you create it from the template |
-| **Worker** (`grocery-mcp` on Cloudflare) | the MCP server Claude.ai talks to | you deploy it |
+| **Worker** (`grocery-mcp` on Cloudflare) | the MCP server Claude.ai talks to | you deploy it (from your fork's Actions) |
 | **Cookbook site** (GitHub Pages on the data repo) | public read-only recipe site | optional; needs GitHub Pro |
 
 A single **GitHub App** (on your account, scoped to the data repo) gives the Worker read/write to the data repo — no PAT. A single **Kroger** public-tier app handles search/prices (app-level) and per-user cart consent.
 
 ## Prerequisites
 
-- A **GitHub** account (+ **GitHub Pro**, ~$4/mo, *only* if you want the public cookbook site from the private repo).
+- A **GitHub** account (+ **GitHub Pro**, ~$4/mo, *only* for the optional public cookbook site from a private repo).
 - A **Cloudflare** account (Workers + KV are free-tier).
-- A **Kroger Developer** account → register one app (public tier).
-- Local tools: `git`, `gh`, Node 22 (via `mise`), `npx wrangler`, `openssl`.
+- A **Kroger Developer** account.
+- `openssl` once (any machine), to convert the App key. No other local tooling required — though if you have the `wrangler` CLI you can use it instead of the Cloudflare dashboard where noted.
 
-## 1. Create the data repo
+## 1. Fork the code repo
 
-```bash
-gh repo create <you>/groceries-agent-data --private \
-  --template caseyWebb/groceries-agent-data-template
-```
+**Fork** `caseyWebb/groceries-agent` to your account and **enable Actions** on the fork (Actions tab → enable). Your fork holds your `wrangler.jsonc` config and runs your *Deploy* / *Onboard* / *Revoke* workflows. To take upstream updates later, `git pull` (or sync the fork in the GitHub UI).
 
-Seed it: add your recipes under `recipes/`, your reference data (`aliases.toml`, etc.), and your personal subtree `users/<username>/` (pantry, preferences, taste, diet_principles, stockup, grocery_list, an empty `overlay.toml`, `notes/`). Push. The repo's CI (inherited from the template) regenerates `_indexes/` on every recipe change.
+## 2. Create the data repo
 
-## 2. Register the GitHub App
+On the [`groceries-agent-data-template`](https://github.com/caseyWebb/groceries-agent-data-template) → **Use this template** → create `<you>/groceries-agent-data`, **Private**. Add your recipes under `recipes/`, reference data (`aliases.toml`, …), and your own `users/<username>/` (or let the *Onboard* Action seed it in step 8). The template's CI regenerates `_indexes/` on every recipe change.
+
+## 3. Register the GitHub App
 
 GitHub → **Settings → Developer settings → GitHub Apps → New GitHub App** (on your account):
 
-- **Homepage URL**: anything (your Worker URL or the repo).
-- **Callback URL / "Request user authorization (OAuth)"**: leave blank / unchecked — identity is not GitHub login.
-- **Webhook**: uncheck **Active** (the Worker receives nothing).
-- **Repository permissions → Contents: Read and write** — this one permission covers the Contents API *and* the Git Data API the commit engine uses. Everything else: No access.
-- **Where can this GitHub App be installed?**: Only on this account.
+- **Homepage URL**: anything. **Webhook**: uncheck **Active**. **"Request user authorization (OAuth)"**: leave off (identity is not GitHub login).
+- **Repository permissions → Contents: Read and write** — covers both the Contents API and the Git Data API the commit engine uses. Everything else: No access.
+- **Where can this be installed?**: Only on this account.
 
-Create it, then capture three things:
+Then capture three things:
 
-1. **App ID** (General page) → `GITHUB_APP_ID`.
-2. **Private key** → "Generate a private key" downloads a PKCS#1 PEM. The Worker needs **PKCS#8**, so convert:
+1. **App ID** (General page).
+2. **Private key** → "Generate a private key" downloads a PKCS#1 PEM. Convert it to **PKCS#8** (the one local step):
    ```bash
    openssl pkcs8 -topk8 -inform PEM -outform PEM -nocrypt \
      -in your-app.private-key.pem -out app-pkcs8.pem
    ```
-3. **Installation ID** → "Install App" → your account → **Only select repositories** → `groceries-agent-data` → Install. The URL is `…/settings/installations/<INSTALLATION_ID>` → `GITHUB_INSTALLATION_ID`.
+3. **Installation ID** → "Install App" → your account → **Only select repositories** → `groceries-agent-data` → Install. The URL ends `…/settings/installations/<INSTALLATION_ID>`.
 
-> If you ever delete and recreate the data repo, re-add it under the App's "Repository access" — the installation tracks repos by internal id, so the new repo isn't auto-included.
+> If you ever delete and recreate the data repo, re-add it under the App's "Repository access" — installations track repos by internal id, so a recreated repo isn't auto-included.
 
-## 3. Register the Kroger app
+## 4. Register the Kroger app
 
 At [developer.kroger.com](https://developer.kroger.com), register one **public-tier** app:
 
-- Scopes: `product.compact` (search/prices) and `cart.basic:write` (cart).
-- Add a **redirect URI**: `https://<worker-host>/oauth/callback`.
-- Capture the **client id** + **secret** → `KROGER_CLIENT_ID` / `KROGER_CLIENT_SECRET` (the cart flow falls back to these unless you set a separate `KROGER_OAUTH_*` app).
+- Scopes: `product.compact` (search/prices) + `cart.basic:write` (cart).
+- Redirect URI: `https://<worker-host>/oauth/callback`.
+- Capture the **client id** + **secret**.
 
-## 4. Deploy the Worker
+## 5. Create the KV namespaces
 
-**Fork** this repo (so you get your own Actions + a `wrangler.jsonc` you can edit), then clone your fork:
+Cloudflare dashboard → **Workers & Pages → KV → Create namespace** (×3): `KROGER_KV`, `TENANT_KV`, `OAUTH_KV`. Note each namespace **id**. *(CLI alternative: `npx wrangler kv namespace create <NAME>`.)*
 
-```bash
-git clone git@github.com:<you>/groceries-agent.git && cd groceries-agent
+## 6. Configure your fork
 
-# KV namespaces (paste each returned id into wrangler.jsonc kv_namespaces):
-npx wrangler kv namespace create KROGER_KV    # Kroger refresh tokens + PKCE verifiers
-npx wrangler kv namespace create TENANT_KV    # allowlist (tenant:<id>) + invite codes (invite:<code>)
-npx wrangler kv namespace create OAUTH_KV     # OAuth provider state (required binding name)
-```
-
-Edit `wrangler.jsonc` `vars` (all non-secret — commit them to your fork):
+Edit `wrangler.jsonc` **in your fork** (GitHub's web editor is fine) — all non-secret:
 
 ```jsonc
-"GITHUB_APP_ID": "<app id>",
-"GITHUB_INSTALLATION_ID": "<installation id>",
-"DATA_OWNER": "<you>",
-"DATA_REPO": "groceries-agent-data",
-"DATA_REF": "main"
+"vars": {
+  "GITHUB_APP_ID": "<app id>",
+  "GITHUB_INSTALLATION_ID": "<installation id>",
+  "DATA_OWNER": "<you>",
+  "DATA_REPO": "groceries-agent-data",
+  "DATA_REF": "main"
+},
+"kv_namespaces": [
+  { "binding": "KROGER_KV", "id": "<KROGER_KV id>" },
+  { "binding": "TENANT_KV", "id": "<TENANT_KV id>" },
+  { "binding": "OAUTH_KV",  "id": "<OAUTH_KV id>" }
+]
 ```
 
 (The tenant id and `users/<username>/` prefix are derived per request from the OAuth grant — no env var.)
 
-Set the secrets (the PEM is multi-line — pipe it, don't paste):
+Then set two **Actions secrets** on the fork (Settings → Secrets and variables → Actions):
 
-```bash
-npx wrangler secret put GITHUB_APP_PRIVATE_KEY < app-pkcs8.pem
-npx wrangler secret put KROGER_CLIENT_ID
-npx wrangler secret put KROGER_CLIENT_SECRET
-rm app-pkcs8.pem          # the key lives in Cloudflare now — don't leave it on disk
-```
+- `CLOUDFLARE_API_TOKEN` — a Cloudflare token with Workers + KV edit; used by *Deploy*, *Onboard*, *Revoke*.
+- `GH_APP_PRIVATE_KEY` — paste the contents of `app-pkcs8.pem`; used by *Onboard*/*Revoke* to write the data repo.
 
-On your **fork**, set two Actions secrets (Settings → Secrets and variables → Actions) and enable Actions:
+## 7. Deploy + set the Worker's runtime secrets
 
-- `CLOUDFLARE_API_TOKEN` — used by the *Deploy Worker*, *Onboard*, and *Revoke* Actions.
-- `GH_APP_PRIVATE_KEY` — the GitHub App PEM (same key as the Worker secret), used by *Onboard*/*Revoke* to write the data repo.
+Run the **Deploy Worker** Action (Actions tab → Run), or push any change to `src/`. It typechecks, tests, and `wrangler deploy`s.
 
-Deploy: push to your fork's `main` (CD via *Deploy Worker*), or run that Action manually. `wrangler.jsonc` is committed to your fork and carries **no secrets** — only the non-secret ids above.
+Once deployed, add the Worker's runtime secrets in the Cloudflare dashboard → your Worker → **Settings → Variables and Secrets → Add (encrypted)**:
 
-Then onboard *yourself* with the **Onboard member** Action (Actions tab → Onboard member → Run, enter your username) — it allowlists you, mints an invite code (shown in the run summary), and seeds your `users/<username>/` subtree.
+- `GITHUB_APP_PRIVATE_KEY` — paste the `app-pkcs8.pem` contents (the dashboard accepts multi-line).
+- `KROGER_CLIENT_ID`, `KROGER_CLIENT_SECRET`.
 
-## 5. Cookbook site (optional)
+*(CLI alternative: `npx wrangler secret put GITHUB_APP_PRIVATE_KEY < app-pkcs8.pem`, etc.)* Delete `app-pkcs8.pem` when done — the key lives in Cloudflare + the Actions secret now.
 
-On the data repo: upgrade to **GitHub Pro** and enable **Pages → Source: GitHub Actions**. The inherited `build-site.yml` builds the public cookbook from `recipes/` (never `users/`) and deploys it. Runs are billed to *your* account, not the code repo's.
+## 8. Onboard yourself
 
-## 6. Connect Claude.ai + Kroger consent
+Run the **Onboard member** Action with `username: <you>` (leave `invite_code` blank to auto-generate). It allowlists you in KV, mints your invite code (shown in the run summary), and seeds `users/<you>/` in the data repo if absent.
 
-- **Claude.ai**: add the Worker (`https://<worker-host>/mcp`) as a custom connector. Claude.ai discovers the OAuth endpoints, registers itself, and sends you to the Worker's `/authorize` page — **enter your invite code** to approve. The issued token carries your tenant on every request. No Cloudflare Access.
-- **Kroger cart consent** (one-time): visit `https://<worker-host>/oauth/init?tenant=<username>` and approve at Kroger. The refresh token lands under `kroger:refresh:<username>`. Re-run this if a cart write ever returns `reauth_required`.
+## 9. Connect Claude.ai + Kroger consent
 
-Paste [`AGENT_INSTRUCTIONS.md`](../AGENT_INSTRUCTIONS.md) into your Claude.ai Project so the agent behaves as intended.
+- **Claude.ai**: add the Worker (`https://<worker-host>/mcp`) as a custom connector. Claude.ai discovers the OAuth endpoints, registers itself, and sends you to `/authorize` — **enter your invite code**. The token then carries your tenant on every request.
+- **Kroger consent** (one-time): visit `https://<worker-host>/oauth/init?tenant=<you>` and approve at Kroger. Re-run if a cart write ever returns `reauth_required`.
+- Paste [`AGENT_INSTRUCTIONS.md`](../AGENT_INSTRUCTIONS.md) into your Claude.ai Project.
+
+## 10. Cookbook site (optional)
+
+On the data repo: upgrade to **GitHub Pro** and enable **Pages → Source: GitHub Actions**. The template's `build-site.yml` builds the public cookbook from `recipes/` (never `users/`) and deploys it. Runs are billed to your account.
 
 ## Onboard a friend
 
-A friend needs only a Claude.ai account and a Kroger account — no GitHub, no Kroger Developer app, no local tooling on your end.
+A friend needs only a Claude.ai account and a Kroger account — no GitHub, no Kroger Developer app, and nothing local on your end.
 
-1. On your fork's **Actions** tab, run **Onboard member** with their `username` (leave `invite_code` blank to auto-generate). It allowlists them, mints the invite code (shown in the run summary), and seeds their `users/<username>/` subtree in the data repo — all in one run.
-2. Hand them the connector URL (`https://<worker-host>/mcp`) + their invite code, and [`AGENT_INSTRUCTIONS.md`](../AGENT_INSTRUCTIONS.md) to paste into their Claude.ai Project.
-3. They connect Claude.ai → enter the invite code at `/authorize` → run their own Kroger consent (`/oauth/init?tenant=<username>`).
+1. On your fork's **Actions** tab → **Onboard member** → Run, enter their `username`. It allowlists them, mints their invite code (in the run summary), and seeds `users/<username>/` in the data repo — one run.
+2. Send them the connector URL (`https://<worker-host>/mcp`) + the invite code + `AGENT_INSTRUCTIONS.md`.
+3. They connect Claude.ai → enter the code at `/authorize` → run their Kroger consent (`/oauth/init?tenant=<username>`).
 
-To remove someone, run **Revoke member** (optionally deleting their `users/<username>/` subtree). They now share the recipe corpus (with their own ratings/notes) and have their own pantry, preferences, and Kroger cart — fully isolated from yours.
-
-They now share the recipe corpus (with their own ratings/notes) and have their own pantry, preferences, and Kroger cart — fully isolated from yours. To remove someone, delete their `tenant:<id>` + `invite:<code>` keys (and, if you like, their `users/<id>/` subtree).
+They share the recipe corpus (with their own ratings/notes) and have their own pantry, preferences, and Kroger cart — fully isolated from yours. To remove someone, run **Revoke member** (optionally deleting their `users/<username>/` subtree).
 
 ## Known unknowns / caveats
 
 - **Kroger Acceptable-Use** (unverified): the public tier's clause on serving non-owner users wasn't confirmable (JS-rendered docs). Low blast radius at friend-group scale; skim the policy (or email Kroger dev support) before inviting non-owner friends.
-- **Kroger cart cap**: 5,000 cart calls/day **per app**, shared across all members. Far above friend-group need; would wall an open-signup model.
-- **GitHub Pro** is required only for the public cookbook site (public Pages from a private repo). Everything else is free-tier.
-- The GitHub App private key is the one high-value secret — Cloudflare secret only, never in the repo.
+- **Kroger cart cap**: 5,000 cart calls/day **per app**, shared across all members — far above friend-group need.
+- **GitHub Pro** is required only for the public cookbook site.
+- The GitHub App private key is the one high-value secret — it lives only as a Cloudflare secret + a GitHub Actions secret, never in the repo. The invite code shown in an Onboard run is visible to anyone with repo access (fine for a trusted group; rotate by re-running with a new code).
