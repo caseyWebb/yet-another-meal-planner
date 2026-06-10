@@ -2,7 +2,7 @@
 
 This is the operator's one-time setup. When you finish you'll have: a private **data repo**, a deployed **grocery-mcp Worker**, and (optionally) a public **cookbook site** — all wired together, and Claude.ai connected.
 
-> **Status note.** The single-operator path below is built and works today. **Multi-member onboarding (friends connecting their own Claude.ai via invite codes) is not built yet** — it needs the OAuth-provider + allowlist work tracked as §3 of the `multi-tenant-friend-group` change. Until then, the Worker's MCP surface is gated by Cloudflare Access for one operator. The "Onboard a friend" section marks what's pending.
+> **Status note.** The Worker is its own OAuth 2.1 provider (`@cloudflare/workers-oauth-provider`): members connect their Claude.ai, complete an **invite-code** consent page, and get a token whose tenant rides every request. Operator and friends use the same path — no Cloudflare Access, no third-party login, no GitHub/Kroger Developer account for friends.
 
 ## Mental model
 
@@ -69,8 +69,9 @@ At [developer.kroger.com](https://developer.kroger.com), register one **public-t
 git clone git@github.com:caseyWebb/groceries-agent.git && cd groceries-agent/worker
 
 # KV namespaces (paste each returned id into wrangler.jsonc kv_namespaces):
-npx wrangler kv namespace create KROGER_KV
-npx wrangler kv namespace create TENANT_KV
+npx wrangler kv namespace create KROGER_KV    # Kroger refresh tokens + PKCE verifiers
+npx wrangler kv namespace create TENANT_KV    # allowlist (tenant:<id>) + invite codes (invite:<code>)
+npx wrangler kv namespace create OAUTH_KV     # OAuth provider state (required binding name)
 ```
 
 Edit `worker/wrangler.jsonc` `vars` (all non-secret):
@@ -80,10 +81,10 @@ Edit `worker/wrangler.jsonc` `vars` (all non-secret):
 "GITHUB_INSTALLATION_ID": "<installation id>",
 "DATA_OWNER": "<you>",
 "DATA_REPO": "groceries-agent-data",
-"DATA_REF": "main",
-"DATA_TENANT_ID": "<username>",        // your tenant id (keys kroger:refresh:<id>)
-"DATA_USER_PREFIX": "users/<username>" // where your personal files live
+"DATA_REF": "main"
 ```
+
+(The tenant id and `users/<username>/` prefix are derived per request from the OAuth grant — no env var.)
 
 Set the secrets (the PEM is multi-line — pipe it, don't paste):
 
@@ -94,10 +95,12 @@ npx wrangler secret put KROGER_CLIENT_SECRET
 rm app-pkcs8.pem          # the key lives in Cloudflare now — don't leave it on disk
 ```
 
-Seed the tenant directory (the allowlist) in KV:
+Seed the allowlist + your own invite code in KV:
 
 ```bash
+# Allowlist your username, and mint an invite code that maps to it:
 npx wrangler kv key put --binding=TENANT_KV --remote "tenant:<username>" '{"id":"<username>"}'
+npx wrangler kv key put --binding=TENANT_KV --remote "invite:<your-code>" "<username>"
 ```
 
 Deploy: push `worker/**` to the code repo (CD, needs a `CLOUDFLARE_API_TOKEN` Actions secret), or `npx wrangler deploy` locally. `wrangler.jsonc` is committed and carries **no secrets** — only the non-secret ids above — so either path works.
@@ -108,14 +111,29 @@ On the data repo: upgrade to **GitHub Pro** and enable **Pages → Source: GitHu
 
 ## 6. Connect Claude.ai + Kroger consent
 
-- **Claude.ai**: add the Worker as a custom connector. *Today* the MCP surface is gated by Cloudflare Access for the operator; you authenticate through the Access flow. (Per-friend invite-code OAuth is §3, pending.)
+- **Claude.ai**: add the Worker (`https://<worker-host>/mcp`) as a custom connector. Claude.ai discovers the OAuth endpoints, registers itself, and sends you to the Worker's `/authorize` page — **enter your invite code** to approve. The issued token carries your tenant on every request. No Cloudflare Access.
 - **Kroger cart consent** (one-time): visit `https://<worker-host>/oauth/init?tenant=<username>` and approve at Kroger. The refresh token lands under `kroger:refresh:<username>`. Re-run this if a cart write ever returns `reauth_required`.
 
 Paste [`AGENT_INSTRUCTIONS.md`](../AGENT_INSTRUCTIONS.md) into your Claude.ai Project so the agent behaves as intended.
 
-## Onboard a friend (PENDING §3)
+## Onboard a friend
 
-The collaborative end-state — a friend connects *their* Claude.ai with an operator-issued invite code, no GitHub/Kroger Developer account of their own — needs the OAuth-provider + allowlist (§3 of `multi-tenant-friend-group`). When built, onboarding will be: create `users/<friend>/` in the data repo, add `tenant:<friend>` to `TENANT_KV`, hand them an invite code + the connector URL, and they run their own Kroger consent. The data model, per-tenant repo paths, and per-tenant Kroger keys are already in place; only the identity step remains.
+A friend needs only a Claude.ai account and a Kroger account — no GitHub, no Kroger Developer app. As operator:
+
+```bash
+# 1. Create their personal subtree in the data repo (seed from the template stubs):
+#    users/<friend>/{pantry,preferences,stockup,grocery_list,taste,diet_principles,
+#                    cooking_log,meal_plan,feeds}.toml + overlay.toml + notes/
+
+# 2. Allowlist them and mint their invite code:
+npx wrangler kv key put --binding=TENANT_KV --remote "tenant:<friend>" '{"id":"<friend>"}'
+npx wrangler kv key put --binding=TENANT_KV --remote "invite:<friend-code>" "<friend>"
+```
+
+3. Hand them the connector URL (`https://<worker-host>/mcp`) + their invite code, and [`AGENT_INSTRUCTIONS.md`](../AGENT_INSTRUCTIONS.md) to paste into their Claude.ai Project.
+4. They connect Claude.ai → enter the invite code at `/authorize` → run their own Kroger consent (`/oauth/init?tenant=<friend>`).
+
+They now share the recipe corpus (with their own ratings/notes) and have their own pantry, preferences, and Kroger cart — fully isolated from yours. To remove someone, delete their `tenant:<id>` + `invite:<code>` keys (and, if you like, their `users/<id>/` subtree).
 
 ## Known unknowns / caveats
 

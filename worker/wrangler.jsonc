@@ -27,22 +27,16 @@
 		"GITHUB_APP_ID": "4022505",
 		"GITHUB_INSTALLATION_ID": "139471207",
 		// The single private data repo (recipes/ + reference data + users/<id>/).
-		// TRANSITIONAL: point at today's repo and keep DATA_USER_PREFIX empty until the
-		// migration moves personal files under users/operator/ (Section 5).
+		// "Which tenant" is derived per-request from the OAuth grant's tenantId prop.
 		"DATA_OWNER": "caseyWebb",
 		"DATA_REPO": "groceries-agent-data",
-		"DATA_REF": "main",
-		"DATA_TENANT_ID": "casey",
-		"DATA_USER_PREFIX": "users/casey",
-		// Cloudflare Access (non-secret, TRANSITIONAL — removed in Section 3.3). In-Worker
-		// JWT validation activates only when BOTH are set.
-		"ACCESS_AUD": "bd70d44841bf62d25e53280251f1f5b2f8dc7131057bca9d3f54128b56f9985c",
-		"ACCESS_TEAM_DOMAIN": "dirtbags.cloudflareaccess.com"
+		"DATA_REF": "main"
 	},
 	// KV. KROGER_KV: per-tenant Kroger refresh tokens (`kroger:refresh:<tenant>`) +
-	// PKCE verifiers (`kroger:pkce:<state>`). TENANT_KV: the tenant directory
-	// (`tenant:<id>`) + OAuth provider state (Section 3). Create each namespace and
-	// paste its id:  npx wrangler kv namespace create <BINDING>
+	// PKCE verifiers (`kroger:pkce:<state>`). TENANT_KV: the tenant directory /
+	// allowlist (`tenant:<id>`) + invite codes (`invite:<code>`). OAUTH_KV: the OAuth
+	// provider's clients/codes/grants/tokens (binding name is required by the lib).
+	// Create each namespace and paste its id:  npx wrangler kv namespace create <BINDING>
 	"kv_namespaces": [
 		{
 			"binding": "KROGER_KV",
@@ -51,6 +45,10 @@
 		{
 			"binding": "TENANT_KV",
 			"id": "3f4eb3ff016647c9b32e340d0b2dfe64"
+		},
+		{
+			"binding": "OAUTH_KV",
+			"id": "REPLACE_WITH_OAUTH_KV_NAMESPACE_ID"
 		}
 	],
 	"observability": {

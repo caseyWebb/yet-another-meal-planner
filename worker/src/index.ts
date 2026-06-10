@@ -1,65 +1,64 @@
-// Worker entry. Serves the MCP server over Streamable HTTP via createMcpHandler
-// (stateless — no Durable Objects). A fresh server is built per request, closing
-// over env so tool handlers can reach the GitHub token and repo coordinates.
-// A plain GET / returns a health line; everything else goes to the MCP handler
-// (default route /mcp), behind in-Worker Cloudflare Access JWT validation when
-// configured (defense-in-depth — Access also gates at the edge).
+// Worker entry (multi-tenancy §3). The Worker is an OAuth 2.1 provider: every
+// member connects their own Claude.ai, completes the invite-code authorize flow
+// (authorize.ts), and gets an access token whose grant `props` carry their
+// `tenantId`. @cloudflare/workers-oauth-provider validates the token on `/mcp`,
+// implements `/token` + `/register` + `.well-known` discovery, and hands us the
+// props. We resolve the tenant and build a per-tenant MCP server — stateless, no
+// Durable Objects. Cloudflare Access is gone; the provider is the gate.
 
+import { OAuthProvider } from "@cloudflare/workers-oauth-provider";
 import { createMcpHandler } from "agents/mcp";
 import type { Env } from "./env.js";
-import { tenantFromEnv } from "./env.js";
 import { buildServer } from "./tools.js";
-import { createAccessVerifier, type AccessVerifier } from "./access.js";
+import { resolveTenant, directoryFromEnv } from "./tenant.js";
 import { handleOAuth } from "./oauth.js";
+import { handleAuthorize } from "./authorize.js";
 
-// Module-level singleton so the JWKS fetched by the verifier is cached across
-// requests served by the same isolate. Rebuilt only if the config changes.
-let verifier: AccessVerifier | null = null;
-let verifierKey = "";
-
-function getVerifier(env: Env): AccessVerifier | null {
-  if (!env.ACCESS_TEAM_DOMAIN || !env.ACCESS_AUD) return null;
-  const key = `${env.ACCESS_TEAM_DOMAIN}|${env.ACCESS_AUD}`;
-  if (!verifier || verifierKey !== key) {
-    verifier = createAccessVerifier(env.ACCESS_TEAM_DOMAIN, env.ACCESS_AUD);
-    verifierKey = key;
-  }
-  return verifier;
-}
-
-function unauthorized(message: string): Response {
-  return new Response(JSON.stringify({ error: "unauthorized", message }), {
-    status: 401,
-    headers: { "content-type": "application/json" },
-  });
-}
-
-export default {
+/**
+ * The gated MCP API. Only reached for `/mcp` requests the provider has already
+ * authenticated; `ctx.props` is the grant's props. We re-check `tenantId` against
+ * the allowlist and serve a server scoped to that tenant — no tool can reach
+ * another tenant's data.
+ */
+const apiHandler = {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+    const props = (ctx as unknown as { props?: { tenantId?: string } }).props;
+    const resolved = await resolveTenant(env, props?.tenantId, directoryFromEnv(env));
+    if ("error" in resolved) {
+      return new Response(JSON.stringify(resolved), {
+        status: 401,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return createMcpHandler(buildServer(env, resolved))(request, env, ctx);
+  },
+};
+
+/**
+ * Everything that isn't the gated MCP API. The provider itself serves `/token`,
+ * `/register`, and the discovery metadata; we own the invite-code `/authorize`
+ * UI, the Kroger `/oauth/*` callback (its own PKCE flow), and a health line.
+ */
+const defaultHandler = {
+  async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
     if (request.method === "GET" && url.pathname === "/") {
-      return new Response("grocery-mcp ok — MCP endpoint at POST /mcp\n", {
+      return new Response("grocery-mcp ok — connect a Claude.ai MCP client to /mcp\n", {
         headers: { "content-type": "text/plain" },
       });
     }
-
-    // The Kroger OAuth callback carries no Access JWT, so /oauth/* is handled
-    // BEFORE the in-Worker gate (and bypassed at the edge by an Access policy).
-    // It is secured by OAuth state + PKCE instead. Everything else stays gated.
-    if (url.pathname.startsWith("/oauth/")) {
-      return handleOAuth(env, url);
-    }
-
-    const v = getVerifier(env);
-    if (v) {
-      const token = request.headers.get("Cf-Access-Jwt-Assertion");
-      if (!token) return unauthorized("Missing Cloudflare Access JWT");
-      if (!(await v.verify(token))) return unauthorized("Invalid Cloudflare Access JWT");
-    }
-
-    // TRANSITIONAL: resolve the single operator tenant from env. Section 3.3
-    // replaces this with per-request bearer-token -> resolveTenant.
-    const server = buildServer(env, tenantFromEnv(env));
-    return createMcpHandler(server)(request, env, ctx);
+    if (url.pathname === "/authorize") return handleAuthorize(request, env);
+    if (url.pathname.startsWith("/oauth/")) return handleOAuth(env, url);
+    return new Response("Not found", { status: 404 });
   },
 };
+
+export default new OAuthProvider({
+  apiRoute: "/mcp",
+  apiHandler,
+  defaultHandler,
+  authorizeEndpoint: "/authorize",
+  tokenEndpoint: "/token",
+  clientRegistrationEndpoint: "/register",
+  scopesSupported: ["mcp"],
+});

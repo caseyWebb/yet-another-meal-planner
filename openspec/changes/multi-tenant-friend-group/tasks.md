@@ -14,10 +14,10 @@
 
 ## 3. OAuth provider + allowlist identity
 
-- [ ] 3.1 Integrate `workers-oauth-provider` (KV-backed clients/codes/grants); expose the authorize/token/registration surface Claude.ai's connector expects.
-- [ ] 3.2 Implement the identity step as an **operator-issued invite code** (D2, resolved) gated by the curated allowlist: a Worker-hosted authorize page collects the code at the connector's OAuth consent step and maps it → tenant directory entry; the issued token carries the tenant thereafter. No third-party login.
-- [ ] 3.3 Replace the Access gate in `index.ts` with per-request bearer → `resolveTenant`; reject unresolved tokens with structured `unauthorized`; delete `access.ts` and remove `ACCESS_*` env.
-- [ ] 3.4 Tests: allowlisted identity gets a tenant token; unknown identity denied; valid token resolves to a tenant; missing/invalid token rejected with no tool run; two tenants are isolated (no cross-tenant server state).
+- [x] 3.1 Integrate `@cloudflare/workers-oauth-provider` (KV-backed clients/codes/grants in `OAUTH_KV`); the provider serves `/token`, `/register`, and `.well-known` discovery; the Worker's default export is the `OAuthProvider`, `apiRoute: "/mcp"`. *(index.ts)*
+- [x] 3.2 Identity step = **operator-issued invite code** (D2): `/authorize` renders a Worker-hosted consent page (authorize.ts) that collects the code, `resolveInvite` maps it → an allowlisted username, and `completeAuthorization` mints a grant whose `props.tenantId` carries the tenant. No third-party login.
+- [x] 3.3 Replaced the Access gate: index.ts is the `OAuthProvider`; the api handler reads the validated grant's `props.tenantId` → `resolveTenant` (allowlist re-check) → per-tenant server; structured `unauthorized` otherwise. Deleted `access.ts` + test; removed `ACCESS_*` (and the now-unused `DATA_TENANT_ID`/`DATA_USER_PREFIX`).
+- [x] 3.4 Tests: valid code → grant with `props.tenantId`; unknown code → no grant; provider-validated id resolves to a tenant; missing id rejected; two ids resolve to disjoint `users/<id>` subtrees. *(authorize.test.ts, tenant.test.ts)* Live Claude.ai connect verification rides §10.
 
 ## 4. Per-tenant Kroger auth
 
