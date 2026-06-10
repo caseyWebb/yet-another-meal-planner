@@ -12,6 +12,7 @@ import { ToolError, runTool } from "./errors.js";
 import { registerWriteTools } from "./write-tools.js";
 import { registerGroceryListTools } from "./grocery-tools.js";
 import { registerOrderTools } from "./order-tools.js";
+import { registerDiscoveryTools } from "./discovery-tools.js";
 import { filterRecipes, type RecipeFilters, type RecipeIndex } from "./recipes.js";
 import { createKrogerClient, type KrogerCandidate } from "./kroger.js";
 import {
@@ -574,6 +575,9 @@ export function buildServer(env: Env): McpServer {
   // atomic commit engine; no cart or external-service writes.
   registerWriteTools(server, gh);
   registerGroceryListTools(server, gh);
+
+  // Discovery: RSS recipe candidates, parse-only URL import, draft create.
+  registerDiscoveryTools(server, gh);
 
   // place_order — the order-time flush: resolve the list, write the Kroger cart,
   // persist learned SKUs. The one tool that reaches the cart (Change 06b).

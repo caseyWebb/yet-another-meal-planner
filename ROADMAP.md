@@ -314,16 +314,23 @@ The bucket name `have_fresh` goes away too (it asserts a freshness the tool isn'
 
 ## Change 10: Discovery + disposition
 
-**Scope:** Implement `fetch_rss_discoveries`, `fetch_flyer_featured`, `import_recipe` (with JSON-LD parsing via `recipe-scraper` or similar), and the draft-state import behavior. Update AGENT_INSTRUCTIONS.md so discovery surfaces 1-2 recipes and 1-2 ready-to-eat items per menu request, always imported in draft state.
+**Scope:** Implement `fetch_rss_discoveries`, `import_recipe`, `create_recipe`, and the draft-state import behavior. Update AGENT_INSTRUCTIONS.md so discovery surfaces 1-2 recipes and 1-2 ready-to-eat items per menu request, always imported in draft state. (Built via the `discovery-and-disposition` OpenSpec change.)
+
+**Decisions (decided 2026-06-10, explore + apply):**
+- **`fetch_flyer_featured` is cut.** Kroger's public API has no "featured"/circular primitive — only `promo > 0`, which `kroger_flyer` already synthesizes. On-sale ready-to-eat discovery instead rides the existing `kroger_flyer` pre-pass (ready-to-eat terms added to `flyer_terms.toml`) + agent-side dedup against `ready_to_eat/*.toml` + `add_draft_ready_to_eat`.
+- **`import_recipe` is parse-only; `create_recipe` is the writer.** JSON-LD never carries the project's judgment fields, so the parsed data goes back to the LLM, which cleans/classifies, assembles the `## Ingredients`/`## Instructions` body (H2 contract guaranteed by construction), and persists via `create_recipe` — one solo commit per recipe.
+- **`fetch_rss_discoveries` returns a candidate pool with no taste `score`.** Taste fit + the final 1–2 pick are LLM judgment (facts-from-tool, judgment-from-LLM); the tool does deterministic fetch + corpus dedup + URL canonicalization.
+- **Parsing is runtime-agnostic.** RSS/Atom via `fast-xml-parser` (real XML parser, unit-tested in Node); JSON-LD extraction via `HTMLRewriter` (workerd) with a pure, fully-tested normalizer for the instruction/duration/yield shapes. No `recipe-scraper`/`cheerio`.
+- **Bot-walled/paywalled sources** (Serious Eats, Food52, NYT) confirmed unreachable from the Worker even with browser headers; recovering them is the push-based **Change 14** (newsletter email).
 
 **Dependencies:** Change 09.
 
 **Deliverables:**
-- `feeds.toml` populated with 5-8 RSS feeds
-- Discovery tools per docs/TOOLS.md
-- JSON-LD recipe import pipeline
-- Draft-state behavior in AGENT_INSTRUCTIONS.md
-- Conversational test of disposition: "rate the Serious Eats one 4 stars", "remove that one"
+- `feeds.toml` seeded with the 5 spike-validated feeds (Budget Bytes, RecipeTin Eats, The Woks of Life, The Kitchn, Bon Appétit); ready-to-eat terms added to `flyer_terms.toml`
+- `fetch_rss_discoveries`, `import_recipe` (parse-only), `create_recipe` (solo-commit write) per docs/TOOLS.md
+- JSON-LD recipe parse + normalize pipeline (`jsonld.ts`) and RSS/Atom parser (`feeds.ts`), unit-tested
+- Draft-state + disposition behavior in AGENT_INSTRUCTIONS.md (incl. paste-to-import fallback for walled sources)
+- Conversational test of disposition: "rate the Budget Bytes one 4 stars", "remove that one"
 
 **Done when:** Menu proposals include opportunistic discoveries; you can disposition them in subsequent conversations; the corpus grows over weeks without manual import work.
 
@@ -384,6 +391,34 @@ The bucket name `have_fresh` goes away too (it asserts a freshness the tool isn'
 
 ---
 
+## Change 14: Newsletter discovery via inbound email
+
+**Scope:** A *push*-based discovery source that complements Change 10's *pull* (RSS). Subscribe a dedicated inbox to recipe newsletters (Serious Eats, NYT Cooking, Bon Appétit, etc.); Cloudflare Email Routing delivers each message to an Email Worker that extracts candidate recipes (title, description, link), unwraps tracker-wrapped links to their canonical URLs, and persists them to an agent-readable inbox file surfaced at menu time. Because the teaser arrives *in the email*, this discovers from sources we cannot fetch — the bot-walled (Serious Eats, Food52) and paywalled (NYT) sites confirmed unreachable in Change 10. Full-recipe import still hits those walls, so the flow presents clean links and the user pastes the recipe to import.
+
+**Why this exists (decided 2026-06-10, explore session):** Change 10's feed spike confirmed — from Cloudflare's actual edge egress, with full browser headers — that Serious Eats (403) and Food52 (429 Vercel) bot-wall the Worker via TLS/bot-management fingerprinting, *not* a UA check, so header spoofing can't recover them; NYT is paywall+login-gated. Pull discovery cannot reach these. Email inverts it: the publisher pushes content to us, so *discovery* becomes unblockable; only the optional full-recipe *import* fetch remains blocked, and that degrades gracefully to manual paste.
+
+**Decisions:**
+- **Dedicated spare domain, not the ProtonMail domain (decided).** Email Routing requires Cloudflare to manage the zone's MX records; repointing the in-use ProtonMail domain's MX would break existing email. Use one of the spare unused domains, added fresh to Cloudflare and dedicated to newsletter intake (e.g. `newsletters@<spare-domain>`). Easiest *and* isolates intake — touches nothing live.
+- **Push via Email Routing → Email Worker (decided).** Inbound `email()` handler, not IMAP polling. No cron, no mailbox scraping.
+- **Canonical-URL unwrapping is a core requirement, not a nicety (decided).** Newsletter links are wrapped in click-trackers (Mailchimp/SendGrid/publisher redirectors). The Worker SHALL resolve each to its canonical destination before storing: decode the destination from the tracker URL's path/query when it's encoded there (no network call), else follow the redirect from the Worker's egress and capture the final `Location` *without* downloading the (possibly walled) destination body. Rationale: Casey's home network runs a privacy DNS that blocks tracking redirectors, so wrapped links are broken on his network; the Worker runs on Cloudflare's network (not behind that DNS), so it unwraps once and Casey only ever sees clean, working URLs. High, concrete user-facing value.
+- **Explicit sender allowlist (decided).** Only mail from known newsletter senders is processed into the inbox; everything else is dropped (spam + security). Curated, edit-when-directed config.
+- **Persist to a flat inbox file (decided/proposed).** Parsed candidates land in a new agent-writable `discoveries_inbox.toml` (`{from, subject, received_at, candidates: [{title, summary, url}]}`), consistent with repo-as-database. Surfaced at menu time alongside `fetch_rss_discoveries`. v0 may store sender/subject/unwrapped-links and let the LLM present them; richer HTML parsing is incremental.
+- **Import stays split; reuse `create_recipe` (decided).** Discovery is unblockable; full-recipe import still hits the same bot walls/paywalls, so the path is present-clean-link → user pastes recipe text → LLM assembles → `create_recipe` (already built in Change 10). No new import tool. The same paste-or-fetch-if-unblocked logic covers "check this article/listicle for recipes."
+
+**Dependencies:** Change 10 (`create_recipe`, the discovery-surfacing menu step, the inbox-at-menu-time pattern). Independent of all Kroger work — buildable any time after 10.
+
+**Deliverables:**
+- A spare domain added to Cloudflare with Email Routing enabled; a route delivering allowlisted senders to the Email Worker
+- Email Worker `email()` handler: sender-allowlist gate, MIME/HTML parse to candidates, tracker-link unwrapping (decode-or-follow), write to `discoveries_inbox.toml` via the commit engine
+- `discoveries_inbox.toml` schema + `docs/SCHEMAS.md` entry; sender-allowlist config + `CLAUDE.md` curated-config line
+- A read path surfacing inbox candidates at menu time (extend `fetch_rss_discoveries` or a sibling `read_discovery_inbox`)
+- AGENT_INSTRUCTIONS.md: newsletter-discovery surfacing + the paste-to-import pattern (incl. NYT is paste-only) + "check this article" on request
+- `docs/TOOLS.md` sync
+
+**Done when:** A recipe newsletter sent to the dedicated address lands as inbox candidates with clean, *unwrapped* URLs (verified working behind the privacy DNS), the agent surfaces them at the next menu request, and pasting a chosen recipe imports it as a draft via `create_recipe`.
+
+---
+
 ## Suggested ordering and parallelization
 
 ```
@@ -424,6 +459,7 @@ The bucket name `have_fresh` goes away too (it asserts a freshness the tool isn'
 - 02 and 03 can run in parallel after 01.
 - **05 and 06 can run in parallel after 04** — 06 is repo-data + the Access gate (no Kroger), so it doesn't depend on 05. 06b then needs both. (In the current repo 05 is already done, so 06 is simply next.)
 - 10 and 11 can run in parallel after 09.
+- **Change 14 (newsletter email discovery) depends only on 10** — push-based complement to 10's RSS pull; buildable any time after 10, independent of Kroger work.
 - **`suggest_sequencing` moved from 08 → 13** (decided 2026-06-09): it consumes the component vocabulary that 13 seeds, and would ship dormant if built earlier (1/63 recipes declare a component today). 08 is now pantry-verification + substitution only; the menu-request flow tolerates an absent sequencing result until 13 lands.
 
 **Natural pause points** (where you'd want to actually use the system for a few weeks before continuing):

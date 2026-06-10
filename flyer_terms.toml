@@ -27,4 +27,14 @@ terms = [
   "coffee",
   "snacks",
   "ice cream",
+  # Ready-to-eat categories — so kroger_flyer surfaces on-sale heat-and-eat /
+  # grab-and-go items the agent can offer as opportunity buys and draft into
+  # ready_to_eat/*.toml (Change 10 folded fetch_flyer_featured into this scan).
+  "rotisserie chicken",
+  "deli prepared",
+  "prepared salads",
+  "frozen pizza",
+  "frozen burritos",
+  "soup",
+  "sushi",
 ]

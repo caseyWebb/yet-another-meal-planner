@@ -58,15 +58,39 @@ Update recipe frontmatter fields. Use for `last_cooked`, `rating`, `status` tran
 
 ### `import_recipe(url)`
 
-Parse a URL via JSON-LD and create a draft recipe in `recipes/`.
+**Parse-only.** Fetch a recipe page, extract its schema.org `Recipe` JSON-LD, and return the structured data. Writes nothing and commits nothing — the agent cleans/classifies the data, assembles the markdown body, then persists via `create_recipe`.
 
 **Params:**
 - `url` (string, required)
 
 **Returns:**
-- `{ slug, frontmatter }` — the imported recipe with `status: draft`
+- `{ title, ingredients: [...], instructions: [...], servings, time_total, time_active, source }` — `ingredients`/`instructions` are string arrays; `servings` is a scalar (number when parseable); `time_total`/`time_active` are minutes or null; `source` is the recipe's canonical URL.
 
-**Notes:** Always imports in draft state. User dispositions later via `update_recipe`.
+**Errors (structured):**
+- `{ error: "unreachable" }` — the page couldn't be fetched (network error or non-2xx). Bot-walled/paywalled sites (Serious Eats, NYT, Food52) land here — paste the recipe instead.
+- `{ error: "no_jsonld" }` — no `<script type="application/ld+json">` on the page.
+- `{ error: "not_a_recipe" }` — JSON-LD present but no schema.org `Recipe`.
+- `{ error: "incomplete", missing: [...] }` — a `Recipe` was found but yielded no ingredients and/or no instructions.
+
+**Notes:** Handles JSON-LD in `@graph`, top-level arrays, multiple script blocks, `@type` as string or array, and instructions as `HowToStep`/`HowToSection`/plain strings (`HowToTip` notes are skipped). The agent owns the judgment fields (protein, cuisine, tags, dietary, `ingredients_key`, `meal_preppable`) when assembling frontmatter for `create_recipe`.
+
+### `create_recipe(frontmatter, body, slug?)`
+
+Write a **new** recipe markdown file (`recipes/<slug>.md`) from agent-assembled frontmatter + body, as **one solo commit**. The slug derives from the title unless `slug` is supplied. The body MUST contain `## Ingredients` and `## Instructions` H2 sections (guarded — a body missing them is rejected, never committed).
+
+**Params:**
+- `frontmatter` (object, required) — full recipe frontmatter. `status` defaults to `draft` if omitted, so discovery imports never land active by accident; discovery should also set `discovered_at` and `discovery_source`.
+- `body` (string, required) — markdown body with the `## Ingredients` / `## Instructions` sections.
+- `slug` (string, optional) — overrides the title-derived slug.
+
+**Returns:**
+- `{ slug, commit_sha }`
+
+**Errors (structured):**
+- `{ error: "slug_exists", slug }` — a recipe already exists at that path; not overwritten.
+- `{ error: "validation_failed" }` — no derivable slug (missing title), or the body lacks the required H2 sections.
+
+**Notes:** The everyday discovery write path: `import_recipe` (parse) → agent cleans/classifies → `create_recipe`. Disposition of the resulting draft happens later via `update_recipe` (→ `active` + rating, or `rejected`).
 
 ---
 
@@ -327,17 +351,12 @@ Walk `produces_components` / `uses_components` references to find recipe pairing
 
 ### `fetch_rss_discoveries()`
 
-Read all configured RSS feeds, score candidates against taste profile, return top 1-2.
+Fetch all feeds in `feeds.toml` and return a **deduped candidate pool** — deduped against recipes already in the corpus (by canonicalized `source:` URL) and with tracking query strings stripped. **No taste score and no ranking**: the agent judges taste fit against the taste profile and picks the 1–2 worth importing (then `import_recipe` + `create_recipe` each).
 
 **Returns:**
-- `{ candidates: [{ url, title, score, source, summary }] }`
+- `{ candidates: [{ url, title, source, feed_weight, summary }], skipped?: [{ feed, reason }] }` — `source` is the feed name; `feed_weight` is the feed's configured trust hint (passed through, not used to rank); unreachable feeds are reported in `skipped`, not fatal.
 
-### `fetch_flyer_featured()`
-
-Inspect this week's Kroger flyer for featured / promoted ready-to-eat items not yet in catalogs.
-
-**Returns:**
-- `{ candidates: [{ name, sku, category, sale_price, suggested_meal }] }`
+**Notes:** Empty or absent `feeds.toml` returns `{ candidates: [] }`. There is no `fetch_flyer_featured` tool — Kroger exposes no "featured" primitive, so on-sale ready-to-eat discovery rides the existing `kroger_flyer` pre-pass (with ready-to-eat terms in `flyer_terms.toml`) plus agent-side dedup against `ready_to_eat/*.toml` and `add_draft_ready_to_eat`.
 
 ### `add_draft_ready_to_eat(items)`
 

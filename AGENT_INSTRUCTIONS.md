@@ -73,7 +73,7 @@ Two starting points: **open-ended** (you pick recipes) or **recipe-seeded** (I n
 
 3. **Sequencing isn't available yet** (`suggest_sequencing` ships with Change 13, once the component vocabulary is seeded). Until then, skip this step — you may still note an obvious shared-perishable pairing conversationally, but there's no tool call here.
 
-4. Call the context-gathering tools **in parallel** (one batch, not sequentially): `kroger_flyer()`, `kroger_prices(ingredients)` for the menu's ingredients, `ready_to_eat_available()`, `read_preferences()`, `read_taste()`. (Discovery feeds — `fetch_rss_discoveries`, `fetch_flyer_featured` — ship with Change 10; until then, don't call them and don't surface new draft discoveries.)
+4. Call the context-gathering tools **in parallel** (one batch, not sequentially): `kroger_flyer()`, `kroger_prices(ingredients)` for the menu's ingredients, `ready_to_eat_available()`, `read_preferences()`, `read_taste()`, and `fetch_rss_discoveries()`. (`fetch_rss_discoveries` returns a *pool* of recipe candidates with no taste score — you judge fit against the taste profile in step 5. There is no `fetch_flyer_featured`: on-sale ready-to-eat items surface from the same `kroger_flyer` call — see the discovery bullet in step 5.)
 
 5. Reason over the assembled context and my original message (including any freeform constraints like "comfort food one night," "I'm feeling lazy," "something Italian"). Propose:
    - A dinner plan sized to my cooking frequency (default from preferences, currently 3 nights, unless I specified otherwise)
@@ -84,7 +84,9 @@ Two starting points: **open-ended** (you pick recipes) or **recipe-seeded** (I n
    - 1–2 ready-to-eat dinner options from `ready_to_eat_available` (good for the lazy / eat-out-adjacent nights)
    - Restocking list for staples
    - Stockup alerts for bulk-buy items on sale
-   - (Recipe / ready-to-eat *discoveries* — the 1–2 new draft imports per request — arrive with Change 10; don't surface them yet.)
+   - **Discoveries (every menu request, as a small side channel — 1–2 of each, never dominating the proposal):**
+     - *Recipes:* from the `fetch_rss_discoveries` pool, pick the 1–2 best fits for the taste profile and this request. For each, call `import_recipe(url)` → clean up and classify the parsed data (protein, cuisine, tags, dietary, `ingredients_key`, `meal_preppable`), assemble the body with `## Ingredients` / `## Instructions`, and `create_recipe(...)` with `status: draft`, `discovered_at`, `discovery_source`. Import immediately — don't wait for me to express interest. If `import_recipe` returns `unreachable`/`no_jsonld`/`not_a_recipe`, just present the link and skip the import (I can paste it later). The pool already excludes recipes I have.
+     - *Ready-to-eat:* scan the `kroger_flyer` results for on-sale heat-and-eat / grab-and-go items, skip any already in `ready_to_eat/*.toml`, and draft 1–2 worthwhile ones via `add_draft_ready_to_eat` (with `source: "kroger-flyer"`). This is the on-sale-RTE discovery path (there's no dedicated tool).
 
 6. Send the proposal in chat. Iterate based on my revisions — rerun affected tool calls as needed.
 
@@ -114,9 +116,14 @@ Same pattern with `update_ready_to_eat(slug, updates)`.
 
 ### Recipe import
 
-Triggered on: "save this recipe: <URL>", "import this one", etc.
+Triggered on: "save this recipe: <URL>", "import this one", "here's a recipe: <pasted text>", etc.
 
-Call `import_recipe(url)`. It runs the JSON-LD parser, writes the markdown file with `status: draft`, returns the slug. Confirm in chat. Don't proactively rate or activate it.
+`import_recipe(url)` is **parse-only** — it fetches the page and returns the JSON-LD `Recipe` data; it does **not** write. Then *you* assemble the recipe and persist it:
+1. Call `import_recipe(url)`. On success you get `{ title, ingredients, instructions, servings, time_total, time_active, source }`.
+2. Clean up and classify into full frontmatter (protein, cuisine, style, tags, dietary, `ingredients_key`, `meal_preppable`, `season`, etc.) and assemble the markdown body with `## Ingredients` and `## Instructions`.
+3. Call `create_recipe(frontmatter, body)` with `status: draft`. Confirm in chat. Don't proactively rate or activate it.
+
+**When `import_recipe` can't reach it** (`unreachable` — bot-walled or paywalled, e.g. Serious Eats, NYT; or `no_jsonld`/`not_a_recipe`/`incomplete`): tell me, and ask me to **paste the recipe text**. From pasted text, do steps 2–3 directly (assemble frontmatter + body, `create_recipe`) — no `import_recipe` call needed. Same for "check this article for recipes": fetch-and-parse if it works, otherwise I'll paste.
 
 ### Inventory hypothetical
 
@@ -179,7 +186,7 @@ If neither flag fires, skip the check-in step entirely.
 - `match_ingredient_to_kroger_sku` never substitutes — when an item isn't fulfillable via curbside/delivery it returns `unavailable`. Turn that into a `propose_substitutions` call and surface the options for me to confirm.
 - Never auto-substitute without my confirmation.
 
-**Discovery happens every menu request, disposition happens whenever I want.** *(Discovery tooling — RSS/flyer feeds + `import_recipe` — ships with Change 10; until then this rule doesn't fire and you surface no new drafts.)* Each menu request surfaces 1–2 new recipes and 1–2 new ready-to-eat options. Import them in draft state immediately — don't wait for me to express interest in this conversation. I'll disposition them later via "rate this," "remove that," etc.
+**Discovery happens every menu request, disposition happens whenever I want.** Each menu request surfaces 1–2 new recipes (from `fetch_rss_discoveries` → `import_recipe` → `create_recipe`) and 1–2 new ready-to-eat options (on-sale items from `kroger_flyer` not already cataloged → `add_draft_ready_to_eat`). Import them in draft state immediately — don't wait for me to express interest in this conversation. I'll disposition them later via "rate this," "remove that," etc.
 
 **Drafts are de-prioritized but accessible.** Once in draft state, they don't keep cluttering subsequent menu proposals. They're available if I explicitly surface them ("show me the discoveries from last week").
 

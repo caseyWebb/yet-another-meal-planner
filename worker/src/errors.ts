@@ -12,7 +12,13 @@ export type ErrorCode =
   | "validation_failed" // a staged change failed structural validation; nothing committed
   | "conflict" // the ref kept moving under us; commit abandoned after bounded retries
   // Order-placement codes (Change 06b):
-  | "reauth_required"; // the Kroger refresh token was rejected; re-run the one-time /oauth/init
+  | "reauth_required" // the Kroger refresh token was rejected; re-run the one-time /oauth/init
+  // Discovery codes (recipe-discovery capability):
+  | "unreachable" // import_recipe could not fetch the page (network error or non-2xx)
+  | "no_jsonld" // the page exposed no <script type="application/ld+json"> blocks
+  | "not_a_recipe" // JSON-LD was present but contained no schema.org Recipe
+  | "incomplete" // a Recipe was found but yielded no ingredients or no instructions
+  | "slug_exists"; // create_recipe target already exists; not overwritten
 
 export interface ToolErrorShape {
   error: ErrorCode;

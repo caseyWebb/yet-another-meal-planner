@@ -1,25 +1,46 @@
 # feeds.toml — RSS feeds for recipe discovery
 #
-# User-curated. RSS feed URLs and tags, read by fetch_rss_discoveries and scored
-# against the taste profile. weight biases how heavily a feed's items rank.
-# See docs/SCHEMAS.md for the full schema.
+# User-curated. RSS feed URLs and tags, read by fetch_rss_discoveries. The tool
+# returns a candidate POOL with no taste score; the AGENT judges taste fit
+# against the taste profile and picks the 1–2 worth importing. weight is passed
+# through as a trust/rank hint for the agent. See docs/SCHEMAS.md.
 #
-# Example feeds (uncomment and edit; aim for 5–8 to start):
-#
-# [[feeds]]
-# url = "https://www.seriouseats.com/recipes/atom.xml"
-# name = "Serious Eats"
-# tags = ["trusted", "technique-focused"]
-# weight = 1.0
-#
-# [[feeds]]
-# url = "https://www.budgetbytes.com/feed/"
-# name = "Budget Bytes"
-# tags = ["weeknight", "approachable"]
-# weight = 0.8
-#
-# [[feeds]]
-# url = "https://www.bonappetit.com/feed/rss"
-# name = "Bon Appétit"
-# tags = ["aspirational", "trend-aware"]
-# weight = 0.7
+# The 5 feeds below were validated 2026-06-10: each has a live feed AND recipe
+# pages that emit schema.org Recipe JSON-LD (so import_recipe works on their
+# links). Sites that bot-wall automated fetches (Serious Eats, Food52) or emit no
+# JSON-LD (Smitten Kitchen) were excluded — recovering those is roadmap Change 14
+# (newsletter email discovery). Add global-cuisine feeds here as you find ones
+# with live feeds + JSON-LD.
+
+[[feeds]]
+url = "https://www.budgetbytes.com/feed/"
+name = "Budget Bytes"
+tags = ["trusted", "weeknight", "budget", "american"]
+weight = 1.0
+
+[[feeds]]
+url = "https://www.recipetineats.com/feed/"
+name = "RecipeTin Eats"
+tags = ["trusted", "weeknight", "global"]
+weight = 1.0
+
+[[feeds]]
+url = "https://thewoksoflife.com/feed/"
+name = "The Woks of Life"
+tags = ["trusted", "chinese", "global"]
+weight = 1.0
+
+# High volume but mixes non-recipe articles; durations come in PT…S seconds form.
+[[feeds]]
+url = "https://www.thekitchn.com/main.rss"
+name = "The Kitchn"
+tags = ["weeknight", "american", "mixed-content"]
+weight = 0.7
+
+# Use the recipes-specific feed (the generic /feed/rss is mostly editorial).
+# totalTime is plain text ("45 minutes"), not ISO 8601.
+[[feeds]]
+url = "https://www.bonappetit.com/feed/recipes-rss-feed/rss"
+name = "Bon Appétit"
+tags = ["global", "trusted"]
+weight = 0.8
