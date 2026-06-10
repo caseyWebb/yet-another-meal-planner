@@ -71,6 +71,11 @@ function isFuzzyCandidate(recipeKey: string, pantryKey: string): boolean {
   return tokens(pantryKey).some((t) => a.has(t));
 }
 
+/** 0 when one name contains the other (a stronger match), 1 for token-overlap-only. */
+function containmentRank(recipeKey: string, pantryKey: string): number {
+  return recipeKey.includes(pantryKey) || pantryKey.includes(recipeKey) ? 0 : 1;
+}
+
 /**
  * Walk parsed recipe ingredients against the pantry. `slug` (when given) is
  * attached as `for_recipes` so per-recipe results aggregate cleanly.
@@ -120,12 +125,19 @@ export function verifyParsedIngredients(
       continue;
     }
 
-    const candidate = pantry.find((p) => isFuzzyCandidate(ing.name, p.key));
-    if (candidate) {
-      result.possible_matches.push({
-        recipe_calls_for: ing.name,
-        candidate_pantry_item: candidate.name,
-      });
+    // Surface ALL plausible candidates (coarse deterministic search → the agent
+    // confirms/rejects each), strongest first. `.sort` is stable, so within a
+    // containment tier the pantry order is preserved.
+    const candidates = pantry
+      .filter((p) => isFuzzyCandidate(ing.name, p.key))
+      .sort((a, b) => containmentRank(ing.name, a.key) - containmentRank(ing.name, b.key));
+    if (candidates.length > 0) {
+      for (const c of candidates) {
+        result.possible_matches.push({
+          recipe_calls_for: ing.name,
+          candidate_pantry_item: c.name,
+        });
+      }
       continue;
     }
 

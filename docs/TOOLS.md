@@ -102,9 +102,9 @@ Parse the named recipe's `## Ingredients` and walk each against the pantry. Retu
     category,                       // when present on the pantry item
     prepared_from                   // slug if a cooked/prepared leftover
   }],
-  possible_matches: [...{           // fuzzy/token-overlap candidate — AGENT CONFIRMS
-    recipe_calls_for,
-    candidate_pantry_item           // confirm → treat as in_pantry (and suggest an aliases.toml entry)
+  possible_matches: [...{           // fuzzy/token-overlap candidate — AGENT CONFIRMS. ALL plausible
+    recipe_calls_for,               //   candidates per ingredient are listed (one entry each),
+    candidate_pantry_item           //   containment matches first; confirm → treat as in_pantry (suggest an aliases.toml entry)
   }],
   not_in_pantry: [...{ ingredient }],  // no candidate at all → to-buy list (presence-driven, never quantity-netted)
   optional: [...ingredients],       // names of parsed "(optional ...)" ingredients — non-blocking; ask before adding to order
@@ -112,7 +112,7 @@ Parse the named recipe's `## Ingredients` and walk each against the pantry. Retu
 }
 ```
 
-**Notes:** No `have_stale` bucket — freshness is an agent judgment over the surfaced age metadata, not a tool output. Matching is exact for `in_pantry`; anything inexact goes to `possible_matches` for the agent to confirm or reject (no silent false-misses, no silent false-positives). `inventory_substitutes_available` applies `substitutions.toml` rules and is empty until rules are seeded. Change 12 may later add a `past_typical_fresh_life` hint per item (from `ingredients.toml`) without changing this shape.
+**Notes:** No `have_stale` bucket — freshness is an agent judgment over the surfaced age metadata, not a tool output. Matching is exact for `in_pantry`; anything inexact goes to `possible_matches` for the agent to confirm or reject (no silent false-misses, no silent false-positives) — **every** plausible pantry candidate for an ingredient is surfaced (not just the first), ranked containment-first, so the agent decides among the full set (coarse deterministic search → LLM narrows). `inventory_substitutes_available` applies `substitutions.toml` rules and is empty until rules are seeded. Change 12 may later add a `past_typical_fresh_life` hint per item (from `ingredients.toml`) without changing this shape.
 
 ### `verify_pantry_for_candidates(slugs)`
 

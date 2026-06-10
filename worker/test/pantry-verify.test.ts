@@ -54,6 +54,35 @@ describe("verifyParsedIngredients", () => {
     expect(res.not_in_pantry).toHaveLength(0);
   });
 
+  it("surfaces ALL fuzzy candidates per ingredient, containment ranked first", () => {
+    // jasmine rice ⊃ "rice" (containment, stronger) vs "rice vinegar" (token-overlap only).
+    // Both must appear; the containment match must come first. (find→filter regression guard.)
+    const res = verifyParsedIngredients(
+      [ing("jasmine rice")],
+      [pantry("rice vinegar"), pantry("rice")], // rice vinegar listed first to prove ranking, not order
+      [],
+      {},
+      NOW,
+    );
+    expect(res.in_pantry).toHaveLength(0);
+    expect(res.possible_matches).toEqual([
+      { recipe_calls_for: "jasmine rice", candidate_pantry_item: "rice" },
+      { recipe_calls_for: "jasmine rice", candidate_pantry_item: "rice vinegar" },
+    ]);
+  });
+
+  it("does not silently drop non-first token-overlap candidates", () => {
+    const res = verifyParsedIngredients(
+      [ing("chicken stock")],
+      [pantry("chicken broth"), pantry("beef stock")],
+      [],
+      {},
+      NOW,
+    );
+    const names = res.possible_matches.map((p) => p.candidate_pantry_item).sort();
+    expect(names).toEqual(["beef stock", "chicken broth"]);
+  });
+
   it("does not auto-match a misleading overlap (onion powder vs yellow onion)", () => {
     const res = verifyParsedIngredients([ing("onion powder")], [pantry("yellow onion")], [], {}, NOW);
     // shared token 'onion' makes it at most a candidate for the agent to reject — never in_pantry
