@@ -5,9 +5,11 @@
 //   1. alias-driven normalization
 //   2. cache lookup + revalidation (no TTL)
 //   3. term search
-//   4. score by tri-state brand / best-effort dietary / availability
-//   5. deterministic tiebreaker (on-sale > regular, then unit price)
-//   6. confidence gate (cache hit OR defined [brands] → confident)
+//   4. near-hard constraints: fulfillment, then identity relevance (a confident
+//      pick may only come from the top relevance tier — the best ingredient match)
+//   5. score by tri-state brand / best-effort dietary within that tier
+//   6. deterministic tiebreaker (on-sale > regular, then unit price)
+//   7. confidence gate (cache hit OR defined [brands] → confident)
 // The fuzzy "which of these?" decision is pushed across the `ambiguous` boundary
 // to the LLM.
 
@@ -139,6 +141,27 @@ function dietaryScore(c: KrogerCandidate, dietary: string[] | undefined): number
   return score;
 }
 
+/** Whitespace-split content tokens of an already-normalized (lowercased) query. */
+export function relevanceTokens(normalized: string): string[] {
+  return normalized.split(/\s+/).filter(Boolean);
+}
+
+/**
+ * Identity relevance (near-hard constraint): how many query tokens appear, as a
+ * case-insensitive substring, in the candidate's description or categories. The
+ * matcher's signal for "is this candidate the queried ingredient at all" —
+ * distinct from the soft brand/dietary preferences.
+ */
+export function relevanceScore(c: KrogerCandidate, queryTokens: string[]): number {
+  if (queryTokens.length === 0) return 0;
+  const haystack = `${c.description} ${c.categories.join(" ")}`.toLowerCase();
+  let score = 0;
+  for (const tok of queryTokens) {
+    if (haystack.includes(tok)) score += 1;
+  }
+  return score;
+}
+
 /** Index of the highest-ranked (lowest index) listed brand the candidate matches, or -1. */
 function brandRank(c: KrogerCandidate, brands: string[]): number {
   const b = c.brand.toLowerCase();
@@ -225,9 +248,18 @@ function confident(c: KrogerCandidate, reason: string): ConfidentMatch {
   };
 }
 
-function ambiguous(pool: KrogerCandidate[], dietary: string[] | undefined, reason: string): AmbiguousMatch {
-  // Surface the strongest candidates first: dietary score, then on-sale, then unit price.
+function ambiguous(
+  pool: KrogerCandidate[],
+  dietary: string[] | undefined,
+  queryTokens: string[],
+  reason: string,
+): AmbiguousMatch {
+  // Surface the strongest candidates first: identity relevance, then dietary
+  // score, then on-sale, then unit price. Relevance leads so the true ingredient
+  // match isn't buried by a cheaper unrelated item.
   const ranked = [...pool].sort((a, b) => {
+    const rel = relevanceScore(b, queryTokens) - relevanceScore(a, queryTokens);
+    if (rel !== 0) return rel;
     const ds = dietaryScore(b, dietary) - dietaryScore(a, dietary);
     if (ds !== 0) return ds;
     const sale = Number(onSale(b)) - Number(onSale(a));
@@ -255,6 +287,7 @@ export async function matchIngredient(
   const normalized = normalizeIngredient(ingredient, deps.aliases);
   const key = brandKey(normalized);
   const dietary = context.dietary;
+  const queryTokens = relevanceTokens(normalized);
 
   // Step 2 — cache lookup + revalidation (no TTL). A hit short-circuits search
   // and narrowing, but is revalidated for live price + fulfillment before use.
@@ -272,7 +305,7 @@ export async function matchIngredient(
   // Step 3 — term search.
   const candidates = await deps.search(normalized);
 
-  // Step 4 — availability is the one near-hard constraint.
+  // Step 4 — availability is one near-hard constraint.
   const fulfillable = candidates.filter(isFulfillable);
   if (fulfillable.length === 0) {
     return {
@@ -282,22 +315,42 @@ export async function matchIngredient(
     };
   }
 
+  // Identity relevance is the second near-hard constraint: a confident pick may
+  // only come from the top relevance tier — the candidates that best match the
+  // queried ingredient. This stops "cheapest fulfillable" from confidently
+  // resolving to an unrelated product (e.g. refried beans for "anaheim peppers").
+  const maxRelevance = Math.max(...fulfillable.map((c) => relevanceScore(c, queryTokens)));
+  const topTier =
+    maxRelevance > 0 ? fulfillable.filter((c) => relevanceScore(c, queryTokens) === maxRelevance) : [];
+
   // Step 6 — confidence gate driven by the tri-state `[brands]` entry.
   const brandsPref = deps.brands[key];
 
   // Absent key, no cache → ambiguous (ask). (D5)
   if (brandsPref === undefined) {
-    return ambiguous(fulfillable, dietary, "no brand preference defined; choose or say 'don't care'");
+    return ambiguous(fulfillable, dietary, queryTokens, "no brand preference defined; choose or say 'don't care'");
   }
 
-  // `[]` → don't care, auto-pick cheapest acceptable. (D5)
+  // Safe fallback: no candidate clearly matches the ingredient (zero relevance
+  // across the pool) → never pick confidently; surface the pool for the LLM/user.
+  if (topTier.length === 0) {
+    return ambiguous(
+      fulfillable,
+      dietary,
+      queryTokens,
+      `no candidate clearly matches "${ingredient}"; choose from these or refine the request`,
+    );
+  }
+
+  // `[]` → don't care, auto-pick cheapest acceptable — within the top tier. (D5)
   if (brandsPref.length === 0) {
-    const pick = commodityPick(fulfillable, context.quantity_hint);
+    const pick = commodityPick(topTier, context.quantity_hint);
     return confident(pick, "don't-care: cheapest acceptable");
   }
 
-  // Non-empty ranked list → highest-ranked available brand wins; tiebreak within it.
-  const ranked = fulfillable
+  // Non-empty ranked list → highest-ranked available brand wins, among the top
+  // relevance tier; tiebreak within it.
+  const ranked = topTier
     .map((c) => ({ c, rank: brandRank(c, brandsPref) }))
     .filter((x) => x.rank >= 0);
   if (ranked.length > 0) {
@@ -306,10 +359,11 @@ export async function matchIngredient(
     return confident(tiebreak(sameBrand), "preferred brand match");
   }
 
-  // Listed brands all unavailable → fall back to ambiguous. (D5)
+  // Listed brands all unavailable (within the relevant tier) → ambiguous. (D5)
   return ambiguous(
     fulfillable,
     dietary,
+    queryTokens,
     "preferred brand(s) unavailable; choose from these or say 'don't care'",
   );
 }

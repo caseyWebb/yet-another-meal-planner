@@ -4,6 +4,7 @@ import {
   normalizeIngredient,
   brandKey,
   tiebreak,
+  relevanceScore,
   type MatchDeps,
 } from "../src/matching.js";
 import type { KrogerCandidate } from "../src/kroger.js";
@@ -66,7 +67,7 @@ describe("matchIngredient — cache lookup + revalidation", () => {
 
   it("re-resolves when the cached SKU is no longer fulfillable", async () => {
     const dead = cand({ productId: "S1", fulfillment: { curbside: false, delivery: false } });
-    const searchHit = cand({ productId: "S2", brand: "Store", price: { regular: 3.0, promo: 0 } });
+    const searchHit = cand({ productId: "S2", brand: "Store", description: "Store Olive Oil", price: { regular: 3.0, promo: 0 } });
     const deps = makeDeps({
       brands: { olive_oil: [] }, // don't-care so re-resolution is confident
       cache: [{ ingredient: "olive oil", sku: "S1" }],
@@ -82,7 +83,7 @@ describe("matchIngredient — cache lookup + revalidation", () => {
       brands: { olive_oil: [] },
       cache: [{ ingredient: "olive oil", sku: "S1" }],
       byId: { S1: cand({ productId: "S1" }) },
-      search: async () => [cand({ productId: "S2", price: { regular: 4, promo: 0 } })],
+      search: async () => [cand({ productId: "S2", description: "Olive Oil", price: { regular: 4, promo: 0 } })],
     });
     const res = await matchIngredient(deps, "olive oil", {}, true);
     expect(res).toMatchObject({ resolved: true, sku: "S2" });
@@ -108,8 +109,8 @@ describe("matchIngredient — confidence gate", () => {
     const deps = makeDeps({
       brands: { yellow_onion: [] },
       search: async () => [
-        cand({ productId: "cheap", size: "2 lb", price: { regular: 1.5, promo: 0 } }),
-        cand({ productId: "pricey", size: "2 lb", price: { regular: 3.0, promo: 0 } }),
+        cand({ productId: "cheap", description: "Yellow Onion", size: "2 lb", price: { regular: 1.5, promo: 0 } }),
+        cand({ productId: "pricey", description: "Yellow Onion", size: "2 lb", price: { regular: 3.0, promo: 0 } }),
       ],
     });
     const res = await matchIngredient(deps, "yellow onion");
@@ -120,9 +121,9 @@ describe("matchIngredient — confidence gate", () => {
     const deps = makeDeps({
       brands: { rice: [] },
       search: async () => [
-        cand({ productId: "small", size: "1 lb", price: { regular: 2, promo: 0 } }),
-        cand({ productId: "mid", size: "3 lb", price: { regular: 5, promo: 0 } }),
-        cand({ productId: "big", size: "5 lb", price: { regular: 7, promo: 0 } }),
+        cand({ productId: "small", description: "White Rice", size: "1 lb", price: { regular: 2, promo: 0 } }),
+        cand({ productId: "mid", description: "White Rice", size: "3 lb", price: { regular: 5, promo: 0 } }),
+        cand({ productId: "big", description: "White Rice", size: "5 lb", price: { regular: 7, promo: 0 } }),
       ],
     });
     const res = await matchIngredient(deps, "rice", { quantity_hint: "2 lb" });
@@ -133,8 +134,8 @@ describe("matchIngredient — confidence gate", () => {
     const deps = makeDeps({
       brands: { olive_oil: ["Brand A", "Brand B"] },
       search: async () => [
-        cand({ productId: "b", brand: "Brand B", price: { regular: 5, promo: 0 } }),
-        cand({ productId: "a", brand: "Brand A", price: { regular: 9, promo: 0 } }),
+        cand({ productId: "b", brand: "Brand B", description: "Brand B Olive Oil", price: { regular: 5, promo: 0 } }),
+        cand({ productId: "a", brand: "Brand A", description: "Brand A Olive Oil", price: { regular: 9, promo: 0 } }),
       ],
     });
     const res = await matchIngredient(deps, "olive oil");
@@ -144,7 +145,7 @@ describe("matchIngredient — confidence gate", () => {
   it("non-empty list whose brands are all unavailable → ambiguous", async () => {
     const deps = makeDeps({
       brands: { olive_oil: ["Brand A", "Brand B"] },
-      search: async () => [cand({ productId: "c", brand: "Brand C", price: { regular: 5, promo: 0 } })],
+      search: async () => [cand({ productId: "c", brand: "Brand C", description: "Brand C Olive Oil", price: { regular: 5, promo: 0 } })],
     });
     const res = await matchIngredient(deps, "olive oil");
     expect(res).toMatchObject({ resolved: false, ambiguous: true });
@@ -169,13 +170,73 @@ describe("matchIngredient — availability + scoring", () => {
     const deps = makeDeps({
       brands: { butter: ["Kerrygold"] },
       search: async () => [
-        cand({ productId: "store", brand: "Kroger", price: { regular: 3, promo: 0 } }),
-        cand({ productId: "land", brand: "Land O Lakes", price: { regular: 4, promo: 0 } }),
+        cand({ productId: "store", brand: "Kroger", description: "Kroger Butter", price: { regular: 3, promo: 0 } }),
+        cand({ productId: "land", brand: "Land O Lakes", description: "Land O Lakes Butter", price: { regular: 4, promo: 0 } }),
       ],
     });
     const res = await matchIngredient(deps, "butter");
     expect(res).toMatchObject({ resolved: false, ambiguous: true });
     if (res.resolved === false && "ambiguous" in res) expect(res.candidates.length).toBeGreaterThan(0);
+  });
+});
+
+describe("matchIngredient — identity relevance gate", () => {
+  // Modeled on the live pepper pool: the correct produce PLU is present but
+  // pricier than the cheap unrelated Mexican-aisle items that recur across
+  // every "X peppers" search.
+  const anaheimPool = () => [
+    cand({ productId: "0000000004677", description: "Fresh Anaheim Peppers", price: { regular: 2.69, promo: 0 } }),
+    cand({ productId: "beans", brand: "Gebhardt", description: "Gebhardt Mexican Style Refried Beans", price: { regular: 1.49, promo: 0 } }),
+    cand({ productId: "soda", brand: "Fanta", description: "Fanta Orange Mexico Soda Pop", price: { regular: 2.79, promo: 2 } }),
+    cand({ productId: "salsa", brand: "La Costena", description: "La Costena Homestyle Medium Mexican Salsa", price: { regular: 1.39, promo: 0 } }),
+  ];
+
+  it("don't-care confidently picks the matching variety, not the cheaper unrelated item", async () => {
+    const deps = makeDeps({ brands: { anaheim_peppers: [] }, search: async () => anaheimPool() });
+    const res = await matchIngredient(deps, "anaheim peppers");
+    // 4677 ($2.69, relevance 2) wins over cheaper beans/salsa ($1.39–1.49, relevance 0).
+    expect(res).toMatchObject({ resolved: true, sku: "0000000004677" });
+  });
+
+  it("ambiguous surfaces the true variety ahead of cheaper unrelated candidates", async () => {
+    const deps = makeDeps({ search: async () => anaheimPool() }); // absent brand key → ambiguous
+    const res = await matchIngredient(deps, "anaheim peppers");
+    expect(res).toMatchObject({ resolved: false, ambiguous: true });
+    if (res.resolved === false && "ambiguous" in res) {
+      expect(res.candidates[0].sku).toBe("0000000004677"); // relevance-ranked first despite higher price
+    }
+  });
+
+  it("zero token overlap with a don't-care entry degrades to ambiguous, never confident-wrong", async () => {
+    // Query shares no token with any candidate description → maxRelevance 0.
+    const deps = makeDeps({ brands: { tofu: [] }, search: async () => anaheimPool() });
+    const res = await matchIngredient(deps, "tofu");
+    expect(res).toMatchObject({ resolved: false, ambiguous: true });
+  });
+
+  it("generic single-token query ties all matches at the top tier; price decides", async () => {
+    const deps = makeDeps({
+      brands: { peppers: [] },
+      search: async () => [
+        cand({ productId: "anaheim", description: "Fresh Anaheim Peppers", price: { regular: 2.69, promo: 0 } }),
+        cand({ productId: "jalapeno", description: "Fresh Jalapeno Peppers", price: { regular: 1.89, promo: 0 } }),
+        cand({ productId: "poblano", description: "Fresh Poblano Peppers", price: { regular: 2.49, promo: 0 } }),
+      ],
+    });
+    const res = await matchIngredient(deps, "peppers");
+    // All three match "peppers" (relevance 1) → top tier is all → cheapest wins.
+    expect(res).toMatchObject({ resolved: true, sku: "jalapeno" });
+  });
+});
+
+describe("relevanceScore", () => {
+  it("counts query tokens present in description + categories", () => {
+    const c = cand({ productId: "x", description: "Fresh Anaheim Peppers", categories: ["Produce"] });
+    expect(relevanceScore(c, ["anaheim", "peppers"])).toBe(2);
+    expect(relevanceScore(c, ["anaheim"])).toBe(1);
+    expect(relevanceScore(c, ["chiles"])).toBe(0);
+    expect(relevanceScore(c, ["produce"])).toBe(1); // categories count
+    expect(relevanceScore(c, [])).toBe(0);
   });
 });
 

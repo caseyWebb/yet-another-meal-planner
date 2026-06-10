@@ -276,9 +276,18 @@ Input: "extra virgin olive oil, 1 tbsp"
 4. Score candidates (deterministic, rule-driven — SCORING, not hard filters)
    - brand preference from preferences.toml [brands] (tri-state — see below)
    - dietary: best-effort soft score (e.g. "organic" in the name); never a gate
+   TWO near-hard constraints govern WHICH PRODUCT (vs. the soft brand/dietary
+   PREFERENCES, which govern which brand/size among matches):
    - availability: must be fulfillable via curbside or delivery at the location
+   - identity relevance: # of query tokens in the product description/categories.
+     A CONFIDENT pick may only come from the top relevance tier — so "anaheim
+     peppers" resolves to the Fresh Anaheim Peppers PLU, never to a cheaper
+     unrelated fulfillable item (refried beans) that happens to be in the search
+     results. If nothing in the pool shares any query token (max relevance 0),
+     the matcher returns ambiguous rather than confidently guessing.
    Scoring (not filtering) means a missing preferred brand can't empty the set —
-   it just leaves nothing scoring on the brand axis.
+   it just leaves nothing scoring on the brand axis. (That softness is for
+   PREFERENCES; identity relevance is near-hard, like availability.)
    This step does NOT substitute. If nothing is available, return
    { resolved: false, reason: "unavailable" }. Substitution is a SEPARATE,
    confirmed step via propose_substitutions — the sole owner of substitutions.toml.
