@@ -42,7 +42,7 @@ Read a single recipe's full content (frontmatter + body).
 - `slug` (string, required)
 
 **Returns:**
-- `{ slug, frontmatter, body }`
+- `{ slug, frontmatter, body }` — `frontmatter` includes the objective shared fields, among them `perishable_ingredients` (a normalized list of the recipe's perishable ingredients; empty when absent). The same field rides each entry's `frontmatter` from the index-backed `list_recipes`, so the menu-gen waste callout reasons over it without any extra tool.
 
 ### `update_recipe(slug, updates)`
 
@@ -55,7 +55,7 @@ Update recipe frontmatter fields. Use for `last_cooked`, `rating`, `status` tran
 **Returns:**
 - `{ slug, updated_fields }` — confirmation of what was changed
 
-**Notes:** Side-effect updates (last_cooked, rating, status) happen during normal flow. Other frontmatter edits require user direction. **Per-tenant routing (D5):** `rating` and `status` are *subjective* — they write to the caller's `users/<id>/overlay.toml`, not the shared recipe, so one member's rating/disposition never changes another's. Objective frontmatter edits write the shared recipe content. `last_cooked` is never set by hand — it's derived from the caller's `cooking_log.toml`. `read_recipe`/`list_recipes` merge the caller's overlay (+ cooking-log `last_cooked`) onto shared content at read time; an absent overlay row means effective `status: draft`.
+**Notes:** Side-effect updates (last_cooked, rating, status) happen during normal flow. Other frontmatter edits require user direction. **Per-tenant routing (D5):** `rating` and `status` are *subjective* — they write to the caller's `users/<id>/overlay.toml`, not the shared recipe, so one member's rating/disposition never changes another's. Objective frontmatter edits write the shared recipe content. `last_cooked` is never set by hand — it's derived from the caller's `cooking_log.toml`. `read_recipe`/`list_recipes` merge the caller's overlay (+ cooking-log `last_cooked`) onto shared content at read time; an absent overlay row means effective `status: draft`. `perishable_ingredients` is objective shared content (not subjective), so an edit to it writes the shared recipe; the Worker normalizes the names on write (the same `normalizeIngredient` the verify matcher uses) so cross-recipe overlap lines up.
 
 ### `import_recipe(url)`
 
@@ -92,7 +92,7 @@ Write a **new** recipe to the **shared corpus** (the data-repo root, read by eve
 - `{ error: "already_exists", slug, source }` — a recipe with this `source` URL is already in the shared corpus (idempotent import, §6.4); `slug` is the existing recipe to reuse.
 - `{ error: "validation_failed" }` — no derivable slug (missing title), or the body lacks the required H2 sections.
 
-**Notes:** The everyday discovery write path: `import_recipe` (parse) → agent cleans/classifies → `create_recipe`. Disposition of the resulting draft happens later via `update_recipe` (→ `active` + rating, or `rejected`). The frontmatter is a pass-through record, so objective fields including `requires_equipment` flow straight through; classify it conservatively (default `[]`, vocab slugs only, truly-irreplaceable gear). The Worker validates its *shape* (array of slugs); the **vocabulary** is enforced at build time (`build-indexes.mjs`), matching the `protein`/`cuisine` posture — an off-vocab slug can't reach the gate without the build, which fails first. `update_recipe` is the same pass-through and the path to backfill `requires_equipment` on existing recipes.
+**Notes:** The everyday discovery write path: `import_recipe` (parse) → agent cleans/classifies → `create_recipe`. Disposition of the resulting draft happens later via `update_recipe` (→ `active` + rating, or `rejected`). The frontmatter is a pass-through record, so objective fields including `requires_equipment` flow straight through; classify it conservatively (default `[]`, vocab slugs only, truly-irreplaceable gear). The Worker validates its *shape* (array of slugs); the **vocabulary** is enforced at build time (`build-indexes.mjs`), matching the `protein`/`cuisine` posture — an off-vocab slug can't reach the gate without the build, which fails first. `update_recipe` is the same pass-through and the path to backfill `requires_equipment` on existing recipes. `perishable_ingredients` flows through the same way and is **normalized on write** (verify-matcher normalization) — classify it at import alongside protein/cuisine, by the "would the leftover rot" test.
 
 ---
 

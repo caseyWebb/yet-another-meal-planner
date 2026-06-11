@@ -4,7 +4,8 @@
 // read for a collision) so the logic is unit-testable.
 
 import type { GitHubClient, TreeFile } from "./github.js";
-import { readOptional } from "./gh-read.js";
+import { readOptional, loadAliases } from "./gh-read.js";
+import { normalizePerishables } from "./matching.js";
 import { serializeMarkdown } from "./serialize.js";
 import { ToolError } from "./errors.js";
 import { truncate } from "./text.js";
@@ -197,6 +198,12 @@ export async function buildNewRecipe(
     throw new ToolError("slug_exists", `A recipe already exists at ${path}`, { slug });
   }
 
-  const fm = "status" in frontmatter ? frontmatter : { ...frontmatter, status: "draft" };
+  const fm: Record<string, unknown> =
+    "status" in frontmatter ? { ...frontmatter } : { ...frontmatter, status: "draft" };
+  // Canonicalize perishable_ingredients (objective shared content) at create the
+  // same way the verify matcher normalizes, so overlap lines up across recipes.
+  if ("perishable_ingredients" in fm) {
+    fm.perishable_ingredients = normalizePerishables(fm.perishable_ingredients, await loadAliases(gh));
+  }
   return { slug, file: { path, content: serializeMarkdown(fm, body) } };
 }

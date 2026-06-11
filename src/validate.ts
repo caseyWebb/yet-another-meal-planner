@@ -85,6 +85,19 @@ export function validateFile(path: string, content: string): void {
     if (fm.standalone != null && typeof fm.standalone !== "boolean") {
       fail(path, `\`standalone\` must be a boolean (got ${JSON.stringify(fm.standalone)})`);
     }
+    // perishable_ingredients (objective shared content) is a normalized array of
+    // ingredient names; same shape-only check as pairs_with (no corpus on workerd).
+    if (fm.perishable_ingredients != null) {
+      if (
+        !Array.isArray(fm.perishable_ingredients) ||
+        fm.perishable_ingredients.some((s) => typeof s !== "string")
+      ) {
+        fail(
+          path,
+          `\`perishable_ingredients\` must be an array of ingredient names (got ${JSON.stringify(fm.perishable_ingredients)})`,
+        );
+      }
+    }
     // requires_equipment: shape only (array of slugs). Deliberately NOT
     // vocab-checked here — the build is the gate for recipe content (D2), so an
     // off-vocab slug can't reach the index without the build, which fails first.

@@ -34,6 +34,18 @@ describe("validateFile", () => {
     ).toThrowError(/standalone/);
   });
 
+  it("accepts a well-formed perishable_ingredients array", () => {
+    expect(() =>
+      validateFile("recipes/x.md", "---\nstatus: active\nperishable_ingredients: [cilantro, lime]\n---\nbody\n"),
+    ).not.toThrow();
+  });
+
+  it("rejects a non-array perishable_ingredients", () => {
+    expect(() =>
+      validateFile("recipes/x.md", "---\nstatus: active\nperishable_ingredients: cilantro\n---\nbody\n"),
+    ).toThrowError(/perishable_ingredients/);
+  });
+
   it("accepts legal pantry categories and rejects illegal ones", () => {
     expect(() =>
       validateFile("pantry.toml", '[[items]]\nname = "milk"\ncategory = "fridge"\n'),

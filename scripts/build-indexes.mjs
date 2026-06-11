@@ -182,6 +182,19 @@ export async function buildRecipeIndexes(recipesDir) {
     if (data.standalone != null && typeof data.standalone !== 'boolean') {
       errors.push(`${rel}: standalone must be a boolean (got ${JSON.stringify(data.standalone)})`);
     }
+    // perishable_ingredients is objective shared content (a normalized list of the
+    // recipe's perishable ingredients, classified at import) consumed by the
+    // menu-gen waste callout. Present-but-not-a-string-array is a hard failure
+    // (like a non-boolean standalone); absence reads as [] and is never warned.
+    if (
+      data.perishable_ingredients != null &&
+      (!Array.isArray(data.perishable_ingredients) ||
+        data.perishable_ingredients.some((s) => typeof s !== 'string'))
+    ) {
+      errors.push(
+        `${rel}: perishable_ingredients must be an array of ingredient names (got ${JSON.stringify(data.perishable_ingredients)})`,
+      );
+    }
 
     // requires_equipment is objective shared content (drives the makeability
     // gate). An array of EQUIPMENT_VOCAB slugs; an entry outside the vocab is a
@@ -208,6 +221,7 @@ export async function buildRecipeIndexes(recipesDir) {
       uses_components: data.uses_components ?? [],
       produces_components: data.produces_components ?? [],
       pairs_with: Array.isArray(data.pairs_with) ? data.pairs_with : [],
+      perishable_ingredients: Array.isArray(data.perishable_ingredients) ? data.perishable_ingredients : [],
       requires_equipment: Array.isArray(data.requires_equipment) ? data.requires_equipment : [],
     });
   }

@@ -55,6 +55,15 @@ describe("buildRecipeUpdate", () => {
     expect(body).toContain("## Ingredients");
   });
 
+  it("normalizes perishable_ingredients into shared content (lowercased, deduped)", async () => {
+    const gh = ghWith({ "recipes/salmon.md": RECIPE }); // no aliases.toml → 404 → {} aliases
+    const file = await buildRecipeUpdate(gh, "salmon", {
+      perishable_ingredients: ["Cilantro", "cilantro", " Lime "],
+    });
+    const { frontmatter } = parseMarkdown(file.content);
+    expect(frontmatter.perishable_ingredients).toEqual(["cilantro", "lime"]);
+  });
+
   it("rejects a malformed slug as not_found", async () => {
     const gh = ghWith({});
     await expect(buildRecipeUpdate(gh, "Not A Slug", {})).rejects.toMatchObject({ code: "not_found" });
@@ -193,6 +202,12 @@ describe("splitRecipeUpdate (content vs overlay routing)", () => {
   it("routes pairs_with and standalone to shared content, not the overlay", () => {
     const r = splitRecipeUpdate({ pairs_with: ["steamed-rice"], standalone: true });
     expect(r.content).toEqual({ pairs_with: ["steamed-rice"], standalone: true });
+    expect(r.overlayEdit).toEqual({});
+  });
+
+  it("routes perishable_ingredients to shared content, not the overlay", () => {
+    const r = splitRecipeUpdate({ perishable_ingredients: ["cilantro"] });
+    expect(r.content).toEqual({ perishable_ingredients: ["cilantro"] });
     expect(r.overlayEdit).toEqual({});
   });
 });

@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   matchIngredient,
   normalizeIngredient,
+  normalizePerishables,
   brandKey,
   tiebreak,
   relevanceScore,
@@ -83,6 +84,27 @@ describe("normalizeIngredient", () => {
 
   it("derives the [brands] key by underscoring spaces", () => {
     expect(brandKey("olive oil")).toBe("olive_oil");
+  });
+});
+
+describe("normalizePerishables", () => {
+  it("normalizes, dedupes, and drops empties through the ingredient normalizer", () => {
+    expect(normalizePerishables(["Cilantro", "cilantro", " Lime "], {})).toEqual(["cilantro", "lime"]);
+  });
+
+  it("applies aliases so surface variants collapse to one canonical entry", () => {
+    expect(normalizePerishables(["scallions", "green onions"], { "green onions": "scallions" })).toEqual([
+      "scallions",
+    ]);
+  });
+
+  it("is idempotent on an already-normalized list", () => {
+    expect(normalizePerishables(["cilantro", "lime"], {})).toEqual(["cilantro", "lime"]);
+  });
+
+  it("returns a non-array value unchanged for validation to reject", () => {
+    expect(normalizePerishables("cilantro", {})).toBe("cilantro");
+    expect(normalizePerishables(["cilantro", 5], {})).toEqual(["cilantro", 5]);
   });
 });
 

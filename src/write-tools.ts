@@ -8,7 +8,8 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { GitHubClient, TreeFile } from "./github.js";
-import { readFile, readOptional } from "./gh-read.js";
+import { readFile, readOptional, loadAliases } from "./gh-read.js";
+import { normalizePerishables } from "./matching.js";
 import { parseMarkdown, parseToml } from "./parse.js";
 import { serializeMarkdown, stringifyTomlWithHeader } from "./serialize.js";
 import { ToolError, runTool } from "./errors.js";
@@ -84,6 +85,12 @@ export async function buildRecipeUpdate(
   const text = await readFile(gh, path, "not_found", `Unknown recipe slug: ${slug}`);
   const { frontmatter, body } = parseMarkdown(text, path);
   const merged = { ...frontmatter, ...updates };
+  // perishable_ingredients is objective shared content; canonicalize the names the
+  // same way the verify matcher does so cross-recipe overlap lines up (only when
+  // the caller is writing the field — a non-array passes through for validation).
+  if ("perishable_ingredients" in updates) {
+    merged.perishable_ingredients = normalizePerishables(merged.perishable_ingredients, await loadAliases(gh));
+  }
   return { path, content: serializeMarkdown(merged, body) };
 }
 

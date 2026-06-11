@@ -230,6 +230,41 @@ test('absent pairs_with / standalone do not warn', async () => {
   await rm(dir, { recursive: true, force: true });
 });
 
+// --- perishable_ingredients (menu-gen waste callout input) --------------
+
+test('valid perishable_ingredients array passes and is carried into the index', async () => {
+  const dir = await tmpRecipes({
+    'tacos.md': recipe('title: Tacos\nstatus: active\nperishable_ingredients: [cilantro, lime]'),
+  });
+  const { recipes, errors } = await buildRecipeIndexes(dir);
+  assert.ok(!errors.some((e) => e.includes('perishable_ingredients')), errors.join('\n'));
+  assert.deepEqual(recipes['tacos'].perishable_ingredients, ['cilantro', 'lime']);
+  await rm(dir, { recursive: true, force: true });
+});
+
+test('hard-fail: perishable_ingredients present as a bare string', async () => {
+  const dir = await tmpRecipes({
+    'bad.md': recipe('title: Bad\nstatus: active\nperishable_ingredients: cilantro'),
+  });
+  const { errors } = await buildRecipeIndexes(dir);
+  assert.ok(
+    errors.some((e) => /perishable_ingredients must be an array of ingredient names/.test(e)),
+    errors.join('\n'),
+  );
+  await rm(dir, { recursive: true, force: true });
+});
+
+test('absent perishable_ingredients does not warn and defaults to empty', async () => {
+  const dir = await tmpRecipes({
+    'plain.md': recipe('title: Plain\nstatus: active\nprotein: chicken\ntime_total: 30\ningredients_key: [chicken]'),
+  });
+  const { recipes, errors, warnings } = await buildRecipeIndexes(dir);
+  assert.deepEqual(errors, []);
+  assert.ok(!warnings.some((w) => /perishable_ingredients/.test(w)), warnings.join('\n'));
+  assert.deepEqual(recipes['plain'].perishable_ingredients, []);
+  await rm(dir, { recursive: true, force: true });
+});
+
 // --- requires_equipment (makeability gate input) ------------------------
 
 test('in-vocabulary requires_equipment passes and is carried into the index', async () => {

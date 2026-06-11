@@ -148,6 +148,29 @@ export function normalizeIngredient(ingredient: string, aliases: Record<string, 
   return s;
 }
 
+/**
+ * Normalize a recipe's `perishable_ingredients` list (objective shared content)
+ * through the same `normalizeIngredient` the verify matcher uses, so cross-recipe
+ * perishable overlap lines up with pantry matching. Drops empties and dedupes;
+ * idempotent (re-normalizing an already-normalized list is a no-op). A non-array,
+ * or an array containing a non-string, is returned unchanged so write-time/build
+ * validation can reject the bad shape rather than this silently coercing it.
+ */
+export function normalizePerishables(value: unknown, aliases: Record<string, string>): unknown {
+  if (!Array.isArray(value)) return value;
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const entry of value) {
+    if (typeof entry !== "string") return value;
+    const norm = normalizeIngredient(entry, aliases);
+    if (norm && !seen.has(norm)) {
+      seen.add(norm);
+      out.push(norm);
+    }
+  }
+  return out;
+}
+
 /** Canonical normalized term → `[brands]` lookup key (spaces → underscores). */
 export function brandKey(normalized: string): string {
   return normalized.replace(/\s+/g, "_");
