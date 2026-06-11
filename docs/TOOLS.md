@@ -313,7 +313,7 @@ Run the full 7-step matching pipeline. Returns a confident match, narrowed candi
 }
 ```
 
-**Returns (ambiguous):**
+**Returns (ambiguous):** `candidates` is the **full** relevance-ranked set of fulfillable products for the term (every match the search returned, up to Kroger's per-request max of 50 — **not** truncated to a handful), so the LLM can browse/list them all and pick without issuing another search.
 ```
 {
   resolved: false,

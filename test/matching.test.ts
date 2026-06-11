@@ -204,6 +204,19 @@ describe("matchIngredient — confidence gate", () => {
     }
   });
 
+  it("returns the FULL fulfillable set when ambiguous — no 5-item truncation", async () => {
+    // 8 distinct fulfillable matches; the LLM should see all 8, not a capped handful.
+    const search = async () =>
+      Array.from({ length: 8 }, (_, i) =>
+        cand({ productId: `P${i}`, description: "Frozen Pizza", price: { regular: 4 + i, promo: 0 } }),
+      );
+    const res = await matchIngredient(makeDeps({ search }), "frozen pizza");
+    expect(res).toMatchObject({ resolved: false, ambiguous: true });
+    if (res.resolved === false && "ambiguous" in res) {
+      expect(res.candidates).toHaveLength(8);
+    }
+  });
+
   it("empty list [] → confident cheapest acceptable", async () => {
     const deps = makeDeps({
       brands: { yellow_onion: [] },

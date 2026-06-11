@@ -83,8 +83,6 @@ export interface UnavailableMatch {
 
 export type MatchResult = ConfidentMatch | AmbiguousMatch | UnavailableMatch;
 
-const MAX_CANDIDATES = 5;
-
 /** A candidate is a valid pick only if fulfillable via curbside or delivery. */
 export function isFulfillable(c: KrogerCandidate): boolean {
   return c.fulfillment.curbside || c.fulfillment.delivery;
@@ -294,7 +292,10 @@ function ambiguous(
   return {
     resolved: false,
     ambiguous: true,
-    candidates: ranked.slice(0, MAX_CANDIDATES).map(toCandidateView),
+    // Return the FULL relevance-ranked fulfillable set (no truncation) so the LLM
+    // can browse everything and pick, rather than re-searching for more. The pool
+    // is already bounded by the caller's search limit.
+    candidates: ranked.map(toCandidateView),
     reason,
   };
 }

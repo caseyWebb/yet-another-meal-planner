@@ -258,7 +258,9 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
     const cache = await getCacheMappings();
     const deps: MatchDeps = {
       search: (term: string): Promise<KrogerCandidate[]> =>
-        kroger.search(term, { locationId, limit: 15 }),
+        // Kroger's per-request max (50) — the matcher returns the full ranked
+        // fulfillable set when ambiguous, so we want the complete relevant pool.
+        kroger.search(term, { locationId, limit: 50 }),
       productById: (productId: string): Promise<KrogerCandidate | null> =>
         kroger.productById(productId, locationId),
       aliases,
@@ -570,7 +572,7 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
     "match_ingredient_to_kroger_sku",
     {
       description:
-        "Run the resolve-only 7-step matching pipeline for one ingredient. Returns a confident match, ambiguous candidates, or unavailable. Never writes the cache (that rides write_cart_and_commit) and never substitutes (that's propose_substitutions). bypass_cache forces re-resolution.",
+        "Run the resolve-only 7-step matching pipeline for one ingredient. Returns a confident match, OR the FULL set of ambiguous candidates (every fulfillable product for the term, relevance-ranked — not truncated, so you can list/compare them all without re-searching), OR unavailable. Never writes the cache (that rides write_cart_and_commit) and never substitutes (that's propose_substitutions). bypass_cache forces re-resolution.",
       inputSchema: {
         ingredient: z.string(),
         context: z.object(matchContextShape).optional(),
