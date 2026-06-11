@@ -47,6 +47,12 @@ npm run deploy       # wrangler deploy — normally NOT run by hand (see below)
 ```
 
 - **Deployment is operator-run from the private data repo**, not from this (public) repo. This repo holds the Worker source + a *reusable* `data-deploy.yml` (`workflow_call`); each operator's data repo has a thin `deploy.yml` caller (`uses: …@main`) that overlays their own `wrangler.jsonc` and runs `typecheck` + `test` + `wrangler deploy`. The public repo holds **no Actions secrets** (the data repo is the single control plane); push/PR here only runs `ci.yml` (typecheck + both test suites). Repo access is via a **GitHub App** (D3), not a PAT: the App private key is a Cloudflare secret (`wrangler secret put GITHUB_APP_PRIVATE_KEY`); the App id, installation id, and data-repo coords are non-secret `wrangler.jsonc` vars (the operator's copy lives in their data repo). Kroger creds + KV are likewise secret-put / bound to Cloudflare — never in the repo or in Actions.
+- **Trigger the deploy after pushing worker changes.** There is deliberately **no** auto-deploy on push (a push trigger would need a data-repo-writable token in this *public* repo — a blast-radius regression we rejected). Instead, when you push changes to `main` that affect the Worker (`src/**`, `wrangler.jsonc`, `package.json`/lockfile), **also kick the deploy** in the operator's private data repo using the operator's already-authenticated local `gh` (no stored cross-repo secret):
+  ```bash
+  gh workflow run deploy.yml --repo caseyWebb/groceries-agent-data   # operator substitutes their data repo
+  gh run watch  --repo caseyWebb/groceries-agent-data                # optional: follow it to green
+  ```
+  It deploys `@main`, so run it *after* the push has landed. Doc/test/openspec-only pushes don't need it. (`npm run deploy` is a local escape hatch, but the data-repo workflow is the source of truth — it gates on typecheck + tests first.)
 - **Local dev/secrets**: `GITHUB_APP_PRIVATE_KEY` + Kroger creds live in `.dev.vars` for local runs (gitignored; see `.dev.vars.example`). See `docs/SELF_HOSTING.md` for the one-time operator setup and the Kroger `/oauth/init?tenant=<id>` flow.
 - **Structured errors, not throws**: tools return `{ error: "...", message }` shapes the agent can reason over. Follow the existing convention in `src/errors.ts`.
 - **`docs/TOOLS.md` is the contract** — when a tool's params/returns change, update `docs/TOOLS.md` in the same pass. No drift.
