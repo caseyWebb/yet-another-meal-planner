@@ -6,7 +6,7 @@ Defines the repo-data-backed read tools exposed by the MCP server (`list_recipes
 ## Requirements
 ### Requirement: list_recipes reads the index and filters in-worker
 
-The system SHALL provide `list_recipes(filters)` that reads the shared `_indexes/recipes.json` in a single call, **joins each entry with the caller's per-tenant overlay** (`rating`, `status` from `overlay.toml`; effective `status` defaults to `draft` when the caller has no overlay row) **and the caller's cooking-log-derived `last_cooked`** (max cook date for the slug from that tenant's `cooking_log.toml`), unions the caller's personal (unshared) recipes, and applies filters in the Worker, returning `{ recipes: [{ slug, title, frontmatter }] }` where `frontmatter` reflects the merged objective content + the caller's subjective fields. If the shared `_indexes/recipes.json` is missing or malformed, the tool SHALL return a structured `index_unavailable` error.
+The system SHALL provide `list_recipes(filters)` that reads the shared `_indexes/recipes.json` in a single call, **joins each entry with the caller's per-tenant overlay** (`rating`, `status` from `overlay.toml`; effective `status` defaults to `draft` when the caller has no overlay row), **the caller's cooking-log-derived `last_cooked`** (max cook date for the slug from that tenant's `cooking_log.toml`), **and the caller's owned-equipment list** (`owned` from `kitchen.toml`, empty when absent), unions the caller's personal (unshared) recipes, and applies filters in the Worker, returning `{ recipes: [{ slug, title, frontmatter }] }` where `frontmatter` reflects the merged objective content + the caller's subjective fields. If the shared `_indexes/recipes.json` is missing or malformed, the tool SHALL return a structured `index_unavailable` error.
 
 #### Scenario: Active recipes returned by default, per caller overlay
 
@@ -32,6 +32,8 @@ The system SHALL provide `list_recipes(filters)` that reads the shared `_indexes
 
 The system SHALL apply `list_recipes` filters with these semantics: array filters (`dietary`, `season`) match when the recipe contains **ALL** listed values (AND); `status` defaults to `active` and `status: "all"` disables status filtering; `exclude_cooked_within_days` is a caller-supplied number that excludes recipes cooked within that many days; and `not_cooked_since` (a date) admits recipes whose `last_cooked` is `null`. The system SHALL NOT provide a `tags` array filter — keyword/name matching against tags is handled by the `query` text filter (see "list_recipes free-text query filter").
 
+The system SHALL additionally apply a **makeability gate** by default: a recipe whose `requires_equipment` is not a subset of the caller's `owned` (see the kitchen-equipment "Deterministic makeability rule") SHALL be excluded. When the caller's `owned` is empty (or `kitchen.toml` is absent) the gate SHALL be a no-op (every recipe passes). A `include_unmakeable: true` filter SHALL disable the exclusion and instead return unmakeable recipes annotated with `missing_equipment` (the required slugs not in `owned`), so the named-dish enumeration path can surface a named recipe flagged rather than silently dropped. The gate SHALL be ANDed with the other filters and SHALL be a pure function of the recipe's indexed `requires_equipment` and the caller's `owned`.
+
 #### Scenario: Array filter matches all values
 
 - **WHEN** `list_recipes({ dietary: ["gluten-free", "dairy-free"] })` is invoked
@@ -56,6 +58,21 @@ The system SHALL apply `list_recipes` filters with these semantics: array filter
 
 - **WHEN** `list_recipes({ tags: ["chicken"] })` is invoked (an unknown filter)
 - **THEN** the `tags` key is ignored (no tag-based narrowing) and the result is the same as if no `tags` were supplied
+
+#### Scenario: Unmakeable recipe is excluded by default
+
+- **WHEN** `list_recipes({})` is invoked, a recipe requires `["pressure-cooker"]`, and the caller's `owned` is `["blender"]`
+- **THEN** that recipe is excluded from the results
+
+#### Scenario: Empty inventory disables the gate
+
+- **WHEN** `list_recipes({})` is invoked and the caller has no `kitchen.toml` (or empty `owned`)
+- **THEN** the makeability gate excludes nothing and recipes are returned as if no equipment filter applied
+
+#### Scenario: include_unmakeable surfaces flagged recipes
+
+- **WHEN** `list_recipes({ include_unmakeable: true })` is invoked, a recipe requires `["pressure-cooker"]`, and the caller's `owned` is `["blender"]`
+- **THEN** that recipe is returned annotated with `missing_equipment: ["pressure-cooker"]` rather than excluded
 
 ### Requirement: list_recipes free-text query filter
 
