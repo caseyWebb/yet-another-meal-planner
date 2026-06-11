@@ -15,6 +15,7 @@ import {
   renderMcpConfig,
   renderPluginManifest,
   buildPluginFiles,
+  resolveVersion,
   yamlQuote,
   DEPTH_TIERS,
 } from '../scripts/build-plugin.mjs';
@@ -175,11 +176,30 @@ test('renderMcpConfig bakes the given worker url into the connector', () => {
   assert.equal(cfg.mcpServers['grocery-mcp'].url, 'https://example.test/mcp');
 });
 
-test('renderPluginManifest: no userConfig (claude.ai ignores it), no version (auto via commit SHA)', () => {
-  const m = JSON.parse(renderPluginManifest());
-  assert.equal(m.name, 'grocery-agent');
-  assert.equal(m.userConfig, undefined);
-  assert.equal(m.version, undefined);
+test('renderPluginManifest: no userConfig (claude.ai ignores it); version is opt-in', () => {
+  // userConfig is never emitted (claude.ai ignores it). version is threaded in by
+  // main() from git; the pure renderer omits it unless asked, so throwaway/no-git
+  // builds ship none.
+  const bare = JSON.parse(renderPluginManifest());
+  assert.equal(bare.name, 'grocery-agent');
+  assert.equal(bare.userConfig, undefined);
+  assert.equal(bare.version, undefined);
+  const versioned = JSON.parse(renderPluginManifest({ version: '0.0.42' }));
+  assert.equal(versioned.version, '0.0.42');
+});
+
+test('buildPluginFiles threads version into the manifest (monotonic claude.ai auto-update)', () => {
+  const without = JSON.parse(buildPluginFiles(parseInstructions(DOC), { mcpUrl: 'https://x' }).get('.claude-plugin/plugin.json'));
+  assert.equal(without.version, undefined);
+  const with42 = JSON.parse(buildPluginFiles(parseInstructions(DOC), { mcpUrl: 'https://x', version: '0.0.42' }).get('.claude-plugin/plugin.json'));
+  assert.equal(with42.version, '0.0.42');
+});
+
+test('resolveVersion: 0.0.<commit-count> in a git checkout, undefined otherwise', () => {
+  const v = resolveVersion(); // REPO_ROOT is a git checkout
+  assert.match(v, /^0\.0\.\d+$/);
+  // Non-git path (a bare temp dir would fail git) → undefined; use an impossible cwd.
+  assert.equal(resolveVersion('/nonexistent-path-for-build-plugin-test'), undefined);
 });
 
 test('buildPluginFiles emits library tiers + workflow skills + manifest + connector', () => {

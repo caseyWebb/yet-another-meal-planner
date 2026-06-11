@@ -1,5 +1,6 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "grocery-agent",
-  "description": "Personal grocery agent — meal planning, pantry, recipes, and Kroger cart. Bundles the workflow skills and the grocery-mcp connector."
+  "description": "Personal grocery agent — meal planning, pantry, recipes, and Kroger cart. Bundles the workflow skills and the grocery-mcp connector.",
+  "version": "0.0.149"
 }

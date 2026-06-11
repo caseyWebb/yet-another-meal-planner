@@ -39,17 +39,23 @@
 //   node scripts/build-plugin.mjs --src PATH              # source doc (default AGENT_INSTRUCTIONS.md)
 
 import { readFile, writeFile, mkdir, rm } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 export const PLUGIN_NAME = 'grocery-agent';
-// No version field is emitted on purpose: a git-hosted marketplace with no
-// plugin version treats every commit as a new version (the commit SHA), so any
-// push auto-propagates to installers' `/plugin marketplace update` — no manual
-// bump to forget. (See docs: "If you omit version and host in git, every commit
-// automatically counts as a new version.")
+// The manifest carries an explicit `version` (see resolveVersion): `0.0.<N>` where
+// N is the repo's commit count. We originally omitted it on the theory that a
+// git-hosted marketplace falls back to the commit SHA so every push auto-propagates
+// — true for the Claude Code CLI, but claude.ai (where this plugin actually runs)
+// did NOT re-pull a versionless plugin across many commits (verified 2026-06-11: an
+// install sat ~17h / 8 commits stale, never picking up new skills). claude.ai gates
+// its auto-update on the `version` STRING changing, so a versionless plugin reads as
+// "never updated." A monotonic commit-count version makes every rebuild strictly
+// newer, which is what claude.ai needs to re-pull. It's computed from git at build
+// time (not baked into the pure builder), so the file map stays deterministic.
 export const PLUGIN_DESCRIPTION =
   'Personal grocery agent — meal planning, pantry, recipes, and Kroger cart. Bundles the workflow skills and the grocery-mcp connector.';
 // Depth tiers a flow may opt into via `needs:`. `core` is implicit (always loaded).
@@ -207,14 +213,13 @@ export function renderWorkflowSkill(flow) {
   return `${fm}\n${loaderLine(flow.needs)}\n\n# ${flow.heading}\n\n${flow.body}\n`;
 }
 
-export function renderPluginManifest({ name = PLUGIN_NAME, description = PLUGIN_DESCRIPTION } = {}) {
-  // No `version` — see the note by PLUGIN_NAME: omitting it makes every commit a
-  // new version, so pushes auto-propagate.
-  return `${JSON.stringify(
-    { $schema: 'https://json.schemastore.org/claude-code-plugin-manifest.json', name, description },
-    null,
-    2,
-  )}\n`;
+export function renderPluginManifest({ name = PLUGIN_NAME, description = PLUGIN_DESCRIPTION, version } = {}) {
+  // `version` is threaded in by main() from git (see the note by PLUGIN_NAME and
+  // resolveVersion); omitted when absent so the pure builder stays version-agnostic
+  // (and throwaway/no-git builds simply ship no version).
+  const manifest = { $schema: 'https://json.schemastore.org/claude-code-plugin-manifest.json', name, description };
+  if (version) manifest.version = version;
+  return `${JSON.stringify(manifest, null, 2)}\n`;
 }
 
 // The connector URL is BAKED into .mcp.json. We tried a plugin `userConfig` value
@@ -228,9 +233,9 @@ export function renderMcpConfig(mcpUrl) {
 
 // Assemble the in-memory file map (relative path → contents). Pure: no disk I/O,
 // so tests assert on the structure directly.
-export function buildPluginFiles(parsed, { mcpUrl = MCP_URL_PLACEHOLDER } = {}) {
+export function buildPluginFiles(parsed, { mcpUrl = MCP_URL_PLACEHOLDER, version } = {}) {
   const files = new Map();
-  files.set('.claude-plugin/plugin.json', renderPluginManifest());
+  files.set('.claude-plugin/plugin.json', renderPluginManifest({ version }));
   files.set('.mcp.json', renderMcpConfig(mcpUrl));
   // Library skills: core + each depth tier present in the source.
   files.set(`skills/${librarySkillName('core')}/SKILL.md`, renderLibrarySkill('core', parsed.persona.core));
@@ -246,6 +251,19 @@ export function buildPluginFiles(parsed, { mcpUrl = MCP_URL_PLACEHOLDER } = {}) 
 }
 
 // --- CLI -----------------------------------------------------------------
+
+// Monotonic plugin version from git: `0.0.<commit-count>`. The count only grows as
+// commits land, so each rebuilt-and-committed bundle is strictly newer than the last
+// — what claude.ai's auto-update compares (see the note by PLUGIN_NAME). Returns
+// undefined outside a git checkout (throwaway/dist builds), which ship no version.
+export function resolveVersion(cwd = REPO_ROOT) {
+  try {
+    const count = execFileSync('git', ['rev-list', '--count', 'HEAD'], { cwd, encoding: 'utf8' }).trim();
+    return /^\d+$/.test(count) ? `0.0.${count}` : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 async function main() {
   const checkOnly = process.argv.includes('--check');
@@ -291,14 +309,17 @@ async function main() {
     );
   }
 
-  const files = buildPluginFiles(parsed, { mcpUrl });
+  const version = resolveVersion();
+  const files = buildPluginFiles(parsed, { mcpUrl, version });
   await rm(out, { recursive: true, force: true });
   for (const [rel, contents] of files) {
     const dest = path.join(out, rel);
     await mkdir(path.dirname(dest), { recursive: true });
     await writeFile(dest, contents);
   }
-  console.log(`built ${PLUGIN_NAME} plugin → ${out}  (${parsed.flows.length} skills: ${flowSummary})`);
+  console.log(
+    `built ${PLUGIN_NAME} plugin v${version ?? '(none)'} → ${out}  (${parsed.flows.length} skills: ${flowSummary})`,
+  );
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
