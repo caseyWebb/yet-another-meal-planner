@@ -275,15 +275,15 @@ Synthesized sale scan — the public API has **no** flyer/circular endpoint, so 
 
 ### `kroger_prices(ingredients)`
 
-Get current prices for a specific list of ingredients (used for menu pre-pass). Takes the top relevant fulfillable product per term.
+Get current prices for a specific list of ingredients (used for menu pre-pass). Returns the **full list of fulfillable products per ingredient** (relevance-ranked, up to Kroger's per-request max of 50) — not just the top one — so the LLM can compare across brands/sizes and pick.
 
 **Params:**
 - `ingredients` (array of strings)
 
 **Returns:**
-- `{ prices: [{ ingredient, sku, brand, size, price: { regular, promo }, on_sale, available: { curbside, delivery } }] }`
+- `{ prices: [{ ingredient, products: [{ sku, brand, description, size, price: { regular, promo }, on_sale, available: { curbside, delivery } }] }] }`
 
-**Notes:** `price` is `{ regular, promo }`; `on_sale` is true only on a real discount (`promo > 0` **and** `promo < regular`) — a `promo` equal to `regular` is not a sale; `available` reflects curbside/delivery fulfillment at the preferred location — the public API exposes no live in-store stock. When no product matches a term, that entry is `{ ingredient, sku: null, available: { curbside: false, delivery: false } }`.
+**Notes:** `products` is every fulfillable match for the term, ordered by Kroger relevance; an ingredient with nothing fulfillable returns `{ ingredient, products: [] }`. `price` is `{ regular, promo }`; `on_sale` is true only on a real discount (`promo > 0` **and** `promo < regular`) — a `promo` equal to `regular` is not a sale; `available` reflects curbside/delivery fulfillment at the preferred location — the public API exposes no live in-store stock.
 
 ### `match_ingredient_to_kroger_sku(ingredient, context)`
 
@@ -348,10 +348,10 @@ Deterministic price-per-unit comparison, used by the matching tiebreaker and whe
 
 ### `ready_to_eat_available()`
 
-Cross-reference `ready_to_eat/*.toml` catalogs against current Kroger availability. "Available" means fulfillable via **curbside or delivery** at the preferred location (`fulfillment.curbside || fulfillment.delivery`) — the public Products API exposes no live in-store stock level.
+Cross-reference `ready_to_eat/*.toml` catalogs against current Kroger availability. "Available" means fulfillable via **curbside or delivery** at the preferred location (`fulfillment.curbside || fulfillment.delivery`) — the public Products API exposes no live in-store stock level. Each available item carries the **full list of fulfillable matching products** (relevance-ranked) so the agent can pick the right/cheapest one.
 
 **Returns:**
-- `{ available: { breakfast: [...], lunch: [...], dinner: [...] }, unavailable: [...] }`
+- `{ available: { breakfast: [...{ name, meal, products: [{ sku, brand, description, size, price, on_sale, available }] }], lunch: [...], dinner: [...] }, unavailable: [...{ name, meal, catalog_sku }] }`
 
 ---
 

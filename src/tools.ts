@@ -92,6 +92,19 @@ const unitPriceItemShape = {
 
 const READY_TO_EAT_MEALS = ["breakfast", "lunch", "dinner"] as const;
 
+/** One product row for the list-returning Kroger lookups (kroger_prices, ready_to_eat). */
+function productRow(c: KrogerCandidate): Record<string, unknown> {
+  return {
+    sku: c.productId,
+    brand: c.brand,
+    description: c.description,
+    size: c.size,
+    price: c.price,
+    on_sale: isOnSale(c),
+    available: c.fulfillment,
+  };
+}
+
 export function buildServer(env: Env, tenant: Tenant): McpServer {
   const server = new McpServer({ name: "grocery-mcp", version: "0.1.0" });
 
@@ -414,7 +427,7 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
     "kroger_prices",
     {
       description:
-        "Current Kroger price for each ingredient at the preferred location: { regular, promo } price, on-sale flag, and curbside/delivery availability. Takes the top relevant fulfillable product per term.",
+        "Current Kroger prices for each ingredient at the preferred location. Returns the FULL list of fulfillable products per ingredient (relevance-ranked) — each with { regular, promo } price, on-sale flag, and curbside/delivery availability — so you can compare across brands/sizes and pick, not just the top one. An ingredient with nothing fulfillable returns an empty products list.",
       inputSchema: { ingredients: z.array(z.string()) },
     },
     ({ ingredients }) =>
@@ -422,22 +435,10 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
         const locationId = await getLocationId();
         const prices = [];
         for (const ingredient of ingredients) {
-          const candidates = await kroger.search(ingredient, { locationId, limit: 5 });
-          const fulfillable = candidates.filter(isFulfillable);
-          const top = fulfillable[0] ?? candidates[0];
-          if (!top) {
-            prices.push({ ingredient, sku: null, available: { curbside: false, delivery: false } });
-            continue;
-          }
-          prices.push({
-            ingredient,
-            sku: top.productId,
-            brand: top.brand,
-            size: top.size,
-            price: top.price,
-            on_sale: isOnSale(top),
-            available: top.fulfillment,
-          });
+          const candidates = await kroger.search(ingredient, { locationId, limit: 50 });
+          // Every fulfillable product for the term — the LLM judges across them.
+          const products = candidates.filter(isFulfillable).map(productRow);
+          prices.push({ ingredient, products });
         }
         return { prices };
       }),
@@ -525,7 +526,7 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
     "ready_to_eat_available",
     {
       description:
-        "Cross-reference ready_to_eat/*.toml catalogs against Kroger availability. 'Available' means fulfillable via curbside or delivery at the preferred location — the public API exposes no live in-store stock.",
+        "Cross-reference ready_to_eat/*.toml catalogs against Kroger availability. Each available catalog item carries the FULL list of fulfillable matching products (relevance-ranked, with price + on-sale + curbside/delivery) so you can pick the right/cheapest one. 'Available' means fulfillable via curbside or delivery — the public API exposes no live in-store stock.",
       inputSchema: {},
     },
     () =>
@@ -541,17 +542,17 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
           for (const item of items) {
             if (typeof item.name !== "string") continue;
             if (item.status === "rejected") continue;
-            const candidates = await kroger.search(item.name, { locationId, limit: 5 });
-            const match = candidates.find(isFulfillable);
-            const record = {
-              name: item.name,
-              meal,
-              sku: match?.productId ?? (typeof item.sku === "string" ? item.sku : null),
-              price: match?.price ?? null,
-              fulfillment: match?.fulfillment ?? { curbside: false, delivery: false },
-            };
-            if (match) available[meal].push(record);
-            else unavailable.push(record);
+            const candidates = await kroger.search(item.name, { locationId, limit: 50 });
+            const products = candidates.filter(isFulfillable).map(productRow);
+            if (products.length > 0) {
+              available[meal].push({ name: item.name, meal, products });
+            } else {
+              unavailable.push({
+                name: item.name,
+                meal,
+                catalog_sku: typeof item.sku === "string" ? item.sku : null,
+              });
+            }
           }
         }
         return { available, unavailable };
@@ -645,7 +646,8 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
         // sale: keep rule-acceptable substitutes that are on sale at the location.
         const locationId = await getLocationId();
         return proposeSale(rule, async (sub) => {
-          const candidates = await kroger.search(sub, { locationId, limit: 5 });
+          // Widen the pool so an on-sale match deeper than the first few isn't missed.
+          const candidates = await kroger.search(sub, { locationId, limit: 50 });
           return candidates.filter(isFulfillable).some((c) => isOnSale(c));
         });
       }),
