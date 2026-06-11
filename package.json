@@ -12,9 +12,10 @@
     "deploy": "wrangler deploy",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:tooling": "node --test tests/build-indexes.test.mjs tests/build-site.test.mjs",
+    "test:tooling": "node --test tests/build-indexes.test.mjs tests/build-site.test.mjs tests/build-plugin.test.mjs",
     "build:indexes": "node scripts/build-indexes.mjs",
-    "build:site": "node scripts/build-site.mjs"
+    "build:site": "node scripts/build-site.mjs",
+    "build:plugin": "node scripts/build-plugin.mjs"
   },
   "dependencies": {
     "@cloudflare/workers-oauth-provider": "^0.7.2",

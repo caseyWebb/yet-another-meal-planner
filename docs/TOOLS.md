@@ -578,6 +578,18 @@ A **stale-cart reminder** fires when a new order begins while the prior list sti
 
 ---
 
+## Bug reporting (agent-bug-reporting)
+
+### `report_bug(title, body)`
+
+Files a bug report as a GitHub issue on the operator's **private data repo** (where the App is installed), on behalf of a member who has no GitHub account and can't file issues themselves. The Worker adds attribution it controls — the caller's `username`, a UTC timestamp, and the `agent-reported` label — so identity can't be omitted or spoofed by the agent. Returns `{ url, number }`.
+
+**Errors:** `insufficient_permission` (the App lacks `Issues: write` — see [`SELF_HOSTING.md`](SELF_HOSTING.md)); `upstream_unavailable` (GitHub unreachable). The agent relays either to the user rather than implying it filed.
+
+Behind the per-tenant gate; the only tool that writes GitHub Issues. Driven by the agent's `report-grocery-agent-bug` skill, which fires on an unworkable tool error or repeated user correction, files at most one issue per distinct problem per session, then tells the user it flagged it.
+
+---
+
 ## What this surface deliberately does NOT include
 
 - No raw GitHub write access (atomic commits only)

@@ -1,0 +1,6 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "grocery-probe",
+  "version": "0.0.1",
+  "description": "Throwaway validation plugin for change package-agent-as-plugin task 1: does a workflow skill reliably load a referenced, near-empty-description library skill in claude.ai? Delete after the mechanism is confirmed."
+}

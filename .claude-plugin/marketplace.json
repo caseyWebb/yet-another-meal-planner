@@ -1,0 +1,13 @@
+{
+  "name": "grocery-agent",
+  "owner": {
+    "name": "Casey Webb"
+  },
+  "plugins": [
+    {
+      "name": "grocery-agent",
+      "source": "./plugin/grocery-agent",
+      "description": "Personal grocery agent — meal planning, pantry, recipes, and Kroger cart. Bundles the workflow skills and the grocery-mcp connector."
+    }
+  ]
+}

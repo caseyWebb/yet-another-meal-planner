@@ -2,7 +2,7 @@
 
 This file is for Claude Code (and humans) **working on** the grocery-agent backend. It is *not* the agent's persona.
 
-> **The grocery-agent operational instructions — persona, conversational flows, behavior rules — live in [`AGENT_INSTRUCTIONS.md`](AGENT_INSTRUCTIONS.md).** That file is the canonical source pasted into the Claude.ai "Grocery Agent" project. Edit it when changing how the *agent* behaves; edit this file when changing how the *repo* is built. They are different audiences.
+> **The grocery-agent operational instructions — persona, conversational flows, behavior rules — live in [`AGENT_INSTRUCTIONS.md`](AGENT_INSTRUCTIONS.md).** That file is the canonical source from which the **grocery-agent plugin** is generated (`scripts/build-plugin.mjs` → `npm run build:plugin`) and installed in Claude.ai via the marketplace — edit `AGENT_INSTRUCTIONS.md` and rebuild, never hand-edit the generated bundle under `plugin/`. Edit it when changing how the *agent* behaves; edit this file when changing how the *repo* is built. They are different audiences.
 
 ## What this repo is
 

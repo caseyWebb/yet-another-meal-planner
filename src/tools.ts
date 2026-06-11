@@ -7,7 +7,7 @@ import { z } from "zod";
 import type { Env } from "./env.js";
 import type { Tenant } from "./tenant.js";
 import { directoryFromEnv } from "./tenant.js";
-import { createGitHubClient, prefixedClient } from "./github.js";
+import { createGitHubClient, prefixedClient, GitHubError } from "./github.js";
 import { createInstallationAuth } from "./github-app.js";
 import { readFile, readOptional } from "./gh-read.js";
 import { parseMarkdown, parseToml } from "./parse.js";
@@ -676,6 +676,41 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
   // place_order — the order-time flush: resolve the list, write the Kroger cart,
   // persist learned SKUs to the SHARED cache. The one tool that reaches the cart.
   registerOrderTools(server, gh, sharedGh, env, tenant.id, resolveIngredient, getLocationId);
+
+  // report_bug — file an attributed GitHub issue on the operator's PRIVATE data
+  // repo on the member's behalf (members have no GitHub account). Identity +
+  // timestamp + label are added server-side, not trusted from the agent. Issues
+  // are repo-level, so this uses the un-prefixed dataGh.
+  server.registerTool(
+    "report_bug",
+    {
+      description:
+        "File a bug report as a GitHub issue on the maintainer's private repo, on behalf of the user (who has no GitHub account and can't file issues). Use it when a grocery-mcp tool errors in a way you can't work around, or when the user has had to repeatedly correct or redirect you on the same thing. Write a specific, reproducible report. The server attributes the issue to the caller and labels it — don't add identity yourself. Returns the issue url + number, or `insufficient_permission` if the maintainer hasn't enabled issue filing yet.",
+      inputSchema: {
+        title: z.string().describe("A short, specific issue title."),
+        body: z
+          .string()
+          .describe(
+            "What you were doing, what went wrong (the error or the correction pattern), and the tools/inputs involved — enough for the maintainer to reproduce.",
+          ),
+      },
+    },
+    ({ title, body }) =>
+      runTool(async () => {
+        const trailer = `\n\n---\n_Filed by the grocery agent on behalf of **${tenant.id}** at ${new Date().toISOString()}._`;
+        try {
+          return await dataGh.createIssue(title, `${body}${trailer}`, ["agent-reported"]);
+        } catch (e) {
+          if (e instanceof GitHubError && e.status === 403) {
+            throw new ToolError(
+              "insufficient_permission",
+              "Could not file the issue: the GitHub App has not been granted Issues:write on the data repo yet.",
+            );
+          }
+          throw e; // runTool maps other failures to upstream_unavailable
+        }
+      }),
+  );
 
   return server;
 }

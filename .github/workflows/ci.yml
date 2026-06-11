@@ -34,3 +34,12 @@ jobs:
 
       - name: Test (build tooling)
         run: npm run test:tooling
+
+      - name: Plugin skills are current with AGENT_INSTRUCTIONS.md
+        # The committed marketplace plugin's skills/ are generated from
+        # AGENT_INSTRUCTIONS.md — guard against drift. The manifest's userConfig
+        # default (worker_url) is operator-specific, so the comparison is scoped
+        # to skills/ (the part derived from the source doc).
+        run: |
+          node scripts/build-plugin.mjs --out /tmp/plugin-check --mcp-url __ci__
+          diff -r plugin/grocery-agent/skills /tmp/plugin-check/skills

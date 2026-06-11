@@ -62,6 +62,12 @@ export interface GitHubClient {
    * retry signal.
    */
   updateRef(commitSha: string): Promise<void>;
+  /**
+   * Open an issue on the repo (repo-level — not under any path prefix). Returns the
+   * issue's html_url and number. A non-transient 403 (the App lacks `Issues: write`)
+   * surfaces as GitHubError(403) for the caller to map to `insufficient_permission`.
+   */
+  createIssue(title: string, body: string, labels?: string[]): Promise<{ url: string; number: number }>;
 }
 
 export function createGitHubClient(coords: RepoCoords, auth: TokenProvider): GitHubClient {
@@ -188,7 +194,23 @@ export function createGitHubClient(coords: RepoCoords, auth: TokenProvider): Git
     ]);
   }
 
-  return { getFile, getRef, getCommitTree, createTree, createCommit, updateRef };
+  async function createIssue(
+    title: string,
+    body: string,
+    labels: string[] = [],
+  ): Promise<{ url: string; number: number }> {
+    const data = (await requestJson("POST", `https://api.github.com/repos/${coords.owner}/${coords.repo}/issues`, {
+      title,
+      body,
+      labels,
+    })) as { html_url?: string; number?: number };
+    if (!data.html_url || typeof data.number !== "number") {
+      throw new GitHubError(502, "Malformed create-issue response");
+    }
+    return { url: data.html_url, number: data.number };
+  }
+
+  return { getFile, getRef, getCommitTree, createTree, createCommit, updateRef, createIssue };
 }
 
 /**
@@ -210,5 +232,6 @@ export function prefixedClient(gh: GitHubClient, prefix: string): GitHubClient {
       gh.createTree(baseTree, files.map((f) => ({ ...f, path: at(f.path) }))),
     createCommit: gh.createCommit,
     updateRef: gh.updateRef,
+    createIssue: gh.createIssue, // repo-level; path prefix is irrelevant
   };
 }

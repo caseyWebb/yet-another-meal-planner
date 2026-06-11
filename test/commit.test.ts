@@ -34,6 +34,9 @@ function fakeGh(opts: {
       if (outcome === "conflict") throw new GitHubError(422, "not a fast-forward");
       if (outcome === "error") throw new GitHubError(500, "server error");
     },
+    async createIssue() {
+      return { url: "https://example.test/issues/1", number: 1 };
+    },
   };
 }
 

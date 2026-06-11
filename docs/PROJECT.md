@@ -27,8 +27,8 @@ The system is **multi-tenant**: one self-hosted Worker serves a small friend gro
 ```
 ┌────────────────────────────────────────────────────────┐
 │  Each member: Phone / Web (their own Claude.ai)        │
-│    • grocery-mcp  (custom connector → /mcp, per member)│
-│    • "Grocery Agent" Project ← AGENT_INSTRUCTIONS.md   │
+│    • grocery-agent plugin: skills + grocery-mcp conn.  │
+│      installed from the marketplace — nothing pasted   │
 │  Connects once via an operator-issued INVITE CODE.     │
 └─────────────────────┬──────────────────────────────────┘
                       │ MCP over HTTPS (OAuth 2.1 bearer)
@@ -78,7 +78,7 @@ The split: Claude.ai handles messaging and reasoning. The Worker provides the do
 ```
 grocery-agent/                   ← repo root IS the Cloudflare Worker
 ├── README.md
-├── AGENT_INSTRUCTIONS.md        ← grocery-agent instructions (canonical; pasted into Claude.ai)
+├── AGENT_INSTRUCTIONS.md        ← grocery-agent instructions (canonical; built into the plugin)
 ├── CLAUDE.md                    ← Claude Code repo-development guide
 ├── src/                         ← Worker source (MCP server, OAuth provider, tools)
 ├── test/                        ← Worker unit tests (vitest)
@@ -420,9 +420,9 @@ The agent's behavior rules and orchestration guidance live in `AGENT_INSTRUCTION
 
 **Two surfaces, two files:**
 
-1. **Claude.ai (the agent).** Copy `AGENT_INSTRUCTIONS.md` contents into the "Grocery Agent" project's instructions field. Each new conversation in the project auto-applies. Manual sync — update the file in the repo, paste into the project when revising. The GitHub MCP and grocery-mcp connectors are configured at the account level.
+1. **Claude.ai (the agent).** `AGENT_INSTRUCTIONS.md` is the canonical source from which the **grocery-agent plugin** is generated (`scripts/build-plugin.mjs`). The persona ships as small **library skills** (`grocery-core`, plus `grocery-cart`/`grocery-corpus` depth); each `### ` flow becomes a workflow skill prefixed with a prerequisite line that loads `grocery-core` (and the depth it `needs`) **once per session** — so a sequential chain (`meal-plan → cook → cooked → add-recipe-feedback`) doesn't re-load the shared rules on every link, and a light flow like `grocery-sale-check` carries only core. The `grocery-mcp` connector is bundled, its URL a prompted `userConfig` value. Members install from the marketplace — nothing pasted; updates propagate via `/plugin marketplace update`. Edit `AGENT_INSTRUCTIONS.md`, rebuild, push.
 
-2. **Claude Code (development).** Run `claude` in the repo directory. Claude Code reads `CLAUDE.md` natively as repo-development context; it does **not** auto-load `AGENT_INSTRUCTIONS.md` (intentional — that's the Claude.ai paste source, not dev context). `CLAUDE.md` points to `AGENT_INSTRUCTIONS.md` for anyone who needs the agent persona.
+2. **Claude Code (development).** Run `claude` in the repo directory. Claude Code reads `CLAUDE.md` natively as repo-development context; it does **not** auto-load `AGENT_INSTRUCTIONS.md` (intentional — that's the plugin build source, not dev context). `CLAUDE.md` points to `AGENT_INSTRUCTIONS.md` for anyone who needs the agent persona.
 
 The Worker, data files, and indexes are the same regardless of surface. What differs is which instruction file each surface consumes: the agent persona on Claude.ai, the dev guide in Claude Code.
 

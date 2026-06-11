@@ -438,7 +438,9 @@ The bucket name `have_fresh` goes away too (it asserts a freshness the tool isn'
 
 ## Change 15: Guided cook mode (hands-free)
 
-**Scope:** The full **cook mode** experience deferred from Change 11 — a hands-free, voice-first walkthrough used *while cooking*. The agent paces the user through a recipe's steps, runs timers, and proactively prompts about ingredients as they come up ("add the garlic now"; "you'll need ginger next — still have enough?"). On completion it drives the cook-capture that Change 11 already built. Primarily an AGENT_INSTRUCTIONS.md / conversational-flow change plus whatever read affordances voice pacing needs.
+> **Update (2026-06-10): folded into the `package-agent-as-plugin` change, design refined.** Cook is structured as **mise en place** — equipment → gather (+ sufficiency check) → prep → cook — split into a `cook` skill (interactive) that hands off to a `cooked` skill (capture). Two corrections to the original sketch below: (1) **ingredient sufficiency is checked at the gather step, not mid-cook** — discovering a shortfall as the step calls for it is exactly the failure mise en place prevents; surface it early when you can still substitute/scale/swap. (2) **timers are user-set** — the agent has no real background timer in claude.ai chat, so it states the duration and asks the user to set their own. Equipment is **asked each time** for now; a kitchen-inventory state (Change 16) removes that friction later. Multi-dish meals get step pacing/ordering and parallel-equipment suggestions (multiple ovens / toaster ovens / pressure cookers).
+
+**Scope:** The full **cook mode** experience deferred from Change 11 — a hands-free, voice-first walkthrough used *while cooking*. The agent paces the user through a recipe's steps and, on completion, drives the cook-capture that Change 11 already built. Primarily an AGENT_INSTRUCTIONS.md / conversational-flow change plus whatever read affordances voice pacing needs. *(The update note above supersedes the original mid-cook ingredient-prompt / agent-run-timer sketch in this section.)*
 
 **Why this is its own change (decided 2026-06-10, explore session):** Change 11 ships the *minimal* cook capture ("I made X" → confirm + log + pantry decrement) and, critically, the `cooking_log.toml` / `meal_plan.toml` schema. Guided cook mode is a **pure consumer/writer of those two files** — it adds UX (step pacing, timers, proactive ingredient prompts), not new persistent state — so it lands with **zero schema migration**. Nailing the schema in Change 11 is what lets this defer cleanly. It's also a meatier, voice-mode-specific UX effort worth isolating from the data work.
 
@@ -456,7 +458,17 @@ The bucket name `have_fresh` goes away too (it asserts a freshness the tool isn'
 - Any minimal read affordances voice pacing requires; `docs/TOOLS.md` synced if the surface changes
 - Conversational test of a full hands-free cook from "I'm making X" through logged completion
 
-**Done when:** From a phone in voice mode, hands messy, the user can say "I'm making the arroz caldo," be walked through it step by step with timely ingredient prompts, and finish with the cook logged and the pantry updated — no typing.
+**Done when:** From a phone in voice mode, hands messy, the user can say "I'm making the arroz caldo," be walked through it step by step (mise en place first), and finish with the cook logged and the pantry updated — no typing.
+
+## Change 16: Kitchen equipment inventory
+
+**Scope:** A persistent per-tenant record of what's in the kitchen to cook *with* (not ingredients — equipment): pots/pans and sizes, sheet trays, the number of ovens, a toaster oven, pressure cooker / Instant Pot, blender, stand mixer, prep bowls, etc. Lets the guided `cook` skill **stop asking equipment every time** and instead reason over what's actually available — including suggesting parallelization ("you've got a toaster oven free — roast the sides there while the main's in the oven") without a round of questions.
+
+**Why deferred (decided 2026-06-10):** Change 15's `cook` skill lands first and *asks/confirms* equipment each cook as a deliberate stopgap. Equipment inventory is a clean, additive state file (parallel to `pantry.toml`) with no dependency on the cook UX — it just removes friction once the cook flow proves out. Splitting it keeps Change 15 focused on the walkthrough UX.
+
+**Likely shape:** a `kitchen.toml` (or similar) per-tenant under `users/<username>/`, agent-editable via a write tool on user direction (same posture as pantry); `cook` reads it when present and falls back to asking when absent. Onboarding could seed it.
+
+**Dependencies:** Change 15 (the `cook` skill that consumes it).
 
 ---
 

@@ -12,6 +12,7 @@ function recorder() {
     async createTree(_base, files: TreeFile[]) { treePaths = files.map((f) => f.path); return "newtree"; },
     async createCommit() { return "commitsha"; },
     async updateRef() {},
+    async createIssue() { return { url: "https://example.test/issues/1", number: 1 }; },
   };
   return { gh, reads, get treePaths() { return treePaths; } };
 }

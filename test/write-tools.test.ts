@@ -33,6 +33,9 @@ function ghWith(files: Record<string, string>): GitHubClient {
       return "x";
     },
     async updateRef() {},
+    async createIssue() {
+      return { url: "https://example.test/issues/1", number: 1 };
+    },
   };
 }
 

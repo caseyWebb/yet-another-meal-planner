@@ -19,7 +19,9 @@ export type ErrorCode =
   | "not_a_recipe" // JSON-LD was present but contained no schema.org Recipe
   | "incomplete" // a Recipe was found but yielded no ingredients or no instructions
   | "slug_exists" // create_recipe target already exists; not overwritten
-  | "already_exists"; // create_recipe source URL is already in the shared corpus; reuse the existing slug
+  | "already_exists" // create_recipe source URL is already in the shared corpus; reuse the existing slug
+  // Bug-reporting code (agent-bug-reporting capability):
+  | "insufficient_permission"; // the GitHub App lacks Issues: write; report_bug could not file
 
 export interface ToolErrorShape {
   error: ErrorCode;
