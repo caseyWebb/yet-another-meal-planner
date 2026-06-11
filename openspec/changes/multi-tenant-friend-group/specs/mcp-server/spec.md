@@ -1,8 +1,24 @@
+## ADDED Requirements
+
+### Requirement: Operator-controlled Worker deployment from the data repo
+
+The Worker SHALL be deployed by the operator from their **private data repo**, which is the single control plane holding the only deployment secret (`CLOUDFLARE_API_TOKEN`). The public code repo SHALL host a **reusable** (`workflow_call`) deploy workflow (`data-deploy.yml`) that checks out the Worker source, overlays the operator's own `wrangler.jsonc`, runs typecheck + tests, then `wrangler deploy`s; the data repo SHALL invoke it from a thin caller. The public code repo SHALL hold **no Actions secrets** — pushes there run only typecheck + both test suites (`ci.yml`), never a deploy. The Worker's own runtime secrets (GitHub App private key, Kroger credentials) SHALL be set via `wrangler secret put` directly to Cloudflare and SHALL NOT be stored in any repository or in GitHub Actions. There SHALL be no automatic deploy triggered by a push to the public code repo — a push trigger would require a data-repo-writable credential stored in a public repo; deployment is operator-triggered (e.g. `gh workflow run deploy.yml` against the data repo).
+
+#### Scenario: Deploy runs from the private data repo
+
+- **WHEN** the operator triggers the data repo's deploy workflow
+- **THEN** the reusable `data-deploy.yml` overlays the operator's `wrangler.jsonc` onto the Worker source, runs typecheck + tests, and deploys with the data repo's `CLOUDFLARE_API_TOKEN`
+
+#### Scenario: Public code repo holds no deploy secret
+
+- **WHEN** a commit is pushed to the public code repo
+- **THEN** only `ci.yml` runs (typecheck + both test suites) with no secrets, and no deploy occurs from the public repo
+
 ## MODIFIED Requirements
 
 ### Requirement: MCP server over Streamable HTTP
 
-The system SHALL host an MCP server in a Cloudflare Worker under `worker/`, exposed over the **Streamable HTTP** transport via `createMcpHandler()`, operating statelessly with **no Durable Objects** and no per-session state. The server SHALL be reachable at a `workers.dev` URL and connectable from a standard MCP client (e.g. MCP Inspector). A server instance SHALL be constructed per request for the **resolved tenant**, so tools close over that tenant's repo coordinates and Kroger context and cannot reach another tenant's data.
+The system SHALL host an MCP server in a Cloudflare Worker at the **repo root** (`src/`), exposed over the **Streamable HTTP** transport via `createMcpHandler()`, operating statelessly with **no Durable Objects** and no per-session state. The server SHALL be reachable at a `workers.dev` URL and connectable from a standard MCP client (e.g. MCP Inspector). A server instance SHALL be constructed per request for the **resolved tenant**, so tools close over that tenant's repo coordinates and Kroger context and cannot reach another tenant's data.
 
 #### Scenario: Tools listed over the MCP endpoint
 
@@ -48,3 +64,8 @@ With per-tenant identity in place, the Worker's tool surface MAY include repo-da
 
 **Reason**: With Cloudflare Access removed there is no Access policy to carve out. The Kroger `/oauth/*` callback remains secured by OAuth `state` + PKCE as before.
 **Migration**: Drop the Access bypass policy for `/oauth/*`. The callback continues to be validated by stored `state`/PKCE (now bound to the initiating tenant); the MCP surface is gated by the Worker's own OAuth provider rather than Access.
+
+### Requirement: Continuous deployment of the Worker
+
+**Reason**: Superseded by operator-controlled deployment from the private data repo (the added "Operator-controlled Worker deployment from the data repo"). The code/data split (D2a) makes the public code repo secret-free, so it can no longer hold the Cloudflare token a push-triggered `deploy-worker.yml` required; the Worker source also moved from `worker/` to the repo root, so a `worker/**` path trigger no longer applies.
+**Migration**: Replace `deploy-worker.yml` (push-CD on `worker/**`) with `ci.yml` (typecheck + both test suites, no secrets) in the code repo plus the reusable `data-deploy.yml`; each operator's data repo deploys via a thin caller holding the only `CLOUDFLARE_API_TOKEN`.
