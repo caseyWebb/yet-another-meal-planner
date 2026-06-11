@@ -18,9 +18,12 @@
 // depth)" — that loads the shared skills once. The hedge leans on the model to skip
 // a reload (Claude Code dedups; claude.ai behavior is the gating check).
 //
-// The connector URL is BAKED into .mcp.json via --mcp-url (claude.ai does not
-// honor a plugin userConfig variable, so each operator forks + rebuilds with
-// their own Worker URL).
+// The connector URL is BAKED into .mcp.json (claude.ai does not honor a plugin
+// userConfig variable, so each operator rebuilds with their own Worker URL). The
+// URL is operator-specific and is NOT hardcoded in committed tooling — it comes
+// from --mcp-url, else $GROCERY_MCP_URL (the gitignored mise.local.toml sets it
+// on the machine). `npm run build:plugin` regenerates the committed marketplace
+// bundle and REFUSES to write the placeholder there (that would break installs).
 //
 // Output mirrors the Claude plugin layout (.claude-plugin/plugin.json, skills/,
 // .mcp.json). Deterministic (document-order flows, stable JSON) so an unchanged
@@ -28,10 +31,11 @@
 // the bundle; edit AGENT_INSTRUCTIONS.md and rebuild.
 //
 // Usage:
-//   node scripts/build-plugin.mjs                         # build dist/grocery-agent-plugin/
+//   npm run build:plugin                                  # regenerate plugin/grocery-agent/ (URL from $GROCERY_MCP_URL)
+//   node scripts/build-plugin.mjs                         # throwaway build → dist/grocery-agent-plugin/ (placeholder URL ok)
 //   node scripts/build-plugin.mjs --check                 # parse + validate only, no write
 //   node scripts/build-plugin.mjs --out DIR               # write to DIR
-//   node scripts/build-plugin.mjs --mcp-url https://...   # default worker_url in the manifest
+//   node scripts/build-plugin.mjs --mcp-url https://...   # connector URL (overrides $GROCERY_MCP_URL)
 //   node scripts/build-plugin.mjs --src PATH              # source doc (default AGENT_INSTRUCTIONS.md)
 
 import { readFile, writeFile, mkdir, rm } from 'node:fs/promises';
@@ -247,7 +251,14 @@ async function main() {
   };
   const src = path.resolve(argVal('--src', path.join(REPO_ROOT, 'AGENT_INSTRUCTIONS.md')));
   const out = path.resolve(argVal('--out', path.join(REPO_ROOT, 'dist', 'grocery-agent-plugin')));
-  const mcpUrl = argVal('--mcp-url', MCP_URL_PLACEHOLDER);
+  // The connector URL is operator-specific and lives on the machine, not in
+  // committed tooling: --mcp-url wins, else $GROCERY_MCP_URL (set in the gitignored
+  // mise.local.toml), else the placeholder. See CLAUDE.md "Building the plugin".
+  const mcpUrl = argVal('--mcp-url', process.env.GROCERY_MCP_URL ?? MCP_URL_PLACEHOLDER);
+  // The committed marketplace bundle (.claude-plugin/marketplace.json → ./plugin/<name>)
+  // is what installers actually get; writing the placeholder there silently breaks
+  // every install's connector. Refuse it — the footgun guard.
+  const committedBundle = path.join(REPO_ROOT, 'plugin', PLUGIN_NAME);
 
   const md = await readFile(src, 'utf8');
   const parsed = parseInstructions(md);
@@ -265,8 +276,14 @@ async function main() {
   }
 
   if (mcpUrl === MCP_URL_PLACEHOLDER) {
+    if (path.resolve(out) === path.resolve(committedBundle)) {
+      console.error(
+        `build-plugin: REFUSING to write the placeholder connector URL into the committed marketplace bundle (${path.relative(REPO_ROOT, committedBundle)}) — that would break every install. Set GROCERY_MCP_URL (mise.local.toml) or pass --mcp-url <your-worker-url>.`,
+      );
+      process.exit(1);
+    }
     console.warn(
-      `build-plugin: WARNING — no --mcp-url given; .mcp.json uses the placeholder ${MCP_URL_PLACEHOLDER}, so the connector will NOT resolve. Rebuild with --mcp-url <your-worker-url>.`,
+      `build-plugin: WARNING — no connector URL (set GROCERY_MCP_URL or pass --mcp-url); .mcp.json uses the placeholder ${MCP_URL_PLACEHOLDER}, so the connector will NOT resolve. Fine for a throwaway/dist build.`,
     );
   }
 

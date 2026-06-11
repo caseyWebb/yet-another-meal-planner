@@ -1,2 +1,12 @@
 [tools]
 node = "22.17.1"
+
+# The plugin build reads the connector URL from $GROCERY_MCP_URL so it is never
+# hardcoded in committed tooling. Set it per-machine in a gitignored mise.local.toml:
+#
+#   [env]
+#   GROCERY_MCP_URL = "https://<your-worker-host>/mcp"
+#
+# `npm run build:plugin` uses it to regenerate plugin/grocery-agent/.mcp.json and
+# refuses to run with the placeholder. (The URL still ends up in the committed
+# bundle — the public marketplace serves it — but it is not in any source/script.)
