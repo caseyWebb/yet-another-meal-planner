@@ -28,11 +28,17 @@ A single **GitHub App** (on your account, scoped to the data repo) gives the Wor
 
 On the [`groceries-agent-data-template`](https://github.com/caseyWebb/groceries-agent-data-template) → **Use this template** → create `<you>/groceries-agent-data`, **Private**. Add your recipes under `recipes/`, reference data (`aliases.toml`, …), and your own `users/<username>/` (or let the *Onboard* Action seed it in step 7). The template's CI regenerates `_indexes/` on every recipe change.
 
-This repo is your **control plane**. It carries (from the template, or copy them from [`docs/data-repo-workflows/`](data-repo-workflows/)) these `.github/workflows/`:
+This repo is your **control plane**. From the template it carries these thin `.github/workflows/` — each a tiny caller (`uses: caseyWebb/groceries-agent/...@main`) of a *reusable* workflow in the public code repo, so the logic and the no-secrets posture live upstream while your private repo holds the config and the one Actions secret. Running them here (not in a fork of the public repo) is what keeps invite codes out of public logs.
 
-- `deploy.yml` — deploy the Worker (caller of the code repo's `data-deploy.yml`)
-- `onboard.yml` / `revoke.yml` — provision members (callers of `data-onboard.yml` / `data-revoke.yml`)
-- `build-indexes.yml` / `build-site.yml` — rebuild indexes + the optional cookbook site
+| Caller (in your data repo) | Calls (code repo) | Does |
+|---|---|---|
+| `deploy.yml` | `data-deploy.yml` | deploy the Worker (overlays your `wrangler.jsonc`) |
+| `onboard.yml` | `data-onboard.yml` | mint a member's invite code + allowlist entry |
+| `revoke.yml` | `data-revoke.yml` | remove a member's allowlist entry + invite code |
+| `build-indexes.yml` | `data-build-indexes.yml` | rebuild `_indexes/` from `recipes/` |
+| `build-site.yml` | `data-build-site.yml` | build + deploy the optional cookbook site |
+
+A live, versioned copy of these callers (and the whole data-repo layout) is vendored in this code repo as a submodule at [`docs/data-template/`](data-template/) — see `docs/data-template/.github/workflows/`. Run `git submodule update --init` to populate it after a fresh clone.
 
 ## 2. Register the GitHub App
 

@@ -34,6 +34,8 @@ The data repo is freely mutable; the Kroger cart is append-only. Capture intent 
 
 Build tooling is managed with **mise** (`mise.toml`) — Node, etc. Don't install globally.
 
+The data-repo template is vendored as a git submodule at `docs/data-template/` (reference only — build/test never touch it). After a fresh clone, run `git submodule update --init` to populate it; `git submodule update --remote && git add docs/data-template` bumps the pinned ref to the template's latest.
+
 ## Working on the Worker (`src/`)
 
 The Worker is the root package. One `package.json` carries both the Worker deps and the `scripts/` build-tooling deps; `npm test` runs the Worker (vitest), `npm run test:tooling` runs the `scripts/` tests (`node --test`).
@@ -70,7 +72,7 @@ npm test                                                   # node --test (root t
 
 - **Validation** runs in `build-indexes.mjs` (TOML parses, frontmatter well-formed, references resolve, status enum *optional* now — it's per-tenant overlay). The Worker reimplements a *structural* subset in TS for write-time validation (it can't run the Node validator on `workerd`).
 - **No git hooks** in this repo anymore (data moved out). Push/PR CI (`ci.yml`) runs `typecheck` + both test suites — no secrets, no deploy.
-- **Actions**: this public repo hosts **reusable** (`on: workflow_call`) workflows that operators' private data repos call (`uses: caseyWebb/groceries-agent/...@main`), billed to the data-repo owner: `data-deploy.yml` (deploy the Worker, overlaying the operator's `wrangler.jsonc`), `data-onboard.yml` / `data-revoke.yml` (KV-only member provisioning — namespace addressed by `tenant_kv_id` input, so no `wrangler.jsonc` needed), and `data-build-indexes.yml` / `data-build-site.yml` (rebuild indexes/site). Reference copies of the thin data-repo callers live in `docs/data-repo-workflows/`. Onboard/revoke run in the **private** data repo so the invite codes they print never hit a public log. `ci.yml` is the only push-triggered workflow here. Tests/fixtures live in `tests/`.
+- **Actions**: this public repo hosts **reusable** (`on: workflow_call`) workflows that operators' private data repos call (`uses: caseyWebb/groceries-agent/...@main`), billed to the data-repo owner: `data-deploy.yml` (deploy the Worker, overlaying the operator's `wrangler.jsonc`), `data-onboard.yml` / `data-revoke.yml` (KV-only member provisioning — namespace addressed by `tenant_kv_id` input, so no `wrangler.jsonc` needed), and `data-build-indexes.yml` / `data-build-site.yml` (rebuild indexes/site). A live, versioned reference of the thin data-repo callers (and the full data-repo layout) is vendored as a submodule at `docs/data-template/` — `git submodule update --init` to populate, `git submodule update --remote` to bump the pinned ref. Onboard/revoke run in the **private** data repo so the invite codes they print never hit a public log. `ci.yml` is the only push-triggered workflow here. Tests/fixtures live in `tests/`.
 
 ## OpenSpec change workflow
 

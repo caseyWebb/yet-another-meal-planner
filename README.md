@@ -38,7 +38,7 @@ deterministic (matching, filtering, file I/O, commits) is the Worker's.
 | `CLAUDE.md` | development guide for working in this repo |
 | `ROADMAP.md` | the sequence of OpenSpec changes building the system |
 
-The data repo is created from the [`groceries-agent-data-template`](https://github.com/caseyWebb/groceries-agent-data-template).
+The data repo is created from the [`groceries-agent-data-template`](https://github.com/caseyWebb/groceries-agent-data-template), which is also vendored here as a submodule at `docs/data-template/` for reference.
 
 ## Self-hosting
 
@@ -60,6 +60,7 @@ The Worker is the root package (one `package.json` for the Worker + `scripts/`):
 
 ```sh
 mise install         # Node 22 (pinned in mise.toml)
+git submodule update --init   # populate docs/data-template/ (reference only; --remote to bump)
 npm install
 npm run typecheck    # tsc --noEmit
 npm test             # vitest — Worker tests (test/*.test.ts)

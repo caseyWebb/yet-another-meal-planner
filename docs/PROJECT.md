@@ -85,7 +85,7 @@ grocery-agent/                   ← repo root IS the Cloudflare Worker
 ├── wrangler.jsonc               ← Worker config TEMPLATE (operators copy + customize in their data repo)
 ├── scripts/                     ← build-indexes.mjs, build-site.mjs, site-assets/
 ├── docs/                        ← PROJECT / SCHEMAS / TOOLS / SELF_HOSTING / MIGRATION
-│   └── data-repo-workflows/     ← reference copies of the data-repo caller workflows
+│   └── data-template/           ← submodule: full data-repo template (caller workflows + layout) for reference
 ├── openspec/                    ← change/spec workflow
 └── .github/workflows/
     ├── ci.yml                   ← push/PR: typecheck + both test suites. NO secrets, NO deploy.
