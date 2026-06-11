@@ -16,6 +16,24 @@ describe("validateFile", () => {
     expect(() => validateFile("recipes/x.md", "no frontmatter here")).toThrowError(/fence/);
   });
 
+  it("accepts a well-formed pairs_with array and a boolean standalone", () => {
+    expect(() =>
+      validateFile("recipes/x.md", "---\nstatus: active\npairs_with: [steamed-rice]\nstandalone: true\n---\nbody\n"),
+    ).not.toThrow();
+  });
+
+  it("rejects a non-array pairs_with", () => {
+    expect(() =>
+      validateFile("recipes/x.md", "---\nstatus: active\npairs_with: steamed-rice\n---\nbody\n"),
+    ).toThrowError(/pairs_with/);
+  });
+
+  it("rejects a non-boolean standalone", () => {
+    expect(() =>
+      validateFile("recipes/x.md", "---\nstatus: active\nstandalone: yes-please\n---\nbody\n"),
+    ).toThrowError(/standalone/);
+  });
+
   it("accepts legal pantry categories and rejects illegal ones", () => {
     expect(() =>
       validateFile("pantry.toml", '[[items]]\nname = "milk"\ncategory = "fridge"\n'),

@@ -186,6 +186,12 @@ describe("splitRecipeUpdate (content vs overlay routing)", () => {
     expect(r.content).toEqual({ title: "X" });
     expect(r.overlayEdit).toEqual({});
   });
+
+  it("routes pairs_with and standalone to shared content, not the overlay", () => {
+    const r = splitRecipeUpdate({ pairs_with: ["steamed-rice"], standalone: true });
+    expect(r.content).toEqual({ pairs_with: ["steamed-rice"], standalone: true });
+    expect(r.overlayEdit).toEqual({});
+  });
 });
 
 describe("buildOverlayUpdate", () => {

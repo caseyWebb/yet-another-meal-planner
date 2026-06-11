@@ -39,6 +39,8 @@ ingredients_key: [chicken thighs, lemon, garlic, oregano, potatoes]
 meal_preppable: true            # boolean; good freezer/batch candidate
 uses_components: []             # array of slugs; what other recipes' outputs this consumes
 produces_components: []         # array of slugs; what other recipes can build on
+pairs_with: []                  # array of recipe slugs; plate-companion sides (a PLATING edge)
+standalone: true                # optional boolean; OMIT unless the dish is an already-rounded plate
 source: https://www.seriouseats.com/lemon-garlic-roasted-chicken
 ---
 
@@ -48,7 +50,9 @@ source: https://www.seriouseats.com/lemon-garlic-roasted-chicken
 **Notes:**
 - `rating`, `status`, and `last_cooked` are **per-tenant**, not shared content (D5) — they live in `overlay.toml` (rating/status) or are derived from `cooking_log.toml` (last_cooked), and the shared `_indexes/recipes.json` carries objective fields only. A shared recipe's frontmatter SHOULD NOT carry them; the build strips them and treats `status` as optional. `update_recipe` routes a `rating`/`status` edit to the caller's overlay, never the shared file.
 - `status` lifecycle (now per-tenant): new imports default to effective `draft`. A member's feedback promotes to `active` (with rating) or rejects to `rejected` **in their own overlay** — one member's disposition never changes another's.
-- `uses_components` / `produces_components`: slugs of other recipes, optional. Used by `suggest_sequencing`.
+- `uses_components` / `produces_components`: slugs of other recipes, optional. A *production* edge (cook a component once, reuse its output across the week). Used by `suggest_sequencing`.
+- `pairs_with`: slugs of other recipes, optional (defaults to empty). A *plating* edge — recipes eaten together on one plate (a main's companion sides) — distinct from the `uses_components`/`produces_components` production edges. Each slug MUST resolve to a real recipe (a build hard-failure otherwise, like an unresolved component reference); sides are themselves recipes, so they reuse the normal verify/import/grocery-list pipeline. Objective **shared content** (carried in `_indexes/recipes.json`, written by `update_recipe`) — not a per-tenant overlay field. Grown lazily by the meal-plan flow as pairings are confirmed; the bootstrap selects sides by plate fit and does NOT traverse the component graph (bidirectional component sequencing stays with `suggest_sequencing`).
+- `standalone`: optional boolean (defaults **unset**, never backfilled). Marks an already-rounded one-pot/inclusive plate so the planner won't prompt for a side. Must be a boolean when present (a build hard-failure otherwise). When unset, the agent infers at plan time whether the dish stands alone and offers to persist its verdict. Objective **shared content**, written by `update_recipe` — not a per-tenant overlay field.
 - `protein` and `cuisine` are **controlled vocabularies** (coarse buckets — `fish` not `salmon`) so variety reasoning is reliable. A value **present** but outside its set is a hard build failure; **absence** keeps the warn-only treatment. Extending a vocabulary is a deliberate edit to the allowed sets in `scripts/build-indexes.mjs`. Current cuisine set: `american, brazilian, cajun, caribbean, chinese, cuban, filipino, french, german, greek, indian, italian, japanese, korean, mediterranean, mexican, moroccan, southwestern, spanish, thai, vietnamese`.
 - `ingredients_key`: top 5–7 ingredients for filtering. Full ingredient list lives in the body.
 

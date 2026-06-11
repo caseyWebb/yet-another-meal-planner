@@ -69,6 +69,17 @@ export function validateFile(path: string, content: string): void {
   if (path.startsWith("recipes/") && path.endsWith(".md")) {
     const fm = parseFrontmatterOrFail(path, content);
     if ("status" in fm) checkEnum(path, "status", fm.status, RECIPE_STATUSES, false);
+    // pairs_with (plating edge) is an array of recipe slugs; standalone is an
+    // optional boolean gate. Slug *resolution* is the post-push build's job (no
+    // corpus on workerd) — here we only enforce the local shape, parallel to status.
+    if (fm.pairs_with != null) {
+      if (!Array.isArray(fm.pairs_with) || fm.pairs_with.some((s) => typeof s !== "string")) {
+        fail(path, `\`pairs_with\` must be an array of recipe slugs (got ${JSON.stringify(fm.pairs_with)})`);
+      }
+    }
+    if (fm.standalone != null && typeof fm.standalone !== "boolean") {
+      fail(path, `\`standalone\` must be a boolean (got ${JSON.stringify(fm.standalone)})`);
+    }
     return;
   }
 

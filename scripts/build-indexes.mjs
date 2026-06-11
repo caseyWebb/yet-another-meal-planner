@@ -162,6 +162,18 @@ export async function buildRecipeIndexes(recipesDir) {
       }
     }
 
+    // pairs_with is a PLATING edge (recipes eaten together on one plate), distinct
+    // from the produces/uses PRODUCTION edges. Array of recipe slugs; slug
+    // resolution is checked once all recipes are collected (below). standalone is
+    // the optional already-rounded-plate gate — a boolean when present, unset by
+    // default (never backfilled), so absence is not warned.
+    if (data.pairs_with != null && !Array.isArray(data.pairs_with)) {
+      errors.push(`${rel}: pairs_with must be an array of recipe slugs (got ${JSON.stringify(data.pairs_with)})`);
+    }
+    if (data.standalone != null && typeof data.standalone !== 'boolean') {
+      errors.push(`${rel}: standalone must be a boolean (got ${JSON.stringify(data.standalone)})`);
+    }
+
     // Emit objective content only — strip the per-tenant subjective fields so the
     // shared index never carries one tenant's rating/status/last_cooked.
     const objective = { ...data };
@@ -171,6 +183,7 @@ export async function buildRecipeIndexes(recipesDir) {
       slug,
       uses_components: data.uses_components ?? [],
       produces_components: data.produces_components ?? [],
+      pairs_with: Array.isArray(data.pairs_with) ? data.pairs_with : [],
     });
   }
 
@@ -186,6 +199,15 @@ export async function buildRecipeIndexes(recipesDir) {
     edges.used_by.sort();
     if (edges.used_by.length && edges.produced_by.length === 0) {
       errors.push(`unresolved component reference "${c}": used by ${edges.used_by.join(', ')} but no recipe produces it`);
+    }
+  }
+
+  // pairs_with plating-edge resolution: every referenced slug must be a real recipe.
+  for (const [slug, r] of Object.entries(recipes)) {
+    for (const target of r.pairs_with) {
+      if (!(target in recipes)) {
+        errors.push(`recipe "${slug}": pairs_with references unknown recipe "${target}"`);
+      }
     }
   }
 

@@ -172,6 +172,61 @@ test('producing a component with no consumer is allowed', async () => {
   await rm(dir, { recursive: true, force: true });
 });
 
+// --- pairs_with (plating edge) + standalone gate ------------------------
+
+test('resolved pairs_with passes and is carried into the index as an array', async () => {
+  const dir = await tmpRecipes({
+    'curry.md': recipe('title: Curry\nstatus: active\npairs_with: [steamed-rice]'),
+    'steamed-rice.md': recipe('title: Steamed Rice\nstatus: active'),
+  });
+  const { recipes, errors } = await buildRecipeIndexes(dir);
+  assert.ok(!errors.some((e) => e.includes('pairs_with')), errors.join('\n'));
+  assert.deepEqual(recipes['curry'].pairs_with, ['steamed-rice']);
+  // A recipe with no pairs_with defaults to an empty array in the index.
+  assert.deepEqual(recipes['steamed-rice'].pairs_with, []);
+  await rm(dir, { recursive: true, force: true });
+});
+
+test('hard-fail: pairs_with references an unknown recipe', async () => {
+  const dir = await tmpRecipes({
+    'main.md': recipe('title: Main\nstatus: active\npairs_with: [ghost-side]'),
+  });
+  const { errors } = await buildRecipeIndexes(dir);
+  assert.ok(errors.some((e) => /pairs_with references unknown recipe "ghost-side"/.test(e)), errors.join('\n'));
+  await rm(dir, { recursive: true, force: true });
+});
+
+test('hard-fail: non-boolean standalone', async () => {
+  const dir = await tmpRecipes({
+    'bad.md': recipe('title: Bad\nstatus: active\nstandalone: yes-please'),
+  });
+  const { errors } = await buildRecipeIndexes(dir);
+  assert.ok(errors.some((e) => /standalone must be a boolean/.test(e)), errors.join('\n'));
+  await rm(dir, { recursive: true, force: true });
+});
+
+test('standalone: true passes and is carried into the index', async () => {
+  const dir = await tmpRecipes({
+    'chili.md': recipe('title: Chili\nstatus: active\nprotein: beef\ntime_total: 60\ningredients_key: [beef]\nstandalone: true'),
+  });
+  const { recipes, errors } = await buildRecipeIndexes(dir);
+  assert.deepEqual(errors, []);
+  assert.equal(recipes['chili'].standalone, true);
+  await rm(dir, { recursive: true, force: true });
+});
+
+test('absent pairs_with / standalone do not warn', async () => {
+  const dir = await tmpRecipes({
+    'plain.md': recipe('title: Plain\nstatus: active\nprotein: chicken\ntime_total: 30\ningredients_key: [chicken]'),
+  });
+  const { recipes, errors, warnings } = await buildRecipeIndexes(dir);
+  assert.deepEqual(errors, []);
+  assert.ok(!warnings.some((w) => /pairs_with|standalone/.test(w)), warnings.join('\n'));
+  // standalone stays unset (not coerced to false) when absent.
+  assert.equal(recipes['plain'].standalone, undefined);
+  await rm(dir, { recursive: true, force: true });
+});
+
 // --- required body sections (structural contract) -----------------------
 
 test('hasH2Section detects ATX H2 headings, ignores other levels', () => {
