@@ -436,6 +436,19 @@ export async function handleInboundEmail(message: InboundMessage, env: Env): Pro
   const fromAddress = (email.from?.address ?? message.from ?? "").toLowerCase();
 
   const gate = gateMessage({ from: fromAddress, allowlist, auth: verdicts });
+  // TEMP DIAGNOSTIC (remove after smoke test): surface the gate decision + the raw
+  // Cloudflare Authentication-Results so we can see exactly why a message is gated.
+  console.log(
+    "[email] gate " +
+      JSON.stringify({
+        from: fromAddress,
+        authRaw: message.headers.get("authentication-results"),
+        verdicts,
+        members: [...allowlist.members],
+        senders: [...allowlist.senders],
+        gate,
+      }),
+  );
   if (!gate.accepted) return { ...gate, found: 0, written: 0 };
 
   // Resolve each anchor to its clean canonical destination, then keep content links.
@@ -451,6 +464,10 @@ export async function handleInboundEmail(message: InboundMessage, env: Env): Pro
     seenLocal.add(canonical);
     resolved.push({ title: a.title, url: canonical });
   }
+  console.log(
+    "[email] extracted " +
+      JSON.stringify({ anchors: anchors.length, found: resolved.length, urls: resolved.map((r) => r.url) }),
+  );
   if (resolved.length === 0) return { ...gate, found: 0, written: 0 };
 
   const [indexRaw, inboxRaw] = await Promise.all([
@@ -471,6 +488,7 @@ export async function handleInboundEmail(message: InboundMessage, env: Env): Pro
   };
 
   const { text, written } = appendInboxEntry(inboxRaw, entry, seen);
+  console.log("[email] write " + JSON.stringify({ found: resolved.length, written }));
   if (written === 0) return { ...gate, found: resolved.length, written: 0 };
 
   await commitFiles(gh, [{ path: INBOX_PATH, content: text }], `discovery: ${written} candidate(s) from ${fromAddress}`);
