@@ -57,11 +57,11 @@
 - [x] 8.3 Update the persona's plan-vs-cook mode text and any cross-references (menu-request, retrospective) for the cook/cooked split; sync `docs/TOOLS.md` if any read affordance changes (Change 15 adds no new write tool — capture stays in `commit_changes`).
 - [x] 8.4 Update tests for 13 flows incl. `cook` + `cooked`; update the openspec `cooking-history`/roadmap notes to reflect Change 15 landing here.
 
-## 9. Connector URL via `userConfig` (R3)
+## 9. Connector URL (R3 → reverted to baked URL after live test)
 
-- [x] 9.1 `build-plugin.mjs`: `plugin.json` emits `userConfig.worker_url` (default = `--mcp-url`); `.mcp.json` url is now `${user_config.worker_url}` (operator-agnostic); drift-guard rescoped to `skills/`. Tests updated; bundle rebuilt; suite green.
-- [ ] 9.2 Verify in claude.ai that the installer prompts `userConfig` and substitutes it into the connector (gating check, like task 1). Fallback if unsupported: keep `--mcp-url` baking per operator. **(manual, Casey)**
-- [x] 9.3 Updated `docs/SELF_HOSTING.md`: install prompts for the Worker URL (override at enable time, no rebuild); operator can optionally bake their URL as the default so friends just accept it.
+- [x] 9.1 ~~`userConfig.worker_url` + `${user_config.worker_url}`~~ — built, then **reverted** (see 9.2). `build-plugin.mjs` now bakes `--mcp-url` straight into `.mcp.json`; no `userConfig` in the manifest. Tests updated (baked-url assertion); suite green.
+- [x] 9.2 **GATING CHECK FAILED (live test 2026-06-11):** claude.ai does **not** honor a plugin `userConfig` variable — `${user_config.worker_url}` reached the connector literally, with no prompt and no way to edit it. Applied the planned fallback: bake the Worker URL per operator via `--mcp-url` (fork + rebuild).
+- [x] 9.3 Docs updated (`SELF_HOSTING.md` §8, `PROJECT.md`): bake-your-URL-then-push, no prompt. **Also recorded** the second live finding: adding a marketplace in claude.ai clones the repo locally and needs GitHub access to sync, so plugin **auto-update effectively requires a GitHub account** — accountless members re-install on changes (no worse than the old paste-the-doc flow). Motivation #3 (auto-updates) holds only for GitHub-account members.
 
 ## 10. Persona prune + reference-loading (R4 — reverses R1 composition)
 

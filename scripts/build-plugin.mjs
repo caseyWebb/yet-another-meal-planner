@@ -18,9 +18,9 @@
 // depth)" — that loads the shared skills once. The hedge leans on the model to skip
 // a reload (Claude Code dedups; claude.ai behavior is the gating check).
 //
-// The connector URL is NOT baked in: .mcp.json points at ${user_config.worker_url},
-// a value the installer is prompted for at enable time (default in the manifest),
-// so one plugin serves every operator.
+// The connector URL is BAKED into .mcp.json via --mcp-url (claude.ai does not
+// honor a plugin userConfig variable, so each operator forks + rebuilds with
+// their own Worker URL).
 //
 // Output mirrors the Claude plugin layout (.claude-plugin/plugin.json, skills/,
 // .mcp.json). Deterministic (document-order flows, stable JSON) so an unchanged
@@ -195,51 +195,29 @@ export function renderWorkflowSkill(flow) {
   return `${fm}\n${loaderLine(flow.needs)}\n\n# ${flow.heading}\n\n${flow.body}\n`;
 }
 
-export function renderPluginManifest({
-  name = PLUGIN_NAME,
-  version = PLUGIN_VERSION,
-  description = PLUGIN_DESCRIPTION,
-  defaultWorkerUrl = MCP_URL_PLACEHOLDER,
-} = {}) {
+export function renderPluginManifest({ name = PLUGIN_NAME, version = PLUGIN_VERSION, description = PLUGIN_DESCRIPTION } = {}) {
   return `${JSON.stringify(
-    {
-      $schema: 'https://json.schemastore.org/claude-code-plugin-manifest.json',
-      name,
-      version,
-      description,
-      // The connector endpoint is operator-specific, so it's a config value the
-      // installer is prompted for at enable time — not baked into .mcp.json. One
-      // plugin serves everyone: friends accept the default (the operator's Worker),
-      // self-hosters override it without rebuilding. Substituted as
-      // ${user_config.worker_url} in .mcp.json.
-      userConfig: {
-        worker_url: {
-          type: 'string',
-          title: 'grocery-mcp Worker URL',
-          description:
-            'Your grocery-mcp connector endpoint (e.g. https://grocery-mcp.<you>.workers.dev/mcp). Leave the default to use the shared deployment; self-hosters enter their own.',
-          default: defaultWorkerUrl,
-        },
-      },
-    },
+    { $schema: 'https://json.schemastore.org/claude-code-plugin-manifest.json', name, version, description },
     null,
     2,
   )}\n`;
 }
 
-// Operator-agnostic: the URL is the userConfig variable the client substitutes
-// at enable time (see renderPluginManifest).
-export const WORKER_URL_VAR = '${user_config.worker_url}';
-export function renderMcpConfig() {
-  return `${JSON.stringify({ mcpServers: { 'grocery-mcp': { type: 'http', url: WORKER_URL_VAR } } }, null, 2)}\n`;
+// The connector URL is BAKED into .mcp.json. We tried a plugin `userConfig` value
+// (${user_config.worker_url}) so one bundle could serve every operator, but
+// claude.ai does NOT substitute userConfig (verified 2026-06-11) — the variable
+// reached the connector literally. So each operator bakes their own Worker URL via
+// --mcp-url and a fork/rebuild; self-hosters do the same.
+export function renderMcpConfig(mcpUrl) {
+  return `${JSON.stringify({ mcpServers: { 'grocery-mcp': { type: 'http', url: mcpUrl } } }, null, 2)}\n`;
 }
 
 // Assemble the in-memory file map (relative path → contents). Pure: no disk I/O,
 // so tests assert on the structure directly.
 export function buildPluginFiles(parsed, { mcpUrl = MCP_URL_PLACEHOLDER } = {}) {
   const files = new Map();
-  files.set('.claude-plugin/plugin.json', renderPluginManifest({ defaultWorkerUrl: mcpUrl }));
-  files.set('.mcp.json', renderMcpConfig());
+  files.set('.claude-plugin/plugin.json', renderPluginManifest());
+  files.set('.mcp.json', renderMcpConfig(mcpUrl));
   // Library skills: core + each depth tier present in the source.
   files.set(`skills/${librarySkillName('core')}/SKILL.md`, renderLibrarySkill('core', parsed.persona.core));
   for (const tier of DEPTH_TIERS) {
@@ -282,7 +260,7 @@ async function main() {
 
   if (mcpUrl === MCP_URL_PLACEHOLDER) {
     console.warn(
-      `build-plugin: WARNING — no --mcp-url given; the userConfig worker_url default is the placeholder ${MCP_URL_PLACEHOLDER}. Installers can still override it at enable time.`,
+      `build-plugin: WARNING — no --mcp-url given; .mcp.json uses the placeholder ${MCP_URL_PLACEHOLDER}, so the connector will NOT resolve. Rebuild with --mcp-url <your-worker-url>.`,
     );
   }
 

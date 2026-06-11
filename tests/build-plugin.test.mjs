@@ -169,17 +169,16 @@ test('yamlQuote escapes embedded quotes and backslashes', () => {
   assert.equal(yamlQuote('a\\b'), '"a\\\\b"');
 });
 
-test('renderMcpConfig points the connector at the userConfig variable (operator-agnostic)', () => {
-  const cfg = JSON.parse(renderMcpConfig());
+test('renderMcpConfig bakes the given worker url into the connector', () => {
+  const cfg = JSON.parse(renderMcpConfig('https://example.test/mcp'));
   assert.equal(cfg.mcpServers['grocery-mcp'].type, 'http');
-  assert.equal(cfg.mcpServers['grocery-mcp'].url, '${user_config.worker_url}');
+  assert.equal(cfg.mcpServers['grocery-mcp'].url, 'https://example.test/mcp');
 });
 
-test('renderPluginManifest declares worker_url userConfig with the given default', () => {
-  const m = JSON.parse(renderPluginManifest({ defaultWorkerUrl: 'https://example.test/mcp' }));
-  assert.equal(m.userConfig.worker_url.type, 'string');
-  assert.equal(m.userConfig.worker_url.default, 'https://example.test/mcp');
-  assert.ok(m.userConfig.worker_url.title && m.userConfig.worker_url.description);
+test('renderPluginManifest has no userConfig (claude.ai does not honor it)', () => {
+  const m = JSON.parse(renderPluginManifest());
+  assert.equal(m.name, 'grocery-agent');
+  assert.equal(m.userConfig, undefined);
 });
 
 test('buildPluginFiles emits library tiers + workflow skills + manifest + connector', () => {
