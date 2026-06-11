@@ -3,9 +3,7 @@
 ## Purpose
 
 Defines the read-side Kroger integration for the MCP server: the `client_credentials` API client (token caching, rate-limit backoff, structured upstream errors), location resolution to a `locationId`, the internal `kroger_search` product helper, and the curated read tools built on it (`kroger_prices`, `kroger_flyer`, `ready_to_eat_available`). Also defines the user-curated `flyer_terms.toml` config that drives broad serendipitous sale scans. No `authorization_code` grant, cart writes, or persistent storage — those are deferred to a later change.
-
 ## Requirements
-
 ### Requirement: Kroger client_credentials API client
 
 The system SHALL provide a Kroger API client that authenticates with the `client_credentials` OAuth grant using a client ID and secret supplied as Worker secrets. The client SHALL cache the access token in isolate memory and re-mint it on expiry rather than minting per request. On `429` responses the client SHALL honor `Retry-After` when present and otherwise apply exponential backoff with jitter. Upstream failures SHALL surface as structured errors (`upstream_unavailable`), never unhandled throws. The client SHALL NOT use the `authorization_code` grant or any persistent storage (those are deferred to a later change).
@@ -73,12 +71,17 @@ The system SHALL provide `kroger_flyer(filter)` that synthesizes a sale list by 
 
 ### Requirement: ready_to_eat_available by curbside/delivery fulfillment
 
-The system SHALL provide `ready_to_eat_available()` that cross-references the `ready_to_eat/*.toml` catalogs against current Kroger availability, where "available" means the item is fulfillable via curbside or delivery (`fulfillment.curbside || fulfillment.delivery`) at the resolved location. The system SHALL NOT claim live in-store stock, which the public API does not expose.
+The system SHALL provide `ready_to_eat_available()` that cross-references the **caller's** per-tenant `users/<username>/ready_to_eat.toml` catalog against current Kroger availability, where "available" means the item is fulfillable via curbside or delivery (`fulfillment.curbside || fulfillment.delivery`) at the resolved location. The system SHALL NOT claim live in-store stock, which the public API does not expose. When the caller has no catalog file (or an empty one), the tool SHALL return an empty availability result rather than erroring.
 
 #### Scenario: Availability partitioned by fulfillment
 
 - **WHEN** `ready_to_eat_available` runs
-- **THEN** catalog items fulfillable via curbside or delivery are returned as available and the rest as unavailable
+- **THEN** the caller's catalog items fulfillable via curbside or delivery are returned as available and the rest as unavailable
+
+#### Scenario: Empty or absent catalog returns empty
+
+- **WHEN** `ready_to_eat_available` runs for a caller whose `users/<username>/ready_to_eat.toml` is absent or empty
+- **THEN** the tool returns an empty availability result without error
 
 ### Requirement: flyer_terms.toml curated config
 
@@ -88,3 +91,4 @@ The system SHALL read broad scan terms from a user-curated `flyer_terms.toml`. T
 
 - **WHEN** `flyer_terms.toml` is absent or empty
 - **THEN** `kroger_flyer` still runs over the precise context terms and returns a (smaller) sale list rather than erroring
+

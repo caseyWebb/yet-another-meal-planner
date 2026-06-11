@@ -3,9 +3,7 @@
 ## Purpose
 
 Defines where and when validation and index regeneration run: the local validation-only pre-commit hook and the GitHub Action that regenerates indexes on push, including the CI-loop guard that prevents the regeneration commit from re-triggering the workflow.
-
 ## Requirements
-
 ### Requirement: Pre-commit validation hook
 
 The system SHALL provide a `pre-commit` hook that runs validation only and never regenerates or stages index files. A failing validation SHALL abort the commit. The hook SHALL be installed on a fresh clone via an npm `prepare` script that points `core.hooksPath` at the committed hooks directory.
@@ -27,12 +25,12 @@ The system SHALL provide a `pre-commit` hook that runs validation only and never
 
 ### Requirement: Index regeneration GitHub Action
 
-The system SHALL provide `.github/workflows/build-indexes.yml` that triggers on push to `recipes/**` and `ready_to_eat/**`, runs validation, regenerates the indexes, and commits the regenerated `_indexes/*.json` back to the branch. The workflow SHALL request `contents: write` permission.
+The system SHALL provide `.github/workflows/build-indexes.yml` that triggers on push to `recipes/**`, runs validation, regenerates the indexes (`_indexes/recipes.json` and `_indexes/components.json`), and commits them back to the branch. The workflow SHALL request `contents: write` permission. It SHALL NOT trigger on ready-to-eat changes or regenerate a ready-to-eat index — ready-to-eat is per-tenant state read directly from `users/<username>/ready_to_eat.toml`, not an indexed shared catalog.
 
 #### Scenario: Push regenerates and commits indexes
 
 - **WHEN** a push modifies a file under `recipes/**`
-- **THEN** the Action validates the corpus, regenerates the three index files, and commits any changes back to the branch
+- **THEN** the Action validates the corpus, regenerates the recipe and components index files, and commits any changes back to the branch
 
 #### Scenario: Validation failure fails the Action
 
@@ -52,3 +50,4 @@ The Action's regeneration commit SHALL include `[skip ci]` in its message so tha
 
 - **WHEN** the Action regenerates indexes and the output is byte-identical to what is already committed
 - **THEN** no commit is created
+

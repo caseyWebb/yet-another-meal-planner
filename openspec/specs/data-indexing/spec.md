@@ -11,7 +11,7 @@ The system SHALL provide `scripts/build-indexes.mjs`, runnable via an npm script
 #### Scenario: Run against the default corpus
 
 - **WHEN** the build script is run with no input-directory override
-- **THEN** it reads from `recipes/` and `ready_to_eat/` and writes `_indexes/recipes.json`, `_indexes/components.json`, and `_indexes/ready_to_eat.json`
+- **THEN** it reads from `recipes/` and writes `_indexes/recipes.json` and `_indexes/components.json`
 
 #### Scenario: Run against a fixtures directory
 
@@ -45,15 +45,6 @@ The system SHALL emit `_indexes/components.json` as a JSON object keyed by compo
 
 - **WHEN** recipe `salmon-with-rice` declares `produces_components: [cooked-rice]` and recipe `kimchi-fried-rice` declares `uses_components: [cooked-rice]`
 - **THEN** `components.json` contains `"cooked-rice": { "produced_by": ["salmon-with-rice"], "used_by": ["kimchi-fried-rice"] }`
-
-### Requirement: Ready-to-eat index shape
-
-The system SHALL emit `_indexes/ready_to_eat.json` as a JSON object keyed by meal (`breakfast`, `lunch`, `dinner`), each carrying the meal's `items` array and its `variety_rules`. All item statuses SHALL be preserved.
-
-#### Scenario: Catalogs aggregated by meal
-
-- **WHEN** `ready_to_eat/dinner.toml` defines items and `variety_rules`
-- **THEN** `ready_to_eat.json` contains a `"dinner"` key with both the `items` array and the `variety_rules` object
 
 ### Requirement: Deterministic output
 
