@@ -44,4 +44,4 @@
 - [x] 6.1 `npm run typecheck`, `npm test` (Worker/vitest), and `npm run test:tooling` (build scripts) all green.
 - [x] 6.2 `node scripts/build-plugin.mjs --check` passes; `openspec validate improve-onboarding` passes.
 - [x] 6.3 Operator: grant the GitHub App the **`Pages: read`** permission (so `recipe_site_url` resolves the private data repo's Pages site).
-- [ ] 6.4 After merge to `main`: push the Worker changes, trigger the data-repo `deploy.yml`, and let the marketplace pull-update carry the regenerated onboarding skill.
+- [x] 6.4 After merge to `main`: push the Worker changes, trigger the data-repo `deploy.yml`, and let the marketplace pull-update carry the regenerated onboarding skill.
