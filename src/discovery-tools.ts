@@ -17,7 +17,7 @@ import { parseToml } from "./parse.js";
 import { ToolError, runTool } from "./errors.js";
 import { commitFiles } from "./commit.js";
 import { fetchWithBrowserHeaders } from "./http.js";
-import { parseFeed } from "./feeds.js";
+import { parseFeed, addFeeds, FEEDS_PATH } from "./feeds.js";
 import { extractJsonLd, findRecipe, normalizeRecipe } from "./jsonld.js";
 import {
   buildCandidates,
@@ -208,6 +208,36 @@ export function registerDiscoveryTools(server: McpServer, sharedGh: GitHubClient
           sharedGh,
           [{ path: SOURCES_PATH, content: text }],
           `discovery: add ${added.members} member(s), ${added.senders} sender(s)`,
+        );
+        return { added, commit_sha };
+      }),
+  );
+
+  server.registerTool(
+    "update_feeds",
+    {
+      description:
+        "Add RSS/Atom discovery feeds to the SHARED feeds.toml at the data-repo root (the pool fetch_rss_discoveries reads). Add-only, deduped by canonicalized url — existing feeds untouched. Each feed needs a url; name, weight (default 1), and tags are optional. Discovery feeds are a shared, group-wide concern, so anyone trusted with this MCP may widen the set (like update_discovery_sources). Returns { added, commit_sha }; makes no commit when no new feed is added.",
+      inputSchema: {
+        feeds: z.array(
+          z.object({
+            url: z.string(),
+            name: z.string().optional(),
+            weight: z.number().optional(),
+            tags: z.array(z.string()).optional(),
+          }),
+        ),
+      },
+    },
+    ({ feeds }) =>
+      runTool(async () => {
+        const existing = await readOptional(sharedGh, FEEDS_PATH);
+        const { text, added } = addFeeds(existing, feeds);
+        if (added === 0) return { added, commit_sha: null };
+        const { commit_sha } = await commitFiles(
+          sharedGh,
+          [{ path: FEEDS_PATH, content: text }],
+          `discovery: add ${added} feed(s)`,
         );
         return { added, commit_sha };
       }),

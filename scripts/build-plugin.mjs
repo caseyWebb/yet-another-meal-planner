@@ -61,6 +61,10 @@ export const librarySkillName = (tier) => `grocery-${tier}`;
 const LIBRARY_DESCRIPTION =
   'Internal shared rules for the grocery agent, loaded by reference from the workflow skills (via their prerequisite line). Not invoked on its own.';
 const MCP_URL_PLACEHOLDER = 'https://grocery-mcp.example.workers.dev';
+// The hosted recipe-site (browse) URL is NOT baked here — the Worker resolves it at
+// runtime from the data repo's GitHub Pages config (the `recipe_site_url` tool),
+// which honors a custom domain and detects whether Pages is enabled. The onboarding
+// flow calls that tool instead of carrying a build-time URL.
 const COMMON_FLOWS_HEADING = 'common flows';
 
 // --- pure helpers --------------------------------------------------------

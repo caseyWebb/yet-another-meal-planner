@@ -343,6 +343,29 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
   );
 
   server.registerTool(
+    "recipe_site_url",
+    {
+      description:
+        "Resolve the URL of the hosted recipe site (the static browse view of the shared corpus), via the data repo's GitHub Pages config. Returns { url, enabled }: enabled:true with the published url (honoring a custom domain) when Pages is on, or enabled:false (url:null) when it isn't — in which case tell the user their operator/admin needs to enable GitHub Pages on the data repo. Use it during onboarding to point a new member at the full collection.",
+      inputSchema: {},
+    },
+    () =>
+      runTool(async () => {
+        try {
+          return await sharedGh.getPagesUrl();
+        } catch (e) {
+          if (e instanceof GitHubError && e.status === 403) {
+            throw new ToolError(
+              "insufficient_permission",
+              "the GitHub App lacks the 'Pages: read' permission needed to resolve the recipe-site URL — ask the operator to grant it",
+            );
+          }
+          throw e;
+        }
+      }),
+  );
+
+  server.registerTool(
     "read_recipe",
     {
       description: "Read a single recipe's parsed frontmatter and markdown body by slug.",
@@ -717,10 +740,11 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
   // The corresponding writes ride commit_changes (cooking_log_entries / meal_plan_ops).
   registerCookingTools(server, gh, sharedGh);
 
-  // Discovery: RSS recipe candidates, parse-only URL import, draft create. Recipes
-  // are SHARED content (root client); only feeds.toml is this tenant's personal
-  // config (prefixed client). Imports dedupe by source URL against the shared
-  // corpus so a recipe is reused, not duplicated (§6.4).
+  // Discovery: RSS recipe candidates, parse-only URL import, draft create, plus the
+  // feeds/sources config writers. Everything here is SHARED (root client) — recipes,
+  // feeds.toml, the discoveries inbox, and discovery_sources.toml all live at the
+  // data-repo root, so any member's config feeds one group pool. Imports dedupe by
+  // source URL against the shared corpus so a recipe is reused, not duplicated (§6.4).
   registerDiscoveryTools(server, sharedGh);
 
   // Recipe notes (§8): attributed annotations authored in this tenant's subtree,

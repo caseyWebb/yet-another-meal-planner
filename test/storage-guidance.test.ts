@@ -24,6 +24,7 @@ function fakeGh(opts: { dir?: DirEntry[] | "404"; files?: Record<string, string>
     createCommit: notUsed,
     updateRef: notUsed,
     createIssue: notUsed,
+    getPagesUrl: notUsed,
   };
 }
 

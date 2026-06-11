@@ -44,6 +44,15 @@ Read a single recipe's full content (frontmatter + body).
 **Returns:**
 - `{ slug, frontmatter, body }` — `frontmatter` includes the objective shared fields, among them `perishable_ingredients` (a normalized list of the recipe's perishable ingredients; empty when absent). The same field rides each entry's `frontmatter` from the index-backed `list_recipes`, so the menu-gen waste callout reasons over it without any extra tool.
 
+### `recipe_site_url()`
+
+Resolve the URL of the hosted recipe site (the static browse view of the shared corpus) from the data repo's **GitHub Pages** config, via the GitHub App token. No parameters; reads the shared repo; never writes. Used in onboarding to point a member at the full corpus.
+
+**Returns:**
+- `{ url, enabled }` — `enabled: true` with the published `html_url` (honoring a custom domain) when Pages is on; `{ url: null, enabled: false }` when it isn't (the agent should tell the user their operator needs to enable GitHub Pages).
+
+**Notes:** Returns a structured `insufficient_permission` error when the GitHub App lacks the **`Pages: read`** permission (a one-time operator grant; see `docs/SELF_HOSTING.md`).
+
 ### `update_recipe(slug, updates)`
 
 Update recipe frontmatter fields. Use for `last_cooked`, `rating`, `status` transitions, and any other frontmatter edits the user has directed.
@@ -231,6 +240,19 @@ Reset `last_verified_at` on confirmed items.
 
 **Returns:**
 - `{ verified: [...], conflicts: [...] }` — conflicts name items not found in the pantry
+
+### `update_stockup(items?, freezer_capacity_estimate?)`
+
+Add items to the caller's bulk-buy watchlist. Writes `users/<username>/stockup.toml`. **Add-only**, deduped by normalized item `name` (re-adding a name is a no-op; existing rows untouched), mirroring `update_discovery_sources`.
+
+**Params:**
+- `items` (array, optional): `[{ name, unit?, typical_purchase?, notes?, baseline_price?, buy_at_or_below? }]`. Only `name` is required. The price fields are **advisory** — nothing in the Worker gates on them (`kroger_flyer` scans stockup item *names* only; "is this a good price?" is the agent's judgment over the live flyer), so omit them when unknown.
+- `freezer_capacity_estimate` (string, optional): `tight | moderate | spacious` — the top-level capacity hint.
+
+**Returns:**
+- `{ added, commit_sha }` — `added` is the count of new items; `commit_sha` is null when nothing changed (no new item and no freezer-estimate change).
+
+**Notes:** The top-level `freezer_capacity_estimate` is serialized before the `[[items]]` tables (TOML ordering). Seeded at onboarding (see the configure-grocery-profile flow); also usable any time the user names a bulk-buy item.
 
 ---
 
@@ -510,7 +532,17 @@ Add trusted sources to the **shared** inbound-newsletter allowlist (root `discov
 **Returns:**
 - `{ added: { members, senders }, commit_sha }` — counts actually added (0 when already present); `commit_sha` is null when nothing changed.
 
-**Notes:** Pairs with the inbound-email handler's auth gate — a listed `sender`/`member` is accepted only when the message also passes aligned DKIM (see `docs/SCHEMAS.md` → `discovery_sources.toml`). The `/follow-source` skill (RSS-autodiscovery-then-forwarder-fallback) and `update_feeds` are a follow-on; for now feeds are edited directly.
+**Notes:** Pairs with the inbound-email handler's auth gate — a listed `sender`/`member` is accepted only when the message also passes aligned DKIM (see `docs/SCHEMAS.md` → `discovery_sources.toml`).
+
+### `update_feeds(feeds)`
+
+Add RSS/Atom feeds to the **shared** discovery config (root `feeds.toml`, the pool `fetch_rss_discoveries` reads). **Add-only**, deduped by canonicalized `url` (existing feeds untouched) — the same posture as `update_discovery_sources`. Discovery feeds are a shared, group-wide concern, so anyone trusted with this MCP may widen the set.
+
+**Params:**
+- `feeds` (array): `[{ url, name?, weight?, tags? }]`. `url` is required; `weight` defaults to `1`. (`fetch_rss_discoveries` reads `url`/`name`/`weight`; `tags` are descriptive.)
+
+**Returns:**
+- `{ added, commit_sha }` — `added` is the count of new feeds; `commit_sha` is null when every `url` was already present.
 
 ### `add_draft_ready_to_eat(items)`
 

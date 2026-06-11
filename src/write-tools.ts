@@ -34,6 +34,7 @@ import {
 } from "./cooking-log.js";
 import { MEAL_PLAN_PATH, plannedOf, applyMealPlanOps, type MealPlanOp } from "./meal-plan.js";
 import { slugify } from "./discovery.js";
+import { addStockup, STOCKUP_PATH } from "./stockup.js";
 
 const SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const MEALS = ["breakfast", "lunch", "dinner"] as const;
@@ -357,6 +358,38 @@ export function registerWriteTools(server: McpServer, gh: GitHubClient, userPref
         if (!file) return { applied, conflicts };
         const { commit_sha } = await commitFiles(gh, [file], "update pantry");
         return { applied, conflicts, commit_sha };
+      }),
+  );
+
+  server.registerTool(
+    "update_stockup",
+    {
+      description:
+        "Add bulk-buy items to the caller's stockup watchlist (users/<id>/stockup.toml). Add-only, deduped by normalized name — re-adding a name is a no-op. Each item needs a name; unit / typical_purchase / notes / baseline_price / buy_at_or_below are optional. Price thresholds are ADVISORY (nothing gates on them — the agent reasons over the live flyer price), so omit them when unknown. Optionally set freezer_capacity_estimate (tight|moderate|spacious). Returns { added, commit_sha }; makes no commit when nothing changed.",
+      inputSchema: {
+        items: z
+          .array(
+            z.object({
+              name: z.string(),
+              unit: z.string().optional(),
+              typical_purchase: z.string().optional(),
+              notes: z.string().optional(),
+              baseline_price: z.number().optional(),
+              buy_at_or_below: z.number().optional(),
+            }),
+          )
+          .optional(),
+        freezer_capacity_estimate: z.enum(["tight", "moderate", "spacious"]).optional(),
+      },
+    },
+    ({ items, freezer_capacity_estimate }) =>
+      runTool(async () => {
+        const path = userPath(STOCKUP_PATH);
+        const existing = await readOptional(gh, path);
+        const { text, added, changed } = addStockup(existing, { items, freezer_capacity_estimate });
+        if (!changed) return { added, commit_sha: null };
+        const { commit_sha } = await commitFiles(gh, [{ path, content: text }], `update stockup (+${added})`);
+        return { added, commit_sha };
       }),
   );
 

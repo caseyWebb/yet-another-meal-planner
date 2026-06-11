@@ -90,11 +90,19 @@ export interface GitHubClient {
    * surfaces as GitHubError(403) for the caller to map to `insufficient_permission`.
    */
   createIssue(title: string, body: string, labels?: string[]): Promise<{ url: string; number: number }>;
+  /**
+   * Resolve the repo's GitHub Pages site URL via `GET /repos/{owner}/{repo}/pages`.
+   * Returns `{ url, enabled: true }` with the published `html_url` (honoring a custom
+   * domain), or `{ url: null, enabled: false }` when Pages is not enabled (404). A
+   * non-transient 403 (the App lacks `Pages: read`) surfaces as GitHubError(403).
+   */
+  getPagesUrl(): Promise<{ url: string | null; enabled: boolean }>;
 }
 
 export function createGitHubClient(coords: RepoCoords, auth: TokenProvider): GitHubClient {
-  const contentsBase = `https://api.github.com/repos/${coords.owner}/${coords.repo}/contents`;
-  const gitBase = `https://api.github.com/repos/${coords.owner}/${coords.repo}/git`;
+  const repoBase = `https://api.github.com/repos/${coords.owner}/${coords.repo}`;
+  const contentsBase = `${repoBase}/contents`;
+  const gitBase = `${repoBase}/git`;
   const branch = coords.ref;
 
   async function authHeaders(extra: Record<string, string> = {}): Promise<Record<string, string>> {
@@ -241,7 +249,7 @@ export function createGitHubClient(coords: RepoCoords, auth: TokenProvider): Git
     body: string,
     labels: string[] = [],
   ): Promise<{ url: string; number: number }> {
-    const data = (await requestJson("POST", `https://api.github.com/repos/${coords.owner}/${coords.repo}/issues`, {
+    const data = (await requestJson("POST", `${repoBase}/issues`, {
       title,
       body,
       labels,
@@ -252,7 +260,20 @@ export function createGitHubClient(coords: RepoCoords, auth: TokenProvider): Git
     return { url: data.html_url, number: data.number };
   }
 
-  return { getFile, listDir, getRef, getCommitTree, createTree, createCommit, updateRef, createIssue };
+  async function getPagesUrl(): Promise<{ url: string | null; enabled: boolean }> {
+    let data: unknown;
+    try {
+      // 404 = Pages not enabled (handled below); a 403 (no `Pages: read`) is rethrown.
+      data = await requestJson("GET", `${repoBase}/pages`, null, [404]);
+    } catch (e) {
+      if (e instanceof GitHubError && e.status === 404) return { url: null, enabled: false };
+      throw e;
+    }
+    const html = (data as { html_url?: unknown })?.html_url;
+    return typeof html === "string" && html ? { url: html, enabled: true } : { url: null, enabled: false };
+  }
+
+  return { getFile, listDir, getRef, getCommitTree, createTree, createCommit, updateRef, createIssue, getPagesUrl };
 }
 
 /**
@@ -276,5 +297,6 @@ export function prefixedClient(gh: GitHubClient, prefix: string): GitHubClient {
     createCommit: gh.createCommit,
     updateRef: gh.updateRef,
     createIssue: gh.createIssue, // repo-level; path prefix is irrelevant
+    getPagesUrl: gh.getPagesUrl, // repo-level; path prefix is irrelevant
   };
 }

@@ -16,6 +16,7 @@ function recorder() {
     async createCommit() { return "commitsha"; },
     async updateRef() {},
     async createIssue() { return { url: "https://example.test/issues/1", number: 1 }; },
+    async getPagesUrl() { return { url: null, enabled: false }; },
   };
   return { gh, reads, get treePaths() { return treePaths; } };
 }
@@ -99,5 +100,45 @@ describe("listDir", () => {
     );
     const gh = createGitHubClient(coords, auth);
     await expect(gh.listDir("nope")).rejects.toMatchObject({ status: 404 });
+  });
+});
+
+describe("getPagesUrl", () => {
+  const auth = { token: async () => "tok" };
+  const coords = { owner: "o", repo: "r", ref: "main" };
+
+  it("returns the published html_url when Pages is enabled", async () => {
+    let captured = "";
+    vi.stubGlobal("fetch", (async (url: string) => {
+      captured = url;
+      return new Response(JSON.stringify({ html_url: "https://recipes.example.org", status: "built" }), {
+        status: 200,
+      });
+    }) as unknown as typeof fetch);
+    const gh = createGitHubClient(coords, auth);
+    expect(await gh.getPagesUrl()).toEqual({ url: "https://recipes.example.org", enabled: true });
+    expect(captured).toBe("https://api.github.com/repos/o/r/pages");
+  });
+
+  it("reports not enabled when Pages returns 404", async () => {
+    vi.stubGlobal(
+      "fetch",
+      (async () => new Response("Not Found", { status: 404 })) as unknown as typeof fetch,
+    );
+    const gh = createGitHubClient(coords, auth);
+    expect(await gh.getPagesUrl()).toEqual({ url: null, enabled: false });
+  });
+
+  it("surfaces a 403 (App lacks Pages: read) as GitHubError", async () => {
+    vi.stubGlobal(
+      "fetch",
+      (async () =>
+        new Response("Forbidden", {
+          status: 403,
+          headers: { "x-ratelimit-remaining": "100" },
+        })) as unknown as typeof fetch,
+    );
+    const gh = createGitHubClient(coords, auth);
+    await expect(gh.getPagesUrl()).rejects.toMatchObject({ status: 403 });
   });
 });

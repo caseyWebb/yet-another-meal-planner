@@ -47,6 +47,7 @@ GitHub → **Settings → Developer settings → GitHub Apps → New GitHub App*
 - **Homepage URL**: anything. **Webhook**: uncheck **Active**. **"Request user authorization (OAuth)"**: leave off (identity is not GitHub login).
 - **Repository permissions → Contents: Read and write** — covers both the Contents API and the Git Data API the commit engine uses.
 - **Repository permissions → Issues: Read and write** — lets the agent file bug reports on your behalf (`report_bug`), as `agent-reported`-labeled issues in your data repo, for members who have no GitHub account. Without it, `report_bug` returns `insufficient_permission` and the agent simply tells the user it couldn't file. (If you add this to an existing App, GitHub will ask you to **approve the new permission** on the installation.)
+- **Repository permissions → Pages: Read** — lets `recipe_site_url` resolve your hosted recipe-site URL (the static browse view) from the repo's GitHub Pages config, so onboarding can point members at the full corpus. Without it, `recipe_site_url` returns `insufficient_permission`; if Pages simply isn't enabled, it returns `{ enabled: false }` and the agent tells the member to ask you to turn it on. (Adding it to an existing App requires **approving the new permission** on the installation.)
 - Everything else: No access.
 - **Where can this be installed?**: Only on this account.
 

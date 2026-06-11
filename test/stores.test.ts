@@ -55,6 +55,7 @@ function fakeGh(opts: { dir?: DirEntry[] | "404"; files?: Record<string, string>
     createCommit: notUsed,
     updateRef: notUsed,
     createIssue: notUsed,
+    getPagesUrl: notUsed,
   };
 }
 
@@ -87,6 +88,9 @@ function commitGh(files: Record<string, string>): GitHubClient {
     async updateRef() {},
     async createIssue() {
       return { url: "x", number: 1 };
+    },
+    async getPagesUrl() {
+      return { url: null, enabled: false };
     },
   };
 }

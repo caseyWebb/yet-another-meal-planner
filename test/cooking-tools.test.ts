@@ -28,6 +28,9 @@ function ghWith(files: Record<string, string>): GitHubClient {
     async createIssue() {
       return { url: "https://example.test/issues/1", number: 1 };
     },
+    async getPagesUrl() {
+      return { url: null, enabled: false };
+    },
   };
 }
 

@@ -376,7 +376,7 @@ terms = [
 
 ## feeds.toml
 
-**Shared** (data-repo root), user-curated. RSS feed URLs and tags. Discovery sources are a group-wide concern: any member's feeds contribute to one shared candidate pool (`fetch_rss_discoveries`), judged against the caller's taste at read time.
+**Shared** (data-repo root). RSS feed URLs and tags — **agent-writable via `update_feeds`** (add-only, deduped by canonicalized url) as well as hand-curated. Discovery sources are a group-wide concern: any member's feeds contribute to one shared candidate pool (`fetch_rss_discoveries`), judged against the caller's taste at read time. `fetch_rss_discoveries` reads `url`/`name`/`weight`; `tags` are descriptive (a TOML string array — quote each value).
 
 ```toml
 # feeds.toml — shared RSS feeds for recipe discovery
@@ -384,19 +384,19 @@ terms = [
 [[feeds]]
 url = "https://www.seriouseats.com/recipes/atom.xml"
 name = "Serious Eats"
-tags = [trusted, technique-focused]
+tags = ["trusted", "technique-focused"]
 weight = 1.0
 
 [[feeds]]
 url = "https://www.budgetbytes.com/feed/"
 name = "Budget Bytes"
-tags = [weeknight, approachable]
+tags = ["weeknight", "approachable"]
 weight = 0.8
 
 [[feeds]]
 url = "https://www.bonappetit.com/feed/rss"
 name = "Bon Appétit"
-tags = [aspirational, trend-aware]
+tags = ["aspirational", "trend-aware"]
 weight = 0.7
 ```
 
@@ -577,7 +577,7 @@ Addressed by `slug`: `update_ready_to_eat(slug, …)` dispositions or rates an i
 
 ## stockup.toml
 
-Bulk-buy watchlist with baseline prices.
+**Per-tenant** (`users/<username>/stockup.toml`). Bulk-buy watchlist. **Agent-writable via `update_stockup`** (add-only, deduped by normalized item `name`) as well as hand-edited; seeded at onboarding.
 
 ```toml
 # stockup.toml — bulk-buy watchlist
@@ -587,19 +587,21 @@ freezer_capacity_estimate = "moderate"   # tight | moderate | spacious
 [[items]]
 name = "chicken thighs"
 unit = "lb"
-baseline_price = 3.99
-buy_at_or_below = 2.99
+baseline_price = 3.99             # ADVISORY — see note; not a gate
+buy_at_or_below = 2.99            # ADVISORY — see note; not a gate
 typical_purchase = "5 lb"
 notes = "Bone-in skin-on preferred"
 
 [[items]]
 name = "salmon"
 unit = "lb"
-baseline_price = 12.99
-buy_at_or_below = 9.99
 typical_purchase = "2 lb"
-notes = "Wild only"
+notes = "Wild only"               # price thresholds omitted — they're optional
 ```
+
+**Notes:**
+- `name` is the only required item field. `freezer_capacity_estimate` is a top-level scalar (serialized before the `[[items]]` tables) and must precede them in TOML.
+- **`baseline_price` / `buy_at_or_below` are advisory, not gates.** No Worker logic keys on them: `kroger_flyer(against_stockup)` scans stockup item *names* only, and "is this a good price?" is the agent reasoning over the live flyer price (and any learned baseline). They are optional — onboarding does not prompt for them, since members rarely know exact numbers.
 
 ## skus/kroger.toml (shared corpus)
 

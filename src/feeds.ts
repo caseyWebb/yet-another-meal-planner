@@ -7,6 +7,9 @@
 
 import { XMLParser } from "fast-xml-parser";
 import { cleanText } from "./text.js";
+import { parseToml } from "./parse.js";
+import { stringifyTomlWithHeader } from "./serialize.js";
+import { canonicalizeUrl } from "./discovery.js";
 
 export interface FeedItem {
   title: string;
@@ -94,4 +97,62 @@ export function parseFeed(xml: string): FeedItem[] {
     });
   }
   return items;
+}
+
+// --- Feed config writes (feeds.toml) ----------------------------------------
+// Pure, add-only merge for the SHARED feeds.toml, mirroring email.ts addSources.
+// The `update_feeds` tool wraps this; keeping it pure makes it unit-testable.
+
+export const FEEDS_PATH = "feeds.toml";
+
+const FEEDS_HEADER =
+  "# feeds.toml — shared RSS/Atom feeds for recipe discovery (agent-writable via update_feeds).\n" +
+  "# Add-only, deduped by canonicalized url. Shared at the data-repo root.";
+
+export interface FeedConfig {
+  url: string;
+  name?: string;
+  weight?: number;
+  tags?: string[];
+}
+
+/**
+ * Add discovery feeds to `feeds.toml`, deduping by canonicalized `url` (existing
+ * rows untouched). Returns the new file text and the count actually added.
+ */
+export function addFeeds(
+  existingRaw: string | null,
+  feeds: FeedConfig[] | undefined,
+): { text: string; added: number } {
+  let parsed: Record<string, unknown> = {};
+  if (existingRaw) {
+    try {
+      parsed = parseToml(existingRaw, FEEDS_PATH);
+    } catch {
+      parsed = {};
+    }
+  }
+
+  const rows = Array.isArray(parsed.feeds) ? [...(parsed.feeds as Record<string, unknown>[])] : [];
+  const have = new Set(
+    rows
+      .map((r) => (typeof r.url === "string" ? canonicalizeUrl(r.url) : null))
+      .filter((u): u is string => u !== null),
+  );
+  let added = 0;
+  for (const feed of feeds ?? []) {
+    if (typeof feed.url !== "string" || !feed.url.trim()) continue;
+    const key = canonicalizeUrl(feed.url);
+    if (have.has(key)) continue;
+    have.add(key);
+    const row: Record<string, unknown> = { url: feed.url };
+    if (feed.name !== undefined) row.name = feed.name;
+    row.weight = feed.weight ?? 1;
+    if (feed.tags !== undefined) row.tags = feed.tags;
+    rows.push(row);
+    added++;
+  }
+
+  const text = stringifyTomlWithHeader(existingRaw ?? FEEDS_HEADER, { ...parsed, feeds: rows });
+  return { text, added };
 }
