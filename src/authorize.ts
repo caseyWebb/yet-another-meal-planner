@@ -9,7 +9,7 @@
 
 import type { AuthRequest } from "@cloudflare/workers-oauth-provider";
 import type { Env } from "./env.js";
-import { resolveInvite } from "./tenant.js";
+import { resolveInvite, normalizeTenantId } from "./tenant.js";
 
 const ESC: Record<string, string> = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
 function esc(s: string): string {
@@ -63,7 +63,9 @@ export async function handleAuthorize(request: Request, env: Env): Promise<Respo
       return page("<p class=\"err\">Malformed authorization request. Restart the connection.</p>", 400);
     }
 
-    const tenantId = await resolveInvite(env.TENANT_KV, code);
+    // resolveInvite returns the canonical (lowercase) username; normalize again so
+    // the grant prop baked into every future request is case-stable at this source.
+    const tenantId = normalizeTenantId((await resolveInvite(env.TENANT_KV, code)) ?? "");
     if (!tenantId) {
       return renderForm(b64, "An MCP client", "That invite code isn't valid. Check it and try again.");
     }

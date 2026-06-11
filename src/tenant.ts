@@ -63,26 +63,44 @@ export interface TenantStore {
 const DIRECTORY_PREFIX = "tenant:";
 const INVITE_PREFIX = "invite:";
 
+/**
+ * Canonical tenant-id form. Usernames are case-insensitive: a member onboarded as
+ * "Casey", connecting as "Casey"/"CASEY", and their data subtree `users/casey/`
+ * are all one identity. We pick lowercase as that form and apply it at EVERY
+ * boundary that derives a key or path from the id — the directory key
+ * (`tenant:<id>`), the invite mapping target, the grant prop, the Kroger
+ * refresh-token key, and the `users/<id>/` path prefix — so a casing mismatch
+ * can't silently split one member's state across two subtrees. Mint writes the
+ * lowercase form too (data-onboard.yml), so the KV directory key and the path
+ * prefix always agree.
+ */
+export function normalizeTenantId(tenantId: string): string {
+  return tenantId.trim().toLowerCase();
+}
+
 /** The single data-repo coordinates, identical for every tenant, from `env`. */
 export function dataCoords(env: Env): RepoCoords {
   return { owner: env.DATA_OWNER, repo: env.DATA_REPO, ref: env.DATA_REF };
 }
 
-/** This tenant's personal-file path prefix within the data repo. */
+/** This tenant's personal-file path prefix within the data repo (always lowercase). */
 export function userPrefix(tenantId: string): string {
-  return `users/${tenantId}`;
+  return `users/${normalizeTenantId(tenantId)}`;
 }
 
 /** A KV-backed tenant directory. Records are JSON under `tenant:<id>`. */
 export function kvTenantStore(kv: KVNamespace): TenantStore {
   return {
     async get(tenantId: string): Promise<TenantRecord | null> {
-      const raw = await kv.get(`${DIRECTORY_PREFIX}${tenantId}`);
+      // Look up under the normalized key so any casing resolves to the one entry.
+      const id = normalizeTenantId(tenantId);
+      const raw = await kv.get(`${DIRECTORY_PREFIX}${id}`);
       if (!raw) return null;
       try {
         const parsed = JSON.parse(raw) as TenantRecord;
         if (!parsed?.id) return null;
-        return parsed;
+        // Canonicalize the id so the prefix/Kroger key never inherit stored casing.
+        return { ...parsed, id: normalizeTenantId(parsed.id) };
       } catch {
         return null;
       }
@@ -110,10 +128,11 @@ export function directoryFromEnv(env: Env): TenantStore {
 
 /** Build the full per-request `Tenant` from a directory record + global env config. */
 export function tenantFromRecord(env: Env, record: TenantRecord): Tenant {
+  const id = normalizeTenantId(record.id);
   return {
-    id: record.id,
+    id,
     dataRepo: dataCoords(env),
-    userPrefix: userPrefix(record.id),
+    userPrefix: userPrefix(id),
     installationId: env.GITHUB_INSTALLATION_ID,
   };
 }
@@ -131,9 +150,13 @@ export async function resolveTenant(
   if (!tenantId) {
     return { error: "unauthorized", message: "No tenant on the request" };
   }
-  const record = await directory.get(tenantId);
+  // Normalize before the directory lookup so a mixed-case grant prop (e.g.
+  // "Casey") matches the lowercase allowlist key and resolves to `users/casey/`.
+  // This is the single defensive point even when `directory` doesn't normalize.
+  const id = normalizeTenantId(tenantId);
+  const record = await directory.get(id);
   if (!record) {
-    return { error: "unauthorized", message: `Username ${tenantId} is not on the allowlist` };
+    return { error: "unauthorized", message: `Username ${id} is not on the allowlist` };
   }
   return tenantFromRecord(env, record);
 }
@@ -148,6 +171,8 @@ export async function resolveInvite(kv: KVNamespace, code: string): Promise<stri
   if (!code) return null;
   const tenantId = await kv.get(`${INVITE_PREFIX}${code}`);
   if (!tenantId) return null;
+  // `get` re-checks the allowlist and returns the canonical (lowercase) id, so the
+  // grant prop set from this is already normalized.
   const record = await kvTenantStore(kv).get(tenantId);
   return record ? record.id : null;
 }

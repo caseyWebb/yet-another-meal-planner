@@ -11,6 +11,7 @@
 // has no stored verifier is rejected with no token exchange.
 
 import type { Env } from "./env.js";
+import { normalizeTenantId } from "./tenant.js";
 import {
   createKrogerUserClient,
   type KrogerUserClient,
@@ -84,7 +85,11 @@ export async function handleOAuthRequest(deps: OAuthDeps, url: URL): Promise<Res
     // The initiating tenant. TRANSITIONAL: taken from a query param; Section 3
     // replaces this with an agent-minted, single-use nonce so a caller cannot
     // initiate a Kroger flow for another tenant.
-    const tenant = url.searchParams.get("tenant");
+    // Normalize to the canonical (lowercase) id so the refresh token lands under
+    // the SAME `kroger:refresh:<id>` key the agent reads with (its grant tenantId
+    // is lowercased in tenant.ts) — a mixed-case `?tenant=Casey` must not orphan
+    // the token under a key the cart-write path never looks at.
+    const tenant = normalizeTenantId(url.searchParams.get("tenant") ?? "");
     if (!tenant) return text("Missing tenant", 400);
 
     const verifier = pkce.generateVerifier();

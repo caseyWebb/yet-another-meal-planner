@@ -4,6 +4,8 @@ import {
   resolveInvite,
   tenantFromRecord,
   kvTenantStore,
+  userPrefix,
+  normalizeTenantId,
   type TenantRecord,
   type TenantStore,
   type Unauthorized,
@@ -62,6 +64,19 @@ describe("resolveTenant (from a provider-validated tenantId)", () => {
     expect(isUnauthorized(await resolveTenant(env, "ghost", store({ alice: ALICE })))).toBe(true);
   });
 
+  it("resolves a mixed-case tenantId to the lowercase users/<id> prefix + allowlist entry", async () => {
+    // The bug: a member granted "Casey" but whose data lives at users/casey/. A
+    // case-sensitive resolve targeted users/Casey/ (empty) — silent data loss.
+    // The allowlist key is the canonical lowercase form (as data-onboard.yml mints).
+    const dir = store({ casey: { id: "casey" } });
+    for (const given of ["Casey", "CASEY", "casey", "  Casey  "]) {
+      const t = (await resolveTenant(env, given, dir)) as Tenant;
+      expect(isUnauthorized(t)).toBe(false);
+      expect(t.id).toBe("casey");
+      expect(t.userPrefix).toBe("users/casey");
+    }
+  });
+
   it("isolates tenants: each id resolves only to its own subtree", async () => {
     const dir = store({ alice: { id: "alice" }, bob: { id: "bob" } });
     const a = (await resolveTenant(env, "alice", dir)) as Tenant;
@@ -103,6 +118,27 @@ describe("resolveInvite (the §3.2 identity step)", () => {
   it("returns null for an empty code", async () => {
     expect(await resolveInvite(memKv(), "")).toBeNull();
   });
+
+  it("returns the canonical lowercase username even if the invite maps to mixed case", async () => {
+    // Allowlist keyed lowercase (as minted); a stray mixed-case invite target still
+    // resolves to the canonical id via the lowercase directory lookup.
+    const kv = memKv({ "invite:CODE": "Casey", "tenant:casey": JSON.stringify({ id: "casey" }) });
+    expect(await resolveInvite(kv, "CODE")).toBe("casey");
+  });
+});
+
+describe("normalizeTenantId / userPrefix", () => {
+  it("lowercases and trims to the canonical id", () => {
+    expect(normalizeTenantId("Casey")).toBe("casey");
+    expect(normalizeTenantId("CASEY")).toBe("casey");
+    expect(normalizeTenantId("  Casey  ")).toBe("casey");
+    expect(normalizeTenantId("casey")).toBe("casey");
+  });
+
+  it("builds a lowercase users/<id> prefix regardless of input casing", () => {
+    expect(userPrefix("Casey")).toBe("users/casey");
+    expect(userPrefix("casey")).toBe("users/casey");
+  });
 });
 
 describe("kvTenantStore", () => {
@@ -111,6 +147,17 @@ describe("kvTenantStore", () => {
     expect(await s.get("alice")).toEqual(ALICE);
     expect(await s.get("nobody")).toBeNull();
     expect(await s.get("broken")).toBeNull();
+  });
+
+  it("looks up the lowercase key and canonicalizes the returned id", async () => {
+    // Allowlist key is the canonical lowercase form; any casing of the lookup id
+    // (the grant prop) must find it and resolve to the lowercase canonical id.
+    const s = kvTenantStore(memKv({ "tenant:casey": JSON.stringify({ id: "casey" }) }));
+    expect(await s.get("Casey")).toEqual({ id: "casey" });
+    expect(await s.get("CASEY")).toEqual({ id: "casey" });
+    // Even a stored mixed-case id is canonicalized on read (defensive).
+    const s2 = kvTenantStore(memKv({ "tenant:casey": JSON.stringify({ id: "Casey" }) }));
+    expect((await s2.get("casey"))?.id).toBe("casey");
   });
 
   it("lists every tenant id (the §8.2 group enumeration), ignoring non-tenant keys", async () => {

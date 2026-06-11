@@ -66,8 +66,14 @@ jobs:
           U: ${{ inputs.username }}
           CODE: ${{ steps.code.outputs.value }}
         run: |
-          npx --yes wrangler kv key put --namespace-id="$KVID" --remote "tenant:${U}" "{\"id\":\"${U}\"}"
-          npx --yes wrangler kv key put --namespace-id="$KVID" --remote "invite:${CODE}" "${U}"
+          # Usernames are case-insensitive: store the canonical lowercase form so the
+          # directory key (tenant:<id>), the stored id, the invite target, and the
+          # Worker's users/<id>/ path prefix all agree. The Worker lowercases on read
+          # too (src/tenant.ts normalizeTenantId), so an already-lowercase data subtree
+          # is never split by a mixed-case onboard input.
+          u="${U,,}"
+          npx --yes wrangler kv key put --namespace-id="$KVID" --remote "tenant:${u}" "{\"id\":\"${u}\"}"
+          npx --yes wrangler kv key put --namespace-id="$KVID" --remote "invite:${CODE}" "${u}"
 
       - name: Resolve connector host (optional, Cloudflare custom domain)
         id: host
@@ -100,15 +106,16 @@ jobs:
           CODE: ${{ steps.code.outputs.value }}
           HOST: ${{ steps.host.outputs.value }}
         run: |
+          u="${U,,}"  # canonical lowercase id — matches the KV/subtree/grant form
           {
-            echo "## Onboarded \`${U}\`"
+            echo "## Onboarded \`${u}\`"
             echo ""
             echo "| | |"
             echo "|---|---|"
             echo "| Invite code | \`${CODE}\` |"
             echo "| Connector URL | \`https://${HOST}/mcp\` |"
             echo ""
-            echo "Send them the invite code + connector URL, and \`AGENT_INSTRUCTIONS.md\` to paste into their Claude.ai Project. They enter the code at the \`/authorize\` page Claude.ai sends them to, then run their Kroger consent at \`https://${HOST}/oauth/init?tenant=${U}\`. Their \`users/${U}/\` subtree is created automatically on their first write (e.g. setting their store)."
+            echo "Send them the invite code + connector URL, and \`AGENT_INSTRUCTIONS.md\` to paste into their Claude.ai Project. They enter the code at the \`/authorize\` page Claude.ai sends them to, then run their Kroger consent at \`https://${HOST}/oauth/init?tenant=${u}\`. Their \`users/${u}/\` subtree is created automatically on their first write (e.g. setting their store)."
             echo ""
             echo "> This run executed in your **private** data repo, so the invite code above is visible only to you (and any data-repo collaborators). Rotate it by re-running with a new code. Never run onboarding from the public code repo or a fork — its logs are world-readable."
           } >> "$GITHUB_STEP_SUMMARY"
