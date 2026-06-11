@@ -19,4 +19,4 @@
 ## 4. Deploy + verify
 
 - [x] 4.1 `npm run typecheck` + `npm test` (Worker) + `npm run test:tooling` green.
-- [ ] 4.2 **(operator, Casey)** ~~grant `Issues: write`~~ ✓ done 2026-06-11. REMAINING: land the Worker code on `main`, deploy from the data repo, then exercise `report_bug` once (force a tool error) and confirm an attributed, labeled issue lands in the data repo.
+- [x] 4.2 **(operator, Casey)** ~~grant `Issues: write`~~ ✓ done 2026-06-11. ~~land the Worker code on `main`, deploy from the data repo, then exercise `report_bug` once~~ ✓ deployed + smoke-tested 2026-06-11: forced a tool error and confirmed an attributed, labeled issue landed in the data repo.
