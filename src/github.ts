@@ -45,9 +45,17 @@ export interface TreeFile {
   content: string;
 }
 
+/** One entry in a directory listing (the subset of the Contents API we use). */
+export interface DirEntry {
+  name: string;
+  type: "file" | "dir";
+}
+
 export interface GitHubClient {
   /** Fetch a repo file's raw text. Throws GitHubError(404) when absent. */
   getFile(path: string): Promise<string>;
+  /** List a directory's entries via the Contents API. Throws GitHubError(404) when absent. */
+  listDir(path: string): Promise<DirEntry[]>;
   /** Resolve `heads/<ref>` to the commit sha it points at. */
   getRef(): Promise<string>;
   /** The tree sha of a commit. */
@@ -109,6 +117,21 @@ export function createGitHubClient(coords: RepoCoords, auth: TokenProvider): Git
     }
 
     throw new GitHubError(lastStatus, `GitHub request exhausted retries for ${path}`);
+  }
+
+  async function listDir(path: string): Promise<DirEntry[]> {
+    const url = `${contentsBase}/${path}?ref=${encodeURIComponent(branch)}`;
+    const data = await requestJson("GET", url, null);
+    if (!Array.isArray(data)) {
+      throw new GitHubError(502, `Expected a directory listing for ${path}`);
+    }
+    const out: DirEntry[] = [];
+    for (const e of data as Array<{ name?: unknown; type?: unknown }>) {
+      if (typeof e.name === "string" && (e.type === "file" || e.type === "dir")) {
+        out.push({ name: e.name, type: e.type });
+      }
+    }
+    return out;
   }
 
   /**
@@ -210,7 +233,7 @@ export function createGitHubClient(coords: RepoCoords, auth: TokenProvider): Git
     return { url: data.html_url, number: data.number };
   }
 
-  return { getFile, getRef, getCommitTree, createTree, createCommit, updateRef, createIssue };
+  return { getFile, listDir, getRef, getCommitTree, createTree, createCommit, updateRef, createIssue };
 }
 
 /**
@@ -226,6 +249,7 @@ export function prefixedClient(gh: GitHubClient, prefix: string): GitHubClient {
   const at = (p: string): string => `${prefix}/${p}`;
   return {
     getFile: (path) => gh.getFile(at(path)),
+    listDir: (path) => gh.listDir(at(path)),
     getRef: gh.getRef,
     getCommitTree: gh.getCommitTree,
     createTree: (baseTree, files) =>

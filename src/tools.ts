@@ -19,6 +19,7 @@ import { registerDiscoveryTools } from "./discovery-tools.js";
 import { registerNoteTools } from "./notes-tools.js";
 import { registerCookingTools } from "./cooking-tools.js";
 import { filterRecipes, type RecipeFilters, type RecipeIndex } from "./recipes.js";
+import { listStorageGuidance, readStorageGuidance } from "./storage-guidance.js";
 import { parseOverlay, mergeOverlay, type Overlay } from "./overlay.js";
 import { toInventory } from "./kitchen.js";
 import { entriesOf, deriveLastCooked } from "./cooking-log.js";
@@ -366,7 +367,7 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
     "read_pantry",
     {
       description:
-        "Read pantry items. Supports category and prepared_only filters. stale_only is not yet supported (needs shelf-life data).",
+        "Read pantry items. Supports category and prepared_only filters. stale_only is unsupported: freshness is judged conversationally (it depends on storage, whether a package was opened, and visual inspection), not computed by the tool.",
       inputSchema: { filter: z.object(pantryFilterShape).optional() },
     },
     ({ filter }) =>
@@ -374,7 +375,7 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
         if (filter?.stale_only) {
           throw new ToolError(
             "unsupported",
-            "stale_only requires shelf-life data, introduced in a later change.",
+            "stale_only is not computable: freshness is an LLM-judged, conversational concern (storage, open packages, visual inspection), not a function of the repo data.",
           );
         }
         const text = await readFile(gh, "pantry.toml", "not_found", "no pantry is set up");
@@ -452,6 +453,26 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
         );
         return { content };
       }),
+  );
+
+  server.registerTool(
+    "list_storage_guidance",
+    {
+      description:
+        'List the curated storage-guidance classes (each a slug + an optional one-line description) from the shared storage_guidance/ tree. Slugs are storage BEHAVIOR CLASSES (e.g. "tender-herbs", "alliums", "leafy-greens"), a few singletons that break their class\'s rule ("basil", "tomatoes", "avocados"), and "_ethylene" for relational "don\'t store together" rules. Map a just-bought item to the right class with your own world knowledge (e.g. cilantro → tender-herbs), then call read_storage_guidance for the relevant ones. Returns { entries: [] } when no tree exists.',
+      inputSchema: {},
+    },
+    () => runTool(() => listStorageGuidance(sharedGh)),
+  );
+
+  server.registerTool(
+    "read_storage_guidance",
+    {
+      description:
+        "Read the curated storage-guidance content for the named class slugs (from list_storage_guidance). Returns { entries: [{ slug, content }] } where content is the file's markdown. An unknown slug yields a structured not_found. This is vetted, curated advice — relay any contested tip WITH the hedge written into its prose, and give NO tip for an item that has no matching class (never improvise).",
+      inputSchema: { slugs: z.array(z.string()) },
+    },
+    ({ slugs }) => runTool(() => readStorageGuidance(sharedGh, slugs)),
   );
 
   server.registerTool(

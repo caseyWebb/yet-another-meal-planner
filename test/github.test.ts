@@ -1,5 +1,7 @@
-import { describe, it, expect } from "vitest";
-import { prefixedClient, type GitHubClient, type TreeFile } from "../src/github.js";
+import { describe, it, expect, vi, afterEach } from "vitest";
+import { createGitHubClient, prefixedClient, type GitHubClient, type TreeFile } from "../src/github.js";
+
+afterEach(() => vi.unstubAllGlobals());
 
 /** A fake client that records the paths it was asked to read/write. */
 function recorder() {
@@ -7,6 +9,7 @@ function recorder() {
   let treePaths: string[] = [];
   const gh: GitHubClient = {
     async getFile(path) { reads.push(path); return `contents of ${path}`; },
+    async listDir(path) { reads.push(path); return []; },
     async getRef() { return "refsha"; },
     async getCommitTree() { return "treesha"; },
     async createTree(_base, files: TreeFile[]) { treePaths = files.map((f) => f.path); return "newtree"; },
@@ -58,5 +61,43 @@ describe("prefixedClient", () => {
     await alice.getFile("pantry.toml");
     await bob.getFile("pantry.toml");
     expect(r.reads).toEqual(["users/alice/pantry.toml", "users/bob/pantry.toml"]);
+  });
+});
+
+describe("listDir", () => {
+  const auth = { token: async () => "tok" };
+  const coords = { owner: "o", repo: "r", ref: "main" };
+
+  it("returns the file/dir entries from a Contents API listing, dropping unknown types", async () => {
+    let captured = "";
+    vi.stubGlobal("fetch", (async (url: string) => {
+      captured = url;
+      return new Response(
+        JSON.stringify([
+          { name: "tender-herbs.md", type: "file" },
+          { name: "sub", type: "dir" },
+          { name: "weird", type: "symlink" },
+        ]),
+        { status: 200 },
+      );
+    }) as unknown as typeof fetch);
+
+    const gh = createGitHubClient(coords, auth);
+    expect(await gh.listDir("storage_guidance")).toEqual([
+      { name: "tender-herbs.md", type: "file" },
+      { name: "sub", type: "dir" },
+    ]);
+    expect(captured).toBe(
+      "https://api.github.com/repos/o/r/contents/storage_guidance?ref=main",
+    );
+  });
+
+  it("throws GitHubError(404) when the directory is absent", async () => {
+    vi.stubGlobal(
+      "fetch",
+      (async () => new Response("Not Found", { status: 404 })) as unknown as typeof fetch,
+    );
+    const gh = createGitHubClient(coords, auth);
+    await expect(gh.listDir("nope")).rejects.toMatchObject({ status: 404 });
   });
 });

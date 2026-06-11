@@ -106,10 +106,10 @@ groceries-agent-data/            ← one private repo for the whole group
 │   ├── lemon-garlic-chicken.md
 │   └── ...
 ├── aliases.toml                 ← SHARED ingredient variants → canonical
-├── ingredients.toml             ← SHARED (RESERVED: shelf-life metadata)
 ├── substitutions.toml           ← SHARED default rules (per-tenant override layer below)
 ├── skus/kroger.toml             ← SHARED, location-tagged SKU cache
 ├── flyer_terms.toml             ← SHARED broad scan terms
+├── storage_guidance/            ← SHARED curated put-away advice (class-keyed prose; read-only)
 ├── feeds.toml                   ← SHARED RSS discovery feeds (group-wide pool)
 ├── discoveries_inbox.toml       ← SHARED forwarded-newsletter candidates (email() writes; read_discovery_inbox reads)
 ├── discovery_sources.toml       ← SHARED inbound-email allowlist (members + senders)
@@ -184,7 +184,7 @@ Both follow the same shape: pantry verification first, then menu generation/elab
 
 2. **Pantry confirmation pass:** Claude calls a tool like `verify_pantry_for_recipe(slug)` or `verify_pantry_for_candidates()`. The Worker parses the recipe ingredients and walks them against the pantry, returning **facts, not freshness verdicts**: `in_pantry` (exact matches, each with age metadata — `added_at`, `last_verified_at`, `days_since_verified`, `category`, `prepared_from`), `possible_matches` (fuzzy candidates for Claude to confirm), `not_in_pantry` (to-buy), `optional` (non-blocking), and `inventory_substitutes_available`.
    - For staples (rice, salt, common spices), the tool lists them in `in_pantry` explicitly — drift catcher in case I forgot to mention I ran out. (This relies on the pantry file staying complete on staples; there is no assumed-present staple list.)
-   - There is **no `have_stale` bucket.** The tool surfaces age metadata; Claude decides which items warrant a "still good?" prompt (freshness depends on storage, not age alone, and isn't in the repo). Change 12 may add a `past_typical_fresh_life` hint from `ingredients.toml` to inform that judgment, without changing the shape.
+   - There is **no `have_stale` bucket.** The tool surfaces age metadata; Claude decides which items warrant a "still good?" prompt (freshness depends on storage, not age alone, and isn't in the repo). Freshness stays LLM-judged — there is no shelf-life table backing it: the once-reserved `ingredients.toml` was cut in favor of the curated `storage_guidance/` tree, which informs put-away advice rather than gating staleness.
    - For items where `substitutions.toml` allows an inventory swap, included in `inventory_substitutes_available` (empty until rules are seeded).
    - Sale-based substitutions are NOT surfaced here — they wait until Kroger flyer is fetched.
 
@@ -405,7 +405,7 @@ Two categories surface as questions:
 - **Spoilage candidates:** short-perishables past their typical fresh-life since `last_verified_at`. Framed as verification: "Basil added 9 days ago — still good?"
 - **Freezer aging nudges:** long-shelf-life items past a "should use soon" threshold (raw meat older than 3 months, prepared food past its window). Framed as use-it-up, not a delete prompt.
 
-If nothing's flagged, the check-in is skipped. Thresholds use rough LLM judgment in v1 (Phase 4) and become precise via `ingredients.toml` in Phase 7.
+If nothing's flagged, the check-in is skipped. Thresholds use rough LLM judgment — freshness stays a conversational, LLM-judged concern (the once-planned `ingredients.toml` shelf-life table was cut; see the storage-guidance work below).
 
 **On portion-level tracking:** the agent does NOT track precise portion counts of prepared/leftover food. That's a whiteboard problem — too high-friction to maintain. The `prepared_from` field on a pantry item tells the agent "you have some cooked rice from Monday's salmon recipe," not "you have 1.5 cups." If I want to use it, I just say so.
 
@@ -536,13 +536,13 @@ These are phases, not weeks. Each builds on the previous and ends with something
 
 ### Phase 7: Waste reduction refinement
 
-**Goal:** Make cross-recipe perishable optimization precise via explicit shelf-life data.
+**Goal:** Cut produce waste with curated storage advice and cross-recipe perishable optimization — *not* a shelf-life table.
 
-- Populate `ingredients.toml` with perishability metadata: `shelf_life_days_fridge`, `shelf_life_days_freezer`, `typical_unit`, `perishability_class` (shelf_stable / short_perishable / very_perishable).
-- Update pantry verification to use `ingredients.toml` thresholds instead of LLM judgment.
-- Refine menu generation to surface "this menu leaves 3/4 of a cilantro bunch unused — want a third recipe that uses cilantro?" suggestions.
+- **Re-cut:** the original "populate `ingredients.toml` with shelf-life metadata" plan was dropped — it encoded facts the LLM already has, and Change 08 settled freshness as an LLM-judged, prompt-resolved concern. `ingredients.toml` was removed entirely.
+- Instead, a curated `storage_guidance/` tree (class-keyed prose, read-only) supplies opinionated put-away advice the model lacks; the agent surfaces 2–3 relevant tips when new perishables arrive (`add-storage-guidance` change).
+- Refine menu generation to surface "this menu leaves 3/4 of a cilantro bunch unused — want a third recipe that uses cilantro?" suggestions (`add-perishable-ingredient-callout` change).
 
-**Done when:** Meaningfully less produce going bad. Occasional useful "swap recipe X for Y, less waste" suggestions.
+**Done when:** Meaningfully less produce going bad. Useful put-away tips and occasional "swap recipe X for Y, less waste" suggestions.
 
 ## Open questions / TBDs
 

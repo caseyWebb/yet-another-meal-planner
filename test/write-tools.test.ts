@@ -21,6 +21,9 @@ function ghWith(files: Record<string, string>): GitHubClient {
       if (path in files) return files[path];
       throw new GitHubError(404, `Not found: ${path}`);
     },
+    async listDir(path: string) {
+      throw new GitHubError(404, `Not found: ${path}`);
+    },
     async getRef() {
       return "x";
     },

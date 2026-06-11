@@ -22,4 +22,4 @@ This is the **flush** — distinct from the menu request's capture. It may happe
 
 **Lifecycle past `in_cart` is user-asserted — never claim it on your own:**
 - *"I placed the order"* → advance `in_cart` items to `ordered` (`update_grocery_list`).
-- *"I picked up the groceries"* → `received` (terminal): `remove_from_grocery_list` for each, and for `grocery`-kind items only, restock the pantry (`update_pantry`). `household`/`other` items don't touch the pantry.
+- *"I picked up the groceries"* → `received` (terminal): `remove_from_grocery_list` for each, and for `grocery`-kind items only, restock the pantry (`update_pantry`). `household`/`other` items don't touch the pantry. Then, for the fresh perishables just received, offer a couple of storage tips following the **Putting groceries away** guidance.

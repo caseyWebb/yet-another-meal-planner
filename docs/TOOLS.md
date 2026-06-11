@@ -148,7 +148,7 @@ Read pantry items, optionally filtered.
 **Returns:**
 - `{ items: [...] }` — array of pantry items per schema
 
-**Notes:** `category` and `prepared_only` are deterministic from pantry data. `stale_only` depends on shelf-life thresholds from `ingredients.toml`, which doesn't exist until Change 12 — until then it returns a structured `{ error: "unsupported" }` rather than guessing.
+**Notes:** `category` and `prepared_only` are deterministic from pantry data. `stale_only` returns a structured `{ error: "unsupported" }`: freshness is an LLM-judged, conversational concern (it depends on storage, whether a package was opened, and visual inspection) rather than something the tool can compute. There is no shelf-life table backing it — the once-reserved `ingredients.toml` was removed in favor of the curated `storage_guidance/` tree (see `list_storage_guidance` / `read_storage_guidance`), which informs put-away advice rather than gating staleness.
 
 ### `read_kitchen()`
 
@@ -187,7 +187,7 @@ Parse the named recipe's `## Ingredients` and walk each against the pantry. Retu
 }
 ```
 
-**Notes:** No `have_stale` bucket — freshness is an agent judgment over the surfaced age metadata, not a tool output. Matching is exact for `in_pantry`; anything inexact goes to `possible_matches` for the agent to confirm or reject (no silent false-misses, no silent false-positives) — **every** plausible pantry candidate for an ingredient is surfaced (not just the first), ranked containment-first, so the agent decides among the full set (coarse deterministic search → LLM narrows). `inventory_substitutes_available` applies `substitutions.toml` rules and is empty until rules are seeded. Change 12 may later add a `past_typical_fresh_life` hint per item (from `ingredients.toml`) without changing this shape.
+**Notes:** No `have_stale` bucket — freshness is an agent judgment over the surfaced age metadata, not a tool output. Matching is exact for `in_pantry`; anything inexact goes to `possible_matches` for the agent to confirm or reject (no silent false-misses, no silent false-positives) — **every** plausible pantry candidate for an ingredient is surfaced (not just the first), ranked containment-first, so the agent decides among the full set (coarse deterministic search → LLM narrows). `inventory_substitutes_available` applies `substitutions.toml` rules and is empty until rules are seeded. There is no shelf-life hint here — freshness stays an agent judgment (the once-planned `ingredients.toml` was cut; `storage_guidance/` supplies put-away advice instead).
 
 ### `verify_pantry_for_candidates(slugs)`
 
@@ -494,6 +494,33 @@ Write to user-curated files. **Content-faithful:** each writes exactly the full 
 
 **Returns:**
 - `{ file, commit_sha }`
+
+---
+
+## Storage guidance tools (read-only)
+
+Two reads over the shared, curated `storage_guidance/` tree — opinionated put-away advice keyed by storage **class** (`tender-herbs`, `alliums`, …), with a few singletons (`basil`, `tomatoes`, `avocados`) and a relational `_ethylene` file. **There is no write tool** for `storage_guidance/`: it is hand-maintained, edit-when-directed curated config, changed only by editing the data repo. The agent maps a just-bought item to a class with its own world knowledge over the semantic slugs (no manifest); over-fetching a class is harmless. See `docs/SCHEMAS.md` for the tree and the AGENT_INSTRUCTIONS put-away rule for when these fire.
+
+### `list_storage_guidance()`
+
+List the available guidance classes.
+
+**Params:** none.
+
+**Returns:**
+- `{ entries: [{ slug, description? }] }` — one entry per `storage_guidance/*.md` file; `slug` is the filename without `.md` (e.g. `tender-herbs`, `_ethylene`); `description` is the optional one-line summary from the file's `description` frontmatter. Returns `{ entries: [] }` when no tree exists (not an error).
+
+### `read_storage_guidance(slugs)`
+
+Read the content of the named guidance entries.
+
+**Params:**
+- `slugs` (array of strings, required) — the class slugs to read (from `list_storage_guidance`).
+
+**Returns:**
+- `{ entries: [{ slug, content }] }` — `content` is the file's full markdown (frontmatter + prose).
+
+**Notes:** An unknown (or malformed) slug yields a structured `{ error: "not_found", slug }`. Contested/folklore tips are pre-hedged in the prose — relay them with their hedge, never as settled fact. No matching class for a bought item → offer no tip (silence over invention).
 
 ---
 

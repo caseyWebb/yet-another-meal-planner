@@ -12,6 +12,9 @@ function fakeGh(opts: {
     async getFile() {
       throw new GitHubError(404, "not used");
     },
+    async listDir() {
+      throw new GitHubError(404, "not used");
+    },
     async getRef() {
       counts.getRef++;
       return `base-sha-${counts.getRef}`;

@@ -6,7 +6,7 @@ Concrete schemas with example values for every data file in the repo. Keep this 
 
 The data lives in **one private data repo** with two regions (see `docs/PROJECT.md` and the `multi-tenant-friend-group` change). Every file below lives in exactly one:
 
-- **Shared corpus (data-repo root)** — objective, single-source, read by everyone: `recipes/*.md` (objective frontmatter + body), `aliases.toml`, `ingredients.toml`, `substitutions.toml` (the shared default layer), `skus/kroger.toml`, `flyer_terms.toml`, **`feeds.toml`** (RSS discovery feeds), **`discoveries_inbox.toml`** (forwarded-newsletter candidates), **`discovery_sources.toml`** (inbound-email allowlist), `_indexes/`. Discovery is a shared, top-level concern — feeds and the newsletter inbox feed one group pool, judged against each caller's taste at read time.
+- **Shared corpus (data-repo root)** — objective, single-source, read by everyone: `recipes/*.md` (objective frontmatter + body), `aliases.toml`, `substitutions.toml` (the shared default layer), `skus/kroger.toml`, `flyer_terms.toml`, `storage_guidance/` (curated put-away advice), **`feeds.toml`** (RSS discovery feeds), **`discoveries_inbox.toml`** (forwarded-newsletter candidates), **`discovery_sources.toml`** (inbound-email allowlist), `_indexes/`. Discovery is a shared, top-level concern — feeds and the newsletter inbox feed one group pool, judged against each caller's taste at read time.
 - **Per-tenant subtree (`users/<username>/`)** — each member's own state: `pantry.toml`, `preferences.toml`, `stockup.toml`, `grocery_list.toml`, `meal_plan.toml`, `cooking_log.toml`, `ready_to_eat.toml` (personal heat-and-eat catalog), `kitchen.toml` (owned cooking equipment), `taste.md`, `diet_principles.md`, **`overlay.toml`** (subjective recipe view), **`notes/<slug>.toml`** (attributed notes), an optional **`substitutions.toml`** override layer, and any personal (unshared) recipes.
 
 **Three-category recipe model (D5):** a recipe's *content* (objective frontmatter + body) is shared; its *overlay* (`rating` + `status`) is per-tenant in `overlay.toml`; its *notes* are per-tenant, attributed, append-mostly. `last_cooked` is **not stored** — it's derived per-tenant from that member's `cooking_log.toml`. Read tools merge shared content + the caller's overlay + cooking-log `last_cooked` at read time.
@@ -428,27 +428,27 @@ name = "NYT Cooking"
 - Every entry needs a valid `address` (contains `@`) — enforced at build + write time.
 - Auth posture: a message is accepted only when authenticated (Cloudflare DKIM/SPF/DMARC) AND from a listed source — `sender ∧ aligned-DKIM` (auto-forward) or `member ∧ aligned-DKIM` (manual forward). The SPF-via-member-relay fallback is deferred. Everything else is dropped silently.
 
-## ingredients.toml (Phase 7)
+## storage_guidance/
 
-RESERVED for Phase 7. Empty in v1. Will hold perishability metadata for cross-recipe waste optimization.
+**Shared corpus** (data-repo root). A curated, hand-maintained tree of **opinionated, vetted storage advice** the agent surfaces at put-away (2–3 relevant, non-obvious tips when new perishables enter the kitchen — on both the order `received` restock and a farmers-market `update_pantry` haul). It encodes opinions the model lacks, not shelf-life facts it already has — which is why it replaced the dead `ingredients.toml` shelf-life table (freshness is LLM-judged per Change 08, not table-gated).
 
-```toml
-# ingredients.toml — RESERVED for Phase 7; empty in v1
+Each file is **markdown prose keyed by a storage behavior *class*** — `tender-herbs.md`, `hardy-herbs.md`, `leafy-greens.md`, `alliums.md`, `potatoes.md`, … — so one entry covers a whole family without per-ingredient duplication. A few **singletons** (`basil.md`, `tomatoes.md`, `avocados.md`) exist for items whose rule contradicts their class. Relational "don't store together" rules (ethylene cross-contamination, onions↔potatoes) live in a dedicated **`_ethylene.md`**, because they belong to no single item.
 
-[[ingredients]]
-name = "basil"
-shelf_life_days_fridge = 7
-shelf_life_days_freezer = 180
-typical_unit = "bunch"
-perishability_class = "very_perishable"
+```markdown
+---
+description: cilantro, parsley, dill, mint — stems in water, in the fridge
+---
 
-[[ingredients]]
-name = "olive oil"
-shelf_life_days_fridge = null    # shelf-stable
-shelf_life_days_freezer = null
-typical_unit = "bottle"
-perishability_class = "shelf_stable"
+# Tender herbs
+
+Stand stems in ~1 inch of water, loosely bagged, **in the refrigerator** …
 ```
+
+**Notes:**
+- **Read-only / edit-when-directed curated config** — there is **no write tool** for it (it is hand-maintained, never an agent side-effect file). Two read tools cover it: `list_storage_guidance()` (class slugs + the optional one-line `description` from each file's frontmatter) and `read_storage_guidance(slugs)` (the named entries' content). See `docs/TOOLS.md`.
+- The optional `description` frontmatter line is the only structured field; the rest is freeform prose. The file is validated only for existence, not parse-checked as data (like other curated markdown).
+- **Mapping is by agent world-knowledge over the semantic slugs** (e.g. cilantro → `tender-herbs`) — there is deliberately no ingredient→class manifest or alias table; over-fetching a class is harmless.
+- **Confidence-in-prose:** solid tips are written plainly; contested/folklore tips are pre-hedged *in the prose itself* ("some cooks rinse berries in vinegar — results vary"), so relaying the file faithfully is relaying it honestly. No matching class file → the agent gives **no tip** (silence over invention).
 
 ## users/<username>/ready_to_eat.toml
 
