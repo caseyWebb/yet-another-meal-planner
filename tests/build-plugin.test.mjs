@@ -175,10 +175,11 @@ test('renderMcpConfig bakes the given worker url into the connector', () => {
   assert.equal(cfg.mcpServers['grocery-mcp'].url, 'https://example.test/mcp');
 });
 
-test('renderPluginManifest has no userConfig (claude.ai does not honor it)', () => {
+test('renderPluginManifest: no userConfig (claude.ai ignores it), no version (auto via commit SHA)', () => {
   const m = JSON.parse(renderPluginManifest());
   assert.equal(m.name, 'grocery-agent');
   assert.equal(m.userConfig, undefined);
+  assert.equal(m.version, undefined);
 });
 
 test('buildPluginFiles emits library tiers + workflow skills + manifest + connector', () => {

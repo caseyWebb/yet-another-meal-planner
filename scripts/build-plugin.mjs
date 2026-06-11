@@ -41,7 +41,11 @@ import path from 'node:path';
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 export const PLUGIN_NAME = 'grocery-agent';
-export const PLUGIN_VERSION = '0.1.1';
+// No version field is emitted on purpose: a git-hosted marketplace with no
+// plugin version treats every commit as a new version (the commit SHA), so any
+// push auto-propagates to installers' `/plugin marketplace update` — no manual
+// bump to forget. (See docs: "If you omit version and host in git, every commit
+// automatically counts as a new version.")
 export const PLUGIN_DESCRIPTION =
   'Personal grocery agent — meal planning, pantry, recipes, and Kroger cart. Bundles the workflow skills and the grocery-mcp connector.';
 // Depth tiers a flow may opt into via `needs:`. `core` is implicit (always loaded).
@@ -195,9 +199,11 @@ export function renderWorkflowSkill(flow) {
   return `${fm}\n${loaderLine(flow.needs)}\n\n# ${flow.heading}\n\n${flow.body}\n`;
 }
 
-export function renderPluginManifest({ name = PLUGIN_NAME, version = PLUGIN_VERSION, description = PLUGIN_DESCRIPTION } = {}) {
+export function renderPluginManifest({ name = PLUGIN_NAME, description = PLUGIN_DESCRIPTION } = {}) {
+  // No `version` — see the note by PLUGIN_NAME: omitting it makes every commit a
+  // new version, so pushes auto-propagate.
   return `${JSON.stringify(
-    { $schema: 'https://json.schemastore.org/claude-code-plugin-manifest.json', name, version, description },
+    { $schema: 'https://json.schemastore.org/claude-code-plugin-manifest.json', name, description },
     null,
     2,
   )}\n`;
