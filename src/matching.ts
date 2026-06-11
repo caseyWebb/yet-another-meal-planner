@@ -90,13 +90,20 @@ export function isFulfillable(c: KrogerCandidate): boolean {
   return c.fulfillment.curbside || c.fulfillment.delivery;
 }
 
-function onSale(c: KrogerCandidate): boolean {
-  return c.price.promo > 0;
+/**
+ * A candidate is on sale only when it carries a promo price that is an actual
+ * DISCOUNT — `promo > 0` AND `promo < regular`. Kroger returns `promo == regular`
+ * (and an occasional `promo >= regular`) for non-sale items, so `promo > 0` alone
+ * over-reports sales (savings 0). The single source of truth for "on sale" across
+ * the matcher, the flyer scan, and price reporting.
+ */
+export function isOnSale(c: KrogerCandidate): boolean {
+  return c.price.promo > 0 && c.price.promo < c.price.regular;
 }
 
 /** Effective price the shopper pays: promo when on sale, else regular. */
 function effectivePrice(c: KrogerCandidate): number {
-  return onSale(c) ? c.price.promo : c.price.regular;
+  return isOnSale(c) ? c.price.promo : c.price.regular;
 }
 
 /**
@@ -183,7 +190,7 @@ function toCandidateView(c: KrogerCandidate): CandidateView {
     brand: c.brand,
     size: c.size,
     price: c.price,
-    on_sale: onSale(c),
+    on_sale: isOnSale(c),
     fulfillment: c.fulfillment,
   };
   if (c.size && parseSize(c.size)) {
@@ -199,7 +206,7 @@ function toCandidateView(c: KrogerCandidate): CandidateView {
  * unparseable). Returns the single winner.
  */
 export function tiebreak(pool: KrogerCandidate[]): KrogerCandidate {
-  const onSalePool = pool.filter(onSale);
+  const onSalePool = pool.filter(isOnSale);
   const tier = onSalePool.length > 0 ? onSalePool : pool;
 
   const items: UnitPriceItem[] = tier.map((c) => ({
@@ -247,7 +254,7 @@ function confident(c: KrogerCandidate, reason: string): ConfidentMatch {
     brand: c.brand,
     size: c.size,
     price: c.price,
-    on_sale: onSale(c),
+    on_sale: isOnSale(c),
     reason,
   };
 }
@@ -266,7 +273,7 @@ function ambiguous(
     if (rel !== 0) return rel;
     const ds = dietaryScore(b, dietary) - dietaryScore(a, dietary);
     if (ds !== 0) return ds;
-    const sale = Number(onSale(b)) - Number(onSale(a));
+    const sale = Number(isOnSale(b)) - Number(isOnSale(a));
     if (sale !== 0) return sale;
     return effectivePrice(a) - effectivePrice(b);
   });

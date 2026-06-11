@@ -260,7 +260,7 @@ Remove an item by name.
 
 ### `kroger_flyer(filter)`
 
-Synthesized sale scan — the public API has **no** flyer/circular endpoint, so this searches terms and keeps products where `promo > 0`, deduped by `productId`. Scans **precise** terms (caller-passed plus stockup/substitution candidates) and **broad** curated terms from `flyer_terms.toml`. Explicitly **non-exhaustive**: each term returns a relevance-ranked page (no sort-by-discount), so it samples the head of each category.
+Synthesized sale scan — the public API has **no** flyer/circular endpoint, so this searches terms and keeps products that are **genuinely discounted** (`promo > 0` **and** `promo < regular`, so `savings > 0`), deduped by `productId`. (Kroger returns `promo == regular` for some non-sale items, so a bare `promo > 0` would leak `savings: 0` noise — those are excluded.) Scans **precise** terms (caller-passed plus stockup/substitution candidates) and **broad** curated terms from `flyer_terms.toml`. Explicitly **non-exhaustive**: each term returns a relevance-ranked page (no sort-by-discount), so it samples the head of each category.
 
 **Params:**
 - `filter` (object, optional): `{ terms?, against_stockup?, against_substitutions? }`
@@ -283,7 +283,7 @@ Get current prices for a specific list of ingredients (used for menu pre-pass). 
 **Returns:**
 - `{ prices: [{ ingredient, sku, brand, size, price: { regular, promo }, on_sale, available: { curbside, delivery } }] }`
 
-**Notes:** `price` is `{ regular, promo }` (`promo: 0` = not on sale); `available` reflects curbside/delivery fulfillment at the preferred location — the public API exposes no live in-store stock. When no product matches a term, that entry is `{ ingredient, sku: null, available: { curbside: false, delivery: false } }`.
+**Notes:** `price` is `{ regular, promo }`; `on_sale` is true only on a real discount (`promo > 0` **and** `promo < regular`) — a `promo` equal to `regular` is not a sale; `available` reflects curbside/delivery fulfillment at the preferred location — the public API exposes no live in-store stock. When no product matches a term, that entry is `{ ingredient, sku: null, available: { curbside: false, delivery: false } }`.
 
 ### `match_ingredient_to_kroger_sku(ingredient, context)`
 

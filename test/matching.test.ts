@@ -5,6 +5,7 @@ import {
   brandKey,
   tiebreak,
   relevanceScore,
+  isOnSale,
   type MatchDeps,
 } from "../src/matching.js";
 import type { KrogerCandidate } from "../src/kroger.js";
@@ -31,6 +32,21 @@ function makeDeps(opts: Partial<MatchDeps> & { byId?: Record<string, KrogerCandi
     locationId: opts.locationId ?? "L1",
   };
 }
+
+describe("isOnSale (real discount only — flyer savings:0 bug)", () => {
+  it("is true only when promo is positive AND below regular", () => {
+    expect(isOnSale(cand({ productId: "a", price: { regular: 5, promo: 3 } }))).toBe(true);
+  });
+  it("is false when promo equals regular (Kroger's non-sale promo echo)", () => {
+    expect(isOnSale(cand({ productId: "b", price: { regular: 2.99, promo: 2.99 } }))).toBe(false);
+  });
+  it("is false when there is no promo", () => {
+    expect(isOnSale(cand({ productId: "c", price: { regular: 4, promo: 0 } }))).toBe(false);
+  });
+  it("is false when promo exceeds regular (bad data — never 'on sale')", () => {
+    expect(isOnSale(cand({ productId: "d", price: { regular: 4, promo: 5 } }))).toBe(false);
+  });
+});
 
 describe("normalizeIngredient", () => {
   it("strips a leading quantity/unit", () => {

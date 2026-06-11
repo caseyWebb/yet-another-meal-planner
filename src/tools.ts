@@ -25,6 +25,7 @@ import { createKrogerClient, type KrogerCandidate } from "./kroger.js";
 import {
   matchIngredient,
   isFulfillable,
+  isOnSale,
   type CachedMapping,
   type MatchContext,
   type MatchDeps,
@@ -431,7 +432,7 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
             brand: top.brand,
             size: top.size,
             price: top.price,
-            on_sale: top.price.promo > 0,
+            on_sale: isOnSale(top),
             available: top.fulfillment,
           });
         }
@@ -443,7 +444,7 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
     "kroger_flyer",
     {
       description:
-        "Synthesized sale scan (the public API has no flyer/circular endpoint). Scans precise context terms (passed plus stockup/substitution candidates) and broad curated terms from flyer_terms.toml, keeps promo > 0, dedupes by productId. Explicitly non-exhaustive: each term returns a relevance-ranked page, not a discount-sorted one.",
+        "Synthesized sale scan (the public API has no flyer/circular endpoint). Scans precise context terms (passed plus stockup/substitution candidates) and broad curated terms from flyer_terms.toml, keeps only genuine discounts (promo > 0 AND promo < regular, so savings > 0), dedupes by productId. Explicitly non-exhaustive: each term returns a relevance-ranked page, not a discount-sorted one.",
       inputSchema: { filter: z.object(flyerFilterShape).optional() },
     },
     ({ filter }) =>
@@ -498,7 +499,7 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
             });
             if (candidates.length === 0) break;
             for (const c of candidates) {
-              if (c.price.promo > 0 && isFulfillable(c) && !seen.has(c.productId)) {
+              if (isOnSale(c) && isFulfillable(c) && !seen.has(c.productId)) {
                 seen.set(c.productId, {
                   sku: c.productId,
                   brand: c.brand,
@@ -642,7 +643,7 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
         const locationId = await getLocationId();
         return proposeSale(rule, async (sub) => {
           const candidates = await kroger.search(sub, { locationId, limit: 5 });
-          return candidates.filter(isFulfillable).some((c) => c.price.promo > 0);
+          return candidates.filter(isFulfillable).some((c) => isOnSale(c));
         });
       }),
   );
@@ -655,7 +656,7 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
 
   // Cooking history + meal plan: read_meal_plan (resume) and retrospective.
   // The corresponding writes ride commit_changes (cooking_log_entries / meal_plan_ops).
-  registerCookingTools(server, gh);
+  registerCookingTools(server, gh, sharedGh);
 
   // Discovery: RSS recipe candidates, parse-only URL import, draft create. Recipes
   // are SHARED content (root client); only feeds.toml is this tenant's personal
