@@ -193,13 +193,6 @@ description: Save a recipe from a URL or pasted text into the shared corpus as a
 
 **When `import_recipe` can't reach it** (`unreachable` — bot-walled or paywalled, e.g. Serious Eats, NYT; or `no_jsonld`/`not_a_recipe`/`incomplete`): tell me, and ask me to **paste the recipe text**. From pasted text, do steps 2–3 directly (assemble frontmatter + body, `create_recipe`) — no `import_recipe` call needed. Same for "check this article for recipes": fetch-and-parse if it works, otherwise I'll paste.
 
-### Inventory hypothetical
-
-<!-- skill: inventory-hypothetical
-description: Evaluate whether buying some candidate ingredients would meaningfully improve the week, without committing them. Use for "market has heirloom tomatoes, basil, chevre — worth grabbing this week?". Runs a speculative, non-persisted menu re-evaluation with the items added in memory. -->
-
-Call `inventory_hypothetical(items)`. The tool runs a speculative menu re-evaluation with those items added in memory (not persisted). Report whether they meaningfully improve the week.
-
 ### Sale check
 
 <!-- skill: grocery-sale-check

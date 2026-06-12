@@ -260,7 +260,6 @@ test('AGENT_INSTRUCTIONS.md: workflows with expected needs + library tiers', asy
     'add-recipe-note',
     'add-ready-to-eat-feedback',
     'import-recipe',
-    'inventory-hypothetical',
     'grocery-sale-check',
     'cooking-retrospective',
     'place-grocery-order',

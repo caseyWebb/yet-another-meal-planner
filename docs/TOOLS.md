@@ -42,7 +42,7 @@ Read a single recipe's full content (frontmatter + body).
 - `slug` (string, required)
 
 **Returns:**
-- `{ slug, frontmatter, body }` — `frontmatter` includes the objective shared fields, among them `perishable_ingredients` (a normalized list of the recipe's perishable ingredients; empty when absent). The same field rides each entry's `frontmatter` from the index-backed `list_recipes`, so the menu-gen waste callout reasons over it without any extra tool.
+- `{ slug, frontmatter, body }` — `frontmatter` includes the objective shared fields, among them `perishable_ingredients` (a normalized list of the recipe's perishable ingredients; empty when absent) and the pairing fields `standalone` (true = a complete one-pot plate) / `pairs_with` (slugs of suggested sides). The `perishable_ingredients` field also rides each entry's `frontmatter` from the index-backed `list_recipes`, so the menu-gen waste callout reasons over it without any extra tool.
 
 ### `recipe_site_url()`
 
@@ -565,24 +565,21 @@ Disposition or otherwise update a ready-to-eat item in the caller's catalog, add
 **Returns:**
 - `{ slug, updated_fields, commit_sha }`
 
-**Returns:**
-- `{ updated_fields }`
-
 ---
 
 ## Preference / config tools (read-only by default)
 
 ### `read_preferences()`
 
-Return the user's parsed preferences.
+Return the user's parsed `preferences.toml` (the parsed object). Throws structured `not_found` when none are set up yet — the empty signal for an un-onboarded member.
 
 ### `read_taste()`
 
-Return the user's taste profile narrative (markdown).
+Return `{ content }` — the user's taste-profile narrative (markdown). Throws `not_found` when unset.
 
 ### `read_diet_principles()`
 
-Return the user's diet-principles narrative (variety rules, markdown).
+Return `{ content }` — the user's diet-principles narrative (variety rules, markdown). Throws `not_found` when unset.
 
 ### `update_preferences(content)` / `update_taste(content)` / `update_diet_principles(content)` / `update_substitutions(content)` / `update_aliases(content)`
 
@@ -658,18 +655,6 @@ Return the current meal plan — recipes committed to cook next (transient cook 
 - `{ planned: [{ recipe, planned_for }] }` (`planned_for` may be null)
 
 **Notes:** The session-start stale-planned reconcile surfaces only **due** rows (`planned_for` on/before today, or unset).
-
-### `inventory_hypothetical(items)`
-
-Speculative menu re-evaluation with hypothetical pantry additions.
-
-**Params:**
-- `items` (array): pantry items to add in-memory only
-
-**Returns:**
-- `{ would_improve_week: bool, suggested_changes: [...], notes: string }`
-
-**Notes:** Does not persist anything. Used for "is this market haul worth grabbing?" reasoning.
 
 ---
 

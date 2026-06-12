@@ -44,7 +44,7 @@ The system is three pieces with one clean split: **the LLM does the fuzzy work; 
 - **The Worker** (this repo, root `src/`) is a Cloudflare Worker hosting the `grocery-mcp` MCP server — the domain tool surface (pantry, recipes, Kroger, substitutions, cart) — plus an OAuth 2.1 provider members connect their Claude.ai to. It is the locus of determinism and the multi-tenant gate.
 - **The data repo** (`<operator>/groceries-agent-data`, private) is the substrate: flat files (TOML + markdown) in git, with git history as the audit log. Created from [`groceries-agent-data-template`](https://github.com/caseyWebb/groceries-agent-data-template); see [`SELF_HOSTING.md`](SELF_HOSTING.md).
 
-There is no database, no scheduler, no agent framework, no CLI. Everything else is glue.
+There is no database, no scheduler, no CLI, and no stateful agent runtime — the `agents` SDK is present only for its stateless `createMcpHandler` MCP transport (no Durable Objects, no Workflows). Everything else is glue.
 
 ## The determinism boundary
 
@@ -64,7 +64,7 @@ The MCP tool boundary is where this is enforced. Tools are **coarse and opiniona
 
 One self-hosted Worker serves a small friend group; each member connects their own Claude.ai. The code is a separate upstream self-hosters deploy without forking; **all the data** lives in **one operator-owned private repo** with a shared root plus one `users/<username>/` subtree per member.
 
-- **OAuth 2.1 provider.** Claude.ai custom connectors authenticate via OAuth, so the Worker hosts an OAuth provider (`@cloudflare/workers-oauth-provider`, KV-backed — no SQL). See `src/authorize.ts`.
+- **OAuth 2.1 provider.** Claude.ai custom connectors authenticate via OAuth, so the Worker hosts an OAuth provider (`@cloudflare/workers-oauth-provider`, KV-backed — no SQL). `src/index.ts` constructs the provider; `src/authorize.ts` renders the invite-code consent page.
 - **Identity is an operator-issued invite code** against a curated allowlist — members need no GitHub account. The issued access token's grant carries the member's `tenantId`.
 - **"Which tenant" is a path prefix.** `users/<username>/` in the single data repo, addressed by wrapping the GitHub client (`prefixedClient`). Each request resolves token → tenant *before* any tool runs, so no tool can reach another member's subtree.
 - **Repo access is a short-lived GitHub App installation token**, never a PAT. The App private key is a Cloudflare secret; the App id / installation id / data-repo coords are non-secret `wrangler.jsonc` vars.
@@ -112,7 +112,7 @@ The data repo is freely mutable; the Kroger cart is append-only. The agent **cap
 Capture is identical regardless of where the user shops; only the flush differs, picked by `preferences.toml [stores].primary`:
 
 - **Kroger online** (`primary: kroger`) — `place_order` resolves the whole `grocery_list.toml` against current Kroger availability, surfaces ambiguous/unavailable items as one batch, writes the Kroger cart, and appends learned `skus/kroger.toml` mappings. The repo is the mutable store (capture continuously); the cart is append-only (flush once).
-- **In-store walk** (`primary` is a store slug) — the `store-walk` flow reads the same list and orders it by a store's aisles (the shared `stores/` registry), walked hands-free one aisle at a time. It needs no cart and degrades gracefully: no layout → a department-grouped list from world knowledge; an aisle map → aisle-by-aisle; sparse `item_locations` → pinpoint the tricky items. On completion it advances picked items straight `active → received` — the same restock-the-pantry behavior as a Kroger pickup.
+- **In-store walk** (`primary` is a store slug) — the `store-walk` flow reads the same list and orders it by a store's aisles (the shared `stores/` registry), walked hands-free one aisle at a time. It needs no cart and degrades gracefully: no layout → a department-grouped list from world knowledge; an aisle map → aisle-by-aisle; sparse `item_locations` → pinpoint the tricky items. On completion it receives the picked items directly from `active` (no `in_cart`/`ordered` stage) — removing them and restocking the pantry, the same end-state as a Kroger pickup.
 
 The shared `stores/<slug>.toml` holds one objective aisle layout per *location* (mapping a store once helps the whole group), plus two sparse, lazily-grown facets (`item_locations`, `doesnt_carry`); attributed per-tenant store notes live at `users/<id>/store_notes/<slug>.toml`. Each grocery-list item carries a `domain` facet (default `grocery`) so a non-grocery run generalizes for free later.
 
@@ -163,7 +163,7 @@ They are deliberately split so the agent persona isn't auto-loaded into a develo
 
 ## Security posture
 
-- **The repo is public.** The data is low-sensitivity personal info, and a public repo collapses the auth story: an authless read-only path leaks nothing not already public, so the security boundary moves cleanly to the **write + Kroger** path. Accepted cost: eating habits, grocery cadence, and `preferences.toml`'s `preferred_location` (≈ rough geography) are public for the operator's own data — but member *data* lives in the **private** data repo, not here.
+- **The repo is public — but only code lives here.** This repo is the Worker plus build tooling; *all* personal data — the operator's included — lives in the **separate private data repo**, under a per-tenant `users/<username>/` subtree (the operator is just another tenant). A public *code* repo collapses the auth story: the MCP read path leaks nothing not already public, so the security boundary moves cleanly to the **write + Kroger** path. The one genuinely-public read surface is the **optional** GitHub Pages cookbook (`scripts/build-site.mjs`), and it publishes only the **shared, objective recipe corpus** (`recipes/*.md`) — never any `users/` subtree, not even the per-tenant `status`/`rating` overlay. Eating habits, grocery cadence, and `preferences.toml`'s `preferred_location` stay private with the rest of each member's state.
 - **Secrets never touch the repo.** Because it's public, this discipline is load-bearing: the GitHub App private key and Kroger OAuth tokens live as Cloudflare Worker secrets only (encrypted at rest, never logged, gitignored locally via `.dev.vars`).
 - **OAuth protects writes, not reads.** Claude.ai's custom-connector UI requires OAuth (no "no auth" / bearer option), and post-public-repo that OAuth guards the write/cart surface.
 - **The cart is write-only.** The Kroger Cart API can add but cannot remove or check out — so the agent literally cannot read the cart or check out for the user. A useful safety property: reconciliation reports what *should* change and tells the user to fix it in the Kroger app, never silently pretends items are gone.

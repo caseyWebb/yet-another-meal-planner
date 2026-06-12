@@ -221,7 +221,7 @@ added_at = "2026-06-09"
 - `domain` (free string, default `grocery`; common values `grocery | home-improvement | garden | pharmacy`) is the kind of **store** the item is bought at — **orthogonal to `kind`**: `kind` governs pantry reconcile on receive, `domain` governs which store-type an in-store walk includes the item in. Absent → read as `grocery` (existing items validate unchanged). Open-vocabulary, not a hard enum — a wrong tag only mis-files an item onto the wrong walk. Validated shape-only (a non-string fails) in the Worker write subset; `add_to_grocery_list` / `update_grocery_list` accept it.
 - `source` carries provenance for order-time dedup/behavior: `pantry_low`/`stockup` were promoted (don't re-prompt); `menu` aggregates with recipe needs; `ad_hoc` is a one-off.
 - `note` holds a **one-off** brand request ("the fancy olive oil this time") — explicitly NOT `preferences.toml`, which is for standing dispositions.
-- Lifecycle: `active → in_cart → ordered → received`. `received` is terminal (entry removed + pantry restocked). The transitions past `active` arrive with order placement in Change 06b.
+- Lifecycle: `active → in_cart → received`. The `status` **enum is only `active | in_cart | ordered`** — `received` is not a stored status but the receive *action* (the row is removed and the pantry restocked). `place_order` writes the `active → in_cart` advance; `ordered`/`ordered_at` exist in the schema but no path currently sets them.
 
 ## cooking_log.toml
 
@@ -536,7 +536,7 @@ private = true                             # owner-only; never surfaced to the g
 
 ## users/<username>/ready_to_eat.toml
 
-**Per-tenant** (a facet of the personal profile, not shared corpus — a ready-to-eat item is a Kroger SKU + "I'll eat this," pure personal taste with no shared content). One file per member; each item is tagged with a `meal` and keyed by a generated `slug`. The agent seeds it at onboarding (items the member names land `active`) and adds drafts as discovery surfaces them; the member dispositions drafts. `variety_rules` are expressed per meal.
+**Per-tenant** (a facet of the personal profile, not shared corpus — a ready-to-eat item is a Kroger SKU + "I'll eat this," pure personal taste with no shared content). One file per member; each item is tagged with a `meal` and keyed by a generated `slug`. The agent seeds it at onboarding (items the member names land `active`) and adds drafts as discovery surfaces them; the member dispositions drafts. (`variety_rules`, shown below, are a hand-maintained convention only — no tool currently reads, writes, or validates them.)
 
 ```toml
 # users/alice/ready_to_eat.toml
@@ -568,12 +568,13 @@ discovery_source = "kroger-flyer"
 brand = "Murray's"
 notes = null
 
+# variety_rules: reserved convention — hand-written only; no tool reads/writes/validates these yet
 [variety_rules.breakfast]
 max_per_category_per_week = 2
 preferred_rotation_days = 3      # don't suggest the same item within N days
 ```
 
-Addressed by `slug`: `update_ready_to_eat(slug, …)` dispositions or rates an item; `add_draft_ready_to_eat` appends (default `draft`, or `status: "active"` for an onboarding-named item) and returns the generated slug. `ready_to_eat_available()` reads the caller's own catalog. There is **no** `_indexes/ready_to_eat.json` — the per-member list is small and read directly. `null` fields are omitted on write (TOML has no null) and treated as absent on read.
+Addressed by `slug`: `update_ready_to_eat(slug, …)` dispositions or rates an item; `add_draft_ready_to_eat` appends (default `draft`, or `status: "active"` for an onboarding-named item) and returns the generated slug. `ready_to_eat_available()` reads the caller's own catalog. There is **no** `_indexes/ready_to_eat.json` — the per-member list is small and read directly. `null` fields are omitted on write (TOML has no null) and treated as absent on read. `category` is a free-form string (no controlled vocabulary), unlike the pantry `category` enum — the `"frozen"`/`"refrigerated"` values above are illustrative.
 
 ## stockup.toml
 

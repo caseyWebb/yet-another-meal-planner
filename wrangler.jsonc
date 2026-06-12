@@ -12,9 +12,9 @@
 	//   wrangler secret put KROGER_OAUTH_CLIENT_SECRET  (optional)
 	"name": "grocery-mcp",
 	"main": "src/index.ts",
-	// The Worker is reached only through the Cloudflare Access-gated custom domain.
-	// Disable the raw *.workers.dev route so there is no un-gated way in.
-	// (Access is removed in Section 3.3 once the OAuth provider gates the MCP surface.)
+	// The MCP surface (/mcp) is gated by the Worker's own OAuth 2.1 provider — there is
+	// no Cloudflare Access in front of it. Disable the raw *.workers.dev route so the
+	// Worker is reached only via the configured custom domain.
 	"workers_dev": false,
 	"compatibility_date": "2025-06-01",
 	// Required by the `agents` SDK internals (mimetext / node:diagnostics_channel).

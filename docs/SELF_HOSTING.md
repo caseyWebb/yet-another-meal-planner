@@ -114,6 +114,7 @@ Once deployed, add the Worker's runtime secrets in the Cloudflare dashboard → 
 
 - `GITHUB_APP_PRIVATE_KEY` — paste the `app-pkcs8.pem` contents (the dashboard accepts multi-line).
 - `KROGER_CLIENT_ID`, `KROGER_CLIENT_SECRET`.
+- *(optional)* `KROGER_OAUTH_CLIENT_ID`, `KROGER_OAUTH_CLIENT_SECRET` — only if you register a **separate** Kroger app for cart writes (the `authorization_code` grant). Left unset, cart writes reuse `KROGER_CLIENT_ID/SECRET` — one app carrying both grants, which is the default this guide assumes (step 3).
 
 *(CLI alternative: `npx wrangler secret put GITHUB_APP_PRIVATE_KEY < app-pkcs8.pem`, etc.)* These persist across deploys — set once. Delete `app-pkcs8.pem` when done — the key lives in Cloudflare now.
 
@@ -131,7 +132,7 @@ Run the **Onboard member** Action (your data repo → Actions) with `username: <
 2. claude.ai → **Customize → upload a custom plugin file** → pick that `.zip`. Open a **fresh chat** afterward (uploaded skills sync to the sandbox only on a new chat).
 3. On a later update you re-run **Build plugin** and re-upload — see *Taking upstream updates* for the Worker-first ordering. No GitHub account is needed to *use* the bundle, so friends just need the file.
 
-**Option 2 — fork + your own marketplace (only if you want pull-based auto-update).** Fork the code repo to `<you>/groceries-agent`, rebuild with your URL (`npm run build:plugin -- --mcp-url https://<worker-host>/mcp --out plugin/grocery-agent` — the build refuses to commit the placeholder), push, and install from your marketplace (`/plugin marketplace add <you>/groceries-agent`). This is the **only** path with `/plugin marketplace update` auto-pull; it costs a fork to maintain and a GitHub account to sync. If you also changed the reusable CI workflows, repoint your data repo's callers at your fork (`uses: <you>/groceries-agent/...@main`).
+**Option 2 — fork + your own marketplace (only if you want pull-based auto-update).** Fork the code repo to `<you>/groceries-agent`, rebuild with your URL (`npm run build:plugin -- --mcp-url https://<worker-host>/mcp` — the npm script already targets `plugin/grocery-agent`, and the build refuses to write the placeholder URL into that committed bundle, so passing `--mcp-url` is required), push, and install from your marketplace (`/plugin marketplace add <you>/groceries-agent`). This is the **only** path with `/plugin marketplace update` auto-pull; it costs a fork to maintain and a GitHub account to sync. If you also changed the reusable CI workflows, repoint your data repo's callers at your fork (`uses: <you>/groceries-agent/...@main`).
 
 **Option 3 — paste into a Claude project (no plugin).** Paste [`AGENT_INSTRUCTIONS.md`](../AGENT_INSTRUCTIONS.md) into a Claude project's custom instructions and add your Worker (`https://<worker-host>/mcp`) as that project's connector. No marketplace, no upload — but it's scoped to that one project and the skills arrive as one blob rather than the split, self-triggering set.
 
