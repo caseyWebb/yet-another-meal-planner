@@ -1,4 +1,4 @@
-// Outbound fetch with browser-like headers (design D7). Used by import_recipe
+// Outbound fetch with browser-like headers (design D7). Used by parse_recipe
 // and the feed fetches. This is request hygiene — it recovers sites that gate on
 // a bare/absent User-Agent — NOT a bot-wall bypass: the 2026-06-10 edge-egress
 // spike confirmed Cloudflare/Vercel bot management (Serious Eats, Food52)

@@ -289,7 +289,7 @@ async function main() {
   const out = path.resolve(argVal('--out', path.join(REPO_ROOT, 'dist', 'grocery-agent-plugin')));
   // The connector URL is operator-specific and lives on the machine, not in
   // committed tooling: --mcp-url wins, else $GROCERY_MCP_URL (set in the gitignored
-  // mise.local.toml), else the placeholder. See CLAUDE.md "Building the plugin".
+  // mise.local.toml), else the placeholder. See CONTRIBUTING.md "Building the plugin".
   const mcpUrl = argVal('--mcp-url', process.env.GROCERY_MCP_URL ?? MCP_URL_PLACEHOLDER);
   // The committed marketplace bundle (.claude-plugin/marketplace.json → ./plugin/<name>)
   // is what installers actually get; writing the placeholder there silently breaks

@@ -73,6 +73,21 @@ npm run test:tooling                                       # node --test (tests/
 
 **Reusable Actions.** This public repo hosts `on: workflow_call` workflows that operators' private data repos call (`uses: caseyWebb/groceries-agent/...@main`), billed to the data-repo owner: `data-deploy.yml`, `data-onboard.yml` / `data-revoke.yml` (KV-only member provisioning), `data-build-indexes.yml` / `data-build-site.yml`, and `data-build-plugin.yml` (mint a self-hoster's plugin bundle with their own connector URL baked in). Onboard/revoke run in the **private** data repo so the invite codes they print never hit a public log. `docs/data-template/.github/workflows/` is the live reference for the thin data-repo callers.
 
+## Building the plugin (`AGENT_INSTRUCTIONS.md` → `plugin/`)
+
+After editing `AGENT_INSTRUCTIONS.md` (or a `src/` tool description the skills quote), regenerate the committed bundle:
+
+```bash
+npm run build:plugin   # → plugin/grocery-agent/ (connector URL from $GROCERY_MCP_URL)
+```
+
+The build bakes the **connector URL** into `plugin/grocery-agent/.mcp.json` and **refuses to write the placeholder URL into the committed bundle** (that would break every install) — so the real URL has to be on hand. Either:
+
+- set it once in the gitignored `mise.local.toml` (`GROCERY_MCP_URL = "https://<your-worker-host>/mcp"`) and run under `mise` so the env var loads, **or**
+- pass it explicitly: `node scripts/build-plugin.mjs --out plugin/grocery-agent --mcp-url https://<your-worker-host>/mcp`.
+
+If `npm run build:plugin` aborts with *"REFUSING to write the placeholder connector URL"*, that guard fired because neither was set. For a throwaway build where the URL doesn't matter (inspecting output, never committed), `node scripts/build-plugin.mjs` writes to `dist/grocery-agent-plugin/` with the placeholder; `--check` parses + validates without writing. The bundle is **generated** — never hand-edit `plugin/`.
+
 ## Tool & skill surfaces — what goes where
 
 The plugin ships **both** the generated skills (from `AGENT_INSTRUCTIONS.md`) and the MCP tool descriptions (`src/`), and both reach the agent at runtime. Keep each fact in exactly one home:

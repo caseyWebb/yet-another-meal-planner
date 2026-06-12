@@ -1,7 +1,7 @@
 // Discovery + draft-creation tools (recipe-discovery capability):
 //   - fetch_rss_discoveries — pull configured feeds, dedup vs corpus, return a
 //     candidate POOL (no taste score; the agent judges fit and picks 1–2).
-//   - import_recipe — PARSE-ONLY: fetch a page, return its JSON-LD Recipe data.
+//   - parse_recipe — PARSE-ONLY: fetch a page, return its JSON-LD Recipe data.
 //     Writes nothing. The agent cleans/classifies, then calls create_recipe.
 //   - create_recipe — write a new draft recipe as one solo commit.
 //
@@ -50,7 +50,7 @@ export function registerDiscoveryTools(server: McpServer, sharedGh: GitHubClient
     "fetch_rss_discoveries",
     {
       description:
-        "Pull the SHARED, group-wide discovery feeds (root feeds.toml) and return a deduped POOL of candidate recipes ({ url, title, source, feed_weight, summary }) — deduped against recipes already in the corpus (by source URL) and canonicalized (tracking query strings stripped). No taste score: YOU judge taste fit against the user's taste profile (read_taste) and pick the 1–2 worth importing, then import_recipe + create_recipe each. No configured feeds returns an empty pool. Unreachable feeds are skipped (reported in `skipped`), not fatal.",
+        "Pull the SHARED, group-wide discovery feeds (root feeds.toml) and return a deduped POOL of candidate recipes ({ url, title, source, feed_weight, summary }) — deduped against recipes already in the corpus (by source URL) and canonicalized (tracking query strings stripped). No taste score: YOU judge taste fit against the user's taste profile (read_taste) and pick the 1–2 worth importing, then parse_recipe + create_recipe each. No configured feeds returns an empty pool. Unreachable feeds are skipped (reported in `skipped`), not fatal.",
       inputSchema: {},
     },
     () =>
@@ -89,10 +89,10 @@ export function registerDiscoveryTools(server: McpServer, sharedGh: GitHubClient
   );
 
   server.registerTool(
-    "import_recipe",
+    "parse_recipe",
     {
       description:
-        "PARSE-ONLY: fetch a recipe page and return its schema.org JSON-LD as structured data ({ title, ingredients[], instructions[], servings, time_total, time_active, source, tools_hint? }). Writes nothing and commits nothing — clean up / classify the data, assemble the markdown body (with ## Ingredients and ## Instructions), then call create_recipe. `tools_hint` (present only when the page lists a schema.org `tool`) is a NON-AUTHORITATIVE hint for classifying `requires_equipment` — it lists every utensil, so default to [] and tag only truly-irreplaceable gear; never copy tools_hint into requires_equipment. If the source URL is already in the shared corpus, the result carries `existing_slug` — reuse that recipe instead of re-creating it (it's shared, you can rate/note it). Structured errors: unreachable (couldn't fetch), no_jsonld (no JSON-LD on page), not_a_recipe (JSON-LD but no Recipe), incomplete (Recipe missing ingredients/instructions). Bot-walled/paywalled sites (e.g. Serious Eats, NYT) return unreachable — paste the recipe instead.",
+        "Parse a recipe page: fetch it and return its schema.org JSON-LD as structured data ({ title, ingredients[], instructions[], servings, time_total, time_active, source, tools_hint? }). Reads only — writes nothing and commits nothing. Clean up / classify the data, assemble the markdown body (with ## Ingredients and ## Instructions), then call create_recipe to persist it. `tools_hint` (present only when the page lists a schema.org `tool`) is a NON-AUTHORITATIVE hint for classifying `requires_equipment` — it lists every utensil, so default to [] and tag only truly-irreplaceable gear; never copy tools_hint into requires_equipment. If the source URL is already in the shared corpus, the result carries `existing_slug` — reuse that recipe instead of re-creating it (it's shared, you can rate/note it). Structured errors: unreachable (couldn't fetch), no_jsonld (no JSON-LD on page), not_a_recipe (JSON-LD but no Recipe), incomplete (Recipe missing ingredients/instructions). Bot-walled/paywalled sites (e.g. Serious Eats, NYT) return unreachable — paste the recipe instead.",
       inputSchema: { url: z.string() },
     },
     ({ url }) =>
