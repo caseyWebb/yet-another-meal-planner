@@ -32,8 +32,9 @@ export interface Tenant {
   dataRepo: RepoCoords;
   /** Repo-relative prefix for this tenant's personal files, e.g. "users/alice" (empty during the pre-migration single-user bootstrap). */
   userPrefix: string;
-  /** GitHub App installation covering the data repo (on the operator's account). */
-  installationId: string;
+  /** GitHub App installation covering the data repo. Optional: when unset the auth
+   *  provider resolves it at runtime from `dataRepo` (see createInstallationAuth). */
+  installationId?: string;
 }
 
 /** Structured rejection returned when a bearer token resolves to no tenant. */

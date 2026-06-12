@@ -54,7 +54,7 @@ GitHub → **Settings → Developer settings → GitHub Apps → New GitHub App*
 - Everything else: No access.
 - **Where can this be installed?**: Only on this account.
 
-Then capture three things:
+Then capture two things and install the App:
 
 1. **App ID** (General page).
 2. **Private key** → "Generate a private key" downloads a PKCS#1 PEM. Convert it to **PKCS#8** (the one local step):
@@ -62,7 +62,7 @@ Then capture three things:
    openssl pkcs8 -topk8 -inform PEM -outform PEM -nocrypt \
      -in your-app.private-key.pem -out app-pkcs8.pem
    ```
-3. **Installation ID** → "Install App" → your account → **Only select repositories** → `groceries-agent-data` → Install. The URL ends `…/settings/installations/<INSTALLATION_ID>`.
+3. **Install the App** → "Install App" → your account → **Only select repositories** → `groceries-agent-data` → Install. You don't need to copy the installation id — the Worker resolves it at runtime from the App's installations. (Want to pin it? Set `GITHUB_INSTALLATION_ID` from the install URL `…/settings/installations/<id>` to skip the lookup.)
 
 > If you ever delete and recreate the data repo, re-add it under the App's "Repository access" — installations track repos by internal id, so a recreated repo isn't auto-included.
 
@@ -74,49 +74,41 @@ At [developer.kroger.com](https://developer.kroger.com), register one **public-t
 - Redirect URI: `https://<worker-host>/oauth/callback`.
 - Capture the **client id** + **secret**.
 
-## 4. Create the KV namespaces
+## 4. KV namespaces — auto-provisioned (nothing to do)
 
-Cloudflare dashboard → **Workers & Pages → KV → Create namespace** (×3): `KROGER_KV`, `TENANT_KV`, `OAUTH_KV`. Note each namespace **id**. *(CLI alternative: `npx wrangler kv namespace create <NAME>`.)*
+The template `wrangler.jsonc` ships **id-less** KV bindings (`KROGER_KV`, `TENANT_KV`, `OAUTH_KV`); the first **Deploy** (step 6) creates the namespaces and pins their ids back into your `wrangler.jsonc`. *(Want to pre-create them instead? Cloudflare dashboard → KV, or `npx wrangler kv namespace create <NAME>`, and paste the ids — but you don't need to.)*
 
 ## 5. Configure the data repo
 
-**a. Add your `wrangler.jsonc`.** Copy [the code repo's `wrangler.jsonc`](../wrangler.jsonc) to the **root of your data repo** and edit the parts that are yours — all non-secret:
+**a. Set one value in `wrangler.jsonc`.** The template (from step 1) already carries it at the repo root — just set your **`GITHUB_APP_ID`**:
 
 ```jsonc
-"name": "<your worker name>",        // e.g. grocery-mcp; this is your worker host
-"vars": {
-  "GITHUB_APP_ID": "<app id>",
-  "GITHUB_INSTALLATION_ID": "<installation id>",
-  "DATA_OWNER": "<you>",
-  "DATA_REPO": "groceries-agent-data",
-  "DATA_REF": "main"
-},
-"kv_namespaces": [
-  { "binding": "KROGER_KV", "id": "<KROGER_KV id>" },
-  { "binding": "TENANT_KV", "id": "<TENANT_KV id>" },
-  { "binding": "OAUTH_KV",  "id": "<OAUTH_KV id>" }
-]
+"vars": { "GITHUB_APP_ID": "<app id>" }
 ```
 
-Leave `main`, `compatibility_date`, `compatibility_flags`, and `observability` as-is — they belong to the source. At deploy time this file is overlaid onto the upstream Worker source. (The tenant id and `users/<username>/` prefix are derived per request from the OAuth grant — no env var.)
+Everything else is a default or auto-handled, so you don't touch it: `name` defaults to `grocery-mcp` (per-account, no clash); **KV ids auto-provision** (step 4); **`DATA_OWNER`/`DATA_REPO` are intuited** from your repo at deploy and `DATA_REF` is `main`; **`GITHUB_INSTALLATION_ID` is resolved at runtime** by the Worker. `workers_dev: true` gives you a `grocery-mcp.<your-subdomain>.workers.dev` URL out of the box (the OAuth provider gates it; switch to a custom domain if you prefer). The tenant id + `users/<username>/` prefix come from the OAuth grant per request.
 
-**b. Set one Actions secret + a few variables** on the data repo (Settings → Secrets and variables → Actions):
+**b. Set secrets + an optional variable** on the data repo (Settings → Secrets and variables → Actions):
 
-- Secret **`CLOUDFLARE_API_TOKEN`** — a Cloudflare token with Workers + KV edit. The *only* secret, used by Deploy / Onboard / Revoke. **This is why the data repo is private** — it holds your credentials and the invite codes onboarding prints.
-- Variable **`TENANT_KV_ID`** — your `TENANT_KV` namespace id (Onboard/Revoke write KV by id, since they don't read `wrangler.jsonc`).
-- Variable **`WORKER_NAME`** (optional) — your worker `name`, so Onboard can auto-resolve the connector host for its summary. Or set **`WORKER_HOST`** directly (e.g. `grocery.example.com`).
+- Secret **`CLOUDFLARE_API_TOKEN`** — a Cloudflare token with Workers + KV edit, used by Deploy / Onboard / Revoke. **This is why the data repo is private** — it holds your credentials and the invite codes onboarding prints.
+- Secrets **`KROGER_CLIENT_ID`** + **`KROGER_CLIENT_SECRET`** *(optional)* — when both are set, the deploy puts them as Worker secrets for you (skip the dashboard for these). Leave them unset to set them in the dashboard in step 6 instead.
+- Variable **`WORKER_NAME`** or **`WORKER_HOST`** *(optional)* — lets Onboard show the connector URL in its summary.
 
-## 6. Deploy + set the Worker's runtime secrets
+There's no `TENANT_KV_ID` — Onboard/Revoke address KV by binding from `wrangler.jsonc`.
 
-Run the **Deploy Worker** Action (your data repo → Actions → Run). It checks out the upstream Worker source, overlays your `wrangler.jsonc`, typechecks, tests, and `wrangler deploy`s — billed to your account.
+## 6. Deploy + set the App key
 
-Once deployed, add the Worker's runtime secrets in the Cloudflare dashboard → your Worker → **Settings → Variables and Secrets → Add (encrypted)**:
+Run the **Deploy Worker** Action (your data repo → Actions → Run). It overlays your `wrangler.jsonc`, typechecks, tests, `wrangler deploy`s — **auto-provisioning the KV namespaces on the first run and pinning their ids back into your repo** — injects your data-repo coordinates, and sets your Kroger secrets if you provided them in 5b. Billed to your account.
+
+**One secret stays manual — the GitHub App private key**, by design: it's the master key to your data repo, so it lives only in Cloudflare, never in a repo. Cloudflare dashboard → your Worker → **Settings → Variables and Secrets → Add (encrypted)**:
 
 - `GITHUB_APP_PRIVATE_KEY` — paste the `app-pkcs8.pem` contents (the dashboard accepts multi-line).
-- `KROGER_CLIENT_ID`, `KROGER_CLIENT_SECRET`.
-- *(optional)* `KROGER_OAUTH_CLIENT_ID`, `KROGER_OAUTH_CLIENT_SECRET` — only if you register a **separate** Kroger app for cart writes (the `authorization_code` grant). Left unset, cart writes reuse `KROGER_CLIENT_ID/SECRET` — one app carrying both grants, which is the default this guide assumes (step 3).
+- `KROGER_CLIENT_ID`, `KROGER_CLIENT_SECRET` — **only if** you didn't set them as repo secrets in 5b.
+- *(optional)* `KROGER_OAUTH_CLIENT_ID`, `KROGER_OAUTH_CLIENT_SECRET` — only if you register a **separate** Kroger app for cart writes (the `authorization_code` grant). Left unset, cart writes reuse `KROGER_CLIENT_ID/SECRET` — one app, both grants (the default this guide assumes, step 3).
 
-*(CLI alternative: `npx wrangler secret put GITHUB_APP_PRIVATE_KEY < app-pkcs8.pem`, etc.)* These persist across deploys — set once. Delete `app-pkcs8.pem` when done — the key lives in Cloudflare now.
+*(CLI alternative: `npx wrangler secret put GITHUB_APP_PRIVATE_KEY < app-pkcs8.pem`.)* Secrets persist across deploys and are read at runtime — set the key any time (before or after deploy, no redeploy needed). Delete `app-pkcs8.pem` when done.
+
+> **Already running an older (pre-zero-config) instance?** Keep your explicit KV ids in `wrangler.jsonc` — auto-provision would create *new* empty namespaces, orphaning your data. The id-less template is for fresh setups only.
 
 ## 7. Onboard yourself
 

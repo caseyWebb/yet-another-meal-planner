@@ -38,18 +38,73 @@ async function mintAppJwt(appId: string, privateKeyPem: string): Promise<string>
     .sign(key);
 }
 
+/** Which installation to mint tokens for: an explicit id (configured), or the data
+ *  repo coords from which the id is resolved at runtime when no id is configured. */
+export interface InstallationRef {
+  /** Configured installation id, if any. When set, used as-is (no resolution). */
+  id?: string;
+  owner: string;
+  repo: string;
+}
+
+// Resolved installation ids, keyed by `<owner>/<repo>` (lowercased). The id is
+// global per deployment (one App install covers the data repo) and changes only on
+// reinstall, so an isolate-lifetime cache is plenty; a cold start re-resolves.
+const installationIdCache = new Map<string, string>();
+
 /**
- * An installation-token provider for one installation id. `appId` and
- * `privateKeyPem` are the App credentials (PKCS#8 PEM). `fetchImpl` is injectable
- * for tests.
+ * Resolve which App installation covers `owner/repo` via
+ * `GET /repos/{owner}/{repo}/installation` (App-JWT authenticated). Lets a deploy
+ * omit a hand-configured installation id — the Worker already holds the App key.
+ */
+async function resolveInstallationId(
+  appId: string,
+  privateKeyPem: string,
+  owner: string,
+  repo: string,
+  fetchImpl: typeof fetch,
+): Promise<string> {
+  const cacheKey = `${owner}/${repo}`.toLowerCase();
+  const cached = installationIdCache.get(cacheKey);
+  if (cached) return cached;
+
+  const jwt = await mintAppJwt(appId, privateKeyPem);
+  const res = await fetchImpl(`https://api.github.com/repos/${owner}/${repo}/installation`, {
+    headers: {
+      Authorization: `Bearer ${jwt}`,
+      Accept: "application/vnd.github+json",
+      "X-GitHub-Api-Version": "2022-11-28",
+      "User-Agent": USER_AGENT,
+    },
+  });
+  if (!res.ok) {
+    throw new GitHubError(
+      res.status,
+      `Failed to resolve App installation for ${owner}/${repo} (${res.status}) — is the App installed on that repo?`,
+    );
+  }
+  const data = (await res.json()) as { id?: number };
+  if (!data.id) throw new GitHubError(502, "Malformed installation response (no id)");
+  const id = String(data.id);
+  installationIdCache.set(cacheKey, id);
+  return id;
+}
+
+/**
+ * An installation-token provider. `appId` and `privateKeyPem` are the App
+ * credentials (PKCS#8 PEM). `installation` is either an explicit id or the data
+ * repo coords to resolve it from at first use. `fetchImpl` is injectable for tests.
  */
 export function createInstallationAuth(
   appId: string,
   privateKeyPem: string,
-  installationId: string,
+  installation: InstallationRef,
   fetchImpl: typeof fetch = fetch,
 ): TokenProvider {
   async function token(): Promise<string> {
+    const installationId =
+      installation.id ??
+      (await resolveInstallationId(appId, privateKeyPem, installation.owner, installation.repo, fetchImpl));
     const cached = tokenCache.get(installationId);
     if (cached && cached.expiresAt - REFRESH_SKEW_MS > Date.now()) {
       return cached.token;
@@ -89,7 +144,8 @@ export function createInstallationAuth(
   return { token };
 }
 
-/** Test helper: drop the module-level installation-token cache. */
+/** Test helper: drop the module-level installation-token + resolved-id caches. */
 export function __resetInstallationTokenCache(): void {
   tokenCache.clear();
+  installationIdCache.clear();
 }

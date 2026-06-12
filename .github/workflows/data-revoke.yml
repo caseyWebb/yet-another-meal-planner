@@ -4,9 +4,9 @@
 # workflow_dispatch caller — see that repo's .github/workflows/revoke.yml. Run it
 # from the data repo (private), never the public code repo/fork.
 #
-# KV-only: no checkout, no GitHub App key, no wrangler.jsonc. The namespace is
-# addressed by id (tenant_kv_id). To also delete their data, remove
-# users/<username>/ from the data repo manually (its web UI).
+# No GitHub App key. The TENANT_KV namespace is addressed by BINDING, resolved from
+# the operator's wrangler.jsonc (checked out here) — no separate tenant_kv_id. To
+# also delete their data, remove users/<username>/ from the data repo manually.
 name: data-revoke
 
 on:
@@ -19,10 +19,6 @@ on:
       invite_code:
         description: "Their invite code to delete (optional — only needed if it was never used/rotated)."
         required: false
-        type: string
-      tenant_kv_id:
-        description: "The TENANT_KV namespace id (from wrangler.jsonc / the Cloudflare dashboard)."
-        required: true
         type: string
       cloudflare_account_id:
         description: "Cloudflare account id. Only needed if the API token spans multiple accounts."
@@ -37,17 +33,21 @@ jobs:
   revoke:
     runs-on: ubuntu-latest
     steps:
+      # The data repo — for its wrangler.jsonc, so KV is addressed by binding.
+      - uses: actions/checkout@v6
+
       - name: Remove from KV (allowlist + invite)
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ inputs.cloudflare_account_id }}
-          KVID: ${{ inputs.tenant_kv_id }}
           U: ${{ inputs.username }}
           CODE: ${{ inputs.invite_code }}
         run: |
-          npx --yes wrangler kv key delete --namespace-id="$KVID" --remote "tenant:${U}" || true
+          # KV by --binding TENANT_KV (from the checked-out wrangler.jsonc). See the
+          # onboard workflow's VERIFY note (zero-config-deploy task 4).
+          npx --yes wrangler kv key delete --binding TENANT_KV --remote "tenant:${U}" || true
           if [ -n "$CODE" ]; then
-            npx --yes wrangler kv key delete --namespace-id="$KVID" --remote "invite:${CODE}" || true
+            npx --yes wrangler kv key delete --binding TENANT_KV --remote "invite:${CODE}" || true
           fi
 
       - name: Summary

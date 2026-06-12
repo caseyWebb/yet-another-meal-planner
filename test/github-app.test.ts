@@ -36,7 +36,7 @@ function fakeFetch(ttlMs: number) {
 describe("createInstallationAuth", () => {
   it("mints an installation token via the App JWT", async () => {
     const { calls, fetchImpl } = fakeFetch(60 * 60_000);
-    const auth = createInstallationAuth("123", pem, "42", fetchImpl);
+    const auth = createInstallationAuth("123", pem, { id: "42", owner: "o", repo: "r" }, fetchImpl);
 
     const token = await auth.token();
 
@@ -51,7 +51,7 @@ describe("createInstallationAuth", () => {
 
   it("caches the token across calls (single mint)", async () => {
     const { calls, fetchImpl } = fakeFetch(60 * 60_000);
-    const auth = createInstallationAuth("123", pem, "42", fetchImpl);
+    const auth = createInstallationAuth("123", pem, { id: "42", owner: "o", repo: "r" }, fetchImpl);
 
     const a = await auth.token();
     const b = await auth.token();
@@ -63,7 +63,7 @@ describe("createInstallationAuth", () => {
   it("re-mints when the cached token is within the refresh skew of expiry", async () => {
     // Token already inside the 60s refresh skew → never cacheable, re-minted each call.
     const { calls, fetchImpl } = fakeFetch(30_000);
-    const auth = createInstallationAuth("123", pem, "42", fetchImpl);
+    const auth = createInstallationAuth("123", pem, { id: "42", owner: "o", repo: "r" }, fetchImpl);
 
     const a = await auth.token();
     const b = await auth.token();
@@ -75,8 +75,8 @@ describe("createInstallationAuth", () => {
 
   it("keeps installations' tokens separate (no cross-installation bleed)", async () => {
     const { fetchImpl } = fakeFetch(60 * 60_000);
-    const a = createInstallationAuth("123", pem, "42", fetchImpl);
-    const b = createInstallationAuth("123", pem, "99", fetchImpl);
+    const a = createInstallationAuth("123", pem, { id: "42", owner: "o", repo: "r" }, fetchImpl);
+    const b = createInstallationAuth("123", pem, { id: "99", owner: "o", repo: "r" }, fetchImpl);
 
     const ta = await a.token();
     const tb = await b.token();
@@ -87,7 +87,39 @@ describe("createInstallationAuth", () => {
   it("surfaces a GitHubError when minting fails", async () => {
     const fetchImpl = (async () =>
       new Response("nope", { status: 403 })) as unknown as typeof fetch;
-    const auth = createInstallationAuth("123", pem, "42", fetchImpl);
+    const auth = createInstallationAuth("123", pem, { id: "42", owner: "o", repo: "r" }, fetchImpl);
+
+    await expect(auth.token()).rejects.toBeInstanceOf(GitHubError);
+  });
+
+  it("resolves the installation id from the repo when none is configured", async () => {
+    const calls: string[] = [];
+    const fetchImpl = (async (url: string | URL) => {
+      const u = String(url);
+      calls.push(u);
+      if (u.endsWith("/repos/o/r/installation")) {
+        return new Response(JSON.stringify({ id: 42 }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return new Response(
+        JSON.stringify({ token: "inst-token-resolved", expires_at: new Date(Date.now() + 60 * 60_000).toISOString() }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }) as unknown as typeof fetch;
+
+    const auth = createInstallationAuth("123", pem, { owner: "o", repo: "r" }, fetchImpl);
+    const token = await auth.token();
+
+    expect(token).toBe("inst-token-resolved");
+    expect(calls).toContain("https://api.github.com/repos/o/r/installation");
+    expect(calls).toContain(TOKEN_URL); // resolved id 42 → mints at /42/access_tokens
+  });
+
+  it("surfaces a GitHubError when installation resolution fails", async () => {
+    const fetchImpl = (async () => new Response("no install", { status: 404 })) as unknown as typeof fetch;
+    const auth = createInstallationAuth("123", pem, { owner: "o", repo: "r" }, fetchImpl);
 
     await expect(auth.token()).rejects.toBeInstanceOf(GitHubError);
   });

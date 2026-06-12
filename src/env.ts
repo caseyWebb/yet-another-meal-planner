@@ -15,9 +15,12 @@ export interface Env {
   GITHUB_APP_PRIVATE_KEY: string;
   /**
    * Installation id of the App install on the operator's account that covers the
-   * data repo. Global (one repo, one install). Non-secret var.
+   * data repo. Global (one repo, one install). Non-secret var. OPTIONAL: when
+   * unset, the Worker resolves it at runtime from the App's installations
+   * (`GET /repos/{owner}/{repo}/installation`) and caches it. Set it to pin/skip
+   * the lookup (e.g. an established deployment).
    */
-  GITHUB_INSTALLATION_ID: string;
+  GITHUB_INSTALLATION_ID?: string;
 
   // --- The single private data repo (recipes/ + reference data + users/<id>/). Global. ---
   /** Data repo owner (the operator's personal account), e.g. "caseyWebb". */

@@ -1,15 +1,20 @@
 # Reusable workflow: deploy the grocery-mcp Worker. A DATA repo (PRIVATE) calls
 # this from a thin workflow_dispatch caller — see that repo's .github/workflows/
 # deploy.yml. The data repo is the operator's single control plane: it holds the
-# only Actions secret (CLOUDFLARE_API_TOKEN) and the operator's wrangler config.
-# The public code repo holds NO secrets and is never forked for ops.
+# Actions secrets (CLOUDFLARE_API_TOKEN + optional Kroger creds) and the operator's
+# wrangler config. The public code repo holds NO secrets and is never forked for ops.
 #
 # Source vs config: the Worker SOURCE comes from this code repo (pinned by
 # code_ref — DRY, updates propagate via @main); the operator's wrangler.jsonc
-# (their KV ids, DATA_* coords, App id, worker name/route) lives in THEIR data repo
-# and is overlaid onto the source before deploy. The Worker's runtime secrets
-# (GitHub App key, Kroger creds) are set once via `wrangler secret put` and persist
-# across deploys — never here.
+# lives in THEIR data repo and is overlaid onto the source before deploy.
+#
+# Zero-config (see the zero-config-deploy change):
+#  - KV ids are auto-provisioned by `wrangler deploy` (the template config ships
+#    id-less bindings) and PINNED BACK into the data repo so redeploys reuse them.
+#  - DATA_OWNER/DATA_REPO are intuited from `github.repository`; DATA_REF defaults
+#    to main — injected as --var, not hand-set in wrangler.jsonc.
+#  - The GitHub App private key STAYS a manual Cloudflare secret (never in a repo).
+#    The lower-value Kroger creds are optionally set here from data-repo secrets.
 name: data-deploy
 
 on:
@@ -27,16 +32,28 @@ on:
       CLOUDFLARE_API_TOKEN:
         description: "Cloudflare token with Workers + KV edit."
         required: true
+      KROGER_CLIENT_ID:
+        description: "Optional: Kroger client id; when set, the deploy puts it as a Worker secret."
+        required: false
+      KROGER_CLIENT_SECRET:
+        description: "Optional: Kroger client secret; set alongside KROGER_CLIENT_ID."
+        required: false
+
+# contents: write so the deploy can pin auto-provisioned KV ids back into the data
+# repo's wrangler.jsonc. The caller must grant the same.
+permissions:
+  contents: write
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      # The caller's repo (the data repo) — for the operator's wrangler.jsonc.
+      # The caller's repo (the data repo) — for the operator's wrangler.jsonc, and
+      # the target of the KV-id pin-back commit.
       - uses: actions/checkout@v6
 
       # This code repo — the Worker source + build deps. Into _code/ so nothing is
-      # ever committed back to the data repo.
+      # ever committed back to the data repo (except the pinned ids, below).
       - uses: actions/checkout@v6
         with:
           repository: caseyWebb/groceries-agent
@@ -46,6 +63,13 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: "22"
+
+      # DATA_OWNER/DATA_REPO are literally the repo this workflow runs in.
+      - name: Derive data-repo coordinates
+        id: coords
+        run: |
+          echo "owner=${GITHUB_REPOSITORY%/*}" >> "$GITHUB_OUTPUT"
+          echo "repo=${GITHUB_REPOSITORY#*/}" >> "$GITHUB_OUTPUT"
 
       - name: Overlay the operator's wrangler config onto the source
         run: cp "${{ inputs.config_path }}" _code/wrangler.jsonc
@@ -62,8 +86,56 @@ jobs:
         run: npm test
         working-directory: _code
 
+      # Deploy. --var injects the intuited data-repo coords into the Worker's vars
+      # (the Worker has no Actions context, so they're baked at deploy). KV bindings
+      # with no id are auto-provisioned here.
       - name: Deploy
         uses: cloudflare/wrangler-action@v4
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           workingDirectory: _code
+          command: >-
+            deploy
+            --var DATA_OWNER:${{ steps.coords.outputs.owner }}
+            --var DATA_REPO:${{ steps.coords.outputs.repo }}
+            --var DATA_REF:main
+
+      # The Worker exists now, so secrets can be put. Only set Kroger creds if the
+      # operator provided them as repo secrets — never clobber dashboard-set values
+      # with empties. The App private key is intentionally NOT handled here.
+      - name: Set Kroger secrets (only if provided)
+        working-directory: _code
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          KID: ${{ secrets.KROGER_CLIENT_ID }}
+          KSECRET: ${{ secrets.KROGER_CLIENT_SECRET }}
+        run: |
+          if [ -n "$KID" ] && [ -n "$KSECRET" ]; then
+            printf '%s' "$KID"     | npx --yes wrangler secret put KROGER_CLIENT_ID
+            printf '%s' "$KSECRET" | npx --yes wrangler secret put KROGER_CLIENT_SECRET
+          else
+            echo "Kroger creds not supplied as repo secrets — leaving any dashboard-set values untouched."
+          fi
+
+      # Pin auto-provisioned KV ids back into the data repo so the NEXT deploy reuses
+      # the same namespaces (our overlay copies the config into the throwaway _code/,
+      # so wrangler's write-back would otherwise be discarded and re-provision).
+      #
+      # VERIFY ON FIRST REAL DEPLOY (zero-config-deploy task 3.3): confirm wrangler
+      # writes the provisioned ids into _code/wrangler.jsonc in place, and that a
+      # wholesale copy-back is acceptable (the template config is machine-managed; if
+      # comment preservation matters, switch to a surgical id-only patch).
+      - name: Pin auto-provisioned KV ids back to the data repo
+        env:
+          CONFIG: ${{ inputs.config_path }}
+        run: |
+          cp _code/wrangler.jsonc "$CONFIG"
+          if git diff --quiet -- "$CONFIG"; then
+            echo "No KV id changes to persist."
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add "$CONFIG"
+            git commit -m "chore(deploy): pin auto-provisioned KV namespace ids"
+            git push
+          fi

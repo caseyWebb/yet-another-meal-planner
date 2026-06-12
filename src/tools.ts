@@ -120,7 +120,7 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
   const installationAuth = createInstallationAuth(
     env.GITHUB_APP_ID,
     env.GITHUB_APP_PRIVATE_KEY,
-    tenant.installationId,
+    { id: tenant.installationId, owner: tenant.dataRepo.owner, repo: tenant.dataRepo.repo },
   );
   const dataGh = createGitHubClient(tenant.dataRepo, installationAuth);
   const sharedGh = dataGh;

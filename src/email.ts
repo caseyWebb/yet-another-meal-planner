@@ -441,7 +441,7 @@ export async function handleInboundEmail(message: InboundMessage, env: Env): Pro
   const auth = createInstallationAuth(
     env.GITHUB_APP_ID,
     env.GITHUB_APP_PRIVATE_KEY,
-    env.GITHUB_INSTALLATION_ID,
+    { id: env.GITHUB_INSTALLATION_ID, owner: env.DATA_OWNER, repo: env.DATA_REPO },
   );
   const gh = createGitHubClient(dataCoords(env), auth);
 
