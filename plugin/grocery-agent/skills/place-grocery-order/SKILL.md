@@ -22,4 +22,4 @@ This is the **online flush** (Kroger) — distinct from the menu request's captu
 
 **Lifecycle past `in_cart` is user-asserted — never claim it on your own:**
 - *"I placed the order"* → advance `in_cart` items to `ordered` (`update_grocery_list`).
-- *"I picked up the groceries"* → `received` (terminal): `remove_from_grocery_list` for each, and for `grocery`-kind items only, restock the pantry (`update_pantry`). `household`/`other` items don't touch the pantry. Then, for the fresh perishables just received, offer a couple of storage tips following the **Putting groceries away** guidance.
+- *"I picked up the groceries"* → `received` (terminal): one `commit_changes` removing the picked items via `grocery_list_ops` and — for `grocery`-kind items only — restocking the pantry via `pantry_operations`. `household`/`other` items don't touch the pantry. Then, for the fresh perishables just received, offer a couple of storage tips following the **Putting groceries away** guidance.

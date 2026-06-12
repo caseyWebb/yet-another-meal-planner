@@ -692,6 +692,7 @@ Persist a batch of repo updates as **one** atomic git commit — no cart. The ev
   config_updates:       [{ file, content }],          // file: preferences|taste|diet_principles|substitutions|aliases
   cooking_log_entries:  [{ type, date?, recipe?, name?, protein?, cuisine? }],  // append cooked meals; date defaults to today
   meal_plan_ops:        [{ op, recipe, planned_for? }],   // op: add | remove  (committed cook intent)
+  grocery_list_ops:     [{ op, item?, name? }],           // op: add | update | remove  (SKU-free buy list)
   commit_message:       string
 }
 ```
@@ -700,6 +701,8 @@ All sections are optional except `commit_message`.
 **`cooking_log_entries` (cooking-history).** Appends to `cooking_log.toml`. `type` is `recipe | ready_to_eat | ad_hoc`; `recipe` is required for `type=recipe` (slug-only), `name` for the others. For each `type=recipe` entry, the recipe's `last_cooked` is **derived** (max log date for that slug) and co-written in the **same** commit — never set `last_cooked` via `recipe_updates`. Ready-to-eat consumption is a `{type:"ready_to_eat", name}` entry **plus** a `pantry_operations` `remove` when the user used the last of it (pantry is presence-based — there is no auto-decrement).
 
 **`meal_plan_ops` (meal-planning).** Mutates `meal_plan.toml`. `add` upserts by recipe slug (updating `planned_for`); `remove` drops the slug's row. Menu agreement writes `add` rows; cook-capture / the stale-planned reconcile write `remove`.
+
+**`grocery_list_ops` (grocery-list).** Mutates the caller's `grocery_list.toml`. `add` carries the full `item` (`{ name, quantity?, kind?, domain?, source?, for_recipes?, note? }`) and MERGES by normalized name (union `for_recipes`, reconcile `quantity`) — including against an item added earlier in the same batch; `update` carries `name` + a partial `item` patch; `remove` carries `name`. Ops apply in array order. An `update`/`remove` for an absent name is reported in `summary.grocery_list.conflicts` (the rest of the batch still commits), not thrown. This is the batch path for multiple grocery-list mutations (a menu capture, a receive's removes) — the granular `add_/update_/remove_from_grocery_list` tools are for a single one-off edit, and multiple same-file writes are never parallelized.
 
 **Returns:**
 - `{ commit_sha, summary }`

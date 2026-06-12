@@ -12,6 +12,8 @@ Capture buy-intent onto the **grocery list** continuously, as it comes up; **flu
 
 **Capture is identical either way** — the grocery list is SKU-free and store-agnostic; only the flush differs. Flush only when I say to (order / go shopping) — if I just mention I'm out of something, add it to the list for next time, don't flush. When something runs low or out, *ask* before putting it on the list (the prompt is the point — don't auto-add). Household / non-food items belong on the list too.
 
+**Persist multi-write turns in one commit.** When resolving a single turn produces more than one repo write — several grocery items at once, a menu's recipes-plus-grocery-items, a receive's removes-plus-pantry-restock — persist them with **one** `commit_changes` (one `*_ops`/`*_updates` field per file), not a sequence of granular calls, and **never fire parallel writes at the same file** (they full-file-overwrite each other and silently drop items). The granular `add_to_grocery_list` / `update_grocery_list` / `remove_from_grocery_list` tools are for a single one-off edit; any batch goes through `commit_changes` `grocery_list_ops`.
+
 The Kroger cart is **write-only** — you can add to it, but not remove or check out. So never tell me something was taken out of the cart; report what should change and tell me to fix it in the Kroger app.
 
 **Substitutions are never automatic.** Inventory subs (recipe wants salmon, I've got trout) come up during the pantry pass; sale subs (salmon's on the menu, trout's on sale) come up with the proposal. When a tool says an item is `unavailable`, offer `propose_substitutions` and let me pick.

@@ -35,6 +35,7 @@ import {
 import { MEAL_PLAN_PATH, plannedOf, applyMealPlanOps, type MealPlanOp } from "./meal-plan.js";
 import { slugify } from "./discovery.js";
 import { addStockup, STOCKUP_PATH } from "./stockup.js";
+import { GROCERY_LIST_PATH, buildGroceryListUpdate } from "./grocery-tools.js";
 
 const SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const MEALS = ["breakfast", "lunch", "dinner"] as const;
@@ -510,7 +511,7 @@ export function registerWriteTools(server: McpServer, gh: GitHubClient, userPref
     "commit_changes",
     {
       description:
-        "Persist a batch of repo updates as ONE commit (no cart). Use at the end of a session to keep the git log clean instead of calling the granular tools repeatedly. recipe_updates split automatically: objective frontmatter/body → shared recipe content; rating/status → the caller's personal overlay. cooking_log_entries append cooked meals (date defaults to today); last_cooked is DERIVED from the log at read time — never set it by hand. meal_plan_ops add/remove committed cook intent. Ready-to-eat consumption is a cooking_log_entries {type:'ready_to_eat'} plus a pantry_operations remove when the user used the last of it.",
+        "Persist a batch of repo updates as ONE commit (no cart). This is the DEFAULT for any turn that makes more than one repo write — batch them here instead of calling the granular tools repeatedly, and never fire parallel writes at the same file (they full-file-clobber each other). recipe_updates split automatically: objective frontmatter/body → shared recipe content; rating/status → the caller's personal overlay. cooking_log_entries append cooked meals (date defaults to today); last_cooked is DERIVED from the log at read time — never set it by hand. meal_plan_ops add/remove committed cook intent. grocery_list_ops add/update/remove buy-list items in the same commit (same-name add merges; a missing-name update/remove is reported as a conflict, not an error). Ready-to-eat consumption is a cooking_log_entries {type:'ready_to_eat'} plus a pantry_operations remove when the user used the last of it.",
       inputSchema: {
         recipe_updates: z
           .array(z.object({ slug: z.string(), updates: z.record(z.string(), z.unknown()) }))
@@ -562,6 +563,18 @@ export function registerWriteTools(server: McpServer, gh: GitHubClient, userPref
               op: z.enum(["add", "remove"]),
               recipe: z.string(),
               planned_for: z.string().nullable().optional(),
+            }),
+          )
+          .optional(),
+        grocery_list_ops: z
+          .array(
+            z.object({
+              op: z.enum(["add", "update", "remove"]),
+              // `add`: the full item (name + optional quantity/kind/domain/source/for_recipes/note).
+              // `update`: the partial patch (with `name` as the key). `remove`: ignored.
+              item: z.record(z.string(), z.unknown()).optional(),
+              // The item key for `update` / `remove`.
+              name: z.string().optional(),
             }),
           )
           .optional(),
@@ -620,6 +633,16 @@ export function registerWriteTools(server: McpServer, gh: GitHubClient, userPref
           );
           if (file) files.push(file);
           summary.meal_plan = { applied, conflicts };
+        }
+
+        if ((payload.grocery_list_ops?.length ?? 0) > 0) {
+          const { file, applied, conflicts } = await buildGroceryListUpdate(
+            gh,
+            userPath(GROCERY_LIST_PATH),
+            payload.grocery_list_ops!,
+          );
+          if (file) files.push(file);
+          summary.grocery_list = { applied, conflicts };
         }
 
         if ((payload.pantry_operations?.length ?? 0) > 0 || (payload.pantry_verified?.length ?? 0) > 0) {

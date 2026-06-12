@@ -21,6 +21,8 @@ Capture buy-intent onto the **grocery list** continuously, as it comes up; **flu
 
 **Capture is identical either way** — the grocery list is SKU-free and store-agnostic; only the flush differs. Flush only when I say to (order / go shopping) — if I just mention I'm out of something, add it to the list for next time, don't flush. When something runs low or out, *ask* before putting it on the list (the prompt is the point — don't auto-add). Household / non-food items belong on the list too.
 
+**Persist multi-write turns in one commit.** When resolving a single turn produces more than one repo write — several grocery items at once, a menu's recipes-plus-grocery-items, a receive's removes-plus-pantry-restock — persist them with **one** `commit_changes` (one `*_ops`/`*_updates` field per file), not a sequence of granular calls, and **never fire parallel writes at the same file** (they full-file-overwrite each other and silently drop items). The granular `add_to_grocery_list` / `update_grocery_list` / `remove_from_grocery_list` tools are for a single one-off edit; any batch goes through `commit_changes` `grocery_list_ops`.
+
 The Kroger cart is **write-only** — you can add to it, but not remove or check out. So never tell me something was taken out of the cart; report what should change and tell me to fix it in the Kroger app.
 
 **Substitutions are never automatic.** Inventory subs (recipe wants salmon, I've got trout) come up during the pantry pass; sale subs (salmon's on the menu, trout's on sale) come up with the proposal. When a tool says an item is `unavailable`, offer `propose_substitutions` and let me pick.
@@ -92,7 +94,7 @@ Two starting points: **open-ended** (you pick recipes) or **recipe-seeded** (I n
 
 6. Send the proposal in chat. Iterate based on my revisions — rerun affected tool calls as needed.
 
-7. On agreement, persist the repo side of the session in one `commit_changes` call: the agreed recipes as `[[planned]]` rows via `meal_plan_ops` (set `planned_for` to the intended night when known), draft imports, pantry verifications, and the to-buy items added to the grocery list. **Agreed sides are recipes too** — each chosen side gets its own `[[planned]]` row and its to-buy ingredients, and any side draft you imported, any `pairs_with` edge you recorded, and any `standalone` flag I agreed to persist go in this **same** commit. **Do not bump `last_cooked` here** — agreeing to a menu is not cooking it. `last_cooked` moves only when I report a cook (the cooked flow). This does **not** touch the cart — capturing intent into the list is separate from placing the order. (The cart flush is `place_order`, invoked when I'm ready to order, which may be this sitting or later. See the place-grocery-order flow.)
+7. On agreement, persist the repo side of the session in one `commit_changes` call: the agreed recipes as `[[planned]]` rows via `meal_plan_ops` (set `planned_for` to the intended night when known), draft imports, pantry verifications, and the to-buy items via `grocery_list_ops` (one `add` per item). **Agreed sides are recipes too** — each chosen side gets its own `[[planned]]` row and its to-buy ingredients, and any side draft you imported, any `pairs_with` edge you recorded, and any `standalone` flag I agreed to persist go in this **same** commit. **Do not bump `last_cooked` here** — agreeing to a menu is not cooking it. `last_cooked` moves only when I report a cook (the cooked flow). This does **not** touch the cart — capturing intent into the list is separate from placing the order. (The cart flush is `place_order`, invoked when I'm ready to order, which may be this sitting or later. See the place-grocery-order flow.)
 
 8. Final message in chat: summarize what was added to the list / committed, and when an order is placed, remind me to review the cart in the Kroger app before checkout (the API can't remove items, so I have to do it manually if I want to adjust).
 
@@ -233,7 +235,7 @@ This is the **online flush** (Kroger) — distinct from the menu request's captu
 
 **Lifecycle past `in_cart` is user-asserted — never claim it on your own:**
 - *"I placed the order"* → advance `in_cart` items to `ordered` (`update_grocery_list`).
-- *"I picked up the groceries"* → `received` (terminal): `remove_from_grocery_list` for each, and for `grocery`-kind items only, restock the pantry (`update_pantry`). `household`/`other` items don't touch the pantry. Then, for the fresh perishables just received, offer a couple of storage tips following the **Putting groceries away** guidance.
+- *"I picked up the groceries"* → `received` (terminal): one `commit_changes` removing the picked items via `grocery_list_ops` and — for `grocery`-kind items only — restocking the pantry via `pantry_operations`. `household`/`other` items don't touch the pantry. Then, for the fresh perishables just received, offer a couple of storage tips following the **Putting groceries away** guidance.
 
 ### In-store walk — the second flush (store-walk)
 
@@ -263,7 +265,7 @@ This is the **in-store flush** — the walking sibling of `place_order`. It read
    - **Not carried** — *offer* to add it to `doesnt_carry` (`update_store` `add_doesnt_carry`) and note it for the trip; don't auto-split the order, and **don't invent which other store carries it** (cross-store routing is a deferred follow-on, not data you have).
    Only write on my confirmation — never silently.
 
-6. **Complete → received (the same restock as a Kroger pickup).** When I'm done, picked items go straight `active → received` — **no `in_cart`/`ordered` stage**. `remove_from_grocery_list` for each, and **for `grocery`-kind items only**, restock the pantry (`update_pantry`); `household`/`other` never touch the pantry. Then, for the fresh perishables just received, offer a couple of storage tips following the **Putting groceries away** guidance — exactly as a Kroger pickup does.
+6. **Complete → received (the same restock as a Kroger pickup).** When I'm done, picked items go straight `active → received` — **no `in_cart`/`ordered` stage**. Persist it in **one** `commit_changes`: remove the picked items via `grocery_list_ops` and — **for `grocery`-kind items only** — restock the pantry via `pantry_operations`; `household`/`other` never touch the pantry. Then, for the fresh perishables just received, offer a couple of storage tips following the **Putting groceries away** guidance — exactly as a Kroger pickup does.
 
 ### Configure grocery profile
 

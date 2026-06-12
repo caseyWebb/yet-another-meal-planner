@@ -17,6 +17,8 @@ import {
   removeGroceryItem,
   updateGroceryItem,
   type GroceryItem,
+  type GroceryAddInput,
+  type GroceryUpdateInput,
 } from "./grocery.js";
 
 export const GROCERY_LIST_PATH = "grocery_list.toml";
@@ -65,6 +67,73 @@ export function serializeGroceryList(
   return { path: PATH, content: stringifyTomlWithHeader(text, { ...data, items }) };
 }
 const writeFile = serializeGroceryList;
+
+/** One batched grocery-list op for `commit_changes`' `grocery_list_ops`. */
+export interface GroceryListOp {
+  op: "add" | "update" | "remove";
+  /** Full add input for `add`; the partial patch for `update`. Ignored for `remove`. */
+  item?: Record<string, unknown>;
+  /** The item key for `update` / `remove`. */
+  name?: string;
+}
+
+/**
+ * Apply a batch of add/update/remove ops over the grocery list at `path`, in array
+ * order, and return the file to commit (null when nothing changed) plus a per-op
+ * applied/conflicts report — the same shape as buildMealPlanUpdate / buildPantryUpdate.
+ * Same-name adds MERGE (addToGroceryList semantics, so a later op sees the earlier
+ * one); an update/remove for an absent name is reported as a conflict, not thrown.
+ * Reads/writes via the passed `gh` at the explicit `path` so commit_changes can
+ * route it under the caller's `users/<username>/` subtree in the same atomic commit.
+ */
+export async function buildGroceryListUpdate(
+  gh: GitHubClient,
+  path: string,
+  ops: GroceryListOp[],
+): Promise<{ file: TreeFile | null; applied: unknown[]; conflicts: unknown[] }> {
+  const todayDate = today();
+  const text = (await readOptional(gh, path)) ?? "";
+  const data = text ? parseToml(text, path) : {};
+  const rawItems = Array.isArray(data.items) ? (data.items as Record<string, unknown>[]) : [];
+  let items = rawItems.map(coerceItem);
+
+  const applied: unknown[] = [];
+  const conflicts: unknown[] = [];
+
+  for (const op of ops) {
+    if (op.op === "add") {
+      const input = (op.item ?? {}) as unknown as GroceryAddInput;
+      if (!input.name || !String(input.name).trim()) {
+        conflicts.push({ op: "add", reason: "add requires item.name" });
+        continue;
+      }
+      const result = addToGroceryList(items, input, todayDate);
+      items = result.items;
+      applied.push({ op: "add", name: result.item.name, merged: result.merged });
+    } else if (op.op === "update") {
+      const name = op.name ?? "";
+      try {
+        const result = updateGroceryItem(items, name, (op.item ?? {}) as GroceryUpdateInput);
+        items = result.items;
+        applied.push({ op: "update", name: result.item.name });
+      } catch {
+        conflicts.push({ op: "update", name, reason: "no grocery-list item with that name" });
+      }
+    } else {
+      const name = op.name ?? "";
+      const result = removeGroceryItem(items, name);
+      if (result.found) {
+        items = result.items;
+        applied.push({ op: "remove", name });
+      } else {
+        conflicts.push({ op: "remove", name, reason: "no grocery-list item with that name" });
+      }
+    }
+  }
+
+  if (applied.length === 0) return { file: null, applied, conflicts };
+  return { file: { path, content: stringifyTomlWithHeader(text, { ...data, items }) }, applied, conflicts };
+}
 
 export function registerGroceryListTools(server: McpServer, gh: GitHubClient): void {
   server.registerTool(
