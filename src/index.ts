@@ -4,7 +4,7 @@
 // `tenantId`. @cloudflare/workers-oauth-provider validates the token on `/mcp`,
 // implements `/token` + `/register` + `.well-known` discovery, and hands us the
 // props. We resolve the tenant and build a per-tenant MCP server — stateless, no
-// Durable Objects. Cloudflare Access is gone; the provider is the gate.
+// Durable Objects. The OAuth provider is the gate.
 
 import { OAuthProvider } from "@cloudflare/workers-oauth-provider";
 import { createMcpHandler } from "agents/mcp";

@@ -106,9 +106,7 @@ export async function proposeSale(
   isOnSale: (substitute: string) => Promise<boolean>,
 ): Promise<SubstitutionResult> {
   if (!rule) return { substitutes: [], unacceptable: [] };
-  const substitutes: string[] = [];
-  for (const sub of rule.acceptable) {
-    if (await isOnSale(sub)) substitutes.push(sub);
-  }
+  const onSale = await Promise.all(rule.acceptable.map((sub) => isOnSale(sub)));
+  const substitutes = rule.acceptable.filter((_, i) => onSale[i]);
   return { substitutes, unacceptable: rule.unacceptable };
 }

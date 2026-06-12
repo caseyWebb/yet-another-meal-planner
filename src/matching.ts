@@ -108,9 +108,54 @@ export function isOnSale(c: KrogerCandidate): boolean {
  */
 export const MIN_FLYER_DISCOUNT = 0.05;
 
-/** Flyer-worthy: a genuine sale whose markdown clears `MIN_FLYER_DISCOUNT`. */
-export function isFlyerWorthy(c: KrogerCandidate): boolean {
-  return isOnSale(c) && c.price.regular - c.price.promo >= c.price.regular * MIN_FLYER_DISCOUNT;
+/** Flyer-worthy: a genuine sale whose markdown clears `minDiscount` (default `MIN_FLYER_DISCOUNT`). */
+export function isFlyerWorthy(c: KrogerCandidate, minDiscount: number = MIN_FLYER_DISCOUNT): boolean {
+  return isOnSale(c) && c.price.regular - c.price.promo >= c.price.regular * minDiscount;
+}
+
+/** One synthesized flyer row (the kroger_flyer output item shape). */
+export interface FlyerItem {
+  sku: string;
+  brand: string;
+  description: string;
+  size: string | null;
+  price: { regular: number; promo: number };
+  savings: number;
+  categories: string[];
+  /** Every scanned term that surfaced this product, in scan order. */
+  matched_terms: string[];
+}
+
+/**
+ * Dedup flyer candidates across terms by productId, preserving scan order. A
+ * product surfaced by several terms appears once, carrying every surfacing term
+ * in `matched_terms` (the first occurrence wins the row fields). `perTerm` must
+ * already be filtered to flyer-worthy, fulfillable candidates — this only merges.
+ */
+export function dedupeFlyerHits(
+  perTerm: { term: string; candidates: KrogerCandidate[] }[],
+): FlyerItem[] {
+  const seen = new Map<string, FlyerItem>();
+  for (const { term, candidates } of perTerm) {
+    for (const c of candidates) {
+      const existing = seen.get(c.productId);
+      if (existing) {
+        if (!existing.matched_terms.includes(term)) existing.matched_terms.push(term);
+        continue;
+      }
+      seen.set(c.productId, {
+        sku: c.productId,
+        brand: c.brand,
+        description: c.description,
+        size: c.size,
+        price: c.price,
+        savings: Math.round((c.price.regular - c.price.promo) * 100) / 100,
+        categories: c.categories,
+        matched_terms: [term],
+      });
+    }
+  }
+  return [...seen.values()];
 }
 
 /** Effective price the shopper pays: promo when on sale, else regular. */

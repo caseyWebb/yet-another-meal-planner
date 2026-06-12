@@ -97,13 +97,18 @@ export function registerNoteTools(
           throw new ToolError("not_found", `Unknown recipe slug: ${slug}`, { slug });
         }
         const ids = await directory.list();
+        const fetched = await Promise.all(
+          ids.map(async (id) => {
+            const prefix = userPrefix(id);
+            const [notesText, overlayText] = await Promise.all([
+              readOptional(sharedGh, `${prefix}/${notesPath(slug)}`),
+              readOptional(sharedGh, `${prefix}/overlay.toml`),
+            ]);
+            return { id, notesText, overlayText };
+          }),
+        );
         const perTenant: TenantSignal[] = [];
-        for (const id of ids) {
-          const prefix = userPrefix(id);
-          const [notesText, overlayText] = await Promise.all([
-            readOptional(sharedGh, `${prefix}/${notesPath(slug)}`),
-            readOptional(sharedGh, `${prefix}/overlay.toml`),
-          ]);
+        for (const { id, notesText, overlayText } of fetched) {
           const notes = parseNotes(notesText);
           const row = overlayText ? parseOverlay(overlayText)[slug] : undefined;
           if (notes.length === 0 && row?.rating == null) continue;
@@ -240,14 +245,14 @@ export function registerStoreNoteTools(
           throw new ToolError("not_found", `Unknown store: ${slug}`, { slug });
         }
         const ids = await directory.list();
-        const perTenant: { author: string; notes: Note[] }[] = [];
-        for (const id of ids) {
-          const prefix = userPrefix(id);
-          const notesText = await readOptional(sharedGh, `${prefix}/${storeNotesPath(slug)}`);
-          const notes = parseNotes(notesText);
-          if (notes.length === 0) continue;
-          perTenant.push({ author: id, notes });
-        }
+        const fetched = await Promise.all(
+          ids.map(async (id) => {
+            const prefix = userPrefix(id);
+            const notesText = await readOptional(sharedGh, `${prefix}/${storeNotesPath(slug)}`);
+            return { id, notes: parseNotes(notesText) };
+          }),
+        );
+        const perTenant = fetched.filter((r) => r.notes.length > 0).map(({ id, notes }) => ({ author: id, notes }));
         return { slug, notes: aggregateNotes(tenantId, perTenant) };
       }),
   );

@@ -62,9 +62,9 @@ Update recipe frontmatter fields. Use for `last_cooked`, `rating`, `status` tran
 - `updates` (object): partial frontmatter to merge
 
 **Returns:**
-- `{ slug, updated_fields }` — confirmation of what was changed
+- `{ slug, updated_fields, commit_sha? }` — confirmation of what was changed; `commit_sha` is present when a write landed and omitted when nothing changed
 
-**Notes:** Side-effect updates (last_cooked, rating, status) happen during normal flow. Other frontmatter edits require user direction. **Per-tenant routing (D5):** `rating` and `status` are *subjective* — they write to the caller's `users/<id>/overlay.toml`, not the shared recipe, so one member's rating/disposition never changes another's. Objective frontmatter edits write the shared recipe content. `last_cooked` is never set by hand — it's derived from the caller's `cooking_log.toml`. `read_recipe`/`list_recipes` merge the caller's overlay (+ cooking-log `last_cooked`) onto shared content at read time; an absent overlay row means effective `status: draft`. `perishable_ingredients` is objective shared content (not subjective), so an edit to it writes the shared recipe; the Worker normalizes the names on write (the same `normalizeIngredient` the verify matcher uses) so cross-recipe overlap lines up.
+**Notes:** Side-effect updates (last_cooked, rating, status) happen during normal flow. Other frontmatter edits require user direction. **Per-tenant routing:** `rating` and `status` are *subjective* — they write to the caller's `users/<id>/overlay.toml`, not the shared recipe, so one member's rating/disposition never changes another's. Objective frontmatter edits write the shared recipe content. `last_cooked` is never set by hand — it's derived from the caller's `cooking_log.toml`. `read_recipe`/`list_recipes` merge the caller's overlay (+ cooking-log `last_cooked`) onto shared content at read time; an absent overlay row means effective `status: draft`. `perishable_ingredients` is objective shared content (not subjective), so an edit to it writes the shared recipe; the Worker normalizes the names on write (the same `normalizeIngredient` the verify matcher uses) so cross-recipe overlap lines up.
 
 ### `parse_recipe(url)`
 
@@ -74,7 +74,7 @@ Update recipe frontmatter fields. Use for `last_cooked`, `rating`, `status` tran
 - `url` (string, required)
 
 **Returns:**
-- `{ title, ingredients: [...], instructions: [...], servings, time_total, time_active, source, tools_hint?, existing_slug? }` — `ingredients`/`instructions` are string arrays; `servings` is a scalar (number when parseable); `time_total`/`time_active` are minutes or null; `source` is the recipe's canonical URL. **`tools_hint`** (present only when the page carries a schema.org `tool`) is the flattened tool-name list — a **non-authoritative hint** for classifying `requires_equipment`, never copied into it (it lists every utensil; default `requires_equipment` to `[]` and tag only truly-irreplaceable gear). **`existing_slug`** is present only when this source URL is **already in the shared corpus** (idempotent import, §6.4) — reuse that recipe (rate it, note it) instead of calling `create_recipe`.
+- `{ title, ingredients: [...], instructions: [...], servings, time_total, time_active, source, tools_hint?, existing_slug? }` — `ingredients`/`instructions` are string arrays; `servings` is a scalar (number when parseable); `time_total`/`time_active` are minutes or null; `source` is the recipe's canonical URL. **`tools_hint`** (present only when the page carries a schema.org `tool`) is the flattened tool-name list — a **non-authoritative hint** for classifying `requires_equipment`, never copied into it (it lists every utensil; default `requires_equipment` to `[]` and tag only truly-irreplaceable gear). **`existing_slug`** is present only when this source URL is **already in the shared corpus** (idempotent import) — reuse that recipe (rate it, note it) instead of calling `create_recipe`.
 
 **Errors (structured):**
 - `{ error: "unreachable" }` — the page couldn't be fetched (network error or non-2xx). Bot-walled/paywalled sites (Serious Eats, NYT, Food52) land here — paste the recipe instead.
@@ -98,7 +98,7 @@ Write a **new** recipe to the **shared corpus** (the data-repo root, read by eve
 
 **Errors (structured):**
 - `{ error: "slug_exists", slug }` — a recipe already exists at that path; not overwritten.
-- `{ error: "already_exists", slug, source }` — a recipe with this `source` URL is already in the shared corpus (idempotent import, §6.4); `slug` is the existing recipe to reuse.
+- `{ error: "already_exists", slug, source }` — a recipe with this `source` URL is already in the shared corpus (idempotent import); `slug` is the existing recipe to reuse.
 - `{ error: "validation_failed" }` — no derivable slug (missing title), or the body lacks the required H2 sections.
 
 **Notes:** The everyday discovery write path: `parse_recipe` (parse) → agent cleans/classifies → `create_recipe`. Disposition of the resulting draft happens later via `update_recipe` (→ `active` + rating, or `rejected`). The frontmatter is a pass-through record, so objective fields including `requires_equipment` flow straight through; classify it conservatively (default `[]`, vocab slugs only, truly-irreplaceable gear). The Worker validates its *shape* (array of slugs); the **vocabulary** is enforced at build time (`build-indexes.mjs`), matching the `protein`/`cuisine` posture — an off-vocab slug can't reach the gate without the build, which fails first. `update_recipe` is the same pass-through and the path to backfill `requires_equipment` on existing recipes. `perishable_ingredients` flows through the same way and is **normalized on write** (verify-matcher normalization) — classify it at import alongside protein/cuisine, by the "would the leftover rot" test.
@@ -107,7 +107,7 @@ Write a **new** recipe to the **shared corpus** (the data-repo root, read by eve
 
 ## Recipe note tools
 
-Notes are the **spin-capture mechanism** (D6): a tweak or observation is an *attributed note*, never an edit to shared recipe content. The canonical recipe stays canonical; "sub gochujang, cut the sugar" lives as a note. This is what makes a shared corpus safe — only a genuine "different dish" warrants a personal-recipe fork. Notes are authored in the caller's own subtree (`users/<id>/notes/<slug>.toml`), so authorship is **structural** (the path), not a spoofable field.
+Notes are the **spin-capture mechanism**: a tweak or observation is an *attributed note*, never an edit to shared recipe content. The canonical recipe stays canonical; "sub gochujang, cut the sugar" lives as a note. This is what makes a shared corpus safe — only a genuine "different dish" warrants a personal-recipe fork. Notes are authored in the caller's own subtree (`users/<id>/notes/<slug>.toml`), so authorship is **structural** (the path), not a spoofable field.
 
 ### `add_recipe_note(slug, body, tags?, private?)`
 
@@ -178,7 +178,7 @@ Read pantry items, optionally filtered.
 **Returns:**
 - `{ items: [...] }` — array of pantry items per schema
 
-**Notes:** `category` and `prepared_only` are deterministic from pantry data. `stale_only` returns a structured `{ error: "unsupported" }`: freshness is an LLM-judged, conversational concern (it depends on storage, whether a package was opened, and visual inspection) rather than something the tool can compute. There is no shelf-life table backing it — the once-reserved `ingredients.toml` was removed in favor of the curated `storage_guidance/` tree (see `list_storage_guidance` / `read_storage_guidance`), which informs put-away advice rather than gating staleness.
+**Notes:** `category` and `prepared_only` are deterministic from pantry data. `stale_only` returns a structured `{ error: "unsupported" }`: freshness is an LLM-judged, conversational concern (it depends on storage, whether a package was opened, and visual inspection) rather than something the tool can compute. There is no shelf-life table backing it — the curated `storage_guidance/` tree (see `list_storage_guidance` / `read_storage_guidance`) informs put-away advice rather than gating staleness.
 
 ### `read_kitchen()`
 
@@ -217,7 +217,7 @@ Parse the named recipe's `## Ingredients` and walk each against the pantry. Retu
 }
 ```
 
-**Notes:** No `have_stale` bucket — freshness is an agent judgment over the surfaced age metadata, not a tool output. Matching is exact for `in_pantry`; anything inexact goes to `possible_matches` for the agent to confirm or reject (no silent false-misses, no silent false-positives) — **every** plausible pantry candidate for an ingredient is surfaced (not just the first), ranked containment-first, so the agent decides among the full set (coarse deterministic search → LLM narrows). `inventory_substitutes_available` applies `substitutions.toml` rules and is empty until rules are seeded. There is no shelf-life hint here — freshness stays an agent judgment (the once-planned `ingredients.toml` was cut; `storage_guidance/` supplies put-away advice instead).
+**Notes:** No `have_stale` bucket — freshness is an agent judgment over the surfaced age metadata, not a tool output. Matching is exact for `in_pantry`; anything inexact goes to `possible_matches` for the agent to confirm or reject (no silent false-misses, no silent false-positives) — **every** plausible pantry candidate for an ingredient is surfaced (not just the first), ranked containment-first, so the agent decides among the full set (coarse deterministic search → LLM narrows). `inventory_substitutes_available` applies `substitutions.toml` rules and is empty until rules are seeded. There is no shelf-life hint here — freshness stays an agent judgment; `storage_guidance/` supplies put-away advice instead.
 
 ### `verify_pantry_for_candidates(slugs)`
 
@@ -236,7 +236,7 @@ Apply pantry updates from conversational messages.
 - `operations` (array): `[{ op: "add" | "remove" | "verify", item: ..., ... }]`
 
 **Returns:**
-- `{ applied: [...], conflicts: [...] }`
+- `{ applied: [...], conflicts: [...], commit_sha? }` — `commit_sha` is omitted when nothing applied
 
 **Notes:** Conflicts surface when remove targets aren't found. The agent should ask the user how to resolve.
 
@@ -260,7 +260,7 @@ Reset `last_verified_at` on confirmed items.
 - `items` (array of names or slugs)
 
 **Returns:**
-- `{ verified: [...], conflicts: [...] }` — conflicts name items not found in the pantry
+- `{ verified: [...], conflicts: [...], commit_sha? }` — conflicts name items not found in the pantry; `commit_sha` is omitted when nothing was verified
 
 ### `update_stockup(items?, freezer_capacity_estimate?)`
 
@@ -279,7 +279,7 @@ Add items to the caller's bulk-buy watchlist. Writes `users/<username>/stockup.t
 
 ## Grocery list tools
 
-The grocery list (`grocery_list.toml`) is the SKU-free buy list for the next order. It accumulates intent across the week; resolution to a Kroger SKU and the cart write are deferred to order placement (`place_order`, Change 06b). See `docs/SCHEMAS.md` for the item schema.
+The grocery list (`grocery_list.toml`) is the SKU-free buy list for the next order. It accumulates intent across the week; resolution to a Kroger SKU and the cart write are deferred to order placement (`place_order`). See `docs/SCHEMAS.md` for the item schema.
 
 ### `read_grocery_list()`
 
@@ -430,16 +430,18 @@ Read the **group's** attributed notes for a store, aggregated across everyone at
 
 ### `kroger_flyer(filter)`
 
-Synthesized sale scan — the public API has **no** flyer/circular endpoint, so this searches terms and keeps products with a **meaningful discount** — on sale **and** at least **5% off** (`regular − promo ≥ 5% of regular`) — deduped by `productId`. This excludes both Kroger's `promo == regular` non-sale echo (`savings: 0`) and penny / near-zero markdowns (`savings: 0.01`), which were noise. The matcher still counts any real promo in its tiebreak; this stricter floor is flyer-only. Scans **precise** terms (caller-passed plus stockup/substitution candidates) and **broad** curated category terms. Explicitly **non-exhaustive**: each term returns a relevance-ranked page (no sort-by-discount), so it samples the head of each category.
+Synthesized sale scan — the public API has **no** flyer/circular endpoint, so this searches terms and keeps products with a **meaningful discount** — on sale **and** at least `min_savings_pct`% off (default **5%**) — deduped by `productId`. This excludes both Kroger's `promo == regular` non-sale echo and penny / near-zero markdowns. Scans **precise** terms (caller-passed plus stockup/substitution candidates) and **broad** curated category terms. Explicitly **non-exhaustive**: each term returns a relevance-ranked page (no sort-by-discount), so it samples the head of each category.
 
 **Params:**
-- `filter` (object, optional): `{ terms?, against_stockup?, against_substitutions? }`
+- `filter` (object, optional): `{ terms?, against_stockup?, against_substitutions?, min_savings_pct? }`
   - `terms` (array of strings): precise context terms (current menu ingredients, etc.).
   - `against_stockup` (boolean): also scan `stockup.toml` item names.
   - `against_substitutions` (boolean): also scan `substitutions.toml` ingredients + their acceptable substitutes.
+  - `min_savings_pct` (number, default 5): minimum percentage markdown required to keep a product. Pass lower (e.g. 3) to widen for bulk stockup items; pass higher to tighten. The `promo == regular` noise filter and fake-sale detection are unconditional regardless of this value.
 
 **Returns:**
-- `{ items: [{ sku, brand, description, size, price: { regular, promo }, savings, categories, matched_term }] }`
+- `{ items: [{ sku, brand, description, size, price: { regular, promo }, savings, categories, matched_terms }] }`
+  - `matched_terms` (array of strings): every scanned term that surfaced this product — use it to distinguish a precise stockup/menu match (`"chicken thighs"`) from a broad category match (`"meat"`).
 
 **Notes:** Degrades gracefully when `flyer_terms.toml` is absent/empty — still scans the precise terms and returns a smaller list. Each term is paginated a couple of pages deep.
 
@@ -457,7 +459,7 @@ Get current prices for a specific list of ingredients (used for menu pre-pass). 
 
 ### `match_ingredient_to_kroger_sku(ingredient, context)`
 
-Run the full 7-step matching pipeline. Returns a confident match, narrowed candidates for the LLM to choose from, or an `unavailable` signal. **Resolve-only** — it does not write the cache (that rides `place_order`, Change 06b) and it does not substitute (that's `propose_substitutions`).
+Run the full 7-step matching pipeline. Returns a confident match, narrowed candidates for the LLM to choose from, or an `unavailable` signal. **Resolve-only** — it does not write the cache (that rides `place_order`) and it does not substitute (that's `propose_substitutions`).
 
 **Params:**
 - `ingredient` (string, required)
@@ -466,7 +468,7 @@ Run the full 7-step matching pipeline. Returns a confident match, narrowed candi
 
 **Confidence rule:** confident when a cache hit OR a defined `preferences.toml [brands]` entry resolves it (including `[]` = "don't care, cheapest acceptable"); otherwise ambiguous. Cache hits are revalidated for current price + curbside/delivery availability before being returned.
 
-**Shared, location-tagged cache (D7/§7.1).** The SKU cache (`skus/kroger.toml`) lives in the **shared corpus**, so a mapping resolved by *any* member warms it for everyone (a network effect). Each entry is tagged with the `locationId` it was resolved at. On lookup, an entry tagged with the caller's own location is tried first, but **every** candidate is revalidated against the caller's `preferred_location` before use — a cross-location entry that isn't carried at the caller's store falls through to a fresh search (so a shared cache can never serve an unavailable SKU). A cross-location hit that *does* revalidate returns `reason: "shared cache hit (revalidated at your store)"`.
+**Shared, location-tagged cache.** The SKU cache (`skus/kroger.toml`) lives in the **shared corpus**, so a mapping resolved by *any* member warms it for everyone (a network effect). Each entry is tagged with the `locationId` it was resolved at. On lookup, an entry tagged with the caller's own location is tried first, but **every** candidate is revalidated against the caller's `preferred_location` before use — a cross-location entry that isn't carried at the caller's store falls through to a fresh search (so a shared cache can never serve an unavailable SKU). A cross-location hit that *does* revalidate returns `reason: "shared cache hit (revalidated at your store)"`.
 
 **Identity relevance (near-hard).** Beyond curbside/delivery availability, a second near-hard constraint guards *which product*: each candidate is scored by how many query tokens appear in its description/categories, and a confident pick may only come from the **top relevance tier**. So `"anaheim peppers"` resolves to the Fresh Anaheim Peppers PLU, not a cheaper unrelated item that merely shows up in Kroger's results; and `[]` "don't care" picks the cheapest *matching* candidate, never the cheapest unrelated one. If nothing in the pool shares a query token, the tool returns `ambiguous` rather than confidently guessing. (Brand/dietary remain soft preferences — this constraint is about identity, not preference.)
 
@@ -538,7 +540,7 @@ Apply the standing substitution rules to surface acceptable alternatives.
 **Returns:**
 - `{ substitutes: [...], unacceptable: [...] }`
 
-**Notes:** Tool applies rules deterministically; LLM presents result to user for confirmation. `"sale"` mode fetches current Kroger flyer/price data **internally** (it does not require the caller to pre-pass `kroger_flyer`). Empty until `substitutions.toml` is seeded — the file is edit-when-directed user config. **Shared + per-tenant override (§7.2):** rules come from the shared corpus `substitutions.toml` joined with this tenant's optional `users/<id>/substitutions.toml`; a personal rule for an ingredient **replaces** the shared rule for that ingredient — for this tenant only, others keep the shared rule.
+**Notes:** Tool applies rules deterministically; LLM presents result to user for confirmation. `"sale"` mode fetches current Kroger flyer/price data **internally** (it does not require the caller to pre-pass `kroger_flyer`). Empty until `substitutions.toml` is seeded — the file is edit-when-directed user config. **Shared + per-tenant override:** rules come from the shared corpus `substitutions.toml` joined with this tenant's optional `users/<id>/substitutions.toml`; a personal rule for an ingredient **replaces** the shared rule for that ingredient — for this tenant only, others keep the shared rule.
 
 ---
 

@@ -28,7 +28,7 @@ The system is three pieces with one clean split: **the LLM does the fuzzy work; 
 ┌────────────────────────────────────────────────────────┐
 │  ONE private GitHub data repo (operator-owned)         │
 │   shared root (read by all):                           │
-│     recipes/*.md · aliases/substitutions.toml          │
+│     recipes/*.md · aliases.toml · substitutions.toml   │
 │     skus/kroger.toml · storage_guidance/ · feeds.toml  │
 │     stores/*.toml · _indexes/                           │
 │   users/<username>/ (one subtree per member):          │
@@ -68,7 +68,7 @@ One self-hosted Worker serves a small friend group; each member connects their o
 - **Identity is an operator-issued invite code** against a curated allowlist — members need no GitHub account. The issued access token's grant carries the member's `tenantId`.
 - **"Which tenant" is a path prefix.** `users/<username>/` in the single data repo, addressed by wrapping the GitHub client (`prefixedClient`). Each request resolves token → tenant *before* any tool runs, so no tool can reach another member's subtree.
 - **Repo access is a short-lived GitHub App installation token**, never a PAT. The App private key is a Cloudflare secret; the App id / installation id / data-repo coords are non-secret `wrangler.jsonc` vars.
-- **Kroger split:** `client_credentials` product/price reads are shared at the app level; cart writes use a **per-tenant** `authorization_code` refresh token (`kroger:refresh:<tenant>`).
+- **Kroger split:** `client_credentials` product/price reads are shared at the app level; cart writes use a **per-tenant** `authorization_code` refresh token (`kroger:refresh:<tenant>`). The product/price client bounds its own concurrent in-flight requests to a small fixed cap (default 6), so fan-out tools (`kroger_flyer`, `kroger_prices`, etc.) use plain `Promise.all` — the cap prevents 429 storms without callers needing a concurrency primitive.
 
 A **solo operator** is simply the degenerate case: one `users/<id>/` subtree.
 
@@ -138,7 +138,7 @@ Every menu request surfaces a small number of new items the user hasn't taken a 
 - **Newsletter email** (optional) — a *push* source that reaches the bot-walled/paywalled sites RSS can't. The Worker exports an `email()` handler; Cloudflare Email Routing points a forwarder address at it. Candidates land in the shared `discoveries_inbox.toml` with unwrapped URLs and surface via `read_discovery_inbox`. See [`SELF_HOSTING.md`](SELF_HOSTING.md) step 9.
 - **Kroger flyer** (`kroger_flyer`) — ready-to-eat candidates ride the flyer scan.
 
-New items persist in **`draft` state immediately**, not gated on the user expressing interest at proposal time — they often won't have an opinion then but might later ("actually, add that Serious Eats one"). Drafts are de-prioritized in later menu generation but remain available. Disposition is conversational: a rating/like → `active`; an explicit no → `rejected` (kept for de-dup); silence → stays draft. Items in draft past ~6 months auto-archive to avoid corpus bloat.
+New items persist in **`draft` state immediately**, not gated on the user expressing interest at proposal time — they often won't have an opinion then but might later ("actually, add that Serious Eats one"). Drafts are de-prioritized in later menu generation but remain available. Disposition is conversational: a rating/like → `active`; an explicit no → `rejected` (kept for de-dup); silence → stays draft.
 
 ## Indexes and validation
 
@@ -163,9 +163,9 @@ They are deliberately split so the agent persona isn't auto-loaded into a develo
 
 ## Security posture
 
-- **The repo is public — but only code lives here.** This repo is the Worker plus build tooling; *all* personal data — the operator's included — lives in the **separate private data repo**, under a per-tenant `users/<username>/` subtree (the operator is just another tenant). A public *code* repo collapses the auth story: the MCP read path leaks nothing not already public, so the security boundary moves cleanly to the **write + Kroger** path. The one genuinely-public read surface is the **optional** GitHub Pages cookbook (`scripts/build-site.mjs`), and it publishes only the **shared, objective recipe corpus** (`recipes/*.md`) — never any `users/` subtree, not even the per-tenant `status`/`rating` overlay. Eating habits, grocery cadence, and `preferences.toml`'s `preferred_location` stay private with the rest of each member's state.
+- **The repo is public — but only code lives here.** This repo is the Worker, the agent's persona/skills source, and build tooling; *all* personal data — the operator's included — lives in the **separate private data repo**, under a per-tenant `users/<username>/` subtree (the operator is just another tenant). A public *code* repo collapses the auth story: the MCP read path leaks nothing not already public, so the security boundary moves cleanly to the **write + Kroger** path. The one genuinely-public read surface is the **optional** GitHub Pages cookbook (`scripts/build-site.mjs`), and it publishes only the **shared, objective recipe corpus** (`recipes/*.md`) — never any `users/` subtree, not even the per-tenant `status`/`rating` overlay. Eating habits, grocery cadence, and `preferences.toml`'s `preferred_location` stay private with the rest of each member's state.
 - **Secrets never touch the repo.** Because it's public, this discipline is load-bearing: the GitHub App private key and Kroger OAuth tokens live as Cloudflare Worker secrets only (encrypted at rest, never logged, gitignored locally via `.dev.vars`).
-- **OAuth protects writes, not reads.** Claude.ai's custom-connector UI requires OAuth (no "no auth" / bearer option), and post-public-repo that OAuth guards the write/cart surface.
+- **OAuth protects writes, not reads.** Claude.ai's custom-connector UI requires OAuth (no "no auth" / bearer option), and that OAuth guards the write/cart surface.
 - **The cart is write-only.** The Kroger Cart API can add but cannot remove or check out — so the agent literally cannot read the cart or check out for the user. A useful safety property: reconciliation reports what *should* change and tells the user to fix it in the Kroger app, never silently pretends items are gone.
 
 ## Tech stack

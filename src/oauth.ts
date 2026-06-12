@@ -3,12 +3,11 @@
 //   - GET /oauth/init     → redirect to Kroger's authorize endpoint (PKCE + state)
 //   - GET /oauth/callback → verify `state`, exchange the code, store the refresh token
 //
-// These paths MUST be reachable without a Cloudflare Access JWT (Kroger's
-// redirect carries none) — index.ts routes them before the Access gate, and an
-// Access *bypass* policy carves them out at the edge (infra). They are secured
-// instead by OAuth `state` (CSRF) + PKCE: the per-flow verifier is held in KV
-// keyed by `state` with a short TTL, so a forged/replayed callback whose state
-// has no stored verifier is rejected with no token exchange.
+// Kroger's redirect carries no credential, so these paths are reached without
+// the connector's OAuth bearer. They are secured instead by OAuth `state` (CSRF)
+// + PKCE: the per-flow verifier is held in KV keyed by `state` with a short TTL,
+// so a forged/replayed callback whose state has no stored verifier is rejected
+// with no token exchange.
 
 import type { Env } from "./env.js";
 import { normalizeTenantId } from "./tenant.js";

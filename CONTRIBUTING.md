@@ -1,17 +1,17 @@
 # Contributing
 
-How to work **on** the grocery-agent backend. For how the system is *built* (the technical model), read [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) first — this guide assumes it.
+How to work **on** the grocery-agent itself — its persona/skills (generated from [`AGENT_INSTRUCTIONS.md`](AGENT_INSTRUCTIONS.md)) **and** the `grocery-mcp` Worker, both built in this repo. For how the system is *built* (the technical model), read [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) first — this guide assumes it.
 
-> **One thing to get right up front.** This repo holds the agent's **backend**, not its persona. The agent's operational instructions — persona, conversational flows, behavior rules — live in [`AGENT_INSTRUCTIONS.md`](AGENT_INSTRUCTIONS.md), which is the canonical source the **grocery-agent plugin** is generated from (`scripts/build-plugin.mjs`). Edit `AGENT_INSTRUCTIONS.md` and rebuild — **never hand-edit the generated bundle under `plugin/`**. Edit *this* repo's code/docs when changing how the *repo* is built; edit `AGENT_INSTRUCTIONS.md` when changing how the *agent* behaves. Different audiences.
+> **One thing to get right up front.** This repo *is* the grocery-agent itself — both of its surfaces. The agent's operational instructions — persona, conversational flows, behavior rules — live in [`AGENT_INSTRUCTIONS.md`](AGENT_INSTRUCTIONS.md), the canonical source the **grocery-agent plugin**'s skills are generated from (`scripts/build-plugin.mjs`); the domain tools live in the `grocery-mcp` Worker (`src/`). Both ship to the agent at runtime, and both are built here. Change the Worker by editing `src/`; change how the agent talks and decides by editing `AGENT_INSTRUCTIONS.md` and rebuilding — **never hand-edit the generated bundle under `plugin/`**.
 
 ## Repo map
 
-There is **no data at the root of this repo** — the data lives in a separate private data repo (see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) and [`docs/SELF_HOSTING.md`](docs/SELF_HOSTING.md)). This repo is code + tooling:
+There is **no data at the root of this repo** — the data lives in a separate private data repo (see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) and [`docs/SELF_HOSTING.md`](docs/SELF_HOSTING.md)). This repo is the agent's source — Worker code, the persona/skills source, and build tooling:
 
 | Path | What it is |
 | --- | --- |
 | `src/`, `test/`, `wrangler.jsonc` | the repo root **is** the Cloudflare Worker (TypeScript) hosting the `grocery-mcp` MCP server + OAuth provider |
-| `scripts/` | index + static-site build tooling (`build-indexes.mjs`, `build-site.mjs`, `build-plugin.mjs`, `site-assets/`), run by data repos via reusable CI |
+| `scripts/` | index + static-site + plugin build tooling (`build-indexes.mjs`, `build-site.mjs`, `build-plugin.mjs`, `site-assets/`), run by data repos via reusable CI |
 | `docs/` | [`ARCHITECTURE.md`](docs/ARCHITECTURE.md) (the technical model) · [`SCHEMAS.md`](docs/SCHEMAS.md) (file formats) · [`TOOLS.md`](docs/TOOLS.md) (the tool contract) · [`SELF_HOSTING.md`](docs/SELF_HOSTING.md) (operator setup) · `data-template/` (submodule) |
 | `AGENT_INSTRUCTIONS.md` | the agent persona; build source for the `plugin/` bundle |
 | `openspec/` | the change/spec workflow — `changes/archive/` is the build history, `specs/` is the living contract |

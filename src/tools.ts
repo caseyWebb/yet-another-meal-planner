@@ -1,6 +1,8 @@
-// Registers the six repo-data read tools on an McpServer. Each tool reads via
-// the shared GitHub client and returns a structured result; failures map to the
-// structured-error convention (errors.ts).
+// buildServer wires the full grocery-mcp tool surface onto an McpServer: the
+// repo-data read + Kroger + pantry-verify tools defined here, plus the write,
+// grocery-list, order, discovery, notes, store, and cooking tool groups
+// registered from their own modules. Each tool returns a structured result;
+// failures map to the structured-error convention (errors.ts).
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
@@ -31,6 +33,8 @@ import {
   isFulfillable,
   isOnSale,
   isFlyerWorthy,
+  dedupeFlyerHits,
+  MIN_FLYER_DISCOUNT,
   type CachedMapping,
   type MatchContext,
   type MatchDeps,
@@ -51,7 +55,6 @@ import {
   verifyParsedIngredients,
   aggregateVerifications,
   type PantryItem,
-  type VerifyResult,
 } from "./pantry-verify.js";
 
 const SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
@@ -79,6 +82,8 @@ const flyerFilterShape = {
   terms: z.array(z.string()).optional(),
   against_stockup: z.boolean().optional(),
   against_substitutions: z.boolean().optional(),
+  /** Minimum markdown to keep, as a percent of regular price (default 5). */
+  min_savings_pct: z.number().optional(),
 };
 
 const matchContextShape = {
@@ -524,13 +529,16 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
     ({ ingredients }) =>
       runTool(async () => {
         const locationId = await getLocationId();
-        const prices = [];
-        for (const ingredient of ingredients) {
-          const candidates = await kroger.search(ingredient, { locationId, limit: 50 });
-          // Every fulfillable product for the term — the LLM judges across them.
-          const products = candidates.filter(isFulfillable).map(productRow);
-          prices.push({ ingredient, products });
-        }
+        // Independent per-ingredient searches run concurrently (bounded by the
+        // Kroger client's concurrency cap); Promise.all preserves input order.
+        const prices = await Promise.all(
+          ingredients.map(async (ingredient) => {
+            const candidates = await kroger.search(ingredient, { locationId, limit: 50 });
+            // Every fulfillable product for the term — the LLM judges across them.
+            const products = candidates.filter(isFulfillable).map(productRow);
+            return { ingredient, products };
+          }),
+        );
         return { prices };
       }),
   );
@@ -539,7 +547,7 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
     "kroger_flyer",
     {
       description:
-        "Synthesized sale scan (the public API has no flyer/circular endpoint). Scans precise context terms (passed plus stockup/substitution candidates) and broad curated category terms, keeps only MEANINGFUL discounts (on sale AND at least 5% off — so neither Kroger's promo==regular non-sale echo nor penny/near-zero markdowns leak through), dedupes by productId. Explicitly non-exhaustive: each term returns a relevance-ranked page, not a discount-sorted one.",
+        "Synthesized sale scan (the public API has no flyer/circular endpoint). Scans precise context terms (passed plus stockup/substitution candidates) and broad curated category terms, keeps only MEANINGFUL discounts (on sale AND at least `min_savings_pct` off — default 5%, so neither Kroger's promo==regular non-sale echo nor penny/near-zero markdowns leak through; pass a lower `min_savings_pct` to widen, e.g. for a bulk stockup item), dedupes by productId. Each kept item carries `matched_terms` — every scanned term that surfaced it — so you can tell a stockup/menu match from a broad-category one. Explicitly non-exhaustive: each term returns a relevance-ranked page, not a discount-sorted one.",
       inputSchema: { filter: z.object(flyerFilterShape).optional() },
     },
     ({ filter }) =>
@@ -582,34 +590,34 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
 
         const terms = [...new Set([...precise, ...broad].map((t) => t.trim()).filter(Boolean))];
 
+        // min_savings_pct is a percent (5 = 5%); convert to the fraction isFlyerWorthy wants.
+        const minDiscount =
+          typeof f.min_savings_pct === "number" ? f.min_savings_pct / 100 : MIN_FLYER_DISCOUNT;
+
         const PAGES = 2;
         const LIMIT = 20;
-        const seen = new Map<string, unknown>();
-        for (const term of terms) {
-          for (let page = 0; page < PAGES; page++) {
-            const candidates = await kroger.search(term, {
-              locationId,
-              limit: LIMIT,
-              start: page * LIMIT,
-            });
-            if (candidates.length === 0) break;
-            for (const c of candidates) {
-              if (isFlyerWorthy(c) && isFulfillable(c) && !seen.has(c.productId)) {
-                seen.set(c.productId, {
-                  sku: c.productId,
-                  brand: c.brand,
-                  description: c.description,
-                  size: c.size,
-                  price: c.price,
-                  savings: Math.round((c.price.regular - c.price.promo) * 100) / 100,
-                  categories: c.categories,
-                  matched_term: term,
-                });
+        // Scan terms concurrently (bounded by the Kroger client cap); within a term
+        // keep the ≤2-page sequential walk + break-on-empty. dedupeFlyerHits then
+        // merges by productId in term order, so each product carries every surfacing
+        // term in matched_terms — no order-dependent first-wins to preserve.
+        const perTerm = await Promise.all(
+          terms.map(async (term) => {
+            const found: KrogerCandidate[] = [];
+            for (let page = 0; page < PAGES; page++) {
+              const candidates = await kroger.search(term, {
+                locationId,
+                limit: LIMIT,
+                start: page * LIMIT,
+              });
+              if (candidates.length === 0) break;
+              for (const c of candidates) {
+                if (isFlyerWorthy(c, minDiscount) && isFulfillable(c)) found.push(c);
               }
             }
-          }
-        }
-        return { items: [...seen.values()] };
+            return { term, candidates: found };
+          }),
+        );
+        return { items: dedupeFlyerHits(perTerm) };
       }),
   );
 
@@ -628,22 +636,30 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
 
         const text = await readOptional(gh, "ready_to_eat.toml");
         const items = text ? ((parseToml(text, "ready_to_eat.toml").items as Record<string, unknown>[]) ?? []) : [];
-        for (const item of items) {
-          if (typeof item.name !== "string") continue;
-          if (item.status === "rejected") continue;
-          const meal = READY_TO_EAT_MEALS.includes(item.meal as (typeof READY_TO_EAT_MEALS)[number])
-            ? (item.meal as string)
-            : "dinner";
-          const candidates = await kroger.search(item.name, { locationId, limit: 50 });
-          const products = candidates.filter(isFulfillable).map(productRow);
-          if (products.length > 0) {
-            available[meal].push({ name: item.name, slug: item.slug ?? null, meal, products });
+        // One Kroger search per catalog item, run concurrently (bounded by the
+        // client cap); bucket from the ordered results so output stays stable.
+        const looked = await Promise.all(
+          items.map(async (item) => {
+            if (typeof item.name !== "string") return null;
+            if (item.status === "rejected") return null;
+            const meal = READY_TO_EAT_MEALS.includes(item.meal as (typeof READY_TO_EAT_MEALS)[number])
+              ? (item.meal as string)
+              : "dinner";
+            const candidates = await kroger.search(item.name, { locationId, limit: 50 });
+            const products = candidates.filter(isFulfillable).map(productRow);
+            return { item, meal, products };
+          }),
+        );
+        for (const r of looked) {
+          if (!r) continue;
+          if (r.products.length > 0) {
+            available[r.meal].push({ name: r.item.name, slug: r.item.slug ?? null, meal: r.meal, products: r.products });
           } else {
             unavailable.push({
-              name: item.name,
-              slug: item.slug ?? null,
-              meal,
-              catalog_sku: typeof item.sku === "string" ? item.sku : null,
+              name: r.item.name,
+              slug: r.item.slug ?? null,
+              meal: r.meal,
+              catalog_sku: typeof r.item.sku === "string" ? r.item.sku : null,
             });
           }
         }
@@ -706,11 +722,12 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
       runTool(async () => {
         const aliases = await getAliases();
         const [pantry, rules] = await Promise.all([getPantryItems(), getSubstitutionRules()]);
-        const perRecipe: { slug: string; result: VerifyResult }[] = [];
-        for (const slug of slugs) {
-          const parsed = await getRecipeIngredients(slug, aliases);
-          perRecipe.push({ slug, result: verifyParsedIngredients(parsed, pantry, rules, aliases) });
-        }
+        const perRecipe = await Promise.all(
+          slugs.map(async (slug) => {
+            const parsed = await getRecipeIngredients(slug, aliases);
+            return { slug, result: verifyParsedIngredients(parsed, pantry, rules, aliases) };
+          }),
+        );
         return aggregateVerifications(perRecipe);
       }),
   );

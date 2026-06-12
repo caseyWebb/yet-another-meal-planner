@@ -63,24 +63,30 @@ export function registerDiscoveryTools(server: McpServer, sharedGh: GitHubClient
 
         const seen = extractRecipeSources(await readOptional(sharedGh, RECIPE_INDEX));
 
+        // Fetch all feeds concurrently (distinct external domains, no shared-host burst concern).
+        const results = await Promise.all(
+          feeds.map(async (f) => {
+            const url = typeof f.url === "string" ? f.url : null;
+            if (!url) return null;
+            const feedName = typeof f.name === "string" ? f.name : url;
+            const feedWeight = typeof f.weight === "number" ? f.weight : 1;
+            try {
+              const res = await fetchWithBrowserHeaders(url);
+              if (!res.ok) return { skip: { feed: feedName, reason: `HTTP ${res.status}` } };
+              const items = parseFeed(await res.text()).slice(0, MAX_PER_FEED);
+              return { entries: items.map((item) => ({ item, feedName, feedWeight })) };
+            } catch (e) {
+              return { skip: { feed: feedName, reason: errMessage(e) } };
+            }
+          }),
+        );
+
         const entries: FeedEntry[] = [];
         const skipped: { feed: string; reason: string }[] = [];
-        for (const f of feeds) {
-          const url = typeof f.url === "string" ? f.url : null;
-          if (!url) continue;
-          const feedName = typeof f.name === "string" ? f.name : url;
-          const feedWeight = typeof f.weight === "number" ? f.weight : 1;
-          try {
-            const res = await fetchWithBrowserHeaders(url);
-            if (!res.ok) {
-              skipped.push({ feed: feedName, reason: `HTTP ${res.status}` });
-              continue;
-            }
-            const items = parseFeed(await res.text()).slice(0, MAX_PER_FEED);
-            for (const item of items) entries.push({ item, feedName, feedWeight });
-          } catch (e) {
-            skipped.push({ feed: feedName, reason: errMessage(e) });
-          }
+        for (const r of results) {
+          if (!r) continue;
+          if ("skip" in r) skipped.push(r.skip!);
+          else entries.push(...r.entries);
         }
 
         const candidates = buildCandidates(entries, seen);

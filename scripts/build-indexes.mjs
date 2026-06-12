@@ -16,6 +16,11 @@ import matter from 'gray-matter';
 import { parse as parseToml } from 'smol-toml';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+// `archived` is valid but tool-unwritten by design — the MANUAL history-preserving
+// removal state (a recipe with cooking_log history can't be deleted, so it's
+// hand-archived: file persists, history resolves, but it leaves active rotation).
+// No tool and no scheduler set it (there is deliberately no auto-archive); the
+// validator must still accept a hand-archived recipe. Mirrored in src/validate.ts.
 const STATUS_ENUM = new Set(['active', 'draft', 'rejected', 'archived']);
 // Subjective recipe fields are per-tenant (overlay + cooking_log), NOT shared
 // corpus content. They are stripped from the shared index and merged at read time

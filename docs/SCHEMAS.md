@@ -1,15 +1,15 @@
 # SCHEMAS.md — Data File Reference
 
-Concrete schemas with example values for every data file in the repo. Keep this in sync with the actual files — when you add a field, update here first, then update the file. Validation in `scripts/build-indexes.mjs` enforces these schemas.
+Concrete schemas with example values for every data file in the repo. Keep this in sync with the actual files — when you add a field, update here first, then update the file. Validation runs in two places: `scripts/build-indexes.mjs` (the full validator, at data-repo build time) and a *structural subset* in the Worker's `src/validate.ts` (at write time). Not every file is build-validated — e.g. `pantry.toml` / `grocery_list.toml` are structurally checked only in the Worker.
 
 ## File placement: shared vs per-tenant (multi-tenant data model)
 
-The data lives in **one private data repo** with two regions (see `ARCHITECTURE.md` and the `multi-tenant-friend-group` change). Every file below lives in exactly one:
+The data lives in **one private data repo** with two regions (see `ARCHITECTURE.md`). Every file below lives in exactly one:
 
 - **Shared corpus (data-repo root)** — objective, single-source, read by everyone: `recipes/*.md` (objective frontmatter + body), `aliases.toml`, `substitutions.toml` (the shared default layer), `skus/kroger.toml`, `flyer_terms.toml`, `storage_guidance/` (curated put-away advice), **`stores/<slug>.toml`** (in-store walk store registry — identity, keyed by location; layout lives in store notes), **`feeds.toml`** (RSS discovery feeds), **`discoveries_inbox.toml`** (forwarded-newsletter candidates), **`discovery_sources.toml`** (inbound-email allowlist), `_indexes/`. Discovery is a shared, top-level concern — feeds and the newsletter inbox feed one group pool, judged against each caller's taste at read time.
 - **Per-tenant subtree (`users/<username>/`)** — each member's own state: `pantry.toml`, `preferences.toml`, `stockup.toml`, `grocery_list.toml`, `meal_plan.toml`, `cooking_log.toml`, `ready_to_eat.toml` (personal heat-and-eat catalog), `kitchen.toml` (owned cooking equipment), `taste.md`, `diet_principles.md`, **`overlay.toml`** (subjective recipe view), **`notes/<slug>.toml`** (attributed recipe notes), **`store_notes/<slug>.toml`** (attributed store notes), an optional **`substitutions.toml`** override layer, and any personal (unshared) recipes.
 
-**Three-category recipe model (D5):** a recipe's *content* (objective frontmatter + body) is shared; its *overlay* (`rating` + `status`) is per-tenant in `overlay.toml`; its *notes* are per-tenant, attributed, append-mostly. `last_cooked` is **not stored** — it's derived per-tenant from that member's `cooking_log.toml`. Read tools merge shared content + the caller's overlay + cooking-log `last_cooked` at read time.
+**Three-category recipe model:** a recipe's *content* (objective frontmatter + body) is shared; its *overlay* (`rating` + `status`) is per-tenant in `overlay.toml`; its *notes* are per-tenant, attributed, append-mostly. `last_cooked` is **not stored** — it's derived per-tenant from that member's `cooking_log.toml`. Read tools merge shared content + the caller's overlay + cooking-log `last_cooked` at read time.
 
 ## Recipe frontmatter (recipes/*.md)
 
@@ -29,7 +29,7 @@ difficulty: easy                # easy | medium | hard
 dietary: [gluten-free, dairy-free]    # array; can be empty
 season: [spring, summer]              # array of seasons; can be empty for year-round
 veg_forward: false              # boolean
-# --- The next three are NO LONGER shared-content fields (D5). They are per-tenant ---
+# --- The next three are per-tenant, not shared-content fields ---
 # last_cooked  → derived from each member's cooking_log.toml (not stored here or in the index)
 # rating       → per-tenant users/<id>/overlay.toml
 # status       → per-tenant users/<id>/overlay.toml (effective default: draft)
@@ -48,8 +48,8 @@ source: https://www.seriouseats.com/lemon-garlic-roasted-chicken
 ```
 
 **Notes:**
-- `rating`, `status`, and `last_cooked` are **per-tenant**, not shared content (D5) — they live in `overlay.toml` (rating/status) or are derived from `cooking_log.toml` (last_cooked), and the shared `_indexes/recipes.json` carries objective fields only. A shared recipe's frontmatter SHOULD NOT carry them; the build strips them and treats `status` as optional. `update_recipe` routes a `rating`/`status` edit to the caller's overlay, never the shared file.
-- `status` lifecycle (now per-tenant): new imports default to effective `draft`. A member's feedback promotes to `active` (with rating) or rejects to `rejected` **in their own overlay** — one member's disposition never changes another's.
+- `rating`, `status`, and `last_cooked` are **per-tenant**, not shared content — they live in `overlay.toml` (rating/status) or are derived from `cooking_log.toml` (last_cooked), and the shared `_indexes/recipes.json` carries objective fields only. A shared recipe's frontmatter SHOULD NOT carry them; the build strips them and treats `status` as optional. (`create_recipe` still stamps a default `status: draft` onto a brand-new recipe's frontmatter, which the build then strips from the shared index — frontmatter status is *tolerated and ignored*, not forbidden.) `update_recipe` routes a `rating`/`status` edit to the caller's overlay, never the shared file.
+- `status` lifecycle (per-tenant): new imports default to effective `draft`. A member's feedback promotes to `active` (with rating) or rejects to `rejected` **in their own overlay** — one member's disposition never changes another's.
 - `pairs_with`: slugs of other recipes, optional (defaults to empty). A *plating* edge — recipes eaten together on one plate (a main's companion sides). Each slug MUST resolve to a real recipe (a build hard-failure otherwise); sides are themselves recipes, so they reuse the normal verify/import/grocery-list pipeline. Objective **shared content** (carried in `_indexes/recipes.json`, written by `update_recipe`) — not a per-tenant overlay field. Grown lazily by the meal-plan flow as pairings are confirmed; the bootstrap selects sides by plate fit.
 - `standalone`: optional boolean (defaults **unset**, never backfilled). Marks an already-rounded one-pot/inclusive plate so the planner won't prompt for a side. Must be a boolean when present (a build hard-failure otherwise). When unset, the agent infers at plan time whether the dish stands alone and offers to persist its verdict. Objective **shared content**, written by `update_recipe` — not a per-tenant overlay field.
 - `perishable_ingredients`: optional array (defaults to empty, warn-free when absent) — a **normalized** list of the recipe's perishable ingredients, feeding the menu-gen waste callout (a partial-unit perishable that no other proposed recipe uses). **Derived at import, not hand-maintained:** the import/create flow classifies it alongside `protein`/`cuisine`. The classification test is *"would the leftover rot before I'd realistically use it?"* — not botany — so shelf-stable staples (olive oil, canned beans) are excluded and a small amount of a fast-spoiling item is included; fuzzy edges (eggs, potatoes) are fine since a wrong call only costs a dismissed nudge. Names use the **same normalization the pantry-verify matcher applies** (`normalizeIngredient`), applied at write time by `create_recipe`/`update_recipe`, so a perishable lines up across recipes for overlap detection. Present-but-not-a-string-array is a build hard-failure (like a non-boolean `standalone`). Objective **shared content** carried in `_indexes/recipes.json` — not a per-tenant overlay field, not curated config. Hand-edit only to correct a misclassification.
@@ -67,7 +67,7 @@ The markdown body below the frontmatter is freeform, with one **hard requirement
 
 ## users/&lt;username&gt;/overlay.toml (per-tenant)
 
-Each member's **subjective view** of shared recipes — the overlay merged onto shared content at read time (D5). Keyed by recipe slug. Holds **only** `rating` + `status` (the two genuinely-subjective single-values). `last_cooked` is **not** here — it's derived from this member's `cooking_log.toml`. Agent-writable side-effect file; an absent row means effective `status: draft` for that member.
+Each member's **subjective view** of shared recipes — the overlay merged onto shared content at read time. Keyed by recipe slug. Holds **only** `rating` + `status` (the two genuinely-subjective single-values). `last_cooked` is **not** here — it's derived from this member's `cooking_log.toml`. Agent-writable side-effect file; an absent row means effective `status: draft` for that member.
 
 ```toml
 # users/alice/overlay.toml — Alice's subjective overlay (rating + status) by slug.
@@ -88,7 +88,7 @@ status = "rejected"            # Alice rejected it; other members are unaffected
 
 ## users/&lt;username&gt;/notes/&lt;slug&gt;.toml (per-tenant)
 
-A member's **attributed notes** on one recipe (shared or personal) — the spin-capture mechanism (D6). One file per recipe slug, `[[notes]]` array, append-mostly. **Author is structural** — it's the `users/<id>/` path the file lives under, never a field (unspoofable). Adding a note never modifies shared content; an author MAY edit or delete their **own** notes (`update_recipe_note` / `remove_recipe_note`, addressed by `created_at`, self-scoped) but never another tenant's.
+A member's **attributed notes** on one recipe (shared or personal) — the spin-capture mechanism. One file per recipe slug, `[[notes]]` array, append-mostly. **Author is structural** — it's the `users/<id>/` path the file lives under, never a field (unspoofable). Adding a note never modifies shared content; an author MAY edit or delete their **own** notes (`update_recipe_note` / `remove_recipe_note`, addressed by `created_at`, self-scoped) but never another tenant's.
 
 ```toml
 # users/alice/notes/miso-glazed-salmon.toml
@@ -178,7 +178,7 @@ free_text = "10-inch cast iron, half-sheet trays"
 
 ## grocery_list.toml
 
-The buy list — committed intent for the next order. Ingredient/product-level and **SKU-free**: resolution to a Kroger SKU happens once, at order time (Change 06b), against current availability, so the list never pins a brand/SKU that could go stale between capture and order. Agent-writable side-effect file (NOT user-curated config). Distinct from `pantry.toml` (observation: what's in the kitchen) and `stockup.toml` (conditional intent: buy IF on sale). Items are keyed by normalized `name` — re-adding an existing name merges rather than duplicating.
+The buy list — committed intent for the next order. Ingredient/product-level and **SKU-free**: resolution to a Kroger SKU happens once, at order time, against current availability, so the list never pins a brand/SKU that could go stale between capture and order. Agent-writable side-effect file (NOT user-curated config). Distinct from `pantry.toml` (observation: what's in the kitchen) and `stockup.toml` (conditional intent: buy IF on sale). Items are keyed by normalized `name` — re-adding an existing name merges rather than duplicating.
 
 ```toml
 # grocery_list.toml
@@ -221,7 +221,7 @@ added_at = "2026-06-09"
 - `domain` (free string, default `grocery`; common values `grocery | home-improvement | garden | pharmacy`) is the kind of **store** the item is bought at — **orthogonal to `kind`**: `kind` governs pantry reconcile on receive, `domain` governs which store-type an in-store walk includes the item in. Absent → read as `grocery` (existing items validate unchanged). Open-vocabulary, not a hard enum — a wrong tag only mis-files an item onto the wrong walk. Validated shape-only (a non-string fails) in the Worker write subset; `add_to_grocery_list` / `update_grocery_list` accept it.
 - `source` carries provenance for order-time dedup/behavior: `pantry_low`/`stockup` were promoted (don't re-prompt); `menu` aggregates with recipe needs; `ad_hoc` is a one-off.
 - `note` holds a **one-off** brand request ("the fancy olive oil this time") — explicitly NOT `preferences.toml`, which is for standing dispositions.
-- Lifecycle: `active → in_cart → received`. The `status` **enum is only `active | in_cart | ordered`** — `received` is not a stored status but the receive *action* (the row is removed and the pantry restocked). `place_order` writes the `active → in_cart` advance; `ordered`/`ordered_at` exist in the schema but no path currently sets them.
+- Lifecycle: `active → in_cart → received`. The `status` **enum is only `active | in_cart | ordered`** — `received` is not a stored status but the receive *action* (the row is removed and the pantry restocked). `place_order` writes the `active → in_cart` advance; `ordered`/`ordered_at` exist in the schema but no path sets them.
 
 ## cooking_log.toml
 
@@ -307,7 +307,7 @@ limit = ["cilantro"]             # ingredients to deprioritize but not reject
 
 ## substitutions.toml
 
-User-curated. Agent edits only when directed. **Shared with a per-tenant override layer (§7.2):** the shared corpus `substitutions.toml` (root) is the default for everyone; a member MAY carry a personal `users/<id>/substitutions.toml` with the same schema. At read time the two are joined and a personal rule **replaces** the shared rule for that same (alias-normalized) ingredient — for that member only. Override-only ingredients are added; shared rules with no override carry through.
+User-curated. Agent edits only when directed. **Shared with a per-tenant override layer:** the shared corpus `substitutions.toml` (root) is the default for everyone; a member MAY carry a personal `users/<id>/substitutions.toml` with the same schema. At read time the two are joined and a personal rule **replaces** the shared rule for that same (alias-normalized) ingredient — for that member only. Override-only ingredients are added; shared rules with no override carry through.
 
 ```toml
 # substitutions.toml — standing substitution rules
@@ -439,11 +439,11 @@ name = "NYT Cooking"
 
 **Notes:**
 - Every entry needs a valid `address` (contains `@`) — enforced at build + write time.
-- Auth posture: a message is accepted only when authenticated (Cloudflare DKIM/SPF/DMARC) AND from a listed source — `sender ∧ aligned-DKIM` (auto-forward) or `member ∧ aligned-DKIM` (manual forward). The SPF-via-member-relay fallback is deferred. Everything else is dropped silently.
+- Auth posture: a message is accepted only when authenticated (Cloudflare DKIM/SPF/DMARC) AND from a listed source — `sender ∧ aligned-DKIM` (auto-forward) or `member ∧ aligned-DKIM` (manual forward). Everything else is dropped silently.
 
 ## storage_guidance/
 
-**Shared corpus** (data-repo root). A curated, hand-maintained tree of **opinionated, vetted storage advice** the agent surfaces at put-away (2–3 relevant, non-obvious tips when new perishables enter the kitchen — on both the order `received` restock and a farmers-market `update_pantry` haul). It encodes opinions the model lacks, not shelf-life facts it already has — which is why it replaced the dead `ingredients.toml` shelf-life table (freshness is LLM-judged per Change 08, not table-gated).
+**Shared corpus** (data-repo root). A curated, hand-maintained tree of **opinionated, vetted storage advice** the agent surfaces at put-away (2–3 relevant, non-obvious tips when new perishables enter the kitchen — on both the order `received` restock and a farmers-market `update_pantry` haul). It encodes opinions the model lacks, not shelf-life facts it already has — there is no shelf-life table; freshness is the agent's own judgment, not table-gated.
 
 Each file is **markdown prose keyed by a storage behavior *class*** — `tender-herbs.md`, `hardy-herbs.md`, `leafy-greens.md`, `alliums.md`, `potatoes.md`, … — so one entry covers a whole family without per-ingredient duplication. A few **singletons** (`basil.md`, `tomatoes.md`, `avocados.md`) exist for items whose rule contradicts their class. Relational "don't store together" rules (ethylene cross-contamination, onions↔potatoes) live in a dedicated **`_ethylene.md`**, because they belong to no single item.
 
@@ -480,16 +480,15 @@ domain = "grocery"               # free string; default "grocery" (grocery | hom
 ```
 
 **Notes:**
-- `slug` + `name` are required; everything else is optional. `slug` SHOULD match the filename (the location id). The registry carries **no layout** — `aisles` / `item_locations` / `doesnt_carry` are gone; they're store notes now.
+- `slug` + `name` are required; everything else is optional. `slug` SHOULD match the filename (the location id). The registry carries **no layout** — aisle order, item placements, and not-carried entries are store notes.
 - **Layout is notes.** Aisle order, where-it-hides placements, and not-carried entries are `add_store_note` / `read_store_notes` with `layout` / `location` / `stock` tags (see the `store_notes/` schema below). One surface for everything we know about a store. The walk infers aisle order from the `layout` notes (lead each with the aisle number); item→aisle placement is agent judgment over the store's own sign vocabulary (open-vocab, no manifest — the storage-guidance posture).
 - `domain` (free string, default `grocery`) is the store's kind; the walk filters the grocery list to items of the same `domain`. A wrong tag only mis-files an item, so it's open-vocabulary, not a hard enum. For a store the user names that isn't registered, the agent classifies its domain from world knowledge (Lowe's → `home-improvement`).
-- **Legacy tolerance:** a `stores/<slug>.toml` written before this change may still carry `aisles` / `item_locations` / `doesnt_carry` keys — the parser and both validators **silently ignore** them (read identity, never error). They are not migrated.
+- Unknown keys (`aisles` / `item_locations` / `doesnt_carry`) are **silently ignored** by the parser and both validators — identity is read, never an error.
 - Validated structurally at build time (`scripts/build-indexes.mjs` → `validateStore`) and by the Worker's write-time subset (`src/validate.ts`). CRUD via `list_stores` / `read_store` / `add_store` / `update_store` (identity ops only) / `remove_store` (see `docs/TOOLS.md`). `list_stores` returns identity only — whether a store has a usable map is a `read_store_notes` concern.
-- **Follow-ons, explicitly out of scope for v1** (seeds captured now, surface deferred): cross-store routing (a `stock` note → another store that carries it; a cheapest-X facet → suggest a split trip); folding the Kroger location config into `stores/` to unify `[stores]`; chain-level data sharing; and the non-grocery skill surface (the `domain` facet is built so a Lowe's/Target run generalizes for free, but the agent copy stays grocery-shaped). Per-item "picked" persistence for resilient long voice walks is also deferred (v1 batches the received transition at completion, like `cook`).
 
 ## users/&lt;username&gt;/store_notes/&lt;slug&gt;.toml (per-tenant)
 
-A member's **attributed notes** on one store — the store analog of recipe notes (D6), and the **single home for everything we know about a store**: both freeform observations ("fish counter closes at 6 PM", "they have the Kerrygold I like") AND the store's **layout**, captured by tag convention. One file per store slug, `[[notes]]` array. **Author is structural** — the `users/<id>/` path the file lives under, never a field. Shared-by-default, with an optional `private` flag.
+A member's **attributed notes** on one store — the store analog of recipe notes, and the **single home for everything we know about a store**: both freeform observations ("fish counter closes at 6 PM", "they have the Kerrygold I like") AND the store's **layout**, captured by tag convention. One file per store slug, `[[notes]]` array. **Author is structural** — the `users/<id>/` path the file lives under, never a field. Shared-by-default, with an optional `private` flag.
 
 ```toml
 # users/alice/store_notes/west-7th-tom-thumb.toml
@@ -534,7 +533,7 @@ private = true                             # owner-only; never surfaced to the g
 
 ## users/<username>/ready_to_eat.toml
 
-**Per-tenant** (a facet of the personal profile, not shared corpus — a ready-to-eat item is a Kroger SKU + "I'll eat this," pure personal taste with no shared content). One file per member; each item is tagged with a `meal` and keyed by a generated `slug`. The agent seeds it at onboarding (items the member names land `active`) and adds drafts as discovery surfaces them; the member dispositions drafts. (`variety_rules`, shown below, are a hand-maintained convention only — no tool currently reads, writes, or validates them.)
+**Per-tenant** (a facet of the personal profile, not shared corpus — a ready-to-eat item is a Kroger SKU + "I'll eat this," pure personal taste with no shared content). One file per member; each item is tagged with a `meal` and keyed by a generated `slug`. The agent seeds it at onboarding (items the member names land `active`) and adds drafts as discovery surfaces them; the member dispositions drafts. (`variety_rules`, shown below, are a hand-maintained convention only — no tool reads, writes, or validates them.)
 
 ```toml
 # users/alice/ready_to_eat.toml
@@ -543,7 +542,7 @@ private = true                             # owner-only; never surfaced to the g
 name = "Kroger breakfast burrito (frozen)"
 slug = "kroger-breakfast-burrito-frozen"   # generated from name, stable key, unique in-file
 meal = "breakfast"               # breakfast | lunch | dinner
-sku = null                       # populated after first cart write
+sku = null                       # reserved — no tool populates it (always written null)
 category = "frozen"
 status = "active"                # active | draft | rejected
 rating = 4                       # optional integer 1–5
@@ -566,13 +565,13 @@ discovery_source = "kroger-flyer"
 brand = "Murray's"
 notes = null
 
-# variety_rules: reserved convention — hand-written only; no tool reads/writes/validates these yet
+# variety_rules: reserved convention — hand-written only; no tool reads/writes/validates these
 [variety_rules.breakfast]
 max_per_category_per_week = 2
 preferred_rotation_days = 3      # don't suggest the same item within N days
 ```
 
-Addressed by `slug`: `update_ready_to_eat(slug, …)` dispositions or rates an item; `add_draft_ready_to_eat` appends (default `draft`, or `status: "active"` for an onboarding-named item) and returns the generated slug. `ready_to_eat_available()` reads the caller's own catalog. There is **no** `_indexes/ready_to_eat.json` — the per-member list is small and read directly. `null` fields are omitted on write (TOML has no null) and treated as absent on read. `category` is a free-form string (no controlled vocabulary), unlike the pantry `category` enum — the `"frozen"`/`"refrigerated"` values above are illustrative.
+Addressed by `slug`: `update_ready_to_eat(slug, …)` dispositions or rates an item; `add_draft_ready_to_eat` appends (default `draft`, or `status: "active"` for an onboarding-named item) and returns the generated slug. `ready_to_eat_available()` reads the caller's own catalog. There is **no** `_indexes/ready_to_eat.json` — the per-member list is small and read directly. `null` fields are omitted on write (TOML has no null) and treated as absent on read. `category` is a free-form string (no controlled vocabulary), unlike the pantry `category` enum — the `"frozen"`/`"refrigerated"` values above are illustrative. Only `name`, `slug`, `meal`, `status`, and `rating` are validated; `category` / `brand` / `notes` / `added_at` / `discovered_at` / `discovery_source` / `sku` are unenforced passthrough metadata.
 
 ## stockup.toml
 
@@ -604,7 +603,7 @@ notes = "Wild only"               # price thresholds omitted — they're optiona
 
 ## skus/kroger.toml (shared corpus)
 
-Machine-maintained SKU cache, in the **shared corpus** (D7/§7.1) — a mapping resolved by any member warms it for everyone. Agent appends entries (via `place_order`) as the matching pipeline runs. Each entry is **tagged with the `locationId`** it was resolved at.
+Machine-maintained SKU cache, in the **shared corpus** — a mapping resolved by any member warms it for everyone. Agent appends entries (via `place_order`) as the matching pipeline runs. Each entry is **tagged with the `locationId`** it was resolved at.
 
 ```toml
 # skus/kroger.toml — Kroger SKU cache (agent-maintained, shared)
@@ -614,7 +613,7 @@ ingredient = "olive oil"
 sku = "0001111046025"
 brand = "Simple Truth Organic"
 size = "16.9 fl oz"
-locationId = "01400376"          # the Kroger location this was resolved at (D7)
+locationId = "01400376"          # the Kroger location this was resolved at
 last_used = "2025-05-15"
 reason = "preferred brand match; in stock at preferred location"
 ambiguity_resolved = false       # true if this required LLM fallback in matching
@@ -630,7 +629,7 @@ reason = "default brand; price-per-unit best in deterministic narrowing"
 ambiguity_resolved = false
 ```
 
-**This is a speed cache, not the source of truth for dispositions.** It stores *resolved SKUs* to skip the expensive search/narrowing; the *disposition* (care / don't-care / ranked) lives in each member's `preferences.toml [brands]`. **Shared + location-tagged:** an entry tagged with the caller's own location is tried first, but every hit is revalidated against the caller's `preferred_location` for current price + curbside/delivery availability before use — a cross-location entry not carried at the caller's store falls through to a fresh search, so a shared cache can never serve an unavailable SKU. No TTL; `last_used` is informational (for pruning). "Don't care" commodities (`[]` in preferences) carry no pinned SKU here; they re-resolve to cheapest-acceptable each run. (`locationId` is absent on legacy entries written before §7.1 — those are treated as same-location and still revalidated.)
+**This is a speed cache, not the source of truth for dispositions.** It stores *resolved SKUs* to skip the expensive search/narrowing; the *disposition* (care / don't-care / ranked) lives in each member's `preferences.toml [brands]`. **Shared + location-tagged:** an entry tagged with the caller's own location is tried first, but every hit is revalidated against the caller's `preferred_location` for current price + curbside/delivery availability before use — a cross-location entry not carried at the caller's store falls through to a fresh search, so a shared cache can never serve an unavailable SKU. No TTL; `last_used` is informational (for pruning). "Don't care" commodities (`[]` in preferences) carry no pinned SKU here; they re-resolve to cheapest-acceptable each run. (An entry with no `locationId` is treated as same-location and still revalidated.)
 
 ## taste.md
 

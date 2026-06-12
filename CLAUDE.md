@@ -1,6 +1,6 @@
 # CLAUDE.md — working in this repo with Claude Code
 
-This is the **grocery-agent backend** — the `grocery-mcp` Cloudflare Worker + its build tooling. The agent itself runs in **Claude.ai**, not Claude Code; this file is read as repo-development context. The real guides live in three docs — read the relevant one rather than working from this file alone:
+This repo is the **grocery-agent itself** — its persona/skills (generated from `AGENT_INSTRUCTIONS.md`) and the `grocery-mcp` Cloudflare Worker, plus the build tooling that produces both. The agent *runs* in **Claude.ai**, not Claude Code, but it's *built* here; this file is read as repo-development context. The real guides live in three docs — read the relevant one rather than working from this file alone:
 
 - **[CONTRIBUTING.md](CONTRIBUTING.md)** — how to work in the repo: toolchain, Worker dev, deployment, data tooling, the tool/skill surface ownership boundary, the OpenSpec workflow, conventions. **Start here.**
 - **[ARCHITECTURE.md](docs/ARCHITECTURE.md)** — how the system is built: the determinism boundary, multi-tenant identity, the data model, the Kroger matching pipeline.

@@ -109,6 +109,13 @@ describe("proposeSale", () => {
     expect(called).toBe(false);
   });
 
+  it("preserves acceptable-list order when several substitutes are on sale", async () => {
+    const rule = findRule(RULES, "salmon", {});
+    const onSale = new Set(["trout", "cod"]);
+    const res = await proposeSale(rule, async (s) => onSale.has(s));
+    expect(res.substitutes).toEqual(["trout", "cod"]);
+  });
+
   it("propagates a Kroger failure (distinct from an empty no-rules result)", async () => {
     const rule = findRule(RULES, "salmon", {});
     await expect(

@@ -4,7 +4,7 @@ A personal grocery agent. It plans your meals, keeps track of what's in your kit
 
 > **Status:** working end-to-end and in personal use — a release candidate, not a packaged product. Single-maintainer project; self-hosting works but assumes you're comfortable with Cloudflare, GitHub Actions, and a Kroger Developer account.
 
-This repository is the **code**: the `grocery-mcp` MCP server and the agent's persona ([`AGENT_INSTRUCTIONS.md`](AGENT_INSTRUCTIONS.md)). The **data** — recipes, pantry, preferences — lives in a separate private **data repo** per deployment.
+This repository is the **grocery-agent itself**: the `grocery-mcp` MCP server and the agent's persona/skills (generated from [`AGENT_INSTRUCTIONS.md`](AGENT_INSTRUCTIONS.md)). The **data** — recipes, pantry, preferences — lives in a separate private **data repo** per deployment.
 
 ## What it does
 

@@ -212,20 +212,33 @@ export async function placeOrder(
   const resolved: ResolvedLine[] = [];
   const checkpoint: CheckpointLine[] = [];
 
-  for (const item of toBuy) {
-    const ov = overrides.get(normalizeName(item.name));
-    if (ov) {
-      resolved.push({
-        name: item.name,
-        sku: ov.sku,
-        brand: ov.brand ?? "",
-        size: ov.size ?? null,
-        quantity: item.quantity,
-        assumed_quantity: item.assumed_quantity,
-      });
+  // Resolve every line concurrently (each resolve runs the matcher → Kroger,
+  // bounded by the client's concurrency cap), then partition into
+  // resolved/checkpoint in input order so the output is deterministic.
+  const outcomes = await Promise.all(
+    toBuy.map(async (item) => {
+      const ov = overrides.get(normalizeName(item.name));
+      if (ov) {
+        const line: ResolvedLine = {
+          name: item.name,
+          sku: ov.sku,
+          brand: ov.brand ?? "",
+          size: ov.size ?? null,
+          quantity: item.quantity,
+          assumed_quantity: item.assumed_quantity,
+        };
+        return { item, line };
+      }
+      return { item, result: await deps.resolve(item.name) };
+    }),
+  );
+
+  for (const o of outcomes) {
+    if ("line" in o) {
+      resolved.push(o.line!);
       continue;
     }
-    const r = await deps.resolve(item.name);
+    const { item, result: r } = o;
     if (r.resolved) {
       resolved.push({
         name: item.name,

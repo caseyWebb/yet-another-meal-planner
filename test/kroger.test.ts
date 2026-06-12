@@ -177,4 +177,28 @@ describe("Kroger client", () => {
     const k = createKrogerClient(env, { fetch: fetchMock, cache: freshCache(), now: () => 1000, sleep: async () => {} });
     await expect(k.resolveLocationId("Kroger Downtown")).rejects.toBeInstanceOf(KrogerError);
   });
+
+  it("caps concurrent in-flight requests at maxConcurrency across a fan-out", async () => {
+    let inFlight = 0;
+    let peak = 0;
+    const fetchMock = (async () => {
+      inFlight++;
+      peak = Math.max(peak, inFlight);
+      await new Promise((r) => setTimeout(r, 5));
+      inFlight--;
+      return json({ data: [PRODUCT] });
+    }) as unknown as typeof fetch;
+
+    // Pre-seed token + location so the burst issues only product reads.
+    const cache: KrogerCache = { token: { accessToken: "T1", expiresAt: 9_999_999_999 }, locationId: "loc1" };
+    const k = createKrogerClient(env, { fetch: fetchMock, cache, now: () => 1000, sleep: async () => {}, maxConcurrency: 3 });
+
+    // search and productById both flow through authedGet, so both are gated.
+    await Promise.all([
+      ...Array.from({ length: 6 }, (_, i) => k.search(`t${i}`, { locationId: "loc1" })),
+      ...Array.from({ length: 6 }, (_, i) => k.productById(`p${i}`, "loc1")),
+    ]);
+
+    expect(peak).toBe(3);
+  });
 });

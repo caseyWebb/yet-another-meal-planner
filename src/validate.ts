@@ -10,6 +10,13 @@ import { parse as parseTomlRaw } from "smol-toml";
 import { ToolError } from "./errors.js";
 import { EQUIPMENT_VOCAB } from "./kitchen.js";
 
+// `archived` is valid but tool-unwritten on purpose: it's the MANUAL
+// history-preserving removal state. A recipe with cooking_log history can't be
+// deleted (an unresolvable log slug hard-fails the build), so it's hand-archived
+// instead — the file persists so history resolves, but it's dropped from active
+// rotation (list_recipes default + retrospective "underused"). No agent tool and
+// no scheduler ever set it (deliberately: there is no auto-archive). Keep it —
+// the data-validation spec enumerates it and overlay/retrospective tests rely on it.
 const RECIPE_STATUSES = ["active", "draft", "rejected", "archived"];
 const PANTRY_CATEGORIES = ["pantry", "fridge", "freezer", "spices"];
 const READY_TO_EAT_STATUSES = ["active", "draft", "rejected"];

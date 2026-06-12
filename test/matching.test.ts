@@ -8,6 +8,7 @@ import {
   relevanceScore,
   isOnSale,
   isFlyerWorthy,
+  dedupeFlyerHits,
   type MatchDeps,
 } from "../src/matching.js";
 import type { KrogerCandidate } from "../src/kroger.js";
@@ -65,6 +66,53 @@ describe("isFlyerWorthy (flyer drops near-zero discounts)", () => {
   });
   it("drops a no-promo item", () => {
     expect(isFlyerWorthy(cand({ productId: "d", price: { regular: 4, promo: 0 } }))).toBe(false);
+  });
+  it("respects a lower min_savings_pct — a 3% discount passes a 2% floor", () => {
+    expect(isFlyerWorthy(cand({ productId: "e", price: { regular: 10, promo: 9.7 } }), 0.02)).toBe(true);
+  });
+  it("respects a higher min_savings_pct — a 3% discount fails a 10% floor", () => {
+    expect(isFlyerWorthy(cand({ productId: "f", price: { regular: 10, promo: 9.7 } }), 0.1)).toBe(false);
+  });
+});
+
+describe("dedupeFlyerHits", () => {
+  const mkCand = (id: string, regular = 5, promo = 4): KrogerCandidate =>
+    cand({ productId: id, brand: "B", description: `item-${id}`, price: { regular, promo } });
+
+  it("a product surfaced by a single term appears once with matched_terms = [term]", () => {
+    const items = dedupeFlyerHits([{ term: "milk", candidates: [mkCand("P1")] }]);
+    expect(items).toHaveLength(1);
+    expect(items[0].matched_terms).toEqual(["milk"]);
+  });
+
+  it("a product surfaced by two terms carries both in matched_terms", () => {
+    const p = mkCand("P1");
+    const items = dedupeFlyerHits([
+      { term: "milk", candidates: [p] },
+      { term: "dairy", candidates: [p] },
+    ]);
+    expect(items).toHaveLength(1);
+    expect(items[0].matched_terms).toEqual(["milk", "dairy"]);
+  });
+
+  it("two distinct products from the same term both appear", () => {
+    const items = dedupeFlyerHits([{ term: "dairy", candidates: [mkCand("P1"), mkCand("P2")] }]);
+    expect(items.map((i) => i.sku)).toEqual(["P1", "P2"]);
+  });
+
+  it("preserves scan order — first-occurrence term list position is stable", () => {
+    const p = mkCand("P1");
+    const items = dedupeFlyerHits([
+      { term: "term-a", candidates: [p] },
+      { term: "term-b", candidates: [p] },
+      { term: "term-c", candidates: [p] },
+    ]);
+    expect(items[0].matched_terms).toEqual(["term-a", "term-b", "term-c"]);
+  });
+
+  it("computes savings as regular - promo rounded to cents", () => {
+    const items = dedupeFlyerHits([{ term: "t", candidates: [mkCand("P1", 5.99, 4.99)] }]);
+    expect(items[0].savings).toBe(1);
   });
 });
 

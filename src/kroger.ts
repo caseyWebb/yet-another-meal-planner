@@ -7,6 +7,7 @@
 // structured `upstream_unavailable` error.
 
 import type { Env } from "./env.js";
+import { Semaphore, withPermit } from "./semaphore.js";
 
 const TOKEN_URL = "https://api.kroger.com/v1/connect/oauth2/token";
 const PRODUCTS_URL = "https://api.kroger.com/v1/products";
@@ -70,6 +71,8 @@ export interface KrogerClientOptions {
   now?: () => number;
   random?: () => number;
   sleep?: (ms: number) => Promise<void>;
+  /** Max concurrent in-flight Kroger HTTP requests this client will issue (default 6). */
+  maxConcurrency?: number;
 }
 
 const defaultSleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
@@ -108,6 +111,9 @@ export function createKrogerClient(env: Env, opts: KrogerClientOptions = {}): Kr
   const now = opts.now ?? (() => Date.now());
   const random = opts.random ?? Math.random;
   const sleep = opts.sleep ?? defaultSleep;
+  // Per-client cap on in-flight requests. Callers fan out with Promise.all and
+  // stay bounded automatically; the 429 backoff below is the cross-isolate backstop.
+  const limiter = new Semaphore(opts.maxConcurrency ?? 6);
 
   async function getToken(): Promise<string> {
     if (cache.token && cache.token.expiresAt > now() + EXPIRY_SKEW_MS) {
@@ -136,8 +142,14 @@ export function createKrogerClient(env: Env, opts: KrogerClientOptions = {}): Kr
     return cache.token.accessToken;
   }
 
+  /** GET, bounded by the per-client concurrency limiter (permit held across the
+   *  whole retry loop, so a backing-off request doesn't free its slot for more load). */
+  function authedGet(url: string): Promise<Response> {
+    return withPermit(limiter, () => doAuthedGet(url));
+  }
+
   /** GET with bearer auth, token refresh on 401, and 429/5xx backoff. */
-  async function authedGet(url: string): Promise<Response> {
+  async function doAuthedGet(url: string): Promise<Response> {
     let lastStatus = 0;
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
       const token = await getToken();

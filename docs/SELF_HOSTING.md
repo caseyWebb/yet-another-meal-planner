@@ -1,6 +1,6 @@
 # SELF_HOSTING — run your own grocery-agent
 
-The operator's one-time setup. When you finish you'll have a private **data repo**, a deployed **grocery-mcp Worker**, and Claude.ai connected — with everything **driven from the web UI + GitHub Actions**. The only local command in the whole flow is one `openssl` line to convert a key.
+The operator's one-time setup. When you finish you'll have a private **data repo**, a deployed **grocery-mcp Worker**, and Claude.ai connected — with everything **driven from the web UI + GitHub Actions**. The only *required* local command in the whole flow is one `openssl` line to convert a key (a `wrangler` CLI alternative is offered where it helps, but never required).
 
 > **How identity works.** The Worker is its own OAuth 2.1 provider (`@cloudflare/workers-oauth-provider`): members add the connector in Claude.ai, complete an **invite-code** consent page, and get a token whose tenant rides every request. Operator and friends use the same path — no Cloudflare Access, no third-party login, and friends need no GitHub or Kroger Developer account.
 
@@ -87,8 +87,8 @@ That's the only value you set; the template's defaults handle everything else. Y
 **b. Add your secrets** (data repo → Settings → Secrets and variables → Actions):
 
 - Secret **`CLOUDFLARE_API_TOKEN`** — a Cloudflare token with Workers + KV edit, used by Deploy / Onboard / Revoke. **This is why the data repo is private** — it holds your credentials and the invite codes onboarding prints.
-- Secrets **`KROGER_CLIENT_ID`** + **`KROGER_CLIENT_SECRET`** — the deploy sets them as your Worker's secrets.
-- Variable **`WORKER_HOST`** *(optional)* — your worker host, so Onboard can show the connector URL in its summary.
+- Secrets **`KROGER_CLIENT_ID`** + **`KROGER_CLIENT_SECRET`** *(optional as Actions secrets)* — when present, the deploy sets them as your Worker's secrets; you can instead add them directly as Worker secrets in the Cloudflare dashboard (like the App key in step 5). Either way the Worker needs them for Kroger search/prices.
+- Variable **`WORKER_NAME`** (or **`WORKER_HOST`**) *(optional)* — so Onboard can show the connector URL in its summary. With `WORKER_NAME` set, Onboard auto-resolves the host via Cloudflare's custom-domain API; `WORKER_HOST` pins it explicitly.
 
 ## 5. Deploy + set the App key
 
@@ -113,7 +113,7 @@ Run the **Onboard member** Action (your data repo → Actions) with `username: <
 
 1. Your data repo → **Actions** → **Build plugin** → **Run** (it defaults `mcp_url` from your `WORKER_HOST` var; or type it in). Download the **grocery-agent-plugin** artifact — it's a `.zip`.
 2. claude.ai → **Customize → upload a custom plugin file** → pick that `.zip`. Open a **fresh chat** afterward (uploaded skills sync to the sandbox only on a new chat).
-3. On a later update you re-run **Build plugin** and re-upload — see *Taking upstream updates* for the Worker-first ordering. No GitHub account is needed to *use* the bundle, so friends just need the file.
+3. On a later update, re-run **Build plugin** and re-upload — see *Taking upstream updates* for the Worker-first ordering. No GitHub account is needed to *use* the bundle, so friends just need the file.
 
 **Option 2 — fork + your own marketplace (only if you want pull-based auto-update).** Fork the code repo to `<you>/groceries-agent`, rebuild with your URL (`npm run build:plugin -- --mcp-url https://<worker-host>/mcp` — the npm script already targets `plugin/grocery-agent`, and the build refuses to write the placeholder URL into that committed bundle, so passing `--mcp-url` is required), push, and install from your marketplace (`/plugin marketplace add <you>/groceries-agent`). This is the **only** path with `/plugin marketplace update` auto-pull; it costs a fork to maintain and a GitHub account to sync. If you also changed the reusable CI workflows, repoint your data repo's callers at your fork (`uses: <you>/groceries-agent/...@main`).
 
