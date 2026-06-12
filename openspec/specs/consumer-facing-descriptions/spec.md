@@ -62,7 +62,7 @@ Workflow-skill bodies (generated from the flow sections of `AGENT_INSTRUCTIONS.m
 
 ### Requirement: Developer-facing surfaces are out of scope
 
-Surfaces read by developers/operators who have the repo checkout — `CLAUDE.md`, `README.md`, `docs/SCHEMAS.md`, `docs/PROJECT.md`, `docs/SELF_HOSTING.md`, and `scripts/` — SHALL retain their filenames and paths; this standard does not apply to them. `docs/TOOLS.md` is synced to the reworded tool descriptions as documentation, but its prose is otherwise developer-facing.
+Surfaces read by developers/operators who have the repo checkout — `CLAUDE.md`, `README.md`, `ARCHITECTURE.md`, `CONTRIBUTING.md`, `docs/SCHEMAS.md`, `docs/SELF_HOSTING.md`, and `scripts/` — SHALL retain their filenames and paths; this standard does not apply to them. `docs/TOOLS.md` is synced to the reworded tool descriptions as documentation, but its prose is otherwise developer-facing.
 
 #### Scenario: Developer doc keeps its paths
 

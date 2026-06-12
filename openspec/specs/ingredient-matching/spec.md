@@ -8,7 +8,7 @@ Defines the deterministic ingredient-to-Kroger-SKU matching pipeline (`match_ing
 
 ### Requirement: Resolve-only matching pipeline
 
-The system SHALL provide `match_ingredient_to_kroger_sku(ingredient, context)` running the deterministic 7-step pipeline from `docs/PROJECT.md`. It SHALL be **resolve-only**: it returns a result but SHALL NOT write the SKU cache (that is deferred to the Change 06 batched commit). It SHALL return exactly one of three shapes — a confident match, an `ambiguous` result with narrowed candidates, or an `unavailable` result.
+The system SHALL provide `match_ingredient_to_kroger_sku(ingredient, context)` running the deterministic 7-step pipeline from `ARCHITECTURE.md`. It SHALL be **resolve-only**: it returns a result but SHALL NOT write the SKU cache (that is deferred to the Change 06 batched commit). It SHALL return exactly one of three shapes — a confident match, an `ambiguous` result with narrowed candidates, or an `unavailable` result.
 
 #### Scenario: Confident match returned
 

@@ -4,7 +4,7 @@ Concrete schemas with example values for every data file in the repo. Keep this 
 
 ## File placement: shared vs per-tenant (multi-tenant data model)
 
-The data lives in **one private data repo** with two regions (see `docs/PROJECT.md` and the `multi-tenant-friend-group` change). Every file below lives in exactly one:
+The data lives in **one private data repo** with two regions (see `../ARCHITECTURE.md` and the `multi-tenant-friend-group` change). Every file below lives in exactly one:
 
 - **Shared corpus (data-repo root)** — objective, single-source, read by everyone: `recipes/*.md` (objective frontmatter + body), `aliases.toml`, `substitutions.toml` (the shared default layer), `skus/kroger.toml`, `flyer_terms.toml`, `storage_guidance/` (curated put-away advice), **`stores/<slug>.toml`** (in-store-walk aisle layouts, keyed by location), **`feeds.toml`** (RSS discovery feeds), **`discoveries_inbox.toml`** (forwarded-newsletter candidates), **`discovery_sources.toml`** (inbound-email allowlist), `_indexes/`. Discovery is a shared, top-level concern — feeds and the newsletter inbox feed one group pool, judged against each caller's taste at read time.
 - **Per-tenant subtree (`users/<username>/`)** — each member's own state: `pantry.toml`, `preferences.toml`, `stockup.toml`, `grocery_list.toml`, `meal_plan.toml`, `cooking_log.toml`, `ready_to_eat.toml` (personal heat-and-eat catalog), `kitchen.toml` (owned cooking equipment), `taste.md`, `diet_principles.md`, **`overlay.toml`** (subjective recipe view), **`notes/<slug>.toml`** (attributed recipe notes), **`store_notes/<slug>.toml`** (attributed store notes), an optional **`substitutions.toml`** override layer, and any personal (unshared) recipes.

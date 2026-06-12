@@ -1,0 +1,103 @@
+# Contributing
+
+How to work **on** the grocery-agent backend. For how the system is *built* (the technical model), read [`ARCHITECTURE.md`](ARCHITECTURE.md) first — this guide assumes it.
+
+> **One thing to get right up front.** This repo holds the agent's **backend**, not its persona. The agent's operational instructions — persona, conversational flows, behavior rules — live in [`AGENT_INSTRUCTIONS.md`](AGENT_INSTRUCTIONS.md), which is the canonical source the **grocery-agent plugin** is generated from (`scripts/build-plugin.mjs`). Edit `AGENT_INSTRUCTIONS.md` and rebuild — **never hand-edit the generated bundle under `plugin/`**. Edit *this* repo's code/docs when changing how the *repo* is built; edit `AGENT_INSTRUCTIONS.md` when changing how the *agent* behaves. Different audiences.
+
+## Repo map
+
+There is **no data at the root of this repo** — the data lives in a separate private data repo (see [`ARCHITECTURE.md`](ARCHITECTURE.md) and [`docs/SELF_HOSTING.md`](docs/SELF_HOSTING.md)). This repo is code + tooling:
+
+| Path | What it is |
+| --- | --- |
+| `src/`, `test/`, `wrangler.jsonc` | the repo root **is** the Cloudflare Worker (TypeScript) hosting the `grocery-mcp` MCP server + OAuth provider |
+| `scripts/` | index + static-site build tooling (`build-indexes.mjs`, `build-site.mjs`, `build-plugin.mjs`, `site-assets/`), run by data repos via reusable CI |
+| `docs/` | [`SCHEMAS.md`](docs/SCHEMAS.md) (file formats) · [`TOOLS.md`](docs/TOOLS.md) (the tool contract) · [`SELF_HOSTING.md`](docs/SELF_HOSTING.md) (operator setup) · `data-template/` (submodule) |
+| `AGENT_INSTRUCTIONS.md` | the agent persona; build source for the `plugin/` bundle |
+| `openspec/` | the change/spec workflow — `changes/archive/` is the build history, `specs/` is the living contract |
+| `.github/workflows/` | `ci.yml` (the only push-triggered workflow) + reusable `data-*` workflows operators call |
+
+## Toolchain
+
+Build tooling is managed with **mise** (`mise.toml`) — Node, etc. Don't install globally.
+
+```bash
+mise install                # Node (pinned in mise.toml)
+git submodule update --init  # populate docs/data-template/ (reference only; --remote to bump)
+npm install
+```
+
+The data-repo template is vendored as a git submodule at `docs/data-template/` (reference only — build and test never touch it). `git submodule update --remote && git add docs/data-template` bumps the pinned ref to the template's latest.
+
+## Working on the Worker (`src/`)
+
+The Worker is the root package. One `package.json` carries both the Worker deps and the `scripts/` build-tooling deps.
+
+```bash
+npm run dev          # wrangler dev — local Worker; point MCP Inspector at the local URL
+npm test             # vitest run — Worker unit tests (test/*.test.ts)
+npm run test:tooling # node --test — build-indexes/build-site/build-plugin tests (tests/*.test.mjs)
+npm run typecheck    # tsc --noEmit
+npm run deploy       # wrangler deploy — normally NOT run by hand (see Deployment)
+```
+
+- **Structured errors, not throws.** Tools return `{ error: "...", message }` shapes the agent can reason over. Follow the existing convention in `src/errors.ts`.
+- **`docs/TOOLS.md` is the contract.** When a tool's params/returns change, update `docs/TOOLS.md` in the same pass — no drift. Likewise `docs/SCHEMAS.md` when a data file's shape changes.
+- **Local dev/secrets** live in `.dev.vars` (gitignored; see `.dev.vars.example`): `GITHUB_APP_PRIVATE_KEY` + Kroger creds. See [`docs/SELF_HOSTING.md`](docs/SELF_HOSTING.md) for the one-time operator setup and the Kroger `/oauth/init?tenant=<id>` flow.
+
+### Deployment
+
+**Deployment is operator-run from the private data repo, not from this (public) repo.** This repo holds the Worker source + a *reusable* `data-deploy.yml`; each operator's data repo has a thin `deploy.yml` caller (`uses: …@main`) that overlays their own `wrangler.jsonc` and runs `typecheck` + `test` + `wrangler deploy`. The public repo holds **no Actions secrets** — the data repo is the single control plane. Push/PR here only runs `ci.yml` (typecheck + both test suites).
+
+There is deliberately **no auto-deploy on push** (a push trigger would need a data-repo-writable token in this public repo — a blast-radius regression). So when you push changes to `main` that affect the Worker (`src/**`, `wrangler.jsonc`, `package.json`/lockfile), **also kick the deploy** in the operator's private data repo using their already-authenticated local `gh`:
+
+```bash
+gh workflow run deploy.yml --repo caseyWebb/groceries-agent-data   # operator substitutes their data repo
+gh run watch  --repo caseyWebb/groceries-agent-data                # optional: follow to green
+```
+
+It deploys `@main`, so run it *after* the push lands. Doc/test/openspec-only pushes don't need it. (`npm run deploy` is a local escape hatch, but the data-repo workflow is the source of truth — it gates on typecheck + tests first.)
+
+## Working on data tooling (`scripts/`)
+
+The scripts build indexes/site for a **data repo**, not this one (no data lives here). Point them at a data checkout with `--root`:
+
+```bash
+node scripts/build-indexes.mjs --root /path/to/data-repo   # → <root>/_indexes/*.json + validation
+node scripts/build-site.mjs    --root /path/to/data-repo --out site
+node scripts/build-indexes.mjs --check                     # validate only, no write
+npm run test:tooling                                       # node --test (tests/, fixture-based)
+```
+
+**Validation** runs in `build-indexes.mjs` (TOML parses, frontmatter well-formed, references resolve). The Worker reimplements a *structural* subset in TypeScript for write-time validation (it can't run the Node validator on `workerd`) — keep the two in mind when changing validation rules.
+
+**Reusable Actions.** This public repo hosts `on: workflow_call` workflows that operators' private data repos call (`uses: caseyWebb/groceries-agent/...@main`), billed to the data-repo owner: `data-deploy.yml`, `data-onboard.yml` / `data-revoke.yml` (KV-only member provisioning), `data-build-indexes.yml` / `data-build-site.yml`, and `data-build-plugin.yml` (mint a self-hoster's plugin bundle with their own connector URL baked in). Onboard/revoke run in the **private** data repo so the invite codes they print never hit a public log. `docs/data-template/.github/workflows/` is the live reference for the thin data-repo callers.
+
+## Tool & skill surfaces — what goes where
+
+The plugin ships **both** the generated skills (from `AGENT_INSTRUCTIONS.md`) and the MCP tool descriptions (`src/`), and both reach the agent at runtime. Keep each fact in exactly one home:
+
+- **Ownership boundary.** A *tool description* owns what the tool does, its params/enums/returns, its guarantees — **including negative ones** ("never auto-applies", "rejects `last_cooked`", "returns facts, not freshness verdicts") — and the **data-model field semantics it reads/writes** (`requires_equipment`, `perishable_ingredients`, `standalone`, `pairs_with`, status enums, which read throws `not_found` when empty). A *skill* owns *when* in a flow to call it, sequencing, how to act on the result, and what to confirm with the user. The test: *could a different agent, with no skills loaded, use this tool correctly and safely from its description alone?* A guarantee that reads like policy still stays in the tool; its matching choreography stays in the skill — complementary halves, not duplicates.
+- **Channel-trigger principle.** A capability gets an entry point on a channel **iff a real trigger exists for that channel.** Tools: a granular tool iff a single-edit trigger exists; a `commit_changes` field iff it's part of a multi-write flow (e.g. `grocery_list_ops`). Skills: `user-invocable` iff a real user trigger exists; otherwise it's a library skill loaded only by reference (`user-invocable: false`).
+- **Don't-gut-the-skill guardrail.** When de-duplicating, you MAY strip a pure contract/guarantee sentence from a skill, but NEVER its prerequisite-loading line or an orchestration step — those are the two jobs a tool can't do.
+
+## OpenSpec change workflow
+
+This repo was built as a sequence of OpenSpec changes (`openspec/changes/archive/` is the history); further work continues the same workflow. Each change carries `proposal.md`, `design.md`, `specs/` deltas, and `tasks.md`.
+
+```bash
+openspec list                       # active changes
+openspec status --change "<name>"   # artifact + task progress
+openspec validate "<name>"          # validate artifacts
+```
+
+- Skills: `/opsx:explore` (think), `/opsx:propose` (create a change + artifacts), `/opsx:apply` (implement tasks), `/opsx:archive` (finalize).
+- Layout: active changes in `openspec/changes/<name>/`; archived in `openspec/changes/archive/`; capability specs in `openspec/specs/<capability>/spec.md`.
+- Specs use `### Requirement:` + `#### Scenario:` (SHALL / WHEN-THEN). Scenarios need exactly four `#`.
+
+## Conventions
+
+- Match the surrounding code's idiom, naming, and comment density.
+- Config/structured files use **TOML**; prose files (recipes, taste, diet_principles, the instruction docs) stay **markdown**; recipe frontmatter is **YAML** (Obsidian renders it).
+- **Don't commit secrets.** The repo is public — anything needed to run that's gitignored gets documented in `README.md` / `.dev.vars.example`.
+- Keep the docs honest: a tool change updates `docs/TOOLS.md`; a schema change updates `docs/SCHEMAS.md`; an architectural shift updates `ARCHITECTURE.md`. The contract is the docs *and* the code — don't let them drift.

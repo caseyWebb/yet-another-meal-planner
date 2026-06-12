@@ -1,0 +1,182 @@
+# Architecture
+
+How the grocery agent works under the hood. This is the durable technical reference — the system as it *is*, not a roadmap. For the agent's conversational behavior see [`AGENT_INSTRUCTIONS.md`](AGENT_INSTRUCTIONS.md); for file formats see [`docs/SCHEMAS.md`](docs/SCHEMAS.md); for the tool contract see [`docs/TOOLS.md`](docs/TOOLS.md); for working in the repo see [`CONTRIBUTING.md`](CONTRIBUTING.md).
+
+## Three components
+
+The system is three pieces with one clean split: **the LLM does the fuzzy work; everything deterministic is code.**
+
+```
+┌────────────────────────────────────────────────────────┐
+│  Claude.ai (each member's own — web + mobile)          │
+│   • grocery-agent plugin: skills + grocery-mcp conn.   │
+│     installed from a marketplace — nothing pasted      │
+│   • connects once via an operator-issued INVITE CODE   │
+└─────────────────────┬──────────────────────────────────┘
+                      │  MCP over HTTPS (OAuth 2.1 bearer)
+                      ▼
+┌────────────────────────────────────────────────────────┐
+│  Cloudflare Worker — OAuth 2.1 provider + grocery-mcp  │
+│   • OAuth provider (KV): token → grant → tenantId      │
+│       → resolveTenant → a per-tenant MCP server        │
+│   • domain tools: coarse, opinionated, deterministic   │
+│   • Kroger client (shared reads; per-tenant cart)      │
+│   • GitHub App installation token (no PAT) for repo I/O │
+└─────────────────────┬──────────────────────────────────┘
+                      │  GitHub App token + Kroger API
+                      ▼
+┌────────────────────────────────────────────────────────┐
+│  ONE private GitHub data repo (operator-owned)         │
+│   shared root (read by all):                           │
+│     recipes/*.md · aliases/substitutions.toml          │
+│     skus/kroger.toml · storage_guidance/ · feeds.toml  │
+│     stores/*.toml · _indexes/                           │
+│   users/<username>/ (one subtree per member):          │
+│     pantry · preferences · stockup · grocery_list      │
+│     meal_plan · cooking_log · overlay · notes/ · …      │
+└────────────────────────────────────────────────────────┘
+
+(The CODE repo — this one: Worker src/, scripts/, docs/, CI —
+ is a separate upstream. Self-hosters deploy it; they never fork it.)
+```
+
+- **Claude.ai** is the conversational surface and the reasoning. Each chat starts fresh; state lives in the data repo, not in chat history. The agent reads what it needs through MCP tools at the start of a conversation.
+- **The Worker** (this repo, root `src/`) is a Cloudflare Worker hosting the `grocery-mcp` MCP server — the domain tool surface (pantry, recipes, Kroger, substitutions, cart) — plus an OAuth 2.1 provider members connect their Claude.ai to. It is the locus of determinism and the multi-tenant gate.
+- **The data repo** (`<operator>/groceries-agent-data`, private) is the substrate: flat files (TOML + markdown) in git, with git history as the audit log. Created from [`groceries-agent-data-template`](https://github.com/caseyWebb/groceries-agent-data-template); see [`docs/SELF_HOSTING.md`](docs/SELF_HOSTING.md).
+
+There is no database, no scheduler, no agent framework, no CLI. Everything else is glue.
+
+## The determinism boundary
+
+The whole design turns on putting the LLM only where genuinely-fuzzy judgment is needed and keeping everything else as plain deterministic code inside the Worker's tools.
+
+**Three places the LLM earns its keep:**
+
+1. **Message understanding and tool orchestration.** Claude reads the request, decides which tools to call in what order, asks follow-ups, interprets freeform constraints ("comfort food one night," "I'm feeling lazy"). This is Claude's native strength — there is no custom routing logic.
+2. **Menu-generation reasoning.** Given assembled context (pantry, flyer, candidates, ready-to-eat, preferences), Claude proposes a plan honoring multiple soft and hard rules. The genuinely-fuzzy step.
+3. **Fuzzy-matching fallback** inside the Worker's Kroger pipeline, only when deterministic narrowing leaves ambiguity, plus taste-profile scoring of new discoveries.
+
+**Everything else is deterministic code with no LLM in the loop:** file I/O, frontmatter parsing, recipe filtering and scoring, Kroger API calls, RSS/JSON-LD parsing, cart writes, git commits, index generation, validation.
+
+The MCP tool boundary is where this is enforced. Tools are **coarse and opinionated** — they wrap multi-step pipelines so the LLM can't bypass them. Raw building blocks (`kroger_raw_search`, `github_raw_write`, `cart_add_by_name`) are deliberately **not** exposed, because they would let the LLM skip the cache, the validation, or the SKU-matching pipeline. See [`docs/TOOLS.md`](docs/TOOLS.md) for the design philosophy and the full inventory.
+
+## Multi-tenant identity
+
+One self-hosted Worker serves a small friend group; each member connects their own Claude.ai. The code is a separate upstream self-hosters deploy without forking; **all the data** lives in **one operator-owned private repo** with a shared root plus one `users/<username>/` subtree per member.
+
+- **OAuth 2.1 provider.** Claude.ai custom connectors authenticate via OAuth, so the Worker hosts an OAuth provider (`@cloudflare/workers-oauth-provider`, KV-backed — no SQL). See `src/authorize.ts`.
+- **Identity is an operator-issued invite code** against a curated allowlist — members need no GitHub account. The issued access token's grant carries the member's `tenantId`.
+- **"Which tenant" is a path prefix.** `users/<username>/` in the single data repo, addressed by wrapping the GitHub client (`prefixedClient`). Each request resolves token → tenant *before* any tool runs, so no tool can reach another member's subtree.
+- **Repo access is a short-lived GitHub App installation token**, never a PAT. The App private key is a Cloudflare secret; the App id / installation id / data-repo coords are non-secret `wrangler.jsonc` vars.
+- **Kroger split:** `client_credentials` product/price reads are shared at the app level; cart writes use a **per-tenant** `authorization_code` refresh token (`kroger:refresh:<tenant>`).
+
+A **solo operator** is simply the degenerate case: one `users/<id>/` subtree.
+
+## The data model
+
+The data repo is the system's memory. It splits two ways — shared vs per-tenant — and within a tenant, into a small set of intent files that must not be conflated. Field-level schemas live in [`docs/SCHEMAS.md`](docs/SCHEMAS.md); this is the conceptual map.
+
+### Shared vs per-tenant
+
+- **Shared corpus (data-repo root)** — objective, single-source, read by everyone: recipe **content** (`recipes/*.md`), `aliases.toml`, the default `substitutions.toml`, the location-tagged `skus/kroger.toml` cache, the curated `storage_guidance/` tree, `stores/<slug>.toml` aisle layouts, and the discovery sources (`feeds.toml`, `discoveries_inbox.toml`, `discovery_sources.toml`). Discovery is shared and top-level: feeds and the newsletter inbox feed one group pool, judged against each caller's taste at read time. `_indexes/` is generated from the shared content.
+- **Per-tenant subtree (`users/<username>/`)** — each member's own state (below). The Worker addresses it by prefixing repo-relative paths, so one request can never reach another member's data.
+
+### Three-category recipe model
+
+A recipe splits three ways so a shared corpus is safe to share:
+
+- **Content** — objective frontmatter + body, shared and single-source.
+- **Overlay** — `rating` + `status`, per-tenant in `users/<id>/overlay.toml` (slug-keyed). One member's disposition never changes another's. `status` lifecycle: `active` (candidate set) · `draft` (surfaced, not yet dispositioned) · `rejected` (explicit no, kept for de-dup) · `archived`. Effective `status` defaults to `draft` when a member has no overlay row.
+- **Notes** — per-tenant, attributed, append-mostly (`users/<id>/notes/<slug>.toml`).
+
+`last_cooked` is **not stored** — it's derived per-tenant from that member's `cooking_log.toml`. Read tools merge shared content + the caller's overlay + cooking-log `last_cooked` at read time; the shared `_indexes/recipes.json` carries objective fields only.
+
+**Notes are the spin-capture mechanism that makes sharing safe.** A tweak ("sub gochujang for the sriracha") is an attributed note, never an edit to shared content; only a genuinely *different dish* warrants a personal-recipe fork under `users/<id>/recipes/`. The shared body changes only for an objective correction. Group notes/ratings aggregate across members at read time (`read_recipe_notes`).
+
+### The intent model (per-tenant)
+
+Five files capture different *kinds* of statement — don't conflate them:
+
+| File | Kind of intent |
+| --- | --- |
+| `pantry.toml` | **observation** — what's physically in the kitchen |
+| `stockup.toml` | **conditional intent** — buy IF it drops below a threshold |
+| `grocery_list.toml` | **committed buy intent** — buy on the next order (ingredient-level, SKU-free) |
+| `meal_plan.toml` | **committed cook intent** — recipes agreed to cook next (transient) |
+| `cooking_log.toml` | **realized history** — append-only log of meals actually cooked |
+
+The data repo is freely mutable; the Kroger cart is append-only. The agent **captures intent into `grocery_list.toml` continuously**, and **flushes to the cart once**, at order time. Capture is store-agnostic (the list is SKU-free); the flush is not.
+
+### The three-store flush model
+
+Capture is identical regardless of where the user shops; only the flush differs, picked by `preferences.toml [stores].primary`:
+
+- **Kroger online** (`primary: kroger`) — `place_order` resolves the whole `grocery_list.toml` against current Kroger availability, surfaces ambiguous/unavailable items as one batch, writes the Kroger cart, and appends learned `skus/kroger.toml` mappings. The repo is the mutable store (capture continuously); the cart is append-only (flush once).
+- **In-store walk** (`primary` is a store slug) — the `store-walk` flow reads the same list and orders it by a store's aisles (the shared `stores/` registry), walked hands-free one aisle at a time. It needs no cart and degrades gracefully: no layout → a department-grouped list from world knowledge; an aisle map → aisle-by-aisle; sparse `item_locations` → pinpoint the tricky items. On completion it advances picked items straight `active → received` — the same restock-the-pantry behavior as a Kroger pickup.
+
+The shared `stores/<slug>.toml` holds one objective aisle layout per *location* (mapping a store once helps the whole group), plus two sparse, lazily-grown facets (`item_locations`, `doesnt_carry`); attributed per-tenant store notes live at `users/<id>/store_notes/<slug>.toml`. Each grocery-list item carries a `domain` facet (default `grocery`) so a non-grocery run generalizes for free later.
+
+## Kroger product matching (ingredient → SKU)
+
+The hardest deterministic problem: turning a recipe ingredient string ("extra virgin olive oil, 1 tbsp") into a specific Kroger SKU. It lives entirely inside `match_ingredient_to_kroger_sku`. The pattern is **progressive deterministic narrowing, with LLM fallback only when ambiguity remains.**
+
+1. **Normalize** — strip quantity/units, lowercase, apply `aliases.toml`. Alias-driven, *not* an aggressive qualifier-stripper: `aliases.toml` is the curated source of truth for which variants collapse to which canonical term.
+2. **Cache lookup → revalidate** — if a normalized term → SKU mapping exists in `skus/kroger.toml`, take that SKU and revalidate it with one targeted lookup (current price + curbside/delivery availability at the preferred location). Available → use it with fresh price/promo; unavailable → treat as a miss and fall through to search (self-healing). Every hit is revalidated, so there is no TTL. The cache short-circuits the expensive search, not the price check. The LLM may pass `bypass_cache` when a cached generic doesn't fit the recipe context.
+3. **Kroger search** — `filter.term` + `filter.locationId` (+ fulfillment) → candidate products with price, size, brand.
+4. **Score candidates** (rule-driven scoring, *not* hard filters) — brand preference from `preferences.toml [brands]`; dietary as a soft score. Two near-hard constraints govern *which product*: **availability** (must be fulfillable via curbside/delivery) and **identity relevance** (how many query tokens appear in the product description/categories). A confident pick comes only from the top relevance tier, so "anaheim peppers" resolves to the Fresh Anaheim Peppers PLU, never a cheaper unrelated fulfillable item. If nothing shares any query token, the matcher returns ambiguous rather than guess. Scoring (not filtering) means a missing preferred brand can't empty the set. This step does **not** substitute.
+5. **Deterministic tiebreaker** (within the top-scoring set) — prefer on-sale, then best price-per-unit (deterministic arithmetic; the LLM only normalizes messy size strings, never does the math); "don't care" commodities take the smallest package covering the quantity hint, then cheapest.
+6. **Confidence gate → LLM only when ambiguous** — **confident** (auto-pick): a cache hit, or a defined brand preference resolves it (including `[]` = "don't care, cheapest acceptable"). **Ambiguous**: no cache hit *and* no defined brand preference → return narrowed candidates and let Claude pick from context or ask.
+7. **Cache result** (persisted at order time) — the resolved mapping is appended to `skus/kroger.toml`; the matcher itself only resolves, and the cache write rides `place_order`'s flush.
+
+**Confidence is legible and self-extinguishing.** It comes entirely from `preferences.toml [brands]`, which is **tri-state**: key absent → ask; `[]` → "don't care," cheapest acceptable; `["A","B"]` → ranked preference. Every answered question caches, so it asks less over time — after a few weeks of use, most common ingredients are cached and never hit the LLM. **Substitution is a separate, confirmed step** via `propose_substitutions`, the sole owner of `substitutions.toml`. Quantity translation is intentionally coarse ("3 cloves garlic" → buy a bulb); pantry tracking absorbs the slack.
+
+## Discovery and disposition
+
+Every menu request surfaces a small number of new items the user hasn't taken a position on, drawn from three sources:
+
+- **RSS** (`fetch_rss_discoveries`) — recipe candidates from trusted blogs in `feeds.toml`, scored against the taste profile.
+- **Newsletter email** (optional) — a *push* source that reaches the bot-walled/paywalled sites RSS can't. The Worker exports an `email()` handler; Cloudflare Email Routing points a forwarder address at it. Candidates land in the shared `discoveries_inbox.toml` with unwrapped URLs and surface via `read_discovery_inbox`. See [`docs/SELF_HOSTING.md`](docs/SELF_HOSTING.md) step 9.
+- **Kroger flyer** (`kroger_flyer`) — ready-to-eat candidates ride the flyer scan.
+
+New items persist in **`draft` state immediately**, not gated on the user expressing interest at proposal time — they often won't have an opinion then but might later ("actually, add that Serious Eats one"). Drafts are de-prioritized in later menu generation but remain available. Disposition is conversational: a rating/like → `active`; an explicit no → `rejected` (kept for de-dup); silence → stays draft. Items in draft past ~6 months auto-archive to avoid corpus bloat.
+
+## Indexes and validation
+
+A GitHub Action regenerates derived data on every push to the data repo's `recipes/**`:
+
+- **`_indexes/recipes.json`** — all recipe frontmatter aggregated as one slug-keyed JSON document (objective fields only). The Worker reads it once per filtering operation — one API call instead of fetching every recipe file.
+
+Ready-to-eat is per-tenant (`users/<username>/ready_to_eat.toml`), so it has **no** aggregate index; the Worker reads each member's catalog directly (the build still structurally validates any it finds).
+
+The same build runs **validation**: every TOML parses, every recipe frontmatter is well-formed, `pairs_with` references resolve, status values are in the enum, `substitutions.toml` rules are well-formed. Validation failures fail the Action (red CI) but don't block reads — the Worker keeps reading HEAD. The point is fast feedback, not gating. The Worker reimplements a *structural* subset of this validation in TypeScript for write-time checks (it can't run the Node validator on `workerd`).
+
+A useful side effect: the indexes are a public-ish artifact any tool can consume — `scripts/build-site.mjs` builds a static GitHub Pages cookbook from them with no backend.
+
+## Two surfaces, two instruction files
+
+The same Worker, data, and indexes back two surfaces. What differs is which instruction file each consumes:
+
+1. **Claude.ai (the agent).** [`AGENT_INSTRUCTIONS.md`](AGENT_INSTRUCTIONS.md) is the canonical source from which the **grocery-agent plugin** is generated (`scripts/build-plugin.mjs` → `npm run build:plugin`). The persona ships as small **library skills** (`grocery-core`, plus `grocery-cart`/`grocery-corpus` depth); each `### ` flow becomes a workflow skill prefixed with a prerequisite line that loads `grocery-core` once per session. The `grocery-mcp` connector is bundled, its URL baked into `.mcp.json` at build time (claude.ai doesn't honor a configurable plugin variable). The version auto-increments as `0.1.<commit-count>`, so claude.ai pulls each new build. Members install from a marketplace — nothing pasted. **Edit `AGENT_INSTRUCTIONS.md` and rebuild; never hand-edit the generated bundle under `plugin/`.**
+2. **Claude Code (development).** `CLAUDE.md` is read natively as repo-development context. It does **not** auto-load `AGENT_INSTRUCTIONS.md` — that's the plugin build source, not dev context — but points to it for anyone who needs the persona.
+
+They are deliberately split so the agent persona isn't auto-loaded into a development session and vice versa.
+
+## Security posture
+
+- **The repo is public.** The data is low-sensitivity personal info, and a public repo collapses the auth story: an authless read-only path leaks nothing not already public, so the security boundary moves cleanly to the **write + Kroger** path. Accepted cost: eating habits, grocery cadence, and `preferences.toml`'s `preferred_location` (≈ rough geography) are public for the operator's own data — but member *data* lives in the **private** data repo, not here.
+- **Secrets never touch the repo.** Because it's public, this discipline is load-bearing: the GitHub App private key and Kroger OAuth tokens live as Cloudflare Worker secrets only (encrypted at rest, never logged, gitignored locally via `.dev.vars`).
+- **OAuth protects writes, not reads.** Claude.ai's custom-connector UI requires OAuth (no "no auth" / bearer option), and post-public-repo that OAuth guards the write/cart surface.
+- **The cart is write-only.** The Kroger Cart API can add but cannot remove or check out — so the agent literally cannot read the cart or check out for the user. A useful safety property: reconciliation reports what *should* change and tells the user to fix it in the Kroger app, never silently pretends items are gone.
+
+## Tech stack
+
+- **Claude.ai** (web + mobile) — conversational surface, subscription auth, fresh-context conversations.
+- **Cloudflare Workers** (TypeScript / `workerd`) — hosts the MCP server + OAuth provider. Free tier handles personal-scale load. **Wrangler** for deploys; **KV** for OAuth/tenant/Kroger token state.
+- **GitHub** — code, data, indexes, CI/CD via Actions. Repo I/O via a **GitHub App** installation token.
+- **Kroger Developer API** — product search, prices, cart writes (write-only).
+- **Pure-JS parsers** that run on `workerd`: `smol-toml`, `js-yaml`, JSON-LD via `HTMLRewriter`, RSS/Atom via `fast-xml-parser`. (No `recipe-scraper`/`cheerio` — they assume Node internals unavailable on `workerd`.)
+- **Obsidian** (optional) — mobile recipe viewing during cooking, pointed at a local clone of the data repo.
+
+## What this is — and isn't
+
+A personal automation experiment targeting a real friction point — the time and willpower of grocery planning — tuned to one person's tastes, freezer, and grocer, and shareable with a small friend group. Not a product, not a startup. The architecture is intentionally minimal: Anthropic provides messaging and reasoning, the Worker provides a domain interface, GitHub provides storage and audit history. The data files are inspectable by humans, version-controlled, and outlive the agent if anyone stops using it.

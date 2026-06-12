@@ -6,7 +6,7 @@ Defines the canonical on-disk layout of the grocery-agent repository: the direct
 ## Requirements
 ### Requirement: Canonical directory layout
 
-The repository SHALL contain the directory structure defined in PROJECT.md so that all downstream changes have a stable place to read from and write to. Directories that would otherwise be empty SHALL contain a `.gitkeep` (or equivalent placeholder) so the structure survives `git clone`.
+The repository SHALL contain the directory structure described in `ARCHITECTURE.md` so that all downstream changes have a stable place to read from and write to. Directories that would otherwise be empty SHALL contain a `.gitkeep` (or equivalent placeholder) so the structure survives `git clone`.
 
 The required directories are: `recipes/`, `skus/`, `_indexes/`, `worker/`, `scripts/`, and `.github/workflows/`. There is no shared `ready_to_eat/` directory — ready-to-eat is per-tenant state under `users/<username>/` (see "Per-user subtree layout").
 
@@ -47,7 +47,7 @@ The repository SHALL include stub `taste.md` and `diet_principles.md` files. Eac
 
 ### Requirement: Canonical docs are committed at defined locations
 
-The repository SHALL commit the canonical project docs. `AGENT_INSTRUCTIONS.md` SHALL reside at the repository root and SHALL be the canonical grocery-agent operational instructions consumed by the Claude.ai project (pasted into its project instructions). `CLAUDE.md` SHALL reside at the repository root as Claude Code development guidance for working in this repo, and SHALL point to `AGENT_INSTRUCTIONS.md` for the agent persona and conversational flows. The reference docs `PROJECT.md`, `SCHEMAS.md`, and `TOOLS.md` SHALL reside under a `docs/` directory. Any references to these docs (including each root doc's pointer to the tool inventory) SHALL resolve to their `docs/` paths.
+The repository SHALL commit the canonical project docs. `AGENT_INSTRUCTIONS.md` SHALL reside at the repository root and SHALL be the canonical grocery-agent operational instructions consumed by the Claude.ai project (pasted into its project instructions). `CLAUDE.md` SHALL reside at the repository root as Claude Code development guidance for working in this repo, and SHALL point to `AGENT_INSTRUCTIONS.md` for the agent persona and conversational flows. The architecture reference `ARCHITECTURE.md` and the contributor guide `CONTRIBUTING.md` SHALL reside at the repository root; the reference docs `SCHEMAS.md` and `TOOLS.md` SHALL reside under a `docs/` directory. Any references to the `docs/` reference docs (including each root doc's pointer to the tool inventory) SHALL resolve to their `docs/` paths.
 
 #### Scenario: Root docs are present with their distinct roles
 
@@ -64,10 +64,10 @@ The repository SHALL commit the canonical project docs. `AGENT_INSTRUCTIONS.md` 
 - **WHEN** a reader opens `CLAUDE.md` looking for the agent persona or conversational flows
 - **THEN** it directs them to `AGENT_INSTRUCTIONS.md` rather than containing that prose itself
 
-#### Scenario: Reference docs live under docs/
+#### Scenario: Canonical docs live at their defined locations
 
-- **WHEN** a developer looks for the project, schema, and tool references
-- **THEN** `docs/PROJECT.md`, `docs/SCHEMAS.md`, and `docs/TOOLS.md` are present
+- **WHEN** a developer looks for the architecture, contributor, schema, and tool references
+- **THEN** `ARCHITECTURE.md` and `CONTRIBUTING.md` are present at the repository root, and `docs/SCHEMAS.md` and `docs/TOOLS.md` are present under `docs/`
 
 #### Scenario: Doc references resolve
 
