@@ -89,6 +89,30 @@ The system SHALL store store notes per-tenant at `users/<id>/store_notes/<slug>.
 - **WHEN** the standing `primary` is `kroger` but the user says "I'm going to the West 7th Tom Thumb, give me a list"
 - **THEN** the agent builds an in-store list for that store and does not change the stored `primary`
 
+### Requirement: Ready-to-eat adds before grouping (configured catalog)
+
+Before grouping the shopping list, if the user has a configured ready-to-eat catalog, the agent SHALL surface heat-and-eat items for buy-time addition — never adding unilaterally. Two passes:
+
+1. **Restock favorites** (any grocery trip). Cross-reference `retrospective`'s `ready_to_eat_favorites` against pantry on-hand; for a favored item that is low or out, suggest a restock ("you're low on the frozen lasagna you keep grabbing — want it on the list?"). On agreement, add to the grocery list so it falls into the grouping step.
+2. **On-sale discovery** (Kroger store trips only — needs flyer data). If this trip is to a Kroger store, scan `kroger_flyer` for on-sale heat-and-eat / grab-and-go items not already in the member's catalog, and draft 1–2 worthwhile candidates via `add_draft_ready_to_eat` (`source: "kroger-flyer"`). For a non-Kroger store there is no flyer — skip discovery.
+
+Both passes SHALL be skipped for an empty catalog. Items added here are included in the grouped list.
+
+#### Scenario: Favored but low RTE item is suggested at trip time
+
+- **WHEN** `retrospective` shows a ready-to-eat favorite that is low or absent from the pantry before a grocery trip
+- **THEN** the agent suggests adding it to the list, and adds it only on the user's agreement
+
+#### Scenario: On-sale RTE discovery is Kroger-store-only
+
+- **WHEN** the trip is to a non-Kroger store
+- **THEN** the agent does NOT call `kroger_flyer` for on-sale RTE discovery — skip discovery for this trip
+
+#### Scenario: Nothing added without agreement
+
+- **WHEN** the agent surfaces a restock or on-sale RTE suggestion at trip time
+- **THEN** nothing is written to the grocery list until the user says yes
+
 ### Requirement: Aisle-ordered shopping list with graceful degradation
 
 The `shopping-list` skill SHALL read the grocery list and present it grouped, **display-first and read-only** until the user commits to walking. Grouping SHALL degrade gracefully: with no known store or layout, a **department**-grouped list from general knowledge; with a named or known store that has `layout` notes, an **aisle**-ordered walk inferred from those notes — item-to-aisle placement is agent judgment over the store's own section vocabulary (open-vocabulary, no manifest — the storage-guidance posture), with `location` notes pinpointing tricky items and a `location` note taking precedence over inferred placement. The list SHALL be filtered to the resolved store's `domain`: a named different-category store (e.g. "Lowe's" → `home-improvement`) SHALL show **only** that domain's items, department-grouped, with no voice offer. When no store is named and `primary` is not a store slug, the skill SHALL **ask** whether the user is shopping a specific store (then resolve it and read its `layout` notes) rather than probe every registered store's notes to guess; with no specific store it defaults to a department list. **Cold items — frozen, then refrigerated (dairy, meat) — SHALL be sequenced to be picked up last** so they stay cold (a final "grab on your way out" group when frozen falls mid-store); cold-vs-shelf-stable is agent judgment over the items. The **whole** list SHALL be displayed before any walk, with recipe attribution and buy amount on each line. The skill SHALL offer to enter voice step-by-step mode **only** when layout is known.

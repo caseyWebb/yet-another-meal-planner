@@ -1,6 +1,6 @@
 ---
 name: place-grocery-order
-description: "Flush the grocery list to the Kroger cart — the deliberate act distinct from capturing intent. Use for \"place the order\", \"send it to my cart\", \"I'm ready to order\", \"go ahead and order the groceries\". Stale-cart check → resolve/preview → flush → honest report. The only path that writes the cart (append-only, write-only)."
+description: "Flush the grocery list to the Kroger cart — the deliberate act distinct from capturing intent. Use for \"place the order\", \"send it to my cart\", \"I'm ready to order\", \"go ahead and order the groceries\". Stale-cart check → ready-to-eat adds → resolve/preview → flush → honest report. The only path that writes the cart (append-only, write-only)."
 ---
 
 > **Prerequisite** — if you haven't already this session, read the `grocery-core` and `grocery-cart` skills before continuing.
@@ -11,14 +11,19 @@ This is the **online flush** (Kroger) — distinct from the menu request's captu
 
 1. **Stale-cart check first.** Read the grocery list (`read_grocery_list`). If any items are still `in_cart` from a prior order that was never confirmed `ordered`, remind me to clear the Kroger cart manually before proceeding (silently flushing again double-adds). Wait for my acknowledgment.
 
-2. **Resolve and preview.** Call `place_order(preview=true)` (optionally with `menu_needs` for needs not yet on the list). Surface, as one batch, anything that needs my decision before writing:
+2. **Ready-to-eat adds — restock + on-sale discovery (configured catalog).** If I've set up a ready-to-eat catalog, surface heat-and-eat buys for this order before resolving — never add unilaterally:
+   - **Restock favorites.** Cross-reference `retrospective`'s `ready_to_eat_favorites` against pantry on-hand — for a favorite that's low/out, *suggest* a restock ("you're out of the frozen lasagna you keep reaching for — add it?").
+   - **On-sale discovery.** Scan `kroger_flyer` for on-sale heat-and-eat / grab-and-go items not already in my catalog, and draft 1–2 worthwhile ones via `add_draft_ready_to_eat` (`source: "kroger-flyer"`).
+   On my yes, add the item to the grocery list (or to `stockup.toml` for a conditional bulk buy) so the resolve/preview below picks it up. (Currently-available heat-and-eat *meal* options for a no-cook night are offered earlier, in the menu-request flow; this is the buy-time restock/discovery side.) Skip entirely for an empty catalog.
+
+3. **Resolve and preview.** Call `place_order(preview=true)` (optionally with `menu_needs` for needs not yet on the list). Surface, as one batch, anything that needs my decision before writing:
    - `checkpoint` items (`ambiguous` → pick from candidates; `unavailable` → enumerate a few sensible Kroger alternatives yourself from world knowledge and resolve each via `match_ingredient_to_kroger_sku` / `kroger_prices`, then let me pick). Don't add these unilaterally.
    - `partials` — items the list/menu wants that the pantry already has. Tell me the plan's required amount (aggregated from `for_recipes`) and ask whether to buy more. Default buy is 1 package; never silently net partials against the order.
    - **Assumed quantities.** Any resolved line with `assumed_quantity: true` defaulted to 1 package — no count was given. The tool won't judge produce; *you* do. For by-the-each produce (peppers, tomatillos, onions, limes, …), read the recipe (`read_recipe`) for the required amount and set an explicit count via `menu_needs[].quantity` or `quantities` before the real flush — a recipe wanting 4 Anaheim peppers must not silently order 1. Items that genuinely need a single package (a head of cabbage, one jar) need no action. Pass quantities on the menu need itself; the `quantities` map is for overriding after this preview.
 
-3. **Flush.** Once I've dispositioned the batch, call `place_order` for real — pass `overrides` for the items I picked SKUs for, `include_partials` for the partials I confirmed, `quantities` for anything beyond 1 package. Resolved items advance to `in_cart`.
+4. **Flush.** Once I've dispositioned the batch, call `place_order` for real — pass `overrides` for the items I picked SKUs for, `include_partials` for the partials I confirmed, `quantities` for anything beyond 1 package. Resolved items advance to `in_cart`.
 
-4. **Report honestly.** `place_order` returns the cart write and SKU-cache commit independently. Never tell me the cart is populated when `cart.written` is false. If `cart.code` is `reauth_required`, the Kroger refresh token was rejected — tell me to re-run the one-time `/oauth/init?tenant=<me>` authorization; the resolution work is preserved. Remind me to review the cart in the Kroger app before checkout.
+5. **Report honestly.** `place_order` returns the cart write and SKU-cache commit independently. Never tell me the cart is populated when `cart.written` is false. If `cart.code` is `reauth_required`, the Kroger refresh token was rejected — tell me to re-run the one-time `/oauth/init?tenant=<me>` authorization; the resolution work is preserved. Remind me to review the cart in the Kroger app before checkout.
 
 **Lifecycle past `in_cart` is user-asserted — never claim it on your own:**
 - *"I placed the order"* → advance `in_cart` items to `ordered` (`update_grocery_list`).

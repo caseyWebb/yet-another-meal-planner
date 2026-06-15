@@ -3,6 +3,30 @@
 ## Purpose
 TBD - created by archiving change order-placement. Update Purpose after archive.
 ## Requirements
+### Requirement: Ready-to-eat adds before order resolution (configured catalog)
+
+Before resolving and flushing the grocery list, if the user has a configured ready-to-eat catalog, the agent SHALL surface heat-and-eat items for buy-time addition — never adding unilaterally. Two passes:
+
+1. **Restock favorites.** Cross-reference `retrospective`'s `ready_to_eat_favorites` against pantry on-hand; for a favored item that is low or out, suggest a restock ("you're out of the frozen lasagna you keep reaching for — add it?"). On agreement, add to the grocery list.
+2. **On-sale discovery.** Scan `kroger_flyer` for on-sale heat-and-eat / grab-and-go items not already in the member's catalog; draft 1–2 worthwhile candidates via `add_draft_ready_to_eat` (`source: "kroger-flyer"`). On agreement, add to the grocery list.
+
+Both passes SHALL be skipped for an empty catalog. Items added here are picked up by the subsequent resolve/preview step.
+
+#### Scenario: Favored but out-of-stock RTE item is suggested for restock
+
+- **WHEN** `retrospective` shows a ready-to-eat favorite and that item is low or absent from the pantry
+- **THEN** the agent suggests restocking it before the order resolves, and adds it to the grocery list only on the user's agreement
+
+#### Scenario: On-sale RTE item not in catalog is drafted
+
+- **WHEN** `kroger_flyer` surfaces an on-sale heat-and-eat item absent from the member's catalog
+- **THEN** the agent drafts it via `add_draft_ready_to_eat` and, on agreement, adds it to the grocery list for this order
+
+#### Scenario: Nothing added without agreement
+
+- **WHEN** the agent surfaces a restock or on-sale RTE suggestion at order time
+- **THEN** nothing is written to the grocery list until the user says yes
+
 ### Requirement: Resolve the grocery list at order time
 
 `place_order` SHALL resolve the **whole** to-buy set at order time — not at capture time — so the cart reflects current availability. The to-buy set SHALL be `grocery_list ∪ (menu needs) − (pantry has)`. Each item SHALL be resolved via the Change 05 matcher (`match_ingredient_to_kroger_sku`) with cache revalidation against current price and curbside/delivery availability. Items the matcher returns as `ambiguous` or `unavailable` SHALL be collected and surfaced as a **single batch checkpoint** for the user to disposition; the cart write SHALL NOT proceed for those items until resolved.
