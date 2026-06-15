@@ -185,13 +185,13 @@ export function registerDiscoveryTools(server: McpServer, sharedGh: GitHubClient
     "read_discovery_inbox",
     {
       description:
-        "Read the SHARED email discoveries inbox (root discoveries_inbox.toml) and return a deduped POOL of candidate recipes ({ url, title, summary, from, received_at }) gathered from forwarded recipe newsletters. URLs are already unwrapped to their clean canonical form. No taste score: YOU judge fit (read_taste) and pick what to import — surface these alongside fetch_rss_discoveries at menu time. Walled/paywalled sources can't be auto-fetched: present the clean link and have the user paste the recipe text, then create_recipe. An absent or empty inbox returns an empty pool.",
+        "Read the SHARED email discoveries inbox (root discoveries_inbox.toml) and return a list of forwarded newsletter emails ({ from, subject, received_at, body }). Each `body` is the full plain-text content of the email — YOU scan it for recipe titles and links, then call parse_recipe(url) on the promising ones. No pre-extraction: the LLM reads the body and decides what's worth importing. Surface these alongside fetch_rss_discoveries at menu time (1–2 at most, never dominating). Walled/paywalled sources can't be auto-fetched: present the link and have the user paste the recipe text, then create_recipe. An absent or empty inbox returns an empty list.",
       inputSchema: {},
     },
     () =>
       runTool(async () => {
         const inboxText = await readOptional(sharedGh, INBOX_PATH);
-        return { candidates: flattenInbox(inboxText) };
+        return { emails: flattenInbox(inboxText) };
       }),
   );
 

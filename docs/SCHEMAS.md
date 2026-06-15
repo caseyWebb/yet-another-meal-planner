@@ -6,7 +6,7 @@ Concrete schemas with example values for every data file in the repo. Keep this 
 
 The data lives in **one private data repo** with two regions (see `ARCHITECTURE.md`). Every file below lives in exactly one:
 
-- **Shared corpus (data-repo root)** — objective, single-source, read by everyone: `recipes/*.md` (objective frontmatter + body), `aliases.toml`, `skus/kroger.toml`, `flyer_terms.toml`, `storage_guidance/` (curated put-away advice), **`stores/<slug>.toml`** (in-store walk store registry — identity, keyed by location; layout lives in store notes), **`feeds.toml`** (RSS discovery feeds), **`discoveries_inbox.toml`** (forwarded-newsletter candidates), **`discovery_sources.toml`** (inbound-email allowlist), `_indexes/`. Discovery is a shared, top-level concern — feeds and the newsletter inbox feed one group pool, judged against each caller's taste at read time.
+- **Shared corpus (data-repo root)** — objective, single-source, read by everyone: `recipes/*.md` (objective frontmatter + body), `aliases.toml`, `skus/kroger.toml`, `flyer_terms.toml`, `storage_guidance/` (curated put-away advice), **`stores/<slug>.toml`** (in-store walk store registry — identity, keyed by location; layout lives in store notes), **`feeds.toml`** (RSS discovery feeds), **`discoveries_inbox.toml`** (forwarded-newsletter emails for agent parsing), **`discovery_sources.toml`** (inbound-email allowlist), `_indexes/`. Discovery is a shared, top-level concern — feeds and the newsletter inbox feed one group pool, judged against each caller's taste at read time.
 - **Per-tenant subtree (`users/<username>/`)** — each member's own state: `pantry.toml`, `preferences.toml`, `stockup.toml`, `grocery_list.toml`, `meal_plan.toml`, `cooking_log.toml`, `ready_to_eat.toml` (personal heat-and-eat catalog), `kitchen.toml` (owned cooking equipment), `taste.md`, `diet_principles.md`, **`overlay.toml`** (subjective recipe view), **`notes/<slug>.toml`** (attributed recipe notes), **`store_notes/<slug>.toml`** (attributed store notes), and any personal (unshared) recipes.
 
 **Three-category recipe model:** a recipe's *content* (objective frontmatter + body) is shared; its *overlay* (`rating` + `status`) is per-tenant in `overlay.toml`; its *notes* are per-tenant, attributed, append-mostly. `last_cooked` is **not stored** — it's derived per-tenant from that member's `cooking_log.toml`. Read tools merge shared content + the caller's overlay + cooking-log `last_cooked` at read time.
@@ -380,24 +380,31 @@ weight = 0.7
 
 ## discoveries_inbox.toml
 
-**Shared** (data-repo root). Agent-writable side-effect file (NOT user-curated). Written by the Worker's inbound-email handler (`email()`), which receives newsletters forwarded to `groceries-agent@<domain>`, and read by the agent via `read_discovery_inbox`. Each `[[entries]]` is one received message; candidate `url`s are already **unwrapped** from their tracker wrappers to clean canonical form. This is the *push* complement to RSS pull — it reaches bot-walled/paywalled sources (Serious Eats, NYT) the Worker can't fetch.
+**Shared** (data-repo root). Agent-writable side-effect file (NOT user-curated). Written by the Worker's inbound-email handler (`email()`), which receives newsletters forwarded to `groceries-agent@<domain>`, and read by the agent via `read_discovery_inbox`. Each `[[entries]]` is one received message with its full plain-text body. The agent reads each `body` and extracts recipe titles and URLs itself — no pre-extraction happens in the Worker. This is the *push* complement to RSS pull — it reaches bot-walled/paywalled sources (Serious Eats, NYT) the Worker can't fetch.
+
+Old entries are automatically pruned when new ones arrive (default retention: 30 days).
 
 ```toml
-# discoveries_inbox.toml — recipe candidates from forwarded newsletters
+# discoveries_inbox.toml — emails from forwarded newsletters for recipe discovery
 
 [[entries]]
 from = "news@seriouseats.com"
 subject = "This week's best dinners"
 received_at = "2026-06-11"            # YYYY-MM-DD from the message Date header (or "")
-  [[entries.candidates]]
-  title = "Weeknight Chili"
-  summary = ""                        # reserved; v0 leaves null/empty
-  url = "https://www.seriouseats.com/weeknight-chili"   # required, unwrapped + canonical
+body = """
+This week we're cooking:
+
+Weeknight Chili (https://www.seriouseats.com/weeknight-chili)
+Sheet-Pan Salmon (https://www.seriouseats.com/sheet-pan-salmon)
+
+...
+"""
 ```
 
 **Notes:**
-- `url` is **required** on every candidate (build + write-time validation). Candidates are deduped at write-time by canonical URL against the corpus `source:` set and the existing inbox; the same key dedups against the RSS pool at surfacing/import.
-- Absent file is valid (no discoveries yet) — `read_discovery_inbox` returns `{ candidates: [] }`.
+- `body` contains the email's plain-text content (or HTML converted to readable text), truncated to 10,000 characters. The agent scans it for recipe links; there is no pre-extracted candidate list.
+- Entries are deduped at write-time by `(from, subject, received_at)` — the same email forwarded twice is stored only once.
+- Absent file is valid (no discoveries yet) — `read_discovery_inbox` returns `{ emails: [] }`.
 
 ## discovery_sources.toml
 

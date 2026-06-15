@@ -5,11 +5,10 @@ import {
   authResultsHeader,
   gateMessage,
   rejectReasonFor,
-  extractAnchors,
-  decodeTrackerUrl,
-  isLikelyContentLink,
+  extractEmailBody,
   appendInboxEntry,
   addSources,
+  INBOX_MAX_AGE_DAYS,
   type Allowlist,
 } from "../src/email.js";
 import { parseToml } from "../src/parse.js";
@@ -130,78 +129,65 @@ describe("authResultsHeader", () => {
 
 describe("rejectReasonFor", () => {
   const base = { from: "casey@dirtbag.social" };
-  it("returns null for a successful index (links found)", () => {
-    expect(rejectReasonFor({ ...base, accepted: true, reason: "member_dkim", found: 2, written: 2 })).toBeNull();
+  it("returns null for a successful write", () => {
+    expect(rejectReasonFor({ ...base, accepted: true, reason: "member_dkim", written: true })).toBeNull();
   });
 
-  it("returns null when accepted but all candidates were duplicates (not a failure)", () => {
-    expect(rejectReasonFor({ ...base, accepted: true, reason: "member_dkim", found: 3, written: 0 })).toBeNull();
-  });
-
-  it("rejects an accepted message with no recipe links found", () => {
-    const r = rejectReasonFor({ ...base, accepted: true, reason: "member_dkim", found: 0, written: 0 });
-    expect(r).toMatch(/no recipe links/i);
+  it("returns null even when the email was a duplicate (not a bounce-worthy failure)", () => {
+    expect(rejectReasonFor({ ...base, accepted: true, reason: "member_dkim", written: false })).toBeNull();
   });
 
   it("gives a detailed DKIM-alignment reason to a known-but-unaligned sender", () => {
-    const r = rejectReasonFor({ ...base, accepted: false, reason: "auth_unaligned", found: 0, written: 0 });
+    const r = rejectReasonFor({ ...base, accepted: false, reason: "auth_unaligned", written: false });
     expect(r).toMatch(/DKIM/i);
   });
 
   it("gives a terse reason to a non-allowlisted sender", () => {
-    const r = rejectReasonFor({ ...base, accepted: false, reason: "not_allowlisted", found: 0, written: 0 });
+    const r = rejectReasonFor({ ...base, accepted: false, reason: "not_allowlisted", written: false });
     expect(r).toMatch(/not an allowlisted/i);
   });
 });
 
-describe("extractAnchors", () => {
-  it("pulls href + link text from HTML and bare URLs from text", () => {
-    const anchors = extractAnchors(
-      '<p>Try <a href="https://x.test/chili">Weeknight Chili</a> and <a href="mailto:x">mail</a></p>',
-      "Also https://y.test/soup here",
+describe("extractEmailBody", () => {
+  it("prefers the text/plain part when available", () => {
+    const body = extractEmailBody("<p>HTML part</p>", "Text part with a link https://x.test/chili");
+    expect(body).toBe("Text part with a link https://x.test/chili");
+    expect(body).not.toContain("<p>");
+  });
+
+  it("falls back to HTML-to-text conversion when no text part", () => {
+    const body = extractEmailBody(
+      '<p>Try <a href="https://x.test/chili">Weeknight Chili</a> for dinner.</p>',
+      null,
     );
-    expect(anchors).toContainEqual({ url: "https://x.test/chili", title: "Weeknight Chili" });
-    expect(anchors.some((a) => a.url.startsWith("mailto:"))).toBe(false);
-    expect(anchors).toContainEqual({ url: "https://y.test/soup", title: null });
+    expect(body).toContain("Weeknight Chili");
+    expect(body).toContain("https://x.test/chili");
+    expect(body).not.toContain("<p>");
+    expect(body).not.toContain("<a ");
   });
 
-  it("survives a nested forward wrapper (links still extracted)", () => {
-    const wrapped =
-      "<div>---------- Forwarded message ----------<br>" +
-      'From: news@seriouseats.com<br><blockquote><a href="https://www.seriouseats.com/braise">Braise</a></blockquote></div>';
-    const anchors = extractAnchors(wrapped, null);
-    expect(anchors).toContainEqual({ url: "https://www.seriouseats.com/braise", title: "Braise" });
-  });
-});
-
-describe("decodeTrackerUrl", () => {
-  it("decodes an encoded destination from a query param without a network call", () => {
-    const { url, followNeeded } = decodeTrackerUrl(
-      "https://click.e.seriouseats.com/?url=https%3A%2F%2Fwww.seriouseats.com%2Fchili&u=123",
+  it("expands anchor tags to 'TEXT (URL)' form so URLs are visible in the body", () => {
+    const body = extractEmailBody(
+      '<a href="https://seriouseats.com/chili">Weeknight Chili</a>',
+      null,
     );
-    expect(url).toBe("https://www.seriouseats.com/chili");
-    expect(followNeeded).toBe(false);
+    expect(body).toMatch(/Weeknight Chili \(https:\/\/seriouseats\.com\/chili\)/);
   });
 
-  it("flags an opaque redirector for following", () => {
-    const { url, followNeeded } = decodeTrackerUrl("https://sendgrid.net/ss/c/abcdef");
-    expect(url).toBe("https://sendgrid.net/ss/c/abcdef");
-    expect(followNeeded).toBe(true);
+  it("drops non-http hrefs (mailto, tel) from the expanded text", () => {
+    const body = extractEmailBody('<a href="mailto:x@y.com">Email us</a>', null);
+    expect(body).toContain("Email us");
+    expect(body).not.toContain("mailto:");
   });
 
-  it("passes a plain content URL through untouched", () => {
-    expect(decodeTrackerUrl("https://www.seriouseats.com/chili")).toEqual({
-      url: "https://www.seriouseats.com/chili",
-      followNeeded: false,
-    });
+  it("returns empty string when both parts are absent", () => {
+    expect(extractEmailBody(null, null)).toBe("");
+    expect(extractEmailBody(undefined, undefined)).toBe("");
   });
-});
 
-describe("isLikelyContentLink", () => {
-  it("keeps content hosts, drops social + unsubscribe chrome", () => {
-    expect(isLikelyContentLink("https://www.seriouseats.com/chili")).toBe(true);
-    expect(isLikelyContentLink("https://facebook.com/seriouseats")).toBe(false);
-    expect(isLikelyContentLink("https://www.seriouseats.com/unsubscribe")).toBe(false);
+  it("truncates long bodies to BODY_MAX", () => {
+    const long = "x".repeat(20_000);
+    expect(extractEmailBody(null, long).length).toBeLessThanOrEqual(10_000);
   });
 });
 
@@ -210,38 +196,56 @@ describe("appendInboxEntry", () => {
     from: "news@seriouseats.com",
     subject: "This week",
     received_at: "2026-06-11",
-    candidates: [
-      { title: "Chili", summary: null, url: "https://www.seriouseats.com/chili" },
-      { title: "Soup", summary: null, url: "https://www.seriouseats.com/soup" },
-    ],
+    body: "Recipe links: Chili https://seriouseats.com/chili\nSoup https://seriouseats.com/soup",
   };
 
-  it("appends a new entry and reports the written count", () => {
-    const { text, written } = appendInboxEntry(null, entry, new Set());
-    expect(written).toBe(2);
-    const pool = flattenInbox(text);
-    expect(pool.map((c) => c.url).sort()).toEqual([
-      "https://www.seriouseats.com/chili",
-      "https://www.seriouseats.com/soup",
-    ]);
+  it("appends a new entry and reports written: true", () => {
+    const { text, written } = appendInboxEntry(null, entry);
+    expect(written).toBe(true);
+    const emails = flattenInbox(text);
+    expect(emails).toHaveLength(1);
+    expect(emails[0]).toMatchObject({
+      from: "news@seriouseats.com",
+      subject: "This week",
+      received_at: "2026-06-11",
+    });
+    expect(emails[0].body).toContain("https://seriouseats.com/chili");
     // round-trips as valid TOML
     expect(() => parseToml(text, "discoveries_inbox.toml")).not.toThrow();
   });
 
-  it("drops candidates already in `seen` (corpus ∪ existing inbox)", () => {
-    const seen = new Set(["https://www.seriouseats.com/chili"]);
-    const { written } = appendInboxEntry(null, entry, seen);
-    expect(written).toBe(1);
+  it("skips a duplicate entry (same from + subject + received_at)", () => {
+    const { text: first } = appendInboxEntry(null, entry);
+    const { text: second, written } = appendInboxEntry(first, entry);
+    expect(written).toBe(false);
+    expect(second).toBe(first);
   });
 
-  it("writes nothing when every candidate is already seen", () => {
-    const seen = new Set([
-      "https://www.seriouseats.com/chili",
-      "https://www.seriouseats.com/soup",
-    ]);
-    const { text, written } = appendInboxEntry(null, entry, seen);
-    expect(written).toBe(0);
-    expect(text).toBe("");
+  it("prunes entries older than INBOX_MAX_AGE_DAYS on write", () => {
+    // Build an inbox with one entry from way in the past.
+    const old = {
+      ...entry,
+      subject: "Old newsletter",
+      received_at: "2000-01-01",
+    };
+    const { text: withOld } = appendInboxEntry(null, old);
+    const emails1 = flattenInbox(withOld);
+    expect(emails1).toHaveLength(1);
+
+    // Appending a fresh entry should prune the old one.
+    const fresh = { ...entry, subject: "Fresh newsletter" };
+    const { text: withFresh, written } = appendInboxEntry(withOld, fresh);
+    expect(written).toBe(true);
+    const emails2 = flattenInbox(withFresh);
+    expect(emails2.map((e) => e.subject)).not.toContain("Old newsletter");
+    expect(emails2.map((e) => e.subject)).toContain("Fresh newsletter");
+  });
+
+  it("keeps entries within the retention window", () => {
+    const recent = { ...entry, subject: "Recent newsletter" };
+    const { text } = appendInboxEntry(null, recent);
+    const emails = flattenInbox(text);
+    expect(emails.map((e) => e.subject)).toContain("Recent newsletter");
   });
 });
 

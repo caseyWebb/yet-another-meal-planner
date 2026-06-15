@@ -130,7 +130,7 @@ A *push* discovery source that reaches the bot-walled/paywalled sites RSS can't 
 3. **Seed the allowlist.** In the data repo, add yourself to `discovery_sources.toml` `[[members]]` (and any newsletter senders to `[[senders]]`), or just say "add me as a discovery source" to the agent (`update_discovery_sources`).
 4. **Feed it — forwarder-only.** Never subscribe `groceries-agent@` directly (confirm-links + paywalls). Instead, from your own inbox set an **auto-forward rule** to `groceries-agent@<domain>` for newsletters you want indexed (your inbox handles the signup/confirm/paywall), or just hit **Forward** on a one-off. Both work: auto-forward keeps the newsletter `From` (allowlist it as a `sender`); manual forward arrives as you (you're a trusted `member`). The handler authenticates (DKIM) before processing and drops everything else silently.
 
-Candidates land in the shared `discoveries_inbox.toml` with clean, **unwrapped** URLs and surface at menu time via `read_discovery_inbox`. Full-recipe import still hits the walls — the agent presents the clean link and you paste the recipe to import.
+Emails land in the shared `discoveries_inbox.toml` with their full body text. The agent reads the body at menu time via `read_discovery_inbox`, scans it for recipe titles and links, and calls `parse_recipe` on the promising ones. Full-recipe import still hits the walls — the agent presents the clean link and you paste the recipe to import.
 
 ## 9. Cookbook site (optional)
 

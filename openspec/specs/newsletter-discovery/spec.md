@@ -29,12 +29,12 @@ A message that satisfies none of these SHALL NOT be written to the inbox. Instea
 #### Scenario: Auto-forwarded newsletter with surviving DKIM is accepted
 
 - **WHEN** a message arrives with `From` equal to an allowlisted sender and a passing DKIM signature for that sender
-- **THEN** the handler proceeds to extract candidates from it
+- **THEN** the handler proceeds to capture its body
 
 #### Scenario: Manually forwarded message from a trusted member is accepted
 
 - **WHEN** a message arrives with `From` equal to an allowlisted member and DKIM aligned to that member's domain
-- **THEN** the handler proceeds to extract candidates from it
+- **THEN** the handler proceeds to capture its body
 
 #### Scenario: Unallowlisted or unauthenticated mail is dropped
 
@@ -43,77 +43,72 @@ A message that satisfies none of these SHALL NOT be written to the inbox. Instea
 
 ### Requirement: Both forwarding forms are supported, including nested forward wrappers
 
-The handler SHALL extract candidate recipes from both an auto-forwarded message (original newsletter body delivered ~intact) and a manually forwarded message (original body nested inside a forward wrapper, e.g. a `---------- Forwarded message ----------` header with quoted or re-encoded HTML). Candidate extraction SHALL operate on whatever links survive in the body and SHALL NOT fail when the original content is nested one or more wrapper levels deep.
+The handler SHALL capture the body from both an auto-forwarded message (original newsletter body delivered ~intact) and a manually forwarded message (original body nested inside a forward wrapper). Body capture SHALL operate on whatever content survives in the message parts (text/plain preferred; HTML converted to readable text as fallback) and SHALL NOT fail when the original content is nested one or more wrapper levels deep.
 
-#### Scenario: Manual forward wrapper does not defeat extraction
+#### Scenario: Manual forward wrapper does not defeat capture
 
 - **WHEN** the handler processes a manually forwarded message whose original newsletter HTML is nested inside a forward wrapper
-- **THEN** it still extracts the candidate recipe links from the nested body
+- **THEN** it still captures the body content from the nested message
 
-### Requirement: Tracker-wrapped links are unwrapped to canonical URLs
+### Requirement: Email body is captured as readable text for LLM parsing
 
-Before storing any candidate, the handler SHALL resolve each link to its canonical destination. When the destination is encoded in the tracker URL's path or query, it SHALL be decoded without a network call; otherwise the handler SHALL follow the redirect from the Worker's egress and capture the final `Location`, WITHOUT downloading the (possibly walled) destination body. The stored candidate URL SHALL be the canonicalized destination (tracking query strings stripped), so links are clean and work even behind a privacy DNS that blocks the original redirectors.
+The handler SHALL capture the email's body as plain text and store it for the agent to parse. The handler SHALL NOT attempt to extract, filter, or unwrap individual recipe URLs — that is the LLM's job at read time. When the message has a `text/plain` part, it SHALL be preferred; when only HTML is available, the handler SHALL convert it to readable plain text by expanding `<a href="URL">TEXT</a>` anchors to `TEXT (URL)` form (preserving URLs for the LLM to find) and stripping remaining markup. The stored body SHALL be truncated at a reasonable maximum (≤ 10,000 characters) so TOML storage stays manageable. This design lets the LLM see all recipes in an email (newsletters commonly feature multiple), rather than relying on heuristic URL filtering that tends to grab unsubscribe or social chrome links instead.
 
-#### Scenario: Encoded destination is decoded without a network call
+#### Scenario: Plain text part is used when available
 
-- **WHEN** a candidate link is a tracker URL carrying its destination encoded in the path or query
-- **THEN** the handler decodes and canonicalizes that destination and stores it, making no outbound request
+- **WHEN** the message contains a `text/plain` part
+- **THEN** the handler stores that content as the body (truncated if needed) without any HTML processing
 
-#### Scenario: Opaque redirector is followed without downloading the body
+#### Scenario: HTML-only message is converted to readable text
 
-- **WHEN** a candidate link is an opaque redirector with no encoded destination
-- **THEN** the handler follows the redirect to capture the final URL and stores its canonical form, without downloading the destination page body
+- **WHEN** the message has only an HTML part
+- **THEN** the handler converts it to readable text, expanding anchor tags to include their destination URL, and stores the result
 
-### Requirement: Candidates are appended to a shared discoveries inbox
+### Requirement: Email bodies are appended to a shared discoveries inbox
 
-Accepted candidates SHALL be appended to a shared `discoveries_inbox.toml` at the data-repo root (not a per-tenant file) via the atomic commit engine. Each inbox record SHALL carry the source identity (`from`), `subject`, `received_at`, and a `candidates` list of `{ title, summary, url }` where `url` is the unwrapped canonical URL. The file SHALL be an agent-writable side-effect file, not user-curated config.
+Accepted emails SHALL be appended to a shared `discoveries_inbox.toml` at the data-repo root (not a per-tenant file) via the atomic commit engine. Each inbox record SHALL carry `from`, `subject`, `received_at`, and `body` (the captured plain-text body). The file SHALL be an agent-writable side-effect file, not user-curated config.
 
 #### Scenario: Accepted message lands as an inbox record
 
-- **WHEN** the handler accepts a message and extracts one or more candidates
-- **THEN** a record with `from`, `subject`, `received_at`, and the canonical-URL candidates is appended to the root `discoveries_inbox.toml` in a single commit
+- **WHEN** the handler accepts a message
+- **THEN** a record with `from`, `subject`, `received_at`, and `body` is appended to the root `discoveries_inbox.toml` in a single commit
 
-### Requirement: Inbox writes dedup deterministically by canonical URL
+### Requirement: Inbox writes dedup by message identity and prune old entries
 
-At inbox write-time the handler SHALL drop any candidate whose canonical URL already appears in the existing corpus `source:` URLs or in an existing `discoveries_inbox.toml` entry — a deterministic set-membership test on the canonical URL. It SHALL NOT dedup by title or any fuzzy/LLM comparison. The handler does NOT fetch the live RSS pool to dedup (that would mean fetching every feed on each inbound message); RSS-vs-inbox overlap collapses at *surfacing/import* via the same canonical-URL key — `read_discovery_inbox` and `fetch_rss_discoveries` return the same key, and import-time `create_recipe` corpus dedup is the backstop. A candidate that cannot be reduced to a stable canonical URL MAY be stored and is not required to dedup until import-time.
+At inbox write-time the handler SHALL skip a message whose `(from, subject, received_at)` triple matches an existing entry — this catches exact re-deliveries without URL-level comparison. Before appending, the handler SHALL also prune entries older than a configurable retention window (default: 30 days), so the inbox does not grow indefinitely. A message with an absent or empty `received_at` SHALL be retained (cannot be age-pruned).
 
-#### Scenario: Same recipe forwarded by two members is stored once
+#### Scenario: Same message forwarded twice is stored once
 
-- **WHEN** two accepted messages each yield a candidate with the same canonical URL
-- **THEN** the URL is written to the inbox only once
+- **WHEN** two deliveries of the same message arrive (same from, subject, and date)
+- **THEN** the second write is skipped and the entry appears exactly once in the inbox
 
-#### Scenario: Already-imported recipe is not re-surfaced
+#### Scenario: Old entries are pruned when a new message arrives
 
-- **WHEN** a candidate's canonical URL equals the `source:` of a recipe already in the corpus
-- **THEN** that candidate is omitted from the inbox write
+- **WHEN** the handler appends a new entry and existing entries are older than the retention window
+- **THEN** the old entries are removed before writing
 
-### Requirement: Senders are notified of failures but not of routine success
+### Requirement: Senders are notified of auth failures only
 
-The handler SHALL `setReject` (bounce) a message that the gate rejects, and an accepted message from which **no** recipe links could be extracted. It SHALL NOT reject a message that was accepted and yielded at least one extractable link — including the case where every candidate was a duplicate already in the corpus or inbox (that is a routine success, not a failure, so forwarding a newsletter of already-known recipes does not bounce). A processing error SHALL also reject with a generic reason rather than being swallowed.
+The handler SHALL `setReject` (bounce) a message that the gate rejects. It SHALL NOT bounce an accepted message for any content-level reason (empty body, duplicate, etc.) — these are silent successes. A processing error SHALL also reject with a generic reason rather than being swallowed.
 
-#### Scenario: Accepted message with no recipe links bounces
+#### Scenario: Auth failure bounces; duplicate is silent
 
-- **WHEN** an accepted message contains no extractable content links
-- **THEN** the handler rejects it with a "no recipe links found" reason
-
-#### Scenario: All-duplicate forward is accepted silently
-
-- **WHEN** an accepted message's candidates are all already in the corpus or inbox
+- **WHEN** an accepted message's `(from, subject, received_at)` is already in the inbox
 - **THEN** the handler writes nothing new and does NOT reject (no bounce)
 
-### Requirement: read_discovery_inbox returns the pooled inbox candidates
+### Requirement: read_discovery_inbox returns inbox emails for LLM parsing
 
-`read_discovery_inbox` SHALL read the shared `discoveries_inbox.toml` and return its candidates as a deduped pool (`{ candidates: [{ url, title, summary, from, received_at }] }`), carrying no taste `score` — taste fit and selection are the agent's judgment, consistent with `fetch_rss_discoveries`. When the inbox file is absent or empty, it SHALL return an empty candidate list rather than erroring. The meal-plan flow SHALL surface these candidates at menu time alongside the RSS pool.
+`read_discovery_inbox` SHALL read the shared `discoveries_inbox.toml` and return its entries as a list of emails (`{ emails: [{ from, subject, received_at, body }] }`). The agent reads each `body`, identifies recipe titles and links itself, and calls `parse_recipe(url)` on the promising ones. The tool carries no taste `score` — taste fit and selection are the agent's judgment, consistent with `fetch_rss_discoveries`. When the inbox file is absent or empty, it SHALL return an empty list rather than erroring. The meal-plan flow SHALL surface these emails at menu time alongside the RSS pool.
 
-#### Scenario: Inbox candidates returned without a score
+#### Scenario: Inbox emails returned for agent parsing
 
 - **WHEN** `read_discovery_inbox` is called with a populated inbox
-- **THEN** each candidate carries `url`, `title`, `summary`, `from`, and `received_at`, and no candidate carries a taste `score`
+- **THEN** each item carries `from`, `subject`, `received_at`, and `body`, with no pre-extracted candidate URLs and no taste `score`
 
 #### Scenario: Empty inbox is not an error
 
 - **WHEN** `discoveries_inbox.toml` is absent or has no entries
-- **THEN** the tool returns `{ candidates: [] }` and does not raise an error
+- **THEN** the tool returns `{ emails: [] }` and does not raise an error
 
 ### Requirement: Walled sources degrade to manual paste at import time
 
@@ -121,15 +116,14 @@ Discovery via email is unblockable, but full-recipe import still hits the same b
 
 #### Scenario: Paywalled candidate is imported by paste
 
-- **WHEN** the user chooses an inbox candidate whose source is paywalled
+- **WHEN** the user chooses a recipe link found in an inbox email whose source is paywalled
 - **THEN** the agent presents the clean link, the user pastes the recipe text, and the agent assembles and persists it via `create_recipe`
 
 ### Requirement: New shared discovery files are schema-validated at build
 
-`scripts/build-indexes.mjs` SHALL validate the shared `discoveries_inbox.toml` and the allowlist config: TOML parses, required fields present, and allowlist entries are well-formed (a `senders`/`members` shape). Validation failures SHALL be reported like other build validation errors and SHALL NOT silently pass.
+`scripts/build-indexes.mjs` SHALL validate the shared `discoveries_inbox.toml` and the allowlist config: TOML parses, required fields present, and allowlist entries are well-formed (a `senders`/`members` shape with valid addresses). Validation failures SHALL be reported like other build validation errors and SHALL NOT silently pass.
 
 #### Scenario: Malformed inbox file fails the build
 
-- **WHEN** `discoveries_inbox.toml` has a malformed entry (missing `url` on a candidate)
+- **WHEN** `discoveries_inbox.toml` has a malformed entry (e.g. missing `body` field or non-string value)
 - **THEN** `build-indexes.mjs` reports a validation error rather than producing indexes
-

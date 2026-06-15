@@ -24,7 +24,7 @@ TBD - created by archiving change discovery-and-disposition. Update Purpose afte
 
 ### Requirement: RSS candidates are deduped against the existing corpus
 
-`fetch_rss_discoveries` SHALL exclude any feed item whose canonical link matches the `source:` URL of a recipe already in the corpus, so already-imported recipes are not re-surfaced. The deduplication SHALL be performed by the tool (deterministically on the canonical URL — the same key the email discovery inbox dedups on), not left to the agent.
+`fetch_rss_discoveries` SHALL exclude any feed item whose canonical link matches the `source:` URL of a recipe already in the corpus, so already-imported recipes are not re-surfaced. The deduplication SHALL be performed by the tool (deterministically on the canonical URL), not left to the agent.
 
 #### Scenario: Already-imported recipe is filtered out
 

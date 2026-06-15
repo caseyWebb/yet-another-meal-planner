@@ -139,7 +139,7 @@ The hardest deterministic problem: turning a recipe ingredient string ("extra vi
 Every menu request surfaces a small number of new items the user hasn't taken a position on, drawn from three sources:
 
 - **RSS** (`fetch_rss_discoveries`) — recipe candidates from trusted blogs in `feeds.toml`, scored against the taste profile.
-- **Newsletter email** (optional) — a *push* source that reaches the bot-walled/paywalled sites RSS can't. The Worker exports an `email()` handler; Cloudflare Email Routing points a forwarder address at it. Candidates land in the shared `discoveries_inbox.toml` with unwrapped URLs and surface via `read_discovery_inbox`. See [`SELF_HOSTING.md`](SELF_HOSTING.md) step 9.
+- **Newsletter email** (optional) — a *push* source that reaches the bot-walled/paywalled sites RSS can't. The Worker exports an `email()` handler; Cloudflare Email Routing points a forwarder address at it. Emails are captured (body text, not pre-extracted URLs) in the shared `discoveries_inbox.toml`; the agent scans each body for recipe links at menu time via `read_discovery_inbox`. See [`SELF_HOSTING.md`](SELF_HOSTING.md) step 9.
 - **Kroger flyer** (`kroger_flyer`) — ready-to-eat candidates ride the flyer scan.
 
 New items persist in **`draft` state immediately**, not gated on the user expressing interest at proposal time — they often won't have an opinion then but might later ("actually, add that Serious Eats one"). Drafts are de-prioritized in later menu generation but remain available. Disposition is conversational: a rating/like → `active`; an explicit no → `rejected` (kept for de-dup); silence → stays draft.

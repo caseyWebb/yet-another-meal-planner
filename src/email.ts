@@ -2,11 +2,10 @@
 // Email Routing delivers forwarded recipe newsletters for `groceries-agent@<domain>`
 // to the Worker's email() handler. We authenticate the message (DKIM/SPF/DMARC
 // verdicts Cloudflare reports), gate it against the SHARED allowlist
-// (discovery_sources.toml — trusted senders + members), unwrap tracker-wrapped
-// links to clean canonical URLs, and append candidate recipes to the shared
-// discoveries_inbox.toml via the commit engine. This is the PUSH complement to RSS
-// pull: it reaches bot-walled/paywalled sources (Serious Eats, NYT) the Worker
-// cannot fetch — the publisher pushes the teaser to us.
+// (discovery_sources.toml — trusted senders + members), capture the email body
+// for the agent to parse, and append it to the shared discoveries_inbox.toml via
+// the commit engine. The LLM reads the body and extracts all recipe links itself,
+// so we never attempt URL extraction here — we just store the email faithfully.
 //
 // MIME parsing uses postal-mime (workerd-compatible, Node-testable) — robust
 // multipart/quoted-printable/base64 + nested forward wrappers, not hand-rolled.
@@ -14,7 +13,6 @@
 
 import PostalMime from "postal-mime";
 import type { Env } from "./env.js";
-import { canonicalizeUrl, extractRecipeSources, flattenInbox } from "./discovery.js";
 import { parseToml } from "./parse.js";
 import { stringifyTomlWithHeader } from "./serialize.js";
 import { commitFiles } from "./commit.js";
@@ -22,19 +20,16 @@ import { readOptional } from "./gh-read.js";
 import { createGitHubClient } from "./github.js";
 import { createInstallationAuth } from "./github-app.js";
 import { dataCoords } from "./tenant.js";
-import { truncate } from "./text.js";
 
 export const INBOX_PATH = "discoveries_inbox.toml";
 export const SOURCES_PATH = "discovery_sources.toml";
-const RECIPE_INDEX = "_indexes/recipes.json";
-const MAX_CANDIDATES_PER_MESSAGE = 25;
-const MAX_REDIRECT_HOPS = 5;
-const TITLE_MAX = 160;
+const BODY_MAX = 10_000;
+export const INBOX_MAX_AGE_DAYS = 30;
 
 const INBOX_HEADER =
-  "# discoveries_inbox.toml — recipe candidates from forwarded newsletters.\n" +
+  "# discoveries_inbox.toml — emails from forwarded newsletters for recipe discovery.\n" +
   "# Written by the Worker email() handler; read by the agent via read_discovery_inbox.\n" +
-  "# Each [[entries]] is one received message; candidate `url`s are unwrapped canonical links.";
+  "# Each [[entries]] is one received message; the agent parses `body` to find recipes.";
 
 /** Minimal shape of Cloudflare's ForwardableEmailMessage we depend on. */
 export interface InboundMessage {
@@ -236,91 +231,49 @@ export function gateMessage(opts: {
   return { accepted: false, reason: "not_allowlisted" };
 }
 
-// --- Link extraction + tracker unwrapping ------------------------------------
+// --- Email body extraction ---------------------------------------------------
 
-const STRIP_TAGS = /<[^>]+>/g;
-const ENTITY = /&(amp|lt|gt|quot|#39|nbsp);/g;
-const ENTITY_MAP: Record<string, string> = {
-  amp: "&",
-  lt: "<",
-  gt: ">",
-  quot: '"',
-  "#39": "'",
-  nbsp: " ",
-};
-
-function decodeEntities(s: string): string {
-  return s.replace(ENTITY, (_m, e) => ENTITY_MAP[e] ?? _m);
-}
-
-export interface Anchor {
-  url: string;
-  title: string | null;
+/**
+ * Convert newsletter HTML to readable plain text, expanding anchor tags to
+ * "TEXT (URL)" form so the LLM can see both the link text and the destination URL.
+ */
+function htmlToReadable(html: string): string {
+  return html
+    // Expand anchors: "TEXT (URL)" — preserves URLs for LLM extraction.
+    .replace(
+      /<a\s[^>]*href\s*=\s*["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi,
+      (_, url: string, inner: string) => {
+        const text = inner.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+        return /^https?:\/\//i.test(url) ? `${text} (${url})` : text;
+      },
+    )
+    // Block-level elements → newlines.
+    .replace(/<\/(?:p|div|li|h[1-6]|tr|td|blockquote)>/gi, "\n")
+    .replace(/<br\s*\/?>/gi, "\n")
+    // Strip remaining tags.
+    .replace(/<[^>]+>/g, "")
+    // Decode common entities.
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&nbsp;/g, " ")
+    // Normalize whitespace.
+    .replace(/[ \t]+/g, " ")
+    .replace(/\n[ \t]+/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
 }
 
 /**
- * Pull anchors ({ href, link text }) out of the (possibly forward-wrapped) HTML,
- * plus bare URLs from the text part. Robust to forward nesting because it simply
- * scans every `href` in whatever postal-mime yields — a quoted/nested original
- * still carries its links.
+ * Extract the best plain-text body from an email for LLM parsing. Prefers the
+ * text/plain part; falls back to converting the HTML part to readable text.
+ * Truncated to BODY_MAX chars so TOML storage stays manageable.
  */
-export function extractAnchors(html?: string | null, text?: string | null): Anchor[] {
-  const out: Anchor[] = [];
-  if (html) {
-    const re = /<a\s[^>]*href\s*=\s*["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi;
-    for (const m of html.matchAll(re)) {
-      const url = decodeEntities(m[1].trim());
-      if (!/^https?:\/\//i.test(url)) continue;
-      const title = decodeEntities(m[2].replace(STRIP_TAGS, " ")).replace(/\s+/g, " ").trim();
-      out.push({ url, title: title || null });
-    }
-  }
-  if (text) {
-    for (const m of text.matchAll(/https?:\/\/[^\s<>"')\]]+/gi)) {
-      out.push({ url: m[0], title: null });
-    }
-  }
-  return out;
-}
-
-const TRACKER_PARAM_KEYS = ["url", "u", "redirect", "target", "link", "destination", "d"];
-const CHROME_HOST_RE =
-  /(list-manage|mailchimp|sendgrid|mcusercontent|facebook|twitter|x\.com|instagram|pinterest|youtube|youtu\.be|tiktok|linkedin|threads\.net)/i;
-const CHROME_PATH_RE = /(unsubscribe|preferences|privacy|\/terms|email-preferences|manage-subscription|webview)/i;
-
-/**
- * Decode a tracker-wrapped link to its destination WITHOUT a network call when
- * the destination is carried in a query param (the common Mailchimp/SendGrid
- * shape, e.g. `?url=https%3A%2F%2F…`). Returns `followNeeded` when it's an opaque
- * redirector that must be followed (orchestrator does that, reading only headers).
- */
-export function decodeTrackerUrl(raw: string): { url: string; followNeeded: boolean } {
-  let u: URL;
-  try {
-    u = new URL(raw);
-  } catch {
-    return { url: raw, followNeeded: false };
-  }
-  for (const key of TRACKER_PARAM_KEYS) {
-    const v = u.searchParams.get(key);
-    if (!v) continue;
-    const decoded = decodeURIComponent(v);
-    if (/^https?:\/\//i.test(decoded)) return { url: decoded, followNeeded: false };
-  }
-  return { url: raw, followNeeded: CHROME_HOST_RE.test(u.host) || /\/(c|click|ss|link|redir)\//i.test(u.pathname) };
-}
-
-/** A canonical URL that plausibly points at recipe content (drops social/unsubscribe chrome). */
-export function isLikelyContentLink(canonical: string): boolean {
-  let u: URL;
-  try {
-    u = new URL(canonical);
-  } catch {
-    return false;
-  }
-  if (CHROME_HOST_RE.test(u.host)) return false;
-  if (CHROME_PATH_RE.test(u.pathname)) return false;
-  return true;
+export function extractEmailBody(html?: string | null, text?: string | null): string {
+  const body = text?.trim() || (html ? htmlToReadable(html) : "");
+  return body.slice(0, BODY_MAX);
 }
 
 // --- Inbox assembly ----------------------------------------------------------
@@ -329,28 +282,26 @@ export interface InboxEntry {
   from: string;
   subject: string;
   received_at: string;
-  candidates: { title: string; summary: string | null; url: string }[];
+  body: string;
+}
+
+/** Cutoff date (YYYY-MM-DD) for pruning inbox entries older than `maxAgeDays`. */
+function cutoffDate(maxAgeDays: number): string {
+  const d = new Date();
+  d.setUTCDate(d.getUTCDate() - maxAgeDays);
+  return d.toISOString().slice(0, 10);
 }
 
 /**
- * Append one received message's deduped candidates to the inbox TOML, dropping
- * any candidate whose canonical URL is already in `seen` (corpus `source:` URLs ∪
- * existing inbox URLs) or repeated within the entry. Returns the new file text and
- * the count written; `written: 0` (nothing new) means the caller skips the commit.
+ * Append a received email to the inbox TOML, deduping by (from + subject +
+ * received_at) to skip exact re-deliveries, and pruning entries older than
+ * INBOX_MAX_AGE_DAYS before writing. Returns the new file text and whether
+ * the entry was actually written (false means it was a duplicate).
  */
 export function appendInboxEntry(
   existingRaw: string | null,
   entry: InboxEntry,
-  seen: Set<string>,
-): { text: string; written: number } {
-  const local = new Set(seen);
-  const candidates = entry.candidates.filter((c) => {
-    if (local.has(c.url)) return false;
-    local.add(c.url);
-    return true;
-  });
-  if (candidates.length === 0) return { text: existingRaw ?? "", written: 0 };
-
+): { text: string; written: boolean } {
   let parsed: Record<string, unknown> = {};
   if (existingRaw) {
     try {
@@ -359,64 +310,48 @@ export function appendInboxEntry(
       parsed = {};
     }
   }
-  const entries = Array.isArray(parsed.entries) ? (parsed.entries as unknown[]) : [];
-  entries.push({ ...entry, candidates });
+  let entries = Array.isArray(parsed.entries)
+    ? (parsed.entries as Record<string, unknown>[])
+    : [];
+
+  // Skip if the same email was already indexed (same sender + subject + date).
+  const key = `${entry.from}\x00${entry.subject}\x00${entry.received_at}`;
+  const isDuplicate = entries.some(
+    (e) => `${e.from}\x00${e.subject}\x00${e.received_at}` === key,
+  );
+  if (isDuplicate) return { text: existingRaw ?? "", written: false };
+
+  // Prune entries older than INBOX_MAX_AGE_DAYS before appending.
+  const cutoff = cutoffDate(INBOX_MAX_AGE_DAYS);
+  entries = entries.filter((e) => {
+    const d = typeof e.received_at === "string" ? e.received_at : "";
+    return !d || d >= cutoff;
+  });
+
+  entries.push(entry);
   const text = stringifyTomlWithHeader(existingRaw ?? INBOX_HEADER, { ...parsed, entries });
-  return { text, written: candidates.length };
+  return { text, written: true };
 }
 
 // --- Orchestrator ------------------------------------------------------------
-
-/** Follow an opaque redirector, reading ONLY headers — never download the (walled) body. */
-async function followRedirect(url: string): Promise<string> {
-  let current = url;
-  for (let i = 0; i < MAX_REDIRECT_HOPS; i++) {
-    let res: Response;
-    try {
-      res = await fetch(current, { method: "GET", redirect: "manual" });
-    } catch {
-      return current;
-    }
-    if (res.status >= 300 && res.status < 400) {
-      const loc = res.headers.get("location");
-      if (!loc) return current;
-      try {
-        current = new URL(loc, current).toString();
-      } catch {
-        return current;
-      }
-      continue;
-    }
-    return res.url || current;
-  }
-  return current;
-}
 
 export interface EmailResult {
   accepted: boolean;
   reason: GateReason;
   /** The message `From` address (lowercased), for observability. */
   from: string;
-  /** Content links extracted from the body (before corpus/inbox dedup). */
-  found: number;
-  /** New candidates actually written to the inbox (0 ⇒ none new, e.g. all duplicates). */
-  written: number;
+  /** Whether the email body was written to the inbox (false = rejected or duplicate). */
+  written: boolean;
 }
 
 /**
  * Map a processing result to a human SMTP-reject reason, or `null` when the
- * message should be accepted silently. The handler `setReject`s with this so the
- * sender gets an inline bounce explaining the failure (debuggable forwarding).
- * Accepted-with-duplicates is a SUCCESS (nothing new, but not a failure) — only a
- * genuine failure rejects, so forwarding a newsletter of known recipes won't bounce.
+ * message should be accepted silently. Only auth failures produce bounces —
+ * content-level issues (empty body, duplicate email) are silent successes so
+ * the sender is not flooded with bounces for newsletters.
  */
 export function rejectReasonFor(result: EmailResult): string | null {
-  if (result.accepted) {
-    if (result.found === 0) {
-      return "Message accepted, but no recipe links were found in it to index.";
-    }
-    return null; // links found (written ≥ 0): success, even if all were duplicates
-  }
+  if (result.accepted) return null;
   switch (result.reason) {
     case "auth_unaligned":
       return (
@@ -432,10 +367,10 @@ export function rejectReasonFor(result: EmailResult): string | null {
 }
 
 /**
- * The Worker email() handler. Authenticate + gate, parse the MIME, unwrap links,
- * extract recipe candidates, and append them to the shared inbox in one commit.
- * Returns a structured result; the caller `setReject`s a failure (see
- * `rejectReasonFor`) so the sender gets a bounce instead of a silent drop.
+ * The Worker email() handler. Authenticate + gate, parse the MIME, capture
+ * the email body, and append it to the shared inbox in one commit. The LLM
+ * reads the body later and extracts recipe links itself. Returns a structured
+ * result; the caller `setReject`s on auth failure so the sender gets a bounce.
  */
 export async function handleInboundEmail(message: InboundMessage, env: Env): Promise<EmailResult> {
   const auth = createInstallationAuth(
@@ -455,45 +390,22 @@ export async function handleInboundEmail(message: InboundMessage, env: Env): Pro
   const verdicts = parseAuthResults(authResultsHeader(email.headers));
 
   const gate = gateMessage({ from: fromAddress, allowlist, auth: verdicts });
-  if (!gate.accepted) return { ...gate, from: fromAddress, found: 0, written: 0 };
+  if (!gate.accepted) return { ...gate, from: fromAddress, written: false };
 
-  // Resolve each anchor to its clean canonical destination, then keep content links.
-  const anchors = extractAnchors(email.html, email.text);
-  const resolved: { title: string | null; url: string }[] = [];
-  const seenLocal = new Set<string>();
-  for (const a of anchors) {
-    if (resolved.length >= MAX_CANDIDATES_PER_MESSAGE) break;
-    const decoded = decodeTrackerUrl(a.url);
-    const destination = decoded.followNeeded ? await followRedirect(decoded.url) : decoded.url;
-    const canonical = canonicalizeUrl(destination);
-    if (seenLocal.has(canonical) || !isLikelyContentLink(canonical)) continue;
-    seenLocal.add(canonical);
-    resolved.push({ title: a.title, url: canonical });
-  }
-  if (resolved.length === 0) return { ...gate, from: fromAddress, found: 0, written: 0 };
-
-  const [indexRaw, inboxRaw] = await Promise.all([
-    readOptional(gh, RECIPE_INDEX),
-    readOptional(gh, INBOX_PATH),
-  ]);
-  const seen = new Set<string>([...extractRecipeSources(indexRaw), ...flattenInbox(inboxRaw).map((c) => c.url)]);
-
+  const body = extractEmailBody(email.html, email.text);
   const entry: InboxEntry = {
     from: fromAddress,
     subject: email.subject ?? "",
     received_at: isoDate(message.headers.get("date")),
-    candidates: resolved.map((r) => ({
-      title: r.title ? truncate(r.title, TITLE_MAX) : r.url,
-      summary: null,
-      url: r.url,
-    })),
+    body,
   };
 
-  const { text, written } = appendInboxEntry(inboxRaw, entry, seen);
-  if (written === 0) return { ...gate, from: fromAddress, found: resolved.length, written: 0 };
+  const inboxRaw = await readOptional(gh, INBOX_PATH);
+  const { text, written } = appendInboxEntry(inboxRaw, entry);
+  if (!written) return { ...gate, from: fromAddress, written: false };
 
-  await commitFiles(gh, [{ path: INBOX_PATH, content: text }], `discovery: ${written} candidate(s) from ${fromAddress}`);
-  return { ...gate, from: fromAddress, found: resolved.length, written };
+  await commitFiles(gh, [{ path: INBOX_PATH, content: text }], `discovery: email from ${fromAddress}`);
+  return { ...gate, from: fromAddress, written: true };
 }
 
 /** Best-effort calendar date (YYYY-MM-DD) from the message `Date` header; UTC, falls back to empty. */

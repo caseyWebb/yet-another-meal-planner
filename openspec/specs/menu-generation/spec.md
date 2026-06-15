@@ -187,8 +187,8 @@ On a menu request, the agent SHALL surface a small number of new recipe discover
 
 #### Scenario: Menu request surfaces and drafts recipe discoveries
 
-- **WHEN** the agent assembles a menu proposal and `fetch_rss_discoveries` or `read_discovery_inbox` returns fresh candidates
-- **THEN** the agent surfaces ~1–2 of the best fits for the taste profile and this request, and imports the chosen ones in draft via `parse_recipe` + `create_recipe`, without waiting for the user to ask
+- **WHEN** the agent assembles a menu proposal and `fetch_rss_discoveries` returns RSS candidates or `read_discovery_inbox` returns inbox emails with recipe links
+- **THEN** the agent scans each inbox email body for recipe titles and URLs, surfaces ~1–2 of the best fits across both pools for the taste profile and this request, and imports the chosen ones in draft via `parse_recipe` + `create_recipe`, without waiting for the user to ask
 
 #### Scenario: Unreachable candidate is presented as a link, not an import
 
