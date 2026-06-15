@@ -23,6 +23,7 @@ import { registerStoreTools } from "./stores-tools.js";
 import { registerCookingTools } from "./cooking-tools.js";
 import { filterRecipes, type RecipeFilters, type RecipeIndex } from "./recipes.js";
 import { listStorageGuidance, readStorageGuidance } from "./storage-guidance.js";
+import { fetchWeatherForecast } from "./weather.js";
 import { profileStatus } from "./profile-status.js";
 import { parseOverlay, mergeOverlay, type Overlay } from "./overlay.js";
 import { toInventory } from "./kitchen.js";
@@ -653,6 +654,47 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
   // place_order — the order-time flush: resolve the list, write the Kroger cart,
   // persist learned SKUs to the SHARED cache. The one tool that reaches the cart.
   registerOrderTools(server, gh, sharedGh, env, tenant.id, resolveIngredient, getLocationId);
+
+  // get_weather_forecast — read-only Open-Meteo fetch; location resolved from
+  // the caller's preferences (location_zip → parse preferred_location). Used by
+  // the meal-plan flow as silent context for weather-appropriate recipe selection.
+  server.registerTool(
+    "get_weather_forecast",
+    {
+      description:
+        "Fetch a daily weather forecast for the user's location (resolved from preferences.location_zip, or parsed from preferred_location). Returns high/low temps, precipitation chance, and meal_vibes hints (no-grill, comfort, soup, grill-friendly, light) per day. Use as silent context in meal planning — weight meal_vibes as soft hints when assigning recipes to planned_for dates; do not narrate the weather to the user unless asked. Structured errors: no_location (ZIP not resolvable from preferences), forecast_unavailable (Open-Meteo unreachable), no_results (location string geocoded to nothing).",
+      inputSchema: {
+        days: z
+          .number()
+          .int()
+          .optional()
+          .describe("Number of forecast days to return (default 7, max 16)."),
+      },
+    },
+    ({ days }) =>
+      runTool(async () => {
+        const prefsText = await readOptional(gh, "preferences.toml");
+        const prefs = prefsText ? parseToml(prefsText, "preferences.toml") : {};
+        const stores = prefs.stores as Record<string, unknown> | undefined;
+
+        // Resolve location: explicit location_zip first, then parse from preferred_location.
+        let zip: string | null = null;
+        if (typeof prefs.location_zip === "string" && prefs.location_zip.trim()) {
+          zip = prefs.location_zip.trim();
+        } else if (typeof stores?.preferred_location === "string") {
+          zip = stores.preferred_location.match(/\d{5}/)?.[0] ?? null;
+        }
+
+        if (!zip) {
+          throw new ToolError(
+            "no_location",
+            "No location found in preferences. Set location_zip or complete store setup with a ZIP code.",
+          );
+        }
+
+        return fetchWeatherForecast(zip, days ?? 7);
+      }),
+  );
 
   // report_bug — file an attributed GitHub issue on the operator's PRIVATE data
   // repo on the member's behalf (members have no GitHub account). Identity +

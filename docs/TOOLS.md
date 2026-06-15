@@ -735,6 +735,53 @@ A **stale-cart reminder** fires when a new order begins while the prior list sti
 
 ---
 
+## Weather tools (menu-generation)
+
+### `get_weather_forecast(days?)`
+
+Fetch a daily weather forecast for the user's location. Read-only, no side effects. Used by the meal-plan flow as silent context for weather-appropriate recipe selection.
+
+**Params:**
+- `days` (number, optional): number of forecast days to return; default 7, clamped to 1–16.
+
+**Returns:**
+```json
+{
+  "location": "Fort Worth, Texas",
+  "forecast": [
+    {
+      "date": "2026-06-15",
+      "high_f": 95,
+      "low_f": 78,
+      "precipitation_chance": 5,
+      "condition": "clear",
+      "meal_vibes": ["grill-friendly", "light"]
+    }
+  ]
+}
+```
+
+- `condition`: one of `clear | partly_cloudy | overcast | rainy | snowy | stormy` (derived from WMO weather code).
+- `meal_vibes`: deterministic hints derived in the Worker from temperature/precipitation thresholds. An empty array means no strong signal.
+
+  | Condition | `meal_vibes` added |
+  |---|---|
+  | precipitation_chance ≥ 60% | `no-grill`, `comfort` |
+  | high_f < 55°F | `soup`, `comfort` (deduped) |
+  | high_f ≥ 80°F AND precipitation_chance < 30% | `grill-friendly` |
+  | high_f ≥ 85°F | `light` |
+
+**Location resolution:** checks `preferences.location_zip` first; falls back to parsing a 5-digit ZIP from `preferred_location` (`"Kroger - 76104"` → `"76104"`). No operator config or API key required (uses Open-Meteo).
+
+**Errors (structured):**
+- `{ error: "no_location" }` — no ZIP resolvable from preferences; agent asks once and stores to `location_zip`.
+- `{ error: "forecast_unavailable" }` — Open-Meteo returned non-2xx or network failure.
+- `{ error: "no_results" }` — geocoding found no match for the location string.
+
+**Notes:** All errors are best-effort — the meal-plan flow continues with season-based reasoning on any error. The agent SHALL NOT narrate weather-based reasoning unless the user asks.
+
+---
+
 ## Bug reporting (agent-bug-reporting)
 
 ### `report_bug(title, body)`

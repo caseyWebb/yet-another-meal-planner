@@ -298,6 +298,11 @@ primary = "kroger"               # fulfillment mode: "kroger" (online flush) OR 
 preferred_location = "Kroger - 76104"   # resolved to a Kroger locationId, then used
                                         # for pricing + curbside/delivery availability
 
+location_zip = "76104"          # optional — explicit ZIP or city name for weather lookup.
+                                # When absent, get_weather_forecast parses the ZIP from
+                                # preferred_location automatically. Only write this if
+                                # preferred_location is absent or non-parseable.
+
 [dietary]
 avoid = []                       # ingredients to always exclude
 limit = ["cilantro"]             # ingredients to deprioritize but not reject

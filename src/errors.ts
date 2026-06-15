@@ -21,7 +21,11 @@ export type ErrorCode =
   | "slug_exists" // create_recipe target already exists; not overwritten
   | "already_exists" // create_recipe source URL is already in the shared corpus; reuse the existing slug
   // Bug-reporting code (agent-bug-reporting capability):
-  | "insufficient_permission"; // the GitHub App lacks Issues: write; report_bug could not file
+  | "insufficient_permission" // the GitHub App lacks Issues: write; report_bug could not file
+  // Weather codes (menu-generation capability):
+  | "no_location" // get_weather_forecast: no ZIP resolvable from preferences
+  | "forecast_unavailable" // get_weather_forecast: Open-Meteo returned non-2xx or network failure
+  | "no_results"; // get_weather_forecast: geocoding returned no results for the given location
 
 export interface ToolErrorShape {
   error: ErrorCode;
