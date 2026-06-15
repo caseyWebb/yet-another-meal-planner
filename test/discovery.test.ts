@@ -168,56 +168,48 @@ describe("flattenInbox", () => {
 from = "newsletter@seriouseats.com"
 subject = "This week's dinners"
 received_at = "2026-06-11"
-  [[entries.candidates]]
-  title = "Weeknight Chili"
-  summary = "A fast chili"
-  url = "https://www.seriouseats.com/weeknight-chili?utm_source=newsletter"
-  [[entries.candidates]]
-  title = "Sheet-Pan Salmon"
-  url = "https://www.seriouseats.com/sheet-pan-salmon"
+body = "Weeknight Chili https://www.seriouseats.com/chili\\nSheet-Pan Salmon https://www.seriouseats.com/salmon"
 
 [[entries]]
 from = "alice@example.com"
-subject = "Fwd: This week's dinners"
-received_at = "2026-06-11"
-  [[entries.candidates]]
-  title = "Weeknight Chili (dup)"
-  url = "https://www.seriouseats.com/weeknight-chili"
+subject = "Check this out"
+received_at = "2026-06-12"
+body = "You should try this: https://www.seriouseats.com/soup"
 `;
 
-  it("flattens entries into a pool with from/received_at and no score", () => {
-    const pool = flattenInbox(inbox);
-    expect(pool).toHaveLength(2);
-    expect(pool[0]).toMatchObject({
-      url: "https://www.seriouseats.com/weeknight-chili",
-      title: "Weeknight Chili",
-      summary: "A fast chili",
+  it("returns a list of emails with from/subject/received_at/body", () => {
+    const emails = flattenInbox(inbox);
+    expect(emails).toHaveLength(2);
+    expect(emails[0]).toMatchObject({
       from: "newsletter@seriouseats.com",
+      subject: "This week's dinners",
       received_at: "2026-06-11",
     });
-    expect(pool[0]).not.toHaveProperty("score");
+    expect(emails[0].body).toContain("https://www.seriouseats.com/chili");
+    expect(emails[0]).not.toHaveProperty("url");
+    expect(emails[0]).not.toHaveProperty("candidates");
   });
 
-  it("dedups across entries by canonical URL (first wins)", () => {
-    const pool = flattenInbox(inbox);
-    const chili = pool.filter((c) => c.url === "https://www.seriouseats.com/weeknight-chili");
-    expect(chili).toHaveLength(1);
-    expect(chili[0].from).toBe("newsletter@seriouseats.com");
+  it("returns all emails without URL-based dedup (body is for LLM parsing)", () => {
+    const emails = flattenInbox(inbox);
+    expect(emails).toHaveLength(2);
+    expect(emails.map((e) => e.from)).toContain("alice@example.com");
   });
 
-  it("returns an empty pool for absent or malformed input", () => {
+  it("returns an empty list for absent or malformed input", () => {
     expect(flattenInbox(null)).toEqual([]);
     expect(flattenInbox("")).toEqual([]);
     expect(flattenInbox("this is = not valid = toml [[[")).toEqual([]);
   });
 
-  it("skips candidates with no url", () => {
-    const pool = flattenInbox(`
+  it("returns an empty body string when the body field is absent", () => {
+    const emails = flattenInbox(`
 [[entries]]
 from = "x@y.com"
-  [[entries.candidates]]
-  title = "No URL here"
+subject = "No body"
+received_at = "2026-06-11"
 `);
-    expect(pool).toEqual([]);
+    expect(emails).toHaveLength(1);
+    expect(emails[0].body).toBe("");
   });
 });

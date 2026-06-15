@@ -501,12 +501,12 @@ Fetch the **shared, group-wide** discovery feeds and return a **deduped candidat
 
 ### `read_discovery_inbox()`
 
-Read the **shared email discoveries inbox** (root `discoveries_inbox.toml`) and return a **deduped candidate pool** of recipes gathered from forwarded recipe newsletters. URLs are already unwrapped from their tracker wrappers to clean canonical form. **No taste score**: like `fetch_rss_discoveries`, the agent judges fit and selects — surface these alongside the RSS pool at menu time. The push complement to RSS pull: it reaches bot-walled/paywalled sources (Serious Eats, NYT) that the Worker cannot fetch.
+Read the **shared email discoveries inbox** (root `discoveries_inbox.toml`) and return a list of forwarded newsletter emails. Each email has a `body` field containing its full plain-text content — **the agent reads the body and extracts recipe titles and links itself**. No pre-extraction: the Worker captures the email faithfully and the LLM does the parsing. Surface these alongside `fetch_rss_discoveries` at menu time (1–2 picks at most, never dominating). The push complement to RSS pull: it reaches bot-walled/paywalled sources (Serious Eats, NYT) that the Worker cannot fetch.
 
 **Returns:**
-- `{ candidates: [{ url, title, summary, from, received_at }] }` — `from` is the source identity (newsletter sender or forwarding member); `received_at` is the message date (or null). Deduped within the inbox by canonical URL.
+- `{ emails: [{ from, subject, received_at, body }] }` — `from` is the sender address; `received_at` is the message date (YYYY-MM-DD or null); `body` is the plain-text email content for LLM parsing.
 
-**Notes:** Absent or empty inbox returns `{ candidates: [] }`. Full-recipe import still hits the same walls — present the clean link and have the user paste the recipe text, then `create_recipe`. The inbox is populated by the Worker's inbound-email handler (forwarded newsletters → `groceries-agent@<domain>`), not by any agent tool.
+**Notes:** Absent or empty inbox returns `{ emails: [] }`. After scanning an email body for recipes, call `parse_recipe(url)` on each promising link — if it returns `unreachable`/`no_jsonld`/`not_a_recipe`, present the link and have the user paste the recipe text, then `create_recipe`. The inbox is populated by the Worker's inbound-email handler (forwarded newsletters → `groceries-agent@<domain>`), not by any agent tool. Entries are auto-pruned after 30 days.
 
 ### `update_discovery_sources(members?, senders?)`
 
