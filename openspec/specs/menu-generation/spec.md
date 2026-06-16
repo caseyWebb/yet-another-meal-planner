@@ -6,12 +6,12 @@ Defines the agent-side orchestration of a menu request end-to-end: the parallel 
 ## Requirements
 ### Requirement: Menu-request context pre-pass
 
-On a menu request, the agent SHALL gather all choice-independent context in a single parallel batch **before** settling on recipes. The batch SHALL always include: `read_pantry()`, `read_preferences()`, `read_taste()`, `read_diet_principles()`, `retrospective("month")`, `fetch_rss_discoveries()`, `read_discovery_inbox()`, and `list_recipes({ status: "active" })`. When the user's fulfillment mode is Kroger (`preferences [stores].primary == "kroger"`), the batch SHALL additionally include `kroger_flyer()`; for a non-Kroger store it SHALL be omitted and sale signals SHALL NOT influence recipe selection for that session. `ready_to_eat_available` is NOT called during the meal-plan flow — it is a buy-time tool used by the flush skills. `kroger_prices` is NOT issued in this batch; it is used only as a targeted deal-check for a handful of comparable items when verifying a specific sale claim during selection (see "Sale-steering as a soft selection pull"), and SHALL NOT be a full pre-pass over the proposed ingredient set — that costing belongs to the place-grocery-order flow. The `list_recipes` call is the **single faceted load**: because `course` rides every entry's frontmatter, one call returns active mains and sides with full metadata and the agent buckets them by `course` — there SHALL NOT be a separate later call to source sides. The **raw pantry** SHALL be loaded as a *selection* input — before recipes are chosen — so that what the member already has informs which recipes are proposed (and so the agent can spot inventory stand-ins by reasoning over it), not merely the post-selection buy list. There SHALL be no `verify_pantry_*` call: pantry matching, freshness, and inventory substitutions are the agent reasoning over the loaded pantry. The fulfillment mode SHALL be determined from the loaded preferences before the batch fires; if genuinely unknown, that is the one thing to confirm first.
+On a menu request, the agent SHALL gather all choice-independent context in a single parallel batch **before** settling on recipes. The batch SHALL always include: `read_pantry()`, `read_preferences()`, `read_taste()`, `read_diet_principles()`, `retrospective("month")`, `fetch_rss_discoveries()`, `read_discovery_inbox()`, `list_recipes({ status: "active" })`, and `get_weather_forecast()` unconditionally (not gated on fulfillment mode). When the user's fulfillment mode is Kroger (`preferences [stores].primary == "kroger"`), the batch SHALL additionally include `kroger_flyer()`; for a non-Kroger store it SHALL be omitted and sale signals SHALL NOT influence recipe selection for that session. `ready_to_eat_available` is NOT called during the meal-plan flow — it is a buy-time tool used by the flush skills. `kroger_prices` is NOT issued in this batch; it is used only as a targeted deal-check for a handful of comparable items when verifying a specific sale claim during selection (see "Sale-steering as a soft selection pull"), and SHALL NOT be a full pre-pass over the proposed ingredient set — that costing belongs to the place-grocery-order flow. The `list_recipes` call is the **single faceted load**: because `course` rides every entry's frontmatter, one call returns active mains and sides with full metadata and the agent buckets them by `course` — there SHALL NOT be a separate later call to source sides. The **raw pantry** SHALL be loaded as a *selection* input — before recipes are chosen — so that what the member already has informs which recipes are proposed (and so the agent can spot inventory stand-ins by reasoning over it), not merely the post-selection buy list. There SHALL be no `verify_pantry_*` call: pantry matching, freshness, and inventory substitutions are the agent reasoning over the loaded pantry. The fulfillment mode SHALL be determined from the loaded preferences before the batch fires; if genuinely unknown, that is the one thing to confirm first. The weather tool is a best-effort read: when it returns `{ error: "forecast_unavailable" }`, `{ error: "no_location" }`, or any other structured error, the agent SHALL continue with season-based reasoning and SHALL NOT surface the failure to the user.
 
 #### Scenario: Open-ended request gathers all choice-independent context before proposing
 
 - **WHEN** the user says "make me a menu" and their fulfillment mode is Kroger
-- **THEN** the agent calls `read_pantry`, `read_preferences`, `read_taste`, `read_diet_principles`, `retrospective`, `fetch_rss_discoveries`, `read_discovery_inbox`, `kroger_flyer`, and `list_recipes({ status: "active" })` in a single batch before presenting any proposal; `ready_to_eat_available` and a full-cart `kroger_prices` are NOT called here
+- **THEN** the agent calls `read_pantry`, `read_preferences`, `read_taste`, `read_diet_principles`, `retrospective`, `fetch_rss_discoveries`, `read_discovery_inbox`, `kroger_flyer`, `list_recipes({ status: "active" })`, and `get_weather_forecast()` in a single batch before presenting any proposal; `ready_to_eat_available` and a full-cart `kroger_prices` are NOT called here
 
 #### Scenario: Non-Kroger session omits flyer and skips sale signals
 
@@ -32,6 +32,16 @@ On a menu request, the agent SHALL gather all choice-independent context in a si
 
 - **WHEN** any menu request is made
 - **THEN** the agent runs the comprehensive pantry confirmation pass (including staples and spices) by reasoning over the loaded pantry, rather than proposing a menu without considering pantry state
+
+#### Scenario: Weather forecast is included in the pre-pass batch
+
+- **WHEN** the user makes a menu request
+- **THEN** `get_weather_forecast()` is called in the parallel context batch alongside `read_pantry`, `read_preferences`, etc., before any recipe is selected
+
+#### Scenario: Forecast failure does not break the menu flow
+
+- **WHEN** `get_weather_forecast()` returns an error (any error variant)
+- **THEN** the agent continues with season-based recipe selection and does not tell the user the weather lookup failed
 
 ### Requirement: Named-dish exhaustive enumeration
 
@@ -328,3 +338,33 @@ On a menu request, the agent SHALL perform menu selection and plate-rounding as 
 
 - **WHEN** the holistic pass produces a tentative plate of mains and sides
 - **THEN** the agent does NOT issue a `kroger_prices` call over the full to-buy set — pricing the cart belongs to the place-grocery-order flow
+
+### Requirement: Weather-aware recipe selection (soft hints, silent)
+
+When `get_weather_forecast` returns a valid forecast, the agent SHALL use the `meal_vibes` array on each forecast day as **soft weighting** when assigning recipes to `planned_for` dates. The agent SHALL prefer:
+- recipes without grill-style preparation on days carrying `no-grill`
+- soups, stews, and comfort-food recipes on days carrying `soup` or `comfort`
+- lighter meals on days carrying `light`
+- grill-style recipes on days carrying `grill-friendly`
+
+This weighting SHALL be a nudge applied during holistic reasoning, not a filter or hard exclusion. An explicit user preference ("I want burgers Tuesday") SHALL always override weather hints. The agent SHALL NOT mention the weather forecast or its weather-based reasoning in the proposal unless the user explicitly asks.
+
+#### Scenario: Rainy day steers away from grilling
+
+- **WHEN** the forecast for a `planned_for` date carries `no-grill` and the recipe corpus includes both a grilled dish and a braised dish equally fitting the user's taste
+- **THEN** the agent favors the braised dish for that date, without explaining the weather rationale in the proposal
+
+#### Scenario: User preference overrides weather hint
+
+- **WHEN** the forecast carries `no-grill` for Tuesday but the user explicitly requests burgers on Tuesday
+- **THEN** the agent proposes burgers on Tuesday; weather hints do not override expressed preference
+
+#### Scenario: Cold rainy day favors comfort food
+
+- **WHEN** the forecast for a date carries both `no-grill` and `soup`
+- **THEN** the agent weights toward soups, stews, and hearty comfort meals for that day
+
+#### Scenario: Weather reasoning is not narrated
+
+- **WHEN** the agent has used `meal_vibes` to steer recipe selection
+- **THEN** the proposal reads like a normal meal plan; weather is not mentioned unless the user asks why a particular recipe was chosen

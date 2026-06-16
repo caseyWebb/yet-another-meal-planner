@@ -216,3 +216,50 @@ When the subtree does not exist yet (the GitHub Contents API returns 404 for a b
 - **WHEN** the subtree listing fails for a reason other than a 404 (e.g. a 5xx from GitHub)
 - **THEN** the tool returns a structured `upstream_unavailable` error rather than reporting `initialized: false`
 
+### Requirement: recipe_site_url resolves the hosted browse URL at runtime
+
+The system SHALL provide a `recipe_site_url` read tool that resolves the URL of the hosted recipe site (the static browse view of the shared corpus) from the data repo's **GitHub Pages** configuration, via the existing GitHub App installation token — so the agent can point a member at the full corpus without any build-time-baked URL. It SHALL return `{ url, enabled }`: `enabled: true` with the published `html_url` (honoring a configured custom domain) when Pages is enabled, and `enabled: false` with `url: null` when it is not (the GitHub Pages API returns 404). When the GitHub App lacks the `Pages: read` permission (403), the tool SHALL return a structured `insufficient_permission` error naming the missing permission, rather than throwing. The tool reads the **shared** data repo (Pages is a repo-level property), takes no parameters, and never writes.
+
+#### Scenario: Returns the published URL when Pages is enabled
+
+- **WHEN** `recipe_site_url` is called and the data repo has GitHub Pages enabled
+- **THEN** it returns `{ url: <published html_url>, enabled: true }`, reflecting a custom domain when one is configured
+
+#### Scenario: Reports not-enabled instead of failing
+
+- **WHEN** `recipe_site_url` is called and the data repo has no GitHub Pages site (404)
+- **THEN** it returns `{ url: null, enabled: false }`, so the agent can tell the member their operator needs to enable Pages
+
+#### Scenario: Missing Pages permission is a structured error
+
+- **WHEN** `recipe_site_url` is called but the GitHub App lacks the `Pages: read` permission (403)
+- **THEN** the tool returns a structured `insufficient_permission` error naming the missing permission, not an unhandled throw
+
+### Requirement: get_weather_forecast returns a daily forecast with meal_vibes hints
+
+The system SHALL provide a `get_weather_forecast(days?)` read tool that resolves the caller's location and returns a daily weather forecast for planning purposes. Location resolution SHALL follow this order: (1) `preferences.location_zip`; (2) a 5-digit ZIP parsed from `preferences.preferred_location` via the `"Kroger - <zip>"` convention. If neither yields a ZIP, the tool SHALL return `{ error: "no_location" }` rather than throwing, so the agent can ask the user once and store the result. On a successful location resolve, the tool SHALL call Open-Meteo (geocoding + forecast APIs) and return `{ location: string, forecast: Array<{ date, high_f, low_f, precipitation_chance, condition, meal_vibes }> }`. A network failure or non-200 response from Open-Meteo SHALL return `{ error: "forecast_unavailable" }`. The `meal_vibes` array SHALL be derived deterministically in the Worker from thresholds (not delegated to the LLM): `no-grill` and `comfort` when precipitation_chance ≥ 60; `soup` when high_f < 55; `grill-friendly` when high_f ≥ 80 and precipitation_chance < 30; `light` when high_f ≥ 85. The `days` parameter defaults to 7 and is clamped to 1–16. The tool SHALL be read-only and have no side effects.
+
+#### Scenario: Returns forecast with meal_vibes for a normally-onboarded member
+
+- **WHEN** `get_weather_forecast()` is called and `preferences.preferred_location` is `"Kroger - 76104"`
+- **THEN** the tool parses ZIP `76104`, calls Open-Meteo, and returns a 7-day forecast array where each entry carries `meal_vibes` derived from that day's temperature and precipitation data
+
+#### Scenario: location_zip takes precedence over preferred_location parsing
+
+- **WHEN** both `preferences.location_zip = "10001"` and `preferences.preferred_location = "Kroger - 76104"` are set
+- **THEN** the tool uses `10001` for the geocoding lookup, not `76104`
+
+#### Scenario: No location returns a structured error
+
+- **WHEN** `get_weather_forecast()` is called and neither `location_zip` nor a parseable ZIP in `preferred_location` exists
+- **THEN** the tool returns `{ error: "no_location" }`, not a throw
+
+#### Scenario: Open-Meteo failure returns a structured error
+
+- **WHEN** the Open-Meteo API returns a non-200 response or times out
+- **THEN** the tool returns `{ error: "forecast_unavailable" }`, not a throw
+
+#### Scenario: meal_vibes is empty on mild, dry days
+
+- **WHEN** the forecast for a day has high_f = 72 and precipitation_chance = 15
+- **THEN** that day's `meal_vibes` is `[]` — no strong signal, no hints applied
