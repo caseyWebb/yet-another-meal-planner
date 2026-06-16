@@ -14,6 +14,20 @@ on:
   workflow_dispatch: {}
 
 jobs:
+  no-open-changes:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: No unarchived OpenSpec changes
+        run: |
+          open=$(find openspec/changes -mindepth 1 -maxdepth 1 -type d ! -name archive | sort)
+          if [ -n "$open" ]; then
+            echo "Unarchived OpenSpec changes must be archived before merging:"
+            echo "$open" | sed 's|openspec/changes/|  - |'
+            exit 1
+          fi
+
   test:
     runs-on: ubuntu-latest
     steps:
