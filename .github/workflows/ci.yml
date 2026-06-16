@@ -58,3 +58,30 @@ jobs:
         run: |
           node scripts/build-plugin.mjs --out /tmp/plugin-check --mcp-url __ci__
           diff -r plugin/grocery-agent/skills /tmp/plugin-check/skills
+
+  trigger-deploy:
+    # Auto-trigger the data-repo deploy on Worker-relevant changes to main.
+    # Only fires on push (not PRs or workflow_dispatch) — the push trigger above
+    # is already filtered to branches: [main], so no extra branch guard needed.
+    # Gated on both CI jobs so a deploy never fires when tests are red.
+    if: github.event_name == 'push'
+    needs: [no-open-changes, test]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 2
+
+      - name: Check for Worker-relevant changes
+        id: changed
+        run: |
+          git diff --name-only HEAD^ HEAD -- src/ wrangler.jsonc package.json package-lock.json \
+            | grep -q . \
+            && echo "relevant=true" >> "$GITHUB_OUTPUT" \
+            || echo "relevant=false" >> "$GITHUB_OUTPUT"
+
+      - name: Trigger Deploy Worker
+        if: steps.changed.outputs.relevant == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.DATA_REPO_ACTIONS_TOKEN }}
+        run: gh workflow run deploy.yml --repo caseyWebb/groceries-agent-data

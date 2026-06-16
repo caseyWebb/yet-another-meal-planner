@@ -47,16 +47,18 @@ npm run deploy       # wrangler deploy — normally NOT run by hand (see Deploym
 
 ### Deployment
 
-**Deployment is operator-run from the private data repo, not from this (public) repo.** This repo holds the Worker source + a *reusable* `data-deploy.yml`; each operator's data repo has a thin `deploy.yml` caller (`uses: …@main`) that overlays their own `wrangler.jsonc` and runs `typecheck` + `test` + `wrangler deploy`. The public repo holds **no Actions secrets** — the data repo is the single control plane. Push/PR here only runs `ci.yml` (typecheck + both test suites).
+**Deployment is operator-run from the private data repo, not from this (public) repo.** This repo holds the Worker source + a *reusable* `data-deploy.yml`; each operator's data repo has a thin `deploy.yml` caller (`uses: …@main`) that overlays their own `wrangler.jsonc` and runs `typecheck` + `test` + `wrangler deploy`. Push/PR here runs `ci.yml` (typecheck + both test suites).
 
-There is deliberately **no auto-deploy on push** (a push trigger would need a data-repo-writable token in this public repo — a blast-radius regression). So when you push changes to `main` that affect the Worker (`src/**`, `wrangler.jsonc`, `package.json`/lockfile), **also kick the deploy** in the operator's private data repo using their already-authenticated local `gh`:
+**Auto-deploy on merge to main.** When Worker-relevant paths change (`src/**`, `wrangler.jsonc`, `package.json`, `package-lock.json`), `ci.yml`'s `trigger-deploy` job fires `gh workflow run deploy.yml --repo caseyWebb/groceries-agent-data` automatically — but only after the `test` and `no-open-changes` jobs pass. This requires a fine-grained PAT with `actions: write` on the data repo stored as `DATA_REPO_ACTIONS_TOKEN` in this repo's secrets. Doc/test/openspec-only pushes skip the trigger. Self-hosters manage their own deploy trigger.
+
+To kick a deploy manually (e.g. after a doc-only push that still needs a redeploy, or to re-run a failed deploy):
 
 ```bash
-gh workflow run deploy.yml --repo caseyWebb/groceries-agent-data   # operator substitutes their data repo
+gh workflow run deploy.yml --repo caseyWebb/groceries-agent-data
 gh run watch  --repo caseyWebb/groceries-agent-data                # optional: follow to green
 ```
 
-It deploys `@main`, so run it *after* the push lands. Doc/test/openspec-only pushes don't need it. (`npm run deploy` is a local escape hatch, but the data-repo workflow is the source of truth — it gates on typecheck + tests first.)
+(`npm run deploy` is a local escape hatch, but the data-repo workflow is the source of truth — it gates on typecheck + tests first.)
 
 ## Working on data tooling (`scripts/`)
 
