@@ -186,7 +186,7 @@ export function applyStoreOperations(store: Store, operations: StoreOperation[])
 
   for (const op of operations) {
     if (op.op === "set_identity") {
-      if (!(IDENTITY_FIELDS as readonly string[]).includes(op.field)) {
+      if (!IDENTITY_FIELDS.includes(op.field)) {
         conflicts.push({ op: op.op, target: op.field, reason: "not a settable identity field" });
         continue;
       }

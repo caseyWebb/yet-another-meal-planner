@@ -36,11 +36,20 @@ function coerceItem(raw: Record<string, unknown>): GroceryItem {
   return {
     name: typeof raw.name === "string" ? raw.name : "",
     quantity: typeof raw.quantity === "string" ? raw.quantity : "1",
-    kind: (raw.kind as GroceryItem["kind"]) ?? "grocery",
+    kind:
+      raw.kind === "grocery" || raw.kind === "household" || raw.kind === "other"
+        ? raw.kind
+        : "grocery",
     // Legacy items written before the domain facet read as "grocery".
     domain: typeof raw.domain === "string" ? raw.domain : "grocery",
-    status: (raw.status as GroceryItem["status"]) ?? "active",
-    source: (raw.source as GroceryItem["source"]) ?? "ad_hoc",
+    status:
+      raw.status === "active" || raw.status === "in_cart" || raw.status === "ordered"
+        ? raw.status
+        : "active",
+    source:
+      raw.source === "ad_hoc" || raw.source === "menu" || raw.source === "pantry_low" || raw.source === "stockup"
+        ? raw.source
+        : "ad_hoc",
     for_recipes: Array.isArray(raw.for_recipes) ? (raw.for_recipes as string[]) : [],
     note: typeof raw.note === "string" ? raw.note : null,
     added_at: typeof raw.added_at === "string" ? raw.added_at : today(),
@@ -102,12 +111,12 @@ export async function buildGroceryListUpdate(
 
   for (const op of ops) {
     if (op.op === "add") {
-      const input = (op.item ?? {}) as unknown as GroceryAddInput;
-      if (!input.name || !String(input.name).trim()) {
+      const rawItem: Record<string, unknown> = op.item ?? {};
+      if (typeof rawItem.name !== "string" || !rawItem.name.trim()) {
         conflicts.push({ op: "add", reason: "add requires item.name" });
         continue;
       }
-      const result = addToGroceryList(items, input, todayDate);
+      const result = addToGroceryList(items, rawItem as unknown as GroceryAddInput, todayDate);
       items = result.items;
       applied.push({ op: "add", name: result.item.name, merged: result.merged });
     } else if (op.op === "update") {

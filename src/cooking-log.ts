@@ -24,7 +24,11 @@ const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 /** Coerce a raw parsed entry into a CookingLogEntry, dropping unknown fields. */
 export function coerceEntry(raw: Record<string, unknown>): CookingLogEntry {
-  const type = raw.type as CookingLogType;
+  const rawType = raw.type;
+  const type: CookingLogType =
+    rawType === "recipe" || rawType === "ready_to_eat" || rawType === "ad_hoc"
+      ? rawType
+      : "ad_hoc";
   const entry: CookingLogEntry = {
     date: typeof raw.date === "string" ? raw.date : "",
     type,

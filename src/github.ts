@@ -148,9 +148,11 @@ export function createGitHubClient(coords: RepoCoords, auth: TokenProvider): Git
       throw new GitHubError(502, `Expected a directory listing for ${path}`);
     }
     const out: DirEntry[] = [];
-    for (const e of data as Array<{ name?: unknown; type?: unknown }>) {
-      if (typeof e.name === "string" && (e.type === "file" || e.type === "dir")) {
-        out.push({ name: e.name, type: e.type });
+    for (const e of data) {
+      if (typeof e !== "object" || e === null) continue;
+      const { name, type } = e as { name?: unknown; type?: unknown };
+      if (typeof name === "string" && (type === "file" || type === "dir")) {
+        out.push({ name, type });
       }
     }
     return out;

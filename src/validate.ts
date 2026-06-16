@@ -216,7 +216,7 @@ export function validateFile(path: string, content: string): void {
         fail(path, `\`owned\` must be an array of equipment slugs (got ${JSON.stringify(parsed.owned)})`);
       }
       for (const slug of parsed.owned) {
-        if (typeof slug !== "string" || !(EQUIPMENT_VOCAB as readonly string[]).includes(slug)) {
+        if (typeof slug !== "string" || !EQUIPMENT_VOCAB.some((v) => v === slug)) {
           fail(path, `\`owned\` slug ${JSON.stringify(slug)} is not one of ${EQUIPMENT_VOCAB.join(" | ")}`);
         }
       }

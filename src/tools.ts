@@ -21,7 +21,7 @@ import { registerDiscoveryTools } from "./discovery-tools.js";
 import { registerNoteTools, registerStoreNoteTools } from "./notes-tools.js";
 import { registerStoreTools } from "./stores-tools.js";
 import { registerCookingTools } from "./cooking-tools.js";
-import { filterRecipes, type RecipeFilters, type RecipeIndex } from "./recipes.js";
+import { filterRecipes, type RecipeIndex } from "./recipes.js";
 import { listStorageGuidance, readStorageGuidance } from "./storage-guidance.js";
 import { fetchWeatherForecast } from "./weather.js";
 import { profileStatus } from "./profile-status.js";
@@ -41,7 +41,7 @@ import {
   type MatchDeps,
   type MatchResult,
 } from "./matching.js";
-import { compareUnitPrice, type UnitPriceItem } from "./unit-price.js";
+import { compareUnitPrice } from "./unit-price.js";
 
 const SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
@@ -291,7 +291,7 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
             slug,
           };
         }
-        return { recipes: filterRecipes(effective, (filters ?? {}) as RecipeFilters, new Date(), owned) };
+        return { recipes: filterRecipes(effective, filters ?? {}, new Date(), owned) };
       }),
   );
 
@@ -516,7 +516,7 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
         if (flyerText) {
           const parsed = parseToml(flyerText, "flyer_terms.toml");
           if (Array.isArray(parsed.terms)) {
-            for (const t of parsed.terms as unknown[]) if (typeof t === "string") broad.push(t);
+            for (const t of parsed.terms) if (typeof t === "string") broad.push(t);
           }
         }
 
@@ -574,9 +574,10 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
           items.map(async (item) => {
             if (typeof item.name !== "string") return null;
             if (item.status === "rejected") return null;
-            const meal = READY_TO_EAT_MEALS.includes(item.meal as (typeof READY_TO_EAT_MEALS)[number])
-              ? (item.meal as string)
-              : "dinner";
+            const meal =
+              typeof item.meal === "string" && (READY_TO_EAT_MEALS as readonly string[]).includes(item.meal)
+                ? item.meal
+                : "dinner";
             const candidates = await kroger.search(item.name, { locationId, limit: 50 });
             const products = candidates.filter(isFulfillable).map(productRow);
             return { item, meal, products };
@@ -606,7 +607,7 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
         "Deterministic price-per-unit comparison from raw price + size strings. The LLM never does the arithmetic. Ranks only WITHIN a dimension (volume/weight/count); cross-dimension or unparseable items land in incomparable, where the LLM may add quantity_override/unit_override and re-call.",
       inputSchema: { items: z.array(z.object(unitPriceItemShape)) },
     },
-    ({ items }) => runTool(async () => compareUnitPrice(items as UnitPriceItem[])),
+    ({ items }) => runTool(async () => compareUnitPrice(items)),
   );
 
   server.registerTool(

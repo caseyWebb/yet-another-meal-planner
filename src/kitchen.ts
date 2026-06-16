@@ -15,7 +15,7 @@ export const EQUIPMENT_VOCAB = [
 ] as const;
 
 export function isEquipmentSlug(slug: unknown): boolean {
-  return typeof slug === "string" && (EQUIPMENT_VOCAB as readonly string[]).includes(slug);
+  return typeof slug === "string" && EQUIPMENT_VOCAB.some((v) => v === slug);
 }
 
 export interface KitchenInventory {

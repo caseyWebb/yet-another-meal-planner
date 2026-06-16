@@ -22,7 +22,7 @@ import {
   type Overlay,
   type OverlayRow,
 } from "./overlay.js";
-import { applyPantryOperations, markVerified, type PantryItem } from "./pantry-write.js";
+import { applyPantryOperations, markVerified, type PantryItem, type AppliedOp, type ConflictOp } from "./pantry-write.js";
 import { applyKitchenOperations, toInventory } from "./kitchen.js";
 import {
   COOKING_LOG_PATH,
@@ -68,7 +68,7 @@ export function splitRecipeUpdate(updates: Record<string, unknown>): {
   const content: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(updates)) {
     if (k === "last_cooked") continue;
-    if (SUBJECTIVE_KEYS.has(k)) (overlayEdit as Record<string, unknown>)[k] = v;
+    if (SUBJECTIVE_KEYS.has(k)) overlayEdit[k as keyof OverlayRow] = v;
     else content[k] = v;
   }
   return { overlayEdit, content, hadLastCooked: "last_cooked" in updates };
@@ -118,7 +118,7 @@ async function buildPantryUpdate(
   path: string,
   operations: Parameters<typeof applyPantryOperations>[1],
   verifyNames: string[],
-): Promise<{ file: TreeFile | null; applied: unknown[]; conflicts: unknown[] }> {
+): Promise<{ file: TreeFile | null; applied: AppliedOp[]; conflicts: ConflictOp[] }> {
   const text = await readFile(gh, path, "not_found", "no pantry is set up");
   const parsed = parseToml(text, path);
   let items = itemsOf(parsed) as PantryItem[];
@@ -151,9 +151,14 @@ async function buildPantryUpdate(
 
 /** Normalize a raw cooking-log entry input: default date to today, drop empties. */
 function makeLogEntry(raw: Record<string, unknown>, todayDate: string): CookingLogEntry {
+  const rawType = raw.type;
+  const type: CookingLogEntry["type"] =
+    rawType === "recipe" || rawType === "ready_to_eat" || rawType === "ad_hoc"
+      ? rawType
+      : "ad_hoc";
   const entry: CookingLogEntry = {
     date: typeof raw.date === "string" && raw.date ? raw.date : todayDate,
-    type: raw.type as CookingLogEntry["type"],
+    type,
   };
   if (typeof raw.recipe === "string") entry.recipe = raw.recipe;
   if (typeof raw.name === "string") entry.name = raw.name;
@@ -435,7 +440,7 @@ export function registerWriteTools(server: McpServer, gh: GitHubClient, userPref
         const { file, applied, conflicts } = await buildPantryUpdate(gh, userPath("pantry.toml"), [], items);
         if (!file) return { verified: [], conflicts };
         const { commit_sha } = await commitFiles(gh, [file], "verify pantry items");
-        return { verified: applied.filter((a: any) => a.op === "verify").map((a: any) => a.name), conflicts, commit_sha };
+        return { verified: applied.filter((a) => a.op === "verify").map((a) => a.name), conflicts, commit_sha };
       }),
   );
 
