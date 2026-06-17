@@ -4,5 +4,5 @@
   "features": {
     "ghcr.io/devcontainers-contrib/features/mise:latest": {}
   },
-  "postCreateCommand": "mise install && npm install"
+  "postCreateCommand": "mise install && mise exec -- npm install"
 }
