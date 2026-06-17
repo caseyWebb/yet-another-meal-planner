@@ -15,6 +15,7 @@ import {
   renderMcpConfig,
   renderPluginManifest,
   buildPluginFiles,
+  parseResourceBlocks,
   resolveVersion,
   yamlQuote,
   DEPTH_TIERS,
@@ -245,6 +246,85 @@ test('DEPTH_TIERS are cart and corpus', () => {
   assert.deepEqual(DEPTH_TIERS, ['cart', 'corpus']);
 });
 
+// --- parseResourceBlocks -------------------------------------------------
+
+test('parseResourceBlocks: body with no resource blocks is returned unchanged', () => {
+  const body = 'Do the thing.\n\nStep 1.\nStep 2.';
+  const { lean, resources } = parseResourceBlocks(body);
+  assert.equal(lean, body);
+  assert.equal(resources.size, 0);
+});
+
+test('parseResourceBlocks: extracts a single block and replaces with a pointer', () => {
+  const body = 'Router intro.\n\n<!-- resource: references/branch-a.md -->\n# Branch A\n\nDo A.\n<!-- /resource -->\n\nEnd.';
+  const { lean, resources } = parseResourceBlocks(body);
+  assert.ok(resources.has('references/branch-a.md'), 'resource not extracted');
+  assert.match(resources.get('references/branch-a.md'), /# Branch A/);
+  assert.match(lean, /> For details, read `references\/branch-a\.md`\./);
+  assert.doesNotMatch(lean, /# Branch A/);
+});
+
+test('parseResourceBlocks: extracts two blocks independently', () => {
+  const body = [
+    'Intro.',
+    '<!-- resource: references/a.md -->',
+    '# A',
+    '<!-- /resource -->',
+    'Middle.',
+    '<!-- resource: references/b.md -->',
+    '# B',
+    '<!-- /resource -->',
+    'End.',
+  ].join('\n');
+  const { lean, resources } = parseResourceBlocks(body);
+  assert.equal(resources.size, 2);
+  assert.ok(resources.has('references/a.md'));
+  assert.ok(resources.has('references/b.md'));
+  assert.doesNotMatch(lean, /# A|# B/);
+});
+
+test('parseResourceBlocks: markdown headings in block content are preserved verbatim in extracted file', () => {
+  const content = '## Sub\n\n### Deep\n\ntext';
+  const body = `<!-- resource: references/deep.md -->\n${content}\n<!-- /resource -->`;
+  const { resources } = parseResourceBlocks(body);
+  assert.match(resources.get('references/deep.md'), /## Sub/);
+  assert.match(resources.get('references/deep.md'), /### Deep/);
+});
+
+test('validateParsed rejects a resource path not under references/', () => {
+  const bad = DOC.replace(
+    'Do the menu thing.',
+    'Do the menu thing.\n\n<!-- resource: assets/foo.md -->\ncontent\n<!-- /resource -->',
+  );
+  const { errors } = validateParsed(parseInstructions(bad));
+  assert.ok(errors.some((e) => /resource path.*must be under references/.test(e)), errors.join('; '));
+});
+
+test('buildPluginFiles emits resource files alongside SKILL.md for a flow with resource blocks', () => {
+  const docWithResource = DOC.replace(
+    'Do the menu thing.',
+    'Do the menu thing.\n\n<!-- resource: references/detail.md -->\n# Detail\n\nFull flow here.\n<!-- /resource -->',
+  );
+  const files = buildPluginFiles(parseInstructions(docWithResource), { mcpUrl: 'https://x' });
+  assert.ok(files.has('skills/menu-request/references/detail.md'), 'reference file not emitted');
+  assert.match(files.get('skills/menu-request/references/detail.md'), /# Detail/);
+  // The SKILL.md body should have the pointer, not the full content.
+  assert.match(files.get('skills/menu-request/SKILL.md'), /> For details, read `references\/detail\.md`\./);
+  assert.doesNotMatch(files.get('skills/menu-request/SKILL.md'), /Full flow here/);
+});
+
+test('buildPluginFiles: skills without resource blocks produce identical output (regression)', () => {
+  // sale-check has no resource blocks — its SKILL.md must be the same as without the feature.
+  const before = buildPluginFiles(parseInstructions(DOC), { mcpUrl: 'https://x' });
+  // Adding a resource block to menu-request must not affect sale-check.
+  const docWithResource = DOC.replace(
+    'Do the menu thing.',
+    'Do the menu thing.\n\n<!-- resource: references/detail.md -->\n# Detail\n<!-- /resource -->',
+  );
+  const after = buildPluginFiles(parseInstructions(docWithResource), { mcpUrl: 'https://x' });
+  assert.equal(after.get('skills/sale-check/SKILL.md'), before.get('skills/sale-check/SKILL.md'));
+});
+
 // --- real-doc contract ---------------------------------------------------
 
 test('AGENT_INSTRUCTIONS.md: workflows with expected needs + library tiers', async () => {
@@ -262,9 +342,7 @@ test('AGENT_INSTRUCTIONS.md: workflows with expected needs + library tiers', asy
     'import-recipe',
     'grocery-sale-check',
     'cooking-retrospective',
-    'place-grocery-order',
-    'shopping-list',
-    'map-grocery-store',
+    'shop-groceries',
     'configure-grocery-profile',
     'report-grocery-agent-bug',
   ]);
@@ -272,9 +350,7 @@ test('AGENT_INSTRUCTIONS.md: workflows with expected needs + library tiers', asy
   assert.deepEqual(needs['meal-plan'], ['cart', 'corpus']);
   assert.deepEqual(needs['grocery-sale-check'], []); // light flow: core only
   assert.deepEqual(needs['cook'], []);
-  assert.deepEqual(needs['place-grocery-order'], ['cart']);
-  assert.deepEqual(needs['shopping-list'], ['cart']);
-  assert.deepEqual(needs['map-grocery-store'], ['cart']);
+  assert.deepEqual(needs['shop-groceries'], ['cart']);
 
   // Library tiers emitted; workflows reference, don't inline.
   const files = buildPluginFiles(parsed, { mcpUrl: 'https://x' });
@@ -283,4 +359,15 @@ test('AGENT_INSTRUCTIONS.md: workflows with expected needs + library tiers', asy
   }
   assert.match(files.get('skills/meal-plan/SKILL.md'), /grocery-core`, `grocery-cart` and `grocery-corpus`/);
   assert.match(files.get('skills/grocery-sale-check/SKILL.md'), /read the `grocery-core` skill before/);
+
+  // shop-groceries has 4 reference files extracted.
+  assert.ok(files.has('skills/shop-groceries/references/kroger-online.md'), 'missing kroger-online.md');
+  assert.ok(files.has('skills/shop-groceries/references/kroger-instore.md'), 'missing kroger-instore.md');
+  assert.ok(files.has('skills/shop-groceries/references/instore-walk.md'), 'missing instore-walk.md');
+  assert.ok(files.has('skills/shop-groceries/references/map-store.md'), 'missing map-store.md');
+  // SKILL.md body has pointers, not inline branch content.
+  assert.match(files.get('skills/shop-groceries/SKILL.md'), /read the `grocery-core` and `grocery-cart` skills/);
+  assert.doesNotMatch(files.get('skills/shop-groceries/SKILL.md'), /Stale-cart check/);
+  // cart prerequisite present.
+  assert.match(files.get('skills/shop-groceries/SKILL.md'), /grocery-cart/);
 });

@@ -286,7 +286,7 @@ Remove an item by name.
 
 ## Store tools (in-store fulfillment)
 
-The **second fulfillment flush**: the `shopping-list` skill groups the same SKU-free grocery list for a specific store — by aisle when it's mapped, by department otherwise (vs. `place_order`'s Kroger online flush). The `stores/` registry holds **identity only** (`stores/<slug>.toml`, keyed by location, **shared/unattributed**); any MCP holder may register or edit one with no extra gate (the `update_discovery_sources` posture). There is **no `stores` index** — the set is small, so `list_stores` reads the directory. **Store layout lives in attributed store notes**, not the registry: aisle order (`layout`-tagged), where-it-hides hints (`location`), and not-carried entries (`stock`) are all `add_store_note` / `read_store_notes` — one surface for everything we know about a store. See `docs/SCHEMAS.md` for the `stores/<slug>.toml` and `store_notes/<slug>.toml` schemas.
+The **in-store fulfillment flush**: the `shop-groceries` skill groups the same SKU-free grocery list for a specific store — by aisle when it's mapped, by department otherwise (vs. `place_order`'s Kroger online flush). For Kroger stores with a registered `location_id`, `kroger_prices` provides API-driven aisle ordering (`aisleLocation`) without a pre-mapped layout. The `stores/` registry holds **identity only** (`stores/<slug>.toml`, keyed by location, **shared/unattributed**); any MCP holder may register or edit one with no extra gate (the `update_discovery_sources` posture). There is **no `stores` index** — the set is small, so `list_stores` reads the directory. **Store layout lives in attributed store notes**, not the registry: aisle order (`layout`-tagged), where-it-hides hints (`location`), and not-carried entries (`stock`) are all `add_store_note` / `read_store_notes` — one surface for everything we know about a store. See `docs/SCHEMAS.md` for the `stores/<slug>.toml` and `store_notes/<slug>.toml` schemas.
 
 ### `list_stores()`
 
@@ -297,20 +297,20 @@ List the registered stores (identity only). Reads the shared `stores/` directory
 
 ### `read_store(slug)`
 
-Read one store's **identity**: `name`, `label?`, `chain?`, `address?`, `domain`. Layout and observations are not here — they're attributed store notes; use `read_store_notes` for the aisle map (`layout`), where-it-hides hints (`location`), not-carried entries (`stock`), and freeform notes (hours, parking).
+Read one store's **identity**: `name`, `label?`, `chain?`, `address?`, `domain`, `location_id?`. Layout and observations are not here — they're attributed store notes; use `read_store_notes` for the aisle map (`layout`), where-it-hides hints (`location`), not-carried entries (`stock`), and freeform notes (hours, parking).
 
 **Params:**
 - `slug` (string, required)
 
 **Returns:**
-- `{ slug, name, label?, chain?, address?, domain }`
+- `{ slug, name, label?, chain?, address?, domain, location_id? }` — `location_id` is a chain-specific external id (e.g. Kroger `locationId`); present only when set.
 
 **Errors (structured):**
 - `{ error: "not_found" }` — unknown (or malformed) slug.
 
-### `add_store(slug, name, label?, chain?, address?, domain?)`
+### `add_store(slug, name, label?, chain?, address?, domain?, location_id?)`
 
-Register a new store location — **identity only**. `slug` is a kebab-case **location** id (`west-7th-tom-thumb`, not `tom-thumb`). `domain` defaults to `"grocery"`. Layout is **not** set here — map a store by recording `layout`-tagged store notes (`add_store_note`) as you walk it. Persists via the atomic commit engine.
+Register a new store location — **identity only**. `slug` is a kebab-case **location** id (`west-7th-tom-thumb`, not `tom-thumb`). `domain` defaults to `"grocery"`. `location_id` is an optional chain-specific external id — for Kroger stores set it to the resolved Kroger `locationId` so in-store walks can bypass the Locations API lookup. Layout is **not** set here — map a store by recording `layout`-tagged store notes (`add_store_note`) as you walk it. Persists via the atomic commit engine.
 
 **Returns:**
 - `{ store, commit_sha }`
@@ -322,7 +322,7 @@ Register a new store location — **identity only**. `slug` is a kebab-case **lo
 ### `update_store(slug, operations)`
 
 Edit a registered store's **identity** with operations (`update_pantry`/`update_kitchen` style):
-- `{ op: "set_identity", field, value }` — `field` ∈ `name | label | chain | address | domain`.
+- `{ op: "set_identity", field, value }` — `field` ∈ `name | label | chain | address | domain | location_id`. Use `location_id` to set or update a chain-specific external id (e.g. Kroger `locationId`).
 
 There are no aisle / item-location / not-carried ops — layout is notes now (`add_store_note` with `layout`/`location`/`stock` tags).
 
@@ -414,9 +414,9 @@ Get current prices for a specific list of ingredients (used for menu pre-pass). 
 - `ingredients` (array of strings)
 
 **Returns:**
-- `{ prices: [{ ingredient, products: [{ sku, brand, description, size, price: { regular, promo }, on_sale, available: { curbside, delivery } }] }] }`
+- `{ prices: [{ ingredient, products: [{ sku, brand, description, size, price: { regular, promo }, on_sale, available: { curbside, delivery }, fulfillment: { curbside, delivery, inStore }, aisleLocation: { number, description, side? } | null }] }] }`
 
-**Notes:** `products` is every fulfillable match for the term, ordered by Kroger relevance; an ingredient with nothing fulfillable returns `{ ingredient, products: [] }`. `price` is `{ regular, promo }`; `on_sale` is true only on a real discount (`promo > 0` **and** `promo < regular`) — a `promo` equal to `regular` is not a sale; `available` reflects curbside/delivery fulfillment at the preferred location — the public API exposes no live in-store stock.
+**Notes:** `products` is every fulfillable match for the term, ordered by Kroger relevance; an ingredient with nothing fulfillable returns `{ ingredient, products: [] }`. `price` is `{ regular, promo }`; `on_sale` is true only on a real discount (`promo > 0` **and** `promo < regular`) — a `promo` equal to `regular` is not a sale; `available` reflects curbside/delivery fulfillment at the preferred location — the public API exposes no live in-store stock. `fulfillment.inStore` (boolean) is true when the item is carried in-store at the preferred location. `aisleLocation` is present when the API returns aisle data for this product at the location — `{ number, description, side? }` — and null otherwise; use it for Kroger in-store aisle ordering (the `kroger-instore` branch of `shop-groceries`).
 
 ### `match_ingredient_to_kroger_sku(ingredient, context)`
 

@@ -25,7 +25,7 @@ const SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
 const storeOpShape = z.object({
   op: z.enum(["set_identity"]),
-  field: z.enum(["name", "label", "chain", "address", "domain"]).optional(),
+  field: z.enum(["name", "label", "chain", "address", "domain", "location_id"]).optional(),
   value: z.string().optional(),
 });
 
@@ -67,7 +67,7 @@ export function registerStoreTools(server: McpServer, sharedGh: GitHubClient): v
     "add_store",
     {
       description:
-        "Register a new store LOCATION in the shared registry (stores/<slug>.toml) — identity only. `slug` is a kebab-case LOCATION id (west-7th-tom-thumb, not tom-thumb). `name` is required; `label`/`chain`/`address` optional; `domain` defaults to 'grocery' (set 'home-improvement' etc. for a non-grocery store). Layout is NOT set here — map a store by recording layout-tagged store notes (add_store_note) as you walk it. Shared corpus, no extra gate. Errors with slug_exists if the slug is already registered (edit identity with update_store).",
+        "Register a new store LOCATION in the shared registry (stores/<slug>.toml) — identity only. `slug` is a kebab-case LOCATION id (west-7th-tom-thumb, not tom-thumb). `name` is required; `label`/`chain`/`address` optional; `domain` defaults to 'grocery' (set 'home-improvement' etc. for a non-grocery store). `location_id` is an optional chain-specific external id — for Kroger stores, set it to the resolved Kroger locationId so in-store walks skip the Locations API lookup. Layout is NOT set here — map a store by recording layout-tagged store notes (add_store_note) as you walk it. Shared corpus, no extra gate. Errors with slug_exists if the slug is already registered (edit identity with update_store).",
       inputSchema: {
         slug: z.string(),
         name: z.string(),
@@ -75,6 +75,7 @@ export function registerStoreTools(server: McpServer, sharedGh: GitHubClient): v
         chain: z.string().optional(),
         address: z.string().optional(),
         domain: z.string().optional(),
+        location_id: z.string().optional(),
       },
     },
     (input) =>
@@ -99,6 +100,7 @@ export function registerStoreTools(server: McpServer, sharedGh: GitHubClient): v
         if (input.label) store.label = input.label;
         if (input.chain) store.chain = input.chain;
         if (input.address) store.address = input.address;
+        if (input.location_id) store.location_id = input.location_id;
         const { commit_sha } = await commitFiles(
           sharedGh,
           [{ path, content: serializeStore(store) }],
@@ -112,7 +114,7 @@ export function registerStoreTools(server: McpServer, sharedGh: GitHubClient): v
     "update_store",
     {
       description:
-        "Edit a registered store's IDENTITY with operations (update_pantry-style). Ops: { op:'set_identity', field, value } where field is name|label|chain|address|domain. Layout is notes now — there are no aisle / item_location / doesnt_carry ops here; record those with add_store_note (tags layout/location/stock). Returns applied + conflicts (e.g. an unsettable field). Unknown slug → not_found.",
+        "Edit a registered store's IDENTITY with operations (update_pantry-style). Ops: { op:'set_identity', field, value } where field is name|label|chain|address|domain|location_id. `location_id` is a chain-specific external id — for Kroger, set it to the resolved Kroger locationId so in-store walks bypass the Locations API. Layout is notes now — there are no aisle / item_location / doesnt_carry ops here; record those with add_store_note (tags layout/location/stock). Returns applied + conflicts (e.g. an unsettable field). Unknown slug → not_found.",
       inputSchema: { slug: z.string(), operations: z.array(storeOpShape) },
     },
     ({ slug, operations }) =>

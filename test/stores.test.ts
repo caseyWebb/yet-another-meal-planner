@@ -106,6 +106,17 @@ describe("toStore / serializeStore round-trip", () => {
     expect(s).toEqual({ slug: "s", name: "S", domain: "grocery" });
   });
 
+  it("round-trips location_id when present", () => {
+    const s = store({ location_id: "70100156" });
+    const reparsed = toStore(parseTomlRaw(serializeStore(s)) as Record<string, unknown>);
+    expect(reparsed.location_id).toBe("70100156");
+  });
+
+  it("omits location_id from serialized output when absent", () => {
+    const serialized = serializeStore(store());
+    expect(serialized).not.toContain("location_id");
+  });
+
   it("silently ignores legacy layout keys (aisles / item_locations / doesnt_carry)", () => {
     const s = toStore({
       slug: "s",
@@ -141,6 +152,14 @@ describe("applyStoreOperations (identity only)", () => {
     expect(conflicts).toEqual([]);
     expect(applied).toEqual([{ op: "set_identity", target: "domain" }]);
     expect(next.domain).toBe("home-improvement");
+  });
+
+  it("set_identity sets location_id", () => {
+    const ops: StoreOperation[] = [{ op: "set_identity", field: "location_id", value: "70100156" }];
+    const { store: next, applied, conflicts } = applyStoreOperations(store(), ops);
+    expect(conflicts).toEqual([]);
+    expect(applied).toEqual([{ op: "set_identity", target: "location_id" }]);
+    expect(next.location_id).toBe("70100156");
   });
 
   it("rejects an empty name as a conflict, not a write", () => {

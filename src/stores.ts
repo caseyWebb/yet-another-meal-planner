@@ -37,6 +37,9 @@ export interface Store {
   chain?: string;
   address?: string;
   domain: string;
+  /** Chain-specific external id (e.g. Kroger `locationId`). Stored so the Kroger
+   *  client can bypass the Locations API on in-store walks. */
+  location_id?: string;
 }
 
 /** Repo-relative path to a store file (shared corpus root). */
@@ -68,9 +71,11 @@ export function toStore(parsed: Record<string, unknown>): Store {
   const label = asString(parsed.label);
   const chain = asString(parsed.chain);
   const address = asString(parsed.address);
+  const location_id = asString(parsed.location_id);
   if (label) store.label = label;
   if (chain) store.chain = chain;
   if (address) store.address = address;
+  if (location_id) store.location_id = location_id;
   return store;
 }
 
@@ -84,6 +89,7 @@ export function serializeStore(store: Store): string {
   if (store.chain) data.chain = store.chain;
   if (store.address) data.address = store.address;
   data.domain = store.domain;
+  if (store.location_id) data.location_id = store.location_id;
   return header + stringifyTomlRaw(data) + "\n";
 }
 
@@ -153,7 +159,7 @@ export async function readStore(gh: GitHubClient, slug: string): Promise<Store> 
 export type StoreOperation =
   // Identity edits (set a top-level field). Layout is notes now — no aisle/
   // item_location/doesnt_carry ops here; those moved to add_store_note.
-  { op: "set_identity"; field: "name" | "label" | "chain" | "address" | "domain"; value: string };
+  { op: "set_identity"; field: "name" | "label" | "chain" | "address" | "domain" | "location_id"; value: string };
 
 export interface StoreApplied {
   op: StoreOperation["op"];
@@ -172,7 +178,7 @@ export interface StoreApplyResult {
   conflicts: StoreConflict[];
 }
 
-const IDENTITY_FIELDS = ["name", "label", "chain", "address", "domain"] as const;
+const IDENTITY_FIELDS = ["name", "label", "chain", "address", "domain", "location_id"] as const;
 
 /**
  * Apply identity update operations in order. An off-target op (an unsettable field,

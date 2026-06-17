@@ -73,6 +73,10 @@ const MCP_URL_PLACEHOLDER = 'https://grocery-mcp.example.workers.dev';
 // flow calls that tool instead of carrying a build-time URL.
 const COMMON_FLOWS_HEADING = 'common flows';
 
+// Regex for <!-- resource: references/<file>.md -->...<content>...<!-- /resource --> blocks.
+// Multiline content is captured; the path is validated in validateParsed.
+const RESOURCE_RE = /<!--\s*resource:\s*([^\s>]+)\s*-->([\s\S]*?)<!--\s*\/resource\s*-->/g;
+
 // --- pure helpers --------------------------------------------------------
 
 // Minimal YAML double-quoted scalar — robust for descriptions that carry colons
@@ -80,6 +84,29 @@ const COMMON_FLOWS_HEADING = 'common flows';
 // unquoted inline scalar.
 export function yamlQuote(s) {
   return `"${String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+}
+
+/**
+ * Extract `<!-- resource: <relpath> -->...<content>...<!-- /resource -->` blocks from
+ * a flow body. Returns the body with each block replaced by a pointer line, plus a
+ * Map of relpath → extracted content for the build to emit as separate files.
+ * Blocks with no resource markers are returned unchanged (resources is empty).
+ */
+export function parseResourceBlocks(body) {
+  const resources = new Map();
+  let lean = body;
+  // Collect all blocks first so we can replace them in a single pass.
+  const matches = [];
+  let m;
+  RESOURCE_RE.lastIndex = 0;
+  while ((m = RESOURCE_RE.exec(body)) !== null) {
+    matches.push({ full: m[0], path: m[1].trim(), content: m[2].trim() });
+  }
+  for (const { full, path, content } of matches) {
+    resources.set(path, content + '\n');
+    lean = lean.replace(full, `> For details, read \`${path}\`.`);
+  }
+  return { lean: lean.trim(), resources };
 }
 
 // Split the persona region (everything before `## Common flows`) into tier blocks
@@ -187,6 +214,15 @@ export function validateParsed(parsed) {
     if (f.description && f.description.length > 1024)
       errors.push(`flow "${f.name}" description is ${f.description.length} chars; claude.ai caps skill descriptions at 1024`);
     if (!f.body) errors.push(`flow "${f.name}" has an empty body`);
+    // Validate any <!-- resource: --> paths: must be under references/ and end in .md.
+    let rm;
+    RESOURCE_RE.lastIndex = 0;
+    while (f.body && (rm = RESOURCE_RE.exec(f.body)) !== null) {
+      const rpath = rm[1].trim();
+      if (!rpath.startsWith('references/') || !rpath.endsWith('.md')) {
+        errors.push(`flow "${f.name}" resource path "${rpath}" must be under references/ and end in .md`);
+      }
+    }
     if (seen.has(f.name)) errors.push(`duplicate skill name "${f.name}"`);
     seen.add(f.name);
     for (const need of f.needs ?? []) {
@@ -254,7 +290,12 @@ export function buildPluginFiles(parsed, { mcpUrl = MCP_URL_PLACEHOLDER, version
     }
   }
   for (const flow of parsed.flows) {
-    files.set(`skills/${flow.name}/SKILL.md`, renderWorkflowSkill(flow));
+    const { lean, resources } = parseResourceBlocks(flow.body);
+    const leanFlow = resources.size > 0 ? { ...flow, body: lean } : flow;
+    files.set(`skills/${flow.name}/SKILL.md`, renderWorkflowSkill(leanFlow));
+    for (const [relpath, content] of resources) {
+      files.set(`skills/${flow.name}/${relpath}`, content);
+    }
   }
   return files;
 }
