@@ -23,7 +23,14 @@ const PRODUCT = {
   brand: "Kroger",
   description: "Kroger 2% Milk",
   categories: ["Dairy"],
-  items: [{ size: "1 gal", price: { regular: 2.99, promo: 0 }, fulfillment: { curbside: true, delivery: true } }],
+  items: [
+    {
+      size: "1 gal",
+      price: { regular: 2.99, promo: 0 },
+      fulfillment: { curbside: true, delivery: true, inStore: true },
+      aisleLocation: { number: "14", description: "Dairy", side: "L" },
+    },
+  ],
 };
 
 function freshCache(): KrogerCache {
@@ -66,7 +73,7 @@ describe("Kroger client", () => {
     expect(tokenCount).toBe(2);
   });
 
-  it("normalizes products with price and fulfillment flags", async () => {
+  it("normalizes products with price, fulfillment flags, and aisleLocation", async () => {
     const fetchMock = (async (url: string) =>
       url.startsWith(TOKEN_URL)
         ? json({ access_token: "T1", expires_in: 1800 })
@@ -81,8 +88,38 @@ describe("Kroger client", () => {
       categories: ["Dairy"],
       size: "1 gal",
       price: { regular: 2.99, promo: 0 },
-      fulfillment: { curbside: true, delivery: true },
+      fulfillment: { curbside: true, delivery: true, inStore: true },
+      aisleLocation: { number: "14", description: "Dairy", side: "L" },
     });
+  });
+
+  it("normalizes a product with no aisleLocation to null", async () => {
+    const noLocation = {
+      ...PRODUCT,
+      items: [{ size: "1 gal", price: { regular: 2.99, promo: 0 }, fulfillment: { curbside: true, delivery: true, inStore: false } }],
+    };
+    const fetchMock = (async (url: string) =>
+      url.startsWith(TOKEN_URL)
+        ? json({ access_token: "T1", expires_in: 1800 })
+        : json({ data: [noLocation] })) as unknown as typeof fetch;
+
+    const k = createKrogerClient(env, { fetch: fetchMock, cache: freshCache(), now: () => 1000, sleep: async () => {} });
+    const [c] = await k.search("milk", { locationId: "loc1" });
+    expect(c.aisleLocation).toBeNull();
+    expect(c.fulfillment.inStore).toBe(false);
+  });
+
+  it("normalizes a product with no fulfillment object (all flags false, no aisleLocation)", async () => {
+    const bare = { productId: "x", brand: "B", description: "D", categories: [], items: [{ size: null }] };
+    const fetchMock = (async (url: string) =>
+      url.startsWith(TOKEN_URL)
+        ? json({ access_token: "T1", expires_in: 1800 })
+        : json({ data: [bare] })) as unknown as typeof fetch;
+
+    const k = createKrogerClient(env, { fetch: fetchMock, cache: freshCache(), now: () => 1000, sleep: async () => {} });
+    const [c] = await k.search("bare", { locationId: "loc1" });
+    expect(c.fulfillment).toEqual({ curbside: false, delivery: false, inStore: false });
+    expect(c.aisleLocation).toBeNull();
   });
 
   it("honors Retry-After on 429 then succeeds", async () => {
@@ -176,6 +213,34 @@ describe("Kroger client", () => {
     const fetchMock = (async () => json({ access_token: "T1", expires_in: 1800 })) as unknown as typeof fetch;
     const k = createKrogerClient(env, { fetch: fetchMock, cache: freshCache(), now: () => 1000, sleep: async () => {} });
     await expect(k.resolveLocationId("Kroger Downtown")).rejects.toBeInstanceOf(KrogerError);
+  });
+
+  it("bypasses the Locations API when given a pre-resolved locationId (no spaces)", async () => {
+    const calls: string[] = [];
+    const fetchMock = (async (url: string) => {
+      calls.push(url);
+      return json({ access_token: "T1", expires_in: 1800 });
+    }) as unknown as typeof fetch;
+
+    const k = createKrogerClient(env, { fetch: fetchMock, cache: freshCache(), now: () => 1000, sleep: async () => {} });
+    const id = await k.resolveLocationId("70100156");
+    expect(id).toBe("70100156");
+    expect(calls.filter((c) => c.includes("/locations")).length).toBe(0);
+  });
+
+  it("still parses a ZIP and fetches when given a preferred_location label (has spaces)", async () => {
+    const calls: string[] = [];
+    const fetchMock = (async (url: string) => {
+      calls.push(url);
+      if (url.startsWith(TOKEN_URL)) return json({ access_token: "T1", expires_in: 1800 });
+      if (url.includes("/locations")) return json({ data: [{ locationId: "01400943" }] });
+      return json({ data: [] });
+    }) as unknown as typeof fetch;
+
+    const k = createKrogerClient(env, { fetch: fetchMock, cache: freshCache(), now: () => 1000, sleep: async () => {} });
+    const id = await k.resolveLocationId("Kroger - 76104");
+    expect(id).toBe("01400943");
+    expect(calls.filter((c) => c.includes("/locations")).length).toBe(1);
   });
 
   it("caps concurrent in-flight requests at maxConcurrency across a fan-out", async () => {

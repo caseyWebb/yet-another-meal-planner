@@ -20,7 +20,8 @@ function cand(overrides: Partial<KrogerCandidate> & { productId: string }): Krog
     categories: [],
     size: null,
     price: { regular: 0, promo: 0 },
-    fulfillment: { curbside: true, delivery: true },
+    fulfillment: { curbside: true, delivery: true, inStore: true },
+    aisleLocation: null,
     ...overrides,
   };
 }
@@ -172,7 +173,7 @@ describe("matchIngredient — cache lookup + revalidation", () => {
   });
 
   it("re-resolves when the cached SKU is no longer fulfillable", async () => {
-    const dead = cand({ productId: "S1", fulfillment: { curbside: false, delivery: false } });
+    const dead = cand({ productId: "S1", fulfillment: { curbside: false, delivery: false, inStore: false } });
     const searchHit = cand({ productId: "S2", brand: "Store", description: "Store Olive Oil", price: { regular: 3.0, promo: 0 } });
     const deps = makeDeps({
       brands: { olive_oil: [] }, // don't-care so re-resolution is confident
@@ -234,7 +235,7 @@ describe("matchIngredient — shared, location-tagged cache (D7/§7.1)", () => {
   });
 
   it("falls through to search when a cross-location entry is unavailable at the caller's store", async () => {
-    const dead = cand({ productId: "X", fulfillment: { curbside: false, delivery: false } });
+    const dead = cand({ productId: "X", fulfillment: { curbside: false, delivery: false, inStore: false } });
     const searchHit = cand({ productId: "Y", description: "Olive Oil", price: { regular: 3, promo: 0 } });
     const deps = makeDeps({
       locationId: "L2",
@@ -338,7 +339,7 @@ describe("matchIngredient — availability + scoring", () => {
   it("nothing fulfillable → unavailable, no substitution", async () => {
     const deps = makeDeps({
       brands: { salmon: [] },
-      search: async () => [cand({ productId: "x", fulfillment: { curbside: false, delivery: false } })],
+      search: async () => [cand({ productId: "x", fulfillment: { curbside: false, delivery: false, inStore: false } })],
     });
     const res = await matchIngredient(deps, "salmon");
     expect(res).toEqual({

@@ -36,7 +36,9 @@ export interface KrogerCandidate {
   categories: string[];
   size: string | null;
   price: { regular: number; promo: number };
-  fulfillment: { curbside: boolean; delivery: boolean };
+  fulfillment: { curbside: boolean; delivery: boolean; inStore: boolean };
+  /** Per-item aisle location at the requested store. Null when the API omits it. */
+  aisleLocation: { number: string; description: string; side?: string } | null;
 }
 
 export interface SearchOptions {
@@ -88,6 +90,15 @@ function normalizeProduct(p: Record<string, unknown>): KrogerCandidate {
   const item = items[0] ?? {};
   const price = (item.price as Record<string, unknown> | undefined) ?? {};
   const f = (item.fulfillment as Record<string, unknown> | undefined) ?? {};
+  const al = item.aisleLocation as Record<string, unknown> | undefined;
+  const aisleLocation =
+    al && typeof al.number === "string" && typeof al.description === "string"
+      ? {
+          number: al.number,
+          description: al.description,
+          ...(typeof al.side === "string" ? { side: al.side } : {}),
+        }
+      : null;
   return {
     productId: String(p.productId ?? ""),
     brand: typeof p.brand === "string" ? p.brand : "",
@@ -101,7 +112,9 @@ function normalizeProduct(p: Record<string, unknown>): KrogerCandidate {
     fulfillment: {
       curbside: Boolean(f.curbside),
       delivery: Boolean(f.delivery),
+      inStore: Boolean(f.inStore),
     },
+    aisleLocation,
   };
 }
 
@@ -184,6 +197,13 @@ export function createKrogerClient(env: Env, opts: KrogerClientOptions = {}): Kr
 
   async function resolveLocationId(label: string): Promise<string> {
     if (cache.locationId) return cache.locationId;
+    // A pre-resolved Kroger locationId (stored in stores/<slug>.toml `location_id`) is
+    // a compact alphanumeric string with no spaces. Bypass the Locations API lookup and
+    // cache it directly so repeated in-store walks skip the resolution round-trip.
+    if (!/\s/.test(label)) {
+      cache.locationId = label;
+      return cache.locationId;
+    }
     const zip = label.match(/\d{5}/)?.[0];
     if (!zip) {
       throw new KrogerError(400, `Cannot parse a ZIP code from preferred_location "${label}"`);

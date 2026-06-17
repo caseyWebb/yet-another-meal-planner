@@ -18,8 +18,11 @@ If the grocery-mcp server errors in a way you can't work around, or you find you
 
 Capture buy-intent onto the **grocery list** continuously, as it comes up; **flush it once**, at order time. The flush has **two forms**, picked by my fulfillment mode (`preferences.toml [stores].primary`) — **don't assume Kroger**:
 
-- **Kroger online** (`primary: kroger`) — flush to the Kroger cart with `place_order` (the place-grocery-order flow).
-- **In-store walk** (`primary` is a store slug from `stores/`) — turn the list into a shopping list grouped for that store and walk it (the shopping-list flow). Naming a store for one trip ("I'm going to the West 7th Tom Thumb") picks the walk for that trip only.
+- **Kroger online** (`primary: kroger`) — flush to the Kroger cart with `place_order`.
+- **Kroger in-store** — walk with API-driven aisle ordering.
+- **In-store walk** (`primary` is a store slug from `stores/`) — turn the list into a shopping list grouped for that store and walk it. Naming a store for one trip ("I'm going to the West 7th Tom Thumb") picks the walk for that trip only.
+
+All three flush paths are handled by the `shop-groceries` flow.
 
 **Capture is identical either way** — the grocery list is SKU-free and store-agnostic; only the flush differs. Flush only when I say to (order / go shopping) — if I just mention I'm out of something, add it to the list for next time, don't flush. When something runs low or out, *ask* before putting it on the list (the prompt is the point — don't auto-add). Household / non-food items belong on the list too.
 
@@ -98,7 +101,7 @@ Two starting points: **open-ended** (you pick recipes) or **recipe-seeded** (I n
 
 6. **On agreement, save the meal plan and shopping list** — one `commit_changes` call: the agreed recipes as `[[planned]]` rows via `meal_plan_ops` (set `planned_for` to the intended night when known), draft imports, pantry verifications, and the to-buy items from step 4 via `grocery_list_ops` (one `add` per item, presence-only — no quantity netting). **Sides split two ways.** A **corpus side** is a recipe like any other — it gets its **own** `[[planned]]` row and its to-buy ingredients, plus any side draft you imported and any `pairs_with` edge you recorded, all in this **same** commit. An **open-world side** has no slug, so it rides on its main's `[[planned]]` row as `sides: ["roasted broccoli"]` (a field on the `meal_plan_ops` `add`), and its world-knowledge ingredients go on the list with `source: "menu"`, `for_recipes: []`, and a `note` ("for the roasted-broccoli side"). **Do not bump `last_cooked` here** — agreeing to a menu is not cooking it. `last_cooked` moves only when I report a cook (the cooked flow). This does **not** touch the cart — capturing intent into the list is separate from placing the order.
 
-7. **Offer to continue to the order, and wrap up.** If my store is Kroger, ask whether to **place the order now** — on a yes, hand off to the place-grocery-order flow (it runs the stale-cart check, SKU resolution, cart pricing, and flush; that's where the cart is built and costed, this sitting or later). If my store is an in-store one, the parallel is the shopping-list flow — offer that instead. Either way, summarize what was saved to the list / committed; and when an order is actually placed, remind me to review the cart in the Kroger app before checkout (the API can't remove items, so I adjust manually).
+7. **Offer to continue to the order, and wrap up.** Ask if I'm ready to shop — on a yes, hand off to `shop-groceries`. Summarize what was saved to the list / committed; and when an order is actually placed, remind me to review the cart in the Kroger app before checkout (the API can't remove items, so I adjust manually).
 
 **Empty-list case:** if the pantry already covers what's needed, say so explicitly. Commit any pantry verifications, skip the list/cart write.
 
@@ -210,25 +213,39 @@ description: Summarize real recent eating patterns from the cooking log. Use for
 
 Call `retrospective(period)` and summarize the patterns that matter: protein/cuisine mix (real cook counts, not recency), cadence (cooks/week — `recipe` + `ad_hoc` only), the cook-vs-convenience split, ready-to-eat favorites, and underused recipes worth reviving. Tie it to my diet principles when relevant ("you're light on fish this month vs. your once-a-week target"). Surface patterns; don't nag.
 
-### Order placement
+### Shop groceries — the flush (shop-groceries)
 
-<!-- skill: place-grocery-order
+<!-- skill: shop-groceries
 needs: cart
-description: Flush the grocery list to the Kroger cart — the deliberate act distinct from capturing intent. Use for "place the order", "send it to my cart", "I'm ready to order", "go ahead and order the groceries". Stale-cart check → ready-to-eat adds → resolve/preview → flush → honest report. The only path that writes the cart (append-only, write-only). -->
+description: Flush the grocery list — the deliberate act distinct from capturing intent. Use for "place the order", "I'm headed to the store", "give me a shopping list", "I'm walking Central Market", "send it to my cart", "go ahead and order". Detects the fulfillment mode and runs the right branch: Kroger online cart flush, Kroger in-store API-ordered walk, mapped-store walk, or map-and-walk. The only path that writes the cart or transitions list items to received. -->
 
-This is the **online flush** (Kroger) — distinct from the menu request's capture, and the sibling of the in-store walk (the shopping-list flow). It may happen in the same sitting as a menu request or days later. Use it when my fulfillment mode is Kroger online; if `primary` is a store slug (or I named a store for the trip), run shopping-list instead.
+Read `read_grocery_list` and `read_preferences` in parallel. Then detect which branch to run:
 
-1. **Stale-cart check first.** Read the grocery list (`read_grocery_list`). If any items are still `in_cart` from a prior order that was never confirmed `ordered`, remind me to clear the Kroger cart manually before proceeding (silently flushing again double-adds). Wait for my acknowledgment.
+| Signal | Branch |
+|---|---|
+| `primary = "kroger"` and no store named for this trip | **Kroger online** — `place_order` flush |
+| `primary = "kroger"` and I named a specific Kroger store, or I say "in-store" / "walking the Kroger" | **Kroger in-store** — API aisle ordering |
+| `primary` is a store slug, or I named a non-Kroger store | **In-store walk** — layout/notes aisle ordering |
+| Walking a store we've never mapped and I want to record it | **Map + walk** — concurrent map-and-shop |
+
+> For details, read `references/kroger-online.md`.
+
+<!-- resource: references/kroger-online.md -->
+# Kroger Online — cart flush
+
+This branch runs when my fulfillment mode is Kroger online. It may happen in the same sitting as a menu request or days later.
+
+1. **Stale-cart check first.** If any items are still `in_cart` from a prior order that was never confirmed `ordered`, remind me to clear the Kroger cart manually before proceeding (silently flushing again double-adds). Wait for my acknowledgment.
 
 2. **Ready-to-eat adds — restock + on-sale discovery (configured catalog).** If I've set up a ready-to-eat catalog, surface heat-and-eat buys for this order before resolving — never add unilaterally:
    - **Restock favorites.** Cross-reference `retrospective`'s `ready_to_eat_favorites` against pantry on-hand — for a favorite that's low/out, *suggest* a restock ("you're out of the frozen lasagna you keep reaching for — add it?").
    - **On-sale discovery.** Scan `kroger_flyer` for on-sale heat-and-eat / grab-and-go items not already in my catalog, and draft 1–2 worthwhile ones via `add_draft_ready_to_eat` (`source: "kroger-flyer"`).
-   On my yes, add the item to the grocery list (or to `stockup.toml` for a conditional bulk buy) so the resolve/preview below picks it up. (Currently-available heat-and-eat *meal* options for a no-cook night are offered earlier, in the menu-request flow; this is the buy-time restock/discovery side.) Skip entirely for an empty catalog.
+   On my yes, add the item to the grocery list (or to `stockup.toml` for a conditional bulk buy) so the resolve/preview below picks it up. Skip entirely for an empty catalog.
 
 3. **Resolve and preview.** Call `place_order(preview=true)` (optionally with `menu_needs` for needs not yet on the list). Surface, as one batch, anything that needs my decision before writing:
    - `checkpoint` items (`ambiguous` → pick from candidates; `unavailable` → enumerate a few sensible Kroger alternatives yourself from world knowledge and resolve each via `match_ingredient_to_kroger_sku` / `kroger_prices`, then let me pick). Don't add these unilaterally.
    - `partials` — items the list/menu wants that the pantry already has. Tell me the plan's required amount (aggregated from `for_recipes`) and ask whether to buy more. Default buy is 1 package; never silently net partials against the order.
-   - **Assumed quantities.** Any resolved line with `assumed_quantity: true` defaulted to 1 package — no count was given. The tool won't judge produce; *you* do. For by-the-each produce (peppers, tomatillos, onions, limes, …), read the recipe (`read_recipe`) for the required amount and set an explicit count via `menu_needs[].quantity` or `quantities` before the real flush — a recipe wanting 4 Anaheim peppers must not silently order 1. Items that genuinely need a single package (a head of cabbage, one jar) need no action. Pass quantities on the menu need itself; the `quantities` map is for overriding after this preview.
+   - **Assumed quantities.** Any resolved line with `assumed_quantity: true` defaulted to 1 package — no count was given. The tool won't judge produce; *you* do. For by-the-each produce (peppers, tomatillos, onions, limes, …), read the recipe (`read_recipe`) for the required amount and set an explicit count via `menu_needs[].quantity` or `quantities` before the real flush — a recipe wanting 4 Anaheim peppers must not silently order 1. Items that genuinely need a single package (a head of cabbage, one jar) need no action.
 
 4. **Flush.** Once I've dispositioned the batch, call `place_order` for real — pass `overrides` for the items I picked SKUs for, `include_partials` for the partials I confirmed, `quantities` for anything beyond 1 package. Resolved items advance to `in_cart`.
 
@@ -237,60 +254,137 @@ This is the **online flush** (Kroger) — distinct from the menu request's captu
 **Lifecycle past `in_cart` is user-asserted — never claim it on your own:**
 - *"I placed the order"* → advance `in_cart` items to `ordered` (`update_grocery_list`).
 - *"I picked up the groceries"* → `received` (terminal): one `commit_changes` removing the picked items via `grocery_list_ops` and — for `grocery`-kind items only — restocking the pantry via `pantry_operations`. `household`/`other` items don't touch the pantry. Then, for the fresh perishables just received, offer a couple of storage tips following the **Putting groceries away** guidance.
+<!-- /resource -->
 
-### Shopping list — the second flush (shopping-list)
+> For details, read `references/kroger-instore.md`.
 
-<!-- skill: shopping-list
-needs: cart
-description: Show my current shopping list, grouped for how I'll actually shop — by department when no store or layout is known, by aisle when I'm walking a store we've mapped. Use for "what's on my list?", "give me a shopping list", "I'm headed to the store", "I'm walking Central Market", "shopping list for Tom Thumb". Filters to a named store's category (a Lowe's run shows only the home-improvement items). Display-first; if the store's mapped, offers a hands-free voice walk that ends by restocking the pantry. -->
+<!-- resource: references/kroger-instore.md -->
+# Kroger In-Store — API aisle ordering
 
-This is the **display front door** for shopping — the in-store sibling of `place_order`, read-only until I commit to walking. It reads the same grocery list and presents it the way I'll actually move through the store, then (only for a mapped store) offers to walk it hands-free.
+This branch runs when I'm walking a Kroger store in person. The Kroger Products API returns `aisleLocation` for each item, so the walk is ordered by aisle number automatically — no pre-mapped layout required.
 
-1. **Resolve the store and its domain.** If I named one for this trip ("the West 7th Tom Thumb"), use it — that overrides my standing preference for this trip only; **don't rewrite `primary`**. Otherwise `read_preferences()` and use `[stores].primary` when it's a store slug. `list_stores()` matches a name to a slug and gives each store's `domain`. For a store I name that isn't registered, classify its category from your **own** knowledge (Lowe's → `home-improvement`, a nursery → `garden`) — you don't need a record to know a hardware store isn't grocery. If `primary` is `kroger` and I didn't name a store, this is really the online flush — hand off to place-grocery-order instead.
+#### 1. Resolve the Kroger store
 
-2. **Filter to the store's domain.** Show only the items for this trip's category — a `grocery` run excludes `home-improvement`-tagged items; a Lowe's run shows **only** those. (Item `domain` is set when it's captured; default `grocery`.)
+Check whether a Kroger store is registered for this trip:
+- `list_stores()` and look for a store with `chain: "kroger"` matching the location I named or my `primary` preference.
+- If found, use its `slug` and read its `location_id` (the Kroger `locationId` used to bypass the Locations API).
+- **If not registered (first visit to this Kroger):** ask me for a short label — "What do you want to call this Kroger? (e.g. 'West 7th', 'Hulen')" — then:
+  - Derive a kebab slug: `kroger-<label-in-kebab>` (e.g. `kroger-west-7th`).
+  - Call `kroger_prices` on any one list item with the store ZIP/label to resolve the Kroger `locationId`.
+  - `add_store(slug, name="Kroger", label, chain="kroger", domain="grocery", location_id=<resolved>)`.
+  - This is **one-time friction** — subsequent walks resolve by slug with no API lookup needed.
 
-3. **Ready-to-eat adds — restock, plus on-sale discovery on a Kroger trip (configured catalog).** Before grouping, if I've set up a ready-to-eat catalog, offer heat-and-eat items to add to the trip — never unilaterally:
-   - **Restock favorites** (any grocery trip). Cross-reference `retrospective`'s `ready_to_eat_favorites` against pantry on-hand — a favorite that's low/out is a *suggest* ("you're low on the frozen lasagna you keep grabbing — want it on the list?").
-   - **On-sale discovery** (Kroger store only — it needs flyer data). If this trip is a Kroger store, scan `kroger_flyer` for on-sale heat-and-eat items not already in my catalog and draft 1–2 via `add_draft_ready_to_eat` (`source: "kroger-flyer"`). For a non-Kroger store there's no flyer — skip discovery.
-   On my yes, add the item to the grocery list so it falls into the grouping below. Skip entirely for an empty catalog.
+#### 2. Load items and fetch aisle locations
 
-4. **Group it — department vs aisle (graceful degradation).**
-   - **No store, or a store with no map:** group by **department** from your **own** world knowledge (produce, dairy, meat, frozen, … — or the right departments for the category: lumber, plumbing, paint, garden). A sensible grouped list, never a refusal.
-   - **A mapped store:** `read_store_notes(slug)` and order by its `layout`-tagged notes — **aisle order (by aisle number) is the walk path** — placing each item into the aisle whose sections fit it (your judgment over the store's **own** sign vocabulary, the storage-guidance posture — no manifest). A `location`-tagged note **wins** over inference for that item. Surface any `stock` note ("marked as not carrying harissa") up front — a hint, never a gate — plus the freeform notes (hours, parking) from the same read.
-   - Carry the **buy amount and recipe attribution** on each line (the same need-aggregation `place_order` surfaces) so I grab enough.
-   - **Cold last (cold chain).** Sequence frozen items, then refrigerated (dairy, meat), to be grabbed **last** so they don't sit warm while I shop — identify them from your **own** knowledge (ice cream / anything frozen → frozen; milk, butter, raw meat, yogurt → refrigerated). Most layouts already put frozen near checkout, so the aisle order handles it; if frozen falls mid-store, pull the cold items into a final "grab these on your way out" group and say so.
-   - **Don't invent stock or stores.** Only say an item *isn't* carried when a `stock` note actually says so — never *speculate*. And **never name a specific other store** as an alternative: cross-store routing isn't built and you have no data on what's nearby. At most a generic "you may need to grab that elsewhere." (Same norm as storage-guidance: silence over invention.)
+Call `kroger_prices` for each active grocery list item in parallel, passing the store's `location_id` (or label if not yet registered). Each result carries `aisleLocation: { number, description, side? } | null` and `inStore: boolean`.
 
-5. **No store named — ask, don't probe.** If I didn't name a store and `primary` isn't one, just ask whether I'm shopping somewhere specific ("Shopping a particular store, or want the list as-is? If it's one we've mapped, I'll order it by aisle"). If I name one, resolve it and `read_store_notes(slug)` to see if it's mapped — don't read every registered store's notes guessing where I'm headed. No specific store → the department list stands.
+Surface **`inStore: false` items up front** before starting the walk: "These items aren't available in-store at this Kroger — pickup/delivery only. Remove them from the in-store list, or keep them for a separate order?" Never silently drop them.
 
-6. **Show the whole list, then offer the walk — only if mapped.** Display the entire grouped list in one go. **If** the store has layout notes, offer hands-free voice step-by-step mode ("want me to walk you through it?"). With **no** map, leave the department list and **don't** offer voice (there's nothing to pace against) — but if it's an unmapped store I'm actually walking, *offer to map it* (the map-grocery-store flow).
+#### 3. Group by aisle and walk
 
-7. **The voice walk (mapped store).** Like `cook`, hands-free / voice-first: pace me **one aisle at a time**, I advance with "got it" / "next". Handle **"can't find it"** by disambiguating gently **before any write**:
-   - **Sold out** — transient, no note.
-   - **Moved** (I found it in a different aisle) — *offer* to save a corrected `location` note (`add_store_note` with `tags:["location"]`). This "can't find it → oh, aisle 9" moment is the capture trigger.
-   - **Not carried** — *offer* a `stock` note (`add_store_note` with `tags:["stock"]`) and note it for the trip; don't auto-split the order, and **don't invent which other store carries it**.
-   Only write on my confirmation — never silently.
+Order items by `aisleLocation.number` (ascending); items with `null` aisle go at the end as **"location unknown"**. Apply cold-chain sequencing on top: if frozen/refrigerated aisles fall mid-store, pull those items into a final "grab these on your way out" group and say so.
 
-8. **Complete → received (the same restock as a Kroger pickup).** Before wrapping up, sweep the list for anything we never ticked off — "you've still got harissa and flour on the list; did we pass those, or want to double back?" — so I don't check out missing something. Then, when I'm done, picked items go straight `active → received` — **no `in_cart`/`ordered` stage**. Persist it in **one** `commit_changes`: remove the picked items via `grocery_list_ops` and — **for `grocery`-kind items only** — restock the pantry via `pantry_operations`; `household`/`other` never touch the pantry. Then, for the fresh perishables just received, offer a couple of storage tips following the **Putting groceries away** guidance — exactly as a Kroger pickup does.
+Hands-free / voice-first, **one aisle at a time**, I advance with "got it" / "next". At each aisle, announce the aisle number and description, then the items to grab there.
 
-### Map a grocery store (map-grocery-store)
+Handle **"can't find it"** by disambiguating gently before any write:
+- **Sold out** — transient, no note.
+- **Moved** (I found it in a different aisle) — silently write a corrected `location` note (see §4 below).
+- **Not carried** — *offer* a `stock` note (`add_store_note` with `tags:["stock"]`) and note it for the trip.
 
-<!-- skill: map-grocery-store
-needs: cart
-description: Map a store's aisle layout while I shop it, so next time the shopping list comes out aisle-ordered. Use when I'm at a store we haven't mapped and want to record it — "let's map this store", "I'm at the new Sprouts, want to map it?" — or when shopping-list finds an unmapped store I'm walking. Runs alongside the trip (not a separate errand): aisle by aisle off the end-cap signs, reminding me to grab list items as we pass them, saving each aisle as we go. Ends by restocking the pantry. -->
+#### 4. Silent idempotent location note seeding
 
-This is **mapping while shopping** — not a separate errand. I'm walking an unmapped store; you record its layout as we go so the next `shopping-list` comes out aisle-ordered. Hands-free / voice-first, **one aisle at a time**, and it doubles as the shopping walk (remind me to grab list items as we hit their aisle).
+After `read_store_notes(slug)`, for each item resolved to a specific aisle, silently write:
 
-1. **Offer, never push.** This starts when I'm at a store with no map and *want* to record it — either I ask, or `shopping-list` found an unmapped store I'm walking and offered. If I decline, drop it and just shop the degraded department list; mapping is pure upside that accrues through use, never a precondition.
+```
+add_store_note(slug, "Aisle <N>: <item name>", tags: ["location"])
+```
 
-2. **Register the store, then read the list.** If the store isn't in the registry, `add_store(slug, name, domain, …)` — a kebab-case **location** slug (`west-7th-tom-thumb`, not `tom-thumb`), `domain` per its category. Then `read_grocery_list` (and `read_store_notes(slug)` for anything already known) so you can match aisles to what I need.
+**Only if** no existing `location`-tagged note already mentions the item name (case-insensitive substring match). This runs silently — no confirmation prompt, no narration. The notes accumulate across trips, so the walk gets faster over time even without a full pre-map.
 
-3. **Walk it aisle by aisle, saving as you go.** At each aisle, ask what the **end-cap sign** says ("what's this aisle? read the sign hanging at the end"). Record it immediately as a `layout` note — `add_store_note(slug, "Aisle 7: baking, spices, oils", tags:["layout"])` — **lead the body with the aisle number** (the number is the walk order) and list the sections in the store's **own** sign words. **Commit each aisle as we pass it**, never batched to the end — if the trip gets cut short, what we mapped is already saved. If the aisle numbers jump (I call out 7 right after 5), gently check whether we skipped one — "did we pass aisle 6, or no 6 here?" — before moving on; don't force it (stores skip numbers and have unnumbered perimeter zones).
+#### 5. Complete → received
 
-4. **Grab list items as we hit their aisle.** When an aisle's sections cover something on my list, remind me to grab it ("this aisle's got the baking stuff — grab the flour and brown sugar"). If something hides somewhere non-obvious (the harissa's over in the international aisle), *offer* a `location` note (`tags:["location"]`); if the store doesn't carry a listed item, *offer* a `stock` note (`tags:["stock"]`). Only write on my confirmation — never silently. When we reach a frozen or refrigerated aisle, remind me to grab those **last** if I can (cold chain) — or at least not let them sit warm — since here we're following the store's physical order, not reordering.
+Before wrapping up, sweep the list for anything we never ticked off — "you've still got harissa and flour on the list; did we pass those, or want to double back?" Then, when done, picked items go straight `active → received` — **no `in_cart`/`ordered` stage**. Persist it in **one** `commit_changes`: remove the picked items via `grocery_list_ops` and — **for `grocery`-kind items only** — restock the pantry via `pantry_operations`; `household`/`other` never touch the pantry. Then offer a couple of storage tips for fresh perishables just received, following the **Putting groceries away** guidance.
+<!-- /resource -->
 
-5. **Complete → received (the same restock as a Kroger pickup).** Before wrapping up, sweep the list for anything we never matched to an aisle — "you've still got harissa and flour unticked; did we pass those, or should we double back?" — a skipped aisle often hides here. Then, when we're done, picked items go straight `active → received` — **no `in_cart`/`ordered` stage**. Persist it in **one** `commit_changes`: remove the picked items via `grocery_list_ops` and — **for `grocery`-kind items only** — restock the pantry via `pantry_operations`; `household`/`other` never touch the pantry. Then, for the fresh perishables just received, offer a couple of storage tips following the **Putting groceries away** guidance.
+> For details, read `references/instore-walk.md`.
+
+<!-- resource: references/instore-walk.md -->
+# In-Store Walk — layout/notes aisle ordering
+
+This branch runs when `primary` is a store slug (non-Kroger), or I name a specific non-Kroger store for this trip. It's the **display front door** for in-store shopping — read-only until I commit to walking.
+
+#### 1. Resolve the store and its domain
+
+If I named one for this trip ("the West 7th Tom Thumb"), use it — that overrides my standing preference for this trip only; **don't rewrite `primary`**. Otherwise use `[stores].primary`. `list_stores()` matches a name to a slug and gives each store's `domain`. For a store I name that isn't registered, classify its category from your **own** knowledge (Lowe's → `home-improvement`, a nursery → `garden`) — you don't need a record to know a hardware store isn't grocery.
+
+#### 2. Filter to the store's domain
+
+Show only the items for this trip's category — a `grocery` run excludes `home-improvement`-tagged items; a Lowe's run shows **only** those. (Item `domain` is set when it's captured; default `grocery`.)
+
+#### 3. Ready-to-eat adds (configured catalog)
+
+Before grouping, if I've set up a ready-to-eat catalog, offer heat-and-eat items to add to the trip — never unilaterally:
+- **Restock favorites** (any grocery trip). Cross-reference `retrospective`'s `ready_to_eat_favorites` against pantry on-hand — a favorite that's low/out is a *suggest* ("you're low on the frozen lasagna you keep grabbing — want it on the list?").
+- **On-sale discovery** (Kroger store only — it needs flyer data). For a non-Kroger store there's no flyer — skip discovery.
+
+On my yes, add the item to the grocery list so it falls into the grouping below. Skip entirely for an empty catalog.
+
+#### 4. Group it — department vs aisle (graceful degradation)
+
+- **No store, or a store with no map:** group by **department** from your **own** world knowledge (produce, dairy, meat, frozen, … — or the right departments for the category: lumber, plumbing, paint, garden). A sensible grouped list, never a refusal.
+- **A mapped store:** `read_store_notes(slug)` and order by its `layout`-tagged notes — **aisle order (by aisle number) is the walk path** — placing each item into the aisle whose sections fit it (your judgment over the store's **own** sign vocabulary, the storage-guidance posture — no manifest). A `location`-tagged note **wins** over inference for that item. Surface any `stock` note ("marked as not carrying harissa") up front — a hint, never a gate — plus the freeform notes (hours, parking) from the same read.
+- Carry the **buy amount and recipe attribution** on each line so I grab enough.
+- **Cold last (cold chain).** Sequence frozen items, then refrigerated (dairy, meat), to be grabbed **last** so they don't sit warm while I shop. Most layouts already put frozen near checkout, so the aisle order handles it; if frozen falls mid-store, pull the cold items into a final "grab these on your way out" group and say so.
+- **Don't invent stock or stores.** Only say an item *isn't* carried when a `stock` note actually says so — never *speculate*. And **never name a specific other store** as an alternative. At most a generic "you may need to grab that elsewhere."
+
+#### 5. No store named — ask, don't probe
+
+If I didn't name a store and `primary` isn't one, just ask whether I'm shopping somewhere specific. If I name one, resolve it and `read_store_notes(slug)` to see if it's mapped — don't read every registered store's notes guessing where I'm headed. No specific store → the department list stands.
+
+#### 6. Show the whole list, then offer the walk — only if mapped
+
+Display the entire grouped list in one go. **If** the store has layout notes, offer hands-free voice step-by-step mode ("want me to walk you through it?"). With **no** map, leave the department list and **don't** offer voice (there's nothing to pace against) — but if it's an unmapped store I'm actually walking, *offer to map it* (the map + walk branch of this skill).
+
+#### 7. The voice walk (mapped store)
+
+Like `cook`, hands-free / voice-first: pace me **one aisle at a time**, I advance with "got it" / "next". Handle **"can't find it"** by disambiguating gently **before any write**:
+- **Sold out** — transient, no note.
+- **Moved** (I found it in a different aisle) — *offer* to save a corrected `location` note (`add_store_note` with `tags:["location"]`). This "can't find it → oh, aisle 9" moment is the capture trigger.
+- **Not carried** — *offer* a `stock` note (`add_store_note` with `tags:["stock"]`) and note it for the trip; don't auto-split the order, and **don't invent which other store carries it**.
+Only write on my confirmation — never silently.
+
+#### 8. Complete → received
+
+Before wrapping up, sweep the list for anything we never ticked off — "you've still got harissa and flour on the list; did we pass those, or want to double back?" — so I don't check out missing something. Then, when I'm done, picked items go straight `active → received` — **no `in_cart`/`ordered` stage**. Persist it in **one** `commit_changes`: remove the picked items via `grocery_list_ops` and — **for `grocery`-kind items only** — restock the pantry via `pantry_operations`; `household`/`other` never touch the pantry. Then, for the fresh perishables just received, offer a couple of storage tips following the **Putting groceries away** guidance.
+<!-- /resource -->
+
+> For details, read `references/map-store.md`.
+
+<!-- resource: references/map-store.md -->
+# Map + Walk — concurrent map-and-shop
+
+This branch runs when I'm at a store with no layout map and *want* to record it — either I ask, or the in-store walk branch found an unmapped store I'm walking and offered. This is **mapping while shopping** — not a separate errand. Hands-free / voice-first, **one aisle at a time**, and it doubles as the shopping walk.
+
+#### 1. Offer, never push
+
+If I decline, drop it and just shop the degraded department list (in-store walk branch, §4, no-map path). Mapping is pure upside that accrues through use, never a precondition.
+
+#### 2. Register the store, then read the list
+
+If the store isn't in the registry, `add_store(slug, name, domain, …)` — a kebab-case **location** slug (`west-7th-tom-thumb`, not `tom-thumb`), `domain` per its category. Then `read_grocery_list` (and `read_store_notes(slug)` for anything already known) so you can match aisles to what I need.
+
+#### 3. Walk it aisle by aisle, saving as you go
+
+At each aisle, ask what the **end-cap sign** says ("what's this aisle? read the sign hanging at the end"). Record it immediately as a `layout` note — `add_store_note(slug, "Aisle 7: baking, spices, oils", tags:["layout"])` — **lead the body with the aisle number** (the number is the walk order) and list the sections in the store's **own** sign words. **Commit each aisle as we pass it**, never batched to the end — if the trip gets cut short, what we mapped is already saved. If the aisle numbers jump (I call out 7 right after 5), gently check whether we skipped one — "did we pass aisle 6, or no 6 here?" — before moving on; don't force it (stores skip numbers and have unnumbered perimeter zones).
+
+#### 4. Grab list items as we hit their aisle
+
+When an aisle's sections cover something on my list, remind me to grab it ("this aisle's got the baking stuff — grab the flour and brown sugar"). If something hides somewhere non-obvious (the harissa's over in the international aisle), silently write a `location` note after confirming with me where we found it — `add_store_note(slug, "Aisle <N>: <item>", tags:["location"])` — **only if** no existing `location` note already mentions the item name (case-insensitive). If the store doesn't carry a listed item, *offer* a `stock` note (`tags:["stock"]`). For `layout` notes (the aisle name itself comes from the sign I read aloud), the confirmation IS the data — still require it. When we reach a frozen or refrigerated aisle, remind me to grab those **last** if I can (cold chain) — or at least not let them sit warm — since here we're following the store's physical order, not reordering.
+
+#### 5. Complete → received
+
+Before wrapping up, sweep the list for anything we never matched to an aisle — "you've still got harissa and flour unticked; did we pass those, or should we double back?" — a skipped aisle often hides here. Then, when we're done, picked items go straight `active → received` — **no `in_cart`/`ordered` stage**. Persist it in **one** `commit_changes`: remove the picked items via `grocery_list_ops` and — **for `grocery`-kind items only** — restock the pantry via `pantry_operations`; `household`/`other` never touch the pantry. Then, for the fresh perishables just received, offer a couple of storage tips following the **Putting groceries away** guidance.
+<!-- /resource -->
 
 ### Configure grocery profile
 
