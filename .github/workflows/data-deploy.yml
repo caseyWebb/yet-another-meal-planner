@@ -51,11 +51,11 @@ jobs:
     steps:
       # The caller's repo (the data repo) — for the operator's wrangler.jsonc, and
       # the target of the KV-id pin-back commit.
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       # This code repo — the Worker source + build deps. Into _code/ so nothing is
       # ever committed back to the data repo (except the pinned ids, below).
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           repository: caseyWebb/groceries-agent
           ref: ${{ inputs.code_ref }}
