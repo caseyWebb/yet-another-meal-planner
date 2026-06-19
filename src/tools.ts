@@ -24,6 +24,7 @@ import { registerCookingTools } from "./cooking-tools.js";
 import { filterRecipes, type RecipeIndex } from "./recipes.js";
 import { listStorageGuidance, readStorageGuidance } from "./storage-guidance.js";
 import { fetchWeatherForecast } from "./weather.js";
+import { parseStaples, STAPLES_PATH } from "./staples.js";
 import { profileStatus } from "./profile-status.js";
 import { parseOverlay, mergeOverlay, type Overlay } from "./overlay.js";
 import { toInventory } from "./kitchen.js";
@@ -381,6 +382,20 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
         const text = await readOptional(gh, "kitchen.toml");
         if (!text) return { owned: [], notes: {} };
         return toInventory(parseToml(text, "kitchen.toml"));
+      }),
+  );
+
+  server.registerTool(
+    "read_staples",
+    {
+      description:
+        "Read the caller's staples list — items they never want to run out of. Returns { items: [{ name, perishable? }] }. Returns { items: [] } when no staples.toml exists — this is not an error; staples-driven behaviors simply degrade to no-ops for that session. Call unconditionally in the meal-plan context pre-pass.",
+      inputSchema: {},
+    },
+    () =>
+      runTool(async () => {
+        const text = await readOptional(gh, STAPLES_PATH);
+        return { items: parseStaples(text) };
       }),
   );
 

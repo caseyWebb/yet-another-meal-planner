@@ -224,6 +224,28 @@ Reset `last_verified_at` on confirmed items.
 **Returns:**
 - `{ verified: [...], conflicts: [...], commit_sha? }` — conflicts name items not found in the pantry; `commit_sha` is omitted when nothing was verified
 
+### `read_staples()`
+
+Return the caller's staples list (the "don't run out of these" catalog). Reads `users/<username>/staples.toml`. Returns `{ items: [] }` when absent — no error.
+
+**Returns:**
+- `{ items: [{ name, perishable? }] }` — each item has a required `name` and an optional `perishable` boolean.
+
+**Notes:** Graceful-absent — `read_staples` never errors on a missing file; an empty list simply means no staples-driven prompting fires. Used in the meal-plan pre-pass batch and by the pantry-update flow to decide whether a depleted item warrants a restock prompt.
+
+### `update_staples(add?, remove?)`
+
+Add items to or remove items from the caller's staples list. Writes `users/<username>/staples.toml`. Adds are deduped by normalized `name`; removes match by normalized `name` and silently succeed when not present.
+
+**Params:**
+- `add` (array, optional): `[{ name, perishable? }]`. Only `name` is required. `perishable: true` enables the staleness-nudge behavior for that item (see `staples.toml` in `docs/SCHEMAS.md`).
+- `remove` (array of strings, optional): item names to remove. Silently no-ops for absent names.
+
+**Returns:**
+- `{ added, removed, commit_sha }` — `added`/`removed` are counts; `commit_sha` is null when nothing changed.
+
+**Notes:** Seeded at onboarding (see the configure-grocery-profile flow); usable any time the user names items they want to track. `perishable` is a flag about that item's typical shelf life — separate from its current pantry `category`. An item can be in both `staples.toml` and `stockup.toml`; they are independent.
+
 ### `update_stockup(items?, freezer_capacity_estimate?)`
 
 Add items to the caller's bulk-buy watchlist. Writes `users/<username>/stockup.toml`. **Add-only**, deduped by normalized item `name` (re-adding a name is a no-op; existing rows untouched), mirroring `update_discovery_sources`.

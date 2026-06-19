@@ -35,6 +35,7 @@ import {
 import { MEAL_PLAN_PATH, plannedOf, applyMealPlanOps, type MealPlanOp } from "./meal-plan.js";
 import { slugify } from "./discovery.js";
 import { addStockup, STOCKUP_PATH } from "./stockup.js";
+import { updateStaples, STAPLES_PATH } from "./staples.js";
 import { GROCERY_LIST_PATH, buildGroceryListUpdate } from "./grocery-tools.js";
 
 const SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
@@ -395,6 +396,33 @@ export function registerWriteTools(server: McpServer, gh: GitHubClient, userPref
         if (!changed) return { added, commit_sha: null };
         const { commit_sha } = await commitFiles(gh, [{ path, content: text }], `update stockup (+${added})`);
         return { added, commit_sha };
+      }),
+  );
+
+  server.registerTool(
+    "update_staples",
+    {
+      description:
+        "Add or remove items on the caller's staples list (users/<id>/staples.toml) — the must-have items they never want to run out of. Adds are deduped by normalized name (re-adding is a no-op); removes match by normalized name (absent name is a silent no-op). Each add needs a `name`; `perishable: true` is optional (flag items like eggs or butter so the agent can prompt when stock looks stale). Returns { added, removed, commit_sha }; makes no commit when nothing changed.",
+      inputSchema: {
+        add: z
+          .array(z.object({ name: z.string(), perishable: z.boolean().optional() }))
+          .optional(),
+        remove: z.array(z.string()).optional(),
+      },
+    },
+    ({ add, remove }) =>
+      runTool(async () => {
+        const path = userPath(STAPLES_PATH);
+        const existing = await readOptional(gh, path);
+        const { text, added, removed, changed } = updateStaples(existing, add ?? [], remove ?? []);
+        if (!changed) return { added, removed, commit_sha: null };
+        const { commit_sha } = await commitFiles(
+          gh,
+          [{ path, content: text }],
+          `update staples (+${added} -${removed})`,
+        );
+        return { added, removed, commit_sha };
       }),
   );
 

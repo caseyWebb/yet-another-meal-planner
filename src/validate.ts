@@ -274,6 +274,21 @@ export function validateFile(path: string, content: string): void {
     return;
   }
 
+  // Per-tenant staples list (users/<id>/staples.toml, or bare). Each item needs
+  // a string `name`; `perishable` is an optional boolean.
+  if (path === "staples.toml" || path.endsWith("/staples.toml")) {
+    const parsed = parseTomlOrFail(path, content);
+    for (const it of items(parsed)) {
+      if (typeof it.name !== "string" || it.name.length === 0) {
+        fail(path, "item is missing required field `name`");
+      }
+      if (it.perishable != null && typeof it.perishable !== "boolean") {
+        fail(path, `\`perishable\` = ${JSON.stringify(it.perishable)} must be a boolean`);
+      }
+    }
+    return;
+  }
+
   // Other TOML (preferences, aliases, stockup, flyer_terms, …):
   // parse-only — confirm it isn't syntactic garbage before committing.
   if (path.endsWith(".toml")) {

@@ -7,7 +7,7 @@ Concrete schemas with example values for every data file in the repo. Keep this 
 The data lives in **one private data repo** with two regions (see `ARCHITECTURE.md`). Every file below lives in exactly one:
 
 - **Shared corpus (data-repo root)** — objective, single-source, read by everyone: `recipes/*.md` (objective frontmatter + body), `aliases.toml`, `skus/kroger.toml`, `flyer_terms.toml`, `storage_guidance/` (curated put-away advice), **`stores/<slug>.toml`** (in-store walk store registry — identity, keyed by location; layout lives in store notes), **`feeds.toml`** (RSS discovery feeds), **`discoveries_inbox.toml`** (forwarded-newsletter emails for agent parsing), **`discovery_sources.toml`** (inbound-email allowlist), `_indexes/`. Discovery is a shared, top-level concern — feeds and the newsletter inbox feed one group pool, judged against each caller's taste at read time.
-- **Per-tenant subtree (`users/<username>/`)** — each member's own state: `pantry.toml`, `preferences.toml`, `stockup.toml`, `grocery_list.toml`, `meal_plan.toml`, `cooking_log.toml`, `ready_to_eat.toml` (personal heat-and-eat catalog), `kitchen.toml` (owned cooking equipment), `taste.md`, `diet_principles.md`, **`overlay.toml`** (subjective recipe view), **`notes/<slug>.toml`** (attributed recipe notes), **`store_notes/<slug>.toml`** (attributed store notes), and any personal (unshared) recipes.
+- **Per-tenant subtree (`users/<username>/`)** — each member's own state: `pantry.toml`, `preferences.toml`, `stockup.toml`, `staples.toml` (must-have items list), `grocery_list.toml`, `meal_plan.toml`, `cooking_log.toml`, `ready_to_eat.toml` (personal heat-and-eat catalog), `kitchen.toml` (owned cooking equipment), `taste.md`, `diet_principles.md`, **`overlay.toml`** (subjective recipe view), **`notes/<slug>.toml`** (attributed recipe notes), **`store_notes/<slug>.toml`** (attributed store notes), and any personal (unshared) recipes.
 
 **Three-category recipe model:** a recipe's *content* (objective frontmatter + body) is shared; its *overlay* (`rating` + `status`) is per-tenant in `overlay.toml`; its *notes* are per-tenant, attributed, append-mostly. `last_cooked` is **not stored** — it's derived per-tenant from that member's `cooking_log.toml`. Read tools merge shared content + the caller's overlay + cooking-log `last_cooked` at read time.
 
@@ -564,6 +564,30 @@ preferred_rotation_days = 3      # don't suggest the same item within N days
 ```
 
 Addressed by `slug`: `update_ready_to_eat(slug, …)` dispositions or rates an item; `add_draft_ready_to_eat` appends (default `draft`, or `status: "active"` for an onboarding-named item) and returns the generated slug. `ready_to_eat_available()` reads the caller's own catalog. There is **no** `_indexes/ready_to_eat.json` — the per-member list is small and read directly. `null` fields are omitted on write (TOML has no null) and treated as absent on read. `category` is a free-form string (no controlled vocabulary), unlike the pantry `category` enum — the `"frozen"`/`"refrigerated"` values above are illustrative. Only `name`, `slug`, `meal`, `status`, and `rating` are validated; `category` / `brand` / `notes` / `added_at` / `discovered_at` / `discovery_source` / `sku` are unenforced passthrough metadata.
+
+## staples.toml
+
+**Per-tenant** (`users/<username>/staples.toml`). Curated "don't run out of these" list. **Agent-writable via `update_staples`** (add-only with dedup; remove by name) as well as hand-edited; optionally seeded at onboarding.
+
+```toml
+# staples.toml — must-have items list (agent-writable via update_staples)
+
+[[items]]
+name = "olive oil"
+# non-perishable — checked at shopping/meal-plan time; no staleness nudge
+
+[[items]]
+name = "eggs"
+perishable = true
+# perishable: true — also triggers a staleness nudge when last_verified_at in
+# pantry.toml is older than 7 days (or absent), during shopping/meal-plan flow
+```
+
+**Notes:**
+- `name` is the only required item field. `perishable` is an optional boolean (default false when absent).
+- **Distinct from `stockup.toml`** (which is price-opportunism / bulk-buy). An item like rice can legitimately appear in both — they are independent and fire at different moments for different reasons.
+- **Absent `staples.toml` degrades gracefully** — all staples-driven behaviors (depletion prompts, restocking callout, staleness nudges) become no-ops, preserving pre-staples behavior.
+- **Perishable flag is explicit**, not inferred from pantry `category` — a staple that's completely empty won't be in `pantry.toml` at all, so inferring from category wouldn't work.
 
 ## stockup.toml
 
