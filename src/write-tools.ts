@@ -120,8 +120,12 @@ async function buildPantryUpdate(
   operations: Parameters<typeof applyPantryOperations>[1],
   verifyNames: string[],
 ): Promise<{ file: TreeFile | null; applied: AppliedOp[]; conflicts: ConflictOp[] }> {
-  const text = await readFile(gh, path, "not_found", "no pantry is set up");
-  const parsed = parseToml(text, path);
+  // Tolerate a not-yet-created pantry: an `add` seeds pantry.toml from empty (the
+  // onboarding starting-inventory step relies on this), matching the cooking-log,
+  // meal-plan, and grocery-list builders. A lone remove/verify against an absent
+  // pantry then reports conflicts (no item with that name) rather than hard-erroring.
+  const text = (await readOptional(gh, path)) ?? "";
+  const parsed = text ? parseToml(text, path) : {};
   let items = itemsOf(parsed) as PantryItem[];
 
   const opResult = applyPantryOperations(items, operations, today());

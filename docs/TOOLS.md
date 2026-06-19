@@ -200,7 +200,7 @@ Apply pantry updates from conversational messages.
 **Returns:**
 - `{ applied: [...], conflicts: [...], commit_sha? }` — `commit_sha` is omitted when nothing applied
 
-**Notes:** Conflicts surface when remove targets aren't found. The agent should ask the user how to resolve.
+**Notes:** Conflicts surface when remove targets aren't found. The agent should ask the user how to resolve. An `add` against a not-yet-created pantry **seeds** `users/<username>/pantry.toml` from empty (the onboarding starting-inventory step relies on this) — a missing file is not an error. A lone `remove`/`verify` on an absent pantry simply reports conflicts (no item with that name) and makes no commit.
 
 ### `update_kitchen(operations)`
 

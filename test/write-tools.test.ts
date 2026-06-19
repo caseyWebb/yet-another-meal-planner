@@ -427,20 +427,113 @@ describe("buildGroceryListUpdate", () => {
   });
 });
 
-describe("commit_changes grocery_list_ops integration", () => {
-  // Invoke the real registered commit_changes handler through a minimal fake server,
-  // capturing the createTree call to prove one commit spans all three files.
-  function collectTools(gh: GitHubClient, userPrefix: string) {
-    const handlers = new Map<string, (input: unknown) => Promise<{ content: { text: string }[] }>>();
-    const server = {
-      registerTool: (name: string, _cfg: unknown, handler: (input: unknown) => Promise<{ content: { text: string }[] }>) => {
-        handlers.set(name, handler);
-      },
-    };
-    registerWriteTools(server as unknown as Parameters<typeof registerWriteTools>[0], gh, userPrefix);
-    return handlers;
-  }
+// Invoke the real registered write-tool handlers through a minimal fake server,
+// capturing createTree so a test can prove what files a commit staged.
+function collectTools(gh: GitHubClient, userPrefix: string) {
+  const handlers = new Map<string, (input: unknown) => Promise<{ content: { text: string }[] }>>();
+  const server = {
+    registerTool: (name: string, _cfg: unknown, handler: (input: unknown) => Promise<{ content: { text: string }[] }>) => {
+      handlers.set(name, handler);
+    },
+  };
+  registerWriteTools(server as unknown as Parameters<typeof registerWriteTools>[0], gh, userPrefix);
+  return handlers;
+}
 
+/** A gh whose getFile always 404s, capturing every createTree's staged changes. */
+function ghCapturing(captured: { path: string; content?: string }[][]): GitHubClient {
+  return {
+    ...ghWith({}),
+    async createTree(_baseTree: string, changes: { path: string; content?: string }[]) {
+      captured.push(changes);
+      return "tree";
+    },
+  };
+}
+
+describe("buildPantryUpdate on a brand-new pantry (issue #2)", () => {
+  it("update_pantry add seeds pantry.toml when none exists yet", async () => {
+    const captured: { path: string; content?: string }[][] = [];
+    const handlers = collectTools(ghCapturing(captured), "users/everett");
+    const res = await handlers.get("update_pantry")!({
+      operations: [{ op: "add", item: { name: "butter", category: "fridge" } }],
+    });
+    const out = JSON.parse(res.content[0].text) as {
+      applied: { op: string; name: string }[];
+      conflicts: unknown[];
+      commit_sha: string;
+    };
+    expect(out.applied).toContainEqual({ op: "add", name: "butter" });
+    expect(out.conflicts).toHaveLength(0);
+    expect(out.commit_sha).toBe("x");
+    expect(captured).toHaveLength(1);
+    const file = captured[0].find((c) => c.path === "users/everett/pantry.toml");
+    expect(file).toBeDefined();
+    const items = parseToml(file!.content!, "pantry.toml").items as Record<string, unknown>[];
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({ name: "butter", category: "fridge" });
+  });
+
+  it("update_pantry add seeds the file even for a single minimal op (name only)", async () => {
+    const captured: { path: string; content?: string }[][] = [];
+    const handlers = collectTools(ghCapturing(captured), "users/everett");
+    const res = await handlers.get("update_pantry")!({ operations: [{ op: "add", name: "butter" }] });
+    const out = JSON.parse(res.content[0].text) as { applied: { op: string; name: string }[] };
+    expect(out.applied).toContainEqual({ op: "add", name: "butter" });
+    const items = parseToml(
+      captured[0].find((c) => c.path === "users/everett/pantry.toml")!.content!,
+      "pantry.toml",
+    ).items as Record<string, unknown>[];
+    expect(items.map((i) => i.name)).toEqual(["butter"]);
+  });
+
+  it("commit_changes pantry_operations seeds pantry.toml when none exists yet", async () => {
+    const captured: { path: string; content?: string }[][] = [];
+    const handlers = collectTools(ghCapturing(captured), "users/everett");
+    const res = await handlers.get("commit_changes")!({
+      pantry_operations: [
+        { op: "add", item: { name: "butter", category: "fridge" } },
+        { op: "add", item: { name: "rice", category: "pantry" } },
+      ],
+      commit_message: "seed starting pantry",
+    });
+    const out = JSON.parse(res.content[0].text) as { summary: { pantry: { applied: unknown[]; conflicts: unknown[] } } };
+    expect(out.summary.pantry.applied).toHaveLength(2);
+    expect(out.summary.pantry.conflicts).toHaveLength(0);
+    const items = parseToml(
+      captured[0].find((c) => c.path === "users/everett/pantry.toml")!.content!,
+      "pantry.toml",
+    ).items as Record<string, unknown>[];
+    expect(items.map((i) => i.name)).toEqual(["butter", "rice"]);
+  });
+
+  it("a lone remove against an absent pantry reports a conflict and makes no commit", async () => {
+    const captured: { path: string; content?: string }[][] = [];
+    const handlers = collectTools(ghCapturing(captured), "users/everett");
+    const res = await handlers.get("update_pantry")!({ operations: [{ op: "remove", name: "ghost" }] });
+    const out = JSON.parse(res.content[0].text) as {
+      applied: unknown[];
+      conflicts: { op: string; name: string }[];
+      commit_sha?: string;
+    };
+    expect(out.applied).toHaveLength(0);
+    expect(out.conflicts).toContainEqual({ op: "remove", name: "ghost", reason: "no pantry item with that name" });
+    expect(out.commit_sha).toBeUndefined(); // file:null → no commit
+    expect(captured).toHaveLength(0);
+  });
+
+  it("mark_pantry_verified against an absent pantry reports missing, makes no commit", async () => {
+    const captured: { path: string; content?: string }[][] = [];
+    const handlers = collectTools(ghCapturing(captured), "users/everett");
+    const res = await handlers.get("mark_pantry_verified")!({ items: ["butter"] });
+    const out = JSON.parse(res.content[0].text) as { verified: string[]; conflicts: { op: string; name: string }[] };
+    expect(out.verified).toHaveLength(0);
+    expect(out.conflicts).toContainEqual({ op: "verify", name: "butter", reason: "no pantry item with that name" });
+    expect(captured).toHaveLength(0);
+  });
+});
+
+describe("commit_changes grocery_list_ops integration", () => {
   it("lands grocery_list + meal_plan + pantry in a single commit (one createTree, all three files)", async () => {
     const captured: { path: string }[][] = [];
     const base = ghWith({ "users/alice/pantry.toml": "items = []\n" });
