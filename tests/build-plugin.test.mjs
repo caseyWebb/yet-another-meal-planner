@@ -13,6 +13,7 @@ import {
   renderWorkflowSkill,
   loaderLine,
   renderMcpConfig,
+  isHttpUrl,
   renderPluginManifest,
   buildPluginFiles,
   parseResourceBlocks,
@@ -191,6 +192,16 @@ test('renderMcpConfig bakes the given worker url into the connector', () => {
   const cfg = JSON.parse(renderMcpConfig('https://example.test/mcp'));
   assert.equal(cfg.mcpServers['grocery-mcp'].type, 'http');
   assert.equal(cfg.mcpServers['grocery-mcp'].url, 'https://example.test/mcp');
+});
+
+test('isHttpUrl gates the committed-bundle guard: http(s) only, no sentinels', () => {
+  // Real connector URLs pass; the placeholder and CI sentinels (e.g. __ci__) are
+  // rejected so they can never leak into the committed marketplace bundle again.
+  assert.equal(isHttpUrl('https://groceries-mcp.caseywebb.xyz/mcp'), true);
+  assert.equal(isHttpUrl('http://localhost:8787/mcp'), true);
+  assert.equal(isHttpUrl('__ci__'), false);
+  assert.equal(isHttpUrl(''), false);
+  assert.equal(isHttpUrl('ftp://example.test/mcp'), false);
 });
 
 test('renderPluginManifest: no userConfig (claude.ai ignores it); version is opt-in', () => {
