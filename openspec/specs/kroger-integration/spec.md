@@ -62,32 +62,32 @@ The system SHALL provide `kroger_prices(ingredients)` returning, per ingredient,
 
 ### Requirement: kroger_flyer synthesized sale scan
 
-The system SHALL provide `kroger_flyer(filter)` that synthesizes a sale list by scanning two term sources and returning genuinely-discounted, fulfillable products deduplicated by `productId`: **precise** terms supplied by the caller (menu ingredients, stockup item names, and any substitute candidates the agent has enumerated from world knowledge) and **broad** curated terms read from `flyer_terms.toml`. The tool SHALL NOT itself derive substitution candidates from a rules file — there is no `against_substitutions` source; substitute terms, when wanted, are passed in by the caller as ordinary `terms`. A product SHALL be kept only when it is fulfillable (curbside or delivery), on sale (`promo > 0 && promo < regular`, excluding Kroger's `promo == regular` non-sale echo), AND marked down by at least `min_savings_pct` of the regular price — a `filter` parameter defaulting to 5%, so penny / near-zero markdowns are excluded while the caller owns the "what counts as a deal" threshold. Each kept product SHALL carry **every** scanned term that surfaced it (`matched_terms`), not only the first, so the caller can distinguish a stockup/menu match from a broad-category match. The result is explicitly non-exhaustive (the public API exposes no flyer/circular endpoint and no sort-by-discount); each term returns a bounded relevance-ranked page that MAY be paginated a few pages deep.
+The system SHALL provide `kroger_flyer(min_savings_pct?)` that returns a synthesized sale list by reading a **pre-warmed per-location flyer cache**, never by issuing live Kroger searches. The tool SHALL resolve the caller's `preferred_location` to a `locationId`, read the materialized rollup at KV key `flyer:{locationId}`, apply the `min_savings_pct` threshold (a parameter defaulting to 5%) at read time over the cached candidates, and return `{ items, as_of }` — where each item is a fulfillable, genuinely-discounted product deduplicated by `productId` and carrying every broad term that surfaced it (`matched_terms`), and `as_of` is the completion timestamp of the sweep that produced the rollup (or null when no rollup exists). The tool SHALL NOT issue any external Kroger subrequest on this path. The cached rollup SHALL store every product passing the **noise floor** — fulfillable (curbside or delivery) AND on sale (`promo > 0 && promo < regular`, excluding Kroger's `promo == regular` echo) — with raw `regular`/`promo` preserved, so the `min_savings_pct` deal judgment is applied at read and remains caller-tunable. The tool SHALL NOT accept ad-hoc `terms` or an `against_stockup` flag: the former live fan-out and per-tenant/precise scanning are removed from this tool and re-homed to the place-groceries flow. When the rollup is absent (cold cache, or a store not yet swept), the tool SHALL return an empty `items` list rather than erroring. The result is explicitly non-exhaustive and MAY be minutes-to-hours stale; `as_of` conveys its age, and the order path re-prices live at fulfillment.
 
-#### Scenario: Only genuine discounts are returned
+#### Scenario: Flyer is served from the warmed cache without live fetch
 
-- **WHEN** `kroger_flyer` runs
-- **THEN** it keeps only fulfillable products on sale and marked down by at least `min_savings_pct` (default 5%) of the regular price, deduplicated by `productId`, dropping `promo == regular` echoes and penny markdowns
+- **WHEN** `kroger_flyer` runs for a caller whose store has a warmed rollup
+- **THEN** it returns that location's cached flyer items plus an `as_of` timestamp, issuing no external Kroger subrequest
 
-#### Scenario: Substitute candidates are scanned as caller-supplied terms
+#### Scenario: Discount floor applied at read time
 
-- **WHEN** the agent wants to check whether a salmon substitute is on sale
-- **THEN** it enumerates candidates (e.g. trout, arctic char, mahi mahi) from world knowledge and passes them as `terms`, rather than the tool reading a substitutions file
+- **WHEN** the caller passes a `min_savings_pct` (or omits it, defaulting to 5%)
+- **THEN** only cached products marked down by at least that fraction of the regular price are returned, the deal judgment staying with the caller over the noise-floor rollup
 
-#### Scenario: Each product carries all matching terms
+#### Scenario: Cold or missing cache degrades gracefully
 
-- **WHEN** a product is surfaced by more than one scanned term (e.g. a precise stockup term and a broad category term)
-- **THEN** it appears once with `matched_terms` listing every term that surfaced it, rather than collapsing to the first term
+- **WHEN** the rollup at `flyer:{locationId}` is absent (fresh deploy, or a store not yet swept)
+- **THEN** `kroger_flyer` returns an empty `items` list and a null `as_of` rather than erroring
 
-#### Scenario: Broad terms drive serendipitous discovery
+#### Scenario: Ad-hoc terms and stockup scanning are not accepted
 
-- **WHEN** `flyer_terms.toml` contains broad category terms (e.g. `"fruit"`, `"frozen meals"`)
-- **THEN** those terms are scanned in addition to precise context terms, surfacing sales beyond the caller's known item list
+- **WHEN** the agent wants to check a salmon substitute or a stockup item against current sales
+- **THEN** it does so through the place-groceries flow, not `kroger_flyer`, which no longer performs any live scan or accepts `terms` / `against_stockup`
 
-#### Scenario: Caller widens the discount floor
+#### Scenario: Each product carries all matching broad terms
 
-- **WHEN** the caller passes a `min_savings_pct` below (or above) the 5% default
-- **THEN** the scan keeps products meeting that threshold instead, moving the deal judgment to the caller
+- **WHEN** a product was surfaced by more than one broad term during the sweep
+- **THEN** it appears once in the rollup with `matched_terms` listing every broad term that surfaced it, rather than collapsing to the first
 
 ### Requirement: ready_to_eat_available by curbside/delivery fulfillment
 
@@ -105,10 +105,10 @@ The system SHALL provide `ready_to_eat_available()` that cross-references the **
 
 ### Requirement: flyer_terms.toml curated config
 
-The system SHALL read broad scan terms from a user-curated `flyer_terms.toml`. The agent SHALL treat it as edit-only-when-directed (the user-curated bucket) and SHALL NOT infer or write terms automatically. Its schema SHALL be documented in `docs/SCHEMAS.md`.
+The system SHALL read broad scan terms from a user-curated `flyer_terms.toml`. The agent SHALL treat it as edit-only-when-directed (the user-curated bucket) and SHALL NOT infer or write terms automatically. These broad terms drive the **background flyer warm** that populates the per-location cache `kroger_flyer` reads, rather than a live per-call scan. Its schema SHALL be documented in `docs/SCHEMAS.md`.
 
 #### Scenario: Missing config degrades gracefully
 
 - **WHEN** `flyer_terms.toml` is absent or empty
-- **THEN** `kroger_flyer` still runs over the precise context terms and returns a (smaller) sale list rather than erroring
+- **THEN** the warm sweep has no broad terms to scan, the per-location rollup is empty, and `kroger_flyer` returns an empty sale list rather than erroring
 
