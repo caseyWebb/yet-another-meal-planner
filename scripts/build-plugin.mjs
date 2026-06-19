@@ -272,6 +272,17 @@ export function renderPluginManifest({ name = PLUGIN_NAME, description = PLUGIN_
 // claude.ai does NOT substitute userConfig (verified 2026-06-11) — the variable
 // reached the connector literally. So each operator bakes their own Worker URL via
 // --mcp-url and a fork/rebuild; self-hosters do the same.
+// A connector URL is valid for the committed bundle only if it parses as http(s).
+// The placeholder and CI sentinels (e.g. `__ci__`) are NOT URLs and must never reach
+// installers. Exported so the guard's rule is unit-tested, not just exercised via main().
+export function isHttpUrl(u) {
+  try {
+    return ['http:', 'https:'].includes(new URL(u).protocol);
+  } catch {
+    return false;
+  }
+}
+
 export function renderMcpConfig(mcpUrl) {
   return `${JSON.stringify({ mcpServers: { 'grocery-mcp': { type: 'http', url: mcpUrl } } }, null, 2)}\n`;
 }
@@ -352,13 +363,22 @@ async function main() {
     return;
   }
 
+  const writingCommittedBundle = path.resolve(out) === path.resolve(committedBundle);
+  // What installers actually get must carry a REAL connector URL. The placeholder
+  // is the obvious footgun, but any non-URL sentinel is just as broken — the CI
+  // drift-check builds with `--mcp-url __ci__` (to a throwaway --out), and that
+  // value silently leaked into the committed bundle once because the old guard only
+  // matched the example placeholder. So the rule for the committed bundle is now
+  // positive: the URL must parse as http(s). Throwaway/dist builds still allow the
+  // placeholder (with a warning) so `node scripts/build-plugin.mjs` and the CI check
+  // keep working.
+  if (writingCommittedBundle && (mcpUrl === MCP_URL_PLACEHOLDER || !isHttpUrl(mcpUrl))) {
+    console.error(
+      `build-plugin: REFUSING to write a non-connector URL ("${mcpUrl}") into the committed marketplace bundle (${path.relative(REPO_ROOT, committedBundle)}) — that would break every install. Set GROCERY_MCP_URL (mise.local.toml) or pass --mcp-url https://<your-worker-host>/mcp.`,
+    );
+    process.exit(1);
+  }
   if (mcpUrl === MCP_URL_PLACEHOLDER) {
-    if (path.resolve(out) === path.resolve(committedBundle)) {
-      console.error(
-        `build-plugin: REFUSING to write the placeholder connector URL into the committed marketplace bundle (${path.relative(REPO_ROOT, committedBundle)}) — that would break every install. Set GROCERY_MCP_URL (mise.local.toml) or pass --mcp-url <your-worker-url>.`,
-      );
-      process.exit(1);
-    }
     console.warn(
       `build-plugin: WARNING — no connector URL (set GROCERY_MCP_URL or pass --mcp-url); .mcp.json uses the placeholder ${MCP_URL_PLACEHOLDER}, so the connector will NOT resolve. Fine for a throwaway/dist build.`,
     );

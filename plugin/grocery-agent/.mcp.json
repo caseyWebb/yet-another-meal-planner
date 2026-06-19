@@ -2,7 +2,7 @@
   "mcpServers": {
     "grocery-mcp": {
       "type": "http",
-      "url": "__ci__"
+      "url": "https://groceries-mcp.caseywebb.xyz/mcp"
     }
   }
 }
