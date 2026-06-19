@@ -84,4 +84,8 @@ jobs:
         if: steps.changed.outputs.relevant == 'true'
         env:
           GH_TOKEN: ${{ secrets.DATA_REPO_ACTIONS_TOKEN }}
-        run: gh workflow run deploy.yml --repo caseyWebb/groceries-agent-data
+        # Pin --ref so gh doesn't resolve the data repo's default branch
+        # (the defaultBranchRef GraphQL lookup needs Contents:read on the token);
+        # the deploy always targets main, so this keeps DATA_REPO_ACTIONS_TOKEN
+        # scoped to just Actions:write (+ mandatory Metadata).
+        run: gh workflow run deploy.yml --repo caseyWebb/groceries-agent-data --ref main
