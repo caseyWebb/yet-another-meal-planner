@@ -11,7 +11,7 @@ import type { GitHubClient, TreeFile } from "./github.js";
 import { readFile, readOptional, loadAliases } from "./gh-read.js";
 import { normalizePerishables } from "./matching.js";
 import { parseMarkdown, parseToml } from "./parse.js";
-import { serializeMarkdown, stringifyTomlWithHeader } from "./serialize.js";
+import { serializeMarkdown, stringifyTomlWithHeader, stripEmptyVarietyDimensions } from "./serialize.js";
 import { ToolError, runTool } from "./errors.js";
 import { commitFiles } from "./commit.js";
 import {
@@ -94,6 +94,9 @@ export async function buildRecipeUpdate(
   if ("perishable_ingredients" in updates) {
     merged.perishable_ingredients = normalizePerishables(merged.perishable_ingredients, await loadAliases(gh));
   }
+  // Treat a none/empty protein|cuisine as absent so a no-protein dish writes
+  // cleanly instead of tripping the controlled-vocabulary check.
+  stripEmptyVarietyDimensions(merged);
   return { path, content: serializeMarkdown(merged, body) };
 }
 
@@ -322,7 +325,7 @@ export function registerWriteTools(server: McpServer, gh: GitHubClient, userPref
     "update_recipe",
     {
       description:
-        "Edit a recipe. Objective frontmatter and body edits change the SHARED recipe content; rating and status are the caller's PERSONAL disposition and are written to their overlay, never the shared recipe. last_cooked cannot be set here — it is derived from the cooking log (append a cooking_log entry via commit_changes). For batching a whole session, use commit_changes.",
+        "Edit a recipe. Objective frontmatter and body edits change the SHARED recipe content; rating and status are the caller's PERSONAL disposition and are written to their overlay, never the shared recipe. Objective frontmatter validates against the controlled vocabularies: `protein`/`cuisine` must be coarse buckets (shrimp→shellfish, salmon→fish; omit `protein` when there's no protein focus — never 'none') and `requires_equipment` slugs must be in-vocab; an off-vocabulary value is rejected (validation_failed). last_cooked cannot be set here — it is derived from the cooking log (append a cooking_log entry via commit_changes). For batching a whole session, use commit_changes.",
       inputSchema: { slug: z.string(), updates: z.record(z.string(), z.unknown()) },
     },
     ({ slug, updates }) =>

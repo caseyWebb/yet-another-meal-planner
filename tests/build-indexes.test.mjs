@@ -62,6 +62,25 @@ test('builds recipe index from fixtures', async () => {
   assert.equal(recipes['experimental-tofu'].status, undefined);
 });
 
+test('flags an off-vocabulary protein (shared vocab from src/vocab.js is the build gate)', async () => {
+  const dir = await tmpRecipes({ 'shrimp.md': recipe('title: Shrimp\nstatus: active\nprotein: shrimp') });
+  const { errors } = await buildRecipeIndexes(dir);
+  assert.ok(
+    errors.some((e) => /protein/.test(e) && /shrimp/.test(e) && /controlled vocabulary/.test(e)),
+    errors.join('\n'),
+  );
+  await rm(dir, { recursive: true, force: true });
+});
+
+test('accepts the coarse buckets (shellfish / thai) the shared vocab defines', async () => {
+  const dir = await tmpRecipes({
+    'curry.md': recipe('title: Curry\nstatus: active\nprotein: shellfish\ncuisine: thai'),
+  });
+  const { errors } = await buildRecipeIndexes(dir);
+  assert.deepEqual(errors, []);
+  await rm(dir, { recursive: true, force: true });
+});
+
 test('validateReadyToEatCatalog: clean catalog passes, malformed ones report', () => {
   const ok = {
     items: [

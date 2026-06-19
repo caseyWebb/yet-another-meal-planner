@@ -2,17 +2,16 @@
 // to cook WITH. Two structurally-separated regions: `owned` — the gating list, an
 // array of EQUIPMENT_VOCAB slugs that is the makeability gate's left operand — and
 // `notes`, freeform cook-reasoning context (oven count, pan sizes) the gate never
-// reads. The vocab mirrors EQUIPMENT_VOCAB in scripts/build-indexes.mjs; keep in sync.
+// reads.
 
-// Equipment a dish is genuinely IMPOSSIBLE without — the "no recipe-preserving
-// workaround exists" test, deliberately small (it doubles as the onboarding
-// checklist). Extending it is a deliberate edit (here + build-indexes.mjs + docs).
-export const EQUIPMENT_VOCAB = [
-  "pressure-cooker",
-  "sous-vide-circulator",
-  "blender",
-  "ice-cream-maker",
-] as const;
+// EQUIPMENT_VOCAB is the makeability gate's vocabulary — the equipment a dish is
+// genuinely IMPOSSIBLE without ("no recipe-preserving workaround"). It is defined
+// once in the shared single-source module (src/vocab.js) and re-exported here for
+// the kitchen logic + the Worker validator; scripts/build-indexes.mjs imports the
+// same source, so the write-time and build-time gates cannot drift. Extending it
+// is a deliberate edit in src/vocab.js (+ a docs/SCHEMAS.md update).
+import { EQUIPMENT_VOCAB } from "./vocab.js";
+export { EQUIPMENT_VOCAB };
 
 export function isEquipmentSlug(slug: unknown): boolean {
   return typeof slug === "string" && EQUIPMENT_VOCAB.some((v) => v === slug);

@@ -6,7 +6,7 @@
 import type { GitHubClient, TreeFile } from "./github.js";
 import { readOptional, loadAliases } from "./gh-read.js";
 import { normalizePerishables } from "./matching.js";
-import { serializeMarkdown } from "./serialize.js";
+import { serializeMarkdown, stripEmptyVarietyDimensions } from "./serialize.js";
 import { ToolError } from "./errors.js";
 import { truncate } from "./text.js";
 import { parseToml } from "./parse.js";
@@ -187,5 +187,8 @@ export async function buildNewRecipe(
   if ("perishable_ingredients" in fm) {
     fm.perishable_ingredients = normalizePerishables(fm.perishable_ingredients, await loadAliases(gh));
   }
+  // Treat a none/empty protein|cuisine as absent so a no-protein dish writes
+  // cleanly instead of tripping the controlled-vocabulary check.
+  stripEmptyVarietyDimensions(fm);
   return { slug, file: { path, content: serializeMarkdown(fm, body) } };
 }

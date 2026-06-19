@@ -1,14 +1,18 @@
 // Structural pre-commit validation (data-write-tools capability). Runs on
 // workerd — the Node index-build validator (scripts/build-indexes.mjs) can't run
-// in the Worker, so this reimplements only the STRUCTURAL subset: every staged
-// file parses, and enumerated fields hold legal values. Cross-reference / index
-// validation stays the post-push build Action's job. Any problem throws
-// ToolError("validation_failed") so the commit engine makes no commit.
+// in the Worker, so this reimplements the STRUCTURAL subset: every staged file
+// parses, enumerated fields hold legal values, and recipe controlled-vocabulary
+// fields (protein / cuisine / requires_equipment) are vocab-checked against the
+// SAME shared definition the build uses (src/vocab.js). Cross-reference / index
+// validation (slug resolution) stays the post-push build Action's job — it needs
+// the whole corpus. Any problem throws ToolError("validation_failed") so the
+// commit engine makes no commit, and the member's agent gets an immediate,
+// fixable error instead of a post-push build failure on main.
 
 import { load as loadYaml } from "js-yaml";
 import { parse as parseTomlRaw } from "smol-toml";
 import { ToolError } from "./errors.js";
-import { EQUIPMENT_VOCAB } from "./kitchen.js";
+import { PROTEIN_VOCAB, CUISINE_VOCAB, EQUIPMENT_VOCAB } from "./vocab.js";
 
 // `archived` is valid but tool-unwritten on purpose: it's the MANUAL
 // history-preserving removal state. A recipe with cooking_log history can't be
@@ -24,10 +28,14 @@ const READY_TO_EAT_MEALS = ["breakfast", "lunch", "dinner"];
 const GROCERY_STATUSES = ["active", "in_cart", "ordered"];
 const GROCERY_KINDS = ["grocery", "household", "other"];
 const COOKING_LOG_TYPES = ["recipe", "ready_to_eat", "ad_hoc"];
-// EQUIPMENT_VOCAB is the makeability gate's vocabulary (src/kitchen.ts, mirrored in
-// scripts/build-indexes.mjs). recipes/*.md `requires_equipment` is NOT vocab-enforced
-// here (loose write, the build is the gate); kitchen.toml `owned` IS, since it's read
-// at runtime with no build between.
+// PROTEIN_VOCAB / CUISINE_VOCAB / EQUIPMENT_VOCAB come from the single shared
+// source (src/vocab.js) that scripts/build-indexes.mjs also imports — so the
+// write-time gate and the build-time gate cannot disagree. recipes/*.md
+// protein / cuisine / requires_equipment ARE vocab-enforced here now (an off-vocab
+// value can otherwise only be caught post-push, where it breaks the public site
+// deploy and the index regen with no signal to the agent). A `none`/empty
+// protein|cuisine is normalized to absent upstream in the write path
+// (src/serialize.ts), so it never reaches this check.
 const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 function fail(path: string, message: string): never {
@@ -111,12 +119,30 @@ export function validateFile(path: string, content: string): void {
         );
       }
     }
-    // requires_equipment: shape only (array of slugs). Deliberately NOT
-    // vocab-checked here — the build is the gate for recipe content (D2), so an
-    // off-vocab slug can't reach the index without the build, which fails first.
+    // Controlled vocabularies (protein / cuisine / requires_equipment) are
+    // enforced HERE at the write boundary AND in the Node build validator, both
+    // drawing from the single shared definition (src/vocab.js), so an off-vocab
+    // value is a fixable error the agent sees immediately instead of a post-push
+    // build failure on main. Checked only WHEN PRESENT; absence stays warn-only
+    // (a no-protein dish is legitimately field-absent — `none`/empty is already
+    // normalized to absent in the write path before it reaches here).
+    if (fm.protein != null && !(typeof fm.protein === "string" && PROTEIN_VOCAB.includes(fm.protein))) {
+      fail(path, `\`protein\` = ${JSON.stringify(fm.protein)} is not in the controlled vocabulary (one of ${PROTEIN_VOCAB.join(" | ")})`);
+    }
+    if (fm.cuisine != null && !(typeof fm.cuisine === "string" && CUISINE_VOCAB.includes(fm.cuisine))) {
+      fail(path, `\`cuisine\` = ${JSON.stringify(fm.cuisine)} is not in the controlled vocabulary (one of ${CUISINE_VOCAB.join(" | ")})`);
+    }
+    // requires_equipment: an array of EQUIPMENT_VOCAB slugs. Shape first, then
+    // vocab (an off-vocab slug silently hides a makeable recipe, so reject it at
+    // write rather than post-push).
     if (fm.requires_equipment != null) {
       if (!Array.isArray(fm.requires_equipment) || fm.requires_equipment.some((s) => typeof s !== "string")) {
         fail(path, `\`requires_equipment\` must be an array of equipment slugs (got ${JSON.stringify(fm.requires_equipment)})`);
+      }
+      for (const slug of fm.requires_equipment as string[]) {
+        if (!EQUIPMENT_VOCAB.includes(slug)) {
+          fail(path, `\`requires_equipment\` slug ${JSON.stringify(slug)} is not in the controlled vocabulary (one of ${EQUIPMENT_VOCAB.join(" | ")})`);
+        }
       }
     }
     return;

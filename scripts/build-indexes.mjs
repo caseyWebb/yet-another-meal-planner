@@ -14,6 +14,7 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import matter from 'gray-matter';
 import { parse as parseToml } from 'smol-toml';
+import { PROTEIN_VOCAB, CUISINE_VOCAB, EQUIPMENT_VOCAB } from '../src/vocab.js';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 // `archived` is valid but tool-unwritten by design — the MANUAL history-preserving
@@ -27,29 +28,14 @@ const STATUS_ENUM = new Set(['active', 'draft', 'rejected', 'archived']);
 // (multi-tenant-friend-group §6.1). `status`, when still present on a not-yet-
 // migrated recipe, is validated leniently but never emitted to the shared index.
 const SUBJECTIVE_FIELDS = ['rating', 'last_cooked', 'status'];
-// Controlled vocabularies for the variety dimensions (coarse buckets — `fish`
-// not `salmon`) so retrospective mixes and diet_principles rules stay reliable.
-// Validated only WHEN PRESENT (absence keeps the warn-only recommended-field
-// treatment). Extending a vocabulary is a deliberate edit here. See docs/SCHEMAS.md.
-const PROTEIN_VOCAB = new Set([
-  'chicken', 'beef', 'pork', 'lamb', 'turkey', 'fish', 'shellfish', 'egg', 'tofu',
-  'vegetarian', 'vegan', 'mixed',
-]);
-const CUISINE_VOCAB = new Set([
-  'american', 'brazilian', 'cajun', 'caribbean', 'chinese', 'cuban', 'filipino',
-  'french', 'german', 'greek', 'indian', 'italian', 'japanese', 'korean',
-  'mediterranean', 'mexican', 'moroccan', 'peruvian', 'southwestern', 'spanish',
-  'thai', 'vietnamese',
-]);
-// Equipment a dish is genuinely IMPOSSIBLE without — the "no recipe-preserving
-// workaround exists" test, deliberately small (it doubles as the onboarding
-// checklist). Drives the makeability gate: a recipe whose requires_equipment is
-// not a subset of a member's owned list is hidden from them. Validated only WHEN
-// PRESENT; absence reads as [] (makeable by everyone). Extending this is a
-// deliberate edit here, same ceremony as the cuisine set. See docs/SCHEMAS.md.
-const EQUIPMENT_VOCAB = new Set([
-  'pressure-cooker', 'sous-vide-circulator', 'blender', 'ice-cream-maker',
-]);
+// Controlled vocabularies for the variety + makeability dimensions (coarse
+// buckets — `fish` not `salmon`) so retrospective mixes and diet_principles rules
+// stay reliable. PROTEIN_VOCAB / CUISINE_VOCAB / EQUIPMENT_VOCAB are imported from
+// the single shared source (src/vocab.js) that the Worker write-time validator
+// (src/validate.ts) also uses, so the build-time gate and the write-time gate
+// cannot drift. Validated only WHEN PRESENT (absence keeps the warn-only
+// recommended-field treatment). Extending a vocabulary is a deliberate edit in
+// src/vocab.js. See docs/SCHEMAS.md.
 const COOKING_LOG_TYPES = new Set(['recipe', 'ready_to_eat', 'ad_hoc']);
 const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 // Recommended-but-optional fields whose absence signals an incomplete migration.
@@ -172,10 +158,10 @@ export async function buildRecipeIndexes(recipesDir) {
     if (missing.length) warnings.push(`${rel}: missing recommended field(s): ${missing.join(', ')}`);
 
     // Controlled-vocabulary check: validated only when present.
-    if (data.protein != null && !PROTEIN_VOCAB.has(data.protein)) {
+    if (data.protein != null && !PROTEIN_VOCAB.includes(data.protein)) {
       errors.push(`${rel}: protein ${JSON.stringify(data.protein)} is not in the controlled vocabulary`);
     }
-    if (data.cuisine != null && !CUISINE_VOCAB.has(data.cuisine)) {
+    if (data.cuisine != null && !CUISINE_VOCAB.includes(data.cuisine)) {
       errors.push(`${rel}: cuisine ${JSON.stringify(data.cuisine)} is not in the controlled vocabulary`);
     }
 
@@ -226,7 +212,7 @@ export async function buildRecipeIndexes(recipesDir) {
         errors.push(`${rel}: requires_equipment must be an array of equipment slugs (got ${JSON.stringify(data.requires_equipment)})`);
       } else {
         for (const slug of data.requires_equipment) {
-          if (!EQUIPMENT_VOCAB.has(slug)) {
+          if (!EQUIPMENT_VOCAB.includes(slug)) {
             errors.push(`${rel}: requires_equipment ${JSON.stringify(slug)} is not in the controlled vocabulary`);
           }
         }
@@ -304,7 +290,7 @@ export function validateKitchenInventory(parsed, rel) {
       errors.push(`${rel}: kitchen \`owned\` must be an array of equipment slugs (got ${JSON.stringify(parsed.owned)})`);
     } else {
       for (const slug of parsed.owned) {
-        if (typeof slug !== 'string' || !EQUIPMENT_VOCAB.has(slug)) {
+        if (typeof slug !== 'string' || !EQUIPMENT_VOCAB.includes(slug)) {
           errors.push(`${rel}: kitchen \`owned\` slug ${JSON.stringify(slug)} is not in the controlled vocabulary`);
         }
       }

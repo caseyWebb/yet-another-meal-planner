@@ -186,12 +186,33 @@ describe("validateFile", () => {
     expect(() => validateFile("taste.md", "anything goes here")).not.toThrow();
   });
 
-  it("accepts a well-formed requires_equipment array (shape only, not vocab-enforced)", () => {
-    // The build is the vocab gate for recipe content — the Worker enforces shape only,
-    // so even an off-vocab slug passes write-time validation here (it fails the build).
+  it("accepts in-vocabulary protein, cuisine, and requires_equipment", () => {
+    expect(() =>
+      validateFile(
+        "recipes/x.md",
+        "---\nstatus: active\nprotein: shellfish\ncuisine: thai\nrequires_equipment: [blender, pressure-cooker]\n---\nbody\n",
+      ),
+    ).not.toThrow();
+  });
+
+  it("rejects an off-vocabulary protein at write time (no longer build-only)", () => {
+    expect(() =>
+      validateFile("recipes/x.md", "---\nstatus: active\nprotein: shrimp\n---\nbody\n"),
+    ).toThrowError(/protein.*shrimp.*controlled vocabulary/);
+  });
+
+  it("rejects an off-vocabulary cuisine at write time", () => {
+    expect(() =>
+      validateFile("recipes/x.md", "---\nstatus: active\ncuisine: martian\n---\nbody\n"),
+    ).toThrowError(/cuisine.*martian.*controlled vocabulary/);
+  });
+
+  it("rejects an off-vocabulary requires_equipment slug at write time", () => {
+    // The Worker now enforces the recipe vocab too (not shape-only) — an off-vocab
+    // slug is a fixable error here instead of a post-push build failure on main.
     expect(() =>
       validateFile("recipes/x.md", "---\nstatus: active\nrequires_equipment: [blender, panini-press]\n---\nbody\n"),
-    ).not.toThrow();
+    ).toThrowError(/requires_equipment.*panini-press.*controlled vocabulary/);
   });
 
   it("rejects a non-array requires_equipment", () => {
