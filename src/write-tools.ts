@@ -346,7 +346,7 @@ export function registerWriteTools(server: McpServer, gh: GitHubClient, userPref
     "update_pantry",
     {
       description:
-        "Apply pantry add/remove/verify operations. Returns what was applied and any conflicts (e.g. a remove whose target isn't present).",
+        "Apply pantry add/remove/verify operations. `add` is an upsert: re-adding an existing name merges into it (overlay incoming fields, preserve added_at, refresh last_verified_at) rather than duplicating; the result includes merged:true when this happens. Returns what was applied and any conflicts (e.g. a remove whose target isn't present).",
       inputSchema: {
         operations: z.array(
           z.object({

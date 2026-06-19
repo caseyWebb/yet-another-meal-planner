@@ -16,6 +16,7 @@ export interface PantryOperation {
 export interface AppliedOp {
   op: PantryOperation["op"];
   name: string;
+  merged?: boolean;
 }
 
 export interface ConflictOp {
@@ -58,15 +59,28 @@ export function applyPantryOperations(
         conflicts.push({ op: "add", name, reason: "add requires a name (set `name` or `item.name`)" });
         continue;
       }
-      const item: PantryItem = {
-        added_at: today,
-        last_verified_at: today,
-        prepared_from: null,
-        ...op.item,
-        name,
-      };
-      next.push(item);
-      applied.push({ op: "add", name });
+      const existingIdx = next.findIndex((it) => matches(it, name));
+      if (existingIdx >= 0) {
+        const existing = next[existingIdx];
+        next[existingIdx] = {
+          ...existing,
+          ...op.item,
+          name,
+          added_at: existing.added_at,
+          last_verified_at: today,
+        };
+        applied.push({ op: "add", name, merged: true });
+      } else {
+        const item: PantryItem = {
+          added_at: today,
+          last_verified_at: today,
+          prepared_from: null,
+          ...op.item,
+          name,
+        };
+        next.push(item);
+        applied.push({ op: "add", name });
+      }
       continue;
     }
 

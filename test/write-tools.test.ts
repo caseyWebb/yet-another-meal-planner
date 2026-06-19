@@ -318,6 +318,50 @@ describe("applyPantryOperations", () => {
     expect(res.applied).toHaveLength(0);
     expect(res.conflicts[0]).toMatchObject({ op: "add", reason: expect.stringContaining("requires a name") });
   });
+
+  it("inserts a new entry when the name is not already in the pantry", () => {
+    const res = applyPantryOperations(
+      items,
+      [{ op: "add", item: { name: "butter", category: "fridge", quantity: "1 lb" } }],
+      "2026-06-09",
+    );
+    expect(res.conflicts).toHaveLength(0);
+    expect(res.applied).toEqual([{ op: "add", name: "butter" }]);
+    expect(res.items).toHaveLength(2);
+    expect(res.items.find((i) => i.name === "butter")).toMatchObject({ quantity: "1 lb", added_at: "2026-06-09" });
+  });
+
+  it("merges into the existing entry when the name already exists, preserving added_at", () => {
+    const existing: PantryItem[] = [
+      { name: "milk", category: "fridge", quantity: "full", added_at: "2026-01-01", last_verified_at: "2026-06-01" },
+    ];
+    const res = applyPantryOperations(
+      existing,
+      [{ op: "add", item: { name: "milk", quantity: "low" } }],
+      "2026-06-09",
+    );
+    expect(res.conflicts).toHaveLength(0);
+    expect(res.applied).toEqual([{ op: "add", name: "milk", merged: true }]);
+    expect(res.items).toHaveLength(1);
+    const milk = res.items[0];
+    expect(milk.quantity).toBe("low");
+    expect(milk.added_at).toBe("2026-01-01");
+    expect(milk.last_verified_at).toBe("2026-06-09");
+  });
+
+  it("upsert match is case-insensitive", () => {
+    const existing: PantryItem[] = [
+      { name: "olive oil", category: "pantry", quantity: "partial", added_at: "2026-01-01", last_verified_at: "2026-06-01" },
+    ];
+    const res = applyPantryOperations(
+      existing,
+      [{ op: "add", item: { name: "Olive Oil", quantity: "low" } }],
+      "2026-06-09",
+    );
+    expect(res.items).toHaveLength(1);
+    expect(res.applied).toEqual([{ op: "add", name: "Olive Oil", merged: true }]);
+    expect(res.items[0].quantity).toBe("low");
+  });
 });
 
 describe("markVerified", () => {
