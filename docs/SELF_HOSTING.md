@@ -105,9 +105,16 @@ Then add the **GitHub App private key** as a Worker secret in the Cloudflare das
 
 **What your `wrangler.jsonc` owns.** The deploy merges code-level config from upstream, so your data-repo `wrangler.jsonc` only needs *operator-owned* keys:
 - `vars.GITHUB_APP_ID` (the one required value), and optionally `name` or `workers_dev: false` + `routes` for a custom domain;
-- id-less KV bindings (or omit `kv_namespaces` entirely) — they auto-provision on first deploy and their ids pin back into this file.
+- id-less KV bindings (or omit `kv_namespaces` entirely) — they auto-provision on first deploy; persist their ids one of two ways (see *Persisting your KV namespace ids* below).
 
 Do **not** set `main`, `compatibility_date`, `compatibility_flags`, `triggers`, or `observability` here — those come from the upstream Worker at deploy, and a stale copy would just be ignored. New operators start from the template with exactly this minimal shape.
+
+**Persisting your KV namespace ids (pick one).** KV bindings start id-less and auto-provision on first deploy, but the **ids must persist** to your `wrangler.jsonc` or the *next* deploy provisions **new** namespaces and orphans all your state (tenant directory, Kroger/OAuth tokens, the flyer cache). Two ways to make that durable — you don't have to grant write access if you'd rather not:
+
+- **Auto-pin (grant write).** Give your data-repo `deploy.yml` caller `permissions: contents: write` so the deploy commits the provisioned ids back into your `wrangler.jsonc` automatically. Without it, the deploy still succeeds but logs a warning that it couldn't push the ids.
+- **Manual (no write access needed).** Create the namespaces yourself once — `npx wrangler kv namespace create KROGER_KV` (and `TENANT_KV`, `OAUTH_KV`) — and paste each returned id into your `wrangler.jsonc` bindings. The deploy then reuses them, and the pin step sees no change and stays **silent** (no commit, no warning). Best if you keep your `wrangler.jsonc` hand-maintained.
+
+Either way, once your ids are set the pin step is a no-op on every subsequent deploy.
 
 **Monitoring the background jobs (optional).** The warm and the inbound-email handler run with no one watching, so the Worker exposes a `/health` endpoint that reports each background job's last-run/freshness. To use it:
 
