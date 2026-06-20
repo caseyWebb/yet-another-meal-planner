@@ -22,13 +22,19 @@
 
 - [ ] 4.1 Decide the open question: scrub the maintainer's real KV ids from the **code repo's** `wrangler.jsonc` (replace with id-less bindings) in addition to the merge-strip. If yes, do it and confirm the maintainer's own deploy path still provisions correctly; if deferred, rely on the merge-strip + tests and note the residual footgun.
 
-## 5. Docs (same pass — no drift)
+## 5. Slim the data-repo template (coupled to the merge — land together)
 
-- [ ] 5.1 `docs/SELF_HOSTING.md`: remove the manual "add `triggers` to your data-repo `wrangler.jsonc`" stopgap; describe the merged-config model and exactly what an operator's `wrangler.jsonc` is responsible for now (KV ids, `routes`/domain, `name`, account `vars`).
-- [ ] 5.2 `CONTRIBUTING.md` and/or `docs/ARCHITECTURE.md`: document the code-vs-operator wrangler ownership boundary (the rule table) so future wrangler changes land in the right place.
-- [ ] 5.3 `wrangler.jsonc`: update/remove the heads-up comment at the `triggers` block (the manual-sync caveat no longer applies once this lands).
+- [ ] 5.1 In the template repo (`groceries-agent-data-template`, the `docs/data-template` submodule), slim `wrangler.jsonc` to the minimal operator-owned set per design Decision 5: keep `vars.GITHUB_APP_ID` (+ optional `name`, `workers_dev`/`routes`, id-less KV bindings); **remove** code-level keys (`main`, `compatibility_date`, `compatibility_flags`, `triggers`, `observability`). Update the file's explanatory comments to say code-level config is merged in at deploy.
+- [ ] 5.2 Verify the **KV-id write-back** path still pins provisioned ids into the slim operator config across deploys (creating `kv_namespaces` if absent); adjust the write-back step in `data-deploy.yml` if it assumes the section exists.
+- [ ] 5.3 Bump the `docs/data-template` submodule pointer in this repo to the slimmed template commit (do this only alongside the merge step from group 3, never before).
 
-## 6. Ship
+## 6. Docs (same pass — no drift)
 
-- [ ] 6.1 `npm run test:tooling` (incl. the new merge tests) + `npm run typecheck` green.
-- [ ] 6.2 After merge + operator redeploy: confirm the cron registers in Cloudflare and `/health`'s `flyer-warm` job transitions from `never_run` to `ok` within a sweep interval.
+- [ ] 6.1 `docs/SELF_HOSTING.md`: remove the manual "add `triggers` to your data-repo `wrangler.jsonc`" stopgap; describe the merged-config model, what an operator's `wrangler.jsonc` is responsible for now, and that new operators start from the slim template.
+- [ ] 6.2 `CONTRIBUTING.md` and/or `docs/ARCHITECTURE.md`: document the code-vs-operator wrangler ownership boundary (the rule table) so future wrangler changes land in the right place.
+- [ ] 6.3 `wrangler.jsonc`: update/remove the heads-up comment at the `triggers` block (the manual-sync caveat no longer applies once this lands).
+
+## 7. Ship
+
+- [ ] 7.1 `npm run test:tooling` (incl. the new merge tests) + `npm run typecheck` green.
+- [ ] 7.2 After merge + operator redeploy: confirm the cron registers in Cloudflare and `/health`'s `flyer-warm` job transitions from `never_run` to `ok` within a sweep interval; and that a from-scratch deploy off the slim template provisions KV and registers the cron.

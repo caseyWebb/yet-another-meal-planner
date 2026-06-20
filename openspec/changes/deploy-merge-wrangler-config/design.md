@@ -20,7 +20,7 @@ The hazard: the code repo's `wrangler.jsonc` currently contains the **maintainer
 - The KV-id provenance rule is enforced and tested.
 
 **Non-Goals:**
-- Slimming operators' `wrangler.jsonc` to overlay-only (a nice later cleanup).
+- Migrating *existing* operators' `wrangler.jsonc` to the slim form (they keep working as-is via the merge; only the *template* for new operators is slimmed).
 - Changing deploy auth, KV auto-provisioning, or secret posture.
 - Merging arbitrary future keys without an explicit rule (the rule set is curated).
 
@@ -56,6 +56,24 @@ Because code is the base and the operator only *contributes* its owned keys, an 
 
 The merge logic is correctness- and security-critical, so it lives in `scripts/merge-wrangler-config.mjs` as a pure function over two parsed configs, unit-tested under `tests/` (Node `--test`, like the other build tooling), and the workflow just calls it. Tests cover: code `triggers` propagate; operator KV ids win and code KV ids never survive; a code-only binding appears id-less; operator `routes`/`name`/`vars` are honored; `compatibility_flags` come from code even if the operator's differ.
 
+### 5. Slim the data-repo template to the minimal operator-owned set (coupled to the merge)
+
+The template lives in `docs/data-template` (submodule → `groceries-agent-data-template`) and is `cp`'d as the operator's config at deploy. Today it carries `name`, `main`, `workers_dev`, `compatibility_date`, `compatibility_flags`, `vars.GITHUB_APP_ID`, id-less `kv_namespaces`, `observability` — and **no `triggers`** (the concrete cause of the missing cron). Once the merge supplies code-level keys, the template only needs the **operator-owned minimum**:
+
+```jsonc
+{
+  // Code-level config (main, compatibility_*, triggers, observability) is merged in
+  // from the upstream Worker at deploy — set only what's yours.
+  "vars": { "GITHUB_APP_ID": "<app id>" }
+  // optional: "name", or "workers_dev": false + "routes"/custom domain.
+  // KV bindings come from code and auto-provision; their ids are pinned back here on first deploy.
+}
+```
+
+- **Coupling:** the template can be slimmed **only because** the deploy now merges code-level config — a slim template deployed under the old `cp` model would ship without `main`/`compat`/`triggers` and break. So the template slim + submodule pointer bump land **in the same change** as the merge, never before it.
+- **KV-id write-back is the catch.** The deploy pins auto-provisioned KV ids back into the operator's config so repeat deploys reuse namespaces (the existing "repeat deploys keep the same namespaces" requirement). With a slim template that omits `kv_namespaces`, the write-back must **create** that section (and the merge must still emit the bindings id-less on first deploy). The write-back operates on the *operator's* config file, not the merged artifact — confirm it tolerates an absent `kv_namespaces` and that ids persist across deploys.
+- **Two repos:** implementing this edits the **template repo** (`groceries-agent-data-template`) and bumps the `docs/data-template` submodule pointer here. Existing operators are untouched (their full config still merges correctly per Decision 3).
+
 ## Risks / Trade-offs
 
 - **Mis-binding KV (cross-tenant)** → the single most important risk; mitigated by Decision 2 + dedicated tests asserting code ids never appear in the output and operator/absent ids always do.
@@ -66,9 +84,10 @@ The merge logic is correctness- and security-critical, so it lives in `scripts/m
 ## Migration Plan
 
 1. Land the merge helper + tests, swap the `cp` step for the merge step in `data-deploy.yml`.
-2. Operators redeploy (no config change needed); code-level config now applies. The flyer cron registers on the next deploy.
-3. Update `SELF_HOSTING.md` to drop the manual `triggers` stopgap and describe the merged-config model.
-4. **Rollback:** revert the workflow step to the `cp`; operators fall back to needing the manual `triggers` block.
+2. Slim the template repo's `wrangler.jsonc` to the minimal operator-owned set (Decision 5) and bump the `docs/data-template` submodule pointer **in the same change** (after the merge step exists, never before).
+3. Existing operators redeploy (no config change needed); code-level config now applies and the flyer cron registers. New operators start from the slim template.
+4. Update `SELF_HOSTING.md` to drop the manual `triggers` stopgap, describe the merged-config model, and point at the slim template.
+5. **Rollback:** revert the workflow step to the `cp` **and** the submodule pointer to the full template together (a slim template under the `cp` model would break). Existing operators are unaffected either way.
 
 ## Open Questions
 
