@@ -24,9 +24,10 @@ import { registerCookingTools } from "./cooking-tools.js";
 import { filterRecipes, type RecipeIndex } from "./recipes.js";
 import { listStorageGuidance, readStorageGuidance } from "./storage-guidance.js";
 import { fetchWeatherForecast } from "./weather.js";
-import { parseStaples, STAPLES_PATH } from "./staples.js";
+import { parseStaples } from "./staples.js";
 import { profileStatus } from "./profile-status.js";
 import { parseOverlay, mergeOverlay, type Overlay } from "./overlay.js";
+import { getProfileBundle, getPantryState, type ProfileBundle } from "./user-kv.js";
 import { toInventory } from "./kitchen.js";
 import { entriesOf, deriveLastCooked } from "./cooking-log.js";
 import { createKrogerClient, type KrogerCandidate } from "./kroger.js";
@@ -118,14 +119,25 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
   const gh = prefixedClient(dataGh, tenant.userPrefix);
   const kroger = createKrogerClient(env);
 
-  // Per-request lazy caches: preferences is read once, the location resolved once,
-  // even when several priced tools run in the same request.
+  // Per-request bundle cache: one KV read for the full profile (lazy migration on miss).
+  let bundlePromise: Promise<ProfileBundle> | null = null;
+  function getBundle(): Promise<ProfileBundle> {
+    if (!bundlePromise) {
+      bundlePromise = getProfileBundle(env.DATA_KV, tenant.id, gh);
+    }
+    return bundlePromise;
+  }
+
+  // Per-request lazy caches backed by the profile bundle (reads from KV).
   let prefsPromise: Promise<Record<string, unknown>> | null = null;
   function getPreferences(): Promise<Record<string, unknown>> {
     if (!prefsPromise) {
       prefsPromise = (async () => {
-        const text = await readFile(gh, "preferences.toml", "not_found", "no preferences are set up");
-        return parseToml(text, "preferences.toml");
+        const bundle = await getBundle();
+        if (!bundle.preferences?.trim()) {
+          throw new ToolError("not_found", "no preferences are set up");
+        }
+        return parseToml(bundle.preferences, "preferences.toml");
       })();
     }
     return prefsPromise;
@@ -186,16 +198,16 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
     return cache;
   }
 
-  // Per-request lazy reads of the caller's subjective layer (on the personal
-  // client `gh`, so they resolve under users/<username>/). The overlay supplies
-  // rating+status; the cooking log supplies last_cooked. Both are merged onto
-  // shared recipe content at read time (§6.2).
+  // Per-request lazy reads of the caller's subjective layer. The overlay
+  // supplies rating+status from the KV profile bundle; the cooking log supplies
+  // last_cooked from GitHub. Both are merged onto shared recipe content at read
+  // time (§6.2).
   let overlayPromise: Promise<Overlay> | null = null;
   function getOverlay(): Promise<Overlay> {
     if (!overlayPromise) {
       overlayPromise = (async () => {
-        const text = await readOptional(gh, "overlay.toml");
-        return text ? parseOverlay(text) : {};
+        const bundle = await getBundle();
+        return bundle.overlay ? parseOverlay(bundle.overlay) : {};
       })();
     }
     return overlayPromise;
@@ -214,14 +226,14 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
     return lastCookedPromise;
   }
 
-  // The caller's owned equipment (kitchen.toml `owned`), the makeability gate's
+  // The caller's owned equipment (from KV bundle), the makeability gate's
   // left operand. Empty/absent ⇒ unknown inventory ⇒ the gate is a no-op.
   let ownedPromise: Promise<string[]> | null = null;
   function getOwnedEquipment(): Promise<string[]> {
     if (!ownedPromise) {
       ownedPromise = (async () => {
-        const text = await readOptional(gh, "kitchen.toml");
-        return text ? toInventory(parseToml(text, "kitchen.toml")).owned : [];
+        const bundle = await getBundle();
+        return bundle.kitchen ? toInventory(parseToml(bundle.kitchen, "kitchen.toml")).owned : [];
       })();
     }
     return ownedPromise;
@@ -352,9 +364,7 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
             "stale_only is not computable: freshness is an LLM-judged, conversational concern (storage, open packages, visual inspection), not a function of the repo data.",
           );
         }
-        const text = await readFile(gh, "pantry.toml", "not_found", "no pantry is set up");
-        const parsed = parseToml(text, "pantry.toml");
-        let items = Array.isArray(parsed.items) ? (parsed.items as Record<string, unknown>[]) : [];
+        let items = await getPantryState(env.DATA_KV, tenant.id, gh);
         if (filter?.category !== undefined) {
           items = items.filter((i) => i.category === filter.category);
         }
@@ -366,83 +376,29 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
   );
 
   server.registerTool(
-    "read_kitchen",
+    "read_user_profile",
     {
       description:
-        "Read the caller's kitchen equipment inventory: { owned: [...EQUIPMENT_VOCAB slugs], notes: {...} }. `owned` is what gates recipe makeability; `notes` is freeform cook context (oven count, pan sizes). Returns an empty inventory when none is set up — an absent inventory means equipment is UNKNOWN, which makes the makeability gate a no-op (every recipe shows).",
+        "Return the caller's full grocery profile in one call: preferences (parsed), taste narrative (markdown), diet principles (markdown), kitchen inventory (owned equipment slugs + notes), staples list, recipe overlay (rating/status per slug), ready-to-eat catalog items, and stockup watchlist. Absent fields return null or empty. Use this at the start of a meal-planning session instead of calling the individual read tools separately.",
       inputSchema: {},
     },
     () =>
       runTool(async () => {
-        const text = await readOptional(gh, "kitchen.toml");
-        if (!text) return { owned: [], notes: {} };
-        return toInventory(parseToml(text, "kitchen.toml"));
-      }),
-  );
-
-  server.registerTool(
-    "read_staples",
-    {
-      description:
-        "Read the caller's staples list — items they never want to run out of. Returns { items: [{ name, perishable? }] }. Returns { items: [] } when no staples.toml exists — this is not an error; staples-driven behaviors simply degrade to no-ops for that session. Call unconditionally in the meal-plan context pre-pass.",
-      inputSchema: {},
-    },
-    () =>
-      runTool(async () => {
-        const text = await readOptional(gh, STAPLES_PATH);
-        return { items: parseStaples(text) };
-      }),
-  );
-
-  server.registerTool(
-    "read_preferences",
-    {
-      description:
-        "Return the user's parsed preferences. Throws `not_found` when none are set up yet — the empty signal for a new member, not an error.",
-      inputSchema: {},
-    },
-    () =>
-      runTool(async () => {
-        const text = await readFile(
-          gh,
-          "preferences.toml",
-          "not_found",
-          "no preferences are set up",
-        );
-        return parseToml(text, "preferences.toml");
-      }),
-  );
-
-  server.registerTool(
-    "read_taste",
-    {
-      description:
-        "Return the user's taste profile narrative (markdown). Throws `not_found` when none is set up yet — the empty signal for a new member, not an error.",
-      inputSchema: {},
-    },
-    () =>
-      runTool(async () => {
-        const content = await readFile(gh, "taste.md", "not_found", "no taste profile is set up");
-        return { content };
-      }),
-  );
-
-  server.registerTool(
-    "read_diet_principles",
-    {
-      description:
-        "Return the user's diet-principles narrative (variety rules, markdown). Throws `not_found` when none are set up yet — the empty signal for a new member, not an error.",
-      inputSchema: {},
-    },
-    () =>
-      runTool(async () => {
-        const content = await readFile(
-          gh,
-          "diet_principles.md",
-          "not_found",
-          "no diet principles are set up",
-        );
-        return { content };
+        const bundle = await getBundle();
+        return {
+          preferences: bundle.preferences ? parseToml(bundle.preferences, "preferences.toml") : null,
+          taste: bundle.taste ?? null,
+          diet_principles: bundle.diet_principles ?? null,
+          kitchen: bundle.kitchen
+            ? toInventory(parseToml(bundle.kitchen, "kitchen.toml"))
+            : { owned: [], notes: {} },
+          staples: parseStaples(bundle.staples ?? null),
+          overlay: bundle.overlay ? parseOverlay(bundle.overlay) : {},
+          ready_to_eat: bundle.ready_to_eat
+            ? ((parseToml(bundle.ready_to_eat, "ready_to_eat.toml").items as Record<string, unknown>[]) ?? [])
+            : [],
+          stockup: bundle.stockup ? parseToml(bundle.stockup, "stockup.toml") : null,
+        };
       }),
   );
 
@@ -450,10 +406,10 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
     "profile_status",
     {
       description:
-        "Report whether the caller has set up their grocery profile, from a single listing of their own subtree. Returns { initialized, missing }: `initialized` is true once preferences.toml exists (the unconditional first onboarding area); `missing` lists the onboarding-area keys still absent (store, taste, diet, equipment, pantry, ready-to-eat, stockup, corpus). A brand-new member with no files yet is { initialized: false, missing: [all areas] }. Read-only, no params. Use it as the up-front gate before doing real work — on initialized:false, run the configure-grocery-profile flow first. If this call errors, treat the result as indeterminate and proceed.",
+        "Report whether the caller has set up their grocery profile. Returns { initialized, missing }: `initialized` is true once preferences are present in the KV profile bundle; `missing` lists the onboarding-area keys still absent (store, taste, diet, equipment, pantry, ready-to-eat, stockup, corpus). A brand-new member with no data yet is { initialized: false, missing: [all areas] }. Read-only, no params. Use it as the up-front gate before doing real work — on initialized:false, run the configure-grocery-profile flow first. If this call errors, treat the result as indeterminate and proceed.",
       inputSchema: {},
     },
-    () => runTool(() => profileStatus(gh)),
+    () => runTool(() => profileStatus(env.DATA_KV, tenant.id)),
   );
 
   server.registerTool(
@@ -534,8 +490,10 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
         const available: Record<string, unknown[]> = { breakfast: [], lunch: [], dinner: [] };
         const unavailable: unknown[] = [];
 
-        const text = await readOptional(gh, "ready_to_eat.toml");
-        const items = text ? ((parseToml(text, "ready_to_eat.toml").items as Record<string, unknown>[]) ?? []) : [];
+        const bundle = await getBundle();
+        const items = bundle.ready_to_eat
+          ? ((parseToml(bundle.ready_to_eat, "ready_to_eat.toml").items as Record<string, unknown>[]) ?? [])
+          : [];
         // One Kroger search per catalog item, run concurrently (bounded by the
         // client cap); bucket from the ordered results so output stays stable.
         const looked = await Promise.all(
@@ -594,14 +552,14 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
   );
 
   // Repo-data write tools route by category internally (content → shared root,
-  // personal/overlay → users/<username>/), so they take the ROOT client + the
-  // caller's prefix. The grocery list is personal, so it takes the prefixed client.
-  registerWriteTools(server, sharedGh, tenant.userPrefix);
-  registerGroceryListTools(server, gh);
+  // personal/overlay → KV profile bundle), so they take the ROOT client + the
+  // caller's prefix + DATA_KV + tenant id for profile writes.
+  registerWriteTools(server, sharedGh, tenant.userPrefix, env.DATA_KV, tenant.id);
+  registerGroceryListTools(server, env.DATA_KV, tenant.id, gh);
 
-  // Cooking history + meal plan: read_meal_plan (resume) and retrospective.
-  // The corresponding writes ride commit_changes (cooking_log_entries / meal_plan_ops).
-  registerCookingTools(server, gh, env.DATA_KV);
+  // Cooking history + meal plan: read_meal_plan (resume), update_meal_plan, and
+  // retrospective. Meal plan reads/writes go through DATA_KV; cooking log stays GitHub.
+  registerCookingTools(server, gh, env.DATA_KV, tenant.id);
 
   // Discovery: RSS recipe candidates, parse-only URL import, draft create, plus the
   // feeds/sources config writers. Everything here is SHARED (root client) — recipes,
@@ -612,7 +570,7 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
 
   // Recipe notes (§8): attributed annotations authored in this tenant's subtree,
   // aggregated across the group at read time (KV tenant directory → each subtree).
-  registerNoteTools(server, sharedGh, gh, tenant.id, directoryFromEnv(env));
+  registerNoteTools(server, sharedGh, gh, tenant.id, directoryFromEnv(env), env.DATA_KV);
 
   // In-store fulfillment: the shared stores/ registry (identity-only CRUD,
   // unattributed) + attributed per-tenant store notes (the recipe-notes pattern,
@@ -642,8 +600,8 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
     },
     ({ days }) =>
       runTool(async () => {
-        const prefsText = await readOptional(gh, "preferences.toml");
-        const prefs = prefsText ? parseToml(prefsText, "preferences.toml") : {};
+        const bundle = await getBundle();
+        const prefs = bundle.preferences ? parseToml(bundle.preferences, "preferences.toml") : {};
         const stores = prefs.stores as Record<string, unknown> | undefined;
 
         // Resolve location: explicit location_zip first, then parse from preferred_location.

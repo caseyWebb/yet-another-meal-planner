@@ -18,7 +18,6 @@ import {
   parseOverlay,
   applyOverlayEdit,
   serializeOverlay,
-  OVERLAY_PATH,
   type Overlay,
   type OverlayRow,
 } from "./overlay.js";
@@ -32,11 +31,19 @@ import {
   validateNewEntry,
   type CookingLogEntry,
 } from "./cooking-log.js";
-import { MEAL_PLAN_PATH, plannedOf, applyMealPlanOps, type MealPlanOp } from "./meal-plan.js";
 import { slugify } from "./discovery.js";
 import { addStockup, STOCKUP_PATH } from "./stockup.js";
 import { updateStaples, STAPLES_PATH } from "./staples.js";
-import { GROCERY_LIST_PATH, buildGroceryListUpdate } from "./grocery-tools.js";
+import {
+  getProfileBundle,
+  updateProfileField,
+  writePantryState,
+  getPantryState,
+  getMealPlanState,
+  writeMealPlanState,
+  type ProfileField,
+} from "./user-kv.js";
+import { applyMealPlanOps } from "./meal-plan.js";
 
 const SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const MEALS = ["breakfast", "lunch", "dinner"] as const;
@@ -100,63 +107,6 @@ export async function buildRecipeUpdate(
   return { path, content: serializeMarkdown(merged, body) };
 }
 
-/**
- * Build the caller's overlay update from a set of per-slug subjective edits.
- * Reads + writes `overlayPath` (the caller's `users/<username>/overlay.toml`).
- * Returns null when there is nothing to write.
- */
-export async function buildOverlayUpdate(
-  gh: GitHubClient,
-  overlayPath: string,
-  edits: Map<string, OverlayRow>,
-): Promise<TreeFile | null> {
-  if (edits.size === 0) return null;
-  const text = (await readOptional(gh, overlayPath)) ?? "";
-  let overlay: Overlay = text ? parseOverlay(text) : {};
-  for (const [slug, edit] of edits) overlay = applyOverlayEdit(overlay, slug, edit);
-  return { path: overlayPath, content: serializeOverlay(overlay) };
-}
-
-async function buildPantryUpdate(
-  gh: GitHubClient,
-  path: string,
-  operations: Parameters<typeof applyPantryOperations>[1],
-  verifyNames: string[],
-): Promise<{ file: TreeFile | null; applied: AppliedOp[]; conflicts: ConflictOp[] }> {
-  // Tolerate a not-yet-created pantry: an `add` seeds pantry.toml from empty (the
-  // onboarding starting-inventory step relies on this), matching the cooking-log,
-  // meal-plan, and grocery-list builders. A lone remove/verify against an absent
-  // pantry then reports conflicts (no item with that name) rather than hard-erroring.
-  const text = (await readOptional(gh, path)) ?? "";
-  const parsed = text ? parseToml(text, path) : {};
-  let items = itemsOf(parsed) as PantryItem[];
-
-  const opResult = applyPantryOperations(items, operations, today());
-  items = opResult.items;
-  let verified: string[] = [];
-  let missing: string[] = [];
-  if (verifyNames.length) {
-    const v = markVerified(items, verifyNames, today());
-    items = v.items;
-    verified = v.verified;
-    missing = v.missing;
-  }
-
-  const changed = opResult.applied.length > 0 || verified.length > 0;
-  const conflicts = [
-    ...opResult.conflicts,
-    ...missing.map((name) => ({ op: "verify" as const, name, reason: "no pantry item with that name" })),
-  ];
-  if (!changed) return { file: null, applied: opResult.applied, conflicts };
-
-  const content = stringifyTomlWithHeader(text, { ...parsed, items });
-  return {
-    file: { path, content },
-    applied: [...opResult.applied, ...verified.map((name) => ({ op: "verify" as const, name }))],
-    conflicts,
-  };
-}
-
 /** Normalize a raw cooking-log entry input: default date to today, drop empties. */
 function makeLogEntry(raw: Record<string, unknown>, todayDate: string): CookingLogEntry {
   const rawType = raw.type;
@@ -213,48 +163,18 @@ export async function buildCookingLogUpdate(
   };
 }
 
-/** Apply meal-plan add/remove ops. Returns the file (null when nothing changed) + report. */
-export async function buildMealPlanUpdate(
-  gh: GitHubClient,
-  path: string,
-  ops: MealPlanOp[],
-): Promise<{ file: TreeFile | null; applied: unknown[]; conflicts: unknown[] }> {
-  const text = (await readOptional(gh, path)) ?? "";
-  const parsed = text ? parseToml(text, path) : {};
-  const planned = plannedOf(parsed);
-  const result = applyMealPlanOps(planned, ops);
-  if (result.applied.length === 0) {
-    return { file: null, applied: result.applied, conflicts: result.conflicts };
-  }
-  return {
-    file: { path, content: stringifyTomlWithHeader(text, { ...parsed, planned: result.items }) },
-    applied: result.applied,
-    conflicts: result.conflicts,
-  };
-}
-
 /**
- * In-memory manager for the caller's single per-tenant `ready_to_eat.toml`
- * catalog (loaded once). Items carry a `meal` field and a generated `slug` as
- * their stable key — `addDraft` mints a slug (unique within the file) from the
- * name and accepts a status so an onboarding-asserted item lands `active` rather
- * than as a draft; `update` addresses items by that slug.
+ * In-memory manager for the per-tenant ready-to-eat catalog. Takes the existing
+ * raw TOML content (or null for a new catalog). Call `serialize()` to get the
+ * updated TOML to write back to KV; it returns null when nothing was changed.
  */
-export function readyToEatManager(gh: GitHubClient, path: string) {
-  let state: { text: string; parsed: Record<string, unknown>; items: Record<string, unknown>[] } | null = null;
+export function readyToEatManager(existingContent: string | null) {
+  const text = existingContent ?? "";
+  const parsed = text ? parseToml(text, READY_TO_EAT_PATH) : {};
+  const items: Record<string, unknown>[] = itemsOf(parsed);
   let touched = false;
 
-  async function load() {
-    if (!state) {
-      const text = (await readOptional(gh, path)) ?? "";
-      const parsed = text ? parseToml(text, path) : {};
-      state = { text, parsed, items: itemsOf(parsed) };
-    }
-    return state;
-  }
-
-  /** A slug from `name`, de-duped within the file with a numeric suffix (recipe-style). */
-  function uniqueSlug(name: string, items: Record<string, unknown>[]): string {
+  function uniqueSlug(name: string): string {
     const taken = new Set(items.map((it) => it.slug).filter((s): s is string => typeof s === "string"));
     const base = slugify(name) || "item";
     if (!taken.has(base)) return base;
@@ -265,10 +185,9 @@ export function readyToEatManager(gh: GitHubClient, path: string) {
 
   return {
     /** Append a new item; returns its generated slug. Default status is "draft". */
-    async addDraft(item: Record<string, unknown>, status: "draft" | "active" = "draft"): Promise<string> {
-      const f = await load();
-      const slug = uniqueSlug(String(item.name ?? ""), f.items);
-      f.items.push({
+    addDraft(item: Record<string, unknown>, status: "draft" | "active" = "draft"): string {
+      const slug = uniqueSlug(String(item.name ?? ""));
+      items.push({
         name: item.name,
         slug,
         meal: item.meal,
@@ -286,39 +205,46 @@ export function readyToEatManager(gh: GitHubClient, path: string) {
       return slug;
     },
     /** Find an item by slug, apply updates. Throws not_found if absent. */
-    async update(slug: string, updates: Record<string, unknown>) {
-      const f = await load();
-      const idx = f.items.findIndex((it) => it.slug === slug);
+    update(slug: string, updates: Record<string, unknown>) {
+      const idx = items.findIndex((it) => it.slug === slug);
       if (idx < 0) throw new ToolError("not_found", `No ready-to-eat item with slug: ${slug}`, { slug });
-      f.items[idx] = { ...f.items[idx], ...updates };
+      items[idx] = { ...items[idx], ...updates };
       touched = true;
     },
-    files(): TreeFile[] {
-      if (!touched || !state) return [];
-      return [{ path, content: stringifyTomlWithHeader(state.text, { ...state.parsed, items: state.items }) }];
+    /** Returns the serialized TOML when touched, or null when nothing changed. */
+    serialize(): string | null {
+      if (!touched) return null;
+      return stringifyTomlWithHeader(text, { ...parsed, items });
     },
   };
 }
 
-const CURATED_FILES: Record<string, string> = {
-  preferences: "preferences.toml",
-  taste: "taste.md",
-  diet_principles: "diet_principles.md",
+// Profile fields now stored in DATA_KV bundle (not GitHub).
+const KV_PROFILE_FIELDS: Record<string, ProfileField> = {
+  preferences: "preferences",
+  taste: "taste",
+  diet_principles: "diet_principles",
+};
+/** Curated files that remain GitHub-backed (shared reference data at root). */
+const SHARED_CURATED_FILES: Record<string, string> = {
   aliases: "aliases.toml",
 };
-/** Curated files that are SHARED reference data (root); the rest are per-tenant. */
-const SHARED_CURATED = new Set(["aliases"]);
 
 // --- registration ------------------------------------------------------------
 
 /**
- * `gh` is the root data-repo client. `userPrefix` is the caller's subtree (e.g.
- * "users/alice", empty pre-migration). Writes are routed by category: objective
- * recipe content + shared reference data at the root; overlay/notes/personal state
- * under the caller's `users/<username>/`. All writes commit via `gh` with explicit
- * paths, so a batch lands as one atomic commit that may span both.
+ * `gh` is the root data-repo client (shared recipe + notes writes). `userPrefix`
+ * routes shared vs. per-tenant GitHub paths. `dataKv` + `username` back the KV
+ * profile bundle (preferences/taste/diet/kitchen/staples/overlay/ready_to_eat/
+ * stockup) and session-state keys (pantry/meal_plan/grocery_list).
  */
-export function registerWriteTools(server: McpServer, gh: GitHubClient, userPrefix: string): void {
+export function registerWriteTools(
+  server: McpServer,
+  gh: GitHubClient,
+  userPrefix: string,
+  dataKv: KVNamespace,
+  username: string,
+): void {
   const userPath = (p: string): string => (userPrefix ? `${userPrefix}/${p}` : p);
 
   server.registerTool(
@@ -338,15 +264,21 @@ export function registerWriteTools(server: McpServer, gh: GitHubClient, userPref
             "last_cooked is derived from the cooking log; append a cooking_log entry instead of setting it directly",
           );
         }
-        const files: TreeFile[] = [];
-        if (Object.keys(content).length > 0) files.push(await buildRecipeUpdate(gh, slug, content));
-        if (Object.keys(overlayEdit).length > 0) {
-          const f = await buildOverlayUpdate(gh, userPath(OVERLAY_PATH), new Map([[slug, overlayEdit]]));
-          if (f) files.push(f);
+        const updated_fields = Object.keys(updates).filter((k) => k !== "last_cooked");
+        if (updated_fields.length === 0) return { slug, updated_fields: [] };
+
+        let commit_sha: string | null = null;
+        if (Object.keys(content).length > 0) {
+          const file = await buildRecipeUpdate(gh, slug, content);
+          ({ commit_sha } = await commitFiles(gh, [file], `update recipe ${slug}`));
         }
-        if (files.length === 0) return { slug, updated_fields: [] };
-        const { commit_sha } = await commitFiles(gh, files, `update recipe ${slug}`);
-        return { slug, updated_fields: Object.keys(updates).filter((k) => k !== "last_cooked"), commit_sha };
+        if (Object.keys(overlayEdit).length > 0) {
+          const bundle = await getProfileBundle(dataKv, username);
+          const current: Overlay = bundle.overlay ? parseOverlay(bundle.overlay) : {};
+          const next = applyOverlayEdit(current, slug, overlayEdit);
+          await updateProfileField(dataKv, username, "overlay", serializeOverlay(next));
+        }
+        return { slug, updated_fields, commit_sha };
       }),
   );
 
@@ -367,10 +299,12 @@ export function registerWriteTools(server: McpServer, gh: GitHubClient, userPref
     },
     ({ operations }) =>
       runTool(async () => {
-        const { file, applied, conflicts } = await buildPantryUpdate(gh, userPath("pantry.toml"), operations, []);
-        if (!file) return { applied, conflicts };
-        const { commit_sha } = await commitFiles(gh, [file], "update pantry");
-        return { applied, conflicts, commit_sha };
+        const items = await getPantryState(dataKv, username, gh);
+        const result = applyPantryOperations(items as PantryItem[], operations, today());
+        if (result.applied.length > 0) {
+          await writePantryState(dataKv, username, result.items);
+        }
+        return { applied: result.applied, conflicts: result.conflicts };
       }),
   );
 
@@ -397,12 +331,11 @@ export function registerWriteTools(server: McpServer, gh: GitHubClient, userPref
     },
     ({ items, freezer_capacity_estimate }) =>
       runTool(async () => {
-        const path = userPath(STOCKUP_PATH);
-        const existing = await readOptional(gh, path);
-        const { text, added, changed } = addStockup(existing, { items, freezer_capacity_estimate });
-        if (!changed) return { added, commit_sha: null };
-        const { commit_sha } = await commitFiles(gh, [{ path, content: text }], `update stockup (+${added})`);
-        return { added, commit_sha };
+        const bundle = await getProfileBundle(dataKv, username);
+        const { text, added, changed } = addStockup(bundle.stockup ?? null, { items, freezer_capacity_estimate });
+        if (!changed) return { added };
+        await updateProfileField(dataKv, username, "stockup", text);
+        return { added };
       }),
   );
 
@@ -420,16 +353,11 @@ export function registerWriteTools(server: McpServer, gh: GitHubClient, userPref
     },
     ({ add, remove }) =>
       runTool(async () => {
-        const path = userPath(STAPLES_PATH);
-        const existing = await readOptional(gh, path);
-        const { text, added, removed, changed } = updateStaples(existing, add ?? [], remove ?? []);
-        if (!changed) return { added, removed, commit_sha: null };
-        const { commit_sha } = await commitFiles(
-          gh,
-          [{ path, content: text }],
-          `update staples (+${added} -${removed})`,
-        );
-        return { added, removed, commit_sha };
+        const bundle = await getProfileBundle(dataKv, username);
+        const { text, added, removed, changed } = updateStaples(bundle.staples ?? null, add ?? [], remove ?? []);
+        if (!changed) return { added, removed };
+        await updateProfileField(dataKv, username, "staples", text);
+        return { added, removed };
       }),
   );
 
@@ -451,16 +379,16 @@ export function registerWriteTools(server: McpServer, gh: GitHubClient, userPref
     },
     ({ operations }) =>
       runTool(async () => {
-        const path = userPath("kitchen.toml");
-        const text = (await readOptional(gh, path)) ?? "";
-        const inventory = toInventory(text ? parseToml(text, path) : {});
+        const bundle = await getProfileBundle(dataKv, username);
+        const text = bundle.kitchen ?? "";
+        const inventory = toInventory(text ? parseToml(text, "kitchen.toml") : {});
         const { inventory: next, applied, conflicts } = applyKitchenOperations(inventory, operations);
         if (applied.length === 0) return { applied, conflicts };
         const data: Record<string, unknown> = { owned: next.owned };
         if (Object.keys(next.notes).length) data.notes = next.notes;
         const content = stringifyTomlWithHeader(text, data);
-        const { commit_sha } = await commitFiles(gh, [{ path, content }], "update kitchen");
-        return { applied, conflicts, commit_sha };
+        await updateProfileField(dataKv, username, "kitchen", content);
+        return { applied, conflicts };
       }),
   );
 
@@ -472,10 +400,13 @@ export function registerWriteTools(server: McpServer, gh: GitHubClient, userPref
     },
     ({ items }) =>
       runTool(async () => {
-        const { file, applied, conflicts } = await buildPantryUpdate(gh, userPath("pantry.toml"), [], items);
-        if (!file) return { verified: [], conflicts };
-        const { commit_sha } = await commitFiles(gh, [file], "verify pantry items");
-        return { verified: applied.filter((a) => a.op === "verify").map((a) => a.name), conflicts, commit_sha };
+        const current = await getPantryState(dataKv, username, gh);
+        const { items: nextItems, verified, missing } = markVerified(current as PantryItem[], items, today());
+        const conflicts = missing.map((name) => ({ op: "verify" as const, name, reason: "no pantry item with that name" }));
+        if (verified.length > 0) {
+          await writePantryState(dataKv, username, nextItems);
+        }
+        return { verified, conflicts };
       }),
   );
 
@@ -500,14 +431,18 @@ export function registerWriteTools(server: McpServer, gh: GitHubClient, userPref
     },
     ({ items }) =>
       runTool(async () => {
-        const mgr = readyToEatManager(gh, userPath(READY_TO_EAT_PATH));
+        const bundle = await getProfileBundle(dataKv, username);
+        const mgr = readyToEatManager(bundle.ready_to_eat ?? null);
         const added: { meal: Meal; name: string; slug: string }[] = [];
         for (const it of items) {
-          const slug = await mgr.addDraft(it, it.status ?? "draft");
+          const slug = mgr.addDraft(it, it.status ?? "draft");
           added.push({ meal: it.meal, name: it.name, slug });
         }
-        const { commit_sha } = await commitFiles(gh, mgr.files(), "add ready-to-eat items");
-        return { added, commit_sha };
+        const serialized = mgr.serialize();
+        if (serialized !== null) {
+          await updateProfileField(dataKv, username, "ready_to_eat", serialized);
+        }
+        return { added };
       }),
   );
 
@@ -520,18 +455,41 @@ export function registerWriteTools(server: McpServer, gh: GitHubClient, userPref
     },
     ({ slug, updates }) =>
       runTool(async () => {
-        const mgr = readyToEatManager(gh, userPath(READY_TO_EAT_PATH));
-        await mgr.update(slug, updates);
-        const { commit_sha } = await commitFiles(gh, mgr.files(), `update ready-to-eat ${slug}`);
-        return { slug, updated_fields: Object.keys(updates), commit_sha };
+        const bundle = await getProfileBundle(dataKv, username);
+        const mgr = readyToEatManager(bundle.ready_to_eat ?? null);
+        mgr.update(slug, updates);
+        const serialized = mgr.serialize();
+        if (serialized !== null) {
+          await updateProfileField(dataKv, username, "ready_to_eat", serialized);
+        }
+        return { slug, updated_fields: Object.keys(updates) };
       }),
   );
 
   // User-curated config writers — content-faithful: write exactly what the caller
   // supplies. The discipline of WHEN to call these (only on explicit user
   // direction) lives in AGENT_INSTRUCTIONS.md.
-  for (const [key, path] of Object.entries(CURATED_FILES)) {
-    const target = SHARED_CURATED.has(key) ? path : userPath(path);
+
+  // Profile fields (preferences/taste/diet_principles) write to the KV bundle.
+  for (const [key, field] of Object.entries(KV_PROFILE_FIELDS)) {
+    const label = key.replace(/_/g, " ");
+    server.registerTool(
+      `update_${key}`,
+      {
+        description: `Write ${key} verbatim with the supplied full content. Call only when the user has directed an edit.`,
+        inputSchema: { content: z.string() },
+      },
+      ({ content }) =>
+        runTool(async () => {
+          await updateProfileField(dataKv, username, field, content);
+          return { updated: key };
+        }),
+    );
+    void label;
+  }
+
+  // Shared reference data (aliases) remains GitHub-backed.
+  for (const [key, path] of Object.entries(SHARED_CURATED_FILES)) {
     server.registerTool(
       `update_${key}`,
       {
@@ -540,7 +498,7 @@ export function registerWriteTools(server: McpServer, gh: GitHubClient, userPref
       },
       ({ content }) =>
         runTool(async () => {
-          const { commit_sha } = await commitFiles(gh, [{ path: target, content }], `update ${path}`);
+          const { commit_sha } = await commitFiles(gh, [{ path, content }], `update ${path}`);
           return { file: path, commit_sha };
         }),
     );
@@ -550,21 +508,11 @@ export function registerWriteTools(server: McpServer, gh: GitHubClient, userPref
     "commit_changes",
     {
       description:
-        "Persist a batch of repo updates as ONE commit (no cart). This is the DEFAULT for any turn that makes more than one repo write — batch them here instead of calling the granular tools repeatedly, and never fire parallel writes at the same file (they full-file-clobber each other). recipe_updates split automatically: objective frontmatter/body → shared recipe content; rating/status → the caller's personal overlay. cooking_log_entries append cooked meals (date defaults to today); last_cooked is DERIVED from the log at read time — never set it by hand. meal_plan_ops add/remove committed cook intent (an `add` may carry free-text open-world `sides` that ride on the main's row; corpus sides get their own row). grocery_list_ops add/update/remove buy-list items in the same commit (same-name add merges; a missing-name update/remove is reported as a conflict, not an error). Ready-to-eat consumption is a cooking_log_entries {type:'ready_to_eat'} plus a pantry_operations remove when the user used the last of it.",
+        "Batch GitHub-backed writes as ONE commit, plus KV-backed writes in the same call. GitHub-backed: recipe_updates (objective frontmatter/body) and cooking_log_entries. KV-backed (no commit_sha per-field): recipe_updates rating/status → overlay bundle, ready_to_eat_drafts/updates → ready_to_eat bundle, config_updates (preferences/taste/diet_principles) → profile bundle, config_updates aliases → shared GitHub file. This is the DEFAULT for multi-write turns — batch rather than calling granular tools repeatedly. recipe_updates split automatically: objective frontmatter/body → shared GitHub recipe; rating/status → KV overlay. cooking_log_entries append cooked meals (date defaults to today); last_cooked is DERIVED from the log — never set it by hand. Ready-to-eat consumption is a cooking_log_entries {type:'ready_to_eat'} entry. Pantry, meal plan, and grocery list writes go through their own KV-backed tools (update_pantry, update_meal_plan, add_to_grocery_list/update_grocery_list/remove_from_grocery_list).",
       inputSchema: {
         recipe_updates: z
           .array(z.object({ slug: z.string(), updates: z.record(z.string(), z.unknown()) }))
           .optional(),
-        pantry_operations: z
-          .array(
-            z.object({
-              op: z.enum(["add", "remove", "verify"]),
-              item: z.record(z.string(), z.unknown()).optional(),
-              name: z.string().optional(),
-            }),
-          )
-          .optional(),
-        pantry_verified: z.array(z.string()).optional(),
         ready_to_eat_drafts: z
           .array(
             z.object({
@@ -596,29 +544,6 @@ export function registerWriteTools(server: McpServer, gh: GitHubClient, userPref
             }),
           )
           .optional(),
-        meal_plan_ops: z
-          .array(
-            z.object({
-              op: z.enum(["add", "remove"]),
-              recipe: z.string(),
-              planned_for: z.string().nullable().optional(),
-              // Open-world sides (free text) to attach to the main's row on an `add`.
-              sides: z.array(z.string()).optional(),
-            }),
-          )
-          .optional(),
-        grocery_list_ops: z
-          .array(
-            z.object({
-              op: z.enum(["add", "update", "remove"]),
-              // `add`: the full item (name + optional quantity/kind/domain/source/for_recipes/note).
-              // `update`: the partial patch (with `name` as the key). `remove`: ignored.
-              item: z.record(z.string(), z.unknown()).optional(),
-              // The item key for `update` / `remove`.
-              name: z.string().optional(),
-            }),
-          )
-          .optional(),
         commit_message: z.string(),
       },
     },
@@ -627,8 +552,9 @@ export function registerWriteTools(server: McpServer, gh: GitHubClient, userPref
         const files: TreeFile[] = [];
         const summary: Record<string, unknown> = {};
 
-        // Cooking log (per-tenant): append entries. last_cooked is DERIVED at read
-        // time from the log, so it is no longer co-written onto recipe frontmatter.
+        // Cooking log (per-tenant, GitHub): append entries. last_cooked is DERIVED
+        // at read time from the log — never co-written onto recipe frontmatter.
+        // Recipe-type entries also trigger removal from the KV meal plan.
         if ((payload.cooking_log_entries?.length ?? 0) > 0) {
           const { file, added } = await buildCookingLogUpdate(
             gh,
@@ -638,10 +564,20 @@ export function registerWriteTools(server: McpServer, gh: GitHubClient, userPref
           );
           files.push(file);
           summary.cooking_log = { added: added.length };
+
+          // Clear cooked recipes from the KV meal plan.
+          const cooked = added
+            .filter((e) => e.type === "recipe" && e.recipe)
+            .map((e) => ({ op: "remove" as const, recipe: e.recipe! }));
+          if (cooked.length > 0) {
+            const current = await getMealPlanState(dataKv, username, gh);
+            const { items: next, applied } = applyMealPlanOps(current, cooked);
+            if (applied.length > 0) await writeMealPlanState(dataKv, username, next);
+          }
         }
 
-        // Recipe updates: objective content → shared root recipe; the caller's
-        // rating/status → their overlay. A subjective edit never touches shared content.
+        // Recipe updates: objective content → shared GitHub recipe; rating/status →
+        // KV overlay bundle. Subjective edits never touch shared GitHub content.
         const overlayEdits = new Map<string, OverlayRow>();
         const contentSlugs: string[] = [];
         for (const r of payload.recipe_updates ?? []) {
@@ -660,64 +596,52 @@ export function registerWriteTools(server: McpServer, gh: GitHubClient, userPref
             overlayEdits.set(r.slug, { ...(overlayEdits.get(r.slug) ?? {}), ...overlayEdit });
           }
         }
-        const overlayFile = await buildOverlayUpdate(gh, userPath(OVERLAY_PATH), overlayEdits);
-        if (overlayFile) files.push(overlayFile);
+        if (overlayEdits.size > 0) {
+          const bundle = await getProfileBundle(dataKv, username);
+          let overlay: Overlay = bundle.overlay ? parseOverlay(bundle.overlay) : {};
+          for (const [slug, edit] of overlayEdits) overlay = applyOverlayEdit(overlay, slug, edit);
+          await updateProfileField(dataKv, username, "overlay", serializeOverlay(overlay));
+        }
         if (contentSlugs.length > 0 || overlayEdits.size > 0) {
           summary.recipes = { content: contentSlugs, overlay: [...overlayEdits.keys()] };
         }
 
-        if ((payload.meal_plan_ops?.length ?? 0) > 0) {
-          const { file, applied, conflicts } = await buildMealPlanUpdate(
-            gh,
-            userPath(MEAL_PLAN_PATH),
-            payload.meal_plan_ops!,
-          );
-          if (file) files.push(file);
-          summary.meal_plan = { applied, conflicts };
-        }
-
-        if ((payload.grocery_list_ops?.length ?? 0) > 0) {
-          const { file, applied, conflicts } = await buildGroceryListUpdate(
-            gh,
-            userPath(GROCERY_LIST_PATH),
-            payload.grocery_list_ops!,
-          );
-          if (file) files.push(file);
-          summary.grocery_list = { applied, conflicts };
-        }
-
-        if ((payload.pantry_operations?.length ?? 0) > 0 || (payload.pantry_verified?.length ?? 0) > 0) {
-          const { file, applied, conflicts } = await buildPantryUpdate(
-            gh,
-            userPath("pantry.toml"),
-            payload.pantry_operations ?? [],
-            payload.pantry_verified ?? [],
-          );
-          if (file) files.push(file);
-          summary.pantry = { applied, conflicts };
-        }
-
+        // ready_to_eat drafts/updates → KV profile bundle.
         if ((payload.ready_to_eat_drafts?.length ?? 0) > 0 || (payload.ready_to_eat_updates?.length ?? 0) > 0) {
-          const mgr = readyToEatManager(gh, userPath(READY_TO_EAT_PATH));
+          const bundle = await getProfileBundle(dataKv, username);
+          const mgr = readyToEatManager(bundle.ready_to_eat ?? null);
           const draftSlugs: string[] = [];
-          for (const d of payload.ready_to_eat_drafts ?? []) draftSlugs.push(await mgr.addDraft(d, d.status ?? "draft"));
-          for (const u of payload.ready_to_eat_updates ?? []) await mgr.update(u.slug, u.updates);
-          files.push(...mgr.files());
+          for (const d of payload.ready_to_eat_drafts ?? []) draftSlugs.push(mgr.addDraft(d, d.status ?? "draft"));
+          for (const u of payload.ready_to_eat_updates ?? []) mgr.update(u.slug, u.updates);
+          const serialized = mgr.serialize();
+          if (serialized !== null) {
+            await updateProfileField(dataKv, username, "ready_to_eat", serialized);
+          }
           summary.ready_to_eat = {
             drafts: draftSlugs,
             updated: (payload.ready_to_eat_updates ?? []).map((u) => u.slug),
           };
         }
 
+        // config_updates: profile fields → KV bundle; aliases → shared GitHub file.
         for (const c of payload.config_updates ?? []) {
-          const p = CURATED_FILES[c.file];
-          files.push({ path: SHARED_CURATED.has(c.file) ? p : userPath(p), content: c.content });
+          const kvField = KV_PROFILE_FIELDS[c.file];
+          if (kvField) {
+            await updateProfileField(dataKv, username, kvField, c.content);
+          } else {
+            const path = SHARED_CURATED_FILES[c.file];
+            if (path) files.push({ path, content: c.content });
+          }
         }
         if ((payload.config_updates?.length ?? 0) > 0) {
           summary.config = payload.config_updates!.map((c) => c.file);
         }
 
-        const { commit_sha } = await commitFiles(gh, files, payload.commit_message);
+        // Only commit to GitHub when there are actual file changes.
+        let commit_sha: string | null = null;
+        if (files.length > 0) {
+          ({ commit_sha } = await commitFiles(gh, files, payload.commit_message));
+        }
         return { commit_sha, summary };
       }),
   );

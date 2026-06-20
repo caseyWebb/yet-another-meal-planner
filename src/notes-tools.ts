@@ -10,11 +10,11 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { GitHubClient, TreeFile } from "./github.js";
 import type { TenantStore } from "./tenant.js";
-import { userPrefix } from "./tenant.js";
 import { readOptional } from "./gh-read.js";
 import { ToolError, runTool } from "./errors.js";
 import { commitFiles } from "./commit.js";
 import { parseOverlay } from "./overlay.js";
+import { readProfileBundle } from "./user-kv.js";
 import {
   parseNotes,
   appendNote,
@@ -42,6 +42,7 @@ function nowIso(): string {
  * @param personalGh this tenant's prefixed client (writes land under users/<id>/)
  * @param tenantId  the caller — author of new notes + privacy boundary on reads
  * @param directory the tenant allowlist, enumerated to aggregate group signal
+ * @param dataKv    DATA_KV namespace — profile bundles hold per-tenant overlay fields
  */
 export function registerNoteTools(
   server: McpServer,
@@ -49,6 +50,7 @@ export function registerNoteTools(
   personalGh: GitHubClient,
   tenantId: string,
   directory: TenantStore,
+  dataKv: KVNamespace,
 ): void {
   server.registerTool(
     "add_recipe_note",
@@ -99,11 +101,11 @@ export function registerNoteTools(
         const ids = await directory.list();
         const fetched = await Promise.all(
           ids.map(async (id) => {
-            const prefix = userPrefix(id);
-            const [notesText, overlayText] = await Promise.all([
-              readOptional(sharedGh, `${prefix}/${notesPath(slug)}`),
-              readOptional(sharedGh, `${prefix}/overlay.toml`),
+            const [notesText, bundle] = await Promise.all([
+              readOptional(sharedGh, `users/${id}/${notesPath(slug)}`),
+              readProfileBundle(dataKv, id),
             ]);
+            const overlayText = bundle?.overlay ?? null;
             return { id, notesText, overlayText };
           }),
         );

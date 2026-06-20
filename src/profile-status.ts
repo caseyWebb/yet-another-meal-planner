@@ -1,26 +1,18 @@
-// Per-tenant initialization status for the grocery profile. Backs the `profile_status`
-// read tool and the `grocery-core` onboarding gate: answers "is this member set up?"
-// from a SINGLE listing of the caller's `users/<username>/` subtree (via the prefixed
-// GitHub client), not a fan of per-area reads. Factored out so the derivation is
-// unit-testable against a fake GitHubClient (mirrors storage-guidance.ts).
+// Per-tenant initialization status for the grocery profile. Backs the
+// `profile_status` read tool and the `grocery-core` onboarding gate: answers
+// "is this member set up?" from DATA_KV — no GitHub directory listing.
 
-import { GitHubError, type DirEntry, type GitHubClient } from "./github.js";
-import { ToolError } from "./errors.js";
+import { readProfileBundle, readPantryState, readMealPlanState, readGroceryListState } from "./user-kv.js";
 
-/**
- * The onboarding areas, each keyed to the file whose presence marks it done; this is
- * also the surfaced order of `missing`. `store` (`preferences.toml`) is the
- * unconditional first onboarding area, so its presence is the initialization predicate.
- */
-const AREA_FILES: ReadonlyArray<readonly [area: string, file: string]> = [
-  ["store", "preferences.toml"],
-  ["taste", "taste.md"],
-  ["diet", "diet_principles.md"],
-  ["equipment", "kitchen.toml"],
-  ["pantry", "pantry.toml"],
-  ["ready-to-eat", "ready_to_eat.toml"],
-  ["stockup", "stockup.toml"],
-  ["corpus", "overlay.toml"],
+const PROFILE_AREAS: ReadonlyArray<readonly [area: string, field: string]> = [
+  ["store", "preferences"],
+  ["taste", "taste"],
+  ["diet", "diet_principles"],
+  ["equipment", "kitchen"],
+  ["pantry", "pantry"],
+  ["ready-to-eat", "ready_to_eat"],
+  ["stockup", "stockup"],
+  ["corpus", "overlay"],
 ];
 
 export interface ProfileStatus {
@@ -28,35 +20,35 @@ export interface ProfileStatus {
   missing: string[];
 }
 
-/**
- * Derive `{ initialized, missing }` from the caller's subtree listing. `entries` is
- * the file/dir listing of `users/<username>/`, or `null` when the subtree does not
- * exist yet (a 404 — a brand-new member). `initialized` is true once `preferences.toml`
- * is present (as a file); `missing` lists the area keys whose file is absent.
- */
-export function deriveProfileStatus(entries: DirEntry[] | null): ProfileStatus {
-  const present = new Set(
-    (entries ?? []).filter((e) => e.type === "file").map((e) => e.name),
-  );
-  const missing = AREA_FILES.filter(([, file]) => !present.has(file)).map(([area]) => area);
-  return { initialized: present.has("preferences.toml"), missing };
-}
+export async function profileStatus(
+  kv: KVNamespace,
+  username: string,
+): Promise<ProfileStatus> {
+  const [bundle, pantry, mealPlan, groceryList] = await Promise.all([
+    readProfileBundle(kv, username),
+    readPantryState(kv, username),
+    readMealPlanState(kv, username),
+    readGroceryListState(kv, username),
+  ]);
 
-/**
- * Read the caller's initialization status in one Contents-API call (the prefixed
- * client lists `users/<username>/`). A 404 on the subtree (brand-new member) is not
- * an error — it derives to "not initialized, all areas missing." Any other upstream
- * failure surfaces as a structured `upstream_unavailable`, so the gate can treat an
- * indeterminate result as non-gating (fail open).
- */
-export async function profileStatus(gh: GitHubClient): Promise<ProfileStatus> {
-  try {
-    return deriveProfileStatus(await gh.listDir(""));
-  } catch (e) {
-    if (e instanceof GitHubError) {
-      if (e.status === 404) return deriveProfileStatus(null);
-      throw new ToolError("upstream_unavailable", e.message);
+  const initialized = bundle?.preferences != null && bundle.preferences.trim().length > 0;
+
+  const missing: string[] = [];
+  for (const [area, field] of PROFILE_AREAS) {
+    if (field === "pantry") {
+      if (pantry === null || pantry.length === 0) missing.push(area);
+    } else {
+      const value = bundle?.[field as keyof typeof bundle];
+      if (value == null || (typeof value === "string" && value.trim().length === 0)) {
+        missing.push(area);
+      }
     }
-    throw e;
   }
+
+  // Session state presence (meal_plan and grocery_list are not onboarding areas
+  // but we surface them in the status for diagnostics when non-empty)
+  void mealPlan;
+  void groceryList;
+
+  return { initialized, missing };
 }

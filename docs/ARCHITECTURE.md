@@ -31,16 +31,24 @@ The system is three pieces with one clean split: **the LLM does the fuzzy work; 
 │     recipes/*.md · aliases.toml                        │
 │     skus/kroger.toml · storage_guidance/ · feeds.toml  │
 │     stores/*.toml · _indexes/                           │
-│   users/<username>/ (one subtree per member):          │
-│     pantry · preferences · stockup · grocery_list      │
-│     meal_plan · cooking_log · overlay · notes/ · …      │
+│   users/<username>/ (per-member historical records):   │
+│     cooking_log.toml · notes/ · store_notes/           │
+└────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────┐
+│  DATA_KV (Cloudflare KV, per-tenant operational state) │
+│   profile:<username>  → JSON bundle (preferences,      │
+│     taste, diet_principles, kitchen, staples, overlay, │
+│     ready_to_eat, stockup)                             │
+│   state:<username>:pantry                              │
+│   state:<username>:meal_plan                           │
+│   state:<username>:grocery_list                        │
 └────────────────────────────────────────────────────────┘
 
 (The CODE repo — this one: Worker src/, scripts/, docs/, CI —
  is a separate upstream. Self-hosters deploy it; they never fork it.)
 ```
 
-- **Claude.ai** is the conversational surface and the reasoning. Each chat starts fresh; state lives in the data repo, not in chat history. The agent reads what it needs through MCP tools at the start of a conversation.
+- **Claude.ai** is the conversational surface and the reasoning. Each chat starts fresh; state lives in DATA_KV (profile + session state) and the data repo (historical records + shared corpus), not in chat history. The agent reads what it needs through MCP tools at the start of a conversation.
 - **The Worker** (this repo, root `src/`) is a Cloudflare Worker hosting the `grocery-mcp` MCP server — the domain tool surface (pantry, recipes, Kroger, cart) — plus an OAuth 2.1 provider members connect their Claude.ai to. It is the locus of determinism and the multi-tenant gate.
 - **The data repo** (`<operator>/groceries-agent-data`, private) is the substrate: flat files (TOML + markdown) in git, with git history as the audit log. Created from [`groceries-agent-data-template`](https://github.com/caseyWebb/groceries-agent-data-template); see [`SELF_HOSTING.md`](SELF_HOSTING.md).
 
@@ -84,14 +92,15 @@ The data repo is the system's memory. It splits two ways — shared vs per-tenan
 ### Shared vs per-tenant
 
 - **Shared corpus (data-repo root)** — objective, single-source, read by everyone: recipe **content** (`recipes/*.md`), `aliases.toml`, the location-tagged `skus/kroger.toml` cache, the curated `storage_guidance/` tree, the `stores/<slug>.toml` store registry (identity), and the discovery sources (`feeds.toml`, `discoveries_inbox.toml`, `discovery_sources.toml`). Discovery is shared and top-level: feeds and the newsletter inbox feed one group pool, judged against each caller's taste at read time. `_indexes/` is generated from the shared content.
-- **Per-tenant subtree (`users/<username>/`)** — each member's own state (below). The Worker addresses it by prefixing repo-relative paths, so one request can never reach another member's data.
+- **Per-tenant GitHub subtree (`users/<username>/`)** — each member's **historical records** only: `cooking_log.toml` (realized cook history), `notes/<slug>.toml` (attributed recipe notes), `store_notes/<slug>.toml` (attributed store notes). Addressed by prefixing repo-relative paths; one request can never reach another member's data.
+- **Per-tenant DATA_KV** — each member's **operational state**, keyed by `profile:<username>` (the profile bundle) and `state:<username>:pantry/meal_plan/grocery_list` (session state). On a KV miss the Worker lazily migrates from any matching GitHub file, populates KV, and returns the data — zero-downtime transition for existing members.
 
 ### Three-category recipe model
 
 A recipe splits three ways so a shared corpus is safe to share:
 
 - **Content** — objective frontmatter + body, shared and single-source.
-- **Overlay** — `rating` + `status`, per-tenant in `users/<id>/overlay.toml` (slug-keyed). One member's disposition never changes another's. `status` lifecycle: `active` (candidate set) · `draft` (surfaced, not yet dispositioned) · `rejected` (explicit no, kept for de-dup) · `archived`. Effective `status` defaults to `draft` when a member has no overlay row.
+- **Overlay** — `rating` + `status`, per-tenant in the `overlay` field of the KV `profile:<username>` bundle (slug-keyed TOML). One member's disposition never changes another's. `status` lifecycle: `active` (candidate set) · `draft` (surfaced, not yet dispositioned) · `rejected` (explicit no, kept for de-dup) · `archived`. Effective `status` defaults to `draft` when a member has no overlay entry.
 - **Notes** — per-tenant, attributed, append-mostly (`users/<id>/notes/<slug>.toml`).
 
 `last_cooked` is **not stored** — it's derived per-tenant from that member's `cooking_log.toml`. Read tools merge shared content + the caller's overlay + cooking-log `last_cooked` at read time; the shared `_indexes/recipes.json` carries objective fields only.
@@ -100,17 +109,17 @@ A recipe splits three ways so a shared corpus is safe to share:
 
 ### The intent model (per-tenant)
 
-Five files capture different *kinds* of statement — don't conflate them:
+Five intent kinds — don't conflate them:
 
-| File | Kind of intent |
+| Key / backing | Kind of intent |
 | --- | --- |
-| `pantry.toml` | **observation** — what's physically in the kitchen |
-| `stockup.toml` | **conditional intent** — buy IF it drops below a threshold |
-| `grocery_list.toml` | **committed buy intent** — buy on the next order (ingredient-level, SKU-free) |
-| `meal_plan.toml` | **committed cook intent** — recipes agreed to cook next (transient) |
-| `cooking_log.toml` | **realized history** — append-only log of meals actually cooked |
+| `state:<username>:pantry` (KV) | **observation** — what's physically in the kitchen |
+| `profile:<username>.stockup` (KV bundle field) | **conditional intent** — buy IF it drops below a threshold |
+| `state:<username>:grocery_list` (KV) | **committed buy intent** — buy on the next order (ingredient-level, SKU-free) |
+| `state:<username>:meal_plan` (KV) | **committed cook intent** — recipes agreed to cook next (transient) |
+| `users/<username>/cooking_log.toml` (GitHub) | **realized history** — append-only log of meals actually cooked |
 
-The data repo is freely mutable; the Kroger cart is append-only. The agent **captures intent into `grocery_list.toml` continuously**, and **flushes to the cart once**, at order time. Capture is store-agnostic (the list is SKU-free); the flush is not.
+KV state is freely mutable with no git history (appropriate for transient operational data); `cooking_log.toml` is GitHub-backed for a durable audit trail. The agent **captures intent into the grocery list continuously**, and **flushes to the cart once**, at order time. Capture is store-agnostic (the list is SKU-free); the flush is not.
 
 ### The flush branches (`shop-groceries`)
 

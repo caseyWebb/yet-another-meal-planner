@@ -57,10 +57,18 @@ export interface Env {
 
   // --- KV ---
   /**
-   * Shared corpus artifacts. Currently holds one key: `"index:recipes"` — the
-   * JSON-serialised recipe index written by `build-indexes` on every recipe push.
-   * Reading from here avoids a GitHub API call (~100–300 ms) on every tool
-   * invocation that needs the index.
+   * Shared corpus artifacts AND per-tenant profile/session state.
+   *
+   * Shared keys: `"index:recipes"` — the JSON-serialised recipe index written by
+   * `build-indexes` on every recipe push (avoids a GitHub API call per invocation).
+   *
+   * Per-tenant keys (written by the Worker, never by CI):
+   * - `profile:<username>` — JSON bundle of all stable profile fields
+   *   (preferences, taste, diet_principles, kitchen, staples, overlay,
+   *   ready_to_eat, stockup), each stored as its raw file content string.
+   * - `state:<username>:pantry` — JSON array of pantry items.
+   * - `state:<username>:meal_plan` — JSON array of planned meal entries.
+   * - `state:<username>:grocery_list` — JSON array of grocery list items.
    */
   DATA_KV: KVNamespace;
   /**
