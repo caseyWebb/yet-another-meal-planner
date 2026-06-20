@@ -3,7 +3,7 @@
 // maintainer's, so its ids/vars must never appear in another operator's deployed config.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mergeWranglerConfig, pinKvIds } from "../scripts/merge-wrangler-config.mjs";
+import { mergeWranglerConfig, pinKvIds, kvIdsChanged } from "../scripts/merge-wrangler-config.mjs";
 
 // The maintainer's (code repo) config — carries real ids/vars that must NOT propagate.
 const code = {
@@ -127,4 +127,26 @@ test("pinKvIds is a no-op when nothing was provisioned", () => {
   const deployed = { kv_namespaces: [{ binding: "KROGER_KV" }] }; // id-less
   const out = pinKvIds(deployed, operator);
   assert.deepEqual(out, operator);
+});
+
+test("kvIdsChanged: false when ids already match (existing/manual operator — pin stays silent)", () => {
+  const existing = { vars: { GITHUB_APP_ID: "OP" }, kv_namespaces: [
+    { binding: "KROGER_KV", id: "K" }, { binding: "TENANT_KV", id: "T" }, { binding: "OAUTH_KV", id: "O" },
+  ] };
+  const deployed = { kv_namespaces: [
+    { binding: "KROGER_KV", id: "K" }, { binding: "TENANT_KV", id: "T" }, { binding: "OAUTH_KV", id: "O" },
+  ] };
+  assert.equal(kvIdsChanged(existing, pinKvIds(deployed, existing)), false);
+});
+
+test("kvIdsChanged: true when a fresh id is provisioned (id-less -> id)", () => {
+  const before = { kv_namespaces: [{ binding: "KROGER_KV" }] };
+  const deployed = { kv_namespaces: [{ binding: "KROGER_KV", id: "NEW" }] };
+  assert.equal(kvIdsChanged(before, pinKvIds(deployed, before)), true);
+});
+
+test("kvIdsChanged: true when an id changes", () => {
+  const before = { kv_namespaces: [{ binding: "KROGER_KV", id: "OLD" }] };
+  const after = { kv_namespaces: [{ binding: "KROGER_KV", id: "NEW" }] };
+  assert.equal(kvIdsChanged(before, after), true);
 });

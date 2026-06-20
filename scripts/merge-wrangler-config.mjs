@@ -95,6 +95,22 @@ export function pinKvIds(deployed, operator) {
   return { ...operator, kv_namespaces: [...byBinding.values()] };
 }
 
+/**
+ * Did the KV binding→id mapping actually change between two configs? Used to keep the
+ * pin step a true no-op (leaving the operator's config and its comments untouched, and
+ * the deploy's commit/push silently skipped) when ids are already set — existing or
+ * manual-setup operators. Returns true only when an id was added or changed.
+ */
+export function kvIdsChanged(before, after) {
+  const ids = (cfg) =>
+    new Map((cfg.kv_namespaces ?? []).filter((n) => n && n.binding).map((n) => [n.binding, n.id ?? null]));
+  const b = ids(before);
+  const a = ids(after);
+  if (a.size !== b.size) return true;
+  for (const [binding, id] of a) if (b.get(binding) !== id) return true;
+  return false;
+}
+
 // --- CLI ---
 
 const parseFile = (p) => JSON5.parse(readFileSync(p, "utf8"));
@@ -108,9 +124,18 @@ if (isMain) {
     writeJson(b, mergeWranglerConfig(parseFile(b), parseFile(a)));
     console.log(`merge: ${a} (operator) onto ${b} (code) -> ${b}`);
   } else if (mode === "pin" && a && b) {
-    // pin <deployed> <operator> -> write operator config with provisioned ids
-    writeJson(b, pinKvIds(parseFile(a), parseFile(b)));
-    console.log(`pin: KV ids from ${a} -> ${b}`);
+    // pin <deployed> <operator> -> write operator config with provisioned ids, but ONLY
+    // when an id actually changed. Leaving the file untouched otherwise keeps the deploy's
+    // `git diff --quiet` check true, so the commit/push is silently skipped for operators
+    // whose ids are already set (so they need no `contents: write` permission).
+    const operator = parseFile(b);
+    const patched = pinKvIds(parseFile(a), operator);
+    if (kvIdsChanged(operator, patched)) {
+      writeJson(b, patched);
+      console.log(`pin: KV ids from ${a} -> ${b}`);
+    } else {
+      console.log(`pin: no KV id changes — left ${b} untouched`);
+    }
   } else {
     console.error("usage: merge-wrangler-config.mjs <merge|pin> <argA> <argB>");
     process.exit(1);
