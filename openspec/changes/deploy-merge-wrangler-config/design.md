@@ -36,15 +36,18 @@ Replace the `cp` with a tested merge helper (`scripts/merge-wrangler-config.mjs`
 | `triggers` | **code** (so a new cron propagates) |
 | `name` | operator if set, else code |
 | `routes` / custom domain | **operator** |
-| `vars` | code base, operator overrides per-key (and the deploy still injects `DATA_OWNER`/`DATA_REPO`/`DATA_REF` via `--var`, which wins at runtime) |
+| `vars` | **operator only** — the code repo's `vars` are the *maintainer's* (`GITHUB_APP_ID`, `GITHUB_INSTALLATION_ID`, `DATA_*`) and are **dropped**; the deploy injects `DATA_OWNER`/`DATA_REPO`/`DATA_REF` via `--var` (Decision 2) |
 | `kv_namespaces` | **binding set from code**; **id always from the operator** (matched by binding name), else omitted → auto-provisioned. Code ids are dropped unconditionally (Decision 2). |
 
 - **vs. blind deep merge:** arrays (`kv_namespaces`) don't deep-merge sensibly, and "operator wins everywhere" would let an operator's stale `compatibility_flags` or missing `triggers` override code. A curated rule set makes ownership explicit and reviewable.
 - **vs. code-as-overlay-on-operator (closest to today):** would require operators to keep a full, correct copy of every code-level key — exactly the sync burden we're removing.
 
-### 2. KV namespace ids ALWAYS originate from the operator; code ids are never deployed elsewhere
+### 2. Operator-specific values (KV ids AND `vars`) ALWAYS originate from the operator; code's are never deployed elsewhere
 
-The merge matches `kv_namespaces` by **binding name**. For each binding the code declares, the deployed entry uses the **operator's id** for that binding if present, otherwise **no id** (so `wrangler deploy` auto-provisions — the existing posture). The code repo's ids are **discarded unconditionally**. This guarantees a fresh operator can never bind the maintainer's namespaces, and a new code-required binding still appears (auto-provisioned for that operator).
+The code repo's `wrangler.jsonc` is the *maintainer's real config*, so it carries the maintainer's KV ids **and** their `vars` (`GITHUB_APP_ID`, `GITHUB_INSTALLATION_ID`, `DATA_*`). Both are operator-specific and must never reach another operator.
+
+- **`kv_namespaces`:** matched by **binding name** — the deployed entry uses the operator's id if present, else **no id** (auto-provisioned, the existing posture); code ids are **discarded unconditionally**. A fresh operator can never bind the maintainer's namespaces, and a new code-required binding still appears.
+- **`vars`:** the deployed `vars` are the **operator's only**; the code repo's `vars` are dropped entirely (the deploy injects `DATA_OWNER`/`DATA_REPO`/`DATA_REF` via `--var`). Without this, a fresh operator would inherit the maintainer's GitHub App installation id — a cross-tenant exposure as severe as the KV one. *(This sharpens the original rule, which is `vars`-blind; both values get the same provenance guarantee, enforced by tests.)*
 
 - Belt-and-suspenders: also **scrub the maintainer's real KV ids from the code repo's committed `wrangler.jsonc`** (replace with no-id bindings) so the footgun is gone even if the merge rule regresses. *(Open question — see below; the maintainer currently relies on those ids for their own deploy path.)*
 
@@ -91,6 +94,6 @@ The template lives in `docs/data-template` (submodule → `groceries-agent-data-
 
 ## Open Questions
 
-- **Scrub the maintainer's KV ids from the code repo's `wrangler.jsonc`?** It removes the footgun but the maintainer's own deploy/local path may rely on them. Resolve before relying solely on Decision 2, or keep both the scrub *and* the merge-strip.
+- ~~**Scrub the maintainer's KV ids from the code repo's `wrangler.jsonc`?**~~ **RESOLVED (maintainer): yes — scrubbed.** The maintainer no longer deploys from the code repo (it's residual), so KV ids are id-less, `GITHUB_APP_ID` is a placeholder, and `GITHUB_INSTALLATION_ID`/`DATA_*` are dropped; real local-dev values live in `.dev.vars`. Both the scrub *and* the merge-strip are in place (defense in depth).
 - **Where does the merge run** — inline `node scripts/merge-wrangler-config.mjs` in the workflow (needs `npm ci` first, already present) vs a self-contained script with no deps? Prefer reusing the installed toolchain.
 - **`name` precedence** — is the Worker name code-default or operator-chosen? Defaulting to operator-if-set, else code, but confirm against how operators currently name their Worker.

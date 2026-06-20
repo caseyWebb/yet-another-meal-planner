@@ -12,7 +12,7 @@
     "deploy": "wrangler deploy",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:tooling": "node --test tests/build-indexes.test.mjs tests/build-site.test.mjs tests/build-plugin.test.mjs",
+    "test:tooling": "node --test tests/build-indexes.test.mjs tests/build-site.test.mjs tests/build-plugin.test.mjs tests/merge-wrangler-config.test.mjs",
     "build:indexes": "node scripts/build-indexes.mjs",
     "build:site": "node scripts/build-site.mjs",
     "build:plugin": "node scripts/build-plugin.mjs --out plugin/grocery-agent",
@@ -35,6 +35,7 @@
     "@cloudflare/workers-types": "^4.20260617.1",
     "@fission-ai/openspec": "^1.4.1",
     "@types/js-yaml": "^4.0.9",
+    "json5": "^2.2.3",
     "typescript": "^6.0.3",
     "vitest": "^3.2.6",
     "wrangler": "^4.102.0"

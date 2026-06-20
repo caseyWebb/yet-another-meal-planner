@@ -19,14 +19,24 @@ The deploy SHALL assemble the deployed `wrangler.jsonc` by **merging** the code 
 - **WHEN** the operator's config sets a custom `name`, `routes`/custom domain, or account-specific `vars`
 - **THEN** those operator values appear in the deployed config (operator wins for these keys)
 
-### Requirement: KV namespace ids always originate from the operator
+### Requirement: Operator-specific values always originate from the operator
 
-When merging `kv_namespaces`, the deploy SHALL match entries **by binding name**: the binding *set* SHALL come from the code repo's config (so a newly-required binding propagates), but each binding's **id SHALL come only from the operator's config** for that binding, or be **omitted** (triggering auto-provisioning) when the operator declares no id. The code repo's KV namespace ids SHALL NEVER appear in the deployed config of another operator. This prevents a fresh operator's Worker from binding the maintainer's KV namespaces (a cross-tenant exposure).
+The code repo's `wrangler.jsonc` is the maintainer's real config, so its KV namespace ids and `vars` are the maintainer's. The deploy SHALL ensure neither reaches another operator:
+
+- `kv_namespaces` SHALL be matched **by binding name**: the binding *set* comes from the code repo's config (so a newly-required binding propagates), but each binding's **id SHALL come only from the operator's config**, or be **omitted** (auto-provisioned) when the operator declares no id. The code repo's KV ids SHALL NEVER appear in another operator's deployed config.
+- The deployed `vars` SHALL be the **operator's only**; the code repo's `vars` (including `GITHUB_INSTALLATION_ID` and `GITHUB_APP_ID`) SHALL be dropped, with the data-repo coordinates injected via `--var` at deploy.
+
+This prevents a fresh operator's Worker from binding the maintainer's KV namespaces or inheriting the maintainer's GitHub App installation (cross-tenant exposures).
 
 #### Scenario: Operator id wins, code id is discarded
 
 - **WHEN** both the code and operator configs declare the `KROGER_KV` binding, each with a different id
 - **THEN** the deployed `KROGER_KV` uses the **operator's** id and the code repo's id does not appear anywhere in the deployed config
+
+#### Scenario: The maintainer's vars never leak
+
+- **WHEN** the code repo's config carries the maintainer's `vars` (e.g. `GITHUB_INSTALLATION_ID`) and the operator's config sets only its own `GITHUB_APP_ID`
+- **THEN** the deployed `vars` contain the operator's values and **none** of the maintainer's (the code repo's `vars` are dropped)
 
 #### Scenario: A code-only binding deploys without an id (auto-provisioned)
 
