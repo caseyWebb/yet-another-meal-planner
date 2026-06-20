@@ -6,13 +6,16 @@ import {
   normalizeTerms,
   readFlyerRollup,
   rollupKey,
+  runWarmJob,
   runWarmTick,
   type FlyerRollup,
   type WarmDeps,
 } from "../src/flyer-warm.js";
+import { readJobHealth } from "../src/health.js";
 import type { KvStore } from "../src/kroger-user.js";
 import type { KrogerCandidate } from "../src/kroger.js";
 import type { FlyerItem } from "../src/matching.js";
+import type { Env } from "../src/env.js";
 
 /** In-memory KvStore. */
 function fakeKv(): KvStore & { store: Map<string, string> } {
@@ -245,5 +248,32 @@ describe("mergeFlyerItems", () => {
     // re-merging the same incoming adds nothing (idempotent → a retried tick is safe)
     const again = mergeFlyerItems(merged, incoming);
     expect(again).toEqual(merged);
+  });
+});
+
+describe("runWarmJob (health + rethrow)", () => {
+  const env = {} as unknown as Env; // NTFY_URL unset → notify no-ops
+
+  it("writes a healthy record carrying the freshness summary", async () => {
+    const h = harness();
+    await runWarmJob(env, h.deps); // build tick
+    await runWarmJob(env, h.deps); // scan all → complete (single batch, default 12 units > 4)
+    const rec = await readJobHealth(h.kv, "flyer-warm");
+    expect(rec).not.toBeNull();
+    expect(rec!.ok).toBe(true);
+    expect(rec!.summary.action).toBe("completed");
+    expect(typeof rec!.summary.sweep_completed_at).toBe("number"); // freshness signal stamped
+  });
+
+  it("on a thrown tick: writes ok:false and rethrows (so the platform sees a failure)", async () => {
+    const h = harness({
+      listTenantIds: async () => {
+        throw new Error("github down");
+      },
+    });
+    await expect(runWarmJob(env, h.deps)).rejects.toThrow("github down");
+    const rec = await readJobHealth(h.kv, "flyer-warm");
+    expect(rec!.ok).toBe(false);
+    expect(rec!.summary.error).toContain("github down");
   });
 });

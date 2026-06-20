@@ -14,7 +14,9 @@ import { resolveTenant, directoryFromEnv } from "./tenant.js";
 import { handleOAuth } from "./oauth.js";
 import { handleAuthorize } from "./authorize.js";
 import { handleInboundEmail, rejectReasonFor, type InboundMessage } from "./email.js";
-import { buildWarmDeps, runWarmTick } from "./flyer-warm.js";
+import { buildWarmDeps, runWarmJob } from "./flyer-warm.js";
+import { handleHealthRequest, writeJobHealth, notifyFailure } from "./health.js";
+import type { KvStore } from "./kroger-user.js";
 
 /**
  * The gated MCP API. Only reached for `/mcp` requests the provider has already
@@ -51,6 +53,7 @@ const defaultHandler = {
     }
     if (url.pathname === "/authorize") return handleAuthorize(request, env);
     if (url.pathname.startsWith("/oauth/")) return handleOAuth(env, url);
+    if (url.pathname === "/health") return handleHealthRequest(request, env);
     return new Response("Not found", { status: 404 });
   },
 };
@@ -82,15 +85,30 @@ export default {
     return oauthProvider.fetch(request, env, ctx);
   },
   async email(message: InboundMessage, env: Env): Promise<void> {
+    const startedAt = Date.now();
     let reason: string | null;
+    let ok = true;
+    let summary: Record<string, unknown>;
     try {
       const result = await handleInboundEmail(message, env);
       console.log("[email] " + JSON.stringify(result)); // one structured line per message
       reason = rejectReasonFor(result);
+      // Tenant-clean: gate outcome only — never the `from` address.
+      summary = { accepted: result.accepted, reason: result.reason, written: result.written };
     } catch (e) {
-      console.error("inbound email handler failed:", e instanceof Error ? e.message : String(e));
+      ok = false;
+      const msg = e instanceof Error ? e.message : String(e);
+      console.error("inbound email handler failed:", msg);
       reason = "A processing error occurred while indexing the message.";
+      summary = { error: msg };
+      await notifyFailure(env, "email", msg);
     }
+    // Best-effort health record; a write failure must not change the reject decision.
+    await writeJobHealth(env.KROGER_KV as unknown as KvStore, "email", {
+      ok,
+      last_run_at: startedAt,
+      summary,
+    }).catch(() => {});
     if (reason) message.setReject(reason);
   },
   /**
@@ -101,10 +119,8 @@ export default {
    * failed tick is logged and retried next tick (the cursor only advances on success).
    */
   async scheduled(_controller: ScheduledController, env: Env, _ctx: ExecutionContext): Promise<void> {
-    try {
-      await runWarmTick(buildWarmDeps(env));
-    } catch (e) {
-      console.error("[flyer-warm] tick failed:", e instanceof Error ? e.message : String(e));
-    }
+    // Health record, optional ntfy push, and the platform-honest rethrow all live in
+    // runWarmJob (testable with injected deps).
+    await runWarmJob(env, buildWarmDeps(env));
   },
 };

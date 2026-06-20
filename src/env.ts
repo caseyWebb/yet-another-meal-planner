@@ -44,10 +44,22 @@ export interface Env {
   /** Kroger `authorization_code` app client secret. Secret, OPTIONAL (falls back to KROGER_CLIENT_SECRET). */
   KROGER_OAUTH_CLIENT_SECRET?: string;
 
+  // --- Observability (background-job-health). All OPTIONAL secrets. ---
+  /**
+   * Gate for the `/health` endpoint. When set, `/health` requires this token (query
+   * `?token=` or `Authorization: Bearer`); when UNSET, `/health` is disabled (404).
+   */
+  HEALTH_TOKEN?: string;
+  /** ntfy topic URL for the optional Worker-side failure push (e.g. `https://ntfy.sh/<topic>`). Unset → no push. */
+  NTFY_URL?: string;
+  /** Optional bearer token for a protected ntfy topic. */
+  NTFY_TOKEN?: string;
+
   // --- KV ---
   /**
    * Per-tenant Kroger refresh tokens (`kroger:refresh:<tenant>`) plus short-lived
-   * PKCE verifiers keyed by `state`. Bound in wrangler.jsonc.
+   * PKCE verifiers keyed by `state`, plus the warmed flyer cache and background-job
+   * health records (`flyer:*`, `health:job:*`). Bound in wrangler.jsonc.
    */
   KROGER_KV: KVNamespace;
   /**

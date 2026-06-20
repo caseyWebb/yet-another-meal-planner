@@ -362,8 +362,15 @@ terms = [
 Derived, time-bound state written by the flyer warm into the `KROGER_KV` namespace (not the data repo — it's an ephemeral cache, regenerated each sweep). Documented here for completeness; nothing edits it by hand.
 
 - `flyer:{locationId}` → `{ sweep_id, as_of, items }` — the per-store rollup. `items` are noise-floor `FlyerItem`s (`{ sku, brand, description, size, price: { regular, promo }, savings, categories, matched_terms }`); `as_of` is epoch ms of the last contribution (surfaced to `kroger_flyer` readers as an ISO 8601 string). Shared across all tenants at that store.
-- `flyer:cursor` → `{ sweep_id, index, total, last_refresh_at, done }` — tiny per-tick progress record; the idle-tick read.
+- `flyer:cursor` → `{ sweep_id, index, total, last_refresh_at, done, completed_at }` — tiny per-tick progress record; the idle-tick read. `completed_at` is epoch ms of the most recent FULL sweep (monotonic — a new sweep doesn't clear it), the freshness signal the warm's health record carries.
 - `flyer:plan` → `{ sweep_id, units }` — the ordered `(locationId, term)` unit list, built once per sweep so later ticks don't re-enumerate over GitHub.
+
+## Background-job health (KV, not a repo file)
+
+Derived operational state for the `/health` endpoint (background-job-health). Each background process writes one record per run; `/health` aggregates them. Tenant-data-free by construction — counts, timestamps, and error classes only.
+
+- `health:job:<name>` → `{ ok, last_run_at, summary }` — one per background job (`health:job:flyer-warm`, `health:job:email`). `ok` is the last run's success; `last_run_at` is epoch ms; `summary` is small tenant-clean detail (the warm carries `{ action, done, sweep_started_at, sweep_completed_at, errors }`; the email handler carries the gate outcome `{ accepted, reason, written }`).
+- `GET /health?token=<HEALTH_TOKEN>` → `{ ok, generated_at, jobs: [{ name, ok, last_run_at, never_run?, summary? }] }` — token-gated (404 when `HEALTH_TOKEN` unset, 401 on a wrong token), aggregate-only. Overall `ok` is false only when a job is *explicitly* failing; a never-run job is reported with `ok: null, never_run: true`. HTTP status is 200 when ok, 503 when failing (so plain HTTP-status monitors trip).
 
 ## feeds.toml
 
