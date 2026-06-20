@@ -72,9 +72,6 @@ jobs:
           echo "owner=${GITHUB_REPOSITORY%/*}" >> "$GITHUB_OUTPUT"
           echo "repo=${GITHUB_REPOSITORY#*/}" >> "$GITHUB_OUTPUT"
 
-      - name: Overlay the operator's wrangler config onto the source
-        run: cp "${{ inputs.config_path }}" _code/wrangler.jsonc
-
       - name: Install dependencies
         run: npm ci
         working-directory: _code
@@ -86,6 +83,15 @@ jobs:
       - name: Test
         run: npm test
         working-directory: _code
+
+      # Assemble the deployed config by MERGING code-level keys (triggers,
+      # compatibility_*, main, observability) from the code repo with the operator's
+      # owned keys (vars, KV ids, name, routes) — instead of the old wholesale `cp`
+      # overlay that dropped code-level config (and silently the flyer cron). The merge
+      # strips the code repo's vars/KV ids (the maintainer's) so they never reach an
+      # operator. See scripts/merge-wrangler-config.mjs.
+      - name: Merge wrangler config (code-level + operator-owned)
+        run: node _code/scripts/merge-wrangler-config.mjs merge "${{ inputs.config_path }}" _code/wrangler.jsonc
 
       # Deploy. --var injects the intuited data-repo coords into the Worker's vars
       # (the Worker has no Actions context, so they're baked at deploy). KV bindings
@@ -118,19 +124,20 @@ jobs:
             echo "Kroger creds not supplied as repo secrets — leaving any dashboard-set values untouched."
           fi
 
-      # Pin auto-provisioned KV ids back into the data repo so the NEXT deploy reuses
-      # the same namespaces (our overlay copies the config into the throwaway _code/,
-      # so wrangler's write-back would otherwise be discarded and re-provision).
+      # Pin auto-provisioned KV ids back into the operator's config so the NEXT deploy
+      # reuses the same namespaces. Under the merge, _code/wrangler.jsonc is the FULL
+      # deployed config (code-level + operator), so a wholesale copy-back would re-bloat
+      # the operator's slim config with code-level keys — instead we surgically patch
+      # only the provisioned KV ids (by binding) into the operator's config.
       #
-      # VERIFY ON FIRST REAL DEPLOY (zero-config-deploy task 3.3): confirm wrangler
-      # writes the provisioned ids into _code/wrangler.jsonc in place, and that a
-      # wholesale copy-back is acceptable (the template config is machine-managed; if
-      # comment preservation matters, switch to a surgical id-only patch).
+      # Assumes `wrangler deploy` writes the provisioned ids into _code/wrangler.jsonc
+      # in place; if a wrangler version stops doing so, fetch ids via `wrangler kv
+      # namespace list` instead (the pin step's input is the only thing that changes).
       - name: Pin auto-provisioned KV ids back to the data repo
         env:
           CONFIG: ${{ inputs.config_path }}
         run: |
-          cp _code/wrangler.jsonc "$CONFIG"
+          node _code/scripts/merge-wrangler-config.mjs pin _code/wrangler.jsonc "$CONFIG"
           if git diff --quiet -- "$CONFIG"; then
             echo "No KV id changes to persist."
           else

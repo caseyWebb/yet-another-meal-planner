@@ -1,8 +1,17 @@
-# .dev.vars.example — local-dev secrets for `wrangler dev`. Copy to `.dev.vars`
+# .dev.vars.example — local-dev env for `wrangler dev`. Copy to `.dev.vars`
 # (gitignored) and fill in. PRODUCTION secrets are set with `wrangler secret put`,
-# never here. Non-secret config (GITHUB_APP_ID, GITHUB_INSTALLATION_ID, DATA_*,
-# KV bindings) lives in wrangler.jsonc, not in this file.
+# never here. The committed wrangler.jsonc carries only PLACEHOLDER non-secret config
+# (its real values are operator-owned and merged in / injected at deploy), so for local
+# dev set your real GITHUB_APP_ID + data-repo coords here. KV is simulated locally.
 
+# --- Non-secret config for local dev (wrangler.jsonc has placeholders) ---
+GITHUB_APP_ID=""
+# GITHUB_INSTALLATION_ID is resolved at runtime by the Worker — set it only to pin/skip the lookup.
+DATA_OWNER=""
+DATA_REPO="groceries-agent-data"
+DATA_REF="main"
+
+# --- Secrets ---
 # GitHub App private key, PKCS#8 PEM (`-----BEGIN PRIVATE KEY-----`). Used to mint
 # installation tokens for local repo reads/writes. As a single dotenv line, quote
 # it and use literal \n between the PEM lines, e.g.:

@@ -25,35 +25,27 @@
 	"compatibility_flags": [
 		"nodejs_compat"
 	],
+	// vars are OPERATOR-OWNED: the deploy merge takes vars from the operator's data-repo
+	// config and strips these, so the values here are a placeholder / local-dev reference
+	// only — never deployed to operators. For local `wrangler dev`, set real values in
+	// `.dev.vars` (gitignored). GITHUB_INSTALLATION_ID is resolved at runtime by the
+	// Worker; DATA_OWNER/DATA_REPO/DATA_REF are injected by the deploy (--var) — so none
+	// of those are committed here.
 	"vars": {
-		// GitHub App (non-secret id + install id on the operator's account). Private key is a secret.
-		"GITHUB_APP_ID": "4022505",
-		"GITHUB_INSTALLATION_ID": "139471207",
-		// The single private data repo (recipes/ + reference data + users/<id>/).
-		// "Which tenant" is derived per-request from the OAuth grant's tenantId prop.
-		"DATA_OWNER": "caseyWebb",
-		"DATA_REPO": "groceries-agent-data",
-		"DATA_REF": "main"
+		"GITHUB_APP_ID": "<app id>"
 	},
 	// KV. KROGER_KV: per-tenant Kroger refresh tokens (`kroger:refresh:<tenant>`) +
 	// PKCE verifiers (`kroger:pkce:<state>`) + the warmed flyer cache (`flyer:{locationId}`
 	// rollups, the sweep `flyer:cursor`, and the persisted `flyer:plan`). TENANT_KV: the tenant directory /
 	// allowlist (`tenant:<id>`) + invite codes (`invite:<code>`). OAUTH_KV: the OAuth
 	// provider's clients/codes/grants/tokens (binding name is required by the lib).
-	// Create each namespace and paste its id:  npx wrangler kv namespace create <BINDING>
+	// Id-less bindings: the deploy auto-provisions per-operator ids and pins them back
+	// into the operator's data-repo config (the merge strips any id committed here). Real
+	// ids are never committed in this public repo; local `wrangler dev` simulates KV.
 	"kv_namespaces": [
-		{
-			"binding": "KROGER_KV",
-			"id": "aee060bb679141d995c8bc0d5643b9d3"
-		},
-		{
-			"binding": "TENANT_KV",
-			"id": "3f4eb3ff016647c9b32e340d0b2dfe64"
-		},
-		{
-			"binding": "OAUTH_KV",
-			"id": "fad701614c5a4a7e950207fd6772e225"
-		}
+		{ "binding": "KROGER_KV" },
+		{ "binding": "TENANT_KV" },
+		{ "binding": "OAUTH_KV" }
 	],
 	// Flyer warm (flyer-cache-warming). ONE trigger on a short cadence drives a
 	// cursor-based sweep (src/flyer-warm.ts): each tick builds the plan, scans the
@@ -62,6 +54,11 @@
 	// re-runs ~daily — that cadence lives in code (DEFAULT_REFRESH_MS), not here; the
 	// frequent cron just gives the sweep ticks to make progress on. Idle ticks are a
 	// single cheap KV read. Test locally with `wrangler dev --test-scheduled`.
+	// The operator deploy (data-deploy.yml) MERGES code-level keys from THIS file —
+	// including this `triggers` block — into each operator's deployed config
+	// (scripts/merge-wrangler-config.mjs), so a cron added here propagates to every
+	// operator on their next deploy. Operator-owned keys (vars, KV ids) come from the
+	// operator's config; the maintainer's vars/KV-ids in this file are stripped.
 	"triggers": {
 		"crons": [
 			"*/5 * * * *"
