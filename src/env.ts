@@ -57,6 +57,13 @@ export interface Env {
 
   // --- KV ---
   /**
+   * Shared corpus artifacts. Currently holds one key: `"index:recipes"` — the
+   * JSON-serialised recipe index written by `build-indexes` on every recipe push.
+   * Reading from here avoids a GitHub API call (~100–300 ms) on every tool
+   * invocation that needs the index.
+   */
+  DATA_KV: KVNamespace;
+  /**
    * Per-tenant Kroger refresh tokens (`kroger:refresh:<tenant>`) plus short-lived
    * PKCE verifiers keyed by `state`, plus the warmed flyer cache and background-job
    * health records (`flyer:*`, `health:job:*`). Bound in wrangler.jsonc.

@@ -14,6 +14,7 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import matter from 'gray-matter';
 import { parse as parseToml } from 'smol-toml';
+import JSON5 from 'json5';
 import { PROTEIN_VOCAB, CUISINE_VOCAB, EQUIPMENT_VOCAB } from '../src/vocab.js';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -508,6 +509,64 @@ async function writeIndexes(indexes, outDir) {
   await writeFile(path.join(outDir, 'recipes.json'), stableStringify(indexes.recipes));
 }
 
+// Publish the recipe index to DATA_KV. Auto-detects eligibility: both
+// CLOUDFLARE_API_TOKEN and the DATA_KV namespace id (read from the data repo's
+// wrangler.jsonc) must be present. Warns and skips rather than failing when
+// either is absent — this keeps `--check` mode and pre-first-deploy runs clean.
+async function publishToKv(indexes, root) {
+  const token = process.env.CLOUDFLARE_API_TOKEN;
+  if (!token) {
+    console.log('KV publish skipped: CLOUDFLARE_API_TOKEN not set');
+    return;
+  }
+
+  // Read the DATA_KV namespace id from the data repo's wrangler.jsonc.
+  let namespaceId;
+  try {
+    const wranglerPath = path.join(root, 'wrangler.jsonc');
+    const wranglerConfig = JSON5.parse(await readFile(wranglerPath, 'utf8'));
+    namespaceId = (wranglerConfig.kv_namespaces ?? []).find((b) => b.binding === 'DATA_KV')?.id;
+  } catch {
+    // wrangler.jsonc absent or unreadable
+  }
+  if (!namespaceId) {
+    console.warn('warn: DATA_KV namespace id not in wrangler.jsonc — skipping KV publish (run deploy first to provision)');
+    return;
+  }
+
+  // Resolve account id from the token (the namespace id alone is not enough for the REST API).
+  let accountId;
+  try {
+    const res = await fetch('https://api.cloudflare.com/client/v4/accounts', {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) throw new Error(`${res.status}`);
+    const { result } = await res.json();
+    accountId = result?.[0]?.id;
+  } catch (err) {
+    console.warn(`warn: KV publish failed — could not resolve Cloudflare account: ${err.message}`);
+    return;
+  }
+  if (!accountId) {
+    console.warn('warn: KV publish failed — no Cloudflare account found for this token');
+    return;
+  }
+
+  const value = stableStringify(indexes.recipes);
+  const url = `https://api.cloudflare.com/client/v4/accounts/${accountId}/storage/kv/namespaces/${namespaceId}/values/index%3Arecipes`;
+  const res = await fetch(url, {
+    method: 'PUT',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'text/plain' },
+    body: value,
+  });
+  if (!res.ok) {
+    const body = await res.text();
+    console.warn(`warn: KV publish failed — ${res.status}: ${body}`);
+    return;
+  }
+  console.log(`KV index:recipes published to DATA_KV (${namespaceId.slice(0, 8)}…)`);
+}
+
 async function main() {
   const checkOnly = process.argv.includes('--check');
   // --root <dir> builds a SEPARATE data checkout (the data repo's CI runs these
@@ -535,6 +594,7 @@ async function main() {
   console.log(
     `indexes written: ${Object.keys(indexes.recipes).length} recipe(s), ${warnings.length} warning(s)`
   );
+  await publishToKv(indexes, root);
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

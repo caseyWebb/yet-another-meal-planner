@@ -31,7 +31,6 @@ import {
 import { addSources, INBOX_PATH, SOURCES_PATH } from "./email.js";
 
 const MAX_PER_FEED = 8;
-const RECIPE_INDEX = "_indexes/recipes.json";
 
 function errMessage(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
@@ -45,7 +44,11 @@ function errMessage(e: unknown): string {
  * menu time. Imports dedupe by source URL against the shared corpus so a recipe
  * already present is reused, never duplicated (§6.4).
  */
-export function registerDiscoveryTools(server: McpServer, sharedGh: GitHubClient): void {
+export function registerDiscoveryTools(
+  server: McpServer,
+  sharedGh: GitHubClient,
+  dataKv: KVNamespace,
+): void {
   server.registerTool(
     "fetch_rss_discoveries",
     {
@@ -61,7 +64,7 @@ export function registerDiscoveryTools(server: McpServer, sharedGh: GitHubClient
         const feeds = Array.isArray(parsed.feeds) ? (parsed.feeds as Record<string, unknown>[]) : [];
         if (feeds.length === 0) return { candidates: [] };
 
-        const seen = extractRecipeSources(await readOptional(sharedGh, RECIPE_INDEX));
+        const seen = extractRecipeSources(await dataKv.get("index:recipes"));
 
         // Fetch all feeds concurrently (distinct external domains, no shared-host burst concern).
         const results = await Promise.all(
@@ -137,7 +140,7 @@ export function registerDiscoveryTools(server: McpServer, sharedGh: GitHubClient
         const source = norm.recipe.source ?? canonicalizeUrl(url);
         // Idempotency (§6.4): if this source is already in the shared corpus, tell
         // the agent which slug to reuse rather than minting a duplicate.
-        const existingSlug = indexSourceToSlug(await readOptional(sharedGh, RECIPE_INDEX)).get(
+        const existingSlug = indexSourceToSlug(await dataKv.get("index:recipes")).get(
           canonicalizeUrl(source),
         );
         return existingSlug
@@ -164,7 +167,7 @@ export function registerDiscoveryTools(server: McpServer, sharedGh: GitHubClient
         // point the agent at the existing slug to reuse.
         const source = typeof frontmatter.source === "string" ? frontmatter.source : null;
         if (source) {
-          const existing = indexSourceToSlug(await readOptional(sharedGh, RECIPE_INDEX)).get(
+          const existing = indexSourceToSlug(await dataKv.get("index:recipes")).get(
             canonicalizeUrl(source),
           );
           if (existing) {

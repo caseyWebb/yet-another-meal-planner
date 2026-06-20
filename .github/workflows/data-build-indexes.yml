@@ -1,8 +1,13 @@
-# Reusable workflow: regenerate a DATA repo's _indexes/ from its recipes/.
-# A data repo (created from groceries-agent-data-template) calls this — see that
-# repo's thin .github/workflows/build-indexes.yml. Billing/runners are the CALLER's
-# (the data repo owner), never this repo's. The build scripts live ONLY here; the
-# data repo carries no copy. `code_ref` pins which version of the scripts to run.
+# Reusable workflow: regenerate a DATA repo's _indexes/ from its recipes/ and
+# publish the recipe index to DATA_KV. A data repo (created from
+# groceries-agent-data-template) calls this — see that repo's thin
+# .github/workflows/build-indexes.yml. Billing/runners are the CALLER's (the data
+# repo owner), never this repo's. The build scripts live ONLY here; the data repo
+# carries no copy. `code_ref` pins which version of the scripts to run.
+#
+# CLOUDFLARE_API_TOKEN is optional: when passed (via `secrets: inherit` in the
+# caller), the build script also publishes the index to DATA_KV. When absent, only
+# the JSON file is written and committed (the old behaviour).
 name: data-build-indexes
 
 on:
@@ -12,6 +17,10 @@ on:
         description: Ref of caseyWebb/groceries-agent to take the build scripts from.
         type: string
         default: main
+    secrets:
+      CLOUDFLARE_API_TOKEN:
+        description: "Cloudflare token with KV write access. Optional: when set, the index is published to DATA_KV after being written to _indexes/."
+        required: false
 
 jobs:
   build:
@@ -39,8 +48,11 @@ jobs:
         working-directory: _code
 
       # `--root .` builds THIS workspace (the data repo), not _code.
+      # When CLOUDFLARE_API_TOKEN is set, the script auto-publishes to DATA_KV.
       - name: Validate + regenerate indexes
         run: node _code/scripts/build-indexes.mjs --root .
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
 
       - name: Commit regenerated indexes
         run: |

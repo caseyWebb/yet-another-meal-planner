@@ -34,15 +34,18 @@
 	"vars": {
 		"GITHUB_APP_ID": "<app id>"
 	},
-	// KV. KROGER_KV: per-tenant Kroger refresh tokens (`kroger:refresh:<tenant>`) +
-	// PKCE verifiers (`kroger:pkce:<state>`) + the warmed flyer cache (`flyer:{locationId}`
-	// rollups, the sweep `flyer:cursor`, and the persisted `flyer:plan`). TENANT_KV: the tenant directory /
-	// allowlist (`tenant:<id>`) + invite codes (`invite:<code>`). OAUTH_KV: the OAuth
-	// provider's clients/codes/grants/tokens (binding name is required by the lib).
+	// KV. DATA_KV: shared corpus artifacts — the recipe index (`index:recipes`), the
+	// only derived artifact fast enough to justify KV over a GitHub API call. KROGER_KV:
+	// per-tenant Kroger refresh tokens (`kroger:refresh:<tenant>`) + PKCE verifiers
+	// (`kroger:pkce:<state>`) + the warmed flyer cache (`flyer:{locationId}` rollups,
+	// the sweep `flyer:cursor`, and the persisted `flyer:plan`). TENANT_KV: the tenant
+	// directory / allowlist (`tenant:<id>`) + invite codes (`invite:<code>`). OAUTH_KV:
+	// the OAuth provider's clients/codes/grants/tokens (binding name required by lib).
 	// Id-less bindings: the deploy auto-provisions per-operator ids and pins them back
 	// into the operator's data-repo config (the merge strips any id committed here). Real
 	// ids are never committed in this public repo; local `wrangler dev` simulates KV.
 	"kv_namespaces": [
+		{ "binding": "DATA_KV" },
 		{ "binding": "KROGER_KV" },
 		{ "binding": "TENANT_KV" },
 		{ "binding": "OAUTH_KV" }

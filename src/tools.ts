@@ -262,20 +262,17 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
     },
     ({ filters }) =>
       runTool(async () => {
-        const [raw, overlay, lastCooked, owned] = await Promise.all([
-          readFile(
-            sharedGh,
-            "_indexes/recipes.json",
-            "index_unavailable",
-            "the recipe index is unavailable",
-          ),
+        const [rawIndex, overlay, lastCooked, owned] = await Promise.all([
+          env.DATA_KV.get("index:recipes"),
           getOverlay(),
           getLastCookedMap(),
           getOwnedEquipment(),
         ]);
+        if (rawIndex === null)
+          throw new ToolError("index_unavailable", "the recipe index is unavailable");
         let index: RecipeIndex;
         try {
-          index = JSON.parse(raw) as RecipeIndex;
+          index = JSON.parse(rawIndex) as RecipeIndex;
         } catch (e) {
           const message = e instanceof Error ? e.message : String(e);
           throw new ToolError("index_unavailable", `the recipe index is malformed: ${message}`);
@@ -604,14 +601,14 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
 
   // Cooking history + meal plan: read_meal_plan (resume) and retrospective.
   // The corresponding writes ride commit_changes (cooking_log_entries / meal_plan_ops).
-  registerCookingTools(server, gh, sharedGh);
+  registerCookingTools(server, gh, env.DATA_KV);
 
   // Discovery: RSS recipe candidates, parse-only URL import, draft create, plus the
   // feeds/sources config writers. Everything here is SHARED (root client) — recipes,
   // feeds.toml, the discoveries inbox, and discovery_sources.toml all live at the
   // data-repo root, so any member's config feeds one group pool. Imports dedupe by
   // source URL against the shared corpus so a recipe is reused, not duplicated (§6.4).
-  registerDiscoveryTools(server, sharedGh);
+  registerDiscoveryTools(server, sharedGh, env.DATA_KV);
 
   // Recipe notes (§8): attributed annotations authored in this tenant's subtree,
   // aggregated across the group at read time (KV tenant directory → each subtree).

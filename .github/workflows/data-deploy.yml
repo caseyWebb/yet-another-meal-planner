@@ -149,3 +149,11 @@ jobs:
               echo "::warning::Could not push pinned KV ids (the deploy caller needs 'permissions: contents: write'). The deploy succeeded; paste the ids from wrangler.jsonc manually, or grant the permission so it auto-pins next time."
             fi
           fi
+
+      # Publish the recipe index to DATA_KV immediately after deploy so the Worker
+      # can serve list_recipes without waiting for a recipe push. Reads the DATA_KV
+      # namespace id from the operator's wrangler.jsonc (pinned back above).
+      - name: Publish indexes to DATA_KV
+        run: node _code/scripts/build-indexes.mjs --root .
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
