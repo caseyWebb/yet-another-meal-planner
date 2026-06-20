@@ -103,6 +103,13 @@ Then add the **GitHub App private key** as a Worker secret in the Cloudflare das
 
 **A background flyer warm starts running automatically.** Your `wrangler.jsonc` ships one **cron trigger**; once deployed, a scheduled sweep periodically pre-computes the Kroger sale flyer for each member's store into the existing `KROGER_KV` namespace, so `kroger_flyer` is a fast cache read instead of a live scan. No extra setup — it reuses your Kroger credentials (step 3) and is **comfortably within the Cloudflare free tier** (a single trigger; each tick does a small bounded batch and most ticks are an idle no-op). It's driven by the root-level `flyer_terms.toml` in your data repo (broad sale-scan categories); absent or empty, the flyer just comes back empty. Cron invocations are billed to your account like any request.
 
+**Monitoring the background jobs (optional).** The warm and the inbound-email handler run with no one watching, so the Worker exposes a `/health` endpoint that reports each background job's last-run/freshness. To use it:
+
+- Set a **`HEALTH_TOKEN`** Worker secret (any random string). `/health` is **disabled (404) until you set it**; then call `https://<your-worker-host>/health?token=<HEALTH_TOKEN>` — it returns JSON (`200` healthy, `503` when a job is failing).
+- Point an uptime monitor at that URL and route alerts to **ntfy** (or wherever). **Uptime Kuma** works well (native ntfy); any URL monitor with a webhook does. Assert on the `200`/`503` status, or on `ok: true` + freshness. Because `/health` is on the fetch path (separate from the cron), it still answers when the cron is dead — so a stalled warm shows up as stale/`503`.
+- *(Optional)* set **`NTFY_URL`** (+ `NTFY_TOKEN` for a protected topic) as Worker secrets — a *failed* background job then pushes a tenant-clean alert to that ntfy topic directly from the Worker, an independent backstop that fires even if your monitor is offline. Unset → no push.
+- To **debug** a failure, the warm's structured logs (and any `tick failed`) live in Workers Logs; the **Cloudflare Workers Observability MCP** lets an AI agent query them directly. Cloudflare's own **Workers → Cron Events** view also shows recent cron runs (now honest about failures — the handler rethrows).
+
 ## 6. Onboard yourself
 
 Run the **Onboard member** Action (your data repo → Actions) with `username: <you>` (leave `invite_code` blank to auto-generate). It allowlists you in KV and mints your invite code (shown in the run summary — **visible only to you**, since this is your private repo). Your `users/<you>/` subtree is created automatically on your first write (e.g. setting your Kroger store) — the commit engine creates files at any path.

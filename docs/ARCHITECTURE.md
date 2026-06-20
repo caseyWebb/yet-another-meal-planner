@@ -144,6 +144,15 @@ The public Kroger API has no flyer/circular endpoint, so the "what's on sale" li
 - **Plan built once, persisted.** Enumerating the work (the tenant directory + each `preferences.toml` + `flyer_terms.toml`) costs external GitHub reads, so it happens **once at sweep start** and the plan is persisted in `flyer:plan`; every later tick reads the plan from KV (a CF-services read, not an external subrequest) and spends its budget only on Kroger scans.
 - **Per-location rollup, noise floor at warm / deal floor at read.** Results are materialized as one `flyer:{locationId}` rollup of fulfillable, on-sale candidates (raw `regular`/`promo` kept). `kroger_flyer` applies the caller's `min_savings_pct` at read, so the deal threshold stays tunable without a re-fetch. A cold cache reads as empty (graceful), and an `as_of` timestamp conveys age — staleness is low-stakes because the order path re-prices live.
 
+## Background-job health
+
+The warm cron and the inbound `email()` handler are the system's **background processes** — they run with no user attached, so a failure has no in-band consumer (every synchronous tool failure surfaces to the user via Claude.ai; a 3am cron failure surfaces to no one). And the platform won't fill the gap: Cloudflare Cron Triggers have no retries and no failure alerts. The keystone failure — *a stopped job emits nothing* — is only detectable from **outside** the Worker.
+
+- **Each background job writes a `health:job:<name>` record** to KV per run (`{ ok, last_run_at, summary }`, tenant-data-free). The warm and the email handler are the registered jobs; a future cron rides the same convention with no new wiring.
+- **`/health` aggregates them** on the **fetch** path — deliberately, because `fetch` is independent of `scheduled`, so the endpoint stays answerable when the cron is dead, and an external monitor catches a stopped job via stale `last_run_at`. It is token-gated (`HEALTH_TOKEN`; 404 when unset) and aggregate-only (no per-tenant data; 200 when ok, 503 when a job is failing).
+- **The Worker stays alerting-agnostic** — it *emits* truthful state; *what is alarming and who to notify* lives in an external monitor (point it at `/health`, route to ntfy). The one in-Worker exception is an **optional** secret-gated ntfy push (`NTFY_URL`) — a failure-domain-independent backstop that fires from the edge even if the operator's monitor is offline. Both default off; unset means `/health` is disabled and no push, i.e. unchanged behavior.
+- **`scheduled()` rethrows** a failed tick (cron is not retried) so Cloudflare's native Cron-Events status reflects failures rather than always-green. Rich diagnosis lives in Workers Logs — queryable via the Cloudflare Workers Observability MCP.
+
 ## Discovery and disposition
 
 Every menu request surfaces a small number of new items the user hasn't taken a position on, drawn from three sources:

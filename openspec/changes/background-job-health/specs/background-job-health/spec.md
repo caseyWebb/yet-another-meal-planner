@@ -58,12 +58,12 @@ A `scheduled` handler SHALL log a failed run AND rethrow it, so that the run is 
 
 ### Requirement: Registered background jobs report health
 
-The flyer warm and the inbound email handler SHALL each write their `health:job:<name>` record, so both current background processes are covered by `/health`. The flyer warm's record SHALL additionally carry the freshness signal a monitor asserts on (the last sweep's completion time and the oldest rollup `as_of`).
+The flyer warm and the inbound email handler SHALL each write their `health:job:<name>` record, so both current background processes are covered by `/health`. The flyer warm's record SHALL additionally carry the freshness signal a monitor asserts on (the last sweep's completion time — when the rollups were last refreshed).
 
 #### Scenario: The flyer warm reports health
 
 - **WHEN** a warm tick runs
-- **THEN** it writes `health:job:flyer-warm` with `ok`, `last_run_at`, and a summary including sweep freshness (last completion + oldest rollup `as_of`) and the run's error count
+- **THEN** it writes `health:job:flyer-warm` with `ok`, `last_run_at`, and a summary including sweep freshness (last completion time) and the run's error count
 
 #### Scenario: The email handler reports health
 

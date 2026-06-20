@@ -10,6 +10,9 @@
 	//   wrangler secret put KROGER_CLIENT_SECRET
 	//   wrangler secret put KROGER_OAUTH_CLIENT_ID      (optional)
 	//   wrangler secret put KROGER_OAUTH_CLIENT_SECRET  (optional)
+	//   wrangler secret put HEALTH_TOKEN                (optional; gates /health — unset = /health disabled)
+	//   wrangler secret put NTFY_URL                    (optional; Worker-side failure push to an ntfy topic)
+	//   wrangler secret put NTFY_TOKEN                  (optional; bearer for a protected ntfy topic)
 	"name": "grocery-mcp",
 	"main": "src/index.ts",
 	// The MCP surface (/mcp) is gated by the Worker's own OAuth 2.1 provider — there is

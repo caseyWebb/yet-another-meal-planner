@@ -25,6 +25,7 @@ import { createInstallationAuth } from "./github-app.js";
 import { readOptional } from "./gh-read.js";
 import { parseToml } from "./parse.js";
 import { dataCoords, directoryFromEnv, userPrefix } from "./tenant.js";
+import { notifyFailure, writeJobHealth } from "./health.js";
 
 // KV keys. Rollups are per-location (`flyer:{locationId}`); the cursor and the
 // persisted sweep plan are single keys. All live in the existing KROGER_KV namespace.
@@ -71,6 +72,10 @@ export interface SweepCursor {
   last_refresh_at: number;
   /** True once every unit has been processed. */
   done: boolean;
+  /** Epoch ms the most recent FULL sweep completed; monotonic (a new sweep does not
+   *  clear it), so it is the freshness signal a monitor asserts on. Null before the
+   *  first completion. */
+  completed_at: number | null;
 }
 
 /** The cached per-location rollup. Stores noise-floor candidates (the 5% deal floor
@@ -103,12 +108,16 @@ export interface WarmConfig {
   refreshMs?: number;
 }
 
-/** What a tick did — returned for tests/observability; the handler may ignore it. */
+/** What a tick did — returned for tests/observability and for the warm's health record. */
 export interface WarmTickResult {
   action: "built" | "scanned" | "completed" | "idle";
   /** Units processed this tick (scan ticks) or planned (build ticks). */
   units: number;
   errors?: number;
+  /** Current sweep state, for the `health:job:flyer-warm` freshness summary. */
+  done: boolean;
+  sweep_started_at: number;
+  sweep_completed_at: number | null;
 }
 
 async function readJson<T>(kv: KvStore, key: string): Promise<T | null> {
@@ -233,6 +242,19 @@ export async function runWarmTick(deps: WarmDeps, config: WarmConfig = {}): Prom
   const batchUnits = config.batchUnits ?? DEFAULT_BATCH_UNITS;
   const refreshMs = config.refreshMs ?? DEFAULT_REFRESH_MS;
   const now = deps.now();
+  const result = (
+    action: WarmTickResult["action"],
+    units: number,
+    c: SweepCursor,
+    errors: number,
+  ): WarmTickResult => ({
+    action,
+    units,
+    errors,
+    done: c.done,
+    sweep_started_at: c.last_refresh_at,
+    sweep_completed_at: c.completed_at ?? null,
+  });
 
   const cursor = await readJson<SweepCursor>(deps.kv, CURSOR_KEY);
 
@@ -247,21 +269,25 @@ export async function runWarmTick(deps: WarmDeps, config: WarmConfig = {}): Prom
       total: plan.units.length,
       last_refresh_at: now,
       done,
+      // Preserve the prior completion (monotonic freshness); stamp now iff this empty
+      // plan completes immediately.
+      completed_at: done ? now : (cursor?.completed_at ?? null),
     };
     await putJson(deps.kv, CURSOR_KEY, next);
     if (done) logSweep(plan, 0); // empty plan (no stores/terms) — complete immediately
-    return { action: "built", units: plan.units.length };
+    return result("built", plan.units.length, next, 0);
   }
 
   // --- idle: complete and not due ---
-  if (cursor.done) return { action: "idle", units: 0 };
+  if (cursor.done) return result("idle", 0, cursor, 0);
 
   // --- scan: a sweep is in progress ---
   const plan = await readJson<SweepPlan>(deps.kv, PLAN_KEY);
   if (!plan || plan.sweep_id !== cursor.sweep_id) {
     // Cursor/plan disagree (e.g. a partial write). Force a rebuild next tick.
-    await putJson(deps.kv, CURSOR_KEY, { ...cursor, done: true, last_refresh_at: 0 });
-    return { action: "idle", units: 0 };
+    const reset: SweepCursor = { ...cursor, done: true, last_refresh_at: 0 };
+    await putJson(deps.kv, CURSOR_KEY, reset);
+    return result("idle", 0, reset, 0);
   }
 
   const batch = plan.units.slice(cursor.index, cursor.index + batchUnits);
@@ -289,9 +315,17 @@ export async function runWarmTick(deps: WarmDeps, config: WarmConfig = {}): Prom
 
   const index = cursor.index + batch.length;
   const done = index >= plan.units.length;
-  await putJson(deps.kv, CURSOR_KEY, { ...cursor, index, done });
+  // Stamp completion on the tick that finishes the sweep; otherwise keep the prior
+  // completion time (monotonic freshness signal).
+  const updated: SweepCursor = {
+    ...cursor,
+    index,
+    done,
+    completed_at: done ? now : (cursor.completed_at ?? null),
+  };
+  await putJson(deps.kv, CURSOR_KEY, updated);
   if (done) logSweep(plan, errors);
-  return { action: done ? "completed" : "scanned", units: batch.length, errors };
+  return result(done ? "completed" : "scanned", batch.length, updated, errors);
 }
 
 /** One structured log line per completed sweep (mirrors the email() handler). */
@@ -312,6 +346,40 @@ export async function readFlyerRollup(
   const rollup = await readJson<FlyerRollup>(kv, rollupKey(locationId));
   if (!rollup) return null;
   return { items: rollup.items, as_of: new Date(rollup.as_of).toISOString() };
+}
+
+/**
+ * One scheduled run: advance the sweep, record `health:job:flyer-warm` (ok with a
+ * freshness summary, or fail), push an optional ntfy alert on failure, and **rethrow**
+ * so the platform's native cron status reflects a failure. Thin glue over `runWarmTick`,
+ * kept here (not in the handler) so it is unit-testable with injected deps + env.
+ */
+export async function runWarmJob(env: Env, deps: WarmDeps): Promise<void> {
+  const startedAt = deps.now();
+  try {
+    const r = await runWarmTick(deps);
+    await writeJobHealth(deps.kv, "flyer-warm", {
+      ok: true,
+      last_run_at: startedAt,
+      summary: {
+        action: r.action,
+        done: r.done,
+        sweep_started_at: r.sweep_started_at,
+        sweep_completed_at: r.sweep_completed_at,
+        errors: r.errors ?? 0,
+      },
+    });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error("[flyer-warm] tick failed:", msg);
+    await writeJobHealth(deps.kv, "flyer-warm", {
+      ok: false,
+      last_run_at: startedAt,
+      summary: { error: msg },
+    }).catch(() => {});
+    await notifyFailure(env, "flyer-warm", msg);
+    throw e; // cron is not retried; surfacing the failure loses nothing
+  }
 }
 
 /** Wire the real GitHub/Kroger/KV clients for the scheduled handler. Runs without an
