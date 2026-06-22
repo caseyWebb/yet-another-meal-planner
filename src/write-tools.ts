@@ -21,7 +21,7 @@ import {
   type Overlay,
   type OverlayRow,
 } from "./overlay.js";
-import { applyPantryOperations, markVerified, type PantryItem, type AppliedOp, type ConflictOp } from "./pantry-write.js";
+import { applyPantryOperations, markVerified, type PantryItem } from "./pantry-write.js";
 import { applyKitchenOperations, toInventory } from "./kitchen.js";
 import {
   COOKING_LOG_PATH,
@@ -32,8 +32,8 @@ import {
   type CookingLogEntry,
 } from "./cooking-log.js";
 import { slugify } from "./discovery.js";
-import { addStockup, STOCKUP_PATH } from "./stockup.js";
-import { updateStaples, STAPLES_PATH } from "./staples.js";
+import { addStockup } from "./stockup.js";
+import { updateStaples } from "./staples.js";
 import {
   getProfileBundle,
   updateProfileField,
@@ -299,7 +299,7 @@ export function registerWriteTools(
     },
     ({ operations }) =>
       runTool(async () => {
-        const items = await getPantryState(dataKv, username, gh);
+        const items = await getPantryState(dataKv, username);
         const result = applyPantryOperations(items as PantryItem[], operations, today());
         if (result.applied.length > 0) {
           await writePantryState(dataKv, username, result.items);
@@ -400,7 +400,7 @@ export function registerWriteTools(
     },
     ({ items }) =>
       runTool(async () => {
-        const current = await getPantryState(dataKv, username, gh);
+        const current = await getPantryState(dataKv, username);
         const { items: nextItems, verified, missing } = markVerified(current as PantryItem[], items, today());
         const conflicts = missing.map((name) => ({ op: "verify" as const, name, reason: "no pantry item with that name" }));
         if (verified.length > 0) {
@@ -570,7 +570,7 @@ export function registerWriteTools(
             .filter((e) => e.type === "recipe" && e.recipe)
             .map((e) => ({ op: "remove" as const, recipe: e.recipe! }));
           if (cooked.length > 0) {
-            const current = await getMealPlanState(dataKv, username, gh);
+            const current = await getMealPlanState(dataKv, username);
             const { items: next, applied } = applyMealPlanOps(current, cooked);
             if (applied.length > 0) await writeMealPlanState(dataKv, username, next);
           }

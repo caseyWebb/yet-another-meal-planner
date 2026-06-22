@@ -1,87 +1,69 @@
 import { describe, it, expect } from "vitest";
-import { deriveProfileStatus, profileStatus } from "../src/profile-status.js";
-import { GitHubError, type GitHubClient, type DirEntry } from "../src/github.js";
-import { ToolError } from "../src/errors.js";
+import { profileStatus } from "../src/profile-status.js";
+import type { ProfileBundle } from "../src/user-kv.js";
 
 const ALL_AREAS = ["store", "taste", "diet", "equipment", "pantry", "ready-to-eat", "stockup", "corpus"];
-const file = (name: string): DirEntry => ({ name, type: "file" });
 
-describe("deriveProfileStatus", () => {
-  it("all area files present → initialized, nothing missing", () => {
-    const entries = [
-      "preferences.toml",
-      "taste.md",
-      "diet_principles.md",
-      "kitchen.toml",
-      "pantry.toml",
-      "ready_to_eat.toml",
-      "stockup.toml",
-      "overlay.toml",
-    ].map(file);
-    expect(deriveProfileStatus(entries)).toEqual({ initialized: true, missing: [] });
+// Minimal KV fake: profileStatus only ever calls `.get(key)`.
+function fakeKv(store: Record<string, string>): KVNamespace {
+  return {
+    get: async (key: string) => store[key] ?? null,
+  } as unknown as KVNamespace;
+}
+
+function kvFrom(opts: {
+  username?: string;
+  bundle?: ProfileBundle;
+  pantry?: unknown[];
+}): KVNamespace {
+  const username = opts.username ?? "alice";
+  const store: Record<string, string> = {};
+  if (opts.bundle) store[`profile:${username}`] = JSON.stringify(opts.bundle);
+  if (opts.pantry) store[`state:${username}:pantry`] = JSON.stringify(opts.pantry);
+  return fakeKv(store);
+}
+
+describe("profileStatus", () => {
+  it("all profile fields + pantry present → initialized, nothing missing", async () => {
+    const kv = kvFrom({
+      bundle: {
+        preferences: "x",
+        taste: "x",
+        diet_principles: "x",
+        kitchen: "x",
+        ready_to_eat: "x",
+        stockup: "x",
+        overlay: "x",
+      },
+      pantry: [{ name: "olive oil" }],
+    });
+    expect(await profileStatus(kv, "alice")).toEqual({ initialized: true, missing: [] });
   });
 
-  it("preferences.toml only → initialized, remaining areas missing in order", () => {
-    expect(deriveProfileStatus([file("preferences.toml")])).toEqual({
+  it("preferences only → initialized, remaining areas missing in order", async () => {
+    const kv = kvFrom({ bundle: { preferences: "x" } });
+    expect(await profileStatus(kv, "alice")).toEqual({
       initialized: true,
       missing: ["taste", "diet", "equipment", "pantry", "ready-to-eat", "stockup", "corpus"],
     });
   });
 
-  it("null subtree (404) → not initialized, all areas missing", () => {
-    expect(deriveProfileStatus(null)).toEqual({ initialized: false, missing: ALL_AREAS });
+  it("no profile bundle at all → not initialized, all areas missing", async () => {
+    const kv = kvFrom({});
+    expect(await profileStatus(kv, "alice")).toEqual({ initialized: false, missing: ALL_AREAS });
   });
 
-  it("files present but no preferences.toml → not initialized, store still missing", () => {
-    const res = deriveProfileStatus([file("taste.md"), file("pantry.toml")]);
+  it("fields present but no preferences → not initialized, store still missing", async () => {
+    const kv = kvFrom({ bundle: { taste: "x" }, pantry: [{ name: "rice" }] });
+    const res = await profileStatus(kv, "alice");
     expect(res.initialized).toBe(false);
     expect(res.missing).toContain("store");
     expect(res.missing).not.toContain("taste");
+    expect(res.missing).not.toContain("pantry");
   });
 
-  it("a preferences.toml DIR (not a file) does not count as initialized", () => {
-    expect(deriveProfileStatus([{ name: "preferences.toml", type: "dir" }]).initialized).toBe(false);
-  });
-});
-
-describe("profileStatus", () => {
-  function fakeGh(dir: DirEntry[] | GitHubError): GitHubClient {
-    const notUsed = () => {
-      throw new Error("not used");
-    };
-    return {
-      async getFile() {
-        throw new Error("not used");
-      },
-      async listDir() {
-        if (dir instanceof GitHubError) throw dir;
-        return dir;
-      },
-      getRef: notUsed,
-      getCommitTree: notUsed,
-      createTree: notUsed,
-      createCommit: notUsed,
-      updateRef: notUsed,
-      createIssue: notUsed,
-      getPagesUrl: notUsed,
-    };
-  }
-
-  it("derives status from the subtree listing", async () => {
-    const res = await profileStatus(fakeGh([file("preferences.toml"), file("overlay.toml")]));
-    expect(res.initialized).toBe(true);
-    expect(res.missing).not.toContain("store");
-    expect(res.missing).not.toContain("corpus");
-  });
-
-  it("treats a 404 subtree as a brand-new member", async () => {
-    const res = await profileStatus(fakeGh(new GitHubError(404, "Not found")));
-    expect(res).toEqual({ initialized: false, missing: ALL_AREAS });
-  });
-
-  it("maps a non-404 upstream failure to a structured upstream_unavailable", async () => {
-    const err = await profileStatus(fakeGh(new GitHubError(500, "boom"))).catch((e) => e);
-    expect(err).toBeInstanceOf(ToolError);
-    expect(err.code).toBe("upstream_unavailable");
+  it("an empty-string preferences field does not count as initialized", async () => {
+    const kv = kvFrom({ bundle: { preferences: "   " } });
+    expect((await profileStatus(kv, "alice")).initialized).toBe(false);
   });
 });

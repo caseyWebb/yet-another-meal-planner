@@ -28,19 +28,29 @@ The system SHALL expose a `read_user_profile()` tool that reads `profile:<userna
 - **WHEN** a tenant's profile bundle exists but does not contain a `kitchen` field (e.g. partially migrated)
 - **THEN** `read_user_profile()` returns `kitchen: null` (or the field-appropriate empty value) rather than erroring
 
-### Requirement: Lazy migration from GitHub on KV miss
+### Requirement: Deploy-time migration runner populates KV from GitHub
 
-The system SHALL implement lazy migration: when `read_user_profile()` (or any per-tenant KV read) encounters an empty KV key for a tenant whose GitHub subtree has existing profile files, it SHALL read those files from GitHub, populate the KV key, and return the result. Subsequent reads SHALL be served from KV without any GitHub API call. Lazy migration SHALL also apply on the write path: a profile update tool that finds an empty KV bundle SHALL seed from GitHub before applying the update, so the first write does not overwrite fields from other areas with empty values.
+The system SHALL migrate existing per-tenant GitHub files into DATA_KV via a deploy-time migration runner, NOT via runtime fallback. The Worker read path SHALL contain no GitHub fallback: a KV miss returns null/empty directly. A migration runner (`scripts/run-migrations.mjs`), invoked from the `data-deploy` workflow, SHALL discover migration modules under `migrations/`, run any not yet recorded in the `migrations:applied` ledger key in DATA_KV, and append each applied migration's id to the ledger. Migration `0001-unified-user-profile-kv` SHALL read each tenant's profile and session-state files from the data repo checkout and write the corresponding `profile:<username>` bundle and `state:<username>:*` keys. Each migration SHALL be idempotent (skip a tenant whose target key already exists) so a re-run is safe.
 
-#### Scenario: First read after deploy migrates transparently
+#### Scenario: Migration runner populates KV at deploy
 
-- **WHEN** a tenant calls a tool after deploy and their `profile:<username>` KV key does not exist yet
-- **THEN** the Worker reads the corresponding GitHub file(s), writes the KV key, and returns the data — the caller receives their profile as if it were already in KV
+- **WHEN** the `data-deploy` workflow runs and migration `0001-unified-user-profile-kv` is not in the `migrations:applied` ledger
+- **THEN** the runner reads each tenant's `users/<username>/` profile and session-state files from the data repo checkout, writes `profile:<username>` and `state:<username>:*` keys to DATA_KV, and records `0001-unified-user-profile-kv` in the ledger
 
-#### Scenario: First profile write also migrates
+#### Scenario: Already-applied migration is skipped
 
-- **WHEN** a tenant calls `update_taste(content)` and `profile:<username>` does not exist in KV
-- **THEN** the Worker seeds the bundle from GitHub (reading all available profile files), applies the taste update, and writes the complete bundle to KV — no other profile field is lost
+- **WHEN** the `data-deploy` workflow runs and `0001-unified-user-profile-kv` is already in the `migrations:applied` ledger
+- **THEN** the runner skips it without re-reading GitHub files or rewriting KV
+
+#### Scenario: Runtime KV miss returns empty, never reads GitHub
+
+- **WHEN** a per-tenant KV read encounters a missing key at runtime
+- **THEN** the Worker returns null/empty for that key and makes no GitHub API call
+
+#### Scenario: Runner skips when namespace not yet provisioned
+
+- **WHEN** the migration runner cannot resolve the DATA_KV namespace id from the operator's `wrangler.jsonc` (brand-new operator, pre-first-deploy)
+- **THEN** the runner warns and exits without error — there is no tenant data to migrate yet
 
 ### Requirement: Session state stored as individual DATA_KV keys
 

@@ -579,7 +579,7 @@ Read the full per-tenant profile bundle from DATA_KV in **one call**. Returns al
 }
 ```
 
-**Notes:** The single call for meal-plan pre-pass and configure-grocery-profile. KV-backed (`profile:<username>`) — on a cache miss (first call for a new member) lazily migrates from GitHub profile files, populates KV, and returns the data. Kitchen `owned` is the array of `EQUIPMENT_VOCAB` slugs that **gate** recipe makeability; an **absent/empty** `owned` makes the gate a no-op (everything shows).
+**Notes:** The single call for meal-plan pre-pass and configure-grocery-profile. KV-backed (`profile:<username>`) — a missing key returns all fields null/empty, no GitHub fallback (existing members' files are migrated into KV once, at deploy time, by the migration runner). Kitchen `owned` is the array of `EQUIPMENT_VOCAB` slugs that **gate** recipe makeability; an **absent/empty** `owned` makes the gate a no-op (everything shows).
 
 ### `profile_status()`
 
@@ -664,7 +664,7 @@ Return the current meal plan — recipes committed to cook next (transient cook 
 **Returns:**
 - `{ planned: [{ recipe, planned_for, sides? }] }` (`planned_for` may be null; `sides` is an optional array of free-text open-world side names riding on the main's row)
 
-**Notes:** The session-start stale-planned reconcile surfaces only **due** rows (`planned_for` on/before today, or unset). KV-backed (`state:<username>:meal_plan`); lazy-migrates from `meal_plan.toml` on first read.
+**Notes:** The session-start stale-planned reconcile surfaces only **due** rows (`planned_for` on/before today, or unset). KV-backed (`state:<username>:meal_plan`); a missing key reads as empty (existing `meal_plan.toml` files are migrated into KV at deploy time by the migration runner).
 
 ### `update_meal_plan(ops)`
 

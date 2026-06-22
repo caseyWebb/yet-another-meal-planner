@@ -53,7 +53,7 @@ export function registerCookingTools(
     },
     () =>
       runTool(async () => {
-        const planned = await getMealPlanState(dataKv, username, gh);
+        const planned = await getMealPlanState(dataKv, username);
         return { planned };
       }),
   );
@@ -76,7 +76,7 @@ export function registerCookingTools(
     },
     ({ ops }) =>
       runTool(async () => {
-        const current = await getMealPlanState(dataKv, username, gh);
+        const current = await getMealPlanState(dataKv, username);
         const { items, applied, conflicts } = applyMealPlanOps(current, ops as MealPlanOp[]);
         if (applied.length > 0) {
           await writeMealPlanState(dataKv, username, items);

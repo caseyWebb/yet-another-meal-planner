@@ -93,7 +93,7 @@ The data repo is the system's memory. It splits two ways — shared vs per-tenan
 
 - **Shared corpus (data-repo root)** — objective, single-source, read by everyone: recipe **content** (`recipes/*.md`), `aliases.toml`, the location-tagged `skus/kroger.toml` cache, the curated `storage_guidance/` tree, the `stores/<slug>.toml` store registry (identity), and the discovery sources (`feeds.toml`, `discoveries_inbox.toml`, `discovery_sources.toml`). Discovery is shared and top-level: feeds and the newsletter inbox feed one group pool, judged against each caller's taste at read time. `_indexes/` is generated from the shared content.
 - **Per-tenant GitHub subtree (`users/<username>/`)** — each member's **historical records** only: `cooking_log.toml` (realized cook history), `notes/<slug>.toml` (attributed recipe notes), `store_notes/<slug>.toml` (attributed store notes). Addressed by prefixing repo-relative paths; one request can never reach another member's data.
-- **Per-tenant DATA_KV** — each member's **operational state**, keyed by `profile:<username>` (the profile bundle) and `state:<username>:pantry/meal_plan/grocery_list` (session state). On a KV miss the Worker lazily migrates from any matching GitHub file, populates KV, and returns the data — zero-downtime transition for existing members.
+- **Per-tenant DATA_KV** — each member's **operational state**, keyed by `profile:<username>` (the profile bundle) and `state:<username>:pantry/meal_plan/grocery_list` (session state). Existing GitHub files are migrated into KV once, at deploy time, by the migration runner (`scripts/run-migrations.mjs` — see "Migrations" below); the Worker read path has **no** GitHub fallback (a KV miss returns empty).
 
 ### Three-category recipe model
 
@@ -183,6 +183,17 @@ Ready-to-eat is per-tenant (`users/<username>/ready_to_eat.toml`), so it has **n
 The same build runs **validation**: every TOML parses, every recipe frontmatter is well-formed, `pairs_with` references resolve, and status values are in the enum. Validation failures fail the Action (red CI) but don't block reads — the Worker keeps reading HEAD. The point is fast feedback, not gating. The Worker reimplements a *structural* subset of this validation in TypeScript for write-time checks (it can't run the Node validator on `workerd`).
 
 A useful side effect: the indexes are a public-ish artifact any tool can consume — `scripts/build-site.mjs` builds a static GitHub Pages cookbook from them with no backend.
+
+## Migrations
+
+State that moves out of GitHub (or otherwise changes shape in `DATA_KV`) is reconciled by a **deploy-time migration runner**, not by runtime fallback — so the Worker read path stays a clean KV read with no legacy branches.
+
+- **`migrations/NNNN-name.mjs`** — each migration exports an `id` and an `async up({ kv, dataRoot, log })`. It reads from the data repo checkout (`dataRoot`) and writes `DATA_KV` through the injected REST client. Migrations are **idempotent** (skip work already done) so a re-run is safe.
+- **`scripts/run-migrations.mjs`** — discovers `migrations/*.mjs` in filename order, reads the `migrations:applied` ledger key from `DATA_KV`, runs any id not in the ledger, and appends each id after it succeeds. It **no-ops gracefully** when the `DATA_KV` namespace id can't be resolved from the operator's `wrangler.jsonc` (a brand-new operator before their first deploy — nothing to migrate yet).
+- **Where it runs** — the `data-deploy` workflow invokes it (`node _code/scripts/run-migrations.mjs --root .`) after `wrangler deploy`, before publishing the recipe index. Both the runner and `build-indexes` publish to KV through the shared `scripts/kv-rest.mjs` client.
+- **The first migration** (`0001-unified-user-profile-kv`) moved per-tenant profile + session state from `users/<username>/` files into the `profile:<username>` bundle and `state:<username>:*` keys. Stale GitHub profile files are inert afterward (the read path never consults them) and can be pruned manually.
+
+Rollback is a redeploy of the prior Worker: the GitHub files are untouched, so the reverted (GitHub-reading) Worker keeps working; KV keys written by a migration are simply ignored by it.
 
 ## Two surfaces, two instruction files
 

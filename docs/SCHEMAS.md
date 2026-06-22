@@ -11,7 +11,7 @@ The data lives in **one private data repo** with two regions (see `ARCHITECTURE.
 - **Per-tenant DATA_KV** — each member's **operational state** (fast, write-through, no git history). Two key shapes:
   - `profile:<username>` — a single JSON object (the **profile bundle**) with fields: `preferences` (raw TOML string), `taste` (markdown string), `diet_principles` (markdown string), `kitchen` (raw TOML string), `staples` (raw TOML string), `overlay` (raw TOML string — per-tenant recipe rating/status), `ready_to_eat` (raw TOML string), `stockup` (raw TOML string). Absent fields are omitted from the JSON object.
   - `state:<username>:pantry`, `state:<username>:meal_plan`, `state:<username>:grocery_list` — JSON arrays of the respective item objects.
-  - On a KV miss the Worker lazily migrates from any matching GitHub file, populates KV, and returns the data — transparent zero-downtime migration for existing members.
+  - Existing GitHub files are migrated into KV once, at deploy time, by the migration runner (`scripts/run-migrations.mjs`, migration `0001-unified-user-profile-kv`). The Worker read path has **no** GitHub fallback — a KV miss returns empty/null.
 
 **Three-category recipe model:** a recipe's *content* (objective frontmatter + body) is shared; its *overlay* (`rating` + `status`) is per-tenant in the `overlay` field of the KV `profile:<username>` bundle; its *notes* are per-tenant, attributed, append-mostly in `users/<username>/notes/<slug>.toml`. `last_cooked` is **not stored** — it's derived per-tenant from `cooking_log.toml`. Read tools merge shared content + the caller's KV overlay + cooking-log `last_cooked` at read time.
 
@@ -90,7 +90,7 @@ status = "rejected"            # Alice rejected it; other members are unaffected
 **Notes:**
 - A row carries `status` (`active | draft | rejected | archived`) and/or `rating` (1–5). Either may be absent. An empty row is dropped (the slug falls back to effective `draft`).
 - Disposition is **per-tenant**: one member's `rejected` coexists with another's `active` for the same shared recipe.
-- Previously stored as `users/<username>/overlay.toml` in the GitHub data repo; now lives in `DATA_KV` as the `overlay` field of the `profile:<username>` bundle. Existing GitHub files are lazily migrated on first read.
+- Previously stored as `users/<username>/overlay.toml` in the GitHub data repo; now lives in `DATA_KV` as the `overlay` field of the `profile:<username>` bundle. Existing GitHub files are migrated into KV once, at deploy time, by the migration runner.
 
 ## users/&lt;username&gt;/notes/&lt;slug&gt;.toml (per-tenant)
 
@@ -118,7 +118,7 @@ private = true                             # owner-only; never surfaced to the g
 
 ## pantry (per-tenant, KV session state)
 
-Live inventory. Agent-writable. Updated as side effect of menu generation and ad-hoc messages. Stored as a JSON array at KV key `state:<username>:pantry` in `DATA_KV`. Previously `users/<username>/pantry.toml` in GitHub; lazily migrated to KV on first read. The schema below describes each item object's shape:
+Live inventory. Agent-writable. Updated as side effect of menu generation and ad-hoc messages. Stored as a JSON array at KV key `state:<username>:pantry` in `DATA_KV`. Previously `users/<username>/pantry.toml` in GitHub; migrated into KV once, at deploy time, by the migration runner. The schema below describes each item object's shape:
 
 ```toml
 # pantry items (stored as JSON array in DATA_KV key state:<username>:pantry)
@@ -163,7 +163,7 @@ prepared_from = null
 
 ## kitchen (per-tenant, KV profile bundle field)
 
-What a member owns to cook **with** (equipment, not ingredients). Agent-writable via `update_kitchen`. Stored as the `kitchen` field (raw TOML string) of the `profile:<username>` KV bundle in `DATA_KV`. Previously `users/<username>/kitchen.toml` in GitHub; lazily migrated to KV on first read. Two structurally-separated regions: `owned` (controlled-vocabulary slugs — the **only** region that gates recipe makeability) and `[notes]` (freeform context the `cook` skill reasons over for parallelization — **never** gates). An absent field means the member's equipment is *unknown*, which makes the makeability gate a no-op (every recipe shows) — unknown is not the same as not-owned.
+What a member owns to cook **with** (equipment, not ingredients). Agent-writable via `update_kitchen`. Stored as the `kitchen` field (raw TOML string) of the `profile:<username>` KV bundle in `DATA_KV`. Previously `users/<username>/kitchen.toml` in GitHub; migrated into KV once, at deploy time, by the migration runner. Two structurally-separated regions: `owned` (controlled-vocabulary slugs — the **only** region that gates recipe makeability) and `[notes]` (freeform context the `cook` skill reasons over for parallelization — **never** gates). An absent field means the member's equipment is *unknown*, which makes the makeability gate a no-op (every recipe shows) — unknown is not the same as not-owned.
 
 ```toml
 # kitchen field of profile:<username> KV bundle — equipment Alice owns to cook WITH.
@@ -184,7 +184,7 @@ free_text = "10-inch cast iron, half-sheet trays"
 
 ## grocery list (per-tenant, KV session state)
 
-The buy list — committed intent for the next order. Ingredient/product-level and **SKU-free**: resolution to a Kroger SKU happens once, at order time, against current availability, so the list never pins a brand/SKU that could go stale between capture and order. Stored as a JSON array at KV key `state:<username>:grocery_list` in `DATA_KV`. Previously `users/<username>/grocery_list.toml` in GitHub; lazily migrated to KV on first read. Agent-writable side-effect file (NOT user-curated config). Distinct from pantry (observation: what's in the kitchen) and `stockup` (conditional intent: buy IF on sale). Items are keyed by normalized `name` — re-adding an existing name merges rather than duplicating. The schema below describes each item object's shape:
+The buy list — committed intent for the next order. Ingredient/product-level and **SKU-free**: resolution to a Kroger SKU happens once, at order time, against current availability, so the list never pins a brand/SKU that could go stale between capture and order. Stored as a JSON array at KV key `state:<username>:grocery_list` in `DATA_KV`. Previously `users/<username>/grocery_list.toml` in GitHub; migrated into KV once, at deploy time, by the migration runner. Agent-writable side-effect file (NOT user-curated config). Distinct from pantry (observation: what's in the kitchen) and `stockup` (conditional intent: buy IF on sale). Items are keyed by normalized `name` — re-adding an existing name merges rather than duplicating. The schema below describes each item object's shape:
 
 ```toml
 # grocery list items (stored as JSON array in DATA_KV key state:<username>:grocery_list)
@@ -262,7 +262,7 @@ cuisine = "chinese"          # they still count in retrospective mixes
 
 ## meal plan (per-tenant, KV session state)
 
-The transient, recipe-grain record of **committed cook intent** — what the agent has agreed to cook next. Distinct from the grocery list (the ingredient-grain BUY list): a planned recipe whose ingredients are all in the pantry still belongs here even though nothing is bought. Rows are cleared as they resolve (cooked → removed; abandoned → dropped). Stored as a JSON array at KV key `state:<username>:meal_plan` in `DATA_KV`. Previously `users/<username>/meal_plan.toml` in GitHub; lazily migrated to KV on first read. Agent-writable side-effect file (NOT user-curated config).
+The transient, recipe-grain record of **committed cook intent** — what the agent has agreed to cook next. Distinct from the grocery list (the ingredient-grain BUY list): a planned recipe whose ingredients are all in the pantry still belongs here even though nothing is bought. Rows are cleared as they resolve (cooked → removed; abandoned → dropped). Stored as a JSON array at KV key `state:<username>:meal_plan` in `DATA_KV`. Previously `users/<username>/meal_plan.toml` in GitHub; migrated into KV once, at deploy time, by the migration runner. Agent-writable side-effect file (NOT user-curated config).
 
 ```toml
 # meal plan items (stored as JSON array in DATA_KV key state:<username>:meal_plan)
@@ -280,7 +280,7 @@ sides = ["roasted broccoli"]      # optional free-text OPEN-WORLD sides riding o
 
 ## preferences (per-tenant, KV profile bundle field)
 
-User-curated. Agent edits only when explicitly directed. Stored as the `preferences` field (raw TOML string) of the `profile:<username>` KV bundle in `DATA_KV`. Previously `users/<username>/preferences.toml` in GitHub; lazily migrated to KV on first read.
+User-curated. Agent edits only when explicitly directed. Stored as the `preferences` field (raw TOML string) of the `profile:<username>` KV bundle in `DATA_KV`. Previously `users/<username>/preferences.toml` in GitHub; migrated into KV once, at deploy time, by the migration runner.
 
 ```toml
 # preferences field of profile:<username> KV bundle — standing preferences
@@ -546,7 +546,7 @@ private = true                             # owner-only; never surfaced to the g
 
 ## ready_to_eat (per-tenant, KV profile bundle field)
 
-**Per-tenant** (a facet of the personal profile, not shared corpus — a ready-to-eat item is a Kroger SKU + "I'll eat this," pure personal taste with no shared content). Stored as the `ready_to_eat` field (raw TOML string) of the `profile:<username>` KV bundle in `DATA_KV`. Previously `users/<username>/ready_to_eat.toml` in GitHub; lazily migrated to KV on first read. Each item is tagged with a `meal` and keyed by a generated `slug`. The agent seeds it at onboarding (items the member names land `active`) and adds drafts as discovery surfaces them; the member dispositions drafts. (`variety_rules`, shown below, are a hand-maintained convention only — no tool reads, writes, or validates them.)
+**Per-tenant** (a facet of the personal profile, not shared corpus — a ready-to-eat item is a Kroger SKU + "I'll eat this," pure personal taste with no shared content). Stored as the `ready_to_eat` field (raw TOML string) of the `profile:<username>` KV bundle in `DATA_KV`. Previously `users/<username>/ready_to_eat.toml` in GitHub; migrated into KV once, at deploy time, by the migration runner. Each item is tagged with a `meal` and keyed by a generated `slug`. The agent seeds it at onboarding (items the member names land `active`) and adds drafts as discovery surfaces them; the member dispositions drafts. (`variety_rules`, shown below, are a hand-maintained convention only — no tool reads, writes, or validates them.)
 
 ```toml
 # ready_to_eat field of profile:<username> KV bundle
@@ -588,7 +588,7 @@ Addressed by `slug`: `update_ready_to_eat(slug, …)` dispositions or rates an i
 
 ## staples (per-tenant, KV profile bundle field)
 
-**Per-tenant**. Curated "don't run out of these" list. Stored as the `staples` field (raw TOML string) of the `profile:<username>` KV bundle in `DATA_KV`. Previously `users/<username>/staples.toml` in GitHub; lazily migrated to KV on first read. **Agent-writable via `update_staples`** (add-only with dedup; remove by name) as well as hand-edited; optionally seeded at onboarding.
+**Per-tenant**. Curated "don't run out of these" list. Stored as the `staples` field (raw TOML string) of the `profile:<username>` KV bundle in `DATA_KV`. Previously `users/<username>/staples.toml` in GitHub; migrated into KV once, at deploy time, by the migration runner. **Agent-writable via `update_staples`** (add-only with dedup; remove by name) as well as hand-edited; optionally seeded at onboarding.
 
 ```toml
 # staples field of profile:<username> KV bundle — must-have items list
@@ -612,7 +612,7 @@ perishable = true
 
 ## stockup (per-tenant, KV profile bundle field)
 
-**Per-tenant**. Bulk-buy watchlist. Stored as the `stockup` field (raw TOML string) of the `profile:<username>` KV bundle in `DATA_KV`. Previously `users/<username>/stockup.toml` in GitHub; lazily migrated to KV on first read. **Agent-writable via `update_stockup`** (add-only, deduped by normalized item `name`) as well as hand-edited; seeded at onboarding.
+**Per-tenant**. Bulk-buy watchlist. Stored as the `stockup` field (raw TOML string) of the `profile:<username>` KV bundle in `DATA_KV`. Previously `users/<username>/stockup.toml` in GitHub; migrated into KV once, at deploy time, by the migration runner. **Agent-writable via `update_stockup`** (add-only, deduped by normalized item `name`) as well as hand-edited; seeded at onboarding.
 
 ```toml
 # stockup field of profile:<username> KV bundle — bulk-buy watchlist
@@ -670,7 +670,7 @@ ambiguity_resolved = false
 
 ## taste (per-tenant, KV profile bundle field)
 
-User-curated narrative. Free-form markdown. Agent edits only when directed. Stored as the `taste` field (markdown string) of the `profile:<username>` KV bundle in `DATA_KV`. Previously `users/<username>/taste.md` in GitHub; lazily migrated to KV on first read.
+User-curated narrative. Free-form markdown. Agent edits only when directed. Stored as the `taste` field (markdown string) of the `profile:<username>` KV bundle in `DATA_KV`. Previously `users/<username>/taste.md` in GitHub; migrated into KV once, at deploy time, by the migration runner.
 
 ```markdown
 # Taste profile
@@ -694,7 +694,7 @@ User-curated narrative. Free-form markdown. Agent edits only when directed. Stor
 
 ## diet_principles (per-tenant, KV profile bundle field)
 
-User-curated rules with reasoning. Free-form markdown. Agent edits only when directed. Stored as the `diet_principles` field (markdown string) of the `profile:<username>` KV bundle in `DATA_KV`. Previously `users/<username>/diet_principles.md` in GitHub; lazily migrated to KV on first read.
+User-curated rules with reasoning. Free-form markdown. Agent edits only when directed. Stored as the `diet_principles` field (markdown string) of the `profile:<username>` KV bundle in `DATA_KV`. Previously `users/<username>/diet_principles.md` in GitHub; migrated into KV once, at deploy time, by the migration runner.
 
 ```markdown
 # Diet principles

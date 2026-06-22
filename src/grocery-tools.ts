@@ -5,7 +5,6 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import type { GitHubClient } from "./github.js";
 import { ToolError, runTool } from "./errors.js";
 import {
   addToGroceryList,
@@ -17,8 +16,6 @@ import {
 } from "./grocery.js";
 import { getGroceryListState, writeGroceryListState } from "./user-kv.js";
 
-export const GROCERY_LIST_PATH = "grocery_list.toml";
-
 function today(): string {
   return new Date().toISOString().slice(0, 10);
 }
@@ -27,7 +24,6 @@ export function registerGroceryListTools(
   server: McpServer,
   dataKv: KVNamespace,
   username: string,
-  gh: GitHubClient,
 ): void {
   server.registerTool(
     "read_grocery_list",
@@ -37,7 +33,7 @@ export function registerGroceryListTools(
     },
     () =>
       runTool(async () => {
-        const items = await getGroceryListState(dataKv, username, gh);
+        const items = await getGroceryListState(dataKv, username);
         return { items };
       }),
   );
@@ -59,7 +55,7 @@ export function registerGroceryListTools(
     },
     (input) =>
       runTool(async () => {
-        const items = await getGroceryListState(dataKv, username, gh);
+        const items = await getGroceryListState(dataKv, username);
         const result = addToGroceryList(items, input, today());
         await writeGroceryListState(dataKv, username, result.items);
         return { item: result.item, merged: result.merged };
@@ -83,7 +79,7 @@ export function registerGroceryListTools(
     },
     ({ name, ...patch }) =>
       runTool(async () => {
-        const items = await getGroceryListState(dataKv, username, gh);
+        const items = await getGroceryListState(dataKv, username);
         let result;
         try {
           result = updateGroceryItem(items, name, patch as GroceryUpdateInput);
@@ -103,7 +99,7 @@ export function registerGroceryListTools(
     },
     ({ name }) =>
       runTool(async () => {
-        const items = await getGroceryListState(dataKv, username, gh);
+        const items = await getGroceryListState(dataKv, username);
         const { items: nextItems, found } = removeGroceryItem(items, name);
         if (!found) return { removed: false };
         await writeGroceryListState(dataKv, username, nextItems);

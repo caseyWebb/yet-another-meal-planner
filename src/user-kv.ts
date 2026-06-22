@@ -1,30 +1,24 @@
 // Per-tenant KV helpers. `profile:<username>` holds the full profile bundle as
 // a JSON object of named raw-content fields. Session-state keys hold item
-// arrays as JSON. On a KV miss, each helper falls back to the corresponding
-// GitHub file (lazy migration): it reads, populates KV, and returns the data
-// so the transition is transparent and zero-downtime.
+// arrays as JSON. KV is the source of truth: a miss returns null/empty and the
+// caller treats it as an absent profile. Existing GitHub files are migrated into
+// KV once, at deploy time, by the migration runner (scripts/run-migrations.mjs)
+// — there is no runtime GitHub fallback.
 
-import type { GitHubClient } from "./github.js";
-import { readOptional } from "./gh-read.js";
-import { parseToml } from "./parse.js";
-import { plannedOf } from "./meal-plan.js";
 import type { PlannedItem } from "./meal-plan.js";
 import type { GroceryItem } from "./grocery.js";
 
 // --- Profile bundle ---
 
-const PROFILE_MIGRATION_FILES = {
-  preferences: "preferences.toml",
-  taste: "taste.md",
-  diet_principles: "diet_principles.md",
-  kitchen: "kitchen.toml",
-  staples: "staples.toml",
-  overlay: "overlay.toml",
-  ready_to_eat: "ready_to_eat.toml",
-  stockup: "stockup.toml",
-} as const;
-
-export type ProfileField = keyof typeof PROFILE_MIGRATION_FILES;
+export type ProfileField =
+  | "preferences"
+  | "taste"
+  | "diet_principles"
+  | "kitchen"
+  | "staples"
+  | "overlay"
+  | "ready_to_eat"
+  | "stockup";
 
 export interface ProfileBundle {
   preferences?: string;
@@ -82,35 +76,13 @@ export async function updateProfileField(
   await writeProfileBundle(kv, username, next);
 }
 
-async function migrateProfileBundle(
-  kv: KVNamespace,
-  username: string,
-  gh: GitHubClient,
-): Promise<ProfileBundle> {
-  const entries = await Promise.all(
-    (Object.entries(PROFILE_MIGRATION_FILES) as [ProfileField, string][]).map(
-      async ([field, path]) => {
-        const content = await readOptional(gh, path);
-        return [field, content] as [ProfileField, string | null];
-      },
-    ),
-  );
-  const bundle: ProfileBundle = {};
-  for (const [field, content] of entries) {
-    if (content !== null) bundle[field] = content;
-  }
-  await writeProfileBundle(kv, username, bundle);
-  return bundle;
-}
-
+// Convenience: a guaranteed (non-null) bundle. A KV miss is an empty profile —
+// no GitHub fallback (the deploy-time migration runner populates KV).
 export async function getProfileBundle(
   kv: KVNamespace,
   username: string,
-  gh: GitHubClient,
 ): Promise<ProfileBundle> {
-  const existing = await readProfileBundle(kv, username);
-  if (existing !== null) return existing;
-  return migrateProfileBundle(kv, username, gh);
+  return (await readProfileBundle(kv, username)) ?? {};
 }
 
 export async function deleteProfileBundle(
@@ -147,19 +119,8 @@ export async function writePantryState(
 export async function getPantryState(
   kv: KVNamespace,
   username: string,
-  gh: GitHubClient,
 ): Promise<Record<string, unknown>[]> {
-  const existing = await readPantryState(kv, username);
-  if (existing !== null) return existing;
-  const text = await readOptional(gh, "pantry.toml");
-  const items: Record<string, unknown>[] = text
-    ? (() => {
-        const data = parseToml(text, "pantry.toml");
-        return Array.isArray(data.items) ? (data.items as Record<string, unknown>[]) : [];
-      })()
-    : [];
-  await writePantryState(kv, username, items);
-  return items;
+  return (await readPantryState(kv, username)) ?? [];
 }
 
 export async function deletePantryState(
@@ -196,14 +157,8 @@ export async function writeMealPlanState(
 export async function getMealPlanState(
   kv: KVNamespace,
   username: string,
-  gh: GitHubClient,
 ): Promise<PlannedItem[]> {
-  const existing = await readMealPlanState(kv, username);
-  if (existing !== null) return existing;
-  const text = await readOptional(gh, "meal_plan.toml");
-  const items = text ? plannedOf(parseToml(text, "meal_plan.toml")) : [];
-  await writeMealPlanState(kv, username, items);
-  return items;
+  return (await readMealPlanState(kv, username)) ?? [];
 }
 
 export async function deleteMealPlanState(
@@ -214,33 +169,6 @@ export async function deleteMealPlanState(
 }
 
 // --- Session state: grocery list ---
-
-function coerceGroceryItem(raw: Record<string, unknown>, today: string): GroceryItem {
-  return {
-    name: typeof raw.name === "string" ? raw.name : "",
-    quantity: typeof raw.quantity === "string" ? raw.quantity : "1",
-    kind:
-      raw.kind === "grocery" || raw.kind === "household" || raw.kind === "other"
-        ? raw.kind
-        : "grocery",
-    domain: typeof raw.domain === "string" ? raw.domain : "grocery",
-    status:
-      raw.status === "active" || raw.status === "in_cart" || raw.status === "ordered"
-        ? raw.status
-        : "active",
-    source:
-      raw.source === "ad_hoc" ||
-      raw.source === "menu" ||
-      raw.source === "pantry_low" ||
-      raw.source === "stockup"
-        ? raw.source
-        : "ad_hoc",
-    for_recipes: Array.isArray(raw.for_recipes) ? (raw.for_recipes as string[]) : [],
-    note: typeof raw.note === "string" ? raw.note : null,
-    added_at: typeof raw.added_at === "string" ? raw.added_at : today,
-    ordered_at: typeof raw.ordered_at === "string" ? raw.ordered_at : null,
-  };
-}
 
 export async function readGroceryListState(
   kv: KVNamespace,
@@ -267,20 +195,8 @@ export async function writeGroceryListState(
 export async function getGroceryListState(
   kv: KVNamespace,
   username: string,
-  gh: GitHubClient,
 ): Promise<GroceryItem[]> {
-  const existing = await readGroceryListState(kv, username);
-  if (existing !== null) return existing;
-  const text = await readOptional(gh, "grocery_list.toml");
-  const items: GroceryItem[] = (() => {
-    if (!text) return [];
-    const data = parseToml(text, "grocery_list.toml");
-    const raw = Array.isArray(data.items) ? (data.items as Record<string, unknown>[]) : [];
-    const today = new Date().toISOString().slice(0, 10);
-    return raw.map((r) => coerceGroceryItem(r, today));
-  })();
-  await writeGroceryListState(kv, username, items);
-  return items;
+  return (await readGroceryListState(kv, username)) ?? [];
 }
 
 export async function deleteGroceryListState(

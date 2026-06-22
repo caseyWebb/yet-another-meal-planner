@@ -84,10 +84,9 @@ function makeCommitSkuCache(gh: GitHubClient, getLocationId: () => Promise<strin
 function makeAdvanceInCart(
   dataKv: KVNamespace,
   username: string,
-  gh: GitHubClient,
 ) {
   return async (lines: ResolvedLine[]): Promise<void> => {
-    const items = await getGroceryListState(dataKv, username, gh);
+    const items = await getGroceryListState(dataKv, username);
     const next: GroceryItem[] = items.map((it) => ({ ...it, for_recipes: [...it.for_recipes] }));
     const indexByKey = new Map(next.map((it, i) => [normalizeName(it.name), i]));
 
@@ -132,7 +131,6 @@ const overrideShape = {
 
 export function registerOrderTools(
   server: McpServer,
-  gh: GitHubClient,
   sharedGh: GitHubClient,
   env: Env,
   tenantId: string,
@@ -143,7 +141,7 @@ export function registerOrderTools(
   // this tenant's personal state (KV-backed).
   const dataKv = env.DATA_KV;
   const commitSkuCache = makeCommitSkuCache(sharedGh, getLocationId);
-  const advanceInCart = makeAdvanceInCart(dataKv, tenantId, gh);
+  const advanceInCart = makeAdvanceInCart(dataKv, tenantId);
 
   server.registerTool(
     "place_order",
@@ -163,9 +161,9 @@ export function registerOrderTools(
         const kv = env.KROGER_KV as unknown as KvStore;
         const userClient = createKrogerUserClient(env, kv, tenantId);
 
-        const list = await getGroceryListState(dataKv, tenantId, gh);
+        const list = await getGroceryListState(dataKv, tenantId);
 
-        const pantryItems = await getPantryState(dataKv, tenantId, gh);
+        const pantryItems = await getPantryState(dataKv, tenantId);
         const pantryNames = new Set<string>(
           pantryItems
             .map((p) => (typeof p.name === "string" ? normalizeName(p.name) : null))

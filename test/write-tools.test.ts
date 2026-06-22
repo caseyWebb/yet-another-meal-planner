@@ -2,14 +2,10 @@ import { describe, it, expect } from "vitest";
 import {
   buildRecipeUpdate,
   buildCookingLogUpdate,
-  buildMealPlanUpdate,
-  buildOverlayUpdate,
   splitRecipeUpdate,
   readyToEatManager,
   registerWriteTools,
 } from "../src/write-tools.js";
-import { buildGroceryListUpdate } from "../src/grocery-tools.js";
-import { parseOverlay } from "../src/overlay.js";
 import { applyPantryOperations, markVerified, type PantryItem } from "../src/pantry-write.js";
 import { serializeMarkdown } from "../src/serialize.js";
 import { parseMarkdown, parseToml } from "../src/parse.js";
@@ -48,6 +44,21 @@ function ghWith(files: Record<string, string>): GitHubClient {
   };
 }
 
+// Minimal KV fake backed by a Map; user-kv helpers use get/put/delete only.
+function fakeKv(initial: Record<string, string> = {}): { kv: KVNamespace; store: Map<string, string> } {
+  const store = new Map(Object.entries(initial));
+  const kv = {
+    get: async (k: string) => store.get(k) ?? null,
+    put: async (k: string, v: string) => {
+      store.set(k, v);
+    },
+    delete: async (k: string) => {
+      store.delete(k);
+    },
+  } as unknown as KVNamespace;
+  return { kv, store };
+}
+
 describe("buildRecipeUpdate", () => {
   it("merges updates into frontmatter and preserves the body", async () => {
     const gh = ghWith({ "recipes/salmon.md": RECIPE });
@@ -81,48 +92,45 @@ describe("buildRecipeUpdate", () => {
 });
 
 describe("readyToEatManager", () => {
-  const PATH = "users/alice/ready_to_eat.toml";
-
-  it("addDraft generates a slug, tags the meal, defaults to draft", async () => {
-    const mgr = readyToEatManager(ghWith({}), PATH);
-    const slug = await mgr.addDraft({ meal: "dinner", name: "Kroger Frozen Lasagna" });
+  it("addDraft generates a slug, tags the meal, defaults to draft", () => {
+    const mgr = readyToEatManager(null);
+    const slug = mgr.addDraft({ meal: "dinner", name: "Kroger Frozen Lasagna" });
     expect(slug).toBe("kroger-frozen-lasagna");
-    const files = mgr.files();
-    expect(files).toHaveLength(1);
-    expect(files[0].path).toBe(PATH);
-    const item = (parseToml(files[0].content).items as Record<string, unknown>[])[0];
+    const content = mgr.serialize();
+    expect(content).not.toBeNull();
+    const item = (parseToml(content!).items as Record<string, unknown>[])[0];
     // null fields (rating/sku) are omitted by TOML serialization — assert the present ones.
     expect(item).toMatchObject({ name: "Kroger Frozen Lasagna", slug, meal: "dinner", status: "draft" });
     expect(typeof item.discovered_at).toBe("string"); // drafts carry a discovered_at date
   });
 
-  it("addDraft status:active lands active with no discovered_at (onboarding path)", async () => {
-    const mgr = readyToEatManager(ghWith({}), PATH);
-    await mgr.addDraft({ meal: "breakfast", name: "Overnight Oats" }, "active");
-    const item = (parseToml(mgr.files()[0].content).items as Record<string, unknown>[])[0];
+  it("addDraft status:active lands active with no discovered_at (onboarding path)", () => {
+    const mgr = readyToEatManager(null);
+    mgr.addDraft({ meal: "breakfast", name: "Overnight Oats" }, "active");
+    const item = (parseToml(mgr.serialize()!).items as Record<string, unknown>[])[0];
     expect(item).toMatchObject({ slug: "overnight-oats", status: "active" });
     expect(item.discovered_at).toBeUndefined(); // null → omitted in TOML
   });
 
-  it("de-dupes slugs within the file with a numeric suffix", async () => {
+  it("de-dupes slugs within the file with a numeric suffix", () => {
     const existing = '[[items]]\nname = "Burrito"\nslug = "burrito"\nmeal = "lunch"\nstatus = "active"\n';
-    const mgr = readyToEatManager(ghWith({ [PATH]: existing }), PATH);
-    const slug = await mgr.addDraft({ meal: "lunch", name: "Burrito" });
+    const mgr = readyToEatManager(existing);
+    const slug = mgr.addDraft({ meal: "lunch", name: "Burrito" });
     expect(slug).toBe("burrito-2");
   });
 
-  it("update addresses items by slug; unknown slug is not_found", async () => {
+  it("update addresses items by slug; unknown slug is not_found", () => {
     const existing = '[[items]]\nname = "Lasagna"\nslug = "lasagna"\nmeal = "dinner"\nstatus = "draft"\n';
-    const mgr = readyToEatManager(ghWith({ [PATH]: existing }), PATH);
-    await mgr.update("lasagna", { status: "active", rating: 4 });
-    const item = (parseToml(mgr.files()[0].content).items as Record<string, unknown>[])[0];
+    const mgr = readyToEatManager(existing);
+    mgr.update("lasagna", { status: "active", rating: 4 });
+    const item = (parseToml(mgr.serialize()!).items as Record<string, unknown>[])[0];
     expect(item).toMatchObject({ slug: "lasagna", status: "active", rating: 4 });
-    await expect(mgr.update("ghost", { status: "rejected" })).rejects.toMatchObject({ code: "not_found" });
+    expect(() => mgr.update("ghost", { status: "rejected" })).toThrowError(/not.*found|ghost/i);
   });
 
-  it("files() is empty when nothing was touched", async () => {
-    const mgr = readyToEatManager(ghWith({ [PATH]: "" }), PATH);
-    expect(mgr.files()).toHaveLength(0);
+  it("serialize() is null when nothing was touched", () => {
+    const mgr = readyToEatManager("");
+    expect(mgr.serialize()).toBeNull();
   });
 });
 
@@ -169,40 +177,6 @@ describe("buildCookingLogUpdate", () => {
   });
 });
 
-describe("buildMealPlanUpdate", () => {
-  it("adds a planned row, returning a file", async () => {
-    const gh = ghWith({ "meal_plan.toml": "# header\n" });
-    const { file, applied } = await buildMealPlanUpdate(gh, "meal_plan.toml", [
-      { op: "add", recipe: "salmon", planned_for: "2026-07-01" },
-    ]);
-    expect(file).not.toBeNull();
-    expect(applied).toContainEqual({ op: "add", recipe: "salmon" });
-    const parsed = parseToml(file!.content) as { planned: Record<string, unknown>[] };
-    expect(parsed.planned[0]).toMatchObject({ recipe: "salmon", planned_for: "2026-07-01" });
-  });
-
-  it("returns no file when nothing applied (remove of a missing row)", async () => {
-    const gh = ghWith({ "meal_plan.toml": "" });
-    const { file, conflicts } = await buildMealPlanUpdate(gh, "meal_plan.toml", [{ op: "remove", recipe: "ghost" }]);
-    expect(file).toBeNull();
-    expect(conflicts).toHaveLength(1);
-  });
-
-  it("round-trips open-world sides through serialization", async () => {
-    const gh = ghWith({ "meal_plan.toml": "# header\n" });
-    const { file } = await buildMealPlanUpdate(gh, "meal_plan.toml", [
-      { op: "add", recipe: "miso-salmon", planned_for: "2026-07-01", sides: ["roasted broccoli", "white rice"] },
-    ]);
-    expect(file).not.toBeNull();
-    const parsed = parseToml(file!.content) as { planned: Record<string, unknown>[] };
-    expect(parsed.planned[0]).toMatchObject({
-      recipe: "miso-salmon",
-      planned_for: "2026-07-01",
-      sides: ["roasted broccoli", "white rice"],
-    });
-  });
-});
-
 describe("splitRecipeUpdate (content vs overlay routing)", () => {
   it("routes rating/status to the overlay and everything else to content", () => {
     const r = splitRecipeUpdate({ title: "X", protein: "beef", rating: 5, status: "active" });
@@ -228,38 +202,6 @@ describe("splitRecipeUpdate (content vs overlay routing)", () => {
     const r = splitRecipeUpdate({ perishable_ingredients: ["cilantro"] });
     expect(r.content).toEqual({ perishable_ingredients: ["cilantro"] });
     expect(r.overlayEdit).toEqual({});
-  });
-});
-
-describe("buildOverlayUpdate", () => {
-  it("returns null when there are no edits", async () => {
-    const gh = ghWith({});
-    expect(await buildOverlayUpdate(gh, "users/alice/overlay.toml", new Map())).toBeNull();
-  });
-
-  it("writes the overlay at the given (user-prefixed) path, creating it when absent", async () => {
-    const gh = ghWith({}); // no existing overlay
-    const file = await buildOverlayUpdate(
-      gh,
-      "users/alice/overlay.toml",
-      new Map([["salmon", { rating: 5, status: "active" }]]),
-    );
-    expect(file!.path).toBe("users/alice/overlay.toml");
-    expect(parseOverlay(file!.content)).toEqual({ salmon: { rating: 5, status: "active" } });
-  });
-
-  it("merges onto an existing overlay without disturbing other slugs", async () => {
-    const existing = '[overlay.beef-stew]\nstatus = "rejected"\n';
-    const gh = ghWith({ "users/alice/overlay.toml": existing });
-    const file = await buildOverlayUpdate(
-      gh,
-      "users/alice/overlay.toml",
-      new Map([["salmon", { status: "active" }]]),
-    );
-    expect(parseOverlay(file!.content)).toEqual({
-      "beef-stew": { status: "rejected" },
-      salmon: { status: "active" },
-    });
   });
 });
 
@@ -375,190 +317,81 @@ describe("markVerified", () => {
   });
 });
 
-describe("buildGroceryListUpdate", () => {
-  const PATH = "users/alice/grocery_list.toml";
-
-  it("applies add/update/remove in array order and reports applied", async () => {
-    const gh = ghWith({ [PATH]: '[[items]]\nname = "milk"\nquantity = "1"\n' });
-    const { file, applied, conflicts } = await buildGroceryListUpdate(gh, PATH, [
-      { op: "add", item: { name: "eggs", quantity: "1 dozen" } },
-      { op: "update", name: "milk", item: { quantity: "2" } },
-      { op: "remove", name: "milk" }, // the remove sees the earlier update's list, still drops milk
-    ]);
-    expect(conflicts).toHaveLength(0);
-    expect(applied).toHaveLength(3);
-    expect(file).not.toBeNull();
-    const items = parseToml(file!.content, PATH).items as Record<string, unknown>[];
-    expect(items.map((i) => i.name)).toEqual(["eggs"]);
-  });
-
-  it("merges same-name adds within one batch (no duplicate); a later op sees the earlier one", async () => {
-    const gh = ghWith({}); // no file → empty list
-    const { file, applied } = await buildGroceryListUpdate(gh, PATH, [
-      { op: "add", item: { name: "eggs", for_recipes: ["chili"] } },
-      { op: "add", item: { name: "Eggs", for_recipes: ["tacos"] } }, // same normalized name
-    ]);
-    const items = parseToml(file!.content, PATH).items as Record<string, unknown>[];
-    expect(items).toHaveLength(1);
-    expect((items[0].for_recipes as string[]).slice().sort()).toEqual(["chili", "tacos"]);
-    expect((applied[1] as { merged: boolean }).merged).toBe(true);
-  });
-
-  it("reports a missing-name remove/update as a conflict while still committing the rest", async () => {
-    const gh = ghWith({ [PATH]: '[[items]]\nname = "milk"\nquantity = "1"\n' });
-    const { file, applied, conflicts } = await buildGroceryListUpdate(gh, PATH, [
-      { op: "remove", name: "ghost" },
-      { op: "add", item: { name: "eggs" } },
-    ]);
-    expect(conflicts).toHaveLength(1);
-    expect(conflicts[0]).toMatchObject({ op: "remove", name: "ghost" });
-    expect(file).not.toBeNull();
-    expect(applied.some((a) => (a as { op: string }).op === "add")).toBe(true);
-  });
-
-  it("returns file:null when no op changed anything (only missing-name ops)", async () => {
-    const gh = ghWith({ [PATH]: '[[items]]\nname = "milk"\nquantity = "1"\n' });
-    const { file, applied, conflicts } = await buildGroceryListUpdate(gh, PATH, [
-      { op: "remove", name: "ghost" },
-    ]);
-    expect(file).toBeNull();
-    expect(applied).toHaveLength(0);
-    expect(conflicts).toHaveLength(1);
-  });
-});
-
-// Invoke the real registered write-tool handlers through a minimal fake server,
-// capturing createTree so a test can prove what files a commit staged.
-function collectTools(gh: GitHubClient, userPrefix: string) {
+// Invoke the real registered write-tool handlers through a minimal fake server.
+// Pantry is KV-backed now, so the integration tests read back from the fake KV
+// (state:<username>:pantry) rather than capturing GitHub commit trees.
+function collectTools(
+  gh: GitHubClient,
+  userPrefix: string,
+  dataKv: KVNamespace,
+  username: string,
+) {
   const handlers = new Map<string, (input: unknown) => Promise<{ content: { text: string }[] }>>();
   const server = {
     registerTool: (name: string, _cfg: unknown, handler: (input: unknown) => Promise<{ content: { text: string }[] }>) => {
       handlers.set(name, handler);
     },
   };
-  registerWriteTools(server as unknown as Parameters<typeof registerWriteTools>[0], gh, userPrefix);
+  registerWriteTools(
+    server as unknown as Parameters<typeof registerWriteTools>[0],
+    gh,
+    userPrefix,
+    dataKv,
+    username,
+  );
   return handlers;
 }
 
-/** A gh whose getFile always 404s, capturing every createTree's staged changes. */
-function ghCapturing(captured: { path: string; content?: string }[][]): GitHubClient {
-  return {
-    ...ghWith({}),
-    async createTree(_baseTree: string, changes: { path: string; content?: string }[]) {
-      captured.push(changes);
-      return "tree";
-    },
-  };
-}
-
-describe("buildPantryUpdate on a brand-new pantry (issue #2)", () => {
-  it("update_pantry add seeds pantry.toml when none exists yet", async () => {
-    const captured: { path: string; content?: string }[][] = [];
-    const handlers = collectTools(ghCapturing(captured), "users/everett");
+describe("update_pantry / mark_pantry_verified (KV-backed)", () => {
+  it("update_pantry add seeds the pantry key when none exists yet, no commit_sha", async () => {
+    const { kv, store } = fakeKv();
+    const handlers = collectTools(ghWith({}), "users/everett", kv, "everett");
     const res = await handlers.get("update_pantry")!({
       operations: [{ op: "add", item: { name: "butter", category: "fridge" } }],
     });
     const out = JSON.parse(res.content[0].text) as {
       applied: { op: string; name: string }[];
       conflicts: unknown[];
-      commit_sha: string;
+      commit_sha?: string;
     };
     expect(out.applied).toContainEqual({ op: "add", name: "butter" });
     expect(out.conflicts).toHaveLength(0);
-    expect(out.commit_sha).toBe("x");
-    expect(captured).toHaveLength(1);
-    const file = captured[0].find((c) => c.path === "users/everett/pantry.toml");
-    expect(file).toBeDefined();
-    const items = parseToml(file!.content!, "pantry.toml").items as Record<string, unknown>[];
+    expect(out.commit_sha).toBeUndefined(); // KV-backed: no git commit
+    const items = JSON.parse(store.get("state:everett:pantry")!) as Record<string, unknown>[];
     expect(items).toHaveLength(1);
     expect(items[0]).toMatchObject({ name: "butter", category: "fridge" });
   });
 
-  it("update_pantry add seeds the file even for a single minimal op (name only)", async () => {
-    const captured: { path: string; content?: string }[][] = [];
-    const handlers = collectTools(ghCapturing(captured), "users/everett");
+  it("update_pantry add works for a single minimal op (name only)", async () => {
+    const { kv, store } = fakeKv();
+    const handlers = collectTools(ghWith({}), "users/everett", kv, "everett");
     const res = await handlers.get("update_pantry")!({ operations: [{ op: "add", name: "butter" }] });
     const out = JSON.parse(res.content[0].text) as { applied: { op: string; name: string }[] };
     expect(out.applied).toContainEqual({ op: "add", name: "butter" });
-    const items = parseToml(
-      captured[0].find((c) => c.path === "users/everett/pantry.toml")!.content!,
-      "pantry.toml",
-    ).items as Record<string, unknown>[];
+    const items = JSON.parse(store.get("state:everett:pantry")!) as Record<string, unknown>[];
     expect(items.map((i) => i.name)).toEqual(["butter"]);
   });
 
-  it("commit_changes pantry_operations seeds pantry.toml when none exists yet", async () => {
-    const captured: { path: string; content?: string }[][] = [];
-    const handlers = collectTools(ghCapturing(captured), "users/everett");
-    const res = await handlers.get("commit_changes")!({
-      pantry_operations: [
-        { op: "add", item: { name: "butter", category: "fridge" } },
-        { op: "add", item: { name: "rice", category: "pantry" } },
-      ],
-      commit_message: "seed starting pantry",
-    });
-    const out = JSON.parse(res.content[0].text) as { summary: { pantry: { applied: unknown[]; conflicts: unknown[] } } };
-    expect(out.summary.pantry.applied).toHaveLength(2);
-    expect(out.summary.pantry.conflicts).toHaveLength(0);
-    const items = parseToml(
-      captured[0].find((c) => c.path === "users/everett/pantry.toml")!.content!,
-      "pantry.toml",
-    ).items as Record<string, unknown>[];
-    expect(items.map((i) => i.name)).toEqual(["butter", "rice"]);
-  });
-
-  it("a lone remove against an absent pantry reports a conflict and makes no commit", async () => {
-    const captured: { path: string; content?: string }[][] = [];
-    const handlers = collectTools(ghCapturing(captured), "users/everett");
+  it("a lone remove against an absent pantry reports a conflict and writes nothing", async () => {
+    const { kv, store } = fakeKv();
+    const handlers = collectTools(ghWith({}), "users/everett", kv, "everett");
     const res = await handlers.get("update_pantry")!({ operations: [{ op: "remove", name: "ghost" }] });
     const out = JSON.parse(res.content[0].text) as {
       applied: unknown[];
-      conflicts: { op: string; name: string }[];
-      commit_sha?: string;
+      conflicts: { op: string; name: string; reason: string }[];
     };
     expect(out.applied).toHaveLength(0);
     expect(out.conflicts).toContainEqual({ op: "remove", name: "ghost", reason: "no pantry item with that name" });
-    expect(out.commit_sha).toBeUndefined(); // file:null → no commit
-    expect(captured).toHaveLength(0);
+    expect(store.has("state:everett:pantry")).toBe(false); // no write
   });
 
-  it("mark_pantry_verified against an absent pantry reports missing, makes no commit", async () => {
-    const captured: { path: string; content?: string }[][] = [];
-    const handlers = collectTools(ghCapturing(captured), "users/everett");
+  it("mark_pantry_verified against an absent pantry reports missing, writes nothing", async () => {
+    const { kv, store } = fakeKv();
+    const handlers = collectTools(ghWith({}), "users/everett", kv, "everett");
     const res = await handlers.get("mark_pantry_verified")!({ items: ["butter"] });
     const out = JSON.parse(res.content[0].text) as { verified: string[]; conflicts: { op: string; name: string }[] };
     expect(out.verified).toHaveLength(0);
     expect(out.conflicts).toContainEqual({ op: "verify", name: "butter", reason: "no pantry item with that name" });
-    expect(captured).toHaveLength(0);
-  });
-});
-
-describe("commit_changes grocery_list_ops integration", () => {
-  it("lands grocery_list + meal_plan + pantry in a single commit (one createTree, all three files)", async () => {
-    const captured: { path: string }[][] = [];
-    const base = ghWith({ "users/alice/pantry.toml": "items = []\n" });
-    const gh: GitHubClient = {
-      ...base,
-      async createTree(_baseTree: string, changes: { path: string }[]) {
-        captured.push(changes);
-        return "tree";
-      },
-    };
-    const handlers = collectTools(gh, "users/alice");
-    const res = await handlers.get("commit_changes")!({
-      grocery_list_ops: [{ op: "add", item: { name: "eggs" } }],
-      meal_plan_ops: [{ op: "add", recipe: "chili" }],
-      pantry_operations: [{ op: "add", item: { name: "rice" } }],
-      commit_message: "menu for the week",
-    });
-    expect(captured).toHaveLength(1); // exactly one commit
-    expect(captured[0].map((c) => c.path).sort()).toEqual([
-      "users/alice/grocery_list.toml",
-      "users/alice/meal_plan.toml",
-      "users/alice/pantry.toml",
-    ]);
-    const out = JSON.parse(res.content[0].text) as { summary: { grocery_list: { applied: unknown[] } } };
-    expect(out.summary.grocery_list.applied).toHaveLength(1);
-    expect(out.summary.grocery_list.applied[0]).toMatchObject({ op: "add", name: "eggs" });
+    expect(store.has("state:everett:pantry")).toBe(false); // no write
   });
 });

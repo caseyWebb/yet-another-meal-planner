@@ -119,11 +119,12 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
   const gh = prefixedClient(dataGh, tenant.userPrefix);
   const kroger = createKrogerClient(env);
 
-  // Per-request bundle cache: one KV read for the full profile (lazy migration on miss).
+  // Per-request bundle cache: one KV read for the full profile (KV is the source
+  // of truth; a miss is an empty profile — deploy-time migration populates KV).
   let bundlePromise: Promise<ProfileBundle> | null = null;
   function getBundle(): Promise<ProfileBundle> {
     if (!bundlePromise) {
-      bundlePromise = getProfileBundle(env.DATA_KV, tenant.id, gh);
+      bundlePromise = getProfileBundle(env.DATA_KV, tenant.id);
     }
     return bundlePromise;
   }
@@ -364,7 +365,7 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
             "stale_only is not computable: freshness is an LLM-judged, conversational concern (storage, open packages, visual inspection), not a function of the repo data.",
           );
         }
-        let items = await getPantryState(env.DATA_KV, tenant.id, gh);
+        let items = await getPantryState(env.DATA_KV, tenant.id);
         if (filter?.category !== undefined) {
           items = items.filter((i) => i.category === filter.category);
         }
@@ -555,7 +556,7 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
   // personal/overlay → KV profile bundle), so they take the ROOT client + the
   // caller's prefix + DATA_KV + tenant id for profile writes.
   registerWriteTools(server, sharedGh, tenant.userPrefix, env.DATA_KV, tenant.id);
-  registerGroceryListTools(server, env.DATA_KV, tenant.id, gh);
+  registerGroceryListTools(server, env.DATA_KV, tenant.id);
 
   // Cooking history + meal plan: read_meal_plan (resume), update_meal_plan, and
   // retrospective. Meal plan reads/writes go through DATA_KV; cooking log stays GitHub.
@@ -580,7 +581,7 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
 
   // place_order — the order-time flush: resolve the list, write the Kroger cart,
   // persist learned SKUs to the SHARED cache. The one tool that reaches the cart.
-  registerOrderTools(server, gh, sharedGh, env, tenant.id, resolveIngredient, getLocationId);
+  registerOrderTools(server, sharedGh, env, tenant.id, resolveIngredient, getLocationId);
 
   // get_weather_forecast — read-only Open-Meteo fetch; location resolved from
   // the caller's preferences (location_zip → parse preferred_location). Used by

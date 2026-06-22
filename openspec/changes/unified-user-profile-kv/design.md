@@ -41,11 +41,22 @@ Profile bundle and session state keys are serialized as JSON. Markdown fields (`
 
 **Rationale:** KV values are opaque strings. JSON is the natural serialization for structured data in a JS/TS Worker. TOML and markdown are the source formats in GitHub; in KV they're runtime working state with no human-browsable requirement.
 
-### Decision: Lazy migration on first access
+### Decision: Explicit migration runner at deploy time
 
-No big-bang data migration script. Instead, each read tool (`read_user_profile`, `read_pantry`, etc.) checks the KV key first; on a miss, it reads the corresponding GitHub file(s), populates the KV key, and returns the result. Each write tool does the same before applying the update: read KV; if empty, seed from GitHub; apply update; write KV.
+The original design used lazy migration (GitHub fallback on KV miss in each read helper). That approach was superseded: the transform logic (TOML→JSON coercion, GitHub file reads) would live in the runtime read path forever, every read would carry a `gh` client it never needs after the first session, and production code would permanently contain dead branches.
 
-**Rationale:** Zero-downtime deploy. Users' existing GitHub-backed profiles migrate transparently on their first session after deploy. No CI job, no migration script, no operator action required. The GitHub files become stale over time (orphaned but harmless).
+A deploy-time migration runner replaces it:
+
+- **`migrations/0001-unified-user-profile-kv.mjs`**: reads each tenant's files directly from the **local data repo checkout** (no GitHub API — the data repo is already checked out as the deploy job's working directory), coerces TOML→JSON, writes `profile:<username>` and `state:<username>:*` keys to DATA_KV via the Cloudflare REST API. Idempotent: skips any tenant whose `profile:<username>` key already exists.
+- **`scripts/run-migrations.mjs`**: discovers `migrations/*.mjs` files in filename order, reads the applied ledger from DATA_KV key `migrations:applied` (a JSON array of migration ids), runs any ids absent from the ledger, appends each id to the ledger after success. Gracefully skips when the DATA_KV namespace id is absent from the operator's `wrangler.jsonc` (brand-new operator pre-first-deploy — nothing to migrate).
+- **`data-deploy.yml`**: adds `node _code/scripts/run-migrations.mjs --root .` after the `wrangler deploy` step and before `build-indexes`.
+- **Ledger in KV** (`migrations:applied`): keeps the "what's applied" record co-located with the data it gates. Avoids reintroducing the commit-back fragility the pin-back step already documents as a footgun. Idempotent migration bodies guard against the "ran but ledger write failed" edge.
+
+The read-path helpers in `src/user-kv.ts` (`getProfileBundle`, `getPantryState`, `getMealPlanState`, `getGroceryListState`) drop their `gh` parameter and GitHub fallback entirely. A KV miss returns `null`/`[]` — no GitHub read. All callers lose the `gh` argument.
+
+**Rationale:** The transform is a migration concern, not a read concern. After the runner executes (seconds into the deploy job), the runtime path is a pure KV read with no GitHub dependency and no dead code.
+
+**Ordering:** Migration runs **after** `wrangler deploy`. A small window exists where the new Worker code is live but KV hasn't been populated yet. At friend-group scale this is seconds and is unlikely to affect any active session; the alternative (before-deploy) requires more conditional logic for the cold-start case and was judged not worth the complexity delta.
 
 ### Decision: Write-through (read-modify-write) for profile bundle updates
 
@@ -67,16 +78,18 @@ Profile update tools read the current `profile:<username>` bundle, update the re
 
 **Revoke leaves orphaned KV keys** → `revoke.yml` must be updated to delete `profile:<username>` and `state:<username>:*` keys from DATA_KV. The current revoke only removes TENANT_KV entries. Add the DATA_KV cleanup to the `data-revoke.yml` workflow.
 
-**Stale GitHub profile files post-migration** → Orphaned but harmless. They'll never be read again after the lazy migration populates KV. Could prune manually or via a future cleanup utility; not a correctness issue.
+**Stale GitHub profile files post-migration** → Orphaned but harmless. The runtime path no longer reads them. Manual pruning of `users/<username>/` files (everything except `cooking_log.toml`, `notes/`, `store_notes/`) is a one-time cleanup after migration completes — not a correctness issue, not automated.
 
-**First session after deploy hits GitHub for lazy migration** → One-time cost per user, per file type, on the first session after deploy. Subsequent sessions are fully KV-native.
+**Brief empty-read window after deploy** → The new Worker is live for the seconds it takes the migration runner to complete. Reads during that window return empty KV results (not GitHub data). At friend-group scale this is acceptable; active mid-session users are unlikely.
+
+**Brand-new operator without a provisioned namespace** → The migration runner gracefully skips when `DATA_KV` has no namespace id in `wrangler.jsonc` (pre-first-deploy). A new operator has no `users/` files to migrate anyway.
 
 ## Migration Plan
 
-1. Deploy the updated Worker (new KV read/write paths, lazy migration on miss)
-2. Each tenant's profile migrates transparently on their first session — no operator action
-3. Update `data-revoke.yml` to delete `profile:<username>` and `state:<username>:*` keys from DATA_KV on member revocation
-4. (Optional, later) Prune stale `users/<username>/` GitHub files once all tenants have migrated
+1. `wrangler deploy` — new Worker code goes live (KV read/write paths, no GitHub fallback)
+2. Migration runner (`scripts/run-migrations.mjs`) fires in the same deploy job — reads `users/*/` from the data repo checkout, writes `profile:<username>` and `state:<username>:*` keys to DATA_KV for each tenant; records `0001-unified-user-profile-kv` in the `migrations:applied` ledger
+3. `build-indexes` fires (existing step) — recipe index published to DATA_KV
+4. Stale GitHub profile files (`preferences.toml`, `taste.md`, etc. under `users/*/`) are now inert; prune manually at leisure
 
 **Rollback:** Revert the Worker to the previous deploy. The GitHub files are still present and unchanged; the reverted Worker reads from GitHub again. KV entries written during the new deploy are ignored (the old Worker doesn't read them). Zero data loss.
 

@@ -249,8 +249,7 @@ export function registerStoreNoteTools(
         const ids = await directory.list();
         const fetched = await Promise.all(
           ids.map(async (id) => {
-            const prefix = userPrefix(id);
-            const notesText = await readOptional(sharedGh, `${prefix}/${storeNotesPath(slug)}`);
+            const notesText = await readOptional(sharedGh, `users/${id}/${storeNotesPath(slug)}`);
             return { id, notes: parseNotes(notesText) };
           }),
         );

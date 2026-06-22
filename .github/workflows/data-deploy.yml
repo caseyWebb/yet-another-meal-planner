@@ -150,6 +150,17 @@ jobs:
             fi
           fi
 
+      # Apply pending KV migrations (e.g. moving per-tenant profile/session state
+      # from users/<username>/ files into DATA_KV). The runner reads the data repo
+      # checkout (working dir) and the DATA_KV namespace id from the operator's
+      # wrangler.jsonc (pinned back above); it records applied ids in the
+      # `migrations:applied` ledger so each migration runs once. No-ops gracefully
+      # when the namespace isn't provisioned yet (brand-new operator).
+      - name: Run KV migrations
+        run: node _code/scripts/run-migrations.mjs --root .
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+
       # Publish the recipe index to DATA_KV immediately after deploy so the Worker
       # can serve list_recipes without waiting for a recipe push. Reads the DATA_KV
       # namespace id from the operator's wrangler.jsonc (pinned back above).
