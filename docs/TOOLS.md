@@ -573,7 +573,6 @@ Read the full per-tenant profile bundle from DATA_KV in **one call**. Returns al
   diet_principles: string | null,    // diet-principles narrative (markdown)
   kitchen:         { owned: [...], notes: {...} },  // equipment inventory (empty when absent)
   staples:         { items: [...] }, // staples list (empty items array when absent)
-  overlay:         { ... } | null,   // per-recipe ratings/status map
   ready_to_eat:    [...],            // ready-to-eat catalog items (empty array when absent)
   stockup:         { ... } | null,   // bulk-buy watchlist (parsed TOML)
 }
