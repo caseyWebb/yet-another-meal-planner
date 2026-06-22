@@ -22,7 +22,7 @@
     "@cloudflare/workers-oauth-provider": "^0.8.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "agents": "^0.16.2",
-    "fast-xml-parser": "^5.9.2",
+    "fast-xml-parser": "^5.9.3",
     "gray-matter": "^4.0.3",
     "jose": "^6.2.3",
     "js-yaml": "^4.1.0",
