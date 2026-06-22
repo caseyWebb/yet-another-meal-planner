@@ -7,8 +7,6 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   buildRecipeIndexes,
-  validateReadyToEatCatalog,
-  validateKitchenInventory,
   validateStore,
   validateDiscoveriesInbox,
   validateDiscoverySources,
@@ -81,29 +79,8 @@ test('accepts the coarse buckets (shellfish / thai) the shared vocab defines', a
   await rm(dir, { recursive: true, force: true });
 });
 
-test('validateReadyToEatCatalog: clean catalog passes, malformed ones report', () => {
-  const ok = {
-    items: [
-      { name: 'Frozen Lasagna', slug: 'frozen-lasagna', meal: 'dinner', status: 'active', rating: 4 },
-      { name: 'Overnight Oats', slug: 'overnight-oats', meal: 'breakfast', status: 'draft' },
-    ],
-  };
-  assert.deepEqual(validateReadyToEatCatalog(ok, 'users/alice/ready_to_eat.toml'), []);
-
-  const bad = {
-    items: [
-      { name: 'a', slug: 'dup', meal: 'brunch' }, // bad meal
-      { name: 'b', slug: 'dup', meal: 'lunch' }, // duplicate slug
-      { name: 'c', meal: 'dinner' }, // missing slug
-      { name: 'd', slug: 'd', meal: 'dinner', rating: 9 }, // bad rating
-    ],
-  };
-  const errs = validateReadyToEatCatalog(bad, 'u/ready_to_eat.toml');
-  assert.ok(errs.some((e) => /meal/.test(e)));
-  assert.ok(errs.some((e) => /duplicate ready-to-eat slug/.test(e)));
-  assert.ok(errs.some((e) => /missing required `slug`/.test(e)));
-  assert.ok(errs.some((e) => /rating/.test(e)));
-});
+// ready_to_eat.toml moved to DATA_KV — no build validator (validated by the
+// Worker at write time). Same for kitchen.toml and meal_plan.toml below.
 
 // --- 4.3 determinism + date normalization -------------------------------
 
@@ -331,23 +308,6 @@ test('absent requires_equipment defaults to [] and does not warn', async () => {
   await rm(dir, { recursive: true, force: true });
 });
 
-// --- kitchen inventory structural validation ----------------------------
-
-test('validateKitchenInventory: clean inventory passes, off-vocab owned reports', () => {
-  assert.deepEqual(
-    validateKitchenInventory({ owned: ['pressure-cooker', 'blender'], notes: { ovens: 2 } }, 'users/alice/kitchen.toml'),
-    [],
-  );
-  // Absent owned is valid (unknown inventory).
-  assert.deepEqual(validateKitchenInventory({ notes: { free_text: 'cast iron' } }, 'u/kitchen.toml'), []);
-  // Empty file is valid.
-  assert.deepEqual(validateKitchenInventory({}, 'u/kitchen.toml'), []);
-  const offVocab = validateKitchenInventory({ owned: ['air-fryer'] }, 'u/kitchen.toml');
-  assert.ok(offVocab.some((e) => /`owned` slug "air-fryer" is not in the controlled vocabulary/.test(e)), offVocab.join('\n'));
-  const nonArray = validateKitchenInventory({ owned: 'blender' }, 'u/kitchen.toml');
-  assert.ok(nonArray.some((e) => /`owned` must be an array/.test(e)), nonArray.join('\n'));
-});
-
 test('validateStore: identity-only — requires slug+name, domain a string, tolerates legacy layout keys', () => {
   const ok = { slug: 'west-7th-tom-thumb', name: 'Tom Thumb', label: 'West 7th', domain: 'grocery' };
   assert.deepEqual(validateStore(ok, 'stores/west-7th-tom-thumb.toml'), []);
@@ -497,36 +457,18 @@ test('in-vocabulary protein/cuisine pass; absent protein only warns', async () =
   await rm(dir, { recursive: true, force: true });
 });
 
-// --- cooking-log + meal-plan validation ---------------------------------
+// --- cooking-log validation ---------------------------------------------
+// (meal_plan.toml moved to DATA_KV — validated by the Worker at write time, not
+// by the build; validateCookingArtifacts no longer takes a mealPlan.)
 
 const recipesFixture = { 'arroz-caldo': { last_cooked: '2026-06-09' }, salmon: { last_cooked: null } };
 
-test('cooking artifacts: valid log + plan produce no errors', () => {
+test('cooking artifacts: valid log produces no errors', () => {
   const { errors } = validateCookingArtifacts({
     recipes: recipesFixture,
     cookingLog: { entries: [{ date: '2026-06-09', type: 'recipe', recipe: 'arroz-caldo' }, { date: '2026-06-08', type: 'ready_to_eat', name: 'lasagna' }] },
-    mealPlan: { planned: [{ recipe: 'salmon', planned_for: '2026-06-12' }] },
   });
   assert.deepEqual(errors, []);
-});
-
-test('cooking artifacts: free-text sides on a planned row pass and are not slug-resolved', () => {
-  const { errors } = validateCookingArtifacts({
-    recipes: recipesFixture,
-    cookingLog: { entries: [] },
-    // "roasted broccoli" resolves to no slug — must NOT be treated as a recipe reference.
-    mealPlan: { planned: [{ recipe: 'salmon', planned_for: '2026-06-12', sides: ['roasted broccoli'] }] },
-  });
-  assert.deepEqual(errors, []);
-});
-
-test('cooking artifacts: hard-fail on non-array sides', () => {
-  const { errors } = validateCookingArtifacts({
-    recipes: recipesFixture,
-    cookingLog: { entries: [] },
-    mealPlan: { planned: [{ recipe: 'salmon', sides: 'roasted broccoli' }] },
-  });
-  assert.ok(errors.some((e) => /sides must be an array of side names/.test(e)), errors.join('\n'));
 });
 
 test('cooking artifacts: hard-fail on unknown type, unresolved slugs, bad dates', () => {
@@ -539,13 +481,10 @@ test('cooking artifacts: hard-fail on unknown type, unresolved slugs, bad dates'
         { date: 'nope', type: 'ad_hoc', name: 'x' }, // bad date
       ],
     },
-    mealPlan: { planned: [{ recipe: 'ghost' }, { recipe: 'salmon', planned_for: 'soon' }] },
   });
   assert.ok(errors.some((e) => e.includes('invalid type')), errors.join('\n'));
   assert.ok(errors.some((e) => e.includes('unknown slug "ghost"') && e.includes('cooking_log')), errors.join('\n'));
   assert.ok(errors.some((e) => e.includes('invalid or missing date')), errors.join('\n'));
-  assert.ok(errors.some((e) => e.includes('meal_plan') && e.includes('unknown slug "ghost"')), errors.join('\n'));
-  assert.ok(errors.some((e) => e.includes('planned_for')), errors.join('\n'));
 });
 
 test('cooking artifacts: last_cooked is no longer cross-checked against the log', () => {
@@ -555,7 +494,6 @@ test('cooking artifacts: last_cooked is no longer cross-checked against the log'
   const { errors, warnings } = validateCookingArtifacts({
     recipes: { stale: { last_cooked: '2026-06-01' } },
     cookingLog: { entries: [{ date: '2026-06-10', type: 'recipe', recipe: 'stale' }] },
-    mealPlan: null,
   });
   assert.deepEqual(errors, []);
   assert.ok(!warnings.some((w) => w.includes('last_cooked')), warnings.join('\n'));
@@ -565,7 +503,6 @@ test('cooking artifacts: accepts a bare TOML date (Date) as well as a string', (
   const { errors, warnings } = validateCookingArtifacts({
     recipes: { x: { last_cooked: '2026-06-09' } },
     cookingLog: { entries: [{ date: new Date('2026-06-09T00:00:00Z'), type: 'recipe', recipe: 'x' }] },
-    mealPlan: null,
   });
   assert.deepEqual(errors, []);
   assert.deepEqual(warnings, []);

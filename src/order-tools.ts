@@ -1,8 +1,7 @@
 // place_order tool registration (order-placement capability). Wires the pure
 // orchestrator in order.ts to the real I/O: the Change 05 matcher (resolution),
-// the Change 06 commit engine (SKU-cache append + list lifecycle), and the
-// user-context Kroger client (cart write). It is the ONLY tool that writes a
-// Kroger cart.
+// the KV grocery-list + pantry reads, and the user-context Kroger client (cart
+// write). It is the ONLY tool that writes a Kroger cart.
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
@@ -13,7 +12,6 @@ import { parseToml } from "./parse.js";
 import { stringifyTomlWithHeader } from "./serialize.js";
 import { runTool } from "./errors.js";
 import { commitFiles } from "./commit.js";
-import { loadGroceryList, serializeGroceryList } from "./grocery-tools.js";
 import { normalizeName, type GroceryItem } from "./grocery.js";
 import type { MatchContext, MatchResult } from "./matching.js";
 import {
@@ -25,6 +23,7 @@ import {
   type ResolvedLine,
 } from "./order.js";
 import { createKrogerUserClient, toToolError, type KvStore } from "./kroger-user.js";
+import { getGroceryListState, writeGroceryListState, getPantryState } from "./user-kv.js";
 
 const SKU_CACHE_PATH = "skus/kroger.toml";
 
@@ -82,9 +81,12 @@ function makeCommitSkuCache(gh: GitHubClient, getLocationId: () => Promise<strin
 }
 
 /** Advance the resolved lines to status:in_cart, adding any missing list entries. */
-function makeAdvanceInCart(gh: GitHubClient) {
-  return async (lines: ResolvedLine[]): Promise<string> => {
-    const { text, data, items } = await loadGroceryList(gh);
+function makeAdvanceInCart(
+  dataKv: KVNamespace,
+  username: string,
+) {
+  return async (lines: ResolvedLine[]): Promise<void> => {
+    const items = await getGroceryListState(dataKv, username);
     const next: GroceryItem[] = items.map((it) => ({ ...it, for_recipes: [...it.for_recipes] }));
     const indexByKey = new Map(next.map((it, i) => [normalizeName(it.name), i]));
 
@@ -110,9 +112,7 @@ function makeAdvanceInCart(gh: GitHubClient) {
       }
     }
 
-    const file = serializeGroceryList(text, data, next);
-    const { commit_sha } = await commitFiles(gh, [file], `place order: ${lines.length} item(s) to cart`);
-    return commit_sha;
+    await writeGroceryListState(dataKv, username, next);
   };
 }
 
@@ -131,7 +131,6 @@ const overrideShape = {
 
 export function registerOrderTools(
   server: McpServer,
-  gh: GitHubClient,
   sharedGh: GitHubClient,
   env: Env,
   tenantId: string,
@@ -139,9 +138,10 @@ export function registerOrderTools(
   getLocationId: () => Promise<string>,
 ): void {
   // The SKU cache is shared corpus (root client); the grocery list + pantry are
-  // this tenant's personal state (prefixed client).
+  // this tenant's personal state (KV-backed).
+  const dataKv = env.DATA_KV;
   const commitSkuCache = makeCommitSkuCache(sharedGh, getLocationId);
-  const advanceInCart = makeAdvanceInCart(gh);
+  const advanceInCart = makeAdvanceInCart(dataKv, tenantId);
 
   server.registerTool(
     "place_order",
@@ -161,16 +161,14 @@ export function registerOrderTools(
         const kv = env.KROGER_KV as unknown as KvStore;
         const userClient = createKrogerUserClient(env, kv, tenantId);
 
-        const { items: list } = await loadGroceryList(gh);
+        const list = await getGroceryListState(dataKv, tenantId);
 
-        const pantryNames = new Set<string>();
-        const pantryText = await readOptional(gh, "pantry.toml");
-        if (pantryText) {
-          const pitems = (parseToml(pantryText, "pantry.toml").items as Record<string, unknown>[]) ?? [];
-          for (const p of pitems) {
-            if (typeof p.name === "string") pantryNames.add(normalizeName(p.name));
-          }
-        }
+        const pantryItems = await getPantryState(dataKv, tenantId);
+        const pantryNames = new Set<string>(
+          pantryItems
+            .map((p) => (typeof p.name === "string" ? normalizeName(p.name) : null))
+            .filter((n): n is string => n !== null),
+        );
 
         const quantities: Record<string, number> = {};
         for (const [k, v] of Object.entries(input.quantities ?? {})) {

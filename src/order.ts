@@ -156,8 +156,8 @@ export interface PlaceOrderDeps {
   commitSkuCache(mappings: NewMapping[]): Promise<string | null>;
   /** Write the resolved lines to the Kroger cart. Throws on failure. */
   cartAdd(lines: ResolvedLine[]): Promise<void>;
-  /** Advance the resolved lines to status:in_cart in grocery_list.toml; returns the commit sha. Throws on failure. */
-  advanceInCart(lines: ResolvedLine[]): Promise<string>;
+  /** Advance the resolved lines to status:in_cart in the grocery list (KV-backed). Throws on failure. */
+  advanceInCart(lines: ResolvedLine[]): Promise<void>;
 }
 
 export interface PlaceOrderOptions {
@@ -172,7 +172,7 @@ export interface PlaceOrderResult {
   checkpoint: CheckpointLine[];
   sku_cache: { committed: boolean; commit_sha?: string | null; error?: string };
   cart: { written: boolean; count?: number; error?: string; code?: string };
-  list: { advanced: boolean; commit_sha?: string; error?: string };
+  list: { advanced: boolean; error?: string };
   preview: boolean;
 }
 
@@ -287,8 +287,8 @@ export async function placeOrder(
   //    otherwise the items stay `active` and the next order retries them.
   if (result.cart.written) {
     try {
-      const sha = await deps.advanceInCart(resolved);
-      result.list = { advanced: true, commit_sha: sha };
+      await deps.advanceInCart(resolved);
+      result.list = { advanced: true };
     } catch (e) {
       result.list = { advanced: false, error: msg(e) };
     }

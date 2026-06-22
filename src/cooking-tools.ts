@@ -1,9 +1,10 @@
 // Read + analysis tools for the cooking-history / meal-planning capabilities:
-//   read_meal_plan — current committed cook intent (for session resume)
-//   retrospective  — aggregate cooking_log.toml over a period (real mixes,
-//                    cadence, cook-vs-convenience, ready-to-eat favorites,
-//                    underused), joining type=recipe entries to the recipe index.
-// Writes (appending log entries, mutating the plan) ride commit_changes.
+//   read_meal_plan  — current committed cook intent (KV-backed, for session resume)
+//   update_meal_plan — add/remove planned entries in KV
+//   retrospective   — aggregate cooking_log.toml over a period (real mixes,
+//                     cadence, cook-vs-convenience, ready-to-eat favorites,
+//                     underused), joining type=recipe entries to the recipe index.
+// Writes (appending log entries) ride commit_changes.
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
@@ -12,9 +13,10 @@ import { readOptional } from "./gh-read.js";
 import { parseToml } from "./parse.js";
 import { ToolError, runTool } from "./errors.js";
 import { COOKING_LOG_PATH, entriesOf } from "./cooking-log.js";
-import { MEAL_PLAN_PATH, plannedOf } from "./meal-plan.js";
+import { applyMealPlanOps, type MealPlanOp } from "./meal-plan.js";
 import { retrospective, type RetrospectiveResult } from "./retrospective.js";
 import type { RecipeIndex } from "./recipes.js";
+import { getMealPlanState, writeMealPlanState } from "./user-kv.js";
 
 export async function loadRetrospective(
   personalGh: GitHubClient,
@@ -40,6 +42,7 @@ export function registerCookingTools(
   server: McpServer,
   gh: GitHubClient,
   dataKv: KVNamespace,
+  username: string,
 ): void {
   server.registerTool(
     "read_meal_plan",
@@ -50,9 +53,35 @@ export function registerCookingTools(
     },
     () =>
       runTool(async () => {
-        const text = await readOptional(gh, MEAL_PLAN_PATH);
-        const planned = text ? plannedOf(parseToml(text, MEAL_PLAN_PATH)) : [];
+        const planned = await getMealPlanState(dataKv, username);
         return { planned };
+      }),
+  );
+
+  server.registerTool(
+    "update_meal_plan",
+    {
+      description:
+        "Add or remove planned meal entries. `add` upserts by recipe slug (updating planned_for and merging sides); `remove` drops every row for the slug. Call this after logging a cooked meal to remove it from the plan. Returns { applied, conflicts } with no commit_sha (KV-backed).",
+      inputSchema: {
+        ops: z.array(
+          z.object({
+            op: z.enum(["add", "remove"]),
+            recipe: z.string(),
+            planned_for: z.string().nullable().optional(),
+            sides: z.array(z.string()).optional(),
+          }),
+        ),
+      },
+    },
+    ({ ops }) =>
+      runTool(async () => {
+        const current = await getMealPlanState(dataKv, username);
+        const { items, applied, conflicts } = applyMealPlanOps(current, ops as MealPlanOp[]);
+        if (applied.length > 0) {
+          await writeMealPlanState(dataKv, username, items);
+        }
+        return { applied, conflicts };
       }),
   );
 

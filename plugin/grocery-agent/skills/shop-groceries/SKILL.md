@@ -7,7 +7,7 @@ description: "Flush the grocery list — the deliberate act distinct from captur
 
 # Shop groceries — the flush (shop-groceries)
 
-Read `read_grocery_list` and `read_preferences` in parallel. Then detect which branch to run:
+Read `read_grocery_list` and `read_user_profile()` in parallel (preferences field drives branch detection). Then detect which branch to run:
 
 | Signal | Branch |
 |---|---|

@@ -77,6 +77,8 @@ npm run test:tooling                                       # node --test (tests/
 
 **Reusable Actions.** This public repo hosts `on: workflow_call` workflows that operators' private data repos call (`uses: caseyWebb/groceries-agent/...@main`), billed to the data-repo owner: `data-deploy.yml`, `data-onboard.yml` / `data-revoke.yml` (KV-only member provisioning), `data-build-indexes.yml` / `data-build-site.yml`, and `data-build-plugin.yml` (mint a self-hoster's plugin bundle with their own connector URL baked in). Onboard/revoke run in the **private** data repo so the invite codes they print never hit a public log. `docs/data-template/.github/workflows/` is the live reference for the thin data-repo callers.
 
+**KV migrations (`migrations/`).** State that moves into `DATA_KV` (or changes shape there) is reconciled once, at deploy time, by `scripts/run-migrations.mjs` — invoked by `data-deploy.yml` after `wrangler deploy`. The Worker read path keeps **no** GitHub fallback. To add one, drop a `migrations/NNNN-name.mjs` exporting `id` and `async up({ kv, dataRoot, log })`: read from the data checkout (`dataRoot`), write via the injected `kv` REST client (`scripts/kv-rest.mjs`), and make it **idempotent** (skip work already done — e.g. a key that already exists). The runner records applied `id`s in the `migrations:applied` KV ledger and runs each once, in filename order; it no-ops when the namespace isn't provisioned yet. See [`ARCHITECTURE.md`](docs/ARCHITECTURE.md#migrations).
+
 ## Building the plugin (`AGENT_INSTRUCTIONS.md` → `plugin/`)
 
 After editing `AGENT_INSTRUCTIONS.md` (or a `src/` tool description the skills quote), regenerate the committed bundle:

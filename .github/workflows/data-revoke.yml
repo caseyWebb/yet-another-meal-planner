@@ -50,7 +50,19 @@ jobs:
             npx --yes wrangler kv key delete --binding TENANT_KV --remote "invite:${CODE}" || true
           fi
 
+      - name: Remove from DATA_KV (profile + session state)
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ inputs.cloudflare_account_id }}
+          U: ${{ inputs.username }}
+        run: |
+          # Per-tenant profile bundle and session-state keys (DATA_KV).
+          npx --yes wrangler kv key delete --binding DATA_KV --remote "profile:${U}" || true
+          npx --yes wrangler kv key delete --binding DATA_KV --remote "state:${U}:pantry" || true
+          npx --yes wrangler kv key delete --binding DATA_KV --remote "state:${U}:meal_plan" || true
+          npx --yes wrangler kv key delete --binding DATA_KV --remote "state:${U}:grocery_list" || true
+
       - name: Summary
         env:
           U: ${{ inputs.username }}
-        run: echo "Revoked \`${U}\` — KV allowlist + invite removed; their token no longer resolves. Delete \`users/${U}/\` from the data repo manually if you want their data gone too." >> "$GITHUB_STEP_SUMMARY"
+        run: echo "Revoked \`${U}\` — TENANT_KV allowlist + invite and DATA_KV profile/session keys removed; their token no longer resolves. Delete \`users/${U}/\` from the data repo manually if you want their GitHub-backed history (cooking_log, notes, store_notes) gone too." >> "$GITHUB_STEP_SUMMARY"

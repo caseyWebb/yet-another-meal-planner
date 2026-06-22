@@ -181,15 +181,6 @@ Read pantry items, optionally filtered.
 
 **Notes:** `category` and `prepared_only` are deterministic from pantry data. `stale_only` returns a structured `{ error: "unsupported" }`: freshness is an LLM-judged, conversational concern (it depends on storage, whether a package was opened, and visual inspection) rather than something the tool can compute. There is no shelf-life table backing it — the curated `storage_guidance/` tree (see `list_storage_guidance` / `read_storage_guidance`) informs put-away advice rather than gating staleness.
 
-### `read_kitchen()`
-
-Read the caller's kitchen equipment inventory (what they own to cook *with*).
-
-**Params:** none.
-
-**Returns:**
-- `{ owned: [...], notes: {...} }` — `owned` is the array of `EQUIPMENT_VOCAB` slugs that **gate** recipe makeability; `notes` is the freeform cook-reasoning table (oven count, pan sizes) that **never** gates. Returns `{ owned: [], notes: {} }` when no `kitchen.toml` exists — an **absent** inventory means equipment is *unknown*, which makes the `list_recipes` makeability gate a no-op (everything shows).
-
 ### `update_pantry(operations)`
 
 Apply pantry updates from conversational messages.
@@ -198,9 +189,9 @@ Apply pantry updates from conversational messages.
 - `operations` (array): `[{ op: "add" | "remove" | "verify", item: ..., ... }]`
 
 **Returns:**
-- `{ applied: [...], conflicts: [...], commit_sha? }` — `commit_sha` is omitted when nothing applied
+- `{ applied: [...], conflicts: [...] }` — KV-backed, no `commit_sha`
 
-**Notes:** Conflicts surface when remove targets aren't found. The agent should ask the user how to resolve. An `add` against a not-yet-created pantry **seeds** `users/<username>/pantry.toml` from empty (the onboarding starting-inventory step relies on this) — a missing file is not an error. A lone `remove`/`verify` on an absent pantry simply reports conflicts (no item with that name) and makes no commit.
+**Notes:** Conflicts surface when remove targets aren't found. The agent should ask the user how to resolve. Pantry state is KV-backed (`state:<username>:pantry`) — no git commit.
 
 ### `update_kitchen(operations)`
 
@@ -210,9 +201,9 @@ Update the caller's kitchen equipment inventory (agent-editable on user directio
 - `operations` (array): `[{ op: "add" | "remove", slug }]` for the gating `owned` list, and `[{ op: "set_note", key, value }]` for a freeform `notes` field.
 
 **Returns:**
-- `{ applied: [...], conflicts: [...] , commit_sha? }`
+- `{ applied: [...], conflicts: [...] }` — KV-backed, no `commit_sha`
 
-**Notes:** An `add` of an **off-vocabulary** slug is a **conflict**, never a silent write — `owned` is the gate's left operand and is kept vocabulary-clean (vocab: `pressure-cooker`, `sous-vide-circulator`, `blender`, `ice-cream-maker`). An `add` of an already-owned slug is idempotent (no-op, no conflict); a `remove` of an absent slug is a conflict. `set_note` fields (oven count, pan sizes) inform the `cook` flow only and **never** gate a recipe. No commit (and `commit_sha` omitted) when nothing applied.
+**Notes:** An `add` of an **off-vocabulary** slug is a **conflict**, never a silent write — `owned` is the gate's left operand and is kept vocabulary-clean (vocab: `pressure-cooker`, `sous-vide-circulator`, `blender`, `ice-cream-maker`). An `add` of an already-owned slug is idempotent (no-op, no conflict); a `remove` of an absent slug is a conflict. `set_note` fields (oven count, pan sizes) inform the `cook` flow only and **never** gate a recipe. Kitchen state is KV-backed (profile bundle `kitchen` field).
 
 ### `mark_pantry_verified(items)`
 
@@ -222,16 +213,7 @@ Reset `last_verified_at` on confirmed items.
 - `items` (array of names or slugs)
 
 **Returns:**
-- `{ verified: [...], conflicts: [...], commit_sha? }` — conflicts name items not found in the pantry; `commit_sha` is omitted when nothing was verified
-
-### `read_staples()`
-
-Return the caller's staples list (the "don't run out of these" catalog). Reads `users/<username>/staples.toml`. Returns `{ items: [] }` when absent — no error.
-
-**Returns:**
-- `{ items: [{ name, perishable? }] }` — each item has a required `name` and an optional `perishable` boolean.
-
-**Notes:** Graceful-absent — `read_staples` never errors on a missing file; an empty list simply means no staples-driven prompting fires. Used in the meal-plan pre-pass batch and by the pantry-update flow to decide whether a depleted item warrants a restock prompt.
+- `{ verified: [...], conflicts: [...] }` — conflicts name items not found in the pantry; KV-backed, no `commit_sha`
 
 ### `update_staples(add?, remove?)`
 
@@ -242,9 +224,9 @@ Add items to or remove items from the caller's staples list. Writes `users/<user
 - `remove` (array of strings, optional): item names to remove. Silently no-ops for absent names.
 
 **Returns:**
-- `{ added, removed, commit_sha }` — `added`/`removed` are counts; `commit_sha` is null when nothing changed.
+- `{ added, removed }` — `added`/`removed` are counts; KV-backed (profile bundle `staples` field), no `commit_sha`.
 
-**Notes:** Seeded at onboarding (see the configure-grocery-profile flow); usable any time the user names items they want to track. `perishable` is a flag about that item's typical shelf life — separate from its current pantry `category`. An item can be in both `staples.toml` and `stockup.toml`; they are independent.
+**Notes:** Seeded at onboarding (see the configure-grocery-profile flow); usable any time the user names items they want to track. `perishable` is a flag about that item's typical shelf life — separate from its current pantry `category`. An item can be in both the staples list and the stockup watchlist; they are independent.
 
 ### `update_stockup(items?, freezer_capacity_estimate?)`
 
@@ -255,7 +237,7 @@ Add items to the caller's bulk-buy watchlist. Writes `users/<username>/stockup.t
 - `freezer_capacity_estimate` (string, optional): `tight | moderate | spacious` — the top-level capacity hint.
 
 **Returns:**
-- `{ added, commit_sha }` — `added` is the count of new items; `commit_sha` is null when nothing changed (no new item and no freezer-estimate change).
+- `{ added }` — `added` is the count of new items; KV-backed (profile bundle `stockup` field), no `commit_sha`.
 
 **Notes:** The top-level `freezer_capacity_estimate` is serialized before the `[[items]]` tables (TOML ordering). Seeded at onboarding (see the configure-grocery-profile flow); also usable any time the user names a bulk-buy item.
 
@@ -263,7 +245,7 @@ Add items to the caller's bulk-buy watchlist. Writes `users/<username>/stockup.t
 
 ## Grocery list tools
 
-The grocery list (`grocery_list.toml`) is the SKU-free buy list for the next order. It accumulates intent across the week; resolution to a Kroger SKU and the cart write are deferred to order placement (`place_order`). See `docs/SCHEMAS.md` for the item schema.
+The grocery list is the SKU-free buy list for the next order (`state:<username>:grocery_list` in DATA_KV). It accumulates intent across the week; resolution to a Kroger SKU and the cart write are deferred to order placement (`place_order`). Writes are KV-backed — no `commit_sha`. See `docs/SCHEMAS.md` for the item schema.
 
 ### `read_grocery_list()`
 
@@ -286,21 +268,21 @@ Add an item (ingredient/product level, no SKU). Keyed by normalized `name` — r
 - `note` (string or null, optional) — one-off brand request / occasion
 
 **Returns:**
-- `{ item, merged, commit_sha }`
+- `{ item, merged }` — KV-backed, no `commit_sha`
 
 ### `update_grocery_list(name, ...patch)`
 
 Patch an existing item by name (`quantity`, `kind`, `domain`, `status`, `source`, `for_recipes`, `note`).
 
 **Returns:**
-- `{ item, commit_sha }` — `not_found` if no such item
+- `{ item }` — `not_found` if no such item; KV-backed, no `commit_sha`
 
 ### `remove_from_grocery_list(name)`
 
 Remove an item by name.
 
 **Returns:**
-- `{ removed: bool, commit_sha? }`
+- `{ removed: bool }` — KV-backed, no `commit_sha`
 
 **Notes:** Promoting a low/out pantry item onto the list is a **prompted** decision (record `source: "pantry_low"`), never automatic. The lifecycle past `active` (`in_cart` → `ordered` → `received`) is driven by `place_order` and the user-asserted transitions — see [`place_order`](#place_orderpayload) below.
 
@@ -575,38 +557,49 @@ Disposition or otherwise update a ready-to-eat item in the caller's catalog, add
 
 ---
 
-## Preference / config tools (read-only by default)
+## Preference / config tools
 
-### `read_preferences()`
+### `read_user_profile()`
 
-Return the user's parsed `preferences.toml` (the parsed object). Throws structured `not_found` when none are set up yet — the empty signal for an un-onboarded member.
+Read the full per-tenant profile bundle from DATA_KV in **one call**. Returns all profile fields; absent fields are null/empty — never throws `not_found`.
 
-### `read_taste()`
+**Params:** none.
 
-Return `{ content }` — the user's taste-profile narrative (markdown). Throws `not_found` when unset.
+**Returns:**
+```
+{
+  preferences:     { ... } | null,   // parsed preferences object (TOML)
+  taste:           string | null,    // taste-profile narrative (markdown)
+  diet_principles: string | null,    // diet-principles narrative (markdown)
+  kitchen:         { owned: [...], notes: {...} },  // equipment inventory (empty when absent)
+  staples:         { items: [...] }, // staples list (empty items array when absent)
+  overlay:         { ... } | null,   // per-recipe ratings/status map
+  ready_to_eat:    [...],            // ready-to-eat catalog items (empty array when absent)
+  stockup:         { ... } | null,   // bulk-buy watchlist (parsed TOML)
+}
+```
 
-### `read_diet_principles()`
-
-Return `{ content }` — the user's diet-principles narrative (variety rules, markdown). Throws `not_found` when unset.
+**Notes:** The single call for meal-plan pre-pass and configure-grocery-profile. KV-backed (`profile:<username>`) — a missing key returns all fields null/empty, no GitHub fallback (existing members' files are migrated into KV once, at deploy time, by the migration runner). Kitchen `owned` is the array of `EQUIPMENT_VOCAB` slugs that **gate** recipe makeability; an **absent/empty** `owned` makes the gate a no-op (everything shows).
 
 ### `profile_status()`
 
-Report whether the caller has set up their grocery profile, derived from a **single** listing of their own `users/<username>/` subtree (one Contents-API call, not a fan of per-area reads). Per-tenant, read-only, no params.
+Report whether the caller has set up their grocery profile. Checks the DATA_KV profile bundle (`profile:<username>`) for field presence. Per-tenant, read-only, no params.
 
 **Returns:**
-- `{ initialized, missing }` — `initialized` (boolean) is `true` once `preferences.toml` exists (the unconditional first onboarding area, so its presence reliably means "got past setup"); `missing` (string[]) lists the onboarding-area keys whose backing file is absent, from the fixed mapping `store`→`preferences.toml`, `taste`→`taste.md`, `diet`→`diet_principles.md`, `equipment`→`kitchen.toml`, `pantry`→`pantry.toml`, `ready-to-eat`→`ready_to_eat.toml`, `stockup`→`stockup.toml`, `corpus`→`overlay.toml`.
+- `{ initialized, missing }` — `initialized` (boolean) is `true` once the `preferences` bundle field is non-empty; `missing` (string[]) lists the onboarding-area keys whose bundle field is absent or empty, from the fixed mapping `store`→`preferences`, `taste`→`taste`, `diet`→`diet_principles`, `equipment`→`kitchen`, `pantry`→`state:<username>:pantry`, `ready-to-eat`→`ready_to_eat`, `stockup`→`stockup`, `corpus`→`overlay`.
 
-A brand-new member whose subtree does not exist yet (404) returns `{ initialized: false, missing: [<all areas>] }` rather than erroring; any other upstream failure is a structured `upstream_unavailable`. Backs the `grocery-core` start-of-session onboarding gate — treat an errored/indeterminate result as non-gating (proceed).
+A brand-new member with no KV key yet returns `{ initialized: false, missing: [<all areas>] }`. Backs the `grocery-core` start-of-session onboarding gate — treat an errored/indeterminate result as non-gating (proceed).
 
 ### `update_preferences(content)` / `update_taste(content)` / `update_diet_principles(content)` / `update_aliases(content)`
 
-Write to user-curated files. **Content-faithful:** each writes exactly the full file content supplied by the caller — no inferred merge. **These should only be called when the user explicitly directs an edit.** The tools exist; the discipline of when to call them lives in AGENT_INSTRUCTIONS.md.
+Write user-curated config. **Content-faithful:** each writes exactly the full file content supplied — no inferred merge. `update_preferences`, `update_taste`, `update_diet_principles` write to the KV profile bundle (no `commit_sha`). `update_aliases` commits `aliases.toml` to the shared GitHub corpus (`{ file, commit_sha }`). **These should only be called when the user explicitly directs an edit.**
 
 **Params:**
 - `content` (string, required) — the complete new file text
 
 **Returns:**
-- `{ file, commit_sha }`
+- `update_preferences` / `update_taste` / `update_diet_principles`: `{ updated: "<field>" }` — KV-backed, no `commit_sha`
+- `update_aliases`: `{ file, commit_sha }`
 
 ---
 
@@ -664,52 +657,65 @@ Aggregate **real** cooking history from the cooking log over a period, joining `
 
 ### `read_meal_plan()`
 
-Return the current meal plan — recipes committed to cook next (transient cook intent). Use at session start to resume.
+Return the current meal plan — recipes committed to cook next (transient cook intent, KV-backed). Use at session start to resume.
 
 **Params:** none.
 
 **Returns:**
 - `{ planned: [{ recipe, planned_for, sides? }] }` (`planned_for` may be null; `sides` is an optional array of free-text open-world side names riding on the main's row)
 
-**Notes:** The session-start stale-planned reconcile surfaces only **due** rows (`planned_for` on/before today, or unset).
+**Notes:** The session-start stale-planned reconcile surfaces only **due** rows (`planned_for` on/before today, or unset). KV-backed (`state:<username>:meal_plan`); a missing key reads as empty (existing `meal_plan.toml` files are migrated into KV at deploy time by the migration runner).
+
+### `update_meal_plan(ops)`
+
+Add or remove planned meal entries. KV-backed — no commit, no `commit_sha`.
+
+**Params:**
+- `ops` (array): `[{ op: "add" | "remove", recipe, planned_for?, sides? }]`
+  - `add` upserts by recipe slug (updating `planned_for`, merging open-world `sides`); `remove` drops all rows for the slug.
+
+**Returns:**
+- `{ applied: [...], conflicts: [...] }` — each applied entry has `{ op, recipe }`; conflicts include the reason.
+
+**Notes:** Called after the user confirms a menu (add rows), and during cook-capture or the stale-planned reconcile (remove rows). `cooking_log_entries` in `commit_changes` also auto-removes cooked recipes from the meal plan. A **corpus** side (a `course: side` recipe) gets its own `add` row; open-world sides ride on the main's `sides` field.
 
 ---
 
 ## Commit / atomic operations
 
-> **Capture/flush split.** Repo persistence and cart placement are two separate tools: **`commit_changes`** (repo commit, no cart) and **`place_order`** (the order-time cart flush + SKU-cache write). The repo commit exists for memory's sake — it happens continuously as intent is captured; the cart write is a separate, order-time flush.
+> **Capture/flush split.** Repo persistence and cart placement are two separate tools: **`commit_changes`** (GitHub commit for recipe/log writes + KV writes for overlay/config/ready-to-eat) and **`place_order`** (the order-time cart flush + SKU-cache write). Pantry, meal plan, and grocery list are fully KV-backed and have their own tools (`update_pantry`, `update_meal_plan`, `add_to_grocery_list`, …).
 
 ### `commit_changes(payload)`
 
-Persist a batch of repo updates as **one** atomic git commit — no cart. The everyday persist path: use it at the end of a session to keep the git log clean instead of calling the granular write tools repeatedly. Every change is structurally validated before commit; the commit lands via the Git Data API (tree → commit → update ref) with optimistic ref-retry against the index-build Action.
+Batch GitHub-backed writes as one atomic git commit, plus KV-backed writes for overlay/config/ready-to-eat, in the same call.
+
+**GitHub-backed (creates a commit):** `recipe_updates` objective frontmatter/body, `cooking_log_entries`.
+
+**KV-backed (no per-field commit_sha):** `recipe_updates` rating/status → overlay bundle, `ready_to_eat_drafts/updates` → ready_to_eat bundle, `config_updates` preferences/taste/diet_principles → profile bundle, `config_updates` aliases → shared GitHub file.
+
+Returns `commit_sha: null` when no GitHub files were written.
 
 **Params:**
 ```
 {
-  recipe_updates:       [{ slug, updates }],          // frontmatter merges (rating, status, ...; do NOT set last_cooked by hand)
-  pantry_operations:    [{ op, item?, name? }],       // op: add | remove | verify
-  pantry_verified:      [name, name, ...],            // reset last_verified_at
-  ready_to_eat_drafts:  [{ meal, name, status?, category?, source?, brand?, notes? }],  // → caller's ready_to_eat.toml; status draft (default) | active
-  ready_to_eat_updates: [{ slug, updates }],          // addressed by slug in the caller's catalog
-  config_updates:       [{ file, content }],          // file: preferences|taste|diet_principles|aliases
-  cooking_log_entries:  [{ type, date?, recipe?, name?, protein?, cuisine? }],  // append cooked meals; date defaults to today
-  meal_plan_ops:        [{ op, recipe, planned_for?, sides? }],   // op: add | remove  (committed cook intent; sides = open-world sides on the main's row)
-  grocery_list_ops:     [{ op, item?, name? }],           // op: add | update | remove  (SKU-free buy list)
+  recipe_updates:       [{ slug, updates }],          // frontmatter merges; objective edits → GitHub; rating/status → KV overlay; do NOT set last_cooked
+  ready_to_eat_drafts:  [{ meal, name, status?, category?, source?, brand?, notes? }],  // → KV ready_to_eat bundle
+  ready_to_eat_updates: [{ slug, updates }],          // → KV ready_to_eat bundle
+  config_updates:       [{ file, content }],          // file: preferences|taste|diet_principles → KV; aliases → GitHub
+  cooking_log_entries:  [{ type, date?, recipe?, name?, protein?, cuisine? }],  // → GitHub cooking_log.toml; date defaults to today; auto-clears cooked recipes from KV meal plan
   commit_message:       string
 }
 ```
 All sections are optional except `commit_message`.
 
-**`cooking_log_entries` (cooking-history).** Appends to `cooking_log.toml`. `type` is `recipe | ready_to_eat | ad_hoc`; `recipe` is required for `type=recipe` (slug-only), `name` for the others. For each `type=recipe` entry, the recipe's `last_cooked` is **derived** (max log date for that slug) and co-written in the **same** commit — never set `last_cooked` via `recipe_updates`. Ready-to-eat consumption is a `{type:"ready_to_eat", name}` entry **plus** a `pantry_operations` `remove` when the user used the last of it (pantry is presence-based — there is no auto-decrement).
+**`cooking_log_entries` (cooking-history).** Appends to `users/<username>/cooking_log.toml` on GitHub. `type` is `recipe | ready_to_eat | ad_hoc`; `recipe` is required for `type=recipe` (slug-only), `name` for the others. Never set `last_cooked` via `recipe_updates` — it is derived from the log. **Auto-clears:** each `type=recipe` entry also removes the cooked slug from the KV meal plan (`state:<username>:meal_plan`) so the plan stays current. Ready-to-eat consumption is a `{type:"ready_to_eat", name}` entry; use `update_pantry` to remove any pantry stock when the user used the last of it.
 
-**`meal_plan_ops` (meal-planning).** Mutates `meal_plan.toml`. `add` upserts by recipe slug (updating `planned_for`, and merging any open-world `sides` — free-text plate companions with no slug — onto the main's row as a deduped union); `remove` drops the slug's row (and its `sides`). A **corpus** side (a `course: side` recipe) gets its own `add` row instead of riding in `sides`. Menu agreement writes `add` rows; cook-capture / the stale-planned reconcile write `remove`.
-
-**`grocery_list_ops` (grocery-list).** Mutates the caller's `grocery_list.toml`. `add` carries the full `item` (`{ name, quantity?, kind?, domain?, source?, for_recipes?, note? }`) and MERGES by normalized name (union `for_recipes`, reconcile `quantity`) — including against an item added earlier in the same batch; `update` carries `name` + a partial `item` patch; `remove` carries `name`. Ops apply in array order. An `update`/`remove` for an absent name is reported in `summary.grocery_list.conflicts` (the rest of the batch still commits), not thrown. This is the batch path for multiple grocery-list mutations (a menu capture, a receive's removes) — the granular `add_/update_/remove_from_grocery_list` tools are for a single one-off edit, and multiple same-file writes are never parallelized.
+**`recipe_updates` routing:** objective frontmatter/body changes → shared GitHub recipe; `rating`/`status` → KV overlay bundle (never the shared recipe). `last_cooked` is derived — set via cooking_log_entries, never directly.
 
 **Returns:**
-- `{ commit_sha, summary }`
+- `{ commit_sha, summary }` — `commit_sha` is null when only KV writes occurred (no GitHub files)
 
-**Notes:** Because the Worker is stateless, batching is **LLM-orchestrated** — accumulate a session's intended changes and flush them through one `commit_changes` call. The granular write tools (`update_recipe`, `update_pantry`, …) each commit on their own and are for standalone one-offs; don't call them N times mid-session.
+**Notes:** Pantry → `update_pantry`. Meal plan → `update_meal_plan`. Grocery list → `add_to_grocery_list` / `update_grocery_list` / `remove_from_grocery_list`. These are KV-backed tools; do not include them in `commit_changes`.
 
 ### `place_order(payload)`
 
@@ -741,7 +747,7 @@ All sections optional. With no args it flushes the current grocery list.
   partials:  [{ name, for_recipes }],
   sku_cache: { committed, commit_sha?, error? },
   cart:      { written, count?, error?, code? },   // code carries reauth_required etc.
-  list:      { advanced, commit_sha?, error? },
+  list:      { advanced, error? },        // KV-backed (no commit_sha)
   preview:   bool
 }
 ```

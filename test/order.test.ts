@@ -169,7 +169,6 @@ function makeDeps(
     advanceInCart: async () => {
       calls.advance++;
       if (opts.advanceThrows) throw new Error("advance failed");
-      return "list-sha";
     },
   };
   return { deps, calls };
@@ -187,7 +186,7 @@ describe("placeOrder", () => {
     expect(res.checkpoint).toEqual([]);
     expect(res.sku_cache).toEqual({ committed: true, commit_sha: "sku-sha" });
     expect(res.cart).toEqual({ written: true, count: 2 });
-    expect(res.list).toEqual({ advanced: true, commit_sha: "list-sha" });
+    expect(res.list).toEqual({ advanced: true });
     expect(calls).toMatchObject({ sku: 1, cart: 1, advance: 1 });
   });
 
