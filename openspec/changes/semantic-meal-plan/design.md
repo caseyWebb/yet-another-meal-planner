@@ -5,9 +5,9 @@ Recipe selection today is **dump-and-reason**: the menu pre-pass loads all choic
 1. **The corpus is meant to grow autonomously** — week over week, seeded by what each member actually likes, shared across the friend group. An unbounded corpus cannot be dumped.
 2. **Free-tier Claude users** matter. Token budgets are tighter, rate limits lower, and the work often runs on a smaller/faster model that reasons *worse* over a large undifferentiated dump (lost-in-the-middle). Dump cost is `O(corpus)` per menu turn, paid by every member every time.
 
-This change is the recipe-selection analog of the storage maturation already underway in `cloudflare-storage-architecture`: the system has stopped being a viability experiment and is a daily tool, so retrieval-over-dump becomes worth its complexity. It builds directly on `d1-recipe-index` (the recipe index moving from a KV blob to a queryable D1 table) — without a queryable, facet-filterable recipe table there is no clean home for the embedding or the SQL prefilter. It is delivered as an **experimental, invoke-by-name skill alongside the production flow**, so the retrieval quality can be proven on a real corpus before any core behavior is replaced.
+This change is the recipe-selection analog of the storage maturation just delivered by the D1 migration (#69–#72): the system has stopped being a viability experiment and is a daily tool, so retrieval-over-dump becomes worth its complexity. It builds directly on the **now-merged D1 platform**: the recipe index is a queryable D1 table (`recipes`, `migrations/d1/0002`), the per-tenant overlay is a D1 table (`overlay`, `0004`), and `DATA_KV`/`smol-toml` are gone — so the embedding column, the SQL facet-prefilter, and the favorite overlay all have a concrete home. It is delivered as an **experimental, invoke-by-name skill alongside the production flow**, so the retrieval quality can be proven on a real corpus before any core behavior is replaced.
 
-The relevant prior art and constraints: the determinism boundary (`docs/ARCHITECTURE.md`, ADR 0001) — capture LLM judgment once, retrieve deterministically, narrow with live context; recipes stay authored markdown in GitHub (the Obsidian premise) while indexes are derived projections; the existing token-AND substring search in `src/recipes.ts`; the per-tenant overlay (`rating` + `status`) heading into D1 via `d1-profile`.
+The relevant prior art and constraints: the determinism boundary (`docs/ARCHITECTURE.md`, ADR 0001) — capture LLM judgment once, retrieve deterministically, narrow with live context; recipes stay authored markdown in GitHub (the Obsidian premise) while indexes are derived projections rebuilt by `projectToD1`; the existing token-AND substring search now reading the D1 index (`src/recipe-index.ts`); the per-tenant overlay shipped as `overlay(tenant, recipe, rating, status)` with the `rate_recipe` write tool.
 
 ## Goals / Non-Goals
 
@@ -29,7 +29,7 @@ The relevant prior art and constraints: the determinism boundary (`docs/ARCHITEC
 
 ### Decision: Embeddings live in a D1 column with brute-force cosine (option B), not Vectorize
 
-Store the 768-dim vector as a column on the D1 `recipes` row (the table `d1-recipe-index` creates). Retrieval is **facet-prefilter in SQL, then cosine over the survivors** in the Worker.
+Store the 768-dim vector as a column on the D1 `recipes` row (the table `d1-recipe-index` shipped). Retrieval is **facet-prefilter in SQL, then cosine over the survivors** in the Worker.
 
 - **Why over Vectorize:** at friend-group scale (hundreds, low-thousands of recipes) the three things Vectorize buys — sub-linear ANN, server-side metadata filter, managed scale — are things we don't need, while its costs are real: a second store, an async/eventually-consistent upsert window, dimensions welded to the model, and keeping two copies in sync on every rebuild. Brute-force is **exact** (not approximate), trivially consistent (the vector is just another projected column rebuilt atomically with the row), and composes with the SQL filter in one store. This mirrors the codebase's standing YAGNI posture ("no premature KV read-cache… add only when measured").
 - **Facet-prefilter first** keeps cosine off the whole corpus: `WHERE course=… AND protein NOT IN (recent) AND makeable…` may cut thousands → low-hundreds before any dot products. This is what extends B's runway and is the same shape Vectorize's metadata pre-filter would take.
@@ -70,7 +70,7 @@ During planning, when the agent judges a discovery matches the member's preferen
 ### Decision: `favorite` boolean replaces the 1–5 star `rating` (BREAKING)
 
 - **Why:** a boolean is exactly the crisp anchor set k-NN wants; stars are poorly calibrated and add disposition friction we're shedding. The lost granularity is recovered, more honestly, from revealed preference (cook frequency in the cooking log).
-- **Cascade:** the per-tenant overlay shrinks toward a single boolean (`favorite`, maybe `+ hidden`); the group signal becomes `COUNT(favorites)` not `AVG(★≥4)` — a simpler SQL aggregate; and the open `update_recipe`-vs-`rate_recipe` question (carried from `finish-kv-migration`/`d1-profile`) **dissolves** into a trivial `toggle_favorite`.
+- **Cascade:** the per-tenant `overlay` table's `rating` column becomes `favorite` (the table shrinks toward a single boolean, maybe `+ hidden`); the group signal (`idx_overlay_recipe` aggregate in `read_recipe_notes`) becomes `COUNT(favorite)` not `AVG(rating)` — a simpler SQL aggregate; and the just-shipped `rate_recipe` tool (which resolved the old `update_recipe`-vs-`rate_recipe` question toward a rating tool) is **replaced** by a trivial `toggle_favorite`.
 - **Favorites are the one positive signal everywhere:** retrieval re-rank (Worker), import-match judgment (Claude), and group signal (SQL).
 
 ### Decision: Taste personalization is nearest-liked re-rank, not a centroid
@@ -88,25 +88,24 @@ Re-rank retrieved candidates by **max cosine similarity to any favorited recipe*
 - **Filter-bubble tightening** (import-match and retrieve-match both pull to the same attractor) → the "bit outside your usual" import allowance + the never-cooked boost; rely on curated-feed breadth and Claude's match latitude being broader than a cosine threshold.
 - **Embedding-model gaps on niche food terms** (`bge-base-en` may not place "gochujang" as Korean/spicy) → the AI description compensates by spelling out the latent axes explicitly.
 - **Brute-force B runway** (loading embeddings through the Worker grows with corpus) → facet-prefilter before cosine, optional int8 quantization, and the written-down Vectorize promotion trigger; the backend-agnostic contract makes the swap a tool-internal change.
-- **Dependency on unlanded `d1-recipe-index`** → this change is sequenced strictly after it; do not start the embedding column or SQL prefilter against the KV blob (it can't facet-prefilter).
-- **In-session import adds latency/complexity to planning and does git writes** → conditional on matches only; batch imports into the session's commit (riding whatever survives `retire-commit-changes`) rather than one commit per import.
-- **BREAKING rating→favorite migration** → map `★≥4 ⇒ favorite` during the `d1-profile` overlay move; the group-signal and any rating-weighting consumers switch to favorite-count in the same pass.
+- **In-session import adds latency/complexity to planning and does GitHub writes** (recipes stay in GitHub) → conditional on matches only; batch imports into the session's atomic commit rather than one commit per import. Note `create_recipe` still solo-commits today (`recipe-discovery`).
+- **BREAKING rating→favorite migration** → a standalone D1 migration adds `overlay.favorite`, backfills `rating >= 4 ⇒ favorite = 1`, and drops `rating` once the group-signal and any rating-weighting consumers switch to favorite-count; retain `rating` through the cutover for rollback.
 
 ## Migration Plan
 
-1. **Gate:** land `d1-recipe-index` (recipe table in D1). This change builds on it.
-2. **Additive metadata first (breaks nothing — old flow ignores it):** add `description`, `side_search_terms` to recipe frontmatter + schema; add the `embedding` column; teach the build to project the embedding (Workers AI) from the description. Backfill descriptions for the existing corpus (one-time, in-session or a scripted pass).
-3. **Search tool:** ship `recipe_semantic_search(specs[])` (facet-prefilter → cosine) behind the backend-agnostic contract.
-4. **Experimental skill:** add the invoke-by-name `semantic-meal-plan` skill (distill → retrieve → compose + in-session aggressive import). Production `menu-generation` untouched. A/B.
-5. **Favorite (BREAKING):** introduce `favorite`/`toggle_favorite`, fold `rating → favorite` into the `d1-profile` overlay migration, switch group signal to favorite-count, wire the k-NN re-rank and freshness boost.
-6. **Promote when proven:** if the experiment beats dump-and-reason on the real corpus, make retrieval the default selection path; only then revisit dropping `draft`/`status` corpus-wide.
+0. **Pre-req (already landed):** the D1 platform (#69–#72) — the `recipes` and `overlay` tables, `projectToD1`, GitHub-recipes-only. No gate remains.
+1. **Additive metadata first (breaks nothing — old flow ignores it):** add `description`, `side_search_terms` to recipe frontmatter + schema; a D1 migration adds the `embedding`/`description`/`side_search_terms` columns to `recipes`; teach `projectToD1`/the build to project the embedding (Workers AI) from the description. Backfill descriptions (and side terms for mains) for the existing corpus (one-time, in-session or scripted — already in progress in the data repo).
+2. **Search tool:** ship `recipe_semantic_search(specs[])` (facet-prefilter → cosine) behind the backend-agnostic contract.
+3. **Experimental skill:** add the invoke-by-name `semantic-meal-plan` skill (distill → retrieve → compose + in-session aggressive import). Production `menu-generation` untouched. A/B.
+4. **Favorite (BREAKING):** D1 migration adds `overlay.favorite` (backfill `rating >= 4 ⇒ 1`); replace `rate_recipe` with `toggle_favorite`; switch the group signal to favorite-count; wire the k-NN re-rank and freshness boost; drop `rating` once consumers move.
+5. **Promote when proven:** if the experiment beats dump-and-reason on the real corpus, make retrieval the default selection path; only then revisit dropping `draft`/`status` corpus-wide.
 
-**Rollback:** the skill is invoke-by-name and parallel — stop invoking it. The additive fields are inert to the old flow. The only non-trivial rollback is the favorite migration (reversible by retaining the original star values through the `d1-profile` cutover until the experiment is committed).
+**Rollback:** the skill is invoke-by-name and parallel — stop invoking it. The additive columns/fields are inert to the old flow. The only non-trivial rollback is the favorite migration (reversible by retaining `overlay.rating` through the cutover until the experiment is committed).
 
 ## Open Questions
 
 - **Reject scope:** is a suppressed discovery per-tenant (A's "no" doesn't hide it from B) or shared? Per-tenant is more correct but needs a small per-member URL suppression list.
-- **Commit batching:** exact mechanism for batching in-session imports into one commit, given `retire-commit-changes` is in flight.
+- **Commit batching:** with `commit_changes` retired (#71) and `create_recipe` still solo-committing to GitHub, decide how multiple in-session imports batch into one atomic commit instead of one commit per import.
 - **Description generation contract:** fixed prompt vs lightly-structured ("2 sentences: what it is / flavor+texture / when you'd want it"); and whether to auto-regenerate on prompt change (lean: no — treat human edits as authoritative, embedding rebuilds from current text).
 - **`hidden` boolean:** keep a per-tenant "never show me this" alongside `favorite`, or is URL-suppression + non-favorite enough?
 - **Novelty spec weighting:** how hard the never-cooked boost pushes by default before the user tunes it.

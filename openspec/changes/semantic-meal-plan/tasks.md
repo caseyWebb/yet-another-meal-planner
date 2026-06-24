@@ -1,14 +1,13 @@
 # Tasks
 
-> Sequenced after `d1-recipe-index` lands (the D1 recipe table is the home for the
-> embedding column and the SQL facet-prefilter). Groups 1–4 are additive and break
+> The D1 platform has landed (#69–#72): the `recipes` and `overlay` tables, `projectToD1`,
+> and GitHub-recipes-only are in place — no gate remains. Groups 1–4 are additive and break
 > nothing; group 5 is the BREAKING favorite cutover; group 6 is promote-when-proven.
 > Vectorize and fully-autonomous cron import are explicit non-goals here.
 
-## 0. Gate
+## 0. Setup
 
-- [ ] 0.1 Confirm `d1-recipe-index` has landed (recipe index served from the D1 table; `loadRecipeIndex`/targeted queries available)
-- [ ] 0.2 Add the Workers AI binding (`@cf/baai/bge-base-en-v1.5`) to `wrangler.jsonc` (operator-merged) and `.dev.vars.example`
+- [ ] 0.1 Add the Workers AI binding (`@cf/baai/bge-base-en-v1.5`) to `wrangler.jsonc` (operator-merged) and `.dev.vars.example`
 
 ## 1. Recipe semantic-identity fields (additive)
 
@@ -19,8 +18,8 @@
 
 ## 2. Embedding projection (additive)
 
-- [ ] 2.1 Add an `embedding` column to the D1 recipe table (migration `migrations/d1/*.sql`)
-- [ ] 2.2 In the build, compute each recipe's embedding via Workers AI from its `description`+title and write it in the same replace-all index rebuild (atomic with the row)
+- [ ] 2.1 New migration `migrations/d1/0007_*.sql`: add `embedding`, `description`, `side_search_terms` columns to the existing `recipes` table
+- [ ] 2.2 Extend `projectToD1` in `scripts/build-indexes.mjs`: compute each recipe's embedding via Workers AI from its `description`+title and write it in the same replace-all (`DELETE`+batched `INSERT`) rebuild (atomic with the row)
 - [ ] 2.3 Skip embedding for recipes lacking a `description`; ensure they remain facet-retrievable but excluded from semantic ranking
 - [ ] 2.4 Add a Worker helper to embed a query string (Workers AI) and a cosine helper
 
@@ -48,11 +47,11 @@
 ## 5. Favorite cutover (BREAKING)
 
 - [ ] 5.1 Replace `create_recipe` draft assumption: discovery/import lands a normal corpus recipe (update `recipe-discovery`); remove the draft-landing behavior
-- [ ] 5.2 Add `toggle_favorite(slug, favorite)`; remove any star-rating write path (`docs/TOOLS.md`, `src/write-tools.ts`)
-- [ ] 5.3 `list_recipes`: add `favorite` filter/return; remove `rating` filter/return (`docs/TOOLS.md`, `src/recipes.ts`)
-- [ ] 5.4 Group signal → `COUNT(favorites)` instead of `AVG(★≥4)` (the D1 aggregate from `d1-profile`)
-- [ ] 5.5 Migration `rating → favorite` (e.g. `★≥4 ⇒ true`), folded into the `d1-profile` overlay move; retain original stars through cutover for rollback
-- [ ] 5.6 Add `rotation.resurface_after_days` / `rotation.novelty_boost` to the preferences merge-patch schema
+- [ ] 5.2 Migration `migrations/d1/0008_*.sql`: add `overlay.favorite`, backfill `rating >= 4 ⇒ 1`; drop `rating` once consumers move (retain through cutover for rollback)
+- [ ] 5.3 Replace `rate_recipe` with `toggle_favorite(slug, favorite)` in `src/write-tools.ts`; update `src/overlay.ts` (`docs/TOOLS.md`)
+- [ ] 5.4 `list_recipes`: add `favorite` filter/return; remove `rating` filter/return (`docs/TOOLS.md`, `src/recipe-index.ts`)
+- [ ] 5.5 Group signal (`read_recipe_notes`, `idx_overlay_recipe`) → `COUNT(favorite)` instead of `AVG(rating)`
+- [ ] 5.6 Add `rotation.resurface_after_days` / `rotation.novelty_boost` to the profile/preferences schema (a `profile` column or `custom` JSON)
 - [ ] 5.7 Decide `hidden` boolean (per-tenant "never show me") vs URL-suppression-only; implement the chosen path
 
 ## 6. Prove and promote
