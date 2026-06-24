@@ -25,7 +25,6 @@ import { filterRecipes, type RecipeIndex } from "./recipes.js";
 import { listStorageGuidance, readStorageGuidance } from "./storage-guidance.js";
 import { fetchWeatherForecast } from "./weather.js";
 import { parseStaples } from "./staples.js";
-import { profileStatus } from "./profile-status.js";
 import { parseOverlay, mergeOverlay, type Overlay } from "./overlay.js";
 import { getProfileBundle, getPantryState, type ProfileBundle } from "./user-kv.js";
 import { toInventory } from "./kitchen.js";
@@ -380,13 +379,34 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
     "read_user_profile",
     {
       description:
-        "Return the caller's full grocery profile in one call: preferences (parsed), taste narrative (markdown), diet principles (markdown), kitchen inventory (owned equipment slugs + notes), staples list, ready-to-eat catalog items, and stockup watchlist. Absent fields return null or empty. Use this at the start of a meal-planning session instead of calling the individual read tools separately.",
+        "Return the caller's full grocery profile in one call, including initialization status. `initialized` is true once preferences are present; `missing` lists onboarding-area keys still absent (store, taste, diet, equipment, ready-to-eat, stockup) — empty when fully set up. Profile fields: preferences (parsed), taste narrative (markdown), diet principles (markdown), kitchen inventory (owned equipment slugs + notes), staples list, ready-to-eat catalog items, stockup watchlist. Absent fields return null or empty. Use this at the start of every session — on initialized:false, run configure-grocery-profile first.",
       inputSchema: {},
     },
     () =>
       runTool(async () => {
         const bundle = await getBundle();
+
+        const PROFILE_AREAS: ReadonlyArray<readonly [area: string, field: keyof typeof bundle]> = [
+          ["store", "preferences"],
+          ["taste", "taste"],
+          ["diet", "diet_principles"],
+          ["equipment", "kitchen"],
+          ["ready-to-eat", "ready_to_eat"],
+          ["stockup", "stockup"],
+        ];
+
+        const initialized = bundle.preferences != null && bundle.preferences.trim().length > 0;
+        const missing: string[] = [];
+        for (const [area, field] of PROFILE_AREAS) {
+          const value = bundle[field];
+          if (value == null || (typeof value === "string" && value.trim().length === 0)) {
+            missing.push(area);
+          }
+        }
+
         return {
+          initialized,
+          missing,
           preferences: bundle.preferences ? parseToml(bundle.preferences, "preferences.toml") : null,
           taste: bundle.taste ?? null,
           diet_principles: bundle.diet_principles ?? null,
@@ -400,16 +420,6 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
           stockup: bundle.stockup ? parseToml(bundle.stockup, "stockup.toml") : null,
         };
       }),
-  );
-
-  server.registerTool(
-    "profile_status",
-    {
-      description:
-        "Report whether the caller has set up their grocery profile. Returns { initialized, missing }: `initialized` is true once preferences are present in the KV profile bundle; `missing` lists the onboarding-area keys still absent (store, taste, diet, equipment, pantry, ready-to-eat, stockup, corpus). A brand-new member with no data yet is { initialized: false, missing: [all areas] }. Read-only, no params. Use it as the up-front gate before doing real work — on initialized:false, run the configure-grocery-profile flow first. If this call errors, treat the result as indeterminate and proceed.",
-      inputSchema: {},
-    },
-    () => runTool(() => profileStatus(env.DATA_KV, tenant.id)),
   );
 
   server.registerTool(
