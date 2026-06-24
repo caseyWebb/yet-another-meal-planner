@@ -4,13 +4,16 @@ import {
   extractRecipeSources,
   indexSourceToSlug,
   buildCandidates,
-  flattenInbox,
   slugify,
   buildNewRecipe,
   type FeedEntry,
 } from "../src/discovery.js";
 import { parseMarkdown } from "../src/parse.js";
 import { GitHubError, type GitHubClient } from "../src/github.js";
+import { fakeD1 } from "./fake-d1.js";
+
+// buildNewRecipe reads aliases from D1 (readAliases); an empty `aliases` table → {}.
+const env = fakeD1().env;
 
 function ghWith(files: Record<string, string>): GitHubClient {
   return {
@@ -57,43 +60,40 @@ describe("canonicalizeUrl", () => {
   });
 });
 
+// extractRecipeSources / indexSourceToSlug now take the D1 `recipeSourceMap`
+// (raw stored `source_url` → slug) and canonicalize the URLs themselves, instead
+// of parsing a KV/JSON index blob.
 describe("extractRecipeSources", () => {
-  it("collects canonicalized source URLs, ignoring null/missing", () => {
-    const index = JSON.stringify({
-      a: { slug: "a", source: "https://ex.com/one/?ref=x" },
-      b: { slug: "b", source: null },
-      c: { slug: "c" },
-    });
-    const set = extractRecipeSources(index);
+  it("collects canonicalized source URLs from the D1 source map", () => {
+    const sourceMap = new Map<string, string>([["https://ex.com/one/?ref=x", "a"]]);
+    const set = extractRecipeSources(sourceMap);
     expect(set.has("https://ex.com/one")).toBe(true);
     expect(set.size).toBe(1);
   });
-  it("returns an empty set for absent or malformed index", () => {
-    expect(extractRecipeSources(null).size).toBe(0);
-    expect(extractRecipeSources("{not json").size).toBe(0);
+  it("returns an empty set for an empty source map", () => {
+    expect(extractRecipeSources(new Map()).size).toBe(0);
   });
 });
 
 describe("indexSourceToSlug (idempotent import, §6.4)", () => {
   it("maps canonicalized source URLs to their recipe slug", () => {
-    const index = JSON.stringify({
-      "miso-salmon": { slug: "miso-salmon", source: "https://ex.com/salmon/?utm=1" },
-      "no-source": { slug: "no-source" },
-    });
-    const map = indexSourceToSlug(index);
+    const sourceMap = new Map<string, string>([
+      ["https://ex.com/salmon/?utm=1", "miso-salmon"],
+    ]);
+    const map = indexSourceToSlug(sourceMap);
     // A tracker-wrapped variant of the same URL resolves to the existing slug.
     expect(map.get(canonicalizeUrl("https://ex.com/salmon#print"))).toBe("miso-salmon");
     expect(map.size).toBe(1);
   });
 
-  it("first slug wins on a source collision; empty for absent/malformed", () => {
-    const dupes = JSON.stringify({
-      a: { source: "https://ex.com/x" },
-      b: { source: "https://ex.com/x/" },
-    });
+  it("first slug wins on a canonical-source collision; empty for an empty map", () => {
+    // Insertion order is the source-map order; both canonicalize to .../x.
+    const dupes = new Map<string, string>([
+      ["https://ex.com/x", "a"],
+      ["https://ex.com/x/", "b"],
+    ]);
     expect(indexSourceToSlug(dupes).get("https://ex.com/x")).toBe("a");
-    expect(indexSourceToSlug(null).size).toBe(0);
-    expect(indexSourceToSlug("{ not json").size).toBe(0);
+    expect(indexSourceToSlug(new Map()).size).toBe(0);
   });
 });
 
@@ -130,7 +130,7 @@ const BODY = "## Ingredients\n- a\n\n## Instructions\n1. do it\n";
 describe("buildNewRecipe", () => {
   it("creates recipes/<slug>.md, defaulting status to draft", async () => {
     const gh = ghWith({});
-    const { slug, file } = await buildNewRecipe(gh, { title: "Test Dish" }, BODY);
+    const { slug, file } = await buildNewRecipe(gh, env, { title: "Test Dish" }, BODY);
     expect(slug).toBe("test-dish");
     expect(file.path).toBe("recipes/test-dish.md");
     const { frontmatter, body } = parseMarkdown(file.content);
@@ -140,76 +140,25 @@ describe("buildNewRecipe", () => {
 
   it("preserves an explicit status", async () => {
     const gh = ghWith({});
-    const { file } = await buildNewRecipe(gh, { title: "X", status: "active" }, BODY);
+    const { file } = await buildNewRecipe(gh, env, { title: "X", status: "active" }, BODY);
     expect(parseMarkdown(file.content).frontmatter.status).toBe("active");
   });
 
   it("refuses to overwrite an existing slug", async () => {
     const gh = ghWith({ "recipes/test-dish.md": "---\ntitle: Test Dish\n---\n## Ingredients\n## Instructions\n" });
-    await expect(buildNewRecipe(gh, { title: "Test Dish" }, BODY)).rejects.toMatchObject({ code: "slug_exists" });
+    await expect(buildNewRecipe(gh, env, { title: "Test Dish" }, BODY)).rejects.toMatchObject({ code: "slug_exists" });
   });
 
   it("rejects a body missing the H2 contract", async () => {
     const gh = ghWith({});
-    await expect(buildNewRecipe(gh, { title: "No Sections" }, "just prose")).rejects.toMatchObject({
+    await expect(buildNewRecipe(gh, env, { title: "No Sections" }, "just prose")).rejects.toMatchObject({
       code: "validation_failed",
     });
   });
 
   it("rejects when no title/slug is derivable", async () => {
     const gh = ghWith({});
-    await expect(buildNewRecipe(gh, {}, BODY)).rejects.toMatchObject({ code: "validation_failed" });
+    await expect(buildNewRecipe(gh, env, {}, BODY)).rejects.toMatchObject({ code: "validation_failed" });
   });
 });
 
-describe("flattenInbox", () => {
-  const inbox = `
-[[entries]]
-from = "newsletter@seriouseats.com"
-subject = "This week's dinners"
-received_at = "2026-06-11"
-body = "Weeknight Chili https://www.seriouseats.com/chili\\nSheet-Pan Salmon https://www.seriouseats.com/salmon"
-
-[[entries]]
-from = "alice@example.com"
-subject = "Check this out"
-received_at = "2026-06-12"
-body = "You should try this: https://www.seriouseats.com/soup"
-`;
-
-  it("returns a list of emails with from/subject/received_at/body", () => {
-    const emails = flattenInbox(inbox);
-    expect(emails).toHaveLength(2);
-    expect(emails[0]).toMatchObject({
-      from: "newsletter@seriouseats.com",
-      subject: "This week's dinners",
-      received_at: "2026-06-11",
-    });
-    expect(emails[0].body).toContain("https://www.seriouseats.com/chili");
-    expect(emails[0]).not.toHaveProperty("url");
-    expect(emails[0]).not.toHaveProperty("candidates");
-  });
-
-  it("returns all emails without URL-based dedup (body is for LLM parsing)", () => {
-    const emails = flattenInbox(inbox);
-    expect(emails).toHaveLength(2);
-    expect(emails.map((e) => e.from)).toContain("alice@example.com");
-  });
-
-  it("returns an empty list for absent or malformed input", () => {
-    expect(flattenInbox(null)).toEqual([]);
-    expect(flattenInbox("")).toEqual([]);
-    expect(flattenInbox("this is = not valid = toml [[[")).toEqual([]);
-  });
-
-  it("returns an empty body string when the body field is absent", () => {
-    const emails = flattenInbox(`
-[[entries]]
-from = "x@y.com"
-subject = "No body"
-received_at = "2026-06-11"
-`);
-    expect(emails).toHaveLength(1);
-    expect(emails[0].body).toBe("");
-  });
-});

@@ -3,7 +3,6 @@
 
 import { GitHubError, type GitHubClient } from "./github.js";
 import { ToolError } from "./errors.js";
-import { parseToml } from "./parse.js";
 
 /** Read a file, mapping a 404 to `notFoundCode` and other failures to upstream. */
 export async function readFile(
@@ -34,12 +33,4 @@ export async function readOptional(gh: GitHubClient, path: string): Promise<stri
     }
     throw e;
   }
-}
-
-/** Read + parse the shared `aliases.toml` into a variant→canonical map ({} when absent). */
-export async function loadAliases(gh: GitHubClient): Promise<Record<string, string>> {
-  const text = await readOptional(gh, "aliases.toml");
-  return text !== null
-    ? ((parseToml(text, "aliases.toml").aliases as Record<string, string>) ?? {})
-    : {};
 }

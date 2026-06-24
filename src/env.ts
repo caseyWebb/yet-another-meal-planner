@@ -57,18 +57,13 @@ export interface Env {
 
   // --- KV ---
   /**
-   * Shared corpus artifacts AND per-tenant profile/session state.
-   *
-   * Shared keys: `"index:recipes"` — the JSON-serialised recipe index written by
-   * `build-indexes` on every recipe push (avoids a GitHub API call per invocation).
-   *
-   * Per-tenant keys (written by the Worker, never by CI):
-   * - `profile:<username>` — JSON bundle of all stable profile fields
-   *   (preferences, taste, diet_principles, kitchen, staples, overlay,
-   *   ready_to_eat, stockup), each stored as its raw file content string.
-   * - `state:<username>:pantry` — JSON array of pantry items.
-   * - `state:<username>:meal_plan` — JSON array of planned meal entries.
-   * - `state:<username>:grocery_list` — JSON array of grocery list items.
+   * REMOVABLE (follow-up). DATA_KV no longer holds any domain data: the recipe index
+   * (→ D1 `recipes`), the profile bundle (→ D1 profile tables, slice 4), and the
+   * `state:<username>:*` session blobs (pantry / meal_plan / grocery_list → D1 row
+   * tables, slice 5) have all moved to D1. The only thing still read from this
+   * namespace is the `migrations:applied` ledger (scripts/run-migrations.mjs). The
+   * binding is kept bound (empty) for this slice to avoid a deploy-config change
+   * mid-migration; dropping it is a separate wrangler/operator-config cleanup.
    */
   DATA_KV: KVNamespace;
   /**
@@ -87,6 +82,20 @@ export interface Env {
    * by `@cloudflare/workers-oauth-provider`; the binding MUST be named `OAUTH_KV`.
    */
   OAUTH_KV: KVNamespace;
+
+  // --- D1 (domain data) ---
+  /**
+   * The system of record for domain/operational data and derived projections
+   * (recipe index, profile, session state, cooking log, notes, registries, …), per
+   * `cloudflare-storage-architecture`: the queryable, relational, admin-editable,
+   * strongly-consistent tier. KV above is now ephemeral infra only — no domain data.
+   *
+   * Tools NEVER touch `env.DB` directly; all access goes through `src/db.ts`, which
+   * owns prepared statements, the batch/transaction helper, and structured-error
+   * mapping. Id-less in `wrangler.jsonc`: auto-provisioned per operator on deploy and
+   * pinned back into their config. Domain data is migrated slice by slice.
+   */
+  DB: D1Database;
 
   // --- Injected by @cloudflare/workers-oauth-provider ---
   /** Provider helpers (`parseAuthRequest`, `lookupClient`, `completeAuthorization`, …). */

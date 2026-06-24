@@ -29,6 +29,8 @@ npm install
 
 The data-repo template is vendored as a git submodule at `docs/data-template/` (reference only — build and test never touch it). `git submodule update --remote && git add docs/data-template` bumps the pinned ref to the template's latest.
 
+> **Template sync note (`d1-foundation`).** New operators are *not* blocked on a template bump: the deploy merge takes the binding **set** from this code repo's `wrangler.jsonc`, so the id-less D1 `DB` binding propagates to every operator on their next deploy regardless of their template version. The separate template repo's own `wrangler.jsonc` should still gain the id-less `{ "binding": "DB", "database_name": "grocery-mcp", "migrations_dir": "migrations/d1" }` entry on its next sync so a freshly cloned template reflects reality — that edit lands in the template repo, not here.
+
 ## Working on the Worker (`src/`)
 
 The Worker is the root package. One `package.json` carries both the Worker deps and the `scripts/` build-tooling deps.
@@ -44,6 +46,7 @@ npm run deploy       # wrangler deploy — normally NOT run by hand (see Deploym
 - **Structured errors, not throws.** Tools return `{ error: "...", message }` shapes the agent can reason over. Follow the existing convention in `src/errors.ts`.
 - **`docs/TOOLS.md` is the contract.** When a tool's params/returns change, update `docs/TOOLS.md` in the same pass — no drift. Likewise `docs/SCHEMAS.md` when a data file's shape changes.
 - **Local dev/secrets** live in `.dev.vars` (gitignored; see `.dev.vars.example`): `GITHUB_APP_PRIVATE_KEY` + Kroger creds. See [`docs/SELF_HOSTING.md`](docs/SELF_HOSTING.md) for the one-time operator setup and the Kroger `/oauth/init?tenant=<id>` flow.
+- **D1 (domain data) goes through `src/db.ts`, never `env.DB`.** `db(env)` exposes `first` / `all` / `run` / `batch` (+ `prepare` for batch); it maps every D1 failure to a structured `storage_error` `ToolError`, so tools stay throw-free. `wrangler dev` binds a **local** SQLite D1 — seed it with `npx wrangler d1 migrations apply DB --local` (applies `migrations/d1/*.sql`; `wrangler d1 execute DB --local --command "…"` inspects it). The deploy applies the same migrations with `--remote`.
 
 ### Deployment
 
@@ -67,17 +70,22 @@ gh run watch  --repo caseyWebb/groceries-agent-data                # optional: f
 The scripts build indexes/site for a **data repo**, not this one (no data lives here). Point them at a data checkout with `--root`:
 
 ```bash
-node scripts/build-indexes.mjs --root /path/to/data-repo   # → <root>/_indexes/*.json + validation
+node scripts/build-indexes.mjs --root /path/to/data-repo   # validate recipes + project the recipe index into D1
 node scripts/build-site.mjs    --root /path/to/data-repo --out site
 node scripts/build-indexes.mjs --check                     # validate only, no write
 npm run test:tooling                                       # node --test (tests/, fixture-based)
 ```
 
-**Validation** runs in `build-indexes.mjs` (TOML parses, frontmatter well-formed, references resolve). The Worker reimplements a *structural* subset in TypeScript for write-time validation (it can't run the Node validator on `workerd`) — keep the two in mind when changing validation rules.
+**Validation.** After `d1-shared-corpus`, `build-indexes.mjs` validates **recipes only** (frontmatter well-formed, controlled vocab, references resolve) and projects the recipe index into D1. The store/discovery/whole-repo-TOML checks moved to **Worker write-time** validators (`src/validate.ts`: `validateFile` for recipe `.md`, `validateStoreInput`/`validateDiscoveryCandidate` for the D1 corpus writes); no non-recipe artifact is build-validated anymore. `smol-toml` is gone from the Worker and build — it survives only in the `.mjs` backfill migrations that parse the legacy TOML into D1.
 
 **Reusable Actions.** This public repo hosts `on: workflow_call` workflows that operators' private data repos call (`uses: caseyWebb/groceries-agent/...@main`), billed to the data-repo owner: `data-deploy.yml`, `data-onboard.yml` / `data-revoke.yml` (KV-only member provisioning), `data-build-indexes.yml` / `data-build-site.yml`, and `data-build-plugin.yml` (mint a self-hoster's plugin bundle with their own connector URL baked in). Onboard/revoke run in the **private** data repo so the invite codes they print never hit a public log. `docs/data-template/.github/workflows/` is the live reference for the thin data-repo callers.
 
-**KV migrations (`migrations/`).** State that moves into `DATA_KV` (or changes shape there) is reconciled once, at deploy time, by `scripts/run-migrations.mjs` — invoked by `data-deploy.yml` after `wrangler deploy`. The Worker read path keeps **no** GitHub fallback. To add one, drop a `migrations/NNNN-name.mjs` exporting `id` and `async up({ kv, dataRoot, log })`: read from the data checkout (`dataRoot`), write via the injected `kv` REST client (`scripts/kv-rest.mjs`), and make it **idempotent** (skip work already done — e.g. a key that already exists). The runner records applied `id`s in the `migrations:applied` KV ledger and runs each once, in filename order; it no-ops when the namespace isn't provisioned yet. See [`ARCHITECTURE.md`](docs/ARCHITECTURE.md#migrations).
+**Migrations — two tracks. Rule of thumb: a schema change is a `migrations/d1/*.sql` file; a data move is a `migrations/*.mjs` file.**
+
+- **Schema (DDL) → `migrations/d1/NNNN_name.sql`.** Declarative table shape, applied by the Cloudflare-native `wrangler d1 migrations apply DB` (`--local` to seed your dev SQLite, `--remote` on deploy — the deploy step runs this) and tracked in D1's own `d1_migrations` table (created automatically). Just write the SQL; don't reach for the `.mjs` runner for DDL.
+- **Data (backfill) → `migrations/NNNN-name.mjs`.** Imperative moves of state into `DATA_KV`/D1 (or shape changes there), reconciled once at deploy time by `scripts/run-migrations.mjs` (invoked by `data-deploy.yml` after `wrangler deploy`, the id pin, and the D1 schema apply). The Worker read path keeps **no** GitHub fallback. Drop a `migrations/NNNN-name.mjs` exporting `id` and `async up({ kv, d1, dataRoot, log })`: read from the data checkout (`dataRoot`), write via the injected `kv` (`scripts/kv-rest.mjs`) and/or `d1` (`scripts/d1-rest.mjs`) REST clients, and make it **idempotent** (skip work already done). `d1` is `null` when D1 isn't provisioned yet — guard on it. The runner records applied `id`s in the `migrations:applied` KV ledger and runs each once, in filename order; it no-ops when the namespace isn't provisioned yet.
+
+Two ledgers (`d1_migrations` for schema, `migrations:applied` for data) is deliberate. See [`ARCHITECTURE.md`](docs/ARCHITECTURE.md#migrations).
 
 ## Building the plugin (`AGENT_INSTRUCTIONS.md` → `plugin/`)
 

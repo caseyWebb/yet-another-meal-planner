@@ -3,13 +3,14 @@
 // builder. Kept I/O-light (only buildNewRecipe touches the GitHub client, to
 // read for a collision) so the logic is unit-testable.
 
+import type { Env } from "./env.js";
 import type { GitHubClient, TreeFile } from "./github.js";
-import { readOptional, loadAliases } from "./gh-read.js";
+import { readOptional } from "./gh-read.js";
+import { readAliases } from "./corpus-db.js";
 import { normalizePerishables } from "./matching.js";
 import { serializeMarkdown, stripEmptyVarietyDimensions } from "./serialize.js";
 import { ToolError } from "./errors.js";
 import { truncate } from "./text.js";
-import { parseToml } from "./parse.js";
 import type { FeedItem } from "./feeds.js";
 
 const SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
@@ -40,48 +41,32 @@ export function canonicalizeUrl(raw: string): string {
   }
 }
 
-/** Canonicalized `source:` URLs of every recipe in `_indexes/recipes.json` (absent → empty set). */
-export function extractRecipeSources(indexRaw: string | null): Set<string> {
+/**
+ * Canonicalized `source` URLs of every indexed recipe, for corpus dedup. The
+ * source-URL projection now lives in the D1 `recipes` table (`source_url` column),
+ * read via `recipeSourceMap(env)` (raw URL → slug). Stored values are raw, so we
+ * canonicalize each here so tracker-wrapped feed links compare equal. Absent → empty set.
+ */
+export function extractRecipeSources(sourceMap: Map<string, string>): Set<string> {
   const set = new Set<string>();
-  if (!indexRaw) return set;
-  let index: unknown;
-  try {
-    index = JSON.parse(indexRaw);
-  } catch {
-    return set;
-  }
-  if (index && typeof index === "object") {
-    for (const entry of Object.values(index as Record<string, unknown>)) {
-      const src = (entry as Record<string, unknown> | null)?.source;
-      if (typeof src === "string" && src) set.add(canonicalizeUrl(src));
-    }
+  for (const src of sourceMap.keys()) {
+    if (src) set.add(canonicalizeUrl(src));
   }
   return set;
 }
 
 /**
- * Map canonicalized `source:` URL → recipe slug for every recipe in
- * `_indexes/recipes.json` (absent/malformed → empty map). The slug is the index
- * key. Drives idempotent import (§6.4): a parsed page whose source is already in
- * this map is reused, not re-created. First slug wins on a (rare) source collision.
+ * Map canonicalized `source` URL → recipe slug for every indexed recipe (from the
+ * D1 `recipes` table via `recipeSourceMap(env)`). Drives idempotent import (§6.4):
+ * a parsed page whose source is already in this map is reused, not re-created.
+ * First slug wins on a (rare) canonical-source collision.
  */
-export function indexSourceToSlug(indexRaw: string | null): Map<string, string> {
+export function indexSourceToSlug(sourceMap: Map<string, string>): Map<string, string> {
   const map = new Map<string, string>();
-  if (!indexRaw) return map;
-  let index: unknown;
-  try {
-    index = JSON.parse(indexRaw);
-  } catch {
-    return map;
-  }
-  if (index && typeof index === "object") {
-    for (const [slug, entry] of Object.entries(index as Record<string, unknown>)) {
-      const src = (entry as Record<string, unknown> | null)?.source;
-      if (typeof src === "string" && src) {
-        const c = canonicalizeUrl(src);
-        if (!map.has(c)) map.set(c, slug);
-      }
-    }
+  for (const [src, slug] of sourceMap) {
+    if (!src) continue;
+    const c = canonicalizeUrl(src);
+    if (!map.has(c)) map.set(c, slug);
   }
   return map;
 }
@@ -105,36 +90,8 @@ export function buildCandidates(entries: FeedEntry[], seen: Set<string>): Candid
   return out;
 }
 
-/** One inbox email from `discoveries_inbox.toml`, for surfacing to the agent. */
-export interface InboxEmail {
-  from: string;
-  subject: string;
-  received_at: string | null;
-  body: string;
-}
-
-/**
- * Read the shared `discoveries_inbox.toml` (an array of `[[entries]]`, each with
- * `from`/`subject`/`received_at`/`body`) into a list of emails for the agent to
- * parse. The agent reads each `body` and identifies recipe titles + URLs itself.
- * Absent/malformed → empty list.
- */
-export function flattenInbox(inboxRaw: string | null): InboxEmail[] {
-  if (!inboxRaw) return [];
-  let parsed: Record<string, unknown>;
-  try {
-    parsed = parseToml(inboxRaw, "discoveries_inbox.toml");
-  } catch {
-    return [];
-  }
-  const entries = Array.isArray(parsed.entries) ? (parsed.entries as Record<string, unknown>[]) : [];
-  return entries.map((entry) => ({
-    from: typeof entry.from === "string" ? entry.from : "",
-    subject: typeof entry.subject === "string" ? entry.subject : "",
-    received_at: typeof entry.received_at === "string" ? entry.received_at || null : null,
-    body: typeof entry.body === "string" ? entry.body : "",
-  }));
-}
+// The discovery inbox is the D1 `discovery_candidates` table now (slice 6) — read via
+// corpus-db `readDiscoveryInbox(env)` (no more TOML flatten).
 
 /** Title → plain slug (lowercase, accents stripped, non-alphanumerics → hyphens). */
 export function slugify(title: string): string {
@@ -155,6 +112,7 @@ export function slugify(title: string): string {
  */
 export async function buildNewRecipe(
   gh: GitHubClient,
+  env: Env,
   frontmatter: Record<string, unknown>,
   body: string,
   slugOverride?: string,
@@ -185,7 +143,7 @@ export async function buildNewRecipe(
   // Canonicalize perishable_ingredients (objective shared content) at create the
   // same way the verify matcher normalizes, so overlap lines up across recipes.
   if ("perishable_ingredients" in fm) {
-    fm.perishable_ingredients = normalizePerishables(fm.perishable_ingredients, await loadAliases(gh));
+    fm.perishable_ingredients = normalizePerishables(fm.perishable_ingredients, await readAliases(env));
   }
   // Treat a none/empty protein|cuisine as absent so a no-protein dish writes
   // cleanly instead of tripping the controlled-vocabulary check.

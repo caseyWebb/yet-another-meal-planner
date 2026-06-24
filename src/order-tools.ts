@@ -1,18 +1,14 @@
 // place_order tool registration (order-placement capability). Wires the pure
 // orchestrator in order.ts to the real I/O: the Change 05 matcher (resolution),
-// the KV grocery-list + pantry reads, and the user-context Kroger client (cart
+// the D1 grocery-list + pantry reads, and the user-context Kroger client (cart
 // write). It is the ONLY tool that writes a Kroger cart.
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { Env } from "./env.js";
-import type { GitHubClient, TreeFile } from "./github.js";
-import { readOptional } from "./gh-read.js";
-import { parseToml } from "./parse.js";
-import { stringifyTomlWithHeader } from "./serialize.js";
 import { runTool } from "./errors.js";
-import { commitFiles } from "./commit.js";
-import { normalizeName, type GroceryItem } from "./grocery.js";
+import { normalizeName } from "./grocery.js";
+import { upsertSkuMappings, readSkuCache, type NewSkuMapping } from "./corpus-db.js";
 import type { MatchContext, MatchResult } from "./matching.js";
 import {
   computeToBuy,
@@ -23,9 +19,7 @@ import {
   type ResolvedLine,
 } from "./order.js";
 import { createKrogerUserClient, toToolError, type KvStore } from "./kroger-user.js";
-import { getGroceryListState, writeGroceryListState, getPantryState } from "./user-kv.js";
-
-const SKU_CACHE_PATH = "skus/kroger.toml";
+import { readGroceryList, readPantryNames, advanceInCartRows } from "./session-db.js";
 
 function today(): string {
   return new Date().toISOString().slice(0, 10);
@@ -38,81 +32,46 @@ type Resolver = (
 ) => Promise<MatchResult>;
 
 /**
- * Read the shared skus/kroger.toml, append only genuinely new (ingredient, sku)
- * pairs, commit. Each new entry is tagged with the caller's resolved `locationId`
- * (D7) so a cross-tenant cache hit can be revalidated against the right store.
- * `gh` here is the SHARED (root) client — the SKU cache lives in the shared corpus.
+ * Upsert genuinely new (ingredient, location) SKU mappings into the D1 `sku_cache`
+ * table (the indexed lookup the matcher reads). Each entry is tagged with the
+ * caller's resolved `locationId` (D7) so a cross-tenant cache hit revalidates against
+ * the right store, and stamped `last_used` today (for revalidation/pruning). The SKU
+ * cache is shared corpus — no tenant column. Returns null (D1 has no commit sha).
  */
-function makeCommitSkuCache(gh: GitHubClient, getLocationId: () => Promise<string>) {
+function makeCommitSkuCache(env: Env, getLocationId: () => Promise<string>) {
   return async (mappings: NewMapping[]): Promise<string | null> => {
-    const text = (await readOptional(gh, SKU_CACHE_PATH)) ?? "";
-    const data = text ? parseToml(text, SKU_CACHE_PATH) : {};
-    const existing = Array.isArray(data.mappings)
-      ? (data.mappings as Record<string, unknown>[])
-      : [];
-    const seen = new Set(existing.map((m) => `${String(m.ingredient)}\0${String(m.sku)}`));
-
-    const additions: Record<string, unknown>[] = [];
-    let locationId: string | null = null;
-    for (const m of mappings) {
-      const key = `${m.ingredient}\0${m.sku}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      if (locationId === null) locationId = await getLocationId();
-      const entry: Record<string, unknown> = { ingredient: m.ingredient, sku: m.sku };
-      if (m.brand) entry.brand = m.brand;
-      if (m.size) entry.size = m.size;
-      if (locationId) entry.locationId = locationId;
-      additions.push(entry);
-    }
-    if (additions.length === 0) return null;
-
-    const file: TreeFile = {
-      path: SKU_CACHE_PATH,
-      content: stringifyTomlWithHeader(text, { ...data, mappings: [...existing, ...additions] }),
-    };
-    const { commit_sha } = await commitFiles(
-      gh,
-      [file],
-      `cache SKU mappings: ${additions.map((a) => a.ingredient).join(", ")}`,
+    if (mappings.length === 0) return null;
+    // Skip mappings already cached for the resolved location (the old (ingredient,sku)
+    // de-dup, now keyed by the table's (ingredient, location_id) PK).
+    const locationId = await getLocationId();
+    const existing = await readSkuCache(env);
+    const have = new Set(
+      existing.map((m) => `${m.ingredient}\0${m.locationId ?? ""}`),
     );
-    return commit_sha;
+    const stamp = today();
+    const toWrite: NewSkuMapping[] = [];
+    for (const m of mappings) {
+      const key = `${m.ingredient}\0${locationId}`;
+      if (have.has(key)) continue;
+      have.add(key);
+      toWrite.push({
+        ingredient: m.ingredient,
+        sku: m.sku,
+        brand: m.brand,
+        size: m.size,
+        locationId,
+        last_used: stamp,
+      });
+    }
+    if (toWrite.length > 0) await upsertSkuMappings(env, toWrite);
+    return null;
   };
 }
 
 /** Advance the resolved lines to status:in_cart, adding any missing list entries. */
-function makeAdvanceInCart(
-  dataKv: KVNamespace,
-  username: string,
-) {
+function makeAdvanceInCart(env: Env, username: string) {
   return async (lines: ResolvedLine[]): Promise<void> => {
-    const items = await getGroceryListState(dataKv, username);
-    const next: GroceryItem[] = items.map((it) => ({ ...it, for_recipes: [...it.for_recipes] }));
-    const indexByKey = new Map(next.map((it, i) => [normalizeName(it.name), i]));
-
-    for (const line of lines) {
-      const key = normalizeName(line.name);
-      const idx = indexByKey.get(key);
-      if (idx != null) {
-        next[idx] = { ...next[idx], status: "in_cart" };
-      } else {
-        // A menu need that wasn't on the list yet — track it through the lifecycle.
-        next.push({
-          name: line.name,
-          quantity: "1",
-          kind: "grocery",
-          domain: "grocery",
-          status: "in_cart",
-          source: "menu",
-          for_recipes: [],
-          note: null,
-          added_at: today(),
-          ordered_at: null,
-        });
-      }
-    }
-
-    await writeGroceryListState(dataKv, username, next);
+    await advanceInCartRows(env, username, lines, today());
   };
 }
 
@@ -131,17 +90,15 @@ const overrideShape = {
 
 export function registerOrderTools(
   server: McpServer,
-  sharedGh: GitHubClient,
   env: Env,
   tenantId: string,
   resolve: Resolver,
   getLocationId: () => Promise<string>,
 ): void {
-  // The SKU cache is shared corpus (root client); the grocery list + pantry are
-  // this tenant's personal state (KV-backed).
-  const dataKv = env.DATA_KV;
-  const commitSkuCache = makeCommitSkuCache(sharedGh, getLocationId);
-  const advanceInCart = makeAdvanceInCart(dataKv, tenantId);
+  // The SKU cache is shared corpus (the D1 `sku_cache` table); the grocery list +
+  // pantry are this tenant's personal state (also D1-backed).
+  const commitSkuCache = makeCommitSkuCache(env, getLocationId);
+  const advanceInCart = makeAdvanceInCart(env, tenantId);
 
   server.registerTool(
     "place_order",
@@ -161,14 +118,8 @@ export function registerOrderTools(
         const kv = env.KROGER_KV as unknown as KvStore;
         const userClient = createKrogerUserClient(env, kv, tenantId);
 
-        const list = await getGroceryListState(dataKv, tenantId);
-
-        const pantryItems = await getPantryState(dataKv, tenantId);
-        const pantryNames = new Set<string>(
-          pantryItems
-            .map((p) => (typeof p.name === "string" ? normalizeName(p.name) : null))
-            .filter((n): n is string => n !== null),
-        );
+        const list = await readGroceryList(env, tenantId);
+        const pantryNames = await readPantryNames(env, tenantId);
 
         const quantities: Record<string, number> = {};
         for (const [k, v] of Object.entries(input.quantities ?? {})) {

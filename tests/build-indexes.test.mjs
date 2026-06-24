@@ -1,21 +1,17 @@
 // Tests for scripts/build-indexes.mjs — index shapes, determinism, validation.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   buildRecipeIndexes,
-  validateStore,
-  validateDiscoveriesInbox,
-  validateDiscoverySources,
-  parseCheckToml,
   stableStringify,
   normalizeValue,
   deriveSlug,
   hasH2Section,
-  validateCookingArtifacts,
+  recipeToRow,
   run,
 } from '../scripts/build-indexes.mjs';
 
@@ -308,85 +304,6 @@ test('absent requires_equipment defaults to [] and does not warn', async () => {
   await rm(dir, { recursive: true, force: true });
 });
 
-test('validateStore: identity-only — requires slug+name, domain a string, tolerates legacy layout keys', () => {
-  const ok = { slug: 'west-7th-tom-thumb', name: 'Tom Thumb', label: 'West 7th', domain: 'grocery' };
-  assert.deepEqual(validateStore(ok, 'stores/west-7th-tom-thumb.toml'), []);
-
-  // Missing required slug/name.
-  const noId = validateStore({}, 'stores/x.toml');
-  assert.ok(noId.some((e) => /missing required `slug`/.test(e)), noId.join('\n'));
-  assert.ok(noId.some((e) => /missing required `name`/.test(e)), noId.join('\n'));
-
-  // domain must be a string when present.
-  const badDomain = validateStore({ slug: 's', name: 'S', domain: 3 }, 'stores/s.toml');
-  assert.ok(badDomain.some((e) => /`domain` must be a string/.test(e)), badDomain.join('\n'));
-
-  // Layout is notes now: legacy aisles/item_locations/doesnt_carry keys are tolerated, not validated.
-  const legacy = validateStore(
-    {
-      slug: 's',
-      name: 'S',
-      aisles: [{ sections: ['ok'] }, { number: 2, sections: [3] }],
-      item_locations: [{ aisle: '1' }],
-      doesnt_carry: 'harissa',
-    },
-    'stores/s.toml',
-  );
-  assert.deepEqual(legacy, []);
-});
-
-test('run: an absent stores/ tree is valid (no store error)', async () => {
-  const root = await mkdtemp(path.join(tmpdir(), 'grocery-store-'));
-  await mkdir(path.join(root, 'recipes'), { recursive: true });
-  await writeFile(path.join(root, 'recipes', 'r.md'), recipe('title: R', SECTIONS));
-  const { errors } = await run({ root });
-  assert.deepEqual(errors, []);
-  await rm(root, { recursive: true, force: true });
-});
-
-test('run: a malformed store in stores/ fails the build', async () => {
-  const root = await mkdtemp(path.join(tmpdir(), 'grocery-store-'));
-  await mkdir(path.join(root, 'recipes'), { recursive: true });
-  await writeFile(path.join(root, 'recipes', 'r.md'), recipe('title: R', SECTIONS));
-  await mkdir(path.join(root, 'stores'), { recursive: true });
-  // Missing required `name`.
-  await writeFile(path.join(root, 'stores', 'bad.toml'), 'slug = "bad"\n');
-  const { errors } = await run({ root });
-  assert.ok(errors.some((e) => /stores\/bad\.toml: store is missing required `name`/.test(e)), errors.join('\n'));
-  await rm(root, { recursive: true, force: true });
-});
-
-// --- shared discovery-source structural validation ----------------------
-
-test('validateDiscoveriesInbox: clean inbox passes, candidate missing url reports', () => {
-  const ok = {
-    entries: [
-      {
-        from: 'news@seriouseats.com',
-        candidates: [{ title: 'Chili', url: 'https://x.test/chili' }],
-      },
-    ],
-  };
-  assert.deepEqual(validateDiscoveriesInbox(ok, 'discoveries_inbox.toml'), []);
-  // Empty/absent-shaped file is valid.
-  assert.deepEqual(validateDiscoveriesInbox({}, 'discoveries_inbox.toml'), []);
-  const bad = { entries: [{ from: 'x@y.com', candidates: [{ title: 'No URL' }] }] };
-  const errs = validateDiscoveriesInbox(bad, 'discoveries_inbox.toml');
-  assert.ok(errs.some((e) => /missing required `url`/.test(e)), errs.join('\n'));
-});
-
-test('validateDiscoverySources: valid addresses pass, bad ones report', () => {
-  const ok = {
-    members: [{ address: 'alice@example.com' }],
-    senders: [{ address: 'news@seriouseats.com', name: 'SE' }],
-  };
-  assert.deepEqual(validateDiscoverySources(ok, 'discovery_sources.toml'), []);
-  assert.deepEqual(validateDiscoverySources({}, 'discovery_sources.toml'), []);
-  const bad = { senders: [{ address: 'not-an-email' }] };
-  const errs = validateDiscoverySources(bad, 'discovery_sources.toml');
-  assert.ok(errs.some((e) => /`senders` entry needs a valid `address`/.test(e)), errs.join('\n'));
-});
-
 // --- required body sections (structural contract) -----------------------
 
 test('hasH2Section detects ATX H2 headings, ignores other levels', () => {
@@ -458,62 +375,161 @@ test('in-vocabulary protein/cuisine pass; absent protein only warns', async () =
 });
 
 // --- cooking-log validation ---------------------------------------------
-// (meal_plan.toml moved to DATA_KV — validated by the Worker at write time, not
-// by the build; validateCookingArtifacts no longer takes a mealPlan.)
+// The cooking log left GitHub for the D1 `cooking_log` table (d1-cooking-log), so
+// the build no longer validates it (validateCookingArtifacts was removed). Its
+// structural checks live on in the Worker's log_cooked tool, which additionally
+// resolves recipe slugs against the D1 `recipes` table at write time. The backfill
+// from cooking_log.toml → D1 is exercised by tests/cooking-log-backfill.test.mjs.
 
-const recipesFixture = { 'arroz-caldo': { last_cooked: '2026-06-09' }, salmon: { last_cooked: null } };
+// --- D1 projection (recipeToRow) ----------------------------------------
+// The recipe index is the D1 `recipes` table now (d1-recipe-index): build-indexes
+// projects rows via recipeToRow and writes NO _indexes/recipes.json. These assert
+// the row mapping that src/recipe-index.ts reconstructs from. Column order:
+// [slug, title, protein, cuisine, time_total, source_url,
+//  ingredients_key, tags, course, season, dietary, pairs_with,
+//  perishable_ingredients, requires_equipment, extra]
+const COL = {
+  slug: 0,
+  title: 1,
+  protein: 2,
+  cuisine: 3,
+  time_total: 4,
+  source_url: 5,
+  ingredients_key: 6,
+  tags: 7,
+  course: 8,
+  season: 9,
+  dietary: 10,
+  pairs_with: 11,
+  perishable_ingredients: 12,
+  requires_equipment: 13,
+  extra: 14,
+};
 
-test('cooking artifacts: valid log produces no errors', () => {
-  const { errors } = validateCookingArtifacts({
-    recipes: recipesFixture,
-    cookingLog: { entries: [{ date: '2026-06-09', type: 'recipe', recipe: 'arroz-caldo' }, { date: '2026-06-08', type: 'ready_to_eat', name: 'lasagna' }] },
+test('recipeToRow: scalar facets land in their columns, source → source_url', () => {
+  const row = recipeToRow({
+    slug: 'salmon-with-rice',
+    title: 'Salmon with Rice',
+    protein: 'fish',
+    cuisine: 'japanese',
+    time_total: 30,
+    source: 'https://example.test/salmon',
   });
-  assert.deepEqual(errors, []);
+  assert.equal(row.length, 15);
+  assert.equal(row[COL.slug], 'salmon-with-rice');
+  assert.equal(row[COL.title], 'Salmon with Rice');
+  assert.equal(row[COL.protein], 'fish');
+  assert.equal(row[COL.cuisine], 'japanese');
+  assert.equal(row[COL.time_total], 30);
+  assert.equal(row[COL.source_url], 'https://example.test/salmon');
 });
 
-test('cooking artifacts: hard-fail on unknown type, unresolved slugs, bad dates', () => {
-  const { errors } = validateCookingArtifacts({
-    recipes: recipesFixture,
-    cookingLog: {
-      entries: [
-        { date: '2026-06-09', type: 'ate_out', name: 'diner' }, // unknown type
-        { date: '2026-06-09', type: 'recipe', recipe: 'ghost' }, // unresolved slug
-        { date: 'nope', type: 'ad_hoc', name: 'x' }, // bad date
-      ],
-    },
+test('recipeToRow: array facets are JSON-stringified into their columns', () => {
+  const row = recipeToRow({
+    slug: 'r',
+    title: 'R',
+    ingredients_key: ['salmon', 'rice'],
+    tags: ['weeknight'],
+    course: ['main'],
+    season: [],
+    dietary: ['pescatarian'],
+    pairs_with: ['steamed-greens'],
+    perishable_ingredients: ['salmon'],
+    requires_equipment: ['blender'],
   });
-  assert.ok(errors.some((e) => e.includes('invalid type')), errors.join('\n'));
-  assert.ok(errors.some((e) => e.includes('unknown slug "ghost"') && e.includes('cooking_log')), errors.join('\n'));
-  assert.ok(errors.some((e) => e.includes('invalid or missing date')), errors.join('\n'));
+  assert.deepEqual(JSON.parse(row[COL.ingredients_key]), ['salmon', 'rice']);
+  assert.deepEqual(JSON.parse(row[COL.tags]), ['weeknight']);
+  assert.deepEqual(JSON.parse(row[COL.course]), ['main']);
+  assert.deepEqual(JSON.parse(row[COL.season]), []);
+  assert.deepEqual(JSON.parse(row[COL.dietary]), ['pescatarian']);
+  assert.deepEqual(JSON.parse(row[COL.pairs_with]), ['steamed-greens']);
+  assert.deepEqual(JSON.parse(row[COL.perishable_ingredients]), ['salmon']);
+  assert.deepEqual(JSON.parse(row[COL.requires_equipment]), ['blender']);
 });
 
-test('cooking artifacts: last_cooked is no longer cross-checked against the log', () => {
-  // last_cooked is a per-tenant value derived at read time, not a shared-recipe
-  // field, so the shared build no longer reconciles frontmatter against the log —
-  // even an apparent "drift" produces no warning.
-  const { errors, warnings } = validateCookingArtifacts({
-    recipes: { stale: { last_cooked: '2026-06-01' } },
-    cookingLog: { entries: [{ date: '2026-06-10', type: 'recipe', recipe: 'stale' }] },
+test('recipeToRow: unpromoted objective fields go to extra; promoted ones do not', () => {
+  const row = recipeToRow({
+    slug: 'r',
+    title: 'R',
+    protein: 'beef',
+    source: 'https://x.test',
+    style: 'one-pot',
+    servings: 6,
+    difficulty: 'easy',
+    discovered_at: null,
+    meal_preppable: true,
   });
-  assert.deepEqual(errors, []);
-  assert.ok(!warnings.some((w) => w.includes('last_cooked')), warnings.join('\n'));
+  const extra = JSON.parse(row[COL.extra]);
+  assert.deepEqual(extra, {
+    style: 'one-pot',
+    servings: 6,
+    difficulty: 'easy',
+    discovered_at: null,
+    meal_preppable: true,
+  });
+  // Promoted fields (slug/title/protein/source) are NOT duplicated into extra.
+  assert.ok(!('slug' in extra));
+  assert.ok(!('title' in extra));
+  assert.ok(!('protein' in extra));
+  assert.ok(!('source' in extra));
 });
 
-test('cooking artifacts: accepts a bare TOML date (Date) as well as a string', () => {
-  const { errors, warnings } = validateCookingArtifacts({
-    recipes: { x: { last_cooked: '2026-06-09' } },
-    cookingLog: { entries: [{ date: new Date('2026-06-09T00:00:00Z'), type: 'recipe', recipe: 'x' }] },
-  });
-  assert.deepEqual(errors, []);
-  assert.deepEqual(warnings, []);
+test('recipeToRow: absent facets are NULL, not "undefined"; empty extra is null', () => {
+  const row = recipeToRow({ slug: 'plain', title: 'Plain' });
+  assert.equal(row[COL.protein], null);
+  assert.equal(row[COL.cuisine], null);
+  assert.equal(row[COL.time_total], null);
+  assert.equal(row[COL.source_url], null);
+  assert.equal(row[COL.ingredients_key], null);
+  assert.equal(row[COL.tags], null);
+  assert.equal(row[COL.extra], null);
 });
 
-// --- TOML parse-check ----------------------------------------------------
+test('recipeToRow round-trips a real built recipe (fixtures → row → reconstructed objective fields)', async () => {
+  const { recipes } = await buildRecipeIndexes(FIXTURES);
+  // Use a fixture with a non-null `source` so the source_url column round-trips.
+  // (A frontmatter `source: null` carries no URL and is reconstructed as absent —
+  // covered by the NULL-column test above and harmless: discovery skips null.)
+  const salmon = recipes['experimental-tofu'];
+  const row = recipeToRow(salmon);
+  // Reconstruct the way src/recipe-index.ts does (extra + columns), proving the
+  // projection is lossless for the objective fields.
+  const reconstructed = { ...(row[COL.extra] ? JSON.parse(row[COL.extra]) : {}) };
+  reconstructed.slug = row[COL.slug];
+  if (row[COL.title] !== null) reconstructed.title = row[COL.title];
+  if (row[COL.protein] !== null) reconstructed.protein = row[COL.protein];
+  if (row[COL.cuisine] !== null) reconstructed.cuisine = row[COL.cuisine];
+  if (row[COL.time_total] !== null) reconstructed.time_total = row[COL.time_total];
+  if (row[COL.source_url] !== null) reconstructed.source = row[COL.source_url];
+  for (const [col, key] of [
+    [COL.ingredients_key, 'ingredients_key'],
+    [COL.tags, 'tags'],
+    [COL.course, 'course'],
+    [COL.season, 'season'],
+    [COL.dietary, 'dietary'],
+    [COL.pairs_with, 'pairs_with'],
+    [COL.perishable_ingredients, 'perishable_ingredients'],
+    [COL.requires_equipment, 'requires_equipment'],
+  ]) {
+    if (row[col] !== null) reconstructed[key] = JSON.parse(row[col]);
+  }
+  assert.deepEqual(reconstructed, salmon);
+});
 
-test('hard-fail: unparseable TOML', async () => {
-  const dir = await mkdtemp(path.join(tmpdir(), 'grocery-toml-'));
-  await writeFile(path.join(dir, 'broken.toml'), 'this = = invalid');
-  const { errors } = await parseCheckToml(dir);
-  assert.ok(errors.some((e) => e.includes('TOML')), errors.join('\n'));
-  await rm(dir, { recursive: true, force: true });
+test('build run() does not write _indexes/recipes.json (the index is D1 now)', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'grocery-noindex-'));
+  await mkdir(path.join(root, 'recipes'), { recursive: true });
+  await writeFile(path.join(root, 'recipes', 'r.md'), recipe('title: R', SECTIONS));
+  // run() validates + builds the index map but writes no files; the projection to
+  // D1 is a separate step (skipped without CLOUDFLARE_API_TOKEN). Assert the legacy
+  // artifact is never produced under _indexes/.
+  await run({ root });
+  let exists = true;
+  try {
+    await stat(path.join(root, '_indexes', 'recipes.json'));
+  } catch {
+    exists = false;
+  }
+  assert.equal(exists, false);
+  await rm(root, { recursive: true, force: true });
 });

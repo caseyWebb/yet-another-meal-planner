@@ -1,19 +1,39 @@
 # SCHEMAS.md — Data File Reference
 
-Concrete schemas with example values for every data file in the repo. Keep this in sync with the actual files — when you add a field, update here first, then update the file. Validation runs in two places: `scripts/build-indexes.mjs` (the full validator, at data-repo build time) and a *structural subset* in the Worker's `src/validate.ts` (at write time). The build validates only what GitHub still owns — the shared corpus (recipes, stores, discovery files, aliases) plus per-tenant `cooking_log.toml`. The **KV-backed** per-tenant state (the `profile:<username>` bundle — preferences/taste/diet_principles/kitchen/staples/overlay/ready_to_eat/stockup — and `state:<username>:pantry`/`meal_plan`/`grocery_list`) is validated **only by the Worker at write time**, never by the build.
+Concrete schemas with example values for every data file in the repo. Keep this in sync with the actual files — when you add a field, update here first, then update the file. Validation runs in two places: `scripts/build-indexes.mjs` (the full validator, at data-repo build time) and a *structural subset* in the Worker's `src/validate.ts` (at write time). The build validates only what GitHub still owns — the shared corpus (recipes, stores, discovery files, aliases). The **D1-backed** per-tenant profile (preferences/taste/diet_principles/kitchen/staples/overlay/ready_to_eat/stockup), the **D1-backed** session state (the `pantry`/`meal_plan`/`grocery_list` tables), and the **D1-backed** `cooking_log` are validated **only by the Worker at write time** (`update_preferences`' merge-patch validation for preferences, `log_cooked` for the cooking log), never by the build.
 
 ## File placement: shared vs per-tenant (multi-tenant data model)
 
 The data lives in **one private data repo** with two regions (see `ARCHITECTURE.md`). Every file below lives in exactly one:
 
-- **Shared corpus (data-repo root)** — objective, single-source, read by everyone: `recipes/*.md` (objective frontmatter + body), `aliases.toml`, `skus/kroger.toml`, `flyer_terms.toml`, `storage_guidance/` (curated put-away advice), **`stores/<slug>.toml`** (in-store walk store registry — identity, keyed by location; layout lives in store notes), **`feeds.toml`** (RSS discovery feeds), **`discoveries_inbox.toml`** (forwarded-newsletter emails for agent parsing), **`discovery_sources.toml`** (inbound-email allowlist), `_indexes/` (build artifacts — committed for git diff/audit; the Worker reads from `DATA_KV` at runtime, not from git). Discovery is a shared, top-level concern — feeds and the newsletter inbox feed one group pool, judged against each caller's taste at read time.
-- **Per-tenant GitHub subtree (`users/<username>/`)** — each member's **historical records** only: `cooking_log.toml` (realized cook history), `notes/<slug>.toml` (attributed recipe notes), `store_notes/<slug>.toml` (attributed store notes). The Worker addresses it by prefixing repo-relative paths, so one request can never reach another member's data.
-- **Per-tenant DATA_KV** — each member's **operational state** (fast, write-through, no git history). Two key shapes:
-  - `profile:<username>` — a single JSON object (the **profile bundle**) with fields: `preferences` (raw TOML string), `taste` (markdown string), `diet_principles` (markdown string), `kitchen` (raw TOML string), `staples` (raw TOML string), `overlay` (raw TOML string — per-tenant recipe rating/status), `ready_to_eat` (raw TOML string), `stockup` (raw TOML string). Absent fields are omitted from the JSON object.
-  - `state:<username>:pantry`, `state:<username>:meal_plan`, `state:<username>:grocery_list` — JSON arrays of the respective item objects.
-  - Existing GitHub files are migrated into KV once, at deploy time, by the migration runner (`scripts/run-migrations.mjs`, migration `0001-unified-user-profile-kv`). The Worker read path has **no** GitHub fallback — a KV miss returns empty/null.
+- **Authored markdown (GitHub, data-repo root)** — the ONLY tier a human hand-edits (Obsidian / native git apps): `recipes/*.md` (objective frontmatter + body) and `storage_guidance/*.md` (curated put-away advice). This is all that remains in GitHub after the D1 migration.
+- **Shared corpus (D1, `migrations/d1/0006_shared_corpus.sql`)** — objective, single-source, read by everyone, migrated off GitHub TOML to D1 tables (`d1-shared-corpus`): `aliases(variant, canonical)`, `sku_cache(ingredient, location_id, …)`, `flyer_terms(term)`, `stores(slug, name, domain)` (in-store-walk registry — identity; layout lives in store notes), `feeds(url, …)` (RSS discovery feeds), `discovery_candidates(id, url UNIQUE, …)` (forwarded-newsletter inbox), `discovery_senders`/`discovery_members` (inbound-email allowlist). Written + validated at the Worker write tools; read by query. The recipe index is the derived D1 `recipes` table (`d1-recipe-index`) — the former `_indexes/recipes.json` is gone.
+- **Attributed records (D1 `recipe_notes` / `store_notes`)** — each member's attributed recipe/store notes, migrated off `users/<username>/*.toml` to D1 tables carrying `author` (the writing tenant) + a `private` flag. `read_recipe_notes` returns own-private + group-shared in one query, joined with the overlay ratings. The GitHub `users/<username>/` subtree no longer holds domain data (vestigial pre-backfill TOML remains in git until a post-migration cleanup).
+- **Per-tenant D1 (the profile)** — each member's grocery **profile** lives in normalized D1 tables (`migrations/d1/0004_profile.sql`), not a KV blob: a singleton `profile` row (the markdown fields `taste`/`diet_principles`, the preference scalars `default_cooking_nights`/`lunch_strategy`/`ready_to_eat_default_action`, the JSON columns `stores`/`dietary`/`custom`/`kitchen_notes`, and `freezer_capacity_estimate`), plus child tables `brand_prefs(tenant, term, ranks)`, `kitchen_equipment(tenant, slug)`, `staples(tenant, name, normalized_name, perishable)`, `overlay(tenant, recipe, rating, status)`, `ready_to_eat(tenant, slug, meal, name, status, category, source, brand, notes)`, and `stockup(tenant, name, normalized_name, unit, typical_purchase, notes, baseline_price, buy_at_or_below)`. `idx_overlay_recipe` powers the cross-tenant group-ratings query. Reads assemble the agent-facing objects from these rows (`src/profile-db.ts`); writes mutate rows — no document format on the profile path.
+- **Per-tenant D1 (session state)** — each member's working state lives in D1 row tables (`migrations/d1/0005_session_state.sql`), not KV blobs: `pantry(tenant, name, normalized_name, quantity, category, prepared_from, added_at, last_verified_at)`, `meal_plan(tenant, recipe, planned_for, sides /*json*/)`, `grocery_list(tenant, name, normalized_name, quantity, kind, domain, status, source, for_recipes /*json*/, note, added_at, ordered_at)` — keyed by normalized name (pantry/grocery) or recipe slug (meal plan), with `idx_grocery_status(tenant, status)` and `idx_pantry_category(tenant, category)` backing the read filters. Adds are row upserts (`INSERT … ON CONFLICT DO UPDATE`), removes/status changes are targeted row statements — no whole-array rewrite, strong read-after-write consistency. (The detailed item shapes are below.)
+  - **`DATA_KV` now holds no domain data** — the recipe index, the profile, and session state have all moved to D1; the binding is removable (a follow-up wrangler cleanup). Existing GitHub files were migrated into D1 once, at deploy time, by the migration runner (`scripts/run-migrations.mjs`); session state is backfilled by `0004-session-state-d1`. The Worker read path has **no** GitHub fallback — a miss returns empty/null.
 
-**Three-category recipe model:** a recipe's *content* (objective frontmatter + body) is shared; its *overlay* (`rating` + `status`) is per-tenant in the `overlay` field of the KV `profile:<username>` bundle; its *notes* are per-tenant, attributed, append-mostly in `users/<username>/notes/<slug>.toml`. `last_cooked` is **not stored** — it's derived per-tenant from `cooking_log.toml`. Read tools merge shared content + the caller's KV overlay + cooking-log `last_cooked` at read time.
+**Three-category recipe model:** a recipe's *content* (objective frontmatter + body) is shared markdown in GitHub; its *overlay* (`rating` + `status`) is per-tenant in the D1 `overlay` table; its *notes* are per-tenant, attributed, append-mostly in the D1 `recipe_notes` table (`recipe`, `author`, `body`, `tags`, `private`, `created_at`). `last_cooked` is **not stored** — it's derived per-tenant from the D1 `cooking_log` table (`MAX(date)` per recipe). Read tools merge shared content + the caller's overlay + cooking-log `last_cooked` at read time.
+
+> **Note on the per-artifact sections below:** the `*.toml` / `users/<username>/*.toml` headings document each artifact's *shape*, which the D1 columns mirror. After the `d1-*` slices, the shared corpus, profile, session state, cooking log, and attributed notes are **D1 tables** (see the placement list above and `migrations/d1/*.sql`), not repo files; the legacy TOML lives on only as the one-time backfill source. `smol-toml` is gone from the Worker and build — it remains a dependency solely for the `.mjs` backfill migrations.
+
+### preferences shape + merge-patch contract
+
+`preferences` is reconstructed from the `profile` row + `brand_prefs` rows into a defined top-level surface plus an open `custom` bag:
+
+```jsonc
+{
+  "default_cooking_nights": 3,                 // number
+  "lunch_strategy": "leftovers",               // "leftovers" | "buy" | "mixed"
+  "ready_to_eat_default_action": "opt-in",     // "opt-in" | "auto-add"
+  "stores":  { "primary": "kroger", "preferred_location": "Kroger - 76104", "location_zip": "76104" },
+  "brands":  { "olive_oil": ["California Olive Ranch"], "yellow_onion": [] },
+  "dietary": { "avoid": [], "limit": ["cilantro"] },
+  "custom":  { /* arbitrary agent-added keys */ }
+}
+```
+
+`update_preferences` takes a `patch` and applies **JSON Merge Patch (RFC 7396)**: a present key sets, `null` deletes, nested objects merge to any depth, arrays replace wholesale. Validation is staged — an unknown top-level patch key is rejected toward `custom` (`validation_failed`), then the merged result's types are validated (`malformed_data` on a bad enum/shape, storing nothing). The whole patch applies in one D1 transaction. The `brands` tri-state maps onto rows: a list value UPSERTs a `brand_prefs` row, `[]` is "don't-care/cheapest", `null` DELETEs the row (back to ambiguous = "ask me"); an absent term leaves its row untouched.
 
 ## Recipe frontmatter (recipes/*.md)
 
@@ -35,9 +55,9 @@ dietary: [gluten-free, dairy-free]    # array; can be empty
 season: [spring, summer]              # array of seasons; can be empty for year-round
 veg_forward: false              # boolean
 # --- The next three are per-tenant, not shared-content fields ---
-# last_cooked  → derived from each member's cooking_log.toml (not stored here or in the index)
-# rating       → per-tenant overlay field of KV profile:<id> bundle
-# status       → per-tenant overlay field of KV profile:<id> bundle (effective default: draft)
+# last_cooked  → derived from each member's D1 cooking_log table (not stored here or in the index)
+# rating       → per-tenant D1 overlay table (tenant, recipe, rating)
+# status       → per-tenant D1 overlay table (effective default: draft)
 discovered_at: null             # ISO date; only set for RSS imports
 discovery_source: null          # string; only set for RSS imports (e.g., "serious-eats")
 ingredients_key: [chicken thighs, lemon, garlic, oregano, potatoes]
@@ -52,15 +72,17 @@ source: https://www.seriouseats.com/lemon-garlic-roasted-chicken
 ```
 
 **Notes:**
-- `rating`, `status`, and `last_cooked` are **per-tenant**, not shared content — `rating`/`status` live in the `overlay` field of each member's KV `profile:<username>` bundle; `last_cooked` is derived from `cooking_log.toml`. The shared `_indexes/recipes.json` carries objective fields only. A shared recipe's frontmatter SHOULD NOT carry them; the build strips them and treats `status` as optional. (`create_recipe` still stamps a default `status: draft` onto a brand-new recipe's frontmatter, which the build then strips from the shared index — frontmatter status is *tolerated and ignored*, not forbidden.) `update_recipe` routes a `rating`/`status` edit to the caller's KV overlay, never the shared file.
+- `rating`, `status`, and `last_cooked` are **per-tenant**, not shared content — `rating`/`status` live in each member's D1 `overlay` table; `last_cooked` is derived from the D1 `cooking_log` table. The shared D1 `recipes` table carries objective fields only. A shared recipe's frontmatter SHOULD NOT carry them; the build strips them and treats `status` as optional. (`create_recipe` still stamps a default `status: draft` onto a brand-new recipe's frontmatter, which the build then strips from the shared index — frontmatter status is *tolerated and ignored*, not forbidden.) `update_recipe` is objective-only and rejects a `rating`/`status` edit toward `rate_recipe`, which writes the caller's D1 overlay row.
 - `status` lifecycle (per-tenant): new imports default to effective `draft`. A member's feedback promotes to `active` (with rating) or rejects to `rejected` **in their own overlay** — one member's disposition never changes another's.
-- `pairs_with`: slugs of other recipes, optional (defaults to empty). A *plating* edge — recipes eaten together on one plate (a main's companion **corpus** sides). Each slug MUST resolve to a real recipe (a build hard-failure otherwise); corpus sides are themselves recipes, so they reuse the normal import/grocery-list pipeline. Objective **shared content** (carried in `_indexes/recipes.json`, written by `update_recipe`) — not a per-tenant overlay field. Grown lazily by the meal-plan flow as corpus pairings are confirmed (filter candidates with `course: side`); **open-world sides** — trivial preparations with no recipe file — are not recorded here (no slug to remember) and ride on the main's meal-plan row instead (KV `state:<username>:meal_plan`).
-- `course`: optional, an **open-vocabulary** classification of what kind of dish the recipe is — one or more of `main`, `side`, `dessert`, `breakfast` by convention, but **any** string is allowed (e.g. `sauce`, `baked_good`) with **no controlled set and no code change** to extend it (contrast `protein`/`cuisine`, which ARE controlled). Authored as a string or an array of strings; the build **normalizes** it to a lowercased, trimmed **array** (so `Main` → `["main"]`), defaulting to `[]` when absent (warn-free). A recipe that plates as more than one course carries multiple values (`course: [main, side]`). Validated for **shape only** (a string or array-of-strings; otherwise a build/Worker hard-failure) — the *values* are never checked. Objective **shared content** carried in `_indexes/recipes.json`, classified at import by `create_recipe` (and editable via `update_recipe`); `list_recipes` filters it by **containment**. (`standalone` is **retired** — whether a main is an already-rounded plate is inferred by the agent at plan time, not persisted; a lingering `standalone` field is ignored, never validated or indexed.)
-- `perishable_ingredients`: optional array (defaults to empty, warn-free when absent) — a **normalized** list of the recipe's perishable ingredients, feeding the menu-gen waste callout (a partial-unit perishable that no other proposed recipe uses). **Derived at import, not hand-maintained:** the import/create flow classifies it alongside `protein`/`cuisine`. The classification test is *"would the leftover rot before I'd realistically use it?"* — not botany — so shelf-stable staples (olive oil, canned beans) are excluded and a small amount of a fast-spoiling item is included; fuzzy edges (eggs, potatoes) are fine since a wrong call only costs a dismissed nudge. Names use the **same normalization the pantry-verify matcher applies** (`normalizeIngredient`), applied at write time by `create_recipe`/`update_recipe`, so a perishable lines up across recipes for overlap detection. Present-but-not-a-string-array is a build hard-failure (like a non-boolean `standalone`). Objective **shared content** carried in `_indexes/recipes.json` — not a per-tenant overlay field, not curated config. Hand-edit only to correct a misclassification.
+- `pairs_with`: slugs of other recipes, optional (defaults to empty). A *plating* edge — recipes eaten together on one plate (a main's companion **corpus** sides). Each slug MUST resolve to a real recipe (a build hard-failure otherwise); corpus sides are themselves recipes, so they reuse the normal import/grocery-list pipeline. Objective **shared content** (carried in the D1 `recipes` table, written by `update_recipe`) — not a per-tenant overlay field. Grown lazily by the meal-plan flow as corpus pairings are confirmed (filter candidates with `course: side`); **open-world sides** — trivial preparations with no recipe file — are not recorded here (no slug to remember) and ride on the main's meal-plan row instead (the D1 `meal_plan` table's `sides` JSON column).
+- `course`: optional, an **open-vocabulary** classification of what kind of dish the recipe is — one or more of `main`, `side`, `dessert`, `breakfast` by convention, but **any** string is allowed (e.g. `sauce`, `baked_good`) with **no controlled set and no code change** to extend it (contrast `protein`/`cuisine`, which ARE controlled). Authored as a string or an array of strings; the build **normalizes** it to a lowercased, trimmed **array** (so `Main` → `["main"]`), defaulting to `[]` when absent (warn-free). A recipe that plates as more than one course carries multiple values (`course: [main, side]`). Validated for **shape only** (a string or array-of-strings; otherwise a build/Worker hard-failure) — the *values* are never checked. Objective **shared content** carried in the D1 `recipes` table, classified at import by `create_recipe` (and editable via `update_recipe`); `list_recipes` filters it by **containment**. (`standalone` is **retired** — whether a main is an already-rounded plate is inferred by the agent at plan time, not persisted; a lingering `standalone` field is ignored, never validated or indexed.)
+- `perishable_ingredients`: optional array (defaults to empty, warn-free when absent) — a **normalized** list of the recipe's perishable ingredients, feeding the menu-gen waste callout (a partial-unit perishable that no other proposed recipe uses). **Derived at import, not hand-maintained:** the import/create flow classifies it alongside `protein`/`cuisine`. The classification test is *"would the leftover rot before I'd realistically use it?"* — not botany — so shelf-stable staples (olive oil, canned beans) are excluded and a small amount of a fast-spoiling item is included; fuzzy edges (eggs, potatoes) are fine since a wrong call only costs a dismissed nudge. Names use the **same normalization the pantry-verify matcher applies** (`normalizeIngredient`), applied at write time by `create_recipe`/`update_recipe`, so a perishable lines up across recipes for overlap detection. Present-but-not-a-string-array is a build hard-failure (like a non-boolean `standalone`). Objective **shared content** carried in the D1 `recipes` table — not a per-tenant overlay field, not curated config. Hand-edit only to correct a misclassification.
 - `protein` and `cuisine` are **controlled vocabularies** (coarse buckets — `fish` not `salmon`) so variety reasoning is reliable. A value **present** but outside its set is a hard failure **at both write time (the Worker, `src/validate.ts`) and build time (`scripts/build-indexes.mjs`)** — `create_recipe`/`update_recipe` reject an off-vocab value with `validation_failed` and make no commit, so it never reaches `main`. **Absence** keeps the warn-only treatment, and a `none`/empty value is **normalized to absent on write** (a dish with no protein focus — a side, a plain noodle/grain dish, a condiment — omits `protein`; never write `none`). The allowed sets are defined **once** in the shared `src/vocab.js`, imported by both validators so they cannot drift; extending a vocabulary is a deliberate edit there. Current cuisine set: `american, brazilian, cajun, caribbean, chinese, cuban, filipino, french, german, greek, indian, italian, japanese, korean, mediterranean, mexican, moroccan, peruvian, southwestern, spanish, thai, vietnamese`.
-- `requires_equipment`: optional array of `EQUIPMENT_VOCAB` slugs naming gear a dish is genuinely **impossible** without — the "no recipe-preserving workaround exists" test. **Default empty** (the overwhelming common case); tag only truly-irreplaceable equipment, since a wrong tag silently hides a makeable recipe. A controlled vocabulary like `protein`/`cuisine` (present-but-off-vocab = hard failure **at both write time and build time**, from the same shared `src/vocab.js`; absence neither fails nor warns). Objective **shared content** carried in `_indexes/recipes.json`, written by `create_recipe`/`update_recipe`. Drives the `list_recipes` makeability gate against a member's kitchen `owned` list (the `kitchen` field of their KV `profile:<username>` bundle). Current set: `pressure-cooker, sous-vide-circulator, blender, ice-cream-maker`.
+- `requires_equipment`: optional array of `EQUIPMENT_VOCAB` slugs naming gear a dish is genuinely **impossible** without — the "no recipe-preserving workaround exists" test. **Default empty** (the overwhelming common case); tag only truly-irreplaceable equipment, since a wrong tag silently hides a makeable recipe. A controlled vocabulary like `protein`/`cuisine` (present-but-off-vocab = hard failure **at both write time and build time**, from the same shared `src/vocab.js`; absence neither fails nor warns). Objective **shared content** carried in the D1 `recipes` table, written by `create_recipe`/`update_recipe`. Drives the `list_recipes` makeability gate against a member's kitchen `owned` list (the D1 `kitchen_equipment` rows). Current set: `pressure-cooker, sous-vide-circulator, blender, ice-cream-maker`.
 - `ingredients_key`: top 5–7 ingredients for filtering. Full ingredient list lives in the body.
-- **`_indexes/recipes.json` — build artifact, not a runtime source.** `build-indexes` generates it and commits it to git for diff/audit, and simultaneously publishes it to `DATA_KV` key `"index:recipes"`. The Worker reads the recipe index exclusively from `DATA_KV` (not from the GitHub API or `_indexes/recipes.json`). A missing or stale KV entry surfaces as `index_unavailable`. The `data-deploy` workflow runs `build-indexes` after deploy to close the bootstrap window on a fresh namespace.
+- **The recipe index is the D1 `recipes` table — not a file, not KV.** `build-indexes` validates `recipes/*.md`, then **projects** the shared objective set into the D1 `recipes` table, replacing it wholesale in one transaction (`DELETE` then batched `INSERT`) so a removed recipe loses its row and the table is a deterministic function of `recipes/*.md`. There is **no** `_indexes/recipes.json` and **no** KV `index:recipes` (both retired by `d1-recipe-index`). The Worker reads the index from D1 (`src/recipe-index.ts`, built on `src/db.ts`). A *provisioned-but-empty* table is a valid empty corpus (`list_recipes` returns `{ recipes: [] }`); an *unreadable* table (D1 unreachable / unmigrated) surfaces as `index_unavailable`. The `data-deploy` workflow runs `build-indexes` after deploy to populate the table on a fresh database (the bootstrap guarantee). `_indexes/` remains in the data repo for the static site's `components.json`, which a different build target owns.
+
+  The `recipes` table holds **objective shared content only** (no per-tenant `status`/`rating`/`last_cooked`): scalar columns `slug` (PK), `title`, `protein`, `cuisine`, `time_total`, `ingredients_key` (a JSON array as TEXT), `source_url` (the recipe's `source` frontmatter); JSON-array columns `tags`, `course`, `season`, `dietary`, `pairs_with`, `perishable_ingredients`, `requires_equipment`; and an `extra` JSON object carrying any other objective frontmatter (so a new field is lossless without a migration until promoted to a queryable column). `idx_recipes_source_url` makes the discovery idempotency check an indexed lookup. Schema: `migrations/d1/0002_recipes.sql`.
 
 ### Recipe body structural contract
 
@@ -70,27 +92,24 @@ The markdown body below the frontmatter is freeform, with one **hard requirement
 - Additional H2 sections (e.g. `## Notes`) are permitted and render generically — no validator or generator change is needed to add one.
 - The contract exists so downstream site generation (`scripts/build-site.mjs`) can reliably locate the ingredient list (to inject checkboxes) and the step list (for numbering + read-aloud) without guessing.
 
-## overlay (per-tenant, KV profile bundle field)
+## overlay (per-tenant, D1 `overlay` table)
 
-Each member's **subjective view** of shared recipes — the overlay merged onto shared content at read time. Keyed by recipe slug. Holds **only** `rating` + `status` (the two genuinely-subjective single-values). `last_cooked` is **not** here — it's derived from this member's `cooking_log.toml`. Stored as the `overlay` field (raw TOML string) of the `profile:<username>` KV bundle in `DATA_KV`. Agent-writable via `update_recipe`; an absent row means effective `status: draft` for that member.
+Each member's **subjective view** of shared recipes — the overlay merged onto shared content at read time. Keyed by recipe slug. Holds **only** `rating` + `status` (the two genuinely-subjective single-values). `last_cooked` is **not** here — it's derived from this member's D1 `cooking_log` table. Stored as rows in the D1 `overlay(tenant, recipe, rating, status)` table. Agent-writable via `rate_recipe`; an absent row means effective `status: draft` for that member.
 
-```toml
-# overlay field of profile:<username> KV bundle — Alice's subjective overlay (rating + status) by slug.
-# Stored as a raw TOML string in DATA_KV. Merged onto shared recipe content at read time;
-# absent slug → status draft. last_cooked is NOT here — it is derived from cooking_log.toml.
+```
+# D1 overlay table — one row per (tenant, recipe). Merged onto shared recipe content
+# at read time; an absent row → status draft. last_cooked is NOT here — it is derived
+# from the D1 cooking_log table.
 
-[overlay.lemon-garlic-roasted-chicken]
-status = "active"
-rating = 5
-
-[overlay.miso-glazed-salmon]
-status = "rejected"            # Alice rejected it; other members are unaffected
+tenant   recipe                          rating  status
+alice    lemon-garlic-roasted-chicken    5       active
+alice    miso-glazed-salmon              NULL    rejected   -- Alice's only; others unaffected
 ```
 
 **Notes:**
 - A row carries `status` (`active | draft | rejected | archived`) and/or `rating` (1–5). Either may be absent. An empty row is dropped (the slug falls back to effective `draft`).
 - Disposition is **per-tenant**: one member's `rejected` coexists with another's `active` for the same shared recipe.
-- Previously stored as `users/<username>/overlay.toml` in the GitHub data repo; now lives in `DATA_KV` as the `overlay` field of the `profile:<username>` bundle. Existing GitHub files are migrated into KV once, at deploy time, by the migration runner.
+- Previously stored as `users/<username>/overlay.toml` in GitHub, then the `overlay` field of the KV profile bundle; now the D1 `overlay` table. The group-ratings aggregate (`read_recipe_notes`) is a single indexed query (`SELECT … FROM overlay WHERE recipe=?`) scoped to the caller's group, not a per-tenant scan.
 
 ## users/&lt;username&gt;/notes/&lt;slug&gt;.toml (per-tenant)
 
@@ -114,14 +133,14 @@ private = true                             # owner-only; never surfaced to the g
 
 **Notes:**
 - `body` (required), `created_at` (required), `tags` (optional, default `[]`), `private` (optional, default `false`). A note with no `body` is dropped on read.
-- `read_recipe_notes(slug)` aggregates **non-private** notes from every member (attributed) plus the **caller's own** private notes; another member's `private` note is never surfaced. Group ratings (from each member's KV `profile:<username>` overlay field) ride the same read. `created_at` is the addressable key for `update_recipe_note` / `remove_recipe_note`.
+- `read_recipe_notes(slug)` aggregates **non-private** notes from every member (attributed) plus the **caller's own** private notes; another member's `private` note is never surfaced. Group ratings (a single indexed query over the D1 `overlay` table, scoped to the group) ride the same read. `created_at` is the addressable key for `update_recipe_note` / `remove_recipe_note`.
 
-## pantry (per-tenant, KV session state)
+## pantry (per-tenant, D1 session state)
 
-Live inventory. Agent-writable. Updated as side effect of menu generation and ad-hoc messages. Stored as a JSON array at KV key `state:<username>:pantry` in `DATA_KV`. Previously `users/<username>/pantry.toml` in GitHub; migrated into KV once, at deploy time, by the migration runner. The schema below describes each item object's shape:
+Live inventory. Agent-writable. Updated as side effect of menu generation and ad-hoc messages. Stored as rows in the D1 `pantry` table (`PRIMARY KEY (tenant, normalized_name)`; columns `name`, `normalized_name`, `quantity`, `category`, `prepared_from`, `added_at`, `last_verified_at`; `idx_pantry_category(tenant, category)` backs the `read_pantry` category filter). Previously the `state:<username>:pantry` JSON array in `DATA_KV`, before that `users/<username>/pantry.toml` in GitHub; migrated into rows once, at deploy time, by the migration runner. Adds are `INSERT … ON CONFLICT DO UPDATE` (keep `added_at`, refresh `last_verified_at`, overlay the rest); reads/writes are row-level and strongly consistent. The schema below describes each item object's shape:
 
 ```toml
-# pantry items (stored as JSON array in DATA_KV key state:<username>:pantry)
+# pantry items (one row per item in the D1 `pantry` table)
 
 [[items]]
 name = "olive oil"
@@ -161,13 +180,14 @@ prepared_from = null
 - `prepared_from` set for cooked/prepared items — faster perishability profile, identifies which recipe produced it.
 - `last_verified_at` resets when the user confirms the item is still there during a pantry confirmation pass.
 
-## kitchen (per-tenant, KV profile bundle field)
+## kitchen (per-tenant, D1 `kitchen_equipment` + `profile.kitchen_notes`)
 
-What a member owns to cook **with** (equipment, not ingredients). Agent-writable via `update_kitchen`. Stored as the `kitchen` field (raw TOML string) of the `profile:<username>` KV bundle in `DATA_KV`. Previously `users/<username>/kitchen.toml` in GitHub; migrated into KV once, at deploy time, by the migration runner. Two structurally-separated regions: `owned` (controlled-vocabulary slugs — the **only** region that gates recipe makeability) and `[notes]` (freeform context the `cook` skill reasons over for parallelization — **never** gates). An absent field means the member's equipment is *unknown*, which makes the makeability gate a no-op (every recipe shows) — unknown is not the same as not-owned.
+What a member owns to cook **with** (equipment, not ingredients). Agent-writable via `update_kitchen`. Stored as `kitchen_equipment(tenant, slug)` rows (the `owned` list) plus the `kitchen_notes` JSON column on the `profile` row. Two structurally-separated regions: `owned` (controlled-vocabulary slugs — the **only** region that gates recipe makeability) and `notes` (freeform context the `cook` skill reasons over for parallelization — **never** gates). No equipment rows means the member's equipment is *unknown*, which makes the makeability gate a no-op (every recipe shows) — unknown is not the same as not-owned.
 
 ```toml
-# kitchen field of profile:<username> KV bundle — equipment Alice owns to cook WITH.
-# `owned` GATES (requires_equipment ⊆ owned → makeable); `[notes]` never does.
+# Assembled kitchen shape — equipment Alice owns to cook WITH (from kitchen_equipment
+# rows) + freeform notes (from profile.kitchen_notes JSON). `owned` GATES
+# (requires_equipment ⊆ owned → makeable); `notes` never does.
 
 owned = ["pressure-cooker", "blender"]   # EQUIPMENT_VOCAB slugs only
 
@@ -182,12 +202,12 @@ free_text = "10-inch cast iron, half-sheet trays"
 - `[notes]`: freeform table, parse-checked only. Oven count, pan sizes, sheet trays — surfaced to the `cook` flow for parallelization suggestions; **no schema, never gates**. Seeded through normal `cook` use, not at onboarding.
 - The makeability rule: a recipe is makeable for a member when its `requires_equipment` is a subset of `owned`. Empty/absent `owned` ⇒ gate no-op. See `list_recipes` and the kitchen-equipment capability.
 
-## grocery list (per-tenant, KV session state)
+## grocery list (per-tenant, D1 session state)
 
-The buy list — committed intent for the next order. Ingredient/product-level and **SKU-free**: resolution to a Kroger SKU happens once, at order time, against current availability, so the list never pins a brand/SKU that could go stale between capture and order. Stored as a JSON array at KV key `state:<username>:grocery_list` in `DATA_KV`. Previously `users/<username>/grocery_list.toml` in GitHub; migrated into KV once, at deploy time, by the migration runner. Agent-writable side-effect file (NOT user-curated config). Distinct from pantry (observation: what's in the kitchen) and `stockup` (conditional intent: buy IF on sale). Items are keyed by normalized `name` — re-adding an existing name merges rather than duplicating. The schema below describes each item object's shape:
+The buy list — committed intent for the next order. Ingredient/product-level and **SKU-free**: resolution to a Kroger SKU happens once, at order time, against current availability, so the list never pins a brand/SKU that could go stale between capture and order. Stored as rows in the D1 `grocery_list` table (`PRIMARY KEY (tenant, normalized_name)`; `for_recipes` is a JSON column; `idx_grocery_status(tenant, status)` backs the `read_grocery_list` status filter). Previously the `state:<username>:grocery_list` JSON array in `DATA_KV`, before that `users/<username>/grocery_list.toml` in GitHub; migrated into rows once, at deploy time, by the migration runner. Agent-writable side-effect data (NOT user-curated config). Distinct from pantry (observation: what's in the kitchen) and `stockup` (conditional intent: buy IF on sale). Items are keyed by normalized `name` — re-adding an existing name merges (row upsert) rather than duplicating; the order/cart status transitions (`place_order`, the in-store walk) are row updates. The schema below describes each item object's shape:
 
 ```toml
-# grocery list items (stored as JSON array in DATA_KV key state:<username>:grocery_list)
+# grocery list items (one row per item in the D1 `grocery_list` table)
 
 [[items]]
 name = "extra virgin olive oil"   # order-time search term (required)
@@ -229,43 +249,38 @@ added_at = "2026-06-09"
 - `note` holds a **one-off** brand request ("the fancy olive oil this time") — explicitly NOT `preferences.toml`, which is for standing dispositions.
 - Lifecycle: `active → in_cart → received`. The `status` **enum is only `active | in_cart | ordered`** — `received` is not a stored status but the receive *action* (the row is removed and the pantry restocked). `place_order` writes the `active → in_cart` advance; `ordered`/`ordered_at` exist in the schema but no path sets them.
 
-## cooking_log.toml
+## cooking_log (D1 table)
 
-The durable, append-only **cooking** log (not an eating log). One entry per cooking event or at-home convenience meal. **Eating out is never logged**, and **leftovers of an already-logged cook are not re-logged** (one cook that feeds several meals is one entry). This is the trend spine `retrospective` reads, and the source `last_cooked` is **derived** from: `last_cooked` for a recipe == the maximum entry `date` whose `recipe` equals that slug. Agent-writable side-effect file (NOT user-curated config).
+The durable, append-only **cooking** log (not an eating log), now a per-tenant **D1 table** (`cooking_log`), not a GitHub file — it was the last per-tenant volatile artifact to leave GitHub (`d1-cooking-log`). One row per cooking event or at-home convenience meal. **Eating out is never logged**, and **leftovers of an already-logged cook are not re-logged** (one cook that feeds several meals is one row). This is the trend spine `retrospective` reads, and the source `last_cooked` is **derived** from it by query: `last_cooked` for a recipe == `MAX(date)` over the caller's `type='recipe'` rows for that slug. Written via the `log_cooked` tool (not user-curated config). Schema: `migrations/d1/0003_cooking_log.sql`; backfilled from the old `cooking_log.toml` by `migrations/0002-cooking-log-d1.mjs`.
 
-```toml
-# cooking_log.toml
-
-[[entries]]
-date = "2026-06-09"            # ISO date (required)
-type = "recipe"               # recipe | ready_to_eat | ad_hoc (required)
-recipe = "arroz-caldo"        # slug; present iff type = recipe
-
-[[entries]]
-date = "2026-06-08"
-type = "ready_to_eat"
-name = "Kroger frozen lasagna"   # present for ready_to_eat / ad_hoc
-
-[[entries]]
-date = "2026-06-07"
-type = "ad_hoc"
-name = "fridge-clearout fried rice"
-protein = "mixed"             # optional inline dims for non-recipe entries so
-cuisine = "chinese"          # they still count in retrospective mixes
+```sql
+CREATE TABLE cooking_log (
+  id      INTEGER PRIMARY KEY AUTOINCREMENT,
+  tenant  TEXT NOT NULL,        -- owning user (every read is tenant-scoped)
+  date    TEXT NOT NULL,        -- ISO YYYY-MM-DD
+  type    TEXT NOT NULL,        -- recipe | ready_to_eat | ad_hoc
+  recipe  TEXT,                 -- slug; present when type = recipe (soft ref to recipes.slug, no FK)
+  name    TEXT,                 -- dish name; present for ready_to_eat | ad_hoc
+  protein TEXT,                 -- optional inline dimension for non-recipe entries
+  cuisine TEXT                  -- (recipe entries resolve protein/cuisine from `recipes` via a JOIN)
+);
+CREATE INDEX idx_cooking_log_tenant_date   ON cooking_log(tenant, date);
+CREATE INDEX idx_cooking_log_tenant_recipe ON cooking_log(tenant, recipe);
 ```
 
 **Notes:**
-- `type = recipe` entries are slug-only — protein/cuisine are looked up from the recipe index, never duplicated, so recategorizing a recipe retroactively corrects its history.
+- `type = recipe` rows are slug-only — protein/cuisine are resolved from the D1 `recipes` table at read time (`retrospective`'s `cooking_log LEFT JOIN recipes` + COALESCE), never duplicated, so recategorizing a recipe retroactively corrects its history.
+- `recipe` is a **soft reference** to `recipes.slug` — there is no FK, so history survives a recipe's removal. `log_cooked` resolves the slug against `recipes` at **write time** (an unknown slug is `not_found`); historical rows are migrated verbatim, even if a slug was later removed.
 - `ready_to_eat` consumption also decrements the item's on-hand stock in `pantry.toml` (the member's `ready_to_eat.toml` catalog stays a pure options list with no stock field) and its accumulating frequency (by `name`) is the favored-item signal for re-order suggestions.
 - Cadence ("cooks/week") counts `recipe` + `ad_hoc` only; `ready_to_eat` is the convenience side of the cook-vs-convenience split.
-- Append-only by tool. Removing an entry is a manual edit; a `type = recipe` entry whose slug no recipe resolves to is a **hard** build failure (archival keeps the file, so history resolves; deletion-with-history is intentionally blocked).
+- Append-only in normal use; `id` gives a stable handle for an admin UI to edit/delete a mis-logged row. The vestigial `users/<username>/cooking_log.toml` files remain in git post-backfill (inert; a later cleanup removes them).
 
-## meal plan (per-tenant, KV session state)
+## meal plan (per-tenant, D1 session state)
 
-The transient, recipe-grain record of **committed cook intent** — what the agent has agreed to cook next. Distinct from the grocery list (the ingredient-grain BUY list): a planned recipe whose ingredients are all in the pantry still belongs here even though nothing is bought. Rows are cleared as they resolve (cooked → removed; abandoned → dropped). Stored as a JSON array at KV key `state:<username>:meal_plan` in `DATA_KV`. Previously `users/<username>/meal_plan.toml` in GitHub; migrated into KV once, at deploy time, by the migration runner. Agent-writable side-effect file (NOT user-curated config).
+The transient, recipe-grain record of **committed cook intent** — what the agent has agreed to cook next. Distinct from the grocery list (the ingredient-grain BUY list): a planned recipe whose ingredients are all in the pantry still belongs here even though nothing is bought. Rows are cleared as they resolve (cooked → removed; abandoned → dropped). Stored as rows in the D1 `meal_plan` table (`PRIMARY KEY (tenant, recipe)`; `sides` is a JSON column). Previously the `state:<username>:meal_plan` JSON array in `DATA_KV`, before that `users/<username>/meal_plan.toml` in GitHub; migrated into rows once, at deploy time, by the migration runner. Agent-writable side-effect data (NOT user-curated config). When a recipe is cooked, `log_cooked` removes its row in the **same D1 transaction** as the cooking-log insert.
 
 ```toml
-# meal plan items (stored as JSON array in DATA_KV key state:<username>:meal_plan)
+# meal plan items (one row per recipe in the D1 `meal_plan` table)
 
 [[planned]]
 recipe = "arroz-caldo"            # slug (required)
@@ -278,12 +293,12 @@ sides = ["roasted broccoli"]      # optional free-text OPEN-WORLD sides riding o
 - `sides` (optional, array of strings) holds **open-world sides** — trivial plate companions ("roasted broccoli", "white rice") with no recipe file — that ride on their main's row. It is advisory free text only: **never slug-resolved**, and the `recipe` slug invariant (and the reconcile/cook flows that key off it) is unaffected. A **corpus** side (a `course: side` recipe with a slug) earns its **own** `[[planned]]` row instead. Its ingredients reach `grocery_list.toml` as `source = "menu"`, `for_recipes = []`, with a `note` identifying the side.
 - Extends the store model: `pantry` = observation, `stockup` = conditional intent, `grocery_list` = committed buy intent, **`meal_plan` = committed cook intent**, **`cooking_log` = realized history**.
 
-## preferences (per-tenant, KV profile bundle field)
+## preferences (per-tenant, D1 `profile` row + `brand_prefs`)
 
-User-curated. Agent edits only when explicitly directed. Stored as the `preferences` field (raw TOML string) of the `profile:<username>` KV bundle in `DATA_KV`. Previously `users/<username>/preferences.toml` in GitHub; migrated into KV once, at deploy time, by the migration runner.
+User-curated. Agent edits only when explicitly directed, via the `update_preferences` **merge-patch** (the defined-surface + `custom` shape and the RFC-7396 contract are described in the storage overview at the top of this doc). Assembled from the `profile` row (scalars + `stores`/`dietary`/`custom` JSON columns) and the `brand_prefs(tenant, term, ranks)` rows. The example below shows the **assembled object** (what `read_user_profile` returns) — there is no longer a `preferences.toml`.
 
 ```toml
-# preferences field of profile:<username> KV bundle — standing preferences
+# Assembled preferences object (read_user_profile) — standing preferences
 
 default_cooking_nights = 3
 lunch_strategy = "leftovers"     # leftovers | buy | mixed
@@ -544,12 +559,12 @@ private = true                             # owner-only; never surfaced to the g
 - **Author-mutable.** `update_store_note(slug, created_at, …)` / `remove_store_note(slug, created_at)` edit or delete the caller's **own** notes (self-scoped by structural authorship — never another tenant's). This is the clean-correction path after a remodel. Across tenants there is no delete-the-other's-note — a reader prefers the most recent by `created_at` when two conflict.
 - `read_store_notes(slug)` aggregates **non-private** notes from every member (attributed) plus the **caller's own** private notes; another member's `private` note is never surfaced. `add_store_note(slug, body, tags?, private?)` appends to the caller's subtree.
 
-## ready_to_eat (per-tenant, KV profile bundle field)
+## ready_to_eat (per-tenant, D1 `ready_to_eat` table)
 
-**Per-tenant** (a facet of the personal profile, not shared corpus — a ready-to-eat item is a Kroger SKU + "I'll eat this," pure personal taste with no shared content). Stored as the `ready_to_eat` field (raw TOML string) of the `profile:<username>` KV bundle in `DATA_KV`. Previously `users/<username>/ready_to_eat.toml` in GitHub; migrated into KV once, at deploy time, by the migration runner. Each item is tagged with a `meal` and keyed by a generated `slug`. The agent seeds it at onboarding (items the member names land `active`) and adds drafts as discovery surfaces them; the member dispositions drafts. (`variety_rules`, shown below, are a hand-maintained convention only — no tool reads, writes, or validates them.)
+**Per-tenant** (a facet of the personal profile, not shared corpus — a ready-to-eat item is a Kroger SKU + "I'll eat this," pure personal taste with no shared content). Stored as `ready_to_eat(tenant, slug, meal, name, status, category, source, brand, notes)` rows. Each item is tagged with a `meal` and keyed by a generated `slug`. The agent seeds it at onboarding (items the member names land `active`) and adds drafts as discovery surfaces them; the member dispositions drafts. (`variety_rules`, shown below, are a hand-maintained convention only — no tool reads, writes, or validates them.)
 
 ```toml
-# ready_to_eat field of profile:<username> KV bundle
+# Assembled ready_to_eat items (from the D1 ready_to_eat table)
 
 [[items]]
 name = "Kroger breakfast burrito (frozen)"
@@ -584,14 +599,14 @@ max_per_category_per_week = 2
 preferred_rotation_days = 3      # don't suggest the same item within N days
 ```
 
-Addressed by `slug`: `update_ready_to_eat(slug, …)` dispositions or rates an item; `add_draft_ready_to_eat` appends (default `draft`, or `status: "active"` for an onboarding-named item) and returns the generated slug. `ready_to_eat_available()` reads the caller's own catalog. There is **no** `_indexes/ready_to_eat.json` — the per-member list is small and read directly. `null` fields are omitted on write (TOML has no null) and treated as absent on read. `category` is a free-form string (no controlled vocabulary), unlike the pantry `category` enum — the `"frozen"`/`"refrigerated"` values above are illustrative. Only `name`, `slug`, `meal`, `status`, and `rating` are validated; `category` / `brand` / `notes` / `added_at` / `discovered_at` / `discovery_source` / `sku` are unenforced passthrough metadata.
+Addressed by `slug`: `update_ready_to_eat(slug, …)` dispositions an item; `add_draft_ready_to_eat` appends (default `draft`, or `status: "active"` for an onboarding-named item) and returns the generated slug. `ready_to_eat_available()` reads the caller's own catalog. There is **no** `_indexes/ready_to_eat.json` — the per-member list is small and read directly. The D1 table columns are `slug`, `meal`, `name`, `status`, `category`, `source` (the discovery source), `brand`, `notes`; `category` is a free-form string (no controlled vocabulary), unlike the pantry `category` enum. (The legacy bundle's `sku`/`rating`/`added_at`/`discovered_at` are not columns — they were unenforced passthrough metadata and are dropped in the move to D1.)
 
-## staples (per-tenant, KV profile bundle field)
+## staples (per-tenant, D1 `staples` table)
 
-**Per-tenant**. Curated "don't run out of these" list. Stored as the `staples` field (raw TOML string) of the `profile:<username>` KV bundle in `DATA_KV`. Previously `users/<username>/staples.toml` in GitHub; migrated into KV once, at deploy time, by the migration runner. **Agent-writable via `update_staples`** (add-only with dedup; remove by name) as well as hand-edited; optionally seeded at onboarding.
+**Per-tenant**. Curated "don't run out of these" list. Stored as `staples(tenant, name, normalized_name, perishable)` rows (deduped by normalized name). **Agent-writable via `update_staples`** (add-only with dedup; remove by name) as well as hand-edited; optionally seeded at onboarding.
 
 ```toml
-# staples field of profile:<username> KV bundle — must-have items list
+# Assembled staples list (from the D1 staples table) — must-have items
 
 [[items]]
 name = "olive oil"
@@ -610,12 +625,12 @@ perishable = true
 - **Absent `staples.toml` degrades gracefully** — all staples-driven behaviors (depletion prompts, restocking callout, staleness nudges) become no-ops, preserving pre-staples behavior.
 - **Perishable flag is explicit**, not inferred from pantry `category` — a staple that's completely empty won't be in `pantry.toml` at all, so inferring from category wouldn't work.
 
-## stockup (per-tenant, KV profile bundle field)
+## stockup (per-tenant, D1 `stockup` table + `profile.freezer_capacity_estimate`)
 
-**Per-tenant**. Bulk-buy watchlist. Stored as the `stockup` field (raw TOML string) of the `profile:<username>` KV bundle in `DATA_KV`. Previously `users/<username>/stockup.toml` in GitHub; migrated into KV once, at deploy time, by the migration runner. **Agent-writable via `update_stockup`** (add-only, deduped by normalized item `name`) as well as hand-edited; seeded at onboarding.
+**Per-tenant**. Bulk-buy watchlist. Stored as `stockup(tenant, name, normalized_name, unit, typical_purchase, notes, baseline_price, buy_at_or_below)` rows (deduped by normalized item `name`), with the top-level `freezer_capacity_estimate` on the `profile` row. **Agent-writable via `update_stockup`** (add-only) as well as hand-edited; seeded at onboarding.
 
 ```toml
-# stockup field of profile:<username> KV bundle — bulk-buy watchlist
+# Assembled stockup watchlist (from the D1 stockup table) — bulk-buy items
 
 freezer_capacity_estimate = "moderate"   # tight | moderate | spacious
 
@@ -668,9 +683,9 @@ ambiguity_resolved = false
 
 **This is a speed cache, not the source of truth for dispositions.** It stores *resolved SKUs* to skip the expensive search/narrowing; the *disposition* (care / don't-care / ranked) lives in each member's `preferences.toml [brands]`. **Shared + location-tagged:** an entry tagged with the caller's own location is tried first, but every hit is revalidated against the caller's `preferred_location` for current price + curbside/delivery availability before use — a cross-location entry not carried at the caller's store falls through to a fresh search, so a shared cache can never serve an unavailable SKU. No TTL; `last_used` is informational (for pruning). "Don't care" commodities (`[]` in preferences) carry no pinned SKU here; they re-resolve to cheapest-acceptable each run. (An entry with no `locationId` is treated as same-location and still revalidated.)
 
-## taste (per-tenant, KV profile bundle field)
+## taste (per-tenant, D1 `profile.taste`)
 
-User-curated narrative. Free-form markdown. Agent edits only when directed. Stored as the `taste` field (markdown string) of the `profile:<username>` KV bundle in `DATA_KV`. Previously `users/<username>/taste.md` in GitHub; migrated into KV once, at deploy time, by the migration runner.
+User-curated narrative. Free-form markdown. Agent edits only when directed (via `update_taste`). Stored as the `taste` markdown column on the singleton `profile` row.
 
 ```markdown
 # Taste profile
@@ -692,9 +707,9 @@ User-curated narrative. Free-form markdown. Agent edits only when directed. Stor
 - ...
 ```
 
-## diet_principles (per-tenant, KV profile bundle field)
+## diet_principles (per-tenant, D1 `profile.diet_principles`)
 
-User-curated rules with reasoning. Free-form markdown. Agent edits only when directed. Stored as the `diet_principles` field (markdown string) of the `profile:<username>` KV bundle in `DATA_KV`. Previously `users/<username>/diet_principles.md` in GitHub; migrated into KV once, at deploy time, by the migration runner.
+User-curated rules with reasoning. Free-form markdown. Agent edits only when directed (via `update_diet_principles`). Stored as the `diet_principles` markdown column on the singleton `profile` row.
 
 ```markdown
 # Diet principles

@@ -8,6 +8,7 @@
 // Records, the endpoint, and the ntfy message are tenant-data-free by construction —
 // counts, timestamps, and error classes only, never usernames or other identifiers.
 
+import { db } from "./db.js";
 import type { Env } from "./env.js";
 import type { KvStore } from "./kroger-user.js";
 
@@ -33,11 +34,37 @@ export interface JobStatus {
   summary?: Record<string, unknown>;
 }
 
+/** The D1 reachability probe row in `/health`. `ok: false` flips overall `ok`. */
+export interface D1Status {
+  ok: boolean;
+  /** Present only when the probe failed — the structured error message (no tenant data). */
+  error?: string;
+}
+
 export interface HealthPayload {
-  /** False iff some job is explicitly failing; a never-run job does NOT flip this. */
+  /**
+   * False iff some job is explicitly failing OR the D1 probe failed; a never-run job
+   * does NOT flip this (D1 is always probed live, so it has no never-run state).
+   */
   ok: boolean;
   generated_at: number;
   jobs: JobStatus[];
+  d1: D1Status;
+}
+
+/**
+ * Probe D1 reachability with `SELECT 1`. A misprovisioned / under-scoped / unreachable
+ * database surfaces here at `/health` rather than at the first tool call. Goes through
+ * `src/db.ts`, so a failure is a structured `storage_error` (never a raw throw); the
+ * probe maps it to `{ ok: false, error }` — it must not throw out of the health path.
+ */
+export async function probeD1(env: Env): Promise<D1Status> {
+  try {
+    await db(env).first<{ ok: number }>("SELECT 1 AS ok");
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
 }
 
 const jobKey = (name: string): string => `${JOB_PREFIX}${name}`;
@@ -57,13 +84,18 @@ export async function readJobHealth(kv: KvStore, name: string): Promise<JobHealt
 }
 
 /**
- * Aggregate the named jobs' records into one payload. A missing record is reported as
- * **never-run** (`ok: null`, `never_run: true`) — distinct from healthy and never
- * omitted. Overall `ok` is false only when a job is *explicitly* failing (`ok: false`),
- * so a fresh deploy with pending jobs doesn't read as broken; the monitor catches a
- * job that stays pending too long via `last_run_at` staleness.
+ * Aggregate the named jobs' records plus a live D1 probe into one payload. A missing job
+ * record is reported as **never-run** (`ok: null, never_run: true`) — distinct from
+ * healthy and never omitted. Overall `ok` is false when a job is *explicitly* failing
+ * (`ok: false`) or the D1 probe failed; a never-run job does NOT flip it, so a fresh
+ * deploy with pending jobs doesn't read as broken (the monitor catches a job that stays
+ * pending too long via `last_run_at` staleness). `env` is the probe's binding source.
  */
-export async function buildHealthPayload(kv: KvStore, names: readonly string[]): Promise<HealthPayload> {
+export async function buildHealthPayload(
+  env: Env,
+  kv: KvStore,
+  names: readonly string[],
+): Promise<HealthPayload> {
   const jobs: JobStatus[] = [];
   for (const name of names) {
     const rec = await readJobHealth(kv, name);
@@ -73,7 +105,13 @@ export async function buildHealthPayload(kv: KvStore, names: readonly string[]):
       jobs.push({ name, ok: rec.ok, last_run_at: rec.last_run_at, summary: rec.summary });
     }
   }
-  return { ok: !jobs.some((j) => j.ok === false), generated_at: Date.now(), jobs };
+  const d1 = await probeD1(env);
+  return {
+    ok: !jobs.some((j) => j.ok === false) && d1.ok,
+    generated_at: Date.now(),
+    jobs,
+    d1,
+  };
 }
 
 /**
@@ -87,7 +125,7 @@ export async function handleHealthRequest(request: Request, env: Env): Promise<R
   const bearer = request.headers.get("authorization")?.replace(/^Bearer\s+/i, "");
   const provided = new URL(request.url).searchParams.get("token") ?? bearer;
   if (provided !== env.HEALTH_TOKEN) return new Response("Unauthorized", { status: 401 });
-  const payload = await buildHealthPayload(env.KROGER_KV as unknown as KvStore, HEALTH_JOBS);
+  const payload = await buildHealthPayload(env, env.KROGER_KV as unknown as KvStore, HEALTH_JOBS);
   return new Response(JSON.stringify(payload), {
     status: payload.ok ? 200 : 503,
     headers: { "content-type": "application/json" },

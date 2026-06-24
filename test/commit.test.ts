@@ -83,7 +83,7 @@ describe("commitFiles", () => {
 
   it("rejects an invalid staged file before committing", async () => {
     const gh = fakeGh({ updateRef: () => "ok" });
-    const bad: TreeFile[] = [{ path: "pantry.toml", content: "not = = valid toml" }];
+    const bad: TreeFile[] = [{ path: "recipes/x.md", content: "no frontmatter fence" }];
     await expect(commitFiles(gh, bad, "msg")).rejects.toMatchObject({ code: "validation_failed" });
     expect(gh.counts.createCommit).toBe(0); // nothing committed
   });

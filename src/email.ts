@@ -13,23 +13,10 @@
 
 import PostalMime from "postal-mime";
 import type { Env } from "./env.js";
-import { parseToml } from "./parse.js";
-import { stringifyTomlWithHeader } from "./serialize.js";
-import { commitFiles } from "./commit.js";
-import { readOptional } from "./gh-read.js";
-import { createGitHubClient } from "./github.js";
-import { createInstallationAuth } from "./github-app.js";
-import { dataCoords } from "./tenant.js";
+import { readAllowlist, insertDiscoveryCandidate, type Allowlist } from "./corpus-db.js";
+import { validateDiscoveryCandidate } from "./validate.js";
 
-export const INBOX_PATH = "discoveries_inbox.toml";
-export const SOURCES_PATH = "discovery_sources.toml";
 const BODY_MAX = 10_000;
-export const INBOX_MAX_AGE_DAYS = 30;
-
-const INBOX_HEADER =
-  "# discoveries_inbox.toml — emails from forwarded newsletters for recipe discovery.\n" +
-  "# Written by the Worker email() handler; read by the agent via read_discovery_inbox.\n" +
-  "# Each [[entries]] is one received message; the agent parses `body` to find recipes.";
 
 /** Minimal shape of Cloudflare's ForwardableEmailMessage we depend on. */
 export interface InboundMessage {
@@ -41,103 +28,10 @@ export interface InboundMessage {
   setReject(reason: string): void;
 }
 
-// --- Allowlist (discovery_sources.toml) -------------------------------------
-
-export interface Allowlist {
-  members: Set<string>;
-  senders: Set<string>;
-}
-
-function normalizeAddress(raw: unknown): string | null {
-  if (typeof raw !== "string") return null;
-  const a = raw.trim().toLowerCase();
-  return a.includes("@") ? a : null;
-}
-
-function rowsOf(parsed: Record<string, unknown>, key: string): Record<string, unknown>[] {
-  return Array.isArray(parsed[key]) ? (parsed[key] as Record<string, unknown>[]) : [];
-}
-
-/** Parse the shared `discovery_sources.toml` into trusted member + sender address sets. */
-export function parseAllowlist(raw: string | null): Allowlist {
-  const members = new Set<string>();
-  const senders = new Set<string>();
-  if (!raw) return { members, senders };
-  let parsed: Record<string, unknown>;
-  try {
-    parsed = parseToml(raw, SOURCES_PATH);
-  } catch {
-    return { members, senders };
-  }
-  for (const m of rowsOf(parsed, "members")) {
-    const a = normalizeAddress(m.address);
-    if (a) members.add(a);
-  }
-  for (const s of rowsOf(parsed, "senders")) {
-    const a = normalizeAddress(s.address);
-    if (a) senders.add(a);
-  }
-  return { members, senders };
-}
-
-const SOURCES_HEADER =
-  "# discovery_sources.toml — shared allowlist for inbound newsletter discovery.\n" +
-  "# [[members]] = trusted friend-group addresses (anything they forward gets indexed).\n" +
-  "# [[senders]] = trusted newsletter senders (auto-forwarded mail from them gets indexed).\n" +
-  "# Anyone trusted with the agent MCP may widen this via update_discovery_sources.";
-
-export interface SourceEntry {
-  address: string;
-  name?: string;
-}
-
-export interface SourceAdditions {
-  members?: SourceEntry[];
-  senders?: SourceEntry[];
-}
-
-function mergeRows(
-  existing: Record<string, unknown>[],
-  additions: SourceEntry[] | undefined,
-): { rows: Record<string, unknown>[]; added: number } {
-  const rows = [...existing];
-  const have = new Set(
-    existing.map((r) => normalizeAddress(r.address)).filter((a): a is string => a !== null),
-  );
-  let added = 0;
-  for (const entry of additions ?? []) {
-    const a = normalizeAddress(entry.address);
-    if (!a || have.has(a)) continue;
-    have.add(a);
-    rows.push(entry.name ? { address: a, name: entry.name } : { address: a });
-    added++;
-  }
-  return { rows, added };
-}
-
-/**
- * Add trusted members/senders to the shared `discovery_sources.toml`, deduping by
- * address (existing entries untouched). Returns the new file text and how many of
- * each kind were actually added. Used by the `update_discovery_sources` tool.
- */
-export function addSources(
-  existingRaw: string | null,
-  additions: SourceAdditions,
-): { text: string; added: { members: number; senders: number } } {
-  let parsed: Record<string, unknown> = {};
-  if (existingRaw) {
-    try {
-      parsed = parseToml(existingRaw, SOURCES_PATH);
-    } catch {
-      parsed = {};
-    }
-  }
-  const members = mergeRows(rowsOf(parsed, "members"), additions.members);
-  const senders = mergeRows(rowsOf(parsed, "senders"), additions.senders);
-  const next = { ...parsed, members: members.rows, senders: senders.rows };
-  const text = stringifyTomlWithHeader(existingRaw ?? SOURCES_HEADER, next);
-  return { text, added: { members: members.added, senders: senders.added } };
-}
+// The shared inbound-newsletter allowlist (trusted members + senders) is the D1
+// `discovery_members`/`discovery_senders` tables (slice 6), read via readAllowlist(env)
+// in handleInboundEmail and widened by the update_discovery_sources tool. The Allowlist
+// shape lives in corpus-db.ts.
 
 // --- Authentication verdicts (Cloudflare's Authentication-Results header) -----
 
@@ -269,7 +163,7 @@ function htmlToReadable(html: string): string {
 /**
  * Extract the best plain-text body from an email for LLM parsing. Prefers the
  * text/plain part; falls back to converting the HTML part to readable text.
- * Truncated to BODY_MAX chars so TOML storage stays manageable.
+ * Truncated to BODY_MAX chars so storage stays manageable.
  */
 export function extractEmailBody(html?: string | null, text?: string | null): string {
   const body = text?.trim() || (html ? htmlToReadable(html) : "");
@@ -285,49 +179,13 @@ export interface InboxEntry {
   body: string;
 }
 
-/** Cutoff date (YYYY-MM-DD) for pruning inbox entries older than `maxAgeDays`. */
-function cutoffDate(maxAgeDays: number): string {
-  const d = new Date();
-  d.setUTCDate(d.getUTCDate() - maxAgeDays);
-  return d.toISOString().slice(0, 10);
-}
-
 /**
- * Append a received email to the inbox TOML, deduping by (from + subject +
- * received_at) to skip exact re-deliveries, and pruning entries older than
- * INBOX_MAX_AGE_DAYS before writing. Returns the new file text and whether
- * the entry was actually written (false means it was a duplicate).
+ * Synthetic dedup url for a received message — one message has no single canonical
+ * url, so dedup is by (from, subject, received_at) carried into the candidate's
+ * UNIQUE(url) column, replacing the in-memory "already seen?" scan over the file.
  */
-export function appendInboxEntry(
-  existingRaw: string | null,
-  entry: InboxEntry,
-): { text: string; written: boolean } {
-  let parsed: Record<string, unknown> = {};
-  if (existingRaw) {
-    try {
-      parsed = parseToml(existingRaw, INBOX_PATH);
-    } catch {
-      parsed = {};
-    }
-  }
-  let entries: InboxEntry[] = Array.isArray(parsed.entries)
-    ? (parsed.entries as InboxEntry[])
-    : [];
-
-  // Skip if the same email was already indexed (same sender + subject + date).
-  const key = `${entry.from}\x00${entry.subject}\x00${entry.received_at}`;
-  const isDuplicate = entries.some(
-    (e) => `${e.from}\x00${e.subject}\x00${e.received_at}` === key,
-  );
-  if (isDuplicate) return { text: existingRaw ?? "", written: false };
-
-  // Prune entries older than INBOX_MAX_AGE_DAYS before appending.
-  const cutoff = cutoffDate(INBOX_MAX_AGE_DAYS);
-  entries = entries.filter((e) => !e.received_at || e.received_at >= cutoff);
-
-  entries.push(entry);
-  const text = stringifyTomlWithHeader(existingRaw ?? INBOX_HEADER, { ...parsed, entries });
-  return { text, written: true };
+export function inboxCandidateUrl(entry: InboxEntry): string {
+  return `inbox:${entry.from} ${entry.subject} ${entry.received_at}`;
 }
 
 // --- Orchestrator ------------------------------------------------------------
@@ -364,20 +222,14 @@ export function rejectReasonFor(result: EmailResult): string | null {
 }
 
 /**
- * The Worker email() handler. Authenticate + gate, parse the MIME, capture
- * the email body, and append it to the shared inbox in one commit. The LLM
- * reads the body later and extracts recipe links itself. Returns a structured
- * result; the caller `setReject`s on auth failure so the sender gets a bounce.
+ * The Worker email() handler. Authenticate + gate against the D1 allowlist, parse the
+ * MIME, capture the email body, and insert it as a D1 `discovery_candidates` row
+ * (deduped by the UNIQUE url column + write-time validated). The LLM reads the body
+ * later and extracts recipe links itself. Returns a structured result; the caller
+ * `setReject`s on auth failure so the sender gets a bounce.
  */
 export async function handleInboundEmail(message: InboundMessage, env: Env): Promise<EmailResult> {
-  const auth = createInstallationAuth(
-    env.GITHUB_APP_ID,
-    env.GITHUB_APP_PRIVATE_KEY,
-    { id: env.GITHUB_INSTALLATION_ID, owner: env.DATA_OWNER, repo: env.DATA_REPO },
-  );
-  const gh = createGitHubClient(dataCoords(env), auth);
-
-  const allowlist = parseAllowlist(await readOptional(gh, SOURCES_PATH));
+  const allowlist: Allowlist = await readAllowlist(env);
 
   const email = await PostalMime.parse(message.raw);
   const fromAddress = (email.from?.address ?? message.from ?? "").toLowerCase();
@@ -397,12 +249,16 @@ export async function handleInboundEmail(message: InboundMessage, env: Env): Pro
     body,
   };
 
-  const inboxRaw = await readOptional(gh, INBOX_PATH);
-  const { text, written } = appendInboxEntry(inboxRaw, entry);
-  if (!written) return { ...gate, from: fromAddress, written: false };
-
-  await commitFiles(gh, [{ path: INBOX_PATH, content: text }], `discovery: email from ${fromAddress}`);
-  return { ...gate, from: fromAddress, written: true };
+  const url = inboxCandidateUrl(entry);
+  validateDiscoveryCandidate({ url }); // write-time candidate validation
+  const written = await insertDiscoveryCandidate(env, {
+    url,
+    from: entry.from,
+    subject: entry.subject,
+    body: entry.body,
+    received_at: entry.received_at,
+  });
+  return { ...gate, from: fromAddress, written };
 }
 
 /** Best-effort calendar date (YYYY-MM-DD) from the message `Date` header; UTC, falls back to empty. */

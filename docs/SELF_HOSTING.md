@@ -22,7 +22,7 @@ A single **GitHub App** (on your account, scoped to the data repo) gives the Wor
 ## Prerequisites
 
 - A **GitHub** account (+ **GitHub Pro**, ~$4/mo, *only* for the optional public cookbook site from a private repo).
-- A **Cloudflare** account (Workers + KV are free-tier).
+- A **Cloudflare** account (Workers + KV + D1 are free-tier).
 - A **Kroger Developer** account.
 - `openssl` once (any machine), to convert the App key. No other local tooling required — though if you have the `wrangler` CLI you can use it instead of the Cloudflare dashboard where noted.
 
@@ -86,7 +86,7 @@ That's the only value you set; the template's defaults handle everything else. Y
 
 **b. Add your secrets** (data repo → Settings → Secrets and variables → Actions):
 
-- Secret **`CLOUDFLARE_API_TOKEN`** — a Cloudflare token with Workers + KV edit, used by Deploy / Onboard / Revoke. **This is why the data repo is private** — it holds your credentials and the invite codes onboarding prints.
+- Secret **`CLOUDFLARE_API_TOKEN`** — a Cloudflare token with Workers + KV + **D1 edit**, used by Deploy / Onboard / Revoke. (D1 edit is needed to auto-provision your database and apply its schema migrations on deploy; an under-scoped token surfaces as a clear failure on the *Apply D1 schema migrations* step.) **This is why the data repo is private** — it holds your credentials and the invite codes onboarding prints.
 - Secrets **`KROGER_CLIENT_ID`** + **`KROGER_CLIENT_SECRET`** *(optional as Actions secrets)* — when present, the deploy sets them as your Worker's secrets; you can instead add them directly as Worker secrets in the Cloudflare dashboard (like the App key in step 5). Either way the Worker needs them for Kroger search/prices.
 - Variable **`WORKER_NAME`** (or **`WORKER_HOST`**) *(optional)* — so Onboard can show the connector URL in its summary. With `WORKER_NAME` set, Onboard auto-resolves the host via Cloudflare's custom-domain API; `WORKER_HOST` pins it explicitly.
 
@@ -105,14 +105,14 @@ Then add the **GitHub App private key** as a Worker secret in the Cloudflare das
 
 **What your `wrangler.jsonc` owns.** The deploy merges code-level config from upstream, so your data-repo `wrangler.jsonc` only needs *operator-owned* keys:
 - `vars.GITHUB_APP_ID` (the one required value), and optionally `name` or `workers_dev: false` + `routes` for a custom domain;
-- id-less KV bindings (or omit `kv_namespaces` entirely) — they auto-provision on first deploy; persist their ids one of two ways (see *Persisting your KV namespace ids* below).
+- id-less KV bindings (or omit `kv_namespaces` entirely) and the id-less D1 `DB` binding (or omit `d1_databases` entirely) — they auto-provision on first deploy; persist their ids one of two ways (see *Persisting your namespace + database ids* below).
 
 Do **not** set `main`, `compatibility_date`, `compatibility_flags`, `triggers`, or `observability` here — those come from the upstream Worker at deploy, and a stale copy would just be ignored. New operators start from the template with exactly this minimal shape.
 
-**Persisting your KV namespace ids (pick one).** KV bindings start id-less and auto-provision on first deploy, but the **ids must persist** to your `wrangler.jsonc` or the *next* deploy provisions **new** namespaces and orphans all your state (tenant directory, Kroger/OAuth tokens, the flyer cache). Two ways to make that durable — you don't have to grant write access if you'd rather not:
+**Persisting your namespace + database ids (pick one).** KV bindings and the D1 `DB` binding start id-less and auto-provision on first deploy, but the **ids must persist** to your `wrangler.jsonc` or the *next* deploy provisions **new** namespaces / a new database and orphans all your state (tenant directory, Kroger/OAuth tokens, the flyer cache, and your D1 data). The same pin step handles both binding types. Two ways to make that durable — you don't have to grant write access if you'd rather not:
 
-- **Auto-pin (grant write).** Give your data-repo `deploy.yml` caller `permissions: contents: write` so the deploy commits the provisioned ids back into your `wrangler.jsonc` automatically. Without it, the deploy still succeeds but logs a warning that it couldn't push the ids.
-- **Manual (no write access needed).** Create the namespaces yourself once — `npx wrangler kv namespace create KROGER_KV` (and `TENANT_KV`, `OAUTH_KV`) — and paste each returned id into your `wrangler.jsonc` bindings. The deploy then reuses them, and the pin step sees no change and stays **silent** (no commit, no warning). Best if you keep your `wrangler.jsonc` hand-maintained.
+- **Auto-pin (grant write).** Give your data-repo `deploy.yml` caller `permissions: contents: write` so the deploy commits the provisioned KV + D1 ids back into your `wrangler.jsonc` automatically. Without it, the deploy still succeeds but logs a warning that it couldn't push the ids.
+- **Manual (no write access needed).** Create the resources yourself once — `npx wrangler kv namespace create KROGER_KV` (and `TENANT_KV`, `OAUTH_KV`) and `npx wrangler d1 create grocery-mcp` — and paste each returned id into your `wrangler.jsonc` bindings (`id` for KV, `database_id` for D1). The deploy then reuses them, and the pin step sees no change and stays **silent** (no commit, no warning). Best if you keep your `wrangler.jsonc` hand-maintained.
 
 Either way, once your ids are set the pin step is a no-op on every subsequent deploy.
 

@@ -1,37 +1,13 @@
 import { describe, it, expect } from "vitest";
 import {
-  parseAllowlist,
   parseAuthResults,
   authResultsHeader,
   gateMessage,
   rejectReasonFor,
   extractEmailBody,
-  appendInboxEntry,
-  addSources,
-  type Allowlist,
+  inboxCandidateUrl,
 } from "../src/email.js";
-import { parseToml } from "../src/parse.js";
-import { flattenInbox } from "../src/discovery.js";
-
-describe("parseAllowlist", () => {
-  it("parses members + senders, lowercasing addresses", () => {
-    const a = parseAllowlist(`
-[[members]]
-address = "Alice@Example.com"
-name = "Alice"
-
-[[senders]]
-address = "news@seriouseats.com"
-`);
-    expect(a.members.has("alice@example.com")).toBe(true);
-    expect(a.senders.has("news@seriouseats.com")).toBe(true);
-  });
-
-  it("returns empty sets for absent/malformed input", () => {
-    expect(parseAllowlist(null).members.size).toBe(0);
-    expect(parseAllowlist("[[[ not toml").senders.size).toBe(0);
-  });
-});
+import type { Allowlist } from "../src/corpus-db.js";
 
 describe("parseAuthResults", () => {
   it("extracts dkim/spf/dmarc verdicts and dkim domains", () => {
@@ -190,87 +166,14 @@ describe("extractEmailBody", () => {
   });
 });
 
-describe("appendInboxEntry", () => {
-  const entry = {
-    from: "news@seriouseats.com",
-    subject: "This week",
-    received_at: "2026-06-11",
-    body: "Recipe links: Chili https://seriouseats.com/chili\nSoup https://seriouseats.com/soup",
-  };
-
-  it("appends a new entry and reports written: true", () => {
-    const { text, written } = appendInboxEntry(null, entry);
-    expect(written).toBe(true);
-    const emails = flattenInbox(text);
-    expect(emails).toHaveLength(1);
-    expect(emails[0]).toMatchObject({
-      from: "news@seriouseats.com",
-      subject: "This week",
-      received_at: "2026-06-11",
-    });
-    expect(emails[0].body).toContain("https://seriouseats.com/chili");
-    // round-trips as valid TOML
-    expect(() => parseToml(text, "discoveries_inbox.toml")).not.toThrow();
-  });
-
-  it("skips a duplicate entry (same from + subject + received_at)", () => {
-    const { text: first } = appendInboxEntry(null, entry);
-    const { text: second, written } = appendInboxEntry(first, entry);
-    expect(written).toBe(false);
-    expect(second).toBe(first);
-  });
-
-  it("prunes entries older than INBOX_MAX_AGE_DAYS on write", () => {
-    // Build an inbox with one entry from way in the past.
-    const old = {
-      ...entry,
-      subject: "Old newsletter",
-      received_at: "2000-01-01",
-    };
-    const { text: withOld } = appendInboxEntry(null, old);
-    const emails1 = flattenInbox(withOld);
-    expect(emails1).toHaveLength(1);
-
-    // Appending a fresh entry should prune the old one.
-    const fresh = { ...entry, subject: "Fresh newsletter" };
-    const { text: withFresh, written } = appendInboxEntry(withOld, fresh);
-    expect(written).toBe(true);
-    const emails2 = flattenInbox(withFresh);
-    expect(emails2.map((e) => e.subject)).not.toContain("Old newsletter");
-    expect(emails2.map((e) => e.subject)).toContain("Fresh newsletter");
-  });
-
-  it("keeps entries within the retention window", () => {
-    const recent = { ...entry, subject: "Recent newsletter" };
-    const { text } = appendInboxEntry(null, recent);
-    const emails = flattenInbox(text);
-    expect(emails.map((e) => e.subject)).toContain("Recent newsletter");
-  });
-});
-
-describe("addSources", () => {
-  it("adds members + senders and dedups by address", () => {
-    const first = addSources(null, {
-      members: [{ address: "Alice@Example.com" }], // members are address-only — no label
-      senders: [{ address: "news@seriouseats.com", name: "Serious Eats" }],
-    });
-    expect(first.added).toEqual({ members: 1, senders: 1 });
-    const second = addSources(first.text, {
-      members: [{ address: "alice@example.com" }], // dup (case-insensitive)
-      senders: [{ address: "cooking@nytimes.com" }],
-    });
-    expect(second.added).toEqual({ members: 0, senders: 1 });
-    const al = parseAllowlist(second.text);
-    expect(al.members.has("alice@example.com")).toBe(true);
-    expect(al.senders.has("cooking@nytimes.com")).toBe(true);
-    expect(al.senders.has("news@seriouseats.com")).toBe(true);
-    // Member rows carry no label; the only `name` written is the newsletter's.
-    expect(second.text).toContain('name = "Serious Eats"');
-    expect((second.text.match(/name = /g) ?? []).length).toBe(1);
-  });
-
-  it("ignores entries with no @ address", () => {
-    const { added } = addSources(null, { senders: [{ address: "not-an-email" }] });
-    expect(added.senders).toBe(0);
+describe("inboxCandidateUrl", () => {
+  // The inbox is a D1 table now; one received message has no single canonical url, so
+  // dedup rides a synthetic url derived from (from, subject, received_at), carried into
+  // the candidate's UNIQUE(url) column. Same triple → same url (an exact re-delivery).
+  it("derives a stable url from the dedup triple", () => {
+    const entry = { from: "news@seriouseats.com", subject: "This week", received_at: "2026-06-11", body: "x" };
+    const url = inboxCandidateUrl(entry);
+    expect(url).toBe(inboxCandidateUrl({ ...entry, body: "different body, same message" }));
+    expect(url).not.toBe(inboxCandidateUrl({ ...entry, received_at: "2026-06-12" }));
   });
 });

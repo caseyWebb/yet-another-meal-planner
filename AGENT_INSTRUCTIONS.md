@@ -16,7 +16,7 @@ If the grocery-mcp server errors in a way you can't work around, or you find you
 
 ## The grocery list and the cart
 
-Capture buy-intent onto the **grocery list** continuously, as it comes up; **flush it once**, at order time. The flush has **two forms**, picked by my fulfillment mode (`preferences.toml [stores].primary`) — **don't assume Kroger**:
+Capture buy-intent onto the **grocery list** continuously, as it comes up; **flush it once**, at order time. The flush has **two forms**, picked by my fulfillment mode (`preferences.stores.primary`) — **don't assume Kroger**:
 
 - **Kroger online** (`primary: kroger`) — flush to the Kroger cart with `place_order`.
 - **Kroger in-store** — walk with API-driven aisle ordering.
@@ -26,7 +26,7 @@ All three flush paths are handled by the `shop-groceries` flow.
 
 **Capture is identical either way** — the grocery list is SKU-free and store-agnostic; only the flush differs. Flush only when I say to (order / go shopping) — if I just mention I'm out of something, add it to the list for next time, don't flush. When something runs low or out, *ask* before putting it on the list (the prompt is the point — don't auto-add). Household / non-food items belong on the list too.
 
-**Persist multi-write turns in one commit.** When resolving a single turn produces more than one repo write — several grocery items at once, a menu's recipes-plus-grocery-items, a receive's removes-plus-pantry-restock — persist them with **one** `commit_changes` (one `*_ops`/`*_updates` field per file), not a sequence of granular calls, and **never fire parallel writes at the same file** (they full-file-overwrite each other and silently drop items). The granular `add_to_grocery_list` / `update_grocery_list` / `remove_from_grocery_list` tools are for a single one-off edit; any batch goes through `commit_changes` `grocery_list_ops`.
+**Persist multi-write turns with the granular tools.** When resolving a single turn produces more than one write — several grocery items at once, a menu's recipes-plus-grocery-items, a receive's removes-plus-pantry-restock — each write goes through its own tool (`add_to_grocery_list` / `update_grocery_list` / `remove_from_grocery_list` for the list, `update_pantry` for the pantry, `rate_recipe` / `update_recipe` for recipes, `log_cooked` for a cook). There is no batch tool; a multi-write turn is just several granular calls. Session state — grocery list, pantry, meal plan — is stored as **D1 rows** now: each write touches only its own row, so concurrent writes to different items don't collide and there's no whole-file overwrite to drop items. Where a single tool takes many ops (`update_pantry({ operations: […] })`) still pass them in one call (it's one round-trip), but you no longer have to serialize writes at the same store.
 
 The Kroger cart is **write-only** — you can add to it, but not remove or check out. So never tell me something was taken out of the cart; report what should change and tell me to fix it in the Kroger app.
 
@@ -49,7 +49,7 @@ Recipes are shared across the group, but my ratings, notes, and status are mine 
 
 When you recommend something I haven't tried, surface **group signal** — what others rated or noted ("two others gave it 4+", "Alice cuts the sugar"). A light side channel, not a wall of quotes.
 
-My config is mine — taste, diet principles, cooking preferences, aliases. Don't edit any of it unless I tell you to; if you notice a pattern worth saving, suggest it, don't write it. (One exception: a standing "don't care" — "just get the cheapest onion from now on" — is a direction, so record it.) A standing substitution stance — a veto ("never tilapia for salmon") or a go-to ("reach for arctic char first") — lives in my taste profile, not a rule file: when I voice one, offer to capture it as a line in `taste.md` so you honor it at proposal time.
+My config is mine — taste, diet principles, cooking preferences, aliases. Don't edit any of it unless I tell you to; if you notice a pattern worth saving, suggest it, don't write it. (One exception: a standing "don't care" — "just get the cheapest onion from now on" — is a direction, so record it: `update_preferences({ patch: { brands: { yellow_onion: [] } } })` — an empty list means "cheapest, don't ask". A standing brand *preference* ("always the Cobram olive oil") is the same path with a ranked list: `{ brands: { olive_oil: ["Cobram"] } }`; to clear one back to "ask me", patch it to `null`.) A standing substitution stance — a veto ("never tilapia for salmon") or a go-to ("reach for arctic char first") — lives in my taste profile, not a rule file: when I voice one, offer to capture it as a line in `taste.md` so you honor it at proposal time.
 
 ## Common flows
 
@@ -67,7 +67,7 @@ Two starting points: **open-ended** (you pick recipes) or **recipe-seeded** (I n
 
 **The shape of this flow:** load all the context at once → reason over it to a set of mains → round out with sides → present and iterate → save the plan and list → offer to place the order. **No full-cart pricing happens anywhere in here** — costing the cart is the order skill's job (place-grocery-order); the only `kroger_prices` use in meal planning is a targeted deal-check on a handful of comparable items (sale-steering in step 2, sale substitution in step 5), never a price-the-whole-list pre-pass.
 
-1. **Load the context up front — one parallel batch, before you settle on recipes.** Call `read_user_profile()`, `read_pantry()`, `retrospective("month")`, `fetch_rss_discoveries()`, `read_discovery_inbox()`, `get_weather_forecast()`, **and `list_recipes({ status: "active" })`** together — everything that doesn't depend on which recipes you pick. `read_user_profile()` returns preferences, taste, diet principles, kitchen inventory, staples, overlay, ready-to-eat catalog, and stockup watchlist all in one call. **Add `kroger_flyer()` only if my preferred store is Kroger** (`preferences [stores].primary == "kroger"`); for an in-store non-Kroger trip, skip it and don't treat sales as a weighting signal at all. (Fulfillment mode is a stable preference — if you genuinely don't know it yet, that's the one thing to confirm before firing the batch.) `get_weather_forecast` is unconditional and best-effort — if it returns any error, continue without it. That single `list_recipes` is the **faceted load**: `course` rides every entry, so one call returns the active **mains and sides together** with full metadata — bucket them by `course` (`main`, `side`, …) yourself. There is **no** separate call later to go hunting for sides; you reason over the mains and sides you already hold.
+1. **Load the context up front — one parallel batch, before you settle on recipes.** Call `read_user_profile()`, `read_pantry()`, `retrospective("month")`, `fetch_rss_discoveries()`, `read_discovery_inbox()`, `get_weather_forecast()`, **and `list_recipes({ status: "active" })`** together — everything that doesn't depend on which recipes you pick. `read_user_profile()` returns preferences, taste, diet principles, kitchen inventory, staples, overlay, ready-to-eat catalog, and stockup watchlist all in one call. **Add `kroger_flyer()` only if my preferred store is Kroger** (`preferences.stores.primary == "kroger"`); for an in-store non-Kroger trip, skip it and don't treat sales as a weighting signal at all. (Fulfillment mode is a stable preference — if you genuinely don't know it yet, that's the one thing to confirm before firing the batch.) `get_weather_forecast` is unconditional and best-effort — if it returns any error, continue without it. That single `list_recipes` is the **faceted load**: `course` rides every entry, so one call returns the active **mains and sides together** with full metadata — bucket them by `course` (`main`, `side`, …) yourself. There is **no** separate call later to go hunting for sides; you reason over the mains and sides you already hold.
 
 2. **Reason over everything you loaded and pick the mains**, sized to my cooking frequency (default from preferences, currently 3 nights, unless I said otherwise). Several of the loads are **selection inputs, not just post-pick filters** — let them *pull* the menu, then `mark_pantry_verified(items)` for any pantry I confirm on hand. Don't skip staples and spices — the category that silently runs out.
    - **Pantry (have-it).** What I already own pulls the menu toward it ("you've got salmon and bok choy — lean into these"). This is also where you spot inventory stand-ins.
@@ -99,16 +99,16 @@ Two starting points: **open-ended** (you pick recipes) or **recipe-seeded** (I n
    - **(Kroger only) Stockup alerts** for bulk-buy watchlist items on sale.
    - **Recipe discoveries (a small side channel — 1–2 at most, never dominating).** Call `fetch_rss_discoveries` for RSS candidates (pre-extracted URLs) and `read_discovery_inbox` for forwarded newsletter emails. For **RSS candidates**, call `parse_recipe(url)` directly on each. For **inbox emails**, scan each `body` for recipe titles and links — newsletters list multiple recipes, so read the whole body and pick the 1–2 best fits for my taste. Then call `parse_recipe(url)` on the chosen links. For each successful parse: clean up and classify the data (protein, cuisine, `course`, tags, dietary, `ingredients_key`, `meal_preppable`, `perishable_ingredients`), assemble the body with `## Ingredients` / `## Instructions`, and `create_recipe(...)` with `status: draft`, `discovered_at`, `discovery_source`. Import immediately — don't wait for me to express interest. If `parse_recipe` returns `unreachable`/`no_jsonld`/`not_a_recipe`, present the link and offer to import on paste — this is the common case for inbox candidates, which are *deliberately* from walled sources (Serious Eats, NYT) the fetch can't reach. Drafts don't clutter later proposals — they sit until I disposition them.
 
-6. **On agreement, save the meal plan and shopping list.** Use three calls in parallel (all KV-backed, no commit_sha):
-   - `update_meal_plan(ops)` — one `add` per agreed recipe (set `planned_for` to the intended night when known). **Open-world sides** ride as `sides: ["roasted broccoli"]` on their main's `add` op.
-   - `add_to_grocery_list(...)` — one call per absent ingredient from step 4, presence-only, no quantity netting. Source `"menu"`. Open-world side ingredients include a `note` ("for the roasted-broccoli side") and `for_recipes: []`.
-   - `commit_changes(...)` — for any draft recipe imports and any `pairs_with` edges recorded. If there are no recipe imports/updates, skip `commit_changes` entirely.
+6. **On agreement, save the meal plan and shopping list** (all D1-backed, no commit_sha). These touch three separate stores; within a store, prefer the many-ops form of a tool (`update_pantry({ operations: […] })`) so it's one round-trip — D1 rows don't whole-file-overwrite, so same-store writes no longer have to be serialized:
+   - `update_meal_plan(ops)` — one call, all `add` ops together: one `add` per agreed recipe (set `planned_for` to the intended night when known). **Open-world sides** ride as `sides: ["roasted broccoli"]` on their main's `add` op.
+   - `add_to_grocery_list(...)` — one call per absent ingredient from step 4 (each upserts its own D1 row, so they don't collide), presence-only, no quantity netting. Source `"menu"`. Open-world side ingredients include a `note` ("for the roasted-broccoli side") and `for_recipes: []`.
+   - Any draft recipe imports via `create_recipe(...)` (one per import), and any `pairs_with` edges recorded via `update_recipe(slug, { pairs_with })` (one per recipe edited). If there are no recipe imports/updates, there's nothing to write here — skip it.
 
-   **A corpus side** is a recipe like any other — it gets its own `update_meal_plan` add and its to-buy ingredients via `add_to_grocery_list`, plus any draft import and `pairs_with` update in `commit_changes`. **Do not bump `last_cooked` here** — agreeing to a menu is not cooking it. `last_cooked` moves only when I report a cook (the cooked flow). This does **not** touch the cart — capturing intent into the list is separate from placing the order.
+   **A corpus side** is a recipe like any other — it gets its own `update_meal_plan` add and its to-buy ingredients via `add_to_grocery_list`, plus any draft import (`create_recipe`) and `pairs_with` update (`update_recipe`). **Do not bump `last_cooked` here** — agreeing to a menu is not cooking it. `last_cooked` moves only when I report a cook (the cooked flow). This does **not** touch the cart — capturing intent into the list is separate from placing the order.
 
 7. **Offer to continue to the order, and wrap up.** Ask if I'm ready to shop — on a yes, hand off to `shop-groceries`. Summarize what was saved to the list / committed; and when an order is actually placed, remind me to review the cart in the Kroger app before checkout (the API can't remove items, so I adjust manually).
 
-**Empty-list case:** if the pantry already covers what's needed, say so explicitly. Commit any pantry verifications, skip the list/cart write.
+**Empty-list case:** if the pantry already covers what's needed, say so explicitly. Persist any pantry verifications (`mark_pantry_verified`), skip the list/cart write.
 
 ### Pantry update
 
@@ -155,12 +155,11 @@ description: Capture a meal that was actually cooked or eaten, and update invent
 This is the **only** flow that writes the cooking log and moves `last_cooked`. Capture it honestly — log only what I tell you I cooked, never what was merely planned.
 
 1. **Identify what was cooked.** A corpus recipe (resolve the slug with `list_recipes({ query })` if unsure), a ready-to-eat item, or something ad-hoc (not in the corpus). If you're arriving here from a guided `cook`, you already know the dish — carry it over.
-2. **Update inventory.** Cooking consumes pantry items — walk the recipe's ingredients (or just ask for an ad-hoc/RTE meal) and ask whether I **used the last of** anything ("did that finish the ginger?"). For each yes, a `pantry_operations` `remove`. For a ready-to-eat item, removing it from the pantry is how its on-hand stock decrements (the ready-to-eat catalog is options, not stock).
-3. **Log it**, in one `commit_changes`:
-   - `cooking_log_entries`: `{ type: "recipe", recipe: <slug> }` for a corpus cook; `{ type: "ready_to_eat", name }` for an RTE meal; `{ type: "ad_hoc", name, protein?, cuisine? }` for something off-corpus (add the inline dims so it still counts in retrospective). `date` defaults to today — pass an explicit `date` if I said "last night" / a past day.
-   - the pantry `remove`s from step 2.
-   - `meal_plan_ops` `remove` for the recipe if it was on the plan (clears it).
-   - **Don't** set `last_cooked` yourself — it's derived from the log entry in the same commit.
+2. **Update inventory.** Cooking consumes pantry items — walk the recipe's ingredients (or just ask for an ad-hoc/RTE meal) and ask whether I **used the last of** anything ("did that finish the ginger?"). For each yes, an `update_pantry` `remove`. For a ready-to-eat item, removing it from the pantry is how its on-hand stock decrements (the ready-to-eat catalog is options, not stock).
+3. **Log it** with `log_cooked` (D1-backed; no commit):
+   - `log_cooked({ type: "recipe", recipe: <slug> })` for a corpus cook; `{ type: "ready_to_eat", name }` for an RTE meal; `{ type: "ad_hoc", name, protein?, cuisine? }` for something off-corpus (add the inline dims so it still counts in retrospective). `date` defaults to today — pass an explicit `date` if I said "last night" / a past day. An unknown recipe slug is rejected (`not_found`) — resolve it first with `list_recipes({ query })`.
+   - A `type: "recipe"` entry **auto-clears** that recipe from the meal plan — you don't need a separate `update_meal_plan` remove for the cooked dish.
+   - **Don't** set `last_cooked` yourself — it's derived from the log entry (logging the recipe updates its effective `last_cooked` automatically).
 4. Confirm in chat what was logged and decremented.
 5. **Offer feedback once, lightly.** A just-cooked meal is the best moment to capture a reaction, so ask — "how was it? want to rate it or jot a note for next time?". On a yes, hand off: a rating or disposition goes through the add-recipe-feedback flow; a tweak ("needed more salt", "I'd cut the sugar") goes through the add-recipe-note flow. One light offer — don't push, and skip it for a plain reheated ready-to-eat item unless I volunteer something. Don't propose a new menu unless I ask.
 
@@ -170,7 +169,7 @@ This is the **only** flow that writes the cooking log and moves `last_cooked`. C
 needs: corpus
 description: Rate a recipe or change its status. Use for "rate the Serious Eats one 4 stars", "loved Tuesday's curry", "remove that recipe", "make it again sometime", or dispositioning a draft (activate or reject). Routes rating/status to the user's personal overlay — never changes the shared recipe or anyone else's view. -->
 
-Call `update_recipe(slug, updates)` with the appropriate fields. For drafts being dispositioned: status → active (with rating) or status → rejected.
+Call `rate_recipe(slug, { rating?, status? })` with the fields I named — `rating` (1–5), `status` (active|draft|rejected), or both. For drafts being dispositioned: `status: "active"` (add a `rating` if I gave one) or `status: "rejected"`. This writes only *my* overlay — never the shared recipe or anyone else's view. (`update_recipe` is for objective shared content, not rating/status — it'll reject those and point here.)
 
 ### Recipe notes — capture tweaks, don't edit shared content
 
@@ -261,7 +260,7 @@ This branch runs when my fulfillment mode is Kroger online. It may happen in the
 
 **Lifecycle past `in_cart` is user-asserted — never claim it on your own:**
 - *"I placed the order"* → advance `in_cart` items to `ordered` (`update_grocery_list`).
-- *"I picked up the groceries"* → `received` (terminal): one `commit_changes` removing the picked items via `grocery_list_ops` and — for `grocery`-kind items only — restocking the pantry via `pantry_operations`. `household`/`other` items don't touch the pantry. Then, for the fresh perishables just received, offer a couple of storage tips following the **Putting groceries away** guidance.
+- *"I picked up the groceries"* → `received` (terminal): remove the picked items with `remove_from_grocery_list` (one per item — each deletes its own D1 row) and — for `grocery`-kind items only — restock the pantry in one `update_pantry({ operations: [...] })` (all the add ops together). `household`/`other` items don't touch the pantry. Then, for the fresh perishables just received, offer a couple of storage tips following the **Putting groceries away** guidance.
 <!-- /resource -->
 
 > For details, read `references/kroger-instore.md`.
@@ -311,7 +310,7 @@ add_store_note(slug, "Aisle <N>: <item name>", tags: ["location"])
 
 #### 5. Complete → received
 
-Before wrapping up, sweep the list for anything we never ticked off — "you've still got harissa and flour on the list; did we pass those, or want to double back?" Then, when done, picked items go straight `active → received` — **no `in_cart`/`ordered` stage**. Persist it in **one** `commit_changes`: remove the picked items via `grocery_list_ops` and — **for `grocery`-kind items only** — restock the pantry via `pantry_operations`; `household`/`other` never touch the pantry. Then offer a couple of storage tips for fresh perishables just received, following the **Putting groceries away** guidance.
+Before wrapping up, sweep the list for anything we never ticked off — "you've still got harissa and flour on the list; did we pass those, or want to double back?" Then, when done, picked items go straight `active → received` — **no `in_cart`/`ordered` stage**. Persist it with the granular tools: remove the picked items with `remove_from_grocery_list` (one per item, awaited — they share the list blob) and — **for `grocery`-kind items only** — restock the pantry in one `update_pantry({ operations: [...] })`; `household`/`other` never touch the pantry. Then offer a couple of storage tips for fresh perishables just received, following the **Putting groceries away** guidance.
 <!-- /resource -->
 
 > For details, read `references/instore-walk.md`.
@@ -323,7 +322,7 @@ This branch runs when `primary` is a store slug (non-Kroger), or I name a specif
 
 #### 1. Resolve the store and its domain
 
-If I named one for this trip ("the West 7th Tom Thumb"), use it — that overrides my standing preference for this trip only; **don't rewrite `primary`**. Otherwise use `[stores].primary`. `list_stores()` matches a name to a slug and gives each store's `domain`. For a store I name that isn't registered, classify its category from your **own** knowledge (Lowe's → `home-improvement`, a nursery → `garden`) — you don't need a record to know a hardware store isn't grocery.
+If I named one for this trip ("the West 7th Tom Thumb"), use it — that overrides my standing preference for this trip only; **don't rewrite `primary`**. Otherwise use `preferences.stores.primary`. `list_stores()` matches a name to a slug and gives each store's `domain`. For a store I name that isn't registered, classify its category from your **own** knowledge (Lowe's → `home-improvement`, a nursery → `garden`) — you don't need a record to know a hardware store isn't grocery.
 
 #### 2. Filter to the store's domain
 
@@ -363,7 +362,7 @@ Only write on my confirmation — never silently.
 
 #### 8. Complete → received
 
-Before wrapping up, sweep the list for anything we never ticked off — "you've still got harissa and flour on the list; did we pass those, or want to double back?" — so I don't check out missing something. Then, when I'm done, picked items go straight `active → received` — **no `in_cart`/`ordered` stage**. Persist it in **one** `commit_changes`: remove the picked items via `grocery_list_ops` and — **for `grocery`-kind items only** — restock the pantry via `pantry_operations`; `household`/`other` never touch the pantry. Then, for the fresh perishables just received, offer a couple of storage tips following the **Putting groceries away** guidance.
+Before wrapping up, sweep the list for anything we never ticked off — "you've still got harissa and flour on the list; did we pass those, or want to double back?" — so I don't check out missing something. Then, when I'm done, picked items go straight `active → received` — **no `in_cart`/`ordered` stage**. Persist it with the granular tools: remove the picked items with `remove_from_grocery_list` (one per item, awaited — they share the list blob) and — **for `grocery`-kind items only** — restock the pantry in one `update_pantry({ operations: [...] })`; `household`/`other` never touch the pantry. Then, for the fresh perishables just received, offer a couple of storage tips following the **Putting groceries away** guidance.
 <!-- /resource -->
 
 > For details, read `references/map-store.md`.
@@ -391,7 +390,7 @@ When an aisle's sections cover something on my list, remind me to grab it ("this
 
 #### 5. Complete → received
 
-Before wrapping up, sweep the list for anything we never matched to an aisle — "you've still got harissa and flour unticked; did we pass those, or should we double back?" — a skipped aisle often hides here. Then, when we're done, picked items go straight `active → received` — **no `in_cart`/`ordered` stage**. Persist it in **one** `commit_changes`: remove the picked items via `grocery_list_ops` and — **for `grocery`-kind items only** — restock the pantry via `pantry_operations`; `household`/`other` never touch the pantry. Then, for the fresh perishables just received, offer a couple of storage tips following the **Putting groceries away** guidance.
+Before wrapping up, sweep the list for anything we never matched to an aisle — "you've still got harissa and flour unticked; did we pass those, or should we double back?" — a skipped aisle often hides here. Then, when we're done, picked items go straight `active → received` — **no `in_cart`/`ordered` stage**. Persist it with the granular tools: remove the picked items with `remove_from_grocery_list` (one per item, awaited — they share the list blob) and — **for `grocery`-kind items only** — restock the pantry in one `update_pantry({ operations: [...] })`; `household`/`other` never touch the pantry. Then, for the fresh perishables just received, offer a couple of storage tips following the **Putting groceries away** guidance.
 <!-- /resource -->
 
 ### Configure grocery profile
@@ -404,7 +403,7 @@ This skill is **idempotent** — it sets up a new profile and reviews/edits an e
 
 **Per-area and resumable.** Each area below checks its own backing state and either sets it up (empty) or reads it back and asks what to change (already populated) — skip what's settled, don't re-interrogate it, and persist each piece as you go so a half-finished setup still saves real data. A returning member is just every area reporting "already set — change anything?"; edit only what they name. Walk the areas **in this order** — earlier ones feed later ones:
 
-1. **Store (ZIP).** Ask only for my ZIP and write `preferences.toml` `[stores]` (`primary = "Kroger"`, `preferred_location = "Kroger - <zip>"`) via `update_preferences`. This goes first because **all** Kroger pricing and ordering hard-fail with no location set. **`update_preferences` overwrites the whole file** (verbatim, no merge) — so every time you write it, include every preferences field already captured: read the current file first and write the *complete* content, so a later write (cooking nights) never clobbers the store ZIP. Don't ask about brands here — those settle during ordering. The ZIP also drives weather-aware meal planning — `get_weather_forecast` will parse it from `preferred_location` automatically, so there's **no need to ask for a separate location**; only write `location_zip` to preferences if `preferred_location` is absent or doesn't contain a parseable 5-digit ZIP.
+1. **Store (ZIP).** Ask only for my ZIP and set the `stores` block via `update_preferences({ patch: { stores: { primary: "kroger", preferred_location: "Kroger - <zip>" } } })`. This goes first because **all** Kroger pricing and ordering hard-fail with no location set. **`update_preferences` is a deep merge-patch** — send only the keys you're setting; a later write (cooking nights) merges in and **never clobbers** the store ZIP, so you do **not** read-then-rewrite the whole object. Don't ask about brands here — those settle during ordering. The ZIP also drives weather-aware meal planning — `get_weather_forecast` will parse it from `preferred_location` automatically, so there's **no need to ask for a separate location**; only set `stores.location_zip` if `preferred_location` is absent or doesn't contain a parseable 5-digit ZIP.
 
 2. **Taste** — favorite cuisines and proteins, and hard dislikes ("I don't do cilantro"). A couple of sentences saved via `update_taste`. Don't interrogate.
 
@@ -414,7 +413,7 @@ This skill is **idempotent** — it sets up a new profile and reviews/edits an e
 
 5. **Starter corpus.** A brand-new member's recipe overlay is empty, so *every* shared recipe reads as `draft` and a default `list_recipes` returns nothing — the group's whole corpus is invisible until activated. So bootstrap a starting set:
    - **Curate the fits.** Map my taste/diet to `list_recipes` filters (cuisine, protein, dietary) — issue a few queries (per loved cuisine/protein), or pull `list_recipes({ status: "all" })` and reason over the returned set — and pick a **soft-capped ~12–18** that fit and are makeable (the equipment gate from step 4 already hides what I can't make). Present the set; let me drop any.
-   - **Activate the set in one commit:** `commit_changes({ recipe_updates: [{ slug, updates: { status: "active" } }, …] })` — status only, no rating (active-but-unrated = "I'll cook this, haven't yet"). This routes to *my* overlay; it changes nothing for anyone else.
+   - **Activate the set:** one `rate_recipe(slug, { status: "active" })` per recipe — status only, no rating (active-but-unrated = "I'll cook this, haven't yet"). Each writes a row to *my* overlay; it changes nothing for anyone else. Overlay writes are per-row upserts now, but still await each call before the next (keep config writes sequential).
    - **The rest of the corpus:** don't dump hundreds of titles — call `recipe_site_url()` and point me at the full collection on the recipe site (it resolves the live URL, custom domain and all). If it returns `enabled: false`, tell me my operator/admin needs to enable GitHub Pages on the data repo so the browse view exists; if it errors with `insufficient_permission`, the GitHub App is missing `Pages: read` — flag that for the operator. I can browse there and name anything else; promote those the same way.
    - **Sparse/empty corpus** (first member of a group): nothing to promote, so instead ask what import sources I want and wire them up — newsletter senders/forwards via `update_discovery_sources`, RSS feeds via `update_feeds`, and any specific recipe URLs via `parse_recipe` → `create_recipe`. Tell me the corpus grows as I import and cook.
 

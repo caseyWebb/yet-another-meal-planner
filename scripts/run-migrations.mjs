@@ -18,6 +18,7 @@ import { readdir } from 'node:fs/promises';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import path from 'node:path';
 import { resolveKvAccess, makeKvClient } from './kv-rest.mjs';
+import { resolveD1Access, makeD1Client } from './d1-rest.mjs';
 
 const SCRIPTS_DIR = path.dirname(fileURLToPath(import.meta.url));
 const CODE_ROOT = path.resolve(SCRIPTS_DIR, '..');
@@ -66,6 +67,15 @@ async function main() {
   }
   const kv = makeKvClient(access);
 
+  // Resolve a D1 client too, for migrations that backfill domain data into D1 (read
+  // the GitHub checkout / KV → INSERT). It's the SAME idempotent, KV-ledgered runner —
+  // only the destination differs. A null `d1` (D1 not provisioned yet, or a brand-new
+  // operator) is fine: slice-0 ships no .mjs migration that touches D1, and a migration
+  // that needs D1 should guard on it. The KV `migrations:applied` ledger is unchanged.
+  const d1Access = await resolveD1Access(dataRoot);
+  const d1 = d1Access.ok ? makeD1Client(d1Access) : null;
+  if (!d1) console.warn(`run-migrations: D1 client unavailable — ${d1Access.reason}`);
+
   const applied = await readLedger(kv);
   let ran = 0;
 
@@ -80,7 +90,7 @@ async function main() {
       throw new Error(`migration ${file} exports no up() function`);
     }
     console.log(`run-migrations: applying ${id}…`);
-    await mod.up({ kv, dataRoot, log: (m) => console.log(`  [${id}] ${m}`) });
+    await mod.up({ kv, d1, dataRoot, log: (m) => console.log(`  [${id}] ${m}`) });
     applied.add(id);
     await kv.put(LEDGER_KEY, JSON.stringify([...applied]));
     ran++;

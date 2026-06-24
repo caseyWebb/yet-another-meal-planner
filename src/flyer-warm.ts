@@ -20,11 +20,9 @@ import type { KrogerCache, KrogerCandidate } from "./kroger.js";
 import { createKrogerClient } from "./kroger.js";
 import type { KvStore } from "./kroger-user.js";
 import { dedupeFlyerHits, isFulfillable, isOnSale, type FlyerItem } from "./matching.js";
-import { createGitHubClient, prefixedClient } from "./github.js";
-import { createInstallationAuth } from "./github-app.js";
-import { readOptional } from "./gh-read.js";
-import { parseToml } from "./parse.js";
-import { dataCoords, directoryFromEnv, userPrefix } from "./tenant.js";
+import { directoryFromEnv } from "./tenant.js";
+import { readPreferences } from "./profile-db.js";
+import { readFlyerTerms } from "./corpus-db.js";
 import { notifyFailure, writeJobHealth } from "./health.js";
 
 // KV keys. Rollups are per-location (`flyer:{locationId}`); the cursor and the
@@ -387,13 +385,6 @@ export async function runWarmJob(env: Env, deps: WarmDeps): Promise<void> {
  *  subtree directly (one shared data repo), since the warmed data is public-derived
  *  store-wide sale data, not tenant-private state. */
 export function buildWarmDeps(env: Env): WarmDeps {
-  const coords = dataCoords(env);
-  const installationAuth = createInstallationAuth(env.GITHUB_APP_ID, env.GITHUB_APP_PRIVATE_KEY, {
-    id: env.GITHUB_INSTALLATION_ID,
-    owner: coords.owner,
-    repo: coords.repo,
-  });
-  const dataGh = createGitHubClient(coords, installationAuth);
   const directory = directoryFromEnv(env);
 
   // A private cache so the client's single-slot `locationId` cache is ours to reset.
@@ -406,17 +397,14 @@ export function buildWarmDeps(env: Env): WarmDeps {
     kv: env.KROGER_KV as unknown as KvStore,
     listTenantIds: () => directory.list(),
     async readPreferredLocationLabel(tenantId) {
-      const text = await readOptional(prefixedClient(dataGh, userPrefix(tenantId)), "preferences.toml");
-      if (!text) return null;
-      const prefs = parseToml(text, "preferences.toml");
-      const stores = prefs.stores as Record<string, unknown> | undefined;
+      // Preferences are D1 now (slice 4); read the tenant's preferred_location label.
+      const prefs = await readPreferences(env, tenantId);
+      const stores = prefs?.stores as Record<string, unknown> | undefined;
       return typeof stores?.preferred_location === "string" ? stores.preferred_location : null;
     },
     async readBroadTerms() {
-      const text = await readOptional(dataGh, "flyer_terms.toml");
-      if (!text) return [];
-      const parsed = parseToml(text, "flyer_terms.toml");
-      return Array.isArray(parsed.terms) ? (parsed.terms.filter((t) => typeof t === "string") as string[]) : [];
+      // Flyer terms are the shared D1 `flyer_terms` table now (slice 6).
+      return readFlyerTerms(env);
     },
     async resolveLocationId(label) {
       krogerCache.locationId = null;

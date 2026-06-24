@@ -1,0 +1,107 @@
+import { describe, it, expect } from "vitest";
+import { fakeD1 } from "./fake-d1.js";
+import {
+  readAliases,
+  addAliases,
+  readSkuCache,
+  upsertSkuMappings,
+  readFlyerTerms,
+  readFeeds,
+  addFeedRows,
+  readAllowlist,
+  addSourceRows,
+  readDiscoveryInbox,
+  insertDiscoveryCandidate,
+} from "../src/corpus-db.js";
+
+describe("aliases (D1)", () => {
+  it("reads variant→canonical and upserts by variant", async () => {
+    const { env, tables } = fakeD1({ tables: { aliases: [{ variant: "EVOO", canonical: "olive oil" }] } });
+    expect(await readAliases(env)).toEqual({ EVOO: "olive oil" });
+
+    const n = await addAliases(env, [
+      { variant: "EVOO", canonical: "extra virgin olive oil" }, // upsert
+      { variant: "chx", canonical: "chicken" },
+      { variant: "", canonical: "skip" }, // skipped (empty variant)
+    ]);
+    expect(n).toBe(2);
+    expect(await readAliases(env)).toEqual({ EVOO: "extra virgin olive oil", chx: "chicken" });
+    expect(tables.aliases).toHaveLength(2);
+  });
+});
+
+describe("sku_cache (D1)", () => {
+  it("reads as CachedMapping[] with '' location → absent", async () => {
+    const { env } = fakeD1({
+      tables: {
+        sku_cache: [
+          { ingredient: "milk", location_id: "", sku: "111", brand: "Kroger", size: "1 gal" },
+          { ingredient: "salmon", location_id: "035", sku: "222", brand: null, size: null },
+        ],
+      },
+    });
+    const cache = await readSkuCache(env);
+    expect(cache).toContainEqual({ ingredient: "milk", sku: "111", brand: "Kroger", size: "1 gal" });
+    expect(cache).toContainEqual({ ingredient: "salmon", sku: "222", locationId: "035" });
+  });
+
+  it("upserts keyed (ingredient, location_id)", async () => {
+    const { env, tables } = fakeD1({ tables: { sku_cache: [] } });
+    await upsertSkuMappings(env, [
+      { ingredient: "milk", sku: "111", locationId: "035", last_used: "2026-06-01" },
+      { ingredient: "milk", sku: "999", locationId: "035", last_used: "2026-06-02" }, // overwrite
+      { ingredient: "milk", sku: "111", locationId: "", last_used: "2026-06-01" }, // distinct key
+    ]);
+    expect(tables.sku_cache).toHaveLength(2);
+    const at035 = tables.sku_cache.find((r) => r.location_id === "035");
+    expect(at035?.sku).toBe("999");
+  });
+});
+
+describe("flyer terms / feeds (D1)", () => {
+  it("reads flyer terms", async () => {
+    const { env } = fakeD1({ tables: { flyer_terms: [{ term: "fruit" }, { term: "cheese" }] } });
+    expect((await readFlyerTerms(env)).sort()).toEqual(["cheese", "fruit"]);
+  });
+
+  it("reads feeds and add-only-dedups by url", async () => {
+    const { env } = fakeD1({
+      tables: { feeds: [{ url: "https://a.com", name: "A", weight: 1, tags: '["x"]' }] },
+    });
+    const feeds = await readFeeds(env);
+    expect(feeds[0]).toEqual({ url: "https://a.com", name: "A", weight: 1, tags: ["x"] });
+    const added = await addFeedRows(env, [
+      { url: "https://a.com" }, // dup → skipped
+      { url: "https://b.com", tags: ["y"] },
+    ]);
+    expect(added).toBe(1);
+    expect((await readFeeds(env)).map((f) => f.url).sort()).toEqual(["https://a.com", "https://b.com"]);
+  });
+});
+
+describe("discovery allowlist + inbox (D1)", () => {
+  it("reads allowlist and add-dedups normalized addresses", async () => {
+    const { env } = fakeD1({ tables: { discovery_members: [{ address: "me@x.com" }], discovery_senders: [] } });
+    const al = await readAllowlist(env);
+    expect(al.members.has("me@x.com")).toBe(true);
+    const added = await addSourceRows(env, {
+      members: [{ address: "Me@X.com" }, { address: "you@x.com" }], // first is dup after normalize
+      senders: [{ address: "n@news.com", name: "News" }, { address: "notanaddress" }],
+    });
+    expect(added).toEqual({ members: 1, senders: 1 });
+    const al2 = await readAllowlist(env);
+    expect([...al2.members].sort()).toEqual(["me@x.com", "you@x.com"]);
+    expect(al2.senders.has("n@news.com")).toBe(true);
+  });
+
+  it("inserts inbox candidates deduped by UNIQUE url", async () => {
+    const { env } = fakeD1({ tables: { discovery_candidates: [] } });
+    const cand = { url: "u1", from: "a@x.com", subject: "hi", body: "find recipes", received_at: "2026-06-11" };
+    expect(await insertDiscoveryCandidate(env, cand)).toBe(true);
+    expect(await insertDiscoveryCandidate(env, cand)).toBe(false); // dup url → not written
+    const inbox = await readDiscoveryInbox(env);
+    expect(inbox).toEqual([
+      { from: "a@x.com", subject: "hi", received_at: "2026-06-11", body: "find recipes" },
+    ]);
+  });
+});

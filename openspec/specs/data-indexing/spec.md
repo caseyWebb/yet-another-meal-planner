@@ -1,5 +1,13 @@
 # data-indexing Specification
 
+> **⚠️ SUPERSEDED by `recipe-index` (the `d1-recipe-index` change).** The recipe index
+> is now projected into the **D1 `recipes` table**, not written to `_indexes/recipes.json`
+> and not published to `DATA_KV` (`index:recipes` is retired, the JSON file deleted). The
+> requirements below describing the `_indexes/recipes.json` write and the DATA_KV publish are
+> stale and pending a rewrite; the *projection* (objective-only fields, subjective stripped,
+> open-vocab `course` normalization, empty-corpus handling) carries over to the D1 rows. See
+> `openspec/specs/recipe-index/spec.md`.
+
 ## Purpose
 
 Defines the deterministic generation of the `_indexes/*.json` artifacts from `recipes/` and `ready_to_eat/`: the build entry point, the shape of each index, slug derivation, date normalization, and the stability guarantees the Worker and other consumers rely on.

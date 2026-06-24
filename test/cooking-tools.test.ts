@@ -1,77 +1,97 @@
 import { describe, it, expect } from "vitest";
 import { loadRetrospective } from "../src/cooking-tools.js";
-import { GitHubError, type GitHubClient } from "../src/github.js";
+import type { Env } from "../src/env.js";
 
-function ghWith(files: Record<string, string>): GitHubClient {
-  return {
-    async getFile(path: string) {
-      if (path in files) return files[path];
-      throw new GitHubError(404, `Not found: ${path}`);
-    },
-    async listDir(path: string) {
-      throw new GitHubError(404, `Not found: ${path}`);
-    },
-    async getRef() {
-      return "x";
-    },
-    async getCommitTree() {
-      return "x";
-    },
-    async createTree() {
-      return "x";
-    },
-    async createCommit() {
-      return "x";
-    },
-    async updateRef() {},
-    async createIssue() {
-      return { url: "https://example.test/issues/1", number: 1 };
-    },
-    async getPagesUrl() {
-      return { url: null, enabled: false };
-    },
+// A fake D1Database that routes by SQL: the `cooking_log LEFT JOIN recipes` window
+// query returns `joinRows`; `SELECT * FROM recipes` returns `recipeRows`.
+// `throwOnRecipes` simulates an unreadable recipes table (index_unavailable).
+function envWith(
+  joinRows: Record<string, unknown>[],
+  recipeRows: Record<string, unknown>[],
+  opts: { throwOnRecipes?: boolean } = {},
+): Env {
+  const makeStmt = (sql: string) => {
+    const stmt = {
+      bind() {
+        return stmt;
+      },
+      async all<T>() {
+        if (sql.includes("FROM cooking_log")) {
+          return { results: joinRows as T[], success: true as const, meta: { changes: 0 } };
+        }
+        if (sql.includes("FROM recipes")) {
+          if (opts.throwOnRecipes) throw new Error("no such table: recipes");
+          return { results: recipeRows as T[], success: true as const, meta: { changes: 0 } };
+        }
+        return { results: [] as T[], success: true as const, meta: { changes: 0 } };
+      },
+      async first<T>() {
+        return null as T | null;
+      },
+      async run() {
+        return { success: true as const, meta: { changes: 0 } };
+      },
+    };
+    return stmt;
   };
-}
-
-function kvWith(keys: Record<string, string>): KVNamespace {
-  return {
-    async get(key: string) {
-      return (keys[key] as string) ?? null;
+  const DB = {
+    prepare: (sql: string) => makeStmt(sql) as unknown as D1PreparedStatement,
+    async batch() {
+      return [];
     },
-  } as unknown as KVNamespace;
+  } as unknown as D1Database;
+  return { DB } as unknown as Env;
 }
 
-const LOG = `[[entries]]
-date = "2026-06-10"
-type = "recipe"
-recipe = "tacos"
-`;
+// One D1 `recipes` row (objective columns only — JSON arrays as TEXT).
+const TACOS_ROW = {
+  slug: "tacos",
+  title: "Tacos",
+  protein: "beef",
+  cuisine: "mexican",
+  time_total: null,
+  ingredients_key: null,
+  source_url: null,
+  tags: null,
+  course: null,
+  season: null,
+  dietary: null,
+  pairs_with: null,
+  perishable_ingredients: null,
+  requires_equipment: null,
+  extra: null,
+};
 
-const INDEX = JSON.stringify({
-  tacos: { slug: "tacos", title: "Tacos", protein: "beef", cuisine: "mexican", status: "active" },
-});
-
-describe("loadRetrospective — KV index routing", () => {
-  it("reads cooking_log from the personal client and the recipe index from DATA_KV", async () => {
-    const personal = ghWith({ "cooking_log.toml": LOG });
-    const dataKv = kvWith({ "index:recipes": INDEX });
-    const r = await loadRetrospective(personal, dataKv, "all");
+describe("loadRetrospective — D1 cooking_log + recipe index", () => {
+  it("aggregates protein/cuisine from the joined cooking_log rows", async () => {
+    // The join row carries protein/cuisine already COALESCE'd in (recipe-derived).
+    const joinRows = [{ type: "recipe", date: "2026-06-10", recipe: "tacos", name: null, protein: "beef", cuisine: "mexican" }];
+    const env = envWith(joinRows, [TACOS_ROW]);
+    const r = await loadRetrospective(env, "everett", "all");
     expect(r.recipes_cooked.find((x) => x.recipe === "tacos")).toBeTruthy();
     expect(r.protein_mix.beef).toBe(1);
+    expect(r.cuisine_mix.mexican).toBe(1);
   });
 
-  it("returns index_unavailable when the KV key is absent (index not yet published)", async () => {
-    const personal = ghWith({ "cooking_log.toml": LOG });
-    const dataKv = kvWith({});
-    await expect(loadRetrospective(personal, dataKv, "all")).rejects.toMatchObject({
+  it("counts a non-recipe entry's inline dims", async () => {
+    const joinRows = [{ type: "ad_hoc", date: "2026-06-11", recipe: null, name: "stir fry", protein: "chicken", cuisine: null }];
+    const env = envWith(joinRows, []);
+    const r = await loadRetrospective(env, "everett", "all");
+    expect(r.protein_mix.chicken).toBe(1);
+    expect(r.cuisine_mix.unknown).toBe(1);
+  });
+
+  it("surfaces index_unavailable when the recipes table is unreadable", async () => {
+    const joinRows = [{ type: "recipe", date: "2026-06-10", recipe: "tacos", name: null, protein: "beef", cuisine: "mexican" }];
+    const env = envWith(joinRows, [], { throwOnRecipes: true });
+    await expect(loadRetrospective(env, "everett", "all")).rejects.toMatchObject({
       code: "index_unavailable",
     });
   });
 
-  it("works with no cooking log yet — empty history, index still from KV", async () => {
-    const personal = ghWith({});
-    const dataKv = kvWith({ "index:recipes": INDEX });
-    const r = await loadRetrospective(personal, dataKv, "all");
+  it("an empty log is not an error — empty history", async () => {
+    const env = envWith([], []);
+    const r = await loadRetrospective(env, "everett", "all");
     expect(r.recipes_cooked).toEqual([]);
   });
 });

@@ -9,10 +9,11 @@ import { z } from "zod";
 import type { Env } from "./env.js";
 import type { Tenant } from "./tenant.js";
 import { directoryFromEnv } from "./tenant.js";
-import { createGitHubClient, prefixedClient, GitHubError } from "./github.js";
+import { createGitHubClient, GitHubError } from "./github.js";
 import { createInstallationAuth } from "./github-app.js";
-import { readFile, readOptional } from "./gh-read.js";
-import { parseMarkdown, parseToml } from "./parse.js";
+import { readFile } from "./gh-read.js";
+import { parseMarkdown } from "./parse.js";
+import { readAliases, readSkuCache } from "./corpus-db.js";
 import { ToolError, runTool } from "./errors.js";
 import { registerWriteTools } from "./write-tools.js";
 import { registerGroceryListTools } from "./grocery-tools.js";
@@ -22,13 +23,21 @@ import { registerNoteTools, registerStoreNoteTools } from "./notes-tools.js";
 import { registerStoreTools } from "./stores-tools.js";
 import { registerCookingTools } from "./cooking-tools.js";
 import { filterRecipes, type RecipeIndex } from "./recipes.js";
+import { loadRecipeIndex } from "./recipe-index.js";
 import { listStorageGuidance, readStorageGuidance } from "./storage-guidance.js";
 import { fetchWeatherForecast } from "./weather.js";
-import { parseStaples } from "./staples.js";
-import { parseOverlay, mergeOverlay, type Overlay } from "./overlay.js";
-import { getProfileBundle, getPantryState, type ProfileBundle } from "./user-kv.js";
-import { toInventory } from "./kitchen.js";
-import { entriesOf, deriveLastCooked } from "./cooking-log.js";
+import { mergeOverlay, type Overlay } from "./overlay.js";
+import { readPantry } from "./session-db.js";
+import {
+  readProfile,
+  readPreferences,
+  readOverlay,
+  readOwnedEquipment,
+  readBrandPrefs,
+  type Preferences,
+} from "./profile-db.js";
+import { db } from "./db.js";
+import { registerCookingWriteTools } from "./cooking-write.js";
 import { createKrogerClient, type KrogerCandidate } from "./kroger.js";
 import {
   matchIngredient,
@@ -104,10 +113,9 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
   const server = new McpServer({ name: "grocery-mcp", version: "0.1.0" });
 
   // Repo access is authenticated with a short-lived GitHub App installation token
-  // (D3) against the single data repo. `sharedGh` addresses root paths (objective
-  // content `recipes/`, reference data, SKU cache, indexes); `gh` is the same repo
-  // wrapped to address this tenant's `users/<username>/` subtree (personal state,
-  // overlay, notes). One repo, two path views — never another tenant's subtree.
+  // (D3) against the single data repo. After slice 6 the ONLY data the Worker reads
+  // from GitHub is recipe markdown (everything else — profile, session, shared corpus
+  // — is D1), so `sharedGh` (root paths: `recipes/`) is the only client needed.
   const installationAuth = createInstallationAuth(
     env.GITHUB_APP_ID,
     env.GITHUB_APP_PRIVATE_KEY,
@@ -115,29 +123,19 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
   );
   const dataGh = createGitHubClient(tenant.dataRepo, installationAuth);
   const sharedGh = dataGh;
-  const gh = prefixedClient(dataGh, tenant.userPrefix);
   const kroger = createKrogerClient(env);
 
-  // Per-request bundle cache: one KV read for the full profile (KV is the source
-  // of truth; a miss is an empty profile — deploy-time migration populates KV).
-  let bundlePromise: Promise<ProfileBundle> | null = null;
-  function getBundle(): Promise<ProfileBundle> {
-    if (!bundlePromise) {
-      bundlePromise = getProfileBundle(env.DATA_KV, tenant.id);
-    }
-    return bundlePromise;
-  }
-
-  // Per-request lazy caches backed by the profile bundle (reads from KV).
-  let prefsPromise: Promise<Record<string, unknown>> | null = null;
-  function getPreferences(): Promise<Record<string, unknown>> {
+  // Per-request lazy caches backed by the D1 profile tables (the profile left KV
+  // for normalized D1 tables — src/profile-db.ts assembles the agent-facing shapes).
+  let prefsPromise: Promise<Preferences> | null = null;
+  function getPreferences(): Promise<Preferences> {
     if (!prefsPromise) {
       prefsPromise = (async () => {
-        const bundle = await getBundle();
-        if (!bundle.preferences?.trim()) {
+        const prefs = await readPreferences(env, tenant.id);
+        if (prefs === null) {
           throw new ToolError("not_found", "no preferences are set up");
         }
-        return parseToml(bundle.preferences, "preferences.toml");
+        return prefs;
       })();
     }
     return prefsPromise;
@@ -168,73 +166,54 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
   let aliasesPromise: Promise<Record<string, string>> | null = null;
   function getAliases(): Promise<Record<string, string>> {
     if (!aliasesPromise) {
-      aliasesPromise = (async () => {
-        const aliasText = await readOptional(sharedGh, "aliases.toml");
-        return aliasText !== null
-          ? ((parseToml(aliasText, "aliases.toml").aliases as Record<string, string>) ?? {})
-          : {};
-      })();
+      aliasesPromise = readAliases(env);
     }
     return aliasesPromise;
   }
 
   async function getCacheMappings(): Promise<CachedMapping[]> {
-    const cacheText = await readOptional(sharedGh, "skus/kroger.toml");
-    const cache: CachedMapping[] = [];
-    if (cacheText) {
-      const mappings = (parseToml(cacheText, "skus/kroger.toml").mappings as Record<string, unknown>[]) ?? [];
-      for (const m of mappings) {
-        if (typeof m.ingredient === "string" && typeof m.sku === "string") {
-          cache.push({
-            ingredient: m.ingredient,
-            sku: m.sku,
-            brand: typeof m.brand === "string" ? m.brand : undefined,
-            size: typeof m.size === "string" ? m.size : undefined,
-            locationId: typeof m.locationId === "string" ? m.locationId : undefined,
-          });
-        }
-      }
-    }
-    return cache;
+    return readSkuCache(env);
   }
 
   // Per-request lazy reads of the caller's subjective layer. The overlay
   // supplies rating+status from the KV profile bundle; the cooking log supplies
-  // last_cooked from GitHub. Both are merged onto shared recipe content at read
-  // time (§6.2).
+  // last_cooked from the D1 `cooking_log` table. Both are merged onto shared
+  // recipe content at read time (§6.2).
   let overlayPromise: Promise<Overlay> | null = null;
   function getOverlay(): Promise<Overlay> {
     if (!overlayPromise) {
-      overlayPromise = (async () => {
-        const bundle = await getBundle();
-        return bundle.overlay ? parseOverlay(bundle.overlay) : {};
-      })();
+      overlayPromise = readOverlay(env, tenant.id);
     }
     return overlayPromise;
   }
 
+  // last_cooked per recipe is now a D1 aggregation: MAX(date) over the caller's
+  // type='recipe' rows, grouped by slug. An empty/absent log yields an empty map.
   let lastCookedPromise: Promise<Map<string, string>> | null = null;
   function getLastCookedMap(): Promise<Map<string, string>> {
     if (!lastCookedPromise) {
       lastCookedPromise = (async () => {
-        const text = await readOptional(gh, "cooking_log.toml");
-        return text
-          ? deriveLastCooked(entriesOf(parseToml(text, "cooking_log.toml")))
-          : new Map<string, string>();
+        const rows = await db(env).all<{ recipe: string; last_cooked: string }>(
+          "SELECT recipe, MAX(date) AS last_cooked FROM cooking_log " +
+            "WHERE tenant = ?1 AND type = 'recipe' AND recipe IS NOT NULL GROUP BY recipe",
+          tenant.id,
+        );
+        const map = new Map<string, string>();
+        for (const { recipe, last_cooked } of rows) {
+          if (recipe && last_cooked) map.set(recipe, last_cooked);
+        }
+        return map;
       })();
     }
     return lastCookedPromise;
   }
 
-  // The caller's owned equipment (from KV bundle), the makeability gate's
-  // left operand. Empty/absent ⇒ unknown inventory ⇒ the gate is a no-op.
+  // The caller's owned equipment (from the D1 kitchen_equipment table), the
+  // makeability gate's left operand. Empty/absent ⇒ unknown inventory ⇒ gate no-op.
   let ownedPromise: Promise<string[]> | null = null;
   function getOwnedEquipment(): Promise<string[]> {
     if (!ownedPromise) {
-      ownedPromise = (async () => {
-        const bundle = await getBundle();
-        return bundle.kitchen ? toInventory(parseToml(bundle.kitchen, "kitchen.toml")).owned : [];
-      })();
+      ownedPromise = readOwnedEquipment(env, tenant.id);
     }
     return ownedPromise;
   }
@@ -246,8 +225,7 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
     bypassCache = false,
   ): Promise<MatchResult> {
     const locationId = await getLocationId();
-    const prefs = await getPreferences();
-    const brands = (prefs.brands as Record<string, string[]> | undefined) ?? {};
+    const brands = await readBrandPrefs(env, tenant.id);
     const aliases = await getAliases();
     const cache = await getCacheMappings();
     const deps: MatchDeps = {
@@ -274,21 +252,22 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
     },
     ({ filters }) =>
       runTool(async () => {
-        const [rawIndex, overlay, lastCooked, owned] = await Promise.all([
-          env.DATA_KV.get("index:recipes"),
+        // The shared index is the D1 `recipes` table (loadRecipeIndex rebuilds the
+        // in-memory RecipeIndex from rows). An EMPTY table is a valid empty corpus —
+        // it yields `{}` and the filter returns []. An UNREADABLE table throws a
+        // `storage_error` from db(); remap that to `index_unavailable` (the two cases
+        // the old KV key-presence check conflated).
+        const [index, overlay, lastCooked, owned] = await Promise.all([
+          loadRecipeIndex(env).catch((e) => {
+            throw new ToolError(
+              "index_unavailable",
+              `the recipe index is unavailable: ${e instanceof Error ? e.message : String(e)}`,
+            );
+          }),
           getOverlay(),
           getLastCookedMap(),
           getOwnedEquipment(),
         ]);
-        if (rawIndex === null)
-          throw new ToolError("index_unavailable", "the recipe index is unavailable");
-        let index: RecipeIndex;
-        try {
-          index = JSON.parse(rawIndex) as RecipeIndex;
-        } catch (e) {
-          const message = e instanceof Error ? e.message : String(e);
-          throw new ToolError("index_unavailable", `the recipe index is malformed: ${message}`);
-        }
         // Join each shared entry with the caller's overlay (rating/status) and
         // cooking-log-derived last_cooked before filtering, so filters see the
         // caller's effective per-tenant view (effective status defaults to draft).
@@ -364,13 +343,10 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
             "stale_only is not computable: freshness is an LLM-judged, conversational concern (storage, open packages, visual inspection), not a function of the repo data.",
           );
         }
-        let items = await getPantryState(env.DATA_KV, tenant.id);
-        if (filter?.category !== undefined) {
-          items = items.filter((i) => i.category === filter.category);
-        }
-        if (filter?.prepared_only) {
-          items = items.filter((i) => i.prepared_from != null);
-        }
+        const items = await readPantry(env, tenant.id, {
+          category: filter?.category,
+          preparedOnly: filter?.prepared_only,
+        });
         return { items };
       }),
   );
@@ -384,40 +360,42 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
     },
     () =>
       runTool(async () => {
-        const bundle = await getBundle();
+        const profile = await readProfile(env, tenant.id);
 
-        const PROFILE_AREAS: ReadonlyArray<readonly [area: string, field: keyof typeof bundle]> = [
-          ["store", "preferences"],
-          ["taste", "taste"],
-          ["diet", "diet_principles"],
-          ["equipment", "kitchen"],
-          ["ready-to-eat", "ready_to_eat"],
-          ["stockup", "stockup"],
+        // Each onboarding area maps to a structured field; an area is "missing"
+        // when its field is empty (null preferences/markdown, empty list/inventory).
+        const isEmpty = (v: unknown): boolean => {
+          if (v == null) return true;
+          if (typeof v === "string") return v.trim().length === 0;
+          if (Array.isArray(v)) return v.length === 0;
+          if (typeof v === "object") return Object.keys(v as Record<string, unknown>).length === 0;
+          return false;
+        };
+        const PROFILE_AREAS: ReadonlyArray<readonly [area: string, value: unknown]> = [
+          ["store", profile.preferences],
+          ["taste", profile.taste],
+          ["diet", profile.diet_principles],
+          ["equipment", profile.kitchen.owned.length ? profile.kitchen : null],
+          ["ready-to-eat", profile.ready_to_eat],
+          ["stockup", profile.stockup],
         ];
 
-        const initialized = bundle.preferences != null && bundle.preferences.trim().length > 0;
+        const initialized = profile.preferences !== null;
         const missing: string[] = [];
-        for (const [area, field] of PROFILE_AREAS) {
-          const value = bundle[field];
-          if (value == null || (typeof value === "string" && value.trim().length === 0)) {
-            missing.push(area);
-          }
+        for (const [area, value] of PROFILE_AREAS) {
+          if (isEmpty(value)) missing.push(area);
         }
 
         return {
           initialized,
           missing,
-          preferences: bundle.preferences ? parseToml(bundle.preferences, "preferences.toml") : null,
-          taste: bundle.taste ?? null,
-          diet_principles: bundle.diet_principles ?? null,
-          kitchen: bundle.kitchen
-            ? toInventory(parseToml(bundle.kitchen, "kitchen.toml"))
-            : { owned: [], notes: {} },
-          staples: parseStaples(bundle.staples ?? null),
-          ready_to_eat: bundle.ready_to_eat
-            ? ((parseToml(bundle.ready_to_eat, "ready_to_eat.toml").items as Record<string, unknown>[]) ?? [])
-            : [],
-          stockup: bundle.stockup ? parseToml(bundle.stockup, "stockup.toml") : null,
+          preferences: profile.preferences,
+          taste: profile.taste,
+          diet_principles: profile.diet_principles,
+          kitchen: profile.kitchen,
+          staples: profile.staples,
+          ready_to_eat: profile.ready_to_eat,
+          stockup: profile.stockup,
         };
       }),
   );
@@ -500,10 +478,7 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
         const available: Record<string, unknown[]> = { breakfast: [], lunch: [], dinner: [] };
         const unavailable: unknown[] = [];
 
-        const bundle = await getBundle();
-        const items = bundle.ready_to_eat
-          ? ((parseToml(bundle.ready_to_eat, "ready_to_eat.toml").items as Record<string, unknown>[]) ?? [])
-          : [];
+        const items = (await readProfile(env, tenant.id)).ready_to_eat;
         // One Kroger search per catalog item, run concurrently (bounded by the
         // client cap); bucket from the ordered results so output stays stable.
         const looked = await Promise.all(
@@ -561,36 +536,41 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
       runTool(() => resolveIngredient(ingredient, context ?? {}, bypass_cache ?? false)),
   );
 
-  // Repo-data write tools route by category internally (content → shared root,
-  // personal/overlay → KV profile bundle), so they take the ROOT client + the
-  // caller's prefix + DATA_KV + tenant id for profile writes.
-  registerWriteTools(server, sharedGh, tenant.userPrefix, env.DATA_KV, tenant.id);
-  registerGroceryListTools(server, env.DATA_KV, tenant.id);
+  // Repo-data write tools route by category internally (objective recipe content →
+  // shared root via GitHub; personal profile/overlay → D1 profile tables; session
+  // state pantry → D1 pantry table), so they take the ROOT client + D1 (env) +
+  // tenant id.
+  registerWriteTools(server, sharedGh, env, tenant.id);
+  registerGroceryListTools(server, env, tenant.id);
 
   // Cooking history + meal plan: read_meal_plan (resume), update_meal_plan, and
-  // retrospective. Meal plan reads/writes go through DATA_KV; cooking log stays GitHub.
-  registerCookingTools(server, gh, env.DATA_KV, tenant.id);
+  // retrospective. Meal plan reads/writes go through the D1 `meal_plan` table; the
+  // cooking log is the D1 `cooking_log` table. log_cooked appends a cooking event and
+  // clears the cooked recipe from the meal plan in ONE D1 transaction (slice 5).
+  registerCookingTools(server, env, tenant.id);
+  registerCookingWriteTools(server, env, tenant.id);
 
   // Discovery: RSS recipe candidates, parse-only URL import, draft create, plus the
   // feeds/sources config writers. Everything here is SHARED (root client) — recipes,
   // feeds.toml, the discoveries inbox, and discovery_sources.toml all live at the
   // data-repo root, so any member's config feeds one group pool. Imports dedupe by
   // source URL against the shared corpus so a recipe is reused, not duplicated (§6.4).
-  registerDiscoveryTools(server, sharedGh, env.DATA_KV);
+  registerDiscoveryTools(server, sharedGh, env);
 
-  // Recipe notes (§8): attributed annotations authored in this tenant's subtree,
-  // aggregated across the group at read time (KV tenant directory → each subtree).
-  registerNoteTools(server, sharedGh, gh, tenant.id, directoryFromEnv(env), env.DATA_KV);
+  // Recipe notes (§8): attributed annotations in the D1 `recipe_notes` table,
+  // aggregated across the group at read time with the privacy WHERE (own-private +
+  // group-shared), joined with the slice-4 overlay-ratings query (fully D1).
+  registerNoteTools(server, tenant.id, directoryFromEnv(env), env);
 
-  // In-store fulfillment: the shared stores/ registry (identity-only CRUD,
-  // unattributed) + attributed per-tenant store notes (the recipe-notes pattern,
-  // store analog) — layout lives in layout/location/stock-tagged store notes.
-  registerStoreTools(server, sharedGh);
-  registerStoreNoteTools(server, sharedGh, gh, tenant.id, directoryFromEnv(env));
+  // In-store fulfillment: the shared D1 `stores` registry (identity-only CRUD,
+  // unattributed) + attributed D1 `store_notes` (the recipe-notes pattern, store
+  // analog) — layout lives in layout/location/stock-tagged store notes.
+  registerStoreTools(server, env);
+  registerStoreNoteTools(server, tenant.id, env);
 
   // place_order — the order-time flush: resolve the list, write the Kroger cart,
   // persist learned SKUs to the SHARED cache. The one tool that reaches the cart.
-  registerOrderTools(server, sharedGh, env, tenant.id, resolveIngredient, getLocationId);
+  registerOrderTools(server, env, tenant.id, resolveIngredient, getLocationId);
 
   // get_weather_forecast — read-only Open-Meteo fetch; location resolved from
   // the caller's preferences (location_zip → parse preferred_location). Used by
@@ -610,14 +590,14 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
     },
     ({ days }) =>
       runTool(async () => {
-        const bundle = await getBundle();
-        const prefs = bundle.preferences ? parseToml(bundle.preferences, "preferences.toml") : {};
+        const prefs = (await readPreferences(env, tenant.id)) ?? {};
         const stores = prefs.stores as Record<string, unknown> | undefined;
 
-        // Resolve location: explicit location_zip first, then parse from preferred_location.
+        // Resolve location: explicit stores.location_zip first, then parse from
+        // preferred_location. (location_zip lives under `stores` in the D1 schema.)
         let zip: string | null = null;
-        if (typeof prefs.location_zip === "string" && prefs.location_zip.trim()) {
-          zip = prefs.location_zip.trim();
+        if (typeof stores?.location_zip === "string" && stores.location_zip.trim()) {
+          zip = stores.location_zip.trim();
         } else if (typeof stores?.preferred_location === "string") {
           zip = stores.preferred_location.match(/\d{5}/)?.[0] ?? null;
         }

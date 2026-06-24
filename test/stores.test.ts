@@ -1,134 +1,15 @@
+// The store registry is the D1 `stores` table now (d1-shared-corpus). stores.ts keeps
+// the pure operation/shape logic (applyStoreOperations, toListing, slug guard); the row
+// read/write is corpus-db. These tests cover both against the fake D1.
+
 import { describe, it, expect } from "vitest";
-import {
-  toStore,
-  serializeStore,
-  toListing,
-  applyStoreOperations,
-  listStores,
-  readStore,
-  storePath,
-  slugFromStoreFile,
-  type Store,
-  type StoreOperation,
-} from "../src/stores.js";
-import { commitFiles } from "../src/commit.js";
-import { GitHubError, type GitHubClient, type DirEntry } from "../src/github.js";
-import { parse as parseTomlRaw } from "smol-toml";
+import { fakeD1 } from "./fake-d1.js";
+import { toListing, applyStoreOperations, assertStoreSlug, type Store, type StoreOperation } from "../src/stores.js";
+import { insertStore, readStoreRow, listStoreRows, upsertStore, deleteStore } from "../src/corpus-db.js";
 
 function store(over: Partial<Store> = {}): Store {
-  return {
-    slug: "west-7th-tom-thumb",
-    name: "Tom Thumb",
-    label: "West 7th",
-    domain: "grocery",
-    ...over,
-  };
+  return { slug: "west-7th-tom-thumb", name: "Tom Thumb", label: "West 7th", domain: "grocery", ...over };
 }
-
-/** A read-only fake gh backed by an in-memory file map + optional dir listing. */
-function fakeGh(opts: { dir?: DirEntry[] | "404"; files?: Record<string, string> }): GitHubClient {
-  const files = opts.files ?? {};
-  const notUsed = () => {
-    throw new Error("not used");
-  };
-  return {
-    async getFile(path) {
-      if (path in files) return files[path];
-      throw new GitHubError(404, `Not found: ${path}`);
-    },
-    async listDir(path) {
-      if (opts.dir === undefined || opts.dir === "404") throw new GitHubError(404, `Not found: ${path}`);
-      return opts.dir;
-    },
-    getRef: notUsed,
-    getCommitTree: notUsed,
-    createTree: notUsed,
-    createCommit: notUsed,
-    updateRef: notUsed,
-    createIssue: notUsed,
-    getPagesUrl: notUsed,
-  };
-}
-
-/** A commit-capturing fake gh: createTree applies writes/deletions to the file map. */
-function commitGh(files: Record<string, string>): GitHubClient {
-  return {
-    async getFile(path) {
-      if (path in files) return files[path];
-      throw new GitHubError(404, `Not found: ${path}`);
-    },
-    async listDir() {
-      throw new GitHubError(404, "no dir");
-    },
-    async getRef() {
-      return "base";
-    },
-    async getCommitTree() {
-      return "tree";
-    },
-    async createTree(_base, changes) {
-      for (const c of changes) {
-        if ("delete" in c) delete files[c.path];
-        else files[c.path] = c.content;
-      }
-      return "newtree";
-    },
-    async createCommit() {
-      return "commit";
-    },
-    async updateRef() {},
-    async createIssue() {
-      return { url: "x", number: 1 };
-    },
-    async getPagesUrl() {
-      return { url: null, enabled: false };
-    },
-  };
-}
-
-describe("slugFromStoreFile / storePath", () => {
-  it("derives the slug from a .toml file and round-trips the path", () => {
-    expect(slugFromStoreFile("west-7th-tom-thumb.toml")).toBe("west-7th-tom-thumb");
-    expect(slugFromStoreFile("README.md")).toBeNull();
-    expect(storePath("west-7th-tom-thumb")).toBe("stores/west-7th-tom-thumb.toml");
-  });
-});
-
-describe("toStore / serializeStore round-trip", () => {
-  it("round-trips identity (slug, name, label, chain, address, domain)", () => {
-    const s = store({ chain: "Albertsons", address: "123 W 7th" });
-    const reparsed = toStore(parseTomlRaw(serializeStore(s)) as Record<string, unknown>);
-    expect(reparsed).toEqual(s);
-  });
-
-  it("defaults domain to grocery; omits absent optional identity", () => {
-    const s = toStore({ slug: "s", name: "S" });
-    expect(s).toEqual({ slug: "s", name: "S", domain: "grocery" });
-  });
-
-  it("round-trips location_id when present", () => {
-    const s = store({ location_id: "70100156" });
-    const reparsed = toStore(parseTomlRaw(serializeStore(s)) as Record<string, unknown>);
-    expect(reparsed.location_id).toBe("70100156");
-  });
-
-  it("omits location_id from serialized output when absent", () => {
-    const serialized = serializeStore(store());
-    expect(serialized).not.toContain("location_id");
-  });
-
-  it("silently ignores legacy layout keys (aisles / item_locations / doesnt_carry)", () => {
-    const s = toStore({
-      slug: "s",
-      name: "S",
-      domain: "grocery",
-      aisles: [{ number: 1, sections: ["produce"] }],
-      item_locations: [{ item: "tahini", aisle: "9" }],
-      doesnt_carry: ["harissa"],
-    });
-    expect(s).toEqual({ slug: "s", name: "S", domain: "grocery" });
-  });
-});
 
 describe("toListing", () => {
   it("returns identity and carries the label", () => {
@@ -140,8 +21,14 @@ describe("toListing", () => {
     });
   });
   it("omits an absent label", () => {
-    const l = toListing(store({ label: undefined }));
-    expect("label" in l).toBe(false);
+    expect("label" in toListing(store({ label: undefined }))).toBe(false);
+  });
+});
+
+describe("assertStoreSlug", () => {
+  it("accepts kebab-case and rejects path traversal", () => {
+    expect(() => assertStoreSlug("west-7th-tom-thumb")).not.toThrow();
+    expect(() => assertStoreSlug("../secrets")).toThrow();
   });
 });
 
@@ -155,9 +42,9 @@ describe("applyStoreOperations (identity only)", () => {
   });
 
   it("set_identity sets location_id", () => {
-    const ops: StoreOperation[] = [{ op: "set_identity", field: "location_id", value: "70100156" }];
-    const { store: next, applied, conflicts } = applyStoreOperations(store(), ops);
-    expect(conflicts).toEqual([]);
+    const { store: next, applied } = applyStoreOperations(store(), [
+      { op: "set_identity", field: "location_id", value: "70100156" },
+    ]);
     expect(applied).toEqual([{ op: "set_identity", target: "location_id" }]);
     expect(next.location_id).toBe("70100156");
   });
@@ -177,70 +64,35 @@ describe("applyStoreOperations (identity only)", () => {
   });
 });
 
-describe("listStores (gh-driven)", () => {
-  it("lists stores sorted by slug (identity only), ignoring non-toml entries", async () => {
-    const gh = fakeGh({
-      dir: [
-        { name: "west-7th-tom-thumb.toml", type: "file" },
-        { name: "central-market.toml", type: "file" },
-        { name: "README.md", type: "file" },
-        { name: "nested", type: "dir" },
-      ],
-      files: {
-        "stores/west-7th-tom-thumb.toml": serializeStore(store()),
-        "stores/central-market.toml": serializeStore(store({ slug: "central-market", name: "Central Market", label: undefined })),
-      },
-    });
-    const { stores } = await listStores(gh);
-    expect(stores.map((s) => s.slug)).toEqual(["central-market", "west-7th-tom-thumb"]);
-    expect(stores[1]).toEqual({ slug: "west-7th-tom-thumb", name: "Tom Thumb", label: "West 7th", domain: "grocery" });
-    expect("has_layout" in stores[1]).toBe(false);
+describe("store registry (D1) round-trip", () => {
+  it("insert → read (identity + extra), list sorted by slug", async () => {
+    const { env } = fakeD1({ tables: { stores: [] } });
+    await insertStore(env, store({ slug: "s", name: "S", label: "L", chain: "Albertsons", address: "123", location_id: "70100156" }));
+    await insertStore(env, store({ slug: "central-market", name: "Central Market", label: undefined }));
+
+    const s = await readStoreRow(env, "s");
+    expect(s).toEqual({ slug: "s", name: "S", label: "L", chain: "Albertsons", address: "123", domain: "grocery", location_id: "70100156" });
+
+    const list = await listStoreRows(env);
+    expect(list.map((x) => x.slug)).toEqual(["central-market", "s"]);
   });
 
-  it("returns an empty set when the stores/ tree does not exist (404)", async () => {
-    expect(await listStores(fakeGh({ dir: "404" }))).toEqual({ stores: [] });
-  });
-});
-
-describe("readStore (gh-driven)", () => {
-  it("reads a store's identity", async () => {
-    const gh = fakeGh({ files: { "stores/west-7th-tom-thumb.toml": serializeStore(store()) } });
-    expect(await readStore(gh, "west-7th-tom-thumb")).toEqual(store());
+  it("defaults domain to grocery; unknown slug → null", async () => {
+    const { env } = fakeD1({ tables: { stores: [{ slug: "s", name: "S", domain: null, extra: null }] } });
+    expect(await readStoreRow(env, "s")).toEqual({ slug: "s", name: "S", domain: "grocery" });
+    expect(await readStoreRow(env, "nope")).toBeNull();
   });
 
-  it("reads identity from a legacy file still carrying layout keys (ignored, no error)", async () => {
-    const legacy =
-      '# legacy\nslug = "s"\nname = "S"\ndomain = "grocery"\n\n[[aisles]]\nnumber = 1\nsections = ["produce"]\n';
-    const gh = fakeGh({ files: { "stores/s.toml": legacy } });
-    expect(await readStore(gh, "s")).toEqual({ slug: "s", name: "S", domain: "grocery" });
-  });
-
-  it("yields a structured not_found for an unknown slug", async () => {
-    await expect(readStore(fakeGh({ files: {} }), "nope")).rejects.toMatchObject({ code: "not_found" });
-  });
-
-  it("rejects a malformed slug (path traversal) without fetching", async () => {
-    await expect(readStore(fakeGh({ files: {} }), "../secrets")).rejects.toMatchObject({ code: "not_found" });
-  });
-});
-
-describe("store mutation round-trip (commit engine, incl. deletion)", () => {
-  it("add → read, update → read, remove → not_found", async () => {
-    const files: Record<string, string> = {};
-    const gh = commitGh(files);
-
-    // add: commit a serialized store, then read it back.
-    await commitFiles(gh, [{ path: storePath("s"), content: serializeStore(store({ slug: "s" })) }], "add");
-    expect((await readStore(gh, "s")).name).toBe("Tom Thumb");
-
-    // update: apply an identity op and re-commit; the read reflects it.
-    const cur = await readStore(gh, "s");
+  it("upsert applies an identity edit; delete removes the row", async () => {
+    const { env } = fakeD1({ tables: { stores: [] } });
+    await insertStore(env, store({ slug: "s", name: "Tom Thumb" }));
+    const cur = (await readStoreRow(env, "s"))!;
     const { store: next } = applyStoreOperations(cur, [{ op: "set_identity", field: "name", value: "TT2" }]);
-    await commitFiles(gh, [{ path: storePath("s"), content: serializeStore(next) }], "update");
-    expect((await readStore(gh, "s")).name).toBe("TT2");
+    await upsertStore(env, next);
+    expect((await readStoreRow(env, "s"))!.name).toBe("TT2");
 
-    // remove: a deletion change drops the file; the read 404s → not_found.
-    await commitFiles(gh, [{ path: storePath("s"), delete: true }], "remove");
-    await expect(readStore(gh, "s")).rejects.toMatchObject({ code: "not_found" });
+    expect(await deleteStore(env, "s")).toBe(true);
+    expect(await readStoreRow(env, "s")).toBeNull();
+    expect(await deleteStore(env, "s")).toBe(false);
   });
 });

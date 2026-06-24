@@ -9,8 +9,10 @@
 # lives in THEIR data repo and is overlaid onto the source before deploy.
 #
 # Zero-config (see the zero-config-deploy change):
-#  - KV ids are auto-provisioned by `wrangler deploy` (the template config ships
-#    id-less bindings) and PINNED BACK into the data repo so redeploys reuse them.
+#  - KV namespace ids and the D1 database id are auto-provisioned by `wrangler deploy`
+#    (the template config ships id-less bindings) and PINNED BACK into the data repo so
+#    redeploys reuse them. D1 schema migrations (migrations/d1/*.sql) are then applied
+#    via `wrangler d1 migrations apply DB --remote`, before the .mjs data-backfill runner.
 #  - DATA_OWNER/DATA_REPO are intuited from `github.repository`; DATA_REF defaults
 #    to main — injected as --var, not hand-set in wrangler.jsonc.
 #  - The GitHub App private key STAYS a manual Cloudflare secret (never in a repo).
@@ -30,7 +32,7 @@ on:
         default: wrangler.jsonc
     secrets:
       CLOUDFLARE_API_TOKEN:
-        description: "Cloudflare token with Workers + KV edit."
+        description: "Cloudflare token with Workers + KV + D1 edit."
         required: true
       KROGER_CLIENT_ID:
         description: "Optional: Kroger client id; when set, the deploy puts it as a Worker secret."
@@ -124,31 +126,48 @@ jobs:
             echo "Kroger creds not supplied as repo secrets — leaving any dashboard-set values untouched."
           fi
 
-      # Pin auto-provisioned KV ids back into the operator's config so the NEXT deploy
-      # reuses the same namespaces. Under the merge, _code/wrangler.jsonc is the FULL
-      # deployed config (code-level + operator), so a wholesale copy-back would re-bloat
-      # the operator's slim config with code-level keys — instead we surgically patch
-      # only the provisioned KV ids (by binding) into the operator's config.
+      # Pin auto-provisioned KV namespace ids AND the D1 database id back into the
+      # operator's config so the NEXT deploy reuses the same namespaces/database. Under
+      # the merge, _code/wrangler.jsonc is the FULL deployed config (code-level +
+      # operator), so a wholesale copy-back would re-bloat the operator's slim config
+      # with code-level keys — instead we surgically patch only the provisioned ids (by
+      # binding) into the operator's config. The same `pin` invocation covers both binding
+      # types (merge-wrangler-config.mjs pinBindingIds + bindingIdsChanged).
       #
       # Assumes `wrangler deploy` writes the provisioned ids into _code/wrangler.jsonc
       # in place; if a wrangler version stops doing so, fetch ids via `wrangler kv
-      # namespace list` instead (the pin step's input is the only thing that changes).
-      - name: Pin auto-provisioned KV ids back to the data repo
+      # namespace list` / `wrangler d1 list` instead (the pin step's input is the only
+      # thing that changes).
+      - name: Pin auto-provisioned KV + D1 ids back to the data repo
         env:
           CONFIG: ${{ inputs.config_path }}
         run: |
           node _code/scripts/merge-wrangler-config.mjs pin _code/wrangler.jsonc "$CONFIG"
           if git diff --quiet -- "$CONFIG"; then
-            echo "No KV id changes to persist."
+            echo "No KV/D1 id changes to persist."
           else
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
             git add "$CONFIG"
-            git commit -m "chore(deploy): pin auto-provisioned KV namespace ids"
+            git commit -m "chore(deploy): pin auto-provisioned KV + D1 ids"
             if ! git push; then
-              echo "::warning::Could not push pinned KV ids (the deploy caller needs 'permissions: contents: write'). The deploy succeeded; paste the ids from wrangler.jsonc manually, or grant the permission so it auto-pins next time."
+              echo "::warning::Could not push pinned KV/D1 ids (the deploy caller needs 'permissions: contents: write'). The deploy succeeded; paste the ids from wrangler.jsonc manually, or grant the permission so it auto-pins next time."
             fi
           fi
+
+      # Apply pending D1 SCHEMA migrations (migrations/d1/*.sql) to the now-provisioned
+      # database. This is the native track — `wrangler d1 migrations apply` tracks applied
+      # files in D1's own `d1_migrations` table (created on first apply), distinct from the
+      # `.mjs` runner's `migrations:applied` KV ledger below. Runs AFTER the pin (so the
+      # database_id is in the operator config) and BEFORE the data backfill (so its tables
+      # exist). A no-op when nothing is pending. The operator's CLOUDFLARE_API_TOKEN must
+      # carry D1 edit — an under-scoped token surfaces as a clear failure here.
+      - name: Apply D1 schema migrations
+        uses: cloudflare/wrangler-action@ebbaa1584979971c8614a24965b4405ff95890e0 # v4.0.0
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          workingDirectory: _code
+          command: d1 migrations apply DB --remote
 
       # Apply pending KV migrations (e.g. moving per-tenant profile/session state
       # from users/<username>/ files into DATA_KV). The runner reads the data repo

@@ -1,0 +1,204 @@
+import { describe, it, expect } from "vitest";
+import {
+  readProfile,
+  readPreferences,
+  readOverlay,
+  readBrandPrefs,
+  setOverlay,
+  setStaples,
+} from "../src/profile-db.js";
+import type { Env } from "../src/env.js";
+
+// A tiny in-memory D1 keyed by table, routing by SQL. Enough to exercise the read
+// assembly + the row writers' SQL/bind contract (a live round-trip is a deploy probe).
+function fakeD1(tables: Record<string, Record<string, unknown>[]>): {
+  env: Env;
+  tables: Record<string, Record<string, unknown>[]>;
+} {
+  const store: Record<string, Record<string, unknown>[]> = {
+    profile: [],
+    brand_prefs: [],
+    kitchen_equipment: [],
+    staples: [],
+    overlay: [],
+    ready_to_eat: [],
+    stockup: [],
+    ...tables,
+  };
+  const tableOf = (sql: string): string | null => {
+    const m = /(?:FROM|INTO|UPDATE)\s+(\w+)/i.exec(sql);
+    return m ? m[1] : null;
+  };
+  const exec = (sql: string, binds: unknown[]) => {
+    const table = tableOf(sql)!;
+    if (/^SELECT/i.test(sql)) {
+      const tenant = binds[0];
+      let rows = (store[table] ?? []).filter((r) => r.tenant === tenant);
+      if (sql.includes("recipe = ?2")) rows = rows.filter((r) => r.recipe === binds[1]);
+      return { rows, changes: 0 };
+    }
+    if (/^DELETE/i.test(sql)) {
+      const before = store[table].length;
+      store[table] = store[table].filter((r) => {
+        if (r.tenant !== binds[0]) return true;
+        if (sql.includes("recipe = ?2")) return r.recipe !== binds[1];
+        return false;
+      });
+      return { rows: [], changes: before - store[table].length };
+    }
+    if (/^INSERT/i.test(sql)) {
+      const cols = /INSERT INTO \w+ \(([^)]+)\)/.exec(sql)![1].split(",").map((c) => c.trim());
+      const row: Record<string, unknown> = {};
+      cols.forEach((c, i) => (row[c] = binds[i] ?? null));
+      const pk = table === "overlay" ? ["tenant", "recipe"] : ["tenant", "normalized_name"];
+      const idx = store[table].findIndex((r) => pk.every((k) => r[k] === row[k]));
+      if (idx >= 0 && /ON CONFLICT/i.test(sql)) store[table][idx] = { ...store[table][idx], ...row };
+      else store[table].push(row);
+      return { rows: [], changes: 1 };
+    }
+    return { rows: [], changes: 0 };
+  };
+  const makeStmt = (sql: string) => {
+    let binds: unknown[] = [];
+    const stmt = {
+      bind(...v: unknown[]) {
+        binds = v;
+        return stmt;
+      },
+      async first<T>() {
+        return (exec(sql, binds).rows[0] ?? null) as T | null;
+      },
+      async all<T>() {
+        return { results: exec(sql, binds).rows as T[], success: true as const, meta: { changes: 0 } };
+      },
+      async run() {
+        return { success: true as const, meta: { changes: exec(sql, binds).changes } };
+      },
+      __exec: () => exec(sql, binds),
+    };
+    return stmt;
+  };
+  const DB = {
+    prepare: (sql: string) => makeStmt(sql) as unknown as D1PreparedStatement,
+    async batch(stmts: unknown[]) {
+      for (const s of stmts) (s as { __exec: () => void }).__exec();
+      return [];
+    },
+  } as unknown as D1Database;
+  return { env: { DB } as unknown as Env, tables: store };
+}
+
+describe("readPreferences", () => {
+  it("reconstructs preferences from the profile row + brand_prefs rows", async () => {
+    const { env } = fakeD1({
+      profile: [
+        {
+          tenant: "everett",
+          default_cooking_nights: 3,
+          lunch_strategy: "leftovers",
+          stores: JSON.stringify({ primary: "kroger" }),
+          dietary: JSON.stringify({ avoid: [], limit: ["cilantro"] }),
+          custom: null,
+        },
+      ],
+      brand_prefs: [
+        { tenant: "everett", term: "olive_oil", ranks: '["Cobram"]' },
+        { tenant: "everett", term: "yellow_onion", ranks: "[]" },
+      ],
+    });
+    const prefs = await readPreferences(env, "everett");
+    expect(prefs).toEqual({
+      default_cooking_nights: 3,
+      lunch_strategy: "leftovers",
+      stores: { primary: "kroger" },
+      dietary: { avoid: [], limit: ["cilantro"] },
+      brands: { olive_oil: ["Cobram"], yellow_onion: [] },
+    });
+  });
+
+  it("returns null when there is no profile row", async () => {
+    const { env } = fakeD1({});
+    expect(await readPreferences(env, "ghost")).toBeNull();
+  });
+});
+
+describe("readBrandPrefs", () => {
+  it("maps term → rank list ([] preserved)", async () => {
+    const { env } = fakeD1({
+      brand_prefs: [
+        { tenant: "everett", term: "olive_oil", ranks: '["A","B"]' },
+        { tenant: "everett", term: "onion", ranks: "[]" },
+      ],
+    });
+    expect(await readBrandPrefs(env, "everett")).toEqual({ olive_oil: ["A", "B"], onion: [] });
+  });
+});
+
+describe("readOverlay / setOverlay", () => {
+  it("round-trips a row through the overlay table", async () => {
+    const { env, tables } = fakeD1({});
+    await setOverlay(env, "everett", "tacos", { rating: 4, status: "active" });
+    expect(tables.overlay).toContainEqual(
+      expect.objectContaining({ tenant: "everett", recipe: "tacos", rating: 4, status: "active" }),
+    );
+    expect(await readOverlay(env, "everett")).toEqual({ tacos: { rating: 4, status: "active" } });
+  });
+
+  it("DELETEs the row when given null", async () => {
+    const { env, tables } = fakeD1({ overlay: [{ tenant: "everett", recipe: "tacos", rating: 4, status: null }] });
+    await setOverlay(env, "everett", "tacos", null);
+    expect(tables.overlay).toHaveLength(0);
+  });
+});
+
+describe("setStaples", () => {
+  it("delete-then-inserts with a normalized_name", async () => {
+    const { env, tables } = fakeD1({});
+    await setStaples(env, "everett", [{ name: "Olive Oil" }, { name: "Eggs", perishable: true }]);
+    expect(tables.staples.map((r) => r.normalized_name).sort()).toEqual(["eggs", "olive oil"]);
+    expect(tables.staples.find((r) => r.name === "Eggs")!.perishable).toBe(1);
+  });
+});
+
+describe("readProfile assembly", () => {
+  it("assembles the full agent-facing shape from rows", async () => {
+    const { env } = fakeD1({
+      profile: [
+        {
+          tenant: "everett",
+          taste: "spicy",
+          diet_principles: "fish weekly",
+          default_cooking_nights: 3,
+          stores: JSON.stringify({ primary: "kroger" }),
+          kitchen_notes: JSON.stringify({ ovens: 2 }),
+          freezer_capacity_estimate: "moderate",
+        },
+      ],
+      kitchen_equipment: [{ tenant: "everett", slug: "blender" }],
+      staples: [{ tenant: "everett", name: "Eggs", normalized_name: "eggs", perishable: 1 }],
+      stockup: [{ tenant: "everett", name: "Salmon", normalized_name: "salmon", unit: "lb" }],
+      ready_to_eat: [
+        { tenant: "everett", slug: "oats", meal: "breakfast", name: "Oats", status: "active" },
+      ],
+    });
+    const profile = await readProfile(env, "everett");
+    expect(profile.taste).toBe("spicy");
+    expect(profile.diet_principles).toBe("fish weekly");
+    expect(profile.preferences).toMatchObject({ default_cooking_nights: 3, stores: { primary: "kroger" } });
+    expect(profile.kitchen).toEqual({ owned: ["blender"], notes: { ovens: 2 } });
+    expect(profile.staples).toEqual([{ name: "Eggs", perishable: true }]);
+    expect(profile.stockup).toMatchObject({ freezer_capacity_estimate: "moderate" });
+    expect(profile.ready_to_eat[0]).toMatchObject({ slug: "oats", meal: "breakfast", status: "active" });
+  });
+
+  it("an absent tenant assembles an empty profile (null preferences, empty lists)", async () => {
+    const { env } = fakeD1({});
+    const profile = await readProfile(env, "ghost");
+    expect(profile.preferences).toBeNull();
+    expect(profile.taste).toBeNull();
+    expect(profile.kitchen).toEqual({ owned: [], notes: {} });
+    expect(profile.staples).toEqual([]);
+    expect(profile.ready_to_eat).toEqual([]);
+    expect(profile.stockup).toBeNull();
+  });
+});

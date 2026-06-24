@@ -1,97 +1,22 @@
-// Shared store registry (in-store-fulfillment capability). One `stores/<slug>.toml`
-// per specific store LOCATION, holding store IDENTITY only — name, label, chain,
-// address, domain. Store content is shared and UNATTRIBUTED (like recipe content).
-// The store's LAYOUT (aisle order, where non-obvious items hide, not-carried set)
-// is NOT here — it lives in attributed store notes (src/notes.ts,
-// users/<id>/store_notes/<slug>.toml) with layout/location/stock tags. A parser
-// reading a legacy file that still carries aisles/item_locations/doesnt_carry keys
-// ignores them silently (see toStore).
+// Shared store registry (in-store-fulfillment capability). The registry is the D1
+// `stores` table (d1-shared-corpus) — one row per specific store LOCATION, holding
+// store IDENTITY only: name, label, chain, address, domain, location_id. Store content
+// is shared and UNATTRIBUTED (like recipe content). The store's LAYOUT (aisle order,
+// where non-obvious items hide, not-carried set) is NOT here — it lives in attributed
+// store notes (the D1 `store_notes` table) with layout/location/stock tags.
 //
-// Split like storage-guidance.ts / kitchen.ts: pure parse/serialize/apply logic
-// here (unit-testable against plain objects + a fake GitHubClient); the tool
-// registration + commit I/O lives in stores-tools.ts. `update_store` operations
-// follow the update_pantry / update_kitchen style — an off-target op is a
-// structured conflict, never a silent write. There is NO `_indexes/stores.json`:
-// the set is small, so `listStores` reads the directory directly (no index).
+// The D1 row read/write lives in corpus-db.ts (the shared-corpus data layer); this
+// file is the pure operation/shape logic (the update_pantry / update_kitchen style),
+// unit-testable against plain Store objects. The `Store` type itself lives in
+// corpus-db.ts so the row mapping owns it.
 
-import { parse as parseTomlRaw, stringify as stringifyTomlRaw } from "smol-toml";
-import { GitHubError, type GitHubClient } from "./github.js";
-import { readFile } from "./gh-read.js";
 import { ToolError } from "./errors.js";
-
-export const STORES_DIR = "stores";
+import type { Store } from "./corpus-db.js";
 
 // kebab-case location slug; anchored so it also rejects path traversal.
 const SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
-/**
- * Objective store IDENTITY (shared, unattributed). Layout — aisle order, where
- * non-obvious items hide, not-carried entries — is NOT structured here; it lives
- * in attributed store notes (`users/<id>/store_notes/<slug>.toml`, tags
- * layout/location/stock). The registry is just identity + `domain`.
- */
-export interface Store {
-  slug: string;
-  name: string;
-  label?: string;
-  chain?: string;
-  address?: string;
-  domain: string;
-  /** Chain-specific external id (e.g. Kroger `locationId`). Stored so the Kroger
-   *  client can bypass the Locations API on in-store walks. */
-  location_id?: string;
-}
-
-/** Repo-relative path to a store file (shared corpus root). */
-export function storePath(slug: string): string {
-  return `${STORES_DIR}/${slug}.toml`;
-}
-
-/** Strip the `.md`/`.toml` extension from a store file name; null for non-store entries. */
-export function slugFromStoreFile(name: string): string | null {
-  if (!name.endsWith(".toml")) return null;
-  return name.slice(0, -5);
-}
-
-function asString(v: unknown): string | undefined {
-  return typeof v === "string" && v.length > 0 ? v : undefined;
-}
-
-/**
- * Normalize a parsed `stores/<slug>.toml` object into the Store identity shape.
- * Legacy `aisles` / `item_locations` / `doesnt_carry` keys (written before layout
- * moved to notes) are silently ignored — read what we still use, never error.
- */
-export function toStore(parsed: Record<string, unknown>): Store {
-  const store: Store = {
-    slug: asString(parsed.slug) ?? "",
-    name: asString(parsed.name) ?? "",
-    domain: asString(parsed.domain) ?? "grocery",
-  };
-  const label = asString(parsed.label);
-  const chain = asString(parsed.chain);
-  const address = asString(parsed.address);
-  const location_id = asString(parsed.location_id);
-  if (label) store.label = label;
-  if (chain) store.chain = chain;
-  if (address) store.address = address;
-  if (location_id) store.location_id = location_id;
-  return store;
-}
-
-/** Serialize a Store back to `stores/<slug>.toml` (identity only, doc header). */
-export function serializeStore(store: Store): string {
-  const header =
-    `# stores/${store.slug}.toml — objective store identity (shared, unattributed).\n` +
-    "# Layout lives in attributed store notes (store_notes/<slug>.toml, tags layout/location/stock).\n\n";
-  const data: Record<string, unknown> = { slug: store.slug, name: store.name };
-  if (store.label) data.label = store.label;
-  if (store.chain) data.chain = store.chain;
-  if (store.address) data.address = store.address;
-  data.domain = store.domain;
-  if (store.location_id) data.location_id = store.location_id;
-  return header + stringifyTomlRaw(data) + "\n";
-}
+export type { Store } from "./corpus-db.js";
 
 /** The compact view `list_stores` returns — identity only. Whether a store has a
  * usable map is a notes concern (read_store_notes), not part of the registry. */
@@ -112,46 +37,11 @@ export function toListing(store: Store): StoreListing {
   return l;
 }
 
-// --- gh-driven read/list (testable against a fake GitHubClient) -------------
-
-/**
- * List the registered stores (identity only). Returns `{ stores: [] }` when the
- * `stores/` tree does not exist yet (an absent registry is not an error — the walk
- * degrades to a department list). No index is read. Whether a store has a usable
- * layout is a notes concern — read_store_notes, not the registry.
- */
-export async function listStores(gh: GitHubClient): Promise<{ stores: StoreListing[] }> {
-  let dir;
-  try {
-    dir = await gh.listDir(STORES_DIR);
-  } catch (e) {
-    if (e instanceof GitHubError) {
-      if (e.status === 404) return { stores: [] };
-      throw new ToolError("upstream_unavailable", e.message);
-    }
-    throw e;
-  }
-  const slugs = dir
-    .filter((e) => e.type === "file")
-    .map((e) => slugFromStoreFile(e.name))
-    .filter((s): s is string => s !== null);
-  const stores = await Promise.all(
-    slugs.map(async (slug) => {
-      const text = await readFile(gh, storePath(slug), "not_found", `Unknown store: ${slug}`);
-      return toListing(toStore(parseTomlRaw(text) as Record<string, unknown>));
-    }),
-  );
-  stores.sort((a, b) => a.slug.localeCompare(b.slug));
-  return { stores };
-}
-
-/** Read one store's objective content. Unknown (or malformed) slug → structured not_found. */
-export async function readStore(gh: GitHubClient, slug: string): Promise<Store> {
+/** Validate a store slug (kebab-case); throws a structured not_found on a bad slug. */
+export function assertStoreSlug(slug: string): void {
   if (!SLUG_RE.test(slug)) {
     throw new ToolError("not_found", `Unknown store: ${slug}`, { slug });
   }
-  const text = await readFile(gh, storePath(slug), "not_found", `Unknown store: ${slug}`);
-  return toStore(parseTomlRaw(text) as Record<string, unknown>);
 }
 
 // --- pure operations (update_store, update_pantry-style) --------------------

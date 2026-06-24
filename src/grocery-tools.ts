@@ -1,20 +1,15 @@
 // Grocery-list CRUD tools (grocery-list capability). The buy list accumulates
 // SKU-free intent across the week; resolution to a Kroger SKU and the cart write
-// are deferred to order placement. Mutations persist via DATA_KV. Lifecycle: this
-// module writes `status: "active"`; the in_cart transition lands with place_order.
+// are deferred to order placement. Mutations persist as D1 rows (src/session-db.ts).
+// Lifecycle: this module writes `status: "active"`; the in_cart transition lands with
+// place_order.
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { ToolError, runTool } from "./errors.js";
-import {
-  addToGroceryList,
-  removeGroceryItem,
-  updateGroceryItem,
-  type GroceryItem,
-  type GroceryAddInput,
-  type GroceryUpdateInput,
-} from "./grocery.js";
-import { getGroceryListState, writeGroceryListState } from "./user-kv.js";
+import type { Env } from "./env.js";
+import { runTool } from "./errors.js";
+import { type GroceryItem, type GroceryAddInput, type GroceryUpdateInput } from "./grocery.js";
+import { readGroceryList, addGroceryRow, updateGroceryRow, removeGroceryRow } from "./session-db.js";
 
 function today(): string {
   return new Date().toISOString().slice(0, 10);
@@ -22,7 +17,7 @@ function today(): string {
 
 export function registerGroceryListTools(
   server: McpServer,
-  dataKv: KVNamespace,
+  env: Env,
   username: string,
 ): void {
   server.registerTool(
@@ -33,7 +28,7 @@ export function registerGroceryListTools(
     },
     () =>
       runTool(async () => {
-        const items = await getGroceryListState(dataKv, username);
+        const items = await readGroceryList(env, username);
         return { items };
       }),
   );
@@ -55,9 +50,7 @@ export function registerGroceryListTools(
     },
     (input) =>
       runTool(async () => {
-        const items = await getGroceryListState(dataKv, username);
-        const result = addToGroceryList(items, input, today());
-        await writeGroceryListState(dataKv, username, result.items);
+        const result = await addGroceryRow(env, username, input as GroceryAddInput, today());
         return { item: result.item, merged: result.merged };
       }),
   );
@@ -79,15 +72,8 @@ export function registerGroceryListTools(
     },
     ({ name, ...patch }) =>
       runTool(async () => {
-        const items = await getGroceryListState(dataKv, username);
-        let result;
-        try {
-          result = updateGroceryItem(items, name, patch as GroceryUpdateInput);
-        } catch {
-          throw new ToolError("not_found", `No grocery-list item named: ${name}`, { name });
-        }
-        await writeGroceryListState(dataKv, username, result.items);
-        return { item: result.item };
+        const item = await updateGroceryRow(env, username, name, patch as GroceryUpdateInput);
+        return { item };
       }),
   );
 
@@ -99,11 +85,8 @@ export function registerGroceryListTools(
     },
     ({ name }) =>
       runTool(async () => {
-        const items = await getGroceryListState(dataKv, username);
-        const { items: nextItems, found } = removeGroceryItem(items, name);
-        if (!found) return { removed: false };
-        await writeGroceryListState(dataKv, username, nextItems);
-        return { removed: true };
+        const { found } = await removeGroceryRow(env, username, name);
+        return { removed: found };
       }),
   );
 }

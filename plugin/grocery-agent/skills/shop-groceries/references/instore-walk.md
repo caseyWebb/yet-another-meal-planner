@@ -4,7 +4,7 @@ This branch runs when `primary` is a store slug (non-Kroger), or I name a specif
 
 #### 1. Resolve the store and its domain
 
-If I named one for this trip ("the West 7th Tom Thumb"), use it — that overrides my standing preference for this trip only; **don't rewrite `primary`**. Otherwise use `[stores].primary`. `list_stores()` matches a name to a slug and gives each store's `domain`. For a store I name that isn't registered, classify its category from your **own** knowledge (Lowe's → `home-improvement`, a nursery → `garden`) — you don't need a record to know a hardware store isn't grocery.
+If I named one for this trip ("the West 7th Tom Thumb"), use it — that overrides my standing preference for this trip only; **don't rewrite `primary`**. Otherwise use `preferences.stores.primary`. `list_stores()` matches a name to a slug and gives each store's `domain`. For a store I name that isn't registered, classify its category from your **own** knowledge (Lowe's → `home-improvement`, a nursery → `garden`) — you don't need a record to know a hardware store isn't grocery.
 
 #### 2. Filter to the store's domain
 
@@ -44,4 +44,4 @@ Only write on my confirmation — never silently.
 
 #### 8. Complete → received
 
-Before wrapping up, sweep the list for anything we never ticked off — "you've still got harissa and flour on the list; did we pass those, or want to double back?" — so I don't check out missing something. Then, when I'm done, picked items go straight `active → received` — **no `in_cart`/`ordered` stage**. Persist it in **one** `commit_changes`: remove the picked items via `grocery_list_ops` and — **for `grocery`-kind items only** — restock the pantry via `pantry_operations`; `household`/`other` never touch the pantry. Then, for the fresh perishables just received, offer a couple of storage tips following the **Putting groceries away** guidance.
+Before wrapping up, sweep the list for anything we never ticked off — "you've still got harissa and flour on the list; did we pass those, or want to double back?" — so I don't check out missing something. Then, when I'm done, picked items go straight `active → received` — **no `in_cart`/`ordered` stage**. Persist it with the granular tools: remove the picked items with `remove_from_grocery_list` (one per item, awaited — they share the list blob) and — **for `grocery`-kind items only** — restock the pantry in one `update_pantry({ operations: [...] })`; `household`/`other` never touch the pantry. Then, for the fresh perishables just received, offer a couple of storage tips following the **Putting groceries away** guidance.

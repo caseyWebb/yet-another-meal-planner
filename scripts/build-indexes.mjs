@@ -9,13 +9,12 @@
 //   node scripts/build-indexes.mjs           # validate + write indexes
 //   node scripts/build-indexes.mjs --check   # validate only, write nothing (pre-commit)
 
-import { readFile, readdir, writeFile, stat } from 'node:fs/promises';
+import { readFile, readdir } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import matter from 'gray-matter';
-import { parse as parseToml } from 'smol-toml';
 import { PROTEIN_VOCAB, CUISINE_VOCAB, EQUIPMENT_VOCAB } from '../src/vocab.js';
-import { resolveKvAccess, kvPut } from './kv-rest.mjs';
+import { resolveD1Access, makeD1Client } from './d1-rest.mjs';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 // `archived` is valid but tool-unwritten by design — the MANUAL history-preserving
@@ -37,8 +36,6 @@ const SUBJECTIVE_FIELDS = ['rating', 'last_cooked', 'status'];
 // cannot drift. Validated only WHEN PRESENT (absence keeps the warn-only
 // recommended-field treatment). Extending a vocabulary is a deliberate edit in
 // src/vocab.js. See docs/SCHEMAS.md.
-const COOKING_LOG_TYPES = new Set(['recipe', 'ready_to_eat', 'ad_hoc']);
-const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 // Recommended-but-optional fields whose absence signals an incomplete migration.
 // last_cooked / rating / discovered_at are legitimately null by design and are NOT warned.
 const RECOMMENDED_FIELDS = ['protein', 'time_total', 'ingredients_key'];
@@ -247,209 +244,122 @@ export async function buildRecipeIndexes(recipesDir) {
   return { recipes, errors, warnings };
 }
 
-// Ready-to-eat and kitchen inventory moved to DATA_KV (the profile:<username>
-// bundle); they are no longer GitHub-backed, so the build validates neither.
-// Both are validated at write time by the Worker (src/validate.ts via
-// update_ready_to_eat / update_kitchen).
-
-// --- shared store-registry validation ------------------------------------
-
-// Stores are shared (stores/<slug>.toml), keyed by location — no aggregate index.
-// Structural-validate one already-parsed store; returns an array of errors. The
-// registry holds IDENTITY only: `slug`+`name` required; `domain` a string when
-// present. Layout lives in attributed store notes (store_notes/<slug>.toml), not
-// here — legacy `aisles`/`item_locations`/`doesnt_carry` keys are tolerated and
-// ignored. An absent stores/ tree never reaches here (the walk skips it).
-export function validateStore(parsed, rel) {
-  const errors = [];
-  if (typeof parsed.slug !== 'string' || !parsed.slug) {
-    errors.push(`${rel}: store is missing required \`slug\``);
-  }
-  if (typeof parsed.name !== 'string' || !parsed.name) {
-    errors.push(`${rel}: store is missing required \`name\``);
-  }
-  if (parsed.domain != null && typeof parsed.domain !== 'string') {
-    errors.push(`${rel}: \`domain\` must be a string (got ${JSON.stringify(parsed.domain)})`);
-  }
-  return errors;
-}
-
-// --- shared discovery-source validation ----------------------------------
-
-// The email discoveries inbox (root discoveries_inbox.toml) is shared and
-// agent/email-written: each [[entries]] holds candidates, every candidate needs a
-// `url`. Absent file is valid (no discoveries yet).
-export function validateDiscoveriesInbox(parsed, rel) {
-  const errors = [];
-  const entries = Array.isArray(parsed.entries) ? parsed.entries : [];
-  for (const e of entries) {
-    const cands = Array.isArray(e.candidates) ? e.candidates : [];
-    for (const c of cands) {
-      if (typeof c.url !== 'string' || !c.url) {
-        errors.push(`${rel}: inbox candidate is missing required \`url\``);
-      }
-    }
-  }
-  return errors;
-}
-
-// The inbound-newsletter allowlist (root discovery_sources.toml) is shared config:
-// every [[members]]/[[senders]] entry needs a valid `address`. Absent file is valid.
-export function validateDiscoverySources(parsed, rel) {
-  const errors = [];
-  for (const key of ['members', 'senders']) {
-    const rows = Array.isArray(parsed[key]) ? parsed[key] : [];
-    for (const r of rows) {
-      if (typeof r.address !== 'string' || !r.address.includes('@')) {
-        errors.push(`${rel}: \`${key}\` entry needs a valid \`address\` (got ${JSON.stringify(r.address)})`);
-      }
-    }
-  }
-  return errors;
-}
-
-// --- cooking-log + meal-plan validation ---------------------------------
-
-// Validate cooking_log.toml against the recipe set. Pure: takes the already-parsed
-// object (or null when the file is absent) plus the recipes map. Returns
-// { errors, warnings }. (meal_plan.toml moved to DATA_KV — validated by the Worker
-// at write time, not here.)
-export function validateCookingArtifacts({ recipes, cookingLog }) {
-  // Accept a quoted ISO string OR a bare TOML date (smol-toml parses those as
-  // Date). Returns the YYYY-MM-DD string, or null when not a valid date.
-  const isoOf = (v) => {
-    if (v instanceof Date) return v.toISOString().slice(0, 10);
-    if (typeof v === 'string' && ISO_DATE_RE.test(v)) return v;
-    return null;
-  };
-
-  const errors = [];
-  const warnings = [];
-  const slugs = new Set(Object.keys(recipes));
-
-  const entries = cookingLog && Array.isArray(cookingLog.entries) ? cookingLog.entries : [];
-  const maxLogDate = new Map(); // slug -> latest cooked date
-  entries.forEach((e, i) => {
-    const where = `cooking_log.toml entry ${i + 1}`;
-    const date = isoOf(e.date);
-    if (date === null) errors.push(`${where}: invalid or missing date (${JSON.stringify(e.date)})`);
-    if (!COOKING_LOG_TYPES.has(e.type)) {
-      errors.push(`${where}: invalid type (${JSON.stringify(e.type)})`);
-      return;
-    }
-    if (e.type === 'recipe') {
-      if (typeof e.recipe !== 'string' || e.recipe.length === 0) {
-        errors.push(`${where}: recipe entry is missing "recipe" (slug)`);
-      } else if (!slugs.has(e.recipe)) {
-        errors.push(`${where}: recipe entry references unknown slug "${e.recipe}"`);
-      } else if (date !== null) {
-        const prev = maxLogDate.get(e.recipe);
-        if (prev === undefined || date > prev) maxLogDate.set(e.recipe, date);
-      }
-    } else if (typeof e.name !== 'string' || e.name.length === 0) {
-      errors.push(`${where}: ${e.type} entry is missing "name"`);
-    }
-  });
-
-  // (The former frontmatter `last_cooked` vs. max-log-date soft-check is gone:
-  // last_cooked is no longer a shared-recipe field — it is a per-tenant value
-  // derived from each tenant's own cooking_log at read time, so the shared index
-  // build cannot and need not reconcile it.)
-  void maxLogDate;
-
-  return { errors, warnings };
-}
-
-// --- toml parse-check (whole repo) --------------------------------------
-
-async function walkToml(dir, acc) {
-  let entries;
-  try {
-    entries = await readdir(dir, { withFileTypes: true });
-  } catch (err) {
-    if (err.code === 'ENOENT') return acc;
-    throw err;
-  }
-  for (const e of entries) {
-    if (e.name === 'node_modules' || e.name === '.git') continue;
-    const full = path.join(dir, e.name);
-    if (e.isDirectory()) await walkToml(full, acc);
-    else if (e.isFile() && e.name.endsWith('.toml')) acc.push(full);
-  }
-  return acc;
-}
-
-// Parse-checks every tracked .toml. Returns { parsed: Map<path,obj>, errors }.
-export async function parseCheckToml(root) {
-  const errors = [];
-  const parsed = new Map();
-  const files = (await walkToml(root, [])).sort();
-  for (const file of files) {
-    const rel = path.relative(REPO_ROOT, file);
-    try {
-      parsed.set(file, parseToml(await readFile(file, 'utf8')));
-    } catch (err) {
-      errors.push(`${rel}: TOML failed to parse — ${err.message}`);
-    }
-  }
-  return { parsed, errors };
-}
+// After d1-shared-corpus (slice 6 — the last), GitHub holds ONLY recipes/*.md. Every
+// other corpus artifact (the store registry + store notes, recipe notes, aliases,
+// feeds, the newsletter allowlist + discovery inbox, the SKU cache, flyer terms) is a
+// D1 table, written and VALIDATED at the Worker's write tools (src/validate.ts). So the
+// build no longer parses or validates any TOML — it validates recipe markdown and
+// projects the recipe index, and nothing else. (Profile / session / cooking-log data
+// likewise left GitHub for D1 in earlier slices.)
 
 // --- orchestration -------------------------------------------------------
 
 export async function run({ recipesDir, root = REPO_ROOT } = {}) {
   recipesDir ??= path.join(root, 'recipes');
 
-  const { recipes, errors: rErr, warnings } = await buildRecipeIndexes(recipesDir);
-  const { parsed, errors: tErr } = await parseCheckToml(root);
+  const { recipes, errors, warnings } = await buildRecipeIndexes(recipesDir);
+  return { indexes: { recipes }, errors: [...errors], warnings: [...warnings] };
+}
 
-  // Shared store registry (stores/<slug>.toml) — structural-validate each store.
-  // (ready_to_eat.toml / kitchen.toml moved to DATA_KV — no longer build-validated.)
-  const storeErr = [];
-  for (const [file, obj] of parsed) {
-    if (file.startsWith(`${path.join(root, 'stores')}${path.sep}`) && file.endsWith('.toml')) {
-      storeErr.push(...validateStore(obj, path.relative(REPO_ROOT, file)));
-    }
+// --- D1 projection -------------------------------------------------------
+
+// The recipe index is now the D1 `recipes` table (d1-recipe-index), not a KV blob
+// or a committed _indexes/recipes.json. This is the build's projection of one
+// validated recipe into a table row; it MUST stay in sync with the Worker's read
+// reconstruction in src/recipe-index.ts (same column ↔ frontmatter map).
+//
+//   * scalar columns reconstructed verbatim: title, protein, cuisine, time_total.
+//   * source_url ⇄ the recipe's `source` frontmatter (renamed only at the column
+//     boundary so discovery's source lookups are indexed).
+//   * ingredients_key + the JSON-array columns hold a JSON value as TEXT.
+//   * extra holds a JSON object of every OTHER objective field (lossless).
+const RECIPE_SCALAR_COLUMNS = ['title', 'protein', 'cuisine', 'time_total'];
+const RECIPE_JSON_COLUMNS = [
+  'ingredients_key',
+  'tags',
+  'course',
+  'season',
+  'dietary',
+  'pairs_with',
+  'perishable_ingredients',
+  'requires_equipment',
+];
+// Column order for the INSERT; `slug` (PK) and `source_url` (renamed) bookend the
+// promoted facets, with `extra` last.
+const RECIPE_COLUMNS = [
+  'slug',
+  ...RECIPE_SCALAR_COLUMNS,
+  'source_url',
+  ...RECIPE_JSON_COLUMNS,
+  'extra',
+];
+
+// Frontmatter keys that map to their OWN column (so they are excluded from `extra`).
+// `source` is the frontmatter name of the `source_url` column; `slug` is the PK.
+const PROMOTED_FIELDS = new Set([
+  'slug',
+  'source',
+  ...RECIPE_SCALAR_COLUMNS,
+  ...RECIPE_JSON_COLUMNS,
+]);
+
+// Project one recipe entry into its positional bind values (RECIPE_COLUMNS order).
+// JSON columns are stringified; `extra` carries the leftover objective fields.
+export function recipeToRow(recipe) {
+  const extra = {};
+  for (const [k, v] of Object.entries(recipe)) {
+    if (!PROMOTED_FIELDS.has(k)) extra[k] = v;
   }
-
-  // Shared discovery sources (root-only, single files): inbox + sender allowlist.
-  const discErr = [];
-  const inbox = parsed.get(path.join(root, 'discoveries_inbox.toml'));
-  if (inbox) discErr.push(...validateDiscoveriesInbox(inbox, 'discoveries_inbox.toml'));
-  const sources = parsed.get(path.join(root, 'discovery_sources.toml'));
-  if (sources) discErr.push(...validateDiscoverySources(sources, 'discovery_sources.toml'));
-
-  const cookingLog = parsed.get(path.join(root, 'cooking_log.toml')) ?? null;
-  const { errors: cErr, warnings: cWarn } = validateCookingArtifacts({ recipes, cookingLog });
-
-  return {
-    indexes: { recipes },
-    errors: [...rErr, ...tErr, ...storeErr, ...discErr, ...cErr],
-    warnings: [...warnings, ...cWarn],
-  };
+  const scalar = (v) => (v === undefined ? null : v);
+  const jsonCol = (v) => (v === undefined || v === null ? null : JSON.stringify(v));
+  return [
+    recipe.slug,
+    ...RECIPE_SCALAR_COLUMNS.map((c) => scalar(recipe[c] ?? null)),
+    scalar(recipe.source ?? null),
+    ...RECIPE_JSON_COLUMNS.map((c) => jsonCol(recipe[c])),
+    Object.keys(extra).length ? JSON.stringify(extra) : null,
+  ];
 }
 
-async function writeIndexes(indexes, outDir) {
-  await writeFile(path.join(outDir, 'recipes.json'), stableStringify(indexes.recipes));
-}
-
-// Publish the recipe index to DATA_KV. Auto-detects eligibility via the shared
-// KV-access resolver (CLOUDFLARE_API_TOKEN + the DATA_KV namespace id from the
-// data repo's wrangler.jsonc). Warns and skips rather than failing when access
-// can't be resolved — this keeps `--check` mode and pre-first-deploy runs clean.
-async function publishToKv(indexes, root) {
-  const access = await resolveKvAccess(root);
+// Project the validated recipe set into the D1 `recipes` table, replacing its
+// contents WHOLESALE in one transaction (DELETE then batched INSERT) — a derived
+// index is rebuilt whole, so replace-all matches the old whole-blob semantics and a
+// removed recipe loses its row. Auto-detects eligibility via the shared D1-access
+// resolver (CLOUDFLARE_API_TOKEN + the DB database id from the data repo's
+// wrangler.jsonc). Warns and SKIPS rather than failing when access can't be
+// resolved — keeping `--check` mode and pre-first-provision runs clean, exactly as
+// the old KV publish did.
+async function projectToD1(indexes, root) {
+  const access = await resolveD1Access(root);
   if (!access.ok) {
-    console.warn(`warn: KV publish skipped — ${access.reason}`);
+    console.warn(`warn: D1 projection skipped — ${access.reason}`);
     return;
   }
+  const d1 = makeD1Client(access);
+  // Deterministic row order (sorted slug) so the projection is reproducible.
+  const recipes = Object.values(indexes.recipes).sort((a, b) => a.slug.localeCompare(b.slug));
+
+  // One atomic request: `DELETE FROM recipes` then an INSERT per recipe, sent as a
+  // single semicolon-joined multi-statement SQL string with one flat positional
+  // `params` array (D1's REST /query binds `?N` across the whole request and runs it
+  // atomically). Replace-all: a removed recipe loses its row; deterministic input →
+  // deterministic table. An empty corpus sends just the DELETE (valid empty table).
+  const colCount = RECIPE_COLUMNS.length;
+  const statements = ['DELETE FROM recipes'];
+  const params = [];
+  recipes.forEach((recipe, i) => {
+    const base = i * colCount;
+    const placeholders = RECIPE_COLUMNS.map((_, j) => `?${base + j + 1}`).join(', ');
+    statements.push(`INSERT INTO recipes (${RECIPE_COLUMNS.join(', ')}) VALUES (${placeholders})`);
+    params.push(...recipeToRow(recipe));
+  });
   try {
-    await kvPut(access, 'index:recipes', stableStringify(indexes.recipes));
+    await d1.query(statements.join('; '), params);
   } catch (err) {
-    console.warn(`warn: KV publish failed — ${err.message}`);
+    console.warn(`warn: D1 projection failed — ${err.message}`);
     return;
   }
-  console.log(`KV index:recipes published to DATA_KV (${access.namespaceId.slice(0, 8)}…)`);
+  console.log(`D1 recipes projected (${recipes.length} row(s), db ${access.databaseId.slice(0, 8)}…)`);
 }
 
 async function main() {
@@ -473,13 +383,13 @@ async function main() {
     return;
   }
 
-  const outDir = path.join(root, '_indexes');
-  await stat(outDir); // _indexes/ exists (Change 01 skeleton)
-  await writeIndexes(indexes, outDir);
+  // The recipe index is no longer a committed _indexes/recipes.json file — it is the
+  // D1 `recipes` table, projected below. (_indexes/ stays for the site's
+  // components.json, which a different build target owns.)
   console.log(
-    `indexes written: ${Object.keys(indexes.recipes).length} recipe(s), ${warnings.length} warning(s)`
+    `recipes validated: ${Object.keys(indexes.recipes).length} recipe(s), ${warnings.length} warning(s)`
   );
-  await publishToKv(indexes, root);
+  await projectToD1(indexes, root);
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

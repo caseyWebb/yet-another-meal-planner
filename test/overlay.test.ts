@@ -1,34 +1,10 @@
 import { describe, it, expect } from "vitest";
 import {
-  parseOverlay,
   mergeOverlay,
   applyOverlayEdit,
-  serializeOverlay,
   DEFAULT_STATUS,
-  type Overlay,
+  type OverlayRow,
 } from "../src/overlay.js";
-
-describe("parseOverlay", () => {
-  it("parses [overlay.<slug>] tables into a slug→row map", () => {
-    const text = `
-[overlay.american-chop-suey]
-status = "active"
-rating = 4
-
-[overlay.beef-stew]
-status = "rejected"
-`;
-    expect(parseOverlay(text)).toEqual({
-      "american-chop-suey": { status: "active", rating: 4 },
-      "beef-stew": { status: "rejected" },
-    });
-  });
-
-  it("returns {} for an empty or overlay-less document", () => {
-    expect(parseOverlay("")).toEqual({});
-    expect(parseOverlay("# just a comment\n")).toEqual({});
-  });
-});
 
 describe("mergeOverlay", () => {
   const content = { slug: "x", title: "X", protein: "beef" };
@@ -66,43 +42,28 @@ describe("mergeOverlay", () => {
 });
 
 describe("applyOverlayEdit", () => {
-  it("sets rating/status on a fresh slug", () => {
-    expect(applyOverlayEdit({}, "x", { rating: 4, status: "active" })).toEqual({
-      x: { rating: 4, status: "active" },
+  it("sets rating/status on a fresh row (no prior row)", () => {
+    expect(applyOverlayEdit(undefined, { rating: 4, status: "active" })).toEqual({
+      rating: 4,
+      status: "active",
     });
   });
 
   it("merges onto an existing row without disturbing the other field", () => {
-    const before: Overlay = { x: { rating: 4, status: "active" } };
-    expect(applyOverlayEdit(before, "x", { status: "rejected" })).toEqual({
-      x: { rating: 4, status: "rejected" },
+    const before: OverlayRow = { rating: 4, status: "active" };
+    expect(applyOverlayEdit(before, { status: "rejected" })).toEqual({
+      rating: 4,
+      status: "rejected",
     });
   });
 
-  it("clears a field when given null, and drops an emptied row", () => {
-    const before: Overlay = { x: { status: "active" } };
-    expect(applyOverlayEdit(before, "x", { status: null })).toEqual({});
+  it("clears a field when given null, and returns null for an emptied row", () => {
+    expect(applyOverlayEdit({ status: "active" }, { status: null })).toBeNull();
   });
 
-  it("does not mutate the input overlay", () => {
-    const before: Overlay = { x: { status: "active" } };
-    applyOverlayEdit(before, "x", { rating: 5 });
-    expect(before).toEqual({ x: { status: "active" } });
-  });
-});
-
-describe("serializeOverlay", () => {
-  it("round-trips through parseOverlay with stable, sorted slug order", () => {
-    const overlay: Overlay = {
-      "beef-stew": { status: "rejected" },
-      "american-chop-suey": { status: "active", rating: 4 },
-    };
-    const text = serializeOverlay(overlay);
-    expect(text.indexOf("american-chop-suey")).toBeLessThan(text.indexOf("beef-stew"));
-    expect(parseOverlay(text)).toEqual(overlay);
-  });
-
-  it("emits a header-only document for an empty overlay", () => {
-    expect(parseOverlay(serializeOverlay({}))).toEqual({});
+  it("does not mutate the input row", () => {
+    const before: OverlayRow = { status: "active" };
+    applyOverlayEdit(before, { rating: 5 });
+    expect(before).toEqual({ status: "active" });
   });
 });
