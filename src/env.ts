@@ -55,17 +55,7 @@ export interface Env {
   /** Optional bearer token for a protected ntfy topic. */
   NTFY_TOKEN?: string;
 
-  // --- KV ---
-  /**
-   * REMOVABLE (follow-up). DATA_KV no longer holds any domain data: the recipe index
-   * (→ D1 `recipes`), the profile bundle (→ D1 profile tables, slice 4), and the
-   * `state:<username>:*` session blobs (pantry / meal_plan / grocery_list → D1 row
-   * tables, slice 5) have all moved to D1. The only thing still read from this
-   * namespace is the `migrations:applied` ledger (scripts/run-migrations.mjs). The
-   * binding is kept bound (empty) for this slice to avoid a deploy-config change
-   * mid-migration; dropping it is a separate wrangler/operator-config cleanup.
-   */
-  DATA_KV: KVNamespace;
+  // --- KV (ephemeral infra only; all domain data is in D1) ---
   /**
    * Per-tenant Kroger refresh tokens (`kroger:refresh:<tenant>`) plus short-lived
    * PKCE verifiers keyed by `state`, plus the warmed flyer cache and background-job

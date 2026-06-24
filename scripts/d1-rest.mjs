@@ -1,10 +1,10 @@
-// d1-rest.mjs — minimal Cloudflare D1 REST client for build/deploy scripts.
-// The D1 counterpart of kv-rest.mjs: it lets run-migrations.mjs issue D1 reads/writes
-// from CI for DATA backfills (read the data-repo checkout / KV → INSERT into D1).
-// Token/account resolution mirrors kv-rest.mjs so it lives in one place.
+// d1-rest.mjs — minimal Cloudflare D1 REST client for build/deploy scripts. Used by
+// build-indexes.mjs to project the recipe index into the D1 `recipes` table from CI
+// (the post-deploy populate, and the data-build-indexes workflow on recipe pushes).
+// Resolves token/account/database from env + the operator's wrangler.jsonc.
 //
 // SCHEMA DDL does NOT go through here — that's the native `wrangler d1 migrations
-// apply` pipeline. This client is for imperative data backfills only.
+// apply` pipeline. This client issues parameterised data queries only.
 
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
