@@ -1,7 +1,7 @@
 // Tests for scripts/build-indexes.mjs — index shapes, determinism, validation.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -16,6 +16,7 @@ import {
   deriveSlug,
   hasH2Section,
   validateCookingArtifacts,
+  recipeToRow,
   run,
 } from '../scripts/build-indexes.mjs';
 
@@ -506,6 +507,159 @@ test('cooking artifacts: accepts a bare TOML date (Date) as well as a string', (
   });
   assert.deepEqual(errors, []);
   assert.deepEqual(warnings, []);
+});
+
+// --- D1 projection (recipeToRow) ----------------------------------------
+// The recipe index is the D1 `recipes` table now (d1-recipe-index): build-indexes
+// projects rows via recipeToRow and writes NO _indexes/recipes.json. These assert
+// the row mapping that src/recipe-index.ts reconstructs from. Column order:
+// [slug, title, protein, cuisine, time_total, source_url,
+//  ingredients_key, tags, course, season, dietary, pairs_with,
+//  perishable_ingredients, requires_equipment, extra]
+const COL = {
+  slug: 0,
+  title: 1,
+  protein: 2,
+  cuisine: 3,
+  time_total: 4,
+  source_url: 5,
+  ingredients_key: 6,
+  tags: 7,
+  course: 8,
+  season: 9,
+  dietary: 10,
+  pairs_with: 11,
+  perishable_ingredients: 12,
+  requires_equipment: 13,
+  extra: 14,
+};
+
+test('recipeToRow: scalar facets land in their columns, source → source_url', () => {
+  const row = recipeToRow({
+    slug: 'salmon-with-rice',
+    title: 'Salmon with Rice',
+    protein: 'fish',
+    cuisine: 'japanese',
+    time_total: 30,
+    source: 'https://example.test/salmon',
+  });
+  assert.equal(row.length, 15);
+  assert.equal(row[COL.slug], 'salmon-with-rice');
+  assert.equal(row[COL.title], 'Salmon with Rice');
+  assert.equal(row[COL.protein], 'fish');
+  assert.equal(row[COL.cuisine], 'japanese');
+  assert.equal(row[COL.time_total], 30);
+  assert.equal(row[COL.source_url], 'https://example.test/salmon');
+});
+
+test('recipeToRow: array facets are JSON-stringified into their columns', () => {
+  const row = recipeToRow({
+    slug: 'r',
+    title: 'R',
+    ingredients_key: ['salmon', 'rice'],
+    tags: ['weeknight'],
+    course: ['main'],
+    season: [],
+    dietary: ['pescatarian'],
+    pairs_with: ['steamed-greens'],
+    perishable_ingredients: ['salmon'],
+    requires_equipment: ['blender'],
+  });
+  assert.deepEqual(JSON.parse(row[COL.ingredients_key]), ['salmon', 'rice']);
+  assert.deepEqual(JSON.parse(row[COL.tags]), ['weeknight']);
+  assert.deepEqual(JSON.parse(row[COL.course]), ['main']);
+  assert.deepEqual(JSON.parse(row[COL.season]), []);
+  assert.deepEqual(JSON.parse(row[COL.dietary]), ['pescatarian']);
+  assert.deepEqual(JSON.parse(row[COL.pairs_with]), ['steamed-greens']);
+  assert.deepEqual(JSON.parse(row[COL.perishable_ingredients]), ['salmon']);
+  assert.deepEqual(JSON.parse(row[COL.requires_equipment]), ['blender']);
+});
+
+test('recipeToRow: unpromoted objective fields go to extra; promoted ones do not', () => {
+  const row = recipeToRow({
+    slug: 'r',
+    title: 'R',
+    protein: 'beef',
+    source: 'https://x.test',
+    style: 'one-pot',
+    servings: 6,
+    difficulty: 'easy',
+    discovered_at: null,
+    meal_preppable: true,
+  });
+  const extra = JSON.parse(row[COL.extra]);
+  assert.deepEqual(extra, {
+    style: 'one-pot',
+    servings: 6,
+    difficulty: 'easy',
+    discovered_at: null,
+    meal_preppable: true,
+  });
+  // Promoted fields (slug/title/protein/source) are NOT duplicated into extra.
+  assert.ok(!('slug' in extra));
+  assert.ok(!('title' in extra));
+  assert.ok(!('protein' in extra));
+  assert.ok(!('source' in extra));
+});
+
+test('recipeToRow: absent facets are NULL, not "undefined"; empty extra is null', () => {
+  const row = recipeToRow({ slug: 'plain', title: 'Plain' });
+  assert.equal(row[COL.protein], null);
+  assert.equal(row[COL.cuisine], null);
+  assert.equal(row[COL.time_total], null);
+  assert.equal(row[COL.source_url], null);
+  assert.equal(row[COL.ingredients_key], null);
+  assert.equal(row[COL.tags], null);
+  assert.equal(row[COL.extra], null);
+});
+
+test('recipeToRow round-trips a real built recipe (fixtures → row → reconstructed objective fields)', async () => {
+  const { recipes } = await buildRecipeIndexes(FIXTURES);
+  // Use a fixture with a non-null `source` so the source_url column round-trips.
+  // (A frontmatter `source: null` carries no URL and is reconstructed as absent —
+  // covered by the NULL-column test above and harmless: discovery skips null.)
+  const salmon = recipes['experimental-tofu'];
+  const row = recipeToRow(salmon);
+  // Reconstruct the way src/recipe-index.ts does (extra + columns), proving the
+  // projection is lossless for the objective fields.
+  const reconstructed = { ...(row[COL.extra] ? JSON.parse(row[COL.extra]) : {}) };
+  reconstructed.slug = row[COL.slug];
+  if (row[COL.title] !== null) reconstructed.title = row[COL.title];
+  if (row[COL.protein] !== null) reconstructed.protein = row[COL.protein];
+  if (row[COL.cuisine] !== null) reconstructed.cuisine = row[COL.cuisine];
+  if (row[COL.time_total] !== null) reconstructed.time_total = row[COL.time_total];
+  if (row[COL.source_url] !== null) reconstructed.source = row[COL.source_url];
+  for (const [col, key] of [
+    [COL.ingredients_key, 'ingredients_key'],
+    [COL.tags, 'tags'],
+    [COL.course, 'course'],
+    [COL.season, 'season'],
+    [COL.dietary, 'dietary'],
+    [COL.pairs_with, 'pairs_with'],
+    [COL.perishable_ingredients, 'perishable_ingredients'],
+    [COL.requires_equipment, 'requires_equipment'],
+  ]) {
+    if (row[col] !== null) reconstructed[key] = JSON.parse(row[col]);
+  }
+  assert.deepEqual(reconstructed, salmon);
+});
+
+test('build run() does not write _indexes/recipes.json (the index is D1 now)', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'grocery-noindex-'));
+  await mkdir(path.join(root, 'recipes'), { recursive: true });
+  await writeFile(path.join(root, 'recipes', 'r.md'), recipe('title: R', SECTIONS));
+  // run() validates + builds the index map but writes no files; the projection to
+  // D1 is a separate step (skipped without CLOUDFLARE_API_TOKEN). Assert the legacy
+  // artifact is never produced under _indexes/.
+  await run({ root });
+  let exists = true;
+  try {
+    await stat(path.join(root, '_indexes', 'recipes.json'));
+  } catch {
+    exists = false;
+  }
+  assert.equal(exists, false);
+  await rm(root, { recursive: true, force: true });
 });
 
 // --- TOML parse-check ----------------------------------------------------

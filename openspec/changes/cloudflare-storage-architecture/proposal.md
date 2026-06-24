@@ -51,4 +51,4 @@ A bonus: for everything that lands in D1, the **TOML-vs-JSON question that start
 ## Capabilities (sketch — to be detailed per slice)
 
 - New: `cloudflare-data-platform` (the D1 binding, access layer, migration tooling, the tier boundary).
-- Modified across slices: `data-read-tools`, `data-write-tools`, `recipe-index-kv` (→ D1), `cooking-history`, `recipe-notes`, `shared-corpus`, `build-automation`, `operator-provisioning`, `multi-tenancy`.
+- Modified across slices: `data-read-tools`, `data-write-tools`, `recipe-index` (formerly `recipe-index-kv`; → D1), `cooking-history`, `recipe-notes`, `shared-corpus`, `build-automation`, `operator-provisioning`, `multi-tenancy`.

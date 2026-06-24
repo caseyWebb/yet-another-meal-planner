@@ -1,13 +1,18 @@
-# Reusable workflow: regenerate a DATA repo's _indexes/ from its recipes/ and
-# publish the recipe index to DATA_KV. A data repo (created from
-# groceries-agent-data-template) calls this — see that repo's thin
-# .github/workflows/build-indexes.yml. Billing/runners are the CALLER's (the data
-# repo owner), never this repo's. The build scripts live ONLY here; the data repo
-# carries no copy. `code_ref` pins which version of the scripts to run.
+# Reusable workflow: validate a DATA repo's recipes/ and project the recipe index
+# into D1. A data repo (created from groceries-agent-data-template) calls this — see
+# that repo's thin .github/workflows/build-indexes.yml. Billing/runners are the
+# CALLER's (the data repo owner), never this repo's. The build scripts live ONLY
+# here; the data repo carries no copy. `code_ref` pins which version of the scripts
+# to run.
 #
-# CLOUDFLARE_API_TOKEN is optional: when passed (via `secrets: inherit` in the
-# caller), the build script also publishes the index to DATA_KV. When absent, only
-# the JSON file is written and committed (the old behaviour).
+# The recipe index is the D1 `recipes` table now (d1-recipe-index), not a committed
+# _indexes/recipes.json — so this job VALIDATES + PROJECTS to D1 and commits no
+# index file. (_indexes/ stays in the data repo for the site's components.json,
+# which a different build target owns.) CLOUDFLARE_API_TOKEN is required for the
+# projection: with it (plus the DB database id pinned in the data repo's
+# wrangler.jsonc by the first deploy), build-indexes replaces the table wholesale;
+# without it (or before first provision) the script warns and skips the projection,
+# so validation still runs.
 name: data-build-indexes
 
 on:
@@ -19,14 +24,12 @@ on:
         default: main
     secrets:
       CLOUDFLARE_API_TOKEN:
-        description: "Cloudflare token with KV write access. Optional: when set, the index is published to DATA_KV after being written to _indexes/."
+        description: "Cloudflare token with D1 write access. When set (and the DB database id is pinned in wrangler.jsonc), the recipe index is projected into the D1 `recipes` table; when absent, the projection warns and skips."
         required: false
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write # commit the regenerated _indexes back to the data repo
     steps:
       # The caller's repo (the data repo) — its recipes/ are the build input.
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -47,21 +50,11 @@ jobs:
         run: npm ci
         working-directory: _code
 
-      # `--root .` builds THIS workspace (the data repo), not _code.
-      # When CLOUDFLARE_API_TOKEN is set, the script auto-publishes to DATA_KV.
-      - name: Validate + regenerate indexes
+      # `--root .` builds THIS workspace (the data repo), not _code. With
+      # CLOUDFLARE_API_TOKEN set, the script projects the recipe index into the D1
+      # `recipes` table (reading the DB database id from the data repo's
+      # wrangler.jsonc); otherwise it warns and skips the projection.
+      - name: Validate recipes + project the D1 index
         run: node _code/scripts/build-indexes.mjs --root .
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-
-      - name: Commit regenerated indexes
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add _indexes
-          if git diff --cached --quiet; then
-            echo "Indexes unchanged; nothing to commit."
-            exit 0
-          fi
-          git commit -m "Regenerate indexes [skip ci]"
-          git push

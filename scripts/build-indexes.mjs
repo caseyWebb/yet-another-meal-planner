@@ -9,13 +9,13 @@
 //   node scripts/build-indexes.mjs           # validate + write indexes
 //   node scripts/build-indexes.mjs --check   # validate only, write nothing (pre-commit)
 
-import { readFile, readdir, writeFile, stat } from 'node:fs/promises';
+import { readFile, readdir } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import matter from 'gray-matter';
 import { parse as parseToml } from 'smol-toml';
 import { PROTEIN_VOCAB, CUISINE_VOCAB, EQUIPMENT_VOCAB } from '../src/vocab.js';
-import { resolveKvAccess, kvPut } from './kv-rest.mjs';
+import { resolveD1Access, makeD1Client } from './d1-rest.mjs';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 // `archived` is valid but tool-unwritten by design — the MANUAL history-preserving
@@ -429,27 +429,105 @@ export async function run({ recipesDir, root = REPO_ROOT } = {}) {
   };
 }
 
-async function writeIndexes(indexes, outDir) {
-  await writeFile(path.join(outDir, 'recipes.json'), stableStringify(indexes.recipes));
+// --- D1 projection -------------------------------------------------------
+
+// The recipe index is now the D1 `recipes` table (d1-recipe-index), not a KV blob
+// or a committed _indexes/recipes.json. This is the build's projection of one
+// validated recipe into a table row; it MUST stay in sync with the Worker's read
+// reconstruction in src/recipe-index.ts (same column ↔ frontmatter map).
+//
+//   * scalar columns reconstructed verbatim: title, protein, cuisine, time_total.
+//   * source_url ⇄ the recipe's `source` frontmatter (renamed only at the column
+//     boundary so discovery's source lookups are indexed).
+//   * ingredients_key + the JSON-array columns hold a JSON value as TEXT.
+//   * extra holds a JSON object of every OTHER objective field (lossless).
+const RECIPE_SCALAR_COLUMNS = ['title', 'protein', 'cuisine', 'time_total'];
+const RECIPE_JSON_COLUMNS = [
+  'ingredients_key',
+  'tags',
+  'course',
+  'season',
+  'dietary',
+  'pairs_with',
+  'perishable_ingredients',
+  'requires_equipment',
+];
+// Column order for the INSERT; `slug` (PK) and `source_url` (renamed) bookend the
+// promoted facets, with `extra` last.
+const RECIPE_COLUMNS = [
+  'slug',
+  ...RECIPE_SCALAR_COLUMNS,
+  'source_url',
+  ...RECIPE_JSON_COLUMNS,
+  'extra',
+];
+
+// Frontmatter keys that map to their OWN column (so they are excluded from `extra`).
+// `source` is the frontmatter name of the `source_url` column; `slug` is the PK.
+const PROMOTED_FIELDS = new Set([
+  'slug',
+  'source',
+  ...RECIPE_SCALAR_COLUMNS,
+  ...RECIPE_JSON_COLUMNS,
+]);
+
+// Project one recipe entry into its positional bind values (RECIPE_COLUMNS order).
+// JSON columns are stringified; `extra` carries the leftover objective fields.
+export function recipeToRow(recipe) {
+  const extra = {};
+  for (const [k, v] of Object.entries(recipe)) {
+    if (!PROMOTED_FIELDS.has(k)) extra[k] = v;
+  }
+  const scalar = (v) => (v === undefined ? null : v);
+  const jsonCol = (v) => (v === undefined || v === null ? null : JSON.stringify(v));
+  return [
+    recipe.slug,
+    ...RECIPE_SCALAR_COLUMNS.map((c) => scalar(recipe[c] ?? null)),
+    scalar(recipe.source ?? null),
+    ...RECIPE_JSON_COLUMNS.map((c) => jsonCol(recipe[c])),
+    Object.keys(extra).length ? JSON.stringify(extra) : null,
+  ];
 }
 
-// Publish the recipe index to DATA_KV. Auto-detects eligibility via the shared
-// KV-access resolver (CLOUDFLARE_API_TOKEN + the DATA_KV namespace id from the
-// data repo's wrangler.jsonc). Warns and skips rather than failing when access
-// can't be resolved — this keeps `--check` mode and pre-first-deploy runs clean.
-async function publishToKv(indexes, root) {
-  const access = await resolveKvAccess(root);
+// Project the validated recipe set into the D1 `recipes` table, replacing its
+// contents WHOLESALE in one transaction (DELETE then batched INSERT) — a derived
+// index is rebuilt whole, so replace-all matches the old whole-blob semantics and a
+// removed recipe loses its row. Auto-detects eligibility via the shared D1-access
+// resolver (CLOUDFLARE_API_TOKEN + the DB database id from the data repo's
+// wrangler.jsonc). Warns and SKIPS rather than failing when access can't be
+// resolved — keeping `--check` mode and pre-first-provision runs clean, exactly as
+// the old KV publish did.
+async function projectToD1(indexes, root) {
+  const access = await resolveD1Access(root);
   if (!access.ok) {
-    console.warn(`warn: KV publish skipped — ${access.reason}`);
+    console.warn(`warn: D1 projection skipped — ${access.reason}`);
     return;
   }
+  const d1 = makeD1Client(access);
+  // Deterministic row order (sorted slug) so the projection is reproducible.
+  const recipes = Object.values(indexes.recipes).sort((a, b) => a.slug.localeCompare(b.slug));
+
+  // One atomic request: `DELETE FROM recipes` then an INSERT per recipe, sent as a
+  // single semicolon-joined multi-statement SQL string with one flat positional
+  // `params` array (D1's REST /query binds `?N` across the whole request and runs it
+  // atomically). Replace-all: a removed recipe loses its row; deterministic input →
+  // deterministic table. An empty corpus sends just the DELETE (valid empty table).
+  const colCount = RECIPE_COLUMNS.length;
+  const statements = ['DELETE FROM recipes'];
+  const params = [];
+  recipes.forEach((recipe, i) => {
+    const base = i * colCount;
+    const placeholders = RECIPE_COLUMNS.map((_, j) => `?${base + j + 1}`).join(', ');
+    statements.push(`INSERT INTO recipes (${RECIPE_COLUMNS.join(', ')}) VALUES (${placeholders})`);
+    params.push(...recipeToRow(recipe));
+  });
   try {
-    await kvPut(access, 'index:recipes', stableStringify(indexes.recipes));
+    await d1.query(statements.join('; '), params);
   } catch (err) {
-    console.warn(`warn: KV publish failed — ${err.message}`);
+    console.warn(`warn: D1 projection failed — ${err.message}`);
     return;
   }
-  console.log(`KV index:recipes published to DATA_KV (${access.namespaceId.slice(0, 8)}…)`);
+  console.log(`D1 recipes projected (${recipes.length} row(s), db ${access.databaseId.slice(0, 8)}…)`);
 }
 
 async function main() {
@@ -473,13 +551,13 @@ async function main() {
     return;
   }
 
-  const outDir = path.join(root, '_indexes');
-  await stat(outDir); // _indexes/ exists (Change 01 skeleton)
-  await writeIndexes(indexes, outDir);
+  // The recipe index is no longer a committed _indexes/recipes.json file — it is the
+  // D1 `recipes` table, projected below. (_indexes/ stays for the site's
+  // components.json, which a different build target owns.)
   console.log(
-    `indexes written: ${Object.keys(indexes.recipes).length} recipe(s), ${warnings.length} warning(s)`
+    `recipes validated: ${Object.keys(indexes.recipes).length} recipe(s), ${warnings.length} warning(s)`
   );
-  await publishToKv(indexes, root);
+  await projectToD1(indexes, root);
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

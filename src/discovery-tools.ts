@@ -11,6 +11,7 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import type { Env } from "./env.js";
 import type { GitHubClient } from "./github.js";
 import { readOptional } from "./gh-read.js";
 import { parseToml } from "./parse.js";
@@ -28,6 +29,7 @@ import {
   indexSourceToSlug,
   type FeedEntry,
 } from "./discovery.js";
+import { recipeSourceMap } from "./recipe-index.js";
 import { addSources, INBOX_PATH, SOURCES_PATH } from "./email.js";
 
 const MAX_PER_FEED = 8;
@@ -47,7 +49,7 @@ function errMessage(e: unknown): string {
 export function registerDiscoveryTools(
   server: McpServer,
   sharedGh: GitHubClient,
-  dataKv: KVNamespace,
+  env: Env,
 ): void {
   server.registerTool(
     "fetch_rss_discoveries",
@@ -64,7 +66,7 @@ export function registerDiscoveryTools(
         const feeds = Array.isArray(parsed.feeds) ? (parsed.feeds as Record<string, unknown>[]) : [];
         if (feeds.length === 0) return { candidates: [] };
 
-        const seen = extractRecipeSources(await dataKv.get("index:recipes"));
+        const seen = extractRecipeSources(await recipeSourceMap(env));
 
         // Fetch all feeds concurrently (distinct external domains, no shared-host burst concern).
         const results = await Promise.all(
@@ -140,7 +142,7 @@ export function registerDiscoveryTools(
         const source = norm.recipe.source ?? canonicalizeUrl(url);
         // Idempotency (§6.4): if this source is already in the shared corpus, tell
         // the agent which slug to reuse rather than minting a duplicate.
-        const existingSlug = indexSourceToSlug(await dataKv.get("index:recipes")).get(
+        const existingSlug = indexSourceToSlug(await recipeSourceMap(env)).get(
           canonicalizeUrl(source),
         );
         return existingSlug
@@ -167,7 +169,7 @@ export function registerDiscoveryTools(
         // point the agent at the existing slug to reuse.
         const source = typeof frontmatter.source === "string" ? frontmatter.source : null;
         if (source) {
-          const existing = indexSourceToSlug(await dataKv.get("index:recipes")).get(
+          const existing = indexSourceToSlug(await recipeSourceMap(env)).get(
             canonicalizeUrl(source),
           );
           if (existing) {

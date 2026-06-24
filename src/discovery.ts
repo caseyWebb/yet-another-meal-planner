@@ -40,48 +40,32 @@ export function canonicalizeUrl(raw: string): string {
   }
 }
 
-/** Canonicalized `source:` URLs of every recipe in `_indexes/recipes.json` (absent → empty set). */
-export function extractRecipeSources(indexRaw: string | null): Set<string> {
+/**
+ * Canonicalized `source` URLs of every indexed recipe, for corpus dedup. The
+ * source-URL projection now lives in the D1 `recipes` table (`source_url` column),
+ * read via `recipeSourceMap(env)` (raw URL → slug). Stored values are raw, so we
+ * canonicalize each here so tracker-wrapped feed links compare equal. Absent → empty set.
+ */
+export function extractRecipeSources(sourceMap: Map<string, string>): Set<string> {
   const set = new Set<string>();
-  if (!indexRaw) return set;
-  let index: unknown;
-  try {
-    index = JSON.parse(indexRaw);
-  } catch {
-    return set;
-  }
-  if (index && typeof index === "object") {
-    for (const entry of Object.values(index as Record<string, unknown>)) {
-      const src = (entry as Record<string, unknown> | null)?.source;
-      if (typeof src === "string" && src) set.add(canonicalizeUrl(src));
-    }
+  for (const src of sourceMap.keys()) {
+    if (src) set.add(canonicalizeUrl(src));
   }
   return set;
 }
 
 /**
- * Map canonicalized `source:` URL → recipe slug for every recipe in
- * `_indexes/recipes.json` (absent/malformed → empty map). The slug is the index
- * key. Drives idempotent import (§6.4): a parsed page whose source is already in
- * this map is reused, not re-created. First slug wins on a (rare) source collision.
+ * Map canonicalized `source` URL → recipe slug for every indexed recipe (from the
+ * D1 `recipes` table via `recipeSourceMap(env)`). Drives idempotent import (§6.4):
+ * a parsed page whose source is already in this map is reused, not re-created.
+ * First slug wins on a (rare) canonical-source collision.
  */
-export function indexSourceToSlug(indexRaw: string | null): Map<string, string> {
+export function indexSourceToSlug(sourceMap: Map<string, string>): Map<string, string> {
   const map = new Map<string, string>();
-  if (!indexRaw) return map;
-  let index: unknown;
-  try {
-    index = JSON.parse(indexRaw);
-  } catch {
-    return map;
-  }
-  if (index && typeof index === "object") {
-    for (const [slug, entry] of Object.entries(index as Record<string, unknown>)) {
-      const src = (entry as Record<string, unknown> | null)?.source;
-      if (typeof src === "string" && src) {
-        const c = canonicalizeUrl(src);
-        if (!map.has(c)) map.set(c, slug);
-      }
-    }
+  for (const [src, slug] of sourceMap) {
+    if (!src) continue;
+    const c = canonicalizeUrl(src);
+    if (!map.has(c)) map.set(c, slug);
   }
   return map;
 }

@@ -70,7 +70,7 @@ gh run watch  --repo caseyWebb/groceries-agent-data                # optional: f
 The scripts build indexes/site for a **data repo**, not this one (no data lives here). Point them at a data checkout with `--root`:
 
 ```bash
-node scripts/build-indexes.mjs --root /path/to/data-repo   # → <root>/_indexes/*.json + validation
+node scripts/build-indexes.mjs --root /path/to/data-repo   # validate recipes + project the recipe index into D1
 node scripts/build-site.mjs    --root /path/to/data-repo --out site
 node scripts/build-indexes.mjs --check                     # validate only, no write
 npm run test:tooling                                       # node --test (tests/, fixture-based)

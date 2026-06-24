@@ -22,6 +22,7 @@ import { registerNoteTools, registerStoreNoteTools } from "./notes-tools.js";
 import { registerStoreTools } from "./stores-tools.js";
 import { registerCookingTools } from "./cooking-tools.js";
 import { filterRecipes, type RecipeIndex } from "./recipes.js";
+import { loadRecipeIndex } from "./recipe-index.js";
 import { listStorageGuidance, readStorageGuidance } from "./storage-guidance.js";
 import { fetchWeatherForecast } from "./weather.js";
 import { parseStaples } from "./staples.js";
@@ -274,21 +275,22 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
     },
     ({ filters }) =>
       runTool(async () => {
-        const [rawIndex, overlay, lastCooked, owned] = await Promise.all([
-          env.DATA_KV.get("index:recipes"),
+        // The shared index is the D1 `recipes` table (loadRecipeIndex rebuilds the
+        // in-memory RecipeIndex from rows). An EMPTY table is a valid empty corpus —
+        // it yields `{}` and the filter returns []. An UNREADABLE table throws a
+        // `storage_error` from db(); remap that to `index_unavailable` (the two cases
+        // the old KV key-presence check conflated).
+        const [index, overlay, lastCooked, owned] = await Promise.all([
+          loadRecipeIndex(env).catch((e) => {
+            throw new ToolError(
+              "index_unavailable",
+              `the recipe index is unavailable: ${e instanceof Error ? e.message : String(e)}`,
+            );
+          }),
           getOverlay(),
           getLastCookedMap(),
           getOwnedEquipment(),
         ]);
-        if (rawIndex === null)
-          throw new ToolError("index_unavailable", "the recipe index is unavailable");
-        let index: RecipeIndex;
-        try {
-          index = JSON.parse(rawIndex) as RecipeIndex;
-        } catch (e) {
-          const message = e instanceof Error ? e.message : String(e);
-          throw new ToolError("index_unavailable", `the recipe index is malformed: ${message}`);
-        }
         // Join each shared entry with the caller's overlay (rating/status) and
         // cooking-log-derived last_cooked before filtering, so filters see the
         // caller's effective per-tenant view (effective status defaults to draft).
@@ -569,14 +571,14 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
 
   // Cooking history + meal plan: read_meal_plan (resume), update_meal_plan, and
   // retrospective. Meal plan reads/writes go through DATA_KV; cooking log stays GitHub.
-  registerCookingTools(server, gh, env.DATA_KV, tenant.id);
+  registerCookingTools(server, gh, env, env.DATA_KV, tenant.id);
 
   // Discovery: RSS recipe candidates, parse-only URL import, draft create, plus the
   // feeds/sources config writers. Everything here is SHARED (root client) — recipes,
   // feeds.toml, the discoveries inbox, and discovery_sources.toml all live at the
   // data-repo root, so any member's config feeds one group pool. Imports dedupe by
   // source URL against the shared corpus so a recipe is reused, not duplicated (§6.4).
-  registerDiscoveryTools(server, sharedGh, env.DATA_KV);
+  registerDiscoveryTools(server, sharedGh, env);
 
   // Recipe notes (§8): attributed annotations authored in this tenant's subtree,
   // aggregated across the group at read time (KV tenant directory → each subtree).

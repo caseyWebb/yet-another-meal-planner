@@ -113,7 +113,7 @@ A recipe splits three ways so a shared corpus is safe to share:
 - **Overlay** — `rating` + `status`, per-tenant in the `overlay` field of the KV `profile:<username>` bundle (slug-keyed TOML). One member's disposition never changes another's. `status` lifecycle: `active` (candidate set) · `draft` (surfaced, not yet dispositioned) · `rejected` (explicit no, kept for de-dup) · `archived`. Effective `status` defaults to `draft` when a member has no overlay entry.
 - **Notes** — per-tenant, attributed, append-mostly (`users/<id>/notes/<slug>.toml`).
 
-`last_cooked` is **not stored** — it's derived per-tenant from that member's `cooking_log.toml`. Read tools merge shared content + the caller's overlay + cooking-log `last_cooked` at read time; the shared `_indexes/recipes.json` carries objective fields only.
+`last_cooked` is **not stored** — it's derived per-tenant from that member's `cooking_log.toml`. Read tools merge shared content + the caller's overlay + cooking-log `last_cooked` at read time; the shared D1 `recipes` table carries objective fields only.
 
 **Notes are the spin-capture mechanism that makes sharing safe.** A tweak ("sub gochujang for the sriracha") is an attributed note, never an edit to shared content; only a genuinely *different dish* warrants a personal-recipe fork under `users/<id>/recipes/`. The shared body changes only for an objective correction. Group notes/ratings aggregate across members at read time (`read_recipe_notes`).
 
@@ -186,7 +186,7 @@ New items persist in **`draft` state immediately**, not gated on the user expres
 
 A GitHub Action regenerates derived data on every push to the data repo's `recipes/**`:
 
-- **`_indexes/recipes.json`** — all recipe frontmatter aggregated as one slug-keyed JSON document (objective fields only). The Worker reads it once per filtering operation — one API call instead of fetching every recipe file.
+- **The D1 `recipes` table** — the recipe index, the shared objective projection of all recipe frontmatter (no per-tenant `status`/`rating`/`last_cooked`). `build-indexes` validates `recipes/*.md` and **projects** the set into D1, replacing the table wholesale in one transaction (`DELETE` + batched `INSERT`) — a *derived* projection rebuilt on every recipe push, so there is **no data backfill** (contrast *authored/operational* data, which needs a one-time `.mjs` migration). The Worker reads it from D1 (`src/recipe-index.ts`) and filters in memory; discovery's source-URL idempotency check is an indexed lookup (`idx_recipes_source_url`). This replaces the former `_indexes/recipes.json` + KV `index:recipes` (retired by `d1-recipe-index`). Recipe *content* (`recipes/*.md`) stays in git — only the derived index moved.
 
 Ready-to-eat is per-tenant and now lives in the `profile:<username>` KV bundle (no aggregate index, no GitHub file); the Worker reads each member's catalog from KV and validates it at write time.
 

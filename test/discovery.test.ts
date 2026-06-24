@@ -57,43 +57,40 @@ describe("canonicalizeUrl", () => {
   });
 });
 
+// extractRecipeSources / indexSourceToSlug now take the D1 `recipeSourceMap`
+// (raw stored `source_url` → slug) and canonicalize the URLs themselves, instead
+// of parsing a KV/JSON index blob.
 describe("extractRecipeSources", () => {
-  it("collects canonicalized source URLs, ignoring null/missing", () => {
-    const index = JSON.stringify({
-      a: { slug: "a", source: "https://ex.com/one/?ref=x" },
-      b: { slug: "b", source: null },
-      c: { slug: "c" },
-    });
-    const set = extractRecipeSources(index);
+  it("collects canonicalized source URLs from the D1 source map", () => {
+    const sourceMap = new Map<string, string>([["https://ex.com/one/?ref=x", "a"]]);
+    const set = extractRecipeSources(sourceMap);
     expect(set.has("https://ex.com/one")).toBe(true);
     expect(set.size).toBe(1);
   });
-  it("returns an empty set for absent or malformed index", () => {
-    expect(extractRecipeSources(null).size).toBe(0);
-    expect(extractRecipeSources("{not json").size).toBe(0);
+  it("returns an empty set for an empty source map", () => {
+    expect(extractRecipeSources(new Map()).size).toBe(0);
   });
 });
 
 describe("indexSourceToSlug (idempotent import, §6.4)", () => {
   it("maps canonicalized source URLs to their recipe slug", () => {
-    const index = JSON.stringify({
-      "miso-salmon": { slug: "miso-salmon", source: "https://ex.com/salmon/?utm=1" },
-      "no-source": { slug: "no-source" },
-    });
-    const map = indexSourceToSlug(index);
+    const sourceMap = new Map<string, string>([
+      ["https://ex.com/salmon/?utm=1", "miso-salmon"],
+    ]);
+    const map = indexSourceToSlug(sourceMap);
     // A tracker-wrapped variant of the same URL resolves to the existing slug.
     expect(map.get(canonicalizeUrl("https://ex.com/salmon#print"))).toBe("miso-salmon");
     expect(map.size).toBe(1);
   });
 
-  it("first slug wins on a source collision; empty for absent/malformed", () => {
-    const dupes = JSON.stringify({
-      a: { source: "https://ex.com/x" },
-      b: { source: "https://ex.com/x/" },
-    });
+  it("first slug wins on a canonical-source collision; empty for an empty map", () => {
+    // Insertion order is the source-map order; both canonicalize to .../x.
+    const dupes = new Map<string, string>([
+      ["https://ex.com/x", "a"],
+      ["https://ex.com/x/", "b"],
+    ]);
     expect(indexSourceToSlug(dupes).get("https://ex.com/x")).toBe("a");
-    expect(indexSourceToSlug(null).size).toBe(0);
-    expect(indexSourceToSlug("{ not json").size).toBe(0);
+    expect(indexSourceToSlug(new Map()).size).toBe(0);
   });
 });
 

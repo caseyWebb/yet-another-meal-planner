@@ -18,7 +18,7 @@ The complete tool surface exposed by `grocery-mcp` to Claude. Each tool encodes 
 
 ### `list_recipes(filters)`
 
-List recipes matching filters. Reads from `_indexes/recipes.json` (single API call).
+List recipes matching filters. Reads the recipe index from the D1 `recipes` table (`src/recipe-index.ts`) and filters in memory. An empty table returns `{ recipes: [] }`; an unreadable table returns `index_unavailable`.
 
 **Params:**
 - `filters` (object, optional): `{ status?, protein?, cuisine?, course?, query?, season?, dietary?, max_time_total?, not_cooked_since?, exclude_cooked_within_days?, include_unmakeable? }`

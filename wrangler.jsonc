@@ -34,8 +34,9 @@
 	"vars": {
 		"GITHUB_APP_ID": "<app id>"
 	},
-	// KV. DATA_KV: shared corpus artifacts — the recipe index (`index:recipes`), the
-	// only derived artifact fast enough to justify KV over a GitHub API call. KROGER_KV:
+	// KV. DATA_KV: per-tenant profile/session state (`profile:<username>`,
+	// `state:<username>:*`). (The recipe index moved to the D1 `recipes` table —
+	// `d1-recipe-index` — so DATA_KV no longer holds `index:recipes`.) KROGER_KV:
 	// per-tenant Kroger refresh tokens (`kroger:refresh:<tenant>`) + PKCE verifiers
 	// (`kroger:pkce:<state>`) + the warmed flyer cache (`flyer:{locationId}` rollups,
 	// the sweep `flyer:cursor`, and the persisted `flyer:plan`). TENANT_KV: the tenant

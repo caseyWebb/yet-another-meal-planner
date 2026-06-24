@@ -57,10 +57,8 @@ export interface Env {
 
   // --- KV ---
   /**
-   * Shared corpus artifacts AND per-tenant profile/session state.
-   *
-   * Shared keys: `"index:recipes"` — the JSON-serialised recipe index written by
-   * `build-indexes` on every recipe push (avoids a GitHub API call per invocation).
+   * Per-tenant profile/session state. (The shared recipe index moved to the D1
+   * `recipes` table — `DB` below — so DATA_KV no longer holds `index:recipes`.)
    *
    * Per-tenant keys (written by the Worker, never by CI):
    * - `profile:<username>` — JSON bundle of all stable profile fields
