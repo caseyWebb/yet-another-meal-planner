@@ -37,12 +37,12 @@
 
 ## 8. Docs
 
-- [ ] 8.1 `docs/ARCHITECTURE.md`: add the three-tier boundary (GitHub = recipe markdown; D1 = domain data; KV = ephemeral infra) and D1's role; note the two-track migration pipeline.
-- [ ] 8.2 `docs/SELF_HOSTING.md`: the `CLOUDFLARE_API_TOKEN` scope now includes **D1 edit**; a D1 database is auto-provisioned on first deploy and pinned back; no manual step.
-- [ ] 8.3 `CONTRIBUTING.md`: local D1 (`wrangler d1 migrations apply DB --local`), and the rule of thumb — **schema change → `migrations/d1/*.sql`; data move → `migrations/*.mjs`**.
-- [ ] 8.4 Note in the data-template repo's `wrangler.jsonc` (operator template) that it gains the id-less `DB` binding on next sync.
+- [x] 8.1 `docs/ARCHITECTURE.md`: add the three-tier boundary (GitHub = recipe markdown; D1 = domain data; KV = ephemeral infra) and D1's role; note the two-track migration pipeline.
+- [x] 8.2 `docs/SELF_HOSTING.md`: the `CLOUDFLARE_API_TOKEN` scope now includes **D1 edit**; a D1 database is auto-provisioned on first deploy and pinned back; no manual step.
+- [x] 8.3 `CONTRIBUTING.md`: local D1 (`wrangler d1 migrations apply DB --local`), and the rule of thumb — **schema change → `migrations/d1/*.sql`; data move → `migrations/*.mjs`**.
+- [x] 8.4 Documented in CONTRIBUTING.md (template-sync note): the `DB` binding propagates to operators via the merge regardless of template version; the separate data-template repo's own `wrangler.jsonc` should gain the id-less `DB` entry on its next sync. NOTE: the actual template edit lands in the external `groceries-agent-data-template` repo (a git submodule, not checked out / not owned here), so it is out of this change's commit scope.
 
 ## 9. Verify
 
-- [ ] 9.1 `npm run typecheck` + `npm test` green (new D1 binding types, merge tests, db.ts tests).
-- [ ] 9.2 End-to-end on a scratch operator/Cloudflare account: deploy auto-provisions D1, `0001_init.sql` applies, the id pins back into the operator config, a redeploy reuses it, and `/health` reports D1 reachable.
+- [x] 9.1 `npm run typecheck` + `npm test` green (new D1 binding types, merge tests, db.ts tests). Also `npm run test:tooling` green (107 pass). See report.
+- [ ] 9.2 NOT VERIFIED LIVE — this sandbox has no Cloudflare account / wrangler login, so I cannot run the end-to-end deploy (auto-provision → `0001_init.sql` apply → id pin-back → redeploy reuse → `/health` D1 reachable). The code, workflow, and provisioning logic are implemented and unit-tested; the live deploy must be run on a scratch operator/Cloudflare account by an operator. Left unchecked.

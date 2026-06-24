@@ -89,6 +89,16 @@ A **solo operator** is simply the degenerate case: one `users/<id>/` subtree.
 
 The data repo is the system's memory. It splits two ways — shared vs per-tenant — and within a tenant, into a small set of intent files that must not be conflated. Field-level schemas live in [`SCHEMAS.md`](SCHEMAS.md); this is the conceptual map.
 
+### Storage tiers (the three-tier boundary)
+
+Per `cloudflare-storage-architecture`, persistent state lives across three tiers chosen by the *nature* of the data, not by convenience:
+
+- **GitHub** — authored **recipe markdown** (`recipes/*.md`) only: the source of truth for recipe *content*, hand-edited via Obsidian / native git apps, version-controlled and human-inspectable. This is the one tier a human edits directly.
+- **D1** (`env.DB`) — all **domain/operational data and derived projections**: the queryable, relational, admin-editable, strongly-consistent (read-after-write) tier. The recipe index, profile, session state, cooking log, notes, registries, config, and caches land here, **migrated slice by slice**. Tools never touch `env.DB` directly — they go through `src/db.ts` (prepared-statement helpers + structured-error mapping; tools never throw). The `d1-foundation` slice stands up the binding, the access layer, and the migration pipeline but moves no domain data yet (a `schema_meta` bootstrap table only).
+- **KV** — **ephemeral infrastructure only**, no domain data: `KROGER_KV` (Kroger tokens, PKCE verifiers, the TTL flyer cache, background-job health), `OAUTH_KV` (OAuth provider state), `TENANT_KV` (tenant directory / invites). The shared flyer cache and the recipe index currently still ride `DATA_KV` until their migration slices move them to D1.
+
+The sections below describe the current (pre-migration) layout; as slices land, the per-tenant operational state moves from KV/GitHub into D1 behind `src/db.ts`.
+
 ### Shared vs per-tenant
 
 - **Shared corpus (data-repo root)** — objective, single-source, read by everyone: recipe **content** (`recipes/*.md`), `aliases.toml`, the location-tagged `skus/kroger.toml` cache, the curated `storage_guidance/` tree, the `stores/<slug>.toml` store registry (identity), and the discovery sources (`feeds.toml`, `discoveries_inbox.toml`, `discovery_sources.toml`). Discovery is shared and top-level: feeds and the newsletter inbox feed one group pool, judged against each caller's taste at read time. `_indexes/` is generated from the shared content.
@@ -186,11 +196,18 @@ A useful side effect: the indexes are a public-ish artifact any tool can consume
 
 ## Migrations
 
-State that moves out of GitHub (or otherwise changes shape in `DATA_KV`) is reconciled by a **deploy-time migration runner**, not by runtime fallback — so the Worker read path stays a clean KV read with no legacy branches.
+State that moves out of GitHub (or otherwise changes shape in `DATA_KV`) is reconciled by a **deploy-time migration runner**, not by runtime fallback — so the Worker read path stays a clean read with no legacy branches.
 
-- **`migrations/NNNN-name.mjs`** — each migration exports an `id` and an `async up({ kv, dataRoot, log })`. It reads from the data repo checkout (`dataRoot`) and writes `DATA_KV` through the injected REST client. Migrations are **idempotent** (skip work already done) so a re-run is safe.
-- **`scripts/run-migrations.mjs`** — discovers `migrations/*.mjs` in filename order, reads the `migrations:applied` ledger key from `DATA_KV`, runs any id not in the ledger, and appends each id after it succeeds. It **no-ops gracefully** when the `DATA_KV` namespace id can't be resolved from the operator's `wrangler.jsonc` (a brand-new operator before their first deploy — nothing to migrate yet).
-- **Where it runs** — the `data-deploy` workflow invokes it (`node _code/scripts/run-migrations.mjs --root .`) after `wrangler deploy`, before publishing the recipe index. Both the runner and `build-indexes` publish to KV through the shared `scripts/kv-rest.mjs` client.
+**Two-track pipeline (since `d1-foundation`).** A migration is one of two kinds, by the *nature* of the change, and each has its own track and its own ledger:
+
+- **Schema (DDL) → `migrations/d1/*.sql`** — declarative table shape, applied by the Cloudflare-native `wrangler d1 migrations apply DB` (`--local` to seed the local dev SQLite, `--remote` on deploy) and tracked in D1's own `d1_migrations` table (created automatically on first apply).
+- **Data (backfill) → `migrations/*.mjs`** — imperative reads (the data-repo checkout / KV) coerced and INSERTed into D1, run by `scripts/run-migrations.mjs` and tracked in the `migrations:applied` **KV** ledger.
+
+Two ledgers is deliberate: each tracks a distinct kind of change, and mixing them would force imperative JS into `.sql` files or reimplement schema-diffing in JS. **Rule of thumb: a schema change is a `.sql` file under `migrations/d1/`; a data move is a `.mjs` file under `migrations/`.** On deploy the schema track runs *before* the data track (tables exist before the backfill writes into them). The `migrations/d1/` directory is separate so the SQL files don't collide with the `.mjs` runner's `migrations/*.mjs` scan.
+
+- **`migrations/NNNN-name.mjs`** — each migration exports an `id` and an `async up({ kv, d1, dataRoot, log })`. It reads from the data repo checkout (`dataRoot`) and writes `DATA_KV` (and, for D1 backfills, `d1`) through the injected REST clients. Migrations are **idempotent** (skip work already done) so a re-run is safe. `d1` is `null` when D1 isn't provisioned yet — a migration that needs it guards on that.
+- **`scripts/run-migrations.mjs`** — discovers `migrations/*.mjs` in filename order, reads the `migrations:applied` ledger key from `DATA_KV`, runs any id not in the ledger, and appends each id after it succeeds. It resolves both a `kv` client (`scripts/kv-rest.mjs`) and a `d1` client (`scripts/d1-rest.mjs`) from the operator's `wrangler.jsonc`. It **no-ops gracefully** when the `DATA_KV` namespace id can't be resolved (a brand-new operator before their first deploy — nothing to migrate yet); a missing D1 id just leaves `d1` null.
+- **Where it runs** — the `data-deploy` workflow invokes it (`node _code/scripts/run-migrations.mjs --root .`) after `wrangler deploy`, the id pin-back, and the D1 *schema* apply, and before publishing the recipe index. The runner and `build-indexes` publish to KV through `scripts/kv-rest.mjs`; D1 backfills go through `scripts/d1-rest.mjs`.
 - **The first migration** (`0001-unified-user-profile-kv`) moved per-tenant profile + session state from `users/<username>/` files into the `profile:<username>` bundle and `state:<username>:*` keys. Stale GitHub profile files are inert afterward (the read path never consults them) and can be pruned manually.
 
 Rollback is a redeploy of the prior Worker: the GitHub files are untouched, so the reverted (GitHub-reading) Worker keeps working; KV keys written by a migration are simply ignored by it.
