@@ -35,10 +35,10 @@ The system is three pieces with one clean split: **the LLM does the fuzzy work; 
 │     notes/ · store_notes/                              │
 └────────────────────────────────────────────────────────┘
 ┌────────────────────────────────────────────────────────┐
-│  DATA_KV (Cloudflare KV, per-tenant session state)     │
-│   state:<username>:pantry                              │
-│   state:<username>:meal_plan                           │
-│   state:<username>:grocery_list                        │
+│  DATA_KV (Cloudflare KV) — EMPTY of domain data;       │
+│   removable (follow-up). Only the migrations:applied   │
+│   ledger remains. Recipe index, profile, and session   │
+│   state have all moved to D1.                          │
 └────────────────────────────────────────────────────────┘
 ┌────────────────────────────────────────────────────────┐
 │  D1 (Cloudflare SQLite, relational tier — migrated     │
@@ -49,13 +49,15 @@ The system is three pieces with one clean split: **the LLM does the fuzzy work; 
 │     taste/diet markdown, stores/dietary/custom JSON)   │
 │   brand_prefs · kitchen_equipment · staples · overlay  │
 │   ready_to_eat · stockup  (per-tenant profile children)│
+│   pantry · meal_plan · grocery_list  (per-tenant       │
+│     session state — row tables)                        │
 └────────────────────────────────────────────────────────┘
 
 (The CODE repo — this one: Worker src/, scripts/, docs/, CI —
  is a separate upstream. Self-hosters deploy it; they never fork it.)
 ```
 
-- **Claude.ai** is the conversational surface and the reasoning. Each chat starts fresh; state lives in DATA_KV (profile + session state) and the data repo (historical records + shared corpus), not in chat history. The agent reads what it needs through MCP tools at the start of a conversation.
+- **Claude.ai** is the conversational surface and the reasoning. Each chat starts fresh; state lives in D1 (profile + session state + cooking log + recipe index) and the data repo (attributed records + shared corpus), not in chat history. The agent reads what it needs through MCP tools at the start of a conversation.
 - **The Worker** (this repo, root `src/`) is a Cloudflare Worker hosting the `grocery-mcp` MCP server — the domain tool surface (pantry, recipes, Kroger, cart) — plus an OAuth 2.1 provider members connect their Claude.ai to. It is the locus of determinism and the multi-tenant gate.
 - **The data repo** (`<operator>/groceries-agent-data`, private) is the substrate: flat files (TOML + markdown) in git, with git history as the audit log. Created from [`groceries-agent-data-template`](https://github.com/caseyWebb/groceries-agent-data-template); see [`SELF_HOSTING.md`](SELF_HOSTING.md).
 
@@ -102,16 +104,16 @@ Per `cloudflare-storage-architecture`, persistent state lives across three tiers
 
 - **GitHub** — authored **recipe markdown** (`recipes/*.md`) only: the source of truth for recipe *content*, hand-edited via Obsidian / native git apps, version-controlled and human-inspectable. This is the one tier a human edits directly.
 - **D1** (`env.DB`) — all **domain/operational data and derived projections**: the queryable, relational, admin-editable, strongly-consistent (read-after-write) tier. The recipe index, profile, session state, cooking log, notes, registries, config, and caches land here, **migrated slice by slice**. Tools never touch `env.DB` directly — they go through `src/db.ts` (prepared-statement helpers + structured-error mapping; tools never throw). The `d1-foundation` slice stands up the binding, the access layer, and the migration pipeline but moves no domain data yet (a `schema_meta` bootstrap table only).
-- **KV** — **ephemeral infrastructure only**, no domain data: `KROGER_KV` (Kroger tokens, PKCE verifiers, the TTL flyer cache, background-job health), `OAUTH_KV` (OAuth provider state), `TENANT_KV` (tenant directory / invites). The shared flyer cache and the recipe index currently still ride `DATA_KV` until their migration slices move them to D1.
+- **KV** — **ephemeral infrastructure only**, no domain data: `KROGER_KV` (Kroger tokens, PKCE verifiers, the TTL flyer cache, background-job health), `OAUTH_KV` (OAuth provider state), `TENANT_KV` (tenant directory / invites). **`DATA_KV` now holds no domain data at all** — the recipe index, the profile, and session state (pantry/meal_plan/grocery_list) have all moved to D1; only the `migrations:applied` ledger remains, and the binding is removable (a follow-up wrangler cleanup).
 
-The sections below describe the current (pre-migration) layout; as slices land, the per-tenant operational state moves from KV/GitHub into D1 behind `src/db.ts`.
+As slices land, per-tenant operational state has moved from KV/GitHub into D1 behind `src/db.ts`; with session state migrated (`d1-session-state`), `DATA_KV` carries no domain data.
 
 ### Shared vs per-tenant
 
 - **Shared corpus (data-repo root)** — objective, single-source, read by everyone: recipe **content** (`recipes/*.md`), `aliases.toml`, the location-tagged `skus/kroger.toml` cache, the curated `storage_guidance/` tree, the `stores/<slug>.toml` store registry (identity), and the discovery sources (`feeds.toml`, `discoveries_inbox.toml`, `discovery_sources.toml`). Discovery is shared and top-level: feeds and the newsletter inbox feed one group pool, judged against each caller's taste at read time. `_indexes/` is generated from the shared content.
 - **Per-tenant GitHub subtree (`users/<username>/`)** — each member's **attributed records** only: `notes/<slug>.toml` (attributed recipe notes), `store_notes/<slug>.toml` (attributed store notes). Addressed by prefixing repo-relative paths; one request can never reach another member's data. With the cooking log moved to D1 (`d1-cooking-log`), GitHub holds **no per-tenant volatile data** — only these attributed records and the shared corpus. (The pre-backfill `cooking_log.toml` files remain in git, inert, until a later cleanup removes them.)
-- **Per-tenant DATA_KV** — each member's remaining **session state**, keyed by `state:<username>:pantry/meal_plan/grocery_list`. (The profile bundle that used to live at `profile:<username>` moved to D1; these session keys move to D1 in a later slice.) The Worker read path has **no** GitHub fallback (a miss returns empty).
-- **Per-tenant D1** — the relational tier. The `cooking_log` table is per-tenant realized cook history (`d1-cooking-log`); the `recipes` table is the shared objective recipe index; the **profile** tables (`profile`, `brand_prefs`, `kitchen_equipment`, `staples`, `overlay`, `ready_to_eat`, `stockup`; `d1-profile`) hold each member's preferences/taste/diet/kitchen/staples/overlay/ready-to-eat/stockup. Tenant-scoped on every read; written via `log_cooked` (cooking events), the build (recipe index), and the profile write tools (`update_preferences` merge-patch, `update_taste`/`…`, `rate_recipe`, etc.).
+- **Per-tenant D1 (session state)** — each member's working state is now D1 row tables (`d1-session-state`): `pantry`, `meal_plan`, `grocery_list` (keyed by normalized name or recipe slug), replacing the former `state:<username>:*` KV blobs. Adds are row upserts, removes/status changes are targeted row statements — strong read-after-write consistency, no whole-array rewrite. The Worker read path has **no** GitHub/KV fallback (a miss returns empty).
+- **Per-tenant D1 (records + profile)** — the relational tier. The `cooking_log` table is per-tenant realized cook history (`d1-cooking-log`); the `recipes` table is the shared objective recipe index; the **profile** tables (`profile`, `brand_prefs`, `kitchen_equipment`, `staples`, `overlay`, `ready_to_eat`, `stockup`; `d1-profile`) hold each member's preferences/taste/diet/kitchen/staples/overlay/ready-to-eat/stockup. Tenant-scoped on every read; written via `log_cooked` (cooking events — which also clears the cooked recipe from `meal_plan` in the **same transaction**), the build (recipe index), the profile write tools, and the session-state tools (`update_pantry`, `update_meal_plan`, `add_to_grocery_list`, …).
 
 ### Three-category recipe model
 
@@ -131,10 +133,10 @@ Five intent kinds — don't conflate them:
 
 | Key / backing | Kind of intent |
 | --- | --- |
-| `state:<username>:pantry` (KV) | **observation** — what's physically in the kitchen |
+| `pantry` (D1, tenant-scoped) | **observation** — what's physically in the kitchen |
 | `stockup` (D1, tenant-scoped) | **conditional intent** — buy IF it drops below a threshold |
-| `state:<username>:grocery_list` (KV) | **committed buy intent** — buy on the next order (ingredient-level, SKU-free) |
-| `state:<username>:meal_plan` (KV) | **committed cook intent** — recipes agreed to cook next (transient) |
+| `grocery_list` (D1, tenant-scoped) | **committed buy intent** — buy on the next order (ingredient-level, SKU-free) |
+| `meal_plan` (D1, tenant-scoped) | **committed cook intent** — recipes agreed to cook next (transient) |
 | `cooking_log` (D1, tenant-scoped) | **realized history** — append-only log of meals actually cooked |
 
 KV state is freely mutable with no git history (appropriate for transient operational data); the `cooking_log` D1 table is the durable, queryable cook history (`id`-addressable, read-after-write consistent). The agent **captures intent into the grocery list continuously**, and **flushes to the cart once**, at order time. Capture is store-agnostic (the list is SKU-free); the flush is not.
@@ -200,7 +202,7 @@ A GitHub Action regenerates derived data on every push to the data repo's `recip
 
 Ready-to-eat is per-tenant and now lives in the D1 `ready_to_eat` table (no aggregate index, no GitHub file); the Worker reads each member's catalog from D1.
 
-The same build runs **validation** over what GitHub still owns: every TOML parses, every recipe frontmatter is well-formed, `pairs_with` references resolve, status values are in the enum, and `stores/` and the discovery files are structurally checked. The D1 profile tables + the KV `state:<username>:*` session state + the D1 `cooking_log` are **not** build-validated — they have no GitHub file to check; the Worker is their sole validator, at write time (`update_preferences`’ merge-patch validation for preferences, `log_cooked` for the cooking log with real recipe-slug resolution against `recipes`). Validation failures fail the Action (red CI) but don't block reads — the Worker keeps reading HEAD. The point is fast feedback, not gating. The Worker reimplements a *structural* subset of this validation in TypeScript for write-time checks (it can't run the Node validator on `workerd`).
+The same build runs **validation** over what GitHub still owns: every TOML parses, every recipe frontmatter is well-formed, `pairs_with` references resolve, status values are in the enum, and `stores/` and the discovery files are structurally checked. The D1 profile tables + the D1 session-state tables (`pantry`/`meal_plan`/`grocery_list`) + the D1 `cooking_log` are **not** build-validated — they have no GitHub file to check; the Worker is their sole validator, at write time (`update_preferences`’ merge-patch validation for preferences, `log_cooked` for the cooking log with real recipe-slug resolution against `recipes`). Validation failures fail the Action (red CI) but don't block reads — the Worker keeps reading HEAD. The point is fast feedback, not gating. The Worker reimplements a *structural* subset of this validation in TypeScript for write-time checks (it can't run the Node validator on `workerd`).
 
 A useful side effect: the indexes are a public-ish artifact any tool can consume — `scripts/build-site.mjs` builds a static GitHub Pages cookbook from them with no backend.
 
