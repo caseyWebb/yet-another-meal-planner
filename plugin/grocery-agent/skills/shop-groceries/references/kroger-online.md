@@ -20,4 +20,4 @@ This branch runs when my fulfillment mode is Kroger online. It may happen in the
 
 **Lifecycle past `in_cart` is user-asserted — never claim it on your own:**
 - *"I placed the order"* → advance `in_cart` items to `ordered` (`update_grocery_list`).
-- *"I picked up the groceries"* → `received` (terminal): one `commit_changes` removing the picked items via `grocery_list_ops` and — for `grocery`-kind items only — restocking the pantry via `pantry_operations`. `household`/`other` items don't touch the pantry. Then, for the fresh perishables just received, offer a couple of storage tips following the **Putting groceries away** guidance.
+- *"I picked up the groceries"* → `received` (terminal): remove the picked items with `remove_from_grocery_list` (one per item, awaited — they share the list blob) and — for `grocery`-kind items only — restock the pantry in one `update_pantry({ operations: [...] })` (all the add ops together). `household`/`other` items don't touch the pantry. Then, for the fresh perishables just received, offer a couple of storage tips following the **Putting groceries away** guidance.

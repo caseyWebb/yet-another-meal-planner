@@ -7,4 +7,4 @@ description: "Rate a recipe or change its status. Use for \"rate the Serious Eat
 
 # Recipe feedback / disposition
 
-Call `update_recipe(slug, updates)` with the appropriate fields. For drafts being dispositioned: status → active (with rating) or status → rejected.
+Call `rate_recipe(slug, { rating?, status? })` with the fields I named — `rating` (1–5), `status` (active|draft|rejected), or both. For drafts being dispositioned: `status: "active"` (add a `rating` if I gave one) or `status: "rejected"`. This writes only *my* overlay — never the shared recipe or anyone else's view. (`update_recipe` is for objective shared content, not rating/status — it'll reject those and point here.)
