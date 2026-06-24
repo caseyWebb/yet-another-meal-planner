@@ -169,18 +169,9 @@ jobs:
           workingDirectory: _code
           command: d1 migrations apply DB --remote
 
-      # Apply pending KV migrations (e.g. moving per-tenant profile/session state
-      # from users/<username>/ files into DATA_KV). The runner reads the data repo
-      # checkout (working dir) and the DATA_KV namespace id from the operator's
-      # wrangler.jsonc (pinned back above); it records applied ids in the
-      # `migrations:applied` ledger so each migration runs once. No-ops gracefully
-      # when the binding isn't provisioned yet (brand-new operator). The runner now
-      # backfills both KV (the `migrations:applied` ledger itself) and D1 — it passes
-      # a D1 client into each migration's up({ kv, d1, … }).
-      - name: Run data backfill migrations (KV + D1)
-        run: node _code/scripts/run-migrations.mjs --root .
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      # (The one-time KV/GitHub→D1 backfill migrations have been applied and retired —
+      # there is no `.mjs` data-migration step anymore. Schema lives in the D1-native
+      # step above; the recipe index is projected below.)
 
       # Project the recipe index into the D1 `recipes` table immediately after deploy
       # so the Worker can serve list_recipes without waiting for a recipe push. Reads

@@ -28,7 +28,6 @@
     "js-yaml": "^5.0.0",
     "marked": "^18.0.5",
     "postal-mime": "^2.7.4",
-    "smol-toml": "^1.7.0",
     "zod": "^4.0.0"
   },
   "devDependencies": {
