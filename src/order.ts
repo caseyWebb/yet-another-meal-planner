@@ -156,7 +156,7 @@ export interface PlaceOrderDeps {
   commitSkuCache(mappings: NewMapping[]): Promise<string | null>;
   /** Write the resolved lines to the Kroger cart. Throws on failure. */
   cartAdd(lines: ResolvedLine[]): Promise<void>;
-  /** Advance the resolved lines to status:in_cart in the grocery list (KV-backed). Throws on failure. */
+  /** Advance the resolved lines to status:in_cart in the grocery list (D1-backed). Throws on failure. */
   advanceInCart(lines: ResolvedLine[]): Promise<void>;
 }
 

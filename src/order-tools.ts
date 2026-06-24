@@ -1,6 +1,6 @@
 // place_order tool registration (order-placement capability). Wires the pure
 // orchestrator in order.ts to the real I/O: the Change 05 matcher (resolution),
-// the KV grocery-list + pantry reads, and the user-context Kroger client (cart
+// the D1 grocery-list + pantry reads, and the user-context Kroger client (cart
 // write). It is the ONLY tool that writes a Kroger cart.
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -12,7 +12,7 @@ import { parseToml } from "./parse.js";
 import { stringifyTomlWithHeader } from "./serialize.js";
 import { runTool } from "./errors.js";
 import { commitFiles } from "./commit.js";
-import { normalizeName, type GroceryItem } from "./grocery.js";
+import { normalizeName } from "./grocery.js";
 import type { MatchContext, MatchResult } from "./matching.js";
 import {
   computeToBuy,
@@ -23,7 +23,7 @@ import {
   type ResolvedLine,
 } from "./order.js";
 import { createKrogerUserClient, toToolError, type KvStore } from "./kroger-user.js";
-import { getGroceryListState, writeGroceryListState, getPantryState } from "./user-kv.js";
+import { readGroceryList, readPantryNames, advanceInCartRows } from "./session-db.js";
 
 const SKU_CACHE_PATH = "skus/kroger.toml";
 
@@ -81,38 +81,9 @@ function makeCommitSkuCache(gh: GitHubClient, getLocationId: () => Promise<strin
 }
 
 /** Advance the resolved lines to status:in_cart, adding any missing list entries. */
-function makeAdvanceInCart(
-  dataKv: KVNamespace,
-  username: string,
-) {
+function makeAdvanceInCart(env: Env, username: string) {
   return async (lines: ResolvedLine[]): Promise<void> => {
-    const items = await getGroceryListState(dataKv, username);
-    const next: GroceryItem[] = items.map((it) => ({ ...it, for_recipes: [...it.for_recipes] }));
-    const indexByKey = new Map(next.map((it, i) => [normalizeName(it.name), i]));
-
-    for (const line of lines) {
-      const key = normalizeName(line.name);
-      const idx = indexByKey.get(key);
-      if (idx != null) {
-        next[idx] = { ...next[idx], status: "in_cart" };
-      } else {
-        // A menu need that wasn't on the list yet — track it through the lifecycle.
-        next.push({
-          name: line.name,
-          quantity: "1",
-          kind: "grocery",
-          domain: "grocery",
-          status: "in_cart",
-          source: "menu",
-          for_recipes: [],
-          note: null,
-          added_at: today(),
-          ordered_at: null,
-        });
-      }
-    }
-
-    await writeGroceryListState(dataKv, username, next);
+    await advanceInCartRows(env, username, lines, today());
   };
 }
 
@@ -138,10 +109,9 @@ export function registerOrderTools(
   getLocationId: () => Promise<string>,
 ): void {
   // The SKU cache is shared corpus (root client); the grocery list + pantry are
-  // this tenant's personal state (KV-backed).
-  const dataKv = env.DATA_KV;
+  // this tenant's personal state (D1-backed).
   const commitSkuCache = makeCommitSkuCache(sharedGh, getLocationId);
-  const advanceInCart = makeAdvanceInCart(dataKv, tenantId);
+  const advanceInCart = makeAdvanceInCart(env, tenantId);
 
   server.registerTool(
     "place_order",
@@ -161,14 +131,8 @@ export function registerOrderTools(
         const kv = env.KROGER_KV as unknown as KvStore;
         const userClient = createKrogerUserClient(env, kv, tenantId);
 
-        const list = await getGroceryListState(dataKv, tenantId);
-
-        const pantryItems = await getPantryState(dataKv, tenantId);
-        const pantryNames = new Set<string>(
-          pantryItems
-            .map((p) => (typeof p.name === "string" ? normalizeName(p.name) : null))
-            .filter((n): n is string => n !== null),
-        );
+        const list = await readGroceryList(env, tenantId);
+        const pantryNames = await readPantryNames(env, tenantId);
 
         const quantities: Record<string, number> = {};
         for (const [k, v] of Object.entries(input.quantities ?? {})) {
