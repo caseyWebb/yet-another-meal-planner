@@ -6,7 +6,7 @@ import {
 } from "../src/write-tools.js";
 import { applyPantryOperations, markVerified, type PantryItem } from "../src/pantry-write.js";
 import { serializeMarkdown } from "../src/serialize.js";
-import { parseMarkdown, parseToml } from "../src/parse.js";
+import { parseMarkdown } from "../src/parse.js";
 import { GitHubError, type GitHubClient } from "../src/github.js";
 import type { Env } from "../src/env.js";
 
@@ -58,12 +58,89 @@ function fakeKv(initial: Record<string, string> = {}): { kv: KVNamespace; store:
   return { kv, store };
 }
 
-// A fake D1 answering the recipe-resolution SELECT used by rate_recipe. `slugs`
-// is the set of recipes that exist; `SELECT 1 … WHERE slug=?1` returns a row iff
-// the bound slug is in it. No writes go through D1 here (the overlay is KV-backed).
-function fakeD1(slugs: string[]): Env {
+// An in-memory fake D1 covering the profile tables the write tools touch. It routes
+// by SQL prefix/table: `SELECT 1 … FROM recipes` resolves a slug against `slugs`;
+// SELECT/INSERT/DELETE against profile, overlay, staples, stockup, brand_prefs,
+// kitchen_equipment, and ready_to_eat read/mutate per-table row stores. UPSERTs use
+// the ON CONFLICT clause's primary key. Enough fidelity to assert real round-trips.
+interface FakeStore {
+  env: Env;
+  tables: Record<string, Record<string, unknown>[]>;
+}
+
+function fakeD1(slugs: string[]): FakeStore {
   const known = new Set(slugs);
-  const makeStmt = () => {
+  const tables: Record<string, Record<string, unknown>[]> = {
+    profile: [],
+    overlay: [],
+    staples: [],
+    stockup: [],
+    brand_prefs: [],
+    kitchen_equipment: [],
+    ready_to_eat: [],
+  };
+
+  function tableOf(sql: string): string | null {
+    const m = /(?:FROM|INTO|UPDATE)\s+(\w+)/i.exec(sql);
+    return m ? m[1] : null;
+  }
+
+  const exec = (sql: string, binds: unknown[]): { rows: Record<string, unknown>[]; changes: number } => {
+    const table = tableOf(sql);
+    if (/^SELECT/i.test(sql)) {
+      if (sql.includes("FROM recipes")) {
+        const slug = binds[0];
+        return { rows: typeof slug === "string" && known.has(slug) ? [{ ok: 1 }] : [], changes: 0 };
+      }
+      if (!table || !tables[table]) return { rows: [], changes: 0 };
+      const tenant = binds[0];
+      const recipe = binds[1]; // for the overlay point read, if any
+      let rows = tables[table].filter((r) => r.tenant === tenant);
+      if (sql.includes("recipe = ?2")) rows = rows.filter((r) => r.recipe === recipe);
+      return { rows, changes: 0 };
+    }
+    if (/^DELETE/i.test(sql)) {
+      if (!table || !tables[table]) return { rows: [], changes: 0 };
+      const tenant = binds[0];
+      const before = tables[table].length;
+      tables[table] = tables[table].filter((r) => {
+        if (r.tenant !== tenant) return true;
+        if (sql.includes("recipe = ?2")) return r.recipe !== binds[1];
+        if (sql.includes("term = ?2")) return r.term !== binds[1];
+        return false;
+      });
+      return { rows: [], changes: before - tables[table].length };
+    }
+    if (/^INSERT/i.test(sql)) {
+      if (!table || !tables[table]) return { rows: [], changes: 0 };
+      const cols = /INSERT INTO \w+ \(([^)]+)\)/.exec(sql)![1].split(",").map((c) => c.trim());
+      const row: Record<string, unknown> = {};
+      cols.forEach((c, i) => (row[c] = binds[i] ?? null));
+      // Resolve the primary key for ON CONFLICT upserts.
+      const pk: string[] =
+        table === "profile"
+          ? ["tenant"]
+          : table === "overlay"
+            ? ["tenant", "recipe"]
+            : table === "brand_prefs"
+              ? ["tenant", "term"]
+              : table === "ready_to_eat"
+                ? ["tenant", "slug"]
+                : table === "kitchen_equipment"
+                  ? ["tenant", "slug"]
+                  : ["tenant", "normalized_name"];
+      const idx = tables[table].findIndex((r) => pk.every((k) => r[k] === row[k]));
+      if (idx >= 0 && /ON CONFLICT/i.test(sql)) {
+        tables[table][idx] = { ...tables[table][idx], ...row };
+      } else {
+        tables[table].push(row);
+      }
+      return { rows: [], changes: 1 };
+    }
+    return { rows: [], changes: 0 };
+  };
+
+  const makeStmt = (sql: string) => {
     let binds: unknown[] = [];
     const stmt = {
       bind(...v: unknown[]) {
@@ -71,25 +148,26 @@ function fakeD1(slugs: string[]): Env {
         return stmt;
       },
       async first<T>() {
-        const slug = binds[0];
-        return (typeof slug === "string" && known.has(slug) ? { ok: 1 } : null) as T | null;
+        return (exec(sql, binds).rows[0] ?? null) as T | null;
       },
       async all<T>() {
-        return { results: [] as T[], success: true as const, meta: { changes: 0 } };
+        return { results: exec(sql, binds).rows as T[], success: true as const, meta: { changes: 0 } };
       },
       async run() {
-        return { success: true as const, meta: { changes: 0 } };
+        return { success: true as const, meta: { changes: exec(sql, binds).changes } };
       },
+      __exec: () => exec(sql, binds),
     };
     return stmt;
   };
   const DB = {
-    prepare: () => makeStmt() as unknown as D1PreparedStatement,
-    async batch() {
+    prepare: (sql: string) => makeStmt(sql) as unknown as D1PreparedStatement,
+    async batch(stmts: unknown[]) {
+      for (const s of stmts) (s as { __exec: () => void }).__exec();
       return [];
     },
   } as unknown as D1Database;
-  return { DB } as unknown as Env;
+  return { env: { DB } as unknown as Env, tables };
 }
 
 describe("buildRecipeUpdate", () => {
@@ -126,44 +204,40 @@ describe("buildRecipeUpdate", () => {
 
 describe("readyToEatManager", () => {
   it("addDraft generates a slug, tags the meal, defaults to draft", () => {
-    const mgr = readyToEatManager(null);
+    const mgr = readyToEatManager([]);
     const slug = mgr.addDraft({ meal: "dinner", name: "Kroger Frozen Lasagna" });
     expect(slug).toBe("kroger-frozen-lasagna");
-    const content = mgr.serialize();
-    expect(content).not.toBeNull();
-    const item = (parseToml(content!).items as Record<string, unknown>[])[0];
-    // null fields (rating/sku) are omitted by TOML serialization — assert the present ones.
+    expect(mgr.touched()).toBe(true);
+    const item = mgr.items()[0];
     expect(item).toMatchObject({ name: "Kroger Frozen Lasagna", slug, meal: "dinner", status: "draft" });
-    expect(typeof item.discovered_at).toBe("string"); // drafts carry a discovered_at date
   });
 
-  it("addDraft status:active lands active with no discovered_at (onboarding path)", () => {
-    const mgr = readyToEatManager(null);
+  it("addDraft status:active lands active (onboarding path)", () => {
+    const mgr = readyToEatManager([]);
     mgr.addDraft({ meal: "breakfast", name: "Overnight Oats" }, "active");
-    const item = (parseToml(mgr.serialize()!).items as Record<string, unknown>[])[0];
+    const item = mgr.items()[0];
     expect(item).toMatchObject({ slug: "overnight-oats", status: "active" });
-    expect(item.discovered_at).toBeUndefined(); // null → omitted in TOML
   });
 
-  it("de-dupes slugs within the file with a numeric suffix", () => {
-    const existing = '[[items]]\nname = "Burrito"\nslug = "burrito"\nmeal = "lunch"\nstatus = "active"\n';
+  it("de-dupes slugs within the catalog with a numeric suffix", () => {
+    const existing = [{ name: "Burrito", slug: "burrito", meal: "lunch", status: "active" }];
     const mgr = readyToEatManager(existing);
     const slug = mgr.addDraft({ meal: "lunch", name: "Burrito" });
     expect(slug).toBe("burrito-2");
   });
 
   it("update addresses items by slug; unknown slug is not_found", () => {
-    const existing = '[[items]]\nname = "Lasagna"\nslug = "lasagna"\nmeal = "dinner"\nstatus = "draft"\n';
+    const existing = [{ name: "Lasagna", slug: "lasagna", meal: "dinner", status: "draft" }];
     const mgr = readyToEatManager(existing);
     mgr.update("lasagna", { status: "active", rating: 4 });
-    const item = (parseToml(mgr.serialize()!).items as Record<string, unknown>[])[0];
+    const item = mgr.items()[0];
     expect(item).toMatchObject({ slug: "lasagna", status: "active", rating: 4 });
     expect(() => mgr.update("ghost", { status: "rejected" })).toThrowError(/not.*found|ghost/i);
   });
 
-  it("serialize() is null when nothing was touched", () => {
-    const mgr = readyToEatManager("");
-    expect(mgr.serialize()).toBeNull();
+  it("touched() is false when nothing was changed", () => {
+    const mgr = readyToEatManager([]);
+    expect(mgr.touched()).toBe(false);
   });
 });
 
@@ -282,7 +356,7 @@ describe("markVerified", () => {
 // Invoke the real registered write-tool handlers through a minimal fake server.
 // Pantry is KV-backed now, so the integration tests read back from the fake KV
 // (state:<username>:pantry) rather than capturing GitHub commit trees.
-function collectTools(gh: GitHubClient, dataKv: KVNamespace, username: string, env: Env = fakeD1([])) {
+function collectTools(gh: GitHubClient, dataKv: KVNamespace, username: string, env: Env = fakeD1([]).env) {
   const handlers = new Map<string, (input: unknown) => Promise<{ content: { text: string }[] }>>();
   const server = {
     registerTool: (name: string, _cfg: unknown, handler: (input: unknown) => Promise<{ content: { text: string }[] }>) => {
@@ -353,56 +427,166 @@ describe("update_pantry / mark_pantry_verified (KV-backed)", () => {
   });
 });
 
-describe("rate_recipe (subjective overlay write)", () => {
-  it("writes only the caller's overlay for an existing recipe, no commit_sha", async () => {
-    const { kv, store } = fakeKv();
-    const handlers = collectTools(ghWith({}), kv, "everett", fakeD1(["miso-salmon"]));
+describe("rate_recipe (subjective overlay write → D1)", () => {
+  it("writes only the caller's overlay row for an existing recipe, no commit_sha", async () => {
+    const { kv } = fakeKv();
+    const d1 = fakeD1(["miso-salmon"]);
+    const handlers = collectTools(ghWith({}), kv, "everett", d1.env);
     const res = await handlers.get("rate_recipe")!({ slug: "miso-salmon", rating: 5 });
     const out = JSON.parse(res.content[0].text) as { slug: string; overlay: Record<string, unknown>; commit_sha?: string };
     expect(out.slug).toBe("miso-salmon");
     expect(out.overlay).toEqual({ rating: 5 });
-    expect(out.commit_sha).toBeUndefined(); // KV-backed overlay, no git commit
-    // The KV overlay bundle (profile:<username>) carries the new row.
-    const bundle = JSON.parse(store.get("profile:everett")!) as { overlay: string };
-    const overlay = parseToml(bundle.overlay) as { overlay: Record<string, unknown> };
-    expect(overlay.overlay["miso-salmon"]).toMatchObject({ rating: 5 });
+    expect(out.commit_sha).toBeUndefined(); // D1-backed overlay, no git commit
+    expect(d1.tables.overlay).toContainEqual(
+      expect.objectContaining({ tenant: "everett", recipe: "miso-salmon", rating: 5 }),
+    );
   });
 
   it("sets status and merges with an existing rating across calls", async () => {
-    const { kv, store } = fakeKv();
-    const handlers = collectTools(ghWith({}), kv, "everett", fakeD1(["miso-salmon"]));
+    const { kv } = fakeKv();
+    const d1 = fakeD1(["miso-salmon"]);
+    const handlers = collectTools(ghWith({}), kv, "everett", d1.env);
     await handlers.get("rate_recipe")!({ slug: "miso-salmon", rating: 4 });
     const res = await handlers.get("rate_recipe")!({ slug: "miso-salmon", status: "active" });
     const out = JSON.parse(res.content[0].text) as { overlay: Record<string, unknown> };
     expect(out.overlay).toMatchObject({ rating: 4, status: "active" });
-    const bundle = JSON.parse(store.get("profile:everett")!) as { overlay: string };
-    const overlay = parseToml(bundle.overlay) as { overlay: Record<string, unknown> };
-    expect(overlay.overlay["miso-salmon"]).toMatchObject({ rating: 4, status: "active" });
+    expect(d1.tables.overlay).toHaveLength(1);
+    expect(d1.tables.overlay[0]).toMatchObject({ recipe: "miso-salmon", rating: 4, status: "active" });
   });
 
   it("rejects a slug not in the recipe index (not_found), writing nothing", async () => {
-    const { kv, store } = fakeKv();
-    const handlers = collectTools(ghWith({}), kv, "everett", fakeD1([])); // no recipes
+    const { kv } = fakeKv();
+    const d1 = fakeD1([]); // no recipes
+    const handlers = collectTools(ghWith({}), kv, "everett", d1.env);
     const res = await handlers.get("rate_recipe")!({ slug: "ghost", status: "active" });
     const out = JSON.parse(res.content[0].text) as { error: string };
     expect(out.error).toBe("not_found");
-    expect(store.has("profile:everett")).toBe(false);
+    expect(d1.tables.overlay).toHaveLength(0);
   });
 
   it("rejects a malformed slug (not_found) before touching D1", async () => {
     const { kv } = fakeKv();
-    const handlers = collectTools(ghWith({}), kv, "everett", fakeD1(["miso-salmon"]));
+    const handlers = collectTools(ghWith({}), kv, "everett", fakeD1(["miso-salmon"]).env);
     const res = await handlers.get("rate_recipe")!({ slug: "Not A Slug", rating: 3 });
     expect((JSON.parse(res.content[0].text) as { error: string }).error).toBe("not_found");
   });
 
   it("rejects an empty edit (neither rating nor status) with validation_failed", async () => {
-    const { kv, store } = fakeKv();
-    const handlers = collectTools(ghWith({}), kv, "everett", fakeD1(["miso-salmon"]));
+    const { kv } = fakeKv();
+    const d1 = fakeD1(["miso-salmon"]);
+    const handlers = collectTools(ghWith({}), kv, "everett", d1.env);
     const res = await handlers.get("rate_recipe")!({ slug: "miso-salmon" });
     const out = JSON.parse(res.content[0].text) as { error: string };
     expect(out.error).toBe("validation_failed");
-    expect(store.has("profile:everett")).toBe(false);
+    expect(d1.tables.overlay).toHaveLength(0);
+  });
+});
+
+describe("profile writes → D1 (staples / stockup / kitchen / ready-to-eat)", () => {
+  it("update_staples upserts staple rows with a normalized_name", async () => {
+    const { kv } = fakeKv();
+    const d1 = fakeD1([]);
+    const handlers = collectTools(ghWith({}), kv, "everett", d1.env);
+    const res = await handlers.get("update_staples")!({
+      add: [{ name: "Olive Oil" }, { name: "Eggs", perishable: true }],
+    });
+    const out = JSON.parse(res.content[0].text) as { added: number; removed: number };
+    expect(out.added).toBe(2);
+    expect(d1.tables.staples.map((r) => r.normalized_name).sort()).toEqual(["eggs", "olive oil"]);
+    expect(d1.tables.staples.find((r) => r.name === "Eggs")!.perishable).toBe(1);
+  });
+
+  it("update_stockup writes rows and the freezer estimate onto the profile row", async () => {
+    const { kv } = fakeKv();
+    const d1 = fakeD1([]);
+    const handlers = collectTools(ghWith({}), kv, "everett", d1.env);
+    await handlers.get("update_stockup")!({
+      items: [{ name: "Chicken Thighs", unit: "lb" }],
+      freezer_capacity_estimate: "moderate",
+    });
+    expect(d1.tables.stockup).toContainEqual(
+      expect.objectContaining({ tenant: "everett", name: "Chicken Thighs", unit: "lb" }),
+    );
+    expect(d1.tables.profile[0]).toMatchObject({ tenant: "everett", freezer_capacity_estimate: "moderate" });
+  });
+
+  it("update_kitchen replaces equipment rows and stores notes JSON on the profile row", async () => {
+    const { kv } = fakeKv();
+    const d1 = fakeD1([]);
+    const handlers = collectTools(ghWith({}), kv, "everett", d1.env);
+    const res = await handlers.get("update_kitchen")!({
+      operations: [
+        { op: "add", slug: "blender" },
+        { op: "set_note", key: "ovens", value: 2 },
+      ],
+    });
+    const out = JSON.parse(res.content[0].text) as { applied: unknown[]; conflicts: unknown[] };
+    expect(out.applied).toHaveLength(2);
+    expect(d1.tables.kitchen_equipment).toContainEqual({ tenant: "everett", slug: "blender" });
+    expect(JSON.parse(d1.tables.profile[0].kitchen_notes as string)).toEqual({ ovens: 2 });
+  });
+
+  it("add_draft_ready_to_eat writes a catalog row keyed by generated slug", async () => {
+    const { kv } = fakeKv();
+    const d1 = fakeD1([]);
+    const handlers = collectTools(ghWith({}), kv, "everett", d1.env);
+    const res = await handlers.get("add_draft_ready_to_eat")!({
+      items: [{ meal: "dinner", name: "Frozen Lasagna" }],
+    });
+    const out = JSON.parse(res.content[0].text) as { added: { slug: string }[] };
+    expect(out.added[0].slug).toBe("frozen-lasagna");
+    expect(d1.tables.ready_to_eat).toContainEqual(
+      expect.objectContaining({ tenant: "everett", slug: "frozen-lasagna", meal: "dinner", status: "draft" }),
+    );
+  });
+});
+
+describe("update_preferences (merge-patch → D1)", () => {
+  it("partial patch merges without clobbering siblings", async () => {
+    const { kv } = fakeKv();
+    const d1 = fakeD1([]);
+    d1.tables.profile.push({ tenant: "everett", stores: JSON.stringify({ primary: "kroger" }) });
+    const handlers = collectTools(ghWith({}), kv, "everett", d1.env);
+    await handlers.get("update_preferences")!({
+      patch: { stores: { preferred_location: "Kroger - 76137" } },
+    });
+    const stores = JSON.parse(d1.tables.profile[0].stores as string);
+    expect(stores).toEqual({ primary: "kroger", preferred_location: "Kroger - 76137" });
+  });
+
+  it("brands tri-state: value UPSERTs, [] is don't-care, null DELETEs", async () => {
+    const { kv } = fakeKv();
+    const d1 = fakeD1([]);
+    d1.tables.brand_prefs.push({ tenant: "everett", term: "canola_oil", ranks: '["Crisco"]' });
+    const handlers = collectTools(ghWith({}), kv, "everett", d1.env);
+    await handlers.get("update_preferences")!({
+      patch: { brands: { olive_oil: ["Cobram"], yellow_onion: [], canola_oil: null } },
+    });
+    const byTerm = Object.fromEntries(d1.tables.brand_prefs.map((r) => [r.term, r.ranks]));
+    expect(byTerm.olive_oil).toBe('["Cobram"]');
+    expect(byTerm.yellow_onion).toBe("[]");
+    expect("canola_oil" in byTerm).toBe(false); // deleted → ambiguous
+  });
+
+  it("rejects an unknown top-level key toward custom, storing nothing", async () => {
+    const { kv } = fakeKv();
+    const d1 = fakeD1([]);
+    const handlers = collectTools(ghWith({}), kv, "everett", d1.env);
+    const res = await handlers.get("update_preferences")!({ patch: { spice_tolerance: "high" } });
+    const out = JSON.parse(res.content[0].text) as { error: string; message?: string };
+    expect(out.error).toBe("validation_failed");
+    expect(JSON.stringify(out)).toMatch(/custom/);
+    expect(d1.tables.profile).toHaveLength(0);
+  });
+
+  it("rejects a type-invalid merged result (bad enum), storing nothing", async () => {
+    const { kv } = fakeKv();
+    const d1 = fakeD1([]);
+    const handlers = collectTools(ghWith({}), kv, "everett", d1.env);
+    const res = await handlers.get("update_preferences")!({ patch: { lunch_strategy: "sometimes" } });
+    const out = JSON.parse(res.content[0].text) as { error: string };
+    expect(out.error).toBe("malformed_data");
+    expect(d1.tables.profile).toHaveLength(0);
   });
 });
 
@@ -411,7 +595,7 @@ describe("update_recipe (objective-only)", () => {
 
   it("rejects a status edit, directing the caller to rate_recipe, writing nothing", async () => {
     const { kv } = fakeKv();
-    const handlers = collectTools(ghWith({ "recipes/salmon.md": RECIPE_MD }), kv, "everett", fakeD1(["salmon"]));
+    const handlers = collectTools(ghWith({ "recipes/salmon.md": RECIPE_MD }), kv, "everett", fakeD1(["salmon"]).env);
     const res = await handlers.get("update_recipe")!({ slug: "salmon", updates: { status: "active" } });
     const out = JSON.parse(res.content[0].text) as { error: string; message?: string };
     expect(out.error).toBe("validation_failed");
@@ -420,14 +604,14 @@ describe("update_recipe (objective-only)", () => {
 
   it("rejects a rating edit toward rate_recipe", async () => {
     const { kv } = fakeKv();
-    const handlers = collectTools(ghWith({ "recipes/salmon.md": RECIPE_MD }), kv, "everett", fakeD1(["salmon"]));
+    const handlers = collectTools(ghWith({ "recipes/salmon.md": RECIPE_MD }), kv, "everett", fakeD1(["salmon"]).env);
     const res = await handlers.get("update_recipe")!({ slug: "salmon", updates: { rating: 5 } });
     expect((JSON.parse(res.content[0].text) as { error: string }).error).toBe("validation_failed");
   });
 
   it("still rejects last_cooked toward log_cooked", async () => {
     const { kv } = fakeKv();
-    const handlers = collectTools(ghWith({ "recipes/salmon.md": RECIPE_MD }), kv, "everett", fakeD1(["salmon"]));
+    const handlers = collectTools(ghWith({ "recipes/salmon.md": RECIPE_MD }), kv, "everett", fakeD1(["salmon"]).env);
     const res = await handlers.get("update_recipe")!({ slug: "salmon", updates: { last_cooked: "2026-06-09" } });
     const out = JSON.parse(res.content[0].text) as { error: string };
     expect(out.error).toBe("validation_failed");
@@ -436,7 +620,7 @@ describe("update_recipe (objective-only)", () => {
 
   it("commits an objective frontmatter edit and returns updated_fields", async () => {
     const { kv } = fakeKv();
-    const handlers = collectTools(ghWith({ "recipes/salmon.md": RECIPE_MD }), kv, "everett", fakeD1(["salmon"]));
+    const handlers = collectTools(ghWith({ "recipes/salmon.md": RECIPE_MD }), kv, "everett", fakeD1(["salmon"]).env);
     const res = await handlers.get("update_recipe")!({ slug: "salmon", updates: { time_total: 30 } });
     const out = JSON.parse(res.content[0].text) as { slug: string; updated_fields: string[]; commit_sha: string };
     expect(out.slug).toBe("salmon");

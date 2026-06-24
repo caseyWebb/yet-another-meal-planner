@@ -8,13 +8,13 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import type { Env } from "./env.js";
+import { db } from "./db.js";
 import type { GitHubClient, TreeFile } from "./github.js";
 import type { TenantStore } from "./tenant.js";
 import { readOptional } from "./gh-read.js";
 import { ToolError, runTool } from "./errors.js";
 import { commitFiles } from "./commit.js";
-import { parseOverlay } from "./overlay.js";
-import { readProfileBundle } from "./user-kv.js";
 import {
   parseNotes,
   appendNote,
@@ -41,8 +41,8 @@ function nowIso(): string {
  * @param sharedGh  root data-repo client (addresses any `users/<id>/` subtree)
  * @param personalGh this tenant's prefixed client (writes land under users/<id>/)
  * @param tenantId  the caller — author of new notes + privacy boundary on reads
- * @param directory the tenant allowlist, enumerated to aggregate group signal
- * @param dataKv    DATA_KV namespace — profile bundles hold per-tenant overlay fields
+ * @param directory the tenant allowlist, scoping the group ratings aggregate
+ * @param env       D1 — the `overlay` table backs the group ratings aggregate query
  */
 export function registerNoteTools(
   server: McpServer,
@@ -50,7 +50,7 @@ export function registerNoteTools(
   personalGh: GitHubClient,
   tenantId: string,
   directory: TenantStore,
-  dataKv: KVNamespace,
+  env: Env,
 ): void {
   server.registerTool(
     "add_recipe_note",
@@ -99,22 +99,36 @@ export function registerNoteTools(
           throw new ToolError("not_found", `Unknown recipe slug: ${slug}`, { slug });
         }
         const ids = await directory.list();
-        const fetched = await Promise.all(
-          ids.map(async (id) => {
-            const [notesText, bundle] = await Promise.all([
-              readOptional(sharedGh, `users/${id}/${notesPath(slug)}`),
-              readProfileBundle(dataKv, id),
-            ]);
-            const overlayText = bundle?.overlay ?? null;
-            return { id, notesText, overlayText };
-          }),
-        );
+        // Notes half: still GitHub (per-tenant notes/<slug>.toml), until slice 6.
+        // Ratings half: ONE indexed D1 query over the `overlay` table for this slug,
+        // then scoped to the group's members (replacing the per-tenant bundle scan).
+        const [notesByTenant, overlayRows] = await Promise.all([
+          Promise.all(
+            ids.map(async (id) => ({
+              id,
+              notes: parseNotes(await readOptional(sharedGh, `users/${id}/${notesPath(slug)}`)),
+            })),
+          ),
+          db(env).all<{ tenant: string; rating: number | null; status: string | null }>(
+            "SELECT tenant, rating, status FROM overlay WHERE recipe = ?1",
+            slug,
+          ),
+        ]);
+        const inGroup = new Set(ids);
+        const ratingByTenant = new Map<string, { rating: unknown; status: unknown }>();
+        for (const r of overlayRows) {
+          if (inGroup.has(r.tenant)) {
+            ratingByTenant.set(r.tenant, {
+              rating: r.rating ?? undefined,
+              status: r.status ?? undefined,
+            });
+          }
+        }
         const perTenant: TenantSignal[] = [];
-        for (const { id, notesText, overlayText } of fetched) {
-          const notes = parseNotes(notesText);
-          const row = overlayText ? parseOverlay(overlayText)[slug] : undefined;
-          if (notes.length === 0 && row?.rating == null) continue;
-          perTenant.push({ author: id, notes, rating: row?.rating, status: row?.status });
+        for (const { id, notes } of notesByTenant) {
+          const rating = ratingByTenant.get(id);
+          if (notes.length === 0 && rating?.rating == null) continue;
+          perTenant.push({ author: id, notes, rating: rating?.rating, status: rating?.status });
         }
         return { slug, ...aggregateGroupSignal(tenantId, perTenant) };
       }),

@@ -16,9 +16,10 @@ import type { CookingLogEntry } from "./cooking-log.js";
 import { applyMealPlanOps, type MealPlanOp } from "./meal-plan.js";
 import { retrospective, type RetrospectiveResult } from "./retrospective.js";
 import { loadRecipeIndex } from "./recipe-index.js";
-import { mergeOverlay, parseOverlay, type Overlay } from "./overlay.js";
+import { mergeOverlay, type Overlay } from "./overlay.js";
+import { readOverlay } from "./profile-db.js";
 import type { RecipeIndex } from "./recipes.js";
-import { getMealPlanState, writeMealPlanState, getProfileBundle } from "./user-kv.js";
+import { getMealPlanState, writeMealPlanState } from "./user-kv.js";
 
 /** One D1 `cooking_log LEFT JOIN recipes` row (protein/cuisine already COALESCE'd). */
 interface CookingLogJoinRow {
@@ -41,7 +42,7 @@ interface CookingLogJoinRow {
  */
 export async function loadRetrospective(
   env: Env,
-  dataKv: KVNamespace,
+  _dataKv: KVNamespace,
   username: string,
   period: string,
 ): Promise<RetrospectiveResult> {
@@ -70,8 +71,7 @@ export async function loadRetrospective(
       `the recipe index is unavailable: ${e instanceof Error ? e.message : String(e)}`,
     );
   });
-  const bundle = await getProfileBundle(dataKv, username);
-  const overlay: Overlay = bundle.overlay ? parseOverlay(bundle.overlay) : {};
+  const overlay: Overlay = await readOverlay(env, username);
 
   // last_cooked per recipe (MAX date over the caller's recipe entries) from the
   // already-loaded rows — no second query.

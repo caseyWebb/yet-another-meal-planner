@@ -12,48 +12,50 @@ import { db } from "./db.js";
 import type { GitHubClient, TreeFile } from "./github.js";
 import { readFile, loadAliases } from "./gh-read.js";
 import { normalizePerishables } from "./matching.js";
-import { parseMarkdown, parseToml } from "./parse.js";
-import { serializeMarkdown, stringifyTomlWithHeader, stripEmptyVarietyDimensions } from "./serialize.js";
+import { parseMarkdown } from "./parse.js";
+import { serializeMarkdown, stripEmptyVarietyDimensions } from "./serialize.js";
 import { ToolError, runTool } from "./errors.js";
 import { commitFiles } from "./commit.js";
-import {
-  parseOverlay,
-  applyOverlayEdit,
-  serializeOverlay,
-  type Overlay,
-  type OverlayRow,
-} from "./overlay.js";
+import { applyOverlayEdit, type OverlayRow } from "./overlay.js";
 import { applyPantryOperations, markVerified, type PantryItem } from "./pantry-write.js";
-import { applyKitchenOperations, toInventory } from "./kitchen.js";
+import { applyKitchenOperations } from "./kitchen.js";
 import { slugify } from "./discovery.js";
 import { addStockup } from "./stockup.js";
 import { updateStaples } from "./staples.js";
 import {
-  getProfileBundle,
-  updateProfileField,
-  writePantryState,
-  getPantryState,
-  type ProfileField,
-} from "./user-kv.js";
+  mergePatch,
+  rejectUnknownPatchKeys,
+  validatePreferences,
+} from "./preferences.js";
+import {
+  readProfile,
+  readPreferences,
+  readOverlay,
+  readStockupItems,
+  readFreezerEstimate,
+  setOverlay,
+  setStaples,
+  setStockup,
+  setKitchen,
+  setReadyToEat,
+  setProfileFields,
+  profileUpsertStmt,
+  brandStmt,
+} from "./profile-db.js";
+import { writePantryState, getPantryState } from "./user-kv.js";
 
 const SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const MEALS = ["breakfast", "lunch", "dinner"] as const;
 type Meal = (typeof MEALS)[number];
-/** The caller's per-tenant ready-to-eat catalog (under their users/<id>/ subtree). */
-const READY_TO_EAT_PATH = "ready_to_eat.toml";
 
 function today(): string {
   return new Date().toISOString().slice(0, 10);
 }
 
-function itemsOf(parsed: Record<string, unknown>): Record<string, unknown>[] {
-  return Array.isArray(parsed.items) ? (parsed.items as Record<string, unknown>[]) : [];
-}
-
 /**
  * The subjective recipe fields. They are the caller's per-tenant disposition and
- * route through `rate_recipe` to the KV overlay — `update_recipe` (objective-only)
- * rejects them rather than silently writing the overlay.
+ * route through `rate_recipe` to the D1 overlay table — `update_recipe`
+ * (objective-only) rejects them rather than silently writing the overlay.
  */
 const SUBJECTIVE_KEYS = ["rating", "status"] as const;
 
@@ -84,17 +86,15 @@ export async function buildRecipeUpdate(
 
 /**
  * In-memory manager for the per-tenant ready-to-eat catalog. Takes the existing
- * raw TOML content (or null for a new catalog). Call `serialize()` to get the
- * updated TOML to write back to KV; it returns null when nothing was changed.
+ * items (from the D1 ready_to_eat table). Call `items()` to get the updated list to
+ * persist; `touched()` reports whether anything changed.
  */
-export function readyToEatManager(existingContent: string | null) {
-  const text = existingContent ?? "";
-  const parsed = text ? parseToml(text, READY_TO_EAT_PATH) : {};
-  const items: Record<string, unknown>[] = itemsOf(parsed);
-  let touched = false;
+export function readyToEatManager(existing: Record<string, unknown>[]) {
+  const list: Record<string, unknown>[] = existing.map((it) => ({ ...it }));
+  let changed = false;
 
   function uniqueSlug(name: string): string {
-    const taken = new Set(items.map((it) => it.slug).filter((s): s is string => typeof s === "string"));
+    const taken = new Set(list.map((it) => it.slug).filter((s): s is string => typeof s === "string"));
     const base = slugify(name) || "item";
     if (!taken.has(base)) return base;
     let n = 2;
@@ -106,44 +106,40 @@ export function readyToEatManager(existingContent: string | null) {
     /** Append a new item; returns its generated slug. Default status is "draft". */
     addDraft(item: Record<string, unknown>, status: "draft" | "active" = "draft"): string {
       const slug = uniqueSlug(String(item.name ?? ""));
-      items.push({
+      list.push({
         name: item.name,
         slug,
         meal: item.meal,
-        sku: null,
         category: item.category ?? null,
         status,
-        rating: null,
-        added_at: today(),
-        discovered_at: status === "draft" ? today() : null,
         discovery_source: item.source ?? null,
         brand: item.brand ?? null,
         notes: item.notes ?? null,
       });
-      touched = true;
+      changed = true;
       return slug;
     },
     /** Find an item by slug, apply updates. Throws not_found if absent. */
     update(slug: string, updates: Record<string, unknown>) {
-      const idx = items.findIndex((it) => it.slug === slug);
+      const idx = list.findIndex((it) => it.slug === slug);
       if (idx < 0) throw new ToolError("not_found", `No ready-to-eat item with slug: ${slug}`, { slug });
-      items[idx] = { ...items[idx], ...updates };
-      touched = true;
+      list[idx] = { ...list[idx], ...updates };
+      changed = true;
     },
-    /** Returns the serialized TOML when touched, or null when nothing changed. */
-    serialize(): string | null {
-      if (!touched) return null;
-      return stringifyTomlWithHeader(text, { ...parsed, items });
+    items(): Record<string, unknown>[] {
+      return list;
+    },
+    touched(): boolean {
+      return changed;
     },
   };
 }
 
-// Profile fields now stored in DATA_KV bundle (not GitHub).
-const KV_PROFILE_FIELDS: Record<string, ProfileField> = {
-  preferences: "preferences",
+/** Profile markdown fields written to the D1 `profile` row (preferences uses merge-patch). */
+const PROFILE_MARKDOWN_FIELDS = {
   taste: "taste",
   diet_principles: "diet_principles",
-};
+} as const;
 /** Curated files that remain GitHub-backed (shared reference data at root). */
 const SHARED_CURATED_FILES: Record<string, string> = {
   aliases: "aliases.toml",
@@ -152,11 +148,12 @@ const SHARED_CURATED_FILES: Record<string, string> = {
 // --- registration ------------------------------------------------------------
 
 /**
- * `gh` is the root data-repo client (shared recipe + notes writes — the only
- * GitHub-backed writes left here). `env` is D1 (the `recipes` index, queried by
- * `rate_recipe` to validate a slug). `dataKv` + `username` back the KV profile
- * bundle (preferences/taste/diet/kitchen/staples/overlay/ready_to_eat/stockup) and
- * session-state keys (pantry/meal_plan/grocery_list).
+ * `gh` is the root data-repo client (shared recipe + aliases writes — the only
+ * GitHub-backed writes left here). `env` is D1: the `recipes` index (queried by
+ * `rate_recipe` to validate a slug) AND the profile tables (preferences/taste/diet/
+ * kitchen/staples/overlay/ready_to_eat/stockup — all via src/profile-db.ts). `dataKv`
+ * + `username` back the session-state pantry key (meal_plan/grocery_list live in
+ * their own tool groups).
  */
 export function registerWriteTools(
   server: McpServer,
@@ -202,7 +199,7 @@ export function registerWriteTools(
     "rate_recipe",
     {
       description:
-        "Set the caller's PERSONAL disposition for a recipe — `rating` (1–5) and/or effective `status` (active|draft|rejected). This writes only the caller's overlay; it never changes the shared recipe content, so one member's rating/status never affects another's. The slug must resolve against the recipe index (unknown slug → not_found). Pass at least one of rating/status. Returns { slug, overlay } with no commit_sha (overlay is KV-backed, not a git commit).",
+        "Set the caller's PERSONAL disposition for a recipe — `rating` (1–5) and/or effective `status` (active|draft|rejected). This writes only the caller's overlay; it never changes the shared recipe content, so one member's rating/status never affects another's. The slug must resolve against the recipe index (unknown slug → not_found). Pass at least one of rating/status. Returns { slug, overlay } with no commit_sha (overlay is D1-backed, not a git commit).",
       inputSchema: {
         slug: z.string(),
         rating: z.number().nullable().optional(),
@@ -228,11 +225,10 @@ export function registerWriteTools(
         if (rating !== undefined) edit.rating = rating;
         if (status !== undefined) edit.status = status;
 
-        const bundle = await getProfileBundle(dataKv, username);
-        const current: Overlay = bundle.overlay ? parseOverlay(bundle.overlay) : {};
-        const next = applyOverlayEdit(current, slug, edit);
-        await updateProfileField(dataKv, username, "overlay", serializeOverlay(next));
-        return { slug, overlay: next[slug] ?? {} };
+        const current = await readOverlay(env, username);
+        const next = applyOverlayEdit(current[slug], edit);
+        await setOverlay(env, username, slug, next);
+        return { slug, overlay: next ?? {} };
       }),
   );
 
@@ -285,10 +281,21 @@ export function registerWriteTools(
     },
     ({ items, freezer_capacity_estimate }) =>
       runTool(async () => {
-        const bundle = await getProfileBundle(dataKv, username);
-        const { text, added, changed } = addStockup(bundle.stockup ?? null, { items, freezer_capacity_estimate });
+        const [existing, currentFreezer] = await Promise.all([
+          readStockupItems(env, username),
+          readFreezerEstimate(env, username),
+        ]);
+        const {
+          items: nextItems,
+          freezer,
+          added,
+          changed,
+        } = addStockup(existing, currentFreezer, { items, freezer_capacity_estimate });
         if (!changed) return { added };
-        await updateProfileField(dataKv, username, "stockup", text);
+        await setStockup(env, username, nextItems);
+        if (freezer !== currentFreezer) {
+          await setProfileFields(env, username, { freezer_capacity_estimate: freezer });
+        }
         return { added };
       }),
   );
@@ -307,10 +314,10 @@ export function registerWriteTools(
     },
     ({ add, remove }) =>
       runTool(async () => {
-        const bundle = await getProfileBundle(dataKv, username);
-        const { text, added, removed, changed } = updateStaples(bundle.staples ?? null, add ?? [], remove ?? []);
+        const existing = (await readProfile(env, username)).staples;
+        const { items, added, removed, changed } = updateStaples(existing, add ?? [], remove ?? []);
         if (!changed) return { added, removed };
-        await updateProfileField(dataKv, username, "staples", text);
+        await setStaples(env, username, items);
         return { added, removed };
       }),
   );
@@ -333,15 +340,10 @@ export function registerWriteTools(
     },
     ({ operations }) =>
       runTool(async () => {
-        const bundle = await getProfileBundle(dataKv, username);
-        const text = bundle.kitchen ?? "";
-        const inventory = toInventory(text ? parseToml(text, "kitchen.toml") : {});
+        const inventory = (await readProfile(env, username)).kitchen;
         const { inventory: next, applied, conflicts } = applyKitchenOperations(inventory, operations);
         if (applied.length === 0) return { applied, conflicts };
-        const data: Record<string, unknown> = { owned: next.owned };
-        if (Object.keys(next.notes).length) data.notes = next.notes;
-        const content = stringifyTomlWithHeader(text, data);
-        await updateProfileField(dataKv, username, "kitchen", content);
+        await setKitchen(env, username, next);
         return { applied, conflicts };
       }),
   );
@@ -385,16 +387,15 @@ export function registerWriteTools(
     },
     ({ items }) =>
       runTool(async () => {
-        const bundle = await getProfileBundle(dataKv, username);
-        const mgr = readyToEatManager(bundle.ready_to_eat ?? null);
+        const existing = (await readProfile(env, username)).ready_to_eat;
+        const mgr = readyToEatManager(existing);
         const added: { meal: Meal; name: string; slug: string }[] = [];
         for (const it of items) {
           const slug = mgr.addDraft(it, it.status ?? "draft");
           added.push({ meal: it.meal, name: it.name, slug });
         }
-        const serialized = mgr.serialize();
-        if (serialized !== null) {
-          await updateProfileField(dataKv, username, "ready_to_eat", serialized);
+        if (mgr.touched()) {
+          await setReadyToEat(env, username, mgr.items());
         }
         return { added };
       }),
@@ -409,12 +410,11 @@ export function registerWriteTools(
     },
     ({ slug, updates }) =>
       runTool(async () => {
-        const bundle = await getProfileBundle(dataKv, username);
-        const mgr = readyToEatManager(bundle.ready_to_eat ?? null);
+        const existing = (await readProfile(env, username)).ready_to_eat;
+        const mgr = readyToEatManager(existing);
         mgr.update(slug, updates);
-        const serialized = mgr.serialize();
-        if (serialized !== null) {
-          await updateProfileField(dataKv, username, "ready_to_eat", serialized);
+        if (mgr.touched()) {
+          await setReadyToEat(env, username, mgr.items());
         }
         return { slug, updated_fields: Object.keys(updates) };
       }),
@@ -424,22 +424,65 @@ export function registerWriteTools(
   // supplies. The discipline of WHEN to call these (only on explicit user
   // direction) lives in AGENT_INSTRUCTIONS.md.
 
-  // Profile fields (preferences/taste/diet_principles) write to the KV bundle.
-  for (const [key, field] of Object.entries(KV_PROFILE_FIELDS)) {
-    const label = key.replace(/_/g, " ");
+  server.registerTool(
+    "update_preferences",
+    {
+      description:
+        "Edit the caller's grocery preferences with a deep merge-patch (RFC 7396): keys present in `patch` set/overwrite, a key set to null is DELETED, nested objects merge to any depth, and arrays replace wholesale. Only the keys you touch change — a partial patch never clobbers siblings (e.g. patching stores.preferred_location keeps stores.primary), so you do NOT need to re-send the whole object. Defined top-level keys: default_cooking_nights (number), lunch_strategy (leftovers|buy|mixed), ready_to_eat_default_action (opt-in|auto-add), stores ({primary, preferred_location, location_zip}), brands (map of term → ranked brand list; [] = don't-care/cheapest, null = clear back to ambiguous), dietary ({avoid[], limit[]}). Anything else nests under `custom`; an unknown top-level key is rejected (use custom). Returns { updated: 'preferences' }.",
+      inputSchema: { patch: z.record(z.string(), z.unknown()) },
+    },
+    ({ patch }) =>
+      runTool(async () => {
+        // Stage 1: reject unknown top-level patch keys (authorship-time signal).
+        rejectUnknownPatchKeys(patch);
+        // Stage 2: deep-merge over the current preferences; validate the result's types.
+        const current = (await readPreferences(env, username)) ?? {};
+        const merged = mergePatch(current, patch) as Record<string, unknown>;
+        validatePreferences(merged);
+
+        // Stage 3: apply atomically (one batch). Scalar/JSON columns come from the
+        // MERGED result; brands tri-state comes from the PATCH (value → UPSERT,
+        // [] → UPSERT empty, null → DELETE — the merged object has already dropped a
+        // null'd brand, so the patch is the only place the delete intent survives).
+        const stmts: D1PreparedStatement[] = [];
+        const profileFields: Record<string, unknown> = {
+          default_cooking_nights:
+            "default_cooking_nights" in merged ? merged.default_cooking_nights : null,
+          lunch_strategy: "lunch_strategy" in merged ? merged.lunch_strategy : null,
+          ready_to_eat_default_action:
+            "ready_to_eat_default_action" in merged ? merged.ready_to_eat_default_action : null,
+          stores: "stores" in merged ? JSON.stringify(merged.stores) : null,
+          dietary: "dietary" in merged ? JSON.stringify(merged.dietary) : null,
+          custom: "custom" in merged ? JSON.stringify(merged.custom) : null,
+        };
+        const profileStmt = profileUpsertStmt(env, username, profileFields);
+        if (profileStmt) stmts.push(profileStmt);
+
+        const brandsPatch = patch.brands;
+        if (brandsPatch !== null && brandsPatch !== undefined && typeof brandsPatch === "object") {
+          for (const [term, value] of Object.entries(brandsPatch as Record<string, unknown>)) {
+            stmts.push(brandStmt(env, username, term, value === null ? null : (value as unknown[])));
+          }
+        }
+        if (stmts.length > 0) await db(env).batch(stmts);
+        return { updated: "preferences" };
+      }),
+  );
+
+  // Profile markdown fields (taste / diet_principles) write the D1 `profile` row.
+  for (const [key, column] of Object.entries(PROFILE_MARKDOWN_FIELDS)) {
     server.registerTool(
       `update_${key}`,
       {
-        description: `Write ${key} verbatim with the supplied full content. Call only when the user has directed an edit.`,
+        description: `Write ${key} verbatim with the supplied full content (markdown narrative). Call only when the user has directed an edit.`,
         inputSchema: { content: z.string() },
       },
       ({ content }) =>
         runTool(async () => {
-          await updateProfileField(dataKv, username, field, content);
+          await setProfileFields(env, username, { [column]: content });
           return { updated: key };
         }),
     );
-    void label;
   }
 
   // Shared reference data (aliases) remains GitHub-backed.

@@ -2,7 +2,8 @@ import { describe, it, expect } from "vitest";
 import { loadRetrospective } from "../src/cooking-tools.js";
 import type { Env } from "../src/env.js";
 
-// Minimal KV fake (getProfileBundle reads profile:<username>; an absent key → {}).
+// Minimal KV fake (meal-plan state; loadRetrospective no longer reads the profile
+// from KV — the overlay is the D1 `overlay` table, served empty by envWith below).
 function fakeKv(initial: Record<string, string> = {}): KVNamespace {
   const store = new Map(Object.entries(initial));
   return {

@@ -1,95 +1,16 @@
-// Per-tenant KV helpers. `profile:<username>` holds the full profile bundle as
-// a JSON object of named raw-content fields. Session-state keys hold item
-// arrays as JSON. KV is the source of truth: a miss returns null/empty and the
-// caller treats it as an absent profile. Existing GitHub files are migrated into
-// KV once, at deploy time, by the migration runner (scripts/run-migrations.mjs)
-// — there is no runtime GitHub fallback.
+// Per-tenant KV helpers. Session-state keys (`state:<username>:pantry|meal_plan|
+// grocery_list`) hold item arrays as JSON; KV is the source of truth (a miss returns
+// null/empty). The per-tenant PROFILE no longer lives here — it moved to normalized
+// D1 tables (src/profile-db.ts, d1-profile). Only these session-state helpers remain
+// (they move to D1 in slice 5). Existing GitHub files were migrated into KV/D1 once,
+// at deploy time, by the migration runner (scripts/run-migrations.mjs) — there is no
+// runtime GitHub fallback.
 
 import type { PlannedItem } from "./meal-plan.js";
 import type { GroceryItem } from "./grocery.js";
 
-// --- Profile bundle ---
-
-export type ProfileField =
-  | "preferences"
-  | "taste"
-  | "diet_principles"
-  | "kitchen"
-  | "staples"
-  | "overlay"
-  | "ready_to_eat"
-  | "stockup";
-
-export interface ProfileBundle {
-  preferences?: string;
-  taste?: string;
-  diet_principles?: string;
-  kitchen?: string;
-  staples?: string;
-  overlay?: string;
-  ready_to_eat?: string;
-  stockup?: string;
-}
-
-function profileKey(username: string): string {
-  return `profile:${username}`;
-}
-
 function stateKey(username: string, name: "pantry" | "meal_plan" | "grocery_list"): string {
   return `state:${username}:${name}`;
-}
-
-export async function readProfileBundle(
-  kv: KVNamespace,
-  username: string,
-): Promise<ProfileBundle | null> {
-  const raw = await kv.get(profileKey(username));
-  if (raw === null) return null;
-  try {
-    return JSON.parse(raw) as ProfileBundle;
-  } catch {
-    return null;
-  }
-}
-
-export async function writeProfileBundle(
-  kv: KVNamespace,
-  username: string,
-  bundle: ProfileBundle,
-): Promise<void> {
-  await kv.put(profileKey(username), JSON.stringify(bundle));
-}
-
-export async function updateProfileField(
-  kv: KVNamespace,
-  username: string,
-  field: ProfileField,
-  content: string | null,
-): Promise<void> {
-  const existing = (await readProfileBundle(kv, username)) ?? {};
-  const next: ProfileBundle = { ...existing };
-  if (content === null) {
-    delete next[field];
-  } else {
-    next[field] = content;
-  }
-  await writeProfileBundle(kv, username, next);
-}
-
-// Convenience: a guaranteed (non-null) bundle. A KV miss is an empty profile —
-// no GitHub fallback (the deploy-time migration runner populates KV).
-export async function getProfileBundle(
-  kv: KVNamespace,
-  username: string,
-): Promise<ProfileBundle> {
-  return (await readProfileBundle(kv, username)) ?? {};
-}
-
-export async function deleteProfileBundle(
-  kv: KVNamespace,
-  username: string,
-): Promise<void> {
-  await kv.delete(profileKey(username));
 }
 
 // --- Session state: pantry ---
