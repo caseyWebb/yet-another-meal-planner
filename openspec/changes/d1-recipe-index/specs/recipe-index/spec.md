@@ -1,3 +1,7 @@
+<!-- This change RENAMES the capability `recipe-index-kv` → `recipe-index`.
+     Applying it moves openspec/specs/recipe-index-kv/ → openspec/specs/recipe-index/
+     and applies the requirement deltas below. -->
+
 ## MODIFIED Requirements
 
 ### Requirement: Recipe index is stored in and served from D1

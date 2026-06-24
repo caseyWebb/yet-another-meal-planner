@@ -58,7 +58,7 @@ CREATE INDEX idx_recipes_source_url ON recipes(source_url);
 
 A provisioned-but-empty `recipes` table is a valid empty corpus → `list_recipes` returns `{ recipes: [] }`, not an error. `index_unavailable` is reserved for the table being unreadable (D1 unreachable / not migrated) — surfaced via `src/db.ts`'s `storage_error` mapping. This splits two cases the KV key-presence check conflated (absent key = both "empty" and "not built yet").
 
-## Open Questions
+## Resolved Decisions
 
-- **Keep `_indexes/recipes.json`?** It's no longer a serving path (the Worker reads D1; `build-site.mjs` reads `recipes/*.md` directly). Options: keep it as a committed, diff-visible snapshot of the projection (cheap, aids debugging/review), or drop it as vestigial. Lean: keep for one or two slices, drop in a cleanup once D1 is trusted. Non-blocking.
-- **Capability rename** `recipe-index-kv` → `recipe-index`. Cosmetic; defer to avoid spec-id churn mid-roadmap. Flagged in the spec delta.
+- **Drop `_indexes/recipes.json`.** Confirmed vestigial: the Worker reads D1 (not the file), and the static site reads `recipes/*.md` + `_indexes/components.json` directly — nothing reads `recipes.json`. The build stops writing it and the committed file is deleted; `discovery.ts`'s comments that reference it as the source are updated to point at D1. (`_indexes/` stays for the site's `components.json`.)
+- **Rename the capability now:** `recipe-index-kv` → `recipe-index`. The `-kv` suffix is actively misleading once the index is D1-served, and this is the change that makes that true — so the rename belongs here, not deferred. Applying renames the live `openspec/specs/recipe-index-kv/` directory.

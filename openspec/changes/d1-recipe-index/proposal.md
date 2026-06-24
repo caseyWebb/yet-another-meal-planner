@@ -9,7 +9,7 @@ Subjective per-tenant fields (`status`, `rating`, `last_cooked`) are already str
 ## What Changes
 
 - **NEW** D1 schema migration `migrations/d1/0002_recipes.sql` — a `recipes` table: scalar columns for the promoted objective facets (`slug` PK, `title`, `protein`, `cuisine`, `time_total`, `ingredients_key`, `source_url`), JSON columns for the array facets (`tags`, `course`, `season`, `dietary`, `pairs_with`, `perishable_ingredients`, `requires_equipment`), and an `extra` JSON column carrying any other objective frontmatter (forward-compat, lossless without a schema change). Index on `source_url`. **No** `status`/`rating`/`last_cooked` (subjective, per-tenant).
-- `scripts/build-indexes.mjs`: replace `publishToKv("index:recipes", …)` with a **D1 projection** — `DELETE FROM recipes; INSERT …` for the whole set in one transaction via the `d1-rest` client (a derived index is rebuilt wholesale, so replace-all matches today's whole-blob semantics). Keep writing `_indexes/recipes.json`? — see open question.
+- `scripts/build-indexes.mjs`: replace `publishToKv("index:recipes", …)` with a **D1 projection** — `DELETE FROM recipes; INSERT …` for the whole set in one transaction via the `d1-rest` client (a derived index is rebuilt wholesale, so replace-all matches today's whole-blob semantics). Also **stop writing `_indexes/recipes.json`** and delete the committed file — it is no longer a serving path (the Worker reads D1; the static site reads `recipes/*.md` + `_indexes/components.json` directly, never `recipes.json`).
 - **NEW** `src/recipe-index.ts` (or extend `src/recipes.ts`): `loadRecipeIndex(env)` reconstructs the in-memory `RecipeIndex` from D1 rows (columns + JSON-parsed arrays + `extra`), plus targeted helpers — `recipeSourceMap(env)` (`source_url → slug`) and per-slug metadata — so discovery/retrospective query directly instead of loading the whole index.
 - `src/tools.ts` `list_recipes`: load the index from D1 (`loadRecipeIndex`) instead of `DATA_KV.get("index:recipes")`; the overlay/last_cooked merge and `filterRecipes` are unchanged (same `RecipeIndex` shape, different source).
 - `src/cooking-tools.ts` (`retrospective`) and `src/discovery-tools.ts` (idempotency / source-URL → slug): read from D1. Discovery's lookup becomes `SELECT slug FROM recipes WHERE source_url = ?` (indexed) rather than scanning the whole index.
@@ -19,9 +19,13 @@ Subjective per-tenant fields (`status`, `rating`, `last_cooked`) are already str
 
 ## Capabilities
 
+### Renamed Capabilities
+
+- `recipe-index-kv` → **`recipe-index`**: the name's `-kv` suffix is now wrong (the index is D1-served), so this change renames the capability. Applying it renames `openspec/specs/recipe-index-kv/` → `openspec/specs/recipe-index/` along with the requirement changes below.
+
 ### Modified Capabilities
 
-- `recipe-index-kv`: the recipe index is stored in and served from **D1**, not KV. (Capability name now a slight misnomer — note it; a rename to `recipe-index` is cosmetic and deferred.) Read sites query D1; the build projects rows; the deploy populates D1.
+- `recipe-index` (formerly `recipe-index-kv`): the recipe index is stored in and served from **D1**, not KV. Read sites query D1; the build projects rows; the deploy populates D1.
 
 ## Impact
 
