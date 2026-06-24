@@ -339,22 +339,21 @@ async function projectToD1(indexes, root) {
   // Deterministic row order (sorted slug) so the projection is reproducible.
   const recipes = Object.values(indexes.recipes).sort((a, b) => a.slug.localeCompare(b.slug));
 
-  // One atomic request: `DELETE FROM recipes` then an INSERT per recipe, sent as a
-  // single semicolon-joined multi-statement SQL string with one flat positional
-  // `params` array (D1's REST /query binds `?N` across the whole request and runs it
-  // atomically). Replace-all: a removed recipe loses its row; deterministic input →
-  // deterministic table. An empty corpus sends just the DELETE (valid empty table).
-  const colCount = RECIPE_COLUMNS.length;
-  const statements = ['DELETE FROM recipes'];
-  const params = [];
-  recipes.forEach((recipe, i) => {
-    const base = i * colCount;
-    const placeholders = RECIPE_COLUMNS.map((_, j) => `?${base + j + 1}`).join(', ');
-    statements.push(`INSERT INTO recipes (${RECIPE_COLUMNS.join(', ')}) VALUES (${placeholders})`);
-    params.push(...recipeToRow(recipe));
-  });
+  // The D1 REST /query endpoint rejects bound params alongside multiple statements
+  // ("params with multiple statements is not supported"), so DELETE + INSERTs can't
+  // be one parameterised request. Run the DELETE on its own (no params), then one
+  // parameterised INSERT per recipe — the same single-statement-per-call shape the
+  // data backfills use. Replace-all: a removed recipe loses its row; deterministic
+  // input → deterministic table. An empty corpus is just the DELETE (valid empty
+  // table). Not a single transaction (REST has no multi-statement param batch); a
+  // brief mid-rebuild window is acceptable for a derived, idempotently-rebuilt index.
+  const placeholders = RECIPE_COLUMNS.map((_, j) => `?${j + 1}`).join(', ');
+  const insertSql = `INSERT INTO recipes (${RECIPE_COLUMNS.join(', ')}) VALUES (${placeholders})`;
   try {
-    await d1.query(statements.join('; '), params);
+    await d1.exec('DELETE FROM recipes');
+    for (const recipe of recipes) {
+      await d1.query(insertSql, recipeToRow(recipe));
+    }
   } catch (err) {
     console.warn(`warn: D1 projection failed — ${err.message}`);
     return;
