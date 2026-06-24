@@ -118,4 +118,16 @@ First **data-backfill** migration (`migrations/0002-cooking-log-d1.mjs`). Build-
 - **Cleanup tracked:** the old `users/<u>/cooking_log.toml` files are now vestigial (the runner
   can't `git rm` them) — delete them from the data repo once D1 is confirmed authoritative.
 
+### Slice 3 — retire-commit-changes  ✅ implemented
+No migration — tool refactor + persona rework. New `rate_recipe(slug,{rating?,status?})`
+(subjective overlay writer, slug-validated against `recipes`, writes the **KV** overlay until
+slice 4); `update_recipe` is objective-only (rejects rating/status → `rate_recipe`,
+last_cooked → `log_cooked`); `commit_changes` **deleted**. `AGENT_INSTRUCTIONS.md` reworked off
+`commit_changes` (and the pre-existing stale `grocery_list_ops`/`pantry_operations` →
+`remove_from_grocery_list`/`update_pantry`); plugin rebuilt. Build-env: typecheck ✅, 526 vitest
++ 116 tooling ✅.
+- **Live to verify:** `rate_recipe` updates the overlay and shows in `list_recipes`;
+  `update_recipe` with `status`/`rating` errors toward `rate_recipe`; `commit_changes` is gone
+  from the tool list.
+
 <!-- Subsequent slices appended as they are implemented. -->
