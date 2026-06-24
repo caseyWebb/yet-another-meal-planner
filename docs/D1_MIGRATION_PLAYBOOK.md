@@ -130,4 +130,18 @@ last_cooked → `log_cooked`); `commit_changes` **deleted**. `AGENT_INSTRUCTIONS
   `update_recipe` with `status`/`rating` errors toward `rate_recipe`; `commit_changes` is gone
   from the tool list.
 
+### Slice 4 — d1-profile  ✅ implemented
+The whole per-tenant profile (preferences, taste, diet_principles, kitchen, staples, overlay,
+ready_to_eat, stockup) → normalized D1 tables (`profile`, `brand_prefs`, `kitchen_equipment`,
+`staples`, `overlay`, `ready_to_eat`, `stockup`). `update_preferences` is now a deep
+**merge-patch** (RFC 7396; brands tri-state = `brand_prefs` UPSERT/`[]`/DELETE); group ratings
+in `read_recipe_notes` are one `SELECT … FROM overlay WHERE recipe=?` (no tenant scan);
+`rate_recipe` writes the D1 `overlay`. KV profile-bundle layer deleted (`smol-toml` now only on
+the GitHub-corpus path). Backfill `migrations/0003-profile-d1.mjs` (KV bundle → rows, deletes
+the key). Build-env: typecheck ✅, 551 vitest + 121 tooling ✅. Plugin rebuilt.
+- **Live to verify:** `0004_profile.sql` applies; backfill populates the profile tables and
+  removes `profile:<u>` KV keys; `read_user_profile` returns the same shape; a partial
+  `update_preferences` patch doesn't clobber siblings; brands tri-state behaves (set/[]/null);
+  "rated 4+ by others" works via the overlay query.
+
 <!-- Subsequent slices appended as they are implemented. -->
