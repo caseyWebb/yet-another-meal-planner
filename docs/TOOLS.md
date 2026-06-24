@@ -561,13 +561,16 @@ Disposition or otherwise update a ready-to-eat item in the caller's catalog, add
 
 ### `read_user_profile()`
 
-Read the full per-tenant profile bundle from DATA_KV in **one call**. Returns all profile fields; absent fields are null/empty — never throws `not_found`.
+Read the full per-tenant profile bundle from DATA_KV in **one call**, including initialization status. Returns all profile fields; absent fields are null/empty — never throws `not_found`.
 
 **Params:** none.
 
 **Returns:**
 ```
 {
+  initialized:     boolean,          // true once preferences field is non-empty
+  missing:         string[],         // onboarding areas still absent: subset of
+                                     //   ["store","taste","diet","equipment","ready-to-eat","stockup"]
   preferences:     { ... } | null,   // parsed preferences object (TOML)
   taste:           string | null,    // taste-profile narrative (markdown)
   diet_principles: string | null,    // diet-principles narrative (markdown)
@@ -578,16 +581,7 @@ Read the full per-tenant profile bundle from DATA_KV in **one call**. Returns al
 }
 ```
 
-**Notes:** The single call for meal-plan pre-pass and configure-grocery-profile. KV-backed (`profile:<username>`) — a missing key returns all fields null/empty, no GitHub fallback (existing members' files are migrated into KV once, at deploy time, by the migration runner). Kitchen `owned` is the array of `EQUIPMENT_VOCAB` slugs that **gate** recipe makeability; an **absent/empty** `owned` makes the gate a no-op (everything shows).
-
-### `profile_status()`
-
-Report whether the caller has set up their grocery profile. Checks the DATA_KV profile bundle (`profile:<username>`) for field presence. Per-tenant, read-only, no params.
-
-**Returns:**
-- `{ initialized, missing }` — `initialized` (boolean) is `true` once the `preferences` bundle field is non-empty; `missing` (string[]) lists the onboarding-area keys whose bundle field is absent or empty, from the fixed mapping `store`→`preferences`, `taste`→`taste`, `diet`→`diet_principles`, `equipment`→`kitchen`, `pantry`→`state:<username>:pantry`, `ready-to-eat`→`ready_to_eat`, `stockup`→`stockup`, `corpus`→`overlay`.
-
-A brand-new member with no KV key yet returns `{ initialized: false, missing: [<all areas>] }`. Backs the `grocery-core` start-of-session onboarding gate — treat an errored/indeterminate result as non-gating (proceed).
+**Notes:** The single call for session start, meal-plan pre-pass, and configure-grocery-profile. On `initialized: false`, run the `configure-grocery-profile` flow first; use `missing` to skip areas already done. KV-backed (`profile:<username>`) — a missing key returns all fields null/empty, no GitHub fallback (existing members' files are migrated into KV once, at deploy time, by the migration runner). Kitchen `owned` is the array of `EQUIPMENT_VOCAB` slugs that **gate** recipe makeability; an **absent/empty** `owned` makes the gate a no-op (everything shows).
 
 ### `update_preferences(content)` / `update_taste(content)` / `update_diet_principles(content)` / `update_aliases(content)`
 
