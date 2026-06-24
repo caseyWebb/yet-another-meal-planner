@@ -23,24 +23,26 @@ The system SHALL provide a `pre-commit` hook that runs validation only and never
 - **WHEN** `npm install` runs on a fresh clone
 - **THEN** the `prepare` script configures `core.hooksPath` to the committed hooks directory so the pre-commit hook is active
 
-### Requirement: Index regeneration GitHub Action
+### Requirement: The build validates recipes and projects the recipe index only
 
-The system SHALL provide `.github/workflows/build-indexes.yml` that triggers on push to `recipes/**`, runs validation, regenerates `_indexes/recipes.json`, commits it back to the branch, and publishes the index to `DATA_KV`. The reusable workflow SHALL declare `CLOUDFLARE_API_TOKEN` as an optional secret so the thin data-repo caller can pass it via `secrets: inherit`. The data-repo thin caller SHALL use `secrets: inherit`. The workflow SHALL request `contents: write` permission. It SHALL NOT trigger on ready-to-eat changes or regenerate a ready-to-eat index — ready-to-eat is per-tenant state read directly from `users/<username>/ready_to_eat.toml`, not an indexed shared catalog.
+`scripts/build-indexes.mjs` SHALL validate recipe markdown and project the recipe index into the D1 `recipes` table, and SHALL NOT validate or parse any other corpus artifact. The store-registry, discovery-inbox, discovery-source, and whole-repo TOML parse-checks SHALL be removed from the build; those validations run at Worker write time in the corresponding tools. With no non-recipe data left in GitHub, the build has nothing else to check, and `smol-toml` is no longer used by the build. The build SHALL NOT publish the index to KV and SHALL NOT commit an `_indexes/recipes.json` index blob — the index is the D1 table, projected on every recipe push (see the `recipe-index` capability for the projection contract).
 
-#### Scenario: Push regenerates, commits, and publishes to KV
+The system SHALL provide a reusable index-regeneration GitHub workflow (`.github/workflows/data-build-indexes.yml`) that triggers on push to `recipes/**`, runs the recipe validation, and projects the validated set into D1. The reusable workflow SHALL declare `CLOUDFLARE_API_TOKEN` as an optional secret so the thin data-repo caller can pass it via `secrets: inherit`. It SHALL NOT trigger on ready-to-eat changes or regenerate a ready-to-eat index — ready-to-eat is per-tenant state, not an indexed shared catalog.
 
-- **WHEN** a push modifies a file under `recipes/**`
-- **THEN** the Action validates the corpus, regenerates the recipe index file, commits any changes back to the branch, and publishes the index to `DATA_KV`
+#### Scenario: Build only touches recipes
+
+- **WHEN** the build runs
+- **THEN** it validates `recipes/*.md` and projects the D1 `recipes` table, performing no store/discovery/TOML validation and no KV `index:recipes` write
+
+#### Scenario: Shared-corpus validation is write-time
+
+- **WHEN** a store, discovery source, or inbox candidate is written
+- **THEN** it is validated by the Worker write tool at write time (a structured error on failure), not by a later build
 
 #### Scenario: Validation failure fails the Action
 
-- **WHEN** a pushed change fails a hard-fail validation rule
-- **THEN** the Action fails and does not commit regenerated indexes or publish to KV
-
-#### Scenario: KV publish uses namespace id from wrangler.jsonc
-
-- **WHEN** the build-indexes Action publishes to KV
-- **THEN** it reads the `DATA_KV` namespace id from the data repo's `wrangler.jsonc` without requiring any separately-configured input or secret
+- **WHEN** a pushed change fails a hard-fail recipe-validation rule
+- **THEN** the Action fails and does not project the D1 table
 
 ### Requirement: CI loop guard
 

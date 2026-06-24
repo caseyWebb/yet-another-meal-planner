@@ -111,17 +111,24 @@ The data-repo template's `wrangler.jsonc` SHALL contain only operator-owned conf
 - **WHEN** a fresh operator deploys from the slim template (no `kv_namespaces` ids, or no `kv_namespaces` at all) and later redeploys
 - **THEN** the first deploy auto-provisions the namespaces, the provisioned ids are persisted into the operator's config, and the redeploy reuses the same namespaces (no orphaned KV state)
 
-### Requirement: DATA_KV is auto-provisioned alongside the existing KV namespaces
+### Requirement: D1 is auto-provisioned and pinned back alongside the KV namespaces
 
-The code repo's `wrangler.jsonc` SHALL declare a `DATA_KV` binding without an id. The deploy SHALL auto-provision the namespace and pin its id back to the operator's `wrangler.jsonc` via the existing pin-back mechanism, identical to how `KROGER_KV`, `TENANT_KV`, and `OAUTH_KV` are handled. The data-repo template SHALL include an id-less `DATA_KV` binding so new operators get it automatically. An operator MAY alternatively create the namespace manually in the Cloudflare dashboard and insert the id directly into their `wrangler.jsonc` — the deploy pin-back will treat a pre-existing id as a no-op.
+The deploy SHALL provision the operator's D1 database with no manual step, by the same mechanism used for the KV namespaces: the code repo's `wrangler.jsonc` ships an id-less `d1_databases` binding (`DB`); `wrangler deploy` auto-provisions a per-operator database; and the provisioned `database_id` is pinned back into the operator's data-repo config so subsequent deploys reuse it. The config merge (`scripts/merge-wrangler-config.mjs`) SHALL take the D1 binding *set* from the code repo (so a new binding propagates to every operator) and the `database_id` from the operator only (the maintainer's id is stripped, as for KV, to prevent cross-tenant exposure). The pin-back SHALL be a true no-op (no commit) when the D1 id is unchanged.
 
-#### Scenario: First deploy provisions DATA_KV alongside existing namespaces
+The operator's `CLOUDFLARE_API_TOKEN` SHALL carry D1 edit permission in addition to Workers + KV. The deploy SHALL apply pending D1 schema migrations (`wrangler d1 migrations apply DB --remote`) after the binding is provisioned, and before projecting the recipe index. There is no separate data-backfill step — the schema apply is the only migration the deploy runs.
 
-- **WHEN** a fresh operator deploys with the updated template (which carries an id-less `DATA_KV` binding)
-- **THEN** `wrangler deploy` provisions `DATA_KV` and the pin-back step writes its id into the operator's `wrangler.jsonc`, with no manual dashboard step required
+#### Scenario: First deploy provisions and pins the D1 database
 
-#### Scenario: Manually pre-populated id is preserved
+- **WHEN** a brand-new operator deploys with an id-less `DB` binding
+- **THEN** `wrangler deploy` auto-provisions a D1 database, the schema migrations apply, and the provisioned `database_id` is committed back into the operator's `wrangler.jsonc`
 
-- **WHEN** an operator creates a KV namespace in the Cloudflare dashboard and sets its id in `wrangler.jsonc` before deploying
-- **THEN** the deploy uses that namespace and the pin-back step leaves the id unchanged
+#### Scenario: Redeploy reuses the pinned database
+
+- **WHEN** an operator whose `DB` id is already pinned redeploys
+- **THEN** the merge binds the existing database, the pin step makes no change (no commit), and no new database is created
+
+#### Scenario: Code-repo D1 id never reaches an operator
+
+- **WHEN** the config merge runs
+- **THEN** the maintainer's `database_id` from the code repo's `wrangler.jsonc` is stripped, and only the operator's own id (or none → auto-provision) is used
 

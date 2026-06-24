@@ -148,19 +148,33 @@ The system SHALL provide `read_pantry(filter)` returning `{ items: [...] }`, sup
 - **WHEN** `read_pantry({ stale_only: true })` is invoked
 - **THEN** the tool returns a structured `unsupported` error explaining that freshness is judged conversationally, not computed by the tool
 
+### Requirement: Unified profile read assembles from D1
+
+`read_user_profile()` SHALL return the caller's full profile assembled from the D1 profile tables — `initialized`, `missing`, and all profile fields — in one batched set of queries. The structured fields (`preferences`, `kitchen`, `staples`, `overlay`, `ready_to_eat`, `stockup`) are reconstructed from typed rows/columns (preferences from the `profile` row + `brand_prefs`); the markdown fields (`taste`, `diet_principles`) are returned as strings from the `profile` row. The Worker SHALL NOT parse TOML on the profile read path, and SHALL NOT read a `profile:<username>` KV bundle. The returned object shape is unchanged from the caller's perspective.
+
+#### Scenario: Profile read assembles structured JSON from D1
+
+- **WHEN** `read_user_profile()` is called for an initialized tenant
+- **THEN** the profile is assembled from the D1 tables and returned in the existing shape, with no TOML parse and no KV bundle read
+
+#### Scenario: Matcher and weather read preferences from D1
+
+- **WHEN** the matcher reads `brands` or the weather resolver reads `stores`/`location_zip`
+- **THEN** the values come from the D1 `brand_prefs` and `profile` rows, not a parsed TOML string
+
 ### Requirement: Config and narrative read tools
 
-The system SHALL provide `read_preferences()` returning the parsed contents of `preferences.toml`, `read_taste()` returning the raw markdown of `taste.md`, and `read_diet_principles()` returning the raw markdown of `diet_principles.md`.
+The system SHALL provide `read_preferences()` returning the caller's `preferences` object assembled from D1 (the `profile` row + `brand_prefs` rows), and `not_found` when no profile/preferences row exists; `read_taste()` returning the caller's taste markdown from the `profile` row; and `read_diet_principles()` returning the caller's diet-principles markdown from the `profile` row. No profile read path parses TOML or reads a KV bundle.
 
-#### Scenario: Preferences returned parsed
+#### Scenario: Preferences returned from D1
 
 - **WHEN** `read_preferences()` is invoked
-- **THEN** it returns `preferences.toml` parsed into a structured object
+- **THEN** it returns the caller's `preferences` object assembled from the D1 `profile` row and `brand_prefs` rows, with no TOML parse
 
-#### Scenario: Narrative files returned raw
+#### Scenario: Narrative fields returned as text
 
 - **WHEN** `read_taste()` or `read_diet_principles()` is invoked
-- **THEN** it returns the file's markdown content as text
+- **THEN** it returns the caller's markdown content as text from the `profile` row
 
 ### Requirement: Empty-data resilience
 

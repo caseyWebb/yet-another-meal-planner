@@ -3,14 +3,28 @@
 ## Purpose
 TBD - created by archiving change git-write-tools. Update Purpose after archive.
 ## Requirements
-### Requirement: Grocery list file and schema
+### Requirement: Grocery list is stored in and served from D1
 
-The system SHALL maintain `grocery_list.toml` at the repo root as an ingredient-level, **SKU-free** buy list of committed buy-intent that accumulates across a week. Each item SHALL carry: `name` (required, the order-time search term), `quantity` (loose buy amount, same looseness as pantry), `kind` (`grocery` | `household` | `other`, default `grocery`), `domain` (free string identifying the kind of store it's bought at — common values `grocery` | `home-improvement` | `garden` | `pharmacy`; default `grocery`), `status` (`active` | `in_cart` | `ordered`, required), `source` (`ad_hoc` | `menu` | `pantry_low` | `stockup`), `for_recipes` (recipe slugs; may be empty), `note` (freeform or null), `added_at` (ISO date, required), and `ordered_at` (ISO date or null). The schema SHALL be documented in `docs/SCHEMAS.md`, and the file SHALL be an agent-writable side-effect file (not user-curated config). Items SHALL NOT store a resolved Kroger SKU — resolution is deferred to order time (Change 06b). `domain` is orthogonal to `kind`: `kind` governs pantry reconcile on receive, `domain` governs which store-type a walk includes the item in.
+The grocery list SHALL be stored as rows in the per-tenant D1 `grocery_list` table (keyed by `(tenant, normalized_name)`), not as a `grocery_list.toml` file or a `state:<username>:grocery_list` JSON array in KV. `read_grocery_list` SHALL query rows (a status filter applied as a `WHERE` clause); `add_to_grocery_list` / `update_grocery_list` / `remove_from_grocery_list` and the order/cart status transitions SHALL be row-level upsert/update/delete (dedup by normalized name), not whole-array rewrites. Writes are strongly consistent (read-after-write).
+
+#### Scenario: Adding an item inserts/updates one row
+
+- **WHEN** `add_to_grocery_list` adds an item
+- **THEN** a single `grocery_list` row is upserted for the caller, leaving other items untouched, and an immediately following read sees it
+
+#### Scenario: Status filter is a query
+
+- **WHEN** `read_grocery_list` is called filtered to `active`
+- **THEN** the result comes from `WHERE tenant=? AND status='active'`, not by loading and filtering the whole list
+
+### Requirement: Grocery list schema
+
+The grocery list SHALL be an ingredient-level, **SKU-free** buy list of committed buy-intent that accumulates across a week. Each item SHALL carry: `name` (required, the order-time search term), `quantity` (loose buy amount, same looseness as pantry), `kind` (`grocery` | `household` | `other`, default `grocery`), `domain` (free string identifying the kind of store it's bought at — common values `grocery` | `home-improvement` | `garden` | `pharmacy`; default `grocery`), `status` (`active` | `in_cart` | `ordered`, required), `source` (`ad_hoc` | `menu` | `pantry_low` | `stockup`), `for_recipes` (recipe slugs; may be empty), `note` (freeform or null), `added_at` (ISO date, required), and `ordered_at` (ISO date or null). The schema SHALL be documented in `docs/SCHEMAS.md`, and the list SHALL be agent-writable side-effect state (not user-curated config). Items SHALL NOT store a resolved Kroger SKU — resolution is deferred to order time. `domain` is orthogonal to `kind`: `kind` governs pantry reconcile on receive, `domain` governs which store-type a walk includes the item in.
 
 #### Scenario: Item conforms to schema
 
-- **WHEN** an item is written to `grocery_list.toml`
-- **THEN** it carries a `name`, a `status` from the legal set, an `added_at` date, and no resolved SKU, and it passes structural validation
+- **WHEN** an item is written to the `grocery_list` table
+- **THEN** it carries a `name`, a `status` from the legal set, an `added_at` date, and no resolved SKU, and it passes write-time validation
 
 #### Scenario: Non-food item is representable
 
@@ -20,7 +34,7 @@ The system SHALL maintain `grocery_list.toml` at the repo root as an ingredient-
 #### Scenario: Domain defaults to grocery
 
 - **WHEN** an item is added with no `domain` supplied
-- **THEN** it is stored with `domain = "grocery"` and validates unchanged (existing items without a `domain` are read as `grocery`)
+- **THEN** it is stored with `domain = "grocery"` and validates unchanged (rows without a `domain` are read as `grocery`)
 
 #### Scenario: Non-grocery item carries its domain
 
@@ -29,29 +43,27 @@ The system SHALL maintain `grocery_list.toml` at the repo root as an ingredient-
 
 ### Requirement: Grocery list CRUD tools
 
-The system SHALL provide `read_grocery_list`, `add_to_grocery_list`, `update_grocery_list`, and `remove_from_grocery_list` for single-item live edits. `add_to_grocery_list` SHALL be keyed by normalized `name`: re-adding an existing name MERGES into the existing entry (union `for_recipes`, reconcile `quantity`) rather than creating a duplicate. New items SHALL be created with `status: active`. All mutations SHALL persist via the atomic commit engine.
-
-Multiple grocery-list mutations produced while resolving a single turn SHALL be persisted as **one** commit — via `commit_changes`' `grocery_list_ops` field — rather than as a sequence of single-item commits or as parallel single-item writes. Because grocery-list writes are full-file read-modify-writes of one file, concurrent single-item writes are not safe (the commit engine's full-file replay can drop updates); the single-item tools are for genuine one-off edits, and any batch SHALL go through `commit_changes`.
+The system SHALL provide `read_grocery_list`, `add_to_grocery_list`, `update_grocery_list`, and `remove_from_grocery_list` for single-item live edits, each a row-level D1 operation that returns without a `commit_sha`. `add_to_grocery_list` SHALL be keyed by normalized `name`: re-adding an existing name MERGES into the existing row (union `for_recipes`, reconcile `quantity`) via upsert rather than creating a duplicate. New items SHALL be created with `status: active`. Because each write is a single-row D1 upsert/update/delete (no whole-file read-modify-write), several mutations in one turn are simply a sequence of row-level writes — there is no batch/commit tool and no full-file replay to drop concurrent updates.
 
 #### Scenario: Re-adding an existing item merges
 
 - **WHEN** `add_to_grocery_list` is called with a name already present on the list
-- **THEN** the existing entry is updated (merged `for_recipes`, reconciled `quantity`) and no duplicate entry is created
+- **THEN** the existing row is upserted (merged `for_recipes`, reconciled `quantity`) and no duplicate row is created
 
 #### Scenario: New item starts active
 
 - **WHEN** a not-yet-present item is added
-- **THEN** it is created with `status: "active"` and an `added_at` date and committed
+- **THEN** a `grocery_list` row is created with `status: "active"` and an `added_at` date, with no `commit_sha`
 
 #### Scenario: Read returns the current list
 
 - **WHEN** `read_grocery_list` is called
-- **THEN** it returns the current items with their fields, including `status` and `source`
+- **THEN** it returns the current rows with their fields, including `status` and `source`
 
-#### Scenario: A multi-item capture is one commit
+#### Scenario: A multi-item capture is a sequence of row writes
 
 - **WHEN** a menu capture adds several to-buy items at once
-- **THEN** they are persisted through `commit_changes` `grocery_list_ops` as a single commit (together with the menu's other repo writes), not as one commit per item
+- **THEN** each item is upserted as its own `grocery_list` row (no batch commit tool, no per-item git commit)
 
 ### Requirement: Prompted promotion from pantry
 
@@ -60,7 +72,7 @@ When a pantry item is low or out, the system SHALL treat adding it to the grocer
 #### Scenario: Low pantry item is offered, not auto-added
 
 - **WHEN** the user reports an item is low or out and the agent considers it for the buy list
-- **THEN** the item is added to `grocery_list.toml` only after the user confirms, recorded with `source: "pantry_low"`
+- **THEN** the item is added to the `grocery_list` table only after the user confirms, recorded with `source: "pantry_low"`
 
 ### Requirement: Provenance supports order-time dedup and aggregation
 
