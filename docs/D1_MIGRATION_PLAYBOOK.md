@@ -103,4 +103,19 @@ renamed `recipe-index-kv` → `recipe-index`. Build-env: typecheck ✅, 530 vite
 - **Cleanup tracked:** `openspec/specs/data-indexing/spec.md` still describes the old KV index
   publish — stale, to be corrected in the final pass (it was outside this slice's deltas).
 
+### Slice 2 — d1-cooking-log  ✅ implemented
+Cooking log GitHub TOML → per-tenant D1 `cooking_log` table. `last_cooked` and `retrospective`
+are now SQL (the latter a `cooking_log LEFT JOIN recipes`). New `log_cooked` tool with
+write-time slug validation against `recipes`; `commit_changes` drops `cooking_log_entries`.
+First **data-backfill** migration (`migrations/0002-cooking-log-d1.mjs`). Build-env: typecheck ✅,
+521 vitest + tooling ✅ (incl. 7 backfill tests). Plugin rebuilt.
+- **Live to verify:**
+  - `migrations/d1/0003_cooking_log.sql` applies; then the backfill runs
+    (`run-migrations.mjs` → `0002-cooking-log-d1.mjs`) and populates `cooking_log` from each
+    `users/<u>/cooking_log.toml`.
+  - `log_cooked` of a real slug logs + clears the meal plan; an unknown slug → `not_found`.
+  - `list_recipes` shows correct `last_cooked`; `retrospective` returns correct mixes.
+- **Cleanup tracked:** the old `users/<u>/cooking_log.toml` files are now vestigial (the runner
+  can't `git rm` them) — delete them from the data repo once D1 is confirmed authoritative.
+
 <!-- Subsequent slices appended as they are implemented. -->
