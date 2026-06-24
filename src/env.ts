@@ -87,6 +87,16 @@ export interface Env {
    */
   DB: D1Database;
 
+  // --- Workers AI (semantic-meal-plan) ---
+  /**
+   * Workers AI binding for in-Cloudflare embeddings (`@cf/baai/bge-base-en-v1.5`,
+   * 768-dim). Used by `src/embedding.ts` to embed the query string on the recipe
+   * semantic-search hot path — keeping the match in the Worker, off the caller's
+   * token budget. No external key/secret. Build-time RECIPE embedding is a separate
+   * path (the Node build can't use this binding); see the semantic-meal-plan design.
+   */
+  AI: Ai;
+
   // --- Injected by @cloudflare/workers-oauth-provider ---
   /** Provider helpers (`parseAuthRequest`, `lookupClient`, `completeAuthorization`, …). */
   OAUTH_PROVIDER: OAuthHelpers;

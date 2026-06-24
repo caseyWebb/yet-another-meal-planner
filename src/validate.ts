@@ -120,6 +120,24 @@ export function validateFile(path: string, content: string): void {
     ) {
       fail(path, `\`course\` must be a string or an array of strings (got ${JSON.stringify(fm.course)})`);
     }
+    // description (semantic-meal-plan) is the AI-written brief summary that seeds the
+    // recipe embedding and the compact candidate row — a non-empty string when present.
+    if (fm.description != null && (typeof fm.description !== "string" || fm.description.trim() === "")) {
+      fail(path, `\`description\` must be a non-empty string (got ${JSON.stringify(fm.description)})`);
+    }
+    // side_search_terms (semantic-meal-plan) are AI-memoized phrases describing the
+    // kind of side that complements a main; the semantic side-retrieval query.
+    if (fm.side_search_terms != null) {
+      if (
+        !Array.isArray(fm.side_search_terms) ||
+        fm.side_search_terms.some((s) => typeof s !== "string")
+      ) {
+        fail(
+          path,
+          `\`side_search_terms\` must be an array of strings (got ${JSON.stringify(fm.side_search_terms)})`,
+        );
+      }
+    }
     // perishable_ingredients (objective shared content) is a normalized array of
     // ingredient names; same shape-only check as pairs_with (no corpus on workerd).
     if (fm.perishable_ingredients != null) {

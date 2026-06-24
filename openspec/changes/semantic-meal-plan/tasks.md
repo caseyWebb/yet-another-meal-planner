@@ -7,12 +7,12 @@
 
 ## 0. Setup
 
-- [ ] 0.1 Add the Workers AI binding (`@cf/baai/bge-base-en-v1.5`) to `wrangler.jsonc` (operator-merged) and `.dev.vars.example`
+- [x] 0.1 Add the Workers AI binding (`@cf/baai/bge-base-en-v1.5`) to `wrangler.jsonc` (operator-merged) and `.dev.vars.example`
 
 ## 1. Recipe semantic-identity fields (additive)
 
-- [ ] 1.1 Add `description` and `side_search_terms` to the recipe frontmatter schema (`docs/SCHEMAS.md`) and the build/write-time validators (`scripts/build-indexes.mjs`, `src/validate.ts`) — shape-only, optional
-- [ ] 1.2 Validate `description` is non-empty-when-present and not a verbatim copy of the source page text (best-effort guard)
+- [x] 1.1 Add `description` and `side_search_terms` to the recipe frontmatter schema (`docs/SCHEMAS.md`) and the build/write-time validators (`scripts/build-indexes.mjs`, `src/validate.ts`) — shape-only, optional
+- [x] 1.2 Validate `description` is non-empty-when-present (in both validators); the "not a verbatim copy of source text" guard is an import-persona concern (1.4), not a structural validator (build/Worker have no source page)
 - [ ] 1.3 Backfill `description` (+ `side_search_terms` for mains) across the existing corpus — one-time agent-in-session or scripted pass
 - [ ] 1.4 Teach the import path (`AGENT_INSTRUCTIONS.md` recipe-import flow) to generate `description` and `side_search_terms` at import
 
@@ -21,7 +21,7 @@
 - [ ] 2.1 New migration `migrations/d1/0007_*.sql`: add `embedding`, `description`, `side_search_terms` columns to the existing `recipes` table
 - [ ] 2.2 Extend `projectToD1` in `scripts/build-indexes.mjs`: compute each recipe's embedding via Workers AI from its `description`+title and write it in the same replace-all (`DELETE`+batched `INSERT`) rebuild (atomic with the row)
 - [ ] 2.3 Skip embedding for recipes lacking a `description`; ensure they remain facet-retrievable but excluded from semantic ranking
-- [ ] 2.4 Add a Worker helper to embed a query string (Workers AI) and a cosine helper
+- [x] 2.4 Add a Worker helper to embed a query string (Workers AI) and a cosine helper (`src/embedding.ts` + `test/embedding.test.ts`)
 
 ## 3. recipe_semantic_search tool (additive, backend-agnostic)
 

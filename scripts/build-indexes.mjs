@@ -186,6 +186,20 @@ export async function buildRecipeIndexes(recipesDir) {
     ) {
       errors.push(`${rel}: course must be a string or an array of strings (got ${JSON.stringify(data.course)})`);
     }
+    // description (semantic-meal-plan) is the AI-written brief summary that seeds the
+    // recipe embedding and the compact candidate row — a non-empty string when present.
+    if (data.description != null && (typeof data.description !== 'string' || data.description.trim() === '')) {
+      errors.push(`${rel}: description must be a non-empty string (got ${JSON.stringify(data.description)})`);
+    }
+    // side_search_terms (semantic-meal-plan) are AI-memoized phrases describing the
+    // kind of side that complements a main; the semantic side-retrieval query.
+    if (
+      data.side_search_terms != null &&
+      (!Array.isArray(data.side_search_terms) ||
+        data.side_search_terms.some((s) => typeof s !== 'string'))
+    ) {
+      errors.push(`${rel}: side_search_terms must be an array of strings (got ${JSON.stringify(data.side_search_terms)})`);
+    }
     // perishable_ingredients is objective shared content (a normalized list of the
     // recipe's perishable ingredients, classified at import) consumed by the
     // menu-gen waste callout. Present-but-not-a-string-array is a hard failure

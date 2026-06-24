@@ -27,3 +27,8 @@ KROGER_CLIENT_SECRET=""
 # the cart flow falls back to KROGER_CLIENT_ID/SECRET above.
 # KROGER_OAUTH_CLIENT_ID=""
 # KROGER_OAUTH_CLIENT_SECRET=""
+
+# --- Workers AI (semantic-meal-plan) ---
+# The `AI` binding needs no secret here: in `wrangler dev` it proxies to the real
+# Workers AI API using your wrangler login (or CLOUDFLARE_API_TOKEN in the env).
+# Nothing to set — listed only so the binding's dev requirement is discoverable.
