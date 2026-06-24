@@ -597,17 +597,18 @@ Read the caller's full per-tenant profile, assembled from the D1 profile tables 
 
 **Notes:** The single call for session start, meal-plan pre-pass, and configure-grocery-profile. On `initialized: false`, run the `configure-grocery-profile` flow first; use `missing` to skip areas already done. KV-backed (`profile:<username>`) — a missing key returns all fields null/empty, no GitHub fallback (existing members' files are migrated into KV once, at deploy time, by the migration runner). Kitchen `owned` is the array of `EQUIPMENT_VOCAB` slugs that **gate** recipe makeability; an **absent/empty** `owned` makes the gate a no-op (everything shows).
 
-### `update_preferences(patch)` / `update_taste(content)` / `update_diet_principles(content)` / `update_aliases(content)`
+### `update_preferences(patch)` / `update_taste(content)` / `update_diet_principles(content)` / `update_aliases(aliases)`
 
-Write user-curated config. `update_taste`/`update_diet_principles` are content-faithful (write the supplied full markdown to the D1 `profile` row, no `commit_sha`). `update_aliases` commits `aliases.toml` to the shared GitHub corpus (`{ file, commit_sha }`). **`update_preferences` is a deep merge-patch**, not a whole-object write. **These should only be called when the user explicitly directs an edit.**
+Write user-curated config. `update_taste`/`update_diet_principles` are content-faithful (write the supplied full markdown to the D1 `profile` row, no `commit_sha`). `update_aliases` **upserts** variant→canonical ingredient mappings into the shared **D1 `aliases` table** (where the matcher reads them), keyed by variant — add/edit, no removal (`{ updated }`, no `commit_sha`). **`update_preferences` is a deep merge-patch**, not a whole-object write. **These should only be called when the user explicitly directs an edit.**
 
 **Params:**
 - `update_preferences`: `patch` (object, required) — a **JSON Merge Patch (RFC 7396)** over the caller's preferences: a present key sets/overwrites, `null` deletes, nested objects merge to **any depth**, arrays replace wholesale. Only the keys you touch change — a partial patch never clobbers siblings, so you do **not** re-send the whole object. Defined top-level keys: `default_cooking_nights` (number), `lunch_strategy` (`leftovers`|`buy`|`mixed`), `ready_to_eat_default_action` (`opt-in`|`auto-add`), `stores` (`{primary, preferred_location, location_zip}`), `brands` (map of term → ranked brand list; `[]` = don't-care/cheapest, `null` = clear back to ambiguous), `dietary` (`{avoid[], limit[]}`). Anything else nests under `custom`; an unknown top-level key returns `validation_failed` (nest it under `custom`). A type-invalid merged result returns `malformed_data` and stores nothing. Applied atomically to the D1 `profile` row + `brand_prefs` rows.
-- `update_taste` / `update_diet_principles` / `update_aliases`: `content` (string, required) — the complete new file/field text
+- `update_taste` / `update_diet_principles`: `content` (string, required) — the complete new field text
+- `update_aliases`: `aliases` (object, required) — a map of variant → canonical, e.g. `{ "EVOO": "olive oil" }`; each is upserted by variant
 
 **Returns:**
 - `update_preferences` / `update_taste` / `update_diet_principles`: `{ updated: "<field>" }` — D1-backed, no `commit_sha`
-- `update_aliases`: `{ file, commit_sha }`
+- `update_aliases`: `{ updated }` — count upserted; D1-backed, no `commit_sha`
 
 ---
 

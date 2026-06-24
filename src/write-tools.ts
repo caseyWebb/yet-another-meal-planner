@@ -12,7 +12,7 @@ import type { Env } from "./env.js";
 import { db } from "./db.js";
 import type { GitHubClient, TreeFile } from "./github.js";
 import { readFile } from "./gh-read.js";
-import { readAliases } from "./corpus-db.js";
+import { readAliases, addAliases } from "./corpus-db.js";
 import { normalizePerishables } from "./matching.js";
 import { parseMarkdown } from "./parse.js";
 import { serializeMarkdown, stripEmptyVarietyDimensions } from "./serialize.js";
@@ -142,16 +142,12 @@ const PROFILE_MARKDOWN_FIELDS = {
   taste: "taste",
   diet_principles: "diet_principles",
 } as const;
-/** Curated files that remain GitHub-backed (shared reference data at root). */
-const SHARED_CURATED_FILES: Record<string, string> = {
-  aliases: "aliases.toml",
-};
-
 // --- registration ------------------------------------------------------------
 
 /**
- * `gh` is the root data-repo client (shared recipe + aliases writes — the only
- * GitHub-backed writes left here). `env` is D1: the `recipes` index (queried by
+ * `gh` is the root data-repo client (shared recipe writes — the only GitHub-backed
+ * writes left here; recipe markdown is the one corpus that stays in git). `env` is
+ * D1: the `recipes` index (queried by
  * `rate_recipe` to validate a slug), the profile tables (preferences/taste/diet/
  * kitchen/staples/overlay/ready_to_eat/stockup — via src/profile-db.ts) AND the
  * session-state pantry table (via src/session-db.ts). meal_plan/grocery_list live in
@@ -478,20 +474,22 @@ export function registerWriteTools(
     );
   }
 
-  // Shared reference data (aliases) remains GitHub-backed.
-  for (const [key, path] of Object.entries(SHARED_CURATED_FILES)) {
-    server.registerTool(
-      `update_${key}`,
-      {
-        description: `Write ${path} verbatim with the supplied full content. Call only when the user has directed an edit.`,
-        inputSchema: { content: z.string() },
-      },
-      ({ content }) =>
-        runTool(async () => {
-          const { commit_sha } = await commitFiles(gh, [{ path, content }], `update ${path}`);
-          return { file: path, commit_sha };
-        }),
-    );
-  }
-
+  // Ingredient aliases are shared corpus in the D1 `aliases` table — the matcher reads
+  // them via readAliases, so writes go to the same table (not GitHub, which the matcher
+  // no longer consults). update_aliases upserts each mapping by variant (add/edit); it
+  // does not remove, matching the other shared-corpus add tools (update_feeds, etc.).
+  server.registerTool(
+    "update_aliases",
+    {
+      description:
+        'Add or update shared ingredient alias mappings (variant → canonical), e.g. { "EVOO": "olive oil" }. Upserts each by variant into the shared corpus (D1). Call only when the user directs an alias edit, or to record one you confirmed during matching. Does not remove aliases.',
+      inputSchema: { aliases: z.record(z.string(), z.string()) },
+    },
+    ({ aliases }) =>
+      runTool(async () => {
+        const mappings = Object.entries(aliases).map(([variant, canonical]) => ({ variant, canonical }));
+        const updated = await addAliases(env, mappings);
+        return { updated };
+      }),
+  );
 }
