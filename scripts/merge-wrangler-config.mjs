@@ -5,15 +5,16 @@
 // automatically instead of silently never deploying.
 //
 // SECURITY: the code repo's wrangler.jsonc is the MAINTAINER's real config, so every
-// operator-owned value in it — `vars` (GITHUB_APP_ID / GITHUB_INSTALLATION_ID / DATA_*)
-// and KV namespace ids — is the maintainer's and MUST NOT reach another operator. The
-// merge takes operator-owned keys from the operator ONLY and strips the code repo's
-// ids/vars unconditionally; otherwise a fresh operator's Worker would bind the
-// maintainer's KV or inherit their GitHub App installation (a cross-tenant exposure).
+// operator-owned value in it — `vars` (GITHUB_APP_ID / GITHUB_INSTALLATION_ID / DATA_*),
+// KV namespace ids, and D1 database ids — is the maintainer's and MUST NOT reach another
+// operator. The merge takes operator-owned keys from the operator ONLY and strips the
+// code repo's ids/vars unconditionally; otherwise a fresh operator's Worker would bind
+// the maintainer's KV/D1 or inherit their GitHub App installation (a cross-tenant
+// exposure). KV namespaces and D1 databases follow the identical id-stripping rule.
 //
 // Two pure, unit-tested operations:
-//   mergeWranglerConfig(code, operator) -> the config to deploy
-//   pinKvIds(deployed, operator)         -> operator config with provisioned KV ids patched in
+//   mergeWranglerConfig(code, operator)  -> the config to deploy
+//   pinBindingIds(deployed, operator)    -> operator config with provisioned KV + D1 ids patched in
 //
 // CLI:
 //   node scripts/merge-wrangler-config.mjs merge <operator.jsonc> <code.jsonc>   (writes <code.jsonc>)
@@ -54,6 +55,14 @@ export function mergeWranglerConfig(code, operator) {
   // OPERATOR by binding, else omitted -> auto-provisioned. Code ids dropped unconditionally.
   out.kv_namespaces = mergeKvNamespaces(code.kv_namespaces, operator.kv_namespaces);
 
+  // d1_databases: same rule as KV. The binding SET (and its `database_name` /
+  // `migrations_dir`) comes from code so a new binding propagates to every operator;
+  // the `database_id` comes from the OPERATOR by binding, else omitted -> auto-provisioned.
+  // The code repo's `database_id` is dropped unconditionally (cross-tenant safety).
+  if (code.d1_databases !== undefined || operator.d1_databases !== undefined) {
+    out.d1_databases = mergeD1Databases(code.d1_databases, operator.d1_databases);
+  }
+
   return out;
 }
 
@@ -67,6 +76,30 @@ function mergeKvNamespaces(codeKv = [], operatorKv = []) {
       const id = operatorIdByBinding.get(n.binding);
       // Drop the code repo's id unconditionally; use the operator's, or none (auto-provision).
       return id ? { binding: n.binding, id } : { binding: n.binding };
+    });
+}
+
+/**
+ * Merge D1 database bindings, mirroring mergeKvNamespaces. The binding set and its
+ * code-owned metadata (`database_name`, `migrations_dir`) come from code; the
+ * `database_id` comes from the operator by binding, else omitted (auto-provision). The
+ * code repo's `database_id` is dropped unconditionally — same cross-tenant safety rule
+ * as KV ids.
+ */
+function mergeD1Databases(codeD1 = [], operatorD1 = []) {
+  const operatorIdByBinding = new Map(
+    (operatorD1 ?? []).filter((d) => d && d.binding).map((d) => [d.binding, d.database_id]),
+  );
+  return (codeD1 ?? [])
+    .filter((d) => d && d.binding)
+    .map((d) => {
+      const out = { binding: d.binding };
+      // Preserve code-owned metadata so the deploy + native migrations resolve correctly.
+      if (d.database_name !== undefined) out.database_name = d.database_name;
+      if (d.migrations_dir !== undefined) out.migrations_dir = d.migrations_dir;
+      const id = operatorIdByBinding.get(d.binding);
+      if (id) out.database_id = id; // operator's id, or none (auto-provision)
+      return out;
     });
 }
 
@@ -96,19 +129,55 @@ export function pinKvIds(deployed, operator) {
 }
 
 /**
- * Did the KV binding→id mapping actually change between two configs? Used to keep the
- * pin step a true no-op (leaving the operator's config and its comments untouched, and
- * the deploy's commit/push silently skipped) when ids are already set — existing or
- * manual-setup operators. Returns true only when an id was added or changed.
+ * Patch the D1 database ids that `wrangler deploy` auto-provisioned into the deployed
+ * config back into the operator's config, matched by binding — the D1 counterpart of
+ * pinKvIds. Preserves the operator's other D1 keys (`database_name`, `migrations_dir`)
+ * and creates `d1_databases` if absent.
  */
-export function kvIdsChanged(before, after) {
-  const ids = (cfg) =>
+export function pinD1Ids(deployed, operator) {
+  const provisioned = new Map(
+    (deployed.d1_databases ?? [])
+      .filter((d) => d && d.binding && d.database_id)
+      .map((d) => [d.binding, d.database_id]),
+  );
+  if (provisioned.size === 0) return operator; // nothing to pin
+
+  const byBinding = new Map(
+    (Array.isArray(operator.d1_databases) ? operator.d1_databases : [])
+      .filter((d) => d && d.binding)
+      .map((d) => [d.binding, { ...d }]),
+  );
+  for (const [binding, database_id] of provisioned) {
+    byBinding.set(binding, { ...(byBinding.get(binding) ?? { binding }), binding, database_id });
+  }
+  return { ...operator, d1_databases: [...byBinding.values()] };
+}
+
+/** Pin both KV namespace ids and D1 database ids in one pass (deploy pin step). */
+export function pinBindingIds(deployed, operator) {
+  return pinD1Ids(deployed, pinKvIds(deployed, operator));
+}
+
+/**
+ * Did the binding→id mapping actually change between two configs, across BOTH
+ * `kv_namespaces` and `d1_databases`? Used to keep the pin step a true no-op (leaving
+ * the operator's config and its comments untouched, and the deploy's commit/push
+ * silently skipped) when ids are already set — existing or manual-setup operators.
+ * Returns true only when an id was added or changed for either binding type.
+ */
+export function bindingIdsChanged(before, after) {
+  const kvIds = (cfg) =>
     new Map((cfg.kv_namespaces ?? []).filter((n) => n && n.binding).map((n) => [n.binding, n.id ?? null]));
-  const b = ids(before);
-  const a = ids(after);
-  if (a.size !== b.size) return true;
-  for (const [binding, id] of a) if (b.get(binding) !== id) return true;
-  return false;
+  const d1Ids = (cfg) =>
+    new Map(
+      (cfg.d1_databases ?? []).filter((d) => d && d.binding).map((d) => [d.binding, d.database_id ?? null]),
+    );
+  const mapsDiffer = (b, a) => {
+    if (a.size !== b.size) return true;
+    for (const [binding, id] of a) if (b.get(binding) !== id) return true;
+    return false;
+  };
+  return mapsDiffer(kvIds(before), kvIds(after)) || mapsDiffer(d1Ids(before), d1Ids(after));
 }
 
 // --- CLI ---
@@ -129,12 +198,12 @@ if (isMain) {
     // `git diff --quiet` check true, so the commit/push is silently skipped for operators
     // whose ids are already set (so they need no `contents: write` permission).
     const operator = parseFile(b);
-    const patched = pinKvIds(parseFile(a), operator);
-    if (kvIdsChanged(operator, patched)) {
+    const patched = pinBindingIds(parseFile(a), operator);
+    if (bindingIdsChanged(operator, patched)) {
       writeJson(b, patched);
-      console.log(`pin: KV ids from ${a} -> ${b}`);
+      console.log(`pin: KV + D1 ids from ${a} -> ${b}`);
     } else {
-      console.log(`pin: no KV id changes — left ${b} untouched`);
+      console.log(`pin: no KV/D1 id changes — left ${b} untouched`);
     }
   } else {
     console.error("usage: merge-wrangler-config.mjs <merge|pin> <argA> <argB>");

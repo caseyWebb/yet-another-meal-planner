@@ -88,6 +88,20 @@ export interface Env {
    */
   OAUTH_KV: KVNamespace;
 
+  // --- D1 (domain data) ---
+  /**
+   * The system of record for domain/operational data and derived projections
+   * (recipe index, profile, session state, cooking log, notes, registries, …), per
+   * `cloudflare-storage-architecture`: the queryable, relational, admin-editable,
+   * strongly-consistent tier. KV above is now ephemeral infra only — no domain data.
+   *
+   * Tools NEVER touch `env.DB` directly; all access goes through `src/db.ts`, which
+   * owns prepared statements, the batch/transaction helper, and structured-error
+   * mapping. Id-less in `wrangler.jsonc`: auto-provisioned per operator on deploy and
+   * pinned back into their config. Domain data is migrated slice by slice.
+   */
+  DB: D1Database;
+
   // --- Injected by @cloudflare/workers-oauth-provider ---
   /** Provider helpers (`parseAuthRequest`, `lookupClient`, `completeAuthorization`, …). */
   OAUTH_PROVIDER: OAuthHelpers;

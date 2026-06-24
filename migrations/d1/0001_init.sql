@@ -1,0 +1,12 @@
+-- 0001_init — bootstrap the D1 schema pipeline (cloudflare-data-platform, slice 0).
+--
+-- This applies via Cloudflare-native migrations: `wrangler d1 migrations apply DB`
+-- (--local to seed the local SQLite dev db, --remote in the deploy), which tracks
+-- applied files in D1's own `d1_migrations` table (created automatically on first
+-- apply — distinct from the `.mjs` data-backfill runner's `migrations:applied` KV
+-- ledger). SCHEMA changes are .sql files here; DATA backfills are .mjs files under
+-- `migrations/`.
+--
+-- No domain tables yet — `schema_meta` exists only to prove provisioning → schema
+-- apply → the Worker binding end-to-end. Domain tables arrive slice by slice.
+CREATE TABLE IF NOT EXISTS schema_meta (key TEXT PRIMARY KEY, value TEXT);

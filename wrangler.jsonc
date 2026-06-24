@@ -50,6 +50,18 @@
 		{ "binding": "TENANT_KV" },
 		{ "binding": "OAUTH_KV" }
 	],
+	// D1 (domain data). `DB` is the system of record for domain/operational data and
+	// derived projections (recipe index, profile, session state, cooking log, …) —
+	// the queryable, relational, admin-editable, strongly-consistent tier; KV above is
+	// now ephemeral infra only (tokens, caches, directory). Migrated slice by slice;
+	// this binding moves no domain data yet. Id-less like the KV bindings: the deploy
+	// auto-provisions a per-operator database and pins its `database_id` back into the
+	// operator's data-repo config (the merge strips any id committed here). SQL schema
+	// migrations live under `migrations/d1/` (applied by `wrangler d1 migrations apply`),
+	// a separate directory from the `.mjs` data-backfill runner's `migrations/` scan.
+	"d1_databases": [
+		{ "binding": "DB", "database_name": "grocery-mcp", "migrations_dir": "migrations/d1" }
+	],
 	// Flyer warm (flyer-cache-warming). ONE trigger on a short cadence drives a
 	// cursor-based sweep (src/flyer-warm.ts): each tick builds the plan, scans the
 	// next ≤12-unit batch (kept under the free-tier 50-external-subrequest + ~10ms-CPU

@@ -8,6 +8,8 @@ export type ErrorCode =
   | "upstream_unavailable"
   | "malformed_data"
   | "unsupported"
+  // Storage code (D1 data-access layer, src/db.ts):
+  | "storage_error" // a D1 statement failed (constraint, malformed SQL, unreachable db); mapped from the raw D1 exception so no raw throw escapes
   // Write-path codes (introduced with the git write tools):
   | "validation_failed" // a staged change failed structural validation; nothing committed
   | "conflict" // the ref kept moving under us; commit abandoned after bounded retries
