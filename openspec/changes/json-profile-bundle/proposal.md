@@ -1,3 +1,16 @@
+## Status — REDIRECTED (do not implement as written)
+
+Superseded by **`cloudflare-storage-architecture`**. That reframe moves the profile data to **D1**, not a KV-JSON bundle — so the *storage* premise below (TOML-strings → JSON in KV) is throwaway and this change is **not** to be implemented against KV.
+
+What survives and carries forward to the D1 profile slice (roadmap slice 4):
+- `update_preferences` as a deep **merge-patch** over a **defined top-level schema + open `custom`** object (the brands tri-state maps just as cleanly onto an UPSERT/DELETE of a `brand_prefs` row).
+- Dropping the redundant `commit_changes.config_updates` block.
+- The staged validation (unknown top-level key → `custom`; types on the merged result).
+
+The merge-patch rationale, the preferences schema, and the spec deltas in `specs/` remain the design source for that slice. Everything below is preserved for that reason; read it as backend-agnostic interface design, not a KV implementation plan.
+
+---
+
 ## Why
 
 The `profile:<username>` KV bundle is a JSON envelope whose field *values* are raw TOML (and markdown) strings — a verbatim fossil of the `unified-user-profile-kv` lift-and-shift, which moved each tenant's GitHub `*.toml` files into KV without re-examining their inner format. On every read the Worker does a TOML decode *inside* the JSON decode (`parseToml(bundle.staples)`, `parseOverlay(bundle.overlay)`, …); on every write it re-serializes to TOML and re-attaches a documentation header comment that **no human will ever read**, because these files no longer live in GitHub.

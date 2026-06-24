@@ -1,6 +1,14 @@
-## Status
+## Status — ABSORBED into `cloudflare-storage-architecture`
 
-**Draft stub** — scope parked for after `json-profile-bundle` lands. Captured here so the thinking isn't lost; not yet fleshed into design/specs/tasks. The merge-patch / TOML→JSON work it builds on is `json-profile-bundle`.
+This stub's scope now lives in the **`cloudflare-storage-architecture`** umbrella, with one change of destination: **cooking_log goes to D1, not KV.** The retrospective/`last_cooked` simplification (`GROUP BY`, `MAX(date)`) is one of the strongest D1 arguments, so the relocation belongs in that roadmap:
+- cooking_log → D1 = roadmap **slice 2** (`d1-cooking-log`)
+- retire `commit_changes` + the `update_recipe`-vs-`rate_recipe` decision = roadmap **slice 3** (`retire-commit-changes`)
+
+The original KV-flavored sketch is kept below for continuity; treat it as superseded — the write-time-validation-via-recipe-index insight and the `commit_changes` analysis still hold verbatim, only the storage target changes from KV to D1.
+
+---
+
+**Original draft stub** — scope parked for after `json-profile-bundle` lands. Captured here so the thinking isn't lost; not yet fleshed into design/specs/tasks.
 
 ## Why
 
