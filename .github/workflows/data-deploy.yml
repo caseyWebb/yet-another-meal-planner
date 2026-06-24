@@ -174,16 +174,18 @@ jobs:
       # checkout (working dir) and the DATA_KV namespace id from the operator's
       # wrangler.jsonc (pinned back above); it records applied ids in the
       # `migrations:applied` ledger so each migration runs once. No-ops gracefully
-      # when the namespace isn't provisioned yet (brand-new operator).
-      - name: Run KV migrations
+      # when the binding isn't provisioned yet (brand-new operator). The runner now
+      # backfills both KV (the `migrations:applied` ledger itself) and D1 — it passes
+      # a D1 client into each migration's up({ kv, d1, … }).
+      - name: Run data backfill migrations (KV + D1)
         run: node _code/scripts/run-migrations.mjs --root .
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
 
-      # Publish the recipe index to DATA_KV immediately after deploy so the Worker
-      # can serve list_recipes without waiting for a recipe push. Reads the DATA_KV
-      # namespace id from the operator's wrangler.jsonc (pinned back above).
-      - name: Publish indexes to DATA_KV
+      # Project the recipe index into the D1 `recipes` table immediately after deploy
+      # so the Worker can serve list_recipes without waiting for a recipe push. Reads
+      # the D1 database id from the operator's wrangler.jsonc (pinned back above).
+      - name: Validate recipes + project the D1 index
         run: node _code/scripts/build-indexes.mjs --root .
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
