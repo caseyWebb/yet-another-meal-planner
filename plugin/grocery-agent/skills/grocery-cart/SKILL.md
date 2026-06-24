@@ -6,7 +6,7 @@ user-invocable: false
 
 ## The grocery list and the cart
 
-Capture buy-intent onto the **grocery list** continuously, as it comes up; **flush it once**, at order time. The flush has **two forms**, picked by my fulfillment mode (`preferences.toml [stores].primary`) — **don't assume Kroger**:
+Capture buy-intent onto the **grocery list** continuously, as it comes up; **flush it once**, at order time. The flush has **two forms**, picked by my fulfillment mode (`preferences.stores.primary`) — **don't assume Kroger**:
 
 - **Kroger online** (`primary: kroger`) — flush to the Kroger cart with `place_order`.
 - **Kroger in-store** — walk with API-driven aisle ordering.

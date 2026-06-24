@@ -35,10 +35,7 @@ The system is three pieces with one clean split: **the LLM does the fuzzy work; 
 │     notes/ · store_notes/                              │
 └────────────────────────────────────────────────────────┘
 ┌────────────────────────────────────────────────────────┐
-│  DATA_KV (Cloudflare KV, per-tenant operational state) │
-│   profile:<username>  → JSON bundle (preferences,      │
-│     taste, diet_principles, kitchen, staples, overlay, │
-│     ready_to_eat, stockup)                             │
+│  DATA_KV (Cloudflare KV, per-tenant session state)     │
 │   state:<username>:pantry                              │
 │   state:<username>:meal_plan                           │
 │   state:<username>:grocery_list                        │
@@ -48,6 +45,10 @@ The system is three pieces with one clean split: **the LLM does the fuzzy work; 
 │   slice by slice)                                      │
 │   recipes        (shared objective recipe index)       │
 │   cooking_log    (per-tenant realized cook history)    │
+│   profile        (per-tenant singleton: prefs scalars, │
+│     taste/diet markdown, stores/dietary/custom JSON)   │
+│   brand_prefs · kitchen_equipment · staples · overlay  │
+│   ready_to_eat · stockup  (per-tenant profile children)│
 └────────────────────────────────────────────────────────┘
 
 (The CODE repo — this one: Worker src/, scripts/, docs/, CI —
@@ -109,15 +110,15 @@ The sections below describe the current (pre-migration) layout; as slices land, 
 
 - **Shared corpus (data-repo root)** — objective, single-source, read by everyone: recipe **content** (`recipes/*.md`), `aliases.toml`, the location-tagged `skus/kroger.toml` cache, the curated `storage_guidance/` tree, the `stores/<slug>.toml` store registry (identity), and the discovery sources (`feeds.toml`, `discoveries_inbox.toml`, `discovery_sources.toml`). Discovery is shared and top-level: feeds and the newsletter inbox feed one group pool, judged against each caller's taste at read time. `_indexes/` is generated from the shared content.
 - **Per-tenant GitHub subtree (`users/<username>/`)** — each member's **attributed records** only: `notes/<slug>.toml` (attributed recipe notes), `store_notes/<slug>.toml` (attributed store notes). Addressed by prefixing repo-relative paths; one request can never reach another member's data. With the cooking log moved to D1 (`d1-cooking-log`), GitHub holds **no per-tenant volatile data** — only these attributed records and the shared corpus. (The pre-backfill `cooking_log.toml` files remain in git, inert, until a later cleanup removes them.)
-- **Per-tenant DATA_KV** — each member's **operational state**, keyed by `profile:<username>` (the profile bundle) and `state:<username>:pantry/meal_plan/grocery_list` (session state). Existing GitHub files are migrated into KV once, at deploy time, by the migration runner (`scripts/run-migrations.mjs` — see "Migrations" below); the Worker read path has **no** GitHub fallback (a KV miss returns empty).
-- **Per-tenant D1** — the relational tier. The `cooking_log` table is per-tenant realized cook history (`d1-cooking-log`); the `recipes` table is the shared objective recipe index. Tenant-scoped on every read; written via `log_cooked` (cooking events) and the build (recipe index).
+- **Per-tenant DATA_KV** — each member's remaining **session state**, keyed by `state:<username>:pantry/meal_plan/grocery_list`. (The profile bundle that used to live at `profile:<username>` moved to D1; these session keys move to D1 in a later slice.) The Worker read path has **no** GitHub fallback (a miss returns empty).
+- **Per-tenant D1** — the relational tier. The `cooking_log` table is per-tenant realized cook history (`d1-cooking-log`); the `recipes` table is the shared objective recipe index; the **profile** tables (`profile`, `brand_prefs`, `kitchen_equipment`, `staples`, `overlay`, `ready_to_eat`, `stockup`; `d1-profile`) hold each member's preferences/taste/diet/kitchen/staples/overlay/ready-to-eat/stockup. Tenant-scoped on every read; written via `log_cooked` (cooking events), the build (recipe index), and the profile write tools (`update_preferences` merge-patch, `update_taste`/`…`, `rate_recipe`, etc.).
 
 ### Three-category recipe model
 
 A recipe splits three ways so a shared corpus is safe to share:
 
 - **Content** — objective frontmatter + body, shared and single-source.
-- **Overlay** — `rating` + `status`, per-tenant in the `overlay` field of the KV `profile:<username>` bundle (slug-keyed TOML). One member's disposition never changes another's. `status` lifecycle: `active` (candidate set) · `draft` (surfaced, not yet dispositioned) · `rejected` (explicit no, kept for de-dup) · `archived`. Effective `status` defaults to `draft` when a member has no overlay entry.
+- **Overlay** — `rating` + `status`, per-tenant in the D1 `overlay(tenant, recipe, rating, status)` table. One member's disposition never changes another's. `status` lifecycle: `active` (candidate set) · `draft` (surfaced, not yet dispositioned) · `rejected` (explicit no, kept for de-dup) · `archived`. Effective `status` defaults to `draft` when a member has no overlay row. The group-ratings signal (`read_recipe_notes`) is a single indexed query — `SELECT tenant, rating, status FROM overlay WHERE recipe=?` scoped to the caller's group — replacing the former per-tenant bundle scan.
 - **Notes** — per-tenant, attributed, append-mostly (`users/<id>/notes/<slug>.toml`).
 
 `last_cooked` is **not stored** — it's derived per-tenant from that member's D1 `cooking_log` rows (`MAX(date)` per recipe). Read tools merge shared content + the caller's overlay + cooking-log `last_cooked` at read time; the shared D1 `recipes` table carries objective fields only.
@@ -131,7 +132,7 @@ Five intent kinds — don't conflate them:
 | Key / backing | Kind of intent |
 | --- | --- |
 | `state:<username>:pantry` (KV) | **observation** — what's physically in the kitchen |
-| `profile:<username>.stockup` (KV bundle field) | **conditional intent** — buy IF it drops below a threshold |
+| `stockup` (D1, tenant-scoped) | **conditional intent** — buy IF it drops below a threshold |
 | `state:<username>:grocery_list` (KV) | **committed buy intent** — buy on the next order (ingredient-level, SKU-free) |
 | `state:<username>:meal_plan` (KV) | **committed cook intent** — recipes agreed to cook next (transient) |
 | `cooking_log` (D1, tenant-scoped) | **realized history** — append-only log of meals actually cooked |
@@ -197,9 +198,9 @@ A GitHub Action regenerates derived data on every push to the data repo's `recip
 
 - **The D1 `cooking_log` table** — per-tenant realized cook history (`d1-cooking-log`), the last per-tenant volatile artifact to leave GitHub. Unlike the derived `recipes` index, this is **authored** data, so it shipped with the first one-time **data backfill** (`migrations/0002-cooking-log-d1.mjs` over the foundation's `.mjs`+`d1` runner: read each `users/<username>/cooking_log.toml` from the checkout → INSERT rows, delete-then-insert per tenant for idempotency). `last_cooked` and `retrospective` are now SQL aggregations (the latter a `cooking_log LEFT JOIN recipes` — the JOIN only possible once the recipe index moved to D1). New events are appended via `log_cooked`, which validates the entry and resolves a recipe slug against `recipes` **at write time** (the validation that was structural-only on `workerd` is now real). The vestigial `cooking_log.toml` files remain in git post-backfill (inert; a later cleanup removes them).
 
-Ready-to-eat is per-tenant and now lives in the `profile:<username>` KV bundle (no aggregate index, no GitHub file); the Worker reads each member's catalog from KV and validates it at write time.
+Ready-to-eat is per-tenant and now lives in the D1 `ready_to_eat` table (no aggregate index, no GitHub file); the Worker reads each member's catalog from D1.
 
-The same build runs **validation** over what GitHub still owns: every TOML parses, every recipe frontmatter is well-formed, `pairs_with` references resolve, status values are in the enum, and `stores/` and the discovery files are structurally checked. KV-backed per-tenant state (profile bundle + `state:<username>:*`) and the D1 `cooking_log` are **not** build-validated — they have no GitHub file to check; the Worker is their sole validator, at write time (`log_cooked` for the cooking log, with real recipe-slug resolution against `recipes`). Validation failures fail the Action (red CI) but don't block reads — the Worker keeps reading HEAD. The point is fast feedback, not gating. The Worker reimplements a *structural* subset of this validation in TypeScript for write-time checks (it can't run the Node validator on `workerd`).
+The same build runs **validation** over what GitHub still owns: every TOML parses, every recipe frontmatter is well-formed, `pairs_with` references resolve, status values are in the enum, and `stores/` and the discovery files are structurally checked. The D1 profile tables + the KV `state:<username>:*` session state + the D1 `cooking_log` are **not** build-validated — they have no GitHub file to check; the Worker is their sole validator, at write time (`update_preferences`’ merge-patch validation for preferences, `log_cooked` for the cooking log with real recipe-slug resolution against `recipes`). Validation failures fail the Action (red CI) but don't block reads — the Worker keeps reading HEAD. The point is fast feedback, not gating. The Worker reimplements a *structural* subset of this validation in TypeScript for write-time checks (it can't run the Node validator on `workerd`).
 
 A useful side effect: the indexes are a public-ish artifact any tool can consume — `scripts/build-site.mjs` builds a static GitHub Pages cookbook from them with no backend.
 
@@ -217,7 +218,7 @@ Two ledgers is deliberate: each tracks a distinct kind of change, and mixing the
 - **`migrations/NNNN-name.mjs`** — each migration exports an `id` and an `async up({ kv, d1, dataRoot, log })`. It reads from the data repo checkout (`dataRoot`) and writes `DATA_KV` (and, for D1 backfills, `d1`) through the injected REST clients. Migrations are **idempotent** (skip work already done) so a re-run is safe. `d1` is `null` when D1 isn't provisioned yet — a migration that needs it guards on that.
 - **`scripts/run-migrations.mjs`** — discovers `migrations/*.mjs` in filename order, reads the `migrations:applied` ledger key from `DATA_KV`, runs any id not in the ledger, and appends each id after it succeeds. It resolves both a `kv` client (`scripts/kv-rest.mjs`) and a `d1` client (`scripts/d1-rest.mjs`) from the operator's `wrangler.jsonc`. It **no-ops gracefully** when the `DATA_KV` namespace id can't be resolved (a brand-new operator before their first deploy — nothing to migrate yet); a missing D1 id just leaves `d1` null.
 - **Where it runs** — the `data-deploy` workflow invokes it (`node _code/scripts/run-migrations.mjs --root .`) after `wrangler deploy`, the id pin-back, and the D1 *schema* apply, and before publishing the recipe index. The runner and `build-indexes` publish to KV through `scripts/kv-rest.mjs`; D1 backfills go through `scripts/d1-rest.mjs`.
-- **The first migration** (`0001-unified-user-profile-kv`) moved per-tenant profile + session state from `users/<username>/` files into the `profile:<username>` bundle and `state:<username>:*` keys. Stale GitHub profile files are inert afterward (the read path never consults them) and can be pruned manually.
+- **The first migration** (`0001-unified-user-profile-kv`) moved per-tenant profile + session state from `users/<username>/` files into the `profile:<username>` bundle and `state:<username>:*` keys. The profile bundle was then backfilled into the D1 profile tables by `0003-profile-d1` (parse each bundle's TOML/markdown fields → rows; delete-then-insert per tenant; delete the bundle key) — so the `profile:<username>` key no longer exists post-migration. Stale GitHub profile files are inert (the read path never consults them) and can be pruned manually.
 
 Rollback is a redeploy of the prior Worker: the GitHub files are untouched, so the reverted (GitHub-reading) Worker keeps working; KV keys written by a migration are simply ignored by it.
 

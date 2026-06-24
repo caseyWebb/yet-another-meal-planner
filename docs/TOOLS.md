@@ -77,9 +77,9 @@ Set the caller's **personal disposition** for a recipe — `rating` (1–5) and/
 - `status` (`active`|`draft`|`rejected` | null, optional) — `null` clears it (falls back to default `draft`)
 
 **Returns:**
-- `{ slug, overlay }` — the caller's resulting overlay row; **no `commit_sha`** (the overlay is KV-backed, not a git commit)
+- `{ slug, overlay }` — the caller's resulting overlay row; **no `commit_sha`** (the overlay is D1-backed, not a git commit)
 
-**Notes:** Pass at least one of `rating`/`status` — an empty edit returns `validation_failed`. An unknown slug returns `not_found` and writes nothing. The overlay lives in the caller's KV profile bundle for now; the tool contract is stable when it moves to D1. `read_recipe`/`list_recipes` merge this overlay onto shared content at read time.
+**Notes:** Pass at least one of `rating`/`status` — an empty edit returns `validation_failed`. An unknown slug returns `not_found` and writes nothing. The overlay lives in the caller's D1 `overlay` table. `read_recipe`/`list_recipes` merge this overlay onto shared content at read time.
 
 ### `parse_recipe(url)`
 
@@ -217,7 +217,7 @@ Update the caller's kitchen equipment inventory (agent-editable on user directio
 **Returns:**
 - `{ applied: [...], conflicts: [...] }` — KV-backed, no `commit_sha`
 
-**Notes:** An `add` of an **off-vocabulary** slug is a **conflict**, never a silent write — `owned` is the gate's left operand and is kept vocabulary-clean (vocab: `pressure-cooker`, `sous-vide-circulator`, `blender`, `ice-cream-maker`). An `add` of an already-owned slug is idempotent (no-op, no conflict); a `remove` of an absent slug is a conflict. `set_note` fields (oven count, pan sizes) inform the `cook` flow only and **never** gate a recipe. Kitchen state is KV-backed (profile bundle `kitchen` field).
+**Notes:** An `add` of an **off-vocabulary** slug is a **conflict**, never a silent write — `owned` is the gate's left operand and is kept vocabulary-clean (vocab: `pressure-cooker`, `sous-vide-circulator`, `blender`, `ice-cream-maker`). An `add` of an already-owned slug is idempotent (no-op, no conflict); a `remove` of an absent slug is a conflict. `set_note` fields (oven count, pan sizes) inform the `cook` flow only and **never** gate a recipe. Kitchen state is D1-backed (the `kitchen_equipment` rows + `profile.kitchen_notes`).
 
 ### `mark_pantry_verified(items)`
 
@@ -238,7 +238,7 @@ Add items to or remove items from the caller's staples list. Writes `users/<user
 - `remove` (array of strings, optional): item names to remove. Silently no-ops for absent names.
 
 **Returns:**
-- `{ added, removed }` — `added`/`removed` are counts; KV-backed (profile bundle `staples` field), no `commit_sha`.
+- `{ added, removed }` — `added`/`removed` are counts; D1-backed (the `staples` table), no `commit_sha`.
 
 **Notes:** Seeded at onboarding (see the configure-grocery-profile flow); usable any time the user names items they want to track. `perishable` is a flag about that item's typical shelf life — separate from its current pantry `category`. An item can be in both the staples list and the stockup watchlist; they are independent.
 
@@ -251,7 +251,7 @@ Add items to the caller's bulk-buy watchlist. Writes `users/<username>/stockup.t
 - `freezer_capacity_estimate` (string, optional): `tight | moderate | spacious` — the top-level capacity hint.
 
 **Returns:**
-- `{ added }` — `added` is the count of new items; KV-backed (profile bundle `stockup` field), no `commit_sha`.
+- `{ added }` — `added` is the count of new items; D1-backed (the `stockup` table + `profile.freezer_capacity_estimate`), no `commit_sha`.
 
 **Notes:** The top-level `freezer_capacity_estimate` is serialized before the `[[items]]` tables (TOML ordering). Seeded at onboarding (see the configure-grocery-profile flow); also usable any time the user names a bulk-buy item.
 
@@ -575,7 +575,7 @@ Disposition or otherwise update a ready-to-eat item in the caller's catalog, add
 
 ### `read_user_profile()`
 
-Read the full per-tenant profile bundle from DATA_KV in **one call**, including initialization status. Returns all profile fields; absent fields are null/empty — never throws `not_found`.
+Read the caller's full per-tenant profile, assembled from the D1 profile tables in **one call** (a batched set of per-table reads), including initialization status. Returns all profile fields; absent fields are null/empty — never throws `not_found`.
 
 **Params:** none.
 
@@ -597,15 +597,16 @@ Read the full per-tenant profile bundle from DATA_KV in **one call**, including 
 
 **Notes:** The single call for session start, meal-plan pre-pass, and configure-grocery-profile. On `initialized: false`, run the `configure-grocery-profile` flow first; use `missing` to skip areas already done. KV-backed (`profile:<username>`) — a missing key returns all fields null/empty, no GitHub fallback (existing members' files are migrated into KV once, at deploy time, by the migration runner). Kitchen `owned` is the array of `EQUIPMENT_VOCAB` slugs that **gate** recipe makeability; an **absent/empty** `owned` makes the gate a no-op (everything shows).
 
-### `update_preferences(content)` / `update_taste(content)` / `update_diet_principles(content)` / `update_aliases(content)`
+### `update_preferences(patch)` / `update_taste(content)` / `update_diet_principles(content)` / `update_aliases(content)`
 
-Write user-curated config. **Content-faithful:** each writes exactly the full file content supplied — no inferred merge. `update_preferences`, `update_taste`, `update_diet_principles` write to the KV profile bundle (no `commit_sha`). `update_aliases` commits `aliases.toml` to the shared GitHub corpus (`{ file, commit_sha }`). **These should only be called when the user explicitly directs an edit.**
+Write user-curated config. `update_taste`/`update_diet_principles` are content-faithful (write the supplied full markdown to the D1 `profile` row, no `commit_sha`). `update_aliases` commits `aliases.toml` to the shared GitHub corpus (`{ file, commit_sha }`). **`update_preferences` is a deep merge-patch**, not a whole-object write. **These should only be called when the user explicitly directs an edit.**
 
 **Params:**
-- `content` (string, required) — the complete new file text
+- `update_preferences`: `patch` (object, required) — a **JSON Merge Patch (RFC 7396)** over the caller's preferences: a present key sets/overwrites, `null` deletes, nested objects merge to **any depth**, arrays replace wholesale. Only the keys you touch change — a partial patch never clobbers siblings, so you do **not** re-send the whole object. Defined top-level keys: `default_cooking_nights` (number), `lunch_strategy` (`leftovers`|`buy`|`mixed`), `ready_to_eat_default_action` (`opt-in`|`auto-add`), `stores` (`{primary, preferred_location, location_zip}`), `brands` (map of term → ranked brand list; `[]` = don't-care/cheapest, `null` = clear back to ambiguous), `dietary` (`{avoid[], limit[]}`). Anything else nests under `custom`; an unknown top-level key returns `validation_failed` (nest it under `custom`). A type-invalid merged result returns `malformed_data` and stores nothing. Applied atomically to the D1 `profile` row + `brand_prefs` rows.
+- `update_taste` / `update_diet_principles` / `update_aliases`: `content` (string, required) — the complete new file/field text
 
 **Returns:**
-- `update_preferences` / `update_taste` / `update_diet_principles`: `{ updated: "<field>" }` — KV-backed, no `commit_sha`
+- `update_preferences` / `update_taste` / `update_diet_principles`: `{ updated: "<field>" }` — D1-backed, no `commit_sha`
 - `update_aliases`: `{ file, commit_sha }`
 
 ---
