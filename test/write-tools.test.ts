@@ -1,7 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
   buildRecipeUpdate,
-  splitRecipeUpdate,
   readyToEatManager,
   registerWriteTools,
 } from "../src/write-tools.js";
@@ -9,6 +8,7 @@ import { applyPantryOperations, markVerified, type PantryItem } from "../src/pan
 import { serializeMarkdown } from "../src/serialize.js";
 import { parseMarkdown, parseToml } from "../src/parse.js";
 import { GitHubError, type GitHubClient } from "../src/github.js";
+import type { Env } from "../src/env.js";
 
 const RECIPE = "---\ntitle: Salmon\nstatus: active\nlast_cooked: null\nrating: null\n---\n\n## Ingredients\n- salmon\n";
 
@@ -56,6 +56,40 @@ function fakeKv(initial: Record<string, string> = {}): { kv: KVNamespace; store:
     },
   } as unknown as KVNamespace;
   return { kv, store };
+}
+
+// A fake D1 answering the recipe-resolution SELECT used by rate_recipe. `slugs`
+// is the set of recipes that exist; `SELECT 1 … WHERE slug=?1` returns a row iff
+// the bound slug is in it. No writes go through D1 here (the overlay is KV-backed).
+function fakeD1(slugs: string[]): Env {
+  const known = new Set(slugs);
+  const makeStmt = () => {
+    let binds: unknown[] = [];
+    const stmt = {
+      bind(...v: unknown[]) {
+        binds = v;
+        return stmt;
+      },
+      async first<T>() {
+        const slug = binds[0];
+        return (typeof slug === "string" && known.has(slug) ? { ok: 1 } : null) as T | null;
+      },
+      async all<T>() {
+        return { results: [] as T[], success: true as const, meta: { changes: 0 } };
+      },
+      async run() {
+        return { success: true as const, meta: { changes: 0 } };
+      },
+    };
+    return stmt;
+  };
+  const DB = {
+    prepare: () => makeStmt() as unknown as D1PreparedStatement,
+    async batch() {
+      return [];
+    },
+  } as unknown as D1Database;
+  return { DB } as unknown as Env;
 }
 
 describe("buildRecipeUpdate", () => {
@@ -130,34 +164,6 @@ describe("readyToEatManager", () => {
   it("serialize() is null when nothing was touched", () => {
     const mgr = readyToEatManager("");
     expect(mgr.serialize()).toBeNull();
-  });
-});
-
-describe("splitRecipeUpdate (content vs overlay routing)", () => {
-  it("routes rating/status to the overlay and everything else to content", () => {
-    const r = splitRecipeUpdate({ title: "X", protein: "beef", rating: 5, status: "active" });
-    expect(r.content).toEqual({ title: "X", protein: "beef" });
-    expect(r.overlayEdit).toEqual({ rating: 5, status: "active" });
-    expect(r.hadLastCooked).toBe(false);
-  });
-
-  it("flags last_cooked and never routes it to content or overlay", () => {
-    const r = splitRecipeUpdate({ title: "X", last_cooked: "2026-06-09" });
-    expect(r.hadLastCooked).toBe(true);
-    expect(r.content).toEqual({ title: "X" });
-    expect(r.overlayEdit).toEqual({});
-  });
-
-  it("routes pairs_with and standalone to shared content, not the overlay", () => {
-    const r = splitRecipeUpdate({ pairs_with: ["steamed-rice"], standalone: true });
-    expect(r.content).toEqual({ pairs_with: ["steamed-rice"], standalone: true });
-    expect(r.overlayEdit).toEqual({});
-  });
-
-  it("routes perishable_ingredients to shared content, not the overlay", () => {
-    const r = splitRecipeUpdate({ perishable_ingredients: ["cilantro"] });
-    expect(r.content).toEqual({ perishable_ingredients: ["cilantro"] });
-    expect(r.overlayEdit).toEqual({});
   });
 });
 
@@ -276,7 +282,7 @@ describe("markVerified", () => {
 // Invoke the real registered write-tool handlers through a minimal fake server.
 // Pantry is KV-backed now, so the integration tests read back from the fake KV
 // (state:<username>:pantry) rather than capturing GitHub commit trees.
-function collectTools(gh: GitHubClient, dataKv: KVNamespace, username: string) {
+function collectTools(gh: GitHubClient, dataKv: KVNamespace, username: string, env: Env = fakeD1([])) {
   const handlers = new Map<string, (input: unknown) => Promise<{ content: { text: string }[] }>>();
   const server = {
     registerTool: (name: string, _cfg: unknown, handler: (input: unknown) => Promise<{ content: { text: string }[] }>) => {
@@ -286,6 +292,7 @@ function collectTools(gh: GitHubClient, dataKv: KVNamespace, username: string) {
   registerWriteTools(
     server as unknown as Parameters<typeof registerWriteTools>[0],
     gh,
+    env,
     dataKv,
     username,
   );
@@ -343,5 +350,97 @@ describe("update_pantry / mark_pantry_verified (KV-backed)", () => {
     expect(out.verified).toHaveLength(0);
     expect(out.conflicts).toContainEqual({ op: "verify", name: "butter", reason: "no pantry item with that name" });
     expect(store.has("state:everett:pantry")).toBe(false); // no write
+  });
+});
+
+describe("rate_recipe (subjective overlay write)", () => {
+  it("writes only the caller's overlay for an existing recipe, no commit_sha", async () => {
+    const { kv, store } = fakeKv();
+    const handlers = collectTools(ghWith({}), kv, "everett", fakeD1(["miso-salmon"]));
+    const res = await handlers.get("rate_recipe")!({ slug: "miso-salmon", rating: 5 });
+    const out = JSON.parse(res.content[0].text) as { slug: string; overlay: Record<string, unknown>; commit_sha?: string };
+    expect(out.slug).toBe("miso-salmon");
+    expect(out.overlay).toEqual({ rating: 5 });
+    expect(out.commit_sha).toBeUndefined(); // KV-backed overlay, no git commit
+    // The KV overlay bundle (profile:<username>) carries the new row.
+    const bundle = JSON.parse(store.get("profile:everett")!) as { overlay: string };
+    const overlay = parseToml(bundle.overlay) as { overlay: Record<string, unknown> };
+    expect(overlay.overlay["miso-salmon"]).toMatchObject({ rating: 5 });
+  });
+
+  it("sets status and merges with an existing rating across calls", async () => {
+    const { kv, store } = fakeKv();
+    const handlers = collectTools(ghWith({}), kv, "everett", fakeD1(["miso-salmon"]));
+    await handlers.get("rate_recipe")!({ slug: "miso-salmon", rating: 4 });
+    const res = await handlers.get("rate_recipe")!({ slug: "miso-salmon", status: "active" });
+    const out = JSON.parse(res.content[0].text) as { overlay: Record<string, unknown> };
+    expect(out.overlay).toMatchObject({ rating: 4, status: "active" });
+    const bundle = JSON.parse(store.get("profile:everett")!) as { overlay: string };
+    const overlay = parseToml(bundle.overlay) as { overlay: Record<string, unknown> };
+    expect(overlay.overlay["miso-salmon"]).toMatchObject({ rating: 4, status: "active" });
+  });
+
+  it("rejects a slug not in the recipe index (not_found), writing nothing", async () => {
+    const { kv, store } = fakeKv();
+    const handlers = collectTools(ghWith({}), kv, "everett", fakeD1([])); // no recipes
+    const res = await handlers.get("rate_recipe")!({ slug: "ghost", status: "active" });
+    const out = JSON.parse(res.content[0].text) as { error: string };
+    expect(out.error).toBe("not_found");
+    expect(store.has("profile:everett")).toBe(false);
+  });
+
+  it("rejects a malformed slug (not_found) before touching D1", async () => {
+    const { kv } = fakeKv();
+    const handlers = collectTools(ghWith({}), kv, "everett", fakeD1(["miso-salmon"]));
+    const res = await handlers.get("rate_recipe")!({ slug: "Not A Slug", rating: 3 });
+    expect((JSON.parse(res.content[0].text) as { error: string }).error).toBe("not_found");
+  });
+
+  it("rejects an empty edit (neither rating nor status) with validation_failed", async () => {
+    const { kv, store } = fakeKv();
+    const handlers = collectTools(ghWith({}), kv, "everett", fakeD1(["miso-salmon"]));
+    const res = await handlers.get("rate_recipe")!({ slug: "miso-salmon" });
+    const out = JSON.parse(res.content[0].text) as { error: string };
+    expect(out.error).toBe("validation_failed");
+    expect(store.has("profile:everett")).toBe(false);
+  });
+});
+
+describe("update_recipe (objective-only)", () => {
+  const RECIPE_MD = "---\ntitle: Salmon\nstatus: active\n---\n\n## Ingredients\n- salmon\n";
+
+  it("rejects a status edit, directing the caller to rate_recipe, writing nothing", async () => {
+    const { kv } = fakeKv();
+    const handlers = collectTools(ghWith({ "recipes/salmon.md": RECIPE_MD }), kv, "everett", fakeD1(["salmon"]));
+    const res = await handlers.get("update_recipe")!({ slug: "salmon", updates: { status: "active" } });
+    const out = JSON.parse(res.content[0].text) as { error: string; message?: string };
+    expect(out.error).toBe("validation_failed");
+    expect(JSON.stringify(out)).toMatch(/rate_recipe/);
+  });
+
+  it("rejects a rating edit toward rate_recipe", async () => {
+    const { kv } = fakeKv();
+    const handlers = collectTools(ghWith({ "recipes/salmon.md": RECIPE_MD }), kv, "everett", fakeD1(["salmon"]));
+    const res = await handlers.get("update_recipe")!({ slug: "salmon", updates: { rating: 5 } });
+    expect((JSON.parse(res.content[0].text) as { error: string }).error).toBe("validation_failed");
+  });
+
+  it("still rejects last_cooked toward log_cooked", async () => {
+    const { kv } = fakeKv();
+    const handlers = collectTools(ghWith({ "recipes/salmon.md": RECIPE_MD }), kv, "everett", fakeD1(["salmon"]));
+    const res = await handlers.get("update_recipe")!({ slug: "salmon", updates: { last_cooked: "2026-06-09" } });
+    const out = JSON.parse(res.content[0].text) as { error: string };
+    expect(out.error).toBe("validation_failed");
+    expect(JSON.stringify(out)).toMatch(/log_cooked/);
+  });
+
+  it("commits an objective frontmatter edit and returns updated_fields", async () => {
+    const { kv } = fakeKv();
+    const handlers = collectTools(ghWith({ "recipes/salmon.md": RECIPE_MD }), kv, "everett", fakeD1(["salmon"]));
+    const res = await handlers.get("update_recipe")!({ slug: "salmon", updates: { time_total: 30 } });
+    const out = JSON.parse(res.content[0].text) as { slug: string; updated_fields: string[]; commit_sha: string };
+    expect(out.slug).toBe("salmon");
+    expect(out.updated_fields).toEqual(["time_total"]);
+    expect(out.commit_sha).toBe("x"); // ghWith fake returns "x" for createCommit
   });
 });

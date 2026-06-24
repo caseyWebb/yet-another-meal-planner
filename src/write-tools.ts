@@ -1,12 +1,14 @@
 // Repo-data write tools (data-write-tools capability). Each tool reads the
 // current file(s), applies a pure transform, and persists via the atomic commit
-// engine (commit.ts). The standalone tools commit one logical change; the
-// batching tool `commit_changes` reuses the same builders to land a whole
-// session as ONE commit. No tool here writes a Kroger cart or calls an external
-// service — that is Change 06b.
+// engine (commit.ts) for shared GitHub content, or DATA_KV for per-tenant state.
+// Objective recipe content is shared (GitHub); a recipe's subjective disposition
+// (rating/status) is per-tenant and routes to the caller's KV overlay via
+// `rate_recipe`. No tool here writes a Kroger cart or calls an external service.
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import type { Env } from "./env.js";
+import { db } from "./db.js";
 import type { GitHubClient, TreeFile } from "./github.js";
 import { readFile, loadAliases } from "./gh-read.js";
 import { normalizePerishables } from "./matching.js";
@@ -48,28 +50,12 @@ function itemsOf(parsed: Record<string, unknown>): Record<string, unknown>[] {
   return Array.isArray(parsed.items) ? (parsed.items as Record<string, unknown>[]) : [];
 }
 
-/** The subjective recipe fields that route to the per-tenant overlay, not content. */
-const SUBJECTIVE_KEYS = new Set(["rating", "status"]);
-
 /**
- * Partition a recipe update into the per-tenant overlay edit (rating/status) and
- * the objective content edit (everything else). `last_cooked` is flagged: it is
- * derived from the cooking log and SHALL NOT be written to content or overlay.
+ * The subjective recipe fields. They are the caller's per-tenant disposition and
+ * route through `rate_recipe` to the KV overlay — `update_recipe` (objective-only)
+ * rejects them rather than silently writing the overlay.
  */
-export function splitRecipeUpdate(updates: Record<string, unknown>): {
-  overlayEdit: OverlayRow;
-  content: Record<string, unknown>;
-  hadLastCooked: boolean;
-} {
-  const overlayEdit: OverlayRow = {};
-  const content: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(updates)) {
-    if (k === "last_cooked") continue;
-    if (SUBJECTIVE_KEYS.has(k)) overlayEdit[k as keyof OverlayRow] = v;
-    else content[k] = v;
-  }
-  return { overlayEdit, content, hadLastCooked: "last_cooked" in updates };
-}
+const SUBJECTIVE_KEYS = ["rating", "status"] as const;
 
 // --- file-level builders (return a TreeFile for the atomic commit) -----------
 
@@ -167,13 +153,15 @@ const SHARED_CURATED_FILES: Record<string, string> = {
 
 /**
  * `gh` is the root data-repo client (shared recipe + notes writes — the only
- * GitHub-backed writes left here). `dataKv` + `username` back the KV profile bundle
- * (preferences/taste/diet/kitchen/staples/overlay/ready_to_eat/stockup) and
+ * GitHub-backed writes left here). `env` is D1 (the `recipes` index, queried by
+ * `rate_recipe` to validate a slug). `dataKv` + `username` back the KV profile
+ * bundle (preferences/taste/diet/kitchen/staples/overlay/ready_to_eat/stockup) and
  * session-state keys (pantry/meal_plan/grocery_list).
  */
 export function registerWriteTools(
   server: McpServer,
   gh: GitHubClient,
+  env: Env,
   dataKv: KVNamespace,
   username: string,
 ): void {
@@ -181,34 +169,70 @@ export function registerWriteTools(
     "update_recipe",
     {
       description:
-        "Edit a recipe. Objective frontmatter and body edits change the SHARED recipe content; rating and status are the caller's PERSONAL disposition and are written to their overlay, never the shared recipe. Objective frontmatter validates against the controlled vocabularies: `protein`/`cuisine` must be coarse buckets (shrimp→shellfish, salmon→fish; omit `protein` when there's no protein focus — never 'none') and `requires_equipment` slugs must be in-vocab; an off-vocabulary value is rejected (validation_failed). last_cooked cannot be set here — it is derived from the cooking log (record a cooked meal via log_cooked). For batching a whole session, use commit_changes.",
+        "Edit a recipe's OBJECTIVE shared content (frontmatter/body) — the same recipe everyone in the group sees. rating and status are NOT settable here: they are the caller's personal disposition — use rate_recipe. last_cooked is NOT settable here either — it is derived from the cooking log (record a cooked meal via log_cooked). Objective frontmatter validates against the controlled vocabularies: `protein`/`cuisine` must be coarse buckets (shrimp→shellfish, salmon→fish; omit `protein` when there's no protein focus — never 'none') and `requires_equipment` slugs must be in-vocab; an off-vocabulary value is rejected (validation_failed).",
       inputSchema: { slug: z.string(), updates: z.record(z.string(), z.unknown()) },
     },
     ({ slug, updates }) =>
       runTool(async () => {
         if (!SLUG_RE.test(slug)) throw new ToolError("not_found", `Unknown recipe slug: ${slug}`, { slug });
-        const { overlayEdit, content, hadLastCooked } = splitRecipeUpdate(updates);
-        if (hadLastCooked) {
+        const subjective = SUBJECTIVE_KEYS.filter((k) => k in updates);
+        if (subjective.length > 0) {
           throw new ToolError(
             "validation_failed",
-            "last_cooked is derived from the cooking log; append a cooking_log entry instead of setting it directly",
+            `${subjective.join("/")} ${subjective.length > 1 ? "are" : "is"} the caller's personal disposition, not shared recipe content — use rate_recipe to set rating/status`,
+            { fields: subjective },
           );
         }
-        const updated_fields = Object.keys(updates).filter((k) => k !== "last_cooked");
+        if ("last_cooked" in updates) {
+          throw new ToolError(
+            "validation_failed",
+            "last_cooked is derived from the cooking log; record a cooked meal via log_cooked instead of setting it directly",
+          );
+        }
+        const updated_fields = Object.keys(updates);
         if (updated_fields.length === 0) return { slug, updated_fields: [] };
 
-        let commit_sha: string | null = null;
-        if (Object.keys(content).length > 0) {
-          const file = await buildRecipeUpdate(gh, slug, content);
-          ({ commit_sha } = await commitFiles(gh, [file], `update recipe ${slug}`));
-        }
-        if (Object.keys(overlayEdit).length > 0) {
-          const bundle = await getProfileBundle(dataKv, username);
-          const current: Overlay = bundle.overlay ? parseOverlay(bundle.overlay) : {};
-          const next = applyOverlayEdit(current, slug, overlayEdit);
-          await updateProfileField(dataKv, username, "overlay", serializeOverlay(next));
-        }
+        const file = await buildRecipeUpdate(gh, slug, updates);
+        const { commit_sha } = await commitFiles(gh, [file], `update recipe ${slug}`);
         return { slug, updated_fields, commit_sha };
+      }),
+  );
+
+  server.registerTool(
+    "rate_recipe",
+    {
+      description:
+        "Set the caller's PERSONAL disposition for a recipe — `rating` (1–5) and/or effective `status` (active|draft|rejected). This writes only the caller's overlay; it never changes the shared recipe content, so one member's rating/status never affects another's. The slug must resolve against the recipe index (unknown slug → not_found). Pass at least one of rating/status. Returns { slug, overlay } with no commit_sha (overlay is KV-backed, not a git commit).",
+      inputSchema: {
+        slug: z.string(),
+        rating: z.number().nullable().optional(),
+        status: z.enum(["active", "draft", "rejected"]).nullable().optional(),
+      },
+    },
+    ({ slug, rating, status }) =>
+      runTool(async () => {
+        if (!SLUG_RE.test(slug)) throw new ToolError("not_found", `Unknown recipe slug: ${slug}`, { slug });
+        if (rating === undefined && status === undefined) {
+          throw new ToolError(
+            "validation_failed",
+            "rate_recipe needs at least one of rating or status to set",
+          );
+        }
+        const row = await db(env).first<{ ok: number }>(
+          "SELECT 1 AS ok FROM recipes WHERE slug = ?1 LIMIT 1",
+          slug,
+        );
+        if (!row) throw new ToolError("not_found", `Unknown recipe slug: ${slug}`, { slug });
+
+        const edit: OverlayRow = {};
+        if (rating !== undefined) edit.rating = rating;
+        if (status !== undefined) edit.status = status;
+
+        const bundle = await getProfileBundle(dataKv, username);
+        const current: Overlay = bundle.overlay ? parseOverlay(bundle.overlay) : {};
+        const next = applyOverlayEdit(current, slug, edit);
+        await updateProfileField(dataKv, username, "overlay", serializeOverlay(next));
+        return { slug, overlay: next[slug] ?? {} };
       }),
   );
 
@@ -434,109 +458,4 @@ export function registerWriteTools(
     );
   }
 
-  server.registerTool(
-    "commit_changes",
-    {
-      description:
-        "Batch GitHub-backed writes as ONE commit, plus KV-backed writes in the same call. GitHub-backed: recipe_updates (objective frontmatter/body). KV-backed (no commit_sha per-field): recipe_updates rating/status → overlay bundle, ready_to_eat_drafts/updates → ready_to_eat bundle, config_updates (preferences/taste/diet_principles) → profile bundle, config_updates aliases → shared GitHub file. This is the DEFAULT for multi-write turns — batch rather than calling granular tools repeatedly. recipe_updates split automatically: objective frontmatter/body → shared GitHub recipe; rating/status → KV overlay. Cooking events (including ready-to-eat consumption) go through log_cooked, NOT here. Pantry, meal plan, and grocery list writes go through their own KV-backed tools (update_pantry, update_meal_plan, add_to_grocery_list/update_grocery_list/remove_from_grocery_list).",
-      inputSchema: {
-        recipe_updates: z
-          .array(z.object({ slug: z.string(), updates: z.record(z.string(), z.unknown()) }))
-          .optional(),
-        ready_to_eat_drafts: z
-          .array(
-            z.object({
-              meal: z.enum(MEALS),
-              name: z.string(),
-              status: z.enum(["draft", "active"]).optional(),
-              category: z.string().optional(),
-              source: z.string().optional(),
-              brand: z.string().optional(),
-              notes: z.string().optional(),
-            }),
-          )
-          .optional(),
-        ready_to_eat_updates: z
-          .array(z.object({ slug: z.string(), updates: z.record(z.string(), z.unknown()) }))
-          .optional(),
-        config_updates: z
-          .array(z.object({ file: z.enum(["preferences", "taste", "diet_principles", "aliases"]), content: z.string() }))
-          .optional(),
-        commit_message: z.string(),
-      },
-    },
-    (payload) =>
-      runTool(async () => {
-        const files: TreeFile[] = [];
-        const summary: Record<string, unknown> = {};
-
-        // Recipe updates: objective content → shared GitHub recipe; rating/status →
-        // KV overlay bundle. Subjective edits never touch shared GitHub content.
-        const overlayEdits = new Map<string, OverlayRow>();
-        const contentSlugs: string[] = [];
-        for (const r of payload.recipe_updates ?? []) {
-          const { overlayEdit, content, hadLastCooked } = splitRecipeUpdate(r.updates);
-          if (hadLastCooked) {
-            throw new ToolError(
-              "validation_failed",
-              "last_cooked is derived from the cooking log; record a cooked meal via log_cooked instead of setting it on a recipe",
-            );
-          }
-          if (Object.keys(content).length > 0) {
-            files.push(await buildRecipeUpdate(gh, r.slug, content));
-            contentSlugs.push(r.slug);
-          }
-          if (Object.keys(overlayEdit).length > 0) {
-            overlayEdits.set(r.slug, { ...(overlayEdits.get(r.slug) ?? {}), ...overlayEdit });
-          }
-        }
-        if (overlayEdits.size > 0) {
-          const bundle = await getProfileBundle(dataKv, username);
-          let overlay: Overlay = bundle.overlay ? parseOverlay(bundle.overlay) : {};
-          for (const [slug, edit] of overlayEdits) overlay = applyOverlayEdit(overlay, slug, edit);
-          await updateProfileField(dataKv, username, "overlay", serializeOverlay(overlay));
-        }
-        if (contentSlugs.length > 0 || overlayEdits.size > 0) {
-          summary.recipes = { content: contentSlugs, overlay: [...overlayEdits.keys()] };
-        }
-
-        // ready_to_eat drafts/updates → KV profile bundle.
-        if ((payload.ready_to_eat_drafts?.length ?? 0) > 0 || (payload.ready_to_eat_updates?.length ?? 0) > 0) {
-          const bundle = await getProfileBundle(dataKv, username);
-          const mgr = readyToEatManager(bundle.ready_to_eat ?? null);
-          const draftSlugs: string[] = [];
-          for (const d of payload.ready_to_eat_drafts ?? []) draftSlugs.push(mgr.addDraft(d, d.status ?? "draft"));
-          for (const u of payload.ready_to_eat_updates ?? []) mgr.update(u.slug, u.updates);
-          const serialized = mgr.serialize();
-          if (serialized !== null) {
-            await updateProfileField(dataKv, username, "ready_to_eat", serialized);
-          }
-          summary.ready_to_eat = {
-            drafts: draftSlugs,
-            updated: (payload.ready_to_eat_updates ?? []).map((u) => u.slug),
-          };
-        }
-
-        // config_updates: profile fields → KV bundle; aliases → shared GitHub file.
-        for (const c of payload.config_updates ?? []) {
-          const kvField = KV_PROFILE_FIELDS[c.file];
-          if (kvField) {
-            await updateProfileField(dataKv, username, kvField, c.content);
-          } else {
-            const path = SHARED_CURATED_FILES[c.file];
-            if (path) files.push({ path, content: c.content });
-          }
-        }
-        if ((payload.config_updates?.length ?? 0) > 0) {
-          summary.config = payload.config_updates!.map((c) => c.file);
-        }
-
-        // Only commit to GitHub when there are actual file changes.
-        let commit_sha: string | null = null;
-        if (files.length > 0) {
-          ({ commit_sha } = await commitFiles(gh, files, payload.commit_message));
-        }
-        return { commit_sha, summary };
-      }),
-  );
 }

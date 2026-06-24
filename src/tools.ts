@@ -572,10 +572,10 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
       runTool(() => resolveIngredient(ingredient, context ?? {}, bypass_cache ?? false)),
   );
 
-  // Repo-data write tools route by category internally (content → shared root,
-  // personal/overlay → KV profile bundle), so they take the ROOT client + DATA_KV +
-  // tenant id for profile writes.
-  registerWriteTools(server, sharedGh, env.DATA_KV, tenant.id);
+  // Repo-data write tools route by category internally (objective recipe content →
+  // shared root, personal/overlay → KV profile bundle), so they take the ROOT client
+  // + D1 (env, for rate_recipe's slug check) + DATA_KV + tenant id for profile writes.
+  registerWriteTools(server, sharedGh, env, env.DATA_KV, tenant.id);
   registerGroceryListTools(server, env.DATA_KV, tenant.id);
 
   // Cooking history + meal plan: read_meal_plan (resume), update_meal_plan, and
