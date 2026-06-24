@@ -88,7 +88,7 @@ Re-rank retrieved candidates by **max cosine similarity to any favorited recipe*
 - **Filter-bubble tightening** (import-match and retrieve-match both pull to the same attractor) → the "bit outside your usual" import allowance + the never-cooked boost; rely on curated-feed breadth and Claude's match latitude being broader than a cosine threshold.
 - **Embedding-model gaps on niche food terms** (`bge-base-en` may not place "gochujang" as Korean/spicy) → the AI description compensates by spelling out the latent axes explicitly.
 - **Brute-force B runway** (loading embeddings through the Worker grows with corpus) → facet-prefilter before cosine, optional int8 quantization, and the written-down Vectorize promotion trigger; the backend-agnostic contract makes the swap a tool-internal change.
-- **In-session import adds latency/complexity to planning and does GitHub writes** (recipes stay in GitHub) → conditional on matches only; batch imports into the session's atomic commit rather than one commit per import. Note `create_recipe` still solo-commits today (`recipe-discovery`).
+- **In-session import adds latency/complexity to planning and does GitHub writes** (recipes stay in GitHub) → conditional on matches only; each import solo-commits like `create_recipe` today (no batching — accepted, see Resolved Questions).
 - **BREAKING rating→favorite migration** → a standalone D1 migration adds `overlay.favorite`, backfills `rating >= 4 ⇒ favorite = 1`, and drops `rating` once the group-signal and any rating-weighting consumers switch to favorite-count; retain `rating` through the cutover for rollback.
 
 ## Migration Plan
@@ -102,10 +102,12 @@ Re-rank retrieved candidates by **max cosine similarity to any favorited recipe*
 
 **Rollback:** the skill is invoke-by-name and parallel — stop invoking it. The additive columns/fields are inert to the old flow. The only non-trivial rollback is the favorite migration (reversible by retaining `overlay.rating` through the cutover until the experiment is committed).
 
-## Open Questions
+## Resolved Questions
 
-- **Reject scope:** is a suppressed discovery per-tenant (A's "no" doesn't hide it from B) or shared? Per-tenant is more correct but needs a small per-member URL suppression list.
-- **Commit batching:** with `commit_changes` retired (#71) and `create_recipe` still solo-committing to GitHub, decide how multiple in-session imports batch into one atomic commit instead of one commit per import.
+- **Reject scope — SHARED.** An explicit reject suppresses the discovery URL group-wide (a shared flag on the `discovery_candidates` URL), so the group curates one noisy discovery stream once rather than each member re-rejecting the same junk. This is deliberately asymmetric with `favorite` (per-tenant: taste is personal): rejection is collective curation, favoriting is personal taste. To keep a shared reject from hiding a recipe another member would favorite, reject is reserved for "not corpus-worthy for the group" (junk/broken/non-recipe/dupe/off-base); a personal not-for-me-this-time is a no-action skip, not a reject.
+- **Commit batching — NONE.** Each in-session import solo-commits to GitHub exactly as `create_recipe` does today (`commit_changes` is retired). One commit per imported recipe is accepted — it matches current behavior and gives each recipe its own provenance commit. No batching machinery.
+
+## Open Questions
 - **Description generation contract:** fixed prompt vs lightly-structured ("2 sentences: what it is / flavor+texture / when you'd want it"); and whether to auto-regenerate on prompt change (lean: no — treat human edits as authoritative, embedding rebuilds from current text).
 - **`hidden` boolean:** keep a per-tenant "never show me this" alongside `favorite`, or is URL-suppression + non-favorite enough?
 - **Novelty spec weighting:** how hard the never-cooked boost pushes by default before the user tunes it.

@@ -63,17 +63,22 @@ During the flow, when the agent judges a loaded discovery matches the member's p
 
 ### Requirement: Disposition collapses into the import decision
 
-With in-session import, disposition SHALL collapse: importing a discovery IS the positive disposition (it becomes a first-class corpus recipe); a non-imported discovery remains a discovery; an explicit "no" SHALL suppress that discovery URL for the caller so it is not re-surfaced. There SHALL be no `draft` limbo state in this flow.
+With in-session import, disposition SHALL collapse to three outcomes: importing a discovery IS the positive disposition (it becomes a first-class corpus recipe); taking no action leaves it a discovery to be re-judged later; an explicit reject SHALL suppress that discovery URL **group-wide** (a shared suppression on the `discovery_candidates` URL) so it is not re-surfaced to any member. There SHALL be no `draft` limbo state in this flow. Because rejection is shared, it SHALL be reserved for "not corpus-worthy for the group" (junk, broken link, non-recipe, duplicate, or clearly off-base for the group's taste); a mere personal not-for-me-this-time SHALL be a no-action skip, NOT a reject, so one member's passing taste does not hide a recipe another member would favorite.
 
 #### Scenario: Import is the yes
 
 - **WHEN** the agent imports a discovery during planning
 - **THEN** the recipe is a normal corpus recipe with no separate draft/disposition step required afterward
 
-#### Scenario: Explicit rejection suppresses the URL
+#### Scenario: Explicit rejection suppresses the URL group-wide
 
-- **WHEN** the member explicitly declines a surfaced discovery
-- **THEN** that discovery URL is suppressed for the caller and not re-surfaced
+- **WHEN** a member explicitly rejects a surfaced discovery as not corpus-worthy
+- **THEN** that discovery URL is suppressed for the whole group and not re-surfaced to any member
+
+#### Scenario: Personal taste-misfit is a skip, not a reject
+
+- **WHEN** a member simply does not want a surfaced discovery this session (personal preference, not a corpus-worthiness judgment)
+- **THEN** it is left as a discovery (no shared suppression) and may surface again for that member or another
 
 ### Requirement: An exploration allowance keeps the loop from over-tightening
 

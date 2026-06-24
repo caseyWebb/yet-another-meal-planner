@@ -40,9 +40,10 @@
 - [ ] 4.3 Recall set: always include a variety/wildcard spec, a never-cooked×taste novelty spec, and pantry-overlap specs; generous K
 - [ ] 4.4 Sides in the same compose pass via chosen mains' `side_search_terms` (facet `course: side`); preserve holistic mains+sides reasoning
 - [ ] 4.5 Aggressive in-session import: cheap blurb triage → `parse_recipe` + agent-written `description`/`side_search_terms`/facets → `create_recipe`; only matches; exact source-URL dedup
-- [ ] 4.6 Disposition collapse: import = yes; explicit "no" suppresses the discovery URL (per-tenant suppression list); no draft state in this flow
-- [ ] 4.7 Exploration allowance: optionally surface one flagged "a bit outside your usual" pick
-- [ ] 4.8 Batch in-session imports into the session commit (rather than one commit per import)
+- [ ] 4.6 Disposition collapse: import = yes; no-action = stays a discovery; explicit reject = SHARED suppression on the `discovery_candidates` URL (group-wide), reserved for not-corpus-worthy; no draft state in this flow
+- [ ] 4.7 Add the shared suppression to the discovery read path (`fetch_rss_discoveries`/`read_discovery_inbox` exclude group-rejected URLs)
+- [ ] 4.8 Exploration allowance: optionally surface one flagged "a bit outside your usual" pick
+- [ ] 4.9 In-session imports solo-commit per recipe (no batching), matching `create_recipe` today
 
 ## 5. Favorite cutover (BREAKING)
 
