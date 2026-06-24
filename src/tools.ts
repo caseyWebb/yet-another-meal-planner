@@ -380,7 +380,7 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
     "read_user_profile",
     {
       description:
-        "Return the caller's full grocery profile in one call: preferences (parsed), taste narrative (markdown), diet principles (markdown), kitchen inventory (owned equipment slugs + notes), staples list, recipe overlay (rating/status per slug), ready-to-eat catalog items, and stockup watchlist. Absent fields return null or empty. Use this at the start of a meal-planning session instead of calling the individual read tools separately.",
+        "Return the caller's full grocery profile in one call: preferences (parsed), taste narrative (markdown), diet principles (markdown), kitchen inventory (owned equipment slugs + notes), staples list, ready-to-eat catalog items, and stockup watchlist. Absent fields return null or empty. Use this at the start of a meal-planning session instead of calling the individual read tools separately.",
       inputSchema: {},
     },
     () =>
@@ -394,7 +394,6 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
             ? toInventory(parseToml(bundle.kitchen, "kitchen.toml"))
             : { owned: [], notes: {} },
           staples: parseStaples(bundle.staples ?? null),
-          overlay: bundle.overlay ? parseOverlay(bundle.overlay) : {},
           ready_to_eat: bundle.ready_to_eat
             ? ((parseToml(bundle.ready_to_eat, "ready_to_eat.toml").items as Record<string, unknown>[]) ?? [])
             : [],
