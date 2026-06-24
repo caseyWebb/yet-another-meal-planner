@@ -282,12 +282,15 @@ export async function run({ recipesDir, root = REPO_ROOT } = {}) {
 // validated recipe into a table row; it MUST stay in sync with the Worker's read
 // reconstruction in src/recipe-index.ts (same column ↔ frontmatter map).
 //
-//   * scalar columns reconstructed verbatim: title, protein, cuisine, time_total.
+//   * scalar columns reconstructed verbatim: title, protein, cuisine, time_total,
+//     description (the semantic-identity brief; its embedding is reconciled
+//     Worker-side, not projected here — recipe_embeddings, migration 0007).
 //   * source_url ⇄ the recipe's `source` frontmatter (renamed only at the column
 //     boundary so discovery's source lookups are indexed).
-//   * ingredients_key + the JSON-array columns hold a JSON value as TEXT.
+//   * ingredients_key + the JSON-array columns (incl. side_search_terms) hold a JSON
+//     value as TEXT.
 //   * extra holds a JSON object of every OTHER objective field (lossless).
-const RECIPE_SCALAR_COLUMNS = ['title', 'protein', 'cuisine', 'time_total'];
+const RECIPE_SCALAR_COLUMNS = ['title', 'protein', 'cuisine', 'time_total', 'description'];
 const RECIPE_JSON_COLUMNS = [
   'ingredients_key',
   'tags',
@@ -297,6 +300,7 @@ const RECIPE_JSON_COLUMNS = [
   'pairs_with',
   'perishable_ingredients',
   'requires_equipment',
+  'side_search_terms',
 ];
 // Column order for the INSERT; `slug` (PK) and `source_url` (renamed) bookend the
 // promoted facets, with `extra` last.

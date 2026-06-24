@@ -16,12 +16,15 @@
 - [ ] 1.3 Backfill `description` (+ `side_search_terms` for mains) across the existing corpus — one-time agent-in-session or scripted pass
 - [ ] 1.4 Teach the import path (`AGENT_INSTRUCTIONS.md` recipe-import flow) to generate `description` and `side_search_terms` at import
 
-## 2. Embedding projection (additive)
+## 2. Embedding reconcile (additive, Worker-side cron — not the build)
 
-- [ ] 2.1 New migration `migrations/d1/0007_*.sql`: add `embedding`, `description`, `side_search_terms` columns to the existing `recipes` table
-- [ ] 2.2 Extend `projectToD1` in `scripts/build-indexes.mjs`: compute each recipe's embedding via Workers AI from its `description`+title and write it in the same replace-all (`DELETE`+batched `INSERT`) rebuild (atomic with the row)
-- [ ] 2.3 Skip embedding for recipes lacking a `description`; ensure they remain facet-retrievable but excluded from semantic ranking
+> Placement decision (design): the recipe vector is generated **Worker-side on the cron** via `env.AI`, not projected by the Node build (which has no binding) — into a **sibling `recipe_embeddings` table**, so the build's replace-all `recipes` rebuild can't clobber a vector it doesn't own. `env.AI` draws on the internal-subrequest budget, not the flyer's external 50, so it rides the existing one cron trigger.
+
+- [x] 2.1 New migration `migrations/d1/0007_recipe_embeddings.sql`: add `description`, `side_search_terms` columns to `recipes`; create the sibling `recipe_embeddings(slug, embedding, description_hash)` table
+- [x] 2.2 Project `description` + `side_search_terms` as `recipes` columns in `scripts/build-indexes.mjs` (no AI in the build) and reconstruct them in `src/recipe-index.ts` (read side stays in sync)
+- [x] 2.3 Worker-side cron reconcile (`src/recipe-embeddings.ts`): embed new/changed descriptions via `env.AI` (batched `embedTexts`, change-driven on a `description_hash`), prune orphans, bounded per tick; wired into `scheduled()` as a second job under the one trigger and registered in `HEALTH_JOBS` (`recipe-embed`)
 - [x] 2.4 Add a Worker helper to embed a query string (Workers AI) and a cosine helper (`src/embedding.ts` + `test/embedding.test.ts`)
+- [x] 2.5 Recipes lacking a `description` get no embedding (excluded from semantic ranking) but stay facet-retrievable via `recipes`; the reconcile prunes a vector when its description is removed
 
 ## 3. recipe_semantic_search tool (additive, backend-agnostic)
 

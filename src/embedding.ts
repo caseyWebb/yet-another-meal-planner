@@ -4,11 +4,12 @@
 //   * `cosineSimilarity` is PURE arithmetic (no I/O) so the ranking math is
 //     unit-testable without a Workers AI binding — the same discipline as
 //     src/matching.ts / src/unit-price.ts.
-//   * `embedText` is the only place that touches the `AI` binding. It embeds a
-//     QUERY string in the Worker so the caller ships text, not vectors, keeping the
-//     match off the caller's token budget. RECIPE embeddings are projected at build
-//     time by a separate path (the Node build can't use this binding) — see the
-//     semantic-meal-plan design's embedding-placement decision.
+//   * `embedText` embeds a QUERY string in the Worker so the caller ships text, not
+//     vectors, keeping the match off the caller's token budget. RECIPE embeddings go
+//     through the same `env.AI` binding but on the cron reconcile (src/recipe-
+//     embeddings.ts), not here — the Node build has no binding, so recipe vectors are
+//     reconciled Worker-side rather than projected by the build. See the semantic-
+//     meal-plan design's embedding-placement decision (option B).
 
 import type { Env } from "./env.js";
 import { ToolError } from "./errors.js";
@@ -64,4 +65,34 @@ export async function embedText(env: Env, text: string): Promise<number[]> {
     });
   }
   return vector;
+}
+
+/**
+ * Embed MANY texts in one Workers AI call — `{ text: string[] }` returns one row per
+ * input, so a whole reconcile batch is a single subrequest (the recipe-embedding
+ * reconcile's batching primitive; see src/recipe-embeddings.ts). Returns the vectors
+ * in input order. An empty input is a no-op (`[]`, no call). Same structured-error
+ * discipline as `embedText`: any AI failure or a response whose row count / dimension
+ * doesn't match the request maps to a `storage_error` ToolError, never a raw throw.
+ */
+export async function embedTexts(env: Env, texts: string[]): Promise<number[][]> {
+  if (texts.length === 0) return [];
+  let res: EmbeddingResponse;
+  try {
+    res = (await env.AI.run(EMBED_MODEL, { text: texts })) as unknown as EmbeddingResponse;
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    throw new ToolError("storage_error", `Workers AI embed failed: ${message}`, { model: EMBED_MODEL });
+  }
+  const vectors = res?.data;
+  if (
+    !Array.isArray(vectors) ||
+    vectors.length !== texts.length ||
+    vectors.some((v) => !Array.isArray(v) || v.length !== EMBED_DIM)
+  ) {
+    throw new ToolError("storage_error", "Workers AI returned an unexpected embedding shape", {
+      model: EMBED_MODEL,
+    });
+  }
+  return vectors;
 }

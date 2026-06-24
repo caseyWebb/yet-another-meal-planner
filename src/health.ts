@@ -15,7 +15,7 @@ import type { KvStore } from "./kroger-user.js";
 const JOB_PREFIX = "health:job:";
 
 /** The registered background jobs `/health` aggregates. */
-export const HEALTH_JOBS = ["flyer-warm", "email"] as const;
+export const HEALTH_JOBS = ["flyer-warm", "recipe-embed", "email"] as const;
 
 /** One job's stored health record. `summary` MUST stay tenant-data-free. */
 export interface JobHealth {
