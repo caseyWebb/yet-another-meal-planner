@@ -155,12 +155,11 @@ description: Capture a meal that was actually cooked or eaten, and update invent
 This is the **only** flow that writes the cooking log and moves `last_cooked`. Capture it honestly — log only what I tell you I cooked, never what was merely planned.
 
 1. **Identify what was cooked.** A corpus recipe (resolve the slug with `list_recipes({ query })` if unsure), a ready-to-eat item, or something ad-hoc (not in the corpus). If you're arriving here from a guided `cook`, you already know the dish — carry it over.
-2. **Update inventory.** Cooking consumes pantry items — walk the recipe's ingredients (or just ask for an ad-hoc/RTE meal) and ask whether I **used the last of** anything ("did that finish the ginger?"). For each yes, a `pantry_operations` `remove`. For a ready-to-eat item, removing it from the pantry is how its on-hand stock decrements (the ready-to-eat catalog is options, not stock).
-3. **Log it**, in one `commit_changes`:
-   - `cooking_log_entries`: `{ type: "recipe", recipe: <slug> }` for a corpus cook; `{ type: "ready_to_eat", name }` for an RTE meal; `{ type: "ad_hoc", name, protein?, cuisine? }` for something off-corpus (add the inline dims so it still counts in retrospective). `date` defaults to today — pass an explicit `date` if I said "last night" / a past day.
-   - the pantry `remove`s from step 2.
-   - `meal_plan_ops` `remove` for the recipe if it was on the plan (clears it).
-   - **Don't** set `last_cooked` yourself — it's derived from the log entry in the same commit.
+2. **Update inventory.** Cooking consumes pantry items — walk the recipe's ingredients (or just ask for an ad-hoc/RTE meal) and ask whether I **used the last of** anything ("did that finish the ginger?"). For each yes, an `update_pantry` `remove`. For a ready-to-eat item, removing it from the pantry is how its on-hand stock decrements (the ready-to-eat catalog is options, not stock).
+3. **Log it** with `log_cooked` (D1-backed; no commit):
+   - `log_cooked({ type: "recipe", recipe: <slug> })` for a corpus cook; `{ type: "ready_to_eat", name }` for an RTE meal; `{ type: "ad_hoc", name, protein?, cuisine? }` for something off-corpus (add the inline dims so it still counts in retrospective). `date` defaults to today — pass an explicit `date` if I said "last night" / a past day. An unknown recipe slug is rejected (`not_found`) — resolve it first with `list_recipes({ query })`.
+   - A `type: "recipe"` entry **auto-clears** that recipe from the meal plan — you don't need a separate `update_meal_plan` remove for the cooked dish.
+   - **Don't** set `last_cooked` yourself — it's derived from the log entry (logging the recipe updates its effective `last_cooked` automatically).
 4. Confirm in chat what was logged and decremented.
 5. **Offer feedback once, lightly.** A just-cooked meal is the best moment to capture a reaction, so ask — "how was it? want to rate it or jot a note for next time?". On a yes, hand off: a rating or disposition goes through the add-recipe-feedback flow; a tweak ("needed more salt", "I'd cut the sugar") goes through the add-recipe-note flow. One light offer — don't push, and skip it for a plain reheated ready-to-eat item unless I volunteer something. Don't propose a new menu unless I ask.
 

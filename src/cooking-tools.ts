@@ -1,48 +1,97 @@
 // Read + analysis tools for the cooking-history / meal-planning capabilities:
 //   read_meal_plan  — current committed cook intent (KV-backed, for session resume)
 //   update_meal_plan — add/remove planned entries in KV
-//   retrospective   — aggregate cooking_log.toml over a period (real mixes,
+//   retrospective   — aggregate the D1 cooking_log over a period (real mixes,
 //                     cadence, cook-vs-convenience, ready-to-eat favorites,
-//                     underused), joining type=recipe entries to the recipe index.
-// Writes (appending log entries) ride commit_changes.
+//                     underused), joining type=recipe rows to the recipe index for
+//                     protein/cuisine.
+// Appending a cooking event rides the log_cooked tool (src/cooking-write.ts).
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { Env } from "./env.js";
-import type { GitHubClient } from "./github.js";
-import { readOptional } from "./gh-read.js";
-import { parseToml } from "./parse.js";
 import { ToolError, runTool } from "./errors.js";
-import { COOKING_LOG_PATH, entriesOf } from "./cooking-log.js";
+import { db } from "./db.js";
+import type { CookingLogEntry } from "./cooking-log.js";
 import { applyMealPlanOps, type MealPlanOp } from "./meal-plan.js";
 import { retrospective, type RetrospectiveResult } from "./retrospective.js";
 import { loadRecipeIndex } from "./recipe-index.js";
-import { getMealPlanState, writeMealPlanState } from "./user-kv.js";
+import { mergeOverlay, parseOverlay, type Overlay } from "./overlay.js";
+import type { RecipeIndex } from "./recipes.js";
+import { getMealPlanState, writeMealPlanState, getProfileBundle } from "./user-kv.js";
 
+/** One D1 `cooking_log LEFT JOIN recipes` row (protein/cuisine already COALESCE'd). */
+interface CookingLogJoinRow {
+  type: CookingLogEntry["type"];
+  date: string;
+  recipe: string | null;
+  name: string | null;
+  protein: string | null;
+  cuisine: string | null;
+}
+
+/**
+ * Load the caller's cooking history from D1 and run the retrospective aggregation.
+ * The base query is the `cooking_log LEFT JOIN recipes` + COALESCE that only became
+ * possible once the recipe index moved to D1 (slice 1): a recipe entry's
+ * protein/cuisine come from the joined `recipes` row, a non-recipe entry's from its
+ * inline columns. The recipe index + the caller's overlay + the derived last_cooked
+ * are merged into an effective index for the `underused` metric (active recipes not
+ * cooked in the window — status is per-tenant, so it must be overlay-merged).
+ */
 export async function loadRetrospective(
-  personalGh: GitHubClient,
   env: Env,
+  dataKv: KVNamespace,
+  username: string,
   period: string,
 ): Promise<RetrospectiveResult> {
-  const logText = await readOptional(personalGh, COOKING_LOG_PATH);
-  const entries = logText ? entriesOf(parseToml(logText, COOKING_LOG_PATH)) : [];
+  const rows = await db(env).all<CookingLogJoinRow>(
+    "SELECT cl.type AS type, cl.date AS date, cl.recipe AS recipe, cl.name AS name, " +
+      "COALESCE(cl.protein, r.protein) AS protein, COALESCE(cl.cuisine, r.cuisine) AS cuisine " +
+      "FROM cooking_log cl LEFT JOIN recipes r ON cl.recipe = r.slug " +
+      "WHERE cl.tenant = ?1",
+    username,
+  );
 
-  // The recipe index now lives in the D1 `recipes` table; loadRecipeIndex rebuilds
-  // the same in-memory RecipeIndex retrospective consumes (objective fields only —
-  // status/last_cooked are per-tenant and not in the shared table). An unreadable
-  // table throws a `storage_error`; remap it to `index_unavailable`.
+  const entries: CookingLogEntry[] = rows.map((row) => {
+    const entry: CookingLogEntry = { date: row.date, type: row.type };
+    if (row.recipe) entry.recipe = row.recipe;
+    if (row.name) entry.name = row.name;
+    if (row.protein) entry.protein = row.protein;
+    if (row.cuisine) entry.cuisine = row.cuisine;
+    return entry;
+  });
+
+  // Effective index for `underused`: shared objective fields (D1) merged with the
+  // caller's overlay (status/rating) and the cooking-log-derived last_cooked.
   const index = await loadRecipeIndex(env).catch((e) => {
     throw new ToolError(
       "index_unavailable",
       `the recipe index is unavailable: ${e instanceof Error ? e.message : String(e)}`,
     );
   });
-  return retrospective(entries, index, period);
+  const bundle = await getProfileBundle(dataKv, username);
+  const overlay: Overlay = bundle.overlay ? parseOverlay(bundle.overlay) : {};
+
+  // last_cooked per recipe (MAX date over the caller's recipe entries) from the
+  // already-loaded rows — no second query.
+  const lastCooked = new Map<string, string>();
+  for (const e of entries) {
+    if (e.type !== "recipe" || !e.recipe || !e.date) continue;
+    const prev = lastCooked.get(e.recipe);
+    if (prev === undefined || e.date > prev) lastCooked.set(e.recipe, e.date);
+  }
+
+  const effective: RecipeIndex = {};
+  for (const [slug, entry] of Object.entries(index)) {
+    effective[slug] = { ...mergeOverlay(entry, overlay[slug], lastCooked.get(slug)), slug };
+  }
+
+  return retrospective(entries, effective, period);
 }
 
 export function registerCookingTools(
   server: McpServer,
-  gh: GitHubClient,
   env: Env,
   dataKv: KVNamespace,
   username: string,
@@ -95,6 +144,6 @@ export function registerCookingTools(
         "Aggregate cooking history over a period from the cooking log. period accepts 'Nd' (e.g. '30d'), 'week', 'month', 'quarter', 'year', or 'all'. Returns recipes_cooked, protein_mix, cuisine_mix (non-recipe entries counted via inline dims; missing → 'unknown'), cadence (cooks/week, recipe+ad_hoc only), cook_vs_convenience (cooked vs ready_to_eat), ready_to_eat_favorites (frequency-ranked), and underused (active recipes not cooked in the window).",
       inputSchema: { period: z.string().optional() },
     },
-    ({ period }) => runTool(() => loadRetrospective(gh, env, period ?? "month")),
+    ({ period }) => runTool(() => loadRetrospective(env, dataKv, username, period ?? "month")),
   );
 }

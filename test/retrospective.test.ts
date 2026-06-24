@@ -12,13 +12,16 @@ const index: RecipeIndex = {
   retired: { slug: "retired", title: "Retired", protein: "pork", cuisine: "american", status: "archived", last_cooked: null },
 };
 
+// protein/cuisine are pre-resolved on each entry by the caller (the D1
+// `cooking_log LEFT JOIN recipes` + COALESCE): recipe entries carry their recipe's
+// dims, non-recipe entries their inline dims.
 const entries: CookingLogEntry[] = [
-  { date: "2026-06-20", type: "recipe", recipe: "salmon" },
-  { date: "2026-06-10", type: "recipe", recipe: "tacos" },
-  { date: "2026-06-12", type: "recipe", recipe: "tacos" },
+  { date: "2026-06-20", type: "recipe", recipe: "salmon", protein: "fish", cuisine: "american" },
+  { date: "2026-06-10", type: "recipe", recipe: "tacos", protein: "beef", cuisine: "mexican" },
+  { date: "2026-06-12", type: "recipe", recipe: "tacos", protein: "beef", cuisine: "mexican" },
   { date: "2026-06-15", type: "ready_to_eat", name: "frozen lasagna", protein: "beef", cuisine: "italian" },
   { date: "2026-06-18", type: "ad_hoc", name: "fried rice", protein: "mixed" },
-  { date: "2026-01-01", type: "recipe", recipe: "salmon" }, // outside a 30d window
+  { date: "2026-01-01", type: "recipe", recipe: "salmon", protein: "fish", cuisine: "american" }, // outside a 30d window
 ];
 
 describe("periodDays", () => {

@@ -1,19 +1,19 @@
 # SCHEMAS.md — Data File Reference
 
-Concrete schemas with example values for every data file in the repo. Keep this in sync with the actual files — when you add a field, update here first, then update the file. Validation runs in two places: `scripts/build-indexes.mjs` (the full validator, at data-repo build time) and a *structural subset* in the Worker's `src/validate.ts` (at write time). The build validates only what GitHub still owns — the shared corpus (recipes, stores, discovery files, aliases) plus per-tenant `cooking_log.toml`. The **KV-backed** per-tenant state (the `profile:<username>` bundle — preferences/taste/diet_principles/kitchen/staples/overlay/ready_to_eat/stockup — and `state:<username>:pantry`/`meal_plan`/`grocery_list`) is validated **only by the Worker at write time**, never by the build.
+Concrete schemas with example values for every data file in the repo. Keep this in sync with the actual files — when you add a field, update here first, then update the file. Validation runs in two places: `scripts/build-indexes.mjs` (the full validator, at data-repo build time) and a *structural subset* in the Worker's `src/validate.ts` (at write time). The build validates only what GitHub still owns — the shared corpus (recipes, stores, discovery files, aliases). The **KV-backed** per-tenant state (the `profile:<username>` bundle — preferences/taste/diet_principles/kitchen/staples/overlay/ready_to_eat/stockup — and `state:<username>:pantry`/`meal_plan`/`grocery_list`) and the **D1-backed** `cooking_log` are validated **only by the Worker at write time** (`log_cooked` for the cooking log), never by the build.
 
 ## File placement: shared vs per-tenant (multi-tenant data model)
 
 The data lives in **one private data repo** with two regions (see `ARCHITECTURE.md`). Every file below lives in exactly one:
 
 - **Shared corpus (data-repo root)** — objective, single-source, read by everyone: `recipes/*.md` (objective frontmatter + body), `aliases.toml`, `skus/kroger.toml`, `flyer_terms.toml`, `storage_guidance/` (curated put-away advice), **`stores/<slug>.toml`** (in-store walk store registry — identity, keyed by location; layout lives in store notes), **`feeds.toml`** (RSS discovery feeds), **`discoveries_inbox.toml`** (forwarded-newsletter emails for agent parsing), **`discovery_sources.toml`** (inbound-email allowlist), `_indexes/` (build artifacts — committed for git diff/audit; the Worker reads from `DATA_KV` at runtime, not from git). Discovery is a shared, top-level concern — feeds and the newsletter inbox feed one group pool, judged against each caller's taste at read time.
-- **Per-tenant GitHub subtree (`users/<username>/`)** — each member's **historical records** only: `cooking_log.toml` (realized cook history), `notes/<slug>.toml` (attributed recipe notes), `store_notes/<slug>.toml` (attributed store notes). The Worker addresses it by prefixing repo-relative paths, so one request can never reach another member's data.
+- **Per-tenant GitHub subtree (`users/<username>/`)** — each member's **attributed records** only: `notes/<slug>.toml` (attributed recipe notes), `store_notes/<slug>.toml` (attributed store notes). The Worker addresses it by prefixing repo-relative paths, so one request can never reach another member's data. (Realized cook history left for the D1 `cooking_log` table — see below; the vestigial `cooking_log.toml` files remain in git until a later cleanup.)
 - **Per-tenant DATA_KV** — each member's **operational state** (fast, write-through, no git history). Two key shapes:
   - `profile:<username>` — a single JSON object (the **profile bundle**) with fields: `preferences` (raw TOML string), `taste` (markdown string), `diet_principles` (markdown string), `kitchen` (raw TOML string), `staples` (raw TOML string), `overlay` (raw TOML string — per-tenant recipe rating/status), `ready_to_eat` (raw TOML string), `stockup` (raw TOML string). Absent fields are omitted from the JSON object.
   - `state:<username>:pantry`, `state:<username>:meal_plan`, `state:<username>:grocery_list` — JSON arrays of the respective item objects.
   - Existing GitHub files are migrated into KV once, at deploy time, by the migration runner (`scripts/run-migrations.mjs`, migration `0001-unified-user-profile-kv`). The Worker read path has **no** GitHub fallback — a KV miss returns empty/null.
 
-**Three-category recipe model:** a recipe's *content* (objective frontmatter + body) is shared; its *overlay* (`rating` + `status`) is per-tenant in the `overlay` field of the KV `profile:<username>` bundle; its *notes* are per-tenant, attributed, append-mostly in `users/<username>/notes/<slug>.toml`. `last_cooked` is **not stored** — it's derived per-tenant from `cooking_log.toml`. Read tools merge shared content + the caller's KV overlay + cooking-log `last_cooked` at read time.
+**Three-category recipe model:** a recipe's *content* (objective frontmatter + body) is shared; its *overlay* (`rating` + `status`) is per-tenant in the `overlay` field of the KV `profile:<username>` bundle; its *notes* are per-tenant, attributed, append-mostly in `users/<username>/notes/<slug>.toml`. `last_cooked` is **not stored** — it's derived per-tenant from the D1 `cooking_log` table (`MAX(date)` per recipe). Read tools merge shared content + the caller's KV overlay + cooking-log `last_cooked` at read time.
 
 ## Recipe frontmatter (recipes/*.md)
 
@@ -35,7 +35,7 @@ dietary: [gluten-free, dairy-free]    # array; can be empty
 season: [spring, summer]              # array of seasons; can be empty for year-round
 veg_forward: false              # boolean
 # --- The next three are per-tenant, not shared-content fields ---
-# last_cooked  → derived from each member's cooking_log.toml (not stored here or in the index)
+# last_cooked  → derived from each member's D1 cooking_log table (not stored here or in the index)
 # rating       → per-tenant overlay field of KV profile:<id> bundle
 # status       → per-tenant overlay field of KV profile:<id> bundle (effective default: draft)
 discovered_at: null             # ISO date; only set for RSS imports
@@ -52,7 +52,7 @@ source: https://www.seriouseats.com/lemon-garlic-roasted-chicken
 ```
 
 **Notes:**
-- `rating`, `status`, and `last_cooked` are **per-tenant**, not shared content — `rating`/`status` live in the `overlay` field of each member's KV `profile:<username>` bundle; `last_cooked` is derived from `cooking_log.toml`. The shared D1 `recipes` table carries objective fields only. A shared recipe's frontmatter SHOULD NOT carry them; the build strips them and treats `status` as optional. (`create_recipe` still stamps a default `status: draft` onto a brand-new recipe's frontmatter, which the build then strips from the shared index — frontmatter status is *tolerated and ignored*, not forbidden.) `update_recipe` routes a `rating`/`status` edit to the caller's KV overlay, never the shared file.
+- `rating`, `status`, and `last_cooked` are **per-tenant**, not shared content — `rating`/`status` live in the `overlay` field of each member's KV `profile:<username>` bundle; `last_cooked` is derived from the D1 `cooking_log` table. The shared D1 `recipes` table carries objective fields only. A shared recipe's frontmatter SHOULD NOT carry them; the build strips them and treats `status` as optional. (`create_recipe` still stamps a default `status: draft` onto a brand-new recipe's frontmatter, which the build then strips from the shared index — frontmatter status is *tolerated and ignored*, not forbidden.) `update_recipe` routes a `rating`/`status` edit to the caller's KV overlay, never the shared file.
 - `status` lifecycle (per-tenant): new imports default to effective `draft`. A member's feedback promotes to `active` (with rating) or rejects to `rejected` **in their own overlay** — one member's disposition never changes another's.
 - `pairs_with`: slugs of other recipes, optional (defaults to empty). A *plating* edge — recipes eaten together on one plate (a main's companion **corpus** sides). Each slug MUST resolve to a real recipe (a build hard-failure otherwise); corpus sides are themselves recipes, so they reuse the normal import/grocery-list pipeline. Objective **shared content** (carried in the D1 `recipes` table, written by `update_recipe`) — not a per-tenant overlay field. Grown lazily by the meal-plan flow as corpus pairings are confirmed (filter candidates with `course: side`); **open-world sides** — trivial preparations with no recipe file — are not recorded here (no slug to remember) and ride on the main's meal-plan row instead (KV `state:<username>:meal_plan`).
 - `course`: optional, an **open-vocabulary** classification of what kind of dish the recipe is — one or more of `main`, `side`, `dessert`, `breakfast` by convention, but **any** string is allowed (e.g. `sauce`, `baked_good`) with **no controlled set and no code change** to extend it (contrast `protein`/`cuisine`, which ARE controlled). Authored as a string or an array of strings; the build **normalizes** it to a lowercased, trimmed **array** (so `Main` → `["main"]`), defaulting to `[]` when absent (warn-free). A recipe that plates as more than one course carries multiple values (`course: [main, side]`). Validated for **shape only** (a string or array-of-strings; otherwise a build/Worker hard-failure) — the *values* are never checked. Objective **shared content** carried in the D1 `recipes` table, classified at import by `create_recipe` (and editable via `update_recipe`); `list_recipes` filters it by **containment**. (`standalone` is **retired** — whether a main is an already-rounded plate is inferred by the agent at plan time, not persisted; a lingering `standalone` field is ignored, never validated or indexed.)
@@ -74,12 +74,12 @@ The markdown body below the frontmatter is freeform, with one **hard requirement
 
 ## overlay (per-tenant, KV profile bundle field)
 
-Each member's **subjective view** of shared recipes — the overlay merged onto shared content at read time. Keyed by recipe slug. Holds **only** `rating` + `status` (the two genuinely-subjective single-values). `last_cooked` is **not** here — it's derived from this member's `cooking_log.toml`. Stored as the `overlay` field (raw TOML string) of the `profile:<username>` KV bundle in `DATA_KV`. Agent-writable via `update_recipe`; an absent row means effective `status: draft` for that member.
+Each member's **subjective view** of shared recipes — the overlay merged onto shared content at read time. Keyed by recipe slug. Holds **only** `rating` + `status` (the two genuinely-subjective single-values). `last_cooked` is **not** here — it's derived from this member's D1 `cooking_log` table. Stored as the `overlay` field (raw TOML string) of the `profile:<username>` KV bundle in `DATA_KV`. Agent-writable via `update_recipe`; an absent row means effective `status: draft` for that member.
 
 ```toml
 # overlay field of profile:<username> KV bundle — Alice's subjective overlay (rating + status) by slug.
 # Stored as a raw TOML string in DATA_KV. Merged onto shared recipe content at read time;
-# absent slug → status draft. last_cooked is NOT here — it is derived from cooking_log.toml.
+# absent slug → status draft. last_cooked is NOT here — it is derived from the D1 cooking_log table.
 
 [overlay.lemon-garlic-roasted-chicken]
 status = "active"
@@ -231,36 +231,31 @@ added_at = "2026-06-09"
 - `note` holds a **one-off** brand request ("the fancy olive oil this time") — explicitly NOT `preferences.toml`, which is for standing dispositions.
 - Lifecycle: `active → in_cart → received`. The `status` **enum is only `active | in_cart | ordered`** — `received` is not a stored status but the receive *action* (the row is removed and the pantry restocked). `place_order` writes the `active → in_cart` advance; `ordered`/`ordered_at` exist in the schema but no path sets them.
 
-## cooking_log.toml
+## cooking_log (D1 table)
 
-The durable, append-only **cooking** log (not an eating log). One entry per cooking event or at-home convenience meal. **Eating out is never logged**, and **leftovers of an already-logged cook are not re-logged** (one cook that feeds several meals is one entry). This is the trend spine `retrospective` reads, and the source `last_cooked` is **derived** from: `last_cooked` for a recipe == the maximum entry `date` whose `recipe` equals that slug. Agent-writable side-effect file (NOT user-curated config).
+The durable, append-only **cooking** log (not an eating log), now a per-tenant **D1 table** (`cooking_log`), not a GitHub file — it was the last per-tenant volatile artifact to leave GitHub (`d1-cooking-log`). One row per cooking event or at-home convenience meal. **Eating out is never logged**, and **leftovers of an already-logged cook are not re-logged** (one cook that feeds several meals is one row). This is the trend spine `retrospective` reads, and the source `last_cooked` is **derived** from it by query: `last_cooked` for a recipe == `MAX(date)` over the caller's `type='recipe'` rows for that slug. Written via the `log_cooked` tool (not user-curated config). Schema: `migrations/d1/0003_cooking_log.sql`; backfilled from the old `cooking_log.toml` by `migrations/0002-cooking-log-d1.mjs`.
 
-```toml
-# cooking_log.toml
-
-[[entries]]
-date = "2026-06-09"            # ISO date (required)
-type = "recipe"               # recipe | ready_to_eat | ad_hoc (required)
-recipe = "arroz-caldo"        # slug; present iff type = recipe
-
-[[entries]]
-date = "2026-06-08"
-type = "ready_to_eat"
-name = "Kroger frozen lasagna"   # present for ready_to_eat / ad_hoc
-
-[[entries]]
-date = "2026-06-07"
-type = "ad_hoc"
-name = "fridge-clearout fried rice"
-protein = "mixed"             # optional inline dims for non-recipe entries so
-cuisine = "chinese"          # they still count in retrospective mixes
+```sql
+CREATE TABLE cooking_log (
+  id      INTEGER PRIMARY KEY AUTOINCREMENT,
+  tenant  TEXT NOT NULL,        -- owning user (every read is tenant-scoped)
+  date    TEXT NOT NULL,        -- ISO YYYY-MM-DD
+  type    TEXT NOT NULL,        -- recipe | ready_to_eat | ad_hoc
+  recipe  TEXT,                 -- slug; present when type = recipe (soft ref to recipes.slug, no FK)
+  name    TEXT,                 -- dish name; present for ready_to_eat | ad_hoc
+  protein TEXT,                 -- optional inline dimension for non-recipe entries
+  cuisine TEXT                  -- (recipe entries resolve protein/cuisine from `recipes` via a JOIN)
+);
+CREATE INDEX idx_cooking_log_tenant_date   ON cooking_log(tenant, date);
+CREATE INDEX idx_cooking_log_tenant_recipe ON cooking_log(tenant, recipe);
 ```
 
 **Notes:**
-- `type = recipe` entries are slug-only — protein/cuisine are looked up from the recipe index, never duplicated, so recategorizing a recipe retroactively corrects its history.
+- `type = recipe` rows are slug-only — protein/cuisine are resolved from the D1 `recipes` table at read time (`retrospective`'s `cooking_log LEFT JOIN recipes` + COALESCE), never duplicated, so recategorizing a recipe retroactively corrects its history.
+- `recipe` is a **soft reference** to `recipes.slug` — there is no FK, so history survives a recipe's removal. `log_cooked` resolves the slug against `recipes` at **write time** (an unknown slug is `not_found`); historical rows are migrated verbatim, even if a slug was later removed.
 - `ready_to_eat` consumption also decrements the item's on-hand stock in `pantry.toml` (the member's `ready_to_eat.toml` catalog stays a pure options list with no stock field) and its accumulating frequency (by `name`) is the favored-item signal for re-order suggestions.
 - Cadence ("cooks/week") counts `recipe` + `ad_hoc` only; `ready_to_eat` is the convenience side of the cook-vs-convenience split.
-- Append-only by tool. Removing an entry is a manual edit; a `type = recipe` entry whose slug no recipe resolves to is a **hard** build failure (archival keeps the file, so history resolves; deletion-with-history is intentionally blocked).
+- Append-only in normal use; `id` gives a stable handle for an admin UI to edit/delete a mis-logged row. The vestigial `users/<username>/cooking_log.toml` files remain in git post-backfill (inert; a later cleanup removes them).
 
 ## meal plan (per-tenant, KV session state)
 

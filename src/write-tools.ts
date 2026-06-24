@@ -8,7 +8,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { GitHubClient, TreeFile } from "./github.js";
-import { readFile, readOptional, loadAliases } from "./gh-read.js";
+import { readFile, loadAliases } from "./gh-read.js";
 import { normalizePerishables } from "./matching.js";
 import { parseMarkdown, parseToml } from "./parse.js";
 import { serializeMarkdown, stringifyTomlWithHeader, stripEmptyVarietyDimensions } from "./serialize.js";
@@ -23,14 +23,6 @@ import {
 } from "./overlay.js";
 import { applyPantryOperations, markVerified, type PantryItem } from "./pantry-write.js";
 import { applyKitchenOperations, toInventory } from "./kitchen.js";
-import {
-  COOKING_LOG_PATH,
-  entriesOf,
-  appendEntries,
-  deriveLastCooked,
-  validateNewEntry,
-  type CookingLogEntry,
-} from "./cooking-log.js";
 import { slugify } from "./discovery.js";
 import { addStockup } from "./stockup.js";
 import { updateStaples } from "./staples.js";
@@ -39,11 +31,8 @@ import {
   updateProfileField,
   writePantryState,
   getPantryState,
-  getMealPlanState,
-  writeMealPlanState,
   type ProfileField,
 } from "./user-kv.js";
-import { applyMealPlanOps } from "./meal-plan.js";
 
 const SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const MEALS = ["breakfast", "lunch", "dinner"] as const;
@@ -105,62 +94,6 @@ export async function buildRecipeUpdate(
   // cleanly instead of tripping the controlled-vocabulary check.
   stripEmptyVarietyDimensions(merged);
   return { path, content: serializeMarkdown(merged, body) };
-}
-
-/** Normalize a raw cooking-log entry input: default date to today, drop empties. */
-function makeLogEntry(raw: Record<string, unknown>, todayDate: string): CookingLogEntry {
-  const rawType = raw.type;
-  const type: CookingLogEntry["type"] =
-    rawType === "recipe" || rawType === "ready_to_eat" || rawType === "ad_hoc"
-      ? rawType
-      : "ad_hoc";
-  const entry: CookingLogEntry = {
-    date: typeof raw.date === "string" && raw.date ? raw.date : todayDate,
-    type,
-  };
-  if (typeof raw.recipe === "string") entry.recipe = raw.recipe;
-  if (typeof raw.name === "string") entry.name = raw.name;
-  if (typeof raw.protein === "string") entry.protein = raw.protein;
-  if (typeof raw.cuisine === "string") entry.cuisine = raw.cuisine;
-  return entry;
-}
-
-/**
- * Append cooking-log entries. Returns the file to commit, the appended entries,
- * and the derived last_cooked per recipe slug (max date over existing + new),
- * which the caller co-writes onto recipe frontmatter in the SAME commit.
- */
-export async function buildCookingLogUpdate(
-  gh: GitHubClient,
-  path: string,
-  rawEntries: Record<string, unknown>[],
-  todayDate: string,
-): Promise<{ file: TreeFile; added: CookingLogEntry[]; lastCooked: Map<string, string> }> {
-  const text = (await readOptional(gh, path)) ?? "";
-  const parsed = text ? parseToml(text, path) : {};
-  const existing = entriesOf(parsed);
-
-  const additions = rawEntries.map((r) => makeLogEntry(r, todayDate));
-  for (const e of additions) {
-    const err = validateNewEntry(e);
-    if (err) throw new ToolError("validation_failed", err);
-  }
-
-  const all = appendEntries(existing, additions);
-  // Only co-write last_cooked for recipes touched by THIS call's additions.
-  const touched = new Set(additions.filter((e) => e.type === "recipe" && e.recipe).map((e) => e.recipe!));
-  const derived = deriveLastCooked(all);
-  const lastCooked = new Map<string, string>();
-  for (const slug of touched) {
-    const max = derived.get(slug);
-    if (max) lastCooked.set(slug, max);
-  }
-
-  return {
-    file: { path, content: stringifyTomlWithHeader(text, { ...parsed, entries: all }) },
-    added: additions,
-    lastCooked,
-  };
 }
 
 /**
@@ -233,25 +166,22 @@ const SHARED_CURATED_FILES: Record<string, string> = {
 // --- registration ------------------------------------------------------------
 
 /**
- * `gh` is the root data-repo client (shared recipe + notes writes). `userPrefix`
- * routes shared vs. per-tenant GitHub paths. `dataKv` + `username` back the KV
- * profile bundle (preferences/taste/diet/kitchen/staples/overlay/ready_to_eat/
- * stockup) and session-state keys (pantry/meal_plan/grocery_list).
+ * `gh` is the root data-repo client (shared recipe + notes writes — the only
+ * GitHub-backed writes left here). `dataKv` + `username` back the KV profile bundle
+ * (preferences/taste/diet/kitchen/staples/overlay/ready_to_eat/stockup) and
+ * session-state keys (pantry/meal_plan/grocery_list).
  */
 export function registerWriteTools(
   server: McpServer,
   gh: GitHubClient,
-  userPrefix: string,
   dataKv: KVNamespace,
   username: string,
 ): void {
-  const userPath = (p: string): string => (userPrefix ? `${userPrefix}/${p}` : p);
-
   server.registerTool(
     "update_recipe",
     {
       description:
-        "Edit a recipe. Objective frontmatter and body edits change the SHARED recipe content; rating and status are the caller's PERSONAL disposition and are written to their overlay, never the shared recipe. Objective frontmatter validates against the controlled vocabularies: `protein`/`cuisine` must be coarse buckets (shrimp→shellfish, salmon→fish; omit `protein` when there's no protein focus — never 'none') and `requires_equipment` slugs must be in-vocab; an off-vocabulary value is rejected (validation_failed). last_cooked cannot be set here — it is derived from the cooking log (append a cooking_log entry via commit_changes). For batching a whole session, use commit_changes.",
+        "Edit a recipe. Objective frontmatter and body edits change the SHARED recipe content; rating and status are the caller's PERSONAL disposition and are written to their overlay, never the shared recipe. Objective frontmatter validates against the controlled vocabularies: `protein`/`cuisine` must be coarse buckets (shrimp→shellfish, salmon→fish; omit `protein` when there's no protein focus — never 'none') and `requires_equipment` slugs must be in-vocab; an off-vocabulary value is rejected (validation_failed). last_cooked cannot be set here — it is derived from the cooking log (record a cooked meal via log_cooked). For batching a whole session, use commit_changes.",
       inputSchema: { slug: z.string(), updates: z.record(z.string(), z.unknown()) },
     },
     ({ slug, updates }) =>
@@ -508,7 +438,7 @@ export function registerWriteTools(
     "commit_changes",
     {
       description:
-        "Batch GitHub-backed writes as ONE commit, plus KV-backed writes in the same call. GitHub-backed: recipe_updates (objective frontmatter/body) and cooking_log_entries. KV-backed (no commit_sha per-field): recipe_updates rating/status → overlay bundle, ready_to_eat_drafts/updates → ready_to_eat bundle, config_updates (preferences/taste/diet_principles) → profile bundle, config_updates aliases → shared GitHub file. This is the DEFAULT for multi-write turns — batch rather than calling granular tools repeatedly. recipe_updates split automatically: objective frontmatter/body → shared GitHub recipe; rating/status → KV overlay. cooking_log_entries append cooked meals (date defaults to today); last_cooked is DERIVED from the log — never set it by hand. Ready-to-eat consumption is a cooking_log_entries {type:'ready_to_eat'} entry. Pantry, meal plan, and grocery list writes go through their own KV-backed tools (update_pantry, update_meal_plan, add_to_grocery_list/update_grocery_list/remove_from_grocery_list).",
+        "Batch GitHub-backed writes as ONE commit, plus KV-backed writes in the same call. GitHub-backed: recipe_updates (objective frontmatter/body). KV-backed (no commit_sha per-field): recipe_updates rating/status → overlay bundle, ready_to_eat_drafts/updates → ready_to_eat bundle, config_updates (preferences/taste/diet_principles) → profile bundle, config_updates aliases → shared GitHub file. This is the DEFAULT for multi-write turns — batch rather than calling granular tools repeatedly. recipe_updates split automatically: objective frontmatter/body → shared GitHub recipe; rating/status → KV overlay. Cooking events (including ready-to-eat consumption) go through log_cooked, NOT here. Pantry, meal plan, and grocery list writes go through their own KV-backed tools (update_pantry, update_meal_plan, add_to_grocery_list/update_grocery_list/remove_from_grocery_list).",
       inputSchema: {
         recipe_updates: z
           .array(z.object({ slug: z.string(), updates: z.record(z.string(), z.unknown()) }))
@@ -532,18 +462,6 @@ export function registerWriteTools(
         config_updates: z
           .array(z.object({ file: z.enum(["preferences", "taste", "diet_principles", "aliases"]), content: z.string() }))
           .optional(),
-        cooking_log_entries: z
-          .array(
-            z.object({
-              date: z.string().optional(),
-              type: z.enum(["recipe", "ready_to_eat", "ad_hoc"]),
-              recipe: z.string().optional(),
-              name: z.string().optional(),
-              protein: z.string().optional(),
-              cuisine: z.string().optional(),
-            }),
-          )
-          .optional(),
         commit_message: z.string(),
       },
     },
@@ -551,30 +469,6 @@ export function registerWriteTools(
       runTool(async () => {
         const files: TreeFile[] = [];
         const summary: Record<string, unknown> = {};
-
-        // Cooking log (per-tenant, GitHub): append entries. last_cooked is DERIVED
-        // at read time from the log — never co-written onto recipe frontmatter.
-        // Recipe-type entries also trigger removal from the KV meal plan.
-        if ((payload.cooking_log_entries?.length ?? 0) > 0) {
-          const { file, added } = await buildCookingLogUpdate(
-            gh,
-            userPath(COOKING_LOG_PATH),
-            payload.cooking_log_entries!,
-            today(),
-          );
-          files.push(file);
-          summary.cooking_log = { added: added.length };
-
-          // Clear cooked recipes from the KV meal plan.
-          const cooked = added
-            .filter((e) => e.type === "recipe" && e.recipe)
-            .map((e) => ({ op: "remove" as const, recipe: e.recipe! }));
-          if (cooked.length > 0) {
-            const current = await getMealPlanState(dataKv, username);
-            const { items: next, applied } = applyMealPlanOps(current, cooked);
-            if (applied.length > 0) await writeMealPlanState(dataKv, username, next);
-          }
-        }
 
         // Recipe updates: objective content → shared GitHub recipe; rating/status →
         // KV overlay bundle. Subjective edits never touch shared GitHub content.
@@ -585,7 +479,7 @@ export function registerWriteTools(
           if (hadLastCooked) {
             throw new ToolError(
               "validation_failed",
-              "last_cooked is derived from the cooking log; use cooking_log_entries instead of setting it on a recipe",
+              "last_cooked is derived from the cooking log; record a cooked meal via log_cooked instead of setting it on a recipe",
             );
           }
           if (Object.keys(content).length > 0) {

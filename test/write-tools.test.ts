@@ -1,7 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
   buildRecipeUpdate,
-  buildCookingLogUpdate,
   splitRecipeUpdate,
   readyToEatManager,
   registerWriteTools,
@@ -131,49 +130,6 @@ describe("readyToEatManager", () => {
   it("serialize() is null when nothing was touched", () => {
     const mgr = readyToEatManager("");
     expect(mgr.serialize()).toBeNull();
-  });
-});
-
-describe("buildCookingLogUpdate", () => {
-  it("appends entries (defaulting date to today) and derives last_cooked for touched recipes", async () => {
-    const gh = ghWith({ "cooking_log.toml": "# header\n" });
-    const { file, added, lastCooked } = await buildCookingLogUpdate(
-      gh,
-      "cooking_log.toml",
-      [
-        { type: "recipe", recipe: "salmon", date: "2026-06-09" },
-        { type: "ready_to_eat", name: "lasagna" }, // date defaults to today
-      ],
-      "2026-06-30",
-    );
-    expect(file.path).toBe("cooking_log.toml");
-    expect(added).toHaveLength(2);
-    expect(added[1].date).toBe("2026-06-30");
-    expect(lastCooked.get("salmon")).toBe("2026-06-09");
-    expect(lastCooked.has("lasagna" as string)).toBe(false);
-    const parsed = parseToml(file.content) as { entries: Record<string, unknown>[] };
-    expect(parsed.entries).toHaveLength(2);
-    expect(file.content).toContain("# header"); // header preserved
-  });
-
-  it("derives last_cooked as the max over existing + new entries", async () => {
-    const existing = '[[entries]]\ndate = "2026-06-20"\ntype = "recipe"\nrecipe = "salmon"\n';
-    const gh = ghWith({ "cooking_log.toml": existing });
-    const { lastCooked } = await buildCookingLogUpdate(
-      gh,
-      "cooking_log.toml",
-      [{ type: "recipe", recipe: "salmon", date: "2026-06-09" }],
-      "2026-06-30",
-    );
-    // older new entry must not lower last_cooked below the existing max
-    expect(lastCooked.get("salmon")).toBe("2026-06-20");
-  });
-
-  it("rejects an invalid entry as validation_failed", async () => {
-    const gh = ghWith({ "cooking_log.toml": "" });
-    await expect(
-      buildCookingLogUpdate(gh, "cooking_log.toml", [{ type: "recipe", date: "2026-06-09" }], "2026-06-30"),
-    ).rejects.toMatchObject({ code: "validation_failed" });
   });
 });
 
@@ -320,12 +276,7 @@ describe("markVerified", () => {
 // Invoke the real registered write-tool handlers through a minimal fake server.
 // Pantry is KV-backed now, so the integration tests read back from the fake KV
 // (state:<username>:pantry) rather than capturing GitHub commit trees.
-function collectTools(
-  gh: GitHubClient,
-  userPrefix: string,
-  dataKv: KVNamespace,
-  username: string,
-) {
+function collectTools(gh: GitHubClient, dataKv: KVNamespace, username: string) {
   const handlers = new Map<string, (input: unknown) => Promise<{ content: { text: string }[] }>>();
   const server = {
     registerTool: (name: string, _cfg: unknown, handler: (input: unknown) => Promise<{ content: { text: string }[] }>) => {
@@ -335,7 +286,6 @@ function collectTools(
   registerWriteTools(
     server as unknown as Parameters<typeof registerWriteTools>[0],
     gh,
-    userPrefix,
     dataKv,
     username,
   );
@@ -345,7 +295,7 @@ function collectTools(
 describe("update_pantry / mark_pantry_verified (KV-backed)", () => {
   it("update_pantry add seeds the pantry key when none exists yet, no commit_sha", async () => {
     const { kv, store } = fakeKv();
-    const handlers = collectTools(ghWith({}), "users/everett", kv, "everett");
+    const handlers = collectTools(ghWith({}), kv, "everett");
     const res = await handlers.get("update_pantry")!({
       operations: [{ op: "add", item: { name: "butter", category: "fridge" } }],
     });
@@ -364,7 +314,7 @@ describe("update_pantry / mark_pantry_verified (KV-backed)", () => {
 
   it("update_pantry add works for a single minimal op (name only)", async () => {
     const { kv, store } = fakeKv();
-    const handlers = collectTools(ghWith({}), "users/everett", kv, "everett");
+    const handlers = collectTools(ghWith({}), kv, "everett");
     const res = await handlers.get("update_pantry")!({ operations: [{ op: "add", name: "butter" }] });
     const out = JSON.parse(res.content[0].text) as { applied: { op: string; name: string }[] };
     expect(out.applied).toContainEqual({ op: "add", name: "butter" });
@@ -374,7 +324,7 @@ describe("update_pantry / mark_pantry_verified (KV-backed)", () => {
 
   it("a lone remove against an absent pantry reports a conflict and writes nothing", async () => {
     const { kv, store } = fakeKv();
-    const handlers = collectTools(ghWith({}), "users/everett", kv, "everett");
+    const handlers = collectTools(ghWith({}), kv, "everett");
     const res = await handlers.get("update_pantry")!({ operations: [{ op: "remove", name: "ghost" }] });
     const out = JSON.parse(res.content[0].text) as {
       applied: unknown[];
@@ -387,7 +337,7 @@ describe("update_pantry / mark_pantry_verified (KV-backed)", () => {
 
   it("mark_pantry_verified against an absent pantry reports missing, writes nothing", async () => {
     const { kv, store } = fakeKv();
-    const handlers = collectTools(ghWith({}), "users/everett", kv, "everett");
+    const handlers = collectTools(ghWith({}), kv, "everett");
     const res = await handlers.get("mark_pantry_verified")!({ items: ["butter"] });
     const out = JSON.parse(res.content[0].text) as { verified: string[]; conflicts: { op: string; name: string }[] };
     expect(out.verified).toHaveLength(0);

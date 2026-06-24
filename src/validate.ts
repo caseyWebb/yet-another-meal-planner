@@ -27,7 +27,6 @@ const READY_TO_EAT_STATUSES = ["active", "draft", "rejected"];
 const READY_TO_EAT_MEALS = ["breakfast", "lunch", "dinner"];
 const GROCERY_STATUSES = ["active", "in_cart", "ordered"];
 const GROCERY_KINDS = ["grocery", "household", "other"];
-const COOKING_LOG_TYPES = ["recipe", "ready_to_eat", "ad_hoc"];
 // PROTEIN_VOCAB / CUISINE_VOCAB / EQUIPMENT_VOCAB come from the single shared
 // source (src/vocab.js) that scripts/build-indexes.mjs also imports — so the
 // write-time gate and the build-time gate cannot disagree. recipes/*.md
@@ -171,24 +170,10 @@ export function validateFile(path: string, content: string): void {
     return;
   }
 
-  if (path === "cooking_log.toml") {
-    const parsed = parseTomlOrFail(path, content);
-    const entries = Array.isArray(parsed.entries) ? (parsed.entries as Record<string, unknown>[]) : [];
-    for (const e of entries) {
-      if (typeof e.date !== "string" || !ISO_DATE_RE.test(e.date)) {
-        fail(path, `entry has an invalid or missing \`date\`: ${JSON.stringify(e.date)}`);
-      }
-      checkEnum(path, "type", e.type, COOKING_LOG_TYPES, true);
-      if (e.type === "recipe") {
-        if (typeof e.recipe !== "string" || e.recipe.length === 0) {
-          fail(path, "recipe entry is missing required field `recipe` (slug)");
-        }
-      } else if (typeof e.name !== "string" || e.name.length === 0) {
-        fail(path, `${String(e.type)} entry is missing required field \`name\``);
-      }
-    }
-    return;
-  }
+  // cooking_log left GitHub for the D1 `cooking_log` table (d1-cooking-log) — there
+  // is no GitHub-commit path that writes it, so it is no longer validated here.
+  // Write-time validation is now the log_cooked tool's job (structural checks +
+  // real recipe-slug resolution against the D1 `recipes` table).
 
   if (path === "meal_plan.toml") {
     const parsed = parseTomlOrFail(path, content);

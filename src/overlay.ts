@@ -1,9 +1,9 @@
 // Per-tenant subjective overlay (shared-corpus capability, D5). The overlay holds
 // only `rating` + `status`, keyed by recipe slug, in the caller's
 // `users/<username>/overlay.toml`. `last_cooked` is NOT here — it is derived from
-// the caller's cooking_log. Read tools merge the overlay (and the cooking-log
-// last_cooked) onto shared recipe content; an absent overlay row means effective
-// status = `draft`.
+// the caller's D1 `cooking_log` table (MAX date per recipe). Read tools merge the
+// overlay (and the cooking-log last_cooked) onto shared recipe content; an absent
+// overlay row means effective status = `draft`.
 //
 // Transition safety: until the data is migrated and `status`/`rating` are stripped
 // from the shared index (§6.1), the shared frontmatter still carries them. The
@@ -86,7 +86,7 @@ export function serializeOverlay(overlay: Overlay): string {
   const header =
     "# Per-tenant subjective overlay (rating + status), keyed by recipe slug.\n" +
     "# Merged onto shared recipe content at read time; absent slug → status draft.\n" +
-    "# last_cooked is NOT here — it is derived from cooking_log.toml.\n\n";
+    "# last_cooked is NOT here — it is derived from the D1 cooking_log table.\n\n";
   const slugs = Object.keys(overlay).sort();
   const blocks = slugs.map((slug) => {
     const row = overlay[slug];

@@ -29,7 +29,8 @@ import { parseStaples } from "./staples.js";
 import { parseOverlay, mergeOverlay, type Overlay } from "./overlay.js";
 import { getProfileBundle, getPantryState, type ProfileBundle } from "./user-kv.js";
 import { toInventory } from "./kitchen.js";
-import { entriesOf, deriveLastCooked } from "./cooking-log.js";
+import { db } from "./db.js";
+import { registerCookingWriteTools } from "./cooking-write.js";
 import { createKrogerClient, type KrogerCandidate } from "./kroger.js";
 import {
   matchIngredient,
@@ -201,8 +202,8 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
 
   // Per-request lazy reads of the caller's subjective layer. The overlay
   // supplies rating+status from the KV profile bundle; the cooking log supplies
-  // last_cooked from GitHub. Both are merged onto shared recipe content at read
-  // time (§6.2).
+  // last_cooked from the D1 `cooking_log` table. Both are merged onto shared
+  // recipe content at read time (§6.2).
   let overlayPromise: Promise<Overlay> | null = null;
   function getOverlay(): Promise<Overlay> {
     if (!overlayPromise) {
@@ -214,14 +215,22 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
     return overlayPromise;
   }
 
+  // last_cooked per recipe is now a D1 aggregation: MAX(date) over the caller's
+  // type='recipe' rows, grouped by slug. An empty/absent log yields an empty map.
   let lastCookedPromise: Promise<Map<string, string>> | null = null;
   function getLastCookedMap(): Promise<Map<string, string>> {
     if (!lastCookedPromise) {
       lastCookedPromise = (async () => {
-        const text = await readOptional(gh, "cooking_log.toml");
-        return text
-          ? deriveLastCooked(entriesOf(parseToml(text, "cooking_log.toml")))
-          : new Map<string, string>();
+        const rows = await db(env).all<{ recipe: string; last_cooked: string }>(
+          "SELECT recipe, MAX(date) AS last_cooked FROM cooking_log " +
+            "WHERE tenant = ?1 AND type = 'recipe' AND recipe IS NOT NULL GROUP BY recipe",
+          tenant.id,
+        );
+        const map = new Map<string, string>();
+        for (const { recipe, last_cooked } of rows) {
+          if (recipe && last_cooked) map.set(recipe, last_cooked);
+        }
+        return map;
       })();
     }
     return lastCookedPromise;
@@ -564,14 +573,17 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
   );
 
   // Repo-data write tools route by category internally (content → shared root,
-  // personal/overlay → KV profile bundle), so they take the ROOT client + the
-  // caller's prefix + DATA_KV + tenant id for profile writes.
-  registerWriteTools(server, sharedGh, tenant.userPrefix, env.DATA_KV, tenant.id);
+  // personal/overlay → KV profile bundle), so they take the ROOT client + DATA_KV +
+  // tenant id for profile writes.
+  registerWriteTools(server, sharedGh, env.DATA_KV, tenant.id);
   registerGroceryListTools(server, env.DATA_KV, tenant.id);
 
   // Cooking history + meal plan: read_meal_plan (resume), update_meal_plan, and
-  // retrospective. Meal plan reads/writes go through DATA_KV; cooking log stays GitHub.
-  registerCookingTools(server, gh, env, env.DATA_KV, tenant.id);
+  // retrospective. Meal plan reads/writes go through DATA_KV; the cooking log is the
+  // D1 `cooking_log` table. log_cooked appends a cooking event (D1 write + meal-plan
+  // clear) — it needs D1 (env) plus the KV meal plan, so it registers here too.
+  registerCookingTools(server, env, env.DATA_KV, tenant.id);
+  registerCookingWriteTools(server, env, env.DATA_KV, tenant.id);
 
   // Discovery: RSS recipe candidates, parse-only URL import, draft create, plus the
   // feeds/sources config writers. Everything here is SHARED (root client) — recipes,

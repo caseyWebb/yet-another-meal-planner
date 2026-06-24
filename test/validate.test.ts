@@ -110,25 +110,15 @@ describe("validateFile", () => {
     ).not.toThrow();
   });
 
-  it("validates cooking_log entries: date, type enum, required recipe/name", () => {
+  // cooking_log left GitHub for the D1 `cooking_log` table (d1-cooking-log): no
+  // GitHub-commit path writes it, so validateFile no longer has a cooking_log.toml
+  // branch. Write-time validation moved to the log_cooked tool
+  // (test/cooking-write.test.ts); the parse-only fallthrough still accepts it as
+  // generic TOML, so it does not throw.
+  it("does not special-case cooking_log.toml (parse-only fallthrough, no throw)", () => {
     expect(() =>
-      validateFile("cooking_log.toml", '[[entries]]\ndate = "2026-06-09"\ntype = "recipe"\nrecipe = "x"\n'),
+      validateFile("cooking_log.toml", '[[entries]]\ndate = "June"\ntype = "ate_out"\n'),
     ).not.toThrow();
-    expect(() =>
-      validateFile("cooking_log.toml", '[[entries]]\ndate = "2026-06-09"\ntype = "ready_to_eat"\nname = "lasagna"\n'),
-    ).not.toThrow();
-    expect(() =>
-      validateFile("cooking_log.toml", '[[entries]]\ndate = "June"\ntype = "recipe"\nrecipe = "x"\n'),
-    ).toThrowError(/date/);
-    expect(() =>
-      validateFile("cooking_log.toml", '[[entries]]\ndate = "2026-06-09"\ntype = "ate_out"\nname = "diner"\n'),
-    ).toThrowError(/not one of/);
-    expect(() =>
-      validateFile("cooking_log.toml", '[[entries]]\ndate = "2026-06-09"\ntype = "recipe"\n'),
-    ).toThrowError(/recipe/);
-    expect(() =>
-      validateFile("cooking_log.toml", '[[entries]]\ndate = "2026-06-09"\ntype = "ad_hoc"\n'),
-    ).toThrowError(/name/);
   });
 
   it("validates meal_plan rows: required recipe, ISO planned_for", () => {

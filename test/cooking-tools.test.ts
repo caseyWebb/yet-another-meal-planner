@@ -1,74 +1,61 @@
 import { describe, it, expect } from "vitest";
 import { loadRetrospective } from "../src/cooking-tools.js";
-import { GitHubError, type GitHubClient } from "../src/github.js";
 import type { Env } from "../src/env.js";
 
-function ghWith(files: Record<string, string>): GitHubClient {
+// Minimal KV fake (getProfileBundle reads profile:<username>; an absent key → {}).
+function fakeKv(initial: Record<string, string> = {}): KVNamespace {
+  const store = new Map(Object.entries(initial));
   return {
-    async getFile(path: string) {
-      if (path in files) return files[path];
-      throw new GitHubError(404, `Not found: ${path}`);
+    get: async (k: string) => store.get(k) ?? null,
+    put: async (k: string, v: string) => {
+      store.set(k, v);
     },
-    async listDir(path: string) {
-      throw new GitHubError(404, `Not found: ${path}`);
+    delete: async (k: string) => {
+      store.delete(k);
     },
-    async getRef() {
-      return "x";
-    },
-    async getCommitTree() {
-      return "x";
-    },
-    async createTree() {
-      return "x";
-    },
-    async createCommit() {
-      return "x";
-    },
-    async updateRef() {},
-    async createIssue() {
-      return { url: "https://example.test/issues/1", number: 1 };
-    },
-    async getPagesUrl() {
-      return { url: null, enabled: false };
-    },
-  };
+  } as unknown as KVNamespace;
 }
 
-// A fake D1Database for the recipe index (loadRecipeIndex does `SELECT * FROM
-// recipes`). `rows` are the table rows; `throwOnAll` simulates an unreadable table.
-function envWithRecipes(
-  rows: Record<string, unknown>[],
-  opts: { throwOnAll?: boolean } = {},
+// A fake D1Database that routes by SQL: the `cooking_log LEFT JOIN recipes` window
+// query returns `joinRows`; `SELECT * FROM recipes` returns `recipeRows`.
+// `throwOnRecipes` simulates an unreadable recipes table (index_unavailable).
+function envWith(
+  joinRows: Record<string, unknown>[],
+  recipeRows: Record<string, unknown>[],
+  opts: { throwOnRecipes?: boolean } = {},
 ): Env {
-  const stmt = {
-    bind() {
-      return stmt;
-    },
-    async all<T>() {
-      if (opts.throwOnAll) throw new Error("no such table: recipes");
-      return { results: rows as T[], success: true as const, meta: { changes: 0 } };
-    },
-    async first<T>() {
-      return (rows[0] ?? null) as T | null;
-    },
-    async run() {
-      return { success: true as const, meta: { changes: 0 } };
-    },
+  const makeStmt = (sql: string) => {
+    const stmt = {
+      bind() {
+        return stmt;
+      },
+      async all<T>() {
+        if (sql.includes("FROM cooking_log")) {
+          return { results: joinRows as T[], success: true as const, meta: { changes: 0 } };
+        }
+        if (sql.includes("FROM recipes")) {
+          if (opts.throwOnRecipes) throw new Error("no such table: recipes");
+          return { results: recipeRows as T[], success: true as const, meta: { changes: 0 } };
+        }
+        return { results: [] as T[], success: true as const, meta: { changes: 0 } };
+      },
+      async first<T>() {
+        return null as T | null;
+      },
+      async run() {
+        return { success: true as const, meta: { changes: 0 } };
+      },
+    };
+    return stmt;
   };
   const DB = {
-    prepare: () => stmt as unknown as D1PreparedStatement,
+    prepare: (sql: string) => makeStmt(sql) as unknown as D1PreparedStatement,
     async batch() {
       return [];
     },
   } as unknown as D1Database;
   return { DB } as unknown as Env;
 }
-
-const LOG = `[[entries]]
-date = "2026-06-10"
-type = "recipe"
-recipe = "tacos"
-`;
 
 // One D1 `recipes` row (objective columns only — JSON arrays as TEXT).
 const TACOS_ROW = {
@@ -89,27 +76,36 @@ const TACOS_ROW = {
   extra: null,
 };
 
-describe("loadRetrospective — D1 index routing", () => {
-  it("reads cooking_log from the personal client and the recipe index from D1", async () => {
-    const personal = ghWith({ "cooking_log.toml": LOG });
-    const env = envWithRecipes([TACOS_ROW]);
-    const r = await loadRetrospective(personal, env, "all");
+describe("loadRetrospective — D1 cooking_log + recipe index", () => {
+  it("aggregates protein/cuisine from the joined cooking_log rows", async () => {
+    // The join row carries protein/cuisine already COALESCE'd in (recipe-derived).
+    const joinRows = [{ type: "recipe", date: "2026-06-10", recipe: "tacos", name: null, protein: "beef", cuisine: "mexican" }];
+    const env = envWith(joinRows, [TACOS_ROW]);
+    const r = await loadRetrospective(env, fakeKv(), "everett", "all");
     expect(r.recipes_cooked.find((x) => x.recipe === "tacos")).toBeTruthy();
     expect(r.protein_mix.beef).toBe(1);
+    expect(r.cuisine_mix.mexican).toBe(1);
+  });
+
+  it("counts a non-recipe entry's inline dims", async () => {
+    const joinRows = [{ type: "ad_hoc", date: "2026-06-11", recipe: null, name: "stir fry", protein: "chicken", cuisine: null }];
+    const env = envWith(joinRows, []);
+    const r = await loadRetrospective(env, fakeKv(), "everett", "all");
+    expect(r.protein_mix.chicken).toBe(1);
+    expect(r.cuisine_mix.unknown).toBe(1);
   });
 
   it("surfaces index_unavailable when the recipes table is unreadable", async () => {
-    const personal = ghWith({ "cooking_log.toml": LOG });
-    const env = envWithRecipes([], { throwOnAll: true });
-    await expect(loadRetrospective(personal, env, "all")).rejects.toMatchObject({
+    const joinRows = [{ type: "recipe", date: "2026-06-10", recipe: "tacos", name: null, protein: "beef", cuisine: "mexican" }];
+    const env = envWith(joinRows, [], { throwOnRecipes: true });
+    await expect(loadRetrospective(env, fakeKv(), "everett", "all")).rejects.toMatchObject({
       code: "index_unavailable",
     });
   });
 
-  it("an empty recipes table is not an error — empty history, index just empty", async () => {
-    const personal = ghWith({});
-    const env = envWithRecipes([]);
-    const r = await loadRetrospective(personal, env, "all");
+  it("an empty log is not an error — empty history", async () => {
+    const env = envWith([], []);
+    const r = await loadRetrospective(env, fakeKv(), "everett", "all");
     expect(r.recipes_cooked).toEqual([]);
   });
 });

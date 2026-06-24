@@ -56,7 +56,7 @@ Resolve the URL of the hosted recipe site (the static browse view of the shared 
 
 ### `update_recipe(slug, updates)`
 
-Update recipe frontmatter fields. Use for `last_cooked`, `rating`, `status` transitions, and any other frontmatter edits the user has directed.
+Update recipe frontmatter fields. Use for `rating`, `status` transitions, and any other frontmatter edits the user has directed. (`last_cooked` is not settable here — it is derived from the cooking log; record a cooked meal via `log_cooked`.)
 
 **Params:**
 - `slug` (string, required)
@@ -65,7 +65,7 @@ Update recipe frontmatter fields. Use for `last_cooked`, `rating`, `status` tran
 **Returns:**
 - `{ slug, updated_fields, commit_sha? }` — confirmation of what was changed; `commit_sha` is present when a write landed and omitted when nothing changed
 
-**Notes:** Side-effect updates (last_cooked, rating, status) happen during normal flow. Other frontmatter edits require user direction. **Per-tenant routing:** `rating` and `status` are *subjective* — they write to the caller's `users/<id>/overlay.toml`, not the shared recipe, so one member's rating/disposition never changes another's. Objective frontmatter edits write the shared recipe content. `last_cooked` is never set by hand — it's derived from the caller's `cooking_log.toml`. `read_recipe`/`list_recipes` merge the caller's overlay (+ cooking-log `last_cooked`) onto shared content at read time; an absent overlay row means effective `status: draft`. `perishable_ingredients` is objective shared content (not subjective), so an edit to it writes the shared recipe; the Worker normalizes the names on write (the same `normalizeIngredient` the Kroger matcher uses) so cross-recipe overlap lines up. Objective frontmatter is checked against the controlled vocabularies on write: `protein`/`cuisine` must be coarse buckets and `requires_equipment` slugs must be in-vocab — an off-vocab value returns `validation_failed` and makes no commit (a `none`/empty `protein`/`cuisine` is normalized to absent rather than rejected).
+**Notes:** Side-effect updates (rating, status) happen during normal flow. Other frontmatter edits require user direction. **Per-tenant routing:** `rating` and `status` are *subjective* — they write to the caller's KV overlay bundle, not the shared recipe, so one member's rating/disposition never changes another's. Objective frontmatter edits write the shared recipe content. `last_cooked` is never set by hand — it's derived from the caller's D1 `cooking_log` rows (record a cooked meal via `log_cooked`). `read_recipe`/`list_recipes` merge the caller's overlay (+ cooking-log `last_cooked`) onto shared content at read time; an absent overlay row means effective `status: draft`. `perishable_ingredients` is objective shared content (not subjective), so an edit to it writes the shared recipe; the Worker normalizes the names on write (the same `normalizeIngredient` the Kroger matcher uses) so cross-recipe overlap lines up. Objective frontmatter is checked against the controlled vocabularies on write: `protein`/`cuisine` must be coarse buckets and `requires_equipment` slugs must be in-vocab — an off-vocab value returns `validation_failed` and makes no commit (a `none`/empty `protein`/`cuisine` is normalized to absent rather than rejected).
 
 ### `parse_recipe(url)`
 
@@ -627,7 +627,7 @@ Read the content of the named guidance entries.
 
 ### `retrospective(period)`
 
-Aggregate **real** cooking history from the cooking log over a period, joining `type=recipe` entries to the recipe index for protein/cuisine.
+Aggregate **real** cooking history from the D1 `cooking_log` table over a period, joining `type=recipe` rows to the `recipes` table for protein/cuisine (a `cooking_log LEFT JOIN recipes` + COALESCE).
 
 **Params:**
 - `period` (string, optional, default `"month"`): `"Nd"` (e.g. `"30d"`) | `"week"` | `"month"` | `"quarter"` | `"year"` | `"all"`.
@@ -646,7 +646,23 @@ Aggregate **real** cooking history from the cooking log over a period, joining `
 }
 ```
 
-**Notes:** `last_cooked` is derived (see `commit_changes`), so `underused` reflects real cook events. Eating out is never logged; leftovers of an already-logged cook are not re-logged.
+**Notes:** `last_cooked` is derived (see `log_cooked`) — `MAX(date)` over the caller's `type=recipe` rows — so `underused` reflects real cook events. Eating out is never logged; leftovers of an already-logged cook are not re-logged.
+
+### `log_cooked(entry)`
+
+Append one cooking event to the caller's `cooking_log` (D1-backed; **no `commit_sha`**). This is the writer that replaced `commit_changes`' `cooking_log_entries`.
+
+**Params:**
+- `type` (string, required): `recipe | ready_to_eat | ad_hoc`.
+- `date` (string, optional): ISO `YYYY-MM-DD`; defaults to today.
+- `recipe` (string): the recipe slug — **required** for `type=recipe`; it MUST resolve against the D1 `recipes` table.
+- `name` (string): the dish name — **required** for `ready_to_eat | ad_hoc`.
+- `protein`, `cuisine` (string, optional): inline dimensions for a non-recipe entry (so it still counts in `retrospective` mixes). Recipe entries take their dims from the recipe, not here.
+
+**Returns:**
+- `{ logged: { date, type, recipe?, name?, protein?, cuisine? } }` — no `commit_sha`.
+
+**Notes:** Validated at write time — a bad date/type or a missing required field is `validation_failed`; an unknown recipe slug is `not_found`, written nowhere. **Auto-clears:** a `type=recipe` entry also removes the cooked slug from the caller's KV meal plan (`state:<username>:meal_plan`) so the plan stays current. Never set `last_cooked` via `update_recipe`/`commit_changes` — logging a recipe here updates its effective `last_cooked` automatically (it's derived by query). Ready-to-eat consumption is a `{ type: "ready_to_eat", name }` entry; use `update_pantry` to remove any pantry stock when the user used the last of it.
 
 ### `read_meal_plan()`
 
@@ -670,19 +686,19 @@ Add or remove planned meal entries. KV-backed — no commit, no `commit_sha`.
 **Returns:**
 - `{ applied: [...], conflicts: [...] }` — each applied entry has `{ op, recipe }`; conflicts include the reason.
 
-**Notes:** Called after the user confirms a menu (add rows), and during cook-capture or the stale-planned reconcile (remove rows). `cooking_log_entries` in `commit_changes` also auto-removes cooked recipes from the meal plan. A **corpus** side (a `course: side` recipe) gets its own `add` row; open-world sides ride on the main's `sides` field.
+**Notes:** Called after the user confirms a menu (add rows), and during cook-capture or the stale-planned reconcile (remove rows). `log_cooked` also auto-removes a cooked recipe from the meal plan. A **corpus** side (a `course: side` recipe) gets its own `add` row; open-world sides ride on the main's `sides` field.
 
 ---
 
 ## Commit / atomic operations
 
-> **Capture/flush split.** Repo persistence and cart placement are two separate tools: **`commit_changes`** (GitHub commit for recipe/log writes + KV writes for overlay/config/ready-to-eat) and **`place_order`** (the order-time cart flush + SKU-cache write). Pantry, meal plan, and grocery list are fully KV-backed and have their own tools (`update_pantry`, `update_meal_plan`, `add_to_grocery_list`, …).
+> **Capture/flush split.** Repo persistence and cart placement are two separate tools: **`commit_changes`** (GitHub commit for recipe writes + KV writes for overlay/config/ready-to-eat) and **`place_order`** (the order-time cart flush + SKU-cache write). Pantry, meal plan, grocery list, and the cooking log are fully KV/D1-backed and have their own tools (`update_pantry`, `update_meal_plan`, `add_to_grocery_list`, `log_cooked`, …).
 
 ### `commit_changes(payload)`
 
 Batch GitHub-backed writes as one atomic git commit, plus KV-backed writes for overlay/config/ready-to-eat, in the same call.
 
-**GitHub-backed (creates a commit):** `recipe_updates` objective frontmatter/body, `cooking_log_entries`.
+**GitHub-backed (creates a commit):** `recipe_updates` objective frontmatter/body.
 
 **KV-backed (no per-field commit_sha):** `recipe_updates` rating/status → overlay bundle, `ready_to_eat_drafts/updates` → ready_to_eat bundle, `config_updates` preferences/taste/diet_principles → profile bundle, `config_updates` aliases → shared GitHub file.
 
@@ -695,15 +711,14 @@ Returns `commit_sha: null` when no GitHub files were written.
   ready_to_eat_drafts:  [{ meal, name, status?, category?, source?, brand?, notes? }],  // → KV ready_to_eat bundle
   ready_to_eat_updates: [{ slug, updates }],          // → KV ready_to_eat bundle
   config_updates:       [{ file, content }],          // file: preferences|taste|diet_principles → KV; aliases → GitHub
-  cooking_log_entries:  [{ type, date?, recipe?, name?, protein?, cuisine? }],  // → GitHub cooking_log.toml; date defaults to today; auto-clears cooked recipes from KV meal plan
   commit_message:       string
 }
 ```
 All sections are optional except `commit_message`.
 
-**`cooking_log_entries` (cooking-history).** Appends to `users/<username>/cooking_log.toml` on GitHub. `type` is `recipe | ready_to_eat | ad_hoc`; `recipe` is required for `type=recipe` (slug-only), `name` for the others. Never set `last_cooked` via `recipe_updates` — it is derived from the log. **Auto-clears:** each `type=recipe` entry also removes the cooked slug from the KV meal plan (`state:<username>:meal_plan`) so the plan stays current. Ready-to-eat consumption is a `{type:"ready_to_eat", name}` entry; use `update_pantry` to remove any pantry stock when the user used the last of it.
+Cooking events are **not** part of `commit_changes` — log them with `log_cooked` (the cooking log moved to D1).
 
-**`recipe_updates` routing:** objective frontmatter/body changes → shared GitHub recipe; `rating`/`status` → KV overlay bundle (never the shared recipe). `last_cooked` is derived — set via cooking_log_entries, never directly.
+**`recipe_updates` routing:** objective frontmatter/body changes → shared GitHub recipe; `rating`/`status` → KV overlay bundle (never the shared recipe). `last_cooked` is derived — record a cooked meal via `log_cooked`, never set it directly.
 
 **Returns:**
 - `{ commit_sha, summary }` — `commit_sha` is null when only KV writes occurred (no GitHub files)

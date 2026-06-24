@@ -1,7 +1,12 @@
-// Pure retrospective aggregation (cooking-history capability). Joins the cooking
-// log to the recipe index to produce real protein/cuisine mixes, cadence, the
-// cook-vs-convenience split, ready-to-eat favorites, and underused recipes. No
-// I/O — the tool wrapper supplies parsed entries, the recipe index, and `now`.
+// Pure retrospective aggregation (cooking-history capability). Produces real
+// protein/cuisine mixes, cadence, the cook-vs-convenience split, ready-to-eat
+// favorites, and underused recipes. No I/O — the tool wrapper supplies the entries,
+// the recipe index, and `now`. Each entry's protein/cuisine is ALREADY RESOLVED by
+// the caller (the D1 `cooking_log LEFT JOIN recipes` + COALESCE — a recipe entry
+// carries its recipe's dims, a non-recipe entry its inline dims), so this layer
+// reads them off the row directly. The recipe `index` is used only for `underused`
+// (active recipes not cooked in the window), where it must already carry the
+// caller's effective status + last_cooked (overlay/cooking-log merged in).
 
 import type { CookingLogEntry } from "./cooking-log.js";
 import type { RecipeIndex } from "./recipes.js";
@@ -83,21 +88,15 @@ export function retrospective(
   let convenience = 0;
 
   for (const e of inWindow) {
-    let protein: string | undefined;
-    let cuisine: string | undefined;
+    // protein/cuisine are already resolved on the entry (recipe-derived for recipe
+    // entries via the JOIN, inline for non-recipe entries via COALESCE).
     if (e.type === "recipe" && e.recipe) {
-      const r = index[e.recipe];
-      protein = typeof r?.protein === "string" ? r.protein : undefined;
-      cuisine = typeof r?.cuisine === "string" ? r.cuisine : undefined;
       const dates = cookedDates.get(e.recipe) ?? [];
       dates.push(e.date);
       cookedDates.set(e.recipe, dates);
-    } else {
-      protein = e.protein;
-      cuisine = e.cuisine;
     }
-    bump(protein_mix, protein ?? "unknown");
-    bump(cuisine_mix, cuisine ?? "unknown");
+    bump(protein_mix, e.protein ?? "unknown");
+    bump(cuisine_mix, e.cuisine ?? "unknown");
 
     if (e.type === "ready_to_eat") {
       convenience++;

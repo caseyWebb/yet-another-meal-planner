@@ -37,8 +37,6 @@ const SUBJECTIVE_FIELDS = ['rating', 'last_cooked', 'status'];
 // cannot drift. Validated only WHEN PRESENT (absence keeps the warn-only
 // recommended-field treatment). Extending a vocabulary is a deliberate edit in
 // src/vocab.js. See docs/SCHEMAS.md.
-const COOKING_LOG_TYPES = new Set(['recipe', 'ready_to_eat', 'ad_hoc']);
-const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 // Recommended-but-optional fields whose absence signals an incomplete migration.
 // last_cooked / rating / discovered_at are legitimately null by design and are NOT warned.
 const RECOMMENDED_FIELDS = ['protein', 'time_total', 'ingredients_key'];
@@ -308,57 +306,11 @@ export function validateDiscoverySources(parsed, rel) {
   return errors;
 }
 
-// --- cooking-log + meal-plan validation ---------------------------------
-
-// Validate cooking_log.toml against the recipe set. Pure: takes the already-parsed
-// object (or null when the file is absent) plus the recipes map. Returns
-// { errors, warnings }. (meal_plan.toml moved to DATA_KV — validated by the Worker
-// at write time, not here.)
-export function validateCookingArtifacts({ recipes, cookingLog }) {
-  // Accept a quoted ISO string OR a bare TOML date (smol-toml parses those as
-  // Date). Returns the YYYY-MM-DD string, or null when not a valid date.
-  const isoOf = (v) => {
-    if (v instanceof Date) return v.toISOString().slice(0, 10);
-    if (typeof v === 'string' && ISO_DATE_RE.test(v)) return v;
-    return null;
-  };
-
-  const errors = [];
-  const warnings = [];
-  const slugs = new Set(Object.keys(recipes));
-
-  const entries = cookingLog && Array.isArray(cookingLog.entries) ? cookingLog.entries : [];
-  const maxLogDate = new Map(); // slug -> latest cooked date
-  entries.forEach((e, i) => {
-    const where = `cooking_log.toml entry ${i + 1}`;
-    const date = isoOf(e.date);
-    if (date === null) errors.push(`${where}: invalid or missing date (${JSON.stringify(e.date)})`);
-    if (!COOKING_LOG_TYPES.has(e.type)) {
-      errors.push(`${where}: invalid type (${JSON.stringify(e.type)})`);
-      return;
-    }
-    if (e.type === 'recipe') {
-      if (typeof e.recipe !== 'string' || e.recipe.length === 0) {
-        errors.push(`${where}: recipe entry is missing "recipe" (slug)`);
-      } else if (!slugs.has(e.recipe)) {
-        errors.push(`${where}: recipe entry references unknown slug "${e.recipe}"`);
-      } else if (date !== null) {
-        const prev = maxLogDate.get(e.recipe);
-        if (prev === undefined || date > prev) maxLogDate.set(e.recipe, date);
-      }
-    } else if (typeof e.name !== 'string' || e.name.length === 0) {
-      errors.push(`${where}: ${e.type} entry is missing "name"`);
-    }
-  });
-
-  // (The former frontmatter `last_cooked` vs. max-log-date soft-check is gone:
-  // last_cooked is no longer a shared-recipe field — it is a per-tenant value
-  // derived from each tenant's own cooking_log at read time, so the shared index
-  // build cannot and need not reconcile it.)
-  void maxLogDate;
-
-  return { errors, warnings };
-}
+// (The cooking log left GitHub for the D1 `cooking_log` table (d1-cooking-log), so
+// the build no longer validates it — there is no cooking_log.toml in the corpus to
+// check. Its structural validation lives on in the Worker's log_cooked tool, which
+// also resolves recipe slugs against the D1 `recipes` table at write time. meal_plan
+// likewise moved to DATA_KV and is Worker-validated, not built here.)
 
 // --- toml parse-check (whole repo) --------------------------------------
 
@@ -419,13 +371,10 @@ export async function run({ recipesDir, root = REPO_ROOT } = {}) {
   const sources = parsed.get(path.join(root, 'discovery_sources.toml'));
   if (sources) discErr.push(...validateDiscoverySources(sources, 'discovery_sources.toml'));
 
-  const cookingLog = parsed.get(path.join(root, 'cooking_log.toml')) ?? null;
-  const { errors: cErr, warnings: cWarn } = validateCookingArtifacts({ recipes, cookingLog });
-
   return {
     indexes: { recipes },
-    errors: [...rErr, ...tErr, ...storeErr, ...discErr, ...cErr],
-    warnings: [...warnings, ...cWarn],
+    errors: [...rErr, ...tErr, ...storeErr, ...discErr],
+    warnings: [...warnings],
   };
 }
 

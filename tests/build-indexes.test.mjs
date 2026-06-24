@@ -15,7 +15,6 @@ import {
   normalizeValue,
   deriveSlug,
   hasH2Section,
-  validateCookingArtifacts,
   recipeToRow,
   run,
 } from '../scripts/build-indexes.mjs';
@@ -459,55 +458,11 @@ test('in-vocabulary protein/cuisine pass; absent protein only warns', async () =
 });
 
 // --- cooking-log validation ---------------------------------------------
-// (meal_plan.toml moved to DATA_KV — validated by the Worker at write time, not
-// by the build; validateCookingArtifacts no longer takes a mealPlan.)
-
-const recipesFixture = { 'arroz-caldo': { last_cooked: '2026-06-09' }, salmon: { last_cooked: null } };
-
-test('cooking artifacts: valid log produces no errors', () => {
-  const { errors } = validateCookingArtifacts({
-    recipes: recipesFixture,
-    cookingLog: { entries: [{ date: '2026-06-09', type: 'recipe', recipe: 'arroz-caldo' }, { date: '2026-06-08', type: 'ready_to_eat', name: 'lasagna' }] },
-  });
-  assert.deepEqual(errors, []);
-});
-
-test('cooking artifacts: hard-fail on unknown type, unresolved slugs, bad dates', () => {
-  const { errors } = validateCookingArtifacts({
-    recipes: recipesFixture,
-    cookingLog: {
-      entries: [
-        { date: '2026-06-09', type: 'ate_out', name: 'diner' }, // unknown type
-        { date: '2026-06-09', type: 'recipe', recipe: 'ghost' }, // unresolved slug
-        { date: 'nope', type: 'ad_hoc', name: 'x' }, // bad date
-      ],
-    },
-  });
-  assert.ok(errors.some((e) => e.includes('invalid type')), errors.join('\n'));
-  assert.ok(errors.some((e) => e.includes('unknown slug "ghost"') && e.includes('cooking_log')), errors.join('\n'));
-  assert.ok(errors.some((e) => e.includes('invalid or missing date')), errors.join('\n'));
-});
-
-test('cooking artifacts: last_cooked is no longer cross-checked against the log', () => {
-  // last_cooked is a per-tenant value derived at read time, not a shared-recipe
-  // field, so the shared build no longer reconciles frontmatter against the log —
-  // even an apparent "drift" produces no warning.
-  const { errors, warnings } = validateCookingArtifacts({
-    recipes: { stale: { last_cooked: '2026-06-01' } },
-    cookingLog: { entries: [{ date: '2026-06-10', type: 'recipe', recipe: 'stale' }] },
-  });
-  assert.deepEqual(errors, []);
-  assert.ok(!warnings.some((w) => w.includes('last_cooked')), warnings.join('\n'));
-});
-
-test('cooking artifacts: accepts a bare TOML date (Date) as well as a string', () => {
-  const { errors, warnings } = validateCookingArtifacts({
-    recipes: { x: { last_cooked: '2026-06-09' } },
-    cookingLog: { entries: [{ date: new Date('2026-06-09T00:00:00Z'), type: 'recipe', recipe: 'x' }] },
-  });
-  assert.deepEqual(errors, []);
-  assert.deepEqual(warnings, []);
-});
+// The cooking log left GitHub for the D1 `cooking_log` table (d1-cooking-log), so
+// the build no longer validates it (validateCookingArtifacts was removed). Its
+// structural checks live on in the Worker's log_cooked tool, which additionally
+// resolves recipe slugs against the D1 `recipes` table at write time. The backfill
+// from cooking_log.toml → D1 is exercised by tests/cooking-log-backfill.test.mjs.
 
 // --- D1 projection (recipeToRow) ----------------------------------------
 // The recipe index is the D1 `recipes` table now (d1-recipe-index): build-indexes
