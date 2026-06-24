@@ -37,7 +37,7 @@
     "@types/js-yaml": "^4.0.9",
     "json5": "^2.2.3",
     "typescript": "^6.0.3",
-    "vitest": "^3.2.6",
+    "vitest": "^4.1.9",
     "wrangler": "^4.103.0"
   }
 }
