@@ -64,6 +64,7 @@ function fakeD1(slugs: string[]): FakeStore {
     kitchen_equipment: [],
     ready_to_eat: [],
     pantry: [],
+    aliases: [],
   };
 
   function tableOf(sql: string): string | null {
@@ -115,7 +116,9 @@ function fakeD1(slugs: string[]): FakeStore {
                 ? ["tenant", "slug"]
                 : table === "kitchen_equipment"
                   ? ["tenant", "slug"]
-                  : ["tenant", "normalized_name"];
+                  : table === "aliases"
+                    ? ["variant"]
+                    : ["tenant", "normalized_name"];
       const idx = tables[table].findIndex((r) => pk.every((k) => r[k] === row[k]));
       if (idx >= 0 && /ON CONFLICT/i.test(sql)) {
         tables[table][idx] = { ...tables[table][idx], ...row };
@@ -360,6 +363,31 @@ function collectTools(gh: GitHubClient, username: string, env: Env = fakeD1([]).
   );
   return handlers;
 }
+
+describe("update_aliases (D1-backed)", () => {
+  it("upserts mappings into the D1 aliases table, no git commit", async () => {
+    const d1 = fakeD1([]);
+    const handlers = collectTools(ghWith({}), "everett", d1.env);
+    const res = await handlers.get("update_aliases")!({
+      aliases: { EVOO: "olive oil", scallions: "green onions" },
+    });
+    const out = JSON.parse(res.content[0].text) as { updated: number; commit_sha?: string };
+    expect(out.updated).toBe(2);
+    expect(out.commit_sha).toBeUndefined(); // D1-backed: not a GitHub commit
+    expect(d1.tables.aliases).toEqual([
+      { variant: "EVOO", canonical: "olive oil" },
+      { variant: "scallions", canonical: "green onions" },
+    ]);
+  });
+
+  it("re-writing a variant upserts (no duplicate row)", async () => {
+    const d1 = fakeD1([]);
+    const handlers = collectTools(ghWith({}), "everett", d1.env);
+    await handlers.get("update_aliases")!({ aliases: { EVOO: "olive oil" } });
+    await handlers.get("update_aliases")!({ aliases: { EVOO: "extra virgin olive oil" } });
+    expect(d1.tables.aliases).toEqual([{ variant: "EVOO", canonical: "extra virgin olive oil" }]);
+  });
+});
 
 describe("update_pantry / mark_pantry_verified (D1-backed)", () => {
   it("update_pantry add inserts a pantry row, no commit_sha", async () => {

@@ -138,17 +138,17 @@ The staples list is per-tenant: `update_staples` SHALL write the caller's `stapl
 
 ### Requirement: User-curated narrative writes are content-faithful
 
-The user-curated narrative `update_*` tools — `update_taste`, `update_diet_principles` (D1 `profile` row), and `update_aliases` (GitHub `aliases.toml`) — SHALL write exactly the content supplied by the caller and SHALL NOT infer or merge additional changes. There is no `update_substitutions` tool. `update_taste` / `update_diet_principles` write the supplied markdown to the caller's `profile` row and return without a `commit_sha`. `update_aliases` commits `aliases.toml` to the shared GitHub corpus and returns `{ file, commit_sha }`. The discipline of *when* these may be called (only on explicit user direction) is documented in `AGENT_INSTRUCTIONS.md`; the tools are unconditional writers of provided content.
+The user-curated narrative `update_*` tools — `update_taste` and `update_diet_principles` (D1 `profile` row) — SHALL write exactly the markdown supplied by the caller and SHALL NOT infer or merge additional changes, returning `{ updated }` with no `commit_sha`. There is no `update_substitutions` tool. `update_aliases` writes the shared ingredient-alias corpus: it SHALL **upsert** each supplied `variant → canonical` mapping by variant into the **D1 `aliases` table** (the same table the matcher reads), returning `{ updated }` with no `commit_sha`; it does not remove mappings and does not write GitHub (the matcher no longer reads `aliases.toml`). The discipline of *when* these may be called (only on explicit user direction) is documented in `AGENT_INSTRUCTIONS.md`.
 
 #### Scenario: Narrative write persists provided content verbatim
 
 - **WHEN** `update_taste(content)` is called with a directed edit
 - **THEN** the tool writes the provided markdown to the caller's D1 `profile` row and returns `{ updated }` with no `commit_sha`, without adding inferred changes
 
-#### Scenario: Aliases write commits to the shared corpus
+#### Scenario: Aliases write upserts the shared D1 table
 
-- **WHEN** `update_aliases(content)` is called
-- **THEN** the supplied content is committed to `aliases.toml` in the shared GitHub corpus and the tool returns `{ file, commit_sha }`
+- **WHEN** `update_aliases({ aliases: { "EVOO": "olive oil" } })` is called
+- **THEN** each mapping is upserted by variant into the D1 `aliases` table and the tool returns `{ updated }` with no `commit_sha` (no GitHub commit)
 
 ### Requirement: Pantry write upserts D1 rows
 
