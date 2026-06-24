@@ -57,6 +57,7 @@ interface PantryRow {
   prepared_from: string | null;
   added_at: string | null;
   last_verified_at: string | null;
+  notes: string | null;
 }
 
 /** Assemble a pantry item (the agent-facing shape) from a row. */
@@ -67,6 +68,7 @@ function pantryItemOf(r: PantryRow): PantryItem {
   item.prepared_from = r.prepared_from; // null is meaningful (the default)
   if (r.added_at != null) item.added_at = r.added_at;
   if (r.last_verified_at != null) item.last_verified_at = r.last_verified_at;
+  if (r.notes != null) item.notes = r.notes;
   return item;
 }
 
@@ -78,7 +80,7 @@ export interface PantryFilter {
 /** Read the caller's pantry rows, with optional category / prepared filters (WHERE). */
 export async function readPantry(env: Env, tenant: string, filter: PantryFilter = {}): Promise<PantryItem[]> {
   let sql =
-    "SELECT name, normalized_name, quantity, category, prepared_from, added_at, last_verified_at " +
+    "SELECT name, normalized_name, quantity, category, prepared_from, added_at, last_verified_at, notes " +
     "FROM pantry WHERE tenant = ?1";
   const binds: unknown[] = [tenant];
   if (filter.category !== undefined) {
@@ -97,10 +99,11 @@ function pantryUpsertStmt(env: Env, tenant: string, item: PantryItem): D1Prepare
   const name = String(item.name);
   return db(env).prepare(
     "INSERT INTO pantry (tenant, name, normalized_name, quantity, category, prepared_from, " +
-      "added_at, last_verified_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) " +
+      "added_at, last_verified_at, notes) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9) " +
       "ON CONFLICT(tenant, normalized_name) DO UPDATE SET " +
       "name = excluded.name, quantity = excluded.quantity, category = excluded.category, " +
-      "prepared_from = excluded.prepared_from, last_verified_at = excluded.last_verified_at",
+      "prepared_from = excluded.prepared_from, last_verified_at = excluded.last_verified_at, " +
+      "notes = excluded.notes",
     tenant,
     name,
     normalizeName(name),
@@ -109,6 +112,7 @@ function pantryUpsertStmt(env: Env, tenant: string, item: PantryItem): D1Prepare
     item.prepared_from ?? null,
     item.added_at ?? null,
     item.last_verified_at ?? null,
+    item.notes ?? null,
   );
 }
 

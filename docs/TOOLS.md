@@ -203,9 +203,9 @@ Apply pantry updates from conversational messages.
 - `operations` (array): `[{ op: "add" | "remove" | "verify", item: ..., ... }]`
 
 **Returns:**
-- `{ applied: [...], conflicts: [...] }` — KV-backed, no `commit_sha`
+- `{ applied: [...], conflicts: [...] }` — D1-backed, no `commit_sha`
 
-**Notes:** Conflicts surface when remove targets aren't found. The agent should ask the user how to resolve. Pantry state is KV-backed (`state:<username>:pantry`) — no git commit.
+**Notes:** Conflicts surface when remove targets aren't found. The agent should ask the user how to resolve. Pantry state is D1-backed (the `pantry` table) — no git commit. Each item may carry an optional freeform `notes` string alongside its structured fields.
 
 ### `update_kitchen(operations)`
 
