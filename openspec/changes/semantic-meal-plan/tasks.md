@@ -64,7 +64,9 @@
 
 ## 6. Prove and promote
 
+> 6.1/6.3 are the **prove-it phase** — they need real A/B usage on the corpus, not a code change. The architecture docs (6.2/6.4) are written; the experiment runs against them.
+
 - [ ] 6.1 A/B the experimental skill against dump-and-reason on the real corpus; tune description-generation prompt and distillation (lens-vs-gate, K, spec diversity)
-- [ ] 6.2 Update `docs/ARCHITECTURE.md`: retrieve-first selection and the determinism boundary as a token boundary
-- [ ] 6.3 If proven, make retrieval the default selection path and revisit retiring `draft`/`status` corpus-wide
-- [ ] 6.4 Record the deferred Vectorize promotion trigger (measured-slow / embeddings-through-Worker heavy) and the int8-quantize / prefilter-only mitigations in `docs/ARCHITECTURE.md`
+- [x] 6.2 `docs/ARCHITECTURE.md` "Semantic recipe selection" section: retrieve-first selection (distill → retrieve → compose) and the determinism boundary doubling as a token boundary
+- [ ] 6.3 If proven, make retrieval the default selection path and revisit retiring `draft`/`status` corpus-wide (couples with the deferred 5.1)
+- [x] 6.4 Recorded the deferred Vectorize promotion trigger (measured-slow / embeddings-through-Worker heavy) and the int8-quantize / prefilter-only mitigations in `docs/ARCHITECTURE.md`
