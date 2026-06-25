@@ -336,12 +336,12 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
           effective[slug] = { ...mergeOverlay(entry, overlay[slug], lastCooked.get(slug)), slug };
         }
 
-        // Favorites = the caller's high-rated recipes that are embedded. (`rating >= 4`
-        // is the documented backfill for the `favorite` flag the cutover introduces;
-        // sourcing it here means the cutover only repoints this set, not the re-rank.)
+        // Favorites = the caller's favorited recipes that are embedded — the
+        // nearest-liked re-rank's anchor set (the favorite cutover repointed this
+        // from `rating >= 4` to the `overlay.favorite` flag, leaving the math intact).
         const favoriteVecs: number[][] = [];
         for (const [slug, row] of Object.entries(overlay)) {
-          if (Number(row?.rating) >= 4) {
+          if (row?.favorite) {
             const vec = embeddings.get(slug);
             if (vec) favoriteVecs.push(vec);
           }

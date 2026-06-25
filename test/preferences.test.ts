@@ -42,7 +42,7 @@ describe("mergePatch (RFC 7396)", () => {
 describe("rejectUnknownPatchKeys", () => {
   it("accepts the defined surface", () => {
     expect(() =>
-      rejectUnknownPatchKeys({ default_cooking_nights: 3, stores: {}, brands: {}, dietary: {}, custom: {} }),
+      rejectUnknownPatchKeys({ default_cooking_nights: 3, stores: {}, brands: {}, dietary: {}, rotation: {}, custom: {} }),
     ).not.toThrow();
   });
 
@@ -68,6 +68,15 @@ describe("validatePreferences", () => {
 
   it("rejects a bad enum (malformed_data)", () => {
     expect(() => validatePreferences({ lunch_strategy: "sometimes" })).toThrowError(/lunch_strategy/);
+  });
+
+  it("accepts a well-formed rotation and rejects non-positive / non-numeric knobs", () => {
+    expect(() =>
+      validatePreferences({ rotation: { resurface_after_days: 21, novelty_boost: 0.2 } }),
+    ).not.toThrow();
+    expect(() => validatePreferences({ rotation: { resurface_after_days: 0 } })).toThrowError(/rotation/);
+    expect(() => validatePreferences({ rotation: { novelty_boost: "lots" } })).toThrowError(/rotation/);
+    expect(() => validatePreferences({ rotation: 30 })).toThrowError(/rotation/);
   });
 
   it("rejects a non-number cooking nights", () => {

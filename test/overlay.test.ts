@@ -9,23 +9,25 @@ import {
 describe("mergeOverlay", () => {
   const content = { slug: "x", title: "X", protein: "beef" };
 
-  it("prefers overlay rating/status; defaults absent status to draft", () => {
-    const merged = mergeOverlay(content, { rating: 5, status: "active" }, undefined);
+  it("prefers overlay favorite/status; defaults absent status to draft", () => {
+    const merged = mergeOverlay(content, { favorite: true, status: "active" }, undefined);
     expect(merged.status).toBe("active");
-    expect(merged.rating).toBe(5);
+    expect(merged.favorite).toBe(true);
     expect(merged.last_cooked).toBeNull();
     expect(merged.title).toBe("X"); // objective content preserved
   });
 
-  it("defaults status to draft when there is no overlay row and no frontmatter status", () => {
-    expect(mergeOverlay(content, undefined, undefined).status).toBe(DEFAULT_STATUS);
+  it("defaults status to draft and favorite to false when there is no overlay row", () => {
+    const merged = mergeOverlay(content, undefined, undefined);
+    expect(merged.status).toBe(DEFAULT_STATUS);
+    expect(merged.favorite).toBe(false);
   });
 
-  it("falls back to frontmatter status/rating during the transition (pre-migration index)", () => {
-    const legacy = { slug: "x", title: "X", status: "archived", rating: 3, last_cooked: "2026-01-01" };
+  it("falls back to frontmatter status during the transition (pre-migration index)", () => {
+    const legacy = { slug: "x", title: "X", status: "archived", last_cooked: "2026-01-01" };
     const merged = mergeOverlay(legacy, undefined, undefined);
     expect(merged.status).toBe("archived");
-    expect(merged.rating).toBe(3);
+    expect(merged.favorite).toBe(false); // favorite is overlay-only, never from frontmatter
     expect(merged.last_cooked).toBe("2026-01-01");
   });
 
@@ -42,28 +44,32 @@ describe("mergeOverlay", () => {
 });
 
 describe("applyOverlayEdit", () => {
-  it("sets rating/status on a fresh row (no prior row)", () => {
-    expect(applyOverlayEdit(undefined, { rating: 4, status: "active" })).toEqual({
-      rating: 4,
+  it("sets favorite/status on a fresh row (no prior row)", () => {
+    expect(applyOverlayEdit(undefined, { favorite: true, status: "active" })).toEqual({
+      favorite: true,
       status: "active",
     });
   });
 
   it("merges onto an existing row without disturbing the other field", () => {
-    const before: OverlayRow = { rating: 4, status: "active" };
+    const before: OverlayRow = { favorite: true, status: "active" };
     expect(applyOverlayEdit(before, { status: "rejected" })).toEqual({
-      rating: 4,
+      favorite: true,
       status: "rejected",
     });
   });
 
-  it("clears a field when given null, and returns null for an emptied row", () => {
+  it("un-favoriting (favorite:false) clears the field, emptying the row to null", () => {
+    expect(applyOverlayEdit({ favorite: true }, { favorite: false })).toBeNull();
+  });
+
+  it("clears status when given null, and returns null for an emptied row", () => {
     expect(applyOverlayEdit({ status: "active" }, { status: null })).toBeNull();
   });
 
   it("does not mutate the input row", () => {
     const before: OverlayRow = { status: "active" };
-    applyOverlayEdit(before, { rating: 5 });
+    applyOverlayEdit(before, { favorite: true });
     expect(before).toEqual({ status: "active" });
   });
 });

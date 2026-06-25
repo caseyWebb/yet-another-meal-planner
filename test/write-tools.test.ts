@@ -413,53 +413,53 @@ describe("update_pantry / mark_pantry_verified (D1-backed)", () => {
   });
 });
 
-describe("rate_recipe (subjective overlay write → D1)", () => {
-  it("writes only the caller's overlay row for an existing recipe, no commit_sha", async () => {
+describe("toggle_favorite / set_recipe_status (subjective overlay write → D1)", () => {
+  it("toggle_favorite writes only the caller's overlay row, no commit_sha", async () => {
     const d1 = fakeD1(["miso-salmon"]);
     const handlers = collectTools(ghWith({}), "everett", d1.env);
-    const res = await handlers.get("rate_recipe")!({ slug: "miso-salmon", rating: 5 });
+    const res = await handlers.get("toggle_favorite")!({ slug: "miso-salmon", favorite: true });
     const out = JSON.parse(res.content[0].text) as { slug: string; overlay: Record<string, unknown>; commit_sha?: string };
     expect(out.slug).toBe("miso-salmon");
-    expect(out.overlay).toEqual({ rating: 5 });
+    expect(out.overlay).toEqual({ favorite: true });
     expect(out.commit_sha).toBeUndefined(); // D1-backed overlay, no git commit
     expect(d1.tables.overlay).toContainEqual(
-      expect.objectContaining({ tenant: "everett", recipe: "miso-salmon", rating: 5 }),
+      expect.objectContaining({ tenant: "everett", recipe: "miso-salmon", favorite: 1 }),
     );
   });
 
-  it("sets status and merges with an existing rating across calls", async () => {
+  it("favorite and status compose across calls onto one row", async () => {
     const d1 = fakeD1(["miso-salmon"]);
     const handlers = collectTools(ghWith({}), "everett", d1.env);
-    await handlers.get("rate_recipe")!({ slug: "miso-salmon", rating: 4 });
-    const res = await handlers.get("rate_recipe")!({ slug: "miso-salmon", status: "active" });
+    await handlers.get("toggle_favorite")!({ slug: "miso-salmon", favorite: true });
+    const res = await handlers.get("set_recipe_status")!({ slug: "miso-salmon", status: "active" });
     const out = JSON.parse(res.content[0].text) as { overlay: Record<string, unknown> };
-    expect(out.overlay).toMatchObject({ rating: 4, status: "active" });
+    expect(out.overlay).toMatchObject({ favorite: true, status: "active" });
     expect(d1.tables.overlay).toHaveLength(1);
-    expect(d1.tables.overlay[0]).toMatchObject({ recipe: "miso-salmon", rating: 4, status: "active" });
+    expect(d1.tables.overlay[0]).toMatchObject({ recipe: "miso-salmon", favorite: 1, status: "active" });
   });
 
-  it("rejects a slug not in the recipe index (not_found), writing nothing", async () => {
+  it("un-favoriting clears the field, DELETEing a row with nothing else set", async () => {
+    const d1 = fakeD1(["miso-salmon"]);
+    const handlers = collectTools(ghWith({}), "everett", d1.env);
+    await handlers.get("toggle_favorite")!({ slug: "miso-salmon", favorite: true });
+    const res = await handlers.get("toggle_favorite")!({ slug: "miso-salmon", favorite: false });
+    expect((JSON.parse(res.content[0].text) as { overlay: Record<string, unknown> }).overlay).toEqual({});
+    expect(d1.tables.overlay).toHaveLength(0);
+  });
+
+  it("set_recipe_status rejects a slug not in the recipe index (not_found), writing nothing", async () => {
     const d1 = fakeD1([]); // no recipes
     const handlers = collectTools(ghWith({}), "everett", d1.env);
-    const res = await handlers.get("rate_recipe")!({ slug: "ghost", status: "active" });
+    const res = await handlers.get("set_recipe_status")!({ slug: "ghost", status: "active" });
     const out = JSON.parse(res.content[0].text) as { error: string };
     expect(out.error).toBe("not_found");
     expect(d1.tables.overlay).toHaveLength(0);
   });
 
-  it("rejects a malformed slug (not_found) before touching D1", async () => {
+  it("toggle_favorite rejects a malformed slug (not_found) before touching D1", async () => {
     const handlers = collectTools(ghWith({}), "everett", fakeD1(["miso-salmon"]).env);
-    const res = await handlers.get("rate_recipe")!({ slug: "Not A Slug", rating: 3 });
+    const res = await handlers.get("toggle_favorite")!({ slug: "Not A Slug", favorite: true });
     expect((JSON.parse(res.content[0].text) as { error: string }).error).toBe("not_found");
-  });
-
-  it("rejects an empty edit (neither rating nor status) with validation_failed", async () => {
-    const d1 = fakeD1(["miso-salmon"]);
-    const handlers = collectTools(ghWith({}), "everett", d1.env);
-    const res = await handlers.get("rate_recipe")!({ slug: "miso-salmon" });
-    const out = JSON.parse(res.content[0].text) as { error: string };
-    expect(out.error).toBe("validation_failed");
-    expect(d1.tables.overlay).toHaveLength(0);
   });
 });
 
@@ -566,18 +566,20 @@ describe("update_preferences (merge-patch → D1)", () => {
 describe("update_recipe (objective-only)", () => {
   const RECIPE_MD = "---\ntitle: Salmon\nstatus: active\n---\n\n## Ingredients\n- salmon\n";
 
-  it("rejects a status edit, directing the caller to rate_recipe, writing nothing", async () => {
+  it("rejects a status edit, directing the caller to set_recipe_status, writing nothing", async () => {
     const handlers = collectTools(ghWith({ "recipes/salmon.md": RECIPE_MD }), "everett", fakeD1(["salmon"]).env);
     const res = await handlers.get("update_recipe")!({ slug: "salmon", updates: { status: "active" } });
     const out = JSON.parse(res.content[0].text) as { error: string; message?: string };
     expect(out.error).toBe("validation_failed");
-    expect(JSON.stringify(out)).toMatch(/rate_recipe/);
+    expect(JSON.stringify(out)).toMatch(/set_recipe_status/);
   });
 
-  it("rejects a rating edit toward rate_recipe", async () => {
+  it("rejects a favorite edit toward toggle_favorite", async () => {
     const handlers = collectTools(ghWith({ "recipes/salmon.md": RECIPE_MD }), "everett", fakeD1(["salmon"]).env);
-    const res = await handlers.get("update_recipe")!({ slug: "salmon", updates: { rating: 5 } });
-    expect((JSON.parse(res.content[0].text) as { error: string }).error).toBe("validation_failed");
+    const res = await handlers.get("update_recipe")!({ slug: "salmon", updates: { favorite: true } });
+    const out = JSON.parse(res.content[0].text) as { error: string };
+    expect(out.error).toBe("validation_failed");
+    expect(JSON.stringify(out)).toMatch(/toggle_favorite/);
   });
 
   it("still rejects last_cooked toward log_cooked", async () => {

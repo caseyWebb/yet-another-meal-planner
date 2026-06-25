@@ -20,6 +20,7 @@ export const DEFINED_PREFERENCE_KEYS = [
   "stores",
   "brands",
   "dietary",
+  "rotation",
   "custom",
 ] as const;
 
@@ -114,6 +115,18 @@ export function validatePreferences(merged: Record<string, unknown>): void {
     for (const [term, val] of Object.entries(brands as Record<string, unknown>)) {
       if (!Array.isArray(val) || val.some((s) => typeof s !== "string")) {
         fail(`brands.${term} must be an array of brand names (got ${JSON.stringify(val)})`);
+      }
+    }
+  }
+  if ("rotation" in merged) {
+    const rotation = merged.rotation;
+    if (!isPlainObject(rotation)) fail(`rotation must be an object (got ${JSON.stringify(rotation)})`);
+    for (const k of ["resurface_after_days", "novelty_boost"]) {
+      if (k in (rotation as Record<string, unknown>)) {
+        const v = (rotation as Record<string, unknown>)[k];
+        if (typeof v !== "number" || !Number.isFinite(v) || v <= 0) {
+          fail(`rotation.${k} must be a positive number (got ${JSON.stringify(v)})`);
+        }
       }
     }
   }

@@ -52,13 +52,15 @@
 
 ## 5. Favorite cutover (BREAKING)
 
-- [ ] 5.1 Replace `create_recipe` draft assumption: discovery/import lands a normal corpus recipe (update `recipe-discovery`); remove the draft-landing behavior
-- [ ] 5.2 Migration `migrations/d1/0008_*.sql`: add `overlay.favorite`, backfill `rating >= 4 ⇒ 1`; drop `rating` once consumers move (retain through cutover for rollback)
-- [ ] 5.3 Replace `rate_recipe` with `toggle_favorite(slug, favorite)` in `src/write-tools.ts`; update `src/overlay.ts` (`docs/TOOLS.md`)
-- [ ] 5.4 `list_recipes`: add `favorite` filter/return; remove `rating` filter/return (`docs/TOOLS.md`, `src/recipe-index.ts`)
-- [ ] 5.5 Group signal (`read_recipe_notes`, `idx_overlay_recipe`) → `COUNT(favorite)` instead of `AVG(rating)`
-- [ ] 5.6 Add `rotation.resurface_after_days` / `rotation.novelty_boost` to the profile/preferences schema (a `profile` column or `custom` JSON)
-- [ ] 5.7 Decide `hidden` boolean (per-tenant "never show me") vs URL-suppression-only; implement the chosen path
+> Scope decision (design Resolved Questions): the **favorite swap landed**; the **draft-retirement (5.1) is deferred** to a focused follow-up (it's a separate behavioral flip for the production flow). The `status` lifecycle is unchanged here — `rate_recipe`'s status half split off into `set_recipe_status` rather than being dropped.
+
+- [ ] 5.1 **DEFERRED** — retire `draft` so discovery/import lands a normal corpus recipe (remove the draft-landing default in `create_recipe`/`recipe-discovery`). Its own behavioral change; the experimental `semantic-meal-plan` skill already imports `active` explicitly, so the production flow can flip independently.
+- [x] 5.2 Migration `migrations/d1/0009_overlay_favorite.sql`: add `overlay.favorite`, backfill `rating >= 4 ⇒ 1`. `rating` column **retained inert** for rollback (a later migration drops it once proven)
+- [x] 5.3 Replace `rate_recipe` with `toggle_favorite(slug, favorite)` **+ `set_recipe_status(slug, status)`** (the status half split off, per the disposition-tools decision) in `src/write-tools.ts`; `src/overlay.ts` + `src/profile-db.ts` read/write `favorite` (`docs/TOOLS.md`)
+- [x] 5.4 `mergeOverlay`/`list_recipes` merge `favorite` (boolean), not `rating`; `update_recipe` rejects `favorite`/`status` toward the new tools (`docs/TOOLS.md`, `docs/SCHEMAS.md`). (No `rating` *filter* existed to remove.)
+- [x] 5.5 Group signal (`read_recipe_notes`, `idx_overlay_recipe`) → favorited-members list / `COUNT(favorite)` instead of `AVG(rating)`
+- [x] 5.6 Add `rotation.resurface_after_days` / `rotation.novelty_boost` as a defined top-level preference key backed by a `profile.rotation` JSON column (migration `0010`); read by `resolveRankParams`, validated in `src/preferences.ts`
+- [x] 5.7 **`hidden` — NO.** Reuse per-tenant `status: rejected` (`set_recipe_status`) + group-wide `reject_discovery`; no new column. Recorded in design Resolved Questions.
 
 ## 6. Prove and promote
 

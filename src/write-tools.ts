@@ -2,8 +2,9 @@
 // current file(s)/rows, applies a pure transform, and persists via the atomic commit
 // engine (commit.ts) for shared GitHub content, or D1 rows for per-tenant state.
 // Objective recipe content is shared (GitHub); a recipe's subjective disposition
-// (rating/status) is per-tenant and routes to the caller's D1 overlay via
-// `rate_recipe`; the pantry is the D1 `pantry` table (src/session-db.ts). No tool here
+// (favorite/status) is per-tenant and routes to the caller's D1 overlay via
+// `toggle_favorite` / `set_recipe_status`; the pantry is the D1 `pantry` table
+// (src/session-db.ts). No tool here
 // writes a Kroger cart or calls an external service.
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -55,10 +56,12 @@ function today(): string {
 
 /**
  * The subjective recipe fields. They are the caller's per-tenant disposition and
- * route through `rate_recipe` to the D1 overlay table — `update_recipe`
- * (objective-only) rejects them rather than silently writing the overlay.
+ * route through `toggle_favorite` / `set_recipe_status` to the D1 overlay table —
+ * `update_recipe` (objective-only) rejects them rather than silently writing the
+ * overlay. (`rating` is retained so a stale caller's `update_recipe({ rating })` is
+ * still steered to the disposition tools rather than written as objective content.)
  */
-const SUBJECTIVE_KEYS = ["rating", "status"] as const;
+const SUBJECTIVE_KEYS = ["favorite", "rating", "status"] as const;
 
 // --- file-level builders (return a TreeFile for the atomic commit) -----------
 
@@ -152,7 +155,7 @@ const SHARED_CURATED_FILES: Record<string, string> = {
 /**
  * `gh` is the root data-repo client (shared recipe + aliases writes — the only
  * GitHub-backed writes left here). `env` is D1: the `recipes` index (queried by
- * `rate_recipe` to validate a slug), the profile tables (preferences/taste/diet/
+ * `toggle_favorite`/`set_recipe_status` to validate a slug), the profile tables (preferences/taste/diet/
  * kitchen/staples/overlay/ready_to_eat/stockup — via src/profile-db.ts) AND the
  * session-state pantry table (via src/session-db.ts). meal_plan/grocery_list live in
  * their own tool groups.
@@ -167,7 +170,7 @@ export function registerWriteTools(
     "update_recipe",
     {
       description:
-        "Edit a recipe's OBJECTIVE shared content (frontmatter/body) — the same recipe everyone in the group sees. rating and status are NOT settable here: they are the caller's personal disposition — use rate_recipe. last_cooked is NOT settable here either — it is derived from the cooking log (record a cooked meal via log_cooked). Objective frontmatter validates against the controlled vocabularies: `protein`/`cuisine` must be coarse buckets (shrimp→shellfish, salmon→fish; omit `protein` when there's no protein focus — never 'none') and `requires_equipment` slugs must be in-vocab; an off-vocabulary value is rejected (validation_failed).",
+        "Edit a recipe's OBJECTIVE shared content (frontmatter/body) — the same recipe everyone in the group sees. favorite and status are NOT settable here: they are the caller's personal disposition — use toggle_favorite (favorite) / set_recipe_status (status). last_cooked is NOT settable here either — it is derived from the cooking log (record a cooked meal via log_cooked). Objective frontmatter validates against the controlled vocabularies: `protein`/`cuisine` must be coarse buckets (shrimp→shellfish, salmon→fish; omit `protein` when there's no protein focus — never 'none') and `requires_equipment` slugs must be in-vocab; an off-vocabulary value is rejected (validation_failed).",
       inputSchema: { slug: z.string(), updates: z.record(z.string(), z.unknown()) },
     },
     ({ slug, updates }) =>
@@ -177,7 +180,7 @@ export function registerWriteTools(
         if (subjective.length > 0) {
           throw new ToolError(
             "validation_failed",
-            `${subjective.join("/")} ${subjective.length > 1 ? "are" : "is"} the caller's personal disposition, not shared recipe content — use rate_recipe to set rating/status`,
+            `${subjective.join("/")} ${subjective.length > 1 ? "are" : "is"} the caller's personal disposition, not shared recipe content — use toggle_favorite to set favorite, set_recipe_status to set status`,
             { fields: subjective },
           );
         }
@@ -196,41 +199,41 @@ export function registerWriteTools(
       }),
   );
 
+  // Both disposition tools resolve the slug against the shared index, then apply a
+  // single-field overlay edit. `rate_recipe` was split here into `toggle_favorite`
+  // (the positive taste signal) + `set_recipe_status` (the active/draft/rejected
+  // lifecycle) in the favorite cutover.
+  const applyDisposition = async (slug: string, edit: OverlayRow): Promise<Record<string, unknown>> => {
+    if (!SLUG_RE.test(slug)) throw new ToolError("not_found", `Unknown recipe slug: ${slug}`, { slug });
+    const row = await db(env).first<{ ok: number }>(
+      "SELECT 1 AS ok FROM recipes WHERE slug = ?1 LIMIT 1",
+      slug,
+    );
+    if (!row) throw new ToolError("not_found", `Unknown recipe slug: ${slug}`, { slug });
+    const current = await readOverlay(env, username);
+    const next = applyOverlayEdit(current[slug], edit);
+    await setOverlay(env, username, slug, next);
+    return { slug, overlay: next ?? {} };
+  };
+
   server.registerTool(
-    "rate_recipe",
+    "toggle_favorite",
     {
       description:
-        "Set the caller's PERSONAL disposition for a recipe — `rating` (1–5) and/or effective `status` (active|draft|rejected). This writes only the caller's overlay; it never changes the shared recipe content, so one member's rating/status never affects another's. The slug must resolve against the recipe index (unknown slug → not_found). Pass at least one of rating/status. Returns { slug, overlay } with no commit_sha (overlay is D1-backed, not a git commit).",
-      inputSchema: {
-        slug: z.string(),
-        rating: z.number().nullable().optional(),
-        status: z.enum(["active", "draft", "rejected"]).nullable().optional(),
-      },
+        "Set the caller's PERSONAL favorite flag for a recipe — `favorite: true` marks it a favorite, `false` clears it. Favorites are THE positive taste signal: they anchor the semantic-search nearest-liked re-rank and the group 'favorited by N others' signal (read_recipe_notes). Writes only the caller's overlay — never the shared recipe, so one member's favorites never affect another's. Unknown slug → not_found. Returns { slug, overlay } (no commit_sha; the overlay is D1-backed).",
+      inputSchema: { slug: z.string(), favorite: z.boolean() },
     },
-    ({ slug, rating, status }) =>
-      runTool(async () => {
-        if (!SLUG_RE.test(slug)) throw new ToolError("not_found", `Unknown recipe slug: ${slug}`, { slug });
-        if (rating === undefined && status === undefined) {
-          throw new ToolError(
-            "validation_failed",
-            "rate_recipe needs at least one of rating or status to set",
-          );
-        }
-        const row = await db(env).first<{ ok: number }>(
-          "SELECT 1 AS ok FROM recipes WHERE slug = ?1 LIMIT 1",
-          slug,
-        );
-        if (!row) throw new ToolError("not_found", `Unknown recipe slug: ${slug}`, { slug });
+    ({ slug, favorite }) => runTool(() => applyDisposition(slug, { favorite })),
+  );
 
-        const edit: OverlayRow = {};
-        if (rating !== undefined) edit.rating = rating;
-        if (status !== undefined) edit.status = status;
-
-        const current = await readOverlay(env, username);
-        const next = applyOverlayEdit(current[slug], edit);
-        await setOverlay(env, username, slug, next);
-        return { slug, overlay: next ?? {} };
-      }),
+  server.registerTool(
+    "set_recipe_status",
+    {
+      description:
+        "Set the caller's PERSONAL status for a recipe — `active | draft | rejected` (the disposition lifecycle: `rejected` drops it from the caller's active set but is kept for de-dup; `active` surfaces it; effective default with no overlay row is `draft`). Pass `status: null` to clear back to the default. Writes only the caller's overlay; one member's status never affects another's. Unknown slug → not_found. Returns { slug, overlay }.",
+      inputSchema: { slug: z.string(), status: z.enum(["active", "draft", "rejected"]).nullable() },
+    },
+    ({ slug, status }) => runTool(() => applyDisposition(slug, { status })),
   );
 
   server.registerTool(
@@ -421,7 +424,7 @@ export function registerWriteTools(
     "update_preferences",
     {
       description:
-        "Edit the caller's grocery preferences with a deep merge-patch (RFC 7396): keys present in `patch` set/overwrite, a key set to null is DELETED, nested objects merge to any depth, and arrays replace wholesale. Only the keys you touch change — a partial patch never clobbers siblings (e.g. patching stores.preferred_location keeps stores.primary), so you do NOT need to re-send the whole object. Defined top-level keys: default_cooking_nights (number), lunch_strategy (leftovers|buy|mixed), ready_to_eat_default_action (opt-in|auto-add), stores ({primary, preferred_location, location_zip}), brands (map of term → ranked brand list; [] = don't-care/cheapest, null = clear back to ambiguous), dietary ({avoid[], limit[]}). Anything else nests under `custom`; an unknown top-level key is rejected (use custom). Returns { updated: 'preferences' }.",
+        "Edit the caller's grocery preferences with a deep merge-patch (RFC 7396): keys present in `patch` set/overwrite, a key set to null is DELETED, nested objects merge to any depth, and arrays replace wholesale. Only the keys you touch change — a partial patch never clobbers siblings (e.g. patching stores.preferred_location keeps stores.primary), so you do NOT need to re-send the whole object. Defined top-level keys: default_cooking_nights (number), lunch_strategy (leftovers|buy|mixed), ready_to_eat_default_action (opt-in|auto-add), stores ({primary, preferred_location, location_zip}), brands (map of term → ranked brand list; [] = don't-care/cheapest, null = clear back to ambiguous), dietary ({avoid[], limit[]}), rotation ({resurface_after_days, novelty_boost} — tunes the semantic-search freshness re-rank: how many days until a cooked recipe rotates back in, and how hard never-cooked recipes are boosted; both positive numbers). Anything else nests under `custom`; an unknown top-level key is rejected (use custom). Returns { updated: 'preferences' }.",
       inputSchema: { patch: z.record(z.string(), z.unknown()) },
     },
     ({ patch }) =>
@@ -446,6 +449,7 @@ export function registerWriteTools(
             "ready_to_eat_default_action" in merged ? merged.ready_to_eat_default_action : null,
           stores: "stores" in merged ? JSON.stringify(merged.stores) : null,
           dietary: "dietary" in merged ? JSON.stringify(merged.dietary) : null,
+          rotation: "rotation" in merged ? JSON.stringify(merged.rotation) : null,
           custom: "custom" in merged ? JSON.stringify(merged.custom) : null,
         };
         const profileStmt = profileUpsertStmt(env, username, profileFields);

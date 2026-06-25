@@ -1,0 +1,11 @@
+-- 0010_profile_rotation — user-tunable freshness rotation (semantic-meal-plan).
+--
+-- The semantic-search re-rank's freshness boost (never-cooked surfaced, recently-
+-- cooked demoted) has two knobs the user can tune: how long until a cooked recipe
+-- rotates back in, and how hard never-cooked recipes are boosted. They live as a
+-- defined top-level preference key (`rotation`, a JSON object) alongside `stores` /
+-- `dietary` — read by resolveRankParams, which falls back to defaults when unset, so
+-- every existing tenant keeps working with no row.
+--
+--   rotation = { resurface_after_days?: number, novelty_boost?: number }
+ALTER TABLE profile ADD COLUMN rotation TEXT;   -- JSON: { resurface_after_days?, novelty_boost? }

@@ -1,10 +1,15 @@
 ---
 name: add-recipe-feedback
-description: "Rate a recipe or change its status. Use for \"rate the Serious Eats one 4 stars\", \"loved Tuesday's curry\", \"remove that recipe\", \"make it again sometime\", or dispositioning a draft (activate or reject). Routes rating/status to the user's personal overlay — never changes the shared recipe or anyone else's view."
+description: "Favorite a recipe or change its status. Use for \"loved Tuesday's curry\" / \"favorite that one\", \"stop suggesting that\", \"remove that recipe\", \"make it again sometime\", or dispositioning a draft (activate or reject). Routes the favorite/status to the user's personal overlay — never changes the shared recipe or anyone else's view."
 ---
 
 > **Prerequisite** — if you haven't already this session, read the `grocery-core` and `grocery-corpus` skills before continuing.
 
 # Recipe feedback / disposition
 
-Call `rate_recipe(slug, { rating?, status? })` with the fields I named — `rating` (1–5), `status` (active|draft|rejected), or both. For drafts being dispositioned: `status: "active"` (add a `rating` if I gave one) or `status: "rejected"`. This writes only *my* overlay — never the shared recipe or anyone else's view. (`update_recipe` is for objective shared content, not rating/status — it'll reject those and point here.)
+Two personal-disposition tools, both writing only *my* overlay (never the shared recipe or anyone else's view):
+
+- **Favorite** — when I love a dish ("favorite that", "loved it"), call `toggle_favorite(slug, true)`; to take it back, `toggle_favorite(slug, false)`. Favorites are *the* positive taste signal — they steer my recommendations (the nearest-liked re-rank) and show up as group signal for others ("favorited by 2").
+- **Status** — when I'm dispositioning ("activate that draft", "reject it", "stop suggesting it"), call `set_recipe_status(slug, "active" | "rejected" | "draft")`. `rejected` drops it from my active set but keeps it for de-dup.
+
+A "loved it" is usually a favorite; a "don't show me this" is a `rejected` status; they're independent (you can favorite *and* set status in two calls). (`update_recipe` is for objective shared content, not favorite/status — it'll reject those and point here.)
