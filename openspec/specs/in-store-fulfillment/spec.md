@@ -38,7 +38,7 @@ The system SHALL provide `list_stores()`, `read_store(slug)`, `add_store(...)`, 
 
 ### Requirement: Attributed per-tenant store notes
 
-The system SHALL store store notes per-tenant at `users/<id>/store_notes/<slug>.toml`, authored structurally (the path, unspoofable), shared-by-default with an optional `private` flag. `add_store_note(slug, body, tags?, private?)` SHALL append a note; `read_store_notes(slug)` SHALL return the caller's own private notes plus every member's shared notes, attributed — mirroring `read_recipe_notes`. Store notes SHALL be the home of **both** freeform observations ("fish counter closes at 6 PM", "they have the Kerrygold I like") **and** store **layout**, captured by tag convention: `layout` (an aisle and its sections, led by the aisle number where one exists — the order of layout notes by aisle number is the walk path), `location` (where a non-obvious item hides), and `stock` (a not-carried entry). An author MAY edit or delete their **own** store notes via `update_store_note(slug, created_at, body?, tags?, private?)` and `remove_store_note(slug, created_at)`, addressing a note by its `created_at`; these SHALL operate only on notes in the caller's own subtree and SHALL NOT touch another tenant's notes. When two notes conflict (e.g. an aisle after a remodel), a reader SHALL prefer the most recent by `created_at`.
+The system SHALL store store notes as rows in the D1 `store_notes` table, authored by the writing tenant (the `author` column, set by the Worker — unspoofable), shared-by-default with an optional `private` flag. `add_store_note(slug, body, tags?, private?)` SHALL append a note; `read_store_notes(slug)` SHALL return the caller's own private notes plus every member's shared notes, attributed — mirroring `read_recipe_notes`. Store notes SHALL be the home of **both** freeform observations ("fish counter closes at 6 PM", "they have the Kerrygold I like") **and** store **layout**, captured by tag convention: `layout` (an aisle and its sections, led by the aisle number where one exists — the order of layout notes by aisle number is the walk path), `location` (where a non-obvious item hides), and `stock` (a not-carried entry). An author MAY edit or delete their **own** store notes via `update_store_note(slug, created_at, body?, tags?, private?)` and `remove_store_note(slug, created_at)`, addressing a note by its `created_at`; these SHALL operate only on the caller's own notes (matched by `author`) and SHALL NOT touch another tenant's notes. When two notes conflict (e.g. an aisle after a remodel), a reader SHALL prefer the most recent by `created_at`.
 
 #### Scenario: Layout captured as a tagged note
 
@@ -58,7 +58,7 @@ The system SHALL store store notes per-tenant at `users/<id>/store_notes/<slug>.
 #### Scenario: Author corrects their own stale note
 
 - **WHEN** the author of a `layout` note calls `update_store_note` (or `remove_store_note`) with that note's `created_at`
-- **THEN** the note is patched (or removed) in the author's subtree and committed, touching no other tenant's notes
+- **THEN** the note row is patched (or removed) in D1, touching no other tenant's notes
 
 #### Scenario: Another tenant's note is not addressable
 

@@ -8,7 +8,7 @@ Defines the canonical on-disk layout of the grocery-agent repository: the direct
 
 The repository SHALL contain the directory structure described in `docs/ARCHITECTURE.md` so that all downstream changes have a stable place to read from and write to. Directories that would otherwise be empty SHALL contain a `.gitkeep` (or equivalent placeholder) so the structure survives `git clone`.
 
-The required directories are: `recipes/`, `skus/`, `_indexes/`, `worker/`, `scripts/`, and `.github/workflows/`. There is no shared `ready_to_eat/` directory — ready-to-eat is per-tenant state under `users/<username>/` (see "Per-user subtree layout").
+The required directories are: `recipes/`, `skus/`, `_indexes/`, `worker/`, `scripts/`, and `.github/workflows/`. There is no shared `ready_to_eat/` directory — ready-to-eat is per-tenant D1 state (the `ready_to_eat` table).
 
 #### Scenario: Fresh clone yields the full skeleton
 
@@ -113,7 +113,7 @@ The data repository **root** SHALL hold only GitHub-authored shared content: rec
 
 ### Requirement: Per-user subtree layout
 
-Each member's `users/<username>/` subtree holds only **authored markdown** for that member: the narrative `taste.md` and `diet_principles.md`, recipe notes under `notes/`, and any personal (unshared) recipes. All operational and profile state — `pantry`, `preferences`, `stockup`, `grocery_list`, `ready_to_eat`, `cooking_log`, `meal_plan`, `feeds`, and the `overlay` (favorite/reject disposition) — is now **D1-backed** (per-tenant D1 rows), NOT stored as `.toml` files in the `users/<username>/` subtree. The subtree SHALL NOT duplicate shared root content. The Worker addresses a member's GitHub files by prefixing repo-relative paths with their `users/<username>/`, so one member's request can never reach another member's subtree.
+Each member's `users/<username>/` subtree holds only **authored markdown** for that member: the narrative `taste.md` and `diet_principles.md`, recipe notes under `notes/`, and any personal (unshared) recipes. All operational and profile state — `pantry`, `preferences`, `stockup`, `grocery_list`, `ready_to_eat`, `cooking_log`, `meal_plan`, `feeds`, and the `overlay` (favorite/reject disposition) — is now **D1-backed** (per-tenant D1 rows), NOT stored as `.toml` files in the `users/<username>/` subtree. The subtree SHALL NOT duplicate shared root content. Per-tenant isolation is enforced in D1 (every per-tenant row carries the resolved `tenant`), not by a GitHub path prefix.
 
 #### Scenario: Per-user subtree carries only authored markdown
 

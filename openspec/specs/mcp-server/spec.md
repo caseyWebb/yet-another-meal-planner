@@ -20,12 +20,12 @@ The system SHALL host an MCP server in a Cloudflare Worker at the **repo root** 
 
 ### Requirement: Authenticated GitHub data-access client
 
-The system SHALL provide a GitHub client wrapper used for all repo reads and writes, authenticating per request with a short-lived **GitHub App installation token** scoped to the single data repository, minted on demand from the App's id + private key. The client SHALL read data at the configured ref's HEAD, apply basic retry with backoff on transient failures and rate-limit responses, and surface failures as structured errors rather than throwing. The client SHALL NOT use a personal access token. Personal files SHALL be addressed by prefixing repo-relative paths with the resolved tenant's `users/<username>/`, so no tool can reach another tenant's subtree.
+The system SHALL provide a GitHub client wrapper used for all repo reads and writes, authenticating per request with a short-lived **GitHub App installation token** scoped to the single data repository, minted on demand from the App's id + private key. The client SHALL read data at the configured ref's HEAD, apply basic retry with backoff on transient failures and rate-limit responses, and surface failures as structured errors rather than throwing. The client SHALL NOT use a personal access token. The client reads and writes the **shared** repo content (the recipe corpus `recipes/*.md` plus reference markdown); per-tenant data lives in D1, not in GitHub, so the client carries no per-tenant path prefix.
 
-#### Scenario: Reads use the installation token, scoped to the tenant's subtree
+#### Scenario: Reads use the installation token for the shared recipe corpus
 
-- **WHEN** any read or write tool fetches or persists a tenant's personal data
-- **THEN** the GitHub client authenticates with the App installation token (benefiting from the per-installation 5,000 req/hr limit, not a PAT or anonymous request) and addresses the file under that tenant's `users/<username>/` prefix
+- **WHEN** any tool reads or commits shared recipe content
+- **THEN** the GitHub client authenticates with the App installation token (benefiting from the per-installation 5,000 req/hr limit, not a PAT or anonymous request) and addresses the file at the data-repo root (e.g. `recipes/`)
 
 #### Scenario: Upstream failure surfaces structured
 
