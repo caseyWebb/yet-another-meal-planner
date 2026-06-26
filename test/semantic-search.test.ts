@@ -9,6 +9,9 @@ import {
   type SearchCandidate,
   type RankParams,
 } from "../src/semantic-search.js";
+import { filterRecipes, type RecipeIndex } from "../src/recipes.js";
+import { mergeOverlay } from "../src/overlay.js";
+import type { Overlay } from "../src/overlay.js";
 
 const NOW = new Date("2026-06-24T12:00:00Z");
 
@@ -179,5 +182,27 @@ describe("resolveRankParams", () => {
   it("ignores malformed / non-positive rotation values", () => {
     const p = resolveRankParams({ rotation: { novelty_boost: "lots", resurface_after_days: -5 } });
     expect(p).toEqual(DEFAULT_RANK_PARAMS);
+  });
+});
+
+// recipe_semantic_search computes its candidate set by merging the caller's overlay
+// onto the shared index and running filterRecipes (the SAME shared predicate as
+// list_recipes) BEFORE ranking. So a rejected recipe is gated out of `survivors` and
+// can never become a ranking candidate — this reproduces that gate end-to-end.
+describe("recipe_semantic_search reject gate", () => {
+  it("a rejected slug is gated out of the survivor set, so it never ranks", () => {
+    const index: RecipeIndex = {
+      keeper: { slug: "keeper", title: "Keeper", last_cooked: null },
+      hidden: { slug: "hidden", title: "Hidden", last_cooked: null },
+    };
+    const overlay: Overlay = { hidden: { reject: true } };
+    // Mirror the handler: merge overlay → effective index → filterRecipes(facets).
+    const effective: RecipeIndex = {};
+    for (const [slug, entry] of Object.entries(index)) {
+      effective[slug] = { ...mergeOverlay(entry, overlay[slug], undefined), slug };
+    }
+    const survivors = filterRecipes(effective, {}, NOW).map((r) => r.slug);
+    expect(survivors).toEqual(["keeper"]);
+    expect(survivors).not.toContain("hidden");
   });
 });

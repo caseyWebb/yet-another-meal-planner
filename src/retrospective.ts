@@ -5,8 +5,8 @@
 // the caller (the D1 `cooking_log LEFT JOIN recipes` + COALESCE — a recipe entry
 // carries its recipe's dims, a non-recipe entry its inline dims), so this layer
 // reads them off the row directly. The recipe `index` is used only for `underused`
-// (active recipes not cooked in the window), where it must already carry the
-// caller's effective status + last_cooked (overlay/cooking-log merged in).
+// (non-rejected recipes not cooked in the window), where it must already carry the
+// caller's effective reject flag + last_cooked (overlay/cooking-log merged in).
 
 import type { CookingLogEntry } from "./cooking-log.js";
 import type { RecipeIndex } from "./recipes.js";
@@ -122,10 +122,12 @@ export function retrospective(
   const weeks = windowDays / 7;
   const cooks_per_week = weeks > 0 ? Math.round((cooked / weeks) * 100) / 100 : cooked;
 
-  // Underused: active recipes not cooked within the window (by derived last_cooked).
+  // Underused: non-rejected recipes not cooked within the window (by derived
+  // last_cooked). Visibility is opt-out, so every recipe the caller has not rejected
+  // is a rotation candidate (there is no `active` set).
   const underused: { slug: string; title: unknown; last_cooked: string | null }[] = [];
   for (const r of Object.values(index)) {
-    if (r.status !== "active") continue;
+    if (r.reject) continue;
     const lc = typeof r.last_cooked === "string" ? r.last_cooked : null;
     if (lc === null || lc < from) {
       underused.push({ slug: r.slug, title: r.title, last_cooked: lc });

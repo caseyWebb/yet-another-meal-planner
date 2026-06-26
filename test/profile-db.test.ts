@@ -135,23 +135,26 @@ describe("readBrandPrefs", () => {
 });
 
 describe("readOverlay / setOverlay", () => {
-  it("round-trips a favorite + status row through the overlay table", async () => {
+  it("round-trips a favorite row through the overlay table", async () => {
     const { env, tables } = fakeD1({});
-    await setOverlay(env, "everett", "tacos", { favorite: true, status: "active" });
+    await setOverlay(env, "everett", "tacos", { favorite: true });
     expect(tables.overlay).toContainEqual(
-      expect.objectContaining({ tenant: "everett", recipe: "tacos", favorite: 1, status: "active" }),
+      expect.objectContaining({ tenant: "everett", recipe: "tacos", favorite: 1, reject: null }),
     );
-    expect(await readOverlay(env, "everett")).toEqual({ tacos: { favorite: true, status: "active" } });
+    expect(await readOverlay(env, "everett")).toEqual({ tacos: { favorite: true } });
   });
 
-  it("stores favorite as NULL when not favorited, reads it as absent", async () => {
-    const { env } = fakeD1({});
-    await setOverlay(env, "everett", "tacos", { status: "rejected" });
-    expect(await readOverlay(env, "everett")).toEqual({ tacos: { status: "rejected" } });
+  it("round-trips a reject row, storing favorite as NULL", async () => {
+    const { env, tables } = fakeD1({});
+    await setOverlay(env, "everett", "tacos", { reject: true });
+    expect(tables.overlay).toContainEqual(
+      expect.objectContaining({ tenant: "everett", recipe: "tacos", favorite: null, reject: 1 }),
+    );
+    expect(await readOverlay(env, "everett")).toEqual({ tacos: { reject: true } });
   });
 
   it("DELETEs the row when given null", async () => {
-    const { env, tables } = fakeD1({ overlay: [{ tenant: "everett", recipe: "tacos", favorite: 1, status: null }] });
+    const { env, tables } = fakeD1({ overlay: [{ tenant: "everett", recipe: "tacos", favorite: 1, reject: null }] });
     await setOverlay(env, "everett", "tacos", null);
     expect(tables.overlay).toHaveLength(0);
   });
@@ -184,7 +187,7 @@ describe("readProfile assembly", () => {
       staples: [{ tenant: "everett", name: "Eggs", normalized_name: "eggs", perishable: 1 }],
       stockup: [{ tenant: "everett", name: "Salmon", normalized_name: "salmon", unit: "lb" }],
       ready_to_eat: [
-        { tenant: "everett", slug: "oats", meal: "breakfast", name: "Oats", status: "active" },
+        { tenant: "everett", slug: "oats", meal: "breakfast", name: "Oats", favorite: 1, reject: null },
       ],
     });
     const profile = await readProfile(env, "everett");
@@ -194,7 +197,7 @@ describe("readProfile assembly", () => {
     expect(profile.kitchen).toEqual({ owned: ["blender"], notes: { ovens: 2 } });
     expect(profile.staples).toEqual([{ name: "Eggs", perishable: true }]);
     expect(profile.stockup).toMatchObject({ freezer_capacity_estimate: "moderate" });
-    expect(profile.ready_to_eat[0]).toMatchObject({ slug: "oats", meal: "breakfast", status: "active" });
+    expect(profile.ready_to_eat[0]).toMatchObject({ slug: "oats", meal: "breakfast", favorite: true, reject: false });
   });
 
   it("an absent tenant assembles an empty profile (null preferences, empty lists)", async () => {

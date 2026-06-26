@@ -37,8 +37,8 @@ interface CookingLogJoinRow {
  * possible once the recipe index moved to D1 (slice 1): a recipe entry's
  * protein/cuisine come from the joined `recipes` row, a non-recipe entry's from its
  * inline columns. The recipe index + the caller's overlay + the derived last_cooked
- * are merged into an effective index for the `underused` metric (active recipes not
- * cooked in the window — status is per-tenant, so it must be overlay-merged).
+ * are merged into an effective index for the `underused` metric (non-rejected recipes
+ * not cooked in the window — reject is per-tenant, so it must be overlay-merged).
  */
 export async function loadRetrospective(
   env: Env,
@@ -63,7 +63,7 @@ export async function loadRetrospective(
   });
 
   // Effective index for `underused`: shared objective fields (D1) merged with the
-  // caller's overlay (status/rating) and the cooking-log-derived last_cooked.
+  // caller's overlay (favorite/reject) and the cooking-log-derived last_cooked.
   const index = await loadRecipeIndex(env).catch((e) => {
     throw new ToolError(
       "index_unavailable",

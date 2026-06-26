@@ -64,7 +64,6 @@ import type { KvStore } from "./kroger-user.js";
 const SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
 const recipeFiltersShape = {
-  status: z.string().optional(),
   protein: z.string().optional(),
   cuisine: z.string().optional(),
   course: z.string().optional(),
@@ -194,7 +193,7 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
   }
 
   // Per-request lazy reads of the caller's subjective layer. The overlay
-  // supplies rating+status from the KV profile bundle; the cooking log supplies
+  // supplies favorite+reject from the D1 `overlay` table; the cooking log supplies
   // last_cooked from the D1 `cooking_log` table. Both are merged onto shared
   // recipe content at read time (§6.2).
   let overlayPromise: Promise<Overlay> | null = null;
@@ -265,7 +264,7 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
     "list_recipes",
     {
       description:
-        "List recipes from the index, filtered. To find recipes by name or keyword (including a named dish), use `query` — the single text search over title AND tags: it keeps recipes whose title or tags contain EVERY token (case-insensitive substring), after dropping connective stopwords (so \"chicken and rice\" matches the same as \"chicken rice\", including a recipe titled \"Chicken and Rice\" whose tags omit \"rice\"). There is no tag filter. Array filters season/dietary match ALL listed values. status defaults to 'active'; pass 'all' to include every status. course is an open-vocabulary facet (main | side | dessert | breakfast | …) matched by containment — `course: 'side'` returns every recipe whose course includes 'side', including a dual-use `[main, side]` dish. exclude_cooked_within_days is a caller-supplied window. A makeability gate is applied by default: recipes needing equipment the caller doesn't own (per kitchen.toml) are hidden — unless the caller has no kitchen inventory recorded, in which case nothing is gated. Pass include_unmakeable:true to instead return those recipes annotated with missing_equipment (use this when surfacing a specifically NAMED dish so it is never silently dropped).",
+        "List recipes from the index, filtered. Returns the whole shared corpus (plus the caller's personal recipes) MINUS recipes the caller has rejected — there is no activation step and no status filter; rejected recipes are simply absent. To find recipes by name or keyword (including a named dish), use `query` — the single text search over title AND tags: it keeps recipes whose title or tags contain EVERY token (case-insensitive substring), after dropping connective stopwords (so \"chicken and rice\" matches the same as \"chicken rice\", including a recipe titled \"Chicken and Rice\" whose tags omit \"rice\"). There is no tag filter. Array filters season/dietary match ALL listed values. course is an open-vocabulary facet (main | side | dessert | breakfast | …) matched by containment — `course: 'side'` returns every recipe whose course includes 'side', including a dual-use `[main, side]` dish. exclude_cooked_within_days is a caller-supplied window. A makeability gate is applied by default: recipes needing equipment the caller doesn't own (per kitchen.toml) are hidden — unless the caller has no kitchen inventory recorded, in which case nothing is gated. Pass include_unmakeable:true to instead return those recipes annotated with missing_equipment (use this when surfacing a specifically NAMED dish so it is never silently dropped). Each returned entry carries the caller's `favorite` boolean; no status or rating.",
       inputSchema: { filters: z.object(recipeFiltersShape).optional() },
     },
     ({ filters }) =>
@@ -286,9 +285,9 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
           getLastCookedMap(),
           getOwnedEquipment(),
         ]);
-        // Join each shared entry with the caller's overlay (rating/status) and
-        // cooking-log-derived last_cooked before filtering, so filters see the
-        // caller's effective per-tenant view (effective status defaults to draft).
+        // Join each shared entry with the caller's overlay (favorite/reject) and
+        // cooking-log-derived last_cooked before filtering, so the reject hard gate
+        // and the makeability gate see the caller's effective per-tenant view.
         const effective: RecipeIndex = {};
         for (const [slug, entry] of Object.entries(index)) {
           effective[slug] = {
@@ -328,9 +327,9 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
           readPreferences(env, tenant.id).catch(() => null),
         ]);
 
-        // Merge the caller's overlay (rating/status) + last_cooked onto the shared
-        // entries so the facet gate sees the effective per-tenant view, exactly as
-        // list_recipes does.
+        // Merge the caller's overlay (favorite/reject) + last_cooked onto the shared
+        // entries so the facet gate (including the reject hard gate) sees the effective
+        // per-tenant view, exactly as list_recipes does.
         const effective: RecipeIndex = {};
         for (const [slug, entry] of Object.entries(index)) {
           effective[slug] = { ...mergeOverlay(entry, overlay[slug], lastCooked.get(slug)), slug };
@@ -586,7 +585,7 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
         const looked = await Promise.all(
           items.map(async (item) => {
             if (typeof item.name !== "string") return null;
-            if (item.status === "rejected") return null;
+            if (item.reject) return null;
             const meal =
               typeof item.meal === "string" && (READY_TO_EAT_MEALS as readonly string[]).includes(item.meal)
                 ? item.meal

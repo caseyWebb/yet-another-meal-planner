@@ -98,11 +98,12 @@ export function slugify(title: string): string {
 }
 
 /**
- * Build the TreeFile for a new draft recipe. Derives the slug from the title (or
- * uses `slugOverride`), defaults `status` to "draft" so a discovery import never
- * lands active by omission, and guards the `## Ingredients`/`## Instructions` H2
- * contract so a malformed body can't be committed as a build-breaker. Refuses to
- * overwrite an existing recipe (slug_exists).
+ * Build the TreeFile for a new recipe. Derives the slug from the title (or uses
+ * `slugOverride`) and guards the `## Ingredients`/`## Instructions` H2 contract so a
+ * malformed body can't be committed as a build-breaker. Stamps NO `status`: the
+ * per-tenant status lifecycle is retired, so an imported recipe is an available corpus
+ * recipe by default (opt-out visibility). Refuses to overwrite an existing recipe
+ * (slug_exists).
  */
 export async function buildNewRecipe(
   gh: GitHubClient,
@@ -132,8 +133,11 @@ export async function buildNewRecipe(
     throw new ToolError("slug_exists", `A recipe already exists at ${path}`, { slug });
   }
 
-  const fm: Record<string, unknown> =
-    "status" in frontmatter ? { ...frontmatter } : { ...frontmatter, status: "draft" };
+  // No `status` is stamped — the per-tenant status lifecycle is retired and an
+  // imported recipe lands available by default. A lingering `status` supplied by a
+  // stale caller is dropped so it never re-enters the corpus as objective content.
+  const fm: Record<string, unknown> = { ...frontmatter };
+  delete fm.status;
   // Canonicalize perishable_ingredients (objective shared content) at create the
   // same way the verify matcher normalizes, so overlap lines up across recipes.
   if ("perishable_ingredients" in fm) {

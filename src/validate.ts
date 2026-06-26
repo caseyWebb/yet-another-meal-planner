@@ -13,14 +13,10 @@ import { load as loadYaml } from "js-yaml";
 import { ToolError } from "./errors.js";
 import { PROTEIN_VOCAB, CUISINE_VOCAB, EQUIPMENT_VOCAB } from "./vocab.js";
 
-// `archived` is valid but tool-unwritten on purpose: it's the MANUAL
-// history-preserving removal state. A recipe with cooking_log history can't be
-// deleted (an unresolvable log slug hard-fails the build), so it's hand-archived
-// instead — the file persists so history resolves, but it's dropped from active
-// rotation (list_recipes default + retrospective "underused"). No agent tool and
-// no scheduler ever set it (deliberately: there is no auto-archive). Keep it —
-// the data-validation spec enumerates it and overlay/retrospective tests rely on it.
-const RECIPE_STATUSES = ["active", "draft", "rejected", "archived"];
+// The per-tenant recipe `status` lifecycle (active/draft/rejected/archived) is
+// RETIRED — the overlay collapsed to favorite/reject and visibility is opt-out, so a
+// recipe carries no status. A lingering frontmatter `status` on an old file is tolerated
+// and ignored (the build strips it from the index); it is no longer validated here.
 // PROTEIN_VOCAB / CUISINE_VOCAB / EQUIPMENT_VOCAB come from the single shared
 // source (src/vocab.js) that scripts/build-indexes.mjs also imports — so the
 // write-time gate and the build-time gate cannot disagree. recipes/*.md
@@ -79,22 +75,6 @@ function parseFrontmatterOrFail(path: string, content: string): Record<string, u
   }
 }
 
-function checkEnum(
-  path: string,
-  field: string,
-  value: unknown,
-  legal: string[],
-  required: boolean,
-): void {
-  if (value === undefined || value === null) {
-    if (required) fail(path, `item is missing required field \`${field}\``);
-    return;
-  }
-  if (typeof value !== "string" || !legal.includes(value)) {
-    fail(path, `\`${field}\` = ${JSON.stringify(value)} is not one of ${legal.join(" | ")}`);
-  }
-}
-
 /**
  * Validate one staged file's full new content by path. Throws
  * ToolError("validation_failed") on any structural problem; returns on success.
@@ -102,11 +82,12 @@ function checkEnum(
 export function validateFile(path: string, content: string): void {
   if (path.startsWith("recipes/") && path.endsWith(".md")) {
     const fm = parseFrontmatterOrFail(path, content);
-    if ("status" in fm) checkEnum(path, "status", fm.status, RECIPE_STATUSES, false);
+    // `status` is no longer validated — the lifecycle is retired; a lingering value is
+    // tolerated and stripped from the index by the build.
     // pairs_with (plating edge) is an array of recipe slugs; course is an
     // open-vocabulary facet (a string or array of strings). Slug *resolution* and
     // course *value* policy are the post-push build's job (no corpus on workerd) —
-    // here we only enforce local shape, parallel to status. (`standalone` is retired:
+    // here we only enforce local shape. (`standalone` is retired:
     // no longer recognized, so a lingering value passes through untouched.)
     if (fm.pairs_with != null) {
       if (!Array.isArray(fm.pairs_with) || fm.pairs_with.some((s) => typeof s !== "string")) {

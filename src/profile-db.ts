@@ -150,17 +150,17 @@ export async function readOwnedEquipment(env: Env, tenant: string): Promise<stri
   return rows.map((r) => r.slug);
 }
 
-/** The caller's overlay (slug → {favorite?, status?}), assembled from the `overlay` table. */
+/** The caller's overlay (slug → {favorite?, reject?}), assembled from the `overlay` table. */
 export async function readOverlay(env: Env, tenant: string): Promise<Record<string, OverlayRow>> {
-  const rows = await db(env).all<{ recipe: string; favorite: number | null; status: string | null }>(
-    "SELECT recipe, favorite, status FROM overlay WHERE tenant = ?1",
+  const rows = await db(env).all<{ recipe: string; favorite: number | null; reject: number | null }>(
+    "SELECT recipe, favorite, reject FROM overlay WHERE tenant = ?1",
     tenant,
   );
   const out: Record<string, OverlayRow> = {};
-  for (const { recipe, favorite, status } of rows) {
+  for (const { recipe, favorite, reject } of rows) {
     const entry: OverlayRow = {};
     if (favorite) entry.favorite = true;
-    if (status != null) entry.status = status;
+    if (reject) entry.reject = true;
     out[recipe] = entry;
   }
   return out;
@@ -181,17 +181,22 @@ export async function readReadyToEat(env: Env, tenant: string): Promise<Record<s
     slug: string;
     meal: string | null;
     name: string | null;
-    status: string | null;
+    favorite: number | null;
+    reject: number | null;
     category: string | null;
     source: string | null;
     brand: string | null;
     notes: string | null;
-  }>("SELECT slug, meal, name, status, category, source, brand, notes FROM ready_to_eat WHERE tenant = ?1", tenant);
+  }>(
+    "SELECT slug, meal, name, favorite, reject, category, source, brand, notes FROM ready_to_eat WHERE tenant = ?1",
+    tenant,
+  );
   return rows.map((r) => ({
     name: r.name,
     slug: r.slug,
     meal: r.meal,
-    status: r.status,
+    favorite: Boolean(r.favorite),
+    reject: Boolean(r.reject),
     category: r.category ?? null,
     discovery_source: r.source ?? null,
     brand: r.brand ?? null,
@@ -377,17 +382,17 @@ export async function setOverlay(
     await db(env).run("DELETE FROM overlay WHERE tenant = ?1 AND recipe = ?2", tenant, slug);
     return;
   }
-  // Write favorite + status only; the legacy `rating` column is left untouched (on
-  // UPDATE) / NULL (on INSERT) — retained inert for rollback, never read by this path.
+  // Write the two disposition flags; `favorite` and `reject` are mutually exclusive
+  // (the row builder in overlay.ts enforces that), so at most one is set.
   const favorite = row.favorite ? 1 : null;
-  const status = row.status == null ? null : (row.status as string);
+  const reject = row.reject ? 1 : null;
   await db(env).run(
-    "INSERT INTO overlay (tenant, recipe, favorite, status) VALUES (?1, ?2, ?3, ?4) " +
-      "ON CONFLICT(tenant, recipe) DO UPDATE SET favorite = excluded.favorite, status = excluded.status",
+    "INSERT INTO overlay (tenant, recipe, favorite, reject) VALUES (?1, ?2, ?3, ?4) " +
+      "ON CONFLICT(tenant, recipe) DO UPDATE SET favorite = excluded.favorite, reject = excluded.reject",
     tenant,
     slug,
     favorite,
-    status,
+    reject,
   );
 }
 
@@ -467,16 +472,18 @@ export async function setReadyToEat(
     d.prepare("DELETE FROM ready_to_eat WHERE tenant = ?1", tenant),
   ];
   const str = (v: unknown): string | null => (typeof v === "string" && v.length > 0 ? v : null);
+  const flag = (v: unknown): number | null => (v ? 1 : null);
   for (const it of items) {
     stmts.push(
       d.prepare(
-        "INSERT INTO ready_to_eat (tenant, slug, meal, name, status, category, source, brand, notes) " +
-          "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        "INSERT INTO ready_to_eat (tenant, slug, meal, name, favorite, reject, category, source, brand, notes) " +
+          "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
         tenant,
         str(it.slug) ?? "",
         str(it.meal),
         str(it.name),
-        str(it.status),
+        flag(it.favorite),
+        flag(it.reject),
         str(it.category),
         str(it.discovery_source) ?? str(it.source),
         str(it.brand),

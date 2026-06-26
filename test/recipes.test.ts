@@ -1,11 +1,13 @@
 import { describe, it, expect } from "vitest";
 import { filterRecipes, type RecipeIndex } from "../src/recipes.js";
 
+// Entries carry the caller's effective per-tenant view (overlay-merged): `reject` is
+// the only disposition the filter gates on. There is no `status` and no active set —
+// visibility is opt-out, so a recipe surfaces unless the caller has rejected it.
 const index: RecipeIndex = {
-  active1: {
-    slug: "active1",
-    title: "Active One",
-    status: "active",
+  visible1: {
+    slug: "visible1",
+    title: "Visible One",
     protein: "beef",
     cuisine: "american",
     course: ["main"],
@@ -15,10 +17,9 @@ const index: RecipeIndex = {
     time_total: 40,
     last_cooked: null,
   },
-  active2: {
-    slug: "active2",
-    title: "Active Two",
-    status: "active",
+  visible2: {
+    slug: "visible2",
+    title: "Visible Two",
     protein: "chicken",
     cuisine: "italian",
     course: ["main", "side"], // dual-use
@@ -28,10 +29,10 @@ const index: RecipeIndex = {
     time_total: 90,
     last_cooked: "2026-06-05", // 3 days before the fixed now
   },
-  draft1: {
-    slug: "draft1",
-    title: "Draft One",
-    status: "draft",
+  hidden1: {
+    slug: "hidden1",
+    title: "Hidden One",
+    reject: true, // the caller rejected this — never surfaces
     protein: "beef",
     course: ["side"],
     tags: ["beef"],
@@ -43,56 +44,48 @@ const index: RecipeIndex = {
 const NOW = new Date("2026-06-08T00:00:00Z");
 
 describe("filterRecipes", () => {
-  it("defaults to active status", () => {
+  it("returns every non-rejected recipe by default", () => {
     const out = filterRecipes(index, {}, NOW).map((r) => r.slug);
-    expect(out.sort()).toEqual(["active1", "active2"]);
+    expect(out.sort()).toEqual(["visible1", "visible2"]);
   });
 
-  it("status 'all' returns every status", () => {
-    const out = filterRecipes(index, { status: "all" }, NOW).map((r) => r.slug);
-    expect(out.sort()).toEqual(["active1", "active2", "draft1"]);
-  });
-
-  it("selects an explicit non-active status", () => {
-    const out = filterRecipes(index, { status: "draft" }, NOW).map((r) => r.slug);
-    expect(out).toEqual(["draft1"]);
+  it("reject is a hard gate: a rejected recipe never surfaces, even when a filter matches it", () => {
+    // hidden1 is a beef [side] recipe; neither a protein nor a course filter admits it.
+    expect(filterRecipes(index, { protein: "beef" }, NOW).map((r) => r.slug)).toEqual(["visible1"]);
+    expect(filterRecipes(index, { course: "side" }, NOW).map((r) => r.slug)).toEqual(["visible2"]);
   });
 
   it("array filters (dietary/season) match ALL listed values (AND)", () => {
-    // active1: dietary ["dairy-free"], season ["fall"]
+    // visible1: dietary ["dairy-free"], season ["fall"]
     expect(filterRecipes(index, { dietary: ["dairy-free"] }, NOW).map((r) => r.slug)).toEqual([
-      "active1",
+      "visible1",
     ]);
-    // requires BOTH values → active1 has only "dairy-free" → excluded
+    // requires BOTH values → visible1 has only "dairy-free" → excluded
     expect(filterRecipes(index, { dietary: ["dairy-free", "gluten-free"] }, NOW).map((r) => r.slug)).toEqual([]);
-    expect(filterRecipes(index, { season: ["fall"] }, NOW).map((r) => r.slug)).toEqual(["active1"]);
+    expect(filterRecipes(index, { season: ["fall"] }, NOW).map((r) => r.slug)).toEqual(["visible1"]);
   });
 
   it("course matches by containment, including dual-use recipes", () => {
-    // active1 [main], active2 [main, side] → both are mains
+    // visible1 [main], visible2 [main, side] → both are mains
     expect(filterRecipes(index, { course: "main" }, NOW).map((r) => r.slug).sort()).toEqual([
-      "active1",
-      "active2",
+      "visible1",
+      "visible2",
     ]);
-    // active2 [main, side] is the only active side; draft1 [side] is filtered out by status
-    expect(filterRecipes(index, { course: "side" }, NOW).map((r) => r.slug)).toEqual(["active2"]);
-    // case/whitespace-insensitive; an open value with no match returns nothing
-    expect(filterRecipes(index, { course: " Side ", status: "all" }, NOW).map((r) => r.slug).sort()).toEqual([
-      "active2",
-      "draft1",
-    ]);
+    // visible2 [main, side] is the only non-rejected side (hidden1 [side] is gated out)
+    expect(filterRecipes(index, { course: "side" }, NOW).map((r) => r.slug)).toEqual(["visible2"]);
+    // case/whitespace-insensitive
+    expect(filterRecipes(index, { course: " Side " }, NOW).map((r) => r.slug)).toEqual(["visible2"]);
     expect(filterRecipes(index, { course: "dessert" }, NOW).map((r) => r.slug)).toEqual([]);
   });
 
   it("course is ANDed with other filters", () => {
-    // course main AND cuisine italian → only active2
+    // course main AND cuisine italian → only visible2
     expect(filterRecipes(index, { course: "main", cuisine: "italian" }, NOW).map((r) => r.slug)).toEqual([
-      "active2",
+      "visible2",
     ]);
   });
 
   it("tags is no longer a filter — passing it is ignored", () => {
-    // active1 has tag "beef"; with no tags filter the result is just the active default.
     const withTags = filterRecipes(index, { tags: ["beef"] } as never, NOW).map((r) => r.slug).sort();
     const without = filterRecipes(index, {}, NOW).map((r) => r.slug).sort();
     expect(withTags).toEqual(without);
@@ -100,33 +93,29 @@ describe("filterRecipes", () => {
 
   it("filters by scalar fields and max_time_total", () => {
     expect(filterRecipes(index, { cuisine: "italian" }, NOW).map((r) => r.slug)).toEqual([
-      "active2",
+      "visible2",
     ]);
     expect(filterRecipes(index, { max_time_total: 50 }, NOW).map((r) => r.slug)).toEqual([
-      "active1",
+      "visible1",
     ]);
   });
 
   it("not_cooked_since admits never-cooked recipes (null last_cooked)", () => {
     const out = filterRecipes(index, { not_cooked_since: "2026-01-01" }, NOW).map((r) => r.slug);
-    // active1 (null) passes; active2 cooked 2026-06-05 (>= date) is excluded.
-    expect(out).toEqual(["active1"]);
+    // visible1 (null) passes; visible2 cooked 2026-06-05 (>= date) is excluded.
+    expect(out).toEqual(["visible1"]);
   });
 
   it("exclude_cooked_within_days drops recently cooked, keeps never-cooked", () => {
-    const out = filterRecipes(
-      index,
-      { status: "all", exclude_cooked_within_days: 14 },
-      NOW,
-    ).map((r) => r.slug);
-    // active2 cooked 3 days ago -> excluded. active1 (null) and draft1 (2025) kept.
-    expect(out.sort()).toEqual(["active1", "draft1"]);
+    const out = filterRecipes(index, { exclude_cooked_within_days: 14 }, NOW).map((r) => r.slug);
+    // visible2 cooked 3 days ago -> excluded. visible1 (null) kept; hidden1 is rejected.
+    expect(out.sort()).toEqual(["visible1"]);
   });
 
   it("returns slug, title, and frontmatter for matches", () => {
-    const [item] = filterRecipes(index, { status: "draft" }, NOW);
-    expect(item.slug).toBe("draft1");
-    expect(item.title).toBe("Draft One");
+    const [item] = filterRecipes(index, { max_time_total: 50 }, NOW);
+    expect(item.slug).toBe("visible1");
+    expect(item.title).toBe("Visible One");
     expect(item.frontmatter.protein).toBe("beef");
   });
 });
@@ -135,7 +124,6 @@ const queryIndex: RecipeIndex = {
   "chicken-and-rice": {
     slug: "chicken-and-rice",
     title: "Chicken and Rice",
-    status: "active",
     protein: "chicken",
     tags: ["weeknight", "comfort-food"],
     last_cooked: null,
@@ -143,7 +131,6 @@ const queryIndex: RecipeIndex = {
   "arroz-caldo": {
     slug: "arroz-caldo",
     title: "Arroz Caldo",
-    status: "active",
     protein: "chicken",
     tags: ["chicken", "rice", "filipino"],
     last_cooked: null,
@@ -151,7 +138,6 @@ const queryIndex: RecipeIndex = {
   "lemon-chicken": {
     slug: "lemon-chicken",
     title: "Lemon Chicken",
-    status: "active",
     protein: "chicken",
     tags: ["weeknight"],
     last_cooked: null,
@@ -159,7 +145,7 @@ const queryIndex: RecipeIndex = {
   "beef-stew": {
     slug: "beef-stew",
     title: "Beef Stew",
-    status: "draft",
+    reject: true, // rejected → excluded from every result
     protein: "beef",
     tags: ["comfort-food"],
     last_cooked: null,
@@ -181,14 +167,14 @@ describe("filterRecipes query", () => {
 
   it("matches a token as a substring of a tag", () => {
     const out = filterRecipes(queryIndex, { query: "comfort" }, NOW).map((r) => r.slug);
-    // comfort matches the comfort-food tag on chicken-and-rice (active default).
+    // comfort matches the comfort-food tag on chicken-and-rice (beef-stew is rejected).
     expect(out).toEqual(["chicken-and-rice"]);
   });
 
   it("composes with other filters (AND)", () => {
     const out = filterRecipes(
       queryIndex,
-      { query: "chicken", status: "active", protein: "chicken" },
+      { query: "chicken", protein: "chicken" },
       NOW,
     ).map((r) => r.slug);
     expect(out.sort()).toEqual(["arroz-caldo", "chicken-and-rice", "lemon-chicken"]);
@@ -198,19 +184,16 @@ describe("filterRecipes query", () => {
     const without = filterRecipes(queryIndex, {}, NOW).map((r) => r.slug).sort();
     const emptyQuery = filterRecipes(queryIndex, { query: "   " }, NOW).map((r) => r.slug).sort();
     expect(emptyQuery).toEqual(without);
+    // beef-stew is rejected → the default is the three non-rejected chicken dishes.
     expect(without).toEqual(["arroz-caldo", "chicken-and-rice", "lemon-chicken"]);
   });
 
   it("drops connective stopwords so the natural phrase matches", () => {
-    // "and" is a stopword → {chicken, rice}. Without stripping, arroz-caldo (no
-    // "and" anywhere) would be wrongly excluded while only the title with "and"
-    // survived. With stripping, both the title-match and the tag-match return.
     const out = filterRecipes(queryIndex, { query: "chicken and rice" }, NOW).map((r) => r.slug).sort();
     expect(out).toEqual(["arroz-caldo", "chicken-and-rice"]);
   });
 
   it("finds a title-only keyword (tag absent)", () => {
-    // chicken-and-rice is titled "Chicken and Rice" but has no "rice" tag.
     const out = filterRecipes(queryIndex, { query: "rice" }, NOW).map((r) => r.slug);
     expect(out).toContain("chicken-and-rice");
   });
@@ -224,18 +207,16 @@ describe("filterRecipes query", () => {
 
 describe("filterRecipes makeability gate", () => {
   const gateIndex: RecipeIndex = {
-    plain: { slug: "plain", title: "Plain", status: "active", last_cooked: null },
+    plain: { slug: "plain", title: "Plain", last_cooked: null },
     needs: {
       slug: "needs",
       title: "Sous Vide Steak",
-      status: "active",
       last_cooked: null,
       requires_equipment: ["sous-vide-circulator"],
     },
     twoNeeds: {
       slug: "twoNeeds",
       title: "Fancy",
-      status: "active",
       last_cooked: null,
       requires_equipment: ["blender", "ice-cream-maker"],
     },
@@ -272,8 +253,18 @@ describe("filterRecipes makeability gate", () => {
   });
 
   it("gate ANDs with other filters", () => {
-    // A status filter still applies alongside the gate.
-    const out = filterRecipes(gateIndex, { status: "all" }, NOW, ["blender"]).map((r) => r.slug).sort();
+    const out = filterRecipes(gateIndex, {}, NOW, ["blender"]).map((r) => r.slug).sort();
     expect(out).toEqual(["plain"]);
+  });
+
+  it("a rejected recipe is gated out before the makeability check", () => {
+    const rejectedGate: RecipeIndex = {
+      ...gateIndex,
+      plain: { slug: "plain", title: "Plain", reject: true, last_cooked: null },
+    };
+    const out = filterRecipes(rejectedGate, {}, NOW, ["sous-vide-circulator", "blender", "ice-cream-maker"])
+      .map((r) => r.slug)
+      .sort();
+    expect(out).toEqual(["needs", "twoNeeds"]); // plain is rejected, the other two are now makeable
   });
 });
