@@ -4,7 +4,6 @@ import {
   resolveInvite,
   tenantFromRecord,
   kvTenantStore,
-  userPrefix,
   normalizeTenantId,
   type TenantRecord,
   type TenantStore,
@@ -46,12 +45,11 @@ const isUnauthorized = (r: Tenant | Unauthorized): r is Unauthorized =>
   (r as Unauthorized).error === "unauthorized";
 
 describe("resolveTenant (from a provider-validated tenantId)", () => {
-  it("builds the Tenant, joining data-repo coords + users/<id> prefix from env", async () => {
+  it("builds the Tenant, joining data-repo coords from env", async () => {
     const t = (await resolveTenant(env, "alice", store({ alice: ALICE }))) as Tenant;
     expect(isUnauthorized(t)).toBe(false);
     expect(t.id).toBe("alice");
     expect(t.dataRepo).toEqual({ owner: "caseyWebb", repo: "grocery-data", ref: "main" });
-    expect(t.userPrefix).toBe("users/alice");
     expect(t.installationId).toBe("42");
   });
 
@@ -64,35 +62,33 @@ describe("resolveTenant (from a provider-validated tenantId)", () => {
     expect(isUnauthorized(await resolveTenant(env, "ghost", store({ alice: ALICE })))).toBe(true);
   });
 
-  it("resolves a mixed-case tenantId to the lowercase users/<id> prefix + allowlist entry", async () => {
-    // The bug: a member granted "Casey" but whose data lives at users/casey/. A
-    // case-sensitive resolve targeted users/Casey/ (empty) — silent data loss.
+  it("resolves a mixed-case tenantId to the canonical lowercase id + allowlist entry", async () => {
+    // The bug: a member granted "Casey" but whose allowlist key is "casey". A
+    // case-sensitive resolve missed the entry (empty) — silent data loss.
     // The allowlist key is the canonical lowercase form (as data-onboard.yml mints).
     const dir = store({ casey: { id: "casey" } });
     for (const given of ["Casey", "CASEY", "casey", "  Casey  "]) {
       const t = (await resolveTenant(env, given, dir)) as Tenant;
       expect(isUnauthorized(t)).toBe(false);
       expect(t.id).toBe("casey");
-      expect(t.userPrefix).toBe("users/casey");
     }
   });
 
-  it("isolates tenants: each id resolves only to its own subtree", async () => {
+  it("isolates tenants: distinct ids over the one shared repo", async () => {
     const dir = store({ alice: { id: "alice" }, bob: { id: "bob" } });
     const a = (await resolveTenant(env, "alice", dir)) as Tenant;
     const b = (await resolveTenant(env, "bob", dir)) as Tenant;
     expect(a.dataRepo).toEqual(b.dataRepo); // same repo
-    expect(a.userPrefix).toBe("users/alice");
-    expect(b.userPrefix).toBe("users/bob"); // disjoint subtree
+    expect(a.id).toBe("alice");
+    expect(b.id).toBe("bob"); // distinct tenant identity
   });
 });
 
 describe("tenantFromRecord", () => {
-  it("derives userPrefix + global coords from the record id", () => {
+  it("derives global coords from the record id", () => {
     expect(tenantFromRecord(env, { id: "bob" })).toEqual({
       id: "bob",
       dataRepo: { owner: "caseyWebb", repo: "grocery-data", ref: "main" },
-      userPrefix: "users/bob",
       installationId: "42",
     });
   });
@@ -127,17 +123,12 @@ describe("resolveInvite (the §3.2 identity step)", () => {
   });
 });
 
-describe("normalizeTenantId / userPrefix", () => {
+describe("normalizeTenantId", () => {
   it("lowercases and trims to the canonical id", () => {
     expect(normalizeTenantId("Casey")).toBe("casey");
     expect(normalizeTenantId("CASEY")).toBe("casey");
     expect(normalizeTenantId("  Casey  ")).toBe("casey");
     expect(normalizeTenantId("casey")).toBe("casey");
-  });
-
-  it("builds a lowercase users/<id> prefix regardless of input casing", () => {
-    expect(userPrefix("Casey")).toBe("users/casey");
-    expect(userPrefix("casey")).toBe("users/casey");
   });
 });
 
