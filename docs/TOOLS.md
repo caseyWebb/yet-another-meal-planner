@@ -766,7 +766,9 @@ The order-time flush — the **only** tool that writes a Kroger cart. Resolves t
 
 **Quantity (package count):** supply it per item via `menu_needs[].quantity`, or via the `quantities` map; the `quantities` map **overrides** `menu_needs[].quantity` when both are present (precedence: `quantities` → `menu_needs[].quantity` → default 1). A line that fell back to the default carries `assumed_quantity: true`. The tool reports that fact but does **not** classify "by-the-each produce" or do portion math — at `preview`, *you* reconcile any `assumed_quantity` by-the-each produce (peppers, tomatillos, …) against the recipe's required amount and set an explicit quantity before the real flush. (`grocery_list` items' string `quantity` like "2 lbs" is a human need-annotation, not a package count.)
 
-**Resolution + checkpoint:** each item runs through the [matcher](#match_ingredient_to_kroger_skuingredient-context) with cache revalidation (a cache hit no longer fulfillable is re-resolved). Items the matcher returns as `ambiguous` or `unavailable` are collected into a single `checkpoint` and are **not** added to the cart. Disposition them and re-call with `overrides` (force a SKU) — already-carted items have advanced to `in_cart`, so they won't be re-added.
+**Resolution + checkpoint:** each item runs through the [matcher](#match_ingredient_to_kroger_skuingredient-context) with cache revalidation (a cache hit no longer fulfillable is re-resolved). Items the matcher returns as `ambiguous` or `unavailable` are collected into a single `checkpoint` and are **not** added to the cart. Disposition them and re-call with `overrides` — already-carted items have advanced to `in_cart`, so they won't be re-added.
+
+**`overrides` — force a specific SKU (disposition *or* lock a deal):** `[{ name, sku, brand?, size? }]` pins a chosen SKU for a line, bypassing the matcher. Use it two ways: to **disposition** an ambiguous/unavailable item, or to **lock a SKU you verified** — e.g. the on-sale `sku` returned by [`kroger_prices`](#kroger_pricesingredients-location_id) — so the deal's exact SKU survives into the cart instead of the matcher picking its own. A forced SKU is **revalidated** for current curbside/delivery availability and returned with **fresh** `price`/`on_sale` (so a deal that lapsed since you checked is visible); a forced SKU that has gone **unavailable** is routed to `checkpoint` rather than blind-carted. **Overrides pin the SKU, not the price:** the cart write (`PUT /v1/cart/add`) carries only SKU + quantity — no price — so whether a sale price actually realizes is Kroger's determination at fulfillment, against flyer data that may be hours-stale. Don't promise the user a locked price; surface the fresh `on_sale` at `preview` and let them decide.
 
 **Params:**
 ```
@@ -774,7 +776,7 @@ The order-time flush — the **only** tool that writes a Kroger cart. Resolves t
   menu_needs:       [{ name, quantity?, for_recipes? }],  // needs not yet on the list
   quantities:       { "<name>": <packages> },             // per-item package count (default 1)
   include_partials: ["<name>", ...],                       // pantry items the user confirmed buying anyway
-  overrides:        [{ name, sku, brand?, size? }],        // disposition previously-ambiguous items
+  overrides:        [{ name, sku, brand?, size? }],        // force a SKU: disposition, or lock a verified/on-sale SKU
   preview:          bool                                    // resolve + report only; no cart write, no commits
 }
 ```
@@ -783,7 +785,7 @@ All sections optional. With no args it flushes the current grocery list.
 **Returns:**
 ```
 {
-  resolved:  [{ name, sku, brand, size, quantity, assumed_quantity }],  // assumed_quantity: qty defaulted to 1
+  resolved:  [{ name, sku, brand, size, quantity, assumed_quantity, price?, on_sale? }],  // assumed_quantity: qty defaulted to 1; price/on_sale: fresh at resolution
   checkpoint:[{ name, kind: "ambiguous"|"unavailable", candidates?, message }],
   partials:  [{ name, for_recipes }],
   sku_cache: { committed, error? },
