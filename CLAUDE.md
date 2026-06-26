@@ -33,6 +33,7 @@ aubr build:plugin            # AGENT_INSTRUCTIONS.md → plugin/grocery-agent/ (
 - **Local dev secrets** live in `.dev.vars` (gitignored; see `.dev.vars.example`): `GITHUB_APP_PRIVATE_KEY` + Kroger creds.
 - **Local D1:** `wrangler dev` binds a *local* SQLite. Seed it with `npx wrangler d1 migrations apply DB --local` (applies `migrations/d1/*.sql`); inspect with `npx wrangler d1 execute DB --local --command "…"`.
 - **Data tooling runs against a data checkout, not this repo:** `node scripts/build-indexes.mjs --root /path/to/data-repo` (add `--check` to validate without writing).
+- **Web sessions:** the bare commands above (`aubr`, `openspec`, `wrangler`, …) work because `mise.toml` activates the toolchain — but only in an interactive shell via `mise activate` in `~/.bashrc`. Claude Code's Bash tool runs a non-interactive shell that never sources it, so the `.claude/hooks/session-start.sh` hook restores `node_modules` *and* writes `mise exec` wrapper shims into `~/.local/bin` to keep these on PATH. Don't remove that block, and prefer `mise exec -- <cmd>` if you ever invoke a repo CLI that lacks a shim.
 
 ## Architecture in one breath
 
