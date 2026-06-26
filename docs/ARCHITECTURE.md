@@ -1,3 +1,7 @@
+---
+update-when: the system components, determinism boundary, multi-tenant identity, data model, or Kroger matching pipeline change
+---
+
 # Architecture
 
 How the grocery agent works under the hood. This is the durable technical reference — the system as it *is*, not a roadmap. For the agent's conversational behavior see [`AGENT_INSTRUCTIONS.md`](../AGENT_INSTRUCTIONS.md); for file formats see [`SCHEMAS.md`](SCHEMAS.md); for the tool contract see [`TOOLS.md`](TOOLS.md); for working in the repo see [`CONTRIBUTING.md`](../CONTRIBUTING.md).

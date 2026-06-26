@@ -1,4 +1,16 @@
 {
+  "enabledPlugins": {
+    "pr-description-sync@caseyWebb": true,
+    "doc-gate@caseyWebb": true
+  },
+  "extraKnownMarketplaces": {
+    "caseyWebb": {
+      "source": {
+        "source": "github",
+        "repo": "caseyWebb/claude-plugins"
+      }
+    }
+  },
   "hooks": {
     "SessionStart": [
       {

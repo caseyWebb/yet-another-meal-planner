@@ -1,3 +1,7 @@
+---
+update-when: a data file's schema or the validation rules change
+---
+
 # SCHEMAS.md — Data File Reference
 
 Concrete schemas with example values for every data file in the repo. Keep this in sync with the actual files — when you add a field, update here first, then update the file. Validation runs in two places: `scripts/build-indexes.mjs` (the full validator, at data-repo build time) and a *structural subset* in the Worker's `src/validate.ts` (at write time). The build validates only what GitHub still owns — the shared corpus (recipes, stores, discovery files, aliases). The **D1-backed** per-tenant profile (preferences/taste/diet_principles/kitchen/staples/overlay/ready_to_eat/stockup), the **D1-backed** session state (the `pantry`/`meal_plan`/`grocery_list` tables), and the **D1-backed** `cooking_log` are validated **only by the Worker at write time** (`update_preferences`' merge-patch validation for preferences, `log_cooked` for the cooking log), never by the build.

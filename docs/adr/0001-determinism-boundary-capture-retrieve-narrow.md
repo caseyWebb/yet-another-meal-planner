@@ -1,3 +1,7 @@
+---
+update-when: the determinism boundary decision is revisited or superseded
+---
+
 # ADR 0001 — Determinism boundary: capture → retrieve → narrow (thin tools, recipe-side retrieval)
 
 **Status:** Accepted — decisions locked in design conversation 2026-06-12. Phase 0 drafted as the `thin-pantry-and-substitution-path` OpenSpec change.

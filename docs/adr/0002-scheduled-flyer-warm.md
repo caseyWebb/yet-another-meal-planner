@@ -1,3 +1,7 @@
+---
+update-when: the flyer cache-warming design is revisited or superseded
+---
+
 # ADR 0002 — Scheduled flyer warm: a cron `capture` step + a per-location shared cache
 
 **Status:** Accepted — drafted as the `warm-flyer-cache` OpenSpec change.

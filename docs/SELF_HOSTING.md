@@ -1,3 +1,7 @@
+---
+update-when: the operator setup, deployment, or Claude.ai connection flow changes
+---
+
 # SELF_HOSTING — run your own grocery-agent
 
 The operator's one-time setup. When you finish you'll have a private **data repo**, a deployed **grocery-mcp Worker**, and Claude.ai connected — with everything **driven from the web UI + GitHub Actions**. The only *required* local command in the whole flow is one `openssl` line to convert a key (a `wrangler` CLI alternative is offered where it helps, but never required).
