@@ -6,12 +6,12 @@ Defines the repo-data-backed read tools exposed by the MCP server (`list_recipes
 ## Requirements
 ### Requirement: list_recipes reads the index and filters in-worker
 
-The system SHALL provide `list_recipes(filters)` that reads the shared `_indexes/recipes.json` in a single call, **joins each entry with the caller's per-tenant overlay** (`rating`, `status` from `overlay.toml`; effective `status` defaults to `draft` when the caller has no overlay row), **the caller's cooking-log-derived `last_cooked`** (max cook date for the slug from that tenant's `cooking_log.toml`), **and the caller's owned-equipment list** (`owned` from `kitchen.toml`, empty when absent), unions the caller's personal (unshared) recipes, and applies filters in the Worker, returning `{ recipes: [{ slug, title, frontmatter }] }` where `frontmatter` reflects the merged objective content + the caller's subjective fields. If the shared `_indexes/recipes.json` is missing or malformed, the tool SHALL return a structured `index_unavailable` error.
+The system SHALL provide `list_recipes(filters)` that reads the shared `_indexes/recipes.json` in a single call, **joins each entry with the caller's per-tenant overlay** (`favorite`, `status` from the D1 overlay; effective `status` defaults to `draft` when the caller has no overlay row), **the caller's cooking-log-derived `last_cooked`** (max cook date for the slug from that tenant's `cooking_log`), **and the caller's owned-equipment list** (`owned` from `kitchen.toml`, empty when absent), unions the caller's personal (unshared) recipes, and applies filters in the Worker, returning `{ recipes: [{ slug, title, frontmatter }] }` where `frontmatter` reflects the merged objective content + the caller's subjective fields. If the shared `_indexes/recipes.json` is missing or malformed, the tool SHALL return a structured `index_unavailable` error.
 
 #### Scenario: Active recipes returned by default, per caller overlay
 
 - **WHEN** `list_recipes({})` is invoked with no `status` filter
-- **THEN** only recipes whose **effective status for the caller** is `active` are returned, each with shared content merged with the caller's `rating`/`last_cooked`
+- **THEN** only recipes whose **effective status for the caller** is `active` are returned, each with shared content merged with the caller's `favorite`/`last_cooked`
 
 #### Scenario: Status reflects the caller, not the corpus
 
@@ -117,12 +117,12 @@ The system SHALL support an optional `query` string filter on `list_recipes` tha
 
 ### Requirement: read_recipe returns frontmatter and body
 
-The system SHALL provide `read_recipe(slug)` returning `{ slug, frontmatter, body }`, where `frontmatter` is the shared objective frontmatter **merged with the caller's overlay fields** (`rating`, `status`, defaulting `status` to `draft` when absent) **and the caller's cooking-log-derived `last_cooked`** and `body` is the markdown after the frontmatter fence. The slug MAY resolve to a shared corpus recipe or one of the caller's personal recipes. The return SHALL NOT include a `last_modified` field. A slug unknown to both the shared corpus and the caller's personal recipes SHALL return a structured `not_found` error.
+The system SHALL provide `read_recipe(slug)` returning `{ slug, frontmatter, body }`, where `frontmatter` is the shared objective frontmatter **merged with the caller's overlay fields** (`favorite`, `status`, defaulting `status` to `draft` when absent) **and the caller's cooking-log-derived `last_cooked`** and `body` is the markdown after the frontmatter fence. The slug MAY resolve to a shared corpus recipe or one of the caller's personal recipes. The return SHALL NOT include a `last_modified` field. A slug unknown to both the shared corpus and the caller's personal recipes SHALL return a structured `not_found` error.
 
 #### Scenario: Existing recipe read with caller's subjective fields
 
-- **WHEN** `read_recipe("american-chop-suey")` is invoked by a tenant who rated it 4 and cooked it last week
-- **THEN** it returns the slug, the shared frontmatter merged with that tenant's `rating: 4` and `last_cooked`, and the markdown body, with no `last_modified` field
+- **WHEN** `read_recipe("american-chop-suey")` is invoked by a tenant who favorited it and cooked it last week
+- **THEN** it returns the slug, the shared frontmatter merged with that tenant's `favorite: true` and `last_cooked`, and the markdown body, with no `last_modified` field
 
 #### Scenario: Unknown slug
 
@@ -187,17 +187,35 @@ Read tools SHALL return clean empty results for sources that currently hold no d
 
 ### Requirement: Group signal is readable on shared recipes
 
-The system SHALL expose the cross-tenant group signal for a shared recipe — other tenants' ratings (aggregated) and non-private notes (attributed) — to inform surfacing of recipes the caller has not tried. This read SHALL aggregate across tenants at read time and SHALL exclude private notes authored by others.
+The system SHALL expose the cross-tenant group signal for a shared recipe — how many other tenants have **favorited** it (a count) and non-private notes (attributed) — to inform surfacing of recipes the caller has not tried. This read SHALL aggregate across tenants at read time and SHALL exclude private notes authored by others. The favorite count replaces the prior averaged star rating; it is a single indexed aggregate (`COUNT` of favorites), not an average over a 1–5 scale.
 
-#### Scenario: Aggregated group rating available
+#### Scenario: Aggregated group favorite count available
 
-- **WHEN** a recipe has been rated by several tenants and the caller requests group signal for it
-- **THEN** the caller receives the aggregated rating and the attributed non-private notes from the group
+- **WHEN** several tenants have favorited a recipe and the caller requests group signal for it
+- **THEN** the caller receives the count of other-tenant favorites and the attributed non-private notes from the group
 
 #### Scenario: Others' private notes excluded
 
 - **WHEN** another tenant has a private note on a recipe
 - **THEN** that private note is not included in the group signal returned to the caller
+
+### Requirement: list_recipes surfaces the favorite boolean
+
+`list_recipes` SHALL surface the caller's `favorite` boolean on each returned entry, merged from the caller's overlay at read time. The prior `rating` value SHALL no longer be merged or returned. (This change adds no dedicated `favorite` query filter to `list_recipes`; semantic retrieval and the favorite re-rank consume the boolean, and a member browses favorites through that path.)
+
+#### Scenario: Favorite rides each entry, rating is gone
+
+- **WHEN** `list_recipes` returns recipes the caller has favorited and not favorited
+- **THEN** each entry's merged view carries `favorite: true`/`false` and carries no `rating` field
+
+### Requirement: list_recipes surfaces the recipe description
+
+`list_recipes` SHALL surface each recipe's `description` on the returned entry (projected as a `recipes` column), so the compact craving-aligned brief is available to the caller without a separate `read_recipe` call.
+
+#### Scenario: Description rides the index entry
+
+- **WHEN** `list_recipes` returns a recipe that has a `description`
+- **THEN** the entry's frontmatter carries that `description`
 
 ### Requirement: profile_status reports initialization from a single subtree listing
 
