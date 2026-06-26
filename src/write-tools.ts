@@ -264,7 +264,7 @@ export function registerWriteTools(
     "update_stockup",
     {
       description:
-        "Add bulk-buy items to the caller's stockup watchlist (users/<id>/stockup.toml). Add-only, deduped by normalized name — re-adding a name is a no-op. Each item needs a name; unit / typical_purchase / notes / baseline_price / buy_at_or_below are optional. Price thresholds are ADVISORY (nothing gates on them — the agent reasons over the live flyer price), so omit them when unknown. Optionally set freezer_capacity_estimate (tight|moderate|spacious). Returns { added, commit_sha }; makes no commit when nothing changed.",
+        "Add bulk-buy items to the caller's stockup watchlist. Add-only, deduped by normalized name — re-adding a name is a no-op. Each item needs a name; unit / typical_purchase / notes / baseline_price / buy_at_or_below are optional. Price thresholds are ADVISORY (nothing gates on them — the agent reasons over the live flyer price), so omit them when unknown. Optionally set freezer_capacity_estimate (tight|moderate|spacious). Returns { added }; makes no change when nothing changed.",
       inputSchema: {
         items: z
           .array(
@@ -306,7 +306,7 @@ export function registerWriteTools(
     "update_staples",
     {
       description:
-        "Add or remove items on the caller's staples list (users/<id>/staples.toml) — the must-have items they never want to run out of. Adds are deduped by normalized name (re-adding is a no-op); removes match by normalized name (absent name is a silent no-op). Each add needs a `name`; `perishable: true` is optional (flag items like eggs or butter so the agent can prompt when stock looks stale). Returns { added, removed, commit_sha }; makes no commit when nothing changed.",
+        "Add or remove items on the caller's staples list — the must-have items they never want to run out of. Adds are deduped by normalized name (re-adding is a no-op); removes match by normalized name (absent name is a silent no-op). Each add needs a `name`; `perishable: true` is optional (flag items like eggs or butter so the agent can prompt when stock looks stale). Returns { added, removed }; makes no change when nothing changed.",
       inputSchema: {
         add: z
           .array(z.object({ name: z.string(), perishable: z.boolean().optional() }))

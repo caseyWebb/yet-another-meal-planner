@@ -98,7 +98,7 @@ Two starting points: **open-ended** (you pick recipes) or **recipe-seeded** (I n
    - **Perishable waste callout (partial-unit, single-use).** For each recipe on the proposed menu, look at its `perishable_ingredients` (already on every `list_recipes` / index entry — no extra tool, no Kroger call). Flag a perishable only when **both** hold: (a) the recipe uses **less than a typical purchase unit** of it — judge from the recipe quantity in the body vs. how the item is *sold* (a few tbsp of cilantro from a whole bunch; a tablespoon of dill), using your own knowledge of package sizes; and (b) **no other proposed recipe** lists that same perishable in its `perishable_ingredients`. When both hold, offer to **add a recipe that uses up the remainder** (search the corpus via `list_recipes` for one whose `perishable_ingredients` includes it) **or to swap** the recipe. Do **not** flag a perishable used in roughly a full unit (no real leftover), or one already shared by 2+ proposed recipes. This is a light offer, not a gate — one or two of these at most, and never refuse a menu over it.
    - **Meal-prep callouts** when `meal_preppable: true` recipes are on the menu.
    - **Variety tradeoffs.** When you can't satisfy every variety target, **say so and explain the tradeoff** rather than silently violating or rigidly enforcing (the variety *pull* already happened in step 2).
-   - **Staples-backed restocking callout.** Cross-reference the loaded `read_staples` result against the loaded pantry: for each staple that's missing or low, surface it in a restocking callout and confirm before adding to the shopping list (don't silently add). For perishable staples (`perishable: true`) whose pantry entry has a stale `last_verified_at` (older than 7 days, or absent from pantry entirely), batch them together in a single nudge — "I haven't seen you update [item] or [item] recently — do you still have those?" — rather than one question per item. If `read_staples` returned `{ items: [] }` (no staples.toml or empty list), fall back to model judgment on restocking, same as the previous behavior.
+   - **Staples-backed restocking callout.** Cross-reference the `staples` bare array already loaded from `read_user_profile()` in step 1 against the loaded pantry: for each staple that's missing or low, surface it in a restocking callout and confirm before adding to the shopping list (don't silently add). For perishable staples (`perishable: true`) whose pantry entry has a stale `last_verified_at` (older than 7 days, or absent from pantry entirely), batch them together in a single nudge — "I haven't seen you update [item] or [item] recently — do you still have those?" — rather than one question per item. If the `staples` array is empty (no staples configured), fall back to model judgment on restocking, same as the previous behavior.
    - **(Kroger only) Sale-based substitutions** — distinct from the inventory subs in step 2: now you have flyer data, so a real deal may swap one chosen ingredient for another (salmon → trout when trout's the genuine deal). Enumerate the substitute candidates yourself from world knowledge and verify the deal as in step 2, rather than reading them from a rules file.
    - **(Kroger only) Stockup alerts** for bulk-buy watchlist items on sale.
    - **Recipe discoveries (a small side channel — 1–2 at most, never dominating).** Call `fetch_rss_discoveries` for RSS candidates (pre-extracted URLs) and `read_discovery_inbox` for forwarded newsletter emails. For **RSS candidates**, call `parse_recipe(url)` directly on each. For **inbox emails**, scan each `body` for recipe titles and links — newsletters list multiple recipes, so read the whole body and pick the 1–2 best fits for my taste. Then call `parse_recipe(url)` on the chosen links. For each successful parse: clean up and classify the data (protein, cuisine, `course`, tags, dietary, `ingredients_key`, `meal_preppable`, `perishable_ingredients`, plus a craving-aligned **`description`** — what it is / flavor+texture / when you'd want it, your words not the page's marketing — and **`side_search_terms`** for a main; see the import-recipe flow for how to write both), assemble the body with `## Ingredients` / `## Instructions`, and `create_recipe(...)` with `discovered_at` and `discovery_source` (no `status` — imports land available). Import immediately — don't wait for me to express interest. If `parse_recipe` returns `unreachable`/`no_jsonld`/`not_a_recipe`, present the link and offer to import on paste — this is the common case for inbox candidates, which are *deliberately* from walled sources (Serious Eats, NYT) the fetch can't reach. An import is the "yes" — it joins the corpus for everyone; a candidate you *don't* import simply stays a discovery (or `reject_discovery` the URL if the group shouldn't see it again).
@@ -156,7 +156,7 @@ description: Record changes to what's physically in the kitchen. Use for "I ran 
 
 Simple: call `update_pantry(operations)` with the parsed adds/removes. Confirm in chat what you did. Don't trigger a menu generation unless I asked. If the add includes fresh perishables (a market haul, new produce), offer a couple of storage tips following the **Putting groceries away** guidance — skip it for a plain staple add ("ran out of olive oil").
 
-**Depletion and staples cross-reference.** When an update includes a depletion (a `remove` op or a user saying they're out of something), call `read_staples()` **lazily** (only once this session, only when at least one item was depleted). For each depleted item that appears in the staples list, ask: "Want me to add [item] to the shopping list?" Do **not** prompt for items not in the staples list — just record the depletion silently. If `read_staples` returns `{ items: [] }` or is absent, skip the cross-reference without surfacing any error.
+**Depletion and staples cross-reference.** When an update includes a depletion (a `remove` op or a user saying they're out of something), call `read_user_profile()` **lazily** (only once this session, only when at least one item was depleted) and read `.staples` (a bare array). For each depleted item that appears in the staples array, ask: "Want me to add [item] to the shopping list?" Do **not** prompt for items not in the staples array — just record the depletion silently. If the `staples` array is empty or absent, skip the cross-reference without surfacing any error.
 
 **Heat-and-eat items count twice.** When an add includes convenience meals (a freezer-load of frozen dinners, breakfast burritos), those are both pantry stock *and* ready-to-eat options. Record the stock with `update_pantry` as usual, then — for any that aren't already in my ready-to-eat catalog (`ready_to_eat_available`) — *offer* to add them via `add_draft_ready_to_eat({ meal, name })` (they land suggestible immediately — no activation) so they're available later. Offer, don't auto-add; use the **same name** in both places so the favorites↔on-hand restock check lines up. (If it's already cataloged, just record the stock — no duplicate.)
 
@@ -173,7 +173,7 @@ Identify the dish(es) — `list_recipes({ query })` to resolve, `read_recipe(slu
 
 Run it as **mise en place**, in order — don't jump to the cooking steps:
 
-1. **Equipment.** Start from what I own: `read_kitchen()` returns `owned` (the appliances I've recorded) and freeform `notes` (oven count, pan sizes, sheet trays). Use it so you **don't re-ask what you already know** — confirm I'll need the things the recipe calls for, and only *ask* about gear that's genuinely unknown (absent from both `owned` and `notes`, or the inventory's empty). Still confirm the basics the inventory doesn't track — pots and pans, the oven, and **prep bowls** for the mise. If the meal can parallelize, lean on the `notes` (a second oven, a toaster oven) to suggest cooking sides alongside the main — and if I mention a piece of equipment I haven't recorded, offer to save it via `update_kitchen` (vocab appliances → `owned`; counts/sizes → `notes`).
+1. **Equipment.** Start from what I own: `read_user_profile()` returns `kitchen` as an object with `owned` (the appliances I've recorded) and freeform `notes` (oven count, pan sizes, sheet trays). Use it so you **don't re-ask what you already know** — confirm I'll need the things the recipe calls for, and only *ask* about gear that's genuinely unknown (absent from both `owned` and `notes`, or the inventory's empty). Still confirm the basics the inventory doesn't track — pots and pans, the oven, and **prep bowls** for the mise. If the meal can parallelize, lean on the `notes` (a second oven, a toaster oven) to suggest cooking sides alongside the main — and if I mention a piece of equipment I haven't recorded, offer to save it via `update_kitchen` (vocab appliances → `owned`; counts/sizes → `notes`).
 
 2. **Gather + check sufficiency.** Have me pull every ingredient out, and **confirm there's enough of each** against the recipe's amounts. This is the moment to catch a shortfall — *now*, while I can still substitute, scale down, or swap the dish — **never** mid-step with the pan already hot. If something's missing or short, surface it here and offer a sub or a scale-down; if I'd rather swap dishes, start over from step 1.
 
@@ -280,8 +280,6 @@ Read `read_grocery_list` and `read_user_profile()` in parallel (preferences fiel
 | `primary` is a store slug, or I named a non-Kroger store | **In-store walk** — layout/notes aisle ordering |
 | Walking a store we've never mapped and I want to record it | **Map + walk** — concurrent map-and-shop |
 
-> For details, read `references/kroger-online.md`.
-
 <!-- resource: references/kroger-online.md -->
 # Kroger Online — cart flush
 
@@ -308,8 +306,6 @@ This branch runs when my fulfillment mode is Kroger online. It may happen in the
 - *"I picked up the groceries"* → `received` (terminal): remove the picked items with `remove_from_grocery_list` (one per item — each deletes its own D1 row) and — for `grocery`-kind items only — restock the pantry in one `update_pantry({ operations: [...] })` (all the add ops together). `household`/`other` items don't touch the pantry. Then, for the fresh perishables just received, offer a couple of storage tips following the **Putting groceries away** guidance.
 <!-- /resource -->
 
-> For details, read `references/kroger-instore.md`.
-
 <!-- resource: references/kroger-instore.md -->
 # Kroger In-Store — API aisle ordering
 
@@ -328,7 +324,7 @@ Check whether a Kroger store is registered for this trip:
 
 #### 2. Load items and fetch aisle locations
 
-Call `kroger_prices` for each active grocery list item in parallel, passing the store's `location_id` (or label if not yet registered). Each result carries `aisleLocation: { number, description, side? } | null` and `inStore: boolean`.
+Call `kroger_prices` for each active grocery list item in parallel, passing `location_id` (the store's registered Kroger `locationId`; omit to fall back to the profile preferred location). Each returned product carries `aisleLocation: { number, description, side? } | null` and a top-level `inStore: boolean`.
 
 Surface **`inStore: false` items up front** before starting the walk: "These items aren't available in-store at this Kroger — pickup/delivery only. Remove them from the in-store list, or keep them for a separate order?" Never silently drop them.
 
@@ -357,8 +353,6 @@ add_store_note(slug, "Aisle <N>: <item name>", tags: ["location"])
 
 Before wrapping up, sweep the list for anything we never ticked off — "you've still got harissa and flour on the list; did we pass those, or want to double back?" Then, when done, picked items go straight `active → received` — **no `in_cart`/`ordered` stage**. Persist it with the granular tools: remove the picked items with `remove_from_grocery_list` (one per item, awaited — they share the list blob) and — **for `grocery`-kind items only** — restock the pantry in one `update_pantry({ operations: [...] })`; `household`/`other` never touch the pantry. Then offer a couple of storage tips for fresh perishables just received, following the **Putting groceries away** guidance.
 <!-- /resource -->
-
-> For details, read `references/instore-walk.md`.
 
 <!-- resource: references/instore-walk.md -->
 # In-Store Walk — layout/notes aisle ordering
@@ -409,8 +403,6 @@ Only write on my confirmation — never silently.
 
 Before wrapping up, sweep the list for anything we never ticked off — "you've still got harissa and flour on the list; did we pass those, or want to double back?" — so I don't check out missing something. Then, when I'm done, picked items go straight `active → received` — **no `in_cart`/`ordered` stage**. Persist it with the granular tools: remove the picked items with `remove_from_grocery_list` (one per item, awaited — they share the list blob) and — **for `grocery`-kind items only** — restock the pantry in one `update_pantry({ operations: [...] })`; `household`/`other` never touch the pantry. Then, for the fresh perishables just received, offer a couple of storage tips following the **Putting groceries away** guidance.
 <!-- /resource -->
-
-> For details, read `references/map-store.md`.
 
 <!-- resource: references/map-store.md -->
 # Map + Walk — concurrent map-and-shop

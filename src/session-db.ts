@@ -215,7 +215,7 @@ function mealPlanUpsertStmt(env: Env, tenant: string, item: PlannedItem): D1Prep
 
 /** A DELETE statement for one meal-plan recipe (exposed for log_cooked's transaction). */
 export function mealPlanDeleteStmt(env: Env, tenant: string, recipe: string): D1PreparedStatement {
-  return db(env).prepare("DELETE FROM meal_plan WHERE tenant = ?1 AND recipe = ?2", tenant, recipe);
+  return db(env).prepare("DELETE FROM meal_plan WHERE tenant = ?1 AND LOWER(recipe) = LOWER(?2)", tenant, recipe);
 }
 
 /**

@@ -11,13 +11,13 @@ Concrete schemas with example values for every data file in the repo. Keep this 
 The data lives in **one private data repo** with two regions (see `ARCHITECTURE.md`). Every file below lives in exactly one:
 
 - **Authored markdown (GitHub, data-repo root)** — the ONLY tier a human hand-edits (Obsidian / native git apps): `recipes/*.md` (objective frontmatter + body) and `storage_guidance/*.md` (curated put-away advice). This is all that remains in GitHub after the D1 migration.
-- **Shared corpus (D1, `migrations/d1/0006_shared_corpus.sql`)** — objective, single-source, read by everyone, migrated off GitHub TOML to D1 tables (`d1-shared-corpus`): `aliases(variant, canonical)`, `sku_cache(ingredient, location_id, …)`, `flyer_terms(term)`, `stores(slug, name, domain)` (in-store-walk registry — identity; layout lives in store notes), `feeds(url, …)` (RSS discovery feeds), `discovery_candidates(id, url UNIQUE, …)` (forwarded-newsletter inbox), `discovery_senders`/`discovery_members` (inbound-email allowlist). Written + validated at the Worker write tools; read by query. The recipe index is the derived D1 `recipes` table (`d1-recipe-index`) — the former `_indexes/recipes.json` is gone.
-- **Attributed records (D1 `recipe_notes` / `store_notes`)** — each member's attributed recipe/store notes, migrated off `users/<username>/*.toml` to D1 tables carrying `author` (the writing tenant) + a `private` flag. `read_recipe_notes` returns own-private + group-shared in one query, joined with the overlay favorites. The GitHub `users/<username>/` subtree no longer holds domain data (vestigial pre-backfill TOML remains in git until a post-migration cleanup).
+- **Shared corpus (D1, `migrations/d1/0006_shared_corpus.sql`)** — objective, single-source, read by everyone, migrated off GitHub TOML to D1 tables (`d1-shared-corpus`): `aliases(variant, canonical)`, `sku_cache(ingredient, location_id, …)`, `flyer_terms(term)`, `stores(slug, name, domain, extra /*json*/)` (in-store-walk registry — identity columns `slug`/`name`/`domain` are top-level; optional identity fields `label`/`chain`/`address`/`location_id` are stored in the `extra` JSON column; layout lives in store notes), `feeds(url, …)` (RSS discovery feeds), `discovery_candidates(id, url UNIQUE, status, …)` (forwarded-newsletter inbox + group-wide rejection log; `status` values: `pending` | `rejected` — `pending` is the default for unprocessed candidates, `rejected` is set by `reject_discovery`), `discovery_senders`/`discovery_members` (inbound-email allowlist). Written + validated at the Worker write tools; read by query. The recipe index is the derived D1 `recipes` table (`d1-recipe-index`) — the former `_indexes/recipes.json` is gone.
+- **Attributed records (D1 `recipe_notes` / `store_notes`)** — each member's attributed recipe/store notes, migrated off `users/<username>/*.toml` to D1 tables carrying `author` (the writing tenant) + a `private` flag. Both tables use `id TEXT PRIMARY KEY` (a generated stable key); `recipe`/`slug` (the recipe or store slug), `author`, `body`, `tags`, `private`, and `created_at` are ordinary columns (not the primary key). `read_recipe_notes` returns own-private + group-shared in one query, joined with the overlay favorites. The GitHub `users/<username>/` subtree no longer holds domain data (vestigial pre-backfill TOML remains in git until a post-migration cleanup).
 - **Per-tenant D1 (the profile)** — each member's grocery **profile** lives in normalized D1 tables (`migrations/d1/0004_profile.sql`), not a KV blob: a singleton `profile` row (the markdown fields `taste`/`diet_principles`, the preference scalars `default_cooking_nights`/`lunch_strategy`/`ready_to_eat_default_action`, the JSON columns `stores`/`dietary`/`rotation`/`custom`/`kitchen_notes`, and `freezer_capacity_estimate`), plus child tables `brand_prefs(tenant, term, ranks)`, `kitchen_equipment(tenant, slug)`, `staples(tenant, name, normalized_name, perishable)`, `overlay(tenant, recipe, favorite, reject)` (the two mutually-exclusive disposition marks; the `status` lifecycle and inert `rating` column were dropped in `0012_overlay_favorites_rejections.sql`), `ready_to_eat(tenant, slug, meal, name, favorite, reject, category, source, brand, notes)`, and `stockup(tenant, name, normalized_name, unit, typical_purchase, notes, baseline_price, buy_at_or_below)`. `idx_overlay_recipe` powers the cross-tenant group-favorites query. Reads assemble the agent-facing objects from these rows (`src/profile-db.ts`); writes mutate rows — no document format on the profile path.
 - **Per-tenant D1 (session state)** — each member's working state lives in D1 row tables (`migrations/d1/0005_session_state.sql`), not KV blobs: `pantry(tenant, name, normalized_name, quantity, category, prepared_from, added_at, last_verified_at, notes)`, `meal_plan(tenant, recipe, planned_for, sides /*json*/)`, `grocery_list(tenant, name, normalized_name, quantity, kind, domain, status, source, for_recipes /*json*/, note, added_at, ordered_at)` — keyed by normalized name (pantry/grocery) or recipe slug (meal plan), with `idx_grocery_status(tenant, status)` and `idx_pantry_category(tenant, category)` backing the read filters. Adds are row upserts (`INSERT … ON CONFLICT DO UPDATE`), removes/status changes are targeted row statements — no whole-array rewrite, strong read-after-write consistency. (The detailed item shapes are below.)
   - **`DATA_KV` has been removed** — the recipe index, the profile, and session state all moved to D1. Existing KV/GitHub data was carried into D1 once, at deploy time, by one-time backfill migrations that have since been applied and retired (along with `DATA_KV`, which only held their ledger). The Worker read path has **no** GitHub/KV fallback — a miss returns empty/null.
 
-**Three-category recipe model:** a recipe's *content* (objective frontmatter + body) is shared markdown in GitHub; its *overlay* (`favorite` + `reject`) is per-tenant in the D1 `overlay` table; its *notes* are per-tenant, attributed, append-mostly in the D1 `recipe_notes` table (`recipe`, `author`, `body`, `tags`, `private`, `created_at`). `last_cooked` is **not stored** — it's derived per-tenant from the D1 `cooking_log` table (`MAX(date)` per recipe). Read tools merge shared content + the caller's overlay + cooking-log `last_cooked` at read time.
+**Three-category recipe model:** a recipe's *content* (objective frontmatter + body) is shared markdown in GitHub; its *overlay* (`favorite` + `reject`) is per-tenant in the D1 `overlay` table; its *notes* are per-tenant, attributed, append-mostly in the D1 `recipe_notes` table (`id TEXT PRIMARY KEY`, `recipe`, `author`, `body`, `tags`, `private`, `created_at`). `last_cooked` is **not stored** — it's derived per-tenant from the D1 `cooking_log` table (`MAX(date)` per recipe). Read tools merge shared content + the caller's overlay + cooking-log `last_cooked` at read time.
 
 > **Note on the per-artifact sections below:** the `*.toml` / `users/<username>/*.toml` headings document each artifact's *shape*, which the D1 columns mirror. After the `d1-*` slices, the shared corpus, profile, session state, cooking log, and attributed notes are **D1 tables** (see the placement list above and `migrations/d1/*.sql`), not repo files. The one-time `.mjs` backfill migrations (and `DATA_KV`) have been applied and retired; `smol-toml` is no longer a direct dependency (it remains only transitively, via the `agents` SDK).
 
@@ -517,6 +517,7 @@ location_id = "70100156"         # optional; chain-specific external id (e.g. Kr
 
 **Notes:**
 - `slug` + `name` are required; everything else is optional. `slug` SHOULD match the filename (the location id). The registry carries **no layout** — aisle order, item placements, and not-carried entries are store notes.
+- **D1 column layout:** the `stores` table has flat top-level columns `slug` (PK), `name`, and `domain`; the optional identity fields `label`, `chain`, `address`, and `location_id` are stored in an `extra` JSON column (not flat top-level keys). `read_store` assembles the full identity object by merging the flat columns with `extra`.
 - **`location_id`** is an optional chain-specific external id — for Kroger stores, set it to the resolved Kroger `locationId` (a compact alphanumeric string like `"70100156"`). When present, `resolveLocationId` in `src/kroger.ts` detects a no-space string and returns it directly, bypassing the Locations API lookup; this makes Kroger in-store walks zero-friction after the one-time registration. Set via `add_store(location_id=…)` or `update_store` with `{ op: "set_identity", field: "location_id", value: … }`.
 - **Layout is notes.** Aisle order, where-it-hides placements, and not-carried entries are `add_store_note` / `read_store_notes` with `layout` / `location` / `stock` tags (see the `store_notes/` schema below). One surface for everything we know about a store. The walk infers aisle order from the `layout` notes (lead each with the aisle number); item→aisle placement is agent judgment over the store's own sign vocabulary (open-vocab, no manifest — the storage-guidance posture). For Kroger stores with a `location_id`, the Kroger in-store branch uses `aisleLocation` from `kroger_prices` instead of layout notes — no pre-mapping required.
 - `domain` (free string, default `grocery`) is the store's kind; the walk filters the grocery list to items of the same `domain`. A wrong tag only mis-files an item, so it's open-vocabulary, not a hard enum. For a store the user names that isn't registered, the agent classifies its domain from world knowledge (Lowe's → `home-improvement`).
@@ -657,35 +658,30 @@ notes = "Wild only"               # price thresholds omitted — they're optiona
 - `name` is the only required item field. `freezer_capacity_estimate` is a top-level scalar (serialized before the `[[items]]` tables) and must precede them in TOML.
 - **`baseline_price` / `buy_at_or_below` are advisory, not gates.** No Worker logic keys on them: `kroger_flyer(against_stockup)` scans stockup item *names* only, and "is this a good price?" is the agent reasoning over the live flyer price (and any learned baseline). They are optional — onboarding does not prompt for them, since members rarely know exact numbers.
 
-## skus/kroger.toml (shared corpus)
+## sku_cache (D1, shared corpus)
 
-Machine-maintained SKU cache, in the **shared corpus** — a mapping resolved by any member warms it for everyone. Agent appends entries (via `place_order`) as the matching pipeline runs. Each entry is **tagged with the `locationId`** it was resolved at.
+Machine-maintained SKU cache in the **shared corpus** (`d1-shared-corpus`, `sku_cache` table) — a mapping resolved by any member warms it for everyone. Written by `place_order` as the matching pipeline resolves ingredients. Each entry is **tagged with the `location_id`** it was resolved at.
 
-```toml
-# skus/kroger.toml — Kroger SKU cache (agent-maintained, shared)
+```sql
+-- D1 sku_cache table (migrations/d1/0006_shared_corpus.sql)
+-- PRIMARY KEY (ingredient, location_id)
 
-[[mappings]]
-ingredient = "olive oil"
-sku = "0001111046025"
-brand = "Simple Truth Organic"
-size = "16.9 fl oz"
-locationId = "01400376"          # the Kroger location this was resolved at
-last_used = "2025-05-15"
-reason = "preferred brand match; in stock at preferred location"
-ambiguity_resolved = false       # true if this required LLM fallback in matching
-
-[[mappings]]
-ingredient = "chicken thighs"
-sku = "0001111091234"
-brand = "Kroger"
-size = "1.5 lb pack"
-locationId = "01400943"
-last_used = "2025-05-14"
-reason = "default brand; price-per-unit best in deterministic narrowing"
-ambiguity_resolved = false
+ingredient   TEXT  -- normalized ingredient name (e.g. "olive oil")
+location_id  TEXT  -- Kroger locationId this was resolved at
+sku          TEXT  -- resolved Kroger SKU
+brand        TEXT  -- brand name of the resolved product
+size         TEXT  -- size/weight string of the resolved product (e.g. "16.9 fl oz")
+last_used    TEXT  -- ISO date of last use (informational; used for cache pruning)
 ```
 
-**This is a speed cache, not the source of truth for dispositions.** It stores *resolved SKUs* to skip the expensive search/narrowing; the *disposition* (care / don't-care / ranked) lives in each member's `preferences.toml [brands]`. **Shared + location-tagged:** an entry tagged with the caller's own location is tried first, but every hit is revalidated against the caller's `preferred_location` for current price + curbside/delivery availability before use — a cross-location entry not carried at the caller's store falls through to a fresh search, so a shared cache can never serve an unavailable SKU. No TTL; `last_used` is informational (for pruning). "Don't care" commodities (`[]` in preferences) carry no pinned SKU here; they re-resolve to cheapest-acceptable each run. (An entry with no `locationId` is treated as same-location and still revalidated.)
+Example rows:
+
+| ingredient     | location_id | sku            | brand               | size        | last_used  |
+|----------------|-------------|----------------|---------------------|-------------|------------|
+| olive oil      | 01400376    | 0001111046025  | Simple Truth Organic| 16.9 fl oz  | 2025-05-15 |
+| chicken thighs | 01400943    | 0001111091234  | Kroger              | 1.5 lb pack | 2025-05-14 |
+
+**This is a speed cache, not the source of truth for dispositions.** It stores *resolved SKUs* to skip the expensive search/narrowing; the *disposition* (care / don't-care / ranked) lives in each member's `profile` row / `brand_prefs` rows. **Shared + location-tagged:** an entry tagged with the caller's own location is tried first, but every hit is revalidated against the caller's `preferred_location` for current price + curbside/delivery availability before use — a cross-location entry not carried at the caller's store falls through to a fresh search, so a shared cache can never serve an unavailable SKU. No TTL; `last_used` is informational (for pruning). "Don't care" commodities (`[]` in preferences) carry no pinned SKU here; they re-resolve to cheapest-acceptable each run. (An entry with no `location_id` is treated as same-location and still revalidated.)
 
 ## taste (per-tenant, D1 `profile.taste`)
 

@@ -123,6 +123,8 @@ function productRow(c: KrogerCandidate): Record<string, unknown> {
     price: c.price,
     on_sale: isOnSale(c),
     available: c.fulfillment,
+    aisleLocation: c.aisleLocation,
+    inStore: c.fulfillment.inStore,
   };
 }
 
@@ -525,12 +527,12 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
     "kroger_prices",
     {
       description:
-        "Current Kroger prices for each ingredient at the preferred location. Returns the FULL list of fulfillable products per ingredient (relevance-ranked) — each with { regular, promo } price, on-sale flag, and curbside/delivery availability — so you can compare across brands/sizes and pick, not just the top one. An ingredient with nothing fulfillable returns an empty products list.",
-      inputSchema: { ingredients: z.array(z.string()) },
+        "Current Kroger prices for each ingredient at the preferred location. Returns the FULL list of fulfillable products per ingredient (relevance-ranked) — each with { regular, promo } price, on-sale flag, curbside/delivery availability, top-level inStore flag, and aisleLocation — so you can compare across brands/sizes and pick, not just the top one. An ingredient with nothing fulfillable returns an empty products list.",
+      inputSchema: { ingredients: z.array(z.string()), location_id: z.string().optional() },
     },
-    ({ ingredients }) =>
+    ({ ingredients, location_id }) =>
       runTool(async () => {
-        const locationId = await getLocationId();
+        const locationId = location_id ?? await getLocationId();
         // Independent per-ingredient searches run concurrently (bounded by the
         // Kroger client's concurrency cap); Promise.all preserves input order.
         const prices = await Promise.all(

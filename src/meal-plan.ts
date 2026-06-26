@@ -2,8 +2,6 @@
 // transient, recipe-grain record of committed cook intent. No I/O here; the
 // tool/commit wrappers supply the parsed file and today's date.
 
-export const MEAL_PLAN_PATH = "meal_plan.toml";
-
 export interface PlannedItem {
   recipe: string;
   /** ISO date the cook is slated for; optional. */

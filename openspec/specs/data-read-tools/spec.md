@@ -30,11 +30,11 @@ The system SHALL provide `list_recipes(filters)` that reads the shared D1 `recip
 
 ### Requirement: list_recipes filter semantics
 
-The system SHALL apply `list_recipes` filters with these semantics: array filters (`dietary`, `season`) match when the recipe contains **ALL** listed values (AND); the `course` filter is a **scalar** that matches by **containment** — a recipe passes when its (array-normalized) `course` includes the requested value, so `{ course: "side" }` returns mains-that-are-also-sides as well as pure sides; `status` defaults to `active` and `status: "all"` disables status filtering; `exclude_cooked_within_days` is a caller-supplied number that excludes recipes cooked within that many days; and `not_cooked_since` (a date) admits recipes whose `last_cooked` is `null`. The system SHALL NOT provide a `tags` array filter — keyword/name matching against tags is handled by the `query` text filter (see "list_recipes free-text query filter"). The `course` value is a free string matched literally against the normalized index values; there is no controlled set.
+The system SHALL apply `list_recipes` filters with these semantics: array filters (`dietary`, `season`) match when the recipe contains **ALL** listed values (AND); the `course` filter is a **scalar** that matches by **containment** — a recipe passes when its (array-normalized) `course` includes the requested value, so `{ course: "side" }` returns mains-that-are-also-sides as well as pure sides; `exclude_cooked_within_days` is a caller-supplied number that excludes recipes cooked within that many days; and `not_cooked_since` (a date) admits recipes whose `last_cooked` is `null`. The system SHALL NOT provide a `tags` array filter — keyword/name matching against tags is handled by the `query` text filter (see "list_recipes free-text query filter"). The `course` value is a free string matched literally against the normalized index values; there is no controlled set. There is no `status` filter — the former `active`/`draft`/`rejected`/`archived` status lifecycle is retired; the default result set is the whole corpus minus the caller's rejects.
 
 The system SHALL additionally apply a **makeability gate** by default: a recipe whose `requires_equipment` is not a subset of the caller's `owned` (see the kitchen-equipment "Deterministic makeability rule") SHALL be excluded. When the caller's `owned` is empty (or `kitchen.toml` is absent) the gate SHALL be a no-op (every recipe passes). A `include_unmakeable: true` filter SHALL disable the exclusion and instead return unmakeable recipes annotated with `missing_equipment` (the required slugs not in `owned`), so the named-dish enumeration path can surface a named recipe flagged rather than silently dropped. The gate SHALL be ANDed with the other filters and SHALL be a pure function of the recipe's indexed `requires_equipment` and the caller's `owned`.
 
-The return shape SHALL stay flat: `course` rides each entry's `frontmatter`; the tool SHALL NOT return a grouped or course-bucketed envelope. Callers that want mains and sides together issue one call (e.g. `list_recipes({ status: "active" })`) and bucket by `course` themselves.
+The return shape SHALL stay flat: `course` rides each entry's `frontmatter`; the tool SHALL NOT return a grouped or course-bucketed envelope. Callers that want mains and sides together issue one call (e.g. `list_recipes({})`) and bucket by `course` themselves.
 
 #### Scenario: Array filter matches all values
 
@@ -50,11 +50,6 @@ The return shape SHALL stay flat: `course` rides each entry's `frontmatter`; the
 
 - **WHEN** `list_recipes({ course: "sauce" })` is invoked and some recipes carry `course: [sauce]`
 - **THEN** those recipes are returned; the filter does not reject `sauce` as off-vocabulary
-
-#### Scenario: Status opt-out returns every status
-
-- **WHEN** `list_recipes({ status: "all" })` is invoked
-- **THEN** recipes of every status (`active`, `draft`, `rejected`, `archived`) are returned
 
 #### Scenario: Never-cooked recipe passes not_cooked_since
 
@@ -112,12 +107,12 @@ The system SHALL support an optional `query` string filter on `list_recipes` tha
 
 #### Scenario: Query composes with structured filters
 
-- **WHEN** `list_recipes({ query: "chicken", status: "active", protein: "chicken" })` is invoked
-- **THEN** only active chicken-protein recipes whose title or tags contain `chicken` are returned
+- **WHEN** `list_recipes({ query: "chicken", protein: "chicken" })` is invoked
+- **THEN** only chicken-protein recipes whose title or tags contain `chicken` are returned
 
 ### Requirement: read_recipe returns frontmatter and body
 
-The system SHALL provide `read_recipe(slug)` returning `{ slug, frontmatter, body }`, where `frontmatter` is the shared objective frontmatter **merged with the caller's overlay fields** (`favorite`, `status`, defaulting `status` to `draft` when absent) **and the caller's cooking-log-derived `last_cooked`** and `body` is the markdown after the frontmatter fence. The slug MAY resolve to a shared corpus recipe or one of the caller's personal recipes. The return SHALL NOT include a `last_modified` field. A slug unknown to both the shared corpus and the caller's personal recipes SHALL return a structured `not_found` error.
+The system SHALL provide `read_recipe(slug)` returning `{ slug, frontmatter, body }`, where `frontmatter` is the shared objective frontmatter **merged with the caller's overlay fields** (`favorite`) **and the caller's cooking-log-derived `last_cooked`** and `body` is the markdown after the frontmatter fence. There is no `status` field in the overlay; the former status lifecycle is retired. The slug MAY resolve to a shared corpus recipe or one of the caller's personal recipes. The return SHALL NOT include a `last_modified` field. A slug unknown to both the shared corpus and the caller's personal recipes SHALL return a structured `not_found` error.
 
 #### Scenario: Existing recipe read with caller's subjective fields
 
@@ -150,7 +145,7 @@ The system SHALL provide `read_pantry(filter)` returning `{ items: [...] }`, sup
 
 ### Requirement: Unified profile read assembles from D1
 
-`read_user_profile()` SHALL return the caller's full profile assembled from the D1 profile tables — `initialized`, `missing`, and all profile fields — in one batched set of queries. The structured fields (`preferences`, `kitchen`, `staples`, `overlay`, `ready_to_eat`, `stockup`) are reconstructed from typed rows/columns (preferences from the `profile` row + `brand_prefs`); the markdown fields (`taste`, `diet_principles`) are returned as strings from the `profile` row. The Worker SHALL NOT parse TOML on the profile read path, and SHALL NOT read a `profile:<username>` KV bundle. The returned object shape is unchanged from the caller's perspective.
+`read_user_profile()` SHALL return the caller's full profile assembled from the D1 profile tables — `initialized`, `missing`, and all profile fields — in one batched set of queries. The structured fields (`preferences`, `kitchen`, `staples`, `overlay`, `ready_to_eat`, `stockup`) are reconstructed from typed rows/columns (preferences from the `profile` row + `brand_prefs`); the markdown fields (`taste`, `diet_principles`) are returned as strings from the `profile` row. `staples` SHALL be returned as a **bare array** (e.g. `[{ name: "olive oil" }, { name: "eggs", perishable: true }]`), not wrapped in an object. `kitchen` SHALL be returned as an **object** (e.g. `{ owned: ["blender"], wishlist: [] }`). The Worker SHALL NOT parse TOML on the profile read path, and SHALL NOT read a `profile:<username>` KV bundle. The returned object shape is otherwise unchanged from the caller's perspective.
 
 #### Scenario: Profile read assembles structured JSON from D1
 

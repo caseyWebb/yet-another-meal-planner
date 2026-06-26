@@ -244,9 +244,3 @@ export function createKrogerClient(env: Env, opts: KrogerClientOptions = {}): Kr
 
   return { resolveLocationId, search, productById };
 }
-
-/** Test helper: clear the module-level isolate caches. */
-export function __resetModuleCache(): void {
-  moduleCache.token = null;
-  moduleCache.locationId = null;
-}

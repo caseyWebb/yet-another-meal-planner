@@ -21,7 +21,7 @@
 	"workers_dev": false,
 	"compatibility_date": "2025-06-01",
 	// Required by the `agents` SDK internals (mimetext / node:diagnostics_channel).
-	// Our own parsing (js-yaml + smol-toml) is workerd-safe and does not depend on it.
+	// Our own parsing (js-yaml) is workerd-safe and does not depend on it.
 	"compatibility_flags": [
 		"nodejs_compat"
 	],
