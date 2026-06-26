@@ -41,12 +41,12 @@ A connected Claude.ai client SHALL be able to perform an authorized write that l
 #### Scenario: Pantry update commits through the gate
 
 - **WHEN** the owner says "I ran out of olive oil" and confirms the update
-- **THEN** the agent invokes the pantry write and `commit_changes` through the connector, the write succeeds through Cloudflare Access, and a corresponding commit appears in the repo
+- **THEN** the agent invokes `update_pantry` through the connector, the write succeeds through Cloudflare Access, and the pantry row is updated in D1
 
-#### Scenario: Recipe rating commits through the gate
+#### Scenario: Recipe update commits through the gate
 
-- **WHEN** the owner says "rate the salmon thing 4 stars"
-- **THEN** the agent invokes `update_recipe` through the connector and the rating change is committed to the repo
+- **WHEN** the owner says "mark the salmon thing as a favorite"
+- **THEN** the agent invokes `toggle_favorite` through the connector and the change is persisted in D1
 
 ### Requirement: Managed-OAuth fallback to a Worker-served OAuth provider
 

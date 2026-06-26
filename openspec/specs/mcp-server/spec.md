@@ -62,7 +62,7 @@ With per-tenant identity in place, the Worker's tool surface MAY include repo-da
 #### Scenario: Cart and write tools exposed behind the per-tenant gate
 
 - **WHEN** the Worker's tool surface is inspected after this change
-- **THEN** it includes the repo-data write tools, `commit_changes`, and `place_order`, all reachable only after the request resolves to an allowlisted tenant, and all acting on that tenant's data only
+- **THEN** it includes the repo-data write tools and `place_order`, all reachable only after the request resolves to an allowlisted tenant, and all acting on that tenant's data only
 
 ### Requirement: Operator-controlled Worker deployment from the data repo
 
