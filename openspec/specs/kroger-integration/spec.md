@@ -53,12 +53,17 @@ The system SHALL provide an internal `kroger_search` helper that queries the Pro
 
 ### Requirement: kroger_prices for an ingredient list
 
-The system SHALL provide `kroger_prices(ingredients)` returning, per ingredient, the current `{ regular, promo }` price, on-sale flag, and curbside/delivery availability at the resolved location.
+The system SHALL provide `kroger_prices(ingredients, location_id?)` returning, per ingredient, the current `{ regular, promo }` price, on-sale flag, curbside/delivery availability, an `aisleLocation` object (`{ number, description, side? }` from the Kroger Products API), and a top-level `inStore` boolean indicating whether the product is available for in-store purchase at the resolved location. The `location_id` parameter is optional; when supplied it overrides the tenant's `preferred_location` resolution for this call (enabling per-trip location overrides without rewriting preferences).
 
-#### Scenario: Prices returned per ingredient
+#### Scenario: Prices returned per ingredient with aisle and in-store fields
 
 - **WHEN** `kroger_prices` is called with a list of ingredient strings
-- **THEN** it returns one priced result per ingredient including current price, on-sale state, and curbside/delivery availability
+- **THEN** it returns one priced result per ingredient including current price, on-sale state, curbside/delivery availability, `aisleLocation` (aisle number/description/side), and `inStore` (boolean)
+
+#### Scenario: Optional location_id overrides preference resolution
+
+- **WHEN** `kroger_prices` is called with an explicit `location_id`
+- **THEN** that `location_id` is used directly for the product lookup without consulting or modifying `preferred_location`
 
 ### Requirement: kroger_flyer synthesized sale scan
 

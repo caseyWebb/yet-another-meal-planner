@@ -12,7 +12,7 @@ This repository is the **grocery-agent itself**: the `grocery-mcp` MCP server an
 - **Tracks your pantry** so it can shop the gaps — and asks before things go stale ("basil's 9 days old — still good?").
 - **Builds the grocery list as intent**, then flushes it **once** to your Kroger cart when you say to — or hands you an aisle-ordered walking list if you're shopping in person.
 - **Matches ingredients to real Kroger SKUs** with price/availability, learns your brand preferences, and asks less over time.
-- **Learns your taste** — ratings, notes, and a taste profile shape future suggestions. A shared recipe corpus, but your ratings and notes are yours.
+- **Learns your taste** — favorites, notes, and a taste profile shape future suggestions. A shared recipe corpus, but your favorites, rejects, and notes are yours.
 - **Surfaces deals and discoveries** — what's on sale from your stockup list, and a couple of new recipes/ready-to-eat options each week from blogs and newsletters you trust.
 - **Remembers what you cooked** — an append-only cooking log it can reflect on ("how have I been eating this month?").
 
@@ -32,10 +32,10 @@ You message it in a normal Claude.ai chat. There's no schedule and no command sy
 >
 > *…after cooking…*
 >
-> **You:** Made the chili last night, it was great — 4 stars.
-> **Agent:** Logged it and rated it 4. That clears it off your meal plan.
+> **You:** Made the chili last night, it was great — want to favorite it.
+> **Agent:** Marked the chili as a favorite and logged it. That clears it off your meal plan.
 
-Smaller things just work too: *"I ran out of olive oil"*, *"what's on sale from my stockup list?"*, *"rate the Serious Eats one 4 stars"*, *"I'm headed to the store — give me a list for Tom Thumb."*
+Smaller things just work too: *"I ran out of olive oil"*, *"what's on sale from my stockup list?"*, *"I loved that Serious Eats recipe — favorite it"*, *"I'm headed to the store — give me a list for Tom Thumb."*
 
 ## How it works
 
@@ -43,7 +43,7 @@ Three components, one clean split: **the LLM does the fuzzy work; everything det
 
 - **Claude.ai** — the conversational surface and reasoning. Each chat starts fresh; state lives in the data repo, not in chat history.
 - **The Worker** (this repo, `src/`) — a Cloudflare Worker hosting the MCP server: opinionated domain tools (Kroger matching, pantry verification, substitutions, atomic git commits) plus an **OAuth 2.1 provider** members connect their Claude.ai to via an operator-issued invite code.
-- **The data repo** (`<you>/groceries-agent-data`, private) — shared `recipes/` + reference data at the root, one `users/<username>/` subtree per member (pantry, preferences, ratings, notes). Git history is the audit log.
+- **The data repo** (`<you>/groceries-agent-data`, private) — shared `recipes/` + narrative markdown at the root and per member; pantry, preferences, favorites, notes, and all operational state live in D1.
 
 The full technical picture — the determinism boundary, multi-tenant identity, the data model, the Kroger matching pipeline — is in **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**.
 

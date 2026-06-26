@@ -104,21 +104,21 @@ The deployment SHALL use **one private** data repository on the operator's accou
 
 ### Requirement: Shared data at the repository root
 
-The data repository **root** SHALL hold the data shared by all members: the recipe **content** under `recipes/`, the shared reference data (`aliases.toml` and the default `substitutions.toml`), the shared `skus/kroger.toml` SKU cache, the curated `storage_guidance/` content tree, and the generated `_indexes/`. The root SHALL NOT contain any per-member subjective or personal data — including ready-to-eat catalogs, which are per-tenant (that lives under `users/<username>/`).
+The data repository **root** SHALL hold only GitHub-authored shared content: recipe **content** under `recipes/` and curated `storage_guidance/` markdown. The `_indexes/` tree is a generated artifact (projected into D1 by the build; the static `components.json` for the recipe site also lives here). The shared operational data — `aliases`, `sku_cache`, `stores`, `feeds`, `discovery_candidates`, and related registries — is now **D1-backed** (the `d1-shared-corpus` migration). The root SHALL NOT contain per-member subjective or personal data.
 
-#### Scenario: Root carries content and reference data
+#### Scenario: Root carries authored recipe content and storage guidance
 
 - **WHEN** the data repository root is inspected
-- **THEN** it contains `recipes/`, the shared reference data and SKU cache, the `storage_guidance/` tree, and `_indexes/`, and no per-member pantry, overlay, notes, or ready-to-eat catalog at the root
+- **THEN** it contains `recipes/` and `storage_guidance/` markdown, plus `_indexes/` for the generated site artifact; the shared operational corpus (aliases, SKU cache, stores, feeds, discovery) is in D1, not in root TOML files
 
 ### Requirement: Per-user subtree layout
 
-Each member's `users/<username>/` subtree SHALL hold only that member's personal state: `pantry.toml`, `preferences.toml`, `stockup.toml`, `grocery_list.toml`, `ready_to_eat.toml`, the narrative `taste.md` and `diet_principles.md`, the agent-writable `cooking_log.toml` and `meal_plan.toml`, `feeds.toml`, the subjective-field `overlay.toml`, recipe notes under `notes/`, any personal (unshared) recipes, and any per-member `substitutions` override. It SHALL NOT duplicate shared root content. The Worker SHALL address a member's files by prefixing repo-relative paths with their `users/<username>/`, so one member's request can never reach another member's subtree.
+Each member's `users/<username>/` subtree holds only **authored markdown** for that member: the narrative `taste.md` and `diet_principles.md`, recipe notes under `notes/`, and any personal (unshared) recipes. All operational and profile state — `pantry`, `preferences`, `stockup`, `grocery_list`, `ready_to_eat`, `cooking_log`, `meal_plan`, `feeds`, and the `overlay` (favorite/reject disposition) — is now **D1-backed** (per-tenant D1 rows), NOT stored as `.toml` files in the `users/<username>/` subtree. The subtree SHALL NOT duplicate shared root content. The Worker addresses a member's GitHub files by prefixing repo-relative paths with their `users/<username>/`, so one member's request can never reach another member's subtree.
 
-#### Scenario: Per-user subtree carries personal state and overlay
+#### Scenario: Per-user subtree carries only authored markdown
 
 - **WHEN** a member's `users/<username>/` subtree is inspected
-- **THEN** it contains that member's pantry/preferences/taste/diet_principles/grocery_list/stockup/ready_to_eat/cooking_log/meal_plan/feeds, an `overlay.toml` of subjective recipe fields, a `notes/` directory, and any personal recipes — and does not duplicate shared root content
+- **THEN** it contains only that member's narrative files (`taste.md`, `diet_principles.md`), a `notes/` directory, and any personal recipes; pantry/preferences/overlay/session state/cooking log are not present as TOML files — they live in D1
 
 ### Requirement: Data template tracked as an independent repository
 

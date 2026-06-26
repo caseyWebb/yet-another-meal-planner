@@ -28,7 +28,7 @@ A single **GitHub App** (on your account, scoped to the data repo) gives the Wor
 
 ## 1. Create the data repo
 
-On the [`groceries-agent-data-template`](https://github.com/caseyWebb/groceries-agent-data-template) → **Use this template** → create `<you>/groceries-agent-data`, **Private**. Add your recipes under `recipes/`, reference data (`aliases.toml`, …), and your own `users/<username>/` (or let the *Onboard* Action seed it in step 6). The template's CI regenerates `_indexes/` on every recipe change.
+On the [`groceries-agent-data-template`](https://github.com/caseyWebb/groceries-agent-data-template) → **Use this template** → create `<you>/groceries-agent-data`, **Private**. Add your recipes under `recipes/` and your own `users/<username>/` narrative markdown (or let the *Onboard* Action seed it in step 6). The template's CI projects the D1 `recipes` table from `recipes/*.md` on every recipe push (and regenerates `_indexes/` for the optional static site).
 
 This repo is your **control plane**. From the template it carries these thin `.github/workflows/` — each a tiny caller (`uses: caseyWebb/groceries-agent/...@main`) of a *reusable* workflow in the public code repo, so the logic and the no-secrets posture live upstream while your private repo holds the config and the one Actions secret. Running them here (not in a fork of the public repo) is what keeps invite codes out of public logs.
 
@@ -37,7 +37,7 @@ This repo is your **control plane**. From the template it carries these thin `.g
 | `deploy.yml` | `data-deploy.yml` | deploy the Worker (overlays your `wrangler.jsonc`) |
 | `onboard.yml` | `data-onboard.yml` | mint a member's invite code + allowlist entry |
 | `revoke.yml` | `data-revoke.yml` | remove a member's allowlist entry + invite code |
-| `build-indexes.yml` | `data-build-indexes.yml` | rebuild `_indexes/` from `recipes/` |
+| `build-indexes.yml` | `data-build-indexes.yml` | project D1 `recipes` table from `recipes/`; rebuild `_indexes/` for the static site |
 | `build-site.yml` | `data-build-site.yml` | build + deploy the optional cookbook site |
 | `build-plugin.yml` | `data-build-plugin.yml` | build your plugin bundle (your Worker URL baked in) as a downloadable artifact to upload to claude.ai |
 
@@ -149,10 +149,10 @@ A *push* discovery source that reaches the bot-walled/paywalled sites RSS can't 
 
 1. **Add a dedicated spare domain to Cloudflare** (Email Routing manages the zone's MX records, so don't use a domain whose mail you rely on — e.g. not your ProtonMail domain). Cloudflare dashboard → **Email** → **Email Routing** → enable.
 2. **Route to the Worker.** Add a custom address (or catch-all) for `groceries-agent@<your-spare-domain>` with action **Send to a Worker** → your `grocery-mcp` Worker. (No `wrangler.jsonc` change — Email Routing binds the address to the Worker in the dashboard.)
-3. **Seed the allowlist.** In the data repo, add yourself to `discovery_sources.toml` `[[members]]` (and any newsletter senders to `[[senders]]`), or just say "add me as a discovery source" to the agent (`update_discovery_sources`).
+3. **Seed the allowlist.** Use the `update_discovery_sources` tool (say "add me as a discovery source" to the agent, or "add \<newsletter\> as a discovery sender") — it writes your member entry and any newsletter sender entries directly to D1. There is no `discovery_sources.toml` to hand-edit.
 4. **Feed it — forwarder-only.** Never subscribe `groceries-agent@` directly (confirm-links + paywalls). Instead, from your own inbox set an **auto-forward rule** to `groceries-agent@<domain>` for newsletters you want indexed (your inbox handles the signup/confirm/paywall), or just hit **Forward** on a one-off. Both work: auto-forward keeps the newsletter `From` (allowlist it as a `sender`); manual forward arrives as you (you're a trusted `member`). The handler authenticates (DKIM) before processing and drops everything else silently.
 
-Emails land in the shared `discoveries_inbox.toml` with their full body text. The agent reads the body at menu time via `read_discovery_inbox`, scans it for recipe titles and links, and calls `parse_recipe` on the promising ones. Full-recipe import still hits the walls — the agent presents the clean link and you paste the recipe to import.
+Emails land in the D1 `discovery_candidates` table with their full body text. The agent reads the body at menu time via `read_discovery_inbox`, scans it for recipe titles and links, and calls `parse_recipe` on the promising ones. Full-recipe import still hits the walls — the agent presents the clean link and you paste the recipe to import.
 
 ## 9. Cookbook site (optional)
 
@@ -177,7 +177,7 @@ A friend needs only a Claude.ai account and a Kroger account — no GitHub, no K
 2. **Hand them the plugin + invite code, matching whichever option you took in [step 7](#7-get-the-agent-into-claudeai--kroger-consent).** *Option 1 (recommended):* send them the `.zip` from your latest **Build plugin** run + their invite code — they upload the file to claude.ai, no GitHub account needed. *Option 2:* send them your marketplace + the invite code (the bundle carries your URL). *Option 3:* send them your **connector URL** (`https://<worker-host>/mcp`) + the invite code + [`AGENT_INSTRUCTIONS.md`](../AGENT_INSTRUCTIONS.md) for a project.
 3. They install (upload the `.zip` / add your marketplace / set up the project), **enter the code at `/authorize`**, then run their Kroger consent (`/oauth/init?tenant=<username>`). On a later update you ship, you re-send the new `.zip` (Option 1) or they `/plugin marketplace update` (Option 2, if they have a GitHub account).
 
-They share the recipe corpus (with their own ratings/notes) and have their own pantry, preferences, and Kroger cart — fully isolated from yours. To remove someone, run **Revoke member** (optionally deleting their `users/<username>/` subtree).
+They share the recipe corpus (with their own favorites/rejects/notes) and have their own pantry, preferences, and Kroger cart — fully isolated from yours. To remove someone, run **Revoke member** (optionally deleting their `users/<username>/` subtree).
 
 ## Known unknowns / caveats
 
