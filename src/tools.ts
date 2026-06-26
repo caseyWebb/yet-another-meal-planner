@@ -285,6 +285,23 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
     return matchIngredient(deps, ingredient, context, bypassCache);
   }
 
+  /**
+   * Revalidate a forced-override SKU (place_order) against current availability +
+   * price at the resolved location — the same one-shot recheck the matcher's cache
+   * path does. Returns the fresh state when fulfillable, or null when it is not.
+   */
+  async function revalidateSku(sku: string) {
+    const locationId = await getLocationId();
+    const fresh = await kroger.productById(sku, locationId);
+    if (!fresh || !isFulfillable(fresh)) return null;
+    return {
+      brand: fresh.brand,
+      size: fresh.size,
+      price: fresh.price,
+      on_sale: isOnSale(fresh),
+    };
+  }
+
   server.registerTool(
     "list_recipes",
     {
@@ -713,7 +730,7 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
 
   // place_order — the order-time flush: resolve the list, write the Kroger cart,
   // persist learned SKUs to the SHARED cache. The one tool that reaches the cart.
-  registerOrderTools(server, env, tenant.id, resolveIngredient, getLocationId);
+  registerOrderTools(server, env, tenant.id, resolveIngredient, revalidateSku, getLocationId);
 
   // get_weather_forecast — read-only Open-Meteo fetch; location resolved from
   // the caller's preferences (location_zip → parse preferred_location). Used by

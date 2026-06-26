@@ -17,6 +17,7 @@ import {
   type Override,
   type PlaceOrderDeps,
   type ResolvedLine,
+  type RevalidatedSku,
 } from "./order.js";
 import { createKrogerUserClient, toToolError, type KvStore } from "./kroger-user.js";
 import { readGroceryList, readPantryNames, advanceInCartRows } from "./session-db.js";
@@ -30,6 +31,9 @@ type Resolver = (
   context?: MatchContext,
   bypassCache?: boolean,
 ) => Promise<MatchResult>;
+
+/** Revalidate a forced-override SKU against current availability + price. */
+type Revalidator = (sku: string) => Promise<RevalidatedSku | null>;
 
 /**
  * Upsert genuinely new (ingredient, location) SKU mappings into the D1 `sku_cache`
@@ -93,6 +97,7 @@ export function registerOrderTools(
   env: Env,
   tenantId: string,
   resolve: Resolver,
+  revalidateSku: Revalidator,
   getLocationId: () => Promise<string>,
 ): void {
   // The SKU cache is shared corpus (the D1 `sku_cache` table); the grocery list +
@@ -104,7 +109,7 @@ export function registerOrderTools(
     "place_order",
     {
       description:
-        "Order-time flush: resolve the whole grocery list (∪ menu_needs − pantry on-hand) against current Kroger availability, write the cart (PUT /v1/cart/add), and cache learned SKU mappings to the shared SKU cache. Ambiguous/unavailable items return as a single `checkpoint` (NOT added) for the user to disposition; pantry overlaps return as `partials` to prompt on. Resolved items advance to status:in_cart only after a successful cart write. SKU-cache commit and cart write are independent best-effort — partial status is reported honestly; the cart is never reported populated when its write failed (check `cart.code` for `reauth_required`). The ONLY tool that writes a Kroger cart. Default buy = 1 package per item; set a count via `menu_needs[].quantity` (or the `quantities` map, which overrides it). Lines that defaulted to 1 are returned with `assumed_quantity: true`. preview=true resolves and reports without writing anything.",
+        "Order-time flush: resolve the whole grocery list (∪ menu_needs − pantry on-hand) against current Kroger availability, write the cart (PUT /v1/cart/add), and cache learned SKU mappings to the shared SKU cache. Ambiguous/unavailable items return as a single `checkpoint` (NOT added) for the user to disposition; pantry overlaps return as `partials` to prompt on. Resolved items advance to status:in_cart only after a successful cart write. `overrides: [{ name, sku, brand?, size? }]` forces a specific SKU for a line — to disposition an ambiguous/unavailable item OR to lock a SKU you verified (e.g. an on-sale one from `kroger_prices`); a forced SKU bypasses the matcher but is still revalidated for current availability and returned with FRESH price/on_sale, and one that has gone unavailable is checkpointed rather than carted. NOTE: overrides pin the SKU, not the price — the cart write carries only SKU + quantity, so whether a sale price realizes is Kroger's call at fulfillment (against possibly-stale flyer data). Resolved lines carry `price`/`on_sale` so you can spot a lapsed deal at preview. SKU-cache commit and cart write are independent best-effort — partial status is reported honestly; the cart is never reported populated when its write failed (check `cart.code` for `reauth_required`). The ONLY tool that writes a Kroger cart. Default buy = 1 package per item; set a count via `menu_needs[].quantity` (or the `quantities` map, which overrides it). Lines that defaulted to 1 are returned with `assumed_quantity: true`. preview=true resolves and reports without writing anything.",
       inputSchema: {
         menu_needs: z.array(z.object(menuNeedShape)).optional(),
         quantities: z.record(z.string(), z.number()).optional(),
@@ -142,6 +147,7 @@ export function registerOrderTools(
 
         const deps: PlaceOrderDeps = {
           resolve: (name) => resolve(name),
+          revalidateSku: (sku) => revalidateSku(sku),
           commitSkuCache,
           cartAdd: async (lines) => {
             try {

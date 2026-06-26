@@ -768,7 +768,9 @@ The order-time flush — the **only** tool that writes a Kroger cart. Resolves t
 
 **Quantity (package count):** supply it per item via `menu_needs[].quantity`, or via the `quantities` map; the `quantities` map **overrides** `menu_needs[].quantity` when both are present (precedence: `quantities` → `menu_needs[].quantity` → default 1). A line that fell back to the default carries `assumed_quantity: true`. The tool reports that fact but does **not** classify "by-the-each produce" or do portion math — at `preview`, *you* reconcile any `assumed_quantity` by-the-each produce (peppers, tomatillos, …) against the recipe's required amount and set an explicit quantity before the real flush. (`grocery_list` items' string `quantity` like "2 lbs" is a human need-annotation, not a package count.)
 
-**Resolution + checkpoint:** each item runs through the [matcher](#match_ingredient_to_kroger_skuingredient-context) with cache revalidation (a cache hit no longer fulfillable is re-resolved). Items the matcher returns as `ambiguous` or `unavailable` are collected into a single `checkpoint` and are **not** added to the cart. Disposition them and re-call with `overrides` (force a SKU) — already-carted items have advanced to `in_cart`, so they won't be re-added.
+**Resolution + checkpoint:** each item runs through the [matcher](#match_ingredient_to_kroger_skuingredient-context) with cache revalidation (a cache hit no longer fulfillable is re-resolved). Items the matcher returns as `ambiguous` or `unavailable` are collected into a single `checkpoint` and are **not** added to the cart. Disposition them and re-call with `overrides` — already-carted items have advanced to `in_cart`, so they won't be re-added.
+
+**`overrides` — force a specific SKU (disposition *or* lock a deal):** `[{ name, sku, brand?, size? }]` pins a chosen SKU for a line, bypassing the matcher. Use it two ways: to **disposition** an ambiguous/unavailable item, or to **lock a SKU you verified** — e.g. the on-sale `sku` returned by [`kroger_prices`](#kroger_pricesingredients-location_id) — so the deal's exact SKU survives into the cart instead of the matcher picking its own. A forced SKU is **revalidated** for current curbside/delivery availability and returned with **fresh** `price`/`on_sale` (so a deal that lapsed since you checked is visible); a forced SKU that has gone **unavailable** is routed to `checkpoint` rather than blind-carted. **Overrides pin the SKU, not the price:** the cart write (`PUT /v1/cart/add`) carries only SKU + quantity — no price — so whether a sale price actually realizes is Kroger's determination at fulfillment, against flyer data that may be hours-stale. Don't promise the user a locked price; surface the fresh `on_sale` at `preview` and let them decide.
 
 **Params:**
 ```
@@ -776,7 +778,7 @@ The order-time flush — the **only** tool that writes a Kroger cart. Resolves t
   menu_needs:       [{ name, quantity?, for_recipes? }],  // needs not yet on the list
   quantities:       { "<name>": <packages> },             // per-item package count (default 1)
   include_partials: ["<name>", ...],                       // pantry items the user confirmed buying anyway
-  overrides:        [{ name, sku, brand?, size? }],        // disposition previously-ambiguous items
+  overrides:        [{ name, sku, brand?, size? }],        // force a SKU: disposition, or lock a verified/on-sale SKU
   preview:          bool                                    // resolve + report only; no cart write, no commits
 }
 ```
@@ -785,7 +787,7 @@ All sections optional. With no args it flushes the current grocery list.
 **Returns:**
 ```
 {
-  resolved:  [{ name, sku, brand, size, quantity, assumed_quantity }],  // assumed_quantity: qty defaulted to 1
+  resolved:  [{ name, sku, brand, size, quantity, assumed_quantity, price?, on_sale? }],  // assumed_quantity: qty defaulted to 1; price/on_sale: fresh at resolution
   checkpoint:[{ name, kind: "ambiguous"|"unavailable", candidates?, message }],
   partials:  [{ name, for_recipes }],
   sku_cache: { committed, error? },
@@ -872,3 +874,38 @@ Behind the per-tenant gate; the only tool that writes GitHub Issues. Driven by t
 - No "execute arbitrary code" or "run arbitrary script"
 - No portion math (no whiteboard problem)
 - No background or scheduled triggers
+
+---
+
+## Harness-provided widgets (NOT MCP tools)
+
+These are **claude.ai built-ins**, not part of `grocery-mcp`. They are exposed by the Claude.ai harness, are invisible to the Worker, and appear in the agent's tool set only where the harness exposes them. A skill that uses one MUST guard on its presence and degrade when it is absent — see the guided `cook` flow in [`AGENT_INSTRUCTIONS.md`](../AGENT_INSTRUCTIONS.md). They are documented here so the contract a skill encodes has a single anchor, not because they belong to this surface.
+
+### `recipe_display_v0`
+
+Renders an interactive recipe card: a servings-scalable ingredient list and a tappable, timer-bearing step list. The guided `cook` flow emits one to scaffold the prep + cook half of the walkthrough.
+
+**Parameters:**
+
+- `title` (string, **required**) — recipe name.
+- `ingredients` (array, **required**) — each:
+  - `id` (string, **required**) — 4-char zero-padded string by convention (`"0001"`, `"0042"`), referenced from step text.
+  - `amount` (number, **required**) — quantity **at `base_servings`** (the widget scales it proportionally).
+  - `name` (string, **required**) — display name; fold counting nouns in here (`"garlic cloves"`, not `"garlic"` with a `clove` unit).
+  - `unit` (string, optional) — one of `g | kg | ml | l | tsp | tbsp | cup | fl_oz | oz | lb | pinch`. Omit for countable items. For seasonings, give a concrete amount in `tsp` rather than a vague count.
+- `steps` (array, **required**) — each:
+  - `id` (string, **required**) — unique step identifier.
+  - `title` (string, **required**) — short summary; used as the timer label and step header.
+  - `content` (string, **required**) — full instruction text; reference ingredients inline with `{ingredient_id}` syntax so amounts update when servings scale.
+  - `timer_seconds` (int, optional) — include for **any** step involving waiting (cooking, baking, resting, marinating, simmering, chilling, preheating). Omit only for active hands-on steps with no waiting.
+- `base_servings` (int, optional) — defaults to `4`.
+- `description` (string, optional) — tagline or brief description.
+- `notes` (string, optional) — tips, variations, additional context.
+
+**Behavioral contract:**
+- The widget scales all ingredient amounts proportionally when servings are adjusted — which only works if `amount` is always the numeric quantity at `base_servings` and step text uses `{ingredient_id}` refs rather than hardcoding amounts.
+- `unit` is absent for countable items — the counting noun goes in `name` instead (don't write `amount: 3, name: "garlic", unit: "clove"`).
+- Timers are meant to be comprehensive — include one whenever a step involves any waiting, not just the "main" cook step.
+- `id` on ingredients is a 4-digit zero-padded string by convention (`"0001"`, `"0042"`), not arbitrary.
+
+The agent never *starts* a timer — in card-tap mode the user taps the step's native timer; in voice mode the user sets their own. Voice-mode timer control is a future seam (issue #87) and not relied upon.
