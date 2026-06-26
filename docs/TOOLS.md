@@ -773,14 +773,14 @@ The order-time flush — the **only** tool that writes a Kroger cart. Resolves t
 **Params:**
 ```
 {
-  menu_needs:       [{ name, quantity?, for_recipes? }],  // needs not yet on the list
-  quantities:       { "<name>": <packages> },             // per-item package count (default 1)
+  menu_needs:       [{ name, quantity?, for_recipes? }],  // needs not yet on the list (quantity: 1–99 integer)
+  quantities:       { "<name>": <packages> },             // per-item package count, 1–99 integer (default 1)
   include_partials: ["<name>", ...],                       // pantry items the user confirmed buying anyway
   overrides:        [{ name, sku, brand?, size? }],        // force a SKU: disposition, or lock a verified/on-sale SKU
   preview:          bool                                    // resolve + report only; no cart write, no commits
 }
 ```
-All sections optional. With no args it flushes the current grocery list.
+All sections optional. With no args it flushes the current grocery list. Package counts (`quantities` and `menu_needs[].quantity`) must be positive integers ≤ 99 — a fractional, zero, or oversized value is rejected before any cart write (`place_order` is the only tool that writes a real Kroger cart).
 
 **Returns:**
 ```

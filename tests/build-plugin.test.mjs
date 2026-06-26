@@ -178,6 +178,23 @@ test('validateParsed rejects an over-1024-char description', () => {
   assert.ok(errors.some((e) => /1024/.test(e)), errors.join('; '));
 });
 
+test('validateParsed rejects a resource path that escapes the bundle (path traversal)', () => {
+  const bad =
+    DOC +
+    '\n### Evil flow\n\n<!-- skill: evil-flow\ndescription: Evil. -->\n\n' +
+    '<!-- resource: references/../../../tmp/pwned.md -->\n# Pwned\n<!-- /resource -->\n';
+  const { errors } = validateParsed(parseInstructions(bad));
+  assert.ok(errors.some((e) => /must not contain "\.\." segments/.test(e)), errors.join('; '));
+});
+
+test('validateParsed accepts a normal references/ resource path', () => {
+  const ok =
+    DOC +
+    '\n### Good flow\n\n<!-- skill: good-flow\ndescription: Good. -->\n\n' +
+    '<!-- resource: references/branch.md -->\n# Branch\n<!-- /resource -->\n';
+  assert.deepEqual(validateParsed(parseInstructions(ok)).errors, []);
+});
+
 test('parseInstructions throws without a Common flows section', () => {
   assert.throws(() => parseInstructions('# Doc\n\n<!-- persona: core -->\n\n## Tone\n\ntext\n'), /Common flows/);
 });

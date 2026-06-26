@@ -161,4 +161,11 @@ describe("kvTenantStore", () => {
     );
     expect((await s.list()).sort()).toEqual(["alice", "bob"]);
   });
+
+  it("canonicalizes enumerated ids (a mixed-case directory key lists as lowercase)", async () => {
+    // Group-aggregation tools derive users/<id>/... paths and profile:<id> keys
+    // from list(); a non-canonical key must not leak its casing downstream.
+    const s = kvTenantStore(memKv({ "tenant:Casey": JSON.stringify({ id: "Casey" }) }));
+    expect(await s.list()).toEqual(["casey"]);
+  });
 });
