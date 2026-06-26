@@ -154,7 +154,7 @@ Write a **new** recipe to the **shared corpus** (the data-repo root, read by eve
 
 ## Recipe note tools
 
-Notes are the **spin-capture mechanism**: a tweak or observation is an *attributed note*, never an edit to shared recipe content. The canonical recipe stays canonical; "sub gochujang, cut the sugar" lives as a note. This is what makes a shared corpus safe — only a genuine "different dish" warrants a personal-recipe fork. Notes are authored in the caller's own subtree (`users/<id>/notes/<slug>.toml`), so authorship is **structural** (the path), not a spoofable field.
+Notes are the **spin-capture mechanism**: a tweak or observation is an *attributed note*, never an edit to shared recipe content. The canonical recipe stays canonical; "sub gochujang, cut the sugar" lives as a note. This is what makes a shared corpus safe — only a genuine "different dish" warrants a personal-recipe fork. Notes are stored in the D1 `recipe_notes` table (attributed by `author` column), so authorship is structural, not a spoofable field.
 
 ### `add_recipe_note(slug, body, tags?, private?)`
 
@@ -167,17 +167,17 @@ Append an attributed note to a recipe (shared or personal) in the caller's notes
 - `private` (boolean, optional) — default `false` (shared with the group). A `private` note is visible only to its author.
 
 **Returns:**
-- `{ slug, author, created_at, commit_sha }`
+- `{ slug, author, created_at }` — D1-backed, no `commit_sha`
 
 **Errors (structured):**
 - `{ error: "validation_failed" }` — malformed slug or empty body.
 
 ### `update_recipe_note(slug, created_at, body?, tags?, private?)`
 
-Edit one of the caller's **own** notes, addressed by its `created_at` (from `add_recipe_note` / `read_recipe_notes`). Only the fields passed change; `created_at` is the immutable key. **Self-scoped** — it reads the caller's own subtree, so it can only touch a note the caller authored. Shared recipe content and other tenants' notes are untouched. (Relaxes the append-only posture for your own notes.)
+Edit one of the caller's **own** notes, addressed by its `created_at` (from `add_recipe_note` / `read_recipe_notes`). Only the fields passed change; `created_at` is the immutable key. **Self-scoped** — it can only touch a note the caller authored. Shared recipe content and other tenants' notes are untouched. (Relaxes the append-only posture for your own notes.)
 
 **Returns:**
-- `{ slug, author, created_at, commit_sha }`
+- `{ slug, author, created_at }` — D1-backed, no `commit_sha`
 
 **Errors (structured):**
 - `{ error: "validation_failed" }` — malformed slug or empty body.
@@ -185,10 +185,10 @@ Edit one of the caller's **own** notes, addressed by its `created_at` (from `add
 
 ### `remove_recipe_note(slug, created_at)`
 
-Delete one of the caller's **own** notes, addressed by its `created_at`. Self-scoped to the caller's subtree; shared content and other tenants' notes are untouched.
+Delete one of the caller's **own** notes, addressed by its `created_at`. Self-scoped; shared content and other tenants' notes are untouched.
 
 **Returns:**
-- `{ slug, removed: true, created_at, commit_sha }`
+- `{ slug, removed: true, created_at }` — D1-backed, no `commit_sha`
 
 **Errors (structured):**
 - `{ error: "not_found" }` — no note of the caller's on that slug with that `created_at`.
@@ -241,13 +241,13 @@ Apply pantry updates from conversational messages.
 
 ### `update_kitchen(operations)`
 
-Update the caller's kitchen equipment inventory (agent-editable on user direction, the same posture as `update_pantry`). Writes `users/<username>/kitchen.toml`.
+Update the caller's kitchen equipment inventory (agent-editable on user direction, the same posture as `update_pantry`). D1-backed (`kitchen_equipment` rows + `profile.kitchen_notes`).
 
 **Params:**
 - `operations` (array): `[{ op: "add" | "remove", slug }]` for the gating `owned` list, and `[{ op: "set_note", key, value }]` for a freeform `notes` field.
 
 **Returns:**
-- `{ applied: [...], conflicts: [...] }` — KV-backed, no `commit_sha`
+- `{ applied: [...], conflicts: [...] }` — D1-backed, no `commit_sha`
 
 **Notes:** An `add` of an **off-vocabulary** slug is a **conflict**, never a silent write — `owned` is the gate's left operand and is kept vocabulary-clean (vocab: `pressure-cooker`, `sous-vide-circulator`, `blender`, `ice-cream-maker`). An `add` of an already-owned slug is idempotent (no-op, no conflict); a `remove` of an absent slug is a conflict. `set_note` fields (oven count, pan sizes) inform the `cook` flow only and **never** gate a recipe. Kitchen state is D1-backed (the `kitchen_equipment` rows + `profile.kitchen_notes`).
 
@@ -259,11 +259,11 @@ Reset `last_verified_at` on confirmed items.
 - `items` (array of names or slugs)
 
 **Returns:**
-- `{ verified: [...], conflicts: [...] }` — conflicts name items not found in the pantry; KV-backed, no `commit_sha`
+- `{ verified: [...], conflicts: [...] }` — conflicts name items not found in the pantry; D1-backed, no `commit_sha`
 
 ### `update_staples(add?, remove?)`
 
-Add items to or remove items from the caller's staples list. Writes `users/<username>/staples.toml`. Adds are deduped by normalized `name`; removes match by normalized `name` and silently succeed when not present.
+Add items to or remove items from the caller's staples list. D1-backed (`staples` table). Adds are deduped by normalized `name`; removes match by normalized `name` and silently succeed when not present.
 
 **Params:**
 - `add` (array, optional): `[{ name, perishable? }]`. Only `name` is required. `perishable: true` enables the staleness-nudge behavior for that item (see `staples.toml` in `docs/SCHEMAS.md`).
@@ -291,7 +291,7 @@ Add items to the caller's bulk-buy watchlist. Writes `users/<username>/stockup.t
 
 ## Grocery list tools
 
-The grocery list is the SKU-free buy list for the next order (`state:<username>:grocery_list` in DATA_KV). It accumulates intent across the week; resolution to a Kroger SKU and the cart write are deferred to order placement (`place_order`). Writes are KV-backed — no `commit_sha`. See `docs/SCHEMAS.md` for the item schema.
+The grocery list is the SKU-free buy list for the next order (D1-backed, `grocery_list` table). It accumulates intent across the week; resolution to a Kroger SKU and the cart write are deferred to order placement (`place_order`). Writes are D1-backed — no `commit_sha`. See `docs/SCHEMAS.md` for the item schema.
 
 ### `read_grocery_list()`
 
@@ -314,21 +314,21 @@ Add an item (ingredient/product level, no SKU). Keyed by normalized `name` — r
 - `note` (string or null, optional) — one-off brand request / occasion
 
 **Returns:**
-- `{ item, merged }` — KV-backed, no `commit_sha`
+- `{ item, merged }` — D1-backed, no `commit_sha`
 
 ### `update_grocery_list(name, ...patch)`
 
 Patch an existing item by name (`quantity`, `kind`, `domain`, `status`, `source`, `for_recipes`, `note`).
 
 **Returns:**
-- `{ item }` — `not_found` if no such item; KV-backed, no `commit_sha`
+- `{ item }` — `not_found` if no such item; D1-backed, no `commit_sha`
 
 ### `remove_from_grocery_list(name)`
 
 Remove an item by name.
 
 **Returns:**
-- `{ removed: bool }` — KV-backed, no `commit_sha`
+- `{ removed: bool }` — D1-backed, no `commit_sha`
 
 **Notes:** Promoting a low/out pantry item onto the list is a **prompted** decision (record `source: "pantry_low"`), never automatic. The lifecycle past `active` (`in_cart` → `ordered` → `received`) is driven by `place_order` and the user-asserted transitions — see [`place_order`](#place_orderpayload) below.
 
@@ -360,10 +360,10 @@ Read one store's **identity**: `name`, `label?`, `chain?`, `address?`, `domain`,
 
 ### `add_store(slug, name, label?, chain?, address?, domain?, location_id?)`
 
-Register a new store location — **identity only**. `slug` is a kebab-case **location** id (`west-7th-tom-thumb`, not `tom-thumb`). `domain` defaults to `"grocery"`. `location_id` is an optional chain-specific external id — for Kroger stores set it to the resolved Kroger `locationId` so in-store walks can bypass the Locations API lookup. Layout is **not** set here — map a store by recording `layout`-tagged store notes (`add_store_note`) as you walk it. Persists via the atomic commit engine.
+Register a new store location — **identity only**. `slug` is a kebab-case **location** id (`west-7th-tom-thumb`, not `tom-thumb`). `domain` defaults to `"grocery"`. `location_id` is an optional chain-specific external id — for Kroger stores set it to the resolved Kroger `locationId` so in-store walks can bypass the Locations API lookup. Layout is **not** set here — map a store by recording `layout`-tagged store notes (`add_store_note`) as you walk it. D1-backed.
 
 **Returns:**
-- `{ store, commit_sha }`
+- `{ store }` — D1-backed, no `commit_sha`
 
 **Errors (structured):**
 - `{ error: "validation_failed" }` — invalid slug or empty name.
@@ -377,40 +377,40 @@ Edit a registered store's **identity** with operations (`update_pantry`/`update_
 There are no aisle / item-location / not-carried ops — layout is notes now (`add_store_note` with `layout`/`location`/`stock` tags).
 
 **Returns:**
-- `{ slug, applied: [...], conflicts: [...], commit_sha? }` — `conflicts` reports e.g. an unsettable field; no commit when nothing applied.
+- `{ slug, applied: [...], conflicts: [...] }` — D1-backed, no `commit_sha`; `conflicts` reports e.g. an unsettable field.
 
 **Errors (structured):**
 - `{ error: "not_found" }` — unknown slug.
 
 ### `remove_store(slug)`
 
-Remove a registered store (deletes `stores/<slug>.toml` atomically). Members' attributed store notes are left untouched.
+Remove a registered store (D1 row delete). Members' attributed store notes are left untouched.
 
 **Returns:**
-- `{ slug, removed: true, commit_sha }`
+- `{ slug, removed: true }` — D1-backed, no `commit_sha`
 
 **Errors (structured):**
 - `{ error: "not_found" }` — unknown slug.
 
 ### `add_store_note(slug, body, tags?, private?)`
 
-Append an attributed note to a store — the single home for everything we know about it. Freeform observations ("fish counter closes at 6 PM", "they stock the Kerrygold I like") **and** layout, by tag convention: `layout` for an aisle + its sections (lead the body with the aisle number — `"Aisle 7: baking, spices"` — the number order is the walk path); `location` for where a non-obvious item hides; `stock` for a not-carried item. Append-mostly; authored in the caller's `users/<id>/store_notes/<slug>.toml` (structural authorship).
+Append an attributed note to a store — the single home for everything we know about it. Freeform observations ("fish counter closes at 6 PM", "they stock the Kerrygold I like") **and** layout, by tag convention: `layout` for an aisle + its sections (lead the body with the aisle number — `"Aisle 7: baking, spices"` — the number order is the walk path); `location` for where a non-obvious item hides; `stock` for a not-carried item. Append-mostly; D1-backed (`store_notes` table, attributed by `author` column).
 
 **Params:**
 - `slug` (string, required), `body` (string, required), `tags` (array, optional), `private` (boolean, optional — default `false`).
 
 **Returns:**
-- `{ slug, author, created_at, commit_sha }`
+- `{ slug, author, created_at }` — D1-backed, no `commit_sha`
 
 **Errors (structured):**
 - `{ error: "validation_failed" }` — malformed slug or empty body.
 
 ### `update_store_note(slug, created_at, body?, tags?, private?)`
 
-Edit one of the caller's **own** store notes, addressed by its `created_at` (from `add_store_note` / `read_store_notes`). Only the fields passed change; `created_at` is the immutable key. **Self-scoped** — it reads the caller's own subtree, so it can only touch a note the caller authored. The clean-correction path for a stale `layout` note after a remodel.
+Edit one of the caller's **own** store notes, addressed by its `created_at` (from `add_store_note` / `read_store_notes`). Only the fields passed change; `created_at` is the immutable key. **Self-scoped** — it can only touch a note the caller authored. The clean-correction path for a stale `layout` note after a remodel.
 
 **Returns:**
-- `{ slug, author, created_at, commit_sha }`
+- `{ slug, author, created_at }` — D1-backed, no `commit_sha`
 
 **Errors (structured):**
 - `{ error: "validation_failed" }` — malformed slug or empty body.
@@ -418,10 +418,10 @@ Edit one of the caller's **own** store notes, addressed by its `created_at` (fro
 
 ### `remove_store_note(slug, created_at)`
 
-Delete one of the caller's **own** store notes, addressed by its `created_at` — e.g. drop a pre-remodel `layout` note. Self-scoped to the caller's subtree; other tenants' notes are untouched.
+Delete one of the caller's **own** store notes, addressed by its `created_at` — e.g. drop a pre-remodel `layout` note. Self-scoped; other tenants' notes are untouched.
 
 **Returns:**
-- `{ slug, removed: true, created_at, commit_sha }`
+- `{ slug, removed: true, created_at }` — D1-backed, no `commit_sha`
 
 **Errors (structured):**
 - `{ error: "not_found" }` — no note of the caller's on that slug with that `created_at`.
@@ -461,11 +461,12 @@ Get current prices for a specific list of ingredients (used for menu pre-pass). 
 
 **Params:**
 - `ingredients` (array of strings)
+- `location_id` (string, optional) — override the store location for this call; defaults to `preferences.stores.preferred_location`. Use when querying a specific store that differs from the primary.
 
 **Returns:**
-- `{ prices: [{ ingredient, products: [{ sku, brand, description, size, price: { regular, promo }, on_sale, available: { curbside, delivery }, fulfillment: { curbside, delivery, inStore }, aisleLocation: { number, description, side? } | null }] }] }`
+- `{ prices: [{ ingredient, products: [{ sku, brand, description, size, price: { regular, promo }, on_sale, available: { curbside, delivery }, fulfillment: { curbside, delivery, inStore }, aisleLocation: { number, description, side? } | null, inStore: boolean }] }] }`
 
-**Notes:** `products` is every fulfillable match for the term, ordered by Kroger relevance; an ingredient with nothing fulfillable returns `{ ingredient, products: [] }`. `price` is `{ regular, promo }`; `on_sale` is true only on a real discount (`promo > 0` **and** `promo < regular`) — a `promo` equal to `regular` is not a sale; `available` reflects curbside/delivery fulfillment at the preferred location — the public API exposes no live in-store stock. `fulfillment.inStore` (boolean) is true when the item is carried in-store at the preferred location. `aisleLocation` is present when the API returns aisle data for this product at the location — `{ number, description, side? }` — and null otherwise; use it for Kroger in-store aisle ordering (the `kroger-instore` branch of `shop-groceries`).
+**Notes:** `products` is every fulfillable match for the term, ordered by Kroger relevance; an ingredient with nothing fulfillable returns `{ ingredient, products: [] }`. `price` is `{ regular, promo }`; `on_sale` is true only on a real discount (`promo > 0` **and** `promo < regular`) — a `promo` equal to `regular` is not a sale; `available` reflects curbside/delivery fulfillment at the preferred location — the public API exposes no live in-store stock. `inStore` (boolean, top-level on each product) is true when the item is carried in-store at the queried location. `aisleLocation` is present when the API returns aisle data for this product at the location — `{ number, description, side? }` — and null otherwise; use it for Kroger in-store aisle ordering (the `kroger-instore` branch of `shop-groceries`).
 
 ### `match_ingredient_to_kroger_sku(ingredient, context)`
 
@@ -478,7 +479,7 @@ Run the full 7-step matching pipeline. Returns a confident match, narrowed candi
 
 **Confidence rule:** confident when a cache hit OR a defined `preferences.toml [brands]` entry resolves it (including `[]` = "don't care, cheapest acceptable"); otherwise ambiguous. Cache hits are revalidated for current price + curbside/delivery availability before being returned.
 
-**Shared, location-tagged cache.** The SKU cache (`skus/kroger.toml`) lives in the **shared corpus**, so a mapping resolved by *any* member warms it for everyone (a network effect). Each entry is tagged with the `locationId` it was resolved at. On lookup, an entry tagged with the caller's own location is tried first, but **every** candidate is revalidated against the caller's `preferred_location` before use — a cross-location entry that isn't carried at the caller's store falls through to a fresh search (so a shared cache can never serve an unavailable SKU). A cross-location hit that *does* revalidate returns `reason: "shared cache hit (revalidated at your store)"`.
+**Shared, location-tagged cache.** The SKU cache (D1 `sku_cache` table, shared corpus) stores mappings resolved by *any* member, warming it for everyone (a network effect). Each entry is tagged with the `location_id` it was resolved at. On lookup, an entry tagged with the caller's own location is tried first, but **every** candidate is revalidated against the caller's `preferred_location` before use — a cross-location entry that isn't carried at the caller's store falls through to a fresh search (so a shared cache can never serve an unavailable SKU). A cross-location hit that *does* revalidate returns `reason: "shared cache hit (revalidated at your store)"`.
 
 **Identity relevance (near-hard).** Beyond curbside/delivery availability, a second near-hard constraint guards *which product*: each candidate is scored by how many query tokens appear in its description/categories, and a confident pick may only come from the **top relevance tier**. So `"anaheim peppers"` resolves to the Fresh Anaheim Peppers PLU, not a cheaper unrelated item that merely shows up in Kroger's results; and `[]` "don't care" picks the cheapest *matching* candidate, never the cheapest unrelated one. If nothing in the pool shares a query token, the tool returns `ambiguous` rather than confidently guessing. (Brand/dietary remain soft preferences — this constraint is about identity, not preference.)
 
@@ -579,7 +580,7 @@ Add trusted sources to the **shared** inbound-newsletter allowlist (root `discov
 - `senders` (array, optional): `[{ address, name? }]` — newsletter `From` addresses; auto-forwarded mail from them gets indexed. `name` is the **newsletter's** name (e.g. "Serious Eats"), never a person's.
 
 **Returns:**
-- `{ added: { members, senders }, commit_sha }` — counts actually added (0 when already present); `commit_sha` is null when nothing changed.
+- `{ added: { members, senders } }` — counts actually added (0 when already present); D1-backed, no `commit_sha`.
 
 **Notes:** Pairs with the inbound-email handler's auth gate — a listed `sender`/`member` is accepted only when the message also passes aligned DKIM (see `docs/SCHEMAS.md` → `discovery_sources.toml`).
 
@@ -591,7 +592,7 @@ Add RSS/Atom feeds to the **shared** discovery config (root `feeds.toml`, the po
 - `feeds` (array): `[{ url, name?, weight?, tags? }]`. `url` is required; `weight` defaults to `1`. (`fetch_rss_discoveries` reads `url`/`name`/`weight`; `tags` are descriptive.)
 
 **Returns:**
-- `{ added, commit_sha }` — `added` is the count of new feeds; `commit_sha` is null when every `url` was already present.
+- `{ added }` — `added` is the count of new feeds; D1-backed, no `commit_sha`.
 
 ### `add_draft_ready_to_eat(items)`
 
@@ -601,7 +602,7 @@ Append ready-to-eat items to the **caller's own** personal ready-to-eat catalog.
 - `items` (array): `[{ meal, name, category?, source?, brand?, notes? }]` — `meal` is `breakfast | lunch | dinner`
 
 **Returns:**
-- `{ added: [{ meal, name, slug }], commit_sha }`
+- `{ added: [{ meal, name, slug }] }` — D1-backed, no `commit_sha`
 
 ### `update_ready_to_eat(slug, updates)`
 
@@ -612,7 +613,7 @@ Disposition or otherwise update a ready-to-eat item in the caller's catalog, add
 - `updates` (object): `{ favorite?, reject?, name?, category?, brand?, notes? }` — `favorite` and `reject` are the booleans of the disposition model, **mutually exclusive** (setting one clears the other); there is no `status` or `rating`. A rejected item is no longer suggested by `ready_to_eat_available`.
 
 **Returns:**
-- `{ slug, updated_fields, commit_sha }`
+- `{ slug, updated_fields }` — D1-backed, no `commit_sha`
 
 ---
 
@@ -634,13 +635,13 @@ Read the caller's full per-tenant profile, assembled from the D1 profile tables 
   taste:           string | null,    // taste-profile narrative (markdown)
   diet_principles: string | null,    // diet-principles narrative (markdown)
   kitchen:         { owned: [...], notes: {...} },  // equipment inventory (empty when absent)
-  staples:         { items: [...] }, // staples list (empty items array when absent)
+  staples:         [...],            // staples list — bare array (empty when absent)
   ready_to_eat:    [...],            // ready-to-eat catalog items (empty array when absent)
   stockup:         { ... } | null,   // bulk-buy watchlist (parsed TOML)
 }
 ```
 
-**Notes:** The single call for session start, meal-plan pre-pass, and configure-grocery-profile. On `initialized: false`, run the `configure-grocery-profile` flow first; use `missing` to skip areas already done. KV-backed (`profile:<username>`) — a missing key returns all fields null/empty, no GitHub fallback (existing members' files are migrated into KV once, at deploy time, by the migration runner). Kitchen `owned` is the array of `EQUIPMENT_VOCAB` slugs that **gate** recipe makeability; an **absent/empty** `owned` makes the gate a no-op (everything shows).
+**Notes:** The single call for session start, meal-plan pre-pass, and configure-grocery-profile. On `initialized: false`, run the `configure-grocery-profile` flow first; use `missing` to skip areas already done. D1-backed (assembled from the per-tenant profile tables) — a missing profile returns all fields null/empty. Kitchen `owned` is the array of `EQUIPMENT_VOCAB` slugs that **gate** recipe makeability; an **absent/empty** `owned` makes the gate a no-op (everything shows).
 
 ### `update_preferences(patch)` / `update_taste(content)` / `update_diet_principles(content)` / `update_aliases(aliases)`
 
@@ -723,29 +724,29 @@ Append one cooking event to the caller's `cooking_log` (D1-backed; **no `commit_
 **Returns:**
 - `{ logged: { date, type, recipe?, name?, protein?, cuisine? } }` — no `commit_sha`.
 
-**Notes:** Validated at write time — a bad date/type or a missing required field is `validation_failed`; an unknown recipe slug is `not_found`, written nowhere. **Auto-clears:** a `type=recipe` entry also removes the cooked slug from the caller's KV meal plan (`state:<username>:meal_plan`) so the plan stays current. Never set `last_cooked` via `update_recipe` — logging a recipe here updates its effective `last_cooked` automatically (it's derived by query). Ready-to-eat consumption is a `{ type: "ready_to_eat", name }` entry; use `update_pantry` to remove any pantry stock when the user used the last of it.
+**Notes:** Validated at write time — a bad date/type or a missing required field is `validation_failed`; an unknown recipe slug is `not_found`, written nowhere. **Auto-clears:** a `type=recipe` entry also removes the cooked slug from the caller's D1 meal plan (`meal_plan` table) so the plan stays current. Never set `last_cooked` via `update_recipe` — logging a recipe here updates its effective `last_cooked` automatically (it's derived by query). Ready-to-eat consumption is a `{ type: "ready_to_eat", name }` entry; use `update_pantry` to remove any pantry stock when the user used the last of it.
 
 ### `read_meal_plan()`
 
-Return the current meal plan — recipes committed to cook next (transient cook intent, KV-backed). Use at session start to resume.
+Return the current meal plan — recipes committed to cook next (transient cook intent, D1-backed). Use at session start to resume.
 
 **Params:** none.
 
 **Returns:**
 - `{ planned: [{ recipe, planned_for, sides? }] }` (`planned_for` may be null; `sides` is an optional array of free-text open-world side names riding on the main's row)
 
-**Notes:** The session-start stale-planned reconcile surfaces only **due** rows (`planned_for` on/before today, or unset). KV-backed (`state:<username>:meal_plan`); a missing key reads as empty (existing `meal_plan.toml` files are migrated into KV at deploy time by the migration runner).
+**Notes:** The session-start stale-planned reconcile surfaces only **due** rows (`planned_for` on/before today, or unset). D1-backed (`meal_plan` table); a missing/empty table reads as empty.
 
 ### `update_meal_plan(ops)`
 
-Add or remove planned meal entries. KV-backed — no commit, no `commit_sha`.
+Add or remove planned meal entries. D1-backed — no commit, no `commit_sha`.
 
 **Params:**
 - `ops` (array): `[{ op: "add" | "remove", recipe, planned_for?, sides? }]`
   - `add` upserts by recipe slug (updating `planned_for`, merging open-world `sides`); `remove` drops all rows for the slug.
 
 **Returns:**
-- `{ applied: [...], conflicts: [...] }` — each applied entry has `{ op, recipe }`; conflicts include the reason.
+- `{ applied: [...], conflicts: [...] }` — D1-backed, no `commit_sha`; each applied entry has `{ op, recipe }`; conflicts include the reason.
 
 **Notes:** Called after the user confirms a menu (add rows), and during cook-capture or the stale-planned reconcile (remove rows). `log_cooked` also auto-removes a cooked recipe from the meal plan. A **corpus** side (a `course: side` recipe) gets its own `add` row; open-world sides ride on the main's `sides` field.
 
@@ -753,7 +754,7 @@ Add or remove planned meal entries. KV-backed — no commit, no `commit_sha`.
 
 ## Order placement
 
-> **Granular writes, no batch tool.** There is no `commit_changes` — every write has a standalone home: objective recipe content (`update_recipe`/`create_recipe`), recipe favorite/reject (`toggle_favorite`/`toggle_reject`), ready-to-eat (`add_draft_ready_to_eat`/`update_ready_to_eat`), config (`update_preferences`/`update_taste`/`update_diet_principles`/`update_aliases`), cooking events (`log_cooked`), and the KV/D1-backed session state (`update_pantry`, `update_meal_plan`, `add_to_grocery_list`/`update_grocery_list`/`remove_from_grocery_list`). A multi-write turn issues one granular call per write. Cart placement is its own tool — **`place_order`** (the order-time cart flush + SKU-cache write).
+> **Granular writes, no batch tool.** There is no `commit_changes` — every write has a standalone home: objective recipe content (`update_recipe`/`create_recipe`), recipe favorite/reject (`toggle_favorite`/`toggle_reject`), ready-to-eat (`add_draft_ready_to_eat`/`update_ready_to_eat`), config (`update_preferences`/`update_taste`/`update_diet_principles`/`update_aliases`), cooking events (`log_cooked`), and the D1-backed session state (`update_pantry`, `update_meal_plan`, `add_to_grocery_list`/`update_grocery_list`/`remove_from_grocery_list`). A multi-write turn issues one granular call per write. Cart placement is its own tool — **`place_order`** (the order-time cart flush + SKU-cache write).
 
 ### `place_order(payload)`
 
@@ -783,9 +784,9 @@ All sections optional. With no args it flushes the current grocery list.
   resolved:  [{ name, sku, brand, size, quantity, assumed_quantity }],  // assumed_quantity: qty defaulted to 1
   checkpoint:[{ name, kind: "ambiguous"|"unavailable", candidates?, message }],
   partials:  [{ name, for_recipes }],
-  sku_cache: { committed, commit_sha?, error? },
+  sku_cache: { committed, error? },
   cart:      { written, count?, error?, code? },   // code carries reauth_required etc.
-  list:      { advanced, error? },        // KV-backed (no commit_sha)
+  list:      { advanced, error? },        // D1-backed (no commit_sha)
   preview:   bool
 }
 ```
