@@ -8,7 +8,7 @@ Defines the recipe index: the shared, objective projection of `recipes/*.md`, st
 
 ### Requirement: Recipe index is stored in and served from D1
 
-The system SHALL maintain the shared recipe index as a `recipes` table in **D1** (the `DB` binding), not as a KV blob. The Worker SHALL read the index from D1 — not from KV or the GitHub data repo — on every tool invocation that requires it (`list_recipes`, `retrospective`, the `read_recipe` slug path, and the discovery idempotency check). The table holds only **objective** recipe content (the shared projection); subjective per-tenant fields (`status`, `rating`, `last_cooked`) are NOT stored here and continue to be merged at read time from the overlay and cooking log.
+The system SHALL maintain the shared recipe index as a `recipes` table in **D1** (the `DB` binding), not as a KV blob. The Worker SHALL read the index from D1 — not from KV or the GitHub data repo — on every tool invocation that requires it (`list_recipes`, `retrospective`, the `read_recipe` slug path, and the discovery idempotency check). The table holds only **objective** recipe content (the shared projection); per-tenant disposition fields (`favorite`, `reject`) and the derived `last_cooked` are NOT stored here — they are merged at read time from the overlay and cooking log.
 
 A *provisioned but empty* `recipes` table SHALL be treated as an empty corpus (the tool returns no recipes), distinct from an *unreadable* table (D1 unreachable or unmigrated), which SHALL surface as `index_unavailable`.
 

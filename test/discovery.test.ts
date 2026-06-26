@@ -128,20 +128,20 @@ describe("slugify", () => {
 const BODY = "## Ingredients\n- a\n\n## Instructions\n1. do it\n";
 
 describe("buildNewRecipe", () => {
-  it("creates recipes/<slug>.md, defaulting status to draft", async () => {
+  it("creates recipes/<slug>.md with no status (available by default)", async () => {
     const gh = ghWith({});
     const { slug, file } = await buildNewRecipe(gh, env, { title: "Test Dish" }, BODY);
     expect(slug).toBe("test-dish");
     expect(file.path).toBe("recipes/test-dish.md");
     const { frontmatter, body } = parseMarkdown(file.content);
-    expect(frontmatter.status).toBe("draft");
+    expect("status" in frontmatter).toBe(false);
     expect(body).toContain("## Ingredients");
   });
 
-  it("preserves an explicit status", async () => {
+  it("strips a lingering status supplied by a stale caller", async () => {
     const gh = ghWith({});
     const { file } = await buildNewRecipe(gh, env, { title: "X", status: "active" }, BODY);
-    expect(parseMarkdown(file.content).frontmatter.status).toBe("active");
+    expect("status" in parseMarkdown(file.content).frontmatter).toBe(false);
   });
 
   it("refuses to overwrite an existing slug", async () => {

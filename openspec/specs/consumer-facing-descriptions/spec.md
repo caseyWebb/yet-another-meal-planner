@@ -29,7 +29,7 @@ Each internal-file reference in consumer-facing text SHALL be dispositioned by w
 #### Scenario: Cross-tool reference points at the tool
 
 - **WHEN** a tool description directs the agent to evaluate against the user's taste profile
-- **THEN** it names the providing tool (`read_taste`) or the concept ("the user's taste profile"), not the file `taste.md`
+- **THEN** it names the providing tool (`read_user_profile`) or the concept ("the user's taste profile"), not the file `taste.md`
 
 #### Scenario: Operator config is described by behavior
 
@@ -73,7 +73,7 @@ Surfaces read by developers/operators who have the repo checkout — `CLAUDE.md`
 
 A given fact SHALL have exactly one canonical home across the MCP tool descriptions and the generated skills, allocated by the test: *could a different agent, with no skills loaded, use this tool correctly and safely from its description alone?*
 
-- The **tool description** SHALL own what the tool does, its params/enums/returns, its guarantees — **including negative guarantees** ("never auto-applies", "rejects `last_cooked`", "returns facts not freshness verdicts") — and the **data-model field semantics it reads or writes** (e.g. `requires_equipment`, `perishable_ingredients`, `standalone`, `pairs_with`, the meaning of a status enum, and which read throws `not_found` when uninitialized).
+- The **tool description** SHALL own what the tool does, its params/enums/returns, its guarantees — **including negative guarantees** ("never auto-applies", "rejects `last_cooked`", "returns facts not freshness verdicts") — and the **data-model field semantics it reads or writes** (e.g. `requires_equipment`, `perishable_ingredients`, `pairs_with`, the meaning of disposition fields like `favorite`/`reject`, and which read throws `not_found` when uninitialized).
 - The **skill** SHALL own when in a flow to call the tool, sequencing across tools, how to act on the result, and what to confirm with the user.
 
 A negative guarantee that reads like policy SHALL remain in the tool description (it is contract); its matching choreography SHALL remain in the skill. The two are complementary halves, not a duplicate, so de-duplication is bidirectional: choreography stranded in a tool description moves to the skill, and field-semantics stranded only in a skill move into the tool description.

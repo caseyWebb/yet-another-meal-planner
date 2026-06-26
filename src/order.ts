@@ -123,6 +123,10 @@ export interface ResolvedLine {
   quantity: number;
   /** Carried from the to-buy line: quantity defaulted to 1 (no count supplied). */
   assumed_quantity: boolean;
+  /** Fresh price at resolution — surfaced so the agent can sanity-check at preview. */
+  price?: { regular: number; promo: number };
+  /** Whether the resolved SKU is on sale at resolution (lets the agent spot a lapsed deal). */
+  on_sale?: boolean;
 }
 
 export interface CheckpointLine {
@@ -132,7 +136,7 @@ export interface CheckpointLine {
   message: string;
 }
 
-/** A learned ingredient→SKU mapping to append to the shared skus/kroger.toml. */
+/** A learned ingredient→SKU mapping to append to the shared D1 `sku_cache` table. */
 export interface NewMapping {
   ingredient: string;
   sku: string;
@@ -142,16 +146,33 @@ export interface NewMapping {
   locationId?: string;
 }
 
-/** Caller-supplied disposition for a previously-ambiguous item: force this SKU. */
+/** Caller-supplied force of a specific SKU for a line — to disposition a
+ *  previously-ambiguous/unavailable item, or to lock a SKU the agent verified
+ *  (e.g. an on-sale one). The forced SKU is revalidated before it reaches the cart. */
 export interface Override {
   sku: string;
   brand?: string;
   size?: string | null;
 }
 
+/** Fresh state of a forced-override SKU after one availability + price recheck. */
+export interface RevalidatedSku {
+  brand: string;
+  size: string | null;
+  price: { regular: number; promo: number };
+  on_sale: boolean;
+}
+
 export interface PlaceOrderDeps {
   /** Resolve one ingredient via the Change 05 matcher (with cache revalidation). */
   resolve(name: string): Promise<MatchResult>;
+  /**
+   * Revalidate a forced-override SKU against current curbside/delivery availability
+   * and price at the resolved location (the same recheck the matcher's cache path
+   * does). Returns the fresh state when fulfillable, or null when it is not — so an
+   * override SKU that has gone unavailable is checkpointed, not blind-carted.
+   */
+  revalidateSku(sku: string): Promise<RevalidatedSku | null>;
   /** Commit SKU-cache appends; returns the commit sha, or null when nothing was new. Throws on failure. */
   commitSkuCache(mappings: NewMapping[]): Promise<string | null>;
   /** Write the resolved lines to the Kroger cart. Throws on failure. */
@@ -170,7 +191,7 @@ export interface PlaceOrderOptions {
 export interface PlaceOrderResult {
   resolved: ResolvedLine[];
   checkpoint: CheckpointLine[];
-  sku_cache: { committed: boolean; commit_sha?: string | null; error?: string };
+  sku_cache: { committed: boolean; error?: string };
   cart: { written: boolean; count?: number; error?: string; code?: string };
   list: { advanced: boolean; error?: string };
   preview: boolean;
@@ -219,13 +240,28 @@ export async function placeOrder(
     toBuy.map(async (item) => {
       const ov = overrides.get(normalizeName(item.name));
       if (ov) {
+        // A forced SKU bypasses the matcher, but is still revalidated for current
+        // availability + price before it can reach the cart. Fulfillable → resolve
+        // with the FRESH price/on_sale (so a lapsed deal is visible); not
+        // fulfillable → checkpoint as unavailable rather than blind-carting it.
+        const fresh = await deps.revalidateSku(ov.sku);
+        if (!fresh) {
+          const checkpoint: CheckpointLine = {
+            name: item.name,
+            kind: "unavailable",
+            message: "forced SKU is no longer fulfillable via curbside or delivery",
+          };
+          return { item, checkpoint };
+        }
         const line: ResolvedLine = {
           name: item.name,
           sku: ov.sku,
-          brand: ov.brand ?? "",
-          size: ov.size ?? null,
+          brand: fresh.brand || ov.brand || "",
+          size: fresh.size ?? ov.size ?? null,
           quantity: item.quantity,
           assumed_quantity: item.assumed_quantity,
+          price: fresh.price,
+          on_sale: fresh.on_sale,
         };
         return { item, line };
       }
@@ -238,6 +274,10 @@ export async function placeOrder(
       resolved.push(o.line!);
       continue;
     }
+    if ("checkpoint" in o) {
+      checkpoint.push(o.checkpoint!);
+      continue;
+    }
     const { item, result: r } = o;
     if (r.resolved) {
       resolved.push({
@@ -247,6 +287,8 @@ export async function placeOrder(
         size: r.size,
         quantity: item.quantity,
         assumed_quantity: item.assumed_quantity,
+        price: r.price,
+        on_sale: r.on_sale,
       });
     } else if ("ambiguous" in r) {
       checkpoint.push({ name: item.name, kind: "ambiguous", candidates: r.candidates, message: r.reason });
@@ -269,8 +311,8 @@ export async function placeOrder(
   // 1. SKU-cache append first — a pure hint, so committing it before the cart
   //    means a cart failure leaves the repo correct and the cart retryable.
   try {
-    const sha = await deps.commitSkuCache(resolved.map(toMapping));
-    result.sku_cache = { committed: true, commit_sha: sha };
+    await deps.commitSkuCache(resolved.map(toMapping));
+    result.sku_cache = { committed: true };
   } catch (e) {
     result.sku_cache = { committed: false, error: msg(e) };
   }

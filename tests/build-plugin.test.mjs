@@ -18,6 +18,7 @@ import {
   buildPluginFiles,
   parseResourceBlocks,
   resolveVersion,
+  floorVersion,
   yamlQuote,
   DEPTH_TIERS,
 } from '../scripts/build-plugin.mjs';
@@ -177,6 +178,23 @@ test('validateParsed rejects an over-1024-char description', () => {
   assert.ok(errors.some((e) => /1024/.test(e)), errors.join('; '));
 });
 
+test('validateParsed rejects a resource path that escapes the bundle (path traversal)', () => {
+  const bad =
+    DOC +
+    '\n### Evil flow\n\n<!-- skill: evil-flow\ndescription: Evil. -->\n\n' +
+    '<!-- resource: references/../../../tmp/pwned.md -->\n# Pwned\n<!-- /resource -->\n';
+  const { errors } = validateParsed(parseInstructions(bad));
+  assert.ok(errors.some((e) => /must not contain "\.\." segments/.test(e)), errors.join('; '));
+});
+
+test('validateParsed accepts a normal references/ resource path', () => {
+  const ok =
+    DOC +
+    '\n### Good flow\n\n<!-- skill: good-flow\ndescription: Good. -->\n\n' +
+    '<!-- resource: references/branch.md -->\n# Branch\n<!-- /resource -->\n';
+  assert.deepEqual(validateParsed(parseInstructions(ok)).errors, []);
+});
+
 test('parseInstructions throws without a Common flows section', () => {
   assert.throws(() => parseInstructions('# Doc\n\n<!-- persona: core -->\n\n## Tone\n\ntext\n'), /Common flows/);
 });
@@ -223,6 +241,18 @@ test('buildPluginFiles threads version into the manifest (monotonic claude.ai au
   assert.equal(with42.version, '0.0.42');
 });
 
+test('floorVersion lifts a regressed rebuild above the published bundle version', () => {
+  // Squash-merges shrink the commit count, so the computed 0.1.<count> can fall below
+  // a version stamped earlier; floorVersion keeps a rebuild strictly ahead of what's
+  // already published so claude.ai still auto-updates.
+  assert.equal(floorVersion('0.1.284', '0.1.305'), '0.1.306'); // regression → floored above
+  assert.equal(floorVersion('0.1.305', '0.1.305'), '0.1.306'); // tie → strictly greater
+  assert.equal(floorVersion('0.1.400', '0.1.305'), '0.1.400'); // already ahead → unchanged
+  assert.equal(floorVersion(undefined, '0.1.305'), undefined); // no git → unchanged
+  assert.equal(floorVersion('0.1.284', undefined), '0.1.284'); // no committed ref → unchanged
+  assert.equal(floorVersion('0.1.284', 'garbage'), '0.1.284'); // off-scheme committed → left alone
+});
+
 test('resolveVersion: 0.1.<commit-count> in a git checkout, undefined otherwise', () => {
   const v = resolveVersion(); // REPO_ROOT is a git checkout
   // `0.1.` floor (not `0.0.`) so it exceeds the old hand-published 0.1.1 — see resolveVersion.
@@ -253,8 +283,25 @@ test('buildPluginFiles is deterministic', () => {
   assert.deepEqual([...a.entries()], [...b.entries()]);
 });
 
-test('DEPTH_TIERS are cart and corpus', () => {
-  assert.deepEqual(DEPTH_TIERS, ['cart', 'corpus']);
+test('DEPTH_TIERS are cart, corpus, and discovery', () => {
+  assert.deepEqual(DEPTH_TIERS, ['cart', 'corpus', 'discovery']);
+});
+
+test('a flow can declare needs: discovery against a discovery persona block', () => {
+  const doc = DOC.replace(
+    '<!-- persona: corpus -->\n\n## Corpus rules\n\nShared recipes.\n',
+    '<!-- persona: corpus -->\n\n## Corpus rules\n\nShared recipes.\n\n<!-- persona: discovery -->\n\n## Discovery rules\n\nTriage then import.\n',
+  ).replace('needs: cart, corpus', 'needs: cart, corpus, discovery');
+  const parsed = parseInstructions(doc);
+  assert.deepEqual(validateParsed(parsed).errors, []);
+  assert.deepEqual(parsed.flows[0].needs, ['cart', 'corpus', 'discovery']);
+  const files = buildPluginFiles(parsed, { mcpUrl: 'https://x' });
+  assert.ok(files.has('skills/grocery-discovery/SKILL.md'), 'missing grocery-discovery library skill');
+  assert.match(files.get('skills/grocery-discovery/SKILL.md'), /Triage then import/);
+  assert.match(
+    files.get('skills/menu-request/SKILL.md'),
+    /`grocery-core`, `grocery-cart`, `grocery-corpus` and `grocery-discovery` skills/,
+  );
 });
 
 // --- parseResourceBlocks -------------------------------------------------
@@ -360,18 +407,22 @@ test('AGENT_INSTRUCTIONS.md: workflows with expected needs + library tiers', asy
     'report-grocery-agent-bug',
   ]);
   const needs = Object.fromEntries(parsed.flows.map((f) => [f.name, f.needs]));
-  assert.deepEqual(needs['meal-plan'], ['cart', 'corpus']);
-  assert.deepEqual(needs['semantic-meal-plan'], ['cart', 'corpus']); // experimental sibling
+  assert.deepEqual(needs['meal-plan'], ['cart', 'corpus']); // untouched: corpus-led, discovery as side channel
+  assert.deepEqual(needs['semantic-meal-plan'], ['cart', 'corpus', 'discovery']); // discovery-first experimental sibling
+  assert.deepEqual(needs['import-recipe'], ['corpus', 'discovery']); // defers triage/import mechanics to the shared tier
   assert.deepEqual(needs['grocery-sale-check'], []); // light flow: core only
   assert.deepEqual(needs['cook'], []);
   assert.deepEqual(needs['shop-groceries'], ['cart']);
 
   // Library tiers emitted; workflows reference, don't inline.
   const files = buildPluginFiles(parsed, { mcpUrl: 'https://x' });
-  for (const tier of ['core', 'cart', 'corpus']) {
+  for (const tier of ['core', 'cart', 'corpus', 'discovery']) {
     assert.ok(files.has(`skills/grocery-${tier}/SKILL.md`), `missing grocery-${tier}`);
   }
   assert.match(files.get('skills/meal-plan/SKILL.md'), /grocery-core`, `grocery-cart` and `grocery-corpus`/);
+  // the importing flows load the discovery tier so their in-body references resolve.
+  assert.match(files.get('skills/semantic-meal-plan/SKILL.md'), /`grocery-corpus` and `grocery-discovery`/);
+  assert.match(files.get('skills/import-recipe/SKILL.md'), /`grocery-core`, `grocery-corpus` and `grocery-discovery`/);
   assert.match(files.get('skills/grocery-sale-check/SKILL.md'), /read the `grocery-core` skill before/);
 
   // shop-groceries has 4 reference files extracted.

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// build-indexes.mjs — walk recipes/, validate (incl. per-tenant ready_to_eat.toml), emit _indexes/*.json.
+// build-indexes.mjs — walk recipes/, validate, emit _indexes/*.json.
 //
 // Content-agnostic: handles an empty corpus cleanly. Output is deterministic
 // (sorted keys, dates normalized to YYYY-MM-DD strings) so an unchanged corpus
@@ -17,16 +17,12 @@ import { PROTEIN_VOCAB, CUISINE_VOCAB, EQUIPMENT_VOCAB } from '../src/vocab.js';
 import { resolveD1Access, makeD1Client } from './d1-rest.mjs';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-// `archived` is valid but tool-unwritten by design — the MANUAL history-preserving
-// removal state (a recipe with cooking_log history can't be deleted, so it's
-// hand-archived: file persists, history resolves, but it leaves active rotation).
-// No tool and no scheduler set it (there is deliberately no auto-archive); the
-// validator must still accept a hand-archived recipe. Mirrored in src/validate.ts.
-const STATUS_ENUM = new Set(['active', 'draft', 'rejected', 'archived']);
 // Subjective recipe fields are per-tenant (overlay + cooking_log), NOT shared
 // corpus content. They are stripped from the shared index and merged at read time
-// (multi-tenant-friend-group §6.1). `status`, when still present on a not-yet-
-// migrated recipe, is validated leniently but never emitted to the shared index.
+// (multi-tenant-friend-group §6.1). The `status` lifecycle is RETIRED (the overlay
+// collapsed to favorite/reject, visibility is opt-out); a lingering frontmatter
+// `status`/`rating` is tolerated, never validated, and always stripped here so it
+// never reaches the shared index.
 const SUBJECTIVE_FIELDS = ['rating', 'last_cooked', 'status'];
 // Controlled vocabularies for the variety + makeability dimensions (coarse
 // buckets — `fish` not `salmon`) so retrospective mixes and diet_principles rules
@@ -142,12 +138,8 @@ export async function buildRecipeIndexes(recipesDir) {
     if (typeof data.title !== 'string' || data.title.trim() === '') {
       errors.push(`${rel}: missing required field "title"`);
     }
-    // status is a per-tenant overlay field now; only validate it when a
-    // not-yet-migrated recipe still carries one. Absence is fine (effective
-    // status defaults to draft per tenant, resolved in the Worker at read time).
-    if (data.status != null && !STATUS_ENUM.has(data.status)) {
-      errors.push(`${rel}: invalid "status" (got ${JSON.stringify(data.status)})`);
-    }
+    // status is retired — not required, not validated. A lingering value is tolerated
+    // and stripped from the index below (SUBJECTIVE_FIELDS).
     const missing = RECOMMENDED_FIELDS.filter(
       (f) => data[f] == null || (Array.isArray(data[f]) && data[f].length === 0)
     );

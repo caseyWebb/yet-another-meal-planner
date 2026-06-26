@@ -1,13 +1,13 @@
-// Discovery + draft-creation tools (recipe-discovery capability):
+// Discovery + recipe-creation tools (recipe-discovery capability):
 //   - fetch_rss_discoveries — pull configured feeds, dedup vs corpus, return a
 //     candidate POOL (no taste score; the agent judges fit and picks 1–2).
 //   - parse_recipe — PARSE-ONLY: fetch a page, return its JSON-LD Recipe data.
 //     Writes nothing. The agent cleans/classifies, then calls create_recipe.
-//   - create_recipe — write a new draft recipe as one solo commit.
+//   - create_recipe — write a new recipe (available by default) as one solo commit.
 //
 // fetch_flyer_featured is intentionally NOT here: Kroger has no "featured"
 // primitive, so on-sale ready-to-eat discovery rides the existing kroger_flyer
-// pre-pass + flyer_terms.toml + agent-side catalog dedup (see AGENT_INSTRUCTIONS).
+// pre-pass + the D1 `flyer_terms` table + agent-side catalog dedup (see AGENT_INSTRUCTIONS).
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
@@ -44,10 +44,10 @@ function errMessage(e: unknown): string {
 
 /**
  * Discovery tools (recipe-discovery capability). Discovery is a SHARED, top-level
- * concern: feeds, the email discoveries inbox, the corpus index, and draft writes
- * all go through `sharedGh` (the data-repo root) — any member's configured feeds
- * feed one group pool, and the candidates are judged against the caller's taste at
- * menu time. Imports dedupe by source URL against the shared corpus so a recipe
+ * concern: the feeds, the email discoveries inbox, and the corpus index live in
+ * shared D1 tables, while recipe (draft) writes go through `sharedGh` (the data-repo
+ * root) — any member's configured feeds feed one group pool, and the candidates are
+ * judged against the caller's taste at menu time. Imports dedupe by source URL against the shared corpus so a recipe
  * already present is reused, never duplicated (§6.4).
  */
 export function registerDiscoveryTools(
@@ -60,7 +60,7 @@ export function registerDiscoveryTools(
     "fetch_rss_discoveries",
     {
       description:
-        "Pull the SHARED, group-wide discovery feeds (root feeds.toml) and return a deduped POOL of candidate recipes ({ url, title, source, feed_weight, summary }) — deduped against recipes already in the corpus (by source URL) and canonicalized (tracking query strings stripped). No taste score: YOU judge taste fit against the user's taste profile (read_taste) and pick the 1–2 worth importing, then parse_recipe + create_recipe each. No configured feeds returns an empty pool. Unreachable feeds are skipped (reported in `skipped`), not fatal.",
+        "Pull the SHARED, group-wide discovery feeds (the shared D1 feeds table) and return a deduped POOL of candidate recipes ({ url, title, source, feed_weight, summary }) — deduped against recipes already in the corpus (by source URL) and canonicalized (tracking query strings stripped). No taste score: YOU judge taste fit against the user's taste profile (from read_user_profile().taste) and pick the 1–2 worth importing, then parse_recipe + create_recipe each. No configured feeds returns an empty pool. Unreachable feeds are skipped (reported in `skipped`), not fatal.",
       inputSchema: {},
     },
     () =>
@@ -164,7 +164,7 @@ export function registerDiscoveryTools(
     "create_recipe",
     {
       description:
-        "Write a NEW recipe to the SHARED corpus, as one solo commit. Slug derives from the title unless `slug` is given. Discovery imports: pass status 'draft' with discovered_at + discovery_source (status defaults to 'draft' if omitted). The body MUST contain ## Ingredients and ## Instructions. `protein` and `cuisine` are coarse CONTROLLED buckets — protein one of: chicken | beef | pork | lamb | turkey | fish | shellfish | egg | tofu | vegetarian | vegan | mixed (map specifics to the bucket: shrimp→shellfish, salmon/cod/tuna→fish); cuisine one of: american | brazilian | cajun | caribbean | chinese | cuban | filipino | french | german | greek | indian | italian | japanese | korean | mediterranean | mexican | moroccan | peruvian | southwestern | spanish | thai | vietnamese. OMIT `protein` entirely for a dish with no protein focus (a side, a plain noodle/grain dish, a condiment) — never write 'none'. An off-vocabulary `protein`/`cuisine` value is rejected (validation_failed). Classify `requires_equipment` conservatively: default [] (the common case) and include a vocab slug (pressure-cooker | sous-vide-circulator | blender | ice-cream-maker) ONLY when the dish is genuinely impossible without it — a wrong tag silently hides a makeable recipe, and an off-vocab slug is rejected. `perishable_ingredients` lists the ingredient names that would spoil before use (the \"would the leftover rot\" test) — fuzzy edges (eggs, potatoes, hardy roots) are fine to skip; default []. Set `description` — a brief, craving-aligned summary (what it is / flavor+texture / when you'd want it), in YOUR words, NOT the page's marketing copy — it is the recipe's semantic-search basis and the compact candidate line; for a MAIN also set `side_search_terms`, phrases for the kind of side that completes it (e.g. [\"a bright acidic salad\", \"crusty bread for the sauce\"]). Refuses to overwrite an existing slug (slug_exists), and refuses to duplicate a recipe whose `source` URL is already in the corpus (already_exists, with the existing slug — reuse it).",
+        "Write a NEW recipe to the SHARED corpus, as one solo commit. Slug derives from the title unless `slug` is given. An imported recipe lands AVAILABLE to every member by default — there is no `status` to set (the per-tenant status lifecycle is retired); for discovery imports set discovered_at + discovery_source. The body MUST contain ## Ingredients and ## Instructions. `protein` and `cuisine` are coarse CONTROLLED buckets — protein one of: chicken | beef | pork | lamb | turkey | fish | shellfish | egg | tofu | vegetarian | vegan | mixed (map specifics to the bucket: shrimp→shellfish, salmon/cod/tuna→fish); cuisine one of: american | brazilian | cajun | caribbean | chinese | cuban | filipino | french | german | greek | indian | italian | japanese | korean | mediterranean | mexican | moroccan | peruvian | southwestern | spanish | thai | vietnamese. OMIT `protein` entirely for a dish with no protein focus (a side, a plain noodle/grain dish, a condiment) — never write 'none'. An off-vocabulary `protein`/`cuisine` value is rejected (validation_failed). Classify `requires_equipment` conservatively: default [] (the common case) and include a vocab slug (pressure-cooker | sous-vide-circulator | blender | ice-cream-maker) ONLY when the dish is genuinely impossible without it — a wrong tag silently hides a makeable recipe, and an off-vocab slug is rejected. `perishable_ingredients` lists the ingredient names that would spoil before use (the \"would the leftover rot\" test) — fuzzy edges (eggs, potatoes, hardy roots) are fine to skip; default []. Set `description` — a brief, craving-aligned summary (what it is / flavor+texture / when you'd want it), in YOUR words, NOT the page's marketing copy — it is the recipe's semantic-search basis and the compact candidate line; for a MAIN also set `side_search_terms`, phrases for the kind of side that completes it (e.g. [\"a bright acidic salad\", \"crusty bread for the sauce\"]). Refuses to overwrite an existing slug (slug_exists), and refuses to duplicate a recipe whose `source` URL is already in the corpus (already_exists, with the existing slug — reuse it).",
       inputSchema: {
         frontmatter: z.record(z.string(), z.unknown()),
         body: z.string(),
@@ -190,7 +190,7 @@ export function registerDiscoveryTools(
           }
         }
         const { slug: finalSlug, file } = await buildNewRecipe(sharedGh, env, frontmatter, body, slug);
-        const { commit_sha } = await commitFiles(sharedGh, [file], `add draft recipe ${finalSlug}`);
+        const { commit_sha } = await commitFiles(sharedGh, [file], `add recipe ${finalSlug}`);
         return { slug: finalSlug, commit_sha };
       }),
   );

@@ -51,6 +51,7 @@ import {
   matchIngredient,
   isFulfillable,
   isOnSale,
+  normalizeIngredient,
   MIN_FLYER_DISCOUNT,
   type CachedMapping,
   type MatchContext,
@@ -64,7 +65,6 @@ import type { KvStore } from "./kroger-user.js";
 const SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
 const recipeFiltersShape = {
-  status: z.string().optional(),
   protein: z.string().optional(),
   cuisine: z.string().optional(),
   course: z.string().optional(),
@@ -85,6 +85,10 @@ const searchSpecShape = {
   label: z.string(),
   facets: z.object(recipeFiltersShape).optional(),
   k: z.number().int().positive().optional(),
+  // Item names the ranker should bias toward (the caller's at-risk perishables /
+  // on-hand items). A bounded, perishable-weighted overlap boost — reorders survivors
+  // only, never gates. Normalized through the alias table before matching.
+  boost_ingredients: z.array(z.string()).optional(),
 };
 
 const pantryFilterShape = {
@@ -114,6 +118,24 @@ const unitPriceItemShape = {
 
 const READY_TO_EAT_MEALS = ["breakfast", "lunch", "dinner"] as const;
 
+/** Normalize an ingredient-name array through the alias table (lowercase/trim/alias per
+ *  entry, drop empties, dedupe). Tolerates a missing/non-array/non-string value → []. The
+ *  shared boundary normalizer for `recipe_semantic_search`'s pantry-overlap set math. */
+function normalizeItems(value: unknown, aliases: Record<string, string>): string[] {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const entry of value) {
+    if (typeof entry !== "string") continue;
+    const norm = normalizeIngredient(entry, aliases);
+    if (norm && !seen.has(norm)) {
+      seen.add(norm);
+      out.push(norm);
+    }
+  }
+  return out;
+}
+
 /** One product row for the list-returning Kroger lookups (kroger_prices, ready_to_eat). */
 function productRow(c: KrogerCandidate): Record<string, unknown> {
   return {
@@ -124,6 +146,8 @@ function productRow(c: KrogerCandidate): Record<string, unknown> {
     price: c.price,
     on_sale: isOnSale(c),
     available: c.fulfillment,
+    aisleLocation: c.aisleLocation,
+    inStore: c.fulfillment.inStore,
   };
 }
 
@@ -194,7 +218,7 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
   }
 
   // Per-request lazy reads of the caller's subjective layer. The overlay
-  // supplies rating+status from the KV profile bundle; the cooking log supplies
+  // supplies favorite+reject from the D1 `overlay` table; the cooking log supplies
   // last_cooked from the D1 `cooking_log` table. Both are merged onto shared
   // recipe content at read time (§6.2).
   let overlayPromise: Promise<Overlay> | null = null;
@@ -261,11 +285,28 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
     return matchIngredient(deps, ingredient, context, bypassCache);
   }
 
+  /**
+   * Revalidate a forced-override SKU (place_order) against current availability +
+   * price at the resolved location — the same one-shot recheck the matcher's cache
+   * path does. Returns the fresh state when fulfillable, or null when it is not.
+   */
+  async function revalidateSku(sku: string) {
+    const locationId = await getLocationId();
+    const fresh = await kroger.productById(sku, locationId);
+    if (!fresh || !isFulfillable(fresh)) return null;
+    return {
+      brand: fresh.brand,
+      size: fresh.size,
+      price: fresh.price,
+      on_sale: isOnSale(fresh),
+    };
+  }
+
   server.registerTool(
     "list_recipes",
     {
       description:
-        "List recipes from the index, filtered. To find recipes by name or keyword (including a named dish), use `query` — the single text search over title AND tags: it keeps recipes whose title or tags contain EVERY token (case-insensitive substring), after dropping connective stopwords (so \"chicken and rice\" matches the same as \"chicken rice\", including a recipe titled \"Chicken and Rice\" whose tags omit \"rice\"). There is no tag filter. Array filters season/dietary match ALL listed values. status defaults to 'active'; pass 'all' to include every status. course is an open-vocabulary facet (main | side | dessert | breakfast | …) matched by containment — `course: 'side'` returns every recipe whose course includes 'side', including a dual-use `[main, side]` dish. exclude_cooked_within_days is a caller-supplied window. A makeability gate is applied by default: recipes needing equipment the caller doesn't own (per kitchen.toml) are hidden — unless the caller has no kitchen inventory recorded, in which case nothing is gated. Pass include_unmakeable:true to instead return those recipes annotated with missing_equipment (use this when surfacing a specifically NAMED dish so it is never silently dropped).",
+        "List recipes from the index, filtered. Returns the whole shared corpus (plus the caller's personal recipes) MINUS recipes the caller has rejected — there is no activation step and no status filter; rejected recipes are simply absent. To find recipes by name or keyword (including a named dish), use `query` — the single text search over title AND tags: it keeps recipes whose title or tags contain EVERY token (case-insensitive substring), after dropping connective stopwords (so \"chicken and rice\" matches the same as \"chicken rice\", including a recipe titled \"Chicken and Rice\" whose tags omit \"rice\"). There is no tag filter. Array filters season/dietary match ALL listed values. course is an open-vocabulary facet (main | side | dessert | breakfast | …) matched by containment — `course: 'side'` returns every recipe whose course includes 'side', including a dual-use `[main, side]` dish. exclude_cooked_within_days is a caller-supplied window. A makeability gate is applied by default: recipes needing equipment the caller doesn't own (per the caller's kitchen inventory) are hidden — unless the caller has no kitchen inventory recorded, in which case nothing is gated. Pass include_unmakeable:true to instead return those recipes annotated with missing_equipment (use this when surfacing a specifically NAMED dish so it is never silently dropped). Each returned entry carries the caller's `favorite` boolean; no status or rating.",
       inputSchema: { filters: z.object(recipeFiltersShape).optional() },
     },
     ({ filters }) =>
@@ -286,9 +327,9 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
           getLastCookedMap(),
           getOwnedEquipment(),
         ]);
-        // Join each shared entry with the caller's overlay (rating/status) and
-        // cooking-log-derived last_cooked before filtering, so filters see the
-        // caller's effective per-tenant view (effective status defaults to draft).
+        // Join each shared entry with the caller's overlay (favorite/reject) and
+        // cooking-log-derived last_cooked before filtering, so the reject hard gate
+        // and the makeability gate see the caller's effective per-tenant view.
         const effective: RecipeIndex = {};
         for (const [slug, entry] of Object.entries(index)) {
           effective[slug] = {
@@ -314,7 +355,7 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
         // caller's overlay (favorites) / cooking log (freshness) / owned equipment
         // (makeability gate), and preferences (rotation tuning — optional, defaults
         // when unset, so semantic search works before any profile exists).
-        const [index, embeddings, overlay, lastCooked, owned, prefs] = await Promise.all([
+        const [index, embeddings, overlay, lastCooked, owned, prefs, aliases] = await Promise.all([
           loadRecipeIndex(env).catch((e) => {
             throw new ToolError(
               "index_unavailable",
@@ -326,11 +367,12 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
           getLastCookedMap(),
           getOwnedEquipment(),
           readPreferences(env, tenant.id).catch(() => null),
+          getAliases().catch(() => ({}) as Record<string, string>),
         ]);
 
-        // Merge the caller's overlay (rating/status) + last_cooked onto the shared
-        // entries so the facet gate sees the effective per-tenant view, exactly as
-        // list_recipes does.
+        // Merge the caller's overlay (favorite/reject) + last_cooked onto the shared
+        // entries so the facet gate (including the reject hard gate) sees the effective
+        // per-tenant view, exactly as list_recipes does.
         const effective: RecipeIndex = {};
         for (const [slug, entry] of Object.entries(index)) {
           effective[slug] = { ...mergeOverlay(entry, overlay[slug], lastCooked.get(slug)), slug };
@@ -358,6 +400,9 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
 
         const results = specs.map((spec, i) => {
           const survivors = filterRecipes(effective, spec.facets ?? {}, now, owned);
+          // Normalize the spec's boost items through the SAME alias table the index's
+          // ingredient arrays are normalized against, so the overlap is exact set math.
+          const boostItems = normalizeItems(spec.boost_ingredients, aliases);
           // Resolve each survivor's embedding + freshness; drop the unembedded (not
           // yet reconciled) — they stay browseable via list_recipes, just unranked here.
           const candidates: SearchCandidate[] = [];
@@ -374,9 +419,22 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
               time_total: typeof fm.time_total === "number" ? fm.time_total : null,
               embedding: vec,
               last_cooked: lastCooked.get(s.slug) ?? null,
+              // Normalize at the boundary so the ranker does plain set membership.
+              // perishable_ingredients is already normalized at import; ingredients_key
+              // is conventionally-but-not-guaranteed normalized, so alias-collapse it too.
+              ingredients_key: normalizeItems(fm.ingredients_key, aliases),
+              perishable_ingredients: normalizeItems(fm.perishable_ingredients, aliases),
             });
           }
-          const recipes = rankCandidates(candidates, vibeVecs[i], favoriteVecs, now, params, spec.k ?? DEFAULT_K);
+          const recipes = rankCandidates(
+            candidates,
+            vibeVecs[i],
+            favoriteVecs,
+            boostItems,
+            now,
+            params,
+            spec.k ?? DEFAULT_K,
+          );
           return { label: spec.label, recipes };
         });
 
@@ -542,12 +600,12 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
     "kroger_prices",
     {
       description:
-        "Current Kroger prices for each ingredient at the preferred location. Returns the FULL list of fulfillable products per ingredient (relevance-ranked) — each with { regular, promo } price, on-sale flag, and curbside/delivery availability — so you can compare across brands/sizes and pick, not just the top one. An ingredient with nothing fulfillable returns an empty products list.",
-      inputSchema: { ingredients: z.array(z.string()) },
+        "Current Kroger prices for each ingredient at the preferred location. Returns the FULL list of fulfillable products per ingredient (relevance-ranked) — each with { regular, promo } price, on-sale flag, curbside/delivery availability, top-level inStore flag, and aisleLocation — so you can compare across brands/sizes and pick, not just the top one. An ingredient with nothing fulfillable returns an empty products list.",
+      inputSchema: { ingredients: z.array(z.string()), location_id: z.string().optional() },
     },
-    ({ ingredients }) =>
+    ({ ingredients, location_id }) =>
       runTool(async () => {
-        const locationId = await getLocationId();
+        const locationId = location_id ?? await getLocationId();
         // Independent per-ingredient searches run concurrently (bounded by the
         // Kroger client's concurrency cap); Promise.all preserves input order.
         const prices = await Promise.all(
@@ -602,7 +660,7 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
         const looked = await Promise.all(
           items.map(async (item) => {
             if (typeof item.name !== "string") return null;
-            if (item.status === "rejected") return null;
+            if (item.reject) return null;
             const meal =
               typeof item.meal === "string" && (READY_TO_EAT_MEALS as readonly string[]).includes(item.meal)
                 ? item.meal
@@ -669,9 +727,9 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
   registerCookingWriteTools(server, env, tenant.id);
 
   // Discovery: RSS recipe candidates, parse-only URL import, draft create, plus the
-  // feeds/sources config writers. Everything here is SHARED (root client) — recipes,
-  // feeds.toml, the discoveries inbox, and discovery_sources.toml all live at the
-  // data-repo root, so any member's config feeds one group pool. Imports dedupe by
+  // feeds/sources config writers. Everything here is SHARED — recipes live at the
+  // data-repo root, while the discovery feeds/inbox/allowlist are shared D1 tables,
+  // so any member's config feeds one group pool. Imports dedupe by
   // source URL against the shared corpus so a recipe is reused, not duplicated (§6.4).
   registerDiscoveryTools(server, sharedGh, env, tenant.id);
 
@@ -688,7 +746,7 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
 
   // place_order — the order-time flush: resolve the list, write the Kroger cart,
   // persist learned SKUs to the SHARED cache. The one tool that reaches the cart.
-  registerOrderTools(server, env, tenant.id, resolveIngredient, getLocationId);
+  registerOrderTools(server, env, tenant.id, resolveIngredient, revalidateSku, getLocationId);
 
   // get_weather_forecast — read-only Open-Meteo fetch; location resolved from
   // the caller's preferences (location_zip → parse preferred_location). Used by

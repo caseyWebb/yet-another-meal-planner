@@ -1,46 +1,47 @@
+---
+update-when: the toolchain, Worker dev or deploy workflow, repo layout, or contribution conventions change
+---
+
 # Contributing
 
 How to work **on** the grocery-agent itself — its persona/skills (generated from [`AGENT_INSTRUCTIONS.md`](AGENT_INSTRUCTIONS.md)) **and** the `grocery-mcp` Worker, both built in this repo. For how the system is *built* (the technical model), read [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) first — this guide assumes it.
 
-> **One thing to get right up front.** This repo *is* the grocery-agent itself — both of its surfaces. The agent's operational instructions — persona, conversational flows, behavior rules — live in [`AGENT_INSTRUCTIONS.md`](AGENT_INSTRUCTIONS.md), the canonical source the **grocery-agent plugin**'s skills are generated from (`scripts/build-plugin.mjs`); the domain tools live in the `grocery-mcp` Worker (`src/`). Both ship to the agent at runtime, and both are built here. Change the Worker by editing `src/`; change how the agent talks and decides by editing `AGENT_INSTRUCTIONS.md` and rebuilding — **never hand-edit the generated bundle under `plugin/`**.
-
 ## Repo map
 
-There is **no data at the root of this repo** — the data lives in a separate private data repo (see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) and [`docs/SELF_HOSTING.md`](docs/SELF_HOSTING.md)). This repo is the agent's source — Worker code, the persona/skills source, and build tooling:
+There is **no data in this repo** — the data lives in a separate private data repo (see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) and [`docs/SELF_HOSTING.md`](docs/SELF_HOSTING.md)). This repo is the agent's source — Worker code, the persona/skills source, and build tooling:
 
 | Path | What it is |
 | --- | --- |
 | `src/`, `test/`, `wrangler.jsonc` | the repo root **is** the Cloudflare Worker (TypeScript) hosting the `grocery-mcp` MCP server + OAuth provider |
 | `scripts/` | index + static-site + plugin build tooling (`build-indexes.mjs`, `build-site.mjs`, `build-plugin.mjs`, `site-assets/`), run by data repos via reusable CI |
-| `docs/` | [`ARCHITECTURE.md`](docs/ARCHITECTURE.md) (the technical model) · [`SCHEMAS.md`](docs/SCHEMAS.md) (file formats) · [`TOOLS.md`](docs/TOOLS.md) (the tool contract) · [`SELF_HOSTING.md`](docs/SELF_HOSTING.md) (operator setup) · `data-template/` (submodule) |
+| `docs/` | [`ARCHITECTURE.md`](docs/ARCHITECTURE.md) (the technical model) · [`SCHEMAS.md`](docs/SCHEMAS.md) (file formats) · [`TOOLS.md`](docs/TOOLS.md) (the tool contract) · [`SELF_HOSTING.md`](docs/SELF_HOSTING.md) (operator setup) |
 | `AGENT_INSTRUCTIONS.md` | the agent persona; build source for the `plugin/` bundle |
 | `openspec/` | the change/spec workflow — `changes/archive/` is the build history, `specs/` is the living contract |
 | `.github/workflows/` | `ci.yml` (the only push-triggered workflow) + reusable `data-*` workflows operators call |
 
 ## Toolchain
 
-Build tooling is managed with **mise** (`mise.toml`) — Node, etc. Don't install globally.
+Build tooling is managed with **mise** (`mise.toml`) — Node and **aube** (the package manager; mise installs `aube`/`aubr`/`aubx`). Don't install globally. `aubr` is `aube run` (use it in place of `npm run`); `aube ci` is the lockfile-strict install used in CI. `package-lock.json` stays the lockfile — aube reads/writes it in place.
 
 ```bash
-mise install                # Node (pinned in mise.toml)
-git submodule update --init  # populate docs/data-template/ (reference only; --remote to bump)
-npm install
+mise install                # Node + aube (pinned in mise.toml)
+aube install                # deps (reads package-lock.json in place)
 ```
 
-The data-repo template is vendored as a git submodule at `docs/data-template/` (reference only — build and test never touch it). `git submodule update --remote && git add docs/data-template` bumps the pinned ref to the template's latest.
+**Supply-chain cooldown.** `.npmrc` sets `minimum-release-age=10080` (7 days): aube won't install a dependency version published less than 7 days ago, falling back to the newest one old enough. It's kept numerically aligned with the Dependabot `cooldown` (`default-days: 7`) so Dependabot only proposes versions aube will install. **Residual:** Dependabot fast-tracks *security* updates (cooldown doesn't apply to them), but aube's window applies to every install — so a same-day security bump can make `aube ci` fail in CI until the version ages in. It's rare and self-healing: re-run CI once the release crosses 7 days (don't disable the window in CI — that re-opens the day-zero risk it guards against).
 
-> **Template sync note (`d1-foundation`).** New operators are *not* blocked on a template bump: the deploy merge takes the binding **set** from this code repo's `wrangler.jsonc`, so the id-less D1 `DB` binding propagates to every operator on their next deploy regardless of their template version. The separate template repo's own `wrangler.jsonc` should still gain the id-less `{ "binding": "DB", "database_name": "grocery-mcp", "migrations_dir": "migrations/d1" }` entry on its next sync so a freshly cloned template reflects reality — that edit lands in the template repo, not here.
+The data-repo template lives in its own independent repo, [`groceries-agent-data-template`](https://github.com/caseyWebb/groceries-agent-data-template) — it is no longer vendored here. Build and test never touch it.
 
 ## Working on the Worker (`src/`)
 
 The Worker is the root package. One `package.json` carries both the Worker deps and the `scripts/` build-tooling deps.
 
 ```bash
-npm run dev          # wrangler dev — local Worker; point MCP Inspector at the local URL
-npm test             # vitest run — Worker unit tests (test/*.test.ts)
-npm run test:tooling # node --test — build-indexes/build-site/build-plugin tests (tests/*.test.mjs)
-npm run typecheck    # tsc --noEmit
-npm run deploy       # wrangler deploy — normally NOT run by hand (see Deployment)
+aubr dev             # wrangler dev — local Worker; point MCP Inspector at the local URL
+aubr test            # vitest run — Worker unit tests (test/*.test.ts)
+aubr test:tooling    # node --test — build-indexes/build-site/build-plugin tests (tests/*.test.mjs)
+aubr typecheck       # tsc --noEmit
+aubr deploy          # wrangler deploy — normally NOT run by hand (see Deployment)
 ```
 
 - **Structured errors, not throws.** Tools return `{ error: "...", message }` shapes the agent can reason over. Follow the existing convention in `src/errors.ts`.
@@ -63,7 +64,7 @@ gh workflow run deploy.yml --repo caseyWebb/groceries-agent-data
 gh run watch  --repo caseyWebb/groceries-agent-data                # optional: follow to green
 ```
 
-(`npm run deploy` is a local escape hatch, but the data-repo workflow is the source of truth — it gates on typecheck + tests first.)
+(`aubr deploy` is a local escape hatch, but the data-repo workflow is the source of truth — it gates on typecheck + tests first.)
 
 ## Working on data tooling (`scripts/`)
 
@@ -73,23 +74,21 @@ The scripts build indexes/site for a **data repo**, not this one (no data lives 
 node scripts/build-indexes.mjs --root /path/to/data-repo   # validate recipes + project the recipe index into D1
 node scripts/build-site.mjs    --root /path/to/data-repo --out site
 node scripts/build-indexes.mjs --check                     # validate only, no write
-npm run test:tooling                                       # node --test (tests/, fixture-based)
+aubr test:tooling                                          # node --test (tests/, fixture-based)
 ```
 
-**Validation.** After `d1-shared-corpus`, `build-indexes.mjs` validates **recipes only** (frontmatter well-formed, controlled vocab, references resolve) and projects the recipe index into D1. The store/discovery/whole-repo-TOML checks moved to **Worker write-time** validators (`src/validate.ts`: `validateFile` for recipe `.md`, `validateStoreInput`/`validateDiscoveryCandidate` for the D1 corpus writes); no non-recipe artifact is build-validated anymore. `smol-toml` is gone from the Worker and build — it survives only in the `.mjs` backfill migrations that parse the legacy TOML into D1.
+**Validation.** `build-indexes.mjs` validates **recipes only** (frontmatter well-formed, controlled vocab, references resolve) and projects the recipe index into D1 — recipe `.md` is the only file it validates. Everything else is validated at **Worker write time** in `src/validate.ts`: `validateFile` for recipe markdown, and `validateStoreInput` / `validateDiscoveryCandidate` for the D1 corpus writes (store registry, discovery candidates).
 
-**Reusable Actions.** This public repo hosts `on: workflow_call` workflows that operators' private data repos call (`uses: caseyWebb/groceries-agent/...@main`), billed to the data-repo owner: `data-deploy.yml`, `data-onboard.yml` / `data-revoke.yml` (KV-only member provisioning), `data-build-indexes.yml` / `data-build-site.yml`, and `data-build-plugin.yml` (mint a self-hoster's plugin bundle with their own connector URL baked in). Onboard/revoke run in the **private** data repo so the invite codes they print never hit a public log. `docs/data-template/.github/workflows/` is the live reference for the thin data-repo callers.
+**Reusable Actions.** This public repo hosts `on: workflow_call` workflows that operators' private data repos call (`uses: caseyWebb/groceries-agent/...@main`): `data-deploy.yml`, `data-onboard.yml` / `data-revoke.yml` (member provisioning), `data-build-indexes.yml` / `data-build-site.yml`, and `data-build-plugin.yml` (mint a self-hoster's plugin bundle with their own connector URL baked in). Onboard/revoke run in the **private** data repo so the invite codes they print never hit a public log. The [`groceries-agent-data-template`](https://github.com/caseyWebb/groceries-agent-data-template) repo's `.github/workflows/` is the live reference for the thin data-repo callers.
 
-**Migrations — schema only.** A schema change is a `migrations/d1/NNNN_name.sql` file: declarative table shape, applied by the Cloudflare-native `wrangler d1 migrations apply DB` (`--local` to seed your dev SQLite, `--remote` on deploy — the deploy step runs this) and tracked in D1's own `d1_migrations` table (created automatically). Just write the SQL.
-
-The original KV/GitHub → D1 move used imperative `migrations/*.mjs` data backfills run by a `scripts/run-migrations.mjs` runner (ledgered in a `migrations:applied` KV key); those have been applied and **removed**, along with `DATA_KV`. There is no `.mjs` data-migration track today. The only script that writes D1 from CI now is `scripts/build-indexes.mjs` (via `scripts/d1-rest.mjs`), which *rebuilds* the derived recipe index — not a stateful migration. If a future reshape needs an imperative backfill, re-introduce a runner then.
+**D1 Migrations.** A D1 schema change is a `migrations/d1/NNNN_name.sql` file: declarative table shape, applied by the Cloudflare-native `wrangler d1 migrations apply DB` (`--local` to seed your dev SQLite, `--remote` on deploy — the deploy step runs this) and tracked in D1's own `d1_migrations` table (created automatically). Just write the SQL.
 
 ## Building the plugin (`AGENT_INSTRUCTIONS.md` → `plugin/`)
 
 After editing `AGENT_INSTRUCTIONS.md` (or a `src/` tool description the skills quote), regenerate the committed bundle:
 
 ```bash
-npm run build:plugin   # → plugin/grocery-agent/ (connector URL from $GROCERY_MCP_URL)
+aubr build:plugin   # → plugin/grocery-agent/ (connector URL from $GROCERY_MCP_URL)
 ```
 
 The build bakes the **connector URL** into `plugin/grocery-agent/.mcp.json` and **refuses to write the placeholder URL into the committed bundle** (that would break every install) — so the real URL has to be on hand. Either:
@@ -97,7 +96,7 @@ The build bakes the **connector URL** into `plugin/grocery-agent/.mcp.json` and 
 - set it once in the gitignored `mise.local.toml` (`GROCERY_MCP_URL = "https://<your-worker-host>/mcp"`) and run under `mise` so the env var loads, **or**
 - pass it explicitly: `node scripts/build-plugin.mjs --out plugin/grocery-agent --mcp-url https://<your-worker-host>/mcp`.
 
-If `npm run build:plugin` aborts with *"REFUSING to write the placeholder connector URL"*, that guard fired because neither was set. For a throwaway build where the URL doesn't matter (inspecting output, never committed), `node scripts/build-plugin.mjs` writes to `dist/grocery-agent-plugin/` with the placeholder; `--check` parses + validates without writing. The bundle is **generated** — never hand-edit `plugin/`.
+If `aubr build:plugin` aborts with *"REFUSING to write the placeholder connector URL"*, that guard fired because neither was set. For a throwaway build where the URL doesn't matter (inspecting output, never committed), `node scripts/build-plugin.mjs` writes to `dist/grocery-agent-plugin/` with the placeholder; `--check` parses + validates without writing. The bundle is **generated** — never hand-edit `plugin/`.
 
 ## Tool & skill surfaces — what goes where
 

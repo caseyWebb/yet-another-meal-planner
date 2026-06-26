@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Defines the read-side Kroger integration for the MCP server: the `client_credentials` API client (token caching, rate-limit backoff, structured upstream errors), location resolution to a `locationId`, the internal `kroger_search` product helper, and the curated read tools built on it (`kroger_prices`, `kroger_flyer`, `ready_to_eat_available`). Also defines the user-curated `flyer_terms.toml` config that drives broad serendipitous sale scans. No `authorization_code` grant, cart writes, or persistent storage — those are deferred to a later change.
+Defines the read-side Kroger integration for the MCP server: the `client_credentials` API client (token caching, rate-limit backoff, structured upstream errors), location resolution to a `locationId`, the internal `kroger_search` product helper, and the curated read tools built on it (`kroger_prices`, `kroger_flyer`, `ready_to_eat_available`). Also defines the shared D1 `flyer_terms` table that drives broad serendipitous sale scans. No `authorization_code` grant, cart writes, or persistent storage — those are deferred to a later change.
 ## Requirements
 ### Requirement: Kroger client_credentials API client
 
@@ -44,21 +44,21 @@ The system SHALL resolve `preferences.toml`'s `preferred_location` label to a Kr
 
 ### Requirement: kroger_search internal product search
 
-The system SHALL provide an internal `kroger_search` helper that queries the Products API by term and `locationId` (and curbside/delivery fulfillment), returning candidate products with `price { regular, promo }`, `size`, `brand`, and fulfillment flags. This helper SHALL NOT be exposed as a raw MCP tool; the curated Kroger tools and the matching pipeline call it internally.
+The system SHALL provide an internal `kroger_search` helper that queries the Products API by term and `locationId` (and curbside/delivery fulfillment), returning candidate products with `price { regular, promo }`, `size`, `brand`, fulfillment flags (curbside, delivery, `inStore`), and `aisleLocation { number, description, side? } | null`. This helper SHALL NOT be exposed as a raw MCP tool; the curated Kroger tools and the matching pipeline call it internally.
 
 #### Scenario: Search returns priced candidates
 
 - **WHEN** `kroger_search` is called with a term and the resolved `locationId`
-- **THEN** it returns candidate products each carrying `price { regular, promo }`, `size`, `brand`, and curbside/delivery fulfillment flags
+- **THEN** it returns candidate products each carrying `price { regular, promo }`, `size`, `brand`, curbside/delivery/`inStore` fulfillment flags, and `aisleLocation`
 
 ### Requirement: kroger_prices for an ingredient list
 
-The system SHALL provide `kroger_prices(ingredients)` returning, per ingredient, the current `{ regular, promo }` price, on-sale flag, and curbside/delivery availability at the resolved location.
+The system SHALL provide `kroger_prices({ ingredients, location_id? })` returning, per ingredient, the current `{ regular, promo }` price, on-sale flag, curbside/delivery availability, a top-level `inStore` flag, and `aisleLocation { number, description, side? } | null` at the resolved location. The optional `location_id` parameter overrides the profile's `preferred_location`-derived Kroger locationId for the duration of the call.
 
 #### Scenario: Prices returned per ingredient
 
 - **WHEN** `kroger_prices` is called with a list of ingredient strings
-- **THEN** it returns one priced result per ingredient including current price, on-sale state, and curbside/delivery availability
+- **THEN** it returns one priced result per ingredient including current price, on-sale state, curbside/delivery availability, `inStore` flag, and `aisleLocation`
 
 ### Requirement: kroger_flyer synthesized sale scan
 
@@ -91,7 +91,7 @@ The system SHALL provide `kroger_flyer(min_savings_pct?)` that returns a synthes
 
 ### Requirement: ready_to_eat_available by curbside/delivery fulfillment
 
-The system SHALL provide `ready_to_eat_available()` that cross-references the **caller's** per-tenant `users/<username>/ready_to_eat.toml` catalog against current Kroger availability, where "available" means the item is fulfillable via curbside or delivery (`fulfillment.curbside || fulfillment.delivery`) at the resolved location. The system SHALL NOT claim live in-store stock, which the public API does not expose. When the caller has no catalog file (or an empty one), the tool SHALL return an empty availability result rather than erroring.
+The system SHALL provide `ready_to_eat_available()` that cross-references the **caller's** per-tenant D1 `ready_to_eat` catalog against current Kroger availability, where "available" means the item is fulfillable via curbside or delivery (`fulfillment.curbside || fulfillment.delivery`) at the resolved location. The system SHALL NOT claim live in-store stock, which the public API does not expose. When the caller has no ready-to-eat entries (or an empty catalog), the tool SHALL return an empty availability result rather than erroring.
 
 #### Scenario: Availability partitioned by fulfillment
 
@@ -100,15 +100,15 @@ The system SHALL provide `ready_to_eat_available()` that cross-references the **
 
 #### Scenario: Empty or absent catalog returns empty
 
-- **WHEN** `ready_to_eat_available` runs for a caller whose `users/<username>/ready_to_eat.toml` is absent or empty
+- **WHEN** `ready_to_eat_available` runs for a caller whose D1 `ready_to_eat` catalog is absent or empty
 - **THEN** the tool returns an empty availability result without error
 
-### Requirement: flyer_terms.toml curated config
+### Requirement: flyer_terms D1 table — curated scan terms
 
-The system SHALL read broad scan terms from a user-curated `flyer_terms.toml`. The agent SHALL treat it as edit-only-when-directed (the user-curated bucket) and SHALL NOT infer or write terms automatically. These broad terms drive the **background flyer warm** that populates the per-location cache `kroger_flyer` reads, rather than a live per-call scan. Its schema SHALL be documented in `docs/SCHEMAS.md`.
+The system SHALL read broad scan terms from the shared D1 `flyer_terms` table. The agent SHALL treat the term list as edit-only-when-directed (the user-curated bucket) and SHALL NOT infer or write terms automatically. These broad terms drive the **background flyer warm** that populates the per-location cache `kroger_flyer` reads, rather than a live per-call scan. The column schema for the `flyer_terms` table SHALL be documented in `docs/SCHEMAS.md`.
 
 #### Scenario: Missing config degrades gracefully
 
-- **WHEN** `flyer_terms.toml` is absent or empty
+- **WHEN** the `flyer_terms` table is empty
 - **THEN** the warm sweep has no broad terms to scan, the per-location rollup is empty, and `kroger_flyer` returns an empty sale list rather than erroring
 

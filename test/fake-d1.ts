@@ -129,6 +129,8 @@ export function fakeD1(
       } else {
         tables[table] = tables[table].filter((r) => {
           if (r.tenant !== binds[0]) return true;
+          if (/LOWER\(recipe\) = LOWER\(\?2\)/i.test(sql))
+            return String(r.recipe).toLowerCase() !== String(binds[1]).toLowerCase();
           if (/recipe = \?2/i.test(sql)) return r.recipe !== binds[1];
           if (/normalized_name = \?2/i.test(sql)) return r.normalized_name !== binds[1];
           return false; // tenant-wide delete

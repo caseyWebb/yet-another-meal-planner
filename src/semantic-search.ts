@@ -30,6 +30,10 @@ export interface SearchCandidate {
   embedding: number[];
   /** YYYY-MM-DD of the caller's most recent cook, or null if never cooked. */
   last_cooked: string | null;
+  /** Normalized top-ingredient keys (alias-collapsed by the caller). Empty when absent. */
+  ingredients_key: string[];
+  /** Normalized waste-prone ingredients (alias-collapsed by the caller). Empty when absent. */
+  perishable_ingredients: string[];
 }
 
 /** One ranked result row (compact — what the tool returns per spec). */
@@ -40,13 +44,17 @@ export interface ScoredRecipe {
   protein: string | null;
   cuisine: string | null;
   time_total: number | null;
-  /** Final blended score (cosine + favorite + freshness), rounded. */
+  /** Final blended score (cosine + favorite + freshness + pantry overlap), rounded. */
   score: number;
   /** Raw query↔recipe cosine before the boosts, for transparency/debugging. */
   similarity: number;
+  /** Which of the spec's `boost_ingredients` this recipe uses (normalized). Empty when
+   *  none matched or the spec passed none — lets the caller explain a surfaced pick. */
+  pantry_overlap: string[];
 }
 
-/** Tunable re-rank weights. Defaults below; overridden per-tenant by `rotation` prefs. */
+/** Tunable re-rank weights. The freshness pair is overridden per-tenant by `rotation`
+ *  prefs; the pantry-overlap weights are constants today (no preferences knob yet). */
 export interface RankParams {
   /** Weight on max-cosine-to-a-favorite (taste direction). */
   favoriteWeight: number;
@@ -54,12 +62,25 @@ export interface RankParams {
   noveltyBoost: number;
   /** Days after which a cooked recipe is fully "rotated back in" (demotion → 0). */
   resurfaceAfterDays: number;
+  /** Weight on the saturated pantry-overlap term (peer to favoriteWeight — a nudge). */
+  pantryWeight: number;
+  /** Per-item overlap weight when a boost item hits the recipe's `perishable_ingredients`
+   *  (the waste-prevention win). */
+  perishWeight: number;
+  /** Per-item overlap weight when a boost item hits only `ingredients_key`. < perishWeight. */
+  keyWeight: number;
+  /** Saturation ceiling for the summed overlap, in perishable-equivalents. */
+  overlapCap: number;
 }
 
 export const DEFAULT_RANK_PARAMS: RankParams = {
   favoriteWeight: 0.15,
   noveltyBoost: 0.1,
   resurfaceAfterDays: 30,
+  pantryWeight: 0.12,
+  perishWeight: 1.0,
+  keyWeight: 0.4,
+  overlapCap: 2,
 };
 
 /** Default top-K per spec when the caller doesn't specify, and the hard cap. */
@@ -105,25 +126,73 @@ export function favoriteAffinity(recipe: number[], favorites: number[][]): numbe
   return best;
 }
 
+/** The pantry-overlap contribution for one candidate: the bounded score boost plus the
+ *  normalized boost items it matched (for `pantry_overlap`). */
+export interface OverlapResult {
+  boost: number;
+  matched: string[];
+}
+
+/**
+ * Two-tier pantry-overlap boost for one candidate against the spec's (already
+ * normalized) `boostItems`. Each boost item is scored once — at the PERISHABLE tier
+ * when the recipe lists it among `perishable_ingredients` (consuming an at-risk
+ * perishable is the waste-prevention win), else at the lower KEY tier when it only
+ * appears in `ingredients_key`. The weighted sum saturates at `overlapCap`
+ * perishable-equivalents and scales by `pantryWeight`, so the term stays small relative
+ * to cosine — it nudges ordering, never overrides relevance or admits a gated-out
+ * recipe. A no-op (boost 0, no matches) when `boostItems` is empty or nothing overlaps.
+ */
+export function pantryOverlap(
+  candidate: SearchCandidate,
+  boostItems: string[],
+  params: RankParams,
+): OverlapResult {
+  if (boostItems.length === 0) return { boost: 0, matched: [] };
+  const perish = new Set(candidate.perishable_ingredients);
+  const key = new Set(candidate.ingredients_key);
+  let weighted = 0;
+  const matched: string[] = [];
+  const seen = new Set<string>();
+  for (const item of boostItems) {
+    if (seen.has(item)) continue; // dedupe boost items
+    seen.add(item);
+    if (perish.has(item)) {
+      weighted += params.perishWeight;
+      matched.push(item);
+    } else if (key.has(item)) {
+      weighted += params.keyWeight;
+      matched.push(item);
+    }
+  }
+  if (matched.length === 0) return { boost: 0, matched: [] };
+  const saturated = Math.min(weighted, params.overlapCap);
+  return { boost: params.pantryWeight * (saturated / params.overlapCap), matched };
+}
+
 /**
  * Rank facet-prefiltered candidates for ONE query vector: blend cosine relevance with
- * the favorite and freshness boosts, sort descending, return the top `k`. Pure — the
- * caller resolves candidates/embeddings/favorites and passes `now`.
+ * the favorite, freshness, and pantry-overlap boosts, sort descending, return the top
+ * `k`. Pure — the caller resolves candidates/embeddings/favorites, normalizes
+ * `boostItems` through the alias table, and passes `now`.
  */
 export function rankCandidates(
   candidates: SearchCandidate[],
   queryVec: number[],
   favorites: number[][],
+  boostItems: string[],
   now: Date,
   params: RankParams,
   k: number,
 ): ScoredRecipe[] {
   const scored = candidates.map((c) => {
     const similarity = cosineSimilarity(queryVec, c.embedding);
+    const overlap = pantryOverlap(c, boostItems, params);
     const score =
       similarity +
       params.favoriteWeight * favoriteAffinity(c.embedding, favorites) +
-      freshnessBoost(c.last_cooked, now, params);
+      freshnessBoost(c.last_cooked, now, params) +
+      overlap.boost;
     return {
       slug: c.slug,
       title: c.title,
@@ -133,6 +202,7 @@ export function rankCandidates(
       time_total: c.time_total,
       score: round4(score),
       similarity: round4(similarity),
+      pantry_overlap: overlap.matched,
     };
   });
   // Sort by blended score, breaking ties on slug for a deterministic order.
@@ -158,5 +228,12 @@ export function resolveRankParams(prefs: Preferences | null): RankParams {
     favoriteWeight: DEFAULT_RANK_PARAMS.favoriteWeight,
     noveltyBoost: num(rotation.novelty_boost, DEFAULT_RANK_PARAMS.noveltyBoost),
     resurfaceAfterDays: num(rotation.resurface_after_days, DEFAULT_RANK_PARAMS.resurfaceAfterDays),
+    // Pantry-overlap weights are constants today — no preferences knob (would require a
+    // preferences-contract change this change deliberately scopes out). Tunable here if
+    // a per-tenant `pantry` pref is added later, mirroring `rotation`.
+    pantryWeight: DEFAULT_RANK_PARAMS.pantryWeight,
+    perishWeight: DEFAULT_RANK_PARAMS.perishWeight,
+    keyWeight: DEFAULT_RANK_PARAMS.keyWeight,
+    overlapCap: DEFAULT_RANK_PARAMS.overlapCap,
   };
 }

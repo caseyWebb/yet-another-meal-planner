@@ -277,28 +277,3 @@ export function createGitHubClient(coords: RepoCoords, auth: TokenProvider): Git
 
   return { getFile, listDir, getRef, getCommitTree, createTree, createCommit, updateRef, createIssue, getPagesUrl };
 }
-
-/**
- * Wrap a client so every repo-relative path is resolved under `prefix` (e.g.
- * "users/alice"). Reads (`getFile`) and tree writes (`createTree` file paths) are
- * prefixed; ref/commit/tree-sha operations target the same repo unchanged. This is
- * how a tenant's personal files (`users/<username>/pantry.toml`) are addressed
- * within the single shared data repo without a second client or repo. An empty
- * prefix returns the client unchanged (the pre-migration root layout).
- */
-export function prefixedClient(gh: GitHubClient, prefix: string): GitHubClient {
-  if (!prefix) return gh;
-  const at = (p: string): string => `${prefix}/${p}`;
-  return {
-    getFile: (path) => gh.getFile(at(path)),
-    listDir: (path) => gh.listDir(at(path)),
-    getRef: gh.getRef,
-    getCommitTree: gh.getCommitTree,
-    createTree: (baseTree, changes) =>
-      gh.createTree(baseTree, changes.map((c) => ({ ...c, path: at(c.path) }))),
-    createCommit: gh.createCommit,
-    updateRef: gh.updateRef,
-    createIssue: gh.createIssue, // repo-level; path prefix is irrelevant
-    getPagesUrl: gh.getPagesUrl, // repo-level; path prefix is irrelevant
-  };
-}

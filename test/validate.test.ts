@@ -3,13 +3,13 @@ import { validateFile, validateStoreInput, validateDiscoveryCandidate } from "..
 
 describe("validateFile", () => {
   it("accepts a well-formed recipe", () => {
-    expect(() => validateFile("recipes/x.md", "---\nstatus: active\n---\nbody\n")).not.toThrow();
+    expect(() => validateFile("recipes/x.md", "---\ntitle: X\n---\nbody\n")).not.toThrow();
   });
 
-  it("rejects an out-of-enum recipe status", () => {
-    expect(() => validateFile("recipes/x.md", "---\nstatus: bogus\n---\nbody\n")).toThrowError(
-      /not one of/,
-    );
+  it("tolerates a lingering frontmatter status (the lifecycle is retired, not validated)", () => {
+    // status is no longer a controlled vocabulary — any value passes (it is stripped
+    // from the index by the build, never enforced).
+    expect(() => validateFile("recipes/x.md", "---\nstatus: bogus\n---\nbody\n")).not.toThrow();
   });
 
   it("rejects a recipe with no frontmatter fence", () => {

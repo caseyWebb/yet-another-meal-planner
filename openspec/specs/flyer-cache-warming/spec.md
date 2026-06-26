@@ -29,16 +29,16 @@ When a sweep has processed all units, subsequent ticks SHALL no-op — a cheap c
 #### Scenario: Refresh window re-arms the sweep
 
 - **WHEN** a tick runs after the refresh window has elapsed since the last completed sweep
-- **THEN** it resets the cursor, rebuilds the plan from the live tenant directory and `flyer_terms.toml`, and begins a fresh sweep
+- **THEN** it resets the cursor, rebuilds the plan from the live tenant directory and the D1 `flyer_terms` table, and begins a fresh sweep
 
 ### Requirement: Sweep plan built once per sweep and persisted
 
-At the start of each sweep the warm SHALL build the unit list — the distinct set of `locationId`s resolved from the union of all tenants' `preferred_location`s, crossed with the broad terms from `flyer_terms.toml` — performing the tenant-directory, store-file, and config reads **once**, and SHALL persist that plan in KV. Subsequent ticks within the sweep SHALL read the plan from KV (a Cloudflare-services read, not an external subrequest), so per-tick external budget is spent only on Kroger scans rather than on re-enumerating the plan.
+At the start of each sweep the warm SHALL build the unit list — the distinct set of `locationId`s resolved from the union of all tenants' `preferred_location`s, crossed with the broad terms from the D1 `flyer_terms` table — performing the tenant-directory, D1, and config reads **once**, and SHALL persist that plan in KV. Subsequent ticks within the sweep SHALL read the plan from KV (a Cloudflare-services read, not an external subrequest), so per-tick external budget is spent only on Kroger scans rather than on re-enumerating the plan.
 
 #### Scenario: Tenant directory read once per sweep
 
 - **WHEN** a sweep begins
-- **THEN** the tenant directory, store files, and `flyer_terms.toml` are read once to build the plan, which is persisted in KV, and later ticks in the same sweep read the plan from KV without re-reading those sources
+- **THEN** the tenant directory, D1 `stores` table, and D1 `flyer_terms` table are read once to build the plan, which is persisted in KV, and later ticks in the same sweep read the plan from KV without re-reading those sources
 
 ### Requirement: Per-location rollup shared across same-store tenants
 

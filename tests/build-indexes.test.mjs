@@ -104,10 +104,14 @@ test('deriveSlug strips .md and directory', () => {
 
 // --- 4.4 validation: each hard-fail trips, soft only warns --------------
 
-test('hard-fail: invalid status enum', async () => {
-  const dir = await tmpRecipes({ 'bad.md': recipe('title: Bad\nstatus: in-progress') });
-  const { errors } = await buildRecipeIndexes(dir);
-  assert.ok(errors.some((e) => e.includes('status')), errors.join('\n'));
+test('tolerates a lingering status (the lifecycle is retired, never validated)', async () => {
+  // status is no longer a controlled vocabulary — any value passes the build (it is
+  // stripped from the index, never enforced).
+  const dir = await tmpRecipes({ 'ok.md': recipe('title: Old\nstatus: in-progress') });
+  const { errors, recipes } = await buildRecipeIndexes(dir);
+  assert.equal(errors.length, 0, errors.join('\n'));
+  // and it never reaches the shared index
+  assert.ok(!JSON.stringify(recipes).includes('in-progress'));
   await rm(dir, { recursive: true, force: true });
 });
 

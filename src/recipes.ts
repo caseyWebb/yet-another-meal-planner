@@ -2,7 +2,6 @@
 // the tool wrapper supplies the index and the reference "now".
 
 export interface RecipeFilters {
-  status?: string;
   protein?: string;
   cuisine?: string;
   /** Open-vocabulary course facet; matched by containment against the recipe's course list. */
@@ -39,7 +38,8 @@ function isoDay(d: Date): string {
 /**
  * Apply filter semantics:
  * - array filters (season/dietary) match ALL listed values (AND); no tags filter
- * - status defaults to "active"; status "all" disables status filtering
+ * - reject is a HARD gate: a recipe the caller has rejected is always dropped
+ *   (opt-out visibility — there is no `status` filter and no effective-draft default)
  * - not_cooked_since admits recipes with null last_cooked (never cooked)
  * - exclude_cooked_within_days drops recipes cooked within N days of `now`
  * - query is the single title+tags text search: tokenize on whitespace, drop
@@ -81,8 +81,6 @@ export function filterRecipes(
   now: Date = new Date(),
   owned: string[] = [],
 ): RecipeListItem[] {
-  const wantStatus = filters.status === "all" ? null : (filters.status ?? "active");
-
   const qTokens = queryTokens(filters.query ?? "");
 
   let cutoffWithin: string | null = null;
@@ -95,7 +93,9 @@ export function filterRecipes(
   const out: RecipeListItem[] = [];
 
   for (const recipe of Object.values(index)) {
-    if (wantStatus !== null && recipe.status !== wantStatus) continue;
+    // Reject hard gate: a recipe the caller rejected never surfaces (the shared
+    // predicate consumed by both list_recipes and recipe_semantic_search).
+    if (recipe.reject) continue;
     if (filters.protein !== undefined && recipe.protein !== filters.protein) continue;
     if (filters.cuisine !== undefined && recipe.cuisine !== filters.cuisine) continue;
 

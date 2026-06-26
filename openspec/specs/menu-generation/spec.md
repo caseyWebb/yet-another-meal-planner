@@ -6,12 +6,17 @@ Defines the agent-side orchestration of a menu request end-to-end: the parallel 
 ## Requirements
 ### Requirement: Menu-request context pre-pass
 
-On a menu request, the agent SHALL gather all choice-independent context in a single parallel batch **before** settling on recipes. The batch SHALL always include: `read_pantry()`, `read_preferences()`, `read_taste()`, `read_diet_principles()`, `retrospective("month")`, `fetch_rss_discoveries()`, `read_discovery_inbox()`, `list_recipes({ status: "active" })`, `get_weather_forecast()`, and `read_staples()` unconditionally (not gated on fulfillment mode). When the user's fulfillment mode is Kroger (`preferences [stores].primary == "kroger"`), the batch SHALL additionally include `kroger_flyer()`; for a non-Kroger store it SHALL be omitted and sale signals SHALL NOT influence recipe selection for that session. `ready_to_eat_available` is NOT called during the meal-plan flow — it is a buy-time tool used by the flush skills. `kroger_prices` is NOT issued in this batch; it is used only as a targeted deal-check for a handful of comparable items when verifying a specific sale claim during selection (see "Sale-steering as a soft selection pull"), and SHALL NOT be a full pre-pass over the proposed ingredient set — that costing belongs to the place-grocery-order flow. The `list_recipes` call is the **single faceted load**: because `course` rides every entry's frontmatter, one call returns active mains and sides with full metadata and the agent buckets them by `course` — there SHALL NOT be a separate later call to source sides. The **raw pantry** SHALL be loaded as a *selection* input — before recipes are chosen — so that what the member already has informs which recipes are proposed (and so the agent can spot inventory stand-ins by reasoning over it), not merely the post-selection buy list. There SHALL be no `verify_pantry_*` call: pantry matching, freshness, and inventory substitutions are the agent reasoning over the loaded pantry. The fulfillment mode SHALL be determined from the loaded preferences before the batch fires; if genuinely unknown, that is the one thing to confirm first. The weather tool is a best-effort read: when it returns `{ error: "forecast_unavailable" }`, `{ error: "no_location" }`, or any other structured error, the agent SHALL continue with season-based reasoning and SHALL NOT surface the failure to the user. `read_staples` returns `{ items: [] }` when absent — this is not a failure; staples-driven prompting is simply suppressed for that session.
+On a menu request, the agent SHALL gather all choice-independent context in a single parallel batch **before** settling on recipes. The batch SHALL always include: `read_pantry()`, `read_user_profile()`, `retrospective("month")`, `fetch_rss_discoveries()`, `read_discovery_inbox()`, `list_recipes()`, and `get_weather_forecast()` unconditionally (not gated on fulfillment mode). `read_user_profile()` returns preferences, taste, diet_principles, kitchen, staples, stockup, and ready_to_eat in one call — there is no need for separate `read_preferences`, `read_taste`, `read_diet_principles`, or `read_staples` calls. When the user's fulfillment mode is Kroger (`preferences [stores].primary == "kroger"`), the batch SHALL additionally include `kroger_flyer()`; for a non-Kroger store it SHALL be omitted and sale signals SHALL NOT influence recipe selection for that session. `ready_to_eat_available` is NOT called during the meal-plan flow — it is a buy-time tool used by the flush skills. `kroger_prices` is NOT issued in this batch; it is used only as a targeted deal-check for a handful of comparable items when verifying a specific sale claim during selection (see "Sale-steering as a soft selection pull"), and SHALL NOT be a full pre-pass over the proposed ingredient set — that costing belongs to the place-grocery-order flow. The `list_recipes()` call is the **single faceted load**: because `course` rides every entry's frontmatter, one call returns the available mains and sides with full metadata and the agent buckets them by `course` — there SHALL NOT be a separate later call to source sides. The recipe candidate set is the caller's **available corpus** — the whole shared corpus **minus the caller's rejects** — with no per-member "active set" to assemble and no `draft` recipes to surface separately (whether that candidate set is dumped in full via `list_recipes` or narrowed via `recipe_semantic_search` is the planner's choice and out of scope for this change). The **raw pantry** SHALL be loaded as a *selection* input — before recipes are chosen — so that what the member already has informs which recipes are proposed (and so the agent can spot inventory stand-ins by reasoning over it), not merely the post-selection buy list. There SHALL be no `verify_pantry_*` call: pantry matching, freshness, and inventory substitutions are the agent reasoning over the loaded pantry. The fulfillment mode SHALL be determined from the loaded preferences before the batch fires; if genuinely unknown, that is the one thing to confirm first. The weather tool is a best-effort read: when it returns `{ error: "forecast_unavailable" }`, `{ error: "no_location" }`, or any other structured error, the agent SHALL continue with season-based reasoning and SHALL NOT surface the failure to the user. An empty `read_user_profile().staples` array means no staples-driven prompting for that session — this is not a failure.
 
 #### Scenario: Open-ended request gathers all choice-independent context before proposing
 
 - **WHEN** the user says "make me a menu" and their fulfillment mode is Kroger
-- **THEN** the agent calls `read_pantry`, `read_preferences`, `read_taste`, `read_diet_principles`, `retrospective`, `fetch_rss_discoveries`, `read_discovery_inbox`, `kroger_flyer`, `list_recipes({ status: "active" })`, `get_weather_forecast()`, and `read_staples()` in a single batch before presenting any proposal; `ready_to_eat_available` and a full-cart `kroger_prices` are NOT called here
+- **THEN** the agent calls `read_pantry`, `read_user_profile`, `retrospective`, `fetch_rss_discoveries`, `read_discovery_inbox`, `kroger_flyer`, `list_recipes()`, and `get_weather_forecast()` in a single batch before presenting any proposal; `ready_to_eat_available` and a full-cart `kroger_prices` are NOT called here, and no separate `read_preferences`, `read_taste`, `read_diet_principles`, or `read_staples` calls are made
+
+#### Scenario: No activation gate on the candidate set
+
+- **WHEN** the agent loads recipes for a menu request
+- **THEN** it considers every non-rejected shared recipe (plus the caller's personal recipes), not a curated per-member active subset
 
 #### Scenario: Non-Kroger session omits flyer and skips sale signals
 
@@ -21,7 +26,7 @@ On a menu request, the agent SHALL gather all choice-independent context in a si
 #### Scenario: One faceted load returns mains and sides together
 
 - **WHEN** the up-front batch runs
-- **THEN** the single `list_recipes({ status: "active" })` result carries `course` on every entry, the agent buckets it into mains and sides, and no separate side-sourcing `list_recipes` call is made later in the flow
+- **THEN** the single `list_recipes()` result carries `course` on every entry, the agent buckets it into mains and sides, and no separate side-sourcing `list_recipes` call is made later in the flow
 
 #### Scenario: Pantry informs selection, not just the buy list
 
@@ -36,7 +41,7 @@ On a menu request, the agent SHALL gather all choice-independent context in a si
 #### Scenario: Weather forecast is included in the pre-pass batch
 
 - **WHEN** the user makes a menu request
-- **THEN** `get_weather_forecast()` is called in the parallel context batch alongside `read_pantry`, `read_preferences`, etc., before any recipe is selected
+- **THEN** `get_weather_forecast()` is called in the parallel context batch alongside `read_pantry`, `read_user_profile`, etc., before any recipe is selected
 
 #### Scenario: Forecast failure does not break the menu flow
 
@@ -45,7 +50,7 @@ On a menu request, the agent SHALL gather all choice-independent context in a si
 
 #### Scenario: Absent staples list does not break the menu flow
 
-- **WHEN** `read_staples()` returns `{ items: [] }` because the member has no `staples.toml`
+- **WHEN** `read_user_profile().staples` returns `[]` because the member has no staples in D1
 - **THEN** the agent continues without staples-driven prompting; no error is surfaced
 
 ### Requirement: Named-dish exhaustive enumeration
@@ -78,7 +83,7 @@ When the fulfillment mode is Kroger and `kroger_flyer` surfaced a sale, the agen
 
 ### Requirement: Full proposal assembly
 
-The agent SHALL assemble a menu proposal that reasons over the gathered context and the user's original message, and SHALL incorporate, when applicable: freeform constraints (mood/cuisine/effort such as "comfort food," "something Italian," "I'm feeling lazy"); recipe notes surfaced from `read_recipe_notes` (tweaks worth baking in, warnings, group ratings); meal-prep callouts for `meal_preppable` recipes; **inventory substitutions** spotted by reasoning over the loaded pantry (a stand-in the member already has for a missing ingredient, surfaced during the pantry pass for confirmation before the item reaches the buy list); a **staples-backed restocking callout** (cross-referencing the loaded `read_staples` result against pantry — missing or low staples are surfaced and confirmed before being added to the list; perishable staples with a stale `last_verified_at` are batched into a staleness nudge); and — **Kroger sessions only** — sale-based substitution opportunities (surfaced after flyer/price data is available, substitute candidates enumerated from world knowledge and verified via `kroger_prices`/`kroger_flyer`) and stockup alerts for bulk-buy items on sale. The proposal SHALL be sized to the user's cooking frequency (`default_cooking_nights`) unless the user specified otherwise. Ready-to-eat options, on-sale RTE discovery, and restock-of-RTE-favorites are **not** part of the proposal — the no-cook-night offer comes after the plan is saved (see "Ready-to-eat no-cook night offer"), and on-sale RTE discovery and restock suggestions are buy-time concerns handled by the flush skills (place-grocery-order, shopping-list).
+The agent SHALL assemble a menu proposal that reasons over the gathered context and the user's original message, and SHALL incorporate, when applicable: freeform constraints (mood/cuisine/effort such as "comfort food," "something Italian," "I'm feeling lazy"); recipe notes surfaced from `read_recipe_notes` (tweaks worth baking in, warnings, group ratings); meal-prep callouts for `meal_preppable` recipes; **inventory substitutions** spotted by reasoning over the loaded pantry (a stand-in the member already has for a missing ingredient, surfaced during the pantry pass for confirmation before the item reaches the buy list); a **staples-backed restocking callout** (cross-referencing the `staples` array from `read_user_profile()` against pantry — missing or low staples are surfaced and confirmed before being added to the list; perishable staples with a stale `last_verified_at` are batched into a staleness nudge); and — **Kroger sessions only** — sale-based substitution opportunities (surfaced after flyer/price data is available, substitute candidates enumerated from world knowledge and verified via `kroger_prices`/`kroger_flyer`) and stockup alerts for bulk-buy items on sale. The proposal SHALL be sized to the user's cooking frequency (`default_cooking_nights`) unless the user specified otherwise. Ready-to-eat options, on-sale RTE discovery, and restock-of-RTE-favorites are **not** part of the proposal — the no-cook-night offer comes after the plan is saved (see "Ready-to-eat no-cook night offer"), and on-sale RTE discovery and restock suggestions are buy-time concerns handled by the flush skills (place-grocery-order, shopping-list).
 
 #### Scenario: Recipe notes are surfaced with the proposal
 
@@ -107,7 +112,7 @@ The agent SHALL assemble a menu proposal that reasons over the gathered context 
 
 #### Scenario: No staples list — restocking callout falls back to model judgment
 
-- **WHEN** the member has no `staples.toml` and a menu is requested
+- **WHEN** the member has an empty `staples` array in D1 and a menu is requested
 - **THEN** the restocking callout (if any) is based on model judgment, same as current behavior
 
 #### Scenario: Sale substitutions appear with the proposal (Kroger), not during pantry verify
@@ -156,32 +161,32 @@ The to-buy list SHALL be produced by the agent reasoning over the chosen recipes
 
 ### Requirement: Capture to grocery list, never flush to cart
 
-On agreement, the agent SHALL persist the menu's to-buy items to `grocery_list.toml` via `commit_changes`/`add_to_grocery_list` (ingredient-level, SKU-free), and SHALL record the agreed recipes as `[[planned]]` rows in `meal_plan.toml` (committed cook intent), setting `planned_for` to the intended cooking night when known, along with side effects such as pantry verifications. **Corpus sides** (`course: side` recipes) are recipes and SHALL be captured the same way as mains: each chosen corpus side earns its own `[[planned]]` slug row, its to-buy ingredients are added to `grocery_list.toml`, and any side draft imported during plate-rounding plus any new `pairs_with` edge SHALL be committed in the same operation. **Open-world sides** (free-text plate companions with no corpus recipe) SHALL instead be captured as a `sides` array on their **accompanying main's** `[[planned]]` row, and their world-knowledge-derived ingredients SHALL be added to `grocery_list.toml` with `source = "menu"`, `for_recipes = []` (no slug to attribute to), and a `note` identifying the side (e.g. "for the roasted-broccoli side"). The agent SHALL NOT bump `last_cooked` on menu agreement — `last_cooked` moves only when a cook is asserted and logged (see the cooking-history capability). The menu flow SHALL NOT call `place_order` or otherwise write the Kroger cart. Cart population SHALL occur only on an explicit order request.
+On agreement, the agent SHALL persist the menu's to-buy items to the grocery list via `add_to_grocery_list` (ingredient-level, SKU-free), and SHALL record the agreed recipes as planned rows in the meal plan via `update_meal_plan` (committed cook intent), setting `planned_for` to the intended cooking night when known, along with side effects such as pantry verifications. **Corpus sides** (`course: side` recipes) are recipes and SHALL be captured the same way as mains: each chosen corpus side earns its own planned slug row, its to-buy ingredients are added to the grocery list, and any side draft imported during plate-rounding plus any new `pairs_with` edge SHALL be committed in the same operation. **Open-world sides** (free-text plate companions with no corpus recipe) SHALL instead be captured as a `sides` array on their **accompanying main's** planned row, and their world-knowledge-derived ingredients SHALL be added to the grocery list with `source = "menu"`, `for_recipes = []` (no slug to attribute to), and a `note` identifying the side (e.g. "for the roasted-broccoli side"). The agent SHALL NOT bump `last_cooked` on menu agreement — `last_cooked` moves only when a cook is asserted and logged (see the cooking-history capability). The menu flow SHALL NOT call `place_order` or otherwise write the Kroger cart. Cart population SHALL occur only on an explicit order request.
 
 #### Scenario: Agreed menu captures intent without touching the cart
 
 - **WHEN** the user agrees to a proposed menu
-- **THEN** the agent commits the to-buy items to `grocery_list.toml`, writes the agreed recipes to `meal_plan.toml`, and does NOT call `place_order` or write the Kroger cart
+- **THEN** the agent persists to-buy items via `add_to_grocery_list`, records the agreed recipes via `update_meal_plan`, and does NOT call `place_order` or write the Kroger cart
 
 #### Scenario: Agreed corpus side captures as its own planned recipe
 
 - **WHEN** the user agrees to a menu in which a main was rounded out with a `course: side` corpus recipe
-- **THEN** the agent writes a `[[planned]]` slug row for the side, adds the side's to-buy ingredients to `grocery_list.toml`, and commits any new `pairs_with` edge or imported side draft in the same commit
+- **THEN** the agent records a planned slug row for the side via `update_meal_plan`, adds the side's to-buy ingredients via `add_to_grocery_list`, and commits any new `pairs_with` edge or imported side draft in the same operation
 
 #### Scenario: Agreed open-world side captures on the main's row and flows to the buy list
 
 - **WHEN** the user agrees to a menu in which a main was rounded out with an open-world side ("roasted broccoli")
-- **THEN** the agent writes `sides = ["roasted broccoli"]` on the main's `[[planned]]` row (no separate slug row), and adds the side's absent ingredients to `grocery_list.toml` as `source = "menu"`, `for_recipes = []`, with a `note` identifying the side — all in the same commit, cart untouched
+- **THEN** the agent records `sides = ["roasted broccoli"]` on the main's planned row (no separate slug row), and adds the side's absent ingredients to the grocery list as `source = "menu"`, `for_recipes = []`, with a `note` identifying the side — all in the same operation, cart untouched
 
 #### Scenario: Agreement does not record a cook
 
 - **WHEN** the user agrees to a proposed menu
-- **THEN** no `cooking_log.toml` entry is appended and no recipe's `last_cooked` is changed
+- **THEN** no cooking log entry is written (via `log_cooked`) and no recipe's `last_cooked` is changed
 
 #### Scenario: Empty-list case is stated explicitly
 
 - **WHEN** the pantry already covers everything the agreed menu needs
-- **THEN** the agent says so explicitly, commits any pantry verifications, writes the agreed recipes to `meal_plan.toml`, and adds nothing to `grocery_list.toml`
+- **THEN** the agent says so explicitly, commits any pantry verifications via `update_meal_plan`, and adds nothing to the grocery list
 
 ### Requirement: Order handoff offer
 
@@ -199,7 +204,7 @@ After the meal plan is saved and the RTE pass (if applicable) is complete, the a
 
 ### Requirement: Menu-generation smoke-test validation
 
-The menu-generation flow SHALL be validated by a scripted smoke test of three seeded requests — open-ended ("make me a menu"), recipe-seeded ("let's make chicken and rice this week"), and freeform-constraint ("something comforting, I'm feeling lazy") — each run from a fresh conversation against live data, with a per-seed rubric of required behaviors. The flow is considered correct when each seed's response satisfies its rubric, the user can iterate with a revision, and agreement lands items in `grocery_list.toml` with the cart untouched.
+The menu-generation flow SHALL be validated by a scripted smoke test of three seeded requests — open-ended ("make me a menu"), recipe-seeded ("let's make chicken and rice this week"), and freeform-constraint ("something comforting, I'm feeling lazy") — each run from a fresh conversation against live data, with a per-seed rubric of required behaviors. The flow is considered correct when each seed's response satisfies its rubric, the user can iterate with a revision, and agreement lands items in the D1 grocery list (via `add_to_grocery_list`) with the cart untouched.
 
 #### Scenario: Recipe-seeded smoke test passes its rubric
 
@@ -209,7 +214,7 @@ The menu-generation flow SHALL be validated by a scripted smoke test of three se
 #### Scenario: Capture-not-flush holds across all seeds
 
 - **WHEN** any smoke-test seed reaches agreement
-- **THEN** to-buy items are written to `grocery_list.toml` and the Kroger cart is not written
+- **THEN** to-buy items are persisted to the grocery list via `add_to_grocery_list` and the Kroger cart is not written
 
 ### Requirement: Discovery surfaced during menu requests
 
@@ -232,21 +237,21 @@ On a menu request, the agent SHALL surface a small number of new recipe discover
 
 ### Requirement: Discoveries are dispositioned conversationally
 
-The agent SHALL let the user disposition draft discoveries in any later conversation through natural requests, mapping them to the existing write tools: a "rate the <source> one N stars" request SHALL promote the recipe draft to `status: active` with that rating via `update_recipe`; a "remove that one" request SHALL set the draft to `status: rejected`; ready-to-eat drafts SHALL be dispositioned analogously via `update_ready_to_eat` against the caller's per-tenant catalog (addressed by `slug`, optionally setting a `rating`). Drafts SHALL remain de-prioritized in subsequent proposals but accessible on explicit request.
+The agent SHALL let the user disposition discoveries through natural requests, mapping them to the favorites/rejections model: a "loved that one" request SHALL `toggle_favorite` the recipe; a "stop suggesting that" / "hide that" request SHALL `toggle_reject` it for the caller (or `reject_discovery` the URL when the candidate is not yet imported and is not corpus-worthy for the group); ready-to-eat items SHALL be dispositioned analogously via `update_ready_to_eat` (favorite / reject) against the caller's per-tenant catalog. There is no `draft` state and no de-prioritized-drafts behavior: an imported recipe is an available corpus recipe, and a non-imported discovery simply stays a discovery.
 
-#### Scenario: Ready-to-eat draft promoted to active with a rating
+#### Scenario: A loved discovery is favorited
 
-- **WHEN** the user says to rate or keep a drafted ready-to-eat item
-- **THEN** the agent calls `update_ready_to_eat(slug, …)` to set it `active` with the given `rating` in the caller's catalog
+- **WHEN** the user says they loved a surfaced or just-imported recipe
+- **THEN** the agent calls `toggle_favorite(slug, true)` for the caller, with no `status` or `rating` involved
 
-#### Scenario: Ready-to-eat draft rejected
+#### Scenario: An unwanted ready-to-eat item is rejected
 
-- **WHEN** the user says to stop suggesting a drafted ready-to-eat item
-- **THEN** the agent calls `update_ready_to_eat(slug, …)` to set its `status` to `rejected` in the caller's catalog, affecting no other member
+- **WHEN** the user says to stop suggesting a ready-to-eat item
+- **THEN** the agent calls `update_ready_to_eat(slug, { reject: true })` in the caller's catalog, affecting no other member, with no `status` or `rating`
 
 ### Requirement: Soft variety honoring backed by real history
 
-Menu generation SHALL honor the variety targets and restrictions in `diet_principles.md` as **selection inputs**: variety targets SHALL act as a **pull** on which recipes are chosen — a "fish once a week" target that `retrospective` shows as unmet should pull a fish recipe into the proposed set, not merely be checked after the fact. Both `read_diet_principles` and `retrospective("month")` are loaded in the pre-pass batch and SHALL be available as selection context from the start. The agent SHALL **explain tradeoffs** when it cannot satisfy all variety targets, rather than silently violating or rigidly enforcing them. Restrictions declared as hard exclusions SHALL be treated as gates (never propose a violating recipe); variety targets SHALL be treated as soft preferences.
+Menu generation SHALL honor the variety targets and restrictions in the member's `diet_principles` (from `read_user_profile()`) as **selection inputs**: variety targets SHALL act as a **pull** on which recipes are chosen — a "fish once a week" target that `retrospective` shows as unmet should pull a fish recipe into the proposed set, not merely be checked after the fact. Both `diet_principles` (from `read_user_profile()`) and `retrospective("month")` are loaded in the pre-pass batch and SHALL be available as selection context from the start. The agent SHALL **explain tradeoffs** when it cannot satisfy all variety targets, rather than silently violating or rigidly enforcing them. Restrictions declared as hard exclusions SHALL be treated as gates (never propose a violating recipe); variety targets SHALL be treated as soft preferences.
 
 #### Scenario: Variety target acts as a selection pull
 
@@ -261,7 +266,7 @@ Menu generation SHALL honor the variety targets and restrictions in `diet_princi
 #### Scenario: Variety reasoning uses cooked history, not plans
 
 - **WHEN** the agent reasons about recent protein/cuisine balance
-- **THEN** it derives the balance from `retrospective` over `cooking_log.toml` (cooked events), not from `meal_plan.toml` intent
+- **THEN** it derives the balance from `retrospective` over the D1 cooking log (cooked events), not from meal plan intent rows
 
 #### Scenario: Tradeoff is explained when variety cannot be satisfied
 
@@ -294,7 +299,7 @@ When assembling a menu, the agent SHALL round out each main that is not an alrea
 
 ### Requirement: Side pairing bootstrap when the edge is empty
 
-When a non-standalone main has an empty `pairs_with` and the natural companion warrants a saved recipe (a side with technique worth keeping, not a one-line preparation), the agent SHALL bootstrap a **corpus** pairing at plan time: it SHALL prefer existing `course: side` recipes (already in hand from the faceted load), then the RSS discovery pool (`fetch_rss_discoveries`), then a web parse (`parse_recipe`); it SHALL propose at most two candidate sides in chat; and on the user accepting such a side it SHALL ensure the side exists as a recipe (importing it as a `status: draft` recipe via the discovery path when it does not already exist, classified with `course: [side]`) and SHALL record the pairing by adding the side's slug to the main's `pairs_with` through `update_recipe`. The recorded edge is shared content, so a later menu request for the same main SHALL find the pairing already present and surface it. When the natural companion is instead a **trivial open-world side**, the agent SHALL NOT import a recipe or record a `pairs_with` edge — it proposes the open-world side directly (re-derived by reasoning each time, since it has no slug to remember). The bootstrap SHALL select sides by plate fit.
+When a non-standalone main has an empty `pairs_with` and the natural companion warrants a saved recipe (a side with technique worth keeping, not a one-line preparation), the agent SHALL bootstrap a **corpus** pairing at plan time: it SHALL prefer existing `course: side` recipes (already in hand from the faceted load), then the RSS discovery pool (`fetch_rss_discoveries`), then a web parse (`parse_recipe`); it SHALL propose at most two candidate sides in chat; and on the user accepting such a side it SHALL ensure the side exists as a recipe (importing it as a recipe via the discovery path using `parse_recipe` → `create_recipe` when it does not already exist, classified with `course: [side]`) and SHALL record the pairing by adding the side's slug to the main's `pairs_with` through `update_recipe`. The recorded edge is shared content, so a later menu request for the same main SHALL find the pairing already present and surface it. When the natural companion is instead a **trivial open-world side**, the agent SHALL NOT import a recipe or record a `pairs_with` edge — it proposes the open-world side directly (re-derived by reasoning each time, since it has no slug to remember). The bootstrap SHALL select sides by plate fit.
 
 #### Scenario: Empty pairs_with bootstraps a corpus side
 
@@ -304,7 +309,7 @@ When a non-standalone main has an empty `pairs_with` and the natural companion w
 #### Scenario: Accepted corpus bootstrap imports the side and records the edge
 
 - **WHEN** the user accepts a proposed corpus side that is not yet in the corpus
-- **THEN** the agent imports it as a `status: draft` recipe with `course: [side]` and adds its slug to the main's `pairs_with` in the same commit
+- **THEN** the agent imports it as a recipe with `course: [side]` via `parse_recipe` + `create_recipe` and adds its slug to the main's `pairs_with` via `update_recipe` in the same operation
 
 #### Scenario: Trivial companion stays open-world, not recorded
 

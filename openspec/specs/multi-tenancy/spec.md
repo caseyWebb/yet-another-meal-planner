@@ -5,7 +5,7 @@ TBD - created by archiving change multi-tenant-friend-group. Update Purpose afte
 ## Requirements
 ### Requirement: Worker is a multi-tenant OAuth 2.1 provider
 
-The Worker SHALL act as an OAuth 2.1 authorization server for the MCP surface so that each member of the friend group connects their own Claude.ai account to the one shared Worker. The Worker SHALL support the dynamic client registration + authorization-code + PKCE flow that the Claude.ai custom-connector requires, and SHALL issue an access token whose presentation on a later MCP request resolves to exactly one tenant. OAuth provider state (registered clients, authorization codes, grants/tokens) SHALL be stored in KV — no SQL database. The access token SHALL be the sole tenant identifier carried on MCP calls; the Worker SHALL NOT rely on Cloudflare Access for MCP-surface identity.
+The Worker SHALL act as an OAuth 2.1 authorization server for the MCP surface so that each member of the friend group connects their own Claude.ai account to the one shared Worker. The Worker SHALL support the dynamic client registration + authorization-code + PKCE flow that the Claude.ai custom-connector requires, and SHALL issue an access token whose presentation on a later MCP request resolves to exactly one tenant. OAuth provider state (registered clients, authorization codes, grants/tokens) SHALL be stored in KV — no SQL database. The access token SHALL be the sole tenant identifier carried on MCP calls; the Worker SHALL NOT rely on Cloudflare Access for MCP-surface identity. A malformed `/authorize` request SHALL render a clean error page with an HTTP 400 status — not a generic 500 — on both the GET and POST paths, consistent with the repo's "structured errors, not throws" convention at user-facing boundaries; `redirect_uri` validation remains unchanged (no open redirect).
 
 #### Scenario: A friend connects their own Claude.ai
 
@@ -16,6 +16,11 @@ The Worker SHALL act as an OAuth 2.1 authorization server for the MCP surface so
 
 - **WHEN** the OAuth provider persists a registered client, an authorization code, or an issued grant
 - **THEN** it is stored in a KV namespace and no relational/SQL store is introduced
+
+#### Scenario: Malformed authorization request yields a 400, not a 500
+
+- **WHEN** a malformed or invalid `/authorize` GET request fails to parse
+- **THEN** the Worker renders the malformed-request error page with HTTP 400, the same as the POST path, rather than surfacing an uncaught 500
 
 ### Requirement: Identity is gated by a curated allowlist
 
@@ -45,14 +50,14 @@ Every MCP request SHALL be resolved to a tenant from its bearer access token bef
 - **WHEN** an MCP request arrives with no token or a token that does not resolve to an allowlisted tenant
 - **THEN** the Worker returns a structured `unauthorized` response and runs no tool
 
-### Requirement: Per-tenant subtree and GitHub App installation tokens
+### Requirement: Tenant data isolation and GitHub App installation tokens
 
-The Worker SHALL resolve each tenant to its `users/<username>/` path prefix within the single shared data repository and SHALL authenticate all repo reads and writes with a short-lived **GitHub App installation token** minted on demand from the App's credentials, scoped to the installation covering the data repository. The Worker SHALL resolve **which installation covers the data repository at runtime** from the App's installations (`GET /app/installations`, authenticated with the App JWT), caching the resolved installation id; it SHALL NOT require a hand-configured installation id. The Worker SHALL address a tenant's personal files by prefixing repo-relative paths with that tenant's `users/<username>/`, so a tool for one tenant cannot read or write another tenant's subtree. The Worker SHALL NOT use a personal access token for repo access, and no per-tenant long-lived user PAT SHALL be stored. Installation tokens SHALL be treated as ephemeral (re-minted on expiry).
+Per-tenant data isolation SHALL be enforced in D1: every per-tenant table carries a `tenant` column, and the MCP server instance is constructed for the resolved tenant so each query is scoped to that tenant — a tool resolved for one tenant cannot read or write another tenant's rows. Repo reads and writes — the **shared** recipe corpus (`recipes/*.md`) plus shared reference markdown, the only data the Worker keeps in GitHub — SHALL be authenticated with a short-lived **GitHub App installation token** minted on demand from the App's credentials, scoped to the installation covering the data repository; there is no per-tenant repo subtree, because personal and operational state lives in D1, not in GitHub. The Worker SHALL resolve **which installation covers the data repository at runtime** from the App's installations (`GET /app/installations`, authenticated with the App JWT), caching the resolved installation id; it SHALL NOT require a hand-configured installation id. The Worker SHALL NOT use a personal access token for repo access, and no per-tenant long-lived user PAT SHALL be stored. Installation tokens SHALL be treated as ephemeral (re-minted on expiry).
 
-#### Scenario: Writes use a scoped installation token under the tenant's subtree
+#### Scenario: Per-tenant writes are isolated in D1; recipe writes use a scoped installation token
 
-- **WHEN** a tool for tenant A persists a change to A's personal state
-- **THEN** the Worker mints a GitHub App installation token covering the data repo, and writes the file under `users/A/`, never another tenant's subtree, and never with a PAT
+- **WHEN** a tool for tenant A persists a change to A's personal state, or commits a shared recipe
+- **THEN** A's personal state is written to D1 scoped to tenant A's rows (never another tenant's), and a shared-recipe commit uses a GitHub App installation token covering the data repo (never a PAT)
 
 #### Scenario: No PAT
 
@@ -80,12 +85,12 @@ The Worker SHALL store each tenant's Kroger refresh token under a per-tenant KV 
 
 ### Requirement: Tenant directory (username allowlist)
 
-The Worker SHALL maintain a tenant directory: the operator-curated **allowlist of usernames** permitted to resolve to a tenant. The data-repository coordinates, the GitHub App installation, and the `users/<username>/` prefix are global/derived, so the directory record need carry no per-tenant repo coordinates. The directory SHALL be the operational source of truth for tenant resolution and SHALL live in KV alongside the OAuth provider and Kroger state — domain data (recipes, pantry, etc.) is NOT stored here; it remains in the data repo.
+The Worker SHALL maintain a tenant directory: the operator-curated **allowlist of usernames** permitted to resolve to a tenant. The data-repository coordinates and the GitHub App installation are global/derived, so the directory record need carry no per-tenant repo coordinates. The directory SHALL be the operational source of truth for tenant resolution and SHALL live in KV alongside the OAuth provider and Kroger state — domain data (recipes, pantry, etc.) is NOT stored here; it remains in the data repo.
 
 #### Scenario: Directory admits an allowlisted username
 
 - **WHEN** a tenant is resolved from its token
-- **THEN** the Worker confirms the username is in the directory allowlist and derives its `users/<username>/` prefix; a username absent from the allowlist resolves to `unauthorized`
+- **THEN** the Worker confirms the username is in the directory allowlist and resolves it to its canonical tenant id; a username absent from the allowlist resolves to `unauthorized`
 
 #### Scenario: Directory holds no domain data
 
@@ -94,32 +99,23 @@ The Worker SHALL maintain a tenant directory: the operator-curated **allowlist o
 
 ### Requirement: Tenant usernames are case-insensitive (canonical lowercase)
 
-Tenant usernames SHALL be case-insensitive: a member is one identity regardless of the casing presented. The Worker SHALL define a single canonical form — **lowercase** — and SHALL apply it at every boundary that derives a key or path from the username, so the directory key, the invite target, the grant prop, the personal-file path prefix, and the Kroger token key all agree. Specifically:
+Tenant usernames SHALL be case-insensitive: a member is one identity regardless of the casing presented. The Worker SHALL define a single canonical form — **lowercase** — and SHALL apply it at every boundary that derives a key from the username, so the directory key, the invite target, the grant prop, the D1 tenant id, and the Kroger token key all agree. Specifically:
 
-- The Worker SHALL normalize the grant's `tenantId` to its canonical lowercase form **before** the allowlist (tenant directory) lookup and before constructing any `tenant:<id>` directory key, `users/<id>/` path prefix, or `kroger:refresh:<id>` token key. Normalization before the lookup is the single defensive point: a mixed-case grant SHALL resolve to the same tenant — and the same `users/<id>/` subtree — as the lowercase form, never to a distinct or empty subtree.
-- Member provisioning SHALL mint the `tenant:<id>` allowlist entry, the stored record `id`, and the `invite:<code>` target in canonical lowercase form, so the directory key and the data subtree path agree at the source.
+- The Worker SHALL normalize the grant's `tenantId` to its canonical lowercase form **before** the allowlist (tenant directory) lookup and before constructing any `tenant:<id>` directory key, D1 tenant id, or `kroger:refresh:<id>` token key. Normalization before the lookup is the single defensive point: a mixed-case grant SHALL resolve to the same tenant — and the same D1 rows — as the lowercase form, never to a distinct or empty identity.
+- Member provisioning SHALL mint the `tenant:<id>` allowlist entry, the stored record `id`, and the `invite:<code>` target in canonical lowercase form, so the directory key and the D1 tenant id agree at the source.
 - The invite-code identity step SHALL return the canonical lowercase username, so the grant prop derived from it is already normalized.
+- Tenant **directory enumeration** (`TenantStore.list()`) SHALL return canonical lowercase ids, matching `get()`, so cross-tenant group-aggregation consumers that derive `users/<id>/...` GitHub paths or `profile:<id>` KV keys from the enumerated ids never inherit stored casing.
 - Shared-root data (recipes, reference data, discovery sources) does NOT use the username and SHALL be unaffected by this normalization.
 
 A consequence is that a username that differs only by case is NOT a distinct tenant; the directory SHALL NOT hold two entries that collide under canonicalization.
 
-#### Scenario: Mixed-case grant resolves to the lowercase subtree and allowlist entry
+#### Scenario: Mixed-case grant resolves to the lowercase tenant id and allowlist entry
 
 - **WHEN** an MCP request arrives whose grant `tenantId` is `Casey` (or `CASEY`) and the allowlist holds the canonical entry `casey`
-- **THEN** the Worker normalizes the id to `casey`, confirms it against the allowlist, and resolves the tenant's `userPrefix` to `users/casey` — the same result as a grant of `casey`
+- **THEN** the Worker normalizes the id to `casey`, confirms it against the allowlist, and resolves the tenant to the canonical id `casey` — the same result as a grant of `casey`
 
-#### Scenario: Personal reads and writes target one subtree regardless of casing
+#### Scenario: Directory enumeration returns canonical ids
 
-- **WHEN** the same member connects once as `casey` and once as `Casey`
-- **THEN** both sessions read and write the identical `users/casey/` personal files (pantry, overlay, notes, cooking log, grocery list) and the identical `kroger:refresh:casey` token key — neither casing produces an empty or divergent subtree
-
-#### Scenario: Provisioning mints the canonical lowercase entries
-
-- **WHEN** a member is onboarded with the username `Casey`
-- **THEN** the directory entry is stored under `tenant:casey` with record `id` `casey`, and the invite code maps to `casey` — so the minted allowlist key matches the `users/casey/` data subtree
-
-#### Scenario: A case-only variant is not a separate tenant
-
-- **WHEN** resolution is attempted for any casing of an allowlisted username
-- **THEN** it canonicalizes to the one lowercase id and resolves to that single tenant; an allowlist that contains the canonical entry SHALL NOT also admit a case-variant as a distinct tenant
+- **WHEN** `TenantStore.list()` enumerates a directory key stored with non-canonical casing (e.g. `tenant:Casey`)
+- **THEN** it returns the canonical id `casey`, so group-aggregation paths and keys derived from it match the member's own normalized writes
 

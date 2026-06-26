@@ -66,16 +66,16 @@ The handler SHALL capture the email's body as plain text and store it for the ag
 
 ### Requirement: Email bodies are appended to a shared discoveries inbox
 
-Accepted emails SHALL be appended to a shared `discoveries_inbox.toml` at the data-repo root (not a per-tenant file) via the atomic commit engine. Each inbox record SHALL carry `from`, `subject`, `received_at`, and `body` (the captured plain-text body). The file SHALL be an agent-writable side-effect file, not user-curated config.
+Accepted emails SHALL be inserted into the shared D1 `discovery_candidates` table (not a per-tenant file). Each inbox record SHALL carry `from` (stored as `source`), `subject`, `received_at` (stored as `discovered_at`), and `body` (the captured plain-text body). The table is agent-writable side-effect state, not user-curated config.
 
 #### Scenario: Accepted message lands as an inbox record
 
 - **WHEN** the handler accepts a message
-- **THEN** a record with `from`, `subject`, `received_at`, and `body` is appended to the root `discoveries_inbox.toml` in a single commit
+- **THEN** a record with `source`, `subject`, `discovered_at`, and `body` is inserted into the D1 `discovery_candidates` table
 
 ### Requirement: Inbox writes dedup by message identity and prune old entries
 
-At inbox write-time the handler SHALL skip a message whose `(from, subject, received_at)` triple matches an existing entry — this catches exact re-deliveries without URL-level comparison. Before appending, the handler SHALL also prune entries older than a configurable retention window (default: 30 days), so the inbox does not grow indefinitely. A message with an absent or empty `received_at` SHALL be retained (cannot be age-pruned).
+At inbox write-time the handler SHALL skip a message whose `(source, subject, discovered_at)` triple matches an existing row — this catches exact re-deliveries without URL-level comparison. Before inserting, the handler SHALL also delete rows older than a configurable retention window (default: 30 days), so the table does not grow indefinitely. A message with an absent or empty `discovered_at` SHALL be retained (cannot be age-pruned).
 
 #### Scenario: Same message forwarded twice is stored once
 
@@ -98,16 +98,16 @@ The handler SHALL `setReject` (bounce) a message that the gate rejects. It SHALL
 
 ### Requirement: read_discovery_inbox returns inbox emails for LLM parsing
 
-`read_discovery_inbox` SHALL read the shared `discoveries_inbox.toml` and return its entries as a list of emails (`{ emails: [{ from, subject, received_at, body }] }`). The agent reads each `body`, identifies recipe titles and links itself, and calls `parse_recipe(url)` on the promising ones. The tool carries no taste `score` — taste fit and selection are the agent's judgment, consistent with `fetch_rss_discoveries`. When the inbox file is absent or empty, it SHALL return an empty list rather than erroring. The meal-plan flow SHALL surface these emails at menu time alongside the RSS pool.
+`read_discovery_inbox` SHALL query the shared D1 `discovery_candidates` table and return its rows as a list of emails (`{ emails: [{ from, subject, received_at, body }] }`). The agent reads each `body`, identifies recipe titles and links itself, and calls `parse_recipe(url)` on the promising ones. The tool carries no taste `score` — taste fit and selection are the agent's judgment, consistent with `fetch_rss_discoveries`. When the table is empty, it SHALL return an empty list rather than erroring. The meal-plan flow SHALL surface these emails at menu time alongside the RSS pool.
 
 #### Scenario: Inbox emails returned for agent parsing
 
-- **WHEN** `read_discovery_inbox` is called with a populated inbox
+- **WHEN** `read_discovery_inbox` is called with a populated D1 `discovery_candidates` table
 - **THEN** each item carries `from`, `subject`, `received_at`, and `body`, with no pre-extracted candidate URLs and no taste `score`
 
 #### Scenario: Empty inbox is not an error
 
-- **WHEN** `discoveries_inbox.toml` is absent or has no entries
+- **WHEN** the D1 `discovery_candidates` table has no rows
 - **THEN** the tool returns `{ emails: [] }` and does not raise an error
 
 ### Requirement: Walled sources degrade to manual paste at import time
@@ -119,11 +119,11 @@ Discovery via email is unblockable, but full-recipe import still hits the same b
 - **WHEN** the user chooses a recipe link found in an inbox email whose source is paywalled
 - **THEN** the agent presents the clean link, the user pastes the recipe text, and the agent assembles and persists it via `create_recipe`
 
-### Requirement: New shared discovery files are schema-validated at build
+### Requirement: Discovery allowlist config is schema-validated at build
 
-`scripts/build-indexes.mjs` SHALL validate the shared `discoveries_inbox.toml` and the allowlist config: TOML parses, required fields present, and allowlist entries are well-formed (a `senders`/`members` shape with valid addresses). Validation failures SHALL be reported like other build validation errors and SHALL NOT silently pass.
+`scripts/build-indexes.mjs` SHALL validate the discovery allowlist config: TOML parses, required fields present, and allowlist entries are well-formed (a `senders`/`members` shape with valid addresses). The D1 `discovery_candidates` table is not a build artifact and is not validated at build time. Validation failures on the allowlist SHALL be reported like other build validation errors and SHALL NOT silently pass.
 
-#### Scenario: Malformed inbox file fails the build
+#### Scenario: Malformed allowlist config fails the build
 
-- **WHEN** `discoveries_inbox.toml` has a malformed entry (e.g. missing `body` field or non-string value)
+- **WHEN** the discovery allowlist config has a malformed entry (e.g. missing address field or invalid shape)
 - **THEN** `build-indexes.mjs` reports a validation error rather than producing indexes

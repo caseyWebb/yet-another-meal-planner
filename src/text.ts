@@ -24,12 +24,6 @@ function safeCodePoint(n: number): string {
   }
 }
 
-/** Unwrap a single CDATA section if the whole value is one. */
-export function stripCdata(s: string): string {
-  const m = /^\s*<!\[CDATA\[([\s\S]*?)\]\]>\s*$/.exec(s);
-  return m ? m[1] : s;
-}
-
 /** Strip tags + CDATA, decode entities, collapse whitespace. For titles/summaries/steps. */
 export function cleanText(raw: string): string {
   let s = raw.replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "$1");

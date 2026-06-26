@@ -2,13 +2,11 @@
 
 ## Purpose
 
-Defines the deterministic ingredient-to-Kroger-SKU matching pipeline (`match_ingredient_to_kroger_sku`) and the `compare_unit_price` comparison tool. Covers the resolve-only contract (confident / ambiguous / unavailable result shapes), tri-state brand-preference confidence from `preferences.toml` `[brands]`, scoring-not-filtering of brand and dietary signals, alias-driven normalization, cache lookup with revalidation and no TTL, the deterministic tiebreaker, and the rule that the matcher never substitutes. Builds on the kroger-integration `kroger_search` helper.
-
+Defines the deterministic ingredient-to-Kroger-SKU matching pipeline (`match_ingredient_to_kroger_sku`) and the `compare_unit_price` comparison tool. Covers the resolve-only contract (confident / ambiguous / unavailable result shapes), tri-state brand-preference confidence from `preferences.toml` `[brands]`, scoring-not-filtering of brand and dietary signals, alias-driven normalization (D1 `aliases` table), D1 `sku_cache` lookup with revalidation and no TTL, the deterministic tiebreaker, and the rule that the matcher never substitutes. Builds on the kroger-integration `kroger_search` helper.
 ## Requirements
-
 ### Requirement: Resolve-only matching pipeline
 
-The system SHALL provide `match_ingredient_to_kroger_sku(ingredient, context)` running the deterministic 7-step pipeline from `docs/ARCHITECTURE.md`. It SHALL be **resolve-only**: it returns a result but SHALL NOT write the SKU cache (that is deferred to the Change 06 batched commit). It SHALL return exactly one of three shapes — a confident match, an `ambiguous` result with narrowed candidates, or an `unavailable` result.
+The system SHALL provide `match_ingredient_to_kroger_sku(ingredient, context)` running the deterministic 7-step pipeline from `docs/ARCHITECTURE.md`. It SHALL be **resolve-only**: it returns a result but SHALL NOT write the D1 `sku_cache` table (that write is deferred to the order path via `place_order`). It SHALL return exactly one of three shapes — a confident match, an `ambiguous` result with narrowed candidates, or an `unavailable` result.
 
 #### Scenario: Confident match returned
 
@@ -97,11 +95,11 @@ The system SHALL match only the given ingredient. When nothing is fulfillable it
 
 ### Requirement: Cache lookup with revalidation and no TTL
 
-The system SHALL, on a cache hit in `skus/kroger.toml`, short-circuit search and narrowing but revalidate the cached SKU with one targeted lookup for current price and curbside/delivery availability before returning it. An available SKU SHALL be returned with fresh price; an unavailable one SHALL trigger re-resolution. The cache SHALL NOT use a TTL. The tool SHALL accept a `bypass_cache` parameter that forces re-resolution.
+The system SHALL, on a cache hit in the D1 `sku_cache` table (keyed by `(ingredient, location_id)`), short-circuit search and narrowing but revalidate the cached SKU with one targeted lookup for current price and curbside/delivery availability before returning it. An available SKU SHALL be returned with fresh price; an unavailable one SHALL trigger re-resolution. The cache SHALL NOT use a TTL. The tool SHALL accept a `bypass_cache` parameter that forces re-resolution.
 
 #### Scenario: Cache hit revalidated before use
 
-- **WHEN** a cached SKU is found for the normalized ingredient
+- **WHEN** a cached SKU is found for the normalized ingredient in the D1 `sku_cache` table
 - **THEN** the system revalidates its current price and curbside/delivery availability, returns it with fresh price if available, and re-resolves if not
 
 #### Scenario: bypass_cache forces re-resolution
@@ -111,16 +109,16 @@ The system SHALL, on a cache hit in `skus/kroger.toml`, short-circuit search and
 
 ### Requirement: Alias-driven normalization
 
-The system SHALL normalize the ingredient by stripping quantity/units, lowercasing, and applying `aliases.toml` as the curated source of truth for variant collapse. It SHALL NOT aggressively strip qualifiers beyond what `aliases.toml` defines.
+The system SHALL normalize the ingredient by stripping quantity/units, lowercasing, and applying the D1 `aliases` table (columns: `variant`, `canonical`) as the curated source of truth for variant collapse. It SHALL NOT aggressively strip qualifiers beyond what the `aliases` table defines.
 
 #### Scenario: Alias collapses a variant
 
-- **WHEN** an ingredient string matches an `aliases.toml` entry
+- **WHEN** an ingredient string matches a `variant` entry in the D1 `aliases` table
 - **THEN** it is normalized to the canonical term before cache lookup and search
 
 ### Requirement: compare_unit_price deterministic comparison
 
-The system SHALL provide `compare_unit_price(items)` performing deterministic price-per-unit comparison from raw `price` and `size` strings. It SHALL parse, convert, and divide internally so the LLM never performs arithmetic. It SHALL rank only within a single dimension (volume, weight, or count) and SHALL place cross-dimension or unparseable items in `incomparable`. It SHALL accept optional `quantity_override`/`unit_override` for residue the parser could not handle. The same core SHALL drive the matcher's tiebreaker.
+The system SHALL provide `compare_unit_price(items)` performing deterministic price-per-unit comparison from raw `price` and `size` strings. It SHALL parse, convert, and divide internally so the LLM never performs arithmetic. It SHALL rank only within a single dimension (volume, weight, or count) and SHALL place cross-dimension or unparseable items in `incomparable`. A size SHALL be treated as unparseable — and routed to `incomparable` — whenever its computed base-unit quantity is not a finite positive number (zero, negative, or non-finite), including via a zero/`Infinity` multi-pack multiplier, a divide-by-zero fraction (`"1/0"`), or a `quantity_override` of `0`; such a size SHALL NOT yield a zero or non-finite `unit_price` that could sort as `cheapest`. A `price` string that is ambiguous to parse (more than one decimal point, or a decimal comma) SHALL parse to no value rather than a silently mis-scaled number. It SHALL accept optional `quantity_override`/`unit_override` for residue the parser could not handle. The same core SHALL drive the matcher's tiebreaker.
 
 #### Scenario: Ranked within a dimension
 
@@ -131,6 +129,16 @@ The system SHALL provide `compare_unit_price(items)` performing deterministic pr
 
 - **WHEN** items span different dimensions or carry unparseable size strings
 - **THEN** those items are returned in `incomparable` rather than mis-ranked
+
+#### Scenario: Degenerate size routes to incomparable, never cheapest
+
+- **WHEN** an item's size yields a zero, negative, or non-finite base-unit quantity (e.g. `"0 x 1 oz"`, `"1/0 gal"`, or a `quantity_override` of `0`)
+- **THEN** the item is returned in `incomparable` and is never selected as `cheapest`
+
+#### Scenario: Ambiguous price string is not silently mis-parsed
+
+- **WHEN** an item's `price` is an ambiguous string such as `"1.234,56"` or `"1.2.3"`
+- **THEN** it parses to no value (the item is not ranked on a mis-scaled price) rather than producing a 1000×-wrong figure
 
 ### Requirement: Deterministic tiebreaker
 
@@ -145,3 +153,4 @@ The system SHALL break ties among top-scoring candidates deterministically: pref
 
 - **WHEN** resolving a `[]` commodity with a `quantity_hint`
 - **THEN** the smallest package covering the hint is chosen, breaking ties by cheapest absolute price
+

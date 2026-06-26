@@ -10,7 +10,7 @@ import { parseMarkdown } from "../src/parse.js";
 import { GitHubError, type GitHubClient } from "../src/github.js";
 import type { Env } from "../src/env.js";
 
-const RECIPE = "---\ntitle: Salmon\nstatus: active\nlast_cooked: null\nrating: null\n---\n\n## Ingredients\n- salmon\n";
+const RECIPE = "---\ntitle: Salmon\ntime_total: 30\nlast_cooked: null\n---\n\n## Ingredients\n- salmon\n";
 
 function ghWith(files: Record<string, string>): GitHubClient {
   return {
@@ -165,12 +165,12 @@ describe("buildRecipeUpdate", () => {
   const env = fakeD1([]).env;
   it("merges updates into frontmatter and preserves the body", async () => {
     const gh = ghWith({ "recipes/salmon.md": RECIPE });
-    const file = await buildRecipeUpdate(gh, env, "salmon", { rating: 4, last_cooked: "2026-06-09" });
+    const file = await buildRecipeUpdate(gh, env, "salmon", { cuisine: "japanese", last_cooked: "2026-06-09" });
     expect(file.path).toBe("recipes/salmon.md");
     const { frontmatter, body } = parseMarkdown(file.content);
-    expect(frontmatter.rating).toBe(4);
+    expect(frontmatter.cuisine).toBe("japanese");
     expect(frontmatter.last_cooked).toBe("2026-06-09");
-    expect(frontmatter.status).toBe("active"); // untouched
+    expect(frontmatter.title).toBe("Salmon"); // untouched
     expect(body).toContain("## Ingredients");
   });
 
@@ -195,36 +195,36 @@ describe("buildRecipeUpdate", () => {
 });
 
 describe("readyToEatManager", () => {
-  it("addDraft generates a slug, tags the meal, defaults to draft", () => {
+  it("add generates a slug, tags the meal, and lands available (no status)", () => {
     const mgr = readyToEatManager([]);
-    const slug = mgr.addDraft({ meal: "dinner", name: "Kroger Frozen Lasagna" });
+    const slug = mgr.add({ meal: "dinner", name: "Kroger Frozen Lasagna" });
     expect(slug).toBe("kroger-frozen-lasagna");
     expect(mgr.touched()).toBe(true);
     const item = mgr.items()[0];
-    expect(item).toMatchObject({ name: "Kroger Frozen Lasagna", slug, meal: "dinner", status: "draft" });
-  });
-
-  it("addDraft status:active lands active (onboarding path)", () => {
-    const mgr = readyToEatManager([]);
-    mgr.addDraft({ meal: "breakfast", name: "Overnight Oats" }, "active");
-    const item = mgr.items()[0];
-    expect(item).toMatchObject({ slug: "overnight-oats", status: "active" });
+    expect(item).toMatchObject({ name: "Kroger Frozen Lasagna", slug, meal: "dinner" });
+    expect("status" in item).toBe(false);
   });
 
   it("de-dupes slugs within the catalog with a numeric suffix", () => {
-    const existing = [{ name: "Burrito", slug: "burrito", meal: "lunch", status: "active" }];
+    const existing = [{ name: "Burrito", slug: "burrito", meal: "lunch" }];
     const mgr = readyToEatManager(existing);
-    const slug = mgr.addDraft({ meal: "lunch", name: "Burrito" });
+    const slug = mgr.add({ meal: "lunch", name: "Burrito" });
     expect(slug).toBe("burrito-2");
   });
 
-  it("update addresses items by slug; unknown slug is not_found", () => {
-    const existing = [{ name: "Lasagna", slug: "lasagna", meal: "dinner", status: "draft" }];
+  it("update sets favorite/reject by slug; unknown slug is not_found", () => {
+    const existing = [{ name: "Lasagna", slug: "lasagna", meal: "dinner" }];
     const mgr = readyToEatManager(existing);
-    mgr.update("lasagna", { status: "active", rating: 4 });
-    const item = mgr.items()[0];
-    expect(item).toMatchObject({ slug: "lasagna", status: "active", rating: 4 });
-    expect(() => mgr.update("ghost", { status: "rejected" })).toThrowError(/not.*found|ghost/i);
+    mgr.update("lasagna", { favorite: true });
+    expect(mgr.items()[0]).toMatchObject({ slug: "lasagna", favorite: true });
+    expect(() => mgr.update("ghost", { reject: true })).toThrowError(/not.*found|ghost/i);
+  });
+
+  it("favorite and reject are mutually exclusive on update", () => {
+    const existing = [{ name: "Lasagna", slug: "lasagna", meal: "dinner", reject: true }];
+    const mgr = readyToEatManager(existing);
+    mgr.update("lasagna", { favorite: true });
+    expect(mgr.items()[0]).toMatchObject({ slug: "lasagna", favorite: true, reject: false });
   });
 
   it("touched() is false when nothing was changed", () => {
@@ -235,7 +235,7 @@ describe("readyToEatManager", () => {
 
 describe("serializeMarkdown round-trip", () => {
   it("keeps a date-like string a string", () => {
-    const text = serializeMarkdown({ last_cooked: "2026-06-09", status: "active" }, "body\n");
+    const text = serializeMarkdown({ last_cooked: "2026-06-09", protein: "fish" }, "body\n");
     const { frontmatter } = parseMarkdown(text);
     expect(frontmatter.last_cooked).toBe("2026-06-09");
     expect(typeof frontmatter.last_cooked).toBe("string");
@@ -441,7 +441,7 @@ describe("update_pantry / mark_pantry_verified (D1-backed)", () => {
   });
 });
 
-describe("toggle_favorite / set_recipe_status (subjective overlay write → D1)", () => {
+describe("toggle_favorite / toggle_reject (subjective overlay write → D1)", () => {
   it("toggle_favorite writes only the caller's overlay row, no commit_sha", async () => {
     const d1 = fakeD1(["miso-salmon"]);
     const handlers = collectTools(ghWith({}), "everett", d1.env);
@@ -455,15 +455,25 @@ describe("toggle_favorite / set_recipe_status (subjective overlay write → D1)"
     );
   });
 
-  it("favorite and status compose across calls onto one row", async () => {
+  it("toggle_reject hides a recipe for the caller via a single overlay row", async () => {
+    const d1 = fakeD1(["miso-salmon"]);
+    const handlers = collectTools(ghWith({}), "everett", d1.env);
+    const res = await handlers.get("toggle_reject")!({ slug: "miso-salmon", reject: true });
+    const out = JSON.parse(res.content[0].text) as { overlay: Record<string, unknown> };
+    expect(out.overlay).toEqual({ reject: true });
+    expect(d1.tables.overlay).toHaveLength(1);
+    expect(d1.tables.overlay[0]).toMatchObject({ recipe: "miso-salmon", favorite: null, reject: 1 });
+  });
+
+  it("favorite and reject are mutually exclusive: rejecting clears a prior favorite", async () => {
     const d1 = fakeD1(["miso-salmon"]);
     const handlers = collectTools(ghWith({}), "everett", d1.env);
     await handlers.get("toggle_favorite")!({ slug: "miso-salmon", favorite: true });
-    const res = await handlers.get("set_recipe_status")!({ slug: "miso-salmon", status: "active" });
+    const res = await handlers.get("toggle_reject")!({ slug: "miso-salmon", reject: true });
     const out = JSON.parse(res.content[0].text) as { overlay: Record<string, unknown> };
-    expect(out.overlay).toMatchObject({ favorite: true, status: "active" });
+    expect(out.overlay).toEqual({ reject: true }); // favorite cleared
     expect(d1.tables.overlay).toHaveLength(1);
-    expect(d1.tables.overlay[0]).toMatchObject({ recipe: "miso-salmon", favorite: 1, status: "active" });
+    expect(d1.tables.overlay[0]).toMatchObject({ recipe: "miso-salmon", favorite: null, reject: 1 });
   });
 
   it("un-favoriting clears the field, DELETEing a row with nothing else set", async () => {
@@ -475,10 +485,10 @@ describe("toggle_favorite / set_recipe_status (subjective overlay write → D1)"
     expect(d1.tables.overlay).toHaveLength(0);
   });
 
-  it("set_recipe_status rejects a slug not in the recipe index (not_found), writing nothing", async () => {
+  it("toggle_reject rejects a slug not in the recipe index (not_found), writing nothing", async () => {
     const d1 = fakeD1([]); // no recipes
     const handlers = collectTools(ghWith({}), "everett", d1.env);
-    const res = await handlers.get("set_recipe_status")!({ slug: "ghost", status: "active" });
+    const res = await handlers.get("toggle_reject")!({ slug: "ghost", reject: true });
     const out = JSON.parse(res.content[0].text) as { error: string };
     expect(out.error).toBe("not_found");
     expect(d1.tables.overlay).toHaveLength(0);
@@ -541,7 +551,7 @@ describe("profile writes → D1 (staples / stockup / kitchen / ready-to-eat)", (
     const out = JSON.parse(res.content[0].text) as { added: { slug: string }[] };
     expect(out.added[0].slug).toBe("frozen-lasagna");
     expect(d1.tables.ready_to_eat).toContainEqual(
-      expect.objectContaining({ tenant: "everett", slug: "frozen-lasagna", meal: "dinner", status: "draft" }),
+      expect.objectContaining({ tenant: "everett", slug: "frozen-lasagna", meal: "dinner" }),
     );
   });
 });
@@ -592,14 +602,21 @@ describe("update_preferences (merge-patch → D1)", () => {
 });
 
 describe("update_recipe (objective-only)", () => {
-  const RECIPE_MD = "---\ntitle: Salmon\nstatus: active\n---\n\n## Ingredients\n- salmon\n";
+  const RECIPE_MD = "---\ntitle: Salmon\n---\n\n## Ingredients\n- salmon\n";
 
-  it("rejects a status edit, directing the caller to set_recipe_status, writing nothing", async () => {
+  it("rejects a reject edit, directing the caller to toggle_reject, writing nothing", async () => {
     const handlers = collectTools(ghWith({ "recipes/salmon.md": RECIPE_MD }), "everett", fakeD1(["salmon"]).env);
-    const res = await handlers.get("update_recipe")!({ slug: "salmon", updates: { status: "active" } });
+    const res = await handlers.get("update_recipe")!({ slug: "salmon", updates: { reject: true } });
     const out = JSON.parse(res.content[0].text) as { error: string; message?: string };
     expect(out.error).toBe("validation_failed");
-    expect(JSON.stringify(out)).toMatch(/set_recipe_status/);
+    expect(JSON.stringify(out)).toMatch(/toggle_reject/);
+  });
+
+  it("rejects a retired status edit (steered away from objective content)", async () => {
+    const handlers = collectTools(ghWith({ "recipes/salmon.md": RECIPE_MD }), "everett", fakeD1(["salmon"]).env);
+    const res = await handlers.get("update_recipe")!({ slug: "salmon", updates: { status: "active" } });
+    const out = JSON.parse(res.content[0].text) as { error: string };
+    expect(out.error).toBe("validation_failed");
   });
 
   it("rejects a favorite edit toward toggle_favorite", async () => {

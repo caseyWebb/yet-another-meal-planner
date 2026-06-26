@@ -6,10 +6,10 @@ import type { RecipeIndex } from "../src/recipes.js";
 const NOW = new Date("2026-06-30T12:00:00Z");
 
 const index: RecipeIndex = {
-  salmon: { slug: "salmon", title: "Salmon", protein: "fish", cuisine: "american", status: "active", last_cooked: "2026-06-20" },
-  tacos: { slug: "tacos", title: "Tacos", protein: "beef", cuisine: "mexican", status: "active", last_cooked: "2026-06-10" },
-  stew: { slug: "stew", title: "Stew", protein: "beef", cuisine: "french", status: "active", last_cooked: null },
-  retired: { slug: "retired", title: "Retired", protein: "pork", cuisine: "american", status: "archived", last_cooked: null },
+  salmon: { slug: "salmon", title: "Salmon", protein: "fish", cuisine: "american", last_cooked: "2026-06-20" },
+  tacos: { slug: "tacos", title: "Tacos", protein: "beef", cuisine: "mexican", last_cooked: "2026-06-10" },
+  stew: { slug: "stew", title: "Stew", protein: "beef", cuisine: "french", last_cooked: null },
+  hidden: { slug: "hidden", title: "Hidden", protein: "pork", cuisine: "american", reject: true, last_cooked: null },
 };
 
 // protein/cuisine are pre-resolved on each entry by the caller (the D1
@@ -73,13 +73,13 @@ describe("retrospective", () => {
     ]);
   });
 
-  it("surfaces underused active recipes (never-cooked + stale), excluding archived", () => {
+  it("surfaces underused non-rejected recipes (never-cooked + stale), excluding rejected", () => {
     const r = retrospective(entries, index, "7d", NOW); // window starts 2026-06-23
     const slugs = r.underused.map((u) => u.slug);
     expect(slugs).toContain("stew"); // never cooked
     expect(slugs).toContain("salmon"); // last cooked 06-20, before window
     expect(slugs).toContain("tacos");
-    expect(slugs).not.toContain("retired"); // archived
+    expect(slugs).not.toContain("hidden"); // rejected → excluded from rotation
     // never-cooked sorts first
     expect(r.underused[0].slug).toBe("stew");
   });

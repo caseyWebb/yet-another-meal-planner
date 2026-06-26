@@ -2,13 +2,13 @@
 
 ## Purpose
 
-Defines the MCP write tools and where each persists. After the D1 migration there is **no batch `commit_changes` tool** — every write has a standalone home, and writes split by storage tier: objective recipe **content** (and shared `aliases.toml`) is committed to the GitHub data repo via the atomic commit engine and returns a `commit_sha`; everything else — per-tenant overlay/profile/session state, the cooking log, and the shared corpus (stores, notes, registries, caches) — is a row-level D1 write that returns **without** a `commit_sha`. This capability defines those tools' contracts, routing, and validation.
+Defines the MCP write tools and where each persists. After the D1 migration there is **no batch `commit_changes` tool** — every write has a standalone home, and writes split by storage tier: objective recipe **content** is committed to the GitHub data repo via the atomic commit engine and returns a `commit_sha`; everything else — per-tenant overlay/profile/session state, the cooking log, ingredient aliases, and the shared corpus (stores, notes, registries, caches) — is a row-level D1 write that returns **without** a `commit_sha`. This capability defines those tools' contracts, routing, and validation.
 
 ## Requirements
 
 ### Requirement: Granular write tools, no batch commit
 
-The system SHALL expose a granular write tool per category and SHALL NOT provide a batch `commit_changes` tool. Every field the former `commit_changes` carried now has a standalone home: objective recipe content (`update_recipe` / `create_recipe`), recipe favorite (`toggle_favorite`) and per-tenant status (`set_recipe_status`), ready-to-eat (`add_draft_ready_to_eat` / `update_ready_to_eat`), config (`update_preferences` / `update_taste` / `update_diet_principles` / `update_aliases`), cooking events (`log_cooked`), pantry (`update_pantry` / `mark_pantry_verified`), meal plan (`update_meal_plan`), grocery list (`add_to_grocery_list` / `update_grocery_list` / `remove_from_grocery_list`), staples (`update_staples`), and stockup (`update_stockup`). A multi-write turn SHALL issue one granular call per write. No tool in this capability SHALL write a Kroger cart or call an external service (cart placement is the separate `place_order` tool).
+The system SHALL expose a granular write tool per category and SHALL NOT provide a batch `commit_changes` tool. Every field the former `commit_changes` carried now has a standalone home: objective recipe content (`update_recipe` / `create_recipe`), recipe disposition (`toggle_favorite` / `toggle_reject`), ready-to-eat (`add_draft_ready_to_eat` / `update_ready_to_eat`), config (`update_preferences` / `update_taste` / `update_diet_principles` / `update_aliases`), cooking events (`log_cooked`), pantry (`update_pantry` / `mark_pantry_verified`), meal plan (`update_meal_plan`), grocery list (`add_to_grocery_list` / `update_grocery_list` / `remove_from_grocery_list`), staples (`update_staples`), and stockup (`update_stockup`). A multi-write turn SHALL issue one granular call per write. No tool in this capability SHALL write a Kroger cart or call an external service (cart placement is the separate `place_order` tool).
 
 #### Scenario: There is no commit_changes tool
 
@@ -22,7 +22,7 @@ The system SHALL expose a granular write tool per category and SHALL NOT provide
 
 ### Requirement: Objective recipe content commits to GitHub
 
-`update_recipe(slug, updates)` and `create_recipe` SHALL write only objective shared recipe **content** (frontmatter/body) to the GitHub data repo (`recipes/`) through the atomic commit engine — create blobs/tree, create a commit whose parent is the read base, then update the ref — authenticating with a GitHub App installation token scoped to the data repository, and SHALL surface failures as structured errors. `update_recipe` SHALL reject `favorite` or `status` keys with a structured `validation_failed` error directing the caller to `toggle_favorite` / `set_recipe_status`, and SHALL reject `last_cooked` (derived via the cooking log / `log_cooked`). It SHALL NOT write any per-tenant overlay or other domain data, and SHALL return `{ slug, updated_fields, commit_sha? }` (`commit_sha` omitted when nothing changed).
+`update_recipe(slug, updates)` and `create_recipe` SHALL write only objective shared recipe **content** (frontmatter/body) to the GitHub data repo (`recipes/`) through the atomic commit engine — create blobs/tree, create a commit whose parent is the read base, then update the ref — authenticating with a GitHub App installation token scoped to the data repository, and SHALL surface failures as structured errors. `update_recipe` SHALL reject `favorite`, `reject`, or `status` keys with a structured `validation_failed` error directing the caller to `toggle_favorite` / `toggle_reject`, and SHALL reject `last_cooked` (derived via the cooking log / `log_cooked`). It SHALL NOT write any per-tenant overlay or other domain data, and SHALL return `{ slug, updated_fields, commit_sha? }` (`commit_sha` omitted when nothing changed).
 
 #### Scenario: update_recipe commits objective content
 
@@ -32,7 +32,7 @@ The system SHALL expose a granular write tool per category and SHALL NOT provide
 #### Scenario: update_recipe rejects subjective keys
 
 - **WHEN** `update_recipe("miso-salmon", { status: "active" })` is called
-- **THEN** a structured `validation_failed` error is returned naming `set_recipe_status`, and nothing is written
+- **THEN** a structured `validation_failed` error is returned directing the caller to `toggle_favorite` / `toggle_reject`, and nothing is written
 
 #### Scenario: Write failure is structured
 
@@ -41,31 +41,50 @@ The system SHALL expose a granular write tool per category and SHALL NOT provide
 
 ### Requirement: toggle_favorite writes the caller's favorite boolean to the D1 overlay
 
-The system SHALL provide a `toggle_favorite(slug, favorite)` tool that sets or clears the caller's `favorite` boolean for a recipe as a row in the D1 `overlay` table (keyed by `(tenant, recipe)`), returning without a `commit_sha`. It SHALL validate `slug` against the D1 `recipes` table (`not_found` when absent) and SHALL NOT write shared recipe content. `favorite: false` SHALL clear the flag, deleting the overlay row when nothing else is set on it.
+The system SHALL provide a `toggle_favorite(slug, favorite)` tool that sets or clears the caller's `favorite` boolean for a recipe as a row in the D1 `overlay` table (keyed by `(tenant, recipe)`), returning without a `commit_sha`. It SHALL validate `slug` against the D1 `recipes` table (`not_found` when absent) and SHALL NOT write shared recipe content. `favorite: false` SHALL clear the flag, deleting the overlay row when nothing else is set on it. `favorite` and `reject` are **mutually exclusive**: setting `favorite: true` SHALL clear any `reject` on the same row.
 
 #### Scenario: Favoriting a recipe writes only the overlay
 
 - **WHEN** `toggle_favorite("miso-salmon", true)` is called for an existing recipe
 - **THEN** the caller's `overlay` row for `miso-salmon` is upserted with `favorite = 1`, no shared recipe content changes, and the tool returns `{ slug, overlay }` with no `commit_sha`
 
+#### Scenario: Favoriting clears a prior reject
+
+- **WHEN** the caller had rejected a recipe and then calls `toggle_favorite(slug, true)`
+- **THEN** the row now carries `favorite` and no `reject` (the two never coexist)
+
 #### Scenario: Favoriting an unknown recipe is rejected
 
 - **WHEN** `toggle_favorite` is called with a slug not in `recipes`
 - **THEN** a structured `not_found` error is returned and nothing is written
 
-### Requirement: set_recipe_status writes the caller's status to the D1 overlay
+### Requirement: toggle_reject hides a recipe for the caller via the D1 overlay
 
-The system SHALL provide a `set_recipe_status(slug, status)` tool that sets the caller's per-tenant `status` (`active | draft | rejected`, or `null` to clear back to the effective default `draft`) for a recipe as a row in the D1 `overlay` table, returning without a `commit_sha`. It SHALL validate `slug` against the D1 `recipes` table (`not_found` when absent) and SHALL NOT write shared recipe content. `favorite` and `status` are independent overlay fields written by their respective tools; together `toggle_favorite` + `set_recipe_status` replace the prior combined `rate_recipe`.
+The system SHALL provide a `toggle_reject(slug, reject)` tool that sets or clears the caller's `reject` flag for a recipe as a row in the D1 `overlay` table, returning without a `commit_sha`. It SHALL validate `slug` against the D1 `recipes` table (`not_found` when absent) and SHALL NOT write shared recipe content. `reject: false` SHALL clear the flag, deleting the overlay row when nothing else is set on it. `reject` and `favorite` are mutually exclusive: setting `reject: true` SHALL clear any `favorite`. A rejected recipe SHALL be excluded from the caller's `list_recipes` and `recipe_semantic_search` results (a hard gate). This is **per-tenant** and distinct from the group-wide `reject_discovery` (which suppresses a discovery URL before import); `toggle_reject` acts on an existing corpus slug for one member only.
 
-#### Scenario: Rejecting a recipe writes only the caller's overlay status
+#### Scenario: Rejecting a recipe hides it for the caller only
 
-- **WHEN** `set_recipe_status("miso-salmon", "rejected")` is called
-- **THEN** the caller's `overlay` row for `miso-salmon` is upserted with `status = rejected`, no shared recipe content changes, and another member's view is unaffected
+- **WHEN** `toggle_reject("miso-salmon", true)` is called
+- **THEN** the caller's `overlay` row is upserted with `reject`, the recipe no longer appears in that caller's `list_recipes`/`recipe_semantic_search`, and no other member's view changes
 
-#### Scenario: Clearing status falls back to the default
+#### Scenario: Un-rejecting restores default visibility
 
-- **WHEN** `set_recipe_status(slug, null)` is called on a row whose only field was status
-- **THEN** the overlay row is deleted and the recipe falls back to effective `status: draft` for the caller
+- **WHEN** `toggle_reject(slug, false)` is called on a row whose only field was `reject`
+- **THEN** the overlay row is deleted and the recipe returns to neutral (available) for the caller
+
+### Requirement: Ready-to-eat disposition is favorite and reject
+
+The ready-to-eat catalog SHALL use the same disposition model as recipes: `add_draft_ready_to_eat` adds an item that is available by default (no `draft`/`active` state), and `update_ready_to_eat` sets a per-item `favorite` or `reject` (mutually exclusive), with no `status` lifecycle and no `rating`. A rejected ready-to-eat item SHALL not be suggested to the caller.
+
+#### Scenario: Rejecting a ready-to-eat item stops suggesting it
+
+- **WHEN** `update_ready_to_eat(slug, { reject: true })` is called
+- **THEN** the item is no longer suggested to the caller, with no `status` or `rating` involved
+
+#### Scenario: Added ready-to-eat items are available immediately
+
+- **WHEN** `add_draft_ready_to_eat` adds an item
+- **THEN** it is part of the caller's catalog and suggestible immediately, with no activation step
 
 ### Requirement: log_cooked appends a cooking event to D1
 
@@ -83,9 +102,9 @@ The system SHALL provide a `log_cooked` tool that appends one cooking event to t
 
 ### Requirement: Profile writes target D1
 
-The per-tenant profile write tools — `update_taste`, `update_diet_principles`, `update_kitchen`, `update_staples`, `update_stockup`, `add_draft_ready_to_eat`, `update_ready_to_eat`, `toggle_favorite`, and `set_recipe_status` — SHALL persist to the D1 profile tables (`profile`, `kitchen_equipment`, `staples`, `stockup`, `ready_to_eat`, `overlay`) as typed rows, not as TOML strings in a KV bundle or `users/<username>/*.toml` files. They SHALL return without a `commit_sha` and SHALL NOT serialize TOML. Multi-row writes SHALL use a D1 transaction.
+The per-tenant profile write tools — `update_taste`, `update_diet_principles`, `update_kitchen`, `update_staples`, `update_stockup`, `add_draft_ready_to_eat`, `update_ready_to_eat`, `toggle_favorite`, and `toggle_reject` — SHALL persist to the D1 profile tables (`profile`, `kitchen_equipment`, `staples`, `stockup`, `ready_to_eat`, `overlay`) as typed rows, not as TOML strings in a KV bundle or `users/<username>/*.toml` files. They SHALL return without a `commit_sha` and SHALL NOT serialize TOML. Multi-row writes SHALL use a D1 transaction.
 
-Ready-to-eat is **per-tenant personal state**: `add_draft_ready_to_eat` and `update_ready_to_eat` SHALL write the caller's `ready_to_eat` rows. Each item SHALL be keyed by a generated `slug` (derived from its `name`, unique within the caller's set); `update_ready_to_eat` SHALL address items by `slug`. Items SHALL support an optional `rating` field. `add_draft_ready_to_eat` SHALL accept an optional `status` (default `draft`) so an item the member explicitly names — e.g. during onboarding — can be added directly as `active`.
+Ready-to-eat is **per-tenant personal state**: `add_draft_ready_to_eat` and `update_ready_to_eat` SHALL write the caller's `ready_to_eat` rows. Each item SHALL be keyed by a generated `slug` (derived from its `name`, unique within the caller's set); `update_ready_to_eat` SHALL address items by `slug`. Items have no `status` or `rating` — disposition is via `favorite`/`reject` only.
 
 The bulk-buy watchlist is likewise per-tenant: `update_stockup` SHALL add items to the caller's `stockup` rows. It SHALL be **add-only with dedup by normalized item `name`** (re-adding an existing name is a no-op). It SHALL accept per item a required `name` and optional `unit`, `typical_purchase`, and `notes`, plus an optional top-level `freezer_capacity_estimate` (stored on the `profile` row). The price-threshold fields (`baseline_price`, `buy_at_or_below`) SHALL be **optional** and advisory. `update_stockup` SHALL return `{ added }` (a count), no `commit_sha`, and add nothing when nothing is new.
 
@@ -93,18 +112,13 @@ The staples list is per-tenant: `update_staples` SHALL write the caller's `stapl
 
 #### Scenario: Structured profile write updates D1 rows
 
-- **WHEN** `update_staples`, `update_stockup`, `update_kitchen`, `update_ready_to_eat`, `toggle_favorite`, or `set_recipe_status` is applied
+- **WHEN** `update_staples`, `update_stockup`, `update_kitchen`, `update_ready_to_eat`, `toggle_favorite`, or `toggle_reject` is applied
 - **THEN** the corresponding D1 table rows are upserted/deleted for the caller, with no TOML serialization, no KV bundle write, and no `commit_sha`
 
 #### Scenario: Ready-to-eat write targets the caller's D1 rows
 
 - **WHEN** `add_draft_ready_to_eat` or `update_ready_to_eat` is called
 - **THEN** the change is written to the caller's `ready_to_eat` rows, keyed by the item's generated `slug`, and no shared catalog is touched
-
-#### Scenario: Onboarding adds an active item directly
-
-- **WHEN** `add_draft_ready_to_eat` is called with `status = "active"` for an item the member named
-- **THEN** the item is added to the caller's `ready_to_eat` rows as `active` (not `draft`) with a generated `slug`
 
 #### Scenario: Staples add is deduped
 
@@ -223,7 +237,7 @@ The recipe write tools — `create_recipe` and `update_recipe` — SHALL reject 
 
 ### Requirement: Structural pre-commit validation for GitHub-backed recipe writes
 
-The system SHALL validate every GitHub-bound recipe change structurally before committing — YAML/frontmatter parses cleanly and enumerated fields (e.g. recipe `status`) hold legal values — using a Workers-runtime-safe (`workerd`) implementation, since the Node build validator cannot run in the Worker. A change that fails structural validation SHALL be rejected with a structured error and SHALL NOT be committed. Cross-reference validation remains the responsibility of the post-push build. D1-backed writes are validated at write time by the corresponding tool's structured validators rather than this commit-engine step.
+The system SHALL validate every GitHub-bound recipe change structurally before committing — YAML/frontmatter parses cleanly and enumerated fields (e.g. `protein`, `cuisine`, `requires_equipment`) hold legal values — using a Workers-runtime-safe (`workerd`) implementation, since the Node build validator cannot run in the Worker. A change that fails structural validation SHALL be rejected with a structured error and SHALL NOT be committed. Cross-reference validation remains the responsibility of the post-push build. D1-backed writes are validated at write time by the corresponding tool's structured validators rather than this commit-engine step.
 
 #### Scenario: Malformed recipe write is rejected before commit
 
@@ -239,8 +253,8 @@ The system SHALL validate every GitHub-bound recipe change structurally before c
 
 The system SHALL route each write to the storage tier that owns the data category:
 
-- **GitHub (atomic commit engine)** — objective recipe **content** (`recipes/`, including the authored `description` and `side_search_terms` frontmatter) and the shared `aliases.toml`. These return a `commit_sha`.
-- **D1 (row-level, `src/db.ts`)** — per-tenant overlay (the `favorite` boolean and `status`), profile (preferences, taste, diet_principles, kitchen, staples, stockup, ready_to_eat), session state (pantry, meal_plan, grocery_list), the cooking log, attributed notes (`recipe_notes`), the shared corpus (stores, store_notes, registries, SKU cache, discovery feeds/inbox/rejections), the recipe-index projection (`recipes`, carrying the `description`/`side_search_terms` columns), and the sibling `recipe_embeddings` table (reconciled Worker-side on the cron). These return **without** a `commit_sha`.
+- **GitHub (atomic commit engine)** — objective recipe **content** (`recipes/`, including the authored `description` and `side_search_terms` frontmatter). These return a `commit_sha`.
+- **D1 (row-level, `src/db.ts`)** — per-tenant overlay (`favorite` and `reject` booleans), profile (preferences, taste, diet_principles, kitchen, staples, stockup, ready_to_eat), session state (pantry, meal_plan, grocery_list), the cooking log, attributed notes (`recipe_notes`), the shared corpus (stores, store_notes, ingredient aliases, registries, SKU cache, discovery feeds/inbox/rejections), the recipe-index projection (`recipes`, carrying the `description`/`side_search_terms` columns), and the sibling `recipe_embeddings` table (reconciled Worker-side on the cron). These return **without** a `commit_sha`.
 
 A subjective-field change to a shared recipe SHALL NOT modify shared content. `last_cooked` is not written as overlay — it is realized by appending to the caller's `cooking_log` (via `log_cooked`) and derived by query.
 
@@ -251,7 +265,7 @@ A subjective-field change to a shared recipe SHALL NOT modify shared content. `l
 
 #### Scenario: Per-tenant and corpus writes target D1
 
-- **WHEN** a tenant's favorite toggle, status change, note, pantry change, or preference edit is persisted
+- **WHEN** a tenant's favorite toggle, reject toggle, note, pantry change, or preference edit is persisted
 - **THEN** it is written as rows to the corresponding D1 table for the caller, returns no `commit_sha`, and never modifies shared recipe content or another member's data
 
 ### Requirement: Note write tool

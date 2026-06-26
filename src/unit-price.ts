@@ -117,21 +117,46 @@ export function parseSize(raw: string): ParsedSize | null {
   const unit = lookupUnit(m[2].trim());
   if (!unit) return null;
 
-  return { dimension: unit.dimension, quantity: num * unit.factor * multiplier };
+  const quantity = num * unit.factor * multiplier;
+  // A degenerate quantity (zero/negative/non-finite — e.g. "0 x 1 oz", a "1/0"
+  // fraction, a zero multiplier) routes to `incomparable` rather than yielding a
+  // 0 or non-finite unit price that could sort first and mis-pick as cheapest.
+  if (!(quantity > 0) || !Number.isFinite(quantity)) return null;
+  return { dimension: unit.dimension, quantity };
 }
 
 /** Resolve an explicit quantity + unit override into a base-unit quantity. */
 export function resolveOverride(quantity: number, unit: string): ParsedSize | null {
   const def = lookupUnit(unit.toLowerCase().trim());
   if (!def) return null;
-  return { dimension: def.dimension, quantity: quantity * def.factor };
+  const q = quantity * def.factor;
+  // Same finite-positive guard as parseSize: a quantity_override of 0 (or a
+  // non-finite product) is incomparable, not a divide-by-zero unit price.
+  if (!(q > 0) || !Number.isFinite(q)) return null;
+  return { dimension: def.dimension, quantity: q };
 }
 
-/** Strip currency formatting and parse a price string or number. */
+/**
+ * Strip currency formatting and parse a US-formatted price string or number.
+ * Fails closed (returns null → `incomparable`) on input that can't be parsed
+ * unambiguously, rather than silently mis-scaling it: a leading negative sign
+ * (nonsensical for a price; the old code dropped it), a decimal-comma locale
+ * ("1.234,56"), or a malformed multi-dot string ("1.2.3"). Kroger's own prices
+ * arrive as numbers, so the numeric branch is unchanged.
+ */
 export function parsePrice(raw: string | number): number | null {
   if (typeof raw === "number") return Number.isFinite(raw) ? raw : null;
-  const cleaned = raw.replace(/[^0-9.]/g, "");
-  if (cleaned === "") return null;
+  const trimmed = raw.trim();
+  // A leading minus (after an optional currency symbol) → reject, so we neither
+  // silently drop the sign nor rank a negative price as "cheapest".
+  if (/^[^\d]*-/.test(trimmed)) return null;
+  const numeric = trimmed.replace(/[^0-9.,]/g, "");
+  if (numeric === "") return null;
+  // A comma after the last dot is a decimal-comma locale ("1.234,56") — ambiguous.
+  const lastDot = numeric.lastIndexOf(".");
+  if (lastDot !== -1 && numeric.indexOf(",") > lastDot) return null;
+  const cleaned = numeric.replace(/,/g, ""); // strip US grouping separators
+  if ((cleaned.match(/\./g)?.length ?? 0) > 1) return null; // >1 decimal point → malformed
   const n = parseFloat(cleaned);
   return Number.isFinite(n) ? n : null;
 }

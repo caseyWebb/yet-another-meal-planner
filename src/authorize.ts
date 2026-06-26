@@ -45,7 +45,14 @@ function renderForm(oauthReqB64: string, clientName: string, error?: string): Re
 /** Handle `/authorize` (GET renders the invite-code form; POST completes the grant). */
 export async function handleAuthorize(request: Request, env: Env): Promise<Response> {
   if (request.method === "GET") {
-    const oauthReqInfo = await env.OAUTH_PROVIDER.parseAuthRequest(request);
+    // parseAuthRequest THROWS on a malformed request / invalid redirect_uri (the
+    // POST path already wraps its decode); render a clean 400, not a generic 500.
+    let oauthReqInfo: AuthRequest;
+    try {
+      oauthReqInfo = await env.OAUTH_PROVIDER.parseAuthRequest(request);
+    } catch {
+      return page("<p class=\"err\">Malformed authorization request. Restart the connection.</p>", 400);
+    }
     const client = await env.OAUTH_PROVIDER.lookupClient(oauthReqInfo.clientId).catch(() => null);
     const name = client?.clientName ?? "An MCP client";
     return renderForm(btoa(JSON.stringify(oauthReqInfo)), name);

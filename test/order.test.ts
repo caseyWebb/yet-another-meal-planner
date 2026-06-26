@@ -3,8 +3,10 @@ import {
   computeToBuy,
   placeOrder,
   type PlaceOrderDeps,
+  type RevalidatedSku,
   type ToBuyItem,
 } from "../src/order.js";
+import { packageCount } from "../src/order-tools.js";
 import type { GroceryItem } from "../src/grocery.js";
 import type { MatchResult } from "../src/matching.js";
 
@@ -46,6 +48,21 @@ const unavailable: MatchResult = {
   reason: "unavailable",
   message: "no fulfillable candidate",
 };
+
+describe("place_order package-count schema", () => {
+  // The guard that keeps a fractional/oversized count out of the real Kroger cart.
+  it("accepts a positive integer within bounds", () => {
+    expect(packageCount.safeParse(1).success).toBe(true);
+    expect(packageCount.safeParse(99).success).toBe(true);
+  });
+
+  it("rejects fractional, zero, negative, and oversized counts", () => {
+    expect(packageCount.safeParse(1.5).success).toBe(false);
+    expect(packageCount.safeParse(0).success).toBe(false);
+    expect(packageCount.safeParse(-3).success).toBe(false);
+    expect(packageCount.safeParse(100000).success).toBe(false);
+  });
+});
 
 describe("computeToBuy", () => {
   it("unions the list and menu needs, deduping by normalized name and merging for_recipes", () => {
@@ -151,11 +168,19 @@ function makeDeps(
     skuCacheThrows?: boolean;
     cartThrows?: Error;
     advanceThrows?: boolean;
+    /** Per-SKU revalidation results; absent SKUs default to fulfillable. */
+    revalidations?: Record<string, RevalidatedSku | null>;
   } = {},
 ) {
-  const calls = { sku: 0, cart: 0, advance: 0, cartLines: [] as unknown[] };
+  const calls = { sku: 0, cart: 0, advance: 0, reval: 0, cartLines: [] as unknown[] };
+  const fulfillable: RevalidatedSku = { brand: "Kroger", size: null, price: { regular: 1, promo: 0 }, on_sale: false };
   const deps: PlaceOrderDeps = {
     resolve: async (name) => resolutions[name.toLowerCase()] ?? unavailable,
+    revalidateSku: async (sku) => {
+      calls.reval++;
+      if (opts.revalidations && sku in opts.revalidations) return opts.revalidations[sku];
+      return fulfillable;
+    },
     commitSkuCache: async () => {
       calls.sku++;
       if (opts.skuCacheThrows) throw new Error("commit failed");
@@ -184,7 +209,7 @@ describe("placeOrder", () => {
 
     expect(res.resolved.map((r) => r.sku)).toEqual(["S1", "S2"]);
     expect(res.checkpoint).toEqual([]);
-    expect(res.sku_cache).toEqual({ committed: true, commit_sha: "sku-sha" });
+    expect(res.sku_cache).toEqual({ committed: true });
     expect(res.cart).toEqual({ written: true, count: 2 });
     expect(res.list).toEqual({ advanced: true });
     expect(calls).toMatchObject({ sku: 1, cart: 1, advance: 1 });
@@ -231,15 +256,55 @@ describe("placeOrder", () => {
     expect(res.cart.code).toBe("reauth_required");
   });
 
-  it("applies overrides for previously-ambiguous items without re-resolving", async () => {
-    const { deps, calls } = makeDeps({ cheese: ambiguous });
-    const overrides = new Map([["cheese", { sku: "PICK", brand: "Tillamook", size: "8 oz" }]]);
+  it("applies overrides without re-resolving, carting the forced SKU with FRESH revalidated price/on_sale", async () => {
+    const { deps, calls } = makeDeps(
+      { cheese: ambiguous },
+      { revalidations: { PICK: { brand: "Tillamook", size: "8 oz", price: { regular: 5, promo: 3.5 }, on_sale: true } } },
+    );
+    const overrides = new Map([["cheese", { sku: "PICK", brand: "stale", size: "stale" }]]);
     const res = await placeOrder(deps, toBuy("cheese"), { overrides });
 
+    // Brand/size/price come from revalidation, not the caller-supplied (stale) override fields.
     expect(res.resolved).toEqual([
-      { name: "cheese", sku: "PICK", brand: "Tillamook", size: "8 oz", quantity: 1, assumed_quantity: true },
+      {
+        name: "cheese",
+        sku: "PICK",
+        brand: "Tillamook",
+        size: "8 oz",
+        quantity: 1,
+        assumed_quantity: true,
+        price: { regular: 5, promo: 3.5 },
+        on_sale: true,
+      },
     ]);
     expect(res.checkpoint).toEqual([]);
+    expect(calls.reval).toBe(1);
+    expect(calls.cart).toBe(1);
+  });
+
+  it("checkpoints an override whose SKU went unavailable instead of blind-carting it", async () => {
+    const { deps, calls } = makeDeps({}, { revalidations: { GONE: null } });
+    const overrides = new Map([["trout", { sku: "GONE" }]]);
+    const res = await placeOrder(deps, toBuy("trout"), { overrides });
+
+    expect(res.resolved).toEqual([]);
+    expect(res.checkpoint.map((c) => [c.name, c.kind])).toEqual([["trout", "unavailable"]]);
+    // Nothing resolved → no cart write at all.
+    expect(calls).toMatchObject({ cart: 0, sku: 0, advance: 0 });
+  });
+
+  it("surfaces a lapsed promo on the resolved line (on_sale:false) rather than dropping it", async () => {
+    const { deps, calls } = makeDeps(
+      {},
+      { revalidations: { LAPSED: { brand: "Kroger", size: "1 lb", price: { regular: 8, promo: 0 }, on_sale: false } } },
+    );
+    const overrides = new Map([["trout", { sku: "LAPSED" }]]);
+    const res = await placeOrder(deps, toBuy("trout"), { overrides });
+
+    expect(res.checkpoint).toEqual([]);
+    expect(res.resolved).toHaveLength(1);
+    expect(res.resolved[0]).toMatchObject({ name: "trout", sku: "LAPSED", on_sale: false });
+    // Still carted — the user chose it; we don't auto-drop a lapsed deal.
     expect(calls.cart).toBe(1);
   });
 

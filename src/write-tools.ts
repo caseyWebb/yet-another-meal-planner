@@ -2,8 +2,8 @@
 // current file(s)/rows, applies a pure transform, and persists via the atomic commit
 // engine (commit.ts) for shared GitHub content, or D1 rows for per-tenant state.
 // Objective recipe content is shared (GitHub); a recipe's subjective disposition
-// (favorite/status) is per-tenant and routes to the caller's D1 overlay via
-// `toggle_favorite` / `set_recipe_status`; the pantry is the D1 `pantry` table
+// (favorite/reject) is per-tenant and routes to the caller's D1 overlay via
+// `toggle_favorite` / `toggle_reject`; the pantry is the D1 `pantry` table
 // (src/session-db.ts). No tool here
 // writes a Kroger cart or calls an external service.
 
@@ -56,12 +56,13 @@ function today(): string {
 
 /**
  * The subjective recipe fields. They are the caller's per-tenant disposition and
- * route through `toggle_favorite` / `set_recipe_status` to the D1 overlay table —
+ * route through `toggle_favorite` / `toggle_reject` to the D1 overlay table —
  * `update_recipe` (objective-only) rejects them rather than silently writing the
- * overlay. (`rating` is retained so a stale caller's `update_recipe({ rating })` is
- * still steered to the disposition tools rather than written as objective content.)
+ * overlay. The retired `status`/`rating` keys stay listed so a stale caller's
+ * `update_recipe({ status })` is steered (rejected) rather than written as objective
+ * content; they are no longer overlay fields.
  */
-const SUBJECTIVE_KEYS = ["favorite", "rating", "status"] as const;
+const SUBJECTIVE_KEYS = ["favorite", "reject", "rating", "status"] as const;
 
 // --- file-level builders (return a TreeFile for the atomic commit) -----------
 
@@ -108,15 +109,14 @@ export function readyToEatManager(existing: Record<string, unknown>[]) {
   }
 
   return {
-    /** Append a new item; returns its generated slug. Default status is "draft". */
-    addDraft(item: Record<string, unknown>, status: "draft" | "active" = "draft"): string {
+    /** Append a new item (available by default — no draft/active state); returns its slug. */
+    add(item: Record<string, unknown>): string {
       const slug = uniqueSlug(String(item.name ?? ""));
       list.push({
         name: item.name,
         slug,
         meal: item.meal,
         category: item.category ?? null,
-        status,
         discovery_source: item.source ?? null,
         brand: item.brand ?? null,
         notes: item.notes ?? null,
@@ -124,11 +124,17 @@ export function readyToEatManager(existing: Record<string, unknown>[]) {
       changed = true;
       return slug;
     },
-    /** Find an item by slug, apply updates. Throws not_found if absent. */
+    /**
+     * Find an item by slug, apply updates. Throws not_found if absent. `favorite` and
+     * `reject` are mutually exclusive: setting one true clears the other.
+     */
     update(slug: string, updates: Record<string, unknown>) {
       const idx = list.findIndex((it) => it.slug === slug);
       if (idx < 0) throw new ToolError("not_found", `No ready-to-eat item with slug: ${slug}`, { slug });
-      list[idx] = { ...list[idx], ...updates };
+      const next = { ...list[idx], ...updates };
+      if (updates.favorite) next.reject = false;
+      if (updates.reject) next.favorite = false;
+      list[idx] = next;
       changed = true;
     },
     items(): Record<string, unknown>[] {
@@ -151,7 +157,7 @@ const PROFILE_MARKDOWN_FIELDS = {
  * `gh` is the root data-repo client (shared recipe writes — the only GitHub-backed
  * writes left here; recipe markdown is the one corpus that stays in git). `env` is
  * D1: the `recipes` index (queried by
- * `toggle_favorite`/`set_recipe_status` to validate a slug), the profile tables (preferences/taste/diet/
+ * `toggle_favorite`/`toggle_reject` to validate a slug), the profile tables (preferences/taste/diet/
  * kitchen/staples/overlay/ready_to_eat/stockup — via src/profile-db.ts) AND the
  * session-state pantry table (via src/session-db.ts). meal_plan/grocery_list live in
  * their own tool groups.
@@ -166,7 +172,7 @@ export function registerWriteTools(
     "update_recipe",
     {
       description:
-        "Edit a recipe's OBJECTIVE shared content (frontmatter/body) — the same recipe everyone in the group sees. favorite and status are NOT settable here: they are the caller's personal disposition — use toggle_favorite (favorite) / set_recipe_status (status). last_cooked is NOT settable here either — it is derived from the cooking log (record a cooked meal via log_cooked). Objective frontmatter validates against the controlled vocabularies: `protein`/`cuisine` must be coarse buckets (shrimp→shellfish, salmon→fish; omit `protein` when there's no protein focus — never 'none') and `requires_equipment` slugs must be in-vocab; an off-vocabulary value is rejected (validation_failed).",
+        "Edit a recipe's OBJECTIVE shared content (frontmatter/body) — the same recipe everyone in the group sees. favorite and reject are NOT settable here: they are the caller's personal disposition — use toggle_favorite (favorite) / toggle_reject (reject). last_cooked is NOT settable here either — it is derived from the cooking log (record a cooked meal via log_cooked). Objective frontmatter validates against the controlled vocabularies: `protein`/`cuisine` must be coarse buckets (shrimp→shellfish, salmon→fish; omit `protein` when there's no protein focus — never 'none') and `requires_equipment` slugs must be in-vocab; an off-vocabulary value is rejected (validation_failed).",
       inputSchema: { slug: z.string(), updates: z.record(z.string(), z.unknown()) },
     },
     ({ slug, updates }) =>
@@ -176,7 +182,7 @@ export function registerWriteTools(
         if (subjective.length > 0) {
           throw new ToolError(
             "validation_failed",
-            `${subjective.join("/")} ${subjective.length > 1 ? "are" : "is"} the caller's personal disposition, not shared recipe content — use toggle_favorite to set favorite, set_recipe_status to set status`,
+            `${subjective.join("/")} ${subjective.length > 1 ? "are" : "is"} the caller's personal disposition, not shared recipe content — use toggle_favorite to set favorite, toggle_reject to hide a recipe (status/rating are retired)`,
             { fields: subjective },
           );
         }
@@ -196,9 +202,9 @@ export function registerWriteTools(
   );
 
   // Both disposition tools resolve the slug against the shared index, then apply a
-  // single-field overlay edit. `rate_recipe` was split here into `toggle_favorite`
-  // (the positive taste signal) + `set_recipe_status` (the active/draft/rejected
-  // lifecycle) in the favorite cutover.
+  // single-field overlay edit. The overlay collapsed to two mutually-exclusive marks:
+  // `toggle_favorite` (the positive taste signal) and `toggle_reject` (hide-from-me,
+  // a hard gate) — the `status` lifecycle and `rating` were retired.
   const applyDisposition = async (slug: string, edit: OverlayRow): Promise<Record<string, unknown>> => {
     if (!SLUG_RE.test(slug)) throw new ToolError("not_found", `Unknown recipe slug: ${slug}`, { slug });
     const row = await db(env).first<{ ok: number }>(
@@ -223,13 +229,13 @@ export function registerWriteTools(
   );
 
   server.registerTool(
-    "set_recipe_status",
+    "toggle_reject",
     {
       description:
-        "Set the caller's PERSONAL status for a recipe — `active | draft | rejected` (the disposition lifecycle: `rejected` drops it from the caller's active set but is kept for de-dup; `active` surfaces it; effective default with no overlay row is `draft`). Pass `status: null` to clear back to the default. Writes only the caller's overlay; one member's status never affects another's. Unknown slug → not_found. Returns { slug, overlay }.",
-      inputSchema: { slug: z.string(), status: z.enum(["active", "draft", "rejected"]).nullable() },
+        "Hide a recipe from the CALLER — `reject: true` removes it from the caller's list_recipes and recipe_semantic_search results (a hard gate), `false` un-hides it back to the available default. Per-tenant: one member's reject never affects another's view, and it does NOT remove the shared recipe. Mutually exclusive with favorite (rejecting clears a favorite). DISTINCT from reject_discovery, which suppresses a discovery URL group-wide before import; toggle_reject acts on an existing corpus slug for one member. Unknown slug → not_found. Returns { slug, overlay } (no commit_sha; the overlay is D1-backed).",
+      inputSchema: { slug: z.string(), reject: z.boolean() },
     },
-    ({ slug, status }) => runTool(() => applyDisposition(slug, { status })),
+    ({ slug, reject }) => runTool(() => applyDisposition(slug, { reject })),
   );
 
   server.registerTool(
@@ -258,7 +264,7 @@ export function registerWriteTools(
     "update_stockup",
     {
       description:
-        "Add bulk-buy items to the caller's stockup watchlist (users/<id>/stockup.toml). Add-only, deduped by normalized name — re-adding a name is a no-op. Each item needs a name; unit / typical_purchase / notes / baseline_price / buy_at_or_below are optional. Price thresholds are ADVISORY (nothing gates on them — the agent reasons over the live flyer price), so omit them when unknown. Optionally set freezer_capacity_estimate (tight|moderate|spacious). Returns { added, commit_sha }; makes no commit when nothing changed.",
+        "Add bulk-buy items to the caller's stockup watchlist. Add-only, deduped by normalized name — re-adding a name is a no-op. Each item needs a name; unit / typical_purchase / notes / baseline_price / buy_at_or_below are optional. Price thresholds are ADVISORY (nothing gates on them — the agent reasons over the live flyer price), so omit them when unknown. Optionally set freezer_capacity_estimate (tight|moderate|spacious). Returns { added }; makes no change when nothing changed.",
       inputSchema: {
         items: z
           .array(
@@ -300,7 +306,7 @@ export function registerWriteTools(
     "update_staples",
     {
       description:
-        "Add or remove items on the caller's staples list (users/<id>/staples.toml) — the must-have items they never want to run out of. Adds are deduped by normalized name (re-adding is a no-op); removes match by normalized name (absent name is a silent no-op). Each add needs a `name`; `perishable: true` is optional (flag items like eggs or butter so the agent can prompt when stock looks stale). Returns { added, removed, commit_sha }; makes no commit when nothing changed.",
+        "Add or remove items on the caller's staples list — the must-have items they never want to run out of. Adds are deduped by normalized name (re-adding is a no-op); removes match by normalized name (absent name is a silent no-op). Each add needs a `name`; `perishable: true` is optional (flag items like eggs or butter so the agent can prompt when stock looks stale). Returns { added, removed }; makes no change when nothing changed.",
       inputSchema: {
         add: z
           .array(z.object({ name: z.string(), perishable: z.boolean().optional() }))
@@ -362,13 +368,12 @@ export function registerWriteTools(
     "add_draft_ready_to_eat",
     {
       description:
-        "Append ready-to-eat items to the caller's personal ready-to-eat catalog. Each item needs a meal (breakfast|lunch|dinner). Defaults to draft; pass status:'active' for an item the user explicitly accepts (e.g. during onboarding). Returns the generated slug for each.",
+        "Append ready-to-eat items to the caller's personal ready-to-eat catalog. Each item needs a meal (breakfast|lunch|dinner). Items are available (suggestible) immediately — there is no draft/active state. Returns the generated slug for each.",
       inputSchema: {
         items: z.array(
           z.object({
             meal: z.enum(MEALS),
             name: z.string(),
-            status: z.enum(["draft", "active"]).optional(),
             category: z.string().optional(),
             source: z.string().optional(),
             brand: z.string().optional(),
@@ -383,7 +388,7 @@ export function registerWriteTools(
         const mgr = readyToEatManager(existing);
         const added: { meal: Meal; name: string; slug: string }[] = [];
         for (const it of items) {
-          const slug = mgr.addDraft(it, it.status ?? "draft");
+          const slug = mgr.add(it);
           added.push({ meal: it.meal, name: it.name, slug });
         }
         if (mgr.touched()) {
@@ -397,7 +402,7 @@ export function registerWriteTools(
     "update_ready_to_eat",
     {
       description:
-        "Disposition or update a ready-to-eat item in the caller's catalog, addressed by slug. Set status (active|draft|rejected) and/or rating.",
+        "Disposition or update a ready-to-eat item in the caller's catalog, addressed by slug. Set `favorite` (loved) and/or `reject` (stop suggesting it) — mutually exclusive, mirroring recipes; there is no status or rating. Other fields (name, category, brand, notes) update in place. Unknown slug → not_found.",
       inputSchema: { slug: z.string(), updates: z.record(z.string(), z.unknown()) },
     },
     ({ slug, updates }) =>

@@ -3,9 +3,7 @@
 ## Purpose
 
 Defines how the repo keeps its dependencies current and secure: Dependabot configuration for both npm and GitHub Actions ecosystems, and the SHA-pinning convention for Actions references that ensures immutable, auditable workflow steps.
-
 ## Requirements
-
 ### Requirement: Dependabot monitors npm dependencies
 The repo SHALL have a `.github/dependabot.yml` that configures Dependabot to open automated PRs for npm ecosystem updates on a weekly schedule, targeting the root `package.json`.
 
@@ -40,3 +38,19 @@ All `uses:` references to external GitHub Actions in `.github/workflows/*.yml` S
 - **WHEN** Dependabot opens a PR updating an Action
 - **THEN** the PR SHALL contain an updated SHA and an updated version comment
 - **THEN** CI SHALL pass on the PR (no workflow syntax errors introduced)
+
+### Requirement: Dependabot npm updates observe a cooldown aligned with aube
+The `.github/dependabot.yml` npm update entry SHALL configure a `cooldown` of `default-days: 7`, kept numerically aligned with the committed aube `minimum-release-age` (10080 minutes). Because both tools select the newest version that is old enough rather than blocking outright, the shared 7-day threshold ensures Dependabot only proposes npm versions that aube will install.
+
+#### Scenario: A day-zero npm release is not proposed
+- **WHEN** a new version of an npm dependency was published less than 7 days ago
+- **THEN** Dependabot SHALL NOT open a PR for that version, instead proposing the newest version at least 7 days old (if any)
+
+#### Scenario: Cooldown stays aligned with aube
+- **WHEN** the supply-chain cooldown threshold is changed
+- **THEN** the Dependabot `cooldown.default-days` and the aube `minimum-release-age` SHALL be updated together to remain numerically equal
+
+#### Scenario: Security updates are exempt from cooldown
+- **WHEN** Dependabot raises a security update
+- **THEN** the `cooldown` SHALL NOT delay it (security updates are exempt by Dependabot's design)
+

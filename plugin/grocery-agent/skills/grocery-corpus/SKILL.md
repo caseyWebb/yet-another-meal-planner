@@ -6,7 +6,7 @@ user-invocable: false
 
 ## Shared recipes, my own kitchen
 
-Recipes are shared across the group, but my favorites, notes, and status are mine — the tools route that for you, so just call them normally. **Never edit a shared recipe to capture something I'd do differently** — that changes it for everyone. A tweak is a note (`add_recipe_note`); a genuinely different dish is a new personal recipe. The shared recipe body changes only for an objective correction.
+Recipes are shared across the group, but my favorites, notes, and rejections are mine — the tools route that for you, so just call them normally. **Never edit a shared recipe to capture something I'd do differently** — that changes it for everyone. A tweak is a note (`add_recipe_note`); a genuinely different dish is a new personal recipe. The shared recipe body changes only for an objective correction.
 
 When you recommend something I haven't tried, surface **group signal** — what others favorited or noted ("two others favorited it", "Alice cuts the sugar"). A light side channel, not a wall of quotes.
 

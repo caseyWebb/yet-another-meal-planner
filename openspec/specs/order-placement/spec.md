@@ -29,7 +29,7 @@ Both passes SHALL be skipped for an empty catalog. Items added here are picked u
 
 ### Requirement: Resolve the grocery list at order time
 
-`place_order` SHALL resolve the **whole** to-buy set at order time — not at capture time — so the cart reflects current availability. The to-buy set SHALL be `grocery_list ∪ (menu needs) − (pantry has)`. Each item SHALL be resolved via the Change 05 matcher (`match_ingredient_to_kroger_sku`) with cache revalidation against current price and curbside/delivery availability. Items the matcher returns as `ambiguous` or `unavailable` SHALL be collected and surfaced as a **single batch checkpoint** for the user to disposition; the cart write SHALL NOT proceed for those items until resolved.
+`place_order` SHALL resolve the **whole** to-buy set at order time — not at capture time — so the cart reflects current availability. The to-buy set SHALL be `grocery_list ∪ (menu needs) − (pantry has)`. Each item SHALL be resolved via the `match_ingredient_to_kroger_sku` matcher with cache revalidation against current price and curbside/delivery availability. Items the matcher returns as `ambiguous` or `unavailable` SHALL be collected and surfaced as a **single batch checkpoint** for the user to disposition; the cart write SHALL NOT proceed for those items until resolved.
 
 #### Scenario: Whole list resolved against current availability
 
@@ -43,12 +43,12 @@ Both passes SHALL be skipped for an empty catalog. Items added here are picked u
 
 ### Requirement: Write the Kroger cart and persist learned mappings
 
-For the resolved set, `place_order` SHALL add items to the Kroger cart via `PUT /v1/cart/add` and SHALL append newly learned ingredient→SKU mappings to `skus/kroger.toml` through the Change 06 atomic-commit engine. The cart write and the SKU-cache commit SHALL be **independent best-effort** operations — neither is transactional with the other, and a failure of one SHALL NOT corrupt the other. `place_order` SHALL return honest partial status and SHALL NOT report a populated cart when the cart write failed.
+For the resolved set, `place_order` SHALL add items to the Kroger cart via `PUT /v1/cart/add` and SHALL upsert newly learned ingredient→SKU mappings to the D1 `sku_cache` table. The cart write and the SKU-cache upsert SHALL be **independent best-effort** operations — neither is transactional with the other, and a failure of one SHALL NOT corrupt the other. `place_order` SHALL return honest partial status and SHALL NOT report a populated cart when the cart write failed.
 
 #### Scenario: Resolved items added and mappings cached
 
 - **WHEN** the resolved set is non-empty and the cart write succeeds
-- **THEN** the items are added via `PUT /v1/cart/add` and the new SKU mappings are committed to `skus/kroger.toml`
+- **THEN** the items are added via `PUT /v1/cart/add` and the new SKU mappings are upserted to the D1 `sku_cache` table
 
 #### Scenario: Honest partial failure
 
@@ -83,7 +83,7 @@ The terminal `received` behavior — remove the item from the list and, for `gro
 
 ### Requirement: Quantity and partial-stock prompting
 
-`place_order` SHALL default the buy quantity to one package per item unless a package count is supplied. A package count MAY be supplied per item via `menu_needs[].quantity`, and the per-name `quantities` map SHALL override it when both are present (precedence: `quantities` map → `menu_needs[].quantity` → default 1; a non-positive value is treated as not supplied). The `grocery_list` item `quantity` is a human need-annotation (e.g. "2 lbs") and SHALL NOT be interpreted as a package count.
+`place_order` SHALL default the buy quantity to one package per item unless a package count is supplied. A package count MAY be supplied per item via `menu_needs[].quantity`, and the per-name `quantities` map SHALL override it when both are present (precedence: `quantities` map → `menu_needs[].quantity` → default 1; a non-positive value is treated as not supplied). A supplied package count SHALL be a positive integer within a sane upper bound; `place_order` SHALL reject a fractional, zero, negative, or oversized count with a structured `validation_failed` error and SHALL NOT write the Kroger cart with it. The `grocery_list` item `quantity` is a human need-annotation (e.g. "2 lbs") and SHALL NOT be interpreted as a package count.
 
 Each to-buy and resolved line SHALL carry `assumed_quantity` — `true` exactly when no package count was supplied from either source and the line fell back to 1. The tool SHALL surface this fact but SHALL NOT itself classify a line as "by-the-each produce" or compute portion math; that judgment SHALL remain with the agent (consistent with the no-portion-math stance). At the `preview` step the agent SHALL reconcile `assumed_quantity` lines that are by-the-each produce against the recipe's required amount and set an explicit quantity before the real flush, rather than silently ordering one.
 
@@ -108,4 +108,37 @@ When the pantry holds a **partial** of an ingredient the plan needs, the agent S
 
 - **WHEN** an item reaches the to-buy set with no package count from either source
 - **THEN** its line has quantity 1 and `assumed_quantity: true`, so the agent can reconcile by-the-each produce against the recipe at preview
+
+#### Scenario: an invalid package count is rejected before the cart
+
+- **WHEN** `place_order` is called with a fractional (`1.5`), zero, negative, or oversized (e.g. `100000`) package count via `quantities` or `menu_needs[].quantity`
+- **THEN** the tool returns a structured `validation_failed` error and writes no Kroger cart
+
+### Requirement: Forced-SKU overrides are revalidated before the cart
+
+`place_order` SHALL accept `overrides` (`[{ name, sku, brand?, size? }]`) as the seam to force a specific Kroger SKU for a to-buy line — to disposition a previously `ambiguous`/`unavailable` item **or** to lock a SKU the agent verified (e.g. an on-sale one from `kroger_prices`). An overridden line SHALL bypass the `match_ingredient_to_kroger_sku` matcher. Before adding a forced SKU to the cart, `place_order` SHALL revalidate it with one targeted lookup for current curbside/delivery availability and fresh price — the same revalidation the matcher's cache path performs. A fulfillable forced SKU SHALL be resolved with its **fresh** `price` and `on_sale` (not caller-supplied or stale values). A forced SKU that is not fulfillable SHALL be returned in the single `checkpoint` batch as `kind: "unavailable"` and SHALL NOT be added to the cart. A resolved forced SKU SHALL still upsert its learned `(ingredient, location)` mapping to the shared SKU cache, exactly as a matcher-resolved line does.
+
+#### Scenario: Verified on-sale SKU is revalidated, then carted
+
+- **WHEN** `place_order` is called with `overrides: [{ name: "trout", sku: "X" }]` and SKU `X` is currently fulfillable
+- **THEN** the line resolves to SKU `X` with its fresh `price`/`on_sale`, is added to the cart via `PUT /v1/cart/add` as that exact SKU, and its mapping is upserted to the SKU cache
+
+#### Scenario: Override SKU that went unavailable is checkpointed, not blind-carted
+
+- **WHEN** `place_order` is called with an override whose SKU is no longer fulfillable at the resolved location
+- **THEN** that line is returned in the `checkpoint` batch as `kind: "unavailable"` and is not added to the cart
+
+#### Scenario: Lapsed promo is surfaced, not auto-dropped
+
+- **WHEN** an overridden SKU is still fulfillable but its promo has lapsed since verification
+- **THEN** the resolved line carries the fresh `on_sale: false` (so the agent can surface the lapse at `preview`) and the line is still carted rather than silently dropped
+
+### Requirement: Overrides pin the SKU, not the price
+
+`place_order` SHALL pin only the **SKU** of an overridden line into the cart; it SHALL NOT claim to lock or guarantee a price. The Kroger cart write (`PUT /v1/cart/add`) carries only `{ upc, quantity }` and no price, so whether a sale price realizes SHALL be Kroger's determination at fulfillment, against flyer data that may be hours-stale. The `place_order` contract (tool description and `docs/TOOLS.md`) SHALL state this SKU-not-price guarantee explicitly so the agent does not over-promise a locked price.
+
+#### Scenario: Cart write carries no price
+
+- **WHEN** an overridden line is added to the cart
+- **THEN** only the SKU (`upc`) and quantity are sent, and `place_order` reports the SKU as carted without asserting the sale price is locked
 

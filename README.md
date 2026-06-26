@@ -1,6 +1,10 @@
+---
+update-when: the project's purpose, headline capabilities, or self-hosting status changes
+---
+
 # grocery-agent
 
-A personal grocery agent. It plans your meals, keeps track of what's in your kitchen, and fills a Kroger cart — all through conversation. You talk to it like a friend who knows your kitchen, not a service you issue commands to. It runs inside **Claude.ai** (web + mobile) and is self-hostable for a small friend group.
+A personal grocery agent. It plans your meals, keeps track of what's in your kitchen, manages your grocery list, and can even fill a Kroger cart — all through conversation. You talk to it like a friend who knows your kitchen, not a service you issue commands to. It runs inside **Claude.ai** (web + mobile) and is self-hostable for a small friend group.
 
 > **Status:** working end-to-end and in personal use — a release candidate, not a packaged product. Single-maintainer project; self-hosting works but assumes you're comfortable with Cloudflare, GitHub Actions, and a Kroger Developer account.
 
@@ -12,13 +16,13 @@ This repository is the **grocery-agent itself**: the `grocery-mcp` MCP server an
 - **Tracks your pantry** so it can shop the gaps — and asks before things go stale ("basil's 9 days old — still good?").
 - **Builds the grocery list as intent**, then flushes it **once** to your Kroger cart when you say to — or hands you an aisle-ordered walking list if you're shopping in person.
 - **Matches ingredients to real Kroger SKUs** with price/availability, learns your brand preferences, and asks less over time.
-- **Learns your taste** — ratings, notes, and a taste profile shape future suggestions. A shared recipe corpus, but your ratings and notes are yours.
+- **Learns your taste** — favorites, notes, and a taste profile shape future suggestions. A shared recipe corpus, but your favorites, rejects, and notes are yours.
 - **Surfaces deals and discoveries** — what's on sale from your stockup list, and a couple of new recipes/ready-to-eat options each week from blogs and newsletters you trust.
 - **Remembers what you cooked** — an append-only cooking log it can reflect on ("how have I been eating this month?").
 
 ## How you use it
 
-You message it in a normal Claude.ai chat. There's no schedule and no command syntax — it reacts to what you say. A typical week:
+You message it in a normal Claude.ai chat. There's no command syntax — it reacts to what you say. A typical week:
 
 > **You:** I'm running low, make me a menu for 3 dinners this week.
 > **Agent:** *(checks your pantry, flyer, and taste)* Before I plan — you've still got the basil from 9 days ago, still good? And here's a 3-dinner plan: sheet-pan chicken (uses the lemons you have), a tofu stir-fry, and Tuesday's leftovers stretched into fried rice. Salmon's on sale if you'd rather swap the tofu. Want me to build the list?
@@ -32,10 +36,10 @@ You message it in a normal Claude.ai chat. There's no schedule and no command sy
 >
 > *…after cooking…*
 >
-> **You:** Made the chili last night, it was great — 4 stars.
-> **Agent:** Logged it and rated it 4. That clears it off your meal plan.
+> **You:** Made the chili last night, it was great — want to favorite it.
+> **Agent:** Marked the chili as a favorite and logged it. That clears it off your meal plan.
 
-Smaller things just work too: *"I ran out of olive oil"*, *"what's on sale from my stockup list?"*, *"rate the Serious Eats one 4 stars"*, *"I'm headed to the store — give me a list for Tom Thumb."*
+Smaller things just work too: *"I ran out of olive oil"*, *"what's on sale from my stockup list?"*, *"I loved that Serious Eats recipe — favorite it"*, *"I'm headed to the store — give me a list for Tom Thumb."*
 
 ## How it works
 
@@ -43,7 +47,7 @@ Three components, one clean split: **the LLM does the fuzzy work; everything det
 
 - **Claude.ai** — the conversational surface and reasoning. Each chat starts fresh; state lives in the data repo, not in chat history.
 - **The Worker** (this repo, `src/`) — a Cloudflare Worker hosting the MCP server: opinionated domain tools (Kroger matching, pantry verification, substitutions, atomic git commits) plus an **OAuth 2.1 provider** members connect their Claude.ai to via an operator-issued invite code.
-- **The data repo** (`<you>/groceries-agent-data`, private) — shared `recipes/` + reference data at the root, one `users/<username>/` subtree per member (pantry, preferences, ratings, notes). Git history is the audit log.
+- **The data repo** (`<you>/groceries-agent-data`, private) — shared `recipes/` + narrative markdown at the root and per member; pantry, preferences, favorites, notes, and all operational state live in D1.
 
 The full technical picture — the determinism boundary, multi-tenant identity, the data model, the Kroger matching pipeline — is in **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**.
 
@@ -58,7 +62,7 @@ The full technical picture — the determinism boundary, multi-tenant identity, 
 | `docs/` | [ARCHITECTURE](docs/ARCHITECTURE.md) (how it's built) · [SCHEMAS](docs/SCHEMAS.md) (file formats) · [TOOLS](docs/TOOLS.md) (tool contract) · [SELF_HOSTING](docs/SELF_HOSTING.md) (operator setup) |
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | how to work in this repo |
 
-The data repo is created from the [`groceries-agent-data-template`](https://github.com/caseyWebb/groceries-agent-data-template), also vendored here as a submodule at `docs/data-template/` for reference.
+The data repo is created from the [`groceries-agent-data-template`](https://github.com/caseyWebb/groceries-agent-data-template), tracked as its own independent repo.
 
 ## Self-hosting
 
@@ -76,13 +80,12 @@ Full step-by-step: **[docs/SELF_HOSTING.md](docs/SELF_HOSTING.md)**.
 The Worker is the root package (one `package.json` for the Worker + `scripts/`):
 
 ```sh
-mise install                  # Node (pinned in mise.toml)
-git submodule update --init   # populate docs/data-template/ (reference only)
-npm install
-npm run typecheck             # tsc --noEmit
-npm test                      # vitest — Worker tests (test/*.test.ts)
-npm run test:tooling          # node --test — build tooling tests (tests/*.test.mjs)
-npm run dev                   # wrangler dev — local Worker for MCP Inspector
+mise install                  # Node + aube (pinned in mise.toml)
+aube install                  # deps (reads package-lock.json in place)
+aubr typecheck                # tsc --noEmit
+aubr test                     # vitest — Worker tests (test/*.test.ts)
+aubr test:tooling             # node --test — build tooling tests (tests/*.test.mjs)
+aubr dev                      # wrangler dev — local Worker for MCP Inspector
 ```
 
 See **[CONTRIBUTING.md](CONTRIBUTING.md)** for conventions, deployment, and the OpenSpec change workflow.

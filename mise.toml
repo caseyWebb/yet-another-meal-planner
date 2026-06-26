@@ -1,5 +1,16 @@
 [tools]
 node = "22.17.1"
+# aube is the package manager (https://aube.jdx.dev). The github backend extracts
+# the release tarball, which ships the aube/aubr/aubx multicall binaries (aubr =
+# `aube run`, aubx = `aube dlx`). Use `aube install` / `aube ci` / `aubr <script>`
+# in place of npm; package-lock.json stays the lockfile, read/written in place.
+"github:endevco/aube" = "1.25.1"
+
+[env]
+# Put this project's locally-installed binaries (openspec, etc.) on PATH so they run
+# as bare commands here — picking up the package.json-pinned version instead of any
+# global install. Resolved relative to this file.
+_.path = ["node_modules/.bin"]
 
 # The plugin build reads the connector URL from $GROCERY_MCP_URL so it is never
 # hardcoded in committed tooling. Set it per-machine in a gitignored mise.local.toml:
@@ -7,6 +18,6 @@ node = "22.17.1"
 #   [env]
 #   GROCERY_MCP_URL = "https://<your-worker-host>/mcp"
 #
-# `npm run build:plugin` uses it to regenerate plugin/grocery-agent/.mcp.json and
+# `aubr build:plugin` uses it to regenerate plugin/grocery-agent/.mcp.json and
 # refuses to run with the placeholder. (The URL still ends up in the committed
 # bundle — the public marketplace serves it — but it is not in any source/script.)
