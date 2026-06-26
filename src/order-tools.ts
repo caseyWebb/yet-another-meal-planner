@@ -79,9 +79,15 @@ function makeAdvanceInCart(env: Env, username: string) {
   };
 }
 
+// Package counts are constrained to positive integers within a sane ceiling so a
+// fractional/oversized value can never reach the real Kroger cart (place_order is
+// the only cart-writing tool). 99 is an arbitrary-but-ample per-line ceiling.
+// Exported for direct schema testing — the MCP layer enforces it before the handler.
+export const packageCount = z.number().int().positive().max(99);
+
 const menuNeedShape = {
   name: z.string(),
-  quantity: z.number().optional(),
+  quantity: packageCount.optional(),
   for_recipes: z.array(z.string()).optional(),
 };
 
@@ -112,7 +118,7 @@ export function registerOrderTools(
         "Order-time flush: resolve the whole grocery list (∪ menu_needs − pantry on-hand) against current Kroger availability, write the cart (PUT /v1/cart/add), and cache learned SKU mappings to the shared SKU cache. Ambiguous/unavailable items return as a single `checkpoint` (NOT added) for the user to disposition; pantry overlaps return as `partials` to prompt on. Resolved items advance to status:in_cart only after a successful cart write. `overrides: [{ name, sku, brand?, size? }]` forces a specific SKU for a line — to disposition an ambiguous/unavailable item OR to lock a SKU you verified (e.g. an on-sale one from `kroger_prices`); a forced SKU bypasses the matcher but is still revalidated for current availability and returned with FRESH price/on_sale, and one that has gone unavailable is checkpointed rather than carted. NOTE: overrides pin the SKU, not the price — the cart write carries only SKU + quantity, so whether a sale price realizes is Kroger's call at fulfillment (against possibly-stale flyer data). Resolved lines carry `price`/`on_sale` so you can spot a lapsed deal at preview. SKU-cache commit and cart write are independent best-effort — partial status is reported honestly; the cart is never reported populated when its write failed (check `cart.code` for `reauth_required`). The ONLY tool that writes a Kroger cart. Default buy = 1 package per item; set a count via `menu_needs[].quantity` (or the `quantities` map, which overrides it). Lines that defaulted to 1 are returned with `assumed_quantity: true`. preview=true resolves and reports without writing anything.",
       inputSchema: {
         menu_needs: z.array(z.object(menuNeedShape)).optional(),
-        quantities: z.record(z.string(), z.number()).optional(),
+        quantities: z.record(z.string(), packageCount).optional(),
         include_partials: z.array(z.string()).optional(),
         overrides: z.array(z.object(overrideShape)).optional(),
         preview: z.boolean().optional(),

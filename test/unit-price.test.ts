@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { parseSize, compareUnitPrice } from "../src/unit-price.js";
+import { parseSize, parsePrice, compareUnitPrice } from "../src/unit-price.js";
 
 describe("parseSize", () => {
   it("parses volume, weight, and count sizes to base units", () => {
@@ -22,6 +22,29 @@ describe("parseSize", () => {
     expect(parseSize("Family Size")).toBeNull();
     expect(parseSize("1 bunch")).toBeNull();
     expect(parseSize("")).toBeNull();
+  });
+
+  it("returns null for degenerate (zero / non-finite) quantities", () => {
+    expect(parseSize("0 x 1 oz")).toBeNull(); // zero multiplier
+    expect(parseSize("1/0 gal")).toBeNull(); // divide-by-zero fraction → Infinity
+    expect(parseSize("0 oz")).toBeNull(); // zero quantity
+  });
+});
+
+describe("parsePrice", () => {
+  it("parses US-formatted strings and passes numbers through", () => {
+    expect(parsePrice("3.49")).toBe(3.49);
+    expect(parsePrice("$1,234.56")).toBe(1234.56);
+    expect(parsePrice("1,000")).toBe(1000);
+    expect(parsePrice(12.5)).toBe(12.5);
+  });
+
+  it("fails closed (null) on ambiguous or nonsensical input", () => {
+    expect(parsePrice("1.234,56")).toBeNull(); // decimal-comma locale
+    expect(parsePrice("1.2.3")).toBeNull(); // multiple decimal points
+    expect(parsePrice("-5.00")).toBeNull(); // negative price → incomparable, not 5
+    expect(parsePrice("n/a")).toBeNull();
+    expect(parsePrice("")).toBeNull();
   });
 });
 
@@ -66,5 +89,23 @@ describe("compareUnitPrice", () => {
     // a: 4.00 / (32*28.3495) ; b: 3.00 / (16*28.3495) -> a is cheaper per unit
     expect(res.cheapest).toBe("a");
     expect(res.incomparable).toEqual([]);
+  });
+
+  it("routes a degenerate size to incomparable, never cheapest", () => {
+    const res = compareUnitPrice([
+      { id: "good", price: "5.00", size: "16 oz" },
+      { id: "degenerate", price: "0.01", size: "0 x 1 oz" }, // cheap-looking but unparseable
+    ]);
+    expect(res.cheapest).toBe("good");
+    expect(res.incomparable).toEqual(["degenerate"]);
+  });
+
+  it("routes a zero quantity_override to incomparable", () => {
+    const res = compareUnitPrice([
+      { id: "good", price: "5.00", size: "16 oz" },
+      { id: "bad", price: "1.00", size: "Family Size", quantity_override: 0, unit_override: "oz" },
+    ]);
+    expect(res.cheapest).toBe("good");
+    expect(res.incomparable).toEqual(["bad"]);
   });
 });

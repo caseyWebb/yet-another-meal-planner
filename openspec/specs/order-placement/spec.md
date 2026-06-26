@@ -83,7 +83,7 @@ The terminal `received` behavior — remove the item from the list and, for `gro
 
 ### Requirement: Quantity and partial-stock prompting
 
-`place_order` SHALL default the buy quantity to one package per item unless a package count is supplied. A package count MAY be supplied per item via `menu_needs[].quantity`, and the per-name `quantities` map SHALL override it when both are present (precedence: `quantities` map → `menu_needs[].quantity` → default 1; a non-positive value is treated as not supplied). The `grocery_list` item `quantity` is a human need-annotation (e.g. "2 lbs") and SHALL NOT be interpreted as a package count.
+`place_order` SHALL default the buy quantity to one package per item unless a package count is supplied. A package count MAY be supplied per item via `menu_needs[].quantity`, and the per-name `quantities` map SHALL override it when both are present (precedence: `quantities` map → `menu_needs[].quantity` → default 1; a non-positive value is treated as not supplied). A supplied package count SHALL be a positive integer within a sane upper bound; `place_order` SHALL reject a fractional, zero, negative, or oversized count with a structured `validation_failed` error and SHALL NOT write the Kroger cart with it. The `grocery_list` item `quantity` is a human need-annotation (e.g. "2 lbs") and SHALL NOT be interpreted as a package count.
 
 Each to-buy and resolved line SHALL carry `assumed_quantity` — `true` exactly when no package count was supplied from either source and the line fell back to 1. The tool SHALL surface this fact but SHALL NOT itself classify a line as "by-the-each produce" or compute portion math; that judgment SHALL remain with the agent (consistent with the no-portion-math stance). At the `preview` step the agent SHALL reconcile `assumed_quantity` lines that are by-the-each produce against the recipe's required amount and set an explicit quantity before the real flush, rather than silently ordering one.
 
@@ -108,6 +108,11 @@ When the pantry holds a **partial** of an ingredient the plan needs, the agent S
 
 - **WHEN** an item reaches the to-buy set with no package count from either source
 - **THEN** its line has quantity 1 and `assumed_quantity: true`, so the agent can reconcile by-the-each produce against the recipe at preview
+
+#### Scenario: an invalid package count is rejected before the cart
+
+- **WHEN** `place_order` is called with a fractional (`1.5`), zero, negative, or oversized (e.g. `100000`) package count via `quantities` or `menu_needs[].quantity`
+- **THEN** the tool returns a structured `validation_failed` error and writes no Kroger cart
 
 ### Requirement: Forced-SKU overrides are revalidated before the cart
 

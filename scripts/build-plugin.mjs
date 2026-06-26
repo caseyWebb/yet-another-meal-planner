@@ -224,6 +224,10 @@ export function validateParsed(parsed) {
       const rpath = rm[1].trim();
       if (!rpath.startsWith('references/') || !rpath.endsWith('.md')) {
         errors.push(`flow "${f.name}" resource path "${rpath}" must be under references/ and end in .md`);
+      } else if (path.normalize(rpath) !== rpath || rpath.split('/').includes('..')) {
+        // The prefix/suffix checks pass for "references/../../../tmp/pwned.md"; a `..`
+        // segment escapes the flow's skills/<name>/ tree once path.join resolves it.
+        errors.push(`flow "${f.name}" resource path "${rpath}" must not contain ".." segments`);
       }
     }
     if (seen.has(f.name)) errors.push(`duplicate skill name "${f.name}"`);

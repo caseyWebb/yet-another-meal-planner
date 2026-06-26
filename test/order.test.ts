@@ -6,6 +6,7 @@ import {
   type RevalidatedSku,
   type ToBuyItem,
 } from "../src/order.js";
+import { packageCount } from "../src/order-tools.js";
 import type { GroceryItem } from "../src/grocery.js";
 import type { MatchResult } from "../src/matching.js";
 
@@ -47,6 +48,21 @@ const unavailable: MatchResult = {
   reason: "unavailable",
   message: "no fulfillable candidate",
 };
+
+describe("place_order package-count schema", () => {
+  // The guard that keeps a fractional/oversized count out of the real Kroger cart.
+  it("accepts a positive integer within bounds", () => {
+    expect(packageCount.safeParse(1).success).toBe(true);
+    expect(packageCount.safeParse(99).success).toBe(true);
+  });
+
+  it("rejects fractional, zero, negative, and oversized counts", () => {
+    expect(packageCount.safeParse(1.5).success).toBe(false);
+    expect(packageCount.safeParse(0).success).toBe(false);
+    expect(packageCount.safeParse(-3).success).toBe(false);
+    expect(packageCount.safeParse(100000).success).toBe(false);
+  });
+});
 
 describe("computeToBuy", () => {
   it("unions the list and menu needs, deduping by normalized name and merging for_recipes", () => {

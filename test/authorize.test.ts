@@ -55,6 +55,18 @@ describe("handleAuthorize — invite-code consent", () => {
     expect(html).toContain(oauthReqB64); // the round-tripped request
   });
 
+  it("GET with a malformed request yields a 400 page, not an uncaught 500", async () => {
+    const { env } = fakeEnv();
+    // parseAuthRequest THROWS on a malformed request / invalid redirect_uri.
+    (env.OAUTH_PROVIDER as unknown as { parseAuthRequest: () => Promise<never> }).parseAuthRequest =
+      async () => {
+        throw new Error("invalid redirect_uri");
+      };
+    const res = await handleAuthorize(new Request("https://worker.example/authorize?bogus=1"), env);
+    expect(res.status).toBe(400);
+    expect((await res.text()).toLowerCase()).toContain("malformed authorization request");
+  });
+
   it("POST with a valid code completes the grant with props.tenantId and redirects", async () => {
     const { env, completeCalls } = fakeEnv({
       "invite:LET-ME-IN": "alice",

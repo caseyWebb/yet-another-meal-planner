@@ -103,7 +103,11 @@ export function kvTenantStore(kv: KVNamespace): TenantStore {
       // allowlist is the source of truth for "who is in the group" (§8.2).
       for (;;) {
         const res = await kv.list({ prefix: DIRECTORY_PREFIX, cursor });
-        for (const k of res.keys) ids.push(k.name.slice(DIRECTORY_PREFIX.length));
+        // Normalize on the way out, matching get(): cross-tenant group-aggregation
+        // tools derive `users/<id>/...` paths and `profile:<id>` keys from these ids,
+        // so they must be canonical even if a directory key was written with casing.
+        for (const k of res.keys)
+          ids.push(normalizeTenantId(k.name.slice(DIRECTORY_PREFIX.length)));
         if (res.list_complete) break;
         cursor = res.cursor;
       }
