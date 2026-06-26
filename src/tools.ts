@@ -23,7 +23,15 @@ import { registerNoteTools, registerStoreNoteTools } from "./notes-tools.js";
 import { registerStoreTools } from "./stores-tools.js";
 import { registerCookingTools } from "./cooking-tools.js";
 import { filterRecipes, type RecipeIndex } from "./recipes.js";
-import { loadRecipeIndex } from "./recipe-index.js";
+import { loadRecipeIndex, loadRecipeEmbeddings } from "./recipe-index.js";
+import { embedTexts } from "./embedding.js";
+import {
+  rankCandidates,
+  resolveRankParams,
+  DEFAULT_K,
+  MAX_K,
+  type SearchCandidate,
+} from "./semantic-search.js";
 import { listStorageGuidance, readStorageGuidance } from "./storage-guidance.js";
 import { fetchWeatherForecast } from "./weather.js";
 import { mergeOverlay, type Overlay } from "./overlay.js";
@@ -67,6 +75,16 @@ const recipeFiltersShape = {
   not_cooked_since: z.string().optional(),
   exclude_cooked_within_days: z.number().optional(),
   include_unmakeable: z.boolean().optional(),
+};
+
+// One semantic-search spec: a free-text `vibe` (embedded into the query vector), the
+// hard `facets` (the SAME gate as list_recipes — they constrain, semantic rank only
+// reorders within them), an echoed `label` to group results by, and an optional `k`.
+const searchSpecShape = {
+  vibe: z.string(),
+  label: z.string(),
+  facets: z.object(recipeFiltersShape).optional(),
+  k: z.number().int().positive().optional(),
 };
 
 const pantryFilterShape = {
@@ -279,6 +297,90 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
           };
         }
         return { recipes: filterRecipes(effective, filters ?? {}, new Date(), owned) };
+      }),
+  );
+
+  server.registerTool(
+    "recipe_semantic_search",
+    {
+      description:
+        "Semantic recipe retrieval (experimental, semantic-meal-plan). Takes an array of search SPECS and returns ranked recipes grouped per spec, in ONE round-trip. Each spec has: `vibe` — free text describing the kind of dish wanted (\"rich cold-weather braise,\" \"bright quick weeknight fish\"), embedded and matched by meaning (NOT keyword); `facets` — the SAME hard filters as list_recipes (protein, cuisine, course, dietary, season, max_time_total, exclude_cooked_within_days, include_unmakeable, …), which CONSTRAIN the result set — semantic rank only reorders within them and can never admit a recipe a facet rejects; `label` — an arbitrary tag echoed back so you can tell each spec's results apart; optional `k` (default " +
+        `${DEFAULT_K}, max ${MAX_K}). Results are re-ranked by cosine relevance to the vibe, nudged by closeness to the caller's favorites (taste direction) and by cook recency (never-cooked surfaced, recently-cooked demoted). Recipes with no embedding yet (just imported, not reconciled) are omitted — they remain findable via list_recipes. Use several diverse specs (a vibe, a variety/wildcard, a never-cooked novelty) for good recall; the makeability gate applies by default exactly as in list_recipes.`,
+      inputSchema: { specs: z.array(z.object(searchSpecShape)).min(1) },
+    },
+    ({ specs }) =>
+      runTool(async () => {
+        // Shared per-request reads, once for all specs: the index + embeddings, the
+        // caller's overlay (favorites) / cooking log (freshness) / owned equipment
+        // (makeability gate), and preferences (rotation tuning — optional, defaults
+        // when unset, so semantic search works before any profile exists).
+        const [index, embeddings, overlay, lastCooked, owned, prefs] = await Promise.all([
+          loadRecipeIndex(env).catch((e) => {
+            throw new ToolError(
+              "index_unavailable",
+              `the recipe index is unavailable: ${e instanceof Error ? e.message : String(e)}`,
+            );
+          }),
+          loadRecipeEmbeddings(env),
+          getOverlay(),
+          getLastCookedMap(),
+          getOwnedEquipment(),
+          readPreferences(env, tenant.id).catch(() => null),
+        ]);
+
+        // Merge the caller's overlay (rating/status) + last_cooked onto the shared
+        // entries so the facet gate sees the effective per-tenant view, exactly as
+        // list_recipes does.
+        const effective: RecipeIndex = {};
+        for (const [slug, entry] of Object.entries(index)) {
+          effective[slug] = { ...mergeOverlay(entry, overlay[slug], lastCooked.get(slug)), slug };
+        }
+
+        // Favorites = the caller's favorited recipes that are embedded — the
+        // nearest-liked re-rank's anchor set (the favorite cutover repointed this
+        // from `rating >= 4` to the `overlay.favorite` flag, leaving the math intact).
+        const favoriteVecs: number[][] = [];
+        for (const [slug, row] of Object.entries(overlay)) {
+          if (row?.favorite) {
+            const vec = embeddings.get(slug);
+            if (vec) favoriteVecs.push(vec);
+          }
+        }
+
+        const params = resolveRankParams(prefs);
+        const now = new Date();
+
+        // One Workers AI call for ALL spec vibes (one subrequest, not K).
+        const vibeVecs = await embedTexts(
+          env,
+          specs.map((s) => s.vibe),
+        );
+
+        const results = specs.map((spec, i) => {
+          const survivors = filterRecipes(effective, spec.facets ?? {}, now, owned);
+          // Resolve each survivor's embedding + freshness; drop the unembedded (not
+          // yet reconciled) — they stay browseable via list_recipes, just unranked here.
+          const candidates: SearchCandidate[] = [];
+          for (const s of survivors) {
+            const vec = embeddings.get(s.slug);
+            if (!vec) continue;
+            const fm = s.frontmatter;
+            candidates.push({
+              slug: s.slug,
+              title: typeof fm.title === "string" ? fm.title : s.slug,
+              description: typeof fm.description === "string" ? fm.description : null,
+              protein: typeof fm.protein === "string" ? fm.protein : null,
+              cuisine: typeof fm.cuisine === "string" ? fm.cuisine : null,
+              time_total: typeof fm.time_total === "number" ? fm.time_total : null,
+              embedding: vec,
+              last_cooked: lastCooked.get(s.slug) ?? null,
+            });
+          }
+          const recipes = rankCandidates(candidates, vibeVecs[i], favoriteVecs, now, params, spec.k ?? DEFAULT_K);
+          return { label: spec.label, recipes };
+        });
+
+        return { results };
       }),
   );
 
@@ -555,7 +657,7 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
   // feeds.toml, the discoveries inbox, and discovery_sources.toml all live at the
   // data-repo root, so any member's config feeds one group pool. Imports dedupe by
   // source URL against the shared corpus so a recipe is reused, not duplicated (§6.4).
-  registerDiscoveryTools(server, sharedGh, env);
+  registerDiscoveryTools(server, sharedGh, env, tenant.id);
 
   // Recipe notes (§8): attributed annotations in the D1 `recipe_notes` table,
   // aggregated across the group at read time with the privacy WHERE (own-private +

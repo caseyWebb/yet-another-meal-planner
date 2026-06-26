@@ -15,6 +15,7 @@ import { handleOAuth } from "./oauth.js";
 import { handleAuthorize } from "./authorize.js";
 import { handleInboundEmail, rejectReasonFor, type InboundMessage } from "./email.js";
 import { buildWarmDeps, runWarmJob } from "./flyer-warm.js";
+import { buildEmbedDeps, runEmbedJob } from "./recipe-embeddings.js";
 import { handleHealthRequest, writeJobHealth, notifyFailure } from "./health.js";
 import type { KvStore } from "./kroger-user.js";
 
@@ -112,15 +113,23 @@ export default {
     if (reason) message.setReject(reason);
   },
   /**
-   * Cron-driven flyer warm (flyer-cache-warming). One trigger fires on a short
-   * cadence; each tick advances the cursor sweep (`flyer-warm.ts`) — building the
-   * plan, scanning the next batch, or no-opping when the sweep is complete. Thin by
-   * design: all logic + the free-tier per-tick budgeting live in `runWarmTick`. A
-   * failed tick is logged and retried next tick (the cursor only advances on success).
+   * The single cron trigger drives TWO independent jobs each tick — kept under one
+   * trigger so the free-tier cron-count limit never bites:
+   *   * flyer warm (flyer-cache-warming) — the cursor sweep in `flyer-warm.ts`.
+   *   * recipe-embedding reconcile (semantic-meal-plan) — `recipe-embeddings.ts`
+   *     refills the embedding table from changed descriptions via `env.AI`. It draws
+   *     on the INTERNAL-subrequest budget, not the flyer's external one, so the two
+   *     coexist in a tick (see the reconcile module header).
+   * Both run regardless of the other's outcome (allSettled), each writes its own
+   * health record + optional ntfy push, and a failure in either is rethrown so the
+   * platform's native cron status reflects it.
    */
   async scheduled(_controller: ScheduledController, env: Env, _ctx: ExecutionContext): Promise<void> {
-    // Health record, optional ntfy push, and the platform-honest rethrow all live in
-    // runWarmJob (testable with injected deps).
-    await runWarmJob(env, buildWarmDeps(env));
+    const results = await Promise.allSettled([
+      runWarmJob(env, buildWarmDeps(env)),
+      runEmbedJob(env, buildEmbedDeps(env)),
+    ]);
+    const failed = results.find((r) => r.status === "rejected");
+    if (failed && failed.status === "rejected") throw failed.reason;
   },
 };

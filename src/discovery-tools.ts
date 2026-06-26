@@ -27,7 +27,14 @@ import {
   type FeedEntry,
 } from "./discovery.js";
 import { recipeSourceMap } from "./recipe-index.js";
-import { readFeeds, addFeedRows, addSourceRows, readDiscoveryInbox } from "./corpus-db.js";
+import {
+  readFeeds,
+  addFeedRows,
+  addSourceRows,
+  readDiscoveryInbox,
+  readDiscoveryRejections,
+  addDiscoveryRejection,
+} from "./corpus-db.js";
 
 const MAX_PER_FEED = 8;
 
@@ -47,6 +54,7 @@ export function registerDiscoveryTools(
   server: McpServer,
   sharedGh: GitHubClient,
   env: Env,
+  tenantId: string,
 ): void {
   server.registerTool(
     "fetch_rss_discoveries",
@@ -60,7 +68,14 @@ export function registerDiscoveryTools(
         const feeds = await readFeeds(env);
         if (feeds.length === 0) return { candidates: [] };
 
-        const seen = extractRecipeSources(await recipeSourceMap(env));
+        // Dedup against BOTH the corpus (already-imported) and the group's rejected
+        // URLs, so a suppressed discovery never reappears in the pool.
+        const [sourceMap, rejected] = await Promise.all([
+          recipeSourceMap(env),
+          readDiscoveryRejections(env),
+        ]);
+        const seen = extractRecipeSources(sourceMap);
+        for (const url of rejected) seen.add(url);
 
         // Fetch all feeds concurrently (distinct external domains, no shared-host burst concern).
         const results = await Promise.all(
@@ -149,7 +164,7 @@ export function registerDiscoveryTools(
     "create_recipe",
     {
       description:
-        "Write a NEW recipe to the SHARED corpus, as one solo commit. Slug derives from the title unless `slug` is given. Discovery imports: pass status 'draft' with discovered_at + discovery_source (status defaults to 'draft' if omitted). The body MUST contain ## Ingredients and ## Instructions. `protein` and `cuisine` are coarse CONTROLLED buckets — protein one of: chicken | beef | pork | lamb | turkey | fish | shellfish | egg | tofu | vegetarian | vegan | mixed (map specifics to the bucket: shrimp→shellfish, salmon/cod/tuna→fish); cuisine one of: american | brazilian | cajun | caribbean | chinese | cuban | filipino | french | german | greek | indian | italian | japanese | korean | mediterranean | mexican | moroccan | peruvian | southwestern | spanish | thai | vietnamese. OMIT `protein` entirely for a dish with no protein focus (a side, a plain noodle/grain dish, a condiment) — never write 'none'. An off-vocabulary `protein`/`cuisine` value is rejected (validation_failed). Classify `requires_equipment` conservatively: default [] (the common case) and include a vocab slug (pressure-cooker | sous-vide-circulator | blender | ice-cream-maker) ONLY when the dish is genuinely impossible without it — a wrong tag silently hides a makeable recipe, and an off-vocab slug is rejected. `perishable_ingredients` lists the ingredient names that would spoil before use (the \"would the leftover rot\" test) — fuzzy edges (eggs, potatoes, hardy roots) are fine to skip; default []. Refuses to overwrite an existing slug (slug_exists), and refuses to duplicate a recipe whose `source` URL is already in the corpus (already_exists, with the existing slug — reuse it).",
+        "Write a NEW recipe to the SHARED corpus, as one solo commit. Slug derives from the title unless `slug` is given. Discovery imports: pass status 'draft' with discovered_at + discovery_source (status defaults to 'draft' if omitted). The body MUST contain ## Ingredients and ## Instructions. `protein` and `cuisine` are coarse CONTROLLED buckets — protein one of: chicken | beef | pork | lamb | turkey | fish | shellfish | egg | tofu | vegetarian | vegan | mixed (map specifics to the bucket: shrimp→shellfish, salmon/cod/tuna→fish); cuisine one of: american | brazilian | cajun | caribbean | chinese | cuban | filipino | french | german | greek | indian | italian | japanese | korean | mediterranean | mexican | moroccan | peruvian | southwestern | spanish | thai | vietnamese. OMIT `protein` entirely for a dish with no protein focus (a side, a plain noodle/grain dish, a condiment) — never write 'none'. An off-vocabulary `protein`/`cuisine` value is rejected (validation_failed). Classify `requires_equipment` conservatively: default [] (the common case) and include a vocab slug (pressure-cooker | sous-vide-circulator | blender | ice-cream-maker) ONLY when the dish is genuinely impossible without it — a wrong tag silently hides a makeable recipe, and an off-vocab slug is rejected. `perishable_ingredients` lists the ingredient names that would spoil before use (the \"would the leftover rot\" test) — fuzzy edges (eggs, potatoes, hardy roots) are fine to skip; default []. Set `description` — a brief, craving-aligned summary (what it is / flavor+texture / when you'd want it), in YOUR words, NOT the page's marketing copy — it is the recipe's semantic-search basis and the compact candidate line; for a MAIN also set `side_search_terms`, phrases for the kind of side that completes it (e.g. [\"a bright acidic salad\", \"crusty bread for the sauce\"]). Refuses to overwrite an existing slug (slug_exists), and refuses to duplicate a recipe whose `source` URL is already in the corpus (already_exists, with the existing slug — reuse it).",
       inputSchema: {
         frontmatter: z.record(z.string(), z.unknown()),
         body: z.string(),
@@ -188,6 +203,26 @@ export function registerDiscoveryTools(
       inputSchema: {},
     },
     () => runTool(async () => ({ emails: await readDiscoveryInbox(env) })),
+  );
+
+  server.registerTool(
+    "reject_discovery",
+    {
+      description:
+        "SHARED, group-wide suppression of a discovery URL: stop it (and its tracker-wrapped variants) from ever resurfacing in fetch_rss_discoveries or read_discovery_inbox for ANYONE. Use ONLY when a candidate is not corpus-worthy for the GROUP — junk, broken, not actually a recipe, a duplicate, or clearly off-base. This is collective curation, deliberately asymmetric with a personal rating: a 'not for me this time' is a no-action skip (just don't import it), NEVER a reject. Idempotent on the canonical URL; an optional `reason` is recorded for provenance. Does not touch the corpus or anyone's recipe overlay.",
+      inputSchema: { url: z.string(), reason: z.string().optional() },
+    },
+    ({ url, reason }) =>
+      runTool(async () => {
+        const canonical = canonicalizeUrl(url);
+        await addDiscoveryRejection(env, {
+          url: canonical,
+          reason: reason ?? null,
+          rejectedBy: tenantId,
+          rejectedAt: new Date().toISOString().slice(0, 10),
+        });
+        return { url: canonical, rejected: true };
+      }),
   );
 
   server.registerTool(

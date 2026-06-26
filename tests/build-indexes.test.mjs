@@ -385,25 +385,27 @@ test('in-vocabulary protein/cuisine pass; absent protein only warns', async () =
 // The recipe index is the D1 `recipes` table now (d1-recipe-index): build-indexes
 // projects rows via recipeToRow and writes NO _indexes/recipes.json. These assert
 // the row mapping that src/recipe-index.ts reconstructs from. Column order:
-// [slug, title, protein, cuisine, time_total, source_url,
+// [slug, title, protein, cuisine, time_total, description, source_url,
 //  ingredients_key, tags, course, season, dietary, pairs_with,
-//  perishable_ingredients, requires_equipment, extra]
+//  perishable_ingredients, requires_equipment, side_search_terms, extra]
 const COL = {
   slug: 0,
   title: 1,
   protein: 2,
   cuisine: 3,
   time_total: 4,
-  source_url: 5,
-  ingredients_key: 6,
-  tags: 7,
-  course: 8,
-  season: 9,
-  dietary: 10,
-  pairs_with: 11,
-  perishable_ingredients: 12,
-  requires_equipment: 13,
-  extra: 14,
+  description: 5,
+  source_url: 6,
+  ingredients_key: 7,
+  tags: 8,
+  course: 9,
+  season: 10,
+  dietary: 11,
+  pairs_with: 12,
+  perishable_ingredients: 13,
+  requires_equipment: 14,
+  side_search_terms: 15,
+  extra: 16,
 };
 
 test('recipeToRow: scalar facets land in their columns, source → source_url', () => {
@@ -413,14 +415,16 @@ test('recipeToRow: scalar facets land in their columns, source → source_url', 
     protein: 'fish',
     cuisine: 'japanese',
     time_total: 30,
+    description: 'A simple weeknight salmon over rice.',
     source: 'https://example.test/salmon',
   });
-  assert.equal(row.length, 15);
+  assert.equal(row.length, 17);
   assert.equal(row[COL.slug], 'salmon-with-rice');
   assert.equal(row[COL.title], 'Salmon with Rice');
   assert.equal(row[COL.protein], 'fish');
   assert.equal(row[COL.cuisine], 'japanese');
   assert.equal(row[COL.time_total], 30);
+  assert.equal(row[COL.description], 'A simple weeknight salmon over rice.');
   assert.equal(row[COL.source_url], 'https://example.test/salmon');
 });
 
@@ -436,6 +440,7 @@ test('recipeToRow: array facets are JSON-stringified into their columns', () => 
     pairs_with: ['steamed-greens'],
     perishable_ingredients: ['salmon'],
     requires_equipment: ['blender'],
+    side_search_terms: ['a crisp acidic green salad'],
   });
   assert.deepEqual(JSON.parse(row[COL.ingredients_key]), ['salmon', 'rice']);
   assert.deepEqual(JSON.parse(row[COL.tags]), ['weeknight']);
@@ -445,6 +450,7 @@ test('recipeToRow: array facets are JSON-stringified into their columns', () => 
   assert.deepEqual(JSON.parse(row[COL.pairs_with]), ['steamed-greens']);
   assert.deepEqual(JSON.parse(row[COL.perishable_ingredients]), ['salmon']);
   assert.deepEqual(JSON.parse(row[COL.requires_equipment]), ['blender']);
+  assert.deepEqual(JSON.parse(row[COL.side_search_terms]), ['a crisp acidic green salad']);
 });
 
 test('recipeToRow: unpromoted objective fields go to extra; promoted ones do not', () => {

@@ -61,6 +61,12 @@
 	"d1_databases": [
 		{ "binding": "DB", "database_name": "grocery-mcp", "migrations_dir": "migrations/d1" }
 	],
+	// Workers AI (semantic-meal-plan). `AI` runs embedding models in-Cloudflare —
+	// `@cf/baai/bge-base-en-v1.5` (768-dim) for the query embedding on the recipe
+	// semantic-search hot path. No external embedding key, no secret. Code-level
+	// binding (like d1/triggers): propagated to every operator by the deploy merge.
+	// In `wrangler dev` the binding is proxied to the real AI API (needs wrangler auth).
+	"ai": { "binding": "AI" },
 	// Flyer warm (flyer-cache-warming). ONE trigger on a short cadence drives a
 	// cursor-based sweep (src/flyer-warm.ts): each tick builds the plan, scans the
 	// next ≤12-unit batch (kept under the free-tier 50-external-subrequest + ~10ms-CPU

@@ -11,7 +11,12 @@ import { normalizePerishables } from "./matching.js";
 import { serializeMarkdown, stripEmptyVarietyDimensions } from "./serialize.js";
 import { ToolError } from "./errors.js";
 import { truncate } from "./text.js";
+import { canonicalizeUrl } from "./url.js";
 import type { FeedItem } from "./feeds.js";
+
+// Re-exported from its dependency-free home (src/url.ts) so existing importers keep
+// using `discovery.js` while corpus-db can share it without an import cycle.
+export { canonicalizeUrl } from "./url.js";
 
 const SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const SUMMARY_MAX = 300;
@@ -28,17 +33,6 @@ export interface FeedEntry {
   item: FeedItem;
   feedName: string;
   feedWeight: number;
-}
-
-/** Strip query + fragment + trailing slash so tracker-wrapped and bare links compare equal. */
-export function canonicalizeUrl(raw: string): string {
-  try {
-    const u = new URL(raw.trim());
-    const path = u.pathname.replace(/\/+$/, "") || "/";
-    return `${u.protocol}//${u.host}${path}`;
-  } catch {
-    return raw.trim();
-  }
 }
 
 /**

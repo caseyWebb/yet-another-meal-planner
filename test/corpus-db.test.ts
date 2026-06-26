@@ -12,6 +12,8 @@ import {
   addSourceRows,
   readDiscoveryInbox,
   insertDiscoveryCandidate,
+  readDiscoveryRejections,
+  addDiscoveryRejection,
 } from "../src/corpus-db.js";
 
 describe("aliases (D1)", () => {
@@ -103,5 +105,43 @@ describe("discovery allowlist + inbox (D1)", () => {
     expect(inbox).toEqual([
       { from: "a@x.com", subject: "hi", received_at: "2026-06-11", body: "find recipes" },
     ]);
+  });
+
+  it("suppresses group-rejected candidates from the inbox (canonical match)", async () => {
+    const { env, tables } = fakeD1({ tables: { discovery_candidates: [], discovery_rejections: [] } });
+    await insertDiscoveryCandidate(env, {
+      url: "https://seriouseats.com/recipe?utm=x", // tracker-wrapped
+      from: "a@x.com",
+      subject: "junk",
+      body: "b1",
+      received_at: "2026-06-11",
+    });
+    await insertDiscoveryCandidate(env, {
+      url: "https://good.com/keep",
+      from: "b@x.com",
+      subject: "keep",
+      body: "b2",
+      received_at: "2026-06-12",
+    });
+    // Reject the CANONICAL form; the tracker-wrapped candidate must still be dropped.
+    await addDiscoveryRejection(env, {
+      url: "https://seriouseats.com/recipe",
+      reason: "not a recipe",
+      rejectedBy: "alice",
+      rejectedAt: "2026-06-13",
+    });
+    expect([...(await readDiscoveryRejections(env))]).toEqual(["https://seriouseats.com/recipe"]);
+    const inbox = await readDiscoveryInbox(env);
+    expect(inbox.map((e) => e.subject)).toEqual(["keep"]);
+    expect(tables.discovery_rejections).toHaveLength(1);
+  });
+
+  it("upserts a rejection idempotently on the canonical url", async () => {
+    const { env, tables } = fakeD1({ tables: { discovery_rejections: [] } });
+    await addDiscoveryRejection(env, { url: "https://x.com/r", reason: "junk", rejectedBy: "a", rejectedAt: "2026-06-01" });
+    await addDiscoveryRejection(env, { url: "https://x.com/r", reason: "dup", rejectedBy: "b", rejectedAt: "2026-06-02" });
+    expect(tables.discovery_rejections).toHaveLength(1);
+    expect(tables.discovery_rejections[0].reason).toBe("dup");
+    expect(tables.discovery_rejections[0].rejected_by).toBe("b");
   });
 });

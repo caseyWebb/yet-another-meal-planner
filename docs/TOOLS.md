@@ -35,6 +35,26 @@ List recipes matching filters. Reads the recipe index from the D1 `recipes` tabl
 - `exclude_cooked_within_days` (number): drop recipes cooked within the last N days. Caller-supplied window, not a stored default.
 - `not_cooked_since` (date): recipes with `last_cooked: null` (never cooked) **pass** this filter.
 
+### `recipe_semantic_search(specs)`
+
+Semantic recipe retrieval (**experimental**, `semantic-meal-plan`). Embeds each spec's free-text `vibe` and ranks the facet-prefiltered corpus by cosine similarity, re-ranked by taste and freshness. Backend-agnostic contract: the middle leg is a brute-force cosine over a D1 `recipe_embeddings` join today; a future Vectorize swap is invisible to the caller. Reads the index (`src/recipe-index.ts`), the embeddings (`recipe_embeddings`), and the caller's overlay / cooking log / preferences. An empty/unindexed corpus returns empty result groups; an unreadable index returns `index_unavailable`.
+
+**Params:**
+- `specs` (array, required, ≥1): each `{ vibe, label, facets?, k? }`:
+  - `vibe` (string): free-text description of the dish wanted (`"rich slow-braised cold-weather comfort"`), embedded and matched by **meaning**, not keyword.
+  - `label` (string): an arbitrary tag echoed back so the caller can tell each spec's results apart.
+  - `facets` (object, optional): the **same** hard filters as `list_recipes` (`status`, `protein`, `cuisine`, `course`, `query`, `season`, `dietary`, `max_time_total`, `not_cooked_since`, `exclude_cooked_within_days`, `include_unmakeable`). They **constrain** the candidate set; semantic rank only reorders within them and can never admit a recipe a facet rejects.
+  - `k` (number, optional): top-K for this spec (default `10`, max `50`).
+
+**Returns:**
+- `{ results: [{ label, recipes: [{ slug, title, description, protein, cuisine, time_total, score, similarity }] }] }` — one group per input spec, in spec order. `similarity` is the raw query↔recipe cosine; `score` is the blended rank (cosine + favorite + freshness). Both rounded to 4 dp.
+
+**Notes:**
+- **Facet gate first, then cosine.** Hard constraints are applied by the same `filterRecipes` gate as `list_recipes` (including the default makeability gate); cosine only ranks the survivors, so it cannot override a constraint.
+- **Re-rank = cosine + two small nudges.** `+ favoriteWeight · max cosine to any favorited recipe` (taste *direction* — nearest-liked, not a centroid; no-op on cold start) and `+ freshness` (never-cooked surfaced by `novelty_boost`; cooked-within-`resurface_after_days` linearly demoted). The nudges are deliberately small relative to cosine — they reorder near-ties, never drag an irrelevant recipe up. Favorites are the caller's `favorite`-flagged recipes (set via `toggle_favorite`); `rotation.{novelty_boost,resurface_after_days}` come from preferences, defaulting when unset.
+- **Unembedded recipes are omitted.** A just-imported recipe whose embedding the cron hasn't reconciled yet is excluded from ranking (not an error) — it stays findable via `list_recipes` until the next reconcile.
+- **One round-trip, one embedding call.** All spec vibes embed in a single Workers AI request; pass several diverse specs (a vibe, a variety/wildcard, a never-cooked novelty) for recall rather than many calls.
+
 ### `read_recipe(slug)`
 
 Read a single recipe's full content (frontmatter + body).
@@ -56,7 +76,7 @@ Resolve the URL of the hosted recipe site (the static browse view of the shared 
 
 ### `update_recipe(slug, updates)`
 
-Edit a recipe's **objective shared content** (frontmatter/body) — the same recipe everyone in the group sees. `rating`/`status` are NOT settable here (they are the caller's personal disposition — use `rate_recipe`), nor is `last_cooked` (derived from the cooking log — record a cooked meal via `log_cooked`).
+Edit a recipe's **objective shared content** (frontmatter/body) — the same recipe everyone in the group sees. `favorite`/`status` are NOT settable here (they are the caller's personal disposition — use `toggle_favorite` / `set_recipe_status`), nor is `last_cooked` (derived from the cooking log — record a cooked meal via `log_cooked`).
 
 **Params:**
 - `slug` (string, required)
@@ -65,21 +85,33 @@ Edit a recipe's **objective shared content** (frontmatter/body) — the same rec
 **Returns:**
 - `{ slug, updated_fields, commit_sha? }` — confirmation of what was changed; `commit_sha` is present when a write landed and omitted when nothing changed
 
-**Notes:** Objective-only — it writes shared GitHub recipe content and nothing else. `rating`/`status` are rejected with `validation_failed` (the message names `rate_recipe`), and `last_cooked` is rejected toward `log_cooked`. `read_recipe`/`list_recipes` merge the caller's overlay (rating/status, set via `rate_recipe`) and cooking-log `last_cooked` onto shared content at read time; an absent overlay row means effective `status: draft`. `perishable_ingredients` is objective shared content, so an edit to it writes the shared recipe; the Worker normalizes the names on write (the same `normalizeIngredient` the Kroger matcher uses) so cross-recipe overlap lines up. Objective frontmatter is checked against the controlled vocabularies on write: `protein`/`cuisine` must be coarse buckets and `requires_equipment` slugs must be in-vocab — an off-vocab value returns `validation_failed` and makes no commit (a `none`/empty `protein`/`cuisine` is normalized to absent rather than rejected).
+**Notes:** Objective-only — it writes shared GitHub recipe content and nothing else. `favorite`/`status` are rejected with `validation_failed` (the message names `toggle_favorite`/`set_recipe_status`), and `last_cooked` is rejected toward `log_cooked`. `read_recipe`/`list_recipes` merge the caller's overlay (favorite/status, set via `toggle_favorite`/`set_recipe_status`) and cooking-log `last_cooked` onto shared content at read time; an absent overlay row means effective `status: draft` and `favorite: false`. `perishable_ingredients` is objective shared content, so an edit to it writes the shared recipe; the Worker normalizes the names on write (the same `normalizeIngredient` the Kroger matcher uses) so cross-recipe overlap lines up. Objective frontmatter is checked against the controlled vocabularies on write: `protein`/`cuisine` must be coarse buckets and `requires_equipment` slugs must be in-vocab — an off-vocab value returns `validation_failed` and makes no commit (a `none`/empty `protein`/`cuisine` is normalized to absent rather than rejected).
 
-### `rate_recipe(slug, { rating?, status? })`
+### `toggle_favorite(slug, favorite)`
 
-Set the caller's **personal disposition** for a recipe — `rating` (1–5) and/or effective `status` (`active`|`draft`|`rejected`). Writes only the caller's per-tenant overlay; it never changes shared recipe content, so one member's rating/status never affects another's.
+Set the caller's **personal favorite flag** for a recipe — `favorite: true` marks it, `false` clears it. Favorites are THE positive taste signal: they anchor the `recipe_semantic_search` nearest-liked re-rank and the group "favorited by N others" signal (`read_recipe_notes`). Writes only the caller's per-tenant overlay; one member's favorites never affect another's. (Replaced the 1–5 `rate_recipe` in the favorite cutover — the lost granularity is recovered, more honestly, from revealed preference in the cooking log.)
 
 **Params:**
 - `slug` (string, required) — must resolve against the recipe index (D1 `recipes`)
-- `rating` (number | null, optional) — `null` clears it
-- `status` (`active`|`draft`|`rejected` | null, optional) — `null` clears it (falls back to default `draft`)
+- `favorite` (boolean, required)
 
 **Returns:**
 - `{ slug, overlay }` — the caller's resulting overlay row; **no `commit_sha`** (the overlay is D1-backed, not a git commit)
 
-**Notes:** Pass at least one of `rating`/`status` — an empty edit returns `validation_failed`. An unknown slug returns `not_found` and writes nothing. The overlay lives in the caller's D1 `overlay` table. `read_recipe`/`list_recipes` merge this overlay onto shared content at read time.
+**Notes:** Unknown slug → `not_found`, writing nothing. `favorite: false` clears the flag; if nothing else is set on the row, the row is DELETEd (no lingering `favorite: 0`). The overlay lives in the caller's D1 `overlay` table.
+
+### `set_recipe_status(slug, status)`
+
+Set the caller's **personal status** for a recipe — `active | draft | rejected` (the disposition lifecycle: `rejected` drops it from the caller's active set but is kept for de-dup; `active` surfaces it; effective default with no overlay row is `draft`). Writes only the caller's overlay; one member's status never affects another's.
+
+**Params:**
+- `slug` (string, required) — must resolve against the recipe index (D1 `recipes`)
+- `status` (`active`|`draft`|`rejected` | null, required) — `null` clears it (falls back to the default `draft`)
+
+**Returns:**
+- `{ slug, overlay }` — the caller's resulting overlay row; no `commit_sha`.
+
+**Notes:** Unknown slug → `not_found`, writing nothing. `favorite` and `status` are independent overlay fields — set both with the two tools. `read_recipe`/`list_recipes` merge the overlay onto shared content at read time.
 
 ### `parse_recipe(url)`
 
@@ -104,7 +136,7 @@ Set the caller's **personal disposition** for a recipe — `rating` (1–5) and/
 Write a **new** recipe to the **shared corpus** (the data-repo root, read by everyone), from agent-assembled frontmatter + body, as **one solo commit**. The slug derives from the title unless `slug` is supplied. The body MUST contain `## Ingredients` and `## Instructions` H2 sections (guarded — a body missing them is rejected, never committed). A recipe is shared and single-source: if the `source` URL is already in the corpus, the write is refused (`already_exists`) so the existing recipe is reused, not duplicated.
 
 **Params:**
-- `frontmatter` (object, required) — full recipe frontmatter. `status` defaults to `draft` if omitted, so discovery imports never land active by accident; discovery should also set `discovered_at` and `discovery_source`.
+- `frontmatter` (object, required) — full recipe frontmatter. `status` defaults to `draft` if omitted, so discovery imports never land active by accident; discovery should also set `discovered_at` and `discovery_source`. Set **`description`** (the craving-aligned semantic-identity brief — the recipe's search-embedding basis) at import, and **`side_search_terms`** for a `main` (phrases for the kind of side that completes it); see `docs/SCHEMAS.md` for both fields.
 - `body` (string, required) — markdown body with the `## Ingredients` / `## Instructions` sections.
 - `slug` (string, optional) — overrides the title-derived slug.
 
@@ -116,7 +148,7 @@ Write a **new** recipe to the **shared corpus** (the data-repo root, read by eve
 - `{ error: "already_exists", slug, source }` — a recipe with this `source` URL is already in the shared corpus (idempotent import); `slug` is the existing recipe to reuse.
 - `{ error: "validation_failed" }` — no derivable slug (missing title), or the body lacks the required H2 sections.
 
-**Notes:** The everyday discovery write path: `parse_recipe` (parse) → agent cleans/classifies → `create_recipe`. Disposition of the resulting draft happens later via `update_recipe` (→ `active` + rating, or `rejected`). The frontmatter is a pass-through record, so objective fields including `requires_equipment` flow straight through; classify it conservatively (default `[]`, vocab slugs only, truly-irreplaceable gear). The Worker enforces the controlled **vocabularies** at write time (`src/validate.ts`) — `protein`, `cuisine`, and `requires_equipment` are checked against the same shared sets (`src/vocab.js`) the build uses, so an off-vocab value returns `validation_failed` and makes no commit instead of breaking the post-push build on `main`; a `none`/empty `protein`/`cuisine` is normalized to absent (omit `protein` when there's no protein focus). `update_recipe` is the same pass-through and the path to backfill `requires_equipment` on existing recipes. `perishable_ingredients` flows through the same way and is **normalized on write** (Kroger-matcher normalization) — classify it at import alongside protein/cuisine, by the "would the leftover rot" test.
+**Notes:** The everyday discovery write path: `parse_recipe` (parse) → agent cleans/classifies → `create_recipe`. Disposition of the resulting draft happens later via `set_recipe_status` (→ `active` or `rejected`) and `toggle_favorite`. The frontmatter is a pass-through record, so objective fields including `requires_equipment` flow straight through; classify it conservatively (default `[]`, vocab slugs only, truly-irreplaceable gear). The Worker enforces the controlled **vocabularies** at write time (`src/validate.ts`) — `protein`, `cuisine`, and `requires_equipment` are checked against the same shared sets (`src/vocab.js`) the build uses, so an off-vocab value returns `validation_failed` and makes no commit instead of breaking the post-push build on `main`; a `none`/empty `protein`/`cuisine` is normalized to absent (omit `protein` when there's no protein focus). `update_recipe` is the same pass-through and the path to backfill `requires_equipment` on existing recipes. `perishable_ingredients` flows through the same way and is **normalized on write** (Kroger-matcher normalization) — classify it at import alongside protein/cuisine, by the "would the leftover rot" test.
 
 ---
 
@@ -163,7 +195,7 @@ Delete one of the caller's **own** notes, addressed by its `created_at`. Self-sc
 
 ### `read_recipe_notes(slug)`
 
-Read the **group's** notes and ratings for a recipe — the collaborative-cookbook view. Aggregated across everyone in the group at read time (the tenant directory → each member's subtree).
+Read the **group's** notes and favorites for a recipe — the collaborative-cookbook view. Aggregated across everyone in the group at read time (the tenant directory → each member's subtree).
 
 **Params:**
 - `slug` (string, required)
@@ -172,12 +204,12 @@ Read the **group's** notes and ratings for a recipe — the collaborative-cookbo
 ```
 {
   slug,
-  notes:   [{ author, created_at, body, tags, private }],   // ordered by timestamp
-  ratings: [{ author, rating, status? }]                    // attributed; one per member who rated
+  notes:     [{ author, created_at, body, tags, private }], // ordered by timestamp
+  favorites: [{ author }]                                   // one per member who favorited it
 }
 ```
 
-**Notes:** The caller sees their **own** private notes plus **everyone's shared** notes; another member's `private` note is never returned. Ratings are never private. Use this to surface group signal ("rated 4+ by two others") before recommending a recipe the caller hasn't tried.
+**Notes:** The caller sees their **own** private notes plus **everyone's shared** notes; another member's `private` note is never returned. `favorites` is the group signal — `favorites.length` is the favorite count. Surface it ("favorited by two others") before recommending a recipe the caller hasn't tried.
 
 ---
 
@@ -514,7 +546,7 @@ Fetch the **shared, group-wide** discovery feeds and return a **deduped candidat
 **Returns:**
 - `{ candidates: [{ url, title, source, feed_weight, summary }], skipped?: [{ feed, reason }] }` — `source` is the feed name; `feed_weight` is the feed's configured trust hint (passed through, not used to rank); unreachable feeds are reported in `skipped`, not fatal.
 
-**Notes:** Feeds are read from the **shared root `feeds.toml`** (not a per-tenant `users/<id>/` path) — discovery sources are a shared concern, so any member's feeds contribute to one group pool. Empty or absent `feeds.toml` returns `{ candidates: [] }`. There is no `fetch_flyer_featured` tool — Kroger exposes no "featured" primitive, so on-sale ready-to-eat discovery rides the existing `kroger_flyer` pre-pass (with ready-to-eat terms in `flyer_terms.toml`) plus agent-side dedup against the caller's `users/<id>/ready_to_eat.toml` and `add_draft_ready_to_eat`.
+**Notes:** Feeds are read from the **shared root `feeds.toml`** (not a per-tenant `users/<id>/` path) — discovery sources are a shared concern, so any member's feeds contribute to one group pool. Empty or absent `feeds.toml` returns `{ candidates: [] }`. The pool excludes URLs the group has **rejected** via `reject_discovery` (the canonical URL is folded into the corpus-dedup set), so a suppressed discovery never reappears. There is no `fetch_flyer_featured` tool — Kroger exposes no "featured" primitive, so on-sale ready-to-eat discovery rides the existing `kroger_flyer` pre-pass (with ready-to-eat terms in `flyer_terms.toml`) plus agent-side dedup against the caller's `users/<id>/ready_to_eat.toml` and `add_draft_ready_to_eat`.
 
 ### `read_discovery_inbox()`
 
@@ -523,7 +555,20 @@ Read the **shared email discoveries inbox** (root `discoveries_inbox.toml`) and 
 **Returns:**
 - `{ emails: [{ from, subject, received_at, body }] }` — `from` is the sender address; `received_at` is the message date (YYYY-MM-DD or null); `body` is the plain-text email content for LLM parsing.
 
-**Notes:** Absent or empty inbox returns `{ emails: [] }`. After scanning an email body for recipes, call `parse_recipe(url)` on each promising link — if it returns `unreachable`/`no_jsonld`/`not_a_recipe`, present the link and have the user paste the recipe text, then `create_recipe`. The inbox is populated by the Worker's inbound-email handler (forwarded newsletters → `groceries-agent@<domain>`), not by any agent tool. Entries are auto-pruned after 30 days.
+**Notes:** Absent or empty inbox returns `{ emails: [] }`. After scanning an email body for recipes, call `parse_recipe(url)` on each promising link — if it returns `unreachable`/`no_jsonld`/`not_a_recipe`, present the link and have the user paste the recipe text, then `create_recipe`. Candidates whose URL the group has **rejected** via `reject_discovery` are dropped (canonical match), so a suppressed discovery never resurfaces. The inbox is populated by the Worker's inbound-email handler (forwarded newsletters → `groceries-agent@<domain>`), not by any agent tool. Entries are auto-pruned after 30 days.
+
+### `reject_discovery(url, reason?)`
+
+**Shared, group-wide suppression** of a discovery URL — the third disposition (alongside import and no-action) in the `semantic-meal-plan` flow. Stops the URL (and its tracker-wrapped variants) from ever resurfacing in `fetch_rss_discoveries` or `read_discovery_inbox` for **anyone**.
+
+**Params:**
+- `url` (string, required): the discovery URL to suppress. Canonicalized (query/fragment/trailing-slash stripped) so a tracker-wrapped and a bare link suppress as one.
+- `reason` (string, optional): free-text provenance ("not a recipe", "duplicate").
+
+**Returns:**
+- `{ url, rejected: true }` — `url` is the stored canonical form.
+
+**Notes:** Use **only** when a candidate is not corpus-worthy **for the group** — junk, broken, not actually a recipe, a duplicate, or clearly off-base. Deliberately **asymmetric** with the per-tenant `favorite`: rejection is *collective curation* (the group curates one noisy stream once), so a personal "not for me this time" is a no-action **skip**, never a reject. Writes a row to the shared `discovery_rejections` table (canonical `url` PK; `reason`/`rejected_by`/`rejected_at` for provenance — `rejected_by` records who, but suppression is group-wide regardless). Idempotent on the canonical URL; a repeat refreshes the reason/provenance. Touches no recipe content or overlay.
 
 ### `update_discovery_sources(members?, senders?)`
 
@@ -602,7 +647,7 @@ Read the caller's full per-tenant profile, assembled from the D1 profile tables 
 Write user-curated config. `update_taste`/`update_diet_principles` are content-faithful (write the supplied full markdown to the D1 `profile` row, no `commit_sha`). `update_aliases` **upserts** variant→canonical ingredient mappings into the shared **D1 `aliases` table** (where the matcher reads them), keyed by variant — add/edit, no removal (`{ updated }`, no `commit_sha`). **`update_preferences` is a deep merge-patch**, not a whole-object write. **These should only be called when the user explicitly directs an edit.**
 
 **Params:**
-- `update_preferences`: `patch` (object, required) — a **JSON Merge Patch (RFC 7396)** over the caller's preferences: a present key sets/overwrites, `null` deletes, nested objects merge to **any depth**, arrays replace wholesale. Only the keys you touch change — a partial patch never clobbers siblings, so you do **not** re-send the whole object. Defined top-level keys: `default_cooking_nights` (number), `lunch_strategy` (`leftovers`|`buy`|`mixed`), `ready_to_eat_default_action` (`opt-in`|`auto-add`), `stores` (`{primary, preferred_location, location_zip}`), `brands` (map of term → ranked brand list; `[]` = don't-care/cheapest, `null` = clear back to ambiguous), `dietary` (`{avoid[], limit[]}`). Anything else nests under `custom`; an unknown top-level key returns `validation_failed` (nest it under `custom`). A type-invalid merged result returns `malformed_data` and stores nothing. Applied atomically to the D1 `profile` row + `brand_prefs` rows.
+- `update_preferences`: `patch` (object, required) — a **JSON Merge Patch (RFC 7396)** over the caller's preferences: a present key sets/overwrites, `null` deletes, nested objects merge to **any depth**, arrays replace wholesale. Only the keys you touch change — a partial patch never clobbers siblings, so you do **not** re-send the whole object. Defined top-level keys: `default_cooking_nights` (number), `lunch_strategy` (`leftovers`|`buy`|`mixed`), `ready_to_eat_default_action` (`opt-in`|`auto-add`), `stores` (`{primary, preferred_location, location_zip}`), `brands` (map of term → ranked brand list; `[]` = don't-care/cheapest, `null` = clear back to ambiguous), `dietary` (`{avoid[], limit[]}`), `rotation` (`{resurface_after_days, novelty_boost}` — tunes the `recipe_semantic_search` freshness re-rank; both positive numbers). Anything else nests under `custom`; an unknown top-level key returns `validation_failed` (nest it under `custom`). A type-invalid merged result returns `malformed_data` and stores nothing. Applied atomically to the D1 `profile` row + `brand_prefs` rows.
 - `update_taste` / `update_diet_principles`: `content` (string, required) — the complete new field text
 - `update_aliases`: `aliases` (object, required) — a map of variant → canonical, e.g. `{ "EVOO": "olive oil" }`; each is upserted by variant
 
@@ -708,7 +753,7 @@ Add or remove planned meal entries. KV-backed — no commit, no `commit_sha`.
 
 ## Order placement
 
-> **Granular writes, no batch tool.** There is no `commit_changes` — every write has a standalone home: objective recipe content (`update_recipe`/`create_recipe`), recipe rating/status (`rate_recipe`), ready-to-eat (`add_draft_ready_to_eat`/`update_ready_to_eat`), config (`update_preferences`/`update_taste`/`update_diet_principles`/`update_aliases`), cooking events (`log_cooked`), and the KV/D1-backed session state (`update_pantry`, `update_meal_plan`, `add_to_grocery_list`/`update_grocery_list`/`remove_from_grocery_list`). A multi-write turn issues one granular call per write. Cart placement is its own tool — **`place_order`** (the order-time cart flush + SKU-cache write).
+> **Granular writes, no batch tool.** There is no `commit_changes` — every write has a standalone home: objective recipe content (`update_recipe`/`create_recipe`), recipe favorite/status (`toggle_favorite`/`set_recipe_status`), ready-to-eat (`add_draft_ready_to_eat`/`update_ready_to_eat`), config (`update_preferences`/`update_taste`/`update_diet_principles`/`update_aliases`), cooking events (`log_cooked`), and the KV/D1-backed session state (`update_pantry`, `update_meal_plan`, `add_to_grocery_list`/`update_grocery_list`/`remove_from_grocery_list`). A multi-write turn issues one granular call per write. Cart placement is its own tool — **`place_order`** (the order-time cart flush + SKU-cache write).
 
 ### `place_order(payload)`
 

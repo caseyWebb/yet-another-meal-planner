@@ -135,17 +135,23 @@ describe("readBrandPrefs", () => {
 });
 
 describe("readOverlay / setOverlay", () => {
-  it("round-trips a row through the overlay table", async () => {
+  it("round-trips a favorite + status row through the overlay table", async () => {
     const { env, tables } = fakeD1({});
-    await setOverlay(env, "everett", "tacos", { rating: 4, status: "active" });
+    await setOverlay(env, "everett", "tacos", { favorite: true, status: "active" });
     expect(tables.overlay).toContainEqual(
-      expect.objectContaining({ tenant: "everett", recipe: "tacos", rating: 4, status: "active" }),
+      expect.objectContaining({ tenant: "everett", recipe: "tacos", favorite: 1, status: "active" }),
     );
-    expect(await readOverlay(env, "everett")).toEqual({ tacos: { rating: 4, status: "active" } });
+    expect(await readOverlay(env, "everett")).toEqual({ tacos: { favorite: true, status: "active" } });
+  });
+
+  it("stores favorite as NULL when not favorited, reads it as absent", async () => {
+    const { env } = fakeD1({});
+    await setOverlay(env, "everett", "tacos", { status: "rejected" });
+    expect(await readOverlay(env, "everett")).toEqual({ tacos: { status: "rejected" } });
   });
 
   it("DELETEs the row when given null", async () => {
-    const { env, tables } = fakeD1({ overlay: [{ tenant: "everett", recipe: "tacos", rating: 4, status: null }] });
+    const { env, tables } = fakeD1({ overlay: [{ tenant: "everett", recipe: "tacos", favorite: 1, status: null }] });
     await setOverlay(env, "everett", "tacos", null);
     expect(tables.overlay).toHaveLength(0);
   });

@@ -137,7 +137,7 @@ describe("handleHealthRequest", () => {
     expect(viaQuery.status).toBe(200);
     const body = (await viaQuery.json()) as { ok: boolean; jobs: { name: string }[] };
     expect(body.ok).toBe(true);
-    expect(body.jobs.map((j) => j.name)).toEqual(["flyer-warm", "email"]);
+    expect(body.jobs.map((j) => j.name)).toEqual(["flyer-warm", "recipe-embed", "email"]);
 
     const viaHeader = await handleHealthRequest(
       new Request("https://x/health", { headers: { authorization: "Bearer secret" } }),

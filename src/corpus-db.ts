@@ -13,6 +13,7 @@
 
 import type { Env } from "./env.js";
 import { db } from "./db.js";
+import { canonicalizeUrl } from "./url.js";
 import type { CachedMapping } from "./matching.js";
 
 /** Parse a JSON column, tolerating null/empty/garbage as `[]`. */
@@ -260,22 +261,56 @@ export interface InboxCandidate {
   body: string;
 }
 
-/** Read the shared email-discovery inbox as the agent reads it (newest-relevant set). */
+/**
+ * Read the shared email-discovery inbox as the agent reads it (newest-relevant set),
+ * dropping any candidate whose URL has been group-rejected (the disposition collapse —
+ * a rejected discovery never resurfaces for anyone). Compared on the canonical URL so
+ * a tracker-wrapped reject still suppresses the bare candidate.
+ */
 export async function readDiscoveryInbox(env: Env): Promise<InboxCandidate[]> {
-  const rows = await db(env).all<{
-    source: string | null;
-    subject: string | null;
-    body: string | null;
-    discovered_at: string | null;
-  }>(
-    "SELECT source, subject, body, discovered_at FROM discovery_candidates ORDER BY discovered_at DESC, id",
+  const [rows, rejected] = await Promise.all([
+    db(env).all<{
+      url: string | null;
+      source: string | null;
+      subject: string | null;
+      body: string | null;
+      discovered_at: string | null;
+    }>(
+      "SELECT url, source, subject, body, discovered_at FROM discovery_candidates ORDER BY discovered_at DESC, id",
+    ),
+    readDiscoveryRejections(env),
+  ]);
+  return rows
+    .filter((r) => !(r.url && rejected.has(canonicalizeUrl(r.url))))
+    .map((r) => ({
+      from: r.source ?? "",
+      subject: r.subject ?? "",
+      received_at: r.discovered_at && r.discovered_at.length ? r.discovered_at : null,
+      body: r.body ?? "",
+    }));
+}
+
+/** Canonical URLs the group has rejected — the suppression set both discovery read
+ *  paths consult (fetch_rss_discoveries unions it into `seen`; the inbox drops them). */
+export async function readDiscoveryRejections(env: Env): Promise<Set<string>> {
+  const rows = await db(env).all<{ url: string }>("SELECT url FROM discovery_rejections");
+  return new Set(rows.map((r) => r.url));
+}
+
+/** Record a group-wide discovery rejection (idempotent on the canonical URL; a repeat
+ *  refreshes the reason/provenance). `url` must already be canonicalized by the caller. */
+export async function addDiscoveryRejection(
+  env: Env,
+  rejection: { url: string; reason: string | null; rejectedBy: string; rejectedAt: string },
+): Promise<void> {
+  await db(env).run(
+    "INSERT INTO discovery_rejections (url, reason, rejected_by, rejected_at) VALUES (?1, ?2, ?3, ?4) " +
+      "ON CONFLICT(url) DO UPDATE SET reason = excluded.reason, rejected_by = excluded.rejected_by, rejected_at = excluded.rejected_at",
+    rejection.url,
+    rejection.reason,
+    rejection.rejectedBy,
+    rejection.rejectedAt,
   );
-  return rows.map((r) => ({
-    from: r.source ?? "",
-    subject: r.subject ?? "",
-    received_at: r.discovered_at && r.discovered_at.length ? r.discovered_at : null,
-    body: r.body ?? "",
-  }));
 }
 
 /**

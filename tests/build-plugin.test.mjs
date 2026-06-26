@@ -344,6 +344,7 @@ test('AGENT_INSTRUCTIONS.md: workflows with expected needs + library tiers', asy
   assert.deepEqual(validateParsed(parsed).errors, []);
   assert.deepEqual(parsed.flows.map((f) => f.name), [
     'meal-plan',
+    'semantic-meal-plan',
     'update-pantry',
     'cook',
     'cooked',
@@ -359,6 +360,7 @@ test('AGENT_INSTRUCTIONS.md: workflows with expected needs + library tiers', asy
   ]);
   const needs = Object.fromEntries(parsed.flows.map((f) => [f.name, f.needs]));
   assert.deepEqual(needs['meal-plan'], ['cart', 'corpus']);
+  assert.deepEqual(needs['semantic-meal-plan'], ['cart', 'corpus']); // experimental sibling
   assert.deepEqual(needs['grocery-sale-check'], []); // light flow: core only
   assert.deepEqual(needs['cook'], []);
   assert.deepEqual(needs['shop-groceries'], ['cart']);

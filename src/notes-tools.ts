@@ -29,24 +29,22 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
-/** The group ratings half of read_recipe_notes: the overlay table, scoped to the group. */
-async function groupRatings(
-  env: Env,
-  slug: string,
-  ids: string[],
-): Promise<{ author: string; rating: unknown; status?: unknown }[]> {
+/** The group-favorites half of read_recipe_notes: the overlay table, scoped to the
+ *  group. The favorite cutover replaced the per-rating list with the members who
+ *  favorited the recipe — `favorites.length` IS the group signal (COUNT(favorite)). */
+async function groupFavorites(env: Env, slug: string, ids: string[]): Promise<{ author: string }[]> {
   const inGroup = new Set(ids);
-  const rows = await db(env).all<{ tenant: string; rating: number | null; status: string | null }>(
-    "SELECT tenant, rating, status FROM overlay WHERE recipe = ?1",
+  const rows = await db(env).all<{ tenant: string; favorite: number | null }>(
+    "SELECT tenant, favorite FROM overlay WHERE recipe = ?1",
     slug,
   );
-  const ratings: { author: string; rating: unknown; status?: unknown }[] = [];
+  const favorites: { author: string }[] = [];
   for (const r of rows) {
-    if (!inGroup.has(r.tenant) || r.rating == null) continue;
-    ratings.push(r.status != null ? { author: r.tenant, rating: r.rating, status: r.status } : { author: r.tenant, rating: r.rating });
+    if (!inGroup.has(r.tenant) || !r.favorite) continue;
+    favorites.push({ author: r.tenant });
   }
-  ratings.sort((a, b) => (a.author < b.author ? -1 : a.author > b.author ? 1 : 0));
-  return ratings;
+  favorites.sort((a, b) => (a.author < b.author ? -1 : a.author > b.author ? 1 : 0));
+  return favorites;
 }
 
 /**
@@ -96,7 +94,7 @@ export function registerNoteTools(
     "read_recipe_notes",
     {
       description:
-        "Read the GROUP's notes and ratings for a recipe — the collaborative cookbook view. Returns { notes: [{ author, created_at, body, tags, private }], ratings: [{ author, rating, status }] } aggregated across everyone in your group. You see your own private notes plus everyone's shared notes; other people's private notes are never shown. Use it to surface group signal ('rated 4+ by others') before recommending a recipe someone hasn't tried.",
+        "Read the GROUP's notes and favorites for a recipe — the collaborative cookbook view. Returns { notes: [{ author, created_at, body, tags, private }], favorites: [{ author }] } aggregated across everyone in your group. You see your own private notes plus everyone's shared notes; other people's private notes are never shown. `favorites` is the group signal — surface it ('favorited by 2 others') before recommending a recipe someone hasn't tried.",
       inputSchema: { slug: z.string() },
     },
     ({ slug }) =>
@@ -106,12 +104,12 @@ export function registerNoteTools(
         }
         const ids = await directory.list();
         // Both halves are now D1 queries: notes (own-private + group-shared via the
-        // privacy WHERE) and ratings (overlay scoped to the group). No GitHub read.
-        const [notes, ratings] = await Promise.all([
+        // privacy WHERE) and favorites (overlay scoped to the group). No GitHub read.
+        const [notes, favorites] = await Promise.all([
           readRecipeNotes(env, slug, tenantId),
-          groupRatings(env, slug, ids),
+          groupFavorites(env, slug, ids),
         ]);
-        return { slug, notes, ratings };
+        return { slug, notes, favorites };
       }),
   );
 

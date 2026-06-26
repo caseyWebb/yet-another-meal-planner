@@ -1,0 +1,37 @@
+## Why
+
+The corpus is meant to grow — week over week, driven by what each member actually likes — but the current meal-plan flow loads the **whole active corpus** into context (`list_recipes({status:"active"})`) and lets the LLM reason over all of it. That is `O(corpus)` tokens on every menu turn: it does not scale as the corpus grows, and it is hostile to **free-tier Claude users** on tighter budgets and smaller, faster models (which also reason worse over a large undifferentiated dump). At the same time, today's only recipe text search is token-AND substring over title+tags — it cannot match on *vibe* ("cozy, warming, something for a rainy night"), which is exactly how menu requests are phrased.
+
+We want to flip recipe selection from **dump-and-reason** to **distill → retrieve → compose**: the LLM reads the (bounded) context, distills it into a handful of searches, deterministic code retrieves a small ranked candidate set, and the LLM composes the plate over that. The expensive matching moves into the Worker (Workers AI embeddings + cosine), *off* Claude's token budget — so the determinism boundary doubles as a token boundary. This is delivered as an **experimental, invoke-by-name skill that runs beside the existing flow**, so it can be A/B'd against dump-and-reason before anything core changes.
+
+## What Changes
+
+- **New experimental meal-plan skill** (`semantic-meal-plan`, invoke-by-name; the production menu flow is unchanged) that: distills loaded context into K search specs, runs them, and composes a plate over the union of compact candidate lists. Each spec splits **vibe** (semantic) from **constraints** (facets), because variety/contrast is anti-similarity and cannot be a cosine query.
+- **Embeddings-in-D1 semantic search** (option B): an `embedding` column on the D1 recipe table, populated by the build from an AI-written description; a `recipe_semantic_search` tool that **facet-prefilters in SQL, then cosines over the survivors**. The tool contract is **backend-agnostic** so a later swap to Cloudflare Vectorize is invisible to skills. Vectorize and fully-autonomous import are explicitly **deferred** behind measured triggers.
+- **AI-generated brief description field** on recipe frontmatter (written in-session by the agent at import, human-editable in Obsidian) — NOT the scraped marketing copy. It is the single source of a recipe's "semantic identity": the embed source, the compact per-candidate context representation, the user-facing "why this dish," and the dedup signal.
+- **Memoized `side_search_terms`** on recipe frontmatter (AI-written at import): the LLM captures *what side complements this main* once, so side selection becomes a plain semantic search (complementarity in the terms, similarity in the retrieval). Curated `pairs_with` stays as the deterministic high-confidence tier.
+- **Aggressive in-session import** during meal planning: when a discovery matches the member's preferences, the agent imports it (with description) on the spot — riding the Claude subscription, **no API and no headless cron**. This keeps fresh material flowing and collapses disposition: **import = the "yes"**, no-action = stays a discovery, explicit reject = **shared** (group-wide) suppression of that discovery URL, reserved for not-corpus-worthy items.
+- **Favorites k-NN taste re-rank**: retrieved candidates are re-ranked by max cosine similarity to the member's favorited recipes (multimodal-safe — nearest-liked, not a single centroid). Favorites also feed import-match judgment and the group signal.
+- **BREAKING — replace the now-shipped `rate_recipe` (1–5 star `rating`) with a `favorite` boolean and `toggle_favorite`.** A crisp anchor set for k-NN, lower disposition friction, and a simpler group signal (`COUNT(favorite)` not `AVG(rating)`). Lost granularity is recovered from revealed preference (cook frequency in the cooking log). The `overlay` table's `rating` column becomes `favorite`; the `status`/`draft` half of `rate_recipe` is retired by the disposition-collapse.
+- **Freshness/novelty boost** in retrieval: never-cooked (and not-cooked-recently) recipes are boosted so imported-but-untried recipes get their shot; window is **user-configurable** in preferences. Plus a "bit outside your usual" allowance in import/surface judgment to keep the loop from tightening into a filter bubble.
+
+## Capabilities
+
+### New Capabilities
+- `semantic-recipe-search`: the embeddings-in-D1 layer — description/`side_search_terms`/`embedding` fields, the build-time embed projection, the backend-agnostic `recipe_semantic_search` tool (facet-prefilter → cosine), favorites k-NN re-rank, freshness boost, and the deferred Vectorize promotion trigger.
+- `experimental-meal-planning`: the invoke-by-name distill → retrieve → compose skill, including aggressive in-session import with disposition-collapse, the vibe/facet split, the holistic-plate constraint, and the exploration allowance.
+
+### Modified Capabilities
+- `recipe-import`: import additionally generates the AI brief description and `side_search_terms`; supports aggressive in-session import of preference-matched discoveries.
+- `recipe-discovery`: disposition collapses — the `draft` state is removed, import is the positive disposition, and "reject" becomes a per-tenant discovery-URL suppression.
+- `data-write-tools`: **BREAKING** remove the shipped `rate_recipe`; `overlay.rating` (1–5) → `overlay.favorite` (boolean); add `toggle_favorite`; per-tenant overlay shrinks toward a single boolean.
+- `data-read-tools`: `list_recipes` favorite filter/return; group signal `COUNT(favorite)` not `AVG(rating)`; the new semantic-search read surface and compact candidate shape.
+
+## Impact
+
+- **The D1 platform has landed** (#69–#72: domain data on Cloudflare D1, GitHub is recipes-only, `DATA_KV`/`smol-toml` dropped). This change builds directly on the shipped schema: the `embedding`/`description`/`side_search_terms` columns extend the existing `recipes` table (`migrations/d1/0002_recipes.sql`), and `favorite` replaces `rating` on the existing `overlay` table (`0004_profile.sql`). No gate remains.
+- **Affected code:** `src/recipe-index.ts` (D1 read path / search), `src/overlay.ts` (rating→favorite), `src/corpus-db.ts`, a new `recipe_semantic_search` + embedding helper, `src/tools.ts` (tool registration), `src/write-tools.ts` (`toggle_favorite`, retire `rate_recipe`), `scripts/build-indexes.mjs` (`projectToD1` embed projection), recipe frontmatter schema, `AGENT_INSTRUCTIONS.md` (the experimental skill + import flow).
+- **New dependency:** Workers AI binding (`@cf/baai/bge-base-en-v1.5`, 768-dim) for in-Worker embeddings. No external embedding key, no Anthropic API spend (descriptions are written in the agent's session).
+- **Docs:** `docs/ARCHITECTURE.md` (retrieve-first selection + the token boundary), `docs/SCHEMAS.md` (description/`side_search_terms`/favorite; drop rating), `docs/TOOLS.md` (`recipe_semantic_search`, `toggle_favorite`, remove `rate_recipe`).
+- **Migration:** new D1 migrations — recipe columns (`embedding`/`description`/`side_search_terms`, populated by the build, no data backfill) and `overlay.rating → overlay.favorite` (`rating >= 4 ⇒ favorite`).
+- **Deferred (explicit non-goals):** fully-autonomous cron import (the in-session path covers growth for now); the Vectorize backend (brute-force-in-D1 until a query is *measured* to need ANN); any negative/dislike anchor (favorite-only).

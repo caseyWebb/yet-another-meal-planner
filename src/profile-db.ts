@@ -30,6 +30,7 @@ interface ProfileRow {
   ready_to_eat_default_action: string | null;
   stores: string | null;
   dietary: string | null;
+  rotation: string | null;
   custom: string | null;
   kitchen_notes: string | null;
   freezer_capacity_estimate: string | null;
@@ -91,6 +92,8 @@ function assemblePreferences(
   if (stores) prefs.stores = stores;
   const dietary = asObject(parseJson(row.dietary));
   if (dietary) prefs.dietary = dietary;
+  const rotation = asObject(parseJson(row.rotation));
+  if (rotation) prefs.rotation = rotation;
   const custom = asObject(parseJson(row.custom));
   if (custom) prefs.custom = custom;
   if (brands.length > 0) {
@@ -109,7 +112,7 @@ function assemblePreferences(
 
 const PROFILE_SELECT =
   "SELECT tenant, taste, diet_principles, default_cooking_nights, lunch_strategy, " +
-  "ready_to_eat_default_action, stores, dietary, custom, kitchen_notes, " +
+  "ready_to_eat_default_action, stores, dietary, rotation, custom, kitchen_notes, " +
   "freezer_capacity_estimate FROM profile WHERE tenant = ?1";
 
 /** The caller's preferences object (or null when none are set up). */
@@ -147,16 +150,16 @@ export async function readOwnedEquipment(env: Env, tenant: string): Promise<stri
   return rows.map((r) => r.slug);
 }
 
-/** The caller's overlay (slug → {rating?, status?}), assembled from the `overlay` table. */
+/** The caller's overlay (slug → {favorite?, status?}), assembled from the `overlay` table. */
 export async function readOverlay(env: Env, tenant: string): Promise<Record<string, OverlayRow>> {
-  const rows = await db(env).all<{ recipe: string; rating: number | null; status: string | null }>(
-    "SELECT recipe, rating, status FROM overlay WHERE tenant = ?1",
+  const rows = await db(env).all<{ recipe: string; favorite: number | null; status: string | null }>(
+    "SELECT recipe, favorite, status FROM overlay WHERE tenant = ?1",
     tenant,
   );
   const out: Record<string, OverlayRow> = {};
-  for (const { recipe, rating, status } of rows) {
+  for (const { recipe, favorite, status } of rows) {
     const entry: OverlayRow = {};
-    if (rating != null) entry.rating = rating;
+    if (favorite) entry.favorite = true;
     if (status != null) entry.status = status;
     out[recipe] = entry;
   }
@@ -299,6 +302,7 @@ const SCALAR_PROFILE_COLUMNS = [
   "ready_to_eat_default_action",
   "stores",
   "dietary",
+  "rotation",
   "custom",
   "kitchen_notes",
   "freezer_capacity_estimate",
@@ -373,14 +377,16 @@ export async function setOverlay(
     await db(env).run("DELETE FROM overlay WHERE tenant = ?1 AND recipe = ?2", tenant, slug);
     return;
   }
-  const rating = row.rating == null ? null : (row.rating as number);
+  // Write favorite + status only; the legacy `rating` column is left untouched (on
+  // UPDATE) / NULL (on INSERT) — retained inert for rollback, never read by this path.
+  const favorite = row.favorite ? 1 : null;
   const status = row.status == null ? null : (row.status as string);
   await db(env).run(
-    "INSERT INTO overlay (tenant, recipe, rating, status) VALUES (?1, ?2, ?3, ?4) " +
-      "ON CONFLICT(tenant, recipe) DO UPDATE SET rating = excluded.rating, status = excluded.status",
+    "INSERT INTO overlay (tenant, recipe, favorite, status) VALUES (?1, ?2, ?3, ?4) " +
+      "ON CONFLICT(tenant, recipe) DO UPDATE SET favorite = excluded.favorite, status = excluded.status",
     tenant,
     slug,
-    rating,
+    favorite,
     status,
   );
 }
