@@ -36,6 +36,8 @@ Display the entire grouped list in one go. **If** the store has layout notes, of
 
 #### 7. The voice walk (mapped store)
 
+**Brief me before we go hands-free — voice mode has a hard limitation, and saying so up front prevents it derailing.** Claude voice mode **can't call tools** (no MCP, no skills) and runs on a smaller model, but it **does carry over this conversation's context**. So set expectations explicitly before I switch: *"Switch to voice mode and walk the aisles — I'll keep the running list and track corrections (moved items, out-of-stocks) in our conversation as you go, but nothing gets **saved** until you come back out of voice mode. When you're done, exit voice mode and I'll write up the store notes then."* During the voice walk, just track corrections conversationally — **don't claim** a note was saved, and don't try to call `add_store_note` (it won't work in voice). The moment I'm back in normal mode, replay what we gathered and write the confirmed notes. Saying this plainly matters: without the framing, voice mode tends to **invent reasons it can't help** (it can't see *why* it lacks tools) instead of simply tracking along.
+
 Like `cook`, hands-free / voice-first: pace me **one aisle at a time**, I advance with "got it" / "next". Handle **"can't find it"** by disambiguating gently **before any write**:
 - **Sold out** — transient, no note.
 - **Moved** (I found it in a different aisle) — *offer* to save a corrected `location` note (`add_store_note` with `tags:["location"]`). This "can't find it → oh, aisle 9" moment is the capture trigger.

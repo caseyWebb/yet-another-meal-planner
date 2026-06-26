@@ -7,7 +7,9 @@ description: "Record changes to what's physically in the kitchen. Use for \"I ra
 
 # Pantry update
 
-Simple: call `update_pantry(operations)` with the parsed adds/removes. Confirm in chat what you did. Don't trigger a menu generation unless I asked. If the add includes fresh perishables (a market haul, new produce), offer a couple of storage tips following the **Putting groceries away** guidance — skip it for a plain staple add ("ran out of olive oil").
+**Read the pantry first so an add merges instead of duplicating.** Before applying adds, call `read_pantry()` (skip if it's already loaded this session) and match each incoming item against what's already there using your own judgment about names — "green onions" you already have *is* the "scallions" I just bought, "ground beef" is the "80/20 beef" entry. When an add matches an existing entry, update that entry (bump quantity / refresh `last_verified_at`) rather than creating a second row; only create a new entry when nothing on hand is the same item. Removes match the same way.
+
+Then call `update_pantry(operations)` with the parsed adds/removes. Confirm in chat what you did. Don't trigger a menu generation unless I asked. If the add includes fresh perishables (a market haul, new produce), offer a couple of storage tips following the **Putting groceries away** guidance — skip it for a plain staple add ("ran out of olive oil").
 
 **Depletion and staples cross-reference.** When an update includes a depletion (a `remove` op or a user saying they're out of something), call `read_user_profile()` **lazily** (only once this session, only when at least one item was depleted) and read `.staples` (a bare array). For each depleted item that appears in the staples array, ask: "Want me to add [item] to the shopping list?" Do **not** prompt for items not in the staples array — just record the depletion silently. If the `staples` array is empty or absent, skip the cross-reference without surfacing any error.
 
