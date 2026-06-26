@@ -31,23 +31,23 @@ The system SHALL support recipe **notes**: free-form markdown annotations attach
 - **WHEN** tenant B reads notes for a recipe that tenant A annotated (non-private)
 - **THEN** B sees A's note attributed to A, alongside B's own notes on that recipe
 
-#### Scenario: Ratings and notes inform surfacing
+#### Scenario: Group disposition and notes inform surfacing
 
 - **WHEN** the agent surfaces a shared recipe a tenant has not tried
-- **THEN** group signal (other tenants' notes and ratings) is available to be surfaced, e.g. "rated 4+ by others in your group"
+- **THEN** group signal (other tenants' notes and disposition — favorites from others in the group) is available to be surfaced
 
-### Requirement: Group ratings aggregate from the D1 overlay table
+### Requirement: Group disposition aggregates from the D1 overlay table
 
-`read_recipe_notes` SHALL compute the group's ratings/status signal for a recipe with a single query against the D1 `overlay` table (`SELECT tenant, rating, status FROM overlay WHERE recipe = ?`), scoped to the caller's group via the tenant directory — not by enumerating the tenant directory and reading each member's profile. A member with no `overlay` row for the recipe contributes nothing to the aggregate.
+`read_recipe_notes` SHALL compute the group's disposition signal for a recipe with a single query against the D1 `overlay` table (`SELECT tenant, favorite, reject FROM overlay WHERE recipe = ?`), scoped to the caller's group via the tenant directory — not by enumerating the tenant directory and reading each member's profile. A member with no `overlay` row for the recipe contributes nothing to the aggregate. There is no `rating` or `status` column in the overlay.
 
-#### Scenario: "rated 4+ by others" is one query
+#### Scenario: "favorited by others" is one query
 
 - **WHEN** `read_recipe_notes(slug)` is called
-- **THEN** the ratings/status across the group come from a single indexed `overlay` query for that recipe, with no per-tenant bundle reads
+- **THEN** the disposition across the group comes from a single indexed `overlay` query for that recipe, with no per-tenant bundle reads
 
-#### Scenario: A member with no overlay row contributes no rating
+#### Scenario: A member with no overlay row contributes no signal
 
-- **WHEN** a group member has never rated the recipe
+- **WHEN** a group member has never marked the recipe as a favorite or rejected it
 - **THEN** they have no `overlay` row for it and contribute nothing to the aggregate (no error)
 
 ### Requirement: Per-note privacy
