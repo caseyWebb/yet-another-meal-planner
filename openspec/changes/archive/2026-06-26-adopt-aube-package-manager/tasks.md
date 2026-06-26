@@ -21,7 +21,7 @@
 - [x] 3.5 `data-build-site.yml`: same swap + `MISE_GLOBAL_CONFIG_FILE`.
 - [x] 3.6 `data-build-plugin.yml`: `actions/setup-node` → `jdx/mise-action` with `install_args: node` (node only). Code is checked out at root here, so no `_code` indirection; no store cache, no `aube ci`.
 - [x] 3.7 SHA-pinned `jdx/mise-action@e6a8b39 # v4.2.0` and `actions/cache@2c8a9bd # v6.0.0` with version comments. All 7 workflow files parse (yq).
-- [ ] 3.8 Open a PR and confirm green on a cold run, then a warm run that restores the store cache. **Requires push/PR (not done locally).** NOTE: `ci.yml` is directly validated by the PR; the reusable `data-*.yml` workflows run only in an operator data repo, so they can only be fully validated by a data-repo dispatch — flag for a follow-up test run there.
+- [x] 3.8 PR [#79](https://github.com/caseyWebb/groceries-agent/pull/79): `test` job green on a clean runner (mise installed `github:endevco/aube@1.25.1`, `aube ci`, 565+104 tests pass). Cold run populated the store cache; the archive-commit push triggers a warm run to confirm restore. NOTE: `ci.yml` is validated directly; the reusable `data-*.yml` workflows run only in an operator data repo — flagged for a follow-up dispatch there.
 
 ## 4. Dependabot cooldown
 
