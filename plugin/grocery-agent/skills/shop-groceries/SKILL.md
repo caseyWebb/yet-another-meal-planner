@@ -18,16 +18,8 @@ Read `read_grocery_list` and `read_user_profile()` in parallel (preferences fiel
 
 > For details, read `references/kroger-online.md`.
 
-> For details, read `references/kroger-online.md`.
-
-> For details, read `references/kroger-instore.md`.
-
 > For details, read `references/kroger-instore.md`.
 
 > For details, read `references/instore-walk.md`.
-
-> For details, read `references/instore-walk.md`.
-
-> For details, read `references/map-store.md`.
 
 > For details, read `references/map-store.md`.

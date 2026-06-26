@@ -15,7 +15,7 @@ Check whether a Kroger store is registered for this trip:
 
 #### 2. Load items and fetch aisle locations
 
-Call `kroger_prices` for each active grocery list item in parallel, passing the store's `location_id` (or label if not yet registered). Each result carries `aisleLocation: { number, description, side? } | null` and `inStore: boolean`.
+Call `kroger_prices` for each active grocery list item in parallel, passing `location_id` (the store's registered Kroger `locationId`; omit to fall back to the profile preferred location). Each returned product carries `aisleLocation: { number, description, side? } | null` and a top-level `inStore: boolean`.
 
 Surface **`inStore: false` items up front** before starting the walk: "These items aren't available in-store at this Kroger — pickup/delivery only. Remove them from the in-store list, or keep them for a separate order?" Never silently drop them.
 
