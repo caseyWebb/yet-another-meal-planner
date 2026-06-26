@@ -34,17 +34,12 @@ The system SHALL render the full markdown body of each recipe, including any H2 
 
 ### Requirement: Index ordering and inclusion
 
-The index page SHALL list recipes alphabetically by title, with `status: active` recipes ordered before `status: draft` recipes (drafts sorted to the bottom). Recipes with `status: rejected` or `status: archived` SHALL be excluded from the site entirely.
+The index page SHALL list all shared-corpus recipes alphabetically by title. The per-tenant `status` lifecycle is retired — recipes no longer carry a `status` frontmatter field and there is no `active`/`draft`/`rejected`/`archived` distinction in the shared corpus. All recipes in `recipes/*.md` are included unless explicitly excluded by the operator's site configuration.
 
-#### Scenario: Drafts sort to the bottom
+#### Scenario: All corpus recipes are listed alphabetically
 
-- **WHEN** the corpus contains both active and draft recipes
-- **THEN** the index lists all active recipes A–Z first, followed by draft recipes A–Z
-
-#### Scenario: Rejected and archived recipes are excluded
-
-- **WHEN** a recipe has `status: rejected` or `status: archived`
-- **THEN** no page is generated for it and it does not appear on the index
+- **WHEN** the generator runs against the `recipes/` corpus
+- **THEN** every recipe is listed A–Z with no status-based exclusion or reordering
 
 ### Requirement: Pure-CSS faceted filtering
 
@@ -71,12 +66,12 @@ Each ingredient on a recipe page SHALL be a checkable item that visibly marks as
 
 ### Requirement: Recipe page content and display surface
 
-Recipe pages SHALL display the title, time, difficulty, cuisine, tags, the rendered body, and a `source` attribution link when present. Recipe cards on the index SHALL display title, time, difficulty, and tags. The site SHALL NOT display `rating` or `last_cooked`. Missing or null optional fields (e.g. a null `time_total`) SHALL be handled gracefully without error.
+Recipe pages SHALL display the title, time, difficulty, cuisine, tags, the rendered body, and a `source` attribution link when present. Recipe cards on the index SHALL display title, time, difficulty, and tags. The site SHALL NOT display per-tenant disposition or derived fields (`favorite`, `reject`, `last_cooked`). Missing or null optional fields (e.g. a null `time_total`) SHALL be handled gracefully without error.
 
-#### Scenario: Agent-internal signals are not shown
+#### Scenario: Per-tenant signals are not shown
 
-- **WHEN** a recipe has `rating` and `last_cooked` values
-- **THEN** neither value appears anywhere on the site
+- **WHEN** the site is generated
+- **THEN** no per-tenant disposition or derived field (`favorite`, `reject`, `last_cooked`) appears anywhere on the site
 
 #### Scenario: Null time renders gracefully
 

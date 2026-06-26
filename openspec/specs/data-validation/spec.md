@@ -78,11 +78,11 @@ The system SHALL emit warnings, without failing the build, when recommended-but-
 
 ### Requirement: Parse-check scope for data TOMLs
 
-The system SHALL parse-check every tracked `.toml` file for validity, but SHALL NOT enforce deep schema validation on non-index data files (`pantry.toml`, `preferences.toml`, `substitutions.toml`, `aliases.toml`, `stockup.toml`, `feeds.toml`, `skus/kroger.toml`) beyond their being parseable. The `storage_guidance/*.md` files are prose and are not parse-checked as data (they are validated only for existence, like other curated markdown).
+Per-tenant and shared-corpus data (pantry, preferences, aliases, stockup, feeds, SKU cache, etc.) is now stored in D1 and is no longer present as `.toml` files in the data repo. The system SHALL parse-check any remaining tracked `.toml` files in the data repo for validity. The `storage_guidance/*.md` files are prose and are not parse-checked as data (they are validated only for existence, like other curated markdown).
 
 #### Scenario: Valid-but-sparse data TOML passes
 
-- **WHEN** `pantry.toml` parses as valid TOML but omits fields the Worker would later expect
+- **WHEN** any remaining tracked `.toml` file in the data repo parses as valid TOML but omits optional fields
 - **THEN** the build does not fail on that file
 
 ### Requirement: Required recipe body sections
@@ -106,51 +106,22 @@ The system SHALL fail the build (non-zero exit) when a recipe body does not cont
 
 ### Requirement: Cooking-log and meal-plan structural validation
 
-The system SHALL parse-check `cooking_log.toml` and `meal_plan.toml` during the index build and SHALL hard-fail (non-zero exit) when: either file does not parse as TOML; a `cooking_log` entry omits `date` or `type`, or has a `type` outside the allowed enum (`recipe`, `ready_to_eat`, `ad_hoc`); a `cooking_log` entry with `type = recipe` omits `recipe` or references a slug no recipe resolves to; a non-`recipe` entry omits `name`; a `meal_plan` `[[planned]]` entry omits `recipe` or references an unresolved slug; a `meal_plan` `[[planned]]` entry carries a `sides` value that is present but is not an array of strings; or any `date` / `planned_for` value is not a valid ISO date. The optional `sides` array on a `[[planned]]` row holds free-text open-world side names and SHALL NOT be slug-resolved (open-world sides are not recipes).
+The cooking log and meal plan SHALL be validated at write time by the Worker's `log_cooked` and `update_meal_plan` tools (D1 storage — not `.toml` files). The Worker SHALL enforce: a `cooking_log` entry requires `date` and `type` (∈ `recipe`/`ready_to_eat`/`ad_hoc`); a `type = recipe` entry requires `recipe` resolved against the D1 `recipes` table; a non-`recipe` entry requires `name`; a `meal_plan` row requires `recipe` resolved against `recipes`; a `sides` value when present MUST be an array of strings (free-text, not slug-resolved); and all `date`/`planned_for` values MUST be valid ISO dates. The index build SHALL NOT parse-check these data sources (they are D1, not files in the repo).
 
-#### Scenario: Unknown cooking-log type blocks the build
+#### Scenario: Unknown cooking-log type is rejected at write
 
-- **WHEN** a `cooking_log.toml` entry declares `type = "snack"`
-- **THEN** the build exits non-zero and reports the invalid `type` and entry
+- **WHEN** `log_cooked` is called with `type: "snack"`
+- **THEN** the Worker returns a structured `validation_failed` error and nothing is written
 
-#### Scenario: Recipe entry with unresolved slug blocks the build
+#### Scenario: Recipe entry with unresolved slug is rejected at write
 
-- **WHEN** a `type = recipe` entry references a slug no recipe file produces
-- **THEN** the build exits non-zero and names the unresolved slug
-
-#### Scenario: Planned entry with unresolved slug blocks the build
-
-- **WHEN** a `meal_plan.toml` `[[planned]]` entry references a slug no recipe produces
-- **THEN** the build exits non-zero and names the unresolved slug
+- **WHEN** `log_cooked` is called with `type: "recipe"` and a slug not in the D1 `recipes` table
+- **THEN** the Worker returns a structured `not_found` error and nothing is written
 
 #### Scenario: Free-text sides on a planned row are not slug-resolved
 
-- **WHEN** a `[[planned]]` row carries `sides = ["roasted broccoli"]` and "roasted broccoli" resolves to no recipe slug
-- **THEN** the build does not fail — `sides` is free-text open-world side names, validated as an array of strings only
-
-#### Scenario: Non-array sides blocks the build
-
-- **WHEN** a `[[planned]]` row declares `sides = "roasted broccoli"` (a bare string, not an array)
-- **THEN** the build exits non-zero and reports the invalid `sides` value and entry
-
-#### Scenario: Malformed date blocks the build
-
-- **WHEN** a `cooking_log` `date` or `meal_plan` `planned_for` is not a valid ISO date
-- **THEN** the build exits non-zero and reports the offending value
-
-### Requirement: last_cooked consistency soft-check
-
-The system SHALL emit a warning, without failing the build, when a recipe's frontmatter `last_cooked` does not equal the maximum `cooking_log.toml` `date` among `type = recipe` entries for that slug. A recipe with no cooking-log entries SHALL NOT warn regardless of its `last_cooked` value, so an empty or partial log does not flag the existing corpus.
-
-#### Scenario: Drift between last_cooked and the log warns
-
-- **WHEN** a recipe's `last_cooked` is earlier than its newest `cooking_log` entry
-- **THEN** the build prints a warning naming the recipe and both dates, and still exits successfully
-
-#### Scenario: Recipe absent from the log does not warn
-
-- **WHEN** a recipe has a non-null `last_cooked` but no `cooking_log` entries
-- **THEN** the build does not warn about that recipe
+- **WHEN** `update_meal_plan` adds a row with `sides: ["roasted broccoli"]` and "roasted broccoli" resolves to no recipe slug
+- **THEN** the write succeeds — `sides` is free-text, validated as an array of strings only
 
 ### Requirement: Controlled vocabulary for variety dimensions
 
@@ -216,22 +187,17 @@ The system SHALL validate recipe frontmatter `requires_equipment` against a cont
 
 ### Requirement: Kitchen inventory structural validation
 
-The system SHALL structurally validate a member's `users/<username>/kitchen.toml` — both in the Node validator (`scripts/build-indexes.mjs`, when run over a data checkout) and in the Worker's write-time structural subset (`src/validate.ts`). Validation SHALL hard-fail (Node: non-zero exit; Worker: structured error, no commit) when: the file does not parse as TOML; `owned` is present but not an array of strings; or an `owned` entry is a slug outside `EQUIPMENT_VOCAB`. The `[notes]` table SHALL be freeform and SHALL NOT be schema-validated beyond parsing. An absent `kitchen.toml` SHALL be valid.
+Kitchen inventory is stored in D1 (`kitchen_equipment` table) and validated at write time by the Worker's `update_kitchen` tool. The Worker's write-time structural subset (`src/validate.ts`) SHALL hard-fail with a structured error when an `owned` entry is a slug outside `EQUIPMENT_VOCAB`. A member with no kitchen rows on record is valid (unknown inventory). The Node index-build validator does not have access to per-tenant D1 state and does not validate kitchen inventory.
 
-#### Scenario: Off-vocabulary owned slug fails
+#### Scenario: Off-vocabulary owned slug fails at write
 
-- **WHEN** a `kitchen.toml` lists `owned = ["air-fryer"]` and `air-fryer` is not in `EQUIPMENT_VOCAB`
-- **THEN** validation hard-fails and names the offending slug
+- **WHEN** `update_kitchen` is called with an `owned` entry not in `EQUIPMENT_VOCAB`
+- **THEN** the Worker returns a structured error and makes no write
 
-#### Scenario: Freeform notes pass
+#### Scenario: Absent kitchen inventory is valid
 
-- **WHEN** a `kitchen.toml` has valid `owned` slugs and an arbitrary `[notes]` table
-- **THEN** validation passes, parse-checking but not schema-validating `[notes]`
-
-#### Scenario: Absent kitchen file passes
-
-- **WHEN** a member has no `kitchen.toml`
-- **THEN** validation passes (an unknown inventory is valid)
+- **WHEN** a member has no kitchen equipment rows in D1
+- **THEN** the system treats it as an unknown inventory (no validation failure)
 
 ### Requirement: Course field shape validation
 
