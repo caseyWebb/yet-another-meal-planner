@@ -29,7 +29,7 @@ Each internal-file reference in consumer-facing text SHALL be dispositioned by w
 #### Scenario: Cross-tool reference points at the tool
 
 - **WHEN** a tool description directs the agent to evaluate against the user's taste profile
-- **THEN** it names the providing tool (`read_taste`) or the concept ("the user's taste profile"), not the file `taste.md`
+- **THEN** it names the providing tool (`read_user_profile`) or the concept ("the user's taste profile"), not the file `taste.md`
 
 #### Scenario: Operator config is described by behavior
 

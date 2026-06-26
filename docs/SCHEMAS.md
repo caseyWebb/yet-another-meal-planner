@@ -207,7 +207,7 @@ free_text = "10-inch cast iron, half-sheet trays"
 ```
 
 **Notes:**
-- `owned`: array of `EQUIPMENT_VOCAB` slugs (the same set `requires_equipment` validates against: `pressure-cooker, sous-vide-circulator, blender, ice-cream-maker`). An off-vocab slug is rejected by `update_kitchen` at write time (a structured conflict, no write) — the gate's left operand is kept vocabulary-clean. (KV-backed now, so there is no build-time check; the write-time gate is the sole guard.)
+- `owned`: array of `EQUIPMENT_VOCAB` slugs (the same set `requires_equipment` validates against: `pressure-cooker, sous-vide-circulator, blender, ice-cream-maker`). An off-vocab slug is rejected by `update_kitchen` at write time (a structured conflict, no write) — the gate's left operand is kept vocabulary-clean. (D1-backed now, so there is no build-time check; the write-time gate is the sole guard.)
 - `[notes]`: freeform table, parse-checked only. Oven count, pan sizes, sheet trays — surfaced to the `cook` flow for parallelization suggestions; **no schema, never gates**. Seeded through normal `cook` use, not at onboarding.
 - The makeability rule: a recipe is makeable for a member when its `requires_equipment` is a subset of `owned`. Empty/absent `owned` ⇒ gate no-op. See `list_recipes` and the kitchen-equipment capability.
 

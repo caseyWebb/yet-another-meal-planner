@@ -32,7 +32,7 @@ List recipes matching filters. Reads the recipe index from the D1 `recipes` tabl
 
 **Notes:**
 - **Opt-out visibility — no status filter.** The default result is the **whole shared corpus minus the caller's rejects** (a recipe with no overlay row is neutral/available). There is no `status` filter and no per-member active set; a recipe the caller has rejected (`toggle_reject`) is excluded entirely (a hard gate), and every other recipe is returned.
-- **Makeability gate (default-on):** joins the caller's `kitchen.toml` `owned` and drops recipes whose `requires_equipment` is not a subset of `owned`, so a recipe the caller can't make is never surfaced. An **empty/absent** `owned` (unknown inventory) makes the gate a **no-op** (everything passes) — it never guts the corpus for an un-onboarded member. `include_unmakeable: true` disables the drop and instead returns those recipes annotated with `missing_equipment` — use it when surfacing a specifically **named** dish so it's flagged, never silently dropped. Pure subset test over the index + `owned`; no ranking.
+- **Makeability gate (default-on):** joins the caller's kitchen `owned` and drops recipes whose `requires_equipment` is not a subset of `owned`, so a recipe the caller can't make is never surfaced. An **empty/absent** `owned` (unknown inventory) makes the gate a **no-op** (everything passes) — it never guts the corpus for an un-onboarded member. `include_unmakeable: true` disables the drop and instead returns those recipes annotated with `missing_equipment` — use it when surfacing a specifically **named** dish so it's flagged, never silently dropped. Pure subset test over the index + `owned`; no ranking.
 - Array filters (`dietary`, `season`) match **all** listed values (AND/narrowing). **There is no `tags` filter** — keyword/tag matching is done by `query`.
 - `course` (string): the **open-vocabulary** dish-type facet (`main | side | dessert | breakfast | …`), matched by **containment** — `course: "side"` returns every recipe whose `course` array includes `side`, including a dual-use `[main, side]` dish. Case/whitespace-insensitive; the value is matched literally against the normalized index (no controlled set). One faceted `list_recipes()` call returns mains and sides together (each entry's `frontmatter` carries `course`); the caller buckets by `course` — the return stays flat, never grouped.
 - `query` (string): the single name/keyword search over `title` **and** `tags`. Tokenize on whitespace, drop connective stopwords (`and`, `or`, `with`, `the`, `a`, `an`, `of`, `in`, `on`, `for`, `&`), then keep a recipe when **every** remaining token is a case-insensitive substring of its `title` or any `tag` (token-AND). Deterministic membership only — no ranking, scoring, or fuzzy matching. So `"chicken and rice"` ≡ `"chicken rice"` and surfaces a recipe titled "Chicken and Rice" even when its tags omit "rice". ANDed with the other filters; an absent, empty, or all-stopword `query` applies no text narrowing.
@@ -280,7 +280,7 @@ Add items to or remove items from the caller's staples list. D1-backed (`staples
 
 ### `update_stockup(items?, freezer_capacity_estimate?)`
 
-Add items to the caller's bulk-buy watchlist. Writes `users/<username>/stockup.toml`. **Add-only**, deduped by normalized item `name` (re-adding a name is a no-op; existing rows untouched), mirroring `update_discovery_sources`.
+Add items to the caller's bulk-buy watchlist. Writes the caller's D1 `stockup` rows. **Add-only**, deduped by normalized item `name` (re-adding a name is a no-op; existing rows untouched), mirroring `update_discovery_sources`.
 
 **Params:**
 - `items` (array, optional): `[{ name, unit?, typical_purchase?, notes?, baseline_price?, buy_at_or_below? }]`. Only `name` is required. The price fields are **advisory** — nothing in the Worker gates on them ("is this a good price?" is the agent's judgment over the flyer and live prices), so omit them when unknown.
@@ -340,7 +340,7 @@ Remove an item by name.
 
 ## Store tools (in-store fulfillment)
 
-The **in-store fulfillment flush**: the `shop-groceries` skill groups the same SKU-free grocery list for a specific store — by aisle when it's mapped, by department otherwise (vs. `place_order`'s Kroger online flush). For Kroger stores with a registered `location_id`, `kroger_prices` provides API-driven aisle ordering (`aisleLocation`) without a pre-mapped layout. The `stores/` registry holds **identity only** (`stores/<slug>.toml`, keyed by location, **shared/unattributed**); any MCP holder may register or edit one with no extra gate (the `update_discovery_sources` posture). There is **no `stores` index** — the set is small, so `list_stores` reads the directory. **Store layout lives in attributed store notes**, not the registry: aisle order (`layout`-tagged), where-it-hides hints (`location`), and not-carried entries (`stock`) are all `add_store_note` / `read_store_notes` — one surface for everything we know about a store. See `docs/SCHEMAS.md` for the `stores/<slug>.toml` and `store_notes/<slug>.toml` schemas.
+The **in-store fulfillment flush**: the `shop-groceries` skill groups the same SKU-free grocery list for a specific store — by aisle when it's mapped, by department otherwise (vs. `place_order`'s Kroger online flush). For Kroger stores with a registered `location_id`, `kroger_prices` provides API-driven aisle ordering (`aisleLocation`) without a pre-mapped layout. The `stores/` registry holds **identity only** (the D1 `stores` table, keyed by location, **shared/unattributed**); any MCP holder may register or edit one with no extra gate (the `update_discovery_sources` posture). There is **no `stores` index** — the set is small, so `list_stores` reads the table. **Store layout lives in attributed store notes**, not the registry: aisle order (`layout`-tagged), where-it-hides hints (`location`), and not-carried entries (`stock`) are all `add_store_note` / `read_store_notes` — one surface for everything we know about a store. See `docs/SCHEMAS.md` for the `stores/<slug>.toml` and `store_notes/<slug>.toml` schemas.
 
 ### `list_stores()`
 
@@ -457,7 +457,7 @@ Synthesized sale scan for the caller's store, served from a **cache warmed in th
   - `matched_terms` (array of strings): every broad term that surfaced this product during the sweep.
   - `as_of` (string | null): ISO 8601 timestamp of this store's last warm, or `null` when the store has not been swept yet.
 
-**Notes:** Pure cache read — issues **no** external Kroger subrequest. Cold/absent cache returns `{ items: [], as_of: null }` (never an error), the same graceful degradation as an absent/empty `flyer_terms.toml` (which now feeds the **warm job**, not this tool). The flyer may be a few hours stale; for a specific purchase the order path re-prices live. There are **no** ad-hoc `terms` / `against_stockup` params — checking whether a specific stockup item or substitute candidate is on sale lives in the place-groceries flow, not here.
+**Notes:** Pure cache read — issues **no** external Kroger subrequest. Cold/absent cache returns `{ items: [], as_of: null }` (never an error), the same graceful degradation as an absent/empty flyer-terms set (the D1 `flyer_terms` table, which now feeds the **warm job**, not this tool). The flyer may be a few hours stale; for a specific purchase the order path re-prices live. There are **no** ad-hoc `terms` / `against_stockup` params — checking whether a specific stockup item or substitute candidate is on sale lives in the place-groceries flow, not here.
 
 ### `kroger_prices(ingredients)`
 
@@ -481,7 +481,7 @@ Run the full 7-step matching pipeline. Returns a confident match, narrowed candi
 - `context` (object, optional): `{ recipe_slug, dietary, quantity_hint }`
 - `bypass_cache` (boolean, optional): force re-resolution, skipping the cache hit — for when a cached SKU doesn't fit the recipe context (cached generic, recipe wants organic).
 
-**Confidence rule:** confident when a cache hit OR a defined `preferences.toml [brands]` entry resolves it (including `[]` = "don't care, cheapest acceptable"); otherwise ambiguous. Cache hits are revalidated for current price + curbside/delivery availability before being returned.
+**Confidence rule:** confident when a cache hit OR a defined `preferences` `[brands]` entry resolves it (including `[]` = "don't care, cheapest acceptable"); otherwise ambiguous. Cache hits are revalidated for current price + curbside/delivery availability before being returned.
 
 **Shared, location-tagged cache.** The SKU cache (D1 `sku_cache` table, shared corpus) stores mappings resolved by *any* member, warming it for everyone (a network effect). Each entry is tagged with the `location_id` it was resolved at. On lookup, an entry tagged with the caller's own location is tried first, but **every** candidate is revalidated against the caller's `preferred_location` before use — a cross-location entry that isn't carried at the caller's store falls through to a fresh search (so a shared cache can never serve an unavailable SKU). A cross-location hit that *does* revalidate returns `reason: "shared cache hit (revalidated at your store)"`.
 
@@ -519,7 +519,7 @@ Run the full 7-step matching pipeline. Returns a confident match, narrowed candi
 }
 ```
 
-**Notes:** When ambiguous, the LLM picks from conversational context or asks the user; a standing "don't care" answer is recorded as `[]` in `preferences.toml [brands]`. On `unavailable`, the LLM enumerates substitute candidates from world knowledge and resolves each (surfacing the alternatives for confirmation) — the matcher never substitutes itself. All resolutions feed back into the cache via the next batched commit.
+**Notes:** When ambiguous, the LLM picks from conversational context or asks the user; a standing "don't care" answer is recorded as `[]` in `preferences` `[brands]`. On `unavailable`, the LLM enumerates substitute candidates from world knowledge and resolves each (surfacing the alternatives for confirmation) — the matcher never substitutes itself. All resolutions feed back into the D1 SKU cache.
 
 ### `compare_unit_price(items)`
 
@@ -551,11 +551,11 @@ Fetch the **shared, group-wide** discovery feeds and return a **deduped candidat
 **Returns:**
 - `{ candidates: [{ url, title, source, feed_weight, summary }], skipped?: [{ feed, reason }] }` — `source` is the feed name; `feed_weight` is the feed's configured trust hint (passed through, not used to rank); unreachable feeds are reported in `skipped`, not fatal.
 
-**Notes:** Feeds are read from the **shared root `feeds.toml`** (not a per-tenant `users/<id>/` path) — discovery sources are a shared concern, so any member's feeds contribute to one group pool. Empty or absent `feeds.toml` returns `{ candidates: [] }`. The pool excludes URLs the group has **rejected** via `reject_discovery` (the canonical URL is folded into the corpus-dedup set), so a suppressed discovery never reappears. There is no `fetch_flyer_featured` tool — Kroger exposes no "featured" primitive, so on-sale ready-to-eat discovery rides the existing `kroger_flyer` pre-pass (with ready-to-eat terms in `flyer_terms.toml`) plus agent-side dedup against the caller's `users/<id>/ready_to_eat.toml` and `add_draft_ready_to_eat`.
+**Notes:** Feeds are read from the **shared D1 `feeds` table** (not a per-tenant store) — discovery sources are a shared concern, so any member's feeds contribute to one group pool. An empty feeds table returns `{ candidates: [] }`. The pool excludes URLs the group has **rejected** via `reject_discovery` (the canonical URL is folded into the corpus-dedup set), so a suppressed discovery never reappears. There is no `fetch_flyer_featured` tool — Kroger exposes no "featured" primitive, so on-sale ready-to-eat discovery rides the existing `kroger_flyer` pre-pass (with ready-to-eat terms in the D1 `flyer_terms` table) plus agent-side dedup against the caller's D1 `ready_to_eat` catalog and `add_draft_ready_to_eat`.
 
 ### `read_discovery_inbox()`
 
-Read the **shared email discoveries inbox** (root `discoveries_inbox.toml`) and return a list of forwarded newsletter emails. Each email has a `body` field containing its full plain-text content — **the agent reads the body and extracts recipe titles and links itself**. No pre-extraction: the Worker captures the email faithfully and the LLM does the parsing. Surface these alongside `fetch_rss_discoveries` at menu time (1–2 picks at most, never dominating). The push complement to RSS pull: it reaches bot-walled/paywalled sources (Serious Eats, NYT) that the Worker cannot fetch.
+Read the **shared email discoveries inbox** (the D1 `discovery_candidates` table) and return a list of forwarded newsletter emails. Each email has a `body` field containing its full plain-text content — **the agent reads the body and extracts recipe titles and links itself**. No pre-extraction: the Worker captures the email faithfully and the LLM does the parsing. Surface these alongside `fetch_rss_discoveries` at menu time (1–2 picks at most, never dominating). The push complement to RSS pull: it reaches bot-walled/paywalled sources (Serious Eats, NYT) that the Worker cannot fetch.
 
 **Returns:**
 - `{ emails: [{ from, subject, received_at, body }] }` — `from` is the sender address; `received_at` is the message date (YYYY-MM-DD or null); `body` is the plain-text email content for LLM parsing.
@@ -577,7 +577,7 @@ Read the **shared email discoveries inbox** (root `discoveries_inbox.toml`) and 
 
 ### `update_discovery_sources(members?, senders?)`
 
-Add trusted sources to the **shared** inbound-newsletter allowlist (root `discovery_sources.toml`). Use when a member sets up a forward or wants a newsletter indexed. Anyone trusted with this MCP is trusted to widen intake (no extra gate). Deduped by `address` — existing entries untouched.
+Add trusted sources to the **shared** inbound-newsletter allowlist (the D1 `discovery_senders`/`discovery_members` tables). Use when a member sets up a forward or wants a newsletter indexed. Anyone trusted with this MCP is trusted to widen intake (no extra gate). Deduped by `address` — existing entries untouched.
 
 **Params:**
 - `members` (array, optional): `[{ address }]` — friend-group personal addresses; anything they forward to `groceries-agent@` gets indexed (manual-forward path). **Address only — no label** (`name` is not stored for members; identity is the address, not an agent-supplied display name).
@@ -590,7 +590,7 @@ Add trusted sources to the **shared** inbound-newsletter allowlist (root `discov
 
 ### `update_feeds(feeds)`
 
-Add RSS/Atom feeds to the **shared** discovery config (root `feeds.toml`, the pool `fetch_rss_discoveries` reads). **Add-only**, deduped by canonicalized `url` (existing feeds untouched) — the same posture as `update_discovery_sources`. Discovery feeds are a shared, group-wide concern, so anyone trusted with this MCP may widen the set.
+Add RSS/Atom feeds to the **shared** discovery config (the D1 `feeds` table, the pool `fetch_rss_discoveries` reads). **Add-only**, deduped by canonicalized `url` (existing feeds untouched) — the same posture as `update_discovery_sources`. Discovery feeds are a shared, group-wide concern, so anyone trusted with this MCP may widen the set.
 
 **Params:**
 - `feeds` (array): `[{ url, name?, weight?, tags? }]`. `url` is required; `weight` defaults to `1`. (`fetch_rss_discoveries` reads `url`/`name`/`weight`; `tags` are descriptive.)
@@ -799,7 +799,7 @@ All sections optional. With no args it flushes the current grocery list.
 
 **Lifecycle (`active → in_cart → ordered → received`):** `place_order` sets `in_cart`. Because the cart API is write-only and unreadable, the transitions past `in_cart` are **user-asserted**, never agent-verified:
 - *"I placed the order"* → advance `in_cart` items to `ordered` via `update_grocery_list`.
-- *"I picked up the groceries"* → `received` (terminal): `remove_from_grocery_list` for each, and for `grocery`-kind items only, restock `pantry.toml` via `update_pantry`. `household`/`other` items don't touch the pantry.
+- *"I picked up the groceries"* → `received` (terminal): `remove_from_grocery_list` for each, and for `grocery`-kind items only, restock the pantry via `update_pantry`. `household`/`other` items don't touch the pantry.
 
 A **stale-cart reminder** fires when a new order begins while the prior list still has `in_cart` items never confirmed `ordered`: remind the user to clear the Kroger cart manually (the API can't), rather than silently double-adding.
 

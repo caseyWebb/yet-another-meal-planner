@@ -46,7 +46,7 @@ The staples setup area SHALL ask the member which items they never want to run o
 #### Scenario: Onboarding composes tools rather than defining its own
 
 - **WHEN** the onboarding skill persists captured setup
-- **THEN** it does so through write tools owned by other capabilities (the existing `update_*` / `add_draft_ready_to_eat` / `commit_changes` plus `update_stockup`, `update_feeds`, and `update_staples`) and defines no MCP tool of its own
+- **THEN** it does so through write tools owned by other capabilities (the existing `update_*` / `add_draft_ready_to_eat` plus `update_stockup`, `update_feeds`, and `update_staples`) and defines no MCP tool of its own
 
 ### Requirement: Onboarding triggers on an empty profile or explicit request
 
