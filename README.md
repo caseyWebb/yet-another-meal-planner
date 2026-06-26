@@ -1,3 +1,7 @@
+---
+update-when: the project's purpose, headline capabilities, or self-hosting status changes
+---
+
 # grocery-agent
 
 A personal grocery agent. It plans your meals, keeps track of what's in your kitchen, and fills a Kroger cart — all through conversation. You talk to it like a friend who knows your kitchen, not a service you issue commands to. It runs inside **Claude.ai** (web + mobile) and is self-hostable for a small friend group.

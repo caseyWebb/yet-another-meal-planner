@@ -1,3 +1,7 @@
+---
+update-when: the build/deploy workflow, doc-ownership boundaries, or coding-agent conventions for this repo change
+---
+
 # CLAUDE.md — working in this repo with Claude Code
 
 This repo is the **grocery-agent itself** — its persona/skills (generated from `AGENT_INSTRUCTIONS.md`) and the `grocery-mcp` Cloudflare Worker, plus the build tooling that produces both. The agent *runs* in **Claude.ai**, not Claude Code, but it's *built* here; this file is read as repo-development context. The real guides live in three docs — read the relevant one rather than working from this file alone:

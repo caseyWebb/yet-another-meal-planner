@@ -1,3 +1,7 @@
+---
+update-when: a tool's parameters or returns change, or the tool surface changes
+---
+
 # TOOLS.md — MCP Tool Inventory
 
 The complete tool surface exposed by `grocery-mcp` to Claude. Each tool encodes a deterministic operation. The LLM composes them; the tools enforce the pipelines.

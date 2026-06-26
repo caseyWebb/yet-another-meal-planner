@@ -1,3 +1,7 @@
+---
+update-when: the toolchain, Worker dev or deploy workflow, repo layout, or contribution conventions change
+---
+
 # Contributing
 
 How to work **on** the grocery-agent itself — its persona/skills (generated from [`AGENT_INSTRUCTIONS.md`](AGENT_INSTRUCTIONS.md)) **and** the `grocery-mcp` Worker, both built in this repo. For how the system is *built* (the technical model), read [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) first — this guide assumes it.
