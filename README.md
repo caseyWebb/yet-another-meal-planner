@@ -58,7 +58,7 @@ The full technical picture — the determinism boundary, multi-tenant identity, 
 | `docs/` | [ARCHITECTURE](docs/ARCHITECTURE.md) (how it's built) · [SCHEMAS](docs/SCHEMAS.md) (file formats) · [TOOLS](docs/TOOLS.md) (tool contract) · [SELF_HOSTING](docs/SELF_HOSTING.md) (operator setup) |
 | [`CONTRIBUTING.md`](CONTRIBUTING.md) | how to work in this repo |
 
-The data repo is created from the [`groceries-agent-data-template`](https://github.com/caseyWebb/groceries-agent-data-template), also vendored here as a submodule at `docs/data-template/` for reference.
+The data repo is created from the [`groceries-agent-data-template`](https://github.com/caseyWebb/groceries-agent-data-template), tracked as its own independent repo.
 
 ## Self-hosting
 
@@ -76,13 +76,12 @@ Full step-by-step: **[docs/SELF_HOSTING.md](docs/SELF_HOSTING.md)**.
 The Worker is the root package (one `package.json` for the Worker + `scripts/`):
 
 ```sh
-mise install                  # Node (pinned in mise.toml)
-git submodule update --init   # populate docs/data-template/ (reference only)
-npm install
-npm run typecheck             # tsc --noEmit
-npm test                      # vitest — Worker tests (test/*.test.ts)
-npm run test:tooling          # node --test — build tooling tests (tests/*.test.mjs)
-npm run dev                   # wrangler dev — local Worker for MCP Inspector
+mise install                  # Node + aube (pinned in mise.toml)
+aube install                  # deps (reads package-lock.json in place)
+aubr typecheck                # tsc --noEmit
+aubr test                     # vitest — Worker tests (test/*.test.ts)
+aubr test:tooling             # node --test — build tooling tests (tests/*.test.mjs)
+aubr dev                      # wrangler dev — local Worker for MCP Inspector
 ```
 
 See **[CONTRIBUTING.md](CONTRIBUTING.md)** for conventions, deployment, and the OpenSpec change workflow.

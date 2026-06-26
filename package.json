@@ -7,6 +7,17 @@
   "engines": {
     "node": ">=22"
   },
+  "aube": {
+    "allowBuilds": {
+      "esbuild": true,
+      "workerd": true,
+      "@fission-ai/openspec": false,
+      "@mongodb-js/zstd": false,
+      "core-js-pure": false,
+      "node-liblzma": false,
+      "sharp": false
+    }
+  },
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",

@@ -4,6 +4,12 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    # Supply-chain cooldown: don't propose a version published less than 7 days ago.
+    # Kept numerically aligned with aube's `minimum-release-age=10080` (.npmrc) so
+    # Dependabot only ever proposes npm versions aube is willing to install. (Does
+    # not apply to security updates — Dependabot fast-tracks those by design.)
+    cooldown:
+      default-days: 7
     groups:
       cloudflare:
         patterns:
