@@ -59,7 +59,10 @@ export const PLUGIN_NAME = 'grocery-agent';
 export const PLUGIN_DESCRIPTION =
   'Personal grocery agent — meal planning, pantry, recipes, and Kroger cart. Bundles the workflow skills and the grocery-mcp connector.';
 // Depth tiers a flow may opt into via `needs:`. `core` is implicit (always loaded).
-export const DEPTH_TIERS = ['cart', 'corpus'];
+// `discovery` carries the shared recipe triage/import mechanics, loaded by the flows
+// that import a recipe (import-recipe, semantic-meal-plan) so they reference one
+// source instead of restating the parse→classify→create detail inline.
+export const DEPTH_TIERS = ['cart', 'corpus', 'discovery'];
 // Persona tiers ship as library skills named grocery-<tier>, loaded by reference.
 export const librarySkillName = (tier) => `grocery-${tier}`;
 // Near-empty on purpose: a library skill loaded only by a workflow's prerequisite
@@ -313,19 +316,57 @@ export function buildPluginFiles(parsed, { mcpUrl = MCP_URL_PLACEHOLDER, version
 
 // --- CLI -----------------------------------------------------------------
 
-// Monotonic plugin version from git: `0.1.<commit-count>`. The count only grows as
-// commits land, so each rebuilt-and-committed bundle is strictly newer than the last
-// — what claude.ai's auto-update compares (see the note by PLUGIN_NAME). The `0.1.`
-// prefix is a deliberate FLOOR, not cosmetic: this plugin once hand-published `0.1.1`
-// (then dropped the field), and claude.ai gates on strictly-greater, so it remembered
-// `0.1.1` as the high-water mark. A `0.0.<count>` scheme is *below* `0.1.1` in semver
-// (minor 0 < 1) and would never auto-update past it. `0.1.<count>` (count ≥ 150 ≫ 1)
-// dominates the old `0.1.1` and stays monotonic. Returns undefined outside a git
-// checkout (throwaway/dist builds), which ship no version.
+// Monotonic plugin version from git: `0.1.<commit-count>`. The count grows as
+// commits land — what claude.ai's auto-update compares (see the note by PLUGIN_NAME).
+// The `0.1.` prefix is a deliberate FLOOR, not cosmetic: this plugin once hand-published
+// `0.1.1` (then dropped the field), and claude.ai gates on strictly-greater, so it
+// remembered `0.1.1` as the high-water mark. A `0.0.<count>` scheme is *below* `0.1.1`
+// in semver (minor 0 < 1) and would never auto-update past it. `0.1.<count>` (count
+// ≥ 150 ≫ 1) dominates the old `0.1.1`. Returns undefined outside a git checkout
+// (throwaway/dist builds), which ship no version.
+//
+// CAVEAT: the commit count is NOT globally monotonic under a squash-merge workflow —
+// squashing a feature branch collapses its many WIP commits into one, so the linear
+// count on `main` can SHRINK below a version stamped earlier from a branch that had
+// more commits in its ancestry. A naive rebuild then regresses the version, and
+// claude.ai (strictly-greater gate) strands installed members on the old skills. So
+// the count is floored above the already-published bundle version (floorVersion) in
+// main() before it's stamped.
 export function resolveVersion(cwd = REPO_ROOT) {
   try {
     const count = execFileSync('git', ['rev-list', '--count', 'HEAD'], { cwd, encoding: 'utf8' }).trim();
     return /^\d+$/.test(count) ? `0.1.${count}` : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+// Floor the git-derived version above the version already baked into the committed
+// bundle, so a rebuild can never regress below what's been published (see the
+// squash-merge caveat on resolveVersion). Given computed `0.1.<n>` and committed
+// `0.1.<m>`, returns `0.1.<max(n, m+1)>` — strictly greater than the published
+// version on a tie or a regression, unchanged when already ahead. Returns `computed`
+// untouched when there's no git version, no committed reference, or either is not a
+// recognized `0.1.<patch>` string (a hand-published version off this scheme is left
+// for a human to reconcile rather than silently overwritten).
+export function floorVersion(computed, committed) {
+  if (!computed) return computed;
+  const c = /^0\.1\.(\d+)$/.exec(computed);
+  const p = committed && /^0\.1\.(\d+)$/.exec(committed);
+  if (!c || !p) return computed;
+  return `0.1.${Math.max(Number(c[1]), Number(p[1]) + 1)}`;
+}
+
+// Read the plugin version already COMMITTED at HEAD — the published high-water mark
+// floorVersion lifts above. Read from git, NOT the working tree: a prior local rebuild
+// may have dirtied the working-copy bundle with a regressed version (a shallow checkout
+// undercounts even worse), so the durable reference is what's in the last commit.
+// Returns undefined outside a git checkout, or when the committed bundle has no version.
+function publishedVersion(cwd = REPO_ROOT) {
+  try {
+    const rel = `plugin/${PLUGIN_NAME}/.claude-plugin/plugin.json`;
+    const v = JSON.parse(execFileSync('git', ['show', `HEAD:${rel}`], { cwd, encoding: 'utf8' })).version;
+    return typeof v === 'string' ? v : undefined;
   } catch {
     return undefined;
   }
@@ -384,7 +425,9 @@ async function main() {
     );
   }
 
-  const version = resolveVersion();
+  // Floor the git-count version above the already-published bundle so a squash-merge
+  // that shrank the commit count can't regress it (see floorVersion / resolveVersion).
+  const version = floorVersion(resolveVersion(), publishedVersion());
   const files = buildPluginFiles(parsed, { mcpUrl, version });
   await rm(out, { recursive: true, force: true });
   for (const [rel, contents] of files) {
