@@ -163,8 +163,8 @@ export async function readFeeds(env: Env): Promise<FeedRow[]> {
 }
 
 /**
- * Add discovery feeds, deduped by url (existing rows untouched — add-only, the old
- * feeds.toml semantics). Returns the count of feeds actually added.
+ * Add discovery feeds, deduped by url (existing rows untouched — add-only, the shared
+ * `feeds` table's dedup semantics). Returns the count of feeds actually added.
  */
 export async function addFeedRows(
   env: Env,

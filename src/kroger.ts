@@ -197,7 +197,7 @@ export function createKrogerClient(env: Env, opts: KrogerClientOptions = {}): Kr
 
   async function resolveLocationId(label: string): Promise<string> {
     if (cache.locationId) return cache.locationId;
-    // A pre-resolved Kroger locationId (stored in stores/<slug>.toml `location_id`) is
+    // A pre-resolved Kroger locationId (stored in the D1 `stores` table (`extra.location_id`)) is
     // a compact alphanumeric string with no spaces. Bypass the Locations API lookup and
     // cache it directly so repeated in-store walks skip the resolution round-trip.
     if (!/\s/.test(label)) {

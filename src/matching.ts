@@ -17,7 +17,7 @@
 import type { KrogerCandidate } from "./kroger.js";
 import { compareUnitPrice, parseSize, type UnitPriceItem } from "./unit-price.js";
 
-/** A cached SKU mapping from the shared `skus/kroger.toml`. */
+/** A cached SKU mapping from the shared D1 `sku_cache` table. */
 export interface CachedMapping {
   ingredient: string;
   sku: string;
@@ -39,11 +39,11 @@ export interface MatchDeps {
   search(term: string): Promise<KrogerCandidate[]>;
   /** Revalidate a cached SKU (current price + fulfillment) at the resolved location. */
   productById(productId: string): Promise<KrogerCandidate | null>;
-  /** `aliases.toml` map (variant → canonical). */
+  /** `aliases` table map (variant → canonical). */
   aliases: Record<string, string>;
-  /** `preferences.toml` `[brands]` (key → ranked list; `[]` = don't-care). */
+  /** `preferences` `[brands]` (key → ranked list; `[]` = don't-care). */
   brands: Record<string, string[]>;
-  /** The shared `skus/kroger.toml` mappings (location-tagged, D7). */
+  /** The shared D1 `sku_cache` mappings (location-tagged, D7). */
   cache: CachedMapping[];
   /** The caller's resolved preferred locationId — drives same-location cache preference (D7). */
   locationId: string;
@@ -181,12 +181,12 @@ export function stripLeadingQuantity(s: string): string {
 
 /**
  * Step 1 — normalize: lowercase, strip a leading quantity/unit, then apply
- * `aliases.toml`. Conservative: it does not strip qualifiers beyond what an
+ * the `aliases` table. Conservative: it does not strip qualifiers beyond what an
  * alias entry collapses.
  */
 export function normalizeIngredient(ingredient: string, aliases: Record<string, string>): string {
   const s = stripLeadingQuantity(ingredient.toLowerCase().trim());
-  // Alias map keys may be mixed-case (aliases.toml uses "EVOO"); match
+  // Alias map keys may be mixed-case (the `aliases` table uses "EVOO"); match
   // case-insensitively. Fall back to the cleaned term when no alias applies.
   for (const [variant, canonical] of Object.entries(aliases)) {
     if (variant.toLowerCase() === s) return canonical;

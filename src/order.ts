@@ -132,7 +132,7 @@ export interface CheckpointLine {
   message: string;
 }
 
-/** A learned ingredient→SKU mapping to append to the shared skus/kroger.toml. */
+/** A learned ingredient→SKU mapping to append to the shared D1 `sku_cache` table. */
 export interface NewMapping {
   ingredient: string;
   sku: string;

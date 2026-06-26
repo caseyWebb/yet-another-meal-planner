@@ -654,9 +654,9 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
   registerCookingWriteTools(server, env, tenant.id);
 
   // Discovery: RSS recipe candidates, parse-only URL import, draft create, plus the
-  // feeds/sources config writers. Everything here is SHARED (root client) — recipes,
-  // feeds.toml, the discoveries inbox, and discovery_sources.toml all live at the
-  // data-repo root, so any member's config feeds one group pool. Imports dedupe by
+  // feeds/sources config writers. Everything here is SHARED — recipes live at the
+  // data-repo root, while the discovery feeds/inbox/allowlist are shared D1 tables,
+  // so any member's config feeds one group pool. Imports dedupe by
   // source URL against the shared corpus so a recipe is reused, not duplicated (§6.4).
   registerDiscoveryTools(server, sharedGh, env, tenant.id);
 
