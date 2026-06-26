@@ -5,11 +5,11 @@ TBD - created by archiving change add-storage-guidance. Update Purpose after arc
 ## Requirements
 ### Requirement: Class-keyed curated storage-guidance content tree
 
-The system SHALL maintain a `storage_guidance/` content tree at the **data-repo root** as shared corpus content read by all tenants. Each file SHALL be markdown prose keyed by a **storage behavior class** (e.g. `tender-herbs.md`, `hardy-herbs.md`, `leafy-greens.md`, `alliums.md`) rather than by individual ingredient, so one entry covers a whole family of items without duplication. A small number of **singleton** files (e.g. `basil.md`, `tomatoes.md`, `avocados.md`) MAY exist for items whose storage rule contradicts their class. Relational "do not store together" rules (e.g. ethylene cross-contamination) SHALL live in a dedicated `_ethylene.md` file, because they belong to no single item. The tree SHALL be hand-maintained curated config and SHALL NOT be written by the agent.
+The system SHALL maintain an `guidance/ingredient_storage/` content tree under the **data-repo-root `guidance/` umbrella** as shared corpus content read by all tenants. Each file SHALL be markdown prose keyed by a **storage behavior class** (e.g. `tender-herbs.md`, `hardy-herbs.md`, `leafy-greens.md`, `alliums.md`) rather than by individual ingredient, so one entry covers a whole family of items without duplication. A small number of **singleton** files (e.g. `basil.md`, `tomatoes.md`, `avocados.md`) MAY exist for items whose storage rule contradicts their class. Relational "do not store together" rules (e.g. ethylene cross-contamination) SHALL live in a dedicated `_ethylene.md` file, because they belong to no single item. The tree SHALL be hand-maintained curated config and SHALL NOT be written by the agent.
 
 #### Scenario: Guidance is keyed by class, not ingredient
 
-- **WHEN** the `storage_guidance/` tree is inspected
+- **WHEN** the `guidance/ingredient_storage/` tree is inspected
 - **THEN** files are named for storage behavior classes (and a few singletons), not one file per ingredient, and the same file serves every member of its class
 
 #### Scenario: Relational rules live in their own file
@@ -19,17 +19,17 @@ The system SHALL maintain a `storage_guidance/` content tree at the **data-repo 
 
 ### Requirement: Read-only access tools, no write path
 
-The system SHALL provide two read tools over `storage_guidance/`: `list_storage_guidance()` returning the available class slugs (each with an optional one-line description), and `read_storage_guidance(slugs)` returning the content of the named entries — following the `list_recipes`/`read_recipe` pattern. The system SHALL NOT provide any tool that writes or edits `storage_guidance/`; it is edit-when-directed curated config, not an agent-mutated side-effect file.
+The system SHALL expose `guidance/ingredient_storage/` through the unified guidance read tools `list_guidance("ingredient_storage")` (returning class slugs each with an optional one-line description) and `read_guidance("ingredient_storage", slugs)` (returning the named entries' content) — defined by the `cooking-techniques` capability. The storage corpus SHALL remain effectively read-only: the `ingredient_storage` domain SHALL be **excluded from the `save_guidance` writable-domain allowlist**, so a write addressed to it is rejected and mutates nothing. The guarantee is that the agent can never alter ingredient-storage content; it is enforced by the allowlist rather than by the absence of any write tool.
 
 #### Scenario: List then read on demand
 
-- **WHEN** the agent calls `list_storage_guidance()` and then `read_storage_guidance(["tender-herbs", "_ethylene"])`
+- **WHEN** the agent calls `list_guidance("ingredient_storage")` and then `read_guidance("ingredient_storage", ["tender-herbs", "_ethylene"])`
 - **THEN** the list returns class slugs and the read returns the content of exactly the named entries
 
-#### Scenario: No write tool exists
+#### Scenario: Storage domain cannot be written
 
-- **WHEN** the tool surface is enumerated
-- **THEN** there is no `update_storage_guidance` (or equivalent write) tool, and the guidance can only be changed by hand-editing the data repo
+- **WHEN** a `save_guidance("ingredient_storage", …)` write is attempted
+- **THEN** it is rejected (the domain is not on the writable allowlist) and the storage corpus is unchanged
 
 ### Requirement: Item-to-class mapping by agent judgment, not a manifest
 

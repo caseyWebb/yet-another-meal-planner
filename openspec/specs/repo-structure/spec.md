@@ -104,12 +104,12 @@ The deployment SHALL use **one private** data repository on the operator's accou
 
 ### Requirement: Shared data at the repository root
 
-The data repository **root** SHALL hold only GitHub-authored shared content: recipe **content** under `recipes/` and curated `storage_guidance/` markdown. The `_indexes/` tree is a generated artifact (projected into D1 by the build; the static `components.json` for the recipe site also lives here). The shared operational data — `aliases`, `sku_cache`, `stores`, `feeds`, `discovery_candidates`, and related registries — is now **D1-backed** (the `d1-shared-corpus` migration). The root SHALL NOT contain per-member subjective or personal data.
+The data repository **root** SHALL hold the data shared by all members: the recipe **content** under `recipes/`, the shared reference data (`aliases.toml` and the default `substitutions.toml`), the shared `skus/kroger.toml` SKU cache, the curated `guidance/` umbrella (with the `guidance/ingredient_storage/` and `guidance/cooking_techniques/` domain subtrees), and the generated `_indexes/`. The root SHALL NOT contain any per-member subjective or personal data — including ready-to-eat catalogs, which are per-tenant (that lives under `users/<username>/`). The legacy root-level `storage_guidance/` tree is relocated under `guidance/ingredient_storage/` and SHALL NOT remain at the root.
 
-#### Scenario: Root carries authored recipe content and storage guidance
+#### Scenario: Root carries content and reference data
 
 - **WHEN** the data repository root is inspected
-- **THEN** it contains `recipes/` and `storage_guidance/` markdown, plus `_indexes/` for the generated site artifact; the shared operational corpus (aliases, SKU cache, stores, feeds, discovery) is in D1, not in root TOML files
+- **THEN** it contains `recipes/`, the shared reference data and SKU cache, the `guidance/` tree (with `ingredient_storage/` and `cooking_techniques/` subtrees), and `_indexes/`, and no per-member pantry, overlay, notes, or ready-to-eat catalog at the root, and no root-level `storage_guidance/`
 
 ### Requirement: Per-user subtree layout
 

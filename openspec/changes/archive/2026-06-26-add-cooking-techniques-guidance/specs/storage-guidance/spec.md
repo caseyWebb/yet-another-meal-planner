@@ -14,7 +14,7 @@ The system SHALL maintain an `guidance/ingredient_storage/` content tree under t
 - **WHEN** a "do not store together" rule is recorded (e.g. onions apart from potatoes, ethylene producers away from sensitive items)
 - **THEN** it lives in the relational `_ethylene.md` file rather than being duplicated into each affected item's file
 
-### Requirement: Read access via unified guidance tools; read-only enforced by write allowlist
+### Requirement: Read-only access tools, no write path
 
 The system SHALL expose `guidance/ingredient_storage/` through the unified guidance read tools `list_guidance("ingredient_storage")` (returning class slugs each with an optional one-line description) and `read_guidance("ingredient_storage", slugs)` (returning the named entries' content) — defined by the `cooking-techniques` capability. The storage corpus SHALL remain effectively read-only: the `ingredient_storage` domain SHALL be **excluded from the `save_guidance` writable-domain allowlist**, so a write addressed to it is rejected and mutates nothing. The guarantee is that the agent can never alter ingredient-storage content; it is enforced by the allowlist rather than by the absence of any write tool.
 

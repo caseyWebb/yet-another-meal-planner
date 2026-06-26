@@ -45,4 +45,4 @@
 ## 8. Verify & land
 
 - [x] 8.1 Confirm `openspec validate "add-cooking-techniques-guidance"` passes and no `storage_guidance` references remain in code/docs/persona (grep).
-- [ ] 8.2 Merge the Worker change to `main` (CI auto-dispatches the data-repo deploy; no D1 migration); land the data-repo move close in time so reads don't 404 on the old path.
+- [x] 8.2 Merge the Worker change to `main` (CI auto-dispatches the data-repo deploy; no D1 migration); land the data-repo move close in time so reads don't 404 on the old path.
