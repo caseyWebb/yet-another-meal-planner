@@ -84,12 +84,12 @@ describe("listDir", () => {
     }) as unknown as typeof fetch);
 
     const gh = createGitHubClient(coords, auth);
-    expect(await gh.listDir("storage_guidance")).toEqual([
+    expect(await gh.listDir("guidance/ingredient_storage")).toEqual([
       { name: "tender-herbs.md", type: "file" },
       { name: "sub", type: "dir" },
     ]);
     expect(captured).toBe(
-      "https://api.github.com/repos/o/r/contents/storage_guidance?ref=main",
+      "https://api.github.com/repos/o/r/contents/guidance/ingredient_storage?ref=main",
     );
   });
 

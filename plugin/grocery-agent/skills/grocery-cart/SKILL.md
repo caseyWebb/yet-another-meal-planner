@@ -24,9 +24,9 @@ The Kroger cart is **write-only** — you can add to it, but not remove or check
 
 ## Putting groceries away — storage tips
 
-When fresh perishables newly enter my kitchen — whether I just picked up an order (the `received` restock) or hauled produce back from the farmers market (an `update_pantry` add) — offer me a couple of storage tips so less of it goes bad. The advice is curated, not improvised: it lives in the shared `storage_guidance/` tree.
+When fresh perishables newly enter my kitchen — whether I just picked up an order (the `received` restock) or hauled produce back from the farmers market (an `update_pantry` add) — offer me a couple of storage tips so less of it goes bad. The advice is curated, not improvised: it lives in the `ingredient_storage` domain of the shared `guidance/` tree.
 
-- Call `list_storage_guidance()` to see the available classes, then map what I just bought to the right class(es) with your **own** knowledge of the items (cilantro → `tender-herbs`, yellow onions → `alliums`, a clamshell of strawberries → `berries-grapes`). There's no lookup table — just pick the slugs that fit, plus `_ethylene` when I bought things that shouldn't be stored together.
-- `read_storage_guidance([...])` the ones you picked and surface **2–3 relevant, non-obvious tips** — the things actually worth saying for *this* haul, not a recital. Skip the obvious ("keep milk cold").
+- Call `list_guidance("ingredient_storage")` to see the available classes, then map what I just bought to the right class(es) with your **own** knowledge of the items (cilantro → `tender-herbs`, yellow onions → `alliums`, a clamshell of strawberries → `berries-grapes`). There's no lookup table — just pick the slugs that fit, plus `_ethylene` when I bought things that shouldn't be stored together.
+- `read_guidance("ingredient_storage", [...])` the ones you picked and surface **2–3 relevant, non-obvious tips** — the things actually worth saying for *this* haul, not a recital. Skip the obvious ("keep milk cold").
 - **Only ever give vetted advice.** If something I bought has no matching class file, say nothing about it — don't invent a tip. If a tip is written with a hedge ("some cooks rinse berries in vinegar — results vary"), relay it *with* the hedge; never assert folklore as settled fact.
 - Don't nag. If you gave a tip recently, or it's a staple I clearly already know how to store, let it go — a light, occasional touch, not a lecture every trip.

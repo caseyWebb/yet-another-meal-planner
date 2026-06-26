@@ -32,7 +32,7 @@ import {
   MAX_K,
   type SearchCandidate,
 } from "./semantic-search.js";
-import { listStorageGuidance, readStorageGuidance } from "./storage-guidance.js";
+import { listGuidance, readGuidance, saveGuidance } from "./guidance.js";
 import { fetchWeatherForecast } from "./weather.js";
 import { mergeOverlay, type Overlay } from "./overlay.js";
 import { readPantry } from "./session-db.js";
@@ -503,23 +503,39 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
   );
 
   server.registerTool(
-    "list_storage_guidance",
+    "list_guidance",
     {
       description:
-        'List the curated storage-guidance classes (each a slug + an optional one-line description) from the shared storage_guidance/ tree. Slugs are storage BEHAVIOR CLASSES (e.g. "tender-herbs", "alliums", "leafy-greens"), a few singletons that break their class\'s rule ("basil", "tomatoes", "avocados"), and "_ethylene" for relational "don\'t store together" rules. Map a just-bought item to the right class with your own world knowledge (e.g. cilantro → tender-herbs), then call read_storage_guidance for the relevant ones. Returns { entries: [] } when no tree exists.',
-      inputSchema: {},
+        'List the curated guidance slugs (each a slug + an optional one-line description) from the shared guidance/ trees. Pass `domain` for one corpus, or omit it to get every domain grouped (returns { domains: [{ domain, entries }] }; with a domain it returns { domain, entries }). Domains: "ingredient_storage" — put-away advice keyed by storage BEHAVIOR CLASS ("tender-herbs", "alliums", "leafy-greens"), a few singletons that break their class\'s rule ("basil", "tomatoes", "avocados"), and "_ethylene" for relational "don\'t store together" rules; "cooking_techniques" — general technique memories keyed by technique ("browning-meat", "searing", "resting-meat"). Map a just-bought item or a recipe step to the right slug with your own world knowledge (cilantro → tender-herbs; "brown the beef" → browning-meat), then call read_guidance for the relevant ones. An absent tree yields an empty listing, not an error.',
+      inputSchema: { domain: z.string().optional() },
     },
-    () => runTool(() => listStorageGuidance(sharedGh)),
+    ({ domain }) => runTool(() => listGuidance(sharedGh, domain)),
   );
 
   server.registerTool(
-    "read_storage_guidance",
+    "read_guidance",
     {
       description:
-        "Read the curated storage-guidance content for the named class slugs (from list_storage_guidance). Returns { entries: [{ slug, content }] } where content is the file's markdown. An unknown slug yields a structured not_found. This is vetted, curated advice — relay any contested tip WITH the hedge written into its prose, and give NO tip for an item that has no matching class (never improvise).",
-      inputSchema: { slugs: z.array(z.string()) },
+        "Read curated guidance content for the named slugs within a domain (from list_guidance). Returns { domain, entries: [{ slug, content }] } where content is the file's markdown. An unknown slug or domain yields a structured error. This is vetted, curated advice — relay any contested tip WITH the hedge written into its prose, and give NO tip for an item/step that has no matching entry (never improvise). Domains: \"ingredient_storage\", \"cooking_techniques\".",
+      inputSchema: { domain: z.string(), slugs: z.array(z.string()) },
     },
-    ({ slugs }) => runTool(() => readStorageGuidance(sharedGh, slugs)),
+    ({ domain, slugs }) => runTool(() => readGuidance(sharedGh, domain, slugs)),
+  );
+
+  server.registerTool(
+    "save_guidance",
+    {
+      description:
+        "Create or REFINE a single guidance memory (one file per slug — refining overwrites, never appends; read the existing entry first and merge). Only the \"cooking_techniques\" domain is writable; a write to \"ingredient_storage\" (curated, read-only) is rejected with validation_failed. `content` is the full markdown you compose — distilled, imperative, non-obvious advice (with a one-line `description:` frontmatter), NOT the verbatim article. `source` (optional) records provenance (e.g. an ATK/Serious Eats URL) into the frontmatter. Use it when the member posts an article/technique to internalize. Returns { domain, slug, path, commit_sha }.",
+      inputSchema: {
+        domain: z.string(),
+        slug: z.string(),
+        content: z.string(),
+        source: z.string().optional(),
+      },
+    },
+    ({ domain, slug, content, source }) =>
+      runTool(() => saveGuidance(sharedGh, domain, slug, content, source)),
   );
 
   server.registerTool(

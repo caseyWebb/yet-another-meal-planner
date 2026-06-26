@@ -225,7 +225,7 @@ Read pantry items, optionally filtered.
 **Returns:**
 - `{ items: [...] }` — array of pantry items per schema
 
-**Notes:** `category` and `prepared_only` are deterministic from pantry data. `stale_only` returns a structured `{ error: "unsupported" }`: freshness is an LLM-judged, conversational concern (it depends on storage, whether a package was opened, and visual inspection) rather than something the tool can compute. There is no shelf-life table backing it — the curated `storage_guidance/` tree (see `list_storage_guidance` / `read_storage_guidance`) informs put-away advice rather than gating staleness.
+**Notes:** `category` and `prepared_only` are deterministic from pantry data. `stale_only` returns a structured `{ error: "unsupported" }`: freshness is an LLM-judged, conversational concern (it depends on storage, whether a package was opened, and visual inspection) rather than something the tool can compute. There is no shelf-life table backing it — the curated `guidance/ingredient_storage/` tree (see `list_guidance` / `read_guidance`) informs put-away advice rather than gating staleness.
 
 ### `update_pantry(operations)`
 
@@ -657,30 +657,54 @@ Write user-curated config. `update_taste`/`update_diet_principles` are content-f
 
 ---
 
-## Storage guidance tools (read-only)
+## Guidance tools
 
-Two reads over the shared, curated `storage_guidance/` tree — opinionated put-away advice keyed by storage **class** (`tender-herbs`, `alliums`, …), with a few singletons (`basil`, `tomatoes`, `avocados`) and a relational `_ethylene` file. **There is no write tool** for `storage_guidance/`: it is hand-maintained, edit-when-directed curated config, changed only by editing the data repo. The agent maps a just-bought item to a class with its own world knowledge over the semantic slugs (no manifest); over-fetching a class is harmless. See `docs/SCHEMAS.md` for the tree and the AGENT_INSTRUCTIONS put-away rule for when these fire.
+Reads + one gated write over the shared, curated `guidance/` trees, organized by **domain** subdirectory:
 
-### `list_storage_guidance()`
+- **`ingredient_storage`** — opinionated put-away advice keyed by storage **class** (`tender-herbs`, `alliums`, …), with a few singletons (`basil`, `tomatoes`, `avocados`) and a relational `_ethylene` file. **Read-only**: hand-maintained, edit-when-directed curated config.
+- **`cooking_techniques`** — general cooking-technique memories keyed by **technique** (`browning-meat`, `searing`, `resting-meat`, …). **Agent-writable** via `save_guidance` (the member posts an article/technique; the agent distills it). One file per technique — refining overwrites, never appends.
 
-List the available guidance classes.
+The agent maps a just-bought item or a recipe step to the right slug with its own world knowledge over the semantic slugs (no manifest); over-fetching is harmless. See `docs/SCHEMAS.md` for the trees and the AGENT_INSTRUCTIONS put-away/cook/capture rules for when these fire.
 
-**Params:** none.
+### `list_guidance(domain?)`
 
-**Returns:**
-- `{ entries: [{ slug, description? }] }` — one entry per `storage_guidance/*.md` file; `slug` is the filename without `.md` (e.g. `tender-herbs`, `_ethylene`); `description` is the optional one-line summary from the file's `description` frontmatter. Returns `{ entries: [] }` when no tree exists (not an error).
-
-### `read_storage_guidance(slugs)`
-
-Read the content of the named guidance entries.
+List the available guidance slugs. Pass `domain` for one corpus, or omit it for every domain grouped.
 
 **Params:**
-- `slugs` (array of strings, required) — the class slugs to read (from `list_storage_guidance`).
+- `domain` (string, optional) — `"ingredient_storage"` or `"cooking_techniques"`. Omit to list all.
 
 **Returns:**
-- `{ entries: [{ slug, content }] }` — `content` is the file's full markdown (frontmatter + prose).
+- With a `domain`: `{ domain, entries: [{ slug, description? }] }` — one entry per `guidance/<domain>/*.md` file; `slug` is the filename without `.md` (e.g. `tender-herbs`, `_ethylene`, `browning-meat`); `description` is the optional one-line summary from the file's `description` frontmatter.
+- Without a `domain`: `{ domains: [{ domain, entries }] }` — every domain grouped.
+- An absent tree yields an empty listing (not an error). An unknown domain yields `{ error: "validation_failed", domain }`.
 
-**Notes:** An unknown (or malformed) slug yields a structured `{ error: "not_found", slug }`. Contested/folklore tips are pre-hedged in the prose — relay them with their hedge, never as settled fact. No matching class for a bought item → offer no tip (silence over invention).
+### `read_guidance(domain, slugs)`
+
+Read the content of the named guidance entries within a domain.
+
+**Params:**
+- `domain` (string, required) — `"ingredient_storage"` or `"cooking_techniques"`.
+- `slugs` (array of strings, required) — the slugs to read (from `list_guidance`).
+
+**Returns:**
+- `{ domain, entries: [{ slug, content }] }` — `content` is the file's full markdown (frontmatter + prose).
+
+**Notes:** An unknown (or malformed) slug yields a structured `{ error: "not_found", slug }`; an unknown domain yields `{ error: "validation_failed", domain }`. Contested/folklore tips are pre-hedged in the prose — relay them with their hedge, never as settled fact. No matching entry for a bought item / cook step → offer no tip (silence over invention).
+
+### `save_guidance(domain, slug, content, source?)`
+
+Create or **refine** a single guidance memory. Gated by a **writable-domain allowlist**.
+
+**Params:**
+- `domain` (string, required) — must be on the writable allowlist (currently **only** `"cooking_techniques"`). A write to `"ingredient_storage"` (curated, read-only) or any unknown domain is rejected.
+- `slug` (string, required) — kebab-case technique slug (e.g. `browning-meat`); no leading underscore, no path traversal.
+- `content` (string, required) — the **full markdown** the agent composes: distilled, imperative, non-obvious advice with a one-line `description:` frontmatter — NOT the verbatim article.
+- `source` (string, optional) — provenance (e.g. an ATK/Serious Eats URL), recorded into the file's frontmatter.
+
+**Returns:**
+- `{ domain, slug, path, commit_sha }` — `path` is `guidance/<domain>/<slug>.md`; the write is one atomic commit (the shared commit engine, same path as `create_recipe`).
+
+**Notes:** There is exactly one file per slug — saving an existing slug **overwrites/refines** it (read the existing entry first and merge; never accumulate duplicates). A write to a non-allowlisted/unknown domain, an empty `content`, or a malformed slug yields `{ error: "validation_failed", … }` and commits nothing — this allowlist is how `ingredient_storage` stays read-only.
 
 ---
 
