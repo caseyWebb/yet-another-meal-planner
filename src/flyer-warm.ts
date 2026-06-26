@@ -90,9 +90,9 @@ export interface WarmDeps {
   kv: KvStore;
   /** Every tenant id on the allowlist (the tenant directory). */
   listTenantIds(): Promise<string[]>;
-  /** This tenant's `preferences.toml` `[stores] preferred_location` label, or null. */
+  /** This tenant's D1 `preferences` `[stores] preferred_location` label, or null. */
   readPreferredLocationLabel(tenantId: string): Promise<string | null>;
-  /** The shared `flyer_terms.toml` broad terms (raw; normalization happens here). */
+  /** The shared D1 `flyer_terms` broad terms (raw; normalization happens here). */
   readBroadTerms(): Promise<string[]>;
   /** Resolve a `preferred_location` label to a Kroger `locationId`. */
   resolveLocationId(label: string): Promise<string>;
@@ -382,7 +382,7 @@ export async function runWarmJob(env: Env, deps: WarmDeps): Promise<void> {
 
 /** Wire the real GitHub/Kroger/KV clients for the scheduled handler. Runs without an
  *  OAuth session: it enumerates the tenant directory and reads any `users/<id>/`
- *  subtree directly (one shared data repo), since the warmed data is public-derived
+ *  reads each tenant's preferred location from D1 directly, since the warmed data is public-derived
  *  store-wide sale data, not tenant-private state. */
 export function buildWarmDeps(env: Env): WarmDeps {
   const directory = directoryFromEnv(env);

@@ -49,7 +49,7 @@ export interface KitchenApplyResult {
   conflicts: KitchenConflict[];
 }
 
-/** Normalize a parsed kitchen.toml object into the inventory shape (absent → empty). */
+/** Normalize a parsed `kitchen` inventory object into the inventory shape (absent → empty). */
 export function toInventory(parsed: Record<string, unknown>): KitchenInventory {
   const owned = Array.isArray(parsed.owned)
     ? (parsed.owned.filter((s): s is string => typeof s === "string"))

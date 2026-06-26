@@ -123,6 +123,8 @@ function productRow(c: KrogerCandidate): Record<string, unknown> {
     price: c.price,
     on_sale: isOnSale(c),
     available: c.fulfillment,
+    aisleLocation: c.aisleLocation,
+    inStore: c.fulfillment.inStore,
   };
 }
 
@@ -264,7 +266,7 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
     "list_recipes",
     {
       description:
-        "List recipes from the index, filtered. Returns the whole shared corpus (plus the caller's personal recipes) MINUS recipes the caller has rejected — there is no activation step and no status filter; rejected recipes are simply absent. To find recipes by name or keyword (including a named dish), use `query` — the single text search over title AND tags: it keeps recipes whose title or tags contain EVERY token (case-insensitive substring), after dropping connective stopwords (so \"chicken and rice\" matches the same as \"chicken rice\", including a recipe titled \"Chicken and Rice\" whose tags omit \"rice\"). There is no tag filter. Array filters season/dietary match ALL listed values. course is an open-vocabulary facet (main | side | dessert | breakfast | …) matched by containment — `course: 'side'` returns every recipe whose course includes 'side', including a dual-use `[main, side]` dish. exclude_cooked_within_days is a caller-supplied window. A makeability gate is applied by default: recipes needing equipment the caller doesn't own (per kitchen.toml) are hidden — unless the caller has no kitchen inventory recorded, in which case nothing is gated. Pass include_unmakeable:true to instead return those recipes annotated with missing_equipment (use this when surfacing a specifically NAMED dish so it is never silently dropped). Each returned entry carries the caller's `favorite` boolean; no status or rating.",
+        "List recipes from the index, filtered. Returns the whole shared corpus (plus the caller's personal recipes) MINUS recipes the caller has rejected — there is no activation step and no status filter; rejected recipes are simply absent. To find recipes by name or keyword (including a named dish), use `query` — the single text search over title AND tags: it keeps recipes whose title or tags contain EVERY token (case-insensitive substring), after dropping connective stopwords (so \"chicken and rice\" matches the same as \"chicken rice\", including a recipe titled \"Chicken and Rice\" whose tags omit \"rice\"). There is no tag filter. Array filters season/dietary match ALL listed values. course is an open-vocabulary facet (main | side | dessert | breakfast | …) matched by containment — `course: 'side'` returns every recipe whose course includes 'side', including a dual-use `[main, side]` dish. exclude_cooked_within_days is a caller-supplied window. A makeability gate is applied by default: recipes needing equipment the caller doesn't own (per the caller's kitchen inventory) are hidden — unless the caller has no kitchen inventory recorded, in which case nothing is gated. Pass include_unmakeable:true to instead return those recipes annotated with missing_equipment (use this when surfacing a specifically NAMED dish so it is never silently dropped). Each returned entry carries the caller's `favorite` boolean; no status or rating.",
       inputSchema: { filters: z.object(recipeFiltersShape).optional() },
     },
     ({ filters }) =>
@@ -525,12 +527,12 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
     "kroger_prices",
     {
       description:
-        "Current Kroger prices for each ingredient at the preferred location. Returns the FULL list of fulfillable products per ingredient (relevance-ranked) — each with { regular, promo } price, on-sale flag, and curbside/delivery availability — so you can compare across brands/sizes and pick, not just the top one. An ingredient with nothing fulfillable returns an empty products list.",
-      inputSchema: { ingredients: z.array(z.string()) },
+        "Current Kroger prices for each ingredient at the preferred location. Returns the FULL list of fulfillable products per ingredient (relevance-ranked) — each with { regular, promo } price, on-sale flag, curbside/delivery availability, top-level inStore flag, and aisleLocation — so you can compare across brands/sizes and pick, not just the top one. An ingredient with nothing fulfillable returns an empty products list.",
+      inputSchema: { ingredients: z.array(z.string()), location_id: z.string().optional() },
     },
-    ({ ingredients }) =>
+    ({ ingredients, location_id }) =>
       runTool(async () => {
-        const locationId = await getLocationId();
+        const locationId = location_id ?? await getLocationId();
         // Independent per-ingredient searches run concurrently (bounded by the
         // Kroger client's concurrency cap); Promise.all preserves input order.
         const prices = await Promise.all(
@@ -652,9 +654,9 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
   registerCookingWriteTools(server, env, tenant.id);
 
   // Discovery: RSS recipe candidates, parse-only URL import, draft create, plus the
-  // feeds/sources config writers. Everything here is SHARED (root client) — recipes,
-  // feeds.toml, the discoveries inbox, and discovery_sources.toml all live at the
-  // data-repo root, so any member's config feeds one group pool. Imports dedupe by
+  // feeds/sources config writers. Everything here is SHARED — recipes live at the
+  // data-repo root, while the discovery feeds/inbox/allowlist are shared D1 tables,
+  // so any member's config feeds one group pool. Imports dedupe by
   // source URL against the shared corpus so a recipe is reused, not duplicated (§6.4).
   registerDiscoveryTools(server, sharedGh, env, tenant.id);
 

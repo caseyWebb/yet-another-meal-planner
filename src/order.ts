@@ -132,7 +132,7 @@ export interface CheckpointLine {
   message: string;
 }
 
-/** A learned ingredient→SKU mapping to append to the shared skus/kroger.toml. */
+/** A learned ingredient→SKU mapping to append to the shared D1 `sku_cache` table. */
 export interface NewMapping {
   ingredient: string;
   sku: string;
@@ -170,7 +170,7 @@ export interface PlaceOrderOptions {
 export interface PlaceOrderResult {
   resolved: ResolvedLine[];
   checkpoint: CheckpointLine[];
-  sku_cache: { committed: boolean; commit_sha?: string | null; error?: string };
+  sku_cache: { committed: boolean; error?: string };
   cart: { written: boolean; count?: number; error?: string; code?: string };
   list: { advanced: boolean; error?: string };
   preview: boolean;
@@ -269,8 +269,8 @@ export async function placeOrder(
   // 1. SKU-cache append first — a pure hint, so committing it before the cart
   //    means a cart failure leaves the repo correct and the cart retryable.
   try {
-    const sha = await deps.commitSkuCache(resolved.map(toMapping));
-    result.sku_cache = { committed: true, commit_sha: sha };
+    await deps.commitSkuCache(resolved.map(toMapping));
+    result.sku_cache = { committed: true };
   } catch (e) {
     result.sku_cache = { committed: false, error: msg(e) };
   }

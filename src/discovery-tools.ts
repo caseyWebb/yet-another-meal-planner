@@ -7,7 +7,7 @@
 //
 // fetch_flyer_featured is intentionally NOT here: Kroger has no "featured"
 // primitive, so on-sale ready-to-eat discovery rides the existing kroger_flyer
-// pre-pass + flyer_terms.toml + agent-side catalog dedup (see AGENT_INSTRUCTIONS).
+// pre-pass + the D1 `flyer_terms` table + agent-side catalog dedup (see AGENT_INSTRUCTIONS).
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
@@ -44,10 +44,10 @@ function errMessage(e: unknown): string {
 
 /**
  * Discovery tools (recipe-discovery capability). Discovery is a SHARED, top-level
- * concern: feeds, the email discoveries inbox, the corpus index, and draft writes
- * all go through `sharedGh` (the data-repo root) — any member's configured feeds
- * feed one group pool, and the candidates are judged against the caller's taste at
- * menu time. Imports dedupe by source URL against the shared corpus so a recipe
+ * concern: the feeds, the email discoveries inbox, and the corpus index live in
+ * shared D1 tables, while recipe (draft) writes go through `sharedGh` (the data-repo
+ * root) — any member's configured feeds feed one group pool, and the candidates are
+ * judged against the caller's taste at menu time. Imports dedupe by source URL against the shared corpus so a recipe
  * already present is reused, never duplicated (§6.4).
  */
 export function registerDiscoveryTools(
@@ -60,7 +60,7 @@ export function registerDiscoveryTools(
     "fetch_rss_discoveries",
     {
       description:
-        "Pull the SHARED, group-wide discovery feeds (root feeds.toml) and return a deduped POOL of candidate recipes ({ url, title, source, feed_weight, summary }) — deduped against recipes already in the corpus (by source URL) and canonicalized (tracking query strings stripped). No taste score: YOU judge taste fit against the user's taste profile (read_taste) and pick the 1–2 worth importing, then parse_recipe + create_recipe each. No configured feeds returns an empty pool. Unreachable feeds are skipped (reported in `skipped`), not fatal.",
+        "Pull the SHARED, group-wide discovery feeds (the shared D1 feeds table) and return a deduped POOL of candidate recipes ({ url, title, source, feed_weight, summary }) — deduped against recipes already in the corpus (by source URL) and canonicalized (tracking query strings stripped). No taste score: YOU judge taste fit against the user's taste profile (from read_user_profile().taste) and pick the 1–2 worth importing, then parse_recipe + create_recipe each. No configured feeds returns an empty pool. Unreachable feeds are skipped (reported in `skipped`), not fatal.",
       inputSchema: {},
     },
     () =>

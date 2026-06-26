@@ -5,13 +5,13 @@ TBD - created by archiving change package-agent-as-plugin. Update Purpose after 
 ## Requirements
 ### Requirement: Guided first-run setup skill
 
-The system SHALL provide a `configure-grocery-profile` skill that handles a member's grocery profile — **store location (ZIP)**, taste, cooking preferences, diet principles, **kitchen equipment**, a **starter recipe corpus**, starting pantry, an optional **bulk-buy watchlist**, an optional **staples list**, and **ready-to-eat (heat-and-eat) acceptance** — **idempotently**: on an empty profile it walks first-time setup conversationally (rather than requiring a wall of typed input); on an existing profile it reads back what it already knows and edits only what the member names. It SHALL persist each piece via write tools — `update_preferences`, `update_taste`, `update_diet_principles`, `update_kitchen`, `update_pantry`, `add_draft_ready_to_eat`, `update_stockup` (bulk-buy watchlist), `update_feeds` (discovery feeds), `update_staples` (staples list), and `commit_changes` (to bulk-promote the starter corpus into the caller's overlay). The skill itself SHALL NOT define an MCP tool — it composes existing and newly-added tools owned by other capabilities. Like every workflow skill, it SHALL load `grocery-core` via its prerequisite line.
+The system SHALL provide a `configure-grocery-profile` skill that handles a member's grocery profile — **store location (ZIP)**, taste, cooking preferences, diet principles, **kitchen equipment**, a **starter recipe corpus**, starting pantry, an optional **bulk-buy watchlist**, an optional **staples list**, and **ready-to-eat (heat-and-eat) acceptance** — **idempotently**: on an empty profile it walks first-time setup conversationally (rather than requiring a wall of typed input); on an existing profile it reads back what it already knows (via `read_user_profile()`) and edits only what the member names. It SHALL persist each piece via write tools — `update_preferences`, `update_taste`, `update_diet_principles`, `update_kitchen`, `update_pantry`, `add_draft_ready_to_eat`, `update_stockup` (bulk-buy watchlist), `update_feeds` (discovery feeds), and `update_staples` (staples list). The skill itself SHALL NOT define an MCP tool — it composes existing and newly-added tools owned by other capabilities. Like every workflow skill, it SHALL load `grocery-core` via its prerequisite line.
 
-The ready-to-eat setup area SHALL ask which kinds of heat-and-eat items the member accepts and for which meals, and SHALL persist named acceptances to the member's `users/<username>/ready_to_eat.toml` as `active` items (via `add_draft_ready_to_eat` with `status: active`). A member with no opinion on ready-to-eat SHALL be able to skip the area, leaving the catalog empty.
+The ready-to-eat setup area SHALL ask which kinds of heat-and-eat items the member accepts and for which meals, and SHALL persist named acceptances to the member's ready-to-eat catalog in D1 as `active` items (via `add_draft_ready_to_eat` with `status: active`). A member with no opinion on ready-to-eat SHALL be able to skip the area, leaving the catalog empty.
 
-The kitchen-equipment setup area SHALL walk the `EQUIPMENT_VOCAB` as a short, finite checklist (e.g. "do you have any of these: pressure cooker, sous vide, blender, …?") and SHALL persist the member's owned equipment to `users/<username>/kitchen.toml` `owned` via `update_kitchen`. It SHALL seed only the gating `owned` list, not the free-text `[notes]` region (oven count and pan sizes surface naturally during the `cook` flow). A member SHALL be able to skip the area, leaving `owned` empty — which makes the makeability gate a no-op, degrading gracefully to unfiltered behavior. The equipment area SHALL run before the starter-corpus area so the makeability gate is seeded for corpus curation.
+The kitchen-equipment setup area SHALL walk the `EQUIPMENT_VOCAB` as a short, finite checklist (e.g. "do you have any of these: pressure cooker, sous vide, blender, …?") and SHALL persist the member's owned equipment to the D1 `kitchen_equipment` table via `update_kitchen`. It SHALL seed only the gating `owned` list, not the free-text `notes` region (oven count and pan sizes surface naturally during the `cook` flow). A member SHALL be able to skip the area, leaving `owned` empty — which makes the makeability gate a no-op, degrading gracefully to unfiltered behavior. The equipment area SHALL run before the starter-corpus area so the makeability gate is seeded for corpus curation.
 
-The staples setup area SHALL ask the member which items they never want to run out of, noting that the list is curated — only things they want the agent to remind them about. For each named item, it SHALL ask if it is perishable (short shelf life once opened / stored). It SHALL persist the list via `update_staples`. The area is skippable; an absent staples list degrades to no-prompting behavior.
+The staples setup area SHALL ask the member which items they never want to run out of, noting that the list is curated — only things they want the agent to remind them about. For each named item, it SHALL ask if it is perishable (short shelf life once opened / stored). It SHALL persist the list to the D1 `staples` table via `update_staples`. The area is skippable; an absent staples list degrades to no-prompting behavior.
 
 #### Scenario: New member is guided through setup
 
@@ -21,32 +21,32 @@ The staples setup area SHALL ask the member which items they never want to run o
 #### Scenario: Ready-to-eat acceptances seed the per-tenant catalog
 
 - **WHEN** the member names heat-and-eat items they accept during onboarding
-- **THEN** the skill writes them as `active` items to that member's `users/<username>/ready_to_eat.toml`, tagged by meal, affecting no other member
+- **THEN** the skill writes them as `active` items to that member's D1 ready-to-eat catalog via `add_draft_ready_to_eat`, tagged by meal, affecting no other member
 
 #### Scenario: Equipment checklist seeds the kitchen inventory
 
 - **WHEN** the member confirms they own a pressure cooker and a blender during the equipment checklist
-- **THEN** the skill writes `owned = ["pressure-cooker", "blender"]` to that member's `users/<username>/kitchen.toml` via `update_kitchen`
+- **THEN** the skill writes `owned = ["pressure-cooker", "blender"]` to that member's D1 kitchen inventory via `update_kitchen`
 
 #### Scenario: Skipped equipment leaves the gate inert
 
 - **WHEN** the member skips the kitchen-equipment area
-- **THEN** `owned` is left empty and the makeability gate suppresses no recipes for that member
+- **THEN** `owned` is left empty in D1 and the makeability gate suppresses no recipes for that member
 
 #### Scenario: Staples seeded at onboarding
 
 - **WHEN** the member names "olive oil, salt, eggs (perishable)" during the staples setup area
-- **THEN** the skill writes `[{ name: "olive oil" }, { name: "salt" }, { name: "eggs", perishable: true }]` to the member's `users/<username>/staples.toml` via `update_staples`
+- **THEN** the skill writes `[{ name: "olive oil" }, { name: "salt" }, { name: "eggs", perishable: true }]` to the member's D1 staples table via `update_staples`
 
-#### Scenario: Skipped staples area leaves file absent
+#### Scenario: Skipped staples area leaves staples empty
 
 - **WHEN** the member skips the staples setup area
-- **THEN** no `staples.toml` is written and all staples-driven prompting behaviors remain suppressed
+- **THEN** no staples rows are written to D1 and all staples-driven prompting behaviors remain suppressed
 
 #### Scenario: Onboarding composes tools rather than defining its own
 
 - **WHEN** the onboarding skill persists captured setup
-- **THEN** it does so through write tools owned by other capabilities (the existing `update_*` / `add_draft_ready_to_eat` / `commit_changes` plus `update_stockup`, `update_feeds`, and `update_staples`) and defines no MCP tool of its own
+- **THEN** it does so through write tools owned by other capabilities (the existing `update_*` / `add_draft_ready_to_eat` plus `update_stockup`, `update_feeds`, and `update_staples`) and defines no MCP tool of its own
 
 ### Requirement: Onboarding triggers on an empty profile or explicit request
 
@@ -81,38 +81,38 @@ The gate SHALL be **fail-open**: if `profile_status` returns an error (an indete
 
 ### Requirement: Incremental, resumable capture
 
-The onboarding skill SHALL capture setup in small batches and persist each batch as it is gathered, so that an interrupted or abandoned setup leaves the already-provided information saved rather than lost. Each setup area SHALL be independently resumable: the skill SHALL check the area's own backing file and SHALL skip (or merely read back) an area that is already populated rather than re-interrogating it — e.g. it SHALL NOT re-walk taste when `taste.md` exists, and SHALL NOT re-promote a starter corpus when the caller's overlay already holds `active` rows. This per-area idempotency is the single code path behind both first-run setup and returning-member review.
+The onboarding skill SHALL capture setup in small batches and persist each batch as it is gathered, so that an interrupted or abandoned setup leaves the already-provided information saved rather than lost. Each setup area SHALL be independently resumable: the skill SHALL check the area's own backing data (via `read_user_profile()`) and SHALL skip (or merely read back) an area that is already populated rather than re-interrogating it — e.g. it SHALL NOT re-walk taste when the `taste` field is already set in D1, and SHALL NOT re-promote a starter corpus when the caller's overlay already holds rows. This per-area idempotency is the single code path behind both first-run setup and returning-member review.
 
-For a brand-new member, several profile reads (`read_preferences`, `read_pantry`, `read_taste`, `read_diet_principles`) return a structured `not_found` rather than an empty result when their backing file is absent. The skill SHALL interpret such a `not_found` as "this area is empty / not yet set up" (the first-run signal for that area) and SHALL NOT treat it as a tool failure nor trip the `report-grocery-agent-bug` reflex.
+For a brand-new member, `read_user_profile()` returns `{ initialized: false, missing: [...all areas...] }`. The `missing` array signals which areas are empty and not yet set up. The skill SHALL use `missing` to determine which areas to walk and SHALL NOT treat an empty area as a tool failure nor trip the `report-grocery-agent-bug` reflex.
 
 #### Scenario: Interrupted setup keeps partial data
 
 - **WHEN** a member provides some setup information and then stops partway through
-- **THEN** the information already gathered has been written and is not lost
+- **THEN** the information already gathered has been written to D1 and is not lost
 
 #### Scenario: Re-running skips already-populated areas
 
 - **WHEN** the skill runs again after some areas were completed
-- **THEN** it reads back the populated areas and asks only about the empty ones, without re-interrogating or overwriting settled areas
+- **THEN** it reads back the populated areas via `read_user_profile()` and asks only about the empty ones, without re-interrogating or overwriting settled areas
 
-#### Scenario: New-member profile reads are treated as empty, not errors
+#### Scenario: New-member profile reads show empty areas, not errors
 
-- **WHEN** the opening readback calls `read_preferences` / `read_pantry` / `read_taste` / `read_diet_principles` for a brand-new member and they return `not_found`
-- **THEN** the skill treats each as an empty area to set up and does not surface a tool failure or file a bug report
+- **WHEN** the opening readback calls `read_user_profile()` for a brand-new member
+- **THEN** the `missing` array indicates all unset areas and the skill treats each as an empty area to set up — it does not surface a tool failure or file a bug report
 
 ### Requirement: Store location captured before pricing-dependent steps
 
-The onboarding skill SHALL capture the member's store location as the first setup area and persist it to `users/<username>/preferences.toml` `[stores]` (a `preferred_location` carrying the member's ZIP) via `update_preferences`, because Kroger pricing and ordering hard-fail until a `preferred_location` is resolvable. It SHALL ask only for a ZIP (the location resolver requires only a 5-digit code) and SHALL NOT prompt for brand defaults at onboarding (those emerge during ordering). Because `update_preferences` writes the file **verbatim** (it does not merge), the skill SHALL supply the **complete** `preferences.toml` content on every write and preserve previously-captured fields, so a later preferences write (e.g. `default_cooking_nights`) does not clobber the store ZIP.
+The onboarding skill SHALL capture the member's store location as the first setup area and persist it to the D1 `profile` row via `update_preferences`, because Kroger pricing and ordering hard-fail until a `preferred_location` is resolvable. It SHALL ask only for a ZIP (the location resolver requires only a 5-digit code) and SHALL NOT prompt for brand defaults at onboarding (those emerge during ordering). `update_preferences` writes the preferences fields passed in, merging them into the existing D1 row, so subsequent `update_preferences` calls for other fields do not clobber the already-written store ZIP.
 
 #### Scenario: ZIP unblocks pricing
 
 - **WHEN** a new member provides their ZIP during onboarding
-- **THEN** the skill writes `[stores].preferred_location` so that a subsequent `kroger_prices` / `place_order` can resolve a location rather than erroring
+- **THEN** the skill writes `preferred_location` via `update_preferences` so that a subsequent `kroger_prices` / `place_order` can resolve a location rather than erroring
 
 #### Scenario: A later preferences write preserves the store ZIP
 
 - **WHEN** the skill captures `default_cooking_nights` in a later area after the store ZIP was already written
-- **THEN** it writes the full `preferences.toml` content including the existing `[stores]` block, so the ZIP is not lost to the verbatim overwrite
+- **THEN** the ZIP is preserved in D1 — `update_preferences` merges fields rather than replacing the whole row
 
 #### Scenario: Brand defaults are not interrogated at onboarding
 
@@ -158,17 +158,17 @@ On first-run setup the inventory area SHALL encourage a thorough, open-ended, ro
 
 ### Requirement: Bulk-buy watchlist seeding
 
-The onboarding skill SHALL offer an optional area to seed the member's bulk-buy watchlist, capturing the items they buy in bulk plus a `typical_purchase` and a `freezer_capacity_estimate`, persisted to `users/<username>/stockup.toml` via `update_stockup`. It SHALL NOT prompt for the `buy_at_or_below` / `baseline_price` thresholds — those are advisory-only (no Worker logic gates on them; "is this a good price" is the agent reasoning over the live flyer), so a member who does not know exact numbers is never blocked. The area SHALL be skippable, leaving the watchlist empty.
+The onboarding skill SHALL offer an optional area to seed the member's bulk-buy watchlist, capturing the items they buy in bulk plus a `typical_purchase` and a `freezer_capacity_estimate`, persisted to the D1 `stockup` table via `update_stockup`. It SHALL NOT prompt for the `buy_at_or_below` / `baseline_price` thresholds — those are advisory-only (no Worker logic gates on them; "is this a good price" is the agent reasoning over the live flyer), so a member who does not know exact numbers is never blocked. The area SHALL be skippable, leaving the watchlist empty.
 
 #### Scenario: Watchlist seeded without numeric thresholds
 
 - **WHEN** a member names items they like to buy in bulk during onboarding
-- **THEN** the skill writes those items (with `typical_purchase` and `freezer_capacity_estimate`) to `stockup.toml` via `update_stockup`, without requiring `buy_at_or_below` or `baseline_price`
+- **THEN** the skill writes those items (with `typical_purchase` and `freezer_capacity_estimate`) to the D1 stockup table via `update_stockup`, without requiring `buy_at_or_below` or `baseline_price`
 
 #### Scenario: Skipped watchlist stays empty
 
 - **WHEN** the member skips the bulk-buy area
-- **THEN** no `stockup.toml` is written and sale-checking simply has no watchlist to filter against
+- **THEN** no stockup rows are written to D1 and sale-checking simply has no watchlist to filter against
 
 ### Requirement: Sparse-corpus onboarding seeds discovery sources
 
@@ -181,7 +181,7 @@ When the shared corpus is empty or too sparse to bootstrap a starter set (e.g. t
 
 ### Requirement: Inventory and heat-and-eat acceptance cross-record ready-to-eat items
 
-Ready-to-eat items are tracked in two places by design — the per-tenant `ready_to_eat.toml` catalog holds them as **options** (meal-tagged, no stock field) and `pantry.toml` holds their **on-hand stock** (freezer/fridge). The onboarding skill SHALL keep these in sync at capture time so that neither view goes stale:
+Ready-to-eat items are tracked in two places by design — the per-tenant D1 ready-to-eat catalog holds them as **options** (meal-tagged, no stock field) and the D1 pantry table holds their **on-hand stock** (freezer/fridge). The onboarding skill SHALL keep these in sync at capture time so that neither view goes stale:
 
 - During the inventory walk, when the member names heat-and-eat items physically on hand (frozen dinners, breakfast burritos, etc.), the skill SHALL record their on-hand stock via `update_pantry` AND SHALL **offer** to add them to the ready-to-eat catalog via `add_draft_ready_to_eat` (`status: active`) so they become suggestible options — offering rather than silently adding (consistent with the persona's don't-auto-add stance).
 - During the heat-and-eat acceptance area, when the member indicates they currently have some of an accepted item on hand, the skill SHALL also record that on-hand stock via `update_pantry`, so the menu-gen restock cross-reference (favorites vs pantry on-hand) does not immediately read a just-named item as out.

@@ -204,27 +204,6 @@ export async function readReadyToEat(env: Env, tenant: string): Promise<Record<s
   }));
 }
 
-/** The caller's stockup watchlist as the agent reads it ({ items, freezer_capacity_estimate? }). */
-export async function readStockup(
-  env: Env,
-  tenant: string,
-): Promise<Record<string, unknown> | null> {
-  const [items, freezer] = await Promise.all([
-    readStockupItems(env, tenant),
-    db(env)
-      .first<{ freezer_capacity_estimate: string | null }>(
-        "SELECT freezer_capacity_estimate FROM profile WHERE tenant = ?1",
-        tenant,
-      )
-      .then((r) => r?.freezer_capacity_estimate ?? null),
-  ]);
-  if (items.length === 0 && freezer === null) return null;
-  const out: Record<string, unknown> = {};
-  if (freezer !== null) out.freezer_capacity_estimate = freezer;
-  out.items = items;
-  return out;
-}
-
 /** Raw stockup items (typed shape) for the update path's dedup logic. */
 export async function readStockupItems(env: Env, tenant: string): Promise<StockupItem[]> {
   const rows = await db(env).all<{

@@ -1,8 +1,6 @@
-// Pure meal-plan logic (meal-planning capability). meal_plan.toml is the
+// Pure meal-plan logic (meal-planning capability). The D1 `meal_plan` table is the
 // transient, recipe-grain record of committed cook intent. No I/O here; the
 // tool/commit wrappers supply the parsed file and today's date.
-
-export const MEAL_PLAN_PATH = "meal_plan.toml";
 
 export interface PlannedItem {
   recipe: string;
@@ -43,7 +41,7 @@ function unionSides(existing: string[] | undefined, add: string[]): string[] {
   return out;
 }
 
-/** Read the planned array out of a parsed meal_plan.toml (empty when absent). */
+/** Read the planned array out of a parsed `meal_plan` record (empty when absent). */
 export function plannedOf(parsed: Record<string, unknown>): PlannedItem[] {
   const raw = Array.isArray(parsed.planned) ? (parsed.planned as Record<string, unknown>[]) : [];
   return raw.map(coercePlanned);

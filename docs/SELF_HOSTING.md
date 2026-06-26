@@ -17,7 +17,7 @@ The operator's one-time setup. When you finish you'll have a private **data repo
 | Piece | What it is | Yours? |
 |---|---|---|
 | **Code repo** (`caseyWebb/groceries-agent`) | the Worker source + build tooling + reusable workflows | **no fork to run it** — your data repo references it (`@main` or a pinned tag). A fork is needed *only* for plugin Option 2 (your own auto-updating marketplace); Options 1 & 3 need no fork (step 7) |
-| **Data repo** (`<you>/groceries-agent-data`, **private**) | `recipes/` + reference data + `users/<username>/`, **plus your `wrangler.jsonc` + the caller workflows** | you create it from the template; it is your control plane |
+| **Data repo** (`<you>/groceries-agent-data`, **private**) | `recipes/` + `storage_guidance/` markdown, **plus your `wrangler.jsonc` + the caller workflows** (per-tenant and shared-corpus data live in D1, not here) | you create it from the template; it is your control plane |
 | **Worker** (`grocery-mcp` on Cloudflare) | the MCP server Claude.ai talks to | you deploy it from your data repo's Actions |
 | **Cookbook site** (GitHub Pages on the data repo) | public read-only recipe site | optional; needs GitHub Pro |
 
@@ -32,7 +32,7 @@ A single **GitHub App** (on your account, scoped to the data repo) gives the Wor
 
 ## 1. Create the data repo
 
-On the [`groceries-agent-data-template`](https://github.com/caseyWebb/groceries-agent-data-template) → **Use this template** → create `<you>/groceries-agent-data`, **Private**. Add your recipes under `recipes/`, reference data (`aliases.toml`, …), and your own `users/<username>/` (or let the *Onboard* Action seed it in step 6). The template's CI regenerates `_indexes/` on every recipe change.
+On the [`groceries-agent-data-template`](https://github.com/caseyWebb/groceries-agent-data-template) → **Use this template** → create `<you>/groceries-agent-data`, **Private**. Add your recipes under `recipes/`. The template's CI projects the D1 `recipes` table from `recipes/*.md` on every recipe push (and regenerates `_indexes/` for the optional static site).
 
 This repo is your **control plane**. From the template it carries these thin `.github/workflows/` — each a tiny caller (`uses: caseyWebb/groceries-agent/...@main`) of a *reusable* workflow in the public code repo, so the logic and the no-secrets posture live upstream while your private repo holds the config and the one Actions secret. Running them here (not in a fork of the public repo) is what keeps invite codes out of public logs.
 
@@ -41,7 +41,7 @@ This repo is your **control plane**. From the template it carries these thin `.g
 | `deploy.yml` | `data-deploy.yml` | deploy the Worker (overlays your `wrangler.jsonc`) |
 | `onboard.yml` | `data-onboard.yml` | mint a member's invite code + allowlist entry |
 | `revoke.yml` | `data-revoke.yml` | remove a member's allowlist entry + invite code |
-| `build-indexes.yml` | `data-build-indexes.yml` | rebuild `_indexes/` from `recipes/` |
+| `build-indexes.yml` | `data-build-indexes.yml` | project D1 `recipes` table from `recipes/`; rebuild `_indexes/` for the static site |
 | `build-site.yml` | `data-build-site.yml` | build + deploy the optional cookbook site |
 | `build-plugin.yml` | `data-build-plugin.yml` | build your plugin bundle (your Worker URL baked in) as a downloadable artifact to upload to claude.ai |
 
@@ -105,7 +105,7 @@ Then add the **GitHub App private key** as a Worker secret in the Cloudflare das
 
 *(CLI alternative: `npx wrangler secret put GITHUB_APP_PRIVATE_KEY < app-pkcs8.pem`.)* Delete `app-pkcs8.pem` when done.
 
-**A background flyer warm runs on a cron — automatically, no config from you.** The deploy **merges** code-level wrangler config (the `triggers.crons` block, `compatibility_*`, `main`, `observability`) from the upstream Worker into your deployed config, so the cron registers on deploy without you touching your `wrangler.jsonc`. (Your `wrangler.jsonc` owns only *your* values — `GITHUB_APP_ID`, optional `name`/custom domain, and KV ids that auto-provision and pin back; see *What your `wrangler.jsonc` owns* below.) Once registered, a scheduled sweep periodically pre-computes the Kroger sale flyer for each member's store into the existing `KROGER_KV` namespace, so `kroger_flyer` is a fast cache read instead of a live scan. It reuses your Kroger credentials (step 3) and is **comfortably within the Cloudflare free tier** (a single trigger; each tick does a small bounded batch and most ticks are an idle no-op). It's driven by the root-level `flyer_terms.toml` in your data repo (broad sale-scan categories); absent or empty, the flyer just comes back empty. Cron invocations are billed to your account like any request.
+**A background flyer warm runs on a cron — automatically, no config from you.** The deploy **merges** code-level wrangler config (the `triggers.crons` block, `compatibility_*`, `main`, `observability`) from the upstream Worker into your deployed config, so the cron registers on deploy without you touching your `wrangler.jsonc`. (Your `wrangler.jsonc` owns only *your* values — `GITHUB_APP_ID`, optional `name`/custom domain, and KV ids that auto-provision and pin back; see *What your `wrangler.jsonc` owns* below.) Once registered, a scheduled sweep periodically pre-computes the Kroger sale flyer for each member's store into the existing `KROGER_KV` namespace, so `kroger_flyer` is a fast cache read instead of a live scan. It reuses your Kroger credentials (step 3) and is **comfortably within the Cloudflare free tier** (a single trigger; each tick does a small bounded batch and most ticks are an idle no-op). It's driven by the `flyer_terms` table (broad sale-scan categories); empty, the flyer just comes back empty. Cron invocations are billed to your account like any request.
 
 **What your `wrangler.jsonc` owns.** The deploy merges code-level config from upstream, so your data-repo `wrangler.jsonc` only needs *operator-owned* keys:
 - `vars.GITHUB_APP_ID` (the one required value), and optionally `name` or `workers_dev: false` + `routes` for a custom domain;
@@ -129,7 +129,7 @@ Either way, once your ids are set the pin step is a no-op on every subsequent de
 
 ## 6. Onboard yourself
 
-Run the **Onboard member** Action (your data repo → Actions) with `username: <you>` (leave `invite_code` blank to auto-generate). It allowlists you in KV and mints your invite code (shown in the run summary — **visible only to you**, since this is your private repo). Your `users/<you>/` subtree is created automatically on your first write (e.g. setting your Kroger store) — the commit engine creates files at any path.
+Run the **Onboard member** Action (your data repo → Actions) with `username: <you>` (leave `invite_code` blank to auto-generate). It allowlists you in KV and mints your invite code (shown in the run summary — **visible only to you**, since this is your private repo). Per-tenant state (preferences, pantry, etc.) is written to D1 by the agent tools as you use the agent.
 
 ## 7. Get the agent into Claude.ai + Kroger consent
 
@@ -153,10 +153,10 @@ A *push* discovery source that reaches the bot-walled/paywalled sites RSS can't 
 
 1. **Add a dedicated spare domain to Cloudflare** (Email Routing manages the zone's MX records, so don't use a domain whose mail you rely on — e.g. not your ProtonMail domain). Cloudflare dashboard → **Email** → **Email Routing** → enable.
 2. **Route to the Worker.** Add a custom address (or catch-all) for `groceries-agent@<your-spare-domain>` with action **Send to a Worker** → your `grocery-mcp` Worker. (No `wrangler.jsonc` change — Email Routing binds the address to the Worker in the dashboard.)
-3. **Seed the allowlist.** In the data repo, add yourself to `discovery_sources.toml` `[[members]]` (and any newsletter senders to `[[senders]]`), or just say "add me as a discovery source" to the agent (`update_discovery_sources`).
+3. **Seed the allowlist.** Use the `update_discovery_sources` tool (say "add me as a discovery source" to the agent, or "add \<newsletter\> as a discovery sender") — it writes your member entry and any newsletter sender entries directly to D1. There is no `discovery_sources.toml` to hand-edit.
 4. **Feed it — forwarder-only.** Never subscribe `groceries-agent@` directly (confirm-links + paywalls). Instead, from your own inbox set an **auto-forward rule** to `groceries-agent@<domain>` for newsletters you want indexed (your inbox handles the signup/confirm/paywall), or just hit **Forward** on a one-off. Both work: auto-forward keeps the newsletter `From` (allowlist it as a `sender`); manual forward arrives as you (you're a trusted `member`). The handler authenticates (DKIM) before processing and drops everything else silently.
 
-Emails land in the shared `discoveries_inbox.toml` with their full body text. The agent reads the body at menu time via `read_discovery_inbox`, scans it for recipe titles and links, and calls `parse_recipe` on the promising ones. Full-recipe import still hits the walls — the agent presents the clean link and you paste the recipe to import.
+Emails land in the D1 `discovery_candidates` table with their full body text. The agent reads the body at menu time via `read_discovery_inbox`, scans it for recipe titles and links, and calls `parse_recipe` on the promising ones. Full-recipe import still hits the walls — the agent presents the clean link and you paste the recipe to import.
 
 ## 9. Cookbook site (optional)
 
@@ -177,11 +177,11 @@ This coupling is also why self-hosters don't ride *my* marketplace for skills: m
 
 A friend needs only a Claude.ai account and a Kroger account — no GitHub, no Kroger Developer app, and nothing local on your end.
 
-1. Your data repo → **Actions** → **Onboard member** → Run, enter their `username`. It allowlists them and mints their invite code (in the run summary, private to you). Their `users/<username>/` subtree is created on their first write.
+1. Your data repo → **Actions** → **Onboard member** → Run, enter their `username`. It allowlists them and mints their invite code (in the run summary, private to you). Per-tenant state (preferences, pantry, etc.) is written to D1 by the agent tools as they use the agent.
 2. **Hand them the plugin + invite code, matching whichever option you took in [step 7](#7-get-the-agent-into-claudeai--kroger-consent).** *Option 1 (recommended):* send them the `.zip` from your latest **Build plugin** run + their invite code — they upload the file to claude.ai, no GitHub account needed. *Option 2:* send them your marketplace + the invite code (the bundle carries your URL). *Option 3:* send them your **connector URL** (`https://<worker-host>/mcp`) + the invite code + [`AGENT_INSTRUCTIONS.md`](../AGENT_INSTRUCTIONS.md) for a project.
 3. They install (upload the `.zip` / add your marketplace / set up the project), **enter the code at `/authorize`**, then run their Kroger consent (`/oauth/init?tenant=<username>`). On a later update you ship, you re-send the new `.zip` (Option 1) or they `/plugin marketplace update` (Option 2, if they have a GitHub account).
 
-They share the recipe corpus (with their own ratings/notes) and have their own pantry, preferences, and Kroger cart — fully isolated from yours. To remove someone, run **Revoke member** (optionally deleting their `users/<username>/` subtree).
+They share the recipe corpus (with their own favorites/rejects/notes) and have their own pantry, preferences, and Kroger cart — fully isolated from yours. To remove someone, run **Revoke member** (removes their allowlist entry and invite code).
 
 ## Known unknowns / caveats
 

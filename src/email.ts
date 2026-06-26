@@ -2,9 +2,9 @@
 // Email Routing delivers forwarded recipe newsletters for `groceries-agent@<domain>`
 // to the Worker's email() handler. We authenticate the message (DKIM/SPF/DMARC
 // verdicts Cloudflare reports), gate it against the SHARED allowlist
-// (discovery_sources.toml — trusted senders + members), capture the email body
-// for the agent to parse, and append it to the shared discoveries_inbox.toml via
-// the commit engine. The LLM reads the body and extracts all recipe links itself,
+// (the D1 `discovery_senders`/`discovery_members` allowlist), capture the email body
+// for the agent to parse, and insert it into the shared D1 `discovery_candidates` table.
+// The LLM reads the body and extracts all recipe links itself,
 // so we never attempt URL extraction here — we just store the email faithfully.
 //
 // MIME parsing uses postal-mime (workerd-compatible, Node-testable) — robust

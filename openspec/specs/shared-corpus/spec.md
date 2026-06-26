@@ -36,24 +36,24 @@ Recipe **content** — the objective frontmatter (title, tags, protein, cuisine,
 - **WHEN** a recipe is classified with `course: [main]` at import
 - **THEN** that `course` is shared by all tenants (it rides the shared index), not stored in any tenant overlay
 
-### Requirement: Per-tenant overlay of subjective fields
+### Requirement: Per-tenant overlay of disposition fields
 
-Each tenant SHALL carry a per-tenant **overlay** for the subjective single-value fields `rating` and `status`, stored as rows in the D1 `overlay` table keyed by `(tenant, recipe)`. The third per-tenant subjective field, `last_cooked`, is NOT stored in the overlay: it is **derived** by query from that tenant's own D1 `cooking_log` rows (the max cook date for the slug), reconciling with the cooking-log capability. Read tools SHALL join shared content with the caller's overlay (rating/status) and the caller's cooking-log-derived last_cooked, so each tenant sees their own subjective view of shared recipes. When a tenant has no overlay row for a shared recipe, its effective `status` for that tenant SHALL default to `draft`. Disposition SHALL be per-tenant: one tenant marking a recipe `active`, `rejected`, or `archived` SHALL NOT change any other tenant's status for it.
+Each tenant SHALL carry a per-tenant **overlay** for the disposition boolean fields `favorite` and `reject`, stored as rows in the D1 `overlay` table keyed by `(tenant, recipe)`. There is no `status` lifecycle and no `rating` field in the overlay — the retired `active`/`draft`/`rejected`/`archived` status and numeric rating have been superseded by the `favorite`/`reject` disposition model. `last_cooked` is NOT stored in the overlay: it is **derived** by query from that tenant's own D1 `cooking_log` rows (the max cook date for the slug). Read tools MAY join shared content with the caller's overlay (`favorite`/`reject`) and the caller's cooking-log-derived `last_cooked`. Disposition is per-tenant: one tenant marking a recipe as a favorite or rejecting it SHALL NOT change any other tenant's overlay for it. `favorite` and `reject` are mutually exclusive; setting one clears the other on the same row.
 
 #### Scenario: Overlay joined at read time
 
-- **WHEN** tenant A reads a shared recipe for which A has an overlay rating of 5 and `status: active`
-- **THEN** the recipe is returned with A's rating and active status merged onto the shared content
+- **WHEN** tenant A reads a shared recipe for which A has `favorite: true` in the overlay
+- **THEN** the recipe is returned with A's disposition merged onto the shared content
 
-#### Scenario: Absent overlay defaults to draft
+#### Scenario: Absent overlay is neutral
 
 - **WHEN** a recipe exists in the shared corpus but the caller has no overlay row for it
-- **THEN** the recipe's effective status for that caller is `draft`
+- **THEN** the recipe is returned as neutral (no favorite, no reject) — there is no default `status` to apply
 
 #### Scenario: Disposition is per-tenant
 
-- **WHEN** tenant A sets `status: rejected` on a shared recipe and tenant B sets `status: active` on the same recipe
-- **THEN** both states coexist; A sees it rejected and B sees it active
+- **WHEN** tenant A rejects a shared recipe and tenant B favorites the same recipe
+- **THEN** both states coexist in separate overlay rows; A sees it rejected and B sees it as a favorite
 
 ### Requirement: Private-recipe escape hatch
 

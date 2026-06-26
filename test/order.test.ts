@@ -184,7 +184,7 @@ describe("placeOrder", () => {
 
     expect(res.resolved.map((r) => r.sku)).toEqual(["S1", "S2"]);
     expect(res.checkpoint).toEqual([]);
-    expect(res.sku_cache).toEqual({ committed: true, commit_sha: "sku-sha" });
+    expect(res.sku_cache).toEqual({ committed: true });
     expect(res.cart).toEqual({ written: true, count: 2 });
     expect(res.list).toEqual({ advanced: true });
     expect(calls).toMatchObject({ sku: 1, cart: 1, advance: 1 });

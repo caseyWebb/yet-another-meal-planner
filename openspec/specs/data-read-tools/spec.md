@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Defines the repo-data-backed read tools exposed by the MCP server (`list_recipes`, `read_recipe`, `read_pantry`, `read_preferences`, `read_taste`, `read_diet_principles`): their return shapes, `list_recipes` filter semantics, `read_pantry` partial-filter scope, per-tool error cases, and empty-data resilience. Consumes `_indexes/recipes.json` from the data-indexing capability.
+Defines the read tools exposed by the MCP server (`list_recipes`, `read_recipe`, `read_pantry`, `read_user_profile`): their return shapes, `list_recipes` filter semantics, `read_pantry` partial-filter scope, per-tool error cases, and empty-data resilience. All profile data (preferences, taste, diet principles, kitchen equipment, staples, stockup, ready-to-eat) is assembled by `read_user_profile()` from D1 in one batched call.
 ## Requirements
 ### Requirement: list_recipes reads the index and filters in-worker
 
@@ -30,9 +30,9 @@ The system SHALL provide `list_recipes(filters)` that reads the shared D1 `recip
 
 ### Requirement: list_recipes filter semantics
 
-The system SHALL apply `list_recipes` filters with these semantics: array filters (`dietary`, `season`) match when the recipe contains **ALL** listed values (AND); the `course` filter is a **scalar** that matches by **containment** — a recipe passes when its (array-normalized) `course` includes the requested value, so `{ course: "side" }` returns mains-that-are-also-sides as well as pure sides; `status` defaults to `active` and `status: "all"` disables status filtering; `exclude_cooked_within_days` is a caller-supplied number that excludes recipes cooked within that many days; and `not_cooked_since` (a date) admits recipes whose `last_cooked` is `null`. The system SHALL NOT provide a `tags` array filter — keyword/name matching against tags is handled by the `query` text filter (see "list_recipes free-text query filter"). The `course` value is a free string matched literally against the normalized index values; there is no controlled set.
+The system SHALL apply `list_recipes` filters with these semantics: array filters (`dietary`, `season`) match when the recipe contains **ALL** listed values (AND); the `course` filter is a **scalar** that matches by **containment** — a recipe passes when its (array-normalized) `course` includes the requested value, so `{ course: "side" }` returns mains-that-are-also-sides as well as pure sides; `exclude_cooked_within_days` is a caller-supplied number that excludes recipes cooked within that many days; and `not_cooked_since` (a date) admits recipes whose `last_cooked` is `null`. The system SHALL NOT provide a `tags` array filter — keyword/name matching against tags is handled by the `query` text filter (see "list_recipes free-text query filter"). The `course` value is a free string matched literally against the normalized index values; there is no controlled set.
 
-The system SHALL additionally apply a **makeability gate** by default: a recipe whose `requires_equipment` is not a subset of the caller's `owned` (see the kitchen-equipment "Deterministic makeability rule") SHALL be excluded. When the caller's `owned` is empty (or `kitchen.toml` is absent) the gate SHALL be a no-op (every recipe passes). A `include_unmakeable: true` filter SHALL disable the exclusion and instead return unmakeable recipes annotated with `missing_equipment` (the required slugs not in `owned`), so the named-dish enumeration path can surface a named recipe flagged rather than silently dropped. The gate SHALL be ANDed with the other filters and SHALL be a pure function of the recipe's indexed `requires_equipment` and the caller's `owned`.
+The system SHALL additionally apply a **makeability gate** by default: a recipe whose `requires_equipment` is not a subset of the caller's `owned` (see the kitchen-equipment "Deterministic makeability rule") SHALL be excluded. When the caller's `owned` is empty (or the D1 kitchen inventory is absent) the gate SHALL be a no-op (every recipe passes). A `include_unmakeable: true` filter SHALL disable the exclusion and instead return unmakeable recipes annotated with `missing_equipment` (the required slugs not in `owned`), so the named-dish enumeration path can surface a named recipe flagged rather than silently dropped. The gate SHALL be ANDed with the other filters and SHALL be a pure function of the recipe's indexed `requires_equipment` and the caller's `owned`.
 
 The return shape SHALL stay flat: `course` rides each entry's `frontmatter`; the tool SHALL NOT return a grouped or course-bucketed envelope. Callers that want mains and sides together issue one call (e.g. `list_recipes({ status: "active" })`) and bucket by `course` themselves.
 
@@ -50,11 +50,6 @@ The return shape SHALL stay flat: `course` rides each entry's `frontmatter`; the
 
 - **WHEN** `list_recipes({ course: "sauce" })` is invoked and some recipes carry `course: [sauce]`
 - **THEN** those recipes are returned; the filter does not reject `sauce` as off-vocabulary
-
-#### Scenario: Status opt-out returns every status
-
-- **WHEN** `list_recipes({ status: "all" })` is invoked
-- **THEN** recipes of every status (`active`, `draft`, `rejected`, `archived`) are returned
 
 #### Scenario: Never-cooked recipe passes not_cooked_since
 
@@ -78,7 +73,7 @@ The return shape SHALL stay flat: `course` rides each entry's `frontmatter`; the
 
 #### Scenario: Empty inventory disables the gate
 
-- **WHEN** `list_recipes({})` is invoked and the caller has no `kitchen.toml` (or empty `owned`)
+- **WHEN** `list_recipes({})` is invoked and the caller has no kitchen inventory in D1 (or empty `owned`)
 - **THEN** the makeability gate excludes nothing and recipes are returned as if no equipment filter applied
 
 #### Scenario: include_unmakeable surfaces flagged recipes
@@ -112,12 +107,12 @@ The system SHALL support an optional `query` string filter on `list_recipes` tha
 
 #### Scenario: Query composes with structured filters
 
-- **WHEN** `list_recipes({ query: "chicken", status: "active", protein: "chicken" })` is invoked
-- **THEN** only active chicken-protein recipes whose title or tags contain `chicken` are returned
+- **WHEN** `list_recipes({ query: "chicken", protein: "chicken" })` is invoked
+- **THEN** only chicken-protein recipes whose title or tags contain `chicken` are returned
 
 ### Requirement: read_recipe returns frontmatter and body
 
-The system SHALL provide `read_recipe(slug)` returning `{ slug, frontmatter, body }`, where `frontmatter` is the shared objective frontmatter **merged with the caller's overlay fields** (`favorite`, `status`, defaulting `status` to `draft` when absent) **and the caller's cooking-log-derived `last_cooked`** and `body` is the markdown after the frontmatter fence. The slug MAY resolve to a shared corpus recipe or one of the caller's personal recipes. The return SHALL NOT include a `last_modified` field. A slug unknown to both the shared corpus and the caller's personal recipes SHALL return a structured `not_found` error.
+The system SHALL provide `read_recipe(slug)` returning `{ slug, frontmatter, body }`, where `frontmatter` is the shared objective frontmatter **merged with the caller's overlay fields** (`favorite`) **and the caller's cooking-log-derived `last_cooked`** and `body` is the markdown after the frontmatter fence. The slug MAY resolve to a shared corpus recipe or one of the caller's personal recipes. The return SHALL NOT include a `last_modified` field and SHALL NOT include a `status` field (the disposition model is favorites/rejections, not status). A slug unknown to both the shared corpus and the caller's personal recipes SHALL return a structured `not_found` error.
 
 #### Scenario: Existing recipe read with caller's subjective fields
 
@@ -150,7 +145,7 @@ The system SHALL provide `read_pantry(filter)` returning `{ items: [...] }`, sup
 
 ### Requirement: Unified profile read assembles from D1
 
-`read_user_profile()` SHALL return the caller's full profile assembled from the D1 profile tables — `initialized`, `missing`, and all profile fields — in one batched set of queries. The structured fields (`preferences`, `kitchen`, `staples`, `overlay`, `ready_to_eat`, `stockup`) are reconstructed from typed rows/columns (preferences from the `profile` row + `brand_prefs`); the markdown fields (`taste`, `diet_principles`) are returned as strings from the `profile` row. The Worker SHALL NOT parse TOML on the profile read path, and SHALL NOT read a `profile:<username>` KV bundle. The returned object shape is unchanged from the caller's perspective.
+`read_user_profile()` SHALL return the caller's full profile assembled from the D1 profile tables — `initialized`, `missing`, and all profile fields — in one batched set of queries. The structured fields (`preferences`, `kitchen`, `overlay`, `ready_to_eat`, `stockup`) are reconstructed from typed rows/columns (preferences from the `profile` row + `brand_prefs`); `staples` is returned as a bare `StaplesItem[]` array (not `{ items: [...] }`) from the D1 `staples` table; the markdown fields (`taste`, `diet_principles`) are returned as strings from the `profile` row. The Worker SHALL NOT parse TOML on the profile read path, and SHALL NOT read a KV bundle. The `kitchen` field returns `{ owned: [...], notes: {...} }` from the D1 `kitchen_equipment` table and profile notes.
 
 #### Scenario: Profile read assembles structured JSON from D1
 
@@ -162,27 +157,13 @@ The system SHALL provide `read_pantry(filter)` returning `{ items: [...] }`, sup
 - **WHEN** the matcher reads `brands` or the weather resolver reads `stores`/`location_zip`
 - **THEN** the values come from the D1 `brand_prefs` and `profile` rows, not a parsed TOML string
 
-### Requirement: Config and narrative read tools
-
-The system SHALL provide `read_preferences()` returning the caller's `preferences` object assembled from D1 (the `profile` row + `brand_prefs` rows), and `not_found` when no profile/preferences row exists; `read_taste()` returning the caller's taste markdown from the `profile` row; and `read_diet_principles()` returning the caller's diet-principles markdown from the `profile` row. No profile read path parses TOML or reads a KV bundle.
-
-#### Scenario: Preferences returned from D1
-
-- **WHEN** `read_preferences()` is invoked
-- **THEN** it returns the caller's `preferences` object assembled from the D1 `profile` row and `brand_prefs` rows, with no TOML parse
-
-#### Scenario: Narrative fields returned as text
-
-- **WHEN** `read_taste()` or `read_diet_principles()` is invoked
-- **THEN** it returns the caller's markdown content as text from the `profile` row
-
 ### Requirement: Empty-data resilience
 
-Read tools SHALL return clean empty results for sources that currently hold no data (files that are entirely comments, empty catalogs, or absent optional sections) rather than erroring. A TOML file with no `items` SHALL yield `{ items: [] }`.
+Read tools SHALL return clean empty results for sources that currently hold no data (empty D1 tables, empty catalogs, or absent optional sections) rather than erroring. A D1 pantry table with no rows SHALL yield `{ items: [] }`.
 
 #### Scenario: Empty pantry yields empty items
 
-- **WHEN** `read_pantry({})` is invoked against a `pantry.toml` that contains only comments
+- **WHEN** `read_pantry({})` is invoked against a pantry that contains no rows
 - **THEN** it returns `{ items: [] }` without error
 
 ### Requirement: Group signal is readable on shared recipes
@@ -217,35 +198,35 @@ The system SHALL expose the cross-tenant group signal for a shared recipe — ho
 - **WHEN** `list_recipes` returns a recipe that has a `description`
 - **THEN** the entry's frontmatter carries that `description`
 
-### Requirement: profile_status reports initialization from a single subtree listing
+### Requirement: profile_status reports initialization from D1
 
-The system SHALL provide a per-tenant `profile_status` read tool that reports whether the caller has completed grocery-profile setup, derived from a **single** listing of the caller's `users/<username>/` subtree (via the prefixed GitHub client's `listDir`). It SHALL take no parameters, never write, and address only the caller's own subtree.
+The system SHALL provide a per-tenant `profile_status` read tool that reports whether the caller has completed grocery-profile setup, derived from the D1 `profile` row and related tables. It SHALL take no parameters, never write, and address only the caller's own profile.
 
-It SHALL return `{ initialized: boolean, missing: string[] }`:
+It SHALL return `{ initialized: boolean, missing: string[] }` — this is also the shape included in `read_user_profile()` results:
 
-- `initialized` SHALL be `true` if and only if the caller's `preferences.toml` is present (the unconditional first onboarding area), and `false` otherwise.
-- `missing` SHALL list the onboarding-area keys whose backing file is absent, using the fixed mapping: `store`→`preferences.toml`, `taste`→`taste.md`, `diet`→`diet_principles.md`, `equipment`→`kitchen.toml`, `pantry`→`pantry.toml`, `ready-to-eat`→`ready_to_eat.toml`, `stockup`→`stockup.toml`, `corpus`→`overlay.toml`.
+- `initialized` SHALL be `true` if and only if the caller's `preferences` record is present in D1 (the unconditional first onboarding area), and `false` otherwise.
+- `missing` SHALL list the onboarding-area keys whose D1 data is absent, using the fixed mapping: `store` (preferences row), `taste`, `diet`, `equipment` (kitchen_equipment rows), `pantry` (pantry rows), `ready-to-eat`, `stockup`, `corpus` (overlay rows).
 
-When the subtree does not exist yet (the GitHub Contents API returns 404 for a brand-new member), the tool SHALL treat it as an empty subtree and return `{ initialized: false, missing: <all area keys> }` rather than erroring. Any other upstream failure SHALL surface as a structured `upstream_unavailable` error (the standard tool-boundary mapping), so the caller can treat an indeterminate result as non-gating.
+When the profile does not exist yet (a brand-new member with no D1 rows), the tool SHALL return `{ initialized: false, missing: <all area keys> }` rather than erroring. Any other upstream failure SHALL surface as a structured `upstream_unavailable` error (the standard tool-boundary mapping), so the caller can treat an indeterminate result as non-gating.
 
-#### Scenario: Brand-new member with no subtree
+#### Scenario: Brand-new member with no D1 profile
 
-- **WHEN** `profile_status` is called for a member whose `users/<username>/` subtree does not exist (404)
+- **WHEN** `profile_status` is called for a member with no D1 profile rows
 - **THEN** it returns `{ initialized: false, missing: [...all area keys...] }` without erroring
 
 #### Scenario: Set-up member reports initialized
 
-- **WHEN** `profile_status` is called for a member whose subtree contains `preferences.toml`
-- **THEN** it returns `initialized: true`, with `missing` listing only the onboarding areas whose files are still absent
+- **WHEN** `profile_status` is called for a member whose D1 profile row exists
+- **THEN** it returns `initialized: true`, with `missing` listing only the onboarding areas whose D1 data is still absent
 
 #### Scenario: Partially set-up member lists the gaps
 
-- **WHEN** `profile_status` is called for a member who has `preferences.toml` but no `taste.md` or `stockup.toml`
+- **WHEN** `profile_status` is called for a member who has a preferences row but no taste or stockup data
 - **THEN** it returns `initialized: true` and `missing` includes `taste` and `stockup`
 
 #### Scenario: Transient upstream failure is a structured error, not a false "not initialized"
 
-- **WHEN** the subtree listing fails for a reason other than a 404 (e.g. a 5xx from GitHub)
+- **WHEN** the D1 query fails for a transient reason (e.g. a 5xx)
 - **THEN** the tool returns a structured `upstream_unavailable` error rather than reporting `initialized: false`
 
 ### Requirement: recipe_site_url resolves the hosted browse URL at runtime
@@ -296,16 +277,3 @@ The system SHALL provide a `get_weather_forecast(days?)` read tool that resolves
 - **WHEN** the forecast for a day has high_f = 72 and precipitation_chance = 15
 - **THEN** that day's `meal_vibes` is `[]` — no strong signal, no hints applied
 
-### Requirement: read_staples returns the caller's staples list
-
-The system SHALL provide `read_staples()` that reads the caller's `users/<username>/staples.toml` and returns `{ items: [{ name, perishable? }] }`. When `staples.toml` is absent or empty the tool SHALL return `{ items: [] }` rather than an error, matching the graceful-degradation contract for optional per-tenant files.
-
-#### Scenario: Returns items with perishable flag
-
-- **WHEN** the caller's `staples.toml` contains `[{ name: "olive oil" }, { name: "eggs", perishable: true }]`
-- **THEN** `read_staples()` returns `{ items: [{ name: "olive oil" }, { name: "eggs", perishable: true }] }`
-
-#### Scenario: Missing file returns empty list
-
-- **WHEN** the caller has no `staples.toml`
-- **THEN** `read_staples()` returns `{ items: [] }` and does not error

@@ -1,7 +1,6 @@
 // Multi-tenancy foundation (multi-tenancy capability). A `Tenant` is the
 // per-request identity context every tool closes over: the single operator-owned
-// data repo every tenant shares, and the `users/<username>/` path prefix under
-// which THIS caller's personal state lives in that repo.
+// data repo every tenant shares. Per-tenant state lives in D1, keyed by tenant id.
 //
 // Repository model (single private data repo): one repo holds `recipes/` + shared
 // reference data at the root and one `users/<username>/` subtree per member. A
@@ -30,8 +29,6 @@ export interface Tenant {
   id: string;
   /** The single shared data repo (objective content + reference data + all users' subtrees). */
   dataRepo: RepoCoords;
-  /** Repo-relative prefix for this tenant's personal files, e.g. "users/alice" (empty during the pre-migration single-user bootstrap). */
-  userPrefix: string;
   /** GitHub App installation covering the data repo. Optional: when unset the auth
    *  provider resolves it at runtime from `dataRepo` (see createInstallationAuth). */
   installationId?: string;
@@ -44,9 +41,9 @@ export interface Unauthorized {
 }
 
 /**
- * What the directory persists per tenant. The data repo, installation, and
- * `users/<id>` prefix are all derivable globally (from `env` + the id), so the
- * record is just the allowlist entry — `resolveTenant` joins the rest on.
+ * What the directory persists per tenant. The data repo and installation are
+ * derivable globally (from `env` + the id), so the record is just the allowlist
+ * entry — `resolveTenant` joins the rest on.
  */
 export interface TenantRecord {
   /** Must equal the directory key (the username) it is stored under. */
@@ -66,14 +63,12 @@ const INVITE_PREFIX = "invite:";
 
 /**
  * Canonical tenant-id form. Usernames are case-insensitive: a member onboarded as
- * "Casey", connecting as "Casey"/"CASEY", and their data subtree `users/casey/`
- * are all one identity. We pick lowercase as that form and apply it at EVERY
- * boundary that derives a key or path from the id — the directory key
- * (`tenant:<id>`), the invite mapping target, the grant prop, the Kroger
- * refresh-token key, and the `users/<id>/` path prefix — so a casing mismatch
- * can't silently split one member's state across two subtrees. Mint writes the
- * lowercase form too (data-onboard.yml), so the KV directory key and the path
- * prefix always agree.
+ * "Casey" who connects as "Casey"/"CASEY" is one identity. We pick lowercase as
+ * that form and apply it at EVERY boundary that derives a key from the id — the
+ * directory key (`tenant:<id>`), the invite mapping target, the grant prop, and the
+ * Kroger refresh-token key — so a casing mismatch can't silently split one member's
+ * state across two keys. Mint writes the lowercase form too (data-onboard.yml), so
+ * the KV directory key and the derived keys always agree.
  */
 export function normalizeTenantId(tenantId: string): string {
   return tenantId.trim().toLowerCase();
@@ -82,11 +77,6 @@ export function normalizeTenantId(tenantId: string): string {
 /** The single data-repo coordinates, identical for every tenant, from `env`. */
 export function dataCoords(env: Env): RepoCoords {
   return { owner: env.DATA_OWNER, repo: env.DATA_REPO, ref: env.DATA_REF };
-}
-
-/** This tenant's personal-file path prefix within the data repo (always lowercase). */
-export function userPrefix(tenantId: string): string {
-  return `users/${normalizeTenantId(tenantId)}`;
 }
 
 /** A KV-backed tenant directory. Records are JSON under `tenant:<id>`. */
@@ -133,7 +123,6 @@ export function tenantFromRecord(env: Env, record: TenantRecord): Tenant {
   return {
     id,
     dataRepo: dataCoords(env),
-    userPrefix: userPrefix(id),
     installationId: env.GITHUB_INSTALLATION_ID,
   };
 }
@@ -152,7 +141,7 @@ export async function resolveTenant(
     return { error: "unauthorized", message: "No tenant on the request" };
   }
   // Normalize before the directory lookup so a mixed-case grant prop (e.g.
-  // "Casey") matches the lowercase allowlist key and resolves to `users/casey/`.
+  // "Casey") matches the lowercase allowlist key (the one canonical entry).
   // This is the single defensive point even when `directory` doesn't normalize.
   const id = normalizeTenantId(tenantId);
   const record = await directory.get(id);

@@ -5,26 +5,21 @@ TBD - created by archiving change in-store-fulfillment. Update Purpose after arc
 ## Requirements
 ### Requirement: Shared store registry and schema
 
-The system SHALL maintain a shared `stores/` tree at the data-repo root, one `stores/<slug>.toml` per **specific store location** (not per chain), holding objective **identity** read by every member. Each store SHALL carry: `slug` (required, kebab-case location id), `name` (required, e.g. "Tom Thumb"), `label` (optional human handle, e.g. "West 7th"), `chain` (optional), `address` (optional), and `domain` (free string, default `grocery`). Store **layout** — aisle order, where-it-hides item locations, and not-carried entries — SHALL NOT be structured fields of this file; it lives in attributed store notes (see "Attributed per-tenant store notes"). The schema SHALL be documented in `docs/SCHEMAS.md` and validated structurally at build time (`scripts/build-indexes.mjs`) and by the Worker's write-time subset. Store identity is objective and **unattributed** (like recipe content). There SHALL be no `_indexes/stores.json` — the set is small and read directly. An absent `stores/` tree SHALL be valid (no stores registered yet). A parser reading a `stores/<slug>.toml` that still carries legacy `aisles` / `item_locations` / `doesnt_carry` keys SHALL ignore them silently, never erroring.
+The system SHALL maintain a shared D1 `stores` table, one row per **specific store location** (not per chain), holding objective **identity** read by every member. Each store SHALL carry: `slug` (required, kebab-case location id), `name` (required, e.g. "Tom Thumb"), `label` (optional human handle, e.g. "West 7th"), `chain` (optional), `address` (optional), `location_id` (optional chain-specific external id, e.g. Kroger's locationId), and `domain` (free string, default `grocery`). Store **layout** — aisle order, where-it-hides item locations, and not-carried entries — SHALL NOT be structured fields of this table; it lives in attributed store notes (see "Attributed per-tenant store notes"). The column schema SHALL be documented in `docs/SCHEMAS.md`. Store identity is objective and **unattributed** (like recipe content). There SHALL be no `_indexes/stores.json` — the set is small and read directly from D1. An empty `stores` table SHALL be valid (no stores registered yet).
 
 #### Scenario: Store conforms to identity schema
 
-- **WHEN** a store is written to `stores/<slug>.toml`
-- **THEN** it carries a `slug` and `name` (plus optional `label`/`chain`/`address`/`domain`), no structured layout fields, and it passes structural validation
-
-#### Scenario: Legacy layout keys are ignored
-
-- **WHEN** a `stores/<slug>.toml` written before this change still contains `aisles` / `item_locations` / `doesnt_carry`
-- **THEN** the parser reads its identity and ignores those keys without error
+- **WHEN** a store is written to the `stores` table
+- **THEN** it carries a `slug` and `name` (plus optional `label`/`chain`/`address`/`domain`/`location_id`), no structured layout fields, and it passes structural validation
 
 #### Scenario: Absent registry is valid
 
-- **WHEN** no `stores/` tree exists
-- **THEN** `list_stores` returns an empty set and build/write validation does not fail
+- **WHEN** the `stores` table has no rows
+- **THEN** `list_stores` returns an empty set and validation does not fail
 
 ### Requirement: Store CRUD tools
 
-The system SHALL provide `list_stores()`, `read_store(slug)`, `add_store(...)`, `update_store(slug, operations)`, and `remove_store(slug)`. `read_store` SHALL return identity only. `update_store` SHALL accept **identity operations only** (set `name` / `label` / `chain` / `address` / `domain`), operation-style like `update_pantry` / `update_kitchen`; it SHALL NOT carry aisle, item-location, or not-carried operations — those facets are removed and live in store notes. Stores are shared corpus; any MCP holder MAY create or edit one with no extra gate (the `update_discovery_sources` posture). `list_stores` SHALL report, per store, whether it has layout notes (`has_notes`) rather than a structured aisle layout. All mutations SHALL persist via the atomic commit engine and return structured results and errors.
+The system SHALL provide `list_stores()`, `read_store(slug)`, `add_store(...)`, `update_store(slug, operations)`, and `remove_store(slug)`. `read_store` SHALL return identity only. `update_store` SHALL accept **identity operations only** (set `name` / `label` / `chain` / `address` / `domain` / `location_id`), operation-style like `update_pantry` / `update_kitchen`; it SHALL NOT carry aisle, item-location, or not-carried operations — those facets are removed and live in store notes. Stores are shared corpus; any MCP holder MAY create or edit one with no extra gate (the `update_discovery_sources` posture). `list_stores` SHALL report, per store, whether it has layout notes (`has_notes`) rather than a structured aisle layout. All mutations SHALL persist to D1 and return structured results and errors.
 
 #### Scenario: List reports note-backed layout
 
@@ -43,7 +38,7 @@ The system SHALL provide `list_stores()`, `read_store(slug)`, `add_store(...)`, 
 
 ### Requirement: Attributed per-tenant store notes
 
-The system SHALL store store notes per-tenant at `users/<id>/store_notes/<slug>.toml`, authored structurally (the path, unspoofable), shared-by-default with an optional `private` flag. `add_store_note(slug, body, tags?, private?)` SHALL append a note; `read_store_notes(slug)` SHALL return the caller's own private notes plus every member's shared notes, attributed — mirroring `read_recipe_notes`. Store notes SHALL be the home of **both** freeform observations ("fish counter closes at 6 PM", "they have the Kerrygold I like") **and** store **layout**, captured by tag convention: `layout` (an aisle and its sections, led by the aisle number where one exists — the order of layout notes by aisle number is the walk path), `location` (where a non-obvious item hides), and `stock` (a not-carried entry). An author MAY edit or delete their **own** store notes via `update_store_note(slug, created_at, body?, tags?, private?)` and `remove_store_note(slug, created_at)`, addressing a note by its `created_at`; these SHALL operate only on notes in the caller's own subtree and SHALL NOT touch another tenant's notes. When two notes conflict (e.g. an aisle after a remodel), a reader SHALL prefer the most recent by `created_at`.
+The system SHALL store store notes as rows in the D1 `store_notes` table, authored by the writing tenant (the `author` column, set by the Worker — unspoofable), shared-by-default with an optional `private` flag. `add_store_note(slug, body, tags?, private?)` SHALL append a note; `read_store_notes(slug)` SHALL return the caller's own private notes plus every member's shared notes, attributed — mirroring `read_recipe_notes`. Store notes SHALL be the home of **both** freeform observations ("fish counter closes at 6 PM", "they have the Kerrygold I like") **and** store **layout**, captured by tag convention: `layout` (an aisle and its sections, led by the aisle number where one exists — the order of layout notes by aisle number is the walk path), `location` (where a non-obvious item hides), and `stock` (a not-carried entry). An author MAY edit or delete their **own** store notes via `update_store_note(slug, created_at, body?, tags?, private?)` and `remove_store_note(slug, created_at)`, addressing a note by its `created_at`; these SHALL operate only on the caller's own notes (matched by `author`) and SHALL NOT touch another tenant's notes. When two notes conflict (e.g. an aisle after a remodel), a reader SHALL prefer the most recent by `created_at`.
 
 #### Scenario: Layout captured as a tagged note
 
@@ -63,7 +58,7 @@ The system SHALL store store notes per-tenant at `users/<id>/store_notes/<slug>.
 #### Scenario: Author corrects their own stale note
 
 - **WHEN** the author of a `layout` note calls `update_store_note` (or `remove_store_note`) with that note's `created_at`
-- **THEN** the note is patched (or removed) in the author's subtree and committed, touching no other tenant's notes
+- **THEN** the note row is patched (or removed) in D1, touching no other tenant's notes
 
 #### Scenario: Another tenant's note is not addressable
 

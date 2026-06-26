@@ -29,7 +29,7 @@ Both passes SHALL be skipped for an empty catalog. Items added here are picked u
 
 ### Requirement: Resolve the grocery list at order time
 
-`place_order` SHALL resolve the **whole** to-buy set at order time — not at capture time — so the cart reflects current availability. The to-buy set SHALL be `grocery_list ∪ (menu needs) − (pantry has)`. Each item SHALL be resolved via the Change 05 matcher (`match_ingredient_to_kroger_sku`) with cache revalidation against current price and curbside/delivery availability. Items the matcher returns as `ambiguous` or `unavailable` SHALL be collected and surfaced as a **single batch checkpoint** for the user to disposition; the cart write SHALL NOT proceed for those items until resolved.
+`place_order` SHALL resolve the **whole** to-buy set at order time — not at capture time — so the cart reflects current availability. The to-buy set SHALL be `grocery_list ∪ (menu needs) − (pantry has)`. Each item SHALL be resolved via the `match_ingredient_to_kroger_sku` matcher with cache revalidation against current price and curbside/delivery availability. Items the matcher returns as `ambiguous` or `unavailable` SHALL be collected and surfaced as a **single batch checkpoint** for the user to disposition; the cart write SHALL NOT proceed for those items until resolved.
 
 #### Scenario: Whole list resolved against current availability
 
@@ -43,12 +43,12 @@ Both passes SHALL be skipped for an empty catalog. Items added here are picked u
 
 ### Requirement: Write the Kroger cart and persist learned mappings
 
-For the resolved set, `place_order` SHALL add items to the Kroger cart via `PUT /v1/cart/add` and SHALL append newly learned ingredient→SKU mappings to `skus/kroger.toml` through the Change 06 atomic-commit engine. The cart write and the SKU-cache commit SHALL be **independent best-effort** operations — neither is transactional with the other, and a failure of one SHALL NOT corrupt the other. `place_order` SHALL return honest partial status and SHALL NOT report a populated cart when the cart write failed.
+For the resolved set, `place_order` SHALL add items to the Kroger cart via `PUT /v1/cart/add` and SHALL upsert newly learned ingredient→SKU mappings to the D1 `sku_cache` table. The cart write and the SKU-cache upsert SHALL be **independent best-effort** operations — neither is transactional with the other, and a failure of one SHALL NOT corrupt the other. `place_order` SHALL return honest partial status and SHALL NOT report a populated cart when the cart write failed.
 
 #### Scenario: Resolved items added and mappings cached
 
 - **WHEN** the resolved set is non-empty and the cart write succeeds
-- **THEN** the items are added via `PUT /v1/cart/add` and the new SKU mappings are committed to `skus/kroger.toml`
+- **THEN** the items are added via `PUT /v1/cart/add` and the new SKU mappings are upserted to the D1 `sku_cache` table
 
 #### Scenario: Honest partial failure
 
