@@ -63,12 +63,12 @@ During the flow, when the agent judges a loaded discovery matches the member's p
 
 ### Requirement: Disposition collapses into the import decision
 
-With in-session import, disposition SHALL collapse to three outcomes: importing a discovery IS the positive disposition (it becomes a first-class corpus recipe); taking no action leaves it a discovery to be re-judged later; an explicit reject SHALL suppress that discovery URL **group-wide** (a shared suppression on the `discovery_candidates` URL) so it is not re-surfaced to any member. There SHALL be no `draft` limbo state in this flow. Because rejection is shared, it SHALL be reserved for "not corpus-worthy for the group" (junk, broken link, non-recipe, duplicate, or clearly off-base for the group's taste); a mere personal not-for-me-this-time SHALL be a no-action skip, NOT a reject, so one member's passing taste does not hide a recipe another member would favorite.
+With in-session import, the disposition SHALL collapse to a *decision* among three outcomes: importing a discovery IS the positive disposition (the agent decides it is worth adding and creates it **now** rather than deferring); taking no action leaves it a discovery to be re-judged later; an explicit reject SHALL suppress that discovery URL **group-wide** (a shared `discovery_rejections` entry keyed by the canonical URL) so it is not re-surfaced to any member. An imported recipe lands as a normal corpus recipe subject to the unchanged per-tenant `status` lifecycle (retiring the `draft` state corpus-wide is out of scope here), and the agent uses it for the current plan directly from the parse rather than re-searching for it the same session. Because rejection is shared, it SHALL be reserved for "not corpus-worthy for the group" (junk, broken link, non-recipe, duplicate, or clearly off-base for the group's taste); a mere personal not-for-me-this-time SHALL be a no-action skip, NOT a reject, so one member's passing taste does not hide a recipe another member would favorite.
 
-#### Scenario: Import is the yes
+#### Scenario: Import is the yes (a decision, made now)
 
-- **WHEN** the agent imports a discovery during planning
-- **THEN** the recipe is a normal corpus recipe with no separate draft/disposition step required afterward
+- **WHEN** the agent judges a discovery worth adding during planning
+- **THEN** it imports the recipe in-session (rather than leaving it to disposition later) and places it on the current plan directly from the parse
 
 #### Scenario: Explicit rejection suppresses the URL group-wide
 

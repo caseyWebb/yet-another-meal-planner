@@ -13,7 +13,7 @@
 
 - [x] 1.1 Add `description` and `side_search_terms` to the recipe frontmatter schema (`docs/SCHEMAS.md`) and the build/write-time validators (`scripts/build-indexes.mjs`, `src/validate.ts`) — shape-only, optional
 - [x] 1.2 Validate `description` is non-empty-when-present (in both validators); the "not a verbatim copy of source text" guard is an import-persona concern (1.4), not a structural validator (build/Worker have no source page)
-- [ ] 1.3 Backfill `description` (+ `side_search_terms` for mains) across the existing corpus — one-time agent-in-session or scripted pass
+- [x] 1.3 Backfill `description` (+ `side_search_terms` for mains) across the existing corpus — one-time agent-in-session or scripted pass (done in the data repo)
 - [x] 1.4 Teach the production import paths (`import-recipe` flow + the menu flow's discovery import) to generate a craving-aligned `description` (always) and `side_search_terms` (mains) at import; reinforced in the `create_recipe` tool description + `docs/TOOLS.md`
 
 ## 2. Embedding reconcile (additive, Worker-side cron — not the build)

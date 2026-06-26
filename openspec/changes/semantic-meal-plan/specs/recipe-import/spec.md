@@ -2,7 +2,7 @@
 
 ### Requirement: AI brief description generated at import
 
-At import the agent SHALL generate and persist a `description` for the recipe: a brief (≈1–2 sentence) summary in a consistent, craving-aligned register (dish identity, flavor/texture, when one would want it), written by the agent — NOT the scraped marketing copy from the source page. The description is authored frontmatter (human-editable); the embedding is derived from it by the build.
+At import the agent SHALL generate and persist a `description` for the recipe: a brief (≈1–2 sentence) summary in a consistent, craving-aligned register (dish identity, flavor/texture, when one would want it), written by the agent — NOT the scraped marketing copy from the source page. The description is authored frontmatter (human-editable); the embedding is derived from it (reconciled Worker-side on the cron).
 
 #### Scenario: Description is summarized, not scraped
 

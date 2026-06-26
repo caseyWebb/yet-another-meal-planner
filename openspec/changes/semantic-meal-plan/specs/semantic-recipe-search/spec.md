@@ -11,8 +11,8 @@ Each recipe SHALL carry a `description` frontmatter field: a brief (≈1–2 sen
 
 #### Scenario: Description is the embed source
 
-- **WHEN** the build projects the recipe index
-- **THEN** the recipe's embedding is computed from its `description` (plus title), and a recipe lacking a `description` is omitted from semantic ranking but still returned by facet filters
+- **WHEN** the recipe-embedding reconcile runs over the index
+- **THEN** the recipe's embedding is computed from its `description`, and a recipe lacking a `description` is omitted from semantic ranking but still returned by facet filters
 
 ### Requirement: Recipes carry memoized side search terms
 
@@ -23,18 +23,23 @@ A main-course recipe SHALL support a `side_search_terms` frontmatter field: AI-w
 - **WHEN** a rich braised main is selected and side retrieval runs
 - **THEN** the search uses the main's `side_search_terms` (describing the desired side) rather than the main's own embedding, and returns `course: side` recipes that complement it
 
-### Requirement: The recipe index carries a derived embedding column
+### Requirement: Recipe embeddings are reconciled Worker-side into a sibling table
 
-The build SHALL project a fixed-dimension embedding for each recipe into the D1 recipe-index table, computed via Workers AI (`@cf/baai/bge-base-en-v1.5`, 768-dim) from the recipe's description. The embedding is a derived projection rebuilt with the row (atomic with the index rebuild), never authored or hand-edited. The query embedding SHALL be computed in the Worker so that callers ship only a query string.
+Each recipe's embedding SHALL be a fixed-dimension vector (Workers AI `@cf/baai/bge-base-en-v1.5`, 768-dim) derived from its `description`, stored in a sibling `recipe_embeddings` table keyed by recipe `slug` — NOT a column on the projected recipe-index row. Because the embedding is generated through the `AI` binding, which the Node index build cannot use, it SHALL be reconciled **Worker-side on the existing cron**: each tick embeds recipes whose description is new or changed (gated on a description hash so a steady corpus does ~no work) and prunes embeddings whose slug no longer has a description. The embedding is a derived projection, never authored or hand-edited. The query embedding SHALL be computed in the Worker so that callers ship only a query string.
 
-#### Scenario: Embedding rebuilds with the row
+#### Scenario: A changed description re-embeds on the next reconcile
 
-- **WHEN** a recipe's `description` changes and the index is rebuilt
-- **THEN** that recipe's embedding column is recomputed in the same rebuild, with no separate vector store to reconcile
+- **WHEN** a recipe's `description` changes
+- **THEN** the cron reconcile re-embeds that recipe into `recipe_embeddings` on a later tick (detected by the description-hash gate), with no separate authored vector and no second managed vector store
+
+#### Scenario: A just-imported recipe is not yet semantically retrievable
+
+- **WHEN** a recipe is imported and its embedding has not yet been reconciled
+- **THEN** the recipe is treated as "not yet indexed" for semantic ranking (excluded, not an error) until the reconcile fills its embedding, while remaining retrievable by facet
 
 ### Requirement: recipe_semantic_search retrieves by facet-prefilter then cosine
 
-The system SHALL expose `recipe_semantic_search(specs[])` where each spec carries a semantic `vibe` query and structured `facets`. For each spec it SHALL first apply the facets as a SQL filter over the recipe table, then rank the surviving rows by cosine similarity between their embedding and the embedded `vibe` query, returning the top-K as compact rows (slug, title, description, key facets, score). Hard constraints (dietary, makeability, and anti-similarity/variety facets) SHALL be enforced by the facet filter, never overridden by semantic rank. The tool contract SHALL be backend-agnostic: callers SHALL NOT depend on whether ranking is served by a D1 column scan or an approximate-nearest-neighbor index.
+The system SHALL expose `recipe_semantic_search(specs[])` where each spec carries a semantic `vibe` query and structured `facets`. For each spec it SHALL first apply the facets as the SAME gate `list_recipes` uses (the `filterRecipes` constraint over the index — dietary, makeability, recency), then rank the surviving rows that have an embedding by cosine similarity between their vector and the embedded `vibe` query, returning the top-K as compact rows (slug, title, description, key facets, score, raw similarity). Hard constraints (dietary, makeability, and anti-similarity/variety facets) SHALL be enforced by the facet filter, never overridden by semantic rank. The tool contract SHALL be backend-agnostic: callers SHALL NOT depend on whether ranking is served by a brute-force cosine over the embedding table or an approximate-nearest-neighbor index.
 
 #### Scenario: Facets gate, vibe ranks
 
@@ -67,7 +72,7 @@ Within a spec's candidate set, the system SHALL apply a taste re-rank that boost
 
 ### Requirement: Retrieval boosts never-cooked and not-recently-cooked recipes
 
-The system SHALL boost candidates that the caller has never cooked, or has not cooked within a configurable window, so that imported-but-untried recipes surface. The window and boost strength SHALL be user-configurable via the preferences schema (e.g. `rotation.resurface_after_days`, `rotation.novelty_boost`). The freshness boost composes with the favorites re-rank: favorites set the taste direction, freshness rotates among similar candidates.
+The system SHALL boost candidates that the caller has never cooked, or has not cooked within a configurable window, so that imported-but-untried recipes surface. The window and boost strength SHALL be user-configurable via the preferences schema (`rotation.resurface_after_days`, `rotation.novelty_boost`). The freshness boost composes with the favorites re-rank: favorites set the taste direction, freshness rotates among similar candidates.
 
 #### Scenario: A never-made favorite-adjacent recipe surfaces
 
