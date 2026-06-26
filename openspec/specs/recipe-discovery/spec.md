@@ -5,21 +5,21 @@ TBD - created by archiving change discovery-and-disposition. Update Purpose afte
 ## Requirements
 ### Requirement: RSS discovery returns a deduped candidate pool without scoring
 
-`fetch_rss_discoveries` SHALL read the feeds configured in the **shared** `feeds.toml` at the data-repo root — read through the shared GitHub client, not a per-tenant `users/<id>/` path — fetch each feed, and return a deduped pool of candidate recipes as `{ candidates: [{ url, title, source, feed_weight, summary }] }`. Discovery feeds are a shared, top-level concern: any member's configured feeds contribute to one group pool, and the candidates are judged against the calling member's taste at menu time. It SHALL NOT compute or return a taste `score` and SHALL NOT rank or pre-select a "top" subset — taste fit and the final selection are the agent's judgment. `feed_weight` SHALL be passed through from the feed's configured weight, not used by the tool to order results. When the shared `feeds.toml` is absent or empty, the tool SHALL return an empty candidate list rather than erroring.
+`fetch_rss_discoveries` SHALL read the feeds configured in the **shared** D1 `feeds` table — not a per-tenant `users/<id>/` path — fetch each feed, and return a deduped pool of candidate recipes as `{ candidates: [{ url, title, source, feed_weight, summary }] }`. Discovery feeds are a shared, top-level concern: any member's configured feeds contribute to one group pool, and the candidates are judged against the calling member's taste at menu time. It SHALL NOT compute or return a taste `score` and SHALL NOT rank or pre-select a "top" subset — taste fit and the final selection are the agent's judgment. `feed_weight` SHALL be passed through from the feed's configured weight, not used by the tool to order results. When the shared `feeds` table is empty, the tool SHALL return an empty candidate list rather than erroring.
 
 #### Scenario: Candidates returned without a score field
 
 - **WHEN** `fetch_rss_discoveries` is called with feeds configured
 - **THEN** each returned candidate carries `url`, `title`, `source`, `feed_weight`, and `summary`, and no candidate carries a taste `score`
 
-#### Scenario: Feeds are read from the shared root, not a per-tenant path
+#### Scenario: Feeds are read from the shared D1 table, not a per-tenant path
 
 - **WHEN** `fetch_rss_discoveries` resolves its feed configuration
-- **THEN** it reads `feeds.toml` from the data-repo root via the shared client, and no `users/<id>/feeds.toml` is consulted
+- **THEN** it reads the shared D1 `feeds` table, and no per-tenant feed config is consulted
 
 #### Scenario: Empty feed config is not an error
 
-- **WHEN** the shared `feeds.toml` has no feed entries
+- **WHEN** the shared D1 `feeds` table has no rows
 - **THEN** the tool returns `{ candidates: [] }` and does not raise an error
 
 ### Requirement: RSS candidates are deduped against the existing corpus
@@ -89,22 +89,22 @@ The discovery tools SHALL parse RSS/Atom feeds and extract HTML/JSON-LD using ru
 
 ### Requirement: Discovery feeds are writable via update_feeds
 
-The system SHALL provide an `update_feeds` tool that adds RSS/Atom discovery feeds to the **shared** `feeds.toml` at the data-repo root — written through the shared GitHub client, not a per-tenant `users/<id>/` path — so a member can wire up discovery sources during onboarding without hand-editing the data repo. It SHALL be **add-only with dedup by canonicalized feed `url`** (existing feeds untouched), mirroring the add-only `update_discovery_sources`, and SHALL accept per feed a required `url` and optional `name`, `weight` (default 1), and `tags`. It SHALL return `{ added, commit_sha }` and SHALL make no commit when no new feed is added. Because feeds are a shared, top-level concern, any member trusted with the MCP MAY widen the group feed set, consistent with `update_discovery_sources`.
+The system SHALL provide an `update_feeds` tool that adds RSS/Atom discovery feeds to the **shared** D1 `feeds` table — not a per-tenant `users/<id>/` path — so a member can wire up discovery sources during onboarding. It SHALL be **add-only with dedup by canonicalized feed `url`** (existing rows untouched), mirroring the add-only `update_discovery_sources`, and SHALL accept per feed a required `url` and optional `name`, `weight` (default 1), and `tags`. It SHALL return `{ added }` and SHALL make no D1 write when no new feed is added. Because feeds are a shared, top-level concern, any member trusted with the MCP MAY widen the group feed set, consistent with `update_discovery_sources`.
 
-#### Scenario: New feed is added to the shared feeds.toml
+#### Scenario: New feed is added to the shared feeds table
 
 - **WHEN** `update_feeds` is called with a feed `url` not already present
-- **THEN** the feed is appended to the data-repo-root `feeds.toml` via the shared client, and the tool returns `{ added, commit_sha }`
+- **THEN** the feed is inserted into the D1 `feeds` table, and the tool returns `{ added }`
 
 #### Scenario: Duplicate feed is a no-op
 
-- **WHEN** `update_feeds` is called with a `url` that canonicalizes to one already in `feeds.toml`
-- **THEN** no duplicate is written, no commit is made, and the result reports nothing added
+- **WHEN** `update_feeds` is called with a `url` that canonicalizes to one already in the D1 `feeds` table
+- **THEN** no duplicate is written, no D1 write is made, and the result reports nothing added
 
-#### Scenario: Feed write targets the shared root, not a tenant subtree
+#### Scenario: Feed write targets the shared D1 table, not a tenant subtree
 
 - **WHEN** any member calls `update_feeds`
-- **THEN** the write targets the shared `feeds.toml` at the data-repo root and no `users/<id>/feeds.toml` is created
+- **THEN** the write targets the shared D1 `feeds` table and no per-tenant feed config is created
 
 ### Requirement: A discovery URL can be rejected group-wide
 

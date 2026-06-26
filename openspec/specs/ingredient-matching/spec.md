@@ -2,13 +2,13 @@
 
 ## Purpose
 
-Defines the deterministic ingredient-to-Kroger-SKU matching pipeline (`match_ingredient_to_kroger_sku`) and the `compare_unit_price` comparison tool. Covers the resolve-only contract (confident / ambiguous / unavailable result shapes), tri-state brand-preference confidence from `preferences.toml` `[brands]`, scoring-not-filtering of brand and dietary signals, alias-driven normalization, cache lookup with revalidation and no TTL, the deterministic tiebreaker, and the rule that the matcher never substitutes. Builds on the kroger-integration `kroger_search` helper.
+Defines the deterministic ingredient-to-Kroger-SKU matching pipeline (`match_ingredient_to_kroger_sku`) and the `compare_unit_price` comparison tool. Covers the resolve-only contract (confident / ambiguous / unavailable result shapes), tri-state brand-preference confidence from `preferences.toml` `[brands]`, scoring-not-filtering of brand and dietary signals, alias-driven normalization (D1 `aliases` table), D1 `sku_cache` lookup with revalidation and no TTL, the deterministic tiebreaker, and the rule that the matcher never substitutes. Builds on the kroger-integration `kroger_search` helper.
 
 ## Requirements
 
 ### Requirement: Resolve-only matching pipeline
 
-The system SHALL provide `match_ingredient_to_kroger_sku(ingredient, context)` running the deterministic 7-step pipeline from `docs/ARCHITECTURE.md`. It SHALL be **resolve-only**: it returns a result but SHALL NOT write the SKU cache (that is deferred to the Change 06 batched commit). It SHALL return exactly one of three shapes — a confident match, an `ambiguous` result with narrowed candidates, or an `unavailable` result.
+The system SHALL provide `match_ingredient_to_kroger_sku(ingredient, context)` running the deterministic 7-step pipeline from `docs/ARCHITECTURE.md`. It SHALL be **resolve-only**: it returns a result but SHALL NOT write the D1 `sku_cache` table (that write is deferred to the order path via `place_order`). It SHALL return exactly one of three shapes — a confident match, an `ambiguous` result with narrowed candidates, or an `unavailable` result.
 
 #### Scenario: Confident match returned
 
@@ -97,11 +97,11 @@ The system SHALL match only the given ingredient. When nothing is fulfillable it
 
 ### Requirement: Cache lookup with revalidation and no TTL
 
-The system SHALL, on a cache hit in `skus/kroger.toml`, short-circuit search and narrowing but revalidate the cached SKU with one targeted lookup for current price and curbside/delivery availability before returning it. An available SKU SHALL be returned with fresh price; an unavailable one SHALL trigger re-resolution. The cache SHALL NOT use a TTL. The tool SHALL accept a `bypass_cache` parameter that forces re-resolution.
+The system SHALL, on a cache hit in the D1 `sku_cache` table (keyed by `(ingredient, location_id)`), short-circuit search and narrowing but revalidate the cached SKU with one targeted lookup for current price and curbside/delivery availability before returning it. An available SKU SHALL be returned with fresh price; an unavailable one SHALL trigger re-resolution. The cache SHALL NOT use a TTL. The tool SHALL accept a `bypass_cache` parameter that forces re-resolution.
 
 #### Scenario: Cache hit revalidated before use
 
-- **WHEN** a cached SKU is found for the normalized ingredient
+- **WHEN** a cached SKU is found for the normalized ingredient in the D1 `sku_cache` table
 - **THEN** the system revalidates its current price and curbside/delivery availability, returns it with fresh price if available, and re-resolves if not
 
 #### Scenario: bypass_cache forces re-resolution
@@ -111,11 +111,11 @@ The system SHALL, on a cache hit in `skus/kroger.toml`, short-circuit search and
 
 ### Requirement: Alias-driven normalization
 
-The system SHALL normalize the ingredient by stripping quantity/units, lowercasing, and applying `aliases.toml` as the curated source of truth for variant collapse. It SHALL NOT aggressively strip qualifiers beyond what `aliases.toml` defines.
+The system SHALL normalize the ingredient by stripping quantity/units, lowercasing, and applying the D1 `aliases` table (columns: `variant`, `canonical`) as the curated source of truth for variant collapse. It SHALL NOT aggressively strip qualifiers beyond what the `aliases` table defines.
 
 #### Scenario: Alias collapses a variant
 
-- **WHEN** an ingredient string matches an `aliases.toml` entry
+- **WHEN** an ingredient string matches a `variant` entry in the D1 `aliases` table
 - **THEN** it is normalized to the canonical term before cache lookup and search
 
 ### Requirement: compare_unit_price deterministic comparison
