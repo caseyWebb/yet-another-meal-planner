@@ -2,7 +2,7 @@
   "name": "grocery-agent",
   "image": "mcr.microsoft.com/devcontainers/base:ubuntu",
   "features": {
-    "ghcr.io/devcontainers-contrib/features/mise:latest": {}
+    "ghcr.io/devcontainers-extra/features/mise:latest": {}
   },
-  "postCreateCommand": "mise install && mise exec -- npm install"
+  "postCreateCommand": "mise trust && mise install && mise exec -- aube install && echo 'eval \"$(mise activate bash)\"' >> ~/.bashrc && echo 'eval \"$(mise activate zsh)\"' >> ~/.zshrc"
 }

@@ -41,7 +41,7 @@ This repo is your **control plane**. From the template it carries these thin `.g
 | `build-site.yml` | `data-build-site.yml` | build + deploy the optional cookbook site |
 | `build-plugin.yml` | `data-build-plugin.yml` | build your plugin bundle (your Worker URL baked in) as a downloadable artifact to upload to claude.ai |
 
-A live, versioned copy of these callers (and the whole data-repo layout) is vendored in this code repo as a submodule at [`docs/data-template/`](data-template/) — see `docs/data-template/.github/workflows/`. Run `git submodule update --init` to populate it after a fresh clone.
+A live, versioned copy of these callers (and the whole data-repo layout) lives in the [`groceries-agent-data-template`](https://github.com/caseyWebb/groceries-agent-data-template) repo — see its `.github/workflows/` for the canonical thin callers.
 
 ## 2. Register the GitHub App
 
@@ -137,7 +137,7 @@ Run the **Onboard member** Action (your data repo → Actions) with `username: <
 2. claude.ai → **Customize → upload a custom plugin file** → pick that `.zip`. Open a **fresh chat** afterward (uploaded skills sync to the sandbox only on a new chat).
 3. On a later update, re-run **Build plugin** and re-upload — see *Taking upstream updates* for the Worker-first ordering. No GitHub account is needed to *use* the bundle, so friends just need the file.
 
-**Option 2 — fork + your own marketplace (only if you want pull-based auto-update).** Fork the code repo to `<you>/groceries-agent`, rebuild with your URL (`npm run build:plugin -- --mcp-url https://<worker-host>/mcp` — the npm script already targets `plugin/grocery-agent`, and the build refuses to write the placeholder URL into that committed bundle, so passing `--mcp-url` is required), push, and install from your marketplace (`/plugin marketplace add <you>/groceries-agent`). This is the **only** path with `/plugin marketplace update` auto-pull; it costs a fork to maintain and a GitHub account to sync. If you also changed the reusable CI workflows, repoint your data repo's callers at your fork (`uses: <you>/groceries-agent/...@main`).
+**Option 2 — fork + your own marketplace (only if you want pull-based auto-update).** Fork the code repo to `<you>/groceries-agent`, rebuild with your URL (`aubr build:plugin --mcp-url https://<worker-host>/mcp` — the script already targets `plugin/grocery-agent`, and the build refuses to write the placeholder URL into that committed bundle, so passing `--mcp-url` is required), push, and install from your marketplace (`/plugin marketplace add <you>/groceries-agent`). This is the **only** path with `/plugin marketplace update` auto-pull; it costs a fork to maintain and a GitHub account to sync. If you also changed the reusable CI workflows, repoint your data repo's callers at your fork (`uses: <you>/groceries-agent/...@main`).
 
 **Option 3 — paste into a Claude project (no plugin).** Paste [`AGENT_INSTRUCTIONS.md`](../AGENT_INSTRUCTIONS.md) into a Claude project's custom instructions and add your Worker (`https://<worker-host>/mcp`) as that project's connector. No marketplace, no upload — but it's scoped to that one project and the skills arrive as one blob rather than the split, self-triggering set.
 

@@ -22,7 +22,7 @@
 // userConfig variable, so each operator rebuilds with their own Worker URL). The
 // URL is operator-specific and is NOT hardcoded in committed tooling — it comes
 // from --mcp-url, else $GROCERY_MCP_URL (the gitignored mise.local.toml sets it
-// on the machine). `npm run build:plugin` regenerates the committed marketplace
+// on the machine). `aubr build:plugin` regenerates the committed marketplace
 // bundle and REFUSES to write the placeholder there (that would break installs).
 //
 // Output mirrors the Claude plugin layout (.claude-plugin/plugin.json, skills/,
@@ -31,7 +31,7 @@
 // the bundle; edit AGENT_INSTRUCTIONS.md and rebuild.
 //
 // Usage:
-//   npm run build:plugin                                  # regenerate plugin/grocery-agent/ (URL from $GROCERY_MCP_URL)
+//   aubr build:plugin                                     # regenerate plugin/grocery-agent/ (URL from $GROCERY_MCP_URL)
 //   node scripts/build-plugin.mjs                         # throwaway build → dist/grocery-agent-plugin/ (placeholder URL ok)
 //   node scripts/build-plugin.mjs --check                 # parse + validate only, no write
 //   node scripts/build-plugin.mjs --out DIR               # write to DIR

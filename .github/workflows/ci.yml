@@ -33,21 +33,33 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+      # mise installs node + aube (and exposes aube/aubr/aubx); cache: true (default)
+      # restores the mise tool cache. GITHUB_TOKEN avoids GitHub API rate limits when
+      # the github:endevco/aube backend resolves the aube release.
+      - uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959d # v4.2.0
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      # Dependency cache: aube's content-addressable store. `aube ci` re-links from
+      # cached tarballs instead of re-downloading on a warm run.
+      - name: Cache aube store
+        uses: actions/cache@2c8a9bd7457de244a408f35966fab2fb45fda9c8 # v6.0.0
         with:
-          node-version: "22"
+          path: ~/.local/share/aube/store
+          key: aube-store-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+          restore-keys: aube-store-${{ runner.os }}-
 
       - name: Install dependencies
-        run: npm ci
+        run: aube ci
 
       - name: Typecheck
-        run: npm run typecheck
+        run: aubr typecheck
 
       - name: Test (Worker)
-        run: npm test
+        run: aubr test
 
       - name: Test (build tooling)
-        run: npm run test:tooling
+        run: aubr test:tooling
 
       - name: Plugin skills are current with AGENT_INSTRUCTIONS.md
         # The committed marketplace plugin's skills/ are generated from

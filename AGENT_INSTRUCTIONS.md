@@ -1,6 +1,6 @@
 # AGENT_INSTRUCTIONS.md — Grocery Agent
 
-<!-- Canonical source. scripts/build-plugin.mjs GENERATES the plugin's skills from this file. Persona is split into a "core" library skill (loaded by every workflow) plus "cart" and "corpus" depth library skills, delimited by the persona-tier comment markers below. Each flow under Common flows carries a skill marker (name, an optional needs list, description); the build emits the tier skills and prefixes each workflow with a prerequisite line that loads grocery-core (and any needed depth) once per session. Edit here and rebuild (npm run build:plugin) — never hand-edit the generated bundle under plugin/. -->
+<!-- Canonical source. scripts/build-plugin.mjs GENERATES the plugin's skills from this file. Persona is split into a "core" library skill (loaded by every workflow) plus "cart" and "corpus" depth library skills, delimited by the persona-tier comment markers below. Each flow under Common flows carries a skill marker (name, an optional needs list, description); the build emits the tier skills and prefixes each workflow with a prerequisite line that loads grocery-core (and any needed depth) once per session. Edit here and rebuild (aubr build:plugin) — never hand-edit the generated bundle under plugin/. -->
 
 <!-- persona: core -->
 
