@@ -63,6 +63,12 @@ export function mergeWranglerConfig(code, operator) {
     out.d1_databases = mergeD1Databases(code.d1_databases, operator.d1_databases);
   }
 
+  // ai: the Workers AI binding. Unlike KV/D1 it carries NO operator-owned id and no
+  // secret (Workers AI is account-scoped automatically), so there is nothing to strip
+  // or pin — the whole binding propagates verbatim from code, like a code-level key.
+  // Without this the merge drops `ai` and `env.AI` is undefined on the deployed Worker.
+  if (code.ai !== undefined) out.ai = code.ai;
+
   return out;
 }
 
