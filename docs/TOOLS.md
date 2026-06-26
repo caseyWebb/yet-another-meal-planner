@@ -93,7 +93,7 @@ Edit a recipe's **objective shared content** (frontmatter/body) — the same rec
 
 ### `toggle_favorite(slug, favorite)`
 
-Set the caller's **personal favorite flag** for a recipe — `favorite: true` marks it, `false` clears it. Favorites are THE positive taste signal: they anchor the `recipe_semantic_search` nearest-liked re-rank and the group "favorited by N others" signal (`read_recipe_notes`). Writes only the caller's per-tenant overlay; one member's favorites never affect another's. (Replaced the 1–5 `rate_recipe` in the favorite cutover — the lost granularity is recovered, more honestly, from revealed preference in the cooking log.)
+Set the caller's **personal favorite flag** for a recipe — `favorite: true` marks it, `false` clears it. Favorites are THE positive taste signal: they anchor the `recipe_semantic_search` nearest-liked re-rank and the group "favorited by N others" signal (`read_recipe_notes`). Writes only the caller's per-tenant overlay; one member's favorites never affect another's.
 
 **Params:**
 - `slug` (string, required) — must resolve against the recipe index (D1 `recipes`)
@@ -270,7 +270,7 @@ Reset `last_verified_at` on confirmed items.
 Add items to or remove items from the caller's staples list. D1-backed (`staples` table). Adds are deduped by normalized `name`; removes match by normalized `name` and silently succeed when not present.
 
 **Params:**
-- `add` (array, optional): `[{ name, perishable? }]`. Only `name` is required. `perishable: true` enables the staleness-nudge behavior for that item (see `staples.toml` in `docs/SCHEMAS.md`).
+- `add` (array, optional): `[{ name, perishable? }]`. Only `name` is required. `perishable: true` enables the staleness-nudge behavior for that item (see the `staples` table in `docs/SCHEMAS.md`).
 - `remove` (array of strings, optional): item names to remove. Silently no-ops for absent names.
 
 **Returns:**
@@ -340,7 +340,7 @@ Remove an item by name.
 
 ## Store tools (in-store fulfillment)
 
-The **in-store fulfillment flush**: the `shop-groceries` skill groups the same SKU-free grocery list for a specific store — by aisle when it's mapped, by department otherwise (vs. `place_order`'s Kroger online flush). For Kroger stores with a registered `location_id`, `kroger_prices` provides API-driven aisle ordering (`aisleLocation`) without a pre-mapped layout. The `stores/` registry holds **identity only** (the D1 `stores` table, keyed by location, **shared/unattributed**); any MCP holder may register or edit one with no extra gate (the `update_discovery_sources` posture). There is **no `stores` index** — the set is small, so `list_stores` reads the table. **Store layout lives in attributed store notes**, not the registry: aisle order (`layout`-tagged), where-it-hides hints (`location`), and not-carried entries (`stock`) are all `add_store_note` / `read_store_notes` — one surface for everything we know about a store. See `docs/SCHEMAS.md` for the `stores/<slug>.toml` and `store_notes/<slug>.toml` schemas.
+The **in-store fulfillment flush**: the `shop-groceries` skill groups the same SKU-free grocery list for a specific store — by aisle when it's mapped, by department otherwise (vs. `place_order`'s Kroger online flush). For Kroger stores with a registered `location_id`, `kroger_prices` provides API-driven aisle ordering (`aisleLocation`) without a pre-mapped layout. The `stores/` registry holds **identity only** (the D1 `stores` table, keyed by location, **shared/unattributed**); any MCP holder may register or edit one with no extra gate (the `update_discovery_sources` posture). There is **no `stores` index** — the set is small, so `list_stores` reads the table. **Store layout lives in attributed store notes**, not the registry: aisle order (`layout`-tagged), where-it-hides hints (`location`), and not-carried entries (`stock`) are all `add_store_note` / `read_store_notes` — one surface for everything we know about a store. See `docs/SCHEMAS.md` for the `stores` and `store_notes` table schemas.
 
 ### `list_stores()`
 
@@ -586,7 +586,7 @@ Add trusted sources to the **shared** inbound-newsletter allowlist (the D1 `disc
 **Returns:**
 - `{ added: { members, senders } }` — counts actually added (0 when already present); D1-backed, no `commit_sha`.
 
-**Notes:** Pairs with the inbound-email handler's auth gate — a listed `sender`/`member` is accepted only when the message also passes aligned DKIM (see `docs/SCHEMAS.md` → `discovery_sources.toml`).
+**Notes:** Pairs with the inbound-email handler's auth gate — a listed `sender`/`member` is accepted only when the message also passes aligned DKIM (see `docs/SCHEMAS.md` → `discovery_sources`).
 
 ### `update_feeds(feeds)`
 
@@ -716,7 +716,7 @@ Aggregate **real** cooking history from the D1 `cooking_log` table over a period
 
 ### `log_cooked(entry)`
 
-Append one cooking event to the caller's `cooking_log` (D1-backed; **no `commit_sha`**). This is the writer that replaced `commit_changes`' `cooking_log_entries`.
+Append one cooking event to the caller's `cooking_log` (D1-backed; **no `commit_sha`**).
 
 **Params:**
 - `type` (string, required): `recipe | ready_to_eat | ad_hoc`.
@@ -757,8 +757,6 @@ Add or remove planned meal entries. D1-backed — no commit, no `commit_sha`.
 ---
 
 ## Order placement
-
-> **Granular writes, no batch tool.** There is no `commit_changes` — every write has a standalone home: objective recipe content (`update_recipe`/`create_recipe`), recipe favorite/reject (`toggle_favorite`/`toggle_reject`), ready-to-eat (`add_draft_ready_to_eat`/`update_ready_to_eat`), config (`update_preferences`/`update_taste`/`update_diet_principles`/`update_aliases`), cooking events (`log_cooked`), and the D1-backed session state (`update_pantry`, `update_meal_plan`, `add_to_grocery_list`/`update_grocery_list`/`remove_from_grocery_list`). A multi-write turn issues one granular call per write. Cart placement is its own tool — **`place_order`** (the order-time cart flush + SKU-cache write).
 
 ### `place_order(payload)`
 

@@ -4,7 +4,7 @@ update-when: the project's purpose, headline capabilities, or self-hosting statu
 
 # grocery-agent
 
-A personal grocery agent. It plans your meals, keeps track of what's in your kitchen, and fills a Kroger cart — all through conversation. You talk to it like a friend who knows your kitchen, not a service you issue commands to. It runs inside **Claude.ai** (web + mobile) and is self-hostable for a small friend group.
+A personal grocery agent. It plans your meals, keeps track of what's in your kitchen, manages your grocery list, and can even fill a Kroger cart — all through conversation. You talk to it like a friend who knows your kitchen, not a service you issue commands to. It runs inside **Claude.ai** (web + mobile) and is self-hostable for a small friend group.
 
 > **Status:** working end-to-end and in personal use — a release candidate, not a packaged product. Single-maintainer project; self-hosting works but assumes you're comfortable with Cloudflare, GitHub Actions, and a Kroger Developer account.
 
@@ -22,7 +22,7 @@ This repository is the **grocery-agent itself**: the `grocery-mcp` MCP server an
 
 ## How you use it
 
-You message it in a normal Claude.ai chat. There's no schedule and no command syntax — it reacts to what you say. A typical week:
+You message it in a normal Claude.ai chat. There's no command syntax — it reacts to what you say. A typical week:
 
 > **You:** I'm running low, make me a menu for 3 dinners this week.
 > **Agent:** *(checks your pantry, flyer, and taste)* Before I plan — you've still got the basil from 9 days ago, still good? And here's a 3-dinner plan: sheet-pan chicken (uses the lemons you have), a tofu stir-fry, and Tuesday's leftovers stretched into fried rice. Salmon's on sale if you'd rather swap the tofu. Want me to build the list?

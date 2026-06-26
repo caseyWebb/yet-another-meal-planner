@@ -9,15 +9,15 @@
 #
 # No GitHub App key. The TENANT_KV namespace is addressed by BINDING — resolved
 # from the operator's wrangler.jsonc (checked out here), the single source of truth —
-# so there's no separate tenant_kv_id to set. The member's users/<username>/ subtree
-# is created lazily on their first write (the commit engine creates files at any path).
+# so there's no separate tenant_kv_id to set. Onboarding writes only the allowlist +
+# invite to KV; per-tenant data lives in D1, written by the agent tools as the member uses it.
 name: data-onboard
 
 on:
   workflow_call:
     inputs:
       username:
-        description: "New member's username (their tenant id + users/<username> subtree)."
+        description: "New member's username (their tenant id)."
         required: true
         type: string
       invite_code:
@@ -65,10 +65,9 @@ jobs:
           CODE: ${{ steps.code.outputs.value }}
         run: |
           # Usernames are case-insensitive: store the canonical lowercase form so the
-          # directory key (tenant:<id>), the stored id, the invite target, and the
-          # Worker's users/<id>/ path prefix all agree. The Worker lowercases on read
-          # too (src/tenant.ts normalizeTenantId), so an already-lowercase data subtree
-          # is never split by a mixed-case onboard input.
+          # directory key (tenant:<id>), the stored id, and the invite target all agree.
+          # The Worker lowercases on read too (src/tenant.ts normalizeTenantId), so a
+          # mixed-case onboard input still resolves to the one tenant.
           #
           # KV by --binding TENANT_KV (resolved from the checked-out wrangler.jsonc) —
           # single source of truth, no tenant_kv_id var. VERIFY (zero-config-deploy
@@ -110,7 +109,7 @@ jobs:
           CODE: ${{ steps.code.outputs.value }}
           HOST: ${{ steps.host.outputs.value }}
         run: |
-          u="${U,,}"  # canonical lowercase id — matches the KV/subtree/grant form
+          u="${U,,}"  # canonical lowercase id — matches the KV/grant form
           {
             echo "## Onboarded \`${u}\`"
             echo ""
@@ -119,7 +118,7 @@ jobs:
             echo "| Invite code | \`${CODE}\` |"
             echo "| Connector URL | \`https://${HOST}/mcp\` |"
             echo ""
-            echo "Send them their invite code + the plugin bundle — the \`.zip\` from your **Build plugin** Action, which bakes in your connector URL (SELF_HOSTING step 7). They enter the code at the \`/authorize\` page Claude.ai sends them to, then run their Kroger consent at \`https://${HOST}/oauth/init?tenant=${u}\`. Their \`users/${u}/\` subtree is created automatically on their first write (e.g. setting their store)."
+            echo "Send them their invite code + the plugin bundle — the \`.zip\` from your **Build plugin** Action, which bakes in your connector URL (SELF_HOSTING step 7). They enter the code at the \`/authorize\` page Claude.ai sends them to, then run their Kroger consent at \`https://${HOST}/oauth/init?tenant=${u}\`. Their per-tenant data (preferences, pantry, etc.) is created in D1 by the agent tools as they use it."
             echo ""
             echo "> This run executed in your **private** data repo, so the invite code above is visible only to you (and any data-repo collaborators). Rotate it by re-running with a new code. Never run onboarding from the public code repo or a fork — its logs are world-readable."
           } >> "$GITHUB_STEP_SUMMARY"

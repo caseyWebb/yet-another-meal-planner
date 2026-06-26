@@ -1,10 +1,6 @@
 {
-	// grocery-mcp — custom MCP server for the grocery agent (multi-tenant).
-	// Transport: createMcpHandler over Streamable HTTP (no Durable Objects). Persistent
-	// state lives in KV only: per-tenant Kroger refresh tokens, the tenant directory,
-	// and (from Section 3) OAuth provider state — never domain data (D9).
-	// Repo access is via a GitHub App (D3), NOT a PAT. Secrets are NOT in this file;
-	// set them out-of-band and they persist across deploys:
+	// grocery-mcp — custom MCP server for the grocery agent.
+	// Secrets are NOT in this file; set them out-of-band and they persist across deploys:
 	//   wrangler secret put GITHUB_APP_PRIVATE_KEY   # PKCS#8 PEM
 	//   wrangler secret put KROGER_CLIENT_ID
 	//   wrangler secret put KROGER_CLIENT_SECRET
@@ -15,10 +11,6 @@
 	//   wrangler secret put NTFY_TOKEN                  (optional; bearer for a protected ntfy topic)
 	"name": "grocery-mcp",
 	"main": "src/index.ts",
-	// The MCP surface (/mcp) is gated by the Worker's own OAuth 2.1 provider — there is
-	// no Cloudflare Access in front of it. Disable the raw *.workers.dev route so the
-	// Worker is reached only via the configured custom domain.
-	"workers_dev": false,
 	"compatibility_date": "2025-06-01",
 	// Required by the `agents` SDK internals (mimetext / node:diagnostics_channel).
 	// Our own parsing (js-yaml) is workerd-safe and does not depend on it.
@@ -28,22 +20,25 @@
 	// vars are OPERATOR-OWNED: the deploy merge takes vars from the operator's data-repo
 	// config and strips these, so the values here are a placeholder / local-dev reference
 	// only — never deployed to operators. For local `wrangler dev`, set real values in
-	// `.dev.vars` (gitignored). GITHUB_INSTALLATION_ID is resolved at runtime by the
-	// Worker; DATA_OWNER/DATA_REPO/DATA_REF are injected by the deploy (--var) — so none
-	// of those are committed here.
+	// `.dev.vars` (gitignored).
 	"vars": {
 		"GITHUB_APP_ID": "<app id>"
 	},
-	// KV — ephemeral infra ONLY (all domain data is in D1 now; DATA_KV was retired
-	// once the recipe index, profile, and session state moved to D1). KROGER_KV:
-	// per-tenant Kroger refresh tokens (`kroger:refresh:<tenant>`) + PKCE verifiers
-	// (`kroger:pkce:<state>`) + the warmed flyer cache (`flyer:{locationId}` rollups,
-	// the sweep `flyer:cursor`, and the persisted `flyer:plan`). TENANT_KV: the tenant
-	// directory / allowlist (`tenant:<id>`) + invite codes (`invite:<code>`). OAUTH_KV:
-	// the OAuth provider's clients/codes/grants/tokens (binding name required by lib).
-	// Id-less bindings: the deploy auto-provisions per-operator ids and pins them back
-	// into the operator's data-repo config (the merge strips any id committed here). Real
-	// ids are never committed in this public repo; local `wrangler dev` simulates KV.
+	// KV (ephemeral infra).
+	// 
+	// KROGER_KV:
+	//    per-tenant Kroger refresh tokens (`kroger:refresh:<tenant>`) + PKCE verifiers
+	//    (`kroger:pkce:<state>`) + the warmed flyer cache (`flyer:{locationId}` rollups,
+	//    the sweep `flyer:cursor`, and the persisted `flyer:plan`).
+	// TENANT_KV:
+	//    the tenant directory / allowlist (`tenant:<id>`) + invite codes (`invite:<code>`).
+	// OAUTH_KV:
+	//    the OAuth provider's clients/codes/grants/tokens (binding name required by lib).
+	// 
+	// Id-less bindings:
+	//    the deploy auto-provisions per-operator ids and pins them back into the operator's
+	//    data-repo config (the merge strips any id committed here). Real ids are never
+	//    committed in this public repo; local `wrangler dev` simulates KV.
 	"kv_namespaces": [
 		{ "binding": "KROGER_KV" },
 		{ "binding": "TENANT_KV" },
@@ -51,13 +46,11 @@
 	],
 	// D1 (domain data). `DB` is the system of record for domain/operational data and
 	// derived projections (recipe index, profile, session state, cooking log, …) —
-	// the queryable, relational, admin-editable, strongly-consistent tier; KV above is
-	// now ephemeral infra only (tokens, caches, directory). Migrated slice by slice;
-	// this binding moves no domain data yet. Id-less like the KV bindings: the deploy
-	// auto-provisions a per-operator database and pins its `database_id` back into the
-	// operator's data-repo config (the merge strips any id committed here). SQL schema
-	// migrations live under `migrations/d1/` (applied by `wrangler d1 migrations apply`),
-	// a separate directory from the `.mjs` data-backfill runner's `migrations/` scan.
+	// the queryable, relational, admin-editable, strongly-consistent tier.
+	// Id-less like the KV bindings: the deploy auto-provisions a per-operator database
+	// and pins its `database_id` back into the operator's data-repo config (the merge
+	// strips any id committed here). SQL schema migrations live under `migrations/d1/`
+	// (applied by `wrangler d1 migrations apply`).
 	"d1_databases": [
 		{ "binding": "DB", "database_name": "grocery-mcp", "migrations_dir": "migrations/d1" }
 	],
@@ -67,13 +60,18 @@
 	// binding (like d1/triggers): propagated to every operator by the deploy merge.
 	// In `wrangler dev` the binding is proxied to the real AI API (needs wrangler auth).
 	"ai": { "binding": "AI" },
-	// Flyer warm (flyer-cache-warming). ONE trigger on a short cadence drives a
-	// cursor-based sweep (src/flyer-warm.ts): each tick builds the plan, scans the
-	// next ≤12-unit batch (kept under the free-tier 50-external-subrequest + ~10ms-CPU
-	// per-invocation caps), or no-ops once the sweep is complete. The sweep itself only
-	// re-runs ~daily — that cadence lives in code (DEFAULT_REFRESH_MS), not here; the
-	// frequent cron just gives the sweep ticks to make progress on. Idle ticks are a
-	// single cheap KV read. Test locally with `wrangler dev --test-scheduled`.
+	// Janitor cron (one trigger, short cadence). Each tick runs two jobs:
+	//   * Flyer warm (flyer-cache-warming) — a cursor-based sweep (src/flyer-warm.ts):
+	//     each tick builds the plan, scans the next ≤12-unit batch (kept under the
+	//     free-tier 50-external-subrequest + ~10ms-CPU per-invocation caps), or no-ops
+	//     once the sweep is complete. The sweep re-runs ~daily (DEFAULT_REFRESH_MS, in
+	//     code, not here); the frequent cron just gives it ticks to make progress on.
+	//     Idle ticks are a single cheap KV read.
+	//   * Recipe-embedding reconcile (semantic-meal-plan, src/recipe-embeddings.ts) —
+	//     refills the embedding table from changed recipe descriptions via env.AI. It
+	//     draws on the internal-subrequest budget, not the flyer's external one, so the
+	//     two coexist in a tick.
+	// Test locally with `wrangler dev --test-scheduled`.
 	// The operator deploy (data-deploy.yml) MERGES code-level keys from THIS file —
 	// including this `triggers` block — into each operator's deployed config
 	// (scripts/merge-wrangler-config.mjs), so a cron added here propagates to every

@@ -6,11 +6,9 @@ update-when: the toolchain, Worker dev or deploy workflow, repo layout, or contr
 
 How to work **on** the grocery-agent itself — its persona/skills (generated from [`AGENT_INSTRUCTIONS.md`](AGENT_INSTRUCTIONS.md)) **and** the `grocery-mcp` Worker, both built in this repo. For how the system is *built* (the technical model), read [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) first — this guide assumes it.
 
-> **One thing to get right up front.** This repo *is* the grocery-agent itself — both of its surfaces. The agent's operational instructions — persona, conversational flows, behavior rules — live in [`AGENT_INSTRUCTIONS.md`](AGENT_INSTRUCTIONS.md), the canonical source the **grocery-agent plugin**'s skills are generated from (`scripts/build-plugin.mjs`); the domain tools live in the `grocery-mcp` Worker (`src/`). Both ship to the agent at runtime, and both are built here. Change the Worker by editing `src/`; change how the agent talks and decides by editing `AGENT_INSTRUCTIONS.md` and rebuilding — **never hand-edit the generated bundle under `plugin/`**.
-
 ## Repo map
 
-There is **no data at the root of this repo** — the data lives in a separate private data repo (see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) and [`docs/SELF_HOSTING.md`](docs/SELF_HOSTING.md)). This repo is the agent's source — Worker code, the persona/skills source, and build tooling:
+There is **no data in this repo** — the data lives in a separate private data repo (see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) and [`docs/SELF_HOSTING.md`](docs/SELF_HOSTING.md)). This repo is the agent's source — Worker code, the persona/skills source, and build tooling:
 
 | Path | What it is |
 | --- | --- |
@@ -33,8 +31,6 @@ aube install                # deps (reads package-lock.json in place)
 **Supply-chain cooldown.** `.npmrc` sets `minimum-release-age=10080` (7 days): aube won't install a dependency version published less than 7 days ago, falling back to the newest one old enough. It's kept numerically aligned with the Dependabot `cooldown` (`default-days: 7`) so Dependabot only proposes versions aube will install. **Residual:** Dependabot fast-tracks *security* updates (cooldown doesn't apply to them), but aube's window applies to every install — so a same-day security bump can make `aube ci` fail in CI until the version ages in. It's rare and self-healing: re-run CI once the release crosses 7 days (don't disable the window in CI — that re-opens the day-zero risk it guards against).
 
 The data-repo template lives in its own independent repo, [`groceries-agent-data-template`](https://github.com/caseyWebb/groceries-agent-data-template) — it is no longer vendored here. Build and test never touch it.
-
-> **Template sync note (`d1-foundation`).** New operators are *not* blocked on a template bump: the deploy merge takes the binding **set** from this code repo's `wrangler.jsonc`, so the id-less D1 `DB` binding propagates to every operator on their next deploy regardless of their template version. The separate template repo's own `wrangler.jsonc` should still gain the id-less `{ "binding": "DB", "database_name": "grocery-mcp", "migrations_dir": "migrations/d1" }` entry on its next sync so a freshly cloned template reflects reality — that edit lands in the template repo, not here.
 
 ## Working on the Worker (`src/`)
 
@@ -81,13 +77,11 @@ node scripts/build-indexes.mjs --check                     # validate only, no w
 aubr test:tooling                                          # node --test (tests/, fixture-based)
 ```
 
-**Validation.** After `d1-shared-corpus`, `build-indexes.mjs` validates **recipes only** (frontmatter well-formed, controlled vocab, references resolve) and projects the recipe index into D1. The store/discovery/whole-repo-TOML checks moved to **Worker write-time** validators (`src/validate.ts`: `validateFile` for recipe `.md`, `validateStoreInput`/`validateDiscoveryCandidate` for the D1 corpus writes); no non-recipe artifact is build-validated anymore. `smol-toml` is gone from the Worker and build.
+**Validation.** `build-indexes.mjs` validates **recipes only** (frontmatter well-formed, controlled vocab, references resolve) and projects the recipe index into D1 — recipe `.md` is the only file it validates. Everything else is validated at **Worker write time** in `src/validate.ts`: `validateFile` for recipe markdown, and `validateStoreInput` / `validateDiscoveryCandidate` for the D1 corpus writes (store registry, discovery candidates).
 
-**Reusable Actions.** This public repo hosts `on: workflow_call` workflows that operators' private data repos call (`uses: caseyWebb/groceries-agent/...@main`), billed to the data-repo owner: `data-deploy.yml`, `data-onboard.yml` / `data-revoke.yml` (KV-only member provisioning), `data-build-indexes.yml` / `data-build-site.yml`, and `data-build-plugin.yml` (mint a self-hoster's plugin bundle with their own connector URL baked in). Onboard/revoke run in the **private** data repo so the invite codes they print never hit a public log. The [`groceries-agent-data-template`](https://github.com/caseyWebb/groceries-agent-data-template) repo's `.github/workflows/` is the live reference for the thin data-repo callers.
+**Reusable Actions.** This public repo hosts `on: workflow_call` workflows that operators' private data repos call (`uses: caseyWebb/groceries-agent/...@main`): `data-deploy.yml`, `data-onboard.yml` / `data-revoke.yml` (member provisioning), `data-build-indexes.yml` / `data-build-site.yml`, and `data-build-plugin.yml` (mint a self-hoster's plugin bundle with their own connector URL baked in). Onboard/revoke run in the **private** data repo so the invite codes they print never hit a public log. The [`groceries-agent-data-template`](https://github.com/caseyWebb/groceries-agent-data-template) repo's `.github/workflows/` is the live reference for the thin data-repo callers.
 
-**Migrations — schema only.** A schema change is a `migrations/d1/NNNN_name.sql` file: declarative table shape, applied by the Cloudflare-native `wrangler d1 migrations apply DB` (`--local` to seed your dev SQLite, `--remote` on deploy — the deploy step runs this) and tracked in D1's own `d1_migrations` table (created automatically). Just write the SQL.
-
-The original KV/GitHub → D1 move used imperative `migrations/*.mjs` data backfills run by a `scripts/run-migrations.mjs` runner (ledgered in a `migrations:applied` KV key); those have been applied and **removed**, along with `DATA_KV`. There is no `.mjs` data-migration track today. The only script that writes D1 from CI now is `scripts/build-indexes.mjs` (via `scripts/d1-rest.mjs`), which *rebuilds* the derived recipe index — not a stateful migration. If a future reshape needs an imperative backfill, re-introduce a runner then.
+**D1 Migrations.** A D1 schema change is a `migrations/d1/NNNN_name.sql` file: declarative table shape, applied by the Cloudflare-native `wrangler d1 migrations apply DB` (`--local` to seed your dev SQLite, `--remote` on deploy — the deploy step runs this) and tracked in D1's own `d1_migrations` table (created automatically). Just write the SQL.
 
 ## Building the plugin (`AGENT_INSTRUCTIONS.md` → `plugin/`)
 
