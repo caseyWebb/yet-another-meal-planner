@@ -58,9 +58,9 @@ describe("slugFromFile", () => {
 });
 
 describe("domain vocabulary", () => {
-  it("includes both corpora, and only cooking_techniques is writable", () => {
-    expect(GUIDANCE_DOMAINS).toEqual(["ingredient_storage", "cooking_techniques"]);
-    expect(WRITABLE_DOMAINS).toEqual(["cooking_techniques"]);
+  it("includes the three corpora; ingredient_storage is read-only, the rest writable", () => {
+    expect(GUIDANCE_DOMAINS).toEqual(["ingredient_storage", "cooking_techniques", "purchasing"]);
+    expect(WRITABLE_DOMAINS).toEqual(["cooking_techniques", "purchasing"]);
   });
 });
 
@@ -113,11 +113,14 @@ describe("listGuidance — all domains", () => {
       dirs: {
         "guidance/ingredient_storage": [{ name: "alliums.md", type: "file" }],
         "guidance/cooking_techniques": [{ name: "browning-meat.md", type: "file" }],
+        "guidance/purchasing": [{ name: "canned-tomatoes.md", type: "file" }],
       },
       files: {
         "guidance/ingredient_storage/alliums.md": "# Alliums\nbody",
         "guidance/cooking_techniques/browning-meat.md":
           "---\ndescription: brown not gray\n---\n\n# Browning meat\nbody",
+        "guidance/purchasing/canned-tomatoes.md":
+          "---\ndescription: no calcium chloride for sauce\n---\n\n# Canned tomatoes\nbody",
       },
     });
     const res = await listGuidance(gh);
@@ -127,6 +130,10 @@ describe("listGuidance — all domains", () => {
         {
           domain: "cooking_techniques",
           entries: [{ slug: "browning-meat", description: "brown not gray" }],
+        },
+        {
+          domain: "purchasing",
+          entries: [{ slug: "canned-tomatoes", description: "no calcium chloride for sauce" }],
         },
       ],
     });
@@ -217,6 +224,25 @@ describe("saveGuidance", () => {
     });
     expect(state.path).toBe("guidance/cooking_techniques/browning-meat.md");
     expect(state.content).toContain("# Browning meat");
+  });
+
+  it("creates a new purchasing entry at guidance/purchasing/<slug>.md (writable domain)", async () => {
+    const { gh, state } = recordingGh();
+    const res = await saveGuidance(
+      gh,
+      "purchasing",
+      "olive-oil",
+      "---\ndescription: which supermarket olive oil is actually good\n---\n\n# Olive oil\nRecent harvest date, dark glass.",
+      "https://www.americastestkitchen.com/taste_tests/olive-oil",
+    );
+    expect(res).toEqual({
+      domain: "purchasing",
+      slug: "olive-oil",
+      path: "guidance/purchasing/olive-oil.md",
+      commit_sha: "newcommit",
+    });
+    expect(state.path).toBe("guidance/purchasing/olive-oil.md");
+    expect(state.content).toContain("# Olive oil");
   });
 
   it("records the source into frontmatter when provided", async () => {

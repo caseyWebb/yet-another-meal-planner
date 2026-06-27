@@ -1,8 +1,9 @@
 // Read + write logic for the curated `guidance/` content trees — markdown corpora
 // at the data-repo root (shared, read by all tenants), organized by DOMAIN
-// subdirectory: `guidance/ingredient_storage/` (curated, read-only put-away advice)
-// and `guidance/cooking_techniques/` (agent-writable technique memories). Both are
-// class/technique-keyed markdown; mapping an item/step to a slug is the agent's
+// subdirectory: `guidance/ingredient_storage/` (curated, read-only put-away advice),
+// `guidance/cooking_techniques/` (agent-writable technique memories), and
+// `guidance/purchasing/` (agent-writable buy-side selection/quality advice). The files
+// are class/technique/item-keyed markdown; mapping an item/step to a slug is the agent's
 // world-knowledge job (no manifest). Factored out of tools.ts so the list/read/save
 // behavior is unit-testable against a fake GitHubClient (mirrors recipes.ts).
 //
@@ -20,11 +21,11 @@ import { ToolError } from "./errors.js";
 const ROOT = "guidance";
 
 /** The controlled vocabulary of guidance domains; each maps to `guidance/<domain>/`. */
-export const GUIDANCE_DOMAINS = ["ingredient_storage", "cooking_techniques"] as const;
+export const GUIDANCE_DOMAINS = ["ingredient_storage", "cooking_techniques", "purchasing"] as const;
 export type GuidanceDomain = (typeof GUIDANCE_DOMAINS)[number];
 
 /** Domains `save_guidance` may write. `ingredient_storage` is excluded → read-only. */
-export const WRITABLE_DOMAINS: readonly GuidanceDomain[] = ["cooking_techniques"];
+export const WRITABLE_DOMAINS: readonly GuidanceDomain[] = ["cooking_techniques", "purchasing"];
 
 // Read slugs allow an optional leading underscore for relational files
 // (`_ethylene` in ingredient_storage). Anchored, so it also rejects path traversal.

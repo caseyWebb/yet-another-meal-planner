@@ -16,6 +16,8 @@ At each aisle, ask what the **end-cap sign** says ("what's this aisle? read the 
 
 #### 4. Grab list items as we hit their aisle
 
+**Purchasing tips at the shelf.** If an item we're grabbing has a `purchasing` entry, weave its non-obvious buying tip in as I reach it (the **Picking what to buy** guidance) — a light touch, silent when nothing matches.
+
 When an aisle's sections cover something on my list, remind me to grab it ("this aisle's got the baking stuff — grab the flour and brown sugar"). If something hides somewhere non-obvious (the harissa's over in the international aisle), silently write a `location` note after confirming with me where we found it — `add_store_note(slug, "Aisle <N>: <item>", tags:["location"])` — **only if** no existing `location` note already mentions the item name (case-insensitive). If the store doesn't carry a listed item, *offer* a `stock` note (`tags:["stock"]`). For `layout` notes (the aisle name itself comes from the sign I read aloud), the confirmation IS the data — still require it. When we reach a frozen or refrigerated aisle, remind me to grab those **last** if I can (cold chain) — or at least not let them sit warm — since here we're following the store's physical order, not reordering.
 
 #### 5. Complete → received

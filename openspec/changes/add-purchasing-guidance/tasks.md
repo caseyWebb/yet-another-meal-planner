@@ -1,40 +1,40 @@
 ## 1. Worker: extend the guidance domain vocabulary
 
-- [ ] 1.1 In `src/guidance.ts`, add `purchasing` to the `GUIDANCE_DOMAINS` controlled vocabulary (maps to `guidance/purchasing/`).
-- [ ] 1.2 Add `purchasing` to the `WRITABLE_DOMAINS` allowlist (writable like `cooking_techniques`; `ingredient_storage` stays excluded → read-only).
-- [ ] 1.3 Confirm no other change is needed in the module — the list/read/save/validation logic, the slug-safety regexes, and the absent-tree-is-empty behavior are all domain-generic and apply to `purchasing` unchanged (`WRITE_SLUG_RE` plain kebab-case fits item slugs; no `_`-prefixed relational file in this domain).
+- [x] 1.1 In `src/guidance.ts`, add `purchasing` to the `GUIDANCE_DOMAINS` controlled vocabulary (maps to `guidance/purchasing/`).
+- [x] 1.2 Add `purchasing` to the `WRITABLE_DOMAINS` allowlist (writable like `cooking_techniques`; `ingredient_storage` stays excluded → read-only).
+- [x] 1.3 Confirm no other change is needed in the module — the list/read/save/validation logic, the slug-safety regexes, and the absent-tree-is-empty behavior are all domain-generic and apply to `purchasing` unchanged (`WRITE_SLUG_RE` plain kebab-case fits item slugs; no `_`-prefixed relational file in this domain).
 
 ## 2. Worker: tool surface (descriptions only — no new tool)
 
-- [ ] 2.1 In `src/tools.ts`, extend the `list_guidance` and `read_guidance` tool descriptions to enumerate the `purchasing` domain and what it covers (buy-side selection keyed by product/item — "what kind of X to get" + non-obvious ripeness/quality), and how to map a list item to a slug by world-knowledge.
-- [ ] 2.2 Extend the `save_guidance` description so `purchasing` reads as writable alongside `cooking_techniques` (and `ingredient_storage` still read-only). No new tool is registered — the generic trio already covers it.
+- [x] 2.1 In `src/tools.ts`, extend the `list_guidance` and `read_guidance` tool descriptions to enumerate the `purchasing` domain and what it covers (buy-side selection keyed by product/item — "what kind of X to get" + non-obvious ripeness/quality), and how to map a list item to a slug by world-knowledge.
+- [x] 2.2 Extend the `save_guidance` description so `purchasing` reads as writable alongside `cooking_techniques` (and `ingredient_storage` still read-only). No new tool is registered — the generic trio already covers it.
 
 ## 3. Tests
 
-- [ ] 3.1 In `test/guidance.test.ts`, add coverage that `list_guidance("purchasing")` and the all-domains-grouped `list_guidance()` include `purchasing`, and that `read_guidance("purchasing", …)` returns content (+ unknown-slug `not_found`).
-- [ ] 3.2 Add `save_guidance("purchasing", …)` create + refine (single file, no duplicate), and assert the `ingredient_storage` read-only rejection still holds.
-- [ ] 3.3 `aubr test` green.
+- [x] 3.1 In `test/guidance.test.ts`, add coverage that `list_guidance("purchasing")` and the all-domains-grouped `list_guidance()` include `purchasing`, and that `read_guidance("purchasing", …)` returns content (+ unknown-slug `not_found`).
+- [x] 3.2 Add `save_guidance("purchasing", …)` create + refine (single file, no duplicate), and assert the `ingredient_storage` read-only rejection still holds.
+- [x] 3.3 `aubr test` green.
 
 ## 4. Docs (same-pass, no drift)
 
-- [ ] 4.1 `docs/SCHEMAS.md`: add the `purchasing` domain to the `guidance/` section — item/product-keyed, `description` + optional `source` frontmatter, writable, flat (no relational file).
-- [ ] 4.2 `docs/TOOLS.md`: update the guidance tool contract (the domain enumeration on `list_guidance` / `read_guidance` and the writable-allowlist note on `save_guidance`) to include `purchasing`.
-- [ ] 4.3 `docs/ARCHITECTURE.md`: update any guidance-umbrella reference that enumerates domains to mention the third (`purchasing`).
+- [x] 4.1 `docs/SCHEMAS.md`: add the `purchasing` domain to the `guidance/` section — item/product-keyed, `description` + optional `source` frontmatter, writable, flat (no relational file).
+- [x] 4.2 `docs/TOOLS.md`: update the guidance tool contract (the domain enumeration on `list_guidance` / `read_guidance` and the writable-allowlist note on `save_guidance`) to include `purchasing`.
+- [x] 4.3 `docs/ARCHITECTURE.md`: update any guidance-umbrella reference that enumerates domains to mention the third (`purchasing`).
 
 ## 5. Agent persona
 
-- [ ] 5.1 `AGENT_INSTRUCTIONS.md`: add the **capture skill** — member posts a buying guide / taste test / URL / their own distillation → best-effort fetch (accept pasted text) → read any existing entry and **merge** → distill to imperative, non-obvious "what to actually grab" bullets (pre-hedge contested/ripeness tips) → `save_guidance("purchasing", slug, content, source?)`. Its selection criteria MUST disambiguate from siblings: a *technique* piece → `save-technique` (`cooking_techniques`); a *single-recipe* tweak → `add-recipe-note`; only *what-to-buy* knowledge → `purchasing`.
-- [ ] 5.2 `AGENT_INSTRUCTIONS.md`: surface purchasing tips in the `shop-groceries` flow — on the **in-store walk**, map list items → entries by world-knowledge, `read_guidance("purchasing", …)`, and weave ~2–3 non-obvious tips in as the relevant aisle/section is reached (silence when none, don't repeat every trip); on the **online (Kroger) flush**, give a single consolidated "check the cart and swap manually" callout. State explicitly it is **narration only** — no influence on `match_ingredient_to_kroger_sku`, no `preferences.brands` write.
-- [ ] 5.3 Rebuild the plugin bundle: `aubr build:plugin` (never hand-edit `plugin/`).
+- [x] 5.1 `AGENT_INSTRUCTIONS.md`: add the **capture skill** — member posts a buying guide / taste test / URL / their own distillation → best-effort fetch (accept pasted text) → read any existing entry and **merge** → distill to imperative, non-obvious "what to actually grab" bullets (pre-hedge contested/ripeness tips) → `save_guidance("purchasing", slug, content, source?)`. Its selection criteria MUST disambiguate from siblings: a *technique* piece → `save-technique` (`cooking_techniques`); a *single-recipe* tweak → `add-recipe-note`; only *what-to-buy* knowledge → `purchasing`.
+- [x] 5.2 `AGENT_INSTRUCTIONS.md`: surface purchasing tips in the `shop-groceries` flow — on the **in-store walk**, map list items → entries by world-knowledge, `read_guidance("purchasing", …)`, and weave ~2–3 non-obvious tips in as the relevant aisle/section is reached (silence when none, don't repeat every trip); on the **online (Kroger) flush**, give a single consolidated "check the cart and swap manually" callout. State explicitly it is **narration only** — no influence on `match_ingredient_to_kroger_sku`, no `preferences.brands` write.
+- [x] 5.3 Rebuild the plugin bundle: `aubr build:plugin` (never hand-edit `plugin/`).
 
 ## 6. Data repos (re-home + seed)
 
-- [ ] 6.1 In `groceries-agent-data`: `git mv guidance/cooking_techniques/canned-tomatoes.md guidance/purchasing/canned-tomatoes.md` (content-preserving; its content is already pure buy-side). Make the edits on the `claude/guidance-purchasing-expansion-9vzxd5` branch.
-- [ ] 6.2 Seed `guidance/purchasing/olive-oil.md` as a second worked example (one-line `description`, `source`, distilled "what to grab" prose; hedge anything contested). In `groceries-agent-data-template`, ensure a `guidance/purchasing/` subtree exists with a representative seed (mirroring how the template carries example guidance for the other domains).
-- [ ] 6.3 Update both data repos' `README.md` to list the `purchasing` domain under `guidance/`.
+- [x] 6.1 In `groceries-agent-data`: `git mv guidance/cooking_techniques/canned-tomatoes.md guidance/purchasing/canned-tomatoes.md` (content-preserving; its content is already pure buy-side). Make the edits on the `claude/guidance-purchasing-expansion-9vzxd5` branch.
+- [x] 6.2 Seed `guidance/purchasing/olive-oil.md` as a second worked example (one-line `description`, `source`, distilled "what to grab" prose; hedge anything contested). In `groceries-agent-data-template`, ensure a `guidance/purchasing/` subtree exists with a representative seed (mirroring how the template carries example guidance for the other domains).
+- [x] 6.3 Update both data repos' `README.md` to list the `purchasing` domain under `guidance/`.
 
 ## 7. Verify & land
 
-- [ ] 7.1 `openspec validate "add-purchasing-guidance" --strict` passes; grep confirms no `canned-tomatoes` reference remains under `cooking_techniques` in code/docs/persona, and the `purchasing` domain is enumerated consistently across `src/`, `docs/`, and the regenerated `plugin/`.
-- [ ] 7.2 `aubr typecheck` and `aubr test` green; confirm `plugin/` was regenerated by the build (not hand-edited).
+- [x] 7.1 `openspec validate "add-purchasing-guidance" --strict` passes; grep confirms no `canned-tomatoes` reference remains under `cooking_techniques` in code/docs/persona, and the `purchasing` domain is enumerated consistently across `src/`, `docs/`, and the regenerated `plugin/`.
+- [x] 7.2 `aubr typecheck` and `aubr test` green; confirm `plugin/` was regenerated by the build (not hand-edited).
 - [ ] 7.3 Merge the Worker change to `main` (CI auto-dispatches the data-repo deploy on the `src/**` change; **no D1 migration**); land the data-repo `git mv` close in time so `canned-tomatoes` reads don't fall between the old and new paths.
