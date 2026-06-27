@@ -22,7 +22,7 @@ The system SHALL discover and import recipes in a background **discovery sweep**
 - **WHEN** a tick throws after a partial publish and re-runs
 - **THEN** already-imported candidates are not imported again (idempotent on canonical source URL and the evaluated set)
 
-### Requirement: Sweep intake polls feeds and drains the email inbox, deduped
+### Requirement: Sweep intake polls feeds and reads the email inbox, deduped
 
 The sweep SHALL gather candidates from both shared sources: the RSS/Atom `feeds` table (polled — discovery is no longer a live agent-time pull) and the email `discovery_candidates` inbox (pushed by the `email()` handler). It SHALL exclude any candidate whose canonical URL is already a corpus recipe `source_url`, is in `discovery_rejections`, or is in the `discovery_evaluated` set (candidates already evaluated and not imported). Canonicalization SHALL strip tracker query strings/fragments/trailing slashes, and SHALL prefer a recipe's JSON-LD-declared `source` over the fetched URL when present.
 

@@ -54,6 +54,8 @@ export const TENANT_TABLES = [
   "meal_plan",
   "grocery_list",
   "cooking_log",
+  "discovery_matches", // per-member discovery attribution (migration 0016)
+  "taste_derived", // per-member taste vector (migration 0016)
 ] as const;
 export const AUTHOR_TABLES = ["recipe_notes", "store_notes"] as const;
 

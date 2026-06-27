@@ -51,6 +51,7 @@ interface FakeOpts {
   classifyThrow?: Set<string>; // titles whose classify throws (park)
   acquireNull?: Set<string>; // urls whose content is unreachable
   confirm?: (members: SweepMember[]) => string[]; // default: confirm all
+  embedThrow?: Set<string>; // embed input texts that throw (a transient env.AI failure)
 }
 
 function makeDeps(opts: FakeOpts) {
@@ -60,7 +61,10 @@ function makeDeps(opts: FakeOpts) {
     loadCandidates: async () => opts.candidates,
     loadMembers: async () => opts.members,
     loadCorpusVectors: async () => opts.corpus ?? [],
-    embed: async (text) => vec(text),
+    embed: async (text) => {
+      if (opts.embedThrow?.has(text)) throw new Error(`AI down: ${text}`);
+      return vec(text);
+    },
     acquireContent: async (c) =>
       opts.acquireNull?.has(c.url)
         ? null
@@ -272,5 +276,21 @@ describe("runDiscoverySweep", () => {
     const res = await runDiscoverySweep(deps, { ...CONFIG, classifyMaxPerTick: 1 });
     expect(calls.classify).toBe(1);
     expect(res.deferred).toBe(1);
+  });
+
+  it("parks a candidate on a transient AI failure without crashing the whole tick", async () => {
+    // The first candidate's triage embed throws (an env.AI hiccup); the sweep must park it
+    // and keep going, not abandon the rest of the batch.
+    const { deps, calls } = makeDeps({
+      candidates: [cand("u1", "Boom"), cand("u2", "Ok")],
+      members: [member("casey")],
+      vectors: { "Ok — s": A, "DESC:Ok": A },
+      embedThrow: new Set(["Boom — s"]),
+    });
+    const res = await runDiscoverySweep(deps, CONFIG); // must NOT reject
+    expect(res.parked).toBe(1);
+    expect(res.imported).toBe(1);
+    expect(calls.imported).toEqual(["ok"]);
+    expect(calls.logs.some((l) => l.title === "Boom" && l.outcome === "error")).toBe(true);
   });
 });

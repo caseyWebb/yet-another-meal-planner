@@ -82,11 +82,13 @@ export interface DiscoveryConfig {
 }
 
 export const DEFAULT_CONFIG: DiscoveryConfig = {
-  // Placeholders until task 0.3 calibrates them against the live corpus embeddings.
+  // Placeholders until task 0.3 calibrates them against the live corpus. classifyMaxPerTick
+  // also caps the EXTERNAL recipe-page fetches, which share the flyer's 50-subrequest
+  // per-invocation budget (both run in one scheduled() tick) — keep it conservative.
   tasteThreshold: 0.55,
   triageThreshold: 0.45,
   dedupThreshold: 0.9,
-  classifyMaxPerTick: 25,
+  classifyMaxPerTick: 12,
   rateCap: 10,
 };
 
@@ -128,7 +130,7 @@ export interface SweepResult {
 
 /** The I/O the sweep needs, injected so the pipeline is testable without feeds/AI/D1/R2. */
 export interface DiscoveryDeps {
-  /** New candidates this tick (deps poll feeds + drain the inbox + dedup vs corpus/rejections/log). */
+  /** New candidates this tick (deps poll feeds + read the inbox + dedup vs corpus/rejections/log). */
   loadCandidates(): Promise<SweepCandidate[]>;
   /** Every member's resolved taste signal. */
   loadMembers(): Promise<SweepMember[]>;
@@ -254,98 +256,113 @@ export async function runDiscoverySweep(
       continue;
     }
 
-    // [1] cheap triage — embed the blurb, drop anything near nobody BEFORE spending a fetch/classify.
-    const triageVec = await deps.embed([candidate.title, candidate.summary ?? ""].join(" — ").trim());
-    if (!nearAnyMember(triageVec, members, config.triageThreshold)) {
-      await deps.recordLog({ ...logBase(candidate), outcome: "no_match", detail: { stage: "triage" } });
-      res.noMatch++;
-      res.processed++;
-      continue;
-    }
-
-    // [2] acquire content — unreachable/walled (no inline recipe) → park (no human to paste).
-    const content = await deps.acquireContent(candidate);
-    if (!content) {
-      await deps.recordLog({ ...logBase(candidate), outcome: "error", detail: { reason: "unreachable" } });
-      res.parked++;
-      res.processed++;
-      continue;
-    }
-
-    // [3] classify — the expensive leg; a persistently-invalid classification parks.
-    classified++;
-    let frontmatter: Record<string, unknown>;
     try {
-      frontmatter = await deps.classify(content, candidate.url);
+      // [1] cheap triage — embed the blurb, drop anything near nobody BEFORE spending a fetch/classify.
+      const triageVec = await deps.embed([candidate.title, candidate.summary ?? ""].join(" — ").trim());
+      if (!nearAnyMember(triageVec, members, config.triageThreshold)) {
+        await deps.recordLog({ ...logBase(candidate), outcome: "no_match", detail: { stage: "triage" } });
+        res.noMatch++;
+        res.processed++;
+        continue;
+      }
+
+      // [2] acquire content — unreachable/walled (no inline recipe) → park (no human to paste).
+      const content = await deps.acquireContent(candidate);
+      if (!content) {
+        await deps.recordLog({ ...logBase(candidate), outcome: "error", detail: { reason: "unreachable" } });
+        res.parked++;
+        res.processed++;
+        continue;
+      }
+
+      // [3] classify — the expensive leg; a persistently-invalid classification parks.
+      classified++;
+      let frontmatter: Record<string, unknown>;
+      try {
+        frontmatter = await deps.classify(content, candidate.url);
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e);
+        await deps.recordLog({ ...logBase(candidate), outcome: "error", detail: { reason: message } });
+        res.parked++;
+        res.processed++;
+        continue;
+      }
+
+      // [4] describe + embed the description — the authoritative vector for dedup + match.
+      const description = await deps.describe(frontmatter);
+      const descVec = await deps.embed(description);
+
+      // [5] dedup — same dish already in the corpus (L2) or imported earlier this tick (L3).
+      const dupSlug = findDuplicate(descVec, corpus, config.dedupThreshold) ??
+        findDuplicate(descVec, importedVectors, config.dedupThreshold);
+      if (dupSlug) {
+        await deps.recordLog({ ...logBase(candidate), outcome: "duplicate", detail: { duplicate_of: dupSlug } });
+        res.duplicate++;
+        res.processed++;
+        continue;
+      }
+
+      // [6] match (cosine + repel + dietary gate), then the negation-aware LLM confirm.
+      const { matches, gatedByDiet } = matchMembers(
+        descVec,
+        asStringArray(frontmatter.dietary),
+        members,
+        config,
+      );
+      if (matches.length === 0) {
+        const outcome: Outcome = gatedByDiet ? "dietary_gated" : "no_match";
+        await deps.recordLog({ ...logBase(candidate), outcome, detail: { stage: "match" } });
+        if (gatedByDiet) res.dietaryGated++;
+        else res.noMatch++;
+        res.processed++;
+        continue;
+      }
+      const matchMembersList = members.filter((m) => matches.some((a) => a.tenant === m.tenant));
+      const confirmed = new Set(await deps.confirmMatches(candidate.title, description, matchMembersList));
+      const attributions = matches.filter((a) => confirmed.has(a.tenant));
+      if (attributions.length === 0) {
+        await deps.recordLog({ ...logBase(candidate), outcome: "no_match", detail: { stage: "confirm" } });
+        res.noMatch++;
+        res.processed++;
+        continue;
+      }
+
+      // [7] import — assemble + validate + write; attribute; log; seed the L3 vector. An
+      // import failure (e.g. a slug collision) parks the candidate rather than crashing the tick.
+      let slug: string;
+      try {
+        slug = await deps.importRecipe(frontmatter, content, descVec);
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e);
+        await deps.recordLog({ ...logBase(candidate), outcome: "error", detail: { reason: `import: ${message}` } });
+        res.parked++;
+        res.processed++;
+        continue;
+      }
+      await deps.recordMatches(slug, attributions);
+      await deps.recordLog({
+        ...logBase(candidate),
+        outcome: "imported",
+        slug,
+        detail: { attribution: attributions },
+      });
+      importedVectors.push({ slug, vector: descVec });
+      res.imported++;
+      res.processed++;
     } catch (e) {
+      // An unexpected transient AI/D1 failure (env.AI hiccup, D1 blip) parks THIS
+      // candidate rather than throwing out of the loop — the unattended sweep must keep
+      // making progress. recordLog is best-effort; if it too fails, the candidate is left
+      // un-evaluated and re-tried next tick (idempotent, so that is safe).
       const message = e instanceof Error ? e.message : String(e);
-      await deps.recordLog({ ...logBase(candidate), outcome: "error", detail: { reason: message } });
+      try {
+        await deps.recordLog({ ...logBase(candidate), outcome: "error", detail: { reason: `unexpected: ${message}` } });
+      } catch {
+        /* logging itself failed — skip; next tick re-evaluates this candidate */
+      }
       res.parked++;
       res.processed++;
-      continue;
     }
-
-    // [4] describe + embed the description — the authoritative vector for dedup + match.
-    const description = await deps.describe(frontmatter);
-    const descVec = await deps.embed(description);
-
-    // [5] dedup — same dish already in the corpus (L2) or imported earlier this tick (L3).
-    const dupSlug = findDuplicate(descVec, corpus, config.dedupThreshold) ??
-      findDuplicate(descVec, importedVectors, config.dedupThreshold);
-    if (dupSlug) {
-      await deps.recordLog({ ...logBase(candidate), outcome: "duplicate", detail: { duplicate_of: dupSlug } });
-      res.duplicate++;
-      res.processed++;
-      continue;
-    }
-
-    // [6] match (cosine + repel + dietary gate), then the negation-aware LLM confirm.
-    const { matches, gatedByDiet } = matchMembers(
-      descVec,
-      asStringArray(frontmatter.dietary),
-      members,
-      config,
-    );
-    if (matches.length === 0) {
-      const outcome: Outcome = gatedByDiet ? "dietary_gated" : "no_match";
-      await deps.recordLog({ ...logBase(candidate), outcome, detail: { stage: "match" } });
-      if (gatedByDiet) res.dietaryGated++;
-      else res.noMatch++;
-      res.processed++;
-      continue;
-    }
-    const matchMembersList = members.filter((m) => matches.some((a) => a.tenant === m.tenant));
-    const confirmed = new Set(await deps.confirmMatches(candidate.title, description, matchMembersList));
-    const attributions = matches.filter((a) => confirmed.has(a.tenant));
-    if (attributions.length === 0) {
-      await deps.recordLog({ ...logBase(candidate), outcome: "no_match", detail: { stage: "confirm" } });
-      res.noMatch++;
-      res.processed++;
-      continue;
-    }
-
-    // [7] import — assemble + validate + write; attribute; log; seed the L3 vector. An
-    // import failure (e.g. a slug collision) parks the candidate rather than crashing the tick.
-    let slug: string;
-    try {
-      slug = await deps.importRecipe(frontmatter, content, descVec);
-    } catch (e) {
-      const message = e instanceof Error ? e.message : String(e);
-      await deps.recordLog({ ...logBase(candidate), outcome: "error", detail: { reason: `import: ${message}` } });
-      res.parked++;
-      res.processed++;
-      continue;
-    }
-    await deps.recordMatches(slug, attributions);
-    await deps.recordLog({
-      ...logBase(candidate),
-      outcome: "imported",
-      slug,
-      detail: { attribution: attributions },
-    });
-    importedVectors.push({ slug, vector: descVec });
-    res.imported++;
-    res.processed++;
   }
 
   return res;

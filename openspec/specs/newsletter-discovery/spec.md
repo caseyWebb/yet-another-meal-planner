@@ -66,7 +66,7 @@ The handler SHALL capture the email's body as plain text and store it for the ag
 
 ### Requirement: Email bodies are appended to a shared discoveries inbox
 
-Accepted emails SHALL be inserted into the shared D1 `discovery_candidates` table (not a per-tenant file). Each inbox record SHALL carry `from` (stored as `source`), `subject`, `received_at` (stored as `discovered_at`), and `body` (the captured plain-text body). The table is the background discovery sweep's **push intake** — written by the `email()` handler, drained by the sweep — not an agent-read inbox.
+Accepted emails SHALL be inserted into the shared D1 `discovery_candidates` table (not a per-tenant file). Each inbox record SHALL carry `from` (stored as `source`), `subject`, `received_at` (stored as `discovered_at`), and `body` (the captured plain-text body). The table is the background discovery sweep's **push intake** — written by the `email()` handler, read by the sweep — not an agent-read inbox.
 
 #### Scenario: Accepted message lands as an inbox record
 
