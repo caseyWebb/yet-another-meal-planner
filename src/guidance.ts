@@ -5,17 +5,15 @@
 // `guidance/purchasing/` (agent-writable buy-side selection/quality advice). The files
 // are class/technique/item-keyed markdown; mapping an item/step to a slug is the agent's
 // world-knowledge job (no manifest). Factored out of tools.ts so the list/read/save
-// behavior is unit-testable against a fake GitHubClient (mirrors recipes.ts).
+// behavior is unit-testable against a fake CorpusStore (mirrors recipes.ts).
 //
 // The read posture mirrors the former storage-guidance module; the WRITE posture
 // (save_guidance) mirrors the shared-and-agent-writable corpora (stores/feeds), but
 // is gated by a WRITABLE-domain allowlist so `ingredient_storage` stays read-only —
 // the guarantee is enforced by the allowlist, not by the absence of a write tool.
 
-import { GitHubError, type GitHubClient } from "./github.js";
-import { readFile } from "./gh-read.js";
+import { type CorpusStore, readCorpusFile } from "./corpus-store.js";
 import { parseMarkdown } from "./parse.js";
-import { commitFiles } from "./commit.js";
 import { ToolError } from "./errors.js";
 
 const ROOT = "guidance";
@@ -69,27 +67,19 @@ export interface GuidanceListing {
 }
 
 /** List one domain's slugs (each with its optional one-line frontmatter `description`). */
-async function listDomain(gh: GitHubClient, domain: GuidanceDomain): Promise<GuidanceListing[]> {
+async function listDomain(store: CorpusStore, domain: GuidanceDomain): Promise<GuidanceListing[]> {
   const dir = dirFor(domain);
-  let entries;
-  try {
-    entries = await gh.listDir(dir);
-  } catch (e) {
-    if (e instanceof GitHubError) {
-      // An absent tree is not an error — the agent simply has nothing vetted to offer.
-      if (e.status === 404) return [];
-      throw new ToolError("upstream_unavailable", e.message);
-    }
-    throw e;
-  }
+  // An absent tree is not an error — `listDir` returns [] (the agent simply has nothing
+  // vetted to offer); a genuine store failure surfaces as a structured ToolError.
+  const entries = await store.listDir(dir);
   const slugs = entries
     .filter((e) => e.type === "file")
     .map((e) => slugFromFile(e.name))
     .filter((s): s is string => s !== null);
   const listings = await Promise.all(
     slugs.map(async (slug) => {
-      const text = await readFile(
-        gh,
+      const text = await readCorpusFile(
+        store,
         `${dir}/${slug}.md`,
         "not_found",
         `Unknown guidance slug: ${slug}`,
@@ -116,15 +106,15 @@ export interface DomainListing {
  * never an error.
  */
 export async function listGuidance(
-  gh: GitHubClient,
+  store: CorpusStore,
   domain?: string,
 ): Promise<{ domain: GuidanceDomain; entries: GuidanceListing[] } | { domains: DomainListing[] }> {
   if (domain !== undefined) {
     assertDomain(domain);
-    return { domain, entries: await listDomain(gh, domain) };
+    return { domain, entries: await listDomain(store, domain) };
   }
   const domains = await Promise.all(
-    GUIDANCE_DOMAINS.map(async (d) => ({ domain: d, entries: await listDomain(gh, d) })),
+    GUIDANCE_DOMAINS.map(async (d) => ({ domain: d, entries: await listDomain(store, d) })),
   );
   return { domains };
 }
@@ -139,7 +129,7 @@ export interface GuidanceEntry {
  * malformed) slug, or an unknown domain, yields a structured error per errors.ts.
  */
 export async function readGuidance(
-  gh: GitHubClient,
+  store: CorpusStore,
   domain: string,
   slugs: string[],
 ): Promise<{ domain: GuidanceDomain; entries: GuidanceEntry[] }> {
@@ -150,8 +140,8 @@ export async function readGuidance(
       if (!READ_SLUG_RE.test(slug)) {
         throw new ToolError("not_found", `Unknown guidance slug: ${slug}`, { slug });
       }
-      const content = await readFile(
-        gh,
+      const content = await readCorpusFile(
+        store,
         `${dir}/${slug}.md`,
         "not_found",
         `Unknown guidance slug: ${slug}`,
@@ -187,12 +177,12 @@ function withSource(content: string, source?: string): string {
  * full markdown the agent composes; `source`, when given, is recorded in frontmatter.
  */
 export async function saveGuidance(
-  gh: GitHubClient,
+  store: CorpusStore,
   domain: string,
   slug: string,
   content: string,
   source?: string,
-): Promise<{ domain: GuidanceDomain; slug: string; path: string; commit_sha: string }> {
+): Promise<{ domain: GuidanceDomain; slug: string; path: string }> {
   assertWritableDomain(domain);
   if (!WRITE_SLUG_RE.test(slug)) {
     throw new ToolError("validation_failed", `Invalid guidance slug: ${slug}`, { slug });
@@ -200,11 +190,10 @@ export async function saveGuidance(
   if (typeof content !== "string" || !content.trim()) {
     throw new ToolError("validation_failed", "guidance content must not be empty", { slug });
   }
+  // One slug = one object: the write is a single-object R2 put (atomic at the object
+  // level), overwriting/refining any existing entry. No commit/sha — the corpus is R2,
+  // not git (git history for the corpus is a deliberately-accepted loss).
   const path = `${dirFor(domain)}/${slug}.md`;
-  const result = await commitFiles(
-    gh,
-    [{ path, content: withSource(content, source) }],
-    `guidance(${domain}): save ${slug}`,
-  );
-  return { domain, slug, path, commit_sha: result.commit_sha };
+  await store.put(path, withSource(content, source));
+  return { domain, slug, path };
 }

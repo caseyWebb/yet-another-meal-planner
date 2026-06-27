@@ -11,7 +11,7 @@ import type { Tenant } from "./tenant.js";
 import { directoryFromEnv } from "./tenant.js";
 import { createGitHubClient, GitHubError } from "./github.js";
 import { createInstallationAuth } from "./github-app.js";
-import { readFile } from "./gh-read.js";
+import { createR2CorpusStore, readCorpusFile } from "./corpus-store.js";
 import { parseMarkdown } from "./parse.js";
 import { readAliases, readSkuCache } from "./corpus-db.js";
 import { ToolError, runTool } from "./errors.js";
@@ -157,10 +157,12 @@ function productRow(c: KrogerCandidate): Record<string, unknown> {
 export function buildServer(env: Env, tenant: Tenant): McpServer {
   const server = new McpServer({ name: "grocery-mcp", version: "0.1.0" });
 
-  // Repo access is authenticated with a short-lived GitHub App installation token
-  // (D3) against the single data repo. After slice 6 the ONLY data the Worker reads
-  // from GitHub is recipe markdown (everything else — profile, session, shared corpus
-  // — is D1), so `sharedGh` (root paths: `recipes/`) is the only client needed.
+  // The authored corpus (recipes/ + guidance/) is read/listed/written through the R2
+  // corpus store — no GitHub App, installation token, or GitHub API call on the data
+  // path. The GitHub App client below remains ONLY for the two non-corpus repo
+  // operations not yet retargeted: `recipe_site_url` (Pages URL) and `report_bug`
+  // (issues). Those move off GitHub in this change's later slices.
+  const corpus = createR2CorpusStore(env.CORPUS);
   const installationAuth = createInstallationAuth(
     env.GITHUB_APP_ID,
     env.GITHUB_APP_PRIVATE_KEY,
@@ -476,7 +478,7 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
           throw new ToolError("not_found", `Unknown recipe slug: ${slug}`, { slug });
         }
         const [text, overlay, lastCooked, description] = await Promise.all([
-          readFile(sharedGh, `recipes/${slug}.md`, "not_found", `Unknown recipe slug: ${slug}`),
+          readCorpusFile(corpus, `recipes/${slug}.md`, "not_found", `Unknown recipe slug: ${slug}`),
           getOverlay(),
           getLastCookedMap(),
           recipeDescription(env, slug),
@@ -569,7 +571,7 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
         'List the curated guidance slugs (each a slug + an optional one-line description) from the shared guidance/ trees. Pass `domain` for one corpus, or omit it to get every domain grouped (returns { domains: [{ domain, entries }] }; with a domain it returns { domain, entries }). Domains: "ingredient_storage" — put-away advice keyed by storage BEHAVIOR CLASS ("tender-herbs", "alliums", "leafy-greens"), a few singletons that break their class\'s rule ("basil", "tomatoes", "avocados"), and "_ethylene" for relational "don\'t store together" rules; "cooking_techniques" — general technique memories keyed by technique ("browning-meat", "searing", "resting-meat"); "purchasing" — buy-side selection keyed by PRODUCT/ITEM ("canned-tomatoes", "olive-oil"): what kind to get, plus the non-obvious "how to tell if it\'s good/ripe" judgments, surfaced while shopping. Map a just-bought item, a recipe step, or a thing on the grocery list to the right slug with your own world knowledge (cilantro → tender-herbs; "brown the beef" → browning-meat; canned tomatoes on the list → canned-tomatoes), then call read_guidance for the relevant ones. An absent tree yields an empty listing, not an error.',
       inputSchema: { domain: z.string().optional() },
     },
-    ({ domain }) => runTool(() => listGuidance(sharedGh, domain)),
+    ({ domain }) => runTool(() => listGuidance(corpus, domain)),
   );
 
   server.registerTool(
@@ -579,14 +581,14 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
         "Read curated guidance content for the named slugs within a domain (from list_guidance). Returns { domain, entries: [{ slug, content }] } where content is the file's markdown. An unknown slug or domain yields a structured error. This is vetted, curated advice — relay any contested tip WITH the hedge written into its prose, and give NO tip for an item/step that has no matching entry (never improvise). Domains: \"ingredient_storage\", \"cooking_techniques\", \"purchasing\".",
       inputSchema: { domain: z.string(), slugs: z.array(z.string()) },
     },
-    ({ domain, slugs }) => runTool(() => readGuidance(sharedGh, domain, slugs)),
+    ({ domain, slugs }) => runTool(() => readGuidance(corpus, domain, slugs)),
   );
 
   server.registerTool(
     "save_guidance",
     {
       description:
-        "Create or REFINE a single guidance memory (one file per slug — refining overwrites, never appends; read the existing entry first and merge). The \"cooking_techniques\" and \"purchasing\" domains are writable; a write to \"ingredient_storage\" (curated, read-only) is rejected with validation_failed. `content` is the full markdown you compose — distilled, imperative, non-obvious advice (with a one-line `description:` frontmatter), NOT the verbatim article. `source` (optional) records provenance (e.g. an ATK/Serious Eats URL) into the frontmatter. Use it when the member posts an article/technique or a buying guide to internalize. Returns { domain, slug, path, commit_sha }.",
+        "Create or REFINE a single guidance memory (one file per slug — refining overwrites, never appends; read the existing entry first and merge). The \"cooking_techniques\" and \"purchasing\" domains are writable; a write to \"ingredient_storage\" (curated, read-only) is rejected with validation_failed. `content` is the full markdown you compose — distilled, imperative, non-obvious advice (with a one-line `description:` frontmatter), NOT the verbatim article. `source` (optional) records provenance (e.g. an ATK/Serious Eats URL) into the frontmatter. Use it when the member posts an article/technique or a buying guide to internalize. Returns { domain, slug, path }.",
       inputSchema: {
         domain: z.string(),
         slug: z.string(),
@@ -595,7 +597,7 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
       },
     },
     ({ domain, slug, content, source }) =>
-      runTool(() => saveGuidance(sharedGh, domain, slug, content, source)),
+      runTool(() => saveGuidance(corpus, domain, slug, content, source)),
   );
 
   server.registerTool(
@@ -715,10 +717,9 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
   );
 
   // Repo-data write tools route by category internally (objective recipe content →
-  // shared root via GitHub; personal profile/overlay → D1 profile tables; session
-  // state pantry → D1 pantry table), so they take the ROOT client + D1 (env) +
-  // tenant id.
-  registerWriteTools(server, sharedGh, env, tenant.id);
+  // R2 corpus store; personal profile/overlay → D1 profile tables; session state
+  // pantry → D1 pantry table), so they take the corpus store + D1 (env) + tenant id.
+  registerWriteTools(server, corpus, env, tenant.id);
   registerGroceryListTools(server, env, tenant.id);
 
   // Cooking history + meal plan: read_meal_plan (resume), update_meal_plan, and
@@ -733,7 +734,7 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
   // data-repo root, while the discovery feeds/inbox/allowlist are shared D1 tables,
   // so any member's config feeds one group pool. Imports dedupe by
   // source URL against the shared corpus so a recipe is reused, not duplicated (§6.4).
-  registerDiscoveryTools(server, sharedGh, env, tenant.id);
+  registerDiscoveryTools(server, corpus, env, tenant.id);
 
   // Recipe notes (§8): attributed annotations in the D1 `recipe_notes` table,
   // aggregated across the group at read time with the privacy WHERE (own-private +

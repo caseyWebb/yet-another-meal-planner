@@ -118,6 +118,18 @@ export interface Env {
    */
   ASSETS: Fetcher;
 
+  // --- R2 (authored corpus) ---
+  /**
+   * The authored-corpus R2 bucket: the `recipes/` and `guidance/` markdown trees, the
+   * source of truth for human-authored content (r2-corpus-store). The Worker
+   * reads/lists/writes the corpus through `src/corpus-store.ts` (createR2CorpusStore) —
+   * there is no GitHub App or installation token on the data path. Hand-edited via
+   * Obsidian (S3-compatible sync to the same bucket). Code-level binding propagated by
+   * the deploy merge; the bucket itself is provisioned per operator in their own
+   * Cloudflare account.
+   */
+  CORPUS: R2Bucket;
+
   // --- Injected by @cloudflare/workers-oauth-provider ---
   /** Provider helpers (`parseAuthRequest`, `lookupClient`, `completeAuthorization`, …). */
   OAUTH_PROVIDER: OAuthHelpers;

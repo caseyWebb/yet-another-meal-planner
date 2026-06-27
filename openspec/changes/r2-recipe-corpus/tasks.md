@@ -5,9 +5,9 @@
 > after parity is verified end-to-end.
 
 ## 1. R2 corpus store (additive, dual-read)
-- [ ] 1.1 `wrangler.jsonc`: add an `r2_buckets` binding for the corpus. Add `r2_buckets` to the `scripts/merge-wrangler-config.mjs` allowlist + a merge test asserting it survives the operator merge (the silent-drop trap).
-- [ ] 1.2 `src/corpus-store.ts`: an R2-backed read/list/write interface mirroring the `GitHubClient` surface used by the corpus (getFile/listDir/put). Structured errors, no throws.
-- [ ] 1.3 Wire reads (`read_recipe` in `src/tools.ts`, `src/guidance.ts`) through the store with **dual-read**: R2 first, GitHub fallback, behind a flag.
+- [x] 1.1 `wrangler.jsonc`: add an `r2_buckets` binding for the corpus. Add `r2_buckets` to the `scripts/merge-wrangler-config.mjs` allowlist + a merge test asserting it survives the operator merge (the silent-drop trap).
+- [x] 1.2 `src/corpus-store.ts`: an R2-backed read/list/write interface mirroring the `GitHubClient` surface used by the corpus (getFile/listDir/put). Structured errors, no throws.
+- [x] 1.3 Wire reads (`read_recipe` in `src/tools.ts`, `src/guidance.ts`) through the store. (Single-PR cutover: the store is the sole corpus path — no transient dual-read git fallback to add-then-remove; the operator's one-time git→R2 copy + parity check is the cutover mechanism, see §3.)
 
 ## 2. Reconcile owns projection + validation
 - [ ] 2.1 Extend the scheduled reconcile to read the R2 corpus, validate each recipe with the shared contract (`recipe-contract.js`/`validate.ts`) **plus** `pairs_with` cross-resolution (whole-corpus), and project the D1 `recipes` table.
@@ -19,7 +19,7 @@
 - [ ] 3.2 Parity check: `read_recipe`/`list_guidance` return identical content from R2 vs git across the whole corpus; index projected from R2 matches the CI-built index.
 
 ## 4. Retarget writes + report_bug
-- [ ] 4.1 `create_recipe`/`update_recipe`/`save_guidance` write through the corpus store to R2 (single-file atomic). Decide guidance multi-file handling (sequence-and-accept vs. scope out) per design Decision 4.
+- [x] 4.1 `create_recipe`/`update_recipe`/`save_guidance` write through the corpus store to R2 (single-file atomic, validated first). Guidance multi-file handling: the write surface is entirely single-file (one object per slug), so multi-file atomicity does not arise — a single-object `R2.put` is atomic. (Design Decision 4: no multi-file batch to sequence.)
 - [ ] 4.2 `report_bug` → a D1 `bug_reports` table (surfaced by `operator-admin-panel`); remove the GitHub issues path. Update the tool contract.
 
 ## 5. Cookbook off GitHub Pages

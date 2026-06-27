@@ -76,6 +76,17 @@ export function mergeWranglerConfig(code, operator) {
   // SPA and `env.ASSETS` is undefined — the silent-drop trap this allowlist guards.
   if (code.assets !== undefined) out.assets = code.assets;
 
+  // r2_buckets: the authored-corpus bucket binding (r2-corpus-store). Like `ai`/`assets`
+  // it carries no operator-owned id and no secret — the `bucket_name` is account-unique
+  // but the same name is safe across operators (each provisions its own bucket of that
+  // name in its own Cloudflare account), so the whole binding propagates verbatim from
+  // code. Without this the merge drops `r2_buckets` and `env.CORPUS` is undefined on the
+  // deployed Worker — every recipe/guidance read would fail. This is the silent-drop trap
+  // the task calls out: a new binding type must be added to the merge explicitly. (Pinning
+  // a per-operator bucket name back into the operator config is operator-provisioning's
+  // concern; the binding itself simply propagates here.)
+  if (code.r2_buckets !== undefined) out.r2_buckets = code.r2_buckets;
+
   return out;
 }
 

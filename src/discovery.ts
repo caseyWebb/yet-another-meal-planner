@@ -1,11 +1,10 @@
 // Pure helpers for the discovery tools (recipe-discovery capability): URL
 // canonicalization, corpus dedup, slug derivation, and the create_recipe file
-// builder. Kept I/O-light (only buildNewRecipe touches the GitHub client, to
+// builder. Kept I/O-light (only buildNewRecipe touches the corpus store, to
 // read for a collision) so the logic is unit-testable.
 
 import type { Env } from "./env.js";
-import type { GitHubClient, TreeFile } from "./github.js";
-import { readOptional } from "./gh-read.js";
+import type { CorpusStore } from "./corpus-store.js";
 import { readAliases } from "./corpus-db.js";
 import { normalizeIngredientList } from "./matching.js";
 import { serializeMarkdown } from "./serialize.js";
@@ -107,12 +106,12 @@ export function slugify(title: string): string {
  * (slug_exists).
  */
 export async function buildNewRecipe(
-  gh: GitHubClient,
+  store: CorpusStore,
   env: Env,
   frontmatter: Record<string, unknown>,
   body: string,
   slugOverride?: string,
-): Promise<{ slug: string; file: TreeFile; facets: RecipeFacets }> {
+): Promise<{ slug: string; file: { path: string; content: string }; facets: RecipeFacets }> {
   const title = typeof frontmatter.title === "string" ? frontmatter.title : "";
   const slug = slugOverride ?? slugify(title);
   if (!SLUG_RE.test(slug)) {
@@ -129,7 +128,7 @@ export async function buildNewRecipe(
   }
 
   const path = `recipes/${slug}.md`;
-  const existing = await readOptional(gh, path);
+  const existing = await store.getFile(path);
   if (existing !== null) {
     throw new ToolError("slug_exists", `A recipe already exists at ${path}`, { slug });
   }
@@ -145,14 +144,16 @@ export async function buildNewRecipe(
   delete fm.description;
   // Canonicalize perishable_ingredients and ingredients_key (objective shared content)
   // at create the same way the verify matcher normalizes, so overlap lines up across
-  // recipes. The full required-field contract is enforced on the serialized content by
-  // the commit engine's validateFile step (a missing/empty required field or a `"none"`
-  // protein is rejected, prompting the agent to author the explicit `null`/`[]`).
+  // recipes.
   if ("perishable_ingredients" in fm || "ingredients_key" in fm) {
     const aliases = await readAliases(env);
     if ("perishable_ingredients" in fm)
       fm.perishable_ingredients = normalizeIngredientList(fm.perishable_ingredients, aliases);
     if ("ingredients_key" in fm) fm.ingredients_key = normalizeIngredientList(fm.ingredients_key, aliases);
   }
+  // The full required-field contract is enforced on the serialized content by the
+  // create_recipe handler's validateFile step (a missing/empty required field or a
+  // `"none"` protein is rejected, prompting the agent to author the explicit `null`/`[]`),
+  // mirroring how the commit engine validated before persisting.
   return { slug, file: { path, content: serializeMarkdown(fm, body) }, facets: facetsFromFrontmatter(fm) };
 }

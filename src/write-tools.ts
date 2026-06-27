@@ -1,8 +1,8 @@
 // Repo-data write tools (data-write-tools capability). Each tool reads the
-// current file(s)/rows, applies a pure transform, and persists via the atomic commit
-// engine (commit.ts) for shared GitHub content, or D1 rows for per-tenant state.
-// Objective recipe content is shared (GitHub); a recipe's subjective disposition
-// (favorite/reject) is per-tenant and routes to the caller's D1 overlay via
+// current file/rows, applies a pure transform, and persists via a single-object R2 put
+// through the corpus store (validated first) for shared recipe markdown, or D1 rows for
+// per-tenant state. Objective recipe content is shared (R2 corpus); a recipe's subjective
+// disposition (favorite/reject) is per-tenant and routes to the caller's D1 overlay via
 // `toggle_favorite` / `toggle_reject`; the pantry is the D1 `pantry` table
 // (src/session-db.ts). No tool here
 // writes a Kroger cart or calls an external service.
@@ -11,14 +11,13 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { Env } from "./env.js";
 import { db } from "./db.js";
-import type { GitHubClient, TreeFile } from "./github.js";
-import { readFile } from "./gh-read.js";
+import { type CorpusStore, readCorpusFile } from "./corpus-store.js";
 import { readAliases, addAliases } from "./corpus-db.js";
 import { normalizeIngredientList } from "./matching.js";
 import { parseMarkdown } from "./parse.js";
 import { serializeMarkdown } from "./serialize.js";
+import { validateFile } from "./validate.js";
 import { ToolError, runTool } from "./errors.js";
-import { commitFiles } from "./commit.js";
 import { applyOverlayEdit, type OverlayRow } from "./overlay.js";
 import { applyKitchenOperations } from "./kitchen.js";
 import { slugify } from "./discovery.js";
@@ -68,24 +67,21 @@ const SUBJECTIVE_KEYS = ["favorite", "reject", "rating", "status"] as const;
 
 /** Build an objective-content update for a shared recipe (root `recipes/<slug>.md`). */
 export async function buildRecipeUpdate(
-  gh: GitHubClient,
+  store: CorpusStore,
   env: Env,
   slug: string,
   updates: Record<string, unknown>,
-): Promise<TreeFile> {
+): Promise<{ path: string; content: string }> {
   if (!SLUG_RE.test(slug)) throw new ToolError("not_found", `Unknown recipe slug: ${slug}`, { slug });
   const path = `recipes/${slug}.md`;
-  const text = await readFile(gh, path, "not_found", `Unknown recipe slug: ${slug}`);
+  const text = await readCorpusFile(store, path, "not_found", `Unknown recipe slug: ${slug}`);
   const { frontmatter, body } = parseMarkdown(text, path);
   const merged = { ...frontmatter, ...updates };
   // perishable_ingredients and ingredients_key are objective shared content;
   // canonicalize the names at WRITE the same way the verify matcher does, so stored
   // names are canonical and cross-recipe overlap (waste detection + the pantry-overlap
   // re-rank) lines up. Only when the caller is writing the field — a non-array passes
-  // through unchanged for the contract validator to reject. The full required-field
-  // contract is enforced on the serialized (merged) content by the commit engine's
-  // validateFile step, so a one-field patch on a compliant recipe passes while an edit
-  // that strips or empties a required field is rejected.
+  // through unchanged for the contract validator to reject.
   if ("perishable_ingredients" in updates || "ingredients_key" in updates) {
     const aliases = await readAliases(env);
     if ("perishable_ingredients" in updates)
@@ -93,6 +89,11 @@ export async function buildRecipeUpdate(
     if ("ingredients_key" in updates)
       merged.ingredients_key = normalizeIngredientList(merged.ingredients_key, aliases);
   }
+  // The full required-field contract is enforced on the serialized (merged) content by
+  // the update_recipe handler's validateFile step BEFORE the R2 put (the commit engine
+  // used to do this) — so a one-field patch on a compliant recipe passes while an edit
+  // that strips or empties a required field, or sets an off-vocabulary value, is rejected
+  // (validation_failed) and nothing is written.
   return { path, content: serializeMarkdown(merged, body) };
 }
 
@@ -160,9 +161,8 @@ const PROFILE_MARKDOWN_FIELDS = {
 // --- registration ------------------------------------------------------------
 
 /**
- * `gh` is the root data-repo client (shared recipe writes — the only GitHub-backed
- * writes left here; recipe markdown is the one corpus that stays in git). `env` is
- * D1: the `recipes` index (queried by
+ * `store` is the R2 corpus store (shared recipe writes — `recipes/<slug>.md`, the one
+ * authored corpus, now in R2 not git). `env` is D1: the `recipes` index (queried by
  * `toggle_favorite`/`toggle_reject` to validate a slug), the profile tables (preferences/taste/diet/
  * kitchen/staples/overlay/ready_to_eat/stockup — via src/profile-db.ts) AND the
  * session-state pantry table (via src/session-db.ts). meal_plan/grocery_list live in
@@ -170,7 +170,7 @@ const PROFILE_MARKDOWN_FIELDS = {
  */
 export function registerWriteTools(
   server: McpServer,
-  gh: GitHubClient,
+  store: CorpusStore,
   env: Env,
   username: string,
 ): void {
@@ -207,9 +207,13 @@ export function registerWriteTools(
         const updated_fields = Object.keys(updates);
         if (updated_fields.length === 0) return { slug, updated_fields: [] };
 
-        const file = await buildRecipeUpdate(gh, env, slug, updates);
-        const { commit_sha } = await commitFiles(gh, [file], `update recipe ${slug}`);
-        return { slug, updated_fields, commit_sha };
+        const file = await buildRecipeUpdate(store, env, slug, updates);
+        // Validate the merged content before persisting (the commit engine used to do
+        // this): an edit that empties a required field or sets an off-vocab value is
+        // rejected (validation_failed) and nothing is written.
+        validateFile(file.path, file.content);
+        await store.put(file.path, file.content);
+        return { slug, updated_fields };
       }),
   );
 

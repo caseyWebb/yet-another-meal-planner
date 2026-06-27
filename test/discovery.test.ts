@@ -9,41 +9,16 @@ import {
   type FeedEntry,
 } from "../src/discovery.js";
 import { parseMarkdown } from "../src/parse.js";
-import { GitHubError, type GitHubClient } from "../src/github.js";
+import { createR2CorpusStore } from "../src/corpus-store.js";
+import { fakeR2 } from "./fake-r2.js";
 import { fakeD1 } from "./fake-d1.js";
 
 // buildNewRecipe reads aliases from D1 (readAliases); an empty `aliases` table → {}.
 const env = fakeD1().env;
 
-function ghWith(files: Record<string, string>): GitHubClient {
-  return {
-    async getFile(path: string) {
-      if (path in files) return files[path];
-      throw new GitHubError(404, `Not found: ${path}`);
-    },
-    async listDir(path: string) {
-      throw new GitHubError(404, `Not found: ${path}`);
-    },
-    async getRef() {
-      return "x";
-    },
-    async getCommitTree() {
-      return "x";
-    },
-    async createTree() {
-      return "x";
-    },
-    async createCommit() {
-      return "x";
-    },
-    async updateRef() {},
-    async createIssue() {
-      return { url: "https://example.test/issues/1", number: 1 };
-    },
-    async getPagesUrl() {
-      return { url: null, enabled: false };
-    },
-  };
+/** A corpus store backed by an in-memory R2 fake, seeded with `files`. */
+function storeWith(files: Record<string, string>) {
+  return createR2CorpusStore(fakeR2(files).bucket);
 }
 
 describe("canonicalizeUrl", () => {
@@ -129,8 +104,8 @@ const BODY = "## Ingredients\n- a\n\n## Instructions\n1. do it\n";
 
 describe("buildNewRecipe", () => {
   it("creates recipes/<slug>.md with no status (available by default)", async () => {
-    const gh = ghWith({});
-    const { slug, file } = await buildNewRecipe(gh, env, { title: "Test Dish" }, BODY);
+    const store = storeWith({});
+    const { slug, file } = await buildNewRecipe(store, env, { title: "Test Dish" }, BODY);
     expect(slug).toBe("test-dish");
     expect(file.path).toBe("recipes/test-dish.md");
     const { frontmatter, body } = parseMarkdown(file.content);
@@ -139,26 +114,26 @@ describe("buildNewRecipe", () => {
   });
 
   it("strips a lingering status supplied by a stale caller", async () => {
-    const gh = ghWith({});
-    const { file } = await buildNewRecipe(gh, env, { title: "X", status: "active" }, BODY);
+    const store = storeWith({});
+    const { file } = await buildNewRecipe(store, env, { title: "X", status: "active" }, BODY);
     expect("status" in parseMarkdown(file.content).frontmatter).toBe(false);
   });
 
   it("refuses to overwrite an existing slug", async () => {
-    const gh = ghWith({ "recipes/test-dish.md": "---\ntitle: Test Dish\n---\n## Ingredients\n## Instructions\n" });
-    await expect(buildNewRecipe(gh, env, { title: "Test Dish" }, BODY)).rejects.toMatchObject({ code: "slug_exists" });
+    const store = storeWith({ "recipes/test-dish.md": "---\ntitle: Test Dish\n---\n## Ingredients\n## Instructions\n" });
+    await expect(buildNewRecipe(store, env, { title: "Test Dish" }, BODY)).rejects.toMatchObject({ code: "slug_exists" });
   });
 
   it("rejects a body missing the H2 contract", async () => {
-    const gh = ghWith({});
-    await expect(buildNewRecipe(gh, env, { title: "No Sections" }, "just prose")).rejects.toMatchObject({
+    const store = storeWith({});
+    await expect(buildNewRecipe(store, env, { title: "No Sections" }, "just prose")).rejects.toMatchObject({
       code: "validation_failed",
     });
   });
 
   it("rejects when no title/slug is derivable", async () => {
-    const gh = ghWith({});
-    await expect(buildNewRecipe(gh, env, {}, BODY)).rejects.toMatchObject({ code: "validation_failed" });
+    const store = storeWith({});
+    await expect(buildNewRecipe(store, env, {}, BODY)).rejects.toMatchObject({ code: "validation_failed" });
   });
 });
 
