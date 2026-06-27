@@ -9,6 +9,8 @@
       :root { --accent: #f4a259; --danger: #b00020; }
       body { font-family: system-ui, sans-serif; color: #222; background: #fafafa; margin: 0; }
       .wrap { max-width: 44rem; margin: 2.5rem auto; padding: 0 1rem; }
+      /* The two-column tool console needs more room than member management. */
+      .wrap.wrap-wide { max-width: 60rem; }
       h1 { font-size: 1.5rem; }
       h2 { font-size: 1.1rem; margin: 0 0 .75rem; }
       .card { background: #fff; border: 1px solid #e5e5e5; border-radius: .6rem; padding: 1rem 1.25rem; margin: 1rem 0; }
@@ -29,7 +31,7 @@
       .row .v { font-family: ui-monospace, monospace; word-break: break-all; }
       textarea { width: 100%; box-sizing: border-box; font: .9rem ui-monospace, monospace; padding: .5rem; border: 1px solid #ccc; border-radius: .3rem; }
       select { font-size: .95rem; padding: .35rem; border: 1px solid #ccc; border-radius: .3rem; }
-      pre { background: #f6f6f6; border: 1px solid #eee; border-radius: .4rem; padding: .6rem .8rem; overflow: auto; font-size: .8rem; margin: .35rem 0; }
+      pre { background: #f6f6f6; border: 1px solid #eee; border-radius: .4rem; padding: .6rem .8rem; overflow: auto; max-height: 28rem; font-size: .8rem; margin: .35rem 0; white-space: pre-wrap; word-break: break-word; }
       .muted { color: #888; }
       .small { font-size: .8rem; }
       /* Top-level area nav (Admin / Dev). */
@@ -40,7 +42,10 @@
       .persona-bar { display: flex; gap: .75rem; align-items: center; flex-wrap: wrap; margin: .25rem 0 1rem; padding-bottom: .75rem; border-bottom: 1px solid #eee; }
       .persona-label .persona { font-family: ui-monospace, monospace; }
       .persona-label .persona.real { color: var(--danger); }
-      .workbench { display: grid; grid-template-columns: 16rem 1fr; gap: 1.25rem; }
+      /* minmax(0,1fr) + min-width:0 lets the content column shrink so a wide schema/result
+         scrolls or wraps INSIDE it instead of blowing the grid (and card) out past the page. */
+      .workbench { display: grid; grid-template-columns: 16rem minmax(0, 1fr); gap: 1.25rem; }
+      .workbench > * { min-width: 0; }
       .tool-list { list-style: none; margin: 0; padding: 0; max-height: 32rem; overflow: auto; }
       .tool-item { padding: .4rem .5rem; border-radius: .35rem; }
       .tool-item.active { background: #fff7ee; }

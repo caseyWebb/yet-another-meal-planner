@@ -2719,7 +2719,7 @@ var _VirtualDom_mapEventTuple = F2(function(func, tuple)
 var _VirtualDom_mapEventRecord = F2(function(func, record)
 {
 	return {
-		H: func(record.H),
+		I: func(record.I),
 		aJ: record.aJ,
 		aG: record.aG
 	}
@@ -2989,7 +2989,7 @@ function _VirtualDom_makeCallback(eventNode, initialHandler)
 		// 3 = Custom
 
 		var value = result.a;
-		var message = !tag ? value : tag < 3 ? value.a : value.H;
+		var message = !tag ? value : tag < 3 ? value.a : value.I;
 		var stopPropagation = tag == 1 ? value.b : tag == 3 && value.aJ;
 		var currentEventNode = (
 			stopPropagation && event.stopPropagation(),
@@ -5371,7 +5371,7 @@ var $author$project$Route$nonEmpty = function (value) {
 };
 var $elm$url$Url$Parser$State = F5(
 	function (visited, unvisited, params, frag, value) {
-		return {N: frag, P: params, L: unvisited, E: value, U: visited};
+		return {N: frag, P: params, L: unvisited, F: value, U: visited};
 	});
 var $elm$url$Url$Parser$getFirstMatch = function (states) {
 	getFirstMatch:
@@ -5383,10 +5383,10 @@ var $elm$url$Url$Parser$getFirstMatch = function (states) {
 			var rest = states.b;
 			var _v1 = state.L;
 			if (!_v1.b) {
-				return $elm$core$Maybe$Just(state.E);
+				return $elm$core$Maybe$Just(state.F);
 			} else {
 				if ((_v1.a === '') && (!_v1.b.b)) {
-					return $elm$core$Maybe$Just(state.E);
+					return $elm$core$Maybe$Just(state.F);
 				} else {
 					var $temp$states = rest;
 					states = $temp$states;
@@ -6011,7 +6011,7 @@ var $elm$url$Url$Parser$query = function (_v0) {
 		var unvisited = _v1.L;
 		var params = _v1.P;
 		var frag = _v1.N;
-		var value = _v1.E;
+		var value = _v1.F;
 		return _List_fromArray(
 			[
 				A5(
@@ -6393,7 +6393,7 @@ var $author$project$Admin$Members$fetchMembers = $elm$http$Http$get(
 		aw: '/admin/api/tenants'
 	});
 var $author$project$Admin$Members$init = _Utils_Tuple2(
-	{l: $author$project$Admin$Members$Idle, F: $elm$core$Maybe$Nothing, Y: '', Z: $krisajenkins$remotedata$RemoteData$Loading, T: ''},
+	{l: $author$project$Admin$Members$Idle, G: $elm$core$Maybe$Nothing, Y: '', Z: $krisajenkins$remotedata$RemoteData$Loading, T: ''},
 	$author$project$Admin$Members$fetchMembers);
 var $author$project$Dev$ToolConsole$Acting = function (a) {
 	return {$: 1, a: a};
@@ -6469,13 +6469,13 @@ var $author$project$Dev$ToolConsole$freshSession = F3(
 			V: '{}',
 			af: $krisajenkins$remotedata$RemoteData$Loading,
 			Z: members,
-			I: persona,
+			J: persona,
 			B: $author$project$Dev$ToolConsole$Ready($krisajenkins$remotedata$RemoteData$NotAsked),
 			R: tool
 		};
 	});
 var $author$project$Dev$ToolConsole$init = function (_v0) {
-	var persona = _v0.I;
+	var persona = _v0.J;
 	var tool = _v0.cA;
 	if (persona.$ === 1) {
 		return _Utils_Tuple2(
@@ -6508,13 +6508,13 @@ var $author$project$Main$enter = F3(
 						model,
 						{
 							w: $author$project$Main$MembersPage(subModel),
-							K: route
+							E: route
 						}),
 					A2($elm$core$Platform$Cmd$map, $author$project$Main$MembersMsg, cmd));
 			case 1:
 				var selected = route.a;
 				var _v2 = $author$project$Dev$ToolConsole$init(
-					{I: actingAs, cA: selected});
+					{J: actingAs, cA: selected});
 				var subModel = _v2.a;
 				var cmd = _v2.b;
 				return _Utils_Tuple2(
@@ -6522,14 +6522,14 @@ var $author$project$Main$enter = F3(
 						model,
 						{
 							w: $author$project$Main$ToolsPage(subModel),
-							K: route
+							E: route
 						}),
 					A2($elm$core$Platform$Cmd$map, $author$project$Main$ToolsMsg, cmd));
 			default:
 				return _Utils_Tuple2(
 					_Utils_update(
 						model,
-						{w: $author$project$Main$NotFoundPage, K: route}),
+						{w: $author$project$Main$NotFoundPage, E: route}),
 					$elm$core$Platform$Cmd$none);
 		}
 	});
@@ -6543,7 +6543,7 @@ var $elm$url$Url$Parser$mapState = F2(
 		var unvisited = _v0.L;
 		var params = _v0.P;
 		var frag = _v0.N;
-		var value = _v0.E;
+		var value = _v0.F;
 		return A5(
 			$elm$url$Url$Parser$State,
 			visited,
@@ -6560,7 +6560,7 @@ var $elm$url$Url$Parser$map = F2(
 			var unvisited = _v1.L;
 			var params = _v1.P;
 			var frag = _v1.N;
-			var value = _v1.E;
+			var value = _v1.F;
 			return A2(
 				$elm$core$List$map,
 				$elm$url$Url$Parser$mapState(value),
@@ -6601,7 +6601,7 @@ var $elm$url$Url$Parser$s = function (str) {
 		var unvisited = _v0.L;
 		var params = _v0.P;
 		var frag = _v0.N;
-		var value = _v0.E;
+		var value = _v0.F;
 		if (!unvisited.b) {
 			return _List_Nil;
 		} else {
@@ -6638,7 +6638,7 @@ var $elm$url$Url$Parser$custom = F2(
 			var unvisited = _v0.L;
 			var params = _v0.P;
 			var frag = _v0.N;
-			var value = _v0.E;
+			var value = _v0.F;
 			if (!unvisited.b) {
 				return _List_Nil;
 			} else {
@@ -6738,7 +6738,7 @@ var $author$project$Main$init = F3(
 			$author$project$Main$enter,
 			$author$project$Route$fromUrl(url),
 			$author$project$Route$actingAsParam(url),
-			{aB: key, w: $author$project$Main$NotFoundPage, K: $author$project$Route$NotFound});
+			{aB: key, w: $author$project$Main$NotFoundPage, E: $author$project$Route$NotFound});
 	});
 var $elm$core$Platform$Sub$batch = _Platform_batch;
 var $elm$core$Platform$Sub$none = $elm$core$Platform$Sub$batch(_List_Nil);
@@ -6780,7 +6780,7 @@ var $author$project$Main$stepTo = F2(
 								model,
 								{
 									w: $author$project$Main$ToolsPage(subModel2),
-									K: route
+									E: route
 								}),
 							A2($elm$core$Platform$Cmd$map, $author$project$Main$ToolsMsg, cmd));
 					} else {
@@ -6792,7 +6792,7 @@ var $author$project$Main$stepTo = F2(
 						return _Utils_Tuple2(
 							_Utils_update(
 								model,
-								{K: route}),
+								{E: route}),
 							$elm$core$Platform$Cmd$none);
 					} else {
 						break _v0$2;
@@ -7081,7 +7081,7 @@ var $author$project$Admin$Members$update = F2(
 							model,
 							{
 								l: $author$project$Admin$Members$Idle,
-								F: $elm$core$Maybe$Just(credentials),
+								G: $elm$core$Maybe$Just(credentials),
 								Y: '',
 								T: ''
 							}),
@@ -7111,7 +7111,7 @@ var $author$project$Admin$Members$update = F2(
 							model,
 							{
 								l: $author$project$Admin$Members$Idle,
-								F: $elm$core$Maybe$Just(credentials)
+								G: $elm$core$Maybe$Just(credentials)
 							}),
 						$elm$core$Platform$Cmd$none);
 				} else {
@@ -7143,7 +7143,7 @@ var $author$project$Admin$Members$update = F2(
 							model,
 							{
 								l: $author$project$Admin$Members$Idle,
-								F: A2($author$project$Admin$Members$clearBannerFor, username, model.F),
+								G: A2($author$project$Admin$Members$clearBannerFor, username, model.G),
 								Z: A2(
 									$krisajenkins$remotedata$RemoteData$map,
 									$elm$core$List$filter(
@@ -7169,7 +7169,7 @@ var $author$project$Admin$Members$update = F2(
 				return _Utils_Tuple2(
 					_Utils_update(
 						model,
-						{F: $elm$core$Maybe$Nothing}),
+						{G: $elm$core$Maybe$Nothing}),
 					$elm$core$Platform$Cmd$none);
 		}
 	});
@@ -7246,7 +7246,7 @@ var $author$project$Dev$ToolConsole$attemptRun = function (session) {
 						{
 							B: $author$project$Dev$ToolConsole$Ready($krisajenkins$remotedata$RemoteData$Loading)
 						})),
-				A3($author$project$Dev$ToolConsole$invoke, session.I, tool, argsValue));
+				A3($author$project$Dev$ToolConsole$invoke, session.J, tool, argsValue));
 		}
 	}
 };
@@ -7346,7 +7346,7 @@ var $author$project$Dev$ToolConsole$update = F2(
 			case 4:
 				if (model.$ === 1) {
 					var session = model.a;
-					return $author$project$Dev$ToolConsole$needsConfirm(session.I) ? _Utils_Tuple2(
+					return $author$project$Dev$ToolConsole$needsConfirm(session.J) ? _Utils_Tuple2(
 						$author$project$Dev$ToolConsole$Acting(
 							_Utils_update(
 								session,
@@ -8097,7 +8097,7 @@ var $author$project$Admin$Members$view = function (model) {
 		_List_fromArray(
 			[
 				$author$project$Admin$Members$viewActionError(model.l),
-				$author$project$Admin$Members$viewBanner(model.F),
+				$author$project$Admin$Members$viewBanner(model.G),
 				$author$project$Admin$Members$viewOnboard(model),
 				$author$project$Admin$Members$viewMembers(model)
 			]));
@@ -8368,7 +8368,7 @@ var $author$project$Dev$ToolConsole$viewRunControls = function (session) {
 							_List_Nil,
 							_List_fromArray(
 								[
-									$elm$html$Html$text(session.I)
+									$elm$html$Html$text(session.J)
 								])),
 							$elm$html$Html$text('? This performs the tool\'s real side effects.')
 						])),
@@ -8418,7 +8418,7 @@ var $author$project$Dev$ToolConsole$viewRunControls = function (session) {
 							$elm$html$Html$text(
 							$author$project$Dev$ToolConsole$isLoading(remote) ? 'Running…' : 'Run')
 						])),
-					$author$project$Dev$ToolConsole$needsConfirm(session.I) ? A2(
+					$author$project$Dev$ToolConsole$needsConfirm(session.J) ? A2(
 					$elm$html$Html$span,
 					_List_fromArray(
 						[
@@ -8662,7 +8662,7 @@ var $author$project$Dev$ToolConsole$viewPersonaBar = function (model) {
 	var current = function () {
 		if (model.$ === 1) {
 			var session = model.a;
-			return $elm$core$Maybe$Just(session.I);
+			return $elm$core$Maybe$Just(session.J);
 		} else {
 			return $elm$core$Maybe$Nothing;
 		}
@@ -8772,6 +8772,13 @@ var $author$project$Main$viewPage = function (model) {
 					]));
 	}
 };
+var $author$project$Main$wrapClass = function (route) {
+	if (route.$ === 1) {
+		return 'wrap wrap-wide';
+	} else {
+		return 'wrap';
+	}
+};
 var $author$project$Main$view = function (model) {
 	return {
 		ax: _List_fromArray(
@@ -8780,7 +8787,8 @@ var $author$project$Main$view = function (model) {
 				$elm$html$Html$div,
 				_List_fromArray(
 					[
-						$elm$html$Html$Attributes$class('wrap')
+						$elm$html$Html$Attributes$class(
+						$author$project$Main$wrapClass(model.E))
 					]),
 				_List_fromArray(
 					[
@@ -8791,7 +8799,7 @@ var $author$project$Main$view = function (model) {
 							[
 								$elm$html$Html$text('grocery-agent admin')
 							])),
-						$author$project$Main$viewNav(model.K),
+						$author$project$Main$viewNav(model.E),
 						$author$project$Main$viewPage(model)
 					]))
 			]),

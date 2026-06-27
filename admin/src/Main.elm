@@ -149,13 +149,24 @@ view : Model -> Browser.Document Msg
 view model =
     { title = "grocery-agent admin"
     , body =
-        [ div [ class "wrap" ]
+        [ div [ class (wrapClass model.route) ]
             [ h1 [] [ text "grocery-agent admin" ]
             , viewNav model.route
             , viewPage model
             ]
         ]
     }
+
+
+{-| The tool console is two-column and wants a wider page than the member-management forms. -}
+wrapClass : Route -> String
+wrapClass route =
+    case route of
+        Route.Tools _ ->
+            "wrap wrap-wide"
+
+        _ ->
+            "wrap"
 
 
 viewNav : Route -> Html Msg
