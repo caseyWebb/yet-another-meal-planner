@@ -89,8 +89,10 @@ const defaultKeySet: KeySetGetter = (team) => {
 
 /** True when the request's URL host is loopback — the only place the dev bypass may engage. */
 export function isLoopbackHost(request: Request): boolean {
+  // `URL.hostname` lowercases, strips the port, and brackets IPv6 (`[::1]`), so those forms
+  // are what we match; the bare `::1` arm only covers a hand-built host (defensive, not reached via URL).
   const host = new URL(request.url).hostname;
-  return host === "localhost" || host === "127.0.0.1" || host === "::1" || host === "[::1]";
+  return host === "localhost" || host === "127.0.0.1" || host === "[::1]" || host === "::1";
 }
 
 /** Parse `ACCESS_ALLOWED_EMAILS` into a normalized (trimmed, lowercased, non-empty) list. */

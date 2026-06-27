@@ -63,11 +63,12 @@ export interface Env {
    */
   ACCESS_ALLOWED_EMAILS?: string;
   /**
-   * Local-dev escape: when `1` AND the request host is loopback (`localhost`/`127.0.0.1`/`::1`)
-   * AND the Access vars are unset, `/admin*` is served without verification so `wrangler dev`
-   * can run the panel. The loopback gate makes it structurally inert in any deployed context —
-   * a stray `1` on a deployed Worker cannot open the panel (it stays 404), and `/health`
-   * surfaces the dangerous config as `exposed`. Never set in a deployed Worker.
+   * Local-dev escape: when set to exactly `1` AND the request host is loopback
+   * (`localhost`/`127.0.0.1`/`::1`) AND the Access vars are unset, `/admin*` is served without
+   * verification so `wrangler dev` can run the panel. The loopback gate makes it structurally
+   * inert in any deployed context — a stray `1` on a deployed Worker cannot open the panel (it
+   * stays 404), and `/health` surfaces the dangerous config as `exposed`. Never set in a
+   * deployed Worker. (Only the literal `1` enables it; e.g. `"true"` is a no-op.)
    */
   ADMIN_DEV_BYPASS?: string;
 
