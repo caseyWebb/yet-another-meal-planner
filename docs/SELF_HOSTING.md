@@ -132,7 +132,7 @@ Your **deploy already published your marketplace** (step 5): it built the plugin
 
 **Add your marketplace and install.**
 
-1. In claude.ai: `/plugin marketplace add <you>/groceries-agent-data`, then `/plugin install grocery-agent`. (No GitHub account needed — adding a public marketplace requires no auth.)
+1. In claude.ai: `/plugin marketplace add <you>/groceries-agent-data`, then `/plugin install grocery-agent@groceries-agent-data`. (No GitHub account needed — adding a public marketplace requires no auth.)
 2. **Connect:** the first time the connector is added, claude.ai discovers its OAuth endpoints and sends you to `/authorize` — **enter your invite code**; the token then carries your tenant on every request.
 3. **Updates pull automatically.** When you redeploy (which republishes the bundle with a higher version), claude.ai re-pulls the new skills on `/plugin marketplace update` — no re-copy, no re-upload.
 
@@ -168,7 +168,7 @@ This Worker-first publish is also why self-hosters don't ride *my* marketplace f
 A friend needs only a Claude.ai account and a Kroger account — no GitHub, no Kroger Developer app, and nothing local on your end.
 
 1. Open your **admin panel** (`https://<your-worker-host>/admin`) and onboard them: enter their `username`. It allowlists them and shows their invite code **once** (copy it now — it's never logged). Per-tenant state (preferences, pantry, etc.) is written to D1 by the agent tools as they use the agent.
-2. **Send them your marketplace name + their invite code:** `/plugin marketplace add <you>/groceries-agent-data`, then `/plugin install grocery-agent`. The bundle carries your connector URL; adding a public marketplace needs no GitHub account.
+2. **Send them your marketplace name + their invite code:** `/plugin marketplace add <you>/groceries-agent-data`, then `/plugin install grocery-agent@groceries-agent-data`. The bundle carries your connector URL; adding a public marketplace needs no GitHub account.
 3. They **enter the code at `/authorize`**, then run their Kroger consent (`/oauth/init?tenant=<username>`). On a later update you ship, they auto-pull it (`/plugin marketplace update`) — nothing to re-send. (Prefer not to use a marketplace? The [step 7](#7-get-the-agent-into-claudeai--kroger-consent) upload/paste fallbacks work for them too.)
 
 They share the recipe corpus (with their own favorites/rejects/notes) and have their own pantry, preferences, and Kroger cart — fully isolated from yours. To remove someone, open `/admin` and **Revoke** them — it removes their allowlist entry + invite(s), purges their per-tenant D1 data, and deletes their Kroger token, so their issued token stops resolving. **Rotate** mints a fresh invite without touching their data (use it for any code that may have appeared in an Actions log before making the data repo public).
