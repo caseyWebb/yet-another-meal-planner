@@ -12,12 +12,7 @@ import {
 } from "../src/tenant.js";
 import type { Env } from "../src/env.js";
 
-const env = {
-  DATA_OWNER: "caseyWebb",
-  DATA_REPO: "grocery-data",
-  DATA_REF: "main",
-  GITHUB_INSTALLATION_ID: "42",
-} as unknown as Env;
+const env = {} as unknown as Env;
 
 const ALICE: TenantRecord = { id: "alice" };
 
@@ -45,12 +40,10 @@ const isUnauthorized = (r: Tenant | Unauthorized): r is Unauthorized =>
   (r as Unauthorized).error === "unauthorized";
 
 describe("resolveTenant (from a provider-validated tenantId)", () => {
-  it("builds the Tenant, joining data-repo coords from env", async () => {
+  it("builds the Tenant from the allowlisted id", async () => {
     const t = (await resolveTenant(env, "alice", store({ alice: ALICE }))) as Tenant;
     expect(isUnauthorized(t)).toBe(false);
-    expect(t.id).toBe("alice");
-    expect(t.dataRepo).toEqual({ owner: "caseyWebb", repo: "grocery-data", ref: "main" });
-    expect(t.installationId).toBe("42");
+    expect(t).toEqual({ id: "alice" });
   });
 
   it("rejects a missing tenantId", async () => {
@@ -74,23 +67,18 @@ describe("resolveTenant (from a provider-validated tenantId)", () => {
     }
   });
 
-  it("isolates tenants: distinct ids over the one shared repo", async () => {
+  it("isolates tenants: distinct ids over the shared corpus", async () => {
     const dir = store({ alice: { id: "alice" }, bob: { id: "bob" } });
     const a = (await resolveTenant(env, "alice", dir)) as Tenant;
     const b = (await resolveTenant(env, "bob", dir)) as Tenant;
-    expect(a.dataRepo).toEqual(b.dataRepo); // same repo
     expect(a.id).toBe("alice");
     expect(b.id).toBe("bob"); // distinct tenant identity
   });
 });
 
 describe("tenantFromRecord", () => {
-  it("derives global coords from the record id", () => {
-    expect(tenantFromRecord(env, { id: "bob" })).toEqual({
-      id: "bob",
-      dataRepo: { owner: "caseyWebb", repo: "grocery-data", ref: "main" },
-      installationId: "42",
-    });
+  it("normalizes the record id into the Tenant", () => {
+    expect(tenantFromRecord(env, { id: "Bob" })).toEqual({ id: "bob" });
   });
 });
 

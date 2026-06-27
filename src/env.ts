@@ -1,35 +1,12 @@
-// Worker environment. Repo access is via a GitHub App (D3): the App id is a
-// non-secret var, the private key is a secret (wrangler secret put). There is ONE
-// private data repo (operator-owned, no org); its coordinates are global vars.
-// "Which tenant" is a `users/<username>/` path prefix within that repo, derived
-// from the OAuth grant's `tenantId` prop on each request (tenant.ts). Kroger
-// client_credentials (reads) stay a single app-level secret shared by all.
+// Worker environment. The authored corpus lives in an R2 bucket bound as `CORPUS`
+// (read/written through src/corpus-store.ts) — there is NO GitHub App, installation
+// token, or data repo on the data path. All per-tenant/operational data is in D1;
+// "which tenant" is the OAuth grant's `tenantId` prop on each request (tenant.ts).
+// Kroger client_credentials (reads) stay a single app-level secret shared by all.
 
 import type { OAuthHelpers } from "@cloudflare/workers-oauth-provider";
 
 export interface Env {
-  // --- GitHub App (repo reads/writes via short-lived installation tokens) ---
-  /** GitHub App id (numeric, as string). Non-secret var. */
-  GITHUB_APP_ID: string;
-  /** GitHub App private key, PKCS#8 PEM. Secret. */
-  GITHUB_APP_PRIVATE_KEY: string;
-  /**
-   * Installation id of the App install on the operator's account that covers the
-   * data repo. Global (one repo, one install). Non-secret var. OPTIONAL: when
-   * unset, the Worker resolves it at runtime from the App's installations
-   * (`GET /repos/{owner}/{repo}/installation`) and caches it. Set it to pin/skip
-   * the lookup (e.g. an established deployment).
-   */
-  GITHUB_INSTALLATION_ID?: string;
-
-  // --- The single private data repo (recipes/ + reference data + users/<id>/). Global. ---
-  /** Data repo owner (the operator's personal account), e.g. "caseyWebb". */
-  DATA_OWNER: string;
-  /** Data repo name, e.g. "groceries-agent-data". */
-  DATA_REPO: string;
-  /** Ref to read the data repo at, e.g. "main". */
-  DATA_REF: string;
-
   // --- Kroger client_credentials (search/flyer/prices). App-level, shared. ---
   /** Kroger Developer (public tier) client_credentials client ID. Secret. */
   KROGER_CLIENT_ID: string;

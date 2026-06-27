@@ -18,12 +18,9 @@ const code = {
   workers_dev: false,
   compatibility_date: "2025-06-01",
   compatibility_flags: ["nodejs_compat"],
+  // The maintainer's own (non-secret) vars, if any — they must NEVER reach an operator.
   vars: {
-    GITHUB_APP_ID: "4022505",
-    GITHUB_INSTALLATION_ID: "139471207",
-    DATA_OWNER: "caseyWebb",
-    DATA_REPO: "groceries-agent-data",
-    DATA_REF: "main",
+    MAINTAINER_VAR: "maintainer-only-139471207",
   },
   kv_namespaces: [
     { binding: "KROGER_KV", id: "MAINTAINER_KROGER" },
@@ -42,7 +39,7 @@ const code = {
 
 // A slim operator config (post-template).
 const operator = {
-  vars: { GITHUB_APP_ID: "9999999" },
+  vars: { OPERATOR_VAR: "op" },
 };
 
 test("code-level triggers propagate when the operator lacks them", () => {
@@ -91,10 +88,9 @@ test("operator surface choices win (name, workers_dev, routes)", () => {
 
 test("vars are the operator's only — the maintainer's vars never leak", () => {
   const out = mergeWranglerConfig(code, operator);
-  assert.deepEqual(out.vars, { GITHUB_APP_ID: "9999999" });
-  // The maintainer's install id / data coords must NOT appear.
-  assert.equal(out.vars.GITHUB_INSTALLATION_ID, undefined);
-  assert.equal(out.vars.DATA_OWNER, undefined);
+  assert.deepEqual(out.vars, { OPERATOR_VAR: "op" });
+  // The maintainer's own vars must NOT appear in the deployed config.
+  assert.equal(out.vars.MAINTAINER_VAR, undefined);
   assert.ok(!JSON.stringify(out).includes("139471207"));
 });
 
@@ -151,7 +147,7 @@ test("pinKvIds patches provisioned ids into the operator config by binding, crea
     { binding: "OAUTH_KV", id: "PROV_OAUTH" },
   ]);
   // other operator keys preserved
-  assert.deepEqual(out.vars, { GITHUB_APP_ID: "9999999" });
+  assert.deepEqual(out.vars, { OPERATOR_VAR: "op" });
 });
 
 test("pinKvIds is a no-op when nothing was provisioned", () => {
@@ -161,7 +157,7 @@ test("pinKvIds is a no-op when nothing was provisioned", () => {
 });
 
 test("bindingIdsChanged (KV): false when ids already match (existing/manual operator — pin stays silent)", () => {
-  const existing = { vars: { GITHUB_APP_ID: "OP" }, kv_namespaces: [
+  const existing = { vars: { OPERATOR_VAR: "OP" }, kv_namespaces: [
     { binding: "KROGER_KV", id: "K" }, { binding: "TENANT_KV", id: "T" }, { binding: "OAUTH_KV", id: "O" },
   ] };
   const deployed = { kv_namespaces: [
@@ -210,7 +206,7 @@ test("D1: pinD1Ids patches a provisioned id into the operator config, creating d
   const deployed = { d1_databases: [{ binding: "DB", database_name: "grocery-mcp", database_id: "PROV_DB" }] };
   const out = pinD1Ids(deployed, operator); // operator has no d1_databases
   assert.deepEqual(out.d1_databases, [{ binding: "DB", database_id: "PROV_DB" }]);
-  assert.deepEqual(out.vars, { GITHUB_APP_ID: "9999999" });
+  assert.deepEqual(out.vars, { OPERATOR_VAR: "op" });
 });
 
 test("D1: pinD1Ids is a no-op when nothing was provisioned (id-less deployed)", () => {

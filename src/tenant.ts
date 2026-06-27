@@ -1,11 +1,8 @@
 // Multi-tenancy foundation (multi-tenancy capability). A `Tenant` is the
-// per-request identity context every tool closes over: the single operator-owned
-// data repo every tenant shares. Per-tenant state lives in D1, keyed by tenant id.
-//
-// Repository model (single private data repo): one repo holds `recipes/` + shared
-// reference data at the root and one `users/<username>/` subtree per member. A
-// single GitHub App installation on the operator's account covers it. There is no
-// org and no per-tenant repo; "which tenant" is a path prefix, not a separate repo.
+// per-request identity context every tool closes over. All per-tenant state lives in
+// D1 keyed by tenant id; the shared authored corpus lives in R2 (one bucket every
+// tenant reads/writes through the corpus store). There is no GitHub data repo on the
+// data path — identity is just the tenant id.
 //
 // The tenant DIRECTORY is the operator-curated allowlist of usernames, in KV, so
 // it is operational mapping, never domain data (D9). The OAuth provider (Section 3)
@@ -16,22 +13,10 @@
 
 import type { Env } from "./env.js";
 
-/** Coordinates of the GitHub repository the Worker reads/writes. */
-export interface RepoCoords {
-  owner: string;
-  repo: string;
-  ref: string;
-}
-
 /** The per-request tenant context. Assembled by `resolveTenant`. */
 export interface Tenant {
-  /** Opaque operator-assigned username, e.g. "alice". Allowlist key + Kroger key + subtree. */
+  /** Opaque operator-assigned username, e.g. "alice". Allowlist key + Kroger key + D1 tenant column. */
   id: string;
-  /** The single shared data repo (objective content + reference data + all users' subtrees). */
-  dataRepo: RepoCoords;
-  /** GitHub App installation covering the data repo. Optional: when unset the auth
-   *  provider resolves it at runtime from `dataRepo` (see createInstallationAuth). */
-  installationId?: string;
 }
 
 /** Structured rejection returned when a bearer token resolves to no tenant. */
@@ -72,11 +57,6 @@ const INVITE_PREFIX = "invite:";
  */
 export function normalizeTenantId(tenantId: string): string {
   return tenantId.trim().toLowerCase();
-}
-
-/** The single data-repo coordinates, identical for every tenant, from `env`. */
-export function dataCoords(env: Env): RepoCoords {
-  return { owner: env.DATA_OWNER, repo: env.DATA_REPO, ref: env.DATA_REF };
 }
 
 /** A KV-backed tenant directory. Records are JSON under `tenant:<id>`. */
@@ -121,14 +101,9 @@ export function directoryFromEnv(env: Env): TenantStore {
   return kvTenantStore(env.TENANT_KV);
 }
 
-/** Build the full per-request `Tenant` from a directory record + global env config. */
-export function tenantFromRecord(env: Env, record: TenantRecord): Tenant {
-  const id = normalizeTenantId(record.id);
-  return {
-    id,
-    dataRepo: dataCoords(env),
-    installationId: env.GITHUB_INSTALLATION_ID,
-  };
+/** Build the full per-request `Tenant` from a directory record. */
+export function tenantFromRecord(_env: Env, record: TenantRecord): Tenant {
+  return { id: normalizeTenantId(record.id) };
 }
 
 /**

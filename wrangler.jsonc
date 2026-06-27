@@ -1,7 +1,6 @@
 {
 	// grocery-mcp — custom MCP server for the grocery agent.
 	// Secrets are NOT in this file; set them out-of-band and they persist across deploys:
-	//   wrangler secret put GITHUB_APP_PRIVATE_KEY   # PKCS#8 PEM
 	//   wrangler secret put KROGER_CLIENT_ID
 	//   wrangler secret put KROGER_CLIENT_SECRET
 	//   wrangler secret put KROGER_OAUTH_CLIENT_ID      (optional)
@@ -16,13 +15,10 @@
 	"compatibility_flags": [
 		"nodejs_compat"
 	],
-	// vars are OPERATOR-OWNED: the deploy merge takes vars from the operator's data-repo
-	// config and strips these, so the values here are a placeholder / local-dev reference
-	// only — never deployed to operators. For local `wrangler dev`, set real values in
-	// `.dev.vars` (gitignored).
-	"vars": {
-		"GITHUB_APP_ID": "<app id>"
-	},
+	// No code-level `vars`: the authored corpus moved to R2 (no GitHub App / data repo),
+	// so there are no global non-secret vars to deploy. Operator-owned vars (if any) come
+	// from the operator's data-repo config via the deploy merge; the maintainer's are
+	// never propagated. Local `wrangler dev` reads `.dev.vars` (gitignored).
 	// KV (ephemeral infra).
 	// 
 	// KROGER_KV:

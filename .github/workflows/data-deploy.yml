@@ -12,11 +12,11 @@
 #  - KV namespace ids and the D1 database id are auto-provisioned by `wrangler deploy`
 #    (the template config ships id-less bindings) and PINNED BACK into the data repo so
 #    redeploys reuse them. D1 schema migrations (migrations/d1/*.sql) are then applied
-#    via `wrangler d1 migrations apply DB --remote`, before the .mjs data-backfill runner.
-#  - DATA_OWNER/DATA_REPO are intuited from `github.repository`; DATA_REF defaults
-#    to main — injected as --var, not hand-set in wrangler.jsonc.
-#  - The GitHub App private key STAYS a manual Cloudflare secret (never in a repo).
-#    The lower-value Kroger creds are optionally set here from data-repo secrets.
+#    via `wrangler d1 migrations apply DB --remote`.
+#  - The R2 corpus bucket (CORPUS) is ensured before deploy (idempotent create); the
+#    authored corpus lives there, read/written by the Worker — no GitHub App or data repo
+#    on the data path. The recipe index is projected by the Worker reconcile, not CI.
+#  - The lower-value Kroger creds are optionally set here from data-repo secrets.
 name: data-deploy
 
 on:
@@ -84,13 +84,6 @@ jobs:
           key: aube-store-${{ runner.os }}-${{ hashFiles('_code/package-lock.json') }}
           restore-keys: aube-store-${{ runner.os }}-
 
-      # DATA_OWNER/DATA_REPO are literally the repo this workflow runs in.
-      - name: Derive data-repo coordinates
-        id: coords
-        run: |
-          echo "owner=${GITHUB_REPOSITORY%/*}" >> "$GITHUB_OUTPUT"
-          echo "repo=${GITHUB_REPOSITORY#*/}" >> "$GITHUB_OUTPUT"
-
       - name: Install dependencies
         run: aube ci
         working-directory: _code
@@ -112,19 +105,27 @@ jobs:
       - name: Merge wrangler config (code-level + operator-owned)
         run: node _code/scripts/merge-wrangler-config.mjs merge "${{ inputs.config_path }}" _code/wrangler.jsonc
 
-      # Deploy. --var injects the intuited data-repo coords into the Worker's vars
-      # (the Worker has no Actions context, so they're baked at deploy). KV bindings
-      # with no id are auto-provisioned here.
+      # The R2 corpus bucket binding (CORPUS) is bound at deploy but `wrangler deploy`
+      # does not create the bucket, so ensure it exists first. Idempotent: re-creating an
+      # existing bucket is a no-op success (the name is the code-level binding's fixed
+      # `bucket_name`, scoped to THIS operator's Cloudflare account). The robust pin-back +
+      # second-deploy idempotency guard is operator-provisioning's concern.
+      - name: Ensure R2 corpus bucket exists
+        uses: cloudflare/wrangler-action@ebbaa1584979971c8614a24965b4405ff95890e0 # v4.0.0
+        continue-on-error: true
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          workingDirectory: _code
+          command: r2 bucket create grocery-corpus
+
+      # Deploy. KV/D1 bindings with no id are auto-provisioned here; the recipe index is
+      # projected by the Worker reconcile (no CI D1 write), not at deploy.
       - name: Deploy
         uses: cloudflare/wrangler-action@ebbaa1584979971c8614a24965b4405ff95890e0 # v4.0.0
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           workingDirectory: _code
-          command: >-
-            deploy
-            --var DATA_OWNER:${{ steps.coords.outputs.owner }}
-            --var DATA_REPO:${{ steps.coords.outputs.repo }}
-            --var DATA_REF:main
+          command: deploy
 
       # The Worker exists now, so secrets can be put. Only set Kroger creds if the
       # operator provided them as repo secrets — never clobber dashboard-set values
@@ -239,12 +240,9 @@ jobs:
 
       # (The one-time KV/GitHub→D1 backfill migrations have been applied and retired —
       # there is no `.mjs` data-migration step anymore. Schema lives in the D1-native
-      # step above; the recipe index is projected below.)
-
-      # Project the recipe index into the D1 `recipes` table immediately after deploy
-      # so the Worker can serve list_recipes without waiting for a recipe push. Reads
-      # the D1 database id from the operator's wrangler.jsonc (pinned back above).
-      - name: Validate recipes + project the D1 index
-        run: node _code/scripts/build-indexes.mjs --root .
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      # step above.)
+      #
+      # The recipe index is NO LONGER projected from CI: the Worker's scheduled reconcile
+      # (src/recipe-projection.ts) reads the R2 corpus, validates it, and rebuilds the D1
+      # `recipes` table every tick. After a fresh deploy the index is empty until the
+      # first cron tick (~5 min) — eventual, the system's accepted model. No CI writes D1.

@@ -7,7 +7,7 @@
 //   <out>/admin/elm.js      (elm make --optimize)
 //   <out>/admin/index.html  (copied from admin/index.html)
 //
-// Mirrors build-plugin.mjs / build-site.mjs: ESM, hand-rolled, deterministic, with a
+// Mirrors build-plugin.mjs: ESM, hand-rolled, deterministic, with a
 // --check validate-only mode (the CI drift gate) that fails if the committed bundle is
 // stale — so admin/dist/ is treated like plugin/ (generated, never hand-edited).
 //

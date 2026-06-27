@@ -49,7 +49,7 @@ jobs:
           github_token: ${{ github.token }}
 
       # No dependency install: build-plugin.mjs imports only Node built-ins
-      # (dependency-free), unlike build-indexes/build-site. Keeps this build fast.
+      # (dependency-free). Keeps this build fast.
       - name: Build plugin bundle (operator URL baked in)
         run: node scripts/build-plugin.mjs --mcp-url "${{ inputs.mcp_url }}" --out dist/bundle
 

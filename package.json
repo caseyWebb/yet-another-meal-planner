@@ -23,9 +23,7 @@
     "deploy": "wrangler deploy",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:tooling": "node --test tests/build-indexes.test.mjs tests/build-site.test.mjs tests/build-plugin.test.mjs tests/merge-wrangler-config.test.mjs tests/stamp-readme-badge.test.mjs",
-    "build:indexes": "node scripts/build-indexes.mjs",
-    "build:site": "node scripts/build-site.mjs",
+    "test:tooling": "node --test tests/build-plugin.test.mjs tests/merge-wrangler-config.test.mjs tests/stamp-readme-badge.test.mjs",
     "build:plugin": "node scripts/build-plugin.mjs --out plugin/grocery-agent",
     "build:plugin:dist": "node scripts/build-plugin.mjs",
     "build:admin": "node scripts/build-admin.mjs"

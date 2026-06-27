@@ -1,23 +1,11 @@
 # .dev.vars.example — local-dev env for `wrangler dev`. Copy to `.dev.vars`
 # (gitignored) and fill in. PRODUCTION secrets are set with `wrangler secret put`,
-# never here. The committed wrangler.jsonc carries only PLACEHOLDER non-secret config
-# (its real values are operator-owned and merged in / injected at deploy), so for local
-# dev set your real GITHUB_APP_ID + data-repo coords here. KV is simulated locally.
-
-# --- Non-secret config for local dev (wrangler.jsonc has placeholders) ---
-GITHUB_APP_ID=""
-# GITHUB_INSTALLATION_ID is resolved at runtime by the Worker — set it only to pin/skip the lookup.
-DATA_OWNER=""
-DATA_REPO="groceries-agent-data"
-DATA_REF="main"
+# never here. KV, D1, and the R2 corpus bucket (CORPUS) are all SIMULATED locally by
+# `wrangler dev` — there is no GitHub App or data repo on the data path (the authored
+# corpus lives in R2). Seed the local corpus with, e.g.:
+#   npx wrangler r2 object put grocery-corpus/recipes/<slug>.md --file <path> --local
 
 # --- Secrets ---
-# GitHub App private key, PKCS#8 PEM (`-----BEGIN PRIVATE KEY-----`). Used to mint
-# installation tokens for local repo reads/writes. As a single dotenv line, quote
-# it and use literal \n between the PEM lines, e.g.:
-#   GITHUB_APP_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\nMIIE...\n-----END PRIVATE KEY-----\n"
-GITHUB_APP_PRIVATE_KEY=""
-
 # Kroger public-tier client_credentials app (search / flyer / prices, and the
 # user-context fallback when KROGER_OAUTH_* are unset).
 KROGER_CLIENT_ID=""

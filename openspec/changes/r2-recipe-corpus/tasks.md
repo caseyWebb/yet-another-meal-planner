@@ -26,9 +26,9 @@
 - [x] 5.1 Serve the cookbook from the Worker (`src/cookbook.ts`, route `/cookbook`), server-rendered from the D1 index (list) + the R2 corpus (bodies) — no GitHub Pages, no GitHub Pro. `recipe_site_url` resolves `<origin>/cookbook` (origin threaded into `buildServer` from the MCP handler). The data-repo `build-site` workflow + `build-site.mjs` retire in §6.1.
 
 ## 6. Remove GitHub from the data path (LAST — after parity)
-- [ ] 6.1 Retire `scripts/build-indexes.mjs` + `scripts/d1-rest.mjs` and the data-repo `build-indexes.yml` (no CI D1 writes).
-- [ ] 6.2 Remove the dual-read git fallback; remove `src/github.ts`/`gh-read.ts`/`commit.ts` corpus use and `src/github-app.ts` + the installation-token resolver from the data path.
-- [ ] 6.3 Retire the Node build validator; `validate.ts` is the sole validator.
+- [x] 6.1 Retired `scripts/build-indexes.mjs` + `scripts/d1-rest.mjs` (and `scripts/build-site.mjs` + `scripts/site-assets/`); deleted the reusable `data-build-indexes.yml` + `data-build-site.yml` workflows and the deploy's CI index-projection step; updated `package.json` (`build:indexes`/`build:site` removed, `test:tooling` trimmed). No CI writes D1.
+- [x] 6.2 Removed `src/github.ts`/`gh-read.ts`/`commit.ts` + `src/github-app.ts` (and their tests). Slimmed `Tenant`/`tenant.ts` (no `dataRepo`/`installationId`/`dataCoords`/`RepoCoords`) and `env.ts` (no `GITHUB_APP_*`/`DATA_*`); dropped the GitHub vars from `wrangler.jsonc` + `.dev.vars.example` + the deploy's `--var` injection. No git fallback (single-PR cutover; the store is the sole corpus path).
+- [x] 6.3 The Node build validator (the retired build's `--check`) is gone; `validate.ts` (write tools) + the shared `recipe-contract.js` (also the Worker reconcile) are the sole validators.
 
 ## 7. Docs (lockstep)
 - [ ] 7.1 `docs/ARCHITECTURE.md`: three-tier boundary (R2 corpus), reconcile-owns-projection, validation consolidation, eventual human-edit feedback.
