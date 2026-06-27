@@ -20,6 +20,7 @@ import { buildProjectionDeps, runProjectionJob } from "./recipe-projection.js";
 import { createR2CorpusStore } from "./corpus-store.js";
 import { handleHealthRequest, handleHealthSvgRequest, writeJobHealth, notifyFailure } from "./health.js";
 import { handleAdmin } from "./admin.js";
+import { handleCookbook } from "./cookbook.js";
 import type { KvStore } from "./kroger-user.js";
 
 /**
@@ -38,7 +39,10 @@ const apiHandler = {
         headers: { "content-type": "application/json" },
       });
     }
-    return createMcpHandler(buildServer(env, resolved))(request, env, ctx);
+    // The request origin is the Worker's own public host (the operator's domain) — passed
+    // to buildServer so `recipe_site_url` can resolve the Worker-hosted cookbook.
+    const origin = new URL(request.url).origin;
+    return createMcpHandler(buildServer(env, resolved, origin))(request, env, ctx);
   },
 };
 
@@ -59,6 +63,7 @@ const defaultHandler = {
     if (url.pathname === "/authorize") return handleAuthorize(request, env);
     if (url.pathname.startsWith("/oauth/")) return handleOAuth(env, url);
     if (url.pathname === "/admin" || url.pathname.startsWith("/admin/")) return handleAdmin(request, env);
+    if (url.pathname === "/cookbook" || url.pathname.startsWith("/cookbook/")) return handleCookbook(request, env);
     if (url.pathname === "/health.svg") return handleHealthSvgRequest(env);
     if (url.pathname === "/health") return handleHealthRequest(env);
     return new Response("Not found", { status: 404 });

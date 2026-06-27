@@ -23,7 +23,7 @@
 - [x] 4.2 `report_bug` → a D1 `bug_reports` table (migration 0015; `src/bug-reports.ts`), surfaced by the admin panel (`GET /admin/api/bug-reports`); the GitHub issues path is removed from the tool. Tool contract updated (returns `{ filed: true }`; server-side attribution + timestamp).
 
 ## 5. Cookbook off GitHub Pages
-- [ ] 5.1 Serve the cookbook from the Worker static assets (reuse the `operator-admin-panel` `assets` binding) or Cloudflare Pages, built from the D1 index. `recipe_site_url` resolves the new host. Retire the data-repo `build-site.yml` Pages dependency + the GitHub Pro requirement.
+- [x] 5.1 Serve the cookbook from the Worker (`src/cookbook.ts`, route `/cookbook`), server-rendered from the D1 index (list) + the R2 corpus (bodies) — no GitHub Pages, no GitHub Pro. `recipe_site_url` resolves `<origin>/cookbook` (origin threaded into `buildServer` from the MCP handler). The data-repo `build-site` workflow + `build-site.mjs` retire in §6.1.
 
 ## 6. Remove GitHub from the data path (LAST — after parity)
 - [ ] 6.1 Retire `scripts/build-indexes.mjs` + `scripts/d1-rest.mjs` and the data-repo `build-indexes.yml` (no CI D1 writes).

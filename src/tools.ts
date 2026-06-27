@@ -9,8 +9,6 @@ import { z } from "zod";
 import type { Env } from "./env.js";
 import type { Tenant } from "./tenant.js";
 import { directoryFromEnv } from "./tenant.js";
-import { createGitHubClient, GitHubError } from "./github.js";
-import { createInstallationAuth } from "./github-app.js";
 import { createR2CorpusStore, readCorpusFile } from "./corpus-store.js";
 import { parseMarkdown } from "./parse.js";
 import { readAliases, readSkuCache } from "./corpus-db.js";
@@ -156,22 +154,14 @@ function productRow(c: KrogerCandidate): Record<string, unknown> {
   };
 }
 
-export function buildServer(env: Env, tenant: Tenant): McpServer {
+export function buildServer(env: Env, tenant: Tenant, origin?: string): McpServer {
   const server = new McpServer({ name: "grocery-mcp", version: "0.1.0" });
 
   // The authored corpus (recipes/ + guidance/) is read/listed/written through the R2
   // corpus store — no GitHub App, installation token, or GitHub API call on the data
-  // path. The GitHub App client below remains ONLY for the two non-corpus repo
-  // operations not yet retargeted: `recipe_site_url` (Pages URL) and `report_bug`
-  // (issues). Those move off GitHub in this change's later slices.
+  // path. `report_bug` writes D1 and `recipe_site_url` resolves the Worker-hosted
+  // cookbook, so GitHub is no longer on the tool surface at all.
   const corpus = createR2CorpusStore(env.CORPUS);
-  const installationAuth = createInstallationAuth(
-    env.GITHUB_APP_ID,
-    env.GITHUB_APP_PRIVATE_KEY,
-    { id: tenant.installationId, owner: tenant.dataRepo.owner, repo: tenant.dataRepo.repo },
-  );
-  const dataGh = createGitHubClient(tenant.dataRepo, installationAuth);
-  const sharedGh = dataGh;
   const kroger = createKrogerClient(env);
 
   // Per-request lazy caches backed by the D1 profile tables (the profile left KV
@@ -448,22 +438,16 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
     "recipe_site_url",
     {
       description:
-        "Resolve the URL of the hosted recipe site (the static browse view of the shared corpus), via the data repo's GitHub Pages config. Returns { url, enabled }: enabled:true with the published url (honoring a custom domain) when Pages is on, or enabled:false (url:null) when it isn't — in which case tell the user their operator/admin needs to enable GitHub Pages on the data repo. Use it during onboarding to point a new member at the full collection.",
+        "Resolve the URL of the hosted cookbook (the browse view of the shared corpus), served by the grocery-mcp Worker itself (no GitHub Pages, no GitHub Pro). Returns { url, enabled }: enabled:true with the cookbook URL (`<host>/cookbook`) when the host is resolvable, or enabled:false (url:null) on the rare path where it isn't. Use it during onboarding to point a new member at the full collection.",
       inputSchema: {},
     },
     () =>
       runTool(async () => {
-        try {
-          return await sharedGh.getPagesUrl();
-        } catch (e) {
-          if (e instanceof GitHubError && e.status === 403) {
-            throw new ToolError(
-              "insufficient_permission",
-              "the GitHub App lacks the 'Pages: read' permission needed to resolve the recipe-site URL — ask the operator to grant it",
-            );
-          }
-          throw e;
-        }
+        // The cookbook is served by THIS Worker at `/cookbook`, built from the D1 index +
+        // R2 bodies (src/cookbook.ts) — no GitHub. `origin` is the request host the member
+        // connected to (the operator's domain), threaded in from the MCP handler.
+        if (!origin) return { url: null, enabled: false };
+        return { url: `${origin}/cookbook`, enabled: true };
       }),
   );
 
