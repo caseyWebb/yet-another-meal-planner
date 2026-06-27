@@ -69,6 +69,13 @@ export function mergeWranglerConfig(code, operator) {
   // Without this the merge drops `ai` and `env.AI` is undefined on the deployed Worker.
   if (code.ai !== undefined) out.ai = code.ai;
 
+  // assets: the Workers Static Assets binding serving the operator-admin SPA. Like
+  // `ai` it carries no operator-owned id and no secret, so the whole binding (directory,
+  // binding name, run_worker_first) propagates verbatim from code, like a code-level
+  // key. Without this the merge drops `assets` and the deployed Worker has no admin
+  // SPA and `env.ASSETS` is undefined — the silent-drop trap this allowlist guards.
+  if (code.assets !== undefined) out.assets = code.assets;
+
   return out;
 }
 

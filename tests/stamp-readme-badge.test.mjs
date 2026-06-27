@@ -1,36 +1,23 @@
 // Tests for scripts/stamp-readme-badge.mjs — the deploy's README health-badge stamper.
 // Covers the idempotent marker replace, the insert-after-first-heading path for repos
-// created from an older template, the badge URL shape, and the token read from config.
+// created from an older template, and the (tokenless, open) badge URL shape.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import {
-  healthTokenFromConfig,
-  badgeSnippet,
-  stampReadmeBadge,
-} from "../scripts/stamp-readme-badge.mjs";
+import { badgeSnippet, stampReadmeBadge } from "../scripts/stamp-readme-badge.mjs";
 
 const START = "<!-- health-badge:start -->";
 const END = "<!-- health-badge:end -->";
 
-test("badgeSnippet builds a /health.svg URL, normalizing host and encoding the token", () => {
+test("badgeSnippet builds an open /health.svg URL, normalizing the host", () => {
   assert.equal(
-    badgeSnippet("grocery-mcp.me.workers.dev", "abc123"),
-    "![grocery-mcp health](https://grocery-mcp.me.workers.dev/health.svg?token=abc123)",
+    badgeSnippet("grocery-mcp.me.workers.dev"),
+    "![grocery-mcp health](https://grocery-mcp.me.workers.dev/health.svg)",
   );
-  // Tolerates a scheme / trailing slash on the host, and encodes token specials.
+  // Tolerates a scheme / trailing slash on the host.
   assert.equal(
-    badgeSnippet("https://grocery.example.com/", "a/b+c"),
-    "![grocery-mcp health](https://grocery.example.com/health.svg?token=a%2Fb%2Bc)",
+    badgeSnippet("https://grocery.example.com/"),
+    "![grocery-mcp health](https://grocery.example.com/health.svg)",
   );
-});
-
-test("healthTokenFromConfig reads vars.HEALTH_TOKEN (JSON5 with comments)", () => {
-  assert.equal(
-    healthTokenFromConfig('{ "vars": { "HEALTH_TOKEN": "tok" } } // trailing comment'),
-    "tok",
-  );
-  assert.equal(healthTokenFromConfig('{ "vars": {} }'), undefined);
-  assert.equal(healthTokenFromConfig("not json"), undefined);
 });
 
 test("stampReadmeBadge inserts the block after the first heading when markers are absent", () => {
@@ -45,14 +32,14 @@ test("stampReadmeBadge inserts the block after the first heading when markers ar
 });
 
 test("stampReadmeBadge replaces between existing markers and is idempotent", () => {
-  const seeded = stampReadmeBadge("# T\n\nbody\n", badgeSnippet("h", "t1"));
-  const updated = stampReadmeBadge(seeded, badgeSnippet("h", "t2"));
-  // Only one marker block ever exists, and it now carries the new token.
+  const seeded = stampReadmeBadge("# T\n\nbody\n", badgeSnippet("h1.example.com"));
+  const updated = stampReadmeBadge(seeded, badgeSnippet("h2.example.com"));
+  // Only one marker block ever exists, and it now points at the new host.
   assert.equal(updated.match(new RegExp(START, "g")).length, 1);
-  assert.ok(updated.includes("token=t2"));
-  assert.ok(!updated.includes("token=t1"));
+  assert.ok(updated.includes("h2.example.com"));
+  assert.ok(!updated.includes("h1.example.com"));
   // Re-stamping with the same snippet changes nothing (true no-op).
-  assert.equal(stampReadmeBadge(updated, badgeSnippet("h", "t2")), updated);
+  assert.equal(stampReadmeBadge(updated, badgeSnippet("h2.example.com")), updated);
 });
 
 test("stampReadmeBadge prepends when the README has no heading", () => {

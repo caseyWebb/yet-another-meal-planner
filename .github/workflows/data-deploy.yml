@@ -174,29 +174,27 @@ jobs:
 
       # Stamp the health badge into the data repo README (data-repo-health-badge): an
       # idempotent <!-- health-badge:start -->…<!-- health-badge:end --> block pointing at
-      # the Worker's token-gated /health.svg card. Reuses the operator's existing WORKER_HOST
-      # (passed by the thin caller, like build-plugin's mcp_url) + HEALTH_TOKEN (read from
-      # their wrangler.jsonc vars). OPTIONAL, exactly like the id pin above: skipped when
-      # HEALTH_TOKEN or worker_host is missing; and the ready-to-paste snippet is ALWAYS
-      # written to the job summary FIRST, so a missing README or a denied push never costs an
-      # operator the manual fallback (paste it once by hand — token + host are stable).
+      # the Worker's OPEN /health.svg card. Reuses the operator's existing WORKER_HOST
+      # (passed by the thin caller, like build-plugin's mcp_url). /health.svg is open and
+      # tenant-clean, so the badge is a plain public URL (no token — that's how a README
+      # badge must work). OPTIONAL, like the id pin above: skipped when worker_host is
+      # missing; and the ready-to-paste snippet is ALWAYS written to the job summary FIRST,
+      # so a missing README or a denied push never costs an operator the manual fallback.
       - name: Stamp health badge into README (optional)
         env:
-          CONFIG: ${{ inputs.config_path }}
           HOST: ${{ inputs.worker_host }}
         run: |
-          TOKEN="$(node _code/scripts/stamp-readme-badge.mjs token "$CONFIG")"
-          if [ -z "$TOKEN" ] || [ -z "$HOST" ]; then
+          if [ -z "$HOST" ]; then
             {
               echo "## Health badge"
               echo ""
-              echo "Not stamped — set \`HEALTH_TOKEN\` (in your \`wrangler.jsonc\` \`vars\`) and the \`WORKER_HOST\` repo variable to enable the README status badge."
+              echo "Not stamped — set the \`WORKER_HOST\` repo variable to enable the README status badge."
             } >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
           # Surface the snippet BEFORE any file/commit work, so neither a missing README nor a
           # denied push can rob the operator of the paste fallback.
-          SNIPPET="$(node _code/scripts/stamp-readme-badge.mjs snippet "$HOST" "$TOKEN")"
+          SNIPPET="$(node _code/scripts/stamp-readme-badge.mjs snippet "$HOST")"
           {
             echo "## Health badge"
             echo ""
@@ -210,7 +208,7 @@ jobs:
             echo "No README.md in the data repo — skipped stamping (snippet is in the summary above)."
             exit 0
           fi
-          node _code/scripts/stamp-readme-badge.mjs stamp README.md "$HOST" "$TOKEN" >/dev/null
+          node _code/scripts/stamp-readme-badge.mjs stamp README.md "$HOST" >/dev/null
           # `git diff --quiet` ignores UNTRACKED files, so stage first and check the index —
           # else a brand-new README (older-template repo) would be written but never committed.
           git add -A -- README.md

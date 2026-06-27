@@ -26,15 +26,6 @@ The deploy SHALL derive `DATA_OWNER` and `DATA_REPO` from the GitHub Actions con
 - **WHEN** the deploy runs in the operator's data repo
 - **THEN** the deployed Worker's `DATA_OWNER`/`DATA_REPO` match that repo and `DATA_REF` is `main`, with no operator edit to `wrangler.jsonc`
 
-### Requirement: KV-writing workflows address namespaces by binding, not id
-
-The onboard and revoke workflows SHALL address `TENANT_KV` by its **binding name** (resolved from the operator's `wrangler.jsonc`), not by a separately-configured namespace id. The operator SHALL NOT set a `TENANT_KV_ID` variable.
-
-#### Scenario: Onboard writes KV by binding
-
-- **WHEN** the operator runs onboard with no `TENANT_KV_ID` configured
-- **THEN** the workflow resolves the `TENANT_KV` binding from `wrangler.jsonc` and writes the allowlist + invite keys to the correct namespace
-
 ### Requirement: Per-secret provisioning posture
 
 The GitHub App private key SHALL remain a Cloudflare Worker secret set out-of-band (e.g. the Cloudflare dashboard), and SHALL NOT be stored in any repository or passed through the deploy workflow. The lower-blast-radius Kroger client credentials MAY be set by the deploy from data-repo secrets.
@@ -132,33 +123,14 @@ The operator's `CLOUDFLARE_API_TOKEN` SHALL carry D1 edit permission in addition
 - **WHEN** the config merge runs
 - **THEN** the maintainer's `database_id` from the code repo's `wrangler.jsonc` is stripped, and only the operator's own id (or none → auto-provision) is used
 
-### Requirement: Health token may be supplied as an operator variable
-
-The operator SHALL be able to supply `HEALTH_TOKEN` as a plaintext `var` in their data-repo `wrangler.jsonc`, in addition to the existing Worker-secret form. Because `vars` are operator-owned in the config merge and are deployed to the Worker as environment values, a `HEALTH_TOKEN` var SHALL reach the Worker as `env.HEALTH_TOKEN` with **no change to the merge** and **no change to how the Worker reads the token**. Supplying it as a var SHALL be optional; when neither the var nor the secret is set, `/health` and `/health.svg` SHALL remain disabled (`404`). Storing the token in the **private** data repo is the supported way to make it available to the deploy for badge stamping.
-
-#### Scenario: A health-token var reaches the Worker
-
-- **WHEN** the operator sets `vars.HEALTH_TOKEN` in `wrangler.jsonc` and deploys
-- **THEN** the deployed Worker reads it as `env.HEALTH_TOKEN`, enabling `/health` and `/health.svg`
-
-#### Scenario: The secret form still works
-
-- **WHEN** `HEALTH_TOKEN` is set as a Worker secret and not as a var
-- **THEN** the endpoints behave exactly as before (the var is additive, not a replacement)
-
-#### Scenario: Unset leaves the endpoints disabled
-
-- **WHEN** neither the `HEALTH_TOKEN` var nor the secret is set
-- **THEN** both `/health` and `/health.svg` respond `404`
-
 ### Requirement: Deploy optionally stamps the README health badge
 
-When the operator has set both `HEALTH_TOKEN` (var) and the `WORKER_HOST` repo variable, the deploy SHALL render a health-badge markdown snippet pointing at `https://<WORKER_HOST>/health.svg?token=<HEALTH_TOKEN>` and SHALL maintain it in the data-repo README inside an **idempotent marker block**. The deploy SHALL replace the content between existing badge markers when present, and SHALL otherwise insert the marker block immediately after the README's first heading (so a repo created from an older template gains the badge without a manual paste). `WORKER_HOST` SHALL be passed into the reusable deploy workflow by the thin caller (mirroring how the plugin build passes its connector host), not resolved by guessing. When either `HEALTH_TOKEN` or `WORKER_HOST` is absent, the deploy SHALL skip stamping and still succeed (the badge is opt-in).
+When the operator has set the `WORKER_HOST` repo variable, the deploy SHALL render a health-badge markdown snippet pointing at the Worker's open `https://<WORKER_HOST>/health.svg` card (no token — `/health.svg` is open and tenant-clean, so the badge is a plain anonymously-fetchable public URL) and SHALL maintain it in the data-repo README inside an **idempotent marker block**. The deploy SHALL replace the content between existing badge markers when present, and SHALL otherwise insert the marker block immediately after the README's first heading (so a repo created from an older template gains the badge without a manual paste). `WORKER_HOST` SHALL be passed into the reusable deploy workflow by the thin caller (mirroring how the plugin build passes its connector host), not resolved by guessing. When `WORKER_HOST` is absent, the deploy SHALL skip stamping and still succeed (the badge is opt-in).
 
 #### Scenario: Badge is stamped when configured
 
-- **WHEN** both `HEALTH_TOKEN` and `WORKER_HOST` are set and the deploy can write back to the repo
-- **THEN** the README contains the marker block with the correct `/health.svg` URL
+- **WHEN** `WORKER_HOST` is set and the deploy can write back to the repo
+- **THEN** the README contains the marker block with the correct open `/health.svg` URL
 
 #### Scenario: Re-stamp is idempotent
 
@@ -172,12 +144,12 @@ When the operator has set both `HEALTH_TOKEN` (var) and the `WORKER_HOST` repo v
 
 #### Scenario: Skipped when not opted in
 
-- **WHEN** `HEALTH_TOKEN` or `WORKER_HOST` is unset
+- **WHEN** `WORKER_HOST` is unset
 - **THEN** the deploy does not modify the README and still completes successfully
 
 ### Requirement: Pin-back is optional with a manual fallback
 
-Persisting deploy-time values back into the operator's data repo — the README health badge **and** the auto-provisioned KV/D1 ids — SHALL be optional and SHALL NOT be required for a successful deploy. When the deploy lacks `contents: write` (or the operator prefers manual setup), it SHALL NOT fail; it SHALL instead surface what the operator needs to apply by hand. In particular, when `HEALTH_TOKEN` and `WORKER_HOST` are set, the deploy SHALL **always** write the ready-to-paste health-badge snippet to the workflow job summary, regardless of whether it could commit the change. An operator SHALL be able to run the deploy without granting `contents: write` and complete badge setup (and id pinning) manually.
+Persisting deploy-time values back into the operator's data repo — the README health badge **and** the auto-provisioned KV/D1 ids — SHALL be optional and SHALL NOT be required for a successful deploy. When the deploy lacks `contents: write` (or the operator prefers manual setup), it SHALL NOT fail; it SHALL instead surface what the operator needs to apply by hand. In particular, when `WORKER_HOST` is set, the deploy SHALL **always** write the ready-to-paste health-badge snippet to the workflow job summary, regardless of whether it could commit the change. An operator SHALL be able to run the deploy without granting `contents: write` and complete badge setup (and id pinning) manually.
 
 #### Scenario: Deploy without write permission still succeeds
 
@@ -186,7 +158,7 @@ Persisting deploy-time values back into the operator's data repo — the README 
 
 #### Scenario: The badge snippet is always surfaced
 
-- **WHEN** the deploy runs with `HEALTH_TOKEN` and `WORKER_HOST` set
+- **WHEN** the deploy runs with `WORKER_HOST` set
 - **THEN** the ready-to-paste badge snippet appears in the job summary whether or not it was committed back
 
 #### Scenario: Manual setup is supported end to end

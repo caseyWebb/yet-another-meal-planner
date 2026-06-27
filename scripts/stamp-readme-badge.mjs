@@ -1,39 +1,28 @@
 // stamp-readme-badge.mjs — maintain the grocery-mcp health badge in a data repo README
 // (data-repo-health-badge). The deploy calls this to keep an idempotent marker block in
-// the operator's README pointing at the Worker's token-gated /health.svg card. Pure,
-// unit-tested helpers + a thin CLI, mirroring scripts/merge-wrangler-config.mjs.
+// the operator's README pointing at the Worker's OPEN /health.svg card. Pure, unit-tested
+// helpers + a thin CLI, mirroring scripts/merge-wrangler-config.mjs.
 //
-// The badge URL embeds HEALTH_TOKEN, which is the operator's own value living in their
-// PRIVATE data repo — exposing it there is intended (data-repo-health-badge design D5).
+// /health.svg is open and tenant-clean (no token — the card shows only job states + the
+// d1 boolean), so the badge is a plain public URL. That's how a README badge must work:
+// GitHub's image proxy fetches it anonymously, and there's no secret to leak into a README.
 //
 // CLI (two subcommands, like merge-wrangler-config.mjs):
-//   node scripts/stamp-readme-badge.mjs token <config.jsonc>             -> prints vars.HEALTH_TOKEN (or "")
-//   node scripts/stamp-readme-badge.mjs stamp <readme.md> <host> <token> -> rewrites <readme.md>, prints the snippet
+//   node scripts/stamp-readme-badge.mjs snippet <host>           -> prints the badge markdown
+//   node scripts/stamp-readme-badge.mjs stamp <readme.md> <host> -> rewrites <readme.md>, prints the snippet
 
 import { readFileSync, writeFileSync, realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import JSON5 from "json5";
 
 const START = "<!-- health-badge:start -->";
 const END = "<!-- health-badge:end -->";
 
-/** Read `vars.HEALTH_TOKEN` from a wrangler.jsonc (JSON5) string; undefined if absent/unparseable. */
-export function healthTokenFromConfig(configText) {
-  try {
-    const cfg = JSON5.parse(configText);
-    const t = cfg?.vars?.HEALTH_TOKEN;
-    return typeof t === "string" && t.length > 0 ? t : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-/** The badge markdown for a worker host + token. Host is normalized (no scheme / trailing slash); token is URL-encoded. */
-export function badgeSnippet(workerHost, token) {
+/** The badge markdown for a worker host. Host is normalized (no scheme / trailing slash). */
+export function badgeSnippet(workerHost) {
   const host = String(workerHost)
     .replace(/^https?:\/\//, "")
     .replace(/\/+$/, "");
-  const url = `https://${host}/health.svg?token=${encodeURIComponent(token)}`;
+  const url = `https://${host}/health.svg`;
   return `![grocery-mcp health](${url})`;
 }
 
@@ -64,14 +53,12 @@ export function stampReadmeBadge(readme, snippet) {
 const isMain = process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url);
 if (isMain) {
   const [mode, ...rest] = process.argv.slice(2);
-  if (mode === "token" && rest[0]) {
-    process.stdout.write(healthTokenFromConfig(readFileSync(rest[0], "utf8")) ?? "");
-  } else if (mode === "snippet" && rest[0] && rest[1]) {
+  if (mode === "snippet" && rest[0]) {
     // Just the badge markdown — touches no file. Lets the deploy surface the paste-snippet
     // even when there is no README to stamp.
-    process.stdout.write(badgeSnippet(rest[0], rest[1]));
-  } else if (mode === "stamp" && rest[0] && rest[1] && rest[2]) {
-    const [readmePath, host, token] = rest;
+    process.stdout.write(badgeSnippet(rest[0]));
+  } else if (mode === "stamp" && rest[0] && rest[1]) {
+    const [readmePath, host] = rest;
     // Tolerate a missing README (ENOENT → empty) so a direct call never throws; the block
     // is prepended into a fresh file. (The deploy guards on existence so it won't fabricate
     // a README, but the CLI stays safe for any caller.)
@@ -81,13 +68,11 @@ if (isMain) {
     } catch {
       current = "";
     }
-    const snippet = badgeSnippet(host, token);
+    const snippet = badgeSnippet(host);
     writeFileSync(readmePath, stampReadmeBadge(current, snippet));
     process.stdout.write(snippet);
   } else {
-    console.error(
-      "usage: stamp-readme-badge.mjs token <config> | snippet <host> <token> | stamp <readme> <host> <token>",
-    );
+    console.error("usage: stamp-readme-badge.mjs snippet <host> | stamp <readme> <host>");
     process.exit(1);
   }
 }

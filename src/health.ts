@@ -1,9 +1,10 @@
 // Background-job health (background-job-health capability). The cron flyer warm and
 // the inbound email() handler run with no human watching, so each writes a small
-// health record to KV on every run, and the token-gated `/health` endpoint aggregates
-// them for an external monitor (which decides what's alarming and pushes the alert —
-// the Worker only EMITS truthful state). An optional ntfy push is the one in-Worker
-// exception: a failure-domain-independent backstop, off unless configured.
+// health record to KV on every run, and the open `/health` endpoint aggregates them
+// for an external monitor (which decides what's alarming and pushes the alert — the
+// Worker only EMITS truthful state; who may READ it is an edge decision, not Worker
+// code). An optional ntfy push is the one in-Worker exception: a failure-domain-
+// independent backstop, off unless configured.
 //
 // Records, the endpoint, and the ntfy message are tenant-data-free by construction —
 // counts, timestamps, and error classes only, never usernames or other identifiers.
@@ -115,30 +116,18 @@ export async function buildHealthPayload(
 }
 
 /**
- * Shared token gate for the `/health*` endpoints. Returns a Response to short-circuit
- * (404 when `HEALTH_TOKEN` is unset → opt-in; 401 on a missing/wrong token via `?token=`
- * or `Authorization: Bearer`), or null when the request is authorized — so the JSON and
- * SVG handlers cannot drift on how they gate.
+ * Handle a `/health` request. **Open and aggregate-only** (background-job-health): the
+ * payload is tenant-data-free by construction, so it carries no token gate — restricting
+ * who may read it is an edge concern (Cloudflare Access / WAF), not Worker code. The D1
+ * probe's raw error string is coarsened to a boolean here so no internal `storage_error`
+ * message leaks. Returns the aggregate payload as JSON — 200 when ok, 503 when a job is
+ * failing so plain HTTP-status monitors trip too. Lives on the fetch path (independent
+ * of the cron), so a stopped job stays detectable via stale `last_run_at`.
  */
-function healthTokenGate(request: Request, env: Env): Response | null {
-  if (!env.HEALTH_TOKEN) return new Response("Not found", { status: 404 });
-  const bearer = request.headers.get("authorization")?.replace(/^Bearer\s+/i, "");
-  const provided = new URL(request.url).searchParams.get("token") ?? bearer;
-  if (provided !== env.HEALTH_TOKEN) return new Response("Unauthorized", { status: 401 });
-  return null;
-}
-
-/**
- * Handle a `/health` request. Token-gated and aggregate-only: 404 when `HEALTH_TOKEN`
- * is unset (opt-in), 401 on a missing/wrong token (`?token=` or `Authorization: Bearer`),
- * else the aggregate payload as JSON — 200 when ok, 503 when a job is failing so plain
- * HTTP-status monitors trip too. Lives on the fetch path (independent of the cron).
- */
-export async function handleHealthRequest(request: Request, env: Env): Promise<Response> {
-  const gate = healthTokenGate(request, env);
-  if (gate) return gate;
+export async function handleHealthRequest(env: Env): Promise<Response> {
   const payload = await buildHealthPayload(env, env.KROGER_KV as unknown as KvStore, HEALTH_JOBS);
-  return new Response(JSON.stringify(payload), {
+  const safe = { ...payload, d1: { ok: payload.d1.ok } };
+  return new Response(JSON.stringify(safe), {
     status: payload.ok ? 200 : 503,
     headers: { "content-type": "application/json" },
   });
@@ -249,15 +238,14 @@ export function renderHealthSvg(payload: HealthPayload): string {
 }
 
 /**
- * Handle a `/health.svg` request — the README-badge variant of `/health`. Same token
- * gate, but ALWAYS responds 200 with an SVG card (degraded state is shown by color,
- * not HTTP status) because image proxies (e.g. GitHub Camo) may not render a non-200
- * response as an image. A short `Cache-Control` lets an embedding README refresh the
- * badge on a TTL rather than live. Aggregate-only, like `/health`.
+ * Handle a `/health.svg` request — the README-badge variant of `/health`. **Open**, like
+ * `/health` (the card is tenant-clean — only job states + the d1 boolean), and ALWAYS
+ * responds 200 with an SVG card (degraded state is shown by color, not HTTP status)
+ * because image proxies (e.g. GitHub Camo) may not render a non-200 response as an image
+ * — and a public README badge must be anonymously fetchable. A short `Cache-Control` lets
+ * an embedding README refresh the badge on a TTL rather than live. Aggregate-only.
  */
-export async function handleHealthSvgRequest(request: Request, env: Env): Promise<Response> {
-  const gate = healthTokenGate(request, env);
-  if (gate) return gate;
+export async function handleHealthSvgRequest(env: Env): Promise<Response> {
   const payload = await buildHealthPayload(env, env.KROGER_KV as unknown as KvStore, HEALTH_JOBS);
   return new Response(renderHealthSvg(payload), {
     status: 200,

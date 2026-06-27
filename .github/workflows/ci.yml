@@ -87,7 +87,7 @@ jobs:
       - name: Check for Worker-relevant changes
         id: changed
         run: |
-          git diff --name-only HEAD^ HEAD -- src/ wrangler.jsonc package.json package-lock.json \
+          git diff --name-only HEAD^ HEAD -- src/ admin/dist/ wrangler.jsonc package.json package-lock.json \
             | grep -q . \
             && echo "relevant=true" >> "$GITHUB_OUTPUT" \
             || echo "relevant=false" >> "$GITHUB_OUTPUT"

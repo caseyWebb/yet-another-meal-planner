@@ -6,7 +6,6 @@
 	//   wrangler secret put KROGER_CLIENT_SECRET
 	//   wrangler secret put KROGER_OAUTH_CLIENT_ID      (optional)
 	//   wrangler secret put KROGER_OAUTH_CLIENT_SECRET  (optional)
-	//   wrangler secret put HEALTH_TOKEN                (optional; gates /health — unset = /health disabled)
 	//   wrangler secret put NTFY_URL                    (optional; Worker-side failure push to an ntfy topic)
 	//   wrangler secret put NTFY_TOKEN                  (optional; bearer for a protected ntfy topic)
 	"name": "grocery-mcp",
@@ -60,6 +59,24 @@
 	// binding (like d1/triggers): propagated to every operator by the deploy merge.
 	// In `wrangler dev` the binding is proxied to the real AI API (needs wrangler auth).
 	"ai": { "binding": "AI" },
+	// Static assets (operator-admin): the committed admin SPA under admin/dist/, served
+	// same-origin at /admin/* via the ASSETS binding. `run_worker_first` routes /admin*
+	// to the Worker FIRST so the Cloudflare Access gate (and the /admin/api/* handlers)
+	// run before any static file is served — an unconfigured deploy is 404, not an open
+	// shell. Code-level binding: the deploy merge propagates it (merge-wrangler-config.mjs
+	// allowlist) like `ai`; it carries no operator-owned id.
+	"assets": {
+		"directory": "./admin/dist",
+		"binding": "ASSETS",
+		"run_worker_first": [
+			"/admin",
+			"/admin/*"
+		]
+	},
+	// workers.dev is OFF so the only route in is the operator's Access-protected custom
+	// domain — closing the *.workers.dev bypass of the /admin Access app. Operator-owned
+	// (merge: operator may override), defaulted here.
+	"workers_dev": false,
 	// Janitor cron (one trigger, short cadence). Each tick runs two jobs:
 	//   * Flyer warm (flyer-cache-warming) — a cursor-based sweep (src/flyer-warm.ts):
 	//     each tick builds the plan, scans the next ≤12-unit batch (kept under the

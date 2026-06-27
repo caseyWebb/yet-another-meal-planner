@@ -36,6 +36,7 @@ const code = {
   triggers: { crons: ["*/5 * * * *"] },
   observability: { enabled: true },
   ai: { binding: "AI" },
+  assets: { directory: "./admin/dist", binding: "ASSETS", run_worker_first: ["/admin", "/admin/*"] },
 };
 
 // A slim operator config (post-template).
@@ -51,6 +52,15 @@ test("code-level triggers propagate when the operator lacks them", () => {
 test("the Workers AI binding propagates verbatim from code (no operator id/secret to strip)", () => {
   const out = mergeWranglerConfig(code, operator); // operator declares no `ai`
   assert.deepEqual(out.ai, { binding: "AI" });
+});
+
+test("the Workers Static Assets binding propagates verbatim from code (operator-admin SPA)", () => {
+  const out = mergeWranglerConfig(code, operator); // operator declares no `assets`
+  assert.deepEqual(out.assets, {
+    directory: "./admin/dist",
+    binding: "ASSETS",
+    run_worker_first: ["/admin", "/admin/*"],
+  });
 });
 
 test("compatibility settings come from code even if the operator differs", () => {
@@ -115,7 +125,7 @@ test("the deployed config only contains the curated key set", () => {
   const out = mergeWranglerConfig(code, operator);
   const allowed = new Set([
     "name", "main", "workers_dev", "compatibility_date", "compatibility_flags",
-    "triggers", "observability", "vars", "kv_namespaces", "d1_databases", "ai", "routes", "route",
+    "triggers", "observability", "vars", "kv_namespaces", "d1_databases", "ai", "assets", "routes", "route",
   ]);
   for (const k of Object.keys(out)) assert.ok(allowed.has(k), `unexpected key in deployed config: ${k}`);
 });
