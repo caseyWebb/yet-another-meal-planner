@@ -5,6 +5,7 @@ import {
   findDuplicate,
   dietaryOk,
   nearAnyMember,
+  isLikelyNonRecipeLink,
   DEFAULT_CONFIG,
   type DiscoveryDeps,
   type DiscoveryConfig,
@@ -55,7 +56,14 @@ interface FakeOpts {
 }
 
 function makeDeps(opts: FakeOpts) {
-  const calls = { classify: 0, imported: [] as string[], logs: [] as LogEntry[], matches: {} as Record<string, unknown> };
+  const calls = {
+    classify: 0,
+    embedMany: 0,
+    acquire: 0,
+    imported: [] as string[],
+    logs: [] as LogEntry[],
+    matches: {} as Record<string, unknown>,
+  };
   const vec = (t: string) => opts.vectors[t] ?? ZERO;
   const deps: DiscoveryDeps = {
     loadCandidates: async () => opts.candidates,
@@ -65,10 +73,17 @@ function makeDeps(opts: FakeOpts) {
       if (opts.embedThrow?.has(text)) throw new Error(`AI down: ${text}`);
       return vec(text);
     },
-    acquireContent: async (c) =>
-      opts.acquireNull?.has(c.url)
+    embedMany: async (texts) => {
+      calls.embedMany++;
+      for (const t of texts) if (opts.embedThrow?.has(t)) throw new Error(`AI down: ${t}`);
+      return texts.map(vec);
+    },
+    acquireContent: async (c) => {
+      calls.acquire++;
+      return opts.acquireNull?.has(c.url)
         ? null
-        : ({ title: c.title, ingredients: ["1 a", "2 b"], instructions: ["do it"] } as RecipeContent),
+        : ({ title: c.title, ingredients: ["1 a", "2 b"], instructions: ["do it"] } as RecipeContent);
+    },
     classify: async (content, source) => {
       calls.classify++;
       if (opts.classifyThrow?.has(content.title)) throw new Error("validation_failed: off-vocab");
@@ -128,6 +143,14 @@ describe("pure helpers", () => {
   it("matchMembers repels a near-duplicate of a member's reject", () => {
     const m = member("c", { rejectVectors: [A] }); // candidate A ≈ a rejected recipe
     expect(matchMembers(A, [], [m], CONFIG).matches).toEqual([]);
+  });
+  it("isLikelyNonRecipeLink drops social/transactional links, keeps recipe URLs", () => {
+    expect(isLikelyNonRecipeLink("https://facebook.com/share/123")).toBe(true);
+    expect(isLikelyNonRecipeLink("https://www.instagram.com/p/abc")).toBe(true);
+    expect(isLikelyNonRecipeLink("https://list.example.com/unsubscribe/xyz")).toBe(true);
+    expect(isLikelyNonRecipeLink("https://example.com/account")).toBe(true);
+    expect(isLikelyNonRecipeLink("not a url")).toBe(true);
+    expect(isLikelyNonRecipeLink("https://smittenkitchen.com/2026/06/ragu")).toBe(false);
   });
 });
 
@@ -279,18 +302,61 @@ describe("runDiscoverySweep", () => {
   });
 
   it("parks a candidate on a transient AI failure without crashing the whole tick", async () => {
-    // The first candidate's triage embed throws (an env.AI hiccup); the sweep must park it
-    // and keep going, not abandon the rest of the batch.
+    // A candidate's DESCRIPTION embed throws (an env.AI hiccup mid-pipeline, after the batched
+    // triage); the sweep must park just that candidate and keep going, not abandon the tick.
     const { deps, calls } = makeDeps({
       candidates: [cand("u1", "Boom"), cand("u2", "Ok")],
       members: [member("casey")],
-      vectors: { "Ok — s": A, "DESC:Ok": A },
-      embedThrow: new Set(["Boom — s"]),
+      vectors: { "Boom — s": A, "Ok — s": A, "DESC:Ok": A },
+      embedThrow: new Set(["DESC:Boom"]),
     });
     const res = await runDiscoverySweep(deps, CONFIG); // must NOT reject
     expect(res.parked).toBe(1);
     expect(res.imported).toBe(1);
     expect(calls.imported).toEqual(["ok"]);
     expect(calls.logs.some((l) => l.title === "Boom" && l.outcome === "error")).toBe(true);
+  });
+
+  it("triages the whole pool in one batched embed call", async () => {
+    const { deps, calls } = makeDeps({
+      candidates: [cand("u1", "One"), cand("u2", "Two"), cand("u3", "Three")],
+      members: [member("casey")],
+      vectors: {
+        "One — s": A, "DESC:One": A,
+        "Two — s": A, "DESC:Two": A,
+        "Three — s": A, "DESC:Three": A,
+      },
+    });
+    await runDiscoverySweep(deps, CONFIG);
+    expect(calls.embedMany).toBe(1); // one subrequest for the whole pool, not one per candidate
+  });
+
+  it("propagates a batch triage-embed failure so the whole tick retries next run", async () => {
+    // A transient env.AI outage fails the batched embed; the sweep must reject WITHOUT logging
+    // any candidate, so the pool stays un-evaluated and re-gathers next tick (never mislabeled).
+    const { deps, calls } = makeDeps({
+      candidates: [cand("u1", "X"), cand("u2", "Y")],
+      members: [member("casey")],
+      vectors: {},
+      embedThrow: new Set(["X — s"]),
+    });
+    await expect(runDiscoverySweep(deps, CONFIG)).rejects.toThrow();
+    expect(calls.logs).toEqual([]);
+  });
+
+  it("bounds external fetches by fetchMaxPerTick, deferring survivors it can't fetch", async () => {
+    // Both clear triage and would be fetched, but the fetch budget is 1 — so only one is
+    // fetched (parks as unreachable); the other defers without ever spending a fetch. Proves
+    // the governor counts FETCHES (the scarce subrequest), not just successful classifies.
+    const { deps, calls } = makeDeps({
+      candidates: [cand("u1", "P1"), cand("u2", "P2")],
+      members: [member("casey")],
+      vectors: { "P1 — s": A, "P2 — s": A },
+      acquireNull: new Set(["u1", "u2"]),
+    });
+    const res = await runDiscoverySweep(deps, { ...CONFIG, fetchMaxPerTick: 1 });
+    expect(calls.acquire).toBe(1);
+    expect(res.parked).toBe(1);
+    expect(res.deferred).toBe(1);
   });
 });

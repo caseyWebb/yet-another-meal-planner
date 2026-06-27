@@ -14,7 +14,7 @@
 // recorded (imported → corpus, or a terminal outcome → the dedup log), so the D1 log IS the
 // progress state and a re-run never reprocesses a handled candidate.
 
-import { cosineSimilarity, embedText } from "./embedding.js";
+import { cosineSimilarity, embedText, embedTexts } from "./embedding.js";
 import { favoriteAffinity } from "./semantic-search.js";
 import type { Env } from "./env.js";
 import { createR2CorpusStore } from "./corpus-store.js";
@@ -77,18 +77,25 @@ export interface DiscoveryConfig {
   dedupThreshold: number;
   /** Max candidates CLASSIFIED per tick (the env.AI budget bound). */
   classifyMaxPerTick: number;
+  /** Max external recipe-page FETCHES per tick (the scarce shared-subrequest bound — a parse
+   *  failure spends one without ever reaching classify, so it is capped separately). */
+  fetchMaxPerTick: number;
   /** Max IMPORTS per tick (the corpus-bloat governor); excess is deferred + logged. */
   rateCap: number;
 }
 
 export const DEFAULT_CONFIG: DiscoveryConfig = {
-  // Placeholders until task 0.3 calibrates them against the live corpus. classifyMaxPerTick
-  // also caps the EXTERNAL recipe-page fetches, which share the flyer's 50-subrequest
-  // per-invocation budget (both run in one scheduled() tick) — keep it conservative.
+  // Placeholders until task 0.3 calibrates them against the live corpus. fetchMaxPerTick
+  // bounds the EXTERNAL recipe-page fetches — the scarce resource, since a parse failure
+  // spends one without reaching classify — which share the flyer's 50-subrequest
+  // per-invocation budget (both run in one scheduled() tick). classifyMaxPerTick bounds the
+  // env.AI classify calls. Keep both conservative; fetchMaxPerTick ≥ classifyMaxPerTick since
+  // some fetches park before classify.
   tasteThreshold: 0.55,
   triageThreshold: 0.45,
   dedupThreshold: 0.9,
   classifyMaxPerTick: 12,
+  fetchMaxPerTick: 16,
   rateCap: 10,
 };
 
@@ -136,8 +143,11 @@ export interface DiscoveryDeps {
   loadMembers(): Promise<SweepMember[]>;
   /** Every corpus recipe's description vector (for L2 dedup), as [slug, vector] pairs. */
   loadCorpusVectors(): Promise<Array<{ slug: string; vector: number[] }>>;
-  /** Embed one text (title+summary at triage; the description post-classify). */
+  /** Embed one text (the description post-classify — one call per surviving candidate). */
   embed(text: string): Promise<number[]>;
+  /** Embed MANY texts in ONE call — the batched triage primitive, so the whole candidate
+   *  pool's title+summary embeds cost a single subrequest instead of one apiece. */
+  embedMany(texts: string[]): Promise<number[][]>;
   /** Fetch + parse a candidate to structured content; null when unreachable/walled (→ parked). */
   acquireContent(candidate: SweepCandidate): Promise<RecipeContent | null>;
   /** Classify content → contract-valid frontmatter; throws (validation_failed) when it can't (→ park). */
@@ -220,6 +230,11 @@ function asStringArray(v: unknown): string[] {
   return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
 }
 
+/** The cheap-triage embed text for a candidate: its title joined with its blurb (if any). */
+export function triageText(c: SweepCandidate): string {
+  return [c.title, c.summary ?? ""].join(" — ").trim();
+}
+
 /**
  * Run one discovery sweep tick: process the gathered candidates through triage → classify →
  * dedup → match → confirm → import, bounded by the classify cap and the import rate cap, and
@@ -247,8 +262,19 @@ export async function runDiscoverySweep(
   };
   const importedVectors: Array<{ slug: string; vector: number[] }> = [];
   let classified = 0;
+  let fetched = 0;
 
-  for (const candidate of candidates) {
+  // Triage embeds in ONE batched env.AI call for the whole pool, not one per candidate.
+  // Embeds count against the shared subrequest budget, so a large feed/inbox pool must not
+  // spend one apiece — the unbatched loop could exhaust the budget on triage alone, before a
+  // single recipe is even fetched. The match itself stays the pure `nearAnyMember` cosine
+  // check below. A batch failure (a transient env.AI outage) propagates and fails the tick:
+  // no candidate is logged, so the whole pool re-gathers next run — far safer than embedding
+  // each one (re-spending the budget we are saving) or mislabeling them all `no_match`.
+  const triageVecs = await deps.embedMany(candidates.map(triageText));
+
+  for (let i = 0; i < candidates.length; i++) {
+    const candidate = candidates[i];
     // Governor / budget: once the rate cap or the classify cap is hit, defer the rest (no
     // wasted classify) — they re-gather next tick (still un-evaluated, so no dedup needed).
     if (res.imported >= config.rateCap || classified >= config.classifyMaxPerTick) {
@@ -257,17 +283,27 @@ export async function runDiscoverySweep(
     }
 
     try {
-      // [1] cheap triage — embed the blurb, drop anything near nobody BEFORE spending a fetch/classify.
-      const triageVec = await deps.embed([candidate.title, candidate.summary ?? ""].join(" — ").trim());
-      if (!nearAnyMember(triageVec, members, config.triageThreshold)) {
+      // [1] cheap triage — drop anything near nobody BEFORE spending a fetch/classify. The
+      //     blurb vector was embedded in the batch above; this is now a pure cosine check.
+      if (!nearAnyMember(triageVecs[i] ?? [], members, config.triageThreshold)) {
         await deps.recordLog({ ...logBase(candidate), outcome: "no_match", detail: { stage: "triage" } });
         res.noMatch++;
         res.processed++;
         continue;
       }
 
+      // Fetch budget: the external page fetch is the scarce shared subrequest, and a parse
+      // failure spends one WITHOUT reaching classify — so bound the fetches directly, not via
+      // the classify cap. A triage survivor we cannot afford to fetch this tick is deferred
+      // (re-gathered next tick); triage non-matches above are still cheaply finalized.
+      if (fetched >= config.fetchMaxPerTick) {
+        res.deferred++;
+        continue;
+      }
+
       // [2] acquire content — unreachable/walled (no inline recipe) → park (no human to paste).
       const content = await deps.acquireContent(candidate);
+      fetched++;
       if (!content) {
         await deps.recordLog({ ...logBase(candidate), outcome: "error", detail: { reason: "unreachable" } });
         res.parked++;
@@ -375,7 +411,37 @@ function logBase(c: SweepCandidate): Pick<LogEntry, "url" | "title" | "source"> 
 // --- real-client wiring (buildDiscoveryDeps), mirroring flyer-warm's buildWarmDeps -------
 
 const MAX_PER_FEED = 8;
+/** Max links promoted from a single email body — a newsletter can carry a long junk tail. */
+const MAX_PER_EMAIL = 8;
 const URL_RE = /https?:\/\/[^\s)"'<>]+/g;
+
+/** Hosts that are never a recipe page — social/sharing and chat. Matched on the host with a
+ *  leading `www.` stripped. Conservative on purpose: over-filtering hides recipes, and the
+ *  per-tick fetch budget already backstops whatever junk slips through. */
+const NON_RECIPE_HOSTS = new Set([
+  "facebook.com", "twitter.com", "x.com", "instagram.com", "pinterest.com",
+  "youtube.com", "youtu.be", "tiktok.com", "linkedin.com", "reddit.com", "threads.net",
+  "whatsapp.com", "t.me",
+]);
+/** Path shapes that are transactional/navigational, never a recipe (unsubscribe, account, …). */
+const NON_RECIPE_PATH_RE =
+  /(?:^|\/)(?:unsubscribe|subscribe|preferences|manage|account|login|signup|sign-up|privacy|terms|contact|about)(?:\/|$)/i;
+
+/** True for a link that is obviously NOT a recipe page (a social share, an unsubscribe link),
+ *  so an email body's junk tail never becomes a fetched-then-parked candidate. Unparseable →
+ *  true (drop). High-precision: it rejects only clear non-recipes; a click-tracking wrapper
+ *  that redirects to a recipe is left for the fetch (bounded by fetchMaxPerTick) to resolve. */
+export function isLikelyNonRecipeLink(raw: string): boolean {
+  let u: URL;
+  try {
+    u = new URL(raw.trim());
+  } catch {
+    return true;
+  }
+  const host = u.host.toLowerCase().replace(/^www\./, "");
+  if (NON_RECIPE_HOSTS.has(host)) return true;
+  return NON_RECIPE_PATH_RE.test(u.pathname);
+}
 
 function renderContent(c: RecipeContent): string {
   return (
@@ -482,11 +548,12 @@ export function buildDiscoveryDeps(env: Env, now: () => number = () => Date.now(
 
       const out: SweepCandidate[] = [];
       const local = new Set<string>();
-      const push = (rawUrl: string, title: string, summary: string | null, source: string) => {
+      const push = (rawUrl: string, title: string, summary: string | null, source: string): boolean => {
         const url = canonicalizeUrl(rawUrl);
-        if (!url || seen.has(url) || local.has(url)) return;
+        if (!url || seen.has(url) || local.has(url)) return false;
         local.add(url);
         out.push({ url, title, summary, source });
+        return true;
       };
 
       // RSS/Atom feeds (title + summary give the triage a real signal).
@@ -505,11 +572,19 @@ export function buildDiscoveryDeps(env: Env, now: () => number = () => Date.now(
         }),
       );
 
-      // Email inbox — extract recipe links from each body (the page fetch yields the real title).
+      // Email inbox — promote the body's recipe links (the page fetch yields the real title).
+      // Drop obvious non-recipe links and cap per email so one newsletter's junk tail cannot
+      // flood the pool: every promoted link costs a triage embed and, if it survives, a fetch.
       for (const email of inbox) {
         const body = typeof email.body === "string" ? email.body : "";
         const subject = typeof email.subject === "string" ? email.subject : "newsletter";
-        for (const m of body.match(URL_RE) ?? []) push(m, subject, null, String(email.from ?? "email"));
+        const sender = String(email.from ?? "email");
+        let promoted = 0;
+        for (const m of body.match(URL_RE) ?? []) {
+          if (promoted >= MAX_PER_EMAIL) break;
+          if (isLikelyNonRecipeLink(m)) continue;
+          if (push(m, subject, null, sender)) promoted++;
+        }
       }
       return out;
     },
@@ -546,6 +621,8 @@ export function buildDiscoveryDeps(env: Env, now: () => number = () => Date.now(
     },
 
     embed: (text) => embedText(env, text),
+
+    embedMany: (texts) => embedTexts(env, texts),
 
     async acquireContent(candidate) {
       try {
