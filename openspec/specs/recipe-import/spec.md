@@ -185,7 +185,7 @@ When a recipe is imported or created, the system SHALL classify the recipe's `co
 #### Scenario: Dual-use dish gets multiple courses
 
 - **WHEN** a hearty grain salad that works as either a main or a side is imported
-- **THEN** the classifier MAY write `course: [main, side]`, and the recipe is later returned by both `list_recipes({ course: "main" })` and `list_recipes({ course: "side" })`
+- **THEN** the classifier MAY write `course: [main, side]`, and the recipe is later returned by both `search_recipes({ specs: [{ label: "m", facets: { course: "main" } }] })` and `search_recipes({ specs: [{ label: "s", facets: { course: "side" } }] })`
 
 #### Scenario: Novel course value is accepted without a code change
 

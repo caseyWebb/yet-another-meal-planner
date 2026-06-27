@@ -8,19 +8,19 @@ Defines the recipe index: the shared, objective projection of `recipes/*.md`, st
 
 ### Requirement: Recipe index is stored in and served from D1
 
-The system SHALL maintain the shared recipe index as a `recipes` table in **D1** (the `DB` binding), not as a KV blob. The Worker SHALL read the index from D1 — not from KV or the GitHub data repo — on every tool invocation that requires it (`list_recipes`, `retrospective`, the `read_recipe` slug path, and the discovery idempotency check). The table holds only **objective** recipe content (the shared projection); per-tenant disposition fields (`favorite`, `reject`) and the derived `last_cooked` are NOT stored here — they are merged at read time from the overlay and cooking log.
+The system SHALL maintain the shared recipe index as a `recipes` table in **D1** (the `DB` binding), not as a KV blob. The Worker SHALL read the index from D1 — not from KV or the GitHub data repo — on every tool invocation that requires it (`search_recipes`, `retrospective`, the `read_recipe` slug path, and the discovery idempotency check). The table holds only **objective** recipe content (the shared projection); per-tenant disposition fields (`favorite`, `reject`) and the derived `last_cooked` are NOT stored here — they are merged at read time from the overlay and cooking log.
 
 A *provisioned but empty* `recipes` table SHALL be treated as an empty corpus (the tool returns no recipes), distinct from an *unreadable* table (D1 unreachable or unmigrated), which SHALL surface as `index_unavailable`.
 
-#### Scenario: list_recipes reads from D1
+#### Scenario: search_recipes reads from D1
 
-- **WHEN** `list_recipes` is called
-- **THEN** the Worker loads the index from the D1 `recipes` table and applies filters, making no KV or GitHub call for the index
+- **WHEN** `search_recipes` is called
+- **THEN** the Worker loads the index from the D1 `recipes` table and applies the spec facets, making no KV or GitHub call for the index
 
 #### Scenario: Empty corpus is not an error
 
 - **WHEN** the `recipes` table exists but has no rows
-- **THEN** `list_recipes` returns `{ recipes: [] }` rather than an `index_unavailable` error
+- **THEN** a vibe-less `search_recipes` spec returns an empty result group rather than an `index_unavailable` error
 
 #### Scenario: Unreadable index surfaces as index_unavailable
 
@@ -49,4 +49,4 @@ A *provisioned but empty* `recipes` table SHALL be treated as an empty corpus (t
 #### Scenario: Deploy populates D1 immediately
 
 - **WHEN** an operator runs the deploy workflow
-- **THEN** the post-deploy `build-indexes` step populates the D1 `recipes` table, so `list_recipes` returns results without requiring a recipe push first
+- **THEN** the post-deploy `build-indexes` step populates the D1 `recipes` table, so `search_recipes` returns results without requiring a recipe push first

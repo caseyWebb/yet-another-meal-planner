@@ -33,7 +33,7 @@ The system SHALL treat a recipe's `last_cooked` as a value **derived by query**,
 
 #### Scenario: last_cooked is a query, not a stored field
 
-- **WHEN** `list_recipes` or `read_recipe` resolves a recipe's `last_cooked`
+- **WHEN** `search_recipes` or `read_recipe` resolves a recipe's `last_cooked`
 - **THEN** the value comes from `MAX(date)` over the caller's `cooking_log` recipe rows for that slug, with no `last_cooked` written to the recipe
 
 #### Scenario: Cooking a recipe updates its derived last_cooked

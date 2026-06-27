@@ -1,4 +1,4 @@
-// Pure list_recipes filtering (design D5). No I/O here so it is unit-testable;
+// Pure search_recipes facet-gate filtering (design D5). No I/O here so it is unit-testable;
 // the tool wrapper supplies the index and the reference "now".
 
 export interface RecipeFilters {
@@ -94,7 +94,7 @@ export function filterRecipes(
 
   for (const recipe of Object.values(index)) {
     // Reject hard gate: a recipe the caller rejected never surfaces (the shared
-    // predicate consumed by both list_recipes and recipe_semantic_search).
+    // predicate consumed by both search_recipes modes — membership and ranked).
     if (recipe.reject) continue;
     if (filters.protein !== undefined && recipe.protein !== filters.protein) continue;
     if (filters.cuisine !== undefined && recipe.cuisine !== filters.cuisine) continue;

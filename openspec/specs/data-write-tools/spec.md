@@ -60,12 +60,12 @@ The system SHALL provide a `toggle_favorite(slug, favorite)` tool that sets or c
 
 ### Requirement: toggle_reject hides a recipe for the caller via the D1 overlay
 
-The system SHALL provide a `toggle_reject(slug, reject)` tool that sets or clears the caller's `reject` flag for a recipe as a row in the D1 `overlay` table, returning without a `commit_sha`. It SHALL validate `slug` against the D1 `recipes` table (`not_found` when absent) and SHALL NOT write shared recipe content. `reject: false` SHALL clear the flag, deleting the overlay row when nothing else is set on it. `reject` and `favorite` are mutually exclusive: setting `reject: true` SHALL clear any `favorite`. A rejected recipe SHALL be excluded from the caller's `list_recipes` and `recipe_semantic_search` results (a hard gate). This is **per-tenant** and distinct from the group-wide `reject_discovery` (which suppresses a discovery URL before import); `toggle_reject` acts on an existing corpus slug for one member only.
+The system SHALL provide a `toggle_reject(slug, reject)` tool that sets or clears the caller's `reject` flag for a recipe as a row in the D1 `overlay` table, returning without a `commit_sha`. It SHALL validate `slug` against the D1 `recipes` table (`not_found` when absent) and SHALL NOT write shared recipe content. `reject: false` SHALL clear the flag, deleting the overlay row when nothing else is set on it. `reject` and `favorite` are mutually exclusive: setting `reject: true` SHALL clear any `favorite`. A rejected recipe SHALL be excluded from the caller's `search_recipes` results (a hard gate, both membership and ranked modes). This is **per-tenant** and distinct from the group-wide `reject_discovery` (which suppresses a discovery URL before import); `toggle_reject` acts on an existing corpus slug for one member only.
 
 #### Scenario: Rejecting a recipe hides it for the caller only
 
 - **WHEN** `toggle_reject("miso-salmon", true)` is called
-- **THEN** the caller's `overlay` row is upserted with `reject`, the recipe no longer appears in that caller's `list_recipes`/`recipe_semantic_search`, and no other member's view changes
+- **THEN** the caller's `overlay` row is upserted with `reject`, the recipe no longer appears in that caller's `search_recipes` results, and no other member's view changes
 
 #### Scenario: Un-rejecting restores default visibility
 

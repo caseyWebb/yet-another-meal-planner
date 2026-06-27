@@ -232,7 +232,7 @@ export function registerWriteTools(
     "toggle_reject",
     {
       description:
-        "Hide a recipe from the CALLER — `reject: true` removes it from the caller's list_recipes and recipe_semantic_search results (a hard gate), `false` un-hides it back to the available default. Per-tenant: one member's reject never affects another's view, and it does NOT remove the shared recipe. Mutually exclusive with favorite (rejecting clears a favorite). DISTINCT from reject_discovery, which suppresses a discovery URL group-wide before import; toggle_reject acts on an existing corpus slug for one member. Unknown slug → not_found. Returns { slug, overlay } (no commit_sha; the overlay is D1-backed).",
+        "Hide a recipe from the CALLER — `reject: true` removes it from the caller's search_recipes results (a hard gate, both membership and ranked modes), `false` un-hides it back to the available default. Per-tenant: one member's reject never affects another's view, and it does NOT remove the shared recipe. Mutually exclusive with favorite (rejecting clears a favorite). DISTINCT from reject_discovery, which suppresses a discovery URL group-wide before import; toggle_reject acts on an existing corpus slug for one member. Unknown slug → not_found. Returns { slug, overlay } (no commit_sha; the overlay is D1-backed).",
       inputSchema: { slug: z.string(), reject: z.boolean() },
     },
     ({ slug, reject }) => runTool(() => applyDisposition(slug, { reject })),

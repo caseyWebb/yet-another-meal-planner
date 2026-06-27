@@ -97,7 +97,7 @@ function rowToRecipe(row: RecipeRow): IndexedRecipe {
 /**
  * Load the whole shared recipe index from D1 and rebuild the `RecipeIndex` map
  * (slug → reconstructed objective entry). A drop-in for the old whole-blob load:
- * `list_recipes` still filters in JS over this, leaving the overlay/last_cooked
+ * `search_recipes` still filters in JS over this, leaving the overlay/last_cooked
  * merge and `filterRecipes` untouched. An EMPTY table is a valid empty corpus
  * (`{}`); an UNREADABLE table throws a `storage_error` (mapped by db()), which the
  * caller surfaces as `index_unavailable`.

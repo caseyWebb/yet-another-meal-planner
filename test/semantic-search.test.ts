@@ -311,11 +311,11 @@ describe("rankCandidates pantry overlap", () => {
   });
 });
 
-// recipe_semantic_search computes its candidate set by merging the caller's overlay
-// onto the shared index and running filterRecipes (the SAME shared predicate as
-// list_recipes) BEFORE ranking. So a rejected recipe is gated out of `survivors` and
-// can never become a ranking candidate — this reproduces that gate end-to-end.
-describe("recipe_semantic_search reject gate", () => {
+// search_recipes computes each spec's candidate set by merging the caller's overlay
+// onto the shared index and running filterRecipes (the SAME shared gate in both modes)
+// BEFORE ranking. So a rejected recipe is gated out of `survivors` and can never become
+// a ranking candidate (nor a membership result) — this reproduces that gate end-to-end.
+describe("search_recipes reject gate (shared facet gate)", () => {
   it("a rejected slug is gated out of the survivor set, so it never ranks", () => {
     const index: RecipeIndex = {
       keeper: { slug: "keeper", title: "Keeper", last_cooked: null },
@@ -330,5 +330,41 @@ describe("recipe_semantic_search reject gate", () => {
     const survivors = filterRecipes(effective, {}, NOW).map((r) => r.slug);
     expect(survivors).toEqual(["keeper"]);
     expect(survivors).not.toContain("hidden");
+  });
+});
+
+// The unified search_recipes forks on `vibe`: a vibe-less spec is MEMBERSHIP (return
+// every survivor, unranked, unembedded INCLUDED, no `k` cap), while a vibe-bearing spec
+// is RANKED (drop the unembedded survivors, then rank + top-`k`). These reproduce the
+// two branches over the same survivor set so the fork's contract is pinned.
+describe("search_recipes mode fork (membership vs ranked)", () => {
+  const index: RecipeIndex = {
+    embedded: { slug: "embedded", title: "Embedded", last_cooked: null },
+    fresh: { slug: "fresh", title: "Fresh import", last_cooked: null }, // no embedding yet
+  };
+  const effective: RecipeIndex = {};
+  for (const [slug, entry] of Object.entries(index)) {
+    effective[slug] = { ...mergeOverlay(entry, undefined, undefined), slug };
+  }
+  const embeddings = new Map<string, number[]>([["embedded", [1, 0]]]); // "fresh" unembedded
+
+  it("membership (no vibe) returns every survivor incl. the unembedded, uncapped by k", () => {
+    // The handler's vibe-less branch is `filterRecipes(...)` returned verbatim.
+    const recipes = filterRecipes(effective, {}, NOW).map((r) => r.slug);
+    expect(recipes).toEqual(["embedded", "fresh"]); // both present, no k applied
+    expect(recipes).toContain("fresh"); // unembedded recipe is NOT dropped
+  });
+
+  it("ranked (vibe present) drops the unembedded survivor before ranking", () => {
+    // The handler's ranked branch keeps only survivors that have an embedding.
+    const survivors = filterRecipes(effective, {}, NOW);
+    const candidates = survivors
+      .filter((s) => embeddings.has(s.slug))
+      .map((s) => cand({ slug: s.slug, embedding: embeddings.get(s.slug) as number[] }));
+    const ranked = rankCandidates(candidates, [1, 0], [], [], NOW, DEFAULT_RANK_PARAMS, 10).map(
+      (r) => r.slug,
+    );
+    expect(ranked).toEqual(["embedded"]);
+    expect(ranked).not.toContain("fresh"); // unembedded dropped in ranked mode
   });
 });
