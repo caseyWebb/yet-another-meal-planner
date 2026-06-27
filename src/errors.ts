@@ -22,8 +22,9 @@ export type ErrorCode =
   | "incomplete" // a Recipe was found but yielded no ingredients or no instructions
   | "slug_exists" // create_recipe target already exists; not overwritten
   | "already_exists" // create_recipe source URL is already in the shared corpus; reuse the existing slug
-  // Bug-reporting code (agent-bug-reporting capability):
-  | "insufficient_permission" // the GitHub App lacks Issues: write; report_bug could not file
+  // Retired/reserved (was: the GitHub App lacked a permission). No tool produces it now —
+  // report_bug writes D1 and recipe_site_url resolves the Worker cookbook (no GitHub App).
+  | "insufficient_permission"
   // Weather codes (menu-generation capability):
   | "no_location" // get_weather_forecast: no ZIP resolvable from preferences
   | "forecast_unavailable" // get_weather_forecast: Open-Meteo returned non-2xx or network failure
