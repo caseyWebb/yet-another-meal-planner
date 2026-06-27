@@ -2,24 +2,28 @@ module Main exposing (main)
 
 {-| The grocery-agent operator admin panel (operator-admin capability).
 
-A small Browser.element SPA served at `/admin` behind Cloudflare Access. It talks
-to the same-origin `/admin/api/*` JSON surface to onboard / list / rotate / revoke
-members. A minted invite code is shown ONCE in the banner here — it is never logged
-server-side, so this view is the only place it appears.
+A `Browser.element` SPA served at `/admin` behind Cloudflare Access, talking to the
+same-origin `/admin/api/*` JSON surface to onboard / list / rotate / revoke members.
+A minted invite code is shown ONCE here — it is never logged server-side.
 
-Refactor-friendly by construction: the whole app is `Model` + `Msg` + pure `update`
-+ `view`, with every server effect a typed `Cmd Msg`. Adding a field to a member or
-a new operation is a compiler-guided change, which is the point of using Elm here.
+Modeling discipline (see ./CLAUDE.md — "make impossible states impossible"):
+
+  - the member list is `WebData` (NotAsked | Loading | Failure | Success), never a
+    `loading : Bool` + `error : Maybe String` + `data` triple that can contradict;
+  - the in-flight mutation is one `ActionState` custom type that ties any error to the
+    operation that produced it, so "busy", "which operation", and "what failed" can
+    never disagree, and one-mutation-at-a-time falls out for free.
 
 -}
 
 import Browser
-import Html exposing (Html, button, div, form, h1, h2, input, label, p, span, strong, table, tbody, td, text, th, thead, tr)
+import Html exposing (Html, button, code, div, form, h1, h2, input, label, p, span, strong, table, tbody, td, text, th, thead, tr)
 import Html.Attributes exposing (attribute, class, disabled, placeholder, type_, value)
 import Html.Events exposing (onClick, onInput, onSubmit)
 import Http
 import Json.Decode as Decode exposing (Decoder)
 import Json.Encode as Encode
+import RemoteData exposing (RemoteData(..), WebData)
 import Url
 
 
@@ -27,38 +31,51 @@ import Url
 -- MODEL
 
 
-{-| What the server returns from onboard / rotate: the credentials to hand a member. -}
-type alias Minted =
+{-| Credentials the server mints on onboard/rotate — handed to a member, shown once. -}
+type alias Credentials =
     { username : String
     , inviteCode : String
     , connectorUrl : String
     }
 
 
-type alias Model =
-    { tenants : List String
-    , loading : Bool
-    , error : Maybe String
-    , newUsername : String
-    , newCode : String
-    , busy : Bool
+{-| The single mutation that can be in flight. Onboard/rotate/revoke are mutually
+exclusive (one operator, one click), so this is one value — not three Bools — and the
+operation's identity (incl. the target username) travels with it.
+-}
+type Operation
+    = Onboard
+    | RotateInvite String
+    | RevokeMember String
 
-    -- The just-minted credentials, shown once until dismissed.
-    , minted : Maybe Minted
+
+{-| Idle, working on an operation, or showing a failed one + its error. A failure is
+inseparable from the operation that caused it; there is no free-floating `Maybe String`.
+-}
+type ActionState
+    = Idle
+    | Busy Operation
+    | Failed Operation Http.Error
+
+
+type alias Model =
+    { members : WebData (List String)
+    , usernameInput : String
+    , inviteInput : String
+    , action : ActionState
+    , banner : Maybe Credentials
     }
 
 
 init : () -> ( Model, Cmd Msg )
 init _ =
-    ( { tenants = []
-      , loading = True
-      , error = Nothing
-      , newUsername = ""
-      , newCode = ""
-      , busy = False
-      , minted = Nothing
+    ( { members = Loading
+      , usernameInput = ""
+      , inviteInput = ""
+      , action = Idle
+      , banner = Nothing
       }
-    , getTenants
+    , fetchMembers
     )
 
 
@@ -67,130 +84,151 @@ init _ =
 
 
 type Msg
-    = GotTenants (Result Http.Error (List String))
-    | SetUsername String
-    | SetCode String
+    = GotMembers (WebData (List String))
+    | UsernameChanged String
+    | InviteChanged String
     | SubmitOnboard
-    | Onboarded (Result Http.Error Minted)
+    | OnboardResult (Result Http.Error Credentials)
     | ClickRotate String
-    | Rotated (Result Http.Error Minted)
+    | RotateResult String (Result Http.Error Credentials)
     | ClickRevoke String
-    | Revoked String (Result Http.Error ())
-    | Dismiss
+    | RevokeResult String (Result Http.Error ())
+    | DismissBanner
 
 
 update : Msg -> Model -> ( Model, Cmd Msg )
 update msg model =
     case msg of
-        GotTenants (Ok tenants) ->
-            ( { model | tenants = tenants, loading = False, error = Nothing }, Cmd.none )
+        GotMembers members ->
+            ( { model | members = members }, Cmd.none )
 
-        GotTenants (Err err) ->
-            ( { model | loading = False, error = Just (httpError err) }, Cmd.none )
+        UsernameChanged value ->
+            ( { model | usernameInput = value }, Cmd.none )
 
-        SetUsername u ->
-            ( { model | newUsername = u }, Cmd.none )
-
-        SetCode c ->
-            ( { model | newCode = c }, Cmd.none )
+        InviteChanged value ->
+            ( { model | inviteInput = value }, Cmd.none )
 
         SubmitOnboard ->
-            if String.trim model.newUsername == "" || model.busy then
-                ( model, Cmd.none )
+            case ( isBusy model.action, String.trim model.usernameInput ) of
+                ( True, _ ) ->
+                    ( model, Cmd.none )
 
-            else
-                ( { model | busy = True, error = Nothing }
-                , onboard (String.trim model.newUsername) (String.trim model.newCode)
-                )
+                ( False, "" ) ->
+                    ( model, Cmd.none )
 
-        Onboarded (Ok minted) ->
+                ( False, username ) ->
+                    ( { model | action = Busy Onboard }
+                    , onboard username (String.trim model.inviteInput)
+                    )
+
+        OnboardResult (Ok credentials) ->
             ( { model
-                | busy = False
-                , newUsername = ""
-                , newCode = ""
-                , minted = Just minted
+                | action = Idle
+                , usernameInput = ""
+                , inviteInput = ""
+                , banner = Just credentials
               }
-            , getTenants
+            , fetchMembers
             )
 
-        Onboarded (Err err) ->
-            ( { model | busy = False, error = Just (httpError err) }, Cmd.none )
+        OnboardResult (Err error) ->
+            ( { model | action = Failed Onboard error }, Cmd.none )
 
         ClickRotate username ->
-            if model.busy then
-                ( model, Cmd.none )
+            start model (RotateInvite username) (rotate username)
 
-            else
-                ( { model | busy = True, error = Nothing }, rotate username )
+        RotateResult _ (Ok credentials) ->
+            ( { model | action = Idle, banner = Just credentials }, Cmd.none )
 
-        Rotated (Ok minted) ->
-            ( { model | busy = False, minted = Just minted }, Cmd.none )
-
-        Rotated (Err err) ->
-            ( { model | busy = False, error = Just (httpError err) }, Cmd.none )
+        RotateResult username (Err error) ->
+            ( { model | action = Failed (RotateInvite username) error }, Cmd.none )
 
         ClickRevoke username ->
-            if model.busy then
-                ( model, Cmd.none )
+            start model (RevokeMember username) (revoke username)
 
-            else
-                ( { model | busy = True, error = Nothing }, revoke username )
-
-        Revoked username (Ok ()) ->
+        RevokeResult username (Ok ()) ->
             ( { model
-                | busy = False
-                , tenants = List.filter (\t -> t /= username) model.tenants
-                , minted =
-                    case model.minted of
-                        Just m ->
-                            if m.username == username then
-                                Nothing
-
-                            else
-                                model.minted
-
-                        Nothing ->
-                            Nothing
+                | action = Idle
+                , members = RemoteData.map (List.filter ((/=) username)) model.members
+                , banner = clearBannerFor username model.banner
               }
             , Cmd.none
             )
 
-        Revoked _ (Err err) ->
-            ( { model | busy = False, error = Just (httpError err) }, Cmd.none )
+        RevokeResult username (Err error) ->
+            ( { model | action = Failed (RevokeMember username) error }, Cmd.none )
 
-        Dismiss ->
-            ( { model | minted = Nothing }, Cmd.none )
+        DismissBanner ->
+            ( { model | banner = Nothing }, Cmd.none )
+
+
+{-| Begin an operation only when nothing else is in flight (no concurrent mutations). -}
+start : Model -> Operation -> Cmd Msg -> ( Model, Cmd Msg )
+start model operation cmd =
+    if isBusy model.action then
+        ( model, Cmd.none )
+
+    else
+        ( { model | action = Busy operation }, cmd )
+
+
+isBusy : ActionState -> Bool
+isBusy action =
+    case action of
+        Busy _ ->
+            True
+
+        _ ->
+            False
+
+
+{-| Drop the "shown once" banner if it belongs to a member we just revoked. -}
+clearBannerFor : String -> Maybe Credentials -> Maybe Credentials
+clearBannerFor username banner =
+    case banner of
+        Just credentials ->
+            if credentials.username == username then
+                Nothing
+
+            else
+                banner
+
+        Nothing ->
+            Nothing
 
 
 
 -- HTTP
 
 
-getTenants : Cmd Msg
-getTenants =
+fetchMembers : Cmd Msg
+fetchMembers =
     Http.get
         { url = "/admin/api/tenants"
-        , expect = Http.expectJson GotTenants (Decode.field "tenants" (Decode.list Decode.string))
+        , expect = Http.expectJson (RemoteData.fromResult >> GotMembers) membersDecoder
         }
 
 
 onboard : String -> String -> Cmd Msg
-onboard username code =
-    let
-        fields =
-            ( "username", Encode.string username )
-                :: (if code == "" then
-                        []
-
-                    else
-                        [ ( "invite_code", Encode.string code ) ]
-                   )
-    in
+onboard username inviteCode =
     Http.post
         { url = "/admin/api/tenants"
-        , body = Http.jsonBody (Encode.object fields)
-        , expect = Http.expectJson Onboarded mintedDecoder
+        , body = Http.jsonBody (onboardBody username inviteCode)
+        , expect = Http.expectJson OnboardResult credentialsDecoder
         }
+
+
+onboardBody : String -> String -> Encode.Value
+onboardBody username inviteCode =
+    Encode.object
+        (( "username", Encode.string username )
+            :: (if inviteCode == "" then
+                    []
+
+                else
+                    [ ( "invite_code", Encode.string inviteCode ) ]
+               )
+        )
 
 
 rotate : String -> Cmd Msg
@@ -198,7 +236,7 @@ rotate username =
     Http.post
         { url = "/admin/api/tenants/" ++ Url.percentEncode username ++ "/rotate"
         , body = Http.emptyBody
-        , expect = Http.expectJson Rotated mintedDecoder
+        , expect = Http.expectJson (RotateResult username) credentialsDecoder
         }
 
 
@@ -209,44 +247,48 @@ revoke username =
         , headers = []
         , url = "/admin/api/tenants/" ++ Url.percentEncode username
         , body = Http.emptyBody
-        , expect = Http.expectWhatever (Revoked username)
+        , expect = Http.expectWhatever (RevokeResult username)
         , timeout = Nothing
         , tracker = Nothing
         }
 
 
-mintedDecoder : Decoder Minted
-mintedDecoder =
-    Decode.map3 Minted
+membersDecoder : Decoder (List String)
+membersDecoder =
+    Decode.field "tenants" (Decode.list Decode.string)
+
+
+credentialsDecoder : Decoder Credentials
+credentialsDecoder =
+    Decode.map3 Credentials
         (Decode.field "username" Decode.string)
         (Decode.field "invite_code" Decode.string)
         (Decode.field "connector_url" Decode.string)
 
 
 httpError : Http.Error -> String
-httpError err =
-    case err of
-        Http.BadUrl u ->
-            "Bad URL: " ++ u
+httpError error =
+    case error of
+        Http.BadUrl url ->
+            "bad URL " ++ url
 
         Http.Timeout ->
-            "The request timed out."
+            "the request timed out"
 
         Http.NetworkError ->
-            "Network error — is the Worker reachable?"
+            "network error — is the Worker reachable?"
 
-        Http.BadStatus code ->
-            if code == 403 then
-                "Forbidden (403) — your Cloudflare Access session is missing or expired."
+        Http.BadStatus 403 ->
+            "forbidden (403) — your Cloudflare Access session is missing or expired"
 
-            else if code == 404 then
-                "Not found (404) — the admin surface may be disabled (ACCESS_* unset)."
+        Http.BadStatus 404 ->
+            "not found (404) — the admin surface may be disabled (ACCESS_* unset)"
 
-            else
-                "Request failed with HTTP " ++ String.fromInt code ++ "."
+        Http.BadStatus status ->
+            "HTTP " ++ String.fromInt status
 
         Http.BadBody detail ->
-            "Unexpected response: " ++ detail
+            "unexpected response: " ++ detail
 
 
 
@@ -257,75 +299,85 @@ view : Model -> Html Msg
 view model =
     div [ class "wrap" ]
         [ h1 [] [ text "grocery-agent admin" ]
-        , viewError model.error
-        , viewMinted model.minted
+        , viewActionError model.action
+        , viewBanner model.banner
         , viewOnboard model
         , viewMembers model
         ]
 
 
-viewError : Maybe String -> Html Msg
-viewError error =
-    case error of
-        Just message ->
-            div [ class "error" ] [ text message ]
+viewActionError : ActionState -> Html Msg
+viewActionError action =
+    case action of
+        Failed operation error ->
+            div [ class "error" ] [ text (operationLabel operation ++ " failed: " ++ httpError error) ]
 
-        Nothing ->
+        _ ->
             text ""
 
 
-viewMinted : Maybe Minted -> Html Msg
-viewMinted minted =
-    case minted of
-        Just m ->
+operationLabel : Operation -> String
+operationLabel operation =
+    case operation of
+        Onboard ->
+            "Onboard"
+
+        RotateInvite username ->
+            "Rotating " ++ username
+
+        RevokeMember username ->
+            "Revoking " ++ username
+
+
+viewBanner : Maybe Credentials -> Html Msg
+viewBanner banner =
+    case banner of
+        Just credentials ->
             div [ class "minted" ]
                 [ div [ class "minted-head" ]
-                    [ strong [] [ text ("Invite for " ++ m.username) ]
-                    , button [ class "link", onClick Dismiss ] [ text "Dismiss" ]
+                    [ strong [] [ text ("Invite for " ++ credentials.username) ]
+                    , button [ class "link", onClick DismissBanner ] [ text "Dismiss" ]
                     ]
                 , p [ class "once" ] [ text "Shown once — copy it now. It is never logged." ]
-                , dlRow "Invite code" m.inviteCode
-                , dlRow "Connector URL" m.connectorUrl
+                , credentialRow "Invite code" credentials.inviteCode
+                , credentialRow "Connector URL" credentials.connectorUrl
                 ]
 
         Nothing ->
             text ""
 
 
-dlRow : String -> String -> Html Msg
-dlRow k v =
-    div [ class "row" ]
-        [ span [ class "k" ] [ text k ]
-        , Html.code [ class "v" ] [ text v ]
-        ]
+credentialRow : String -> String -> Html Msg
+credentialRow key val =
+    div [ class "row" ] [ span [ class "k" ] [ text key ], code [ class "v" ] [ text val ] ]
 
 
 viewOnboard : Model -> Html Msg
 viewOnboard model =
+    let
+        submitting =
+            model.action == Busy Onboard
+    in
     form [ class "card", onSubmit SubmitOnboard ]
         [ h2 [] [ text "Onboard a member" ]
         , label []
             [ text "Username"
-            , input
-                [ placeholder "e.g. casey"
-                , value model.newUsername
-                , onInput SetUsername
-                , attribute "autocomplete" "off"
-                ]
-                []
+            , input [ placeholder "e.g. casey", value model.usernameInput, onInput UsernameChanged, attribute "autocomplete" "off" ] []
             ]
         , label []
             [ text "Invite code (optional — blank generates one)"
-            , input
-                [ placeholder "leave blank to auto-generate"
-                , value model.newCode
-                , onInput SetCode
-                , attribute "autocomplete" "off"
-                ]
-                []
+            , input [ placeholder "leave blank to auto-generate", value model.inviteInput, onInput InviteChanged, attribute "autocomplete" "off" ] []
             ]
-        , button [ type_ "submit", disabled (model.busy || String.trim model.newUsername == "") ]
-            [ text "Onboard" ]
+        , button
+            [ type_ "submit", disabled (submitting || String.trim model.usernameInput == "") ]
+            [ text
+                (if submitting then
+                    "Onboarding…"
+
+                 else
+                    "Onboard"
+                )
+            ]
         ]
 
 
@@ -333,29 +385,60 @@ viewMembers : Model -> Html Msg
 viewMembers model =
     div [ class "card" ]
         [ h2 [] [ text "Members" ]
-        , if model.loading then
-            p [] [ text "Loading…" ]
+        , case model.members of
+            NotAsked ->
+                p [] [ text "…" ]
 
-          else if List.isEmpty model.tenants then
-            p [] [ text "No members yet." ]
+            Loading ->
+                p [] [ text "Loading…" ]
 
-          else
-            table []
-                [ thead [] [ tr [] [ th [] [ text "Username" ], th [] [ text "Actions" ] ] ]
-                , tbody [] (List.map (viewMember model.busy) model.tenants)
-                ]
+            Failure error ->
+                div [ class "error" ] [ text ("Could not load members: " ++ httpError error) ]
+
+            Success [] ->
+                p [] [ text "No members yet." ]
+
+            Success members ->
+                table []
+                    [ thead [] [ tr [] [ th [] [ text "Username" ], th [] [ text "Actions" ] ] ]
+                    , tbody [] (List.map (viewMember model.action) members)
+                    ]
         ]
 
 
-viewMember : Bool -> String -> Html Msg
-viewMember busy username =
+viewMember : ActionState -> String -> Html Msg
+viewMember action username =
+    let
+        rotating =
+            action == Busy (RotateInvite username)
+
+        revoking =
+            action == Busy (RevokeMember username)
+    in
     tr []
         [ td [] [ text username ]
         , td []
-            [ button [ class "link", disabled busy, onClick (ClickRotate username) ] [ text "Rotate invite" ]
-            , button [ class "danger", disabled busy, onClick (ClickRevoke username) ] [ text "Revoke" ]
+            [ button [ class "link", disabled (isBusy action), onClick (ClickRotate username) ]
+                [ text
+                    (if rotating then
+                        "Rotating…"
+
+                     else
+                        "Rotate invite"
+                    )
+                ]
+            , button [ class "danger", disabled (isBusy action), onClick (ClickRevoke username) ]
+                [ text
+                    (if revoking then
+                        "Revoking…"
+
+                     else
+                        "Revoke"
+                    )
+                ]
             ]
         ]
+
 
 
 -- MAIN
@@ -367,5 +450,5 @@ main =
         { init = init
         , update = update
         , view = view
-        , subscriptions = \_ -> Sub.none
+        , subscriptions = always Sub.none
         }

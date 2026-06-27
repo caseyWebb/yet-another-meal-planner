@@ -26,7 +26,10 @@ aubr typecheck               # tsc --noEmit
 aubr test                    # vitest run — Worker unit tests (test/*.test.ts)
 aubr test:tooling            # node --test — build-tooling tests (tests/*.test.mjs, fixture-based)
 aubr build:plugin            # AGENT_INSTRUCTIONS.md → plugin/grocery-agent/ (needs $GROCERY_MCP_URL)
+aubr build:admin             # admin/src/*.elm → admin/dist/ — the Elm operator panel (see admin/CLAUDE.md)
 ```
+
+The **operator admin panel** (`/admin`) is an Elm SPA under [`admin/`](admin/) — its modeling standards ("make impossible states impossible", RemoteData, no `Bool`/`Maybe String` state) live in [`admin/CLAUDE.md`](admin/CLAUDE.md). `admin/dist/` is generated (like `plugin/`) — never hand-edit it.
 
 - **Single Worker test:** `aubr test test/kroger.test.ts`, or filter by name with `aubr test -- -t "match ingredient"`.
 - **`*.live.test.ts`** (`kroger.live`, `discovery.live`) hit real external APIs and need creds; the default `vitest run` covers the rest.
