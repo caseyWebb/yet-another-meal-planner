@@ -8,32 +8,31 @@
 // not Worker code). `recipe_site_url` resolves `<origin>/cookbook`, the host the agent
 // points members at.
 //
-// SECURITY: the recipe body is agent-/human-authored shared content rendered to HTML on
-// an open, cross-tenant surface, so it is UNTRUSTED for rendering. Two defenses: (1) a
-// `marked` renderer that DROPS raw HTML (no `<script>`/`onerror=`) and scheme-filters
-// link/image URLs (no `javascript:`), since a recipe body is markdown and needs no raw
-// HTML; (2) a restrictive `Content-Security-Policy` (no script at all) as defense in
-// depth. The corpus-store / parse / D1 layers throw structured `ToolError`s, so the
-// handler wraps its body in a try/catch (this surface has no `runTool` boundary) and maps
-// them to a clean 404/503 instead of a 500.
+// SEARCH: `/cookbook?q=` is keyword search ranked in the Worker over the indexed metadata
+// (src/cookbook-search.ts) — no embeddings, no Workers AI. The server `?q=` page is a full
+// keyword-ranked render (no-JS fallback, shareable URL); `/cookbook/search.js` enhances
+// the index/search page into debounced, in-place search against the JSON endpoint
+// `/cookbook/search?q=`. Clearing the box restores the index without a reload.
+//
+// SECURITY: a recipe body is agent-/human-authored shared content rendered to HTML on an
+// open, cross-tenant surface, so it is UNTRUSTED for rendering. Defenses: (1) a `marked`
+// renderer that DROPS raw HTML (no `<script>`/`onerror=`) and scheme-filters link/image
+// URLs (no `javascript:`), since a recipe body is markdown and needs no raw HTML; (2) a
+// per-page `Content-Security-Policy`. The recipe-body page `/cookbook/<slug>` keeps the
+// STRICT no-script CSP (no `script-src` at all). The index/search page relaxes ONLY to
+// `script-src 'self'; connect-src 'self'` to run the first-party search script and its
+// fetch — no `'unsafe-inline'`, no third-party origin — and it renders results as escaped
+// text (server) / `textContent` (client), never injecting untrusted HTML. The corpus-store
+// / parse / D1 layers throw structured `ToolError`s, so the handler wraps its body in a
+// try/catch (this surface has no `runTool` boundary) and maps them to a clean 404/503.
 
 import { Marked } from "marked";
 import type { Env } from "./env.js";
 import { ToolError } from "./errors.js";
-import { loadRecipeIndex, loadRecipeEmbeddings } from "./recipe-index.js";
+import { loadRecipeIndex } from "./recipe-index.js";
 import { createR2CorpusStore } from "./corpus-store.js";
 import { parseMarkdown } from "./parse.js";
-import { embedText, EMBED_DIM } from "./embedding.js";
-import { filterRecipes } from "./recipes.js";
-import {
-  COOKBOOK_K,
-  DEFAULT_SIMILARITY_FLOOR,
-  mergeCookbookResults,
-  normalizeQuery,
-  queryVectorCacheKey,
-  type CookbookHit,
-  type EmbeddedCandidate,
-} from "./cookbook-search.js";
+import { rankByKeyword, toHit, type CookbookHit } from "./cookbook-search.js";
 
 const SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
@@ -83,27 +82,33 @@ form.search input[type=search]{flex:1;min-width:0;padding:.4rem .6rem;font-size:
 form.search button{padding:.4rem .9rem;font-size:1rem;cursor:pointer}
 `;
 
-// No script at all (script-src defaults to 'none' under default-src 'none'); inline styles
-// only; images over https/data. A second line of defense behind the sanitizing renderer.
-const CSP = "default-src 'none'; style-src 'unsafe-inline'; img-src https: data:; base-uri 'none'";
+// The recipe-body page renders untrusted markdown → keep the STRICT no-script CSP.
+const CSP_STRICT = "default-src 'none'; style-src 'unsafe-inline'; img-src https: data:; base-uri 'none'";
+// The index/search page runs the first-party search script + its fetch — and nothing else:
+// no `'unsafe-inline'` for script, no third-party origins.
+const CSP_SEARCH =
+  "default-src 'none'; script-src 'self'; connect-src 'self'; style-src 'unsafe-inline'; img-src https: data:; base-uri 'none'";
 
-function htmlResponse(body: string, status: number): Response {
+/** The one `<script>` the cookbook serves, loaded only on the index/search page. */
+const SEARCH_SCRIPT_TAG = '<script src="/cookbook/search.js" defer></script>';
+
+function htmlResponse(body: string, status: number, csp: string = CSP_STRICT): Response {
   return new Response(body, {
     status,
     headers: {
       "content-type": "text/html; charset=utf-8",
-      "content-security-policy": CSP,
+      "content-security-policy": csp,
       ...(status === 200 ? { "cache-control": "max-age=300" } : {}),
     },
   });
 }
 
-function page(title: string, bodyHtml: string): Response {
+function page(title: string, bodyHtml: string, csp: string = CSP_STRICT): Response {
   const html = `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${esc(title)}</title><style>${STYLE}</style></head>
 <body>${bodyHtml}</body></html>`;
-  return htmlResponse(html, 200);
+  return htmlResponse(html, 200, csp);
 }
 
 function notice(status: number, heading: string): Response {
@@ -112,18 +117,23 @@ function notice(status: number, heading: string): Response {
   return htmlResponse(html, status);
 }
 
-/** A loose index entry / search hit → the compact shape the list renderer needs. */
-function toHit(r: Record<string, unknown>): CookbookHit {
-  return {
-    slug: String(r.slug),
-    title: typeof r.title === "string" && r.title.length > 0 ? r.title : String(r.slug),
-    description: typeof r.description === "string" ? r.description : null,
-    protein: typeof r.protein === "string" ? r.protein : null,
-    cuisine: typeof r.cuisine === "string" ? r.cuisine : null,
-  };
+/** JSON for the search endpoint. Short cache — identical queries collapse at the edge. */
+function jsonResponse(data: unknown): Response {
+  return new Response(JSON.stringify(data), {
+    status: 200,
+    headers: { "content-type": "application/json; charset=utf-8", "cache-control": "max-age=60" },
+  });
 }
 
-/** One `<li>` for the recipe list — shared by the index and the search results. */
+/** Serve the static client search script first-party (so `script-src 'self'` admits it). */
+function scriptResponse(js: string): Response {
+  return new Response(js, {
+    status: 200,
+    headers: { "content-type": "text/javascript; charset=utf-8", "cache-control": "max-age=3600" },
+  });
+}
+
+/** One `<li>` for the recipe list — shared by the index and the server-rendered results. */
 function recipeListItem(hit: CookbookHit): string {
   const chips = [hit.protein, hit.cuisine]
     .filter((v): v is string => typeof v === "string" && v.length > 0)
@@ -133,11 +143,11 @@ function recipeListItem(hit: CookbookHit): string {
   return `<li><a href="/cookbook/${esc(hit.slug)}">${esc(hit.title)}</a> ${chips}${desc}</li>`;
 }
 
-/** The server-rendered search form (GET → `/cookbook?q=…`). No script — a plain form,
- *  so the restrictive no-script CSP is unaffected. `q` is echoed back, escaped. */
+/** The search form. Works without JS (GET → `/cookbook?q=`); `search.js` enhances it into
+ *  debounced, in-place search. `q` is echoed back, escaped. */
 function searchForm(q: string): string {
   return `<form class="search" method="GET" action="/cookbook" role="search">
-<input type="search" name="q" value="${esc(q)}" placeholder="Search recipes…" aria-label="Search recipes">
+<input id="q" type="search" name="q" value="${esc(q)}" placeholder="Search recipes…" aria-label="Search recipes" autocomplete="off">
 <button type="submit">Search</button>
 </form>`;
 }
@@ -151,9 +161,10 @@ async function renderIndex(env: Env): Promise<Response> {
   const items = recipes.map(recipeListItem).join("\n");
   const body = `<h1>Cookbook</h1>
 ${searchForm("")}
-<p class="meta">${recipes.length} recipe${recipes.length === 1 ? "" : "s"}</p>
-<ul class="recipes">${items || "<li>No recipes yet.</li>"}</ul>`;
-  return page("Cookbook", body);
+<div id="results"><p class="meta">${recipes.length} recipe${recipes.length === 1 ? "" : "s"}</p>
+<ul class="recipes">${items || "<li>No recipes yet.</li>"}</ul></div>
+${SEARCH_SCRIPT_TAG}`;
+  return page("Cookbook", body, CSP_SEARCH);
 }
 
 /** One recipe page: its R2 body rendered to HTML, with a title + meta line from frontmatter. */
@@ -168,7 +179,7 @@ async function renderRecipe(env: Env, slug: string): Promise<Response> {
     .map((v) => esc(v))
     .join(" · ");
   // The body is UNTRUSTED — render through the sanitizing `md` instance (no raw HTML, no
-  // unsafe URL schemes), never the default `marked`.
+  // unsafe URL schemes), never the default `marked`. The page keeps the strict no-script CSP.
   const bodyHtml = await md.parse(body);
   // Only show the source as a link when it is a safe http(s) URL; a non-http scheme
   // (e.g. a `javascript:` injection) is dropped rather than rendered even as inert text.
@@ -182,114 +193,157 @@ async function renderRecipe(env: Env, slug: string): Promise<Response> {
 ${meta ? `<p class="meta">${meta}</p>` : ""}
 ${sourceLine}
 ${bodyHtml}`;
-  return page(title, html);
+  return page(title, html, CSP_STRICT);
 }
 
-// --- Hybrid search (cookbook-search) -------------------------------------------------
+// --- Keyword search (cookbook-search) ------------------------------------------------
 
-/** Query vectors are stable — they change only when EMBED_MODEL changes, which re-keys
- *  the cache — so they can be held a long while; a miss simply re-embeds. */
-const QVEC_TTL_SECONDS = 60 * 60 * 24 * 30; // 30 days
-
-/** Read a query's cached embedding vector, or null on a miss. A parse/shape mismatch is
- *  treated as a miss (self-healing — the next search re-embeds), never a throw. */
-async function getCachedQueryVector(env: Env, q: string): Promise<number[] | null> {
-  const raw = await env.KROGER_KV.get(queryVectorCacheKey(q));
-  if (raw === null) return null;
-  try {
-    const v: unknown = JSON.parse(raw);
-    if (Array.isArray(v) && v.length === EMBED_DIM && v.every((n) => typeof n === "number")) {
-      return v as number[];
-    }
-  } catch {
-    // fall through to a miss
-  }
-  return null;
-}
-
-/** Write-through a freshly embedded query vector under the model+query key, with a TTL. */
-async function putCachedQueryVector(env: Env, q: string, vec: number[]): Promise<void> {
-  await env.KROGER_KV.put(queryVectorCacheKey(q), JSON.stringify(vec), {
-    expirationTtl: QVEC_TTL_SECONDS,
-  });
-}
-
-/** Resolve the query's embedding: a cache hit skips Workers AI entirely; a miss embeds the
- *  NORMALIZED query (matching the cache key) and write-through caches it (best-effort — a
- *  cache write failure must not fail the search). */
-async function resolveQueryVector(env: Env, q: string): Promise<number[]> {
-  const cached = await getCachedQueryVector(env, q);
-  if (cached !== null) return cached;
-  const vec = await embedText(env, normalizeQuery(q));
-  await putCachedQueryVector(env, q, vec).catch(() => {});
-  return vec;
-}
-
-/** The search results page: the prefilled form, an "N results" heading (or a clean empty
- *  state), and the shared recipe list. Always 200 — "no matches" is a normal outcome. */
+/** The server-rendered results page (no-JS fallback + shareable `?q=` URL): the prefilled
+ *  form, an "N results" heading (or a clean empty state), the shared recipe list, and the
+ *  enhancement script. Always 200 — "no matches" is a normal outcome. */
 function searchResultsPage(q: string, results: CookbookHit[]): Response {
   const header = `<nav><a href="/cookbook">← All recipes</a></nav>
 <h1>Cookbook</h1>
 ${searchForm(q)}`;
-  const body =
+  const inner =
     results.length > 0
-      ? `${header}
-<p class="meta">${results.length} result${results.length === 1 ? "" : "s"} for "${esc(q)}"</p>
+      ? `<p class="meta">${results.length} result${results.length === 1 ? "" : "s"} for "${esc(q)}"</p>
 <ul class="recipes">${results.map(recipeListItem).join("\n")}</ul>`
-      : `${header}
-<p class="meta">No recipes match "${esc(q)}".</p>`;
-  return page(`Search · ${q}`, body);
+      : `<p class="meta">No recipes match "${esc(q)}".</p>`;
+  const body = `${header}
+<div id="results">${inner}</div>
+${SEARCH_SCRIPT_TAG}`;
+  return page(`Search · ${q}`, body, CSP_SEARCH);
 }
 
-/**
- * Render hybrid search results for a non-empty `q`. The SUBSTRING tier (title+tags, the
- * same match `search_recipes` membership runs — `owned: []`, so nothing is gated on this
- * anonymous surface) is always computed. The SEMANTIC tier is best-effort and NEVER
- * load-bearing: any failure loading the embeddings or embedding the query (Workers AI
- * down, empty embed index) disables it and the substring results render alone. The index
- * load itself can still throw → the caller maps it to a 503, exactly like the index page.
- */
+/** Server-render keyword results for a non-empty `q` (the no-JS / shareable path). Shares
+ *  `rankByKeyword` with the JSON endpoint, so the two agree on ordering. */
 async function renderSearch(env: Env, q: string): Promise<Response> {
   const index = await loadRecipeIndex(env);
-  const substring: CookbookHit[] = filterRecipes(index, { query: q }).map((r) =>
-    toHit(r.frontmatter),
-  );
+  return searchResultsPage(q, rankByKeyword(index, q));
+}
 
-  let queryVec: number[] | null = null;
-  let candidates: EmbeddedCandidate[] = [];
-  try {
-    const embeddings = await loadRecipeEmbeddings(env);
-    for (const r of Object.values(index)) {
-      const vec = embeddings.get(String(r.slug));
-      if (vec) candidates.push({ ...toHit(r), embedding: vec });
-    }
-    // Embed only when there is something to rank — skips the Workers AI call (and the
-    // cache write) when no embedded recipe survived into the current index.
-    if (candidates.length > 0) {
-      queryVec = await resolveQueryVector(env, q);
-    }
-  } catch {
-    // Semantic tier unavailable — fall back to substring-only (graceful degradation).
-    queryVec = null;
-    candidates = [];
+/** The JSON search endpoint the client fetches: the ranked rows for `q`, or an empty list
+ *  for an empty/no-match query (always 200). */
+async function renderSearchJson(env: Env, q: string): Promise<Response> {
+  if (!q) return jsonResponse({ results: [] });
+  const index = await loadRecipeIndex(env);
+  return jsonResponse({ results: rankByKeyword(index, q) });
+}
+
+// Debounced, in-place client search. Vanilla JS, served first-party at /cookbook/search.js.
+// Renders rows from the JSON endpoint with `textContent` (never `innerHTML` for endpoint
+// values); the only `innerHTML` use restores our OWN captured server-rendered index markup
+// when the box is cleared. Stale responses are dropped via a sequence guard + AbortController.
+const SEARCH_JS = `(function () {
+  var input = document.getElementById("q");
+  var results = document.getElementById("results");
+  if (!input || !results) return;
+
+  var startedWithQuery = input.value.trim() !== "";
+  var initialIndex = startedWithQuery ? null : results.innerHTML;
+  var timer = null;
+  var controller = null;
+  var seq = 0;
+
+  function chip(text) {
+    var s = document.createElement("span");
+    s.className = "chip";
+    s.textContent = text;
+    return s;
   }
 
-  const results = mergeCookbookResults(
-    substring,
-    candidates,
-    queryVec,
-    DEFAULT_SIMILARITY_FLOOR,
-    COOKBOOK_K,
-  );
-  return searchResultsPage(q, results);
-}
+  function render(q, rows) {
+    if (!rows.length) {
+      var none = document.createElement("p");
+      none.className = "meta";
+      none.textContent = 'No recipes match "' + q + '".';
+      results.replaceChildren(none);
+      return;
+    }
+    var meta = document.createElement("p");
+    meta.className = "meta";
+    meta.textContent = rows.length + " result" + (rows.length === 1 ? "" : "s") + ' for "' + q + '"';
+    var ul = document.createElement("ul");
+    ul.className = "recipes";
+    rows.forEach(function (r) {
+      var li = document.createElement("li");
+      var a = document.createElement("a");
+      a.href = "/cookbook/" + encodeURIComponent(r.slug);
+      a.textContent = r.title;
+      li.appendChild(a);
+      [r.protein, r.cuisine].forEach(function (v) {
+        if (v) {
+          li.appendChild(document.createTextNode(" "));
+          li.appendChild(chip(v));
+        }
+      });
+      if (r.description) {
+        var d = document.createElement("div");
+        d.className = "desc";
+        d.textContent = r.description;
+        li.appendChild(d);
+      }
+      ul.appendChild(li);
+    });
+    results.replaceChildren(meta, ul);
+  }
+
+  function run(q) {
+    var mine = ++seq;
+    if (controller) controller.abort();
+    controller = new AbortController();
+    fetch("/cookbook/search?q=" + encodeURIComponent(q), {
+      signal: controller.signal,
+      headers: { accept: "application/json" },
+    })
+      .then(function (res) {
+        return res.json();
+      })
+      .then(function (data) {
+        if (mine === seq) render(q, (data && data.results) || []);
+      })
+      .catch(function () {});
+  }
+
+  function clearToIndex() {
+    seq++;
+    if (controller) controller.abort();
+    if (initialIndex !== null) results.innerHTML = initialIndex;
+    else window.location.assign("/cookbook");
+  }
+
+  input.addEventListener("input", function () {
+    var q = input.value.trim();
+    if (timer) clearTimeout(timer);
+    if (q === "") {
+      clearToIndex();
+      return;
+    }
+    timer = setTimeout(function () {
+      run(q);
+    }, 250);
+  });
+
+  if (input.form) {
+    input.form.addEventListener("submit", function (e) {
+      e.preventDefault();
+      if (timer) clearTimeout(timer);
+      var q = input.value.trim();
+      if (q === "") clearToIndex();
+      else run(q);
+    });
+  }
+})();
+`;
 
 /**
  * Handle a `/cookbook` request. `/cookbook` lists the corpus from the D1 index (or, with a
- * `?q=`, renders hybrid search results); `/cookbook/<slug>` renders one recipe's R2 body.
- * Open + read-only. The render path can throw structured `ToolError`s (R2 down, D1 down,
- * malformed YAML in a hand-edited recipe), so map them to a graceful 404/503 rather than a
- * 500 — there is no `runTool` boundary on this open HTML surface.
+ * `?q=`, renders keyword search results); `/cookbook/search` is the JSON search endpoint;
+ * `/cookbook/search.js` is the client script; `/cookbook/<slug>` renders one recipe's R2
+ * body. Open + read-only. The render path can throw structured `ToolError`s (R2 down, D1
+ * down, malformed YAML in a hand-edited recipe), so map them to a graceful 404/503 rather
+ * than a 500 — there is no `runTool` boundary on this open HTML surface.
  */
 export async function handleCookbook(request: Request, env: Env): Promise<Response> {
   if (request.method !== "GET" && request.method !== "HEAD") {
@@ -298,6 +352,13 @@ export async function handleCookbook(request: Request, env: Env): Promise<Respon
   const url = new URL(request.url);
   const { pathname } = url;
   try {
+    // Search routes are checked before the `/cookbook/<slug>` match (both "search" and
+    // "search.js" would otherwise be read as recipe slugs).
+    if (pathname === "/cookbook/search.js") return scriptResponse(SEARCH_JS);
+    if (pathname === "/cookbook/search") {
+      const q = (url.searchParams.get("q") ?? "").trim();
+      return await renderSearchJson(env, q);
+    }
     if (pathname === "/cookbook" || pathname === "/cookbook/") {
       const q = (url.searchParams.get("q") ?? "").trim();
       return q ? await renderSearch(env, q) : await renderIndex(env);
