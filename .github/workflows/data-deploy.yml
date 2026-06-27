@@ -31,7 +31,7 @@ on:
         type: string
         default: wrangler.jsonc
       worker_host:
-        description: "Connector host (e.g. grocery-mcp.<you>.workers.dev) for the README health badge. Blank → badge skipped. Pass `${{ vars.WORKER_HOST }}` from the caller, like the plugin build does."
+        description: "Connector host (e.g. grocery-mcp.<you>.workers.dev) for the README health badge. Blank skips the badge. Callers pass their WORKER_HOST repo variable here, like the plugin build passes its mcp_url."
         type: string
         required: false
         default: ""
