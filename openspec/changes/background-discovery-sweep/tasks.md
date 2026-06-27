@@ -16,12 +16,12 @@
 - [x] 0.4 Gate decision: **auto-import is viable** — a small Workers AI model (`mistral-small-3.1-24b`) classifies into valid, accurate frontmatter unattended, with the contract validator as the hard backstop + retry-then-park for the rare loud failure. The design does NOT need to fall back to "background scoring, chat imports." Groups 1–9 may proceed; τ/δ (0.3) calibrate alongside the matcher/dedup work.
 
 ## 1. Schema (migrations, additive)
-- [ ] 1.1 Promote `discovered_at` from `recipes.extra` to a queryable `recipes` column + index (projection writes it; the reconcile/projection owns it).
-- [ ] 1.2 Match-attribution table `(recipe, tenant)` (sweep-owned; PK + index for the new-for-me query).
-- [ ] 1.3 The sweep **log** table (timestamp, canonical url, title, source, outcome, detail JSON) with a retention window; design it to subsume `discovery_evaluated` (terminal-verdict subset) and `discovery_errors` (parked subset) — or sibling tables if cleaner. Decide and document.
-- [ ] 1.4 Per-member taste-vector storage (`taste_derived(tenant, taste_hash, embedding)` sibling table — the leaning option in design Open Questions).
-- [ ] 1.5 `profile.last_planned_at` column (per-tenant watermark).
-- [ ] 1.6 Confirm the projection's wholesale `recipes` rebuild does not clobber any sweep-owned table (sibling-table discipline); local D1 migration apply green.
+- [x] 1.1 Promote `discovered_at` from `recipes.extra` to a queryable `recipes` column + index (`migrations/d1/0016`); the projection writes it (`RECIPE_SCALAR_COLUMNS` in `recipe-projection.ts`) and the index read reconstructs it (`recipe-index.ts`) so the in-memory shape doesn't regress.
+- [x] 1.2 Match-attribution table `discovery_matches(recipe, tenant, score, matched_at)` — PK `(recipe, tenant)` + `idx_discovery_matches_tenant` for the new-for-me query.
+- [x] 1.3 ONE `discovery_log` table serves three roles (decided + documented in the migration + design Decision 11): operator audit log (idx on created_at), the dedup "already evaluated" set (idx on url), and the parked-error surface (idx on outcome → `WHERE outcome='error'`). Retention-pruned.
+- [x] 1.4 `taste_derived(tenant, taste_hash, embedding, updated_at)` sibling table.
+- [x] 1.5 `profile.last_planned_at` column (per-tenant watermark).
+- [x] 1.6 Sweep-owned tables are siblings of `recipes` (projection can't clobber them); `discovered_at` is the lone projection-owned promotion. Local `wrangler d1 migrations apply DB --local` green; projection + index tests updated and passing (20).
 
 ## 2. env.AI helpers
 - [ ] 2.1 `src/discovery-classify.ts` (or beside `description.ts`): `classifyRecipe(env, pageOrBody) → frontmatter`, structured-error mapped, output run through `validateFile` before use; retry-with-corrective-reprompt budget.

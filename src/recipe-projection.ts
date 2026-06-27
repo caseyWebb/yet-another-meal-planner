@@ -69,7 +69,9 @@ export function deriveSlug(path: string): string {
 // Column map — MUST mirror the read reconstruction in src/recipe-index.ts.
 // `description` is NOT a column (Worker-derived, recipe_derived/migration 0013) — listed
 // in PROMOTED_FIELDS only so a lingering authored `description:` is excluded from `extra`.
-const RECIPE_SCALAR_COLUMNS = ["title", "protein", "cuisine", "time_total"];
+// `discovered_at` is a promoted scalar (migration 0016) so the new-for-me read can filter
+// on it; it is authored frontmatter (a date normalized to YYYY-MM-DD), projected here.
+const RECIPE_SCALAR_COLUMNS = ["title", "protein", "cuisine", "time_total", "discovered_at"];
 const RECIPE_JSON_COLUMNS = [
   "ingredients_key",
   "tags",

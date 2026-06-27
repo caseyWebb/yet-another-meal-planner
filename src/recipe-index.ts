@@ -25,7 +25,7 @@ import { db } from "./db.js";
 import type { RecipeIndex, IndexedRecipe } from "./recipes.js";
 
 /** Scalar columns reconstructed verbatim (column name === frontmatter field). */
-const SCALAR_COLUMNS = ["title", "protein", "cuisine", "time_total", "description"] as const;
+const SCALAR_COLUMNS = ["title", "protein", "cuisine", "time_total", "description", "discovered_at"] as const;
 
 /** JSON-encoded columns (TEXT holding a JSON value) — JSON.parse on load. */
 const JSON_COLUMNS = [
@@ -48,6 +48,7 @@ interface RecipeRow {
   cuisine: string | null;
   time_total: number | null;
   description: string | null;
+  discovered_at: string | null;
   ingredients_key: string | null;
   source_url: string | null;
   tags: string | null;
