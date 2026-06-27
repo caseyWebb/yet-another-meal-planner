@@ -1,6 +1,6 @@
 ## Context
 
-The Worker already serves an open, tenant-data-free `/health` endpoint (the `background-job-health` capability): an aggregate of each registered job's state (`flyer-warm`, `recipe-index`, `recipe-embed`, `email`), each with `ok` / `null`-never-run, `last_run_at`, and a free-form `summary`, plus a live D1 reachability probe. It returns `200` when healthy and `503` when a job is failing (so plain HTTP monitors trip), and there is also a `/health.svg` README badge. None of this is visible inside the `/admin` operator panel — an Elm `Browser.application` behind Cloudflare Access, today organized as an **Admin** area (member management, at the panel root) and a **Dev** area (the tool console).
+The Worker already serves an open, tenant-data-free `/health` endpoint (the `background-job-health` capability): an aggregate of each registered job's state (`flyer-warm`, `recipe-index`, `recipe-embed`, `email`), each with `ok` / `null`-never-run, `last_run_at`, and a free-form `summary`; a live D1 reachability probe; and — as of the recently-landed `harden-admin-access-gate` change — an `admin` gate-posture section of tenant-clean booleans (`access_configured`, `email_allowlist`, `dev_bypass_set`, `exposed`). It returns `200` when healthy and `503` when a job is failing, the D1 probe fails, **or the admin gate is `exposed`** (so plain HTTP monitors trip), and there is also a `/health.svg` README badge whose `admin` row shows `gated` / `disabled` / `dev` / `exposed`. None of this is visible inside the `/admin` operator panel — an Elm `Browser.application` behind Cloudflare Access, today organized as an **Admin** area (member management, at the panel root) and a **Dev** area (the tool console).
 
 This change makes background-job health the panel's home view and relocates member management to its own tab. The panel discipline is `admin/CLAUDE.md`'s "make impossible states impossible": remote reads are `RemoteData`, finite states are unions, no `Bool`/`Maybe String` smearing.
 
@@ -9,6 +9,7 @@ This change makes background-job health the panel's home view and relocates memb
 **Goals:**
 - Surface the `/health` aggregate as the panel's home route, glanceable from where the operator already authenticates.
 - Render the **degraded** (`503`) payload — the state the operator most wants — rather than dropping it.
+- Surface the `admin` gate posture, making an **`exposed`** gate a prominent warning (the panel reflexively reports whether its own Access gate is configured correctly).
 - Relocate member management to a `/admin/members` tab; nav becomes Status / Members / Dev · Tools.
 - Reuse the existing endpoint with **zero Worker/TS changes**.
 
@@ -37,6 +38,8 @@ NetworkError_ / Timeout_ / BadUrl_ ──────▶ Err (mapped Http.Error)
 
 Decoding is keyed on **decode success, not status code**: a `503` from `/health` always carries the payload (it decodes → success), while a `403` HTML page from an expired Access session does not (→ `BadStatus 403`, a real error). **Alternative considered:** branch on the status code (treat exactly 200/503 as "has body"). Rejected — decode-or-fail is simpler and correctly handles any future status that carries a valid payload, and any that doesn't.
 
+This is now doubly load-bearing: an **`exposed`** admin gate is one of the `503` causes, and it is precisely the state the operator most needs to see. With `expectJson`, an exposed gate would render as a bare `BadStatus 503` — the panel would hide its own most-alarming misconfiguration behind a generic error. Decoding the body surfaces the warning instead.
+
 ### Degraded is *data* (`Success ok:false`), not a transport `Failure`
 
 The fetch result is `WebData HealthPayload`. A decoded payload — healthy or degraded — is `Success`; only network/decode failures are `Failure`. The healthy-vs-degraded headline derives from `payload.ok`, never from the HTTP layer. This cleanly separates "the service is degraded" (a successful read of bad news) from "I couldn't reach the service" (an error), and means the most important view state is a normal `Success` render, not an error path.
@@ -53,6 +56,19 @@ ok = Nothing    → NeverRun     (never_run:true corroborates)
 
 The view then case-matches `Healthy | Failing | NeverRun` exhaustively. **Alternative:** carry `ok : Maybe Bool` + a `neverRun : Bool` in the model and guard in the view. Rejected — that is the exact antipattern the panel exists to avoid.
 
+### Render the admin posture via a derived `GateState`, not four raw booleans
+
+The page decodes the `admin` section as the four wire booleans (`accessConfigured`, `emailAllowlist`, `devBypassSet`, `exposed`) — the payload's source of truth — and **derives** a single display state for the gate, mirroring the Worker badge's precedence exactly so the two readouts never disagree:
+
+```
+exposed          → Exposed   (red — the panel's own gate could admit a tokenless request)
+access_configured → Gated    (green; emailAllowlist shown as a defense-in-depth sub-detail)
+dev_bypass_set    → DevBypass (muted — inert off loopback)
+otherwise         → Disabled  (muted — surface is 404)
+```
+
+`type GateState = Exposed | Gated | DevBypass | Disabled` is computed in a helper (per `admin/CLAUDE.md`'s "derive, don't store" and "custom types for finite states"); `emailAllowlist` is an orthogonal flag rendered alongside the `Gated` state, not a fifth gate state. **Alternative:** decode straight into a `GateState` union. Rejected — the four booleans are not mutually exclusive (e.g. `access_configured` *and* `email_allowlist`), so the raw record is the honest wire model and the union is a view-time projection of it.
+
 ### Status is a new top-level module + home route; Members relocates
 
 A new `admin/src/Status.elm` owns the page (model `{ health : WebData HealthPayload }`, the decoders, the fetch, the view). `Route` gains a `Health` variant mapped to `/admin` (and `/`); `Members` moves to `/admin/members`. `Main` gains `HealthPage` / `HealthMsg`, lands on Status at init, and renders a three-link nav. **Alternative:** keep an "Admin area" grouping Status + Members behind a sub-nav. Rejected — the user wants Members as a peer tab, and three flat top-level areas matches the existing "a surface is its own routed module" rule.
@@ -68,7 +84,7 @@ The per-job `summary` is `Record<string, unknown>`, heterogeneous per job. The p
 ## Risks / Trade-offs
 
 - **Elm build needs `package.elm-lang.org`** → the committed `admin/dist/` bundle must be rebuilt (`aubr build:admin`); if the build host can't reach the package server, leave the rebuild to CI and do **not** commit a stale bundle (per `admin/CLAUDE.md`).
-- **Panel now depends on the `/health` JSON shape** (a cross-capability coupling to `background-job-health`) → pin it with a decode test (a healthy `200` body and a degraded `503` body), so a future shape change surfaces as a failing test rather than a silent blank view.
+- **Panel now depends on the `/health` JSON shape** (a cross-capability coupling to `background-job-health`, including its `admin` posture section) → pin it with a decode test (a healthy `200` body, a job-degraded `503` body, and an `exposed`-gate `503` body), so a future shape change surfaces as a failing test rather than a silent blank view.
 - **Generic `summary` rendering is unpolished** (raw epoch timestamps, raw values) → acceptable for this pass; known keys can be prettified later without a contract change.
 - **`/admin` now shows Status, not member management** → a bookmark to the old root lands on Status; member management is one click away at `/admin/members`. Minor, intended UX change.
 
