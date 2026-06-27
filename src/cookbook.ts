@@ -1,13 +1,12 @@
-// The hosted cookbook (r2-corpus-store) — the static browse view of the SHARED recipe
-// corpus, now served by the Worker instead of GitHub Pages (removing the GitHub Pro
-// requirement and the data-repo build-site.yml dependency). It is built from the D1
-// `recipes` index (the list) + the R2 corpus (each recipe's body), server-rendered on
-// request, so it always reflects the latest reconcile with no separate build/deploy.
+// The hosted cookbook (r2-corpus-store) — the browse view of the SHARED recipe corpus,
+// served by the Worker. It is built from the D1 `recipes` index (the list) + the R2
+// corpus (each recipe's body), server-rendered on request, so it always reflects the
+// latest reconcile.
 //
-// Open (no auth), like `/health`: the corpus is shared group content, not tenant-private,
-// and the old Pages site was likewise a browse view. An operator who wants it gated can
-// front it with Cloudflare Access (an edge concern, not Worker code). `recipe_site_url`
-// resolves `<origin>/cookbook`, the host the agent points members at.
+// Open (no auth), like `/health`: the corpus is shared group content, not tenant-private.
+// An operator who wants it gated can front it with Cloudflare Access (an edge concern,
+// not Worker code). `recipe_site_url` resolves `<origin>/cookbook`, the host the agent
+// points members at.
 //
 // SECURITY: the recipe body is agent-/human-authored shared content rendered to HTML on
 // an open, cross-tenant surface, so it is UNTRUSTED for rendering. Two defenses: (1) a

@@ -63,15 +63,17 @@ contract** (the `recipe-metadata-contract` capability): every system-consumed fi
 present, with explicit empty forms (`null`/`[]`) where a value is genuinely empty —
 `source: null` and `discovered_at`/`discovery_source` null for a non-discovery import.
 There is no `status` field (the per-tenant `status` lifecycle is retired) and no `draft`
-limbo — an imported recipe is an available corpus recipe by default. The output SHALL
-pass `scripts/build-indexes.mjs --check` with **no errors and no missing-required-field
-slack**; a judgment field left unpopulated is a hard failure, not a soft warning, so the
-importer SHALL classify or explicitly empty every required field before the write.
+limbo — an imported recipe is an available corpus recipe by default. The write SHALL
+satisfy the shared required-field contract (`src/recipe-contract.js`, enforced by
+`create_recipe`'s write-time validator and re-checked by the Worker reconcile) with **no
+errors and no missing-required-field slack**; a judgment field left unpopulated is a hard
+failure, not a soft warning, so the importer SHALL classify or explicitly empty every
+required field before the write.
 
 #### Scenario: Fresh import validates strictly
 
-- **WHEN** the importer has written a recipe and `build-indexes.mjs --check` is run
-- **THEN** the build exits zero only if every required field is present (value or explicit empty); a missing required field fails the check
+- **WHEN** the importer writes a recipe via `create_recipe`
+- **THEN** the write succeeds only if every required field is present (value or explicit empty); a missing required field is rejected with a structured `validation_failed` error and no recipe is written
 
 #### Scenario: Available by default, no draft
 

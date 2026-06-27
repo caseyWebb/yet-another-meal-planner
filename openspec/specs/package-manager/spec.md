@@ -58,7 +58,7 @@ The repository SHALL commit aube's release cooling window rather than rely on th
 - **THEN** aube SHALL fall back to the newest version at least 7 days old rather than installing the day-zero release
 
 ### Requirement: CI runs on mise with tool and dependency caching
-CI workflows that install dependencies (`ci.yml`, `data-deploy.yml`, `data-build-indexes.yml`, `data-build-site.yml`) SHALL set up the toolchain via `jdx/mise-action` and install via `aube ci`, with caching enabled at two tiers: the mise tool cache (node + aube binaries, provided by `jdx/mise-action`) and an `actions/cache` of aube's content-addressable store (`~/.local/share/aube/store`) keyed on the hash of `package-lock.json`. The dependency-free `data-build-plugin.yml` workflow SHALL set up node via mise only and SHALL NOT install dependencies or cache the aube store. New action references SHALL be SHA-pinned with a version comment.
+CI workflows that install dependencies (`ci.yml`, `data-deploy.yml`) SHALL set up the toolchain via `jdx/mise-action` and install via `aube ci`, with caching enabled at two tiers: the mise tool cache (node + aube binaries, provided by `jdx/mise-action`) and an `actions/cache` of aube's content-addressable store (`~/.local/share/aube/store`) keyed on the hash of `package-lock.json`. The dependency-free `data-build-plugin.yml` workflow SHALL set up node via mise only and SHALL NOT install dependencies or cache the aube store. New action references SHALL be SHA-pinned with a version comment.
 
 #### Scenario: Dependency cache is restored on a warm run
 - **WHEN** an installing CI job runs with an unchanged `package-lock.json` from a prior run

@@ -1,10 +1,9 @@
 -- 0002_recipes — the shared recipe index as a D1 table (d1-recipe-index, slice 1).
 --
--- The recipe index is a DERIVED projection of recipes/*.md: `build-indexes` parses
--- and validates the corpus, then replaces this table wholesale on every recipe push
--- (DELETE + batched INSERT in one transaction). There is no .mjs data backfill —
--- the build owns the rows, and the post-deploy `build-indexes` populates them by the
--- end of the first deploy (the bootstrap guarantee carried over from the KV index).
+-- The recipe index is a DERIVED projection of recipes/*.md: the Worker reconcile
+-- (src/recipe-projection.ts) reads the whole R2 corpus, validates it, then replaces this
+-- table wholesale each cron tick (DELETE + batched INSERT in one transaction). The reconcile
+-- owns the rows; the first pass after a fresh deploy populates them (the bootstrap guarantee).
 --
 -- Column shape (design "scalar + JSON + extra"):
 --   * scalar columns for the promoted objective facets an admin UI sorts/filters on

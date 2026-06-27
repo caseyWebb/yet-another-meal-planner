@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "grocery-agent: the grocery-mcp Cloudflare Worker (MCP server) + the index/site build tooling that data repos run via reusable CI workflows.",
+  "description": "grocery-agent: the grocery-mcp Cloudflare Worker (MCP server) + the plugin-build and deploy tooling that data repos run via reusable CI workflows.",
   "engines": {
     "node": ">=22"
   },
