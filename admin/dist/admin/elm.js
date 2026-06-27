@@ -784,11 +784,11 @@ function _Debug_crash_UNUSED(identifier, fact1, fact2, fact3, fact4)
 
 function _Debug_regionToString(region)
 {
-	if (region.aI.ai === region.aY.ai)
+	if (region.aJ.ah === region.aZ.ah)
 	{
-		return 'on line ' + region.aI.ai;
+		return 'on line ' + region.aJ.ah;
 	}
-	return 'on lines ' + region.aI.ai + ' through ' + region.aY.ai;
+	return 'on lines ' + region.aJ.ah + ' through ' + region.aZ.ah;
 }
 
 
@@ -1857,9 +1857,9 @@ var _Platform_worker = F4(function(impl, flagDecoder, debugMetadata, args)
 	return _Platform_initialize(
 		flagDecoder,
 		args,
-		impl.b2,
-		impl.cD,
-		impl.cv,
+		impl.b3,
+		impl.cE,
+		impl.cw,
 		function() { return function() {} }
 	);
 });
@@ -2720,8 +2720,8 @@ var _VirtualDom_mapEventRecord = F2(function(func, record)
 {
 	return {
 		I: func(record.I),
-		aJ: record.aJ,
-		aG: record.aG
+		aK: record.aK,
+		aH: record.aH
 	}
 });
 
@@ -2990,10 +2990,10 @@ function _VirtualDom_makeCallback(eventNode, initialHandler)
 
 		var value = result.a;
 		var message = !tag ? value : tag < 3 ? value.a : value.I;
-		var stopPropagation = tag == 1 ? value.b : tag == 3 && value.aJ;
+		var stopPropagation = tag == 1 ? value.b : tag == 3 && value.aK;
 		var currentEventNode = (
 			stopPropagation && event.stopPropagation(),
-			(tag == 2 ? value.b : tag == 3 && value.aG) && event.preventDefault(),
+			(tag == 2 ? value.b : tag == 3 && value.aH) && event.preventDefault(),
 			eventNode
 		);
 		var tagger;
@@ -3943,11 +3943,11 @@ var _Browser_element = _Debugger_element || F4(function(impl, flagDecoder, debug
 	return _Platform_initialize(
 		flagDecoder,
 		args,
-		impl.b2,
-		impl.cD,
-		impl.cv,
+		impl.b3,
+		impl.cE,
+		impl.cw,
 		function(sendToApp, initialModel) {
-			var view = impl.cE;
+			var view = impl.cF;
 			/**/
 			var domNode = args['node'];
 			//*/
@@ -3979,12 +3979,12 @@ var _Browser_document = _Debugger_document || F4(function(impl, flagDecoder, deb
 	return _Platform_initialize(
 		flagDecoder,
 		args,
-		impl.b2,
-		impl.cD,
-		impl.cv,
+		impl.b3,
+		impl.cE,
+		impl.cw,
 		function(sendToApp, initialModel) {
-			var divertHrefToApp = impl.aH && impl.aH(sendToApp)
-			var view = impl.cE;
+			var divertHrefToApp = impl.aI && impl.aI(sendToApp)
+			var view = impl.cF;
 			var title = _VirtualDom_doc.title;
 			var bodyNode = _VirtualDom_doc.body;
 			var currNode = _VirtualDom_virtualize(bodyNode);
@@ -3997,7 +3997,7 @@ var _Browser_document = _Debugger_document || F4(function(impl, flagDecoder, deb
 				bodyNode = _VirtualDom_applyPatches(bodyNode, currNode, patches, sendToApp);
 				currNode = nextNode;
 				_VirtualDom_divertHrefToApp = 0;
-				(title !== doc.cz) && (_VirtualDom_doc.title = title = doc.cz);
+				(title !== doc.cA) && (_VirtualDom_doc.title = title = doc.cA);
 			});
 		}
 	);
@@ -4053,12 +4053,12 @@ function _Browser_makeAnimator(model, draw)
 
 function _Browser_application(impl)
 {
-	var onUrlChange = impl.ch;
-	var onUrlRequest = impl.ci;
+	var onUrlChange = impl.ci;
+	var onUrlRequest = impl.cj;
 	var key = function() { key.a(onUrlChange(_Browser_getUrl())); };
 
 	return _Browser_document({
-		aH: function(sendToApp)
+		aI: function(sendToApp)
 		{
 			key.a = sendToApp;
 			_Browser_window.addEventListener('popstate', key);
@@ -4074,9 +4074,9 @@ function _Browser_application(impl)
 					var next = $elm$url$Url$fromString(href).a;
 					sendToApp(onUrlRequest(
 						(next
-							&& curr.bj === next.bj
-							&& curr.a3 === next.a3
-							&& curr.bg.a === next.bg.a
+							&& curr.bl === next.bl
+							&& curr.a4 === next.a4
+							&& curr.bi.a === next.bi.a
 						)
 							? $elm$browser$Browser$Internal(next)
 							: $elm$browser$Browser$External(href)
@@ -4084,13 +4084,13 @@ function _Browser_application(impl)
 				}
 			});
 		},
-		b2: function(flags)
+		b3: function(flags)
 		{
-			return A3(impl.b2, flags, _Browser_getUrl(), key);
+			return A3(impl.b3, flags, _Browser_getUrl(), key);
 		},
+		cF: impl.cF,
 		cE: impl.cE,
-		cD: impl.cD,
-		cv: impl.cv
+		cw: impl.cw
 	});
 }
 
@@ -4156,17 +4156,17 @@ var _Browser_decodeEvent = F2(function(decoder, event)
 function _Browser_visibilityInfo()
 {
 	return (typeof _VirtualDom_doc.hidden !== 'undefined')
-		? { b$: 'hidden', bO: 'visibilitychange' }
+		? { b0: 'hidden', bP: 'visibilitychange' }
 		:
 	(typeof _VirtualDom_doc.mozHidden !== 'undefined')
-		? { b$: 'mozHidden', bO: 'mozvisibilitychange' }
+		? { b0: 'mozHidden', bP: 'mozvisibilitychange' }
 		:
 	(typeof _VirtualDom_doc.msHidden !== 'undefined')
-		? { b$: 'msHidden', bO: 'msvisibilitychange' }
+		? { b0: 'msHidden', bP: 'msvisibilitychange' }
 		:
 	(typeof _VirtualDom_doc.webkitHidden !== 'undefined')
-		? { b$: 'webkitHidden', bO: 'webkitvisibilitychange' }
-		: { b$: 'hidden', bO: 'visibilitychange' };
+		? { b0: 'webkitHidden', bP: 'webkitvisibilitychange' }
+		: { b0: 'hidden', bP: 'visibilitychange' };
 }
 
 
@@ -4247,12 +4247,12 @@ var _Browser_call = F2(function(functionName, id)
 function _Browser_getViewport()
 {
 	return {
-		br: _Browser_getScene(),
-		bB: {
-			bE: _Browser_window.pageXOffset,
-			bF: _Browser_window.pageYOffset,
-			bD: _Browser_doc.documentElement.clientWidth,
-			a2: _Browser_doc.documentElement.clientHeight
+		bt: _Browser_getScene(),
+		bD: {
+			bG: _Browser_window.pageXOffset,
+			cH: _Browser_window.pageYOffset,
+			bF: _Browser_doc.documentElement.clientWidth,
+			a3: _Browser_doc.documentElement.clientHeight
 		}
 	};
 }
@@ -4262,8 +4262,8 @@ function _Browser_getScene()
 	var body = _Browser_doc.body;
 	var elem = _Browser_doc.documentElement;
 	return {
-		bD: Math.max(body.scrollWidth, body.offsetWidth, elem.scrollWidth, elem.offsetWidth, elem.clientWidth),
-		a2: Math.max(body.scrollHeight, body.offsetHeight, elem.scrollHeight, elem.offsetHeight, elem.clientHeight)
+		bF: Math.max(body.scrollWidth, body.offsetWidth, elem.scrollWidth, elem.offsetWidth, elem.clientWidth),
+		a3: Math.max(body.scrollHeight, body.offsetHeight, elem.scrollHeight, elem.offsetHeight, elem.clientHeight)
 	};
 }
 
@@ -4286,15 +4286,15 @@ function _Browser_getViewportOf(id)
 	return _Browser_withNode(id, function(node)
 	{
 		return {
-			br: {
-				bD: node.scrollWidth,
-				a2: node.scrollHeight
+			bt: {
+				bF: node.scrollWidth,
+				a3: node.scrollHeight
 			},
-			bB: {
-				bE: node.scrollLeft,
-				bF: node.scrollTop,
-				bD: node.clientWidth,
-				a2: node.clientHeight
+			bD: {
+				bG: node.scrollLeft,
+				cH: node.scrollTop,
+				bF: node.clientWidth,
+				a3: node.clientHeight
 			}
 		};
 	});
@@ -4324,18 +4324,18 @@ function _Browser_getElement(id)
 		var x = _Browser_window.pageXOffset;
 		var y = _Browser_window.pageYOffset;
 		return {
-			br: _Browser_getScene(),
-			bB: {
-				bE: x,
-				bF: y,
-				bD: _Browser_doc.documentElement.clientWidth,
-				a2: _Browser_doc.documentElement.clientHeight
+			bt: _Browser_getScene(),
+			bD: {
+				bG: x,
+				cH: y,
+				bF: _Browser_doc.documentElement.clientWidth,
+				a3: _Browser_doc.documentElement.clientHeight
 			},
-			bT: {
-				bE: x + rect.left,
-				bF: y + rect.top,
-				bD: rect.width,
-				a2: rect.height
+			bU: {
+				bG: x + rect.left,
+				cH: y + rect.top,
+				bF: rect.width,
+				a3: rect.height
 			}
 		};
 	});
@@ -4404,10 +4404,10 @@ var _Http_toTask = F3(function(router, toTask, request)
 		xhr.addEventListener('error', function() { done($elm$http$Http$NetworkError_); });
 		xhr.addEventListener('timeout', function() { done($elm$http$Http$Timeout_); });
 		xhr.addEventListener('load', function() { done(_Http_toResponse(request.ap.b, xhr)); });
-		$elm$core$Maybe$isJust(request.cB) && _Http_track(router, xhr, request.cB.a);
+		$elm$core$Maybe$isJust(request.cC) && _Http_track(router, xhr, request.cC.a);
 
 		try {
-			xhr.open(request.b6, request.aw, true);
+			xhr.open(request.b7, request.aw, true);
 		} catch (e) {
 			return done($elm$http$Http$BadUrl_(request.aw));
 		}
@@ -4426,13 +4426,13 @@ var _Http_toTask = F3(function(router, toTask, request)
 
 function _Http_configureRequest(xhr, request)
 {
-	for (var headers = request.b_; headers.b; headers = headers.b) // WHILE_CONS
+	for (var headers = request.b$; headers.b; headers = headers.b) // WHILE_CONS
 	{
 		xhr.setRequestHeader(headers.a.a, headers.a.b);
 	}
-	xhr.timeout = request.cy.a || 0;
+	xhr.timeout = request.cz.a || 0;
 	xhr.responseType = request.ap.d;
-	xhr.withCredentials = request.bI;
+	xhr.withCredentials = request.bJ;
 }
 
 
@@ -4454,9 +4454,9 @@ function _Http_toMetadata(xhr)
 {
 	return {
 		aw: xhr.responseURL,
-		ct: xhr.status,
-		cu: xhr.statusText,
-		b_: _Http_parseHeaders(xhr.getAllResponseHeaders())
+		cu: xhr.status,
+		cv: xhr.statusText,
+		b$: _Http_parseHeaders(xhr.getAllResponseHeaders())
 	};
 }
 
@@ -4551,15 +4551,15 @@ function _Http_track(router, xhr, tracker)
 	xhr.upload.addEventListener('progress', function(event) {
 		if (xhr.c) { return; }
 		_Scheduler_rawSpawn(A2($elm$core$Platform$sendToSelf, router, _Utils_Tuple2(tracker, $elm$http$Http$Sending({
-			cs: event.loaded,
-			bu: event.total
+			ct: event.loaded,
+			bw: event.total
 		}))));
 	});
 	xhr.addEventListener('progress', function(event) {
 		if (xhr.c) { return; }
 		_Scheduler_rawSpawn(A2($elm$core$Platform$sendToSelf, router, _Utils_Tuple2(tracker, $elm$http$Http$Receiving({
-			cl: event.loaded,
-			bu: event.lengthComputable ? $elm$core$Maybe$Just(event.total) : $elm$core$Maybe$Nothing
+			cm: event.loaded,
+			bw: event.lengthComputable ? $elm$core$Maybe$Just(event.total) : $elm$core$Maybe$Nothing
 		}))));
 	});
 }var $author$project$Main$LinkClicked = function (a) {
@@ -5076,7 +5076,7 @@ var $elm$url$Url$Http = 0;
 var $elm$url$Url$Https = 1;
 var $elm$url$Url$Url = F6(
 	function (protocol, host, port_, path, query, fragment) {
-		return {a_: fragment, a3: host, aF: path, bg: port_, bj: protocol, bk: query};
+		return {a$: fragment, a4: host, aG: path, bi: port_, bl: protocol, bm: query};
 	});
 var $elm$core$String$contains = _String_contains;
 var $elm$core$String$length = _String_length;
@@ -5998,9 +5998,9 @@ var $elm$url$Url$Parser$parse = F2(
 				A5(
 					$elm$url$Url$Parser$State,
 					_List_Nil,
-					$elm$url$Url$Parser$preparePath(url.aF),
-					$elm$url$Url$Parser$prepareQuery(url.bk),
-					url.a_,
+					$elm$url$Url$Parser$preparePath(url.aG),
+					$elm$url$Url$Parser$prepareQuery(url.bm),
+					url.a$,
 					$elm$core$Basics$identity)));
 	});
 var $elm$url$Url$Parser$Parser = $elm$core$Basics$identity;
@@ -6071,8 +6071,9 @@ var $author$project$Route$actingAsParam = function (url) {
 					$elm$url$Url$Parser$Query$string('as')),
 				_Utils_update(
 					url,
-					{aF: '/'}))));
+					{aG: '/'}))));
 };
+var $author$project$Main$defaultDevSection = 'mcp-inspector';
 var $author$project$Main$MembersMsg = function (a) {
 	return {$: 2, a: a};
 };
@@ -6167,7 +6168,7 @@ var $elm$http$Http$resolve = F2(
 			case 3:
 				var metadata = response.a;
 				return $elm$core$Result$Err(
-					$elm$http$Http$BadStatus(metadata.ct));
+					$elm$http$Http$BadStatus(metadata.cu));
 			default:
 				var body = response.b;
 				return A2(
@@ -6210,7 +6211,7 @@ var $elm$http$Http$Request = function (a) {
 };
 var $elm$http$Http$State = F2(
 	function (reqs, subs) {
-		return {bm: reqs, by: subs};
+		return {bo: reqs, bA: subs};
 	});
 var $elm$http$Http$init = $elm$core$Task$succeed(
 	A2($elm$http$Http$State, $elm$core$Dict$empty, _List_Nil));
@@ -6254,7 +6255,7 @@ var $elm$http$Http$updateReqs = F3(
 					return A2(
 						$elm$core$Task$andThen,
 						function (pid) {
-							var _v4 = req.cB;
+							var _v4 = req.cC;
 							if (_v4.$ === 1) {
 								return A3($elm$http$Http$updateReqs, router, otherCmds, reqs);
 							} else {
@@ -6284,7 +6285,7 @@ var $elm$http$Http$onEffects = F4(
 				return $elm$core$Task$succeed(
 					A2($elm$http$Http$State, reqs, subs));
 			},
-			A3($elm$http$Http$updateReqs, router, cmds, state.bm));
+			A3($elm$http$Http$updateReqs, router, cmds, state.bo));
 	});
 var $elm$core$List$maybeCons = F3(
 	function (f, mx, xs) {
@@ -6327,7 +6328,7 @@ var $elm$http$Http$onSelfMsg = F3(
 				A2(
 					$elm$core$List$filterMap,
 					A3($elm$http$Http$maybeSend, router, tracker, progress),
-					state.by)));
+					state.bA)));
 	});
 var $elm$http$Http$Cancel = function (a) {
 	return {$: 0, a: a};
@@ -6341,13 +6342,13 @@ var $elm$http$Http$cmdMap = F2(
 			var r = cmd.a;
 			return $elm$http$Http$Request(
 				{
-					bI: r.bI,
+					bJ: r.bJ,
 					ax: r.ax,
 					ap: A2(_Http_mapExpect, func, r.ap),
-					b_: r.b_,
-					b6: r.b6,
-					cy: r.cy,
-					cB: r.cB,
+					b$: r.b$,
+					b7: r.b7,
+					cz: r.cz,
+					cC: r.cC,
 					aw: r.aw
 				});
 		}
@@ -6371,11 +6372,11 @@ var $elm$http$Http$subscription = _Platform_leaf('Http');
 var $elm$http$Http$request = function (r) {
 	return $elm$http$Http$command(
 		$elm$http$Http$Request(
-			{bI: false, ax: r.ax, ap: r.ap, b_: r.b_, b6: r.b6, cy: r.cy, cB: r.cB, aw: r.aw}));
+			{bJ: false, ax: r.ax, ap: r.ap, b$: r.b$, b7: r.b7, cz: r.cz, cC: r.cC, aw: r.aw}));
 };
 var $elm$http$Http$get = function (r) {
 	return $elm$http$Http$request(
-		{ax: $elm$http$Http$emptyBody, ap: r.ap, b_: _List_Nil, b6: 'GET', cy: $elm$core$Maybe$Nothing, cB: $elm$core$Maybe$Nothing, aw: r.aw});
+		{ax: $elm$http$Http$emptyBody, ap: r.ap, b$: _List_Nil, b7: 'GET', cz: $elm$core$Maybe$Nothing, cC: $elm$core$Maybe$Nothing, aw: r.aw});
 };
 var $elm$json$Json$Decode$field = _Json_decodeField;
 var $elm$json$Json$Decode$list = _Json_decodeList;
@@ -6407,7 +6408,7 @@ var $author$project$Dev$ToolConsole$GotCatalog = function (a) {
 };
 var $author$project$Dev$ToolConsole$Tool = F3(
 	function (name, description, schema) {
-		return {aW: description, aj: name, bs: schema};
+		return {aX: description, ai: name, bu: schema};
 	});
 var $elm$json$Json$Decode$map3 = _Json_map3;
 var $elm$json$Json$Encode$null = _Json_encodeNull;
@@ -6476,7 +6477,7 @@ var $author$project$Dev$ToolConsole$freshSession = F3(
 	});
 var $author$project$Dev$ToolConsole$init = function (_v0) {
 	var persona = _v0.J;
-	var tool = _v0.cA;
+	var tool = _v0.cB;
 	if (persona.$ === 1) {
 		return _Utils_Tuple2(
 			$author$project$Dev$ToolConsole$NoPersona($krisajenkins$remotedata$RemoteData$Loading),
@@ -6514,7 +6515,7 @@ var $author$project$Main$enter = F3(
 			case 1:
 				var selected = route.a;
 				var _v2 = $author$project$Dev$ToolConsole$init(
-					{J: actingAs, cA: selected});
+					{J: actingAs, cB: selected});
 				var subModel = _v2.a;
 				var cmd = _v2.b;
 				return _Utils_Tuple2(
@@ -6729,7 +6730,7 @@ var $author$project$Route$fromUrl = function (url) {
 			_Utils_update(
 				url,
 				{
-					aF: $author$project$Route$stripTrailingSlash(url.aF)
+					aG: $author$project$Route$stripTrailingSlash(url.aG)
 				})));
 };
 var $author$project$Main$init = F3(
@@ -6738,12 +6739,52 @@ var $author$project$Main$init = F3(
 			$author$project$Main$enter,
 			$author$project$Route$fromUrl(url),
 			$author$project$Route$actingAsParam(url),
-			{aB: key, w: $author$project$Main$NotFoundPage, E: $author$project$Route$NotFound});
+			{ao: $author$project$Main$defaultDevSection, aC: key, w: $author$project$Main$NotFoundPage, E: $author$project$Route$NotFound});
 	});
 var $elm$core$Platform$Sub$batch = _Platform_batch;
 var $elm$core$Platform$Sub$none = $elm$core$Platform$Sub$batch(_List_Nil);
 var $elm$browser$Browser$Navigation$load = _Browser_load;
 var $elm$browser$Browser$Navigation$pushUrl = _Browser_pushUrl;
+var $author$project$Main$NoOp = {$: 5};
+var $elm$core$Basics$composeL = F3(
+	function (g, f, x) {
+		return g(
+			f(x));
+	});
+var $elm$core$Task$onError = _Scheduler_onError;
+var $elm$core$Task$attempt = F2(
+	function (resultToMessage, task) {
+		return $elm$core$Task$command(
+			A2(
+				$elm$core$Task$onError,
+				A2(
+					$elm$core$Basics$composeL,
+					A2($elm$core$Basics$composeL, $elm$core$Task$succeed, resultToMessage),
+					$elm$core$Result$Err),
+				A2(
+					$elm$core$Task$andThen,
+					A2(
+						$elm$core$Basics$composeL,
+						A2($elm$core$Basics$composeL, $elm$core$Task$succeed, resultToMessage),
+						$elm$core$Result$Ok),
+					task)));
+	});
+var $elm$browser$Browser$Dom$getElement = _Browser_getElement;
+var $elm$browser$Browser$Dom$setViewport = _Browser_setViewport;
+var $author$project$Main$subnavHeight = 48;
+var $author$project$Main$scrollToSection = function (sectionId) {
+	return A2(
+		$elm$core$Task$attempt,
+		function (_v0) {
+			return $author$project$Main$NoOp;
+		},
+		A2(
+			$elm$core$Task$andThen,
+			function (el) {
+				return A2($elm$browser$Browser$Dom$setViewport, 0, el.bU.cH - $author$project$Main$subnavHeight);
+			},
+			$elm$browser$Browser$Dom$getElement(sectionId)));
+};
 var $author$project$Dev$ToolConsole$selectTool = F2(
 	function (tool, model) {
 		if (model.$ === 1) {
@@ -6825,7 +6866,7 @@ var $elm$url$Url$addPrefixed = F3(
 	});
 var $elm$url$Url$toString = function (url) {
 	var http = function () {
-		var _v0 = url.bj;
+		var _v0 = url.bl;
 		if (!_v0) {
 			return 'http://';
 		} else {
@@ -6835,17 +6876,17 @@ var $elm$url$Url$toString = function (url) {
 	return A3(
 		$elm$url$Url$addPrefixed,
 		'#',
-		url.a_,
+		url.a$,
 		A3(
 			$elm$url$Url$addPrefixed,
 			'?',
-			url.bk,
+			url.bm,
 			_Utils_ap(
 				A2(
 					$elm$url$Url$addPort,
-					url.bg,
-					_Utils_ap(http, url.a3)),
-				url.aF)));
+					url.bi,
+					_Utils_ap(http, url.a4)),
+				url.aG)));
 };
 var $author$project$Admin$Members$Busy = function (a) {
 	return {$: 1, a: a};
@@ -6865,7 +6906,7 @@ var $author$project$Admin$Members$clearBannerFor = F2(
 	function (username, banner) {
 		if (!banner.$) {
 			var credentials = banner.a;
-			return _Utils_eq(credentials.aM, username) ? $elm$core$Maybe$Nothing : banner;
+			return _Utils_eq(credentials.aN, username) ? $elm$core$Maybe$Nothing : banner;
 		} else {
 			return $elm$core$Maybe$Nothing;
 		}
@@ -6909,7 +6950,7 @@ var $author$project$Admin$Members$OnboardResult = function (a) {
 };
 var $author$project$Admin$Members$Credentials = F3(
 	function (username, inviteCode, connectorUrl) {
-		return {aS: connectorUrl, a5: inviteCode, aM: username};
+		return {aT: connectorUrl, a6: inviteCode, aN: username};
 	});
 var $author$project$Admin$Members$credentialsDecoder = A4(
 	$elm$json$Json$Decode$map3,
@@ -6954,7 +6995,7 @@ var $author$project$Admin$Members$onboardBody = F2(
 	});
 var $elm$http$Http$post = function (r) {
 	return $elm$http$Http$request(
-		{ax: r.ax, ap: r.ap, b_: _List_Nil, b6: 'POST', cy: $elm$core$Maybe$Nothing, cB: $elm$core$Maybe$Nothing, aw: r.aw});
+		{ax: r.ax, ap: r.ap, b$: _List_Nil, b7: 'POST', cz: $elm$core$Maybe$Nothing, cC: $elm$core$Maybe$Nothing, aw: r.aw});
 };
 var $author$project$Admin$Members$onboard = F2(
 	function (username, inviteCode) {
@@ -6993,10 +7034,10 @@ var $author$project$Admin$Members$revoke = function (username) {
 			ax: $elm$http$Http$emptyBody,
 			ap: $elm$http$Http$expectWhatever(
 				$author$project$Admin$Members$RevokeResult(username)),
-			b_: _List_Nil,
-			b6: 'DELETE',
-			cy: $elm$core$Maybe$Nothing,
-			cB: $elm$core$Maybe$Nothing,
+			b$: _List_Nil,
+			b7: 'DELETE',
+			cz: $elm$core$Maybe$Nothing,
+			cC: $elm$core$Maybe$Nothing,
 			aw: '/admin/api/tenants/' + $elm$url$Url$percentEncode(username)
 		});
 };
@@ -7190,7 +7231,7 @@ var $author$project$Dev$ToolConsole$gotInvocation = function (result) {
 };
 var $author$project$Dev$ToolConsole$Invocation = F2(
 	function (isError, result) {
-		return {a6: isError, bp: result};
+		return {a7: isError, br: result};
 	});
 var $elm$json$Json$Decode$bool = _Json_decodeBool;
 var $author$project$Dev$ToolConsole$invocationDecoder = A3(
@@ -7402,7 +7443,7 @@ var $author$project$Main$update = F2(
 						model,
 						A2(
 							$elm$browser$Browser$Navigation$pushUrl,
-							model.aB,
+							model.aC,
 							$elm$url$Url$toString(url)));
 				} else {
 					var href = _v0.a.a.a;
@@ -7416,13 +7457,23 @@ var $author$project$Main$update = F2(
 					$author$project$Main$stepTo,
 					$author$project$Route$fromUrl(url),
 					model);
+			case 4:
+				var sectionId = _v0.a.a;
+				return _Utils_Tuple2(
+					_Utils_update(
+						model,
+						{ao: sectionId}),
+					$author$project$Main$scrollToSection(sectionId));
+			case 5:
+				var _v1 = _v0.a;
+				return _Utils_Tuple2(model, $elm$core$Platform$Cmd$none);
 			case 2:
 				if (!_v0.b.$) {
 					var subMsg = _v0.a.a;
 					var subModel = _v0.b.a;
-					var _v1 = A2($author$project$Admin$Members$update, subMsg, subModel);
-					var subModel2 = _v1.a;
-					var cmd = _v1.b;
+					var _v2 = A2($author$project$Admin$Members$update, subMsg, subModel);
+					var subModel2 = _v2.a;
+					var cmd = _v2.b;
 					return _Utils_Tuple2(
 						_Utils_update(
 							model,
@@ -7437,9 +7488,9 @@ var $author$project$Main$update = F2(
 				if (_v0.b.$ === 1) {
 					var subMsg = _v0.a.a;
 					var subModel = _v0.b.a;
-					var _v2 = A2($author$project$Dev$ToolConsole$update, subMsg, subModel);
-					var subModel2 = _v2.a;
-					var cmd = _v2.b;
+					var _v3 = A2($author$project$Dev$ToolConsole$update, subMsg, subModel);
+					var subModel2 = _v3.a;
+					var cmd = _v3.b;
 					return _Utils_Tuple2(
 						_Utils_update(
 							model,
@@ -7595,8 +7646,10 @@ var $author$project$Main$viewNav = function (route) {
 				$author$project$Main$isDev(route))
 			]));
 };
+var $elm$html$Html$Attributes$id = $elm$html$Html$Attributes$stringProperty('id');
 var $elm$virtual_dom$VirtualDom$map = _VirtualDom_map;
 var $elm$html$Html$map = $elm$virtual_dom$VirtualDom$map;
+var $elm$html$Html$section = _VirtualDom_node('section');
 var $author$project$Admin$Members$httpError = function (error) {
 	switch (error.$) {
 		case 0:
@@ -7731,7 +7784,7 @@ var $author$project$Admin$Members$viewBanner = function (banner) {
 							_List_Nil,
 							_List_fromArray(
 								[
-									$elm$html$Html$text('Invite for ' + credentials.aM)
+									$elm$html$Html$text('Invite for ' + credentials.aN)
 								])),
 							A2(
 							$elm$html$Html$button,
@@ -7755,8 +7808,8 @@ var $author$project$Admin$Members$viewBanner = function (banner) {
 						[
 							$elm$html$Html$text('Shown once — copy it now. It is never logged.')
 						])),
-					A2($author$project$Admin$Members$credentialRow, 'Invite code', credentials.a5),
-					A2($author$project$Admin$Members$credentialRow, 'Connector URL', credentials.aS)
+					A2($author$project$Admin$Members$credentialRow, 'Invite code', credentials.a6),
+					A2($author$project$Admin$Members$credentialRow, 'Connector URL', credentials.aT)
 				]));
 	} else {
 		return $elm$html$Html$text('');
@@ -8142,7 +8195,7 @@ var $author$project$Dev$ToolConsole$viewToolItem = F2(
 							'active',
 							_Utils_eq(
 								selected,
-								$elm$core$Maybe$Just(tool.aj)))
+								$elm$core$Maybe$Just(tool.ai)))
 						]))
 				]),
 			_List_fromArray(
@@ -8153,12 +8206,12 @@ var $author$project$Dev$ToolConsole$viewToolItem = F2(
 						[
 							$author$project$Route$href(
 							$author$project$Route$Tools(
-								$elm$core$Maybe$Just(tool.aj))),
+								$elm$core$Maybe$Just(tool.ai))),
 							$elm$html$Html$Attributes$class('tool-name')
 						]),
 					_List_fromArray(
 						[
-							$elm$html$Html$text(tool.aj)
+							$elm$html$Html$text(tool.ai)
 						])),
 					A2(
 					$elm$html$Html$p,
@@ -8168,7 +8221,7 @@ var $author$project$Dev$ToolConsole$viewToolItem = F2(
 						]),
 					_List_fromArray(
 						[
-							$elm$html$Html$text(tool.aW)
+							$elm$html$Html$text(tool.aX)
 						]))
 				]));
 	});
@@ -8310,7 +8363,7 @@ var $author$project$Dev$ToolConsole$viewResult = function (run) {
 							_List_fromArray(
 								[
 									_Utils_Tuple2('result', true),
-									_Utils_Tuple2('error', invocation.a6)
+									_Utils_Tuple2('error', invocation.a7)
 								]))
 						]),
 					_List_fromArray(
@@ -8321,7 +8374,7 @@ var $author$project$Dev$ToolConsole$viewResult = function (run) {
 							_List_fromArray(
 								[
 									$elm$html$Html$text(
-									A2($elm$json$Json$Encode$encode, 2, invocation.bp))
+									A2($elm$json$Json$Encode$encode, 2, invocation.br))
 								]))
 						]));
 		}
@@ -8467,7 +8520,7 @@ var $author$project$Dev$ToolConsole$viewSchema = function (tool) {
 					_List_fromArray(
 						[
 							$elm$html$Html$text(
-							A2($elm$json$Json$Encode$encode, 2, t.bs))
+							A2($elm$json$Json$Encode$encode, 2, t.bu))
 						]))
 				]));
 	} else {
@@ -8509,7 +8562,7 @@ var $author$project$Dev$ToolConsole$viewTool = function (session) {
 						$elm$core$Maybe$andThen,
 						$author$project$Dev$ToolConsole$find(
 							function (t) {
-								return _Utils_eq(t.aj, name);
+								return _Utils_eq(t.ai, name);
 							}),
 						$krisajenkins$remotedata$RemoteData$toMaybe(session.af))),
 					A2(
@@ -8733,16 +8786,50 @@ var $author$project$Dev$ToolConsole$view = function (model) {
 			]),
 		_List_fromArray(
 			[
-				A2(
-				$elm$html$Html$h2,
-				_List_Nil,
-				_List_fromArray(
-					[
-						$elm$html$Html$text('MCP tool console')
-					])),
 				$author$project$Dev$ToolConsole$viewPersonaBar(model),
 				$author$project$Dev$ToolConsole$viewBody(model)
 			]));
+};
+var $author$project$Main$devSections = _List_fromArray(
+	[
+		{aA: 'mcp-inspector', a9: 'MCP Inspector'}
+	]);
+var $author$project$Main$ScrollToSection = function (a) {
+	return {$: 4, a: a};
+};
+var $author$project$Main$viewPill = F2(
+	function (activeId, sectionDef) {
+		return A2(
+			$elm$html$Html$button,
+			_List_fromArray(
+				[
+					$elm$html$Html$Attributes$classList(
+					_List_fromArray(
+						[
+							_Utils_Tuple2('pill', true),
+							_Utils_Tuple2(
+							'active',
+							_Utils_eq(sectionDef.aA, activeId))
+						])),
+					$elm$html$Html$Events$onClick(
+					$author$project$Main$ScrollToSection(sectionDef.aA))
+				]),
+			_List_fromArray(
+				[
+					$elm$html$Html$text(sectionDef.a9)
+				]));
+	});
+var $author$project$Main$viewDevSubnav = function (activeId) {
+	return A2(
+		$elm$html$Html$nav,
+		_List_fromArray(
+			[
+				$elm$html$Html$Attributes$class('subnav')
+			]),
+		A2(
+			$elm$core$List$map,
+			$author$project$Main$viewPill(activeId),
+			$author$project$Main$devSections));
 };
 var $author$project$Main$viewPage = function (model) {
 	var _v0 = model.w;
@@ -8756,9 +8843,26 @@ var $author$project$Main$viewPage = function (model) {
 		case 1:
 			var subModel = _v0.a;
 			return A2(
-				$elm$html$Html$map,
-				$author$project$Main$ToolsMsg,
-				$author$project$Dev$ToolConsole$view(subModel));
+				$elm$html$Html$div,
+				_List_Nil,
+				_List_fromArray(
+					[
+						$author$project$Main$viewDevSubnav(model.ao),
+						A2(
+						$elm$html$Html$section,
+						_List_fromArray(
+							[
+								$elm$html$Html$Attributes$id('mcp-inspector'),
+								$elm$html$Html$Attributes$class('dev-section')
+							]),
+						_List_fromArray(
+							[
+								A2(
+								$elm$html$Html$map,
+								$author$project$Main$ToolsMsg,
+								$author$project$Dev$ToolConsole$view(subModel))
+							]))
+					]));
 		default:
 			return A2(
 				$elm$html$Html$div,
@@ -8803,17 +8907,17 @@ var $author$project$Main$view = function (model) {
 						$author$project$Main$viewPage(model)
 					]))
 			]),
-		cz: 'grocery-agent admin'
+		cA: 'grocery-agent admin'
 	};
 };
 var $author$project$Main$main = $elm$browser$Browser$application(
 	{
-		b2: $author$project$Main$init,
-		ch: $author$project$Main$UrlChanged,
-		ci: $author$project$Main$LinkClicked,
-		cv: $elm$core$Basics$always($elm$core$Platform$Sub$none),
-		cD: $author$project$Main$update,
-		cE: $author$project$Main$view
+		b3: $author$project$Main$init,
+		ci: $author$project$Main$UrlChanged,
+		cj: $author$project$Main$LinkClicked,
+		cw: $elm$core$Basics$always($elm$core$Platform$Sub$none),
+		cE: $author$project$Main$update,
+		cF: $author$project$Main$view
 	});
 _Platform_export({'Main':{'init':$author$project$Main$main(
 	$elm$json$Json$Decode$succeed(0))(0)}});}(this));

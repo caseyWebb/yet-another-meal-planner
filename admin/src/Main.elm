@@ -19,11 +19,14 @@ URLs (deep-linkable, refresh-stable); the Worker serves this shell for any unmat
 
 import Admin.Members as Members
 import Browser
+import Browser.Dom as Dom
 import Browser.Navigation as Nav
 import Dev.ToolConsole as ToolConsole
-import Html exposing (Html, a, div, h1, nav, text)
-import Html.Attributes exposing (class, classList)
+import Html exposing (Html, a, button, div, h1, nav, section, text)
+import Html.Attributes exposing (class, classList, id)
+import Html.Events exposing (onClick)
 import Route exposing (Route)
+import Task
 import Url exposing (Url)
 
 
@@ -35,7 +38,20 @@ type alias Model =
     { key : Nav.Key
     , route : Route
     , page : Page
+    , activeDevSection : String
     }
+
+
+{-| The Dev area's sections, one pill each in the sticky sub-nav. A new Dev surface is a
+new entry here (+ its section in `viewPage`) — the pills accumulate, nothing crams in. -}
+devSections : List { id : String, label : String }
+devSections =
+    [ { id = "mcp-inspector", label = "MCP Inspector" } ]
+
+
+defaultDevSection : String
+defaultDevSection =
+    "mcp-inspector"
 
 
 {-| The live page and its state, as one value — you cannot be on one page holding
@@ -49,7 +65,7 @@ type Page
 init : () -> Url -> Nav.Key -> ( Model, Cmd Msg )
 init _ url key =
     -- `?as=` seeds the Dev workbench's persona on a deep link; it is model state after.
-    enter (Route.fromUrl url) (Route.actingAsParam url) { key = key, route = Route.NotFound, page = NotFoundPage }
+    enter (Route.fromUrl url) (Route.actingAsParam url) { key = key, route = Route.NotFound, page = NotFoundPage, activeDevSection = defaultDevSection }
 
 
 
@@ -61,6 +77,8 @@ type Msg
     | UrlChanged Url
     | MembersMsg Members.Msg
     | ToolsMsg ToolConsole.Msg
+    | ScrollToSection String
+    | NoOp
 
 
 update : Msg -> Model -> ( Model, Cmd Msg )
@@ -74,6 +92,12 @@ update msg model =
 
         ( UrlChanged url, _ ) ->
             stepTo (Route.fromUrl url) model
+
+        ( ScrollToSection sectionId, _ ) ->
+            ( { model | activeDevSection = sectionId }, scrollToSection sectionId )
+
+        ( NoOp, _ ) ->
+            ( model, Cmd.none )
 
         ( MembersMsg subMsg, MembersPage subModel ) ->
             let
@@ -139,6 +163,22 @@ enter route actingAs model =
 
         Route.NotFound ->
             ( { model | route = route, page = NotFoundPage }, Cmd.none )
+
+
+{-| Scroll a Dev section to just under the sticky sub-nav (≈ filling the viewport, since a
+section is sized to `100vh − sub-nav`). `Dom.getElement` gives the section's document Y; we
+offset by the sub-nav height. A missing element (race) is a harmless no-op. -}
+scrollToSection : String -> Cmd Msg
+scrollToSection sectionId =
+    Dom.getElement sectionId
+        |> Task.andThen (\el -> Dom.setViewport 0 (el.element.y - subnavHeight))
+        |> Task.attempt (\_ -> NoOp)
+
+
+{-| Sub-nav height in px — matches `--subnav-h: 3rem` in index.html (1rem = 16px). -}
+subnavHeight : Float
+subnavHeight =
+    48
 
 
 
@@ -209,10 +249,30 @@ viewPage model =
             Html.map MembersMsg (Members.view subModel)
 
         ToolsPage subModel ->
-            Html.map ToolsMsg (ToolConsole.view subModel)
+            -- Dev area: a sticky pill sub-nav over full-viewport sections (one today). Each
+            -- section's id is its pill's scroll target.
+            div []
+                [ viewDevSubnav model.activeDevSection
+                , section [ id "mcp-inspector", class "dev-section" ]
+                    [ Html.map ToolsMsg (ToolConsole.view subModel) ]
+                ]
 
         NotFoundPage ->
             div [ class "card" ] [ text "Not found." ]
+
+
+viewDevSubnav : String -> Html Msg
+viewDevSubnav activeId =
+    nav [ class "subnav" ] (List.map (viewPill activeId) devSections)
+
+
+viewPill : String -> { id : String, label : String } -> Html Msg
+viewPill activeId sectionDef =
+    button
+        [ classList [ ( "pill", True ), ( "active", sectionDef.id == activeId ) ]
+        , onClick (ScrollToSection sectionDef.id)
+        ]
+        [ text sectionDef.label ]
 
 
 
