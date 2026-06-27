@@ -32,7 +32,7 @@ If I didn't name a store and `primary` isn't one, just ask whether I'm shopping 
 
 #### 6. Show the whole list, then offer the walk — only if mapped
 
-Display the entire grouped list in one go. **If** the store has layout notes, offer hands-free voice step-by-step mode ("want me to walk you through it?"). With **no** map, leave the department list and **don't** offer voice (there's nothing to pace against) — but if it's an unmapped store I'm actually walking, *offer to map it* (the map + walk branch of this skill).
+Display the entire grouped list in one go. On an **unmapped** department list (no voice walk to pace against), fold any **Picking what to buy** tips in with the list here; on a **mapped** store, save them for the shelf on the walk (step 7) instead — don't say them twice. **If** the store has layout notes, offer hands-free voice step-by-step mode ("want me to walk you through it?"). With **no** map, leave the department list and **don't** offer voice (there's nothing to pace against) — but if it's an unmapped store I'm actually walking, *offer to map it* (the map + walk branch of this skill).
 
 #### 7. The voice walk (mapped store)
 
@@ -42,7 +42,7 @@ Like `cook`, hands-free / voice-first: pace me **one aisle at a time**, I advanc
 - **Sold out** — transient, no note.
 - **Moved** (I found it in a different aisle) — *offer* to save a corrected `location` note (`add_store_note` with `tags:["location"]`). This "can't find it → oh, aisle 9" moment is the capture trigger.
 - **Not carried** — *offer* a `stock` note (`add_store_note` with `tags:["stock"]`) and note it for the trip; don't auto-split the order, and **don't invent which other store carries it**.
-Only write on my confirmation — never silently.
+Only write on my confirmation — never silently. And as we reach an item that has **purchasing** guidance, weave its non-obvious buying tip in at that aisle (the **Picking what to buy** guidance) — a light touch, silent when nothing matches.
 
 #### 8. Complete → received
 

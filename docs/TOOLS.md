@@ -659,15 +659,16 @@ Reads + one gated write over the shared, curated `guidance/` trees, organized by
 
 - **`ingredient_storage`** — opinionated put-away advice keyed by storage **class** (`tender-herbs`, `alliums`, …), with a few singletons (`basil`, `tomatoes`, `avocados`) and a relational `_ethylene` file. **Read-only**: hand-maintained, edit-when-directed curated config.
 - **`cooking_techniques`** — general cooking-technique memories keyed by **technique** (`browning-meat`, `searing`, `resting-meat`, …). **Agent-writable** via `save_guidance` (the member posts an article/technique; the agent distills it). One file per technique — refining overwrites, never appends.
+- **`purchasing`** — buy-side selection advice keyed by **product/item** (`canned-tomatoes`, `olive-oil`, …): *what kind to get* plus the non-obvious *how to tell if it's good/ripe* judgments. **Agent-writable** via `save_guidance` (the member posts a buying guide / taste test; the agent distills it). One file per item — refining overwrites, never appends.
 
-The agent maps a just-bought item or a recipe step to the right slug with its own world knowledge over the semantic slugs (no manifest); over-fetching is harmless. See `docs/SCHEMAS.md` for the trees and the AGENT_INSTRUCTIONS put-away/cook/capture rules for when these fire.
+The agent maps a just-bought item, a recipe step, or a thing on the grocery list to the right slug with its own world knowledge over the semantic slugs (no manifest); over-fetching is harmless. See `docs/SCHEMAS.md` for the trees and the AGENT_INSTRUCTIONS put-away/cook/shop/capture rules for when these fire.
 
 ### `list_guidance(domain?)`
 
 List the available guidance slugs. Pass `domain` for one corpus, or omit it for every domain grouped.
 
 **Params:**
-- `domain` (string, optional) — `"ingredient_storage"` or `"cooking_techniques"`. Omit to list all.
+- `domain` (string, optional) — `"ingredient_storage"`, `"cooking_techniques"`, or `"purchasing"`. Omit to list all.
 
 **Returns:**
 - With a `domain`: `{ domain, entries: [{ slug, description? }] }` — one entry per `guidance/<domain>/*.md` file; `slug` is the filename without `.md` (e.g. `tender-herbs`, `_ethylene`, `browning-meat`); `description` is the optional one-line summary from the file's `description` frontmatter.
@@ -679,7 +680,7 @@ List the available guidance slugs. Pass `domain` for one corpus, or omit it for 
 Read the content of the named guidance entries within a domain.
 
 **Params:**
-- `domain` (string, required) — `"ingredient_storage"` or `"cooking_techniques"`.
+- `domain` (string, required) — `"ingredient_storage"`, `"cooking_techniques"`, or `"purchasing"`.
 - `slugs` (array of strings, required) — the slugs to read (from `list_guidance`).
 
 **Returns:**
@@ -692,8 +693,8 @@ Read the content of the named guidance entries within a domain.
 Create or **refine** a single guidance memory. Gated by a **writable-domain allowlist**.
 
 **Params:**
-- `domain` (string, required) — must be on the writable allowlist (currently **only** `"cooking_techniques"`). A write to `"ingredient_storage"` (curated, read-only) or any unknown domain is rejected.
-- `slug` (string, required) — kebab-case technique slug (e.g. `browning-meat`); no leading underscore, no path traversal.
+- `domain` (string, required) — must be on the writable allowlist (`"cooking_techniques"` or `"purchasing"`). A write to `"ingredient_storage"` (curated, read-only) or any unknown domain is rejected.
+- `slug` (string, required) — kebab-case slug for the technique or product/item (e.g. `browning-meat`, `olive-oil`); no leading underscore, no path traversal.
 - `content` (string, required) — the **full markdown** the agent composes: distilled, imperative, non-obvious advice with a one-line `description:` frontmatter — NOT the verbatim article.
 - `source` (string, optional) — provenance (e.g. an ATK/Serious Eats URL), recorded into the file's frontmatter.
 

@@ -23,7 +23,7 @@ Surface **`inStore: false` items up front** before starting the walk: "These ite
 
 Order items by `aisleLocation.number` (ascending); items with `null` aisle go at the end as **"location unknown"**. Apply cold-chain sequencing on top: if frozen/refrigerated aisles fall mid-store, pull those items into a final "grab these on your way out" group and say so.
 
-Hands-free / voice-first, **one aisle at a time**, I advance with "got it" / "next". At each aisle, announce the aisle number and description, then the items to grab there.
+Hands-free / voice-first, **one aisle at a time**, I advance with "got it" / "next". At each aisle, announce the aisle number and description, then the items to grab there. As we reach an aisle, if something there has **purchasing** guidance (which canned tomatoes, which olive oil), weave the non-obvious tip in following the **Picking what to buy** guidance — at the shelf, where I'm choosing.
 
 Handle **"can't find it"** by disambiguating gently before any write:
 - **Sold out** — transient, no note.

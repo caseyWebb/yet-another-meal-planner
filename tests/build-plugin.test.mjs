@@ -395,6 +395,7 @@ test('AGENT_INSTRUCTIONS.md: workflows with expected needs + library tiers', asy
     'cook',
     'cooked',
     'save-technique',
+    'save-buying-guide',
     'add-recipe-feedback',
     'add-recipe-note',
     'add-ready-to-eat-feedback',

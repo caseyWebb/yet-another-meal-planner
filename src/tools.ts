@@ -562,7 +562,7 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
     "list_guidance",
     {
       description:
-        'List the curated guidance slugs (each a slug + an optional one-line description) from the shared guidance/ trees. Pass `domain` for one corpus, or omit it to get every domain grouped (returns { domains: [{ domain, entries }] }; with a domain it returns { domain, entries }). Domains: "ingredient_storage" — put-away advice keyed by storage BEHAVIOR CLASS ("tender-herbs", "alliums", "leafy-greens"), a few singletons that break their class\'s rule ("basil", "tomatoes", "avocados"), and "_ethylene" for relational "don\'t store together" rules; "cooking_techniques" — general technique memories keyed by technique ("browning-meat", "searing", "resting-meat"). Map a just-bought item or a recipe step to the right slug with your own world knowledge (cilantro → tender-herbs; "brown the beef" → browning-meat), then call read_guidance for the relevant ones. An absent tree yields an empty listing, not an error.',
+        'List the curated guidance slugs (each a slug + an optional one-line description) from the shared guidance/ trees. Pass `domain` for one corpus, or omit it to get every domain grouped (returns { domains: [{ domain, entries }] }; with a domain it returns { domain, entries }). Domains: "ingredient_storage" — put-away advice keyed by storage BEHAVIOR CLASS ("tender-herbs", "alliums", "leafy-greens"), a few singletons that break their class\'s rule ("basil", "tomatoes", "avocados"), and "_ethylene" for relational "don\'t store together" rules; "cooking_techniques" — general technique memories keyed by technique ("browning-meat", "searing", "resting-meat"); "purchasing" — buy-side selection keyed by PRODUCT/ITEM ("canned-tomatoes", "olive-oil"): what kind to get, plus the non-obvious "how to tell if it\'s good/ripe" judgments, surfaced while shopping. Map a just-bought item, a recipe step, or a thing on the grocery list to the right slug with your own world knowledge (cilantro → tender-herbs; "brown the beef" → browning-meat; canned tomatoes on the list → canned-tomatoes), then call read_guidance for the relevant ones. An absent tree yields an empty listing, not an error.',
       inputSchema: { domain: z.string().optional() },
     },
     ({ domain }) => runTool(() => listGuidance(sharedGh, domain)),
@@ -572,7 +572,7 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
     "read_guidance",
     {
       description:
-        "Read curated guidance content for the named slugs within a domain (from list_guidance). Returns { domain, entries: [{ slug, content }] } where content is the file's markdown. An unknown slug or domain yields a structured error. This is vetted, curated advice — relay any contested tip WITH the hedge written into its prose, and give NO tip for an item/step that has no matching entry (never improvise). Domains: \"ingredient_storage\", \"cooking_techniques\".",
+        "Read curated guidance content for the named slugs within a domain (from list_guidance). Returns { domain, entries: [{ slug, content }] } where content is the file's markdown. An unknown slug or domain yields a structured error. This is vetted, curated advice — relay any contested tip WITH the hedge written into its prose, and give NO tip for an item/step that has no matching entry (never improvise). Domains: \"ingredient_storage\", \"cooking_techniques\", \"purchasing\".",
       inputSchema: { domain: z.string(), slugs: z.array(z.string()) },
     },
     ({ domain, slugs }) => runTool(() => readGuidance(sharedGh, domain, slugs)),
@@ -582,7 +582,7 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
     "save_guidance",
     {
       description:
-        "Create or REFINE a single guidance memory (one file per slug — refining overwrites, never appends; read the existing entry first and merge). Only the \"cooking_techniques\" domain is writable; a write to \"ingredient_storage\" (curated, read-only) is rejected with validation_failed. `content` is the full markdown you compose — distilled, imperative, non-obvious advice (with a one-line `description:` frontmatter), NOT the verbatim article. `source` (optional) records provenance (e.g. an ATK/Serious Eats URL) into the frontmatter. Use it when the member posts an article/technique to internalize. Returns { domain, slug, path, commit_sha }.",
+        "Create or REFINE a single guidance memory (one file per slug — refining overwrites, never appends; read the existing entry first and merge). The \"cooking_techniques\" and \"purchasing\" domains are writable; a write to \"ingredient_storage\" (curated, read-only) is rejected with validation_failed. `content` is the full markdown you compose — distilled, imperative, non-obvious advice (with a one-line `description:` frontmatter), NOT the verbatim article. `source` (optional) records provenance (e.g. an ATK/Serious Eats URL) into the frontmatter. Use it when the member posts an article/technique or a buying guide to internalize. Returns { domain, slug, path, commit_sha }.",
       inputSchema: {
         domain: z.string(),
         slug: z.string(),
