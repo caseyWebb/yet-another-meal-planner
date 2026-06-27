@@ -1,7 +1,7 @@
 module Status exposing
     ( Model, Msg, init, update, view
     , HealthPayload, Job, JobState(..), AdminPosture, GateState(..)
-    , gateState, healthDecoder, decodeBody
+    , gateState, healthDecoder, decodeBody, formatLocal
     )
 
 {-| The Status area's service-health home view (operator-admin).
@@ -28,20 +28,27 @@ body that does not decode as health (e.g. a `403` from an expired Access session
 `Failure`. Without this, an `exposed` gate — a `503` — would surface as a generic HTTP error
 instead of the warning the operator needs.
 
-The second/third export groups (`HealthPayload`…`decodeBody`) are exposed for the decode
-tests in `tests/StatusTest.elm` — the JSON-shape mapping and gate precedence are the
-compiler-opaque logic worth pinning.
+Epoch-ms timestamps — each job's `last_run_at` and any timestamp-shaped value inside a
+`summary` (e.g. flyer-warm's `sweep_completed_at`) — render in the **browser's local time
+zone**, fetched once via `Time.here` at init. `relAge` still drives the at-a-glance "Nm ago"
+age; the absolute local time sits in the row's hover title.
+
+The second/third export groups (`HealthPayload`…`formatLocal`) are exposed for the unit
+tests in `tests/StatusTest.elm` — the JSON-shape mapping, gate precedence, and local-time
+formatting are the compiler-opaque logic worth pinning.
 
 -}
 
 import Dict exposing (Dict)
 import Html exposing (Html, button, div, h2, p, span, strong, text)
-import Html.Attributes exposing (class)
+import Html.Attributes exposing (class, title)
 import Html.Events exposing (onClick)
 import Http
 import Json.Decode as Decode exposing (Decoder)
 import Json.Encode as Encode
 import RemoteData exposing (RemoteData(..), WebData)
+import Task
+import Time
 
 
 
@@ -49,7 +56,9 @@ import RemoteData exposing (RemoteData(..), WebData)
 
 
 type alias Model =
-    { health : WebData HealthPayload }
+    { health : WebData HealthPayload
+    , zone : Time.Zone
+    }
 
 
 {-| The `/health` aggregate. `d1Ok` flattens the payload's `d1: { ok }` (the public endpoint
@@ -117,7 +126,11 @@ gateState a =
 
 init : ( Model, Cmd Msg )
 init =
-    ( { health = Loading }, fetchHealth )
+    -- Fetch `/health` and the browser's time zone in parallel; the zone formats the
+    -- absolute local times (defaulting to UTC for the brief moment before `Time.here`).
+    ( { health = Loading, zone = Time.utc }
+    , Cmd.batch [ fetchHealth, Task.perform GotZone Time.here ]
+    )
 
 
 
@@ -126,6 +139,7 @@ init =
 
 type Msg
     = GotHealth (WebData HealthPayload)
+    | GotZone Time.Zone
     | Refresh
 
 
@@ -134,6 +148,9 @@ update msg model =
     case msg of
         GotHealth health ->
             ( { model | health = health }, Cmd.none )
+
+        GotZone zone ->
+            ( { model | zone = zone }, Cmd.none )
 
         Refresh ->
             ( { model | health = Loading }, fetchHealth )
@@ -251,12 +268,12 @@ view model =
             [ h2 [] [ text "Service health" ]
             , button [ class "link", onClick Refresh ] [ text "Refresh" ]
             ]
-        , viewBody model.health
+        , viewBody model.zone model.health
         ]
 
 
-viewBody : WebData HealthPayload -> Html Msg
-viewBody health =
+viewBody : Time.Zone -> WebData HealthPayload -> Html Msg
+viewBody zone health =
     case health of
         NotAsked ->
             p [] [ text "…" ]
@@ -268,16 +285,16 @@ viewBody health =
             div [ class "error" ] [ text ("Could not load /health: " ++ httpError error) ]
 
         Success payload ->
-            viewPayload payload
+            viewPayload zone payload
 
 
-viewPayload : HealthPayload -> Html Msg
-viewPayload payload =
+viewPayload : Time.Zone -> HealthPayload -> Html Msg
+viewPayload zone payload =
     div []
         [ viewExposedWarning payload.admin
         , viewHeadline payload.ok
         , div [ class "card" ]
-            (List.map (viewJobRow payload.generatedAt) payload.jobs
+            (List.map (viewJobRow zone payload.generatedAt) payload.jobs
                 ++ [ viewD1Row payload.d1Ok, viewAdminRow payload.admin ]
             )
         ]
@@ -313,21 +330,21 @@ viewHeadline ok =
         ]
 
 
-viewJobRow : Int -> Job -> Html Msg
-viewJobRow now job =
+viewJobRow : Time.Zone -> Int -> Job -> Html Msg
+viewJobRow zone now job =
     let
         ( cls, word ) =
             jobStateClassWord job.state
 
-        age =
+        ( age, ageTitle ) =
             case job.lastRunAt of
                 Just t ->
-                    relAge (now - t)
+                    ( relAge (now - t), formatLocal zone t )
 
                 Nothing ->
-                    ""
+                    ( "", "" )
     in
-    statusRow job.name cls word age (viewSummary job.summary)
+    statusRow job.name cls word age ageTitle (viewSummary zone job.summary)
 
 
 viewD1Row : Bool -> Html Msg
@@ -340,7 +357,7 @@ viewD1Row ok =
             else
                 ( "fail", "unreachable" )
     in
-    statusRow "d1" cls word "" []
+    statusRow "d1" cls word "" "" []
 
 
 viewAdminRow : AdminPosture -> Html Msg
@@ -359,31 +376,32 @@ viewAdminRow posture =
             else
                 []
     in
-    statusRow "admin gate" cls word "" detail
+    statusRow "admin gate" cls word "" "" detail
 
 
 {-| One health row: a colored dot, the component label, its state word (colored), an optional
-relative age, and optional detail lines below (a job's summary, the gate's sub-detail). -}
-statusRow : String -> String -> String -> String -> List (Html Msg) -> Html Msg
-statusRow label cls word age detail =
+relative age (with the absolute local time on hover), and optional detail lines below (a job's
+summary, the gate's sub-detail). -}
+statusRow : String -> String -> String -> String -> String -> List (Html Msg) -> Html Msg
+statusRow label cls word age ageTitle detail =
     div [ class "status-row" ]
         (div [ class "status-line" ]
             [ span [ class ("dot " ++ cls) ] []
             , span [ class "status-label" ] [ text label ]
             , span [ class ("status-word " ++ cls) ] [ text word ]
-            , span [ class "status-age muted small" ] [ text age ]
+            , span [ class "status-age muted small", title ageTitle ] [ text age ]
             ]
             :: detail
         )
 
 
-viewSummary : Dict String Decode.Value -> List (Html Msg)
-viewSummary summary =
+viewSummary : Time.Zone -> Dict String Decode.Value -> List (Html Msg)
+viewSummary zone summary =
     if Dict.isEmpty summary then
         []
 
     else
-        [ summaryBlock (List.map (\( k, v ) -> ( k, Encode.encode 0 v )) (Dict.toList summary)) ]
+        [ summaryBlock (List.map (\( k, v ) -> ( k, summaryValue zone v )) (Dict.toList summary)) ]
 
 
 summaryBlock : List ( String, String ) -> Html Msg
@@ -447,6 +465,102 @@ relAge ms =
 
     else
         String.fromInt (s // 86400) ++ "d ago"
+
+
+{-| Render a summary value, formatting a timestamp-shaped integer (epoch ms, ≥ ~2001) as a
+local time and leaving everything else (counts, strings, null) as compact JSON. The threshold
+keeps real counts — never anywhere near 1e12 — from being mistaken for timestamps, so the
+generic render stays per-key-agnostic. -}
+summaryValue : Time.Zone -> Decode.Value -> String
+summaryValue zone v =
+    case Decode.decodeValue Decode.int v of
+        Ok n ->
+            if n >= 1000000000000 then
+                formatLocal zone n
+
+            else
+                Encode.encode 0 v
+
+        Err _ ->
+            Encode.encode 0 v
+
+
+{-| Format an epoch-ms instant in the given zone as "Mon D, h:mm AM/PM" (e.g. "Jun 27, 2:34 PM"). -}
+formatLocal : Time.Zone -> Int -> String
+formatLocal zone ms =
+    let
+        posix =
+            Time.millisToPosix ms
+
+        hour24 =
+            Time.toHour zone posix
+
+        hour12 =
+            if modBy 12 hour24 == 0 then
+                12
+
+            else
+                modBy 12 hour24
+
+        minute =
+            String.padLeft 2 '0' (String.fromInt (Time.toMinute zone posix))
+
+        meridiem =
+            if hour24 < 12 then
+                "AM"
+
+            else
+                "PM"
+    in
+    monthAbbr (Time.toMonth zone posix)
+        ++ " "
+        ++ String.fromInt (Time.toDay zone posix)
+        ++ ", "
+        ++ String.fromInt hour12
+        ++ ":"
+        ++ minute
+        ++ " "
+        ++ meridiem
+
+
+monthAbbr : Time.Month -> String
+monthAbbr month =
+    case month of
+        Time.Jan ->
+            "Jan"
+
+        Time.Feb ->
+            "Feb"
+
+        Time.Mar ->
+            "Mar"
+
+        Time.Apr ->
+            "Apr"
+
+        Time.May ->
+            "May"
+
+        Time.Jun ->
+            "Jun"
+
+        Time.Jul ->
+            "Jul"
+
+        Time.Aug ->
+            "Aug"
+
+        Time.Sep ->
+            "Sep"
+
+        Time.Oct ->
+            "Oct"
+
+        Time.Nov ->
+            "Nov"
+
+        Time.Dec ->
+            "Dec"
 
 
 httpError : Http.Error -> String

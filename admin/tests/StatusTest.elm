@@ -11,6 +11,7 @@ import Http
 import Json.Decode as Decode
 import Status exposing (GateState(..), JobState(..))
 import Test exposing (Test, describe, test)
+import Time
 
 
 healthyBody : String
@@ -77,5 +78,13 @@ suite =
                 \_ ->
                     Status.decodeBody (meta 403) "<html>Forbidden</html>"
                         |> Expect.equal (Err (Http.BadStatus 403))
+            ]
+        , describe "formatLocal (epoch ms → local time)"
+            [ test "midnight → 12:00 AM" <|
+                \_ -> Status.formatLocal Time.utc 0 |> Expect.equal "Jan 1, 12:00 AM"
+            , test "noon → 12:00 PM" <|
+                \_ -> Status.formatLocal Time.utc 43200000 |> Expect.equal "Jan 1, 12:00 PM"
+            , test "13:05 → 1:05 PM with zero-padded minute" <|
+                \_ -> Status.formatLocal Time.utc 47100000 |> Expect.equal "Jan 1, 1:05 PM"
             ]
         ]
