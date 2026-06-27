@@ -222,4 +222,25 @@ describe("handleAdmin (routing + gate)", () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ tenants: ["bob"] });
   });
+
+  it("serves the SPA shell from ASSETS with the path unchanged (no /index.html rewrite → no redirect loop)", async () => {
+    let askedPath = "";
+    const env = {
+      TENANT_KV: memKv(),
+      KROGER_KV: memKv(),
+      DB: throwingD1(),
+      ADMIN_DEV_BYPASS: "1",
+      ASSETS: {
+        fetch: async (req: Request) => {
+          askedPath = new URL(req.url).pathname;
+          return new Response("<html>shell</html>", { status: 200 });
+        },
+      },
+    } as unknown as Env;
+    const res = await handleAdmin(new Request("https://x/admin"), env);
+    expect(res.status).toBe(200);
+    // Passed through verbatim — NOT rewritten to /admin/index.html (which the assets
+    // auto-trailing-slash would 307 back to /admin/, looping via run_worker_first).
+    expect(askedPath).toBe("/admin");
+  });
 });

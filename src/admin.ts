@@ -294,11 +294,14 @@ export async function handleAdmin(request: Request, env: Env): Promise<Response>
     }
   }
 
-  // Static SPA: serve from the ASSETS binding (already past the Access gate).
+  // Static SPA: serve from the ASSETS binding (already past the Access gate). Pass the
+  // request through UNCHANGED and let Static Assets' html_handling resolve it — `/admin`
+  // → `/admin/` (trailing-slash redirect, so the page's relative `./elm.js` resolves),
+  // `/admin/` → index.html, `/admin/elm.js` → the bundle. Rewriting to `/admin/index.html`
+  // here would hit that same auto-redirect on every request and loop, because
+  // run_worker_first routes the redirect target back through this handler.
   if (request.method === "GET" || request.method === "HEAD") {
-    const assetUrl =
-      path === "/admin" || path === "/admin/" ? new URL("/admin/index.html", url) : url;
-    return env.ASSETS.fetch(new Request(assetUrl, request));
+    return env.ASSETS.fetch(request);
   }
   return new Response("Method not allowed", { status: 405 });
 }
