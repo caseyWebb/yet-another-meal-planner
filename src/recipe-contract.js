@@ -129,8 +129,8 @@ export function validateRecipeContract(fm) {
       }
     } else if (f === 'season') {
       // Controlled vocabulary like protein/cuisine — strict exact match (authored
-      // canonical, lowercase). `autumn` is rejected in favor of `fall`; legacy values
-      // are canonicalized by scripts/migrate-season-vocab.mjs before this gate sees them.
+      // canonical, lowercase). `autumn` is rejected in favor of `fall`. Read paths
+      // normalize legacy synonyms; the gate itself never coerces.
       for (const s of fm[f]) {
         if (!SEASON_VOCAB.includes(s))
           errors.push(

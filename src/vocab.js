@@ -58,11 +58,10 @@ export const CUISINE_VOCAB = Object.freeze([
 export const SEASON_VOCAB = Object.freeze(["spring", "summer", "fall", "winter"]);
 
 // Canonicalize a `season` token: trim, lowercase, and fold the `autumn` synonym to
-// `fall`. Defined ONCE here so the read-side match (src/retrospective.ts) and the
-// source migration (scripts/migrate-season-vocab.mjs) agree on the canonical form.
-// Note: validation is strict (exact SEASON_VOCAB membership) — this normalizer is for
-// matching legacy values on read and for canonicalizing source data in the migration,
-// not a write-time coercion.
+// `fall`. Used by the read-side season match (src/retrospective.ts) so a recipe stored
+// before the vocab gate still compares correctly. Note: validation is STRICT (exact
+// SEASON_VOCAB membership) — this normalizer is for matching legacy values on read,
+// NOT a write-time coercion.
 export function normalizeSeason(value) {
   const s = String(value).trim().toLowerCase();
   return s === "autumn" ? "fall" : s;

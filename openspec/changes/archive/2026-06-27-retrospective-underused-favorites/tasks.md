@@ -31,10 +31,10 @@
 - [x] 5.3 Run `aubr typecheck` and `aubr test` (full suite) — all green.
 - [x] 5.4 Run `openspec validate "retrospective-underused-favorites" --strict` — passes.
 
-## 6. Season vocabulary enforcement & data migration
+## 6. Season vocabulary enforcement
 
 - [x] 6.1 Add a strict `season` check to the shared contract (`src/recipe-contract.js`) against `SEASON_VOCAB`, mirroring `requires_equipment`/`EQUIPMENT_VOCAB` — enforced by both the Worker (`src/validate.ts`) and build (`scripts/build-indexes.mjs`) gates automatically (no per-gate edit needed).
-- [x] 6.2 Centralize `normalizeSeason` in `src/vocab.js` (+ `src/vocab.d.ts`); re-export from `src/retrospective.ts` so read-side matching and the migration share one canonical form.
-- [x] 6.3 Add the migration tool `scripts/migrate-season-vocab.mjs` (`--root <data-repo>`, `--check`): surgical `season`-line rewrite (case-fold, `autumn`→`fall`, de-dupe), flagging unmappable tokens for manual repair; idempotent.
-- [x] 6.4 Tests: season cases in `test/recipe-contract.test.ts` (accept canonical; reject off-vocab/`autumn`/casing) and `tests/migrate-season-vocab.test.mjs` (canonicalization, inline/block forms, unmappable, idempotent `run`).
+- [x] 6.2 Centralize `normalizeSeason` in `src/vocab.js` (+ `src/vocab.d.ts`); re-export from `src/retrospective.ts` so the read-side match has one canonical form.
+- [x] 6.3 No migration tool — read-side normalization covers reads, and any pre-existing non-canonical `season` values are corrected directly in the data repo before deploying (decided against a deterministic script).
+- [x] 6.4 Tests: season cases in `test/recipe-contract.test.ts` (accept canonical; reject off-vocab/`autumn`/casing).
 - [x] 6.5 Docs + persona: `docs/SCHEMAS.md` (season bullet + inline comment), `docs/TOOLS.md` (`create_recipe` off-vocab list), the `season` classification bullet in `AGENT_INSTRUCTIONS.md` (rejected on write); rebuild the plugin.
