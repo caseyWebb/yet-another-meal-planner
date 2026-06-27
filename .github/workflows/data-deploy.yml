@@ -173,13 +173,13 @@ jobs:
           fi
 
       # Stamp the health badge into the data repo README (data-repo-health-badge): an
-      # idempotent <!-- health-badge --> block pointing at the Worker's token-gated
-      # /health.svg card. Reuses the operator's existing WORKER_HOST (passed by the thin
-      # caller, like build-plugin's mcp_url) + HEALTH_TOKEN (read from their wrangler.jsonc
-      # vars). OPTIONAL, exactly like the id pin above: skipped when HEALTH_TOKEN or
-      # worker_host is missing; and the ready-to-paste snippet is ALWAYS written to the job
-      # summary, so an operator without `contents: write` can paste it once by hand (token +
-      # host are stable, so it never needs re-pinning).
+      # idempotent <!-- health-badge:start -->…<!-- health-badge:end --> block pointing at
+      # the Worker's token-gated /health.svg card. Reuses the operator's existing WORKER_HOST
+      # (passed by the thin caller, like build-plugin's mcp_url) + HEALTH_TOKEN (read from
+      # their wrangler.jsonc vars). OPTIONAL, exactly like the id pin above: skipped when
+      # HEALTH_TOKEN or worker_host is missing; and the ready-to-paste snippet is ALWAYS
+      # written to the job summary FIRST, so a missing README or a denied push never costs an
+      # operator the manual fallback (paste it once by hand — token + host are stable).
       - name: Stamp health badge into README (optional)
         env:
           CONFIG: ${{ inputs.config_path }}
@@ -194,23 +194,31 @@ jobs:
             } >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
-          SNIPPET="$(node _code/scripts/stamp-readme-badge.mjs stamp README.md "$HOST" "$TOKEN")"
-          # Always surface the ready-to-paste snippet, whether or not we can commit it back.
+          # Surface the snippet BEFORE any file/commit work, so neither a missing README nor a
+          # denied push can rob the operator of the paste fallback.
+          SNIPPET="$(node _code/scripts/stamp-readme-badge.mjs snippet "$HOST" "$TOKEN")"
           {
             echo "## Health badge"
             echo ""
-            echo "This is maintained in your README automatically when the deploy can write back; otherwise paste it in once:"
+            echo "Maintained in your README automatically when the deploy can write back; otherwise paste it in once:"
             echo ""
             echo '```markdown'
             echo "$SNIPPET"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
-          if git diff --quiet -- README.md; then
+          if [ ! -f README.md ]; then
+            echo "No README.md in the data repo — skipped stamping (snippet is in the summary above)."
+            exit 0
+          fi
+          node _code/scripts/stamp-readme-badge.mjs stamp README.md "$HOST" "$TOKEN" >/dev/null
+          # `git diff --quiet` ignores UNTRACKED files, so stage first and check the index —
+          # else a brand-new README (older-template repo) would be written but never committed.
+          git add -A -- README.md
+          if git diff --cached --quiet -- README.md; then
             echo "README badge already up to date."
           else
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add README.md
             git commit -m "chore(deploy): stamp health badge in README"
             if ! git push; then
               echo "::warning::Could not push the README health badge (the deploy caller needs 'permissions: contents: write'). The deploy succeeded; paste the snippet from this run's summary into your README once."

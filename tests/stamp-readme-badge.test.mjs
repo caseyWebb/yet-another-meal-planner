@@ -60,3 +60,15 @@ test("stampReadmeBadge prepends when the README has no heading", () => {
   assert.ok(out.startsWith(`${START}\n![b](u)\n${END}`));
   assert.ok(out.includes("just text, no heading"));
 });
+
+test("stampReadmeBadge handles an empty README (missing-file path → fresh block)", () => {
+  // The CLI maps a missing README to "" before calling this, so empty must not throw.
+  const out = stampReadmeBadge("", "![b](u)");
+  assert.ok(out.startsWith(`${START}\n![b](u)\n${END}`));
+});
+
+test("stampReadmeBadge leaves a $-bearing snippet literal (no regex replacement codes)", () => {
+  const seeded = stampReadmeBadge("# T\n\nbody\n", "![b](u1)");
+  const out = stampReadmeBadge(seeded, "![b]($&$1$$)");
+  assert.ok(out.includes("![b]($&$1$$)"));
+});

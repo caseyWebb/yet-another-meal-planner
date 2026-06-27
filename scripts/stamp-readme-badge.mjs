@@ -50,7 +50,8 @@ function escapeRe(s) {
 export function stampReadmeBadge(readme, snippet) {
   const block = `${START}\n${snippet}\n${END}`;
   const re = new RegExp(`${escapeRe(START)}[\\s\\S]*?${escapeRe(END)}`);
-  if (re.test(readme)) return readme.replace(re, block);
+  // Replacer function (not a string) so `$&`/`$1`/`$$` in the snippet are never interpreted.
+  if (re.test(readme)) return readme.replace(re, () => block);
 
   const lines = readme.split("\n");
   const headingIdx = lines.findIndex((l) => /^#{1,6}\s/.test(l));
@@ -65,13 +66,28 @@ if (isMain) {
   const [mode, ...rest] = process.argv.slice(2);
   if (mode === "token" && rest[0]) {
     process.stdout.write(healthTokenFromConfig(readFileSync(rest[0], "utf8")) ?? "");
+  } else if (mode === "snippet" && rest[0] && rest[1]) {
+    // Just the badge markdown — touches no file. Lets the deploy surface the paste-snippet
+    // even when there is no README to stamp.
+    process.stdout.write(badgeSnippet(rest[0], rest[1]));
   } else if (mode === "stamp" && rest[0] && rest[1] && rest[2]) {
     const [readmePath, host, token] = rest;
+    // Tolerate a missing README (ENOENT → empty) so a direct call never throws; the block
+    // is prepended into a fresh file. (The deploy guards on existence so it won't fabricate
+    // a README, but the CLI stays safe for any caller.)
+    let current = "";
+    try {
+      current = readFileSync(readmePath, "utf8");
+    } catch {
+      current = "";
+    }
     const snippet = badgeSnippet(host, token);
-    writeFileSync(readmePath, stampReadmeBadge(readFileSync(readmePath, "utf8"), snippet));
+    writeFileSync(readmePath, stampReadmeBadge(current, snippet));
     process.stdout.write(snippet);
   } else {
-    console.error("usage: stamp-readme-badge.mjs token <config> | stamp <readme> <host> <token>");
+    console.error(
+      "usage: stamp-readme-badge.mjs token <config> | snippet <host> <token> | stamp <readme> <host> <token>",
+    );
     process.exit(1);
   }
 }
