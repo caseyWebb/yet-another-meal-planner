@@ -22,6 +22,6 @@
 
 ## 5. Build, tests, verify
 
-- [x] 5.1 `aubr test:admin` green (new `JsoncTest` + `SchemaExampleTest`, existing `RouteTest`/`ToolConsoleTest`/`StatusTest` unaffected). — 56 passed: 14 `Jsonc`, 18 `SchemaExample` (incl. the round-trip invariant, required-first order, and an exact-layout pin), 24 prior.
+- [x] 5.1 `aubr test:admin` green (new `JsoncTest` + `SchemaExampleTest`, existing `RouteTest`/`ToolConsoleTest`/`StatusTest` unaffected). — 58 passed: 13 `Jsonc`, 18 `SchemaExample` (incl. the round-trip invariant, required-first order, an exact-layout pin, and enum-escaping / multi-line-description hardening from code review), 27 prior.
 - [x] 5.2 `aubr build:admin` to regenerate the committed `admin/dist/`; `aubr build:admin --check` clean (if `package.elm-lang.org` is unreachable, land source and leave the rebuild to CI per `admin/CLAUDE.md`). — Registry reachable; bundle rebuilt (7 modules), `--check` reports up to date.
 - [~] 5.3 Manual smoke under `wrangler dev` + `ADMIN_DEV_BYPASS=1`: select a tool with required+optional+enum fields (e.g. `add_to_grocery_list`), confirm the seeded commented example; run it unedited (required-only) and observe the result; uncomment an optional and an enum and re-run. — NEEDS local `wrangler dev` + local D1 / dev secrets, not available in this environment. Behavior is covered by the unit tests (exact layout, enum hint, round-trip invariant); manual smoke is left for a connected box.

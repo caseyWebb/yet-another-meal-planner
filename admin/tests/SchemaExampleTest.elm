@@ -78,6 +78,13 @@ suite =
                         [ \o -> String.contains "\"x\": null" o |> Expect.equal True
                         , \o -> String.contains "(unsupported schema)" o |> Expect.equal True
                         ]
+        , test "an enum value containing a quote is JSON-escaped and round-trips" <|
+            \_ ->
+                Jsonc.strip (generate (objSchema [ ( "k", enum [ "a\"b", "c" ] ) ] [ "k" ]))
+                    |> Decode.decodeString (Decode.field "k" Decode.string)
+                    |> Expect.equal (Ok "a\"b")
+        , test "a multi-line description collapses to one line and does not break the example" <|
+            \_ -> invariant (objSchema [ ( "d", strWithDescription "line1\nline2" ) ] [ "d" ]) [ "d" ]
         , describe "round-trip invariant: strip(generate s) parses to the required-only object"
             [ test "single required field among optionals" <|
                 \_ -> invariant (objSchema [ ( "name", str ), ( "quantity", str ) ] [ "name" ]) [ "name" ]
@@ -137,6 +144,14 @@ enum options =
     Encode.object
         [ ( "type", Encode.string "string" )
         , ( "enum", Encode.list Encode.string options )
+        ]
+
+
+strWithDescription : String -> Encode.Value
+strWithDescription description =
+    Encode.object
+        [ ( "type", Encode.string "string" )
+        , ( "description", Encode.string description )
         ]
 
 

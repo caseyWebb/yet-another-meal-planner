@@ -7783,9 +7783,12 @@ var $author$project$Dev$SchemaExample$commentBlock = F2(
 				A2($elm$core$String$split, '\n', block)));
 	});
 var $author$project$Dev$SchemaExample$enumOptions = function (schema) {
-	if ((schema.$ === 1) && (!schema.a.$)) {
-		var options = schema.a.a;
-		return $elm$core$Maybe$Just(options);
+	if (((schema.$ === 1) && (!schema.a.$)) && schema.a.a.b) {
+		var _v1 = schema.a.a;
+		var first = _v1.a;
+		var rest = _v1.b;
+		return $elm$core$Maybe$Just(
+			A2($elm$core$List$cons, first, rest));
 	} else {
 		return $elm$core$Maybe$Nothing;
 	}
@@ -7797,11 +7800,30 @@ var $author$project$Dev$SchemaExample$isUnknown = function (schema) {
 		return false;
 	}
 };
+var $elm$core$String$replace = F3(
+	function (before, after, string) {
+		return A2(
+			$elm$core$String$join,
+			after,
+			A2($elm$core$String$split, before, string));
+	});
+var $author$project$Dev$SchemaExample$oneLine = function (text) {
+	return A3(
+		$elm$core$String$replace,
+		'\t',
+		' ',
+		A3(
+			$elm$core$String$replace,
+			'\u000D',
+			' ',
+			A3($elm$core$String$replace, '\n', ' ', text)));
+};
 var $author$project$Dev$SchemaExample$hintComment = function (field) {
 	var _v0 = $author$project$Dev$SchemaExample$enumOptions(field.ak);
 	if (!_v0.$) {
 		var options = _v0.a;
-		return '  // ' + A2($elm$core$String$join, ' | ', options);
+		return '  // ' + $author$project$Dev$SchemaExample$oneLine(
+			A2($elm$core$String$join, ' | ', options));
 	} else {
 		if ($author$project$Dev$SchemaExample$isUnknown(field.ak)) {
 			return '  // (unsupported schema)';
@@ -7809,7 +7831,7 @@ var $author$project$Dev$SchemaExample$hintComment = function (field) {
 			var _v1 = field.aE;
 			if (!_v1.$) {
 				var description = _v1.a;
-				return '  // ' + description;
+				return '  // ' + $author$project$Dev$SchemaExample$oneLine(description);
 			} else {
 				return '';
 			}
@@ -7823,14 +7845,18 @@ var $elm$core$List$isEmpty = function (xs) {
 		return false;
 	}
 };
+var $author$project$Dev$SchemaExample$jsonString = A2(
+	$elm$core$Basics$composeR,
+	$elm$json$Json$Encode$string,
+	$elm$json$Json$Encode$encode(0));
 var $author$project$Dev$SchemaExample$fieldValue = F3(
-	function (level, inherit, field) {
+	function (level, commented, field) {
 		var _v4 = field.aC;
 		if (!_v4.$) {
 			var d = _v4.a;
 			return A2($elm$json$Json$Encode$encode, 0, d);
 		} else {
-			return A3($author$project$Dev$SchemaExample$schemaValue, level, inherit, field.ak);
+			return A3($author$project$Dev$SchemaExample$schemaValue, level, commented, field.ak);
 		}
 	});
 var $author$project$Dev$SchemaExample$renderArray = F3(
@@ -7865,13 +7891,13 @@ var $author$project$Dev$SchemaExample$renderObject = F3(
 				fields)) + ('\n' + ($author$project$Dev$SchemaExample$indent(level) + '}'))));
 	});
 var $author$project$Dev$SchemaExample$schemaValue = F3(
-	function (level, inherit, schema) {
+	function (level, commented, schema) {
 		switch (schema.$) {
 			case 1:
 				if ((!schema.a.$) && schema.a.a.b) {
 					var _v1 = schema.a.a;
 					var first = _v1.a;
-					return '\"' + (first + '\"');
+					return $author$project$Dev$SchemaExample$jsonString(first);
 				} else {
 					return '\"\"';
 				}
@@ -7883,10 +7909,10 @@ var $author$project$Dev$SchemaExample$schemaValue = F3(
 				return 'false';
 			case 5:
 				var inner = schema.a;
-				return A3($author$project$Dev$SchemaExample$renderArray, level, inherit, inner);
+				return A3($author$project$Dev$SchemaExample$renderArray, level, commented, inner);
 			case 0:
 				var fields = schema.a;
-				return A3($author$project$Dev$SchemaExample$renderObject, level, inherit, fields);
+				return A3($author$project$Dev$SchemaExample$renderObject, level, commented, fields);
 			default:
 				return 'null';
 		}

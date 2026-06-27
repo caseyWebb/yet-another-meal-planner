@@ -266,20 +266,20 @@ renderField level inherit field =
 
 
 fieldValue : Int -> Bool -> Field -> String
-fieldValue level inherit field =
+fieldValue level commented field =
     case field.default of
         Just d ->
             Encode.encode 0 d
 
         Nothing ->
-            schemaValue level inherit field.schema
+            schemaValue level commented field.schema
 
 
 schemaValue : Int -> Bool -> Schema -> String
-schemaValue level inherit schema =
+schemaValue level commented schema =
     case schema of
         SString (Just (first :: _)) ->
-            "\"" ++ first ++ "\""
+            jsonString first
 
         SString _ ->
             "\"\""
@@ -294,10 +294,10 @@ schemaValue level inherit schema =
             "false"
 
         SArray inner ->
-            renderArray level inherit inner
+            renderArray level commented inner
 
         SObject fields ->
-            renderObject level inherit fields
+            renderObject level commented fields
 
         SUnknown ->
             "null"
@@ -338,7 +338,7 @@ hintComment : Field -> String
 hintComment field =
     case enumOptions field.schema of
         Just options ->
-            "  // " ++ String.join " | " options
+            "  // " ++ oneLine (String.join " | " options)
 
         Nothing ->
             if isUnknown field.schema then
@@ -347,7 +347,7 @@ hintComment field =
             else
                 case field.description of
                     Just description ->
-                        "  // " ++ description
+                        "  // " ++ oneLine description
 
                     Nothing ->
                         ""
@@ -356,11 +356,32 @@ hintComment field =
 enumOptions : Schema -> Maybe (List String)
 enumOptions schema =
     case schema of
-        SString (Just options) ->
-            Just options
+        SString (Just (first :: rest)) ->
+            Just (first :: rest)
 
         _ ->
             Nothing
+
+
+{-| A string as a strict-JSON literal, with `"`/`\`/control chars escaped — used for an
+enum's placeholder value so an option containing a quote can't produce invalid JSON. (Same
+escaping the `default` path gets for free from `Encode.encode`.)
+-}
+jsonString : String -> String
+jsonString =
+    Encode.string >> Encode.encode 0
+
+
+{-| Collapse newlines/tabs to spaces so a multi-line `description`/`enum` can't terminate a
+`//` hint mid-line (which would spill bare text into the example or, inside a commented block,
+be truncated by the comment re-indent). Keeps a hint to exactly one line.
+-}
+oneLine : String -> String
+oneLine text =
+    text
+        |> String.replace "\n" " "
+        |> String.replace "\u{000D}" " "
+        |> String.replace "\t" " "
 
 
 isUnknown : Schema -> Bool
