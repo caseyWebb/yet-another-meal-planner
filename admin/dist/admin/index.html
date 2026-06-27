@@ -34,10 +34,27 @@
       pre { background: #f6f6f6; border: 1px solid #eee; border-radius: .4rem; padding: .6rem .8rem; overflow: auto; font-size: .8rem; margin: .35rem 0; white-space: pre-wrap; word-break: break-word; }
       .muted { color: #888; }
       .small { font-size: .8rem; }
-      /* Top-level area nav (Admin / Dev). */
+      /* Top-level area nav (Status / Members / Dev). */
       .nav { display: flex; gap: .5rem; margin: .5rem 0 1.25rem; border-bottom: 1px solid #e5e5e5; }
       .nav-link { text-decoration: none; color: #555; padding: .5rem .75rem; border-bottom: 2px solid transparent; }
       .nav-link.active { color: #222; border-bottom-color: var(--accent); font-weight: 600; }
+      /* Status (service health) home view: a headline card + one row per job / d1 / admin gate. */
+      .status-head { display: flex; justify-content: space-between; align-items: center; }
+      .headline { display: flex; align-items: center; gap: .5rem; font-size: 1.05rem; }
+      .status-row { border-bottom: 1px solid #f2f2f2; }
+      .status-row:last-child { border-bottom: 0; }
+      .status-line { display: flex; align-items: center; gap: .5rem; padding: .45rem 0; }
+      .status-label { flex: 1; font-family: ui-monospace, monospace; font-size: .9rem; }
+      .status-word { font-size: .85rem; font-weight: 600; }
+      .status-age { min-width: 5rem; text-align: right; }
+      .dot { width: .6rem; height: .6rem; border-radius: 50%; background: #8b949e; flex: 0 0 auto; }
+      .dot.ok { background: #2da44e; } .status-word.ok { color: #1a7f37; }
+      .dot.fail { background: #cf222e; } .status-word.fail { color: #cf222e; }
+      .dot.never { background: #d4a72c; } .status-word.never { color: #9a6700; }
+      .dot.muted { background: #8b949e; } .status-word.muted { color: #57606a; }
+      .summary { display: flex; flex-wrap: wrap; gap: .15rem .9rem; margin: 0 0 .45rem 1.1rem; }
+      .summary-item { display: flex; gap: .35rem; align-items: baseline; }
+      .summary-v { font-family: ui-monospace, monospace; color: #444; word-break: break-all; }
       /* Dev sub-nav: sticky pills (one per Dev section); the main nav scrolls away above it. */
       .subnav { position: sticky; top: 0; z-index: 5; display: flex; gap: .5rem; align-items: center; height: var(--subnav-h); background: #fafafa; border-bottom: 1px solid #e5e5e5; }
       .pill { font: inherit; font-size: .85rem; padding: .3rem .85rem; border-radius: 999px; border: 1px solid #ddd; background: #fff; color: #555; cursor: pointer; }

@@ -3,10 +3,12 @@ module Main exposing (main)
 {-| The grocery-agent operator admin shell (operator-admin capability).
 
 A client-routed `Browser.application` served under `/admin` behind Cloudflare Access. The
-panel is split into two top-level areas so it grows by adding routed pages, not by stacking
+panel is split into three top-level areas so it grows by adding routed pages, not by stacking
 cards on one view:
 
-  - **Admin** — member management (onboard / list / rotate / revoke), in `Admin.Members`.
+  - **Status** — the service-health home view (`/health`: jobs, D1, admin-gate posture), in
+    `Status`. This is the home route (`/admin`).
+  - **Members** — member management (onboard / list / rotate / revoke), in `Admin.Members`.
   - **Dev** — the MCP tool console (inspect + run tools as a chosen member), in
     `Dev.ToolConsole`.
 
@@ -26,6 +28,7 @@ import Html exposing (Html, a, button, div, h1, nav, section, text)
 import Html.Attributes exposing (class, classList, id)
 import Html.Events exposing (onClick)
 import Route exposing (Route)
+import Status
 import Task
 import Url exposing (Url)
 
@@ -78,7 +81,8 @@ sectionLabel section =
 {-| The live page and its state, as one value — you cannot be on one page holding
 another's model. -}
 type Page
-    = MembersPage Members.Model
+    = HealthPage Status.Model
+    | MembersPage Members.Model
     | ToolsPage ToolConsole.Model
     | NotFoundPage
 
@@ -96,6 +100,7 @@ init _ url key =
 type Msg
     = LinkClicked Browser.UrlRequest
     | UrlChanged Url
+    | HealthMsg Status.Msg
     | MembersMsg Members.Msg
     | ToolsMsg ToolConsole.Msg
     | ScrollToSection DevSection
@@ -120,6 +125,13 @@ update msg model =
         ( NoOp, _ ) ->
             ( model, Cmd.none )
 
+        ( HealthMsg subMsg, HealthPage subModel ) ->
+            let
+                ( subModel2, cmd ) =
+                    Status.update subMsg subModel
+            in
+            ( { model | page = HealthPage subModel2 }, Cmd.map HealthMsg cmd )
+
         ( MembersMsg subMsg, MembersPage subModel ) ->
             let
                 ( subModel2, cmd ) =
@@ -135,6 +147,9 @@ update msg model =
             ( { model | page = ToolsPage subModel2 }, Cmd.map ToolsMsg cmd )
 
         -- A sub-message for a page we are no longer on (a late response): drop it.
+        ( HealthMsg _, _ ) ->
+            ( model, Cmd.none )
+
         ( MembersMsg _, _ ) ->
             ( model, Cmd.none )
 
@@ -159,6 +174,9 @@ stepTo route model =
         ( Route.Members, MembersPage _ ) ->
             ( { model | route = route }, Cmd.none )
 
+        ( Route.Health, HealthPage _ ) ->
+            ( { model | route = route }, Cmd.none )
+
         _ ->
             enter route Nothing model
 
@@ -168,6 +186,13 @@ stepTo route model =
 enter : Route -> Maybe String -> Model -> ( Model, Cmd Msg )
 enter route actingAs model =
     case route of
+        Route.Health ->
+            let
+                ( subModel, cmd ) =
+                    Status.init
+            in
+            ( { model | route = route, page = HealthPage subModel }, Cmd.map HealthMsg cmd )
+
         Route.Members ->
             let
                 ( subModel, cmd ) =
@@ -235,7 +260,8 @@ wrapClass route =
 viewNav : Route -> Html Msg
 viewNav route =
     nav [ class "nav" ]
-        [ navLink "Admin" Route.Members (isAdmin route)
+        [ navLink "Status" Route.Health (isStatus route)
+        , navLink "Members" Route.Members (isMembers route)
         , navLink "Dev · Tools" (Route.Tools Nothing) (isDev route)
         ]
 
@@ -245,8 +271,18 @@ navLink label route active =
     a [ Route.href route, classList [ ( "nav-link", True ), ( "active", active ) ] ] [ text label ]
 
 
-isAdmin : Route -> Bool
-isAdmin route =
+isStatus : Route -> Bool
+isStatus route =
+    case route of
+        Route.Health ->
+            True
+
+        _ ->
+            False
+
+
+isMembers : Route -> Bool
+isMembers route =
     case route of
         Route.Members ->
             True
@@ -268,6 +304,9 @@ isDev route =
 viewPage : Model -> Html Msg
 viewPage model =
     case model.page of
+        HealthPage subModel ->
+            Html.map HealthMsg (Status.view subModel)
+
         MembersPage subModel ->
             Html.map MembersMsg (Members.view subModel)
 

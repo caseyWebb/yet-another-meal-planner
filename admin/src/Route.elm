@@ -1,9 +1,10 @@
 module Route exposing (Route(..), actingAsParam, fromUrl, href, toString)
 
-{-| The admin SPA's client routes, all under the worker-served `/admin` base. The panel
-is split into an **Admin** area (member management) and a **Dev** area (the tool console),
-each a routed page, so a new surface is a new route + module rather than another card on
-one page.
+{-| The admin SPA's client routes, all under the worker-served `/admin` base. The panel is
+split into top-level areas — **Status** (the service-health home view), **Members** (member
+management), and **Dev** (the tool console) — each a routed page, so a new surface is a new
+route + module rather than another card on one page. The home route (`/admin`, and `/`) is
+`Health`; member management lives at its own `/admin/members`.
 
 `Tools` carries the optionally-selected tool name, so a specific tool deep-links
 (`/admin/dev/tools/place_order`). The acting-as persona is NOT part of the route — it is
@@ -21,7 +22,8 @@ import Url.Parser.Query as Query
 
 
 type Route
-    = Members
+    = Health
+    | Members
     | Tools (Maybe String)
     | NotFound
 
@@ -29,8 +31,8 @@ type Route
 parser : Parser (Route -> a) a
 parser =
     oneOf
-        [ Parser.map Members top
-        , Parser.map Members (s "admin")
+        [ Parser.map Health top
+        , Parser.map Health (s "admin")
         , Parser.map Members (s "admin" </> s "members")
         , Parser.map (Tools Nothing) (s "admin" </> s "dev" </> s "tools")
         , Parser.map (Just >> Tools) (s "admin" </> s "dev" </> s "tools" </> string)
@@ -57,6 +59,9 @@ stripTrailingSlash path =
 toString : Route -> String
 toString route =
     case route of
+        Health ->
+            Builder.absolute [ "admin" ] []
+
         Members ->
             Builder.absolute [ "admin", "members" ] []
 

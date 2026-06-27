@@ -1,8 +1,9 @@
 # CLAUDE.md — `admin/` (the Elm operator panel)
 
 This is the operator admin SPA (`operator-admin`): a small Elm `Browser.application` app
-(client-routed: an Admin area for member management, a Dev area for the MCP tool console)
-served at `/admin`, talking to the same-origin `/admin/api/*` JSON surface. We chose
+(client-routed: a Status home area for service health, a Members area for member management,
+a Dev area for the MCP tool console) served at `/admin`, talking to the same-origin
+`/admin/api/*` JSON surface. We chose
 Elm **deliberately, for refactorability through the type system** — and that payoff is
 only real if we model *with* the types, not around them. Lazy data modeling (`Bool`
 flags, `Maybe String` errors) throws away the entire reason we're here.
