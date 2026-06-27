@@ -457,27 +457,27 @@ test('in-vocabulary protein/cuisine pass', async () => {
 // The recipe index is the D1 `recipes` table now (d1-recipe-index): build-indexes
 // projects rows via recipeToRow and writes NO _indexes/recipes.json. These assert
 // the row mapping that src/recipe-index.ts reconstructs from. Column order:
-// [slug, title, protein, cuisine, time_total, description, source_url,
+// [slug, title, protein, cuisine, time_total, source_url,
 //  ingredients_key, tags, course, season, dietary, pairs_with,
 //  perishable_ingredients, requires_equipment, side_search_terms, extra]
+// description is NOT a column — it is a Worker-derived field (recipe_derived, migration 0013).
 const COL = {
   slug: 0,
   title: 1,
   protein: 2,
   cuisine: 3,
   time_total: 4,
-  description: 5,
-  source_url: 6,
-  ingredients_key: 7,
-  tags: 8,
-  course: 9,
-  season: 10,
-  dietary: 11,
-  pairs_with: 12,
-  perishable_ingredients: 13,
-  requires_equipment: 14,
-  side_search_terms: 15,
-  extra: 16,
+  source_url: 5,
+  ingredients_key: 6,
+  tags: 7,
+  course: 8,
+  season: 9,
+  dietary: 10,
+  pairs_with: 11,
+  perishable_ingredients: 12,
+  requires_equipment: 13,
+  side_search_terms: 14,
+  extra: 15,
 };
 
 test('recipeToRow: scalar facets land in their columns, source → source_url', () => {
@@ -487,16 +487,14 @@ test('recipeToRow: scalar facets land in their columns, source → source_url', 
     protein: 'fish',
     cuisine: 'japanese',
     time_total: 30,
-    description: 'A simple weeknight salmon over rice.',
     source: 'https://example.test/salmon',
   });
-  assert.equal(row.length, 17);
+  assert.equal(row.length, 16);
   assert.equal(row[COL.slug], 'salmon-with-rice');
   assert.equal(row[COL.title], 'Salmon with Rice');
   assert.equal(row[COL.protein], 'fish');
   assert.equal(row[COL.cuisine], 'japanese');
   assert.equal(row[COL.time_total], 30);
-  assert.equal(row[COL.description], 'A simple weeknight salmon over rice.');
   assert.equal(row[COL.source_url], 'https://example.test/salmon');
 });
 
@@ -531,6 +529,7 @@ test('recipeToRow: unpromoted objective fields go to extra; promoted ones do not
     title: 'R',
     protein: 'beef',
     source: 'https://x.test',
+    description: 'a derived blurb that must NOT land in extra',
     style: 'one-pot',
     servings: 6,
     difficulty: 'easy',
@@ -550,6 +549,8 @@ test('recipeToRow: unpromoted objective fields go to extra; promoted ones do not
   assert.ok(!('title' in extra));
   assert.ok(!('protein' in extra));
   assert.ok(!('source' in extra));
+  // description is Worker-derived now (recipe_derived) — dropped, never shunted into extra.
+  assert.ok(!('description' in extra));
 });
 
 test('recipeToRow: absent facets are NULL, not "undefined"; empty extra is null', () => {
@@ -576,7 +577,6 @@ test('recipeToRow round-trips a real built recipe (fixtures → row → reconstr
   if (row[COL.protein] !== null) reconstructed.protein = row[COL.protein];
   if (row[COL.cuisine] !== null) reconstructed.cuisine = row[COL.cuisine];
   if (row[COL.time_total] !== null) reconstructed.time_total = row[COL.time_total];
-  if (row[COL.description] !== null) reconstructed.description = row[COL.description];
   if (row[COL.source_url] !== null) reconstructed.source = row[COL.source_url];
   for (const [col, key] of [
     [COL.ingredients_key, 'ingredients_key'],
@@ -591,7 +591,10 @@ test('recipeToRow round-trips a real built recipe (fixtures → row → reconstr
   ]) {
     if (row[col] !== null) reconstructed[key] = JSON.parse(row[col]);
   }
-  assert.deepEqual(reconstructed, salmon);
+  // description is a Worker-derived field now (not projected), so the lossless round-trip is
+  // over the non-derived objective fields — compare against the recipe minus its description.
+  const { description: _derived, ...salmonObjective } = salmon;
+  assert.deepEqual(reconstructed, salmonObjective);
 });
 
 test('build run() does not write _indexes/recipes.json (the index is D1 now)', async () => {

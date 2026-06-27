@@ -9,6 +9,7 @@ import { readOptional } from "./gh-read.js";
 import { readAliases } from "./corpus-db.js";
 import { normalizeIngredientList } from "./matching.js";
 import { serializeMarkdown } from "./serialize.js";
+import { facetsFromFrontmatter, type RecipeFacets } from "./description.js";
 import { ToolError } from "./errors.js";
 import { truncate } from "./text.js";
 import { canonicalizeUrl } from "./url.js";
@@ -111,7 +112,7 @@ export async function buildNewRecipe(
   frontmatter: Record<string, unknown>,
   body: string,
   slugOverride?: string,
-): Promise<{ slug: string; file: TreeFile }> {
+): Promise<{ slug: string; file: TreeFile; facets: RecipeFacets }> {
   const title = typeof frontmatter.title === "string" ? frontmatter.title : "";
   const slug = slugOverride ?? slugify(title);
   if (!SLUG_RE.test(slug)) {
@@ -138,6 +139,10 @@ export async function buildNewRecipe(
   // stale caller is dropped so it never re-enters the corpus as objective content.
   const fm: Record<string, unknown> = { ...frontmatter };
   delete fm.status;
+  // description is a Worker-DERIVED field now (generated from the facets, stored in
+  // recipe_derived) — never authored frontmatter; drop any supplied value so it can't
+  // re-enter the corpus as objective content. The describe seed runs after the commit.
+  delete fm.description;
   // Canonicalize perishable_ingredients and ingredients_key (objective shared content)
   // at create the same way the verify matcher normalizes, so overlap lines up across
   // recipes. The full required-field contract is enforced on the serialized content by
@@ -149,5 +154,5 @@ export async function buildNewRecipe(
       fm.perishable_ingredients = normalizeIngredientList(fm.perishable_ingredients, aliases);
     if ("ingredients_key" in fm) fm.ingredients_key = normalizeIngredientList(fm.ingredients_key, aliases);
   }
-  return { slug, file: { path, content: serializeMarkdown(fm, body) } };
+  return { slug, file: { path, content: serializeMarkdown(fm, body) }, facets: facetsFromFrontmatter(fm) };
 }

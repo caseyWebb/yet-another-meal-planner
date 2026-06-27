@@ -1,55 +1,104 @@
 import { describe, it, expect } from "vitest";
 import {
-  reconcileEmbeddings,
+  reconcileRecipeDerived,
   hashText,
-  type EmbedDeps,
-  type RecipeDescription,
+  type DerivedDeps,
+  type DerivedRow,
+  type FacetRow,
 } from "../src/recipe-embeddings.js";
+import { contentHash, type RecipeFacets } from "../src/description.js";
 
-// A stored embedding in the in-memory fake.
-interface Stored {
-  embedding: number[];
-  description_hash: string;
+// A FacetRow with sensible empty defaults; override what a test cares about.
+function facet(slug: string, over: Partial<RecipeFacets> = {}): FacetRow {
+  return {
+    slug,
+    title: over.title ?? slug,
+    ingredients_key: over.ingredients_key ?? [],
+    course: over.course ?? [],
+    protein: over.protein ?? null,
+    cuisine: over.cuisine ?? null,
+    time_total: over.time_total ?? null,
+    dietary: over.dietary ?? [],
+    season: over.season ?? [],
+  };
 }
 
-// Build an EmbedDeps backed by in-memory maps. embedTexts returns a deterministic
-// one-element vector per text ([length]) so upserted vectors are checkable and we can
-// assert the chunk→slug alignment. `embedCalls` records each AI call's input array.
+// The fake's stored derived state: the change-detection row plus the (separately stored) vector.
+interface StoredDerived {
+  content_hash: string | null;
+  description: string | null;
+  description_hash: string | null;
+  embedding?: number[];
+}
+
+// Build DerivedDeps over in-memory maps. `describe` returns a deterministic `desc:<title>` so
+// outputs are checkable; `embedTexts` returns a one-element [length] vector per text so vectors
+// are checkable and chunk→slug alignment is assertable. Records describe/embed AI calls.
 function makeDeps(
-  recipes: RecipeDescription[],
-  stored: Record<string, Stored> = {},
-  opts: { maxPerTick?: number; inputBatch?: number } = {},
+  facets: FacetRow[],
+  stored: Record<string, StoredDerived> = {},
+  opts: { describeMax?: number; embedMax?: number; inputBatch?: number } = {},
 ) {
-  const embeddings = new Map<string, Stored>(Object.entries(stored));
+  const derived = new Map<string, DerivedRow>();
+  const vectors = new Map<string, number[]>();
+  for (const [slug, s] of Object.entries(stored)) {
+    derived.set(slug, {
+      slug,
+      content_hash: s.content_hash,
+      description: s.description,
+      description_hash: s.description_hash,
+    });
+    if (s.embedding) vectors.set(slug, s.embedding);
+  }
+  const describeCalls: string[] = [];
   const embedCalls: string[][] = [];
-  const deps: EmbedDeps = {
-    loadDescriptions: async () => recipes.map((r) => ({ ...r })),
-    loadEmbeddingHashes: async () =>
-      [...embeddings.entries()].map(([slug, v]) => ({ slug, description_hash: v.description_hash })),
-    pruneOrphans: async () => {
-      const live = new Set(recipes.map((r) => r.slug));
-      let n = 0;
-      for (const slug of [...embeddings.keys()]) {
-        if (!live.has(slug)) {
-          embeddings.delete(slug);
-          n++;
-        }
-      }
-      return n;
+
+  const deps: DerivedDeps = {
+    loadFacets: async () => facets.map((f) => ({ ...f })),
+    loadDerived: async () => [...derived.values()].map((d) => ({ ...d })),
+    describe: async (f) => {
+      describeCalls.push(f.title);
+      return `desc:${f.title}`;
+    },
+    upsertDescription: async (slug, description, content_hash) => {
+      const prev = derived.get(slug);
+      derived.set(slug, { slug, description, content_hash, description_hash: prev?.description_hash ?? null });
     },
     embedTexts: async (texts) => {
       embedCalls.push(texts);
       return texts.map((t) => [t.length]);
     },
     upsertEmbeddings: async (rows) => {
-      for (const r of rows) embeddings.set(r.slug, { embedding: r.embedding, description_hash: r.description_hash });
+      for (const r of rows) {
+        const prev = derived.get(r.slug);
+        derived.set(r.slug, {
+          slug: r.slug,
+          content_hash: prev?.content_hash ?? null,
+          description: prev?.description ?? null,
+          description_hash: r.description_hash,
+        });
+        vectors.set(r.slug, r.embedding);
+      }
     },
-    maxPerTick: opts.maxPerTick ?? 100,
+    pruneOrphans: async () => {
+      const live = new Set(facets.map((f) => f.slug));
+      let n = 0;
+      for (const slug of [...derived.keys()]) {
+        if (!live.has(slug)) {
+          derived.delete(slug);
+          vectors.delete(slug);
+          n++;
+        }
+      }
+      return n;
+    },
+    describeMaxPerTick: opts.describeMax ?? 100,
+    embedMaxPerTick: opts.embedMax ?? 100,
     inputBatch: opts.inputBatch ?? 25,
     kv: {} as never,
     now: () => 0,
   };
-  return { deps, embeddings, embedCalls };
+  return { deps, derived, vectors, describeCalls, embedCalls };
 }
 
 describe("hashText", () => {
@@ -64,84 +113,125 @@ describe("hashText", () => {
   });
 });
 
-describe("reconcileEmbeddings", () => {
-  it("cold-embeds every described recipe and stores its hash", async () => {
-    const { deps, embeddings } = makeDeps([
-      { slug: "a", description: "alpha" },
-      { slug: "b", description: "betas" },
-    ]);
-    const r = await reconcileEmbeddings(deps);
-    expect(r).toEqual({ embedded: 2, pruned: 0, pending: 0 });
-    expect(embeddings.get("a")).toEqual({ embedding: [5], description_hash: hashText("alpha") });
-    expect(embeddings.get("b")).toEqual({ embedding: [5], description_hash: hashText("betas") });
+describe("reconcileRecipeDerived", () => {
+  it("cold: describes then embeds every recipe", async () => {
+    const a = facet("a", { title: "A" });
+    const b = facet("b", { title: "B" });
+    const { deps, derived, vectors, describeCalls, embedCalls } = makeDeps([a, b]);
+
+    const r = await reconcileRecipeDerived(deps);
+
+    expect(r).toEqual({ described: 2, describePending: 0, embedded: 2, pruned: 0, pending: 0 });
+    expect(describeCalls).toEqual(["A", "B"]);
+    expect(embedCalls).toEqual([["desc:A", "desc:B"]]);
+    expect(derived.get("a")).toEqual({
+      slug: "a",
+      content_hash: contentHash(a),
+      description: "desc:A",
+      description_hash: hashText("desc:A"),
+    });
+    expect(vectors.get("a")).toEqual(["desc:A".length]);
   });
 
-  it("does nothing when every description is already embedded (change-driven)", async () => {
-    const { deps, embedCalls } = makeDeps(
-      [{ slug: "a", description: "alpha" }],
-      { a: { embedding: [5], description_hash: hashText("alpha") } },
-    );
-    const r = await reconcileEmbeddings(deps);
-    expect(r.embedded).toBe(0);
-    expect(embedCalls).toEqual([]); // no AI subrequest at steady state
-  });
-
-  it("re-embeds only the recipe whose description changed", async () => {
-    const { deps, embeddings, embedCalls } = makeDeps(
-      [
-        { slug: "a", description: "alpha CHANGED" },
-        { slug: "b", description: "beta" },
-      ],
-      {
-        a: { embedding: [5], description_hash: hashText("alpha") },
-        b: { embedding: [4], description_hash: hashText("beta") },
+  it("steady: no describe and no embed when content + description hashes are current", async () => {
+    const a = facet("a", { title: "A" });
+    const { deps, describeCalls, embedCalls } = makeDeps([a], {
+      a: {
+        content_hash: contentHash(a),
+        description: "desc:A",
+        description_hash: hashText("desc:A"),
+        embedding: [6],
       },
-    );
-    const r = await reconcileEmbeddings(deps);
+    });
+    const r = await reconcileRecipeDerived(deps);
+    expect(r.described).toBe(0);
+    expect(r.embedded).toBe(0);
+    expect(describeCalls).toEqual([]);
+    expect(embedCalls).toEqual([]);
+  });
+
+  it("re-describes (then re-embeds) only the recipe whose facets changed", async () => {
+    const aOld = facet("a", { title: "A" });
+    const aNew = facet("a", { title: "A2" }); // facet changed → content_hash differs
+    const b = facet("b", { title: "B" });
+    const { deps, derived, describeCalls, embedCalls } = makeDeps([aNew, b], {
+      a: { content_hash: contentHash(aOld), description: "desc:A", description_hash: hashText("desc:A"), embedding: [6] },
+      b: { content_hash: contentHash(b), description: "desc:B", description_hash: hashText("desc:B"), embedding: [6] },
+    });
+
+    const r = await reconcileRecipeDerived(deps);
+
+    expect(r.described).toBe(1);
     expect(r.embedded).toBe(1);
-    expect(embedCalls).toEqual([["alpha CHANGED"]]);
-    expect(embeddings.get("a")).toEqual({ embedding: [13], description_hash: hashText("alpha CHANGED") });
-    expect(embeddings.get("b")?.embedding).toEqual([4]); // untouched
+    expect(describeCalls).toEqual(["A2"]);
+    expect(embedCalls).toEqual([["desc:A2"]]);
+    expect(derived.get("a")).toEqual({
+      slug: "a",
+      content_hash: contentHash(aNew),
+      description: "desc:A2",
+      description_hash: hashText("desc:A2"),
+    });
+    expect(derived.get("b")?.description_hash).toBe(hashText("desc:B")); // untouched
   });
 
-  it("prunes an embedding whose recipe no longer has a description", async () => {
-    const { deps, embeddings } = makeDeps(
-      [{ slug: "a", description: "alpha" }],
-      {
-        a: { embedding: [5], description_hash: hashText("alpha") },
-        gone: { embedding: [9], description_hash: "deadbeef" },
-      },
-    );
-    const r = await reconcileEmbeddings(deps);
+  it("embeds a current description whose vector is missing (no re-describe)", async () => {
+    const a = facet("a", { title: "A" });
+    const { deps, describeCalls, embedCalls, vectors } = makeDeps([a], {
+      a: { content_hash: contentHash(a), description: "desc:A", description_hash: null }, // described, not embedded
+    });
+    const r = await reconcileRecipeDerived(deps);
+    expect(r.described).toBe(0);
+    expect(r.embedded).toBe(1);
+    expect(describeCalls).toEqual([]);
+    expect(embedCalls).toEqual([["desc:A"]]);
+    expect(vectors.get("a")).toEqual(["desc:A".length]);
+  });
+
+  it("prunes a derived row whose recipe no longer exists", async () => {
+    const a = facet("a", { title: "A" });
+    const { deps, derived } = makeDeps([a], {
+      a: { content_hash: contentHash(a), description: "desc:A", description_hash: hashText("desc:A"), embedding: [6] },
+      gone: { content_hash: "x", description: "d", description_hash: "y", embedding: [9] },
+    });
+    const r = await reconcileRecipeDerived(deps);
     expect(r.pruned).toBe(1);
+    expect(r.described).toBe(0);
     expect(r.embedded).toBe(0);
-    expect(embeddings.has("gone")).toBe(false);
+    expect(derived.has("gone")).toBe(false);
+  });
+
+  it("bounds describes per tick and resumes on the next", async () => {
+    const facets = ["a", "b", "c", "d", "e"].map((s) => facet(s, { title: s.toUpperCase() }));
+    const { deps, derived } = makeDeps(facets, {}, { describeMax: 2 });
+
+    const first = await reconcileRecipeDerived(deps);
+    // 2 described this tick; those same 2 then embed (embed cap is the default 100).
+    expect(first).toEqual({ described: 2, describePending: 3, embedded: 2, pruned: 0, pending: 0 });
+    expect([...derived.values()].filter((d) => d.description).length).toBe(2);
+
+    const second = await reconcileRecipeDerived(deps);
+    expect(second.described).toBe(2);
+    expect(second.describePending).toBe(1);
   });
 
   it("bounds embeds per tick and defers the rest as pending", async () => {
-    const recipes = ["a", "b", "c", "d", "e"].map((s) => ({ slug: s, description: s }));
-    const { deps, embeddings } = makeDeps(recipes, {}, { maxPerTick: 2 });
-    const first = await reconcileEmbeddings(deps);
-    expect(first).toEqual({ embedded: 2, pruned: 0, pending: 3 });
-    expect(embeddings.size).toBe(2);
-    // A second tick continues from where the first stopped.
-    const second = await reconcileEmbeddings(deps);
-    expect(second).toEqual({ embedded: 2, pruned: 0, pending: 1 });
-    expect(embeddings.size).toBe(4);
+    const facets = ["a", "b", "c"].map((s) => facet(s, { title: s }));
+    // All already described+current, none embedded → only the embed pass runs.
+    const stored: Record<string, StoredDerived> = {};
+    for (const f of facets) stored[f.slug] = { content_hash: contentHash(f), description: `desc:${f.title}`, description_hash: null };
+    const { deps } = makeDeps(facets, stored, { embedMax: 2 });
+    const r = await reconcileRecipeDerived(deps);
+    expect(r).toEqual({ described: 0, describePending: 0, embedded: 2, pruned: 0, pending: 1 });
   });
 
   it("chunks the embed batch by inputBatch, keeping vector↔slug alignment", async () => {
-    const recipes = [
-      { slug: "a", description: "a" },
-      { slug: "b", description: "bb" },
-      { slug: "c", description: "ccc" },
-    ];
-    const { deps, embeddings, embedCalls } = makeDeps(recipes, {}, { inputBatch: 2 });
-    const r = await reconcileEmbeddings(deps);
+    const facets = [facet("a", { title: "A" }), facet("b", { title: "BB" }), facet("c", { title: "CCC" })];
+    const { deps, vectors, embedCalls } = makeDeps(facets, {}, { inputBatch: 2 });
+    const r = await reconcileRecipeDerived(deps);
     expect(r.embedded).toBe(3);
-    expect(embedCalls).toEqual([["a", "bb"], ["ccc"]]); // two AI calls
-    expect(embeddings.get("a")?.embedding).toEqual([1]);
-    expect(embeddings.get("b")?.embedding).toEqual([2]);
-    expect(embeddings.get("c")?.embedding).toEqual([3]);
+    expect(embedCalls).toEqual([["desc:A", "desc:BB"], ["desc:CCC"]]); // two AI calls
+    expect(vectors.get("a")).toEqual(["desc:A".length]);
+    expect(vectors.get("b")).toEqual(["desc:BB".length]);
+    expect(vectors.get("c")).toEqual(["desc:CCC".length]);
   });
 });

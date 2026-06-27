@@ -199,15 +199,16 @@ export async function run({ recipesDir, root = REPO_ROOT } = {}) {
 // validated recipe into a table row; it MUST stay in sync with the Worker's read
 // reconstruction in src/recipe-index.ts (same column ↔ frontmatter map).
 //
-//   * scalar columns reconstructed verbatim: title, protein, cuisine, time_total,
-//     description (the semantic-identity brief; its embedding is reconciled
-//     Worker-side, not projected here — recipe_embeddings, migration 0007).
+//   * scalar columns reconstructed verbatim: title, protein, cuisine, time_total.
+//   * description is NO LONGER projected — it is a Worker-DERIVED field (recipe_derived,
+//     migration 0013): the build neither stores it as a column nor keeps it in `extra`
+//     (it is excluded via PROMOTED_FIELDS), so a lingering authored `description:` is dropped.
 //   * source_url ⇄ the recipe's `source` frontmatter (renamed only at the column
 //     boundary so discovery's source lookups are indexed).
 //   * ingredients_key + the JSON-array columns (incl. side_search_terms) hold a JSON
 //     value as TEXT.
 //   * extra holds a JSON object of every OTHER objective field (lossless).
-const RECIPE_SCALAR_COLUMNS = ['title', 'protein', 'cuisine', 'time_total', 'description'];
+const RECIPE_SCALAR_COLUMNS = ['title', 'protein', 'cuisine', 'time_total'];
 const RECIPE_JSON_COLUMNS = [
   'ingredients_key',
   'tags',
@@ -234,6 +235,9 @@ const RECIPE_COLUMNS = [
 const PROMOTED_FIELDS = new Set([
   'slug',
   'source',
+  // Worker-DERIVED (recipe_derived, migration 0013): not a `recipes` column, and listed here
+  // so a lingering authored `description:` is excluded from `extra` rather than re-stored.
+  'description',
   ...RECIPE_SCALAR_COLUMNS,
   ...RECIPE_JSON_COLUMNS,
 ]);

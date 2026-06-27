@@ -178,7 +178,7 @@ export function registerWriteTools(
     "update_recipe",
     {
       description:
-        "Edit a recipe's OBJECTIVE shared content (frontmatter/body) — the same recipe everyone in the group sees. `updates` is a partial patch (merged over the existing frontmatter); you need only send the fields you're changing. favorite and reject are NOT settable here: they are the caller's personal disposition — use toggle_favorite (favorite) / toggle_reject (reject). last_cooked is NOT settable here either — it is derived from the cooking log (record a cooked meal via log_cooked). The MERGED result must satisfy the full required-field contract (the same one create_recipe enforces): every system-consumed field present with its explicit empty form — so a one-field patch on a compliant recipe succeeds, but a patch that EMPTIES a required field (e.g. `description: \"\"`, `ingredients_key: []`) or sets an off-vocabulary `protein`/`cuisine`/`requires_equipment` value is rejected (validation_failed). For no protein focus set `protein: null` (never omit, never 'none').",
+        "Edit a recipe's OBJECTIVE shared content (frontmatter/body) — the same recipe everyone in the group sees. `updates` is a partial patch (merged over the existing frontmatter); you need only send the fields you're changing. favorite and reject are NOT settable here: they are the caller's personal disposition — use toggle_favorite (favorite) / toggle_reject (reject). last_cooked is NOT settable here either — it is derived from the cooking log (record a cooked meal via log_cooked). The MERGED result must satisfy the full required-field contract (the same one create_recipe enforces): every system-consumed field present with its explicit empty form — so a one-field patch on a compliant recipe succeeds, but a patch that EMPTIES a required field (e.g. `ingredients_key: []`) or sets an off-vocabulary `protein`/`cuisine`/`requires_equipment` value is rejected (validation_failed). For no protein focus set `protein: null` (never omit, never 'none'). `description` is NOT settable here — it is AI-generated from the recipe's facets and refreshed automatically when they change.",
       inputSchema: { slug: z.string(), updates: z.record(z.string(), z.unknown()) },
     },
     ({ slug, updates }) =>
@@ -196,6 +196,12 @@ export function registerWriteTools(
           throw new ToolError(
             "validation_failed",
             "last_cooked is derived from the cooking log; record a cooked meal via log_cooked instead of setting it directly",
+          );
+        }
+        if ("description" in updates) {
+          throw new ToolError(
+            "validation_failed",
+            "description is an AI-generated field now (derived from the recipe's facets and refreshed automatically when they change) — it is not authored content; omit it from updates",
           );
         }
         const updated_fields = Object.keys(updates);
