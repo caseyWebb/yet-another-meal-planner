@@ -555,7 +555,7 @@ Read the **shared email discoveries inbox** (the D1 `discovery_candidates` table
 
 ### `reject_discovery(url, reason?)`
 
-**Shared, group-wide suppression** of a discovery URL — the third disposition (alongside import and no-action) in the `semantic-meal-plan` flow. Stops the URL (and its tracker-wrapped variants) from ever resurfacing in `fetch_rss_discoveries` or `read_discovery_inbox` for **anyone**.
+**Shared, group-wide suppression** of a discovery URL — the third disposition (alongside import and no-action) in the meal-plan flow. Stops the URL (and its tracker-wrapped variants) from ever resurfacing in `fetch_rss_discoveries` or `read_discovery_inbox` for **anyone**.
 
 **Params:**
 - `url` (string, required): the discovery URL to suppress. Canonicalized (query/fragment/trailing-slash stripped) so a tracker-wrapped and a bare link suppress as one.

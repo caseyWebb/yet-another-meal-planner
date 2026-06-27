@@ -6,7 +6,7 @@ user-invocable: false
 
 ## Bringing a recipe into the corpus — triage, parse, classify, create
 
-These are the shared mechanics for importing an external recipe — whether I hand you a URL or paste (the `import-recipe` flow) or you're folding the discovery pools into a menu (`semantic-meal-plan`). The *mechanics* live here; *when* to reach for them, and whether an import lands on a plan, are the calling flow's call.
+These are the shared mechanics for importing an external recipe — whether I hand you a URL or paste (the `import-recipe` flow) or you're folding the discovery pools into a menu (the `meal-plan` flow). The *mechanics* live here; *when* to reach for them, and whether an import lands on a plan, are the calling flow's call.
 
 **Triage cheap-first.** Before spending a `parse_recipe`, judge fit from the title / summary / blurb against my taste and the request at hand — most discovery candidates are a quick no. Only parse the genuine fits, so cost is proportional to matches, not to discovery volume. (When I've handed you a specific recipe, there's no triage — the "yes" is implicit.)
 

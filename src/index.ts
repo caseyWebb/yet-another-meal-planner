@@ -116,7 +116,7 @@ export default {
    * The single cron trigger drives TWO independent jobs each tick — kept under one
    * trigger so the free-tier cron-count limit never bites:
    *   * flyer warm (flyer-cache-warming) — the cursor sweep in `flyer-warm.ts`.
-   *   * recipe-embedding reconcile (semantic-meal-plan) — `recipe-embeddings.ts`
+   *   * recipe-embedding reconcile (semantic recipe search) — `recipe-embeddings.ts`
    *     refills the embedding table from changed descriptions via `env.AI`. It draws
    *     on the INTERNAL-subrequest budget, not the flyer's external one, so the two
    *     coexist in a tick (see the reconcile module header).

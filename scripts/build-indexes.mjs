@@ -178,12 +178,12 @@ export async function buildRecipeIndexes(recipesDir) {
     ) {
       errors.push(`${rel}: course must be a string or an array of strings (got ${JSON.stringify(data.course)})`);
     }
-    // description (semantic-meal-plan) is the AI-written brief summary that seeds the
+    // description (semantic recipe search) is the AI-written brief summary that seeds the
     // recipe embedding and the compact candidate row — a non-empty string when present.
     if (data.description != null && (typeof data.description !== 'string' || data.description.trim() === '')) {
       errors.push(`${rel}: description must be a non-empty string (got ${JSON.stringify(data.description)})`);
     }
-    // side_search_terms (semantic-meal-plan) are AI-memoized phrases describing the
+    // side_search_terms (semantic recipe search) are AI-memoized phrases describing the
     // kind of side that complements a main; the semantic side-retrieval query.
     if (
       data.side_search_terms != null &&

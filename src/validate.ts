@@ -101,12 +101,12 @@ export function validateFile(path: string, content: string): void {
     ) {
       fail(path, `\`course\` must be a string or an array of strings (got ${JSON.stringify(fm.course)})`);
     }
-    // description (semantic-meal-plan) is the AI-written brief summary that seeds the
+    // description (semantic recipe search) is the AI-written brief summary that seeds the
     // recipe embedding and the compact candidate row — a non-empty string when present.
     if (fm.description != null && (typeof fm.description !== "string" || fm.description.trim() === "")) {
       fail(path, `\`description\` must be a non-empty string (got ${JSON.stringify(fm.description)})`);
     }
-    // side_search_terms (semantic-meal-plan) are AI-memoized phrases describing the
+    // side_search_terms (semantic recipe search) are AI-memoized phrases describing the
     // kind of side that complements a main; the semantic side-retrieval query.
     if (fm.side_search_terms != null) {
       if (

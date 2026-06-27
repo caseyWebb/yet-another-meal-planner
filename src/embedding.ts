@@ -1,4 +1,4 @@
-// Embedding + similarity helpers for semantic recipe search (semantic-meal-plan).
+// Embedding + similarity helpers for semantic recipe search.
 //
 // Two concerns live here, deliberately split:
 //   * `cosineSimilarity` is PURE arithmetic (no I/O) so the ranking math is

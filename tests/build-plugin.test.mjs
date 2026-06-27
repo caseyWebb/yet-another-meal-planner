@@ -391,7 +391,6 @@ test('AGENT_INSTRUCTIONS.md: workflows with expected needs + library tiers', asy
   assert.deepEqual(validateParsed(parsed).errors, []);
   assert.deepEqual(parsed.flows.map((f) => f.name), [
     'meal-plan',
-    'semantic-meal-plan',
     'update-pantry',
     'cook',
     'cooked',
@@ -407,8 +406,7 @@ test('AGENT_INSTRUCTIONS.md: workflows with expected needs + library tiers', asy
     'report-grocery-agent-bug',
   ]);
   const needs = Object.fromEntries(parsed.flows.map((f) => [f.name, f.needs]));
-  assert.deepEqual(needs['meal-plan'], ['cart', 'corpus']); // untouched: corpus-led, discovery as side channel
-  assert.deepEqual(needs['semantic-meal-plan'], ['cart', 'corpus', 'discovery']); // discovery-first experimental sibling
+  assert.deepEqual(needs['meal-plan'], ['cart', 'corpus', 'discovery']); // discovery-first retrieval flow
   assert.deepEqual(needs['import-recipe'], ['corpus', 'discovery']); // defers triage/import mechanics to the shared tier
   assert.deepEqual(needs['grocery-sale-check'], []); // light flow: core only
   assert.deepEqual(needs['cook'], []);
@@ -419,9 +417,8 @@ test('AGENT_INSTRUCTIONS.md: workflows with expected needs + library tiers', asy
   for (const tier of ['core', 'cart', 'corpus', 'discovery']) {
     assert.ok(files.has(`skills/grocery-${tier}/SKILL.md`), `missing grocery-${tier}`);
   }
-  assert.match(files.get('skills/meal-plan/SKILL.md'), /grocery-core`, `grocery-cart` and `grocery-corpus`/);
-  // the importing flows load the discovery tier so their in-body references resolve.
-  assert.match(files.get('skills/semantic-meal-plan/SKILL.md'), /`grocery-corpus` and `grocery-discovery`/);
+  // the meal-plan flow now loads the discovery tier (discovery-first) alongside cart + corpus.
+  assert.match(files.get('skills/meal-plan/SKILL.md'), /`grocery-core`, `grocery-cart`, `grocery-corpus` and `grocery-discovery`/);
   assert.match(files.get('skills/import-recipe/SKILL.md'), /`grocery-core`, `grocery-corpus` and `grocery-discovery`/);
   assert.match(files.get('skills/grocery-sale-check/SKILL.md'), /read the `grocery-core` skill before/);
 

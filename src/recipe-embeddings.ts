@@ -1,4 +1,4 @@
-// Recipe-embedding reconcile (semantic-meal-plan). The recipe vector is DERIVED from
+// Recipe-embedding reconcile (semantic recipe search). The recipe vector is DERIVED from
 // the description, and is generated Worker-side on the cron — NOT projected by the
 // Node build, which has no `env.AI` binding (see the design's embedding-placement
 // decision, option B). Each scheduled tick reconciles the sibling `recipe_embeddings`

@@ -54,7 +54,7 @@ The `user-invocable: false` frontmatter is emitted on library skills only (not w
 
 #### Scenario: An importing flow reaches the shared mechanics at runtime
 
-- **WHEN** the `semantic-meal-plan` or `import-recipe` workflow fires and its prerequisite line loads `grocery-discovery`
+- **WHEN** the `meal-plan` or `import-recipe` workflow fires and its prerequisite line loads `grocery-discovery`
 - **THEN** the triage/import mechanics are in context for that flow, so its in-body references to the shared mechanics resolve rather than pointing at a separate, un-loaded skill
 
 #### Scenario: Library skills do not auto-select and are hidden from user discovery
