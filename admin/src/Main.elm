@@ -1,82 +1,55 @@
 module Main exposing (main)
 
-{-| The grocery-agent operator admin panel (operator-admin capability).
+{-| The grocery-agent operator admin shell (operator-admin capability).
 
-A `Browser.element` SPA served at `/admin` behind Cloudflare Access, talking to the
-same-origin `/admin/api/*` JSON surface to onboard / list / rotate / revoke members.
-A minted invite code is shown ONCE here — it is never logged server-side.
+A client-routed `Browser.application` served under `/admin` behind Cloudflare Access. The
+panel is split into two top-level areas so it grows by adding routed pages, not by stacking
+cards on one view:
 
-Modeling discipline (see ./CLAUDE.md — "make impossible states impossible"):
+  - **Admin** — member management (onboard / list / rotate / revoke), in `Admin.Members`.
+  - **Dev** — the MCP tool console (inspect + run tools as a chosen member), in
+    `Dev.ToolConsole`.
 
-  - the member list is `WebData` (NotAsked | Loading | Failure | Success), never a
-    `loading : Bool` + `error : Maybe String` + `data` triple that can contradict;
-  - the in-flight mutation is one `ActionState` custom type that ties any error to the
-    operation that produced it, so "busy", "which operation", and "what failed" can
-    never disagree, and one-mutation-at-a-time falls out for free.
+The current page **and its sub-model** are one `Page` union (a page owns its state), so
+being "on the Tools page holding Members' state" is unrepresentable. Navigation is by real
+URLs (deep-linkable, refresh-stable); the Worker serves this shell for any unmatched
+`/admin/*` route.
 
 -}
 
+import Admin.Members as Members
 import Browser
-import Html exposing (Html, button, code, div, form, h1, h2, input, label, p, span, strong, table, tbody, td, text, th, thead, tr)
-import Html.Attributes exposing (attribute, class, disabled, placeholder, type_, value)
-import Html.Events exposing (onClick, onInput, onSubmit)
-import Http
-import Json.Decode as Decode exposing (Decoder)
-import Json.Encode as Encode
-import RemoteData exposing (RemoteData(..), WebData)
-import Url
+import Browser.Navigation as Nav
+import Dev.ToolConsole as ToolConsole
+import Html exposing (Html, a, div, h1, nav, text)
+import Html.Attributes exposing (class, classList)
+import Route exposing (Route)
+import Url exposing (Url)
 
 
 
 -- MODEL
 
 
-{-| Credentials the server mints on onboard/rotate — handed to a member, shown once. -}
-type alias Credentials =
-    { username : String
-    , inviteCode : String
-    , connectorUrl : String
-    }
-
-
-{-| The single mutation that can be in flight. Onboard/rotate/revoke are mutually
-exclusive (one operator, one click), so this is one value — not three Bools — and the
-operation's identity (incl. the target username) travels with it.
--}
-type Operation
-    = Onboard
-    | RotateInvite String
-    | RevokeMember String
-
-
-{-| Idle, working on an operation, or showing a failed one + its error. A failure is
-inseparable from the operation that caused it; there is no free-floating `Maybe String`.
--}
-type ActionState
-    = Idle
-    | Busy Operation
-    | Failed Operation Http.Error
-
-
 type alias Model =
-    { members : WebData (List String)
-    , usernameInput : String
-    , inviteInput : String
-    , action : ActionState
-    , banner : Maybe Credentials
+    { key : Nav.Key
+    , route : Route
+    , page : Page
     }
 
 
-init : () -> ( Model, Cmd Msg )
-init _ =
-    ( { members = Loading
-      , usernameInput = ""
-      , inviteInput = ""
-      , action = Idle
-      , banner = Nothing
-      }
-    , fetchMembers
-    )
+{-| The live page and its state, as one value — you cannot be on one page holding
+another's model. -}
+type Page
+    = MembersPage Members.Model
+    | ToolsPage ToolConsole.Model
+    | NotFoundPage
+
+
+init : () -> Url -> Nav.Key -> ( Model, Cmd Msg )
+init _ url key =
+    -- `?as=` seeds the Dev workbench's persona on a deep link; it is model state after.
+    enter (Route.fromUrl url) (Route.actingAsParam url) { key = key, route = Route.NotFound, page = NotFoundPage }
 
 
 
@@ -84,360 +57,151 @@ init _ =
 
 
 type Msg
-    = GotMembers (WebData (List String))
-    | UsernameChanged String
-    | InviteChanged String
-    | SubmitOnboard
-    | OnboardResult (Result Http.Error Credentials)
-    | ClickRotate String
-    | RotateResult String (Result Http.Error Credentials)
-    | ClickRevoke String
-    | RevokeResult String (Result Http.Error ())
-    | DismissBanner
+    = LinkClicked Browser.UrlRequest
+    | UrlChanged Url
+    | MembersMsg Members.Msg
+    | ToolsMsg ToolConsole.Msg
 
 
 update : Msg -> Model -> ( Model, Cmd Msg )
 update msg model =
-    case msg of
-        GotMembers members ->
-            ( { model | members = members }, Cmd.none )
+    case ( msg, model.page ) of
+        ( LinkClicked (Browser.Internal url), _ ) ->
+            ( model, Nav.pushUrl model.key (Url.toString url) )
 
-        UsernameChanged value ->
-            ( { model | usernameInput = value }, Cmd.none )
+        ( LinkClicked (Browser.External href), _ ) ->
+            ( model, Nav.load href )
 
-        InviteChanged value ->
-            ( { model | inviteInput = value }, Cmd.none )
+        ( UrlChanged url, _ ) ->
+            stepTo (Route.fromUrl url) model
 
-        SubmitOnboard ->
-            case ( isBusy model.action, String.trim model.usernameInput ) of
-                ( True, _ ) ->
-                    ( model, Cmd.none )
+        ( MembersMsg subMsg, MembersPage subModel ) ->
+            let
+                ( subModel2, cmd ) =
+                    Members.update subMsg subModel
+            in
+            ( { model | page = MembersPage subModel2 }, Cmd.map MembersMsg cmd )
 
-                ( False, "" ) ->
-                    ( model, Cmd.none )
+        ( ToolsMsg subMsg, ToolsPage subModel ) ->
+            let
+                ( subModel2, cmd ) =
+                    ToolConsole.update subMsg subModel
+            in
+            ( { model | page = ToolsPage subModel2 }, Cmd.map ToolsMsg cmd )
 
-                ( False, username ) ->
-                    ( { model | action = Busy Onboard }
-                    , onboard username (String.trim model.inviteInput)
-                    )
+        -- A sub-message for a page we are no longer on (a late response): drop it.
+        ( MembersMsg _, _ ) ->
+            ( model, Cmd.none )
 
-        OnboardResult (Ok credentials) ->
-            ( { model
-                | action = Idle
-                , usernameInput = ""
-                , inviteInput = ""
-                , banner = Just credentials
-              }
-            , fetchMembers
-            )
-
-        OnboardResult (Err error) ->
-            ( { model | action = Failed Onboard error }, Cmd.none )
-
-        ClickRotate username ->
-            start model (RotateInvite username) (rotate username)
-
-        RotateResult _ (Ok credentials) ->
-            ( { model | action = Idle, banner = Just credentials }, Cmd.none )
-
-        RotateResult username (Err error) ->
-            ( { model | action = Failed (RotateInvite username) error }, Cmd.none )
-
-        ClickRevoke username ->
-            start model (RevokeMember username) (revoke username)
-
-        RevokeResult username (Ok ()) ->
-            ( { model
-                | action = Idle
-                , members = RemoteData.map (List.filter ((/=) username)) model.members
-                , banner = clearBannerFor username model.banner
-              }
-            , Cmd.none
-            )
-
-        RevokeResult username (Err error) ->
-            ( { model | action = Failed (RevokeMember username) error }, Cmd.none )
-
-        DismissBanner ->
-            ( { model | banner = Nothing }, Cmd.none )
+        ( ToolsMsg _, _ ) ->
+            ( model, Cmd.none )
 
 
-{-| Begin an operation only when nothing else is in flight (no concurrent mutations). -}
-start : Model -> Operation -> Cmd Msg -> ( Model, Cmd Msg )
-start model operation cmd =
-    if isBusy model.action then
-        ( model, Cmd.none )
+{-| Navigate in-app: stay on the live page when it is the same area (preserving its state —
+e.g. reopen a tool without losing the persona/catalog), else build the area fresh. The
+acting-as persona is model state, so it is not re-seeded on in-app navigation.
+-}
+stepTo : Route -> Model -> ( Model, Cmd Msg )
+stepTo route model =
+    case ( route, model.page ) of
+        ( Route.Tools selected, ToolsPage subModel ) ->
+            let
+                ( subModel2, cmd ) =
+                    ToolConsole.selectTool selected subModel
+            in
+            ( { model | route = route, page = ToolsPage subModel2 }, Cmd.map ToolsMsg cmd )
 
-    else
-        ( { model | action = Busy operation }, cmd )
-
-
-isBusy : ActionState -> Bool
-isBusy action =
-    case action of
-        Busy _ ->
-            True
+        ( Route.Members, MembersPage _ ) ->
+            ( { model | route = route }, Cmd.none )
 
         _ ->
-            False
+            enter route Nothing model
 
 
-{-| Drop the "shown once" banner if it belongs to a member we just revoked. -}
-clearBannerFor : String -> Maybe Credentials -> Maybe Credentials
-clearBannerFor username banner =
-    case banner of
-        Just credentials ->
-            if credentials.username == username then
-                Nothing
+{-| Build a route's page from scratch. For Tools, `actingAs` seeds the persona (only ever
+`Just` on the initial deep link). -}
+enter : Route -> Maybe String -> Model -> ( Model, Cmd Msg )
+enter route actingAs model =
+    case route of
+        Route.Members ->
+            let
+                ( subModel, cmd ) =
+                    Members.init
+            in
+            ( { model | route = route, page = MembersPage subModel }, Cmd.map MembersMsg cmd )
 
-            else
-                banner
+        Route.Tools selected ->
+            let
+                ( subModel, cmd ) =
+                    ToolConsole.init { persona = actingAs, tool = selected }
+            in
+            ( { model | route = route, page = ToolsPage subModel }, Cmd.map ToolsMsg cmd )
 
-        Nothing ->
-            Nothing
-
-
-
--- HTTP
-
-
-fetchMembers : Cmd Msg
-fetchMembers =
-    Http.get
-        { url = "/admin/api/tenants"
-        , expect = Http.expectJson (RemoteData.fromResult >> GotMembers) membersDecoder
-        }
-
-
-onboard : String -> String -> Cmd Msg
-onboard username inviteCode =
-    Http.post
-        { url = "/admin/api/tenants"
-        , body = Http.jsonBody (onboardBody username inviteCode)
-        , expect = Http.expectJson OnboardResult credentialsDecoder
-        }
-
-
-onboardBody : String -> String -> Encode.Value
-onboardBody username inviteCode =
-    Encode.object
-        (( "username", Encode.string username )
-            :: (if inviteCode == "" then
-                    []
-
-                else
-                    [ ( "invite_code", Encode.string inviteCode ) ]
-               )
-        )
-
-
-rotate : String -> Cmd Msg
-rotate username =
-    Http.post
-        { url = "/admin/api/tenants/" ++ Url.percentEncode username ++ "/rotate"
-        , body = Http.emptyBody
-        , expect = Http.expectJson (RotateResult username) credentialsDecoder
-        }
-
-
-revoke : String -> Cmd Msg
-revoke username =
-    Http.request
-        { method = "DELETE"
-        , headers = []
-        , url = "/admin/api/tenants/" ++ Url.percentEncode username
-        , body = Http.emptyBody
-        , expect = Http.expectWhatever (RevokeResult username)
-        , timeout = Nothing
-        , tracker = Nothing
-        }
-
-
-membersDecoder : Decoder (List String)
-membersDecoder =
-    Decode.field "tenants" (Decode.list Decode.string)
-
-
-credentialsDecoder : Decoder Credentials
-credentialsDecoder =
-    Decode.map3 Credentials
-        (Decode.field "username" Decode.string)
-        (Decode.field "invite_code" Decode.string)
-        (Decode.field "connector_url" Decode.string)
-
-
-httpError : Http.Error -> String
-httpError error =
-    case error of
-        Http.BadUrl url ->
-            "bad URL " ++ url
-
-        Http.Timeout ->
-            "the request timed out"
-
-        Http.NetworkError ->
-            "network error — is the Worker reachable?"
-
-        Http.BadStatus 403 ->
-            "forbidden (403) — your Cloudflare Access session is missing or expired"
-
-        Http.BadStatus 404 ->
-            "not found (404) — the admin surface may be disabled (ACCESS_* unset)"
-
-        Http.BadStatus status ->
-            "HTTP " ++ String.fromInt status
-
-        Http.BadBody detail ->
-            "unexpected response: " ++ detail
+        Route.NotFound ->
+            ( { model | route = route, page = NotFoundPage }, Cmd.none )
 
 
 
 -- VIEW
 
 
-view : Model -> Html Msg
+view : Model -> Browser.Document Msg
 view model =
-    div [ class "wrap" ]
-        [ h1 [] [ text "grocery-agent admin" ]
-        , viewActionError model.action
-        , viewBanner model.banner
-        , viewOnboard model
-        , viewMembers model
+    { title = "grocery-agent admin"
+    , body =
+        [ div [ class "wrap" ]
+            [ h1 [] [ text "grocery-agent admin" ]
+            , viewNav model.route
+            , viewPage model
+            ]
+        ]
+    }
+
+
+viewNav : Route -> Html Msg
+viewNav route =
+    nav [ class "nav" ]
+        [ navLink "Admin" Route.Members (isAdmin route)
+        , navLink "Dev · Tools" (Route.Tools Nothing) (isDev route)
         ]
 
 
-viewActionError : ActionState -> Html Msg
-viewActionError action =
-    case action of
-        Failed operation error ->
-            div [ class "error" ] [ text (operationLabel operation ++ " failed: " ++ httpError error) ]
+navLink : String -> Route -> Bool -> Html Msg
+navLink label route active =
+    a [ Route.href route, classList [ ( "nav-link", True ), ( "active", active ) ] ] [ text label ]
+
+
+isAdmin : Route -> Bool
+isAdmin route =
+    case route of
+        Route.Members ->
+            True
 
         _ ->
-            text ""
+            False
 
 
-operationLabel : Operation -> String
-operationLabel operation =
-    case operation of
-        Onboard ->
-            "Onboard"
+isDev : Route -> Bool
+isDev route =
+    case route of
+        Route.Tools _ ->
+            True
 
-        RotateInvite username ->
-            "Rotating " ++ username
-
-        RevokeMember username ->
-            "Revoking " ++ username
+        _ ->
+            False
 
 
-viewBanner : Maybe Credentials -> Html Msg
-viewBanner banner =
-    case banner of
-        Just credentials ->
-            div [ class "minted" ]
-                [ div [ class "minted-head" ]
-                    [ strong [] [ text ("Invite for " ++ credentials.username) ]
-                    , button [ class "link", onClick DismissBanner ] [ text "Dismiss" ]
-                    ]
-                , p [ class "once" ] [ text "Shown once — copy it now. It is never logged." ]
-                , credentialRow "Invite code" credentials.inviteCode
-                , credentialRow "Connector URL" credentials.connectorUrl
-                ]
+viewPage : Model -> Html Msg
+viewPage model =
+    case model.page of
+        MembersPage subModel ->
+            Html.map MembersMsg (Members.view subModel)
 
-        Nothing ->
-            text ""
+        ToolsPage subModel ->
+            Html.map ToolsMsg (ToolConsole.view subModel)
 
-
-credentialRow : String -> String -> Html Msg
-credentialRow key val =
-    div [ class "row" ] [ span [ class "k" ] [ text key ], code [ class "v" ] [ text val ] ]
-
-
-viewOnboard : Model -> Html Msg
-viewOnboard model =
-    let
-        submitting =
-            model.action == Busy Onboard
-    in
-    form [ class "card", onSubmit SubmitOnboard ]
-        [ h2 [] [ text "Onboard a member" ]
-        , label []
-            [ text "Username"
-            , input [ placeholder "e.g. casey", value model.usernameInput, onInput UsernameChanged, attribute "autocomplete" "off" ] []
-            ]
-        , label []
-            [ text "Invite code (optional — blank generates one)"
-            , input [ placeholder "leave blank to auto-generate", value model.inviteInput, onInput InviteChanged, attribute "autocomplete" "off" ] []
-            ]
-        , button
-            [ type_ "submit", disabled (submitting || String.trim model.usernameInput == "") ]
-            [ text
-                (if submitting then
-                    "Onboarding…"
-
-                 else
-                    "Onboard"
-                )
-            ]
-        ]
-
-
-viewMembers : Model -> Html Msg
-viewMembers model =
-    div [ class "card" ]
-        [ h2 [] [ text "Members" ]
-        , case model.members of
-            NotAsked ->
-                p [] [ text "…" ]
-
-            Loading ->
-                p [] [ text "Loading…" ]
-
-            Failure error ->
-                div [ class "error" ] [ text ("Could not load members: " ++ httpError error) ]
-
-            Success [] ->
-                p [] [ text "No members yet." ]
-
-            Success members ->
-                table []
-                    [ thead [] [ tr [] [ th [] [ text "Username" ], th [] [ text "Actions" ] ] ]
-                    , tbody [] (List.map (viewMember model.action) members)
-                    ]
-        ]
-
-
-viewMember : ActionState -> String -> Html Msg
-viewMember action username =
-    let
-        rotating =
-            action == Busy (RotateInvite username)
-
-        revoking =
-            action == Busy (RevokeMember username)
-    in
-    tr []
-        [ td [] [ text username ]
-        , td []
-            [ button [ class "link", disabled (isBusy action), onClick (ClickRotate username) ]
-                [ text
-                    (if rotating then
-                        "Rotating…"
-
-                     else
-                        "Rotate invite"
-                    )
-                ]
-            , button [ class "danger", disabled (isBusy action), onClick (ClickRevoke username) ]
-                [ text
-                    (if revoking then
-                        "Revoking…"
-
-                     else
-                        "Revoke"
-                    )
-                ]
-            ]
-        ]
+        NotFoundPage ->
+            div [ class "card" ] [ text "Not found." ]
 
 
 
@@ -446,9 +210,11 @@ viewMember action username =
 
 main : Program () Model Msg
 main =
-    Browser.element
+    Browser.application
         { init = init
         , update = update
         , view = view
         , subscriptions = always Sub.none
+        , onUrlRequest = LinkClicked
+        , onUrlChange = UrlChanged
         }

@@ -27,11 +27,38 @@
       .row { display: flex; gap: .75rem; align-items: baseline; margin: .35rem 0; }
       .row .k { width: 8rem; color: #666; font-size: .85rem; }
       .row .v { font-family: ui-monospace, monospace; word-break: break-all; }
+      textarea { width: 100%; box-sizing: border-box; font: .9rem ui-monospace, monospace; padding: .5rem; border: 1px solid #ccc; border-radius: .3rem; }
+      select { font-size: .95rem; padding: .35rem; border: 1px solid #ccc; border-radius: .3rem; }
+      pre { background: #f6f6f6; border: 1px solid #eee; border-radius: .4rem; padding: .6rem .8rem; overflow: auto; font-size: .8rem; margin: .35rem 0; }
+      .muted { color: #888; }
+      .small { font-size: .8rem; }
+      /* Top-level area nav (Admin / Dev). */
+      .nav { display: flex; gap: .5rem; margin: .5rem 0 1.25rem; border-bottom: 1px solid #e5e5e5; }
+      .nav-link { text-decoration: none; color: #555; padding: .5rem .75rem; border-bottom: 2px solid transparent; }
+      .nav-link.active { color: #222; border-bottom-color: var(--accent); font-weight: 600; }
+      /* Tool console. */
+      .persona-bar { display: flex; gap: .75rem; align-items: center; flex-wrap: wrap; margin: .25rem 0 1rem; padding-bottom: .75rem; border-bottom: 1px solid #eee; }
+      .persona-label .persona { font-family: ui-monospace, monospace; }
+      .persona-label .persona.real { color: var(--danger); }
+      .workbench { display: grid; grid-template-columns: 16rem 1fr; gap: 1.25rem; }
+      .tool-list { list-style: none; margin: 0; padding: 0; max-height: 32rem; overflow: auto; }
+      .tool-item { padding: .4rem .5rem; border-radius: .35rem; }
+      .tool-item.active { background: #fff7ee; }
+      .tool-item .tool-name { display: block; font-family: ui-monospace, monospace; font-size: .85rem; color: #1a5; text-decoration: none; }
+      .tool-item .tool-desc { margin: .15rem 0 0; font-size: .75rem; color: #777; max-height: 2.6em; overflow: hidden; }
+      .schema-label { font-size: .75rem; text-transform: uppercase; letter-spacing: .04em; color: #999; }
+      .run { display: flex; gap: .5rem; align-items: center; margin: .5rem 0; }
+      .confirm { background: #fdecec; border: 1px solid var(--danger); border-radius: .5rem; padding: .75rem 1rem; margin: .5rem 0; }
+      button.danger-solid { background: var(--danger); color: #fff; }
+      .result { border-left: 3px solid #1a5; padding-left: .6rem; }
+      .result.error { border-left-color: var(--danger); }
     </style>
   </head>
   <body>
     <div id="app"></div>
-    <script src="./elm.js"></script>
+    <!-- Absolute path: the SPA is client-routed (Browser.application), so it loads at
+         deep URLs like /admin/dev/tools/<tool> where a relative `./elm.js` would 404. -->
+    <script src="/admin/elm.js"></script>
     <script>
       Elm.Main.init({ node: document.getElementById("app") });
     </script>

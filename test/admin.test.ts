@@ -243,4 +243,71 @@ describe("handleAdmin (routing + gate)", () => {
     // auto-trailing-slash would 307 back to /admin/, looping via run_worker_first).
     expect(askedPath).toBe("/admin");
   });
+
+  it("serves the SPA shell for an unmatched client route (deep link → 200, URL kept)", async () => {
+    const asked: string[] = [];
+    const env = {
+      TENANT_KV: memKv(),
+      KROGER_KV: memKv(),
+      DB: throwingD1(),
+      ADMIN_DEV_BYPASS: "1",
+      ASSETS: {
+        fetch: async (req: Request) => {
+          const p = new URL(req.url).pathname;
+          asked.push(p);
+          // Only the canonical `/admin/` is a real asset; the client route 404s.
+          return p === "/admin/"
+            ? new Response("<html>shell</html>", { status: 200 })
+            : new Response("not found", { status: 404 });
+        },
+      },
+    } as unknown as Env;
+    const res = await handleAdmin(new Request("https://x/admin/dev/tools/place_order"), env);
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain("shell");
+    // Tried the real path first (404), then fell back to the canonical `/admin/` shell.
+    expect(asked).toEqual(["/admin/dev/tools/place_order", "/admin/"]);
+  });
+});
+
+describe("handleAdmin (tool console)", () => {
+  const consoleEnv = (extra: Record<string, unknown> = {}) =>
+    ({
+      TENANT_KV: memKv({ "tenant:bob": JSON.stringify({ id: "bob" }) }),
+      KROGER_KV: memKv(),
+      DB: {} as unknown as Env["DB"],
+      ADMIN_DEV_BYPASS: "1",
+      ...extra,
+    }) as unknown as Env;
+
+  it("lists the live tool catalog for an allowlisted tenant", async () => {
+    const res = await handleAdmin(new Request("https://x/admin/api/tools?tenant=bob"), consoleEnv());
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { tools: { name: string }[] };
+    const names = body.tools.map((t) => t.name);
+    // The catalog is the real buildServer surface — a couple of stable names suffice.
+    expect(names).toContain("search_recipes");
+    expect(names).toContain("read_recipe");
+  });
+
+  it("400s when no acting-as tenant is supplied", async () => {
+    const res = await handleAdmin(new Request("https://x/admin/api/tools"), consoleEnv());
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toBe("validation_failed");
+  });
+
+  it("404s when acting as a non-member", async () => {
+    const res = await handleAdmin(
+      new Request("https://x/admin/api/tools?tenant=ghost"),
+      consoleEnv(),
+    );
+    expect(res.status).toBe(404);
+    expect(((await res.json()) as { error: string }).error).toBe("not_found");
+  });
+
+  it("404s the tool console when the surface is disabled (no Access config)", async () => {
+    const env = { TENANT_KV: memKv(), KROGER_KV: memKv(), DB: {} } as unknown as Env;
+    const res = await handleAdmin(new Request("https://x/admin/api/tools?tenant=bob"), env);
+    expect(res.status).toBe(404);
+  });
 });

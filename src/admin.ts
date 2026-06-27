@@ -20,7 +20,14 @@ import { createRemoteJWKSet, jwtVerify } from "jose";
 import type { Env } from "./env.js";
 import { db, type Db } from "./db.js";
 import { ToolError } from "./errors.js";
-import { kvTenantStore, normalizeTenantId } from "./tenant.js";
+import {
+  kvTenantStore,
+  normalizeTenantId,
+  resolveTenant,
+  directoryFromEnv,
+  type Tenant,
+} from "./tenant.js";
+import { listToolsFor, callToolFor } from "./admin-tools.js";
 import type { KvStore } from "./kroger-user.js";
 
 const TENANT_PREFIX = "tenant:"; // mirrors src/tenant.ts (the allowlist directory)
@@ -229,8 +236,30 @@ async function readJsonBody(request: Request): Promise<Record<string, unknown>> 
   }
 }
 
+/**
+ * Resolve the operator-chosen "acting as" tenant the SAME way the MCP surface does
+ * (allowlist re-check via `resolveTenant`), mapping a missing id to `validation_failed`
+ * (400) and a non-member to `not_found` (404) so the tool-console routes fail like the
+ * rest of the admin API. The resulting `Tenant` is identical to what `/mcp` builds.
+ */
+async function resolveActingTenant(env: Env, tenantId: string | null): Promise<Tenant> {
+  if (!tenantId || !tenantId.trim()) {
+    throw new ToolError("validation_failed", "An acting-as tenant is required");
+  }
+  const resolved = await resolveTenant(env, tenantId, directoryFromEnv(env));
+  if ("error" in resolved) {
+    throw new ToolError("not_found", resolved.message);
+  }
+  return resolved;
+}
+
 /** Route an `/admin/api/*` request to an operation. Throws ToolError; the caller serializes. */
-async function routeAdminApi(deps: AdminDeps, request: Request, url: URL): Promise<unknown> {
+async function routeAdminApi(
+  env: Env,
+  deps: AdminDeps,
+  request: Request,
+  url: URL,
+): Promise<unknown> {
   const method = request.method;
   const path = url.pathname;
 
@@ -259,6 +288,29 @@ async function routeAdminApi(deps: AdminDeps, request: Request, url: URL): Promi
     return revoke(deps, decodeURIComponent(tenantMatch[1]));
   }
 
+  // Tool console (the operator dev workbench): list + invoke the live MCP tool surface
+  // AS a chosen tenant, over the same `buildServer` path `/mcp` uses (src/admin-tools.ts).
+  if (path === "/admin/api/tools") {
+    if (method === "GET") {
+      const tenant = await resolveActingTenant(env, url.searchParams.get("tenant"));
+      return listToolsFor(env, tenant);
+    }
+    throw new ToolError("unsupported", `Method ${method} not supported on ${path}`);
+  }
+
+  const toolMatch = path.match(/^\/admin\/api\/tools\/([^/]+)$/);
+  if (toolMatch && method === "POST") {
+    const body = await readJsonBody(request);
+    const tenant = await resolveActingTenant(env, body.tenant != null ? String(body.tenant) : null);
+    // Only a JSON object is valid `arguments`; anything else is an empty arg set, which
+    // the tool's own input schema then accepts or rejects (validation stays the tool's).
+    const args =
+      body.arguments && typeof body.arguments === "object" && !Array.isArray(body.arguments)
+        ? (body.arguments as Record<string, unknown>)
+        : {};
+    return callToolFor(env, tenant, decodeURIComponent(toolMatch[1]), args);
+  }
+
   throw new ToolError("not_found", `No admin route for ${method} ${path}`);
 }
 
@@ -283,7 +335,7 @@ export async function handleAdmin(request: Request, env: Env): Promise<Response>
   const url = new URL(request.url);
   const path = url.pathname;
 
-  if (path === "/admin/api/tenants" || path.startsWith("/admin/api/tenants/")) {
+  if (path.startsWith("/admin/api/")) {
     const deps: AdminDeps = {
       tenantKv: env.TENANT_KV,
       krogerKv: env.KROGER_KV as unknown as KvStore,
@@ -291,7 +343,7 @@ export async function handleAdmin(request: Request, env: Env): Promise<Response>
       randomCode: randomInviteCode,
     };
     try {
-      return json(await routeAdminApi(deps, request, url), 200);
+      return json(await routeAdminApi(env, deps, request, url), 200);
     } catch (e) {
       if (e instanceof ToolError) return json(e.toShape(), statusFor(e));
       const message = e instanceof Error ? e.message : String(e);
@@ -301,12 +353,25 @@ export async function handleAdmin(request: Request, env: Env): Promise<Response>
 
   // Static SPA: serve from the ASSETS binding (already past the Access gate). Pass the
   // request through UNCHANGED and let Static Assets' html_handling resolve it — `/admin`
-  // → `/admin/` (trailing-slash redirect, so the page's relative `./elm.js` resolves),
-  // `/admin/` → index.html, `/admin/elm.js` → the bundle. Rewriting to `/admin/index.html`
-  // here would hit that same auto-redirect on every request and loop, because
-  // run_worker_first routes the redirect target back through this handler.
+  // → `/admin/` (trailing-slash redirect, so the page's `/admin/elm.js` resolves),
+  // `/admin/` → index.html, `/admin/elm.js` → the bundle.
+  //
+  // The SPA is client-routed (`Browser.application`), so a GET for an in-app route that
+  // maps to NO asset (e.g. `/admin/dev/tools/place_order`) comes back 404 from ASSETS.
+  // That is a client route: serve the SPA shell CONTENT at the original URL so the deep
+  // link / refresh resolves client-side. We fetch the canonical `/admin/` (html_handling
+  // returns index.html with 200) rather than `/admin/index.html` (which 307s back to
+  // `/admin/`, and returning that redirect would drop the client route from the URL).
+  // `env.ASSETS.fetch` bypasses run_worker_first, so this never re-enters and loops.
   if (request.method === "GET" || request.method === "HEAD") {
-    return env.ASSETS.fetch(request);
+    const direct = await env.ASSETS.fetch(request);
+    if (direct.status !== 404) return direct;
+    const shellUrl = new URL(request.url);
+    shellUrl.pathname = "/admin/";
+    shellUrl.search = "";
+    return env.ASSETS.fetch(
+      new Request(shellUrl.toString(), { method: request.method, headers: request.headers }),
+    );
   }
   return new Response("Method not allowed", { status: 405 });
 }
