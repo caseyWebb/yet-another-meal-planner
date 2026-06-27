@@ -3,9 +3,9 @@ import { PROTEIN_VOCAB, CUISINE_VOCAB, EQUIPMENT_VOCAB } from "../src/vocab.js";
 import { EQUIPMENT_VOCAB as KITCHEN_EQUIPMENT_VOCAB } from "../src/kitchen.js";
 
 // The Worker validator (src/validate.ts), the kitchen logic (src/kitchen.ts), and
-// the Node build validator (scripts/build-indexes.mjs) all draw these sets from
-// src/vocab.js. These guards pin the buckets that matter and prove there is no
-// second copy (the build side is covered behaviorally in tests/build-indexes.test.mjs).
+// the reconcile contract (src/recipe-contract.js, run by src/recipe-projection.ts) all
+// draw these sets from src/vocab.js. These guards pin the buckets that matter and prove
+// there is no second copy (the reconcile side is covered in test/recipe-projection.test.ts).
 describe("controlled vocabularies (single source of truth)", () => {
   it("protein uses coarse buckets — shellfish in, shrimp/none out", () => {
     expect(PROTEIN_VOCAB).toContain("shellfish");

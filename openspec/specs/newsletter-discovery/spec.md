@@ -119,11 +119,11 @@ Discovery via email is unblockable, but full-recipe import still hits the same b
 - **WHEN** the user chooses a recipe link found in an inbox email whose source is paywalled
 - **THEN** the agent presents the clean link, the user pastes the recipe text, and the agent assembles and persists it via `create_recipe`
 
-### Requirement: Discovery allowlist config is schema-validated at build
+### Requirement: Discovery allowlist writes normalize and dedupe addresses
 
-`scripts/build-indexes.mjs` SHALL validate the discovery allowlist config: TOML parses, required fields present, and allowlist entries are well-formed (a `senders`/`members` shape with valid addresses). The D1 `discovery_candidates` table is not a build artifact and is not validated at build time. Validation failures on the allowlist SHALL be reported like other build validation errors and SHALL NOT silently pass.
+The Worker SHALL accept additions to the shared inbound-newsletter allowlist (the `discovery_senders` / `discovery_members` D1 tables) through `update_discovery_sources`. On write it SHALL normalize each address (trim + lowercase), drop any entry without an `@`, and dedupe against existing rows, leaving existing entries untouched and returning the count of newly added entries per kind.
 
-#### Scenario: Malformed allowlist config fails the build
+#### Scenario: Addresses are normalized and deduped on write
 
-- **WHEN** the discovery allowlist config has a malformed entry (e.g. missing address field or invalid shape)
-- **THEN** `build-indexes.mjs` reports a validation error rather than producing indexes
+- **WHEN** `update_discovery_sources` adds `members`/`senders` entries, some duplicating existing rows and some lacking an `@`
+- **THEN** each address is trimmed and lowercased, entries without an `@` are dropped, duplicates are ignored, and the tool returns the count of newly added entries

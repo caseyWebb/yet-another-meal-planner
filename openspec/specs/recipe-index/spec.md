@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Defines the recipe index: the shared, objective projection of `recipes/*.md`, stored in and served from the D1 `recipes` table. The Worker reads the index from D1 — not from KV or the GitHub data repo — for the read-heavy operations that require it, and the build projects the validated recipe set into the table on every recipe push.
+Defines the recipe index: the shared, objective projection of `recipes/*.md`, stored in and served from the D1 `recipes` table. The Worker reads the index from D1 — not from KV or the GitHub data repo — for the read-heavy operations that require it, and the Worker's scheduled reconcile projects the validated recipe set into the table from the R2 corpus.
 
 ## Requirements
 
@@ -37,16 +37,16 @@ A *provisioned but empty* `recipes` table SHALL be treated as an empty corpus (t
 - **WHEN** `parse_recipe` or `create_recipe` checks whether a source URL is already indexed
 - **THEN** the lookup runs against the D1 `recipes` table (the `source_url` column is indexed) rather than loading the entire index
 
-### Requirement: The build projects the index into D1
+### Requirement: The Worker reconcile projects the index into D1
 
-`build-indexes` SHALL project the validated recipe set into the D1 `recipes` table by replacing its contents wholesale in one transaction (`DELETE` then batched `INSERT`), so a removed recipe loses its row and the table is a deterministic function of `recipes/*.md`. It SHALL NOT publish the index to KV. The build SHALL skip the projection gracefully (warn, not fail) when D1 access cannot be resolved (e.g. `--check` mode or before first provision).
+The Worker's scheduled reconcile (`src/recipe-projection.ts`) SHALL project the validated recipe set into the D1 `recipes` table by replacing its contents wholesale in one transaction (`DELETE` then batched `INSERT`), so a removed recipe loses its row and the table is a deterministic function of the R2 `recipes/*.md` corpus. It SHALL NOT publish the index to KV. Projection is eventual (cron-driven): a fresh database is populated by the first reconcile pass over the R2 corpus, not by a CI build (see `r2-corpus-store` for the reconcile contract).
 
-#### Scenario: Recipe push rebuilds the D1 table
+#### Scenario: A reconcile rebuilds the D1 table
 
-- **WHEN** `build-indexes` runs after a recipe change
-- **THEN** the `recipes` table is replaced to match the current `recipes/*.md`, with no KV `index:recipes` write
+- **WHEN** the reconcile runs after a recipe change
+- **THEN** the `recipes` table is replaced to match the current R2 `recipes/*.md`, with no KV `index:recipes` write
 
-#### Scenario: Deploy populates D1 immediately
+#### Scenario: First reconcile populates a fresh database
 
-- **WHEN** an operator runs the deploy workflow
-- **THEN** the post-deploy `build-indexes` step populates the D1 `recipes` table, so `search_recipes` returns results without requiring a recipe push first
+- **WHEN** an operator deploys and the first scheduled reconcile runs
+- **THEN** it populates the D1 `recipes` table from the R2 corpus, so `search_recipes` returns results

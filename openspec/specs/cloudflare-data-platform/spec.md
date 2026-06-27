@@ -52,7 +52,7 @@ Worker tools SHALL access D1 exclusively through `src/db.ts`, never the raw `env
 
 D1 schema changes SHALL be applied by Cloudflare-native migrations: declarative SQL files under `migrations/d1/*.sql`, applied by `wrangler d1 migrations apply DB` (`--local` to seed the dev SQLite, `--remote` on deploy), and tracked in D1's own `d1_migrations` table (created automatically on first apply). This SHALL be the only standing migration track — a schema change is a `.sql` file under `migrations/d1/`; there is no other migration mechanism.
 
-**No script writes D1 from CI.** The recipe-index projection moves from the retired CI build (`scripts/build-indexes.mjs`/`scripts/d1-rest.mjs`) into the **Worker reconcile**, which projects the `recipes` table from the R2 corpus (see `r2-corpus-store`). The index is therefore a deterministic rebuild of a derived table performed by the Worker, not a CI-run script and not a stateful migration. (The original one-time KV/GitHub → D1 data backfills and their imperative runner were already applied and removed.)
+**No script writes D1 from CI.** The recipe-index projection is performed by the **Worker reconcile**, which projects the `recipes` table from the R2 corpus (see `r2-corpus-store`). The index is a deterministic rebuild of a derived table, distinct from the schema-migration track.
 
 #### Scenario: Schema migration applies on deploy
 

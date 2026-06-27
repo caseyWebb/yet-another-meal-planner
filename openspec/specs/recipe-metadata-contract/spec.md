@@ -108,14 +108,14 @@ to `preferences`' defined surface plus `custom` bag.
 
 ### Requirement: The required-field contract has a single shared source of truth
 
-The required-field contract SHALL be defined exactly once in a shared module (a sibling
-to `src/vocab.js`) — the field list, each field's empty-form shape, and the conditional
-`side_search_terms` rule — and imported by both the Worker write-time validator
-(`src/validate.ts`) and the Node index-build validator (`scripts/build-indexes.mjs`).
-Neither validator SHALL define its own copy of the contract. This guarantees the
-write-time gate and the build-time gate can never disagree about what a compliant recipe
-is. If a platform constraint makes a shared import infeasible and a copy is unavoidable,
-an automated test SHALL assert the copies are equal, failing CI on any drift.
+The required-field contract SHALL be defined exactly once in a shared module
+(`src/recipe-contract.js`, a sibling to `src/vocab.js`) — the field list, each field's
+empty-form shape, and the conditional `side_search_terms` rule — and imported by both the
+Worker write-time validator (`src/validate.ts`) and the Worker reconcile
+(`src/recipe-projection.ts`). Neither validator SHALL define its own copy of the contract.
+This guarantees the write-time gate and the reconcile gate can never disagree about what a
+compliant recipe is. If a platform constraint makes a shared import infeasible and a copy is
+unavoidable, an automated test SHALL assert the copies are equal, failing CI on any drift.
 
 #### Scenario: One definition feeds both validators
 

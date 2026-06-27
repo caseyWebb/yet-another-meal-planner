@@ -3,20 +3,18 @@
 // contract the write tools use (src/recipe-contract.js) PLUS the cross-corpus checks
 // that need the whole corpus (`pairs_with` slug resolution, duplicate slugs, the body
 // `## Ingredients`/`## Instructions` sections), and projects the D1 `recipes` table.
-// This REPLACES the retired CI build (scripts/build-indexes.mjs) — the index is now a
-// deterministic, Worker-owned rebuild from R2, not a CI-run script.
+// The index is a deterministic, Worker-owned rebuild from R2.
 //
 // A recipe that fails validation is SKIPPED (not projected) and recorded to the D1
 // `reconcile_errors` table, so a malformed human/Obsidian edit is observable
-// (agent-readable record + `/health` + an ntfy push) instead of silently dropped — the
-// eventual-feedback model that replaces red CI (design Decision 3). Projection is
-// eventual (cron-driven), consistent with the system's accepted eventual-consistency.
+// (agent-readable record + `/health` + an ntfy push) instead of silently dropped.
+// Projection is eventual (cron-driven), consistent with the system's accepted
+// eventual-consistency.
 //
 // Logic is split from I/O (injected `ProjectionDeps`) so it is unit-testable with
 // in-memory R2/D1 fakes, exactly as `recipe-embeddings.ts` does for the derived reconcile.
 // The D1 row shape MUST stay in sync with the read reconstruction in src/recipe-index.ts
-// (same column ↔ frontmatter map) — the projection helpers below are the workerd port of
-// the retired build's projection.
+// (same column ↔ frontmatter map).
 
 import { db } from "./db.js";
 import type { Env } from "./env.js";
@@ -26,10 +24,10 @@ import type { CorpusStore } from "./corpus-store.js";
 import { notifyFailure, writeJobHealth } from "./health.js";
 import type { KvStore } from "./kroger-user.js";
 
-// --- pure projection helpers (workerd port of scripts/build-indexes.mjs) ---
+// --- pure projection helpers ---
 
 // Subjective/per-tenant fields are stripped from the shared index and merged at read
-// time from the overlay + cooking log. `status` is retired; a lingering value is
+// time from the overlay + cooking log. `status` is not indexed; a stray value is
 // tolerated and stripped here so it never reaches the shared index.
 const SUBJECTIVE_FIELDS = ["rating", "last_cooked", "status"];
 
@@ -68,7 +66,7 @@ export function deriveSlug(path: string): string {
   return base.endsWith(".md") ? base.slice(0, -3) : base;
 }
 
-// Column map — MUST mirror src/recipe-index.ts (read) and the retired build (write).
+// Column map — MUST mirror the read reconstruction in src/recipe-index.ts.
 // `description` is NOT a column (Worker-derived, recipe_derived/migration 0013) — listed
 // in PROMOTED_FIELDS only so a lingering authored `description:` is excluded from `extra`.
 const RECIPE_SCALAR_COLUMNS = ["title", "protein", "cuisine", "time_total"];
@@ -176,9 +174,9 @@ export async function reconcileRecipeIndex(deps: ProjectionDeps): Promise<Projec
     }
     seenSlugs.set(slug, path);
 
-    // Required-field contract (frontmatter) + required body sections — the same checks
-    // the retired build ran, now on workerd. The contract returns every violation; the
-    // section check adds any missing H2. Surface the first as the recorded error.
+    // Required-field contract (frontmatter) + required body sections. The contract returns
+    // every violation; the section check adds any missing H2. Surface the first as the
+    // recorded error.
     const allErrs = [
       ...validateRecipeContract(frontmatter),
       ...REQUIRED_SECTIONS.filter((s) => !hasH2Section(body, s)).map(
@@ -190,8 +188,8 @@ export async function reconcileRecipeIndex(deps: ProjectionDeps): Promise<Projec
       continue;
     }
 
-    // Project objective content only (strip subjective fields + retired `standalone`),
-    // normalizing course + the array facets exactly as the build did.
+    // Project objective content only (strip subjective fields + the unindexed `standalone`),
+    // normalizing course + the array facets.
     const objective: Record<string, unknown> = { ...frontmatter };
     for (const f of SUBJECTIVE_FIELDS) delete objective[f];
     delete objective.standalone;
@@ -207,8 +205,8 @@ export async function reconcileRecipeIndex(deps: ProjectionDeps): Promise<Projec
     }) as Record<string, unknown>;
   }
 
-  // Cross-corpus `pairs_with` resolution (the check the retired CI build performed, now
-  // possible because the reconcile holds the whole corpus): every referenced slug must be
+  // Cross-corpus `pairs_with` resolution (possible because the reconcile holds the whole
+  // corpus): every referenced slug must be
   // a real, VALID recipe. A dangling reference flags the REFERRING recipe and drops it
   // from the index (a validation failure → not projected), consistent with the contract.
   for (const [slug, r] of Object.entries(valid)) {
