@@ -44,3 +44,15 @@ Obsidian native Properties (1.4+) have typed properties (text/list/number/checkb
 - **Help-text mechanism:** Metadata Menu field tooltips vs. a pinned help note vs. template comments — likely a combination.
 - **Credential distribution — RESOLVED: scoped per-author R2 tokens** (decided with `r2-recipe-corpus`). The vault ships everything except the sync credential; each author pastes their own scoped Remotely Save token. Open sub-question: admin-panel-minted vs. dashboard-created.
 - **Cookbook reader for friends:** confirm the friend read-path is the cookbook site (not a shipped read-only vault), so this artifact stays author-only.
+
+## Implementation refinements (resolved during apply)
+
+1. **Plugin set — RESOLVED: Metadata Menu + Templater + Remotely Save.** Templater (not QuickAdd) drives the new-recipe flow via a `recipes/` **folder template** (`trigger_on_file_creation`), so creating a note there scaffolds the human-authored frontmatter automatically. Linter is **not** bundled (keep the set minimal). Pins live in `vault-template/plugin-pins.json`.
+
+2. **Course options — `COURSE_SUGGESTIONS`, not a controlled vocab.** `course` is open server-side (shape-validated only — see `recipe-contract.js` / ARCHITECTURE.md), so the build sources its dropdown from a new `COURSE_SUGGESTIONS` export in `src/vocab.js` that is explicitly **non-enforced**: the vault offers it as an open Multi (the author may still add a value), while `protein`/`cuisine`/`season`/`requires_equipment` are strictly constrained. This keeps every dropdown's options in one module (`vocab.js`) without misrepresenting `course` as closed.
+
+3. **Plugin binaries are vendored, not committed.** The committed `vault/` carries the generated config + each plugin's small `manifest.json`; the multi-MB `main.js`/`styles.css` are fetched by `build-vault --fetch-plugins` (sha256-verified from the pins) into the distributable and **gitignored**. This keeps the public repo free of large third-party bundles and keeps `build-vault --check` **offline** (it validates only the deterministic, vocab-derived config — the actual drift gate), at the cost of one fetch step when packaging the distributable (documented in SELF_HOSTING).
+
+4. **Help text — combination.** A pinned "How to add a recipe" note (the one-time trust + R2-credential setup and the authoring flow), Templater-comment guidance in the template, and a generated banner in the fileClass note. Metadata Menu field tooltips were not pursued (the note + banner suffice).
+
+5. **Mobile vs desktop:** not separately verified during apply — Metadata Menu and Remotely Save both support mobile; the dropdown UX on phones remains a manual check (task 4.2).
