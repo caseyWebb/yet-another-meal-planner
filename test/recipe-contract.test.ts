@@ -29,10 +29,15 @@ describe("validateRecipeContract", () => {
     expect(validateRecipeContract(compliant())).toEqual([]);
   });
 
+  it("does not require description (it is a Worker-derived field, not authored)", () => {
+    const fm = compliant();
+    delete fm.description;
+    expect(validateRecipeContract(fm)).toEqual([]);
+  });
+
   it("REQUIRED_FIELDS enumerates the full system-consumed set", () => {
     for (const f of [
       "title",
-      "description",
       "ingredients_key",
       "course",
       "protein",
@@ -52,7 +57,7 @@ describe("validateRecipeContract", () => {
   });
 
   describe("non-empty fields", () => {
-    for (const f of ["title", "description"]) {
+    for (const f of ["title"]) {
       it(`rejects a missing ${f}`, () => {
         const fm = compliant();
         delete fm[f];

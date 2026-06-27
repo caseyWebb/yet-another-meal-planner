@@ -51,8 +51,8 @@ describe("validateFile", () => {
     );
   });
 
-  it("rejects an empty non-empty field (description)", () => {
-    expect(() => validateFile("recipes/x.md", recipe({ description: '""' }))).toThrowError(/description/);
+  it("does not require description (a Worker-derived field, not authored)", () => {
+    expect(() => validateFile("recipes/x.md", recipe({ description: undefined }))).not.toThrow();
   });
 
   it("rejects an omitted explicit-null scalar (protein)", () => {

@@ -15,6 +15,7 @@ import type { Env } from "./env.js";
 import type { GitHubClient } from "./github.js";
 import { ToolError, runTool } from "./errors.js";
 import { commitFiles } from "./commit.js";
+import { seedRecipeDescription } from "./recipe-embeddings.js";
 import { fetchWithBrowserHeaders } from "./http.js";
 import { parseFeed } from "./feeds.js";
 import { extractJsonLd, findRecipe, normalizeRecipe } from "./jsonld.js";
@@ -165,7 +166,7 @@ export function registerDiscoveryTools(
     {
       description:
         "Write a NEW recipe to the SHARED corpus, as one solo commit. Slug derives from the title unless `slug` is given. An imported recipe lands AVAILABLE to every member by default — there is no `status` to set (the per-tenant status lifecycle is retired). The body MUST contain ## Ingredients and ## Instructions. " +
-          "EVERY system-consumed field is REQUIRED and must be PRESENT (the recipe is rejected with validation_failed otherwise) — use the explicit empty form where a value is genuinely empty. Required, non-empty: `title`; `description` (a brief craving-aligned summary — what it is / flavor+texture / when you'd want it, in YOUR words, NOT the page's marketing copy; it is the semantic-search basis and compact candidate line); `ingredients_key` (the defining 5–7 ingredients); `course` (e.g. [main], [side], [main, side]). Required, value OR explicit `null` (never omit, never 'none'): `protein` (coarse bucket: chicken | beef | pork | lamb | turkey | fish | shellfish | egg | tofu | vegetarian | vegan | mixed — map specifics: shrimp→shellfish, salmon/cod/tuna→fish; `null` when there is no protein focus), `cuisine` (american | brazilian | cajun | caribbean | chinese | cuban | filipino | french | german | greek | indian | italian | japanese | korean | mediterranean | mexican | moroccan | peruvian | southwestern | spanish | thai | vietnamese; `null` if cuisine-agnostic), `time_total` (minutes or `null`), `source` (the URL or `null` if hand-entered; set discovered_at + discovery_source for discovery imports). Required, may be `[]`: `dietary`, `season` (controlled vocab: spring | summer | fall | winter — `[]` for year-round; an off-vocab value, incl. `autumn` or capitalized, is rejected), `tags`, `pairs_with`, `perishable_ingredients` (names that would spoil before use — the \"would the leftover rot\" test; skip fuzzy edges like eggs/potatoes), `requires_equipment` (ONLY truly-irreplaceable gear: pressure-cooker | sous-vide-circulator | blender | ice-cream-maker — a wrong tag silently hides a makeable recipe; an off-vocab slug is rejected). `side_search_terms` is REQUIRED: non-empty for a MAIN (phrases for the kind of side that completes it, e.g. [\"a bright acidic salad\", \"crusty bread for the sauce\"]), `[]` for non-mains. Other free-form fields pass through untouched. An off-vocabulary `protein`/`cuisine`/`season`/`requires_equipment` value, a `\"none\"` protein, or any missing/empty required field is rejected (validation_failed). Refuses to overwrite an existing slug (slug_exists), and refuses to duplicate a recipe whose `source` URL is already in the corpus (already_exists, with the existing slug — reuse it).",
+          "EVERY system-consumed field is REQUIRED and must be PRESENT (the recipe is rejected with validation_failed otherwise) — use the explicit empty form where a value is genuinely empty. Required, non-empty: `title`; `ingredients_key` (the defining 5–7 ingredients); `course` (e.g. [main], [side], [main, side]). Required, value OR explicit `null` (never omit, never 'none'): `protein` (coarse bucket: chicken | beef | pork | lamb | turkey | fish | shellfish | egg | tofu | vegetarian | vegan | mixed — map specifics: shrimp→shellfish, salmon/cod/tuna→fish; `null` when there is no protein focus), `cuisine` (american | brazilian | cajun | caribbean | chinese | cuban | filipino | french | german | greek | indian | italian | japanese | korean | mediterranean | mexican | moroccan | peruvian | southwestern | spanish | thai | vietnamese; `null` if cuisine-agnostic), `time_total` (minutes or `null`), `source` (the URL or `null` if hand-entered; set discovered_at + discovery_source for discovery imports). Required, may be `[]`: `dietary`, `season` (controlled vocab: spring | summer | fall | winter — `[]` for year-round; an off-vocab value, incl. `autumn` or capitalized, is rejected), `tags`, `pairs_with`, `perishable_ingredients` (names that would spoil before use — the \"would the leftover rot\" test; skip fuzzy edges like eggs/potatoes), `requires_equipment` (ONLY truly-irreplaceable gear: pressure-cooker | sous-vide-circulator | blender | ice-cream-maker — a wrong tag silently hides a makeable recipe; an off-vocab slug is rejected). `side_search_terms` is REQUIRED: non-empty for a MAIN (phrases for the kind of side that completes it, e.g. [\"a bright acidic salad\", \"crusty bread for the sauce\"]), `[]` for non-mains. Other free-form fields pass through untouched. An off-vocabulary `protein`/`cuisine`/`season`/`requires_equipment` value, a `\"none\"` protein, or any missing/empty required field is rejected (validation_failed). Refuses to overwrite an existing slug (slug_exists), and refuses to duplicate a recipe whose `source` URL is already in the corpus (already_exists, with the existing slug — reuse it). The `description` is generated automatically from the recipe's facets (it is no longer authored) — any `description` you supply is ignored.",
       inputSchema: {
         frontmatter: z.record(z.string(), z.unknown()),
         body: z.string(),
@@ -190,8 +191,16 @@ export function registerDiscoveryTools(
             );
           }
         }
-        const { slug: finalSlug, file } = await buildNewRecipe(sharedGh, env, frontmatter, body, slug);
+        const { slug: finalSlug, file, facets } = await buildNewRecipe(sharedGh, env, frontmatter, body, slug);
         const { commit_sha } = await commitFiles(sharedGh, [file], `add recipe ${finalSlug}`);
+        // Seed the derived description synchronously so the new recipe reads well before the
+        // reconcile's next tick (the reconcile stays the authority + refreshes on facet change).
+        // Best-effort: a generation failure must NOT fail the already-committed import.
+        try {
+          await seedRecipeDescription(env, finalSlug, facets);
+        } catch (e) {
+          console.error(`[create_recipe] description seed failed for ${finalSlug} (reconcile will backfill):`, e);
+        }
         return { slug: finalSlug, commit_sha };
       }),
   );

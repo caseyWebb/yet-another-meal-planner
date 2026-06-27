@@ -14,8 +14,11 @@
 
 import { PROTEIN_VOCAB, CUISINE_VOCAB, SEASON_VOCAB, EQUIPMENT_VOCAB } from './vocab.js';
 
-// Required strings — present AND non-empty (no valid empty form).
-export const REQUIRED_NONEMPTY_STRINGS = ['title', 'description'];
+// Required strings — present AND non-empty (no valid empty form). `description` is NOT here:
+// it is a Worker-DERIVED field (generated from the facets, stored in recipe_derived — see the
+// derived-recipe-metadata capability), not authored frontmatter, so the contract neither
+// requires nor validates it.
+export const REQUIRED_NONEMPTY_STRINGS = ['title'];
 // Required arrays — present AND non-empty (arrays of strings; `course` tolerates a bare
 // string, normalized to a one-element array).
 export const REQUIRED_NONEMPTY_ARRAYS = ['ingredients_key', 'course'];

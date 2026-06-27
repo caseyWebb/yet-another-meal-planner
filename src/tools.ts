@@ -23,7 +23,7 @@ import { registerNoteTools, registerStoreNoteTools } from "./notes-tools.js";
 import { registerStoreTools } from "./stores-tools.js";
 import { registerCookingTools } from "./cooking-tools.js";
 import { filterRecipes, type RecipeIndex } from "./recipes.js";
-import { loadRecipeIndex, loadRecipeEmbeddings } from "./recipe-index.js";
+import { loadRecipeIndex, loadRecipeEmbeddings, recipeDescription } from "./recipe-index.js";
 import { embedTexts } from "./embedding.js";
 import {
   rankCandidates,
@@ -467,7 +467,7 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
     "read_recipe",
     {
       description:
-        "Read a single recipe's parsed frontmatter and markdown body by slug. Frontmatter includes `course` (the open-vocabulary dish type — main | side | dessert | breakfast | …) and `pairs_with` (slugs of sides remembered for this main).",
+        "Read a single recipe's parsed frontmatter and markdown body by slug. Frontmatter includes `course` (the open-vocabulary dish type — main | side | dessert | breakfast | …), `pairs_with` (slugs of sides remembered for this main), and the AI-generated `description` (merged from the derived store; absent if not yet generated).",
       inputSchema: { slug: z.string() },
     },
     ({ slug }) =>
@@ -475,13 +475,17 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
         if (!SLUG_RE.test(slug)) {
           throw new ToolError("not_found", `Unknown recipe slug: ${slug}`, { slug });
         }
-        const [text, overlay, lastCooked] = await Promise.all([
+        const [text, overlay, lastCooked, description] = await Promise.all([
           readFile(sharedGh, `recipes/${slug}.md`, "not_found", `Unknown recipe slug: ${slug}`),
           getOverlay(),
           getLastCookedMap(),
+          recipeDescription(env, slug),
         ]);
         const { frontmatter, body } = parseMarkdown(text, `recipes/${slug}.md`);
         const merged = mergeOverlay(frontmatter, overlay[slug], lastCooked.get(slug));
+        // description is a Worker-DERIVED field (recipe_derived), merged at read time alongside
+        // overlay/last_cooked; null until the reconcile first generates it (never an error).
+        if (description !== null) merged.description = description;
         return { slug, frontmatter: merged, body };
       }),
   );
