@@ -1,97 +1,143 @@
 import { describe, it, expect } from "vitest";
 import { validateFile, validateStoreInput, validateDiscoveryCandidate } from "../src/validate.js";
 
+// A minimal CONTRACT-COMPLIANT recipe frontmatter (every system-consumed field present
+// in its explicit empty form). Tests override one axis at a time; pass a key as
+// `undefined` to OMIT it (to exercise the missing-required-field rejection).
+const BASE: Record<string, string | undefined> = {
+  title: "X",
+  description: "A simple test dish.",
+  ingredients_key: "[x]",
+  course: "[main]",
+  protein: "null",
+  cuisine: "null",
+  time_total: "null",
+  source: "null",
+  dietary: "[]",
+  season: "[]",
+  tags: "[]",
+  pairs_with: "[]",
+  perishable_ingredients: "[]",
+  requires_equipment: "[]",
+  side_search_terms: '["a crisp green salad"]',
+};
+function recipe(overrides: Record<string, string | undefined> = {}): string {
+  const merged = { ...BASE, ...overrides };
+  const fm = Object.entries(merged)
+    .filter(([, v]) => v !== undefined)
+    .map(([k, v]) => `${k}: ${v}`)
+    .join("\n");
+  return `---\n${fm}\n---\nbody\n`;
+}
+
 describe("validateFile", () => {
-  it("accepts a well-formed recipe", () => {
-    expect(() => validateFile("recipes/x.md", "---\ntitle: X\n---\nbody\n")).not.toThrow();
+  it("accepts a well-formed (contract-compliant) recipe", () => {
+    expect(() => validateFile("recipes/x.md", recipe())).not.toThrow();
   });
 
   it("tolerates a lingering frontmatter status (the lifecycle is retired, not validated)", () => {
-    // status is no longer a controlled vocabulary — any value passes (it is stripped
-    // from the index by the build, never enforced).
-    expect(() => validateFile("recipes/x.md", "---\nstatus: bogus\n---\nbody\n")).not.toThrow();
+    expect(() => validateFile("recipes/x.md", recipe({ status: "bogus" }))).not.toThrow();
   });
 
   it("rejects a recipe with no frontmatter fence", () => {
     expect(() => validateFile("recipes/x.md", "no frontmatter here")).toThrowError(/fence/);
   });
 
+  // --- required-field contract ----------------------------------------------
+
+  it("rejects a recipe missing a required field (ingredients_key)", () => {
+    expect(() => validateFile("recipes/x.md", recipe({ ingredients_key: undefined }))).toThrowError(
+      /ingredients_key/,
+    );
+  });
+
+  it("rejects an empty non-empty field (description)", () => {
+    expect(() => validateFile("recipes/x.md", recipe({ description: '""' }))).toThrowError(/description/);
+  });
+
+  it("rejects an omitted explicit-null scalar (protein)", () => {
+    expect(() => validateFile("recipes/x.md", recipe({ protein: undefined }))).toThrowError(/protein/);
+  });
+
+  it("accepts explicit null protein/cuisine/time_total/source", () => {
+    expect(() => validateFile("recipes/x.md", recipe())).not.toThrow();
+  });
+
+  it("rejects a `none` protein (must be explicit null)", () => {
+    expect(() => validateFile("recipes/x.md", recipe({ protein: "none" }))).toThrowError(/protein.*none/);
+  });
+
+  it("rejects a main with empty side_search_terms; accepts a non-main with []", () => {
+    expect(() => validateFile("recipes/x.md", recipe({ side_search_terms: "[]" }))).toThrowError(
+      /side_search_terms/,
+    );
+    expect(() =>
+      validateFile("recipes/x.md", recipe({ course: "[side]", side_search_terms: "[]" })),
+    ).not.toThrow();
+  });
+
+  // --- shapes ---------------------------------------------------------------
+
   it("accepts a well-formed pairs_with array and a course (scalar or array)", () => {
-    expect(() =>
-      validateFile("recipes/x.md", "---\nstatus: active\npairs_with: [steamed-rice]\ncourse: main\n---\nbody\n"),
-    ).not.toThrow();
-    expect(() =>
-      validateFile("recipes/x.md", "---\nstatus: active\ncourse: [main, side]\n---\nbody\n"),
-    ).not.toThrow();
+    expect(() => validateFile("recipes/x.md", recipe({ pairs_with: "[steamed-rice]", course: "main" }))).not.toThrow();
+    expect(() => validateFile("recipes/x.md", recipe({ course: "[main, side]" }))).not.toThrow();
   });
 
   it("rejects a non-array pairs_with", () => {
-    expect(() =>
-      validateFile("recipes/x.md", "---\nstatus: active\npairs_with: steamed-rice\n---\nbody\n"),
-    ).toThrowError(/pairs_with/);
+    expect(() => validateFile("recipes/x.md", recipe({ pairs_with: "steamed-rice" }))).toThrowError(/pairs_with/);
   });
 
   it("rejects a course that is neither a string nor an array of strings", () => {
-    expect(() =>
-      validateFile("recipes/x.md", "---\nstatus: active\ncourse: 3\n---\nbody\n"),
-    ).toThrowError(/course/);
+    expect(() => validateFile("recipes/x.md", recipe({ course: "3" }))).toThrowError(/course/);
   });
 
   it("accepts an off-convention course value (open vocabulary)", () => {
     expect(() =>
-      validateFile("recipes/x.md", "---\nstatus: active\ncourse: [sauce]\n---\nbody\n"),
+      validateFile("recipes/x.md", recipe({ course: "[sauce]", side_search_terms: "[]" })),
     ).not.toThrow();
   });
 
   it("ignores a lingering retired standalone field", () => {
-    expect(() =>
-      validateFile("recipes/x.md", "---\nstatus: active\nstandalone: yes-please\n---\nbody\n"),
-    ).not.toThrow();
+    expect(() => validateFile("recipes/x.md", recipe({ standalone: "yes-please" }))).not.toThrow();
   });
 
   it("accepts a well-formed perishable_ingredients array", () => {
-    expect(() =>
-      validateFile("recipes/x.md", "---\nstatus: active\nperishable_ingredients: [cilantro, lime]\n---\nbody\n"),
-    ).not.toThrow();
+    expect(() => validateFile("recipes/x.md", recipe({ perishable_ingredients: "[cilantro, lime]" }))).not.toThrow();
   });
 
   it("rejects a non-array perishable_ingredients", () => {
-    expect(() =>
-      validateFile("recipes/x.md", "---\nstatus: active\nperishable_ingredients: cilantro\n---\nbody\n"),
-    ).toThrowError(/perishable_ingredients/);
+    expect(() => validateFile("recipes/x.md", recipe({ perishable_ingredients: "cilantro" }))).toThrowError(
+      /perishable_ingredients/,
+    );
   });
 
   it("accepts in-vocabulary protein, cuisine, and requires_equipment", () => {
     expect(() =>
       validateFile(
         "recipes/x.md",
-        "---\nstatus: active\nprotein: shellfish\ncuisine: thai\nrequires_equipment: [blender, pressure-cooker]\n---\nbody\n",
+        recipe({ protein: "shellfish", cuisine: "thai", requires_equipment: "[blender, pressure-cooker]" }),
       ),
     ).not.toThrow();
   });
 
   it("rejects an off-vocabulary protein at write time (no longer build-only)", () => {
-    expect(() =>
-      validateFile("recipes/x.md", "---\nstatus: active\nprotein: shrimp\n---\nbody\n"),
-    ).toThrowError(/protein.*shrimp.*controlled vocabulary/);
+    expect(() => validateFile("recipes/x.md", recipe({ protein: "shrimp" }))).toThrowError(/protein.*shrimp/);
   });
 
   it("rejects an off-vocabulary cuisine at write time", () => {
-    expect(() =>
-      validateFile("recipes/x.md", "---\nstatus: active\ncuisine: martian\n---\nbody\n"),
-    ).toThrowError(/cuisine.*martian.*controlled vocabulary/);
+    expect(() => validateFile("recipes/x.md", recipe({ cuisine: "martian" }))).toThrowError(/cuisine.*martian/);
   });
 
   it("rejects an off-vocabulary requires_equipment slug at write time", () => {
     expect(() =>
-      validateFile("recipes/x.md", "---\nstatus: active\nrequires_equipment: [blender, panini-press]\n---\nbody\n"),
-    ).toThrowError(/requires_equipment.*panini-press.*controlled vocabulary/);
+      validateFile("recipes/x.md", recipe({ requires_equipment: "[blender, panini-press]" })),
+    ).toThrowError(/requires_equipment.*panini-press/);
   });
 
   it("rejects a non-array requires_equipment", () => {
-    expect(() =>
-      validateFile("recipes/x.md", "---\nstatus: active\nrequires_equipment: blender\n---\nbody\n"),
-    ).toThrowError(/requires_equipment/);
+    expect(() => validateFile("recipes/x.md", recipe({ requires_equipment: "blender" }))).toThrowError(
+      /requires_equipment/,
+    );
   });
 
   // After d1-shared-corpus (slice 6), recipes/*.md are the ONLY files the commit
