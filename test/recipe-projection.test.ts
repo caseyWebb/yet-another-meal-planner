@@ -106,7 +106,7 @@ describe("reconcileRecipeIndex — valid corpus", () => {
 
     // The main's pairs_with column (a JSON-array TEXT column) carries the resolved ref.
     const main = written.recipes.find((r) => r[0] === "miso-salmon")!;
-    const pairsCol = main[1 + 4 + 1 + 5]; // slug + 4 scalars + source_url + (pairs_with is the 5th JSON col)
+    const pairsCol = main[1 + 5 + 1 + 5]; // slug + 5 scalars + source_url + (pairs_with is the 5th JSON col)
     expect(JSON.parse(pairsCol as string)).toEqual(["cucumber-salad"]);
   });
 
@@ -198,12 +198,37 @@ describe("recipeToRow — projection shape (mirrors the recipes table / recipe-i
       side_search_terms: ["a salad"],
       servings: 4, // a free-form objective field → extra
     });
-    // [slug, title, protein, cuisine, time_total, source_url, ...9 json cols, extra]
+    // [slug, title, protein, cuisine, time_total, discovered_at, source_url, ...9 json cols, extra]
     expect(row[0]).toBe("x");
     expect(row.slice(1, 5)).toEqual(["X", "beef", "italian", 40]);
-    expect(row[5]).toBe("https://ex.com/x"); // source_url
-    expect(JSON.parse(row[6] as string)).toEqual(["beef"]); // ingredients_key
+    expect(row[5]).toBeNull(); // discovered_at (none on this recipe)
+    expect(row[6]).toBe("https://ex.com/x"); // source_url
+    expect(JSON.parse(row[7] as string)).toEqual(["beef"]); // ingredients_key
     expect(JSON.parse(row[row.length - 1] as string)).toEqual({ servings: 4 }); // extra
+  });
+
+  it("promotes discovered_at to its own column and keeps discovery_source in extra", () => {
+    const row = recipeToRow({
+      slug: "d",
+      title: "D",
+      protein: null,
+      cuisine: null,
+      time_total: null,
+      source: null,
+      ingredients_key: ["x"],
+      course: ["main"],
+      season: [],
+      dietary: [],
+      tags: [],
+      pairs_with: [],
+      perishable_ingredients: [],
+      requires_equipment: [],
+      side_search_terms: ["a salad"],
+      discovered_at: "2025-05-20", // promoted column (migration 0016)
+      discovery_source: "serious-eats", // NOT promoted → stays in extra
+    });
+    expect(row[5]).toBe("2025-05-20"); // discovered_at column
+    expect(JSON.parse(row[row.length - 1] as string)).toEqual({ discovery_source: "serious-eats" });
   });
 });
 

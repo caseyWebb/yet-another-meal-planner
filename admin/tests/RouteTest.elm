@@ -6,7 +6,7 @@ the type system can't catch a wrong parse, only a wrong type.
 -}
 
 import Expect
-import Route exposing (Route(..))
+import Route exposing (LogSource(..), Route(..))
 import Test exposing (Test, describe, test)
 import Url
 
@@ -50,6 +50,14 @@ suite =
                 \_ -> parse "/admin/dev/tools/" |> Expect.equal (Tools Nothing)
             , test "/admin/dev/tools/<name> → Tools (Just name)" <|
                 \_ -> parse "/admin/dev/tools/place_order" |> Expect.equal (Tools (Just "place_order"))
+            , test "/admin/logs → Logs Nothing (the area)" <|
+                \_ -> parse "/admin/logs" |> Expect.equal (Logs Nothing)
+            , test "/admin/logs/ (trailing slash) → Logs Nothing" <|
+                \_ -> parse "/admin/logs/" |> Expect.equal (Logs Nothing)
+            , test "/admin/logs/discovery → Logs (Just Discovery)" <|
+                \_ -> parse "/admin/logs/discovery" |> Expect.equal (Logs (Just Discovery))
+            , test "/admin/logs/<unknown> → NotFound (no bogus source)" <|
+                \_ -> parse "/admin/logs/nope" |> Expect.equal NotFound
             , test "unknown path → NotFound" <|
                 \_ -> parse "/admin/nope" |> Expect.equal NotFound
             ]
@@ -62,6 +70,10 @@ suite =
                 \_ -> roundTrip (Tools Nothing) |> Expect.equal (Tools Nothing)
             , test "Tools (Just name)" <|
                 \_ -> roundTrip (Tools (Just "read_recipe")) |> Expect.equal (Tools (Just "read_recipe"))
+            , test "Logs Nothing" <|
+                \_ -> roundTrip (Logs Nothing) |> Expect.equal (Logs Nothing)
+            , test "Logs (Just Discovery)" <|
+                \_ -> roundTrip (Logs (Just Discovery)) |> Expect.equal (Logs (Just Discovery))
             ]
         , describe "actingAsParam"
             [ test "?as=casey → Just casey" <|

@@ -544,27 +544,29 @@ Cross-reference the **caller's own** personal ready-to-eat catalog against curre
 
 ## Discovery tools
 
-### `fetch_rss_discoveries()`
+Unprompted discovery is **autonomous**: a background **discovery sweep** (a scheduled cron job — see ARCHITECTURE → *the discovery sweep*) polls the shared feeds + drains the email inbox, classifies and taste-matches each candidate, and **auto-imports** the fits into the shared corpus, attributed per member. The agent does **not** pull/triage/parse discoveries in-flow; it **reads the sweep's output** for the caller via `list_new_for_me` at plan time. The tools here are the reads (`list_new_for_me`, `read_discovery_errors`), source suppression (`reject_discovery`), the shared source config (`update_feeds`, `update_discovery_sources`), and the **manual** import path (`parse_recipe` + `create_recipe`, for a URL/paste the user hands the agent).
 
-Fetch the **shared, group-wide** discovery feeds and return a **deduped candidate pool** — deduped against recipes already in the corpus (by canonicalized `source:` URL) and with tracking query strings stripped. **No taste score and no ranking**: the agent judges taste fit against the taste profile and picks the 1–2 worth importing (then `parse_recipe` + `create_recipe` each).
+### `list_new_for_me()`
 
-**Returns:**
-- `{ candidates: [{ url, title, source, feed_weight, summary }], skipped?: [{ feed, reason }] }` — `source` is the feed name; `feed_weight` is the feed's configured trust hint (passed through, not used to rank); unreachable feeds are reported in `skipped`, not fatal.
-
-**Notes:** Feeds are read from the **shared D1 `feeds` table** (not a per-tenant store) — discovery sources are a shared concern, so any member's feeds contribute to one group pool. An empty feeds table returns `{ candidates: [] }`. The pool excludes URLs the group has **rejected** via `reject_discovery` (the canonical URL is folded into the corpus-dedup set), so a suppressed discovery never reappears. There is no `fetch_flyer_featured` tool — Kroger exposes no "featured" primitive, so on-sale ready-to-eat discovery rides the existing `kroger_flyer` pre-pass (with ready-to-eat terms in the D1 `flyer_terms` table) plus agent-side dedup against the caller's D1 `ready_to_eat` catalog and `add_draft_ready_to_eat`.
-
-### `read_discovery_inbox()`
-
-Read the **shared email discoveries inbox** (the D1 `discovery_candidates` table) and return a list of forwarded newsletter emails. Each email has a `body` field containing its full plain-text content — **the agent reads the body and extracts recipe titles and links itself**. No pre-extraction: the Worker captures the email faithfully and the LLM does the parsing. Surface these alongside `fetch_rss_discoveries` at menu time (1–2 picks at most, never dominating). The push complement to RSS pull: it reaches bot-walled/paywalled sources (Serious Eats, NYT) that the Worker cannot fetch.
+Return the recipes the **background discovery sweep imported for the caller** since their last meal plan — the discovery surface the meal-plan flow reads. Each row is **already classified and embedded**, so it is immediately usable *and* retrievable via `search_recipes`. Scoped to the caller: recipes the sweep **matched to the caller's taste** (a `discovery_matches` row for this tenant), discovered after their `last_planned_at` watermark, with **no overlay disposition** (not favorited/rejected) and **not yet cooked**. Read-only; per-tenant.
 
 **Returns:**
-- `{ emails: [{ from, subject, received_at, body }] }` — `from` is the sender address; `received_at` is the message date (YYYY-MM-DD or null); `body` is the plain-text email content for LLM parsing.
+- `{ recipes: [{ slug, title, description, protein, cuisine, time_total, discovered_at }] }` — most-recent-first, bounded. `description` is the AI-generated "why this dish."
 
-**Notes:** Absent or empty inbox returns `{ emails: [] }`. After scanning an email body for recipes, call `parse_recipe(url)` on each promising link — if it returns `unreachable`/`no_jsonld`/`not_a_recipe`, present the link and have the user paste the recipe text, then `create_recipe`. Candidates whose URL the group has **rejected** via `reject_discovery` are dropped (canonical match), so a suppressed discovery never resurfaces. The inbox is populated by the Worker's inbound-email handler (forwarded newsletters → `groceries-agent@<domain>`), not by any agent tool. Entries are auto-pruned after 30 days.
+**Notes:** The watermark is the **later** of the caller's `last_planned_at` (the D1 `profile` planning watermark, stamped by `update_meal_plan` on an `add`) and a fixed **~21-day floor**, so a never-planned member sees at most a recent window of discoveries, not the whole backlog. An **empty list is normal** (nothing new since they last planned). Fold these into the menu *before* the rest of retrieval. This is the discovery surface the meal-plan flow reads — the agent reads ready-made results; it does not fetch/score/import in-flow.
+
+### `read_discovery_errors()`
+
+List the discovery candidates the background sweep **parked** — candidates it couldn't classify into a contract-valid recipe after its corrective retries (so they were never imported), held for an operator/author to look at. **Shared** across the group, read-only; the discovery analog of `read_reconcile_errors`.
+
+**Returns:**
+- `{ errors: [{ url, title, source, outcome, slug, detail, created_at }] }` — one entry per parked candidate (`outcome` is `error`; `slug` is null for a parked candidate); `source` is the feed name / sender address, `detail` the failure reason (e.g. the validator's complaints or `unreachable`). An **empty list** means the sweep is importing cleanly.
+
+**Notes:** This is the `outcome = 'error'` subset of the sweep's `discovery_log` (see `docs/SCHEMAS.md` → `discovery_log`). The full per-candidate outcome log (every outcome, not just errors) is the operator's **Logs › Discovery** admin view, not an agent tool.
 
 ### `reject_discovery(url, reason?)`
 
-**Shared, group-wide suppression** of a discovery URL — the third disposition (alongside import and no-action) in the meal-plan flow. Stops the URL (and its tracker-wrapped variants) from ever resurfacing in `fetch_rss_discoveries` or `read_discovery_inbox` for **anyone**.
+**Shared, group-wide suppression** of a discovery **source** URL: stops the URL (and its tracker-wrapped variants) from ever being re-imported by the **background discovery sweep** for **anyone**. The sweep folds these into its intake dedup, so a rejected url is never re-evaluated.
 
 **Params:**
 - `url` (string, required): the discovery URL to suppress. Canonicalized (query/fragment/trailing-slash stripped) so a tracker-wrapped and a bare link suppress as one.
@@ -573,7 +575,9 @@ Read the **shared email discoveries inbox** (the D1 `discovery_candidates` table
 **Returns:**
 - `{ url, rejected: true }` — `url` is the stored canonical form.
 
-**Notes:** Use **only** when a candidate is not corpus-worthy **for the group** — junk, broken, not actually a recipe, a duplicate, or clearly off-base. Deliberately **asymmetric** with the per-tenant `favorite`: rejection is *collective curation* (the group curates one noisy stream once), so a personal "not for me this time" is a no-action **skip**, never a reject. Writes a row to the shared `discovery_rejections` table (canonical `url` PK; `reason`/`rejected_by`/`rejected_at` for provenance — `rejected_by` records who, but suppression is group-wide regardless). Idempotent on the canonical URL; a repeat refreshes the reason/provenance. Touches no recipe content or overlay.
+**Notes:** Use **only** when a source is not corpus-worthy **for the group** — junk, broken, not actually a recipe, a duplicate, or a feed/site producing off-base results. Deliberately **asymmetric** with the per-tenant marks: this is *collective curation* of the noisy intake stream (pre-import, by source URL), whereas a member who simply dislikes an **already-imported** corpus recipe uses **`toggle_reject`** (per-tenant), not this. Writes a row to the shared `discovery_rejections` table (canonical `url` PK; `reason`/`rejected_by`/`rejected_at` for provenance — `rejected_by` records who, but suppression is group-wide regardless). Idempotent on the canonical URL; a repeat refreshes the reason/provenance. Touches no recipe content or overlay.
+
+There is no `fetch_flyer_featured` tool — Kroger exposes no "featured" primitive, so on-sale ready-to-eat discovery rides the existing `kroger_flyer` pre-pass (with ready-to-eat terms in the D1 `flyer_terms` table) plus agent-side dedup against the caller's D1 `ready_to_eat` catalog and `add_draft_ready_to_eat`. This is buy-time discovery, separate from the recipe sweep.
 
 ### `update_discovery_sources(members?, senders?)`
 
@@ -590,10 +594,10 @@ Add trusted sources to the **shared** inbound-newsletter allowlist (the D1 `disc
 
 ### `update_feeds(feeds)`
 
-Add RSS/Atom feeds to the **shared** discovery config (the D1 `feeds` table, the pool `fetch_rss_discoveries` reads). **Add-only**, deduped by canonicalized `url` (existing feeds untouched) — the same posture as `update_discovery_sources`. Discovery feeds are a shared, group-wide concern, so anyone trusted with this MCP may widen the set.
+Add RSS/Atom feeds to the **shared** discovery config (the D1 `feeds` table, the feed set the **background discovery sweep** polls). **Add-only**, deduped by canonicalized `url` (existing feeds untouched) — the same posture as `update_discovery_sources`. Discovery feeds are a shared, group-wide concern, so anyone trusted with this MCP may widen the set.
 
 **Params:**
-- `feeds` (array): `[{ url, name?, weight?, tags? }]`. `url` is required; `weight` defaults to `1`. (`fetch_rss_discoveries` reads `url`/`name`/`weight`; `tags` are descriptive.)
+- `feeds` (array): `[{ url, name?, weight?, tags? }]`. `url` is required; `weight` defaults to `1`. (The sweep reads `url`/`name`; `tags` are descriptive.)
 
 **Returns:**
 - `{ added }` — `added` is the count of new feeds; D1-backed, no `commit_sha`.
@@ -778,7 +782,7 @@ Add or remove planned meal entries. D1-backed — no commit, no `commit_sha`.
 **Returns:**
 - `{ applied: [...], conflicts: [...] }` — D1-backed, no `commit_sha`; each applied entry has `{ op, recipe }`; conflicts include the reason.
 
-**Notes:** Called after the user confirms a menu (add rows), and during cook-capture or the stale-planned reconcile (remove rows). `log_cooked` also auto-removes a cooked recipe from the meal plan. A **corpus** side (a `course: side` recipe) gets its own `add` row; open-world sides ride on the main's `sides` field.
+**Notes:** Called after the user confirms a menu (add rows), and during cook-capture or the stale-planned reconcile (remove rows). `log_cooked` also auto-removes a cooked recipe from the meal plan. A **corpus** side (a `course: side` recipe) gets its own `add` row; open-world sides ride on the main's `sides` field. An **`add`** op also stamps the caller's `profile.last_planned_at` planning watermark (today) — the bound `list_new_for_me` reads, so the next plan surfaces only discoveries imported since this one.
 
 ---
 
@@ -897,7 +901,7 @@ Behind the per-tenant gate; a pure D1 write — no GitHub. Driven by the agent's
 - No "search arbitrary text across recipes" (use `search_recipes` over the index)
 - No "execute arbitrary code" or "run arbitrary script"
 - No portion math (no whiteboard problem)
-- No background or scheduled triggers
+- No tool that itself schedules or triggers background work — the scheduled jobs (the flyer warm, the recipe-index projection, the recipe-derived reconcile, the discovery sweep) run in the Worker's `scheduled()` handler, not as tools; the tool surface only *reads* their output (`kroger_flyer`, `search_recipes`, `list_new_for_me`, `read_reconcile_errors`, `read_discovery_errors`)
 
 ---
 

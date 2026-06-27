@@ -13,9 +13,10 @@ The data lives in three tiers (see `ARCHITECTURE.md`): the authored markdown cor
 - **Authored markdown (R2 bucket `CORPUS`)** — the human-editable tier (an Obsidian vault synced to the same bucket): `recipes/*.md` (objective frontmatter + body) and the `guidance/**/*.md` umbrella (`guidance/ingredient_storage/` — curated put-away advice, read-only; `guidance/cooking_techniques/` — technique memories, agent-writable via `save_guidance`; `guidance/purchasing/` — buy-side selection advice, also agent-writable). Object keys are repo-relative paths (`recipes/<slug>.md`, `guidance/<domain>/<slug>.md`); read/written through `src/corpus-store.ts`. There is no GitHub App or data repo on the data path.
 - **Shared corpus (D1, `migrations/d1/0006_shared_corpus.sql`)** — objective, single-source, read by everyone: `aliases(variant, canonical)`, `sku_cache(ingredient, location_id, …)`, `flyer_terms(term)`, `stores(slug, name, domain, extra /*json*/)` (in-store-walk registry — identity columns `slug`/`name`/`domain` are top-level; optional identity fields `label`/`chain`/`address`/`location_id` are stored in the `extra` JSON column; layout lives in store notes), `feeds(url, …)` (RSS discovery feeds), `discovery_candidates(id, url UNIQUE, status, …)` (forwarded-newsletter inbox + group-wide rejection log; `status` values: `pending` | `rejected` — `pending` is the default for unprocessed candidates, `rejected` is set by `reject_discovery`), `discovery_senders`/`discovery_members` (inbound-email allowlist). Written + validated at the Worker write tools; read by query. The recipe index is the derived D1 `recipes` table — there is no `_indexes/recipes.json`.
 - **Attributed records (D1 `recipe_notes` / `store_notes`)** — each member's attributed recipe/store notes, stored in D1 tables carrying `author` (the writing tenant, set by the Worker) + a `private` flag. Both tables use `id TEXT PRIMARY KEY` (a generated stable key); `recipe`/`slug` (the recipe or store slug), `author`, `body`, `tags`, `private`, and `created_at` are ordinary columns (not the primary key). `read_recipe_notes` returns own-private + group-shared in one query, joined with the overlay favorites.
-- **Per-tenant D1 (the profile)** — each member's grocery **profile** lives in normalized D1 tables (`migrations/d1/0004_profile.sql`): a singleton `profile` row (the markdown fields `taste`/`diet_principles`, the preference scalars `default_cooking_nights`/`lunch_strategy`/`ready_to_eat_default_action`, the JSON columns `stores`/`dietary`/`rotation`/`custom`/`kitchen_notes`, and `freezer_capacity_estimate`), plus child tables `brand_prefs(tenant, term, ranks)`, `kitchen_equipment(tenant, slug)`, `staples(tenant, name, normalized_name, perishable)`, `overlay(tenant, recipe, favorite, reject)` (the two mutually-exclusive disposition marks; there is no `status` lifecycle or `rating` column), `ready_to_eat(tenant, slug, meal, name, favorite, reject, category, source, brand, notes)`, and `stockup(tenant, name, normalized_name, unit, typical_purchase, notes, baseline_price, buy_at_or_below)`. `idx_overlay_recipe` powers the cross-tenant group-favorites query. Reads assemble the agent-facing objects from these rows (`src/profile-db.ts`); writes mutate rows — no document format on the profile path.
+- **Per-tenant D1 (the profile)** — each member's grocery **profile** lives in normalized D1 tables (`migrations/d1/0004_profile.sql`): a singleton `profile` row (the markdown fields `taste`/`diet_principles`, the preference scalars `default_cooking_nights`/`lunch_strategy`/`ready_to_eat_default_action`, the JSON columns `stores`/`dietary`/`rotation`/`custom`/`kitchen_notes`, `freezer_capacity_estimate`, and `last_planned_at` — the per-tenant planning watermark, migration 0016, stamped by `update_meal_plan` on an add and read by `list_new_for_me`), plus child tables `brand_prefs(tenant, term, ranks)`, `kitchen_equipment(tenant, slug)`, `staples(tenant, name, normalized_name, perishable)`, `overlay(tenant, recipe, favorite, reject)` (the two mutually-exclusive disposition marks; there is no `status` lifecycle or `rating` column), `ready_to_eat(tenant, slug, meal, name, favorite, reject, category, source, brand, notes)`, and `stockup(tenant, name, normalized_name, unit, typical_purchase, notes, baseline_price, buy_at_or_below)`. `idx_overlay_recipe` powers the cross-tenant group-favorites query. Reads assemble the agent-facing objects from these rows (`src/profile-db.ts`); writes mutate rows — no document format on the profile path.
 - **Per-tenant D1 (session state)** — each member's working state lives in D1 row tables (`migrations/d1/0005_session_state.sql`): `pantry(tenant, name, normalized_name, quantity, category, prepared_from, added_at, last_verified_at, notes)`, `meal_plan(tenant, recipe, planned_for, sides /*json*/)`, `grocery_list(tenant, name, normalized_name, quantity, kind, domain, status, source, for_recipes /*json*/, note, added_at, ordered_at)` — keyed by normalized name (pantry/grocery) or recipe slug (meal plan), with `idx_grocery_status(tenant, status)` and `idx_pantry_category(tenant, category)` backing the read filters. Adds are row upserts (`INSERT … ON CONFLICT DO UPDATE`), removes/status changes are targeted row statements — no whole-array rewrite, strong read-after-write consistency. (The detailed item shapes are below.) The Worker read path has **no** GitHub/KV fallback — a miss returns empty/null.
-- **Shared operational D1 (reconcile + bug reports)** — group-wide (not per-tenant) operational tables the Worker owns: `reconcile_errors(slug, path, message, recorded_at)` (`migrations/d1/0014_reconcile_errors.sql`) — recipes the index reconcile **skipped**, replaced wholesale each pass; and `bug_reports(id, reporter, title, body, created_at, status)` (`migrations/d1/0015_bug_reports.sql`) — agent-filed bug reports, `reporter`/`created_at` attributed server-side. (The detailed shapes are below.)
+- **Shared operational D1 (reconcile + bug reports + discovery log)** — group-wide (not per-tenant) operational tables the Worker owns: `reconcile_errors(slug, path, message, recorded_at)` (`migrations/d1/0014_reconcile_errors.sql`) — recipes the index reconcile **skipped**, replaced wholesale each pass; `bug_reports(id, reporter, title, body, created_at, status)` (`migrations/d1/0015_bug_reports.sql`) — agent-filed bug reports, `reporter`/`created_at` attributed server-side; and `discovery_log(id, url, title, source, outcome, slug, detail, created_at)` (`migrations/d1/0016_background_discovery.sql`) — the discovery sweep's per-candidate outcome log, one table serving three roles (operator audit, intake dedup, parked-error surface), retention-pruned. (The detailed shapes are below.)
+- **Sweep-/reconcile-owned per-member D1 (discovery sweep)** — group-wide *attribution + taste* tables the discovery sweep owns (`migrations/d1/0016_background_discovery.sql`): `discovery_matches(recipe, tenant, score, matched_at)` — per-member match attribution (the import gate **and** the `list_new_for_me` filter); and `taste_derived(tenant, taste_hash, embedding, updated_at)` — each member's taste-text embedding, content-hash gated like `recipe_derived`. Like `recipe_derived`, these are **siblings of `recipes`** so the index projection's wholesale `recipes` rebuild never owns them. (The detailed shapes are below.)
 
 **Three-category recipe model:** a recipe's *content* (objective frontmatter + body) is shared markdown in the R2 corpus; its *overlay* (`favorite` + `reject`) is per-tenant in the D1 `overlay` table; its *notes* are per-tenant, attributed, append-mostly in the D1 `recipe_notes` table (`id TEXT PRIMARY KEY`, `recipe`, `author`, `body`, `tags`, `private`, `created_at`). `last_cooked` is **not stored** — it's derived per-tenant from the D1 `cooking_log` table (`MAX(date)` per recipe). Read tools merge shared content + the caller's overlay + cooking-log `last_cooked` at read time.
 
@@ -64,8 +65,8 @@ veg_forward: false              # boolean
 # last_cooked  → derived from each member's D1 cooking_log table (not stored here or in the index)
 # favorite     → per-tenant D1 overlay table (tenant, recipe, favorite)
 # reject       → per-tenant D1 overlay table (hard gate; absent row = neutral/available)
-discovered_at: null             # ISO date; only set for RSS imports
-discovery_source: null          # string; only set for RSS imports (e.g., "serious-eats")
+discovered_at: null             # ISO date (YYYY-MM-DD); set for discovery imports — a QUERYABLE recipes column (below), written by the projection from this frontmatter
+discovery_source: null          # string; set for discovery imports (e.g. "discovery-sweep", "serious-eats")
 ingredients_key: [chicken thighs, lemon, garlic, oregano, potatoes]
 meal_preppable: true            # boolean; good freezer/batch candidate
 pairs_with: []                  # array of recipe slugs; plate-companion sides (a PLATING edge)
@@ -84,7 +85,7 @@ source: https://www.seriouseats.com/lemon-garlic-roasted-chicken
   - **Required, may be `[]`:** `dietary`, `season`, `tags`, `pairs_with`, `perishable_ingredients`, `requires_equipment`.
   - **Conditional:** `side_search_terms` — present always; **non-empty** when `course` includes `main`, else `[]`.
 
-  Fields outside this set are **free-form** and pass through into the `extra` projection unchecked (e.g. `meal_preppable`, `veg_forward`, `difficulty`, `style`, `servings`, `time_active`, `discovered_at`, `discovery_source`). Promoting a free-form field to a queryable/consumed column means adding it to the contract in the same change. A compliant skeleton:
+  Fields outside this set are **free-form** and pass through into the `extra` projection unchecked (e.g. `meal_preppable`, `veg_forward`, `difficulty`, `style`, `servings`, `time_active`, `discovery_source`). (`discovered_at` is free-form too — not in the contract — but the projection **also** promotes it to its own queryable `recipes.discovered_at` column; see the `recipes`-table note below.) Promoting a free-form field to a queryable/consumed column means adding it to the contract in the same change. A compliant skeleton:
 
   ```yaml
   title: …
@@ -115,7 +116,7 @@ source: https://www.seriouseats.com/lemon-garlic-roasted-chicken
 - `ingredients_key`: **required, non-empty** — the top 5–7 defining ingredients for filtering and the pantry-overlap re-rank. Full ingredient list lives in the body. **Normalized through the alias table on write** (`create_recipe`/`update_recipe`, same matcher as `perishable_ingredients`) so names line up across recipes.
 - **The recipe index is the D1 `recipes` table — not a file.** The Worker's scheduled **reconcile** (`src/recipe-projection.ts`) reads the whole R2 corpus, validates every `recipes/*.md` object, then **projects** the shared objective set into the D1 `recipes` table, replacing it wholesale in one transaction (`DELETE` then batched `INSERT`) so a removed recipe loses its row and the table is a deterministic function of the R2 corpus. A recipe that fails validation is **skipped** (left out of the index) and recorded to the D1 `reconcile_errors` table. There is **no** `_indexes/recipes.json`. The Worker reads the index from D1 (`src/recipe-index.ts`, built on `src/db.ts`). A *provisioned-but-empty* table is a valid empty corpus (a vibe-less `search_recipes` spec returns `{ results: [{ label, recipes: [] }] }`); an *unreadable* table (D1 unreachable / unmigrated) surfaces as `index_unavailable`. A fresh database is populated by the first reconcile pass over the R2 corpus (the bootstrap guarantee).
 
-  The `recipes` table holds **objective shared content only** (no per-tenant `favorite`/`reject`/`last_cooked`): scalar columns `slug` (PK), `title`, `protein`, `cuisine`, `time_total`, `ingredients_key` (a JSON array as TEXT), `source_url` (the recipe's `source` frontmatter); JSON-array columns `tags`, `course`, `season`, `dietary`, `pairs_with`, `perishable_ingredients`, `requires_equipment`; and an `extra` JSON object carrying any other objective frontmatter (so a new field is lossless without a migration until promoted to a queryable column). `idx_recipes_source_url` makes the discovery idempotency check an indexed lookup. Schema: `migrations/d1/0002_recipes.sql`.
+  The `recipes` table holds **objective shared content only** (no per-tenant `favorite`/`reject`/`last_cooked`): scalar columns `slug` (PK), `title`, `protein`, `cuisine`, `time_total`, `discovered_at` (the recipe's `discovered_at` frontmatter, `YYYY-MM-DD`; null when not a dated import), `ingredients_key` (a JSON array as TEXT), `source_url` (the recipe's `source` frontmatter); JSON-array columns `tags`, `course`, `season`, `dietary`, `pairs_with`, `perishable_ingredients`, `requires_equipment`; and an `extra` JSON object carrying any other objective frontmatter (so a new field is lossless without a migration until promoted to a queryable column). `idx_recipes_source_url` makes the discovery idempotency check an indexed lookup, and `idx_recipes_discovered_at` makes `list_new_for_me`'s `WHERE discovered_at > <watermark>` an indexed range scan. `discovered_at` is **promoted out of `extra` to its own column** (migration 0016) precisely so the new-for-me read can filter on it; the projection writes it from each recipe's frontmatter. Schema: `migrations/d1/0002_recipes.sql` (+ `0016_background_discovery.sql` for `discovered_at`).
 
 ### Recipe body structural contract
 
@@ -134,6 +135,18 @@ The reconcile-owned home of each recipe's **derived** fields (migration 0013). N
 - `content_hash` — change-detection hash of those authored facets. The describe pass regenerates the description only when it differs (or is null), so a steady corpus does ~no work.
 - `embedding` — JSON array of 768 floats (`@cf/baai/bge-base-en-v1.5`) as TEXT; null until the embed pass fills it.
 - `description_hash` — hash of the description the vector was built from; gates re-embed.
+
+## taste_derived (per-member, D1 `taste_derived` table — Worker-derived)
+
+Each member's **taste-text embedding** — the cold-start/taste signal the **discovery sweep**'s matcher scores a candidate against (alongside the member's favorited-recipe vectors). Derived from the member's authored `profile.taste` text via `env.AI` and **content-hash gated**, mirroring `recipe_derived`'s description/embedding gate exactly: it regenerates only when the taste text changes, so a steady profile does ~no work. Refreshed at the **start of each discovery-sweep tick** (a small reconcile pass, `src/taste-vector.ts`) and pruned for a member who clears their taste text or leaves the group. A NULL/absent vector means the member is matched on **favorites alone** (or the cold-start fallback). Keyed by `tenant`. Migration 0016.
+
+```sql
+-- D1 taste_derived table — one row per member. PRIMARY KEY (tenant).
+tenant     TEXT  -- owning member
+taste_hash TEXT  -- hash of the profile.taste text the vector was built from (the regeneration gate)
+embedding  TEXT  -- JSON array of EMBED_DIM floats as TEXT; NULL until first derived
+updated_at TEXT  -- ISO timestamp of the last (re)embed
+```
 
 ## overlay (per-tenant, D1 `overlay` table)
 
@@ -363,6 +376,63 @@ Example rows:
 **Notes:**
 - `reporter` and `created_at` are set by the Worker — the agent supplies only `title`/`body`. `status` defaults to `open`; the operator closes it through the admin panel.
 
+## discovery_matches (per-member, D1 `discovery_matches` table)
+
+The **discovery sweep**'s per-member match attribution: which member(s) the sweep matched an imported recipe to, and at what taste score. This one record does **double duty** — it is the sweep's **import gate** (a candidate is imported only when ≥1 member matches it, so the shared corpus never floods any one member with the group's combined discovery firehose) **and** the per-member filter behind `list_new_for_me` (a member sees only the discoveries attributed to them). Keyed by `(recipe, tenant)`; written by the sweep on an import (`src/discovery-db.ts` `recordDiscoveryMatches`), read by `readNewForMe`. **Sibling of `recipes`** (like `recipe_derived`/`taste_derived`), so the index projection's wholesale `recipes` rebuild never touches it. Migration 0016.
+
+```sql
+-- D1 discovery_matches table — one row per (recipe, member) the sweep matched. PRIMARY KEY (recipe, tenant).
+-- idx_discovery_matches_tenant on (tenant) backs the per-member new-for-me read.
+recipe     TEXT  -- recipe slug (joins recipes.slug)  NOT NULL
+tenant     TEXT  -- the member the sweep matched it to  NOT NULL
+score      REAL  -- the taste cosine that cleared the match threshold (provenance / log detail)
+matched_at TEXT  -- YYYY-MM-DD the match was recorded
+```
+
+Example rows:
+
+| recipe | tenant | score | matched_at |
+|--------|--------|-------|------------|
+| harissa-roast-chicken | alice | 0.6312 | 2026-06-26 |
+| harissa-roast-chicken | bob | 0.5841 | 2026-06-26 |
+
+## discovery_log (D1 table, shared)
+
+The **discovery sweep**'s per-candidate **outcome log** — **one table serving three roles** (design Decision 11), so the audit surface and the operational state aren't three tables:
+- the **operator audit log** — recent rows, any outcome (ordered by `created_at`), the admin **Logs › Discovery** view;
+- the intake **"already evaluated" dedup set** — any row for a `url` marks it handled, so a re-run never reprocesses a candidate (the log **is** the sweep's progress state — there is no separate cursor);
+- the **parked-error surface** — `WHERE outcome = 'error'`, read by the agent-readable `read_discovery_errors` tool.
+
+**Shared** (not per-tenant — discovery source URLs/outcomes are group content). Each sweep tick **appends** one row per terminal outcome and **prunes** rows older than the retention window (`LOG_RETENTION_DAYS`), so it doesn't grow without bound — a `no_match` aged out of the window may be re-evaluated later, which is acceptable. Schema: `migrations/d1/0016_background_discovery.sql`.
+
+```sql
+-- D1 discovery_log table — one row per candidate outcome (append-only within a tick, retention-pruned).
+-- PRIMARY KEY (id). Indexed three ways for its three roles:
+--   idx_discovery_log_url     on (url)        — the dedup "already evaluated" lookup
+--   idx_discovery_log_created on (created_at) — the most-recent-first operator log
+--   idx_discovery_log_outcome on (outcome)    — the parked-error (outcome='error') subset
+id         TEXT  -- sweep-provided unique id (PK)
+url        TEXT  -- canonical source URL (the dedup key)
+title      TEXT  -- candidate title
+source     TEXT  -- feed name / sender address (provenance)
+outcome    TEXT  -- imported | duplicate | no_match | rejected_source | dietary_gated | error  NOT NULL
+slug       TEXT  -- resulting recipe slug (imports only; NULL otherwise)
+detail     TEXT  -- JSON: attribution (imports), the matched-duplicate slug, the validation/fetch error, etc.
+created_at TEXT  -- ISO timestamp (most-recent-first ordering)
+```
+
+Example rows:
+
+| id | url | title | source | outcome | slug | detail | created_at |
+|----|-----|-------|--------|---------|------|--------|------------|
+| `d1a…` | https://www.seriouseats.com/harissa-roast-chicken | Harissa Roast Chicken | Serious Eats | imported | harissa-roast-chicken | {"attribution":[{"tenant":"alice","score":0.6312}]} | 2026-06-26T09:00:01.000Z |
+| `d2b…` | https://example.com/not-a-recipe | Our Summer Newsletter | news@example.com | error | NULL | {"reason":"unreachable"} | 2026-06-26T09:00:02.000Z |
+
+**Notes:**
+- `outcome` is one of `imported` | `duplicate` | `no_match` | `rejected_source` | `dietary_gated` | `error`. `read_discovery_errors` returns the `error` subset; `list_new_for_me` reads imports through `discovery_matches`, not this log.
+- The dedup set is **every** distinct `url` in the table regardless of outcome, so a `duplicate`/`no_match`/`error` candidate is not re-fetched until it ages past the retention window.
+- The full log (every outcome) is served to the operator at `GET /admin/api/logs/discovery` → `{ entries: [...] }` (Access-gated, most-recent-first, bounded) — the **Logs › Discovery** admin view.
+
 ## meal plan (per-tenant, D1 session state)
 
 The transient, recipe-grain record of **committed cook intent** — what the agent has agreed to cook next. Distinct from the grocery list (the ingredient-grain BUY list): a planned recipe whose ingredients are all in the pantry still belongs here even though nothing is bought. Rows are cleared as they resolve (cooked → removed; abandoned → dropped). Stored as rows in the D1 `meal_plan` table (`PRIMARY KEY (tenant, recipe)`; `sides` is a JSON column). Agent-writable side-effect data (NOT user-curated config). When a recipe is cooked, `log_cooked` removes its row in the **same D1 transaction** as the cooking-log insert.
@@ -405,6 +475,7 @@ custom                      TEXT     -- JSON: arbitrary agent-added keys
 kitchen_notes               TEXT     -- JSON: freeform cook-reasoning notes (oven count, pan sizes)
 freezer_capacity_estimate   TEXT     -- tight | moderate | spacious
 rotation                    TEXT     -- JSON: {resurface_after_days?, novelty_boost?}
+last_planned_at             TEXT     -- YYYY-MM-DD planning watermark (0016): set by update_meal_plan on an add; bounds list_new_for_me
 
 -- D1 brand_prefs table — one row per (tenant, ingredient term). PRIMARY KEY (tenant, term).
 tenant  TEXT  -- owning user
@@ -490,7 +561,7 @@ Derived, time-bound state written by the flyer warm into the `KROGER_KV` namespa
 
 Derived operational state for the `/health` endpoint (background-job-health). Each background process writes one record per run; `/health` aggregates them. Tenant-data-free by construction — counts, timestamps, and error classes only.
 
-- `health:job:<name>` → `{ ok, last_run_at, summary }` — one per background job (`health:job:flyer-warm`, `health:job:recipe-embed`, `health:job:email`). `ok` is the last run's success; `last_run_at` is epoch ms; `summary` is small tenant-clean detail (the warm carries `{ action, done, sweep_started_at, sweep_completed_at, errors }`; the email handler carries the gate outcome `{ accepted, reason, written }`).
+- `health:job:<name>` → `{ ok, last_run_at, summary }` — one per background job (`health:job:flyer-warm`, `health:job:recipe-index`, `health:job:recipe-embed`, `health:job:discovery-sweep`, `health:job:email`). `ok` is the last run's success; `last_run_at` is epoch ms; `summary` is small tenant-clean detail (the warm carries `{ action, done, sweep_started_at, sweep_completed_at, errors }`; the discovery sweep carries `{ processed, imported, duplicate, no_match, dietary_gated, parked, deferred, taste_updated, log_pruned }`; the email handler carries the gate outcome `{ accepted, reason, written }`).
 - `GET /health` → `{ ok, generated_at, jobs: [{ name, ok, last_run_at, never_run?, summary? }], d1: { ok }, admin: { access_configured, email_allowlist, dev_bypass_set, exposed } }` — **open and tenant-clean** (no token; the D1 probe is coarsened to a boolean so no raw `storage_error` string is exposed; the `admin` posture is booleans only — never the allowlisted emails). Aggregate-only. Overall `ok` is false when a job is *explicitly* failing, the D1 probe failed, or the admin gate is `exposed` (the dev bypass set on a surface Access doesn't protect — only the loopback guard stands between it and an open panel); a never-run job is reported with `ok: null, never_run: true`. HTTP status is 200 when ok, 503 when failing (so plain HTTP-status monitors trip). Restricting reads is an edge concern (Cloudflare Access / WAF), not Worker config.
 - `GET /health.svg` → the same aggregate payload rendered as an SVG **card** (`content-type: image/svg+xml`) for a README badge (data-repo-health-badge). **Open** like `/health` (no token — a public README badge must be anonymously fetchable), but **always HTTP 200** — degraded state is shown by color, not status, because an image proxy (GitHub Camo) may not render a non-200 as an image — with a short `Cache-Control` so it refreshes on a TTL. Tenant-data-free; a never-run job renders amber (pending), not red, and the `admin` row shows the gate state (green `gated` / muted `disabled`|`dev` / red `exposed`). It's a glance, not an alarm: point real HTTP-status/freshness monitors at `/health` (JSON), not `.svg`.
 
@@ -505,13 +576,13 @@ The operator admin panel (operator-admin) is a static Elm SPA at `/admin` plus a
 
 ## feeds (shared corpus, D1 `feeds` table)
 
-**Shared** (data-repo root). RSS feed URLs and tags — **agent-writable via `update_feeds`** (add-only, deduped by canonicalized url) as well as hand-curated. Discovery sources are a group-wide concern: any member's feeds contribute to one shared candidate pool (`fetch_rss_discoveries`), judged against the caller's taste at read time. `fetch_rss_discoveries` reads `url`/`name`/`weight`; `tags` are descriptive.
+**Shared** (D1 shared corpus). RSS feed URLs and tags — **agent-writable via `update_feeds`** (add-only, deduped by canonicalized url) as well as hand-curated. Discovery sources are a group-wide concern: any member's feeds contribute to the one set the **background discovery sweep** polls each tick (`src/discovery-sweep.ts`); the sweep classifies and taste-matches the resulting candidates per member. The sweep reads `url`/`name`; `weight`/`tags` are descriptive (not used to rank).
 
 ```sql
 -- D1 feeds table — shared RSS feeds for recipe discovery. PRIMARY KEY (url).
 url     TEXT  -- canonical feed URL
 name    TEXT  -- human-readable feed name
-weight  REAL  -- relative fetch weight (higher = more results surfaced)
+weight  REAL  -- relative fetch weight (descriptive)
 tags    TEXT  -- JSON array of descriptive tags (e.g. ["trusted", "technique-focused"])
 ```
 
@@ -525,7 +596,7 @@ Example rows:
 
 ## discovery_candidates (shared corpus, D1 `discovery_candidates` table)
 
-**Shared** (D1 shared corpus). Agent-writable side-effect data (NOT user-curated). Written by the Worker's inbound-email handler (`email()`), which receives newsletters forwarded to `groceries-agent@<domain>`, and read by the agent via `read_discovery_inbox`. Each row is one received message with its full plain-text body. The agent reads each `body` and extracts recipe titles and URLs itself — no pre-extraction happens in the Worker. This is the *push* complement to RSS pull — it reaches bot-walled/paywalled sources (Serious Eats, NYT) the Worker can't fetch.
+**Shared** (D1 shared corpus). Agent-writable side-effect data (NOT user-curated). Written by the Worker's inbound-email handler (`email()`), which receives newsletters forwarded to `groceries-agent@<domain>`, and **drained by the background discovery sweep** (`src/discovery-sweep.ts`), which extracts recipe links from each row's full plain-text `body`, then classifies/taste-matches/imports them like any feed candidate. Each row is one received message with its full plain-text body — the Worker captures the email faithfully; the sweep does the link extraction (no pre-extraction at write). This is the *push* complement to the RSS feeds — it reaches bot-walled/paywalled sources (Serious Eats, NYT) the Worker can't fetch.
 
 Old entries are automatically pruned when new ones arrive (default retention: 30 days).
 
@@ -549,9 +620,9 @@ Example rows (one row per email; the `body` carries the recipe links the agent e
 | `inbox:news@seriouseats.com This week's best dinners 2026-06-11` | *(same as id)* | news@seriouseats.com | This week's best dinners | This week we're cooking: Weeknight Chili (seriouseats.com/weeknight-chili), Sheet-Pan Salmon (seriouseats.com/sheet-pan-salmon) … | 2026-06-11 | new |
 
 **Notes:**
-- `body` contains the email's plain-text content (or HTML converted to readable text), truncated to 10,000 characters. The agent scans it for recipe links; there is no pre-extracted candidate list.
+- `body` contains the email's plain-text content (or HTML converted to readable text), truncated to 10,000 characters. The sweep scans it for recipe links; there is no pre-extracted candidate list.
 - Entries are deduped at write-time by `(source, subject, discovered_at)` — the same email forwarded twice is stored only once.
-- An empty table is valid (no discoveries yet) — `read_discovery_inbox` returns `{ emails: [] }`.
+- An empty table is valid (no discoveries yet) — the sweep simply finds no email candidates that tick.
 
 ## discovery_sources (shared corpus, D1 `discovery_senders` + `discovery_members`)
 

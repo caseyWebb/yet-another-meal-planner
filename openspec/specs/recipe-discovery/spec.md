@@ -3,34 +3,6 @@
 ## Purpose
 TBD - created by archiving change discovery-and-disposition. Update Purpose after archive.
 ## Requirements
-### Requirement: RSS discovery returns a deduped candidate pool without scoring
-
-`fetch_rss_discoveries` SHALL read the feeds configured in the **shared** D1 `feeds` table — not a per-tenant `users/<id>/` path — fetch each feed, and return a deduped pool of candidate recipes as `{ candidates: [{ url, title, source, feed_weight, summary }] }`. Discovery feeds are a shared, top-level concern: any member's configured feeds contribute to one group pool, and the candidates are judged against the calling member's taste at menu time. It SHALL NOT compute or return a taste `score` and SHALL NOT rank or pre-select a "top" subset — taste fit and the final selection are the agent's judgment. `feed_weight` SHALL be passed through from the feed's configured weight, not used by the tool to order results. When the shared `feeds` table is empty, the tool SHALL return an empty candidate list rather than erroring.
-
-#### Scenario: Candidates returned without a score field
-
-- **WHEN** `fetch_rss_discoveries` is called with feeds configured
-- **THEN** each returned candidate carries `url`, `title`, `source`, `feed_weight`, and `summary`, and no candidate carries a taste `score`
-
-#### Scenario: Feeds are read from the shared D1 table, not a per-tenant path
-
-- **WHEN** `fetch_rss_discoveries` resolves its feed configuration
-- **THEN** it reads the shared D1 `feeds` table, and no per-tenant feed config is consulted
-
-#### Scenario: Empty feed config is not an error
-
-- **WHEN** the shared D1 `feeds` table has no rows
-- **THEN** the tool returns `{ candidates: [] }` and does not raise an error
-
-### Requirement: RSS candidates are deduped against the existing corpus
-
-`fetch_rss_discoveries` SHALL exclude any feed item whose canonical link matches the `source:` URL of a recipe already in the corpus, so already-imported recipes are not re-surfaced. The deduplication SHALL be performed by the tool (deterministically on the canonical URL), not left to the agent.
-
-#### Scenario: Already-imported recipe is filtered out
-
-- **WHEN** a feed item's canonical link equals the `source:` of an existing recipe in the corpus
-- **THEN** that item is omitted from the returned candidate pool
-
 ### Requirement: create_recipe persists a recipe with a solo commit
 
 `create_recipe(frontmatter, body)` SHALL write a new `recipes/<slug>.md` from the agent-supplied frontmatter and body and commit it on its own via the atomic commit engine — not staged into the end-of-session commit. The slug SHALL be derived from the title (or supplied). The tool SHALL refuse to overwrite an existing recipe, returning `{ error: "slug_exists", slug }` when a file already exists at the target path, and SHALL refuse to duplicate a recipe whose `source` URL is already in the corpus (`already_exists`, with the existing slug to reuse). It SHALL NOT stamp a `status` (the per-tenant `status` lifecycle is retired); a created recipe is an available corpus recipe by default. The importing agent SHALL populate `description` and, for mains, `side_search_terms` so the recipe is semantically retrievable once its embedding reconciles.
@@ -108,15 +80,20 @@ The system SHALL provide an `update_feeds` tool that adds RSS/Atom discovery fee
 
 ### Requirement: A discovery URL can be rejected group-wide
 
-The system SHALL provide a `reject_discovery(url, reason?)` tool that records a **shared, group-wide** suppression of a discovery URL in a `discovery_rejections` table keyed by the canonical URL. Both discovery read paths SHALL consult it: `fetch_rss_discoveries` SHALL exclude rejected URLs from its candidate pool (folded into its corpus-dedup set), and `read_discovery_inbox` SHALL drop candidates whose URL is rejected (canonical match). Rejection SHALL be idempotent on the canonical URL and SHALL NOT modify recipe content or any tenant's overlay. Because the suppression is shared, it is reserved for "not corpus-worthy for the group" (junk, broken, non-recipe, duplicate, off-base); a personal not-for-me-this-time is a no-action skip, not a reject.
+The system SHALL provide a `reject_discovery(url, reason?)` tool that records a **shared, group-wide** suppression of a discovery source URL in a `discovery_rejections` table keyed by the canonical URL. The background discovery sweep SHALL consult it: a rejected URL (and its tracker-wrapped variants) SHALL be excluded from intake so the sweep never re-imports it. Rejection SHALL be idempotent on the canonical URL and SHALL NOT, by itself, modify recipe content or any tenant's overlay. Because pre-import candidates are no longer surfaced to members for triage, rejection is reserved for suppressing a **source** that is not corpus-worthy for the group (a feed/site producing junk, broken, non-recipe, or duplicate results); suppressing an individual member's view of an already-imported recipe is `toggle_reject` (per-tenant), and removing a bad import from the shared corpus is a separate explicit action. A personal not-for-me is `toggle_reject`, never `reject_discovery`.
 
-#### Scenario: A rejected URL stops resurfacing for everyone
+#### Scenario: A rejected source stops being imported
 
-- **WHEN** a member calls `reject_discovery` on a discovery URL and any member later reads the discovery pools
-- **THEN** that URL (and its tracker-wrapped variants) is absent from both `fetch_rss_discoveries` and `read_discovery_inbox` for the whole group
+- **WHEN** a member calls `reject_discovery` on a source URL and the sweep later runs
+- **THEN** that URL (and its tracker-wrapped variants) is excluded from sweep intake and is not re-imported for the group
 
 #### Scenario: Rejection writes no recipe or overlay
 
 - **WHEN** `reject_discovery` is called
 - **THEN** only the shared `discovery_rejections` table is written; no recipe content and no tenant overlay changes
+
+#### Scenario: Personal dislike of an imported recipe is toggle_reject, not reject_discovery
+
+- **WHEN** a member wants to stop seeing an already-imported recipe that others may still want
+- **THEN** the agent calls `toggle_reject` for that member, not `reject_discovery` (which is group-wide source suppression)
 

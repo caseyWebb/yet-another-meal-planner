@@ -127,7 +127,13 @@ describe("handleHealthRequest", () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as { ok: boolean; jobs: { name: string }[] };
     expect(body.ok).toBe(true);
-    expect(body.jobs.map((j) => j.name)).toEqual(["flyer-warm", "recipe-index", "recipe-embed", "email"]);
+    expect(body.jobs.map((j) => j.name)).toEqual([
+      "flyer-warm",
+      "recipe-index",
+      "recipe-embed",
+      "email",
+      "discovery-sweep",
+    ]);
   });
 
   it("503s (so plain HTTP monitors trip) when a job is failing", async () => {
@@ -167,6 +173,7 @@ describe("handleHealthSvgRequest", () => {
     await writeJobHealth(kv, "recipe-index", rec(true));
     await writeJobHealth(kv, "recipe-embed", rec(true));
     await writeJobHealth(kv, "email", rec(true));
+    await writeJobHealth(kv, "discovery-sweep", rec(true));
     const e = { KROGER_KV: kv, DB: fakeD1() } as unknown as Env;
     const res = await handleHealthSvgRequest(e);
     expect(res.status).toBe(200);
@@ -174,7 +181,8 @@ describe("handleHealthSvgRequest", () => {
     expect(res.headers.get("cache-control")).toMatch(/max-age=\d+/);
     const body = await res.text();
     expect(body.startsWith("<svg")).toBe(true);
-    for (const name of ["flyer-warm", "recipe-index", "recipe-embed", "email", "d1"]) expect(body).toContain(name);
+    for (const name of ["flyer-warm", "recipe-index", "recipe-embed", "email", "discovery-sweep", "d1"])
+      expect(body).toContain(name);
     expect(body).toContain("healthy");
     expect(body).not.toContain("#d29922"); // no amber when nothing is never-run
   });

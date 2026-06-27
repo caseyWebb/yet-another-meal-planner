@@ -20,6 +20,7 @@ import { mergeOverlay, type Overlay } from "./overlay.js";
 import { readOverlay } from "./profile-db.js";
 import type { RecipeIndex } from "./recipes.js";
 import { readMealPlan, applyMealPlanRowOps } from "./session-db.js";
+import { stampLastPlanned } from "./discovery-db.js";
 
 /** One D1 `cooking_log LEFT JOIN recipes` row (protein/cuisine already COALESCE'd). */
 interface CookingLogJoinRow {
@@ -127,6 +128,11 @@ export function registerCookingTools(
     ({ ops }) =>
       runTool(async () => {
         const { applied, conflicts } = await applyMealPlanRowOps(env, username, ops as MealPlanOp[]);
+        // Committing planned recipes advances the new-for-me watermark, so the next
+        // list_new_for_me returns only discoveries imported after this plan.
+        if (ops.some((o) => o.op === "add")) {
+          await stampLastPlanned(env, username, new Date().toISOString().slice(0, 10));
+        }
         return { applied, conflicts };
       }),
   );

@@ -25,7 +25,7 @@ import { db } from "./db.js";
 import type { RecipeIndex, IndexedRecipe } from "./recipes.js";
 
 /** Scalar columns reconstructed verbatim (column name === frontmatter field). */
-const SCALAR_COLUMNS = ["title", "protein", "cuisine", "time_total", "description"] as const;
+const SCALAR_COLUMNS = ["title", "protein", "cuisine", "time_total", "description", "discovered_at"] as const;
 
 /** JSON-encoded columns (TEXT holding a JSON value) — JSON.parse on load. */
 const JSON_COLUMNS = [
@@ -48,6 +48,7 @@ interface RecipeRow {
   cuisine: string | null;
   time_total: number | null;
   description: string | null;
+  discovered_at: string | null;
   ingredients_key: string | null;
   source_url: string | null;
   tags: string | null;
@@ -158,8 +159,8 @@ export async function recipeDescription(env: Env, slug: string): Promise<string 
 /**
  * Map canonicalized-free `source_url` → slug for every indexed recipe with a
  * source. Discovery canonicalizes both sides before comparing, so this returns the
- * raw stored URL; the caller (discovery.ts) canonicalizes. Used by the enumeration
- * path (`fetch_rss_discoveries`). First slug wins on a (rare) source collision.
+ * raw stored URL; the caller canonicalizes. Used by the discovery sweep's intake dedup
+ * and the manual import idempotency check. First slug wins on a (rare) source collision.
  */
 export async function recipeSourceMap(env: Env): Promise<Map<string, string>> {
   const rows = await db(env).all<{ slug: string; source_url: string | null }>(

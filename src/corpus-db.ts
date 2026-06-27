@@ -290,8 +290,8 @@ export async function readDiscoveryInbox(env: Env): Promise<InboxCandidate[]> {
     }));
 }
 
-/** Canonical URLs the group has rejected — the suppression set both discovery read
- *  paths consult (fetch_rss_discoveries unions it into `seen`; the inbox drops them). */
+/** Canonical URLs the group has rejected — the suppression set the discovery sweep's
+ *  intake unions into its dedup `seen` set so a rejected source is never re-imported. */
 export async function readDiscoveryRejections(env: Env): Promise<Set<string>> {
   const rows = await db(env).all<{ url: string }>("SELECT url FROM discovery_rejections");
   return new Set(rows.map((r) => r.url));
