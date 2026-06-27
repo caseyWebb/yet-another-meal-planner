@@ -401,7 +401,7 @@ Example rows:
 The **discovery sweep**'s per-candidate **outcome log** — **one table serving three roles** (design Decision 11), so the audit surface and the operational state aren't three tables:
 - the **operator audit log** — recent rows, any outcome (ordered by `created_at`), the admin **Logs › Discovery** view;
 - the intake **"already evaluated" dedup set** — any row for a `url` marks it handled, so a re-run never reprocesses a candidate (the log **is** the sweep's progress state — there is no separate cursor);
-- the **parked-error surface** — `WHERE outcome = 'error'`, read by the agent-readable `read_discovery_errors` tool.
+- the **parked/failed surface** — `WHERE outcome IN ('error', 'failed')`, read by the agent-readable `read_discovery_errors` tool; the `failed` count also flips the `discovery-sweep` health record's `ok`.
 
 **Shared** (not per-tenant — discovery source URLs/outcomes are group content). Each sweep tick **appends** one row per terminal outcome and **prunes** rows older than the retention window (`LOG_RETENTION_DAYS`), so it doesn't grow without bound — a `no_match` aged out of the window may be re-evaluated later, which is acceptable. Schema: `migrations/d1/0016_background_discovery.sql`.
 
@@ -410,12 +410,12 @@ The **discovery sweep**'s per-candidate **outcome log** — **one table serving 
 -- PRIMARY KEY (id). Indexed three ways for its three roles:
 --   idx_discovery_log_url     on (url)        — the dedup "already evaluated" lookup
 --   idx_discovery_log_created on (created_at) — the most-recent-first operator log
---   idx_discovery_log_outcome on (outcome)    — the parked-error (outcome='error') subset
+--   idx_discovery_log_outcome on (outcome)    — the parked/failed (outcome IN ('error','failed')) subset
 id         TEXT  -- sweep-provided unique id (PK)
 url        TEXT  -- canonical source URL (the dedup key)
 title      TEXT  -- candidate title
 source     TEXT  -- feed name / sender address (provenance)
-outcome    TEXT  -- imported | duplicate | no_match | rejected_source | dietary_gated | error  NOT NULL
+outcome    TEXT  -- imported | duplicate | no_match | rejected_source | dietary_gated | error | failed  NOT NULL
 slug       TEXT  -- resulting recipe slug (imports only; NULL otherwise)
 detail     TEXT  -- JSON: attribution (imports), the matched-duplicate slug, the validation/fetch error, etc.
 created_at TEXT  -- ISO timestamp (most-recent-first ordering)
@@ -427,10 +427,11 @@ Example rows:
 |----|-----|-------|--------|---------|------|--------|------------|
 | `d1a…` | https://www.seriouseats.com/harissa-roast-chicken | Harissa Roast Chicken | Serious Eats | imported | harissa-roast-chicken | {"attribution":[{"tenant":"alice","score":0.6312}]} | 2026-06-26T09:00:01.000Z |
 | `d2b…` | https://example.com/not-a-recipe | Our Summer Newsletter | news@example.com | error | NULL | {"reason":"unreachable"} | 2026-06-26T09:00:02.000Z |
+| `d3c…` | https://www.bonappetit.com/recipe/braised-short-ribs | Braised Short Ribs | Bon Appétit | failed | NULL | {"reason":"unexpected: Workers AI embed failed: Too many subrequests by single Worker invocation"} | 2026-06-26T09:00:03.000Z |
 
 **Notes:**
-- `outcome` is one of `imported` | `duplicate` | `no_match` | `rejected_source` | `dietary_gated` | `error`. `read_discovery_errors` returns the `error` subset; `list_new_for_me` reads imports through `discovery_matches`, not this log.
-- The dedup set is **every** distinct `url` in the table regardless of outcome, so a `duplicate`/`no_match`/`error` candidate is not re-fetched until it ages past the retention window.
+- `outcome` is one of `imported` | `duplicate` | `no_match` | `rejected_source` | `dietary_gated` | `error` | `failed`. `error` is a **content park** (an un-importable page — unreachable/walled/invalid), an expected steady state; `failed` is an **infrastructure failure** (a transient env.AI/D1 error — a subrequest-limit hit, an outage), which degrades the `discovery-sweep` health record (`countDiscoveryFailures`) until cleared. `read_discovery_errors` returns both; `list_new_for_me` reads imports through `discovery_matches`, not this log.
+- The dedup set is **every** distinct `url` in the table regardless of outcome, so a `duplicate`/`no_match`/`error`/`failed` candidate is not re-fetched until its row is cleared or ages past the retention window.
 - The full log (every outcome) is served to the operator at `GET /admin/api/logs/discovery` → `{ entries: [...] }` (Access-gated, most-recent-first, bounded) — the **Logs › Discovery** admin view.
 
 ## meal plan (per-tenant, D1 session state)

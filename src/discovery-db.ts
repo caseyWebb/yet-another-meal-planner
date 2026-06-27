@@ -6,7 +6,8 @@
 // discovery_log is one table serving three roles (migration 0016 / design Decision 11):
 //   * the operator audit log        — readDiscoveryLog (most-recent-first, bounded)
 //   * the dedup "already evaluated"  — loadEvaluatedUrls (don't reprocess a handled url)
-//   * the parked-error surface       — readDiscoveryErrors (outcome = 'error')
+//   * the parked/failed surface      — readDiscoveryErrors (outcome 'error' = content park,
+//                                      'failed' = infrastructure failure)
 
 import { db } from "./db.js";
 import type { Env } from "./env.js";
@@ -59,6 +60,17 @@ export async function loadEvaluatedUrls(env: Env): Promise<Set<string>> {
   return set;
 }
 
+/** Count of standing INFRASTRUCTURE failures (`outcome = 'failed'`) — the signal the
+ *  discovery-sweep health record flips `ok` on, so an idle tick after an outage still reads
+ *  as degraded until the failures clear. Distinct from content `error` parks (un-importable
+ *  pages), which are an expected steady state and do not degrade health. */
+export async function countDiscoveryFailures(env: Env): Promise<number> {
+  const row = await db(env).first<{ n: number }>(
+    "SELECT COUNT(*) AS n FROM discovery_log WHERE outcome = 'failed'",
+  );
+  return row?.n ?? 0;
+}
+
 function parseDetail(v: unknown): unknown {
   if (typeof v !== "string" || v === "") return null;
   try {
@@ -78,11 +90,12 @@ export async function readDiscoveryLog(env: Env, limit = 200): Promise<Discovery
   return rows.map((r) => ({ ...r, detail: parseDetail(r.detail) }));
 }
 
-/** The parked-error subset of the log (the agent-readable read_discovery_errors surface). */
+/** The parked/failed subset of the log (the agent-readable read_discovery_errors surface):
+ *  content `error` parks AND infrastructure `failed` rows, so nothing dropped is hidden. */
 export async function readDiscoveryErrors(env: Env, limit = 100): Promise<DiscoveryLogRow[]> {
   const rows = await db(env).all<DiscoveryLogRow & { detail: string | null }>(
     "SELECT id, url, title, source, outcome, slug, detail, created_at FROM discovery_log " +
-      "WHERE outcome = 'error' ORDER BY created_at DESC LIMIT ?1",
+      "WHERE outcome IN ('error', 'failed') ORDER BY created_at DESC LIMIT ?1",
     Math.max(1, Math.min(limit, 1000)),
   );
   return rows.map((r) => ({ ...r, detail: parseDetail(r.detail) }));

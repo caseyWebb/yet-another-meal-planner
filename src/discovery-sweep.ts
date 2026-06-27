@@ -29,10 +29,16 @@ import { classifyRecipe } from "./discovery-classify.js";
 import { generateDescription, facetsFromFrontmatter } from "./description.js";
 import { CLASSIFY_MODEL } from "./discovery-classify.js";
 import { validateFile } from "./validate.js";
-import { seedRecipeDescription } from "./recipe-embeddings.js";
+import { seedRecipeDescription, EMBED_INPUT_BATCH } from "./recipe-embeddings.js";
 import { readOverlay, readProfile } from "./profile-db.js";
 import { readTasteVectors, reconcileTasteVectors, buildTasteDeps } from "./taste-vector.js";
-import { recordDiscoveryLog, loadEvaluatedUrls, recordDiscoveryMatches, pruneDiscoveryLog } from "./discovery-db.js";
+import {
+  recordDiscoveryLog,
+  loadEvaluatedUrls,
+  recordDiscoveryMatches,
+  pruneDiscoveryLog,
+  countDiscoveryFailures,
+} from "./discovery-db.js";
 import { notifyFailure, writeJobHealth } from "./health.js";
 import type { KvStore } from "./kroger-user.js";
 
@@ -80,6 +86,9 @@ export interface DiscoveryConfig {
   /** Max external recipe-page FETCHES per tick (the scarce shared-subrequest bound — a parse
    *  failure spends one without ever reaching classify, so it is capped separately). */
   fetchMaxPerTick: number;
+  /** Max candidates CONSIDERED per tick. Bounds the triage-embed + log-write cost so an
+   *  unbounded intake backlog can't balloon one invocation; the excess defers to later ticks. */
+  maxCandidatesPerTick: number;
   /** Max IMPORTS per tick (the corpus-bloat governor); excess is deferred + logged. */
   rateCap: number;
 }
@@ -96,6 +105,7 @@ export const DEFAULT_CONFIG: DiscoveryConfig = {
   dedupThreshold: 0.9,
   classifyMaxPerTick: 12,
   fetchMaxPerTick: 16,
+  maxCandidatesPerTick: 150,
   rateCap: 10,
 };
 
@@ -106,6 +116,7 @@ export type Outcome =
   | "rejected_source"
   | "dietary_gated"
   | "error"
+  | "failed"
   | "deferred";
 
 /** One per-candidate outcome row for the operator log (and the dedup/error views). */
@@ -131,7 +142,12 @@ export interface SweepResult {
   duplicate: number;
   noMatch: number;
   dietaryGated: number;
+  /** CONTENT parks — a candidate the sweep can't use (unreachable/walled/invalid). Expected
+   *  steady state; surfaced for an author to eyeball, but NOT a system-health failure. */
   parked: number;
+  /** INFRASTRUCTURE failures — a candidate dropped by a transient env.AI/D1 error (a
+   *  subrequest-limit hit, an AI outage). A real failure: it flips the job's health `ok`. */
+  failed: number;
   deferred: number;
 }
 
@@ -258,23 +274,34 @@ export async function runDiscoverySweep(
     noMatch: 0,
     dietaryGated: 0,
     parked: 0,
+    failed: 0,
     deferred: 0,
   };
   const importedVectors: Array<{ slug: string; vector: number[] }> = [];
   let classified = 0;
   let fetched = 0;
 
-  // Triage embeds in ONE batched env.AI call for the whole pool, not one per candidate.
-  // Embeds count against the shared subrequest budget, so a large feed/inbox pool must not
-  // spend one apiece — the unbatched loop could exhaust the budget on triage alone, before a
-  // single recipe is even fetched. The match itself stays the pure `nearAnyMember` cosine
-  // check below. A batch failure (a transient env.AI outage) propagates and fails the tick:
-  // no candidate is logged, so the whole pool re-gathers next run — far safer than embedding
-  // each one (re-spending the budget we are saving) or mislabeling them all `no_match`.
-  const triageVecs = await deps.embedMany(candidates.map(triageText));
+  // Clamp the per-tick pool so an unbounded intake backlog (many feeds, an un-pruned inbox)
+  // can't balloon one invocation's subrequest/CPU cost — each candidate costs a triage-embed
+  // slot and a log write. The excess defers to later ticks (the frequent cron drains it),
+  // exactly like the rate/fetch caps below.
+  const pool = candidates.slice(0, config.maxCandidatesPerTick);
+  res.deferred += candidates.length - pool.length;
 
-  for (let i = 0; i < candidates.length; i++) {
-    const candidate = candidates[i];
+  // Triage embeds, batched in env.AI-input-sized CHUNKS (EMBED_INPUT_BATCH — the same bge input
+  // ceiling the recipe-embedding reconcile chunks on), so the whole pool costs ceil(N/BATCH)
+  // calls — not one per candidate, and not one oversized call that would exceed the model's
+  // input limit and wedge the tick. The match itself stays the pure `nearAnyMember` cosine
+  // check below. A chunk failure (a transient env.AI outage) propagates and fails the tick: no
+  // candidate is logged, so the whole pool re-gathers next run — far safer than embedding each
+  // one (re-spending the budget we are saving) or mislabeling them all `no_match`.
+  const triageVecs: number[][] = [];
+  for (let i = 0; i < pool.length; i += EMBED_INPUT_BATCH) {
+    triageVecs.push(...(await deps.embedMany(pool.slice(i, i + EMBED_INPUT_BATCH).map(triageText))));
+  }
+
+  for (let i = 0; i < pool.length; i++) {
+    const candidate = pool[i];
     // Governor / budget: once the rate cap or the classify cap is hit, defer the rest (no
     // wasted classify) — they re-gather next tick (still un-evaluated, so no dedup needed).
     if (res.imported >= config.rateCap || classified >= config.classifyMaxPerTick) {
@@ -386,17 +413,19 @@ export async function runDiscoverySweep(
       res.imported++;
       res.processed++;
     } catch (e) {
-      // An unexpected transient AI/D1 failure (env.AI hiccup, D1 blip) parks THIS
-      // candidate rather than throwing out of the loop — the unattended sweep must keep
-      // making progress. recordLog is best-effort; if it too fails, the candidate is left
-      // un-evaluated and re-tried next tick (idempotent, so that is safe).
+      // An unexpected transient AI/D1 failure (env.AI hiccup, a subrequest-limit hit, a D1
+      // blip) drops THIS candidate rather than throwing out of the loop — the unattended sweep
+      // must keep making progress. It is recorded as `failed` (an INFRASTRUCTURE failure, not a
+      // content `error`): a real fault that flips the job's health `ok` until it clears, vs an
+      // expected un-importable page. recordLog is best-effort; if it too fails, the candidate is
+      // left un-evaluated and re-tried next tick (idempotent, so that is safe).
       const message = e instanceof Error ? e.message : String(e);
       try {
-        await deps.recordLog({ ...logBase(candidate), outcome: "error", detail: { reason: `unexpected: ${message}` } });
+        await deps.recordLog({ ...logBase(candidate), outcome: "failed", detail: { reason: `unexpected: ${message}` } });
       } catch {
         /* logging itself failed — skip; next tick re-evaluates this candidate */
       }
-      res.parked++;
+      res.failed++;
       res.processed++;
     }
   }
@@ -438,7 +467,7 @@ export function isLikelyNonRecipeLink(raw: string): boolean {
   } catch {
     return true;
   }
-  const host = u.host.toLowerCase().replace(/^www\./, "");
+  const host = u.hostname.toLowerCase().replace(/^www\./, "");
   if (NON_RECIPE_HOSTS.has(host)) return true;
   return NON_RECIPE_PATH_RE.test(u.pathname);
 }
@@ -685,10 +714,13 @@ export const LOG_RETENTION_DAYS = 60;
 /**
  * One scheduled run of the discovery sweep: refresh the per-member taste vectors (so the
  * matcher has current taste), run the sweep, prune old log rows, record
- * `health:job:discovery-sweep` (ok with a counts summary, or fail), push an ntfy alert on a
- * hard failure, and **rethrow** so the platform's native cron status reflects it — the same
- * shape as runWarmJob / runEmbedJob / runProjectionJob. Runs AFTER the index projection +
- * recipe-derived reconcile in the tick, so dedup/match see a fresh corpus + fresh embeddings.
+ * `health:job:discovery-sweep` — a counts summary with `ok: false` while any standing
+ * INFRASTRUCTURE failure (`outcome = 'failed'`) sits unresolved, so `/health` shows the
+ * degradation even on a later idle tick (a content park does NOT degrade it). On a HARD
+ * (thrown) tick it records `ok: false` and **rethrows** so the platform's native cron status
+ * reflects it too — the same shape as runWarmJob / runEmbedJob / runProjectionJob. Runs AFTER
+ * the index projection + recipe-derived reconcile in the tick, so dedup/match see a fresh
+ * corpus + fresh embeddings.
  */
 export async function runDiscoverySweepJob(
   env: Env,
@@ -711,8 +743,15 @@ export async function runDiscoverySweepJob(
     const r = await runDiscoverySweep(deps, config);
     const cutoff = new Date(startedAt - LOG_RETENTION_DAYS * 86_400_000).toISOString();
     const pruned = await pruneDiscoveryLog(env, cutoff);
+    // Standing infrastructure-failure count (not just this tick's): an idle tick after an
+    // outage must still read as degraded until the `failed` rows clear, so the health record
+    // reflects the system's actual state, not just the latest run's activity. THAT is what a
+    // health check is for. `ok: false` flips `/health` to 503; the cron itself is NOT failed
+    // (the tick completed) — only a thrown tick rethrows below.
+    const failedOutstanding = await countDiscoveryFailures(env);
+    const ok = failedOutstanding === 0;
     await writeJobHealth(kv, "discovery-sweep", {
-      ok: true,
+      ok,
       last_run_at: startedAt,
       summary: {
         processed: r.processed,
@@ -721,14 +760,25 @@ export async function runDiscoverySweepJob(
         no_match: r.noMatch,
         dietary_gated: r.dietaryGated,
         parked: r.parked,
+        failed: r.failed,
+        failed_outstanding: failedOutstanding,
         deferred: r.deferred,
         taste_updated: taste.updated,
         log_pruned: pruned,
       },
     });
-    if (r.parked > 0) {
-      // Parked candidates aren't a job failure, but they need eyes (read_discovery_errors /
-      // the admin log). A best-effort heads-up; never let it fail the run.
+    if (r.failed > 0) {
+      // Push only on FRESH infra failures (this tick), not on every tick a failure stands —
+      // the standing state is already visible at `/health` (ok:false). Avoids per-tick ntfy
+      // spam on the short cron cadence.
+      await notifyFailure(
+        env,
+        "discovery-sweep",
+        `${r.failed} discovery candidate(s) failed on infrastructure errors this tick (${failedOutstanding} standing; see /health, read_discovery_errors)`,
+      ).catch(() => {});
+    } else if (r.parked > 0) {
+      // Content parks aren't a job failure, but they need eyes (read_discovery_errors / the
+      // admin log). A best-effort heads-up; never let it fail the run.
       await notifyFailure(env, "discovery-sweep", `${r.parked} discovery candidate(s) parked (see read_discovery_errors)`).catch(
         () => {},
       );

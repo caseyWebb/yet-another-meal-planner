@@ -301,9 +301,10 @@ describe("runDiscoverySweep", () => {
     expect(res.deferred).toBe(1);
   });
 
-  it("parks a candidate on a transient AI failure without crashing the whole tick", async () => {
+  it("records an INFRA failure (not a content park) on a transient AI error, without crashing the tick", async () => {
     // A candidate's DESCRIPTION embed throws (an env.AI hiccup mid-pipeline, after the batched
-    // triage); the sweep must park just that candidate and keep going, not abandon the tick.
+    // triage); the sweep must drop just that candidate and keep going. It is a `failed` (infra)
+    // outcome, distinct from a content `error` park — so it can flip the job's health.
     const { deps, calls } = makeDeps({
       candidates: [cand("u1", "Boom"), cand("u2", "Ok")],
       members: [member("casey")],
@@ -311,13 +312,14 @@ describe("runDiscoverySweep", () => {
       embedThrow: new Set(["DESC:Boom"]),
     });
     const res = await runDiscoverySweep(deps, CONFIG); // must NOT reject
-    expect(res.parked).toBe(1);
+    expect(res.failed).toBe(1);
+    expect(res.parked).toBe(0);
     expect(res.imported).toBe(1);
     expect(calls.imported).toEqual(["ok"]);
-    expect(calls.logs.some((l) => l.title === "Boom" && l.outcome === "error")).toBe(true);
+    expect(calls.logs.some((l) => l.title === "Boom" && l.outcome === "failed")).toBe(true);
   });
 
-  it("triages the whole pool in one batched embed call", async () => {
+  it("triages a small pool in one chunked embed call", async () => {
     const { deps, calls } = makeDeps({
       candidates: [cand("u1", "One"), cand("u2", "Two"), cand("u3", "Three")],
       members: [member("casey")],
@@ -328,7 +330,31 @@ describe("runDiscoverySweep", () => {
       },
     });
     await runDiscoverySweep(deps, CONFIG);
-    expect(calls.embedMany).toBe(1); // one subrequest for the whole pool, not one per candidate
+    expect(calls.embedMany).toBe(1); // 3 ≤ EMBED_INPUT_BATCH → one chunk, not one call per candidate
+  });
+
+  it("chunks triage embeds at the input-batch size for a large pool", async () => {
+    // > EMBED_INPUT_BATCH (25): must take ceil(N/25) chunks, NOT one oversized call (which
+    // would exceed the model input limit and — since a batch failure fails the tick — wedge it).
+    const N = 30;
+    const candidates = Array.from({ length: N }, (_, i) => cand(`u${i}`, `R${i}`));
+    const vectors: Record<string, number[]> = {};
+    for (const c of candidates) vectors[`${c.title} — s`] = B; // orthogonal → all fail triage cheaply
+    const { deps, calls } = makeDeps({ candidates, members: [member("casey")], vectors });
+    const res = await runDiscoverySweep(deps, CONFIG);
+    expect(calls.embedMany).toBe(2); // ceil(30 / 25)
+    expect(res.noMatch).toBe(N);
+  });
+
+  it("clamps the per-tick pool, deferring the overflow to later ticks", async () => {
+    const N = 5;
+    const candidates = Array.from({ length: N }, (_, i) => cand(`u${i}`, `R${i}`));
+    const vectors: Record<string, number[]> = {};
+    for (const c of candidates) vectors[`${c.title} — s`] = B; // all fail triage (kept cheap)
+    const { deps } = makeDeps({ candidates, members: [member("casey")], vectors });
+    const res = await runDiscoverySweep(deps, { ...CONFIG, maxCandidatesPerTick: 2 });
+    expect(res.processed).toBe(2); // only the clamped pool is considered
+    expect(res.deferred).toBe(3); // the overflow defers, un-evaluated, for a later tick
   });
 
   it("propagates a batch triage-embed failure so the whole tick retries next run", async () => {
