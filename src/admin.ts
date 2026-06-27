@@ -404,8 +404,8 @@ async function routeAdminApi(
   // Shared-corpus editors (operator-admin): the WRITABLE companion to the read-only data
   // explorer. `/admin/api/corpus/<table>` lists (GET), adds (POST), and removes by PK
   // (DELETE …/<key>) rows of the five group-wide shared-corpus tables. Operator/cross-tenant
-  // and never exposed as MCP tools; remove is operator-only. Distinct from `/admin/api/data/`
-  // (which stays read-only). Sits before that block so it's unambiguous.
+  // and never exposed as MCP tools; remove is operator-only. Distinct from the read-only
+  // `/admin/api/data/` namespace (a disjoint prefix).
   if (path.startsWith("/admin/api/corpus/")) {
     const rest = path.slice("/admin/api/corpus/".length);
     const [tableSlug, ...keyParts] = rest.split("/");

@@ -83,6 +83,20 @@ function requireString(body: Record<string, unknown>, field: string): string {
 }
 
 /**
+ * A required email address, rejected up front when it lacks an `@`. Without this the
+ * downstream `addSourceRows` silently drops a malformed address (returning `{ added: 0 }`,
+ * a 200 the editor renders as a dedup no-op) — so the operator gets no signal. Mirrors the
+ * normalization `addSourceRows` applies before storage.
+ */
+function requireAddress(body: Record<string, unknown>): string {
+  const address = requireString(body, "address");
+  if (!address.includes("@")) {
+    throw new ToolError("validation_failed", "A valid email address is required", { field: "address" });
+  }
+  return address;
+}
+
+/**
  * Add one row to a corpus table from a validated request body. Validation rejects (writing
  * nothing) before any helper runs. Returns `{ added }` — the count actually written (0 when
  * the row was a dedup no-op). The editor refetches the list afterward, so this is advisory.
@@ -100,8 +114,8 @@ export async function addCorpusRow(env: Env, table: CorpusTable, body: Record<st
     }
     case "feeds": {
       const url = requireString(body, "url");
-      if (body.weight != null && typeof body.weight !== "number") {
-        throw new ToolError("validation_failed", "weight must be a number", { field: "weight" });
+      if (body.weight != null && (typeof body.weight !== "number" || body.weight < 0)) {
+        throw new ToolError("validation_failed", "weight must be a non-negative number", { field: "weight" });
       }
       const weight = typeof body.weight === "number" ? body.weight : 1;
       const name = typeof body.name === "string" && body.name.trim() ? body.name.trim() : undefined;
@@ -112,13 +126,13 @@ export async function addCorpusRow(env: Env, table: CorpusTable, body: Record<st
       return { added: await addFeedRows(env, [{ url, name, weight, tags }]) };
     }
     case "senders": {
-      const address = requireString(body, "address");
+      const address = requireAddress(body);
       const name = typeof body.name === "string" && body.name.trim() ? body.name.trim() : undefined;
       const { senders } = await addSourceRows(env, { senders: [{ address, name }] });
       return { added: senders };
     }
     case "members": {
-      const address = requireString(body, "address");
+      const address = requireAddress(body);
       const { members } = await addSourceRows(env, { members: [{ address }] });
       return { added: members };
     }

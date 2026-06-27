@@ -90,6 +90,26 @@ describe("POST /admin/api/corpus/<table>", () => {
     );
     expect(res.status).toBe(400);
   });
+
+  it("rejects a negative feed weight (400)", async () => {
+    const { env } = devEnv({ feeds: [] });
+    const res = await handleAdmin(
+      new Request(url("feeds"), { method: "POST", body: JSON.stringify({ url: "https://a.com", weight: -1 }) }),
+      env,
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects a malformed member address (no @) with 400 instead of a silent no-op", async () => {
+    const { env, tables } = devEnv({ discovery_members: [] });
+    const res = await handleAdmin(
+      new Request(url("members"), { method: "POST", body: JSON.stringify({ address: "notanaddress" }) }),
+      env,
+    );
+    expect(res.status).toBe(400);
+    expect((await res.json()) as { error: string }).toMatchObject({ error: "validation_failed" });
+    expect(tables.discovery_members).toHaveLength(0);
+  });
 });
 
 describe("DELETE /admin/api/corpus/<table>/<key>", () => {
