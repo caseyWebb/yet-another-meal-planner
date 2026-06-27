@@ -106,6 +106,12 @@ The plugin ships **both** the generated skills (from `AGENT_INSTRUCTIONS.md`) an
 - **Channel-trigger principle.** A capability gets an entry point on a channel **iff a real trigger exists for that channel.** Tools: a granular tool iff a single-edit trigger exists; a `commit_changes` field iff it's part of a multi-write flow (e.g. `grocery_list_ops`). Skills: `user-invocable` iff a real user trigger exists; otherwise it's a library skill loaded only by reference (`user-invocable: false`).
 - **Don't-gut-the-skill guardrail.** When de-duplicating, you MAY strip a pure contract/guarantee sentence from a skill, but NEVER its prerequisite-loading line or an orchestration step — those are the two jobs a tool can't do.
 
+## Opening a pull request
+
+Every PR is prefilled from [`.github/pull_request_template.md`](.github/pull_request_template.md): a short **What & why** plus a **considerations checklist** drawn from the rules above (docs in lockstep, the tool/skill boundary, D1 via `src/db.ts`, the `merge-wrangler-config.mjs` allowlist, migrations, `plugin/` regen, OpenSpec sync, no-secrets). Each item is a *consideration* — checking it means "I weighed this," and the not-applicable case is folded into the wording, so every box is honestly checkable on every PR. **Fill the What & why and check every box.** This applies to PRs the repo's own agent opens too — leaving the template unfilled blocks the PR.
+
+The `pr-checklist` workflow ([`.github/workflows/pr-checklist.yml`](.github/workflows/pr-checklist.yml)) re-runs on each PR-body edit (separate from `ci.yml`, so checking a box doesn't re-run the test suites) and fails if the `<!-- pr-checklist:v1 -->` sentinel is missing or any box is unchecked; Dependabot and other bot PRs are exempt. The workflow only *produces* the check — **it blocks merge only once `pr-checklist` is added to `main`'s branch protection as a required status check** (a one-time repo setting, not a file in the tree).
+
 ## OpenSpec change workflow
 
 This repo was built as a sequence of OpenSpec changes (`openspec/changes/archive/` is the history); further work continues the same workflow. Each change carries `proposal.md`, `design.md`, `specs/` deltas, and `tasks.md`.
