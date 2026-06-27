@@ -16,6 +16,7 @@ import { handleAuthorize } from "./authorize.js";
 import { handleInboundEmail, rejectReasonFor, type InboundMessage } from "./email.js";
 import { buildWarmDeps, runWarmJob } from "./flyer-warm.js";
 import { buildEmbedDeps, runEmbedJob } from "./recipe-embeddings.js";
+import { buildFacetDeps, runFacetJob } from "./recipe-classify.js";
 import { buildProjectionDeps, runProjectionJob } from "./recipe-projection.js";
 import { buildDiscoveryDeps, runDiscoverySweepJob } from "./discovery-sweep.js";
 import { loadDiscoveryConfig } from "./discovery-calibration.js";
@@ -147,16 +148,22 @@ export default {
   async scheduled(_controller: ScheduledController, env: Env, _ctx: ExecutionContext): Promise<void> {
     const kv = env.KROGER_KV as unknown as KvStore;
     const corpus = createR2CorpusStore(env.CORPUS);
+    // Phase 1: the facet classify pass (derives the descriptive facets the projection merges)
+    // + the flyer warm (independent of the index), in parallel. Classify runs BEFORE the
+    // projection so the projection materializes the EFFECTIVE facets (recipe-facet-derivation).
     const phase1 = await Promise.allSettled([
       runWarmJob(env, buildWarmDeps(env)),
-      runProjectionJob(env, buildProjectionDeps(env, corpus), kv),
+      runFacetJob(env, buildFacetDeps(env, corpus)),
     ]);
-    const phase2 = await Promise.allSettled([runEmbedJob(env, buildEmbedDeps(env))]);
-    // The sweep runs after the index + embeddings are fresh (it dedups + matches against them).
-    // Load the operator's stored config (sparse override merged over DEFAULT_CONFIG at job start).
+    // Phase 2: the index projection (merges the fresh classified facets + authored overrides).
+    const phase2 = await Promise.allSettled([runProjectionJob(env, buildProjectionDeps(env, corpus), kv)]);
+    // Phase 3: the recipe-derived reconcile (describe → embed; reads the fresh index).
+    const phase3 = await Promise.allSettled([runEmbedJob(env, buildEmbedDeps(env))]);
+    // Phase 4: the sweep runs after the index + embeddings are fresh (it dedups + matches against
+    // them). Load the operator's stored config (sparse override merged over DEFAULT_CONFIG).
     const sweepConfig = await loadDiscoveryConfig(env);
-    const phase3 = await Promise.allSettled([runDiscoverySweepJob(env, buildDiscoveryDeps(env), kv, sweepConfig)]);
-    const failed = [...phase1, ...phase2, ...phase3].find((r) => r.status === "rejected");
+    const phase4 = await Promise.allSettled([runDiscoverySweepJob(env, buildDiscoveryDeps(env), kv, sweepConfig)]);
+    const failed = [...phase1, ...phase2, ...phase3, ...phase4].find((r) => r.status === "rejected");
     if (failed && failed.status === "rejected") throw failed.reason;
   },
 };

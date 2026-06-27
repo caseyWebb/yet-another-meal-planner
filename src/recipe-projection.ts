@@ -20,6 +20,7 @@ import { db } from "./db.js";
 import type { Env } from "./env.js";
 import { parseMarkdown } from "./parse.js";
 import { validateRecipeContract } from "./recipe-contract.js";
+import { mergeEffectiveFacets, parseFacetRow, type ClassifiedFacets, type RawFacetRow } from "./recipe-facets.js";
 import type { CorpusStore } from "./corpus-store.js";
 import { notifyFailure, writeJobHealth } from "./health.js";
 import type { KvStore } from "./kroger-user.js";
@@ -137,6 +138,8 @@ export interface ProjectionDeps {
   replaceErrors(errors: ReconcileError[]): Promise<void>;
   /** The slugs currently recorded as reconcile errors — to detect NEW failures for the alert. */
   loadErrorSlugs(): Promise<string[]>;
+  /** The classify pass's derived facets per slug (recipe-facet-derivation), merged into the index. */
+  loadClassifiedFacets(): Promise<Map<string, ClassifiedFacets>>;
 }
 
 function msg(e: unknown): string {
@@ -152,6 +155,7 @@ function msg(e: unknown): string {
  */
 export async function reconcileRecipeIndex(deps: ProjectionDeps): Promise<ProjectionResult> {
   const paths = (await deps.listRecipePaths()).filter((p) => p.endsWith(".md")).sort();
+  const classified = await deps.loadClassifiedFacets();
   const errors: ReconcileError[] = [];
   const valid: Record<string, Record<string, unknown>> = {}; // slug -> projected entry
   const seenSlugs = new Map<string, string>(); // slug -> first path (duplicate-slug guard)
@@ -190,20 +194,21 @@ export async function reconcileRecipeIndex(deps: ProjectionDeps): Promise<Projec
       continue;
     }
 
-    // Project objective content only (strip subjective fields + the unindexed `standalone`),
-    // normalizing course + the array facets.
+    // Project objective content only (strip subjective fields + the unindexed `standalone`).
+    // The descriptive facets are the EFFECTIVE values: the classify pass's derived facets merged
+    // with any authored frontmatter override (Tier B authored-wins, tags unioned, Tier A
+    // classified-wins) — so a reader sees one resolved value with no read-time join. Tier C
+    // (dietary, requires_equipment, time_total, pairs_with) stays authored, untouched.
     const objective: Record<string, unknown> = { ...frontmatter };
     for (const f of SUBJECTIVE_FIELDS) delete objective[f];
     delete objective.standalone;
+    const effective = mergeEffectiveFacets(frontmatter, classified.get(slug) ?? null);
     valid[slug] = normalizeValue({
       ...objective,
       slug,
       pairs_with: Array.isArray(frontmatter.pairs_with) ? frontmatter.pairs_with : [],
-      perishable_ingredients: Array.isArray(frontmatter.perishable_ingredients)
-        ? frontmatter.perishable_ingredients
-        : [],
       requires_equipment: Array.isArray(frontmatter.requires_equipment) ? frontmatter.requires_equipment : [],
-      course: normalizeCourse(frontmatter.course),
+      ...effective,
     }) as Record<string, unknown>;
   }
 
@@ -283,6 +288,13 @@ export function buildProjectionDeps(env: Env, store: CorpusStore, now: () => num
     async loadErrorSlugs() {
       const rows = await d.all<{ slug: string }>("SELECT slug FROM reconcile_errors");
       return rows.map((r) => r.slug);
+    },
+    async loadClassifiedFacets() {
+      const rows = await d.all<RawFacetRow>(
+        "SELECT slug, protein, cuisine, course, season, tags, ingredients_key, " +
+          "perishable_ingredients, side_search_terms, meal_preppable FROM recipe_facets",
+      );
+      return new Map(rows.map((r) => [r.slug, parseFacetRow(r)]));
     },
   };
 }

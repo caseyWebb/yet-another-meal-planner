@@ -16,6 +16,7 @@ const VALID_MAIN = {
   perishable_ingredients: ["basil"],
   requires_equipment: [],
   side_search_terms: ["a crisp green salad"],
+  meal_preppable: false,
 };
 
 /** Build a fake Env whose AI.run returns the queued responses in order. */

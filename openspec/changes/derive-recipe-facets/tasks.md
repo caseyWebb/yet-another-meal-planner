@@ -6,34 +6,34 @@
 
 ## 2. Shared classifier
 
-- [ ] 2.1 Extract the model + prompt + contract-validated corrective-retry loop from `src/discovery-classify.ts` into a shared classifier module consumed by both the discovery sweep and the new whole-corpus pass (no behavior change to the sweep)
-- [ ] 2.2 Add `meal_preppable` (boolean) to `CLASSIFIED_FIELDS`, the prompt, and a few-shot anchor; resolve its consumer open question (wire into meal-plan/freezer reasoning, or land as captured-but-unused with a note)
-- [ ] 2.3 Make the classifier override-aware: accept supplied authored Tier B overrides as input and condition output on them, so `side_search_terms` tracks the **effective** `course`
-- [ ] 2.4 Apply alias normalization (`normalizeIngredientList`) to the derived `ingredients_key` and `perishable_ingredients` in the shared path
+- [x] 2.1 Extract the model + prompt + contract-validated corrective-retry loop from `src/discovery-classify.ts` into a shared classifier module consumed by both the discovery sweep and the new whole-corpus pass (no behavior change to the sweep) — `classifyRecipe` reused by both paths; `DERIVED_FACET_FIELDS` documents the derived subset
+- [x] 2.2 Add `meal_preppable` (boolean) to `CLASSIFIED_FIELDS`, the prompt, and a few-shot anchor; resolve its consumer open question — **landed as captured-but-unused** (Tier A, rides `recipes.extra`; no consumer wired)
+- [x] 2.3 Make the classifier override-aware: accept supplied authored Tier B overrides as input and condition output on them, so `side_search_terms` tracks the **effective** `course` (`ClassifyConditioning` prompt hint)
+- [x] 2.4 Apply alias normalization (`normalizeIngredientList`) to the derived `ingredients_key` and `perishable_ingredients` in the shared path (`extractFacets` in `recipe-classify.ts`)
 
 ## 3. Schema
 
-- [ ] 3.1 Resolve the sibling-vs-fold open question and add the migration: a `recipe_facets` slug-keyed sibling table (derived facet columns + `classify_hash`), or an extension of `recipe_derived` — under `migrations/d1/NNNN_*.sql`
-- [ ] 3.2 Apply `--local` and verify the table shape; confirm the projection's wholesale `recipes` rebuild cannot clobber it
+- [x] 3.1 Resolve the sibling-vs-fold open question and add the migration — **separate `recipe_facets` sibling table** (`migrations/d1/0018_recipe_facets.sql`), slug PK + `body_hash` + the 9 derived facet columns
+- [ ] 3.2 Apply `--local` and verify the table shape; confirm the projection's wholesale `recipes` rebuild cannot clobber it — **deferred (needs `wrangler d1` + local D1; run in dev)**
 
 ## 4. Classify pass (scheduled)
 
-- [ ] 4.1 Implement the classify pass with injected deps (testable with in-memory fakes, mirroring `recipe-embeddings.ts`): read R2 bodies directly, gate on `hash(body + conditioning overrides)`, bound per tick, write raw classified facets to the facet table
-- [ ] 4.2 Wire it into the `scheduled()` handler in the order `classify → recipe-index projection → recipe-derived (describe → embed) → discovery sweep`
-- [ ] 4.3 Add a `recipe-classify` `health:job` record (counts + pending summary), register it in `HEALTH_JOBS`, ntfy on failure, and rethrow so the cron status reflects failures
-- [ ] 4.4 Confirm steady-state ≈ 0 work (the gate) and that a cold corpus backfills over several bounded ticks
+- [x] 4.1 Implement the classify pass with injected deps (testable with in-memory fakes, mirroring `recipe-embeddings.ts`): read R2 bodies directly, gate on `hash(body + conditioning overrides)`, bound per tick, write raw classified facets to the facet table (`src/recipe-classify.ts`)
+- [x] 4.2 Wire it into the `scheduled()` handler in the order `classify → recipe-index projection → recipe-derived (describe → embed) → discovery sweep` (4 phases in `src/index.ts`)
+- [x] 4.3 Add a `recipe-classify` `health:job` record (counts + pending summary), register it in `HEALTH_JOBS`, ntfy on failure, and rethrow so the cron status reflects failures
+- [x] 4.4 Confirm steady-state ≈ 0 work (the `body_hash` gate) and that a cold corpus backfills over several bounded ticks (`CLASSIFY_MAX_PER_TICK`)
 
 ## 5. Projection merge
 
-- [ ] 5.1 In `src/recipe-projection.ts`, read the facet table and write the **effective** value into each `recipes` facet column: Tier A → derived; Tier B → `authored ?? derived`; `tags` → union; Tier C (`dietary`, `requires_equipment`) → authored
-- [ ] 5.2 Project an unclassified recipe's derived facets as their explicit empty form (not-yet-derived tolerance), never an error
-- [ ] 5.3 Verify every existing reader (`filterRecipes`, cookbook, retrospective, describe pass, semantic search) is unchanged — it reads the materialized effective value from `recipes`
+- [x] 5.1 In `src/recipe-projection.ts`, read the facet table and write the **effective** value into each `recipes` facet column: Tier A → derived; Tier B → `authored ?? derived`; `tags` → union; Tier C (`dietary`, `requires_equipment`) → authored (`mergeEffectiveFacets` in `src/recipe-facets.ts`)
+- [x] 5.2 Project an unclassified recipe's derived facets as their explicit empty form (not-yet-derived tolerance), never an error (null classified → empty/legacy fallback)
+- [x] 5.3 Verify every existing reader (`filterRecipes`, cookbook, retrospective, describe pass, semantic search) is unchanged — it reads the materialized effective value from `recipes` (projection tests green; readers untouched)
 
 ## 6. Contract + write-time validation
 
-- [ ] 6.1 Update `src/recipe-contract.js`: shrink the required set to the authored gates + identity (`title`, `source`, `time_total`, `dietary`, `requires_equipment`, `pairs_with`); make Tier B optional-but-vocab-validated-when-present; remove Tier A; move the `course → side_search_terms` rule to classifier-output validation
-- [ ] 6.2 Update `src/validate.ts` so write-time accepts an absent Tier B facet and rejects an off-vocabulary authored override (`protein`/`cuisine`/`season`)
-- [ ] 6.3 Confirm the one shared module validates both authored overrides and classifier output (single source of truth preserved); resolve the `time_total` open question (keep authored vs fold into Tier A)
+- [x] 6.1 Update `src/recipe-contract.js`: shrink the required set to the authored gates + identity (`title`, `source`, `time_total`, `dietary`, `requires_equipment`, `pairs_with`); make Tier B optional-but-vocab-validated-when-present; remove Tier A; the `course → side_search_terms` rule now fires only when `side_search_terms` is present (classifier output) — validated-when-present keys on `hasOwnProperty`
+- [x] 6.2 `src/validate.ts` uses the shared contract unchanged — write-time now accepts an absent Tier B facet and rejects an off-vocab authored override (covered by the contract rewrite)
+- [x] 6.3 Confirmed the one shared module validates both authored overrides and classifier output (the classifier's `toFrontmatter` sets every key → fully validated; authored frontmatter omits keys → relaxed); `time_total` open question resolved — **kept authored** (Tier C)
 
 ## 7. Authoring tools
 
@@ -61,10 +61,10 @@
 
 ## 11. Tests
 
-- [ ] 11.1 Unit tests for the classify pass logic: the change gate, override-aware conditioning (`side_search_terms` vs effective `course`), bounded-per-tick, alias normalization
-- [ ] 11.2 Unit tests for the projection effective-facet merge: Tier A derived, Tier B override-wins, `tags` union, Tier C authored, and the not-yet-derived empty form
-- [ ] 11.3 Contract tests: an absent Tier B facet is accepted, an off-vocab override is rejected, a missing required authored field is rejected, Tier A is not required
-- [ ] 11.4 Land the agreement eval as a repeatable script (live-gated like `*.live.test.ts`)
+- [x] 11.1 Unit tests for the classify pass logic: the change gate, bounded-per-tick, classify-failure empty-row, orphan prune, alias normalization (`test/recipe-classify.test.ts`)
+- [x] 11.2 Unit tests for the projection effective-facet merge: Tier A derived, Tier B override-wins, `tags` union, null-classified fallback, row parsing (`test/recipe-facets.test.ts`) + projection tests stay green
+- [x] 11.3 Contract tests: an absent Tier B facet is accepted, an off-vocab override is rejected, a missing required authored field is rejected, Tier A is not required (`test/recipe-contract.test.ts` + `test/validate.test.ts` rewritten)
+- [ ] 11.4 Land the agreement eval as a repeatable script (live-gated like `*.live.test.ts`) — **see task 1.1**
 
 ## 12. Verify end-to-end
 

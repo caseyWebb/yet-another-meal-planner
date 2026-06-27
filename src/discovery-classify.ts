@@ -40,6 +40,25 @@ export const CLASSIFIED_FIELDS = [
   "perishable_ingredients",
   "requires_equipment",
   "side_search_terms",
+  "meal_preppable",
+] as const;
+
+/** The facets the whole-corpus classify pass DERIVES into D1 (recipe-facet-derivation).
+ *  A subset of CLASSIFIED_FIELDS: the Tier A (derived-only) + Tier B (override-default)
+ *  facets. `time_total`, `dietary`, and `requires_equipment` stay authored (Tier C) and
+ *  are NOT derived here even though the model still emits them for the discovery path. */
+export const DERIVED_FACET_FIELDS = [
+  // Tier B — classified default, an authored frontmatter value overrides at merge.
+  "protein",
+  "cuisine",
+  "course",
+  "season",
+  "tags",
+  // Tier A — derived only, no authored override.
+  "ingredients_key",
+  "perishable_ingredients",
+  "side_search_terms",
+  "meal_preppable",
 ] as const;
 
 export const SYSTEM_PROMPT = [
@@ -64,6 +83,7 @@ export const SYSTEM_PROMPT = [
     EQUIPMENT_VOCAB.join(" | ") +
     ". Tag a slug ONLY when the dish is genuinely IMPOSSIBLE without it — no recipe-preserving workaround. A purée/smoothie that must be smooth -> blender; a churned ice cream -> ice-cream-maker. Default to [] — a stand mixer, food processor (when a blender substitutes), oven, pan, or pressure-cooker-with-a-stovetop-version do NOT count. When unsure, output []. Over-tagging silently HIDES a recipe a cook could make.",
   '- side_search_terms: for a course that includes "main", a NON-EMPTY array of 2-3 short phrases describing the KIND of side that completes the plate (e.g. ["a bright acidic salad", "crusty bread for the sauce"]). For anything that is not a main, output [].',
+  "- meal_preppable: a boolean — true when the dish is a good make-ahead / batch / freezer candidate (holds and reheats well, e.g. stews, braises, grain bowls, casseroles, baked goods), false for dishes best eaten fresh (crisp salads, fried foods, delicate seafood, anything that wilts or sogs). When unsure, false.",
   "",
   "Rules: output STRICT JSON with exactly those keys. Stay strictly inside the controlled vocabularies for protein, cuisine, season, and requires_equipment — an off-list value is a hard error. Do not invent ingredients or attributes the recipe does not contain; if the input is sparse, prefer null/[] over guessing.",
 ].join("\n");
@@ -92,6 +112,7 @@ const FEW_SHOT: Exemplar[] = [
       perishable_ingredients: ["clams", "parsley"],
       requires_equipment: [],
       side_search_terms: ["a crisp green salad", "crusty bread for the broth"],
+      meal_preppable: false,
     },
   },
   {
@@ -109,6 +130,7 @@ const FEW_SHOT: Exemplar[] = [
       perishable_ingredients: ["asparagus"],
       requires_equipment: [],
       side_search_terms: [],
+      meal_preppable: false,
     },
   },
   {
@@ -127,6 +149,7 @@ const FEW_SHOT: Exemplar[] = [
       perishable_ingredients: ["spinach"],
       requires_equipment: [],
       side_search_terms: ["warm naan or flatbread", "a cooling cucumber raita"],
+      meal_preppable: true,
     },
   },
 ];
@@ -141,13 +164,26 @@ export interface ClassifyInput {
 /** Chat-message shape (loose — matches what env.AI.run accepts). */
 type Msg = { role: "system" | "user" | "assistant"; content: string };
 
-function baseMessages(input: ClassifyInput): Msg[] {
+/** Authored facets the classifier should treat as authoritative (override-aware conditioning,
+ *  recipe-facet-derivation D6). Currently `course`, so a Tier-B `course` override drives the
+ *  dependent `side_search_terms` (non-empty iff the effective course includes `main`). */
+export interface ClassifyConditioning {
+  course?: string[];
+}
+
+function baseMessages(input: ClassifyInput, conditioning?: ClassifyConditioning): Msg[] {
   const msgs: Msg[] = [{ role: "system", content: SYSTEM_PROMPT }];
   for (const ex of FEW_SHOT) {
     msgs.push({ role: "user", content: `Title: ${ex.title}\n${ex.body}` });
     msgs.push({ role: "assistant", content: JSON.stringify(ex.output) });
   }
-  msgs.push({ role: "user", content: `Title: ${input.title}\n${input.content}` });
+  const hint =
+    conditioning?.course && conditioning.course.length
+      ? `\n\nThe recipe's author has specified course = ${JSON.stringify(
+          conditioning.course,
+        )}. Treat that as authoritative: set "course" to exactly that, and make "side_search_terms" consistent with it (non-empty iff it includes "main").`
+      : "";
+  msgs.push({ role: "user", content: `Title: ${input.title}\n${input.content}${hint}` });
   return msgs;
 }
 
@@ -210,8 +246,9 @@ export async function classifyRecipe(
   input: ClassifyInput,
   source: string | null,
   maxRetries: number = CLASSIFY_MAX_RETRIES,
+  conditioning?: ClassifyConditioning,
 ): Promise<ClassifyResult> {
-  const messages = baseMessages(input);
+  const messages = baseMessages(input, conditioning);
   let lastErrors: string[] = [];
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {

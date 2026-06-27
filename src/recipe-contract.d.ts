@@ -7,6 +7,8 @@ export const REQUIRED_NONEMPTY_STRINGS: readonly string[];
 export const REQUIRED_NONEMPTY_ARRAYS: readonly string[];
 export const REQUIRED_NULLABLE_SCALARS: readonly string[];
 export const REQUIRED_ARRAYS: readonly string[];
+export const OPTIONAL_TIER_A: readonly string[];
+export const OPTIONAL_TIER_B: readonly string[];
 export const REQUIRED_FIELDS: readonly string[];
 
 /**

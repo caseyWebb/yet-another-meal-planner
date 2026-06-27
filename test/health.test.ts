@@ -129,6 +129,7 @@ describe("handleHealthRequest", () => {
     expect(body.ok).toBe(true);
     expect(body.jobs.map((j) => j.name)).toEqual([
       "flyer-warm",
+      "recipe-classify",
       "recipe-index",
       "recipe-embed",
       "email",
@@ -170,6 +171,7 @@ describe("handleHealthSvgRequest", () => {
   it("200s with an SVG card listing every job + d1 when healthy (open, no token)", async () => {
     const kv = fakeKv();
     await writeJobHealth(kv, "flyer-warm", rec(true));
+    await writeJobHealth(kv, "recipe-classify", rec(true));
     await writeJobHealth(kv, "recipe-index", rec(true));
     await writeJobHealth(kv, "recipe-embed", rec(true));
     await writeJobHealth(kv, "email", rec(true));
@@ -181,7 +183,7 @@ describe("handleHealthSvgRequest", () => {
     expect(res.headers.get("cache-control")).toMatch(/max-age=\d+/);
     const body = await res.text();
     expect(body.startsWith("<svg")).toBe(true);
-    for (const name of ["flyer-warm", "recipe-index", "recipe-embed", "email", "discovery-sweep", "d1"])
+    for (const name of ["flyer-warm", "recipe-classify", "recipe-index", "recipe-embed", "email", "discovery-sweep", "d1"])
       expect(body).toContain(name);
     expect(body).toContain("healthy");
     expect(body).not.toContain("#d29922"); // no amber when nothing is never-run

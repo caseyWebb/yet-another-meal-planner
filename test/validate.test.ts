@@ -45,18 +45,26 @@ describe("validateFile", () => {
 
   // --- required-field contract ----------------------------------------------
 
-  it("rejects a recipe missing a required field (ingredients_key)", () => {
-    expect(() => validateFile("recipes/x.md", recipe({ ingredients_key: undefined }))).toThrowError(
-      /ingredients_key/,
-    );
+  it("accepts an omitted ingredients_key (derived Tier A, no longer authored)", () => {
+    expect(() => validateFile("recipes/x.md", recipe({ ingredients_key: undefined }))).not.toThrow();
+  });
+
+  it("rejects a missing required AUTHORED field (dietary, a hard gate)", () => {
+    expect(() => validateFile("recipes/x.md", recipe({ dietary: undefined }))).toThrowError(/dietary/);
   });
 
   it("does not require description (a Worker-derived field, not authored)", () => {
     expect(() => validateFile("recipes/x.md", recipe({ description: undefined }))).not.toThrow();
   });
 
-  it("rejects an omitted explicit-null scalar (protein)", () => {
-    expect(() => validateFile("recipes/x.md", recipe({ protein: undefined }))).toThrowError(/protein/);
+  it("accepts an omitted protein/cuisine (derived Tier B, no longer authored-required)", () => {
+    expect(() =>
+      validateFile("recipes/x.md", recipe({ protein: undefined, cuisine: undefined })),
+    ).not.toThrow();
+  });
+
+  it("rejects an omitted required scalar (time_total)", () => {
+    expect(() => validateFile("recipes/x.md", recipe({ time_total: undefined }))).toThrowError(/time_total/);
   });
 
   it("accepts explicit null protein/cuisine/time_total/source", () => {

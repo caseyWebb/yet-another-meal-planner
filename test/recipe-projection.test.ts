@@ -11,6 +11,7 @@ import {
 } from "../src/recipe-projection.js";
 import type { Env } from "../src/env.js";
 import type { KvStore } from "../src/kroger-user.js";
+import type { ClassifiedFacets } from "../src/recipe-facets.js";
 import { serializeMarkdown } from "../src/serialize.js";
 import { createR2CorpusStore } from "../src/corpus-store.js";
 import { fakeR2 } from "./fake-r2.js";
@@ -54,7 +55,11 @@ function recipeMd(over: Record<string, unknown> = {}, body = BODY): string {
 }
 
 /** Injected in-memory deps over a `path -> markdown` map; captures what was written. */
-function makeDeps(files: Record<string, string>, priorErrorSlugs: string[] = []) {
+function makeDeps(
+  files: Record<string, string>,
+  priorErrorSlugs: string[] = [],
+  classified: Map<string, ClassifiedFacets> = new Map(),
+) {
   const written = { recipes: [] as unknown[][], errors: [] as ReconcileError[] };
   const deps: ProjectionDeps = {
     listRecipePaths: async () => Object.keys(files),
@@ -66,6 +71,7 @@ function makeDeps(files: Record<string, string>, priorErrorSlugs: string[] = [])
       written.errors = errs;
     },
     loadErrorSlugs: async () => priorErrorSlugs,
+    loadClassifiedFacets: async () => classified,
   };
   return { deps, written };
 }
@@ -271,6 +277,7 @@ describe("runProjectionJob — health record + new-error alert", () => {
       replaceRecipes: async () => {},
       replaceErrors: async () => {},
       loadErrorSlugs: async () => [],
+      loadClassifiedFacets: async () => new Map(),
     };
     const kv = makeKv();
     vi.stubGlobal("fetch", (async () => new Response("ok")) as unknown as typeof fetch);
