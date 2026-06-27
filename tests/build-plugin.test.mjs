@@ -399,6 +399,7 @@ test('AGENT_INSTRUCTIONS.md: workflows with expected needs + library tiers', asy
     'add-recipe-note',
     'add-ready-to-eat-feedback',
     'import-recipe',
+    'recipe-sides',
     'grocery-sale-check',
     'cooking-retrospective',
     'shop-groceries',
@@ -408,6 +409,7 @@ test('AGENT_INSTRUCTIONS.md: workflows with expected needs + library tiers', asy
   const needs = Object.fromEntries(parsed.flows.map((f) => [f.name, f.needs]));
   assert.deepEqual(needs['meal-plan'], ['cart', 'corpus', 'discovery']); // discovery-first retrieval flow
   assert.deepEqual(needs['import-recipe'], ['corpus', 'discovery']); // defers triage/import mechanics to the shared tier
+  assert.deepEqual(needs['recipe-sides'], ['corpus', 'discovery']); // standalone sides flow: shared side-resolution + import mechanics
   assert.deepEqual(needs['grocery-sale-check'], []); // light flow: core only
   assert.deepEqual(needs['cook'], []);
   assert.deepEqual(needs['shop-groceries'], ['cart']);
