@@ -1,6 +1,6 @@
 module Admin.Members exposing (Model, Msg, init, update, view)
 
-{-| The Admin area's member management (operator-admin): onboard / list / rotate / revoke.
+{-| The Members area's member management (operator-admin): onboard / list / rotate / revoke.
 Lifted out of the old single-page `Main` essentially unchanged — the shell now owns the
 page chrome (title + nav), so `view` returns just this surface's content.
 

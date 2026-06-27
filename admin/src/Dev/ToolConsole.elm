@@ -379,7 +379,7 @@ viewBody model =
                     div [ class "error" ] [ text ("Could not load members: " ++ httpError err) ]
 
                 Success [] ->
-                    p [ class "muted" ] [ text "No members yet — onboard one under the Admin area first." ]
+                    p [ class "muted" ] [ text "No members yet — onboard one on the Members tab first." ]
 
                 _ ->
                     p [ class "muted" ] [ text "Pick a persona above to inspect and run tools as that member." ]
