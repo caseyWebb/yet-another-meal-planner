@@ -568,12 +568,24 @@ Derived operational state for the `/health` endpoint (background-job-health). Ea
 
 ## Operator admin surface (HTTP, not a repo file)
 
-The operator admin panel (operator-admin) is a static Elm SPA at `/admin` plus a same-origin JSON API, gated by **Cloudflare Access** on `/admin*` and verified in-Worker (`Cf-Access-Jwt-Assertion`). Opt-in: 404 when `ACCESS_TEAM_DOMAIN`/`ACCESS_AUD` are unset. An optional `ACCESS_ALLOWED_EMAILS` allowlist adds a second check on the verified `email` claim (else 403 — defense-in-depth against a too-loose Access policy). The local-dev bypass (`ADMIN_DEV_BYPASS`) only engages on a loopback host, so it is structurally inert on any deployed Worker (a stray flag leaves `/admin` at 404, and `/health` reports the gate `exposed`). No per-tenant domain data crosses it — only the allowlist/invite operations. The minted invite code is returned **once** and never logged.
+The operator admin panel (operator-admin) is a static Elm SPA at `/admin` plus a same-origin JSON API, gated by **Cloudflare Access** on `/admin*` and verified in-Worker (`Cf-Access-Jwt-Assertion`). Opt-in: 404 when `ACCESS_TEAM_DOMAIN`/`ACCESS_AUD` are unset. An optional `ACCESS_ALLOWED_EMAILS` allowlist adds a second check on the verified `email` claim (else 403 — defense-in-depth against a too-loose Access policy). The local-dev bypass (`ADMIN_DEV_BYPASS`) only engages on a loopback host, so it is structurally inert on any deployed Worker (a stray flag leaves `/admin` at 404, and `/health` reports the gate `exposed`). The member-lifecycle routes below cross only the allowlist/invite operations; the read-only **Data explorer** (`/admin/api/data/*`, below) deliberately crosses per-tenant domain data — the operator sees every member's rows (the group has no assumed internal privacy). The minted invite code is returned **once** and never logged.
 
 - `GET /admin/api/tenants` → `{ tenants: string[] }` — the allowlisted member ids (canonical lowercase, sorted).
 - `POST /admin/api/tenants` `{ username, invite_code? }` → `{ username, invite_code, connector_url }` — onboard; writes `tenant:<id>` + `invite:<code>` (generates the code when omitted). `connector_url` is `<origin>/mcp`.
 - `POST /admin/api/tenants/<id>/rotate` → `{ username, invite_code, connector_url }` — mint a new code, delete the member's prior `invite:*` mapping(s); allowlist + per-tenant data untouched. Errors `not_found` if the member is absent.
 - `DELETE /admin/api/tenants/<id>` → `{ username, revoked: true, invites_removed }` — remove `tenant:<id>` + every `invite:* → id` + `kroger:refresh:<id>`, and purge the per-tenant D1 tables + attributed notes through `src/db.ts`. The member's issued token stops resolving (allowlist re-check fails).
+
+### Data explorer (`/admin/api/data/*`, operator-data-explorer)
+
+The **Data** area's read surface (`src/admin-data.ts`) — read-only, cross-tenant views over D1 and the R2 corpus, behind the same Access gate (so they 404 with the rest of the surface when it is disabled). Every route is **GET** (a write method is `405`); each runs a **fixed** query (no operator-supplied SQL), goes through `src/db.ts` / `src/corpus-store.ts`, and performs **no redaction** — `private` notes are returned and cross-tenant aggregates name their tenants. Scope is D1 domain data + the R2 corpus only; no KV secret is reachable.
+
+- `GET /admin/api/data/recipes` → `{ recipes: [{ slug, title, status }] }` — every slug in the R2 corpus ∪ the `recipes` table, each with its projection `status` (`indexed | skipped | pending | orphaned`).
+- `GET /admin/api/data/recipes/<slug>` → the cross-tier record: `{ slug, status, reconcile_message, source, projection, derived: { description, has_embedding, state } | null, dispositions: [{ tenant, favorite, reject }], notes: [...] }`. `status` is derived from (R2 source present?, `recipes` row present?); `skipped` carries the `reconcile_errors` reason; the embedding is shown as presence only, never the raw vector. `not_found` when the slug is in neither tier.
+- `GET /admin/api/data/members/<id>` → one member's full per-tenant state: `{ id, profile, pantry, meal_plan, grocery_list, overlay, cooking_log, recipe_notes, store_notes }`. The id is resolved against the allowlist (`not_found` when absent); reuses the canonical `profile-db`/`session-db` readers.
+- `GET /admin/api/data/corpus/<table>` → `{ table, columns, rows }` for an allowlisted shared-corpus table (`aliases`, `flyer_terms`, `feeds`, `stores`, `store_notes`, `sku_cache`). `sku_cache` is bounded by a default `LIMIT`.
+- `GET /admin/api/data/corpus/guidance?prefix=` → `{ prefix, entries: [{ name, type }] }` — list a `guidance/**` R2 prefix; `GET /admin/api/data/corpus/guidance/object?path=` → `{ key, markdown }` — one guidance object's markdown text.
+- `GET /admin/api/data/discovery/<table>` → `{ table, columns, rows }` for `discovery_candidates` / `discovery_senders` / `discovery_members` / `discovery_rejections`.
+- `GET /admin/api/data/system/<table>` → `{ table, columns, rows }` for `reconcile_errors` / `bug_reports` / `schema_meta`.
 
 ## feeds (shared corpus, D1 `feeds` table)
 
@@ -654,6 +666,33 @@ Example rows (`discovery_members`):
 **Notes:**
 - Every entry needs a valid `address` (contains `@`) — enforced at build + write time.
 - Auth posture: a message is accepted only when authenticated (Cloudflare DKIM/SPF/DMARC) AND from a listed source — `sender ∧ aligned-DKIM` (auto-forward) or `member ∧ aligned-DKIM` (manual forward). Everything else is dropped silently.
+
+## discovery_config (D1 singleton, operator-scoped)
+
+**Operator-scoped** — read by the background discovery sweep at job start; written only by the operator via the admin Config console (not an agent tool). The table holds a **sparse override** of the sweep's compiled-in `DEFAULT_CONFIG`: only the knobs an operator has explicitly tuned are non-null; every null column falls back to the default. This means `DEFAULT_CONFIG` is the safe compile-time baseline and the table records only deliberate operator deltas — an empty or absent row runs with all defaults.
+
+```sql
+-- D1 discovery_config table (migration 0017). SINGLE ROW (id = 1, enforced by CHECK).
+id               INTEGER PRIMARY KEY CHECK (id = 1)  -- singleton guard
+taste_threshold  REAL     -- cosine threshold for per-member taste match (τ); null → DEFAULT_CONFIG.tasteThreshold
+triage_threshold REAL     -- cheaper pre-classify blurb-cosine gate; null → DEFAULT_CONFIG.triageThreshold
+dedup_threshold  REAL     -- semantic duplicate cosine gate (δ); null → DEFAULT_CONFIG.dedupThreshold
+classify_max     INTEGER  -- max classify+fetch calls per sweep tick; null → DEFAULT_CONFIG.classifyMaxPerTick
+rate_cap         INTEGER  -- max recipe imports per tick (corpus-bloat governor); null → DEFAULT_CONFIG.rateCap
+```
+
+Example row (all knobs tuned):
+
+| id | taste_threshold | triage_threshold | dedup_threshold | classify_max | rate_cap |
+|----|----------------|-----------------|----------------|-------------|---------|
+| 1 | 0.60 | 0.40 | 0.85 | 8 | 5 |
+
+**Notes:**
+- Read by `loadDiscoveryConfig(env)` (`src/discovery-calibration.ts`): reads the row, validates each knob against its range (`> 0 && ≤ 1` for real knobs; `> 0 && integer` for caps), and falls back to `DEFAULT_CONFIG` on a null or out-of-range value.
+- Written via `saveDiscoveryConfig(env, patch)` — merges the patch over the existing row and upserts with `INSERT … ON CONFLICT(id) DO UPDATE SET`.
+- Floor guards (`FLOOR_TASTE = 0.2`, `FLOOR_DEDUP = 0.7`) and ceiling guard (`CEILING_RATE_CAP = 100`) require `confirm: true` in the admin PUT to override — the API rejects without it (400 `validation_failed` + `needsConfirm: true`), preventing accidental footgun writes.
+- The calibration console's **analyze** endpoint (`POST /admin/api/discovery/analyze`) computes a cheap no-AI readout of how many corpus pairs fall within δ and how many members clear τ, before any config write — a preview, not a write.
+- The calibration console's **dry-run** endpoint (`POST /admin/api/discovery/dry-run`) runs the full pipeline with `importRecipe`/`recordMatches`/`recordLog` stubbed out, returning what *would* be imported — the sweep's built-in E2E verification.
 
 ## guidance/
 

@@ -94,6 +94,8 @@ export function fakeD1(
     } else if (/\bauthor = \?2/i.test(sql)) {
       eq("author", 2);
     }
+    // The explorer reads a member's authored notes by `author = ?1` (no privacy clause).
+    if (/\bauthor = \?1/i.test(sql)) eq("author", 1);
     if (/created_at = \?3/i.test(sql)) eq("created_at", 3);
     return out;
   };
@@ -101,12 +103,21 @@ export function fakeD1(
   const exec = (sql: string, binds: unknown[]): { rows: Record<string, unknown>[]; changes: number } => {
     const table = tableOf(sql);
     if (/^SELECT/i.test(sql)) {
-      if (table === "recipes") {
+      // The recipes slug-resolution shim (log_cooked): with no `recipes` table seeded, a
+      // SELECT resolves against the `known` set. When a test DOES seed `tables.recipes`
+      // (the data explorer reads real projection rows), fall through to a normal SELECT.
+      if (table === "recipes" && !tables.recipes) {
         const slug = binds[0];
         return { rows: typeof slug === "string" && known.has(slug) ? [{ ok: 1 }] : [], changes: 0 };
       }
       if (!table || !tables[table]) return { rows: [], changes: 0 };
-      const base = GLOBAL_TABLES.has(table) ? tables[table] : tables[table].filter((r) => r.tenant === binds[0]);
+      // Tenant-scope only when the query actually filters by `tenant = ?1`; otherwise
+      // (global tables, and cross-tenant reads like overlay-by-recipe) read all rows and
+      // let the WHERE-equality filters below narrow.
+      const base =
+        !GLOBAL_TABLES.has(table) && /\btenant = \?1/i.test(sql)
+          ? tables[table].filter((r) => r.tenant === binds[0])
+          : tables[table];
       let rows = applyWhere(sql, binds, base);
       // Honor the simple ORDER BY clauses the corpus reads use.
       const order = /ORDER BY\s+(\w+)(\s+DESC)?/i.exec(sql);

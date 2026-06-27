@@ -324,11 +324,13 @@ export function buildPluginFiles(parsed, { mcpUrl = MCP_URL_PLACEHOLDER, version
 // passes the DATA repo's commit count via --version (the published, monotonic-per-
 // operator value — see the note by PLUGIN_NAME); this fallback is used only when
 // --version is absent (local/throwaway builds, where the version does not matter).
-// The `0.2.` prefix is a deliberate floor over the OLD code-repo marketplace, which
-// published up to `0.1.126`: claude.ai gates on strictly-greater per plugin name, and
-// an operator's data-repo commit count is small (≈50), so a `0.1.<count>` scheme would
-// REGRESS below 0.1.126 and strand existing installs. `0.2.<count>` dominates it for
-// every operator. Returns undefined outside a git checkout (ships no version).
+// The `0.2.` prefix is a deliberate GENERATION marker over the OLD code-repo marketplace,
+// which published the same plugin name up to `0.1.126`. claude.ai gates auto-update on
+// strictly-greater per plugin name, so the data-repo era uses `0.2.x` to sit above that
+// whole `0.1.x` line for every operator — a data-repo commit count (large for an
+// established repo, tiny for a fresh one) can't be relied on to clear 0.1.126 on its own.
+// `0.2.<count>` then keeps each republish strictly newer. Returns undefined outside a git
+// checkout (ships no version).
 export function resolveVersion(cwd = REPO_ROOT) {
   try {
     const count = execFileSync('git', ['rev-list', '--count', 'HEAD'], { cwd, encoding: 'utf8' }).trim();

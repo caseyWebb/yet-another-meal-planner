@@ -175,7 +175,7 @@ jobs:
             git add "$CONFIG"
             git commit -m "chore(deploy): pin auto-provisioned KV + D1 ids"
             if ! git push; then
-              echo "::warning::Could not push pinned KV/D1 ids (the deploy caller needs 'permissions: contents: write'). The deploy succeeded; paste the ids from wrangler.jsonc manually, or grant the permission so it auto-pins next time."
+              echo "::warning::Could not push pinned KV/D1 ids — either the deploy caller lacks 'permissions: contents: write', or an out-of-band push moved the branch. The deploy succeeded; grant the permission (or paste the ids from wrangler.jsonc manually) so they persist."
             fi
           fi
 
@@ -226,7 +226,7 @@ jobs:
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
             git commit -m "chore(deploy): stamp health badge in README"
             if ! git push; then
-              echo "::warning::Could not push the README health badge (the deploy caller needs 'permissions: contents: write'). The deploy succeeded; paste the snippet from this run's summary into your README once."
+              echo "::warning::Could not push the README health badge — either the deploy caller lacks 'permissions: contents: write', or an out-of-band push moved the branch. The deploy succeeded; paste the snippet from this run's summary into your README once."
             fi
           fi
 
@@ -263,9 +263,11 @@ jobs:
             exit 0
           fi
           MCP_URL="https://$HOST/mcp"
-          # 0.2.<count>: the data repo's commit count is small (≈50), and the old
-          # code-repo marketplace published up to 0.1.126 under the same plugin name —
-          # so a 0.1.<count> would regress and strand installs. 0.2.<count> dominates it.
+          # 0.2.<count>: the old code-repo marketplace published the same plugin name up to
+          # 0.1.126, and claude.ai gates auto-update strictly-greater per name — so the
+          # data-repo era uses 0.2.x to sit above that whole 0.1.x line for every operator
+          # (a data-repo commit count alone can't be relied on to clear 0.1.126). <count>
+          # keeps each republish strictly newer.
           VERSION="0.2.$(git rev-list --count HEAD)"
           node _code/scripts/build-plugin.mjs --out plugin/grocery-agent --mcp-url "$MCP_URL" --version "$VERSION"
           git add plugin/grocery-agent
@@ -278,8 +280,10 @@ jobs:
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
             git commit -m "chore(deploy): publish plugin bundle (v$VERSION)"
+            # Deploys are serialized by the caller's `concurrency: group: deploy`, so this push
+            # only fails on a missing write permission or an out-of-band push to the branch.
             if ! git push; then
-              echo "::warning::Could not push the published plugin bundle (the deploy caller needs 'permissions: contents: write'). The deploy succeeded; grant the permission so it auto-publishes next time."
+              echo "::warning::Could not publish the plugin bundle — either the deploy caller lacks 'permissions: contents: write', or an out-of-band push moved the branch. The Worker deploy itself succeeded; grant the permission (or re-run the deploy) to publish."
             fi
             # Only when we actually published: a bundle with no manifest won't resolve as a marketplace.
             [ -f .claude-plugin/marketplace.json ] || echo "::warning::Published the plugin bundle but there is no .claude-plugin/marketplace.json — add one pointing at ./plugin/grocery-agent (see the data-repo template) so the marketplace resolves."

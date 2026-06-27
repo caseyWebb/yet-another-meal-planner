@@ -22,18 +22,33 @@ const RECIPE_MD = [
 ].join("\n");
 
 /**
- * An env whose DB returns recipe-index rows for `loadRecipeIndex` (the only D1 read the
- * cookbook makes — there are no embeddings on this path), with an optional R2 corpus for
- * the recipe-body render.
+ * An env whose DB routes by SQL: `loadRecipeEmbeddings`'s query (`… WHERE embedding IS NOT
+ * NULL`) returns `embeddingRows`; every other query (the recipe index) returns `recipeRows`.
+ * An optional R2 corpus backs the recipe-body render. `failEmbeddings` makes the embeddings
+ * read throw, to exercise the best-effort "omit the Similar Recipes section, still render the
+ * body" path.
  */
-function envWith(opts: { recipeRows?: Record<string, unknown>[]; files?: Record<string, string> }): Env {
+function envWith(opts: {
+  recipeRows?: Record<string, unknown>[];
+  embeddingRows?: { slug: string; embedding: string }[];
+  files?: Record<string, string>;
+  failEmbeddings?: boolean;
+}): Env {
   const recipeRows = opts.recipeRows ?? [];
-  const makeStmt = () => {
-    const stmt = { bind: () => stmt, all: async () => ({ results: recipeRows }) };
+  const embeddingRows = opts.embeddingRows ?? [];
+  const makeStmt = (sql: string) => {
+    const isEmbeddings = /embedding IS NOT NULL/i.test(sql);
+    const stmt = {
+      bind: () => stmt,
+      all: async () => {
+        if (isEmbeddings && opts.failEmbeddings) throw new Error("embeddings unavailable");
+        return { results: isEmbeddings ? embeddingRows : recipeRows };
+      },
+    };
     return stmt;
   };
   return {
-    DB: { prepare: () => makeStmt() },
+    DB: { prepare: (sql: string) => makeStmt(sql) },
     CORPUS: fakeR2(opts.files ?? {}).bucket,
   } as unknown as Env;
 }
@@ -235,5 +250,81 @@ describe("handleCookbook search", () => {
     expect(csp).toMatch(/default-src 'none'/);
     expect(csp).not.toMatch(/script-src/);
     expect(html).not.toMatch(/<script/i);
+  });
+});
+
+describe("handleCookbook similar recipes", () => {
+  it("renders Similar Recipes from stored embeddings, excluding self and below-floor recipes", async () => {
+    const env = envWith({
+      files: { "recipes/miso-salmon.md": RECIPE_MD },
+      recipeRows: [
+        { slug: "miso-salmon", title: "Miso Salmon" },
+        { slug: "teriyaki-salmon", title: "Teriyaki Salmon", protein: "fish" },
+        { slug: "chocolate-cake", title: "Chocolate Cake" },
+      ],
+      embeddingRows: [
+        { slug: "miso-salmon", embedding: JSON.stringify([1, 0, 0]) },
+        { slug: "teriyaki-salmon", embedding: JSON.stringify([0.98, 0.1, 0]) }, // ~0.995 → above floor
+        { slug: "chocolate-cake", embedding: JSON.stringify([0, 0, 1]) }, // cosine 0 → below floor
+      ],
+    });
+    const res = await handleCookbook(get("/cookbook/miso-salmon"), env);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain("Similar Recipes");
+    expect(html).toContain("/cookbook/teriyaki-salmon");
+    expect(html).not.toContain("/cookbook/chocolate-cake"); // below the similarity floor
+    expect(html).not.toContain('href="/cookbook/miso-salmon"'); // the viewed recipe excludes itself
+    // The section is static links, so the body page keeps its strict no-script CSP.
+    const csp = res.headers.get("content-security-policy") ?? "";
+    expect(csp).toMatch(/default-src 'none'/);
+    expect(csp).not.toMatch(/script-src/);
+    expect(html).not.toMatch(/<script/i);
+  });
+
+  it("omits the section when the viewed recipe has no stored embedding yet", async () => {
+    const env = envWith({
+      files: { "recipes/miso-salmon.md": RECIPE_MD },
+      recipeRows: [
+        { slug: "miso-salmon", title: "Miso Salmon" },
+        { slug: "teriyaki-salmon", title: "Teriyaki Salmon" },
+      ],
+      // The viewed recipe is unembedded (just imported); only another recipe has a vector.
+      embeddingRows: [{ slug: "teriyaki-salmon", embedding: JSON.stringify([1, 0, 0]) }],
+    });
+    const html = await (await handleCookbook(get("/cookbook/miso-salmon"), env)).text();
+    expect(html).toContain("<h1>Miso Salmon</h1>"); // body still renders
+    expect(html).not.toContain("Similar Recipes");
+  });
+
+  it("still renders the body (200) when the embeddings read fails — section omitted", async () => {
+    const env = envWith({
+      files: { "recipes/miso-salmon.md": RECIPE_MD },
+      recipeRows: [{ slug: "miso-salmon", title: "Miso Salmon" }],
+      failEmbeddings: true,
+    });
+    const res = await handleCookbook(get("/cookbook/miso-salmon"), env);
+    expect(res.status).toBe(200); // best-effort: a failed embeddings read does not 503 the page
+    const html = await res.text();
+    expect(html).toContain("<h1>Miso Salmon</h1>");
+    expect(html).not.toContain("Similar Recipes");
+  });
+
+  it("escapes neighbor titles rendered in the section", async () => {
+    const env = envWith({
+      files: { "recipes/base.md": RECIPE_MD },
+      recipeRows: [
+        { slug: "base", title: "Base" },
+        { slug: "evil", title: "<script>alert(1)</script>Pasta" },
+      ],
+      embeddingRows: [
+        { slug: "base", embedding: JSON.stringify([1, 0]) },
+        { slug: "evil", embedding: JSON.stringify([1, 0]) }, // identical vector → cosine 1
+      ],
+    });
+    const html = await (await handleCookbook(get("/cookbook/base"), env)).text();
+    expect(html).toContain("/cookbook/evil");
+    expect(html).not.toMatch(/<script>alert\(1\)<\/script>/); // never injected raw
+    expect(html).toContain("&lt;script&gt;alert(1)&lt;/script&gt;"); // rendered escaped
   });
 });

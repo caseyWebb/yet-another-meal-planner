@@ -2,11 +2,11 @@
 
 ## Purpose
 
-Defines the Cloudflare Worker MCP runtime: the Streamable-HTTP transport via `createMcpHandler` (stateless, no Durable Objects), the authenticated GitHub data-access client, the workerd-safe parsing approach, the structured-error convention shared by all tools, the authless-now / secure-by-write-time deployment posture, and the Worker's continuous deployment.
+Defines the Cloudflare Worker MCP runtime: the Streamable-HTTP transport via `createMcpHandler` (stateless, no Durable Objects), the workerd-safe parsing approach, the structured-error convention shared by all tools, the per-tenant gate over the R2/D1 data path, and the operator-controlled deployment posture. (Corpus data-access lives in the `r2-corpus-store` capability; per-tenant data is in D1.)
 ## Requirements
 ### Requirement: MCP server over Streamable HTTP
 
-The system SHALL host an MCP server in a Cloudflare Worker at the **repo root** (`src/`), exposed over the **Streamable HTTP** transport via `createMcpHandler()`, operating statelessly with **no Durable Objects** and no per-session state. The server SHALL be reachable at a `workers.dev` URL and connectable from a standard MCP client (e.g. MCP Inspector). A server instance SHALL be constructed per request for the **resolved tenant**, so tools close over that tenant's repo coordinates and Kroger context and cannot reach another tenant's data.
+The system SHALL host an MCP server in a Cloudflare Worker at the **repo root** (`src/`), exposed over the **Streamable HTTP** transport via `createMcpHandler()`, operating statelessly with **no Durable Objects** and no per-session state. The server SHALL be reachable at a `workers.dev` URL and connectable from a standard MCP client (e.g. MCP Inspector). A server instance SHALL be constructed per request for the **resolved tenant**, so tools close over that tenant's **R2/D1 context** and Kroger context and cannot reach another tenant's data.
 
 #### Scenario: Tools listed over the MCP endpoint
 
@@ -16,21 +16,7 @@ The system SHALL host an MCP server in a Cloudflare Worker at the **repo root** 
 #### Scenario: No cross-tenant state retained
 
 - **WHEN** two different tenants invoke tools against the Worker
-- **THEN** each request is served purely from its own tenant's repo state, with no shared or carried-over state between tenants or requests
-
-### Requirement: Authenticated GitHub data-access client
-
-The system SHALL provide a GitHub client wrapper used for all repo reads and writes, authenticating per request with a short-lived **GitHub App installation token** scoped to the single data repository, minted on demand from the App's id + private key. The client SHALL read data at the configured ref's HEAD, apply basic retry with backoff on transient failures and rate-limit responses, and surface failures as structured errors rather than throwing. The client SHALL NOT use a personal access token. The client reads and writes the **shared** repo content (the recipe corpus `recipes/*.md` plus reference markdown); per-tenant data lives in D1, not in GitHub, so the client carries no per-tenant path prefix.
-
-#### Scenario: Reads use the installation token for the shared recipe corpus
-
-- **WHEN** any tool reads or commits shared recipe content
-- **THEN** the GitHub client authenticates with the App installation token (benefiting from the per-installation 5,000 req/hr limit, not a PAT or anonymous request) and addresses the file at the data-repo root (e.g. `recipes/`)
-
-#### Scenario: Upstream failure surfaces structured
-
-- **WHEN** GitHub is unreachable or returns a rate-limit response after retries are exhausted
-- **THEN** the client returns a structured `upstream_unavailable` error and does not throw an unhandled exception
+- **THEN** each request is served purely from its own tenant's R2/D1 state, with no shared or carried-over state between tenants or requests
 
 ### Requirement: Workers-runtime-safe parsing
 
@@ -66,15 +52,15 @@ With per-tenant identity in place, the Worker's tool surface MAY include repo-da
 
 ### Requirement: Operator-controlled Worker deployment from the data repo
 
-The Worker SHALL be deployed by the operator from their **private data repo**, which is the single control plane holding the only deployment secret (`CLOUDFLARE_API_TOKEN`). The public code repo SHALL host a **reusable** (`workflow_call`) deploy workflow (`data-deploy.yml`) that checks out the Worker source, overlays the operator's own `wrangler.jsonc`, runs typecheck + tests, then `wrangler deploy`s; the data repo SHALL invoke it from a thin caller. The public code repo SHALL hold **no Actions secrets** — pushes there run only typecheck + both test suites (`ci.yml`), never a deploy. The Worker's own runtime secrets (GitHub App private key, Kroger credentials) SHALL be set via `wrangler secret put` directly to Cloudflare and SHALL NOT be stored in any repository or in GitHub Actions. There SHALL be no automatic deploy triggered by a push to the public code repo — a push trigger would require a data-repo-writable credential stored in a public repo; deployment is operator-triggered (e.g. `gh workflow run deploy.yml` against the data repo).
+The Worker SHALL be deployed by the operator from their **data repo** (which MAY be public — it carries nothing secret), the single control plane holding the only deployment secret (`CLOUDFLARE_API_TOKEN`, encrypted). The public code repo SHALL host a **reusable** (`workflow_call`) deploy workflow (`data-deploy.yml`) that checks out the Worker source, overlays the operator's own `wrangler.jsonc`, runs typecheck + tests, then `wrangler deploy`s; the data repo SHALL invoke it from a thin caller. The Worker's own runtime secrets — the **Kroger credentials** — SHALL be set via `wrangler secret put` directly to Cloudflare and SHALL NOT be stored in any repository or in GitHub Actions (there is no GitHub App private key). A push to the **code** repo MAY automatically dispatch the data repo's deploy: `ci.yml`'s `trigger-deploy` job, gated on green CI, fires the data repo's workflow via a fine-grained `DATA_REPO_ACTIONS_TOKEN` (`actions: write` on the data repo only). The public code repo SHALL still hold **no Cloudflare deploy secret** and SHALL NOT run `wrangler deploy` itself — the deploy always executes in the data repo with the data repo's token.
 
-#### Scenario: Deploy runs from the private data repo
+#### Scenario: Deploy runs from the data repo
 
-- **WHEN** the operator triggers the data repo's deploy workflow
+- **WHEN** the operator (or the code repo's `trigger-deploy`) triggers the data repo's deploy workflow
 - **THEN** the reusable `data-deploy.yml` overlays the operator's `wrangler.jsonc` onto the Worker source, runs typecheck + tests, and deploys with the data repo's `CLOUDFLARE_API_TOKEN`
 
-#### Scenario: Public code repo holds no deploy secret
+#### Scenario: Public code repo holds no Cloudflare deploy secret
 
 - **WHEN** a commit is pushed to the public code repo
-- **THEN** only `ci.yml` runs (typecheck + both test suites) with no secrets, and no deploy occurs from the public repo
+- **THEN** `ci.yml` runs typecheck + both test suites with no Cloudflare secret and runs no `wrangler deploy` itself; on Worker/plugin-relevant changes it only **dispatches** the data repo's deploy (which runs there, with the data repo's token)
 

@@ -1,4 +1,4 @@
-module Route exposing (LogSource(..), Route(..), actingAsParam, fromUrl, href, logSourceFromSlug, logSourceSlug, toString)
+module Route exposing (DataRoute(..), LogSource(..), Route(..), actingAsParam, fromUrl, href, logSourceFromSlug, logSourceSlug, toString)
 
 {-| The admin SPA's client routes, all under the worker-served `/admin` base. The panel is
 split into top-level areas — **Status** (the service-health home view), **Members** (member
@@ -28,7 +28,20 @@ type Route
     | Members
     | Tools (Maybe String)
     | Logs (Maybe LogSource)
+    | Config
+    | Data DataRoute
     | NotFound
+
+
+{-| The Data area's sub-routes. The two 360 views carry an optionally-selected entity
+(`recipes/<slug>`, `members/<id>`) so a recipe/member deep-links; the three flat views
+are bare. `/admin/data` (no sub-segment) resolves to the recipe list. -}
+type DataRoute
+    = DataRecipes (Maybe String)
+    | DataMembers (Maybe String)
+    | DataCorpus
+    | DataDiscovery
+    | DataSystem
 
 
 {-| The Logs area's log sources — a finite enum, not a stringly-typed slug (admin/CLAUDE.md
@@ -69,6 +82,15 @@ parser =
         , Parser.map (Just >> Tools) (s "admin" </> s "dev" </> s "tools" </> string)
         , Parser.map (Logs Nothing) (s "admin" </> s "logs")
         , Parser.map (Just >> Logs) (s "admin" </> s "logs" </> logSource)
+        , Parser.map Config (s "admin" </> s "config")
+        , Parser.map (Data (DataRecipes Nothing)) (s "admin" </> s "data" </> s "recipes")
+        , Parser.map (Data << DataRecipes << Just) (s "admin" </> s "data" </> s "recipes" </> string)
+        , Parser.map (Data (DataMembers Nothing)) (s "admin" </> s "data" </> s "members")
+        , Parser.map (Data << DataMembers << Just) (s "admin" </> s "data" </> s "members" </> string)
+        , Parser.map (Data DataCorpus) (s "admin" </> s "data" </> s "corpus")
+        , Parser.map (Data DataDiscovery) (s "admin" </> s "data" </> s "discovery")
+        , Parser.map (Data DataSystem) (s "admin" </> s "data" </> s "system")
+        , Parser.map (Data (DataRecipes Nothing)) (s "admin" </> s "data")
         ]
 
 
@@ -117,8 +139,39 @@ toString route =
         Logs (Just source) ->
             Builder.absolute [ "admin", "logs", logSourceSlug source ] []
 
+        Config ->
+            Builder.absolute [ "admin", "config" ] []
+
+        Data dataRoute ->
+            Builder.absolute ("admin" :: "data" :: dataSegments dataRoute) []
+
         NotFound ->
             Builder.absolute [ "admin" ] []
+
+
+dataSegments : DataRoute -> List String
+dataSegments dataRoute =
+    case dataRoute of
+        DataRecipes Nothing ->
+            [ "recipes" ]
+
+        DataRecipes (Just slug) ->
+            [ "recipes", slug ]
+
+        DataMembers Nothing ->
+            [ "members" ]
+
+        DataMembers (Just id) ->
+            [ "members", id ]
+
+        DataCorpus ->
+            [ "corpus" ]
+
+        DataDiscovery ->
+            [ "discovery" ]
+
+        DataSystem ->
+            [ "system" ]
 
 
 href : Route -> Html.Attribute msg
