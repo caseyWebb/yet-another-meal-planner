@@ -74,7 +74,7 @@ The repository SHALL include a `README.md` explaining the project and how to use
 
 The public data-repo template (`caseyWebb/groceries-agent-data-template`) SHALL be tracked as its own independent repository, NOT vendored into this code repo. This repository SHALL NOT carry a git submodule (or `.gitmodules` entry) for the template, and SHALL NOT keep hand-maintained copies of the data-repo caller workflows under `docs/`. The template repo's own `.github/workflows/` is the single canonical reference for the thin data-repo callers.
 
-The explanatory content describing the data-repo callers — the mapping of each data-repo caller workflow to this repo's reusable workflow, and the rationale for running them in the private data repo — SHALL reside in `docs/SELF_HOSTING.md`, pointing at the [`groceries-agent-data-template`](https://github.com/caseyWebb/groceries-agent-data-template) repo as the canonical example.
+The explanatory content describing the data-repo callers — the mapping of each data-repo caller workflow to this repo's reusable workflow, and the rationale for running them in the data repo — SHALL reside in `docs/SELF_HOSTING.md`, pointing at the [`groceries-agent-data-template`](https://github.com/caseyWebb/groceries-agent-data-template) repo as the canonical example.
 
 #### Scenario: No template submodule is present
 

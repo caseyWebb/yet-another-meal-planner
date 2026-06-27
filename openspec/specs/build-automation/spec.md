@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Defines the reusable CI workflow that builds the agent plugin bundle: a self-hoster's data repo calls it to produce a downloadable plugin artifact with their own connector URL baked in. Recipe validation and the recipe index are owned by the Worker reconcile (see the `recipe-index` and `r2-corpus-store` capabilities).
+Defines how the agent plugin bundle is built and published in CI: the operator's deploy (the reusable `data-deploy.yml`) builds the bundle with their own connector URL baked in and commits it to their public data repo, which serves as their plugin marketplace. Recipe validation and the recipe index are owned by the Worker reconcile (see the `recipe-index` and `r2-corpus-store` capabilities).
 ## Requirements
 ### Requirement: Deploy builds and publishes the plugin bundle to the data-repo marketplace
 

@@ -8,7 +8,7 @@ How to work **on** the grocery-agent itself — its persona/skills (generated fr
 
 ## Repo map
 
-There is **no data in this repo** — the data lives in a separate private data repo (see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) and [`docs/SELF_HOSTING.md`](docs/SELF_HOSTING.md)). This repo is the agent's source — Worker code, the persona/skills source, and build tooling:
+There is **no data in this repo** — the data lives in a separate (public) data repo (see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) and [`docs/SELF_HOSTING.md`](docs/SELF_HOSTING.md)). This repo is the agent's source — Worker code, the persona/skills source, and build tooling:
 
 | Path | What it is |
 | --- | --- |
