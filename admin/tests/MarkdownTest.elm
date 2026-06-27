@@ -52,4 +52,12 @@ suite =
                         [ Query.findAll [ Selector.tag "script" ] >> Query.count (Expect.equal 0)
                         , Query.has [ Selector.tag "pre", Selector.text "<script>alert('x')</script>" ]
                         ]
+        , test "inline raw HTML never becomes a live element (onerror can't fire)" <|
+            \_ ->
+                -- dillonkearns escapes invalid-tag text as inert text rather than emitting
+                -- an element; either way no live <img> reaches the DOM.
+                Markdown.render "Hello <img src=x onerror=alert(1)> world"
+                    |> Query.fromHtml
+                    |> Query.findAll [ Selector.tag "img" ]
+                    |> Query.count (Expect.equal 0)
         ]

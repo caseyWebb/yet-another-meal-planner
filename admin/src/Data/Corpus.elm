@@ -13,7 +13,7 @@ loaded-but-no-content combination.
 -}
 
 import Data.Table as Table
-import Html exposing (Html, button, div, em, h2, hr, li, p, pre, span, text, ul)
+import Html exposing (Html, button, div, em, h2, hr, li, p, span, text, ul)
 import Html.Attributes exposing (class)
 import Html.Events exposing (onClick)
 import Http
