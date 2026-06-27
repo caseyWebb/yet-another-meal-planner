@@ -23,6 +23,7 @@ import Admin.Members as Members
 import Browser
 import Browser.Dom as Dom
 import Browser.Navigation as Nav
+import Data
 import Dev.ToolConsole as ToolConsole
 import Html exposing (Html, a, button, div, h1, nav, section, text)
 import Html.Attributes exposing (class, classList, id)
@@ -84,6 +85,7 @@ type Page
     = HealthPage Status.Model
     | MembersPage Members.Model
     | ToolsPage ToolConsole.Model
+    | DataPage Data.Model
     | NotFoundPage
 
 
@@ -103,6 +105,7 @@ type Msg
     | HealthMsg Status.Msg
     | MembersMsg Members.Msg
     | ToolsMsg ToolConsole.Msg
+    | DataMsg Data.Msg
     | ScrollToSection DevSection
     | NoOp
 
@@ -146,6 +149,13 @@ update msg model =
             in
             ( { model | page = ToolsPage subModel2 }, Cmd.map ToolsMsg cmd )
 
+        ( DataMsg subMsg, DataPage subModel ) ->
+            let
+                ( subModel2, cmd ) =
+                    Data.update subMsg subModel
+            in
+            ( { model | page = DataPage subModel2 }, Cmd.map DataMsg cmd )
+
         -- A sub-message for a page we are no longer on (a late response): drop it.
         ( HealthMsg _, _ ) ->
             ( model, Cmd.none )
@@ -154,6 +164,9 @@ update msg model =
             ( model, Cmd.none )
 
         ( ToolsMsg _, _ ) ->
+            ( model, Cmd.none )
+
+        ( DataMsg _, _ ) ->
             ( model, Cmd.none )
 
 
@@ -176,6 +189,13 @@ stepTo route model =
 
         ( Route.Health, HealthPage _ ) ->
             ( { model | route = route }, Cmd.none )
+
+        ( Route.Data dataRoute, DataPage subModel ) ->
+            let
+                ( subModel2, cmd ) =
+                    Data.goto dataRoute subModel
+            in
+            ( { model | route = route, page = DataPage subModel2 }, Cmd.map DataMsg cmd )
 
         _ ->
             enter route Nothing model
@@ -206,6 +226,13 @@ enter route actingAs model =
                     ToolConsole.init { persona = actingAs, tool = selected }
             in
             ( { model | route = route, page = ToolsPage subModel }, Cmd.map ToolsMsg cmd )
+
+        Route.Data dataRoute ->
+            let
+                ( subModel, cmd ) =
+                    Data.init dataRoute
+            in
+            ( { model | route = route, page = DataPage subModel }, Cmd.map DataMsg cmd )
 
         Route.NotFound ->
             ( { model | route = route, page = NotFoundPage }, Cmd.none )
@@ -253,6 +280,9 @@ wrapClass route =
         Route.Tools _ ->
             "wrap wrap-wide"
 
+        Route.Data _ ->
+            "wrap wrap-wide"
+
         _ ->
             "wrap"
 
@@ -263,6 +293,7 @@ viewNav route =
         [ navLink "Status" Route.Health (isStatus route)
         , navLink "Members" Route.Members (isMembers route)
         , navLink "Dev · Tools" (Route.Tools Nothing) (isDev route)
+        , navLink "Data" (Route.Data (Route.DataRecipes Nothing)) (isData route)
         ]
 
 
@@ -301,6 +332,16 @@ isDev route =
             False
 
 
+isData : Route -> Bool
+isData route =
+    case route of
+        Route.Data _ ->
+            True
+
+        _ ->
+            False
+
+
 viewPage : Model -> Html Msg
 viewPage model =
     case model.page of
@@ -318,6 +359,9 @@ viewPage model =
                 , section [ id (sectionId McpInspector), class "dev-section" ]
                     [ Html.map ToolsMsg (ToolConsole.view subModel) ]
                 ]
+
+        DataPage subModel ->
+            Html.map DataMsg (Data.view subModel)
 
         NotFoundPage ->
             div [ class "card" ] [ text "Not found." ]

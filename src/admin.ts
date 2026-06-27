@@ -29,6 +29,14 @@ import {
 } from "./tenant.js";
 import { listToolsFor, callToolFor } from "./admin-tools.js";
 import { listBugReports } from "./bug-reports.js";
+import {
+  recipeList,
+  recipeDetail,
+  memberDetail,
+  readTable,
+  guidanceListing,
+  guidanceObject,
+} from "./admin-data.js";
 import type { KvStore } from "./kroger-user.js";
 
 const TENANT_PREFIX = "tenant:"; // mirrors src/tenant.ts (the allowlist directory)
@@ -366,6 +374,48 @@ async function routeAdminApi(
   if (path === "/admin/api/bug-reports") {
     if (method === "GET") return { reports: await listBugReports(deps.db) };
     throw new ToolError("unsupported", `Method ${method} not supported on ${path}`);
+  }
+
+  // Data explorer (operator-data-explorer): read-only, cross-tenant views over D1 + the
+  // R2 corpus. Every route is GET — a write method is `unsupported` (405) — and the whole
+  // block sits inside `handleAdmin`, so it inherits the Access gate (404 when disabled)
+  // with no auth code of its own. Member resolution reuses the same allowlist check the
+  // tool console uses (`resolveActingTenant`), so an unknown id is `not_found` (404).
+  if (path.startsWith("/admin/api/data/")) {
+    if (method !== "GET") {
+      throw new ToolError("unsupported", `Method ${method} not supported on ${path}`);
+    }
+    const rest = path.slice("/admin/api/data/".length);
+
+    if (rest === "recipes") return recipeList(env);
+    const recipeMatch = rest.match(/^recipes\/([^/]+)$/);
+    if (recipeMatch) return recipeDetail(env, decodeURIComponent(recipeMatch[1]));
+
+    const memberMatch = rest.match(/^members\/([^/]+)$/);
+    if (memberMatch) {
+      const tenant = await resolveActingTenant(env, decodeURIComponent(memberMatch[1]));
+      return memberDetail(env, tenant.id);
+    }
+
+    // Guidance R2 browse (exact paths matched before the generic corpus/<table>).
+    if (rest === "corpus/guidance") {
+      return guidanceListing(env, url.searchParams.get("prefix") ?? undefined);
+    }
+    if (rest === "corpus/guidance/object") {
+      const p = url.searchParams.get("path");
+      if (!p) throw new ToolError("validation_failed", "A guidance object path is required");
+      return guidanceObject(env, p);
+    }
+    const corpusMatch = rest.match(/^corpus\/([^/]+)$/);
+    if (corpusMatch) return readTable(env, "corpus", decodeURIComponent(corpusMatch[1]));
+
+    const discoveryMatch = rest.match(/^discovery\/([^/]+)$/);
+    if (discoveryMatch) return readTable(env, "discovery", decodeURIComponent(discoveryMatch[1]));
+
+    const systemMatch = rest.match(/^system\/([^/]+)$/);
+    if (systemMatch) return readTable(env, "system", decodeURIComponent(systemMatch[1]));
+
+    throw new ToolError("not_found", `No data route for ${method} ${path}`);
   }
 
   // Tool console (the operator dev workbench): list + invoke the live MCP tool surface

@@ -87,6 +87,16 @@
       button.danger-solid { background: var(--danger); color: #fff; }
       .result { border-left: 3px solid #1a5; padding-left: .6rem; }
       .result.error { border-left-color: var(--danger); }
+      /* Data area: a sub-nav of pills (plain links) over the five entity views. */
+      .data-nav { display: flex; gap: .5rem; flex-wrap: wrap; margin: .25rem 0 1.25rem; }
+      a.pill { text-decoration: none; display: inline-block; }
+      hr { border: 0; border-top: 1px solid #e5e5e5; margin: 1.5rem 0; }
+      /* Recipe projection-status badge (indexed / skipped / pending / orphaned). */
+      .tier { font-size: .75rem; font-weight: 600; padding: .1rem .55rem; border-radius: 999px; border: 1px solid; }
+      .tier.indexed { color: #1a7f37; border-color: #1a7f37; }
+      .tier.skipped { color: #cf222e; border-color: #cf222e; }
+      .tier.pending { color: #9a6700; border-color: #9a6700; }
+      .tier.orphaned { color: #57606a; border-color: #57606a; }
     </style>
   </head>
   <body>
