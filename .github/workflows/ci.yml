@@ -67,15 +67,13 @@ jobs:
         # needs package.elm-lang.org reachable (as build-admin already does).
         run: aubr test:admin
 
-      - name: Plugin skills are current with AGENT_INSTRUCTIONS.md
-        # The committed marketplace plugin's skills/ are generated from
-        # AGENT_INSTRUCTIONS.md — guard against drift. The manifest carries an
-        # operator-specific connector URL and a per-commit version (0.1.<count>),
-        # and .mcp.json is operator-specific too, so the comparison is scoped to
-        # skills/ (the only part deterministically derived from the source doc).
-        run: |
-          node scripts/build-plugin.mjs --out /tmp/plugin-check --mcp-url __ci__
-          diff -r plugin/grocery-agent/skills /tmp/plugin-check/skills
+      - name: Plugin builds from AGENT_INSTRUCTIONS.md
+        # There is no committed bundle in this repo (the operator's deploy builds and
+        # publishes it into their data-repo marketplace), so this guards that the persona
+        # source still parses and maps to a well-formed skill set — the same validation
+        # the deploy's build runs — catching a broken AGENT_INSTRUCTIONS.md before it
+        # reaches any operator's publish.
+        run: node scripts/build-plugin.mjs --check
 
   trigger-deploy:
     # Auto-trigger the data-repo deploy on Worker-relevant changes to main.
@@ -90,10 +88,14 @@ jobs:
         with:
           fetch-depth: 2
 
-      - name: Check for Worker-relevant changes
+      - name: Check for Worker- or plugin-relevant changes
         id: changed
+        # Worker paths (src/, wrangler.jsonc, deps, admin/dist) plus the plugin sources
+        # (AGENT_INSTRUCTIONS.md, the builder) — a persona-only change must republish the
+        # skills, and the deploy is Worker-first so it redeploys the (unchanged) Worker
+        # before publishing, which is safe.
         run: |
-          git diff --name-only HEAD^ HEAD -- src/ admin/dist/ wrangler.jsonc package.json package-lock.json \
+          git diff --name-only HEAD^ HEAD -- src/ admin/dist/ wrangler.jsonc package.json package-lock.json AGENT_INSTRUCTIONS.md scripts/build-plugin.mjs \
             | grep -q . \
             && echo "relevant=true" >> "$GITHUB_OUTPUT" \
             || echo "relevant=false" >> "$GITHUB_OUTPUT"

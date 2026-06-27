@@ -266,7 +266,7 @@ They are deliberately split so the agent persona isn't auto-loaded into a develo
 
 - **Claude.ai** (web + mobile) — conversational surface, subscription auth, fresh-context conversations.
 - **Cloudflare Workers** (TypeScript / `workerd`) — hosts the MCP server + OAuth provider. Free tier handles personal-scale load. **Wrangler** for deploys; **KV** for OAuth/tenant/Kroger token state.
-- **GitHub** — code and the plugin marketplace, CI/CD via Actions. Not on the data path (the authored corpus is R2).
+- **GitHub** — the code (this repo) and each operator's data repo, which doubles as their **public plugin marketplace** (the deploy publishes the bundle there); CI/CD via Actions. Not on the data path (the authored corpus is R2).
 - **Cloudflare R2** (`CORPUS`) — the authored markdown corpus, read/written through `src/corpus-store.ts`; Obsidian authoring rides its S3-compatible API.
 - **Kroger Developer API** — product search, prices, cart writes (write-only).
 - **Pure-JS parsers** that run on `workerd`: `js-yaml`, JSON-LD via `HTMLRewriter`, RSS/Atom via `fast-xml-parser`. (No `recipe-scraper`/`cheerio` — they assume Node internals unavailable on `workerd`.)

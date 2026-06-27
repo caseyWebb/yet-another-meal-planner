@@ -61,9 +61,13 @@ jobs:
     env:
       MISE_GLOBAL_CONFIG_FILE: ${{ github.workspace }}/_code/mise.toml
     steps:
-      # The caller's repo (the data repo) — for the operator's wrangler.jsonc, and
-      # the target of the KV-id pin-back commit.
+      # The caller's repo (the data repo) — for the operator's wrangler.jsonc, the
+      # target of the KV-id pin-back commit, and the marketplace bundle the publish
+      # step commits. fetch-depth: 0 (full history) so the plugin version derives from
+      # `git rev-list --count HEAD` of the data repo — a shallow clone would return 1.
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
 
       # This code repo — the Worker source + build deps. Into _code/ so nothing is
       # ever committed back to the data repo (except the pinned ids, below).
@@ -237,6 +241,47 @@ jobs:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           workingDirectory: _code
           command: d1 migrations apply DB --remote
+
+      # Build the plugin bundle with THIS operator's connector URL baked in and publish
+      # it to their data repo, which serves as their plugin marketplace. This is the TAIL
+      # of the deploy: it runs only after the Worker deploy above, so published skills can
+      # never reference a tool the deployed Worker does not yet serve — the Worker-first
+      # ordering is structural, not documented discipline. The version is the data repo's
+      # own commit count: monotonic per operator (every publish is a commit), which is what
+      # claude.ai's strictly-greater auto-update gate needs to re-pull. The connector host
+      # comes from worker_host (passed by the thin caller, like the badge). Skipped with a
+      # warning when worker_host is absent; graceful on a denied push (like the pin/badge
+      # steps) so the deploy still succeeds.
+      - name: Build & publish plugin to the data-repo marketplace
+        env:
+          HOST: ${{ inputs.worker_host }}
+        run: |
+          if [ -z "$HOST" ]; then
+            echo "::warning::No worker_host — skipping plugin publish. Set the WORKER_HOST repo variable (and pass it as worker_host) so the deploy can bake your connector URL and publish your marketplace bundle."
+            exit 0
+          fi
+          MCP_URL="https://$HOST/mcp"
+          VERSION="0.1.$(git rev-list --count HEAD)"
+          node _code/scripts/build-plugin.mjs --out plugin/grocery-agent --mcp-url "$MCP_URL" --version "$VERSION"
+          git add plugin/grocery-agent
+          # marketplace.json (committed in the data repo, → ./plugin/grocery-agent) ships
+          # too if present; the build does not generate it. Warn if it is missing — the
+          # bundle publishes but the marketplace manifest won't resolve until it's added.
+          if [ -f .claude-plugin/marketplace.json ]; then
+            git add .claude-plugin/marketplace.json
+          else
+            echo "::warning::No .claude-plugin/marketplace.json in the data repo — the bundle is published but the marketplace won't resolve until you add one pointing at ./plugin/grocery-agent (see the data-repo template)."
+          fi
+          if git diff --cached --quiet; then
+            echo "Plugin bundle already up to date (v$VERSION)."
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git commit -m "chore(deploy): publish plugin bundle (v$VERSION)"
+            if ! git push; then
+              echo "::warning::Could not push the published plugin bundle (the deploy caller needs 'permissions: contents: write'). The deploy succeeded; grant the permission so it auto-publishes next time."
+            fi
+          fi
 
       # (The one-time KV/GitHub→D1 backfill migrations have been applied and retired —
       # there is no `.mjs` data-migration step anymore. Schema lives in the D1-native

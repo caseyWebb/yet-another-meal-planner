@@ -24,8 +24,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:tooling": "node --test tests/build-plugin.test.mjs tests/merge-wrangler-config.test.mjs tests/stamp-readme-badge.test.mjs",
-    "build:plugin": "node scripts/build-plugin.mjs --out plugin/grocery-agent",
-    "build:plugin:dist": "node scripts/build-plugin.mjs",
+    "build:plugin": "node scripts/build-plugin.mjs",
     "build:admin": "node scripts/build-admin.mjs",
     "test:admin": "node scripts/test-admin.mjs"
   },

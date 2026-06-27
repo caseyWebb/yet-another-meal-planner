@@ -18,7 +18,6 @@ import {
   buildPluginFiles,
   parseResourceBlocks,
   resolveVersion,
-  floorVersion,
   yamlQuote,
   DEPTH_TIERS,
 } from '../scripts/build-plugin.mjs';
@@ -212,9 +211,10 @@ test('renderMcpConfig bakes the given worker url into the connector', () => {
   assert.equal(cfg.mcpServers['grocery-mcp'].url, 'https://example.test/mcp');
 });
 
-test('isHttpUrl gates the committed-bundle guard: http(s) only, no sentinels', () => {
-  // Real connector URLs pass; the placeholder and CI sentinels (e.g. __ci__) are
-  // rejected so they can never leak into the committed marketplace bundle again.
+test('isHttpUrl: http(s) only, no sentinels (gates the no-real-URL warning)', () => {
+  // Real connector URLs pass; the placeholder and CI sentinels (e.g. __ci__) do not,
+  // so a throwaway/local build warns that the connector will not resolve. The deploy
+  // always passes a real --mcp-url, so the published bundle carries a working connector.
   assert.equal(isHttpUrl('https://groceries-mcp.caseywebb.xyz/mcp'), true);
   assert.equal(isHttpUrl('http://localhost:8787/mcp'), true);
   assert.equal(isHttpUrl('__ci__'), false);
@@ -241,21 +241,10 @@ test('buildPluginFiles threads version into the manifest (monotonic claude.ai au
   assert.equal(with42.version, '0.0.42');
 });
 
-test('floorVersion lifts a regressed rebuild above the published bundle version', () => {
-  // Squash-merges shrink the commit count, so the computed 0.1.<count> can fall below
-  // a version stamped earlier; floorVersion keeps a rebuild strictly ahead of what's
-  // already published so claude.ai still auto-updates.
-  assert.equal(floorVersion('0.1.284', '0.1.305'), '0.1.306'); // regression → floored above
-  assert.equal(floorVersion('0.1.305', '0.1.305'), '0.1.306'); // tie → strictly greater
-  assert.equal(floorVersion('0.1.400', '0.1.305'), '0.1.400'); // already ahead → unchanged
-  assert.equal(floorVersion(undefined, '0.1.305'), undefined); // no git → unchanged
-  assert.equal(floorVersion('0.1.284', undefined), '0.1.284'); // no committed ref → unchanged
-  assert.equal(floorVersion('0.1.284', 'garbage'), '0.1.284'); // off-scheme committed → left alone
-});
-
 test('resolveVersion: 0.1.<commit-count> in a git checkout, undefined otherwise', () => {
+  // The local fallback only — the deploy passes the DATA repo's commit count via
+  // --version. `0.1.` floor (not `0.0.`) so it exceeds the old hand-published 0.1.1.
   const v = resolveVersion(); // REPO_ROOT is a git checkout
-  // `0.1.` floor (not `0.0.`) so it exceeds the old hand-published 0.1.1 — see resolveVersion.
   assert.match(v, /^0\.1\.\d+$/);
   // Non-git path (a bare temp dir would fail git) → undefined; use an impossible cwd.
   assert.equal(resolveVersion('/nonexistent-path-for-build-plugin-test'), undefined);

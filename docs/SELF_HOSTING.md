@@ -8,16 +8,16 @@ The operator's one-time setup. When you finish you'll have a **data repo** (your
 
 > **How identity works.** The Worker is its own OAuth 2.1 provider (`@cloudflare/workers-oauth-provider`): members add the connector in Claude.ai, complete an **invite-code** consent page, and get a token whose tenant rides every request. Operator and friends use the same path — no Cloudflare Access, no third-party login, and friends need no GitHub or Kroger Developer account.
 
-> **You don't fork the code repo to *run* it.** Your data repo is your single **deploy control plane** — it holds your config, your one Actions secret, and the Deploy workflow (plus the plugin caller). It holds no recipe content: your recipes/guidance live in an **R2 bucket** the Worker reads directly (see [step 2](#2-the-r2-corpus-bucket--obsidian-authoring)). Those workflows are thin callers of *reusable* workflows in the public code repo (`uses: …@main`), so the public repo holds **no secrets** and you take updates by pinning a ref — no fork to maintain. (Member management is the Cloudflare Access-gated `/admin` panel, not a workflow — so no invite code is ever printed into a CI log.)
+> **You don't fork the code repo to *run* it.** Your data repo is your single **deploy control plane** *and* your plugin marketplace — it holds your config, your one Actions secret, the Deploy workflow, and the published plugin bundle. It holds no recipe content: your recipes/guidance live in an **R2 bucket** the Worker reads directly (see [step 2](#2-the-r2-corpus-bucket--obsidian-authoring)). The workflows are thin callers of *reusable* workflows in the public code repo (`uses: …@main`), so the public repo holds **no secrets** and you take updates by pinning a ref — no fork to maintain. (Member management is the Cloudflare Access-gated `/admin` panel, not a workflow — so no invite code is ever printed into a CI log.)
 >
-> **Plugin distribution is the one wrinkle.** The plugin in this repo's marketplace bakes in a connector URL — *mine*, which isn't open for signups (claude.ai doesn't honor a configurable plugin variable, so the URL is fixed at build time). To get **your** Worker connected you pick one of three options in [step 7](#7-get-the-agent-into-claudeai--kroger-consent): **(1, recommended)** a CI Action mints you a baked bundle you upload — **no fork**; **(2)** fork to publish your own auto-updating marketplace; or **(3)** paste the instructions into a Claude project. Only option 2 needs a fork.
+> **Plugin distribution: your data repo *is* the marketplace.** Your deploy builds the plugin with **your** connector URL baked in and commits it to your data repo; because that repo is **public**, it's a Claude plugin marketplace your members add directly (`/plugin marketplace add <you>/groceries-agent-data`) and auto-update from — **no fork, no file to forward, and no GitHub account for members** (adding a public marketplace needs no auth). See [step 7](#7-get-the-agent-into-claudeai--kroger-consent).
 
 ## Mental model
 
 | Piece | What it is | Yours? |
 |---|---|---|
-| **Code repo** (`caseyWebb/groceries-agent`) | the Worker source + build tooling + reusable workflows | **no fork to run it** — your data repo references it (`@main` or a pinned tag). A fork is needed *only* for plugin Option 2 (your own auto-updating marketplace); Options 1 & 3 need no fork (step 7) |
-| **Data repo** (`<you>/groceries-agent-data`, private) | **your `wrangler.jsonc` + the caller workflows + the one Actions secret** — the deploy control plane only (per-tenant data lives in D1; recipe content lives in R2, not here) | you create it from the template; it is your control plane |
+| **Code repo** (`caseyWebb/groceries-agent`) | the Worker source + build tooling + reusable workflows | **no fork** — your data repo references it (`@main` or a pinned tag); you take updates by bumping that ref |
+| **Data repo** (`<you>/groceries-agent-data`, **public**) | **your `wrangler.jsonc` + the caller workflows + the one (encrypted) Actions secret + the published plugin bundle** — your deploy control plane *and* your plugin marketplace (per-tenant data lives in D1; recipe content lives in R2, not here) | you create it from the template, **public**; it is your control plane and marketplace |
 | **R2 corpus bucket** (`grocery-corpus` on Cloudflare) | `recipes/*.md` + `guidance/**/*.md` — the authored corpus the Worker reads | auto-provisioned by the deploy; you author into it via Obsidian (step 2) |
 | **Worker** (`grocery-mcp` on Cloudflare) | the MCP server Claude.ai talks to | you deploy it from your data repo's Actions |
 | **Cookbook** (`<your-domain>/cookbook`, served by the Worker) | read-only recipe site, built from the D1 index + R2 bodies | always on; no separate hosting |
@@ -33,16 +33,15 @@ The Worker reads its corpus straight from the bound **R2 bucket** — no GitHub 
 
 ## 1. Create the data repo
 
-On the [`groceries-agent-data-template`](https://github.com/caseyWebb/groceries-agent-data-template) → **Use this template** → create `<you>/groceries-agent-data`, **Private**. This is your **deploy control plane** — config + workflows only; your recipes live in the R2 corpus bucket (step 2), and the Worker's scheduled reconcile projects the D1 `recipes` index from R2 (no CI recipe build).
+On the [`groceries-agent-data-template`](https://github.com/caseyWebb/groceries-agent-data-template) → **Use this template** → create `<you>/groceries-agent-data`, **Public**. This is your **deploy control plane** *and* your plugin marketplace — config + workflow + the published bundle; your recipes live in the R2 corpus bucket (step 2), and the Worker's scheduled reconcile projects the D1 `recipes` index from R2 (no CI recipe build). Public is safe: nothing here is secret (see [Secrets live in one place](#known-unknowns--caveats)) — and public is what lets members add your marketplace without a GitHub account.
 
-This repo is your **control plane**. From the template it carries these thin `.github/workflows/` — each a tiny caller (`uses: caseyWebb/groceries-agent/...@main`) of a *reusable* workflow in the public code repo, so the logic and the no-secrets posture live upstream while your data repo holds the config and the one Actions secret. (Member management is the Cloudflare Access-gated `/admin` panel, not a workflow.)
+This repo is your **control plane**. From the template it carries one thin `.github/workflows/` caller (`uses: caseyWebb/groceries-agent/...@main`) of a *reusable* workflow in the public code repo, so the logic and the no-secrets posture live upstream while your data repo holds the config and the one Actions secret. (Member management is the Cloudflare Access-gated `/admin` panel, not a workflow.)
 
 | Caller (in your data repo) | Calls (code repo) | Does |
 |---|---|---|
-| `deploy.yml` | `data-deploy.yml` | ensure the `grocery-corpus` R2 bucket exists, then deploy the Worker (overlays your `wrangler.jsonc`) |
-| `build-plugin.yml` | `data-build-plugin.yml` | build your plugin bundle (your Worker URL baked in) as a downloadable artifact to upload to claude.ai |
+| `deploy.yml` | `data-deploy.yml` | ensure the `grocery-corpus` R2 bucket exists, deploy the Worker (overlays your `wrangler.jsonc`), then build the plugin with your URL baked in and publish it to your marketplace |
 
-A live, versioned copy of these callers (and the whole data-repo layout) lives in the [`groceries-agent-data-template`](https://github.com/caseyWebb/groceries-agent-data-template) repo — see its `.github/workflows/` for the canonical thin callers.
+A live, versioned copy of this caller (and the whole data-repo layout) lives in the [`groceries-agent-data-template`](https://github.com/caseyWebb/groceries-agent-data-template) repo — see its `.github/workflows/` for the canonical thin caller.
 
 ## 2. The R2 corpus bucket + Obsidian authoring
 
@@ -81,11 +80,11 @@ At [developer.kroger.com](https://developer.kroger.com), register one **public-t
 
 - Secret **`CLOUDFLARE_API_TOKEN`** — a Cloudflare token with Workers + KV + **D1 edit**, used by the Deploy workflow. (D1 edit is needed to auto-provision your database and apply its schema migrations on deploy; an under-scoped token surfaces as a clear failure on the *Apply D1 schema migrations* step.) It's an **encrypted** Actions secret — a repo-visibility flip doesn't expose it — and with member management in the `/admin` panel, it's the only sensitive thing the data repo holds.
 - Secrets **`KROGER_CLIENT_ID`** + **`KROGER_CLIENT_SECRET`** *(optional as Actions secrets)* — when present, the deploy sets them as your Worker's secrets; you can instead add them directly as Worker secrets in the Cloudflare dashboard (step 5). Either way the Worker needs them for Kroger search/prices.
-- Variable **`WORKER_NAME`** (or **`WORKER_HOST`**) *(optional)* — so Onboard can show the connector URL in its summary. With `WORKER_NAME` set, Onboard auto-resolves the host via Cloudflare's custom-domain API; `WORKER_HOST` pins it explicitly.
+- Variable **`WORKER_HOST`** (e.g. `grocery-mcp.<you>.workers.dev`) — your connector host. The deploy passes it through to **bake `https://<WORKER_HOST>/mcp` into your published plugin bundle** and to stamp the README health badge. **Set this before deploying** — without it the deploy skips the plugin publish (you'd have no marketplace) and the badge.
 
 ## 5. Deploy
 
-Run the **Deploy Worker** Action (your data repo → Actions → Run) — it ensures the `grocery-corpus` R2 bucket exists, then builds, tests, and deploys your Worker, billed to your account. There's no key to paste afterward (there is no GitHub App; the Worker reads the corpus via its R2 binding).
+Run the **Deploy Worker** Action (your data repo → Actions → Run) — it ensures the `grocery-corpus` R2 bucket exists, then builds, tests, and deploys your Worker, and finally **builds your plugin (your `WORKER_HOST` baked in) and publishes it to your data-repo marketplace** — all billed to your account. There's no key to paste afterward (there is no GitHub App; the Worker reads the corpus via its R2 binding). The publish is the deploy's **tail** — it runs only after the Worker is live, so your skills never get ahead of the tools the Worker serves.
 
 *(Optional)* If you register a **separate** Kroger app for cart writes, add `KROGER_OAUTH_CLIENT_ID` + `KROGER_OAUTH_CLIENT_SECRET` as Worker secrets in the Cloudflare dashboard → your Worker → **Settings → Variables and Secrets → Add (encrypted)**. Left unset, cart writes reuse `KROGER_CLIENT_ID/SECRET` (step 3).
 
@@ -128,19 +127,17 @@ The panel also has a **Dev** area with an **MCP tool console** (`/admin/dev/tool
 
 ## 7. Get the agent into Claude.ai + Kroger consent
 
-> **The shipped plugin points at *my* Worker — not yours.** The plugin in this repo's marketplace (`caseyWebb/groceries-agent`) bakes **my** connector URL into its `.mcp.json`, because claude.ai won't override a plugin's connector URL at install time (no `userConfig` support). My Worker only admits tenants I've onboarded — **it isn't open for signups** — so installing my plugin as-is points you at a server you can't use. The **skills** are URL-free and identical for everyone; only *how you supply your own connector* differs. Three ways, easiest first:
+Your **deploy already published your marketplace** (step 5): it built the plugin with *your* connector URL baked into `.mcp.json` and committed it to your **public** data repo. The skills are URL-free and identical for everyone; the bundle just carries your Worker URL. So getting the agent into Claude.ai is one step:
 
-**Option 1 — build your own bundle via CI (no fork). Recommended.** Your data repo's **Build plugin** Action mints a plugin bundle with *your* Worker URL baked in, as a downloadable file you upload to claude.ai. One bundle — connector + skills together — no fork, no marketplace.
+**Add your marketplace and install.**
 
-1. Your data repo → **Actions** → **Build plugin** → **Run** (it defaults `mcp_url` from your `WORKER_HOST` var; or type it in). Download the **grocery-agent-plugin** artifact — it's a `.zip`.
-2. claude.ai → **Customize → upload a custom plugin file** → pick that `.zip`. Open a **fresh chat** afterward (uploaded skills sync to the sandbox only on a new chat).
-3. On a later update, re-run **Build plugin** and re-upload — see *Taking upstream updates* for the Worker-first ordering. No GitHub account is needed to *use* the bundle, so friends just need the file.
+1. In claude.ai: `/plugin marketplace add <you>/groceries-agent-data`, then `/plugin install grocery-agent`. (No GitHub account needed — adding a public marketplace requires no auth.)
+2. **Connect:** the first time the connector is added, claude.ai discovers its OAuth endpoints and sends you to `/authorize` — **enter your invite code**; the token then carries your tenant on every request.
+3. **Updates pull automatically.** When you redeploy (which republishes the bundle with a higher version), claude.ai re-pulls the new skills on `/plugin marketplace update` — no re-copy, no re-upload.
 
-**Option 2 — fork + your own marketplace (only if you want pull-based auto-update).** Fork the code repo to `<you>/groceries-agent`, rebuild with your URL (`aubr build:plugin --mcp-url https://<worker-host>/mcp` — the script already targets `plugin/grocery-agent`, and the build refuses to write the placeholder URL into that committed bundle, so passing `--mcp-url` is required), push, and install from your marketplace (`/plugin marketplace add <you>/groceries-agent`). This is the **only** path with `/plugin marketplace update` auto-pull; it costs a fork to maintain and a GitHub account to sync. If you also changed the reusable CI workflows, repoint your data repo's callers at your fork (`uses: <you>/groceries-agent/...@main`).
+> **Fallbacks (rarely needed).** A member who'd rather not add a marketplace can **upload a file** — download the `plugin/grocery-agent/` bundle from your public repo and use claude.ai → *Customize → upload a custom plugin file* (open a fresh chat after). Or **paste [`AGENT_INSTRUCTIONS.md`](../AGENT_INSTRUCTIONS.md)** into a Claude project's custom instructions and add your Worker (`https://<worker-host>/mcp`) as that project's connector — scoped to that one project, skills as one blob rather than the split, self-triggering set.
 
-**Option 3 — paste into a Claude project (no plugin).** Paste [`AGENT_INSTRUCTIONS.md`](../AGENT_INSTRUCTIONS.md) into a Claude project's custom instructions and add your Worker (`https://<worker-host>/mcp`) as that project's connector. No marketplace, no upload — but it's scoped to that one project and the skills arrive as one blob rather than the split, self-triggering set.
-
-**Then connect (every option):** the first time your connector is added, claude.ai discovers its OAuth endpoints and sends you to `/authorize` — **enter your invite code**; the token then carries your tenant on every request. Then do **Kroger consent** (one-time): visit `https://<worker-host>/oauth/init?tenant=<you>` and approve at Kroger (re-run if a cart write ever returns `reauth_required`).
+**Then do Kroger consent** (one-time): visit `https://<worker-host>/oauth/init?tenant=<you>` and approve at Kroger (re-run if a cart write ever returns `reauth_required`).
 
 ## 8. Newsletter discovery via email (optional)
 
@@ -159,22 +156,19 @@ The cookbook is served by the **Worker itself** at `<your-domain>/cookbook` — 
 
 ## Taking upstream updates
 
-There's no fork to sync (unless you took Option 2). Your data repo's caller workflows reference the code repo at `@main` (latest) or a pinned tag/sha. To control *when* you take updates, pin `code_ref` in your `deploy.yml` (and the `@…` ref in the other callers) to a release tag, and bump it when you're ready.
+There's no fork to sync. Your data repo's `deploy.yml` references the code repo at `@main` (latest) or a pinned tag/sha. To control *when* you take updates, pin `code_ref` in your `deploy.yml` to a release tag and bump it when you're ready.
 
-**Worker and skills are one contract — advance the Worker first.** The plugin's skills call MCP tools *by name*, and those tools live in the Worker. If skills move ahead of a Worker you haven't redeployed, a skill can call a tool that isn't live yet. So on any update that touches tools:
+**Worker and skills are one contract — and the deploy advances them in the right order for you.** The plugin's skills call MCP tools *by name*, and those tools live in the Worker; if skills moved ahead of a Worker you hadn't redeployed, a skill could call a tool that isn't live yet. The deploy makes this safe **structurally**: a single **Re-run Deploy Worker** deploys the Worker first and *then* builds and publishes the matching plugin to your marketplace — never the reverse. So taking an update is one action, and members auto-pull the new skills once it finishes.
 
-1. **Re-run Deploy Worker** (deploys from your pinned `code_ref` / `@main`) so the new tools are live.
-2. **Then rebuild and redistribute the plugin** so the matching skills ship — *Option 1:* re-run **Build plugin**, download, re-upload; *Option 2:* rebuild + push to your marketplace. Never the reverse.
-
-This coupling is also why self-hosters don't ride *my* marketplace for skills: my pushes would advance their skills independently of their deploys — the exact skew above, out of their hands.
+This Worker-first publish is also why self-hosters don't ride *my* marketplace for skills: my pushes would advance their skills independently of their own deploys — the exact skew the ordering prevents, out of their hands.
 
 ## Onboard a friend
 
 A friend needs only a Claude.ai account and a Kroger account — no GitHub, no Kroger Developer app, and nothing local on your end.
 
 1. Open your **admin panel** (`https://<your-worker-host>/admin`) and onboard them: enter their `username`. It allowlists them and shows their invite code **once** (copy it now — it's never logged). Per-tenant state (preferences, pantry, etc.) is written to D1 by the agent tools as they use the agent.
-2. **Hand them the plugin + invite code, matching whichever option you took in [step 7](#7-get-the-agent-into-claudeai--kroger-consent).** *Option 1 (recommended):* send them the `.zip` from your latest **Build plugin** run + their invite code — they upload the file to claude.ai, no GitHub account needed. *Option 2:* send them your marketplace + the invite code (the bundle carries your URL). *Option 3:* send them your **connector URL** (`https://<worker-host>/mcp`) + the invite code + [`AGENT_INSTRUCTIONS.md`](../AGENT_INSTRUCTIONS.md) for a project.
-3. They install (upload the `.zip` / add your marketplace / set up the project), **enter the code at `/authorize`**, then run their Kroger consent (`/oauth/init?tenant=<username>`). On a later update you ship, you re-send the new `.zip` (Option 1) or they `/plugin marketplace update` (Option 2, if they have a GitHub account).
+2. **Send them your marketplace name + their invite code:** `/plugin marketplace add <you>/groceries-agent-data`, then `/plugin install grocery-agent`. The bundle carries your connector URL; adding a public marketplace needs no GitHub account.
+3. They **enter the code at `/authorize`**, then run their Kroger consent (`/oauth/init?tenant=<username>`). On a later update you ship, they auto-pull it (`/plugin marketplace update`) — nothing to re-send. (Prefer not to use a marketplace? The [step 7](#7-get-the-agent-into-claudeai--kroger-consent) upload/paste fallbacks work for them too.)
 
 They share the recipe corpus (with their own favorites/rejects/notes) and have their own pantry, preferences, and Kroger cart — fully isolated from yours. To remove someone, open `/admin` and **Revoke** them — it removes their allowlist entry + invite(s), purges their per-tenant D1 data, and deletes their Kroger token, so their issued token stops resolving. **Rotate** mints a fresh invite without touching their data (use it for any code that may have appeared in an Actions log before making the data repo public).
 
@@ -183,4 +177,4 @@ They share the recipe corpus (with their own favorites/rejects/notes) and have t
 - **Kroger Acceptable-Use** (unverified): the public tier's clause on serving non-owner users wasn't confirmable (JS-rendered docs). Low blast radius at friend-group scale; skim the policy (or email Kroger dev support) before inviting non-owner friends.
 - **Kroger cart cap**: 5,000 cart calls/day **per app**, shared across all members — far above friend-group need.
 - **Corpus has no version history.** R2 is a flat object store, not git — there's no recipe commit history (the operator confirmed history isn't load-bearing here). Pin the `grocery-corpus` bucket name so a redeploy never orphans it (step 5), and keep a local `rclone` mirror if you want your own backups.
-- **Secrets live in one place.** There's no GitHub App private key to hold — your `CLOUDFLARE_API_TOKEN` is the only Actions secret, and it stays **encrypted** even if the repo is made public — a visibility flip doesn't expose it (keep workflows `workflow_dispatch`/push-triggered, not fork-PR-triggered). Per-author **R2 sync tokens** (step 2) are scoped to the corpus bucket and revocable one at a time. Invite codes are minted in the **Cloudflare Access-gated admin panel** (`/admin`) and shown once in that authenticated UI — never written to a git log — so nothing forces the data repo to stay private (the public flip itself is a separate, later step; rotate any code that appeared in a prior Actions run first).
+- **Secrets live in one place — which is why the data repo can be public.** There's no GitHub App private key to hold — your `CLOUDFLARE_API_TOKEN` is the only Actions secret, and it stays **encrypted** when the repo is public (a visibility flip doesn't expose it; keep workflows `workflow_dispatch`/push-triggered, not fork-PR-triggered). Per-author **R2 sync tokens** (step 2) are scoped to the corpus bucket and revocable one at a time. Invite codes are minted in the **Cloudflare Access-gated admin panel** (`/admin`) and shown once in that authenticated UI — never written to a git log. The `wrangler.jsonc` ids (KV/D1) and the `ACCESS_AUD` + team domain are **non-secret identifiers** — security rests on the Cloudflare API token, the Access JWT signature, and your `ACCESS_ALLOWED_EMAILS` allowlist (set it, step 6). **Before flipping to public**, confirm `.wrangler/` is gitignored and not committed (it caches your Cloudflare account id + email), and scan history for any invite code that appeared in a pre-`/admin` Actions run or commit — rotate it in `/admin` if so.
