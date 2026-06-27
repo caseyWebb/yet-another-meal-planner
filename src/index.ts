@@ -18,6 +18,7 @@ import { buildWarmDeps, runWarmJob } from "./flyer-warm.js";
 import { buildEmbedDeps, runEmbedJob } from "./recipe-embeddings.js";
 import { buildProjectionDeps, runProjectionJob } from "./recipe-projection.js";
 import { buildDiscoveryDeps, runDiscoverySweepJob } from "./discovery-sweep.js";
+import { loadDiscoveryConfig } from "./discovery-calibration.js";
 import { createR2CorpusStore } from "./corpus-store.js";
 import { handleHealthRequest, handleHealthSvgRequest, writeJobHealth, notifyFailure } from "./health.js";
 import { handleAdmin } from "./admin.js";
@@ -152,7 +153,9 @@ export default {
     ]);
     const phase2 = await Promise.allSettled([runEmbedJob(env, buildEmbedDeps(env))]);
     // The sweep runs after the index + embeddings are fresh (it dedups + matches against them).
-    const phase3 = await Promise.allSettled([runDiscoverySweepJob(env, buildDiscoveryDeps(env), kv)]);
+    // Load the operator's stored config (sparse override merged over DEFAULT_CONFIG at job start).
+    const sweepConfig = await loadDiscoveryConfig(env);
+    const phase3 = await Promise.allSettled([runDiscoverySweepJob(env, buildDiscoveryDeps(env), kv, sweepConfig)]);
     const failed = [...phase1, ...phase2, ...phase3].find((r) => r.status === "rejected");
     if (failed && failed.status === "rejected") throw failed.reason;
   },

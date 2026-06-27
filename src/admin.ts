@@ -30,6 +30,16 @@ import {
 import { listToolsFor, callToolFor } from "./admin-tools.js";
 import { listBugReports } from "./bug-reports.js";
 import { readDiscoveryLog } from "./discovery-db.js";
+import {
+  loadDiscoveryConfig,
+  saveDiscoveryConfig,
+  analyzeThresholds,
+  buildDryRunDeps,
+  validateDiscoveryConfig,
+  type AnalyzeResult,
+  type DryRunOutcome,
+} from "./discovery-calibration.js";
+import { buildDiscoveryDeps, runDiscoverySweep } from "./discovery-sweep.js";
 import type { KvStore } from "./kroger-user.js";
 
 const TENANT_PREFIX = "tenant:"; // mirrors src/tenant.ts (the allowlist directory)
@@ -313,6 +323,17 @@ async function readJsonBody(request: Request): Promise<Record<string, unknown>> 
   }
 }
 
+/** Extract a DiscoveryConfig patch from an API request body — only present, numeric fields. */
+function parsePatchFromBody(body: Record<string, unknown>): Partial<import("./discovery-sweep.js").DiscoveryConfig> {
+  const patch: Partial<import("./discovery-sweep.js").DiscoveryConfig> = {};
+  if (typeof body.tasteThreshold === "number") patch.tasteThreshold = body.tasteThreshold;
+  if (typeof body.triageThreshold === "number") patch.triageThreshold = body.triageThreshold;
+  if (typeof body.dedupThreshold === "number") patch.dedupThreshold = body.dedupThreshold;
+  if (typeof body.classifyMaxPerTick === "number") patch.classifyMaxPerTick = body.classifyMaxPerTick;
+  if (typeof body.rateCap === "number") patch.rateCap = body.rateCap;
+  return patch;
+}
+
 /**
  * Resolve the operator-chosen "acting as" tenant the SAME way the MCP surface does
  * (allowlist re-check via `resolveTenant`), mapping a missing id to `validation_failed`
@@ -377,6 +398,53 @@ async function routeAdminApi(
   // response stays manageable.
   if (path === "/admin/api/logs/discovery") {
     if (method === "GET") return { entries: await readDiscoveryLog(env, 200) };
+    throw new ToolError("unsupported", `Method ${method} not supported on ${path}`);
+  }
+
+  // Discovery config: the operator-tunable knob store + calibration console.
+  // Operator/cross-tenant (reads all members to set global knobs); never exposed as MCP tools.
+  if (path === "/admin/api/discovery/config") {
+    if (method === "GET") {
+      const config = await loadDiscoveryConfig(env);
+      return { config };
+    }
+    if (method === "PUT") {
+      const body = await readJsonBody(request);
+      const patch = parsePatchFromBody(body);
+      const { confirm } = body;
+      const validation = validateDiscoveryConfig(patch, { confirm: confirm === true });
+      if (validation.error) throw validation.error;
+      await saveDiscoveryConfig(env, patch);
+      const merged = await loadDiscoveryConfig(env);
+      return { config: merged };
+    }
+    throw new ToolError("unsupported", `Method ${method} not supported on ${path}`);
+  }
+
+  if (path === "/admin/api/discovery/analyze") {
+    if (method === "POST") {
+      const body = await readJsonBody(request);
+      const config = await loadDiscoveryConfig(env);
+      const patch = parsePatchFromBody(body);
+      const preview = { ...config, ...Object.fromEntries(Object.entries(patch).filter(([, v]) => v != null)) };
+      const result: AnalyzeResult = await analyzeThresholds(env, preview as typeof config);
+      return result;
+    }
+    throw new ToolError("unsupported", `Method ${method} not supported on ${path}`);
+  }
+
+  if (path === "/admin/api/discovery/dry-run") {
+    if (method === "POST") {
+      const body = await readJsonBody(request);
+      const config = await loadDiscoveryConfig(env);
+      const patch = parsePatchFromBody(body);
+      const previewConfig = { ...config, ...Object.fromEntries(Object.entries(patch).filter(([, v]) => v != null)) };
+      const realDeps = buildDiscoveryDeps(env);
+      const { deps, capturedOutcomes } = buildDryRunDeps(realDeps);
+      await runDiscoverySweep(deps, previewConfig as typeof config);
+      const outcomes: DryRunOutcome[] = capturedOutcomes();
+      return { outcomes };
+    }
     throw new ToolError("unsupported", `Method ${method} not supported on ${path}`);
   }
 

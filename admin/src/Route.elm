@@ -28,6 +28,7 @@ type Route
     | Members
     | Tools (Maybe String)
     | Logs (Maybe LogSource)
+    | Config
     | NotFound
 
 
@@ -69,6 +70,7 @@ parser =
         , Parser.map (Just >> Tools) (s "admin" </> s "dev" </> s "tools" </> string)
         , Parser.map (Logs Nothing) (s "admin" </> s "logs")
         , Parser.map (Just >> Logs) (s "admin" </> s "logs" </> logSource)
+        , Parser.map Config (s "admin" </> s "config")
         ]
 
 
@@ -116,6 +118,9 @@ toString route =
 
         Logs (Just source) ->
             Builder.absolute [ "admin", "logs", logSourceSlug source ] []
+
+        Config ->
+            Builder.absolute [ "admin", "config" ] []
 
         NotFound ->
             Builder.absolute [ "admin" ] []

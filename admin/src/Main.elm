@@ -25,6 +25,7 @@ import Admin.Members as Members
 import Browser
 import Browser.Dom as Dom
 import Browser.Navigation as Nav
+import Config
 import Dev.ToolConsole as ToolConsole
 import Html exposing (Html, a, button, div, h1, nav, section, text)
 import Html.Attributes exposing (class, classList, id)
@@ -88,6 +89,7 @@ type Page
     | MembersPage Members.Model
     | ToolsPage ToolConsole.Model
     | LogsPage Logs.Model
+    | ConfigPage Config.Model
     | NotFoundPage
 
 
@@ -108,6 +110,7 @@ type Msg
     | MembersMsg Members.Msg
     | ToolsMsg ToolConsole.Msg
     | LogsMsg Logs.Msg
+    | ConfigMsg Config.Msg
     | ScrollToSection DevSection
     | NoOp
 
@@ -158,6 +161,13 @@ update msg model =
             in
             ( { model | page = LogsPage subModel2 }, Cmd.map LogsMsg cmd )
 
+        ( ConfigMsg subMsg, ConfigPage subModel ) ->
+            let
+                ( subModel2, cmd ) =
+                    Config.update subMsg subModel
+            in
+            ( { model | page = ConfigPage subModel2 }, Cmd.map ConfigMsg cmd )
+
         -- A sub-message for a page we are no longer on (a late response): drop it.
         ( HealthMsg _, _ ) ->
             ( model, Cmd.none )
@@ -169,6 +179,9 @@ update msg model =
             ( model, Cmd.none )
 
         ( LogsMsg _, _ ) ->
+            ( model, Cmd.none )
+
+        ( ConfigMsg _, _ ) ->
             ( model, Cmd.none )
 
 
@@ -197,6 +210,9 @@ stepTo route model =
             ( { model | route = route }, Cmd.none )
 
         ( Route.Health, HealthPage _ ) ->
+            ( { model | route = route }, Cmd.none )
+
+        ( Route.Config, ConfigPage _ ) ->
             ( { model | route = route }, Cmd.none )
 
         _ ->
@@ -242,6 +258,13 @@ enter route actingAs model =
                     Logs.init (logSourceOr selected)
             in
             ( { model | route = route, page = LogsPage subModel }, Cmd.map LogsMsg cmd )
+
+        Route.Config ->
+            let
+                ( subModel, cmd ) =
+                    Config.init
+            in
+            ( { model | route = route, page = ConfigPage subModel }, Cmd.map ConfigMsg cmd )
 
         Route.NotFound ->
             ( { model | route = route, page = NotFoundPage }, Cmd.none )
@@ -293,6 +316,9 @@ wrapClass route =
         Route.Logs _ ->
             "wrap wrap-wide"
 
+        Route.Config ->
+            "wrap wrap-wide"
+
         _ ->
             "wrap"
 
@@ -304,6 +330,7 @@ viewNav route =
         , navLink "Members" Route.Members (isMembers route)
         , navLink "Dev · Tools" (Route.Tools Nothing) (isDev route)
         , navLink "Logs" (Route.Logs Nothing) (isLogs route)
+        , navLink "Config" Route.Config (isConfig route)
         ]
 
 
@@ -352,6 +379,16 @@ isLogs route =
             False
 
 
+isConfig : Route -> Bool
+isConfig route =
+    case route of
+        Route.Config ->
+            True
+
+        _ ->
+            False
+
+
 viewPage : Model -> Html Msg
 viewPage model =
     case model.page of
@@ -372,6 +409,9 @@ viewPage model =
 
         LogsPage subModel ->
             Html.map LogsMsg (Logs.view subModel)
+
+        ConfigPage subModel ->
+            Html.map ConfigMsg (Config.view subModel)
 
         NotFoundPage ->
             div [ class "card" ] [ text "Not found." ]

@@ -602,6 +602,8 @@ Add RSS/Atom feeds to the **shared** discovery config (the D1 `feeds` table, the
 **Returns:**
 - `{ added }` — `added` is the count of new feeds; D1-backed, no `commit_sha`.
 
+**Sweep calibration is an operator/admin surface, not an MCP tool.** The discovery sweep's pipeline knobs (`tasteThreshold`, `triageThreshold`, `dedupThreshold`, `classifyMaxPerTick`, `rateCap`) are tunable via the **Config** area of the operator admin panel — a D1-backed `discovery_config` sparse override merged over `DEFAULT_CONFIG` at job start. The admin console also exposes a cheap no-AI threshold analysis (`POST /admin/api/discovery/analyze`) and a no-write full-pipeline dry-run (`POST /admin/api/discovery/dry-run`) for calibration before committing changes. These surfaces are deliberate non-tools: they are cross-tenant, Access-gated, and operator-only — not reachable by any per-tenant MCP session. The tool contract is unchanged.
+
 ### `add_draft_ready_to_eat(items)`
 
 Append ready-to-eat items to the **caller's own** personal ready-to-eat catalog. Each item is given a generated `slug` (unique within the catalog) and is **available (suggestible) immediately** — there is no draft/active state or activation step.

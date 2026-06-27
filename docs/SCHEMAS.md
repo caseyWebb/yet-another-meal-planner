@@ -654,6 +654,33 @@ Example rows (`discovery_members`):
 - Every entry needs a valid `address` (contains `@`) — enforced at build + write time.
 - Auth posture: a message is accepted only when authenticated (Cloudflare DKIM/SPF/DMARC) AND from a listed source — `sender ∧ aligned-DKIM` (auto-forward) or `member ∧ aligned-DKIM` (manual forward). Everything else is dropped silently.
 
+## discovery_config (D1 singleton, operator-scoped)
+
+**Operator-scoped** — read by the background discovery sweep at job start; written only by the operator via the admin Config console (not an agent tool). The table holds a **sparse override** of the sweep's compiled-in `DEFAULT_CONFIG`: only the knobs an operator has explicitly tuned are non-null; every null column falls back to the default. This means `DEFAULT_CONFIG` is the safe compile-time baseline and the table records only deliberate operator deltas — an empty or absent row runs with all defaults.
+
+```sql
+-- D1 discovery_config table (migration 0017). SINGLE ROW (id = 1, enforced by CHECK).
+id               INTEGER PRIMARY KEY CHECK (id = 1)  -- singleton guard
+taste_threshold  REAL     -- cosine threshold for per-member taste match (τ); null → DEFAULT_CONFIG.tasteThreshold
+triage_threshold REAL     -- cheaper pre-classify blurb-cosine gate; null → DEFAULT_CONFIG.triageThreshold
+dedup_threshold  REAL     -- semantic duplicate cosine gate (δ); null → DEFAULT_CONFIG.dedupThreshold
+classify_max     INTEGER  -- max classify+fetch calls per sweep tick; null → DEFAULT_CONFIG.classifyMaxPerTick
+rate_cap         INTEGER  -- max recipe imports per tick (corpus-bloat governor); null → DEFAULT_CONFIG.rateCap
+```
+
+Example row (all knobs tuned):
+
+| id | taste_threshold | triage_threshold | dedup_threshold | classify_max | rate_cap |
+|----|----------------|-----------------|----------------|-------------|---------|
+| 1 | 0.60 | 0.40 | 0.85 | 8 | 5 |
+
+**Notes:**
+- Read by `loadDiscoveryConfig(env)` (`src/discovery-calibration.ts`): reads the row, validates each knob against its range (`> 0 && ≤ 1` for real knobs; `> 0 && integer` for caps), and falls back to `DEFAULT_CONFIG` on a null or out-of-range value.
+- Written via `saveDiscoveryConfig(env, patch)` — merges the patch over the existing row and upserts with `INSERT … ON CONFLICT(id) DO UPDATE SET`.
+- Floor guards (`FLOOR_TASTE = 0.2`, `FLOOR_DEDUP = 0.7`) and ceiling guard (`CEILING_RATE_CAP = 100`) require `confirm: true` in the admin PUT to override — the API rejects without it (400 `validation_failed` + `needsConfirm: true`), preventing accidental footgun writes.
+- The calibration console's **analyze** endpoint (`POST /admin/api/discovery/analyze`) computes a cheap no-AI readout of how many corpus pairs fall within δ and how many members clear τ, before any config write — a preview, not a write.
+- The calibration console's **dry-run** endpoint (`POST /admin/api/discovery/dry-run`) runs the full pipeline with `importRecipe`/`recordMatches`/`recordLog` stubbed out, returning what *would* be imported — the sweep's built-in E2E verification.
+
 ## guidance/
 
 **Shared corpus** (R2 bucket `CORPUS`, under `guidance/`). A curated tree of **opinionated, vetted advice** the agent surfaces in flow, organized by **domain** subdirectory (each file is an R2 object keyed `guidance/<domain>/<slug>.md`). Each file is markdown prose keyed by a semantic slug, with an optional one-line `description` frontmatter field (the only structured field; the rest is freeform prose). Files are validated only for existence, not parse-checked as data (like other curated markdown). All domains map by **agent world-knowledge over the semantic slugs** — there is deliberately no manifest or alias table; over-fetching is harmless.
