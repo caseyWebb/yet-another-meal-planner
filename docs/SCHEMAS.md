@@ -57,7 +57,7 @@ time_active: 15                 # minutes, integer
 servings: 4
 difficulty: easy                # easy | medium | hard
 dietary: [gluten-free, dairy-free]    # array; can be empty
-season: [spring, summer]              # array of seasons; can be empty for year-round
+season: [spring, summer]              # canonical vocab (SEASON_VOCAB in src/vocab.js): spring | summer | fall | winter; [] = year-round; read-normalized (case-fold, autumn≡fall), write-gate is a staged follow-on
 veg_forward: false              # boolean
 # --- The next three are per-tenant, not shared-content fields ---
 # last_cooked  → derived from each member's D1 cooking_log table (not stored here or in the index)

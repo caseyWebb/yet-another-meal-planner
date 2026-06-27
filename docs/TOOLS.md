@@ -716,18 +716,19 @@ Aggregate **real** cooking history from the D1 `cooking_log` table over a period
 **Returns:**
 ```
 {
-  period, window: { from, to, days },
+  period, window: { from, to, days },                  // period scopes the next five fields only
   recipes_cooked:   [{ recipe, count, dates }],   // distinct recipes, with per-cook dates
   protein_mix:      { <protein>: count },          // counts EVERY cook event; non-recipe entries via inline dims; missing → "unknown"
   cuisine_mix:      { <cuisine>: count },
   cadence:          { cooks, weeks, cooks_per_week },   // counts recipe + ad_hoc only (ready_to_eat is not cooking)
   cook_vs_convenience: { cooked, convenience },         // cooked = recipe + ad_hoc; convenience = ready_to_eat
   ready_to_eat_favorites: [{ name, count }],            // frequency-ranked; feeds menu-flow restock suggestions
-  underused:        [{ slug, title, last_cooked }]      // active recipes not cooked within the window
+  underused:        [{ slug, title, last_cooked, why, cook_count }],  // loved & quiet & in-season; ≤15, stalest first
+  underused_count:  <number>                            // total qualifying before the 15-item cap
 }
 ```
 
-**Notes:** `last_cooked` is derived (see `log_cooked`) — `MAX(date)` over the caller's `type=recipe` rows — so `underused` reflects real cook events. Eating out is never logged; leftovers of an already-logged cook are not re-logged.
+**Notes:** `last_cooked` is derived (see `log_cooked`) — `MAX(date)` over the caller's `type=recipe` rows. **`underused` is independent of `period`**: it surfaces **loved** recipes — `favorite === true` (declared) **or** cooked **≥3× in the trailing 12 months** (revealed) — that are **stale** (`last_cooked` null, or older than a **fixed 30 days**) and **in season** now (the recipe's `season` is `[]`/year-round or includes the current Northern-hemisphere season; matched case-insensitively with `autumn`≡`fall`). Rejected recipes are excluded. `why` is `"favorite"` or `"revealed"`; `cook_count` is the all-time cook count (for the revival nudge). The list is sorted never-cooked-first then oldest `last_cooked` and capped at 15 — `underused_count` reports how many qualified. Eating out is never logged; leftovers of an already-logged cook are not re-logged.
 
 ### `log_cooked(entry)`
 

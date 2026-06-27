@@ -4,4 +4,5 @@
 
 export const PROTEIN_VOCAB: readonly string[];
 export const CUISINE_VOCAB: readonly string[];
+export const SEASON_VOCAB: readonly string[];
 export const EQUIPMENT_VOCAB: readonly string[];

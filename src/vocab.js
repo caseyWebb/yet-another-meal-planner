@@ -52,6 +52,13 @@ export const CUISINE_VOCAB = Object.freeze([
   "vietnamese",
 ]);
 
+// The four meteorological seasons. A recipe's `season` array draws from this
+// vocabulary (or is `[]` for year-round). Consumers that match a recipe's
+// `season` against a derived current season normalize first (case-fold +
+// `autumn` → `fall`), so legacy free-form values still match — see
+// normalizeSeason in src/retrospective.ts.
+export const SEASON_VOCAB = Object.freeze(["spring", "summer", "fall", "winter"]);
+
 // Equipment a dish is genuinely IMPOSSIBLE without — the "no recipe-preserving
 // workaround exists" test, deliberately small (it doubles as the onboarding
 // checklist). Drives the makeability gate.
