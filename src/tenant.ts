@@ -67,8 +67,8 @@ const INVITE_PREFIX = "invite:";
  * that form and apply it at EVERY boundary that derives a key from the id — the
  * directory key (`tenant:<id>`), the invite mapping target, the grant prop, and the
  * Kroger refresh-token key — so a casing mismatch can't silently split one member's
- * state across two keys. Mint writes the lowercase form too (data-onboard.yml), so
- * the KV directory key and the derived keys always agree.
+ * state across two keys. Mint writes the lowercase form too (the admin onboard in
+ * `src/admin.ts`), so the KV directory key and the derived keys always agree.
  */
 export function normalizeTenantId(tenantId: string): string {
   return tenantId.trim().toLowerCase();

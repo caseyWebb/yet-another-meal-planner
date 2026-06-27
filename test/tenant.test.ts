@@ -65,7 +65,7 @@ describe("resolveTenant (from a provider-validated tenantId)", () => {
   it("resolves a mixed-case tenantId to the canonical lowercase id + allowlist entry", async () => {
     // The bug: a member granted "Casey" but whose allowlist key is "casey". A
     // case-sensitive resolve missed the entry (empty) — silent data loss.
-    // The allowlist key is the canonical lowercase form (as data-onboard.yml mints).
+    // The allowlist key is the canonical lowercase form (as the admin onboard mints).
     const dir = store({ casey: { id: "casey" } });
     for (const given of ["Casey", "CASEY", "casey", "  Casey  "]) {
       const t = (await resolveTenant(env, given, dir)) as Tenant;

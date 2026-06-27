@@ -8,7 +8,7 @@ The operator's one-time setup. When you finish you'll have a private **data repo
 
 > **How identity works.** The Worker is its own OAuth 2.1 provider (`@cloudflare/workers-oauth-provider`): members add the connector in Claude.ai, complete an **invite-code** consent page, and get a token whose tenant rides every request. Operator and friends use the same path — no Cloudflare Access, no third-party login, and friends need no GitHub or Kroger Developer account.
 
-> **You don't fork the code repo to *run* it.** Your **private data repo is your single control plane** — it holds your config, your one Actions secret, and the Deploy / Onboard / Revoke workflows. Those are thin callers of *reusable* workflows in the public code repo (`uses: …@main`), so the public repo holds **no secrets** and you take updates by pinning a ref — no fork to maintain. This is also what keeps invite codes private: onboarding runs in *your* private repo, so the code it prints is never in a public log.
+> **You don't fork the code repo to *run* it.** Your data repo is your single control plane — it holds your config, your one Actions secret, and the Deploy workflow (plus the build/site/plugin callers). Those are thin callers of *reusable* workflows in the public code repo (`uses: …@main`), so the public repo holds **no secrets** and you take updates by pinning a ref — no fork to maintain. (Member management is no longer a workflow — it's the Cloudflare Access-gated `/admin` panel — so no invite code is ever printed into a CI log.)
 >
 > **Plugin distribution is the one wrinkle.** The plugin in this repo's marketplace bakes in a connector URL — *mine*, which isn't open for signups (claude.ai doesn't honor a configurable plugin variable, so the URL is fixed at build time). To get **your** Worker connected you pick one of three options in [step 7](#7-get-the-agent-into-claudeai--kroger-consent): **(1, recommended)** a CI Action mints you a baked bundle you upload — **no fork**; **(2)** fork to publish your own auto-updating marketplace; or **(3)** paste the instructions into a Claude project. Only option 2 needs a fork.
 
@@ -34,13 +34,11 @@ A single **GitHub App** (on your account, scoped to the data repo) gives the Wor
 
 On the [`groceries-agent-data-template`](https://github.com/caseyWebb/groceries-agent-data-template) → **Use this template** → create `<you>/groceries-agent-data`, **Private**. Add your recipes under `recipes/`. The template's CI projects the D1 `recipes` table from `recipes/*.md` on every recipe push (and regenerates `_indexes/` for the optional static site).
 
-This repo is your **control plane**. From the template it carries these thin `.github/workflows/` — each a tiny caller (`uses: caseyWebb/groceries-agent/...@main`) of a *reusable* workflow in the public code repo, so the logic and the no-secrets posture live upstream while your private repo holds the config and the one Actions secret. Running them here (not in a fork of the public repo) is what keeps invite codes out of public logs.
+This repo is your **control plane**. From the template it carries these thin `.github/workflows/` — each a tiny caller (`uses: caseyWebb/groceries-agent/...@main`) of a *reusable* workflow in the public code repo, so the logic and the no-secrets posture live upstream while your data repo holds the config and the one Actions secret. (Member management is no longer a workflow — it's the Cloudflare Access-gated `/admin` panel.)
 
 | Caller (in your data repo) | Calls (code repo) | Does |
 |---|---|---|
 | `deploy.yml` | `data-deploy.yml` | deploy the Worker (overlays your `wrangler.jsonc`) |
-| `onboard.yml` | `data-onboard.yml` | mint a member's invite code + allowlist entry |
-| `revoke.yml` | `data-revoke.yml` | remove a member's allowlist entry + invite code |
 | `build-indexes.yml` | `data-build-indexes.yml` | project D1 `recipes` table from `recipes/`; rebuild `_indexes/` for the static site |
 | `build-site.yml` | `data-build-site.yml` | build + deploy the optional cookbook site |
 | `build-plugin.yml` | `data-build-plugin.yml` | build your plugin bundle (your Worker URL baked in) as a downloadable artifact to upload to claude.ai |
@@ -90,7 +88,7 @@ That's the only value you set; the template's defaults handle everything else. Y
 
 **b. Add your secrets** (data repo → Settings → Secrets and variables → Actions):
 
-- Secret **`CLOUDFLARE_API_TOKEN`** — a Cloudflare token with Workers + KV + **D1 edit**, used by Deploy / Onboard / Revoke. (D1 edit is needed to auto-provision your database and apply its schema migrations on deploy; an under-scoped token surfaces as a clear failure on the *Apply D1 schema migrations* step.) **This is why the data repo is private** — it holds your credentials and the invite codes onboarding prints.
+- Secret **`CLOUDFLARE_API_TOKEN`** — a Cloudflare token with Workers + KV + **D1 edit**, used by the Deploy workflow. (D1 edit is needed to auto-provision your database and apply its schema migrations on deploy; an under-scoped token surfaces as a clear failure on the *Apply D1 schema migrations* step.) It's an **encrypted** Actions secret — a repo-visibility flip doesn't expose it — and now that member management has moved to the `/admin` panel, it's the only sensitive thing the data repo holds.
 - Secrets **`KROGER_CLIENT_ID`** + **`KROGER_CLIENT_SECRET`** *(optional as Actions secrets)* — when present, the deploy sets them as your Worker's secrets; you can instead add them directly as Worker secrets in the Cloudflare dashboard (like the App key in step 5). Either way the Worker needs them for Kroger search/prices.
 - Variable **`WORKER_NAME`** (or **`WORKER_HOST`**) *(optional)* — so Onboard can show the connector URL in its summary. With `WORKER_NAME` set, Onboard auto-resolves the host via Cloudflare's custom-domain API; `WORKER_HOST` pins it explicitly.
 
