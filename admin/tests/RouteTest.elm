@@ -36,10 +36,12 @@ suite : Test
 suite =
     describe "Route"
         [ describe "fromUrl"
-            [ test "/admin → Members" <|
-                \_ -> parse "/admin" |> Expect.equal Members
-            , test "/admin/ (trailing slash) → Members" <|
-                \_ -> parse "/admin/" |> Expect.equal Members
+            [ test "/admin → Health (home)" <|
+                \_ -> parse "/admin" |> Expect.equal Health
+            , test "/admin/ (trailing slash) → Health" <|
+                \_ -> parse "/admin/" |> Expect.equal Health
+            , test "/ (root) → Health" <|
+                \_ -> parse "/" |> Expect.equal Health
             , test "/admin/members → Members" <|
                 \_ -> parse "/admin/members" |> Expect.equal Members
             , test "/admin/dev/tools → Tools Nothing" <|
@@ -52,7 +54,9 @@ suite =
                 \_ -> parse "/admin/nope" |> Expect.equal NotFound
             ]
         , describe "round-trip (toString >> fromUrl == identity)"
-            [ test "Members" <|
+            [ test "Health" <|
+                \_ -> roundTrip Health |> Expect.equal Health
+            , test "Members" <|
                 \_ -> roundTrip Members |> Expect.equal Members
             , test "Tools Nothing" <|
                 \_ -> roundTrip (Tools Nothing) |> Expect.equal (Tools Nothing)
