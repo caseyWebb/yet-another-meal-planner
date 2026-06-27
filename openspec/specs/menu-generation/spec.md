@@ -6,12 +6,12 @@ Defines the agent-side orchestration of a menu request end-to-end: the parallel 
 ## Requirements
 ### Requirement: Menu-request context pre-pass
 
-On a menu request, the agent SHALL gather all choice-independent context in a single parallel batch **before** selecting recipes, but SHALL NOT load the whole corpus. The batch SHALL always include: `read_pantry()`, `read_user_profile()`, `retrospective("month")`, `fetch_rss_discoveries()`, `read_discovery_inbox()`, and `get_weather_forecast()` unconditionally (not gated on fulfillment mode). It SHALL NOT include a whole-corpus `search_recipes` membership load — recipe selection is done by **bounded retrieval** (vibe-bearing `search_recipes` specs for open-ended weeks; a vibe-less `query` spec for a named dish), issued after the context is in hand, not by dumping every recipe into context. `read_user_profile()` returns preferences, taste, diet_principles, kitchen, staples, stockup, and ready_to_eat in one call — there is no need for separate `read_preferences`, `read_taste`, `read_diet_principles`, or `read_staples` calls. When the user's fulfillment mode is Kroger (`preferences[stores].primary == "kroger"`), the batch SHALL additionally include `kroger_flyer()`; for a non-Kroger store it SHALL be omitted and sale signals SHALL NOT influence recipe selection for that session. `ready_to_eat_available` is NOT called during the meal-plan flow — it is a buy-time tool used by the flush skills. `kroger_prices` is NOT issued in this batch; it is used only as a targeted deal-check for a handful of comparable items when verifying a specific sale claim during selection, and SHALL NOT be a full pre-pass over the proposed ingredient set — that costing belongs to the place-grocery-order flow. The recipe candidate space is the caller's **available corpus** — the whole shared corpus **minus the caller's rejects**, with no per-member "active set" and no `draft` recipes — reached through `search_recipes` rather than loaded wholesale. The **raw pantry** SHALL be loaded as a *selection* input — before recipes are chosen — so that what the member already has informs which recipes are proposed (and so the agent can spot inventory stand-ins), and so its at-risk perishables can seed `boost_ingredients` on the use-it-up search. There SHALL be no `verify_pantry_*` call: pantry matching, freshness, and inventory substitutions are the agent reasoning over the loaded pantry. The fulfillment mode SHALL be determined from the loaded preferences before the batch fires; if genuinely unknown, that is the one thing to confirm first. The weather tool is a best-effort read: when it returns any structured error, the agent SHALL continue with season-based reasoning and SHALL NOT surface the failure to the user. An empty `read_user_profile().staples` array means no staples-driven prompting for that session — this is not a failure.
+On a menu request, the agent SHALL gather all choice-independent context in a single parallel batch **before** selecting recipes, but SHALL NOT load the whole corpus. The batch SHALL always include: `read_pantry()`, `read_user_profile()`, `retrospective("month")`, `list_new_for_me()` (the background sweep's discoveries for the caller — replacing the retired `fetch_rss_discoveries`/`read_discovery_inbox` pull), and `get_weather_forecast()` unconditionally (not gated on fulfillment mode). It SHALL NOT include a whole-corpus `search_recipes` membership load — recipe selection is done by **bounded retrieval** (vibe-bearing `search_recipes` specs for open-ended weeks; a vibe-less `query` spec for a named dish), issued after the context is in hand, not by dumping every recipe into context. `read_user_profile()` returns preferences, taste, diet_principles, kitchen, staples, stockup, and ready_to_eat in one call — there is no need for separate `read_preferences`, `read_taste`, `read_diet_principles`, or `read_staples` calls. When the user's fulfillment mode is Kroger (`preferences[stores].primary == "kroger"`), the batch SHALL additionally include `kroger_flyer()`; for a non-Kroger store it SHALL be omitted and sale signals SHALL NOT influence recipe selection for that session. `ready_to_eat_available` is NOT called during the meal-plan flow — it is a buy-time tool used by the flush skills. `kroger_prices` is NOT issued in this batch; it is used only as a targeted deal-check for a handful of comparable items when verifying a specific sale claim during selection, and SHALL NOT be a full pre-pass over the proposed ingredient set — that costing belongs to the place-grocery-order flow. The recipe candidate space is the caller's **available corpus** — the whole shared corpus **minus the caller's rejects**, with no per-member "active set" and no `draft` recipes — reached through `search_recipes` rather than loaded wholesale. The **raw pantry** SHALL be loaded as a *selection* input — before recipes are chosen — so that what the member already has informs which recipes are proposed (and so the agent can spot inventory stand-ins), and so its at-risk perishables can seed `boost_ingredients` on the use-it-up search. There SHALL be no `verify_pantry_*` call: pantry matching, freshness, and inventory substitutions are the agent reasoning over the loaded pantry. The fulfillment mode SHALL be determined from the loaded preferences before the batch fires; if genuinely unknown, that is the one thing to confirm first. The weather tool is a best-effort read: when it returns any structured error, the agent SHALL continue with season-based reasoning and SHALL NOT surface the failure to the user. An empty `read_user_profile().staples` array means no staples-driven prompting for that session — this is not a failure.
 
 #### Scenario: Open-ended request gathers context but does not dump the corpus
 
 - **WHEN** the user says "make me a menu" and their fulfillment mode is Kroger
-- **THEN** the agent calls `read_pantry`, `read_user_profile`, `retrospective`, `fetch_rss_discoveries`, `read_discovery_inbox`, `kroger_flyer`, and `get_weather_forecast()` in a single batch before proposing; it does NOT issue a whole-corpus `search_recipes` membership load, `ready_to_eat_available`, a full-cart `kroger_prices`, or separate `read_preferences`/`read_taste`/`read_diet_principles`/`read_staples` calls; recipe candidates are obtained by bounded `search_recipes` retrieval afterward
+- **THEN** the agent calls `read_pantry`, `read_user_profile`, `retrospective`, `list_new_for_me`, `kroger_flyer`, and `get_weather_forecast()` in a single batch before proposing; it does NOT issue a whole-corpus `search_recipes` membership load, `ready_to_eat_available`, a full-cart `kroger_prices`, `fetch_rss_discoveries`/`read_discovery_inbox`, or separate `read_preferences`/`read_taste`/`read_diet_principles`/`read_staples` calls; recipe candidates are obtained by bounded `search_recipes` retrieval afterward
 
 #### Scenario: No activation gate on the candidate set
 
@@ -214,45 +214,26 @@ The meal-plan flow SHALL be validated by a scripted smoke test of three seeded r
 #### Scenario: Open-ended smoke test uses bounded retrieval
 
 - **WHEN** the open-ended seed "make me a menu" is run
-- **THEN** the response selects recipes via bounded vibe-bearing `search_recipes` specs (not a whole-corpus dump), triaging the discovery pools before retrieval
+- **THEN** the response selects recipes via bounded vibe-bearing `search_recipes` specs (not a whole-corpus dump), folding the `list_new_for_me` discoveries into selection rather than polling/importing discovery sources in-flow
 
 #### Scenario: Capture-not-flush holds across all seeds
 
 - **WHEN** any smoke-test seed reaches agreement
 - **THEN** to-buy items are persisted to the grocery list via `add_to_grocery_list` and the Kroger cart is not written
 
-### Requirement: Discovery surfaced during menu requests
-
-On a menu request, the agent SHALL triage and import the loaded discovery pools (`fetch_rss_discoveries`, `read_discovery_inbox`) **before** issuing the `search_recipes` retrieval, so the freshest, most intentional candidates seed the plan first and retrieval cannot tunnel onto the established corpus and bury a just-found candidate. The agent SHALL triage cheap-first from each candidate's title/summary/blurb against the taste profile and this request, `parse_recipe` only the genuine fits, classify, and `create_recipe` (no `draft` state — imports land available). For inbox emails, the agent SHALL scan each `body` for recipe titles and links (newsletters list several) and pick the 1–2 best fits. Accepted discovery picks SHALL claim plan slots first, and the `search_recipes` retrieval SHALL then be sized to the **remaining** nights (gap-fill), not the full week. Discovery import SHALL NOT block or dominate the proposal. On-sale ready-to-eat discovery is **not** surfaced during the menu request — it is a buy-time concern handled by the place-grocery-order and shopping-list flows.
-
-#### Scenario: Discovery is triaged and imported before retrieval
-
-- **WHEN** the agent assembles a menu and `fetch_rss_discoveries`/`read_discovery_inbox` return candidates
-- **THEN** the agent scans each inbox email body for recipe titles and URLs, triages cheap-first, imports the genuine fits via `parse_recipe` + `create_recipe` before issuing `search_recipes`, and the accepted picks occupy plan slots before retrieval is consulted
-
-#### Scenario: Retrieval fills only the remaining nights
-
-- **WHEN** accepted discoveries already fill some of the week's nights
-- **THEN** the `search_recipes` retrieval is sized to the nights not yet filled, rather than retrieving a full week and folding discoveries in afterward
-
-#### Scenario: Unreachable candidate is presented as a link, not an import
-
-- **WHEN** `parse_recipe` returns `unreachable`/`no_jsonld`/`not_a_recipe` for a candidate
-- **THEN** the agent presents the link and skips the import (common for inbox candidates from walled sources) — it does not block or defer the proposal
-
-#### Scenario: On-sale ready-to-eat discovery is not surfaced here
-
-- **WHEN** a menu request runs
-- **THEN** the agent does NOT scan `kroger_flyer` for on-sale RTE items during the menu flow — that discovery happens at order/shopping time in the flush skills
-
 ### Requirement: Discoveries are dispositioned conversationally
 
-The agent SHALL let the user disposition discoveries through natural requests, mapping them to the favorites/rejections model: a "loved that one" request SHALL `toggle_favorite` the recipe; a "stop suggesting that" / "hide that" request SHALL `toggle_reject` it for the caller (or `reject_discovery` the URL when the candidate is not yet imported and is not corpus-worthy for the group); ready-to-eat items SHALL be dispositioned analogously via `update_ready_to_eat` (favorite / reject) against the caller's per-tenant catalog. There is no `draft` state and no de-prioritized-drafts behavior: an imported recipe is an available corpus recipe, and a non-imported discovery simply stays a discovery.
+The agent SHALL let the user disposition discoveries through natural requests, mapping them to the favorites/rejections model: a "loved that one" request SHALL `toggle_favorite` the recipe; a "stop suggesting that" / "hide that" request SHALL `toggle_reject` it for the caller. Because discoveries are now auto-imported by the background sweep (there is no pre-import candidate for a member to triage in-conversation), a "stop suggesting that" disposition on a surfaced recipe is `toggle_reject` (per-tenant); `reject_discovery` is reserved for group-wide suppression of a discovery **source** (see the `recipe-discovery` capability), not a per-conversation disposition of a surfaced recipe. Ready-to-eat items SHALL be dispositioned analogously via `update_ready_to_eat` (favorite / reject) against the caller's per-tenant catalog. There is no `draft` state: an imported recipe is an available corpus recipe.
 
 #### Scenario: A loved discovery is favorited
 
-- **WHEN** the user says they loved a surfaced or just-imported recipe
+- **WHEN** the user says they loved a surfaced or imported recipe
 - **THEN** the agent calls `toggle_favorite(slug, true)` for the caller, with no `status` or `rating` involved
+
+#### Scenario: A surfaced recipe the member dislikes is toggle_reject, not reject_discovery
+
+- **WHEN** the user says to stop suggesting a recipe surfaced by `list_new_for_me`
+- **THEN** the agent calls `toggle_reject(slug)` for the caller (hiding it for them, leaving it for others), not `reject_discovery`
 
 #### Scenario: An unwanted ready-to-eat item is rejected
 
@@ -309,12 +290,12 @@ When assembling a menu, the agent SHALL round out each main that is not an alrea
 
 ### Requirement: Side pairing bootstrap when the edge is empty
 
-When a non-standalone main has an empty `pairs_with` and the natural companion warrants a saved recipe (a side with technique worth keeping, not a one-line preparation), the `meal-plan` flow MAY bootstrap a **corpus** pairing at plan time as opportunistic backfill — the `recipe-sides` flow is the primary author of `pairs_with`, and the `meal-plan` flow records an edge only for a pairing it confirms in the course of planning. The bootstrap SHALL follow the shared side-resolution ladder: prefer existing `course: side` recipes (retrieved via a `search_recipes` side spec driven by the main's `side_search_terms`), then the RSS discovery pool (`fetch_rss_discoveries`), then a web parse (`parse_recipe`); it SHALL propose at most two candidate sides in chat; and on the user accepting such a side it SHALL ensure the side exists as a recipe (importing it via `parse_recipe` → `create_recipe` when it does not already exist, classified with `course: [side]`) and SHALL record the pairing by adding the side's slug to the main's `pairs_with` through `update_recipe`. The recorded edge is shared content, so a later menu request for the same main SHALL find the pairing already present and surface it. When the natural companion is instead a **trivial open-world side**, the agent SHALL NOT import a recipe or record a `pairs_with` edge — it proposes the open-world side directly (re-derived by reasoning each time, since it has no slug to remember). The bootstrap SHALL select sides by plate fit.
+When a non-standalone main has an empty `pairs_with` and the natural companion warrants a saved recipe (a side with technique worth keeping, not a one-line preparation), the `meal-plan` flow MAY bootstrap a **corpus** pairing at plan time as opportunistic backfill — the `recipe-sides` flow is the primary author of `pairs_with`, and the `meal-plan` flow records an edge only for a pairing it confirms in the course of planning. The bootstrap SHALL follow the shared side-resolution ladder: prefer existing `course: side` recipes (retrieved via a `search_recipes` side spec driven by the main's `side_search_terms`), then a web parse (`parse_recipe`) of a specific side the user names or the agent proposes; it SHALL propose at most two candidate sides in chat; and on the user accepting such a side it SHALL ensure the side exists as a recipe (importing it via `parse_recipe` → `create_recipe` when it does not already exist, classified with `course: [side]`) and SHALL record the pairing by adding the side's slug to the main's `pairs_with` through `update_recipe`. The recorded edge is shared content, so a later menu request for the same main SHALL find the pairing already present and surface it. When the natural companion is instead a **trivial open-world side**, the agent SHALL NOT import a recipe or record a `pairs_with` edge — it proposes the open-world side directly (re-derived by reasoning each time, since it has no slug to remember). The bootstrap SHALL select sides by plate fit.
 
 #### Scenario: Empty pairs_with bootstraps a corpus side
 
 - **WHEN** a non-standalone main has an empty `pairs_with`, the natural companion warrants a saved recipe, and the user requests a menu including it
-- **THEN** the agent searches corpus (via a `search_recipes` side spec) then RSS then web, proposes one or two savory sides, and asks the user to choose
+- **THEN** the agent searches corpus (via a `search_recipes` side spec) then a web parse, proposes one or two savory sides, and asks the user to choose
 
 #### Scenario: Accepted corpus bootstrap imports the side and records the edge
 
@@ -413,62 +394,31 @@ To bound the recall lost by not dumping the corpus, the distillation SHALL inclu
 - **WHEN** mains are selected
 - **THEN** side candidates are retrieved via the mains' `side_search_terms` within the same compose pass and the plate is reasoned over holistically
 
-### Requirement: Aggressive in-session import of preference-matched discoveries
-
-During the flow, when the agent judges a loaded discovery matches the member's preferences, it SHALL import it in-session: cheap triage on the discovery blurb, then `parse_recipe` and agent-written `description`/`side_search_terms`/facets, then `create_recipe`. Only matched discoveries SHALL be fully parsed and imported, so per-session cost is proportional to matches, not discovery volume. Import is performed on the agent's session (no external embedding/Anthropic API and no headless cron). The agent SHALL avoid importing a recipe already present (exact source-URL dedup at minimum).
-
-#### Scenario: Match is imported on the spot
-
-- **WHEN** a loaded discovery clearly matches the member's taste during planning
-- **THEN** the agent imports it with a generated description in the same session, and it becomes a candidate for this plan and a corpus recipe for future plans
-
-#### Scenario: Non-matches are not fully parsed
-
-- **WHEN** a discovery does not pass cheap blurb-level triage
-- **THEN** it is not `parse_recipe`'d or imported, and remains a discovery for later re-judgment
-
-#### Scenario: Already-present recipe is not re-imported
-
-- **WHEN** a matched discovery's source URL already exists in the corpus
-- **THEN** the agent does not create a duplicate
-
-### Requirement: Disposition collapses into the import decision
-
-Importing a discovery into the shared corpus is cheap and reversible, so the agent SHALL import every genuine fit autonomously, without a per-candidate approval gate — import is **not** a consequential decision. Importing SHALL be **decoupled from plan placement**: a created recipe does NOT automatically land on this week's menu. The disposition SHALL resolve to one of these outcomes:
-
-- **accept** — import the recipe **and** place it on this week's plan (the agent works from the parse directly; a just-imported recipe is not semantically retrievable the same session, but is found by a vibe-less `query` spec);
-- **maybe next time** — import the recipe (it joins the corpus and reconciles an embedding, so it is retrievable next session) **but leave it off this week's plan**. This is the silent resting state of a good import that did not fit the week's gaps; it SHALL be surfaced only as a light "saved … for later" mention in the proposal, never as an approval prompt;
-- **no-action skip** — leave a non-fitting candidate as a discovery to be re-judged later (no write);
-- **reject** — `reject_discovery(url, reason?)`, suppressing the URL **group-wide**, reserved for "not corpus-worthy for the group" (junk, broken link, non-recipe, duplicate, clearly off-base for the group). A mere personal not-for-me-this-time SHALL be a no-action skip, NOT a reject.
-
-Because rejection is shared, one member's passing taste SHALL NOT hide a recipe another member would favorite. What goes on the plan remains the consequential choice surfaced in the proposal for the member to iterate on; what enters the corpus is autonomous.
-
-#### Scenario: Import is autonomous and does not auto-plan
-
-- **WHEN** the agent judges a discovery worth adding during planning
-- **THEN** it imports the recipe in-session without asking, and the recipe lands on this week's plan only if it is an accepted pick — importing alone does not place it on the menu
-
-#### Scenario: A good import that does not fit the week is "maybe next time"
-
-- **WHEN** a discovery is a genuine fit but the week's plan is already filled by better-fitting picks
-- **THEN** the recipe is still imported (joining the corpus for future plans) and is left off this week's plan, surfaced as a light "saved for later" line rather than a per-candidate question
-
-#### Scenario: Explicit rejection suppresses the URL group-wide
-
-- **WHEN** a candidate is not corpus-worthy for the group (junk, broken, non-recipe, duplicate, off-base)
-- **THEN** the agent calls `reject_discovery` and the URL is suppressed for the whole group and not re-surfaced to any member
-
-#### Scenario: Personal taste-misfit is a skip, not a reject
-
-- **WHEN** the agent simply judges a candidate not a fit for this member this session (personal preference, not a corpus-worthiness judgment)
-- **THEN** it is left as a discovery (no shared suppression) and may surface again for that member or another
-
 ### Requirement: An exploration allowance keeps the loop from over-tightening
 
-Because both import-match and retrieval-match pull toward established taste, the flow SHALL permit a deliberate "a bit outside your usual" pick — surfacing or importing an occasional candidate that is adjacent to, but not squarely inside, the member's established taste — so the corpus and rotation do not collapse into a filter bubble.
+Because both the background matcher and retrieval pull toward established taste, the flow SHALL permit a deliberate "a bit outside your usual" pick — surfacing an occasional candidate (from the new-for-me set or a wildcard retrieval spec) that is adjacent to, but not squarely inside, the member's established taste — so the corpus and rotation do not collapse into a filter bubble. (The complementary allowance on the import side — the sweep importing the occasional adjacent recipe — is the `discovery-sweep` capability's concern.)
 
 #### Scenario: An adjacent pick is offered
 
 - **WHEN** the flow assembles a proposal
 - **THEN** it MAY include a clearly-flagged "a bit outside your usual" option alongside the squarely-on-taste picks
+
+### Requirement: New-for-me discoveries seed the plan from a read, not in-flow import
+
+On a menu request, the agent SHALL obtain fresh discoveries by **reading** the background sweep's output — a `list_new_for_me` read returning recipes imported (`discovered_at`) after the caller's `last_planned_at` watermark, attributed to the caller, undispositioned by the caller, and not yet cooked. The agent SHALL NOT poll feeds, drain the email inbox, triage candidate blurbs, `parse_recipe`, classify, or `create_recipe` during the menu flow — that capture is the background `discovery-sweep` capability's job. Because the sweep already classified and embedded these recipes, they are immediately retrievable; the agent SHALL fold them into selection (they may claim plan slots and they surface in `search_recipes` retrieval), with no "imported this session but not yet retrievable" special-casing. On saving the plan, the agent SHALL stamp the caller's `last_planned_at` so subsequent reads return only newer discoveries.
+
+#### Scenario: Discoveries come from a read, not a pull-and-import
+
+- **WHEN** the agent assembles a menu
+- **THEN** it calls `list_new_for_me` (no `fetch_rss_discoveries`, `read_discovery_inbox`, `parse_recipe`, or in-flow `create_recipe`) and folds the returned recipes into selection
+
+#### Scenario: New-for-me recipes are immediately retrievable
+
+- **WHEN** `list_new_for_me` returns a recipe the sweep imported
+- **THEN** the agent may both place it directly and find it via `search_recipes`, because it is already embedded — no "work from the parse, don't re-search" special case applies
+
+#### Scenario: Planning advances the watermark
+
+- **WHEN** the agent saves an agreed meal plan
+- **THEN** the caller's `last_planned_at` is stamped so the next `list_new_for_me` returns only recipes discovered afterward
 

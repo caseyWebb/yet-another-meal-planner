@@ -14,7 +14,7 @@
 
 ## MODIFIED Requirements
 
-### Requirement: A discovery source can be rejected group-wide
+### Requirement: A discovery URL can be rejected group-wide
 
 The system SHALL provide a `reject_discovery(url, reason?)` tool that records a **shared, group-wide** suppression of a discovery source URL in a `discovery_rejections` table keyed by the canonical URL. The background discovery sweep SHALL consult it: a rejected URL (and its tracker-wrapped variants) SHALL be excluded from intake so the sweep never re-imports it. Rejection SHALL be idempotent on the canonical URL and SHALL NOT, by itself, modify recipe content or any tenant's overlay. Because pre-import candidates are no longer surfaced to members for triage, rejection is reserved for suppressing a **source** that is not corpus-worthy for the group (a feed/site producing junk, broken, non-recipe, or duplicate results); suppressing an individual member's view of an already-imported recipe is `toggle_reject` (per-tenant), and removing a bad import from the shared corpus is a separate explicit action. A personal not-for-me is `toggle_reject`, never `reject_discovery`.
 

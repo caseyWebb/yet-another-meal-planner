@@ -66,12 +66,17 @@ The handler SHALL capture the email's body as plain text and store it for the ag
 
 ### Requirement: Email bodies are appended to a shared discoveries inbox
 
-Accepted emails SHALL be inserted into the shared D1 `discovery_candidates` table (not a per-tenant file). Each inbox record SHALL carry `from` (stored as `source`), `subject`, `received_at` (stored as `discovered_at`), and `body` (the captured plain-text body). The table is agent-writable side-effect state, not user-curated config.
+Accepted emails SHALL be inserted into the shared D1 `discovery_candidates` table (not a per-tenant file). Each inbox record SHALL carry `from` (stored as `source`), `subject`, `received_at` (stored as `discovered_at`), and `body` (the captured plain-text body). The table is the background discovery sweep's **push intake** — written by the `email()` handler, drained by the sweep — not an agent-read inbox.
 
 #### Scenario: Accepted message lands as an inbox record
 
 - **WHEN** the handler accepts a message
 - **THEN** a record with `source`, `subject`, `discovered_at`, and `body` is inserted into the D1 `discovery_candidates` table
+
+#### Scenario: The sweep is the consumer of the inbox
+
+- **WHEN** the background discovery sweep runs and the `discovery_candidates` table has rows
+- **THEN** the sweep reads those rows as candidates for classification/matching/import, and no agent tool reads the inbox
 
 ### Requirement: Inbox writes dedup by message identity and prune old entries
 
@@ -96,28 +101,19 @@ The handler SHALL `setReject` (bounce) a message that the gate rejects. It SHALL
 - **WHEN** an accepted message's `(from, subject, received_at)` is already in the inbox
 - **THEN** the handler writes nothing new and does NOT reject (no bounce)
 
-### Requirement: read_discovery_inbox returns inbox emails for LLM parsing
-
-`read_discovery_inbox` SHALL query the shared D1 `discovery_candidates` table and return its rows as a list of emails (`{ emails: [{ from, subject, received_at, body }] }`). The agent reads each `body`, identifies recipe titles and links itself, and calls `parse_recipe(url)` on the promising ones. The tool carries no taste `score` — taste fit and selection are the agent's judgment, consistent with `fetch_rss_discoveries`. When the table is empty, it SHALL return an empty list rather than erroring. The meal-plan flow SHALL surface these emails at menu time alongside the RSS pool.
-
-#### Scenario: Inbox emails returned for agent parsing
-
-- **WHEN** `read_discovery_inbox` is called with a populated D1 `discovery_candidates` table
-- **THEN** each item carries `from`, `subject`, `received_at`, and `body`, with no pre-extracted candidate URLs and no taste `score`
-
-#### Scenario: Empty inbox is not an error
-
-- **WHEN** the D1 `discovery_candidates` table has no rows
-- **THEN** the tool returns `{ emails: [] }` and does not raise an error
-
 ### Requirement: Walled sources degrade to manual paste at import time
 
-Discovery via email is unblockable, but full-recipe import still hits the same bot walls / paywalls. The flow SHALL present the clean canonical link and let the user paste the recipe text for the agent to assemble and persist via the existing `create_recipe`. It SHALL NOT introduce a new import tool and SHALL NOT claim to have fetched a walled page.
+Discovery via email is unblockable at the inbox, but auto-import still hits bot walls / paywalls on linked pages. The sweep SHALL import from an email whose **body carries the recipe inline** (classifying directly from the captured body, no page fetch). When a candidate is reachable only behind a wall (a link whose page the sweep cannot fetch and no inline recipe), the sweep SHALL NOT fabricate a fetch and SHALL NOT auto-import it — it has no member to prompt for a paste. The user-initiated manual import path (`parse_recipe`/`create_recipe`, with its paste fallback for a URL the member hands the agent) is unchanged and remains the way a walled link-only recipe is brought in.
 
-#### Scenario: Paywalled candidate is imported by paste
+#### Scenario: Inline-recipe email is auto-imported
 
-- **WHEN** the user chooses a recipe link found in an inbox email whose source is paywalled
-- **THEN** the agent presents the clean link, the user pastes the recipe text, and the agent assembles and persists it via `create_recipe`
+- **WHEN** an accepted email's body contains the full recipe text
+- **THEN** the sweep classifies and imports it from the body without fetching any page
+
+#### Scenario: Walled link-only candidate is not auto-imported
+
+- **WHEN** a candidate is reachable only behind a bot wall/paywall and carries no inline recipe
+- **THEN** the sweep does not auto-import it (no member is present to paste); the member may still import it via the manual `create_recipe` paste path
 
 ### Requirement: Discovery allowlist writes normalize and dedupe addresses
 
@@ -127,3 +123,4 @@ The Worker SHALL accept additions to the shared inbound-newsletter allowlist (th
 
 - **WHEN** `update_discovery_sources` adds `members`/`senders` entries, some duplicating existing rows and some lacking an `@`
 - **THEN** each address is trimmed and lowercased, entries without an `@` are dropped, duplicates are ignored, and the tool returns the count of newly added entries
+

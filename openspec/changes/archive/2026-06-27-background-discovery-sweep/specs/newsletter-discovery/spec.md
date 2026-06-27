@@ -22,7 +22,7 @@ Accepted emails SHALL be inserted into the shared D1 `discovery_candidates` tabl
 - **WHEN** the background discovery sweep runs and the `discovery_candidates` table has rows
 - **THEN** the sweep reads those rows as candidates for classification/matching/import, and no agent tool reads the inbox
 
-### Requirement: Walled sources are handled by the sweep where the body carries the recipe
+### Requirement: Walled sources degrade to manual paste at import time
 
 Discovery via email is unblockable at the inbox, but auto-import still hits bot walls / paywalls on linked pages. The sweep SHALL import from an email whose **body carries the recipe inline** (classifying directly from the captured body, no page fetch). When a candidate is reachable only behind a wall (a link whose page the sweep cannot fetch and no inline recipe), the sweep SHALL NOT fabricate a fetch and SHALL NOT auto-import it — it has no member to prompt for a paste. The user-initiated manual import path (`parse_recipe`/`create_recipe`, with its paste fallback for a URL the member hands the agent) is unchanged and remains the way a walled link-only recipe is brought in.
 
