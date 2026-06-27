@@ -241,11 +241,12 @@ test('buildPluginFiles threads version into the manifest (monotonic claude.ai au
   assert.equal(with42.version, '0.0.42');
 });
 
-test('resolveVersion: 0.1.<commit-count> in a git checkout, undefined otherwise', () => {
+test('resolveVersion: 0.2.<commit-count> in a git checkout, undefined otherwise', () => {
   // The local fallback only — the deploy passes the DATA repo's commit count via
-  // --version. `0.1.` floor (not `0.0.`) so it exceeds the old hand-published 0.1.1.
+  // --version. `0.2.` floor dominates the old code-repo marketplace's 0.1.126 under
+  // the same plugin name (a small data-repo count under 0.1.x would regress).
   const v = resolveVersion(); // REPO_ROOT is a git checkout
-  assert.match(v, /^0\.1\.\d+$/);
+  assert.match(v, /^0\.2\.\d+$/);
   // Non-git path (a bare temp dir would fail git) → undefined; use an impossible cwd.
   assert.equal(resolveVersion('/nonexistent-path-for-build-plugin-test'), undefined);
 });

@@ -48,7 +48,7 @@ import path from 'node:path';
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 export const PLUGIN_NAME = 'grocery-agent';
-// The manifest carries an explicit `version`: `0.1.<N>` where N is the DATA repo's
+// The manifest carries an explicit `version`: `0.2.<N>` where N is the DATA repo's
 // commit count, computed at deploy time and passed via --version (resolveVersion is
 // the local fallback for throwaway builds). claude.ai gates its auto-update on the
 // `version` STRING changing (verified 2026-06-11: a versionless install sat ~17h / 8
@@ -320,17 +320,19 @@ export function buildPluginFiles(parsed, { mcpUrl = MCP_URL_PLACEHOLDER, version
 
 // --- CLI -----------------------------------------------------------------
 
-// Local fallback plugin version from git: `0.1.<commit-count>` of `cwd`. The deploy
+// Local fallback plugin version from git: `0.2.<commit-count>` of `cwd`. The deploy
 // passes the DATA repo's commit count via --version (the published, monotonic-per-
 // operator value — see the note by PLUGIN_NAME); this fallback is used only when
 // --version is absent (local/throwaway builds, where the version does not matter).
-// The `0.1.` prefix is a deliberate floor: claude.ai gates on strictly-greater and
-// once remembered a hand-published `0.1.1`, so a `0.0.<count>` scheme (minor 0 < 1)
-// would never update past it. Returns undefined outside a git checkout (ships no version).
+// The `0.2.` prefix is a deliberate floor over the OLD code-repo marketplace, which
+// published up to `0.1.126`: claude.ai gates on strictly-greater per plugin name, and
+// an operator's data-repo commit count is small (≈50), so a `0.1.<count>` scheme would
+// REGRESS below 0.1.126 and strand existing installs. `0.2.<count>` dominates it for
+// every operator. Returns undefined outside a git checkout (ships no version).
 export function resolveVersion(cwd = REPO_ROOT) {
   try {
     const count = execFileSync('git', ['rev-list', '--count', 'HEAD'], { cwd, encoding: 'utf8' }).trim();
-    return /^\d+$/.test(count) ? `0.1.${count}` : undefined;
+    return /^\d+$/.test(count) ? `0.2.${count}` : undefined;
   } catch {
     return undefined;
   }

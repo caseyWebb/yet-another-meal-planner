@@ -33,9 +33,10 @@ This change spans three repos. OpenSpec artifacts live here (code repo); impleme
 - *Alternative considered:* a separate `publish-plugin.yml`. Rejected — ordering reverts to discipline, and two workflows is more surface. The `concurrency: group: deploy` already serializes runs, avoiding commit races.
 - *Graceful degradation:* if the caller withholds `contents: write` (the "manual pin" posture), the publish can't push — it warns and leaves the built bundle in the run, mirroring the existing pin/badge steps. The deploy still succeeds.
 
-### D3 — Version = the data repo's own commit count (`0.1.<count>`)
-`resolveVersion()` computes `0.1.<git rev-list --count HEAD>` against the **data repo** (the workflow root), not the code checkout under `_code/`. Every publish is a commit, so the count strictly increases per operator — exactly what claude.ai's strictly-greater auto-update gate needs.
-- *Why this is robust:* purging a file from history (the `.wrangler` cleanup, D6) rewrites trees but keeps the commit *count*, so the cleanup doesn't regress the version. New operators starting near `0.1.1` are fine — they have no prior installs to undercut.
+### D3 — Version = `0.2.<data-repo-commit-count>`
+The deploy passes `0.2.<git rev-list --count HEAD>` (data repo, workflow root) to `build-plugin.mjs` via `--version`; `resolveVersion()` is the local fallback. Every publish is a commit, so the count strictly increases per operator — exactly what claude.ai's strictly-greater auto-update gate needs.
+- *Why `0.2.` and not `0.1.`:* the old **code-repo** marketplace published up to `0.1.126` under the same plugin name (`grocery-agent`). A data repo's commit count is small (Casey's is **54**), so `0.1.<count>` would land at `0.1.54` — *below* `0.1.126` — and, if claude.ai keys its high-water mark by plugin name, would regress and strand existing installs. `0.2.<count>` dominates `0.1.126` for **every** operator (minor 2 > 1) and is equally fine if claude.ai keys by marketplace source (fresh install) or for a brand-new operator (no prior install). This resolves Risk #1 below — safe under either gating model, so no need to verify it first.
+- *Why this is robust:* purging a file from history (the `.wrangler` cleanup, D6) rewrites trees but keeps the commit *count*, so the cleanup doesn't regress the version.
 - *Compute-before-commit:* the version is read before the publish commit, so the committed bundle carries `<count_before>`; the commit makes it `<count_after>`; the next publish reads the now-higher count. Strictly increasing across publishes — correct.
 - *Alternatives considered:* (a) keep code-repo commit count + floor against the data repo's last-published `plugin.json` — works but re-introduces the floor logic we're deleting; (b) a wall-clock `0.1.<YYYYMMDDHHMM>` — monotonic and rewrite-proof, but bumps on every re-run even with no content change. Commit-count is the simplest monotonic signal tied to actual publishes.
 
@@ -52,7 +53,7 @@ Removing `.wrangler/cache/wrangler-account.json` (leaks the CF account id + the 
 
 ## Risks / Trade-offs
 
-- **claude.ai per-name version high-water mark** → Casey's existing installs sit on the code-repo marketplace at `0.1.126`. If claude.ai gates updates by plugin *name* (`grocery-agent`) across marketplaces, the new data-repo bundle must exceed `0.1.126` to update in place. *Mitigation:* his data repo's commit count is plausibly already > 126 (≈20 branches of history); confirm at implementation and, if short, apply a one-time floor. A *re-add* of the new marketplace is likely treated as a fresh install regardless. New operators are unaffected (no prior installs).
+- **claude.ai per-name version high-water mark** → Casey's existing installs sit on the code-repo marketplace at `0.1.126`. **Resolved (D3):** the data repo's count is **54**, so a naive `0.1.<count>` would regress to `0.1.54`; we version as `0.2.<count>` instead, which exceeds `0.1.126` whether claude.ai gates by plugin name or by marketplace source. New operators are unaffected (no prior installs).
 - **Existing installs break when the code-repo marketplace is removed** → anyone on `caseyWebb/groceries-agent` loses the source. *Mitigation:* documented one-time re-add to the data-repo marketplace; it's just Casey + friends.
 - **Marketplace points at a not-yet-built `./plugin/grocery-agent`** before the first deploy → adding the marketplace pre-deploy would 404. *Mitigation:* onboarding happens after the first deploy; the template ships `marketplace.json` but the bundle materializes on first publish — document the ordering.
 - **History rewrite for the `.wrangler` purge** → could in theory perturb the commit count. *Mitigation:* a file-only purge (filter-repo/BFG path) preserves commit count (D3); do the cleanup *before* the first marketplace publish so there's no prior data-repo-count version to undercut.
@@ -68,6 +69,6 @@ Removing `.wrangler/cache/wrangler-account.json` (leaks the CF account id + the 
 
 ## Open Questions
 
-- Does claude.ai dedupe/gate the plugin `version` by plugin **name**, by **marketplace source**, or by both? Determines whether Casey needs a one-time version floor above `0.1.126` (Risk #1). Resolve by checking his data-repo commit count and testing a re-add.
+- Does claude.ai gate the plugin `version` by plugin **name** or by **marketplace source**? No longer blocking — `0.2.<count>` is safe under both (D3) — but worth confirming on the first cutover, since it also tells us whether existing installs auto-update in place or need a manual re-add.
 - Should the code repo's root `.mcp.json` (the dev/Inspector connector, maintainer URL) stay? Leaning yes — it's local-dev only, not part of distribution.
 - Confirm `/plugin marketplace add` + install is available in the claude.ai **web** surface the friend group uses (the spec already claims web + Desktop Chat tab support).

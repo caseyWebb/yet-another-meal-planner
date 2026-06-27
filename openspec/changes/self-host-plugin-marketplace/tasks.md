@@ -46,7 +46,7 @@
 ## 8. Cutover & verification — **(OPERATOR)**
 
 - [ ] 8.1 Merge the code-repo branch so the updated `data-deploy.yml` is live, then run the data repo's **Deploy** to produce the first published marketplace bundle (Worker-first; bundle committed)
-- [ ] 8.2 Verify the data repo now has `.claude-plugin/marketplace.json` + `plugin/grocery-agent/` with the operator's URL in `.mcp.json` and a version `> 0.1.126` (or confirm a re-add is a fresh install — Risk #1; `git rev-list --count HEAD` on the data repo is already ≫ 126)
+- [ ] 8.2 Verify the data repo now has `.claude-plugin/marketplace.json` + `plugin/grocery-agent/` with the operator's URL in `.mcp.json` and version `0.2.<count>` (e.g. `0.2.55`) — the `0.2.` scheme dominates the old `0.1.126` regardless of how claude.ai gates updates (D3)
 - [ ] 8.3 Flip `caseyWebb/groceries-agent-data` to **Public** (only after 7.2/7.3)
 - [ ] 8.4 In claude.ai, `/plugin marketplace add caseyWebb/groceries-agent-data`, install, complete the invite-code flow, confirm tools + skills load; confirm a re-publish auto-updates
 - [ ] 8.5 Notify friends to re-add the new marketplace

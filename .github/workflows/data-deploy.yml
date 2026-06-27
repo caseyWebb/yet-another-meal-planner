@@ -261,7 +261,10 @@ jobs:
             exit 0
           fi
           MCP_URL="https://$HOST/mcp"
-          VERSION="0.1.$(git rev-list --count HEAD)"
+          # 0.2.<count>: the data repo's commit count is small (≈50), and the old
+          # code-repo marketplace published up to 0.1.126 under the same plugin name —
+          # so a 0.1.<count> would regress and strand installs. 0.2.<count> dominates it.
+          VERSION="0.2.$(git rev-list --count HEAD)"
           node _code/scripts/build-plugin.mjs --out plugin/grocery-agent --mcp-url "$MCP_URL" --version "$VERSION"
           git add plugin/grocery-agent
           # marketplace.json (committed in the data repo, → ./plugin/grocery-agent) ships
