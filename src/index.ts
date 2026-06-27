@@ -17,6 +17,7 @@ import { handleInboundEmail, rejectReasonFor, type InboundMessage } from "./emai
 import { buildWarmDeps, runWarmJob } from "./flyer-warm.js";
 import { buildEmbedDeps, runEmbedJob } from "./recipe-embeddings.js";
 import { buildProjectionDeps, runProjectionJob } from "./recipe-projection.js";
+import { buildDiscoveryDeps, runDiscoverySweepJob } from "./discovery-sweep.js";
 import { createR2CorpusStore } from "./corpus-store.js";
 import { handleHealthRequest, handleHealthSvgRequest, writeJobHealth, notifyFailure } from "./health.js";
 import { handleAdmin } from "./admin.js";
@@ -124,7 +125,7 @@ export default {
     if (reason) message.setReject(reason);
   },
   /**
-   * The single cron trigger drives THREE jobs each tick — kept under one trigger so the
+   * The single cron trigger drives FOUR jobs each tick — kept under one trigger so the
    * free-tier cron-count limit never bites:
    *   * flyer warm (flyer-cache-warming) — the cursor sweep in `flyer-warm.ts`.
    *   * recipe-index projection (r2-corpus-store) — `recipe-projection.ts` reads the R2
@@ -134,10 +135,13 @@ export default {
    *   * recipe-derived reconcile (semantic recipe search) — `recipe-embeddings.ts` refills
    *     the description/embedding table from the freshly-projected `recipes` facets via
    *     `env.AI`. It draws on the INTERNAL-subrequest budget, not the flyer's external one.
+   *   * discovery sweep (background-discovery-sweep) — `discovery-sweep.ts` polls feeds +
+   *     the email inbox, classifies/taste-matches/imports via `env.AI`, and logs each
+   *     outcome. It runs LAST so dedup + matching see a fresh index AND fresh embeddings.
    * The flyer warm is independent of the index, so it runs ALONGSIDE the projection; the
-   * embed job runs after so it sees the fresh index. Each writes its own health record +
-   * optional ntfy push, and any hard failure is rethrown so the platform's native cron
-   * status reflects it.
+   * embed job runs after so it sees the fresh index; the discovery sweep runs after that.
+   * Each writes its own health record + optional ntfy push, and any hard failure is rethrown
+   * so the platform's native cron status reflects it.
    */
   async scheduled(_controller: ScheduledController, env: Env, _ctx: ExecutionContext): Promise<void> {
     const kv = env.KROGER_KV as unknown as KvStore;
@@ -147,7 +151,9 @@ export default {
       runProjectionJob(env, buildProjectionDeps(env, corpus), kv),
     ]);
     const phase2 = await Promise.allSettled([runEmbedJob(env, buildEmbedDeps(env))]);
-    const failed = [...phase1, ...phase2].find((r) => r.status === "rejected");
+    // The sweep runs after the index + embeddings are fresh (it dedups + matches against them).
+    const phase3 = await Promise.allSettled([runDiscoverySweepJob(env, buildDiscoveryDeps(env), kv)]);
+    const failed = [...phase1, ...phase2, ...phase3].find((r) => r.status === "rejected");
     if (failed && failed.status === "rejected") throw failed.reason;
   },
 };
