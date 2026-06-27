@@ -14,6 +14,15 @@ build/
 # Elm compiler cache (admin/) — never committed.
 admin/elm-stuff/
 
+# Authoring vault: the committed vault/ holds the generated config + pinned plugin
+# manifests, but the heavy plugin bundles are vendored on demand by
+# `build-vault --fetch-plugins` (sha256-verified from vault-template/plugin-pins.json)
+# — keep the multi-MB third-party binaries out of the public repo.
+vault/.obsidian/plugins/*/main.js
+vault/.obsidian/plugins/*/styles.css
+# Packaged distributable (the zip an author downloads).
+grocery-authoring-vault*.zip
+
 # Cloudflare Worker / Wrangler
 .wrangler/
 .dev.vars

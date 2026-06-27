@@ -17,6 +17,8 @@ immediately; a real member requires an explicit confirm before the side effects 
 
 -}
 
+import Dev.Jsonc as Jsonc
+import Dev.SchemaExample as SchemaExample
 import Html exposing (Html, a, button, div, h2, label, li, option, p, pre, select, span, strong, text, textarea, ul)
 import Html.Attributes exposing (attribute, class, classList, disabled, selected, value)
 import Html.Events exposing (onClick, onInput)
@@ -61,12 +63,22 @@ type Run
     | Confirming
 
 
+{-| The arguments buffer. `Pristine` means untouched — the box shows a schema-derived example
+*derived in the view* from the selected tool, so it costs no `Msg` and fills in the instant
+the catalog resolves (no clobbering a slow load). The operator's first keystroke captures the
+text as `Edited`; selecting another tool returns to `Pristine` and reseeds.
+-}
+type Args
+    = Pristine
+    | Edited String
+
+
 type alias Session =
     { members : List String
     , persona : String
     , catalog : WebData (List Tool)
     , selected : Maybe String
-    , args : String
+    , args : Args
     , run : Run
     }
 
@@ -92,7 +104,7 @@ freshSession members persona tool =
     , persona = persona
     , catalog = Loading
     , selected = tool
-    , args = "{}"
+    , args = Pristine
     , run = Ready NotAsked
     }
 
@@ -105,7 +117,7 @@ selectTool : Maybe String -> Model -> ( Model, Cmd Msg )
 selectTool tool model =
     case model of
         Acting session ->
-            ( Acting { session | selected = tool, args = "{}", run = Ready NotAsked }, Cmd.none )
+            ( Acting { session | selected = tool, args = Pristine, run = Ready NotAsked }, Cmd.none )
 
         NoPersona _ ->
             ( model, Cmd.none )
@@ -148,7 +160,7 @@ update msg model =
             withSession model (\session -> ( { session | catalog = catalog }, Cmd.none ))
 
         ArgsChanged args ->
-            withSession model (\session -> ( { session | args = args }, Cmd.none ))
+            withSession model (\session -> ( { session | args = Edited args }, Cmd.none ))
 
         ClickRun ->
             case model of
@@ -209,12 +221,33 @@ attemptRun session =
             ( Acting session, Cmd.none )
 
         Just tool ->
-            case Decode.decodeString Decode.value session.args of
+            case Decode.decodeString Decode.value (Jsonc.strip (argsText session tool)) of
                 Err err ->
                     ( Acting { session | run = Ready (Failure (BadArgsJson (Decode.errorToString err))) }, Cmd.none )
 
                 Ok argsValue ->
                     ( Acting { session | run = Ready Loading }, invoke session.persona tool argsValue )
+
+
+{-| The text the args box shows for `tool`: the operator's buffer once edited, else the
+example derived from that tool's input schema (the empty object until the catalog resolves).
+-}
+argsText : Session -> String -> String
+argsText session tool =
+    case session.args of
+        Edited text ->
+            text
+
+        Pristine ->
+            SchemaExample.generate (schemaFor session tool)
+
+
+schemaFor : Session -> String -> Encode.Value
+schemaFor session tool =
+    RemoteData.toMaybe session.catalog
+        |> Maybe.andThen (find (\t -> t.name == tool))
+        |> Maybe.map .schema
+        |> Maybe.withDefault Encode.null
 
 
 {-| The safety contract: running a tool as a REAL member needs an explicit confirm; a
@@ -428,10 +461,10 @@ viewTool session =
                 [ h2 [] [ text name ]
                 , viewSchema (RemoteData.toMaybe session.catalog |> Maybe.andThen (find (\t -> t.name == name)))
                 , label []
-                    [ text "Arguments (JSON)"
+                    [ text "Arguments (JSON — // comments and trailing commas OK)"
                     , textarea
                         [ class "args"
-                        , value session.args
+                        , value (argsText session name)
                         , onInput ArgsChanged
                         , attribute "spellcheck" "false"
                         ]

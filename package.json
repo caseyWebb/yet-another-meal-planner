@@ -23,9 +23,10 @@
     "deploy": "wrangler deploy",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:tooling": "node --test tests/build-plugin.test.mjs tests/merge-wrangler-config.test.mjs tests/stamp-readme-badge.test.mjs",
+    "test:tooling": "node --test tests/build-plugin.test.mjs tests/build-vault.test.mjs tests/merge-wrangler-config.test.mjs tests/stamp-readme-badge.test.mjs",
     "build:plugin": "node scripts/build-plugin.mjs",
     "build:admin": "node scripts/build-admin.mjs",
+    "build:vault": "node scripts/build-vault.mjs",
     "test:admin": "node scripts/test-admin.mjs"
   },
   "dependencies": {
