@@ -222,10 +222,82 @@ describe("renderHealthSvg", () => {
         { name: "email", ok: false, last_run_at: now - 30_000 },
       ],
       d1: { ok: true },
+      admin: { access_configured: true, email_allowlist: false, dev_bypass_set: false, exposed: false },
     });
     expect(svg).toContain("2h ago");
     expect(svg).toContain("just now");
     expect(svg).toContain("degraded");
+  });
+});
+
+describe("admin gate posture in health", () => {
+  const okJobs = async (kv: ReturnType<typeof fakeKv>) => {
+    await writeJobHealth(kv, "flyer-warm", rec(true));
+    await writeJobHealth(kv, "recipe-embed", rec(true));
+    await writeJobHealth(kv, "email", rec(true));
+  };
+
+  it("reports the gate posture as booleans and never the allowlisted emails", async () => {
+    const kv = fakeKv();
+    await okJobs(kv);
+    const e = {
+      KROGER_KV: kv,
+      DB: fakeD1(),
+      ACCESS_TEAM_DOMAIN: "team.cloudflareaccess.com",
+      ACCESS_AUD: "aud123",
+      ACCESS_ALLOWED_EMAILS: "operator@example.com",
+    } as unknown as Env;
+    const res = await handleHealthRequest(e);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { ok: boolean; admin: Record<string, boolean> };
+    expect(body.admin).toEqual({
+      access_configured: true,
+      email_allowlist: true,
+      dev_bypass_set: false,
+      exposed: false,
+    });
+    expect(body.ok).toBe(true);
+    expect(JSON.stringify(body)).not.toContain("operator@example.com");
+  });
+
+  it("degrades to 503 when the dev bypass is set without Access (exposed)", async () => {
+    const kv = fakeKv();
+    await okJobs(kv);
+    const e = { KROGER_KV: kv, DB: fakeD1(), ADMIN_DEV_BYPASS: "1" } as unknown as Env;
+    const res = await handleHealthRequest(e);
+    expect(res.status).toBe(503);
+    const body = (await res.json()) as { ok: boolean; admin: { exposed: boolean } };
+    expect(body.admin.exposed).toBe(true);
+    expect(body.ok).toBe(false);
+  });
+
+  it("svg renders the admin row exposed + degraded headline, still 200", async () => {
+    const kv = fakeKv();
+    await okJobs(kv);
+    const e = { KROGER_KV: kv, DB: fakeD1(), ADMIN_DEV_BYPASS: "1" } as unknown as Env;
+    const res = await handleHealthSvgRequest(e);
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    expect(body).toContain("admin");
+    expect(body).toContain("exposed");
+    expect(body).toContain("degraded");
+    expect(body).toContain("#f85149"); // the exposed row is red
+  });
+
+  it("svg renders the admin row gated (healthy) when Access is configured", async () => {
+    const kv = fakeKv();
+    await okJobs(kv);
+    const e = {
+      KROGER_KV: kv,
+      DB: fakeD1(),
+      ACCESS_TEAM_DOMAIN: "team.cloudflareaccess.com",
+      ACCESS_AUD: "aud123",
+    } as unknown as Env;
+    const res = await handleHealthSvgRequest(e);
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    expect(body).toContain("gated");
+    expect(body).toContain("healthy");
   });
 });
 

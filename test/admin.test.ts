@@ -1,6 +1,8 @@
 import { describe, it, expect } from "vitest";
+import { SignJWT, generateKeyPair } from "jose";
 import {
   requireAccess,
+  adminPosture,
   onboard,
   rotate,
   revoke,
@@ -63,20 +65,44 @@ function makeDeps(initial: Record<string, string> = {}) {
 
 describe("requireAccess", () => {
   const accessEnv = (over: Partial<Env>): Env => ({ ...over }) as unknown as Env;
+  const configured = { ACCESS_TEAM_DOMAIN: "team.cloudflareaccess.com", ACCESS_AUD: "aud123" };
+
+  // Mint a real RS256 assertion and a `getKeySet` resolving to its public key, so the
+  // post-verify email-allowlist branch is exercised offline (no remote JWKS fetch).
+  async function signed(claims: Record<string, unknown>) {
+    const { publicKey, privateKey } = await generateKeyPair("RS256");
+    const token = await new SignJWT(claims)
+      .setProtectedHeader({ alg: "RS256" })
+      .setIssuer("https://team.cloudflareaccess.com")
+      .setAudience("aud123")
+      .sign(privateKey);
+    const getKeySet = (() => async () => publicKey) as unknown as Parameters<typeof requireAccess>[2];
+    return { token, getKeySet };
+  }
+  const withToken = (token: string) =>
+    new Request("https://x/admin", { headers: { "Cf-Access-Jwt-Assertion": token } });
 
   it("is disabled (404) when Access is unconfigured and no dev bypass", async () => {
     const r = await requireAccess(new Request("https://x/admin"), accessEnv({}));
     expect(r.status).toBe("disabled");
   });
 
-  it("admits via the dev bypass only when Access is unconfigured", async () => {
-    const r = await requireAccess(new Request("https://x/admin"), accessEnv({ ADMIN_DEV_BYPASS: "1" }));
+  it("admits via the dev bypass on a loopback host when Access is unconfigured", async () => {
+    const r = await requireAccess(new Request("http://localhost/admin"), accessEnv({ ADMIN_DEV_BYPASS: "1" }));
     expect(r.status).toBe("ok");
+  });
+
+  it("does NOT admit via the dev bypass on a non-loopback (deployed) host, even with the flag", async () => {
+    const r = await requireAccess(
+      new Request("https://grocery.example.com/admin"),
+      accessEnv({ ADMIN_DEV_BYPASS: "1" }),
+    );
+    expect(r.status).toBe("disabled");
   });
 
   it("denies a configured surface presenting no assertion (no JWKS fetch)", async () => {
     let fetched = false;
-    const env = accessEnv({ ACCESS_TEAM_DOMAIN: "team.cloudflareaccess.com", ACCESS_AUD: "aud123" });
+    const env = accessEnv(configured);
     const r = await requireAccess(new Request("https://x/admin"), env, () => {
       fetched = true;
       throw new Error("JWKS must not be fetched");
@@ -88,10 +114,61 @@ describe("requireAccess", () => {
   it("denies a malformed assertion (jose rejects the compact JWS, no key fetch)", async () => {
     // "not-a-jwt" fails compact-JWS parsing before the remote JWKS is consulted, so
     // the default key set never reaches the network — the verify simply throws → denied.
-    const env = accessEnv({ ACCESS_TEAM_DOMAIN: "team.cloudflareaccess.com", ACCESS_AUD: "aud123" });
+    const env = accessEnv(configured);
     const req = new Request("https://x/admin", { headers: { "Cf-Access-Jwt-Assertion": "not-a-jwt" } });
     const r = await requireAccess(req, env);
     expect(r.status).toBe("denied");
+  });
+
+  it("admits any verified assertion when no allowlist is set", async () => {
+    const { token, getKeySet } = await signed({ email: "anyone@example.com" });
+    const r = await requireAccess(withToken(token), accessEnv(configured), getKeySet);
+    expect(r.status).toBe("ok");
+    if (r.status === "ok") expect(r.email).toBe("anyone@example.com");
+  });
+
+  it("admits a verified assertion whose email is on the allowlist (case-insensitive)", async () => {
+    const { token, getKeySet } = await signed({ email: "Op@Example.com" });
+    const env = accessEnv({ ...configured, ACCESS_ALLOWED_EMAILS: "other@x.com, op@example.com" });
+    const r = await requireAccess(withToken(token), env, getKeySet);
+    expect(r.status).toBe("ok");
+  });
+
+  it("denies a verified assertion whose email is off the allowlist", async () => {
+    const { token, getKeySet } = await signed({ email: "intruder@evil.com" });
+    const env = accessEnv({ ...configured, ACCESS_ALLOWED_EMAILS: "op@example.com" });
+    const r = await requireAccess(withToken(token), env, getKeySet);
+    expect(r.status).toBe("denied");
+  });
+
+  it("denies a verified assertion with no email claim when an allowlist is set", async () => {
+    const { token, getKeySet } = await signed({ sub: "no-email" });
+    const env = accessEnv({ ...configured, ACCESS_ALLOWED_EMAILS: "op@example.com" });
+    const r = await requireAccess(withToken(token), env, getKeySet);
+    expect(r.status).toBe("denied");
+  });
+});
+
+describe("adminPosture", () => {
+  const env = (over: Partial<Env>): Env => ({ ...over }) as unknown as Env;
+
+  it("reports gated when Access is configured (with allowlist flag), never exposed", () => {
+    expect(
+      adminPosture(env({ ACCESS_TEAM_DOMAIN: "t.cloudflareaccess.com", ACCESS_AUD: "a", ACCESS_ALLOWED_EMAILS: "x@y.com" })),
+    ).toEqual({ access_configured: true, email_allowlist: true, dev_bypass_set: false, exposed: false });
+  });
+
+  it("flags exposed when the dev bypass is set without Access (only the loopback guard protects it)", () => {
+    expect(adminPosture(env({ ADMIN_DEV_BYPASS: "1" }))).toEqual({
+      access_configured: false,
+      email_allowlist: false,
+      dev_bypass_set: true,
+      exposed: true,
+    });
+  });
+
+  it("is not exposed when unconfigured without the bypass (safe 404 surface)", () => {
+    expect(adminPosture(env({})).exposed).toBe(false);
   });
 });
 
@@ -197,7 +274,7 @@ describe("handleAdmin (routing + gate)", () => {
       ADMIN_DEV_BYPASS: "1",
     } as unknown as Env;
     const res = await handleAdmin(
-      new Request("https://groc.example.com/admin/api/tenants", {
+      new Request("http://localhost/admin/api/tenants", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ username: "Casey" }),
@@ -208,7 +285,7 @@ describe("handleAdmin (routing + gate)", () => {
     const body = (await res.json()) as { username: string; invite_code: string; connector_url: string };
     expect(body.username).toBe("casey");
     expect(body.invite_code).toMatch(/^[0-9a-f]{16}$/);
-    expect(body.connector_url).toBe("https://groc.example.com/mcp");
+    expect(body.connector_url).toBe("http://localhost/mcp");
     expect(await tenantKv.get("tenant:casey")).toBe(JSON.stringify({ id: "casey" }));
   });
 
@@ -219,7 +296,7 @@ describe("handleAdmin (routing + gate)", () => {
       DB: throwingD1(),
       ADMIN_DEV_BYPASS: "1",
     } as unknown as Env;
-    const res = await handleAdmin(new Request("https://x/admin/api/tenants"), env);
+    const res = await handleAdmin(new Request("http://localhost/admin/api/tenants"), env);
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ tenants: ["bob"] });
   });
@@ -238,7 +315,7 @@ describe("handleAdmin (routing + gate)", () => {
       DB: d1.env.DB,
       ADMIN_DEV_BYPASS: "1",
     } as unknown as Env;
-    const res = await handleAdmin(new Request("https://x/admin/api/bug-reports"), env);
+    const res = await handleAdmin(new Request("http://localhost/admin/api/bug-reports"), env);
     expect(res.status).toBe(200);
     const body = (await res.json()) as { reports: { reporter: string; title: string }[] };
     expect(body.reports).toHaveLength(1);
@@ -259,7 +336,7 @@ describe("handleAdmin (routing + gate)", () => {
         },
       },
     } as unknown as Env;
-    const res = await handleAdmin(new Request("https://x/admin"), env);
+    const res = await handleAdmin(new Request("http://localhost/admin"), env);
     expect(res.status).toBe(200);
     // Passed through verbatim — NOT rewritten to /admin/index.html (which the assets
     // auto-trailing-slash would 307 back to /admin/, looping via run_worker_first).
@@ -284,7 +361,7 @@ describe("handleAdmin (routing + gate)", () => {
         },
       },
     } as unknown as Env;
-    const res = await handleAdmin(new Request("https://x/admin/dev/tools/place_order"), env);
+    const res = await handleAdmin(new Request("http://localhost/admin/dev/tools/place_order"), env);
     expect(res.status).toBe(200);
     expect(await res.text()).toContain("shell");
     // Tried the real path first (404), then fell back to the canonical `/admin/` shell.
@@ -305,7 +382,7 @@ describe("handleAdmin (routing + gate)", () => {
         },
       },
     } as unknown as Env;
-    const res = await handleAdmin(new Request("https://x/admin/elm.js"), env);
+    const res = await handleAdmin(new Request("http://localhost/admin/elm.js"), env);
     expect(res.status).toBe(404);
     // No shell fallback for an extension path — asked only for the asset itself.
     expect(asked).toEqual(["/admin/elm.js"]);
@@ -323,7 +400,7 @@ describe("handleAdmin (tool console)", () => {
     }) as unknown as Env;
 
   it("lists the live tool catalog for an allowlisted tenant", async () => {
-    const res = await handleAdmin(new Request("https://x/admin/api/tools?tenant=bob"), consoleEnv());
+    const res = await handleAdmin(new Request("http://localhost/admin/api/tools?tenant=bob"), consoleEnv());
     expect(res.status).toBe(200);
     const body = (await res.json()) as { tools: { name: string }[] };
     const names = body.tools.map((t) => t.name);
@@ -333,14 +410,14 @@ describe("handleAdmin (tool console)", () => {
   });
 
   it("400s when no acting-as tenant is supplied", async () => {
-    const res = await handleAdmin(new Request("https://x/admin/api/tools"), consoleEnv());
+    const res = await handleAdmin(new Request("http://localhost/admin/api/tools"), consoleEnv());
     expect(res.status).toBe(400);
     expect(((await res.json()) as { error: string }).error).toBe("validation_failed");
   });
 
   it("404s when acting as a non-member", async () => {
     const res = await handleAdmin(
-      new Request("https://x/admin/api/tools?tenant=ghost"),
+      new Request("http://localhost/admin/api/tools?tenant=ghost"),
       consoleEnv(),
     );
     expect(res.status).toBe(404);

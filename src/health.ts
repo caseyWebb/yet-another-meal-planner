@@ -10,6 +10,7 @@
 // counts, timestamps, and error classes only, never usernames or other identifiers.
 
 import { db } from "./db.js";
+import { adminPosture, type AdminPosture } from "./admin.js";
 import type { Env } from "./env.js";
 import type { KvStore } from "./kroger-user.js";
 
@@ -44,13 +45,16 @@ export interface D1Status {
 
 export interface HealthPayload {
   /**
-   * False iff some job is explicitly failing OR the D1 probe failed; a never-run job
-   * does NOT flip this (D1 is always probed live, so it has no never-run state).
+   * False iff some job is explicitly failing, the D1 probe failed, OR the admin gate is
+   * `exposed`; a never-run job does NOT flip this (D1 is always probed live, so it has no
+   * never-run state).
    */
   ok: boolean;
   generated_at: number;
   jobs: JobStatus[];
   d1: D1Status;
+  /** Operator admin gate posture (tenant-clean booleans; `exposed` degrades overall `ok`). */
+  admin: AdminPosture;
 }
 
 /**
@@ -88,9 +92,10 @@ export async function readJobHealth(kv: KvStore, name: string): Promise<JobHealt
  * Aggregate the named jobs' records plus a live D1 probe into one payload. A missing job
  * record is reported as **never-run** (`ok: null, never_run: true`) — distinct from
  * healthy and never omitted. Overall `ok` is false when a job is *explicitly* failing
- * (`ok: false`) or the D1 probe failed; a never-run job does NOT flip it, so a fresh
- * deploy with pending jobs doesn't read as broken (the monitor catches a job that stays
- * pending too long via `last_run_at` staleness). `env` is the probe's binding source.
+ * (`ok: false`), the D1 probe failed, or the admin gate is `exposed`; a never-run job does
+ * NOT flip it, so a fresh deploy with pending jobs doesn't read as broken (the monitor
+ * catches a job that stays pending too long via `last_run_at` staleness). The admin posture
+ * is derived from `env` (the same gate logic `requireAccess` uses). `env` is the probe's binding source.
  */
 export async function buildHealthPayload(
   env: Env,
@@ -107,11 +112,13 @@ export async function buildHealthPayload(
     }
   }
   const d1 = await probeD1(env);
+  const admin = adminPosture(env);
   return {
-    ok: !jobs.some((j) => j.ok === false) && d1.ok,
+    ok: !jobs.some((j) => j.ok === false) && d1.ok && !admin.exposed,
     generated_at: Date.now(),
     jobs,
     d1,
+    admin,
   };
 }
 
@@ -173,10 +180,16 @@ export function renderHealthSvg(payload: HealthPayload): string {
     fail: "#f85149",
     never: "#d29922",
   };
-  const color = (state: "ok" | "fail" | "never") =>
-    state === "ok" ? C.ok : state === "fail" ? C.fail : C.never;
+  const color = (state: "ok" | "fail" | "never" | "muted") =>
+    state === "ok" ? C.ok : state === "fail" ? C.fail : state === "muted" ? C.muted : C.never;
 
-  const rows: { label: string; state: "ok" | "fail" | "never"; word: string; age: string }[] = [
+  // Admin gate row: red `exposed` is the loud signal; green `gated` is the healthy operator
+  // state; `dev`/`disabled` are muted (safe — the surface is 404 in a deployed context).
+  const a = payload.admin;
+  const adminWord = a.exposed ? "exposed" : a.access_configured ? "gated" : a.dev_bypass_set ? "dev" : "disabled";
+  const adminState: "ok" | "fail" | "muted" = a.exposed ? "fail" : a.access_configured ? "ok" : "muted";
+
+  const rows: { label: string; state: "ok" | "fail" | "never" | "muted"; word: string; age: string }[] = [
     ...payload.jobs.map((j) => {
       const state: "ok" | "fail" | "never" = j.never_run ? "never" : j.ok ? "ok" : "fail";
       return {
@@ -187,6 +200,7 @@ export function renderHealthSvg(payload: HealthPayload): string {
       };
     }),
     { label: "d1", state: payload.d1.ok ? "ok" : "fail", word: payload.d1.ok ? "ok" : "fail", age: "" },
+    { label: "admin", state: adminState, word: adminWord, age: "" },
   ];
 
   const headWord = payload.ok ? "healthy" : "degraded";

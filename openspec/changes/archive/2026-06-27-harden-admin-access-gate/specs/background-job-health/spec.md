@@ -1,21 +1,4 @@
-# background-job-health Specification
-
-## Purpose
-TBD - created by archiving change background-job-health. Update Purpose after archive.
-## Requirements
-### Requirement: Background-job health records
-
-Each background process (a cron-`scheduled` job or the inbound `email` handler) SHALL persist a health record in KV at `health:job:<name>` on every run, of the shape `{ ok: boolean, last_run_at: number, summary: object }`. `ok` reflects whether the run succeeded; `last_run_at` is epoch ms; `summary` carries small operational detail (counts, durations, error classes). Records SHALL be **tenant-data-free** — no usernames, tenant ids, or other per-tenant identifiers may appear in any field. The record SHALL live under the existing `KROGER_KV` namespace with a `health:` prefix (no new binding).
-
-#### Scenario: A job writes its health record on each run
-
-- **WHEN** a background job completes a run (successfully or with failure)
-- **THEN** it writes `health:job:<name>` with `ok`, a fresh `last_run_at`, and a tenant-data-free `summary`
-
-#### Scenario: Records never carry tenant data
-
-- **WHEN** a job records a failure caused by a specific tenant's input
-- **THEN** the `summary` records only the error class and counts, never the tenant id or other per-tenant identifiers
+## MODIFIED Requirements
 
 ### Requirement: Aggregate health endpoint
 
@@ -47,48 +30,6 @@ The response SHALL additionally carry an `admin` posture section reporting the o
 
 - **WHEN** the dev bypass is enabled on a surface Access does not protect, so its only safeguard is the loopback dev-guard (`exposed: true`)
 - **THEN** overall `ok` is `false` and `/health` returns `503`
-
-### Requirement: Scheduled handlers surface failures to the platform
-
-A `scheduled` handler SHALL log a failed run AND rethrow it, so that the run is recorded as a failure by the platform's native cron status (rather than being swallowed and reported as success). Because cron runs are not retried, rethrowing loses no work.
-
-#### Scenario: A failed tick is recorded as a failure
-
-- **WHEN** a scheduled tick throws
-- **THEN** the handler logs the error and rethrows it, so the platform's cron run status reflects the failure rather than success
-
-### Requirement: Registered background jobs report health
-
-The flyer warm and the inbound email handler SHALL each write their `health:job:<name>` record, so both current background processes are covered by `/health`. The flyer warm's record SHALL additionally carry the freshness signal a monitor asserts on (the last sweep's completion time — when the rollups were last refreshed).
-
-#### Scenario: The flyer warm reports health
-
-- **WHEN** a warm tick runs
-- **THEN** it writes `health:job:flyer-warm` with `ok`, `last_run_at`, and a summary including sweep freshness (last completion time) and the run's error count
-
-#### Scenario: The email handler reports health
-
-- **WHEN** the inbound `email` handler processes a message
-- **THEN** it writes `health:job:email` with `ok`, `last_run_at`, and a tenant-data-free summary
-
-### Requirement: Optional secret-gated failure notification
-
-When an `NTFY_URL` secret (and optional `NTFY_TOKEN`) is configured, a background job that **fails** SHALL post a short, tenant-data-free alert to that ntfy topic — an independent failure push that does not depend on any external monitor. When `NTFY_URL` is **unset**, no notification SHALL be attempted and the job SHALL proceed unaffected (graceful degradation). A notification attempt that itself fails SHALL NOT change the job's own outcome.
-
-#### Scenario: Failure posts an ntfy alert when configured
-
-- **WHEN** a background job fails and `NTFY_URL` is configured
-- **THEN** a short tenant-data-free alert is posted to the ntfy topic (authenticated with `NTFY_TOKEN` when set)
-
-#### Scenario: No notification configured degrades gracefully
-
-- **WHEN** a background job fails and `NTFY_URL` is unset
-- **THEN** no notification is attempted and the job proceeds exactly as before
-
-#### Scenario: A failing notification does not affect the job
-
-- **WHEN** posting the ntfy alert itself errors
-- **THEN** the failure is swallowed and the job's own success/failure outcome is unchanged
 
 ### Requirement: Health endpoint is unauthenticated and safe to expose
 
@@ -151,4 +92,3 @@ The rendered SVG SHALL be **tenant-data-free**, derived only from the aggregate 
 
 - **WHEN** the SVG card renders
 - **THEN** it contains only aggregate state (job names, statuses, timestamps, D1 status, admin posture) and no usernames, tenant ids, or allowlisted email addresses
-
