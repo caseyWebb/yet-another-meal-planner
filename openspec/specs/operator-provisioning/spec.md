@@ -26,15 +26,6 @@ The deploy SHALL derive `DATA_OWNER` and `DATA_REPO` from the GitHub Actions con
 - **WHEN** the deploy runs in the operator's data repo
 - **THEN** the deployed Worker's `DATA_OWNER`/`DATA_REPO` match that repo and `DATA_REF` is `main`, with no operator edit to `wrangler.jsonc`
 
-### Requirement: KV-writing workflows address namespaces by binding, not id
-
-The onboard and revoke workflows SHALL address `TENANT_KV` by its **binding name** (resolved from the operator's `wrangler.jsonc`), not by a separately-configured namespace id. The operator SHALL NOT set a `TENANT_KV_ID` variable.
-
-#### Scenario: Onboard writes KV by binding
-
-- **WHEN** the operator runs onboard with no `TENANT_KV_ID` configured
-- **THEN** the workflow resolves the `TENANT_KV` binding from `wrangler.jsonc` and writes the allowlist + invite keys to the correct namespace
-
 ### Requirement: Per-secret provisioning posture
 
 The GitHub App private key SHALL remain a Cloudflare Worker secret set out-of-band (e.g. the Cloudflare dashboard), and SHALL NOT be stored in any repository or passed through the deploy workflow. The lower-blast-radius Kroger client credentials MAY be set by the deploy from data-repo secrets.
