@@ -1,4 +1,4 @@
-module Dev.ToolConsole exposing (Model, Msg, init, selectTool, update, view)
+module Dev.ToolConsole exposing (Model, Msg, init, needsConfirm, selectTool, update, view)
 
 {-| The Dev area's MCP tool console: inspect the live tool surface and invoke any tool AS
 a chosen member, the credential-free in-panel analog of the stock MCP Inspector (the
@@ -153,11 +153,11 @@ update msg model =
         ClickRun ->
             case model of
                 Acting session ->
-                    if isTestPersona session.persona then
-                        attemptRun session
+                    if needsConfirm session.persona then
+                        ( Acting { session | run = Confirming }, Cmd.none )
 
                     else
-                        ( Acting { session | run = Confirming }, Cmd.none )
+                        attemptRun session
 
                 NoPersona _ ->
                     ( model, Cmd.none )
@@ -215,6 +215,16 @@ attemptRun session =
 
                 Ok argsValue ->
                     ( Acting { session | run = Ready Loading }, invoke session.persona tool argsValue )
+
+
+{-| The safety contract: running a tool as a REAL member needs an explicit confirm; a
+throwaway `test-`/`sandbox-` persona does not. Exposed because it is the rule the run gate
+turns on — pinned by `tests/ToolConsoleTest.elm` so the bypass convention can't drift
+silently.
+-}
+needsConfirm : String -> Bool
+needsConfirm persona =
+    not (isTestPersona persona)
 
 
 isTestPersona : String -> Bool
@@ -335,7 +345,7 @@ viewPersonaBar model =
             [ text "acting as "
             , case current of
                 Just persona ->
-                    strong [ classList [ ( "persona", True ), ( "real", not (isTestPersona persona) ) ] ]
+                    strong [ classList [ ( "persona", True ), ( "real", needsConfirm persona ) ] ]
                         [ text persona ]
 
                 Nothing ->
@@ -473,11 +483,11 @@ viewRunControls session =
                             "Run"
                         )
                     ]
-                , if isTestPersona session.persona then
-                    span [ class "muted small" ] [ text " test persona — runs immediately" ]
+                , if needsConfirm session.persona then
+                    span [ class "muted small" ] [ text " real member — confirms first" ]
 
                   else
-                    span [ class "muted small" ] [ text " real member — confirms first" ]
+                    span [ class "muted small" ] [ text " test persona — runs immediately" ]
                 ]
 
 

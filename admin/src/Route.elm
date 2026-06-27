@@ -17,6 +17,7 @@ import Html.Attributes
 import Url exposing (Url)
 import Url.Builder as Builder
 import Url.Parser as Parser exposing ((</>), Parser, oneOf, s, string, top)
+import Url.Parser.Query as Query
 
 
 type Route
@@ -75,32 +76,23 @@ href route =
 
 
 {-| Read an initial acting-as persona from a `?as=<id>` query param. Best-effort: used
-only to seed the workbench on a deep link; the persona is model state thereafter.
+only to seed the workbench on a deep link; the persona is model state thereafter. Parsed
+with `Url.Parser.Query` (its tested `&`/`=` splitting + percent-decoding) over a
+path-stripped URL so it matches regardless of which route the query rode in on; an empty
+`?as=` is treated as absent.
 -}
 actingAsParam : Url -> Maybe String
 actingAsParam url =
-    url.query
-        |> Maybe.withDefault ""
-        |> String.split "&"
-        |> List.filterMap
-            (\pair ->
-                case String.split "=" pair of
-                    key :: rest ->
-                        if key == "as" then
-                            let
-                                raw =
-                                    String.join "=" rest
-                            in
-                            if String.isEmpty raw then
-                                Nothing
+    { url | path = "/" }
+        |> Parser.parse (Parser.query (Query.string "as"))
+        |> Maybe.andThen identity
+        |> Maybe.andThen nonEmpty
 
-                            else
-                                Just (Maybe.withDefault raw (Url.percentDecode raw))
 
-                        else
-                            Nothing
+nonEmpty : String -> Maybe String
+nonEmpty value =
+    if String.isEmpty value then
+        Nothing
 
-                    [] ->
-                        Nothing
-            )
-        |> List.head
+    else
+        Just value

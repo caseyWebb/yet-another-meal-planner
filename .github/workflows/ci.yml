@@ -61,6 +61,12 @@ jobs:
       - name: Test (build tooling)
         run: aubr test:tooling
 
+      - name: Test (admin Elm)
+        # The admin SPA's compiler-opaque logic — URL routing + the run-gate safety
+        # convention. Classic elm-test via npx (no pinned elm binary), like build-admin;
+        # needs package.elm-lang.org reachable (as build-admin already does).
+        run: aubr test:admin
+
       - name: Plugin skills are current with AGENT_INSTRUCTIONS.md
         # The committed marketplace plugin's skills/ are generated from
         # AGENT_INSTRUCTIONS.md — guard against drift. The manifest carries an
