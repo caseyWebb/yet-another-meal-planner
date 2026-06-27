@@ -85,6 +85,33 @@
       button.danger-solid { background: var(--danger); color: #fff; }
       .result { border-left: 3px solid #1a5; padding-left: .6rem; }
       .result.error { border-left-color: var(--danger); }
+      /* Logs area: a left submenu of sources + the selected source's entries (master/detail). */
+      .logs { display: grid; grid-template-columns: 12rem minmax(0, 1fr); gap: 1.25rem; }
+      .logs > * { min-width: 0; }
+      .log-sources { list-style: none; margin: .25rem 0 0; padding: 0; }
+      .log-source { border-radius: .35rem; }
+      .log-source.active { background: #fff7ee; }
+      .log-source-link { display: block; padding: .4rem .6rem; color: #555; text-decoration: none; font-size: .9rem; }
+      .log-source.active .log-source-link { color: #222; font-weight: 600; }
+      .log-head { display: flex; justify-content: space-between; align-items: center; }
+      .entry-list { list-style: none; margin: 0; padding: 0; }
+      .entry-row { display: flex; align-items: baseline; gap: .6rem; padding: .45rem .5rem; border-bottom: 1px solid #f2f2f2; }
+      .entry-row.has-detail { cursor: pointer; }
+      .entry-row.has-detail:hover { background: #fafafa; }
+      .entry-outcome { font-size: .8rem; font-weight: 600; min-width: 7rem; }
+      .entry-outcome.ok { color: #1a7f37; } .entry-outcome.fail { color: #cf222e; } .entry-outcome.muted { color: #57606a; }
+      .entry-title { flex: 1; font-size: .9rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .entry-source { min-width: 6rem; }
+      .entry-time { min-width: 11rem; text-align: right; }
+      .entry-more { color: #1a5; white-space: nowrap; }
+      /* Detail dialog: the open entry's full detail over the (intact) list. */
+      .dialog-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.35); display: flex; align-items: flex-start; justify-content: center; padding: 4rem 1rem; z-index: 20; }
+      .dialog { background: #fff; border-radius: .6rem; max-width: 40rem; width: 100%; max-height: 80vh; overflow: auto; padding: 1rem 1.25rem; box-shadow: 0 .5rem 2rem rgba(0,0,0,.2); }
+      .dialog-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: .5rem; }
+      .dialog-body .row { display: flex; gap: .75rem; align-items: baseline; margin: .3rem 0; }
+      .dialog-body .row .k { width: 7rem; color: #666; font-size: .85rem; }
+      .dialog-body .row .v { word-break: break-all; }
+      .detail-blob { margin-top: .5rem; }
     </style>
   </head>
   <body>

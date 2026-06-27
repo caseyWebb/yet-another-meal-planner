@@ -3,7 +3,7 @@ module Main exposing (main)
 {-| The grocery-agent operator admin shell (operator-admin capability).
 
 A client-routed `Browser.application` served under `/admin` behind Cloudflare Access. The
-panel is split into three top-level areas so it grows by adding routed pages, not by stacking
+panel is split into four top-level areas so it grows by adding routed pages, not by stacking
 cards on one view:
 
   - **Status** — the service-health home view (`/health`: jobs, D1, admin-gate posture), in
@@ -11,6 +11,8 @@ cards on one view:
   - **Members** — member management (onboard / list / rotate / revoke), in `Admin.Members`.
   - **Dev** — the MCP tool console (inspect + run tools as a chosen member), in
     `Dev.ToolConsole`.
+  - **Logs** — operator-auditable activity logs (a left submenu of sources, master/detail), in
+    `Logs`. The selected source rides the route (`/admin/logs/discovery`).
 
 The current page **and its sub-model** are one `Page` union (a page owns its state), so
 being "on the Tools page holding Members' state" is unrepresentable. Navigation is by real
@@ -27,7 +29,8 @@ import Dev.ToolConsole as ToolConsole
 import Html exposing (Html, a, button, div, h1, nav, section, text)
 import Html.Attributes exposing (class, classList, id)
 import Html.Events exposing (onClick)
-import Route exposing (Route)
+import Logs
+import Route exposing (LogSource(..), Route)
 import Status
 import Task
 import Url exposing (Url)
@@ -84,6 +87,7 @@ type Page
     = HealthPage Status.Model
     | MembersPage Members.Model
     | ToolsPage ToolConsole.Model
+    | LogsPage Logs.Model
     | NotFoundPage
 
 
@@ -103,6 +107,7 @@ type Msg
     | HealthMsg Status.Msg
     | MembersMsg Members.Msg
     | ToolsMsg ToolConsole.Msg
+    | LogsMsg Logs.Msg
     | ScrollToSection DevSection
     | NoOp
 
@@ -146,6 +151,13 @@ update msg model =
             in
             ( { model | page = ToolsPage subModel2 }, Cmd.map ToolsMsg cmd )
 
+        ( LogsMsg subMsg, LogsPage subModel ) ->
+            let
+                ( subModel2, cmd ) =
+                    Logs.update subMsg subModel
+            in
+            ( { model | page = LogsPage subModel2 }, Cmd.map LogsMsg cmd )
+
         -- A sub-message for a page we are no longer on (a late response): drop it.
         ( HealthMsg _, _ ) ->
             ( model, Cmd.none )
@@ -154,6 +166,9 @@ update msg model =
             ( model, Cmd.none )
 
         ( ToolsMsg _, _ ) ->
+            ( model, Cmd.none )
+
+        ( LogsMsg _, _ ) ->
             ( model, Cmd.none )
 
 
@@ -171,6 +186,13 @@ stepTo route model =
             in
             ( { model | route = route, page = ToolsPage subModel2 }, Cmd.map ToolsMsg cmd )
 
+        ( Route.Logs selected, LogsPage subModel ) ->
+            let
+                ( subModel2, cmd ) =
+                    Logs.selectSource (logSourceOr selected) subModel
+            in
+            ( { model | route = route, page = LogsPage subModel2 }, Cmd.map LogsMsg cmd )
+
         ( Route.Members, MembersPage _ ) ->
             ( { model | route = route }, Cmd.none )
 
@@ -179,6 +201,13 @@ stepTo route model =
 
         _ ->
             enter route Nothing model
+
+
+{-| The selected log source for a `Logs` route, defaulting the bare `/admin/logs` (no source
+chosen) to the first source so the area always shows a log. -}
+logSourceOr : Maybe LogSource -> LogSource
+logSourceOr selected =
+    Maybe.withDefault Discovery selected
 
 
 {-| Build a route's page from scratch. For Tools, `actingAs` seeds the persona (only ever
@@ -206,6 +235,13 @@ enter route actingAs model =
                     ToolConsole.init { persona = actingAs, tool = selected }
             in
             ( { model | route = route, page = ToolsPage subModel }, Cmd.map ToolsMsg cmd )
+
+        Route.Logs selected ->
+            let
+                ( subModel, cmd ) =
+                    Logs.init (logSourceOr selected)
+            in
+            ( { model | route = route, page = LogsPage subModel }, Cmd.map LogsMsg cmd )
 
         Route.NotFound ->
             ( { model | route = route, page = NotFoundPage }, Cmd.none )
@@ -246,11 +282,15 @@ view model =
     }
 
 
-{-| The tool console is two-column and wants a wider page than the member-management forms. -}
+{-| The two-column areas (the tool console and the logs master/detail) want a wider page than
+the member-management forms. -}
 wrapClass : Route -> String
 wrapClass route =
     case route of
         Route.Tools _ ->
+            "wrap wrap-wide"
+
+        Route.Logs _ ->
             "wrap wrap-wide"
 
         _ ->
@@ -263,6 +303,7 @@ viewNav route =
         [ navLink "Status" Route.Health (isStatus route)
         , navLink "Members" Route.Members (isMembers route)
         , navLink "Dev · Tools" (Route.Tools Nothing) (isDev route)
+        , navLink "Logs" (Route.Logs Nothing) (isLogs route)
         ]
 
 
@@ -301,6 +342,16 @@ isDev route =
             False
 
 
+isLogs : Route -> Bool
+isLogs route =
+    case route of
+        Route.Logs _ ->
+            True
+
+        _ ->
+            False
+
+
 viewPage : Model -> Html Msg
 viewPage model =
     case model.page of
@@ -318,6 +369,9 @@ viewPage model =
                 , section [ id (sectionId McpInspector), class "dev-section" ]
                     [ Html.map ToolsMsg (ToolConsole.view subModel) ]
                 ]
+
+        LogsPage subModel ->
+            Html.map LogsMsg (Logs.view subModel)
 
         NotFoundPage ->
             div [ class "card" ] [ text "Not found." ]

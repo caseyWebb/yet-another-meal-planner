@@ -29,6 +29,7 @@ import {
 } from "./tenant.js";
 import { listToolsFor, callToolFor } from "./admin-tools.js";
 import { listBugReports } from "./bug-reports.js";
+import { readDiscoveryLog } from "./discovery-db.js";
 import type { KvStore } from "./kroger-user.js";
 
 const TENANT_PREFIX = "tenant:"; // mirrors src/tenant.ts (the allowlist directory)
@@ -365,6 +366,15 @@ async function routeAdminApi(
   // Bug reports: the operator's review queue for agent-filed reports (report_bug → D1).
   if (path === "/admin/api/bug-reports") {
     if (method === "GET") return { reports: await listBugReports(deps.db) };
+    throw new ToolError("unsupported", `Method ${method} not supported on ${path}`);
+  }
+
+  // Logs › Discovery: the background discovery sweep's per-candidate outcome log. Group-wide
+  // (the operator sees every member's attributions — the cross-tenant operator reach the rest
+  // of /admin has), most-recent-first, and bounded by readDiscoveryLog (default/cap 200) so the
+  // response stays manageable.
+  if (path === "/admin/api/logs/discovery") {
+    if (method === "GET") return { entries: await readDiscoveryLog(env, 200) };
     throw new ToolError("unsupported", `Method ${method} not supported on ${path}`);
   }
 
