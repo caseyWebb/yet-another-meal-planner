@@ -1,0 +1,10 @@
+{
+  "alwaysUpdateLinks": true,
+  "newFileLocation": "folder",
+  "newFileFolderPath": "recipes",
+  "attachmentFolderPath": "_attachments",
+  "promptDelete": false,
+  "useMarkdownLinks": false,
+  "showInlineTitle": true,
+  "propertiesInDocument": "visible"
+}

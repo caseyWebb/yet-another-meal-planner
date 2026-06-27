@@ -6,7 +6,7 @@ update-when: the build/deploy workflow, common commands, doc-ownership boundarie
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-This repo is the **grocery-agent itself**: the `grocery-mcp` Cloudflare Worker (`src/`), the agent persona/skills source (`AGENT_INSTRUCTIONS.md`, from which `plugin/` is generated), and the build tooling (`scripts/`) that produces the plugin bundle, the admin SPA, and the corpus-migration helper. The agent *runs* in Claude.ai; it is *built* here. **There is no data in this repo** — each operator's authored corpus (recipes + guidance markdown) lives in a Cloudflare **R2 bucket**, and their profile/state in Cloudflare D1/KV (tenant identity is a D1 column, not a repo subtree). The recipe index and the cookbook are derived by the Worker (a scheduled reconcile + a `/cookbook` route), not a CI build.
+This repo is the **grocery-agent itself**: the `grocery-mcp` Cloudflare Worker (`src/`), the agent persona/skills source (`AGENT_INSTRUCTIONS.md`, from which `plugin/` is generated), and the build tooling (`scripts/`) that produces the plugin bundle, the admin SPA, and the Obsidian authoring vault. The agent *runs* in Claude.ai; it is *built* here. **There is no data in this repo** — each operator's authored corpus (recipes + guidance markdown) lives in a Cloudflare **R2 bucket**, and their profile/state in Cloudflare D1/KV (tenant identity is a D1 column, not a repo subtree). The recipe index and the cookbook are derived by the Worker (a scheduled reconcile + a `/cookbook` route), not a CI build.
 
 Read the deep docs rather than reverse-engineering from code:
 - **[CONTRIBUTING.md](CONTRIBUTING.md)** — toolchain, Worker dev, deployment, data tooling, the tool/skill ownership boundary, OpenSpec workflow, conventions. **Start here.**
@@ -27,9 +27,12 @@ aubr test                    # vitest run — Worker unit tests (test/*.test.ts)
 aubr test:tooling            # node --test — build-tooling tests (tests/*.test.mjs, fixture-based)
 aubr build:plugin            # AGENT_INSTRUCTIONS.md → plugin/grocery-agent/ (needs $GROCERY_MCP_URL)
 aubr build:admin             # admin/src/*.elm → admin/dist/ — the Elm operator panel (see admin/CLAUDE.md)
+aubr build:vault             # vault-template/ + src/vocab.js → vault/ — the Obsidian authoring vault
 ```
 
 The **operator admin panel** (`/admin`) is an Elm SPA under [`admin/`](admin/) — its modeling standards ("make impossible states impossible", RemoteData, no `Bool`/`Maybe String` state) live in [`admin/CLAUDE.md`](admin/CLAUDE.md). `admin/dist/` is generated (like `plugin/`) — never hand-edit it.
+
+The **authoring vault** (`vault/`) is the corpus-authoring surface: a preconfigured Obsidian vault whose Metadata Menu dropdowns are generated from `src/vocab.js`, so vocab-bound recipe facets (`protein`/`cuisine`/`season`/`requires_equipment`, plus the open `course` set) are constrained at the editing surface. Generated from `vault-template/` by `scripts/build-vault.mjs` (`--check` drift gate in CI) — never hand-edit `vault/`. The pinned community-plugin binaries are vendored on demand (`build:vault --fetch-plugins`, sha256-verified from `vault-template/plugin-pins.json`), not committed.
 
 - **Single Worker test:** `aubr test test/kroger.test.ts`, or filter by name with `aubr test -- -t "match ingredient"`.
 - **`*.live.test.ts`** (`kroger.live`, `discovery.live`) hit real external APIs and need creds; the default `vitest run` covers the rest.
@@ -61,7 +64,7 @@ Two patterns recur and explain most design decisions:
 
 ## OpenSpec workflow
 
-This repo was built as a sequence of OpenSpec changes and continues that way. `openspec/changes/archive/` is the history; `openspec/specs/` is the living contract. Skills: `/opsx:explore`, `/opsx:propose`, `/opsx:apply`, `/opsx:archive`. Use `openspec list` and `openspec validate "<name>"`. Specs use `### Requirement:` + `#### Scenario:` (SHALL / WHEN-THEN; scenarios need exactly four `#`).
+This repo is developed as a sequence of OpenSpec changes. `openspec/changes/archive/` is the history; `openspec/specs/` is the living contract. Skills: `/opsx:explore`, `/opsx:propose`, `/opsx:apply`, `/opsx:archive`. Use `openspec list` and `openspec validate "<name>"`. Specs use `### Requirement:` + `#### Scenario:` (SHALL / WHEN-THEN; scenarios need exactly four `#`).
 
 ## Conventions
 

@@ -13,7 +13,8 @@ There is **no data in this repo** — the data lives in a separate private data 
 | Path | What it is |
 | --- | --- |
 | `src/`, `test/`, `wrangler.jsonc` | the repo root **is** the Cloudflare Worker (TypeScript) hosting the `grocery-mcp` MCP server + OAuth provider |
-| `scripts/` | build tooling: `build-plugin.mjs` (the plugin bundle), `build-admin.mjs` (the admin SPA), `merge-wrangler-config.mjs` (the deploy config merge). The recipe index + cookbook are derived by the Worker now, not built here; the corpus is copied/edited via `rclone` (see [`docs/SELF_HOSTING.md`](docs/SELF_HOSTING.md)). |
+| `scripts/` | build tooling: `build-plugin.mjs` (the plugin bundle), `build-admin.mjs` (the admin SPA), `build-vault.mjs` (the Obsidian authoring vault, from `vault-template/` + `src/vocab.js`), `merge-wrangler-config.mjs` (the deploy config merge). The recipe index + cookbook are derived by the Worker, not built here; the corpus is copied/edited via `rclone` (see [`docs/SELF_HOSTING.md`](docs/SELF_HOSTING.md)). |
+| `vault-template/`, `vault/` | the authoring vault's authored **source** and its **generated** output (the corpus-authoring Obsidian vault; `vault/` is committed like `plugin/`, never hand-edited) |
 | `docs/` | [`ARCHITECTURE.md`](docs/ARCHITECTURE.md) (the technical model) · [`SCHEMAS.md`](docs/SCHEMAS.md) (file formats) · [`TOOLS.md`](docs/TOOLS.md) (the tool contract) · [`SELF_HOSTING.md`](docs/SELF_HOSTING.md) (operator setup) |
 | `AGENT_INSTRUCTIONS.md` | the agent persona; build source for the `plugin/` bundle |
 | `openspec/` | the change/spec workflow — `changes/archive/` is the build history, `specs/` is the living contract |
@@ -30,7 +31,7 @@ aube install                # deps (reads package-lock.json in place)
 
 **Supply-chain cooldown.** `.npmrc` sets `minimum-release-age=10080` (7 days): aube won't install a dependency version published less than 7 days ago, falling back to the newest one old enough. It's kept numerically aligned with the Dependabot `cooldown` (`default-days: 7`) so Dependabot only proposes versions aube will install. **Residual:** Dependabot fast-tracks *security* updates (cooldown doesn't apply to them), but aube's window applies to every install — so a same-day security bump can make `aube ci` fail in CI until the version ages in. It's rare and self-healing: re-run CI once the release crosses 7 days (don't disable the window in CI — that re-opens the day-zero risk it guards against).
 
-The data-repo template lives in its own independent repo, [`groceries-agent-data-template`](https://github.com/caseyWebb/groceries-agent-data-template) — it is no longer vendored here. Build and test never touch it.
+The data-repo template lives in its own independent repo, [`groceries-agent-data-template`](https://github.com/caseyWebb/groceries-agent-data-template) — it is not vendored here. Build and test never touch it.
 
 ## Working on the Worker (`src/`)
 
@@ -53,7 +54,7 @@ aubr deploy          # wrangler deploy — normally NOT run by hand (see Deploym
 
 **Deployment is operator-run from the private data repo, not from this (public) repo.** This repo holds the Worker source + a *reusable* `data-deploy.yml`; each operator's data repo has a thin `deploy.yml` caller (`uses: …@main`) that **merges** their `wrangler.jsonc` with the code repo's and runs `typecheck` + `test` + `wrangler deploy`. Push/PR here runs `ci.yml` (typecheck + both test suites).
 
-**wrangler config has a code-vs-operator ownership split.** `data-deploy.yml` merges the two configs (`scripts/merge-wrangler-config.mjs`): **code-level** keys (`main`, `compatibility_date`, `compatibility_flags`, `triggers`, `observability`) come from *this repo's* `wrangler.jsonc`, so a new code-level setting (e.g. a cron trigger) propagates to every operator on their next deploy — put such changes here. The **binding set** likewise comes from code so a new binding propagates: `kv_namespaces`/`d1_databases` carry their bindings from code while taking each id from the operator (code ids stripped), and `ai` (no id, no secret — Workers AI is account-scoped) propagates verbatim. **A new binding type must be added to the merge explicitly** — the merge is an allowlist, not a passthrough, so an unhandled binding is silently dropped from the deployed config (this is exactly how the `ai` binding first shipped undeployed). **Operator-owned** keys (`vars`, `kv_namespaces` ids, `name`, `routes`) come from the operator's config; the code repo's `vars`/KV-ids are the maintainer's and are *stripped* by the merge so they never reach another operator. (Before the merge, the deploy `cp`-replaced the config, so code-level changes silently never deployed — the cause of an early flyer-cron miss.)
+**wrangler config has a code-vs-operator ownership split.** `data-deploy.yml` merges the two configs (`scripts/merge-wrangler-config.mjs`): **code-level** keys (`main`, `compatibility_date`, `compatibility_flags`, `triggers`, `observability`) come from *this repo's* `wrangler.jsonc`, so a new code-level setting (e.g. a cron trigger) propagates to every operator on their next deploy — put such changes here. The **binding set** likewise comes from code so a new binding propagates: `kv_namespaces`/`d1_databases` carry their bindings from code while taking each id from the operator (code ids stripped), and `ai` (no id, no secret — Workers AI is account-scoped) propagates verbatim. **A new binding type must be added to the merge explicitly** — the merge is an allowlist, not a passthrough, so an unhandled binding is silently dropped from the deployed config. **Operator-owned** keys (`vars`, `kv_namespaces` ids, `name`, `routes`) come from the operator's config; the code repo's `vars`/KV-ids are the maintainer's and are *stripped* by the merge so they never reach another operator.
 
 **Auto-deploy on merge to main.** When Worker-relevant paths change (`src/**`, `wrangler.jsonc`, `package.json`, `package-lock.json`), `ci.yml`'s `trigger-deploy` job fires `gh workflow run deploy.yml --repo caseyWebb/groceries-agent-data` automatically — but only after the `test` and `no-open-changes` jobs pass. This requires a fine-grained PAT with `actions: write` on the data repo stored as `DATA_REPO_ACTIONS_TOKEN` in this repo's secrets. Doc/test/openspec-only pushes skip the trigger. Self-hosters manage their own deploy trigger.
 
@@ -68,7 +69,7 @@ gh run watch  --repo caseyWebb/groceries-agent-data                # optional: f
 
 ## The corpus + the index (no CI data build)
 
-The authored corpus (`recipes/*.md` + `guidance/**/*.md`) lives in the operator's R2 `CORPUS` bucket, read/written through `src/corpus-store.ts`. There is **no CI index/site build** anymore: the recipe index is projected by the Worker's scheduled reconcile, and the cookbook is served by the Worker. The corpus is copied/edited with `rclone` (R2 is S3-compatible) — the one-time seed and the bulk-edit round-trip are documented in [`docs/SELF_HOSTING.md`](docs/SELF_HOSTING.md):
+The authored corpus (`recipes/*.md` + `guidance/**/*.md`) lives in the operator's R2 `CORPUS` bucket, read/written through `src/corpus-store.ts`. There is **no CI index/site build**: the recipe index is projected by the Worker's scheduled reconcile, and the cookbook is served by the Worker. The corpus is copied/edited with `rclone` (R2 is S3-compatible) — the one-time seed and the bulk-edit round-trip are documented in [`docs/SELF_HOSTING.md`](docs/SELF_HOSTING.md):
 
 ```bash
 rclone sync r2:grocery-corpus ./data     # pull the corpus to a local folder
@@ -77,7 +78,7 @@ rclone sync ./data r2:grocery-corpus      # push it back
 aubr test:tooling                         # node --test (tests/, fixture-based) — the repo's tooling tests
 ```
 
-**Index projection (`src/recipe-projection.ts`).** The cron reconcile reads the whole R2 corpus, validates every recipe (the shared `src/recipe-contract.js` required-field/vocab contract + the `## Ingredients`/`## Instructions` body sections + duplicate-slug guard + cross-corpus `pairs_with` resolution), and rebuilds the D1 `recipes` table. An invalid recipe is **skipped** (not indexed) and recorded to the `reconcile_errors` table — surfaced via `/health`, the `read_reconcile_errors` tool, and an ntfy push (the eventual-feedback model that replaced red CI). It runs in `scheduled()` before the recipe-derived (description/embedding) reconcile.
+**Index projection (`src/recipe-projection.ts`).** The cron reconcile reads the whole R2 corpus, validates every recipe (the shared `src/recipe-contract.js` required-field/vocab contract + the `## Ingredients`/`## Instructions` body sections + duplicate-slug guard + cross-corpus `pairs_with` resolution), and rebuilds the D1 `recipes` table. An invalid recipe is **skipped** (not indexed) and recorded to the `reconcile_errors` table — surfaced via `/health`, the `read_reconcile_errors` tool, and an ntfy push. It runs in `scheduled()` before the recipe-derived (description/embedding) reconcile.
 
 **Validation.** One validator: `src/validate.ts` (`validateFile`) gates agent writes at the Worker, and the shared `src/recipe-contract.js` is reused by the reconcile for the whole-corpus pass. `validateStoreInput` / `validateDiscoveryCandidate` cover the D1 corpus writes (store registry, discovery candidates).
 
@@ -100,6 +101,17 @@ The build bakes the **connector URL** into `plugin/grocery-agent/.mcp.json` and 
 
 If `aubr build:plugin` aborts with *"REFUSING to write the placeholder connector URL"*, that guard fired because neither was set. For a throwaway build where the URL doesn't matter (inspecting output, never committed), `node scripts/build-plugin.mjs` writes to `dist/grocery-agent-plugin/` with the placeholder; `--check` parses + validates without writing. The bundle is **generated** — never hand-edit `plugin/`.
 
+## Building the authoring vault (`vault-template/` + `src/vocab.js` → `vault/`)
+
+The Obsidian authoring vault is generated like the plugin. After editing `vault-template/` **or `src/vocab.js`** (the dropdown options come from the vocab), regenerate the committed vault:
+
+```bash
+aubr build:vault           # → vault/ (config + pinned plugin manifests)
+aubr build:vault -- --check   # validate-only: fail on drift vs vault-template/ + src/vocab.js (the CI gate)
+```
+
+`vault/` is committed and **generated — never hand-edit it**; edit `vault-template/` (or the vocab) and rebuild. The drift gate is **offline**: the Metadata Menu `recipe` fileClass dropdowns are derived from `src/vocab.js`, so a vocab change that isn't rebuilt fails CI's `build-vault --check` — the same discipline as the plugin/admin builds, and what keeps the editing-time constraint in lockstep with the server validator. The three pinned community plugins (Metadata Menu / Templater / Remotely Save) are **not** committed as binaries: `node scripts/build-vault.mjs --fetch-plugins` downloads them from the versions pinned in `vault-template/plugin-pins.json`, verifies each sha256, and lays them into `vault/` to produce the openable distributable. Bumping a plugin means updating the pin (version + embedded manifest + asset sha256), then `aubr build:vault` + commit.
+
 ## Tool & skill surfaces — what goes where
 
 The plugin ships **both** the generated skills (from `AGENT_INSTRUCTIONS.md`) and the MCP tool descriptions (`src/`), and both reach the agent at runtime. Keep each fact in exactly one home:
@@ -116,7 +128,7 @@ The `pr-checklist` workflow ([`.github/workflows/pr-checklist.yml`](.github/work
 
 ## OpenSpec change workflow
 
-This repo was built as a sequence of OpenSpec changes (`openspec/changes/archive/` is the history); further work continues the same workflow. Each change carries `proposal.md`, `design.md`, `specs/` deltas, and `tasks.md`.
+This repo is developed as a sequence of OpenSpec changes (`openspec/changes/archive/` is the history). Each change carries `proposal.md`, `design.md`, `specs/` deltas, and `tasks.md`.
 
 ```bash
 openspec list                       # active changes

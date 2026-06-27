@@ -77,6 +77,14 @@ jobs:
           node scripts/build-plugin.mjs --out /tmp/plugin-check --mcp-url __ci__
           diff -r plugin/grocery-agent/skills /tmp/plugin-check/skills
 
+      - name: Authoring vault is current with src/vocab.js
+        # The committed vault/ is generated from vault-template/ + src/vocab.js — its
+        # Metadata Menu dropdowns ARE the vocabulary, so this gate proves the authoring
+        # constraints can't drift from the server validator. Offline by design (the
+        # vendored plugin binaries are fetched separately, never committed), so --check
+        # needs no network — same drift discipline as the plugin/admin builds.
+        run: node scripts/build-vault.mjs --check
+
   trigger-deploy:
     # Auto-trigger the data-repo deploy on Worker-relevant changes to main.
     # Only fires on push (not PRs or workflow_dispatch) — the push trigger above
