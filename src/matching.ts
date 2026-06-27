@@ -195,14 +195,16 @@ export function normalizeIngredient(ingredient: string, aliases: Record<string, 
 }
 
 /**
- * Normalize a recipe's `perishable_ingredients` list (objective shared content)
- * through the same `normalizeIngredient` the verify matcher uses, so cross-recipe
- * perishable overlap lines up with pantry matching. Drops empties and dedupes;
- * idempotent (re-normalizing an already-normalized list is a no-op). A non-array,
- * or an array containing a non-string, is returned unchanged so write-time/build
- * validation can reject the bad shape rather than this silently coercing it.
+ * Normalize a recipe's ingredient-name list (objective shared content — the
+ * `perishable_ingredients` and `ingredients_key` arrays) through the same
+ * `normalizeIngredient` the verify matcher uses, so cross-recipe overlap (waste
+ * detection, the pantry-overlap re-rank) lines up with pantry matching. Drops empties
+ * and dedupes; idempotent (re-normalizing an already-normalized list is a no-op). A
+ * non-array, or an array containing a non-string, is returned unchanged so
+ * write-time/build validation can reject the bad shape rather than this silently
+ * coercing it.
  */
-export function normalizePerishables(value: unknown, aliases: Record<string, string>): unknown {
+export function normalizeIngredientList(value: unknown, aliases: Record<string, string>): unknown {
   if (!Array.isArray(value)) return value;
   const seen = new Set<string>();
   const out: string[] = [];
@@ -216,6 +218,9 @@ export function normalizePerishables(value: unknown, aliases: Record<string, str
   }
   return out;
 }
+
+/** Back-compat alias — perishables use the generic ingredient-list normalizer. */
+export const normalizePerishables = normalizeIngredientList;
 
 /** Canonical normalized term → `[brands]` lookup key (spaces → underscores). */
 export function brandKey(normalized: string): string {

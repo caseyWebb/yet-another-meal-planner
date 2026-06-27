@@ -7,8 +7,8 @@ import type { Env } from "./env.js";
 import type { GitHubClient, TreeFile } from "./github.js";
 import { readOptional } from "./gh-read.js";
 import { readAliases } from "./corpus-db.js";
-import { normalizePerishables } from "./matching.js";
-import { serializeMarkdown, stripEmptyVarietyDimensions } from "./serialize.js";
+import { normalizeIngredientList } from "./matching.js";
+import { serializeMarkdown } from "./serialize.js";
 import { ToolError } from "./errors.js";
 import { truncate } from "./text.js";
 import { canonicalizeUrl } from "./url.js";
@@ -138,13 +138,16 @@ export async function buildNewRecipe(
   // stale caller is dropped so it never re-enters the corpus as objective content.
   const fm: Record<string, unknown> = { ...frontmatter };
   delete fm.status;
-  // Canonicalize perishable_ingredients (objective shared content) at create the
-  // same way the verify matcher normalizes, so overlap lines up across recipes.
-  if ("perishable_ingredients" in fm) {
-    fm.perishable_ingredients = normalizePerishables(fm.perishable_ingredients, await readAliases(env));
+  // Canonicalize perishable_ingredients and ingredients_key (objective shared content)
+  // at create the same way the verify matcher normalizes, so overlap lines up across
+  // recipes. The full required-field contract is enforced on the serialized content by
+  // the commit engine's validateFile step (a missing/empty required field or a `"none"`
+  // protein is rejected, prompting the agent to author the explicit `null`/`[]`).
+  if ("perishable_ingredients" in fm || "ingredients_key" in fm) {
+    const aliases = await readAliases(env);
+    if ("perishable_ingredients" in fm)
+      fm.perishable_ingredients = normalizeIngredientList(fm.perishable_ingredients, aliases);
+    if ("ingredients_key" in fm) fm.ingredients_key = normalizeIngredientList(fm.ingredients_key, aliases);
   }
-  // Treat a none/empty protein|cuisine as absent so a no-protein dish writes
-  // cleanly instead of tripping the controlled-vocabulary check.
-  stripEmptyVarietyDimensions(fm);
   return { slug, file: { path, content: serializeMarkdown(fm, body) } };
 }

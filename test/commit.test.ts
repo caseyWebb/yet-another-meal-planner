@@ -46,9 +46,33 @@ function fakeGh(opts: {
   };
 }
 
+// A contract-compliant recipe (every system-consumed field present in its explicit
+// empty form) so the commit engine's validateFile gate passes; the commit tests care
+// about batching/retry, not the recipe shape.
+const COMPLIANT_RECIPE = [
+  "---",
+  "title: X",
+  "description: A simple test dish.",
+  "ingredients_key: [x]",
+  "course: [side]",
+  "protein: null",
+  "cuisine: null",
+  "time_total: null",
+  "source: null",
+  "dietary: []",
+  "season: []",
+  "tags: []",
+  "pairs_with: []",
+  "perishable_ingredients: []",
+  "requires_equipment: []",
+  "side_search_terms: []",
+  "---",
+  "body\n",
+].join("\n");
+
 const FILES: TreeFile[] = [
   { path: "pantry.toml", content: "items = []\n" },
-  { path: "recipes/x.md", content: "---\nstatus: active\n---\nbody\n" },
+  { path: "recipes/x.md", content: COMPLIANT_RECIPE },
 ];
 
 describe("commitFiles", () => {

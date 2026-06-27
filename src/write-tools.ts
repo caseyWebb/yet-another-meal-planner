@@ -14,9 +14,9 @@ import { db } from "./db.js";
 import type { GitHubClient, TreeFile } from "./github.js";
 import { readFile } from "./gh-read.js";
 import { readAliases, addAliases } from "./corpus-db.js";
-import { normalizePerishables } from "./matching.js";
+import { normalizeIngredientList } from "./matching.js";
 import { parseMarkdown } from "./parse.js";
-import { serializeMarkdown, stripEmptyVarietyDimensions } from "./serialize.js";
+import { serializeMarkdown } from "./serialize.js";
 import { ToolError, runTool } from "./errors.js";
 import { commitFiles } from "./commit.js";
 import { applyOverlayEdit, type OverlayRow } from "./overlay.js";
@@ -78,15 +78,21 @@ export async function buildRecipeUpdate(
   const text = await readFile(gh, path, "not_found", `Unknown recipe slug: ${slug}`);
   const { frontmatter, body } = parseMarkdown(text, path);
   const merged = { ...frontmatter, ...updates };
-  // perishable_ingredients is objective shared content; canonicalize the names the
-  // same way the verify matcher does so cross-recipe overlap lines up (only when
-  // the caller is writing the field — a non-array passes through for validation).
-  if ("perishable_ingredients" in updates) {
-    merged.perishable_ingredients = normalizePerishables(merged.perishable_ingredients, await readAliases(env));
+  // perishable_ingredients and ingredients_key are objective shared content;
+  // canonicalize the names at WRITE the same way the verify matcher does, so stored
+  // names are canonical and cross-recipe overlap (waste detection + the pantry-overlap
+  // re-rank) lines up. Only when the caller is writing the field — a non-array passes
+  // through unchanged for the contract validator to reject. The full required-field
+  // contract is enforced on the serialized (merged) content by the commit engine's
+  // validateFile step, so a one-field patch on a compliant recipe passes while an edit
+  // that strips or empties a required field is rejected.
+  if ("perishable_ingredients" in updates || "ingredients_key" in updates) {
+    const aliases = await readAliases(env);
+    if ("perishable_ingredients" in updates)
+      merged.perishable_ingredients = normalizeIngredientList(merged.perishable_ingredients, aliases);
+    if ("ingredients_key" in updates)
+      merged.ingredients_key = normalizeIngredientList(merged.ingredients_key, aliases);
   }
-  // Treat a none/empty protein|cuisine as absent so a no-protein dish writes
-  // cleanly instead of tripping the controlled-vocabulary check.
-  stripEmptyVarietyDimensions(merged);
   return { path, content: serializeMarkdown(merged, body) };
 }
 
@@ -172,7 +178,7 @@ export function registerWriteTools(
     "update_recipe",
     {
       description:
-        "Edit a recipe's OBJECTIVE shared content (frontmatter/body) — the same recipe everyone in the group sees. favorite and reject are NOT settable here: they are the caller's personal disposition — use toggle_favorite (favorite) / toggle_reject (reject). last_cooked is NOT settable here either — it is derived from the cooking log (record a cooked meal via log_cooked). Objective frontmatter validates against the controlled vocabularies: `protein`/`cuisine` must be coarse buckets (shrimp→shellfish, salmon→fish; omit `protein` when there's no protein focus — never 'none') and `requires_equipment` slugs must be in-vocab; an off-vocabulary value is rejected (validation_failed).",
+        "Edit a recipe's OBJECTIVE shared content (frontmatter/body) — the same recipe everyone in the group sees. `updates` is a partial patch (merged over the existing frontmatter); you need only send the fields you're changing. favorite and reject are NOT settable here: they are the caller's personal disposition — use toggle_favorite (favorite) / toggle_reject (reject). last_cooked is NOT settable here either — it is derived from the cooking log (record a cooked meal via log_cooked). The MERGED result must satisfy the full required-field contract (the same one create_recipe enforces): every system-consumed field present with its explicit empty form — so a one-field patch on a compliant recipe succeeds, but a patch that EMPTIES a required field (e.g. `description: \"\"`, `ingredients_key: []`) or sets an off-vocabulary `protein`/`cuisine`/`requires_equipment` value is rejected (validation_failed). For no protein focus set `protein: null` (never omit, never 'none').",
       inputSchema: { slug: z.string(), updates: z.record(z.string(), z.unknown()) },
     },
     ({ slug, updates }) =>

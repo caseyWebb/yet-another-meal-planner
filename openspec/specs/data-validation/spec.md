@@ -45,36 +45,36 @@ The system SHALL fail the build (non-zero exit) when any of the following struct
 
 ### Requirement: Required frontmatter fields
 
-The system SHALL require every recipe to define a non-empty `title` (string). `status` is **not** a required or validated field. Absence of `title` SHALL be a hard failure.
+The system SHALL require every recipe to define **all** system-consumed frontmatter
+fields, present even when empty (the blunt-uniform contract owned by the
+`recipe-metadata-contract` capability): `title`, `description`, `ingredients_key`,
+`course`, `protein`, `cuisine`, `time_total`, `source`, `dietary`, `season`, `tags`,
+`pairs_with`, `perishable_ingredients`, `requires_equipment`, and `side_search_terms`.
+A missing required field SHALL be a hard failure at build time (non-zero exit) and at
+Worker write time (`validation_failed`, no commit), naming the missing field and recipe.
+`title`, `description`, `ingredients_key`, and `course` SHALL additionally be non-empty.
+`status` is **not** a required or validated field (the lifecycle is retired); a lingering
+value is tolerated and stripped from the index.
 
 #### Scenario: Missing title blocks the build
 
 - **WHEN** a recipe omits `title` or sets it empty
 - **THEN** the build exits non-zero and reports the missing required field
 
+#### Scenario: Missing ingredients_key blocks the build
+
+- **WHEN** a recipe omits `ingredients_key` (or sets it to an empty array)
+- **THEN** the build exits non-zero and names the missing/empty required field and recipe
+
+#### Scenario: Present-but-empty required arrays are accepted
+
+- **WHEN** a recipe carries every required field with `dietary: []`, `pairs_with: []`, and `perishable_ingredients: []`
+- **THEN** the build accepts the recipe (the empty form is present)
+
 #### Scenario: Status is not required
 
 - **WHEN** a recipe omits `status` (or carries any `status` value)
 - **THEN** the build validates it fine — `status` is neither required nor enum-checked
-
-### Requirement: Warn-only soft validation
-
-The system SHALL emit warnings, without failing the build, when recommended-but-optional frontmatter fields (e.g. `protein`, `time_total`, `ingredients_key`) are missing or null. Optional arrays such as `pairs_with` / `perishable_ingredients` / `course` SHALL default to empty without warning.
-
-#### Scenario: Missing optional field warns but passes
-
-- **WHEN** a recipe omits `protein` and `time_total` but has a valid `title`
-- **THEN** the build prints a warning naming the missing fields and still exits successfully
-
-#### Scenario: Absent pairing and course fields do not warn
-
-- **WHEN** a recipe omits `pairs_with` and `course`
-- **THEN** the build treats both as empty, prints no warning for either, and exits successfully
-
-#### Scenario: Absent perishable_ingredients does not warn
-
-- **WHEN** a recipe omits `perishable_ingredients`
-- **THEN** the build treats it as empty, prints no warning, and exits successfully
 
 ### Requirement: Parse-check scope for data TOMLs
 
@@ -130,32 +130,39 @@ The cooking log and meal plan SHALL be validated at write time by the Worker's `
 
 ### Requirement: Controlled vocabulary for variety dimensions
 
-The system SHALL validate recipe frontmatter `protein` and `cuisine` against controlled allowed-value sets (coarse buckets — e.g. `fish` rather than `salmon`) so variety reasoning is reliable. This validation SHALL run in **both** the Node index-build validator (`scripts/build-indexes.mjs`) and the Worker's write-time structural subset (`src/validate.ts`), drawing the allowed sets from a single shared definition so the two cannot drift. A `protein` or `cuisine` value **present** but outside its allowed set SHALL be a hard failure naming the offending value, recipe, and field — Node: non-zero exit; Worker: a structured `validation_failed` error that aborts the commit. The Worker recipe write path SHALL normalize a `protein`/`cuisine` whose value is the literal string `none` (or the empty string) to **absent** before persisting, since "no protein focus" is a legitimate state and absence is warn-only — such a value is therefore written as absent rather than rejected. Absence of `protein` or `cuisine` SHALL retain the existing warn-only treatment, not a hard failure. The allowed sets SHALL be documented in `docs/SCHEMAS.md`.
+The system SHALL validate recipe frontmatter `protein` and `cuisine` against controlled
+allowed-value sets (coarse buckets — e.g. `fish` rather than `salmon`) so variety
+reasoning is reliable. This validation SHALL run in **both** the Node index-build
+validator (`scripts/build-indexes.mjs`) and the Worker's write-time structural subset
+(`src/validate.ts`), drawing the allowed sets from a single shared definition so the two
+cannot drift. `protein` and `cuisine` SHALL each be **present** on every recipe, carrying
+either an in-vocabulary value or the explicit literal `null` (the canonical "no value"
+form). A value present but outside its allowed set SHALL be a hard failure naming the
+offending value, recipe, and field — Node: non-zero exit; Worker: a structured
+`validation_failed` error that aborts the commit. The write path SHALL NOT translate a
+no-focus dish into an *absent* field and SHALL NOT accept the literal string `"none"`;
+"no protein focus" is expressed as `protein: null`. The allowed sets SHALL be documented
+in `docs/SCHEMAS.md`.
 
 #### Scenario: Out-of-vocabulary protein blocks the build
 
-- **WHEN** a recipe declares `protein: salmon` and `salmon` is not in the allowed protein set (e.g. it collapses to `fish`)
+- **WHEN** a recipe declares `protein: salmon` and `salmon` is not in the allowed protein set (it collapses to `fish`)
 - **THEN** the build exits non-zero and reports the invalid value, recipe, and field
 
 #### Scenario: Out-of-vocabulary protein is rejected at write time
 
-- **WHEN** `create_recipe` or `update_recipe` persists a recipe with `protein: shrimp` (not in the allowed set; the bucket is `shellfish`)
+- **WHEN** `create_recipe` or `update_recipe` persists a recipe with `protein: shrimp` (the bucket is `shellfish`)
 - **THEN** the Worker returns a structured `validation_failed` error naming the field and value, and makes no commit
 
-#### Scenario: A `none` protein is normalized to absent at write time
+#### Scenario: A no-protein dish carries explicit null
 
-- **WHEN** `create_recipe` or `update_recipe` persists a recipe with `protein: none` (or an empty string)
-- **THEN** the recipe is written with `protein` absent (not rejected), and the build later treats it as the warn-only missing-field case
+- **WHEN** `create_recipe` or `update_recipe` persists a vegetable side or condiment with no protein focus
+- **THEN** it is written with `protein: null` (present and explicit), and a `protein: "none"` or omitted `protein` is rejected as non-compliant
 
 #### Scenario: In-vocabulary value passes
 
 - **WHEN** a recipe declares `protein: fish` and `cuisine: filipino`, both in their allowed sets
 - **THEN** validation passes for those fields
-
-#### Scenario: Absent dimension warns but does not fail
-
-- **WHEN** a recipe omits `protein`
-- **THEN** the build warns (per the existing soft rule) and still exits successfully
 
 ### Requirement: Ready-to-eat catalog structural validation
 
@@ -206,22 +213,28 @@ Kitchen inventory is stored in D1 (`kitchen_equipment` table) and validated at w
 
 ### Requirement: Course field shape validation
 
-The system SHALL validate the shape of a recipe's `course` frontmatter — when present, it MUST be a string or an array of strings — and SHALL hard-fail the build (non-zero exit) naming the offending value, recipe, and field when it is not. The system SHALL NOT validate `course` *values* against any controlled set (unlike `protein` / `cuisine`): any string value is accepted, so the facet stays open-vocabulary and expandable without a code change. The Worker's structural pre-commit subset SHALL apply the same shape-only check (parallel to `pairs_with` / `domain`).
+The system SHALL require `course` to be **present** on every recipe as a **non-empty**
+array of strings (a lone string is normalized to a one-element array), and SHALL
+hard-fail the build (non-zero exit) — and the Worker write at `validation_failed` —
+naming the offending value, recipe, and field when it is absent, empty, or not a
+string/array-of-strings. The system SHALL NOT validate `course` *values* against any
+controlled set (unlike `protein` / `cuisine`): any string value is accepted, so the
+facet stays open-vocabulary and expandable without a code change.
 
 #### Scenario: Off-convention course value passes
 
 - **WHEN** a recipe declares `course: [sauce]`, a value outside the documented `main`/`side`/`dessert`/`breakfast` convention
 - **THEN** validation passes — no controlled-vocabulary check rejects the value
 
+#### Scenario: Absent or empty course blocks the build
+
+- **WHEN** a recipe omits `course` or sets `course: []`
+- **THEN** the build exits non-zero and reports the missing required `course` for that recipe
+
 #### Scenario: Non-string course blocks the build
 
-- **WHEN** a recipe declares `course: 3` (a number, neither a string nor an array of strings)
+- **WHEN** a recipe declares `course: 3` (neither a string nor an array of strings)
 - **THEN** the build exits non-zero and reports the invalid `course` value, recipe, and field
-
-#### Scenario: Array-of-strings course passes
-
-- **WHEN** a recipe declares `course: [main, side]`
-- **THEN** validation passes
 
 ### Requirement: Single source of truth for controlled vocabularies
 

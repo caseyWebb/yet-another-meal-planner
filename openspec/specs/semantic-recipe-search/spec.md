@@ -3,22 +3,34 @@
 ## Purpose
 
 Defines semantic retrieval over the recipe corpus: an AI-written `description` and memoized `side_search_terms` on each recipe, fixed-dimension embeddings reconciled Worker-side into a sibling `recipe_embeddings` table, and the `recipe_semantic_search(specs[])` tool that facet-prefilters then ranks survivors by cosine similarity to an embedded `vibe` query. Retrieval re-ranks toward the caller's nearest favorited recipe (multimodal-safe k-NN, not a single centroid) and boosts never-cooked / not-recently-cooked recipes on a configurable rotation window.
-
 ## Requirements
-
 ### Requirement: Recipes carry an AI-written brief description
 
-Each recipe SHALL carry a `description` frontmatter field: a brief (≈1–2 sentence) summary written by the agent at import in a consistent, craving-aligned register, describing the dish's identity, flavor/texture, and when one would want it. The `description` SHALL NOT be the scraped marketing copy from the source site. It is human-editable (it lives in authored markdown frontmatter); the derived embedding is rebuilt from whatever the description currently says. A recipe with no `description` SHALL still index and be retrievable by facet, but SHALL be excluded from semantic ranking until a description exists.
+Each recipe SHALL carry a **mandatory, non-empty** `description` frontmatter field: a
+brief (≈1–2 sentence) summary written by the agent at import in a consistent,
+craving-aligned register, describing the dish's identity, flavor/texture, and when one
+would want it. The `description` SHALL NOT be the scraped marketing copy from the source
+site. It is human-editable (it lives in authored markdown frontmatter); the derived
+embedding is rebuilt from whatever the description currently says. Because `description`
+is a required field (the `recipe-metadata-contract` capability), a recipe with **no**
+description SHALL NOT be writable or buildable — so the only recipe excluded from semantic
+ranking is one whose embedding has not **yet** been reconciled (a transient
+just-imported state), not a permanent description-less recipe.
 
 #### Scenario: Description is generated at import, not scraped
 
 - **WHEN** a recipe is imported and the source page carries SEO marketing copy
 - **THEN** the persisted `description` is the agent's own concise summary, not the source marketing text
 
-#### Scenario: Description is the embed source
+#### Scenario: A description-less recipe cannot be persisted
 
-- **WHEN** the recipe-embedding reconcile runs over the index
-- **THEN** the recipe's embedding is computed from its `description`, and a recipe lacking a `description` is omitted from semantic ranking but still returned by facet filters
+- **WHEN** a recipe write or build presents a recipe with an empty or absent `description`
+- **THEN** it is rejected as non-compliant (no permanent description-less, facet-only recipe exists in the corpus)
+
+#### Scenario: Only the pre-reconcile state is excluded from ranking
+
+- **WHEN** a recipe has been imported with a valid `description` but its embedding has not yet been reconciled by the cron
+- **THEN** it is transiently excluded from semantic ranking (still returned by facet filters) until the next reconcile fills its embedding
 
 ### Requirement: Recipes carry memoized side search terms
 
@@ -118,3 +130,4 @@ Each `recipe_semantic_search` spec SHALL accept an optional `boost_ingredients: 
 
 - **WHEN** a spec omits `boost_ingredients`
 - **THEN** ranking is unchanged from the cosine + favorite + freshness blend and every row's `pantry_overlap` is empty
+
