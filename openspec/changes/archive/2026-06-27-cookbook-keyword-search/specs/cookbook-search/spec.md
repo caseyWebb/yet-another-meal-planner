@@ -1,10 +1,5 @@
-# cookbook-search Specification
+## MODIFIED Requirements
 
-## Purpose
-
-Keyword search for the open, anonymous `/cookbook` browse site: a deterministic, field-weighted ranker over the indexed recipe metadata, exposed both as a server-rendered `?q=` page (the no-JS fallback) and a JSON endpoint that a debounced, first-party client script renders in place — under a Content-Security-Policy that keeps the untrusted recipe-body render script-free.
-
-## Requirements
 ### Requirement: Cookbook search entry point
 
 The `/cookbook` route SHALL accept an optional `q` query parameter. When `q` is absent or empty after trimming, the route SHALL render the existing alphabetical index unchanged. When `q` is non-empty, the route SHALL render a server-rendered, keyword-ranked results page for that query. The route SHALL remain open (no authentication) and read-only (GET/HEAD only). The search control SHALL be a server-rendered text input that functions without client-side script (submitting to `/cookbook?q=`), progressively enhanced by a first-party script into debounced, in-place search; the recipe-body page's strict no-script `Content-Security-Policy` SHALL be preserved (see "Content-Security-Policy posture").
@@ -32,6 +27,8 @@ Because the cookbook is an open, cross-tenant surface with no caller identity, c
 
 - **WHEN** two different visitors search the same query
 - **THEN** they receive the same ranking, independent of any tenant's favourites, cooking history, or pantry
+
+## ADDED Requirements
 
 ### Requirement: Keyword field-weighted ranking
 
@@ -133,3 +130,24 @@ The recipe-body page `/cookbook/<slug>`, which renders untrusted author/agent ma
 - **WHEN** a recipe title or description contains an inline `<script>` and is shown on the search page
 - **THEN** the value is rendered inert (escaped / as text) and the CSP would block inline script execution regardless
 
+## REMOVED Requirements
+
+### Requirement: Two-tier hybrid ranking
+
+**Reason**: Semantic ranking is a poor fit for the open browse surface; the two-tier substring+semantic merge is replaced by keyword field-weighted ranking over the indexed metadata.
+**Migration**: None for callers — `/cookbook?q=` still returns ranked recipes; the ordering is now keyword-based and the cookbook no longer reads recipe embeddings.
+
+### Requirement: Similarity floor and empty results
+
+**Reason**: The cosine similarity floor is removed with the semantic tier. The empty-results behavior is preserved under the new "Empty results state" requirement.
+**Migration**: None — a no-match query still renders a 200 empty state with a link back to the index.
+
+### Requirement: Graceful degradation without embeddings
+
+**Reason**: The cookbook no longer embeds queries or loads recipe embeddings, so there is no semantic tier to degrade from; keyword ranking runs over the always-present D1 index.
+**Migration**: None — every recipe in the index is keyword-searchable, including just-imported recipes that predate the next reconcile (the index is the projection, not the embedding table).
+
+### Requirement: Query-vector cache
+
+**Reason**: No query is embedded anymore, so there is no vector to cache; the `cookbook:qvec:` KV key family is retired.
+**Migration**: None — orphaned `cookbook:qvec:*` keys expire via their existing TTL; no cleanup is required.

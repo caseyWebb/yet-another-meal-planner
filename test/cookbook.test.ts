@@ -1,15 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { handleCookbook } from "../src/cookbook.js";
 import type { Env } from "../src/env.js";
-import { EMBED_DIM } from "../src/embedding.js";
 import { fakeR2 } from "./fake-r2.js";
-
-/** Build an EMBED_DIM-length vector with the given non-zero entries (rest zero). */
-function vec(entries: Record<number, number>): number[] {
-  const v = new Array(EMBED_DIM).fill(0);
-  for (const [i, x] of Object.entries(entries)) v[Number(i)] = x;
-  return v;
-}
 
 const RECIPE_MD = [
   "---",
@@ -30,38 +22,23 @@ const RECIPE_MD = [
 ].join("\n");
 
 /**
- * An env whose DB returns recipe-index rows for `loadRecipeIndex` and embedding rows for
- * `loadRecipeEmbeddings` (routed by SQL), with optional Workers AI + KV fakes for search.
+ * An env whose DB returns recipe-index rows for `loadRecipeIndex` (the only D1 read the
+ * cookbook makes — there are no embeddings on this path), with an optional R2 corpus for
+ * the recipe-body render.
  */
-function envWith(opts: {
-  recipeRows?: Record<string, unknown>[];
-  embeddingRows?: { slug: string; embedding: string }[];
-  files?: Record<string, string>;
-  ai?: { run: (model: string, input: unknown) => Promise<unknown> };
-  kv?: Map<string, string>;
-}): Env {
+function envWith(opts: { recipeRows?: Record<string, unknown>[]; files?: Record<string, string> }): Env {
   const recipeRows = opts.recipeRows ?? [];
-  const embeddingRows = opts.embeddingRows ?? [];
-  // loadRecipeEmbeddings is the only cookbook SELECT that filters on a non-null embedding.
-  const rowsFor = (sql: string) => (/embedding IS NOT NULL/.test(sql) ? embeddingRows : recipeRows);
-  const makeStmt = (sql: string) => {
-    const stmt = { bind: () => stmt, all: async () => ({ results: rowsFor(sql) }) };
+  const makeStmt = () => {
+    const stmt = { bind: () => stmt, all: async () => ({ results: recipeRows }) };
     return stmt;
   };
-  const kv = opts.kv ?? new Map<string, string>();
   return {
-    DB: { prepare: (sql: string) => makeStmt(sql) },
+    DB: { prepare: () => makeStmt() },
     CORPUS: fakeR2(opts.files ?? {}).bucket,
-    AI: opts.ai ?? { run: async () => ({ data: [vec({})] }) },
-    KROGER_KV: {
-      get: async (k: string) => kv.get(k) ?? null,
-      put: async (k: string, v: string) => void kv.set(k, v),
-    },
   } as unknown as Env;
 }
 
-const get = (path: string, method = "GET") =>
-  new Request(`https://groc.example.com${path}`, { method });
+const get = (path: string, method = "GET") => new Request(`https://groc.example.com${path}`, { method });
 
 describe("handleCookbook", () => {
   it("renders the index from the D1 recipe index", async () => {
@@ -149,60 +126,48 @@ describe("handleCookbook", () => {
 });
 
 describe("handleCookbook search", () => {
-  it("renders a GET search form on the index", async () => {
+  it("renders a progressively-enhanced search form + script on the index", async () => {
     const env = envWith({ recipeRows: [{ slug: "miso-salmon", title: "Miso Salmon" }] });
-    const html = await (await handleCookbook(get("/cookbook"), env)).text();
+    const res = await handleCookbook(get("/cookbook"), env);
+    const html = await res.text();
     expect(html).toContain('name="q"');
+    expect(html).toContain('id="q"');
     expect(html).toContain('action="/cookbook"');
     expect(html).toMatch(/method="GET"/i);
+    expect(html).toContain('id="results"');
+    expect(html).toContain('src="/cookbook/search.js"');
+    // the index/search page relaxes the CSP to first-party script + fetch (and nothing else)
+    const csp = res.headers.get("content-security-policy") ?? "";
+    expect(csp).toMatch(/script-src 'self'/);
+    expect(csp).toMatch(/connect-src 'self'/);
+    expect(csp).not.toMatch(/unsafe-inline'[^;]*script|script[^;]*unsafe-inline/);
   });
 
-  it("lists an exact title match ahead of semantic-only neighbours", async () => {
+  it("ranks a title match ahead of a description-only match (server-rendered ?q=)", async () => {
     const env = envWith({
       recipeRows: [
-        { slug: "taco-night", title: "Taco Night" },
-        { slug: "salsa-bowl", title: "Salsa Bowl" },
+        { slug: "bean-soup", title: "Bean Soup" },
+        { slug: "green-salad", title: "Green Salad", description: "tossed with bean sprouts" },
       ],
-      embeddingRows: [
-        { slug: "taco-night", embedding: JSON.stringify(vec({ 1: 1 })) }, // cosine 0 vs query
-        { slug: "salsa-bowl", embedding: JSON.stringify(vec({ 0: 1 })) }, // cosine 1 vs query
-      ],
-      ai: { run: async () => ({ data: [vec({ 0: 1 })] }) }, // query points at salsa-bowl
     });
-    const res = await handleCookbook(get("/cookbook?q=taco"), env);
+    const res = await handleCookbook(get("/cookbook?q=bean"), env);
     expect(res.status).toBe(200);
     const html = await res.text();
-    // taco-night via SUBSTRING (title), salsa-bowl via SEMANTIC — substring ordered first.
-    expect(html).toContain("/cookbook/taco-night");
-    expect(html).toContain("/cookbook/salsa-bowl");
-    expect(html.indexOf("/cookbook/taco-night")).toBeLessThan(html.indexOf("/cookbook/salsa-bowl"));
-    expect(html.split("/cookbook/taco-night").length - 1).toBe(1); // appears exactly once
+    expect(html).toContain("/cookbook/bean-soup");
+    expect(html).toContain("/cookbook/green-salad");
+    expect(html.indexOf("/cookbook/bean-soup")).toBeLessThan(html.indexOf("/cookbook/green-salad"));
   });
 
-  it("returns cosine-ranked results for a vibe query, floored, no-script", async () => {
+  it("surfaces a facet (cuisine) match the title does not mention", async () => {
     const env = envWith({
       recipeRows: [
-        { slug: "alpha-stew", title: "Alpha Stew" },
-        { slug: "gamma-soup", title: "Gamma Soup" },
-        { slug: "beta-salad", title: "Beta Salad" },
+        { slug: "pad-thai", title: "Rice Noodles", cuisine: "thai" },
+        { slug: "carbonara", title: "Carbonara", cuisine: "italian" },
       ],
-      embeddingRows: [
-        { slug: "alpha-stew", embedding: JSON.stringify(vec({ 0: 1 })) }, // cosine 1.0
-        { slug: "gamma-soup", embedding: JSON.stringify(vec({ 0: 3, 1: 1 })) }, // ~0.95
-        { slug: "beta-salad", embedding: JSON.stringify(vec({ 1: 1 })) }, // cosine 0 → floored out
-      ],
-      ai: { run: async () => ({ data: [vec({ 0: 1 })] }) },
     });
-    const res = await handleCookbook(get("/cookbook?q=cozy"), env);
-    expect(res.status).toBe(200);
-    const html = await res.text();
-    expect(html).toContain("/cookbook/alpha-stew");
-    expect(html).toContain("/cookbook/gamma-soup");
-    expect(html).not.toContain("/cookbook/beta-salad"); // below the similarity floor
-    expect(html.indexOf("/cookbook/alpha-stew")).toBeLessThan(html.indexOf("/cookbook/gamma-soup"));
-    // the open surface stays script-free under the same restrictive CSP
-    expect(html).not.toMatch(/<script/i);
-    expect(res.headers.get("content-security-policy")).toMatch(/default-src 'none'/);
+    const html = await (await handleCookbook(get("/cookbook?q=thai"), env)).text();
+    expect(html).toContain("/cookbook/pad-thai");
+    expect(html).not.toContain("/cookbook/carbonara");
   });
 
   it("renders a 200 empty state when nothing matches", async () => {
@@ -214,49 +179,61 @@ describe("handleCookbook search", () => {
     expect(html).toContain("← All recipes");
   });
 
-  it("falls back to substring results when the query embed fails (no 5xx)", async () => {
-    const env = envWith({
-      recipeRows: [{ slug: "taco-night", title: "Taco Night" }],
-      embeddingRows: [{ slug: "taco-night", embedding: JSON.stringify(vec({ 0: 1 })) }],
-      ai: {
-        run: async () => {
-          throw new Error("AI down");
-        },
-      },
-    });
-    const res = await handleCookbook(get("/cookbook?q=taco"), env);
-    expect(res.status).toBe(200);
-    expect(await res.text()).toContain("/cookbook/taco-night"); // substring tier still renders
-  });
-
-  it("finds a not-yet-embedded recipe by title", async () => {
+  it("serves the search endpoint as ranked JSON", async () => {
     const env = envWith({
       recipeRows: [
-        { slug: "fresh-bread", title: "Fresh Bread" }, // no embedding row yet
-        { slug: "old-soup", title: "Old Soup" },
+        { slug: "taco-night", title: "Taco Night" },
+        { slug: "sushi", title: "Sushi" },
       ],
-      embeddingRows: [{ slug: "old-soup", embedding: JSON.stringify(vec({ 0: 1 })) }],
-      ai: { run: async () => ({ data: [vec({ 1: 1 })] }) },
     });
-    const res = await handleCookbook(get("/cookbook?q=bread"), env);
+    const res = await handleCookbook(get("/cookbook/search?q=taco"), env);
     expect(res.status).toBe(200);
-    expect(await res.text()).toContain("/cookbook/fresh-bread");
+    expect(res.headers.get("content-type")).toMatch(/application\/json/);
+    const data = (await res.json()) as { results: { slug: string }[] };
+    expect(data.results.map((r) => r.slug)).toEqual(["taco-night"]);
   });
 
-  it("reuses the cached query vector across identical searches (one embed call)", async () => {
-    const counter = { n: 0 };
+  it("returns an empty JSON list (200) when the endpoint query matches nothing or is empty", async () => {
+    const env = envWith({ recipeRows: [{ slug: "sushi", title: "Sushi" }] });
+    const miss = (await (await handleCookbook(get("/cookbook/search?q=taco"), env)).json()) as { results: unknown[] };
+    const empty = (await (await handleCookbook(get("/cookbook/search?q="), env)).json()) as { results: unknown[] };
+    expect(miss.results).toEqual([]);
+    expect(empty.results).toEqual([]);
+  });
+
+  it("the server ?q= page and the JSON endpoint agree on ordering", async () => {
     const env = envWith({
-      recipeRows: [{ slug: "alpha-stew", title: "Alpha Stew" }],
-      embeddingRows: [{ slug: "alpha-stew", embedding: JSON.stringify(vec({ 0: 1 })) }],
-      ai: {
-        run: async () => {
-          counter.n++;
-          return { data: [vec({ 0: 1 })] };
-        },
-      },
+      recipeRows: [
+        { slug: "chicken-tacos", title: "Chicken Tacos" },
+        { slug: "chicken-soup", title: "Chicken Soup" },
+        { slug: "beef-tacos", title: "Beef Tacos" },
+      ],
     });
-    await handleCookbook(get("/cookbook?q=cozy"), env);
-    await handleCookbook(get("/cookbook?q=cozy"), env);
-    expect(counter.n).toBe(1); // the second search hit the KV vector cache
+    const json = (await (await handleCookbook(get("/cookbook/search?q=chicken%20tacos"), env)).json()) as {
+      results: { slug: string }[];
+    };
+    const html = await (await handleCookbook(get("/cookbook?q=chicken%20tacos"), env)).text();
+    expect(json.results[0].slug).toBe("chicken-tacos");
+    // every endpoint result appears in the SSR page, in the same relative order
+    const positions = json.results.map((r) => html.indexOf(`/cookbook/${r.slug}`));
+    expect(positions.every((p) => p >= 0)).toBe(true);
+    expect(positions).toEqual([...positions].sort((a, b) => a - b));
+  });
+
+  it("serves the client search script with a JS content-type", async () => {
+    const res = await handleCookbook(get("/cookbook/search.js"), envWith({}));
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toMatch(/javascript/);
+    expect(await res.text()).toContain("addEventListener");
+  });
+
+  it("keeps the recipe-body page strict no-script", async () => {
+    const env = envWith({ files: { "recipes/miso-salmon.md": RECIPE_MD } });
+    const res = await handleCookbook(get("/cookbook/miso-salmon"), env);
+    const html = await res.text();
+    const csp = res.headers.get("content-security-policy") ?? "";
+    expect(csp).toMatch(/default-src 'none'/);
+    expect(csp).not.toMatch(/script-src/);
+    expect(html).not.toMatch(/<script/i);
   });
 });

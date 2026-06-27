@@ -1,104 +1,129 @@
 import { describe, it, expect } from "vitest";
-import {
-  DEFAULT_SIMILARITY_FLOOR,
-  mergeCookbookResults,
-  normalizeQuery,
-  queryVectorCacheKey,
-  type CookbookHit,
-  type EmbeddedCandidate,
-} from "../src/cookbook-search.js";
-import { EMBED_MODEL } from "../src/embedding.js";
-import { hashText } from "../src/hash.js";
+import { rankByKeyword, toHit, WEIGHTS } from "../src/cookbook-search.js";
+import type { RecipeIndex } from "../src/recipes.js";
 
-function hit(slug: string, title = slug): CookbookHit {
-  return { slug, title, description: null, protein: null, cuisine: null };
+/** Build a RecipeIndex from loose frontmatter records (slug required). */
+function index(recipes: Record<string, unknown>[]): RecipeIndex {
+  const idx: RecipeIndex = {};
+  for (const r of recipes) idx[String(r.slug)] = { ...r, slug: String(r.slug) };
+  return idx;
 }
-function cand(slug: string, embedding: number[], title = slug): EmbeddedCandidate {
-  return { ...hit(slug, title), embedding };
-}
+const slugs = (hits: { slug: string }[]) => hits.map((h) => h.slug);
 
-describe("mergeCookbookResults", () => {
-  it("orders substring hits ahead of semantic-only neighbours", () => {
-    const out = mergeCookbookResults(
-      [hit("tacos", "Tacos")],
-      [cand("enchiladas", [1, 0]), cand("burrito", [1, 0])],
-      [1, 0],
-      0,
-      10,
-    );
-    // substring first; the semantic tier is tie-broken on slug (burrito < enchiladas)
-    expect(out.map((r) => r.slug)).toEqual(["tacos", "burrito", "enchiladas"]);
+describe("rankByKeyword", () => {
+  it("ranks a title match above a description-only match", () => {
+    const idx = index([
+      { slug: "bean-soup", title: "Bean Soup" },
+      { slug: "green-salad", title: "Green Salad", description: "tossed with bean sprouts" },
+    ]);
+    expect(slugs(rankByKeyword(idx, "bean"))).toEqual(["bean-soup", "green-salad"]);
   });
 
-  it("dedupes a both-tier match, keeping it in the substring tier only", () => {
-    const out = mergeCookbookResults(
-      [hit("tacos", "Tacos")],
-      [cand("tacos", [1, 0], "Tacos"), cand("burrito", [1, 0])],
-      [1, 0],
-      0,
-      10,
-    );
-    expect(out.filter((r) => r.slug === "tacos")).toHaveLength(1);
-    expect(out.map((r) => r.slug)).toEqual(["tacos", "burrito"]);
+  it("matches a facet value (cuisine) even when absent from the title", () => {
+    const idx = index([
+      { slug: "pad-thai", title: "Rice Noodles", cuisine: "thai" },
+      { slug: "carbonara", title: "Carbonara", cuisine: "italian" },
+    ]);
+    expect(slugs(rankByKeyword(idx, "thai"))).toEqual(["pad-thai"]);
   });
 
-  it("excludes semantic candidates below the floor", () => {
-    const out = mergeCookbookResults([], [cand("near", [1, 0]), cand("far", [0, 1])], [1, 0], 0.5, 10);
-    expect(out.map((r) => r.slug)).toEqual(["near"]); // far has cosine 0 < 0.5
+  it("ranks a full-coverage match above a partial-coverage match", () => {
+    const idx = index([
+      { slug: "chicken-tacos", title: "Chicken Tacos" },
+      { slug: "chicken-soup", title: "Chicken Soup" },
+    ]);
+    expect(slugs(rankByKeyword(idx, "chicken tacos"))).toEqual(["chicken-tacos", "chicken-soup"]);
   });
 
-  it("ranks the semantic tier best-first, tie-broken on slug", () => {
-    const out = mergeCookbookResults(
-      [],
-      [cand("b", [3, 1]), cand("a", [3, 1]), cand("top", [1, 0])],
-      [1, 0],
-      0,
-      10,
-    );
-    // top (cosine 1) first; then the a/b tie (cosine 3/√10) broken on slug
-    expect(out.map((r) => r.slug)).toEqual(["top", "a", "b"]);
+  it("gives a typeahead prefix of the title a boost", () => {
+    const idx = index([
+      { slug: "chicken-tacos", title: "Chicken Tacos" },
+      { slug: "tacos-chicken", title: "Tacos with Chicken" },
+    ]);
+    // "chicken ta" is a literal prefix of "Chicken Tacos" → it ranks first
+    expect(slugs(rankByKeyword(idx, "chicken ta"))[0]).toBe("chicken-tacos");
   });
 
-  it("returns substring-only when there is no query vector (degradation)", () => {
-    const out = mergeCookbookResults([hit("x")], [cand("y", [1, 0])], null, 0.5, 10);
-    expect(out.map((r) => r.slug)).toEqual(["x"]); // candidates ignored without a vector
+  it("matches a partial token (typeahead), so 'chick' reaches 'Chicken'", () => {
+    const idx = index([{ slug: "chicken-pie", title: "Chicken Pie" }, { slug: "beef-pie", title: "Beef Pie" }]);
+    expect(slugs(rankByKeyword(idx, "chick"))).toEqual(["chicken-pie"]);
   });
 
-  it("is empty-in / empty-out", () => {
-    expect(mergeCookbookResults([], [], [1, 0], 0.5, 10)).toEqual([]);
-    expect(mergeCookbookResults([], [], null, 0.5, 10)).toEqual([]);
+  it("excludes recipes that match no query token", () => {
+    const idx = index([
+      { slug: "tacos", title: "Tacos" },
+      { slug: "sushi", title: "Sushi" },
+    ]);
+    expect(slugs(rankByKeyword(idx, "tacos"))).toEqual(["tacos"]);
   });
 
-  it("caps the semantic tier at k but never the substring tier", () => {
-    const subs = [hit("s1", "S1"), hit("s2", "S2"), hit("s3", "S3")];
-    const cands = [cand("c1", [1, 0]), cand("c2", [1, 0]), cand("c3", [1, 0])];
-    const out = mergeCookbookResults(subs, cands, [1, 0], 0, 1);
-    expect(out.filter((r) => r.slug.startsWith("s"))).toHaveLength(3); // all substring shown
-    expect(out.filter((r) => r.slug.startsWith("c"))).toHaveLength(1); // semantic capped at k=1
+  it("breaks score ties by title then slug", () => {
+    const idx = index([
+      { slug: "z", title: "Taco Bravo" },
+      { slug: "a", title: "Taco Bravo" },
+      { slug: "m", title: "Taco Alpha" },
+    ]);
+    // identical "taco" title hit → equal score; order by title (Alpha<Bravo) then slug (a<z)
+    expect(slugs(rankByKeyword(idx, "taco"))).toEqual(["m", "a", "z"]);
+  });
+
+  it("returns nothing for an empty or all-stopword query", () => {
+    const idx = index([{ slug: "tacos", title: "Tacos" }]);
+    expect(rankByKeyword(idx, "")).toEqual([]);
+    expect(rankByKeyword(idx, "   ")).toEqual([]);
+    expect(rankByKeyword(idx, "and the")).toEqual([]);
+  });
+
+  it("tokenizes punctuation and hyphens cleanly", () => {
+    const idx = index([{ slug: "stir-fry", title: "Stir Fry" }]);
+    expect(slugs(rankByKeyword(idx, "stir-fry!"))).toEqual(["stir-fry"]);
+  });
+
+  it("keeps accented words whole, with no 1-char-token leakage", () => {
+    const idx = index([
+      { slug: "jalapeno-poppers", title: "Jalapeño Poppers" },
+      { slug: "plain-toast", title: "Plain Toast" }, // contains an "o"
+    ]);
+    // "jalapeño" stays one token (not ["jalape","o"]): it matches the accented title and
+    // the stray "o" no longer drags in unrelated recipes.
+    expect(slugs(rankByKeyword(idx, "jalapeño"))).toEqual(["jalapeno-poppers"]);
+  });
+
+  it("earns the typeahead prefix bonus across a hyphen separator", () => {
+    const idx = index([
+      { slug: "chicken-tacos", title: "Chicken Tacos" },
+      { slug: "tacos-chicken", title: "Tacos with Chicken" },
+    ]);
+    expect(slugs(rankByKeyword(idx, "chicken-ta"))[0]).toBe("chicken-tacos");
+  });
+
+  it("scores across multiple metadata fields (tags, course, ingredients)", () => {
+    const idx = index([
+      { slug: "a", title: "Mystery Dish", tags: ["weeknight"], course: ["main"], ingredients_key: ["lentil"] },
+      { slug: "b", title: "Other Dish" },
+    ]);
+    expect(slugs(rankByKeyword(idx, "lentil"))).toEqual(["a"]);
+    expect(slugs(rankByKeyword(idx, "weeknight"))).toEqual(["a"]);
+  });
+
+  it("weights title above description", () => {
+    expect(WEIGHTS.title.word).toBeGreaterThan(WEIGHTS.description.word);
   });
 });
 
-describe("queryVectorCacheKey / normalizeQuery", () => {
-  it("normalizes case and whitespace", () => {
-    expect(normalizeQuery("  Chicken   Rice ")).toBe("chicken rice");
+describe("toHit", () => {
+  it("falls back to the slug when the title is missing or empty", () => {
+    expect(toHit({ slug: "x" }).title).toBe("x");
+    expect(toHit({ slug: "x", title: "" }).title).toBe("x");
   });
 
-  it("collapses equivalent queries to the same key", () => {
-    expect(queryVectorCacheKey("Tacos")).toBe(queryVectorCacheKey("  tacos "));
-  });
-
-  it("gives distinct queries distinct keys", () => {
-    expect(queryVectorCacheKey("tacos")).not.toBe(queryVectorCacheKey("burritos"));
-  });
-
-  it("binds the key to the embedding model, so a model change re-keys", () => {
-    expect(queryVectorCacheKey("x")).toBe(`cookbook:qvec:${hashText(`${EMBED_MODEL}\nx`)}`);
-    // hashing the query alone (no model) would differ — proves the model participates
-    expect(queryVectorCacheKey("x")).not.toBe(`cookbook:qvec:${hashText("x")}`);
-  });
-
-  it("exposes a default floor inside (0, 1)", () => {
-    expect(DEFAULT_SIMILARITY_FLOOR).toBeGreaterThan(0);
-    expect(DEFAULT_SIMILARITY_FLOOR).toBeLessThan(1);
+  it("carries the compact render fields, coercing non-strings to null", () => {
+    expect(toHit({ slug: "s", title: "T", description: "D", protein: "fish", cuisine: 7 })).toEqual({
+      slug: "s",
+      title: "T",
+      description: "D",
+      protein: "fish",
+      cuisine: null,
+    });
   });
 });
