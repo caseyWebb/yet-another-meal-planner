@@ -118,6 +118,16 @@ describe("validateRecipeContract", () => {
         validateRecipeContract(compliant({ requires_equipment: ["air-fryer"] })).some((e) => /air-fryer/.test(e)),
       ).toBe(true);
     });
+    it("accepts canonical season tokens", () => {
+      expect(validateRecipeContract(compliant({ season: ["spring", "fall"] }))).toEqual([]);
+    });
+    it("rejects an off-vocab season token", () => {
+      expect(validateRecipeContract(compliant({ season: ["monsoon"] })).some((e) => /season/.test(e))).toBe(true);
+    });
+    it("rejects the autumn synonym and non-canonical casing (must be canonical, e.g. fall)", () => {
+      expect(validateRecipeContract(compliant({ season: ["autumn"] })).some((e) => /season/.test(e))).toBe(true);
+      expect(validateRecipeContract(compliant({ season: ["Summer"] })).some((e) => /season/.test(e))).toBe(true);
+    });
   });
 
   describe("conditional side_search_terms", () => {

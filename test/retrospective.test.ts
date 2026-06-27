@@ -1,9 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { retrospective, periodDays } from "../src/retrospective.js";
+import { retrospective, periodDays, seasonOf, normalizeSeason } from "../src/retrospective.js";
 import type { CookingLogEntry } from "../src/cooking-log.js";
 import type { RecipeIndex } from "../src/recipes.js";
 
-const NOW = new Date("2026-06-30T12:00:00Z");
+const NOW = new Date("2026-06-30T12:00:00Z"); // summer (Northern hemisphere)
 
 const index: RecipeIndex = {
   salmon: { slug: "salmon", title: "Salmon", protein: "fish", cuisine: "american", last_cooked: "2026-06-20" },
@@ -34,7 +34,30 @@ describe("periodDays", () => {
   });
 });
 
-describe("retrospective", () => {
+describe("seasonOf", () => {
+  it("maps UTC months to Northern-hemisphere meteorological seasons", () => {
+    expect(seasonOf(new Date("2026-01-15T00:00:00Z"))).toBe("winter");
+    expect(seasonOf(new Date("2026-02-28T00:00:00Z"))).toBe("winter");
+    expect(seasonOf(new Date("2026-03-01T00:00:00Z"))).toBe("spring");
+    expect(seasonOf(new Date("2026-05-31T00:00:00Z"))).toBe("spring");
+    expect(seasonOf(new Date("2026-06-01T00:00:00Z"))).toBe("summer");
+    expect(seasonOf(new Date("2026-08-31T00:00:00Z"))).toBe("summer");
+    expect(seasonOf(new Date("2026-09-01T00:00:00Z"))).toBe("fall");
+    expect(seasonOf(new Date("2026-11-30T00:00:00Z"))).toBe("fall");
+    expect(seasonOf(new Date("2026-12-01T00:00:00Z"))).toBe("winter");
+  });
+});
+
+describe("normalizeSeason", () => {
+  it("case-folds and maps autumn to fall", () => {
+    expect(normalizeSeason("Autumn")).toBe("fall");
+    expect(normalizeSeason("FALL")).toBe("fall");
+    expect(normalizeSeason("  Summer ")).toBe("summer");
+    expect(normalizeSeason("winter")).toBe("winter");
+  });
+});
+
+describe("retrospective aggregates", () => {
   it("counts every cook event in protein_mix, not one per recipe", () => {
     const r = retrospective(entries, index, "30d", NOW);
     // tacos cooked twice (beef x2) + lasagna beef = 3 beef; salmon fish = 1; ad_hoc mixed = 1
@@ -73,17 +96,6 @@ describe("retrospective", () => {
     ]);
   });
 
-  it("surfaces underused non-rejected recipes (never-cooked + stale), excluding rejected", () => {
-    const r = retrospective(entries, index, "7d", NOW); // window starts 2026-06-23
-    const slugs = r.underused.map((u) => u.slug);
-    expect(slugs).toContain("stew"); // never cooked
-    expect(slugs).toContain("salmon"); // last cooked 06-20, before window
-    expect(slugs).toContain("tacos");
-    expect(slugs).not.toContain("hidden"); // rejected → excluded from rotation
-    // never-cooked sorts first
-    expect(r.underused[0].slug).toBe("stew");
-  });
-
   it("buckets missing dimensions under unknown", () => {
     const r = retrospective(
       [{ date: "2026-06-15", type: "ad_hoc", name: "leftovers" }],
@@ -93,5 +105,110 @@ describe("retrospective", () => {
     );
     expect(r.protein_mix.unknown).toBe(1);
     expect(r.cuisine_mix.unknown).toBe(1);
+  });
+});
+
+describe("retrospective underused", () => {
+  // NOW = 2026-06-30 (summer). Fixed staleness cutoff = 2026-05-31; trailing-12mo
+  // revealed window starts 2025-06-30.
+
+  it("surfaces a stale favorite, tagged why=favorite", () => {
+    const idx: RecipeIndex = {
+      miso: { slug: "miso", title: "Miso Salmon", favorite: true, last_cooked: "2026-04-01" },
+    };
+    const log: CookingLogEntry[] = [{ date: "2026-04-01", type: "recipe", recipe: "miso" }];
+    const r = retrospective(log, idx, "month", NOW);
+    expect(r.underused).toEqual([
+      { slug: "miso", title: "Miso Salmon", last_cooked: "2026-04-01", why: "favorite", cook_count: 1 },
+    ]);
+  });
+
+  it("includes a favorited-but-never-cooked recipe and sorts it ahead of cooked ones", () => {
+    const idx: RecipeIndex = {
+      miso: { slug: "miso", title: "Miso", favorite: true, last_cooked: "2026-04-01" },
+      dandan: { slug: "dandan", title: "Dan Dan", favorite: true, last_cooked: null },
+    };
+    const log: CookingLogEntry[] = [{ date: "2026-04-01", type: "recipe", recipe: "miso" }];
+    const r = retrospective(log, idx, "month", NOW);
+    expect(r.underused.map((u) => u.slug)).toEqual(["dandan", "miso"]); // never-cooked first
+    expect(r.underused[0]).toMatchObject({ slug: "dandan", last_cooked: null, why: "favorite", cook_count: 0 });
+  });
+
+  it("surfaces a revealed favorite (>=3 cooks in trailing 12mo) with all-time cook_count", () => {
+    const idx: RecipeIndex = {
+      arroz: { slug: "arroz", title: "Arroz Caldo", favorite: false, last_cooked: "2026-04-01" },
+    };
+    const log: CookingLogEntry[] = [
+      { date: "2024-01-01", type: "recipe", recipe: "arroz" }, // all-time only (outside trailing 12mo)
+      { date: "2025-08-01", type: "recipe", recipe: "arroz" },
+      { date: "2025-10-01", type: "recipe", recipe: "arroz" },
+      { date: "2026-01-01", type: "recipe", recipe: "arroz" },
+      { date: "2026-04-01", type: "recipe", recipe: "arroz" },
+    ];
+    const r = retrospective(log, idx, "month", NOW);
+    expect(r.underused).toEqual([
+      { slug: "arroz", title: "Arroz Caldo", last_cooked: "2026-04-01", why: "revealed", cook_count: 5 },
+    ]);
+  });
+
+  it("does not surface a one-off cook (not a revealed favorite)", () => {
+    const idx: RecipeIndex = {
+      oneoff: { slug: "oneoff", title: "One Off", favorite: false, last_cooked: "2025-09-01" },
+    };
+    const log: CookingLogEntry[] = [{ date: "2025-09-01", type: "recipe", recipe: "oneoff" }];
+    const r = retrospective(log, idx, "month", NOW);
+    expect(r.underused).toEqual([]);
+    expect(r.underused_count).toBe(0);
+  });
+
+  it("excludes a rejected recipe even when revealed and stale", () => {
+    const idx: RecipeIndex = {
+      padsee: { slug: "padsee", title: "Pad See Ew", reject: true, favorite: false, last_cooked: "2026-03-01" },
+    };
+    const log: CookingLogEntry[] = [
+      { date: "2025-09-01", type: "recipe", recipe: "padsee" },
+      { date: "2025-12-01", type: "recipe", recipe: "padsee" },
+      { date: "2026-03-01", type: "recipe", recipe: "padsee" },
+    ];
+    const r = retrospective(log, idx, "month", NOW);
+    expect(r.underused).toEqual([]);
+  });
+
+  it("drops out-of-season favorites but keeps year-round ones", () => {
+    const idx: RecipeIndex = {
+      braise: { slug: "braise", title: "Winter Braise", favorite: true, last_cooked: null, season: ["winter"] },
+      gazpacho: { slug: "gazpacho", title: "Gazpacho", favorite: true, last_cooked: null, season: [] },
+    };
+    const r = retrospective([], idx, "month", NOW); // NOW is summer
+    expect(r.underused.map((u) => u.slug)).toEqual(["gazpacho"]);
+  });
+
+  it("matches season case-insensitively with autumn === fall", () => {
+    const FALL = new Date("2026-10-15T12:00:00Z");
+    const idx: RecipeIndex = {
+      apple: { slug: "apple", title: "Apple Crisp", favorite: true, last_cooked: null, season: ["Autumn"] },
+    };
+    const r = retrospective([], idx, "month", FALL);
+    expect(r.underused.map((u) => u.slug)).toEqual(["apple"]);
+  });
+
+  it("uses a fixed 30-day staleness window independent of period", () => {
+    const idx: RecipeIndex = {
+      fresh: { slug: "fresh", title: "Fresh Fav", favorite: true, last_cooked: "2026-06-10" }, // 20 days ago
+    };
+    const log: CookingLogEntry[] = [{ date: "2026-06-10", type: "recipe", recipe: "fresh" }];
+    const r = retrospective(log, idx, "year", NOW); // long period must NOT widen staleness
+    expect(r.underused).toEqual([]);
+  });
+
+  it("caps at 15 items and reports the full total in underused_count", () => {
+    const many: RecipeIndex = {};
+    for (let i = 0; i < 20; i++) {
+      const slug = `fav-${String(i).padStart(2, "0")}`;
+      many[slug] = { slug, title: slug, favorite: true, last_cooked: null };
+    }
+    const r = retrospective([], many, "month", NOW);
+    expect(r.underused).toHaveLength(15);
+    expect(r.underused_count).toBe(20);
   });
 });

@@ -12,7 +12,7 @@
 // runs UNCOMPILED under node, so it cannot import a .ts module. src/recipe-contract.d.ts
 // gives the TypeScript side (Worker + vitest + tsc) its types.
 
-import { PROTEIN_VOCAB, CUISINE_VOCAB, EQUIPMENT_VOCAB } from './vocab.js';
+import { PROTEIN_VOCAB, CUISINE_VOCAB, SEASON_VOCAB, EQUIPMENT_VOCAB } from './vocab.js';
 
 // Required strings — present AND non-empty (no valid empty form).
 export const REQUIRED_NONEMPTY_STRINGS = ['title', 'description'];
@@ -125,6 +125,16 @@ export function validateRecipeContract(fm) {
         if (!EQUIPMENT_VOCAB.includes(slug))
           errors.push(
             `\`requires_equipment\` ${JSON.stringify(slug)} is not in the controlled vocabulary (one of ${EQUIPMENT_VOCAB.join(' | ')})`,
+          );
+      }
+    } else if (f === 'season') {
+      // Controlled vocabulary like protein/cuisine — strict exact match (authored
+      // canonical, lowercase). `autumn` is rejected in favor of `fall`. Read paths
+      // normalize legacy synonyms; the gate itself never coerces.
+      for (const s of fm[f]) {
+        if (!SEASON_VOCAB.includes(s))
+          errors.push(
+            `\`season\` ${JSON.stringify(s)} is not in the controlled vocabulary (one of ${SEASON_VOCAB.join(' | ')}; use \`fall\`, not \`autumn\`)`,
           );
       }
     }

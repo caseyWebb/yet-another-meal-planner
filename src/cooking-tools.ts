@@ -135,7 +135,7 @@ export function registerCookingTools(
     "retrospective",
     {
       description:
-        "Aggregate cooking history over a period from the cooking log. period accepts 'Nd' (e.g. '30d'), 'week', 'month', 'quarter', 'year', or 'all'. Returns recipes_cooked, protein_mix, cuisine_mix (non-recipe entries counted via inline dims; missing → 'unknown'), cadence (cooks/week, recipe+ad_hoc only), cook_vs_convenience (cooked vs ready_to_eat), ready_to_eat_favorites (frequency-ranked), and underused (active recipes not cooked in the window).",
+        "Aggregate cooking history over a period from the cooking log. period accepts 'Nd' (e.g. '30d'), 'week', 'month', 'quarter', 'year', or 'all', and scopes recipes_cooked, protein_mix, cuisine_mix (non-recipe entries counted via inline dims; missing → 'unknown'), cadence (cooks/week, recipe+ad_hoc only), cook_vs_convenience (cooked vs ready_to_eat), and ready_to_eat_favorites (frequency-ranked). underused is INDEPENDENT of period: loved recipes — the caller's favorites PLUS revealed favorites (cooked ≥3× in the trailing 12 months) — that have gone stale (never cooked, or not cooked in a FIXED 30 days) and are in season now; rejected recipes are excluded. Each underused item carries why ('favorite' | 'revealed') and cook_count (all-time), is sorted stalest-first, and is capped at 15; underused_count is the pre-cap qualifying total.",
       inputSchema: { period: z.string().optional() },
     },
     ({ period }) => runTool(() => loadRetrospective(env, username, period ?? "month")),

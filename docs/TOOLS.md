@@ -141,7 +141,7 @@ Write a **new** recipe to the **shared corpus** (the data-repo root, read by eve
 **Errors (structured):**
 - `{ error: "slug_exists", slug }` — a recipe already exists at that path; not overwritten.
 - `{ error: "already_exists", slug, source }` — a recipe with this `source` URL is already in the shared corpus (idempotent import); `slug` is the existing recipe to reuse.
-- `{ error: "validation_failed" }` — no derivable slug (missing title), the body lacks the required H2 sections, or the frontmatter violates the required-field contract (a missing/empty required field, an off-vocabulary `protein`/`cuisine`/`requires_equipment` value, or a `"none"` protein — the error names the offending field).
+- `{ error: "validation_failed" }` — no derivable slug (missing title), the body lacks the required H2 sections, or the frontmatter violates the required-field contract (a missing/empty required field, an off-vocabulary `protein`/`cuisine`/`season`/`requires_equipment` value, or a `"none"` protein — the error names the offending field).
 
 **Notes:** The everyday discovery write path: `parse_recipe` (parse) → agent cleans/classifies → `create_recipe`. The recipe is available to everyone the moment it's committed (no draft, no activation); later personal disposition is `toggle_favorite` (love it) or `toggle_reject` (hide it). The frontmatter is a pass-through record (free-form fields ride through), but the required-field contract is enforced at write time (`src/validate.ts`, the shared `validateRecipeContract` the build also runs) so a recipe can never be created silently un-indexed. `protein`/`cuisine`/`requires_equipment` are checked against the shared vocabularies (`src/vocab.js`); a no-protein dish writes `protein: null` (never omitted, never `none`). `update_recipe` enforces the same contract on the **merged** result — a one-field patch on a compliant recipe succeeds, an edit that empties a required field is rejected — and is the path to backfill fields on existing recipes. `perishable_ingredients` **and `ingredients_key`** are **normalized on write** (Kroger-matcher normalization) so cross-recipe overlap lines up; classify `perishable_ingredients` by the "would the leftover rot" test.
 
@@ -716,18 +716,19 @@ Aggregate **real** cooking history from the D1 `cooking_log` table over a period
 **Returns:**
 ```
 {
-  period, window: { from, to, days },
+  period, window: { from, to, days },                  // period scopes the next five fields only
   recipes_cooked:   [{ recipe, count, dates }],   // distinct recipes, with per-cook dates
   protein_mix:      { <protein>: count },          // counts EVERY cook event; non-recipe entries via inline dims; missing → "unknown"
   cuisine_mix:      { <cuisine>: count },
   cadence:          { cooks, weeks, cooks_per_week },   // counts recipe + ad_hoc only (ready_to_eat is not cooking)
   cook_vs_convenience: { cooked, convenience },         // cooked = recipe + ad_hoc; convenience = ready_to_eat
   ready_to_eat_favorites: [{ name, count }],            // frequency-ranked; feeds menu-flow restock suggestions
-  underused:        [{ slug, title, last_cooked }]      // active recipes not cooked within the window
+  underused:        [{ slug, title, last_cooked, why, cook_count }],  // loved & quiet & in-season; ≤15, stalest first
+  underused_count:  <number>                            // total qualifying before the 15-item cap
 }
 ```
 
-**Notes:** `last_cooked` is derived (see `log_cooked`) — `MAX(date)` over the caller's `type=recipe` rows — so `underused` reflects real cook events. Eating out is never logged; leftovers of an already-logged cook are not re-logged.
+**Notes:** `last_cooked` is derived (see `log_cooked`) — `MAX(date)` over the caller's `type=recipe` rows. **`underused` is independent of `period`**: it surfaces **loved** recipes — `favorite === true` (declared) **or** cooked **≥3× in the trailing 12 months** (revealed) — that are **stale** (`last_cooked` null, or older than a **fixed 30 days**) and **in season** now (the recipe's `season` is `[]`/year-round or includes the current Northern-hemisphere season; matched case-insensitively with `autumn`≡`fall`). Rejected recipes are excluded. `why` is `"favorite"` or `"revealed"`; `cook_count` is the all-time cook count (for the revival nudge). The list is sorted never-cooked-first then oldest `last_cooked` and capped at 15 — `underused_count` reports how many qualified. Eating out is never logged; leftovers of an already-logged cook are not re-logged.
 
 ### `log_cooked(entry)`
 
