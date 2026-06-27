@@ -61,7 +61,7 @@ Two patterns recur and explain most design decisions:
 
 ## OpenSpec workflow
 
-This repo was built as a sequence of OpenSpec changes and continues that way. `openspec/changes/archive/` is the history; `openspec/specs/` is the living contract. Skills: `/opsx:explore`, `/opsx:propose`, `/opsx:apply`, `/opsx:archive`. Use `openspec list` and `openspec validate "<name>"`. Specs use `### Requirement:` + `#### Scenario:` (SHALL / WHEN-THEN; scenarios need exactly four `#`).
+This repo is developed as a sequence of OpenSpec changes. `openspec/changes/archive/` is the history; `openspec/specs/` is the living contract. Skills: `/opsx:explore`, `/opsx:propose`, `/opsx:apply`, `/opsx:archive`. Use `openspec list` and `openspec validate "<name>"`. Specs use `### Requirement:` + `#### Scenario:` (SHALL / WHEN-THEN; scenarios need exactly four `#`).
 
 ## Conventions
 
