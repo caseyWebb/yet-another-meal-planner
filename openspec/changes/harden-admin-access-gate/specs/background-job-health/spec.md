@@ -4,7 +4,7 @@
 
 The Worker SHALL serve a `/health` endpoint on its public (non-MCP) fetch path that aggregates all `health:job:<name>` records into one response reporting an overall `ok` and, per job, its `ok`, `last_run_at`, and a freshness/last-error summary. Because the `fetch` path is independent of the `scheduled` path, `/health` SHALL remain answerable even when the cron is not firing, so a stopped job is detectable via stale `last_run_at` / freshness. The endpoint SHALL return **only aggregate** state — never per-tenant rows, and store identifiers SHALL be reported as counts rather than enumerated. A job that has never run SHALL be reported as such rather than omitted or treated as healthy.
 
-The response SHALL additionally carry an `admin` posture section reporting the operator admin gate as booleans only: `access_configured` (both Access vars set), `email_allowlist` (an allowlist is configured), `dev_bypass_set` (the dev bypass flag is present), and `exposed`. The `admin` section SHALL NOT include the allowlisted email addresses themselves — only whether an allowlist is configured. `exposed` SHALL be `true` when a tokenless `/admin` request would be admitted in a deployed (non-loopback) context, and SHALL be computed by the **same** gate-disposition logic the `/admin` gate uses, so the report cannot drift from the gate. When `exposed` is `true`, the overall `ok` SHALL be `false` (so `/health` returns `503`), in addition to the existing job-failure and D1-probe conditions.
+The response SHALL additionally carry an `admin` posture section reporting the operator admin gate as booleans only: `access_configured` (both Access vars set), `email_allowlist` (an allowlist is configured), `dev_bypass_set` (the dev bypass flag is present), and `exposed`. The `admin` section SHALL NOT include the allowlisted email addresses themselves — only whether an allowlist is configured. `exposed` SHALL be `true` when the dev bypass is enabled on a surface that Access does not protect (`ACCESS_TEAM_DOMAIN`/`ACCESS_AUD` unset and `ADMIN_DEV_BYPASS` set) — the surface's only safeguard is then the loopback dev-guard, an alarm-worthy deployment misconfiguration — and SHALL be computed by the **same** gate-disposition helper the `/admin` gate uses, so the report cannot drift from the gate. When `exposed` is `true`, the overall `ok` SHALL be `false` (so `/health` returns `503`), in addition to the existing job-failure and D1-probe conditions.
 
 #### Scenario: Endpoint aggregates job health
 
@@ -28,7 +28,7 @@ The response SHALL additionally carry an `admin` posture section reporting the o
 
 #### Scenario: An exposed admin gate degrades overall health
 
-- **WHEN** the admin gate would admit a tokenless `/admin` request in a deployed (non-loopback) context (`exposed: true`)
+- **WHEN** the dev bypass is enabled on a surface Access does not protect, so its only safeguard is the loopback dev-guard (`exposed: true`)
 - **THEN** overall `ok` is `false` and `/health` returns `503`
 
 ### Requirement: Health endpoint is unauthenticated and safe to expose

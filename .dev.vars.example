@@ -39,6 +39,11 @@ KROGER_CLIENT_SECRET=""
 # Unset → /admin is 404 (opt-in, fails closed).
 # ACCESS_TEAM_DOMAIN="yourteam.cloudflareaccess.com"
 # ACCESS_AUD="<access-application-aud-tag>"
-# Local dev ONLY: serve /admin without Access verification so `wrangler dev` can run
-# the panel. Honored only when the ACCESS_* vars above are unset; never set in prod.
+# Optional defense-in-depth: restrict /admin to specific operator emails (the verified
+# Access `email` claim must match, case-insensitive). Unset → any valid Access session admits.
+# ACCESS_ALLOWED_EMAILS="you@example.com"
+# Local dev ONLY: serve /admin without Access verification so `wrangler dev` can run the
+# panel. Honored only when the request host is loopback AND the ACCESS_* vars are unset; it is
+# inert (panel stays 404) on any deployed host, so never set it in prod. Note: with this on,
+# /health reports the admin gate as `exposed` (expected locally).
 ADMIN_DEV_BYPASS="1"

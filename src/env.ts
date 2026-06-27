@@ -55,9 +55,19 @@ export interface Env {
   /** Cloudflare Access application audience (AUD) tag the admin JWT must carry. Non-secret. */
   ACCESS_AUD?: string;
   /**
-   * Local-dev escape: when `1` AND the Access vars are unset, `/admin*` is served
-   * without verification so `wrangler dev` can run the panel. Never set in a
-   * deployed Worker — once Access is configured it cannot engage.
+   * OPTIONAL comma-separated allowlist of operator email addresses — defense-in-depth beyond
+   * the Access policy. When set, a verified assertion's `email` claim must match one entry
+   * (case-insensitive, trimmed) or `/admin*` is denied (403). When unset, any assertion that
+   * passes signature/`aud`/issuer verification is admitted (prior behavior), and `/health`
+   * reports `email_allowlist: false`. Non-secret; the addresses are never exposed by `/health`.
+   */
+  ACCESS_ALLOWED_EMAILS?: string;
+  /**
+   * Local-dev escape: when `1` AND the request host is loopback (`localhost`/`127.0.0.1`/`::1`)
+   * AND the Access vars are unset, `/admin*` is served without verification so `wrangler dev`
+   * can run the panel. The loopback gate makes it structurally inert in any deployed context —
+   * a stray `1` on a deployed Worker cannot open the panel (it stays 404), and `/health`
+   * surfaces the dangerous config as `exposed`. Never set in a deployed Worker.
    */
   ADMIN_DEV_BYPASS?: string;
 

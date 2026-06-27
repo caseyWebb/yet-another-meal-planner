@@ -87,24 +87,63 @@ const defaultKeySet: KeySetGetter = (team) => {
   return set;
 };
 
+/** True when the request's URL host is loopback — the only place the dev bypass may engage. */
+export function isLoopbackHost(request: Request): boolean {
+  const host = new URL(request.url).hostname;
+  return host === "localhost" || host === "127.0.0.1" || host === "::1" || host === "[::1]";
+}
+
+/** Parse `ACCESS_ALLOWED_EMAILS` into a normalized (trimmed, lowercased, non-empty) list. */
+function parseAllowedEmails(raw: string | undefined): string[] {
+  return (raw ?? "")
+    .split(",")
+    .map((e) => e.trim().toLowerCase())
+    .filter(Boolean);
+}
+
 /**
- * Verify a request's Cloudflare Access assertion. When `ACCESS_TEAM_DOMAIN` /
- * `ACCESS_AUD` are unset the surface is disabled (404) — unless `ADMIN_DEV_BYPASS`
- * is `1` AND no Access config is present, the local-dev escape so `wrangler dev`
- * can serve the panel (it can never engage once Access is configured). With Access
- * configured, a missing or invalid `Cf-Access-Jwt-Assertion` is denied (403).
- * `getKeySet` is injectable so the dev/disabled/denied paths are testable offline.
+ * The gate's decision for a request that presents NO valid assertion, as a function of
+ * config + host. The SINGLE source of truth shared by `requireAccess` (the live gate) and
+ * `adminPosture` (the `/health` report) so the two can never drift:
+ *   - `gated`      — Access is configured; a real request must present a valid assertion.
+ *   - `dev-bypass` — Access unset, `ADMIN_DEV_BYPASS=1`, AND the host is loopback (local dev only).
+ *   - `disabled`   — anything else (incl. the bypass flag on a non-loopback/deployed host) → 404.
+ */
+export type GateDisposition = "gated" | "dev-bypass" | "disabled";
+export function adminGateDisposition(env: Env, opts: { isLoopback: boolean }): GateDisposition {
+  const team = env.ACCESS_TEAM_DOMAIN?.trim();
+  const aud = env.ACCESS_AUD?.trim();
+  if (team && aud) return "gated";
+  if (env.ADMIN_DEV_BYPASS === "1" && opts.isLoopback) return "dev-bypass";
+  return "disabled";
+}
+
+/**
+ * Verify a request's Cloudflare Access assertion. When Access is unconfigured the surface is
+ * disabled (404) — unless `ADMIN_DEV_BYPASS=1` AND the request host is loopback, the local-dev
+ * escape so `wrangler dev` can serve the panel; the loopback gate makes it structurally inert in
+ * any deployed context, regardless of the flag. With Access configured, a missing/invalid
+ * `Cf-Access-Jwt-Assertion` is denied (403); and when `ACCESS_ALLOWED_EMAILS` is set, a verified
+ * assertion whose `email` claim is absent or off the list is denied too (defense-in-depth beyond
+ * the Access policy). `getKeySet` is injectable so the dev/disabled/denied paths test offline.
  */
 export async function requireAccess(
   request: Request,
   env: Env,
   getKeySet: KeySetGetter = defaultKeySet,
 ): Promise<AccessResult> {
+  const disposition = adminGateDisposition(env, { isLoopback: isLoopbackHost(request) });
+  if (disposition === "disabled") return { status: "disabled" };
+  if (disposition === "dev-bypass") {
+    console.warn(
+      "[admin] ADMIN_DEV_BYPASS engaged — serving /admin without Access verification (loopback dev only)",
+    );
+    return { status: "ok" };
+  }
+  // disposition === "gated": Access is configured, so both vars are present (re-read for jose).
   const team = env.ACCESS_TEAM_DOMAIN?.trim();
   const aud = env.ACCESS_AUD?.trim();
-  if (!team || !aud) {
-    return env.ADMIN_DEV_BYPASS === "1" ? { status: "ok" } : { status: "disabled" };
-  }
+  if (!team || !aud) return { status: "disabled" }; // defensive; "gated" implies both set
   const token = request.headers.get("Cf-Access-Jwt-Assertion") ?? "";
   if (!token) return { status: "denied" };
   try {
@@ -113,10 +152,42 @@ export async function requireAccess(
       audience: aud,
       clockTolerance: "5s",
     });
-    return { status: "ok", email: typeof payload.email === "string" ? payload.email : undefined };
+    const email = typeof payload.email === "string" ? payload.email : undefined;
+    const allow = parseAllowedEmails(env.ACCESS_ALLOWED_EMAILS);
+    if (allow.length > 0 && (!email || !allow.includes(email.trim().toLowerCase()))) {
+      return { status: "denied" };
+    }
+    return { status: "ok", email };
   } catch {
     return { status: "denied" };
   }
+}
+
+/** The admin gate's posture, as tenant-clean booleans for `/health` (never the emails themselves). */
+export interface AdminPosture {
+  /** Both Access vars set — the surface is gated by a verified Access assertion. */
+  access_configured: boolean;
+  /** An `ACCESS_ALLOWED_EMAILS` allowlist is configured (defense-in-depth beyond the Access policy). */
+  email_allowlist: boolean;
+  /** `ADMIN_DEV_BYPASS` is set (inert in any deployed context, but surfaced so a stray prod flag shows). */
+  dev_bypass_set: boolean;
+  /**
+   * The surface's only safeguard is the loopback dev-guard: Access unset AND the dev bypass set.
+   * An alarm-worthy deployment misconfiguration — the gate still 404s on a deployed host, but the
+   * config is surfaced so health degrades. Derived from the shared disposition (asking "could the
+   * bypass admit?"), so a regression that drops the loopback guard flips this too.
+   */
+  exposed: boolean;
+}
+
+/** Compute the admin gate posture from env alone (`exposed` asks the deployed-risk question). */
+export function adminPosture(env: Env): AdminPosture {
+  return {
+    access_configured: !!(env.ACCESS_TEAM_DOMAIN?.trim() && env.ACCESS_AUD?.trim()),
+    email_allowlist: parseAllowedEmails(env.ACCESS_ALLOWED_EMAILS).length > 0,
+    dev_bypass_set: env.ADMIN_DEV_BYPASS === "1",
+    exposed: adminGateDisposition(env, { isLoopback: true }) === "dev-bypass",
+  };
 }
 
 // --- Member lifecycle operations (pure over AdminDeps) ----------------------
