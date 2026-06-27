@@ -62,12 +62,21 @@ Read a single recipe's full content (frontmatter + body).
 
 ### `recipe_site_url()`
 
-Resolve the URL of the hosted recipe site (the static browse view of the shared corpus) from the data repo's **GitHub Pages** config, via the GitHub App token. No parameters; reads the shared repo; never writes. Used in onboarding to point a member at the full corpus.
+Resolve the URL of the hosted cookbook (the static browse view of the shared corpus), served by the **grocery-mcp Worker itself** at `<host>/cookbook` — built from the D1 index + the R2 corpus (`src/cookbook.ts`), no GitHub Pages and no GitHub App token. No parameters; never writes. Used in onboarding to point a member at the full corpus.
 
 **Returns:**
-- `{ url, enabled }` — `enabled: true` with the published `html_url` (honoring a custom domain) when Pages is on; `{ url: null, enabled: false }` when it isn't (the agent should tell the user their operator needs to enable GitHub Pages).
+- `{ url, enabled }` — `enabled: true` with `<host>/cookbook` (the operator's domain the member connected to) when the host is resolvable; `{ url: null, enabled: false }` on the rare path where it isn't.
 
-**Notes:** Returns a structured `insufficient_permission` error when the GitHub App lacks the **`Pages: read`** permission (a one-time operator grant; see `docs/SELF_HOSTING.md`).
+**Notes:** No GitHub Pages, no GitHub Pro, no permission grant — it cannot return `insufficient_permission`. On the `enabled: false` path the cookbook just couldn't be addressed; surface the corpus another way (e.g. `search_recipes`) rather than pointing at a URL.
+
+### `read_reconcile_errors()`
+
+List the recipes the index reconcile **SKIPPED** because they failed validation — the shared corpus's current indexing failures. The recipe index is rebuilt from the R2 corpus by a **background reconcile**; a recipe whose frontmatter breaks the required-field/vocabulary contract, is missing a `## Ingredients`/`## Instructions` body section, duplicates another slug, or has a dangling `pairs_with` is **NOT indexed** (so it won't appear in `search_recipes`) and is recorded here with the first actionable error. No parameters; **shared** across the group; never writes.
+
+**Returns:**
+- `{ errors: [{ slug, path, message, recorded_at }] }` — one entry per skipped recipe; `message` is the first actionable error (e.g. `` `thai-curry`: `protein: poltry` isn't a valid value``), `path` its R2 object path. An **empty list** means every recipe indexed cleanly.
+
+**Notes:** Use it when a member reports a recipe they authored/edited (e.g. via Obsidian) isn't showing up, or proactively after a bulk edit — then relay the specific fix so they can correct the source.
 
 ### `update_recipe(slug, updates)`
 
@@ -78,9 +87,9 @@ Edit a recipe's **objective shared content** (frontmatter/body) — the same rec
 - `updates` (object): partial objective frontmatter to merge (title, protein, cuisine, course, tags, dietary, pairs_with, perishable_ingredients, …)
 
 **Returns:**
-- `{ slug, updated_fields, commit_sha? }` — confirmation of what was changed; `commit_sha` is present when a write landed and omitted when nothing changed
+- `{ slug, updated_fields }` — confirmation of what was changed (`updated_fields` is `[]` when nothing was passed to change). **No `commit_sha`** — the recipe is a single R2 object, not a git commit.
 
-**Notes:** Objective-only — it writes shared GitHub recipe content and nothing else. `favorite`/`reject` (and the retired `status`/`rating`) are rejected with `validation_failed` (the message names `toggle_favorite`/`toggle_reject`), and `last_cooked` is rejected toward `log_cooked`; `description` is rejected too (it is AI-generated from the recipe's facets and stored in `recipe_derived`, not authored). `read_recipe`/`search_recipes` merge the caller's overlay (favorite/reject, set via `toggle_favorite`/`toggle_reject`) and cooking-log `last_cooked` onto shared content at read time; an absent overlay row means **neutral (available)** — `favorite: false`, `reject: false`. `perishable_ingredients` is objective shared content, so an edit to it writes the shared recipe; the Worker normalizes the names on write (the same `normalizeIngredient` the Kroger matcher uses) so cross-recipe overlap lines up. Objective frontmatter is checked against the controlled vocabularies on write: `protein`/`cuisine` must be coarse buckets and `requires_equipment` slugs must be in-vocab — an off-vocab value returns `validation_failed` and makes no commit (a `none`/empty `protein`/`cuisine` is normalized to absent rather than rejected).
+**Notes:** Objective-only — it writes the shared recipe's R2 object and nothing else. `favorite`/`reject` (and the retired `status`/`rating`) are rejected with `validation_failed` (the message names `toggle_favorite`/`toggle_reject`), and `last_cooked` is rejected toward `log_cooked`; `description` is rejected too (it is AI-generated from the recipe's facets and stored in `recipe_derived`, not authored). The **merged** result must satisfy the full required-field contract (the same one `create_recipe` enforces) — a one-field patch on a compliant recipe succeeds, but a patch that empties a required field (e.g. `ingredients_key: []`) or sets an off-vocab `protein`/`cuisine`/`requires_equipment` value is rejected (`validation_failed`) and nothing is written. `read_recipe`/`search_recipes` merge the caller's overlay (favorite/reject, set via `toggle_favorite`/`toggle_reject`) and cooking-log `last_cooked` onto shared content at read time; an absent overlay row means **neutral (available)** — `favorite: false`, `reject: false`. `perishable_ingredients` is objective shared content, so an edit to it writes the shared recipe; the Worker normalizes the names on write (the same `normalizeIngredient` the Kroger matcher uses) so cross-recipe overlap lines up. For no protein focus set `protein: null` (never omit, never `none`).
 
 ### `toggle_favorite(slug, favorite)`
 
@@ -110,7 +119,7 @@ Hide a recipe from the **caller** — `reject: true` removes it from the caller'
 
 ### `parse_recipe(url)`
 
-**Parse-only.** Fetch a recipe page, extract its schema.org `Recipe` JSON-LD, and return the structured data. Writes nothing and commits nothing — the agent cleans/classifies the data, assembles the markdown body, then persists via `create_recipe`.
+**Parse-only.** Fetch a recipe page, extract its schema.org `Recipe` JSON-LD, and return the structured data. Writes nothing — the agent cleans/classifies the data, assembles the markdown body, then persists via `create_recipe`.
 
 **Params:**
 - `url` (string, required)
@@ -128,7 +137,7 @@ Hide a recipe from the **caller** — `reject: true` removes it from the caller'
 
 ### `create_recipe(frontmatter, body, slug?)`
 
-Write a **new** recipe to the **shared corpus** (the data-repo root, read by everyone), from agent-assembled frontmatter + body, as **one solo commit**. The slug derives from the title unless `slug` is supplied. The body MUST contain `## Ingredients` and `## Instructions` H2 sections (guarded — a body missing them is rejected, never committed). A recipe is shared and single-source: if the `source` URL is already in the corpus, the write is refused (`already_exists`) so the existing recipe is reused, not duplicated.
+Write a **new** recipe to the **shared corpus** (read by everyone), from agent-assembled frontmatter + body, as **one R2 object**. The slug derives from the title unless `slug` is supplied. The body MUST contain `## Ingredients` and `## Instructions` H2 sections (guarded — a body missing them is rejected, never written). A recipe is shared and single-source: if the `source` URL is already in the corpus, the write is refused (`already_exists`) so the existing recipe is reused, not duplicated.
 
 **Params:**
 - `frontmatter` (object, required) — full recipe frontmatter. **Every system-consumed field is required and must be present** (the required-field contract, `src/recipe-contract.js`): `title`, `ingredients_key`, `course` (non-empty); `protein`, `cuisine`, `time_total`, `source` (a value **or explicit `null`**); `dietary`, `season`, `tags`, `pairs_with`, `perishable_ingredients`, `requires_equipment` (may be `[]`); and `side_search_terms` (non-empty for a `main`, `[]` otherwise). Fields outside this set are free-form and pass through untouched. **No `status`** is stamped (the per-tenant status lifecycle is retired) — an imported recipe lands available to the whole group by default; a lingering `status` is stripped. Discovery imports should set `discovered_at` and `discovery_source`. `description` is **not** an input — it is AI-generated from the recipe's facets and stored in D1 (`recipe_derived`); any supplied `description` is ignored.
@@ -136,14 +145,14 @@ Write a **new** recipe to the **shared corpus** (the data-repo root, read by eve
 - `slug` (string, optional) — overrides the title-derived slug.
 
 **Returns:**
-- `{ slug, commit_sha }`
+- `{ slug }` — the slug the recipe was written at. **No `commit_sha`** — the recipe is a single R2 object, not a git commit.
 
 **Errors (structured):**
 - `{ error: "slug_exists", slug }` — a recipe already exists at that path; not overwritten.
 - `{ error: "already_exists", slug, source }` — a recipe with this `source` URL is already in the shared corpus (idempotent import); `slug` is the existing recipe to reuse.
 - `{ error: "validation_failed" }` — no derivable slug (missing title), the body lacks the required H2 sections, or the frontmatter violates the required-field contract (a missing/empty required field, an off-vocabulary `protein`/`cuisine`/`season`/`requires_equipment` value, or a `"none"` protein — the error names the offending field).
 
-**Notes:** The everyday discovery write path: `parse_recipe` (parse) → agent cleans/classifies → `create_recipe`. The recipe is available to everyone the moment it's committed (no draft, no activation); later personal disposition is `toggle_favorite` (love it) or `toggle_reject` (hide it). The frontmatter is a pass-through record (free-form fields ride through), but the required-field contract is enforced at write time (`src/validate.ts`, the shared `validateRecipeContract` the build also runs) so a recipe can never be created silently un-indexed. `protein`/`cuisine`/`requires_equipment` are checked against the shared vocabularies (`src/vocab.js`); a no-protein dish writes `protein: null` (never omitted, never `none`). `update_recipe` enforces the same contract on the **merged** result — a one-field patch on a compliant recipe succeeds, an edit that empties a required field is rejected — and is the path to backfill fields on existing recipes. `perishable_ingredients` **and `ingredients_key`** are **normalized on write** (Kroger-matcher normalization) so cross-recipe overlap lines up; classify `perishable_ingredients` by the "would the leftover rot" test.
+**Notes:** The everyday discovery write path: `parse_recipe` (parse) → agent cleans/classifies → `create_recipe`. The recipe is available to everyone the moment it's written (no draft, no activation); later personal disposition is `toggle_favorite` (love it) or `toggle_reject` (hide it). The frontmatter is a pass-through record (free-form fields ride through), but the required-field contract is enforced at write time (`src/validate.ts`, the shared `validateRecipeContract` the build also runs) so a recipe can never be created silently un-indexed. `protein`/`cuisine`/`requires_equipment` are checked against the shared vocabularies (`src/vocab.js`); a no-protein dish writes `protein: null` (never omitted, never `none`). `update_recipe` enforces the same contract on the **merged** result — a one-field patch on a compliant recipe succeeds, an edit that empties a required field is rejected — and is the path to backfill fields on existing recipes. `perishable_ingredients` **and `ingredients_key`** are **normalized on write** (Kroger-matcher normalization) so cross-recipe overlap lines up; classify `perishable_ingredients` by the "would the leftover rot" test.
 
 ---
 
@@ -699,9 +708,9 @@ Create or **refine** a single guidance memory. Gated by a **writable-domain allo
 - `source` (string, optional) — provenance (e.g. an ATK/Serious Eats URL), recorded into the file's frontmatter.
 
 **Returns:**
-- `{ domain, slug, path, commit_sha }` — `path` is `guidance/<domain>/<slug>.md`; the write is one atomic commit (the shared commit engine, same path as `create_recipe`).
+- `{ domain, slug, path }` — `path` is `guidance/<domain>/<slug>.md`; the write is one R2 object put (atomic at the object level, same store as `create_recipe`). **No `commit_sha`** — the corpus is R2, not git.
 
-**Notes:** There is exactly one file per slug — saving an existing slug **overwrites/refines** it (read the existing entry first and merge; never accumulate duplicates). A write to a non-allowlisted/unknown domain, an empty `content`, or a malformed slug yields `{ error: "validation_failed", … }` and commits nothing — this allowlist is how `ingredient_storage` stays read-only.
+**Notes:** There is exactly one file per slug — saving an existing slug **overwrites/refines** it (read the existing entry first and merge; never accumulate duplicates). A write to a non-allowlisted/unknown domain, an empty `content`, or a malformed slug yields `{ error: "validation_failed", … }` and writes nothing — this allowlist is how `ingredient_storage` stays read-only.
 
 ---
 
@@ -873,19 +882,19 @@ Fetch a daily weather forecast for the user's location. Read-only, no side effec
 
 ### `report_bug(title, body)`
 
-Files a bug report as a GitHub issue on the operator's **private data repo** (where the App is installed), on behalf of a member who has no GitHub account and can't file issues themselves. The Worker adds attribution it controls — the caller's `username`, a UTC timestamp, and the `agent-reported` label — so identity can't be omitted or spoofed by the agent. Returns `{ url, number }`.
+Records a bug report into the **operator's review queue** (the D1 `bug_reports` table), on behalf of a member who can't file issues themselves. The operator reviews it in the **admin panel** (`GET /admin/api/bug-reports`). The Worker stamps attribution it controls — the reporter is the caller's tenant id, plus a UTC timestamp — so identity can't be omitted or spoofed by the agent. Use it when a grocery-mcp tool errors in a way the agent can't work around, or when the user has had to repeatedly correct/redirect on the same thing; write a specific, reproducible report. Returns `{ filed: true }`.
 
-**Errors:** `insufficient_permission` (the App lacks `Issues: write` — see [`SELF_HOSTING.md`](SELF_HOSTING.md)); `upstream_unavailable` (GitHub unreachable). The agent relays either to the user rather than implying it filed.
+**Errors:** `storage_error` (the D1 write failed). It no longer files a GitHub issue, so it **cannot** return `insufficient_permission` (the retired GitHub-App-lacks-`Issues:write` case).
 
-Behind the per-tenant gate; the only tool that writes GitHub Issues. Driven by the agent's `report-grocery-agent-bug` skill, which fires on an unworkable tool error or repeated user correction, files at most one issue per distinct problem per session, then tells the user it flagged it.
+Behind the per-tenant gate; a pure D1 write — no GitHub. Driven by the agent's `report-grocery-agent-bug` skill, which fires on an unworkable tool error or repeated user correction, files at most one report per distinct problem per session, then tells the user it flagged it.
 
 ---
 
 ## What this surface deliberately does NOT include
 
-- No raw GitHub write access (atomic commits only)
+- No raw corpus write access (whole-object R2 writes via `create_recipe`/`update_recipe`/`save_guidance` only)
 - No raw Kroger API access (matching pipeline + cart write only)
-- No "search arbitrary text across recipes" (use GitHub MCP for that)
+- No "search arbitrary text across recipes" (use `search_recipes` over the index)
 - No "execute arbitrary code" or "run arbitrary script"
 - No portion math (no whiteboard problem)
 - No background or scheduled triggers

@@ -13,7 +13,7 @@ There is **no data in this repo** — the data lives in a separate private data 
 | Path | What it is |
 | --- | --- |
 | `src/`, `test/`, `wrangler.jsonc` | the repo root **is** the Cloudflare Worker (TypeScript) hosting the `grocery-mcp` MCP server + OAuth provider |
-| `scripts/` | index + static-site + plugin build tooling (`build-indexes.mjs`, `build-site.mjs`, `build-plugin.mjs`, `site-assets/`), run by data repos via reusable CI |
+| `scripts/` | build tooling: `build-plugin.mjs` (the plugin bundle), `build-admin.mjs` (the admin SPA), `merge-wrangler-config.mjs` (the deploy config merge), `migrate-corpus-to-r2.mjs` (one-time git→R2 corpus copy + parity). The recipe index + cookbook are derived by the Worker now, not built here. |
 | `docs/` | [`ARCHITECTURE.md`](docs/ARCHITECTURE.md) (the technical model) · [`SCHEMAS.md`](docs/SCHEMAS.md) (file formats) · [`TOOLS.md`](docs/TOOLS.md) (the tool contract) · [`SELF_HOSTING.md`](docs/SELF_HOSTING.md) (operator setup) |
 | `AGENT_INSTRUCTIONS.md` | the agent persona; build source for the `plugin/` bundle |
 | `openspec/` | the change/spec workflow — `changes/archive/` is the build history, `specs/` is the living contract |
@@ -39,14 +39,14 @@ The Worker is the root package. One `package.json` carries both the Worker deps 
 ```bash
 aubr dev             # wrangler dev — local Worker; point MCP Inspector at the local URL
 aubr test            # vitest run — Worker unit tests (test/*.test.ts)
-aubr test:tooling    # node --test — build-indexes/build-site/build-plugin tests (tests/*.test.mjs)
+aubr test:tooling    # node --test — build-plugin / merge-config / readme-badge tests (tests/*.test.mjs)
 aubr typecheck       # tsc --noEmit
 aubr deploy          # wrangler deploy — normally NOT run by hand (see Deployment)
 ```
 
 - **Structured errors, not throws.** Tools return `{ error: "...", message }` shapes the agent can reason over. Follow the existing convention in `src/errors.ts`.
 - **`docs/TOOLS.md` is the contract.** When a tool's params/returns change, update `docs/TOOLS.md` in the same pass — no drift. Likewise `docs/SCHEMAS.md` when a data file's shape changes.
-- **Local dev/secrets** live in `.dev.vars` (gitignored; see `.dev.vars.example`): `GITHUB_APP_PRIVATE_KEY` + Kroger creds. See [`docs/SELF_HOSTING.md`](docs/SELF_HOSTING.md) for the one-time operator setup and the Kroger `/oauth/init?tenant=<id>` flow.
+- **Local dev/secrets** live in `.dev.vars` (gitignored; see `.dev.vars.example`): Kroger creds. The authored corpus is the local R2 `CORPUS` bucket (`wrangler dev` simulates it — no GitHub App). See [`docs/SELF_HOSTING.md`](docs/SELF_HOSTING.md) for the one-time operator setup and the Kroger `/oauth/init?tenant=<id>` flow.
 - **D1 (domain data) goes through `src/db.ts`, never `env.DB`.** `db(env)` exposes `first` / `all` / `run` / `batch` (+ `prepare` for batch); it maps every D1 failure to a structured `storage_error` `ToolError`, so tools stay throw-free. `wrangler dev` binds a **local** SQLite D1 — seed it with `npx wrangler d1 migrations apply DB --local` (applies `migrations/d1/*.sql`; `wrangler d1 execute DB --local --command "…"` inspects it). The deploy applies the same migrations with `--remote`.
 
 ### Deployment
@@ -66,20 +66,22 @@ gh run watch  --repo caseyWebb/groceries-agent-data                # optional: f
 
 (`aubr deploy` is a local escape hatch, but the data-repo workflow is the source of truth — it gates on typecheck + tests first.)
 
-## Working on data tooling (`scripts/`)
+## The corpus + the index (no CI data build)
 
-The scripts build indexes/site for a **data repo**, not this one (no data lives here). Point them at a data checkout with `--root`:
+The authored corpus (`recipes/*.md` + `guidance/**/*.md`) lives in the operator's R2 `CORPUS` bucket, read/written through `src/corpus-store.ts`. There is **no CI index/site build** anymore: the recipe index is projected by the Worker's scheduled reconcile, and the cookbook is served by the Worker.
 
 ```bash
-node scripts/build-indexes.mjs --root /path/to/data-repo   # validate recipes + project the recipe index into D1
-node scripts/build-site.mjs    --root /path/to/data-repo --out site
-node scripts/build-indexes.mjs --check                     # validate only, no write
-aubr test:tooling                                          # node --test (tests/, fixture-based)
+node scripts/migrate-corpus-to-r2.mjs --root /path/to/data-repo            # one-time git→R2 copy
+node scripts/migrate-corpus-to-r2.mjs --root /path/to/data-repo --check    # list, write nothing
+node scripts/migrate-corpus-to-r2.mjs --root /path/to/data-repo --verify   # parity: R2 ↔ git
+aubr test:tooling                                                          # node --test (tests/, fixture-based)
 ```
 
-**Validation.** `build-indexes.mjs` validates **recipes only** (frontmatter well-formed, controlled vocab, references resolve) and projects the recipe index into D1 — recipe `.md` is the only file it validates. Everything else is validated at **Worker write time** in `src/validate.ts`: `validateFile` for recipe markdown, and `validateStoreInput` / `validateDiscoveryCandidate` for the D1 corpus writes (store registry, discovery candidates).
+**Index projection (`src/recipe-projection.ts`).** The cron reconcile reads the whole R2 corpus, validates every recipe (the shared `src/recipe-contract.js` required-field/vocab contract + the `## Ingredients`/`## Instructions` body sections + duplicate-slug guard + cross-corpus `pairs_with` resolution), and rebuilds the D1 `recipes` table. An invalid recipe is **skipped** (not indexed) and recorded to the `reconcile_errors` table — surfaced via `/health`, the `read_reconcile_errors` tool, and an ntfy push (the eventual-feedback model that replaced red CI). It runs in `scheduled()` before the recipe-derived (description/embedding) reconcile.
 
-**Reusable Actions.** This public repo hosts `on: workflow_call` workflows that operators' data repos call (`uses: caseyWebb/groceries-agent/...@main`): `data-deploy.yml`, `data-build-indexes.yml` / `data-build-site.yml`, and `data-build-plugin.yml` (mint a self-hoster's plugin bundle with their own connector URL baked in). Member provisioning is **no longer a workflow** — it's the Cloudflare Access-gated `/admin` panel (`src/admin.ts`), so no invite code is printed into a CI log (which is what lets the data repo be public). The [`groceries-agent-data-template`](https://github.com/caseyWebb/groceries-agent-data-template) repo's `.github/workflows/` is the live reference for the thin data-repo callers.
+**Validation.** One validator: `src/validate.ts` (`validateFile`) gates agent writes at the Worker, and the shared `src/recipe-contract.js` is reused by the reconcile for the whole-corpus pass. `validateStoreInput` / `validateDiscoveryCandidate` cover the D1 corpus writes (store registry, discovery candidates).
+
+**Reusable Actions.** This public repo hosts `on: workflow_call` workflows that operators' data repos call (`uses: caseyWebb/groceries-agent/...@main`): `data-deploy.yml` and `data-build-plugin.yml` (mint a self-hoster's plugin bundle with their own connector URL baked in). The former CI index/site builds (`data-build-indexes.yml` / `data-build-site.yml`) are **retired** — the Worker derives both. Member provisioning is **not a workflow** — it's the Cloudflare Access-gated `/admin` panel (`src/admin.ts`), so no invite code is printed into a CI log (which is what lets the data repo be public). The [`groceries-agent-data-template`](https://github.com/caseyWebb/groceries-agent-data-template) repo's `.github/workflows/` is the live reference for the thin data-repo callers.
 
 **D1 Migrations.** A D1 schema change is a `migrations/d1/NNNN_name.sql` file: declarative table shape, applied by the Cloudflare-native `wrangler d1 migrations apply DB` (`--local` to seed your dev SQLite, `--remote` on deploy — the deploy step runs this) and tracked in D1's own `d1_migrations` table (created automatically). Just write the SQL.
 
