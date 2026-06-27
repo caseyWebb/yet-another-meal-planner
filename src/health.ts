@@ -115,20 +115,156 @@ export async function buildHealthPayload(
 }
 
 /**
+ * Shared token gate for the `/health*` endpoints. Returns a Response to short-circuit
+ * (404 when `HEALTH_TOKEN` is unset → opt-in; 401 on a missing/wrong token via `?token=`
+ * or `Authorization: Bearer`), or null when the request is authorized — so the JSON and
+ * SVG handlers cannot drift on how they gate.
+ */
+function healthTokenGate(request: Request, env: Env): Response | null {
+  if (!env.HEALTH_TOKEN) return new Response("Not found", { status: 404 });
+  const bearer = request.headers.get("authorization")?.replace(/^Bearer\s+/i, "");
+  const provided = new URL(request.url).searchParams.get("token") ?? bearer;
+  if (provided !== env.HEALTH_TOKEN) return new Response("Unauthorized", { status: 401 });
+  return null;
+}
+
+/**
  * Handle a `/health` request. Token-gated and aggregate-only: 404 when `HEALTH_TOKEN`
  * is unset (opt-in), 401 on a missing/wrong token (`?token=` or `Authorization: Bearer`),
  * else the aggregate payload as JSON — 200 when ok, 503 when a job is failing so plain
  * HTTP-status monitors trip too. Lives on the fetch path (independent of the cron).
  */
 export async function handleHealthRequest(request: Request, env: Env): Promise<Response> {
-  if (!env.HEALTH_TOKEN) return new Response("Not found", { status: 404 });
-  const bearer = request.headers.get("authorization")?.replace(/^Bearer\s+/i, "");
-  const provided = new URL(request.url).searchParams.get("token") ?? bearer;
-  if (provided !== env.HEALTH_TOKEN) return new Response("Unauthorized", { status: 401 });
+  const gate = healthTokenGate(request, env);
+  if (gate) return gate;
   const payload = await buildHealthPayload(env, env.KROGER_KV as unknown as KvStore, HEALTH_JOBS);
   return new Response(JSON.stringify(payload), {
     status: payload.ok ? 200 : 503,
     headers: { "content-type": "application/json" },
+  });
+}
+
+/** Coarse relative-age label ("just now" / "Nm ago" / "Nh ago" / "Nd ago") — all the badge needs. */
+function relAge(ms: number, now: number): string {
+  const s = Math.max(0, Math.round((now - ms) / 1000));
+  if (s < 60) return "just now";
+  const m = Math.round(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.round(m / 60);
+  if (h < 24) return `${h}h ago`;
+  return `${Math.round(h / 24)}d ago`;
+}
+
+/** Minimal XML-text escape for safe SVG string interpolation. */
+function esc(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+/**
+ * Render the aggregate health payload as a self-contained SVG **card** for a README
+ * badge. Tenant-data-free by construction — it reads only the payload's job states,
+ * `last_run_at`s, and the D1 probe (no per-tenant identifier exists in the payload).
+ * The card draws its own opaque panel so it reads on both light and dark GitHub themes
+ * (the design's theme-neutral choice). A never-run job renders amber ("pending"), not
+ * red, so a fresh deploy doesn't look broken; the headline mirrors `payload.ok`.
+ * Layout uses a monospace font + fixed columns, so no font-metric width math is needed.
+ */
+export function renderHealthSvg(payload: HealthPayload): string {
+  const C = {
+    bg: "#1b1f24",
+    border: "#30363d",
+    text: "#e6edf3",
+    muted: "#8b949e",
+    ok: "#3fb950",
+    fail: "#f85149",
+    never: "#d29922",
+  };
+  const color = (state: "ok" | "fail" | "never") =>
+    state === "ok" ? C.ok : state === "fail" ? C.fail : C.never;
+
+  const rows: { label: string; state: "ok" | "fail" | "never"; word: string; age: string }[] = [
+    ...payload.jobs.map((j) => {
+      const state: "ok" | "fail" | "never" = j.never_run ? "never" : j.ok ? "ok" : "fail";
+      return {
+        label: j.name,
+        state,
+        word: state,
+        age: j.last_run_at != null ? relAge(j.last_run_at, payload.generated_at) : "",
+      };
+    }),
+    { label: "d1", state: payload.d1.ok ? "ok" : "fail", word: payload.d1.ok ? "ok" : "fail", age: "" },
+  ];
+
+  const headWord = payload.ok ? "healthy" : "degraded";
+  const headColor = payload.ok ? C.ok : C.fail;
+
+  // Fixed layout (px). Columns are left-anchored at constant x; monospace keeps each
+  // column internally aligned without measuring text.
+  const width = 320;
+  const padX = 14;
+  const rowH = 22;
+  const firstRow = 60;
+  const dotX = padX + 4;
+  const nameX = padX + 18;
+  const wordX = 150;
+  const ageX = 232;
+  const lastRow = firstRow + (rows.length - 1) * rowH;
+  const footerY = lastRow + 26;
+  const height = footerY + 12;
+  const asOf = `${new Date(payload.generated_at).toISOString().slice(11, 16)} UTC`;
+
+  const rowSvg = rows
+    .map((r, i) => {
+      const y = firstRow + i * rowH;
+      const c = color(r.state);
+      const age = r.age
+        ? `<text x="${ageX}" y="${y}" fill="${C.muted}" font-size="12">${esc(r.age)}</text>`
+        : "";
+      return (
+        `<circle cx="${dotX}" cy="${y - 4}" r="4" fill="${c}"/>` +
+        `<text x="${nameX}" y="${y}" fill="${C.text}">${esc(r.label)}</text>` +
+        `<text x="${wordX}" y="${y}" fill="${c}">${esc(r.word)}</text>` +
+        age
+      );
+    })
+    .join("");
+
+  return (
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" ` +
+    `viewBox="0 0 ${width} ${height}" role="img" aria-label="grocery-mcp health: ${esc(headWord)}">` +
+    `<style>text{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:13px}</style>` +
+    `<rect x="0.5" y="0.5" width="${width - 1}" height="${height - 1}" rx="6" fill="${C.bg}" stroke="${C.border}"/>` +
+    `<text x="${padX}" y="26" fill="${C.text}" font-weight="bold">grocery-mcp</text>` +
+    `<text x="${width - padX}" y="26" fill="${headColor}" font-weight="bold" text-anchor="end">● ${esc(headWord)}</text>` +
+    `<line x1="${padX}" y1="38" x2="${width - padX}" y2="38" stroke="${C.border}"/>` +
+    rowSvg +
+    `<text x="${padX}" y="${footerY}" fill="${C.muted}" font-size="11">as of ${esc(asOf)}</text>` +
+    `</svg>`
+  );
+}
+
+/**
+ * Handle a `/health.svg` request — the README-badge variant of `/health`. Same token
+ * gate, but ALWAYS responds 200 with an SVG card (degraded state is shown by color,
+ * not HTTP status) because image proxies (e.g. GitHub Camo) may not render a non-200
+ * response as an image. A short `Cache-Control` lets an embedding README refresh the
+ * badge on a TTL rather than live. Aggregate-only, like `/health`.
+ */
+export async function handleHealthSvgRequest(request: Request, env: Env): Promise<Response> {
+  const gate = healthTokenGate(request, env);
+  if (gate) return gate;
+  const payload = await buildHealthPayload(env, env.KROGER_KV as unknown as KvStore, HEALTH_JOBS);
+  return new Response(renderHealthSvg(payload), {
+    status: 200,
+    headers: {
+      "content-type": "image/svg+xml; charset=utf-8",
+      "cache-control": "max-age=120, s-maxage=120",
+    },
   });
 }
 

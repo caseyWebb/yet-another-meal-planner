@@ -30,6 +30,11 @@ on:
         description: Path, in the DATA repo, to the operator's wrangler.jsonc.
         type: string
         default: wrangler.jsonc
+      worker_host:
+        description: "Connector host (e.g. grocery-mcp.<you>.workers.dev) for the README health badge. Blank → badge skipped. Pass `${{ vars.WORKER_HOST }}` from the caller, like the plugin build does."
+        type: string
+        required: false
+        default: ""
     secrets:
       CLOUDFLARE_API_TOKEN:
         description: "Cloudflare token with Workers + KV + D1 edit."
@@ -164,6 +169,51 @@ jobs:
             git commit -m "chore(deploy): pin auto-provisioned KV + D1 ids"
             if ! git push; then
               echo "::warning::Could not push pinned KV/D1 ids (the deploy caller needs 'permissions: contents: write'). The deploy succeeded; paste the ids from wrangler.jsonc manually, or grant the permission so it auto-pins next time."
+            fi
+          fi
+
+      # Stamp the health badge into the data repo README (data-repo-health-badge): an
+      # idempotent <!-- health-badge --> block pointing at the Worker's token-gated
+      # /health.svg card. Reuses the operator's existing WORKER_HOST (passed by the thin
+      # caller, like build-plugin's mcp_url) + HEALTH_TOKEN (read from their wrangler.jsonc
+      # vars). OPTIONAL, exactly like the id pin above: skipped when HEALTH_TOKEN or
+      # worker_host is missing; and the ready-to-paste snippet is ALWAYS written to the job
+      # summary, so an operator without `contents: write` can paste it once by hand (token +
+      # host are stable, so it never needs re-pinning).
+      - name: Stamp health badge into README (optional)
+        env:
+          CONFIG: ${{ inputs.config_path }}
+          HOST: ${{ inputs.worker_host }}
+        run: |
+          TOKEN="$(node _code/scripts/stamp-readme-badge.mjs token "$CONFIG")"
+          if [ -z "$TOKEN" ] || [ -z "$HOST" ]; then
+            {
+              echo "## Health badge"
+              echo ""
+              echo "Not stamped — set \`HEALTH_TOKEN\` (in your \`wrangler.jsonc\` \`vars\`) and the \`WORKER_HOST\` repo variable to enable the README status badge."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          SNIPPET="$(node _code/scripts/stamp-readme-badge.mjs stamp README.md "$HOST" "$TOKEN")"
+          # Always surface the ready-to-paste snippet, whether or not we can commit it back.
+          {
+            echo "## Health badge"
+            echo ""
+            echo "This is maintained in your README automatically when the deploy can write back; otherwise paste it in once:"
+            echo ""
+            echo '```markdown'
+            echo "$SNIPPET"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          if git diff --quiet -- README.md; then
+            echo "README badge already up to date."
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add README.md
+            git commit -m "chore(deploy): stamp health badge in README"
+            if ! git push; then
+              echo "::warning::Could not push the README health badge (the deploy caller needs 'permissions: contents: write'). The deploy succeeded; paste the snippet from this run's summary into your README once."
             fi
           fi
 

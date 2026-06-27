@@ -84,5 +84,5 @@ Rollback: remove the marker block from the README (badge disappears) and/or unse
 
 ## Open Questions
 
-- **Light/dark theming.** A plain `![](…)` image can't switch on `prefers-color-scheme` the way a `<picture>` can. Decide whether to keep the card theme-neutral (colors legible on both GitHub themes) or embed an in-SVG `@media (prefers-color-scheme: dark)` style block (and verify Camo preserves it). Lean: theme-neutral first; revisit if it reads poorly on dark.
+- **Light/dark theming.** ~~A plain `![](…)` image can't switch on `prefers-color-scheme` the way a `<picture>` can.~~ **Resolved (theme-neutral):** the card draws its own opaque dark panel (`#1b1f24`) with light text, so it renders identically and legibly on both GitHub themes — verified by rasterizing the healthy/degraded/never-run states on light and dark panels. No in-SVG media query needed.
 - **Exact `Cache-Control` value** (≈120s vs a touch longer) — tune against observed Camo refresh behavior; not load-bearing.
