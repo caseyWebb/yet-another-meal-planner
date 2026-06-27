@@ -2,18 +2,24 @@
 
 ## Purpose
 
-Defines the reusable CI workflow that builds the agent plugin bundle: a self-hoster's data repo calls it to produce a downloadable plugin artifact with their own connector URL baked in. Recipe validation and the recipe index are owned by the Worker reconcile (see the `recipe-index` and `r2-corpus-store` capabilities).
+Defines how the agent plugin bundle is built and published in CI: the operator's deploy (the reusable `data-deploy.yml`) builds the bundle with their own connector URL baked in and commits it to their public data repo, which serves as their plugin marketplace. Recipe validation and the recipe index are owned by the Worker reconcile (see the `recipe-index` and `r2-corpus-store` capabilities).
 ## Requirements
-### Requirement: Reusable plugin-build workflow produces an operator-baked bundle artifact
+### Requirement: Deploy builds and publishes the plugin bundle to the data-repo marketplace
 
-The system SHALL provide a reusable (`on: workflow_call`) GitHub workflow that builds the grocery-agent plugin bundle with a **caller-supplied connector URL** and publishes it as a **downloadable artifact**. The workflow SHALL run **without secrets**, SHALL build from a caller-supplied code ref (default `main`), and SHALL NOT modify the committed marketplace bundle. A thin caller in an operator's private data repo SHALL invoke it with the operator's Worker URL.
+The reusable **deploy** workflow SHALL, after the Worker deploy step succeeds, build the plugin bundle from the persona source with the operator's connector URL baked into `.mcp.json`, and publish it by committing `.claude-plugin/marketplace.json` and the generated `plugin/` bundle into the operator's data repository (reusing the deploy's existing `contents: write`). The build SHALL run **only after** the Worker deploy, so published skills never reference tools the deployed Worker does not yet serve. The published plugin version SHALL be derived from the data repository's own commit count, so each publish is strictly newer than the last. The build step SHALL require no secrets of its own — it uses the deploy's credentials to deploy the Worker, not to build the bundle.
 
-#### Scenario: Operator builds their bundle from the data repo
+#### Scenario: Deploy publishes the bundle after the Worker is live
 
-- **WHEN** an operator runs their thin `build-plugin` caller with their Worker URL
-- **THEN** a plugin bundle with that URL baked into `.mcp.json` is produced and published as a downloadable artifact in the run, with no secrets used and the committed marketplace bundle unchanged
+- **WHEN** an operator runs the deploy
+- **THEN** the Worker is deployed first, then the plugin bundle is built with the operator's connector URL and committed to the data repository's `.claude-plugin/marketplace.json` + `plugin/`
 
-#### Scenario: Bundle is packaged in the accepted upload layout
+#### Scenario: Connector URL is baked per operator
 
-- **WHEN** the workflow packages the bundle
-- **THEN** the archive contains `.claude-plugin/`, `.mcp.json`, and `skills/` at its root — the layout claude.ai accepts for an uploaded plugin file
+- **WHEN** the deploy builds the bundle
+- **THEN** `.mcp.json` carries that operator's `grocery-mcp` connector URL, identical to other operators' bundles except for the URL and the version
+
+#### Scenario: Published version is monotonic
+
+- **WHEN** the deploy republishes after a change
+- **THEN** the bundle's version (the data repository's commit count) is strictly greater than the previously published version
+

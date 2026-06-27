@@ -6,9 +6,9 @@ cart — or walks you through any store, aisle by aisle. The agent *runs* inside
 repo is what *builds* it.
 
 > **There is no data in this repo.** It holds the agent's source — a Cloudflare Worker (the
-> `grocery-mcp` server), the persona it runs on, and the build tooling. Every operator's recipes,
-> profile, and state live in a *separate private data repo* plus Cloudflare D1. See
-> [Self-hosting](#self-hosting).
+> `grocery-mcp` server), the persona it runs on, and the build tooling. Every operator's recipes
+> live in Cloudflare R2 and their profile/state in Cloudflare D1; a separate **public data repo**
+> is the deploy control plane and the plugin marketplace. See [Self-hosting](#self-hosting).
 
 ## What it does
 
@@ -65,7 +65,7 @@ Kroger SKU matching, cart writes, validation.
   Cloudflare Worker · grocery-mcp
         │   OAuth provider + multi-tenant gate + coarse, opinionated domain tools
         │   (pantry · recipes · Kroger matching · cart) — the locus of determinism
-        ├──────────►  GitHub data repo (private)  — authored recipe & guidance markdown
+        ├──────────►  Cloudflare R2               — authored recipe & guidance markdown
         ├──────────►  Cloudflare D1               — profile, session state, indexes, caches
         └──────────►  Kroger Developer API        — product search, prices, cart writes
 ```
@@ -92,8 +92,7 @@ background crons — is in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 | --- | --- |
 | `src/`, `test/`, `wrangler.jsonc` | the Cloudflare Worker — the `grocery-mcp` MCP server + OAuth provider |
 | `scripts/` | build tooling — recipe indexes, the static cookbook, the plugin bundle |
-| `AGENT_INSTRUCTIONS.md` | the agent persona + conversational flows; the source `plugin/` is generated from |
-| `plugin/` | the **generated** plugin bundle (skills + connector) — never hand-edited |
+| `AGENT_INSTRUCTIONS.md` | the agent persona + conversational flows; the source the plugin bundle is generated from (the bundle is published to the operator's data-repo marketplace, not committed here) |
 | `docs/` | the deep docs (see [Documentation](#documentation)) |
 | `migrations/d1/` | D1 schema migrations, applied by `wrangler d1 migrations apply` |
 | `openspec/` | the change/spec workflow — `changes/archive/` is the history, `specs/` the living contract |
@@ -116,7 +115,7 @@ aubr dev              # wrangler dev — a local Worker; point MCP Inspector at 
 aubr typecheck        # tsc --noEmit
 aubr test             # vitest — Worker unit tests (test/*.test.ts)
 aubr test:tooling     # node --test — build-tooling tests (tests/*.test.mjs)
-aubr build:plugin     # AGENT_INSTRUCTIONS.md → plugin/ (needs $GROCERY_MCP_URL set)
+aubr build:plugin     # throwaway/inspect build → dist/ (the deploy publishes the real bundle to your data-repo marketplace)
 ```
 
 Local dev secrets (a GitHub App key + Kroger credentials) go in a gitignored `.dev.vars` — see
@@ -126,11 +125,14 @@ deployment, and conventions — is [`CONTRIBUTING.md`](CONTRIBUTING.md).
 ## Self-hosting
 
 One self-hosted Worker serves a small friend group, and **you don't fork this repo to run it.**
-You create a private **data repo** from a template — that repo is your control plane: it holds your
-config and thin caller workflows that reference this repo's reusable CI. A GitHub App gives the
-Worker access to your recipes, a Kroger developer app handles search and cart, and Cloudflare hosts
-the Worker, D1, and KV (comfortably free-tier at personal scale). Friends connect their own
-Claude.ai with an invite code you mint — no GitHub or Kroger developer account needed on their end.
+You create a **public data repo** from a template — that repo is your control plane *and* your
+plugin marketplace: it holds your config, a thin caller workflow that references this repo's reusable
+CI, and the plugin bundle your deploy publishes with your connector URL baked in. Your recipes live
+in a Cloudflare R2 bucket; Cloudflare hosts the Worker, D1, KV, and R2 (comfortably free-tier at
+personal scale); a Kroger developer app handles search and cart. Friends add your marketplace
+(`/plugin marketplace add <you>/groceries-agent-data`) and connect their own Claude.ai with an
+invite code you mint — no GitHub or Kroger developer account needed on their end. Nothing in the
+data repo is secret, which is what lets it be public.
 
 The complete walkthrough is [`docs/SELF_HOSTING.md`](docs/SELF_HOSTING.md).
 

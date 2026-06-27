@@ -1,0 +1,24 @@
+/* recipe-authoring.css — editing-surface styling for the grocery-agent authoring
+   vault. Generated/copied by scripts/build-vault.mjs from vault-template/; do not
+   hand-edit the built vault. Keeps the Properties + Metadata Menu surface legible
+   while authoring controlled-vocabulary recipe frontmatter. */
+
+/* Give the properties (frontmatter) editor room so the long vocab dropdowns
+   (cuisine has ~22 options) are comfortable to scan. */
+.metadata-container {
+  --metadata-label-width: 12em;
+}
+
+/* Make the Metadata Menu "add value" / dropdown suggestions readable. */
+.metadata-menu.value-suggester-modal .suggestion-item,
+.suggestion-container .suggestion-item.mod-complex {
+  font-variant-numeric: tabular-nums;
+}
+
+/* A gentle callout style for the "How to add a recipe" help note. */
+.markdown-rendered .help-callout {
+  border-left: 3px solid var(--interactive-accent);
+  padding: 0.4em 0.9em;
+  background: var(--background-secondary);
+  border-radius: 4px;
+}

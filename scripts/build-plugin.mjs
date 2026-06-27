@@ -19,11 +19,13 @@
 // a reload (Claude Code dedups; claude.ai behavior is the gating check).
 //
 // The connector URL is BAKED into .mcp.json (claude.ai does not honor a plugin
-// userConfig variable, so each operator rebuilds with their own Worker URL). The
-// URL is operator-specific and is NOT hardcoded in committed tooling — it comes
-// from --mcp-url, else $GROCERY_MCP_URL (the gitignored mise.local.toml sets it
-// on the machine). `aubr build:plugin` regenerates the committed marketplace
-// bundle and REFUSES to write the placeholder there (that would break installs).
+// userConfig variable, so each operator's bundle carries their own Worker URL). The
+// URL is operator-specific and is NOT hardcoded in committed tooling — it comes from
+// --mcp-url, else $GROCERY_MCP_URL (the gitignored mise.local.toml sets it). The
+// marketplace bundle is NOT committed in this code repo: the operator's deploy builds
+// it with their URL and publishes it into their (public) data repo, which serves as
+// their plugin marketplace (see .github/workflows/data-deploy.yml). Run this locally
+// only for a throwaway/inspection build.
 //
 // Output mirrors the Claude plugin layout (.claude-plugin/plugin.json, skills/,
 // .mcp.json). Deterministic (document-order flows, stable JSON) so an unchanged
@@ -31,11 +33,11 @@
 // the bundle; edit AGENT_INSTRUCTIONS.md and rebuild.
 //
 // Usage:
-//   aubr build:plugin                                     # regenerate plugin/grocery-agent/ (URL from $GROCERY_MCP_URL)
 //   node scripts/build-plugin.mjs                         # throwaway build → dist/grocery-agent-plugin/ (placeholder URL ok)
 //   node scripts/build-plugin.mjs --check                 # parse + validate only, no write
-//   node scripts/build-plugin.mjs --out DIR               # write to DIR
+//   node scripts/build-plugin.mjs --out DIR               # write to DIR (the deploy passes the data repo's plugin/grocery-agent)
 //   node scripts/build-plugin.mjs --mcp-url https://...   # connector URL (overrides $GROCERY_MCP_URL)
+//   node scripts/build-plugin.mjs --version 0.1.<n>       # manifest version (the deploy passes the data repo's commit count)
 //   node scripts/build-plugin.mjs --src PATH              # source doc (default AGENT_INSTRUCTIONS.md)
 
 import { readFile, writeFile, mkdir, rm } from 'node:fs/promises';
@@ -46,16 +48,15 @@ import path from 'node:path';
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 export const PLUGIN_NAME = 'grocery-agent';
-// The manifest carries an explicit `version` (see resolveVersion): `0.0.<N>` where
-// N is the repo's commit count. We originally omitted it on the theory that a
-// git-hosted marketplace falls back to the commit SHA so every push auto-propagates
-// — true for the Claude Code CLI, but claude.ai (where this plugin actually runs)
-// did NOT re-pull a versionless plugin across many commits (verified 2026-06-11: an
-// install sat ~17h / 8 commits stale, never picking up new skills). claude.ai gates
-// its auto-update on the `version` STRING changing, so a versionless plugin reads as
-// "never updated." A monotonic commit-count version makes every rebuild strictly
-// newer, which is what claude.ai needs to re-pull. It's computed from git at build
-// time (not baked into the pure builder), so the file map stays deterministic.
+// The manifest carries an explicit `version`: `0.2.<N>` where N is the DATA repo's
+// commit count, computed at deploy time and passed via --version (resolveVersion is
+// the local fallback for throwaway builds). claude.ai gates its auto-update on the
+// `version` STRING changing (verified 2026-06-11: a versionless install sat ~17h / 8
+// commits stale, never picking up new skills), so the version must be strictly greater
+// on each publish. Deriving it from the data repo's commit count makes it monotonic
+// per operator BY CONSTRUCTION — every publish is a commit, so the count only grows —
+// which is exactly what claude.ai needs to re-pull. The version is passed in (not
+// baked into the pure builder), so the file map stays deterministic.
 export const PLUGIN_DESCRIPTION =
   'Personal grocery agent — meal planning, pantry, recipes, and Kroger cart. Bundles the workflow skills and the grocery-mcp connector.';
 // Depth tiers a flow may opt into via `needs:`. `core` is implicit (always loaded).
@@ -277,7 +278,7 @@ export function renderPluginManifest({ name = PLUGIN_NAME, description = PLUGIN_
 // (${user_config.worker_url}) so one bundle could serve every operator, but
 // claude.ai does NOT substitute userConfig (verified 2026-06-11) — the variable
 // reached the connector literally. So each operator bakes their own Worker URL via
-// --mcp-url and a fork/rebuild; self-hosters do the same.
+// --mcp-url; the deploy does this and publishes the bundle to the operator's data repo.
 // A connector URL is valid for the committed bundle only if it parses as http(s).
 // The placeholder and CI sentinels (e.g. `__ci__`) are NOT URLs and must never reach
 // installers. Exported so the guard's rule is unit-tested, not just exercised via main().
@@ -319,57 +320,19 @@ export function buildPluginFiles(parsed, { mcpUrl = MCP_URL_PLACEHOLDER, version
 
 // --- CLI -----------------------------------------------------------------
 
-// Monotonic plugin version from git: `0.1.<commit-count>`. The count grows as
-// commits land — what claude.ai's auto-update compares (see the note by PLUGIN_NAME).
-// The `0.1.` prefix is a deliberate FLOOR, not cosmetic: this plugin once hand-published
-// `0.1.1` (then dropped the field), and claude.ai gates on strictly-greater, so it
-// remembered `0.1.1` as the high-water mark. A `0.0.<count>` scheme is *below* `0.1.1`
-// in semver (minor 0 < 1) and would never auto-update past it. `0.1.<count>` (count
-// ≥ 150 ≫ 1) dominates the old `0.1.1`. Returns undefined outside a git checkout
-// (throwaway/dist builds), which ship no version.
-//
-// CAVEAT: the commit count is NOT globally monotonic under a squash-merge workflow —
-// squashing a feature branch collapses its many WIP commits into one, so the linear
-// count on `main` can SHRINK below a version stamped earlier from a branch that had
-// more commits in its ancestry. A naive rebuild then regresses the version, and
-// claude.ai (strictly-greater gate) strands installed members on the old skills. So
-// the count is floored above the already-published bundle version (floorVersion) in
-// main() before it's stamped.
+// Local fallback plugin version from git: `0.2.<commit-count>` of `cwd`. The deploy
+// passes the DATA repo's commit count via --version (the published, monotonic-per-
+// operator value — see the note by PLUGIN_NAME); this fallback is used only when
+// --version is absent (local/throwaway builds, where the version does not matter).
+// The `0.2.` prefix is a deliberate floor over the OLD code-repo marketplace, which
+// published up to `0.1.126`: claude.ai gates on strictly-greater per plugin name, and
+// an operator's data-repo commit count is small (≈50), so a `0.1.<count>` scheme would
+// REGRESS below 0.1.126 and strand existing installs. `0.2.<count>` dominates it for
+// every operator. Returns undefined outside a git checkout (ships no version).
 export function resolveVersion(cwd = REPO_ROOT) {
   try {
     const count = execFileSync('git', ['rev-list', '--count', 'HEAD'], { cwd, encoding: 'utf8' }).trim();
-    return /^\d+$/.test(count) ? `0.1.${count}` : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-// Floor the git-derived version above the version already baked into the committed
-// bundle, so a rebuild can never regress below what's been published (see the
-// squash-merge caveat on resolveVersion). Given computed `0.1.<n>` and committed
-// `0.1.<m>`, returns `0.1.<max(n, m+1)>` — strictly greater than the published
-// version on a tie or a regression, unchanged when already ahead. Returns `computed`
-// untouched when there's no git version, no committed reference, or either is not a
-// recognized `0.1.<patch>` string (a hand-published version off this scheme is left
-// for a human to reconcile rather than silently overwritten).
-export function floorVersion(computed, committed) {
-  if (!computed) return computed;
-  const c = /^0\.1\.(\d+)$/.exec(computed);
-  const p = committed && /^0\.1\.(\d+)$/.exec(committed);
-  if (!c || !p) return computed;
-  return `0.1.${Math.max(Number(c[1]), Number(p[1]) + 1)}`;
-}
-
-// Read the plugin version already COMMITTED at HEAD — the published high-water mark
-// floorVersion lifts above. Read from git, NOT the working tree: a prior local rebuild
-// may have dirtied the working-copy bundle with a regressed version (a shallow checkout
-// undercounts even worse), so the durable reference is what's in the last commit.
-// Returns undefined outside a git checkout, or when the committed bundle has no version.
-function publishedVersion(cwd = REPO_ROOT) {
-  try {
-    const rel = `plugin/${PLUGIN_NAME}/.claude-plugin/plugin.json`;
-    const v = JSON.parse(execFileSync('git', ['show', `HEAD:${rel}`], { cwd, encoding: 'utf8' })).version;
-    return typeof v === 'string' ? v : undefined;
+    return /^\d+$/.test(count) ? `0.2.${count}` : undefined;
   } catch {
     return undefined;
   }
@@ -387,10 +350,9 @@ async function main() {
   // committed tooling: --mcp-url wins, else $GROCERY_MCP_URL (set in the gitignored
   // mise.local.toml), else the placeholder. See CONTRIBUTING.md "Building the plugin".
   const mcpUrl = argVal('--mcp-url', process.env.GROCERY_MCP_URL ?? MCP_URL_PLACEHOLDER);
-  // The committed marketplace bundle (.claude-plugin/marketplace.json → ./plugin/<name>)
-  // is what installers actually get; writing the placeholder there silently breaks
-  // every install's connector. Refuse it — the footgun guard.
-  const committedBundle = path.join(REPO_ROOT, 'plugin', PLUGIN_NAME);
+  // The version is supplied by the deploy (--version = the data repo's commit count,
+  // monotonic per operator); resolveVersion() is the local fallback for throwaway builds.
+  const version = argVal('--version', undefined) ?? resolveVersion();
 
   const md = await readFile(src, 'utf8');
   const parsed = parseInstructions(md);
@@ -407,30 +369,15 @@ async function main() {
     return;
   }
 
-  const writingCommittedBundle = path.resolve(out) === path.resolve(committedBundle);
-  // What installers actually get must carry a REAL connector URL. The placeholder
-  // is the obvious footgun, but any non-URL sentinel is just as broken — the CI
-  // drift-check builds with `--mcp-url __ci__` (to a throwaway --out), and that
-  // value silently leaked into the committed bundle once because the old guard only
-  // matched the example placeholder. So the rule for the committed bundle is now
-  // positive: the URL must parse as http(s). Throwaway/dist builds still allow the
-  // placeholder (with a warning) so `node scripts/build-plugin.mjs` and the CI check
-  // keep working.
-  if (writingCommittedBundle && (mcpUrl === MCP_URL_PLACEHOLDER || !isHttpUrl(mcpUrl))) {
-    console.error(
-      `build-plugin: REFUSING to write a non-connector URL ("${mcpUrl}") into the committed marketplace bundle (${path.relative(REPO_ROOT, committedBundle)}) — that would break every install. Set GROCERY_MCP_URL (mise.local.toml) or pass --mcp-url https://<your-worker-host>/mcp.`,
-    );
-    process.exit(1);
-  }
-  if (mcpUrl === MCP_URL_PLACEHOLDER) {
+  // A throwaway/local build may use the placeholder; the deploy always passes a real
+  // --mcp-url, so the published bundle carries a working connector. isHttpUrl gates the
+  // warning (and stays exported for tests).
+  if (mcpUrl === MCP_URL_PLACEHOLDER || !isHttpUrl(mcpUrl)) {
     console.warn(
-      `build-plugin: WARNING — no connector URL (set GROCERY_MCP_URL or pass --mcp-url); .mcp.json uses the placeholder ${MCP_URL_PLACEHOLDER}, so the connector will NOT resolve. Fine for a throwaway/dist build.`,
+      `build-plugin: WARNING — no real connector URL (set GROCERY_MCP_URL or pass --mcp-url); .mcp.json uses "${mcpUrl}", so the connector will NOT resolve. Fine for a throwaway/inspection build.`,
     );
   }
 
-  // Floor the git-count version above the already-published bundle so a squash-merge
-  // that shrank the commit count can't regress it (see floorVersion / resolveVersion).
-  const version = floorVersion(resolveVersion(), publishedVersion());
   const files = buildPluginFiles(parsed, { mcpUrl, version });
   await rm(out, { recursive: true, force: true });
   for (const [rel, contents] of files) {

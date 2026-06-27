@@ -78,38 +78,48 @@ Each conversational flow SHALL be its own skill with a trigger description autho
 
 ### Requirement: Marketplace distribution with pull-based updates
 
-The plugin SHALL be distributed via a marketplace (a GitHub repo) so that installed plugins receive updates by pulling, without members re-copying any instructions. The build output SHALL be publishable to that marketplace. Updating agent behavior SHALL reach installed members through a rebuild-and-publish, not a manual document re-copy.
+The plugin SHALL be distributed via a marketplace that is **the operator's own data repository, made public** (`<operator>/groceries-agent-data`), so that installed plugins receive updates by pulling, without members re-copying any instructions. The marketplace SHALL NOT be hosted in the code repository. The operator's deploy SHALL publish the build output to that marketplace by committing `.claude-plugin/marketplace.json` and the generated `plugin/` bundle into the data repo. The published plugin version SHALL be **monotonically increasing per operator** — derived from the data repo's own commit count — so claude.ai's strictly-greater auto-update gate always recognizes a republish as newer. Updating agent behavior SHALL reach installed members through a rebuild-and-publish, not a manual document re-copy.
 
 #### Scenario: An update reaches members without re-copying
 
-- **WHEN** the operator changes `AGENT_INSTRUCTIONS.md`, rebuilds, and publishes to the marketplace
+- **WHEN** the operator changes `AGENT_INSTRUCTIONS.md`, redeploys, and the deploy republishes the bundle to the data-repo marketplace
 - **THEN** members' installed plugins can pull the update with no manual instruction re-copying
 
-### Requirement: Fork-free self-hoster plugin distribution via uploadable bundle
+#### Scenario: Members install from the operator's public data-repo marketplace
 
-Self-hosters SHALL be able to obtain a plugin bundle with their own `grocery-mcp` connector URL baked in, built by CI **without forking the code repo**, and install it in claude.ai by **uploading the bundle file** — no marketplace and no public hosting required. The bundle SHALL be identical to the operator's marketplace bundle except for the baked connector URL, and installing it SHALL require no manual connector addition.
+- **WHEN** a member runs `/plugin marketplace add <operator>/groceries-agent-data` and installs the plugin
+- **THEN** the bundle resolves from `.claude-plugin/marketplace.json` → `./plugin/grocery-agent` in the operator's public data repo, with the operator's connector URL baked in
 
-#### Scenario: Self-hoster installs a baked bundle by upload
+#### Scenario: A republish is always recognized as newer
 
-- **WHEN** a self-hoster builds the bundle with their own Worker URL, uploads the file to claude.ai, and completes the OAuth invite-code flow
-- **THEN** the bundled `grocery-mcp` connector and all skills are available, with no connector added by hand and no code fork
-
-#### Scenario: Friend without a GitHub account installs the same file
-
-- **WHEN** the self-hoster forwards the built bundle file to a friend who has no GitHub account
-- **THEN** the friend can upload it to claude.ai and use the agent after completing the invite-code flow
+- **WHEN** the operator republishes the bundle after any change
+- **THEN** the published version (the data repo's commit count) is strictly greater than the previously published version, so claude.ai's auto-update gate re-pulls it
 
 ### Requirement: Worker and skills advance together, Worker first
 
-Because skills invoke MCP tools by name, a self-hoster's plugin skills SHALL NOT be advanced ahead of the Worker that serves those tools. On an upstream update that changes tools, the operator SHALL redeploy the Worker before rebuilding and redistributing the plugin. A self-hoster's skills SHALL NOT be sourced from an upstream marketplace that advances them independently of the self-hoster's own deploys.
+Because skills invoke MCP tools by name, a self-hoster's plugin skills SHALL NOT be advanced ahead of the Worker that serves those tools. The publish SHALL be the **tail of the deploy**: the deploy SHALL redeploy the Worker first and only then build and commit the plugin bundle to the data-repo marketplace, so the ordering is enforced **structurally** rather than by operator discipline. A self-hoster's skills SHALL be sourced only from **their own** data-repo marketplace — advanced by their own deploys — never from a marketplace that advances them independently of those deploys.
 
-#### Scenario: Update redeploys the Worker before redistributing skills
+#### Scenario: Deploy publishes skills only after the Worker is updated
 
-- **WHEN** a self-hoster takes an upstream update that adds or changes tools
-- **THEN** they redeploy the Worker first, then rebuild and redistribute the plugin, so no shipped skill references a tool that is not yet deployed
+- **WHEN** a self-hoster takes an upstream update that adds or changes tools and runs the deploy
+- **THEN** the deploy redeploys the Worker first and only then builds and commits the plugin, so no published skill references a tool that is not yet deployed
 
-#### Scenario: Self-hoster skills are not auto-advanced from upstream
+#### Scenario: Self-hoster skills come from their own marketplace, not an independent upstream
 
 - **WHEN** a self-hoster wants the agent's skills
-- **THEN** they obtain them from a bundle they build and redistribute themselves, not by installing the operator's upstream marketplace plugin for its skills
+- **THEN** they obtain them from their own data-repo marketplace, published by their own deploy, not by installing a marketplace that advances skills independently of their deploys
+
+### Requirement: Fork-free self-hoster distribution via the operator's public data-repo marketplace
+
+Self-hosters SHALL distribute the plugin **without forking the code repo** by publishing it to **their own data repository, made public**, which serves as a Claude plugin marketplace. The published bundle SHALL bake the operator's own `grocery-mcp` connector URL into `.mcp.json`, and SHALL be identical to any other operator's bundle except for that baked URL and the per-operator version. Members SHALL install with `/plugin marketplace add <operator>/groceries-agent-data` and SHALL NOT be required to have a GitHub account or to add the connector by hand. A no-GitHub fallback SHALL remain available (the publicly fetchable bundle in the repo, and `AGENT_INSTRUCTIONS.md` as a project-paste path).
+
+#### Scenario: Self-hoster publishes a marketplace without forking
+
+- **WHEN** a self-hoster deploys, which builds the bundle with their Worker URL and commits it to their data repo
+- **THEN** their data repo is a working plugin marketplace with no fork of the code repo and no manually maintained bundle
+
+#### Scenario: Friend without a GitHub account installs from the public marketplace
+
+- **WHEN** a friend with no GitHub account adds the operator's public marketplace in claude.ai (which needs no GitHub authentication) and installs
+- **THEN** the bundled `grocery-mcp` connector and all skills are available after the invite-code flow, with no file forwarding, no fork, and no connector added by hand
 
