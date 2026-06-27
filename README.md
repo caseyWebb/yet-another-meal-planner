@@ -1,91 +1,153 @@
----
-update-when: the project's purpose, headline capabilities, or self-hosting status changes
----
-
 # grocery-agent
 
-A personal grocery agent. It plans your meals, keeps track of what's in your kitchen, manages your grocery list, and can even fill a Kroger cart — all through conversation. You talk to it like a friend who knows your kitchen, not a service you issue commands to. It runs inside **Claude.ai** (web + mobile) and is self-hostable for a small friend group.
+A personal grocery agent you talk to like a friend who knows your kitchen. It plans the week's
+dinners from a shared recipe corpus, keeps track of what's in your pantry, and fills your Kroger
+cart — or walks you through any store, aisle by aisle. The agent *runs* inside Claude.ai; this
+repo is what *builds* it.
 
-> **Status:** working end-to-end and in personal use — a release candidate, not a packaged product. Single-maintainer project; self-hosting works but assumes you're comfortable with Cloudflare, GitHub Actions, and a Kroger Developer account.
-
-This repository is the **grocery-agent itself**: the `grocery-mcp` MCP server and the agent's persona/skills (generated from [`AGENT_INSTRUCTIONS.md`](AGENT_INSTRUCTIONS.md)). The **data** — recipes, pantry, preferences — lives in a separate private **data repo** per deployment.
+> **There is no data in this repo.** It holds the agent's source — a Cloudflare Worker (the
+> `grocery-mcp` server), the persona it runs on, and the build tooling. Every operator's recipes,
+> profile, and state live in a *separate private data repo* plus Cloudflare D1. See
+> [Self-hosting](#self-hosting).
 
 ## What it does
 
-- **Plans meals conversationally** — open-ended ("make me a menu for the week") or recipe-seeded ("I want salmon and rice tonight"), sized to how often you actually cook, around what you already have.
-- **Tracks your pantry** so it can shop the gaps — and asks before things go stale ("basil's 9 days old — still good?").
-- **Builds the grocery list as intent**, then flushes it **once** to your Kroger cart when you say to — or hands you an aisle-ordered walking list if you're shopping in person.
-- **Matches ingredients to real Kroger SKUs** with price/availability, learns your brand preferences, and asks less over time.
-- **Learns your taste** — favorites, notes, and a taste profile shape future suggestions. A shared recipe corpus, but your favorites, rejects, and notes are yours.
-- **Surfaces deals and discoveries** — what's on sale from your stockup list, and a couple of new recipes/ready-to-eat options each week from blogs and newsletters you trust.
-- **Remembers what you cooked** — an append-only cooking log it can reflect on ("how have I been eating this month?").
+- **Plans your week.** Proposes a menu from your recipe corpus, weighted by your taste, the
+  season, the weather, what you've cooked recently, what's on sale, and what's about to spoil in
+  your fridge — then builds the grocery list.
+- **Tracks your kitchen.** Pantry, staples, and equipment, with a nudge about perishables before
+  they turn and storage tips when fresh produce comes in.
+- **Fills your Kroger cart.** Resolves each ingredient to a specific SKU and writes your cart,
+  asking only when a choice is genuinely ambiguous ("which olive oil?") — and remembering your
+  answer so it asks less over time.
+- **Or walks you through any store.** The same buy list, grouped aisle-by-aisle for an in-store
+  trip and read out hands-free, one aisle at a time — Kroger or otherwise.
+- **Finds new recipes.** Surfaces candidates from your trusted recipe blogs (RSS) and forwarded
+  newsletters, scored against your taste; you import the keepers in one step.
+- **Shares with a small friend group.** Recipes and store maps are shared across the group; your
+  favorites, notes, pantry, preferences, and cart stay private to you.
 
-## How you use it
+## What it feels like
 
-You message it in a normal Claude.ai chat. There's no command syntax — it reacts to what you say. A typical week:
+```
+you ›  make me a menu for the week — feeling a bit lazy, and I've got salmon to use up
 
-> **You:** I'm running low, make me a menu for 3 dinners this week.
-> **Agent:** *(checks your pantry, flyer, and taste)* Before I plan — you've still got the basil from 9 days ago, still good? And here's a 3-dinner plan: sheet-pan chicken (uses the lemons you have), a tofu stir-fry, and Tuesday's leftovers stretched into fried rice. Salmon's on sale if you'd rather swap the tofu. Want me to build the list?
-> **You:** Swap in the salmon. And add coffee, I'm almost out.
-> **Agent:** Done — grocery list has the salmon, the produce gaps, and coffee. Say the word when you want it in your cart.
->
-> *…later…*
->
-> **You:** Place the order.
-> **Agent:** *(resolves the list against Kroger, flags one ambiguous item, writes the cart)* In your cart. One thing — there were two "coffee" matches, I picked the one you bought last time. Review in the Kroger app before checkout; the API can add but can't remove.
->
-> *…after cooking…*
->
-> **You:** Made the chili last night, it was great — want to favorite it.
-> **Agent:** Marked the chili as a favorite and logged it. That clears it off your meal plan.
+     ›  reads your profile, pantry, what's on sale, and the last month of dinners…
+        Here's an easy week, with the salmon up front:
+          Mon  Sheet-pan salmon & green beans      (uses the salmon)
+          Tue  Leftovers
+          Wed  Black bean tacos                     (pantry-heavy, 20 min)
+          Thu  Chicken katsu curry                  ← two others favorited this
+          Fri  Margherita pizza                     (mozzarella's on sale this week)
+        New this week from your feeds: a miso-butter pasta — want it in?
 
-Smaller things just work too: *"I ran out of olive oil"*, *"what's on sale from my stockup list?"*, *"I loved that Serious Eats recipe — favorite it"*, *"I'm headed to the store — give me a list for Tom Thumb."*
+you ›  swap Friday for the pasta, then order it
+
+     ›  Done. Cart's resolved — one thing to pick: 3 brands of white miso match.
+        … you choose … cart written. Check out in the Kroger app.
+```
+
+State lives in your data, not the chat — each conversation starts fresh and the agent reads what
+it needs through its tools.
 
 ## How it works
 
-Three components, one clean split: **the LLM does the fuzzy work; everything deterministic is code.**
+The whole design turns on one split: **the LLM does the fuzzy work; everything deterministic is
+plain code.** Claude handles conversation, menu reasoning, and the genuinely-fuzzy judgment calls;
+a stateless Cloudflare Worker owns everything that should be exact — file I/O, recipe filtering,
+Kroger SKU matching, cart writes, validation.
 
-- **Claude.ai** — the conversational surface and reasoning. Each chat starts fresh; state lives in the data repo, not in chat history.
-- **The Worker** (this repo, `src/`) — a Cloudflare Worker hosting the MCP server: opinionated domain tools (Kroger matching, pantry verification, substitutions, atomic git commits) plus an **OAuth 2.1 provider** members connect their Claude.ai to via an operator-issued invite code.
-- **The data repo** (`<you>/groceries-agent-data`, private) — shared `recipes/` + narrative markdown at the root and per member; pantry, preferences, favorites, notes, and all operational state live in D1.
+```
+  You, in Claude.ai (web + mobile)
+        │   the grocery-agent plugin — workflow skills + the grocery-mcp connector
+        │   MCP over HTTPS, OAuth 2.1 · connect once with an operator-issued invite code
+        ▼
+  Cloudflare Worker · grocery-mcp
+        │   OAuth provider + multi-tenant gate + coarse, opinionated domain tools
+        │   (pantry · recipes · Kroger matching · cart) — the locus of determinism
+        ├──────────►  GitHub data repo (private)  — authored recipe & guidance markdown
+        ├──────────►  Cloudflare D1               — profile, session state, indexes, caches
+        └──────────►  Kroger Developer API        — product search, prices, cart writes
+```
 
-The full technical picture — the determinism boundary, multi-tenant identity, the data model, the Kroger matching pipeline — is in **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**.
+Two patterns recur and explain most of the design:
+
+- **Coarse, opinionated tools.** A tool wraps a whole pipeline — `match_ingredient_to_kroger_sku`
+  runs the full ingredient→SKU match internally — so the model can't bypass the cache, validation,
+  or matching. Raw building blocks aren't exposed, and tools return *structured errors, not throws*.
+- **Capture → retrieve → narrow.** LLM-derived knowledge (recipe facets, embeddings, the sale
+  flyer) is captured once into persistent data, retrieved deterministically, and narrowed by the
+  model with live context — so the hot path stays fast and the model is reserved for real novelty.
+
+**Multi-tenancy is a D1 column.** One self-hosted Worker serves a friend group; an invite code
+resolves to a tenant *before* any tool runs, and every per-tenant table is isolated by its `tenant`
+column. Recipes and store maps are deliberately shared; everything personal is not.
+
+The full picture — the determinism boundary, the data model, the Kroger matching pipeline, and the
+background crons — is in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 ## This repo
 
-| Path | What it holds |
+| Path | What it is |
 | --- | --- |
-| `src/`, `test/`, `wrangler.jsonc` | the Cloudflare Worker (MCP server + OAuth provider) |
-| `scripts/` | index + static-site + plugin build tooling, run by data repos via reusable CI |
-| `.github/workflows/` | `ci` (typecheck + tests) + reusable `data-*` workflows operators call |
-| `AGENT_INSTRUCTIONS.md` | the agent persona; source for the `plugin/` bundle installed in Claude.ai |
-| `docs/` | [ARCHITECTURE](docs/ARCHITECTURE.md) (how it's built) · [SCHEMAS](docs/SCHEMAS.md) (file formats) · [TOOLS](docs/TOOLS.md) (tool contract) · [SELF_HOSTING](docs/SELF_HOSTING.md) (operator setup) |
-| [`CONTRIBUTING.md`](CONTRIBUTING.md) | how to work in this repo |
+| `src/`, `test/`, `wrangler.jsonc` | the Cloudflare Worker — the `grocery-mcp` MCP server + OAuth provider |
+| `scripts/` | build tooling — recipe indexes, the static cookbook, the plugin bundle |
+| `AGENT_INSTRUCTIONS.md` | the agent persona + conversational flows; the source `plugin/` is generated from |
+| `plugin/` | the **generated** plugin bundle (skills + connector) — never hand-edited |
+| `docs/` | the deep docs (see [Documentation](#documentation)) |
+| `migrations/d1/` | D1 schema migrations, applied by `wrangler d1 migrations apply` |
+| `openspec/` | the change/spec workflow — `changes/archive/` is the history, `specs/` the living contract |
+| `.github/workflows/` | CI plus the reusable workflows operators' data repos call |
 
-The data repo is created from the [`groceries-agent-data-template`](https://github.com/caseyWebb/groceries-agent-data-template), tracked as its own independent repo.
+**Built with** Cloudflare Workers (TypeScript on `workerd`) · D1 + KV · a GitHub App for repo I/O ·
+the Kroger Developer API · pure-JS parsers (`js-yaml`, JSON-LD via `HTMLRewriter`, RSS via
+`fast-xml-parser`). No database server, no scheduler, no stateful runtime.
+
+## Quickstart (development)
+
+The toolchain is pinned with [mise](https://mise.jdx.dev); **aube** is the package manager (`aubr`
+= `aube run`). Don't install anything globally — `package-lock.json` stays the lockfile.
+
+```bash
+mise install          # Node 22 + aube, pinned in mise.toml
+aube install          # dependencies (reads package-lock.json in place)
+
+aubr dev              # wrangler dev — a local Worker; point MCP Inspector at the local URL
+aubr typecheck        # tsc --noEmit
+aubr test             # vitest — Worker unit tests (test/*.test.ts)
+aubr test:tooling     # node --test — build-tooling tests (tests/*.test.mjs)
+aubr build:plugin     # AGENT_INSTRUCTIONS.md → plugin/ (needs $GROCERY_MCP_URL set)
+```
+
+Local dev secrets (a GitHub App key + Kroger credentials) go in a gitignored `.dev.vars` — see
+[`.dev.vars.example`](.dev.vars.example). The full developer guide — Worker dev, the D1 workflow,
+deployment, and conventions — is [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ## Self-hosting
 
-Self-host for yourself or a friend group **without forking this repo and without running anything locally** — your private **data repo is the control plane**, driving everything from GitHub Actions:
+One self-hosted Worker serves a small friend group, and **you don't fork this repo to run it.**
+You create a private **data repo** from a template — that repo is your control plane: it holds your
+config and thin caller workflows that reference this repo's reusable CI. A GitHub App gives the
+Worker access to your recipes, a Kroger developer app handles search and cart, and Cloudflare hosts
+the Worker, D1, and KV (comfortably free-tier at personal scale). Friends connect their own
+Claude.ai with an invite code you mint — no GitHub or Kroger developer account needed on their end.
 
-1. **Create a data repo** from the template (private); add your `wrangler.jsonc` vars and the one `CLOUDFLARE_API_TOKEN` Actions secret. Its thin caller workflows `uses:` the reusable workflows here — no fork to maintain.
-2. **Register** a GitHub App (data-repo access) and a Kroger Developer app.
-3. **Deploy** the Worker via the data repo's *Deploy Worker* Action.
-4. **Onboard** yourself and friends with the *Onboard member* Action — it mints an invite code; their `users/<username>/` subtree is created on first use.
+The complete walkthrough is [`docs/SELF_HOSTING.md`](docs/SELF_HOSTING.md).
 
-Full step-by-step: **[docs/SELF_HOSTING.md](docs/SELF_HOSTING.md)**.
+## Documentation
 
-## Developing
+- [`CONTRIBUTING.md`](CONTRIBUTING.md) — toolchain, Worker dev, deployment, conventions. **Start here to hack on it.**
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — the determinism boundary, multi-tenancy, the data model, the Kroger matching pipeline, the crons.
+- [`docs/TOOLS.md`](docs/TOOLS.md) — the MCP tool contract (params, returns, guarantees).
+- [`docs/SCHEMAS.md`](docs/SCHEMAS.md) — recipe-file and D1 formats.
+- [`docs/SELF_HOSTING.md`](docs/SELF_HOSTING.md) — operator setup, end to end.
+- [`AGENT_INSTRUCTIONS.md`](AGENT_INSTRUCTIONS.md) — the persona and the conversational flows.
 
-The Worker is the root package (one `package.json` for the Worker + `scripts/`):
+## What this is — and isn't
 
-```sh
-mise install                  # Node + aube (pinned in mise.toml)
-aube install                  # deps (reads package-lock.json in place)
-aubr typecheck                # tsc --noEmit
-aubr test                     # vitest — Worker tests (test/*.test.ts)
-aubr test:tooling             # node --test — build tooling tests (tests/*.test.mjs)
-aubr dev                      # wrangler dev — local Worker for MCP Inspector
-```
-
-See **[CONTRIBUTING.md](CONTRIBUTING.md)** for conventions, deployment, and the OpenSpec change workflow.
+A personal automation experiment aimed at a real friction point — the time and willpower grocery
+planning takes — tuned to one person's tastes, freezer, and grocer, and shareable with a few
+friends. **Not a product, not a startup.** The architecture is deliberately minimal: Claude
+provides the reasoning, the Worker provides a domain interface, GitHub holds the recipe corpus and
+its history, and D1 holds the operational data. The recipe files are plain, version-controlled
+markdown — inspectable by a human and able to outlive the agent if anyone ever stops using it.
