@@ -2,7 +2,7 @@
 
 ### Requirement: PR template with a considerations checklist
 
-The repository SHALL provide a `.github/pull_request_template.md` that pre-populates every pull request's body with a free-text "What & why" section and a fixed checklist of project-specific **considerations**. The template SHALL carry a stable HTML-comment sentinel (`<!-- pr-checklist:v1 -->`) used for presence detection. Each checklist item SHALL be phrased as a consideration whose not-applicable case is folded into its own wording, so that every item is honestly checkable on every pull request without forcing a false claim. The checklist SHALL cover, at minimum: contract docs kept in lockstep (`docs/TOOLS.md` / `docs/SCHEMAS.md` / `docs/ARCHITECTURE.md`); the tool/skill ownership boundary; D1 access routed through `src/db.ts` with structured errors; a new wrangler binding type added to the `merge-wrangler-config.mjs` allowlist; a D1 schema change shipping a `migrations/d1/NNNN_*.sql` file; `plugin/` not hand-edited; an OpenSpec change archived with deltas synced; and no secrets committed (the repo is public).
+The repository SHALL provide a `.github/pull_request_template.md` that pre-populates every pull request's body with a free-text "What & why" section and a fixed checklist of project-specific **considerations**. The template SHALL carry a stable HTML-comment sentinel (`<!-- pr-checklist:v1 -->`) used for presence detection. Each checklist item SHALL be phrased as a consideration whose not-applicable case is folded into its own wording, so that every item is honestly checkable on every pull request without forcing a false claim. The checklist SHALL cover, at minimum: contract docs kept in lockstep (`docs/TOOLS.md` / `docs/SCHEMAS.md` / `docs/ARCHITECTURE.md`); the tool/skill ownership boundary; D1 access routed through `src/db.ts` with structured errors; a new wrangler binding type added to the `merge-wrangler-config.mjs` allowlist; a D1 schema change shipping a `migrations/d1/NNNN_*.sql` file; `plugin/` not hand-edited; an OpenSpec change archived with deltas synced; no secrets committed (the repo is public); and running the repo's `/code-review` skill (an adversarial review of the whole PR) and addressing or triaging its findings.
 
 #### Scenario: New PR is prefilled with the checklist
 
@@ -46,6 +46,25 @@ The checklist gate SHALL exempt pull requests authored by bots (a PR author whos
 
 - **WHEN** Dependabot opens a pull request whose body does not match the template
 - **THEN** the `pr-checklist` check passes instead of failing
+
+### Requirement: Adversarial whole-PR code-review skill
+
+The repository SHALL provide a `/code-review` skill (`.claude/skills/code-review/SKILL.md`) and a `code-reviewer` subagent (`.claude/agents/code-reviewer.md`) that together perform an adversarial review of a pull request. The skill SHALL be thin: it SHALL compute the full PR diff against the merge-base with the default branch (`git merge-base origin/main HEAD`, reviewed as `BASE...HEAD`) and delegate the review to the `code-reviewer` subagent, rather than embedding the review logic itself. The review SHALL cover the **entirety of the PR** — every change since the branch diverged from the default branch — and SHALL NOT be scoped to a single commit (e.g. `HEAD~1`) or the working tree alone. The `code-reviewer` subagent SHALL hold the repo-specific review criteria (the determinism boundary, throw-free tools, `src/db.ts` routing, multi-tenant isolation, the wrangler-merge allowlist, docs lockstep, generated `plugin/`, and no-secrets) and SHALL report findings only without editing files. The PR template's "Code review" consideration refers to this skill.
+
+#### Scenario: Review covers the whole PR, not the latest commit
+
+- **WHEN** the `/code-review` skill runs on a branch with multiple commits
+- **THEN** it reviews the cumulative diff from the merge-base with the default branch through `HEAD`, not just the most recent commit
+
+#### Scenario: Skill delegates to the subagent
+
+- **WHEN** the `/code-review` skill is invoked
+- **THEN** it computes the merge-base range and spawns the `code-reviewer` subagent to perform the adversarial review, rather than reviewing inline
+
+#### Scenario: Reviewer reports without editing
+
+- **WHEN** the `code-reviewer` subagent completes its pass
+- **THEN** it returns findings grouped by severity with `file:line` and suggested fixes, and makes no edits to the working tree
 
 ### Requirement: Contribution docs reference the template and gate
 

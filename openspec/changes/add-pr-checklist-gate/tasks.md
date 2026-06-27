@@ -14,6 +14,11 @@
 ## 4. Don't stump the agent
 - [x] 4.1 Update `CLAUDE.md` and `CONTRIBUTING.md`: a PR here uses `.github/pull_request_template.md`, fills "What & why," and checks every consideration before the gate goes green.
 
+## 4b. Code-review skill + subagent
+- [x] 4b.1 Add the "Code review" consideration to the template.
+- [x] 4b.2 Add `.claude/skills/code-review/SKILL.md` — a thin skill that scopes the full PR diff (`git merge-base origin/main HEAD`, reviewed as `BASE...HEAD`, never `HEAD~1`/working-tree) and delegates to the `code-reviewer` subagent.
+- [x] 4b.3 Add `.claude/agents/code-reviewer.md` — an adversarial, read-only reviewer preloaded with the repo's invariants; reports findings by severity, never edits.
+
 ## 5. Verify
 - [x] 5.1 Self-review: open this change's own PR using the new template, confirm the gate runs, fails on an unchecked box, and passes once fully checked.
 - [x] 5.2 `openspec validate add-pr-checklist-gate --strict` passes.

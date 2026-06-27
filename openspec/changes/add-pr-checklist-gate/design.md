@@ -50,6 +50,7 @@ not-applicable case, so there's no honest reason to leave one unchecked.
 - [ ] **Generated plugin.** `plugin/` was not hand-edited; `AGENT_INSTRUCTIONS.md`/quoted-tool-description changes were followed by `aubr build:plugin` (or no such change).
 - [ ] **OpenSpec.** If this was an OpenSpec change, it's archived and deltas are synced into `openspec/specs/` (or not an OpenSpec change).
 - [ ] **No secrets.** No secrets, tokens, or personal data added — this repo is public.
+- [ ] **Code review.** Ran the repo's `/code-review` skill (adversarial review of the *whole* PR diff) and addressed/triaged findings.
 - [ ] **Checks.** `aubr typecheck`, `aubr test`, `aubr test:tooling` pass locally or on CI.
 ```
 
@@ -67,6 +68,25 @@ The body is available as `github.event.pull_request.body`; the job needs nothing
 - **Bot authors** (`endsWith('[bot]')`) → skip with a neutral pass; Dependabot can't fill a template.
 - **Boxes inside `<!-- -->` comments** → the template puts no `- [ ]` inside comments, and the scan can ignore commented regions; documented so future edits don't reintroduce the hazard.
 - **Required-check bootstrapping** → the workflow only *produces* a check; an admin must add `pr-checklist` to `main` branch protection for it to block merge. Called out in tasks + CONTRIBUTING so it isn't a silent no-op.
+
+## D7 — The "Code review" consideration: a thin skill over an adversarial subagent
+
+One consideration isn't self-attested prose — it points at a tool: `/code-review`. Two artifacts back it:
+
+- **`.claude/skills/code-review/SKILL.md`** — a *thin* orchestrator. It computes the PR's full scope and delegates; it holds no review logic. Keeping it thin means the review criteria have exactly one home (the subagent), matching the repo's "each fact in one place" discipline.
+- **`.claude/agents/code-reviewer.md`** — the adversarial reviewer, read-only (`Read`/`Grep`/`Glob`/`Bash`), preloaded with this repo's invariants (determinism boundary, throw-free tools, `src/db.ts` routing, tenant isolation, the wrangler-merge allowlist, docs lockstep, generated `plugin/`, no-secrets). It reports findings by severity; it never edits.
+
+**Whole-PR, not last-commit — the core requirement.** The skill scopes the diff to the merge-base with the default branch:
+
+```
+   git fetch origin main
+   BASE=$(git merge-base origin/main HEAD)
+   git diff "$BASE"...HEAD        # the ENTIRE PR
+```
+
+`HEAD~1` / "the latest commit" / the working tree are explicitly forbidden scopes. A per-commit review misses the classic failure mode where a defect is introduced in commit A and half-fixed in commit C — only the cumulative end-state reveals it. Three-dot range (`BASE...HEAD`) gives exactly the branch's divergence regardless of rebases or commit count. For a large PR the skill may fan out several `code-reviewer` agents over disjoint file groups, but each still diffs against `$BASE`, never an intermediate commit.
+
+Note this is a *local pre-merge* skill (a checklist attestation), deliberately **not** wired into `pr-checklist.yml` — the gate verifies the box is checked, not that a review happened. Enforcing "a review actually ran" in CI would mean trusting a self-reported marker anyway; the honest contract is the same as every other consideration.
 
 ## D6 — Keep the agent from being stumped
 
