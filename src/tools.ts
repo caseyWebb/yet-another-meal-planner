@@ -77,17 +77,20 @@ const recipeFiltersShape = {
   include_unmakeable: z.boolean().optional(),
 };
 
-// One semantic-search spec: a free-text `vibe` (embedded into the query vector), the
-// hard `facets` (the SAME gate as list_recipes — they constrain, semantic rank only
-// reorders within them), an echoed `label` to group results by, and an optional `k`.
+// One search spec for `search_recipes`. The `facets` are the hard gate (the same
+// `filterRecipes` constraint in both modes); `label` is echoed back to group results.
+// The `vibe` is OPTIONAL and selects the mode: present ⇒ ranked (embed the vibe, cosine
+// over the embedded survivors, drop the unembedded, return top-`k`); absent ⇒ membership
+// (return every survivor, unranked, unembedded included, no `k` cap — the named-dish /
+// browse path). `k` and `boost_ingredients` apply to ranked specs only.
 const searchSpecShape = {
-  vibe: z.string(),
   label: z.string(),
   facets: z.object(recipeFiltersShape).optional(),
+  vibe: z.string().optional(),
   k: z.number().int().positive().optional(),
   // Item names the ranker should bias toward (the caller's at-risk perishables /
   // on-hand items). A bounded, perishable-weighted overlap boost — reorders survivors
-  // only, never gates. Normalized through the alias table before matching.
+  // only, never gates. Normalized through the alias table before matching. Ranked specs only.
   boost_ingredients: z.array(z.string()).optional(),
 };
 
@@ -120,7 +123,7 @@ const READY_TO_EAT_MEALS = ["breakfast", "lunch", "dinner"] as const;
 
 /** Normalize an ingredient-name array through the alias table (lowercase/trim/alias per
  *  entry, drop empties, dedupe). Tolerates a missing/non-array/non-string value → []. The
- *  shared boundary normalizer for `recipe_semantic_search`'s pantry-overlap set math. */
+ *  shared boundary normalizer for `search_recipes`'s pantry-overlap set math. */
 function normalizeItems(value: unknown, aliases: Record<string, string>): string[] {
   if (!Array.isArray(value)) return [];
   const seen = new Set<string>();
@@ -303,19 +306,22 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
   }
 
   server.registerTool(
-    "list_recipes",
+    "search_recipes",
     {
       description:
-        "List recipes from the index, filtered. Returns the whole shared corpus (plus the caller's personal recipes) MINUS recipes the caller has rejected — there is no activation step and no status filter; rejected recipes are simply absent. To find recipes by name or keyword (including a named dish), use `query` — the single text search over title AND tags: it keeps recipes whose title or tags contain EVERY token (case-insensitive substring), after dropping connective stopwords (so \"chicken and rice\" matches the same as \"chicken rice\", including a recipe titled \"Chicken and Rice\" whose tags omit \"rice\"). There is no tag filter. Array filters season/dietary match ALL listed values. course is an open-vocabulary facet (main | side | dessert | breakfast | …) matched by containment — `course: 'side'` returns every recipe whose course includes 'side', including a dual-use `[main, side]` dish. exclude_cooked_within_days is a caller-supplied window. A makeability gate is applied by default: recipes needing equipment the caller doesn't own (per the caller's kitchen inventory) are hidden — unless the caller has no kitchen inventory recorded, in which case nothing is gated. Pass include_unmakeable:true to instead return those recipes annotated with missing_equipment (use this when surfacing a specifically NAMED dish so it is never silently dropped). Each returned entry carries the caller's `favorite` boolean; no status or rating.",
-      inputSchema: { filters: z.object(recipeFiltersShape).optional() },
+        "Find recipes in the index. Takes an array of search SPECS and returns one result group per spec — `{ results: [{ label, recipes }] }`, in input order — in ONE round-trip. Every spec applies `facets` as the hard gate over the caller's available corpus (the whole shared corpus plus the caller's personal recipes, MINUS the caller's rejects; no status/draft/activation step). A spec's `vibe` is OPTIONAL and picks the mode. WITHOUT a vibe (membership): returns EVERY recipe passing the facets, unranked, INCLUDING recipes not yet embedded (e.g. just imported) and uncapped by `k` — this is the named-dish / browse path, so a named dish is never silently dropped. To find a named dish, use a vibe-less spec with `facets.query` (the single text search over title AND tags: keeps recipes whose title or tags contain EVERY token as a case-insensitive substring after dropping connective stopwords, so \"chicken and rice\" matches \"chicken rice\", including a recipe titled \"Chicken and Rice\" whose tags omit \"rice\"), typically with include_unmakeable:true. WITH a vibe (ranked): the vibe is embedded and the survivors that HAVE an embedding are ranked by cosine to it, nudged by closeness to the caller's favorites (taste direction), cook recency (never-cooked surfaced, recently-cooked demoted), and the spec's `boost_ingredients` (a bounded perishable-weighted pantry overlap); unembedded survivors are dropped and the top-" +
+        `${DEFAULT_K} (max ${MAX_K}, override with \`k\`) compact rows returned. Facet notes (both modes): array filters season/dietary match ALL listed values; course is an open-vocabulary facet (main | side | dessert | breakfast | …) matched by containment — \`course: 'side'\` returns every recipe whose course includes 'side', including a dual-use \`[main, side]\` dish; exclude_cooked_within_days is a caller-supplied window; there is no tag filter. A makeability gate is applied by default in both modes: recipes needing equipment the caller doesn't own are hidden — unless the caller has no kitchen inventory recorded, in which case nothing is gated — and include_unmakeable:true instead returns those recipes annotated with missing_equipment. Each membership row carries the caller's \`favorite\` boolean and \`description\`; no status or rating. For recall, use several diverse vibe specs (a vibe, a variety/wildcard, a never-cooked novelty) in one call.`,
+      inputSchema: { specs: z.array(z.object(searchSpecShape)).min(1) },
     },
-    ({ filters }) =>
+    ({ specs }) =>
       runTool(async () => {
-        // The shared index is the D1 `recipes` table (loadRecipeIndex rebuilds the
-        // in-memory RecipeIndex from rows). An EMPTY table is a valid empty corpus —
-        // it yields `{}` and the filter returns []. An UNREADABLE table throws a
-        // `storage_error` from db(); remap that to `index_unavailable` (the two cases
-        // the old KV key-presence check conflated).
+        // Membership (no vibe) needs only the index + overlay/last_cooked/owned for the
+        // facet gate; ranking (vibe present) additionally needs embeddings, rotation
+        // prefs, and the alias table for boost normalization. We load the ranking-only
+        // reads conditionally so a pure-membership batch makes ZERO AI subrequests and no
+        // extra D1 reads. The index read remaps an UNREADABLE table to `index_unavailable`
+        // (an EMPTY table is a valid empty corpus — `{}`, so the gate returns []).
+        const ranked = specs.some((s) => typeof s.vibe === "string" && s.vibe.length > 0);
         const [index, overlay, lastCooked, owned] = await Promise.all([
           loadRecipeIndex(env).catch((e) => {
             throw new ToolError(
@@ -327,9 +333,10 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
           getLastCookedMap(),
           getOwnedEquipment(),
         ]);
+
         // Join each shared entry with the caller's overlay (favorite/reject) and
-        // cooking-log-derived last_cooked before filtering, so the reject hard gate
-        // and the makeability gate see the caller's effective per-tenant view.
+        // cooking-log-derived last_cooked before filtering, so the reject hard gate and
+        // the makeability gate see the caller's effective per-tenant view (both modes).
         const effective: RecipeIndex = {};
         for (const [slug, entry] of Object.entries(index)) {
           effective[slug] = {
@@ -337,46 +344,27 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
             slug,
           };
         }
-        return { recipes: filterRecipes(effective, filters ?? {}, new Date(), owned) };
-      }),
-  );
+        const now = new Date();
 
-  server.registerTool(
-    "recipe_semantic_search",
-    {
-      description:
-        "Semantic recipe retrieval (experimental, semantic-meal-plan). Takes an array of search SPECS and returns ranked recipes grouped per spec, in ONE round-trip. Each spec has: `vibe` — free text describing the kind of dish wanted (\"rich cold-weather braise,\" \"bright quick weeknight fish\"), embedded and matched by meaning (NOT keyword); `facets` — the SAME hard filters as list_recipes (protein, cuisine, course, dietary, season, max_time_total, exclude_cooked_within_days, include_unmakeable, …), which CONSTRAIN the result set — semantic rank only reorders within them and can never admit a recipe a facet rejects; `label` — an arbitrary tag echoed back so you can tell each spec's results apart; optional `k` (default " +
-        `${DEFAULT_K}, max ${MAX_K}). Results are re-ranked by cosine relevance to the vibe, nudged by closeness to the caller's favorites (taste direction) and by cook recency (never-cooked surfaced, recently-cooked demoted). Recipes with no embedding yet (just imported, not reconciled) are omitted — they remain findable via list_recipes. Use several diverse specs (a vibe, a variety/wildcard, a never-cooked novelty) for good recall; the makeability gate applies by default exactly as in list_recipes.`,
-      inputSchema: { specs: z.array(z.object(searchSpecShape)).min(1) },
-    },
-    ({ specs }) =>
-      runTool(async () => {
-        // Shared per-request reads, once for all specs: the index + embeddings, the
-        // caller's overlay (favorites) / cooking log (freshness) / owned equipment
-        // (makeability gate), and preferences (rotation tuning — optional, defaults
-        // when unset, so semantic search works before any profile exists).
-        const [index, embeddings, overlay, lastCooked, owned, prefs, aliases] = await Promise.all([
-          loadRecipeIndex(env).catch((e) => {
-            throw new ToolError(
-              "index_unavailable",
-              `the recipe index is unavailable: ${e instanceof Error ? e.message : String(e)}`,
-            );
-          }),
+        // Membership-only: gate per spec and return the survivors directly — unranked,
+        // unembedded included, no `k` cap, `boost_ingredients` ignored.
+        if (!ranked) {
+          return {
+            results: specs.map((spec) => ({
+              label: spec.label,
+              recipes: filterRecipes(effective, spec.facets ?? {}, now, owned),
+            })),
+          };
+        }
+
+        // Ranking path: load the embeddings + rotation prefs + alias table, embed the
+        // vibe-bearing specs' vibes in ONE Workers AI call (vibe-less specs make no
+        // contribution to the embed batch and stay in membership mode).
+        const [embeddings, prefs, aliases] = await Promise.all([
           loadRecipeEmbeddings(env),
-          getOverlay(),
-          getLastCookedMap(),
-          getOwnedEquipment(),
           readPreferences(env, tenant.id).catch(() => null),
           getAliases().catch(() => ({}) as Record<string, string>),
         ]);
-
-        // Merge the caller's overlay (favorite/reject) + last_cooked onto the shared
-        // entries so the facet gate (including the reject hard gate) sees the effective
-        // per-tenant view, exactly as list_recipes does.
-        const effective: RecipeIndex = {};
-        for (const [slug, entry] of Object.entries(index)) {
-          effective[slug] = { ...mergeOverlay(entry, overlay[slug], lastCooked.get(slug)), slug };
-        }
 
         // Favorites = the caller's favorited recipes that are embedded — the
         // nearest-liked re-rank's anchor set (the favorite cutover repointed this
@@ -388,23 +376,33 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
             if (vec) favoriteVecs.push(vec);
           }
         }
-
         const params = resolveRankParams(prefs);
-        const now = new Date();
 
-        // One Workers AI call for ALL spec vibes (one subrequest, not K).
+        // One embed call for ALL vibe-bearing specs, mapped back to their spec index so a
+        // mix of membership and ranked specs in one call stays aligned.
+        const vibeSpecs = specs
+          .map((spec, i) => ({ spec, i }))
+          .filter((x) => typeof x.spec.vibe === "string" && x.spec.vibe.length > 0);
         const vibeVecs = await embedTexts(
           env,
-          specs.map((s) => s.vibe),
+          vibeSpecs.map((x) => x.spec.vibe as string),
         );
+        const vibeVecByIndex = new Map<number, number[]>();
+        vibeSpecs.forEach((x, j) => vibeVecByIndex.set(x.i, vibeVecs[j]));
 
         const results = specs.map((spec, i) => {
           const survivors = filterRecipes(effective, spec.facets ?? {}, now, owned);
+          const vibeVec = vibeVecByIndex.get(i);
+          // A vibe-less spec in a ranked batch is still membership: return survivors
+          // directly (unranked, unembedded included, no `k`).
+          if (!vibeVec) {
+            return { label: spec.label, recipes: survivors };
+          }
           // Normalize the spec's boost items through the SAME alias table the index's
           // ingredient arrays are normalized against, so the overlap is exact set math.
           const boostItems = normalizeItems(spec.boost_ingredients, aliases);
-          // Resolve each survivor's embedding + freshness; drop the unembedded (not
-          // yet reconciled) — they stay browseable via list_recipes, just unranked here.
+          // Resolve each survivor's embedding + freshness; drop the unembedded (not yet
+          // reconciled) — they stay reachable via a vibe-less membership spec.
           const candidates: SearchCandidate[] = [];
           for (const s of survivors) {
             const vec = embeddings.get(s.slug);
@@ -428,7 +426,7 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
           }
           const recipes = rankCandidates(
             candidates,
-            vibeVecs[i],
+            vibeVec,
             favoriteVecs,
             boostItems,
             now,

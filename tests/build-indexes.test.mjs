@@ -33,12 +33,40 @@ async function tmpRecipes(files) {
 const SECTIONS = `\n## Ingredients\n\n- x\n\n## Instructions\n\n1. do it\n`;
 const recipe = (fm, body = SECTIONS) => `---\n${fm}\n---\n${body}`;
 
+// A minimal CONTRACT-COMPLIANT frontmatter (every system-consumed field present in its
+// explicit empty form). Tests override one axis at a time via `fm({...})`; pass a key
+// as `undefined` to OMIT it (to exercise the missing-required-field hard fail).
+const BASE = {
+  title: 'X',
+  description: 'A simple test dish.',
+  ingredients_key: '[x]',
+  course: '[main]',
+  protein: 'null',
+  cuisine: 'null',
+  time_total: 'null',
+  source: 'null',
+  dietary: '[]',
+  season: '[]',
+  tags: '[]',
+  pairs_with: '[]',
+  perishable_ingredients: '[]',
+  requires_equipment: '[]',
+  side_search_terms: '["a crisp green salad"]',
+};
+function fm(overrides = {}) {
+  const merged = { ...BASE, ...overrides };
+  return Object.entries(merged)
+    .filter(([, v]) => v !== undefined) // `undefined` omits the line entirely
+    .map(([k, v]) => `${k}: ${v}`)
+    .join('\n');
+}
+
 // --- 4.2 index shapes from fixtures -------------------------------------
 
 test('builds recipe index from fixtures', async () => {
   const { recipes, errors, warnings } = await buildRecipeIndexes(FIXTURES);
   assert.deepEqual(errors, []);
-  assert.deepEqual(warnings, []); // fixtures have all recommended fields
+  assert.deepEqual(warnings, []); // the warn-only tier is retired — nothing warns
 
   assert.deepEqual(
     Object.keys(recipes).sort(),
@@ -56,11 +84,11 @@ test('builds recipe index from fixtures', async () => {
   assert.equal(recipes['experimental-tofu'].status, undefined);
 });
 
-test('flags an off-vocabulary protein (shared vocab from src/vocab.js is the build gate)', async () => {
-  const dir = await tmpRecipes({ 'shrimp.md': recipe('title: Shrimp\nstatus: active\nprotein: shrimp') });
+test('flags an off-vocabulary protein (shared contract is the build gate)', async () => {
+  const dir = await tmpRecipes({ 'shrimp.md': recipe(fm({ protein: 'shrimp' })) });
   const { errors } = await buildRecipeIndexes(dir);
   assert.ok(
-    errors.some((e) => /protein/.test(e) && /shrimp/.test(e) && /controlled vocabulary/.test(e)),
+    errors.some((e) => /protein/.test(e) && /shrimp/.test(e)),
     errors.join('\n'),
   );
   await rm(dir, { recursive: true, force: true });
@@ -68,15 +96,12 @@ test('flags an off-vocabulary protein (shared vocab from src/vocab.js is the bui
 
 test('accepts the coarse buckets (shellfish / thai) the shared vocab defines', async () => {
   const dir = await tmpRecipes({
-    'curry.md': recipe('title: Curry\nstatus: active\nprotein: shellfish\ncuisine: thai'),
+    'curry.md': recipe(fm({ protein: 'shellfish', cuisine: 'thai' })),
   });
   const { errors } = await buildRecipeIndexes(dir);
   assert.deepEqual(errors, []);
   await rm(dir, { recursive: true, force: true });
 });
-
-// ready_to_eat.toml moved to DATA_KV — no build validator (validated by the
-// Worker at write time). Same for kitchen.toml and meal_plan.toml below.
 
 // --- 4.3 determinism + date normalization -------------------------------
 
@@ -87,8 +112,6 @@ test('output is deterministic across runs', async () => {
 });
 
 test('subjective date field last_cooked is stripped from the shared index', async () => {
-  // Date normalization itself is covered by the normalizeValue unit test below;
-  // here we assert the per-tenant last_cooked never lands in the shared index.
   const { recipes } = await buildRecipeIndexes(FIXTURES);
   assert.equal(recipes['salmon-with-rice'].last_cooked, undefined);
 });
@@ -102,12 +125,12 @@ test('deriveSlug strips .md and directory', () => {
   assert.equal(deriveSlug('recipes/foo/bar.md'), 'bar');
 });
 
-// --- 4.4 validation: each hard-fail trips, soft only warns --------------
+// --- 4.4 validation: the required-field contract hard-fails -------------
 
 test('tolerates a lingering status (the lifecycle is retired, never validated)', async () => {
-  // status is no longer a controlled vocabulary — any value passes the build (it is
-  // stripped from the index, never enforced).
-  const dir = await tmpRecipes({ 'ok.md': recipe('title: Old\nstatus: in-progress') });
+  // status is not in the contract — any value passes the build (it is stripped from
+  // the index, never enforced).
+  const dir = await tmpRecipes({ 'ok.md': recipe(fm({ status: 'in-progress' })) });
   const { errors, recipes } = await buildRecipeIndexes(dir);
   assert.equal(errors.length, 0, errors.join('\n'));
   // and it never reaches the shared index
@@ -116,16 +139,54 @@ test('tolerates a lingering status (the lifecycle is retired, never validated)',
 });
 
 test('hard-fail: missing title', async () => {
-  const dir = await tmpRecipes({ 'notitle.md': recipe('status: active') });
+  const dir = await tmpRecipes({ 'notitle.md': recipe(fm({ title: undefined })) });
   const { errors } = await buildRecipeIndexes(dir);
   assert.ok(errors.some((e) => e.includes('title')), errors.join('\n'));
   await rm(dir, { recursive: true, force: true });
 });
 
+test('hard-fail: a missing required field (ingredients_key) fails the build', async () => {
+  const dir = await tmpRecipes({ 'sparse.md': recipe(fm({ ingredients_key: undefined })) });
+  const { errors } = await buildRecipeIndexes(dir);
+  assert.ok(
+    errors.some((e) => e.includes('sparse.md') && e.includes('ingredients_key')),
+    errors.join('\n'),
+  );
+  await rm(dir, { recursive: true, force: true });
+});
+
+test('hard-fail: an empty non-empty field (ingredients_key: []) fails the build', async () => {
+  const dir = await tmpRecipes({ 'empty.md': recipe(fm({ ingredients_key: '[]' })) });
+  const { errors } = await buildRecipeIndexes(dir);
+  assert.ok(errors.some((e) => e.includes('ingredients_key')), errors.join('\n'));
+  await rm(dir, { recursive: true, force: true });
+});
+
+test('hard-fail: an omitted explicit-null scalar (protein) fails the build', async () => {
+  const dir = await tmpRecipes({ 'noprotein.md': recipe(fm({ protein: undefined })) });
+  const { errors } = await buildRecipeIndexes(dir);
+  assert.ok(errors.some((e) => e.includes('protein')), errors.join('\n'));
+  await rm(dir, { recursive: true, force: true });
+});
+
+test('hard-fail: a `none` protein is rejected (must be explicit null)', async () => {
+  const dir = await tmpRecipes({ 'none.md': recipe(fm({ protein: 'none' })) });
+  const { errors } = await buildRecipeIndexes(dir);
+  assert.ok(errors.some((e) => /protein/.test(e) && /none/.test(e)), errors.join('\n'));
+  await rm(dir, { recursive: true, force: true });
+});
+
+test('explicit null protein/cuisine/time_total/source pass', async () => {
+  const dir = await tmpRecipes({ 'nulls.md': recipe(fm()) }); // BASE uses null scalars
+  const { errors } = await buildRecipeIndexes(dir);
+  assert.deepEqual(errors, []);
+  await rm(dir, { recursive: true, force: true });
+});
+
 test('hard-fail: duplicate slug across nested dirs', async () => {
   const dir = await tmpRecipes({
-    'a/dup.md': recipe('title: A\nstatus: active'),
-    'b/dup.md': recipe('title: B\nstatus: active'),
+    'a/dup.md': recipe(fm({ title: 'A' })),
+    'b/dup.md': recipe(fm({ title: 'B' })),
   });
   const { errors } = await buildRecipeIndexes(dir);
   assert.ok(errors.some((e) => e.includes('duplicate slug')), errors.join('\n'));
@@ -139,32 +200,24 @@ test('hard-fail: unparseable frontmatter', async () => {
   await rm(dir, { recursive: true, force: true });
 });
 
-test('soft: missing recommended fields warns but does not fail', async () => {
-  const dir = await tmpRecipes({ 'sparse.md': recipe('title: Sparse\nstatus: active') });
-  const { errors, warnings } = await buildRecipeIndexes(dir);
-  assert.deepEqual(errors, []);
-  assert.ok(warnings.some((w) => w.includes('recommended')), warnings.join('\n'));
-  await rm(dir, { recursive: true, force: true });
-});
-
 // --- pairs_with (plating edge) + course facet ---------------------------
 
 test('resolved pairs_with passes and is carried into the index as an array', async () => {
   const dir = await tmpRecipes({
-    'curry.md': recipe('title: Curry\nstatus: active\npairs_with: [steamed-rice]'),
-    'steamed-rice.md': recipe('title: Steamed Rice\nstatus: active'),
+    'curry.md': recipe(fm({ title: 'Curry', pairs_with: '[steamed-rice]' })),
+    'steamed-rice.md': recipe(fm({ title: 'Steamed Rice', course: '[side]', side_search_terms: '[]' })),
   });
   const { recipes, errors } = await buildRecipeIndexes(dir);
-  assert.ok(!errors.some((e) => e.includes('pairs_with')), errors.join('\n'));
+  assert.deepEqual(errors, []);
   assert.deepEqual(recipes['curry'].pairs_with, ['steamed-rice']);
-  // A recipe with no pairs_with defaults to an empty array in the index.
+  // An empty pairs_with stays an empty array in the index.
   assert.deepEqual(recipes['steamed-rice'].pairs_with, []);
   await rm(dir, { recursive: true, force: true });
 });
 
 test('hard-fail: pairs_with references an unknown recipe', async () => {
   const dir = await tmpRecipes({
-    'main.md': recipe('title: Main\nstatus: active\npairs_with: [ghost-side]'),
+    'main.md': recipe(fm({ title: 'Main', pairs_with: '[ghost-side]' })),
   });
   const { errors } = await buildRecipeIndexes(dir);
   assert.ok(errors.some((e) => /pairs_with references unknown recipe "ghost-side"/.test(e)), errors.join('\n'));
@@ -173,7 +226,7 @@ test('hard-fail: pairs_with references an unknown recipe', async () => {
 
 test('course: scalar is normalized to a lowercased, trimmed array', async () => {
   const dir = await tmpRecipes({
-    'roast.md': recipe('title: Roast\nstatus: active\ncourse: Main'),
+    'roast.md': recipe(fm({ title: 'Roast', course: 'Main' })),
   });
   const { recipes, errors } = await buildRecipeIndexes(dir);
   assert.deepEqual(errors, []);
@@ -183,7 +236,7 @@ test('course: scalar is normalized to a lowercased, trimmed array', async () => 
 
 test('course: array is lowercased and trimmed (dual-use)', async () => {
   const dir = await tmpRecipes({
-    'grain-salad.md': recipe('title: Grain Salad\nstatus: active\ncourse: ["Main", " Side "]'),
+    'grain-salad.md': recipe(fm({ title: 'Grain Salad', course: '["Main", " Side "]' })),
   });
   const { recipes, errors } = await buildRecipeIndexes(dir);
   assert.deepEqual(errors, []);
@@ -192,8 +245,9 @@ test('course: array is lowercased and trimmed (dual-use)', async () => {
 });
 
 test('course: an off-convention value passes (open vocabulary)', async () => {
+  // A non-main course needs no side_search_terms.
   const dir = await tmpRecipes({
-    'chimichurri.md': recipe('title: Chimichurri\nstatus: active\ncourse: [sauce]'),
+    'chimichurri.md': recipe(fm({ title: 'Chimichurri', course: '[sauce]', side_search_terms: '[]' })),
   });
   const { recipes, errors } = await buildRecipeIndexes(dir);
   assert.deepEqual(errors, []);
@@ -201,30 +255,46 @@ test('course: an off-convention value passes (open vocabulary)', async () => {
   await rm(dir, { recursive: true, force: true });
 });
 
-test('hard-fail: course present but not a string/array', async () => {
-  const dir = await tmpRecipes({
-    'bad.md': recipe('title: Bad\nstatus: active\ncourse: 3'),
-  });
+test('hard-fail: course absent', async () => {
+  const dir = await tmpRecipes({ 'bad.md': recipe(fm({ course: undefined })) });
   const { errors } = await buildRecipeIndexes(dir);
-  assert.ok(errors.some((e) => /course must be a string or an array of strings/.test(e)), errors.join('\n'));
+  assert.ok(errors.some((e) => /course/.test(e)), errors.join('\n'));
   await rm(dir, { recursive: true, force: true });
 });
 
-test('absent pairs_with / course do not warn; course defaults to empty', async () => {
-  const dir = await tmpRecipes({
-    'plain.md': recipe('title: Plain\nstatus: active\nprotein: chicken\ntime_total: 30\ningredients_key: [chicken]'),
-  });
-  const { recipes, errors, warnings } = await buildRecipeIndexes(dir);
+test('hard-fail: course present but empty', async () => {
+  const dir = await tmpRecipes({ 'bad.md': recipe(fm({ course: '[]' })) });
+  const { errors } = await buildRecipeIndexes(dir);
+  assert.ok(errors.some((e) => /course/.test(e)), errors.join('\n'));
+  await rm(dir, { recursive: true, force: true });
+});
+
+test('hard-fail: course present but not a string/array', async () => {
+  const dir = await tmpRecipes({ 'bad.md': recipe(fm({ course: '3' })) });
+  const { errors } = await buildRecipeIndexes(dir);
+  assert.ok(errors.some((e) => /course.*must be a string or an array of strings/.test(e)), errors.join('\n'));
+  await rm(dir, { recursive: true, force: true });
+});
+
+// --- side_search_terms (conditional on course) --------------------------
+
+test('hard-fail: a main with empty side_search_terms', async () => {
+  const dir = await tmpRecipes({ 'main.md': recipe(fm({ course: '[main]', side_search_terms: '[]' })) });
+  const { errors } = await buildRecipeIndexes(dir);
+  assert.ok(errors.some((e) => /side_search_terms/.test(e)), errors.join('\n'));
+  await rm(dir, { recursive: true, force: true });
+});
+
+test('a non-main with empty side_search_terms passes', async () => {
+  const dir = await tmpRecipes({ 'side.md': recipe(fm({ course: '[side]', side_search_terms: '[]' })) });
+  const { errors } = await buildRecipeIndexes(dir);
   assert.deepEqual(errors, []);
-  assert.ok(!warnings.some((w) => /pairs_with|course/.test(w)), warnings.join('\n'));
-  assert.deepEqual(recipes['plain'].course, []);
   await rm(dir, { recursive: true, force: true });
 });
 
 test('retired standalone field is ignored: no fail, not projected', async () => {
   const dir = await tmpRecipes({
-    // a now-retired field with any value — must not fail the build, must not appear in the index
-    'chili.md': recipe('title: Chili\nstatus: active\nprotein: beef\ntime_total: 60\ningredients_key: [beef]\nstandalone: yes-please'),
+    'chili.md': recipe(fm({ title: 'Chili', protein: 'beef', standalone: 'yes-please' })),
   });
   const { recipes, errors } = await buildRecipeIndexes(dir);
   assert.deepEqual(errors, []);
@@ -232,38 +302,42 @@ test('retired standalone field is ignored: no fail, not projected', async () => 
   await rm(dir, { recursive: true, force: true });
 });
 
+test('free-form fields pass through untouched (no presence expectation)', async () => {
+  const dir = await tmpRecipes({
+    'ff.md': recipe(fm({ meal_preppable: 'true', veg_forward: 'false' })),
+  });
+  const { recipes, errors, warnings } = await buildRecipeIndexes(dir);
+  assert.deepEqual(errors, []);
+  assert.deepEqual(warnings, []);
+  assert.equal(recipes['ff'].meal_preppable, true);
+  await rm(dir, { recursive: true, force: true });
+});
+
 // --- perishable_ingredients (menu-gen waste callout input) --------------
 
 test('valid perishable_ingredients array passes and is carried into the index', async () => {
   const dir = await tmpRecipes({
-    'tacos.md': recipe('title: Tacos\nstatus: active\nperishable_ingredients: [cilantro, lime]'),
+    'tacos.md': recipe(fm({ title: 'Tacos', perishable_ingredients: '[cilantro, lime]' })),
   });
   const { recipes, errors } = await buildRecipeIndexes(dir);
-  assert.ok(!errors.some((e) => e.includes('perishable_ingredients')), errors.join('\n'));
+  assert.deepEqual(errors, []);
   assert.deepEqual(recipes['tacos'].perishable_ingredients, ['cilantro', 'lime']);
   await rm(dir, { recursive: true, force: true });
 });
 
 test('hard-fail: perishable_ingredients present as a bare string', async () => {
   const dir = await tmpRecipes({
-    'bad.md': recipe('title: Bad\nstatus: active\nperishable_ingredients: cilantro'),
+    'bad.md': recipe(fm({ title: 'Bad', perishable_ingredients: 'cilantro' })),
   });
   const { errors } = await buildRecipeIndexes(dir);
-  assert.ok(
-    errors.some((e) => /perishable_ingredients must be an array of ingredient names/.test(e)),
-    errors.join('\n'),
-  );
+  assert.ok(errors.some((e) => /perishable_ingredients/.test(e)), errors.join('\n'));
   await rm(dir, { recursive: true, force: true });
 });
 
-test('absent perishable_ingredients does not warn and defaults to empty', async () => {
-  const dir = await tmpRecipes({
-    'plain.md': recipe('title: Plain\nstatus: active\nprotein: chicken\ntime_total: 30\ningredients_key: [chicken]'),
-  });
-  const { recipes, errors, warnings } = await buildRecipeIndexes(dir);
-  assert.deepEqual(errors, []);
-  assert.ok(!warnings.some((w) => /perishable_ingredients/.test(w)), warnings.join('\n'));
-  assert.deepEqual(recipes['plain'].perishable_ingredients, []);
+test('hard-fail: perishable_ingredients absent', async () => {
+  const dir = await tmpRecipes({ 'p.md': recipe(fm({ perishable_ingredients: undefined })) });
+  const { errors } = await buildRecipeIndexes(dir);
+  assert.ok(errors.some((e) => /perishable_ingredients/.test(e)), errors.join('\n'));
   await rm(dir, { recursive: true, force: true });
 });
 
@@ -271,40 +345,36 @@ test('absent perishable_ingredients does not warn and defaults to empty', async 
 
 test('in-vocabulary requires_equipment passes and is carried into the index', async () => {
   const dir = await tmpRecipes({
-    'sous-vide-steak.md': recipe('title: Sous Vide Steak\nstatus: active\nrequires_equipment: [sous-vide-circulator]'),
+    'sous-vide-steak.md': recipe(fm({ title: 'Sous Vide Steak', requires_equipment: '[sous-vide-circulator]' })),
   });
   const { recipes, errors } = await buildRecipeIndexes(dir);
-  assert.ok(!errors.some((e) => /requires_equipment/.test(e)), errors.join('\n'));
+  assert.deepEqual(errors, []);
   assert.deepEqual(recipes['sous-vide-steak'].requires_equipment, ['sous-vide-circulator']);
   await rm(dir, { recursive: true, force: true });
 });
 
 test('hard-fail: off-vocabulary requires_equipment', async () => {
   const dir = await tmpRecipes({
-    'bad.md': recipe('title: Bad\nstatus: active\nrequires_equipment: [panini-press]'),
+    'bad.md': recipe(fm({ title: 'Bad', requires_equipment: '[panini-press]' })),
   });
   const { errors } = await buildRecipeIndexes(dir);
-  assert.ok(errors.some((e) => /requires_equipment "panini-press" is not in the controlled vocabulary/.test(e)), errors.join('\n'));
+  assert.ok(errors.some((e) => /requires_equipment.*panini-press.*not in the controlled vocabulary/.test(e)), errors.join('\n'));
   await rm(dir, { recursive: true, force: true });
 });
 
 test('hard-fail: non-array requires_equipment', async () => {
   const dir = await tmpRecipes({
-    'bad.md': recipe('title: Bad\nstatus: active\nrequires_equipment: blender'),
+    'bad.md': recipe(fm({ title: 'Bad', requires_equipment: 'blender' })),
   });
   const { errors } = await buildRecipeIndexes(dir);
-  assert.ok(errors.some((e) => /requires_equipment must be an array/.test(e)), errors.join('\n'));
+  assert.ok(errors.some((e) => /requires_equipment.*must be an array/.test(e)), errors.join('\n'));
   await rm(dir, { recursive: true, force: true });
 });
 
-test('absent requires_equipment defaults to [] and does not warn', async () => {
-  const dir = await tmpRecipes({
-    'plain.md': recipe('title: Plain\nstatus: active\nprotein: chicken\ntime_total: 30\ningredients_key: [chicken]'),
-  });
-  const { recipes, errors, warnings } = await buildRecipeIndexes(dir);
-  assert.deepEqual(errors, []);
-  assert.ok(!warnings.some((w) => /requires_equipment/.test(w)), warnings.join('\n'));
-  assert.deepEqual(recipes['plain'].requires_equipment, []);
+test('hard-fail: requires_equipment absent', async () => {
+  const dir = await tmpRecipes({ 're.md': recipe(fm({ requires_equipment: undefined })) });
+  const { errors } = await buildRecipeIndexes(dir);
+  assert.ok(errors.some((e) => /requires_equipment/.test(e)), errors.join('\n'));
   await rm(dir, { recursive: true, force: true });
 });
 
@@ -320,7 +390,7 @@ test('hasH2Section detects ATX H2 headings, ignores other levels', () => {
 
 test('hard-fail: missing Ingredients section reports file + section', async () => {
   const dir = await tmpRecipes({
-    'noing.md': recipe('title: NoIng\nstatus: active', '\n## Instructions\n\n1. go\n'),
+    'noing.md': recipe(fm({ title: 'NoIng' }), '\n## Instructions\n\n1. go\n'),
   });
   const { errors } = await buildRecipeIndexes(dir);
   assert.ok(
@@ -332,7 +402,7 @@ test('hard-fail: missing Ingredients section reports file + section', async () =
 
 test('hard-fail: missing Instructions section reports file + section', async () => {
   const dir = await tmpRecipes({
-    'noinstr.md': recipe('title: NoInstr\nstatus: active', '\n## Ingredients\n\n- x\n'),
+    'noinstr.md': recipe(fm({ title: 'NoInstr' }), '\n## Ingredients\n\n- x\n'),
   });
   const { errors } = await buildRecipeIndexes(dir);
   assert.ok(
@@ -345,7 +415,7 @@ test('hard-fail: missing Instructions section reports file + section', async () 
 test('extra H2 sections beyond the required two are allowed', async () => {
   const dir = await tmpRecipes({
     'notes.md': recipe(
-      'title: Notes\nstatus: active\nprotein: fish\ntime_total: 10\ningredients_key: [x]',
+      fm({ title: 'Notes', protein: 'fish', time_total: '10' }),
       '\n## Ingredients\n\n- x\n\n## Instructions\n\n1. go\n\n## Notes\n\nMake ahead.\n'
     ),
   });
@@ -358,8 +428,8 @@ test('extra H2 sections beyond the required two are allowed', async () => {
 
 test('hard-fail: out-of-vocabulary protein and cuisine', async () => {
   const dir = await tmpRecipes({
-    'bad-protein.md': recipe('title: P\nstatus: active\nprotein: salmon\ntime_total: 10\ningredients_key: [x]'),
-    'bad-cuisine.md': recipe('title: C\nstatus: active\nprotein: fish\ncuisine: martian\ntime_total: 10\ningredients_key: [x]'),
+    'bad-protein.md': recipe(fm({ title: 'P', protein: 'salmon' })),
+    'bad-cuisine.md': recipe(fm({ title: 'C', protein: 'fish', cuisine: 'martian' })),
   });
   const { errors } = await buildRecipeIndexes(dir);
   assert.ok(errors.some((e) => e.includes('bad-protein.md') && e.includes('protein')), errors.join('\n'));
@@ -367,14 +437,12 @@ test('hard-fail: out-of-vocabulary protein and cuisine', async () => {
   await rm(dir, { recursive: true, force: true });
 });
 
-test('in-vocabulary protein/cuisine pass; absent protein only warns', async () => {
+test('in-vocabulary protein/cuisine pass', async () => {
   const dir = await tmpRecipes({
-    'ok.md': recipe('title: Ok\nstatus: active\nprotein: fish\ncuisine: japanese\ntime_total: 10\ningredients_key: [x]'),
-    'noprotein.md': recipe('title: NoP\nstatus: active\ntime_total: 10\ningredients_key: [x]'),
+    'ok.md': recipe(fm({ title: 'Ok', protein: 'fish', cuisine: 'japanese' })),
   });
-  const { errors, warnings } = await buildRecipeIndexes(dir);
+  const { errors } = await buildRecipeIndexes(dir);
   assert.deepEqual(errors, []);
-  assert.ok(warnings.some((w) => w.includes('noprotein.md') && w.includes('protein')), warnings.join('\n'));
   await rm(dir, { recursive: true, force: true });
 });
 
@@ -498,8 +566,6 @@ test('recipeToRow: absent facets are NULL, not "undefined"; empty extra is null'
 test('recipeToRow round-trips a real built recipe (fixtures → row → reconstructed objective fields)', async () => {
   const { recipes } = await buildRecipeIndexes(FIXTURES);
   // Use a fixture with a non-null `source` so the source_url column round-trips.
-  // (A frontmatter `source: null` carries no URL and is reconstructed as absent —
-  // covered by the NULL-column test above and harmless: discovery skips null.)
   const salmon = recipes['experimental-tofu'];
   const row = recipeToRow(salmon);
   // Reconstruct the way src/recipe-index.ts does (extra + columns), proving the
@@ -510,6 +576,7 @@ test('recipeToRow round-trips a real built recipe (fixtures → row → reconstr
   if (row[COL.protein] !== null) reconstructed.protein = row[COL.protein];
   if (row[COL.cuisine] !== null) reconstructed.cuisine = row[COL.cuisine];
   if (row[COL.time_total] !== null) reconstructed.time_total = row[COL.time_total];
+  if (row[COL.description] !== null) reconstructed.description = row[COL.description];
   if (row[COL.source_url] !== null) reconstructed.source = row[COL.source_url];
   for (const [col, key] of [
     [COL.ingredients_key, 'ingredients_key'],
@@ -520,6 +587,7 @@ test('recipeToRow round-trips a real built recipe (fixtures → row → reconstr
     [COL.pairs_with, 'pairs_with'],
     [COL.perishable_ingredients, 'perishable_ingredients'],
     [COL.requires_equipment, 'requires_equipment'],
+    [COL.side_search_terms, 'side_search_terms'],
   ]) {
     if (row[col] !== null) reconstructed[key] = JSON.parse(row[col]);
   }
@@ -529,7 +597,7 @@ test('recipeToRow round-trips a real built recipe (fixtures → row → reconstr
 test('build run() does not write _indexes/recipes.json (the index is D1 now)', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'grocery-noindex-'));
   await mkdir(path.join(root, 'recipes'), { recursive: true });
-  await writeFile(path.join(root, 'recipes', 'r.md'), recipe('title: R', SECTIONS));
+  await writeFile(path.join(root, 'recipes', 'r.md'), recipe(fm({ title: 'R' }), SECTIONS));
   // run() validates + builds the index map but writes no files; the projection to
   // D1 is a separate step (skipped without CLOUDFLARE_API_TOKEN). Assert the legacy
   // artifact is never produced under _indexes/.

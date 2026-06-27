@@ -60,7 +60,7 @@ export const PLUGIN_DESCRIPTION =
   'Personal grocery agent — meal planning, pantry, recipes, and Kroger cart. Bundles the workflow skills and the grocery-mcp connector.';
 // Depth tiers a flow may opt into via `needs:`. `core` is implicit (always loaded).
 // `discovery` carries the shared recipe triage/import mechanics, loaded by the flows
-// that import a recipe (import-recipe, semantic-meal-plan) so they reference one
+// that import a recipe (import-recipe, meal-plan) so they reference one
 // source instead of restating the parse→classify→create detail inline.
 export const DEPTH_TIERS = ['cart', 'corpus', 'discovery'];
 // Persona tiers ship as library skills named grocery-<tier>, loaded by reference.

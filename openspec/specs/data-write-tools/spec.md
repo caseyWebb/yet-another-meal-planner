@@ -3,9 +3,7 @@
 ## Purpose
 
 Defines the MCP write tools and where each persists. After the D1 migration there is **no batch `commit_changes` tool** — every write has a standalone home, and writes split by storage tier: objective recipe **content** is committed to the GitHub data repo via the atomic commit engine and returns a `commit_sha`; everything else — per-tenant overlay/profile/session state, the cooking log, ingredient aliases, and the shared corpus (stores, notes, registries, caches) — is a row-level D1 write that returns **without** a `commit_sha`. This capability defines those tools' contracts, routing, and validation.
-
 ## Requirements
-
 ### Requirement: Granular write tools, no batch commit
 
 The system SHALL expose a granular write tool per category and SHALL NOT provide a batch `commit_changes` tool. Every field the former `commit_changes` carried now has a standalone home: objective recipe content (`update_recipe` / `create_recipe`), recipe disposition (`toggle_favorite` / `toggle_reject`), ready-to-eat (`add_draft_ready_to_eat` / `update_ready_to_eat`), config (`update_preferences` / `update_taste` / `update_diet_principles` / `update_aliases`), cooking events (`log_cooked`), pantry (`update_pantry` / `mark_pantry_verified`), meal plan (`update_meal_plan`), grocery list (`add_to_grocery_list` / `update_grocery_list` / `remove_from_grocery_list`), staples (`update_staples`), and stockup (`update_stockup`). A multi-write turn SHALL issue one granular call per write. No tool in this capability SHALL write a Kroger cart or call an external service (cart placement is the separate `place_order` tool).
@@ -60,12 +58,12 @@ The system SHALL provide a `toggle_favorite(slug, favorite)` tool that sets or c
 
 ### Requirement: toggle_reject hides a recipe for the caller via the D1 overlay
 
-The system SHALL provide a `toggle_reject(slug, reject)` tool that sets or clears the caller's `reject` flag for a recipe as a row in the D1 `overlay` table, returning without a `commit_sha`. It SHALL validate `slug` against the D1 `recipes` table (`not_found` when absent) and SHALL NOT write shared recipe content. `reject: false` SHALL clear the flag, deleting the overlay row when nothing else is set on it. `reject` and `favorite` are mutually exclusive: setting `reject: true` SHALL clear any `favorite`. A rejected recipe SHALL be excluded from the caller's `list_recipes` and `recipe_semantic_search` results (a hard gate). This is **per-tenant** and distinct from the group-wide `reject_discovery` (which suppresses a discovery URL before import); `toggle_reject` acts on an existing corpus slug for one member only.
+The system SHALL provide a `toggle_reject(slug, reject)` tool that sets or clears the caller's `reject` flag for a recipe as a row in the D1 `overlay` table, returning without a `commit_sha`. It SHALL validate `slug` against the D1 `recipes` table (`not_found` when absent) and SHALL NOT write shared recipe content. `reject: false` SHALL clear the flag, deleting the overlay row when nothing else is set on it. `reject` and `favorite` are mutually exclusive: setting `reject: true` SHALL clear any `favorite`. A rejected recipe SHALL be excluded from the caller's `search_recipes` results (a hard gate, both membership and ranked modes). This is **per-tenant** and distinct from the group-wide `reject_discovery` (which suppresses a discovery URL before import); `toggle_reject` acts on an existing corpus slug for one member only.
 
 #### Scenario: Rejecting a recipe hides it for the caller only
 
 - **WHEN** `toggle_reject("miso-salmon", true)` is called
-- **THEN** the caller's `overlay` row is upserted with `reject`, the recipe no longer appears in that caller's `list_recipes`/`recipe_semantic_search`, and no other member's view changes
+- **THEN** the caller's `overlay` row is upserted with `reject`, the recipe no longer appears in that caller's `search_recipes` results, and no other member's view changes
 
 #### Scenario: Un-rejecting restores default visibility
 
@@ -208,17 +206,27 @@ The user-curated narrative `update_*` tools — `update_taste` and `update_diet_
 
 ### Requirement: Recipe write tools enforce controlled vocabularies
 
-The recipe write tools — `create_recipe` and `update_recipe` — SHALL reject a write whose recipe frontmatter carries a `protein`, `cuisine`, or `requires_equipment` value outside its controlled vocabulary, returning a structured `validation_failed` error (naming the offending field and value) and making **no commit**. Enforcement SHALL occur at the commit engine's `validateFile` step so every recipe write path is covered uniformly. Before this check, the recipe write path SHALL normalize a `protein`/`cuisine` value of the literal string `none` (or the empty string) to **absent**, so a no-protein-focus dish is persisted with the field omitted rather than rejected. The `create_recipe` and `update_recipe` tool descriptions SHALL enumerate the `protein` and `cuisine` controlled sets (as `create_recipe` already enumerates the equipment set) and SHALL state that `protein` is omitted for a dish with no protein focus — never written as `none`.
+The recipe write tools — `create_recipe` and `update_recipe` — SHALL reject a write whose
+recipe frontmatter carries a `protein`, `cuisine`, or `requires_equipment` value outside
+its controlled vocabulary, returning a structured `validation_failed` error (naming the
+offending field and value) and making **no commit**. Enforcement SHALL occur at the commit
+engine's `validateFile` step so every recipe write path is covered uniformly. `protein`
+and `cuisine` SHALL each be present as an in-vocabulary value **or the explicit literal
+`null`** — the write path SHALL NOT normalize a no-focus dish to an absent field and SHALL
+NOT accept the literal string `none` (a `none`/`""` value is rejected as non-compliant,
+prompting `null`). The `create_recipe` and `update_recipe` tool descriptions SHALL
+enumerate the `protein` and `cuisine` controlled sets and SHALL state that a dish with no
+protein focus is written as `protein: null` — never omitted, never `none`.
 
 #### Scenario: Off-vocabulary protein is rejected before commit
 
 - **WHEN** `create_recipe` is called with frontmatter `protein: shrimp` (the bucket is `shellfish`)
 - **THEN** the tool returns a structured `validation_failed` error naming `protein` and `shrimp`, and no recipe file is committed
 
-#### Scenario: No-protein dish writes cleanly via normalization
+#### Scenario: No-protein dish requires explicit null
 
-- **WHEN** `create_recipe` is called with frontmatter `protein: none` for a vegetable side or condiment
-- **THEN** the recipe is committed with `protein` absent (no error), and the agent is not forced into a retry
+- **WHEN** `create_recipe` is called for a vegetable side with `protein: none` (or an empty string)
+- **THEN** the tool returns a structured `validation_failed` error directing `protein: null`, and the recipe is committed only once `protein` is the explicit `null`
 
 #### Scenario: Off-vocabulary equipment is rejected before commit
 
@@ -233,7 +241,7 @@ The recipe write tools — `create_recipe` and `update_recipe` — SHALL reject 
 #### Scenario: Tool descriptions surface the controlled sets
 
 - **WHEN** the `create_recipe` / `update_recipe` tool schemas are presented to the agent
-- **THEN** their descriptions list the allowed `protein` and `cuisine` values and the "omit `protein` when there is no protein focus — never `none`" rule
+- **THEN** their descriptions list the allowed `protein` and `cuisine` values and the "write `protein: null` when there is no protein focus — never omit, never `none`" rule
 
 ### Requirement: Structural pre-commit validation for GitHub-backed recipe writes
 
@@ -281,3 +289,37 @@ The system SHALL provide a tool (`add_recipe_note`) to add a recipe note as a ro
 
 - **WHEN** the note tool is called with `private: true`
 - **THEN** the stored row is marked private so later reads surface it only to its author
+
+### Requirement: Recipe write tools enforce the required-field contract
+
+`create_recipe` and `update_recipe` SHALL enforce the full required-field contract (the
+`recipe-metadata-contract` capability), rejecting with a structured `validation_failed`
+error (no commit) any write whose resulting recipe is missing a required field or carries
+an off-contract empty (an empty `title`/`description`/`ingredients_key`/`course`, an
+omitted explicit-`null` scalar, or a main lacking `side_search_terms`). For
+`update_recipe`, the contract SHALL be checked against the **merged result** (existing
+frontmatter overlaid with the patch), not the patch alone — so a single-field edit on an
+already-compliant recipe succeeds, while an edit that would strip or empty a required
+field is rejected. `create_recipe`'s tool description SHALL enumerate the complete
+required-field set, including `ingredients_key` and the explicit-empty forms.
+
+#### Scenario: create_recipe rejects a missing required field
+
+- **WHEN** `create_recipe` is called with frontmatter that omits `ingredients_key`
+- **THEN** the tool returns a structured `validation_failed` error naming the missing field and makes no commit
+
+#### Scenario: update_recipe validates the merged result, not the patch
+
+- **WHEN** `update_recipe` patches only `time_total` on a recipe that already carries every other required field
+- **THEN** the merged recipe is contract-compliant and the edit commits — the patch need not resend the full field set
+
+#### Scenario: update_recipe rejects an edit that empties a required field
+
+- **WHEN** `update_recipe` patches `description: ""` (or `ingredients_key: []`) onto an existing recipe
+- **THEN** the merged result violates the non-empty rule and the tool returns `validation_failed`, making no commit
+
+#### Scenario: create_recipe description enumerates the required set
+
+- **WHEN** the `create_recipe` tool schema is presented to the agent
+- **THEN** its description lists every required field (including `ingredients_key`) and the explicit empty form for each
+

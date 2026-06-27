@@ -9,7 +9,7 @@ description: "Walk the user through actively cooking a dish (or a main + sides),
 
 My hands are messy, so keep turns short. The flow has two halves: a **conversational pre-flight** (stays in chat — this is where shortfalls get caught), then **prep + cook scaffolded on a card** with an optional hands-free voice walk over it.
 
-Identify the dish(es) — `list_recipes({ query })` to resolve, `read_recipe(slug)` for the ingredients and `## Instructions`. If I'm making a main plus sides, read all of them; you'll pace and order across them.
+Identify the dish(es) — a vibe-less `search_recipes({ specs: [{ label: "named", facets: { query } }] })` to resolve (read `results[0].recipes`), `read_recipe(slug)` for the ingredients and `## Instructions`. If I'm making a main plus sides, read all of them; you'll pace and order across them.
 
 **Pull up technique memories first.** Once you've read the recipe, call `list_guidance("cooking_techniques")` and map this dish's steps to any saved techniques with your **own** knowledge (a "brown the beef" step → `browning-meat`, a "sear then rest" → `searing`/`resting-meat`). `read_guidance("cooking_techniques", [...])` the few that fit so they're ready to weave in. There's no lookup table; if nothing matches, that's fine — say nothing.
 

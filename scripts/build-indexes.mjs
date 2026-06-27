@@ -13,7 +13,7 @@ import { readFile, readdir } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import matter from 'gray-matter';
-import { PROTEIN_VOCAB, CUISINE_VOCAB, EQUIPMENT_VOCAB } from '../src/vocab.js';
+import { validateRecipeContract } from '../src/recipe-contract.js';
 import { resolveD1Access, makeD1Client } from './d1-rest.mjs';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -24,17 +24,14 @@ const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..
 // `status`/`rating` is tolerated, never validated, and always stripped here so it
 // never reaches the shared index.
 const SUBJECTIVE_FIELDS = ['rating', 'last_cooked', 'status'];
-// Controlled vocabularies for the variety + makeability dimensions (coarse
-// buckets — `fish` not `salmon`) so retrospective mixes and diet_principles rules
-// stay reliable. PROTEIN_VOCAB / CUISINE_VOCAB / EQUIPMENT_VOCAB are imported from
-// the single shared source (src/vocab.js) that the Worker write-time validator
-// (src/validate.ts) also uses, so the build-time gate and the write-time gate
-// cannot drift. Validated only WHEN PRESENT (absence keeps the warn-only
-// recommended-field treatment). Extending a vocabulary is a deliberate edit in
-// src/vocab.js. See docs/SCHEMAS.md.
-// Recommended-but-optional fields whose absence signals an incomplete migration.
-// last_cooked / rating / discovered_at are legitimately null by design and are NOT warned.
-const RECOMMENDED_FIELDS = ['protein', 'time_total', 'ingredients_key'];
+// The full required-field contract (blunt-uniform) is enforced from the single shared
+// source (src/recipe-contract.js) that the Worker write-time validator (src/validate.ts)
+// also uses, so the build-time gate and the write-time gate cannot drift. Every
+// system-consumed field must be PRESENT (explicit `null`/`[]` where empty); a missing
+// or off-contract field is a HARD failure (there is no warn-only recommended tier).
+// Free-form fields nothing filters/ranks on pass through untouched. Extending the
+// contract or a vocabulary is a deliberate edit in src/recipe-contract.js / src/vocab.js.
+// See docs/SCHEMAS.md.
 // Recipe bodies must carry these H2 sections so site generation can reliably
 // locate the ingredient list (for checkboxes) and the step list (for read-aloud).
 // Extra H2 sections (e.g. a future `## Notes`) are permitted and render generically.
@@ -135,89 +132,17 @@ export async function buildRecipeIndexes(recipesDir) {
     }
     seenSlugs.set(slug, rel);
 
-    if (typeof data.title !== 'string' || data.title.trim() === '') {
-      errors.push(`${rel}: missing required field "title"`);
-    }
-    // status is retired — not required, not validated. A lingering value is tolerated
-    // and stripped from the index below (SUBJECTIVE_FIELDS).
-    const missing = RECOMMENDED_FIELDS.filter(
-      (f) => data[f] == null || (Array.isArray(data[f]) && data[f].length === 0)
-    );
-    if (missing.length) warnings.push(`${rel}: missing recommended field(s): ${missing.join(', ')}`);
-
-    // Controlled-vocabulary check: validated only when present.
-    if (data.protein != null && !PROTEIN_VOCAB.includes(data.protein)) {
-      errors.push(`${rel}: protein ${JSON.stringify(data.protein)} is not in the controlled vocabulary`);
-    }
-    if (data.cuisine != null && !CUISINE_VOCAB.includes(data.cuisine)) {
-      errors.push(`${rel}: cuisine ${JSON.stringify(data.cuisine)} is not in the controlled vocabulary`);
-    }
+    // Required-field contract (blunt-uniform) — every system-consumed field present,
+    // explicit `null`/`[]` where empty, vocab-checked where controlled. Hard-fails the
+    // build (the same shared check the Worker runs at write time); free-form fields are
+    // ignored here and pass through into the projection. (`status` is retired — not in
+    // the contract; a lingering value is tolerated and stripped below via
+    // SUBJECTIVE_FIELDS. `standalone` is likewise ignored.)
+    for (const msg of validateRecipeContract(data)) errors.push(`${rel}: ${msg}`);
 
     for (const section of REQUIRED_SECTIONS) {
       if (!hasH2Section(content, section)) {
         errors.push(`${rel}: missing required body section "## ${section}"`);
-      }
-    }
-
-    // pairs_with is a PLATING edge (recipes eaten together on one plate), distinct
-    // from the produces/uses PRODUCTION edges. Array of recipe slugs; slug
-    // resolution is checked once all recipes are collected (below).
-    if (data.pairs_with != null && !Array.isArray(data.pairs_with)) {
-      errors.push(`${rel}: pairs_with must be an array of recipe slugs (got ${JSON.stringify(data.pairs_with)})`);
-    }
-    // course is an OPEN-vocabulary facet (main | side | dessert | breakfast | …) —
-    // what kind of dish this is, classified at import. Shape-only check: a string or
-    // an array of strings. The VALUE is never checked against a set (unlike
-    // protein/cuisine), so the facet stays expandable without a code change. Absence
-    // reads as [] and is never warned. (`standalone` is retired — no longer a
-    // recognized field; a lingering value is ignored, never validated or projected.)
-    if (
-      data.course != null &&
-      typeof data.course !== 'string' &&
-      !(Array.isArray(data.course) && data.course.every((c) => typeof c === 'string'))
-    ) {
-      errors.push(`${rel}: course must be a string or an array of strings (got ${JSON.stringify(data.course)})`);
-    }
-    // description (semantic-meal-plan) is the AI-written brief summary that seeds the
-    // recipe embedding and the compact candidate row — a non-empty string when present.
-    if (data.description != null && (typeof data.description !== 'string' || data.description.trim() === '')) {
-      errors.push(`${rel}: description must be a non-empty string (got ${JSON.stringify(data.description)})`);
-    }
-    // side_search_terms (semantic-meal-plan) are AI-memoized phrases describing the
-    // kind of side that complements a main; the semantic side-retrieval query.
-    if (
-      data.side_search_terms != null &&
-      (!Array.isArray(data.side_search_terms) ||
-        data.side_search_terms.some((s) => typeof s !== 'string'))
-    ) {
-      errors.push(`${rel}: side_search_terms must be an array of strings (got ${JSON.stringify(data.side_search_terms)})`);
-    }
-    // perishable_ingredients is objective shared content (a normalized list of the
-    // recipe's perishable ingredients, classified at import) consumed by the
-    // menu-gen waste callout. Present-but-not-a-string-array is a hard failure
-    // (like a non-boolean standalone); absence reads as [] and is never warned.
-    if (
-      data.perishable_ingredients != null &&
-      (!Array.isArray(data.perishable_ingredients) ||
-        data.perishable_ingredients.some((s) => typeof s !== 'string'))
-    ) {
-      errors.push(
-        `${rel}: perishable_ingredients must be an array of ingredient names (got ${JSON.stringify(data.perishable_ingredients)})`,
-      );
-    }
-
-    // requires_equipment is objective shared content (drives the makeability
-    // gate). An array of EQUIPMENT_VOCAB slugs; an entry outside the vocab is a
-    // hard failure (like protein/cuisine). Absence reads as [] (makeable by all).
-    if (data.requires_equipment != null) {
-      if (!Array.isArray(data.requires_equipment)) {
-        errors.push(`${rel}: requires_equipment must be an array of equipment slugs (got ${JSON.stringify(data.requires_equipment)})`);
-      } else {
-        for (const slug of data.requires_equipment) {
-          if (!EQUIPMENT_VOCAB.includes(slug)) {
-            errors.push(`${rel}: requires_equipment ${JSON.stringify(slug)} is not in the controlled vocabulary`);
-          }
-        }
       }
     }
 

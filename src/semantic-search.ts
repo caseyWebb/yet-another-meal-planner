@@ -1,4 +1,4 @@
-// Pure ranking for `recipe_semantic_search` (semantic-meal-plan). No I/O here so the
+// Pure ranking for `search_recipes`'s vibe-present (ranked) mode. No I/O here so the
 // scoring is unit-testable; the tool wrapper (src/tools.ts) supplies the facet-
 // prefiltered candidates, their embeddings, the query vector, the favorite vectors,
 // and the reference `now`. This is the cosine + re-rank middle leg of the design's

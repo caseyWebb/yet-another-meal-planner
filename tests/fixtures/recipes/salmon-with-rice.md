@@ -16,7 +16,13 @@ rating: 4
 status: active
 discovered_at: null
 discovery_source: null
+description: A gentle one-pan salmon over rice with soy and scallion — clean, savory, and weeknight-easy with leftovers built in.
+course: [main]
 ingredients_key: [salmon, rice, soy sauce, scallion]
+pairs_with: []
+perishable_ingredients: [salmon, scallion]
+requires_equipment: []
+side_search_terms: ["a bright cucumber sunomono", "a simple miso soup"]
 meal_preppable: true
 source: null
 ---

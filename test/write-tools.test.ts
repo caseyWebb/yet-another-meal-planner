@@ -602,7 +602,34 @@ describe("update_preferences (merge-patch → D1)", () => {
 });
 
 describe("update_recipe (objective-only)", () => {
-  const RECIPE_MD = "---\ntitle: Salmon\n---\n\n## Ingredients\n- salmon\n";
+  // A contract-compliant base recipe, so a one-field objective patch produces a still
+  // compliant merged result (the merged result is what the commit engine validates).
+  const RECIPE_MD = [
+    "---",
+    "title: Salmon",
+    "description: A simple weeknight salmon.",
+    "ingredients_key: [salmon]",
+    "course: [main]",
+    "protein: fish",
+    "cuisine: japanese",
+    "time_total: null",
+    "source: null",
+    "dietary: []",
+    "season: []",
+    "tags: []",
+    "pairs_with: []",
+    "perishable_ingredients: []",
+    "requires_equipment: []",
+    'side_search_terms: ["a bright cucumber salad"]',
+    "---",
+    "",
+    "## Ingredients",
+    "- salmon",
+    "",
+    "## Instructions",
+    "1. cook",
+    "",
+  ].join("\n");
 
   it("rejects a reject edit, directing the caller to toggle_reject, writing nothing", async () => {
     const handlers = collectTools(ghWith({ "recipes/salmon.md": RECIPE_MD }), "everett", fakeD1(["salmon"]).env);
@@ -642,5 +669,21 @@ describe("update_recipe (objective-only)", () => {
     expect(out.slug).toBe("salmon");
     expect(out.updated_fields).toEqual(["time_total"]);
     expect(out.commit_sha).toBe("x"); // ghWith fake returns "x" for createCommit
+  });
+
+  it("validates the MERGED result: a one-field patch on a compliant recipe succeeds", async () => {
+    const handlers = collectTools(ghWith({ "recipes/salmon.md": RECIPE_MD }), "everett", fakeD1(["salmon"]).env);
+    const res = await handlers.get("update_recipe")!({ slug: "salmon", updates: { cuisine: "korean" } });
+    const out = JSON.parse(res.content[0].text) as { slug?: string; error?: string; commit_sha?: string };
+    expect(out.error).toBeUndefined();
+    expect(out.slug).toBe("salmon");
+  });
+
+  it("rejects a patch that empties a required field (merged result is non-compliant)", async () => {
+    const handlers = collectTools(ghWith({ "recipes/salmon.md": RECIPE_MD }), "everett", fakeD1(["salmon"]).env);
+    const res = await handlers.get("update_recipe")!({ slug: "salmon", updates: { ingredients_key: [] } });
+    const out = JSON.parse(res.content[0].text) as { error: string };
+    expect(out.error).toBe("validation_failed");
+    expect(JSON.stringify(out)).toMatch(/ingredients_key/);
   });
 });

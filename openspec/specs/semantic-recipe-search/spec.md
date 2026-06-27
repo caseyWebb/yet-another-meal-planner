@@ -2,23 +2,35 @@
 
 ## Purpose
 
-Defines semantic retrieval over the recipe corpus: an AI-written `description` and memoized `side_search_terms` on each recipe, fixed-dimension embeddings reconciled Worker-side into a sibling `recipe_embeddings` table, and the `recipe_semantic_search(specs[])` tool that facet-prefilters then ranks survivors by cosine similarity to an embedded `vibe` query. Retrieval re-ranks toward the caller's nearest favorited recipe (multimodal-safe k-NN, not a single centroid) and boosts never-cooked / not-recently-cooked recipes on a configurable rotation window.
-
+Defines semantic retrieval over the recipe corpus: an AI-written `description` and memoized `side_search_terms` on each recipe, fixed-dimension embeddings reconciled Worker-side into a sibling `recipe_embeddings` table, and the vibe-present (ranked) mode of `search_recipes(specs[])` that facet-prefilters then ranks survivors by cosine similarity to an embedded `vibe` query. Retrieval re-ranks toward the caller's nearest favorited recipe (multimodal-safe k-NN, not a single centroid) and boosts never-cooked / not-recently-cooked recipes on a configurable rotation window.
 ## Requirements
-
 ### Requirement: Recipes carry an AI-written brief description
 
-Each recipe SHALL carry a `description` frontmatter field: a brief (≈1–2 sentence) summary written by the agent at import in a consistent, craving-aligned register, describing the dish's identity, flavor/texture, and when one would want it. The `description` SHALL NOT be the scraped marketing copy from the source site. It is human-editable (it lives in authored markdown frontmatter); the derived embedding is rebuilt from whatever the description currently says. A recipe with no `description` SHALL still index and be retrievable by facet, but SHALL be excluded from semantic ranking until a description exists.
+Each recipe SHALL carry a **mandatory, non-empty** `description` frontmatter field: a
+brief (≈1–2 sentence) summary written by the agent at import in a consistent,
+craving-aligned register, describing the dish's identity, flavor/texture, and when one
+would want it. The `description` SHALL NOT be the scraped marketing copy from the source
+site. It is human-editable (it lives in authored markdown frontmatter); the derived
+embedding is rebuilt from whatever the description currently says. Because `description`
+is a required field (the `recipe-metadata-contract` capability), a recipe with **no**
+description SHALL NOT be writable or buildable — so the only recipe excluded from semantic
+ranking is one whose embedding has not **yet** been reconciled (a transient
+just-imported state), not a permanent description-less recipe.
 
 #### Scenario: Description is generated at import, not scraped
 
 - **WHEN** a recipe is imported and the source page carries SEO marketing copy
 - **THEN** the persisted `description` is the agent's own concise summary, not the source marketing text
 
-#### Scenario: Description is the embed source
+#### Scenario: A description-less recipe cannot be persisted
 
-- **WHEN** the recipe-embedding reconcile runs over the index
-- **THEN** the recipe's embedding is computed from its `description`, and a recipe lacking a `description` is omitted from semantic ranking but still returned by facet filters
+- **WHEN** a recipe write or build presents a recipe with an empty or absent `description`
+- **THEN** it is rejected as non-compliant (no permanent description-less, facet-only recipe exists in the corpus)
+
+#### Scenario: Only the pre-reconcile state is excluded from ranking
+
+- **WHEN** a recipe has been imported with a valid `description` but its embedding has not yet been reconciled by the cron
+- **THEN** it is transiently excluded from semantic ranking (still returned by facet filters) until the next reconcile fills its embedding
 
 ### Requirement: Recipes carry memoized side search terms
 
@@ -42,25 +54,6 @@ Each recipe's embedding SHALL be a fixed-dimension vector (Workers AI `@cf/baai/
 
 - **WHEN** a recipe is imported and its embedding has not yet been reconciled
 - **THEN** the recipe is treated as "not yet indexed" for semantic ranking (excluded, not an error) until the reconcile fills its embedding, while remaining retrievable by facet
-
-### Requirement: recipe_semantic_search retrieves by facet-prefilter then cosine
-
-The system SHALL expose `recipe_semantic_search(specs[])` where each spec carries a semantic `vibe` query and structured `facets`. For each spec it SHALL first apply the facets as the SAME gate `list_recipes` uses (the `filterRecipes` constraint over the index — dietary, makeability, recency), then rank the surviving rows that have an embedding by cosine similarity between their vector and the embedded `vibe` query, returning the top-K as compact rows (slug, title, description, key facets, score, raw similarity). Hard constraints (dietary, makeability, and anti-similarity/variety facets) SHALL be enforced by the facet filter, never overridden by semantic rank. The tool contract SHALL be backend-agnostic: callers SHALL NOT depend on whether ranking is served by a brute-force cosine over the embedding table or an approximate-nearest-neighbor index.
-
-#### Scenario: Facets gate, vibe ranks
-
-- **WHEN** a spec requests vibe "cozy, warming, braise" with facets `{ course: main, protein NOT IN [chicken], makeable: true }`
-- **THEN** only main-course, non-chicken, makeable recipes are candidates, and among those the warmest/most-braise-like rank first by cosine
-
-#### Scenario: Compact candidate shape
-
-- **WHEN** `recipe_semantic_search` returns candidates
-- **THEN** each row carries the slug, title, brief description, key facets, and a score — not the full recipe body or full metadata — so the candidate set stays token-cheap
-
-#### Scenario: Batched specs in one call
-
-- **WHEN** the caller submits K specs
-- **THEN** all K are served in a single tool round-trip, returning results grouped by spec
 
 ### Requirement: Retrieval re-ranks by nearest favorited recipe
 
@@ -92,7 +85,7 @@ The system SHALL boost candidates that the caller has never cooked, or has not c
 
 ### Requirement: Retrieval boosts recipes that use the caller's at-risk ingredients
 
-Each `recipe_semantic_search` spec SHALL accept an optional `boost_ingredients: string[]` — normalized item names the caller wants the ranker to bias toward (the at-risk perishables / on-hand items the agent judged worth using up). Within a spec's candidate set, the system SHALL add a bounded pantry-overlap term to each candidate's score, computed as a two-tier set-overlap between the spec's `boost_ingredients` and the candidate's `ingredients_key ∪ perishable_ingredients`: a boost item that matches the recipe's `perishable_ingredients` SHALL contribute MORE than one that matches only `ingredients_key`, because consuming an at-risk perishable is the waste-prevention win. Boost items SHALL be normalized through the same alias table the index uses before matching, so synonym collapse is alias-driven; the system SHALL NOT embed individual ingredients. The total pantry-overlap boost SHALL be small relative to cosine and SHALL saturate, so it nudges ordering without overriding semantic relevance, can never admit a recipe the facet gate rejected, and never excludes a candidate that has zero overlap. The boost SHALL be a no-op when a spec omits `boost_ingredients` or when no candidate ingredient matches. Each returned row SHALL carry a `pantry_overlap` field listing which boost items that recipe hit, so the caller can explain a surfaced pick.
+Each vibe-bearing `search_recipes` spec SHALL accept an optional `boost_ingredients: string[]` — normalized item names the caller wants the ranker to bias toward (the at-risk perishables / on-hand items the agent judged worth using up). Within a spec's ranked candidate set, the system SHALL add a bounded pantry-overlap term to each candidate's score, computed as a two-tier set-overlap between the spec's `boost_ingredients` and the candidate's `ingredients_key ∪ perishable_ingredients`: a boost item that matches the recipe's `perishable_ingredients` SHALL contribute MORE than one that matches only `ingredients_key`, because consuming an at-risk perishable is the waste-prevention win. Boost items SHALL be normalized through the same alias table the index uses before matching, so synonym collapse is alias-driven; the system SHALL NOT embed individual ingredients. The total pantry-overlap boost SHALL be small relative to cosine and SHALL saturate, so it nudges ordering without overriding semantic relevance, can never admit a recipe the facet gate rejected, and never excludes a candidate that has zero overlap. The boost SHALL be a no-op when a spec omits `boost_ingredients`, when a spec is vibe-less (membership mode does not rank), or when no candidate ingredient matches. Each returned ranked row SHALL carry a `pantry_overlap` field listing which boost items that recipe hit, so the caller can explain a surfaced pick.
 
 #### Scenario: Perishable overlap outranks key-only overlap
 
@@ -118,3 +111,32 @@ Each `recipe_semantic_search` spec SHALL accept an optional `boost_ingredients: 
 
 - **WHEN** a spec omits `boost_ingredients`
 - **THEN** ranking is unchanged from the cosine + favorite + freshness blend and every row's `pantry_overlap` is empty
+
+### Requirement: search_recipes ranks vibe-bearing specs by facet-prefilter then cosine
+
+A `search_recipes` spec that carries a `vibe` SHALL be served in **ranked mode**: the tool SHALL first apply the spec's `facets` as the SAME gate the membership mode uses (the `filterRecipes` constraint over the index — dietary, makeability, recency), then rank the surviving rows **that have an embedding** by cosine similarity between their vector and the embedded `vibe` query, returning the top-`k` (default `DEFAULT_K`, max `MAX_K`) as compact rows (slug, title, description, key facets, score, raw similarity). Survivors with no embedding (e.g. just-imported, not yet reconciled) SHALL be dropped from the ranked group — they remain returnable by a vibe-less membership spec. Hard constraints (dietary, makeability, and anti-similarity/variety facets) SHALL be enforced by the facet filter, never overridden by semantic rank. The `vibe` SHALL be embedded in the Worker so callers ship only a query string, and all vibe-bearing specs in one call SHALL be embedded in a single Workers AI request (one subrequest for the batch, not one per spec); a batch containing only vibe-less specs SHALL make no AI request at all. The tool contract SHALL be backend-agnostic: callers SHALL NOT depend on whether ranking is served by a brute-force cosine over the embedding table or an approximate-nearest-neighbor index.
+
+#### Scenario: Facets gate, vibe ranks
+
+- **WHEN** a spec requests vibe "cozy, warming, braise" with facets `{ course: main, protein NOT IN [chicken], makeable: true }`
+- **THEN** only main-course, non-chicken, makeable recipes are candidates, and among those the warmest/most-braise-like rank first by cosine
+
+#### Scenario: Compact candidate shape
+
+- **WHEN** a ranked group is returned
+- **THEN** each row carries the slug, title, brief description, key facets, and a score — not the full recipe body or full metadata — so the candidate set stays token-cheap
+
+#### Scenario: Unembedded survivor dropped from a ranked group
+
+- **WHEN** a vibe-bearing spec's facets admit a recipe that has no embedding yet
+- **THEN** that recipe is absent from the ranked group, but a sibling vibe-less spec with the same facets still returns it
+
+#### Scenario: Batched specs in one call, one embed request
+
+- **WHEN** the caller submits several vibe-bearing specs in one `search_recipes` call
+- **THEN** all are served in a single tool round-trip, returning results grouped by spec, with their vibes embedded in one Workers AI request
+
+#### Scenario: Vibe-less batch makes no AI request
+
+- **WHEN** every spec in a `search_recipes` call omits `vibe`
+- **THEN** no embedding/Workers AI request is made and every group is the unranked membership set

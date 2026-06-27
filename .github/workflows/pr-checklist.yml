@@ -1,0 +1,54 @@
+name: PR Checklist
+
+# Gate-only quality check for the PUBLIC code repo: every PR body must carry the
+# checklist from .github/pull_request_template.md with every consideration checked.
+# Deliberately SEPARATE from ci.yml and listening on `edited` so that checking a box
+# (a PR-body edit, not a push) re-runs only this lightweight gate and not the test
+# suites. The body is read from an env var (never interpolated into the shell), and
+# there is no checkout and no external action — so there is no `uses:` SHA to pin and
+# no command-injection surface. Gate-only: it posts no comment (needs no write perms).
+# This file only PRODUCES the `pr-checklist` check — to block merge, add it to main's
+# branch protection as a required status check (see CONTRIBUTING.md).
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  pr-checklist:
+    runs-on: ubuntu-latest
+    env:
+      BODY: ${{ github.event.pull_request.body }}
+      AUTHOR: ${{ github.event.pull_request.user.login }}
+    steps:
+      - name: Checklist present and fully checked
+        run: |
+          # Bots (e.g. dependabot[bot]) can't fill the template — neutral pass.
+          case "$AUTHOR" in
+            *'[bot]')
+              echo "Author '$AUTHOR' is a bot — skipping checklist gate."
+              exit 0
+              ;;
+          esac
+
+          # Presence: the template's sentinel must survive in the body. Without it,
+          # an emptied body has zero unchecked boxes and would vacuously pass.
+          if ! printf '%s' "$BODY" | grep -qF '<!-- pr-checklist:v1 -->'; then
+            echo "::error::PR body is missing the checklist (no <!-- pr-checklist:v1 --> sentinel)."
+            echo "Restore the template from .github/pull_request_template.md and check every box."
+            exit 1
+          fi
+
+          # Completeness: no unchecked GitHub task-list item ('- [ ]') may remain.
+          # grep -c prints the count (and exits 1 when zero); '|| true' keeps the run alive.
+          unchecked=$(printf '%s' "$BODY" | grep -cE '^[[:space:]]*- \[ \]' || true)
+          if [ "$unchecked" -ne 0 ]; then
+            echo "::error::$unchecked checklist item(s) still unchecked — check every consideration before merge."
+            printf '%s' "$BODY" | grep -nE '^[[:space:]]*- \[ \]' || true
+            exit 1
+          fi
+
+          echo "Checklist present and fully checked. ✔"

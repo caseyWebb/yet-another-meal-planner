@@ -5,30 +5,12 @@
 
 import { dump as dumpYaml } from "js-yaml";
 
-// A `none`/empty `protein` or `cuisine` means "no protein focus / unclassified" —
-// a legitimate state the coarse controlled vocab has no slot for, and which the
-// schema already expresses as ABSENCE (warn-only, never a hard failure). The
-// recipe write path strips such a value before serialization so the field is
-// simply not written, rather than rejected by the vocab check. A non-`none`
-// off-vocab value (e.g. "shrimp") is left in place and is caught by validateFile.
-const EMPTY_VARIETY_VALUES = new Set(["none", "n/a", "na", ""]);
-
-/**
- * Drop `protein`/`cuisine` from recipe frontmatter when their value is `none` or
- * empty (case-insensitive). Mutates and returns the passed object. Applied by the
- * recipe write builders (create_recipe / update_recipe) before serialization.
- */
-export function stripEmptyVarietyDimensions(
-  frontmatter: Record<string, unknown>,
-): Record<string, unknown> {
-  for (const key of ["protein", "cuisine"] as const) {
-    const value = frontmatter[key];
-    if (typeof value === "string" && EMPTY_VARIETY_VALUES.has(value.trim().toLowerCase())) {
-      delete frontmatter[key];
-    }
-  }
-  return frontmatter;
-}
+// NOTE: the former `stripEmptyVarietyDimensions` (which dropped a `none`/empty
+// `protein`/`cuisine` to ABSENT before serialization) is retired. Under the
+// required-field contract (src/recipe-contract.js) `protein`/`cuisine` are
+// PRESENT-required, carrying an explicit `null` for "no protein focus" — never
+// omitted, never the literal `"none"`. The write path persists the explicit `null`,
+// and a `"none"` value is rejected by validateFile so the agent rewrites it as `null`.
 
 /** Reassemble a markdown file from frontmatter + body (inverse of parseMarkdown). */
 export function serializeMarkdown(frontmatter: Record<string, unknown>, body: string): string {

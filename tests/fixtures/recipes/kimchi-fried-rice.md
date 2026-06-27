@@ -16,7 +16,13 @@ rating: null
 status: active
 discovered_at: null
 discovery_source: null
+description: Smoky, tangy kimchi fried rice with a runny egg on top — fast, deeply savory comfort from yesterday's leftover rice.
+course: [main]
 ingredients_key: [kimchi, rice, egg, scallion]
+pairs_with: []
+perishable_ingredients: [kimchi, scallion]
+requires_equipment: []
+side_search_terms: ["a simple cucumber salad", "quick sautéed greens"]
 meal_preppable: false
 source: null
 ---

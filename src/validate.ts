@@ -11,7 +11,7 @@
 
 import { load as loadYaml } from "js-yaml";
 import { ToolError } from "./errors.js";
-import { PROTEIN_VOCAB, CUISINE_VOCAB, EQUIPMENT_VOCAB } from "./vocab.js";
+import { validateRecipeContract } from "./recipe-contract.js";
 
 // The per-tenant recipe `status` lifecycle (active/draft/rejected/archived) is
 // RETIRED — the overlay collapsed to favorite/reject and visibility is opt-out, so a
@@ -82,82 +82,18 @@ function parseFrontmatterOrFail(path: string, content: string): Record<string, u
 export function validateFile(path: string, content: string): void {
   if (path.startsWith("recipes/") && path.endsWith(".md")) {
     const fm = parseFrontmatterOrFail(path, content);
-    // `status` is no longer validated — the lifecycle is retired; a lingering value is
-    // tolerated and stripped from the index by the build.
-    // pairs_with (plating edge) is an array of recipe slugs; course is an
-    // open-vocabulary facet (a string or array of strings). Slug *resolution* and
-    // course *value* policy are the post-push build's job (no corpus on workerd) —
-    // here we only enforce local shape. (`standalone` is retired:
-    // no longer recognized, so a lingering value passes through untouched.)
-    if (fm.pairs_with != null) {
-      if (!Array.isArray(fm.pairs_with) || fm.pairs_with.some((s) => typeof s !== "string")) {
-        fail(path, `\`pairs_with\` must be an array of recipe slugs (got ${JSON.stringify(fm.pairs_with)})`);
-      }
-    }
-    if (
-      fm.course != null &&
-      typeof fm.course !== "string" &&
-      !(Array.isArray(fm.course) && fm.course.every((c) => typeof c === "string"))
-    ) {
-      fail(path, `\`course\` must be a string or an array of strings (got ${JSON.stringify(fm.course)})`);
-    }
-    // description (semantic-meal-plan) is the AI-written brief summary that seeds the
-    // recipe embedding and the compact candidate row — a non-empty string when present.
-    if (fm.description != null && (typeof fm.description !== "string" || fm.description.trim() === "")) {
-      fail(path, `\`description\` must be a non-empty string (got ${JSON.stringify(fm.description)})`);
-    }
-    // side_search_terms (semantic-meal-plan) are AI-memoized phrases describing the
-    // kind of side that complements a main; the semantic side-retrieval query.
-    if (fm.side_search_terms != null) {
-      if (
-        !Array.isArray(fm.side_search_terms) ||
-        fm.side_search_terms.some((s) => typeof s !== "string")
-      ) {
-        fail(
-          path,
-          `\`side_search_terms\` must be an array of strings (got ${JSON.stringify(fm.side_search_terms)})`,
-        );
-      }
-    }
-    // perishable_ingredients (objective shared content) is a normalized array of
-    // ingredient names; same shape-only check as pairs_with (no corpus on workerd).
-    if (fm.perishable_ingredients != null) {
-      if (
-        !Array.isArray(fm.perishable_ingredients) ||
-        fm.perishable_ingredients.some((s) => typeof s !== "string")
-      ) {
-        fail(
-          path,
-          `\`perishable_ingredients\` must be an array of ingredient names (got ${JSON.stringify(fm.perishable_ingredients)})`,
-        );
-      }
-    }
-    // Controlled vocabularies (protein / cuisine / requires_equipment) are
-    // enforced HERE at the write boundary AND in the Node build validator, both
-    // drawing from the single shared definition (src/vocab.js), so an off-vocab
-    // value is a fixable error the agent sees immediately instead of a post-push
-    // build failure on main. Checked only WHEN PRESENT; absence stays warn-only
-    // (a no-protein dish is legitimately field-absent — `none`/empty is already
-    // normalized to absent in the write path before it reaches here).
-    if (fm.protein != null && !(typeof fm.protein === "string" && PROTEIN_VOCAB.includes(fm.protein))) {
-      fail(path, `\`protein\` = ${JSON.stringify(fm.protein)} is not in the controlled vocabulary (one of ${PROTEIN_VOCAB.join(" | ")})`);
-    }
-    if (fm.cuisine != null && !(typeof fm.cuisine === "string" && CUISINE_VOCAB.includes(fm.cuisine))) {
-      fail(path, `\`cuisine\` = ${JSON.stringify(fm.cuisine)} is not in the controlled vocabulary (one of ${CUISINE_VOCAB.join(" | ")})`);
-    }
-    // requires_equipment: an array of EQUIPMENT_VOCAB slugs. Shape first, then
-    // vocab (an off-vocab slug silently hides a makeable recipe, so reject it at
-    // write rather than post-push).
-    if (fm.requires_equipment != null) {
-      if (!Array.isArray(fm.requires_equipment) || fm.requires_equipment.some((s) => typeof s !== "string")) {
-        fail(path, `\`requires_equipment\` must be an array of equipment slugs (got ${JSON.stringify(fm.requires_equipment)})`);
-      }
-      for (const slug of fm.requires_equipment as string[]) {
-        if (!EQUIPMENT_VOCAB.includes(slug)) {
-          fail(path, `\`requires_equipment\` slug ${JSON.stringify(slug)} is not in the controlled vocabulary (one of ${EQUIPMENT_VOCAB.join(" | ")})`);
-        }
-      }
-    }
+    // The full required-field contract (blunt-uniform) is enforced HERE at the write
+    // boundary AND in the Node build validator, both drawing from the single shared
+    // definition (src/recipe-contract.js), so a non-compliant recipe is a fixable error
+    // the agent sees immediately instead of a post-push build failure on main. For
+    // `update_recipe` the commit engine validates the MERGED file content, so a
+    // one-field patch on an already-compliant recipe passes while an edit that strips or
+    // empties a required field is rejected. `status` is retired — not in the contract;
+    // a lingering value is tolerated and stripped from the index by the build. Slug
+    // *resolution* for `pairs_with` stays the post-push build's job (no corpus on
+    // workerd). The contract returns every violation; we surface the first.
+    const errs = validateRecipeContract(fm);
+    if (errs.length) fail(path, errs[0]);
     return;
   }
 
