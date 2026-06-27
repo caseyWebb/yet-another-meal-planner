@@ -268,6 +268,26 @@ describe("handleAdmin (routing + gate)", () => {
     // Tried the real path first (404), then fell back to the canonical `/admin/` shell.
     expect(asked).toEqual(["/admin/dev/tools/place_order", "/admin/"]);
   });
+
+  it("keeps a genuine asset 404 (path with a file extension) a 404, not the shell", async () => {
+    const asked: string[] = [];
+    const env = {
+      TENANT_KV: memKv(),
+      KROGER_KV: memKv(),
+      DB: throwingD1(),
+      ADMIN_DEV_BYPASS: "1",
+      ASSETS: {
+        fetch: async (req: Request) => {
+          asked.push(new URL(req.url).pathname);
+          return new Response("not found", { status: 404 });
+        },
+      },
+    } as unknown as Env;
+    const res = await handleAdmin(new Request("https://x/admin/elm.js"), env);
+    expect(res.status).toBe(404);
+    // No shell fallback for an extension path — asked only for the asset itself.
+    expect(asked).toEqual(["/admin/elm.js"]);
+  });
 });
 
 describe("handleAdmin (tool console)", () => {

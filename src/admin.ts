@@ -366,6 +366,12 @@ export async function handleAdmin(request: Request, env: Env): Promise<Response>
   if (request.method === "GET" || request.method === "HEAD") {
     const direct = await env.ASSETS.fetch(request);
     if (direct.status !== 404) return direct;
+    // A 404 for a path whose last segment has a file extension (`/admin/elm.js`) is a
+    // GENUINE asset miss — keep it a 404 rather than masking it with the HTML shell (which
+    // would hand back `text/html` 200 under a `.js` URL on a broken deploy). Only
+    // extension-less paths are client routes; serve those the shell so they resolve.
+    const lastSegment = path.split("/").pop() ?? "";
+    if (lastSegment.includes(".")) return direct;
     const shellUrl = new URL(request.url);
     shellUrl.pathname = "/admin/";
     shellUrl.search = "";

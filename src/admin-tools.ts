@@ -92,10 +92,14 @@ export async function invokeTool(
   }
   const out = unwrapResult(raw);
   // A plain-text isError result is a protocol error (unknown tool / bad arguments); the
-  // tool's own structured errors are objects and pass through untouched.
+  // tool's own structured errors are objects and pass through untouched. The code below is
+  // **best-effort, operator-facing labeling only** — the message is always surfaced
+  // verbatim, so a misclassification is cosmetic. We match the SDK's specific unknown-tool
+  // wording (`Tool <name> not found`, capital T) rather than a bare "not found", so a Zod
+  // validation message that happens to contain "not found" isn't mislabeled.
   if (out.isError && typeof out.result === "string") {
     const message = out.result;
-    const error: "not_found" | "validation_failed" = /not found/i.test(message)
+    const error: "not_found" | "validation_failed" = /Tool .+ not found/.test(message)
       ? "not_found"
       : "validation_failed";
     return { isError: true, result: { error, message } };
