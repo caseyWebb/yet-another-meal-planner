@@ -21,6 +21,7 @@ import type { Env } from "./env.js";
 import { db, type Db } from "./db.js";
 import { ToolError } from "./errors.js";
 import { kvTenantStore, normalizeTenantId } from "./tenant.js";
+import { listBugReports } from "./bug-reports.js";
 import type { KvStore } from "./kroger-user.js";
 
 const TENANT_PREFIX = "tenant:"; // mirrors src/tenant.ts (the allowlist directory)
@@ -259,6 +260,12 @@ async function routeAdminApi(deps: AdminDeps, request: Request, url: URL): Promi
     return revoke(deps, decodeURIComponent(tenantMatch[1]));
   }
 
+  // Bug reports: the operator's review queue for agent-filed reports (report_bug → D1).
+  if (path === "/admin/api/bug-reports") {
+    if (method === "GET") return { reports: await listBugReports(deps.db) };
+    throw new ToolError("unsupported", `Method ${method} not supported on ${path}`);
+  }
+
   throw new ToolError("not_found", `No admin route for ${method} ${path}`);
 }
 
@@ -283,7 +290,7 @@ export async function handleAdmin(request: Request, env: Env): Promise<Response>
   const url = new URL(request.url);
   const path = url.pathname;
 
-  if (path === "/admin/api/tenants" || path.startsWith("/admin/api/tenants/")) {
+  if (path === "/admin/api/tenants" || path.startsWith("/admin/api/tenants/") || path === "/admin/api/bug-reports") {
     const deps: AdminDeps = {
       tenantKv: env.TENANT_KV,
       krogerKv: env.KROGER_KV as unknown as KvStore,

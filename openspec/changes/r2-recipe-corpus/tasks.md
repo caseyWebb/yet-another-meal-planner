@@ -20,7 +20,7 @@
 
 ## 4. Retarget writes + report_bug
 - [x] 4.1 `create_recipe`/`update_recipe`/`save_guidance` write through the corpus store to R2 (single-file atomic, validated first). Guidance multi-file handling: the write surface is entirely single-file (one object per slug), so multi-file atomicity does not arise — a single-object `R2.put` is atomic. (Design Decision 4: no multi-file batch to sequence.)
-- [ ] 4.2 `report_bug` → a D1 `bug_reports` table (surfaced by `operator-admin-panel`); remove the GitHub issues path. Update the tool contract.
+- [x] 4.2 `report_bug` → a D1 `bug_reports` table (migration 0015; `src/bug-reports.ts`), surfaced by the admin panel (`GET /admin/api/bug-reports`); the GitHub issues path is removed from the tool. Tool contract updated (returns `{ filed: true }`; server-side attribution + timestamp).
 
 ## 5. Cookbook off GitHub Pages
 - [ ] 5.1 Serve the cookbook from the Worker static assets (reuse the `operator-admin-panel` `assets` binding) or Cloudflare Pages, built from the D1 index. `recipe_site_url` resolves the new host. Retire the data-repo `build-site.yml` Pages dependency + the GitHub Pro requirement.

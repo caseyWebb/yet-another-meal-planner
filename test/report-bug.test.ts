@@ -1,51 +1,37 @@
-// Tests for the GitHub client's createIssue (the report_bug tool's write path).
-import { describe, it, expect, vi, afterEach } from "vitest";
-import { createGitHubClient } from "../src/github.js";
+// Tests for report_bug's D1 write path (the GitHub-issues path is retired): the
+// bug-reports recorder/lister and the admin read endpoint.
+import { describe, it, expect } from "vitest";
+import { recordBugReport, listBugReports } from "../src/bug-reports.js";
+import { db } from "../src/db.js";
+import { fakeD1 } from "./fake-d1.js";
 
-const auth = { token: async () => "tok" };
-const coords = { owner: "caseyWebb", repo: "groceries-agent-data", ref: "main" };
+describe("recordBugReport / listBugReports", () => {
+  it("records an attributed report and lists it back", async () => {
+    const d1 = fakeD1({ tables: { bug_reports: [] } });
+    await recordBugReport(db(d1.env), "casey", "Match broke", "match_ingredient threw", "2026-06-27T10:00:00.000Z");
 
-afterEach(() => vi.unstubAllGlobals());
-
-describe("createIssue", () => {
-  it("POSTs to the repo issues endpoint and returns the url + number", async () => {
-    let captured: { url: string; init: RequestInit } | null = null;
-    vi.stubGlobal("fetch", (async (url: string, init: RequestInit) => {
-      captured = { url, init };
-      return new Response(JSON.stringify({ html_url: "https://github.com/o/r/issues/7", number: 7 }), {
-        status: 201,
-      });
-    }) as unknown as typeof fetch);
-
-    const gh = createGitHubClient(coords, auth);
-    const res = await gh.createIssue("Title", "Body", ["agent-reported"]);
-
-    expect(res).toEqual({ url: "https://github.com/o/r/issues/7", number: 7 });
-    expect(captured!.url).toBe("https://api.github.com/repos/caseyWebb/groceries-agent-data/issues");
-    expect(captured!.init.method).toBe("POST");
-    expect(JSON.parse(captured!.init.body as string)).toEqual({
-      title: "Title",
-      body: "Body",
-      labels: ["agent-reported"],
+    expect(d1.tables.bug_reports).toHaveLength(1);
+    expect(d1.tables.bug_reports[0]).toMatchObject({
+      reporter: "casey",
+      title: "Match broke",
+      body: "match_ingredient threw",
+      created_at: "2026-06-27T10:00:00.000Z",
+      status: "open",
     });
+
+    const reports = await listBugReports(db(d1.env));
+    expect(reports).toHaveLength(1);
+    expect(reports[0]).toMatchObject({ reporter: "casey", title: "Match broke", status: "open" });
   });
 
-  it("surfaces a 403 (no Issues:write) as GitHubError(403) for the tool to map", async () => {
-    vi.stubGlobal(
-      "fetch",
-      (async () =>
-        new Response("Forbidden", { status: 403, headers: { "x-ratelimit-remaining": "4999" } })) as unknown as typeof fetch,
-    );
-    const gh = createGitHubClient(coords, auth);
-    await expect(gh.createIssue("t", "b")).rejects.toMatchObject({ status: 403 });
-  });
-
-  it("rejects a malformed issue response", async () => {
-    vi.stubGlobal(
-      "fetch",
-      (async () => new Response(JSON.stringify({ nope: true }), { status: 201 })) as unknown as typeof fetch,
-    );
-    const gh = createGitHubClient(coords, auth);
-    await expect(gh.createIssue("t", "b")).rejects.toMatchObject({ status: 502 });
+  it("keeps multiple reports distinct (autoincrement id, no GitHub)", async () => {
+    const d1 = fakeD1({ tables: { bug_reports: [] } });
+    await recordBugReport(db(d1.env), "casey", "A", "a", "2026-06-27T10:00:00.000Z");
+    await recordBugReport(db(d1.env), "everett", "B", "b", "2026-06-27T11:00:00.000Z");
+    expect(d1.tables.bug_reports).toHaveLength(2);
+    const reports = await listBugReports(db(d1.env));
+    // newest first (created_at DESC)
+    expect(reports.map((r) => r.title)).toEqual(["B", "A"]);
+    expect(reports.map((r) => r.reporter)).toEqual(["everett", "casey"]);
   });
 });

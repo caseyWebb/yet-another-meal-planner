@@ -32,7 +32,12 @@ const PK: Record<string, string[]> = {
   stores: ["slug"],
   store_notes: ["id"],
   recipe_notes: ["id"],
+  bug_reports: ["id"],
 };
+
+// Tables whose `id` PK is AUTOINCREMENT: an INSERT that omits `id` gets the next one,
+// so successive inserts don't collide on an undefined id (mirrors SQLite autoincrement).
+const AUTOINCREMENT_TABLES = new Set(["bug_reports"]);
 
 // Shared-corpus tables have no `tenant` column — SELECT/DELETE over them are global,
 // filtered only by explicit WHERE equality clauses below.
@@ -47,6 +52,7 @@ const GLOBAL_TABLES = new Set([
   "stores",
   "store_notes",
   "recipe_notes",
+  "bug_reports",
 ]);
 
 export function fakeD1(
@@ -143,6 +149,11 @@ export function fakeD1(
       const cols = /INSERT (?:OR IGNORE )?INTO \w+ \(([^)]+)\)/i.exec(sql)![1].split(",").map((c) => c.trim());
       const row: Record<string, unknown> = {};
       cols.forEach((c, i) => (row[c] = binds[i] ?? null));
+      // Autoincrement `id` when the table declares it and the INSERT omitted it.
+      if (AUTOINCREMENT_TABLES.has(table) && row.id == null) {
+        const maxId = tables[table].reduce((m, r) => Math.max(m, Number(r.id) || 0), 0);
+        row.id = maxId + 1;
+      }
       const pk = PK[table] ?? ["tenant", "normalized_name"];
       const idx = tables[table].findIndex((r) => pk.every((k) => r[k] === row[k]));
       if (idx >= 0) {

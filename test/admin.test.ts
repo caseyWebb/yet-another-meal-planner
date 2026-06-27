@@ -13,6 +13,7 @@ import {
 import type { Env } from "../src/env.js";
 import type { Db } from "../src/db.js";
 import type { KvStore } from "../src/kroger-user.js";
+import { fakeD1 } from "./fake-d1.js";
 
 /** In-memory KV with get/put/delete/list (single page) — satisfies KVNamespace + KvStore. */
 function memKv(initial: Record<string, string> = {}): KVNamespace {
@@ -221,6 +222,27 @@ describe("handleAdmin (routing + gate)", () => {
     const res = await handleAdmin(new Request("https://x/admin/api/tenants"), env);
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ tenants: ["bob"] });
+  });
+
+  it("lists agent-filed bug reports via GET /admin/api/bug-reports", async () => {
+    const d1 = fakeD1({
+      tables: {
+        bug_reports: [
+          { id: 1, reporter: "casey", title: "Match broke", body: "x", created_at: "2026-06-27T10:00:00.000Z", status: "open" },
+        ],
+      },
+    });
+    const env = {
+      TENANT_KV: memKv(),
+      KROGER_KV: memKv(),
+      DB: d1.env.DB,
+      ADMIN_DEV_BYPASS: "1",
+    } as unknown as Env;
+    const res = await handleAdmin(new Request("https://x/admin/api/bug-reports"), env);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { reports: { reporter: string; title: string }[] };
+    expect(body.reports).toHaveLength(1);
+    expect(body.reports[0]).toMatchObject({ reporter: "casey", title: "Match broke", status: "open" });
   });
 
   it("serves the SPA shell from ASSETS with the path unchanged (no /index.html rewrite → no redirect loop)", async () => {

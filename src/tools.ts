@@ -25,6 +25,7 @@ import { registerCookingTools } from "./cooking-tools.js";
 import { filterRecipes, type RecipeIndex } from "./recipes.js";
 import { loadRecipeIndex, loadRecipeEmbeddings, recipeDescription } from "./recipe-index.js";
 import { readReconcileErrors } from "./recipe-projection.js";
+import { recordBugReport } from "./bug-reports.js";
 import { embedTexts } from "./embedding.js";
 import {
   rankCandidates,
@@ -803,38 +804,27 @@ export function buildServer(env: Env, tenant: Tenant): McpServer {
       }),
   );
 
-  // report_bug — file an attributed GitHub issue on the operator's PRIVATE data
-  // repo on the member's behalf (members have no GitHub account). Identity +
-  // timestamp + label are added server-side, not trusted from the agent. Issues
-  // are repo-level, so this uses the un-prefixed dataGh.
+  // report_bug — record an attributed bug report into the D1 `bug_reports` table the
+  // operator reviews via the admin panel (the GitHub App / issues path is gone for
+  // data). Identity + timestamp are stamped server-side, never trusted from the agent.
   server.registerTool(
     "report_bug",
     {
       description:
-        "File a bug report as a GitHub issue on the maintainer's private repo, on behalf of the user (who has no GitHub account and can't file issues). Use it when a grocery-mcp tool errors in a way you can't work around, or when the user has had to repeatedly correct or redirect you on the same thing. Write a specific, reproducible report. The server attributes the issue to the caller and labels it — don't add identity yourself. Returns the issue url + number, or `insufficient_permission` if the maintainer hasn't enabled issue filing yet.",
+        "File a bug report to the operator's review queue, on behalf of the user (who can't file issues themselves). Use it when a grocery-mcp tool errors in a way you can't work around, or when the user has had to repeatedly correct or redirect you on the same thing. Write a specific, reproducible report. The server attributes the report to the caller and timestamps it — don't add identity yourself. The operator sees it in their admin panel. Returns { filed: true }.",
       inputSchema: {
         title: z.string().describe("A short, specific issue title."),
         body: z
           .string()
           .describe(
-            "What you were doing, what went wrong (the error or the correction pattern), and the tools/inputs involved — enough for the maintainer to reproduce.",
+            "What you were doing, what went wrong (the error or the correction pattern), and the tools/inputs involved — enough for the operator to reproduce.",
           ),
       },
     },
     ({ title, body }) =>
       runTool(async () => {
-        const trailer = `\n\n---\n_Filed by the grocery agent on behalf of **${tenant.id}** at ${new Date().toISOString()}._`;
-        try {
-          return await dataGh.createIssue(title, `${body}${trailer}`, ["agent-reported"]);
-        } catch (e) {
-          if (e instanceof GitHubError && e.status === 403) {
-            throw new ToolError(
-              "insufficient_permission",
-              "Could not file the issue: the GitHub App has not been granted Issues:write on the data repo yet.",
-            );
-          }
-          throw e; // runTool maps other failures to upstream_unavailable
-        }
+        await recordBugReport(db(env), tenant.id, title, body, new Date().toISOString());
+        return { filed: true };
       }),
   );
 
