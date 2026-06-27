@@ -36,6 +36,10 @@ import {
   readDiscoveryRejections,
   addDiscoveryRejection,
 } from "./corpus-db.js";
+import { readNewForMe, readDiscoveryErrors } from "./discovery-db.js";
+
+/** Cold-start floor: a never-planned member sees at most this window of recent discoveries. */
+const NEW_FOR_ME_WINDOW_DAYS = 21;
 
 const MAX_PER_FEED = 8;
 
@@ -277,5 +281,30 @@ export function registerDiscoveryTools(
         const added = await addFeedRows(env, feeds);
         return { added };
       }),
+  );
+
+  server.registerTool(
+    "list_new_for_me",
+    {
+      description:
+        "Return the recipes the BACKGROUND discovery sweep imported FOR YOU since your last meal plan — already classified and embedded (so they're immediately usable AND retrievable via search_recipes). Each carries { slug, title, description, protein, cuisine, time_total, discovered_at }. Scoped to the caller: recipes the sweep matched to YOUR taste, that you haven't favorited/rejected or cooked, discovered after your last plan (capped at a recent window for a never-planned member). This REPLACES the old fetch_rss_discoveries/read_discovery_inbox pull — discovery is autonomous now; you read the result, you don't triage/parse/import in-flow. Fold these into the menu before the rest of retrieval. An empty list is normal (nothing new since you last planned).",
+      inputSchema: {},
+    },
+    () =>
+      runTool(async () => {
+        const floor = new Date(Date.now() - NEW_FOR_ME_WINDOW_DAYS * 86_400_000).toISOString().slice(0, 10);
+        const recipes = await readNewForMe(env, tenantId, floor);
+        return { recipes };
+      }),
+  );
+
+  server.registerTool(
+    "read_discovery_errors",
+    {
+      description:
+        "Read the SHARED discovery-sweep error surface: candidates the background sweep could not classify into a valid recipe after retries, parked for an operator/author to look at (mirrors read_reconcile_errors). Each carries { url, title, source, detail, created_at }. An empty list means the sweep is importing cleanly. Read-only; does not retry or import.",
+      inputSchema: {},
+    },
+    () => runTool(async () => ({ errors: await readDiscoveryErrors(env) })),
   );
 }

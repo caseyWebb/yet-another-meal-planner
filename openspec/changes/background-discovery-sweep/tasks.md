@@ -44,9 +44,9 @@
 - [x] 4.2 `health:job:discovery-sweep` record (tenant-data-free counts: processed/imported/duplicate/no_match/dietary_gated/parked/deferred/taste_updated/log_pruned); registered in `HEALTH_JOBS` (health tests updated, full suite 733 green); ntfy best-effort on parked candidates + on a hard failure.
 
 ## 5. Agent read surfaces
-- [ ] 5.1 `list_new_for_me` tool: `discovered_at > last_planned_at` ∧ attributed to caller ∧ no overlay row ∧ not in cooking_log; fixed-window floor for cold start; empty is not an error. Returns compact rows (already embedded/classified).
-- [ ] 5.2 `read_discovery_errors` tool (mirror `read_reconcile_errors`) over the parked subset of the log.
-- [ ] 5.3 Stamp `last_planned_at` when `update_meal_plan` saves an agreed plan.
+- [x] 5.1 `list_new_for_me` tool (`discovery-tools.ts`): `readNewForMe` — `discovered_at > watermark` (max of `last_planned_at` and a 21-day floor) ∧ attributed to caller (`discovery_matches`) ∧ no overlay row ∧ not in `cooking_log`; compact rows (already embedded). Empty is not an error.
+- [x] 5.2 `read_discovery_errors` tool (`discovery-tools.ts`) over the `outcome='error'` subset of `discovery_log` (mirrors `read_reconcile_errors`).
+- [x] 5.3 `update_meal_plan` stamps `last_planned_at` (today) whenever it applies an `add` op. *Note:* the `discovery-db` SQL (incl. the new-for-me JOIN) is exercised by the local D1 apply + the deferred E2E — `fake-d1` is a pattern-router, not real SQLite, so a JOIN unit test isn't worth faking.
 
 ## 6. Operator log view (admin)
 - [ ] 6.1 `GET /admin/api/logs/discovery` in `src/admin.ts`: Access-gated like the rest of `/admin*` (404 when unconfigured), group-wide, most-recent-first, bounded count; reads the sweep log.
