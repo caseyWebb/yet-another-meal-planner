@@ -48,22 +48,22 @@
 - [x] 5.2 `read_discovery_errors` tool (`discovery-tools.ts`) over the `outcome='error'` subset of `discovery_log` (mirrors `read_reconcile_errors`).
 - [x] 5.3 `update_meal_plan` stamps `last_planned_at` (today) whenever it applies an `add` op. *Note:* the `discovery-db` SQL (incl. the new-for-me JOIN) is exercised by the local D1 apply + the deferred E2E — `fake-d1` is a pattern-router, not real SQLite, so a JOIN unit test isn't worth faking.
 
-## 6. Operator log view (admin)
-- [ ] 6.1 `GET /admin/api/logs/discovery` in `src/admin.ts`: Access-gated like the rest of `/admin*` (404 when unconfigured), group-wide, most-recent-first, bounded count; reads the sweep log.
-- [ ] 6.2 Admin SPA Logs area (`admin/src/**`): new top-level **Logs** route (`/admin/logs`, `/admin/logs/discovery`), left submenu (Discovery), `RemoteData` master/detail list, detail **dialog** — modeled per `admin/CLAUDE.md` (custom types for selected-source + open-dialog; no `Bool`/`Maybe String` state).
-- [ ] 6.3 Worker serves the SPA shell for `/admin/logs/*` deep links (the existing client-route fallthrough already covers `/admin/*`; add a test).
-- [ ] 6.4 Rebuild + commit `admin/dist/` via `aubr build:admin` (needs `package.elm-lang.org`; if unreachable, leave to CI and say so — don't commit a stale bundle).
-- [ ] 6.5 Tests: `admin-tools.test.ts`-style coverage for the new endpoint (gated, bounded, shape).
+## 6. Operator log view (admin) — done by a parallel subagent
+- [x] 6.1 `GET /admin/api/logs/discovery` in `src/admin.ts` (dispatched in `routeAdminApi`, so it inherits `requireAccess`): 404 when Access unconfigured, 403 on bad assertion, group-wide, `ORDER BY created_at DESC`, bounded (200); reads `readDiscoveryLog`.
+- [x] 6.2 Admin SPA Logs area: `Route.LogSource` union (not a stringly-typed slug) + a new `admin/src/Logs.elm` with `WebData (Loaded (List Entry) Dialog)` where `Dialog = Closed | Open Entry` lives INSIDE `Success` — so an open dialog can't exist without the loaded list behind it (the spec's "cannot contradict the list" invariant, structurally). Left submenu (Discovery), master/detail, detail dialog. Wired into `Main.elm`.
+- [x] 6.3 `/admin/logs` + `/admin/logs/discovery` deep-link via the existing shell fallthrough; test added.
+- [x] 6.4 `admin/dist/` rebuilt (`package.elm-lang.org` was reachable; `build:admin --check` reports no drift) — no CI rebuild needed.
+- [x] 6.5 `test/admin-logs.test.ts` (endpoint gating/ordering/bounding/shell) + `admin/tests/{RouteTest,LogsTest}.elm` (route round-trip, outcome mapping, decoder, `hasDetail`). 42 admin vitest + 50 Elm unit tests pass.
 
 ## 7. Retire the pull surface + reframe reject
-- [ ] 7.1 Remove `fetch_rss_discoveries` + `read_discovery_inbox` registrations from `src/discovery-tools.ts` (logic now lives in the sweep); update `discovery.test.ts`.
-- [ ] 7.2 Reframe `reject_discovery`: source-suppression consulted by the sweep intake (already group-wide by canonical URL); update its description + the `recipe-discovery` reject scenario.
-- [ ] 7.3 Keep `parse_recipe`/`create_recipe`/`update_feeds`/`update_discovery_sources` (manual import + config) — confirm unchanged.
+- [x] 7.1 Removed `fetch_rss_discoveries` + `read_discovery_inbox` registrations from `src/discovery-tools.ts` (+ trimmed their now-unused imports/helpers); no test exercised them by name (the discovery tests cover the pure helpers), so nothing to migrate. Stale comments in `recipe-index.ts` / `corpus-db.ts` updated to name the sweep.
+- [x] 7.2 `reject_discovery` reframed to group-wide **source** suppression consulted by the sweep intake; description updated (+ the `recipe-discovery` delta scenario already specced).
+- [x] 7.3 `parse_recipe`/`create_recipe`/`update_feeds`/`update_discovery_sources` retained; the file header + `update_feeds` description updated to reflect the autonomous sweep.
 
 ## 8. Agent persona (`AGENT_INSTRUCTIONS.md` → rebuild `plugin/`)
-- [ ] 8.1 `meal-plan`: replace step-2 triage/import with the `list_new_for_me` read in the step-1 context batch; fold new-for-me into selection (now retrievable); drop the "work from the parse, don't re-search" caveat; stamp `last_planned_at` on save.
-- [ ] 8.2 `grocery-discovery` skill: retire the discovery triage/disposition section; keep the parse/classify mechanics only for the manual `import-recipe` flow; update the side-bootstrap ladder (drop the RSS tier → corpus → web parse).
-- [ ] 8.3 `aubr build:plugin` and commit the regenerated bundle (needs `$GROCERY_MCP_URL`).
+- [x] 8.1 `meal-plan`: step-1 batch now loads `list_new_for_me()` (not the pull tools); step 2 rewritten from "triage + import" to "fold in new-for-me" (no parse/classify/import in-flow); dropped the "not retrievable this session" caveats (the sweep embedded them); exploration allowance + saved-for-later + step-8 import note all reworded. `last_planned_at` stamp landed in group 5.
+- [x] 8.2 `grocery-discovery` block reframed to the shared MANUAL-import mechanics (handed-a-URL / confirmed-side); triage-the-pool removed; disposition collapsed to the two suppression levers (`toggle_reject` personal / `reject_discovery` source). The sides ladder had no RSS tier to drop.
+- [x] 8.3 `aubr build:plugin` rebuilt the bundle (v0.1.127); regenerated `plugin/` carries `list_new_for_me`, no retired tools. Full suite 739 green.
 
 ## 9. Docs (lockstep)
 - [ ] 9.1 `docs/ARCHITECTURE.md`: determinism boundary (capture relocates to the cron); new §discovery-sweep beside the other crons; "three crons" → "four"; rewrite the Discovery and disposition section; admin §gains the Logs area.

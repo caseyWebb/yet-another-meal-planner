@@ -159,8 +159,8 @@ export async function recipeDescription(env: Env, slug: string): Promise<string 
 /**
  * Map canonicalized-free `source_url` → slug for every indexed recipe with a
  * source. Discovery canonicalizes both sides before comparing, so this returns the
- * raw stored URL; the caller (discovery.ts) canonicalizes. Used by the enumeration
- * path (`fetch_rss_discoveries`). First slug wins on a (rare) source collision.
+ * raw stored URL; the caller canonicalizes. Used by the discovery sweep's intake dedup
+ * and the manual import idempotency check. First slug wins on a (rare) source collision.
  */
 export async function recipeSourceMap(env: Env): Promise<Map<string, string>> {
   const rows = await db(env).all<{ slug: string; source_url: string | null }>(
