@@ -48,6 +48,7 @@ import {
   guidanceListing,
   guidanceObject,
 } from "./admin-data.js";
+import { isCorpusTable, listCorpusTable, addCorpusRow, deleteCorpusRow } from "./admin-corpus.js";
 import type { KvStore } from "./kroger-user.js";
 
 const TENANT_PREFIX = "tenant:"; // mirrors src/tenant.ts (the allowlist directory)
@@ -397,6 +398,29 @@ async function routeAdminApi(
   // Bug reports: the operator's review queue for agent-filed reports (report_bug → D1).
   if (path === "/admin/api/bug-reports") {
     if (method === "GET") return { reports: await listBugReports(deps.db) };
+    throw new ToolError("unsupported", `Method ${method} not supported on ${path}`);
+  }
+
+  // Shared-corpus editors (operator-admin): the WRITABLE companion to the read-only data
+  // explorer. `/admin/api/corpus/<table>` lists (GET), adds (POST), and removes by PK
+  // (DELETE …/<key>) rows of the five group-wide shared-corpus tables. Operator/cross-tenant
+  // and never exposed as MCP tools; remove is operator-only. Distinct from the read-only
+  // `/admin/api/data/` namespace (a disjoint prefix).
+  if (path.startsWith("/admin/api/corpus/")) {
+    const rest = path.slice("/admin/api/corpus/".length);
+    const [tableSlug, ...keyParts] = rest.split("/");
+    if (!isCorpusTable(tableSlug)) {
+      throw new ToolError("not_found", `No corpus table ${tableSlug}`, { table: tableSlug });
+    }
+    if (keyParts.length === 0) {
+      if (method === "GET") return listCorpusTable(env, tableSlug);
+      if (method === "POST") return addCorpusRow(env, tableSlug, await readJsonBody(request));
+      throw new ToolError("unsupported", `Method ${method} not supported on ${path}`);
+    }
+    // A trailing `/<key>` segment addresses one row for removal.
+    if (method === "DELETE") {
+      return deleteCorpusRow(env, tableSlug, decodeURIComponent(keyParts.join("/")));
+    }
     throw new ToolError("unsupported", `Method ${method} not supported on ${path}`);
   }
 

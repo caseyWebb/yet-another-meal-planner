@@ -64,6 +64,12 @@ export async function addAliases(
   return stmts.length;
 }
 
+/** Delete an alias by variant (its PK). Returns whether a row was removed. */
+export async function deleteAlias(env: Env, variant: string): Promise<boolean> {
+  const res = await db(env).run("DELETE FROM aliases WHERE variant = ?1", variant);
+  return res.changes > 0;
+}
+
 // === SKU cache ===============================================================
 
 interface SkuRow {
@@ -140,6 +146,31 @@ export async function readFlyerTerms(env: Env): Promise<string[]> {
   return rows.map((r) => r.term);
 }
 
+/**
+ * Add flyer broad-scan terms, deduped by term (the bare PK; existing untouched —
+ * add-only, insert-or-ignore). Each term is trimmed; empties are skipped. Returns the
+ * count actually added.
+ */
+export async function addFlyerTerms(env: Env, terms: string[]): Promise<number> {
+  const have = new Set(await readFlyerTerms(env));
+  const d = db(env);
+  const stmts: D1PreparedStatement[] = [];
+  for (const raw of terms) {
+    const term = typeof raw === "string" ? raw.trim() : "";
+    if (!term || have.has(term)) continue;
+    have.add(term);
+    stmts.push(d.prepare("INSERT OR IGNORE INTO flyer_terms (term) VALUES (?1)", term));
+  }
+  if (stmts.length > 0) await d.batch(stmts);
+  return stmts.length;
+}
+
+/** Delete a flyer term by its value (its PK). Returns whether a row was removed. */
+export async function deleteFlyerTerm(env: Env, term: string): Promise<boolean> {
+  const res = await db(env).run("DELETE FROM flyer_terms WHERE term = ?1", term);
+  return res.changes > 0;
+}
+
 // === Feeds ===================================================================
 
 export interface FeedRow {
@@ -190,7 +221,18 @@ export async function addFeedRows(
   return stmts.length;
 }
 
+/** Delete a feed by url (its PK). Returns whether a row was removed. */
+export async function deleteFeed(env: Env, url: string): Promise<boolean> {
+  const res = await db(env).run("DELETE FROM feeds WHERE url = ?1", url);
+  return res.changes > 0;
+}
+
 // === Discovery allowlist =====================================================
+
+/** Normalize an allowlist address the same way `addSourceRows` stores it (trim + lowercase). */
+function normalizeAddress(raw: string): string {
+  return raw.trim().toLowerCase();
+}
 
 export interface Allowlist {
   members: Set<string>;
@@ -220,7 +262,7 @@ export async function addSourceRows(
 ): Promise<{ members: number; senders: number }> {
   const norm = (raw: unknown): string | null => {
     if (typeof raw !== "string") return null;
-    const a = raw.trim().toLowerCase();
+    const a = normalizeAddress(raw);
     return a.includes("@") ? a : null;
   };
   const current = await readAllowlist(env);
@@ -250,6 +292,18 @@ export async function addSourceRows(
   }
   if (stmts.length > 0) await d.batch(stmts);
   return { members: memberCount, senders: senderCount };
+}
+
+/** Delete a newsletter sender by address (normalized to match storage). Returns whether a row was removed. */
+export async function deleteSender(env: Env, address: string): Promise<boolean> {
+  const res = await db(env).run("DELETE FROM discovery_senders WHERE address = ?1", normalizeAddress(address));
+  return res.changes > 0;
+}
+
+/** Delete a discovery member by address (normalized to match storage). Returns whether a row was removed. */
+export async function deleteMember(env: Env, address: string): Promise<boolean> {
+  const res = await db(env).run("DELETE FROM discovery_members WHERE address = ?1", normalizeAddress(address));
+  return res.changes > 0;
 }
 
 // === Discovery inbox =========================================================

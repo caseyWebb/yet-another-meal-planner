@@ -3,13 +3,19 @@ import { fakeD1 } from "./fake-d1.js";
 import {
   readAliases,
   addAliases,
+  deleteAlias,
   readSkuCache,
   upsertSkuMappings,
   readFlyerTerms,
+  addFlyerTerms,
+  deleteFlyerTerm,
   readFeeds,
   addFeedRows,
+  deleteFeed,
   readAllowlist,
   addSourceRows,
+  deleteSender,
+  deleteMember,
   readDiscoveryInbox,
   insertDiscoveryCandidate,
   readDiscoveryRejections,
@@ -29,6 +35,13 @@ describe("aliases (D1)", () => {
     expect(n).toBe(2);
     expect(await readAliases(env)).toEqual({ EVOO: "extra virgin olive oil", chx: "chicken" });
     expect(tables.aliases).toHaveLength(2);
+  });
+
+  it("deletes an alias by variant, reporting whether a row went", async () => {
+    const { env, tables } = fakeD1({ tables: { aliases: [{ variant: "EVOO", canonical: "olive oil" }] } });
+    expect(await deleteAlias(env, "EVOO")).toBe(true);
+    expect(await deleteAlias(env, "EVOO")).toBe(false); // already gone
+    expect(tables.aliases).toHaveLength(0);
   });
 });
 
@@ -66,6 +79,16 @@ describe("flyer terms / feeds (D1)", () => {
     expect((await readFlyerTerms(env)).sort()).toEqual(["cheese", "fruit"]);
   });
 
+  it("adds flyer terms (trim, dedup) and deletes by term", async () => {
+    const { env, tables } = fakeD1({ tables: { flyer_terms: [{ term: "fruit" }] } });
+    const added = await addFlyerTerms(env, ["fruit", "  cheese  ", "", "cheese"]); // dup + trim + empty skip
+    expect(added).toBe(1);
+    expect((await readFlyerTerms(env)).sort()).toEqual(["cheese", "fruit"]);
+    expect(await deleteFlyerTerm(env, "fruit")).toBe(true);
+    expect(await deleteFlyerTerm(env, "fruit")).toBe(false);
+    expect(tables.flyer_terms.map((r) => r.term)).toEqual(["cheese"]);
+  });
+
   it("reads feeds and add-only-dedups by url", async () => {
     const { env } = fakeD1({
       tables: { feeds: [{ url: "https://a.com", name: "A", weight: 1, tags: '["x"]' }] },
@@ -78,6 +101,13 @@ describe("flyer terms / feeds (D1)", () => {
     ]);
     expect(added).toBe(1);
     expect((await readFeeds(env)).map((f) => f.url).sort()).toEqual(["https://a.com", "https://b.com"]);
+  });
+
+  it("deletes a feed by url", async () => {
+    const { env, tables } = fakeD1({ tables: { feeds: [{ url: "https://a.com", name: "A", weight: 1, tags: null }] } });
+    expect(await deleteFeed(env, "https://a.com")).toBe(true);
+    expect(await deleteFeed(env, "https://a.com")).toBe(false);
+    expect(tables.feeds).toHaveLength(0);
   });
 });
 
@@ -94,6 +124,18 @@ describe("discovery allowlist + inbox (D1)", () => {
     const al2 = await readAllowlist(env);
     expect([...al2.members].sort()).toEqual(["me@x.com", "you@x.com"]);
     expect(al2.senders.has("n@news.com")).toBe(true);
+  });
+
+  it("deletes a member/sender by address, normalizing the key to match storage", async () => {
+    const { env, tables } = fakeD1({
+      tables: { discovery_members: [{ address: "me@x.com" }], discovery_senders: [{ address: "n@news.com", name: "News" }] },
+    });
+    // The stored row is normalized; a mixed-case/whitespace delete key must still hit it.
+    expect(await deleteMember(env, "  Me@X.com ")).toBe(true);
+    expect(await deleteMember(env, "me@x.com")).toBe(false);
+    expect(await deleteSender(env, "N@News.com")).toBe(true);
+    expect(tables.discovery_members).toHaveLength(0);
+    expect(tables.discovery_senders).toHaveLength(0);
   });
 
   it("inserts inbox candidates deduped by UNIQUE url", async () => {

@@ -587,6 +587,14 @@ The **Data** area's read surface (`src/admin-data.ts`) — read-only, cross-tena
 - `GET /admin/api/data/discovery/<table>` → `{ table, columns, rows }` for `discovery_candidates` / `discovery_senders` / `discovery_members` / `discovery_rejections`.
 - `GET /admin/api/data/system/<table>` → `{ table, columns, rows }` for `reconcile_errors` / `bug_reports` / `schema_meta`.
 
+### Shared-corpus editors (`/admin/api/corpus/*`, operator-admin)
+
+The **Config** area's *writable* companion to the read-only Data explorer (`src/admin-corpus.ts`) — the operator curation surface for five group-wide shared-corpus tables, behind the same Access gate (404 with the rest of the surface when disabled). `<table>` is one of `aliases` | `flyer-terms` | `feeds` | `senders` | `members`; an unknown table is `404` and an unsupported method `405`. Distinct from the read-only `/admin/api/data/*` namespace. **Removal is operator-only** — no MCP tool deletes these — so the agent adds (via `update_aliases`/`update_feeds`/`update_discovery_sources`) and the operator prunes. All writes go through `src/corpus-db.ts` (→ `src/db.ts`, structured errors).
+
+- `GET /admin/api/corpus/<table>` → `{ table, columns, rows }` — the table's rows (server-fixed column order): `aliases` → `{variant, canonical}`, `flyer-terms` → `{term}`, `feeds` → `{url, name, weight, tags}`, `senders`/`members` → `{address}`.
+- `POST /admin/api/corpus/<table>` `{...row}` → `{ added }` — add one validated row. `aliases` upserts by `variant` (re-adding overwrites `canonical`); the rest insert-or-ignore (add-only dedup). Validation rejects a bad/empty key with `400` (`validation_failed`), writing nothing (`feeds` needs a `url`, a numeric `weight` defaulting to 1, and `tags` as a string array; addresses are normalized).
+- `DELETE /admin/api/corpus/<table>/<key>` → `{ removed }` — remove by primary key. Idempotent: an absent key is `{ removed: false }`, not a `404`. Address keys (`senders`/`members`) are normalized (trim + lowercase) to match storage.
+
 ## feeds (shared corpus, D1 `feeds` table)
 
 **Shared** (D1 shared corpus). RSS feed URLs and tags — **agent-writable via `update_feeds`** (add-only, deduped by canonicalized url) as well as hand-curated. Discovery sources are a group-wide concern: any member's feeds contribute to the one set the **background discovery sweep** polls each tick (`src/discovery-sweep.ts`); the sweep classifies and taste-matches the resulting candidates per member. The sweep reads `url`/`name`; `weight`/`tags` are descriptive (not used to rank).
