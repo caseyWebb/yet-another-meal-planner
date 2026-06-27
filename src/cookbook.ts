@@ -29,10 +29,12 @@
 import { Marked } from "marked";
 import type { Env } from "./env.js";
 import { ToolError } from "./errors.js";
-import { loadRecipeIndex } from "./recipe-index.js";
+import { loadRecipeIndex, loadRecipeEmbeddings } from "./recipe-index.js";
 import { createR2CorpusStore } from "./corpus-store.js";
 import { parseMarkdown } from "./parse.js";
 import { rankByKeyword, toHit, type CookbookHit } from "./cookbook-search.js";
+import { nearestNeighbors } from "./cookbook-similar.js";
+import type { IndexedRecipe } from "./recipes.js";
 
 const SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
@@ -80,6 +82,8 @@ nav{margin-bottom:1rem}
 form.search{display:flex;gap:.5rem;margin:1rem 0}
 form.search input[type=search]{flex:1;min-width:0;padding:.4rem .6rem;font-size:1rem}
 form.search button{padding:.4rem .9rem;font-size:1rem;cursor:pointer}
+section.similar{margin-top:2rem;border-top:1px solid #e5e7eb;padding-top:.5rem}
+section.similar h2{font-size:1.1rem;margin-bottom:.25rem}
 `;
 
 // The recipe-body page renders untrusted markdown → keep the STRICT no-script CSP.
@@ -167,6 +171,32 @@ ${SEARCH_SCRIPT_TAG}`;
   return page("Cookbook", body, CSP_SEARCH);
 }
 
+/**
+ * The "Similar Recipes" section for one recipe: the nearest recipes by cosine over the
+ * STORED `recipe_derived` embeddings. Recipe→recipe, so there is NO query embedding and NO
+ * Workers AI call — just a D1 read of the vectors plus arithmetic. Best-effort: any failure
+ * to load the embeddings/index yields "", so the recipe body still renders. Returns "" — and
+ * the section is omitted entirely — when the recipe has no stored vector yet, nothing clears
+ * the floor, or a load fails. Server-rendered static links (escaped via `recipeListItem`),
+ * so the body page keeps its strict no-script CSP.
+ */
+async function renderSimilar(env: Env, slug: string): Promise<string> {
+  let neighbors: CookbookHit[];
+  try {
+    const [embeddings, index] = await Promise.all([loadRecipeEmbeddings(env), loadRecipeIndex(env)]);
+    neighbors = nearestNeighbors(slug, embeddings)
+      .map((s) => index[s])
+      .filter((r): r is IndexedRecipe => r != null)
+      .map(toHit);
+  } catch {
+    return ""; // embeddings/D1 trouble → omit the section, never fail the body page
+  }
+  if (neighbors.length === 0) return "";
+  const items = neighbors.map(recipeListItem).join("\n");
+  return `<section class="similar"><h2>Similar Recipes</h2>
+<ul class="recipes">${items}</ul></section>`;
+}
+
 /** One recipe page: its R2 body rendered to HTML, with a title + meta line from frontmatter. */
 async function renderRecipe(env: Env, slug: string): Promise<Response> {
   const store = createR2CorpusStore(env.CORPUS);
@@ -188,11 +218,15 @@ async function renderRecipe(env: Env, slug: string): Promise<Response> {
   const sourceLine = safeSource
     ? `<p class="meta">Source: <a href="${esc(safeSource)}">${esc(safeSource)}</a></p>`
     : "";
+  // Recipe→recipe "Similar Recipes" over the stored vectors — best-effort (no AI call), so
+  // a missing embedding / D1 hiccup just omits the section rather than failing the body page.
+  const similarHtml = await renderSimilar(env, slug);
   const html = `<nav><a href="/cookbook">← Cookbook</a></nav>
 <h1>${esc(title)}</h1>
 ${meta ? `<p class="meta">${meta}</p>` : ""}
 ${sourceLine}
-${bodyHtml}`;
+${bodyHtml}
+${similarHtml}`;
   return page(title, html, CSP_STRICT);
 }
 
