@@ -35,7 +35,7 @@ The flow SHALL resolve its subject X through one of two entry modes. When X reso
 
 ### Requirement: Shared cheapest-first side-resolution ladder
 
-Side resolution SHALL follow a single cheapest-first, highest-confidence-first ladder, defined once and referenced by the planning flows: (1) surface curated `pairs_with` corpus sides when present; (2) otherwise retrieve corpus sides facet-gated to `course: side` (semantically via `recipe_semantic_search` over the side terms, or via `list_recipes({course:"side"})`); (3) otherwise propose new sides to source and, on confirmation, import them; (4) otherwise propose a trivial open-world side named from world knowledge. The agent SHALL stop at the first rung that satisfies the request and SHALL NOT search the web when curated or corpus sides already answer it.
+Side resolution SHALL follow a single cheapest-first, highest-confidence-first ladder, defined once and referenced by the `meal-plan` flow: (1) surface curated `pairs_with` corpus sides when present; (2) otherwise retrieve corpus sides with a `search_recipes` spec whose vibe is the subject's side terms and `facets: { course: "side" }`; (3) otherwise propose new sides to source and, on confirmation, import them; (4) otherwise propose a trivial open-world side named from world knowledge. The agent SHALL stop at the first rung that satisfies the request and SHALL NOT search the web when curated or corpus sides already answer it.
 
 #### Scenario: Curated pairing short-circuits the ladder
 
