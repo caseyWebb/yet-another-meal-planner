@@ -28,6 +28,6 @@ Out of scope: no Worker code or tool changes (the flow is persona prose; the too
 
 - **Agent persona:** `AGENT_INSTRUCTIONS.md` — delete the old `### Menu request` section, promote the `### Semantic menu` section to canonical with the named-dish fold-in, strip experimental markers, fix the line-62 cross-reference.
 - **Generated bundle:** `aubr build:plugin` regenerates `plugin/grocery-agent/skills/`; the stale `semantic-meal-plan/` skill directory is deleted.
-- **Specs:** delta files for `menu-generation` (large MODIFY/ADD/REMOVE) and `experimental-meal-planning` (REMOVE all). `meal-planning` and `semantic-recipe-search` untouched.
+- **Specs:** delta file for `menu-generation` (large MODIFY/ADD/REMOVE) absorbing the migrated requirements. `experimental-meal-planning` is **retired by deleting the capability spec** at archive time — OpenSpec rejects a spec with zero requirements, so the capability is removed outright rather than emptied (its requirements migrated into `menu-generation`; the disposition is documented in design.md). `meal-planning` and `semantic-recipe-search` untouched.
 - **Docs:** `docs/TOOLS.md`, `docs/ARCHITECTURE.md`, `docs/SCHEMAS.md`.
 - **Dependency:** sequenced after `unify-recipe-search`; the promoted flow references `search_recipes`. No Worker code, no tests change (no tool behavior changes; meal-plan flow validation is conversational per the smoke-test requirement).
