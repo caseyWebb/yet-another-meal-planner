@@ -6,7 +6,7 @@
     <meta name="robots" content="noindex" />
     <title>grocery-agent admin</title>
     <style>
-      :root { --accent: #f4a259; --danger: #b00020; }
+      :root { --accent: #f4a259; --danger: #b00020; --subnav-h: 3rem; --section-pad: 1rem; }
       body { font-family: system-ui, sans-serif; color: #222; background: #fafafa; margin: 0; }
       .wrap { max-width: 44rem; margin: 2.5rem auto; padding: 0 1rem; }
       /* The two-column tool console needs more room than member management. */
@@ -31,22 +31,33 @@
       .row .v { font-family: ui-monospace, monospace; word-break: break-all; }
       textarea { width: 100%; box-sizing: border-box; font: .9rem ui-monospace, monospace; padding: .5rem; border: 1px solid #ccc; border-radius: .3rem; }
       select { font-size: .95rem; padding: .35rem; border: 1px solid #ccc; border-radius: .3rem; }
-      pre { background: #f6f6f6; border: 1px solid #eee; border-radius: .4rem; padding: .6rem .8rem; overflow: auto; max-height: 28rem; font-size: .8rem; margin: .35rem 0; white-space: pre-wrap; word-break: break-word; }
+      pre { background: #f6f6f6; border: 1px solid #eee; border-radius: .4rem; padding: .6rem .8rem; overflow: auto; font-size: .8rem; margin: .35rem 0; white-space: pre-wrap; word-break: break-word; }
       .muted { color: #888; }
       .small { font-size: .8rem; }
       /* Top-level area nav (Admin / Dev). */
       .nav { display: flex; gap: .5rem; margin: .5rem 0 1.25rem; border-bottom: 1px solid #e5e5e5; }
       .nav-link { text-decoration: none; color: #555; padding: .5rem .75rem; border-bottom: 2px solid transparent; }
       .nav-link.active { color: #222; border-bottom-color: var(--accent); font-weight: 600; }
+      /* Dev sub-nav: sticky pills (one per Dev section); the main nav scrolls away above it. */
+      .subnav { position: sticky; top: 0; z-index: 5; display: flex; gap: .5rem; align-items: center; height: var(--subnav-h); background: #fafafa; border-bottom: 1px solid #e5e5e5; }
+      .pill { font: inherit; font-size: .85rem; padding: .3rem .85rem; border-radius: 999px; border: 1px solid #ddd; background: #fff; color: #555; cursor: pointer; }
+      .pill.active { background: var(--accent); color: #222; border-color: var(--accent); font-weight: 600; }
+      /* Each Dev section fills the viewport below the sticky sub-nav, with fixed (not %) padding. */
+      .dev-section { scroll-margin-top: var(--subnav-h); min-height: calc(100vh - var(--subnav-h) - 2 * var(--section-pad)); padding: var(--section-pad) 0; display: flex; }
+      .dev-section > .console { flex: 1; display: flex; flex-direction: column; margin: 0; }
       /* Tool console. */
       .persona-bar { display: flex; gap: .75rem; align-items: center; flex-wrap: wrap; margin: .25rem 0 1rem; padding-bottom: .75rem; border-bottom: 1px solid #eee; }
       .persona-label .persona { font-family: ui-monospace, monospace; }
       .persona-label .persona.real { color: var(--danger); }
       /* minmax(0,1fr) + min-width:0 lets the content column shrink so a wide schema/result
-         scrolls or wraps INSIDE it instead of blowing the grid (and card) out past the page. */
-      .workbench { display: grid; grid-template-columns: 16rem minmax(0, 1fr); gap: 1.25rem; }
-      .workbench > * { min-width: 0; }
-      .tool-list { list-style: none; margin: 0; padding: 0; max-height: 32rem; overflow: auto; }
+         scrolls or wraps INSIDE it instead of blowing the grid (and card) out past the page.
+         flex:1 + min-height:0 make the workbench fill the full-height section, so each column
+         scrolls independently and the tool list runs to the bottom (not just to the schema). */
+      .workbench { display: grid; grid-template-columns: 16rem minmax(0, 1fr); gap: 1.25rem; flex: 1; min-height: 0; }
+      .workbench > * { min-width: 0; min-height: 0; }
+      .catalog { display: flex; flex-direction: column; }
+      .tool-detail { overflow: auto; }
+      .tool-list { list-style: none; margin: 0; padding: 0; flex: 1; overflow: auto; }
       .tool-item { padding: .4rem .5rem; border-radius: .35rem; }
       .tool-item.active { background: #fff7ee; }
       .tool-item .tool-name { display: block; font-family: ui-monospace, monospace; font-size: .85rem; color: #1a5; text-decoration: none; }

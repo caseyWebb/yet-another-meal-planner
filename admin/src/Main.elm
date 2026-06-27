@@ -19,11 +19,14 @@ URLs (deep-linkable, refresh-stable); the Worker serves this shell for any unmat
 
 import Admin.Members as Members
 import Browser
+import Browser.Dom as Dom
 import Browser.Navigation as Nav
 import Dev.ToolConsole as ToolConsole
-import Html exposing (Html, a, div, h1, nav, text)
-import Html.Attributes exposing (class, classList)
+import Html exposing (Html, a, button, div, h1, nav, section, text)
+import Html.Attributes exposing (class, classList, id)
+import Html.Events exposing (onClick)
 import Route exposing (Route)
+import Task
 import Url exposing (Url)
 
 
@@ -35,7 +38,41 @@ type alias Model =
     { key : Nav.Key
     , route : Route
     , page : Page
+    , activeDevSection : DevSection
     }
+
+
+{-| The Dev area's sections — one pill each in the sticky sub-nav. A finite enum, not a
+`String` (admin/CLAUDE.md rule 3): a new Dev surface is a new variant here, and the
+compiler then flags every site that must handle it (the id, the label, its section block
+in `viewPage`). The pills accumulate; nothing crams in. -}
+type DevSection
+    = McpInspector
+
+
+devSections : List DevSection
+devSections =
+    [ McpInspector ]
+
+
+defaultDevSection : DevSection
+defaultDevSection =
+    McpInspector
+
+
+{-| The section's DOM id — also its pill's scroll target. -}
+sectionId : DevSection -> String
+sectionId section =
+    case section of
+        McpInspector ->
+            "mcp-inspector"
+
+
+sectionLabel : DevSection -> String
+sectionLabel section =
+    case section of
+        McpInspector ->
+            "MCP Inspector"
 
 
 {-| The live page and its state, as one value — you cannot be on one page holding
@@ -49,7 +86,7 @@ type Page
 init : () -> Url -> Nav.Key -> ( Model, Cmd Msg )
 init _ url key =
     -- `?as=` seeds the Dev workbench's persona on a deep link; it is model state after.
-    enter (Route.fromUrl url) (Route.actingAsParam url) { key = key, route = Route.NotFound, page = NotFoundPage }
+    enter (Route.fromUrl url) (Route.actingAsParam url) { key = key, route = Route.NotFound, page = NotFoundPage, activeDevSection = defaultDevSection }
 
 
 
@@ -61,6 +98,8 @@ type Msg
     | UrlChanged Url
     | MembersMsg Members.Msg
     | ToolsMsg ToolConsole.Msg
+    | ScrollToSection DevSection
+    | NoOp
 
 
 update : Msg -> Model -> ( Model, Cmd Msg )
@@ -74,6 +113,12 @@ update msg model =
 
         ( UrlChanged url, _ ) ->
             stepTo (Route.fromUrl url) model
+
+        ( ScrollToSection section, _ ) ->
+            ( { model | activeDevSection = section }, scrollToSection section )
+
+        ( NoOp, _ ) ->
+            ( model, Cmd.none )
 
         ( MembersMsg subMsg, MembersPage subModel ) ->
             let
@@ -139,6 +184,24 @@ enter route actingAs model =
 
         Route.NotFound ->
             ( { model | route = route, page = NotFoundPage }, Cmd.none )
+
+
+{-| Scroll a Dev section up to just under the sticky sub-nav, which fills the viewport with
+it (a section is sized to `100vh − sub-nav`) and scrolls the page header — the `h1` + main
+nav — out of view. `Dom.getElement` gives the section's document Y; we offset by the sub-nav
+height. A missing element (race) is a harmless no-op. -}
+scrollToSection : DevSection -> Cmd Msg
+scrollToSection section =
+    Dom.getElement (sectionId section)
+        |> Task.andThen (\el -> Dom.setViewport 0 (el.element.y - subnavHeight))
+        |> Task.attempt (\_ -> NoOp)
+
+
+{-| Sub-nav height in px, tracking `--subnav-h: 3rem` in index.html. Assumes the UA default
+16px root; if that's overridden the post-click scroll drifts a few px — cosmetic only. -}
+subnavHeight : Float
+subnavHeight =
+    48
 
 
 
@@ -209,10 +272,33 @@ viewPage model =
             Html.map MembersMsg (Members.view subModel)
 
         ToolsPage subModel ->
-            Html.map ToolsMsg (ToolConsole.view subModel)
+            -- Dev area: a sticky pill sub-nav over full-viewport sections (one today). Each
+            -- section's id is its pill's scroll target.
+            div []
+                [ viewDevSubnav model.activeDevSection
+                , section [ id (sectionId McpInspector), class "dev-section" ]
+                    [ Html.map ToolsMsg (ToolConsole.view subModel) ]
+                ]
 
         NotFoundPage ->
             div [ class "card" ] [ text "Not found." ]
+
+
+{-| The sticky pill row. With one section the pill still earns its place: clicking it
+scrolls the page header away and snaps the section to fill the viewport (see
+`scrollToSection`); with more sections it's how you jump between them. -}
+viewDevSubnav : DevSection -> Html Msg
+viewDevSubnav active =
+    nav [ class "subnav" ] (List.map (viewPill active) devSections)
+
+
+viewPill : DevSection -> DevSection -> Html Msg
+viewPill active section =
+    button
+        [ classList [ ( "pill", True ), ( "active", section == active ) ]
+        , onClick (ScrollToSection section)
+        ]
+        [ text (sectionLabel section) ]
 
 
 

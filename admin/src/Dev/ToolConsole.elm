@@ -323,8 +323,7 @@ httpError error =
 view : Model -> Html Msg
 view model =
     div [ class "card console" ]
-        [ h2 [] [ text "MCP tool console" ]
-        , viewPersonaBar model
+        [ viewPersonaBar model
         , viewBody model
         ]
 
