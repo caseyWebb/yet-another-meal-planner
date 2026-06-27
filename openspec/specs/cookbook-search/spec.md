@@ -1,94 +1,135 @@
 # cookbook-search Specification
 
 ## Purpose
-TBD - created by archiving change cookbook-semantic-search. Update Purpose after archive.
+
+Keyword search for the open, anonymous `/cookbook` browse site: a deterministic, field-weighted ranker over the indexed recipe metadata, exposed both as a server-rendered `?q=` page (the no-JS fallback) and a JSON endpoint that a debounced, first-party client script renders in place — under a Content-Security-Policy that keeps the untrusted recipe-body render script-free.
+
 ## Requirements
 ### Requirement: Cookbook search entry point
 
-The `/cookbook` route SHALL accept an optional `q` query parameter. When `q` is absent or empty after trimming, the route SHALL render the existing alphabetical index unchanged. When `q` is non-empty, the route SHALL render a results page for that query. The route SHALL remain open (no authentication) and read-only (GET/HEAD only), and the search control SHALL be a server-rendered `<form method="GET">` requiring no client-side script, leaving the page's restrictive `Content-Security-Policy` (no script) unchanged.
+The `/cookbook` route SHALL accept an optional `q` query parameter. When `q` is absent or empty after trimming, the route SHALL render the existing alphabetical index unchanged. When `q` is non-empty, the route SHALL render a server-rendered, keyword-ranked results page for that query. The route SHALL remain open (no authentication) and read-only (GET/HEAD only). The search control SHALL be a server-rendered text input that functions without client-side script (submitting to `/cookbook?q=`), progressively enhanced by a first-party script into debounced, in-place search; the recipe-body page's strict no-script `Content-Security-Policy` SHALL be preserved (see "Content-Security-Policy posture").
 
 #### Scenario: Empty query renders the full index
 
 - **WHEN** `/cookbook` is requested with no `q`, or an all-whitespace `q`
 - **THEN** the full alphabetical recipe index is rendered, as it is today
 
-#### Scenario: Non-empty query renders results
+#### Scenario: Non-empty query renders keyword results
 
 - **WHEN** `/cookbook?q=tacos` is requested
-- **THEN** a results page for "tacos" is rendered, reusing the recipe-list UI
+- **THEN** a keyword-ranked results page for "tacos" is rendered server-side, reusing the recipe-list UI
 
-#### Scenario: Search adds no script
+#### Scenario: Search works without client script
 
-- **WHEN** any `/cookbook` page is rendered
-- **THEN** the response carries the same restrictive CSP, contains no `<script>`, and the search form submits via GET
-
-### Requirement: Two-tier hybrid ranking
-
-A non-empty query SHALL be answered by merging two tiers: a **substring tier** — every recipe whose title or tags contain every query token as a case-insensitive substring (the same text match the membership mode of `search_recipes` applies) — and a **semantic tier** — recipes ranked by cosine similarity between the embedded query and the recipe's stored embedding. Substring-tier matches SHALL be ordered ahead of semantic-only matches, and the two tiers SHALL be deduplicated by slug so no recipe appears twice.
-
-#### Scenario: Exact-intent match is surfaced first
-
-- **WHEN** a query names a dish that exists by title, e.g. "tacos"
-- **THEN** the recipe whose title matches appears ahead of merely semantically-related recipes
-
-#### Scenario: Semantic neighbours fill in
-
-- **WHEN** a query expresses a vibe with no literal title or tag match, e.g. "cozy rainy night"
-- **THEN** recipes are returned ranked by semantic similarity to the query
-
-#### Scenario: A recipe matching both tiers appears once
-
-- **WHEN** a recipe matches the query by both substring and embedding
-- **THEN** it appears exactly once, in the substring tier
-
-### Requirement: Similarity floor and empty results
-
-Semantic-tier candidates whose cosine similarity is below a configured floor SHALL be excluded, so a query that matches nothing meaningful does not return the whole corpus weakly ranked. When neither tier yields a result, the route SHALL render a clean "no matches" state with HTTP 200 and a link back to the full index.
-
-#### Scenario: Weak matches are excluded
-
-- **WHEN** a query has no substring hit and its closest recipe is below the similarity floor
-- **THEN** that recipe is not returned
-
-#### Scenario: No matches renders an empty state
-
-- **WHEN** a query yields no substring hits and no above-floor semantic matches
-- **THEN** a "no matches" page is rendered with a link back to the full cookbook, not an error
-
-### Requirement: Graceful degradation without embeddings
-
-The semantic tier SHALL NOT be load-bearing. When the query embedding cannot be produced or the recipe embeddings cannot be loaded — e.g. Workers AI is unavailable or the embed index is empty — the route SHALL render the substring-tier results alone and SHALL NOT return a server error. A recipe that has no stored embedding (e.g. imported since the last reconcile) SHALL remain findable through the substring tier.
-
-#### Scenario: Embedding failure falls back to substring
-
-- **WHEN** the query embed call fails
-- **THEN** the substring-tier results are rendered and the response is not a 5xx
-
-#### Scenario: Not-yet-embedded recipe is still findable
-
-- **WHEN** a recipe has been imported but not yet embedded, and the query matches its title
-- **THEN** it appears in the results via the substring tier
-
-### Requirement: Query-vector cache
-
-A query's embedding vector SHALL be cached, keyed by the embedding model and the normalized query text, so repeated queries reuse the vector without a new Workers AI call. The cache SHALL store the query **vector**, not the result list, so that a corpus reconcile is reflected on the next search with no cache invalidation, and a change of embedding model SHALL produce a different key so no stale-dimension vector is reused.
-
-#### Scenario: Repeat query skips the embed call
-
-- **WHEN** the same normalized query is searched again while its vector is cached
-- **THEN** the cached vector is used and no new embed call is made
-
-#### Scenario: Reconcile reflected without invalidation
-
-- **WHEN** the recipe corpus is re-embedded after a query's vector was cached
-- **THEN** the next search for that query ranks against the updated recipe embeddings using the still-valid cached query vector
+- **WHEN** the page is loaded with JavaScript disabled and the search input is submitted with `q=tacos`
+- **THEN** the browser navigates to `/cookbook?q=tacos` and the server renders the ranked results
 
 ### Requirement: Anonymous relevance-only ranking
 
-Because the cookbook is an open, cross-tenant surface with no caller identity, cookbook search ranking SHALL use semantic relevance (cosine) alone, with none of the per-tenant favourite, freshness, or pantry-overlap boosts applied by the agent-facing `search_recipes` tool.
+Because the cookbook is an open, cross-tenant surface with no caller identity, cookbook search ranking SHALL use the keyword relevance score alone, with none of the per-tenant favourite, freshness, or pantry-overlap boosts applied by the agent-facing `search_recipes` tool. Every visitor SHALL receive the same ranking for the same query.
 
 #### Scenario: No per-tenant boosts
 
 - **WHEN** two different visitors search the same query
 - **THEN** they receive the same ranking, independent of any tenant's favourites, cooking history, or pantry
+
+### Requirement: Keyword field-weighted ranking
+
+A non-empty query SHALL be answered by a deterministic keyword ranker over the recipe's indexed metadata fields — at least `title`, `tags`, `protein`, `cuisine`, `course`, `dietary`, `season`, `ingredients_key`, and `description`. The query SHALL be tokenized (lowercased, whitespace-split, stopwords dropped). Each token SHALL contribute a field-weighted score where higher-signal fields (title, tags, the `protein`/`cuisine` facets) weigh more than lower-signal prose (`description`), and an exact facet match weighs more than a substring match. A recipe's total score SHALL reflect how many distinct query tokens it matched across all fields (query coverage), so a recipe matching all query tokens ranks above one matching only some. Results SHALL be ordered by descending score and tie-broken deterministically (by title, then slug). A recipe that matches no query token SHALL be excluded. The specific field weights and match-kind multipliers are tunable constants and are NOT part of this contract.
+
+#### Scenario: Named dish ranks first
+
+- **WHEN** a query names a dish that exists by title, e.g. "tacos"
+- **THEN** the recipe whose title matches appears ahead of recipes that merely mention the term in a lower-weight field
+
+#### Scenario: Coverage orders full matches above partial
+
+- **WHEN** a two-token query is run and recipe A matches both tokens while recipe B matches only one (with otherwise comparable field hits)
+- **THEN** recipe A is ranked above recipe B
+
+#### Scenario: Facet keyword is matched
+
+- **WHEN** a query is "thai" and a recipe carries `cuisine: thai`
+- **THEN** that recipe is surfaced via the cuisine facet even if "thai" does not appear in its title
+
+#### Scenario: Zero-match recipe is excluded
+
+- **WHEN** a recipe matches none of the query tokens in any indexed field
+- **THEN** it does not appear in the results
+
+#### Scenario: Deterministic ordering
+
+- **WHEN** two recipes earn the same score for a query
+- **THEN** they are ordered by title then slug, identically on every request
+
+### Requirement: Keyword search endpoint and debounced client search
+
+The route SHALL expose `GET /cookbook/search?q=` that returns the keyword-ranked results for `q` as JSON (an ordered list of result rows). The index/search page SHALL load a first-party script that, as the visitor types, debounces input, requests the JSON endpoint, discards stale or out-of-order responses, and updates the results list in place WITHOUT a full-page re-render. Clearing the query SHALL restore the alphabetical index view. The script SHALL render rows from the JSON data without using `innerHTML` for untrusted values.
+
+#### Scenario: Endpoint returns ranked JSON
+
+- **WHEN** `GET /cookbook/search?q=tacos` is requested
+- **THEN** the response is JSON containing the keyword-ranked result rows in score order
+
+#### Scenario: Typing updates results in place
+
+- **WHEN** the visitor types a query on the enhanced page
+- **THEN** the results list updates from the JSON endpoint without reloading the page
+
+#### Scenario: Clearing the query restores the index
+
+- **WHEN** the visitor clears the search input
+- **THEN** the full alphabetical index is shown again
+
+#### Scenario: Stale responses are discarded
+
+- **WHEN** a newer query's request resolves before an older in-flight request
+- **THEN** the older response is ignored and does not overwrite the newer results
+
+### Requirement: No-JS progressive-enhancement fallback
+
+The server-rendered `/cookbook?q=` results page SHALL be a complete keyword-ranked page, so search functions with client JavaScript disabled and the `?q=` URL is shareable. The client enhancement SHALL augment this page rather than replace it. The server page and the JSON endpoint SHALL use the same ranking, so their ordering for a given query agrees.
+
+#### Scenario: No-JS results page
+
+- **WHEN** `/cookbook?q=tacos` is requested with no client script running
+- **THEN** the server renders the same keyword-ranked results that the JSON endpoint would return for "tacos"
+
+#### Scenario: Server page and endpoint agree
+
+- **WHEN** the same query is served by the server `?q=` page and by `/cookbook/search`
+- **THEN** the two produce the same ordered set of recipes
+
+### Requirement: Empty results state
+
+When a non-empty query matches no recipe, the server `/cookbook?q=` page SHALL render a clean "no matches" state at HTTP 200 with a link back to the full index, and the `/cookbook/search` endpoint SHALL return an empty result list (HTTP 200), never an error.
+
+#### Scenario: No matches renders an empty state
+
+- **WHEN** a query matches no recipe in any indexed field
+- **THEN** the server page renders a "no matches" message at HTTP 200 with a link back to the full cookbook, not an error
+
+#### Scenario: Endpoint returns an empty list
+
+- **WHEN** `/cookbook/search?q=` matches no recipe
+- **THEN** the endpoint returns an empty JSON list at HTTP 200
+
+### Requirement: Content-Security-Policy posture
+
+The recipe-body page `/cookbook/<slug>`, which renders untrusted author/agent markdown to HTML, SHALL retain the strict no-script `Content-Security-Policy` (`default-src 'none'`, no `script-src`). The index/search page SHALL relax its CSP only enough to run first-party search: `script-src 'self'` (no `'unsafe-inline'` for scripts) and `connect-src 'self'`, admitting no third-party origins. The search script SHALL be served first-party (e.g. `/cookbook/search.js`).
+
+#### Scenario: Body page stays script-free
+
+- **WHEN** `/cookbook/<slug>` is rendered
+- **THEN** its CSP contains no `script-src` allowance and the page contains no `<script>`
+
+#### Scenario: Search page allows only first-party script and fetch
+
+- **WHEN** the index/search page is rendered
+- **THEN** its CSP allows `script-src 'self'` and `connect-src 'self'` with no `'unsafe-inline'` script and no third-party origins
+
+#### Scenario: Injected inline script cannot execute
+
+- **WHEN** a recipe title or description contains an inline `<script>` and is shown on the search page
+- **THEN** the value is rendered inert (escaped / as text) and the CSP would block inline script execution regardless
 
