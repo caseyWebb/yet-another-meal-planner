@@ -28,4 +28,4 @@ _None._ Search is additive on the same base URL: `recipe_site_url` still resolve
 - **Code**: `src/cookbook.ts` gains the `?q=` branch + results render; a small cookbook-search module owns the two-tier merge, the floor, and the query-vector cache. Reuses `embedText` / `cosineSimilarity` (`src/embedding.ts`), `loadRecipeEmbeddings` (`src/recipe-index.ts`), and `filterRecipes`'s `query` facet (`src/recipes.ts`).
 - **Storage**: query-vector cache in `KROGER_KV` (the existing ephemeral-infra namespace; key `cookbook:qvec:<hash(model+q)>`). **No new D1 table, no migration, no new cron** — `recipe_derived` embeddings already exist.
 - **Workers AI**: one query embed per *uncached* search, on an open route; cost negligible, abuse mitigation deferred to edge primitives.
-- **Docs**: `docs/ARCHITECTURE.md` (the `/cookbook` route description). `docs/TOOLS.md` unaffected (not an MCP tool); `docs/SCHEMAS.md` unaffected (no D1 shape change).
+- **Docs**: `docs/ARCHITECTURE.md` (the `/cookbook` route description) and `docs/SCHEMAS.md` (the new `cookbook:qvec:` KV key family, alongside the flyer/health caches). `docs/TOOLS.md` unaffected (not an MCP tool); no D1 shape change.

@@ -20,9 +20,20 @@
 import { Marked } from "marked";
 import type { Env } from "./env.js";
 import { ToolError } from "./errors.js";
-import { loadRecipeIndex } from "./recipe-index.js";
+import { loadRecipeIndex, loadRecipeEmbeddings } from "./recipe-index.js";
 import { createR2CorpusStore } from "./corpus-store.js";
 import { parseMarkdown } from "./parse.js";
+import { embedText, EMBED_DIM } from "./embedding.js";
+import { filterRecipes } from "./recipes.js";
+import {
+  COOKBOOK_K,
+  DEFAULT_SIMILARITY_FLOOR,
+  mergeCookbookResults,
+  normalizeQuery,
+  queryVectorCacheKey,
+  type CookbookHit,
+  type EmbeddedCandidate,
+} from "./cookbook-search.js";
 
 const SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
@@ -67,6 +78,9 @@ ul.recipes li{padding:.6rem 0;border-bottom:1px solid #e5e7eb}
 .chip{display:inline-block;background:#fef3c7;color:#92400e;border-radius:999px;padding:.05rem .5rem;font-size:.75rem;margin-right:.25rem}
 .desc{color:#374151}
 nav{margin-bottom:1rem}
+form.search{display:flex;gap:.5rem;margin:1rem 0}
+form.search input[type=search]{flex:1;min-width:0;padding:.4rem .6rem;font-size:1rem}
+form.search button{padding:.4rem .9rem;font-size:1rem;cursor:pointer}
 `;
 
 // No script at all (script-src defaults to 'none' under default-src 'none'); inline styles
@@ -98,23 +112,45 @@ function notice(status: number, heading: string): Response {
   return htmlResponse(html, status);
 }
 
+/** A loose index entry / search hit → the compact shape the list renderer needs. */
+function toHit(r: Record<string, unknown>): CookbookHit {
+  return {
+    slug: String(r.slug),
+    title: typeof r.title === "string" && r.title.length > 0 ? r.title : String(r.slug),
+    description: typeof r.description === "string" ? r.description : null,
+    protein: typeof r.protein === "string" ? r.protein : null,
+    cuisine: typeof r.cuisine === "string" ? r.cuisine : null,
+  };
+}
+
+/** One `<li>` for the recipe list — shared by the index and the search results. */
+function recipeListItem(hit: CookbookHit): string {
+  const chips = [hit.protein, hit.cuisine]
+    .filter((v): v is string => typeof v === "string" && v.length > 0)
+    .map((v) => `<span class="chip">${esc(v)}</span>`)
+    .join("");
+  const desc = hit.description ? `<div class="desc">${esc(hit.description)}</div>` : "";
+  return `<li><a href="/cookbook/${esc(hit.slug)}">${esc(hit.title)}</a> ${chips}${desc}</li>`;
+}
+
+/** The server-rendered search form (GET → `/cookbook?q=…`). No script — a plain form,
+ *  so the restrictive no-script CSP is unaffected. `q` is echoed back, escaped. */
+function searchForm(q: string): string {
+  return `<form class="search" method="GET" action="/cookbook" role="search">
+<input type="search" name="q" value="${esc(q)}" placeholder="Search recipes…" aria-label="Search recipes">
+<button type="submit">Search</button>
+</form>`;
+}
+
 /** The cookbook index: every recipe in the D1 index, titled + linked, with a short blurb. */
 async function renderIndex(env: Env): Promise<Response> {
   const index = await loadRecipeIndex(env);
-  const recipes = Object.values(index).sort((a, b) =>
-    String(a.title ?? a.slug).localeCompare(String(b.title ?? b.slug)),
-  );
-  const items = recipes
-    .map((r) => {
-      const chips = [r.protein, r.cuisine]
-        .filter((v): v is string => typeof v === "string" && v.length > 0)
-        .map((v) => `<span class="chip">${esc(v)}</span>`)
-        .join("");
-      const desc = typeof r.description === "string" ? `<div class="desc">${esc(r.description)}</div>` : "";
-      return `<li><a href="/cookbook/${esc(r.slug)}">${esc(r.title ?? r.slug)}</a> ${chips}${desc}</li>`;
-    })
-    .join("\n");
+  const recipes = Object.values(index)
+    .map(toHit)
+    .sort((a, b) => a.title.localeCompare(b.title) || a.slug.localeCompare(b.slug));
+  const items = recipes.map(recipeListItem).join("\n");
   const body = `<h1>Cookbook</h1>
+${searchForm("")}
 <p class="meta">${recipes.length} recipe${recipes.length === 1 ? "" : "s"}</p>
 <ul class="recipes">${items || "<li>No recipes yet.</li>"}</ul>`;
   return page("Cookbook", body);
@@ -149,20 +185,123 @@ ${bodyHtml}`;
   return page(title, html);
 }
 
+// --- Hybrid search (cookbook-search) -------------------------------------------------
+
+/** Query vectors are stable — they change only when EMBED_MODEL changes, which re-keys
+ *  the cache — so they can be held a long while; a miss simply re-embeds. */
+const QVEC_TTL_SECONDS = 60 * 60 * 24 * 30; // 30 days
+
+/** Read a query's cached embedding vector, or null on a miss. A parse/shape mismatch is
+ *  treated as a miss (self-healing — the next search re-embeds), never a throw. */
+async function getCachedQueryVector(env: Env, q: string): Promise<number[] | null> {
+  const raw = await env.KROGER_KV.get(queryVectorCacheKey(q));
+  if (raw === null) return null;
+  try {
+    const v: unknown = JSON.parse(raw);
+    if (Array.isArray(v) && v.length === EMBED_DIM && v.every((n) => typeof n === "number")) {
+      return v as number[];
+    }
+  } catch {
+    // fall through to a miss
+  }
+  return null;
+}
+
+/** Write-through a freshly embedded query vector under the model+query key, with a TTL. */
+async function putCachedQueryVector(env: Env, q: string, vec: number[]): Promise<void> {
+  await env.KROGER_KV.put(queryVectorCacheKey(q), JSON.stringify(vec), {
+    expirationTtl: QVEC_TTL_SECONDS,
+  });
+}
+
+/** Resolve the query's embedding: a cache hit skips Workers AI entirely; a miss embeds the
+ *  NORMALIZED query (matching the cache key) and write-through caches it (best-effort — a
+ *  cache write failure must not fail the search). */
+async function resolveQueryVector(env: Env, q: string): Promise<number[]> {
+  const cached = await getCachedQueryVector(env, q);
+  if (cached !== null) return cached;
+  const vec = await embedText(env, normalizeQuery(q));
+  await putCachedQueryVector(env, q, vec).catch(() => {});
+  return vec;
+}
+
+/** The search results page: the prefilled form, an "N results" heading (or a clean empty
+ *  state), and the shared recipe list. Always 200 — "no matches" is a normal outcome. */
+function searchResultsPage(q: string, results: CookbookHit[]): Response {
+  const header = `<nav><a href="/cookbook">← All recipes</a></nav>
+<h1>Cookbook</h1>
+${searchForm(q)}`;
+  const body =
+    results.length > 0
+      ? `${header}
+<p class="meta">${results.length} result${results.length === 1 ? "" : "s"} for "${esc(q)}"</p>
+<ul class="recipes">${results.map(recipeListItem).join("\n")}</ul>`
+      : `${header}
+<p class="meta">No recipes match "${esc(q)}".</p>`;
+  return page(`Search · ${q}`, body);
+}
+
 /**
- * Handle a `/cookbook` request. `/cookbook` lists the corpus from the D1 index;
- * `/cookbook/<slug>` renders one recipe's R2 body. Open + read-only. The render path can
- * throw structured `ToolError`s (R2 down, D1 down, malformed YAML in a hand-edited
- * recipe), so map them to a graceful 404/503 rather than a 500 — there is no `runTool`
- * boundary on this open HTML surface.
+ * Render hybrid search results for a non-empty `q`. The SUBSTRING tier (title+tags, the
+ * same match `search_recipes` membership runs — `owned: []`, so nothing is gated on this
+ * anonymous surface) is always computed. The SEMANTIC tier is best-effort and NEVER
+ * load-bearing: any failure loading the embeddings or embedding the query (Workers AI
+ * down, empty embed index) disables it and the substring results render alone. The index
+ * load itself can still throw → the caller maps it to a 503, exactly like the index page.
+ */
+async function renderSearch(env: Env, q: string): Promise<Response> {
+  const index = await loadRecipeIndex(env);
+  const substring: CookbookHit[] = filterRecipes(index, { query: q }).map((r) =>
+    toHit(r.frontmatter),
+  );
+
+  let queryVec: number[] | null = null;
+  let candidates: EmbeddedCandidate[] = [];
+  try {
+    const embeddings = await loadRecipeEmbeddings(env);
+    for (const r of Object.values(index)) {
+      const vec = embeddings.get(String(r.slug));
+      if (vec) candidates.push({ ...toHit(r), embedding: vec });
+    }
+    // Embed only when there is something to rank — skips the Workers AI call (and the
+    // cache write) when no embedded recipe survived into the current index.
+    if (candidates.length > 0) {
+      queryVec = await resolveQueryVector(env, q);
+    }
+  } catch {
+    // Semantic tier unavailable — fall back to substring-only (graceful degradation).
+    queryVec = null;
+    candidates = [];
+  }
+
+  const results = mergeCookbookResults(
+    substring,
+    candidates,
+    queryVec,
+    DEFAULT_SIMILARITY_FLOOR,
+    COOKBOOK_K,
+  );
+  return searchResultsPage(q, results);
+}
+
+/**
+ * Handle a `/cookbook` request. `/cookbook` lists the corpus from the D1 index (or, with a
+ * `?q=`, renders hybrid search results); `/cookbook/<slug>` renders one recipe's R2 body.
+ * Open + read-only. The render path can throw structured `ToolError`s (R2 down, D1 down,
+ * malformed YAML in a hand-edited recipe), so map them to a graceful 404/503 rather than a
+ * 500 — there is no `runTool` boundary on this open HTML surface.
  */
 export async function handleCookbook(request: Request, env: Env): Promise<Response> {
   if (request.method !== "GET" && request.method !== "HEAD") {
     return new Response("Method not allowed", { status: 405 });
   }
-  const { pathname } = new URL(request.url);
+  const url = new URL(request.url);
+  const { pathname } = url;
   try {
-    if (pathname === "/cookbook" || pathname === "/cookbook/") return await renderIndex(env);
+    if (pathname === "/cookbook" || pathname === "/cookbook/") {
+      const q = (url.searchParams.get("q") ?? "").trim();
+      return q ? await renderSearch(env, q) : await renderIndex(env);
+    }
     const m = pathname.match(/^\/cookbook\/([^/]+)\/?$/);
     if (m) {
       const slug = decodeURIComponent(m[1]);
