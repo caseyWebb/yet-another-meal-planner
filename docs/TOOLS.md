@@ -557,12 +557,12 @@ Return the recipes the **background discovery sweep imported for the caller** si
 
 ### `read_discovery_errors()`
 
-List the discovery candidates the background sweep **parked** — candidates it couldn't classify into a contract-valid recipe after its corrective retries (so they were never imported), held for an operator/author to look at. **Shared** across the group, read-only; the discovery analog of `read_reconcile_errors`.
+List the discovery candidates the background sweep **parked or failed** — a **content park** (`outcome` `error`: a candidate it couldn't reach or classify into a contract-valid recipe after its corrective retries, so it was never imported) or an **infrastructure failure** (`outcome` `failed`: a candidate dropped by a transient env.AI/D1 error — a subrequest-limit hit, an outage), held for an operator/author to look at. **Shared** across the group, read-only; the discovery analog of `read_reconcile_errors`.
 
 **Returns:**
-- `{ errors: [{ url, title, source, outcome, slug, detail, created_at }] }` — one entry per parked candidate (`outcome` is `error`; `slug` is null for a parked candidate); `source` is the feed name / sender address, `detail` the failure reason (e.g. the validator's complaints or `unreachable`). An **empty list** means the sweep is importing cleanly.
+- `{ errors: [{ url, title, source, outcome, slug, detail, created_at }] }` — one entry per parked/failed candidate (`outcome` is `error` or `failed`; `slug` is null); `source` is the feed name / sender address, `detail` the reason (e.g. the validator's complaints, `unreachable`, or the env.AI error). An **empty list** means the sweep is importing cleanly. A standing `failed` row also degrades the `discovery-sweep` health record (`/health`); a content `error` does not.
 
-**Notes:** This is the `outcome = 'error'` subset of the sweep's `discovery_log` (see `docs/SCHEMAS.md` → `discovery_log`). The full per-candidate outcome log (every outcome, not just errors) is the operator's **Logs › Discovery** admin view, not an agent tool.
+**Notes:** This is the `outcome IN ('error', 'failed')` subset of the sweep's `discovery_log` (see `docs/SCHEMAS.md` → `discovery_log`). The full per-candidate outcome log (every outcome, not just these) is the operator's **Logs › Discovery** admin view, not an agent tool.
 
 ### `reject_discovery(url, reason?)`
 

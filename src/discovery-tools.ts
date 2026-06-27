@@ -227,7 +227,7 @@ export function registerDiscoveryTools(
     "read_discovery_errors",
     {
       description:
-        "Read the SHARED discovery-sweep error surface: candidates the background sweep could not classify into a valid recipe after retries, parked for an operator/author to look at (mirrors read_reconcile_errors). Each carries { url, title, source, outcome, slug, detail, created_at } (outcome is 'error'; detail holds the validation failure). An empty list means the sweep is importing cleanly. Read-only; does not retry or import.",
+        "Read the SHARED discovery-sweep error surface: candidates the background sweep parked or failed, held for an operator/author to look at (mirrors read_reconcile_errors). Each carries { url, title, source, outcome, slug, detail, created_at }. outcome 'error' is a content park (could not reach or classify a candidate into a valid recipe after retries; detail holds the validation/fetch failure); outcome 'failed' is an infrastructure failure (a transient env.AI/D1 error such as a subrequest-limit hit; detail holds the error), which also degrades the discovery-sweep health record until it clears. An empty list means the sweep is importing cleanly. Read-only; does not retry or import.",
       inputSchema: {},
     },
     () => runTool(async () => ({ errors: await readDiscoveryErrors(env) })),
