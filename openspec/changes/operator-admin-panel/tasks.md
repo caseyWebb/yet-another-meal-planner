@@ -5,46 +5,56 @@
 > purpose** — it must follow a deployed, Access-configured, end-to-end-verified
 > panel, or there would be no way to onboard during the gap.
 
+> **Status (apply session):** groups 1–6 implemented and verified locally
+> (`typecheck`, full `vitest`, `test:tooling`, `openspec validate --strict`, and a
+> `wrangler deploy --dry-run` confirming the `assets` + `run_worker_first` config).
+> **Two items are blocked by the sandbox, not by code:**
+> (a) the committed `admin/dist/` bundle (3.3) and `build:admin --check` (8.1) need
+> Elm's package registry (`package.elm-lang.org`), which the sandbox network policy
+> blocks — run `aubr build:admin` in CI / a connected dev box; (b) group 7 + the
+> post-deploy checks (8.2 full run, 8.3) are gated on a real deploy + Cloudflare
+> Access setup.
+
 ## 1. Access gate (Worker)
-- [ ] 1.1 Add `jose` (Web-Crypto build) to `package.json`.
-- [ ] 1.2 Add `requireAccess(request, env, expectedAud)` (in `src/admin.ts`): fetch + cache the team JWKS in `KROGER_KV` (short TTL, re-fetch on unknown `kid`), verify the `Cf-Access-Jwt-Assertion` signature + `aud` + issuer, return the verified claims or a `403`; small clock-skew leeway; fail closed on any error.
-- [ ] 1.3 `src/env.ts`: drop `HEALTH_TOKEN`; add operator-owned vars `ACCESS_TEAM_DOMAIN`, `ACCESS_AUD` (non-secret identifiers, documented like `GITHUB_APP_ID`).
-- [ ] 1.4 Opt-in / fails-closed: `/admin*` responds `404` when `ACCESS_TEAM_DOMAIN`/`ACCESS_AUD` are unset; `403` when set but the assertion is missing/invalid.
-- [ ] 1.5 Dev-only bypass: honor `ADMIN_DEV_BYPASS=1` (gitignored `.dev.vars`) **only** when the Access vars are absent, so `wrangler dev` can serve the panel locally and the bypass can't engage in a configured deployment. Update `.dev.vars.example`.
+- [x] 1.1 `jose` (Web-Crypto build) is a dependency (already in `package.json`).
+- [x] 1.2 Add `requireAccess(request, env, getKeySet?)` (in `src/admin.ts`): cache the team JWKS per team domain (jose `createRemoteJWKSet`), verify the `Cf-Access-Jwt-Assertion` signature + `aud` + issuer with a 5s clock tolerance, return `ok`/`disabled`/`denied`; fail closed on any error.
+- [x] 1.3 `src/env.ts`: drop `HEALTH_TOKEN`; add operator-owned vars `ACCESS_TEAM_DOMAIN`, `ACCESS_AUD` (+ the `ADMIN_DEV_BYPASS` dev escape and the `ASSETS` Fetcher binding).
+- [x] 1.4 Opt-in / fails-closed: `/admin*` is `404` when the Access vars are unset; `403` when set but the assertion is missing/invalid.
+- [x] 1.5 Dev-only bypass: honor `ADMIN_DEV_BYPASS=1` only when the Access vars are absent; documented in `.dev.vars.example`.
 
 ## 2. Admin API (Worker)
-- [ ] 2.1 `GET /admin/api/tenants` — list canonical ids from `tenant:*` (operational only; no domain data).
-- [ ] 2.2 `POST /admin/api/tenants` `{username, invite_code?}` — onboard: canonicalize, generate a code when absent, write `tenant:<id>` + `invite:<code> → <id>`, return `{username, invite_code, connector_url}` with `connector_url = ${new URL(request.url).origin}/mcp`. Never log the code.
-- [ ] 2.3 `POST /admin/api/tenants/:id/rotate` — mint a new invite mapping, delete prior `invite:* → id` mappings (located by scanning `invite:*`), leave the allowlist entry + per-tenant data intact.
-- [ ] 2.4 `DELETE /admin/api/tenants/:id` — revoke: delete `tenant:<id>`, delete every `invite:* → id` (by scan), delete `kroger:refresh:<id>`, and purge per-tenant D1 (every tenant-scoped table + attributed notes) in one `db.batch` through `src/db.ts`.
-- [ ] 2.5 Centralize the per-tenant table list in one exported constant (reused by revoke) so a future table can't silently escape the purge; structured errors throughout (no throws across the handler boundary).
-- [ ] 2.6 `test/admin.test.ts` — onboard writes both keys + returns origin-derived connector URL; rotate replaces the code and invalidates the old; revoke clears KV (allowlist + all matching invites + Kroger token) and batches the D1 deletes; `requireAccess` admits a valid assertion and rejects missing/bad-aud/bad-sig; `404` when unconfigured.
+- [x] 2.1 `GET /admin/api/tenants` — list canonical ids from `tenant:*` (operational only).
+- [x] 2.2 `POST /admin/api/tenants` `{username, invite_code?}` — onboard; `connector_url = ${origin}/mcp`. Never logs the code.
+- [x] 2.3 `POST /admin/api/tenants/:id/rotate` — mint a new invite, delete prior `invite:* → id` by scan; allowlist + data untouched.
+- [x] 2.4 `DELETE /admin/api/tenants/:id` — revoke: delete `tenant:<id>` + every `invite:* → id` + `kroger:refresh:<id>` + per-tenant D1 (every tenant-scoped table + attributed notes) in one `db.batch`.
+- [x] 2.5 Centralize the per-tenant table list (`TENANT_TABLES`/`AUTHOR_TABLES`) so a future table can't escape the purge; structured errors across the handler boundary.
+- [x] 2.6 `test/admin.test.ts` — onboard/list/rotate/revoke + `requireAccess` (disabled/dev/denied) + `handleAdmin` gate + origin-derived connector URL (15 tests, green).
 
 ## 3. Admin SPA (Elm) + build
-- [ ] 3.1 Add the `admin/` Elm source tree: `admin/elm.json`, `admin/src/Main.elm` (list / onboard / revoke / rotate against `/admin/api/*`; show the invite code + connector URL once), `admin/index.html`.
-- [ ] 3.2 Add `scripts/build-admin.mjs` — deterministic, `--check` validate-only mode (mirrors `build-plugin.mjs`): runs `elm make`, copies `index.html`, writes a committed `admin/dist/`. Wire an `aubr` script (e.g. `build:admin`).
-- [ ] 3.3 Commit `admin/dist/**`; gitignore the source map. CI runs `build-admin --check` to catch drift (same gate style as the plugin build).
+- [x] 3.1 `admin/` Elm source: `elm.json`, `src/Main.elm` (list / onboard / revoke / rotate; show the code once), `index.html`.
+- [x] 3.2 `scripts/build-admin.mjs` — deterministic, `--check` mode (mirrors `build-plugin.mjs`); `build:admin` npm script; outputs `admin/dist/admin/{elm.js,index.html}`.
+- [ ] 3.3 **(blocked: Elm registry)** Commit `admin/dist/**` (gitignore re-include added; Elm cache ignored). Run `aubr build:admin` where `package.elm-lang.org` is reachable, then commit the bundle.
 
 ## 4. wrangler + config merge
-- [ ] 4.1 `wrangler.jsonc`: add the `assets` binding (directory `admin/dist`, bound) and set `workers_dev: false`. Route `/admin/api/*` worker-first so the API reaches the handler rather than a static 404 (`run_worker_first` glob or the version's equivalent — confirm against the deployed wrangler).
-- [ ] 4.2 `scripts/merge-wrangler-config.mjs`: add `assets` to the code-level allowlist so it survives the operator merge (the silent-drop trap). Add a merge test asserting `assets` is present in the merged output.
+- [x] 4.1 `wrangler.jsonc`: `assets` binding (`directory: ./admin/dist`, `run_worker_first: ["/admin","/admin/*"]`) + `workers_dev: false`. Confirmed valid via `wrangler deploy --dry-run`.
+- [x] 4.2 `scripts/merge-wrangler-config.mjs`: `assets` propagates verbatim from code (like `ai`); merge test asserts it survives + is in the curated key set.
 
 ## 5. Open `/health`, drop `HEALTH_TOKEN`
-- [ ] 5.1 `src/health.ts`: remove the `HEALTH_TOKEN` branches; serve the aggregate payload unauthenticated; coarsen the D1 probe to a boolean (drop the raw `storage_error` string from the public payload).
-- [ ] 5.2 `src/index.ts`: route `/admin*` through `requireAccess`; leave `/health` open. Update `test/` for the open endpoint + the coarsened `d1` field.
+- [x] 5.1 `src/health.ts`: removed the token branches; serve the aggregate payload unauthenticated; coarsen the D1 probe to a boolean (no raw `storage_error` string).
+- [x] 5.2 `src/index.ts`: route `/admin*` through `handleAdmin`; `/health` open (`handleHealthRequest(env)`); `test/health.test.ts` updated for the open + coarsened endpoint.
 
 ## 6. Docs + specs lockstep
-- [ ] 6.1 `docs/ARCHITECTURE.md`: add the admin as the 4th no-tenant surface (cron / email / health / admin); record the Access-gates-`/admin`-only posture and the open-`/health` decision; note the `assets` merge-allowlist entry.
-- [ ] 6.2 `docs/SELF_HOSTING.md`: replace the "run the Onboard/Revoke Action" flow with "open `/admin`"; add the one-time Cloudflare Access setup (an app scoped to `/admin*` only — **never the hostname root**, or it gates `/mcp`), the `ACCESS_*` vars, and `workers_dev:false`; update the `/health` section (open + tenant-clean; restrict at the edge if desired). Soften the "why the data repo is private" framing (blocker removed; full public flip is a later change).
-- [ ] 6.3 Update the surface/route inventory wherever the public fetch routes are enumerated.
+- [x] 6.1 `docs/ARCHITECTURE.md`: `/health` open + the new "Operator admin surface" (4th no-tenant surface, Access posture, `assets` allowlist).
+- [x] 6.2 `docs/SELF_HOSTING.md`: onboarding via `/admin` + the one-time Cloudflare Access setup (`/admin*` scope only), the `ACCESS_*` vars, `/health` open, the security-summary reframe.
+- [x] 6.3 `docs/SCHEMAS.md`: `/health` (open, coarsened) + the `/admin/api/*` surface; `src/index.ts` route comment lists `/admin`.
 
 ## 7. Retire the Actions-based flow (LAST — after 1–6 are deployed + verified)
-- [ ] 7.1 Code repo: delete `.github/workflows/data-onboard.yml` and `.github/workflows/data-revoke.yml`.
-- [ ] 7.2 Data repo (`groceries-agent-data`): delete the `onboard.yml` / `revoke.yml` callers.
-- [ ] 7.3 Template repo (`groceries-agent-data-template`): delete the `onboard.yml` / `revoke.yml` callers and update any template README referencing them.
+- [ ] 7.1 **(deploy-gated)** Code repo: delete `.github/workflows/data-onboard.yml` and `.github/workflows/data-revoke.yml`.
+- [ ] 7.2 **(deploy-gated)** Data repo (`groceries-agent-data`): delete the `onboard.yml` / `revoke.yml` callers.
+- [ ] 7.3 **(deploy-gated)** Template repo (`groceries-agent-data-template`): delete the callers; clean the SELF_HOSTING control-plane workflow table + the lines 11/37–48 "private repo keeps invite codes secret" framing.
 
 ## 8. Verify
-- [ ] 8.1 `aubr typecheck`, `aubr test`, `aubr test:tooling`, `aubr build:admin --check` all green.
-- [ ] 8.2 Local: `wrangler dev` with `ADMIN_DEV_BYPASS=1` — onboard a test member, confirm the code shows once and `tenant:*`/`invite:*` are written; rotate; revoke and confirm the KV keys + local D1 rows are gone; `/health` answers with no token and no raw `d1.error`.
-- [ ] 8.3 Post-deploy: with the Access app live, confirm `/admin` requires an Access session, `*.workers.dev` is closed (`workers_dev:false`), and `/mcp` / `/authorize` are unaffected. Onboard / rotate / revoke a real member end-to-end before doing group 7.
-- [ ] 8.4 `openspec validate operator-admin-panel --strict` passes.
+- [x] 8.1 `typecheck`, `vitest` (659 pass), `test:tooling` (117 pass) green. **`build:admin --check` blocked** on Elm registry access (run in CI/dev).
+- [ ] 8.2 **(needs the built bundle)** Local `wrangler dev` with `ADMIN_DEV_BYPASS=1`: onboard/rotate/revoke a test member, confirm KV + local D1 effects and the code shows once; `/health` answers with no token and no raw `d1.error`. (Unit-tested now; full local run pending the dist build.)
+- [ ] 8.3 **(deploy-gated)** Post-deploy: `/admin` requires an Access session, `*.workers.dev` is closed, `/mcp` unaffected; onboard/rotate/revoke a real member end-to-end before group 7.
+- [x] 8.4 `openspec validate operator-admin-panel --strict` passes.

@@ -117,48 +117,41 @@ function env(over: Partial<Env>): Env {
 }
 
 describe("handleHealthRequest", () => {
-  it("404s when HEALTH_TOKEN is unset (opt-in)", async () => {
-    const res = await handleHealthRequest(new Request("https://x/health"), env({}));
-    expect(res.status).toBe(404);
-  });
-
-  it("401s on a missing or wrong token", async () => {
-    const e = env({ HEALTH_TOKEN: "secret" });
-    expect((await handleHealthRequest(new Request("https://x/health"), e)).status).toBe(401);
-    expect((await handleHealthRequest(new Request("https://x/health?token=nope"), e)).status).toBe(401);
-  });
-
-  it("200s with the right token (query or bearer) and reports jobs", async () => {
+  it("is open (no token gate) and reports each registered job", async () => {
     const kv = fakeKv();
     await writeJobHealth(kv, "flyer-warm", rec(true, { action: "completed" }));
-    const e = { KROGER_KV: kv, DB: fakeD1(), HEALTH_TOKEN: "secret" } as unknown as Env;
-
-    const viaQuery = await handleHealthRequest(new Request("https://x/health?token=secret"), e);
-    expect(viaQuery.status).toBe(200);
-    const body = (await viaQuery.json()) as { ok: boolean; jobs: { name: string }[] };
+    const e = { KROGER_KV: kv, DB: fakeD1() } as unknown as Env;
+    const res = await handleHealthRequest(e);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { ok: boolean; jobs: { name: string }[] };
     expect(body.ok).toBe(true);
     expect(body.jobs.map((j) => j.name)).toEqual(["flyer-warm", "recipe-embed", "email"]);
-
-    const viaHeader = await handleHealthRequest(
-      new Request("https://x/health", { headers: { authorization: "Bearer secret" } }),
-      e,
-    );
-    expect(viaHeader.status).toBe(200);
   });
 
   it("503s (so plain HTTP monitors trip) when a job is failing", async () => {
     const kv = fakeKv();
     await writeJobHealth(kv, "flyer-warm", rec(false, { error: "boom" }));
-    const e = { KROGER_KV: kv, DB: fakeD1(), HEALTH_TOKEN: "secret" } as unknown as Env;
-    const res = await handleHealthRequest(new Request("https://x/health?token=secret"), e);
+    const e = { KROGER_KV: kv, DB: fakeD1() } as unknown as Env;
+    const res = await handleHealthRequest(e);
     expect(res.status).toBe(503);
+  });
+
+  it("coarsens the D1 probe to a boolean — no raw error string in the public payload", async () => {
+    const kv = fakeKv();
+    await writeJobHealth(kv, "flyer-warm", rec(true));
+    const e = { KROGER_KV: kv, DB: fakeD1(false) } as unknown as Env;
+    const res = await handleHealthRequest(e);
+    expect(res.status).toBe(503);
+    const body = (await res.json()) as { d1: { ok: boolean; error?: string } };
+    expect(body.d1.ok).toBe(false);
+    expect(body.d1.error).toBeUndefined();
   });
 
   it("exposes only aggregate fields (no per-tenant data)", async () => {
     const kv = fakeKv();
     await writeJobHealth(kv, "email", rec(true, { accepted: true, reason: "sender_dkim", written: true }));
-    const e = { KROGER_KV: kv, DB: fakeD1(), HEALTH_TOKEN: "secret" } as unknown as Env;
-    const res = await handleHealthRequest(new Request("https://x/health?token=secret"), e);
+    const e = { KROGER_KV: kv, DB: fakeD1() } as unknown as Env;
+    const res = await handleHealthRequest(e);
     const text = await res.text();
     // The summary we stored is gate-outcome only; no address/tenant id should appear.
     expect(text).not.toMatch(/@/);

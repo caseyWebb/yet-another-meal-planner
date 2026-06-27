@@ -44,12 +44,24 @@ export interface Env {
   /** Kroger `authorization_code` app client secret. Secret, OPTIONAL (falls back to KROGER_CLIENT_SECRET). */
   KROGER_OAUTH_CLIENT_SECRET?: string;
 
-  // --- Observability (background-job-health). All OPTIONAL secrets. ---
+  // --- Operator admin surface (operator-admin). OPTIONAL, non-secret identifiers. ---
   /**
-   * Gate for the `/health` endpoint. When set, `/health` requires this token (query
-   * `?token=` or `Authorization: Bearer`); when UNSET, `/health` is disabled (404).
+   * Cloudflare Access team domain (e.g. `myteam.cloudflareaccess.com`) — the JWKS
+   * source for verifying the admin surface's `Cf-Access-Jwt-Assertion`. With this
+   * and `ACCESS_AUD` set, `/admin*` requires a valid Access session; UNSET disables
+   * the admin surface (404). Non-secret (an identifier; the gate is the Access app).
    */
-  HEALTH_TOKEN?: string;
+  ACCESS_TEAM_DOMAIN?: string;
+  /** Cloudflare Access application audience (AUD) tag the admin JWT must carry. Non-secret. */
+  ACCESS_AUD?: string;
+  /**
+   * Local-dev escape: when `1` AND the Access vars are unset, `/admin*` is served
+   * without verification so `wrangler dev` can run the panel. Never set in a
+   * deployed Worker — once Access is configured it cannot engage.
+   */
+  ADMIN_DEV_BYPASS?: string;
+
+  // --- Observability (background-job-health). All OPTIONAL secrets. ---
   /** ntfy topic URL for the optional Worker-side failure push (e.g. `https://ntfy.sh/<topic>`). Unset → no push. */
   NTFY_URL?: string;
   /** Optional bearer token for a protected ntfy topic. */
@@ -96,6 +108,15 @@ export interface Env {
    * path (the Node build can't use this binding); see the semantic-recipe-search design.
    */
   AI: Ai;
+
+  // --- Static assets (operator-admin) ---
+  /**
+   * Workers Static Assets binding serving the admin SPA committed under `admin/dist/`.
+   * `handleAdmin` serves the shell/bundle via `env.ASSETS.fetch()` after the Access
+   * gate, so the static surface is gated too. Code-level binding (no operator id);
+   * propagated by the deploy merge (`scripts/merge-wrangler-config.mjs` allowlist).
+   */
+  ASSETS: Fetcher;
 
   // --- Injected by @cloudflare/workers-oauth-provider ---
   /** Provider helpers (`parseAuthRequest`, `lookupClient`, `completeAuthorization`, …). */

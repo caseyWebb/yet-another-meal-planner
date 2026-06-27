@@ -17,6 +17,7 @@ import { handleInboundEmail, rejectReasonFor, type InboundMessage } from "./emai
 import { buildWarmDeps, runWarmJob } from "./flyer-warm.js";
 import { buildEmbedDeps, runEmbedJob } from "./recipe-embeddings.js";
 import { handleHealthRequest, writeJobHealth, notifyFailure } from "./health.js";
+import { handleAdmin } from "./admin.js";
 import type { KvStore } from "./kroger-user.js";
 
 /**
@@ -42,7 +43,8 @@ const apiHandler = {
 /**
  * Everything that isn't the gated MCP API. The provider itself serves `/token`,
  * `/register`, and the discovery metadata; we own the invite-code `/authorize`
- * UI, the Kroger `/oauth/*` callback (its own PKCE flow), and a health line.
+ * UI, the Kroger `/oauth/*` callback (its own PKCE flow), the Cloudflare
+ * Access-gated `/admin` operator surface, and the open `/health` line.
  */
 const defaultHandler = {
   async fetch(request: Request, env: Env): Promise<Response> {
@@ -54,7 +56,8 @@ const defaultHandler = {
     }
     if (url.pathname === "/authorize") return handleAuthorize(request, env);
     if (url.pathname.startsWith("/oauth/")) return handleOAuth(env, url);
-    if (url.pathname === "/health") return handleHealthRequest(request, env);
+    if (url.pathname === "/admin" || url.pathname.startsWith("/admin/")) return handleAdmin(request, env);
+    if (url.pathname === "/health") return handleHealthRequest(env);
     return new Response("Not found", { status: 404 });
   },
 };

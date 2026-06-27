@@ -32,3 +32,13 @@ KROGER_CLIENT_SECRET=""
 # The `AI` binding needs no secret here: in `wrangler dev` it proxies to the real
 # Workers AI API using your wrangler login (or CLOUDFLARE_API_TOKEN in the env).
 # Nothing to set — listed only so the binding's dev requirement is discoverable.
+
+# --- Operator admin panel (operator-admin) ---
+# In production, /admin is gated by Cloudflare Access; set the team domain + the
+# Access application's AUD tag (both non-secret identifiers) to enable + verify it.
+# Unset → /admin is 404 (opt-in, fails closed).
+# ACCESS_TEAM_DOMAIN="yourteam.cloudflareaccess.com"
+# ACCESS_AUD="<access-application-aud-tag>"
+# Local dev ONLY: serve /admin without Access verification so `wrangler dev` can run
+# the panel. Honored only when the ACCESS_* vars above are unset; never set in prod.
+ADMIN_DEV_BYPASS="1"

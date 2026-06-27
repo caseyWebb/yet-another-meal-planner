@@ -432,7 +432,16 @@ Derived, time-bound state written by the flyer warm into the `KROGER_KV` namespa
 Derived operational state for the `/health` endpoint (background-job-health). Each background process writes one record per run; `/health` aggregates them. Tenant-data-free by construction — counts, timestamps, and error classes only.
 
 - `health:job:<name>` → `{ ok, last_run_at, summary }` — one per background job (`health:job:flyer-warm`, `health:job:email`). `ok` is the last run's success; `last_run_at` is epoch ms; `summary` is small tenant-clean detail (the warm carries `{ action, done, sweep_started_at, sweep_completed_at, errors }`; the email handler carries the gate outcome `{ accepted, reason, written }`).
-- `GET /health?token=<HEALTH_TOKEN>` → `{ ok, generated_at, jobs: [{ name, ok, last_run_at, never_run?, summary? }] }` — token-gated (404 when `HEALTH_TOKEN` unset, 401 on a wrong token), aggregate-only. Overall `ok` is false only when a job is *explicitly* failing; a never-run job is reported with `ok: null, never_run: true`. HTTP status is 200 when ok, 503 when failing (so plain HTTP-status monitors trip).
+- `GET /health` → `{ ok, generated_at, jobs: [{ name, ok, last_run_at, never_run?, summary? }], d1: { ok } }` — **open and tenant-clean** (no token; the D1 probe is coarsened to a boolean so no raw `storage_error` string is exposed). Aggregate-only. Overall `ok` is false when a job is *explicitly* failing or the D1 probe failed; a never-run job is reported with `ok: null, never_run: true`. HTTP status is 200 when ok, 503 when failing (so plain HTTP-status monitors trip). Restricting reads is an edge concern (Cloudflare Access / WAF), not Worker config.
+
+## Operator admin surface (HTTP, not a repo file)
+
+The operator admin panel (operator-admin) is a static Elm SPA at `/admin` plus a same-origin JSON API, gated by **Cloudflare Access** on `/admin*` and verified in-Worker (`Cf-Access-Jwt-Assertion`). Opt-in: 404 when `ACCESS_TEAM_DOMAIN`/`ACCESS_AUD` are unset. No per-tenant domain data crosses it — only the allowlist/invite operations. The minted invite code is returned **once** and never logged.
+
+- `GET /admin/api/tenants` → `{ tenants: string[] }` — the allowlisted member ids (canonical lowercase, sorted).
+- `POST /admin/api/tenants` `{ username, invite_code? }` → `{ username, invite_code, connector_url }` — onboard; writes `tenant:<id>` + `invite:<code>` (generates the code when omitted). `connector_url` is `<origin>/mcp`.
+- `POST /admin/api/tenants/<id>/rotate` → `{ username, invite_code, connector_url }` — mint a new code, delete the member's prior `invite:*` mapping(s); allowlist + per-tenant data untouched. Errors `not_found` if the member is absent.
+- `DELETE /admin/api/tenants/<id>` → `{ username, revoked: true, invites_removed }` — remove `tenant:<id>` + every `invite:* → id` + `kroger:refresh:<id>`, and purge the per-tenant D1 tables + attributed notes through `src/db.ts`. The member's issued token stops resolving (allowlist re-check fails).
 
 ## feeds (shared corpus, D1 `feeds` table)
 
