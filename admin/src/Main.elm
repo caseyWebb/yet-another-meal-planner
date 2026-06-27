@@ -3,7 +3,7 @@ module Main exposing (main)
 {-| The grocery-agent operator admin shell (operator-admin capability).
 
 A client-routed `Browser.application` served under `/admin` behind Cloudflare Access. The
-panel is split into four top-level areas so it grows by adding routed pages, not by stacking
+panel is split into top-level areas so it grows by adding routed pages, not by stacking
 cards on one view:
 
   - **Status** — the service-health home view (`/health`: jobs, D1, admin-gate posture), in
@@ -13,6 +13,9 @@ cards on one view:
     `Dev.ToolConsole`.
   - **Logs** — operator-auditable activity logs (a left submenu of sources, master/detail), in
     `Logs`. The selected source rides the route (`/admin/logs/discovery`).
+  - **Config** — operator configuration, in `Config`.
+  - **Data** — the read-only data explorer over D1 and the R2 corpus (five entity views), in
+    `Data`. The selected recipe/member rides the route (`/admin/data/recipes/<slug>`).
 
 The current page **and its sub-model** are one `Page` union (a page owns its state), so
 being "on the Tools page holding Members' state" is unrepresentable. Navigation is by real
@@ -26,6 +29,7 @@ import Browser
 import Browser.Dom as Dom
 import Browser.Navigation as Nav
 import Config
+import Data
 import Dev.ToolConsole as ToolConsole
 import Html exposing (Html, a, button, div, h1, nav, section, text)
 import Html.Attributes exposing (class, classList, id)
@@ -90,6 +94,7 @@ type Page
     | ToolsPage ToolConsole.Model
     | LogsPage Logs.Model
     | ConfigPage Config.Model
+    | DataPage Data.Model
     | NotFoundPage
 
 
@@ -111,6 +116,7 @@ type Msg
     | ToolsMsg ToolConsole.Msg
     | LogsMsg Logs.Msg
     | ConfigMsg Config.Msg
+    | DataMsg Data.Msg
     | ScrollToSection DevSection
     | NoOp
 
@@ -168,6 +174,13 @@ update msg model =
             in
             ( { model | page = ConfigPage subModel2 }, Cmd.map ConfigMsg cmd )
 
+        ( DataMsg subMsg, DataPage subModel ) ->
+            let
+                ( subModel2, cmd ) =
+                    Data.update subMsg subModel
+            in
+            ( { model | page = DataPage subModel2 }, Cmd.map DataMsg cmd )
+
         -- A sub-message for a page we are no longer on (a late response): drop it.
         ( HealthMsg _, _ ) ->
             ( model, Cmd.none )
@@ -182,6 +195,9 @@ update msg model =
             ( model, Cmd.none )
 
         ( ConfigMsg _, _ ) ->
+            ( model, Cmd.none )
+
+        ( DataMsg _, _ ) ->
             ( model, Cmd.none )
 
 
@@ -214,6 +230,13 @@ stepTo route model =
 
         ( Route.Config, ConfigPage _ ) ->
             ( { model | route = route }, Cmd.none )
+
+        ( Route.Data dataRoute, DataPage subModel ) ->
+            let
+                ( subModel2, cmd ) =
+                    Data.goto dataRoute subModel
+            in
+            ( { model | route = route, page = DataPage subModel2 }, Cmd.map DataMsg cmd )
 
         _ ->
             enter route Nothing model
@@ -265,6 +288,13 @@ enter route actingAs model =
                     Config.init
             in
             ( { model | route = route, page = ConfigPage subModel }, Cmd.map ConfigMsg cmd )
+
+        Route.Data dataRoute ->
+            let
+                ( subModel, cmd ) =
+                    Data.init dataRoute
+            in
+            ( { model | route = route, page = DataPage subModel }, Cmd.map DataMsg cmd )
 
         Route.NotFound ->
             ( { model | route = route, page = NotFoundPage }, Cmd.none )
@@ -319,6 +349,9 @@ wrapClass route =
         Route.Config ->
             "wrap wrap-wide"
 
+        Route.Data _ ->
+            "wrap wrap-wide"
+
         _ ->
             "wrap"
 
@@ -331,6 +364,7 @@ viewNav route =
         , navLink "Dev · Tools" (Route.Tools Nothing) (isDev route)
         , navLink "Logs" (Route.Logs Nothing) (isLogs route)
         , navLink "Config" Route.Config (isConfig route)
+        , navLink "Data" (Route.Data (Route.DataRecipes Nothing)) (isData route)
         ]
 
 
@@ -389,6 +423,16 @@ isConfig route =
             False
 
 
+isData : Route -> Bool
+isData route =
+    case route of
+        Route.Data _ ->
+            True
+
+        _ ->
+            False
+
+
 viewPage : Model -> Html Msg
 viewPage model =
     case model.page of
@@ -412,6 +456,9 @@ viewPage model =
 
         ConfigPage subModel ->
             Html.map ConfigMsg (Config.view subModel)
+
+        DataPage subModel ->
+            Html.map DataMsg (Data.view subModel)
 
         NotFoundPage ->
             div [ class "card" ] [ text "Not found." ]

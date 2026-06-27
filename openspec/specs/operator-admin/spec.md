@@ -218,7 +218,7 @@ The tool console SHALL make the acting persona visible whenever a tool can be in
 
 ### Requirement: Admin panel is organized into top-level areas with client-side routing
 
-The admin SPA SHALL organize its surfaces into top-level areas — a **Status** area (the operator-facing background-job health view), a **Members** area (member management), a **Dev** area (the tool console and future developer surfaces), a **Logs** area (operator-auditable activity logs, organized by a left submenu of log sources; see "Logs area with a left submenu and a detail dialog"), and a **Config** area (operator-editable configuration; its first occupant is the discovery calibration console — see "Config area hosts the discovery calibration console") — navigable by client-side routing so each surface has its own URL and a new surface is added as its own routed module rather than another card on a single page. The panel's **home** route (`/admin`) SHALL be the Status view; member management SHALL be reached at its own route (`/admin/members`), the tool console under `/admin/dev`, the logs under `/admin/logs` (with the selected log source as a sub-route, e.g. `/admin/logs/discovery`), and configuration under `/admin/config`, not at the panel root. Navigating between surfaces SHALL update the browser URL, and a deep link or refresh to a surface's URL SHALL load that surface directly.
+The admin SPA SHALL organize its surfaces into top-level areas — a **Status** area (the operator-facing background-job health view), a **Members** area (member management), a **Dev** area (the tool console and future developer surfaces), a **Logs** area (operator-auditable activity logs, organized by a left submenu of log sources; see "Logs area with a left submenu and a detail dialog"), a **Config** area (operator-editable configuration; its first occupant is the discovery calibration console — see "Config area hosts the discovery calibration console"), and a **Data** area (the read-only data explorer over D1 and the R2 corpus — see the operator-data-explorer capability) — navigable by client-side routing so each surface has its own URL and a new surface is added as its own routed module rather than another card on a single page. The panel's **home** route (`/admin`) SHALL be the Status view; member management SHALL be reached at its own route (`/admin/members`), the tool console under `/admin/dev`, the logs under `/admin/logs` (with the selected log source as a sub-route, e.g. `/admin/logs/discovery`), configuration under `/admin/config`, and the data explorer under `/admin/data/*`, not at the panel root. Navigating between surfaces SHALL update the browser URL, and a deep link or refresh to a surface's URL SHALL load that surface directly.
 
 #### Scenario: Navigation updates the URL
 
@@ -249,6 +249,11 @@ The admin SPA SHALL organize its surfaces into top-level areas — a **Status** 
 
 - **WHEN** the operator opens `/admin/config` directly (or refreshes there)
 - **THEN** the Worker serves the SPA shell and the app routes to the Config area
+
+#### Scenario: Deep link to a data view
+
+- **WHEN** the operator opens a data-explorer route such as `/admin/data/recipes/<slug>` directly (or refreshes there)
+- **THEN** the Worker serves the SPA shell and the app routes to that data view
 
 ### Requirement: Status homepage surfaces service health
 
