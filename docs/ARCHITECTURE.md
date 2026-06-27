@@ -236,7 +236,7 @@ Ready-to-eat is per-tenant, in the D1 `ready_to_eat` table; the Worker reads eac
 
 **Eventual human-edit feedback** (replacing the old red CI). A malformed Obsidian/R2 edit can no longer fail a push — there is no push. Instead the projection **skips** the invalid recipe (it stays out of the index) and surfaces it four ways: the D1 `reconcile_errors` table, the `/health` `recipe-index` job's skipped count, an agent-readable `read_reconcile_errors` MCP tool, and an ntfy push for each **new** invalid recipe. This is the system's accepted eventual-consistency model: a bad edit degrades that one recipe's discoverability until corrected, never the whole index, and the author learns out-of-band rather than from a build log.
 
-The hosted **cookbook** moved off GitHub Pages onto the Worker (`src/cookbook.ts`, route `/cookbook`): the index lists from the D1 `recipes` table, each `/cookbook/<slug>` renders that recipe's R2 body, and `recipe_site_url` resolves `<origin>/cookbook`. Open + read-only, publishing only the shared objective corpus.
+The hosted **cookbook** is served by the Worker (`src/cookbook.ts`, route `/cookbook`): the index lists from the D1 `recipes` table, each `/cookbook/<slug>` renders that recipe's R2 body, and `recipe_site_url` resolves `<origin>/cookbook`. Open + read-only, publishing only the shared objective corpus.
 
 ## Migrations
 

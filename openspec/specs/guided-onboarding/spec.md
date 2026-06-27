@@ -130,17 +130,17 @@ After taste/diet/equipment capture, the onboarding skill SHALL treat the whole s
 
 ### Requirement: Hosted recipe site is the browse-everything surface
 
-Rather than dumping the entire shared corpus into chat, the onboarding skill SHALL point the member at the hosted recipe site to browse the full collection and pick anything to activate. It SHALL obtain the site URL at runtime by calling `recipe_site_url` (never a build-time-baked URL). When that tool reports `enabled: false`, the skill SHALL tell the member their operator needs to enable GitHub Pages on the data repo (a setup step, not a failure); when it reports `insufficient_permission`, the skill SHALL flag that the GitHub App needs `Pages: read`.
+Rather than dumping the entire shared corpus into chat, the onboarding skill SHALL point the member at the hosted cookbook to browse the full collection and pick anything to activate. It SHALL obtain the URL at runtime by calling `recipe_site_url` (never a build-time-baked URL). When that tool reports `enabled: false`, the skill SHALL surface the corpus another way (e.g. `search_recipes`) rather than presenting a broken link.
 
-#### Scenario: Skill points at the resolved site for the full corpus
+#### Scenario: Skill points at the resolved cookbook for the full corpus
 
 - **WHEN** the member wants to see everything available, not just the curated set
 - **THEN** the skill calls `recipe_site_url`, and on `enabled: true` gives the member the returned link to browse
 
-#### Scenario: Not-enabled is surfaced as a setup step
+#### Scenario: Not-enabled is surfaced gracefully
 
-- **WHEN** `recipe_site_url` returns `enabled: false` (or `insufficient_permission`)
-- **THEN** the skill tells the member their operator needs to enable GitHub Pages (or grant the App `Pages: read`), rather than presenting a broken link
+- **WHEN** `recipe_site_url` returns `enabled: false`
+- **THEN** the skill surfaces the corpus another way (e.g. `search_recipes`) rather than presenting a broken link
 
 ### Requirement: Thorough first-run inventory
 

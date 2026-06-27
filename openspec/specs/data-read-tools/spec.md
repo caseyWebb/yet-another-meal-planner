@@ -107,22 +107,17 @@ When the profile does not exist yet (a brand-new member with no D1 rows), the to
 
 ### Requirement: recipe_site_url resolves the hosted browse URL at runtime
 
-The system SHALL provide a `recipe_site_url` read tool that resolves the URL of the hosted recipe site (the static browse view of the shared corpus) from the data repo's **GitHub Pages** configuration, via the existing GitHub App installation token — so the agent can point a member at the full corpus without any build-time-baked URL. It SHALL return `{ url, enabled }`: `enabled: true` with the published `html_url` (honoring a configured custom domain) when Pages is enabled, and `enabled: false` with `url: null` when it is not (the GitHub Pages API returns 404). When the GitHub App lacks the `Pages: read` permission (403), the tool SHALL return a structured `insufficient_permission` error naming the missing permission, rather than throwing. The tool reads the **shared** data repo (Pages is a repo-level property), takes no parameters, and never writes.
+The system SHALL provide a `recipe_site_url` read tool that resolves the URL of the hosted cookbook (the browse view of the shared corpus), served by the grocery-mcp Worker itself at `<origin>/cookbook` — so the agent can point a member at the full corpus without any build-time-baked URL. It SHALL return `{ url, enabled }`: `enabled: true` with `<origin>/cookbook` when the request origin is resolvable, and `enabled: false` with `url: null` when it is not. The tool takes no parameters and never writes.
 
-#### Scenario: Returns the published URL when Pages is enabled
+#### Scenario: Returns the cookbook URL
 
-- **WHEN** `recipe_site_url` is called and the data repo has GitHub Pages enabled
-- **THEN** it returns `{ url: <published html_url>, enabled: true }`, reflecting a custom domain when one is configured
+- **WHEN** `recipe_site_url` is called and the request origin is resolvable
+- **THEN** it returns `{ url: "<origin>/cookbook", enabled: true }`
 
 #### Scenario: Reports not-enabled instead of failing
 
-- **WHEN** `recipe_site_url` is called and the data repo has no GitHub Pages site (404)
-- **THEN** it returns `{ url: null, enabled: false }`, so the agent can tell the member their operator needs to enable Pages
-
-#### Scenario: Missing Pages permission is a structured error
-
-- **WHEN** `recipe_site_url` is called but the GitHub App lacks the `Pages: read` permission (403)
-- **THEN** the tool returns a structured `insufficient_permission` error naming the missing permission, not an unhandled throw
+- **WHEN** `recipe_site_url` is called and the request origin is not resolvable
+- **THEN** it returns `{ url: null, enabled: false }`, so the agent can surface the corpus another way rather than presenting a broken link
 
 ### Requirement: get_weather_forecast returns a daily forecast with meal_vibes hints
 
