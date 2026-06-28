@@ -11,41 +11,64 @@ import {
   writeJobHealth,
   type JobHealth,
 } from "../src/health.js";
-import type { KvStore } from "../src/kroger-user.js";
 import type { Env } from "../src/env.js";
 
-// A fake D1 binding whose `SELECT 1` either succeeds or throws — enough for the probe,
-// which only ever issues `db(env).first("SELECT 1 AS ok")`. The default is reachable.
-function fakeD1(reachable = true): D1Database {
+// A fake D1 that backs the `job_health` table (upsert + read-all + read-by-name) and answers
+// the `SELECT 1 AS ok` probe. `reachable: false` throws on every statement — modeling D1 down,
+// so the probe fails AND the health-row read must degrade gracefully (not throw). Enough fidelity
+// to exercise health's D1 access without a live binding.
+function fakeHealthD1(opts: { reachable?: boolean } = {}): D1Database {
+  const reachable = opts.reachable ?? true;
+  const rows = new Map<string, { name: string; ok: number; last_run_at: number; summary: string }>();
+  const fail = () => {
+    throw new Error("D1_ERROR: no such database");
+  };
+  const run = (sql: string, binds: unknown[]) => {
+    if (!reachable) fail();
+    if (/INSERT INTO job_health/i.test(sql)) {
+      const [name, ok, last_run_at, summary] = binds as [string, number, number, string];
+      rows.set(name, { name, ok, last_run_at, summary });
+      return { meta: { changes: 1 } };
+    }
+    return { meta: { changes: 0 } };
+  };
+  const first = (sql: string, binds: unknown[]) => {
+    if (!reachable) fail();
+    if (/SELECT 1 AS ok/i.test(sql)) return { ok: 1 };
+    if (/FROM job_health WHERE name = \?1/i.test(sql)) return rows.get(binds[0] as string) ?? null;
+    return null;
+  };
+  const all = (sql: string) => {
+    if (!reachable) fail();
+    if (/FROM job_health/i.test(sql)) return { results: [...rows.values()] };
+    return { results: [] };
+  };
   return {
-    prepare() {
-      return {
-        bind() {
-          return this;
+    prepare(sql: string) {
+      let binds: unknown[] = [];
+      const stmt = {
+        bind(...v: unknown[]) {
+          binds = v;
+          return stmt;
         },
         async first() {
-          if (!reachable) throw new Error("D1_ERROR: no such database");
-          return { ok: 1 };
+          return first(sql, binds);
+        },
+        async all() {
+          return all(sql);
+        },
+        async run() {
+          return run(sql, binds);
         },
       };
+      return stmt as unknown as D1PreparedStatement;
     },
   } as unknown as D1Database;
 }
 
-function fakeKv(): KvStore & { store: Map<string, string> } {
-  const store = new Map<string, string>();
-  return {
-    store,
-    async get(key) {
-      return store.has(key) ? (store.get(key) as string) : null;
-    },
-    async put(key, value) {
-      store.set(key, value);
-    },
-    async delete(key) {
-      store.delete(key);
-    },
-  };
+/** A fresh env backed by a single reachable `job_health` D1 (write + read share it). */
+function healthEnv(over: Partial<Env> = {}): Env {
+  return { DB: fakeHealthD1(), ...over } as unknown as Env;
 }
 
 const rec = (ok: boolean, summary: Record<string, unknown> = {}): JobHealth => ({
@@ -55,51 +78,47 @@ const rec = (ok: boolean, summary: Record<string, unknown> = {}): JobHealth => (
 });
 
 describe("job health records", () => {
-  it("round-trips write/read", async () => {
-    const kv = fakeKv();
-    await writeJobHealth(kv, "flyer-warm", rec(true, { action: "completed" }));
-    expect(await readJobHealth(kv, "flyer-warm")).toEqual(rec(true, { action: "completed" }));
-    expect(await readJobHealth(kv, "missing")).toBeNull();
+  it("round-trips write/read through D1", async () => {
+    const env = healthEnv();
+    await writeJobHealth(env, "flyer-warm", rec(true, { action: "completed" }));
+    expect(await readJobHealth(env, "flyer-warm")).toEqual(rec(true, { action: "completed" }));
+    expect(await readJobHealth(env, "missing")).toBeNull();
   });
 });
 
-function healthEnv(d1: D1Database = fakeD1()): Env {
-  return { DB: d1 } as unknown as Env;
-}
-
 describe("buildHealthPayload", () => {
   it("marks a missing record never-run and does not let it flip overall ok", async () => {
-    const kv = fakeKv();
-    await writeJobHealth(kv, "flyer-warm", rec(true));
-    const p = await buildHealthPayload(healthEnv(), kv, ["flyer-warm", "email"]);
+    const env = healthEnv();
+    await writeJobHealth(env, "flyer-warm", rec(true));
+    const p = await buildHealthPayload(env, ["flyer-warm", "email"]);
     expect(p.ok).toBe(true);
     const email = p.jobs.find((j) => j.name === "email")!;
     expect(email).toMatchObject({ ok: null, last_run_at: null, never_run: true });
   });
 
   it("overall ok is false when a job is explicitly failing", async () => {
-    const kv = fakeKv();
-    await writeJobHealth(kv, "flyer-warm", rec(false, { error: "boom" }));
-    await writeJobHealth(kv, "email", rec(true));
-    const p = await buildHealthPayload(healthEnv(), kv, ["flyer-warm", "email"]);
+    const env = healthEnv();
+    await writeJobHealth(env, "flyer-warm", rec(false, { error: "boom" }));
+    await writeJobHealth(env, "email", rec(true));
+    const p = await buildHealthPayload(env, ["flyer-warm", "email"]);
     expect(p.ok).toBe(false);
   });
 
   it("includes a D1 probe row and reports it reachable", async () => {
-    const kv = fakeKv();
-    await writeJobHealth(kv, "flyer-warm", rec(true));
-    const p = await buildHealthPayload(healthEnv(), kv, ["flyer-warm"]);
+    const env = healthEnv();
+    await writeJobHealth(env, "flyer-warm", rec(true));
+    const p = await buildHealthPayload(env, ["flyer-warm"]);
     expect(p.d1).toEqual({ ok: true });
     expect(p.ok).toBe(true);
   });
 
-  it("overall ok is false (and d1 reports the error) when D1 is unreachable", async () => {
-    const kv = fakeKv();
-    await writeJobHealth(kv, "flyer-warm", rec(true));
-    const p = await buildHealthPayload(healthEnv(fakeD1(false)), kv, ["flyer-warm"]);
+  it("degrades gracefully when D1 is unreachable: still responds, jobs never-run, d1 down, no throw", async () => {
+    const env = { DB: fakeHealthD1({ reachable: false }) } as unknown as Env;
+    const p = await buildHealthPayload(env, ["flyer-warm", "email"]);
     expect(p.d1.ok).toBe(false);
     expect(p.d1.error).toMatch(/storage_error|D1/i);
     expect(p.ok).toBe(false);
+    expect(p.jobs.every((j) => j.never_run === true)).toBe(true);
   });
 });
 
@@ -109,22 +128,17 @@ describe("probeD1", () => {
   });
 
   it("maps an unreachable database to a structured ok:false (never throws)", async () => {
-    const status = await probeD1(healthEnv(fakeD1(false)));
+    const status = await probeD1({ DB: fakeHealthD1({ reachable: false }) } as unknown as Env);
     expect(status.ok).toBe(false);
     expect(typeof status.error).toBe("string");
   });
 });
 
-function env(over: Partial<Env>): Env {
-  return { KROGER_KV: fakeKv(), DB: fakeD1(), ...over } as unknown as Env;
-}
-
 describe("handleHealthRequest", () => {
   it("is open (no token gate) and reports each registered job", async () => {
-    const kv = fakeKv();
-    await writeJobHealth(kv, "flyer-warm", rec(true, { action: "completed" }));
-    const e = { KROGER_KV: kv, DB: fakeD1() } as unknown as Env;
-    const res = await handleHealthRequest(e);
+    const env = healthEnv();
+    await writeJobHealth(env, "flyer-warm", rec(true, { action: "completed" }));
+    const res = await handleHealthRequest(env);
     expect(res.status).toBe(200);
     const body = (await res.json()) as { ok: boolean; jobs: { name: string }[] };
     expect(body.ok).toBe(true);
@@ -139,18 +153,15 @@ describe("handleHealthRequest", () => {
   });
 
   it("503s (so plain HTTP monitors trip) when a job is failing", async () => {
-    const kv = fakeKv();
-    await writeJobHealth(kv, "flyer-warm", rec(false, { error: "boom" }));
-    const e = { KROGER_KV: kv, DB: fakeD1() } as unknown as Env;
-    const res = await handleHealthRequest(e);
+    const env = healthEnv();
+    await writeJobHealth(env, "flyer-warm", rec(false, { error: "boom" }));
+    const res = await handleHealthRequest(env);
     expect(res.status).toBe(503);
   });
 
   it("coarsens the D1 probe to a boolean — no raw error string in the public payload", async () => {
-    const kv = fakeKv();
-    await writeJobHealth(kv, "flyer-warm", rec(true));
-    const e = { KROGER_KV: kv, DB: fakeD1(false) } as unknown as Env;
-    const res = await handleHealthRequest(e);
+    const env = { DB: fakeHealthD1({ reachable: false }) } as unknown as Env;
+    const res = await handleHealthRequest(env);
     expect(res.status).toBe(503);
     const body = (await res.json()) as { d1: { ok: boolean; error?: string } };
     expect(body.d1.ok).toBe(false);
@@ -158,10 +169,9 @@ describe("handleHealthRequest", () => {
   });
 
   it("exposes only aggregate fields (no per-tenant data)", async () => {
-    const kv = fakeKv();
-    await writeJobHealth(kv, "email", rec(true, { accepted: true, reason: "sender_dkim", written: true }));
-    const e = { KROGER_KV: kv, DB: fakeD1() } as unknown as Env;
-    const res = await handleHealthRequest(e);
+    const env = healthEnv();
+    await writeJobHealth(env, "email", rec(true, { accepted: true, reason: "sender_dkim", written: true }));
+    const res = await handleHealthRequest(env);
     const text = await res.text();
     // The summary we stored is gate-outcome only; no address/tenant id should appear.
     expect(text).not.toMatch(/@/);
@@ -170,15 +180,10 @@ describe("handleHealthRequest", () => {
 
 describe("handleHealthSvgRequest", () => {
   it("200s with an SVG card listing every job + d1 when healthy (open, no token)", async () => {
-    const kv = fakeKv();
-    await writeJobHealth(kv, "flyer-warm", rec(true));
-    await writeJobHealth(kv, "recipe-classify", rec(true));
-    await writeJobHealth(kv, "recipe-index", rec(true));
-    await writeJobHealth(kv, "recipe-embed", rec(true));
-    await writeJobHealth(kv, "email", rec(true));
-    await writeJobHealth(kv, "discovery-sweep", rec(true));
-    const e = { KROGER_KV: kv, DB: fakeD1() } as unknown as Env;
-    const res = await handleHealthSvgRequest(e);
+    const env = healthEnv();
+    for (const name of ["flyer-warm", "recipe-classify", "recipe-index", "recipe-embed", "email", "discovery-sweep"])
+      await writeJobHealth(env, name, rec(true));
+    const res = await handleHealthSvgRequest(env);
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toMatch(/image\/svg\+xml/);
     expect(res.headers.get("cache-control")).toMatch(/max-age=\d+/);
@@ -191,19 +196,17 @@ describe("handleHealthSvgRequest", () => {
   });
 
   it("still 200s (never 503) when degraded, showing the degraded headline", async () => {
-    const kv = fakeKv();
-    await writeJobHealth(kv, "flyer-warm", rec(false, { error: "boom" }));
-    const e = { KROGER_KV: kv, DB: fakeD1() } as unknown as Env;
-    const res = await handleHealthSvgRequest(e);
+    const env = healthEnv();
+    await writeJobHealth(env, "flyer-warm", rec(false, { error: "boom" }));
+    const res = await handleHealthSvgRequest(env);
     expect(res.status).toBe(200);
     expect(await res.text()).toContain("degraded");
   });
 
   it("renders a never-run job in the distinct amber/pending style (not as broken)", async () => {
-    const kv = fakeKv();
-    await writeJobHealth(kv, "flyer-warm", rec(true)); // recipe-embed + email never run
-    const e = { KROGER_KV: kv, DB: fakeD1() } as unknown as Env;
-    const res = await handleHealthSvgRequest(e);
+    const env = healthEnv();
+    await writeJobHealth(env, "flyer-warm", rec(true)); // recipe-embed + email never run
+    const res = await handleHealthSvgRequest(env);
     const body = await res.text();
     expect(res.status).toBe(200);
     expect(body).toContain("#d29922"); // amber present for the never-run rows
@@ -212,10 +215,9 @@ describe("handleHealthSvgRequest", () => {
   });
 
   it("renders only aggregate data (no per-tenant identifiers)", async () => {
-    const kv = fakeKv();
-    await writeJobHealth(kv, "email", rec(true, { accepted: true, reason: "sender_dkim", written: true }));
-    const e = { KROGER_KV: kv, DB: fakeD1() } as unknown as Env;
-    const res = await handleHealthSvgRequest(e);
+    const env = healthEnv();
+    await writeJobHealth(env, "email", rec(true, { accepted: true, reason: "sender_dkim", written: true }));
+    const res = await handleHealthSvgRequest(env);
     const body = await res.text();
     expect(body).not.toMatch(/@/); // no email addresses
     expect(body).not.toContain("sender_dkim"); // summary fields are never rendered
@@ -258,17 +260,16 @@ describe("renderHealthSvg", () => {
 
 describe("Workers AI quota signal", () => {
   it("flags ai_quota_exhausted from a job's 4006 error and degrades health (503)", async () => {
-    const kv = fakeKv();
+    const env = healthEnv();
     await writeJobHealth(
-      kv,
+      env,
       "recipe-embed",
       rec(false, {
         error:
           "Workers AI description generation failed: 4006: you have used up your daily free allocation of 10,000 neurons",
       }),
     );
-    const e = { KROGER_KV: kv, DB: fakeD1() } as unknown as Env;
-    const res = await handleHealthRequest(e);
+    const res = await handleHealthRequest(env);
     expect(res.status).toBe(503);
     const body = (await res.json()) as { ok: boolean; ai_quota_exhausted: boolean };
     expect(body.ai_quota_exhausted).toBe(true);
@@ -276,19 +277,16 @@ describe("Workers AI quota signal", () => {
   });
 
   it("flags ai_quota_exhausted from a job's explicit quota_exhausted summary flag", async () => {
-    const kv = fakeKv();
-    await writeJobHealth(kv, "recipe-classify", rec(false, { classified: 0, quota_exhausted: true }));
-    const e = { KROGER_KV: kv, DB: fakeD1() } as unknown as Env;
-    const body = (await (await handleHealthRequest(e)).json()) as { ai_quota_exhausted: boolean };
+    const env = healthEnv();
+    await writeJobHealth(env, "recipe-classify", rec(false, { classified: 0, quota_exhausted: true }));
+    const body = (await (await handleHealthRequest(env)).json()) as { ai_quota_exhausted: boolean };
     expect(body.ai_quota_exhausted).toBe(true);
   });
 
   it("does not flag quota for healthy jobs", async () => {
-    const kv = fakeKv();
-    await writeJobHealth(kv, "recipe-classify", rec(true, { classified: 20, quota_exhausted: false }));
-    const payload = await buildHealthPayload({ KROGER_KV: kv, DB: fakeD1() } as unknown as Env, kv, [
-      "recipe-classify",
-    ]);
+    const env = healthEnv();
+    await writeJobHealth(env, "recipe-classify", rec(true, { classified: 20, quota_exhausted: false }));
+    const payload = await buildHealthPayload(env, ["recipe-classify"]);
     expect(payload.ai_quota_exhausted).toBe(false);
   });
 
@@ -301,23 +299,20 @@ describe("Workers AI quota signal", () => {
 });
 
 describe("admin gate posture in health", () => {
-  const okJobs = async (kv: ReturnType<typeof fakeKv>) => {
-    await writeJobHealth(kv, "flyer-warm", rec(true));
-    await writeJobHealth(kv, "recipe-embed", rec(true));
-    await writeJobHealth(kv, "email", rec(true));
+  const okJobs = async (env: Env) => {
+    await writeJobHealth(env, "flyer-warm", rec(true));
+    await writeJobHealth(env, "recipe-embed", rec(true));
+    await writeJobHealth(env, "email", rec(true));
   };
 
   it("reports the gate posture as booleans and never the allowlisted emails", async () => {
-    const kv = fakeKv();
-    await okJobs(kv);
-    const e = {
-      KROGER_KV: kv,
-      DB: fakeD1(),
+    const env = healthEnv({
       ACCESS_TEAM_DOMAIN: "team.cloudflareaccess.com",
       ACCESS_AUD: "aud123",
       ACCESS_ALLOWED_EMAILS: "operator@example.com",
-    } as unknown as Env;
-    const res = await handleHealthRequest(e);
+    });
+    await okJobs(env);
+    const res = await handleHealthRequest(env);
     expect(res.status).toBe(200);
     const body = (await res.json()) as { ok: boolean; admin: Record<string, boolean> };
     expect(body.admin).toEqual({
@@ -331,10 +326,9 @@ describe("admin gate posture in health", () => {
   });
 
   it("degrades to 503 when the dev bypass is set without Access (exposed)", async () => {
-    const kv = fakeKv();
-    await okJobs(kv);
-    const e = { KROGER_KV: kv, DB: fakeD1(), ADMIN_DEV_BYPASS: "1" } as unknown as Env;
-    const res = await handleHealthRequest(e);
+    const env = healthEnv({ ADMIN_DEV_BYPASS: "1" });
+    await okJobs(env);
+    const res = await handleHealthRequest(env);
     expect(res.status).toBe(503);
     const body = (await res.json()) as { ok: boolean; admin: { exposed: boolean } };
     expect(body.admin.exposed).toBe(true);
@@ -342,10 +336,9 @@ describe("admin gate posture in health", () => {
   });
 
   it("svg renders the admin row exposed + degraded headline, still 200", async () => {
-    const kv = fakeKv();
-    await okJobs(kv);
-    const e = { KROGER_KV: kv, DB: fakeD1(), ADMIN_DEV_BYPASS: "1" } as unknown as Env;
-    const res = await handleHealthSvgRequest(e);
+    const env = healthEnv({ ADMIN_DEV_BYPASS: "1" });
+    await okJobs(env);
+    const res = await handleHealthSvgRequest(env);
     expect(res.status).toBe(200);
     const body = await res.text();
     expect(body).toContain("admin");
@@ -355,15 +348,9 @@ describe("admin gate posture in health", () => {
   });
 
   it("svg renders the admin row gated (healthy) when Access is configured", async () => {
-    const kv = fakeKv();
-    await okJobs(kv);
-    const e = {
-      KROGER_KV: kv,
-      DB: fakeD1(),
-      ACCESS_TEAM_DOMAIN: "team.cloudflareaccess.com",
-      ACCESS_AUD: "aud123",
-    } as unknown as Env;
-    const res = await handleHealthSvgRequest(e);
+    const env = healthEnv({ ACCESS_TEAM_DOMAIN: "team.cloudflareaccess.com", ACCESS_AUD: "aud123" });
+    await okJobs(env);
+    const res = await handleHealthSvgRequest(env);
     expect(res.status).toBe(200);
     const body = await res.text();
     expect(body).toContain("gated");
@@ -372,6 +359,8 @@ describe("admin gate posture in health", () => {
 });
 
 describe("notifyFailure", () => {
+  const env = (over: Partial<Env>): Env => ({ ...over }) as unknown as Env;
+
   it("posts to ntfy with the token when NTFY_URL is set", async () => {
     const calls: { url: string; init: RequestInit }[] = [];
     const fakeFetch = (async (url: string, init: RequestInit) => {

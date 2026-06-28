@@ -30,6 +30,7 @@ type Route
     | Logs (Maybe LogSource)
     | Config ConfigRoute
     | Data DataRoute
+    | Usage
     | NotFound
 
 
@@ -154,6 +155,7 @@ parser =
         , Parser.map (Data DataDiscovery) (s "admin" </> s "data" </> s "discovery")
         , Parser.map (Data DataSystem) (s "admin" </> s "data" </> s "system")
         , Parser.map (Data (DataRecipes Nothing)) (s "admin" </> s "data")
+        , Parser.map Usage (s "admin" </> s "usage")
         ]
 
 
@@ -215,6 +217,9 @@ toString route =
 
         Data dataRoute ->
             Builder.absolute ("admin" :: "data" :: dataSegments dataRoute) []
+
+        Usage ->
+            Builder.absolute [ "admin", "usage" ] []
 
         NotFound ->
             Builder.absolute [ "admin" ] []

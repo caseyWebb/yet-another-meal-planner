@@ -39,6 +39,7 @@ import Route exposing (LogSource(..), Route)
 import Status
 import Task
 import Url exposing (Url)
+import Usage
 
 
 
@@ -95,6 +96,7 @@ type Page
     | LogsPage Logs.Model
     | ConfigPage Config.Model
     | DataPage Data.Model
+    | UsagePage Usage.Model
     | NotFoundPage
 
 
@@ -117,6 +119,7 @@ type Msg
     | LogsMsg Logs.Msg
     | ConfigMsg Config.Msg
     | DataMsg Data.Msg
+    | UsageMsg Usage.Msg
     | ScrollToSection DevSection
     | NoOp
 
@@ -181,6 +184,13 @@ update msg model =
             in
             ( { model | page = DataPage subModel2 }, Cmd.map DataMsg cmd )
 
+        ( UsageMsg subMsg, UsagePage subModel ) ->
+            let
+                ( subModel2, cmd ) =
+                    Usage.update subMsg subModel
+            in
+            ( { model | page = UsagePage subModel2 }, Cmd.map UsageMsg cmd )
+
         -- A sub-message for a page we are no longer on (a late response): drop it.
         ( HealthMsg _, _ ) ->
             ( model, Cmd.none )
@@ -198,6 +208,9 @@ update msg model =
             ( model, Cmd.none )
 
         ( DataMsg _, _ ) ->
+            ( model, Cmd.none )
+
+        ( UsageMsg _, _ ) ->
             ( model, Cmd.none )
 
 
@@ -241,6 +254,9 @@ stepTo route model =
                     Data.goto dataRoute subModel
             in
             ( { model | route = route, page = DataPage subModel2 }, Cmd.map DataMsg cmd )
+
+        ( Route.Usage, UsagePage _ ) ->
+            ( { model | route = route }, Cmd.none )
 
         _ ->
             enter route Nothing model
@@ -299,6 +315,13 @@ enter route actingAs model =
                     Data.init dataRoute
             in
             ( { model | route = route, page = DataPage subModel }, Cmd.map DataMsg cmd )
+
+        Route.Usage ->
+            let
+                ( subModel, cmd ) =
+                    Usage.init
+            in
+            ( { model | route = route, page = UsagePage subModel }, Cmd.map UsageMsg cmd )
 
         Route.NotFound ->
             ( { model | route = route, page = NotFoundPage }, Cmd.none )
@@ -369,6 +392,7 @@ viewNav route =
         , navLink "Logs" (Route.Logs Nothing) (isLogs route)
         , navLink "Config" (Route.Config Route.ConfigCalibration) (isConfig route)
         , navLink "Data" (Route.Data (Route.DataRecipes Nothing)) (isData route)
+        , navLink "Usage" Route.Usage (isUsage route)
         ]
 
 
@@ -437,6 +461,16 @@ isData route =
             False
 
 
+isUsage : Route -> Bool
+isUsage route =
+    case route of
+        Route.Usage ->
+            True
+
+        _ ->
+            False
+
+
 viewPage : Model -> Html Msg
 viewPage model =
     case model.page of
@@ -463,6 +497,9 @@ viewPage model =
 
         DataPage subModel ->
             Html.map DataMsg (Data.view subModel)
+
+        UsagePage subModel ->
+            Html.map UsageMsg (Usage.view subModel)
 
         NotFoundPage ->
             div [ class "card" ] [ text "Not found." ]

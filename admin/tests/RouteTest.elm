@@ -102,6 +102,8 @@ suite =
                 \_ -> roundTrip (Config ConfigSenders) |> Expect.equal (Config ConfigSenders)
             , test "Config Members" <|
                 \_ -> roundTrip (Config ConfigMembers) |> Expect.equal (Config ConfigMembers)
+            , test "Usage" <|
+                \_ -> roundTrip Usage |> Expect.equal Usage
             ]
         , describe "actingAsParam"
             [ test "?as=casey → Just casey" <|

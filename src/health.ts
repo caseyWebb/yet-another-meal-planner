@@ -1,7 +1,8 @@
 // Background-job health (background-job-health capability). The cron flyer warm and
-// the inbound email() handler run with no human watching, so each writes a small
-// health record to KV on every run, and the open `/health` endpoint aggregates them
-// for an external monitor (which decides what's alarming and pushes the alert — the
+// the inbound email() handler run with no human watching, so each upserts a small
+// health record to the D1 `job_health` table on every run, and the open `/health`
+// endpoint aggregates them for an external monitor (which decides what's alarming and
+// pushes the alert — the
 // Worker only EMITS truthful state; who may READ it is an edge decision, not Worker
 // code). An optional ntfy push is the one in-Worker exception: a failure-domain-
 // independent backstop, off unless configured.
@@ -12,9 +13,6 @@
 import { db } from "./db.js";
 import { adminPosture, type AdminPosture } from "./admin.js";
 import type { Env } from "./env.js";
-import type { KvStore } from "./kroger-user.js";
-
-const JOB_PREFIX = "health:job:";
 
 /** The registered background jobs `/health` aggregates. */
 export const HEALTH_JOBS = [
@@ -105,19 +103,59 @@ export async function probeD1(env: Env): Promise<D1Status> {
   }
 }
 
-const jobKey = (name: string): string => `${JOB_PREFIX}${name}`;
-
-export async function writeJobHealth(kv: KvStore, name: string, health: JobHealth): Promise<void> {
-  await kv.put(jobKey(name), JSON.stringify(health));
+/** The D1 `job_health` row shape (0/1 `ok`, JSON-encoded `summary`). */
+interface JobHealthRow {
+  name: string;
+  ok: number;
+  last_run_at: number;
+  summary: string;
 }
 
-export async function readJobHealth(kv: KvStore, name: string): Promise<JobHealth | null> {
-  const raw = await kv.get(jobKey(name));
-  if (raw === null) return null;
+/** Decode a `job_health` row into a `JobHealth` (0/1 → boolean, summary JSON → object). A
+ *  malformed `summary` degrades to `{}` rather than throwing — a corrupt row must not break
+ *  the whole aggregate. */
+function rowToHealth(row: JobHealthRow): JobHealth {
+  let summary: Record<string, unknown> = {};
   try {
-    return JSON.parse(raw) as JobHealth;
+    const parsed = JSON.parse(row.summary);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) summary = parsed as Record<string, unknown>;
   } catch {
-    return null;
+    // leave summary as {}
+  }
+  return { ok: row.ok === 1, last_run_at: row.last_run_at, summary };
+}
+
+const UPSERT_JOB_HEALTH =
+  "INSERT INTO job_health (name, ok, last_run_at, summary) VALUES (?1, ?2, ?3, ?4) " +
+  "ON CONFLICT(name) DO UPDATE SET ok = excluded.ok, last_run_at = excluded.last_run_at, summary = excluded.summary";
+
+/** Upsert a job's health record into D1 (one row per job, through `src/db.ts`). Tenant-clean
+ *  by construction — `summary` carries only counts/timestamps/error classes. */
+export async function writeJobHealth(env: Env, name: string, health: JobHealth): Promise<void> {
+  await db(env).run(UPSERT_JOB_HEALTH, name, health.ok ? 1 : 0, health.last_run_at, JSON.stringify(health.summary));
+}
+
+/** Read one job's health row, or null when it has never run. */
+export async function readJobHealth(env: Env, name: string): Promise<JobHealth | null> {
+  const row = await db(env).first<JobHealthRow>(
+    "SELECT name, ok, last_run_at, summary FROM job_health WHERE name = ?1",
+    name,
+  );
+  return row ? rowToHealth(row) : null;
+}
+
+/**
+ * Read every `job_health` row into a name→record map. Degrades to an EMPTY map when D1 is
+ * unreachable (a `storage_error` from `src/db.ts`) rather than throwing — `/health` must stay
+ * answerable on the fetch path even when D1 is down; the live D1 probe carries that signal
+ * (`d1.ok: false` degrades overall `ok`), and the jobs then read as never-run.
+ */
+async function readAllJobHealth(env: Env): Promise<Map<string, JobHealth>> {
+  try {
+    const rows = await db(env).all<JobHealthRow>("SELECT name, ok, last_run_at, summary FROM job_health");
+    return new Map(rows.map((r) => [r.name, rowToHealth(r)]));
+  } catch {
+    return new Map();
   }
 }
 
@@ -130,14 +168,11 @@ export async function readJobHealth(kv: KvStore, name: string): Promise<JobHealt
  * catches a job that stays pending too long via `last_run_at` staleness). The admin posture
  * is derived from `env` (the same gate logic `requireAccess` uses). `env` is the probe's binding source.
  */
-export async function buildHealthPayload(
-  env: Env,
-  kv: KvStore,
-  names: readonly string[],
-): Promise<HealthPayload> {
+export async function buildHealthPayload(env: Env, names: readonly string[]): Promise<HealthPayload> {
+  const records = await readAllJobHealth(env);
   const jobs: JobStatus[] = [];
   for (const name of names) {
-    const rec = await readJobHealth(kv, name);
+    const rec = records.get(name);
     if (!rec) {
       jobs.push({ name, ok: null, last_run_at: null, never_run: true });
     } else {
@@ -167,7 +202,7 @@ export async function buildHealthPayload(
  * of the cron), so a stopped job stays detectable via stale `last_run_at`.
  */
 export async function handleHealthRequest(env: Env): Promise<Response> {
-  const payload = await buildHealthPayload(env, env.KROGER_KV as unknown as KvStore, HEALTH_JOBS);
+  const payload = await buildHealthPayload(env, HEALTH_JOBS);
   const safe = { ...payload, d1: { ok: payload.d1.ok } };
   return new Response(JSON.stringify(safe), {
     status: payload.ok ? 200 : 503,
@@ -303,7 +338,7 @@ export function renderHealthSvg(payload: HealthPayload): string {
  * an embedding README refresh the badge on a TTL rather than live. Aggregate-only.
  */
 export async function handleHealthSvgRequest(env: Env): Promise<Response> {
-  const payload = await buildHealthPayload(env, env.KROGER_KV as unknown as KvStore, HEALTH_JOBS);
+  const payload = await buildHealthPayload(env, HEALTH_JOBS);
   return new Response(renderHealthSvg(payload), {
     status: 200,
     headers: {

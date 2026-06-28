@@ -12,10 +12,10 @@ import {
   type WarmDeps,
 } from "../src/flyer-warm.js";
 import { readJobHealth } from "../src/health.js";
+import { fakeD1 } from "./fake-d1.js";
 import type { KvStore } from "../src/kroger-user.js";
 import type { KrogerCandidate } from "../src/kroger.js";
 import type { FlyerItem } from "../src/matching.js";
-import type { Env } from "../src/env.js";
 
 /** In-memory KvStore. */
 function fakeKv(): KvStore & { store: Map<string, string> } {
@@ -252,13 +252,13 @@ describe("mergeFlyerItems", () => {
 });
 
 describe("runWarmJob (health + rethrow)", () => {
-  const env = {} as unknown as Env; // NTFY_URL unset → notify no-ops
-
+  // Health now lives in D1 (job_health); env carries the fake D1 and no NTFY_URL (notify no-ops).
   it("writes a healthy record carrying the freshness summary", async () => {
+    const { env } = fakeD1();
     const h = harness();
     await runWarmJob(env, h.deps); // build tick
     await runWarmJob(env, h.deps); // scan all → complete (single batch, default 12 units > 4)
-    const rec = await readJobHealth(h.kv, "flyer-warm");
+    const rec = await readJobHealth(env, "flyer-warm");
     expect(rec).not.toBeNull();
     expect(rec!.ok).toBe(true);
     expect(rec!.summary.action).toBe("completed");
@@ -266,13 +266,14 @@ describe("runWarmJob (health + rethrow)", () => {
   });
 
   it("on a thrown tick: writes ok:false and rethrows (so the platform sees a failure)", async () => {
+    const { env } = fakeD1();
     const h = harness({
       listTenantIds: async () => {
         throw new Error("github down");
       },
     });
     await expect(runWarmJob(env, h.deps)).rejects.toThrow("github down");
-    const rec = await readJobHealth(h.kv, "flyer-warm");
+    const rec = await readJobHealth(env, "flyer-warm");
     expect(rec!.ok).toBe(false);
     expect(rec!.summary.error).toContain("github down");
   });

@@ -55,11 +55,26 @@ export interface Env {
   /** Optional bearer token for a protected ntfy topic. */
   NTFY_TOKEN?: string;
 
+  // --- Usage observability (usage-observability). OPTIONAL operator config. ---
+  /**
+   * Cloudflare account tag for the GraphQL Analytics API the operator Usage view queries
+   * (`/admin/usage`). Non-secret identifier. UNSET (with or without `CF_ANALYTICS_TOKEN`)
+   * makes the Usage view report "not configured" rather than failing.
+   */
+  CF_ACCOUNT_ID?: string;
+  /**
+   * A **read-only** Cloudflare API token (Account Analytics: Read) the Usage view uses to read
+   * account-wide KV-operation and Workers-AI-neuron usage from the GraphQL Analytics API. Secret,
+   * OPTIONAL — set via `wrangler secret`, never committed (the repo is public). When unset, the
+   * Usage view reports "not configured". Reads only; it can mutate nothing.
+   */
+  CF_ANALYTICS_TOKEN?: string;
+
   // --- KV (ephemeral infra only; all domain data is in D1) ---
   /**
    * Per-tenant Kroger refresh tokens (`kroger:refresh:<tenant>`) plus short-lived
-   * PKCE verifiers keyed by `state`, plus the warmed flyer cache and background-job
-   * health records (`flyer:*`, `health:job:*`). Bound in wrangler.jsonc.
+   * PKCE verifiers keyed by `state`, plus the warmed flyer cache (`flyer:*`). Bound in
+   * wrangler.jsonc. (Background-job health is in D1's `job_health` table, not here.)
    */
   KROGER_KV: KVNamespace;
   /**

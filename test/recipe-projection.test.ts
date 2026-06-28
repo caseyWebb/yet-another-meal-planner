@@ -9,26 +9,16 @@ import {
   type ProjectionDeps,
   type ReconcileError,
 } from "../src/recipe-projection.js";
+import { readJobHealth } from "../src/health.js";
 import type { Env } from "../src/env.js";
-import type { KvStore } from "../src/kroger-user.js";
 import type { ClassifiedFacets } from "../src/recipe-facets.js";
 import { serializeMarkdown } from "../src/serialize.js";
 import { createR2CorpusStore } from "../src/corpus-store.js";
 import { fakeR2 } from "./fake-r2.js";
+import { fakeD1 } from "./fake-d1.js";
 
 afterEach(() => vi.unstubAllGlobals());
 
-/** A tiny in-memory KvStore (put/get) for the job-runner health record. */
-function makeKv(): KvStore & { store: Map<string, string> } {
-  const store = new Map<string, string>();
-  return {
-    store,
-    get: async (k: string) => store.get(k) ?? null,
-    put: async (k: string, v: string) => {
-      store.set(k, v);
-    },
-  } as unknown as KvStore & { store: Map<string, string> };
-}
 
 const BODY = "## Ingredients\n- x\n\n## Instructions\n1. go\n";
 
@@ -248,17 +238,16 @@ describe("runProjectionJob — health record + new-error alert", () => {
       },
       ["bad1"],
     );
-    const kv = makeKv();
     const bodies: string[] = [];
     vi.stubGlobal("fetch", (async (_url: string, init: RequestInit) => {
       bodies.push(String(init?.body));
       return new Response("ok");
     }) as unknown as typeof fetch);
-    const env = { NTFY_URL: "https://ntfy.test/topic" } as unknown as Env;
+    const env = { ...fakeD1().env, NTFY_URL: "https://ntfy.test/topic" } as unknown as Env;
 
-    await runProjectionJob(env, deps, kv, () => 1000);
+    await runProjectionJob(env, deps, () => 1000);
 
-    const health = JSON.parse(kv.store.get("health:job:recipe-index")!);
+    const health = (await readJobHealth(env, "recipe-index"))!;
     expect(health.ok).toBe(true);
     expect(health.summary).toEqual({ projected: 0, skipped: 2 });
     // exactly one alert, naming the NEW failure only
@@ -279,11 +268,10 @@ describe("runProjectionJob — health record + new-error alert", () => {
       loadErrorSlugs: async () => [],
       loadClassifiedFacets: async () => new Map(),
     };
-    const kv = makeKv();
     vi.stubGlobal("fetch", (async () => new Response("ok")) as unknown as typeof fetch);
-    const env = {} as unknown as Env; // no NTFY_URL → notifyFailure is a no-op
-    await expect(runProjectionJob(env, deps, kv, () => 1000)).rejects.toThrow(/R2 down/);
-    const health = JSON.parse(kv.store.get("health:job:recipe-index")!);
+    const env = fakeD1().env; // no NTFY_URL → notifyFailure is a no-op
+    await expect(runProjectionJob(env, deps, () => 1000)).rejects.toThrow(/R2 down/);
+    const health = (await readJobHealth(env, "recipe-index"))!;
     expect(health.ok).toBe(false);
   });
 });

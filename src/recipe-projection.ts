@@ -23,7 +23,6 @@ import { validateRecipeContract } from "./recipe-contract.js";
 import { mergeEffectiveFacets, parseFacetRow, type ClassifiedFacets, type RawFacetRow } from "./recipe-facets.js";
 import type { CorpusStore } from "./corpus-store.js";
 import { notifyFailure, writeJobHealth } from "./health.js";
-import type { KvStore } from "./kroger-user.js";
 
 // --- pure projection helpers ---
 
@@ -300,12 +299,12 @@ export function buildProjectionDeps(env: Env, store: CorpusStore, now: () => num
  * failure so the platform's native cron status reflects it — the same shape as
  * `runEmbedJob` / `runWarmJob`.
  */
-export async function runProjectionJob(env: Env, deps: ProjectionDeps, kv: KvStore, now: () => number = () => Date.now()): Promise<void> {
+export async function runProjectionJob(env: Env, deps: ProjectionDeps, now: () => number = () => Date.now()): Promise<void> {
   const startedAt = now();
   try {
     const priorSlugs = new Set(await deps.loadErrorSlugs());
     const r = await reconcileRecipeIndex(deps);
-    await writeJobHealth(kv, "recipe-index", {
+    await writeJobHealth(env, "recipe-index", {
       ok: true,
       last_run_at: startedAt,
       summary: { projected: r.projected, skipped: r.skipped },
@@ -323,7 +322,7 @@ export async function runProjectionJob(env: Env, deps: ProjectionDeps, kv: KvSto
   } catch (e) {
     const m = msg(e);
     console.error("[recipe-index] reconcile failed:", m);
-    await writeJobHealth(kv, "recipe-index", {
+    await writeJobHealth(env, "recipe-index", {
       ok: false,
       last_run_at: startedAt,
       summary: { error: m },

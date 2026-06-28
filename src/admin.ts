@@ -56,6 +56,7 @@ import {
   guidanceObject,
 } from "./admin-data.js";
 import { isCorpusTable, listCorpusTable, addCorpusRow, deleteCorpusRow } from "./admin-corpus.js";
+import { fetchUsage } from "./usage.js";
 import type { KvStore } from "./kroger-user.js";
 
 const TENANT_PREFIX = "tenant:"; // mirrors src/tenant.ts (the allowlist directory)
@@ -405,6 +406,15 @@ async function routeAdminApi(
   // Bug reports: the operator's review queue for agent-filed reports (report_bug → D1).
   if (path === "/admin/api/bug-reports") {
     if (method === "GET") return { reports: await listBugReports(deps.db) };
+    throw new ToolError("unsupported", `Method ${method} not supported on ${path}`);
+  }
+
+  // Resource-usage observability (usage-observability): account-wide KV-operation + Workers-AI
+  // neuron usage for the day, against the daily free-tier limits, read from the Cloudflare
+  // GraphQL Analytics API. Inherits the Access gate; performs NO KV (observing the budget must
+  // not consume it). Reports `{ configured: false }` when the CF analytics vars are unset.
+  if (path === "/admin/api/usage") {
+    if (method === "GET") return fetchUsage(env);
     throw new ToolError("unsupported", `Method ${method} not supported on ${path}`);
   }
 

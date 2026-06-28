@@ -24,7 +24,6 @@ import { createR2CorpusStore } from "./corpus-store.js";
 import { handleHealthRequest, handleHealthSvgRequest, writeJobHealth, notifyFailure } from "./health.js";
 import { handleAdmin } from "./admin.js";
 import { handleCookbook } from "./cookbook.js";
-import type { KvStore } from "./kroger-user.js";
 
 /**
  * The gated MCP API. Only reached for `/mcp` requests the provider has already
@@ -119,7 +118,7 @@ export default {
       await notifyFailure(env, "email", msg);
     }
     // Best-effort health record; a write failure must not change the reject decision.
-    await writeJobHealth(env.KROGER_KV as unknown as KvStore, "email", {
+    await writeJobHealth(env, "email", {
       ok,
       last_run_at: startedAt,
       summary,
@@ -146,7 +145,6 @@ export default {
    * so the platform's native cron status reflects it.
    */
   async scheduled(_controller: ScheduledController, env: Env, _ctx: ExecutionContext): Promise<void> {
-    const kv = env.KROGER_KV as unknown as KvStore;
     const corpus = createR2CorpusStore(env.CORPUS);
     // Phase 1: the facet classify pass (derives the descriptive facets the projection merges)
     // + the flyer warm (independent of the index), in parallel. Classify runs BEFORE the
@@ -156,13 +154,13 @@ export default {
       runFacetJob(env, buildFacetDeps(env, corpus)),
     ]);
     // Phase 2: the index projection (merges the fresh classified facets + authored overrides).
-    const phase2 = await Promise.allSettled([runProjectionJob(env, buildProjectionDeps(env, corpus), kv)]);
+    const phase2 = await Promise.allSettled([runProjectionJob(env, buildProjectionDeps(env, corpus))]);
     // Phase 3: the recipe-derived reconcile (describe → embed; reads the fresh index).
     const phase3 = await Promise.allSettled([runEmbedJob(env, buildEmbedDeps(env))]);
     // Phase 4: the sweep runs after the index + embeddings are fresh (it dedups + matches against
     // them). Load the operator's stored config (sparse override merged over DEFAULT_CONFIG).
     const sweepConfig = await loadDiscoveryConfig(env);
-    const phase4 = await Promise.allSettled([runDiscoverySweepJob(env, buildDiscoveryDeps(env), kv, sweepConfig)]);
+    const phase4 = await Promise.allSettled([runDiscoverySweepJob(env, buildDiscoveryDeps(env), sweepConfig)]);
     const failed = [...phase1, ...phase2, ...phase3, ...phase4].find((r) => r.status === "rejected");
     if (failed && failed.status === "rejected") throw failed.reason;
   },

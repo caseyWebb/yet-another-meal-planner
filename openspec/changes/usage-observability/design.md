@@ -67,6 +67,17 @@ The page shows usage as absolute counts **plus** the free-tier daily limit as a 
 - "Not configured" is a **real state**, not a `Maybe` — model the payload as a union: `type UsageView = NotConfigured | Configured UsageData` decoded from the `configured` discriminator, so "configured but no data" is unrepresentable.
 - Render KV ops and AI neurons against limits; over-limit rows styled like the Status page's `fail`.
 
+## Future: Workers Analytics Engine for per-run metrics (not this change)
+
+Health records do two jobs: **liveness** (current `ok`/`last_run_at` per job, read synchronously by `/health`) and a latent appetite for **per-run history** (neuron cost, counts, durations over time). This change puts liveness in **D1** — the right tool, since `/health` needs an authoritative, immediate, in-Worker point read of the latest value per job.
+
+Cloudflare's first-class store for the *history* half is **Workers Analytics Engine** (`writeDataPoint`, queried back through the same GraphQL/SQL Analytics API the Usage page already uses; cheap high-frequency writes that touch neither the KV nor D1 budget). It is deliberately **out of scope here** because:
+
+- It cannot serve liveness: AE is sampled/aggregation-oriented (no clean "latest value per job" point read), its GraphQL reads lag a few minutes, and it is not readable from inside the Worker at request time — all fatal for `/health`.
+- It needs a new binding **type** (`analytics_engine_datasets`), which must be added to the deploy merge allowlist (`scripts/merge-wrangler-config.mjs`) or it is silently dropped from operators' configs.
+
+If we later want neuron/op **trends** ("neurons/day over 30 days, by job"), AE is the idiomatic home and composes with the Usage page (same GraphQL source, no new query surface) — a clean follow-on capability, not a reason to change the liveness store. Until then, Workers Logs (`observability.enabled` is already on) is the ad-hoc historical trail.
+
 ## Risks / open items
 
 - **GraphQL field names** must be verified live (Decision 1) — the single most likely place to need iteration.

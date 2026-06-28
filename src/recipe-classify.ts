@@ -347,7 +347,7 @@ export async function runFacetJob(env: Env, deps: DerivedFacetDeps): Promise<voi
   const startedAt = deps.now();
   try {
     const r = await reconcileRecipeFacets(deps);
-    await writeJobHealth(deps.kv, "recipe-classify", {
+    await writeJobHealth(env, "recipe-classify", {
       // Quota exhaustion is a soft degradation (not a crash) — report it as not-ok so the job row
       // reflects it, and the summary flag drives the explicit `/health` "ai quota exhausted" signal.
       ok: !r.quotaExhausted,
@@ -364,7 +364,7 @@ export async function runFacetJob(env: Env, deps: DerivedFacetDeps): Promise<voi
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     console.error("[recipe-classify] classify pass failed:", msg);
-    await writeJobHealth(deps.kv, "recipe-classify", {
+    await writeJobHealth(env, "recipe-classify", {
       ok: false,
       last_run_at: startedAt,
       summary: { error: msg },

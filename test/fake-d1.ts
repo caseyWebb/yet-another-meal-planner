@@ -33,6 +33,7 @@ const PK: Record<string, string[]> = {
   store_notes: ["id"],
   recipe_notes: ["id"],
   bug_reports: ["id"],
+  job_health: ["name"],
 };
 
 // Tables whose `id` PK is AUTOINCREMENT: an INSERT that omits `id` gets the next one,
@@ -62,6 +63,7 @@ export function fakeD1(
     pantry: [],
     meal_plan: [],
     grocery_list: [],
+    job_health: [],
     ...(init.tables ?? {}),
   };
   const known = new Set(init.recipes ?? []);
@@ -86,6 +88,7 @@ export function fakeD1(
     if (/\brecipe = \?2/i.test(sql)) eq("recipe", 2);
     if (/\bstore = \?1/i.test(sql)) eq("store", 1);
     if (/\bslug = \?1/i.test(sql)) eq("slug", 1);
+    if (/\bname = \?1/i.test(sql)) eq("name", 1);
     if (/normalized_name = \?2/i.test(sql)) eq("normalized_name", 2);
     // Attributed notes: privacy rule (private=0 OR author=?2), and self-scoped
     // findOwnNote (author=?2 AND created_at=?3).

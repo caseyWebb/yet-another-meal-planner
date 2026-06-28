@@ -356,7 +356,7 @@ export async function runWarmJob(env: Env, deps: WarmDeps): Promise<void> {
   const startedAt = deps.now();
   try {
     const r = await runWarmTick(deps);
-    await writeJobHealth(deps.kv, "flyer-warm", {
+    await writeJobHealth(env, "flyer-warm", {
       ok: true,
       last_run_at: startedAt,
       summary: {
@@ -370,7 +370,7 @@ export async function runWarmJob(env: Env, deps: WarmDeps): Promise<void> {
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     console.error("[flyer-warm] tick failed:", msg);
-    await writeJobHealth(deps.kv, "flyer-warm", {
+    await writeJobHealth(env, "flyer-warm", {
       ok: false,
       last_run_at: startedAt,
       summary: { error: msg },

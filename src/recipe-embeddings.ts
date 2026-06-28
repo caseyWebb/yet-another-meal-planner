@@ -254,7 +254,7 @@ export async function runEmbedJob(env: Env, deps: DerivedDeps): Promise<void> {
   const startedAt = deps.now();
   try {
     const r = await reconcileRecipeDerived(deps);
-    await writeJobHealth(deps.kv, "recipe-embed", {
+    await writeJobHealth(env, "recipe-embed", {
       ok: true,
       last_run_at: startedAt,
       summary: {
@@ -268,7 +268,7 @@ export async function runEmbedJob(env: Env, deps: DerivedDeps): Promise<void> {
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     console.error("[recipe-derived] reconcile failed:", msg);
-    await writeJobHealth(deps.kv, "recipe-embed", {
+    await writeJobHealth(env, "recipe-embed", {
       ok: false,
       last_run_at: startedAt,
       summary: { error: msg },

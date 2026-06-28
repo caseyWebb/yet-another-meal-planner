@@ -44,7 +44,6 @@ import {
   countDiscoveryFailures,
 } from "./discovery-db.js";
 import { notifyFailure, writeJobHealth } from "./health.js";
-import type { KvStore } from "./kroger-user.js";
 
 /** A new discovery candidate to evaluate (already deduped vs corpus/rejections/log by the deps). */
 export interface SweepCandidate {
@@ -890,7 +889,6 @@ export const LOG_RETENTION_DAYS = 60;
 export async function runDiscoverySweepJob(
   env: Env,
   deps: DiscoveryDeps,
-  kv: KvStore,
   config: DiscoveryConfig = DEFAULT_CONFIG,
   now: () => number = () => Date.now(),
 ): Promise<void> {
@@ -915,7 +913,7 @@ export async function runDiscoverySweepJob(
     // (the tick completed) — only a thrown tick rethrows below.
     const failedOutstanding = await countDiscoveryFailures(env);
     const ok = failedOutstanding === 0;
-    await writeJobHealth(kv, "discovery-sweep", {
+    await writeJobHealth(env, "discovery-sweep", {
       ok,
       last_run_at: startedAt,
       summary: {
@@ -951,7 +949,7 @@ export async function runDiscoverySweepJob(
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     console.error("[discovery-sweep] tick failed:", msg);
-    await writeJobHealth(kv, "discovery-sweep", {
+    await writeJobHealth(env, "discovery-sweep", {
       ok: false,
       last_run_at: startedAt,
       summary: { error: msg },
