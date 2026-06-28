@@ -2,9 +2,9 @@
 
 ## 1. Schema migrations
 
-- [x] 1.1 `migrations/d1/0019_operator_config.sql` — new `operator_config` singleton table with ranking weight columns (`favorite_weight`, `novelty_boost`, `pantry_weight`, `perish_weight`, `key_weight`, `overlap_cap`) and flyer columns (`min_flyer_discount`, `flyer_refresh_hours`, `flyer_batch_units`); all nullable; `id INTEGER PRIMARY KEY CHECK (id = 1)`.
-- [x] 1.2 `migrations/d1/0020_discovery_config_limits.sql` — `ALTER TABLE discovery_config ADD COLUMN` for `fetch_max_per_tick INTEGER`, `max_candidates_per_tick INTEGER`, `retry_max_attempts INTEGER`, `log_retention_days INTEGER`; all nullable.
-- [x] 1.3 `migrations/d1/0021_profile_retro_prefs.sql` — `ALTER TABLE profile ADD COLUMN retrospective_prefs TEXT` (JSON: `{ stale_after_days, revealed_months, revealed_min_cooks }`).
+- [x] 1.1 `migrations/d1/0020_operator_config.sql` — new `operator_config` singleton table with ranking weight columns (`favorite_weight`, `novelty_boost`, `pantry_weight`, `perish_weight`, `key_weight`, `overlap_cap`) and flyer columns (`min_flyer_discount`, `flyer_refresh_hours`, `flyer_batch_units`); all nullable; `id INTEGER PRIMARY KEY CHECK (id = 1)`.
+- [x] 1.2 `migrations/d1/0021_discovery_config_limits.sql` — `ALTER TABLE discovery_config ADD COLUMN` for `fetch_max_per_tick INTEGER`, `max_candidates_per_tick INTEGER`, `retry_max_attempts INTEGER`, `log_retention_days INTEGER`; all nullable.
+- [x] 1.3 `migrations/d1/0022_profile_retro_prefs.sql` — `ALTER TABLE profile ADD COLUMN retrospective_prefs TEXT` (JSON: `{ stale_after_days, revealed_months, revealed_min_cooks }`).
 
 ## 2. `src/operator-config.ts` (NEW)
 

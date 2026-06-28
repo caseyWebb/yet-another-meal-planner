@@ -76,7 +76,7 @@ The four new processing-limit fields are simpler than the threshold knobs (no fl
 
 ## Impact
 
-- `migrations/d1/0019_operator_config.sql` — new `operator_config` table
+- `migrations/d1/0020_operator_config.sql` — new `operator_config` table
 - `migrations/d1/0020_profile_rhythm_prefs.sql` — four new nullable columns on `profile`
 - `src/operator-config.ts` — NEW: `loadOperatorConfig()`, `saveOperatorConfig()`, typed defaults, D1 helpers
 - `src/admin.ts` — wire GET/PUT `/admin/api/operator-config`
