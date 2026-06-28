@@ -44,6 +44,7 @@ import {
   type DryRunOutcome,
 } from "./discovery-calibration.js";
 import { buildDiscoveryDeps, runDiscoverySweep, processCandidate, DEFAULT_CONFIG } from "./discovery-sweep.js";
+import { loadOperatorConfig, saveOperatorConfig, validateOperatorConfig, parseOperatorConfigPatch } from "./operator-config.js";
 import { probeFeed } from "./discovery-probe.js";
 import { addDiscoveryRejection } from "./corpus-db.js";
 import { canonicalizeUrl } from "./url.js";
@@ -348,6 +349,10 @@ function parsePatchFromBody(body: Record<string, unknown>): Partial<import("./di
   if (typeof body.dedupThreshold === "number") patch.dedupThreshold = body.dedupThreshold;
   if (typeof body.classifyMaxPerTick === "number") patch.classifyMaxPerTick = body.classifyMaxPerTick;
   if (typeof body.rateCap === "number") patch.rateCap = body.rateCap;
+  if (typeof body.fetchMaxPerTick === "number") patch.fetchMaxPerTick = body.fetchMaxPerTick;
+  if (typeof body.maxCandidatesPerTick === "number") patch.maxCandidatesPerTick = body.maxCandidatesPerTick;
+  if (typeof body.retryMaxAttempts === "number") patch.retryMaxAttempts = body.retryMaxAttempts;
+  if (typeof body.logRetentionDays === "number") patch.logRetentionDays = body.logRetentionDays;
   return patch;
 }
 
@@ -489,6 +494,24 @@ async function routeAdminApi(
   // response stays manageable.
   if (path === "/admin/api/logs/discovery") {
     if (method === "GET") return { entries: await readDiscoveryLog(env, 200) };
+    throw new ToolError("unsupported", `Method ${method} not supported on ${path}`);
+  }
+
+  // Operator config: ranking weights and flyer behavior. Operator/cross-tenant; no MCP tools.
+  if (path === "/admin/api/operator-config") {
+    if (method === "GET") {
+      const config = await loadOperatorConfig(env);
+      return { config };
+    }
+    if (method === "PUT") {
+      const body = await readJsonBody(request);
+      const patch = parseOperatorConfigPatch(body);
+      const err = validateOperatorConfig(patch as Record<string, unknown>);
+      if (err) throw err;
+      await saveOperatorConfig(env, patch);
+      const merged = await loadOperatorConfig(env);
+      return { config: merged };
+    }
     throw new ToolError("unsupported", `Method ${method} not supported on ${path}`);
   }
 

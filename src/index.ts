@@ -20,6 +20,7 @@ import { buildFacetDeps, runFacetJob } from "./recipe-classify.js";
 import { buildProjectionDeps, runProjectionJob } from "./recipe-projection.js";
 import { buildDiscoveryDeps, runDiscoverySweepJob } from "./discovery-sweep.js";
 import { loadDiscoveryConfig } from "./discovery-calibration.js";
+import { loadOperatorConfig } from "./operator-config.js";
 import { createR2CorpusStore } from "./corpus-store.js";
 import { handleHealthRequest, handleHealthSvgRequest, writeJobHealth, notifyFailure } from "./health.js";
 import { handleAdmin } from "./admin.js";
@@ -146,11 +147,16 @@ export default {
    */
   async scheduled(_controller: ScheduledController, env: Env, _ctx: ExecutionContext): Promise<void> {
     const corpus = createR2CorpusStore(env.CORPUS);
+    // Load operator config once; used for flyer warm pacing and sweep (below).
+    const operatorConfig = await loadOperatorConfig(env).catch(() => null);
     // Phase 1: the facet classify pass (derives the descriptive facets the projection merges)
     // + the flyer warm (independent of the index), in parallel. Classify runs BEFORE the
     // projection so the projection materializes the EFFECTIVE facets (recipe-facet-derivation).
+    const warmConfig = operatorConfig
+      ? { batchUnits: operatorConfig.flyerBatchUnits, refreshMs: operatorConfig.flyerRefreshHours * 60 * 60 * 1000 }
+      : {};
     const phase1 = await Promise.allSettled([
-      runWarmJob(env, buildWarmDeps(env)),
+      runWarmJob(env, buildWarmDeps(env), warmConfig),
       runFacetJob(env, buildFacetDeps(env, corpus)),
     ]);
     // Phase 2: the index projection (merges the fresh classified facets + authored overrides).

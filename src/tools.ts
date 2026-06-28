@@ -33,6 +33,7 @@ import {
   type SearchCandidate,
 } from "./semantic-search.js";
 import { listGuidance, readGuidance, saveGuidance } from "./guidance.js";
+import { loadOperatorConfig } from "./operator-config.js";
 import { fetchWeatherForecast } from "./weather.js";
 import { mergeOverlay, type Overlay } from "./overlay.js";
 import { readPantry } from "./session-db.js";
@@ -351,12 +352,13 @@ export function buildServer(env: Env, tenant: Tenant, origin?: string): McpServe
           };
         }
 
-        // Ranking path: load the embeddings + rotation prefs + alias table, embed the
-        // vibe-bearing specs' vibes in ONE Workers AI call (vibe-less specs make no
+        // Ranking path: load the embeddings + rotation prefs + operator config + alias table,
+        // embed the vibe-bearing specs' vibes in ONE Workers AI call (vibe-less specs make no
         // contribution to the embed batch and stay in membership mode).
-        const [embeddings, prefs, aliases] = await Promise.all([
+        const [embeddings, prefs, operatorConfig, aliases] = await Promise.all([
           loadRecipeEmbeddings(env),
           readPreferences(env, tenant.id).catch(() => null),
+          loadOperatorConfig(env).catch(() => null),
           getAliases().catch(() => ({}) as Record<string, string>),
         ]);
 
@@ -370,7 +372,7 @@ export function buildServer(env: Env, tenant: Tenant, origin?: string): McpServe
             if (vec) favoriteVecs.push(vec);
           }
         }
-        const params = resolveRankParams(prefs);
+        const params = resolveRankParams(prefs, operatorConfig ?? undefined);
 
         // One embed call for ALL vibe-bearing specs, mapped back to their spec index so a
         // mix of membership and ranked specs in one call stays aligned.
@@ -631,8 +633,11 @@ export function buildServer(env: Env, tenant: Tenant, origin?: string): McpServe
       runTool(async () => {
         const locationId = await getLocationId();
         // min_savings_pct is a percent (5 = 5%); convert to a fraction of regular price.
+        // Fall back to the operator-configured default, then the compiled constant.
+        const operatorFlyerConfig = await loadOperatorConfig(env).catch(() => null);
+        const defaultDiscount = operatorFlyerConfig?.minFlyerDiscount ?? MIN_FLYER_DISCOUNT;
         const minDiscount =
-          typeof filter?.min_savings_pct === "number" ? filter.min_savings_pct / 100 : MIN_FLYER_DISCOUNT;
+          typeof filter?.min_savings_pct === "number" ? filter.min_savings_pct / 100 : defaultDiscount;
         // Pure cache read: the warm (flyer-warm.ts) stores noise-floor candidates per
         // location; the 5% deal floor is applied HERE so it stays caller-tunable.
         const rollup = await readFlyerRollup(env.KROGER_KV as unknown as KvStore, locationId);

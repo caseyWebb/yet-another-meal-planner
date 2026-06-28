@@ -34,6 +34,7 @@ interface ProfileRow {
   custom: string | null;
   kitchen_notes: string | null;
   freezer_capacity_estimate: string | null;
+  retrospective_prefs: string | null;
 }
 
 /** Parse a JSON column, tolerating null/empty/garbage as `null`. */
@@ -94,6 +95,8 @@ function assemblePreferences(
   if (dietary) prefs.dietary = dietary;
   const rotation = asObject(parseJson(row.rotation));
   if (rotation) prefs.rotation = rotation;
+  const retrospective = asObject(parseJson(row.retrospective_prefs));
+  if (retrospective) prefs.retrospective = retrospective;
   const custom = asObject(parseJson(row.custom));
   if (custom) prefs.custom = custom;
   if (brands.length > 0) {
@@ -113,7 +116,7 @@ function assemblePreferences(
 const PROFILE_SELECT =
   "SELECT tenant, taste, diet_principles, default_cooking_nights, lunch_strategy, " +
   "ready_to_eat_default_action, stores, dietary, rotation, custom, kitchen_notes, " +
-  "freezer_capacity_estimate FROM profile WHERE tenant = ?1";
+  "freezer_capacity_estimate, retrospective_prefs FROM profile WHERE tenant = ?1";
 
 /** The caller's preferences object (or null when none are set up). */
 export async function readPreferences(env: Env, tenant: string): Promise<Preferences | null> {
