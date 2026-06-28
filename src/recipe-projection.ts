@@ -108,7 +108,7 @@ export interface ReconcileError {
   message: string;
 }
 
-/** What one index reconcile did, for the `health:job:recipe-index` summary. */
+/** What one index reconcile did, for the `recipe-index` job_health summary. */
 export interface ProjectionResult {
   /** Recipes projected into the index. */
   projected: number;
@@ -293,7 +293,7 @@ export function buildProjectionDeps(env: Env, store: CorpusStore, now: () => num
 
 /**
  * One scheduled run of the index reconcile: read prior error slugs, do the pass, record
- * `health:job:recipe-index` (ok with a counts summary, or fail), push an ntfy alert for
+ * the `recipe-index` job_health row (ok with a counts summary, or fail), push an ntfy alert for
  * any NEW invalid recipe (de-spammed via the prior-slug diff — a persistent error is
  * recorded once, not re-alerted) AND on a hard job failure, and **rethrow** a hard
  * failure so the platform's native cron status reflects it — the same shape as

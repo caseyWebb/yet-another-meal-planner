@@ -95,7 +95,6 @@ function makeDeps(
     describeMaxPerTick: opts.describeMax ?? 100,
     embedMaxPerTick: opts.embedMax ?? 100,
     inputBatch: opts.inputBatch ?? 25,
-    kv: {} as never,
     now: () => 0,
   };
   return { deps, derived, vectors, describeCalls, embedCalls };

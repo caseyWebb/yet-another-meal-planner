@@ -22,7 +22,6 @@ import { embedTexts } from "./embedding.js";
 import type { Env } from "./env.js";
 import { hashText } from "./hash.js";
 import { notifyFailure, writeJobHealth } from "./health.js";
-import type { KvStore } from "./kroger-user.js";
 
 // Re-exported so existing importers (and tests) keep a single hash entry point.
 export { hashText } from "./hash.js";
@@ -57,7 +56,7 @@ export interface UpsertEmbeddingRow {
   description_hash: string;
 }
 
-/** What one reconcile did, for the `health:job:recipe-embed` summary (tenant-data-free). */
+/** What one reconcile did, for the `recipe-embed` job_health summary (tenant-data-free). */
 export interface ReconcileResult {
   /** Descriptions (re)generated this tick. */
   described: number;
@@ -91,8 +90,7 @@ export interface DerivedDeps {
   describeMaxPerTick: number;
   embedMaxPerTick: number;
   inputBatch: number;
-  /** KV for the health record + epoch-ms clock, mirroring the flyer's WarmDeps. */
-  kv: KvStore;
+  /** Epoch-ms clock (injected so tests can pin it). */
   now(): number;
 }
 
@@ -226,7 +224,6 @@ export function buildEmbedDeps(env: Env): DerivedDeps {
     describeMaxPerTick: DESCRIBE_MAX_PER_TICK,
     embedMaxPerTick: RECONCILE_MAX_PER_TICK,
     inputBatch: EMBED_INPUT_BATCH,
-    kv: env.KROGER_KV as unknown as KvStore,
     now: () => Date.now(),
   };
 }
@@ -245,7 +242,7 @@ export async function seedRecipeDescription(env: Env, slug: string, facets: Reci
 }
 
 /**
- * One scheduled run of the reconcile: do the pass, record `health:job:recipe-embed`
+ * One scheduled run of the reconcile: do the pass, record the `recipe-embed` job_health row
  * (ok with a counts summary, or fail), push an optional ntfy alert on failure, and
  * **rethrow** so the platform's native cron status reflects a failure — the same shape as
  * `runWarmJob`. Kept out of the handler so it is unit-testable with injected deps + env.

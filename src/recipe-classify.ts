@@ -30,7 +30,6 @@ import { readAliases } from "./corpus-db.js";
 import { hashText } from "./hash.js";
 import { normalizeFacetCourse, EMPTY_FACETS, type ClassifiedFacets } from "./recipe-facets.js";
 import { isAiQuotaError, notifyFailure, writeJobHealth } from "./health.js";
-import type { KvStore } from "./kroger-user.js";
 
 /** Max recipes CLASSIFIED per tick (one env.AI call each — not batchable, like describe). */
 export const CLASSIFY_MAX_PER_TICK = 20;
@@ -53,7 +52,7 @@ export interface FacetState {
   body_hash: string | null;
 }
 
-/** What one classify pass did, for the `health:job:recipe-classify` summary (tenant-data-free). */
+/** What one classify pass did, for the `recipe-classify` job_health summary (tenant-data-free). */
 export interface FacetReconcileResult {
   /** Recipes (re)classified this tick. */
   classified: number;
@@ -89,8 +88,7 @@ export interface DerivedFacetDeps {
   pruneOrphans(corpusSlugs: string[]): Promise<number>;
   /** Per-tick cap (injected so tests can shrink it). */
   maxPerTick: number;
-  /** KV for the health record + epoch-ms clock, mirroring the other crons' deps. */
-  kv: KvStore;
+  /** Epoch-ms clock (injected so tests can pin it). */
   now(): number;
 }
 
@@ -333,13 +331,12 @@ export function buildFacetDeps(env: Env, store: CorpusStore): DerivedFacetDeps {
       return orphans.length;
     },
     maxPerTick: CLASSIFY_MAX_PER_TICK,
-    kv: env.KROGER_KV as unknown as KvStore,
     now: () => Date.now(),
   };
 }
 
 /**
- * One scheduled run of the classify pass: do the pass, record `health:job:recipe-classify`
+ * One scheduled run of the classify pass: do the pass, record the `recipe-classify` job_health row
  * (ok with a counts summary, or fail), push an optional ntfy alert on failure, and **rethrow**
  * so the platform's native cron status reflects a failure — the same shape as `runEmbedJob`.
  */

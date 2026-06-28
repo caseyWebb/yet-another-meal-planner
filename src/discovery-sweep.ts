@@ -878,7 +878,7 @@ export const LOG_RETENTION_DAYS = 60;
 /**
  * One scheduled run of the discovery sweep: refresh the per-member taste vectors (so the
  * matcher has current taste), run the sweep, prune old log rows, record
- * `health:job:discovery-sweep` — a counts summary with `ok: false` while any standing
+ * the `discovery-sweep` job_health row — a counts summary with `ok: false` while any standing
  * INFRASTRUCTURE failure (`outcome = 'failed'`) sits unresolved, so `/health` shows the
  * degradation even on a later idle tick (a content park does NOT degrade it). On a HARD
  * (thrown) tick it records `ok: false` and **rethrows** so the platform's native cron status

@@ -48,7 +48,6 @@ function makeDeps(
       return state.filter((s) => !corpus.has(s.slug)).length;
     },
     maxPerTick: opts.maxPerTick ?? 100,
-    kv: { get: async () => null, put: async () => {}, delete: async () => {} },
     now: () => 1000,
   };
   return { deps, upserts, empties, prunedWithRef: () => prunedWith };
