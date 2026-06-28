@@ -50,7 +50,8 @@ interface FakeOpts {
   vectors: Record<string, number[]>;
   classifyDietary?: Record<string, string[]>; // per-title dietary on the classified recipe
   classifyThrow?: Set<string>; // titles whose classify throws (park)
-  acquireNull?: Set<string>; // urls whose content is unreachable
+  acquireNull?: Set<string>; // urls whose content can't be acquired (parks as `unreachable`)
+  acquireFail?: Record<string, { reason: "unreachable" | "no_jsonld" | "not_a_recipe" | "incomplete"; status?: number }>; // urls that fail acquisition with a SPECIFIC reason
   confirm?: (members: SweepMember[]) => string[]; // default: confirm all
   embedThrow?: Set<string>; // embed input texts that throw (a transient env.AI failure)
 }
@@ -80,9 +81,13 @@ function makeDeps(opts: FakeOpts) {
     },
     acquireContent: async (c) => {
       calls.acquire++;
-      return opts.acquireNull?.has(c.url)
-        ? null
-        : ({ title: c.title, ingredients: ["1 a", "2 b"], instructions: ["do it"] } as RecipeContent);
+      const fail = opts.acquireFail?.[c.url];
+      if (fail) return { ok: false as const, ...fail };
+      if (opts.acquireNull?.has(c.url)) return { ok: false as const, reason: "unreachable" as const };
+      return {
+        ok: true as const,
+        content: { title: c.title, ingredients: ["1 a", "2 b"], instructions: ["do it"] } as RecipeContent,
+      };
     },
     classify: async (content, source) => {
       calls.classify++;
@@ -191,6 +196,31 @@ describe("runDiscoverySweep", () => {
     expect(res.parked).toBe(1);
     expect(calls.classify).toBe(0);
     expect(calls.logs[0]).toMatchObject({ outcome: "error", detail: { reason: "unreachable" } });
+  });
+
+  it("parks with the SPECIFIC acquisition reason, not a catch-all unreachable", async () => {
+    const { deps, calls } = makeDeps({
+      candidates: [cand("u1", "Roundup")],
+      members: [member("casey")],
+      vectors: { "Roundup — s": A },
+      acquireFail: { u1: { reason: "not_a_recipe" } },
+    });
+    const res = await runDiscoverySweep(deps, CONFIG);
+    expect(res.parked).toBe(1);
+    expect(calls.classify).toBe(0);
+    expect(calls.logs[0]).toMatchObject({ outcome: "error", detail: { reason: "not_a_recipe" } });
+  });
+
+  it("records the HTTP status when a fetch is non-2xx (walled)", async () => {
+    const { deps, calls } = makeDeps({
+      candidates: [cand("u1", "Walled")],
+      members: [member("casey")],
+      vectors: { "Walled — s": A },
+      acquireFail: { u1: { reason: "unreachable", status: 403 } },
+    });
+    const res = await runDiscoverySweep(deps, CONFIG);
+    expect(res.parked).toBe(1);
+    expect(calls.logs[0]).toMatchObject({ outcome: "error", detail: { reason: "unreachable", status: 403 } });
   });
 
   it("parks a candidate whose classification never validates", async () => {

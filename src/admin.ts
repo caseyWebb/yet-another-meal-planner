@@ -40,6 +40,7 @@ import {
   type DryRunOutcome,
 } from "./discovery-calibration.js";
 import { buildDiscoveryDeps, runDiscoverySweep } from "./discovery-sweep.js";
+import { probeFeed, reprobeParked } from "./discovery-probe.js";
 import {
   recipeList,
   recipeDetail,
@@ -518,6 +519,28 @@ async function routeAdminApi(
       await runDiscoverySweep(deps, previewConfig as typeof config);
       const outcomes: DryRunOutcome[] = capturedOutcomes();
       return { outcomes };
+    }
+    throw new ToolError("unsupported", `Method ${method} not supported on ${path}`);
+  }
+
+  // Edge feed-probe: fetch a feed URL and a sample of its entry pages FROM the Worker's egress,
+  // through the same acquisition path the sweep uses, so the operator can tell whether a feed is
+  // actually a viable source before/after adding it. Writes nothing.
+  if (path === "/admin/api/discovery/test-feed") {
+    if (method === "POST") {
+      const body = await readJsonBody(request);
+      const feedUrl = typeof body.url === "string" ? body.url.trim() : "";
+      if (!feedUrl) throw new ToolError("validation_failed", "A feed url is required", { field: "url" });
+      return probeFeed(feedUrl);
+    }
+    throw new ToolError("unsupported", `Method ${method} not supported on ${path}`);
+  }
+
+  // Backfill: re-classify a bounded batch of legacy parked rows still labeled the catch-all
+  // `unreachable`, rewriting each to its specific acquisition reason. Idempotent + re-runnable.
+  if (path === "/admin/api/discovery/reprobe-parked") {
+    if (method === "POST") {
+      return reprobeParked(env);
     }
     throw new ToolError("unsupported", `Method ${method} not supported on ${path}`);
   }

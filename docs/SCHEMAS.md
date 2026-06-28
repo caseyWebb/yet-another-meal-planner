@@ -421,12 +421,15 @@ detail     TEXT  -- JSON: attribution (imports), the matched-duplicate slug, the
 created_at TEXT  -- ISO timestamp (most-recent-first ordering)
 ```
 
+For a content **park** (`outcome = 'error'`), `detail.reason` is the **specific** acquisition failure — `unreachable` (the fetch threw or returned a non-2xx; the HTTP status is recorded as `detail.status` when it was a non-2xx), `no_jsonld` (page fetched, no JSON-LD), `not_a_recipe` (JSON-LD present but no schema.org `Recipe`), `incomplete` (a `Recipe` with no ingredients/instructions), or a classification-validation message — **not** a catch-all `unreachable`. This is the same taxonomy `parse_recipe` returns and what the operator feed-probe reports, so a walled/dead source is distinguishable from a feed entry that simply isn't a parseable recipe. (Legacy rows still carrying the old catch-all `unreachable` are re-classified in place by the operator re-probe, `POST /admin/api/discovery/reprobe-parked`. A re-probed row that now acquires a valid recipe — the original park was stale — is relabeled `detail.reason = 'ok'`; it **stays parked** (`outcome` is unchanged — the re-probe imports nothing, and the URL is already in the evaluated-set, so a re-import is a manual re-add), the `ok` label just flags the recovery to the operator.)
+
 Example rows:
 
 | id | url | title | source | outcome | slug | detail | created_at |
 |----|-----|-------|--------|---------|------|--------|------------|
 | `d1a…` | https://www.seriouseats.com/harissa-roast-chicken | Harissa Roast Chicken | Serious Eats | imported | harissa-roast-chicken | {"attribution":[{"tenant":"alice","score":0.6312}]} | 2026-06-26T09:00:01.000Z |
-| `d2b…` | https://example.com/not-a-recipe | Our Summer Newsletter | news@example.com | error | NULL | {"reason":"unreachable"} | 2026-06-26T09:00:02.000Z |
+| `d2b…` | https://example.com/roundup | 10 Best Summer Salads | news@example.com | error | NULL | {"reason":"not_a_recipe"} | 2026-06-26T09:00:02.000Z |
+| `d3c…` | https://www.seriouseats.com/walled | Walled Recipe | Serious Eats | error | NULL | {"reason":"unreachable","status":403} | 2026-06-26T09:00:03.000Z |
 | `d3c…` | https://www.bonappetit.com/recipe/braised-short-ribs | Braised Short Ribs | Bon Appétit | failed | NULL | {"reason":"unexpected: Workers AI embed failed: Too many subrequests by single Worker invocation"} | 2026-06-26T09:00:03.000Z |
 
 **Notes:**

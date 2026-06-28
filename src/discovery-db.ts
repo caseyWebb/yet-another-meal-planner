@@ -107,6 +107,29 @@ export async function pruneDiscoveryLog(env: Env, beforeIso: string): Promise<nu
   return r.changes;
 }
 
+/** Parked `error` rows still carrying the legacy catch-all `detail.reason = 'unreachable'`
+ *  (the backfill target). Rows already carrying a SPECIFIC reason (no_jsonld / not_a_recipe /
+ *  incomplete) are excluded by the json_extract filter, so a re-probe never redoes them.
+ *  Bounded by `limit` so one re-probe invocation can't exhaust the subrequest budget. */
+export async function readLegacyUnreachable(env: Env, limit: number): Promise<DiscoveryLogRow[]> {
+  const rows = await db(env).all<DiscoveryLogRow & { detail: string | null }>(
+    "SELECT id, url, title, source, outcome, slug, detail, created_at FROM discovery_log " +
+      "WHERE outcome = 'error' AND json_extract(detail, '$.reason') = 'unreachable' " +
+      "ORDER BY created_at DESC LIMIT ?1",
+    Math.max(1, Math.min(limit, 1000)),
+  );
+  return rows.map((r) => ({ ...r, detail: parseDetail(r.detail) }));
+}
+
+/** Rewrite one log row's `detail` JSON in place (the re-probe's only mutation). */
+export async function updateDiscoveryDetail(
+  env: Env,
+  id: string,
+  detail: Record<string, unknown>,
+): Promise<void> {
+  await db(env).run("UPDATE discovery_log SET detail = ?2 WHERE id = ?1", id, JSON.stringify(detail));
+}
+
 /** Persist per-member attribution for an imported recipe (one batch). */
 export async function recordDiscoveryMatches(
   env: Env,

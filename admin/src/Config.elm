@@ -48,6 +48,7 @@ aliasesConfig =
         [ { key = "variant", label = "Variant", kind = Text, required = True }
         , { key = "canonical", label = "Canonical", kind = Text, required = True }
         ]
+    , testUrlColumn = Nothing
     }
 
 
@@ -57,6 +58,7 @@ flyerTermsConfig =
     , slug = "flyer-terms"
     , pkColumn = "term"
     , addFields = [ { key = "term", label = "Term", kind = Text, required = True } ]
+    , testUrlColumn = Nothing
     }
 
 
@@ -71,6 +73,7 @@ feedsConfig =
         , { key = "weight", label = "Weight", kind = Number, required = False }
         , { key = "tags", label = "Tags", kind = Tags, required = False }
         ]
+    , testUrlColumn = Just "url"
     }
 
 
@@ -83,6 +86,7 @@ sendersConfig =
         [ { key = "address", label = "Address", kind = Text, required = True }
         , { key = "name", label = "Name", kind = Text, required = False }
         ]
+    , testUrlColumn = Nothing
     }
 
 
@@ -92,6 +96,7 @@ membersConfig =
     , slug = "members"
     , pkColumn = "address"
     , addFields = [ { key = "address", label = "Address", kind = Text, required = True } ]
+    , testUrlColumn = Nothing
     }
 
 

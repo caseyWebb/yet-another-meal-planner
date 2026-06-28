@@ -24,7 +24,7 @@ import { recipeSourceMap, loadRecipeEmbeddings } from "./recipe-index.js";
 import { extractRecipeSources, canonicalizeUrl, buildNewRecipe } from "./discovery.js";
 import { parseFeed } from "./feeds.js";
 import { fetchWithBrowserHeaders } from "./http.js";
-import { extractJsonLd, findRecipe, normalizeRecipe } from "./jsonld.js";
+import { acquireRecipeContent, type AcquireReason } from "./recipe-acquire.js";
 import { classifyRecipe } from "./discovery-classify.js";
 import { generateDescription, facetsFromFrontmatter } from "./description.js";
 import { CLASSIFY_MODEL } from "./discovery-classify.js";
@@ -72,6 +72,13 @@ export interface RecipeContent {
   ingredients: string[];
   instructions: string[];
 }
+
+/** The result of acquiring a candidate's page: the parsed content, or the SPECIFIC reason it
+ *  could not be acquired (the same taxonomy parse_recipe surfaces) so the park log can tell a
+ *  walled/dead source from a feed entry that simply isn't a parseable recipe. */
+export type AcquireOutcome =
+  | { ok: true; content: RecipeContent }
+  | { ok: false; reason: AcquireReason; status?: number };
 
 /** Tunable thresholds + per-tick caps (calibrated by the spike's task 0.3; injected). */
 export interface DiscoveryConfig {
@@ -165,7 +172,7 @@ export interface DiscoveryDeps {
    *  pool's title+summary embeds cost a single subrequest instead of one apiece. */
   embedMany(texts: string[]): Promise<number[][]>;
   /** Fetch + parse a candidate to structured content; null when unreachable/walled (→ parked). */
-  acquireContent(candidate: SweepCandidate): Promise<RecipeContent | null>;
+  acquireContent(candidate: SweepCandidate): Promise<AcquireOutcome>;
   /** Classify content → contract-valid frontmatter; throws (validation_failed) when it can't (→ park). */
   classify(content: RecipeContent, source: string): Promise<Record<string, unknown>>;
   /** Generate the description from the classified facets (the embed source + "why this dish"). */
@@ -328,15 +335,20 @@ export async function runDiscoverySweep(
         continue;
       }
 
-      // [2] acquire content — unreachable/walled (no inline recipe) → park (no human to paste).
-      const content = await deps.acquireContent(candidate);
+      // [2] acquire content — park with the SPECIFIC reason (unreachable / no_jsonld /
+      //     not_a_recipe / incomplete) so the operator can tell a walled/dead source from a
+      //     feed entry that simply isn't a parseable recipe (no human to paste either way).
+      const acquired = await deps.acquireContent(candidate);
       fetched++;
-      if (!content) {
-        await deps.recordLog({ ...logBase(candidate), outcome: "error", detail: { reason: "unreachable" } });
+      if (!acquired.ok) {
+        const detail: Record<string, unknown> = { reason: acquired.reason };
+        if (acquired.status !== undefined) detail.status = acquired.status;
+        await deps.recordLog({ ...logBase(candidate), outcome: "error", detail });
         res.parked++;
         res.processed++;
         continue;
       }
+      const content = acquired.content;
 
       // [3] classify — the expensive leg; a persistently-invalid classification parks.
       classified++;
@@ -654,23 +666,16 @@ export function buildDiscoveryDeps(env: Env, now: () => number = () => Date.now(
     embedMany: (texts) => embedTexts(env, texts),
 
     async acquireContent(candidate) {
-      try {
-        const res = await fetchWithBrowserHeaders(candidate.url);
-        if (!res.ok) return null;
-        const blocks = await extractJsonLd(res);
-        if (blocks.length === 0) return null;
-        const recipe = findRecipe(blocks);
-        if (!recipe) return null;
-        const norm = normalizeRecipe(recipe);
-        if (!norm.ok) return null;
-        return {
-          title: norm.recipe.title || candidate.title,
-          ingredients: norm.recipe.ingredients,
-          instructions: norm.recipe.instructions,
-        };
-      } catch {
-        return null;
-      }
+      const result = await acquireRecipeContent(candidate.url);
+      if (!result.ok) return result;
+      return {
+        ok: true,
+        content: {
+          title: result.recipe.title || candidate.title,
+          ingredients: result.recipe.ingredients,
+          instructions: result.recipe.instructions,
+        },
+      };
     },
 
     async classify(content, source) {

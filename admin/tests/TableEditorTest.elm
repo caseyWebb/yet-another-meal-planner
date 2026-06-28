@@ -5,11 +5,12 @@ the decoded `{columns, rows}` shape, encoding the add-form draft per field kind,
 `ActionState` transitions (Idle→Busy→Idle on success, →Failed on error, one-at-a-time).
 -}
 
-import Config.TableEditor as TE exposing (ActionState(..), FieldKind(..), Msg(..), Operation(..))
+import Config.TableEditor as TE exposing (ActionState(..), FieldKind(..), Msg(..), Operation(..), TestTarget(..))
 import Dict
 import Expect
 import Http
 import Json.Encode as Encode
+import RemoteData exposing (RemoteData(..))
 import Test exposing (Test, describe, test)
 
 
@@ -22,6 +23,7 @@ aliasesConfig =
         [ { key = "variant", label = "Variant", kind = Text, required = True }
         , { key = "canonical", label = "Canonical", kind = Text, required = True }
         ]
+    , testUrlColumn = Nothing
     }
 
 
@@ -36,6 +38,7 @@ feedsConfig =
         , { key = "weight", label = "Weight", kind = Number, required = False }
         , { key = "tags", label = "Tags", kind = Tags, required = False }
         ]
+    , testUrlColumn = Just "url"
     }
 
 
@@ -44,6 +47,12 @@ actionAfter : List Msg -> ActionState
 actionAfter msgs =
     List.foldl (\m model -> Tuple.first (TE.update m model)) (Tuple.first (TE.init aliasesConfig)) msgs
         |> .action
+
+
+{-| Drive `update` from a feeds model, returning the full model (to inspect both action + test). -}
+feedsModelAfter : List Msg -> TE.Model
+feedsModelAfter msgs =
+    List.foldl (\m model -> Tuple.first (TE.update m model)) (Tuple.first (TE.init feedsConfig)) msgs
 
 
 suite : Test
@@ -118,5 +127,33 @@ suite =
                 \_ ->
                     actionAfter [ RemoveRow "EVOO" ]
                         |> Expect.equal (Busy (Remove "EVOO"))
+            ]
+        , describe "feed test action (read-only, independent of mutations)"
+            [ test "TestFeed sets the test to Loading and leaves action untouched" <|
+                \_ ->
+                    let
+                        model =
+                            feedsModelAfter [ TestFeed TestDraft "https://feed" ]
+                    in
+                    ( model.action, model.test )
+                        |> Expect.equal ( Idle, Just ( TestDraft, Loading ) )
+            , test "a test does NOT disturb an in-flight add" <|
+                \_ ->
+                    feedsModelAfter [ DraftChanged "url" "https://a", SubmitAdd, TestFeed (TestRow "https://b") "https://b" ]
+                        |> .action
+                        |> Expect.equal (Busy Add)
+            , test "TestFeed with a blank url is ignored (no test shown)" <|
+                \_ ->
+                    feedsModelAfter [ TestFeed TestDraft "" ]
+                        |> .test
+                        |> Expect.equal Nothing
+            , test "GotTest stores the failure inside the test state, action stays Idle" <|
+                \_ ->
+                    let
+                        model =
+                            feedsModelAfter [ TestFeed TestDraft "https://feed", GotTest TestDraft (Err Http.Timeout) ]
+                    in
+                    ( model.action, model.test )
+                        |> Expect.equal ( Idle, Just ( TestDraft, Failure Http.Timeout ) )
             ]
         ]
