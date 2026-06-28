@@ -353,6 +353,106 @@ describe("POST /admin/api/discovery/dry-run", () => {
   });
 });
 
+// --- POST /admin/api/discovery/:id/retry ------------------------------------
+
+/** D1 fake that serves a single discovery_log row by id, and tracks updates. */
+function rowD1(row: { id: string; url: string; outcome: string; attempts: number } | null): {
+  DB: Env["DB"];
+  updates: Array<{ id: string; outcome: string }>;
+} {
+  const updates: Array<{ id: string; outcome: string }> = [];
+  const makeStmt = (sql: string) => {
+    let binds: unknown[] = [];
+    const stmt = {
+      bind(...v: unknown[]) { binds = v; return stmt; },
+      async first<T>() {
+        if (/FROM discovery_log WHERE id/.test(sql)) {
+          if (!row || row.id !== binds[0]) return null as T | null;
+          return {
+            id: row.id, url: row.url, title: "Test", source: "feed", outcome: row.outcome,
+            slug: null, detail: null, created_at: "2026-01-01T00:00:00.000Z",
+            attempts: row.attempts, next_retry_at: null,
+          } as T | null;
+        }
+        return null as T | null;
+      },
+      async all<T>() {
+        return { results: [] as T[], success: true as const, meta: { changes: 0 } };
+      },
+      async run() {
+        if (/UPDATE discovery_log SET outcome/.test(sql)) {
+          updates.push({ id: binds[0] as string, outcome: binds[1] as string });
+        }
+        return { success: true as const, meta: { changes: 1 } };
+      },
+    };
+    return stmt;
+  };
+  const DB = {
+    prepare: (sql: string) => makeStmt(sql) as unknown as D1PreparedStatement,
+    async batch() { return []; },
+  } as unknown as Env["DB"];
+  return { DB, updates };
+}
+
+describe("POST /admin/api/discovery/:id/retry", () => {
+  it("404s for an unknown row id", async () => {
+    const { DB } = rowD1(null);
+    const env = devEnv(DB);
+    const res = await handleAdmin(
+      new Request("http://localhost/admin/api/discovery/unknown-id/retry", { method: "POST" }),
+      env,
+    );
+    expect(res.status).toBe(404);
+  });
+
+  it("405s for a row whose outcome is not error/failed (e.g. imported)", async () => {
+    const { DB } = rowD1({ id: "row1", url: "https://example.com/r", outcome: "imported", attempts: 0 });
+    const env = devEnv(DB);
+    const res = await handleAdmin(
+      new Request("http://localhost/admin/api/discovery/row1/retry", { method: "POST" }),
+      env,
+    );
+    expect(res.status).toBe(405);
+  });
+
+  it("405s for a non-POST method", async () => {
+    const { DB } = rowD1({ id: "row1", url: "https://example.com/r", outcome: "error", attempts: 0 });
+    const env = devEnv(DB);
+    const res = await handleAdmin(
+      new Request("http://localhost/admin/api/discovery/row1/retry", { method: "GET" }),
+      env,
+    );
+    expect(res.status).toBe(405);
+  });
+});
+
+// --- DELETE /admin/api/discovery/:id ----------------------------------------
+
+describe("DELETE /admin/api/discovery/:id", () => {
+  it("404s for an unknown row id", async () => {
+    const { DB } = rowD1(null);
+    const env = devEnv(DB);
+    const res = await handleAdmin(
+      new Request("http://localhost/admin/api/discovery/unknown-id", { method: "DELETE" }),
+      env,
+    );
+    expect(res.status).toBe(404);
+  });
+
+  it("deletes a known row and returns { deleted: id }", async () => {
+    const { DB } = rowD1({ id: "row1", url: "https://example.com/r", outcome: "error", attempts: 1 });
+    const env = devEnv(DB);
+    const res = await handleAdmin(
+      new Request("http://localhost/admin/api/discovery/row1", { method: "DELETE" }),
+      env,
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { deleted: string };
+    expect(body.deleted).toBe("row1");
+  });
+});
+
 // --- SPA deep-link for /admin/config ----------------------------------------
 
 describe("SPA deep-link for /admin/config (client route)", () => {

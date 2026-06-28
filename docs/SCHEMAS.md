@@ -409,39 +409,49 @@ The **discovery sweep**'s per-candidate **outcome log** — **one table serving 
 - the intake **"already evaluated" dedup set** — any row for a `url` marks it handled, so a re-run never reprocesses a candidate (the log **is** the sweep's progress state — there is no separate cursor);
 - the **parked/failed surface** — `WHERE outcome IN ('error', 'failed')`, read by the agent-readable `read_discovery_errors` tool; the `failed` count also flips the `discovery-sweep` health record's `ok`.
 
-**Shared** (not per-tenant — discovery source URLs/outcomes are group content). Each sweep tick **appends** one row per terminal outcome and **prunes** rows older than the retention window (`LOG_RETENTION_DAYS`), so it doesn't grow without bound — a `no_match` aged out of the window may be re-evaluated later, which is acceptable. Schema: `migrations/d1/0016_background_discovery.sql`.
+**Shared** (not per-tenant — discovery source URLs/outcomes are group content). Each sweep tick **appends** one row per terminal outcome and **prunes** rows older than the retention window (`LOG_RETENTION_DAYS`), so it doesn't grow without bound — a `no_match` aged out of the window may be re-evaluated later, which is acceptable. Schema: `migrations/d1/0016_background_discovery.sql` + `migrations/d1/0018_discovery_retry.sql`.
 
 ```sql
 -- D1 discovery_log table — one row per candidate outcome (append-only within a tick, retention-pruned).
--- PRIMARY KEY (id). Indexed three ways for its three roles:
---   idx_discovery_log_url     on (url)        — the dedup "already evaluated" lookup
---   idx_discovery_log_created on (created_at) — the most-recent-first operator log
---   idx_discovery_log_outcome on (outcome)    — the parked/failed (outcome IN ('error','failed')) subset
-id         TEXT  -- sweep-provided unique id (PK)
-url        TEXT  -- canonical source URL (the dedup key)
-title      TEXT  -- candidate title
-source     TEXT  -- feed name / sender address (provenance)
-outcome    TEXT  -- imported | duplicate | no_match | rejected_source | dietary_gated | error | failed  NOT NULL
-slug       TEXT  -- resulting recipe slug (imports only; NULL otherwise)
-detail     TEXT  -- JSON: attribution (imports), the matched-duplicate slug, the validation/fetch error, etc.
-created_at TEXT  -- ISO timestamp (most-recent-first ordering)
+-- PRIMARY KEY (id). Indexed four ways:
+--   idx_discovery_log_url     on (url)              — the dedup "already evaluated" lookup
+--   idx_discovery_log_created on (created_at)       — the most-recent-first operator log
+--   idx_discovery_log_outcome on (outcome)          — the parked/failed (outcome IN ('error','failed')) subset
+--   idx_discovery_log_retry   on (outcome, next_retry_at) — due-retry scan
+id             TEXT     -- sweep-provided unique id (PK)
+url            TEXT     -- canonical source URL (the dedup key)
+title          TEXT     -- candidate title
+source         TEXT     -- feed name / sender address (provenance)
+outcome        TEXT     -- imported | duplicate | no_match | rejected_source | dietary_gated | error | failed  NOT NULL
+slug           TEXT     -- resulting recipe slug (imports only; NULL otherwise)
+detail         TEXT     -- JSON: attribution (imports), the matched-duplicate slug, the validation/fetch error, etc.
+created_at     TEXT     -- ISO timestamp (most-recent-first ordering)
+attempts       INTEGER  -- how many acquisition passes this row has had (0 = non-retryable / legacy; ≥1 = retryable park)
+next_retry_at  TEXT     -- ISO timestamp when this row next enters the cron retry stream; NULL = terminal (not retryable)
 ```
 
-For a content **park** (`outcome = 'error'`), `detail.reason` is the **specific** acquisition failure — `unreachable` (the fetch threw or returned a non-2xx; the HTTP status is recorded as `detail.status` when it was a non-2xx), `no_jsonld` (page fetched, no JSON-LD), `not_a_recipe` (JSON-LD present but no schema.org `Recipe`), `incomplete` (a `Recipe` with no ingredients/instructions), or a classification-validation message — **not** a catch-all `unreachable`. This is the same taxonomy `parse_recipe` returns and what the operator feed-probe reports, so a walled/dead source is distinguishable from a feed entry that simply isn't a parseable recipe. (Legacy rows still carrying the old catch-all `unreachable` are re-classified in place by the operator re-probe, `POST /admin/api/discovery/reprobe-parked`. A re-probed row that now acquires a valid recipe — the original park was stale — is relabeled `detail.reason = 'ok'`; it **stays parked** (`outcome` is unchanged — the re-probe imports nothing, and the URL is already in the evaluated-set, so a re-import is a manual re-add), the `ok` label just flags the recovery to the operator.)
+For a content **park** (`outcome = 'error'`), `detail.reason` is the **specific** acquisition failure — `unreachable` (the fetch threw or returned a non-2xx; the HTTP status is recorded as `detail.status` when it was a non-2xx), `no_jsonld` (page fetched, no JSON-LD), `not_a_recipe` (JSON-LD present but no schema.org `Recipe`), `incomplete` (a `Recipe` with no ingredients/instructions), or a classification-validation message — **not** a catch-all `unreachable`. This is the same taxonomy `parse_recipe` returns and what the operator feed-probe reports, so a walled/dead source is distinguishable from a feed entry that simply isn't a parseable recipe.
+
+The **retry lifecycle** (`attempts` / `next_retry_at`):
+- When a retryable park is first written (`outcome = 'error'`, `detail.reason = 'unreachable'`; or `outcome = 'failed'`), `attempts = 1` and `next_retry_at` is set to the first backoff slot.
+- Each sweep tick loads due rows (`next_retry_at <= now`) as a bounded retry sub-stream and re-runs the full acquisition pipeline on them in place (`resolveDiscoveryRow` on success/termination; `bumpDiscoveryRetry` on re-failure within cap).
+- On successful re-acquisition the row is resolved: `outcome` updates, `next_retry_at` clears (terminal).
+- On exhaustion (`attempts >= retryMaxAttempts`) the row terminates to `outcome = 'error'`, `next_retry_at = NULL` — health clears (the `countDiscoveryFailures` query counts `outcome = 'failed'` only).
+- Legacy rows (`attempts = 0`) and non-retryable parks (`next_retry_at = NULL`) are never re-admitted by the cron retry stream; an operator can manually retry any `error`/`failed` row via `POST /admin/api/discovery/:id/retry` regardless of attempt count.
 
 Example rows:
 
-| id | url | title | source | outcome | slug | detail | created_at |
-|----|-----|-------|--------|---------|------|--------|------------|
-| `d1a…` | https://www.seriouseats.com/harissa-roast-chicken | Harissa Roast Chicken | Serious Eats | imported | harissa-roast-chicken | {"attribution":[{"tenant":"alice","score":0.6312}]} | 2026-06-26T09:00:01.000Z |
-| `d2b…` | https://example.com/roundup | 10 Best Summer Salads | news@example.com | error | NULL | {"reason":"not_a_recipe"} | 2026-06-26T09:00:02.000Z |
-| `d3c…` | https://www.seriouseats.com/walled | Walled Recipe | Serious Eats | error | NULL | {"reason":"unreachable","status":403} | 2026-06-26T09:00:03.000Z |
-| `d3c…` | https://www.bonappetit.com/recipe/braised-short-ribs | Braised Short Ribs | Bon Appétit | failed | NULL | {"reason":"unexpected: Workers AI embed failed: Too many subrequests by single Worker invocation"} | 2026-06-26T09:00:03.000Z |
+| id | url | title | source | outcome | slug | detail | created_at | attempts | next_retry_at |
+|----|-----|-------|--------|---------|------|--------|------------|----------|---------------|
+| `d1a…` | https://www.seriouseats.com/harissa-roast-chicken | Harissa Roast Chicken | Serious Eats | imported | harissa-roast-chicken | {"attribution":[{"tenant":"alice","score":0.6312}]} | 2026-06-26T09:00:01.000Z | 0 | NULL |
+| `d2b…` | https://example.com/roundup | 10 Best Summer Salads | news@example.com | error | NULL | {"reason":"not_a_recipe"} | 2026-06-26T09:00:02.000Z | 0 | NULL |
+| `d3c…` | https://www.seriouseats.com/walled | Walled Recipe | Serious Eats | error | NULL | {"reason":"unreachable","status":403} | 2026-06-26T09:00:03.000Z | 1 | 2026-06-26T10:00:03.000Z |
+| `d4d…` | https://www.bonappetit.com/recipe/braised-short-ribs | Braised Short Ribs | Bon Appétit | failed | NULL | {"reason":"unexpected: Workers AI embed failed: Too many subrequests"} | 2026-06-26T09:00:04.000Z | 1 | 2026-06-26T10:00:04.000Z |
 
 **Notes:**
-- `outcome` is one of `imported` | `duplicate` | `no_match` | `rejected_source` | `dietary_gated` | `error` | `failed`. `error` is a **content park** (an un-importable page — unreachable/walled/invalid), an expected steady state; `failed` is an **infrastructure failure** (a transient env.AI/D1 error — a subrequest-limit hit, an outage), which degrades the `discovery-sweep` health record (`countDiscoveryFailures`) until cleared. `read_discovery_errors` returns both; `list_new_for_me` reads imports through `discovery_matches`, not this log.
-- The dedup set is **every** distinct `url` in the table regardless of outcome, so a `duplicate`/`no_match`/`error`/`failed` candidate is not re-fetched until its row is cleared or ages past the retention window.
-- The full log (every outcome) is served to the operator at `GET /admin/api/logs/discovery` → `{ entries: [...] }` (Access-gated, most-recent-first, bounded) — the **Logs › Discovery** admin view.
+- `outcome` is one of `imported` | `duplicate` | `no_match` | `rejected_source` | `dietary_gated` | `error` | `failed`. `error` is a **content park** (an un-importable page — unreachable/walled/invalid), an expected steady state; `failed` is an **infrastructure failure** (a transient env.AI/D1 error), which degrades the `discovery-sweep` health record (`countDiscoveryFailures`) until cleared or terminalized. `read_discovery_errors` returns both; `failed` rows are transient/in-retry until their attempt cap is exhausted (then they terminalize to `error`).
+- The dedup set is **every** distinct `url` in the table regardless of outcome, so a `duplicate`/`no_match`/`error`/`failed` candidate is not re-fetched as a fresh candidate — retryable rows re-enter via the explicit retry stream only.
+- The full log (every outcome) is served to the operator at `GET /admin/api/logs/discovery` → `{ entries: [...] }` (Access-gated, most-recent-first, bounded) — the **Logs › Discovery** admin view. Per-row **Retry** and **Delete** buttons appear for `error`/`failed` rows.
 
 ## meal plan (per-tenant, D1 session state)
 

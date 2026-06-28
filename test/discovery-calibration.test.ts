@@ -188,6 +188,9 @@ function makeFakeDeps(opts: {
     importRecipe: async () => "real-import-slug",
     recordMatches: async () => {},
     recordLog: async () => {},
+    loadRetries: async () => [],
+    resolveRow: async () => {},
+    bumpRetry: async () => {},
   };
 }
 

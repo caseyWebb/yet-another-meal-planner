@@ -36,6 +36,9 @@ import { readTasteVectors, reconcileTasteVectors, buildTasteDeps } from "./taste
 import {
   recordDiscoveryLog,
   loadEvaluatedUrls,
+  loadDueRetries,
+  resolveDiscoveryRow,
+  bumpDiscoveryRetry,
   recordDiscoveryMatches,
   pruneDiscoveryLog,
   countDiscoveryFailures,
@@ -52,6 +55,10 @@ export interface SweepCandidate {
   summary: string | null;
   /** Provenance for the log (feed name / sender address). */
   source: string;
+  /** For retry candidates: the existing discovery_log row to resolve in place (not a fresh INSERT). */
+  existingRowId?: string;
+  /** For retry candidates: the current attempt count (used to compute backoff / terminalize). */
+  attempts?: number;
 }
 
 /** One member's taste signal for the matcher (vectors resolved by the deps). */
@@ -99,6 +106,15 @@ export interface DiscoveryConfig {
   maxCandidatesPerTick: number;
   /** Max IMPORTS per tick (the corpus-bloat governor); excess is deferred + logged. */
   rateCap: number;
+  /** Exponential backoff schedule for retryable parks: minutes to wait before each re-attempt.
+   *  Index 0 = wait after the 1st park, index 1 = after the 2nd attempt fails, etc.
+   *  When exhausted, the last value is reused. */
+  retryBackoffMinutes: number[];
+  /** Max retry attempts before a retryable row becomes terminal. */
+  retryMaxAttempts: number;
+  /** Max retryable-row fetches per tick — the retry sub-budget that prevents retries from
+   *  starving fresh intake of the shared fetchMaxPerTick budget. */
+  retryFetchMaxPerTick: number;
 }
 
 export const DEFAULT_CONFIG: DiscoveryConfig = {
@@ -115,6 +131,11 @@ export const DEFAULT_CONFIG: DiscoveryConfig = {
   fetchMaxPerTick: 16,
   maxCandidatesPerTick: 150,
   rateCap: 10,
+  // Retry backoff: 1h, 6h, 1d, 3d — placeholders, tunable like the existing thresholds.
+  retryBackoffMinutes: [60, 360, 1440, 4320],
+  retryMaxAttempts: 5,
+  // Retry sub-budget: < fetchMaxPerTick so retries cannot consume the entire fetch budget.
+  retryFetchMaxPerTick: 4,
 };
 
 export type Outcome =
@@ -163,6 +184,8 @@ export interface SweepResult {
 export interface DiscoveryDeps {
   /** New candidates this tick (deps poll feeds + read the inbox + dedup vs corpus/rejections/log). */
   loadCandidates(): Promise<SweepCandidate[]>;
+  /** Due retryable rows (outcome error/failed, next_retry_at <= now, not rejected) as candidates. */
+  loadRetries(nowIso: string, limit: number): Promise<SweepCandidate[]>;
   /** Every member's resolved taste signal. */
   loadMembers(): Promise<SweepMember[]>;
   /** Every corpus recipe's description vector (for L2 dedup), as [slug, vector] pairs. */
@@ -184,8 +207,12 @@ export interface DiscoveryDeps {
   importRecipe(frontmatter: Record<string, unknown>, content: RecipeContent, descVector: number[]): Promise<string>;
   /** Persist per-member attribution for an imported recipe. */
   recordMatches(slug: string, attributions: Attribution[]): Promise<void>;
-  /** Append one outcome row to the discovery log. */
-  recordLog(entry: LogEntry): Promise<void>;
+  /** Append one outcome row to the discovery log (INSERT). Opts carry retry state for retryable parks. */
+  recordLog(entry: LogEntry, opts?: { attempts?: number; nextRetryAt?: string | null }): Promise<void>;
+  /** Update an existing row in place when a retry resolves (success or exhaustion terminalize). */
+  resolveRow(id: string, entry: LogEntry): Promise<void>;
+  /** Bump the retry clock on an existing row when a retry re-fails but hasn't hit the cap. */
+  bumpRetry(id: string, attempts: number, nextRetryAt: string): Promise<void>;
 }
 
 // --- pure matcher / dedup helpers (the same cosine the search ranker uses) ---
@@ -262,14 +289,18 @@ export function triageText(c: SweepCandidate): string {
 /**
  * Run one discovery sweep tick: process the gathered candidates through triage → classify →
  * dedup → match → confirm → import, bounded by the classify cap and the import rate cap, and
- * record a log entry for every terminal outcome. Pure orchestration over injected deps; all
- * writes are idempotent (the recorded outcome keeps a candidate from reprocessing), so a
- * thrown/retried tick is safe.
+ * record a log entry for every terminal outcome. Also processes the due-retry stream (parked
+ * rows whose next_retry_at has passed) under a dedicated sub-budget so retries can't starve
+ * fresh intake. Pure orchestration over injected deps; all writes are idempotent (the recorded
+ * outcome keeps a candidate from reprocessing), so a thrown/retried tick is safe.
  */
 export async function runDiscoverySweep(
   deps: DiscoveryDeps,
   config: DiscoveryConfig = DEFAULT_CONFIG,
 ): Promise<SweepResult> {
+  const nowMs = Date.now();
+  const nowIso = new Date(nowMs).toISOString();
+
   const [candidates, members, corpus] = await Promise.all([
     deps.loadCandidates(),
     deps.loadMembers(),
@@ -308,6 +339,7 @@ export async function runDiscoverySweep(
     triageVecs.push(...(await deps.embedMany(pool.slice(i, i + EMBED_INPUT_BATCH).map(triageText))));
   }
 
+  // --- Fresh intake ---
   for (let i = 0; i < pool.length; i++) {
     const candidate = pool[i];
     // Governor / budget: once the rate cap or the classify cap is hit, defer the rest (no
@@ -316,131 +348,60 @@ export async function runDiscoverySweep(
       res.deferred++;
       continue;
     }
-
-    try {
-      // [1] cheap triage — drop anything near nobody BEFORE spending a fetch/classify. The
-      //     blurb vector was embedded in the batch above; this is now a pure cosine check.
-      if (!nearAnyMember(triageVecs[i] ?? [], members, config.triageThreshold)) {
-        await deps.recordLog({ ...logBase(candidate), outcome: "no_match", detail: { stage: "triage" } });
-        res.noMatch++;
-        res.processed++;
-        continue;
-      }
-
-      // Fetch budget: the external page fetch is the scarce shared subrequest, and a parse
-      // failure spends one WITHOUT reaching classify — so bound the fetches directly, not via
-      // the classify cap. A triage survivor we cannot afford to fetch this tick is deferred
-      // (re-gathered next tick); triage non-matches above are still cheaply finalized.
-      if (fetched >= config.fetchMaxPerTick) {
-        res.deferred++;
-        continue;
-      }
-
-      // [2] acquire content — park with the SPECIFIC reason (unreachable / no_jsonld /
-      //     not_a_recipe / incomplete) so the operator can tell a walled/dead source from a
-      //     feed entry that simply isn't a parseable recipe (no human to paste either way).
-      const acquired = await deps.acquireContent(candidate);
-      fetched++;
-      if (!acquired.ok) {
-        const detail: Record<string, unknown> = { reason: acquired.reason };
-        if (acquired.status !== undefined) detail.status = acquired.status;
-        await deps.recordLog({ ...logBase(candidate), outcome: "error", detail });
-        res.parked++;
-        res.processed++;
-        continue;
-      }
-      const content = acquired.content;
-
-      // [3] classify — the expensive leg; a persistently-invalid classification parks.
-      classified++;
-      let frontmatter: Record<string, unknown>;
-      try {
-        frontmatter = await deps.classify(content, candidate.url);
-      } catch (e) {
-        const message = e instanceof Error ? e.message : String(e);
-        await deps.recordLog({ ...logBase(candidate), outcome: "error", detail: { reason: message } });
-        res.parked++;
-        res.processed++;
-        continue;
-      }
-
-      // [4] describe + embed the description — the authoritative vector for dedup + match.
-      const description = await deps.describe(frontmatter);
-      const descVec = await deps.embed(description);
-
-      // [5] dedup — same dish already in the corpus (L2) or imported earlier this tick (L3).
-      const dupSlug = findDuplicate(descVec, corpus, config.dedupThreshold) ??
-        findDuplicate(descVec, importedVectors, config.dedupThreshold);
-      if (dupSlug) {
-        await deps.recordLog({ ...logBase(candidate), outcome: "duplicate", detail: { duplicate_of: dupSlug } });
-        res.duplicate++;
-        res.processed++;
-        continue;
-      }
-
-      // [6] match (cosine + repel + dietary gate), then the negation-aware LLM confirm.
-      const { matches, gatedByDiet } = matchMembers(
-        descVec,
-        asStringArray(frontmatter.dietary),
-        members,
-        config,
-      );
-      if (matches.length === 0) {
-        const outcome: Outcome = gatedByDiet ? "dietary_gated" : "no_match";
-        await deps.recordLog({ ...logBase(candidate), outcome, detail: { stage: "match" } });
-        if (gatedByDiet) res.dietaryGated++;
-        else res.noMatch++;
-        res.processed++;
-        continue;
-      }
-      const matchMembersList = members.filter((m) => matches.some((a) => a.tenant === m.tenant));
-      const confirmed = new Set(await deps.confirmMatches(candidate.title, description, matchMembersList));
-      const attributions = matches.filter((a) => confirmed.has(a.tenant));
-      if (attributions.length === 0) {
-        await deps.recordLog({ ...logBase(candidate), outcome: "no_match", detail: { stage: "confirm" } });
-        res.noMatch++;
-        res.processed++;
-        continue;
-      }
-
-      // [7] import — assemble + validate + write; attribute; log; seed the L3 vector. An
-      // import failure (e.g. a slug collision) parks the candidate rather than crashing the tick.
-      let slug: string;
-      try {
-        slug = await deps.importRecipe(frontmatter, content, descVec);
-      } catch (e) {
-        const message = e instanceof Error ? e.message : String(e);
-        await deps.recordLog({ ...logBase(candidate), outcome: "error", detail: { reason: `import: ${message}` } });
-        res.parked++;
-        res.processed++;
-        continue;
-      }
-      await deps.recordMatches(slug, attributions);
-      await deps.recordLog({
-        ...logBase(candidate),
-        outcome: "imported",
-        slug,
-        detail: { attribution: attributions },
-      });
-      importedVectors.push({ slug, vector: descVec });
-      res.imported++;
-      res.processed++;
-    } catch (e) {
-      // An unexpected transient AI/D1 failure (env.AI hiccup, a subrequest-limit hit, a D1
-      // blip) drops THIS candidate rather than throwing out of the loop — the unattended sweep
-      // must keep making progress. It is recorded as `failed` (an INFRASTRUCTURE failure, not a
-      // content `error`): a real fault that flips the job's health `ok` until it clears, vs an
-      // expected un-importable page. recordLog is best-effort; if it too fails, the candidate is
-      // left un-evaluated and re-tried next tick (idempotent, so that is safe).
-      const message = e instanceof Error ? e.message : String(e);
-      try {
-        await deps.recordLog({ ...logBase(candidate), outcome: "failed", detail: { reason: `unexpected: ${message}` } });
-      } catch {
-        /* logging itself failed — skip; next tick re-evaluates this candidate */
-      }
-      res.failed++;
-      res.processed++;
+    // Fetch budget guard: a triage survivor we cannot afford to fetch this tick is deferred.
+    // Triage non-matches (above) are still cheaply finalized even when the fetch budget is full.
+    if (fetched >= config.fetchMaxPerTick) {
+      res.deferred++;
+      continue;
     }
+
+    const r = await processCandidate(deps, config, candidate, {
+      triageVec: triageVecs[i] ?? [],
+      members,
+      corpus,
+      importedVectors,
+      nowMs,
+    });
+    if (r.didFetch) fetched++;
+    if (r.didClassify) classified++;
+
+    if (r.outcome === "no_match") res.noMatch++;
+    else if (r.outcome === "duplicate") res.duplicate++;
+    else if (r.outcome === "dietary_gated") res.dietaryGated++;
+    else if (r.outcome === "imported") res.imported++;
+    else if (r.outcome === "error") res.parked++;
+    else if (r.outcome === "failed") res.failed++;
+    res.processed++;
+  }
+
+  // --- Retry stream ---
+  // Due retryable rows, processed AFTER fresh intake so retries don't starve fresh fetches.
+  // Bounded by both retryFetchMaxPerTick (the retry sub-budget) and the shared fetchMaxPerTick.
+  const retries = await deps.loadRetries(nowIso, config.retryFetchMaxPerTick);
+  let retryFetched = 0;
+  for (const candidate of retries) {
+    if (retryFetched >= config.retryFetchMaxPerTick || fetched >= config.fetchMaxPerTick) break;
+    if (res.imported >= config.rateCap || classified >= config.classifyMaxPerTick) break;
+
+    const r = await processCandidate(deps, config, candidate, {
+      triageVec: null, // retry candidates skip triage — already evaluated before
+      members,
+      corpus,
+      importedVectors,
+      nowMs,
+    });
+    // All retries attempt a fetch (the pipeline starts at acquire); count against shared budget.
+    fetched++;
+    retryFetched++;
+    if (r.didClassify) classified++;
+
+    if (r.outcome === "no_match") res.noMatch++;
+    else if (r.outcome === "duplicate") res.duplicate++;
+    else if (r.outcome === "dietary_gated") res.dietaryGated++;
+    else if (r.outcome === "imported") res.imported++;
+    else if (r.outcome === "error") res.parked++;
+    else if (r.outcome === "failed") res.failed++;
+    res.processed++;
   }
 
   return res;
@@ -448,6 +409,166 @@ export async function runDiscoverySweep(
 
 function logBase(c: SweepCandidate): Pick<LogEntry, "url" | "title" | "source"> {
   return { url: c.url, title: c.title, source: c.source };
+}
+
+/** ISO timestamp for the next retry attempt, based on how many have been made so far. */
+function nextRetryAt(config: DiscoveryConfig, nowMs: number, currentAttempts: number): string {
+  const idx = Math.min(currentAttempts - 1, config.retryBackoffMinutes.length - 1);
+  const delayMs = (config.retryBackoffMinutes[idx] ?? 60) * 60 * 1000;
+  return new Date(nowMs + delayMs).toISOString();
+}
+
+/** Whether this acquisition reason is retryable (transient) vs structural (terminal). */
+function isRetryableReason(reason: string): boolean {
+  return reason === "unreachable";
+}
+
+/**
+ * The per-candidate pipeline: acquire → classify → dedup → match → confirm → import.
+ * Shared by the cron fresh-intake loop, the cron retry stream, and the admin manual-retry
+ * endpoint — so the retry and manual-retry paths get identical pipeline behavior.
+ *
+ * `candidate.existingRowId` selects resolve-in-place vs INSERT. When set, on success
+ * `deps.resolveRow` is called; on re-failure `deps.bumpRetry` or `deps.resolveRow`
+ * (terminalize) is called. `bypassCap` forces resolve-in-place even on a repeated failure
+ * (the manual-retry operator override — always one pass, never a bump).
+ *
+ * Returns the outcome and whether a fetch/classify was performed (for caller counter tracking).
+ */
+export async function processCandidate(
+  deps: DiscoveryDeps,
+  config: DiscoveryConfig,
+  candidate: SweepCandidate,
+  ctx: {
+    /** Precomputed triage vector; null = skip triage (retry + manual-retry paths). */
+    triageVec: number[] | null;
+    members: SweepMember[];
+    corpus: Array<{ slug: string; vector: number[] }>;
+    importedVectors: Array<{ slug: string; vector: number[] }>;
+    nowMs: number;
+  },
+  opts: { bypassCap?: boolean } = {},
+): Promise<{ outcome: Outcome; didFetch: boolean; didClassify: boolean }> {
+  const { triageVec, members, corpus, importedVectors, nowMs } = ctx;
+  const existingRowId = candidate.existingRowId;
+  const currentAttempts = candidate.attempts ?? 0;
+
+  // Helpers that pick INSERT vs resolve-in-place depending on whether this is a retry.
+  const logSuccess = async (entry: LogEntry) => {
+    if (existingRowId) {
+      await deps.resolveRow(existingRowId, entry);
+    } else {
+      await deps.recordLog(entry);
+    }
+  };
+
+  const logPark = async (entry: LogEntry, retryable: boolean) => {
+    if (existingRowId) {
+      // Retry path: bump or terminalize.
+      const newAttempts = currentAttempts + 1;
+      const exhausted = opts.bypassCap || newAttempts >= config.retryMaxAttempts;
+      if (exhausted) {
+        // Terminalize: resolve to a terminal error park (clears next_retry_at).
+        await deps.resolveRow(existingRowId, { ...entry, outcome: "error" });
+      } else {
+        await deps.bumpRetry(existingRowId, newAttempts, nextRetryAt(config, nowMs, newAttempts));
+      }
+    } else if (retryable) {
+      // Fresh park with a retryable reason: schedule the first retry.
+      await deps.recordLog(entry, { attempts: 1, nextRetryAt: nextRetryAt(config, nowMs, 1) });
+    } else {
+      await deps.recordLog(entry);
+    }
+  };
+
+  try {
+    // [1] cheap triage — skip for retry candidates (already evaluated before).
+    if (triageVec !== null) {
+      if (!nearAnyMember(triageVec, members, config.triageThreshold)) {
+        await logSuccess({ ...logBase(candidate), outcome: "no_match", detail: { stage: "triage" } });
+        return { outcome: "no_match", didFetch: false, didClassify: false };
+      }
+    }
+
+    // [2] acquire content — park with the SPECIFIC reason so the operator can tell failure types.
+    const acquired = await deps.acquireContent(candidate);
+    if (!acquired.ok) {
+      const detail: Record<string, unknown> = { reason: acquired.reason };
+      if (acquired.status !== undefined) detail.status = acquired.status;
+      await logPark({ ...logBase(candidate), outcome: "error", detail }, isRetryableReason(acquired.reason));
+      return { outcome: "error", didFetch: true, didClassify: false };
+    }
+    const content = acquired.content;
+
+    // [3] classify — the expensive leg; a persistently-invalid classification parks (terminal).
+    let frontmatter: Record<string, unknown>;
+    try {
+      frontmatter = await deps.classify(content, candidate.url);
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      await logSuccess({ ...logBase(candidate), outcome: "error", detail: { reason: message } });
+      return { outcome: "error", didFetch: true, didClassify: true };
+    }
+
+    // [4] describe + embed the description — the authoritative vector for dedup + match.
+    const description = await deps.describe(frontmatter);
+    const descVec = await deps.embed(description);
+
+    // [5] dedup — same dish already in the corpus (L2) or imported earlier this tick (L3).
+    const dupSlug =
+      findDuplicate(descVec, corpus, config.dedupThreshold) ??
+      findDuplicate(descVec, importedVectors, config.dedupThreshold);
+    if (dupSlug) {
+      await logSuccess({ ...logBase(candidate), outcome: "duplicate", detail: { duplicate_of: dupSlug } });
+      return { outcome: "duplicate", didFetch: true, didClassify: true };
+    }
+
+    // [6] match (cosine + repel + dietary gate), then the negation-aware LLM confirm.
+    const { matches, gatedByDiet } = matchMembers(
+      descVec,
+      asStringArray(frontmatter.dietary),
+      members,
+      config,
+    );
+    if (matches.length === 0) {
+      const outcome: Outcome = gatedByDiet ? "dietary_gated" : "no_match";
+      await logSuccess({ ...logBase(candidate), outcome, detail: { stage: "match" } });
+      return { outcome, didFetch: true, didClassify: true };
+    }
+    const matchMembersList = members.filter((m) => matches.some((a) => a.tenant === m.tenant));
+    const confirmed = new Set(await deps.confirmMatches(candidate.title, description, matchMembersList));
+    const attributions = matches.filter((a) => confirmed.has(a.tenant));
+    if (attributions.length === 0) {
+      await logSuccess({ ...logBase(candidate), outcome: "no_match", detail: { stage: "confirm" } });
+      return { outcome: "no_match", didFetch: true, didClassify: true };
+    }
+
+    // [7] import — assemble + validate + write; attribute; log; seed the L3 vector.
+    let slug: string;
+    try {
+      slug = await deps.importRecipe(frontmatter, content, descVec);
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      await logSuccess({ ...logBase(candidate), outcome: "error", detail: { reason: `import: ${message}` } });
+      return { outcome: "error", didFetch: true, didClassify: true };
+    }
+    await deps.recordMatches(slug, attributions);
+    await logSuccess({ ...logBase(candidate), outcome: "imported", slug, detail: { attribution: attributions } });
+    importedVectors.push({ slug, vector: descVec });
+    return { outcome: "imported", didFetch: true, didClassify: true };
+  } catch (e) {
+    // An unexpected transient AI/D1 failure — record as `failed` (infra failure, not content error).
+    const message = e instanceof Error ? e.message : String(e);
+    try {
+      await logPark(
+        { ...logBase(candidate), outcome: "failed", detail: { reason: `unexpected: ${message}` } },
+        true, // infra failures are always retryable
+      );
+    } catch {
+      /* logging itself failed — skip; next tick re-evaluates this candidate */
+    }
+    return { outcome: "failed", didFetch: false, didClassify: false };
+  }
 }
 
 // --- real-client wiring (buildDiscoveryDeps), mirroring flyer-warm's buildWarmDeps -------
@@ -721,8 +842,33 @@ export function buildDiscoveryDeps(env: Env, now: () => number = () => Date.now(
       await recordDiscoveryMatches(env, slug, attributions, today());
     },
 
-    async recordLog(entry) {
-      await recordDiscoveryLog(env, { ...entry, createdAt: new Date(now()).toISOString() });
+    async loadRetries(nowIso, limit) {
+      const rows = await loadDueRetries(env, nowIso, limit);
+      return rows.map((r) => ({
+        url: r.url ?? "",
+        title: r.title ?? "",
+        summary: null,
+        source: r.source ?? "",
+        existingRowId: r.id,
+        attempts: r.attempts,
+      }));
+    },
+
+    async recordLog(entry, opts) {
+      await recordDiscoveryLog(env, {
+        ...entry,
+        createdAt: new Date(now()).toISOString(),
+        attempts: opts?.attempts,
+        nextRetryAt: opts?.nextRetryAt,
+      });
+    },
+
+    async resolveRow(id, entry) {
+      await resolveDiscoveryRow(env, id, entry);
+    },
+
+    async bumpRetry(id, attempts, nextRetryAt) {
+      await bumpDiscoveryRetry(env, id, attempts, nextRetryAt);
     },
   };
 }

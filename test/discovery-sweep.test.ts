@@ -107,6 +107,9 @@ function makeDeps(opts: FakeOpts) {
     recordLog: async (e) => {
       calls.logs.push(e);
     },
+    loadRetries: async () => [],
+    resolveRow: async () => {},
+    bumpRetry: async () => {},
   };
   return { deps, calls };
 }

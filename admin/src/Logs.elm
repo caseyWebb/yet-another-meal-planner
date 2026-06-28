@@ -1,7 +1,6 @@
 module Logs exposing
     ( Model, Msg, init, selectSource, update, view
     , Outcome(..), Entry, entryDecoder, outcomeFromString, outcomeLabel, hasDetail
-    , ReprobeSummary, reprobeSummaryDecoder, reprobeSummaryText
     )
 
 {-| The Logs area's operator-auditable activity logs (operator-admin).
@@ -21,7 +20,9 @@ Modeling discipline (see ../CLAUDE.md — "make impossible states impossible"):
     triple;
   - the open-dialog state lives **inside** the `Success` variant (`Loaded entries dialog`), so
     "a dialog is open for entry X" cannot exist without the loaded list it sits in front of —
-    `Loading`-with-an-open-dialog is unrepresentable.
+    `Loading`-with-an-open-dialog is unrepresentable;
+  - the in-flight per-row action is a single `Maybe RowAction` (which row, which action, and any
+    error), so "retrying row A while deleting row B" is unrepresentable.
 
 The second export group is exposed for the unit tests in `tests/LogsTest.elm` — the outcome
 mapping and the "has expandable detail" predicate are the compiler-opaque logic worth pinning.
@@ -59,7 +60,8 @@ type alias Entry =
 
 {-| The per-candidate outcome, collapsed from the wire string into a finite union so the row
 styling/label is exhaustive. `Other` keeps an unrecognized future outcome renderable (its raw
-string) without a decode failure — the one open arm, deliberate. -}
+string) without a decode failure — the one open arm, deliberate. `Failed` is an infrastructure
+failure (transient; in-retry until its attempt cap); `Errored` is a terminal content park. -}
 type Outcome
     = Imported
     | Duplicate
@@ -67,6 +69,7 @@ type Outcome
     | RejectedSource
     | DietaryGated
     | Errored
+    | Failed
     | Other String
 
 
@@ -84,36 +87,24 @@ type Loaded
     = Loaded (List Entry) Dialog
 
 
-{-| The operator `reprobe-parked` backfill action: its in-flight state, result summary, and
-failure as ONE value (never a busy `Bool` beside a `Maybe` error), distinct from the log's
-`WebData` load — the backfill runs independently of (re)loading the entry list. -}
-type ReprobeState
-    = ReprobeIdle
-    | ReprobeRunning
-    | ReprobeDone ReprobeSummary
-    | ReprobeFailed Http.Error
-
-
-{-| What `POST /admin/api/discovery/reprobe-parked` returns: how many legacy `unreachable` rows
-it examined and how they re-classified. -}
-type alias ReprobeSummary =
-    { scanned : Int
-    , reclassified : Int
-    , stillUnreachable : Int
-    , nowAcquirable : Int
-    }
+{-| The in-flight per-row action: which row id, which action kind, and any error — one value so
+"retrying row A while deleting row B" cannot be represented. -}
+type RowAction
+    = Retrying String
+    | Deleting String
+    | RowFailed String String Http.Error
 
 
 type alias Model =
     { selected : LogSource
     , discovery : WebData Loaded
-    , reprobe : ReprobeState
+    , rowAction : Maybe RowAction
     }
 
 
 init : LogSource -> ( Model, Cmd Msg )
 init source =
-    ( { selected = source, discovery = NotAsked, reprobe = ReprobeIdle }, Cmd.none )
+    ( { selected = source, discovery = NotAsked, rowAction = Nothing }, Cmd.none )
         |> load source
 
 
@@ -121,10 +112,7 @@ init source =
 navigation), preserving any already-loaded source and fetching one not yet loaded. -}
 selectSource : LogSource -> Model -> ( Model, Cmd Msg )
 selectSource source model =
-    -- Clear any stale re-probe summary on navigation, so a summary shown under one source can't
-    -- leak across to another (a latent bug today — Discovery is the only source — but correct the
-    -- moment a second LogSource is added).
-    load source ( { model | selected = source, reprobe = ReprobeIdle }, Cmd.none )
+    load source ( { model | selected = source, rowAction = Nothing }, Cmd.none )
 
 
 {-| Select `source` and, if its entries are not already loaded/loading, kick its fetch. Folds
@@ -150,8 +138,9 @@ type Msg
     | OpenEntry Entry
     | CloseDialog
     | Reload
-    | RunReprobe
-    | GotReprobe (Result Http.Error ReprobeSummary)
+    | RetryRow String
+    | DeleteRow String
+    | GotRowAction String String (Result Http.Error ())
 
 
 update : Msg -> Model -> ( Model, Cmd Msg )
@@ -169,24 +158,36 @@ update msg model =
             ( { model | discovery = mapLoaded (\list _ -> Loaded list Closed) model.discovery }, Cmd.none )
 
         Reload ->
-            -- A manual refresh clears a stale re-probe summary so what's shown always matches the
-            -- last re-probe (not a load that happened after it).
-            ( { model | discovery = Loading, reprobe = ReprobeIdle }, fetchDiscovery )
+            ( { model | discovery = Loading, rowAction = Nothing }, fetchDiscovery )
 
-        RunReprobe ->
-            -- One at a time: ignore a click while a re-probe is already running.
-            if model.reprobe == ReprobeRunning then
-                ( model, Cmd.none )
+        RetryRow id ->
+            case model.rowAction of
+                Just (Retrying _) ->
+                    ( model, Cmd.none )
 
-            else
-                ( { model | reprobe = ReprobeRunning }, postReprobe )
+                Just (Deleting _) ->
+                    ( model, Cmd.none )
 
-        GotReprobe (Ok summary) ->
-            -- Reload the log so the re-classified detail.reasons are reflected immediately.
-            ( { model | reprobe = ReprobeDone summary, discovery = Loading }, fetchDiscovery )
+                _ ->
+                    ( { model | rowAction = Just (Retrying id) }, postRetry id )
 
-        GotReprobe (Err err) ->
-            ( { model | reprobe = ReprobeFailed err }, Cmd.none )
+        DeleteRow id ->
+            case model.rowAction of
+                Just (Retrying _) ->
+                    ( model, Cmd.none )
+
+                Just (Deleting _) ->
+                    ( model, Cmd.none )
+
+                _ ->
+                    ( { model | rowAction = Just (Deleting id) }, deleteRow id )
+
+        GotRowAction id kind (Ok ()) ->
+            -- Reload the log so the updated row is reflected immediately.
+            ( { model | rowAction = Nothing, discovery = Loading }, fetchDiscovery )
+
+        GotRowAction id kind (Err err) ->
+            ( { model | rowAction = Just (RowFailed id kind err) }, Cmd.none )
 
 
 {-| Transform a loaded source's `(entries, dialog)` in place; a no-op while not yet `Success`
@@ -213,22 +214,26 @@ discoveryDecoder =
     Decode.field "entries" (Decode.list entryDecoder)
 
 
-postReprobe : Cmd Msg
-postReprobe =
+postRetry : String -> Cmd Msg
+postRetry id =
     Http.post
-        { url = "/admin/api/discovery/reprobe-parked"
+        { url = "/admin/api/discovery/" ++ id ++ "/retry"
         , body = Http.emptyBody
-        , expect = Http.expectJson GotReprobe reprobeSummaryDecoder
+        , expect = Http.expectWhatever (GotRowAction id "retry")
         }
 
 
-reprobeSummaryDecoder : Decoder ReprobeSummary
-reprobeSummaryDecoder =
-    Decode.map4 ReprobeSummary
-        (Decode.field "scanned" Decode.int)
-        (Decode.field "reclassified" Decode.int)
-        (Decode.field "stillUnreachable" Decode.int)
-        (Decode.field "nowAcquirable" Decode.int)
+deleteRow : String -> Cmd Msg
+deleteRow id =
+    Http.request
+        { method = "DELETE"
+        , headers = []
+        , url = "/admin/api/discovery/" ++ id
+        , body = Http.emptyBody
+        , expect = Http.expectWhatever (GotRowAction id "delete")
+        , timeout = Nothing
+        , tracker = Nothing
+        }
 
 
 entryDecoder : Decoder Entry
@@ -272,6 +277,9 @@ outcomeFromString raw =
         "error" ->
             Errored
 
+        "failed" ->
+            Failed
+
         _ ->
             Other raw
 
@@ -284,7 +292,7 @@ view : Model -> Html Msg
 view model =
     div [ class "logs" ]
         [ viewSubmenu model.selected
-        , viewSource model.selected model.discovery model.reprobe
+        , viewSource model.selected model.discovery model.rowAction
         ]
 
 
@@ -317,26 +325,52 @@ viewSourceItem selected source =
 
 
 {-| The RIGHT panel: the entries for the selected source. A new source adds an arm here. -}
-viewSource : LogSource -> WebData Loaded -> ReprobeState -> Html Msg
-viewSource selected discovery reprobe =
+viewSource : LogSource -> WebData Loaded -> Maybe RowAction -> Html Msg
+viewSource selected discovery rowAction =
     case selected of
         Discovery ->
             div [ class "log-entries" ]
                 [ div [ class "log-head" ]
                     [ h2 [] [ text "Discovery" ]
                     , div [ class "log-actions" ]
-                        [ button [ class "link", onClick RunReprobe, disabled (reprobe == ReprobeRunning) ]
-                            [ text (reprobeButtonLabel reprobe) ]
-                        , button [ class "link", onClick Reload ] [ text "Refresh" ]
+                        [ button [ class "link", onClick Reload ] [ text "Refresh" ]
                         ]
                     ]
-                , viewReprobe reprobe
-                , viewLoaded discovery
+                , viewRowActionBanner rowAction
+                , viewLoaded discovery rowAction
                 ]
 
 
-viewLoaded : WebData Loaded -> Html Msg
-viewLoaded discovery =
+{-| The banner line shown while a per-row action is in flight or has failed. -}
+viewRowActionBanner : Maybe RowAction -> Html Msg
+viewRowActionBanner rowAction =
+    case rowAction of
+        Nothing ->
+            text ""
+
+        Just (Retrying _) ->
+            p [ class "muted small" ] [ text "Retrying…" ]
+
+        Just (Deleting _) ->
+            p [ class "muted small" ] [ text "Deleting…" ]
+
+        Just (RowFailed _ kind err) ->
+            div [ class "error" ]
+                [ text
+                    ((if kind == "retry" then
+                        "Retry"
+
+                      else
+                        "Delete"
+                     )
+                        ++ " failed: "
+                        ++ httpError err
+                    )
+                ]
+
+
+viewLoaded : WebData Loaded -> Maybe RowAction -> Html Msg
+viewLoaded discovery rowAction =
     case discovery of
         NotAsked ->
             p [ class "muted" ] [ text "…" ]
@@ -352,62 +386,50 @@ viewLoaded discovery =
 
         Success (Loaded entries dialog) ->
             div []
-                [ ul [ class "entry-list" ] (List.map viewEntryRow entries)
+                [ ul [ class "entry-list" ] (List.map (viewEntryRow rowAction) entries)
                 , viewDialog dialog
                 ]
 
 
-reprobeButtonLabel : ReprobeState -> String
-reprobeButtonLabel reprobe =
-    case reprobe of
-        ReprobeRunning ->
-            "Re-probing…"
+isRowBusy : Maybe RowAction -> String -> Bool
+isRowBusy rowAction id =
+    case rowAction of
+        Just (Retrying rid) ->
+            rid == id
+
+        Just (Deleting rid) ->
+            rid == id
 
         _ ->
-            "Re-probe parked"
+            False
 
 
-{-| The re-probe result line under the log head: the summary on success, the error on failure,
-nothing before the operator has run it (or right after, while the reload is in flight). -}
-viewReprobe : ReprobeState -> Html Msg
-viewReprobe reprobe =
-    case reprobe of
-        ReprobeIdle ->
-            text ""
+isAnyBusy : Maybe RowAction -> Bool
+isAnyBusy rowAction =
+    case rowAction of
+        Just (Retrying _) ->
+            True
 
-        ReprobeRunning ->
-            p [ class "muted small" ] [ text "Re-probing parked rows from the edge…" ]
+        Just (Deleting _) ->
+            True
 
-        ReprobeDone summary ->
-            p [ class "muted small" ] [ text (reprobeSummaryText summary) ]
-
-        ReprobeFailed err ->
-            div [ class "error" ] [ text ("Re-probe failed: " ++ httpError err) ]
+        _ ->
+            False
 
 
-{-| Human-readable one-liner for a re-probe summary. Pinned by `tests/LogsTest.elm`. -}
-reprobeSummaryText : ReprobeSummary -> String
-reprobeSummaryText summary =
-    if summary.scanned == 0 then
-        "No legacy “unreachable” rows left to re-probe."
-
-    else
-        "Re-probed "
-            ++ String.fromInt summary.scanned
-            ++ ": "
-            ++ String.fromInt summary.reclassified
-            ++ " reclassified, "
-            ++ String.fromInt summary.stillUnreachable
-            ++ " still unreachable, "
-            ++ String.fromInt summary.nowAcquirable
-            ++ " now acquirable."
+isRetryable : Outcome -> Bool
+isRetryable outcome =
+    outcome == Errored || outcome == Failed
 
 
-viewEntryRow : Entry -> Html Msg
-viewEntryRow entry =
+viewEntryRow : Maybe RowAction -> Entry -> Html Msg
+viewEntryRow rowAction entry =
     let
         ( cls, word ) =
             outcomeClassWord entry.outcome
+
+        busy =
+            isAnyBusy rowAction
 
         attrs =
             classList [ ( "entry-row", True ), ( "has-detail", hasDetail entry ) ]
@@ -423,7 +445,37 @@ viewEntryRow entry =
         , span [ class "entry-title" ] [ text (entryTitle entry) ]
         , span [ class "entry-source muted small" ] [ text (Maybe.withDefault "" entry.source) ]
         , span [ class "entry-time muted small" ] [ text (Maybe.withDefault "" entry.createdAt) ]
-        , if hasDetail entry then
+        , if isRetryable entry.outcome then
+            span [ class "entry-row-actions" ]
+                [ button
+                    [ class "link small"
+                    , disabled busy
+                    , onClick (RetryRow entry.id)
+                    ]
+                    [ text
+                        (if isRowBusy rowAction entry.id then
+                            "Retrying…"
+
+                         else
+                            "Retry"
+                        )
+                    ]
+                , button
+                    [ class "link small"
+                    , disabled busy
+                    , onClick (DeleteRow entry.id)
+                    ]
+                    [ text
+                        (if isRowBusy rowAction entry.id then
+                            "Deleting…"
+
+                         else
+                            "Delete"
+                        )
+                    ]
+                ]
+
+          else if hasDetail entry then
             span [ class "entry-more small" ] [ text "details →" ]
 
           else
@@ -548,6 +600,9 @@ outcomeClassWord outcome =
 
         Errored ->
             ( "fail", "error" )
+
+        Failed ->
+            ( "fail", "failed" )
 
         Other raw ->
             ( "muted", raw )
