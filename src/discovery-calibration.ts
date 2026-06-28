@@ -62,6 +62,10 @@ export async function loadDiscoveryConfig(env: Env): Promise<DiscoveryConfig> {
     dedupThreshold: validatedKnob(row.dedup_threshold, (n) => n > 0 && n <= 1) ?? DEFAULT_CONFIG.dedupThreshold,
     classifyMaxPerTick: validatedKnob(row.classify_max, (n) => n > 0 && Number.isInteger(n)) ?? DEFAULT_CONFIG.classifyMaxPerTick,
     rateCap: validatedKnob(row.rate_cap, (n) => n > 0 && Number.isInteger(n)) ?? DEFAULT_CONFIG.rateCap,
+    // Subrequest-budget safety bounds, not operator-tunable matching knobs — no D1 column;
+    // always the compiled default. (The calibration console tunes match quality, not budgets.)
+    fetchMaxPerTick: DEFAULT_CONFIG.fetchMaxPerTick,
+    maxCandidatesPerTick: DEFAULT_CONFIG.maxCandidatesPerTick,
   };
 }
 
@@ -237,6 +241,7 @@ export function buildDryRunDeps(realDeps: DiscoveryDeps): DryRunDeps {
     loadMembers: () => realDeps.loadMembers(),
     loadCorpusVectors: () => realDeps.loadCorpusVectors(),
     embed: (text) => realDeps.embed(text),
+    embedMany: (texts) => realDeps.embedMany(texts),
     acquireContent: (c) => realDeps.acquireContent(c),
     classify: (content, source) => realDeps.classify(content, source),
     describe: (frontmatter) => realDeps.describe(frontmatter),

@@ -13,11 +13,12 @@ loaded-but-no-content combination.
 -}
 
 import Data.Table as Table
-import Html exposing (Html, button, div, em, h2, hr, li, p, pre, span, text, ul)
+import Html exposing (Html, button, div, em, h2, hr, li, p, span, text, ul)
 import Html.Attributes exposing (class)
 import Html.Events exposing (onClick)
 import Http
 import Json.Decode as Decode exposing (Decoder)
+import Markdown
 import RemoteData exposing (RemoteData(..), WebData)
 import Url.Builder as Builder
 
@@ -257,7 +258,7 @@ viewObject path object =
                     p [ class "muted" ] [ em [] [ text "empty object" ] ]
 
                 else
-                    pre [] [ text markdown ]
+                    div [ class "card" ] [ Markdown.render markdown ]
         ]
 
 

@@ -5,6 +5,7 @@ import {
   findDuplicate,
   dietaryOk,
   nearAnyMember,
+  isLikelyNonRecipeLink,
   DEFAULT_CONFIG,
   type DiscoveryDeps,
   type DiscoveryConfig,
@@ -49,13 +50,21 @@ interface FakeOpts {
   vectors: Record<string, number[]>;
   classifyDietary?: Record<string, string[]>; // per-title dietary on the classified recipe
   classifyThrow?: Set<string>; // titles whose classify throws (park)
-  acquireNull?: Set<string>; // urls whose content is unreachable
+  acquireNull?: Set<string>; // urls whose content can't be acquired (parks as `unreachable`)
+  acquireFail?: Record<string, { reason: "unreachable" | "no_jsonld" | "not_a_recipe" | "incomplete"; status?: number }>; // urls that fail acquisition with a SPECIFIC reason
   confirm?: (members: SweepMember[]) => string[]; // default: confirm all
   embedThrow?: Set<string>; // embed input texts that throw (a transient env.AI failure)
 }
 
 function makeDeps(opts: FakeOpts) {
-  const calls = { classify: 0, imported: [] as string[], logs: [] as LogEntry[], matches: {} as Record<string, unknown> };
+  const calls = {
+    classify: 0,
+    embedMany: 0,
+    acquire: 0,
+    imported: [] as string[],
+    logs: [] as LogEntry[],
+    matches: {} as Record<string, unknown>,
+  };
   const vec = (t: string) => opts.vectors[t] ?? ZERO;
   const deps: DiscoveryDeps = {
     loadCandidates: async () => opts.candidates,
@@ -65,10 +74,21 @@ function makeDeps(opts: FakeOpts) {
       if (opts.embedThrow?.has(text)) throw new Error(`AI down: ${text}`);
       return vec(text);
     },
-    acquireContent: async (c) =>
-      opts.acquireNull?.has(c.url)
-        ? null
-        : ({ title: c.title, ingredients: ["1 a", "2 b"], instructions: ["do it"] } as RecipeContent),
+    embedMany: async (texts) => {
+      calls.embedMany++;
+      for (const t of texts) if (opts.embedThrow?.has(t)) throw new Error(`AI down: ${t}`);
+      return texts.map(vec);
+    },
+    acquireContent: async (c) => {
+      calls.acquire++;
+      const fail = opts.acquireFail?.[c.url];
+      if (fail) return { ok: false as const, ...fail };
+      if (opts.acquireNull?.has(c.url)) return { ok: false as const, reason: "unreachable" as const };
+      return {
+        ok: true as const,
+        content: { title: c.title, ingredients: ["1 a", "2 b"], instructions: ["do it"] } as RecipeContent,
+      };
+    },
     classify: async (content, source) => {
       calls.classify++;
       if (opts.classifyThrow?.has(content.title)) throw new Error("validation_failed: off-vocab");
@@ -129,6 +149,14 @@ describe("pure helpers", () => {
     const m = member("c", { rejectVectors: [A] }); // candidate A ≈ a rejected recipe
     expect(matchMembers(A, [], [m], CONFIG).matches).toEqual([]);
   });
+  it("isLikelyNonRecipeLink drops social/transactional links, keeps recipe URLs", () => {
+    expect(isLikelyNonRecipeLink("https://facebook.com/share/123")).toBe(true);
+    expect(isLikelyNonRecipeLink("https://www.instagram.com/p/abc")).toBe(true);
+    expect(isLikelyNonRecipeLink("https://list.example.com/unsubscribe/xyz")).toBe(true);
+    expect(isLikelyNonRecipeLink("https://example.com/account")).toBe(true);
+    expect(isLikelyNonRecipeLink("not a url")).toBe(true);
+    expect(isLikelyNonRecipeLink("https://smittenkitchen.com/2026/06/ragu")).toBe(false);
+  });
 });
 
 describe("runDiscoverySweep", () => {
@@ -168,6 +196,31 @@ describe("runDiscoverySweep", () => {
     expect(res.parked).toBe(1);
     expect(calls.classify).toBe(0);
     expect(calls.logs[0]).toMatchObject({ outcome: "error", detail: { reason: "unreachable" } });
+  });
+
+  it("parks with the SPECIFIC acquisition reason, not a catch-all unreachable", async () => {
+    const { deps, calls } = makeDeps({
+      candidates: [cand("u1", "Roundup")],
+      members: [member("casey")],
+      vectors: { "Roundup — s": A },
+      acquireFail: { u1: { reason: "not_a_recipe" } },
+    });
+    const res = await runDiscoverySweep(deps, CONFIG);
+    expect(res.parked).toBe(1);
+    expect(calls.classify).toBe(0);
+    expect(calls.logs[0]).toMatchObject({ outcome: "error", detail: { reason: "not_a_recipe" } });
+  });
+
+  it("records the HTTP status when a fetch is non-2xx (walled)", async () => {
+    const { deps, calls } = makeDeps({
+      candidates: [cand("u1", "Walled")],
+      members: [member("casey")],
+      vectors: { "Walled — s": A },
+      acquireFail: { u1: { reason: "unreachable", status: 403 } },
+    });
+    const res = await runDiscoverySweep(deps, CONFIG);
+    expect(res.parked).toBe(1);
+    expect(calls.logs[0]).toMatchObject({ outcome: "error", detail: { reason: "unreachable", status: 403 } });
   });
 
   it("parks a candidate whose classification never validates", async () => {
@@ -278,19 +331,88 @@ describe("runDiscoverySweep", () => {
     expect(res.deferred).toBe(1);
   });
 
-  it("parks a candidate on a transient AI failure without crashing the whole tick", async () => {
-    // The first candidate's triage embed throws (an env.AI hiccup); the sweep must park it
-    // and keep going, not abandon the rest of the batch.
+  it("records an INFRA failure (not a content park) on a transient AI error, without crashing the tick", async () => {
+    // A candidate's DESCRIPTION embed throws (an env.AI hiccup mid-pipeline, after the batched
+    // triage); the sweep must drop just that candidate and keep going. It is a `failed` (infra)
+    // outcome, distinct from a content `error` park — so it can flip the job's health.
     const { deps, calls } = makeDeps({
       candidates: [cand("u1", "Boom"), cand("u2", "Ok")],
       members: [member("casey")],
-      vectors: { "Ok — s": A, "DESC:Ok": A },
-      embedThrow: new Set(["Boom — s"]),
+      vectors: { "Boom — s": A, "Ok — s": A, "DESC:Ok": A },
+      embedThrow: new Set(["DESC:Boom"]),
     });
     const res = await runDiscoverySweep(deps, CONFIG); // must NOT reject
-    expect(res.parked).toBe(1);
+    expect(res.failed).toBe(1);
+    expect(res.parked).toBe(0);
     expect(res.imported).toBe(1);
     expect(calls.imported).toEqual(["ok"]);
-    expect(calls.logs.some((l) => l.title === "Boom" && l.outcome === "error")).toBe(true);
+    expect(calls.logs.some((l) => l.title === "Boom" && l.outcome === "failed")).toBe(true);
+  });
+
+  it("triages a small pool in one chunked embed call", async () => {
+    const { deps, calls } = makeDeps({
+      candidates: [cand("u1", "One"), cand("u2", "Two"), cand("u3", "Three")],
+      members: [member("casey")],
+      vectors: {
+        "One — s": A, "DESC:One": A,
+        "Two — s": A, "DESC:Two": A,
+        "Three — s": A, "DESC:Three": A,
+      },
+    });
+    await runDiscoverySweep(deps, CONFIG);
+    expect(calls.embedMany).toBe(1); // 3 ≤ EMBED_INPUT_BATCH → one chunk, not one call per candidate
+  });
+
+  it("chunks triage embeds at the input-batch size for a large pool", async () => {
+    // > EMBED_INPUT_BATCH (25): must take ceil(N/25) chunks, NOT one oversized call (which
+    // would exceed the model input limit and — since a batch failure fails the tick — wedge it).
+    const N = 30;
+    const candidates = Array.from({ length: N }, (_, i) => cand(`u${i}`, `R${i}`));
+    const vectors: Record<string, number[]> = {};
+    for (const c of candidates) vectors[`${c.title} — s`] = B; // orthogonal → all fail triage cheaply
+    const { deps, calls } = makeDeps({ candidates, members: [member("casey")], vectors });
+    const res = await runDiscoverySweep(deps, CONFIG);
+    expect(calls.embedMany).toBe(2); // ceil(30 / 25)
+    expect(res.noMatch).toBe(N);
+  });
+
+  it("clamps the per-tick pool, deferring the overflow to later ticks", async () => {
+    const N = 5;
+    const candidates = Array.from({ length: N }, (_, i) => cand(`u${i}`, `R${i}`));
+    const vectors: Record<string, number[]> = {};
+    for (const c of candidates) vectors[`${c.title} — s`] = B; // all fail triage (kept cheap)
+    const { deps } = makeDeps({ candidates, members: [member("casey")], vectors });
+    const res = await runDiscoverySweep(deps, { ...CONFIG, maxCandidatesPerTick: 2 });
+    expect(res.processed).toBe(2); // only the clamped pool is considered
+    expect(res.deferred).toBe(3); // the overflow defers, un-evaluated, for a later tick
+  });
+
+  it("propagates a batch triage-embed failure so the whole tick retries next run", async () => {
+    // A transient env.AI outage fails the batched embed; the sweep must reject WITHOUT logging
+    // any candidate, so the pool stays un-evaluated and re-gathers next tick (never mislabeled).
+    const { deps, calls } = makeDeps({
+      candidates: [cand("u1", "X"), cand("u2", "Y")],
+      members: [member("casey")],
+      vectors: {},
+      embedThrow: new Set(["X — s"]),
+    });
+    await expect(runDiscoverySweep(deps, CONFIG)).rejects.toThrow();
+    expect(calls.logs).toEqual([]);
+  });
+
+  it("bounds external fetches by fetchMaxPerTick, deferring survivors it can't fetch", async () => {
+    // Both clear triage and would be fetched, but the fetch budget is 1 — so only one is
+    // fetched (parks as unreachable); the other defers without ever spending a fetch. Proves
+    // the governor counts FETCHES (the scarce subrequest), not just successful classifies.
+    const { deps, calls } = makeDeps({
+      candidates: [cand("u1", "P1"), cand("u2", "P2")],
+      members: [member("casey")],
+      vectors: { "P1 — s": A, "P2 — s": A },
+      acquireNull: new Set(["u1", "u2"]),
+    });
+    const res = await runDiscoverySweep(deps, { ...CONFIG, fetchMaxPerTick: 1 });
+    expect(calls.acquire).toBe(1);
+    expect(res.parked).toBe(1);
+    expect(res.deferred).toBe(1);
   });
 });

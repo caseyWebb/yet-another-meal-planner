@@ -1,4 +1,4 @@
-module Route exposing (DataRoute(..), LogSource(..), Route(..), actingAsParam, fromUrl, href, logSourceFromSlug, logSourceSlug, toString)
+module Route exposing (ConfigRoute(..), DataRoute(..), LogSource(..), Route(..), actingAsParam, fromUrl, href, logSourceFromSlug, logSourceSlug, toString)
 
 {-| The admin SPA's client routes, all under the worker-served `/admin` base. The panel is
 split into top-level areas — **Status** (the service-health home view), **Members** (member
@@ -28,9 +28,24 @@ type Route
     | Members
     | Tools (Maybe String)
     | Logs (Maybe LogSource)
-    | Config
+    | Config ConfigRoute
     | Data DataRoute
     | NotFound
+
+
+{-| The Config area's sub-routes, one per pill in the area's sub-nav. The default (the bare
+`/admin/config`) is the discovery calibration console (`Calibration`); the other five are the
+shared-corpus editors. A finite union, never a stringly-typed slug (admin/CLAUDE.md rule 3):
+a new config surface is a new variant here, and the compiler then flags every site that must
+handle it (its slug, its label, its section). Each variant's URL slug is its single canonical
+encoding (`configSegment`), parsed back by `configRouteFromSlug`. -}
+type ConfigRoute
+    = ConfigCalibration
+    | ConfigAliases
+    | ConfigFlyerTerms
+    | ConfigFeeds
+    | ConfigSenders
+    | ConfigMembers
 
 
 {-| The Data area's sub-routes. The two 360 views carry an optionally-selected entity
@@ -72,6 +87,53 @@ logSourceFromSlug slug =
             Nothing
 
 
+{-| A Config sub-route's URL slug (the `/admin/config/<slug>` segment). `Calibration` has no
+segment — it is the bare `/admin/config` — so it maps to the empty string and is not printed
+as a child segment (`configSegments`). -}
+configSlug : ConfigRoute -> String
+configSlug configRoute_ =
+    case configRoute_ of
+        ConfigCalibration ->
+            ""
+
+        ConfigAliases ->
+            "aliases"
+
+        ConfigFlyerTerms ->
+            "flyer-terms"
+
+        ConfigFeeds ->
+            "feeds"
+
+        ConfigSenders ->
+            "senders"
+
+        ConfigMembers ->
+            "members"
+
+
+configRouteFromSlug : String -> Maybe ConfigRoute
+configRouteFromSlug slug =
+    case slug of
+        "aliases" ->
+            Just ConfigAliases
+
+        "flyer-terms" ->
+            Just ConfigFlyerTerms
+
+        "feeds" ->
+            Just ConfigFeeds
+
+        "senders" ->
+            Just ConfigSenders
+
+        "members" ->
+            Just ConfigMembers
+
+        _ ->
+            Nothing
+
+
 parser : Parser (Route -> a) a
 parser =
     oneOf
@@ -82,7 +144,8 @@ parser =
         , Parser.map (Just >> Tools) (s "admin" </> s "dev" </> s "tools" </> string)
         , Parser.map (Logs Nothing) (s "admin" </> s "logs")
         , Parser.map (Just >> Logs) (s "admin" </> s "logs" </> logSource)
-        , Parser.map Config (s "admin" </> s "config")
+        , Parser.map (Config ConfigCalibration) (s "admin" </> s "config")
+        , Parser.map Config (s "admin" </> s "config" </> configRoute)
         , Parser.map (Data (DataRecipes Nothing)) (s "admin" </> s "data" </> s "recipes")
         , Parser.map (Data << DataRecipes << Just) (s "admin" </> s "data" </> s "recipes" </> string)
         , Parser.map (Data (DataMembers Nothing)) (s "admin" </> s "data" </> s "members")
@@ -99,6 +162,14 @@ unknown slug rather than admitting a bogus source. -}
 logSource : Parser (LogSource -> a) a
 logSource =
     custom "LOG_SOURCE" logSourceFromSlug
+
+
+{-| Parse a config sub-route slug segment into a `ConfigRoute`, failing the route (→ NotFound)
+on an unknown slug rather than admitting a bogus sub-view. The bare `/admin/config`
+(`Calibration`) is matched by its own parser entry, not here. -}
+configRoute : Parser (ConfigRoute -> a) a
+configRoute =
+    custom "CONFIG_ROUTE" configRouteFromSlug
 
 
 fromUrl : Url -> Route
@@ -139,14 +210,26 @@ toString route =
         Logs (Just source) ->
             Builder.absolute [ "admin", "logs", logSourceSlug source ] []
 
-        Config ->
-            Builder.absolute [ "admin", "config" ] []
+        Config configRoute_ ->
+            Builder.absolute ("admin" :: "config" :: configSegments configRoute_) []
 
         Data dataRoute ->
             Builder.absolute ("admin" :: "data" :: dataSegments dataRoute) []
 
         NotFound ->
             Builder.absolute [ "admin" ] []
+
+
+{-| The path segments under `/admin/config` for a sub-route. `Calibration` is the bare area
+root, so it contributes no child segment; the editors each contribute their slug. -}
+configSegments : ConfigRoute -> List String
+configSegments configRoute_ =
+    case configRoute_ of
+        ConfigCalibration ->
+            []
+
+        _ ->
+            [ configSlug configRoute_ ]
 
 
 dataSegments : DataRoute -> List String

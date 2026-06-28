@@ -228,8 +228,12 @@ stepTo route model =
         ( Route.Health, HealthPage _ ) ->
             ( { model | route = route }, Cmd.none )
 
-        ( Route.Config, ConfigPage _ ) ->
-            ( { model | route = route }, Cmd.none )
+        ( Route.Config configRoute, ConfigPage subModel ) ->
+            let
+                ( subModel2, cmd ) =
+                    Config.goto configRoute subModel
+            in
+            ( { model | route = route, page = ConfigPage subModel2 }, Cmd.map ConfigMsg cmd )
 
         ( Route.Data dataRoute, DataPage subModel ) ->
             let
@@ -282,10 +286,10 @@ enter route actingAs model =
             in
             ( { model | route = route, page = LogsPage subModel }, Cmd.map LogsMsg cmd )
 
-        Route.Config ->
+        Route.Config configRoute ->
             let
                 ( subModel, cmd ) =
-                    Config.init
+                    Config.init configRoute
             in
             ( { model | route = route, page = ConfigPage subModel }, Cmd.map ConfigMsg cmd )
 
@@ -346,7 +350,7 @@ wrapClass route =
         Route.Logs _ ->
             "wrap wrap-wide"
 
-        Route.Config ->
+        Route.Config _ ->
             "wrap wrap-wide"
 
         Route.Data _ ->
@@ -363,7 +367,7 @@ viewNav route =
         , navLink "Members" Route.Members (isMembers route)
         , navLink "Dev · Tools" (Route.Tools Nothing) (isDev route)
         , navLink "Logs" (Route.Logs Nothing) (isLogs route)
-        , navLink "Config" Route.Config (isConfig route)
+        , navLink "Config" (Route.Config Route.ConfigCalibration) (isConfig route)
         , navLink "Data" (Route.Data (Route.DataRecipes Nothing)) (isData route)
         ]
 
@@ -416,7 +420,7 @@ isLogs route =
 isConfig : Route -> Bool
 isConfig route =
     case route of
-        Route.Config ->
+        Route.Config _ ->
             True
 
         _ ->

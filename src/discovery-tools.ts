@@ -19,8 +19,7 @@ import { ToolError, runTool } from "./errors.js";
 import { validateFile } from "./validate.js";
 import { seedRecipeDescription } from "./recipe-embeddings.js";
 import { seedRecipeFacets } from "./recipe-classify.js";
-import { fetchWithBrowserHeaders } from "./http.js";
-import { extractJsonLd, findRecipe, normalizeRecipe } from "./jsonld.js";
+import { acquireRecipeContent } from "./recipe-acquire.js";
 import { buildNewRecipe, canonicalizeUrl, indexSourceToSlug } from "./discovery.js";
 import { recipeSourceMap } from "./recipe-index.js";
 import { addFeedRows, addSourceRows, addDiscoveryRejection } from "./corpus-db.js";
@@ -28,10 +27,6 @@ import { readNewForMe, readDiscoveryErrors } from "./discovery-db.js";
 
 /** Cold-start floor: a never-planned member sees at most this window of recent discoveries. */
 const NEW_FOR_ME_WINDOW_DAYS = 21;
-
-function errMessage(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
-}
 
 /**
  * Discovery tools (recipe-discovery capability). Discovery is a SHARED, top-level concern:
@@ -58,36 +53,36 @@ export function registerDiscoveryTools(
     },
     ({ url }) =>
       runTool(async () => {
-        let res: Response;
-        try {
-          res = await fetchWithBrowserHeaders(url);
-        } catch (e) {
-          throw new ToolError("unreachable", `Could not fetch ${url}: ${errMessage(e)}`, { url });
+        // Single shared acquisition path (src/recipe-acquire.ts) — the SAME pipeline and the
+        // SAME failure taxonomy the background sweep parks with, so the two can't drift.
+        const result = await acquireRecipeContent(url);
+        if (!result.ok) {
+          switch (result.reason) {
+            case "unreachable":
+              throw new ToolError(
+                "unreachable",
+                result.status !== undefined
+                  ? `Fetching ${url} returned HTTP ${result.status}`
+                  : `Could not fetch ${url}`,
+                result.status !== undefined ? { url, status: result.status } : { url },
+              );
+            case "no_jsonld":
+              throw new ToolError("no_jsonld", `No JSON-LD found at ${url}`, { url });
+            case "not_a_recipe":
+              throw new ToolError("not_a_recipe", `JSON-LD present but no schema.org Recipe at ${url}`, {
+                url,
+              });
+            case "incomplete":
+              throw new ToolError(
+                "incomplete",
+                `Recipe at ${url} is missing ${(result.missing ?? []).join(" and ")}`,
+                { url, missing: result.missing ?? [] },
+              );
+            default:
+              throw new ToolError("unreachable", `Could not acquire ${url}`, { url });
+          }
         }
-        if (!res.ok) {
-          throw new ToolError("unreachable", `Fetching ${url} returned HTTP ${res.status}`, {
-            url,
-            status: res.status,
-          });
-        }
-
-        const blocks = await extractJsonLd(res);
-        if (blocks.length === 0) {
-          throw new ToolError("no_jsonld", `No JSON-LD found at ${url}`, { url });
-        }
-        const recipe = findRecipe(blocks);
-        if (!recipe) {
-          throw new ToolError("not_a_recipe", `JSON-LD present but no schema.org Recipe at ${url}`, {
-            url,
-          });
-        }
-        const norm = normalizeRecipe(recipe);
-        if (!norm.ok) {
-          throw new ToolError("incomplete", `Recipe at ${url} is missing ${norm.missing.join(" and ")}`, {
-            url,
-            missing: norm.missing,
-          });
-        }
+        const norm = result;
 
         const source = norm.recipe.source ?? canonicalizeUrl(url);
         // Idempotency (§6.4): if this source is already in the shared corpus, tell
@@ -239,7 +234,7 @@ export function registerDiscoveryTools(
     "read_discovery_errors",
     {
       description:
-        "Read the SHARED discovery-sweep error surface: candidates the background sweep could not classify into a valid recipe after retries, parked for an operator/author to look at (mirrors read_reconcile_errors). Each carries { url, title, source, outcome, slug, detail, created_at } (outcome is 'error'; detail holds the validation failure). An empty list means the sweep is importing cleanly. Read-only; does not retry or import.",
+        "Read the SHARED discovery-sweep error surface: candidates the background sweep parked or failed, held for an operator/author to look at (mirrors read_reconcile_errors). Each carries { url, title, source, outcome, slug, detail, created_at }. outcome 'error' is a content park (could not reach or classify a candidate into a valid recipe after retries; detail holds the validation/fetch failure); outcome 'failed' is an infrastructure failure (a transient env.AI/D1 error such as a subrequest-limit hit; detail holds the error), which also degrades the discovery-sweep health record until it clears. An empty list means the sweep is importing cleanly. Read-only; does not retry or import.",
       inputSchema: {},
     },
     () => runTool(async () => ({ errors: await readDiscoveryErrors(env) })),

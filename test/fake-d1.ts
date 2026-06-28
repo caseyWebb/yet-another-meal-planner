@@ -136,10 +136,11 @@ export function fakeD1(
       if (!table || !tables[table]) return { rows: [], changes: 0 };
       const before = tables[table].length;
       if (GLOBAL_TABLES.has(table)) {
+        // A single-column equality `WHERE <col> = ?1` deletes the matching row(s); any
+        // other shape is a table-wide delete.
+        const eq = /\bWHERE\s+(\w+) = \?1\s*$/i.exec(sql);
         const keep = (r: Record<string, unknown>): boolean => {
-          if (/\brecipe = \?1/i.test(sql)) return r.recipe !== binds[0];
-          if (/\bstore = \?1/i.test(sql)) return r.store !== binds[0];
-          if (/\bid = \?1/i.test(sql)) return r.id !== binds[0];
+          if (eq) return r[eq[1]] !== binds[0];
           return false; // table-wide delete
         };
         tables[table] = tables[table].filter((r) => keep(r));

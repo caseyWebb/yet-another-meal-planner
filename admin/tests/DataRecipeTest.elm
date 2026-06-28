@@ -23,7 +23,7 @@ detail status extra =
         ++ status
         ++ "\","
         ++ extra
-        ++ ",\"source\":null,\"projection\":null,\"dispositions\":[],\"notes\":[]}"
+        ++ ",\"source\":null,\"body\":null,\"projection\":null,\"dispositions\":[],\"notes\":[]}"
 
 
 suite : Test
@@ -63,7 +63,7 @@ suite =
             \_ ->
                 let
                     json =
-                        "{\"slug\":\"foo\",\"status\":\"indexed\",\"reconcile_message\":null,\"source\":\"x\",\"projection\":null,\"derived\":null,\"dispositions\":[{\"tenant\":\"alice\",\"favorite\":true,\"reject\":false}],\"notes\":[]}"
+                        "{\"slug\":\"foo\",\"status\":\"indexed\",\"reconcile_message\":null,\"source\":\"x\",\"body\":null,\"projection\":null,\"derived\":null,\"dispositions\":[{\"tenant\":\"alice\",\"favorite\":true,\"reject\":false}],\"notes\":[]}"
                 in
                 Decode.decodeString Recipe.recipeDetailDecoder json
                     |> Result.map (.dispositions >> List.map .tenant)

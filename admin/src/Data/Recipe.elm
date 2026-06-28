@@ -21,6 +21,7 @@ import Html.Attributes exposing (class, href)
 import Http
 import Json.Decode as Decode exposing (Decoder)
 import Json.Encode as Encode
+import Markdown
 import RemoteData exposing (RemoteData(..), WebData)
 
 
@@ -71,6 +72,7 @@ type alias RecipeDetail =
     , hasEmbedding : Bool
     , dispositions : List Disposition
     , notes : List Decode.Value
+    , body : Maybe String
     }
 
 
@@ -162,15 +164,19 @@ listEntryDecoder =
 
 recipeDetailDecoder : Decoder RecipeDetail
 recipeDetailDecoder =
-    Decode.map8 RecipeDetail
-        (Decode.field "slug" Decode.string)
-        tierDecoder
-        (Decode.field "source" (Decode.nullable Decode.string))
-        (Decode.field "projection" (Decode.nullable Decode.value))
-        descriptionDecoder
-        hasEmbeddingDecoder
-        (Decode.field "dispositions" (Decode.list dispositionDecoder))
-        (Decode.field "notes" (Decode.list Decode.value))
+    -- map8 caps at eight fields; apply the ninth (`body`) to the partial constructor.
+    Decode.map2 (\toDetail body -> toDetail body)
+        (Decode.map8 RecipeDetail
+            (Decode.field "slug" Decode.string)
+            tierDecoder
+            (Decode.field "source" (Decode.nullable Decode.string))
+            (Decode.field "projection" (Decode.nullable Decode.value))
+            descriptionDecoder
+            hasEmbeddingDecoder
+            (Decode.field "dispositions" (Decode.list dispositionDecoder))
+            (Decode.field "notes" (Decode.list Decode.value))
+        )
+        (Decode.field "body" (Decode.nullable Decode.string))
 
 
 {-| Build the `RecipeTier` from the server's `status` discriminant plus the fields each
@@ -317,9 +323,26 @@ viewRecipe detail =
         , viewDescription detail
         , viewDispositions detail.dispositions
         , section "Cross-tenant notes" (viewJsonList detail.notes)
+        , viewRenderedBody detail.body
         , section "R2 source (recipes/<slug>.md)" [ viewSource detail.source ]
         , section "D1 projection (recipes row)" [ viewMaybeJson detail.projection ]
         ]
+
+
+{-| The recipe body rendered to HTML (the member-facing view), shown above the raw source
+inspector. Omitted when there's no body (orphaned slug) or it's blank. -}
+viewRenderedBody : Maybe String -> Html msg
+viewRenderedBody body =
+    case body of
+        Just markdown ->
+            if String.isEmpty (String.trim markdown) then
+                text ""
+
+            else
+                section "Rendered body" [ div [ class "card" ] [ Markdown.render markdown ] ]
+
+        Nothing ->
+            text ""
 
 
 viewTier : RecipeTier -> List (Html msg)

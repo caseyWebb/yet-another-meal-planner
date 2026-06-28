@@ -6,7 +6,7 @@ the type system can't catch a wrong parse, only a wrong type.
 -}
 
 import Expect
-import Route exposing (LogSource(..), Route(..))
+import Route exposing (ConfigRoute(..), LogSource(..), Route(..))
 import Test exposing (Test, describe, test)
 import Url
 
@@ -58,6 +58,22 @@ suite =
                 \_ -> parse "/admin/logs/discovery" |> Expect.equal (Logs (Just Discovery))
             , test "/admin/logs/<unknown> → NotFound (no bogus source)" <|
                 \_ -> parse "/admin/logs/nope" |> Expect.equal NotFound
+            , test "/admin/config → Config Calibration (default sub-view)" <|
+                \_ -> parse "/admin/config" |> Expect.equal (Config ConfigCalibration)
+            , test "/admin/config/ (trailing slash) → Config Calibration" <|
+                \_ -> parse "/admin/config/" |> Expect.equal (Config ConfigCalibration)
+            , test "/admin/config/aliases → Config Aliases" <|
+                \_ -> parse "/admin/config/aliases" |> Expect.equal (Config ConfigAliases)
+            , test "/admin/config/flyer-terms → Config FlyerTerms" <|
+                \_ -> parse "/admin/config/flyer-terms" |> Expect.equal (Config ConfigFlyerTerms)
+            , test "/admin/config/feeds → Config Feeds" <|
+                \_ -> parse "/admin/config/feeds" |> Expect.equal (Config ConfigFeeds)
+            , test "/admin/config/senders → Config Senders" <|
+                \_ -> parse "/admin/config/senders" |> Expect.equal (Config ConfigSenders)
+            , test "/admin/config/members → Config Members" <|
+                \_ -> parse "/admin/config/members" |> Expect.equal (Config ConfigMembers)
+            , test "/admin/config/<unknown> → NotFound (no bogus sub-view)" <|
+                \_ -> parse "/admin/config/bogus" |> Expect.equal NotFound
             , test "unknown path → NotFound" <|
                 \_ -> parse "/admin/nope" |> Expect.equal NotFound
             ]
@@ -74,6 +90,18 @@ suite =
                 \_ -> roundTrip (Logs Nothing) |> Expect.equal (Logs Nothing)
             , test "Logs (Just Discovery)" <|
                 \_ -> roundTrip (Logs (Just Discovery)) |> Expect.equal (Logs (Just Discovery))
+            , test "Config Calibration" <|
+                \_ -> roundTrip (Config ConfigCalibration) |> Expect.equal (Config ConfigCalibration)
+            , test "Config Aliases" <|
+                \_ -> roundTrip (Config ConfigAliases) |> Expect.equal (Config ConfigAliases)
+            , test "Config FlyerTerms" <|
+                \_ -> roundTrip (Config ConfigFlyerTerms) |> Expect.equal (Config ConfigFlyerTerms)
+            , test "Config Feeds" <|
+                \_ -> roundTrip (Config ConfigFeeds) |> Expect.equal (Config ConfigFeeds)
+            , test "Config Senders" <|
+                \_ -> roundTrip (Config ConfigSenders) |> Expect.equal (Config ConfigSenders)
+            , test "Config Members" <|
+                \_ -> roundTrip (Config ConfigMembers) |> Expect.equal (Config ConfigMembers)
             ]
         , describe "actingAsParam"
             [ test "?as=casey → Just casey" <|

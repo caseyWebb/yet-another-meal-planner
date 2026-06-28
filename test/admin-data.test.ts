@@ -87,6 +87,36 @@ describe("recipeDetail — cross-tier projection status", () => {
   });
 });
 
+describe("recipeDetail — body (frontmatter-stripped, for client rendering)", () => {
+  it("strips the YAML frontmatter fence, leaving the body; raw source unchanged", async () => {
+    const src = "---\ntitle: Foo\ncuisine: italian\n---\n## Ingredients\n- eggs\n\n## Instructions\n1. Cook.\n";
+    const { env } = makeEnv({ tables: { recipes: [{ slug: "foo", title: "Foo" }] }, r2: { "recipes/foo.md": src } });
+    const d = await recipeDetail(env, "foo");
+    expect(d.source).toBe(src);
+    expect(d.body).toBe("## Ingredients\n- eggs\n\n## Instructions\n1. Cook.\n");
+  });
+
+  it("returns the whole text as body when there's no frontmatter", async () => {
+    const { env } = makeEnv({ r2: { "recipes/baz.md": "# Baz\n\nNo frontmatter here." } });
+    const d = await recipeDetail(env, "baz");
+    expect(d.body).toBe("# Baz\n\nNo frontmatter here.");
+  });
+
+  it("falls back to the whole source when the frontmatter YAML is malformed (never throws)", async () => {
+    const bad = "---\nfoo: [unclosed\n---\n## Instructions\n1. Cook.\n";
+    const { env } = makeEnv({ r2: { "recipes/bar.md": bad } });
+    const d = await recipeDetail(env, "bar");
+    expect(d.status).toBe("pending");
+    expect(d.body).toBe(bad);
+  });
+
+  it("body is null for an orphaned slug with no R2 source", async () => {
+    const { env } = makeEnv({ tables: { recipes: [{ slug: "qux", title: "Qux" }] } });
+    const d = await recipeDetail(env, "qux");
+    expect(d.body).toBeNull();
+  });
+});
+
 describe("recipeDetail — cross-tenant aggregate names tenants (no redaction)", () => {
   it("lists each tenant's disposition and every author's notes, including private", async () => {
     const { env } = makeEnv({

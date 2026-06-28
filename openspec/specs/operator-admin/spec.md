@@ -218,7 +218,7 @@ The tool console SHALL make the acting persona visible whenever a tool can be in
 
 ### Requirement: Admin panel is organized into top-level areas with client-side routing
 
-The admin SPA SHALL organize its surfaces into top-level areas — a **Status** area (the operator-facing background-job health view), a **Members** area (member management), a **Dev** area (the tool console and future developer surfaces), a **Logs** area (operator-auditable activity logs, organized by a left submenu of log sources; see "Logs area with a left submenu and a detail dialog"), a **Config** area (operator-editable configuration; its first occupant is the discovery calibration console — see "Config area hosts the discovery calibration console"), and a **Data** area (the read-only data explorer over D1 and the R2 corpus — see the operator-data-explorer capability) — navigable by client-side routing so each surface has its own URL and a new surface is added as its own routed module rather than another card on a single page. The panel's **home** route (`/admin`) SHALL be the Status view; member management SHALL be reached at its own route (`/admin/members`), the tool console under `/admin/dev`, the logs under `/admin/logs` (with the selected log source as a sub-route, e.g. `/admin/logs/discovery`), configuration under `/admin/config`, and the data explorer under `/admin/data/*`, not at the panel root. Navigating between surfaces SHALL update the browser URL, and a deep link or refresh to a surface's URL SHALL load that surface directly.
+The admin SPA SHALL organize its surfaces into top-level areas — a **Status** area (the operator-facing background-job health view), a **Members** area (member management), a **Dev** area (the tool console and future developer surfaces), a **Logs** area (operator-auditable activity logs, organized by a left submenu of log sources; see "Logs area with a left submenu and a detail dialog"), a **Config** area (operator-editable configuration, organized into routed sub-views — the discovery calibration console and the shared-corpus editors; see "Config area hosts the calibration console and the shared-corpus editors"), and a **Data** area (the read-only data explorer over D1 and the R2 corpus — see the operator-data-explorer capability) — navigable by client-side routing so each surface has its own URL and a new surface is added as its own routed module rather than another card on a single page. The panel's **home** route (`/admin`) SHALL be the Status view; member management SHALL be reached at its own route (`/admin/members`), the tool console under `/admin/dev`, the logs under `/admin/logs` (with the selected log source as a sub-route, e.g. `/admin/logs/discovery`), configuration under `/admin/config` (with the selected config sub-view as a sub-route, e.g. `/admin/config/feeds`), and the data explorer under `/admin/data/*`, not at the panel root. Navigating between surfaces SHALL update the browser URL, and a deep link or refresh to a surface's URL SHALL load that surface directly.
 
 #### Scenario: Navigation updates the URL
 
@@ -248,7 +248,12 @@ The admin SPA SHALL organize its surfaces into top-level areas — a **Status** 
 #### Scenario: Deep link to config
 
 - **WHEN** the operator opens `/admin/config` directly (or refreshes there)
-- **THEN** the Worker serves the SPA shell and the app routes to the Config area
+- **THEN** the Worker serves the SPA shell and the app routes to the Config area with the calibration console selected
+
+#### Scenario: Deep link to a config sub-view
+
+- **WHEN** the operator opens a config editor route such as `/admin/config/feeds` directly (or refreshes there)
+- **THEN** the Worker serves the SPA shell and the app routes to the Config area with that shared-corpus editor selected
 
 #### Scenario: Deep link to a data view
 
@@ -332,7 +337,9 @@ The generated example SHALL be valid after stripping: submitting it unmodified S
 
 The admin SPA SHALL provide a top-level **Logs** area (a fourth area beside Status, Members, and Dev) for operator-auditable activity logs. The Logs area SHALL render a **left submenu** of log sources and, on the right, the entries for the selected source — the master/detail layout of the MCP-inspector tool console. Its first (and initially only) submenu item SHALL be **Discovery**, showing the background discovery sweep's per-candidate outcome log. The area SHALL be **extensible by adding a submenu item**, not by restructuring — a future log source becomes another entry in the left submenu. The Logs area and its submenu selection SHALL be client-routed (`/admin/logs` for the area, `/admin/logs/discovery` for the Discovery log) so a deep link or refresh loads the selected log directly. When an individual entry carries more than a row's worth of detail, the entry SHALL be expandable into a **dialog** showing its full detail (rather than inlining every field into the list).
 
-The Logs surfaces SHALL be modeled per the panel's data-modeling standard: the loaded entries SHALL be `RemoteData` (the four-state load), the selected submenu item SHALL be a custom type (not a stringly-typed route), and the open-dialog state SHALL be modeled so "a dialog is open for entry X" cannot contradict the loaded list.
+The Discovery log view SHALL provide an operator **re-probe** action that invokes the `reprobe-parked` backfill (`POST /admin/api/discovery/reprobe-parked`, see the re-probe requirement) and renders the returned summary (rows scanned, reclassified, still-unreachable, now-acquirable). On success the view SHALL reload the log so the re-classified `detail.reason`s are reflected immediately. The action SHALL be one-at-a-time (disabled while a re-probe is in flight).
+
+The Logs surfaces SHALL be modeled per the panel's data-modeling standard: the loaded entries SHALL be `RemoteData` (the four-state load), the selected submenu item SHALL be a custom type (not a stringly-typed route), and the open-dialog state SHALL be modeled so "a dialog is open for entry X" cannot contradict the loaded list. The re-probe action's in-flight state, its result summary, and its failure SHALL likewise be one custom type (never a `Bool` busy flag beside a `Maybe` error), distinct from the log's load state.
 
 #### Scenario: Logs area shows the Discovery submenu and its entries
 
@@ -354,6 +361,16 @@ The Logs surfaces SHALL be modeled per the panel's data-modeling standard: the l
 - **WHEN** a future log source is introduced
 - **THEN** it appears as an additional left-submenu item under Logs without restructuring the area
 
+#### Scenario: Operator re-probes parked rows from the Discovery log
+
+- **WHEN** the operator activates the re-probe action in the Discovery log view
+- **THEN** the app POSTs `reprobe-parked`, shows the returned summary (scanned / reclassified / still-unreachable / now-acquirable), and reloads the log so the re-classified reasons appear
+
+#### Scenario: The re-probe action is one-at-a-time
+
+- **WHEN** a re-probe is already in flight
+- **THEN** the action is disabled so a second overlapping re-probe cannot be started
+
 ### Requirement: Discovery log is served cross-tenant under Access
 
 The admin surface SHALL expose a read endpoint (e.g. `GET /admin/api/logs/discovery`) returning the background discovery sweep's per-candidate outcome log — each entry's timestamp, source URL and title, discovery source, outcome (imported / skipped-duplicate / skipped-no-match / skipped-rejected-source / dietary-gated / parked-error), and outcome-specific detail (import slug + matched-member attribution, the matched corpus recipe for a duplicate, the validation failure for a parked error). The endpoint SHALL read the sweep's log (see the `discovery-sweep` capability) and SHALL present the group-wide log (the operator sees every member's attributions — the same cross-tenant operator reach the rest of `/admin` has). It SHALL be gated by Cloudflare Access exactly like the rest of `/admin*`, including the opt-in rule: when the Access configuration is unset, the endpoint SHALL respond `404`. The endpoint SHALL bound the number of entries returned (most-recent-first) so the response stays manageable.
@@ -373,9 +390,11 @@ The admin surface SHALL expose a read endpoint (e.g. `GET /admin/api/logs/discov
 - **WHEN** the discovery log contains more entries than the response cap
 - **THEN** the endpoint returns the most recent entries up to the cap, not the entire history
 
-### Requirement: Config area hosts the discovery calibration console
+### Requirement: Config area hosts the calibration console and the shared-corpus editors
 
-The admin SPA SHALL provide a top-level **Config** area (routed at `/admin/config`) hosting the discovery calibration console: the sweep's tunable knobs (τ, triage threshold, δ, classify cap, rate cap) as a form, an **Analyze** action and a **Dry-run** action, and a results panel — laid out so the projected effect of the current knob values is visible on the **same screen** before the operator saves. Editing a knob and running Analyze/Dry-run SHALL NOT persist anything; only an explicit Save writes the config. The form SHALL show the projected effect (the Analyze/Dry-run results) before Save, and a value past a hard floor SHALL require an explicit confirmation step in the UI (mirroring the server-side guard). The surfaces SHALL be modeled per `admin/CLAUDE.md`: the loaded config and the Analyze/Dry-run results as `RemoteData`, and a dirty-vs-saved form state as a custom type (so "unsaved edits" cannot be confused with "saved").
+The admin SPA SHALL provide a top-level **Config** area (routed at `/admin/config`) organized into routed sub-views reached by a sub-navigation, whose **default** sub-view (the bare `/admin/config`) is the discovery calibration console and whose other sub-views are the shared-corpus editors (see "Operator edits shared-corpus tables under Config"). Each sub-view SHALL have its own sub-route so it deep-links (e.g. `/admin/config`, `/admin/config/feeds`), and selecting a sub-view SHALL update the browser URL without a full-page reload.
+
+The discovery calibration console SHALL host the sweep's tunable knobs (τ, triage threshold, δ, classify cap, rate cap) as a form, an **Analyze** action and a **Dry-run** action, and a results panel — laid out so the projected effect of the current knob values is visible on the **same screen** before the operator saves. Editing a knob and running Analyze/Dry-run SHALL NOT persist anything; only an explicit Save writes the config. The form SHALL show the projected effect (the Analyze/Dry-run results) before Save, and a value past a hard floor SHALL require an explicit confirmation step in the UI (mirroring the server-side guard). The surfaces SHALL be modeled per `admin/CLAUDE.md`: the loaded config and the Analyze/Dry-run results as `RemoteData`, and a dirty-vs-saved form state as a custom type (so "unsaved edits" cannot be confused with "saved").
 
 #### Scenario: Operator previews then saves a knob change
 
@@ -387,10 +406,69 @@ The admin SPA SHALL provide a top-level **Config** area (routed at `/admin/confi
 - **WHEN** the operator drags τ below the hard floor and tries to Save
 - **THEN** the console requires an explicit confirmation before sending the write
 
-#### Scenario: Config area deep-links
+#### Scenario: Config area deep-links to the calibration console
 
 - **WHEN** the operator opens `/admin/config` directly (or refreshes there)
-- **THEN** the Worker serves the SPA shell and the app routes to the Config area
+- **THEN** the Worker serves the SPA shell and the app routes to the Config area with the calibration console as the default sub-view
+
+#### Scenario: Config sub-views are reachable by sub-navigation
+
+- **WHEN** the operator opens the Config area and selects a shared-corpus editor from the sub-navigation
+- **THEN** the browser URL changes to that editor's sub-route and the editor renders, the calibration console being one selectable sub-view among them
+
+### Requirement: Operator edits shared-corpus tables under Config
+
+The Config area SHALL provide an operator editor for each of the five shared-corpus lookup tables — ingredient **aliases** (`variant → canonical`), **flyer terms**, discovery **feeds** (RSS/Atom sources), and the discovery allowlist's newsletter **senders** and member **addresses** — each as its own routed sub-view that **lists** the table's current rows, **adds** a row, and **removes** a row by its primary key. These are group-wide (tenant-free) shared config, and the editor SHALL present and write the group-wide table (the same cross-tenant operator reach the rest of `/admin` has).
+
+Removal SHALL be **operator-only**: it SHALL NOT be exposed as an MCP tool, so the agent can add (via the existing add tools) but only the operator prunes. Adding through the editor SHALL match the existing write semantics — `aliases` is an upsert keyed by `variant` (re-adding a variant overwrites its canonical), and `flyer_terms`, `feeds`, `senders`, and `members` are insert-or-ignore (add-only dedup) — so the operator's add path and the agent's add path converge on the same row. A removal SHALL be idempotent: removing an absent key SHALL succeed (reporting that nothing was removed) rather than erroring.
+
+The editor surfaces SHALL be modeled per `admin/CLAUDE.md`: the loaded rows SHALL be `RemoteData` (the four-state load), and the in-flight add/remove mutation together with its failure SHALL be a single custom type carrying which operation is in flight (so "an add is running", "a remove of row X is running", and "the last mutation failed, with its error" cannot contradict, and one mutation at a time is structural) — never a `Bool` busy flag beside a `Maybe String` error. After a successful add or remove the editor SHALL refetch the list rather than locally patching it, so the displayed rows are always the authoritative server state.
+
+#### Scenario: Operator lists, adds, and removes a feed
+
+- **WHEN** the operator opens `/admin/config/feeds`, adds a feed URL, then removes an existing feed
+- **THEN** the editor lists the current feeds, the added feed appears after the write, and the removed feed is gone — each change reflected by refetching the group-wide `feeds` table
+
+#### Scenario: Adding an existing alias overwrites its canonical
+
+- **WHEN** the operator adds an alias whose `variant` already exists with a different `canonical`
+- **THEN** the row's canonical is updated to the new value (upsert), not duplicated
+
+#### Scenario: Removing an address is operator-only and normalized
+
+- **WHEN** the operator removes a discovery sender or member address that was stored normalized (trimmed, lowercased)
+- **THEN** the matching row is removed regardless of the key's surrounding whitespace or letter case, and no MCP tool exposes this removal to the agent
+
+#### Scenario: Removing an absent row is idempotent
+
+- **WHEN** the operator removes a key that is not present
+- **THEN** the operation succeeds and reports that no row was removed, rather than returning an error
+
+### Requirement: Shared-corpus editor endpoints served cross-tenant under Access
+
+The admin surface SHALL expose, gated by Cloudflare Access exactly like the rest of `/admin*` (404 when Access is unconfigured), a writable corpus namespace `/admin/api/corpus/<table>` where `<table>` is one of a fixed set (`aliases`, `flyer-terms`, `feeds`, `senders`, `members`): `GET /admin/api/corpus/<table>` lists the table's rows, `POST /admin/api/corpus/<table>` adds one validated row, and `DELETE /admin/api/corpus/<table>/<key>` removes the row with that primary key. An unknown `<table>` SHALL be a not-found error and an unsupported method SHALL be rejected (`405`). These are operator/cross-tenant operations writing group-wide config and SHALL NOT be exposed as MCP tools. They SHALL be distinct from the read-only `/admin/api/data/*` explorer namespace, which remains read-only.
+
+The `POST` SHALL validate per table server-side and write nothing on a bad input: a non-empty primary key always; `aliases` a non-empty `canonical`; `feeds` a URL with a numeric `weight` (defaulting when absent) and `tags` as a string array; `senders`/`members` an address that is normalized (trimmed, lowercased) before storage. The `DELETE` SHALL normalize an address key the same way before matching, so a delete always targets the row an add produced. All writes SHALL go through the Worker's structured storage layer (returning structured errors, not throwing).
+
+#### Scenario: Corpus endpoints are reachable only under Access
+
+- **WHEN** Access is configured and an authenticated operator calls `GET /admin/api/corpus/feeds`
+- **THEN** the feed rows are returned; and when Access is unconfigured every `/admin/api/corpus/*` route responds `404` like the rest of `/admin*`
+
+#### Scenario: An invalid add is rejected without a write
+
+- **WHEN** `POST /admin/api/corpus/aliases` sends a row missing its `canonical` (or an empty `variant`)
+- **THEN** the endpoint returns a structured validation error and writes nothing
+
+#### Scenario: An unknown table or method is rejected
+
+- **WHEN** a request targets `/admin/api/corpus/<unknown>` or uses an unsupported method on a valid table
+- **THEN** the endpoint responds with a not-found error for the unknown table and `405` for the unsupported method, writing nothing
+
+#### Scenario: Delete removes by primary key
+
+- **WHEN** `DELETE /admin/api/corpus/flyer-terms/<term>` targets an existing term
+- **THEN** that term's row is removed and the response reports the removal; a key that is absent reports no removal rather than erroring
 
 ### Requirement: Discovery calibration endpoints served cross-tenant under Access
 
@@ -405,4 +483,54 @@ The admin surface SHALL expose, gated by Cloudflare Access exactly like the rest
 
 - **WHEN** `PUT /admin/api/discovery/config` sends a below-floor τ without the explicit-confirm flag
 - **THEN** the endpoint returns a structured error and writes nothing
+
+### Requirement: Operator probes a discovery feed from the edge
+
+The admin surface SHALL expose, gated by Cloudflare Access exactly like the rest of `/admin*` (404 when Access is unconfigured), an operator-only edge feed-probe `POST /admin/api/discovery/test-feed { url }` that runs **from the Worker's egress** and reports whether a feed URL is a viable discovery source. The probe SHALL fetch the feed URL with the same browser-headered fetch the sweep uses, report the fetch status and whether the body parses as RSS/Atom and how many items it yields, and then run the sweep's recipe-acquisition path against a bounded sample of the feed's entry pages — reporting **each sampled page's specific outcome** from the same taxonomy the sweep parks with (`ok` / `unreachable` / `no_jsonld` / `not_a_recipe` / `incomplete`). The probe SHALL reuse the exact acquisition logic the sweep uses (a shared helper, not a re-implementation) so its verdict matches what the sweep would actually do. The probe SHALL write nothing — it neither imports a recipe nor mutates the feed set. It is an operator/cross-tenant operation and SHALL NOT be exposed as an MCP tool; an unsupported method SHALL be rejected (`405`).
+
+The Config › Feeds editor SHALL offer a **test action** — on each listed feed row and on the add form's drafted URL — that calls the probe endpoint and renders its verdict (feed reachable and item count; how many sampled entry pages parsed versus were walled or were not recipes). The test action's in-flight state and its result/failure SHALL be modeled per `admin/CLAUDE.md` (a single state type carrying which row is being tested and its outcome — never a `Bool` busy flag beside a `Maybe String`), and a test SHALL be read-only: it SHALL NOT add, remove, or refetch the feed rows.
+
+#### Scenario: Probe reports the feed and a sample of its entry pages
+
+- **WHEN** the operator triggers a test on a feed whose XML fetches and parses but whose entry pages are all bot-walled
+- **THEN** the probe reports the feed as reachable with its item count, and the sampled entry pages as `unreachable`, so the operator sees the feed is not actually a viable source
+
+#### Scenario: Probe distinguishes a non-recipe feed from a walled one
+
+- **WHEN** the operator tests a feed whose entries are roundup/article pages (fetch 200, no schema.org `Recipe`)
+- **THEN** the sampled pages report `not_a_recipe` (not `unreachable`), distinguishing an off-base source from a walled one
+
+#### Scenario: Probe is Access-gated and writes nothing
+
+- **WHEN** Access is configured and the operator calls `POST /admin/api/discovery/test-feed`
+- **THEN** the verdict is returned and no feed row or recipe is written; and when Access is unconfigured the route responds `404` like the rest of `/admin*`
+
+#### Scenario: The test action does not mutate the feed list
+
+- **WHEN** the operator tests a drafted or existing feed URL in the Feeds editor
+- **THEN** the verdict renders without adding, removing, or refetching the feed rows
+
+### Requirement: Operator re-probes mislabeled parked discovery rows
+
+The admin surface SHALL expose, gated by Cloudflare Access exactly like the rest of `/admin*` (404 when Access is unconfigured), an operator-only `POST /admin/api/discovery/reprobe-parked` that re-classifies existing parked `outcome='error'` discovery-log rows whose `detail.reason` is the legacy catch-all `unreachable`. For each such row it SHALL re-run the shared acquisition helper against the row's URL and update that row's `detail.reason` in place to the specific outcome (`no_jsonld` / `not_a_recipe` / `incomplete`, or leave `unreachable` when the page genuinely still cannot be fetched), recording the HTTP status where the failure is a non-2xx. A row that now acquires a valid recipe (the original park was stale) SHALL be relabeled `detail.reason = 'ok'` and SHALL remain parked (its `outcome` unchanged — the re-probe imports nothing). The re-probe SHALL be bounded (it processes a capped batch of legacy rows per invocation so a large backlog cannot exhaust the subrequest budget in one call) and idempotent (a row already carrying a specific reason is skipped). It SHALL import nothing and SHALL touch only the `detail` of the targeted rows. It is operator/cross-tenant and SHALL NOT be exposed as an MCP tool; an unsupported method SHALL be rejected (`405`).
+
+#### Scenario: A legacy unreachable row is re-classified to its specific reason
+
+- **WHEN** the operator runs the re-probe and a legacy `unreachable` row's URL now fetches 200 with no schema.org `Recipe`
+- **THEN** that row's `detail.reason` is updated to `not_a_recipe` in place, and nothing is imported
+
+#### Scenario: A still-unreachable row keeps unreachable
+
+- **WHEN** the re-probe re-fetches a legacy row's URL and it still returns a non-2xx or throws
+- **THEN** the row keeps `detail.reason` of `unreachable`, with the HTTP status recorded where applicable
+
+#### Scenario: A now-acquirable row is flagged ok but stays parked
+
+- **WHEN** the re-probe re-fetches a legacy row's URL and it now yields a valid recipe
+- **THEN** the row's `detail.reason` is relabeled `ok` while its `outcome` stays `error` (the re-probe imports nothing), flagging the recovery to the operator
+
+#### Scenario: Re-probe is bounded and idempotent
+
+- **WHEN** the operator runs the re-probe twice
+- **THEN** the first run processes a capped batch of legacy `unreachable` rows and the second skips rows already carrying a specific reason, so re-running does not redo settled rows
 

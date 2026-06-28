@@ -17,6 +17,7 @@ import type { Env } from "./env.js";
 import { db } from "./db.js";
 import { ToolError } from "./errors.js";
 import { createR2CorpusStore, type CorpusStore, type DirEntry } from "./corpus-store.js";
+import { parseMarkdown } from "./parse.js";
 import { readProfile } from "./profile-db.js";
 import { readPantry, readMealPlan, readGroceryList } from "./session-db.js";
 
@@ -46,6 +47,10 @@ export interface RecipeDetail {
   reconcile_message: string | null;
   /** The raw R2 `recipes/<slug>.md` source text; null when no source object exists. */
   source: string | null;
+  /** The recipe body for client rendering: `source` with its YAML frontmatter fence
+   *  removed (via `parseMarkdown`), the whole text when there's no parseable frontmatter,
+   *  and null when there's no source. Derived from `source` — no extra R2/D1 read. */
+  body: string | null;
   /** The D1 `recipes` projection row (raw columns); null when not indexed/orphaned-absent. */
   projection: Record<string, unknown> | null;
   /** The derived description + embedding presence; null when no `recipe_derived` row. */
@@ -73,6 +78,22 @@ function deriveStatus(hasSource: boolean, hasRow: boolean, hasReconcile: boolean
 function slugOfRecipeKey(key: string): string | null {
   const m = /^recipes\/(.+)\.md$/.exec(key);
   return m ? m[1] : null;
+}
+
+/**
+ * The recipe body (frontmatter removed) for client rendering, from the already-fetched
+ * source. `null` when there's no source. A source whose YAML frontmatter is malformed —
+ * the very recipe an operator opens to debug a `skipped` row — falls back to the whole
+ * text rather than throwing, so the detail endpoint never 500s on the case it exists to
+ * surface. With no frontmatter fence, `parseMarkdown` already returns the whole text.
+ */
+function recipeBody(source: string | null): string | null {
+  if (source === null) return null;
+  try {
+    return parseMarkdown(source, "recipe source").body;
+  } catch {
+    return source;
+  }
 }
 
 /**
@@ -152,6 +173,7 @@ export async function recipeDetail(env: Env, slug: string): Promise<RecipeDetail
     status,
     reconcile_message: status === "skipped" ? (reconcile?.message ?? null) : null,
     source,
+    body: recipeBody(source),
     projection,
     derived,
     dispositions: overlay.map((r) => ({

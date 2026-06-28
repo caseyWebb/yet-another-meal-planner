@@ -407,7 +407,7 @@ Example rows:
 The **discovery sweep**'s per-candidate **outcome log** — **one table serving three roles** (design Decision 11), so the audit surface and the operational state aren't three tables:
 - the **operator audit log** — recent rows, any outcome (ordered by `created_at`), the admin **Logs › Discovery** view;
 - the intake **"already evaluated" dedup set** — any row for a `url` marks it handled, so a re-run never reprocesses a candidate (the log **is** the sweep's progress state — there is no separate cursor);
-- the **parked-error surface** — `WHERE outcome = 'error'`, read by the agent-readable `read_discovery_errors` tool.
+- the **parked/failed surface** — `WHERE outcome IN ('error', 'failed')`, read by the agent-readable `read_discovery_errors` tool; the `failed` count also flips the `discovery-sweep` health record's `ok`.
 
 **Shared** (not per-tenant — discovery source URLs/outcomes are group content). Each sweep tick **appends** one row per terminal outcome and **prunes** rows older than the retention window (`LOG_RETENTION_DAYS`), so it doesn't grow without bound — a `no_match` aged out of the window may be re-evaluated later, which is acceptable. Schema: `migrations/d1/0016_background_discovery.sql`.
 
@@ -416,27 +416,31 @@ The **discovery sweep**'s per-candidate **outcome log** — **one table serving 
 -- PRIMARY KEY (id). Indexed three ways for its three roles:
 --   idx_discovery_log_url     on (url)        — the dedup "already evaluated" lookup
 --   idx_discovery_log_created on (created_at) — the most-recent-first operator log
---   idx_discovery_log_outcome on (outcome)    — the parked-error (outcome='error') subset
+--   idx_discovery_log_outcome on (outcome)    — the parked/failed (outcome IN ('error','failed')) subset
 id         TEXT  -- sweep-provided unique id (PK)
 url        TEXT  -- canonical source URL (the dedup key)
 title      TEXT  -- candidate title
 source     TEXT  -- feed name / sender address (provenance)
-outcome    TEXT  -- imported | duplicate | no_match | rejected_source | dietary_gated | error  NOT NULL
+outcome    TEXT  -- imported | duplicate | no_match | rejected_source | dietary_gated | error | failed  NOT NULL
 slug       TEXT  -- resulting recipe slug (imports only; NULL otherwise)
 detail     TEXT  -- JSON: attribution (imports), the matched-duplicate slug, the validation/fetch error, etc.
 created_at TEXT  -- ISO timestamp (most-recent-first ordering)
 ```
+
+For a content **park** (`outcome = 'error'`), `detail.reason` is the **specific** acquisition failure — `unreachable` (the fetch threw or returned a non-2xx; the HTTP status is recorded as `detail.status` when it was a non-2xx), `no_jsonld` (page fetched, no JSON-LD), `not_a_recipe` (JSON-LD present but no schema.org `Recipe`), `incomplete` (a `Recipe` with no ingredients/instructions), or a classification-validation message — **not** a catch-all `unreachable`. This is the same taxonomy `parse_recipe` returns and what the operator feed-probe reports, so a walled/dead source is distinguishable from a feed entry that simply isn't a parseable recipe. (Legacy rows still carrying the old catch-all `unreachable` are re-classified in place by the operator re-probe, `POST /admin/api/discovery/reprobe-parked`. A re-probed row that now acquires a valid recipe — the original park was stale — is relabeled `detail.reason = 'ok'`; it **stays parked** (`outcome` is unchanged — the re-probe imports nothing, and the URL is already in the evaluated-set, so a re-import is a manual re-add), the `ok` label just flags the recovery to the operator.)
 
 Example rows:
 
 | id | url | title | source | outcome | slug | detail | created_at |
 |----|-----|-------|--------|---------|------|--------|------------|
 | `d1a…` | https://www.seriouseats.com/harissa-roast-chicken | Harissa Roast Chicken | Serious Eats | imported | harissa-roast-chicken | {"attribution":[{"tenant":"alice","score":0.6312}]} | 2026-06-26T09:00:01.000Z |
-| `d2b…` | https://example.com/not-a-recipe | Our Summer Newsletter | news@example.com | error | NULL | {"reason":"unreachable"} | 2026-06-26T09:00:02.000Z |
+| `d2b…` | https://example.com/roundup | 10 Best Summer Salads | news@example.com | error | NULL | {"reason":"not_a_recipe"} | 2026-06-26T09:00:02.000Z |
+| `d3c…` | https://www.seriouseats.com/walled | Walled Recipe | Serious Eats | error | NULL | {"reason":"unreachable","status":403} | 2026-06-26T09:00:03.000Z |
+| `d3c…` | https://www.bonappetit.com/recipe/braised-short-ribs | Braised Short Ribs | Bon Appétit | failed | NULL | {"reason":"unexpected: Workers AI embed failed: Too many subrequests by single Worker invocation"} | 2026-06-26T09:00:03.000Z |
 
 **Notes:**
-- `outcome` is one of `imported` | `duplicate` | `no_match` | `rejected_source` | `dietary_gated` | `error`. `read_discovery_errors` returns the `error` subset; `list_new_for_me` reads imports through `discovery_matches`, not this log.
-- The dedup set is **every** distinct `url` in the table regardless of outcome, so a `duplicate`/`no_match`/`error` candidate is not re-fetched until it ages past the retention window.
+- `outcome` is one of `imported` | `duplicate` | `no_match` | `rejected_source` | `dietary_gated` | `error` | `failed`. `error` is a **content park** (an un-importable page — unreachable/walled/invalid), an expected steady state; `failed` is an **infrastructure failure** (a transient env.AI/D1 error — a subrequest-limit hit, an outage), which degrades the `discovery-sweep` health record (`countDiscoveryFailures`) until cleared. `read_discovery_errors` returns both; `list_new_for_me` reads imports through `discovery_matches`, not this log.
+- The dedup set is **every** distinct `url` in the table regardless of outcome, so a `duplicate`/`no_match`/`error`/`failed` candidate is not re-fetched until its row is cleared or ages past the retention window.
 - The full log (every outcome) is served to the operator at `GET /admin/api/logs/discovery` → `{ entries: [...] }` (Access-gated, most-recent-first, bounded) — the **Logs › Discovery** admin view.
 
 ## meal plan (per-tenant, D1 session state)
@@ -585,12 +589,20 @@ The operator admin panel (operator-admin) is a static Elm SPA at `/admin` plus a
 The **Data** area's read surface (`src/admin-data.ts`) — read-only, cross-tenant views over D1 and the R2 corpus, behind the same Access gate (so they 404 with the rest of the surface when it is disabled). Every route is **GET** (a write method is `405`); each runs a **fixed** query (no operator-supplied SQL), goes through `src/db.ts` / `src/corpus-store.ts`, and performs **no redaction** — `private` notes are returned and cross-tenant aggregates name their tenants. Scope is D1 domain data + the R2 corpus only; no KV secret is reachable.
 
 - `GET /admin/api/data/recipes` → `{ recipes: [{ slug, title, status }] }` — every slug in the R2 corpus ∪ the `recipes` table, each with its projection `status` (`indexed | skipped | pending | orphaned`).
-- `GET /admin/api/data/recipes/<slug>` → the cross-tier record: `{ slug, status, reconcile_message, source, projection, derived: { description, has_embedding, state } | null, dispositions: [{ tenant, favorite, reject }], notes: [...] }`. `status` is derived from (R2 source present?, `recipes` row present?); `skipped` carries the `reconcile_errors` reason; the embedding is shown as presence only, never the raw vector. `not_found` when the slug is in neither tier.
+- `GET /admin/api/data/recipes/<slug>` → the cross-tier record: `{ slug, status, reconcile_message, source, body, projection, derived: { description, has_embedding, state } | null, dispositions: [{ tenant, favorite, reject }], notes: [...] }`. `status` is derived from (R2 source present?, `recipes` row present?); `skipped` carries the `reconcile_errors` reason; the embedding is shown as presence only, never the raw vector. `body` is `source` with its YAML frontmatter fence removed (the whole text when there's none, `null` when there's no source) — derived from `source` with no extra read, for client-side markdown rendering. `not_found` when the slug is in neither tier.
 - `GET /admin/api/data/members/<id>` → one member's full per-tenant state: `{ id, profile, pantry, meal_plan, grocery_list, overlay, cooking_log, recipe_notes, store_notes }`. The id is resolved against the allowlist (`not_found` when absent); reuses the canonical `profile-db`/`session-db` readers.
 - `GET /admin/api/data/corpus/<table>` → `{ table, columns, rows }` for an allowlisted shared-corpus table (`aliases`, `flyer_terms`, `feeds`, `stores`, `store_notes`, `sku_cache`). `sku_cache` is bounded by a default `LIMIT`.
 - `GET /admin/api/data/corpus/guidance?prefix=` → `{ prefix, entries: [{ name, type }] }` — list a `guidance/**` R2 prefix; `GET /admin/api/data/corpus/guidance/object?path=` → `{ key, markdown }` — one guidance object's markdown text.
 - `GET /admin/api/data/discovery/<table>` → `{ table, columns, rows }` for `discovery_candidates` / `discovery_senders` / `discovery_members` / `discovery_rejections`.
 - `GET /admin/api/data/system/<table>` → `{ table, columns, rows }` for `reconcile_errors` / `bug_reports` / `schema_meta`.
+
+### Shared-corpus editors (`/admin/api/corpus/*`, operator-admin)
+
+The **Config** area's *writable* companion to the read-only Data explorer (`src/admin-corpus.ts`) — the operator curation surface for five group-wide shared-corpus tables, behind the same Access gate (404 with the rest of the surface when disabled). `<table>` is one of `aliases` | `flyer-terms` | `feeds` | `senders` | `members`; an unknown table is `404` and an unsupported method `405`. Distinct from the read-only `/admin/api/data/*` namespace. **Removal is operator-only** — no MCP tool deletes these — so the agent adds (via `update_aliases`/`update_feeds`/`update_discovery_sources`) and the operator prunes. All writes go through `src/corpus-db.ts` (→ `src/db.ts`, structured errors).
+
+- `GET /admin/api/corpus/<table>` → `{ table, columns, rows }` — the table's rows (server-fixed column order): `aliases` → `{variant, canonical}`, `flyer-terms` → `{term}`, `feeds` → `{url, name, weight, tags}`, `senders`/`members` → `{address}`.
+- `POST /admin/api/corpus/<table>` `{...row}` → `{ added }` — add one validated row. `aliases` upserts by `variant` (re-adding overwrites `canonical`); the rest insert-or-ignore (add-only dedup). Validation rejects a bad/empty key with `400` (`validation_failed`), writing nothing (`feeds` needs a `url`, a numeric `weight` defaulting to 1, and `tags` as a string array; addresses are normalized).
+- `DELETE /admin/api/corpus/<table>/<key>` → `{ removed }` — remove by primary key. Idempotent: an absent key is `{ removed: false }`, not a `404`. Address keys (`senders`/`members`) are normalized (trim + lowercase) to match storage.
 
 ## feeds (shared corpus, D1 `feeds` table)
 
