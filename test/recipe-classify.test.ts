@@ -112,8 +112,13 @@ describe("reconcileRecipeFacets", () => {
     expect(empties[0].bodyHash).toBe(recipe("bad").bodyHash);
   });
 
-  it("on Workers AI quota exhaustion: stops the tick, writes NO empty rows, flags quotaExhausted", async () => {
-    const quota = new Error("4006: you have used up your daily free allocation of 10,000 neurons");
+  it("on Workers AI quota exhaustion (storage_error + 4006 message): stops the tick, writes NO empty rows, flags quotaExhausted", async () => {
+    // The real quota error arrives as a `storage_error`-coded ToolError whose message carries the 4006
+    // text (runModel wraps the env.AI exception) — the gate keys on that CODE, not the message alone.
+    const quota = Object.assign(
+      new Error("Workers AI classification failed: 4006: you have used up your daily free allocation of 10,000 neurons"),
+      { code: "storage_error" },
+    );
     const { deps, upserts, empties } = makeDeps([recipe("q1"), recipe("q2")], [], {
       failWith: { q1: quota, q2: quota },
     });
@@ -124,6 +129,38 @@ describe("reconcileRecipeFacets", () => {
     expect(empties).toHaveLength(0); // NO empty rows under quota — they retry once it returns
     expect(upserts).toHaveLength(0);
     expect(r.pending).toBe(2); // both still stale
+  });
+
+  it("does NOT treat a PERMANENT validation_failed as a quota stop even if its message echoes '4006'/'neurons'", async () => {
+    // A contract failure's message echoes the recipe's own field values, so a recipe literally mentioning
+    // "neurons" could trip isAiQuotaError on the message alone. Gating on the CODE (storage_error) keeps it
+    // a PARK, never a quota stop that would wrongly defer the rest of the tick.
+    const perm = Object.assign(
+      new Error('Classification did not pass the recipe contract: protein "neurons" is off-vocab (4006)'),
+      { code: "validation_failed" },
+    );
+    const { deps, upserts, empties } = makeDeps([recipe("tricky")], [], { failWith: { tricky: perm } });
+    const r = await reconcileRecipeFacets(deps);
+    expect(r.quotaExhausted).toBe(false); // NOT a quota stop
+    expect(r.parked).toBe(1); // parked as the permanent failure it is
+    expect(r.errored).toBe(0);
+    expect(empties.map((e) => e.slug)).toEqual(["tricky"]); // gate advanced (parked)
+    expect(upserts).toHaveLength(0);
+  });
+
+  it("treats a non-quota storage_error as TRANSIENT (errored, gate not advanced)", async () => {
+    // A storage_error WITHOUT the 4006/neurons text is an ordinary transient hiccup — it must retry, not be
+    // mistaken for a quota stop (which would defer the rest of the tick) nor parked (which would lose facets).
+    const blip = Object.assign(new Error("Workers AI classification failed: connection reset"), {
+      code: "storage_error",
+    });
+    const { deps, upserts, empties } = makeDeps([recipe("blip")], [], { failWith: { blip } });
+    const r = await reconcileRecipeFacets(deps);
+    expect(r.quotaExhausted).toBe(false);
+    expect(r.errored).toBe(1);
+    expect(r.parked).toBe(0);
+    expect(empties).toHaveLength(0); // gate NOT advanced — retries next tick
+    expect(upserts).toHaveLength(0);
   });
 
   it("prunes facet rows whose slug is no longer in the corpus", async () => {

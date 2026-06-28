@@ -116,7 +116,10 @@ export async function reconcileRecipeFacets(deps: DerivedFacetDeps): Promise<Fac
     try {
       facets = await deps.classify(r);
     } catch (e) {
-      if (isAiQuotaError(errMessage(e))) {
+      // Quota exhaustion always arrives as a `storage_error` (the env.AI exception class) whose
+      // message carries the 4006 text — gate on the CODE so a permanent `validation_failed` (whose
+      // message echoes recipe field values) can never be mis-read as a quota stop.
+      if ((e as { code?: unknown }).code === "storage_error" && isAiQuotaError(errMessage(e))) {
         // Workers AI's daily allocation is exhausted — every remaining classify this tick fails the
         // same way. Do NOT advance the gate (so these retry once quota returns, and the projection
         // keeps falling back to the authored frontmatter meanwhile) and stop the tick early.
