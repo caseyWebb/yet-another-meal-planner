@@ -1,6 +1,7 @@
 module Logs exposing
     ( Model, Msg, init, selectSource, update, view
     , Outcome(..), Entry, entryDecoder, outcomeFromString, outcomeLabel, hasDetail
+    , ReprobeSummary, reprobeSummaryDecoder, reprobeSummaryText
     )
 
 {-| The Logs area's operator-auditable activity logs (operator-admin).
@@ -28,7 +29,7 @@ mapping and the "has expandable detail" predicate are the compiler-opaque logic 
 -}
 
 import Html exposing (Html, button, div, h2, li, p, pre, span, strong, text, ul)
-import Html.Attributes exposing (class, classList)
+import Html.Attributes exposing (class, classList, disabled)
 import Html.Events exposing (onClick)
 import Http
 import Json.Decode as Decode exposing (Decoder)
@@ -83,15 +84,36 @@ type Loaded
     = Loaded (List Entry) Dialog
 
 
+{-| The operator `reprobe-parked` backfill action: its in-flight state, result summary, and
+failure as ONE value (never a busy `Bool` beside a `Maybe` error), distinct from the log's
+`WebData` load — the backfill runs independently of (re)loading the entry list. -}
+type ReprobeState
+    = ReprobeIdle
+    | ReprobeRunning
+    | ReprobeDone ReprobeSummary
+    | ReprobeFailed Http.Error
+
+
+{-| What `POST /admin/api/discovery/reprobe-parked` returns: how many legacy `unreachable` rows
+it examined and how they re-classified. -}
+type alias ReprobeSummary =
+    { scanned : Int
+    , reclassified : Int
+    , stillUnreachable : Int
+    , nowAcquirable : Int
+    }
+
+
 type alias Model =
     { selected : LogSource
     , discovery : WebData Loaded
+    , reprobe : ReprobeState
     }
 
 
 init : LogSource -> ( Model, Cmd Msg )
 init source =
-    ( { selected = source, discovery = NotAsked }, Cmd.none )
+    ( { selected = source, discovery = NotAsked, reprobe = ReprobeIdle }, Cmd.none )
         |> load source
 
 
@@ -125,6 +147,8 @@ type Msg
     | OpenEntry Entry
     | CloseDialog
     | Reload
+    | RunReprobe
+    | GotReprobe (Result Http.Error ReprobeSummary)
 
 
 update : Msg -> Model -> ( Model, Cmd Msg )
@@ -142,7 +166,24 @@ update msg model =
             ( { model | discovery = mapLoaded (\list _ -> Loaded list Closed) model.discovery }, Cmd.none )
 
         Reload ->
-            ( { model | discovery = Loading }, fetchDiscovery )
+            -- A manual refresh clears a stale re-probe summary so what's shown always matches the
+            -- last re-probe (not a load that happened after it).
+            ( { model | discovery = Loading, reprobe = ReprobeIdle }, fetchDiscovery )
+
+        RunReprobe ->
+            -- One at a time: ignore a click while a re-probe is already running.
+            if model.reprobe == ReprobeRunning then
+                ( model, Cmd.none )
+
+            else
+                ( { model | reprobe = ReprobeRunning }, postReprobe )
+
+        GotReprobe (Ok summary) ->
+            -- Reload the log so the re-classified detail.reasons are reflected immediately.
+            ( { model | reprobe = ReprobeDone summary, discovery = Loading }, fetchDiscovery )
+
+        GotReprobe (Err err) ->
+            ( { model | reprobe = ReprobeFailed err }, Cmd.none )
 
 
 {-| Transform a loaded source's `(entries, dialog)` in place; a no-op while not yet `Success`
@@ -167,6 +208,24 @@ fetchDiscovery =
 discoveryDecoder : Decoder (List Entry)
 discoveryDecoder =
     Decode.field "entries" (Decode.list entryDecoder)
+
+
+postReprobe : Cmd Msg
+postReprobe =
+    Http.post
+        { url = "/admin/api/discovery/reprobe-parked"
+        , body = Http.emptyBody
+        , expect = Http.expectJson GotReprobe reprobeSummaryDecoder
+        }
+
+
+reprobeSummaryDecoder : Decoder ReprobeSummary
+reprobeSummaryDecoder =
+    Decode.map4 ReprobeSummary
+        (Decode.field "scanned" Decode.int)
+        (Decode.field "reclassified" Decode.int)
+        (Decode.field "stillUnreachable" Decode.int)
+        (Decode.field "nowAcquirable" Decode.int)
 
 
 entryDecoder : Decoder Entry
@@ -222,7 +281,7 @@ view : Model -> Html Msg
 view model =
     div [ class "logs" ]
         [ viewSubmenu model.selected
-        , viewSource model.selected model.discovery
+        , viewSource model.selected model.discovery model.reprobe
         ]
 
 
@@ -255,15 +314,20 @@ viewSourceItem selected source =
 
 
 {-| The RIGHT panel: the entries for the selected source. A new source adds an arm here. -}
-viewSource : LogSource -> WebData Loaded -> Html Msg
-viewSource selected discovery =
+viewSource : LogSource -> WebData Loaded -> ReprobeState -> Html Msg
+viewSource selected discovery reprobe =
     case selected of
         Discovery ->
             div [ class "log-entries" ]
                 [ div [ class "log-head" ]
                     [ h2 [] [ text "Discovery" ]
-                    , button [ class "link", onClick Reload ] [ text "Refresh" ]
+                    , div [ class "log-actions" ]
+                        [ button [ class "link", onClick RunReprobe, disabled (reprobe == ReprobeRunning) ]
+                            [ text (reprobeButtonLabel reprobe) ]
+                        , button [ class "link", onClick Reload ] [ text "Refresh" ]
+                        ]
                     ]
+                , viewReprobe reprobe
                 , viewLoaded discovery
                 ]
 
@@ -288,6 +352,52 @@ viewLoaded discovery =
                 [ ul [ class "entry-list" ] (List.map viewEntryRow entries)
                 , viewDialog dialog
                 ]
+
+
+reprobeButtonLabel : ReprobeState -> String
+reprobeButtonLabel reprobe =
+    case reprobe of
+        ReprobeRunning ->
+            "Re-probing…"
+
+        _ ->
+            "Re-probe parked"
+
+
+{-| The re-probe result line under the log head: the summary on success, the error on failure,
+nothing before the operator has run it (or right after, while the reload is in flight). -}
+viewReprobe : ReprobeState -> Html Msg
+viewReprobe reprobe =
+    case reprobe of
+        ReprobeIdle ->
+            text ""
+
+        ReprobeRunning ->
+            p [ class "muted small" ] [ text "Re-probing parked rows from the edge…" ]
+
+        ReprobeDone summary ->
+            p [ class "muted small" ] [ text (reprobeSummaryText summary) ]
+
+        ReprobeFailed err ->
+            div [ class "error" ] [ text ("Re-probe failed: " ++ httpError err) ]
+
+
+{-| Human-readable one-liner for a re-probe summary. Pinned by `tests/LogsTest.elm`. -}
+reprobeSummaryText : ReprobeSummary -> String
+reprobeSummaryText summary =
+    if summary.scanned == 0 then
+        "No legacy “unreachable” rows left to re-probe."
+
+    else
+        "Re-probed "
+            ++ String.fromInt summary.scanned
+            ++ ": "
+            ++ String.fromInt summary.reclassified
+            ++ " reclassified, "
+            ++ String.fromInt summary.stillUnreachable
+            ++ " still unreachable, "
+            ++ String.fromInt summary.nowAcquirable
+            ++ " now acquirable."
 
 
 viewEntryRow : Entry -> Html Msg
