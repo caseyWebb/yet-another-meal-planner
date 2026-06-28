@@ -3,6 +3,7 @@ import {
   buildHealthPayload,
   handleHealthRequest,
   handleHealthSvgRequest,
+  isAiQuotaError,
   notifyFailure,
   probeD1,
   readJobHealth,
@@ -233,10 +234,69 @@ describe("renderHealthSvg", () => {
       ],
       d1: { ok: true },
       admin: { access_configured: true, email_allowlist: false, dev_bypass_set: false, exposed: false },
+      ai_quota_exhausted: false,
     });
     expect(svg).toContain("2h ago");
     expect(svg).toContain("just now");
     expect(svg).toContain("degraded");
+  });
+
+  it("renders an explicit Workers AI quota-exhausted row when flagged", () => {
+    const svg = renderHealthSvg({
+      ok: false,
+      generated_at: 1_700_000_000_000,
+      jobs: [{ name: "recipe-classify", ok: false, last_run_at: 1_700_000_000_000 }],
+      d1: { ok: true },
+      admin: { access_configured: true, email_allowlist: false, dev_bypass_set: false, exposed: false },
+      ai_quota_exhausted: true,
+    });
+    expect(svg).toContain("ai");
+    expect(svg).toContain("quota exhausted");
+    expect(svg).toContain("degraded");
+  });
+});
+
+describe("Workers AI quota signal", () => {
+  it("flags ai_quota_exhausted from a job's 4006 error and degrades health (503)", async () => {
+    const kv = fakeKv();
+    await writeJobHealth(
+      kv,
+      "recipe-embed",
+      rec(false, {
+        error:
+          "Workers AI description generation failed: 4006: you have used up your daily free allocation of 10,000 neurons",
+      }),
+    );
+    const e = { KROGER_KV: kv, DB: fakeD1() } as unknown as Env;
+    const res = await handleHealthRequest(e);
+    expect(res.status).toBe(503);
+    const body = (await res.json()) as { ok: boolean; ai_quota_exhausted: boolean };
+    expect(body.ai_quota_exhausted).toBe(true);
+    expect(body.ok).toBe(false);
+  });
+
+  it("flags ai_quota_exhausted from a job's explicit quota_exhausted summary flag", async () => {
+    const kv = fakeKv();
+    await writeJobHealth(kv, "recipe-classify", rec(false, { classified: 0, quota_exhausted: true }));
+    const e = { KROGER_KV: kv, DB: fakeD1() } as unknown as Env;
+    const body = (await (await handleHealthRequest(e)).json()) as { ai_quota_exhausted: boolean };
+    expect(body.ai_quota_exhausted).toBe(true);
+  });
+
+  it("does not flag quota for healthy jobs", async () => {
+    const kv = fakeKv();
+    await writeJobHealth(kv, "recipe-classify", rec(true, { classified: 20, quota_exhausted: false }));
+    const payload = await buildHealthPayload({ KROGER_KV: kv, DB: fakeD1() } as unknown as Env, kv, [
+      "recipe-classify",
+    ]);
+    expect(payload.ai_quota_exhausted).toBe(false);
+  });
+
+  it("isAiQuotaError matches 4006 / neurons messages, not generic errors", () => {
+    expect(isAiQuotaError("4006: you have used up your daily free allocation of 10,000 neurons")).toBe(true);
+    expect(isAiQuotaError("Some neurons message")).toBe(true);
+    expect(isAiQuotaError("Workers AI returned an empty description")).toBe(false);
+    expect(isAiQuotaError(undefined)).toBe(false);
   });
 });
 

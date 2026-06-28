@@ -29,7 +29,7 @@ import { normalizeIngredientList } from "./matching.js";
 import { readAliases } from "./corpus-db.js";
 import { hashText } from "./hash.js";
 import { normalizeFacetCourse, EMPTY_FACETS, type ClassifiedFacets } from "./recipe-facets.js";
-import { notifyFailure, writeJobHealth } from "./health.js";
+import { isAiQuotaError, notifyFailure, writeJobHealth } from "./health.js";
 import type { KvStore } from "./kroger-user.js";
 
 /** Max recipes CLASSIFIED per tick (one env.AI call each — not batchable, like describe). */
@@ -57,12 +57,19 @@ export interface FacetState {
 export interface FacetReconcileResult {
   /** Recipes (re)classified this tick. */
   classified: number;
-  /** Recipes deferred to a later tick (over the per-tick cap). */
+  /** Recipes still needing work (over the cap, transiently errored, or deferred by a quota stop). */
   pending: number;
-  /** Recipes whose classification failed the contract within the retry budget (gate advanced, facets empty). */
-  failed: number;
+  /** PERMANENT failures — a classification that couldn't pass the contract within the retry budget;
+   *  parked (gate advanced with empty facets) so it isn't re-spent every tick. */
+  parked: number;
+  /** TRANSIENT failures (a non-quota env.AI/storage hiccup) — the gate is NOT advanced, so the recipe
+   *  retries next tick and the projection keeps falling back to authored frontmatter meanwhile. */
+  errored: number;
   /** Orphan facet rows deleted (slug no longer in the corpus). */
   pruned: number;
+  /** True when Workers AI's daily free allocation (error 4006) was hit — the tick stops early and the
+   *  remaining recipes are left un-gated so they retry once quota returns (no empty rows written). */
+  quotaExhausted: boolean;
 }
 
 /** The I/O the classify pass needs, injected so the logic is testable without R2/AI/D1. */
@@ -100,28 +107,61 @@ export async function reconcileRecipeFacets(deps: DerivedFacetDeps): Promise<Fac
 
   const stale = recipes.filter((r) => state.get(r.slug)?.body_hash !== r.bodyHash);
   const batch = stale.slice(0, deps.maxPerTick);
-  let failed = 0;
+  let classified = 0;
+  let parked = 0;
+  let errored = 0;
+  let quotaExhausted = false;
   for (const r of batch) {
+    let facets: ClassifiedFacets;
     try {
-      const facets = await deps.classify(r);
-      await deps.upsertFacets(r.slug, facets, r.bodyHash);
-    } catch {
-      // The classifier could not produce contract-valid facets within the retry budget (rare for
-      // an already-valid corpus recipe). Advance the gate with empty facets so we don't re-spend
-      // env.AI every tick; the recipe reads as "not yet derived" until its body changes.
-      failed++;
-      await deps.upsertEmpty(r.slug, r.bodyHash);
+      facets = await deps.classify(r);
+    } catch (e) {
+      if (isAiQuotaError(errMessage(e))) {
+        // Workers AI's daily allocation is exhausted — every remaining classify this tick fails the
+        // same way. Do NOT advance the gate (so these retry once quota returns, and the projection
+        // keeps falling back to the authored frontmatter meanwhile) and stop the tick early.
+        quotaExhausted = true;
+        break;
+      }
+      if (isPermanentClassifyError(e)) {
+        // A contract failure the retry budget couldn't fix (no human present to correct it) — park
+        // it (advance the gate with empty facets) so we don't re-spend env.AI on it every tick.
+        parked++;
+        await deps.upsertEmpty(r.slug, r.bodyHash);
+      } else {
+        // A TRANSIENT env.AI / storage hiccup — leave the gate stale so it retries next tick (and the
+        // projection keeps using the authored frontmatter). This is the fix for the quota-exhaustion
+        // class of failure: a transient error must never advance the gate.
+        errored++;
+      }
+      continue;
     }
+    await deps.upsertFacets(r.slug, facets, r.bodyHash);
+    classified++;
   }
 
   const pruned = await deps.pruneOrphans(recipes.map((r) => r.slug));
 
   return {
-    classified: batch.length - failed,
-    pending: stale.length - batch.length,
-    failed,
+    // classified + parked have advanced their gate; everything else (over-cap, errored, quota-deferred)
+    // is still stale and counted as pending.
+    classified,
+    pending: stale.length - classified - parked,
+    parked,
+    errored,
     pruned,
+    quotaExhausted,
   };
+}
+
+/** A classify error the retry budget can't fix on its own — a contract `validation_failed` (no human
+ *  present), as opposed to a transient `storage_error`/AI hiccup. Only this parks the recipe. */
+function isPermanentClassifyError(e: unknown): boolean {
+  return typeof e === "object" && e !== null && (e as { code?: unknown }).code === "validation_failed";
+}
+
+function errMessage(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
 }
 
 /** Stable gate hash over the recipe body + the authored Tier-B overrides the classifier conditions on. */
@@ -305,9 +345,18 @@ export async function runFacetJob(env: Env, deps: DerivedFacetDeps): Promise<voi
   try {
     const r = await reconcileRecipeFacets(deps);
     await writeJobHealth(deps.kv, "recipe-classify", {
-      ok: true,
+      // Quota exhaustion is a soft degradation (not a crash) — report it as not-ok so the job row
+      // reflects it, and the summary flag drives the explicit `/health` "ai quota exhausted" signal.
+      ok: !r.quotaExhausted,
       last_run_at: startedAt,
-      summary: { classified: r.classified, pending: r.pending, failed: r.failed, pruned: r.pruned },
+      summary: {
+        classified: r.classified,
+        pending: r.pending,
+        parked: r.parked,
+        errored: r.errored,
+        pruned: r.pruned,
+        quota_exhausted: r.quotaExhausted,
+      },
     });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);

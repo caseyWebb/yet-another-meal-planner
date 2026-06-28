@@ -69,6 +69,7 @@ type alias HealthPayload =
     , jobs : List Job
     , d1Ok : Bool
     , admin : AdminPosture
+    , aiQuotaExhausted : Bool
     }
 
 
@@ -208,12 +209,14 @@ decodeBody metadata body =
 
 healthDecoder : Decoder HealthPayload
 healthDecoder =
-    Decode.map5 HealthPayload
+    Decode.map6 HealthPayload
         (Decode.field "ok" Decode.bool)
         (Decode.field "generated_at" Decode.int)
         (Decode.field "jobs" (Decode.list jobDecoder))
         (Decode.at [ "d1", "ok" ] Decode.bool)
         (Decode.field "admin" adminDecoder)
+        -- Tolerate an older Worker that predates the field (defaults to not-exhausted).
+        (Decode.oneOf [ Decode.field "ai_quota_exhausted" Decode.bool, Decode.succeed False ])
 
 
 jobDecoder : Decoder Job
@@ -292,6 +295,7 @@ viewPayload : Time.Zone -> HealthPayload -> Html Msg
 viewPayload zone payload =
     div []
         [ viewExposedWarning payload.admin
+        , viewAiQuotaWarning payload.aiQuotaExhausted
         , viewHeadline payload.ok
         , div [ class "card" ]
             (List.map (viewJobRow zone payload.generatedAt) payload.jobs
@@ -308,6 +312,21 @@ viewExposedWarning posture =
         div [ class "error" ]
             [ strong [] [ text "Admin gate exposed. " ]
             , text "Access is unconfigured and the dev bypass is set — a deployed Worker would serve /admin unauthenticated. Set ACCESS_TEAM_DOMAIN and ACCESS_AUD (and clear ADMIN_DEV_BYPASS)."
+            ]
+
+    else
+        text ""
+
+
+{-| The explicit Workers AI quota-exhausted alert: when an AI cron job reports error 4006 (the
+daily free allocation of neurons is used up), name the cause rather than leaving a generic job
+failure. Rendered as a red banner like the exposed-gate warning. -}
+viewAiQuotaWarning : Bool -> Html Msg
+viewAiQuotaWarning exhausted =
+    if exhausted then
+        div [ class "error" ]
+            [ strong [] [ text "Workers AI quota exhausted. " ]
+            , text "The daily free allocation of 10,000 neurons is used up (error 4006), so the recipe-classify, recipe-embed, and discovery cron jobs cannot run their AI steps. They resume at the next daily reset — or upgrade to the Cloudflare Workers Paid plan to remove the cap."
             ]
 
     else

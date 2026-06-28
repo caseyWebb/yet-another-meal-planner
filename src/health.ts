@@ -62,6 +62,32 @@ export interface HealthPayload {
   d1: D1Status;
   /** Operator admin gate posture (tenant-clean booleans; `exposed` degrades overall `ok`). */
   admin: AdminPosture;
+  /**
+   * True when an AI-using background job reported Workers AI's daily-free-allocation
+   * exhaustion (error 4006). An explicit, distinct signal — the AI cron jobs (classify,
+   * describe/embed, discovery) all fall over together when neurons run out, so a generic
+   * job-failure is ambiguous; this names the cause. Degrades overall `ok`. Tenant-clean
+   * (a boolean derived from the jobs' own tenant-clean summaries).
+   */
+  ai_quota_exhausted: boolean;
+}
+
+/**
+ * Detect Workers AI's daily-free-allocation exhaustion (error 4006) from a job's tenant-clean
+ * error string, so `/health` can name "Workers AI quota exhausted" rather than report a generic
+ * job failure. Matches the 4006 code or the "neurons" allocation message Cloudflare returns.
+ */
+export function isAiQuotaError(message: unknown): boolean {
+  if (typeof message !== "string") return false;
+  const m = message.toLowerCase();
+  return m.includes("4006") || m.includes("neurons") || m.includes("daily free allocation");
+}
+
+/** True when a job's stored summary indicates Workers AI quota exhaustion (an explicit flag the
+ *  job set, or a quota-shaped `error` string). */
+function summaryHasAiQuota(summary: Record<string, unknown> | undefined): boolean {
+  if (!summary) return false;
+  return summary.quota_exhausted === true || isAiQuotaError(summary.error);
 }
 
 /**
@@ -120,12 +146,14 @@ export async function buildHealthPayload(
   }
   const d1 = await probeD1(env);
   const admin = adminPosture(env);
+  const aiQuotaExhausted = jobs.some((j) => summaryHasAiQuota(j.summary));
   return {
-    ok: !jobs.some((j) => j.ok === false) && d1.ok && !admin.exposed,
+    ok: !jobs.some((j) => j.ok === false) && d1.ok && !admin.exposed && !aiQuotaExhausted,
     generated_at: Date.now(),
     jobs,
     d1,
     admin,
+    ai_quota_exhausted: aiQuotaExhausted,
   };
 }
 
@@ -208,6 +236,14 @@ export function renderHealthSvg(payload: HealthPayload): string {
     }),
     { label: "d1", state: payload.d1.ok ? "ok" : "fail", word: payload.d1.ok ? "ok" : "fail", age: "" },
     { label: "admin", state: adminState, word: adminWord, age: "" },
+    // Workers AI quota row: the loud, explicit "neurons exhausted" signal (the AI crons all fail
+    // together when it trips, so naming the cause beats a generic job-fail).
+    {
+      label: "ai",
+      state: payload.ai_quota_exhausted ? "fail" : "ok",
+      word: payload.ai_quota_exhausted ? "quota exhausted" : "ok",
+      age: "",
+    },
   ];
 
   const headWord = payload.ok ? "healthy" : "degraded";
