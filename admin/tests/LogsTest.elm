@@ -28,6 +28,8 @@ suite =
                 \_ -> Logs.outcomeFromString "dietary_gated" |> Expect.equal DietaryGated
             , test "error" <|
                 \_ -> Logs.outcomeFromString "error" |> Expect.equal Errored
+            , test "failed" <|
+                \_ -> Logs.outcomeFromString "failed" |> Expect.equal Failed
             , test "an unrecognized outcome is kept as Other (forward-compatible, no decode failure)" <|
                 \_ -> Logs.outcomeFromString "something_new" |> Expect.equal (Other "something_new")
             ]
@@ -42,6 +44,11 @@ suite =
                     Decode.decodeString Logs.entryDecoder sparseErrorRow
                         |> Result.map (\e -> ( e.outcome, e.title, e.slug ))
                         |> Expect.equal (Ok ( Errored, Nothing, Nothing ))
+            , test "decodes a failed (infra) row" <|
+                \_ ->
+                    Decode.decodeString Logs.entryDecoder failedRow
+                        |> Result.map (\e -> e.outcome)
+                        |> Expect.equal (Ok Failed)
             ]
         , describe "hasDetail (is the entry dialog-worthy)"
             [ test "an import with attribution detail has detail" <|
@@ -54,23 +61,6 @@ suite =
                 \_ -> decodedHasDetail bareNoMatchRow |> Expect.equal (Just False)
             , test "an empty-object detail with no slug has nothing to expand" <|
                 \_ -> decodedHasDetail emptyObjectDetailRow |> Expect.equal (Just False)
-            ]
-        , describe "reprobeSummaryDecoder"
-            [ test "decodes the reprobe-parked summary counts" <|
-                \_ ->
-                    Decode.decodeString Logs.reprobeSummaryDecoder reprobeRow
-                        |> Result.map (\s -> ( s.scanned, s.reclassified, ( s.stillUnreachable, s.nowAcquirable ) ))
-                        |> Expect.equal (Ok ( 25, 18, ( 5, 2 ) ))
-            ]
-        , describe "reprobeSummaryText"
-            [ test "summarizes a non-empty re-probe batch" <|
-                \_ ->
-                    Logs.reprobeSummaryText { scanned = 25, reclassified = 18, stillUnreachable = 5, nowAcquirable = 2 }
-                        |> Expect.equal "Re-probed 25: 18 reclassified, 5 still unreachable, 2 now acquirable."
-            , test "reports an empty batch (backlog drained)" <|
-                \_ ->
-                    Logs.reprobeSummaryText { scanned = 0, reclassified = 0, stillUnreachable = 0, nowAcquirable = 0 }
-                        |> Expect.equal "No legacy “unreachable” rows left to re-probe."
             ]
         ]
 
@@ -112,6 +102,6 @@ sparseErrorRow =
     """{"id":"6","url":null,"title":null,"source":null,"outcome":"error","slug":null,"detail":{"reason":"x"},"created_at":null}"""
 
 
-reprobeRow : String
-reprobeRow =
-    """{"scanned":25,"reclassified":18,"stillUnreachable":5,"nowAcquirable":2}"""
+failedRow : String
+failedRow =
+    """{"id":"7","url":"https://example.com/f","title":"Infra fail","source":"feed:test","outcome":"failed","slug":null,"detail":{"reason":"unexpected: AI timeout"},"created_at":"2026-06-27T10:05:00.000Z"}"""

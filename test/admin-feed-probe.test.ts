@@ -20,46 +20,6 @@ function memKv(initial: Record<string, string> = {}): KVNamespace {
   } as unknown as KVNamespace;
 }
 
-/** A D1 fake backing the discovery_log table for the re-probe (legacy SELECT + detail UPDATE). */
-function logD1(rows: Array<{ id: string; url: string; detail: Record<string, unknown> }>): {
-  DB: Env["DB"];
-  current: () => Map<string, Record<string, unknown>>;
-} {
-  const store = new Map(rows.map((r) => [r.id, { ...r, detail: JSON.stringify(r.detail) }]));
-  const makeStmt = (sql: string) => {
-    let binds: unknown[] = [];
-    const stmt = {
-      bind(...v: unknown[]) { binds = v; return stmt; },
-      async first<T>() { return null as T | null; },
-      async all<T>() {
-        if (/json_extract\(detail, '\$\.reason'\) = 'unreachable'/.test(sql)) {
-          const results = [...store.values()]
-            .filter((r) => (JSON.parse(r.detail).reason === "unreachable"))
-            .map((r) => ({ id: r.id, url: r.url, title: null, source: null, outcome: "error", slug: null, detail: r.detail, created_at: null }));
-          return { results: results as T[], success: true as const, meta: { changes: 0 } };
-        }
-        return { results: [] as T[], success: true as const, meta: { changes: 0 } };
-      },
-      async run() {
-        if (/UPDATE discovery_log SET detail/.test(sql)) {
-          const [id, detail] = binds as [string, string];
-          const row = store.get(id);
-          if (row) row.detail = detail;
-        }
-        return { success: true as const, meta: { changes: 1 } };
-      },
-    };
-    return stmt;
-  };
-  const DB = {
-    prepare: (sql: string) => makeStmt(sql) as unknown as D1PreparedStatement,
-    async batch() { return []; },
-  } as unknown as Env["DB"];
-  return {
-    DB,
-    current: () => new Map([...store.values()].map((r) => [r.id, JSON.parse(r.detail)])),
-  };
-}
 
 function devEnv(DB?: Env["DB"]): Env {
   return {
@@ -132,38 +92,3 @@ describe("POST /admin/api/discovery/test-feed", () => {
   });
 });
 
-describe("POST /admin/api/discovery/reprobe-parked", () => {
-  it("405s on GET", async () => {
-    const res = await handleAdmin(new Request("http://localhost/admin/api/discovery/reprobe-parked"), devEnv());
-    expect(res.status).toBe(405);
-  });
-
-  it("keeps still-unreachable rows unreachable and skips already-specific rows", async () => {
-    const { DB, current } = logD1([
-      { id: "r1", url: "https://dead.example/a", detail: { reason: "unreachable" } },
-      { id: "r2", url: "https://ok.example/b", detail: { reason: "not_a_recipe" } }, // already specific → not selected
-    ]);
-    vi.stubGlobal("fetch", vi.fn(async () => new Response("gone", { status: 404 })));
-    const res = await handleAdmin(
-      new Request("http://localhost/admin/api/discovery/reprobe-parked", { method: "POST" }),
-      devEnv(DB),
-    );
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as { scanned: number; stillUnreachable: number; reclassified: number };
-    expect(body.scanned).toBe(1); // r2 excluded by the json_extract filter
-    expect(body.stillUnreachable).toBe(1);
-    const after = current();
-    expect(after.get("r1")).toMatchObject({ reason: "unreachable", status: 404 });
-    expect(after.get("r2")).toEqual({ reason: "not_a_recipe" }); // untouched
-  });
-
-  it("is idempotent — a second run with no legacy rows scans nothing", async () => {
-    const { DB } = logD1([{ id: "r1", url: "https://ok.example/a", detail: { reason: "not_a_recipe" } }]);
-    const res = await handleAdmin(
-      new Request("http://localhost/admin/api/discovery/reprobe-parked", { method: "POST" }),
-      devEnv(DB),
-    );
-    const body = (await res.json()) as { scanned: number };
-    expect(body.scanned).toBe(0);
-  });
-});

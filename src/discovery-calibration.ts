@@ -66,6 +66,9 @@ export async function loadDiscoveryConfig(env: Env): Promise<DiscoveryConfig> {
     // always the compiled default. (The calibration console tunes match quality, not budgets.)
     fetchMaxPerTick: DEFAULT_CONFIG.fetchMaxPerTick,
     maxCandidatesPerTick: DEFAULT_CONFIG.maxCandidatesPerTick,
+    retryBackoffMinutes: DEFAULT_CONFIG.retryBackoffMinutes,
+    retryMaxAttempts: DEFAULT_CONFIG.retryMaxAttempts,
+    retryFetchMaxPerTick: DEFAULT_CONFIG.retryFetchMaxPerTick,
   };
 }
 
@@ -273,6 +276,10 @@ export function buildDryRunDeps(realDeps: DiscoveryDeps): DryRunDeps {
         detail: entry.detail,
       });
     },
+
+    async loadRetries() { return []; },
+    async resolveRow() {},
+    async bumpRetry() {},
   };
 
   return {

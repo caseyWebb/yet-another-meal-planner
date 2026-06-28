@@ -7,7 +7,11 @@
 //   * the operator audit log        — readDiscoveryLog (most-recent-first, bounded)
 //   * the dedup "already evaluated"  — loadEvaluatedUrls (don't reprocess a handled url)
 //   * the parked/failed surface      — readDiscoveryErrors (outcome 'error' = content park,
-//                                      'failed' = infrastructure failure)
+//                                      'failed' = infrastructure failure, transient/in-retry)
+//
+// Migration 0018 adds `attempts` and `next_retry_at` for the retry lifecycle:
+// `error/unreachable` and `failed` rows become retryable (bounded backoff + cap);
+// `next_retry_at IS NOT NULL` means due-for-retry; NULL means terminal.
 
 import { db } from "./db.js";
 import type { Env } from "./env.js";
@@ -21,6 +25,10 @@ export interface DiscoveryLogRow {
   slug: string | null;
   detail: unknown;
   created_at: string | null;
+  /** How many acquisition passes this row has had (0 for legacy/non-retryable; ≥1 for retryable parks). */
+  attempts: number;
+  /** ISO timestamp when this row next enters the retry stream; null = terminal (not retryable). */
+  next_retry_at: string | null;
 }
 
 /** Append one per-candidate outcome to the discovery log. */
@@ -34,11 +42,13 @@ export async function recordDiscoveryLog(
     slug?: string | null;
     detail?: Record<string, unknown>;
     createdAt: string;
+    attempts?: number;
+    nextRetryAt?: string | null;
   },
 ): Promise<void> {
   await db(env).run(
-    "INSERT INTO discovery_log (id, url, title, source, outcome, slug, detail, created_at) " +
-      "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+    "INSERT INTO discovery_log (id, url, title, source, outcome, slug, detail, created_at, attempts, next_retry_at) " +
+      "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
     crypto.randomUUID(),
     entry.url,
     entry.title,
@@ -47,6 +57,8 @@ export async function recordDiscoveryLog(
     entry.slug ?? null,
     entry.detail ? JSON.stringify(entry.detail) : null,
     entry.createdAt,
+    entry.attempts ?? 0,
+    entry.nextRetryAt ?? null,
   );
 }
 
@@ -83,7 +95,7 @@ function parseDetail(v: unknown): unknown {
 /** The operator Discovery log — most-recent-first, bounded (admin Logs view / API). */
 export async function readDiscoveryLog(env: Env, limit = 200): Promise<DiscoveryLogRow[]> {
   const rows = await db(env).all<DiscoveryLogRow & { detail: string | null }>(
-    "SELECT id, url, title, source, outcome, slug, detail, created_at FROM discovery_log " +
+    "SELECT id, url, title, source, outcome, slug, detail, created_at, attempts, next_retry_at FROM discovery_log " +
       "ORDER BY created_at DESC LIMIT ?1",
     Math.max(1, Math.min(limit, 1000)),
   );
@@ -91,43 +103,87 @@ export async function readDiscoveryLog(env: Env, limit = 200): Promise<Discovery
 }
 
 /** The parked/failed subset of the log (the agent-readable read_discovery_errors surface):
- *  content `error` parks AND infrastructure `failed` rows, so nothing dropped is hidden. */
+ *  content `error` parks AND infrastructure `failed` rows, so nothing dropped is hidden.
+ *  `failed` rows are transient/in-retry until their attempt cap is exhausted; exhausted
+ *  infrastructure failures resolve to terminal `error` so /health clears. */
 export async function readDiscoveryErrors(env: Env, limit = 100): Promise<DiscoveryLogRow[]> {
   const rows = await db(env).all<DiscoveryLogRow & { detail: string | null }>(
-    "SELECT id, url, title, source, outcome, slug, detail, created_at FROM discovery_log " +
+    "SELECT id, url, title, source, outcome, slug, detail, created_at, attempts, next_retry_at FROM discovery_log " +
       "WHERE outcome IN ('error', 'failed') ORDER BY created_at DESC LIMIT ?1",
     Math.max(1, Math.min(limit, 1000)),
   );
   return rows.map((r) => ({ ...r, detail: parseDetail(r.detail) }));
 }
 
-/** Prune log rows older than `beforeIso` (the retention window). Returns rows deleted. */
-export async function pruneDiscoveryLog(env: Env, beforeIso: string): Promise<number> {
-  const r = await db(env).run("DELETE FROM discovery_log WHERE created_at < ?1", beforeIso);
-  return r.changes;
+/** One log row by id (for the admin per-row retry / delete operations). Returns null if not found. */
+export async function readDiscoveryRowById(env: Env, id: string): Promise<DiscoveryLogRow | null> {
+  const row = await db(env).first<DiscoveryLogRow & { detail: string | null }>(
+    "SELECT id, url, title, source, outcome, slug, detail, created_at, attempts, next_retry_at FROM discovery_log WHERE id = ?1",
+    id,
+  );
+  if (!row) return null;
+  return { ...row, detail: parseDetail(row.detail) };
 }
 
-/** Parked `error` rows still carrying the legacy catch-all `detail.reason = 'unreachable'`
- *  (the backfill target). Rows already carrying a SPECIFIC reason (no_jsonld / not_a_recipe /
- *  incomplete) are excluded by the json_extract filter, so a re-probe never redoes them.
- *  Bounded by `limit` so one re-probe invocation can't exhaust the subrequest budget. */
-export async function readLegacyUnreachable(env: Env, limit: number): Promise<DiscoveryLogRow[]> {
+/** Due retryable rows — outcome IN ('error','failed'), next_retry_at <= now, not rejected.
+ *  Returns up to `limit` rows for the retry stream each sweep tick. */
+export async function loadDueRetries(
+  env: Env,
+  nowIso: string,
+  limit: number,
+): Promise<DiscoveryLogRow[]> {
   const rows = await db(env).all<DiscoveryLogRow & { detail: string | null }>(
-    "SELECT id, url, title, source, outcome, slug, detail, created_at FROM discovery_log " +
-      "WHERE outcome = 'error' AND json_extract(detail, '$.reason') = 'unreachable' " +
-      "ORDER BY created_at DESC LIMIT ?1",
-    Math.max(1, Math.min(limit, 1000)),
+    "SELECT id, url, title, source, outcome, slug, detail, created_at, attempts, next_retry_at " +
+      "FROM discovery_log " +
+      "WHERE outcome IN ('error', 'failed') AND next_retry_at IS NOT NULL AND next_retry_at <= ?1 " +
+      "AND (url IS NULL OR url NOT IN (SELECT url FROM discovery_rejections)) " +
+      "ORDER BY next_retry_at ASC LIMIT ?2",
+    nowIso,
+    Math.max(1, Math.min(limit, 500)),
   );
   return rows.map((r) => ({ ...r, detail: parseDetail(r.detail) }));
 }
 
-/** Rewrite one log row's `detail` JSON in place (the re-probe's only mutation). */
-export async function updateDiscoveryDetail(
+/** Update an existing log row in place after a retry resolves: set outcome/detail/slug and clear
+ *  next_retry_at (the row is now terminal — either successfully resolved or exhausted). */
+export async function resolveDiscoveryRow(
   env: Env,
   id: string,
-  detail: Record<string, unknown>,
+  entry: { outcome: string; detail?: Record<string, unknown>; slug?: string | null },
 ): Promise<void> {
-  await db(env).run("UPDATE discovery_log SET detail = ?2 WHERE id = ?1", id, JSON.stringify(detail));
+  await db(env).run(
+    "UPDATE discovery_log SET outcome = ?2, detail = ?3, slug = ?4, next_retry_at = NULL WHERE id = ?1",
+    id,
+    entry.outcome,
+    entry.detail ? JSON.stringify(entry.detail) : null,
+    entry.slug ?? null,
+  );
+}
+
+/** Bump the retry clock for an existing row after a re-failure that hasn't exhausted the cap. */
+export async function bumpDiscoveryRetry(
+  env: Env,
+  id: string,
+  attempts: number,
+  nextRetryAt: string,
+): Promise<void> {
+  await db(env).run(
+    "UPDATE discovery_log SET attempts = ?2, next_retry_at = ?3 WHERE id = ?1",
+    id,
+    attempts,
+    nextRetryAt,
+  );
+}
+
+/** Remove one log row (the delete endpoint's second half — the rejection is already written). */
+export async function deleteDiscoveryRow(env: Env, id: string): Promise<void> {
+  await db(env).run("DELETE FROM discovery_log WHERE id = ?1", id);
+}
+
+/** Prune log rows older than `beforeIso` (the retention window). Returns rows deleted. */
+export async function pruneDiscoveryLog(env: Env, beforeIso: string): Promise<number> {
+  const r = await db(env).run("DELETE FROM discovery_log WHERE created_at < ?1", beforeIso);
+  return r.changes;
 }
 
 /** Persist per-member attribution for an imported recipe (one batch). */

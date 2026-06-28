@@ -1,21 +1,13 @@
-// Operator feed-probe + parked-row re-probe (operator-admin capability). Both run FROM the
-// Worker's edge egress and reuse the SAME acquisition helper the discovery sweep uses
-// (src/recipe-acquire.ts), so an operator's verdict matches what the autonomous sweep would
-// actually do. Neither imports a recipe nor mutates the feed set; the re-probe touches only the
-// `detail` of the rows it re-classifies. Throw-free at the acquisition layer (a wall surfaces
-// as `unreachable`), so a single dead page can't wedge a probe.
+// Operator feed-probe (operator-admin capability). Runs FROM the Worker's edge egress
+// and reuses the SAME acquisition helper the discovery sweep uses (src/recipe-acquire.ts),
+// so an operator's verdict matches what the autonomous sweep would actually do. Writes nothing.
 
-import type { Env } from "./env.js";
 import { fetchWithBrowserHeaders } from "./http.js";
 import { parseFeed } from "./feeds.js";
 import { acquireRecipeContent } from "./recipe-acquire.js";
-import { readLegacyUnreachable, updateDiscoveryDetail } from "./discovery-db.js";
 
 /** Entry pages sampled per feed test — bounds the live subrequests one operator click costs. */
 export const PROBE_SAMPLE_SIZE = 5;
-/** Legacy `unreachable` rows re-classified per re-probe call — bounds the subrequest budget so
- *  a large backlog drains in controlled batches across several operator clicks. */
-export const REPROBE_BATCH_CAP = 25;
 
 /** A sampled entry page's verdict: `ok` (a parseable recipe) or the specific failure reason. */
 export interface SampleOutcome {
@@ -78,51 +70,4 @@ export async function probeFeed(url: string): Promise<FeedProbeResult> {
     sampled.map(async (item) => toSampleOutcome(item.link, await acquireRecipeContent(item.link))),
   );
   return { feed, sample };
-}
-
-export interface ReprobeResult {
-  /** Legacy `unreachable` rows examined this call (≤ REPROBE_BATCH_CAP). */
-  scanned: number;
-  /** Rows whose reason became a specific failure (no_jsonld / not_a_recipe / incomplete). */
-  reclassified: number;
-  /** Rows that still could not be fetched (kept `unreachable`). */
-  stillUnreachable: number;
-  /** Rows that now acquire a parseable recipe (the original park was stale). */
-  nowAcquirable: number;
-}
-
-/**
- * Re-classify a bounded batch of parked `error` rows still carrying the legacy catch-all
- * `detail.reason = 'unreachable'`: re-fetch each through the shared acquisition helper and
- * rewrite its `detail.reason` in place to the specific outcome (or leave `unreachable`). Rows
- * already carrying a specific reason are excluded by the query, so re-running drains the
- * remaining unreachable rows without redoing settled ones. Imports nothing.
- */
-export async function reprobeParked(env: Env): Promise<ReprobeResult> {
-  const rows = await readLegacyUnreachable(env, REPROBE_BATCH_CAP);
-  const result: ReprobeResult = { scanned: rows.length, reclassified: 0, stillUnreachable: 0, nowAcquirable: 0 };
-
-  for (const row of rows) {
-    if (!row.url) continue;
-    const acquired = await acquireRecipeContent(row.url);
-    if (acquired.ok) {
-      // The page now yields a valid recipe — the original park was stale (a transient outage, or
-      // the site added JSON-LD). Relabel `ok` so the operator can see it recovered. The row STAYS
-      // parked (`outcome` is untouched — the re-probe imports nothing, by design): its URL is
-      // already in the sweep's evaluated-set, so re-importing is a manual re-add, not automatic.
-      await updateDiscoveryDetail(env, row.id, { reason: "ok" });
-      result.nowAcquirable++;
-    } else if (acquired.reason === "unreachable") {
-      // Keep unreachable, refreshing the recorded status if the fetch now carries one.
-      await updateDiscoveryDetail(env, row.id, {
-        reason: "unreachable",
-        ...(acquired.status !== undefined ? { status: acquired.status } : {}),
-      });
-      result.stillUnreachable++;
-    } else {
-      await updateDiscoveryDetail(env, row.id, { reason: acquired.reason });
-      result.reclassified++;
-    }
-  }
-  return result;
 }

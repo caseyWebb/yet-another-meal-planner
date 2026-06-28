@@ -29,7 +29,11 @@ import {
 } from "./tenant.js";
 import { listToolsFor, callToolFor } from "./admin-tools.js";
 import { listBugReports } from "./bug-reports.js";
-import { readDiscoveryLog } from "./discovery-db.js";
+import {
+  readDiscoveryLog,
+  readDiscoveryRowById,
+  deleteDiscoveryRow,
+} from "./discovery-db.js";
 import {
   loadDiscoveryConfig,
   saveDiscoveryConfig,
@@ -39,8 +43,10 @@ import {
   type AnalyzeResult,
   type DryRunOutcome,
 } from "./discovery-calibration.js";
-import { buildDiscoveryDeps, runDiscoverySweep } from "./discovery-sweep.js";
-import { probeFeed, reprobeParked } from "./discovery-probe.js";
+import { buildDiscoveryDeps, runDiscoverySweep, processCandidate, DEFAULT_CONFIG } from "./discovery-sweep.js";
+import { probeFeed } from "./discovery-probe.js";
+import { addDiscoveryRejection } from "./corpus-db.js";
+import { canonicalizeUrl } from "./url.js";
 import {
   recipeList,
   recipeDetail,
@@ -536,13 +542,61 @@ async function routeAdminApi(
     throw new ToolError("unsupported", `Method ${method} not supported on ${path}`);
   }
 
-  // Backfill: re-classify a bounded batch of legacy parked rows still labeled the catch-all
-  // `unreachable`, rewriting each to its specific acquisition reason. Idempotent + re-runnable.
-  if (path === "/admin/api/discovery/reprobe-parked") {
+  // Per-row manual retry: re-run the full acquisition pipeline for one discovery_log row.
+  // Only valid for `error`/`failed` rows; idempotent (re-running a resolved row is a no-op
+  // beyond the 405). `bypassCap` means the admin can always retry regardless of attempt count.
+  const retryMatch = path.match(/^\/admin\/api\/discovery\/([^/]+)\/retry$/);
+  if (retryMatch) {
     if (method === "POST") {
-      return reprobeParked(env);
+      const id = retryMatch[1];
+      const row = await readDiscoveryRowById(env, id);
+      if (!row) throw new ToolError("not_found", `No discovery row with id ${id}`);
+      if (row.outcome !== "error" && row.outcome !== "failed") {
+        throw new ToolError("unsupported", `Row ${id} has outcome "${row.outcome}" — only error/failed rows can be retried`);
+      }
+      const deps = buildDiscoveryDeps(env);
+      const members = await deps.loadMembers();
+      const corpusVectors = await deps.loadCorpusVectors();
+      const candidate = {
+        url: row.url ?? "",
+        title: row.title ?? "",
+        summary: null,
+        source: row.source ?? "",
+        existingRowId: id,
+        attempts: row.attempts,
+      };
+      const nowMs = Date.now();
+      await processCandidate(deps, DEFAULT_CONFIG, candidate, {
+        triageVec: null,
+        members,
+        corpus: corpusVectors,
+        importedVectors: [],
+        nowMs,
+      }, { bypassCap: true });
+      const updated = await readDiscoveryRowById(env, id);
+      return updated;
     }
     throw new ToolError("unsupported", `Method ${method} not supported on ${path}`);
+  }
+
+  // Per-row delete-as-rejection: write a permanent group-wide rejection then delete the log row.
+  // Idempotent: re-deleting a deleted row returns 404 (the row is gone); re-deleting a URL that
+  // is already rejected writes the rejection again (ON CONFLICT UPDATE) and removes the row.
+  const deleteDiscoveryMatch = path.match(/^\/admin\/api\/discovery\/([^/]+)$/);
+  if (deleteDiscoveryMatch && method === "DELETE") {
+    const id = deleteDiscoveryMatch[1];
+    const row = await readDiscoveryRowById(env, id);
+    if (!row) throw new ToolError("not_found", `No discovery row with id ${id}`);
+    if (row.url) {
+      await addDiscoveryRejection(env, {
+        url: canonicalizeUrl(row.url),
+        reason: "operator-deleted",
+        rejectedBy: "admin",
+        rejectedAt: new Date().toISOString(),
+      });
+    }
+    await deleteDiscoveryRow(env, id);
+    return { deleted: id };
   }
 
   // Tool console (the operator dev workbench): list + invoke the live MCP tool surface
