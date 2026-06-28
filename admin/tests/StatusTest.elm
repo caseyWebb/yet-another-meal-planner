@@ -29,6 +29,11 @@ exposedBody =
     """{"ok":false,"generated_at":1000000,"jobs":[{"name":"flyer-warm","ok":true,"last_run_at":999000,"summary":{}}],"d1":{"ok":true},"admin":{"access_configured":false,"email_allowlist":false,"dev_bypass_set":true,"exposed":true}}"""
 
 
+quotaBody : String
+quotaBody =
+    """{"ok":false,"generated_at":1000000,"jobs":[{"name":"recipe-classify","ok":false,"last_run_at":999000,"summary":{"quota_exhausted":true}}],"d1":{"ok":true},"admin":{"access_configured":true,"email_allowlist":false,"dev_bypass_set":false,"exposed":false},"ai_quota_exhausted":true}"""
+
+
 meta : Int -> Http.Metadata
 meta status =
     { url = "https://host/health", statusCode = status, statusText = "", headers = Dict.empty }
@@ -64,6 +69,22 @@ suite =
 
                         Err _ ->
                             Expect.fail "exposed body should decode"
+            , test "ai_quota_exhausted:true → aiQuotaExhausted True" <|
+                \_ ->
+                    case Decode.decodeString Status.healthDecoder quotaBody of
+                        Ok payload ->
+                            Expect.equal payload.aiQuotaExhausted True
+
+                        Err _ ->
+                            Expect.fail "quota body should decode"
+            , test "a body without ai_quota_exhausted defaults to False (back-compat)" <|
+                \_ ->
+                    case Decode.decodeString Status.healthDecoder healthyBody of
+                        Ok payload ->
+                            Expect.equal payload.aiQuotaExhausted False
+
+                        Err _ ->
+                            Expect.fail "healthy body should decode"
             ]
         , describe "decodeBody (body-preserving: keyed on the body, not the status)"
             [ test "503 + valid health body → Ok degraded payload (not dropped)" <|

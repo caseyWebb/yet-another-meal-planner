@@ -20,7 +20,11 @@ const recipe = (slug: string, body = "## Ingredients\n- x\n## Instructions\n1. g
 function makeDeps(
   recipes: RecipeToClassify[],
   state: FacetState[],
-  opts: { maxPerTick?: number; failOn?: Set<string>; classified?: (r: RecipeToClassify) => ClassifiedFacets } = {},
+  opts: {
+    maxPerTick?: number;
+    failWith?: Record<string, unknown>;
+    classified?: (r: RecipeToClassify) => ClassifiedFacets;
+  } = {},
 ) {
   const upserts: Array<{ slug: string; facets: ClassifiedFacets; bodyHash: string }> = [];
   const empties: Array<{ slug: string; bodyHash: string }> = [];
@@ -29,7 +33,7 @@ function makeDeps(
     loadRecipes: async () => recipes,
     loadFacetState: async () => state,
     classify: async (r) => {
-      if (opts.failOn?.has(r.slug)) throw new Error("classify failed");
+      if (opts.failWith && r.slug in opts.failWith) throw opts.failWith[r.slug];
       return opts.classified ? opts.classified(r) : { ...EMPTY_FACETS, protein: "chicken", course: ["main"] };
     },
     upsertFacets: async (slug, facets, bodyHash) => {
@@ -85,15 +89,78 @@ describe("reconcileRecipeFacets", () => {
     expect(upserts).toHaveLength(2);
   });
 
-  it("records an EMPTY gate-advanced row on a classify failure (not re-spent next tick)", async () => {
-    const { deps, upserts, empties } = makeDeps([recipe("bad")], [], { failOn: new Set(["bad"]) });
+  it("does NOT advance the gate on a TRANSIENT failure (retries next tick)", async () => {
+    const { deps, upserts, empties } = makeDeps([recipe("blip")], [], {
+      failWith: { blip: new Error("network blip") },
+    });
     const r = await reconcileRecipeFacets(deps);
-    expect(r.failed).toBe(1);
-    expect(r.classified).toBe(0);
+    expect(r.errored).toBe(1);
+    expect(r.parked).toBe(0);
     expect(upserts).toHaveLength(0);
-    expect(empties.map((e) => e.slug)).toEqual(["bad"]);
-    // The gate hash is advanced so the next tick (same body) is not re-classified.
+    expect(empties).toHaveLength(0); // gate NOT advanced — it retries next tick
+    expect(r.pending).toBe(1); // still stale
+  });
+
+  it("PARKS (advances the gate with empty facets) on a PERMANENT contract failure", async () => {
+    const perm = Object.assign(new Error("contract"), { code: "validation_failed" });
+    const { deps, upserts, empties } = makeDeps([recipe("bad")], [], { failWith: { bad: perm } });
+    const r = await reconcileRecipeFacets(deps);
+    expect(r.parked).toBe(1);
+    expect(r.errored).toBe(0);
+    expect(upserts).toHaveLength(0);
+    expect(empties.map((e) => e.slug)).toEqual(["bad"]); // gate advanced (the rare permanent case)
     expect(empties[0].bodyHash).toBe(recipe("bad").bodyHash);
+  });
+
+  it("on Workers AI quota exhaustion (storage_error + 4006 message): stops the tick, writes NO empty rows, flags quotaExhausted", async () => {
+    // The real quota error arrives as a `storage_error`-coded ToolError whose message carries the 4006
+    // text (runModel wraps the env.AI exception) — the gate keys on that CODE, not the message alone.
+    const quota = Object.assign(
+      new Error("Workers AI classification failed: 4006: you have used up your daily free allocation of 10,000 neurons"),
+      { code: "storage_error" },
+    );
+    const { deps, upserts, empties } = makeDeps([recipe("q1"), recipe("q2")], [], {
+      failWith: { q1: quota, q2: quota },
+    });
+    const r = await reconcileRecipeFacets(deps);
+    expect(r.quotaExhausted).toBe(true);
+    expect(r.classified).toBe(0);
+    expect(r.parked).toBe(0);
+    expect(empties).toHaveLength(0); // NO empty rows under quota — they retry once it returns
+    expect(upserts).toHaveLength(0);
+    expect(r.pending).toBe(2); // both still stale
+  });
+
+  it("does NOT treat a PERMANENT validation_failed as a quota stop even if its message echoes '4006'/'neurons'", async () => {
+    // A contract failure's message echoes the recipe's own field values, so a recipe literally mentioning
+    // "neurons" could trip isAiQuotaError on the message alone. Gating on the CODE (storage_error) keeps it
+    // a PARK, never a quota stop that would wrongly defer the rest of the tick.
+    const perm = Object.assign(
+      new Error('Classification did not pass the recipe contract: protein "neurons" is off-vocab (4006)'),
+      { code: "validation_failed" },
+    );
+    const { deps, upserts, empties } = makeDeps([recipe("tricky")], [], { failWith: { tricky: perm } });
+    const r = await reconcileRecipeFacets(deps);
+    expect(r.quotaExhausted).toBe(false); // NOT a quota stop
+    expect(r.parked).toBe(1); // parked as the permanent failure it is
+    expect(r.errored).toBe(0);
+    expect(empties.map((e) => e.slug)).toEqual(["tricky"]); // gate advanced (parked)
+    expect(upserts).toHaveLength(0);
+  });
+
+  it("treats a non-quota storage_error as TRANSIENT (errored, gate not advanced)", async () => {
+    // A storage_error WITHOUT the 4006/neurons text is an ordinary transient hiccup — it must retry, not be
+    // mistaken for a quota stop (which would defer the rest of the tick) nor parked (which would lose facets).
+    const blip = Object.assign(new Error("Workers AI classification failed: connection reset"), {
+      code: "storage_error",
+    });
+    const { deps, upserts, empties } = makeDeps([recipe("blip")], [], { failWith: { blip } });
+    const r = await reconcileRecipeFacets(deps);
+    expect(r.quotaExhausted).toBe(false);
+    expect(r.errored).toBe(1);
+    expect(r.parked).toBe(0);
+    expect(empties).toHaveLength(0); // gate NOT advanced — retries next tick
+    expect(upserts).toHaveLength(0);
   });
 
   it("prunes facet rows whose slug is no longer in the corpus", async () => {
