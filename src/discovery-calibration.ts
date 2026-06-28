@@ -37,6 +37,10 @@ interface DiscoveryConfigRow {
   dedup_threshold: number | null;
   classify_max: number | null;
   rate_cap: number | null;
+  fetch_max_per_tick: number | null;
+  max_candidates_per_tick: number | null;
+  retry_max_attempts: number | null;
+  log_retention_days: number | null;
 }
 
 /** Validate a numeric knob from the D1 row: returns null (→ use default) when absent/invalid. */
@@ -51,10 +55,13 @@ function validatedKnob(value: number | null | undefined, check: (n: number) => b
  * to the default — the table only records intentional operator deltas. Type/range-validated
  * defensively on read so a malformed row can never produce a nonsensical config.
  */
+const SELECT_DISCOVERY_CONFIG =
+  "SELECT taste_threshold, triage_threshold, dedup_threshold, classify_max, rate_cap, " +
+  "fetch_max_per_tick, max_candidates_per_tick, retry_max_attempts, log_retention_days " +
+  "FROM discovery_config WHERE id = 1";
+
 export async function loadDiscoveryConfig(env: Env): Promise<DiscoveryConfig> {
-  const row = await db(env).first<DiscoveryConfigRow>(
-    "SELECT taste_threshold, triage_threshold, dedup_threshold, classify_max, rate_cap FROM discovery_config WHERE id = 1",
-  );
+  const row = await db(env).first<DiscoveryConfigRow>(SELECT_DISCOVERY_CONFIG);
   if (!row) return { ...DEFAULT_CONFIG };
   return {
     tasteThreshold: validatedKnob(row.taste_threshold, (n) => n > 0 && n <= 1) ?? DEFAULT_CONFIG.tasteThreshold,
@@ -62,40 +69,47 @@ export async function loadDiscoveryConfig(env: Env): Promise<DiscoveryConfig> {
     dedupThreshold: validatedKnob(row.dedup_threshold, (n) => n > 0 && n <= 1) ?? DEFAULT_CONFIG.dedupThreshold,
     classifyMaxPerTick: validatedKnob(row.classify_max, (n) => n > 0 && Number.isInteger(n)) ?? DEFAULT_CONFIG.classifyMaxPerTick,
     rateCap: validatedKnob(row.rate_cap, (n) => n > 0 && Number.isInteger(n)) ?? DEFAULT_CONFIG.rateCap,
-    // Subrequest-budget safety bounds, not operator-tunable matching knobs — no D1 column;
-    // always the compiled default. (The calibration console tunes match quality, not budgets.)
-    fetchMaxPerTick: DEFAULT_CONFIG.fetchMaxPerTick,
-    maxCandidatesPerTick: DEFAULT_CONFIG.maxCandidatesPerTick,
+    fetchMaxPerTick: validatedKnob(row.fetch_max_per_tick, (n) => n > 0 && Number.isInteger(n)) ?? DEFAULT_CONFIG.fetchMaxPerTick,
+    maxCandidatesPerTick: validatedKnob(row.max_candidates_per_tick, (n) => n > 0 && Number.isInteger(n)) ?? DEFAULT_CONFIG.maxCandidatesPerTick,
+    retryMaxAttempts: validatedKnob(row.retry_max_attempts, (n) => n > 0 && Number.isInteger(n)) ?? DEFAULT_CONFIG.retryMaxAttempts,
+    logRetentionDays: validatedKnob(row.log_retention_days, (n) => n > 0 && Number.isInteger(n)) ?? DEFAULT_CONFIG.logRetentionDays,
     retryBackoffMinutes: DEFAULT_CONFIG.retryBackoffMinutes,
-    retryMaxAttempts: DEFAULT_CONFIG.retryMaxAttempts,
     retryFetchMaxPerTick: DEFAULT_CONFIG.retryFetchMaxPerTick,
   };
 }
 
 /** Write operator knob overrides to discovery_config (upsert; only sets non-null fields). */
 export async function saveDiscoveryConfig(env: Env, patch: Partial<DiscoveryConfig>): Promise<void> {
-  // Read the existing row so we do a true merge (don't overwrite already-set knobs with null).
-  const existing = await db(env).first<DiscoveryConfigRow>(
-    "SELECT taste_threshold, triage_threshold, dedup_threshold, classify_max, rate_cap FROM discovery_config WHERE id = 1",
-  );
+  const existing = await db(env).first<DiscoveryConfigRow>(SELECT_DISCOVERY_CONFIG);
   const merged = {
     taste_threshold: patch.tasteThreshold ?? existing?.taste_threshold ?? null,
     triage_threshold: patch.triageThreshold ?? existing?.triage_threshold ?? null,
     dedup_threshold: patch.dedupThreshold ?? existing?.dedup_threshold ?? null,
     classify_max: patch.classifyMaxPerTick ?? existing?.classify_max ?? null,
     rate_cap: patch.rateCap ?? existing?.rate_cap ?? null,
+    fetch_max_per_tick: patch.fetchMaxPerTick ?? existing?.fetch_max_per_tick ?? null,
+    max_candidates_per_tick: patch.maxCandidatesPerTick ?? existing?.max_candidates_per_tick ?? null,
+    retry_max_attempts: patch.retryMaxAttempts ?? existing?.retry_max_attempts ?? null,
+    log_retention_days: patch.logRetentionDays ?? existing?.log_retention_days ?? null,
   };
   await db(env).run(
-    "INSERT INTO discovery_config (id, taste_threshold, triage_threshold, dedup_threshold, classify_max, rate_cap) " +
-      "VALUES (1, ?1, ?2, ?3, ?4, ?5) " +
+    "INSERT INTO discovery_config (id, taste_threshold, triage_threshold, dedup_threshold, classify_max, rate_cap, " +
+      "fetch_max_per_tick, max_candidates_per_tick, retry_max_attempts, log_retention_days) " +
+      "VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9) " +
       "ON CONFLICT(id) DO UPDATE SET " +
       "taste_threshold = excluded.taste_threshold, triage_threshold = excluded.triage_threshold, " +
-      "dedup_threshold = excluded.dedup_threshold, classify_max = excluded.classify_max, rate_cap = excluded.rate_cap",
+      "dedup_threshold = excluded.dedup_threshold, classify_max = excluded.classify_max, rate_cap = excluded.rate_cap, " +
+      "fetch_max_per_tick = excluded.fetch_max_per_tick, max_candidates_per_tick = excluded.max_candidates_per_tick, " +
+      "retry_max_attempts = excluded.retry_max_attempts, log_retention_days = excluded.log_retention_days",
     merged.taste_threshold,
     merged.triage_threshold,
     merged.dedup_threshold,
     merged.classify_max,
     merged.rate_cap,
+    merged.fetch_max_per_tick,
+    merged.max_candidates_per_tick,
+    merged.retry_max_attempts,
+    merged.log_retention_days,
   );
 }
 

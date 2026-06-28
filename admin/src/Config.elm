@@ -13,6 +13,8 @@ selected sub-route rides the URL (`Route.ConfigRoute`), so each sub-view deep-li
 -}
 
 import Config.Calibration as Calibration
+import Config.Flyer as Flyer
+import Config.Ranking as Ranking
 import Config.TableEditor as TableEditor exposing (EditorConfig, FieldKind(..))
 import Html exposing (Html, a, div, text)
 import Html.Attributes exposing (class, classList)
@@ -28,6 +30,8 @@ import Route exposing (ConfigRoute(..))
 in the model distinguishes which editor is live. -}
 type Section
     = CalibrationS Calibration.Model
+    | RankingS Ranking.Model
+    | FlyerS Flyer.Model
     | EditorS TableEditor.Model
 
 
@@ -100,41 +104,36 @@ membersConfig =
     }
 
 
-configFor : ConfigRoute -> Maybe EditorConfig
-configFor configRoute =
-    case configRoute of
-        ConfigCalibration ->
-            Nothing
-
-        ConfigAliases ->
-            Just aliasesConfig
-
-        ConfigFlyerTerms ->
-            Just flyerTermsConfig
-
-        ConfigFeeds ->
-            Just feedsConfig
-
-        ConfigSenders ->
-            Just sendersConfig
-
-        ConfigMembers ->
-            Just membersConfig
-
-
-
 -- INIT / NAV
 
 
 {-| Build the Config area for a sub-route from scratch. -}
 init : ConfigRoute -> ( Model, Cmd Msg )
 init configRoute =
-    case configFor configRoute of
-        Nothing ->
+    case configRoute of
+        ConfigCalibration ->
             wrap CalibrationS CalibrationMsg configRoute Calibration.init
 
-        Just config ->
-            wrap EditorS EditorMsg configRoute (TableEditor.init config)
+        ConfigRanking ->
+            wrap RankingS RankingMsg configRoute Ranking.init
+
+        ConfigFlyer ->
+            wrap FlyerS FlyerMsg configRoute Flyer.init
+
+        ConfigAliases ->
+            wrap EditorS EditorMsg configRoute (TableEditor.init aliasesConfig)
+
+        ConfigFlyerTerms ->
+            wrap EditorS EditorMsg configRoute (TableEditor.init flyerTermsConfig)
+
+        ConfigFeeds ->
+            wrap EditorS EditorMsg configRoute (TableEditor.init feedsConfig)
+
+        ConfigSenders ->
+            wrap EditorS EditorMsg configRoute (TableEditor.init sendersConfig)
+
+        ConfigMembers ->
+            wrap EditorS EditorMsg configRoute (TableEditor.init membersConfig)
 
 
 wrap : (sub -> Section) -> (subMsg -> Msg) -> ConfigRoute -> ( sub, Cmd subMsg ) -> ( Model, Cmd Msg )
@@ -160,6 +159,8 @@ goto configRoute model =
 
 type Msg
     = CalibrationMsg Calibration.Msg
+    | RankingMsg Ranking.Msg
+    | FlyerMsg Flyer.Msg
     | EditorMsg TableEditor.Msg
 
 
@@ -169,11 +170,23 @@ update msg model =
         ( CalibrationMsg sub, CalibrationS m ) ->
             wrap CalibrationS CalibrationMsg model.route (Calibration.update sub m)
 
+        ( RankingMsg sub, RankingS m ) ->
+            wrap RankingS RankingMsg model.route (Ranking.update sub m)
+
+        ( FlyerMsg sub, FlyerS m ) ->
+            wrap FlyerS FlyerMsg model.route (Flyer.update sub m)
+
         ( EditorMsg sub, EditorS m ) ->
             wrap EditorS EditorMsg model.route (TableEditor.update sub m)
 
         -- A sub-message for a sub-view we are no longer on (a late response): drop it.
         ( CalibrationMsg _, _ ) ->
+            ( model, Cmd.none )
+
+        ( RankingMsg _, _ ) ->
+            ( model, Cmd.none )
+
+        ( FlyerMsg _, _ ) ->
             ( model, Cmd.none )
 
         ( EditorMsg _, _ ) ->
@@ -200,6 +213,8 @@ viewSubnav active =
 tabs : List ( String, ConfigRoute )
 tabs =
     [ ( "Calibration", ConfigCalibration )
+    , ( "Ranking", ConfigRanking )
+    , ( "Flyer", ConfigFlyer )
     , ( "Aliases", ConfigAliases )
     , ( "Flyer terms", ConfigFlyerTerms )
     , ( "Feeds", ConfigFeeds )
@@ -222,6 +237,12 @@ viewSection section =
     case section of
         CalibrationS m ->
             Html.map CalibrationMsg (Calibration.view m)
+
+        RankingS m ->
+            Html.map RankingMsg (Ranking.view m)
+
+        FlyerS m ->
+            Html.map FlyerMsg (Flyer.view m)
 
         EditorS m ->
             Html.map EditorMsg (TableEditor.view m)

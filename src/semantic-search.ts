@@ -211,29 +211,29 @@ export function rankCandidates(
 }
 
 /**
- * Resolve the re-rank params from a tenant's preferences, falling back to defaults for
- * any field not set. Reads a `rotation: { resurface_after_days, novelty_boost }` object
- * (added to the preferences schema in the favorite cutover; until then every tenant
- * gets the defaults). Defensive about the loose `Preferences` shape — a malformed value
- * is ignored in favor of the default rather than throwing on the read path.
+ * Resolve re-rank params. Precedence (lowest → highest):
+ *   1. Compiled DEFAULT_RANK_PARAMS
+ *   2. operatorDefaults (from operator_config — group-wide override)
+ *   3. Per-tenant profile.rotation (resurface_after_days, novelty_boost only)
+ *
+ * The optional `operatorDefaults` param accepts a Partial<RankParams> so callers that
+ * haven't loaded operator_config yet continue to work (they get the compiled defaults).
  */
-export function resolveRankParams(prefs: Preferences | null): RankParams {
+export function resolveRankParams(prefs: Preferences | null, operatorDefaults: Partial<RankParams> = {}): RankParams {
   const rotation =
     prefs && typeof prefs.rotation === "object" && prefs.rotation !== null
       ? (prefs.rotation as Record<string, unknown>)
       : {};
   const num = (v: unknown, fallback: number): number =>
     typeof v === "number" && Number.isFinite(v) && v > 0 ? v : fallback;
+  const base: RankParams = { ...DEFAULT_RANK_PARAMS, ...operatorDefaults };
   return {
-    favoriteWeight: DEFAULT_RANK_PARAMS.favoriteWeight,
-    noveltyBoost: num(rotation.novelty_boost, DEFAULT_RANK_PARAMS.noveltyBoost),
-    resurfaceAfterDays: num(rotation.resurface_after_days, DEFAULT_RANK_PARAMS.resurfaceAfterDays),
-    // Pantry-overlap weights are constants today — no preferences knob (would require a
-    // preferences-contract change this change deliberately scopes out). Tunable here if
-    // a per-tenant `pantry` pref is added later, mirroring `rotation`.
-    pantryWeight: DEFAULT_RANK_PARAMS.pantryWeight,
-    perishWeight: DEFAULT_RANK_PARAMS.perishWeight,
-    keyWeight: DEFAULT_RANK_PARAMS.keyWeight,
-    overlapCap: DEFAULT_RANK_PARAMS.overlapCap,
+    favoriteWeight: base.favoriteWeight,
+    noveltyBoost: num(rotation.novelty_boost, base.noveltyBoost),
+    resurfaceAfterDays: num(rotation.resurface_after_days, base.resurfaceAfterDays),
+    pantryWeight: base.pantryWeight,
+    perishWeight: base.perishWeight,
+    keyWeight: base.keyWeight,
+    overlapCap: base.overlapCap,
   };
 }

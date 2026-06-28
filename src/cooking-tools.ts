@@ -14,10 +14,10 @@ import { ToolError, runTool } from "./errors.js";
 import { db } from "./db.js";
 import type { CookingLogEntry } from "./cooking-log.js";
 import { type MealPlanOp } from "./meal-plan.js";
-import { retrospective, type RetrospectiveResult } from "./retrospective.js";
+import { retrospective, type RetrospectiveResult, type RetroConfig } from "./retrospective.js";
 import { loadRecipeIndex } from "./recipe-index.js";
 import { mergeOverlay, type Overlay } from "./overlay.js";
-import { readOverlay } from "./profile-db.js";
+import { readOverlay, readPreferences } from "./profile-db.js";
 import type { RecipeIndex } from "./recipes.js";
 import { readMealPlan, applyMealPlanRowOps } from "./session-db.js";
 import { stampLastPlanned } from "./discovery-db.js";
@@ -87,7 +87,18 @@ export async function loadRetrospective(
     effective[slug] = { ...mergeOverlay(entry, overlay[slug], lastCooked.get(slug)), slug };
   }
 
-  return retrospective(entries, effective, period);
+  const prefs = await readPreferences(env, username).catch(() => null);
+  const retroPrefs = prefs && typeof prefs.retrospective === "object" && prefs.retrospective !== null
+    ? (prefs.retrospective as Record<string, unknown>)
+    : {};
+  const num = (v: unknown): number | undefined => (typeof v === "number" && v > 0 ? v : undefined);
+  const retroConfig: RetroConfig = {
+    staleAfterDays: num(retroPrefs.stale_after_days),
+    revealedMonths: num(retroPrefs.revealed_months),
+    revealedMinCooks: num(retroPrefs.revealed_min_cooks),
+  };
+
+  return retrospective(entries, effective, period, new Date(), retroConfig);
 }
 
 export function registerCookingTools(

@@ -42,6 +42,8 @@ handle it (its slug, its label, its section). Each variant's URL slug is its sin
 encoding (`configSegment`), parsed back by `configRouteFromSlug`. -}
 type ConfigRoute
     = ConfigCalibration
+    | ConfigRanking
+    | ConfigFlyer
     | ConfigAliases
     | ConfigFlyerTerms
     | ConfigFeeds
@@ -97,6 +99,12 @@ configSlug configRoute_ =
         ConfigCalibration ->
             ""
 
+        ConfigRanking ->
+            "ranking"
+
+        ConfigFlyer ->
+            "flyer"
+
         ConfigAliases ->
             "aliases"
 
@@ -116,6 +124,12 @@ configSlug configRoute_ =
 configRouteFromSlug : String -> Maybe ConfigRoute
 configRouteFromSlug slug =
     case slug of
+        "ranking" ->
+            Just ConfigRanking
+
+        "flyer" ->
+            Just ConfigFlyer
+
         "aliases" ->
             Just ConfigAliases
 

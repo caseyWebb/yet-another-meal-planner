@@ -36,6 +36,10 @@ type alias Config =
     , dedupThreshold : Float
     , classifyMaxPerTick : Int
     , rateCap : Int
+    , fetchMaxPerTick : Int
+    , maxCandidatesPerTick : Int
+    , retryMaxAttempts : Int
+    , logRetentionDays : Int
     }
 
 
@@ -45,6 +49,10 @@ type alias Draft =
     , dedupThreshold : String
     , classifyMaxPerTick : String
     , rateCap : String
+    , fetchMaxPerTick : String
+    , maxCandidatesPerTick : String
+    , retryMaxAttempts : String
+    , logRetentionDays : String
     }
 
 
@@ -238,6 +246,10 @@ configToDraft c =
     , dedupThreshold = String.fromFloat c.dedupThreshold
     , classifyMaxPerTick = String.fromInt c.classifyMaxPerTick
     , rateCap = String.fromInt c.rateCap
+    , fetchMaxPerTick = String.fromInt c.fetchMaxPerTick
+    , maxCandidatesPerTick = String.fromInt c.maxCandidatesPerTick
+    , retryMaxAttempts = String.fromInt c.retryMaxAttempts
+    , logRetentionDays = String.fromInt c.logRetentionDays
     }
 
 
@@ -250,6 +262,10 @@ parseDraft d =
             , dedupThreshold = delta
             , classifyMaxPerTick = round cap
             , rateCap = round rate
+            , fetchMaxPerTick = 0
+            , maxCandidatesPerTick = 0
+            , retryMaxAttempts = 0
+            , logRetentionDays = 0
             }
         )
         (String.toFloat d.tasteThreshold)
@@ -257,6 +273,22 @@ parseDraft d =
         (String.toFloat d.dedupThreshold)
         (String.toFloat d.classifyMaxPerTick)
         (String.toFloat d.rateCap)
+        |> Maybe.andThen
+            (\c ->
+                Maybe.map4
+                    (\a b r l ->
+                        { c
+                        | fetchMaxPerTick = a
+                        , maxCandidatesPerTick = b
+                        , retryMaxAttempts = r
+                        , logRetentionDays = l
+                        }
+                    )
+                    (String.toFloat d.fetchMaxPerTick |> Maybe.map round)
+                    (String.toFloat d.maxCandidatesPerTick |> Maybe.map round)
+                    (String.toFloat d.retryMaxAttempts |> Maybe.map round)
+                    (String.toFloat d.logRetentionDays |> Maybe.map round)
+            )
 
 
 defaultConfig : Config
@@ -266,6 +298,10 @@ defaultConfig =
     , dedupThreshold = 0.9
     , classifyMaxPerTick = 12
     , rateCap = 10
+    , fetchMaxPerTick = 5
+    , maxCandidatesPerTick = 40
+    , retryMaxAttempts = 3
+    , logRetentionDays = 60
     }
 
 
@@ -334,6 +370,10 @@ encodeDraft d =
             , Maybe.map (\v -> ( "dedupThreshold", E.float v )) (String.toFloat d.dedupThreshold)
             , Maybe.map (\v -> ( "classifyMaxPerTick", E.int (round v) )) (String.toFloat d.classifyMaxPerTick)
             , Maybe.map (\v -> ( "rateCap", E.int (round v) )) (String.toFloat d.rateCap)
+            , Maybe.map (\v -> ( "fetchMaxPerTick", E.int (round v) )) (String.toFloat d.fetchMaxPerTick)
+            , Maybe.map (\v -> ( "maxCandidatesPerTick", E.int (round v) )) (String.toFloat d.maxCandidatesPerTick)
+            , Maybe.map (\v -> ( "retryMaxAttempts", E.int (round v) )) (String.toFloat d.retryMaxAttempts)
+            , Maybe.map (\v -> ( "logRetentionDays", E.int (round v) )) (String.toFloat d.logRetentionDays)
             ]
         )
 
@@ -347,6 +387,10 @@ encodeDraftWithConfirm d confirm =
             , Maybe.map (\v -> ( "dedupThreshold", E.float v )) (String.toFloat d.dedupThreshold)
             , Maybe.map (\v -> ( "classifyMaxPerTick", E.int (round v) )) (String.toFloat d.classifyMaxPerTick)
             , Maybe.map (\v -> ( "rateCap", E.int (round v) )) (String.toFloat d.rateCap)
+            , Maybe.map (\v -> ( "fetchMaxPerTick", E.int (round v) )) (String.toFloat d.fetchMaxPerTick)
+            , Maybe.map (\v -> ( "maxCandidatesPerTick", E.int (round v) )) (String.toFloat d.maxCandidatesPerTick)
+            , Maybe.map (\v -> ( "retryMaxAttempts", E.int (round v) )) (String.toFloat d.retryMaxAttempts)
+            , Maybe.map (\v -> ( "logRetentionDays", E.int (round v) )) (String.toFloat d.logRetentionDays)
             , if confirm then
                 Just ( "confirm", E.bool True )
 
@@ -362,12 +406,40 @@ encodeDraftWithConfirm d confirm =
 
 configDecoder : D.Decoder Config
 configDecoder =
-    D.map5 Config
+    D.map5
+        (\tau triage delta cap rate ->
+            { tasteThreshold = tau
+            , triageThreshold = triage
+            , dedupThreshold = delta
+            , classifyMaxPerTick = cap
+            , rateCap = rate
+            , fetchMaxPerTick = 0
+            , maxCandidatesPerTick = 0
+            , retryMaxAttempts = 0
+            , logRetentionDays = 0
+            }
+        )
         (D.field "tasteThreshold" D.float)
         (D.field "triageThreshold" D.float)
         (D.field "dedupThreshold" D.float)
         (D.field "classifyMaxPerTick" D.int)
         (D.field "rateCap" D.int)
+        |> D.andThen
+            (\c ->
+                D.map4
+                    (\a b r l ->
+                        { c
+                        | fetchMaxPerTick = a
+                        , maxCandidatesPerTick = b
+                        , retryMaxAttempts = r
+                        , logRetentionDays = l
+                        }
+                    )
+                    (D.field "fetchMaxPerTick" D.int)
+                    (D.field "maxCandidatesPerTick" D.int)
+                    (D.field "retryMaxAttempts" D.int)
+                    (D.field "logRetentionDays" D.int)
+            )
 
 
 configResponseDecoder : D.Decoder Config
@@ -473,6 +545,13 @@ viewKnobForm model =
             , knobRow "Dedup threshold (δ)" "0" "1" "0.01" d.dedupThreshold (\draft v -> { draft | dedupThreshold = v })
             , knobRow "Classify max / tick" "1" "100" "1" d.classifyMaxPerTick (\draft v -> { draft | classifyMaxPerTick = v })
             , knobRow "Rate cap (imports / tick)" "1" "200" "1" d.rateCap (\draft v -> { draft | rateCap = v })
+            ]
+        , fieldset []
+            [ h3 [] [ text "Processing limits" ]
+            , knobRow "Fetch max / tick" "1" "50" "1" d.fetchMaxPerTick (\draft v -> { draft | fetchMaxPerTick = v })
+            , knobRow "Max candidates / tick" "1" "200" "1" d.maxCandidatesPerTick (\draft v -> { draft | maxCandidatesPerTick = v })
+            , knobRow "Retry max attempts" "0" "10" "1" d.retryMaxAttempts (\draft v -> { draft | retryMaxAttempts = v })
+            , knobRow "Log retention (days)" "1" "365" "1" d.logRetentionDays (\draft v -> { draft | logRetentionDays = v })
             ]
         , if isDirty then
             button [ class "btn-secondary", onClick ResetForm ] [ text "Reset" ]

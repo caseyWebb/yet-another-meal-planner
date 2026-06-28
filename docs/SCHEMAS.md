@@ -495,6 +495,7 @@ custom                      TEXT     -- JSON: arbitrary agent-added keys
 kitchen_notes               TEXT     -- JSON: freeform cook-reasoning notes (oven count, pan sizes)
 freezer_capacity_estimate   TEXT     -- tight | moderate | spacious
 rotation                    TEXT     -- JSON: {resurface_after_days?, novelty_boost?}
+retrospective_prefs         TEXT     -- JSON: {stale_after_days?, revealed_months?, revealed_min_cooks?}; overrides retrospective defaults per member (0021)
 last_planned_at             TEXT     -- YYYY-MM-DD planning watermark (0016): set by update_meal_plan on an add; bounds list_new_for_me
 
 -- D1 brand_prefs table — one row per (tenant, ingredient term). PRIMARY KEY (tenant, term).
@@ -700,20 +701,24 @@ Example rows (`discovery_members`):
 **Operator-scoped** — read by the background discovery sweep at job start; written only by the operator via the admin Config console (not an agent tool). The table holds a **sparse override** of the sweep's compiled-in `DEFAULT_CONFIG`: only the knobs an operator has explicitly tuned are non-null; every null column falls back to the default. This means `DEFAULT_CONFIG` is the safe compile-time baseline and the table records only deliberate operator deltas — an empty or absent row runs with all defaults.
 
 ```sql
--- D1 discovery_config table (migration 0017). SINGLE ROW (id = 1, enforced by CHECK).
-id               INTEGER PRIMARY KEY CHECK (id = 1)  -- singleton guard
-taste_threshold  REAL     -- cosine threshold for per-member taste match (τ); null → DEFAULT_CONFIG.tasteThreshold
-triage_threshold REAL     -- cheaper pre-classify blurb-cosine gate; null → DEFAULT_CONFIG.triageThreshold
-dedup_threshold  REAL     -- semantic duplicate cosine gate (δ); null → DEFAULT_CONFIG.dedupThreshold
-classify_max     INTEGER  -- max classify+fetch calls per sweep tick; null → DEFAULT_CONFIG.classifyMaxPerTick
-rate_cap         INTEGER  -- max recipe imports per tick (corpus-bloat governor); null → DEFAULT_CONFIG.rateCap
+-- D1 discovery_config table (migration 0017 + 0020). SINGLE ROW (id = 1, enforced by CHECK).
+id                      INTEGER PRIMARY KEY CHECK (id = 1)  -- singleton guard
+taste_threshold         REAL     -- cosine threshold for per-member taste match (τ); null → DEFAULT_CONFIG.tasteThreshold
+triage_threshold        REAL     -- cheaper pre-classify blurb-cosine gate; null → DEFAULT_CONFIG.triageThreshold
+dedup_threshold         REAL     -- semantic duplicate cosine gate (δ); null → DEFAULT_CONFIG.dedupThreshold
+classify_max            INTEGER  -- max classify+fetch calls per sweep tick; null → DEFAULT_CONFIG.classifyMaxPerTick
+rate_cap                INTEGER  -- max recipe imports per tick (corpus-bloat governor); null → DEFAULT_CONFIG.rateCap
+fetch_max_per_tick      INTEGER  -- max feed fetch calls per tick; null → 5
+max_candidates_per_tick INTEGER  -- max candidates forwarded to classify per tick; null → 40
+retry_max_attempts      INTEGER  -- max retry attempts for a failed candidate; null → 3
+log_retention_days      INTEGER  -- days to retain discovery outcome log rows; null → 60
 ```
 
 Example row (all knobs tuned):
 
-| id | taste_threshold | triage_threshold | dedup_threshold | classify_max | rate_cap |
-|----|----------------|-----------------|----------------|-------------|---------|
-| 1 | 0.60 | 0.40 | 0.85 | 8 | 5 |
+| id | taste_threshold | triage_threshold | dedup_threshold | classify_max | rate_cap | fetch_max_per_tick | max_candidates_per_tick | retry_max_attempts | log_retention_days |
+|----|----------------|-----------------|----------------|-------------|---------|-------------------|------------------------|-------------------|-------------------|
+| 1 | 0.60 | 0.40 | 0.85 | 8 | 5 | 3 | 30 | 2 | 30 |
 
 **Notes:**
 - Read by `loadDiscoveryConfig(env)` (`src/discovery-calibration.ts`): reads the row, validates each knob against its range (`> 0 && ≤ 1` for real knobs; `> 0 && integer` for caps), and falls back to `DEFAULT_CONFIG` on a null or out-of-range value.
@@ -721,6 +726,37 @@ Example row (all knobs tuned):
 - Floor guards (`FLOOR_TASTE = 0.2`, `FLOOR_DEDUP = 0.7`) and ceiling guard (`CEILING_RATE_CAP = 100`) require `confirm: true` in the admin PUT to override — the API rejects without it (400 `validation_failed` + `needsConfirm: true`), preventing accidental footgun writes.
 - The calibration console's **analyze** endpoint (`POST /admin/api/discovery/analyze`) computes a cheap no-AI readout of how many corpus pairs fall within δ and how many members clear τ, before any config write — a preview, not a write.
 - The calibration console's **dry-run** endpoint (`POST /admin/api/discovery/dry-run`) runs the full pipeline with `importRecipe`/`recordMatches`/`recordLog` stubbed out, returning what *would* be imported — the sweep's built-in E2E verification.
+
+## operator_config (D1 singleton, operator-scoped)
+
+**Operator-scoped** — read at each MCP tool call (ranking, flyer) and at cron start (flyer warm). Written only via the admin Config panel. Follows the same sparse-override singleton pattern as `discovery_config`: only columns an operator has explicitly tuned are non-null; absent or null columns fall back to `DEFAULT_OPERATOR_CONFIG` compiled defaults. An empty or absent row runs with all defaults.
+
+```sql
+-- D1 operator_config table (migration 0019). SINGLE ROW (id = 1, enforced by CHECK).
+id                  INTEGER PRIMARY KEY CHECK (id = 1)  -- singleton guard
+-- Ranking weights (precedence: compiled → operator_config → per-tenant rotation)
+favorite_weight     REAL     -- boost for favorited recipes in ranking; null → 0.15
+novelty_boost       REAL     -- group-default novelty boost; null → 0.1 (per-tenant rotation overrides)
+pantry_weight       REAL     -- pantry-hit score multiplier; null → 0.12
+perish_weight       REAL     -- perishable-ingredient score multiplier; null → 1.0
+key_weight          REAL     -- key-ingredient overlap score multiplier; null → 0.4
+overlap_cap         INTEGER  -- max key-ingredient overlaps counted; null → 2
+-- Flyer knobs
+min_flyer_discount  REAL     -- minimum savings fraction to include in flyer results; null → 0.05
+flyer_refresh_hours INTEGER  -- hours between flyer warm runs; null → 24
+flyer_batch_units   INTEGER  -- SKUs fetched per Kroger flyer batch call; null → 12
+```
+
+Example row (ranking weights adjusted, flyer defaults left as-is):
+
+| id | favorite_weight | novelty_boost | pantry_weight | perish_weight | key_weight | overlap_cap | min_flyer_discount | flyer_refresh_hours | flyer_batch_units |
+|----|----------------|--------------|--------------|--------------|-----------|------------|-------------------|--------------------|--------------------|
+| 1 | 0.20 | 0.15 | 0.10 | 1.0 | 0.5 | 3 | NULL | NULL | NULL |
+
+**Notes:**
+- `loadOperatorConfig(env)` (`src/operator-config.ts`) reads the singleton row and merges over `DEFAULT_OPERATOR_CONFIG` — any null column takes its compiled default.
+- `saveOperatorConfig(env, patch)` upserts the id=1 row with non-null fields from the patch. `validateOperatorConfig(patch)` enforces: fractions in [0,1] for `favorite_weight`, `novelty_boost`, `pantry_weight`, `perish_weight`, `min_flyer_discount`; positive integers for `overlap_cap`, `flyer_refresh_hours`, `flyer_batch_units`.
+- Ranking precedence: compiled defaults → `operator_config` → per-tenant `profile.rotation` (for `novelty_boost` / `resurface_after_days`). `resolveRankParams` in `src/semantic-search.ts` applies these three tiers in order.
 
 ## guidance/
 
