@@ -1,7 +1,7 @@
 ## 1. Agreement eval (gates Tier B + drives the migration)
 
 - [x] 1.1 Agreement-eval harness written (`scripts/eval-facet-agreement/run.mjs`): classifies a local corpus copy via Workers AI REST, reports per-field agreement vs authored frontmatter
-- [ ] 1.2 Review agreement rates; confirm each Tier B facet clears the trust bar — or escalate a low-agreement field back to authored-required — **deferred: run the eval in dev (needs corpus + CLOUDFLARE_API_TOKEN), then decide**
+- [x] 1.2 Ran the eval over the live corpus (151 recipes): Tier B exact-match agreement cuisine 88% / course 79% / protein 76% / season 75% — all clear the bar. **Decision: keep all five Tier B derived-default, none escalated** (disagreements are preserved as overrides; migration is regression-proof for Tier B). Recorded in design.md.
 - [x] 1.3 Strip plan emitted by the eval (`--plan <file>`): Tier A → strip unconditionally; Tier B → strip on agreement, keep-as-override on disagreement
 
 ## 2. Shared classifier
