@@ -3,6 +3,9 @@ import {
   handleOAuthRequest,
   challengeFromVerifier,
   generateVerifier,
+  mintAuthNonce,
+  redeemAuthNonce,
+  buildKrogerConsentUrl,
   type OAuthDeps,
   type Pkce,
 } from "../src/oauth.js";
@@ -51,13 +54,15 @@ function recordingClientFor(overrides: Partial<KrogerUserClient> = {}) {
 }
 
 describe("/oauth route handling", () => {
-  it("init stores the verifier+tenant under state and redirects to Kroger", async () => {
+  it("init redeems the nonce, stores the verifier+bound tenant under state, and redirects", async () => {
     const kv = memKv();
     const { clientFor } = recordingClientFor();
     const deps: OAuthDeps = { kv, clientFor, pkce: fixedPkce };
+    const nonce = await mintAuthNonce(kv, "alice");
+
     const res = await handleOAuthRequest(
       deps,
-      new URL("https://grocery-mcp.example.com/oauth/init?tenant=alice"),
+      new URL(`https://grocery-mcp.example.com/oauth/init?nonce=${nonce}`),
     );
 
     expect(res.status).toBe(302);
@@ -69,9 +74,11 @@ describe("/oauth route handling", () => {
       verifier: "fixed-verifier",
       tenant: "alice",
     });
+    // The nonce is single-use: consumed by the redemption.
+    expect(await redeemAuthNonce(kv, nonce)).toBeNull();
   });
 
-  it("rejects an init with no tenant", async () => {
+  it("rejects an init with no nonce, writing no flow", async () => {
     const kv = memKv();
     const { clientFor } = recordingClientFor();
     const res = await handleOAuthRequest({ kv, clientFor, pkce: fixedPkce }, new URL("https://x.com/oauth/init"));
@@ -79,7 +86,30 @@ describe("/oauth route handling", () => {
     expect(await kv.get("kroger:pkce:fixed-state")).toBeNull();
   });
 
-  it("completes the init→callback handshake bound to the initiating tenant", async () => {
+  it("rejects an init with an unknown/expired nonce, writing no flow", async () => {
+    const kv = memKv();
+    const { clientFor } = recordingClientFor();
+    const res = await handleOAuthRequest(
+      { kv, clientFor, pkce: fixedPkce },
+      new URL("https://x.com/oauth/init?nonce=does-not-exist"),
+    );
+    expect(res.status).toBe(400);
+    expect(await kv.get("kroger:pkce:fixed-state")).toBeNull();
+  });
+
+  it("rejects re-use of a nonce that already started a flow", async () => {
+    const kv = memKv();
+    const { clientFor } = recordingClientFor();
+    const deps: OAuthDeps = { kv, clientFor, pkce: fixedPkce };
+    const nonce = await mintAuthNonce(kv, "alice");
+
+    const first = await handleOAuthRequest(deps, new URL(`https://x.com/oauth/init?nonce=${nonce}`));
+    expect(first.status).toBe(302);
+    const second = await handleOAuthRequest(deps, new URL(`https://x.com/oauth/init?nonce=${nonce}`));
+    expect(second.status).toBe(400);
+  });
+
+  it("completes the init→callback handshake bound to the nonce's tenant", async () => {
     const kv = memKv();
     let exchanged: { code: string; verifier: string } | null = null;
     const { clientFor, tenants } = recordingClientFor({
@@ -88,8 +118,9 @@ describe("/oauth route handling", () => {
       },
     });
     const deps: OAuthDeps = { kv, clientFor, pkce: fixedPkce };
+    const nonce = await mintAuthNonce(kv, "alice");
 
-    await handleOAuthRequest(deps, new URL("https://x.com/oauth/init?tenant=alice"));
+    await handleOAuthRequest(deps, new URL(`https://x.com/oauth/init?nonce=${nonce}`));
     const res = await handleOAuthRequest(
       deps,
       new URL("https://x.com/oauth/callback?code=THECODE&state=fixed-state"),
@@ -97,7 +128,7 @@ describe("/oauth route handling", () => {
 
     expect(res.status).toBe(200);
     expect(exchanged).toEqual({ code: "THECODE", verifier: "fixed-verifier" });
-    // The callback resolved the client for the SAME tenant that initiated the flow.
+    // The callback resolved the client for the SAME tenant the nonce was bound to.
     expect(tenants).toEqual(["alice", "alice"]);
     // The single-use record is consumed.
     expect(await kv.get("kroger:pkce:fixed-state")).toBeNull();
@@ -156,5 +187,36 @@ describe("/oauth route handling", () => {
     const v = generateVerifier();
     expect(v).toMatch(/^[A-Za-z0-9_-]+$/);
     expect(v.length).toBeGreaterThanOrEqual(43);
+  });
+});
+
+describe("Kroger consent nonce", () => {
+  it("mints then redeems a nonce to its bound (canonical) tenant", async () => {
+    const kv = memKv();
+    const nonce = await mintAuthNonce(kv, "Casey");
+    expect(nonce).toMatch(/^[A-Za-z0-9_-]+$/);
+    // Bound tenant is canonicalized (lowercased) at mint time.
+    expect(await redeemAuthNonce(kv, nonce)).toBe("casey");
+  });
+
+  it("is single-use: a second redemption returns null", async () => {
+    const kv = memKv();
+    const nonce = await mintAuthNonce(kv, "alice");
+    expect(await redeemAuthNonce(kv, nonce)).toBe("alice");
+    expect(await redeemAuthNonce(kv, nonce)).toBeNull();
+  });
+
+  it("returns null for an unknown or empty nonce", async () => {
+    const kv = memKv();
+    expect(await redeemAuthNonce(kv, "never-minted")).toBeNull();
+    expect(await redeemAuthNonce(kv, "")).toBeNull();
+  });
+
+  it("buildKrogerConsentUrl embeds a redeemable nonce for the tenant", async () => {
+    const kv = memKv();
+    const url = await buildKrogerConsentUrl(kv, "https://grocery-mcp.example.com", "alice");
+    expect(url).toMatch(/^https:\/\/grocery-mcp\.example\.com\/oauth\/init\?nonce=[A-Za-z0-9_-]+$/);
+    const nonce = new URL(url).searchParams.get("nonce")!;
+    expect(await redeemAuthNonce(kv, nonce)).toBe("alice");
   });
 });

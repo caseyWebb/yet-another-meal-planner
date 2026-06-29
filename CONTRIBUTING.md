@@ -47,7 +47,7 @@ aubr deploy          # wrangler deploy — normally NOT run by hand (see Deploym
 
 - **Structured errors, not throws.** Tools return `{ error: "...", message }` shapes the agent can reason over. Follow the existing convention in `src/errors.ts`.
 - **`docs/TOOLS.md` is the contract.** When a tool's params/returns change, update `docs/TOOLS.md` in the same pass — no drift. Likewise `docs/SCHEMAS.md` when a data file's shape changes.
-- **Local dev/secrets** live in `.dev.vars` (gitignored; see `.dev.vars.example`): Kroger creds. The authored corpus is the local R2 `CORPUS` bucket (`wrangler dev` simulates it — no GitHub App). See [`docs/SELF_HOSTING.md`](docs/SELF_HOSTING.md) for the one-time operator setup and the Kroger `/oauth/init?tenant=<id>` flow.
+- **Local dev/secrets** live in `.dev.vars` (gitignored; see `.dev.vars.example`): Kroger creds. The authored corpus is the local R2 `CORPUS` bucket (`wrangler dev` simulates it — no GitHub App). See [`docs/SELF_HOSTING.md`](docs/SELF_HOSTING.md) for the one-time operator setup and the Kroger account-linking flow (mint a consent link from `/admin` → Members → **Kroger link**, or the `kroger_login_url` tool for a connected member).
 - **D1 (domain data) goes through `src/db.ts`, never `env.DB`.** `db(env)` exposes `first` / `all` / `run` / `batch` (+ `prepare` for batch); it maps every D1 failure to a structured `storage_error` `ToolError`, so tools stay throw-free. `wrangler dev` binds a **local** SQLite D1 — seed it with `npx wrangler d1 migrations apply DB --local` (applies `migrations/d1/*.sql`; `wrangler d1 execute DB --local --command "…"` inspects it). The deploy applies the same migrations with `--remote`.
 
 ### Deployment
