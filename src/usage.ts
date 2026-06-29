@@ -71,7 +71,8 @@ export type UsageResult =
       };
     };
 
-/** The current UTC calendar day as `YYYY-MM-DD` (the Analytics `date` dimension's format). */
+/** The current UTC calendar day as `YYYY-MM-DD` (the KV `date` dimension's format; the AI bounds
+ *  append `THH:00:00Z` to it for the `datetimeHour` dimension). */
 export function utcDay(nowMs: number): string {
   return new Date(nowMs).toISOString().slice(0, 10);
 }

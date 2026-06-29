@@ -17,16 +17,32 @@ function graphqlBody(account: unknown) {
   return { data: { viewer: { accounts: [account] } } };
 }
 
-function fetchReturning(body: unknown, status = 200): { fetchImpl: typeof fetch; calls: number } {
+function fetchReturning(
+  body: unknown,
+  status = 200,
+): { fetchImpl: typeof fetch; calls: number; lastRequest: { query?: string; variables?: unknown } | null } {
   let calls = 0;
-  const fetchImpl = (async () => {
+  let lastRequest: { query?: string; variables?: unknown } | null = null;
+  const fetchImpl = (async (_url: string, init?: RequestInit) => {
     calls += 1;
+    // The GraphQL fetchers send a JSON body; the AE SQL fetchers send a plain SQL string. Only the
+    // former is captured for assertion — ignore a non-JSON body rather than throwing in the mock.
+    if (typeof init?.body === "string") {
+      try {
+        lastRequest = JSON.parse(init.body);
+      } catch {
+        lastRequest = null;
+      }
+    }
     return new Response(JSON.stringify(body), { status });
   }) as unknown as typeof fetch;
   return {
     fetchImpl,
     get calls() {
       return calls;
+    },
+    get lastRequest() {
+      return lastRequest;
     },
   };
 }
@@ -155,6 +171,33 @@ describe("fetchUsage", () => {
     expect(result.day).toBe("2026-06-28");
     expect(result.kv.totals.write).toBe(1440);
     expect(result.ai.neurons_used).toBe(42);
+  });
+
+  // Guards the exact GraphQL dataset/field/filter names against silent regression: the previous
+  // bug was a non-existent node name (`workersKvOperationsAdaptiveGroups`) that Cloudflare rejected
+  // with "unknown field". The response-parsing tests above cannot catch that — they feed a canned
+  // response and never inspect the request — so assert the request body directly.
+  it("sends the live-schema dataset/field names and the current day's filter bounds", async () => {
+    const f = fetchReturning(graphqlBody({}));
+    const now = Date.parse("2026-06-28T10:00:00Z");
+    await fetchUsage(configuredEnv(), { fetchImpl: f.fetchImpl, now: () => now });
+    const query = f.lastRequest?.query ?? "";
+    // KV dataset + its date-range filter
+    expect(query).toContain("kvOperationsAdaptiveGroups");
+    expect(query).toContain('date_geq: "2026-06-28"');
+    expect(query).toContain('date_leq: "2026-06-28"');
+    // AI dataset + its datetimeHour filter + the renamed dimension/metric
+    expect(query).toContain("aiInferenceAdaptiveGroups");
+    expect(query).toContain('datetimeHour_geq: "2026-06-28T00:00:00Z"');
+    expect(query).toContain('datetimeHour_leq: "2026-06-28T23:00:00Z"');
+    expect(query).toContain("modelId");
+    expect(query).toContain("totalNeurons");
+    // The old, non-existent names must not reappear.
+    expect(query).not.toContain("workersKvOperationsAdaptiveGroups");
+    expect(query).not.toContain("workersAiInferenceRequestsAdaptiveGroups");
+    expect(query).not.toMatch(/\bmodelName\b/);
+    // The day is inlined into the query; only accountTag stays a bound variable (no `date`).
+    expect(f.lastRequest?.variables).toEqual({ accountTag: "acct123" });
   });
 
   it("throws upstream_unavailable on a non-2xx", async () => {
