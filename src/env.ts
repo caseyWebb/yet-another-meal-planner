@@ -48,6 +48,13 @@ export interface Env {
    * deployed Worker. (Only the literal `1` enables it; e.g. `"true"` is a no-op.)
    */
   ADMIN_DEV_BYPASS?: string;
+  /**
+   * Transitional flag (operator-admin rewrite): when set to exactly `1`, `/admin*` is served
+   * by the new Hono app (`src/admin/app.tsx`) instead of the Elm `handleAdmin`. Lets the
+   * TypeScript panel be built and exercised behind the same Access gate while the Elm panel
+   * remains the default, until the single cutover flip removes this branch. Non-secret.
+   */
+  ADMIN_HONO?: string;
 
   // --- AGPL §13 source offer (open-source-license). OPTIONAL, non-secret. ---
   /**

@@ -1,31 +1,29 @@
 #!/usr/bin/env node
-// build-admin.mjs — compile the operator admin SPA (admin/src/Main.elm) into the
-// committed static bundle the Worker serves via its ASSETS binding (operator-admin).
+// build-admin.mjs — compile the operator admin islands (src/admin/client/*.tsx) and copy the
+// stylesheet into the committed static bundle the Worker serves via its ASSETS binding
+// (operator-admin). The server pages are server-rendered in the Worker (Hono JSX, built by
+// wrangler's esbuild); only the browser islands + the stylesheet are pre-built static assets.
 //
-// Output layout maps URL paths under /admin/ to files, so the bundle lands under an
-// `admin/` subdir of the output root (the ASSETS `directory` is the root):
-//   <out>/admin/elm.js      (elm make --optimize)
-//   <out>/admin/index.html  (copied from admin/index.html)
+// Output layout maps URL paths under /admin/ to files (ASSETS `directory` is admin/dist):
+//   <out>/admin/islands/<name>.js   (esbuild bundle, browser ESM, hono/jsx/dom runtime)
+//   <out>/admin/styles.css          (copied from src/admin/styles.css)
 //
-// Mirrors build-plugin.mjs: ESM, hand-rolled, deterministic, with a
-// --check validate-only mode (the CI drift gate) that fails if the committed bundle is
-// stale — so admin/dist/ is treated like plugin/ (generated, never hand-edited).
+// esbuild only — NO network package registry needed, so any sandbox can rebuild it (the whole
+// point of leaving Elm: package.elm-lang.org is gone). Hand-rolled + deterministic, mirroring
+// build-plugin.mjs, with a --check validate-only mode (the CI drift gate). The Elm bundle
+// (admin/dist/admin/{elm.js,index.html}) stays committed and is served by default until the
+// cutover flip (Phase 5) removes it; this script no longer builds Elm.
 //
-// Elm needs its package registry (package.elm-lang.org) reachable at build time. Set
-// ELM to override the compiler binary; it defaults to `npx --yes elm@<ELM_VERSION>`.
-//
-// Usage:
-//   node scripts/build-admin.mjs [--out admin/dist] [--check]
+// Usage: node scripts/build-admin.mjs [--out admin/dist] [--check]
 
-import { execFileSync } from "node:child_process";
-import { readFileSync, writeFileSync, mkdirSync, rmSync, existsSync } from "node:fs";
+import esbuild from "esbuild";
+import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
-import os from "node:os";
 
-const ELM_VERSION = "0.19.1-6";
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const ADMIN_DIR = path.join(REPO_ROOT, "admin");
+const CLIENT_DIR = path.join(REPO_ROOT, "src", "admin", "client");
+const STYLES_SRC = path.join(REPO_ROOT, "src", "admin", "styles.css");
 
 function parseArgs(argv) {
   const args = { out: path.join("admin", "dist"), check: false };
@@ -36,38 +34,44 @@ function parseArgs(argv) {
   return args;
 }
 
-function elmInvocation() {
-  if (process.env.ELM) return { cmd: process.env.ELM, base: [] };
-  return { cmd: "npx", base: ["--yes", `elm@${ELM_VERSION}`] };
+/** Island entrypoints: every `*.tsx` directly under src/admin/client (one bundle each). */
+function islandEntries() {
+  return readdirSync(CLIENT_DIR)
+    .filter((f) => f.endsWith(".tsx"))
+    .sort()
+    .map((f) => ({ name: f.replace(/\.tsx$/, ""), file: path.join(CLIENT_DIR, f) }));
 }
 
-/** Compile Main.elm to an optimized JS string. Throws on a compile or registry error. */
-function compileElm() {
-  const tmp = path.join(os.tmpdir(), `admin-elm-${process.pid}.js`);
-  const { cmd, base } = elmInvocation();
-  try {
-    execFileSync(cmd, [...base, "make", path.join("src", "Main.elm"), "--optimize", "--output", tmp], {
-      cwd: ADMIN_DIR,
-      stdio: ["ignore", "inherit", "inherit"],
-    });
-    return readFileSync(tmp, "utf8");
-  } finally {
-    if (existsSync(tmp)) rmSync(tmp);
-  }
+/** Bundle one island to an ESM string (deterministic; no minify for a stable drift diff). */
+async function bundleIsland(file) {
+  const result = await esbuild.build({
+    entryPoints: [file],
+    bundle: true,
+    format: "esm",
+    platform: "browser",
+    target: "es2022",
+    jsx: "automatic",
+    jsxImportSource: "hono/jsx/dom",
+    minify: false,
+    write: false,
+  });
+  return result.outputFiles[0].text;
 }
 
 /** The bundle as a { relativePath -> content } map (the unit of compare/write). */
-function buildFiles() {
-  return {
-    "admin/elm.js": compileElm(),
-    "admin/index.html": readFileSync(path.join(ADMIN_DIR, "index.html"), "utf8"),
-  };
+async function buildFiles() {
+  const files = {};
+  for (const { name, file } of islandEntries()) {
+    files[`admin/islands/${name}.js`] = await bundleIsland(file);
+  }
+  files["admin/styles.css"] = readFileSync(STYLES_SRC, "utf8");
+  return files;
 }
 
-function main() {
+async function main() {
   const args = parseArgs(process.argv.slice(2));
   const outRoot = path.resolve(REPO_ROOT, args.out);
-  const files = buildFiles();
+  const files = await buildFiles();
 
   if (args.check) {
     let stale = false;
@@ -95,4 +99,4 @@ function main() {
   }
 }
 
-main();
+await main();

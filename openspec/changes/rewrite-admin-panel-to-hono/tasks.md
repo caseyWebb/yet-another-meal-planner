@@ -1,18 +1,18 @@
 # Tasks
 
 ## 1. Scaffold + Members thin vertical (pipeline proof)
-- [ ] Add the `hono` dependency; set `jsx: "react-jsx"` + `jsxImportSource: "hono/jsx"` in `tsconfig.json` (server JSX compiles via the Worker's existing esbuild)
-- [ ] Create the Hono admin app (`src/admin/app.ts`), `basePath('/admin')`, exporting its type for `hc`
-- [ ] Port `requireAccess` to Hono middleware (reuse the function verbatim); preserve the opt-in / dev-bypass / email-allowlist posture
-- [ ] Mount the app where `handleAdmin` is called (`src/index.ts:69`) **behind a flag/branch** so Elm still serves `/admin` until cutover
-- [ ] Rewrite `scripts/build-admin.mjs`: esbuild island bundler → `admin/dist/admin/islands/*.js`; keep the `--check` drift gate; remove the Elm path (staged — full removal in Phase 5)
-- [ ] Extract the inline `<style>` → served `admin/dist/admin/styles.css`; add `@view-transition { navigation: auto; }` + `view-transition-name` on the persistent shell (h1 + nav)
-- [ ] Stand up the `admin/src/ui/` component kit (Card, Button, Pill, TierBadge, Dot, Dialog, Field, ErrorBanner, Table, layout, `Loadable` RemoteData primitive)
-- [ ] SSR the Members list by calling the existing `src/` lifecycle/list functions directly
-- [ ] Hydrate onboard / rotate / revoke as one island; wire mutations through `hc` typed routes that call the same `src/` functions
-- [ ] Preserve the once-shown invite-code + connector-URL minting (never logged)
-- [ ] Establish the TS discipline primitives: `Loadable`/RemoteData union, `assertNever`, `ts-pattern` `.exhaustive()`
-- [ ] vitest coverage for the Members routes (`app.request(...)`) and the island
+- [x] Add the `hono` (+ `ts-pattern`, `esbuild`, `@playwright/test`) deps; set `jsx: "react-jsx"` + `jsxImportSource: "hono/jsx"` in `tsconfig.json` (server JSX compiles via the Worker's existing esbuild)
+- [x] Create the Hono admin app (`src/admin/app.tsx`), `basePath('/admin')`, exporting `AdminApp` for `hc`
+- [x] Port `requireAccess` to Hono middleware (reuse the function verbatim); preserve the opt-in / dev-bypass / email-allowlist posture
+- [x] Mount the app where `handleAdmin` is called (`src/index.ts`) **behind `ADMIN_HONO=1`** so Elm still serves `/admin` until cutover
+- [x] Rewrite `scripts/build-admin.mjs`: esbuild island bundler → `admin/dist/admin/islands/*.js`; keep the `--check` drift gate; remove the Elm path (staged — full removal in Phase 5)
+- [x] Extract the inline `<style>` → served `admin/dist/admin/styles.css`; add `@view-transition { navigation: auto; }` + `view-transition-name` on the persistent shell (h1 + nav)
+- [x] Stand up the `src/admin/ui/` component kit (Card, Button, Pill, TierBadge, Dot, Dialog, Field, ErrorBanner, Table, layout, `Loadable` RemoteData primitive)
+- [x] SSR the Members list by calling the existing `src/` lifecycle/list functions directly
+- [x] Hydrate onboard / rotate / revoke as one island; wire mutations through `hc` typed routes that call the same `src/` functions
+- [x] Preserve the once-shown invite-code + connector-URL minting (never logged)
+- [x] Establish the TS discipline primitives: `Loadable`/RemoteData union, `assertNever`; the island's `ActionState` is one in-flight-mutation union
+- [x] vitest coverage for the Members routes (`app.request(...)`): gate, SSR, list, onboard, structured-error, revoke
 - [ ] Stand up Playwright + a CI job (spin up `wrangler dev`, run E2E, upload screenshot/diff artifacts); commit the first Members visual-snapshot baseline (rendered in the Playwright container)
 
 ## 2. Tool Console — runtime-ceiling gate

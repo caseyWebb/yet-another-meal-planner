@@ -1,0 +1,250 @@
+/* The operator admin stylesheet (operator-admin). Extracted from the Elm panel's inline
+   <style> into a served asset (SSR has no single index.html) and linked from the layout.
+   Styling stays GLOBAL + semantic (Decision 9) — the component kit owns markup, this owns
+   the look. Built/copied to admin/dist/admin/styles.css by scripts/build-admin.mjs. */
+
+/* Cross-document View Transitions (Decision 8): animate full-page SSR navigations; the
+   shell's title + nav carry view-transition-names (set in the layout) so they morph across
+   navigations. Progressive enhancement — unsupported browsers fall back to an instant nav. */
+@view-transition {
+  navigation: auto;
+}
+
+:root {
+  --accent: #f4a259;
+  --danger: #b00020;
+  --subnav-h: 3rem;
+  --section-pad: 1rem;
+}
+body {
+  font-family: system-ui, sans-serif;
+  color: #222;
+  background: #fafafa;
+  margin: 0;
+}
+.wrap {
+  max-width: 44rem;
+  margin: 2.5rem auto;
+  padding: 0 1rem;
+}
+.wrap.wrap-wide {
+  max-width: 60rem;
+}
+h1 {
+  font-size: 1.5rem;
+}
+h2 {
+  font-size: 1.1rem;
+  margin: 0 0 0.75rem;
+}
+.card {
+  background: #fff;
+  border: 1px solid #e5e5e5;
+  border-radius: 0.6rem;
+  padding: 1rem 1.25rem;
+  margin: 1rem 0;
+}
+label {
+  display: block;
+  margin: 0.75rem 0;
+  font-size: 0.9rem;
+}
+input {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  font-size: 1rem;
+  padding: 0.5rem;
+  margin-top: 0.25rem;
+  border: 1px solid #ccc;
+  border-radius: 0.3rem;
+}
+button {
+  font-size: 0.95rem;
+  padding: 0.5rem 1rem;
+  border: 0;
+  border-radius: 0.4rem;
+  background: var(--accent);
+  color: #222;
+  cursor: pointer;
+}
+button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.form-actions {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+button.link {
+  background: none;
+  color: #1a5;
+  padding: 0.3rem 0.5rem;
+}
+button.danger {
+  background: none;
+  color: var(--danger);
+  padding: 0.3rem 0.5rem;
+}
+button.danger-solid {
+  background: var(--danger);
+  color: #fff;
+}
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+th,
+td {
+  text-align: left;
+  padding: 0.5rem 0.25rem;
+  border-bottom: 1px solid #eee;
+}
+.error {
+  background: #fdecec;
+  color: var(--danger);
+  padding: 0.6rem 0.9rem;
+  border-radius: 0.4rem;
+  margin: 1rem 0;
+}
+.minted {
+  background: #fff7ee;
+  border: 1px solid var(--accent);
+  border-radius: 0.6rem;
+  padding: 1rem 1.25rem;
+  margin: 1rem 0;
+}
+.once {
+  color: #a15;
+  font-size: 0.85rem;
+  margin: 0.25rem 0 0.75rem;
+}
+.row {
+  display: flex;
+  gap: 0.75rem;
+  align-items: baseline;
+  margin: 0.35rem 0;
+}
+.row .k {
+  width: 8rem;
+  color: #666;
+  font-size: 0.85rem;
+}
+.row .v {
+  font-family: ui-monospace, monospace;
+  word-break: break-all;
+}
+.muted {
+  color: #888;
+}
+.small {
+  font-size: 0.8rem;
+}
+/* Top-level area nav. */
+.nav {
+  display: flex;
+  gap: 0.5rem;
+  margin: 0.5rem 0 1.25rem;
+  border-bottom: 1px solid #e5e5e5;
+}
+.nav-link {
+  text-decoration: none;
+  color: #555;
+  padding: 0.5rem 0.75rem;
+  border-bottom: 2px solid transparent;
+}
+.nav-link.active {
+  color: #222;
+  border-bottom-color: var(--accent);
+  font-weight: 600;
+}
+/* Pills (sub-nav). */
+.pill {
+  font: inherit;
+  font-size: 0.85rem;
+  padding: 0.3rem 0.85rem;
+  border-radius: 999px;
+  border: 1px solid #ddd;
+  background: #fff;
+  color: #555;
+  cursor: pointer;
+}
+.pill.active {
+  background: var(--accent);
+  color: #222;
+  border-color: var(--accent);
+  font-weight: 600;
+}
+/* Status dots. */
+.dot {
+  width: 0.6rem;
+  height: 0.6rem;
+  border-radius: 50%;
+  background: #8b949e;
+  flex: 0 0 auto;
+  display: inline-block;
+}
+.dot.ok {
+  background: #2da44e;
+}
+.dot.fail {
+  background: #cf222e;
+}
+.dot.never {
+  background: #d4a72c;
+}
+.dot.muted {
+  background: #8b949e;
+}
+/* Detail dialog. */
+.dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.35);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 4rem 1rem;
+  z-index: 20;
+}
+.dialog {
+  background: #fff;
+  border-radius: 0.6rem;
+  max-width: 40rem;
+  width: 100%;
+  max-height: 80vh;
+  overflow: auto;
+  padding: 1rem 1.25rem;
+  box-shadow: 0 0.5rem 2rem rgba(0, 0, 0, 0.2);
+}
+.dialog-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.5rem;
+}
+/* Recipe projection-status badge. */
+.tier {
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 0.1rem 0.55rem;
+  border-radius: 999px;
+  border: 1px solid;
+}
+.tier.indexed {
+  color: #1a7f37;
+  border-color: #1a7f37;
+}
+.tier.skipped {
+  color: #cf222e;
+  border-color: #cf222e;
+}
+.tier.pending {
+  color: #9a6700;
+  border-color: #9a6700;
+}
+.tier.orphaned {
+  color: #57606a;
+  border-color: #57606a;
+}

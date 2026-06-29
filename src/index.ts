@@ -26,6 +26,7 @@ import { handleHealthRequest, handleHealthSvgRequest, writeJobHealth, recordUsag
 import { handleAdmin } from "./admin.js";
 import { handleCookbook } from "./cookbook.js";
 import { handleSource } from "./source.js";
+import adminApp from "./admin/app.js";
 
 /**
  * The gated MCP API. Only reached for `/mcp` requests the provider has already
@@ -66,7 +67,13 @@ const defaultHandler = {
     }
     if (url.pathname === "/authorize") return handleAuthorize(request, env);
     if (url.pathname.startsWith("/oauth/")) return handleOAuth(env, url);
-    if (url.pathname === "/admin" || url.pathname.startsWith("/admin/")) return handleAdmin(request, env);
+    if (url.pathname === "/admin" || url.pathname.startsWith("/admin/")) {
+      // Transitional: the new Hono panel serves `/admin*` when ADMIN_HONO=1, else the Elm
+      // panel (handleAdmin). Both sit behind the same Access gate; the single cutover flip
+      // (Phase 5) removes this branch. See openspec rewrite-admin-panel-to-hono.
+      if (env.ADMIN_HONO === "1") return adminApp.fetch(request, env);
+      return handleAdmin(request, env);
+    }
     if (url.pathname === "/cookbook" || url.pathname.startsWith("/cookbook/")) return handleCookbook(request, env);
     if (url.pathname === "/health.svg") return handleHealthSvgRequest(env);
     if (url.pathname === "/health") return handleHealthRequest(env);
