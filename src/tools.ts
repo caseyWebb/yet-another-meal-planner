@@ -48,6 +48,7 @@ import {
 import { db } from "./db.js";
 import { registerCookingWriteTools } from "./cooking-write.js";
 import { createKrogerClient, type KrogerCandidate } from "./kroger.js";
+import { buildKrogerConsentUrl } from "./oauth.js";
 import {
   matchIngredient,
   isFulfillable,
@@ -450,6 +451,32 @@ export function buildServer(env: Env, tenant: Tenant, origin?: string): McpServe
         // connected to (the operator's domain), threaded in from the MCP handler.
         if (!origin) return { url: null, enabled: false };
         return { url: `${origin}/cookbook`, enabled: true };
+      }),
+  );
+
+  server.registerTool(
+    "kroger_login_url",
+    {
+      description:
+        "Mint the one-time Kroger account-authorization link for the CURRENT member and return { url }. Kroger ordering (place_order, ready_to_eat_available, and any cart write) needs the member's own Kroger shopping account linked first; this returns a personal link the member opens in a browser to consent at Kroger (scope: add-to-cart only). Give the returned URL to the member to click. Use it (1) the first time a member sets up ordering, and (2) whenever a Kroger cart write returns `code: \"reauth_required\"` — the stored token was rejected and the member must re-authorize. The link is bound to the calling member from their authenticated session: it takes NO arguments and cannot mint a link for anyone else. It is single-use and expires in ~10 minutes, so mint it on demand rather than caching it. (Operators bootstrapping a member who isn't connected yet use the admin panel's consent-link action instead.)",
+      inputSchema: {},
+    },
+    () =>
+      runTool(async () => {
+        // The link is minted for the caller's OWN grant tenant (never an argument);
+        // `origin` is the member's connected host, threaded in from the MCP handler.
+        if (!origin) {
+          throw new ToolError(
+            "upstream_unavailable",
+            "cannot resolve the Worker origin for the Kroger authorization link",
+          );
+        }
+        const url = await buildKrogerConsentUrl(
+          env.KROGER_KV as unknown as KvStore,
+          origin,
+          tenant.id,
+        );
+        return { url };
       }),
   );
 

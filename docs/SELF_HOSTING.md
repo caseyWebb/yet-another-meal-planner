@@ -143,7 +143,7 @@ Your **deploy already published your marketplace** (step 5): it built the plugin
 
 > **Fallbacks (rarely needed).** A member who'd rather not add a marketplace can **upload a file** — download the `plugin/grocery-agent/` bundle from your public repo and use claude.ai → *Customize → upload a custom plugin file* (open a fresh chat after). Or **paste [`AGENT_INSTRUCTIONS.md`](../AGENT_INSTRUCTIONS.md)** into a Claude project's custom instructions and add your Worker (`https://<worker-host>/mcp`) as that project's connector — scoped to that one project, skills as one blob rather than the split, self-triggering set.
 
-**Then do Kroger consent** (one-time): visit `https://<worker-host>/oauth/init?tenant=<you>` and approve at Kroger (re-run if a cart write ever returns `reauth_required`).
+**Then do Kroger consent** (one-time): open your **admin panel** (`https://<worker-host>/admin`) → **Members**, click **Kroger link** for your own member, open the minted link, and approve at Kroger. (Once you're connected you can instead just ask the agent to set up Kroger ordering — it calls `kroger_login_url` and hands you the same link.) Re-mint a fresh link if a cart write ever returns `reauth_required`.
 
 ## 8. Newsletter discovery via email (optional)
 
@@ -174,7 +174,7 @@ A friend needs only a Claude.ai account and a Kroger account — no GitHub, no K
 
 1. Open your **admin panel** (`https://<your-worker-host>/admin`) and onboard them: enter their `username`. It allowlists them and shows their invite code **once** (copy it now — it's never logged). Per-tenant state (preferences, pantry, etc.) is written to D1 by the agent tools as they use the agent.
 2. **Send them your marketplace name + their invite code:** `/plugin marketplace add <you>/groceries-agent-data`, then `/plugin install grocery-agent@groceries-agent-data`. The bundle carries your connector URL; adding a public marketplace needs no GitHub account.
-3. They **enter the code at `/authorize`**, then run their Kroger consent (`/oauth/init?tenant=<username>`). On a later update you ship, they auto-pull it (`/plugin marketplace update`) — nothing to re-send. (Prefer not to use a marketplace? The [step 7](#7-get-the-agent-into-claudeai--kroger-consent) upload/paste fallbacks work for them too.)
+3. They **enter the code at `/authorize`**, then set up Kroger consent: once connected, they ask the agent to set up Kroger ordering — it calls `kroger_login_url` and gives them a personal consent link to open and approve at Kroger. (To bootstrap a friend who isn't connected yet, mint the link for them from your `/admin` → **Members** → **Kroger link**.) On a later update you ship, they auto-pull it (`/plugin marketplace update`) — nothing to re-send. (Prefer not to use a marketplace? The [step 7](#7-get-the-agent-into-claudeai--kroger-consent) upload/paste fallbacks work for them too.)
 
 They share the recipe corpus (with their own favorites/rejects/notes) and have their own pantry, preferences, and Kroger cart — fully isolated from yours. To remove someone, open `/admin` and **Revoke** them — it removes their allowlist entry + invite(s), purges their per-tenant D1 data, and deletes their Kroger token, so their issued token stops resolving. **Rotate** mints a fresh invite without touching their data (use it for any code that may have appeared in an Actions log before making the data repo public).
 

@@ -34,14 +34,25 @@ type alias Credentials =
     }
 
 
-{-| The single mutation that can be in flight. Onboard/rotate/revoke are mutually
-exclusive (one operator, one click), so this is one value — not three Bools — and the
-operation's identity (incl. the target username) travels with it.
+{-| The "show once" banner content: either freshly-minted invite credentials, or a
+freshly-minted single-use Kroger consent link for a member. One field, two variants —
+so "there is a credential banner" and "there is a Kroger-link banner" can't both be set
+in contradictory ways. Each variant carries the member it belongs to (for revoke cleanup).
+-}
+type Minted
+    = MintedInvite Credentials
+    | MintedKrogerLink { username : String, url : String }
+
+
+{-| The single mutation that can be in flight. Onboard/rotate/revoke/kroger-link are
+mutually exclusive (one operator, one click), so this is one value — not four Bools — and
+the operation's identity (incl. the target username) travels with it.
 -}
 type Operation
     = Onboard
     | RotateInvite String
     | RevokeMember String
+    | MintKrogerLink String
 
 
 {-| Idle, working on an operation, or showing a failed one + its error. A failure is
@@ -58,7 +69,7 @@ type alias Model =
     , usernameInput : String
     , inviteInput : String
     , action : ActionState
-    , banner : Maybe Credentials
+    , banner : Maybe Minted
     }
 
 
@@ -88,6 +99,8 @@ type Msg
     | RotateResult String (Result Http.Error Credentials)
     | ClickRevoke String
     | RevokeResult String (Result Http.Error ())
+    | ClickKrogerLink String
+    | KrogerLinkResult String (Result Http.Error String)
     | DismissBanner
 
 
@@ -121,7 +134,7 @@ update msg model =
                 | action = Idle
                 , usernameInput = ""
                 , inviteInput = ""
-                , banner = Just credentials
+                , banner = Just (MintedInvite credentials)
               }
             , fetchMembers
             )
@@ -133,7 +146,7 @@ update msg model =
             start model (RotateInvite username) (rotate username)
 
         RotateResult _ (Ok credentials) ->
-            ( { model | action = Idle, banner = Just credentials }, Cmd.none )
+            ( { model | action = Idle, banner = Just (MintedInvite credentials) }, Cmd.none )
 
         RotateResult username (Err error) ->
             ( { model | action = Failed (RotateInvite username) error }, Cmd.none )
@@ -152,6 +165,15 @@ update msg model =
 
         RevokeResult username (Err error) ->
             ( { model | action = Failed (RevokeMember username) error }, Cmd.none )
+
+        ClickKrogerLink username ->
+            start model (MintKrogerLink username) (krogerLink username)
+
+        KrogerLinkResult username (Ok url) ->
+            ( { model | action = Idle, banner = Just (MintedKrogerLink { username = username, url = url }) }, Cmd.none )
+
+        KrogerLinkResult username (Err error) ->
+            ( { model | action = Failed (MintKrogerLink username) error }, Cmd.none )
 
         DismissBanner ->
             ( { model | banner = Nothing }, Cmd.none )
@@ -178,11 +200,11 @@ isBusy action =
 
 
 {-| Drop the "shown once" banner if it belongs to a member we just revoked. -}
-clearBannerFor : String -> Maybe Credentials -> Maybe Credentials
+clearBannerFor : String -> Maybe Minted -> Maybe Minted
 clearBannerFor username banner =
     case banner of
-        Just credentials ->
-            if credentials.username == username then
+        Just minted ->
+            if mintedUsername minted == username then
                 Nothing
 
             else
@@ -190,6 +212,17 @@ clearBannerFor username banner =
 
         Nothing ->
             Nothing
+
+
+{-| The member a banner's minted content belongs to. -}
+mintedUsername : Minted -> String
+mintedUsername minted =
+    case minted of
+        MintedInvite credentials ->
+            credentials.username
+
+        MintedKrogerLink { username } ->
+            username
 
 
 
@@ -246,6 +279,20 @@ revoke username =
         , timeout = Nothing
         , tracker = Nothing
         }
+
+
+krogerLink : String -> Cmd Msg
+krogerLink username =
+    Http.post
+        { url = "/admin/api/tenants/" ++ Url.percentEncode username ++ "/kroger-login"
+        , body = Http.emptyBody
+        , expect = Http.expectJson (KrogerLinkResult username) krogerLinkDecoder
+        }
+
+
+krogerLinkDecoder : Decoder String
+krogerLinkDecoder =
+    Decode.field "url" Decode.string
 
 
 membersDecoder : Decoder (List String)
@@ -322,11 +369,14 @@ operationLabel operation =
         RevokeMember username ->
             "Revoking " ++ username
 
+        MintKrogerLink username ->
+            "Minting Kroger link for " ++ username
 
-viewBanner : Maybe Credentials -> Html Msg
+
+viewBanner : Maybe Minted -> Html Msg
 viewBanner banner =
     case banner of
-        Just credentials ->
+        Just (MintedInvite credentials) ->
             div [ class "minted" ]
                 [ div [ class "minted-head" ]
                     [ strong [] [ text ("Invite for " ++ credentials.username) ]
@@ -335,6 +385,16 @@ viewBanner banner =
                 , p [ class "once" ] [ text "Shown once — copy it now. It is never logged." ]
                 , credentialRow "Invite code" credentials.inviteCode
                 , credentialRow "Connector URL" credentials.connectorUrl
+                ]
+
+        Just (MintedKrogerLink { username, url }) ->
+            div [ class "minted" ]
+                [ div [ class "minted-head" ]
+                    [ strong [] [ text ("Kroger consent link for " ++ username) ]
+                    , button [ class "link", onClick DismissBanner ] [ text "Dismiss" ]
+                    ]
+                , p [ class "once" ] [ text "Give this link to the member to open and authorize Kroger. Single-use and expires in ~10 minutes; it is never logged." ]
+                , credentialRow "Consent URL" url
                 ]
 
         Nothing ->
@@ -408,6 +468,9 @@ viewMember action username =
 
         revoking =
             action == Busy (RevokeMember username)
+
+        linking =
+            action == Busy (MintKrogerLink username)
     in
     tr []
         [ td [] [ text username ]
@@ -419,6 +482,15 @@ viewMember action username =
 
                      else
                         "Rotate invite"
+                    )
+                ]
+            , button [ class "link", disabled (isBusy action), onClick (ClickKrogerLink username) ]
+                [ text
+                    (if linking then
+                        "Minting…"
+
+                     else
+                        "Kroger link"
                     )
                 ]
             , button [ class "danger", disabled (isBusy action), onClick (ClickRevoke username) ]

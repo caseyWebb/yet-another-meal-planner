@@ -20,6 +20,19 @@ import {
 const PKCE_TTL_SECONDS = 600;
 const pkceKey = (state: string): string => `kroger:pkce:${state}`;
 
+// The Kroger consent link is minted from an AUTHENTICATED context (the
+// `kroger_login_url` MCP tool, which knows the caller's grant tenant, or the
+// Access-gated admin surface) and carries a single-use nonce that `/oauth/init`
+// redeems to the initiating tenant. The tenant is therefore never taken from
+// unauthenticated request input — closing the cross-tenant token-binding hole.
+const AUTH_NONCE_TTL_SECONDS = 600;
+const authNonceKey = (nonce: string): string => `kroger:authnonce:${nonce}`;
+
+/** The record stored under a consent nonce: the authenticated tenant it is bound to. */
+interface NonceRecord {
+  tenant: string;
+}
+
 /** The per-flow record stored under the state key: the PKCE verifier + the tenant
  * that initiated the flow, so the callback stores the refresh token under that
  * tenant's key (kroger-user-auth: "state SHALL be bound to the initiating tenant"). */
@@ -60,6 +73,57 @@ export interface Pkce {
 
 const defaultPkce: Pkce = { generateVerifier, generateState, challengeFromVerifier };
 
+/**
+ * Mint a single-use Kroger-consent nonce bound to an authenticated tenant and
+ * return it. The caller MUST have established the tenant from a trusted context
+ * (an MCP grant or the Access-gated admin surface) — this function does not, and
+ * cannot, verify that. The nonce is never logged; it is returned only to the
+ * authenticated caller and redeemed once at `/oauth/init`.
+ */
+export async function mintAuthNonce(kv: KvStore, tenant: string): Promise<string> {
+  const bound = normalizeTenantId(tenant);
+  if (!bound) throw new Error("mintAuthNonce requires a tenant");
+  const nonce = base64url(crypto.getRandomValues(new Uint8Array(32)));
+  const record: NonceRecord = { tenant: bound };
+  await kv.put(authNonceKey(nonce), JSON.stringify(record), {
+    expirationTtl: AUTH_NONCE_TTL_SECONDS,
+  });
+  return nonce;
+}
+
+/**
+ * Redeem a consent nonce to its bound tenant, consuming it (single-use): the key
+ * is deleted before the tenant is returned, so a second redemption — or one past
+ * the TTL — yields null. An unknown or corrupt nonce also yields null.
+ */
+export async function redeemAuthNonce(kv: KvStore, nonce: string): Promise<string | null> {
+  if (!nonce) return null;
+  const raw = await kv.get(authNonceKey(nonce));
+  if (!raw) return null;
+  await kv.delete(authNonceKey(nonce)); // single-use: consume before returning
+  try {
+    const record = JSON.parse(raw) as NonceRecord;
+    return record?.tenant ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Build the Kroger consent link a member opens to authorize their account. Mints a
+ * single-use nonce bound to `tenant` and embeds it in `<origin>/oauth/init?nonce=…`.
+ * The one helper both the `kroger_login_url` MCP tool and the admin mint endpoint
+ * call, so the two authenticated front doors stay identical.
+ */
+export async function buildKrogerConsentUrl(
+  kv: KvStore,
+  origin: string,
+  tenant: string,
+): Promise<string> {
+  const nonce = await mintAuthNonce(kv, tenant);
+  return `${origin}/oauth/init?nonce=${nonce}`;
+}
+
 export interface OAuthDeps {
   kv: KvStore;
   /** Build a Kroger user client bound to a specific tenant's refresh-token key. */
@@ -81,15 +145,16 @@ export async function handleOAuthRequest(deps: OAuthDeps, url: URL): Promise<Res
   const redirectUri = `${url.origin}/oauth/callback`;
 
   if (url.pathname === "/oauth/init") {
-    // The initiating tenant. TRANSITIONAL: taken from a query param; Section 3
-    // replaces this with an agent-minted, single-use nonce so a caller cannot
-    // initiate a Kroger flow for another tenant.
-    // Normalize to the canonical (lowercase) id so the refresh token lands under
-    // the SAME `kroger:refresh:<id>` key the agent reads with (its grant tenantId
-    // is lowercased in tenant.ts) — a mixed-case `?tenant=Casey` must not orphan
-    // the token under a key the cart-write path never looks at.
-    const tenant = normalizeTenantId(url.searchParams.get("tenant") ?? "");
-    if (!tenant) return text("Missing tenant", 400);
+    // The initiating tenant comes from a single-use nonce minted in an
+    // authenticated context (the `kroger_login_url` tool or the admin surface),
+    // never from request input — so a caller cannot start a Kroger flow for a
+    // tenant it has not authenticated as. Redeeming consumes the nonce; the tenant
+    // it carries is already the canonical (lowercase) id, so the refresh token
+    // lands under the same `kroger:refresh:<id>` key the cart-write path reads.
+    const tenant = await redeemAuthNonce(deps.kv, url.searchParams.get("nonce") ?? "");
+    if (!tenant) {
+      return text("Invalid or expired authorization link; start Kroger setup again", 400);
+    }
 
     const verifier = pkce.generateVerifier();
     const state = pkce.generateState();

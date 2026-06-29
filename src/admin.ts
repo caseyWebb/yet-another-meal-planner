@@ -58,6 +58,7 @@ import {
 } from "./admin-data.js";
 import { isCorpusTable, listCorpusTable, addCorpusRow, deleteCorpusRow } from "./admin-corpus.js";
 import { fetchUsage, fetchUsageTrends } from "./usage.js";
+import { buildKrogerConsentUrl } from "./oauth.js";
 import type { KvStore } from "./kroger-user.js";
 
 const TENANT_PREFIX = "tenant:"; // mirrors src/tenant.ts (the allowlist directory)
@@ -401,6 +402,17 @@ async function routeAdminApi(
   if (rotateMatch && method === "POST") {
     const result = await rotate(deps, decodeURIComponent(rotateMatch[1]));
     return { ...result, connector_url: `${url.origin}/mcp` };
+  }
+
+  // Kroger consent-link bootstrap: mint the same single-use nonce the `kroger_login_url`
+  // MCP tool mints (kroger-user-auth), bound to a chosen ALLOWLISTED member, so the
+  // operator can link a member who has no `/mcp` session yet. Resolved by the same
+  // allowlist check the tool console uses; never exposed as an MCP tool. The nonce is
+  // not logged (it rides only in this Access-authenticated response).
+  const krogerLoginMatch = path.match(/^\/admin\/api\/tenants\/([^/]+)\/kroger-login$/);
+  if (krogerLoginMatch && method === "POST") {
+    const tenant = await resolveActingTenant(env, decodeURIComponent(krogerLoginMatch[1]));
+    return { url: await buildKrogerConsentUrl(deps.krogerKv, url.origin, tenant.id) };
   }
 
   const tenantMatch = path.match(/^\/admin\/api\/tenants\/([^/]+)$/);

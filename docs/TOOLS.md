@@ -540,6 +540,17 @@ Cross-reference the **caller's own** personal ready-to-eat catalog against curre
 **Returns:**
 - `{ available: { breakfast: [...{ name, slug, meal, products: [{ sku, brand, description, size, price, on_sale, available }] }], lunch: [...], dinner: [...] }, unavailable: [...{ name, slug, meal, catalog_sku }] }`
 
+### `kroger_login_url()`
+
+Mint the one-time Kroger account-authorization link for the **current member** and return `{ url }`. Kroger ordering (`place_order`, `ready_to_eat_available`, any cart write) requires the member's own Kroger shopping account to be linked first; this returns a personal browser link the member opens to consent at Kroger (scope: add-to-cart only). Hand the returned URL to the member to click.
+
+Takes **no parameters** — the link is bound to the calling member from their authenticated session, so it can never mint a link for anyone else. The link carries a **single-use nonce that expires in ~10 minutes**, so mint it on demand rather than caching it.
+
+**When to call:** (1) the first time a member sets up ordering, and (2) whenever a cart write returns `cart.code: "reauth_required"` — the stored token was rejected and the member must re-authorize. (Operators bootstrapping a member who isn't connected yet use the admin panel's **Kroger link** action on the Members page instead.)
+
+**Returns:**
+- `{ url }` — e.g. `https://<connector-host>/oauth/init?nonce=<nonce>`
+
 ---
 
 ## Discovery tools
@@ -827,7 +838,7 @@ All sections optional. With no args it flushes the current grocery list. Package
 }
 ```
 
-**Partial-failure honesty:** the SKU-cache commit and the cart write are **independent best-effort** operations (the SKU cache is a pure hint). Order: commit the cache → write the cart → advance the list to `in_cart` *only after a successful cart write*. So a cart failure leaves the list `active` (retryable, no silent drop) and **never** reports a populated cart; a cache-commit failure after a successful cart just re-resolves next time. If the cart write fails because the Kroger refresh token was rejected, `cart.code` is `reauth_required` — re-run the one-time `/oauth/init?tenant=<id>` (see `docs/SELF_HOSTING.md`).
+**Partial-failure honesty:** the SKU-cache commit and the cart write are **independent best-effort** operations (the SKU cache is a pure hint). Order: commit the cache → write the cart → advance the list to `in_cart` *only after a successful cart write*. So a cart failure leaves the list `active` (retryable, no silent drop) and **never** reports a populated cart; a cache-commit failure after a successful cart just re-resolves next time. If the cart write fails because the Kroger refresh token was rejected, `cart.code` is `reauth_required` — call [`kroger_login_url`](#kroger_login_url) and give the member the returned link to re-authorize (see `docs/SELF_HOSTING.md`).
 
 **Lifecycle (`active → in_cart → ordered → received`):** `place_order` sets `in_cart`. Because the cart API is write-only and unreadable, the transitions past `in_cart` are **user-asserted**, never agent-verified:
 - *"I placed the order"* → advance `in_cart` items to `ordered` via `update_grocery_list`.
