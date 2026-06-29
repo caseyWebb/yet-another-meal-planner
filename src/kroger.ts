@@ -1,10 +1,12 @@
 // Kroger public-tier API client (designs D1, D3, D4, D11, D12). Parallels the
 // GitHub client but is a distinct external path. Authenticates with the
 // `client_credentials` grant (no user context, no refresh token → the Worker
-// stays authless/stateless), caches the access token and the resolved
-// locationId in isolate memory, and handles `429`/`Retry-After`/backoff. Upstream
-// failures surface as a typed KrogerError that the tool boundary maps to the
-// structured `upstream_unavailable` error.
+// stays authless/stateless), caches the app-level access token in isolate
+// memory, and handles `429`/`Retry-After`/backoff. The resolved locationId is
+// per-tenant store context and is NOT isolate-cached — an isolate is reused
+// across tenants, so a cached location would leak one tenant's store to another.
+// Upstream failures surface as a typed KrogerError that the tool boundary maps
+// to the structured `upstream_unavailable` error.
 
 import type { Env } from "./env.js";
 import { Semaphore, withPermit } from "./semaphore.js";
@@ -57,15 +59,17 @@ export interface KrogerClient {
   productById(productId: string, locationId: string): Promise<KrogerCandidate | null>;
 }
 
-/** Mutable caches that live for the isolate's lifetime (token + resolved location). */
+/** Mutable cache that lives for the isolate's lifetime. Holds only the app-level
+ *  access token — no per-tenant state (the resolved locationId is intentionally
+ *  not cached, since an isolate is shared across tenants). */
 export interface KrogerCache {
   token: { accessToken: string; expiresAt: number } | null;
-  locationId: string | null;
 }
 
 // Module-level singleton: persists across requests served by the same isolate,
-// which is exactly the "isolate memory" lifetime the design calls for.
-const moduleCache: KrogerCache = { token: null, locationId: null };
+// which is exactly the "isolate memory" lifetime the design calls for. Token-only
+// — it carries no tenant context, so sharing it across tenants is sound.
+const moduleCache: KrogerCache = { token: null };
 
 export interface KrogerClientOptions {
   fetch?: typeof fetch;
@@ -196,13 +200,13 @@ export function createKrogerClient(env: Env, opts: KrogerClientOptions = {}): Kr
   }
 
   async function resolveLocationId(label: string): Promise<string> {
-    if (cache.locationId) return cache.locationId;
+    // The resolved locationId is per-tenant store context and is never cached in
+    // isolate memory (a cached location would leak across tenants sharing the isolate).
     // A pre-resolved Kroger locationId (stored in the D1 `stores` table (`extra.location_id`)) is
     // a compact alphanumeric string with no spaces. Bypass the Locations API lookup and
-    // cache it directly so repeated in-store walks skip the resolution round-trip.
+    // return it directly; otherwise resolve the label's ZIP via the Locations API.
     if (!/\s/.test(label)) {
-      cache.locationId = label;
-      return cache.locationId;
+      return label;
     }
     const zip = label.match(/\d{5}/)?.[0];
     if (!zip) {
@@ -215,8 +219,7 @@ export function createKrogerClient(env: Env, opts: KrogerClientOptions = {}): Kr
     if (!loc?.locationId) {
       throw new KrogerError(404, `No Kroger location found near ${zip}`);
     }
-    cache.locationId = loc.locationId;
-    return cache.locationId;
+    return loc.locationId;
   }
 
   async function search(term: string, opts2: SearchOptions): Promise<KrogerCandidate[]> {

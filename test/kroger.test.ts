@@ -34,7 +34,7 @@ const PRODUCT = {
 };
 
 function freshCache(): KrogerCache {
-  return { token: null, locationId: null };
+  return { token: null };
 }
 
 describe("Kroger client", () => {
@@ -192,7 +192,24 @@ describe("Kroger client", () => {
     expect(JSON.parse(res.content[0].text).error).toBe("upstream_unavailable");
   });
 
-  it("resolves a location once and reuses the cached id", async () => {
+  it("holds no isolate-level location state: each label resolves independently", async () => {
+    // Two requests (different stores) share one client + token cache, as they would
+    // when served by the same reused isolate. Neither must inherit the other's id.
+    const fetchMock = (async (url: string) => {
+      if (url.startsWith(TOKEN_URL)) return json({ access_token: "T1", expires_in: 1800 });
+      if (url.includes("76104")) return json({ data: [{ locationId: "01400943" }] });
+      if (url.includes("30303")) return json({ data: [{ locationId: "00900111" }] });
+      return json({ data: [] });
+    }) as unknown as typeof fetch;
+
+    const k = createKrogerClient(env, { fetch: fetchMock, cache: freshCache(), now: () => 1000, sleep: async () => {} });
+    const idA = await k.resolveLocationId("Kroger - 76104");
+    const idB = await k.resolveLocationId("Kroger - 30303");
+    expect(idA).toBe("01400943");
+    expect(idB).toBe("00900111"); // the second store, never tenant A's pinned id
+  });
+
+  it("does not cache a resolved location across calls (re-resolves the same label)", async () => {
     const calls: string[] = [];
     const fetchMock = (async (url: string) => {
       calls.push(url);
@@ -206,7 +223,7 @@ describe("Kroger client", () => {
     const id2 = await k.resolveLocationId("Kroger - 76104");
     expect(id1).toBe("01400943");
     expect(id2).toBe("01400943");
-    expect(calls.filter((c) => c.includes("/locations")).length).toBe(1);
+    expect(calls.filter((c) => c.includes("/locations")).length).toBe(2);
   });
 
   it("rejects a preferred_location label with no parseable ZIP", async () => {
@@ -254,8 +271,8 @@ describe("Kroger client", () => {
       return json({ data: [PRODUCT] });
     }) as unknown as typeof fetch;
 
-    // Pre-seed token + location so the burst issues only product reads.
-    const cache: KrogerCache = { token: { accessToken: "T1", expiresAt: 9_999_999_999 }, locationId: "loc1" };
+    // Pre-seed the token so the burst issues only product reads.
+    const cache: KrogerCache = { token: { accessToken: "T1", expiresAt: 9_999_999_999 } };
     const k = createKrogerClient(env, { fetch: fetchMock, cache, now: () => 1000, sleep: async () => {}, maxConcurrency: 3 });
 
     // search and productById both flow through authedGet, so both are gated.

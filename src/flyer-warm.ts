@@ -16,7 +16,7 @@
 // wires the real clients for the `scheduled()` handler.
 
 import type { Env } from "./env.js";
-import type { KrogerCache, KrogerCandidate } from "./kroger.js";
+import type { KrogerCandidate } from "./kroger.js";
 import { createKrogerClient } from "./kroger.js";
 import type { KvStore } from "./kroger-user.js";
 import { dedupeFlyerHits, isFulfillable, isOnSale, type FlyerItem } from "./matching.js";
@@ -390,11 +390,9 @@ export async function runWarmJob(env: Env, deps: WarmDeps, config: WarmConfig = 
 export function buildWarmDeps(env: Env): WarmDeps {
   const directory = directoryFromEnv(env);
 
-  // A private cache so the client's single-slot `locationId` cache is ours to reset.
-  // `resolveLocationId` returns the cached id when set, so to resolve MANY stores we
-  // null the slot before each call; the token stays cached across them.
-  const krogerCache: KrogerCache = { token: null, locationId: null };
-  const kroger = createKrogerClient(env, { cache: krogerCache });
+  // The client no longer caches the resolved locationId (it is per-tenant store
+  // context), so a single client resolves MANY stores across the sweep directly.
+  const kroger = createKrogerClient(env);
 
   return {
     kv: env.KROGER_KV as unknown as KvStore,
@@ -410,7 +408,6 @@ export function buildWarmDeps(env: Env): WarmDeps {
       return readFlyerTerms(env);
     },
     async resolveLocationId(label) {
-      krogerCache.locationId = null;
       return kroger.resolveLocationId(label);
     },
     async scan(locationId, term) {
