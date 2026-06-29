@@ -89,11 +89,11 @@ Islands (`client/*.tsx`) run in the browser and are typechecked under
 ## Build & serve
 
 - Source of truth: `src/admin/**`. `scripts/build-admin.mjs` (`aubr build:admin`) esbuild-bundles
-  each `client/*.tsx` island → the **committed** `admin/dist/admin/islands/*.js` and copies
-  `styles.css`. SSR pages are NOT pre-built — the Worker renders them per request.
-- **`admin/dist/` is generated — never hand-edit it.** After any island/style change, rebuild and
-  commit the bundle, or the deployed islands are stale. `aubr build:admin --check` is the CI drift
-  gate. esbuild-only — no network registry — so any sandbox can rebuild it.
+  each `client/*.tsx` island → `admin/dist/admin/islands/*.js` and copies `styles.css`. SSR pages
+  are NOT pre-built — the Worker renders them per request.
+- **`admin/dist/` is a gitignored build artifact — not committed.** CI and the deploy build it
+  fresh (esbuild-only, no network registry), and local `wrangler dev` needs a build first. (The
+  bundles embed environment-specific module paths, so a committed copy wouldn't be reproducible.)
 - Auth lives in the Worker (Cloudflare Access on `/admin*`, reused as the app's `accessGate`
   middleware). Islands just call same-origin `/admin/api/*` and trust the gate — keep auth logic
   out of the client.

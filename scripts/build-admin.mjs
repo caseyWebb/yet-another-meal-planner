@@ -1,17 +1,21 @@
 #!/usr/bin/env node
 // build-admin.mjs — compile the operator admin islands (src/admin/client/*.tsx) and copy the
-// stylesheet into the committed static bundle the Worker serves via its ASSETS binding
+// stylesheet into admin/dist, the static bundle the Worker serves via its ASSETS binding
 // (operator-admin). The server pages are server-rendered in the Worker (Hono JSX, built by
 // wrangler's esbuild); only the browser islands + the stylesheet are pre-built static assets.
+//
+// admin/dist/ is a BUILD ARTIFACT — NOT committed (gitignored). CI and the deploy build it
+// fresh, and local `wrangler dev` needs a build first. (The esbuild bundles embed
+// environment-specific module paths — the aube virtual-store location — so a committed copy
+// would not be reproducible across machines, which is why we build rather than commit.)
 //
 // Output layout maps URL paths under /admin/ to files (ASSETS `directory` is admin/dist):
 //   <out>/admin/islands/<name>.js   (esbuild bundle, browser ESM, hono/jsx/dom runtime)
 //   <out>/admin/styles.css          (copied from src/admin/styles.css)
 //
-// esbuild only — NO network package registry needed, so any sandbox can rebuild it. Hand-rolled
-// + deterministic, mirroring build-plugin.mjs, with a --check validate-only mode (the CI drift
-// gate). The committed bundle is exactly the islands + the stylesheet; the server pages are not
-// pre-built (the Worker renders them at request time).
+// esbuild only — NO network package registry needed, so any sandbox can rebuild it. A --check
+// validate-only mode is kept for local "does my tree match a prior build" comparisons (it is
+// NOT a CI gate — there is no committed bundle to compare against).
 //
 // Usage: node scripts/build-admin.mjs [--out admin/dist] [--check]
 

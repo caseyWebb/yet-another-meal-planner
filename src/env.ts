@@ -160,7 +160,8 @@ export interface Env {
   // --- Static assets (operator-admin) ---
   /**
    * Workers Static Assets binding serving the admin panel's island bundles + stylesheet
-   * committed under `admin/dist/`. The Hono app (`src/admin/app.tsx`) SSRs every page and
+   * built under `admin/dist/` (a gitignored artifact, built fresh at deploy time). The Hono
+   * app (`src/admin/app.tsx`) SSRs every page and
    * falls back to `env.ASSETS.fetch()` for `/admin/islands/*` + `/admin/styles.css` — past
    * the Access gate, so the static surface is gated too. `run_worker_first` on `/admin*`
    * keeps assets behind the gate. Code-level binding (no operator id); propagated by the

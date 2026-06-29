@@ -113,7 +113,7 @@ The admin surface SHALL list the current members from the tenant directory (the 
 
 The admin UI SHALL be served by the Worker from the **same origin** as its `/admin/api/*` operations, so the browser makes no cross-origin request and the deployment needs no CORS configuration. The UI SHALL be a **Hono application** that **server-renders** its pages (HTML produced in the Worker via Hono JSX) and **hydrates** its interactive surfaces as **islands** — client bundles that attach to server-rendered markup. Both the server-render and the island bundles SHALL be served same-origin: the HTML from the Worker (worker-first on `/admin*`), the island bundles and other static files from the Worker's static-assets binding.
 
-The island bundles and any static files SHALL be built from source by a **deterministic build script** (supporting a `--check` validate-only mode) into a **committed** output directory (`admin/dist/`), served via the static-assets binding; the generated bundle SHALL NOT be hand-edited. The build SHALL NOT depend on a network package registry being reachable, so any sandbox can rebuild it. The static-assets binding SHALL be carried through the operator config merge so it reaches every operator's deployment.
+The island bundles and any static files SHALL be built from source by a build script into the `admin/dist/` output directory — a **build artifact that is NOT committed** (it is gitignored), built fresh by CI and by the deploy (and for local `wrangler dev`) — served via the static-assets binding; the generated bundle SHALL NOT be hand-edited. The build SHALL NOT depend on a network package registry being reachable, so any sandbox can rebuild it. The static-assets binding SHALL be carried through the operator config merge so it reaches every operator's deployment.
 
 Because `/admin*` is routed worker-first, the Worker SHALL produce each in-app route's page server-side (it owns the routes under `/admin/*`), so a deep link or refresh to any admin route loads that surface directly. A GET for an `/admin/*` path that is neither an `/admin/api/*` route nor a real static asset SHALL be handled by the Hono app's page router (rendering that route's page), not by a redirect — so it does not re-enter the worker-first route and loop.
 
@@ -125,7 +125,7 @@ Because `/admin*` is routed worker-first, the Worker SHALL produce each in-app r
 #### Scenario: Bundle is built from source, not hand-edited
 
 - **WHEN** the admin UI changes
-- **THEN** the change is made in the TypeScript UI source and the island bundle is rebuilt by the build script (verifiable with `--check`), and the committed bundle is not edited by hand
+- **THEN** the change is made in the TypeScript UI source and the island bundle is rebuilt by the build script, and `admin/dist/` is not edited by hand (it is a gitignored build artifact, rebuilt fresh by CI and the deploy)
 
 #### Scenario: Bundle builds without a package registry
 
