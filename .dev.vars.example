@@ -21,6 +21,12 @@ KROGER_CLIENT_SECRET=""
 # Workers AI API using your wrangler login (or CLOUDFLARE_API_TOKEN in the env).
 # Nothing to set — listed only so the binding's dev requirement is discoverable.
 
+# --- AGPL §13 source offer (open-source-license) ---
+# The source URL the open /source page links to. Unset → it names the upstream repo. If you
+# MODIFY the Worker and run it for others, set this to YOUR fork's source (AGPL §13 requires
+# offering network users your corresponding source). Non-secret.
+# SOURCE_URL="https://github.com/you/your-groceries-agent-fork"
+
 # --- Operator admin panel (operator-admin) ---
 # In production, /admin is gated by Cloudflare Access; set the team domain + the
 # Access application's AUD tag (both non-secret identifiers) to enable + verify it.

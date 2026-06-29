@@ -7,7 +7,7 @@ By submitting a Contribution to the Project — for example, by opening a pull r
 ## 1. Definitions
 
 - **"You"** / **"Your"** means the individual or legal entity that submits a Contribution, and — for an entity — all entities that control, are controlled by, or are under common control with it.
-- **"Maintainer"** means Casey Webb, the maintainer and steward of the Project, and any successor the Maintainer designates.
+- **"Maintainer"** means Casey Webb (casey@dirtbag.social), the maintainer and steward of the Project, and any successor the Maintainer designates.
 - **"Contribution"** means any original work of authorship — code, documentation, configuration, or other material — that You intentionally submit to the Project, in any form and through any medium, including any modification of or addition to existing work. "Submit" means any form of communication sent to the Project or the Maintainer (for example a pull request, patch, issue attachment, or message), except anything You conspicuously mark "Not a Contribution."
 
 ## 2. Copyright license

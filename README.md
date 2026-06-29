@@ -162,7 +162,7 @@ run a *modified* version as a network service and AGPL §13 asks you to offer th
 
 It's also **dual-licensed.** The maintainer reserves the right to offer a managed, hosted version
 under separate commercial terms — so a commercial use the AGPL doesn't permit (a closed-source
-hosted offering) needs a commercial license; [ask the maintainer](https://github.com/caseyWebb).
+hosted offering) needs a commercial license; [ask the maintainer](mailto:casey@dirtbag.social).
 Self-hosting always stays free.
 
 Contributions come in under the AGPL plus a short [Contributor License Agreement](CLA.md) — the

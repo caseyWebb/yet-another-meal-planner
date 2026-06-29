@@ -49,6 +49,16 @@ export interface Env {
    */
   ADMIN_DEV_BYPASS?: string;
 
+  // --- AGPL §13 source offer (open-source-license). OPTIONAL, non-secret. ---
+  /**
+   * The source location `/source` offers, satisfying AGPL section 13 for users interacting over
+   * the network. A self-hoster who MODIFIES the Worker MUST set this to THEIR fork's source URL
+   * (their Corresponding Source); unset, `/source` names the upstream repository. Non-secret and
+   * operator-owned — the deploy merge passes the operator's `vars` and strips the maintainer's, so
+   * each operator points it at their own source.
+   */
+  SOURCE_URL?: string;
+
   // --- Observability (background-job-health). All OPTIONAL secrets. ---
   /** ntfy topic URL for the optional Worker-side failure push (e.g. `https://ntfy.sh/<topic>`). Unset → no push. */
   NTFY_URL?: string;
