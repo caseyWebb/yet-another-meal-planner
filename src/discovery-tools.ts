@@ -196,7 +196,7 @@ export function registerDiscoveryTools(
     "update_feeds",
     {
       description:
-        "Add RSS/Atom discovery feeds to the SHARED feed set (the feeds the background discovery sweep polls). Add-only, deduped by url — existing feeds untouched. Each feed needs a url; name, weight (default 1), and tags are optional. Discovery feeds are a shared, group-wide concern, so anyone trusted with this MCP may widen the set (like update_discovery_sources). Returns { added }.",
+        "Add RSS/Atom discovery feeds to the SHARED feed set (the feeds the background discovery sweep polls). Add-only, deduped by url — existing feeds untouched. Each feed needs a url; name, weight (default 1), and tags are optional. A feed url MUST be a public http(s) URL — a non-http scheme, embedded credentials, or a private/loopback/link-local host is rejected with validation_failed and nothing is stored. Discovery feeds are a shared, group-wide concern, so anyone trusted with this MCP may widen the set (like update_discovery_sources). Returns { added }.",
       inputSchema: {
         feeds: z.array(
           z.object({

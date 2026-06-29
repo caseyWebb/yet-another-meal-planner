@@ -23,7 +23,7 @@ import { readFeeds, readDiscoveryInbox, readDiscoveryRejections } from "./corpus
 import { recipeSourceMap, loadRecipeEmbeddings } from "./recipe-index.js";
 import { extractRecipeSources, canonicalizeUrl, buildNewRecipe } from "./discovery.js";
 import { parseFeed } from "./feeds.js";
-import { fetchWithBrowserHeaders } from "./http.js";
+import { fetchWithBrowserHeaders, readTextCapped } from "./http.js";
 import { acquireRecipeContent, type AcquireReason } from "./recipe-acquire.js";
 import { classifyRecipe, DERIVED_FACET_FIELDS } from "./discovery-classify.js";
 import { generateDescription, facetsFromFrontmatter } from "./description.js";
@@ -114,6 +114,12 @@ export interface DiscoveryConfig {
   /** Max retryable-row fetches per tick — the retry sub-budget that prevents retries from
    *  starving fresh intake of the shared fetchMaxPerTick budget. */
   retryFetchMaxPerTick: number;
+  /** Max FEED fetches per tick — the feed-poll's slice of the shared external-subrequest budget.
+   *  Feeds are polled in a cursor-rotated bounded batch (`selectFeedBatch`) so the add-only feed
+   *  set can grow without the per-tick feed fan-out exceeding the budget shared with the flyer
+   *  warm in the same scheduled() tick. A budget guardrail, NOT a taste knob — like
+   *  retryFetchMaxPerTick it is a constant, not part of the D1 override / admin calibration UI. */
+  feedFetchMaxPerTick: number;
   /** Days to retain discovery_log rows (audit/dedup window). */
   logRetentionDays: number;
 }
@@ -125,6 +131,11 @@ export const DEFAULT_CONFIG: DiscoveryConfig = {
   // per-invocation budget (both run in one scheduled() tick). classifyMaxPerTick bounds the
   // env.AI classify calls. Keep both conservative; fetchMaxPerTick ≥ classifyMaxPerTick since
   // some fetches park before classify.
+  //
+  // External-fetch budget (one scheduled() tick): flyer(~25) + recipe-page(fetchMaxPerTick) +
+  // feed(feedFetchMaxPerTick) ≤ ~50. With 25 + 16 + 6 = 47 this stays under the cap; a future
+  // bump to fetchMaxPerTick or the flyer batch must keep the sum ≤ 50 or it reopens the feed
+  // fan-out exhaustion (#54). A dozen feeds drain in ceil(12/6)=2 ticks at feedFetchMaxPerTick=6.
   tasteThreshold: 0.55,
   triageThreshold: 0.45,
   dedupThreshold: 0.9,
@@ -137,6 +148,8 @@ export const DEFAULT_CONFIG: DiscoveryConfig = {
   retryMaxAttempts: 5,
   // Retry sub-budget: < fetchMaxPerTick so retries cannot consume the entire fetch budget.
   retryFetchMaxPerTick: 4,
+  // Feed-poll sub-budget: a const (not a D1/UI knob), sized into the residual budget above.
+  feedFetchMaxPerTick: 6,
   logRetentionDays: 60,
 };
 
@@ -580,6 +593,11 @@ const MAX_PER_FEED = 8;
 const MAX_PER_EMAIL = 8;
 const URL_RE = /https?:\/\/[^\s)"'<>]+/g;
 
+/** KV key (KROGER_KV — the namespace the flyer cursor already uses) for the feed-poll rotation
+ *  cursor: an integer offset into the url-sorted feed set. Ephemeral/best-effort — losing it
+ *  restarts the rotation, which dedup makes harmless. */
+const FEED_CURSOR_KEY = "discovery:feed-cursor";
+
 /** Hosts that are never a recipe page — social/sharing and chat. Matched on the host with a
  *  leading `www.` stripped. Conservative on purpose: over-filtering hides recipes, and the
  *  per-tick fetch budget already backstops whatever junk slips through. */
@@ -606,6 +624,26 @@ export function isLikelyNonRecipeLink(raw: string): boolean {
   const host = u.hostname.toLowerCase().replace(/^www\./, "");
   if (NON_RECIPE_HOSTS.has(host)) return true;
   return NON_RECIPE_PATH_RE.test(u.pathname);
+}
+
+/** Deterministically select up to `k` items starting at `cursor` (wrapping), returning the batch
+ *  and the next cursor. Pure — the feed I/O + KV cursor read/write stay in the deps (mirrors
+ *  flyer-warm's testable `buildPlan` over its glue). This is what bounds the feed fan-out (#54):
+ *  feeds are polled in a per-tick bounded batch advanced by a persisted cursor, so the add-only
+ *  feed set can grow without the feed fetches exceeding the shared subrequest budget; feeds not in
+ *  this tick's batch are polled on a later tick. Callers pass feeds in a stable order (sorted by
+ *  url) so the rotation is reproducible and every feed is reached. A lost/garbage cursor is
+ *  normalized, so losing the persisted cursor merely restarts the rotation (dedup makes a re-poll
+ *  a no-op). */
+export function selectFeedBatch<T>(feeds: T[], cursor: number, k: number): { batch: T[]; nextCursor: number } {
+  const n = feeds.length;
+  if (n === 0 || k <= 0) return { batch: [], nextCursor: 0 };
+  const c = Number.isFinite(cursor) ? Math.trunc(cursor) : 0; // lost/garbage cursor → start at 0
+  const start = ((c % n) + n) % n; // normalize negative / out-of-range
+  const take = Math.min(k, n);
+  const batch: T[] = [];
+  for (let i = 0; i < take; i++) batch.push(feeds[(start + i) % n]);
+  return { batch, nextCursor: (start + take) % n };
 }
 
 function renderContent(c: RecipeContent): string {
@@ -721,21 +759,34 @@ export function buildDiscoveryDeps(env: Env, now: () => number = () => Date.now(
         return true;
       };
 
-      // RSS/Atom feeds (title + summary give the triage a real signal).
+      // RSS/Atom feeds (title + summary give the triage a real signal). Polled in a per-tick
+      // bounded batch advanced by a persisted rotation cursor (selectFeedBatch + KROGER_KV), so the
+      // add-only feed set can grow without the feed fan-out exceeding the shared external-subrequest
+      // budget (#54). feedFetchMaxPerTick is a const guardrail (not operator-tunable), so it is read
+      // from DEFAULT_CONFIG directly rather than threaded through the deps.
+      const sortedFeeds = feeds.filter((f) => f.url).sort((a, b) => a.url.localeCompare(b.url));
+      const cursor = Number.parseInt((await env.KROGER_KV.get(FEED_CURSOR_KEY)) ?? "", 10);
+      const { batch, nextCursor } = selectFeedBatch(
+        sortedFeeds,
+        Number.isNaN(cursor) ? 0 : cursor,
+        DEFAULT_CONFIG.feedFetchMaxPerTick,
+      );
       await Promise.all(
-        feeds.map(async (f) => {
-          if (!f.url) return;
+        batch.map(async (f) => {
           try {
             const res = await fetchWithBrowserHeaders(f.url);
             if (!res.ok) return;
-            for (const item of parseFeed(await res.text()).slice(0, MAX_PER_FEED)) {
+            for (const item of parseFeed(await readTextCapped(res)).slice(0, MAX_PER_FEED)) {
               push(item.link, item.title, item.summary ?? null, f.name ?? f.url);
             }
           } catch {
-            // a dead feed is skipped this sweep (re-tried next), never wedges the sweep
+            // a dead/blocked/over-cap feed is skipped this sweep (re-polled on a later rotation)
           }
         }),
       );
+      // Advance the rotation cursor after the batch is dispatched. Best-effort: a lost write just
+      // re-polls the same feeds next tick, which dedup makes a no-op.
+      await env.KROGER_KV.put(FEED_CURSOR_KEY, String(nextCursor));
 
       // Email inbox — promote the body's recipe links (the page fetch yields the real title).
       // Drop obvious non-recipe links and cap per email so one newsletter's junk tail cannot

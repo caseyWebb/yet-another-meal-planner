@@ -128,7 +128,7 @@ Hide a recipe from the **caller** — `reject: true` removes it from the caller'
 - `{ title, ingredients: [...], instructions: [...], servings, time_total, time_active, source, tools_hint?, existing_slug? }` — `ingredients`/`instructions` are string arrays; `servings` is a scalar (number when parseable); `time_total`/`time_active` are minutes or null; `source` is the recipe's canonical URL. **`tools_hint`** (present only when the page carries a schema.org `tool`) is the flattened tool-name list — a **non-authoritative hint** for classifying `requires_equipment`, never copied into it (it lists every utensil; default `requires_equipment` to `[]` and tag only truly-irreplaceable gear). **`existing_slug`** is present only when this source URL is **already in the shared corpus** (idempotent import) — reuse that recipe (rate it, note it) instead of calling `create_recipe`.
 
 **Errors (structured):**
-- `{ error: "unreachable" }` — the page couldn't be fetched (network error or non-2xx). Bot-walled/paywalled sites (Serious Eats, NYT, Food52) land here — paste the recipe instead.
+- `{ error: "unreachable" }` — the page couldn't be fetched (network error or non-2xx). Bot-walled/paywalled sites (Serious Eats, NYT, Food52) land here — paste the recipe instead. A URL the egress guard refuses (a non-`http(s)` scheme, embedded credentials, a private/loopback/link-local host, or a redirect into one) also returns `unreachable` with **no** status — indistinguishable from a dead host, so it can't be used to probe internal reachability.
 - `{ error: "no_jsonld" }` — no `<script type="application/ld+json">` on the page.
 - `{ error: "not_a_recipe" }` — JSON-LD present but no schema.org `Recipe`.
 - `{ error: "incomplete", missing: [...] }` — a `Recipe` was found but yielded no ingredients and/or no instructions.
@@ -608,7 +608,7 @@ Add trusted sources to the **shared** inbound-newsletter allowlist (the D1 `disc
 Add RSS/Atom feeds to the **shared** discovery config (the D1 `feeds` table, the feed set the **background discovery sweep** polls). **Add-only**, deduped by canonicalized `url` (existing feeds untouched) — the same posture as `update_discovery_sources`. Discovery feeds are a shared, group-wide concern, so anyone trusted with this MCP may widen the set.
 
 **Params:**
-- `feeds` (array): `[{ url, name?, weight?, tags? }]`. `url` is required; `weight` defaults to `1`. (The sweep reads `url`/`name`; `tags` are descriptive.)
+- `feeds` (array): `[{ url, name?, weight?, tags? }]`. `url` is required and MUST be a public `http`/`https` URL — a non-http scheme, embedded credentials, or a private/loopback/link-local host is rejected with `validation_failed` and nothing is stored. `weight` defaults to `1`. (The sweep reads `url`/`name`; `tags` are descriptive.)
 
 **Returns:**
 - `{ added }` — `added` is the count of new feeds; D1-backed, no `commit_sha`.

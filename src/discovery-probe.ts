@@ -2,7 +2,7 @@
 // and reuses the SAME acquisition helper the discovery sweep uses (src/recipe-acquire.ts),
 // so an operator's verdict matches what the autonomous sweep would actually do. Writes nothing.
 
-import { fetchWithBrowserHeaders } from "./http.js";
+import { fetchWithBrowserHeaders, readTextCapped } from "./http.js";
 import { parseFeed } from "./feeds.js";
 import { acquireRecipeContent } from "./recipe-acquire.js";
 
@@ -59,7 +59,7 @@ export async function probeFeed(url: string): Promise<FeedProbeResult> {
   // as `parsed: false` rather than letting a malformed-XML throw escape as a 500.
   let items: ReturnType<typeof parseFeed>;
   try {
-    items = parseFeed(await res.text());
+    items = parseFeed(await readTextCapped(res));
   } catch {
     return { feed: { reachable: true, status: res.status, parsed: false, itemCount: 0 }, sample: [] };
   }
