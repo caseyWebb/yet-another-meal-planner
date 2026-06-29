@@ -19,7 +19,9 @@ import {
   randomInviteCode,
   type AdminDeps,
 } from "../admin.js";
+import { buildHealthPayload, HEALTH_JOBS } from "../health.js";
 import { MembersPage } from "./pages/members.js";
+import { StatusPage } from "./pages/status.js";
 
 /** The injectable surface the member-lifecycle operations close over (real bindings here). */
 function adminDeps(env: Env): AdminDeps {
@@ -69,8 +71,12 @@ app.onError((err, c) => {
   return c.json({ error: "upstream_unavailable", message }, 500);
 });
 
-// Home (`/admin`) is the Status view once it lands; until then, land on Members.
-app.get("/", (c) => c.redirect("/admin/members"));
+// Home (`/admin`) is the Status service-health view, SSR'd from the same `buildHealthPayload`
+// the public `/health` uses (no client fetch, no decoder).
+app.get("/", async (c) => {
+  const payload = await buildHealthPayload(c.env, HEALTH_JOBS);
+  return c.html(page(<StatusPage payload={payload} />));
+});
 
 // SSR: the Members list, read by calling `listTenants` directly (no client fetch).
 app.get("/members", async (c) => {

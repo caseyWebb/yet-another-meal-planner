@@ -24,7 +24,7 @@
 - [ ] Commit a Playwright visual-snapshot baseline for the tool console (catalog + seeded-args + result states)
 
 ## 3. Read-heavy areas (SSR-only)
-- [ ] Status home — SSR the `/health` payload rendering (headline, per-job rows, D1 row, admin-gate posture, never-run state, 503-is-data handling)
+- [x] Status home — SSR `buildHealthPayload` directly (headline, per-job rows, D1 row, admin-gate posture incl. exposed/AI-quota warnings, never-run state); the 503-decode dance is gone (in-process call)
 - [ ] Logs — SSR the source submenu + selected-source entries (master/detail)
 - [ ] Data explorer — SSR the 5 entity views (recipes list/detail, members, corpus, discovery, system) by calling `admin-data.ts` directly
 - [ ] Usage — SSR the usage / trends / tool-usage dashboards (`{ configured: false }` handling preserved)
