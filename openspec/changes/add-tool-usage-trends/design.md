@@ -52,13 +52,13 @@ Add `recordToolPoint(env, tool, { ok, durationMs })` as a sibling to `recordUsag
 Mirror `fetchUsageTrends`: an AE SQL client reusing `CF_ACCOUNT_ID` + the analytics token, performing no KV/D1, returning `{ configured: false }` when unset and `upstream_unavailable` on failure. The query groups by tool over the window:
 ```sql
 SELECT blob1 AS tool, count() AS calls,
+       sum(blob2 = 'error')               AS errors,
        quantileWeighted(0.5)(double1, 1)  AS p50_ms,
-       quantileWeighted(0.95)(double1, 1) AS p95_ms,
-       sum(blob2 = 'error') / count()     AS error_rate
+       quantileWeighted(0.95)(double1, 1) AS p95_ms
 FROM grocery_tool WHERE timestamp > now() - INTERVAL '<window>' DAY
 GROUP BY tool ORDER BY calls DESC
 ```
-p95 is reported because it is the number that matters for a request-path tool (avg hides the Kroger-fanout tail). The panel is a **sortable per-tool table** — a different shape from the per-job line series, so a new section on `/admin/usage`, not a tweak to the existing chart.
+The SQL returns the raw `errors` **count**, not a rate: the error *rate* is derived in the Elm view (`errors / calls`) per the "derive, don't store" rule, so it can never drift from the counts — do not "fix" this back to a stored `error_rate`. p95 is reported because it is the number that matters for a request-path tool (avg hides the Kroger-fanout tail). The panel is a **sortable per-tool table** — a different shape from the per-job line series, so a new section on `/admin/usage`, not a tweak to the existing chart.
 
 ### Decision 5: v1 carries no error code
 `blob2` distinguishes ok/error; the specific `ErrorCode` would have to be parsed out of the `fail()` JSON body (not a top-level field), which is fragile. The slot layout reserves `blob3` so a v2 can add it without reordering. "Why did it error" is a Logs question until then.
