@@ -111,154 +111,67 @@ The admin surface SHALL list the current members from the tenant directory (the 
 
 ### Requirement: Admin UI served as same-origin static assets
 
-The admin UI SHALL be a static single-page application served by the Worker from the **same origin** as `/admin/api/*`, so the browser calls the admin API without any cross-origin request and the deployment needs no CORS configuration. The UI SHALL be built from source by a deterministic build script (supporting a `--check` validate-only mode) into a committed output directory, and served via the Worker's static-assets binding; the generated bundle SHALL NOT be hand-edited. The static-assets binding SHALL be carried through the operator config merge so it reaches every operator's deployment.
+The admin UI SHALL be served by the Worker from the **same origin** as its `/admin/api/*` operations, so the browser makes no cross-origin request and the deployment needs no CORS configuration. The UI SHALL be a **Hono application** that **server-renders** its pages (HTML produced in the Worker via Hono JSX) and **hydrates** its interactive surfaces as **islands** — client bundles that attach to server-rendered markup. Both the server-render and the island bundles SHALL be served same-origin: the HTML from the Worker (worker-first on `/admin*`), the island bundles and other static files from the Worker's static-assets binding.
 
-The SPA SHALL be **client-routed** (a `Browser.application`): it owns multiple in-app routes under `/admin/*`. Because `/admin*` is routed worker-first, the Worker SHALL serve the SPA shell (the app's `index.html`) for any `/admin/*` GET that is neither an `/admin/api/*` route nor a real static asset, so in-app routes deep-link and survive a refresh. The Worker SHALL serve that shell by fetching it from the assets binding (not by redirecting to `/admin/index.html`), so it does not re-enter the worker-first route and loop.
+The island bundles and any static files SHALL be built from source by a **deterministic build script** (supporting a `--check` validate-only mode) into a **committed** output directory (`admin/dist/`), served via the static-assets binding; the generated bundle SHALL NOT be hand-edited. The build SHALL NOT depend on a network package registry being reachable, so any sandbox can rebuild it. The static-assets binding SHALL be carried through the operator config merge so it reaches every operator's deployment.
+
+Because `/admin*` is routed worker-first, the Worker SHALL produce each in-app route's page server-side (it owns the routes under `/admin/*`), so a deep link or refresh to any admin route loads that surface directly. A GET for an `/admin/*` path that is neither an `/admin/api/*` route nor a real static asset SHALL be handled by the Hono app's page router (rendering that route's page), not by a redirect — so it does not re-enter the worker-first route and loop.
 
 #### Scenario: UI and API share an origin (no CORS)
 
-- **WHEN** the admin SPA calls `/admin/api/*`
+- **WHEN** an admin island calls an `/admin/api/*` route (or a page is server-rendered)
 - **THEN** the call is same-origin and succeeds with no CORS preflight or `Access-Control-*` configuration
 
 #### Scenario: Bundle is built from source, not hand-edited
 
 - **WHEN** the admin UI changes
-- **THEN** the change is made in the UI source and the bundle is rebuilt by the build script (verifiable with `--check`), and the committed bundle is not edited by hand
+- **THEN** the change is made in the TypeScript UI source and the island bundle is rebuilt by the build script (verifiable with `--check`), and the committed bundle is not edited by hand
+
+#### Scenario: Bundle builds without a package registry
+
+- **WHEN** the admin UI is built in a sandbox with no access to a language package registry
+- **THEN** the build script still produces the committed bundle (the toolchain has no network-registry build dependency)
 
 #### Scenario: The assets binding survives the operator config merge
 
 - **WHEN** the deploy merges the code-level config into an operator's config
 - **THEN** the static-assets binding is present in the deployed config (it is on the merge allowlist) and the admin UI is served
 
-#### Scenario: Client routes are served the SPA shell
+#### Scenario: Routes are served their page server-side
 
 - **WHEN** a GET arrives for an `/admin/*` path that is not an `/admin/api/*` route and not a built static asset (e.g. `/admin/dev/tools/place_order`)
-- **THEN** the Worker serves the SPA shell from the assets binding (without redirect-looping), and the app resolves the route client-side
-
-### Requirement: Operator tool console lists the live MCP tool surface
-
-The admin surface SHALL expose `GET /admin/api/tools` returning the live MCP tool catalog — each tool's name, description, and input JSON Schema — derived from the **same** `tools/list` a real MCP client receives, by building the per-tenant tool server and enumerating it (not from a hand-maintained list). The catalog SHALL therefore reflect any tool the MCP surface registers, with no console-specific per-tool code. The endpoint SHALL require an `acting-as` tenant (query parameter), resolved against the allowlist by the same check tool invocation uses; the catalog *content* is tenant-independent, but resolving the tenant keeps listing and invoking uniformly gated.
-
-#### Scenario: Catalog mirrors the MCP tool surface
-
-- **WHEN** the operator opens the tool console acting as an allowlisted member
-- **THEN** `GET /admin/api/tools` returns every tool the MCP server registers for that tenant, each with its description and input schema, matching what `/mcp`'s `tools/list` would return
-
-#### Scenario: A newly registered tool appears without console changes
-
-- **WHEN** a new tool is added to `buildServer` and the Worker is redeployed
-- **THEN** the tool appears in the console catalog with no change to the admin API or the SPA
-
-#### Scenario: Listing requires a resolvable tenant
-
-- **WHEN** `GET /admin/api/tools` is called with a missing or non-allowlisted `acting-as` tenant
-- **THEN** the surface returns a structured error and no catalog, the same resolution outcome as tool invocation
-
-### Requirement: Operator tool console invokes a tool as a chosen tenant
-
-The admin surface SHALL expose `POST /admin/api/tools/<name>` accepting `{ tenant, arguments }`, which invokes the named tool **as that tenant** by building `buildServer(env, tenant)` and driving it over an in-memory MCP transport, and SHALL return the tool's structured result or structured error **verbatim** — the same value a real MCP client would receive for the same tenant and arguments. A tool that returns a structured error (e.g. `not_found`, `validation_failed`, `unavailable`) SHALL be surfaced as that structured result, NOT as an HTTP 500. The console SHALL NOT bypass the tool's input validation, expose any tool the MCP surface does not, or alter the tool's behavior.
-
-#### Scenario: Successful invocation returns the tool's structured result
-
-- **WHEN** the operator runs a tool with valid arguments as a chosen tenant
-- **THEN** the surface builds the tenant's MCP server, invokes the tool over the in-memory transport, and returns the tool's structured result unchanged
-
-#### Scenario: A tool's structured error is returned as data, not a crash
-
-- **WHEN** an invoked tool returns a structured error (e.g. the tenant has no preferred store, or a slug is unknown)
-- **THEN** the surface returns that structured error to the console for display, not an unhandled 500
-
-#### Scenario: Invalid arguments are rejected by the tool's own schema
-
-- **WHEN** the operator runs a tool with arguments that violate its input schema
-- **THEN** invocation is rejected by the same validation the MCP surface applies, and the validation error is returned to the console — the console does not pre-filter or bypass it
-
-#### Scenario: Unknown tool name
-
-- **WHEN** the operator POSTs to `/admin/api/tools/<name>` for a name the server does not register
-- **THEN** the surface returns a structured `not_found`-class error and invokes nothing
-
-### Requirement: Tool invocation identity is operator-driven under Access
-
-The tool console SHALL determine the acting tenant from the operator's request (the chosen id), resolved against the allowlist by the same `resolveTenant` check the MCP surface uses — NOT from an MCP OAuth token. The operator MAY act as any allowlisted member. These endpoints SHALL remain gated by Cloudflare Access exactly like the rest of `/admin*`, including the opt-in rule: when the Access configuration is unset the tool-console endpoints SHALL respond `404` along with the rest of the admin surface. A request whose `acting-as` tenant is absent from the allowlist SHALL be rejected and SHALL invoke no tool.
-
-#### Scenario: Operator acts as a chosen member
-
-- **WHEN** an Access-authenticated operator selects member `casey` and runs a tool
-- **THEN** the tool runs with `casey`'s tenant context (the same `Tenant` `/mcp` would build for `casey`), without any MCP OAuth token
-
-#### Scenario: Tool console is disabled when the admin surface is
-
-- **WHEN** `ACCESS_TEAM_DOMAIN` or `ACCESS_AUD` is unset
-- **THEN** `GET /admin/api/tools` and `POST /admin/api/tools/<name>` respond `404`, exposing no catalog and running no tool
-
-#### Scenario: Acting as a non-member is rejected
-
-- **WHEN** a tool invocation names an `acting-as` tenant that is not on the allowlist
-- **THEN** the surface returns an `unauthorized`/`not_found`-class error and invokes no tool
-
-### Requirement: The dev workbench shows and guards the acting persona
-
-The tool console SHALL make the acting persona visible whenever a tool can be invoked (a persistent "acting as `<member>`" indicator), and SHALL NOT allow a tool to be invoked while no persona is selected. Before invoking a tool as a **real member**, the console SHALL require an explicit confirmation; a persona designated for testing (by the `test-`/`sandbox-` naming convention) MAY bypass that confirmation. The selected persona is workbench-wide context that persists across dev surfaces, not a per-invocation field.
-
-#### Scenario: No persona means no invocation
-
-- **WHEN** the operator is on the tool console with no persona selected
-- **THEN** tool invocation is unavailable until a persona is chosen
-
-#### Scenario: The acting persona is always visible
-
-- **WHEN** a persona is selected and a tool is runnable
-- **THEN** the console continuously displays which member it is acting as
-
-#### Scenario: Confirm before acting as a real member
-
-- **WHEN** the operator runs a tool while acting as a real member (not a `test-`/`sandbox-` persona)
-- **THEN** the console requires an explicit confirmation before the invocation is sent
+- **THEN** the Hono app renders that route's page (without redirect-looping), and the surface resolves directly
 
 ### Requirement: Admin panel is organized into top-level areas with client-side routing
 
-The admin SPA SHALL organize its surfaces into top-level areas — a **Status** area (the operator-facing background-job health view), a **Members** area (member management), a **Dev** area (the tool console and future developer surfaces), a **Logs** area (operator-auditable activity logs, organized by a left submenu of log sources; see "Logs area with a left submenu and a detail dialog"), a **Config** area (operator-editable configuration, organized into routed sub-views — the discovery calibration console and the shared-corpus editors; see "Config area hosts the calibration console and the shared-corpus editors"), and a **Data** area (the read-only data explorer over D1 and the R2 corpus — see the operator-data-explorer capability) — navigable by client-side routing so each surface has its own URL and a new surface is added as its own routed module rather than another card on a single page. The panel's **home** route (`/admin`) SHALL be the Status view; member management SHALL be reached at its own route (`/admin/members`), the tool console under `/admin/dev`, the logs under `/admin/logs` (with the selected log source as a sub-route, e.g. `/admin/logs/discovery`), configuration under `/admin/config` (with the selected config sub-view as a sub-route, e.g. `/admin/config/feeds`), and the data explorer under `/admin/data/*`, not at the panel root. Navigating between surfaces SHALL update the browser URL, and a deep link or refresh to a surface's URL SHALL load that surface directly.
+The admin panel SHALL organize its surfaces into top-level areas — a **Status** area (the operator-facing background-job health view), a **Members** area (member management), a **Logs** area (operator-auditable activity logs, organized by a left submenu of log sources), a **Config** area (the discovery calibration console and the shared-corpus editors, as routed sub-views), and a **Data** area (the read-only data explorer over D1 and the R2 corpus — see the operator-data-explorer capability) — each with its own URL, so a new surface is added as its own routed page rather than another card on a single page. The panel's **home** route (`/admin`) SHALL be the Status view; member management SHALL be reached at `/admin/members`, the logs under `/admin/logs` (with the selected source as a sub-route, e.g. `/admin/logs/discovery`), configuration under `/admin/config` (with the selected sub-view as a sub-route, e.g. `/admin/config/feeds`), and the data explorer under `/admin/data/*`, not at the panel root.
 
-#### Scenario: Navigation updates the URL
+Each area's page SHALL be **server-rendered** for its URL, and its interactive controls SHALL be hydrated as islands. Navigating to a surface SHALL load that surface (server-rendered) at its own URL, and a deep link or refresh to a surface's URL SHALL load that surface directly. Within a hydrated surface, an interaction (e.g. opening a detail dialog, editing a config form) MAY update state client-side without a full navigation.
 
-- **WHEN** the operator switches from one area to another (e.g. from Status to member management, to the tool console, to the logs, or to config)
-- **THEN** the browser URL changes to that surface's route and the surface renders, without a full-page server reload
+#### Scenario: Each surface has its own URL
+
+- **WHEN** the operator opens a different area (e.g. Status, member management, the logs, or config)
+- **THEN** the browser URL is that surface's route and the surface renders for that URL
 
 #### Scenario: Home route shows the Status view
 
 - **WHEN** the operator opens `/admin` (or `/`)
 - **THEN** the Status (background-job health) view renders as the home surface, not member management
 
-#### Scenario: Member management has its own route
-
-- **WHEN** the operator opens `/admin/members` directly (or refreshes there)
-- **THEN** the Worker serves the SPA shell and the app routes to the member-management surface
-
-#### Scenario: Deep link to a tool
-
-- **WHEN** the operator opens `/admin/dev/tools/<tool>` directly (or refreshes there)
-- **THEN** the Worker serves the SPA shell and the app routes to that tool's view
-
 #### Scenario: Deep link to a log
 
 - **WHEN** the operator opens `/admin/logs/discovery` directly (or refreshes there)
-- **THEN** the Worker serves the SPA shell and the app routes to the Logs area with the Discovery log selected
-
-#### Scenario: Deep link to config
-
-- **WHEN** the operator opens `/admin/config` directly (or refreshes there)
-- **THEN** the Worker serves the SPA shell and the app routes to the Config area with the calibration console selected
+- **THEN** the Worker server-renders the Logs area with the Discovery log selected
 
 #### Scenario: Deep link to a config sub-view
 
 - **WHEN** the operator opens a config editor route such as `/admin/config/feeds` directly (or refreshes there)
-- **THEN** the Worker serves the SPA shell and the app routes to the Config area with that shared-corpus editor selected
+- **THEN** the Worker server-renders the Config area with that shared-corpus editor selected
 
 #### Scenario: Deep link to a data view
 
 - **WHEN** the operator opens a data-explorer route such as `/admin/data/recipes/<slug>` directly (or refreshes there)
-- **THEN** the Worker serves the SPA shell and the app routes to that data view
+- **THEN** the Worker server-renders that data view
 
 ### Requirement: Status homepage surfaces service health
 
@@ -294,44 +207,6 @@ The home view SHALL NOT introduce any per-tenant data beyond what the tenant-dat
 
 - **WHEN** the `/health` fetch fails at the network layer or returns a body that does not decode as a health payload (e.g. a `403` when the Access session has expired)
 - **THEN** the home view shows a load-failure state, distinct from a successfully-read degraded payload
-
-### Requirement: The tool console seeds arguments with a schema-derived example and tolerates comments
-
-When a tool is selected, the console SHALL pre-fill its argument input with an editable example **generated structurally from the tool's input JSON Schema** — not from any hand-maintained per-tool text — so that a newly registered tool gets a useful example with no console-specific code. In the example, every **required** field SHALL be present with a type-appropriate placeholder value, and every **optional** field SHALL be present but **commented out**; the example SHALL be pretty-printed (indented, one field per line). An `enum` field SHALL use its first allowed value and list the alternatives in a comment; a field with a schema `default` SHALL use that default; a nullable field SHALL be shown as its underlying type's example; a no-field tool SHALL yield `{}`.
-
-Because the example uses comments, the argument input SHALL accept JSON containing `//` line comments, `/* */` block comments, and trailing commas: the console SHALL strip these before submitting, **preserving** any such sequence that occurs inside a string value. Stripping SHALL be a client-side input convenience only — it SHALL NOT bypass or alter the server-side input validation, which remains the sole validator of the submitted arguments.
-
-The generated example SHALL be valid after stripping: submitting it unmodified SHALL parse to the schema's required-only object (every optional field omitted because commented out).
-
-#### Scenario: Selecting a tool seeds a schema-derived example
-
-- **WHEN** the operator selects a tool whose catalog entry is loaded
-- **THEN** the argument input is pre-filled with a pretty-printed JSON example derived from that tool's input schema, with required fields present and optional fields commented out, rather than a bare `{}`
-
-#### Scenario: Enum and optional fields are rendered for discoverability
-
-- **WHEN** the seeded example includes an `enum` field and one or more optional fields
-- **THEN** the enum field shows a first allowed value with the alternatives listed in a comment, and each optional field appears commented out so the operator can uncomment the ones to send
-
-#### Scenario: The seeded example submits unmodified
-
-- **WHEN** the operator runs a tool without editing the seeded example
-- **THEN** the console strips the comments and submits the underlying JSON, which is the schema's required-only object (optional fields omitted)
-
-#### Scenario: Comments and trailing commas are tolerated on submit
-
-- **WHEN** the operator submits arguments containing `//` or `/* */` comments or trailing commas
-- **THEN** the console strips them and submits the underlying JSON, while leaving intact any `//` or `/*` that appears inside a string value
-
-#### Scenario: A tool with no input fields stays empty
-
-- **WHEN** the operator selects a tool whose input schema declares no fields
-- **THEN** the seeded example is `{}`
-
-#### Scenario: Editing replaces the seeded example until the tool changes
-
-- **WHEN** the operator edits the argument input and then selects a different tool
-- **THEN** their edited text is preserved while that tool stays selected, and selecting another tool reseeds the input from the newly selected tool's schema
 
 ### Requirement: Logs area with a left submenu and a detail dialog
 
@@ -571,4 +446,44 @@ The Access-gated admin surface SHALL mint a Kroger consent link for the operator
 
 - **WHEN** the consent-link endpoint names a tenant that is not on the allowlist
 - **THEN** the surface returns an `unauthorized`/`not_found`-class error and mints no nonce
+
+### Requirement: Panel data flows by SSR for reads and typed RPC for interactions
+
+The admin panel SHALL obtain a surface's **initial data** by calling the Worker's existing `src/` operation functions **directly** during server-render (in the same Worker isolate), embedding the result into the page and the island's hydration props — with **no client fetch and no hand-written response decoder** for the first paint. After hydration, an island's **interactions** — mutations (e.g. onboard / revoke / rotate, corpus add / remove, config save, tool invoke, discovery retry / delete) and **live previews** (e.g. discovery Analyze / Dry-run, feed test) — SHALL call typed Hono routes through Hono's RPC client (`hc`), whose request and response types are **inferred from the route definitions** with no codegen and no separately-maintained decoder. Both the server-render path and the typed routes SHALL call the **same** `src/` functions, so there is one source of truth for each operation regardless of transport.
+
+The island hydration props SHALL be JSON-serializable, so the client hydrates with state matching the server-render. A route that an island calls SHALL return the operation's structured result or structured error verbatim (a tool/operation structured error is data for the island to render, not an HTTP 500), preserving the existing structured-error contract.
+
+#### Scenario: Initial read is server-rendered without a client fetch
+
+- **WHEN** the operator opens an admin surface (e.g. the Data recipe list, or the Config calibration console)
+- **THEN** the Worker calls the corresponding `src/` function during server-render and the page arrives populated, with no client-side fetch or decoder for the initial data
+
+#### Scenario: An island interaction calls a typed route
+
+- **WHEN** the operator triggers a mutation or live preview from a hydrated island (e.g. runs Analyze, or saves the discovery config)
+- **THEN** the island calls a typed Hono route via `hc`, the route runs the same `src/` operation the server-render would, and the island receives the typed structured result or structured error
+
+#### Scenario: One source of truth across transports
+
+- **WHEN** an operation is reachable both as initial server-rendered data and as an island-invoked route
+- **THEN** both call the same `src/` function (the route is not a re-implementation), so their results cannot diverge
+
+### Requirement: Panel UI models impossible states impossible in TypeScript
+
+The admin UI SHALL carry forward the panel's data-modeling discipline in TypeScript: a surface's loaded remote data SHALL be a **discriminated union** over the load's states (not-asked / loading / failure-with-error / success-with-value), never a `boolean` loading flag beside an optional error and optional value; a finite set of UI states SHALL be a discriminated union, not a `string` or parallel booleans; an in-flight mutation together with which operation is running and its failure SHALL be a **single** union value (so "busy", "which operation", and "the error" cannot contradict, and one-mutation-at-a-time is structural); and an error SHALL carry its type inside the failing state, not a detached `string`. Exhaustiveness over these unions SHALL be enforced (e.g. an exhaustiveness check that fails the build when a variant is unhandled), so adding a state flags every site that must handle it. The discipline SHALL be documented in `admin/CLAUDE.md` in its TypeScript form.
+
+#### Scenario: Remote data is a four-state union
+
+- **WHEN** a surface loads data from the Worker
+- **THEN** its state is a discriminated union whose variants are not-asked, loading, failure (carrying the error), and success (carrying the value) — and the impossible combinations are unrepresentable
+
+#### Scenario: An in-flight mutation and its failure are one value
+
+- **WHEN** a surface performs a mutation that can fail (e.g. a corpus add or a member revoke)
+- **THEN** the in-flight operation, which row/operation it targets, and its failure are one union value, so a second overlapping mutation and a contradictory "busy but errored" state are unrepresentable
+
+#### Scenario: Adding a UI state is caught by exhaustiveness
+
+- **WHEN** a developer adds a new variant to one of the panel's UI-state unions
+- **THEN** the build's exhaustiveness check flags every `switch`/match that does not yet handle the new variant
 

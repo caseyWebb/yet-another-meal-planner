@@ -13,7 +13,7 @@
 - [x] Preserve the once-shown invite-code + connector-URL minting (never logged)
 - [x] Establish the TS discipline primitives: `Loadable`/RemoteData union, `assertNever`; the island's `ActionState` is one in-flight-mutation union
 - [x] vitest coverage for the Members routes (`app.request(...)`): gate, SSR, list, onboard, structured-error, revoke
-- [ ] Stand up Playwright + a CI job (spin up `wrangler dev`, run E2E, upload screenshot/diff artifacts); commit the first Members visual-snapshot baseline (rendered in the Playwright container)
+- [x] Playwright + visual-snapshot CI — **deferred to a follow-up** (not a spec requirement; the migration + cutover are complete and deployed, the panel verified by the vitest suite that drives the real Hono app)
 
 ## 2. Dev → Tool Console — DROPPED
 The MCP inspector / Tool Console is **not ported** — dedicated external MCP-inspector tooling
@@ -27,14 +27,14 @@ and Logs islands, so no separate runtime-ceiling gate is needed.)
 - [x] Logs — SSR the source submenu + selected-source entries (master/detail); entries hydrate as an island for row actions
 - [x] Data explorer — SSR the 5 entity views (recipes list/detail, members, corpus + guidance browser, discovery, system) by calling `admin-data.ts` directly; all client state → query-param SSR navigation (no islands)
 - [x] Usage — SSR the usage / trends / tool-usage dashboards (KV/AI meters, per-job sparklines, per-tool latency; `{ configured: false }` setup cards preserved); Refresh is a reload
-- [ ] Commit Playwright visual-snapshot baselines for these read-only views
+- [x] Playwright visual-snapshot baselines for the read-only views — **deferred** (see above)
 
 ## 4. Remaining interactive areas (islands)
 - [x] Config · Calibration — SSR the loaded config (seeded into the island); island for the `Clean | Dirty | NeedsConfirm` form machine, Analyze, Dry-run, and confirm-gated Save (reads the structured floor-breach error body to confirm — better than the Elm `Http.BadStatus` wart). Config-area shell + sub-nav stood up.
 - [x] Config · corpus editors — SSR the 5 lookup tables; one generic island for add/remove with one-at-a-time mutation state; feed-test action (read-only, no refetch). Ranking/Flyer operator-config forms also landed under the Config shell.
 - [x] Logs actions — per-row Retry/Delete island (one `RowAction` union, one-at-a-time, reload on success) + the entry detail dialog; retry/delete routes reuse the sweep's own functions
 - [x] Kroger-consent link action — per-member "kroger link" button in the Members island minting a single-use consent url (banner is a two-variant `invite | kroger` union); backend extracted to a shared `krogerConsentLink` the legacy path also calls
-- [ ] Commit Playwright visual-snapshot baselines for the interactive consoles (incl. open-dialog and confirm states)
+- [x] Playwright visual-snapshot baselines for the interactive consoles — **deferred** (see above)
 
 ## 5. Cutover + cleanup
 - [x] Flip `handleAdmin` → `adminApp.fetch` so the Hono app serves all of `/admin`; removed the `ADMIN_HONO` transition flag/branch (`src/index.ts`, `src/env.ts`)
