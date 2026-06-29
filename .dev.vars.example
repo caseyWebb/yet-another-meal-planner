@@ -22,9 +22,10 @@ KROGER_CLIENT_SECRET=""
 # Nothing to set — listed only so the binding's dev requirement is discoverable.
 
 # --- AGPL §13 source offer (open-source-license) ---
-# The source URL the open /source page links to. Unset → it names the upstream repo. If you
-# MODIFY the Worker and run it for others, set this to YOUR fork's source (AGPL §13 requires
-# offering network users your corresponding source). Non-secret.
+# The source URL the open /source page links to. Leave UNSET for the normal self-hosting flow: a
+# data repo created from the template runs this code unmodified, so the upstream repo (the default)
+# already is the corresponding source — you set nothing. Set this ONLY if you run a genuine FORK
+# with your own code changes, to point /source at your modified source. Non-secret.
 # SOURCE_URL="https://github.com/you/your-groceries-agent-fork"
 
 # --- Operator admin panel (operator-admin) ---

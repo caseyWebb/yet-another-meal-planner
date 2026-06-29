@@ -2,10 +2,12 @@
 // that anyone interacting with a *modified* version over a network be offered its Corresponding
 // Source. `/source` is that offer: a small, open, tenant-clean page linking to the source.
 //
-// A self-hoster who MODIFIES the Worker MUST point this at THEIR source — set the `SOURCE_URL` var
-// to their fork/source location (their Corresponding Source); unset, it names the upstream
-// repository. Open and gateless like `/health` — it carries no tenant data, only the license and
-// the source location.
+// UNSET, it names the upstream repository — correct for the standard self-hosting flow, where a
+// data repo created from the template runs this code UNMODIFIED (it calls the upstream reusable
+// workflow `@main`), so upstream already is the corresponding source and the operator sets nothing.
+// Only a GENUINE FORK that modifies the Worker sets `SOURCE_URL`, to point `/source` at its own
+// modified source. Open and gateless like `/health` — it carries no tenant data, only the license
+// and the source location.
 
 import type { Env } from "./env.js";
 
