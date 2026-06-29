@@ -118,6 +118,12 @@ The plugin ships **both** the generated skills (from `AGENT_INSTRUCTIONS.md`) an
 - **Channel-trigger principle.** A capability gets an entry point on a channel **iff a real trigger exists for that channel.** Tools: a granular tool iff a single-edit trigger exists; a `commit_changes` field iff it's part of a multi-write flow (e.g. `grocery_list_ops`). Skills: `user-invocable` iff a real user trigger exists; otherwise it's a library skill loaded only by reference (`user-invocable: false`).
 - **Don't-gut-the-skill guardrail.** When de-duplicating, you MAY strip a pure contract/guarantee sentence from a skill, but NEVER its prerequisite-loading line or an orchestration step — those are the two jobs a tool can't do.
 
+## Contributor License Agreement
+
+This project is licensed **AGPL-3.0-only**, and it is **dual-licensed**: the maintainer reserves the right to offer a managed/hosted version under separate commercial terms. For that to stay possible as the Project takes outside contributions, every contributor agrees to a short [Contributor License Agreement](CLA.md).
+
+The CLA is **not** a copyright assignment — you keep ownership of your work. You grant the maintainer a license to use your contribution under the AGPL **and** under other terms (including commercial), so the public project stays AGPL while a commercial/managed offering remains the maintainer's to make. **Submitting a contribution — opening a pull request — means you agree to [CLA.md](CLA.md).** Read it once; it covers your future contributions too.
+
 ## Opening a pull request
 
 Every PR is prefilled from [`.github/pull_request_template.md`](.github/pull_request_template.md): a short **What & why** plus a **considerations checklist** drawn from the rules above (docs in lockstep, the tool/skill boundary, D1 via `src/db.ts`, the `merge-wrangler-config.mjs` allowlist, migrations, `plugin/` regen, OpenSpec sync, no-secrets). Each item is a *consideration* — checking it means "I weighed this," and the not-applicable case is folded into the wording, so every box is honestly checkable on every PR. **Fill the What & why and check every box.** This applies to PRs the repo's own agent opens too — leaving the template unfilled blocks the PR.

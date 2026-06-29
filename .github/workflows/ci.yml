@@ -83,6 +83,13 @@ jobs:
         # needs no network — same drift discipline as the plugin/admin builds.
         run: node scripts/build-vault.mjs --check
 
+      - name: Dependency licenses are AGPL-3.0-compatible
+        # The deployed Worker bundles its PRODUCTION deps, so each must carry a license an
+        # AGPL-3.0 work may redistribute (open-source-license). Fails on an unknown or
+        # incompatible license before the dependency can land; dev/optional-only tooling is out
+        # of scope. Pure-Node gate, unit-tested in tests/check-licenses.test.mjs.
+        run: node scripts/check-licenses.mjs
+
   trigger-deploy:
     # Auto-trigger the data-repo deploy on Worker-relevant changes to main.
     # Only fires on push (not PRs or workflow_dispatch) — the push trigger above

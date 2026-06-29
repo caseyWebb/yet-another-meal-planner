@@ -49,6 +49,18 @@ export interface Env {
    */
   ADMIN_DEV_BYPASS?: string;
 
+  // --- AGPL §13 source offer (open-source-license). OPTIONAL, non-secret. ---
+  /**
+   * The source location `/source` offers, satisfying AGPL section 13 for users interacting over the
+   * network. UNSET, `/source` names the upstream repository — which is correct for the standard
+   * self-hosting flow: a data repo created from the template runs this code UNMODIFIED (it calls the
+   * upstream reusable workflow `@main`), so the upstream repo already IS the corresponding source and
+   * the operator sets nothing. Only a GENUINE FORK that modifies the Worker sets this, to point
+   * `/source` at its own modified source. Non-secret and operator-owned (the deploy merge passes the
+   * operator's `vars`, strips the maintainer's).
+   */
+  SOURCE_URL?: string;
+
   // --- Observability (background-job-health). All OPTIONAL secrets. ---
   /** ntfy topic URL for the optional Worker-side failure push (e.g. `https://ntfy.sh/<topic>`). Unset → no push. */
   NTFY_URL?: string;

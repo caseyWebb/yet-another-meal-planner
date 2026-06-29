@@ -21,6 +21,7 @@ The operator's one-time setup. When you finish you'll have a **data repo** (your
 | **R2 corpus bucket** (`grocery-corpus` on Cloudflare) | `recipes/*.md` + `guidance/**/*.md` — the authored corpus the Worker reads | auto-provisioned by the deploy; you author into it via Obsidian (step 2) |
 | **Worker** (`grocery-mcp` on Cloudflare) | the MCP server Claude.ai talks to | you deploy it from your data repo's Actions |
 | **Cookbook** (`<your-domain>/cookbook`, served by the Worker) | read-only recipe site, built from the D1 index + R2 bodies | always on; no separate hosting |
+| **Source** (`<your-domain>/source`, served by the Worker) | AGPL §13 source offer — an open page linking to the code repo (the agent is AGPL-3.0) | always on; points upstream unless you run a genuine fork and set the `SOURCE_URL` var |
 
 The Worker reads its corpus straight from the bound **R2 bucket** — no GitHub App, no PAT, no per-request token mint. A single **Kroger** public-tier app handles search/prices (app-level) and per-user cart consent.
 

@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "description": "grocery-agent: the grocery-mcp Cloudflare Worker (MCP server) + the plugin-build and deploy tooling that data repos run via reusable CI workflows.",
+  "license": "AGPL-3.0-only",
   "engines": {
     "node": ">=22"
   },
@@ -23,7 +24,8 @@
     "deploy": "wrangler deploy",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:tooling": "node --test tests/build-plugin.test.mjs tests/build-vault.test.mjs tests/merge-wrangler-config.test.mjs tests/stamp-readme-badge.test.mjs tests/strip-facets.test.mjs",
+    "test:tooling": "node --test tests/build-plugin.test.mjs tests/build-vault.test.mjs tests/merge-wrangler-config.test.mjs tests/stamp-readme-badge.test.mjs tests/strip-facets.test.mjs tests/check-licenses.test.mjs",
+    "check:licenses": "node scripts/check-licenses.mjs",
     "build:plugin": "node scripts/build-plugin.mjs",
     "build:admin": "node scripts/build-admin.mjs",
     "build:vault": "node scripts/build-vault.mjs",

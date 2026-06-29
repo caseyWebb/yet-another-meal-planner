@@ -153,3 +153,18 @@ friends. **Not a product, not a startup.** The architecture is deliberately mini
 provides the reasoning, the Worker provides a domain interface, GitHub holds the recipe corpus and
 its history, and D1 holds the operational data. The recipe files are plain, version-controlled
 markdown — inspectable by a human and able to outlive the agent if anyone ever stops using it.
+
+## License
+
+[AGPL-3.0-only](LICENSE) — open source, copyleft. Use it, modify it, and self-host it freely,
+including running your own instance for yourself and your friends at no charge. The one obligation:
+run a *modified* version as a network service and AGPL §13 asks you to offer those users its source.
+
+It's also **dual-licensed.** The maintainer reserves the right to offer a managed, hosted version
+under separate commercial terms — so a commercial use the AGPL doesn't permit (a closed-source
+hosted offering) needs a commercial license; [ask the maintainer](mailto:casey@dirtbag.social).
+Self-hosting always stays free.
+
+Contributions come in under the AGPL plus a short [Contributor License Agreement](CLA.md) — the
+grant that keeps the dual-license possible. See
+[CONTRIBUTING.md](CONTRIBUTING.md#contributor-license-agreement).

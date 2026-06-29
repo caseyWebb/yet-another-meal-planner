@@ -25,6 +25,7 @@ import { createR2CorpusStore } from "./corpus-store.js";
 import { handleHealthRequest, handleHealthSvgRequest, writeJobHealth, recordUsagePoint, notifyFailure } from "./health.js";
 import { handleAdmin } from "./admin.js";
 import { handleCookbook } from "./cookbook.js";
+import { handleSource } from "./source.js";
 
 /**
  * The gated MCP API. Only reached for `/mcp` requests the provider has already
@@ -69,6 +70,8 @@ const defaultHandler = {
     if (url.pathname === "/cookbook" || url.pathname.startsWith("/cookbook/")) return handleCookbook(request, env);
     if (url.pathname === "/health.svg") return handleHealthSvgRequest(env);
     if (url.pathname === "/health") return handleHealthRequest(env);
+    // AGPL §13 source offer (open and tenant-clean) — see src/source.ts.
+    if (url.pathname === "/source") return handleSource(env);
     return new Response("Not found", { status: 404 });
   },
 };
