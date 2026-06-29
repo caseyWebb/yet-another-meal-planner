@@ -7,8 +7,11 @@ module Usage exposing
     , ToolsView(..)
     , TrendDay
     , TrendsView(..)
+    , UpstreamError
     , UsageData
+    , UsageError(..)
     , UsageView(..)
+    , errorBodyDecoder
     , errorRate
     , init
     , isOver
@@ -57,7 +60,7 @@ import Html.Attributes exposing (class, title)
 import Html.Events exposing (onClick)
 import Http
 import Json.Decode as Decode exposing (Decoder)
-import RemoteData exposing (RemoteData(..), WebData)
+import RemoteData exposing (RemoteData(..))
 
 
 
@@ -65,9 +68,37 @@ import RemoteData exposing (RemoteData(..), WebData)
 
 
 type alias Model =
-    { usage : WebData UsageView
-    , trends : WebData TrendsView
-    , tools : WebData ToolsView
+    { usage : Loaded UsageView
+    , trends : Loaded TrendsView
+    , tools : Loaded ToolsView
+    }
+
+
+{-| A loaded usage request: like `WebData`, but its failure carries a typed `UsageError` instead
+of a bare `Http.Error`, so the view can render the upstream `{ error, message }` body the Worker
+returns rather than a bare HTTP status.
+-}
+type alias Loaded a =
+    RemoteData UsageError a
+
+
+{-| Why a request failed. A transport/decoding problem keeps the structured `Http.Error`; an
+upstream failure carries the Worker's decoded `{ error, message }` body so the operator sees the
+real cause (e.g. an analytics binding or token problem) without opening the browser console. The
+page is admin-only behind the Access gate, so showing full upstream detail is safe. Modeled as a
+union — never `Maybe String` — so the error and its content cannot contradict (see ../CLAUDE.md).
+-}
+type UsageError
+    = Transport Http.Error
+    | Upstream UpstreamError
+
+
+{-| The Worker's structured error body (`src/errors.ts` `ToolError.toShape()`): an error `code`
+and a human-readable `message`.
+-}
+type alias UpstreamError =
+    { code : String
+    , message : String
     }
 
 
@@ -183,9 +214,9 @@ init =
 
 
 type Msg
-    = GotUsage (WebData UsageView)
-    | GotTrends (WebData TrendsView)
-    | GotTools (WebData ToolsView)
+    = GotUsage (Loaded UsageView)
+    | GotTrends (Loaded TrendsView)
+    | GotTools (Loaded ToolsView)
     | Refresh
 
 
@@ -215,8 +246,62 @@ fetchUsage : Cmd Msg
 fetchUsage =
     Http.get
         { url = "/admin/api/usage"
-        , expect = Http.expectJson (RemoteData.fromResult >> GotUsage) usageViewDecoder
+        , expect = expectUsageJson GotUsage usageViewDecoder
         }
+
+
+{-| Like `Http.expectJson`, but a non-2xx response is not discarded to a bare `BadStatus`: its
+body is decoded as the Worker's `{ error, message }` shape and carried as an `Upstream` error, so
+the view shows the real upstream message. `Http.expectJson` throws the non-2xx body away (that is
+the whole reason the panel only ever showed "HTTP 500"); `Http.expectStringResponse` keeps it.
+-}
+expectUsageJson : (Loaded a -> Msg) -> Decoder a -> Http.Expect Msg
+expectUsageJson toMsg decoder =
+    Http.expectStringResponse (RemoteData.fromResult >> toMsg) (resolveResponse decoder)
+
+
+{-| Resolve a raw HTTP response into a typed result: a 2xx runs through the success `decoder`; a
+non-2xx whose body is the Worker's `{ error, message }` shape becomes an `Upstream` error carrying
+the real detail; anything else (a transport failure, an Access-gate HTML 403/404, an undecodable
+body) degrades to a `Transport` error so the existing friendly messages still apply.
+-}
+resolveResponse : Decoder a -> Http.Response String -> Result UsageError a
+resolveResponse decoder response =
+    case response of
+        Http.BadUrl_ url ->
+            Err (Transport (Http.BadUrl url))
+
+        Http.Timeout_ ->
+            Err (Transport Http.Timeout)
+
+        Http.NetworkError_ ->
+            Err (Transport Http.NetworkError)
+
+        Http.BadStatus_ metadata body ->
+            case Decode.decodeString errorBodyDecoder body of
+                Ok upstream ->
+                    Err (Upstream upstream)
+
+                Err _ ->
+                    Err (Transport (Http.BadStatus metadata.statusCode))
+
+        Http.GoodStatus_ _ body ->
+            case Decode.decodeString decoder body of
+                Ok value ->
+                    Ok value
+
+                Err err ->
+                    Err (Transport (Http.BadBody (Decode.errorToString err)))
+
+
+{-| Decode the Worker's structured error body (`{ error, message }`). Used only on a non-2xx
+response; a body that does not match this shape falls back to a bare status (see `resolveResponse`).
+-}
+errorBodyDecoder : Decoder UpstreamError
+errorBodyDecoder =
+    Decode.map2 UpstreamError
+        (Decode.field "error" Decode.string)
+        (Decode.field "message" Decode.string)
 
 
 {-| Decode the payload, branching on the `configured` discriminator: `false` is the
@@ -286,7 +371,7 @@ fetchTrends : Cmd Msg
 fetchTrends =
     Http.get
         { url = "/admin/api/usage/trends"
-        , expect = Http.expectJson (RemoteData.fromResult >> GotTrends) trendsViewDecoder
+        , expect = expectUsageJson GotTrends trendsViewDecoder
         }
 
 
@@ -326,7 +411,7 @@ fetchTools : Cmd Msg
 fetchTools =
     Http.get
         { url = "/admin/api/usage/tools"
-        , expect = Http.expectJson (RemoteData.fromResult >> GotTools) toolsViewDecoder
+        , expect = expectUsageJson GotTools toolsViewDecoder
         }
 
 
@@ -373,7 +458,7 @@ view model =
         ]
 
 
-viewBody : WebData UsageView -> Html Msg
+viewBody : Loaded UsageView -> Html Msg
 viewBody usage =
     case usage of
         NotAsked ->
@@ -383,7 +468,7 @@ viewBody usage =
             p [] [ text "Loading…" ]
 
         Failure error ->
-            div [ class "error" ] [ text ("Could not load /admin/api/usage: " ++ httpError error) ]
+            div [ class "error" ] [ text ("Could not load /admin/api/usage: " ++ usageError error) ]
 
         Success NotConfigured ->
             viewNotConfigured
@@ -512,7 +597,7 @@ viewModelItem m =
 window, sourced from `GET /admin/api/usage/trends`. Mirrors the snapshot's `WebData` discipline,
 degrading to an explicit "not available" state when the analytics config is unset.
 -}
-viewTrends : WebData TrendsView -> Html Msg
+viewTrends : Loaded TrendsView -> Html Msg
 viewTrends trends =
     case trends of
         NotAsked ->
@@ -522,7 +607,7 @@ viewTrends trends =
             div [ class "card" ] [ p [ class "muted" ] [ text "Loading trends…" ] ]
 
         Failure error ->
-            div [ class "error" ] [ text ("Could not load /admin/api/usage/trends: " ++ httpError error) ]
+            div [ class "error" ] [ text ("Could not load /admin/api/usage/trends: " ++ usageError error) ]
 
         Success TrendsNotConfigured ->
             viewTrendsNotConfigured
@@ -641,7 +726,7 @@ formatMs ms =
 percentiles over the recent window, sourced from `GET /admin/api/usage/tools`. Mirrors the trends
 panel's `WebData` discipline, degrading to an explicit "not available" state when analytics is unset.
 -}
-viewTools : WebData ToolsView -> Html Msg
+viewTools : Loaded ToolsView -> Html Msg
 viewTools tools =
     case tools of
         NotAsked ->
@@ -651,7 +736,7 @@ viewTools tools =
             div [ class "card" ] [ p [ class "muted" ] [ text "Loading tool usage…" ] ]
 
         Failure error ->
-            div [ class "error" ] [ text ("Could not load /admin/api/usage/tools: " ++ httpError error) ]
+            div [ class "error" ] [ text ("Could not load /admin/api/usage/tools: " ++ usageError error) ]
 
         Success ToolsNotConfigured ->
             viewToolsNotConfigured
@@ -736,6 +821,20 @@ errorRate t =
 formatPct : Float -> String
 formatPct frac =
     String.fromInt (round (frac * 100)) ++ "%"
+
+
+{-| Render a typed `UsageError` for the operator. An upstream failure shows the Worker's real
+`message` and `error` code (full detail — this surface is admin-only behind the Access gate); a
+transport failure falls back to the friendly `httpError` strings.
+-}
+usageError : UsageError -> String
+usageError error =
+    case error of
+        Transport httpErr ->
+            httpError httpErr
+
+        Upstream upstream ->
+            upstream.message ++ " [" ++ upstream.code ++ "]"
 
 
 httpError : Http.Error -> String

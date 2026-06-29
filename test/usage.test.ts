@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import {
   fetchUsage,
   fetchUsageTrends,
@@ -32,6 +32,37 @@ function fetchReturning(body: unknown, status = 200): { fetchImpl: typeof fetch;
 }
 
 const configuredEnv = (): Env => ({ CF_ACCOUNT_ID: "acct123", CF_ANALYTICS_TOKEN: "tok" }) as unknown as Env;
+
+// Regression guard for the `this`-binding bug: `defaultDeps` invokes the global `fetch` as
+// `deps.fetchImpl(...)`, so an UNBOUND `fetch` stored on the object would run with `this`
+// pointing at the deps object — which workerd rejects with "Illegal invocation". Every other
+// test injects its own `fetchImpl`, so only this one exercises the real default. It re-imports
+// the module with the global `fetch` stubbed by a `this`-recorder, runs the production path
+// (no injected deps), and asserts `this` is pinned to `globalThis`, not the holder object.
+describe("defaultDeps fetch binding", () => {
+  it("invokes the global fetch with `this` pinned to globalThis, not the deps object", async () => {
+    let capturedThis: unknown = "unset";
+    const recorder = function (this: unknown) {
+      capturedThis = this;
+      return Promise.resolve(new Response(JSON.stringify(graphqlBody({})), { status: 200 }));
+    } as unknown as typeof fetch;
+
+    vi.stubGlobal("fetch", recorder);
+    vi.resetModules();
+    try {
+      const mod = await import("../src/usage.js");
+      // Production path: no injected fetchImpl, so this uses the real `defaultDeps`.
+      await mod.fetchUsage(configuredEnv());
+      // Pre-fix `{ fetchImpl: fetch }` captures `this === defaultDeps` (the holder); the bound
+      // default pins it to globalThis. This assertion fails against the unbound code.
+      expect(capturedThis).toBe(globalThis);
+      expect(capturedThis).not.toBe(mod.defaultDeps);
+    } finally {
+      vi.unstubAllGlobals();
+      vi.resetModules();
+    }
+  });
+});
 
 describe("utcDay", () => {
   it("formats epoch ms as a YYYY-MM-DD UTC day", () => {
