@@ -61,11 +61,12 @@ jobs:
       - name: Test (build tooling)
         run: aubr test:tooling
 
-      - name: Test (admin Elm)
-        # The admin SPA's compiler-opaque logic — URL routing + the run-gate safety
-        # convention. Classic elm-test via npx (no pinned elm binary), like build-admin;
-        # needs package.elm-lang.org reachable (as build-admin already does).
-        run: aubr test:admin
+      - name: Admin panel islands are current with src/admin/
+        # The committed admin/dist/ island bundles + stylesheet are generated from
+        # src/admin/client/*.tsx + src/admin/styles.css by esbuild — no network registry, so
+        # --check needs no network. Proves the committed bundle can't drift from source; the
+        # SSR pages are not pre-built (the Worker renders them), so they need no gate here.
+        run: node scripts/build-admin.mjs --check
 
       - name: Plugin builds from AGENT_INSTRUCTIONS.md
         # There is no committed bundle in this repo (the operator's deploy builds and
