@@ -5,17 +5,17 @@ TBD - created by archiving change derive-recipe-facets. Update Purpose after arc
 ## Requirements
 ### Requirement: A whole-corpus classify pass derives recipe facets on the cron
 
-The Worker SHALL run a scheduled **classify pass** that derives recipe facets from the recipe body, generalizing the discovery sweep's classifier (`src/discovery-classify.ts`) over the **entire** R2 corpus rather than only new discovery candidates. The pass SHALL run in the `scheduled()` handler, SHALL read recipe bodies directly from the R2 corpus (a binding call, not an external subrequest), SHALL classify on the small Workers AI model with the shared contract validator as the backstop and a corrective retry, and SHALL bound the number of recipes classified per tick (deferring the remainder to later ticks). It SHALL write a `health:job` record for the run, like the other scheduled jobs.
+The Worker SHALL run a scheduled **classify pass** that derives recipe facets from the recipe body, generalizing the discovery sweep's classifier (`src/discovery-classify.ts`) over the **entire** R2 corpus rather than only new discovery candidates. The pass SHALL run in the `scheduled()` handler, SHALL read recipe bodies directly from the R2 corpus (a binding call, not an external subrequest), SHALL classify on the small Workers AI model with the shared contract validator as the backstop and a corrective retry, and SHALL bound the work per tick by **both** a recipe-count cap and a wall-clock time budget (deferring the remainder to later ticks), so a large backlog cannot overrun the scheduled invocation's resource budget and starve the jobs that run after the classify pass in the same tick. It SHALL write a `health:job` record for the run, like the other scheduled jobs.
 
 #### Scenario: The pass classifies the whole corpus, not just discoveries
 
 - **WHEN** the classify pass runs and a corpus recipe has no derived facets yet
 - **THEN** it classifies that recipe from its body and stores the derived facets in D1, the same classifier the discovery sweep uses
 
-#### Scenario: Work is bounded per tick
+#### Scenario: Work is bounded per tick on both budgets
 
-- **WHEN** more recipes need classification than the per-tick cap allows
-- **THEN** the pass classifies up to the cap this tick and defers the rest to later ticks, recording a pending count in its health summary
+- **WHEN** more recipes need classification than the per-tick count cap allows, or classifying them would exceed the per-tick wall-clock budget
+- **THEN** the pass classifies within the count cap and the wall-clock budget this tick — whichever it reaches first — and defers the rest to later ticks, recording a pending count (and a `timed_out` flag when the time budget stopped it) in its health summary
 
 #### Scenario: The classifier is shared, not duplicated
 

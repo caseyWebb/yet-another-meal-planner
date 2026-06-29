@@ -22,6 +22,8 @@ function makeDeps(
   state: FacetState[],
   opts: {
     maxPerTick?: number;
+    timeBudgetMs?: number;
+    now?: () => number;
     failWith?: Record<string, unknown>;
     classified?: (r: RecipeToClassify) => ClassifiedFacets;
   } = {},
@@ -48,7 +50,8 @@ function makeDeps(
       return state.filter((s) => !corpus.has(s.slug)).length;
     },
     maxPerTick: opts.maxPerTick ?? 100,
-    now: () => 1000,
+    timeBudgetMs: opts.timeBudgetMs ?? Number.MAX_SAFE_INTEGER,
+    now: opts.now ?? (() => 1000),
   };
   return { deps, upserts, empties, prunedWithRef: () => prunedWith };
 }
@@ -86,6 +89,20 @@ describe("reconcileRecipeFacets", () => {
     expect(r.classified).toBe(2);
     expect(r.pending).toBe(1);
     expect(upserts).toHaveLength(2);
+  });
+
+  it("stops STARTING new classifications when the per-tick TIME budget elapses (backlog carries over)", async () => {
+    // now() reads in order: startedAt=0, iter-1 guard=0 (proceed, classify a), iter-2 guard=100 (>=50, break).
+    // The time budget — not the count cap — is what bounds a slow/large backlog so the tick stays in budget.
+    const ticks = [0, 0, 100];
+    let i = 0;
+    const now = () => ticks[Math.min(i++, ticks.length - 1)];
+    const { deps, upserts } = makeDeps([recipe("a"), recipe("b")], [], { timeBudgetMs: 50, now });
+    const r = await reconcileRecipeFacets(deps);
+    expect(r.timedOut).toBe(true);
+    expect(r.classified).toBe(1);
+    expect(upserts.map((u) => u.slug)).toEqual(["a"]); // only the one that fit the budget
+    expect(r.pending).toBe(1); // 'b' stays stale, retried next tick
   });
 
   it("does NOT advance the gate on a TRANSIENT failure (retries next tick)", async () => {
