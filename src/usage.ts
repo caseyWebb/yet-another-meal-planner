@@ -106,7 +106,9 @@ export function mapAccountUsage(account: AccountAnalytics, day: string, nowMs: n
     const action = asKvAction(row.dimensions?.actionType);
     if (!action) continue;
     const nsId = row.dimensions?.namespaceId ?? "unknown";
-    const requests = num(row.sum?.requests);
+    // KV requests are an operation count (integral), but round defensively so every count the
+    // payload exposes as INT actually is one — the same invariant the neuron rounding below holds.
+    const requests = Math.round(num(row.sum?.requests));
     const counts = byNamespace.get(nsId) ?? zeroCounts();
     counts[action] += requests;
     byNamespace.set(nsId, counts);
@@ -121,8 +123,11 @@ export function mapAccountUsage(account: AccountAnalytics, day: string, nowMs: n
     const model = row.dimensions?.modelId ?? "unknown";
     byModel.set(model, (byModel.get(model) ?? 0) + num(row.sum?.totalNeurons));
   }
+  // Cloudflare reports neurons as a fractional amount (e.g. 10453.8); the usage meter is a whole-
+  // neuron budget gauge, so round each model's total to an integer (matching the integer KV meters
+  // and the `neurons`/`neurons_used` INT contract the admin payload exposes).
   const aiByModel: AiModelUsage[] = [...byModel.entries()]
-    .map(([model, neurons]) => ({ model, neurons }))
+    .map(([model, neurons]) => ({ model, neurons: Math.round(neurons) }))
     .sort((a, b) => b.neurons - a.neurons);
   const neuronsUsed = aiByModel.reduce((s, m) => s + m.neurons, 0);
 

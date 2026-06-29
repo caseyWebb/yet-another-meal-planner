@@ -130,6 +130,25 @@ describe("mapAccountUsage", () => {
     expect(usage.ai.by_model[0]).toEqual({ model: "@cf/baai/bge-base-en-v1.5", neurons: 1200 });
   });
 
+  it("rounds Cloudflare's fractional neurons to integers (the INT payload contract)", () => {
+    const account = {
+      kvOperations: [],
+      aiInference: [
+        { dimensions: { modelId: "a" }, sum: { totalNeurons: 10453.803226754151 } },
+        { dimensions: { modelId: "b" }, sum: { totalNeurons: 12.5 } },
+      ],
+    };
+    const usage = mapAccountUsage(account, "2026-06-28", 1);
+    if (!usage.configured) throw new Error("expected configured");
+    // Each model rounded, and the total is the sum of the rounded per-model values.
+    expect(usage.ai.by_model).toEqual([
+      { model: "a", neurons: 10454 },
+      { model: "b", neurons: 13 },
+    ]);
+    expect(usage.ai.neurons_used).toBe(10467);
+    expect(Number.isInteger(usage.ai.neurons_used)).toBe(true);
+  });
+
   it("tolerates an empty / shapeless account (no rows)", () => {
     const usage = mapAccountUsage({}, "2026-06-28", 1);
     if (!usage.configured) throw new Error("expected configured");
