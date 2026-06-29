@@ -63,8 +63,14 @@
 	// like `ai`/`assets`): the deploy merge propagates it (merge-wrangler-config.mjs
 	// allowlist) — a NEW binding TYPE, so the merge needs an explicit allowlist line or it
 	// is silently dropped from every operator's deploy.
+	// A SECOND dataset (tool-usage-trends): one tenant-clean point per MCP tool call
+	// (tool name, ok/error, duration) to `grocery_tool` — the request-path history tier,
+	// read back by the Usage tool panel via the AE SQL API. The merge copies this whole
+	// array verbatim, so a second instance of the type propagates with no extra allowlist
+	// line (a regression test pins that both bindings survive).
 	"analytics_engine_datasets": [
-		{ "binding": "USAGE_AE", "dataset": "grocery_usage" }
+		{ "binding": "USAGE_AE", "dataset": "grocery_usage" },
+		{ "binding": "TOOL_AE", "dataset": "grocery_tool" }
 	],
 	// Static assets (operator-admin): the committed admin SPA under admin/dist/, served
 	// same-origin at /admin/* via the ASSETS binding. `run_worker_first` routes /admin*

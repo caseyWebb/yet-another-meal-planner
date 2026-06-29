@@ -86,6 +86,23 @@ export interface Env {
    */
   USAGE_AE?: AnalyticsEngineDataset;
 
+  // --- Tool usage trends (tool-usage-trends). Code-level binding, no operator config. ---
+  /**
+   * Workers Analytics Engine dataset (`grocery_tool`) every MCP tool call emits one
+   * tenant-clean data point to — the request-path **history** tier (per-tool frequency +
+   * performance), sibling to the per-job `USAGE_AE`. Carries the tool name, the call outcome
+   * (`ok`/`error`), and the call duration, never a tenant id or call arguments. Emitted once
+   * from the `buildServer` registration decorator (`src/tools.ts`) via `recordToolPoint`
+   * (`src/health.ts`), read back by the Usage tool panel via the AE SQL API (`src/usage.ts`).
+   * OPTIONAL: an unbound deployment makes `recordToolPoint` a silent no-op (`TOOL_AE?.`). AE
+   * `writeDataPoint` is non-blocking and draws on neither the KV nor the D1 budget. Code-level
+   * binding (no operator-owned id, like `USAGE_AE`), propagated by the deploy merge
+   * (`scripts/merge-wrangler-config.mjs` copies the whole `analytics_engine_datasets` array).
+   * The blob/double slot layout is a documented positional contract (`docs/SCHEMAS.md`); a
+   * later change must not reorder existing slots.
+   */
+  TOOL_AE?: AnalyticsEngineDataset;
+
   // --- KV (ephemeral infra only; all domain data is in D1) ---
   /**
    * Per-tenant Kroger refresh tokens (`kroger:refresh:<tenant>`) plus short-lived

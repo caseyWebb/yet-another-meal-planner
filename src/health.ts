@@ -168,6 +168,40 @@ export function recordUsagePoint(
   }
 }
 
+/**
+ * Emit ONE tenant-clean data point for a single MCP tool call to the `grocery_tool` Analytics
+ * Engine dataset (tool-usage-trends) — the request-path **history** tier (per-tool frequency +
+ * performance), sibling to `recordUsagePoint`'s per-job tier. Fired once per call from the
+ * `buildServer` registration decorator (`src/tools.ts`). Carries the tool name, the call outcome,
+ * and the call duration in a **positional** slot order (see `docs/SCHEMAS.md`):
+ *
+ *   indexes: [tool]                     — the sampling key (one per tool)
+ *   blobs:   [tool, ok ? "ok":"error",  — dimensions; blob3 RESERVED for a future error code
+ *             ]
+ *   doubles: [durationMs]               — the call duration metric
+ *
+ * **Best-effort and non-blocking**, exactly like `recordUsagePoint`: an unbound `TOOL_AE` is a
+ * silent no-op (`TOOL_AE?.`) and a throw is swallowed, so instrumentation never changes a tool's
+ * result. **Tenant-clean by construction** — only the tool name (a fixed, low-cardinality enum),
+ * the outcome, and the duration; never a per-tenant id or any call argument. AE `writeDataPoint`
+ * is non-blocking and consumes neither the KV nor the D1 budget.
+ */
+export function recordToolPoint(
+  env: Pick<Env, "TOOL_AE">,
+  tool: string,
+  point: { ok: boolean; durationMs: number },
+): void {
+  try {
+    env.TOOL_AE?.writeDataPoint({
+      indexes: [tool],
+      blobs: [tool, point.ok ? "ok" : "error"],
+      doubles: [point.durationMs],
+    });
+  } catch {
+    // Emission must never affect the tool — swallow (mirrors recordUsagePoint).
+  }
+}
+
 /** Read one job's health row, or null when it has never run. */
 export async function readJobHealth(env: Env, name: string): Promise<JobHealth | null> {
   const row = await db(env).first<JobHealthRow>(

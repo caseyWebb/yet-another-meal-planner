@@ -13,6 +13,7 @@ import { createR2CorpusStore, readCorpusFile } from "./corpus-store.js";
 import { parseMarkdown } from "./parse.js";
 import { readAliases, readSkuCache } from "./corpus-db.js";
 import { ToolError, runTool } from "./errors.js";
+import { instrumentTools, type ToolRegistrar } from "./tool-instrumentation.js";
 import { registerWriteTools } from "./write-tools.js";
 import { registerGroceryListTools } from "./grocery-tools.js";
 import { registerOrderTools } from "./order-tools.js";
@@ -158,6 +159,12 @@ function productRow(c: KrogerCandidate): Record<string, unknown> {
 
 export function buildServer(env: Env, tenant: Tenant, origin?: string): McpServer {
   const server = new McpServer({ name: "grocery-mcp", version: "0.1.0" });
+
+  // tool-usage-trends: wrap registerTool ONCE, before any tool is registered, so every tool —
+  // the inline ones below AND those added by the register*Tools helpers — emits one tenant-clean
+  // per-call usage point (tool, ok/error, duration) to the `grocery_tool` AE dataset. Best-effort
+  // and non-blocking; never touches the result. Tenant id is deliberately NOT passed.
+  instrumentTools(server as unknown as ToolRegistrar, env);
 
   // The authored corpus (recipes/ + guidance/) is read/listed/written through the R2
   // corpus store — no GitHub App, installation token, or GitHub API call on the data

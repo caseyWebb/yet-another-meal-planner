@@ -346,3 +346,109 @@ export async function fetchUsageTrends(env: Env, deps: UsageDeps = defaultDeps):
   }
   return mapTrendRows(body.data ?? [], nowMs, TRENDS_WINDOW_DAYS);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Tool usage TRENDS (tool-usage-trends): the per-MCP-tool-call HISTORY tier, read from the
+// Workers Analytics Engine SQL API over the `grocery_tool` dataset (the request-path sibling of
+// `grocery_usage`). Every tool call emits one tenant-clean point (tool, ok/error, duration) via
+// the buildServer registration decorator (`src/tool-instrumentation.ts` → `recordToolPoint`);
+// this reads them back as per-tool aggregates — call count, error count, and latency percentiles.
+// A SECOND AE SQL client reusing `CF_ACCOUNT_ID` + `CF_ANALYTICS_TOKEN`, performing NO KV or D1.
+
+/** One tool's aggregate metrics over the window. `errors`/`calls` give the error RATE (derived in
+ *  the view, never stored); `p50_ms`/`p95_ms` are duration percentiles (p95 catches the tail). */
+export interface ToolUsage {
+  tool: string;
+  /** Number of calls in the window. */
+  calls: number;
+  /** Number of those calls that returned a structured error (or threw). */
+  errors: number;
+  /** Median call duration (ms). */
+  p50_ms: number;
+  /** 95th-percentile call duration (ms) — the request-path tail. */
+  p95_ms: number;
+}
+
+/** The tool-usage payload returned to the admin API. A discriminated union mirroring `TrendsResult`,
+ *  so "configured but empty" is unrepresentable: an unconfigured deployment is `{ configured: false }`. */
+export type ToolUsageResult =
+  | { configured: false }
+  | { configured: true; generated_at: number; window_days: number; tools: ToolUsage[] };
+
+/** The AE SQL `data` row shape for the tool query (loosely typed — numbers may arrive as strings). */
+interface ToolUsageRow {
+  tool?: unknown;
+  calls?: unknown;
+  errors?: unknown;
+  p50_ms?: unknown;
+  p95_ms?: unknown;
+}
+
+/**
+ * Pure mapping of AE SQL `data` rows into per-tool aggregates, ordered by call count descending
+ * (ties broken by name) so the panel renders busiest-first. Rows with no tool name are dropped;
+ * numeric columns are coerced (missing → 0).
+ */
+export function mapToolUsageRows(rows: ToolUsageRow[], nowMs: number, windowDays: number): ToolUsageResult {
+  const tools: ToolUsage[] = [];
+  for (const row of rows) {
+    const tool = typeof row.tool === "string" ? row.tool : "";
+    if (!tool) continue;
+    tools.push({
+      tool,
+      calls: toNum(row.calls),
+      errors: toNum(row.errors),
+      p50_ms: toNum(row.p50_ms),
+      p95_ms: toNum(row.p95_ms),
+    });
+  }
+  tools.sort((a, b) => b.calls - a.calls || a.tool.localeCompare(b.tool));
+  return { configured: true, generated_at: nowMs, window_days: windowDays, tools };
+}
+
+/** The AE SQL query: per-tool call count, error count, and p50/p95 duration over the window.
+ *  `double1` is the call duration; `blob1` the tool name; `blob2` the outcome (`ok`|`error`). */
+const toolUsageSql = (windowDays: number) =>
+  `SELECT blob1 AS tool, count() AS calls, ` +
+  `sum(blob2 = 'error') AS errors, ` +
+  `quantileWeighted(0.5)(double1, 1) AS p50_ms, ` +
+  `quantileWeighted(0.95)(double1, 1) AS p95_ms ` +
+  `FROM grocery_tool ` +
+  `WHERE timestamp > now() - INTERVAL '${windowDays}' DAY ` +
+  `GROUP BY tool ORDER BY calls DESC`;
+
+/**
+ * Fetch the per-tool usage aggregates from the Analytics Engine SQL API. Returns
+ * `{ configured: false }` (with NO network call) when `CF_ACCOUNT_ID`/`CF_ANALYTICS_TOKEN` is
+ * unset. Maps a transport failure, a non-2xx, or an unparseable body to an `upstream_unavailable`
+ * ToolError (the admin route serializes it). Performs no KV or D1 operation.
+ */
+export async function fetchToolUsage(env: Env, deps: UsageDeps = defaultDeps): Promise<ToolUsageResult> {
+  const accountTag = env.CF_ACCOUNT_ID?.trim();
+  const token = env.CF_ANALYTICS_TOKEN?.trim();
+  if (!accountTag || !token) return { configured: false };
+
+  const nowMs = deps.now();
+  let res: Response;
+  try {
+    res = await deps.fetchImpl(aeSqlEndpoint(accountTag), {
+      method: "POST",
+      headers: { "content-type": "text/plain", authorization: `Bearer ${token}` },
+      body: toolUsageSql(TRENDS_WINDOW_DAYS),
+    });
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    throw new ToolError("upstream_unavailable", `Analytics Engine SQL request failed: ${message}`);
+  }
+  if (!res.ok) {
+    throw new ToolError("upstream_unavailable", `Analytics Engine SQL returned HTTP ${res.status}`);
+  }
+  let body: { data?: ToolUsageRow[] };
+  try {
+    body = (await res.json()) as typeof body;
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    throw new ToolError("upstream_unavailable", `Analytics Engine SQL returned an unparseable body: ${message}`);
+  }
+  return mapToolUsageRows(body.data ?? [], nowMs, TRENDS_WINDOW_DAYS);
+}

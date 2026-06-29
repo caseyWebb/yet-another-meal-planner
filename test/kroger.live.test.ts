@@ -36,7 +36,7 @@ describe.skipIf(!LIVE)("Kroger live smoke (read-only)", () => {
       KROGER_CLIENT_ID: process.env.KROGER_CLIENT_ID ?? vars.KROGER_CLIENT_ID,
       KROGER_CLIENT_SECRET: process.env.KROGER_CLIENT_SECRET ?? vars.KROGER_CLIENT_SECRET,
     } as unknown as Env;
-    kroger = createKrogerClient(env, { cache: { token: null, locationId: null } });
+    kroger = createKrogerClient(env, { cache: { token: null } });
   });
 
   it("mints a token and resolves a locationId from a ZIP label", async () => {

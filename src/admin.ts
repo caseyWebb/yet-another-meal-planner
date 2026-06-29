@@ -57,7 +57,7 @@ import {
   guidanceObject,
 } from "./admin-data.js";
 import { isCorpusTable, listCorpusTable, addCorpusRow, deleteCorpusRow } from "./admin-corpus.js";
-import { fetchUsage, fetchUsageTrends } from "./usage.js";
+import { fetchUsage, fetchUsageTrends, fetchToolUsage } from "./usage.js";
 import { buildKrogerConsentUrl } from "./oauth.js";
 import type { KvStore } from "./kroger-user.js";
 
@@ -441,6 +441,15 @@ async function routeAdminApi(
   // `{ configured: false }` when the CF analytics vars are unset.
   if (path === "/admin/api/usage/trends") {
     if (method === "GET") return fetchUsageTrends(env);
+    throw new ToolError("unsupported", `Method ${method} not supported on ${path}`);
+  }
+
+  // Tool usage (tool-usage-trends): per-MCP-tool-call metrics (count, error count, p50/p95
+  // duration) over the recent window, read from the Analytics Engine SQL API (the `grocery_tool`
+  // dataset every tool call emits to). Same Access gate + opt-in config; performs NO KV or D1.
+  // Reports `{ configured: false }` when the CF analytics vars are unset.
+  if (path === "/admin/api/usage/tools") {
+    if (method === "GET") return fetchToolUsage(env);
     throw new ToolError("unsupported", `Method ${method} not supported on ${path}`);
   }
 

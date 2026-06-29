@@ -3,12 +3,16 @@ module Usage exposing
     , KvCounts
     , Model
     , Msg
+    , ToolUsage
+    , ToolsView(..)
     , TrendDay
     , TrendsView(..)
     , UsageData
     , UsageView(..)
+    , errorRate
     , init
     , isOver
+    , toolsViewDecoder
     , trendsViewDecoder
     , update
     , usageViewDecoder
@@ -63,6 +67,7 @@ import RemoteData exposing (RemoteData(..), WebData)
 type alias Model =
     { usage : WebData UsageView
     , trends : WebData TrendsView
+    , tools : WebData ToolsView
     }
 
 
@@ -145,9 +150,32 @@ type alias TrendDay =
     }
 
 
+{-| The tool-usage payload (tool-usage-trends): either the deployment has no Cloudflare Analytics
+config (the same opt-in the snapshot uses), or it carries each MCP tool's window aggregates. Decoded
+from the `configured` flag, so "configured but no data" is unrepresentable.
+-}
+type ToolsView
+    = ToolsNotConfigured
+    | ToolsConfigured (List ToolUsage)
+
+
+{-| One MCP tool's aggregate metrics over the window: call count, error count (the error RATE is
+derived in the view, never stored — it can't drift from the counts), and p50/p95 call duration (ms).
+-}
+type alias ToolUsage =
+    { tool : String
+    , calls : Int
+    , errors : Int
+    , p50Ms : Float
+    , p95Ms : Float
+    }
+
+
 init : ( Model, Cmd Msg )
 init =
-    ( { usage = Loading, trends = Loading }, Cmd.batch [ fetchUsage, fetchTrends ] )
+    ( { usage = Loading, trends = Loading, tools = Loading }
+    , Cmd.batch [ fetchUsage, fetchTrends, fetchTools ]
+    )
 
 
 
@@ -157,6 +185,7 @@ init =
 type Msg
     = GotUsage (WebData UsageView)
     | GotTrends (WebData TrendsView)
+    | GotTools (WebData ToolsView)
     | Refresh
 
 
@@ -169,8 +198,13 @@ update msg model =
         GotTrends trends ->
             ( { model | trends = trends }, Cmd.none )
 
+        GotTools tools ->
+            ( { model | tools = tools }, Cmd.none )
+
         Refresh ->
-            ( { model | usage = Loading, trends = Loading }, Cmd.batch [ fetchUsage, fetchTrends ] )
+            ( { model | usage = Loading, trends = Loading, tools = Loading }
+            , Cmd.batch [ fetchUsage, fetchTrends, fetchTools ]
+            )
 
 
 
@@ -288,6 +322,40 @@ trendDayDecoder =
         (Decode.field "total_ms" Decode.float)
 
 
+fetchTools : Cmd Msg
+fetchTools =
+    Http.get
+        { url = "/admin/api/usage/tools"
+        , expect = Http.expectJson (RemoteData.fromResult >> GotTools) toolsViewDecoder
+        }
+
+
+{-| Decode the tool-usage payload, branching on the `configured` discriminator: `false` is the
+not-available state (no tools follow); `true` carries each tool's window aggregates.
+-}
+toolsViewDecoder : Decoder ToolsView
+toolsViewDecoder =
+    Decode.field "configured" Decode.bool
+        |> Decode.andThen
+            (\configured ->
+                if configured then
+                    Decode.map ToolsConfigured (Decode.field "tools" (Decode.list toolUsageDecoder))
+
+                else
+                    Decode.succeed ToolsNotConfigured
+            )
+
+
+toolUsageDecoder : Decoder ToolUsage
+toolUsageDecoder =
+    Decode.map5 ToolUsage
+        (Decode.field "tool" Decode.string)
+        (Decode.field "calls" Decode.int)
+        (Decode.field "errors" Decode.int)
+        (Decode.field "p50_ms" Decode.float)
+        (Decode.field "p95_ms" Decode.float)
+
+
 
 -- VIEW
 
@@ -301,6 +369,7 @@ view model =
             ]
         , viewBody model.usage
         , viewTrends model.trends
+        , viewTools model.tools
         ]
 
 
@@ -566,6 +635,107 @@ weightedAvgMs days =
 formatMs : Float -> String
 formatMs ms =
     String.fromInt (round ms) ++ " ms"
+
+
+{-| The Tool usage panel (tool-usage-trends): each MCP tool's call count, error rate, and latency
+percentiles over the recent window, sourced from `GET /admin/api/usage/tools`. Mirrors the trends
+panel's `WebData` discipline, degrading to an explicit "not available" state when analytics is unset.
+-}
+viewTools : WebData ToolsView -> Html Msg
+viewTools tools =
+    case tools of
+        NotAsked ->
+            text ""
+
+        Loading ->
+            div [ class "card" ] [ p [ class "muted" ] [ text "Loading tool usage…" ] ]
+
+        Failure error ->
+            div [ class "error" ] [ text ("Could not load /admin/api/usage/tools: " ++ httpError error) ]
+
+        Success ToolsNotConfigured ->
+            viewToolsNotConfigured
+
+        Success (ToolsConfigured toolList) ->
+            viewToolUsageList toolList
+
+
+{-| The opt-in-unset state for tool usage: it reuses the snapshot's analytics config, so name the
+same two variables, mirroring the "not configured" degradation elsewhere.
+-}
+viewToolsNotConfigured : Html Msg
+viewToolsNotConfigured =
+    div [ class "card" ]
+        [ strong [] [ text "Tool usage not available. " ]
+        , text "Per-tool call history comes from the Workers Analytics Engine SQL API, which reuses "
+        , span [ class "summary-k" ] [ text "CF_ACCOUNT_ID" ]
+        , text " and "
+        , span [ class "summary-k" ] [ text "CF_ANALYTICS_TOKEN" ]
+        , text ". Set them to see per-tool calls, error rate, and latency over the last 30 days."
+        ]
+
+
+viewToolUsageList : List ToolUsage -> Html Msg
+viewToolUsageList tools =
+    div [ class "card" ]
+        (h2 [] [ text "Tool usage" ]
+            :: p [ class "muted small" ] [ text "MCP tool calls over the last 30 days, busiest first: count · error rate · p50 / p95 latency, from Analytics Engine." ]
+            :: (if List.isEmpty tools then
+                    [ p [ class "muted" ] [ text "No tool calls recorded yet." ] ]
+
+                else
+                    List.map viewToolRow tools
+               )
+        )
+
+
+{-| One tool's window summary: name, then call count, derived error rate, and p50/p95 latency. The
+row turns red when any call errored in the window (error rate > 0) — the loud signal.
+-}
+viewToolRow : ToolUsage -> Html Msg
+viewToolRow t =
+    let
+        cls =
+            if t.errors > 0 then
+                "fail"
+
+            else
+                "ok"
+    in
+    div [ class "status-row" ]
+        [ div [ class "status-line" ]
+            [ span [ class ("dot " ++ cls) ] []
+            , span [ class "status-label" ] [ text t.tool ]
+            , span [ class "status-word muted small" ] [ text (toolMetrics t) ]
+            ]
+        ]
+
+
+toolMetrics : ToolUsage -> String
+toolMetrics t =
+    String.join " · "
+        [ String.fromInt t.calls ++ " calls"
+        , formatPct (errorRate t) ++ " err"
+        , "p50 " ++ formatMs t.p50Ms
+        , "p95 " ++ formatMs t.p95Ms
+        ]
+
+
+{-| A tool's error rate as a fraction of its calls (0 when it had no calls). Derived, never stored —
+pinned by `tests/UsageTest.elm`.
+-}
+errorRate : ToolUsage -> Float
+errorRate t =
+    if t.calls <= 0 then
+        0
+
+    else
+        toFloat t.errors / toFloat t.calls
+
+
+formatPct : Float -> String
+formatPct frac =
+    String.fromInt (round (frac * 100)) ++ "%"
 
 
 httpError : Http.Error -> String

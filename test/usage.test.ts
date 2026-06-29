@@ -2,8 +2,10 @@ import { describe, it, expect } from "vitest";
 import {
   fetchUsage,
   fetchUsageTrends,
+  fetchToolUsage,
   mapAccountUsage,
   mapTrendRows,
+  mapToolUsageRows,
   utcDay,
   FREE_TIER_LIMITS,
   TRENDS_WINDOW_DAYS,
@@ -209,6 +211,54 @@ describe("fetchUsageTrends", () => {
       throw new Error("network down");
     }) as unknown as typeof fetch;
     await expect(fetchUsageTrends(configuredEnv(), { fetchImpl, now: () => 1 })).rejects.toMatchObject({
+      code: "upstream_unavailable",
+    });
+  });
+});
+
+describe("mapToolUsageRows", () => {
+  it("maps AE SQL rows into per-tool aggregates, busiest-first, coercing numeric strings", () => {
+    const rows = [
+      { tool: "read_recipe", calls: "5", errors: "1", p50_ms: "12", p95_ms: "40" },
+      { tool: "place_order", calls: 20, errors: 0, p50_ms: 300, p95_ms: 900 },
+    ];
+    const result = mapToolUsageRows(rows, 1_700_000_000_000, TRENDS_WINDOW_DAYS);
+    if (!result.configured) throw new Error("expected configured");
+    expect(result.window_days).toBe(TRENDS_WINDOW_DAYS);
+    // ordered by call count descending
+    expect(result.tools.map((t) => t.tool)).toEqual(["place_order", "read_recipe"]);
+    expect(result.tools[1]).toEqual({ tool: "read_recipe", calls: 5, errors: 1, p50_ms: 12, p95_ms: 40 });
+  });
+
+  it("drops rows with no tool name and tolerates an empty result set", () => {
+    const result = mapToolUsageRows([{ calls: 9 }], 1, TRENDS_WINDOW_DAYS);
+    if (!result.configured) throw new Error("expected configured");
+    expect(result.tools).toEqual([]);
+    expect(mapToolUsageRows([], 1, TRENDS_WINDOW_DAYS)).toMatchObject({ configured: true, tools: [] });
+  });
+});
+
+describe("fetchToolUsage", () => {
+  it("returns { configured: false } and makes NO request when the CF vars are unset", async () => {
+    const f = fetchReturning({ data: [] });
+    const result = await fetchToolUsage({} as unknown as Env, { fetchImpl: f.fetchImpl, now: () => 1 });
+    expect(result).toEqual({ configured: false });
+    expect(f.calls).toBe(0);
+  });
+
+  it("maps the AE SQL `data` rows into a tool-usage payload", async () => {
+    const f = fetchReturning({
+      data: [{ tool: "kroger_prices", calls: 12, errors: 2, p50_ms: 250, p95_ms: 800 }],
+    });
+    const result = await fetchToolUsage(configuredEnv(), { fetchImpl: f.fetchImpl, now: () => 1 });
+    if (!result.configured) throw new Error("expected configured");
+    expect(f.calls).toBe(1);
+    expect(result.tools[0]).toEqual({ tool: "kroger_prices", calls: 12, errors: 2, p50_ms: 250, p95_ms: 800 });
+  });
+
+  it("throws upstream_unavailable on a non-2xx", async () => {
+    const f = fetchReturning("nope", 403);
+    await expect(fetchToolUsage(configuredEnv(), { fetchImpl: f.fetchImpl, now: () => 1 })).rejects.toMatchObject({
       code: "upstream_unavailable",
     });
   });

@@ -87,13 +87,15 @@ export function mergeWranglerConfig(code, operator) {
   // concern; the binding itself simply propagates here.)
   if (code.r2_buckets !== undefined) out.r2_buckets = code.r2_buckets;
 
-  // analytics_engine_datasets: the usage-trends history dataset binding (usage-trends). A NEW
-  // binding TYPE — like `ai`/`assets`/`r2_buckets` it carries no operator-owned id and no
-  // secret (AE datasets are account-scoped automatically), so the whole binding propagates
-  // verbatim from code. WITHOUT this line the merge silently drops `analytics_engine_datasets`
-  // from every operator's deployed config and `env.USAGE_AE` is undefined — the per-run usage
-  // points vanish (best-effort, so nothing errors; the trends panel just stays empty). This is
-  // exactly the silent-drop trap the allowlist guards: a new binding type must be added here.
+  // analytics_engine_datasets: the AE history-tier dataset bindings — `USAGE_AE`/`grocery_usage`
+  // (usage-trends, per-job) and `TOOL_AE`/`grocery_tool` (tool-usage-trends, per-tool-call). A
+  // binding TYPE — like `ai`/`assets`/`r2_buckets` it carries no operator-owned id and no secret
+  // (AE datasets are account-scoped automatically), so the WHOLE array propagates verbatim from
+  // code, keyed by type rather than by binding name — a SECOND dataset rides through with no extra
+  // line. WITHOUT this the merge silently drops `analytics_engine_datasets` from every operator's
+  // deployed config and both `env.USAGE_AE`/`env.TOOL_AE` are undefined — the points vanish
+  // (best-effort, so nothing errors; the panels just stay empty). The silent-drop trap the
+  // allowlist guards; a regression test pins that both bindings survive.
   if (code.analytics_engine_datasets !== undefined) out.analytics_engine_datasets = code.analytics_engine_datasets;
 
   return out;

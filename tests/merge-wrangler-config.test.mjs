@@ -35,7 +35,10 @@ const code = {
   ai: { binding: "AI" },
   assets: { directory: "./admin/dist", binding: "ASSETS", run_worker_first: ["/admin", "/admin/*"] },
   r2_buckets: [{ binding: "CORPUS", bucket_name: "grocery-corpus" }],
-  analytics_engine_datasets: [{ binding: "USAGE_AE", dataset: "grocery_usage" }],
+  analytics_engine_datasets: [
+    { binding: "USAGE_AE", dataset: "grocery_usage" },
+    { binding: "TOOL_AE", dataset: "grocery_tool" },
+  ],
 };
 
 // A slim operator config (post-template).
@@ -67,11 +70,15 @@ test("the R2 corpus bucket binding propagates verbatim from code (the silent-dro
   assert.deepEqual(out.r2_buckets, [{ binding: "CORPUS", bucket_name: "grocery-corpus" }]);
 });
 
-test("the Analytics Engine dataset binding propagates verbatim from code (the silent-drop trap)", () => {
-  // usage-trends: a new binding TYPE the merge must allowlist explicitly, or the per-run
-  // usage points are silently dropped from every operator's deploy (`env.USAGE_AE` undefined).
+test("both Analytics Engine dataset bindings propagate verbatim from code (the silent-drop trap)", () => {
+  // usage-trends + tool-usage-trends: the merge copies the WHOLE array by type, so a SECOND
+  // dataset instance rides through. WITHOUT the allowlist line both `env.USAGE_AE` (per-job)
+  // and `env.TOOL_AE` (per-tool-call) are undefined and every operator's points vanish.
   const out = mergeWranglerConfig(code, operator); // operator declares no analytics_engine_datasets
-  assert.deepEqual(out.analytics_engine_datasets, [{ binding: "USAGE_AE", dataset: "grocery_usage" }]);
+  assert.deepEqual(out.analytics_engine_datasets, [
+    { binding: "USAGE_AE", dataset: "grocery_usage" },
+    { binding: "TOOL_AE", dataset: "grocery_tool" },
+  ]);
 });
 
 test("compatibility settings come from code even if the operator differs", () => {

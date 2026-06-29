@@ -8,7 +8,7 @@ the `isOver` limit predicate. The types can't prove these — the shapes can.
 import Expect
 import Json.Decode as Decode
 import Test exposing (Test, describe, test)
-import Usage exposing (TrendsView(..), UsageView(..))
+import Usage exposing (ToolsView(..), TrendsView(..), UsageView(..))
 
 
 suite : Test
@@ -43,6 +43,27 @@ suite =
                     Decode.decodeString Usage.trendsViewDecoder configuredTrends
                         |> Result.map summarizeTrends
                         |> Expect.equal (Ok { jobs = 1, firstJob = "flyer-warm", days = 2, latestRuns = 288 })
+            ]
+        , describe "toolsViewDecoder"
+            [ test "an unconfigured payload decodes to the ToolsNotConfigured state" <|
+                \_ ->
+                    Decode.decodeString Usage.toolsViewDecoder "{\"configured\":false}"
+                        |> Expect.equal (Ok ToolsNotConfigured)
+            , test "a configured payload decodes each tool's aggregates" <|
+                \_ ->
+                    Decode.decodeString Usage.toolsViewDecoder configuredTools
+                        |> Result.map summarizeTools
+                        |> Expect.equal (Ok { tools = 2, firstTool = "kroger_prices", firstCalls = 12 })
+            ]
+        , describe "errorRate"
+            [ test "is errors over calls" <|
+                \_ ->
+                    Usage.errorRate { tool = "x", calls = 20, errors = 5, p50Ms = 1, p95Ms = 2 }
+                        |> Expect.within (Expect.Absolute 0.0001) 0.25
+            , test "is zero when the tool had no calls (no division by zero)" <|
+                \_ ->
+                    Usage.errorRate { tool = "x", calls = 0, errors = 0, p50Ms = 0, p95Ms = 0 }
+                        |> Expect.equal 0
             ]
         ]
 
@@ -88,6 +109,38 @@ summarizeTrends view =
 
                 [] ->
                     { jobs = 0, firstJob = "", days = 0, latestRuns = -1 }
+
+
+{-| Pull the compiler-opaque values out of a decoded `ToolsConfigured` payload for one assertion;
+a `ToolsNotConfigured` (shouldn't happen for this fixture) yields sentinel values that fail.
+-}
+summarizeTools : ToolsView -> { tools : Int, firstTool : String, firstCalls : Int }
+summarizeTools view =
+    case view of
+        ToolsNotConfigured ->
+            { tools = -1, firstTool = "", firstCalls = -1 }
+
+        ToolsConfigured tools ->
+            case tools of
+                first :: _ ->
+                    { tools = List.length tools, firstTool = first.tool, firstCalls = first.calls }
+
+                [] ->
+                    { tools = 0, firstTool = "", firstCalls = -1 }
+
+
+configuredTools : String
+configuredTools =
+    """
+    { "configured": true
+    , "generated_at": 1700000000000
+    , "window_days": 30
+    , "tools":
+        [ { "tool": "kroger_prices", "calls": 12, "errors": 2, "p50_ms": 250.0, "p95_ms": 800.0 }
+        , { "tool": "read_recipe", "calls": 5, "errors": 0, "p50_ms": 12.0, "p95_ms": 40.0 }
+        ]
+    }
+    """
 
 
 configuredTrends : String
