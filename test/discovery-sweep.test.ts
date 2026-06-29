@@ -6,6 +6,7 @@ import {
   dietaryOk,
   nearAnyMember,
   isLikelyNonRecipeLink,
+  selectFeedBatch,
   DEFAULT_CONFIG,
   type DiscoveryDeps,
   type DiscoveryConfig,
@@ -417,5 +418,61 @@ describe("runDiscoverySweep", () => {
     expect(calls.acquire).toBe(1);
     expect(res.parked).toBe(1);
     expect(res.deferred).toBe(1);
+  });
+});
+
+describe("selectFeedBatch — feed-poll rotation (#54)", () => {
+  const feeds = ["a", "b", "c", "d", "e"]; // stand-ins for url-sorted feeds
+
+  it("returns at most k and advances the cursor", () => {
+    const { batch, nextCursor } = selectFeedBatch(feeds, 0, 2);
+    expect(batch).toEqual(["a", "b"]);
+    expect(nextCursor).toBe(2);
+  });
+
+  it("wraps around the end of the list", () => {
+    const { batch, nextCursor } = selectFeedBatch(feeds, 4, 3);
+    expect(batch).toEqual(["e", "a", "b"]);
+    expect(nextCursor).toBe(2);
+  });
+
+  it("polls k >= n as the whole list, returning to the same start", () => {
+    const { batch, nextCursor } = selectFeedBatch(feeds, 1, 10);
+    expect(batch).toEqual(["b", "c", "d", "e", "a"]);
+    expect(nextCursor).toBe(1);
+  });
+
+  it("covers every feed over successive ticks with no starvation", () => {
+    const seen = new Set<string>();
+    let cursor = 0;
+    for (let tick = 0; tick < 3; tick++) {
+      const r = selectFeedBatch(feeds, cursor, 2);
+      r.batch.forEach((f) => seen.add(f));
+      cursor = r.nextCursor;
+    }
+    expect(seen).toEqual(new Set(feeds)); // 3 ticks × 2 ≥ 5 feeds
+  });
+
+  it("reaches a newly added (add-only) feed within a bounded number of ticks", () => {
+    const grown = [...feeds, "f", "g"]; // 7 feeds
+    const seen = new Set<string>();
+    let cursor = 0;
+    for (let tick = 0; tick < Math.ceil(grown.length / 2); tick++) {
+      const r = selectFeedBatch(grown, cursor, 2);
+      r.batch.forEach((f) => seen.add(f));
+      cursor = r.nextCursor;
+    }
+    expect(seen.has("g")).toBe(true);
+  });
+
+  it("normalizes a lost/garbage/negative/out-of-range cursor", () => {
+    expect(selectFeedBatch(feeds, Number.NaN, 2).batch).toEqual(["a", "b"]); // cold start
+    expect(selectFeedBatch(feeds, -1, 2).batch).toEqual(["e", "a"]); // -1 → index 4
+    expect(selectFeedBatch(feeds, 12, 1).batch).toEqual(["c"]); // 12 mod 5 = 2
+  });
+
+  it("handles an empty feed set and a non-positive k", () => {
+    expect(selectFeedBatch([], 3, 2)).toEqual({ batch: [], nextCursor: 0 });
+    expect(selectFeedBatch(feeds, 0, 0)).toEqual({ batch: [], nextCursor: 0 });
   });
 });

@@ -75,6 +75,7 @@ export async function loadDiscoveryConfig(env: Env): Promise<DiscoveryConfig> {
     logRetentionDays: validatedKnob(row.log_retention_days, (n) => n > 0 && Number.isInteger(n)) ?? DEFAULT_CONFIG.logRetentionDays,
     retryBackoffMinutes: DEFAULT_CONFIG.retryBackoffMinutes,
     retryFetchMaxPerTick: DEFAULT_CONFIG.retryFetchMaxPerTick,
+    feedFetchMaxPerTick: DEFAULT_CONFIG.feedFetchMaxPerTick,
   };
 }
 

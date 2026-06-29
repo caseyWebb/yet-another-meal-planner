@@ -13,7 +13,8 @@
 
 import type { Env } from "./env.js";
 import { db } from "./db.js";
-import { canonicalizeUrl } from "./url.js";
+import { canonicalizeUrl, isPublicHttpUrl } from "./url.js";
+import { ToolError } from "./errors.js";
 import type { CachedMapping } from "./matching.js";
 
 /** Parse a JSON column, tolerating null/empty/garbage as `[]`. */
@@ -206,6 +207,15 @@ export async function addFeedRows(
   const stmts: D1PreparedStatement[] = [];
   for (const f of feeds) {
     if (typeof f.url !== "string" || !f.url.trim() || have.has(f.url)) continue;
+    // Egress safety (outbound-fetch-safety): never STORE a feed URL the sweep/probe could later
+    // be steered into fetching against an internal/non-http target — the write-time half of the
+    // guard the fetch primitive applies. Atomic: a bad URL rejects the batch before any write.
+    if (!isPublicHttpUrl(f.url)) {
+      throw new ToolError("validation_failed", `Feed URL must be a public http(s) URL: ${f.url}`, {
+        field: "url",
+        url: f.url,
+      });
+    }
     have.add(f.url);
     stmts.push(
       d.prepare(

@@ -109,6 +109,29 @@ describe("flyer terms / feeds (D1)", () => {
     expect(await deleteFeed(env, "https://a.com")).toBe(false);
     expect(tables.feeds).toHaveLength(0);
   });
+
+  it("rejects a non-public feed url at write time, storing nothing (outbound-fetch-safety)", async () => {
+    for (const bad of [
+      "http://127.0.0.1/feed.xml",
+      "http://169.254.169.254/",
+      "file:///etc/passwd",
+      "http://admin:pw@example.com/feed",
+      "http://localhost:8080/rss",
+    ]) {
+      const { env, tables } = fakeD1({ tables: { feeds: [] } });
+      // Atomic: a good url in the same batch is NOT stored when another is rejected.
+      await expect(addFeedRows(env, [{ url: "https://good.example/rss" }, { url: bad }])).rejects.toMatchObject({
+        code: "validation_failed",
+      });
+      expect(tables.feeds).toHaveLength(0);
+    }
+  });
+
+  it("stores a valid public feed url", async () => {
+    const { env } = fakeD1({ tables: { feeds: [] } });
+    expect(await addFeedRows(env, [{ url: "https://fresh.example/rss" }])).toBe(1);
+    expect((await readFeeds(env)).map((f) => f.url)).toEqual(["https://fresh.example/rss"]);
+  });
 });
 
 describe("discovery allowlist + inbox (D1)", () => {
