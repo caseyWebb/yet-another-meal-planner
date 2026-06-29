@@ -16,7 +16,7 @@ The Worker *is* the backend: the admin operations already exist as plain TS func
 - **SSR + islands:** server-render pages by calling `src/` functions directly; hydrate only the interactive regions as islands; islands update via Hono's `hc` typed RPC. One source of truth per operation across both transports.
 - Kill the hand-mirrored decoder seam (zero codegen).
 - Make the UI buildable in any sandbox (remove the `package.elm-lang.org` dependency).
-- Preserve **every** observable behavior: Access gating, member lifecycle, tool console, corpus editors, calibration, discovery-log actions, Kroger-consent link.
+- Preserve **every** observable behavior of the ported areas: Access gating, member lifecycle, corpus editors, calibration, discovery-log actions, Kroger-consent link.
 - Port the `admin/CLAUDE.md` "impossible states impossible" discipline to TypeScript.
 - Establish a thin JSX **component kit** (incl. a `Loadable` RemoteData primitive) the areas compose from; keep styling as global CSS.
 - Add **Playwright** end-to-end + visual-regression tests in CI, emitting screenshot diffs as PR artifacts.
@@ -24,7 +24,7 @@ The Worker *is* the backend: the admin operations already exist as plain TS func
 **Non-Goals:**
 - No second Worker, no meta-framework (SvelteKit/HonoX/Vite). One deployable.
 - No change to the determinism boundary, the `src/` operation functions, the D1 schema, or the MCP surface.
-- No change to the panel's *observable capabilities* — this is a re-platform, not a feature change.
+- No change to the panel's *observable capabilities* — this is a re-platform, not a feature change — **except** the Dev → Tool Console (MCP inspector), which is **dropped** (dedicated external MCP-inspector tooling covers it; it didn't earn its keep).
 - SSR is **not a hard requirement**: a surface MAY ship islands-only (CSR) first and gain SSR later.
 
 ## Decisions
@@ -33,7 +33,7 @@ The Worker *is* the backend: the admin operations already exist as plain TS func
 Hono is a router, not a Worker generator: it mounts under the existing `fetch` with `app.route('/admin', …)`, leaving `OAuthProvider` on top and the `email`/`scheduled` handlers untouched. **Alternatives rejected:** *SvelteKit as its own Worker* — it generates the Worker entry, colliding with `OAuthProvider`; the path of least resistance is a second Worker, which forces an A/B fork (either bind D1/R2/KV + the Kroger secret into a second Worker, splitting the determinism boundary across two deploys, or build an RPC layer). *Hono SPA-only* — loses the SSR win for the read-heavy half (Status/Data/Usage). One Worker, one binding set, one determinism boundary; no fork.
 
 ### 2. SSR for reads, islands for interactions
-Read-heavy areas (Status, Data explorer, Usage) are **SSR-only** — no island, no client fetch. Interactive areas (Members, Tool Console, Calibration, corpus editors, Logs) are **SSR + island(s)**: the page and the island's initial props are server-rendered; the island hydrates from those props (no fetch on first paint) and uses `hc` for subsequent mutations/live-previews/incremental reads. An island is the smallest interactive *region* of a page, not necessarily the whole route.
+Read-heavy areas (Status, Data explorer, Usage) are **SSR-only** — no island, no client fetch. Interactive areas (Members, Calibration, corpus editors, Logs) are **SSR + island(s)**: the page and the island's initial props are server-rendered; the island hydrates from those props (no fetch on first paint) and uses `hc` for subsequent mutations/live-previews/incremental reads. An island is the smallest interactive *region* of a page, not necessarily the whole route.
 
 ### 3. `hc` is typed `fetch`, not a new protocol
 `hc<AppType>()` infers request/response types from the Hono route definitions at compile time; at runtime it is plain JSON-over-HTTP — the same wire the Elm app uses today. **Not gRPC** (no protobuf, no HTTP/2, no codegen). The value is shared types, not a new transport. SSR props are typed by the `src/` function's return type; `hc` calls by the exported route type — both zero-codegen, both reflecting the same `src/` signatures.
@@ -59,7 +59,7 @@ Navigation between areas is **full SSR** — no client-side router, no client ro
 The existing ~120-line stylesheet is extracted from the inline `<style>` into a **served `admin/dist/admin/styles.css`** (SSR has no single `index.html`), linked from a shared layout component and reachable for the View-Transition opt-in. Its semantic class vocabulary (`.card`, `.pill`, `.tier.<status>`, `.dialog`, …) and `:root` tokens stay **global** — for 120 lines on a one-operator tool, CSS Modules / CSS-in-JS / Tailwind are overhead with no payoff. A thin **component kit** (`admin/src/ui/`) of ~10–15 JSX primitives — `Card`, `Button`, `Pill`, `TierBadge`, `Dot`, `Dialog`, `Field`, `ErrorBanner`, `Table`, a layout, and a **`Loadable`** that renders the 4-state RemoteData union (Decision 7) — gives the real component win (composition, typed props, change-once) and co-locates each component's markup + class usage, while styling stays simple and global. The 7 areas compose from this kit.
 
 ### 10. Testing: vitest (logic) + Playwright visual snapshots in CI
-Pure logic (route parsing, JSONC stripping, schema-example generation, table-editor logic) is **vitest**, ported directly from the Elm tests. End-to-end + **visual regression** is **Playwright**, run in CI against a `wrangler dev` preview: `toHaveScreenshot()` with **committed baseline PNGs** (the repo's committed-artifact pattern), rendered inside the pinned Playwright container so local and CI match, with diff images uploaded as **CI artifacts on the PR** — so an agent-written PR carries before/after/diff screenshots as a first-class output. **No SaaS, no secret.** **Alternative noted:** *Percy/Chromatic* — a nicer inline-PR dashboard, but adds a hosted dependency + `PERCY_TOKEN` (and won't run on fork PRs); an optional upgrade, not the default.
+Pure logic (route parsing, the Status/Logs render helpers, table-editor logic) is **vitest**, ported directly from the Elm tests. End-to-end + **visual regression** is **Playwright**, run in CI against a `wrangler dev` preview: `toHaveScreenshot()` with **committed baseline PNGs** (the repo's committed-artifact pattern), rendered inside the pinned Playwright container so local and CI match, with diff images uploaded as **CI artifacts on the PR** — so an agent-written PR carries before/after/diff screenshots as a first-class output. **No SaaS, no secret.** **Alternative noted:** *Percy/Chromatic* — a nicer inline-PR dashboard, but adds a hosted dependency + `PERCY_TOKEN` (and won't run on fork PRs); an optional upgrade, not the default.
 
 ## Risks / Trade-offs
 
@@ -67,7 +67,7 @@ Pure logic (route parsing, JSONC stripping, schema-example generation, table-edi
 - **Loss of Elm's compiler-enforced totality** (TS allows escape hatches) → Discriminated unions + `ts-pattern` `.exhaustive()` + `assertNever`, under the existing strict `tsc`. The discipline was always the value; it ports.
 - **Hydration/serialization boundary** (island props must be JSON-serializable to avoid hydration mismatch) → These functions are already JSON-serialized over `/admin/api/*` today, so they are effectively JSON-shaped; enforce JSON-serializable prop types at the island boundary.
 - **Big-rewrite / partial-parity risk** → Build the Hono app to parity on the branch in phases; `/admin` cannot be served by both Elm and Hono at once, so cutover is a **single** flip (`handleAdmin` → `admin.fetch`) at the end. Rollback = revert that flip (the Elm bundle remains in history until the rip-out commit).
-- **`hono/jsx/dom` is younger than React** → Port Tool Console (the most dynamic island) second as a runtime-ceiling gate; forms, dialogs, and tables are well within its range, and a strain there is a contained one-island swap to Preact/React (data layer untouched).
+- **`hono/jsx/dom` is younger than React** → Validated on the Members + Logs islands (forms, dialogs, mutations via `hc`, one-at-a-time state) — well within range. A future strain on a complex island is a contained one-island swap to Preact/React (data layer untouched).
 - **Visual-snapshot flakiness across environments** → Run Playwright snapshots inside the pinned Playwright container so local and CI render identically; commit the baselines like any other generated artifact, and review diffs as PR artifacts.
 
 ## Migration Plan
@@ -75,7 +75,7 @@ Pure logic (route parsing, JSONC stripping, schema-example generation, table-edi
 Phased on the feature branch; the Elm panel keeps serving `/admin` until the final cutover flip.
 
 1. **Scaffold + Members thin vertical** — prove the whole pipeline (Hono mount, Access middleware, SSR-via-`src/`-call, one island, one typed route, esbuild build + `--check`, the component kit + served `styles.css` + View-Transition opt-in, the Playwright + visual-snapshot CI harness, vitest) on the smallest real CRUD surface, including the once-shown invite minting.
-2. **Tool Console (runtime-ceiling gate)** — port the most dynamic island second to validate `hono/jsx/dom` on schema-derived forms + the JSONC arg editor (and the `hc` invoke path) before the bulk; a strain here is a contained one-island swap to Preact/React.
+2. **Dev → Tool Console — DROPPED.** Not ported (external MCP-inspector tooling covers it; it didn't earn its keep). The `/admin/dev/*` area + `/admin/api/tools*` routes are removed at cutover. The island runtime is validated on the Members + Logs islands instead.
 3. **Read-heavy areas (SSR-only)** — Status, Logs list, Data explorer (5 views), Usage. Big seam reduction, minimal/no islands.
 4. **Remaining interactive areas (islands)** — Calibration (the form machine + analyze/dry-run/confirm-save), corpus editors (+ feed test), Logs actions (retry/delete + detail dialog).
 5. **Cutover + cleanup** — flip `handleAdmin` → `admin.fetch`; remove `admin/elm.json`, `admin/src/*.elm`, `admin/tests/*.elm` and the Elm toolchain; finish `build-admin.mjs`; drop the `package.elm-lang.org` step from CI; rewrite `admin/CLAUDE.md` and update `docs/ARCHITECTURE.md` / `CONTRIBUTING.md` in lockstep.

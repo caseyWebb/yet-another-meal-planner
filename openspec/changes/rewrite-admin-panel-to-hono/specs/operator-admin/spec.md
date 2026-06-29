@@ -35,24 +35,19 @@ Because `/admin*` is routed worker-first, the Worker SHALL produce each in-app r
 
 ### Requirement: Admin panel is organized into top-level areas with client-side routing
 
-The admin panel SHALL organize its surfaces into top-level areas — a **Status** area (the operator-facing background-job health view), a **Members** area (member management), a **Dev** area (the tool console and future developer surfaces), a **Logs** area (operator-auditable activity logs, organized by a left submenu of log sources), a **Config** area (the discovery calibration console and the shared-corpus editors, as routed sub-views), and a **Data** area (the read-only data explorer over D1 and the R2 corpus — see the operator-data-explorer capability) — each with its own URL, so a new surface is added as its own routed page rather than another card on a single page. The panel's **home** route (`/admin`) SHALL be the Status view; member management SHALL be reached at `/admin/members`, the tool console under `/admin/dev`, the logs under `/admin/logs` (with the selected source as a sub-route, e.g. `/admin/logs/discovery`), configuration under `/admin/config` (with the selected sub-view as a sub-route, e.g. `/admin/config/feeds`), and the data explorer under `/admin/data/*`, not at the panel root.
+The admin panel SHALL organize its surfaces into top-level areas — a **Status** area (the operator-facing background-job health view), a **Members** area (member management), a **Logs** area (operator-auditable activity logs, organized by a left submenu of log sources), a **Config** area (the discovery calibration console and the shared-corpus editors, as routed sub-views), and a **Data** area (the read-only data explorer over D1 and the R2 corpus — see the operator-data-explorer capability) — each with its own URL, so a new surface is added as its own routed page rather than another card on a single page. The panel's **home** route (`/admin`) SHALL be the Status view; member management SHALL be reached at `/admin/members`, the logs under `/admin/logs` (with the selected source as a sub-route, e.g. `/admin/logs/discovery`), configuration under `/admin/config` (with the selected sub-view as a sub-route, e.g. `/admin/config/feeds`), and the data explorer under `/admin/data/*`, not at the panel root.
 
-Each area's page SHALL be **server-rendered** for its URL, and its interactive controls SHALL be hydrated as islands. Navigating to a surface SHALL load that surface (server-rendered) at its own URL, and a deep link or refresh to a surface's URL SHALL load that surface directly. Within a hydrated surface, an interaction (e.g. selecting a tool, opening a detail dialog) MAY update state client-side without a full navigation.
+Each area's page SHALL be **server-rendered** for its URL, and its interactive controls SHALL be hydrated as islands. Navigating to a surface SHALL load that surface (server-rendered) at its own URL, and a deep link or refresh to a surface's URL SHALL load that surface directly. Within a hydrated surface, an interaction (e.g. opening a detail dialog, editing a config form) MAY update state client-side without a full navigation.
 
 #### Scenario: Each surface has its own URL
 
-- **WHEN** the operator opens a different area (e.g. Status, member management, the tool console, the logs, or config)
+- **WHEN** the operator opens a different area (e.g. Status, member management, the logs, or config)
 - **THEN** the browser URL is that surface's route and the surface renders for that URL
 
 #### Scenario: Home route shows the Status view
 
 - **WHEN** the operator opens `/admin` (or `/`)
 - **THEN** the Status (background-job health) view renders as the home surface, not member management
-
-#### Scenario: Deep link to a tool
-
-- **WHEN** the operator opens `/admin/dev/tools/<tool>` directly (or refreshes there)
-- **THEN** the Worker server-renders the Dev area with that tool selected
 
 #### Scenario: Deep link to a log
 
@@ -110,3 +105,25 @@ The admin UI SHALL carry forward the panel's data-modeling discipline in TypeScr
 
 - **WHEN** a developer adds a new variant to one of the panel's UI-state unions
 - **THEN** the build's exhaustiveness check flags every `switch`/match that does not yet handle the new variant
+
+## REMOVED Requirements
+
+### Requirement: Operator tool console lists the live MCP tool surface
+
+**Reason**: The Dev → Tool Console (MCP inspector) is dropped in the Hono rewrite — dedicated external MCP-inspector tooling covers this need better, and the in-panel console did not earn its keep. The `/admin/dev/*` area is not ported; the `GET /admin/api/tools` route is removed at cutover.
+
+### Requirement: Operator tool console invokes a tool as a chosen tenant
+
+**Reason**: Part of the dropped Dev → Tool Console area. The `POST /admin/api/tools/<name>` invoke route is removed at cutover.
+
+### Requirement: Tool invocation identity is operator-driven under Access
+
+**Reason**: Part of the dropped Dev → Tool Console area (governed tool invocation as a chosen tenant); no longer applicable with the console removed.
+
+### Requirement: The dev workbench shows and guards the acting persona
+
+**Reason**: The acting-persona workbench was a Tool Console concern; dropped with the area.
+
+### Requirement: The tool console seeds arguments with a schema-derived example and tolerates comments
+
+**Reason**: The schema-derived example generator + JSONC argument tolerance were Tool Console UI; dropped with the area.

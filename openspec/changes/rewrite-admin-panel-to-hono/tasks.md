@@ -15,13 +15,12 @@
 - [x] vitest coverage for the Members routes (`app.request(...)`): gate, SSR, list, onboard, structured-error, revoke
 - [ ] Stand up Playwright + a CI job (spin up `wrangler dev`, run E2E, upload screenshot/diff artifacts); commit the first Members visual-snapshot baseline (rendered in the Playwright container)
 
-## 2. Tool Console — runtime-ceiling gate
-- [ ] SSR the console shell + tool catalog via the same `buildServer` enumeration path the Elm console uses
-- [ ] Port the schema-derived example generator and the JSONC arg tolerance (comment/trailing-comma stripping) to TS
-- [ ] Hydrate the console as a `hono/jsx/dom` island; invoke tools via a typed route returning the structured result/error verbatim
-- [ ] Preserve the acting-persona guardrails (visible persona, no-invoke-without-persona, confirm-before-real-member)
-- [ ] **Gate:** if `hono/jsx/dom` strains on the dynamic forms, swap this one island to Preact/React (data layer untouched) and record it
-- [ ] Commit a Playwright visual-snapshot baseline for the tool console (catalog + seeded-args + result states)
+## 2. Dev → Tool Console — DROPPED
+The MCP inspector / Tool Console is **not ported** — dedicated external MCP-inspector tooling
+covers this better, and the in-panel console did not earn its keep. The `/admin/dev/*` area and
+its `/admin/api/tools` + `/admin/api/tools/:name` routes are removed at cutover (Phase 5). See
+the spec delta's REMOVED Requirements. (The island runtime was already validated on the Members
+and Logs islands, so no separate runtime-ceiling gate is needed.)
 
 ## 3. Read-heavy areas (SSR-only)
 - [x] Status home — SSR `buildHealthPayload` directly (headline, per-job rows, D1 row, admin-gate posture incl. exposed/AI-quota warnings, never-run state); the 503-decode dance is gone (in-process call)
@@ -40,6 +39,7 @@
 ## 5. Cutover + cleanup
 - [ ] Flip `handleAdmin` → `admin.fetch` so the Hono app serves all of `/admin`; remove the transition flag/branch
 - [ ] Remove `admin/elm.json`, `admin/src/*.elm`, `admin/tests/*.elm`, `scripts/test-admin.mjs` (Elm), and the pinned Elm compiler / `package.elm-lang.org` build dependency
+- [ ] Remove the **dropped Tool Console** backend: `GET /admin/api/tools` + `POST /admin/api/tools/:name` in `src/admin.ts`, and `src/admin-tools.ts` + its tests (if unused elsewhere)
 - [ ] Finish `scripts/build-admin.mjs` (esbuild-only); confirm `aubr build:admin --check` passes; drop the Elm reachability concern from CI
 - [ ] Repoint admin logic tests into the vitest run; the Playwright E2E + visual-snapshot suite runs in CI
 - [ ] Rewrite `admin/CLAUDE.md` for the TypeScript discipline (discriminated unions, `Loadable`, exhaustiveness)

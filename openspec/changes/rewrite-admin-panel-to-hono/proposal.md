@@ -5,7 +5,7 @@ The operator admin panel is ~8,400 lines of Elm whose type-safety guarantee stop
 ## What Changes
 
 - Replace the Elm SPA (`admin/src/**/*.elm`, `Browser.application`, `elm make`) with a **TypeScript admin app on Hono**, mounted inside the existing Worker where `handleAdmin` is called today (`src/index.ts:69`) — **no second Worker, no new deploy surface, one binding set, one determinism boundary**.
-- **Rendering: SSR + islands.** Pages are server-rendered with **`hono/jsx`** inside the Worker; the genuinely-interactive consoles (Calibration, Tool Console, Table/corpus editors, Members lifecycle) hydrate as **`hono/jsx/dom`** islands. Hono-native, zero deps beyond `hono`, no new build tooling. SSR is a nice-to-have, not a gate — a surface MAY ship islands-only (CSR) first.
+- **Rendering: SSR + islands.** Pages are server-rendered with **`hono/jsx`** inside the Worker; the genuinely-interactive surfaces (Calibration, Table/corpus editors, Members lifecycle, Logs row actions) hydrate as **`hono/jsx/dom`** islands. Hono-native, zero deps beyond `hono`, no new build tooling. SSR is a nice-to-have, not a gate — a surface MAY ship islands-only (CSR) first.
 - **Data flow.** Initial reads are SSR'd by calling the existing `src/` functions directly (no fetch, no decoder); island interactions (mutations, live previews) use Hono's `hc` **typed RPC client**. Both transports call the *same* `src/` functions — one source of truth, zero codegen on both paths.
 - **Component kit.** A thin `admin/src/ui/` set of JSX primitives (`Card`, `Button`, `Pill`, `TierBadge`, `Dialog`, `Field`, `ErrorBanner`, a layout, and a `Loadable` RemoteData primitive) the 7 areas compose from; the existing ~120-line stylesheet moves from inline `<style>` to a served `styles.css` and stays **global** (no CSS Modules/CSS-in-JS).
 - **Navigation.** Full SSR navigation between areas, polished with **cross-document View Transitions** (`@view-transition`, CSS-only) — no client-side router.
@@ -21,7 +21,7 @@ The operator admin panel is ~8,400 lines of Elm whose type-safety guarantee stop
 <!-- None. The panel's observable capabilities are preserved; this is an implementation re-platform. -->
 
 ### Modified Capabilities
-- `operator-admin`: the panel's **rendering model** (Elm `Browser.application` SPA → Hono SSR + hydrated islands), its **build** (`elm make` → esbuild islands + server JSX), and its **data-modeling discipline** (Elm `RemoteData`/custom types → TypeScript discriminated unions) change. Access gating, member lifecycle, the tool console, the shared-corpus editors, discovery calibration, the discovery-log actions, and the Kroger-consent link are **behavior-preserved**.
+- `operator-admin`: the panel's **rendering model** (Elm `Browser.application` SPA → Hono SSR + hydrated islands), its **build** (`elm make` → esbuild islands + server JSX), and its **data-modeling discipline** (Elm `RemoteData`/custom types → TypeScript discriminated unions) change. Access gating, member lifecycle, the shared-corpus editors, discovery calibration, the discovery-log actions, and the Kroger-consent link are **behavior-preserved**; the **Dev → Tool Console (MCP inspector) is dropped** (external tooling covers it — see the spec's REMOVED Requirements).
 
 ## Impact
 
