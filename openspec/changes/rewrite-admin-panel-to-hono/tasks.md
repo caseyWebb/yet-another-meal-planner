@@ -1,12 +1,12 @@
 # Tasks
 
-## 0. Resolve the island-runtime gate
-- [ ] Confirm the Claude design system's distribution form (CSS/tokens · web components · React component library) — see design.md Open Questions
-- [ ] Lock the island runtime: `hono/jsx/dom` (CSS/web-components) **or** Preact+`preact/compat` / real React (React components)
-- [ ] If a React design system: spike the actual design-system components under the chosen runtime (render + hydrate) before Phase 1
+## 0. Component source (runtime settled: React)
+- [ ] View runtime is **React** — Claude Design (claude.ai/design) is React-based and its designs map 1:1 onto shippable React (see design.md Decision 4)
+- [ ] Confirm where the panel's components come from: an existing synced design system the panel imports · screens designed in claude.ai/design whose React is shipped · the admin set built as its own syncable design system
+- [ ] Validate a representative design-system component renders via `react-dom/server` (edge entry) and hydrates via `react-dom/client` in the Phase-1 scaffold
 
 ## 1. Scaffold + Members thin vertical (pipeline proof)
-- [ ] Add `hono` dependency; add `jsx: "react-jsx"` + `jsxImportSource: "hono/jsx"` to `tsconfig.json`
+- [ ] Add `hono`, `react`, `react-dom` dependencies; set `jsx: "react-jsx"` (React) in `tsconfig.json`; use React's edge server entry for `react-dom/server`
 - [ ] Create the Hono admin app (`src/admin/app.ts`), `basePath('/admin')`, exporting its type for `hc`
 - [ ] Port `requireAccess` to Hono middleware (reuse the function verbatim); preserve the opt-in / dev-bypass / email-allowlist posture
 - [ ] Mount the app where `handleAdmin` is called (`src/index.ts:69`) **behind a flag/branch** so Elm still serves `/admin` until cutover
@@ -17,12 +17,11 @@
 - [ ] Establish the TS discipline primitives: `Loadable`/RemoteData union, `assertNever`, `ts-pattern` `.exhaustive()`
 - [ ] vitest coverage for the Members routes (`app.request(...)`) and the island
 
-## 2. Tool Console — runtime-ceiling gate
+## 2. Tool Console — complexity checkpoint
 - [ ] SSR the console shell + tool catalog via the same `buildServer` enumeration path the Elm console uses
 - [ ] Port the schema-derived example generator and the JSONC arg tolerance (comment/trailing-comma stripping) to TS
-- [ ] Hydrate the console as an island under the chosen runtime; invoke tools via a typed route returning the structured result/error verbatim
+- [ ] Hydrate the console as a React island; invoke tools via a typed route returning the structured result/error verbatim
 - [ ] Preserve the acting-persona guardrails (visible persona, no-invoke-without-persona, confirm-before-real-member)
-- [ ] **Gate:** if the runtime strains on the dynamic forms, swap this island to Preact (data layer untouched) and record the decision
 
 ## 3. Read-heavy areas (SSR-only)
 - [ ] Status home — SSR the `/health` payload rendering (headline, per-job rows, D1 row, admin-gate posture, never-run state, 503-is-data handling)
