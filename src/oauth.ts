@@ -82,6 +82,10 @@ const defaultPkce: Pkce = { generateVerifier, generateState, challengeFromVerifi
  */
 export async function mintAuthNonce(kv: KvStore, tenant: string): Promise<string> {
   const bound = normalizeTenantId(tenant);
+  // Precondition: callers pass an already-resolved tenant (the grant tenant in the
+  // tool path, an allowlist-resolved id in the admin path). The throw is a guard for
+  // a misuse that current callers can't hit; both call sites run inside a boundary
+  // (`runTool` / the admin try-catch) that serializes it into a structured error.
   if (!bound) throw new Error("mintAuthNonce requires a tenant");
   const nonce = base64url(crypto.getRandomValues(new Uint8Array(32)));
   const record: NonceRecord = { tenant: bound };
