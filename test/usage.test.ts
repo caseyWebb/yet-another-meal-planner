@@ -57,6 +57,14 @@ describe("defaultDeps fetch binding", () => {
       // default pins it to globalThis. This assertion fails against the unbound code.
       expect(capturedThis).toBe(globalThis);
       expect(capturedThis).not.toBe(mod.defaultDeps);
+
+      // Belt-and-suspenders: invoke the default fetchImpl DETACHED from its object, independent of
+      // `fetchUsage`'s control flow. A bound function ignores the receiver; an unbound one would
+      // capture `undefined` here (and `defaultDeps` when called as a method above).
+      capturedThis = "unset";
+      const detached = mod.defaultDeps.fetchImpl;
+      await detached("https://example.invalid/", { method: "POST" });
+      expect(capturedThis).toBe(globalThis);
     } finally {
       vi.unstubAllGlobals();
       vi.resetModules();
