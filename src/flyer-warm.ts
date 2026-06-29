@@ -352,10 +352,10 @@ export async function readFlyerRollup(
  * so the platform's native cron status reflects a failure. Thin glue over `runWarmTick`,
  * kept here (not in the handler) so it is unit-testable with injected deps + env.
  */
-export async function runWarmJob(env: Env, deps: WarmDeps): Promise<void> {
+export async function runWarmJob(env: Env, deps: WarmDeps, config: WarmConfig = {}): Promise<void> {
   const startedAt = deps.now();
   try {
-    const r = await runWarmTick(deps);
+    const r = await runWarmTick(deps, config);
     await writeJobHealth(env, "flyer-warm", {
       ok: true,
       last_run_at: startedAt,

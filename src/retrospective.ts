@@ -86,12 +86,19 @@ function inSeason(seasonValue: unknown, current: Season): boolean {
   return seasonValue.some((s) => normalizeSeason(String(s)) === current);
 }
 
-/** Days since a recipe was last cooked beyond which it counts as stale for `underused`. */
-const STALE_AFTER_DAYS = 30;
-/** Trailing window (months) over which repeated cooks reveal an unstarred favorite. */
-const REVEALED_MONTHS = 12;
-/** Minimum cooks within the trailing window to count as a revealed favorite. */
-const REVEALED_MIN_COOKS = 3;
+/** Per-member retrospective preferences; absent fields fall back to the compiled defaults. */
+export interface RetroConfig {
+  staleAfterDays?: number;
+  revealedMonths?: number;
+  revealedMinCooks?: number;
+}
+
+const DEFAULT_RETRO_CONFIG: Required<RetroConfig> = {
+  staleAfterDays: 30,
+  revealedMonths: 12,
+  revealedMinCooks: 3,
+};
+
 /** Cap on returned underused items; the full qualifying total rides in underused_count. */
 const UNDERUSED_CAP = 15;
 
@@ -104,7 +111,11 @@ export function retrospective(
   index: RecipeIndex,
   period: string,
   now: Date = new Date(),
+  retroConfig: RetroConfig = {},
 ): RetrospectiveResult {
+  const STALE_AFTER_DAYS = retroConfig.staleAfterDays ?? DEFAULT_RETRO_CONFIG.staleAfterDays;
+  const REVEALED_MONTHS = retroConfig.revealedMonths ?? DEFAULT_RETRO_CONFIG.revealedMonths;
+  const REVEALED_MIN_COOKS = retroConfig.revealedMinCooks ?? DEFAULT_RETRO_CONFIG.revealedMinCooks;
   const days = periodDays(period);
   const to = isoDay(now);
   let from: string;

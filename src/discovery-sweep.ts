@@ -114,6 +114,8 @@ export interface DiscoveryConfig {
   /** Max retryable-row fetches per tick — the retry sub-budget that prevents retries from
    *  starving fresh intake of the shared fetchMaxPerTick budget. */
   retryFetchMaxPerTick: number;
+  /** Days to retain discovery_log rows (audit/dedup window). */
+  logRetentionDays: number;
 }
 
 export const DEFAULT_CONFIG: DiscoveryConfig = {
@@ -135,6 +137,7 @@ export const DEFAULT_CONFIG: DiscoveryConfig = {
   retryMaxAttempts: 5,
   // Retry sub-budget: < fetchMaxPerTick so retries cannot consume the entire fetch budget.
   retryFetchMaxPerTick: 4,
+  logRetentionDays: 60,
 };
 
 export type Outcome =
@@ -904,7 +907,7 @@ export async function runDiscoverySweepJob(
       }, now),
     );
     const r = await runDiscoverySweep(deps, config);
-    const cutoff = new Date(startedAt - LOG_RETENTION_DAYS * 86_400_000).toISOString();
+    const cutoff = new Date(startedAt - config.logRetentionDays * 86_400_000).toISOString();
     const pruned = await pruneDiscoveryLog(env, cutoff);
     // Standing infrastructure-failure count (not just this tick's): an idle tick after an
     // outage must still read as degraded until the `failed` rows clear, so the health record

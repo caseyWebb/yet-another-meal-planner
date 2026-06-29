@@ -31,8 +31,18 @@ import { hashText } from "./hash.js";
 import { normalizeFacetCourse, EMPTY_FACETS, type ClassifiedFacets } from "./recipe-facets.js";
 import { isAiQuotaError, notifyFailure, recordUsagePoint, writeJobHealth } from "./health.js";
 
-/** Max recipes CLASSIFIED per tick (one env.AI call each — not batchable, like describe). */
-export const CLASSIFY_MAX_PER_TICK = 20;
+/** Max recipes CLASSIFIED per tick (one env.AI call each — not batchable, like describe). A SMALL cap:
+ *  classify is the first phase of the scheduled tick and blocks the projection/embed/discovery jobs after
+ *  it, so a large stale backlog × seconds-long env.AI calls can overrun the Worker invocation's resource
+ *  budget (exceededResources) and starve those later jobs. The cap (with the time budget below) keeps one
+ *  tick's work small; the rest of a backlog carries to later ticks via the hash gate. */
+export const CLASSIFY_MAX_PER_TICK = 6;
+
+/** Wall-clock budget for the classify loop within one tick. env.AI calls are seconds each and their
+ *  latency varies (and balloons near quota limits), so a fixed count alone can't bound the time — stop
+ *  STARTING new classifications once this elapses, leaving headroom in the invocation for the jobs that
+ *  run after classify. Whatever finished is persisted (gated); the rest stay pending for the next tick. */
+export const CLASSIFY_TIME_BUDGET_MS = 6_000;
 
 /** One corpus recipe the pass may (re)classify — body + the conditioning overrides + its gate hash. */
 export interface RecipeToClassify {
@@ -69,6 +79,9 @@ export interface FacetReconcileResult {
   /** True when Workers AI's daily free allocation (error 4006) was hit — the tick stops early and the
    *  remaining recipes are left un-gated so they retry once quota returns (no empty rows written). */
   quotaExhausted: boolean;
+  /** True when the per-tick wall-clock budget stopped the loop with stale recipes still unprocessed — a
+   *  signal there is a backlog being worked down a few per tick (e.g. after a bulk re-derive). */
+  timedOut: boolean;
 }
 
 /** The I/O the classify pass needs, injected so the logic is testable without R2/AI/D1. */
@@ -88,6 +101,8 @@ export interface DerivedFacetDeps {
   pruneOrphans(corpusSlugs: string[]): Promise<number>;
   /** Per-tick cap (injected so tests can shrink it). */
   maxPerTick: number;
+  /** Per-tick wall-clock budget for the classify loop, in ms (injected so tests can shrink it). */
+  timeBudgetMs: number;
   /** Epoch-ms clock (injected so tests can pin it). */
   now(): number;
 }
@@ -105,11 +120,22 @@ export async function reconcileRecipeFacets(deps: DerivedFacetDeps): Promise<Fac
 
   const stale = recipes.filter((r) => state.get(r.slug)?.body_hash !== r.bodyHash);
   const batch = stale.slice(0, deps.maxPerTick);
+  const startedAt = deps.now();
   let classified = 0;
   let parked = 0;
   let errored = 0;
   let quotaExhausted = false;
+  let timedOut = false;
   for (const r of batch) {
+    // Wall-clock guard: stop STARTING new classifications once the per-tick budget elapses, so classify
+    // (the first phase) leaves the invocation enough budget for the projection/embed/discovery jobs that
+    // run after it. The unprocessed recipes stay stale (counted pending) and carry to the next tick.
+    // This caps when a NEW classify starts, not mid-call — a classify already in flight runs to completion
+    // (no AbortSignal into env.AI), so the real bound is ~budget + one classify; the count cap caps the rest.
+    if (deps.now() - startedAt >= deps.timeBudgetMs) {
+      timedOut = true;
+      break;
+    }
     let facets: ClassifiedFacets;
     try {
       facets = await deps.classify(r);
@@ -152,6 +178,7 @@ export async function reconcileRecipeFacets(deps: DerivedFacetDeps): Promise<Fac
     errored,
     pruned,
     quotaExhausted,
+    timedOut,
   };
 }
 
@@ -331,6 +358,7 @@ export function buildFacetDeps(env: Env, store: CorpusStore): DerivedFacetDeps {
       return orphans.length;
     },
     maxPerTick: CLASSIFY_MAX_PER_TICK,
+    timeBudgetMs: CLASSIFY_TIME_BUDGET_MS,
     now: () => Date.now(),
   };
 }
@@ -356,6 +384,7 @@ export async function runFacetJob(env: Env, deps: DerivedFacetDeps): Promise<voi
         errored: r.errored,
         pruned: r.pruned,
         quota_exhausted: r.quotaExhausted,
+        timed_out: r.timedOut,
       },
     });
     // History point (usage-trends): doubles = [duration_ms, classified, pending, parked, errored, pruned].
