@@ -15,6 +15,13 @@ import {
 } from "../discovery-calibration.js";
 import { buildDiscoveryDeps, runDiscoverySweep, type DiscoveryConfig } from "../discovery-sweep.js";
 import { probeFeed, type FeedProbeResult } from "../discovery-probe.js";
+import {
+  loadOperatorConfig,
+  saveOperatorConfig,
+  validateOperatorConfig,
+  parseOperatorConfigPatch,
+  type OperatorConfig,
+} from "../operator-config.js";
 import { ToolError } from "../errors.js";
 
 /** The nine operator-editable discovery knobs (the read-only retry/feed defaults are never PUT). */
@@ -79,4 +86,19 @@ export async function testFeed(env: Env, body: Record<string, unknown>): Promise
   const url = typeof body.url === "string" ? body.url.trim() : "";
   if (!url) throw new ToolError("validation_failed", "A feed url is required", { field: "url" });
   return probeFeed(url);
+}
+
+// --- Ranking + Flyer (operator config) ---------------------------------------
+
+export async function getOperatorConfig(env: Env): Promise<{ config: OperatorConfig }> {
+  return { config: await loadOperatorConfig(env) };
+}
+
+/** Write the operator ranking/flyer overrides, range-validated (no confirm gate). */
+export async function putOperatorConfig(env: Env, body: Record<string, unknown>): Promise<{ config: OperatorConfig }> {
+  const patch = parseOperatorConfigPatch(body);
+  const err = validateOperatorConfig(patch as Record<string, unknown>);
+  if (err) throw err;
+  await saveOperatorConfig(env, patch);
+  return { config: await loadOperatorConfig(env) };
 }

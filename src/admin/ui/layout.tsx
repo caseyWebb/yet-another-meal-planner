@@ -46,8 +46,8 @@ export const Layout = ({
     </head>
     <body>
       <div class={wide ? "wrap wrap-wide" : "wrap"}>
-        <h1 style="view-transition-name: admin-title">grocery-agent admin</h1>
-        <nav class="nav" style="view-transition-name: admin-nav">
+        <h1>grocery-agent admin</h1>
+        <nav class="nav">
           {AREAS.map((a) => (
             <a href={a.href} class={navClass(a.href, active)}>
               {a.label}

@@ -30,7 +30,7 @@ import { buildDiscoveryDeps, processCandidate, DEFAULT_CONFIG } from "../discove
 import { addDiscoveryRejection } from "../corpus-db.js";
 import { canonicalizeUrl } from "../url.js";
 import { LogsPage } from "./pages/logs.js";
-import { getDiscoveryConfig, putDiscoveryConfig, analyzeDiscovery, dryRunDiscovery, testFeed } from "./config-api.js";
+import { getDiscoveryConfig, putDiscoveryConfig, analyzeDiscovery, dryRunDiscovery, testFeed, getOperatorConfig, putOperatorConfig } from "./config-api.js";
 import { registerConfigRoutes } from "./pages/config.js";
 
 /** The injectable surface the member-lifecycle operations close over (real bindings here). */
@@ -156,7 +156,10 @@ const routes = app
   .put("/api/discovery/config", async (c) => c.json(await putDiscoveryConfig(c.env, await c.req.json())))
   .post("/api/discovery/analyze", async (c) => c.json(await analyzeDiscovery(c.env, await c.req.json())))
   .post("/api/discovery/dry-run", async (c) => c.json(await dryRunDiscovery(c.env, await c.req.json())))
-  .post("/api/discovery/test-feed", async (c) => c.json(await testFeed(c.env, await c.req.json())));
+  .post("/api/discovery/test-feed", async (c) => c.json(await testFeed(c.env, await c.req.json())))
+  // Config › Ranking + Flyer: the operator ranking/flyer config store.
+  .get("/api/operator-config", async (c) => c.json(await getOperatorConfig(c.env)))
+  .put("/api/operator-config", async (c) => c.json(await putOperatorConfig(c.env, await c.req.json())));
 
 // Data explorer area (operator-data-explorer): read-only SSR views over D1 + the R2 corpus.
 registerDataRoutes(app);

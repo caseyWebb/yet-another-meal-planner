@@ -59,8 +59,6 @@ describe("admin Hono app", () => {
     // Links the served stylesheet and bootstraps the island.
     expect(html).toContain("/admin/styles.css");
     expect(html).toContain("/admin/islands/members.js");
-    // View-transition opt-in element is present (the persistent shell).
-    expect(html).toContain("view-transition-name");
   });
 
   it("lists tenants via the typed GET route", async () => {

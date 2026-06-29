@@ -1,7 +1,6 @@
 /* operator admin stylesheet (operator-admin, Decision 9: global CSS). Extracted verbatim from
    the Elm panel inline <style> so the Hono port renders identically; served as
-   admin/dist/admin/styles.css. The @view-transition opt-in (Decision 8) animates SSR navigations. */
-@view-transition { navigation: auto; }
+   admin/dist/admin/styles.css. */
 
       :root { --accent: #f4a259; --danger: #b00020; --subnav-h: 3rem; --section-pad: 1rem; }
       body { font-family: system-ui, sans-serif; color: #222; background: #fafafa; margin: 0; }
