@@ -18,6 +18,7 @@ const AREAS: Area[] = [
   { href: "/admin/data", label: "Data" },
   { href: "/admin/usage", label: "Usage" },
   { href: "/admin/logs", label: "Logs" },
+  { href: "/admin/config", label: "Config" },
 ];
 
 function navClass(href: string, active: string): string {

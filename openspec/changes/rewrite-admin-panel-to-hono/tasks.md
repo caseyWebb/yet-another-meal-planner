@@ -30,7 +30,7 @@ and Logs islands, so no separate runtime-ceiling gate is needed.)
 - [ ] Commit Playwright visual-snapshot baselines for these read-only views
 
 ## 4. Remaining interactive areas (islands)
-- [ ] Config · Calibration — SSR the loaded config; island for the `Clean | Dirty | NeedsConfirm` form machine, Analyze, Dry-run, and confirm-gated Save (read the structured floor-breach error body to name the field — an improvement over the Elm `Http.BadStatus` wart)
+- [x] Config · Calibration — SSR the loaded config (seeded into the island); island for the `Clean | Dirty | NeedsConfirm` form machine, Analyze, Dry-run, and confirm-gated Save (reads the structured floor-breach error body to confirm — better than the Elm `Http.BadStatus` wart). Config-area shell + sub-nav stood up.
 - [ ] Config · corpus editors — SSR the 5 lookup tables; island for add/remove with one-at-a-time mutation state; feed-test action (read-only, no refetch)
 - [x] Logs actions — per-row Retry/Delete island (one `RowAction` union, one-at-a-time, reload on success) + the entry detail dialog; retry/delete routes reuse the sweep's own functions
 - [ ] Kroger-consent link action where it lives in the panel

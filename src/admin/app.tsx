@@ -30,6 +30,8 @@ import { buildDiscoveryDeps, processCandidate, DEFAULT_CONFIG } from "../discove
 import { addDiscoveryRejection } from "../corpus-db.js";
 import { canonicalizeUrl } from "../url.js";
 import { LogsPage } from "./pages/logs.js";
+import { getDiscoveryConfig, putDiscoveryConfig, analyzeDiscovery, dryRunDiscovery, testFeed } from "./config-api.js";
+import { registerConfigRoutes } from "./pages/config.js";
 
 /** The injectable surface the member-lifecycle operations close over (real bindings here). */
 function adminDeps(env: Env): AdminDeps {
@@ -148,10 +150,19 @@ const routes = app
     }
     await deleteDiscoveryRow(c.env, id);
     return c.json({ deleted: id });
-  });
+  })
+  // Config › Calibration: the discovery knob store + analyze/dry-run previews + the edge feed-probe.
+  .get("/api/discovery/config", async (c) => c.json(await getDiscoveryConfig(c.env)))
+  .put("/api/discovery/config", async (c) => c.json(await putDiscoveryConfig(c.env, await c.req.json())))
+  .post("/api/discovery/analyze", async (c) => c.json(await analyzeDiscovery(c.env, await c.req.json())))
+  .post("/api/discovery/dry-run", async (c) => c.json(await dryRunDiscovery(c.env, await c.req.json())))
+  .post("/api/discovery/test-feed", async (c) => c.json(await testFeed(c.env, await c.req.json())));
 
 // Data explorer area (operator-data-explorer): read-only SSR views over D1 + the R2 corpus.
 registerDataRoutes(app);
+
+// Config area (operator-admin): the discovery calibration console (+ ranking/flyer + corpus editors).
+registerConfigRoutes(app);
 
 // Usage area (usage-observability / usage-trends / tool-usage-trends): three SSR dashboards.
 app.get("/usage", async (c) => {
