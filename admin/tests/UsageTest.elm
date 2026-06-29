@@ -65,6 +65,28 @@ suite =
                     Usage.errorRate { tool = "x", calls = 0, errors = 0, p50Ms = 0, p95Ms = 0 }
                         |> Expect.equal 0
             ]
+        , describe "errorBodyDecoder"
+            [ test "decodes the Worker's { error, message } body into both fields" <|
+                \_ ->
+                    Decode.decodeString Usage.errorBodyDecoder
+                        "{\"error\":\"upstream_unavailable\",\"message\":\"Cloudflare Analytics request failed: Illegal invocation\"}"
+                        |> Expect.equal
+                            (Ok
+                                { code = "upstream_unavailable"
+                                , message = "Cloudflare Analytics request failed: Illegal invocation"
+                                }
+                            )
+            , test "fails on a body that is not the { error, message } shape (so resolveResponse falls back to a bare status)" <|
+                \_ ->
+                    Decode.decodeString Usage.errorBodyDecoder "<html>502 Bad Gateway</html>"
+                        |> Result.toMaybe
+                        |> Expect.equal Nothing
+            , test "fails when the message field is absent (a partial body is not an upstream error)" <|
+                \_ ->
+                    Decode.decodeString Usage.errorBodyDecoder "{\"error\":\"not_found\"}"
+                        |> Result.toMaybe
+                        |> Expect.equal Nothing
+            ]
         ]
 
 

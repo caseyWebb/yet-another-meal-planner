@@ -163,7 +163,13 @@ export interface UsageDeps {
   now: () => number;
 }
 
-const defaultDeps: UsageDeps = { fetchImpl: fetch, now: () => Date.now() };
+// `fetch` is bound to the global scope: it is invoked below as `deps.fetchImpl(...)`,
+// and an unbound global `fetch` called as a method rebinds `this` to the deps object,
+// which workerd rejects with "Illegal invocation: function called with incorrect `this`
+// reference". Bind once here so every fetcher sharing these deps is safe. Exported so the
+// regression guard can exercise this real default detached from its object (the injected-
+// fetchImpl tests cannot catch a `this`-binding regression).
+export const defaultDeps: UsageDeps = { fetchImpl: fetch.bind(globalThis), now: () => Date.now() };
 
 /**
  * Fetch the current UTC day's usage from the Cloudflare GraphQL Analytics API. Returns
