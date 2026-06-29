@@ -2,13 +2,16 @@ name: CLA Assistant
 
 # Records contributor agreement to CLA.md (open-source-license, the AGPL + dual-license grant).
 # On each PR the bot checks whether every commit author has signed; if not, it comments asking
-# them to, and a contributor signs by replying with the sign phrase below. Signatures are stored
-# in this repo at signatures/version1/cla.json. The maintainer and bots are allowlisted.
+# them to, and a contributor signs by replying with the sign phrase below. The maintainer and
+# bots are allowlisted.
+#
+# Signatures are stored at signatures/version1/cla.json on the dedicated `cla-signatures` branch,
+# NOT on `main`: the bot records each signature with a direct push, but `main` is ruleset-protected
+# (changes must go through a PR with required checks) and rejects it. Keep `cla-signatures`
+# unprotected. To move the ledger out of this repo entirely, use the action's remote-* inputs.
 #
 # NOTE: this third-party action is pinned to a version TAG, while the rest of the repo pins by
 # commit SHA (see ci.yml). Pin contributor-assistant/github-action to a SHA when convenient.
-# NOTE: signatures are stored on `main`; if main is branch-protected against direct pushes, store
-# them on a dedicated branch or a separate repo instead (the action's `branch` / remote-* inputs).
 
 on:
   issue_comment:
@@ -36,7 +39,8 @@ jobs:
         with:
           path-to-document: 'https://github.com/caseyWebb/groceries-agent/blob/main/CLA.md'
           path-to-signatures: 'signatures/version1/cla.json'
-          branch: 'main'
+          # Dedicated, unprotected branch — `main` is ruleset-protected and rejects the bot's push.
+          branch: 'cla-signatures'
           # The maintainer and bots never sign. `*[bot]` covers Dependabot and friends.
           allowlist: 'caseyWebb,*[bot]'
           custom-pr-sign-comment: 'I have read the CLA Document and I hereby sign the CLA'
