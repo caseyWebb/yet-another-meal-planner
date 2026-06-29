@@ -1,7 +1,7 @@
 // Agent-filed bug reports (agent-bug-reporting capability), backed by the D1
 // `bug_reports` table. `report_bug` records a report here instead of opening a GitHub
 // issue (the GitHub App is gone for data); the operator reviews them via the admin
-// panel (`GET /admin/api/bug-reports`). Attribution (reporter + timestamp) is stamped
+// panel's Data explorer (the `bug_reports` system table). Attribution (reporter + timestamp) is stamped
 // server-side, never trusted from the agent. Goes through `src/db.ts`, so a D1 failure
 // surfaces as a structured `storage_error` (no raw throw at the tool boundary).
 

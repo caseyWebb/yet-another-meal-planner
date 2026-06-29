@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { handleAdmin } from "../src/admin.js";
+import { handleAdmin } from "./admin-request.js";
 import type { Env } from "../src/env.js";
 
 /** In-memory KV (get/put/delete/list single page) — enough for the admin deps the gate builds. */
@@ -144,38 +144,4 @@ describe("handleAdmin (logs › discovery)", () => {
     expect(body.entries[0].id).toBe("r249");
   });
 
-  it("405s a non-GET on the discovery log", async () => {
-    const { DB } = discoveryD1([]);
-    const env = { TENANT_KV: memKv(), KROGER_KV: memKv(), DB, ADMIN_DEV_BYPASS: "1" } as unknown as Env;
-    const res = await handleAdmin(
-      new Request("http://localhost/admin/api/logs/discovery", { method: "POST" }),
-      env,
-    );
-    expect(res.status).toBe(405);
-  });
-
-  it("serves the SPA shell for a /admin/logs/discovery deep link (client route, not an API path)", async () => {
-    const asked: string[] = [];
-    const env = {
-      TENANT_KV: memKv(),
-      KROGER_KV: memKv(),
-      DB: throwingD1(),
-      ADMIN_DEV_BYPASS: "1",
-      ASSETS: {
-        fetch: async (req: Request) => {
-          const p = new URL(req.url).pathname;
-          asked.push(p);
-          // Only the canonical `/admin/` is a real asset; the client route 404s.
-          return p === "/admin/"
-            ? new Response("<html>shell</html>", { status: 200 })
-            : new Response("not found", { status: 404 });
-        },
-      },
-    } as unknown as Env;
-    const res = await handleAdmin(new Request("http://localhost/admin/logs/discovery"), env);
-    expect(res.status).toBe(200);
-    expect(await res.text()).toContain("shell");
-    // Tried the real path first (404), then fell back to the canonical `/admin/` shell.
-    expect(asked).toEqual(["/admin/logs/discovery", "/admin/"]);
-  });
 });

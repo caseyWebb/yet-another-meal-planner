@@ -1,24 +1,25 @@
-// The operator admin surface (operator-admin capability). A static admin SPA at
-// `/admin` plus a small JSON API at `/admin/api/*` that performs member
-// onboard / revoke / rotate / list directly against the Worker's own bindings —
-// the in-Worker replacement for the onboard/revoke GitHub Actions, so a minted
-// invite code is shown once to the authenticated operator and never written to a
-// git-hosted log.
+// The operator admin surface (operator-admin capability) — the Cloudflare Access gate plus
+// the member-lifecycle operations (onboard / revoke / rotate / list) and the Kroger
+// consent-link bootstrap, performed directly against the Worker's own bindings. These are
+// the in-Worker replacement for the onboard/revoke GitHub Actions, so a minted invite code
+// is shown once to the authenticated operator and never written to a git-hosted log. The
+// HTTP surface itself is the Hono app (`src/admin/app.tsx`), which SSRs every page and calls
+// these functions directly; this module owns the gate + the operations, not the routing.
 //
-// This is the 4th surface that runs WITHOUT a per-tenant OAuth session (alongside
-// the cron, the email() handler, and /health). It is deliberately cross-tenant —
-// its job is to manage every tenant — so instead of a tenant token it is gated by
-// **Cloudflare Access**: the operator authenticates at the edge, Access injects a
-// signed `Cf-Access-Jwt-Assertion`, and `requireAccess` verifies it (signature via
-// the team JWKS + audience) as defense-in-depth against a *.workers.dev bypass.
-// Opt-in and fails closed: with no Access config the surface is 404 (disabled).
+// This is the 4th surface that runs WITHOUT a per-tenant OAuth session (alongside the cron,
+// the email() handler, and /health). It is deliberately cross-tenant — its job is to manage
+// every tenant — so instead of a tenant token it is gated by **Cloudflare Access**: the
+// operator authenticates at the edge, Access injects a signed `Cf-Access-Jwt-Assertion`, and
+// `requireAccess` verifies it (signature via the team JWKS + audience) as defense-in-depth
+// against a *.workers.dev bypass. Opt-in and fails closed: with no Access config the surface
+// is 404 (disabled).
 //
 // The Access gate covers `/admin*` only; the MCP surface keeps its own OAuth
 // provider (multi-tenancy: the MCP-surface identity does not rely on Access).
 
 import { createRemoteJWKSet, jwtVerify } from "jose";
 import type { Env } from "./env.js";
-import { db, type Db } from "./db.js";
+import type { Db } from "./db.js";
 import { ToolError } from "./errors.js";
 import {
   kvTenantStore,
@@ -27,37 +28,6 @@ import {
   directoryFromEnv,
   type Tenant,
 } from "./tenant.js";
-import { listToolsFor, callToolFor } from "./admin-tools.js";
-import { listBugReports } from "./bug-reports.js";
-import {
-  readDiscoveryLog,
-  readDiscoveryRowById,
-  deleteDiscoveryRow,
-} from "./discovery-db.js";
-import {
-  loadDiscoveryConfig,
-  saveDiscoveryConfig,
-  analyzeThresholds,
-  buildDryRunDeps,
-  validateDiscoveryConfig,
-  type AnalyzeResult,
-  type DryRunOutcome,
-} from "./discovery-calibration.js";
-import { buildDiscoveryDeps, runDiscoverySweep, processCandidate, DEFAULT_CONFIG } from "./discovery-sweep.js";
-import { loadOperatorConfig, saveOperatorConfig, validateOperatorConfig, parseOperatorConfigPatch } from "./operator-config.js";
-import { probeFeed } from "./discovery-probe.js";
-import { addDiscoveryRejection } from "./corpus-db.js";
-import { canonicalizeUrl } from "./url.js";
-import {
-  recipeList,
-  recipeDetail,
-  memberDetail,
-  readTable,
-  guidanceListing,
-  guidanceObject,
-} from "./admin-data.js";
-import { isCorpusTable, listCorpusTable, addCorpusRow, deleteCorpusRow } from "./admin-corpus.js";
-import { fetchUsage, fetchUsageTrends, fetchToolUsage } from "./usage.js";
 import { buildKrogerConsentUrl } from "./oauth.js";
 import type { KvStore } from "./kroger-user.js";
 
@@ -325,43 +295,13 @@ export async function revoke(
   return { username: id, revoked: true, invites_removed: invitesRemoved };
 }
 
-// --- HTTP routing -----------------------------------------------------------
-
-function json(data: unknown, status: number): Response {
-  return new Response(JSON.stringify(data), {
-    status,
-    headers: { "content-type": "application/json" },
-  });
-}
-
-async function readJsonBody(request: Request): Promise<Record<string, unknown>> {
-  try {
-    return (await request.json()) as Record<string, unknown>;
-  } catch {
-    return {};
-  }
-}
-
-/** Extract a DiscoveryConfig patch from an API request body — only present, numeric fields. */
-function parsePatchFromBody(body: Record<string, unknown>): Partial<import("./discovery-sweep.js").DiscoveryConfig> {
-  const patch: Partial<import("./discovery-sweep.js").DiscoveryConfig> = {};
-  if (typeof body.tasteThreshold === "number") patch.tasteThreshold = body.tasteThreshold;
-  if (typeof body.triageThreshold === "number") patch.triageThreshold = body.triageThreshold;
-  if (typeof body.dedupThreshold === "number") patch.dedupThreshold = body.dedupThreshold;
-  if (typeof body.classifyMaxPerTick === "number") patch.classifyMaxPerTick = body.classifyMaxPerTick;
-  if (typeof body.rateCap === "number") patch.rateCap = body.rateCap;
-  if (typeof body.fetchMaxPerTick === "number") patch.fetchMaxPerTick = body.fetchMaxPerTick;
-  if (typeof body.maxCandidatesPerTick === "number") patch.maxCandidatesPerTick = body.maxCandidatesPerTick;
-  if (typeof body.retryMaxAttempts === "number") patch.retryMaxAttempts = body.retryMaxAttempts;
-  if (typeof body.logRetentionDays === "number") patch.logRetentionDays = body.logRetentionDays;
-  return patch;
-}
+// --- Kroger consent-link bootstrap ------------------------------------------
 
 /**
  * Resolve the operator-chosen "acting as" tenant the SAME way the MCP surface does
  * (allowlist re-check via `resolveTenant`), mapping a missing id to `validation_failed`
- * (400) and a non-member to `not_found` (404) so the tool-console routes fail like the
- * rest of the admin API. The resulting `Tenant` is identical to what `/mcp` builds.
+ * (400) and a non-member to `not_found` (404). The resulting `Tenant` is identical to
+ * what `/mcp` builds.
  */
 async function resolveActingTenant(env: Env, tenantId: string | null): Promise<Tenant> {
   if (!tenantId || !tenantId.trim()) {
@@ -374,384 +314,19 @@ async function resolveActingTenant(env: Env, tenantId: string | null): Promise<T
   return resolved;
 }
 
-/** Route an `/admin/api/*` request to an operation. Throws ToolError; the caller serializes. */
-async function routeAdminApi(
+/**
+ * Mint a single-use Kroger consent link bound to a chosen ALLOWLISTED member — the same nonce
+ * the `kroger_login_url` MCP tool mints (kroger-user-auth), so the operator can link a member
+ * who has no `/mcp` session yet. Resolved by the same allowlist check the MCP surface uses
+ * (an unknown id is `not_found`); never exposed as an MCP tool. The nonce is not logged — it
+ * rides only in the returned url, carried in this Access-authenticated response.
+ */
+export async function krogerConsentLink(
   env: Env,
   deps: AdminDeps,
-  request: Request,
-  url: URL,
-): Promise<unknown> {
-  const method = request.method;
-  const path = url.pathname;
-
-  if (path === "/admin/api/tenants") {
-    if (method === "GET") return listTenants(deps);
-    if (method === "POST") {
-      const body = await readJsonBody(request);
-      const result = await onboard(
-        deps,
-        String(body.username ?? ""),
-        body.invite_code != null ? String(body.invite_code) : undefined,
-      );
-      return { ...result, connector_url: `${url.origin}/mcp` };
-    }
-    throw new ToolError("unsupported", `Method ${method} not supported on ${path}`);
-  }
-
-  const rotateMatch = path.match(/^\/admin\/api\/tenants\/([^/]+)\/rotate$/);
-  if (rotateMatch && method === "POST") {
-    const result = await rotate(deps, decodeURIComponent(rotateMatch[1]));
-    return { ...result, connector_url: `${url.origin}/mcp` };
-  }
-
-  // Kroger consent-link bootstrap: mint the same single-use nonce the `kroger_login_url`
-  // MCP tool mints (kroger-user-auth), bound to a chosen ALLOWLISTED member, so the
-  // operator can link a member who has no `/mcp` session yet. Resolved by the same
-  // allowlist check the tool console uses; never exposed as an MCP tool. The nonce is
-  // not logged (it rides only in this Access-authenticated response).
-  const krogerLoginMatch = path.match(/^\/admin\/api\/tenants\/([^/]+)\/kroger-login$/);
-  if (krogerLoginMatch && method === "POST") {
-    const tenant = await resolveActingTenant(env, decodeURIComponent(krogerLoginMatch[1]));
-    return { url: await buildKrogerConsentUrl(deps.krogerKv, url.origin, tenant.id) };
-  }
-
-  const tenantMatch = path.match(/^\/admin\/api\/tenants\/([^/]+)$/);
-  if (tenantMatch && method === "DELETE") {
-    return revoke(deps, decodeURIComponent(tenantMatch[1]));
-  }
-
-  // Bug reports: the operator's review queue for agent-filed reports (report_bug → D1).
-  if (path === "/admin/api/bug-reports") {
-    if (method === "GET") return { reports: await listBugReports(deps.db) };
-    throw new ToolError("unsupported", `Method ${method} not supported on ${path}`);
-  }
-
-  // Resource-usage observability (usage-observability): account-wide KV-operation + Workers-AI
-  // neuron usage for the day, against the daily free-tier limits, read from the Cloudflare
-  // GraphQL Analytics API. Inherits the Access gate; performs NO KV (observing the budget must
-  // not consume it). Reports `{ configured: false }` when the CF analytics vars are unset.
-  if (path === "/admin/api/usage") {
-    if (method === "GET") return fetchUsage(env);
-    throw new ToolError("unsupported", `Method ${method} not supported on ${path}`);
-  }
-
-  // Usage TRENDS (usage-trends): per-job run metrics (counts + durations) over the recent window,
-  // read from the Analytics Engine SQL API (the `grocery_usage` dataset the jobs emit to). Same
-  // Access gate, same opt-in config as `/admin/api/usage`; performs NO KV or D1. Reports
-  // `{ configured: false }` when the CF analytics vars are unset.
-  if (path === "/admin/api/usage/trends") {
-    if (method === "GET") return fetchUsageTrends(env);
-    throw new ToolError("unsupported", `Method ${method} not supported on ${path}`);
-  }
-
-  // Tool usage (tool-usage-trends): per-MCP-tool-call metrics (count, error count, p50/p95
-  // duration) over the recent window, read from the Analytics Engine SQL API (the `grocery_tool`
-  // dataset every tool call emits to). Same Access gate + opt-in config; performs NO KV or D1.
-  // Reports `{ configured: false }` when the CF analytics vars are unset.
-  if (path === "/admin/api/usage/tools") {
-    if (method === "GET") return fetchToolUsage(env);
-    throw new ToolError("unsupported", `Method ${method} not supported on ${path}`);
-  }
-
-  // Shared-corpus editors (operator-admin): the WRITABLE companion to the read-only data
-  // explorer. `/admin/api/corpus/<table>` lists (GET), adds (POST), and removes by PK
-  // (DELETE …/<key>) rows of the five group-wide shared-corpus tables. Operator/cross-tenant
-  // and never exposed as MCP tools; remove is operator-only. Distinct from the read-only
-  // `/admin/api/data/` namespace (a disjoint prefix).
-  if (path.startsWith("/admin/api/corpus/")) {
-    const rest = path.slice("/admin/api/corpus/".length);
-    const [tableSlug, ...keyParts] = rest.split("/");
-    if (!isCorpusTable(tableSlug)) {
-      throw new ToolError("not_found", `No corpus table ${tableSlug}`, { table: tableSlug });
-    }
-    if (keyParts.length === 0) {
-      if (method === "GET") return listCorpusTable(env, tableSlug);
-      if (method === "POST") return addCorpusRow(env, tableSlug, await readJsonBody(request));
-      throw new ToolError("unsupported", `Method ${method} not supported on ${path}`);
-    }
-    // A trailing `/<key>` segment addresses one row for removal.
-    if (method === "DELETE") {
-      return deleteCorpusRow(env, tableSlug, decodeURIComponent(keyParts.join("/")));
-    }
-    throw new ToolError("unsupported", `Method ${method} not supported on ${path}`);
-  }
-
-  // Data explorer (operator-data-explorer): read-only, cross-tenant views over D1 + the
-  // R2 corpus. Every route is GET — a write method is `unsupported` (405) — and the whole
-  // block sits inside `handleAdmin`, so it inherits the Access gate (404 when disabled)
-  // with no auth code of its own. Member resolution reuses the same allowlist check the
-  // tool console uses (`resolveActingTenant`), so an unknown id is `not_found` (404).
-  if (path.startsWith("/admin/api/data/")) {
-    if (method !== "GET") {
-      throw new ToolError("unsupported", `Method ${method} not supported on ${path}`);
-    }
-    const rest = path.slice("/admin/api/data/".length);
-
-    if (rest === "recipes") return recipeList(env);
-    const recipeMatch = rest.match(/^recipes\/([^/]+)$/);
-    if (recipeMatch) return recipeDetail(env, decodeURIComponent(recipeMatch[1]));
-
-    const memberMatch = rest.match(/^members\/([^/]+)$/);
-    if (memberMatch) {
-      const tenant = await resolveActingTenant(env, decodeURIComponent(memberMatch[1]));
-      return memberDetail(env, tenant.id);
-    }
-
-    // Guidance R2 browse (exact paths matched before the generic corpus/<table>).
-    if (rest === "corpus/guidance") {
-      return guidanceListing(env, url.searchParams.get("prefix") ?? undefined);
-    }
-    if (rest === "corpus/guidance/object") {
-      const p = url.searchParams.get("path");
-      if (!p) throw new ToolError("validation_failed", "A guidance object path is required");
-      return guidanceObject(env, p);
-    }
-    const corpusMatch = rest.match(/^corpus\/([^/]+)$/);
-    if (corpusMatch) return readTable(env, "corpus", decodeURIComponent(corpusMatch[1]));
-
-    const discoveryMatch = rest.match(/^discovery\/([^/]+)$/);
-    if (discoveryMatch) return readTable(env, "discovery", decodeURIComponent(discoveryMatch[1]));
-
-    const systemMatch = rest.match(/^system\/([^/]+)$/);
-    if (systemMatch) return readTable(env, "system", decodeURIComponent(systemMatch[1]));
-
-    throw new ToolError("not_found", `No data route for ${method} ${path}`);
-  }
-
-  // Logs › Discovery: the background discovery sweep's per-candidate outcome log. Group-wide
-  // (the operator sees every member's attributions — the cross-tenant operator reach the rest
-  // of /admin has), most-recent-first, and bounded by readDiscoveryLog (default/cap 200) so the
-  // response stays manageable.
-  if (path === "/admin/api/logs/discovery") {
-    if (method === "GET") return { entries: await readDiscoveryLog(env, 200) };
-    throw new ToolError("unsupported", `Method ${method} not supported on ${path}`);
-  }
-
-  // Operator config: ranking weights and flyer behavior. Operator/cross-tenant; no MCP tools.
-  if (path === "/admin/api/operator-config") {
-    if (method === "GET") {
-      const config = await loadOperatorConfig(env);
-      return { config };
-    }
-    if (method === "PUT") {
-      const body = await readJsonBody(request);
-      const patch = parseOperatorConfigPatch(body);
-      const err = validateOperatorConfig(patch as Record<string, unknown>);
-      if (err) throw err;
-      await saveOperatorConfig(env, patch);
-      const merged = await loadOperatorConfig(env);
-      return { config: merged };
-    }
-    throw new ToolError("unsupported", `Method ${method} not supported on ${path}`);
-  }
-
-  // Discovery config: the operator-tunable knob store + calibration console.
-  // Operator/cross-tenant (reads all members to set global knobs); never exposed as MCP tools.
-  if (path === "/admin/api/discovery/config") {
-    if (method === "GET") {
-      const config = await loadDiscoveryConfig(env);
-      return { config };
-    }
-    if (method === "PUT") {
-      const body = await readJsonBody(request);
-      const patch = parsePatchFromBody(body);
-      const { confirm } = body;
-      const validation = validateDiscoveryConfig(patch, { confirm: confirm === true });
-      if (validation.error) throw validation.error;
-      await saveDiscoveryConfig(env, patch);
-      const merged = await loadDiscoveryConfig(env);
-      return { config: merged };
-    }
-    throw new ToolError("unsupported", `Method ${method} not supported on ${path}`);
-  }
-
-  if (path === "/admin/api/discovery/analyze") {
-    if (method === "POST") {
-      const body = await readJsonBody(request);
-      const config = await loadDiscoveryConfig(env);
-      const patch = parsePatchFromBody(body);
-      const preview = { ...config, ...Object.fromEntries(Object.entries(patch).filter(([, v]) => v != null)) };
-      const result: AnalyzeResult = await analyzeThresholds(env, preview as typeof config);
-      return result;
-    }
-    throw new ToolError("unsupported", `Method ${method} not supported on ${path}`);
-  }
-
-  if (path === "/admin/api/discovery/dry-run") {
-    if (method === "POST") {
-      const body = await readJsonBody(request);
-      const config = await loadDiscoveryConfig(env);
-      const patch = parsePatchFromBody(body);
-      const previewConfig = { ...config, ...Object.fromEntries(Object.entries(patch).filter(([, v]) => v != null)) };
-      const realDeps = buildDiscoveryDeps(env);
-      const { deps, capturedOutcomes } = buildDryRunDeps(realDeps);
-      await runDiscoverySweep(deps, previewConfig as typeof config);
-      const outcomes: DryRunOutcome[] = capturedOutcomes();
-      return { outcomes };
-    }
-    throw new ToolError("unsupported", `Method ${method} not supported on ${path}`);
-  }
-
-  // Edge feed-probe: fetch a feed URL and a sample of its entry pages FROM the Worker's egress,
-  // through the same acquisition path the sweep uses, so the operator can tell whether a feed is
-  // actually a viable source before/after adding it. Writes nothing.
-  if (path === "/admin/api/discovery/test-feed") {
-    if (method === "POST") {
-      const body = await readJsonBody(request);
-      const feedUrl = typeof body.url === "string" ? body.url.trim() : "";
-      if (!feedUrl) throw new ToolError("validation_failed", "A feed url is required", { field: "url" });
-      return probeFeed(feedUrl);
-    }
-    throw new ToolError("unsupported", `Method ${method} not supported on ${path}`);
-  }
-
-  // Per-row manual retry: re-run the full acquisition pipeline for one discovery_log row.
-  // Only valid for `error`/`failed` rows; idempotent (re-running a resolved row is a no-op
-  // beyond the 405). `bypassCap` means the admin can always retry regardless of attempt count.
-  const retryMatch = path.match(/^\/admin\/api\/discovery\/([^/]+)\/retry$/);
-  if (retryMatch) {
-    if (method === "POST") {
-      const id = retryMatch[1];
-      const row = await readDiscoveryRowById(env, id);
-      if (!row) throw new ToolError("not_found", `No discovery row with id ${id}`);
-      if (row.outcome !== "error" && row.outcome !== "failed") {
-        throw new ToolError("unsupported", `Row ${id} has outcome "${row.outcome}" — only error/failed rows can be retried`);
-      }
-      const deps = buildDiscoveryDeps(env);
-      const members = await deps.loadMembers();
-      const corpusVectors = await deps.loadCorpusVectors();
-      const candidate = {
-        url: row.url ?? "",
-        title: row.title ?? "",
-        summary: null,
-        source: row.source ?? "",
-        existingRowId: id,
-        attempts: row.attempts,
-      };
-      const nowMs = Date.now();
-      await processCandidate(deps, DEFAULT_CONFIG, candidate, {
-        triageVec: null,
-        members,
-        corpus: corpusVectors,
-        importedVectors: [],
-        nowMs,
-      }, { bypassCap: true });
-      const updated = await readDiscoveryRowById(env, id);
-      return updated;
-    }
-    throw new ToolError("unsupported", `Method ${method} not supported on ${path}`);
-  }
-
-  // Per-row delete-as-rejection: write a permanent group-wide rejection then delete the log row.
-  // Idempotent: re-deleting a deleted row returns 404 (the row is gone); re-deleting a URL that
-  // is already rejected writes the rejection again (ON CONFLICT UPDATE) and removes the row.
-  const deleteDiscoveryMatch = path.match(/^\/admin\/api\/discovery\/([^/]+)$/);
-  if (deleteDiscoveryMatch && method === "DELETE") {
-    const id = deleteDiscoveryMatch[1];
-    const row = await readDiscoveryRowById(env, id);
-    if (!row) throw new ToolError("not_found", `No discovery row with id ${id}`);
-    if (row.url) {
-      await addDiscoveryRejection(env, {
-        url: canonicalizeUrl(row.url),
-        reason: "operator-deleted",
-        rejectedBy: "admin",
-        rejectedAt: new Date().toISOString(),
-      });
-    }
-    await deleteDiscoveryRow(env, id);
-    return { deleted: id };
-  }
-
-  // Tool console (the operator dev workbench): list + invoke the live MCP tool surface
-  // AS a chosen tenant, over the same `buildServer` path `/mcp` uses (src/admin-tools.ts).
-  if (path === "/admin/api/tools") {
-    if (method === "GET") {
-      const tenant = await resolveActingTenant(env, url.searchParams.get("tenant"));
-      return listToolsFor(env, tenant);
-    }
-    throw new ToolError("unsupported", `Method ${method} not supported on ${path}`);
-  }
-
-  const toolMatch = path.match(/^\/admin\/api\/tools\/([^/]+)$/);
-  if (toolMatch && method === "POST") {
-    const body = await readJsonBody(request);
-    const tenant = await resolveActingTenant(env, body.tenant != null ? String(body.tenant) : null);
-    // Only a JSON object is valid `arguments`; anything else is an empty arg set, which
-    // the tool's own input schema then accepts or rejects (validation stays the tool's).
-    const args =
-      body.arguments && typeof body.arguments === "object" && !Array.isArray(body.arguments)
-        ? (body.arguments as Record<string, unknown>)
-        : {};
-    return callToolFor(env, tenant, decodeURIComponent(toolMatch[1]), args);
-  }
-
-  throw new ToolError("not_found", `No admin route for ${method} ${path}`);
-}
-
-function statusFor(err: ToolError): number {
-  if (err.code === "not_found") return 404;
-  if (err.code === "validation_failed") return 400;
-  if (err.code === "unsupported") return 405;
-  return 500;
-}
-
-/**
- * Handle an `/admin*` request: gate on Cloudflare Access, then either run a JSON
- * API operation or serve the static SPA from the ASSETS binding. The static shell
- * is Access-gated here too (this handler runs worker-first for `/admin*`), so an
- * unconfigured deployment serves nothing — 404.
- */
-export async function handleAdmin(request: Request, env: Env): Promise<Response> {
-  const access = await requireAccess(request, env);
-  if (access.status === "disabled") return new Response("Not found", { status: 404 });
-  if (access.status === "denied") return new Response("Forbidden", { status: 403 });
-
-  const url = new URL(request.url);
-  const path = url.pathname;
-
-  if (path.startsWith("/admin/api/")) {
-    const deps: AdminDeps = {
-      tenantKv: env.TENANT_KV,
-      krogerKv: env.KROGER_KV as unknown as KvStore,
-      db: db(env),
-      randomCode: randomInviteCode,
-    };
-    try {
-      return json(await routeAdminApi(env, deps, request, url), 200);
-    } catch (e) {
-      if (e instanceof ToolError) return json(e.toShape(), statusFor(e));
-      const message = e instanceof Error ? e.message : String(e);
-      return json({ error: "upstream_unavailable", message }, 500);
-    }
-  }
-
-  // Static SPA: serve from the ASSETS binding (already past the Access gate). Pass the
-  // request through UNCHANGED and let Static Assets' html_handling resolve it — `/admin`
-  // → `/admin/` (trailing-slash redirect, so the page's `/admin/elm.js` resolves),
-  // `/admin/` → index.html, `/admin/elm.js` → the bundle.
-  //
-  // The SPA is client-routed (`Browser.application`), so a GET for an in-app route that
-  // maps to NO asset (e.g. `/admin/dev/tools/place_order`) comes back 404 from ASSETS.
-  // That is a client route: serve the SPA shell CONTENT at the original URL so the deep
-  // link / refresh resolves client-side. We fetch the canonical `/admin/` (html_handling
-  // returns index.html with 200) rather than `/admin/index.html` (which 307s back to
-  // `/admin/`, and returning that redirect would drop the client route from the URL).
-  // `env.ASSETS.fetch` bypasses run_worker_first, so this never re-enters and loops.
-  if (request.method === "GET" || request.method === "HEAD") {
-    const direct = await env.ASSETS.fetch(request);
-    if (direct.status !== 404) return direct;
-    // A 404 for a path whose last segment has a file extension (`/admin/elm.js`) is a
-    // GENUINE asset miss — keep it a 404 rather than masking it with the HTML shell (which
-    // would hand back `text/html` 200 under a `.js` URL on a broken deploy). Only
-    // extension-less paths are client routes; serve those the shell so they resolve.
-    const lastSegment = path.split("/").pop() ?? "";
-    if (lastSegment.includes(".")) return direct;
-    const shellUrl = new URL(request.url);
-    shellUrl.pathname = "/admin/";
-    shellUrl.search = "";
-    return env.ASSETS.fetch(
-      new Request(shellUrl.toString(), { method: request.method, headers: request.headers }),
-    );
-  }
-  return new Response("Method not allowed", { status: 405 });
+  tenantId: string,
+  origin: string,
+): Promise<{ url: string }> {
+  const tenant = await resolveActingTenant(env, tenantId);
+  return { url: await buildKrogerConsentUrl(deps.krogerKv, origin, tenant.id) };
 }

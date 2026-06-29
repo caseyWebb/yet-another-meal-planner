@@ -1,5 +1,5 @@
 // Resource-usage observability (usage-observability capability). Backs the operator
-// Usage view (`/admin/usage` → `GET /admin/api/usage`): account-wide KV-operation and
+// Usage view (server-rendered at `/admin/usage`): account-wide KV-operation and
 // Workers-AI-neuron consumption for the current UTC day, against the daily free-tier
 // limits, so the operator can see what is eating which budget.
 //

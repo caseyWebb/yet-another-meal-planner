@@ -7,7 +7,6 @@ import {
   guidanceListing,
   guidanceObject,
 } from "../src/admin-data.js";
-import { handleAdmin } from "../src/admin.js";
 import type { Env } from "../src/env.js";
 import { fakeD1 } from "./fake-d1.js";
 import { fakeR2 } from "./fake-r2.js";
@@ -18,19 +17,6 @@ function makeEnv(opts: { tables?: Record<string, Record<string, unknown>[]>; r2?
   const r2 = fakeR2(opts.r2 ?? {});
   const env = { ...d1.env, CORPUS: r2.bucket } as unknown as Env;
   return { env, d1, r2 };
-}
-
-/** Minimal in-memory KV satisfying the bits handleAdmin's tenant routes touch. */
-function memKv(initial: Record<string, string> = {}): KVNamespace {
-  const m = new Map(Object.entries(initial));
-  return {
-    async get(key: string) { return m.get(key) ?? null; },
-    async put(key: string, value: string) { m.set(key, value); },
-    async delete(key: string) { m.delete(key); },
-    async list({ prefix = "" }: { prefix?: string } = {}) {
-      return { keys: [...m.keys()].filter((k) => k.startsWith(prefix)).map((name) => ({ name })), list_complete: true, cacheStatus: null };
-    },
-  } as unknown as KVNamespace;
 }
 
 describe("recipeDetail — cross-tier projection status", () => {
@@ -250,37 +236,6 @@ describe("read-only guarantee", () => {
   });
 });
 
-describe("handleAdmin — data routes (gate + method + resolution)", () => {
-  const base = (extra: Record<string, unknown> = {}) =>
-    ({ TENANT_KV: memKv({ "tenant:alice": JSON.stringify({ id: "alice" }) }), KROGER_KV: memKv(), ADMIN_DEV_BYPASS: "1", ...extra }) as unknown as Env;
-
-  it("serves the recipe list as JSON under the dev-bypass gate", async () => {
-    const { env: dataEnv } = makeEnv({ tables: { recipes: [{ slug: "foo", title: "Foo" }] }, r2: { "recipes/foo.md": "# Foo" } });
-    const env = base({ DB: dataEnv.DB, CORPUS: dataEnv.CORPUS });
-    const res = await handleAdmin(new Request("http://localhost/admin/api/data/recipes"), env);
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as { recipes: { slug: string; status: string }[] };
-    expect(body.recipes).toEqual([{ slug: "foo", title: "Foo", status: "indexed" }]);
-  });
-
-  it("404s every data route when the Access gate is unconfigured", async () => {
-    const env = { TENANT_KV: memKv(), KROGER_KV: memKv(), DB: {} } as unknown as Env;
-    const res = await handleAdmin(new Request("https://x/admin/api/data/recipes"), env);
-    expect(res.status).toBe(404);
-  });
-
-  it("405s a write method on a data route", async () => {
-    const { env: dataEnv } = makeEnv();
-    const env = base({ DB: dataEnv.DB, CORPUS: dataEnv.CORPUS });
-    const res = await handleAdmin(new Request("http://localhost/admin/api/data/recipes", { method: "POST" }), env);
-    expect(res.status).toBe(405);
-  });
-
-  it("404s a member view for an id not on the allowlist", async () => {
-    const { env: dataEnv } = makeEnv();
-    const env = base({ DB: dataEnv.DB, CORPUS: dataEnv.CORPUS });
-    const res = await handleAdmin(new Request("http://localhost/admin/api/data/members/ghost"), env);
-    expect(res.status).toBe(404);
-    expect(((await res.json()) as { error: string }).error).toBe("not_found");
-  });
-});
+// The read-only JSON data API (`GET /admin/api/data/*`) is retired: the Hono data explorer
+// SSRs these views by calling the same `admin-data.ts` readers directly (covered above and in
+// admin-data-views.test.ts). The Access gate is covered in admin.test.ts / admin-app.test.ts.

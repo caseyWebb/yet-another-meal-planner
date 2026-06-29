@@ -2,7 +2,7 @@
 // namespace lets the operator LIST / ADD / REMOVE rows of the five group-wide shared-corpus
 // lookup tables — ingredient aliases, flyer broad-scan terms, discovery feeds, and the
 // discovery newsletter-sender / member allowlist. It is the curation surface the read-only
-// `/admin/api/data/*` explorer deliberately can't provide.
+// SSR Data explorer deliberately can't provide.
 //
 // Removal is OPERATOR-ONLY: no MCP delete tool exposes it, so the agent adds (via its
 // existing add tools) and only the operator prunes. Adds match the existing write semantics
@@ -11,7 +11,7 @@
 // and a bad input as `validation_failed` — this module never throws raw.
 //
 // It rides the same Cloudflare Access gate as the rest of `/admin*` (it has no auth code of
-// its own); when Access is unconfigured `handleAdmin` 404s the whole surface, this included.
+// its own); when Access is unconfigured the admin app's gate 404s the whole surface, this included.
 
 import type { Env } from "./env.js";
 import { ToolError } from "./errors.js";

@@ -124,6 +124,14 @@ jobs:
           workingDirectory: _code
           command: r2 bucket create grocery-corpus
 
+      # admin/dist/ is a build artifact (NOT committed — the esbuild bundles embed
+      # environment-specific module paths, so a committed copy isn't reproducible). Build the
+      # operator panel's island bundles + stylesheet so `wrangler deploy`'s ASSETS binding
+      # (./admin/dist) has them. esbuild-only, no network registry.
+      - name: Build admin panel islands
+        run: aubr build:admin
+        working-directory: _code
+
       # Deploy. KV/D1 bindings with no id are auto-provisioned here; the recipe index is
       # projected by the Worker reconcile (no CI D1 write), not at deploy.
       - name: Deploy

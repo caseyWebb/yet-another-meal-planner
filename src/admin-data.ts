@@ -1,6 +1,7 @@
 // The operator data explorer (operator-data-explorer capability). Read-only,
 // cross-tenant reads over D1 and the R2 corpus that back the admin panel's Data area
-// (`/admin/api/data/*`). Everything here is a READ: `SELECT` through `src/db.ts` and
+// (server-rendered at `/admin/data/*`, these readers called directly). Everything here is a
+// READ: `SELECT` through `src/db.ts` and
 // `get`/`list` through `src/corpus-store.ts` — no row or object is ever created,
 // updated, or deleted. Like the rest of the Worker, a storage failure surfaces as a
 // structured error (`storage_error` for D1, `upstream_unavailable` for R2), never a

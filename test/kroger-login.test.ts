@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { buildServer } from "../src/tools.js";
-import { withServer, invokeTool } from "../src/admin-tools.js";
+import { withServer, invokeTool } from "./tool-harness.js";
 import { redeemAuthNonce } from "../src/oauth.js";
 import type { KvStore } from "../src/kroger-user.js";
 import type { Env } from "../src/env.js";

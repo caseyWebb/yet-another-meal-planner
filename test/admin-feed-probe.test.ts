@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { handleAdmin } from "../src/admin.js";
+import { handleAdmin } from "./admin-request.js";
 import { PROBE_SAMPLE_SIZE } from "../src/discovery-probe.js";
 import type { Env } from "../src/env.js";
 
@@ -45,11 +45,6 @@ describe("POST /admin/api/discovery/test-feed", () => {
       env,
     );
     expect(res.status).toBe(404);
-  });
-
-  it("405s on GET", async () => {
-    const res = await handleAdmin(new Request("http://localhost/admin/api/discovery/test-feed"), devEnv());
-    expect(res.status).toBe(405);
   });
 
   it("rejects a missing url with a validation error", async () => {

@@ -61,11 +61,12 @@ jobs:
       - name: Test (build tooling)
         run: aubr test:tooling
 
-      - name: Test (admin Elm)
-        # The admin SPA's compiler-opaque logic — URL routing + the run-gate safety
-        # convention. Classic elm-test via npx (no pinned elm binary), like build-admin;
-        # needs package.elm-lang.org reachable (as build-admin already does).
-        run: aubr test:admin
+      - name: Build admin panel islands
+        # admin/dist/ is a build artifact, NOT committed (the esbuild bundles embed
+        # environment-specific module paths, so a committed copy isn't reproducible) — the
+        # deploy builds it fresh. Build it here too so a broken island (an esbuild bundling
+        # failure) fails CI before the deploy. esbuild-only, no network registry.
+        run: node scripts/build-admin.mjs
 
       - name: Plugin builds from AGENT_INSTRUCTIONS.md
         # There is no committed bundle in this repo (the operator's deploy builds and
@@ -105,12 +106,13 @@ jobs:
 
       - name: Check for Worker- or plugin-relevant changes
         id: changed
-        # Worker paths (src/, wrangler.jsonc, deps, admin/dist) plus the plugin sources
+        # Worker paths (src/ — incl. the admin SSR + island source under src/admin/ —
+        # wrangler.jsonc, deps, the admin island builder) plus the plugin sources
         # (AGENT_INSTRUCTIONS.md, the builder) — a persona-only change must republish the
         # skills, and the deploy is Worker-first so it redeploys the (unchanged) Worker
-        # before publishing, which is safe.
+        # before publishing, which is safe. admin/dist/ is built at deploy time, not committed.
         run: |
-          git diff --name-only HEAD^ HEAD -- src/ admin/dist/ wrangler.jsonc package.json package-lock.json AGENT_INSTRUCTIONS.md scripts/build-plugin.mjs \
+          git diff --name-only HEAD^ HEAD -- src/ wrangler.jsonc package.json package-lock.json AGENT_INSTRUCTIONS.md scripts/build-plugin.mjs scripts/build-admin.mjs \
             | grep -q . \
             && echo "relevant=true" >> "$GITHUB_OUTPUT" \
             || echo "relevant=false" >> "$GITHUB_OUTPUT"

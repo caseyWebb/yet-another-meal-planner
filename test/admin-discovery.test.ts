@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { handleAdmin } from "../src/admin.js";
+import { handleAdmin } from "./admin-request.js";
 import { FLOOR_TASTE, FLOOR_DEDUP, CEILING_RATE_CAP } from "../src/discovery-calibration.js";
 import { DEFAULT_CONFIG } from "../src/discovery-sweep.js";
 import type { Env } from "../src/env.js";
@@ -237,15 +237,6 @@ describe("PUT /admin/api/discovery/config", () => {
     expect(res.status).toBe(400);
   });
 
-  it("405s a non-GET/PUT method on /admin/api/discovery/config", async () => {
-    const { DB } = configD1();
-    const env = devEnv(DB);
-    const res = await handleAdmin(
-      new Request("http://localhost/admin/api/discovery/config", { method: "DELETE" }),
-      env,
-    );
-    expect(res.status).toBe(405);
-  });
 });
 
 // --- POST /admin/api/discovery/analyze --------------------------------------
@@ -286,15 +277,6 @@ describe("POST /admin/api/discovery/analyze", () => {
     expect(res.status).toBe(404);
   });
 
-  it("405s a non-POST method on /admin/api/discovery/analyze", async () => {
-    const { DB } = configD1();
-    const env = devEnv(DB);
-    const res = await handleAdmin(
-      new Request("http://localhost/admin/api/discovery/analyze", { method: "GET" }),
-      env,
-    );
-    expect(res.status).toBe(405);
-  });
 });
 
 // --- POST /admin/api/discovery/dry-run --------------------------------------
@@ -342,15 +324,6 @@ describe("POST /admin/api/discovery/dry-run", () => {
     expect(res.status).toBe(404);
   });
 
-  it("405s a non-POST method on /admin/api/discovery/dry-run", async () => {
-    const { DB } = configD1();
-    const env = devEnv(DB);
-    const res = await handleAdmin(
-      new Request("http://localhost/admin/api/discovery/dry-run", { method: "GET" }),
-      env,
-    );
-    expect(res.status).toBe(405);
-  });
 });
 
 // --- POST /admin/api/discovery/:id/retry ------------------------------------
@@ -416,15 +389,6 @@ describe("POST /admin/api/discovery/:id/retry", () => {
     expect(res.status).toBe(405);
   });
 
-  it("405s for a non-POST method", async () => {
-    const { DB } = rowD1({ id: "row1", url: "https://example.com/r", outcome: "error", attempts: 0 });
-    const env = devEnv(DB);
-    const res = await handleAdmin(
-      new Request("http://localhost/admin/api/discovery/row1/retry", { method: "GET" }),
-      env,
-    );
-    expect(res.status).toBe(405);
-  });
 });
 
 // --- DELETE /admin/api/discovery/:id ----------------------------------------
@@ -450,33 +414,5 @@ describe("DELETE /admin/api/discovery/:id", () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as { deleted: string };
     expect(body.deleted).toBe("row1");
-  });
-});
-
-// --- SPA deep-link for /admin/config ----------------------------------------
-
-describe("SPA deep-link for /admin/config (client route)", () => {
-  it("serves the SPA shell for a /admin/config deep link", async () => {
-    const { DB } = configD1();
-    const asked: string[] = [];
-    const env = {
-      TENANT_KV: emptyTenantKv(),
-      KROGER_KV: memKv(),
-      DB,
-      ADMIN_DEV_BYPASS: "1",
-      ASSETS: {
-        fetch: async (req: Request) => {
-          const p = new URL(req.url).pathname;
-          asked.push(p);
-          return p === "/admin/"
-            ? new Response("<html>shell</html>", { status: 200 })
-            : new Response("not found", { status: 404 });
-        },
-      },
-    } as unknown as Env;
-    const res = await handleAdmin(new Request("http://localhost/admin/config"), env);
-    expect(res.status).toBe(200);
-    expect(await res.text()).toContain("shell");
-    expect(asked).toEqual(["/admin/config", "/admin/"]);
   });
 });

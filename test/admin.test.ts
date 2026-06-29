@@ -7,15 +7,14 @@ import {
   rotate,
   revoke,
   listTenants,
-  handleAdmin,
   TENANT_TABLES,
   AUTHOR_TABLES,
   type AdminDeps,
 } from "../src/admin.js";
+import { handleAdmin } from "./admin-request.js";
 import type { Env } from "../src/env.js";
 import type { Db } from "../src/db.js";
 import type { KvStore } from "../src/kroger-user.js";
-import { fakeD1 } from "./fake-d1.js";
 
 /** In-memory KV with get/put/delete/list (single page) — satisfies KVNamespace + KvStore. */
 function memKv(initial: Record<string, string> = {}): KVNamespace {
@@ -301,74 +300,12 @@ describe("handleAdmin (routing + gate)", () => {
     expect(await res.json()).toEqual({ tenants: ["bob"] });
   });
 
-  it("lists agent-filed bug reports via GET /admin/api/bug-reports", async () => {
-    const d1 = fakeD1({
-      tables: {
-        bug_reports: [
-          { id: 1, reporter: "casey", title: "Match broke", body: "x", created_at: "2026-06-27T10:00:00.000Z", status: "open" },
-        ],
-      },
-    });
-    const env = {
-      TENANT_KV: memKv(),
-      KROGER_KV: memKv(),
-      DB: d1.env.DB,
-      ADMIN_DEV_BYPASS: "1",
-    } as unknown as Env;
-    const res = await handleAdmin(new Request("http://localhost/admin/api/bug-reports"), env);
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as { reports: { reporter: string; title: string }[] };
-    expect(body.reports).toHaveLength(1);
-    expect(body.reports[0]).toMatchObject({ reporter: "casey", title: "Match broke", status: "open" });
-  });
+  // Bug reports are surfaced by the Hono data explorer (the `bug_reports` system table), not a
+  // dedicated JSON route; covered by report-bug.test.ts + admin-data-views.test.ts.
+  // The SPA shell is gone — the Hono app SSRs every page — so only a genuine asset miss falls
+  // through to ASSETS (still 404, the gate already passed):
 
-  it("serves the SPA shell from ASSETS with the path unchanged (no /index.html rewrite → no redirect loop)", async () => {
-    let askedPath = "";
-    const env = {
-      TENANT_KV: memKv(),
-      KROGER_KV: memKv(),
-      DB: throwingD1(),
-      ADMIN_DEV_BYPASS: "1",
-      ASSETS: {
-        fetch: async (req: Request) => {
-          askedPath = new URL(req.url).pathname;
-          return new Response("<html>shell</html>", { status: 200 });
-        },
-      },
-    } as unknown as Env;
-    const res = await handleAdmin(new Request("http://localhost/admin"), env);
-    expect(res.status).toBe(200);
-    // Passed through verbatim — NOT rewritten to /admin/index.html (which the assets
-    // auto-trailing-slash would 307 back to /admin/, looping via run_worker_first).
-    expect(askedPath).toBe("/admin");
-  });
-
-  it("serves the SPA shell for an unmatched client route (deep link → 200, URL kept)", async () => {
-    const asked: string[] = [];
-    const env = {
-      TENANT_KV: memKv(),
-      KROGER_KV: memKv(),
-      DB: throwingD1(),
-      ADMIN_DEV_BYPASS: "1",
-      ASSETS: {
-        fetch: async (req: Request) => {
-          const p = new URL(req.url).pathname;
-          asked.push(p);
-          // Only the canonical `/admin/` is a real asset; the client route 404s.
-          return p === "/admin/"
-            ? new Response("<html>shell</html>", { status: 200 })
-            : new Response("not found", { status: 404 });
-        },
-      },
-    } as unknown as Env;
-    const res = await handleAdmin(new Request("http://localhost/admin/dev/tools/place_order"), env);
-    expect(res.status).toBe(200);
-    expect(await res.text()).toContain("shell");
-    // Tried the real path first (404), then fell back to the canonical `/admin/` shell.
-    expect(asked).toEqual(["/admin/dev/tools/place_order", "/admin/"]);
-  });
-
-  it("keeps a genuine asset 404 (path with a file extension) a 404, not the shell", async () => {
+  it("keeps a genuine asset 404 (no SSR route → ASSETS fallthrough → 404)", async () => {
     const asked: string[] = [];
     const env = {
       TENANT_KV: memKv(),
@@ -382,51 +319,9 @@ describe("handleAdmin (routing + gate)", () => {
         },
       },
     } as unknown as Env;
-    const res = await handleAdmin(new Request("http://localhost/admin/elm.js"), env);
+    const res = await handleAdmin(new Request("http://localhost/admin/islands/nonexistent.js"), env);
     expect(res.status).toBe(404);
-    // No shell fallback for an extension path — asked only for the asset itself.
-    expect(asked).toEqual(["/admin/elm.js"]);
-  });
-});
-
-describe("handleAdmin (tool console)", () => {
-  const consoleEnv = (extra: Record<string, unknown> = {}) =>
-    ({
-      TENANT_KV: memKv({ "tenant:bob": JSON.stringify({ id: "bob" }) }),
-      KROGER_KV: memKv(),
-      DB: {} as unknown as Env["DB"],
-      ADMIN_DEV_BYPASS: "1",
-      ...extra,
-    }) as unknown as Env;
-
-  it("lists the live tool catalog for an allowlisted tenant", async () => {
-    const res = await handleAdmin(new Request("http://localhost/admin/api/tools?tenant=bob"), consoleEnv());
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as { tools: { name: string }[] };
-    const names = body.tools.map((t) => t.name);
-    // The catalog is the real buildServer surface — a couple of stable names suffice.
-    expect(names).toContain("search_recipes");
-    expect(names).toContain("read_recipe");
-  });
-
-  it("400s when no acting-as tenant is supplied", async () => {
-    const res = await handleAdmin(new Request("http://localhost/admin/api/tools"), consoleEnv());
-    expect(res.status).toBe(400);
-    expect(((await res.json()) as { error: string }).error).toBe("validation_failed");
-  });
-
-  it("404s when acting as a non-member", async () => {
-    const res = await handleAdmin(
-      new Request("http://localhost/admin/api/tools?tenant=ghost"),
-      consoleEnv(),
-    );
-    expect(res.status).toBe(404);
-    expect(((await res.json()) as { error: string }).error).toBe("not_found");
-  });
-
-  it("404s the tool console when the surface is disabled (no Access config)", async () => {
-    const env = { TENANT_KV: memKv(), KROGER_KV: memKv(), DB: {} } as unknown as Env;
-    const res = await handleAdmin(new Request("https://x/admin/api/tools?tenant=bob"), env);
-    expect(res.status).toBe(404);
+    // No SSR route matched, so the request fell through to ASSETS — asked for the asset itself.
+    expect(asked).toEqual(["/admin/islands/nonexistent.js"]);
   });
 });
