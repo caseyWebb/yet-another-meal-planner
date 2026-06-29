@@ -15,6 +15,7 @@ interface Area {
 const AREAS: Area[] = [
   { href: "/admin", label: "Status" },
   { href: "/admin/members", label: "Members" },
+  { href: "/admin/data", label: "Data" },
 ];
 
 function navClass(href: string, active: string): string {

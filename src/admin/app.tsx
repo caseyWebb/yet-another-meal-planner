@@ -22,6 +22,7 @@ import {
 import { buildHealthPayload, HEALTH_JOBS } from "../health.js";
 import { MembersPage } from "./pages/members.js";
 import { StatusPage } from "./pages/status.js";
+import { registerDataRoutes } from "./pages/data.js";
 
 /** The injectable surface the member-lifecycle operations close over (real bindings here). */
 function adminDeps(env: Env): AdminDeps {
@@ -104,6 +105,9 @@ const routes = app
   .delete("/api/tenants/:id", async (c) => {
     return c.json(await revoke(adminDeps(c.env), decodeURIComponent(c.req.param("id"))));
   });
+
+// Data explorer area (operator-data-explorer): read-only SSR views over D1 + the R2 corpus.
+registerDataRoutes(app);
 
 // Static islands + styles fall through to the ASSETS binding (already past the Access gate;
 // `ASSETS.fetch` bypasses run_worker_first, so this never re-enters and loops).
