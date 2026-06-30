@@ -89,6 +89,50 @@ describe("handleCookbook", () => {
     expect(html).toContain("https://ex.com/miso-salmon"); // source link
   });
 
+  it('renders an "Open in Claude" deep link prefilling a cook prompt with the slug', async () => {
+    const env = envWith({ files: { "recipes/miso-salmon.md": RECIPE_MD } });
+    const html = await (await handleCookbook(get("/cookbook/miso-salmon"), env)).text();
+    expect(html).toContain('class="cta"');
+    expect(html).toContain("https://claude.ai/new?q=");
+    // the prompt is URL-encoded and carries both the title and the slug for the cook skill
+    // This title has no `'`/`&`, so encodeURIComponent fully encodes it and the URL appears
+    // verbatim. (For titles that DO contain `'` or `&`, the rendered href differs — those
+    // chars survive encodeURIComponent and are then HTML-escaped by the load-bearing esc()
+    // wrapper in renderRecipe; see the hostile-title test below.)
+    const expected = `https://claude.ai/new?q=${encodeURIComponent(
+      'Cook "Miso Salmon" with me (cookbook recipe slug: miso-salmon). Walk me through it.',
+    )}`;
+    expect(html).toContain(expected);
+    // it does not break the strict no-script CSP (it's a plain anchor)
+    const res = await handleCookbook(get("/cookbook/miso-salmon"), env);
+    expect(res.headers.get("content-security-policy")).not.toMatch(/script-src/);
+  });
+
+  it("escapes a hostile recipe title in the Open-in-Claude href (no attribute breakout)", async () => {
+    // A title carrying the chars encodeURIComponent leaves literal (' and the un-encoded `"`
+    // only matters once HTML-escaping is in play): the esc() wrapper around the href is what
+    // prevents an attribute breakout on this open, cross-tenant surface.
+    const evil = [
+      "---",
+      'title: Evil" onmouseover="alert(1)',
+      "---",
+      "",
+      "## Ingredients",
+      "- x",
+      "",
+      "## Instructions",
+      "1. x",
+      "",
+    ].join("\n");
+    const env = envWith({ files: { "recipes/evil.md": evil } });
+    const html = await (await handleCookbook(get("/cookbook/evil"), env)).text();
+    const cta = html.slice(html.indexOf('class="cta"'));
+    const href = cta.slice(0, cta.indexOf("</a>"));
+    // the title's `"` must be encoded/escaped, never a raw quote that breaks out of href="…"
+    expect(href).not.toMatch(/onmouseover=/i);
+    expect(href).toContain("%22"); // the title's quote arrived percent-encoded in the URL
+  });
+
   it("neutralizes XSS in an untrusted recipe body (drops raw HTML + unsafe URL schemes)", async () => {
     const malicious = [
       "---",

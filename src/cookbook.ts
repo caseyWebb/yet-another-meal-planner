@@ -49,6 +49,22 @@ function safeUrl(u: unknown): string {
   return /^https?:\/\//i.test(s) || s.startsWith("/") || s.startsWith("#") ? s : "#";
 }
 
+// An "Open in Claude" deep link for one recipe. claude.ai has no structured "invoke skill"
+// param — only a prefilled new-chat composer via `?q=` — so we seed a natural-language ask
+// that carries the slug; the agent's `cook` skill resolves the dish from it against the shared
+// corpus (it never inlines the recipe body — the slug is enough for the agent to fetch the
+// canonical text via its tools). Assumes the member already has the grocery connector
+// installed; a visitor without it just lands in a vanilla Claude chat. The composer may
+// auto-submit depending on the claude.ai release — harmless for a "let's cook" prompt.
+const CLAUDE_NEW_CHAT = "https://claude.ai/new";
+function openInClaudeUrl(title: string, slug: string): string {
+  // The slug is the precise handle; the title is just a human label. Bound it so a pathological
+  // multi-KB frontmatter title can't be smuggled into the prompt (the agent resolves by slug).
+  const label = title.length > 80 ? `${title.slice(0, 80)}…` : title;
+  const prompt = `Cook "${label}" with me (cookbook recipe slug: ${slug}). Walk me through it.`;
+  return `${CLAUDE_NEW_CHAT}?q=${encodeURIComponent(prompt)}`;
+}
+
 // A markdown renderer for UNTRUSTED bodies: raw HTML is dropped (recipes are markdown, not
 // HTML), and link/image URLs are scheme-filtered. Module-level (reused across requests).
 const md = new Marked({
@@ -78,6 +94,8 @@ ul.recipes{list-style:none;padding:0}
 ul.recipes li{padding:.6rem 0;border-bottom:1px solid #e5e7eb}
 .chip{display:inline-block;background:#fef3c7;color:#92400e;border-radius:999px;padding:.05rem .5rem;font-size:.75rem;margin-right:.25rem}
 .desc{color:#374151}
+a.cta{display:inline-block;background:#c2410c;color:#fff;border-radius:.4rem;padding:.45rem .85rem;font-weight:600;margin:.5rem 0}
+a.cta:hover{background:#9a3412;text-decoration:none}
 nav{margin-bottom:1rem}
 form.search{display:flex;gap:.5rem;margin:1rem 0}
 form.search input[type=search]{flex:1;min-width:0;padding:.4rem .6rem;font-size:1rem}
@@ -218,6 +236,8 @@ async function renderRecipe(env: Env, slug: string): Promise<Response> {
   const sourceLine = safeSource
     ? `<p class="meta">Source: <a href="${esc(safeSource)}">${esc(safeSource)}</a></p>`
     : "";
+  // "Open in Claude" — prefills a new chat to kick off the guided `cook` flow for this dish.
+  const openInClaude = `<p><a class="cta" href="${esc(openInClaudeUrl(title, slug))}" target="_blank" rel="nofollow noopener noreferrer">👨‍🍳 Cook this with Claude</a></p>`;
   // Recipe→recipe "Similar Recipes" over the stored vectors — best-effort (no AI call), so
   // a missing embedding / D1 hiccup just omits the section rather than failing the body page.
   const similarHtml = await renderSimilar(env, slug);
@@ -225,6 +245,7 @@ async function renderRecipe(env: Env, slug: string): Promise<Response> {
 <h1>${esc(title)}</h1>
 ${meta ? `<p class="meta">${meta}</p>` : ""}
 ${sourceLine}
+${openInClaude}
 ${bodyHtml}
 ${similarHtml}`;
   return page(title, html, CSP_STRICT);
