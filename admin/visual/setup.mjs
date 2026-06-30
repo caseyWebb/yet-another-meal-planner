@@ -2,7 +2,10 @@
 // webServer entrypoint for the admin visual/smoke harness (operator-admin, Phase 8). Builds the
 // islands + Tailwind/Basecoat stylesheet, applies the D1 migrations to the LOCAL SQLite, seeds a
 // deterministic discovery-log fixture (so the Logs detail dialog has stable content for the
-// screenshot), then runs `wrangler dev` with the Access dev-bypass. Long-running: the final
+// screenshot), then runs `wrangler dev --local` with the Access dev-bypass. `--local` disables
+// remote bindings, so the `AI` binding renders as "not supported" instead of opening a credentialed
+// remote-proxy session (CI has no Cloudflare token — that session fails to start). The harness
+// never invokes AI; it only screenshots pages + opens the Logs dialog. Long-running: the final
 // `wrangler dev` is the server Playwright waits on. Everything is local + offline (miniflare D1).
 
 import { execFileSync } from "node:child_process";
@@ -21,4 +24,4 @@ const SEED = [
 sh("node", ["scripts/build-admin.mjs"]);
 sh("npx", ["wrangler", "d1", "migrations", "apply", "DB", "--local"]);
 sh("npx", ["wrangler", "d1", "execute", "DB", "--local", "--command", SEED]);
-sh("npx", ["wrangler", "dev", "--port", "8787", "--var", "ADMIN_DEV_BYPASS:1"]);
+sh("npx", ["wrangler", "dev", "--local", "--port", "8787", "--var", "ADMIN_DEV_BYPASS:1"]);
