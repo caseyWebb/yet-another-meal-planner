@@ -101,10 +101,11 @@ tree for the utility classes you use.
   pages still ship zero client JS. Do not load Basecoat's JS into an island (it would fight the
   island's DOM reconciliation).
 - **Icons:** inline Lucide SVG (Basecoat ships none) — copy the path from lucide.dev.
-- **Transitional bridge (temporary):** `styles.css` still carries panel-specific layout plus a
-  `-legacy` bridge (`.card-legacy`, the `@layer base` bare-element rules) so areas not yet
-  migrated render as before. It shrinks as each area moves to Basecoat and is removed entirely in
-  the cleanup phase. **New work does not use the bridge classes** — use Basecoat + utilities.
+- **Panel-specific CSS:** beyond the imports + theme, `styles.css` holds only the layout Basecoat
+  doesn't define — the area nav + sub-nav pills, the Status/Logs master-detail grids, status dots,
+  the recipe-tier badges, and the once-shown credentials callout. Everything else is Basecoat
+  components + Tailwind utilities; reach for those first and add to `styles.css` only for layout
+  Basecoat genuinely lacks.
 
 ## Build & serve
 

@@ -120,16 +120,18 @@ function CalibrationIsland({ config }: { config: DiscoveryConfig }) {
           </fieldset>
 
           {form.t === "needsConfirm" ? (
-            <div class="alert" data-variant="destructive">
-              <section>{form.warning.message}</section>
-              <footer>
+            <div class="grid gap-2">
+              <div class="alert" data-variant="destructive">
+                <section>{form.warning.message}</section>
+              </div>
+              <div class="form-actions">
                 <button class="btn" data-variant="destructive" data-size="sm" onClick={() => save(true)}>
                   Confirm &amp; save
                 </button>
                 <button class="btn" data-variant="ghost" data-size="sm" onClick={() => setForm({ t: "dirty", draft: form.draft })}>
                   Cancel
                 </button>
-              </footer>
+              </div>
             </div>
           ) : (
             <div class="form-actions">

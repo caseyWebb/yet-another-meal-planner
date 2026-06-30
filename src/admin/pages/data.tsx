@@ -301,13 +301,13 @@ const GuidanceBrowser = ({ view }: { view: GuidanceView }) =>
         {view.listing.entries.map((e) =>
           e.type === "dir" ? (
             <li>
-              <a class="tool-name" href={`/admin/data/corpus?gprefix=${encodeURIComponent(joinPrefix(view.prefix, e.name))}`}>
+              <a href={`/admin/data/corpus?gprefix=${encodeURIComponent(joinPrefix(view.prefix, e.name))}`}>
                 📁 {e.name}
               </a>
             </li>
           ) : (
             <li>
-              <a class="tool-name" href={`/admin/data/corpus?gpath=${encodeURIComponent(joinPrefix(view.prefix, e.name))}`}>
+              <a href={`/admin/data/corpus?gpath=${encodeURIComponent(joinPrefix(view.prefix, e.name))}`}>
                 {e.name}
               </a>
             </li>
