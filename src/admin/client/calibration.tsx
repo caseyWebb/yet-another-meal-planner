@@ -99,7 +99,7 @@ function CalibrationIsland({ config }: { config: DiscoveryConfig }) {
 
   return (
     <div>
-      <div class="card">
+      <div class="card-legacy">
       <fieldset style="border:0;padding:0;margin:0">
         {KNOBS.map((k) => (
           <label>
@@ -153,7 +153,7 @@ const AnalyzePanel = ({ state }: { state: Loadable<AnalyzeResult> }) => {
   if (state.status === "failure") return <div class="error">Analyze failed: {state.error.message}</div>;
   const a = state.value;
   return (
-    <div class="card">
+    <div class="card-legacy">
       <h2>Analyze</h2>
       <p class="muted small">
         δ pairs: {a.deltaPairCount}
@@ -187,7 +187,7 @@ const DryRunPanel = ({ state }: { state: Loadable<DryRunOutcome[]> }) => {
   if (state.status === "loading") return <p class="muted">Running the pipeline (no writes)…</p>;
   if (state.status === "failure") return <div class="error">Dry-run failed: {state.error.message}</div>;
   return (
-    <div class="card">
+    <div class="card-legacy">
       <h2>Dry-run</h2>
       {state.value.length === 0 ? (
         <p class="muted">No candidates this run.</p>

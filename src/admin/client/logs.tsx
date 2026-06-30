@@ -40,7 +40,7 @@ function DetailDialog({ entry, onClose }: { entry: DiscoveryLogRow; onClose: () 
   ];
   return (
     <div class="dialog-backdrop" onClick={onClose}>
-      <div class="dialog" onClick={(e: Event) => e.stopPropagation()}>
+      <div class="dialog-legacy" onClick={(e: Event) => e.stopPropagation()}>
         <div class="dialog-head">
           <h2>{entryTitle(entry)}</h2>
           <button class="link" onClick={onClose}>

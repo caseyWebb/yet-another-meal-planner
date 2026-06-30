@@ -62,7 +62,7 @@ function OpConfigIsland({ config, fields }: { config: OperatorConfig; fields: Fi
   }
 
   return (
-    <div class="card">
+    <div class="card-legacy">
       {state.t === "error" ? <div class="error">{state.message}</div> : null}
       {fields.map((f) => (
         <label>

@@ -1,124 +1,149 @@
-/* operator admin stylesheet (operator-admin, Decision 9: global CSS). Extracted verbatim from
-   the Elm panel inline <style> so the Hono port renders identically; served as
-   admin/dist/admin/styles.css. */
+/* operator admin stylesheet — the Tailwind entry (operator-admin design system).
+   Compiled by scripts/build-admin.mjs (Tailwind v4) → admin/dist/admin/styles.css
+   (a gitignored build artifact, built fresh by CI/deploy/local; never committed).
 
-      :root { --accent: #f4a259; --danger: #b00020; --subnav-h: 3rem; --section-pad: 1rem; }
-      body { font-family: system-ui, sans-serif; color: #222; background: #fafafa; margin: 0; }
-      .wrap { max-width: 44rem; margin: 2.5rem auto; padding: 0 1rem; }
-      /* The two-column tool console needs more room than member management. */
-      .wrap.wrap-wide { max-width: 60rem; }
-      h1 { font-size: 1.5rem; }
-      h2 { font-size: 1.1rem; margin: 0 0 .75rem; }
-      .card { background: #fff; border: 1px solid #e5e5e5; border-radius: .6rem; padding: 1rem 1.25rem; margin: 1rem 0; }
-      label { display: block; margin: .75rem 0; font-size: .9rem; }
-      input { display: block; width: 100%; box-sizing: border-box; font-size: 1rem; padding: .5rem; margin-top: .25rem; border: 1px solid #ccc; border-radius: .3rem; }
-      button { font-size: .95rem; padding: .5rem 1rem; border: 0; border-radius: .4rem; background: var(--accent); color: #222; cursor: pointer; }
-      button:disabled { opacity: .5; cursor: default; }
-      .form-actions { display: flex; gap: .5rem; align-items: center; }
-      button.link { background: none; color: #1a5; padding: .3rem .5rem; }
-      button.danger { background: none; color: var(--danger); padding: .3rem .5rem; }
-      table { width: 100%; border-collapse: collapse; }
-      th, td { text-align: left; padding: .5rem .25rem; border-bottom: 1px solid #eee; }
-      .error { background: #fdecec; color: var(--danger); padding: .6rem .9rem; border-radius: .4rem; margin: 1rem 0; }
-      .minted { background: #fff7ee; border: 1px solid var(--accent); border-radius: .6rem; padding: 1rem 1.25rem; margin: 1rem 0; }
-      .minted-head { display: flex; justify-content: space-between; align-items: center; }
-      .once { color: #a15; font-size: .85rem; margin: .25rem 0 .75rem; }
-      .row { display: flex; gap: .75rem; align-items: baseline; margin: .35rem 0; }
-      .row .k { width: 8rem; color: #666; font-size: .85rem; }
-      .row .v { font-family: ui-monospace, monospace; word-break: break-all; }
-      textarea { width: 100%; box-sizing: border-box; font: .9rem ui-monospace, monospace; padding: .5rem; border: 1px solid #ccc; border-radius: .3rem; }
-      /* The tool console's args box is seeded with a multi-line, commented JSON example — give it room. */
-      .args { min-height: 14rem; resize: vertical; }
-      select { font-size: .95rem; padding: .35rem; border: 1px solid #ccc; border-radius: .3rem; }
-      pre { background: #f6f6f6; border: 1px solid #eee; border-radius: .4rem; padding: .6rem .8rem; overflow: auto; font-size: .8rem; margin: .35rem 0; white-space: pre-wrap; word-break: break-word; }
-      .muted { color: #888; }
-      .small { font-size: .8rem; }
-      /* Top-level area nav (Status / Members / Dev). */
-      .nav { display: flex; gap: .5rem; margin: .5rem 0 1.25rem; border-bottom: 1px solid #e5e5e5; }
-      .nav-link { text-decoration: none; color: #555; padding: .5rem .75rem; border-bottom: 2px solid transparent; }
-      .nav-link.active { color: #222; border-bottom-color: var(--accent); font-weight: 600; }
-      /* Status (service health) home view: a headline card + one row per job / d1 / admin gate. */
-      .status-head { display: flex; justify-content: space-between; align-items: center; }
-      .headline { display: flex; align-items: center; gap: .5rem; font-size: 1.05rem; }
-      .status-row { border-bottom: 1px solid #f2f2f2; }
-      .status-row:last-child { border-bottom: 0; }
-      .status-line { display: flex; align-items: center; gap: .5rem; padding: .45rem 0; }
-      .status-label { flex: 1; font-family: ui-monospace, monospace; font-size: .9rem; }
-      .status-word { font-size: .85rem; font-weight: 600; }
-      .status-age { min-width: 5rem; text-align: right; }
-      .dot { width: .6rem; height: .6rem; border-radius: 50%; background: #8b949e; flex: 0 0 auto; }
-      .dot.ok { background: #2da44e; } .status-word.ok { color: #1a7f37; }
-      .dot.fail { background: #cf222e; } .status-word.fail { color: #cf222e; }
-      .dot.never { background: #d4a72c; } .status-word.never { color: #9a6700; }
-      .dot.muted { background: #8b949e; } .status-word.muted { color: #57606a; }
-      .summary { display: flex; flex-wrap: wrap; gap: .15rem .9rem; margin: 0 0 .45rem 1.1rem; }
-      .summary-item { display: flex; gap: .35rem; align-items: baseline; }
-      .summary-v { font-family: ui-monospace, monospace; color: #444; word-break: break-all; }
-      /* Dev sub-nav: sticky pills (one per Dev section); the main nav scrolls away above it. */
-      .subnav { position: sticky; top: 0; z-index: 5; display: flex; gap: .5rem; align-items: center; height: var(--subnav-h); background: #fafafa; border-bottom: 1px solid #e5e5e5; }
-      .pill { font: inherit; font-size: .85rem; padding: .3rem .85rem; border-radius: 999px; border: 1px solid #ddd; background: #fff; color: #555; cursor: pointer; }
-      .pill.active { background: var(--accent); color: #222; border-color: var(--accent); font-weight: 600; }
-      /* Each Dev section fills the viewport below the sticky sub-nav, with fixed (not %) padding. */
-      .dev-section { scroll-margin-top: var(--subnav-h); min-height: calc(100vh - var(--subnav-h) - 2 * var(--section-pad)); padding: var(--section-pad) 0; display: flex; }
-      .dev-section > .console { flex: 1; display: flex; flex-direction: column; margin: 0; }
-      /* Tool console. */
-      .persona-bar { display: flex; gap: .75rem; align-items: center; flex-wrap: wrap; margin: .25rem 0 1rem; padding-bottom: .75rem; border-bottom: 1px solid #eee; }
-      .persona-label .persona { font-family: ui-monospace, monospace; }
-      .persona-label .persona.real { color: var(--danger); }
-      /* minmax(0,1fr) + min-width:0 lets the content column shrink so a wide schema/result
-         scrolls or wraps INSIDE it instead of blowing the grid (and card) out past the page.
-         flex:1 + min-height:0 make the workbench fill the full-height section, so each column
-         scrolls independently and the tool list runs to the bottom (not just to the schema). */
-      .workbench { display: grid; grid-template-columns: 16rem minmax(0, 1fr); gap: 1.25rem; flex: 1; min-height: 0; }
-      .workbench > * { min-width: 0; min-height: 0; }
-      .catalog { display: flex; flex-direction: column; }
-      .tool-detail { overflow: auto; }
-      .tool-list { list-style: none; margin: 0; padding: 0; flex: 1; overflow: auto; }
-      .tool-item { padding: .4rem .5rem; border-radius: .35rem; }
-      .tool-item.active { background: #fff7ee; }
-      .tool-item .tool-name { display: block; font-family: ui-monospace, monospace; font-size: .85rem; color: #1a5; text-decoration: none; }
-      .tool-item .tool-desc { margin: .15rem 0 0; font-size: .75rem; color: #777; max-height: 2.6em; overflow: hidden; }
-      .schema-label { font-size: .75rem; text-transform: uppercase; letter-spacing: .04em; color: #999; }
-      .run { display: flex; gap: .5rem; align-items: center; margin: .5rem 0; }
-      .confirm { background: #fdecec; border: 1px solid var(--danger); border-radius: .5rem; padding: .75rem 1rem; margin: .5rem 0; }
-      button.danger-solid { background: var(--danger); color: #fff; }
-      .result { border-left: 3px solid #1a5; padding-left: .6rem; }
-      .result.error { border-left-color: var(--danger); }
-      /* Logs area: a left submenu of sources + the selected source's entries (master/detail). */
-      .logs { display: grid; grid-template-columns: 12rem minmax(0, 1fr); gap: 1.25rem; }
-      .logs > * { min-width: 0; }
-      .log-sources { list-style: none; margin: .25rem 0 0; padding: 0; }
-      .log-source { border-radius: .35rem; }
-      .log-source.active { background: #fff7ee; }
-      .log-source-link { display: block; padding: .4rem .6rem; color: #555; text-decoration: none; font-size: .9rem; }
-      .log-source.active .log-source-link { color: #222; font-weight: 600; }
-      .log-head { display: flex; justify-content: space-between; align-items: center; }
-      .log-actions { display: flex; gap: .75rem; align-items: center; }
-      .entry-list { list-style: none; margin: 0; padding: 0; }
-      .entry-row { display: flex; align-items: baseline; gap: .6rem; padding: .45rem .5rem; border-bottom: 1px solid #f2f2f2; }
-      .entry-row.has-detail { cursor: pointer; }
-      .entry-row.has-detail:hover { background: #fafafa; }
-      .entry-outcome { font-size: .8rem; font-weight: 600; min-width: 7rem; }
-      .entry-outcome.ok { color: #1a7f37; } .entry-outcome.fail { color: #cf222e; } .entry-outcome.muted { color: #57606a; }
-      .entry-title { flex: 1; font-size: .9rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-      .entry-source { min-width: 6rem; }
-      .entry-time { min-width: 11rem; text-align: right; }
-      .entry-more { color: #1a5; white-space: nowrap; }
-      /* Detail dialog: the open entry's full detail over the (intact) list. */
-      .dialog-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.35); display: flex; align-items: flex-start; justify-content: center; padding: 4rem 1rem; z-index: 20; }
-      .dialog { background: #fff; border-radius: .6rem; max-width: 40rem; width: 100%; max-height: 80vh; overflow: auto; padding: 1rem 1.25rem; box-shadow: 0 .5rem 2rem rgba(0,0,0,.2); }
-      .dialog-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: .5rem; }
-      .dialog-body .row { display: flex; gap: .75rem; align-items: baseline; margin: .3rem 0; }
-      .dialog-body .row .k { width: 7rem; color: #666; font-size: .85rem; }
-      .dialog-body .row .v { word-break: break-all; }
-      .detail-blob { margin-top: .5rem; }
-      /* Data area: a sub-nav of pills (plain links) over the five entity views. */
-      .data-nav { display: flex; gap: .5rem; flex-wrap: wrap; margin: .25rem 0 1.25rem; }
-      a.pill { text-decoration: none; display: inline-block; }
-      hr { border: 0; border-top: 1px solid #e5e5e5; margin: 1.5rem 0; }
-      /* Recipe projection-status badge (indexed / skipped / pending / orphaned). */
-      .tier { font-size: .75rem; font-weight: 600; padding: .1rem .55rem; border-radius: 999px; border: 1px solid; }
-      .tier.indexed { color: #1a7f37; border-color: #1a7f37; }
-      .tier.skipped { color: #cf222e; border-color: #cf222e; }
-      .tier.pending { color: #9a6700; border-color: #9a6700; }
-      .tier.orphaned { color: #57606a; border-color: #57606a; }
+   Basecoat (the Vega style pack) provides the component system — buttons, cards,
+   inputs, badges, alerts, tables, dialogs — via its `class` + `data-variant`/`data-size`
+   API. This file adds (1) the operator theme (the orange accent, as a shadcn token
+   override) and (2) the panel-specific layout Basecoat does not define.
+
+   MIGRATION NOTE: the `@layer` blocks below are the TRANSITIONAL bridge that keeps
+   pages not yet on Basecoat looking as before. As each area is restyled page-by-page,
+   its bespoke rules are dropped here; the bridge is removed entirely in the cleanup
+   phase. New work uses Basecoat component classes + Tailwind utilities — NOT these. */
+
+@import "tailwindcss";
+@import "basecoat-css/vega";
+
+/* Scan the panel source (pages, islands, kit, shell) for the utility classes it uses. */
+@source "./";
+
+/* Operator theme: keep the orange accent. Basecoat reads the shadcn `--primary` token;
+   override it (and the legacy `--accent` the bridge rules still read) after Basecoat. */
+:root {
+  --primary: #f4a259;
+  --primary-foreground: #1a1a1a;
+  --accent: #f4a259;
+  --danger: #b00020;
+  --subnav-h: 3rem;
+  --section-pad: 1rem;
+}
+
+/* ---- Transitional bridge: bare-element styling for pages not yet on Basecoat
+   classes. Kept in `@layer base` so it overrides Tailwind's preflight but LOSES to
+   Basecoat component classes (`.btn`, `.input`, …) — so migrating an element to a
+   Basecoat class cleanly takes over. Removed in the cleanup phase. ---- */
+@layer base {
+  body { font-family: system-ui, sans-serif; color: #222; background: #fafafa; margin: 0; }
+  h1 { font-size: 1.5rem; }
+  h2 { font-size: 1.1rem; margin: 0 0 .75rem; }
+  label { display: block; margin: .75rem 0; font-size: .9rem; }
+  input { display: block; width: 100%; box-sizing: border-box; font-size: 1rem; padding: .5rem; margin-top: .25rem; border: 1px solid #ccc; border-radius: .3rem; }
+  button { font-size: .95rem; padding: .5rem 1rem; border: 0; border-radius: .4rem; background: var(--accent); color: #222; cursor: pointer; }
+  button:disabled { opacity: .5; cursor: default; }
+  button.link { background: none; color: #1a5; padding: .3rem .5rem; }
+  button.danger { background: none; color: var(--danger); padding: .3rem .5rem; }
+  button.danger-solid { background: var(--danger); color: #fff; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: .5rem .25rem; border-bottom: 1px solid #eee; }
+  textarea { width: 100%; box-sizing: border-box; font: .9rem ui-monospace, monospace; padding: .5rem; border: 1px solid #ccc; border-radius: .3rem; }
+  select { font-size: .95rem; padding: .35rem; border: 1px solid #ccc; border-radius: .3rem; }
+  pre { background: #f6f6f6; border: 1px solid #eee; border-radius: .4rem; padding: .6rem .8rem; overflow: auto; font-size: .8rem; margin: .35rem 0; white-space: pre-wrap; word-break: break-word; }
+  hr { border: 0; border-top: 1px solid #e5e5e5; margin: 1.5rem 0; }
+}
+
+/* ---- Panel-specific layout Basecoat does not define (nav, status/logs/data grids,
+   the once-shown banner, dots, pills, the legacy card/dialog). Kept verbatim during
+   the migration; each block is dropped as its area moves to Basecoat. The legacy
+   `.card`/`.dialog` are renamed `-legacy` so Basecoat owns the canonical names once
+   a page adopts them. ---- */
+@layer components {
+  .wrap { max-width: 44rem; margin: 2.5rem auto; padding: 0 1rem; }
+  .wrap.wrap-wide { max-width: 60rem; }
+  .card-legacy { background: #fff; border: 1px solid #e5e5e5; border-radius: .6rem; padding: 1rem 1.25rem; margin: 1rem 0; }
+  .form-actions { display: flex; gap: .5rem; align-items: center; }
+  .error { background: #fdecec; color: var(--danger); padding: .6rem .9rem; border-radius: .4rem; margin: 1rem 0; }
+  .minted { background: #fff7ee; border: 1px solid var(--accent); border-radius: .6rem; padding: 1rem 1.25rem; margin: 1rem 0; }
+  .minted-head { display: flex; justify-content: space-between; align-items: center; }
+  .once { color: #a15; font-size: .85rem; margin: .25rem 0 .75rem; }
+  .row { display: flex; gap: .75rem; align-items: baseline; margin: .35rem 0; }
+  .row .k { width: 8rem; color: #666; font-size: .85rem; }
+  .row .v { font-family: ui-monospace, monospace; word-break: break-all; }
+  .args { min-height: 14rem; resize: vertical; }
+  .muted { color: #888; }
+  .small { font-size: .8rem; }
+  .nav { display: flex; gap: .5rem; margin: .5rem 0 1.25rem; border-bottom: 1px solid #e5e5e5; }
+  .nav-link { text-decoration: none; color: #555; padding: .5rem .75rem; border-bottom: 2px solid transparent; }
+  .nav-link.active { color: #222; border-bottom-color: var(--accent); font-weight: 600; }
+  .status-head { display: flex; justify-content: space-between; align-items: center; }
+  .headline { display: flex; align-items: center; gap: .5rem; font-size: 1.05rem; }
+  .status-row { border-bottom: 1px solid #f2f2f2; }
+  .status-row:last-child { border-bottom: 0; }
+  .status-line { display: flex; align-items: center; gap: .5rem; padding: .45rem 0; }
+  .status-label { flex: 1; font-family: ui-monospace, monospace; font-size: .9rem; }
+  .status-word { font-size: .85rem; font-weight: 600; }
+  .status-age { min-width: 5rem; text-align: right; }
+  .dot { width: .6rem; height: .6rem; border-radius: 50%; background: #8b949e; flex: 0 0 auto; }
+  .dot.ok { background: #2da44e; } .status-word.ok { color: #1a7f37; }
+  .dot.fail { background: #cf222e; } .status-word.fail { color: #cf222e; }
+  .dot.never { background: #d4a72c; } .status-word.never { color: #9a6700; }
+  .dot.muted { background: #8b949e; } .status-word.muted { color: #57606a; }
+  .summary { display: flex; flex-wrap: wrap; gap: .15rem .9rem; margin: 0 0 .45rem 1.1rem; }
+  .summary-item { display: flex; gap: .35rem; align-items: baseline; }
+  .summary-v { font-family: ui-monospace, monospace; color: #444; word-break: break-all; }
+  .subnav { position: sticky; top: 0; z-index: 5; display: flex; gap: .5rem; align-items: center; height: var(--subnav-h); background: #fafafa; border-bottom: 1px solid #e5e5e5; }
+  .pill { font: inherit; font-size: .85rem; padding: .3rem .85rem; border-radius: 999px; border: 1px solid #ddd; background: #fff; color: #555; cursor: pointer; }
+  .pill.active { background: var(--accent); color: #222; border-color: var(--accent); font-weight: 600; }
+  a.pill { text-decoration: none; display: inline-block; }
+  .persona-bar { display: flex; gap: .75rem; align-items: center; flex-wrap: wrap; margin: .25rem 0 1rem; padding-bottom: .75rem; border-bottom: 1px solid #eee; }
+  .persona-label .persona { font-family: ui-monospace, monospace; }
+  .persona-label .persona.real { color: var(--danger); }
+  .dev-section { scroll-margin-top: var(--subnav-h); min-height: calc(100vh - var(--subnav-h) - 2 * var(--section-pad)); padding: var(--section-pad) 0; display: flex; }
+  .dev-section > .console { flex: 1; display: flex; flex-direction: column; margin: 0; }
+  .workbench { display: grid; grid-template-columns: 16rem minmax(0, 1fr); gap: 1.25rem; flex: 1; min-height: 0; }
+  .workbench > * { min-width: 0; min-height: 0; }
+  .catalog { display: flex; flex-direction: column; }
+  .tool-detail { overflow: auto; }
+  .tool-list { list-style: none; margin: 0; padding: 0; flex: 1; overflow: auto; }
+  .tool-item { padding: .4rem .5rem; border-radius: .35rem; }
+  .tool-item.active { background: #fff7ee; }
+  .tool-item .tool-name { display: block; font-family: ui-monospace, monospace; font-size: .85rem; color: #1a5; text-decoration: none; }
+  .tool-item .tool-desc { margin: .15rem 0 0; font-size: .75rem; color: #777; max-height: 2.6em; overflow: hidden; }
+  .schema-label { font-size: .75rem; text-transform: uppercase; letter-spacing: .04em; color: #999; }
+  .run { display: flex; gap: .5rem; align-items: center; margin: .5rem 0; }
+  .confirm { background: #fdecec; border: 1px solid var(--danger); border-radius: .5rem; padding: .75rem 1rem; margin: .5rem 0; }
+  .result { border-left: 3px solid #1a5; padding-left: .6rem; }
+  .result.error { border-left-color: var(--danger); }
+  .logs { display: grid; grid-template-columns: 12rem minmax(0, 1fr); gap: 1.25rem; }
+  .logs > * { min-width: 0; }
+  .log-sources { list-style: none; margin: .25rem 0 0; padding: 0; }
+  .log-source { border-radius: .35rem; }
+  .log-source.active { background: #fff7ee; }
+  .log-source-link { display: block; padding: .4rem .6rem; color: #555; text-decoration: none; font-size: .9rem; }
+  .log-source.active .log-source-link { color: #222; font-weight: 600; }
+  .log-head { display: flex; justify-content: space-between; align-items: center; }
+  .log-actions { display: flex; gap: .75rem; align-items: center; }
+  .entry-list { list-style: none; margin: 0; padding: 0; }
+  .entry-row { display: flex; align-items: baseline; gap: .6rem; padding: .45rem .5rem; border-bottom: 1px solid #f2f2f2; }
+  .entry-row.has-detail { cursor: pointer; }
+  .entry-row.has-detail:hover { background: #fafafa; }
+  .entry-outcome { font-size: .8rem; font-weight: 600; min-width: 7rem; }
+  .entry-outcome.ok { color: #1a7f37; } .entry-outcome.fail { color: #cf222e; } .entry-outcome.muted { color: #57606a; }
+  .entry-title { flex: 1; font-size: .9rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .entry-source { min-width: 6rem; }
+  .entry-time { min-width: 11rem; text-align: right; }
+  .entry-more { color: #1a5; white-space: nowrap; }
+  .dialog-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.35); display: flex; align-items: flex-start; justify-content: center; padding: 4rem 1rem; z-index: 20; }
+  .dialog-legacy { background: #fff; border-radius: .6rem; max-width: 40rem; width: 100%; max-height: 80vh; overflow: auto; padding: 1rem 1.25rem; box-shadow: 0 .5rem 2rem rgba(0,0,0,.2); }
+  .dialog-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: .5rem; }
+  .dialog-body .row { display: flex; gap: .75rem; align-items: baseline; margin: .3rem 0; }
+  .dialog-body .row .k { width: 7rem; color: #666; font-size: .85rem; }
+  .dialog-body .row .v { word-break: break-all; }
+  .detail-blob { margin-top: .5rem; }
+  .data-nav { display: flex; gap: .5rem; flex-wrap: wrap; margin: .25rem 0 1.25rem; }
+  .tier { font-size: .75rem; font-weight: 600; padding: .1rem .55rem; border-radius: 999px; border: 1px solid; }
+  .tier.indexed { color: #1a7f37; border-color: #1a7f37; }
+  .tier.skipped { color: #cf222e; border-color: #cf222e; }
+  .tier.pending { color: #9a6700; border-color: #9a6700; }
+  .tier.orphaned { color: #57606a; border-color: #57606a; }
+}

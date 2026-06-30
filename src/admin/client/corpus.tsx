@@ -163,7 +163,7 @@ function CorpusEditor({ config, page }: { config: TableConfig; page: CorpusPage 
         </tbody>
       </table>
 
-      <div class="card">
+      <div class="card-legacy">
         <h2>Add</h2>
         {config.addFields.map((f) => (
           <label>

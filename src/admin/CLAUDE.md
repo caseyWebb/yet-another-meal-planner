@@ -89,11 +89,13 @@ Islands (`client/*.tsx`) run in the browser and are typechecked under
 ## Build & serve
 
 - Source of truth: `src/admin/**`. `scripts/build-admin.mjs` (`aubr build:admin`) esbuild-bundles
-  each `client/*.tsx` island → `admin/dist/admin/islands/*.js` and copies `styles.css`. SSR pages
-  are NOT pre-built — the Worker renders them per request.
+  each `client/*.tsx` island → `admin/dist/admin/islands/*.js` and **Tailwind-compiles** `styles.css`
+  (Basecoat + the panel's utilities) → `admin/dist/admin/styles.css`. SSR pages are NOT pre-built —
+  the Worker renders them per request.
 - **`admin/dist/` is a gitignored build artifact — not committed.** CI and the deploy build it
-  fresh (esbuild-only, no network registry), and local `wrangler dev` needs a build first. (The
-  bundles embed environment-specific module paths, so a committed copy wouldn't be reproducible.)
+  fresh (esbuild + Tailwind, both from installed node_modules — no network registry), and local
+  `wrangler dev` needs a build first. (The bundles embed environment-specific module paths, so a
+  committed copy wouldn't be reproducible.)
 - Auth lives in the Worker (Cloudflare Access on `/admin*`, reused as the app's `accessGate`
   middleware). Islands just call same-origin `/admin/api/*` and trust the gate — keep auth logic
   out of the client.

@@ -4,7 +4,7 @@
 
 import type { Child } from "hono/jsx";
 
-export const Card = ({ children }: { children?: Child }) => <div class="card">{children}</div>;
+export const Card = ({ children }: { children?: Child }) => <div class="card-legacy">{children}</div>;
 
 type ButtonVariant = "primary" | "link" | "danger" | "danger-solid";
 
@@ -67,7 +67,7 @@ export const Table = ({ head, children }: { head: Child; children?: Child }) => 
 
 export const Dialog = ({ title, children }: { title: string; children?: Child }) => (
   <div class="dialog-backdrop">
-    <div class="dialog">
+    <div class="dialog-legacy">
       <div class="dialog-head">
         <h2>{title}</h2>
       </div>

@@ -169,11 +169,11 @@ export const StatusPage = ({ payload }: { payload: HealthPayload }) => (
         Paid plan to remove the cap.
       </div>
     ) : null}
-    <div class="card headline">
+    <div class="card-legacy headline">
       <span class={`dot ${payload.ok ? "ok" : "fail"}`} />
       <strong class={`status-word ${payload.ok ? "ok" : "fail"}`}>{payload.ok ? "Healthy" : "Degraded"}</strong>
     </div>
-    <div class="card">
+    <div class="card-legacy">
       {payload.jobs.map((job) => (
         <JobRow job={job} now={payload.generated_at} />
       ))}
