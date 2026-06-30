@@ -17,7 +17,7 @@ Prerequisite (satisfied): `rewrite-admin-panel-to-hono` is cut over and archived
 
 ## 4. Read-only areas
 - [x] Data explorer (`pages/data.tsx`, 5 views): tables → Basecoat `table`, `.card-legacy` → `card`/`section`. Kept the `.pill` view-nav, `.tier` status badges, and the `.tool-list` guidance browser as panel-specific (Basecoat has no nav-pill/semantic-tier). All 5 views earn their keep (distinct read surfaces). 22 data tests green; Playwright-verified
-- [ ] Usage dashboards (`pages/usage.tsx`): card/badge + keep the custom sparkline viz; triage setup-card states
+- [x] Usage dashboards (`pages/usage.tsx`): dashboard cards → kit `<Card>`, NotConfigured setup cards → `card`/`section` muted, Refresh → ghost `btn`. Kept the status-row/dot meters, `.summary` AI-by-model, and the sparkline viz (panel-specific). Confirmed via Playwright that Basecoat `.card` needs a `<section>` wrapper (direct children get card-layout gaps) — the kit `<Card>` provides it
 
 ## 5. Logs
 - [ ] Logs master/detail (`pages/logs.tsx`, `client/logs.tsx`): card/table + native `<dialog>` for the detail (drop the bespoke `.dialog-backdrop`/`.dialog`); row-action (retry/delete) island behavior unchanged

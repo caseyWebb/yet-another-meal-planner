@@ -6,6 +6,7 @@
 
 import type { Child } from "hono/jsx";
 import { Layout } from "../ui/layout.js";
+import { Card } from "../ui/kit.js";
 import type { UsageResult, TrendsResult, ToolUsageResult } from "../../usage.js";
 
 const KV_ACTIONS = ["read", "write", "delete", "list"] as const;
@@ -32,7 +33,11 @@ const MeterRow = ({ label, used, limit }: { label: string; used: number; limit: 
   );
 };
 
-const NotConfigured = ({ children }: { children?: Child }) => <div class="card-legacy muted">{children}</div>;
+const NotConfigured = ({ children }: { children?: Child }) => (
+  <div class="card">
+    <section class="muted">{children}</section>
+  </div>
+);
 
 const UsagePanel = ({ usage }: { usage: UsageResult }) => {
   if (!usage.configured) {
@@ -47,13 +52,13 @@ const UsagePanel = ({ usage }: { usage: UsageResult }) => {
   return (
     <div>
       <p class="muted small">Cloudflare usage for {usage.day} (UTC), against the daily free-tier limits.</p>
-      <div class="card-legacy">
+      <Card>
         <h2>KV operations</h2>
         {KV_ACTIONS.map((a) => (
           <MeterRow label={`${a}s`} used={usage.kv.totals[a]} limit={usage.kv.limits[a]} />
         ))}
-      </div>
-      <div class="card-legacy">
+      </Card>
+      <Card>
         <h2>By namespace</h2>
         <p class="muted small">Keyed by Cloudflare namespace id (read · write · delete · list).</p>
         {usage.kv.namespaces.length === 0 ? (
@@ -72,8 +77,8 @@ const UsagePanel = ({ usage }: { usage: UsageResult }) => {
             </div>
           ))
         )}
-      </div>
-      <div class="card-legacy">
+      </Card>
+      <Card>
         <h2>Workers AI</h2>
         <MeterRow label="neurons" used={usage.ai.neurons_used} limit={usage.ai.neurons_limit} />
         {usage.ai.by_model.length === 0 ? (
@@ -88,7 +93,7 @@ const UsagePanel = ({ usage }: { usage: UsageResult }) => {
             ))}
           </div>
         )}
-      </div>
+      </Card>
     </div>
   );
 };
@@ -104,7 +109,7 @@ const TrendsPanel = ({ trends }: { trends: TrendsResult }) => {
     );
   }
   return (
-    <div class="card-legacy">
+    <Card>
       <h2>Trends</h2>
       <p class="muted small">Per-job runs over the last {trends.window_days} days (UTC), oldest → newest.</p>
       {trends.jobs.length === 0 ? (
@@ -129,7 +134,7 @@ const TrendsPanel = ({ trends }: { trends: TrendsResult }) => {
           );
         })
       )}
-    </div>
+    </Card>
   );
 };
 
@@ -144,7 +149,7 @@ const ToolsPanel = ({ tools }: { tools: ToolUsageResult }) => {
     );
   }
   return (
-    <div class="card-legacy">
+    <Card>
       <h2>Tool usage</h2>
       <p class="muted small">MCP tool calls over the last {tools.window_days} days, busiest first.</p>
       {tools.tools.length === 0 ? (
@@ -166,7 +171,7 @@ const ToolsPanel = ({ tools }: { tools: ToolUsageResult }) => {
           );
         })
       )}
-    </div>
+    </Card>
   );
 };
 
@@ -182,7 +187,7 @@ export const UsagePage = ({
   <Layout title="Usage · grocery-agent admin" active="/admin/usage">
     <div class="status-head">
       <h2>Usage</h2>
-      <a href="/admin/usage" class="nav-link" style="border:0">
+      <a href="/admin/usage" class="btn" data-variant="ghost" data-size="sm">
         Refresh
       </a>
     </div>
