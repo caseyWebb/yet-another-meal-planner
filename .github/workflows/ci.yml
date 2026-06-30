@@ -91,6 +91,45 @@ jobs:
         # of scope. Pure-Node gate, unit-tested in tests/check-licenses.test.mjs.
         run: node scripts/check-licenses.mjs
 
+  admin-visual:
+    # Browser-level visual + smoke aid for the operator admin panel: drives the real panel via a
+    # local `wrangler dev` and uploads per-area screenshots (+ pixel diffs vs the committed
+    # baselines) as PR artifacts. NON-BLOCKING (continue-on-error) — the baselines are a dev
+    # bootstrap and CI's pinned Chromium differs, so this surfaces diffs without gating; the
+    # vitest `test` job is the functional gate. See admin/visual/README.md to promote it to a gate.
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959d # v4.2.0
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+      - name: Cache aube store
+        uses: actions/cache@2c8a9bd7457de244a408f35966fab2fb45fda9c8 # v6.0.0
+        with:
+          path: ~/.local/share/aube/store
+          key: aube-store-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+          restore-keys: aube-store-${{ runner.os }}-
+      - name: Install dependencies
+        run: aube ci
+      # Installs the Chromium build @playwright/test pins (+ its OS deps). This differs from the
+      # browser the bootstrap baselines were captured with, hence the non-blocking job above.
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+      - name: Admin visual + smoke tests
+        run: aubr test:admin
+      - name: Upload screenshots + report
+        if: ${{ always() }}
+        # NOTE: version-tagged (not SHA-pinned like the actions above) — pin to a SHA to match the
+        # repo's convention when convenient.
+        uses: actions/upload-artifact@v4
+        with:
+          name: admin-visual
+          path: |
+            playwright-report/
+            admin/visual/.results/
+          retention-days: 14
+
   trigger-deploy:
     # Auto-trigger the data-repo deploy on Worker-relevant changes to main.
     # Only fires on push (not PRs or workflow_dispatch) — the push trigger above
