@@ -26,8 +26,8 @@ Prerequisite (satisfied): `rewrite-admin-panel-to-hono` is cut over and archived
 - [x] Config islands (`calibration.tsx`, `corpus.tsx`, `opconfig.tsx`): forms → Basecoat `label`+`input` with `grid gap` layout, buttons → `btn` variants, failures → `alert`, tables → `table`; the calibration `.confirm` floor-warning → a destructive `alert` with a `<footer>` action row. Page pill sub-nav kept (panel-specific). The `Clean|Dirty|NeedsConfirm` form-machine + add/remove/test behavior unchanged. (No native-select/switch needed — these forms are number/text inputs.) **Playwright-verified**: calibration knob form + the feeds corpus editor
 
 ## 7. Cleanup + docs
-- [ ] Remove the dead hand-rolled component classes from `src/admin/styles.css` (only the thin project theme + layout layer remains); confirm no orphaned class references across `src/admin/**`
-- [ ] Update `docs/ARCHITECTURE.md` + `CONTRIBUTING.md` admin-build references for the Tailwind step in lockstep; `aubr typecheck` + `aubr test` green and `node scripts/build-admin.mjs` builds clean (admin/dist is gitignored — nothing to commit)
+- [x] Removed the transitional bridge + dead cruft from `src/admin/styles.css` (the `-legacy` card/dialog, the `.error` banner, the `:not(.btn)` bare-element bridge, and the tool-console-era classes) — only the operator theme + panel-specific layout (nav, status/logs grids, dots, tier badges, the minted callout) remains. Verified: 0 orphaned class references, 1025 tests green, all six areas Playwright-screenshotted unchanged
+- [x] Updated `CLAUDE.md` + `CONTRIBUTING.md` + `docs/ARCHITECTURE.md` admin-build references for the Tailwind/Basecoat step in lockstep (`src/admin/CLAUDE.md` was updated alongside the build change in Phase 1); `aubr typecheck` + `aubr test` green, `node scripts/build-admin.mjs` builds clean (admin/dist gitignored)
 
 ## 8. Visual regression (optional — the rewrite deferred this harness wholesale; MAY be a separate change)
 - [ ] Stand up the Playwright harness: config + a CI job spinning up a `wrangler dev` preview, rendered in the pinned Playwright container, screenshot/diff images uploaded as PR artifacts
