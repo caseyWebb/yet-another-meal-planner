@@ -63,24 +63,34 @@ function OpConfigIsland({ config, fields }: { config: OperatorConfig; fields: Fi
 
   return (
     <div class="card">
-      {state.t === "error" ? <div class="error">{state.message}</div> : null}
-      {fields.map((f) => (
-        <label>
-          {f.label}
-          <input
-            type="number"
-            step={f.step}
-            value={draft[f.key]}
-            onInput={(e: Event) => onField(f.key, (e.target as HTMLInputElement).value)}
-          />
-        </label>
-      ))}
-      <div class="form-actions">
-        <button disabled={!canSave} onClick={save}>
-          Save
-        </button>
-        {state.t === "saved" ? <span class="muted small">Saved.</span> : null}
-      </div>
+      <section class="grid gap-4">
+        {state.t === "error" ? (
+          <div class="alert" data-variant="destructive">
+            <section>{state.message}</section>
+          </div>
+        ) : null}
+        {fields.map((f) => (
+          <div class="grid gap-2">
+            <label class="label" for={f.key}>
+              {f.label}
+            </label>
+            <input
+              class="input"
+              id={f.key}
+              type="number"
+              step={f.step}
+              value={draft[f.key]}
+              onInput={(e: Event) => onField(f.key, (e.target as HTMLInputElement).value)}
+            />
+          </div>
+        ))}
+        <div class="form-actions">
+          <button class="btn" data-size="sm" disabled={!canSave} onClick={save}>
+            Save
+          </button>
+          {state.t === "saved" ? <span class="muted small">Saved.</span> : null}
+        </div>
+      </section>
     </div>
   );
 }

@@ -100,45 +100,53 @@ function CalibrationIsland({ config }: { config: DiscoveryConfig }) {
   return (
     <div>
       <div class="card">
-      <fieldset style="border:0;padding:0;margin:0">
-        {KNOBS.map((k) => (
-          <label>
-            {k.label}
-            <input
-              type="number"
-              step={k.step}
-              value={draft[k.key]}
-              onInput={(e: Event) => onField(k.key, (e.target as HTMLInputElement).value)}
-            />
-          </label>
-        ))}
-      </fieldset>
+        <section class="grid gap-4">
+          <fieldset class="grid gap-4" style="border:0;padding:0;margin:0">
+            {KNOBS.map((k) => (
+              <div class="grid gap-2">
+                <label class="label" for={k.key}>
+                  {k.label}
+                </label>
+                <input
+                  class="input"
+                  id={k.key}
+                  type="number"
+                  step={k.step}
+                  value={draft[k.key]}
+                  onInput={(e: Event) => onField(k.key, (e.target as HTMLInputElement).value)}
+                />
+              </div>
+            ))}
+          </fieldset>
 
-      {form.t === "needsConfirm" ? (
-        <div class="confirm">
-          <p>{form.warning.message}</p>
-          <div class="form-actions">
-            <button class="danger-solid" onClick={() => save(true)}>
-              Confirm &amp; save
-            </button>
-            <button class="link" onClick={() => setForm({ t: "dirty", draft: form.draft })}>
-              Cancel
-            </button>
-          </div>
-        </div>
-      ) : (
-        <div class="form-actions">
-          <button disabled={!dirty} onClick={() => save(false)}>
-            Save
-          </button>
-          <button class="link" onClick={runAnalyze}>
-            Analyze
-          </button>
-          <button class="link" onClick={runDryRun}>
-            Dry-run
-          </button>
-        </div>
-      )}
+          {form.t === "needsConfirm" ? (
+            <div class="grid gap-2">
+              <div class="alert" data-variant="destructive">
+                <section>{form.warning.message}</section>
+              </div>
+              <div class="form-actions">
+                <button class="btn" data-variant="destructive" data-size="sm" onClick={() => save(true)}>
+                  Confirm &amp; save
+                </button>
+                <button class="btn" data-variant="ghost" data-size="sm" onClick={() => setForm({ t: "dirty", draft: form.draft })}>
+                  Cancel
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div class="form-actions">
+              <button class="btn" data-size="sm" disabled={!dirty} onClick={() => save(false)}>
+                Save
+              </button>
+              <button class="btn" data-variant="ghost" data-size="sm" onClick={runAnalyze}>
+                Analyze
+              </button>
+              <button class="btn" data-variant="ghost" data-size="sm" onClick={runDryRun}>
+                Dry-run
+              </button>
+            </div>
+          )}
+        </section>
       </div>
 
       <AnalyzePanel state={analyze} />
@@ -150,34 +158,41 @@ function CalibrationIsland({ config }: { config: DiscoveryConfig }) {
 const AnalyzePanel = ({ state }: { state: Loadable<AnalyzeResult> }) => {
   if (state.status === "notAsked") return null;
   if (state.status === "loading") return <p class="muted">Analyzing…</p>;
-  if (state.status === "failure") return <div class="error">Analyze failed: {state.error.message}</div>;
+  if (state.status === "failure")
+    return (
+      <div class="alert" data-variant="destructive">
+        <section>Analyze failed: {state.error.message}</section>
+      </div>
+    );
   const a = state.value;
   return (
     <div class="card">
-      <h2>Analyze</h2>
-      <p class="muted small">
-        δ pairs: {a.deltaPairCount}
-        {a.deltaBounded ? " (sampled)" : ""} · corpus {a.deltaCorpusSize}
-      </p>
-      <table>
-        <thead>
-          <tr>
-            <th>member</th>
-            <th>matches at τ</th>
-          </tr>
-        </thead>
-        <tbody>
-          {a.memberTau.map((m) => (
+      <section>
+        <h2>Analyze</h2>
+        <p class="muted small">
+          δ pairs: {a.deltaPairCount}
+          {a.deltaBounded ? " (sampled)" : ""} · corpus {a.deltaCorpusSize}
+        </p>
+        <table class="table">
+          <thead>
             <tr>
-              <td>{m.tenant}</td>
-              <td>
-                {m.matchCount}
-                {m.coldStart ? <span class="muted small"> (cold start)</span> : null}
-              </td>
+              <th>member</th>
+              <th>matches at τ</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {a.memberTau.map((m) => (
+              <tr>
+                <td>{m.tenant}</td>
+                <td>
+                  {m.matchCount}
+                  {m.coldStart ? <span class="muted small"> (cold start)</span> : null}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </section>
     </div>
   );
 };
@@ -185,25 +200,32 @@ const AnalyzePanel = ({ state }: { state: Loadable<AnalyzeResult> }) => {
 const DryRunPanel = ({ state }: { state: Loadable<DryRunOutcome[]> }) => {
   if (state.status === "notAsked") return null;
   if (state.status === "loading") return <p class="muted">Running the pipeline (no writes)…</p>;
-  if (state.status === "failure") return <div class="error">Dry-run failed: {state.error.message}</div>;
+  if (state.status === "failure")
+    return (
+      <div class="alert" data-variant="destructive">
+        <section>Dry-run failed: {state.error.message}</section>
+      </div>
+    );
   return (
     <div class="card">
-      <h2>Dry-run</h2>
-      {state.value.length === 0 ? (
-        <p class="muted">No candidates this run.</p>
-      ) : (
-        <ul class="entry-list">
-          {state.value.map((o) => (
-            <li class="entry-row">
-              <span class="entry-outcome muted">{o.outcome}</span>
-              <span class="entry-title">{o.title || o.url}</span>
-              <span class="entry-source muted small">
-                {o.wouldMatchMembers && o.wouldMatchMembers.length > 0 ? `→ ${o.wouldMatchMembers.join(", ")}` : ""}
-              </span>
-            </li>
-          ))}
-        </ul>
-      )}
+      <section>
+        <h2>Dry-run</h2>
+        {state.value.length === 0 ? (
+          <p class="muted">No candidates this run.</p>
+        ) : (
+          <ul class="entry-list">
+            {state.value.map((o) => (
+              <li class="entry-row">
+                <span class="entry-outcome muted">{o.outcome}</span>
+                <span class="entry-title">{o.title || o.url}</span>
+                <span class="entry-source muted small">
+                  {o.wouldMatchMembers && o.wouldMatchMembers.length > 0 ? `→ ${o.wouldMatchMembers.join(", ")}` : ""}
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
     </div>
   );
 };

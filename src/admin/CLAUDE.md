@@ -86,14 +86,37 @@ Islands (`client/*.tsx`) run in the browser and are typechecked under
 "hono/jsx/dom"`; the SSR pages compile under the root config (workerd types, `jsxImportSource:
 "hono/jsx"`). Keep browser-only code in `client/`. `aubr typecheck` runs both passes.
 
+## Styling — the Basecoat design system
+
+The panel is styled with **Basecoat** (the Vega style pack), a Tailwind CSS component system
+(shadcn/ui-compatible tokens, no React). `src/admin/styles.css` is the **Tailwind entry**:
+`@import "tailwindcss"; @import "basecoat-css/vega";` + the operator theme (`--primary` → the
+orange accent). The build (`build-admin.mjs`) Tailwind-compiles it; `@source "./"` scans this
+tree for the utility classes you use.
+
+- **Compose from Basecoat's class API:** a root component class plus `data-variant`/`data-size`
+  attributes — `<button class="btn" data-variant="destructive" data-size="sm">`, `<div class="card"><section>…</section></div>`, `<div class="alert" data-variant="destructive"><svg…/><h2>…</h2><section>…</section></div>`, `<span class="badge">`, `<input class="input">`, `<table class="table">`. Layout is **Tailwind utilities** (`flex`, `grid`, `gap-*`, `items-center`, …).
+- **No Basecoat component JavaScript.** Modals use the native `<dialog>` element (`showModal()`)
+  — Basecoat styles it CSS-only; interactivity lives in `hono/jsx/dom` island state, so read-only
+  pages still ship zero client JS. Do not load Basecoat's JS into an island (it would fight the
+  island's DOM reconciliation).
+- **Icons:** inline Lucide SVG (Basecoat ships none) — copy the path from lucide.dev.
+- **Panel-specific CSS:** beyond the imports + theme, `styles.css` holds only the layout Basecoat
+  doesn't define — the area nav + sub-nav pills, the Status/Logs master-detail grids, status dots,
+  the recipe-tier badges, and the once-shown credentials callout. Everything else is Basecoat
+  components + Tailwind utilities; reach for those first and add to `styles.css` only for layout
+  Basecoat genuinely lacks.
+
 ## Build & serve
 
 - Source of truth: `src/admin/**`. `scripts/build-admin.mjs` (`aubr build:admin`) esbuild-bundles
-  each `client/*.tsx` island → `admin/dist/admin/islands/*.js` and copies `styles.css`. SSR pages
-  are NOT pre-built — the Worker renders them per request.
+  each `client/*.tsx` island → `admin/dist/admin/islands/*.js` and **Tailwind-compiles** `styles.css`
+  (Basecoat + the panel's utilities) → `admin/dist/admin/styles.css`. SSR pages are NOT pre-built —
+  the Worker renders them per request.
 - **`admin/dist/` is a gitignored build artifact — not committed.** CI and the deploy build it
-  fresh (esbuild-only, no network registry), and local `wrangler dev` needs a build first. (The
-  bundles embed environment-specific module paths, so a committed copy wouldn't be reproducible.)
+  fresh (esbuild + Tailwind, both from installed node_modules — no network registry), and local
+  `wrangler dev` needs a build first. (The bundles embed environment-specific module paths, so a
+  committed copy wouldn't be reproducible.)
 - Auth lives in the Worker (Cloudflare Access on `/admin*`, reused as the app's `accessGate`
   middleware). Islands just call same-origin `/admin/api/*` and trust the gate — keep auth logic
   out of the client.

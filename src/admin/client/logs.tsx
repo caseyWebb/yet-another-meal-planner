@@ -4,7 +4,7 @@
 // cannot contradict and one-at-a-time is structural (admin/CLAUDE.md). A successful retry/delete
 // reloads the page (re-SSRs the fresh log).
 
-import { render, useState } from "hono/jsx/dom";
+import { render, useState, useRef, useEffect } from "hono/jsx/dom";
 import { hc } from "hono/client";
 import type { AdminApp } from "../app.js";
 import type { DiscoveryLogRow } from "../../discovery-db.js";
@@ -30,36 +30,52 @@ async function readError(res: { status: number; json: () => Promise<unknown> }):
   return `HTTP ${res.status}`;
 }
 
-function DetailDialog({ entry, onClose }: { entry: DiscoveryLogRow; onClose: () => void }) {
-  const rows: [string, string | null][] = [
-    ["outcome", entry.outcome],
-    ["url", entry.url],
-    ["source", entry.source],
-    ["imported as", entry.slug],
-    ["at", entry.created_at],
-  ];
+// The detail modal is the native <dialog> element (Basecoat `dialog`, CSS-only — no Basecoat
+// JS). It is rendered persistently and opened/closed imperatively from the island's `entry`
+// state via an effect; the native `close` event (Esc) and a backdrop click both sync state.
+function DetailDialog({ entry, onClose }: { entry: DiscoveryLogRow | null; onClose: () => void }) {
+  const ref = useRef<HTMLDialogElement>(null);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    if (entry && !el.open) el.showModal();
+    else if (!entry && el.open) el.close();
+  }, [entry]);
+  const rows: [string, string | null][] = entry
+    ? [
+        ["outcome", entry.outcome],
+        ["url", entry.url],
+        ["source", entry.source],
+        ["imported as", entry.slug],
+        ["at", entry.created_at],
+      ]
+    : [];
   return (
-    <div class="dialog-backdrop" onClick={onClose}>
-      <div class="dialog" onClick={(e: Event) => e.stopPropagation()}>
-        <div class="dialog-head">
-          <h2>{entryTitle(entry)}</h2>
-          <button class="link" onClick={onClose}>
-            Close
-          </button>
+    <dialog ref={ref} class="dialog" onClose={onClose} onClick={(e: Event) => e.target === ref.current && onClose()}>
+      {entry ? (
+        <div>
+          <header>
+            <h2>{entryTitle(entry)}</h2>
+          </header>
+          <section>
+            {rows
+              .filter(([, v]) => v != null && v !== "")
+              .map(([k, v]) => (
+                <div class="row">
+                  <span class="k">{k}</span>
+                  <span class="v">{v}</span>
+                </div>
+              ))}
+            <pre class="detail-blob">{JSON.stringify(entry.detail, null, 2)}</pre>
+          </section>
+          <footer>
+            <button type="button" class="btn" data-variant="outline" data-size="sm" onClick={onClose}>
+              Close
+            </button>
+          </footer>
         </div>
-        <div class="dialog-body">
-          {rows
-            .filter(([, v]) => v != null && v !== "")
-            .map(([k, v]) => (
-              <div class="row">
-                <span class="k">{k}</span>
-                <span class="v">{v}</span>
-              </div>
-            ))}
-          <pre class="detail-blob">{JSON.stringify(entry.detail, null, 2)}</pre>
-        </div>
-      </div>
-    </div>
+      ) : null}
+    </dialog>
   );
 }
 
@@ -87,14 +103,16 @@ function LogsIsland({ entries }: { entries: DiscoveryLogRow[] }) {
       <div class="log-head">
         <h2>Discovery</h2>
         <div class="log-actions">
-          <button class="link" disabled={busy} onClick={() => location.reload()}>
+          <button class="btn" data-variant="ghost" data-size="sm" disabled={busy} onClick={() => location.reload()}>
             Refresh
           </button>
         </div>
       </div>
       {action != null && action.kind === "failed" ? (
-        <div class="error">
-          {action.action === "retry" ? "Retry" : "Delete"} failed: {action.error}
+        <div class="alert" data-variant="destructive">
+          <section>
+            {action.action === "retry" ? "Retry" : "Delete"} failed: {action.error}
+          </section>
         </div>
       ) : null}
       {entries.length === 0 ? (
@@ -118,10 +136,10 @@ function LogsIsland({ entries }: { entries: DiscoveryLogRow[] }) {
                 <span class="entry-time muted small">{e.created_at ?? ""}</span>
                 {retryable ? (
                   <span class="log-actions">
-                    <button class="link" disabled={busy} onClick={() => retry(e.id)}>
+                    <button class="btn" data-variant="ghost" data-size="sm" disabled={busy} onClick={() => retry(e.id)}>
                       {action != null && action.kind === "retrying" && action.id === e.id ? "Retrying…" : "Retry"}
                     </button>
-                    <button class="danger" disabled={busy} onClick={() => del(e.id)}>
+                    <button class="btn" data-variant="destructive" data-size="sm" disabled={busy} onClick={() => del(e.id)}>
                       {action != null && action.kind === "deleting" && action.id === e.id ? "Deleting…" : "Delete"}
                     </button>
                   </span>
@@ -133,7 +151,7 @@ function LogsIsland({ entries }: { entries: DiscoveryLogRow[] }) {
           })}
         </ul>
       )}
-      {dialog != null ? <DetailDialog entry={dialog} onClose={() => setDialog(null)} /> : null}
+      <DetailDialog entry={dialog} onClose={() => setDialog(null)} />
     </div>
   );
 }

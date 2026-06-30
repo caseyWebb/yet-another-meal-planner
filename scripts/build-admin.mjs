@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// build-admin.mjs — compile the operator admin islands (src/admin/client/*.tsx) and copy the
-// stylesheet into admin/dist, the static bundle the Worker serves via its ASSETS binding
+// build-admin.mjs — compile the operator admin islands (src/admin/client/*.tsx) and compile the
+// stylesheet (Tailwind v4 + Basecoat) into admin/dist, the static bundle the Worker serves via its ASSETS binding
 // (operator-admin). The server pages are server-rendered in the Worker (Hono JSX, built by
 // wrangler's esbuild); only the browser islands + the stylesheet are pre-built static assets.
 //
@@ -11,22 +11,26 @@
 //
 // Output layout maps URL paths under /admin/ to files (ASSETS `directory` is admin/dist):
 //   <out>/admin/islands/<name>.js   (esbuild bundle, browser ESM, hono/jsx/dom runtime)
-//   <out>/admin/styles.css          (copied from src/admin/styles.css)
+//   <out>/admin/styles.css          (Tailwind-compiled from src/admin/styles.css: Basecoat + the panel's utilities)
 //
-// esbuild only — NO network package registry needed, so any sandbox can rebuild it. A --check
+// esbuild + Tailwind, both run from installed node_modules — NO network package registry needed, so any
+// sandbox can rebuild it (Tailwind v4's engine is a prebuilt binary, like esbuild). A --check
 // validate-only mode is kept for local "does my tree match a prior build" comparisons (it is
 // NOT a CI gate — there is no committed bundle to compare against).
 //
 // Usage: node scripts/build-admin.mjs [--out admin/dist] [--check]
 
 import esbuild from "esbuild";
-import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, rmSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { tmpdir } from "node:os";
 import path from "node:path";
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const CLIENT_DIR = path.join(REPO_ROOT, "src", "admin", "client");
 const STYLES_SRC = path.join(REPO_ROOT, "src", "admin", "styles.css");
+const TAILWIND_BIN = path.join(REPO_ROOT, "node_modules", ".bin", "tailwindcss");
 
 function parseArgs(argv) {
   const args = { out: path.join("admin", "dist"), check: false };
@@ -61,13 +65,28 @@ async function bundleIsland(file) {
   return result.outputFiles[0].text;
 }
 
+/** Compile the Tailwind entry (Basecoat + the panel's utilities) to a CSS string. Runs the
+ *  Tailwind CLI from installed node_modules — no network — so any sandbox rebuilds it. */
+function compileStyles() {
+  const out = path.join(tmpdir(), `admin-styles-${process.pid}.css`);
+  try {
+    execFileSync(TAILWIND_BIN, ["-i", STYLES_SRC, "-o", out, "--minify"], {
+      cwd: REPO_ROOT,
+      stdio: ["ignore", "ignore", "inherit"],
+    });
+    return readFileSync(out, "utf8");
+  } finally {
+    rmSync(out, { force: true });
+  }
+}
+
 /** The bundle as a { relativePath -> content } map (the unit of compare/write). */
 async function buildFiles() {
   const files = {};
   for (const { name, file } of islandEntries()) {
     files[`admin/islands/${name}.js`] = await bundleIsland(file);
   }
-  files["admin/styles.css"] = readFileSync(STYLES_SRC, "utf8");
+  files["admin/styles.css"] = compileStyles();
   return files;
 }
 

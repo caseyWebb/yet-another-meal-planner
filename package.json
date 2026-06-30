@@ -28,7 +28,8 @@
     "check:licenses": "node scripts/check-licenses.mjs",
     "build:plugin": "node scripts/build-plugin.mjs",
     "build:admin": "node scripts/build-admin.mjs",
-    "build:vault": "node scripts/build-vault.mjs"
+    "build:vault": "node scripts/build-vault.mjs",
+    "test:admin": "playwright test"
   },
   "dependencies": {
     "@cloudflare/workers-oauth-provider": "^0.8.1",
@@ -48,9 +49,12 @@
     "@cloudflare/workers-types": "^4.20260621.1",
     "@fission-ai/openspec": "^1.4.1",
     "@playwright/test": "^1.61.1",
+    "@tailwindcss/cli": "^4.3.2",
     "@types/js-yaml": "^4.0.9",
+    "basecoat-css": "^1.0.1",
     "esbuild": "^0.28.1",
     "json5": "^2.2.3",
+    "tailwindcss": "^4.3.2",
     "typescript": "^6.0.3",
     "vitest": "^4.1.9",
     "wrangler": "^4.103.0"

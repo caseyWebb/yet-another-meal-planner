@@ -107,7 +107,7 @@ function MembersIsland(initial: MembersIslandProps) {
         <div class="minted">
           <div class="minted-head">
             <strong>{banner.kind === "kroger" ? `Kroger consent link for ${banner.username}` : banner.username}</strong>
-            <button class="link" onClick={() => setBanner(null)}>
+            <button class="btn" data-variant="ghost" data-size="sm" onClick={() => setBanner(null)}>
               dismiss
             </button>
           </div>
@@ -136,8 +136,12 @@ function MembersIsland(initial: MembersIslandProps) {
           ) : null}
         </div>
       ) : null}
-      {action.status === "failed" ? <div class="error">{action.message}</div> : null}
-      <table>
+      {action.status === "failed" ? (
+        <div class="alert" data-variant="destructive">
+          <section>{action.message}</section>
+        </div>
+      ) : null}
+      <table class="table">
         <thead>
           <tr>
             <th>member</th>
@@ -149,13 +153,13 @@ function MembersIsland(initial: MembersIslandProps) {
             <tr>
               <td>{m}</td>
               <td class="form-actions">
-                <button class="link" disabled={busy} onClick={() => doRotate(m)}>
+                <button class="btn" data-variant="ghost" data-size="sm" disabled={busy} onClick={() => doRotate(m)}>
                   rotate invite
                 </button>
-                <button class="link" disabled={busy} onClick={() => doKrogerLink(m)}>
+                <button class="btn" data-variant="ghost" data-size="sm" disabled={busy} onClick={() => doKrogerLink(m)}>
                   {action.status === "busy" && action.op.kind === "kroger" && action.op.id === m ? "minting…" : "kroger link"}
                 </button>
-                <button class="danger" disabled={busy} onClick={() => doRevoke(m)}>
+                <button class="btn" data-variant="destructive" data-size="sm" disabled={busy} onClick={() => doRevoke(m)}>
                   revoke
                 </button>
               </td>
@@ -165,12 +169,13 @@ function MembersIsland(initial: MembersIslandProps) {
       </table>
       <form class="form-actions" onSubmit={doOnboard}>
         <input
+          class="input"
           type="text"
           placeholder="username"
           value={username}
           onInput={(e: Event) => setUsername((e.target as HTMLInputElement).value)}
         />
-        <button type="submit" disabled={busy}>
+        <button type="submit" class="btn" data-size="sm" disabled={busy}>
           onboard
         </button>
       </form>

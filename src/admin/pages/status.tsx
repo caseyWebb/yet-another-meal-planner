@@ -146,39 +146,69 @@ const AdminRow = ({ posture }: { posture: AdminPosture }) => {
   return <StatusRow label="admin gate" cls={cls} word={word} detail={detail} />;
 };
 
+/** A destructive-alert warning icon (inline Lucide `triangle-alert`; Basecoat ships no icons). */
+const WarnIcon = () => (
+  <svg
+    xmlns="http://www.w3.org/2000/svg"
+    width="24"
+    height="24"
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    stroke-width="2"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+    class="lucide lucide-triangle-alert"
+  >
+    <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3" />
+    <path d="M12 9v4" />
+    <path d="M12 17h.01" />
+  </svg>
+);
+
 export const StatusPage = ({ payload }: { payload: HealthPayload }) => (
   <Layout title="Status · grocery-agent admin" active="/admin">
     <div class="status-head">
       <h2>Service health</h2>
-      <a href="/admin" class="nav-link" style="border:0">
+      <a href="/admin" class="btn" data-variant="ghost" data-size="sm">
         Refresh
       </a>
     </div>
     {payload.admin.exposed ? (
-      <div class="error">
-        <strong>Admin gate exposed. </strong>
-        Access is unconfigured and the dev bypass is set — a deployed Worker would serve /admin unauthenticated. Set
-        ACCESS_TEAM_DOMAIN and ACCESS_AUD (and clear ADMIN_DEV_BYPASS).
+      <div class="alert" data-variant="destructive">
+        <WarnIcon />
+        <h2>Admin gate exposed</h2>
+        <section>
+          Access is unconfigured and the dev bypass is set — a deployed Worker would serve /admin unauthenticated. Set
+          ACCESS_TEAM_DOMAIN and ACCESS_AUD (and clear ADMIN_DEV_BYPASS).
+        </section>
       </div>
     ) : null}
     {payload.ai_quota_exhausted ? (
-      <div class="error">
-        <strong>Workers AI quota exhausted. </strong>
-        The daily free allocation of 10,000 neurons is used up (error 4006), so the recipe-classify, recipe-embed, and
-        discovery cron jobs cannot run their AI steps. They resume at the next daily reset — or upgrade to the Workers
-        Paid plan to remove the cap.
+      <div class="alert" data-variant="destructive">
+        <WarnIcon />
+        <h2>Workers AI quota exhausted</h2>
+        <section>
+          The daily free allocation of 10,000 neurons is used up (error 4006), so the recipe-classify, recipe-embed, and
+          discovery cron jobs cannot run their AI steps. They resume at the next daily reset — or upgrade to the Workers
+          Paid plan to remove the cap.
+        </section>
       </div>
     ) : null}
-    <div class="card headline">
-      <span class={`dot ${payload.ok ? "ok" : "fail"}`} />
-      <strong class={`status-word ${payload.ok ? "ok" : "fail"}`}>{payload.ok ? "Healthy" : "Degraded"}</strong>
+    <div class="card">
+      <section class="headline">
+        <span class={`dot ${payload.ok ? "ok" : "fail"}`} />
+        <strong class={`status-word ${payload.ok ? "ok" : "fail"}`}>{payload.ok ? "Healthy" : "Degraded"}</strong>
+      </section>
     </div>
     <div class="card">
-      {payload.jobs.map((job) => (
-        <JobRow job={job} now={payload.generated_at} />
-      ))}
-      <StatusRow label="d1" cls={payload.d1.ok ? "ok" : "fail"} word={payload.d1.ok ? "reachable" : "unreachable"} />
-      <AdminRow posture={payload.admin} />
+      <section>
+        {payload.jobs.map((job) => (
+          <JobRow job={job} now={payload.generated_at} />
+        ))}
+        <StatusRow label="d1" cls={payload.d1.ok ? "ok" : "fail"} word={payload.d1.ok ? "reachable" : "unreachable"} />
+        <AdminRow posture={payload.admin} />
+      </section>
     </div>
   </Layout>
 );

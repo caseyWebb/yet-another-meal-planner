@@ -116,7 +116,7 @@ function CorpusEditor({ config, page }: { config: TableConfig; page: CorpusPage 
 
   const testCell = (key: string, url: string) => (
     <span class="log-actions">
-      <button class="link" disabled={test.t === "testing"} onClick={() => runTest(url, key)}>
+      <button class="btn" data-variant="ghost" data-size="sm" disabled={test.t === "testing"} onClick={() => runTest(url, key)}>
         {test.t === "testing" && test.key === key ? "testing…" : "test"}
       </button>
       {test.t === "result" && test.key === key ? (
@@ -130,11 +130,13 @@ function CorpusEditor({ config, page }: { config: TableConfig; page: CorpusPage 
   return (
     <div>
       {action.t === "failed" ? (
-        <div class="error">
-          {action.op.op === "add" ? "Add" : "Remove"} failed: {action.error}
+        <div class="alert" data-variant="destructive">
+          <section>
+            {action.op.op === "add" ? "Add" : "Remove"} failed: {action.error}
+          </section>
         </div>
       ) : null}
-      <table>
+      <table class="table">
         <thead>
           <tr>
             {rows.columns.map((c) => (
@@ -153,7 +155,7 @@ function CorpusEditor({ config, page }: { config: TableConfig; page: CorpusPage 
                 ))}
                 <td class="form-actions">
                   {config.testUrlColumn ? testCell(key, String(row[config.testUrlColumn] ?? "")) : null}
-                  <button class="danger" disabled={busy} onClick={() => remove(key)}>
+                  <button class="btn" data-variant="destructive" data-size="sm" disabled={busy} onClick={() => remove(key)}>
                     {busy && action.t === "busy" && action.op.op === "remove" && action.op.key === key ? "removing…" : "remove"}
                   </button>
                 </td>
@@ -164,33 +166,39 @@ function CorpusEditor({ config, page }: { config: TableConfig; page: CorpusPage 
       </table>
 
       <div class="card">
-        <h2>Add</h2>
-        {config.addFields.map((f) => (
-          <label>
-            {f.label}
-            {f.required ? "" : " (optional)"}
-            <input
-              type={f.kind === "number" ? "number" : "text"}
-              value={draft[f.key] ?? ""}
-              onInput={(e: Event) => setDraft({ ...draft, [f.key]: (e.target as HTMLInputElement).value })}
-            />
-          </label>
-        ))}
-        <div class="form-actions">
-          <button disabled={busy} onClick={add}>
-            {busy && action.t === "busy" && action.op.op === "add" ? "adding…" : "add"}
-          </button>
-          {config.testUrlColumn ? (
-            <button class="link" disabled={test.t === "testing"} onClick={() => runTest(draft[config.testUrlColumn!] ?? "", "__draft__")}>
-              test url
+        <section class="grid gap-4">
+          <h2>Add</h2>
+          {config.addFields.map((f) => (
+            <div class="grid gap-2">
+              <label class="label" for={f.key}>
+                {f.label}
+                {f.required ? "" : " (optional)"}
+              </label>
+              <input
+                class="input"
+                id={f.key}
+                type={f.kind === "number" ? "number" : "text"}
+                value={draft[f.key] ?? ""}
+                onInput={(e: Event) => setDraft({ ...draft, [f.key]: (e.target as HTMLInputElement).value })}
+              />
+            </div>
+          ))}
+          <div class="form-actions">
+            <button class="btn" data-size="sm" disabled={busy} onClick={add}>
+              {busy && action.t === "busy" && action.op.op === "add" ? "adding…" : "add"}
             </button>
+            {config.testUrlColumn ? (
+              <button class="btn" data-variant="ghost" data-size="sm" disabled={test.t === "testing"} onClick={() => runTest(draft[config.testUrlColumn!] ?? "", "__draft__")}>
+                test url
+              </button>
+            ) : null}
+          </div>
+          {config.testUrlColumn && test.t === "result" && test.key === "__draft__" ? (
+            <p class={test.ok ? "muted small" : "small"} style={test.ok ? "" : "color:var(--danger)"}>
+              {test.summary}
+            </p>
           ) : null}
-        </div>
-        {config.testUrlColumn && test.t === "result" && test.key === "__draft__" ? (
-          <p class={test.ok ? "muted small" : "small"} style={test.ok ? "" : "color:var(--danger)"}>
-            {test.summary}
-          </p>
-        ) : null}
+        </section>
       </div>
     </div>
   );
