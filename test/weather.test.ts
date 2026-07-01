@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { deriveVibes, wmoToCondition, fetchWeatherForecast } from "../src/weather.js";
+import { deriveVibes, wmoToCondition, fetchWeatherForecast, deriveCategory, dayCategory } from "../src/weather.js";
 
 // --- deriveVibes ---
 
@@ -51,6 +51,57 @@ describe("deriveVibes", () => {
 
   it("boundary: 54°F → soup", () => {
     expect(deriveVibes(54, 0)).toContain("soup");
+  });
+});
+
+// --- deriveCategory / dayCategory ---
+
+describe("deriveCategory", () => {
+  it("maps no-grill (rain) to wet", () => {
+    expect(deriveCategory(["no-grill", "comfort"])).toBe("wet");
+  });
+
+  it("maps soup (cold) to cold-comfort", () => {
+    expect(deriveCategory(["soup", "comfort"])).toBe("cold-comfort");
+  });
+
+  it("maps grill-friendly to grill", () => {
+    expect(deriveCategory(["grill-friendly"])).toBe("grill");
+  });
+
+  it("maps light (hot) to grill even without grill-friendly", () => {
+    expect(deriveCategory(["light"])).toBe("grill");
+  });
+
+  it("defaults to mild when no strong signal", () => {
+    expect(deriveCategory([])).toBe("mild");
+  });
+
+  it("prioritizes wet over cold-comfort when both no-grill and soup are present", () => {
+    // A cold, rainy day derives both no-grill and soup from deriveVibes — wet wins.
+    expect(deriveCategory(["no-grill", "comfort", "soup"])).toBe("wet");
+  });
+
+  it("prioritizes wet over grill when both no-grill and grill-friendly signals are present", () => {
+    expect(deriveCategory(["no-grill", "grill-friendly"])).toBe("wet");
+  });
+
+  it("prioritizes cold-comfort over grill when both soup and light/grill-friendly are present", () => {
+    expect(deriveCategory(["soup", "grill-friendly"])).toBe("cold-comfort");
+    expect(deriveCategory(["soup", "light"])).toBe("cold-comfort");
+  });
+
+  it("is a pure function of its own input — never depends on any other day", () => {
+    // Calling it repeatedly with the same input is stable; distinct inputs are independent.
+    const a = deriveCategory(deriveVibes(45, 10)); // cold, dry
+    const b = deriveCategory(deriveVibes(90, 5)); // hot, dry
+    expect(a).toBe("cold-comfort");
+    expect(b).toBe("grill");
+  });
+
+  it("dayCategory reads meal_vibes/condition off a WeatherDay-shaped object", () => {
+    expect(dayCategory({ meal_vibes: ["no-grill", "comfort"], condition: "rainy" })).toBe("wet");
+    expect(dayCategory({ meal_vibes: [], condition: "clear" })).toBe("mild");
   });
 });
 

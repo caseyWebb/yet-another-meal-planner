@@ -82,6 +82,41 @@ export function deriveVibes(highF: number, precipChance: number): string[] {
   return vibes;
 }
 
+/**
+ * The discrete, mutually-exclusive weather CATEGORY set `weather-bucket-planning` allocates slot
+ * quotas over. Every forecast day collapses to exactly one of these (never several) — `mild` is
+ * the no-strong-signal default. Distinct from `deriveVibes`' graded tag set: a category is a
+ * single classification for a day, not a bag of hints.
+ */
+export type WeatherCategory = "grill" | "cold-comfort" | "wet" | "mild";
+
+/** Every non-`mild` category — the buckets a night vibe can declare membership in. */
+export const WEATHER_BUCKETS: readonly WeatherCategory[] = ["grill", "cold-comfort", "wet"];
+
+/**
+ * Collapse ONE forecast day's `meal_vibes` (from `deriveVibes`) into exactly one discrete
+ * `WeatherCategory`, via a fixed priority order — never a union, never a function of any other
+ * day. Priority (highest first):
+ *   1. `no-grill` (rain-driven)               → `wet`
+ *   2. `soup` (cold-driven)                    → `cold-comfort`
+ *   3. `grill-friendly` or `light` (hot/dry)   → `grill`
+ *   4. otherwise                               → `mild`
+ * `condition` is accepted for forward-compatibility (a future tie-break) but the current rule is
+ * driven entirely by `mealVibes`.
+ */
+export function deriveCategory(mealVibes: string[], condition?: string): WeatherCategory {
+  void condition; // not currently a tie-break input; kept for signature stability
+  if (mealVibes.includes("no-grill")) return "wet";
+  if (mealVibes.includes("soup")) return "cold-comfort";
+  if (mealVibes.includes("grill-friendly") || mealVibes.includes("light")) return "grill";
+  return "mild";
+}
+
+/** Convenience: derive a `WeatherDay`'s category straight from its `meal_vibes`/`condition`. */
+export function dayCategory(day: Pick<WeatherDay, "meal_vibes" | "condition">): WeatherCategory {
+  return deriveCategory(day.meal_vibes, day.condition);
+}
+
 /** Fetch a daily weather forecast for a location string (ZIP or city name). */
 export async function fetchWeatherForecast(
   location: string,

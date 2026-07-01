@@ -123,6 +123,34 @@ describe("deriveArchetypes", () => {
     const nullNamer = { name: async () => null };
     expect(await deriveArchetypes(items, [], 7, nullNamer, { k: 2, minClusterSize: 2 })).toEqual([]);
   });
+
+  it("threads a successful weather-bucket classification through to the candidate", async () => {
+    const bucketedDeps = {
+      name: async ({ descriptions }: { descriptions: string[]; cadence_days: number | null }) =>
+        descriptions.length ? { vibe: descriptions[0], cadence_days: null, weather_affinity: ["grill" as const] } : null,
+    };
+    const out = await deriveArchetypes(items, [], 7, bucketedDeps, { k: 2, minClusterSize: 2 });
+    expect(out.length).toBeGreaterThan(0);
+    expect(out.every((a) => a.weather_affinity !== undefined)).toBe(true);
+    expect(out[0].weather_affinity).toEqual(["grill"]);
+  });
+
+  it("defaults to bucketless (no weather_affinity key) when the namer returns no classification", async () => {
+    // `deps` above never returns weather_affinity — the default fail-soft/neutral path.
+    const out = await deriveArchetypes(items, [], 7, deps, { k: 2, minClusterSize: 2 });
+    expect(out.every((a) => a.weather_affinity === undefined)).toBe(true);
+  });
+
+  it("a bucket classification never affects the vibe phrase itself", async () => {
+    const bucketedDeps = {
+      name: async ({ descriptions }: { descriptions: string[]; cadence_days: number | null }) =>
+        descriptions.length ? { vibe: descriptions[0], cadence_days: null, weather_affinity: ["wet" as const] } : null,
+    };
+    const withoutBucket = await deriveArchetypes(items, [], 7, deps, { k: 2, minClusterSize: 2 });
+    const withBucket = await deriveArchetypes(items, [], 7, bucketedDeps, { k: 2, minClusterSize: 2 });
+    expect(withBucket.map((a) => a.vibe)).toEqual(withoutBucket.map((a) => a.vibe));
+    expect(withBucket.map((a) => a.id)).toEqual(withoutBucket.map((a) => a.id));
+  });
 });
 
 describe("dedupeClusters", () => {

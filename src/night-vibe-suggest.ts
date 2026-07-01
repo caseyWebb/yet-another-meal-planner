@@ -93,7 +93,12 @@ export async function runDerivation(env: Env, tenant: string, seed: number, maxS
     const draft: ProposalDraft = {
       kind: "add_vibe",
       target: c.id,
-      payload: { id: c.id, vibe: c.vibe, cadence_days: c.cadence_days },
+      payload: {
+        id: c.id,
+        vibe: c.vibe,
+        cadence_days: c.cadence_days,
+        ...(c.weather_affinity ? { weather_affinity: c.weather_affinity } : {}),
+      },
       rationale: rationaleFor(c, source),
       evidence: c.evidence,
     };

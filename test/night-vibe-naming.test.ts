@@ -8,7 +8,7 @@ function fakeEnv(response: string): Env {
 const throwEnv = { AI: { run: async () => { throw new Error("quota exhausted"); } } } as unknown as Env;
 
 describe("nameCluster", () => {
-  it("names a cluster from its descriptions and carries the cadence through", async () => {
+  it("names a cluster from its descriptions and carries the cadence through (no bucket line → bucketless)", async () => {
     const r = await nameCluster(fakeEnv('"a simple weeknight italian pasta"'), {
       descriptions: ["baked ziti", "penne pomodoro"],
       cadence_days: 7,
@@ -23,6 +23,40 @@ describe("nameCluster", () => {
 
   it("rejects a degenerate one-word phrase", async () => {
     expect(await nameCluster(fakeEnv("pasta"), { descriptions: ["x"], cadence_days: null })).toBeNull();
+  });
+
+  it("parses a two-line reply into the vibe phrase + discrete weather bucket", async () => {
+    const r = await nameCluster(fakeEnv("a slow weekend braise\ncold-comfort"), {
+      descriptions: ["short rib braise"],
+      cadence_days: 30,
+    });
+    expect(r).toEqual({ vibe: "a slow weekend braise", cadence_days: 30, weather_affinity: ["cold-comfort"] });
+  });
+
+  it("recognizes every bucket label, case/punctuation-insensitively", async () => {
+    const grill = await nameCluster(fakeEnv("a smoky backyard cookout\nGrill."), {
+      descriptions: ["ribs"],
+      cadence_days: null,
+    });
+    expect(grill?.weather_affinity).toEqual(["grill"]);
+    const wet = await nameCluster(fakeEnv("a rainy-day stew\n\"wet\""), { descriptions: ["stew"], cadence_days: null });
+    expect(wet?.weather_affinity).toEqual(["wet"]);
+  });
+
+  it("defaults to bucketless when the classification line is neutral, missing, or unrecognized", async () => {
+    const neutral = await nameCluster(fakeEnv("a bright grain bowl\nneutral"), { descriptions: ["bowl"], cadence_days: null });
+    expect(neutral).toEqual({ vibe: "a bright grain bowl", cadence_days: null });
+    expect(neutral?.weather_affinity).toBeUndefined();
+
+    const missing = await nameCluster(fakeEnv("a bright grain bowl"), { descriptions: ["bowl"], cadence_days: null });
+    expect(missing?.weather_affinity).toBeUndefined();
+
+    const garbage = await nameCluster(fakeEnv("a bright grain bowl\nwho knows"), { descriptions: ["bowl"], cadence_days: null });
+    expect(garbage?.weather_affinity).toBeUndefined();
+  });
+
+  it("a failed generation call still fails soft to null even though it would have classified a bucket", async () => {
+    expect(await nameCluster(throwEnv, { descriptions: ["ribs"], cadence_days: null })).toBeNull();
   });
 });
 

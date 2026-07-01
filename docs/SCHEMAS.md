@@ -159,6 +159,8 @@ updated_at TEXT  -- ISO timestamp of the last (re)embed
 
 Each member's **night-vibe palette** — the durable, editable "shape of a week" `propose_meal_plan` samples (night-vibe-palette capability, migration 0025). A night vibe is a saved `search_recipes` spec (a `vibe` phrase + optional `facets`) plus lifecycle metadata. Per-tenant PRIVATE profile data (siblings of `staples`/`stockup`), never shared; written by the `add_/update_/remove_night_vibe` tools (`src/night-vibe-db.ts`). The per-vibe embedding lives in the sibling `night_vibe_derived`, hash-gated on the vibe text and reconciled Worker-side (`src/night-vibe-vector.ts`, the `night-vibe-embed` job) exactly like `taste_derived`.
 
+`weather_affinity` is discrete **bucket membership** (`weather-bucket-planning`), not a graded score: `src/night-vibe-schedule.ts`'s `resolveBucketMembership` reads each stored string through the same tag→category map a forecast day resolves through (`src/weather.ts`'s `deriveCategory`), so a row can store either the new category names (`grill | cold-comfort | wet`) or the legacy `deriveVibes` tags (`soup | comfort | grill-friendly | light | no-grill`) and both resolve to the same bucket set — zero data migration. An empty/absent/all-unrecognized array is **bucketless** (a universal filler, eligible for every category's slot quota). `weather_antipathy` is retained on the row for back-compat but is **not consulted** by `propose_meal_plan`'s quota allocation (the hard category exclusion replaces graded penalties).
+
 ```sql
 -- D1 night_vibes table — PRIMARY KEY (tenant, id).
 tenant            TEXT     -- owning member
@@ -167,9 +169,10 @@ vibe              TEXT     -- the craving/query phrase (the slot's retrieval que
 facets            TEXT     -- JSON object: optional hard-gate search facets (NULL = none)
 cadence_days      INTEGER  -- target period; NULL = no cadence pressure (occasional/weighted)
 pinned            INTEGER  -- 1 = sticky weekly intent (placed when due, exempt from the weather reserve)
-base_weight       REAL     -- base sampling weight before debt/weather (NULL → 1)
-weather_affinity  TEXT     -- JSON string[]: weather meal_vibes favoring this vibe (NULL = [])
-weather_antipathy TEXT     -- JSON string[]: weather meal_vibes suppressing it (NULL = [])
+base_weight       REAL     -- base sampling weight before debt (NULL → 1)
+weather_affinity  TEXT     -- JSON string[]: discrete bucket membership (grill|cold-comfort|wet, or a
+                            -- back-compat legacy meal_vibes tag resolving to the same buckets); NULL/[] = bucketless
+weather_antipathy TEXT     -- JSON string[]: retained for back-compat; NOT consulted by quota allocation (NULL = [])
 season            TEXT     -- JSON string[]: seasonal lean (NULL = [])
 created_at        TEXT
 updated_at        TEXT

@@ -17,7 +17,7 @@ import { mergeOverlay, type Overlay } from "./overlay.js";
 import { rankCandidates, resolveRankParams, type SearchCandidate } from "./semantic-search.js";
 import { readPreferences } from "./profile-db.js";
 import { loadOperatorConfig } from "./operator-config.js";
-import { fetchWeatherForecast } from "./weather.js";
+import { fetchWeatherForecast, deriveCategory, type WeatherCategory } from "./weather.js";
 import { readNightVibes, readNightVibeVectors, readVibeLastSatisfied, type NightVibe } from "./night-vibe-db.js";
 import { debt, sampleWeek, DEFAULT_CADENCE_PARAMS, type NightVibeSpec } from "./night-vibe-schedule.js";
 import { assembleProposal, type ProposalCtx } from "./meal-plan-proposal.js";
@@ -174,8 +174,12 @@ export function registerProposeMealPlanTool(server: McpServer, env: Env, tenant:
         }
         // The weather forecast horizon IS the planning window (fetchWeatherForecast clamps to
         // its own supported range, e.g. 1–16 days, rather than failing on an oversized window).
+        // Each day collapses to exactly ONE discrete category (never a flattened union) —
+        // `sampleWeek` histograms this mix into quotas itself (capped at its own reliability
+        // horizon), so no additional bounding happens here beyond the fetch's own day count.
         const weather = await fetchWeatherForecast(resolveZip(prefs), window).catch(() => null);
-        const weatherVibes = weather && "forecast" in weather ? [...new Set(weather.forecast.flatMap((d) => d.meal_vibes))] : [];
+        const dayCategories: WeatherCategory[] =
+          weather && "forecast" in weather ? weather.forecast.map((d) => deriveCategory(d.meal_vibes, d.condition)) : [];
 
         const specs: NightVibeSpec[] = palette.map((v) => ({
           id: v.id,
@@ -185,7 +189,7 @@ export function registerProposeMealPlanTool(server: McpServer, env: Env, tenant:
           weather_antipathy: v.weather_antipathy,
           cadence_days: v.cadence_days,
         }));
-        const shape = sampleWeek(specs, weatherVibes, debtByVibe, nightsToFill, resolvedSeed, DEFAULT_CADENCE_PARAMS, window);
+        const shape = sampleWeek(specs, dayCategories, debtByVibe, nightsToFill, resolvedSeed, DEFAULT_CADENCE_PARAMS, window);
         const paletteById = new Map(palette.map((v) => [v.id, v]));
 
         // Level 2 — rank each sampled slot's candidates into a pool.

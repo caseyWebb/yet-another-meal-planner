@@ -11,6 +11,7 @@
 import { cosineSimilarity } from "./embedding.js";
 import { mulberry32 } from "./rng.js";
 import { slugify } from "./discovery.js";
+import type { WeatherCategory } from "./weather.js";
 
 /** One recipe in the member's taste-space: its vector plus the dates it was cooked (for cadence). */
 export interface TasteItem {
@@ -195,22 +196,31 @@ export interface DerivedArchetype {
   id: string;
   vibe: string;
   cadence_days: number | null;
+  /** Discrete weather bucket membership from the naming pass's classification (weather-bucket-
+   *  planning) — a one-element category array, or absent when neutral/unclassified (bucketless,
+   *  fail-soft default). Written verbatim into the `add_vibe` proposal's `weather_affinity`. */
+  weather_affinity?: WeatherCategory[];
   /** Which member recipes formed this cluster + its size (proposal evidence). */
   evidence: { member_slugs: string[]; size: number };
 }
 
 /** The naming step, injected so the orchestration is testable without `env.AI`. */
 export interface DeriveDeps {
-  /** Name a cluster from its members' descriptions + the inferred cadence, or null to skip it. */
-  name(input: { descriptions: string[]; cadence_days: number | null }): Promise<{ vibe: string; cadence_days: number | null } | null>;
+  /** Name a cluster from its members' descriptions + the inferred cadence (and classify its
+   *  weather bucket in the same call), or null to skip it. */
+  name(input: {
+    descriptions: string[];
+    cadence_days: number | null;
+  }): Promise<{ vibe: string; cadence_days: number | null; weather_affinity?: WeatherCategory[] } | null>;
 }
 
 /**
  * End-to-end archetype derivation: cluster the taste-space, drop clusters already covered by the
  * palette, cap to `maxProposals` (biggest-first), and NAME each surviving cluster into a candidate
- * vibe (via the injected small-model dep). Returns the `add_vibe` candidates. Deterministic in the
- * clustering/dedup; the naming is the only non-deterministic (model) step, injected so this
- * orchestration is unit-testable with a fake namer.
+ * vibe + weather bucket (via the injected small-model dep, one call per cluster). Returns the
+ * `add_vibe` candidates. Deterministic in the clustering/dedup; the naming is the only
+ * non-deterministic (model) step, injected so this orchestration is unit-testable with a fake
+ * namer.
  */
 export async function deriveArchetypes(
   items: TasteItem[],
@@ -231,12 +241,16 @@ export async function deriveArchetypes(
     if (!vibe) continue;
     const id = slugify(vibe);
     if (!id) continue;
-    out.push({
+    const archetype: DerivedArchetype = {
       id,
       vibe,
       cadence_days: named?.cadence_days ?? cl.cadence_days,
       evidence: { member_slugs: cl.members.map((m) => m.slug), size: cl.members.length },
-    });
+    };
+    // Fail-soft: a missing/neutral classification simply omits weather_affinity → bucketless,
+    // never blocks the derived vibe itself from being proposed.
+    if (named?.weather_affinity && named.weather_affinity.length > 0) archetype.weather_affinity = named.weather_affinity;
+    out.push(archetype);
   }
   return out;
 }
