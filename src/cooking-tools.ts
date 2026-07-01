@@ -124,7 +124,7 @@ export function registerCookingTools(
     "update_meal_plan",
     {
       description:
-        "Add or remove planned meal entries. `add` upserts by recipe slug (updating planned_for and merging sides); `remove` drops every row for the slug. Call this after logging a cooked meal to remove it from the plan. Returns { applied, conflicts } with no commit_sha (D1-backed).",
+        "Add or remove planned meal entries. `add` upserts by recipe slug (updating planned_for, merging sides, and setting the optional `from_vibe` slot provenance); `remove` drops every row for the slug. Call this after logging a cooked meal to remove it from the plan. Returns { applied, conflicts } with no commit_sha (D1-backed).",
       inputSchema: {
         ops: z.array(
           z.object({
@@ -132,6 +132,7 @@ export function registerCookingTools(
             recipe: z.string(),
             planned_for: z.string().nullable().optional(),
             sides: z.array(z.string()).optional(),
+            from_vibe: z.string().nullable().optional(),
           }),
         ),
       },

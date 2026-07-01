@@ -61,6 +61,14 @@ describe("applyMealPlanOps", () => {
     expect(res.items).toContainEqual({ recipe: "miso-salmon", planned_for: "2026-06-14", sides: ["roasted broccoli"] });
   });
 
+  it("records from_vibe slot provenance on add and preserves it on a later add", () => {
+    const res = applyMealPlanOps([], [{ op: "add", recipe: "miso-salmon", from_vibe: "weeknight-fish" }]);
+    expect(res.items.find((i) => i.recipe === "miso-salmon")!.from_vibe).toBe("weeknight-fish");
+    // A later add without from_vibe keeps the prior provenance (doesn't clobber to null).
+    const res2 = applyMealPlanOps(res.items, [{ op: "add", recipe: "miso-salmon", planned_for: "2026-06-15" }]);
+    expect(res2.items.find((i) => i.recipe === "miso-salmon")!.from_vibe).toBe("weeknight-fish");
+  });
+
   it("merges sides onto an existing row (union, no duplicate row)", () => {
     const start: PlannedItem[] = [{ recipe: "miso-salmon", planned_for: "2026-06-14", sides: ["roasted broccoli"] }];
     const res = applyMealPlanOps(start, [{ op: "add", recipe: "miso-salmon", sides: ["roasted broccoli", "white rice"] }]);

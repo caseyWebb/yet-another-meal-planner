@@ -120,6 +120,22 @@ describe("readPreferences", () => {
     const { env } = fakeD1({});
     expect(await readPreferences(env, "ghost")).toBeNull();
   });
+
+  it("includes planning_cadence_days when set, and omits it when null", async () => {
+    const { env } = fakeD1({
+      profile: [
+        { tenant: "everett", default_cooking_nights: 3, planning_cadence_days: 14 },
+      ],
+    });
+    const prefs = await readPreferences(env, "everett");
+    expect(prefs).toMatchObject({ planning_cadence_days: 14 });
+
+    const { env: env2 } = fakeD1({
+      profile: [{ tenant: "everett", default_cooking_nights: 3, planning_cadence_days: null }],
+    });
+    const prefs2 = await readPreferences(env2, "everett");
+    expect(prefs2).not.toHaveProperty("planning_cadence_days");
+  });
 });
 
 describe("readBrandPrefs", () => {

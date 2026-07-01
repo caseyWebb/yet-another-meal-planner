@@ -182,19 +182,21 @@ interface MealPlanRow {
   recipe: string;
   planned_for: string | null;
   sides: string | null;
+  from_vibe: string | null;
 }
 
 function plannedItemOf(r: MealPlanRow): PlannedItem {
   const item: PlannedItem = { recipe: r.recipe, planned_for: r.planned_for ?? null };
   const sides = parseJsonArray(r.sides);
   if (sides.length) item.sides = sides;
+  if (r.from_vibe) item.from_vibe = r.from_vibe;
   return item;
 }
 
 /** Read the caller's meal-plan rows. */
 export async function readMealPlan(env: Env, tenant: string): Promise<PlannedItem[]> {
   const rows = await db(env).all<MealPlanRow>(
-    "SELECT recipe, planned_for, sides FROM meal_plan WHERE tenant = ?1",
+    "SELECT recipe, planned_for, sides, from_vibe FROM meal_plan WHERE tenant = ?1",
     tenant,
   );
   return rows.map(plannedItemOf);
@@ -204,12 +206,13 @@ export async function readMealPlan(env: Env, tenant: string): Promise<PlannedIte
 function mealPlanUpsertStmt(env: Env, tenant: string, item: PlannedItem): D1PreparedStatement {
   const sides = item.sides && item.sides.length ? JSON.stringify(item.sides) : null;
   return db(env).prepare(
-    "INSERT INTO meal_plan (tenant, recipe, planned_for, sides) VALUES (?1, ?2, ?3, ?4) " +
-      "ON CONFLICT(tenant, recipe) DO UPDATE SET planned_for = excluded.planned_for, sides = excluded.sides",
+    "INSERT INTO meal_plan (tenant, recipe, planned_for, sides, from_vibe) VALUES (?1, ?2, ?3, ?4, ?5) " +
+      "ON CONFLICT(tenant, recipe) DO UPDATE SET planned_for = excluded.planned_for, sides = excluded.sides, from_vibe = excluded.from_vibe",
     tenant,
     item.recipe,
     item.planned_for ?? null,
     sides,
+    item.from_vibe ?? null,
   );
 }
 

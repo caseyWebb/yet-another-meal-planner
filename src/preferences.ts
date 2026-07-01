@@ -15,6 +15,7 @@ import { ToolError } from "./errors.js";
 /** The defined top-level preference keys (everything else nests under `custom`). */
 export const DEFINED_PREFERENCE_KEYS = [
   "default_cooking_nights",
+  "planning_cadence_days",
   "lunch_strategy",
   "ready_to_eat_default_action",
   "stores",
@@ -77,6 +78,12 @@ export function validatePreferences(merged: Record<string, unknown>): void {
     const v = merged.default_cooking_nights;
     if (typeof v !== "number" || !Number.isFinite(v)) {
       fail(`default_cooking_nights must be a number (got ${JSON.stringify(v)})`);
+    }
+  }
+  if ("planning_cadence_days" in merged) {
+    const v = merged.planning_cadence_days;
+    if (typeof v !== "number" || !Number.isFinite(v) || v <= 0) {
+      fail(`planning_cadence_days must be a positive number (got ${JSON.stringify(v)})`);
     }
   }
   if ("lunch_strategy" in merged) {

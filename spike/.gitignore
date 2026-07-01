@@ -1,0 +1,5 @@
+# Spike/exploration harnesses live here. NEVER commit corpus/tenant data into this public repo
+# (the corpus lives in R2, profiles in D1). Only self-contained, synthetic test harnesses belong.
+fixtures/
+**/fixtures/
+*.json

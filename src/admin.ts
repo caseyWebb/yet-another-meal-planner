@@ -55,6 +55,9 @@ export const TENANT_TABLES = [
   "cooking_log",
   "discovery_matches", // per-member discovery attribution (migration 0016)
   "taste_derived", // per-member taste vector (migration 0016)
+  "night_vibes", // per-member night-vibe palette (migration 0025)
+  "night_vibe_derived", // per-member night-vibe embeddings (migration 0025)
+  "pending_proposals", // per-member profile-reconciliation queue (migration 0027)
 ] as const;
 export const AUTHOR_TABLES = ["recipe_notes", "store_notes"] as const;
 

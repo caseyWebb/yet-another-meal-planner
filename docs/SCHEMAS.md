@@ -13,8 +13,8 @@ The data lives in three tiers (see `ARCHITECTURE.md`): the authored markdown cor
 - **Authored markdown (R2 bucket `CORPUS`)** — the human-editable tier (an Obsidian vault synced to the same bucket): `recipes/*.md` (objective frontmatter + body) and the `guidance/**/*.md` umbrella (`guidance/ingredient_storage/` — curated put-away advice, read-only; `guidance/cooking_techniques/` — technique memories, agent-writable via `save_guidance`; `guidance/purchasing/` — buy-side selection advice, also agent-writable). Object keys are repo-relative paths (`recipes/<slug>.md`, `guidance/<domain>/<slug>.md`); read/written through `src/corpus-store.ts`. There is no GitHub App or data repo on the data path.
 - **Shared corpus (D1, `migrations/d1/0006_shared_corpus.sql`)** — objective, single-source, read by everyone: `aliases(variant, canonical)`, `sku_cache(ingredient, location_id, …)`, `flyer_terms(term)`, `stores(slug, name, domain, extra /*json*/)` (in-store-walk registry — identity columns `slug`/`name`/`domain` are top-level; optional identity fields `label`/`chain`/`address`/`location_id` are stored in the `extra` JSON column; layout lives in store notes), `feeds(url, …)` (RSS discovery feeds), `discovery_candidates(id, url UNIQUE, status, …)` (forwarded-newsletter inbox + group-wide rejection log; `status` values: `pending` | `rejected` — `pending` is the default for unprocessed candidates, `rejected` is set by `reject_discovery`), `discovery_senders`/`discovery_members` (inbound-email allowlist). Written + validated at the Worker write tools; read by query. The recipe index is the derived D1 `recipes` table — there is no `_indexes/recipes.json`.
 - **Attributed records (D1 `recipe_notes` / `store_notes`)** — each member's attributed recipe/store notes, stored in D1 tables carrying `author` (the writing tenant, set by the Worker) + a `private` flag. Both tables use `id TEXT PRIMARY KEY` (a generated stable key); `recipe`/`slug` (the recipe or store slug), `author`, `body`, `tags`, `private`, and `created_at` are ordinary columns (not the primary key). `read_recipe_notes` returns own-private + group-shared in one query, joined with the overlay favorites.
-- **Per-tenant D1 (the profile)** — each member's grocery **profile** lives in normalized D1 tables (`migrations/d1/0004_profile.sql`): a singleton `profile` row (the markdown fields `taste`/`diet_principles`, the preference scalars `default_cooking_nights`/`lunch_strategy`/`ready_to_eat_default_action`, the JSON columns `stores`/`dietary`/`rotation`/`custom`/`kitchen_notes`, `freezer_capacity_estimate`, and `last_planned_at` — the per-tenant planning watermark, migration 0016, stamped by `update_meal_plan` on an add and read by `list_new_for_me`), plus child tables `brand_prefs(tenant, term, ranks)`, `kitchen_equipment(tenant, slug)`, `staples(tenant, name, normalized_name, perishable)`, `overlay(tenant, recipe, favorite, reject)` (the two mutually-exclusive disposition marks; there is no `status` lifecycle or `rating` column), `ready_to_eat(tenant, slug, meal, name, favorite, reject, category, source, brand, notes)`, and `stockup(tenant, name, normalized_name, unit, typical_purchase, notes, baseline_price, buy_at_or_below)`. `idx_overlay_recipe` powers the cross-tenant group-favorites query. Reads assemble the agent-facing objects from these rows (`src/profile-db.ts`); writes mutate rows — no document format on the profile path.
-- **Per-tenant D1 (session state)** — each member's working state lives in D1 row tables (`migrations/d1/0005_session_state.sql`): `pantry(tenant, name, normalized_name, quantity, category, prepared_from, added_at, last_verified_at, notes)`, `meal_plan(tenant, recipe, planned_for, sides /*json*/)`, `grocery_list(tenant, name, normalized_name, quantity, kind, domain, status, source, for_recipes /*json*/, note, added_at, ordered_at)` — keyed by normalized name (pantry/grocery) or recipe slug (meal plan), with `idx_grocery_status(tenant, status)` and `idx_pantry_category(tenant, category)` backing the read filters. Adds are row upserts (`INSERT … ON CONFLICT DO UPDATE`), removes/status changes are targeted row statements — no whole-array rewrite, strong read-after-write consistency. (The detailed item shapes are below.) The Worker read path has **no** GitHub/KV fallback — a miss returns empty/null.
+- **Per-tenant D1 (the profile)** — each member's grocery **profile** lives in normalized D1 tables (`migrations/d1/0004_profile.sql`): a singleton `profile` row (the markdown fields `taste`/`diet_principles`, the preference scalars `default_cooking_nights`/`planning_cadence_days`/`lunch_strategy`/`ready_to_eat_default_action`, the JSON columns `stores`/`dietary`/`rotation`/`custom`/`kitchen_notes`, `freezer_capacity_estimate`, and `last_planned_at` — the per-tenant planning watermark, migration 0016, stamped by `update_meal_plan` on an add and read by `list_new_for_me`), plus child tables `brand_prefs(tenant, term, ranks)`, `kitchen_equipment(tenant, slug)`, `staples(tenant, name, normalized_name, perishable)`, `overlay(tenant, recipe, favorite, reject)` (the two mutually-exclusive disposition marks; there is no `status` lifecycle or `rating` column), `ready_to_eat(tenant, slug, meal, name, favorite, reject, category, source, brand, notes)`, and `stockup(tenant, name, normalized_name, unit, typical_purchase, notes, baseline_price, buy_at_or_below)`. `idx_overlay_recipe` powers the cross-tenant group-favorites query. Reads assemble the agent-facing objects from these rows (`src/profile-db.ts`); writes mutate rows — no document format on the profile path.
+- **Per-tenant D1 (session state)** — each member's working state lives in D1 row tables (`migrations/d1/0005_session_state.sql`): `pantry(tenant, name, normalized_name, quantity, category, prepared_from, added_at, last_verified_at, notes)`, `meal_plan(tenant, recipe, planned_for, sides /*json*/, from_vibe /*night-vibe slot provenance, migration 0026; advisory, never slug-resolved*/)`, `grocery_list(tenant, name, normalized_name, quantity, kind, domain, status, source, for_recipes /*json*/, note, added_at, ordered_at)` — keyed by normalized name (pantry/grocery) or recipe slug (meal plan), with `idx_grocery_status(tenant, status)` and `idx_pantry_category(tenant, category)` backing the read filters. Adds are row upserts (`INSERT … ON CONFLICT DO UPDATE`), removes/status changes are targeted row statements — no whole-array rewrite, strong read-after-write consistency. (The detailed item shapes are below.) The Worker read path has **no** GitHub/KV fallback — a miss returns empty/null.
 - **Shared operational D1 (reconcile + bug reports + discovery log)** — group-wide (not per-tenant) operational tables the Worker owns: `reconcile_errors(slug, path, message, recorded_at)` (`migrations/d1/0014_reconcile_errors.sql`) — recipes the index reconcile **skipped**, replaced wholesale each pass; `bug_reports(id, reporter, title, body, created_at, status)` (`migrations/d1/0015_bug_reports.sql`) — agent-filed bug reports, `reporter`/`created_at` attributed server-side; and `discovery_log(id, url, title, source, outcome, slug, detail, created_at)` (`migrations/d1/0016_background_discovery.sql`) — the discovery sweep's per-candidate outcome log, one table serving three roles (operator audit, intake dedup, parked-error surface), retention-pruned. (The detailed shapes are below.)
 - **Sweep-/reconcile-owned per-member D1 (discovery sweep)** — group-wide *attribution + taste* tables the discovery sweep owns (`migrations/d1/0016_background_discovery.sql`): `discovery_matches(recipe, tenant, score, matched_at)` — per-member match attribution (the import gate **and** the `list_new_for_me` filter); and `taste_derived(tenant, taste_hash, embedding, updated_at)` — each member's taste-text embedding, content-hash gated like `recipe_derived`. Like `recipe_derived`, these are **siblings of `recipes`** so the index projection's wholesale `recipes` rebuild never owns them. (The detailed shapes are below.)
 
@@ -28,7 +28,8 @@ The shared corpus, profile, session state, cooking log, and attributed notes are
 
 ```jsonc
 {
-  "default_cooking_nights": 3,                 // number
+  "default_cooking_nights": 3,                 // number — cooking nights WITHIN the planning window
+  "planning_cadence_days": 7,                  // number — how far out the caller plans/shops (days); drives propose_meal_plan's weather horizon + vibe-recurrence caps
   "lunch_strategy": "leftovers",               // "leftovers" | "buy" | "mixed"
   "ready_to_eat_default_action": "opt-in",     // "opt-in" | "auto-add"
   "stores":  { "primary": "kroger", "preferred_location": "Kroger - 76104", "location_zip": "76104" },
@@ -152,6 +153,55 @@ tenant     TEXT  -- owning member
 taste_hash TEXT  -- hash of the profile.taste text the vector was built from (the regeneration gate)
 embedding  TEXT  -- JSON array of EMBED_DIM floats as TEXT; NULL until first derived
 updated_at TEXT  -- ISO timestamp of the last (re)embed
+```
+
+## night_vibes (per-tenant, D1 `night_vibes` + `night_vibe_derived` tables)
+
+Each member's **night-vibe palette** — the durable, editable "shape of a week" `propose_meal_plan` samples (night-vibe-palette capability, migration 0025). A night vibe is a saved `search_recipes` spec (a `vibe` phrase + optional `facets`) plus lifecycle metadata. Per-tenant PRIVATE profile data (siblings of `staples`/`stockup`), never shared; written by the `add_/update_/remove_night_vibe` tools (`src/night-vibe-db.ts`). The per-vibe embedding lives in the sibling `night_vibe_derived`, hash-gated on the vibe text and reconciled Worker-side (`src/night-vibe-vector.ts`, the `night-vibe-embed` job) exactly like `taste_derived`.
+
+`weather_affinity` is discrete **bucket membership** (`weather-bucket-planning`), not a graded score: `src/night-vibe-schedule.ts`'s `resolveBucketMembership` reads each stored string through the same tag→category map a forecast day resolves through (`src/weather.ts`'s `deriveCategory`), so a row can store either the new category names (`grill | cold-comfort | wet`) or the legacy `deriveVibes` tags (`soup | comfort | grill-friendly | light | no-grill`) and both resolve to the same bucket set — zero data migration. An empty/absent/all-unrecognized array is **bucketless** (a universal filler, eligible for every category's slot quota). `weather_antipathy` is retained on the row for back-compat but is **not consulted** by `propose_meal_plan`'s quota allocation (the hard category exclusion replaces graded penalties).
+
+```sql
+-- D1 night_vibes table — PRIMARY KEY (tenant, id).
+tenant            TEXT     -- owning member
+id                TEXT     -- stable per-tenant vibe id (slug)
+vibe              TEXT     -- the craving/query phrase (the slot's retrieval query)
+facets            TEXT     -- JSON object: optional hard-gate search facets (NULL = none)
+cadence_days      INTEGER  -- target period; NULL = no cadence pressure (occasional/weighted)
+pinned            INTEGER  -- 1 = sticky weekly intent (placed when due, exempt from the weather reserve)
+base_weight       REAL     -- base sampling weight before debt (NULL → 1)
+weather_affinity  TEXT     -- JSON string[]: discrete bucket membership (grill|cold-comfort|wet, or a
+                            -- back-compat legacy meal_vibes tag resolving to the same buckets); NULL/[] = bucketless
+weather_antipathy TEXT     -- JSON string[]: retained for back-compat; NOT consulted by quota allocation (NULL = [])
+season            TEXT     -- JSON string[]: seasonal lean (NULL = [])
+created_at        TEXT
+updated_at        TEXT
+
+-- D1 night_vibe_derived table — PRIMARY KEY (tenant, id). Worker-derived (hash-gated).
+tenant     TEXT
+id         TEXT
+vibe_hash  TEXT  -- hash of the vibe text the vector was built from (the regeneration gate)
+embedding  TEXT  -- JSON array of EMBED_DIM floats; NULL until first derived (→ "not yet indexed")
+updated_at TEXT
+```
+
+## pending_proposals (per-tenant, D1 `pending_proposals` table)
+
+The **profile-reconciliation** queue (migration 0027, `profile-reconciliation` capability): proposed profile edits that reconcile a member's **stated** palette against their **revealed** cooking behavior. Written by the deterministic `reconcile-signals` cron (`src/reconcile-signals.ts`, producer `signal-cron`) and, optionally, by the operator via `reconcile_enqueue_proposal` (producer `operator`); read/resolved by the member via `list_proposals`/`confirm_proposal` (`src/reconcile-db.ts`). `id` is a **stable hash of `(tenant, kind, target)`** so re-drafting is an idempotent `INSERT OR IGNORE` and a rejected proposal is never re-surfaced.
+
+```sql
+-- D1 pending_proposals table. PRIMARY KEY (id). idx_pending_proposals_tenant_status on (tenant, status).
+id          TEXT  -- stable hash(tenant|kind|target) — dedup + no-re-propose
+tenant      TEXT  -- the member the proposal is for
+kind        TEXT  -- add_vibe | adjust_cadence | prune_vibe
+target      TEXT  -- the vibe id the proposal acts on
+payload     TEXT  -- JSON: the proposed profile diff (applied verbatim on accept)
+rationale   TEXT  -- human-readable "why"
+evidence    TEXT  -- JSON: the signals that triggered it
+status      TEXT  -- pending | accepted | rejected
+producer    TEXT  -- signal-cron | edge | operator
+created_at  TEXT
+resolved_at TEXT  -- when accepted/rejected
 ```
 
 ## overlay (per-tenant, D1 `overlay` table)
@@ -316,6 +366,9 @@ recipe  TEXT     -- slug; present when type = recipe (soft ref to recipes.slug, 
 name    TEXT     -- dish name; present for ready_to_eat | ad_hoc
 protein TEXT     -- optional inline dimension for non-recipe entries
 cuisine TEXT     -- optional; recipe entries resolve protein/cuisine from `recipes` via a JOIN
+satisfied_vibe TEXT -- night-vibe slot provenance (migration 0026): copied from the cleared meal_plan
+                    -- row's from_vibe on cook, so last_satisfied(vibe) = MAX(date) WHERE satisfied_vibe = id.
+                    -- NULL for an off-plan cook (idx_cooking_log_satisfied_vibe on (tenant, satisfied_vibe))
 ```
 
 Example rows:
@@ -489,7 +542,8 @@ User-curated. Agent edits only when explicitly directed, via the `update_prefere
 tenant                      TEXT     -- owning user
 taste                       TEXT     -- markdown (see taste section below)
 diet_principles             TEXT     -- markdown (see diet_principles section below)
-default_cooking_nights      INTEGER  -- default number of cooking nights per week
+default_cooking_nights      INTEGER  -- default number of cooking nights WITHIN the planning window
+planning_cadence_days       INTEGER  -- how far out the caller plans/shops, in days (0028); unset falls back to a 7-day planning window in propose_meal_plan
 lunch_strategy              TEXT     -- leftovers | buy | mixed
 ready_to_eat_default_action TEXT     -- opt-in | auto-add
 stores                      TEXT     -- JSON: {primary, preferred_location, location_zip}
@@ -509,9 +563,9 @@ ranks   TEXT  -- JSON array: [] = don't-care/cheapest; non-empty = ranked brand 
 
 Example rows (`profile`):
 
-| tenant | default_cooking_nights | lunch_strategy | ready_to_eat_default_action | stores | dietary | freezer_capacity_estimate |
-|--------|----------------------|----------------|----------------------------|--------|---------|--------------------------|
-| alice | 3 | leftovers | opt-in | {"primary":"kroger","preferred_location":"Kroger - 76104","location_zip":"76104"} | {"avoid":[],"limit":["cilantro"]} | moderate |
+| tenant | default_cooking_nights | planning_cadence_days | lunch_strategy | ready_to_eat_default_action | stores | dietary | freezer_capacity_estimate |
+|--------|----------------------|----------------------|----------------|----------------------------|--------|---------|--------------------------|
+| alice | 3 | 7 | leftovers | opt-in | {"primary":"kroger","preferred_location":"Kroger - 76104","location_zip":"76104"} | {"avoid":[],"limit":["cilantro"]} | moderate |
 
 Example rows (`brand_prefs`):
 

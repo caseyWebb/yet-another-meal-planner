@@ -44,12 +44,26 @@ describe("log_cooked (D1, transactional meal-plan clear)", () => {
     const batch = d1.batches[0];
     expect(batch).toHaveLength(2);
     expect(batch[0].sql).toMatch(/INSERT INTO cooking_log/);
-    expect(batch[0].binds).toEqual(["everett", "2026-06-20", "recipe", "miso-salmon", null, null, null]);
+    // Trailing null is satisfied_vibe (this planned row carried no from_vibe).
+    expect(batch[0].binds).toEqual(["everett", "2026-06-20", "recipe", "miso-salmon", null, null, null, null]);
     expect(batch[1].sql).toMatch(/DELETE FROM meal_plan/);
     expect(batch[1].binds).toEqual(["everett", "miso-salmon"]);
 
     // The cooked recipe was removed; the other remains.
     expect(d1.tables.meal_plan.map((r) => r.recipe)).toEqual(["tacos"]);
+  });
+
+  it("copies the planned row's from_vibe onto the cooking-log satisfied_vibe (shape in → shape out)", async () => {
+    const d1: FakeD1 = fakeD1({
+      recipes: ["miso-salmon"],
+      tables: {
+        meal_plan: [{ tenant: "everett", recipe: "miso-salmon", planned_for: null, sides: null, from_vibe: "weeknight-fish" }],
+      },
+    });
+    const handlers = collect(d1.env, "everett");
+    await handlers.get("log_cooked")!({ type: "recipe", recipe: "miso-salmon", date: "2026-06-22" });
+    // satisfied_vibe (8th bind) carries the planned row's from_vibe.
+    expect(d1.batches[0][0].binds).toEqual(["everett", "2026-06-22", "recipe", "miso-salmon", null, null, null, "weeknight-fish"]);
   });
 
   it("defaults date to today when omitted", async () => {
@@ -78,7 +92,7 @@ describe("log_cooked (D1, transactional meal-plan clear)", () => {
     expect(out.logged).toMatchObject({ type: "ready_to_eat", name: "frozen lasagna" });
     const batch = d1.batches[0];
     expect(batch).toHaveLength(1);
-    expect(batch[0].binds).toEqual(["everett", "2026-06-21", "ready_to_eat", null, "frozen lasagna", "beef", null]);
+    expect(batch[0].binds).toEqual(["everett", "2026-06-21", "ready_to_eat", null, "frozen lasagna", "beef", null, null]);
   });
 
   it("rejects a non-recipe entry with no name (validation_failed)", async () => {

@@ -72,13 +72,27 @@ export function registerCookingWriteTools(
           }
         }
 
+        // Slot provenance ("shape in → shape out"): if this recipe was planned to fill a
+        // night-vibe slot, carry that vibe onto the cooking-log row so the cadence scheduler
+        // can advance the vibe's last_satisfied. Read it BEFORE the clear (the DELETE below
+        // removes the row). An off-plan cook (no row, or no from_vibe) leaves it null.
+        let satisfiedVibe: string | null = null;
+        if (entry.type === "recipe" && entry.recipe) {
+          const row = await db(env).first<{ from_vibe: string | null }>(
+            "SELECT from_vibe FROM meal_plan WHERE tenant = ?1 AND LOWER(recipe) = LOWER(?2) LIMIT 1",
+            username,
+            entry.recipe,
+          );
+          satisfiedVibe = row?.from_vibe ?? null;
+        }
+
         // The cooking-log INSERT and (for a recipe entry) the meal-plan row DELETE run
         // in ONE D1 transaction — both per-tenant tables are in D1 now, so the clear is
         // atomic with the log write (resolves the slice-2 cross-store seam).
         const stmts: D1PreparedStatement[] = [
           db(env).prepare(
-            "INSERT INTO cooking_log (tenant, date, type, recipe, name, protein, cuisine) " +
-              "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT INTO cooking_log (tenant, date, type, recipe, name, protein, cuisine, satisfied_vibe) " +
+              "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             username,
             entry.date,
             entry.type,
@@ -86,6 +100,7 @@ export function registerCookingWriteTools(
             entry.name ?? null,
             entry.protein ?? null,
             entry.cuisine ?? null,
+            satisfiedVibe,
           ),
         ];
         if (entry.type === "recipe" && entry.recipe) {

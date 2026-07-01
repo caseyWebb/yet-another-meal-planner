@@ -293,6 +293,79 @@ Add items to the caller's bulk-buy watchlist. Writes the caller's D1 `stockup` r
 
 ---
 
+## Night-vibe palette tools
+
+The **night-vibe palette** is each member's durable, editable "shape of a week" — a set of saved `search_recipes` specs (a `vibe` phrase + optional `facets`) plus lifecycle metadata (a `cadence_days` period, `weather_affinity` bucket membership, an optional `season`, `pinned`, `base_weight`). `propose_meal_plan` samples this palette at Level 1 to shape the week, then fills each slot at Level 2. Per-tenant private profile data (D1 `night_vibes`, siblings of `staples`/`stockup`); the vibe text's embedding is reconciled on the cron (hash-gated) like `taste_derived`, so a fresh vibe is retrievable a tick later.
+
+`weather_affinity` is discrete **bucket membership**, not a graded score: a vibe belongs to zero or more of `grill | cold-comfort | wet` (both the new category names and the legacy `soup | comfort | grill-friendly | light | no-grill` tags are accepted and resolve to the same buckets — see `propose_meal_plan` below). No membership (the default) makes a vibe a **universal filler**, eligible for every weather category's slots. `weather_antipathy` is accepted for backward compatibility but is not consulted by `propose_meal_plan`'s allocation.
+
+### `list_night_vibes()`
+
+Return the caller's palette. `{ vibes: [{ id, vibe, facets?, cadence_days?, pinned?, base_weight?, weather_affinity?, weather_antipathy?, season? }] }` — empty when unset. Per-tenant; never writes.
+
+### `add_night_vibe(vibe, id?, …meta)`
+
+Add a night vibe. `vibe` (required) is the craving/query phrase; `id` defaults to a slug of the vibe. Meta: `facets` (hard-gate search facets), `cadence_days` (target period — 7 ≈ weekly, 30 ≈ monthly, drives the debt scheduler), `pinned` (sticky weekly intent), `base_weight`, `weather_affinity` (discrete bucket membership — `grill | cold-comfort | wet`, or a legacy tag from `soup | comfort | grill-friendly | light | no-grill` that resolves to the same buckets; omit for a bucketless universal filler), `weather_antipathy` (accepted, not consulted by allocation), `season` (`spring | summer | fall | winter`). A duplicate id returns `conflict` (use `update_night_vibe`). Returns `{ id }`.
+
+### `update_night_vibe(id, …patch)`
+
+Patch an existing vibe — pass only the fields to change. Editing `vibe` re-embeds it on the next cron tick. An un-passed field is **preserved** (there is no clear-a-field path — remove and re-add to drop one). Unknown id → `not_found`. Returns `{ id, updated_fields }`.
+
+### `remove_night_vibe(id)`
+
+Remove a vibe by `id` (its derived embedding is pruned on the next tick). Unknown id → `not_found`. Returns `{ id, removed: true }`.
+
+### `propose_meal_plan(nights?, seed?, lock?, exclude?, boost_ingredients?, nudges?)`
+
+Propose a week of dinners from the caller's night-vibe palette — **stateless, deterministic, no Workers AI call** (every query vector is cron-captured), **no writes**. Two levels: **(1) shape** — sample `nights` night-vibe slots by **cadence-debt** (a vibe overdue against its `cadence_days` surfaces; pinned vibes are placed; overdue placement yields ≥1 slot to the weighted pool) combined with **discrete weather-bucket quotas**: each forecast day collapses to exactly one category (`grill | cold-comfort | wet | mild`), the window's day-category mix is histogrammed into integer slot quotas (largest-remainder rounding — mirroring the forecast's proportion, e.g. one hot day in seven yields a small `grill` quota, not full-strength pressure on every slot), and each category's quota is filled from that category's member vibes plus bucketless (universal-filler) vibes, ranked by cadence-debt; a quota with no eligible member, and every `mild`-day slot, degrades to the flex pool (the whole remaining palette) so a slot is **never** left empty for lack of a weather match; **(2) fill** — retrieve each slot's vibe by meaning (the same ranked retrieval as `search_recipes`) and select a **varied** main by MMR + protein/cuisine caps **across the week** (not the top-3 lookalikes), then compose rung-1 `pairs_with` corpus sides. The fill also does **holistic use-it-up**: it derives the caller's at-risk perishables from their **pantry** (always-on — no param) and spreads them across the week's mains via a bounded, decrementing set-cover term, so a multi-serving item (a family pack of ground beef) can be used across **two** mains and residual is reported — all subordinate to vibe relevance and the hard gate.
+
+The **planning window** (`preferences.planning_cadence_days`, days; defaults to 7 when unset) names how far out the caller plans/shops, independent of `nights`/`default_cooking_nights` (the count of cooking nights **within** that window — a longer window alone doesn't imply cooking more often). The window drives three things: the weather forecast is requested for that many days out (replacing a fixed horizon, clamped to the forecast source's own supported range, and further capped at a ~10-day forecast-reliability horizon for category derivation — days beyond it are treated as `mild`), each night vibe's **occurrence cap** for this plan — `max(1, floor(window / cadence_days))` — so a weekly vibe (`cadence_days: 7`) can be sampled into up to 2 slots of a 14-day window instead of at most once (a vibe with no period, or a period ≥ the window, still caps at 1; this cap, and "already placed" status, is enforced **globally across every category's quota fill**, not reset per category), and an overdue vibe whose bucket's quota is **zero** this window rolls over rather than force-placing into a mismatched slot — until its debt crosses the escape-hatch tier, at which point it force-places regardless. Recurrences are spread across the window (not placed adjacently) where the sampling mechanism allows it; determinism, pinned/overdue precedence, and rollover are unaffected. A recurring vibe never repeats the **same recipe** — cross-slot diversity (`usedSlugs`) still guarantees two occurrences of a vibe resolve to two different recipes.
+
+**Params:**
+- `nights` (number, optional): dinners to plan (default: `preferences.default_cooking_nights` or 5, max 14).
+- `seed` (number, optional): deterministic seed — the same inputs + seed give the same week; change **only** the seed for "give me another week." Defaults to today's date (stable within a day).
+- `lock` (string[], optional): recipe slugs to keep — returned as leading `locked` slots; the rest of the week diversifies *against* them (won't duplicate/clash). Slugs resolve **case-insensitively** and **respect the reject hard gate**; a lock that's unknown, not-yet-embedded, or rejected is returned as an **explicit empty `locked` slot** (never silently dropped). Each lock occupies one night, so the sampled slot count is `nights − lock.length`.
+- `exclude` (string[], optional): recipe slugs to drop from every pool (swap-out).
+- `boost_ingredients` (string[], optional): an **override** for the always-on use-it-up — extra items to fold into the at-risk demand ("definitely use these"), unioned with the pantry-derived set (never lowering a larger pantry count). Not required to get use-it-up: the demand is derived from the pantry every call. Alias-normalized; a bounded coverage nudge, never a gate.
+- `nudges` (object, optional): `{ max_time_total? }` (a hard time gate applied to every slot) and `{ variety? }` (0–1; higher = more diverse, lower λ).
+
+**Returns:**
+- `{ plan, variety, uncovered_at_risk, diagnostics }`.
+  - `plan`: one entry per slot — `{ vibe_id, reason (pinned|overdue|sampled|locked), main, sides, uses_perishables, flags, why }`. `main` is `{ slug, title, description, protein, cuisine, time_total, score }` or **`null`** for an **explicit empty slot** (`empty_reason` set — a vibe with no retrievable candidate, or none clearing the caps — never silently dropped). `sides` are rung-1 corpus sides `{ slug, title }`. `uses_perishables` is the at-risk items this main **claimed** (decremented from the demand — what it actually uses up, not merely any perishable it lists). `flags`: `waste` (single-use perishables no other main shares — a cheap hint), `meal_prep`, `novel` (never cooked), `no_corpus_side` (add an open-world side). `why[]` explains the pick (incl. "uses your X (going bad)").
+  - `variety`: `{ distinct_proteins, distinct_cuisines, mean_pairwise_sim, max_pairwise_sim }` over the chosen mains.
+  - `uncovered_at_risk`: at-risk items the assembled plan could **not** use up (residual demand) — the honest "still going bad" signal, so the caller can re-roll, lock, or shop around them. `[]` when everything was covered (or there was no at-risk demand).
+  - `diagnostics`: `{ seed, lambda, nights, filled, empty, rolled_over }` — `rolled_over` are due vibes that didn't fit this week (debt keeps climbing).
+
+**Notes:** An empty palette returns an empty `plan` with a `note` to add vibes first. The tool never writes — persist an agreed plan with `update_meal_plan`, threading each chosen main's `vibe_id` as the row's `from_vibe` so cooking it advances that vibe's cadence (`satisfied_vibe`). Sides are **corpus-only** (rung-1 `pairs_with`); open-world sides and freeform-text queries are the calling surface's job, so the tool never fabricates a side. Holistic use-it-up is **always-on** (derived from the pantry) — the caller doesn't need to pass `boost_ingredients` to get it; matching is keyword + alias set-membership over `perishable_ingredients`/`ingredients_key` (no vectors).
+
+---
+
+## Profile-reconciliation tools
+
+The reconcile reconciles a member's **stated** preference (their night-vibe palette + cadences) against **revealed** behavior (their cooking log). A background signal cron (and, optionally, the operator's frontier Claude) enqueues proposed profile edits into a per-member queue; the member confirms them from either surface.
+
+### `list_proposals()`
+
+List the caller's **pending** reconcile proposals — suggested palette edits (prune a vibe you never cook, stretch a cadence you keep deferring). Read-only. `{ proposals: [{ id, kind, target, rationale, payload, evidence, producer }] }`.
+
+### `confirm_proposal(id, accept)`
+
+Accept (`accept: true` → applies the diff: prune/adjust/add a night vibe, marks accepted) or reject (`false` → recorded; the stable id means the same proposal is never re-surfaced) a proposal. Unknown/already-resolved id → `not_found`. Returns `{ id, status, applied? }`.
+
+### `reconcile_read_signals()` — operator-only
+
+Read the deterministic reconcile signals across **all** members (each member's palette size + drafted cadence signals) so the operator's own Claude can reason over the group and enqueue richer proposals. Gated on `isOperator` (caller's tenant == `OWNER_TENANT_ID`); non-operators get `insufficient_permission`. `{ members: [{ tenant, palette_size, signals }] }`.
+
+### `reconcile_enqueue_proposal(tenant, kind, target, payload, rationale, evidence?)` — operator-only
+
+Enqueue a proposal for a member (the operator-frontier producer). The member still confirms it before anything changes. Idempotent by `(tenant, kind, target)`. `insufficient_permission` for non-operators. Returns `{ id, enqueued }`.
+
+### `suggest_night_vibes(max_suggestions?, seed?)`
+
+Derive candidate **night vibes** for the caller from what they actually like and cook, and **enqueue** them as `add_vibe` proposals (the caller confirms via `confirm_proposal`) — this tool **never writes the palette**. It clusters the caller's favorites + cook history (their `recipe_derived` vectors) into archetypes, names each on a **small model** (the same generation also classifies the cluster's discrete weather bucket — `grill | cold-comfort | wet`, or bucketless when neutral/unclassifiable — so a confirmed proposal's `weather_affinity` is populated at creation time, no second model call), infers a `cadence_days` from the observed cook interval, and **drops any archetype already covered by their palette**. With too little history to cluster, it falls back to **starter vibes from the caller's taste notes** (cold-start vibes are always bucketless). Use it at onboarding to seed an empty palette, or any time to grow it. `max_suggestions` (default 4, max 8) caps the enqueue; `seed` makes the clustering reproducible (defaults to today). Returns `{ candidates, enqueued, source }` — `source` is `clusters | cold_start | none` (a `note` is added when there's no taste-space yet).
+
+---
+
 ## Grocery list tools
 
 The grocery list is the SKU-free buy list for the next order (D1-backed, `grocery_list` table). It accumulates intent across the week; resolution to a Kroger SKU and the cart write are deferred to order placement (`place_order`). Writes are D1-backed — no `commit_sha`. See `docs/SCHEMAS.md` for the item schema.
@@ -669,7 +742,7 @@ Read the caller's full per-tenant profile, assembled from the D1 profile tables 
 Write user-curated config. `update_taste`/`update_diet_principles` are content-faithful (write the supplied full markdown to the D1 `profile` row, no `commit_sha`). `update_aliases` **upserts** variant→canonical ingredient mappings into the shared **D1 `aliases` table** (where the matcher reads them), keyed by variant — add/edit, no removal (`{ updated }`, no `commit_sha`). **`update_preferences` is a deep merge-patch**, not a whole-object write. **These should only be called when the user explicitly directs an edit.**
 
 **Params:**
-- `update_preferences`: `patch` (object, required) — a **JSON Merge Patch (RFC 7396)** over the caller's preferences: a present key sets/overwrites, `null` deletes, nested objects merge to **any depth**, arrays replace wholesale. Only the keys you touch change — a partial patch never clobbers siblings, so you do **not** re-send the whole object. Defined top-level keys: `default_cooking_nights` (number), `lunch_strategy` (`leftovers`|`buy`|`mixed`), `ready_to_eat_default_action` (`opt-in`|`auto-add`), `stores` (`{primary, preferred_location, location_zip}`), `brands` (map of term → ranked brand list; `[]` = don't-care/cheapest, `null` = clear back to ambiguous), `dietary` (`{avoid[], limit[]}`), `rotation` (`{resurface_after_days, novelty_boost}` — tunes the `search_recipes` freshness re-rank; both positive numbers). Anything else nests under `custom`; an unknown top-level key returns `validation_failed` (nest it under `custom`). A type-invalid merged result returns `malformed_data` and stores nothing. Applied atomically to the D1 `profile` row + `brand_prefs` rows.
+- `update_preferences`: `patch` (object, required) — a **JSON Merge Patch (RFC 7396)** over the caller's preferences: a present key sets/overwrites, `null` deletes, nested objects merge to **any depth**, arrays replace wholesale. Only the keys you touch change — a partial patch never clobbers siblings, so you do **not** re-send the whole object. Defined top-level keys: `default_cooking_nights` (number — cooking nights within the planning window), `planning_cadence_days` (positive number — how far out the caller plans/shops, in days; drives `propose_meal_plan`'s weather horizon and vibe-recurrence caps, unset falls back to a 7-day window), `lunch_strategy` (`leftovers`|`buy`|`mixed`), `ready_to_eat_default_action` (`opt-in`|`auto-add`), `stores` (`{primary, preferred_location, location_zip}`), `brands` (map of term → ranked brand list; `[]` = don't-care/cheapest, `null` = clear back to ambiguous), `dietary` (`{avoid[], limit[]}`), `rotation` (`{resurface_after_days, novelty_boost}` — tunes the `search_recipes` freshness re-rank; both positive numbers). Anything else nests under `custom`; an unknown top-level key returns `validation_failed` (nest it under `custom`). A type-invalid merged result returns `malformed_data` and stores nothing. Applied atomically to the D1 `profile` row + `brand_prefs` rows.
 - `update_taste` / `update_diet_principles`: `content` (string, required) — the complete new field text
 - `update_aliases`: `aliases` (object, required) — a map of variant → canonical, e.g. `{ "EVOO": "olive oil" }`; each is upserted by variant
 

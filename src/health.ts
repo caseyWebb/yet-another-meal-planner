@@ -20,8 +20,11 @@ export const HEALTH_JOBS = [
   "recipe-classify",
   "recipe-index",
   "recipe-embed",
+  "night-vibe-embed",
   "email",
   "discovery-sweep",
+  "reconcile-signals",
+  "archetype-derive",
 ] as const;
 
 /** One job's stored health record. `summary` MUST stay tenant-data-free. */

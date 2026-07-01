@@ -75,3 +75,7 @@ Desktop.ini
 .\#*
 \#*\#
 .migration/
+
+# Claude Code agent worktrees — ephemeral, per-agent git worktrees created for
+# isolated background tasks. Local tooling state, never committed.
+.claude/worktrees/

@@ -35,6 +35,9 @@ const PK: Record<string, string[]> = {
   recipe_notes: ["id"],
   bug_reports: ["id"],
   job_health: ["name"],
+  night_vibes: ["tenant", "id"],
+  night_vibe_derived: ["tenant", "id"],
+  pending_proposals: ["tenant", "id"],
 };
 
 // Tables whose `id` PK is AUTOINCREMENT: an INSERT that omits `id` gets the next one,
@@ -87,6 +90,9 @@ export function fakeD1(
     if (/status = \?2/i.test(sql)) eq("status", 2);
     if (/\brecipe = \?1/i.test(sql)) eq("recipe", 1);
     if (/\brecipe = \?2/i.test(sql)) eq("recipe", 2);
+    if (/LOWER\(recipe\) = LOWER\(\?2\)/i.test(sql)) {
+      out = out.filter((r) => String(r.recipe).toLowerCase() === String(binds[1]).toLowerCase());
+    }
     if (/\bstore = \?1/i.test(sql)) eq("store", 1);
     if (/\bslug = \?1/i.test(sql)) eq("slug", 1);
     if (/\blocation_id = \?1/i.test(sql)) eq("location_id", 1);

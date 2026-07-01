@@ -42,7 +42,15 @@ describe("mergePatch (RFC 7396)", () => {
 describe("rejectUnknownPatchKeys", () => {
   it("accepts the defined surface", () => {
     expect(() =>
-      rejectUnknownPatchKeys({ default_cooking_nights: 3, stores: {}, brands: {}, dietary: {}, rotation: {}, custom: {} }),
+      rejectUnknownPatchKeys({
+        default_cooking_nights: 3,
+        planning_cadence_days: 7,
+        stores: {},
+        brands: {},
+        dietary: {},
+        rotation: {},
+        custom: {},
+      }),
     ).not.toThrow();
   });
 
@@ -81,6 +89,13 @@ describe("validatePreferences", () => {
 
   it("rejects a non-number cooking nights", () => {
     expect(() => validatePreferences({ default_cooking_nights: "three" })).toThrow();
+  });
+
+  it("accepts a positive planning_cadence_days and rejects non-positive/non-numeric", () => {
+    expect(() => validatePreferences({ planning_cadence_days: 14 })).not.toThrow();
+    expect(() => validatePreferences({ planning_cadence_days: 0 })).toThrowError(/planning_cadence_days/);
+    expect(() => validatePreferences({ planning_cadence_days: -3 })).toThrowError(/planning_cadence_days/);
+    expect(() => validatePreferences({ planning_cadence_days: "weekly" })).toThrowError(/planning_cadence_days/);
   });
 
   it("rejects brands that aren't term → string[]", () => {

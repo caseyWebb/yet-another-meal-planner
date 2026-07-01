@@ -26,6 +26,7 @@ interface ProfileRow {
   taste: string | null;
   diet_principles: string | null;
   default_cooking_nights: number | null;
+  planning_cadence_days: number | null;
   lunch_strategy: string | null;
   ready_to_eat_default_action: string | null;
   stores: string | null;
@@ -86,6 +87,7 @@ function assemblePreferences(
   if (row === null) return null;
   const prefs: Preferences = {};
   if (row.default_cooking_nights != null) prefs.default_cooking_nights = row.default_cooking_nights;
+  if (row.planning_cadence_days != null) prefs.planning_cadence_days = row.planning_cadence_days;
   if (row.lunch_strategy != null) prefs.lunch_strategy = row.lunch_strategy;
   if (row.ready_to_eat_default_action != null)
     prefs.ready_to_eat_default_action = row.ready_to_eat_default_action;
@@ -114,7 +116,7 @@ function assemblePreferences(
 // --- reads -------------------------------------------------------------------
 
 const PROFILE_SELECT =
-  "SELECT tenant, taste, diet_principles, default_cooking_nights, lunch_strategy, " +
+  "SELECT tenant, taste, diet_principles, default_cooking_nights, planning_cadence_days, lunch_strategy, " +
   "ready_to_eat_default_action, stores, dietary, rotation, custom, kitchen_notes, " +
   "freezer_capacity_estimate, retrospective_prefs FROM profile WHERE tenant = ?1";
 
@@ -285,6 +287,7 @@ const SCALAR_PROFILE_COLUMNS = [
   "taste",
   "diet_principles",
   "default_cooking_nights",
+  "planning_cadence_days",
   "lunch_strategy",
   "ready_to_eat_default_action",
   "stores",

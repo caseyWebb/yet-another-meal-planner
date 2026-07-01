@@ -190,8 +190,11 @@ describe("handleHealthRequest", () => {
       "recipe-classify",
       "recipe-index",
       "recipe-embed",
+      "night-vibe-embed",
       "email",
       "discovery-sweep",
+      "reconcile-signals",
+      "archetype-derive",
     ]);
   });
 
@@ -224,7 +227,7 @@ describe("handleHealthRequest", () => {
 describe("handleHealthSvgRequest", () => {
   it("200s with an SVG card listing every job + d1 when healthy (open, no token)", async () => {
     const env = healthEnv();
-    for (const name of ["flyer-warm", "recipe-classify", "recipe-index", "recipe-embed", "email", "discovery-sweep"])
+    for (const name of ["flyer-warm", "recipe-classify", "recipe-index", "recipe-embed", "night-vibe-embed", "email", "discovery-sweep", "reconcile-signals", "archetype-derive"])
       await writeJobHealth(env, name, rec(true));
     const res = await handleHealthSvgRequest(env);
     expect(res.status).toBe(200);
@@ -232,7 +235,7 @@ describe("handleHealthSvgRequest", () => {
     expect(res.headers.get("cache-control")).toMatch(/max-age=\d+/);
     const body = await res.text();
     expect(body.startsWith("<svg")).toBe(true);
-    for (const name of ["flyer-warm", "recipe-classify", "recipe-index", "recipe-embed", "email", "discovery-sweep", "d1"])
+    for (const name of ["flyer-warm", "recipe-classify", "recipe-index", "recipe-embed", "night-vibe-embed", "email", "discovery-sweep", "d1"])
       expect(body).toContain(name);
     expect(body).toContain("healthy");
     expect(body).not.toContain("#d29922"); // no amber when nothing is never-run

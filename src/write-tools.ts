@@ -441,7 +441,7 @@ export function registerWriteTools(
     "update_preferences",
     {
       description:
-        "Edit the caller's grocery preferences with a deep merge-patch (RFC 7396): keys present in `patch` set/overwrite, a key set to null is DELETED, nested objects merge to any depth, and arrays replace wholesale. Only the keys you touch change — a partial patch never clobbers siblings (e.g. patching stores.preferred_location keeps stores.primary), so you do NOT need to re-send the whole object. Defined top-level keys: default_cooking_nights (number), lunch_strategy (leftovers|buy|mixed), ready_to_eat_default_action (opt-in|auto-add), stores ({primary, preferred_location, location_zip}), brands (map of term → ranked brand list; [] = don't-care/cheapest, null = clear back to ambiguous), dietary ({avoid[], limit[]}), rotation ({resurface_after_days, novelty_boost} — tunes the semantic-search freshness re-rank: how many days until a cooked recipe rotates back in, and how hard never-cooked recipes are boosted; both positive numbers). Anything else nests under `custom`; an unknown top-level key is rejected (use custom). Returns { updated: 'preferences' }.",
+        "Edit the caller's grocery preferences with a deep merge-patch (RFC 7396): keys present in `patch` set/overwrite, a key set to null is DELETED, nested objects merge to any depth, and arrays replace wholesale. Only the keys you touch change — a partial patch never clobbers siblings (e.g. patching stores.preferred_location keeps stores.primary), so you do NOT need to re-send the whole object. Defined top-level keys: default_cooking_nights (number — cooking nights WITHIN the planning window, not per week), planning_cadence_days (positive number — how far out the caller plans/shops, in days; drives propose_meal_plan's weather horizon and vibe-recurrence caps; unset falls back to a 7-day window), lunch_strategy (leftovers|buy|mixed), ready_to_eat_default_action (opt-in|auto-add), stores ({primary, preferred_location, location_zip}), brands (map of term → ranked brand list; [] = don't-care/cheapest, null = clear back to ambiguous), dietary ({avoid[], limit[]}), rotation ({resurface_after_days, novelty_boost} — tunes the semantic-search freshness re-rank: how many days until a cooked recipe rotates back in, and how hard never-cooked recipes are boosted; both positive numbers). Anything else nests under `custom`; an unknown top-level key is rejected (use custom). Returns { updated: 'preferences' }.",
       inputSchema: { patch: z.record(z.string(), z.unknown()) },
     },
     ({ patch }) =>
@@ -461,6 +461,8 @@ export function registerWriteTools(
         const profileFields: Record<string, unknown> = {
           default_cooking_nights:
             "default_cooking_nights" in merged ? merged.default_cooking_nights : null,
+          planning_cadence_days:
+            "planning_cadence_days" in merged ? merged.planning_cadence_days : null,
           lunch_strategy: "lunch_strategy" in merged ? merged.lunch_strategy : null,
           ready_to_eat_default_action:
             "ready_to_eat_default_action" in merged ? merged.ready_to_eat_default_action : null,

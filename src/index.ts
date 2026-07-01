@@ -16,6 +16,9 @@ import { handleAuthorize } from "./authorize.js";
 import { handleInboundEmail, rejectReasonFor, type InboundMessage } from "./email.js";
 import { buildWarmDeps, runWarmJob } from "./flyer-warm.js";
 import { buildEmbedDeps, runEmbedJob } from "./recipe-embeddings.js";
+import { runNightVibeVectorJob } from "./night-vibe-vector.js";
+import { runReconcileSignalsJob } from "./reconcile-signals.js";
+import { runArchetypeDerivationJob } from "./night-vibe-suggest.js";
 import { buildFacetDeps, runFacetJob } from "./recipe-classify.js";
 import { buildProjectionDeps, runProjectionJob } from "./recipe-projection.js";
 import { buildDiscoveryDeps, runDiscoverySweepJob } from "./discovery-sweep.js";
@@ -184,13 +187,19 @@ export default {
     ]);
     // Phase 2: the index projection (merges the fresh classified facets + authored overrides).
     const phase2 = await Promise.allSettled([runProjectionJob(env, buildProjectionDeps(env, corpus))]);
-    // Phase 3: the recipe-derived reconcile (describe → embed; reads the fresh index).
-    const phase3 = await Promise.allSettled([runEmbedJob(env, buildEmbedDeps(env))]);
+    // Phase 3: the recipe-derived reconcile (describe → embed; reads the fresh index) plus the
+    // per-vibe night-vibe embedding reconcile — both draw on the internal env.AI budget and are
+    // change-driven (hash gates), so they coexist without competing for the flyer's 50-subrequest cap.
+    const phase3 = await Promise.allSettled([runEmbedJob(env, buildEmbedDeps(env)), runNightVibeVectorJob(env)]);
     // Phase 4: the sweep runs after the index + embeddings are fresh (it dedups + matches against
     // them). Load the operator's stored config (sparse override merged over DEFAULT_CONFIG).
     const sweepConfig = await loadDiscoveryConfig(env);
     const phase4 = await Promise.allSettled([runDiscoverySweepJob(env, buildDiscoveryDeps(env), sweepConfig)]);
-    const failed = [...phase1, ...phase2, ...phase3, ...phase4].find((r) => r.status === "rejected");
+    // Phase 5: profile-reconciliation producers — the deterministic signal pass (no model) plus
+    // the generative archetype-derivation pass (self-gated to ~daily; names new archetypes on the
+    // small model and enqueues add_vibe proposals). Both feed the pending_proposals queue.
+    const phase5 = await Promise.allSettled([runReconcileSignalsJob(env), runArchetypeDerivationJob(env)]);
+    const failed = [...phase1, ...phase2, ...phase3, ...phase4, ...phase5].find((r) => r.status === "rejected");
     if (failed && failed.status === "rejected") throw failed.reason;
   },
 };
