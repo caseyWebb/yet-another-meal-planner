@@ -37,6 +37,8 @@ import { StatusPage } from "./pages/status.js";
 import { registerDataRoutes } from "./pages/data.js";
 import { fetchUsage, fetchUsageTrends, fetchToolUsage } from "../usage.js";
 import { UsagePage } from "./pages/usage.js";
+import { readInsights } from "../insights.js";
+import { InsightsPage } from "./pages/insights.js";
 import { readDiscoveryLog, readDiscoveryCandidates, readDiscoveryRowById, deleteDiscoveryRow } from "../discovery-db.js";
 import { buildDiscoveryDeps, processCandidate, DEFAULT_CONFIG } from "../discovery-sweep.js";
 import { addDiscoveryRejection } from "../corpus-db.js";
@@ -266,6 +268,14 @@ app.get("/discovery", async (c) => {
   const pageParam = Number(c.req.query("page") ?? "1");
   const requestedPage = Number.isFinite(pageParam) && pageParam > 0 ? pageParam - 1 : 0;
   return c.html(page(<DiscoveryPage candidates={candidates} filter={filter} page={requestedPage} now={Date.now()} />));
+});
+
+// Insights area (group-insights): a group-wide popularity dashboard over the recipe corpus. SSR'd
+// for first paint from the one `readInsights` group-aggregation reader, then hydrated into an
+// interactive island (window / sort / expand) seeded from the emitted props block — no client
+// fetch. Read-only; aggregates across all member-tenants (the admin surface is cross-tenant).
+app.get("/insights", async (c) => {
+  return c.html(page(<InsightsPage payload={await readInsights(c.env)} />));
 });
 
 // Usage area (usage-observability / usage-trends / tool-usage-trends): three SSR dashboards.
