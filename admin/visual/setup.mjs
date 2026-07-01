@@ -18,7 +18,7 @@ const SEED = [
   "DELETE FROM discovery_log WHERE id IN ('viz-err','viz-rej');",
   "INSERT INTO discovery_log (id,url,title,source,outcome,slug,detail,created_at,attempts,next_retry_at) VALUES",
   "('viz-err','https://example.com/recipe-a','Example Recipe A','demo-feed','error',NULL,'{\"error\":\"fetch failed after 3 tries\"}','2026-01-01T00:00:00Z',1,NULL),",
-  "('viz-rej','https://example.com/recipe-b','Example Recipe B','demo-feed','rejected',NULL,'{\"reason\":\"off-diet (contains shellfish)\"}','2026-01-01T00:00:00Z',0,NULL);",
+  "('viz-rej','https://example.com/recipe-b','Example Recipe B','demo-feed','dietary_gated',NULL,'{\"reason\":\"off-diet (contains shellfish)\"}','2026-01-01T00:00:00Z',0,NULL);",
 ].join(" ");
 
 sh("node", ["scripts/build-admin.mjs"]);
