@@ -1,7 +1,7 @@
 // CRUD tools for the per-tenant NIGHT-VIBE PALETTE (night-vibe-palette capability). A night
 // vibe is a saved `search_recipes` spec (a `vibe` phrase + optional `facets`) plus lifecycle
-// metadata: a `cadence_days` target period, `weather_affinity`/`weather_antipathy` tags (from
-// the weather `meal_vibes` vocabulary), an optional `season` lean, `pinned` (sticky weekly
+// metadata: a `cadence_days` target period, `weather_affinity` weather-bucket membership
+// (`grill`/`cold-comfort`/`wet`; legacy `meal_vibes` tags still accepted), an optional `season` lean, `pinned` (sticky weekly
 // intent), and a `base_weight`. `propose_meal_plan` samples this palette to shape a week; the
 // vibe text is embedded on the next cron tick (hash-gated) so a fresh vibe is retrievable a
 // tick later. All writes are per-tenant private profile data — never shared.
@@ -13,10 +13,12 @@ import { runTool, ToolError } from "./errors.js";
 import { slugify } from "./discovery.js";
 import { readNightVibes, upsertNightVibe, deleteNightVibe, type NightVibe } from "./night-vibe-db.js";
 
-// The controlled weather-vibe vocabulary the affinity tags join against (src/weather.ts
-// `deriveVibes`). Kept permissive (a tag off this set simply never matches a forecast), but
-// the enum documents the useful values and catches typos at the tool boundary.
-const WEATHER_VIBE = z.enum(["soup", "comfort", "grill-friendly", "light", "no-grill"]);
+// The weather vocabulary the affinity tags declare. The PREFERRED values are the discrete
+// weather-bucket categories `propose_meal_plan` allocates over (`grill`/`cold-comfort`/`wet`);
+// the legacy `deriveVibes` tags (`soup`/`comfort`/`grill-friendly`/`light`/`no-grill`) are still
+// accepted and resolved to a bucket through the same map (`resolveBucketMembership`), so an
+// existing palette keeps working. The enum documents the useful values and catches typos.
+const WEATHER_VIBE = z.enum(["grill", "cold-comfort", "wet", "soup", "comfort", "grill-friendly", "light", "no-grill"]);
 
 const facetsSchema = z
   .object({
@@ -61,7 +63,7 @@ export function registerNightVibeTools(server: McpServer, env: Env, tenant: stri
     "add_night_vibe",
     {
       description:
-        "Add a night vibe to the caller's palette. `vibe` is the craving/query phrase (e.g. 'a simple, comforting weeknight Italian pasta'). Optional: an `id` (else derived from the vibe), hard-gate `facets`, a `cadence_days` target period (7 ≈ weekly, 30 ≈ monthly — drives the debt scheduler), `pinned` (sticky weekly intent), `weather_affinity`/`weather_antipathy` tags (soup|comfort|grill-friendly|light|no-grill), a `season` lean, and a `base_weight`. Rejects a duplicate id with `conflict` (use update_night_vibe). Returns { id }.",
+        "Add a night vibe to the caller's palette. `vibe` is the craving/query phrase (e.g. 'a simple, comforting weeknight Italian pasta'). Optional: an `id` (else derived from the vibe), hard-gate `facets`, a `cadence_days` target period (7 ≈ weekly, 30 ≈ monthly — drives the debt scheduler), `pinned` (sticky weekly intent), `weather_affinity` weather-bucket membership (grill|cold-comfort|wet — a legacy soup|comfort|grill-friendly|light|no-grill tag is also accepted), a `season` lean, and a `base_weight`. Rejects a duplicate id with `conflict` (use update_night_vibe). Returns { id }.",
       inputSchema: {
         vibe: z.string().min(1),
         id: z.string().optional(),

@@ -417,6 +417,22 @@ describe("sampleWeek — quota-based weather allocation", () => {
     }
   });
 
+  it("does NOT underfill flex: a multi-cap vibe drawn in a category still fills a flex slot it has room for", () => {
+    // Regression: the flex pass must gate on the vibe's remaining occurrence cap, not on whether
+    // it was already used. A single bucketless weekly vibe (cap 2 in a 14-day window) with a
+    // grill+mild forecast must fill BOTH slots (grill quota 1 + mild/flex 1) — not get placed once
+    // in grill and then excluded from flex, silently dropping the second slot with nothing rolled over.
+    const palette: NightVibeSpec[] = [{ id: "pasta", cadence_days: 7 }];
+    const debts = new Map([["pasta", 1.0]]); // below forceDueAt — sampled, not force-placed
+    const days: WeatherCategory[] = ["grill", "mild"];
+    for (let seed = 1; seed <= 20; seed++) {
+      const wk = sampleWeek(palette, days, debts, 2, seed, DEFAULT_CADENCE_PARAMS, 14);
+      expect(wk.slots.length).toBe(2); // both slots filled — no silent underfill
+      expect(wk.slots.every((s) => s.id === "pasta")).toBe(true); // the only vibe, within its cap of 2
+      expect(wk.rolledOver).toEqual([]);
+    }
+  });
+
   it("an overdue vibe whose bucket has a zero quota this window rolls over (below the escape hatch)", () => {
     const palette: NightVibeSpec[] = [
       { id: "grill-vibe", weather_affinity: ["grill"] }, // debt set below forceRegardlessAt

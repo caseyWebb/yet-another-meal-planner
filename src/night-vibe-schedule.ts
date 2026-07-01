@@ -523,7 +523,12 @@ export function sampleWeek(
     }
 
     if (flexSlots > 0) {
-      const flexPool = pool.filter((w) => !used.has(w.id));
+      // Draw flex from the WHOLE remaining pool — `drawBoundedMultiplicity` gates on each vibe's
+      // `state.remaining` (its occurrence cap, threaded from the category fills), so a multi-cap
+      // vibe already placed once still fills a flex slot it has room for. Filtering by `used`
+      // here would silently underfill (drop a flex slot a capable vibe could take) with nothing
+      // rolled over to explain the gap.
+      const flexPool = pool;
       for (const s of drawBoundedMultiplicity(state, flexPool, flexSlots, rng)) {
         slots.push({ id: s.id, reason: "sampled", debt: round4(s.debt), weight: round4(s.weight) });
         used.add(s.id);
