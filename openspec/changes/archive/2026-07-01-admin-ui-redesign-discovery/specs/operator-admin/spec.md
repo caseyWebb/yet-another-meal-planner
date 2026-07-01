@@ -106,31 +106,75 @@ The Discovery area's candidate-card list SHALL provide, for each retryable candi
 
 ### Requirement: Logs area with a left submenu and a detail dialog
 
-The admin panel SHALL provide a top-level **Logs** area, server-rendered, whose default content (the bare `/admin/logs` route) is the all-cron-jobs run log: a filterable, paginated list of individual `job_runs` records across every registered background job. The Logs area SHALL NOT host a candidate-level Discovery destination — the per-candidate discovery pipeline is reached at the top-level **Discovery** area (`/admin/discovery`; see "Discovery area shows the candidate pipeline"), not under Logs. The legacy route `/admin/logs/discovery` SHALL redirect to `/admin/discovery` (preserving the link for any existing bookmark) rather than serving its own content. A `discovery-sweep` run entry's expanded detail SHALL link to `/admin/discovery` (not `/admin/logs/discovery`) for per-candidate detail, since the run's summary carries only sweep-tick counts, not individual candidates.
+The admin panel SHALL provide a top-level **Logs** area, server-rendered, whose default content (the bare `/admin/logs` route) is the **all-cron-jobs run log**: a filterable, paginated list of individual `job_runs` records across every registered background job (see "Logs area shows the all-jobs run log" below). The Logs area SHALL NOT host a candidate-level Discovery destination — the per-candidate discovery pipeline is reached at the top-level **Discovery** area (`/admin/discovery`; see "Discovery area shows the candidate pipeline"), not under Logs. The legacy route `/admin/logs/discovery` SHALL respond with a **302 redirect** to `/admin/discovery` (preserving the link for any existing bookmark) rather than serving its own content.
 
 When an individual run-log entry expands to more than a row's worth of detail, it SHALL render inline (the summary key/value detail), not in a separate dialog.
 
 #### Scenario: Logs area shows the all-jobs run log by default
 
 - **WHEN** the operator opens `/admin/logs`
-- **THEN** the area renders the all-jobs run log (entries across every registered background job, newest-first)
+- **THEN** the area renders the all-jobs run log (entries across every registered background job, newest-first), not the Discovery candidate log
 
 #### Scenario: The legacy Discovery log route redirects to the Discovery area
 
 - **WHEN** the operator opens `/admin/logs/discovery` directly (or refreshes there)
-- **THEN** the Worker redirects to `/admin/discovery`, which renders the candidate-pipeline view
+- **THEN** the Worker responds with a 302 redirect to `/admin/discovery`, which renders the candidate-pipeline view
 
 #### Scenario: Entry detail expands inline for a run
 
 - **WHEN** the operator expands a run-log entry on `/admin/logs`
 - **THEN** its `job_health`-shaped summary (and, on failure, its error) renders inline beneath the entry, without a dialog
 
-#### Scenario: A discovery-sweep run links to the Discovery area, not the legacy route
-
-- **WHEN** the operator expands a `discovery-sweep` run entry
-- **THEN** the expanded detail includes a link to `/admin/discovery` for per-candidate detail, not `/admin/logs/discovery`
-
 #### Scenario: A new log source is added as a submenu destination
 
 - **WHEN** a future log source is introduced
-- **THEN** it appears as an additional Logs destination without restructuring the all-jobs run-log view
+- **THEN** it appears as an additional Logs destination without restructuring the all-jobs run-log view or the Discovery area
+
+### Requirement: Logs area shows the all-jobs run log
+
+The Logs area's default view SHALL render every registered background job's run history (`job_runs`, via the `background-job-health` capability) as one merged, newest-first list, bounded to a fixed page size. The view SHALL provide:
+
+- A **job filter** as a row of pills — "All jobs" plus one pill per registered job name (`HEALTH_JOBS`) — selecting which job's runs are shown; the currently selected pill SHALL be visually distinct.
+- A **hint line** reporting the count of runs shown under the current filter, split into ok vs. failed counts.
+- One **entry per run**, showing: a status dot (ok/fail), the job's name (with its icon), an ok/failed label, the run's relative age, and its duration.
+- **Pagination** over the filtered list, with a fixed page size, when the filtered count exceeds one page.
+- Each entry SHALL be **expandable** to show its stored `summary` (the same tenant-clean counts the job upserts to `job_health`) rendered as key/value pairs, and, when the run failed, the run's error.
+
+The view SHALL be server-rendered (no client island): the job filter and the page SHALL be expressed in the route (query parameters and/or a job sub-route), so each filter/page combination is independently navigable and deep-linkable; per-entry expand/collapse SHALL require no server round-trip and no client-side JavaScript bundle (e.g. a native disclosure element).
+
+A job with zero recorded runs SHALL still appear as a filter pill (consistent with the Status area always listing a registered job, even never-run) but SHALL show no entries under that filter.
+
+#### Scenario: All-jobs view lists runs across every job, newest-first
+
+- **WHEN** the operator opens `/admin/logs` with multiple jobs' runs recorded
+- **THEN** the entries render newest-first regardless of which job produced each run, and the hint line reports the total run count split ok vs. failed
+
+#### Scenario: Filtering by job pill narrows the list
+
+- **WHEN** the operator selects a specific job's pill
+- **THEN** only that job's runs render, the hint line updates to that job's counts, and the page resets to the first page
+
+#### Scenario: A never-run job still shows a pill with no entries
+
+- **WHEN** a registered job has no `job_runs` records yet
+- **THEN** its pill is present in the filter row, and selecting it shows zero entries (not an error)
+
+#### Scenario: Expanding a run shows its summary
+
+- **WHEN** the operator expands a run entry
+- **THEN** the entry's stored `summary` renders as key/value detail beneath it, without navigating away from the list
+
+#### Scenario: Expanding a failed run shows its error
+
+- **WHEN** the operator expands a run entry whose outcome was a failure
+- **THEN** the expanded detail includes the run's error alongside its summary
+
+#### Scenario: Pagination is filter-aware
+
+- **WHEN** the filtered run count exceeds one page
+- **THEN** pagination controls let the operator move between pages of the current filter, and changing the filter resets to the first page
+
+#### Scenario: A discovery-sweep run links to the Discovery area, not the legacy route
+
+- **WHEN** the operator expands a `discovery-sweep` run entry
+- **THEN** the expanded detail includes a link to `/admin/discovery` for per-candidate detail, not `/admin/logs/discovery`, since the run's summary carries only sweep-tick counts, not individual candidates
