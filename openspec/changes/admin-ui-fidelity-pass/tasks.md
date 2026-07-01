@@ -1,11 +1,11 @@
 ## 1. Shared primitives (build once, consume everywhere)
 
-- [ ] 1.1 Add a sparkline hover-tooltip primitive (mirrors the mock's `useTip()` + `bar-tip` markup) as a small client helper, imperatively driven from bar mouse handlers (no per-bar React/JSX node cost) — usable from both an SSR-rendered sparkline and a hydrated island.
-- [ ] 1.2 Add a trash-icon-only `Remove` button to the shared kit (`src/admin/ui/kit.tsx`), replacing the text "remove" `btn[data-variant=destructive]` pattern in `src/admin/client/corpus.tsx`.
-- [ ] 1.3 Add a frontmatter-stripping markdown-body helper reusable by both the Recipe detail view and the Guidance view — reuse the existing `parseMarkdown`-based body extraction the Recipe detail already performs (per the `operator-data-explorer` "Recipe body is provided frontmatter-stripped" requirement) rather than writing a second implementation.
-- [ ] 1.4 Extend the shared pretty key/value renderer so array-valued fields render as badge/pill chips (mirrors the mock's `PrettyKV`/`PrettyValue`), usable by both the R2 frontmatter panel and a D1 index row.
-- [ ] 1.5 Add a small job/candidate-property pill component (label:value as a `badge`) for Status's job summary counts.
-- [ ] 1.6 Fix `Slider` (`src/admin/ui/kit.tsx`) and its caller (`KnobRow` in `src/admin/client/knob-console.tsx`) to compute `(value - min) / (max - min) * 100` and set it as a `--slider-value` CSS custom property on the input, on both initial SSR render and every `onInput`, so the fill always reflects the true value instead of Basecoat's hardcoded 20% fallback.
+- [x] 1.1 Add a sparkline hover-tooltip primitive (mirrors the mock's `useTip()` + `bar-tip` markup) as a small client helper, imperatively driven from bar mouse handlers (no per-bar React/JSX node cost) — usable from both an SSR-rendered sparkline and a hydrated island.
+- [x] 1.2 Add a trash-icon-only `Remove` button to the shared kit (`src/admin/ui/kit.tsx`), replacing the text "remove" `btn[data-variant=destructive]` pattern in `src/admin/client/corpus.tsx`.
+- [x] 1.3 Add a frontmatter-stripping markdown-body helper reusable by both the Recipe detail view and the Guidance view — reuse the existing `parseMarkdown`-based body extraction the Recipe detail already performs (per the `operator-data-explorer` "Recipe body is provided frontmatter-stripped" requirement) rather than writing a second implementation.
+- [x] 1.4 Extend the shared pretty key/value renderer so array-valued fields render as badge/pill chips (mirrors the mock's `PrettyKV`/`PrettyValue`), usable by both the R2 frontmatter panel and a D1 index row.
+- [x] 1.5 Add a small job/candidate-property pill component (label:value as a `badge`) for Status's job summary counts.
+- [x] 1.6 Fix `Slider` (`src/admin/ui/kit.tsx`) and its caller (`KnobRow` in `src/admin/client/knob-console.tsx`) to compute `(value - min) / (max - min) * 100` and set it as a `--slider-value` CSS custom property on the input, on both initial SSR render and every `onInput`, so the fill always reflects the true value instead of Basecoat's hardcoded 20% fallback.
 
 ## 2. Status homepage
 

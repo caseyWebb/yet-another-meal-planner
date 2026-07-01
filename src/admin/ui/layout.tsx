@@ -57,6 +57,9 @@ export const Layout = ({
         </nav>
         {children}
       </div>
+      {/* Progressive-enhancement sparkline hover tooltip (Status/Usage) — a plain DOM script,
+          not a hydrated island; a no-op on pages with no tip-bearing segment. */}
+      <script type="module" src="/admin/islands/sparkline-tip.js" />
     </body>
   </html>
 );

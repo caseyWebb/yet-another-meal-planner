@@ -12,7 +12,7 @@
 // mock's KnobConsole does.
 
 import { useState } from "hono/jsx/dom";
-import { Slider } from "../ui/kit.js";
+import { Slider, sliderFillPct } from "../ui/kit.js";
 import type { KnobSpec } from "../ui/kit.js";
 
 export type Draft = Record<string, string>;
@@ -101,6 +101,14 @@ export function KnobRow({ knob, draft, onChange }: { knob: KnobSpec; draft: Draf
         max={knob.max}
         step={knob.step}
         value={Number.isFinite(raw) ? raw : knob.min}
+        onInput={(e: Event) => {
+          const input = e.target as HTMLInputElement;
+          // Recompute the fill var immediately, on the same element the drag is happening on —
+          // don't wait for the state update + re-render round trip, so the fill tracks the
+          // thumb with zero visible lag while dragging.
+          input.style.setProperty("--slider-value", `${sliderFillPct(knob.min, knob.max, Number(input.value))}%`);
+          onChange(knob.key, input.value);
+        }}
       />
       {knob.help || below ? (
         <p class="knob-help muted small">

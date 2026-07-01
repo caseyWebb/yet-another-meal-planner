@@ -139,9 +139,10 @@ describe("Usage SSR", () => {
     expect(html).toContain("place_order");
   });
 
-  it("ships no client island (no <script> island bundle reference)", () => {
+  it("ships no dedicated client island (only the shared, page-agnostic sparkline-tip script every admin page loads via Layout — no hydration props, no per-page bundle)", () => {
     const html = render(UsagePage({ usage, trends, tools }));
-    expect(html).not.toContain("/admin/islands/");
     expect(html).not.toContain("application/json");
+    expect(html).toContain("/admin/islands/sparkline-tip.js");
+    expect(html.match(/\/admin\/islands\/[a-z-]+\.js/g)).toEqual(["/admin/islands/sparkline-tip.js"]);
   });
 });
