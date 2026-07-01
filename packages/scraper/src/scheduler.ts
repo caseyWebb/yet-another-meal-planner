@@ -6,7 +6,7 @@
 // cursor, logger), so the whole flow is testable with in-memory fakes — no network, no
 // browser, no filesystem. The CLI wires the real deps; tests wire fakes.
 
-import type { RecipeItem } from "@grocery-agent/contract";
+import { MAX_BATCH_ITEMS, type RecipeItem } from "@grocery-agent/contract";
 import type { ScraperConfig, SourceConfig } from "./config.js";
 import type { AdapterFactory, Sdk, SourceAdapter } from "./adapter.js";
 import { validateEmit } from "./adapter.js";
@@ -156,18 +156,27 @@ async function runSource(config: ScraperConfig, source: SourceConfig, deps: Tick
 
   if (items.length === 0) return summary;
 
-  // One batch per source.
-  const batch = buildBatch(source.id, items);
-  const outcome = await pushBatch(deps.connectorUrl, deps.ingestKey, batch, deps.fetchImpl, deps.pushOptions);
-  summary.push = outcome.result;
+  // Chunk into batches that stay under the Worker's per-invocation subrequest budget (a backfill
+  // can collect thousands of items; the Worker does one D1 write per item). Each chunk is pushed
+  // and its URLs marked seen independently, so a mid-backfill failure only re-tries the unpushed
+  // tail next tick. Stop on the first failed chunk — a bad key / rate limit won't fix itself this
+  // pass, and hammering the endpoint with the remaining chunks helps nobody.
+  for (let i = 0; i < items.length; i += MAX_BATCH_ITEMS) {
+    const chunkItems = items.slice(i, i + MAX_BATCH_ITEMS);
+    const chunkUrls = pushedUrls.slice(i, i + MAX_BATCH_ITEMS);
+    const batch = buildBatch(source.id, chunkItems);
+    const outcome = await pushBatch(deps.connectorUrl, deps.ingestKey, batch, deps.fetchImpl, deps.pushOptions);
+    summary.push = outcome.result;
 
-  if (outcome.result === "accepted" || outcome.result === "partial") {
-    summary.pushed = outcome.response.accepted;
-    // Mark every attempted URL seen — deduped ones are still "done" from our side.
-    for (const u of pushedUrls) deps.cursor.add(u);
-    deps.cursor.save();
-  } else {
-    deps.log.error("push failed", { source: source.id, result: outcome.result });
+    if (outcome.result === "accepted" || outcome.result === "partial") {
+      summary.pushed += outcome.response.accepted;
+      // Mark every attempted URL in this chunk seen — deduped ones are still "done" from our side.
+      for (const u of chunkUrls) deps.cursor.add(u);
+      deps.cursor.save();
+    } else {
+      deps.log.error("push failed", { source: source.id, result: outcome.result, chunkStart: i });
+      break;
+    }
   }
 
   return summary;

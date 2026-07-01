@@ -37,6 +37,7 @@ import { readTasteVectors, reconcileTasteVectors, buildTasteDeps } from "./taste
 import {
   recordDiscoveryLog,
   loadEvaluatedUrls,
+  loadSettledUrls,
   loadDueRetries,
   resolveDiscoveryRow,
   bumpDiscoveryRetry,
@@ -409,7 +410,10 @@ export async function runDiscoverySweep(
     // (imported / rejected / contract-park); keep it on a transient `failed` so the next tick
     // retries from the stored content (no re-fetch — its content persists in ingest_candidates).
     if (candidate.pushed && r.outcome !== "failed") {
-      await deps.deletePushed?.(candidate.url);
+      // Best-effort: a failed delete must NOT abort the tick after the recipe is already
+      // imported (that would leave the inbox row for re-gather → re-import). The next gather
+      // cleans a stale row up by deduping the inbox against the settled discovery_log.
+      await deps.deletePushed?.(candidate.url)?.catch(() => {});
     }
 
     if (r.outcome === "no_match") res.noMatch++;
@@ -783,11 +787,12 @@ export function buildDiscoveryDeps(env: Env, now: () => number = () => Date.now(
   return {
     async loadCandidates() {
       const feeds = await readFeeds(env);
-      const [sourceMap, rejected, evaluated, inbox] = await Promise.all([
+      const [sourceMap, rejected, evaluated, inbox, settled] = await Promise.all([
         recipeSourceMap(env),
         readDiscoveryRejections(env),
         loadEvaluatedUrls(env),
         readDiscoveryInbox(env),
+        loadSettledUrls(env),
       ]);
       const seen = extractRecipeSources(sourceMap);
       for (const u of rejected) seen.add(u);
@@ -856,7 +861,12 @@ export function buildDiscoveryDeps(env: Env, now: () => number = () => Date.now(
       const corpusUrls = extractRecipeSources(sourceMap);
       for (const c of await readIngestCandidates(env)) {
         if (local.has(c.url)) continue;
-        if (corpusUrls.has(c.url)) {
+        // Skip + clean a candidate already in the corpus OR already SETTLED in the log (imported
+        // or otherwise terminally resolved). The settled check closes the reconcile-lag window:
+        // corpusUrls is projected by the reconcile cron and trails a just-completed import, so a
+        // stale inbox row (e.g. a failed post-import delete) would otherwise be re-imported here.
+        // Parks (unreachable/no_jsonld) are NOT settled, so a push still supersedes them.
+        if (corpusUrls.has(c.url) || settled.has(c.url)) {
           await deleteIngestCandidate(env, c.url).catch(() => {});
           continue;
         }

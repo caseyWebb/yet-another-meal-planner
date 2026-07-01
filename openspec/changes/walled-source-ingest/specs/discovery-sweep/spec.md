@@ -45,7 +45,7 @@ In addition to fresh intake, the sweep SHALL maintain a **retry stream**: parked
 
 ### Requirement: Pushed candidates skip the acquire fetch and are recorded with provenance
 
-A pushed candidate SHALL be processed by the sweep with its `acquire` step **satisfied from its attached pre-parsed content** — the sweep SHALL NOT fetch its URL. Every downstream stage (triage, classify, describe/embed, dedup, taste-match, confirm, import, attribution) SHALL be identical to a feed candidate, so a pushed candidate is taste-matched and governed (rate cap, classify cap) with no special attribution. The sweep SHALL record on the candidate's `discovery_log` row that it was `pushed` and its `origin` (the batch source), so the operator surface can badge it and render its `acquire` stage as satisfied-by-push. Because a pushed candidate's content persists in `ingest_candidates`, a **transient** classify/infrastructure failure SHALL be retryable by re-running classification from the stored content (no re-fetch), while a **contract-invalid** classification SHALL park terminally as for any candidate.
+A pushed candidate SHALL be processed by the sweep with its `acquire` step **satisfied from its attached pre-parsed content** — the sweep SHALL NOT fetch its URL. Every downstream stage (triage, classify, describe/embed, dedup, taste-match, confirm, import, attribution) SHALL be identical to a feed candidate, so a pushed candidate is taste-matched and governed (rate cap, classify cap) with no special attribution. The sweep SHALL record on the candidate's `discovery_log` row that it was `pushed` and its `origin` (the batch source), so the operator surface can badge it and render its `acquire` stage as satisfied-by-push. Because a pushed candidate's content persists in `ingest_candidates`, a **transient** classify/infrastructure failure SHALL be retryable by re-running classification from the stored content (no re-fetch), while a **contract-invalid** classification SHALL park terminally as for any candidate. The `ingest_candidates` row is the retry state: the sweep SHALL delete it on a **terminal** outcome (imported / rejected / contract-park) and keep it on a **transient** failure. Deleting the row SHALL be best-effort — a failed delete SHALL NOT abort the tick after the recipe is already imported — and the sweep's fresh-intake gather SHALL clean up (and skip) any inbox row whose URL is already a corpus recipe **or already settled in the discovery log**, so a stale row that survived a failed delete is not re-imported on a later tick (the corpus projection lags a just-completed import; the settled-log check closes that window).
 
 #### Scenario: A pushed candidate is not fetched
 
@@ -66,3 +66,8 @@ A pushed candidate SHALL be processed by the sweep with its `acquire` step **sat
 
 - **WHEN** a pushed candidate's classification fails on a transient infrastructure error
 - **THEN** it is retried by re-running classification from the persisted pushed content, not by re-fetching the source
+
+#### Scenario: A stale inbox row is not re-imported
+
+- **WHEN** a pushed candidate was imported but its `ingest_candidates` row survived (a best-effort delete failed) and reaches the next sweep before the corpus projection catches up
+- **THEN** the fresh-intake gather skips and cleans it up because its URL is already settled in the discovery log, so it is not imported a second time

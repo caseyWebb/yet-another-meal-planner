@@ -24,6 +24,7 @@ import { readDiscoveryRejections } from "./corpus-db.js";
 import { loadSettledUrls } from "./discovery-db.js";
 import { recipeSourceMap } from "./recipe-index.js";
 import { extractRecipeSources, canonicalizeUrl } from "./discovery.js";
+import { ToolError } from "./errors.js";
 
 /** Per-key fixed-window rate limit (best-effort, KV-backed; fail-open on a KV error). */
 const RL_MAX = 120;
@@ -79,7 +80,8 @@ export async function handleIngest(request: Request, env: Env, now: number = Dat
   }
   const env0 = parseIngestEnvelope(body);
   if (!env0.ok) {
-    const src = typeof (body as { source?: unknown })?.source === "string" ? (body as { source: string }).source : "unknown";
+    const rawSrc = typeof (body as { source?: unknown })?.source === "string" ? (body as { source: string }).source : "unknown";
+    const src = rawSrc.slice(0, 200);
     await recordIngestPush(
       env,
       { keyId: key.id, source: src || "unknown", received: 0, accepted: 0, deduped: 0, rejected: 0, result: "bad_payload" },
@@ -94,6 +96,10 @@ export async function handleIngest(request: Request, env: Env, now: number = Dat
 
   // [4] arrival dedup sets. Pushed candidates dedup against the SETTLED log only (not parks),
   // so a push supersedes a prior walled `unreachable`/`no_jsonld` park for the same url.
+  // Every read/write below goes through `db()`, which THROWS on a D1 failure; wrap the whole
+  // storage section so a transient db blip returns a structured storage_error, not a bare 500
+  // (this endpoint is wired raw in index.ts with no surrounding try/catch).
+  try {
   const [sourceMap, rejections, settled, inflight] = await Promise.all([
     recipeSourceMap(env),
     readDiscoveryRejections(env),
@@ -178,4 +184,12 @@ export async function handleIngest(request: Request, env: Env, now: number = Dat
     now,
   ).catch(() => {});
   return json(response, 200);
+  } catch (e) {
+    // A D1 failure anywhere in the dedup reads or per-item inserts. Map it to a structured
+    // storage_error (503, retryable) so the scraper backs off and re-pushes — arrival dedup
+    // makes the re-push safe for any items that did land before the failure. The internal
+    // SQL/context on a ToolError is not leaked over the wire (the scraper keys off the status).
+    const message = e instanceof ToolError ? e.message : "ingest storage failure";
+    return json({ error: "storage_error", message }, 503);
+  }
 }

@@ -296,7 +296,7 @@ export async function loadDueRetries(
   limit: number,
 ): Promise<DiscoveryLogRow[]> {
   const rows = await db(env).all<DiscoveryLogRow & { detail: string | null }>(
-    "SELECT id, url, title, source, outcome, slug, detail, created_at, attempts, next_retry_at " +
+    "SELECT id, url, title, source, outcome, slug, detail, created_at, attempts, next_retry_at, pushed, origin " +
       "FROM discovery_log " +
       "WHERE outcome IN ('error', 'failed') AND next_retry_at IS NOT NULL AND next_retry_at <= ?1 " +
       "AND (url IS NULL OR url NOT IN (SELECT url FROM discovery_rejections)) " +

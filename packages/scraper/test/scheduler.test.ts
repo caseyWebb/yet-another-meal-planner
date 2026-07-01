@@ -152,4 +152,45 @@ describe("runTick", () => {
     expect(summaries[0].push).toBe("accepted");
     expect(summaries[1].authExpired).toBe(true);
   });
+
+  it("chunks a large backfill into batches of at most MAX_BATCH_ITEMS", async () => {
+    // 201 discovered recipes → the worker does one D1 write per item, so the scraper must
+    // split into 200 + 1 rather than POSTing a single oversized batch (which the endpoint
+    // would reject with bad_payload / blow the subrequest budget).
+    const N = 201;
+    const urls = Array.from({ length: N }, (_, i) => `https://paid.example/recipes/${i}`);
+    const sitemap = `<?xml version="1.0"?><urlset>${urls.map((u) => `<url><loc>${u}</loc></url>`).join("")}</urlset>`;
+    const bigTier: FetchTier = {
+      fetch: vi.fn((url: string): Promise<FetchResult> => {
+        if (url.endsWith("sitemap.xml")) return Promise.resolve({ html: sitemap, finalUrl: url, status: 200 });
+        return Promise.resolve({ html: recipePage("R", url), finalUrl: url, status: 200 });
+      }),
+      close: () => Promise.resolve(),
+    };
+
+    // A push that echoes each batch's actual size back as `accepted`, and records the sizes.
+    const sizes: number[] = [];
+    const echoPush = ((_url: string, init: { body: string }) => {
+      const n = (JSON.parse(init.body) as { recipes: unknown[] }).recipes.length;
+      sizes.push(n);
+      return Promise.resolve({
+        status: 200,
+        json: () => Promise.resolve({ received: n, accepted: n, deduped: 0, rejected: 0, results: [] }),
+      });
+    }) as unknown as FetchImpl;
+
+    const cursor = fakeCursor();
+    const deps = baseDeps({ cursor, tierFor: () => bigTier, fetchImpl: echoPush });
+    const source: SourceConfig = {
+      id: "paid",
+      adapter: "jsonld",
+      mode: "backfill",
+      sitemap_url: "https://paid.example/sitemap.xml",
+    };
+
+    const [summary] = await runTick(config([source]), deps);
+    expect(sizes).toEqual([200, 1]); // chunked, no batch over the cap
+    expect(summary.pushed).toBe(N); // every item accepted across the two chunks
+    expect(cursor._set.size).toBe(N); // all URLs marked seen
+  });
 });

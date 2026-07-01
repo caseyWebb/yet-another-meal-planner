@@ -6,6 +6,8 @@ The Worker SHALL expose `POST /admin/api/ingest` accepting a JSON **batch envelo
 
 The endpoint SHALL reject a batch with a missing/blank `source` as `bad_key`-adjacent (`rejected`, reason names the missing source), and SHALL reject an individual item that fails the contract shape (e.g. missing `source` URL, empty `ingredients`/`instructions`) as `rejected` with the offending field, without failing the whole batch when other items are valid.
 
+The batch envelope SHALL carry no more than a bounded number of items (`MAX_BATCH_ITEMS`, a shared-contract constant), because the endpoint persists one item per D1 write inside a single Worker invocation and an unbounded batch would exhaust the per-invocation subrequest budget mid-loop. An over-cap batch SHALL be rejected wholesale as `bad_payload` (`400`, nothing persisted) rather than processed partway; a scraper with more than a batch's worth of candidates SHALL split them into cap-sized batches (which arrival dedup makes safe to push independently).
+
 #### Scenario: A valid batch is accepted and summarized
 
 - **WHEN** a scraper POSTs `/admin/api/ingest` with a valid key and a batch of well-formed recipe items
@@ -21,9 +23,14 @@ The endpoint SHALL reject a batch with a missing/blank `source` as `bad_key`-adj
 - **WHEN** a batch arrives with a valid key but a missing or blank `source`
 - **THEN** the batch is rejected (nothing persisted) and the response names the missing `source`
 
+#### Scenario: An over-cap batch is rejected wholesale
+
+- **WHEN** a batch arrives with a valid key but more than `MAX_BATCH_ITEMS` recipes
+- **THEN** the endpoint rejects it as `bad_payload` (`400`) and persists nothing, rather than importing a prefix and failing on the rest
+
 ### Requirement: Ingest keys authenticate the endpoint as a carve-out from the Access gate
 
-The `POST /admin/api/ingest` route SHALL be authenticated by a bearer **ingest key** — NOT by Cloudflare Access — as an explicit, allowlisted exemption to the `/admin*` Access gate, because a headless scraper carries no Access JWT. The Worker SHALL compare the presented bearer token against the stored key hashes using a constant-time comparison, SHALL reject a missing/unknown/revoked key with `401` (`bad_key`), and SHALL run no persistence for an unauthenticated request. The exemption SHALL apply to **only** `/admin/api/ingest`; every other `/admin*` path SHALL remain Access-gated unchanged. On a successful authentication the Worker SHALL record the key's `last_used` and the batch's reported `scraper_version` / `contract_version`, and SHALL bound abusive request volume (rate limit) on this open, key-authed route.
+The `POST /admin/api/ingest` route SHALL be authenticated by a bearer **ingest key** — NOT by Cloudflare Access — as an explicit, allowlisted exemption to the `/admin*` Access gate, because a headless scraper carries no Access JWT. The Worker SHALL authenticate by hashing the presented bearer token (SHA-256) and looking the digest up against the stored key hashes — the plaintext secret is never compared byte-by-byte, so the lookup exposes no per-secret timing signal and the reversible secret is never stored. It SHALL reject a missing/unknown/revoked key with `401` (`bad_key`), and SHALL run no persistence for an unauthenticated request. The exemption SHALL apply to **only** `/admin/api/ingest`; every other `/admin*` path SHALL remain Access-gated unchanged. On a successful authentication the Worker SHALL record the key's `last_used` and the batch's reported `scraper_version` / `contract_version`, and SHALL bound abusive request volume (rate limit) on this open, key-authed route.
 
 #### Scenario: A revoked or unknown key is rejected
 

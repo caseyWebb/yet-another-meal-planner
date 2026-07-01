@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { handleIngest } from "../src/ingest.js";
 import { mintIngestKey, readScraperLiveness, revokeIngestKey, FRESH_WINDOW_MS } from "../src/ingest-db.js";
-import { CONTRACT_VERSION, type BatchResponse } from "@grocery-agent/contract";
+import { CONTRACT_VERSION, MAX_BATCH_ITEMS, type BatchResponse } from "@grocery-agent/contract";
 import { fakeD1 } from "./fake-d1.js";
 
 // POST /admin/api/ingest (recipe-ingestion). Exercised end-to-end over the in-memory D1
@@ -62,6 +62,28 @@ describe("handleIngest", () => {
 
     const badKey = await handleIngest(req("ing_live_deadbeef", batch([validItem(1)])), f.env, NOW);
     expect(badKey.status).toBe(401);
+    expect(f.tables.ingest_candidates).toHaveLength(0);
+  });
+
+  it("rejects a REVOKED key with 401 bad_key and persists nothing", async () => {
+    const f = freshEnv();
+    const { id, secret } = await mintIngestKey(f.env, "home-nas", NOW);
+    await revokeIngestKey(f.env, id);
+
+    const res = await handleIngest(req(secret, batch([validItem(1)])), f.env, NOW + 1000);
+    expect(res.status).toBe(401);
+    expect(((await res.json()) as { error: string }).error).toBe("bad_key");
+    expect(f.tables.ingest_candidates).toHaveLength(0);
+  });
+
+  it("rejects an over-cap batch (> MAX_BATCH_ITEMS) with 400 bad_payload before any write", async () => {
+    const f = freshEnv();
+    const { secret } = await mintIngestKey(f.env, "home-nas", NOW);
+    const tooMany = Array.from({ length: MAX_BATCH_ITEMS + 1 }, (_, i) => validItem(i));
+
+    const res = await handleIngest(req(secret, batch(tooMany)), f.env, NOW);
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toBe("bad_payload");
     expect(f.tables.ingest_candidates).toHaveLength(0);
   });
 

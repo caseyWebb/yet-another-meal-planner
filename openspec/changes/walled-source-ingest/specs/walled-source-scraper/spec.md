@@ -63,7 +63,7 @@ Session establishment SHALL be decoupled from the recurring daemon: the operator
 
 ### Requirement: Recipes are stripped to functional facts and pushed in per-source batches
 
-The scraper SHALL extract only the **functional recipe facts** — title, ingredients, instructions, times, and the canonical source URL — and SHALL NOT push publisher prose (headnotes) or images. It SHALL push per **source** in batches (the envelope's `source` names that source), stamping its `scraper_version` and targeted `contract_version`. A push failure (network / non-2xx) SHALL be retried with backoff; the scraper's own already-pushed cursor is an optimization only, since the Worker dedups on arrival — a re-push is safe.
+The scraper SHALL extract only the **functional recipe facts** — title, ingredients, instructions, times, and the canonical source URL — and SHALL NOT push publisher prose (headnotes) or images. It SHALL push per **source** in batches (the envelope's `source` names that source), stamping its `scraper_version` and targeted `contract_version`. When a source yields more than the shared-contract batch cap (`MAX_BATCH_ITEMS`) of items — notably a `backfill` over a large archive — the scraper SHALL split them into cap-sized batches and push each independently, marking a batch's URLs seen only after that batch succeeds so a mid-run failure re-tries only the unpushed tail. A push failure (network / non-2xx) SHALL be retried with backoff; the scraper's own already-pushed cursor is an optimization only, since the Worker dedups on arrival — a re-push is safe.
 
 #### Scenario: Only functional facts are pushed
 
@@ -74,6 +74,11 @@ The scraper SHALL extract only the **functional recipe facts** — title, ingred
 
 - **WHEN** the scraper pushes recipes gathered from one source
 - **THEN** it sends one batch tagged with that `source`, `scraper_version`, and `contract_version`
+
+#### Scenario: A large backfill is split into cap-sized batches
+
+- **WHEN** a `backfill` gathers more than `MAX_BATCH_ITEMS` recipes from one source
+- **THEN** the scraper pushes them as several cap-sized batches, marking each batch's URLs seen only after it succeeds, rather than one oversized batch the endpoint would reject
 
 ### Requirement: The scraper provides operator CLI verbs and ships as a container
 

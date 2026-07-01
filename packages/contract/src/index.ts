@@ -16,6 +16,7 @@ export {
 } from "./recipe-parse.js";
 export {
   CONTRACT_VERSION,
+  MAX_BATCH_ITEMS,
   RecipeItemSchema,
   IngestBatchSchema,
   IngestEnvelopeSchema,

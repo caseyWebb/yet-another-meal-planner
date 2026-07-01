@@ -14,6 +14,15 @@ import { z } from "zod";
  */
 export const CONTRACT_VERSION = "v1";
 
+/**
+ * Hard cap on recipes per batch. The Worker processes a batch with one D1 write per
+ * item (plus a handful of dedup reads) inside a single request, so an unbounded batch
+ * would blow the Worker's per-invocation subrequest budget mid-loop. The scraper chunks
+ * a large backfill into batches of this size; the Worker rejects an over-cap batch with
+ * `bad_payload` rather than failing partway through. Shared so the two sides never disagree.
+ */
+export const MAX_BATCH_ITEMS = 200;
+
 /** Public http(s) URL guard — mirrors the Worker's egress posture (no other schemes). */
 function isHttpUrl(s: string): boolean {
   try {
@@ -48,10 +57,10 @@ export type RecipeItem = z.infer<typeof RecipeItemSchema>;
  * fields are the machine's reported build + targeted contract version.
  */
 export const IngestBatchSchema = z.object({
-  source: z.string().trim().min(1),
-  scraper_version: z.string().trim().min(1),
-  contract_version: z.string().trim().min(1),
-  recipes: z.array(RecipeItemSchema).min(1),
+  source: z.string().trim().min(1).max(200),
+  scraper_version: z.string().trim().min(1).max(100),
+  contract_version: z.string().trim().min(1).max(100),
+  recipes: z.array(RecipeItemSchema).min(1).max(MAX_BATCH_ITEMS),
 });
 export type IngestBatch = z.infer<typeof IngestBatchSchema>;
 
@@ -63,10 +72,10 @@ export type IngestBatch = z.infer<typeof IngestBatchSchema>;
  * `IngestBatchSchema` above to self-validate before sending.)
  */
 export const IngestEnvelopeSchema = z.object({
-  source: z.string().trim().min(1),
-  scraper_version: z.string().trim().min(1),
-  contract_version: z.string().trim().min(1),
-  recipes: z.array(z.unknown()).min(1),
+  source: z.string().trim().min(1).max(200),
+  scraper_version: z.string().trim().min(1).max(100),
+  contract_version: z.string().trim().min(1).max(100),
+  recipes: z.array(z.unknown()).min(1).max(MAX_BATCH_ITEMS),
 });
 export type IngestEnvelope = z.infer<typeof IngestEnvelopeSchema>;
 

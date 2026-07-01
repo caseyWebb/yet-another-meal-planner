@@ -481,8 +481,8 @@ detail         TEXT     -- JSON: attribution (imports), the matched-duplicate sl
 created_at     TEXT     -- ISO timestamp (most-recent-first ordering)
 attempts       INTEGER  -- how many acquisition passes this row has had (0 = non-retryable / legacy; ≥1 = retryable park)
 next_retry_at  TEXT     -- ISO timestamp when this row next enters the cron retry stream; NULL = terminal (not retryable)
-pushed         INTEGER  -- 1 when the candidate arrived via POST /admin/api/ingest (a scraper push); 0 otherwise  (0027)
-origin         TEXT     -- for a pushed row, the batch `source` name (provenance shown in the admin Discovery view)  (0027)
+pushed         INTEGER  -- 1 when the candidate arrived via POST /admin/api/ingest (a scraper push); 0 otherwise  (0031)
+origin         TEXT     -- for a pushed row, the batch `source` name (provenance shown in the admin Discovery view)  (0031)
 ```
 
 A **pushed** row (`pushed = 1`, `origin = "<source>"`) is a walled-source scraper candidate (see `ingest_candidates` below): its `acquire` stage was satisfied from attached content, not a fetch, so the admin Discovery view badges it (`scraper: <origin>`) and renders `acquire` as arrived-via-push. A pushed candidate's **transient** infrastructure failure is NOT written here — its `ingest_candidates` inbox row is the retry state — so only its terminal outcome ever appears in this log.
