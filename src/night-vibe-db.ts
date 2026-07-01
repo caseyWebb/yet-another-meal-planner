@@ -135,6 +135,23 @@ export async function readVibeLastSatisfied(env: Env, tenant: string): Promise<M
   return map;
 }
 
+/** The caller's cook dates grouped by recipe slug (`type = recipe` cooking-log rows) — the
+ *  taste-space's cadence-inference input for archetype derivation. */
+export async function readCookedDatesByRecipe(env: Env, tenant: string): Promise<Map<string, string[]>> {
+  const rows = await db(env).all<{ recipe: string; date: string }>(
+    "SELECT recipe, date FROM cooking_log WHERE tenant = ?1 AND type = 'recipe' AND recipe IS NOT NULL",
+    tenant,
+  );
+  const map = new Map<string, string[]>();
+  for (const r of rows) {
+    if (!r.recipe || !r.date) continue;
+    const a = map.get(r.recipe) ?? [];
+    a.push(r.date);
+    map.set(r.recipe, a);
+  }
+  return map;
+}
+
 /** The caller's night-vibe vectors (vibe id → embedding), skipping NULL/garbage rows —
  *  the Level-2 fill's query vectors. An unembedded vibe is simply absent (not-yet-indexed). */
 export async function readNightVibeVectors(env: Env, tenant: string): Promise<Map<string, number[]>> {

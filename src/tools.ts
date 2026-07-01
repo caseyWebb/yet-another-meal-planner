@@ -19,6 +19,7 @@ import { registerGroceryListTools } from "./grocery-tools.js";
 import { registerNightVibeTools } from "./night-vibe-tools.js";
 import { registerProposeMealPlanTool } from "./meal-plan-proposal-tool.js";
 import { registerReconcileTools } from "./reconcile-tools.js";
+import { registerSuggestNightVibesTool } from "./night-vibe-suggest.js";
 import { registerOrderTools } from "./order-tools.js";
 import { registerDiscoveryTools } from "./discovery-tools.js";
 import { registerNoteTools, registerStoreNoteTools } from "./notes-tools.js";
@@ -777,6 +778,10 @@ export function buildServer(env: Env, tenant: Tenant, origin?: string): McpServe
   // Profile reconciliation: member confirm (list_/confirm_proposal) + operator-gated
   // cross-tenant surface (reconcile_read_signals / reconcile_enqueue_proposal).
   registerReconcileTools(server, env, tenant);
+
+  // Archetype derivation: suggest_night_vibes derives + enqueues add_vibe proposals from the
+  // caller's favorites + cook history (with a taste-text cold start). Never writes the palette.
+  registerSuggestNightVibesTool(server, env, tenant);
 
   // Cooking history + meal plan: read_meal_plan (resume), update_meal_plan, and
   // retrospective. Meal plan reads/writes go through the D1 `meal_plan` table; the

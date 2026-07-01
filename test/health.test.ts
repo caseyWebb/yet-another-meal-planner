@@ -194,6 +194,7 @@ describe("handleHealthRequest", () => {
       "email",
       "discovery-sweep",
       "reconcile-signals",
+      "archetype-derive",
     ]);
   });
 
@@ -226,7 +227,7 @@ describe("handleHealthRequest", () => {
 describe("handleHealthSvgRequest", () => {
   it("200s with an SVG card listing every job + d1 when healthy (open, no token)", async () => {
     const env = healthEnv();
-    for (const name of ["flyer-warm", "recipe-classify", "recipe-index", "recipe-embed", "night-vibe-embed", "email", "discovery-sweep", "reconcile-signals"])
+    for (const name of ["flyer-warm", "recipe-classify", "recipe-index", "recipe-embed", "night-vibe-embed", "email", "discovery-sweep", "reconcile-signals", "archetype-derive"])
       await writeJobHealth(env, name, rec(true));
     const res = await handleHealthSvgRequest(env);
     expect(res.status).toBe(200);

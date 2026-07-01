@@ -355,6 +355,10 @@ Read the deterministic reconcile signals across **all** members (each member's p
 
 Enqueue a proposal for a member (the operator-frontier producer). The member still confirms it before anything changes. Idempotent by `(tenant, kind, target)`. `insufficient_permission` for non-operators. Returns `{ id, enqueued }`.
 
+### `suggest_night_vibes(max_suggestions?, seed?)`
+
+Derive candidate **night vibes** for the caller from what they actually like and cook, and **enqueue** them as `add_vibe` proposals (the caller confirms via `confirm_proposal`) — this tool **never writes the palette**. It clusters the caller's favorites + cook history (their `recipe_derived` vectors) into archetypes, names each on a **small model**, infers a `cadence_days` from the observed cook interval, and **drops any archetype already covered by their palette**. With too little history to cluster, it falls back to **starter vibes from the caller's taste notes**. Use it at onboarding to seed an empty palette, or any time to grow it. `max_suggestions` (default 4, max 8) caps the enqueue; `seed` makes the clustering reproducible (defaults to today). Returns `{ candidates, enqueued, source }` — `source` is `clusters | cold_start | none` (a `note` is added when there's no taste-space yet).
+
 ---
 
 ## Grocery list tools
