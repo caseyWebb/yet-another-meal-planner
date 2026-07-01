@@ -58,7 +58,7 @@ export const NORMALIZE_EMBED_BACKFILL_MAX_PER_TICK = 25;
 export interface NormalizeDeps {
   loadBatch(limit: number, now: number): Promise<string[]>;
   identityEmbeddings(): Promise<{ id: string; embedding: number[] }[]>;
-  /** EVERY existing node id (merged + unembedded included) — the canonical-collision set. */
+  /** EVERY existing node id and alias variant (merged + unembedded included) — the canonical-collision set. */
   knownIds(): Promise<Set<string>>;
   /** Surviving node ids with no stored embedding — the backfill batch, bounded. */
   embeddingless(limit: number): Promise<string[]>;
@@ -145,6 +145,7 @@ export function validateCanonicalId(raw: string | null): string | null {
   if (id !== id.toLowerCase()) return null;
   if (/[(),\n\r]/.test(id)) return null;
   const segments = id.split("::");
+  if (segments.length > 2) return null; // base or base::detail only — the prompt teaches no deeper shape
   if (segments.some((s) => !s.trim() || s !== s.trim() || s.includes(":"))) return null;
   return id;
 }

@@ -414,6 +414,7 @@ describe("validateCanonicalId", () => {
     expect(validateCanonicalId("dates\npitted")).toBeNull(); // newline
     expect(validateCanonicalId("oats::")).toBeNull(); // empty detail segment
     expect(validateCanonicalId("oats:steel-cut")).toBeNull(); // stray single colon
+    expect(validateCanonicalId("oats::steel-cut::organic")).toBeNull(); // deeper than base::detail
     expect(validateCanonicalId("a".repeat(65))).toBeNull(); // over the length bound
   });
 });

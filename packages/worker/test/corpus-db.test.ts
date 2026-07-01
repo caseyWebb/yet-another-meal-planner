@@ -208,7 +208,7 @@ describe("ingredient identity / normalization (D1)", () => {
     ]);
   });
 
-  it("readIdentityIds returns EVERY node id (merged + unembedded included)", async () => {
+  it("readIdentityIds returns EVERY node id and alias variant (merged + unembedded included)", async () => {
     const { env } = fakeD1({
       tables: {
         ingredient_identity: [
@@ -216,9 +216,12 @@ describe("ingredient identity / normalization (D1)", () => {
           { id: "courgette", base: "courgette", representative: "zucchini" }, // merged loser
           { id: "saffron", base: "saffron", representative: null }, // no embedding
         ],
+        // a standing variant→node row shadows any later node minted under the same name — it
+        // must be in the collision set even though "scallion" is not itself a node id
+        ingredient_alias: [{ variant: "scallion", id: "zucchini" }],
       },
     });
-    expect(await readIdentityIds(env)).toEqual(new Set(["zucchini", "courgette", "saffron"]));
+    expect(await readIdentityIds(env)).toEqual(new Set(["zucchini", "courgette", "saffron", "scallion"]));
   });
 
   it("readEmbeddinglessIds returns only unembedded SURVIVORS, oldest first, bounded", async () => {

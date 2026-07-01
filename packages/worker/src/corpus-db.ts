@@ -340,13 +340,18 @@ export async function readNovelTermsBatch(env: Env, limit: number, now: number):
   return rows.map((r) => r.term);
 }
 
-/** EVERY identity node id — merged losers and unembedded nodes included. The capture job's
- *  collision set for a classifier-proposed canonical id: a canonical equal to ANY existing id
- *  falls back to the verbatim mint (an upsert onto a merged loser would silently alias the term
- *  through the representative chain). */
+/** EVERY identity node id AND alias variant — merged losers and unembedded nodes included. The
+ *  capture job's collision set for a classifier-proposed canonical id: a canonical equal to ANY
+ *  existing id falls back to the verbatim mint (an upsert onto a merged loser would silently
+ *  alias the term through the representative chain), and one equal to ANY alias variant likewise
+ *  (the resolver's front door is the alias map, so a standing variant→other-node row would
+ *  shadow the freshly minted node for every later lookup of that exact string). */
 export async function readIdentityIds(env: Env): Promise<Set<string>> {
-  const rows = await db(env).all<{ id: string }>("SELECT id FROM ingredient_identity");
-  return new Set(rows.map((r) => r.id));
+  const [ids, variants] = await Promise.all([
+    db(env).all<{ id: string }>("SELECT id FROM ingredient_identity"),
+    db(env).all<{ variant: string }>("SELECT variant FROM ingredient_alias"),
+  ]);
+  return new Set([...ids.map((r) => r.id), ...variants.map((r) => r.variant)]);
 }
 
 /** Surviving identity nodes with NO stored embedding (e.g. human-minted via update_aliases) —
