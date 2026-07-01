@@ -40,6 +40,7 @@ import { UsagePage } from "./pages/usage.js";
 import { readInsights } from "../insights.js";
 import { InsightsPage } from "./pages/insights.js";
 import { readDiscoveryLog, readDiscoveryCandidates, readDiscoveryRowById, deleteDiscoveryRow } from "../discovery-db.js";
+import { mintIngestKey, revokeIngestKey, readScraperLiveness } from "../ingest-db.js";
 import { buildDiscoveryDeps, processCandidate, DEFAULT_CONFIG } from "../discovery-sweep.js";
 import { addDiscoveryRejection } from "../corpus-db.js";
 import { canonicalizeUrl } from "../url.js";
@@ -195,6 +196,18 @@ const routes = app
   .delete("/api/tenants/:id", async (c) => {
     return c.json(await revoke(adminDeps(c.env), decodeURIComponent(c.req.param("id"))));
   })
+  // Config › Ingest Keys: the walled-source scraper key roster (recipe-ingestion). GET returns
+  // the liveness rollup's per-scraper rows (label/prefix/sources/status/versions/skew — no
+  // secret); mint returns the plaintext secret ONCE; revoke is immediate.
+  .get("/api/ingest/keys", async (c) => c.json({ scrapers: (await readScraperLiveness(c.env)).scrapers }))
+  .post("/api/ingest/keys", validator("json", (v) => v as { label?: string }), async (c) => {
+    const label = String(c.req.valid("json").label ?? "").trim();
+    if (!label) throw new ToolError("validation_failed", "an ingest key needs a scraper label");
+    return c.json(await mintIngestKey(c.env, label));
+  })
+  .post("/api/ingest/keys/:id/revoke", async (c) =>
+    c.json({ id: c.req.param("id"), revoked: await revokeIngestKey(c.env, c.req.param("id")) }),
+  )
   // Discovery: the raw log read (kept as a stable JSON surface at its existing path) and the
   // per-candidate row actions the Discovery island calls. Retry/Delete reuse the sweep's own
   // functions (shared logic, not a re-implementation) — same outcome as the autonomous sweep.

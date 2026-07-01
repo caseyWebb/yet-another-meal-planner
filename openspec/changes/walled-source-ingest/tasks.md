@@ -30,8 +30,8 @@
 
 ## 5. Admin — Config › Ingest Keys (Phase 2)
 
-- [ ] 5.1 `/admin/api/*` typed routes for key mint (secret once) / list / revoke, calling `src/ingest-db.ts`.
-- [ ] 5.2 The Ingest Keys **island** under Config (per `ConfigScreen.jsx`→`IngestKeys`): roster table, Mint dialog + shown-once secret callout with copy, per-row Revoke behind a destructive confirm, empty state. Add "Ingest Keys" to the Config groups.
+- [x] 5.1 Typed routes on the `AdminApp` chain (`src/admin/app.tsx`): `GET /api/ingest/keys` (returns the liveness rollup's per-scraper rows — no secret), `POST /api/ingest/keys` (mint → secret once), `POST /api/ingest/keys/:id/revoke`. Access-gated (distinct from the exact-path key-authed `/admin/api/ingest`).
+- [x] 5.2 `src/admin/client/ingest-keys.tsx` island + the Config › Ingest Keys group/page (`pages/config.tsx`): roster table (label+prefix, source chips, created, last-used, status), Mint dialog + shown-once secret banner, per-row Revoke behind a destructive-confirm `<dialog>`, empty state. Modeled on the Members island (ActionState union, `Banner` variant).
 
 ## 6. Admin — Discovery › Scrapers + Status (Phase 2)
 
