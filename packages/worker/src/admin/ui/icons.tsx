@@ -1,8 +1,9 @@
 // Inline Lucide icons (operator-admin) — Basecoat ships none, so icons used by more than one
 // area live here (copy the path data from lucide.dev; admin/CLAUDE.md › Styling).
 
-/** A small wrapper sharing the common SVG attributes every Lucide icon needs. */
-const Icon = ({ children, size = 16 }: { children?: unknown; size?: number }) => (
+/** A small wrapper sharing the common SVG attributes every Lucide icon needs. `class` forwards
+ *  so a caller can color/position a specific icon (e.g. the Nodes axis directional chevrons). */
+const Icon = ({ children, size = 16, class: cls }: { children?: unknown; size?: number; class?: string }) => (
   <svg
     xmlns="http://www.w3.org/2000/svg"
     width={size}
@@ -13,6 +14,7 @@ const Icon = ({ children, size = 16 }: { children?: unknown; size?: number }) =>
     stroke-width="2"
     stroke-linecap="round"
     stroke-linejoin="round"
+    class={cls}
   >
     {children}
   </svg>
@@ -222,8 +224,8 @@ export const ChevronDownIcon = ({ size }: { size?: number }) => (
   </Icon>
 );
 
-export const ChevronRightIcon = ({ size }: { size?: number }) => (
-  <Icon size={size}>
+export const ChevronRightIcon = ({ size, class: cls }: { size?: number; class?: string }) => (
+  <Icon size={size} class={cls}>
     <path d="m9 18 6-6-6-6" />
   </Icon>
 );
@@ -276,6 +278,16 @@ export const ArrowRightIcon = ({ size }: { size?: number }) => (
   <Icon size={size}>
     <path d="M5 12h14" />
     <path d="m12 5 7 7-7 7" />
+  </Icon>
+);
+
+// ── Normalization › Nodes (ingredient-identity graph) ─────────────────────────────────────────
+
+export const LayersIcon = ({ size }: { size?: number }) => (
+  <Icon size={size}>
+    <path d="M12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83z" />
+    <path d="M2 12a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 12" />
+    <path d="M2 17a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 17" />
   </Icon>
 );
 

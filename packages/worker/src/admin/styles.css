@@ -908,4 +908,124 @@
     .rk-counts { gap: 1.25rem; }
     .rk-facts { flex-wrap: wrap; gap: 1rem 1.5rem; }
   }
+
+  /* ── Decisions refinements (deep-link into a node + the re-confirm marker) ── */
+  /* A decision's resolved id links to its node in the graph when one exists. */
+  .nz-resolve-link { text-decoration: none; border-radius: var(--radius-sm); }
+  .nz-resolve-link:hover .nz-id-base { text-decoration: underline; text-underline-offset: 2px; color: var(--accent); }
+  /* The periodic re-confirm pass marker — distinct from the initial-capture source. */
+  .nz-reconfirm { display: inline-flex; align-items: center; gap: .25rem; font-size: .68rem; font-weight: 600; color: #6639ba; background: color-mix(in oklch, #8250df 10%, #fff); border: 1px solid color-mix(in oklch, #8250df 30%, transparent); border-radius: 999px; padding: .06rem .45rem; white-space: nowrap; }
+
+  /* ── Normalization › Nodes: the identity-graph structure lens (ingredient-identity graph).
+     A browsable node list (`ng-*`) opens a relationship detail (`nd-*`) that lays a node's
+     incoming ("satisfied by") + outgoing ("satisfies") edges on one left→right axis. Edge-kind
+     badges: general=blue · containment=amber · membership=violet. Translated from the Nodes
+     Surface design bundle to the panel palette; panel layout the Basecoat kit doesn't provide. */
+  .ng-inline-filter { color: var(--accent); font-weight: 600; text-decoration: none; }
+  .ng-inline-filter:hover { text-decoration: underline; }
+  .ng-facets { margin-bottom: .9rem; }
+  .pill.ng-pill-orphan { display: inline-flex; align-items: center; gap: .3rem; }
+  .pill.ng-pill-orphan.active { background: #fdf6e3; border-color: color-mix(in oklch, #d4a72c 45%, var(--border)); color: #9a6700; font-weight: 600; }
+
+  /* Node list rows. */
+  .ng-list { display: flex; flex-direction: column; gap: .4rem; }
+  .ng-row { display: flex; align-items: center; gap: .8rem; width: 100%; text-align: left; text-decoration: none; color: inherit; background: #fff; border: 1px solid var(--border); border-radius: var(--radius-lg); box-shadow: var(--shadow-xs); padding: .6rem .85rem; transition: border-color .12s, background .12s; }
+  .ng-row:hover { border-color: color-mix(in oklch, var(--accent) 45%, var(--border)); background: color-mix(in oklch, var(--muted) 30%, #fff); }
+  .ng-row:focus-visible { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in oklch, var(--accent) 30%, transparent); }
+  .ng-row.orphan { border-left: 3px solid #d4a72c; }
+
+  .ng-row-glyph { display: inline-flex; align-items: center; justify-content: center; width: 2rem; height: 2rem; border-radius: 50%; flex: 0 0 auto; background: color-mix(in oklch, var(--muted) 55%, transparent); color: #555; }
+  .ng-row-glyph.concept { background: #f4eefb; color: #7a4fb0; }
+  .ng-row-glyph.orphan { background: #fdf6e3; color: #9a6700; }
+  .ng-row-glyph.big { width: 2.6rem; height: 2.6rem; }
+
+  .ng-row-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: .15rem; }
+  .ng-row-id { min-width: 0; }
+  .ng-row-sub { display: flex; flex-wrap: wrap; align-items: center; gap: .35rem; font-size: .78rem; color: var(--muted-foreground); }
+  .ng-row-kind { font-weight: 500; color: #555; }
+  .ng-row-merged { display: inline-flex; align-items: center; gap: .25rem; }
+  .ng-row-merged code { font-size: .74rem; }
+
+  .ng-row-trail { display: inline-flex; align-items: center; gap: .7rem; flex: 0 0 auto; }
+  .ng-deg { display: inline-flex; align-items: center; gap: .6rem; font-size: .82rem; font-variant-numeric: tabular-nums; color: #555; }
+  .ng-deg-part { display: inline-flex; align-items: center; gap: .12rem; }
+  .ng-deg-in, .ng-deg-out { color: #bbb; }
+  .ng-row-chev { color: #bbb; flex: 0 0 auto; }
+  .ng-orphan-chip { display: inline-flex; align-items: center; gap: .25rem; font-size: .68rem; font-weight: 600; color: #9a6700; border: 1px solid color-mix(in oklch, #d4a72c 45%, var(--border)); background: #fdf6e3; border-radius: 999px; padding: .1rem .5rem; white-space: nowrap; }
+  .ng-orphan-chip.big { font-size: .74rem; padding: .18rem .6rem; }
+
+  /* Node detail head + facts. */
+  .nd-back { margin-bottom: 1rem; }
+  .nd-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; margin-bottom: 1.1rem; }
+  .nd-id { display: flex; align-items: center; gap: .8rem; min-width: 0; }
+  .nd-id-text { min-width: 0; }
+  .nd-id-main .nz-id { font-size: 1.1rem; }
+  .nd-id-main .nz-id-base { color: #1a1a1a; font-weight: 600; }
+  .nd-id-main .nz-id-detail { font-size: .82rem; }
+  .nd-id-sub { font-size: .8rem; color: var(--muted-foreground); margin-top: .2rem; display: inline-flex; gap: .3rem; align-items: center; flex-wrap: wrap; }
+  .nd-id-sub code { font-size: .78rem; color: #555; }
+
+  .nd-facts { display: flex; flex-wrap: wrap; gap: .6rem 1.75rem; border: 1px solid var(--border); border-radius: var(--radius-lg); background: #fff; box-shadow: var(--shadow-xs); padding: .8rem 1rem; margin: 0 0 1rem; }
+  .nd-fact { display: flex; flex-direction: column; gap: .2rem; }
+  .nd-fact dt { font-size: .68rem; text-transform: uppercase; letter-spacing: .04em; color: #888; font-weight: 600; }
+  .nd-fact dd { margin: 0; font-size: .85rem; color: #1a1a1a; }
+  .nd-fact dd code { font-size: .82rem; }
+  .ng-fact-concept, .ng-fact-concrete { display: inline-flex; align-items: center; gap: .3rem; }
+  .ng-fact-concept { color: #7a4fb0; }
+  .ng-fact-concrete { color: #555; }
+  .ng-fact-edges { display: inline-flex; align-items: center; gap: .3rem; }
+
+  .nd-rep { display: flex; align-items: flex-start; gap: .5rem; font-size: .82rem; line-height: 1.5; color: #7a4fb0; background: color-mix(in oklch, #8250df 7%, #fff); border: 1px solid color-mix(in oklch, #8250df 30%, var(--border)); border-radius: var(--radius-md); padding: .6rem .8rem; margin-bottom: 1.25rem; }
+  .nd-rep svg { flex: 0 0 auto; margin-top: .15rem; }
+  .nd-rep code { font-size: .8rem; }
+  .nd-rep-link { color: inherit; text-decoration: underline; text-underline-offset: 2px; }
+
+  .nd-block { margin-bottom: 1.5rem; }
+  .nd-aliases { display: flex; flex-wrap: wrap; gap: .35rem; }
+  .nd-alias { font-family: var(--font-mono); font-size: .78rem; color: #333; background: color-mix(in oklch, var(--muted) 50%, transparent); border: 1px solid var(--border); border-radius: 999px; padding: .12rem .55rem; }
+
+  /* The satisfies axis — incoming (left) → THIS → outgoing (right). */
+  .ng-axis { display: grid; grid-template-columns: minmax(0,1fr) auto minmax(0,1fr); align-items: center; gap: .6rem 1.1rem; border: 1px solid var(--border); border-radius: var(--radius-lg); background: color-mix(in oklch, var(--muted) 22%, #fff); padding: 1.15rem 1.1rem; }
+  .ng-axis-col { display: flex; flex-direction: column; gap: .5rem; min-width: 0; }
+  .ng-axis-col.in { align-items: flex-end; text-align: right; }
+  .ng-axis-col.out { align-items: flex-start; }
+  .ng-axis-cap { font-size: .66rem; text-transform: uppercase; letter-spacing: .04em; color: #888; font-weight: 600; display: inline-flex; align-items: center; gap: .3rem; margin-bottom: .1rem; }
+  .ng-cap-in, .ng-cap-out { color: #bbb; }
+  .ng-axis-n { background: var(--muted); border-radius: 999px; padding: 0 .4rem; font-variant-numeric: tabular-nums; color: #555; }
+  .ng-axis-empty { font-size: .78rem; color: #bbb; font-style: italic; }
+
+  .ng-axis-center { display: flex; flex-direction: column; align-items: center; gap: .35rem; padding: 0 .1rem; }
+  .ng-center-node { border: 1.5px solid var(--accent); background: color-mix(in oklch, var(--accent) 9%, #fff); border-radius: 999px; padding: .4rem .75rem; box-shadow: 0 0 0 4px color-mix(in oklch, var(--accent) 9%, transparent); white-space: nowrap; }
+  .ng-center-node .nz-id-base { color: #1a1a1a; font-weight: 600; }
+  .ng-axis-flow { font-size: .58rem; text-transform: uppercase; letter-spacing: .08em; color: #bbb; font-weight: 700; }
+
+  /* Edge chips + kind badges. */
+  .ng-edge { display: inline-flex; align-items: center; gap: .4rem; max-width: 100%; text-decoration: none; color: inherit; background: #fff; border: 1px solid var(--border); border-radius: 999px; padding: .22rem .35rem; transition: border-color .12s, box-shadow .12s; }
+  .ng-edge:hover { border-color: color-mix(in oklch, var(--accent) 45%, var(--border)); box-shadow: var(--shadow-xs); }
+  .ng-edge:focus-visible { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in oklch, var(--accent) 25%, transparent); }
+  .ng-edge.disabled { cursor: default; opacity: .65; }
+  .ng-edge-node { padding: 0 .25rem; min-width: 0; }
+  .ng-edge-node .nz-id { font-size: .8rem; }
+  .ng-arrow-wire { display: inline-flex; align-items: center; gap: .3rem; flex: 0 0 auto; }
+  .ng-arrow-wire svg { color: #bbb; flex: 0 0 auto; }
+
+  .ng-kind { font-size: .58rem; text-transform: uppercase; letter-spacing: .03em; font-weight: 700; padding: .08rem .4rem; border-radius: 999px; border: 1px solid; white-space: nowrap; flex: 0 0 auto; }
+  .ng-kind.k-general { color: #0969da; background: #eaf3fb; border-color: color-mix(in oklch, #0969da 30%, var(--border)); }
+  .ng-kind.k-containment { color: #9a6700; background: #fdf6e3; border-color: color-mix(in oklch, #d4a72c 42%, var(--border)); }
+  .ng-kind.k-membership { color: #7a4fb0; background: #f4eefb; border-color: color-mix(in oklch, #8250df 35%, var(--border)); }
+
+  /* Orphan detail note + legend. */
+  .nd-orphan-note { display: flex; align-items: flex-start; gap: .65rem; border: 1px solid color-mix(in oklch, #d4a72c 42%, var(--border)); background: #fdf6e3; border-radius: var(--radius-lg); padding: 1rem 1.1rem; }
+  .nd-orphan-note > svg { color: #9a6700; flex: 0 0 auto; margin-top: .15rem; }
+  .nd-orphan-note strong { color: #9a6700; font-size: .9rem; }
+  .nd-orphan-note p { margin: .3rem 0 0; font-size: .84rem; line-height: 1.5; color: #333; }
+
+  .nd-legend { display: flex; flex-wrap: wrap; gap: .4rem 1.25rem; margin-top: .9rem; padding-top: .8rem; border-top: 1px dashed var(--border); }
+  .nd-legend-item { display: inline-flex; align-items: center; gap: .4rem; }
+
+  @media (max-width: 720px) {
+    .ng-axis { grid-template-columns: 1fr; gap: 1rem; }
+    .ng-axis-col.in, .ng-axis-col.out { align-items: flex-start; text-align: left; }
+    .ng-axis-center { align-items: flex-start; }
+  }
 }
