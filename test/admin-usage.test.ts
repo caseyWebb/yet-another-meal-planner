@@ -33,7 +33,18 @@ const usage: UsageResult = {
       ],
     },
   },
-  ai: { neurons_limit: 10000, neurons_used: 42, by_model: [{ model: "bge", neurons: 42 }] },
+  ai: {
+    neurons_limit: 10000,
+    neurons_used: 42,
+    by_model: [{ model: "bge", neurons: 42 }],
+    history: {
+      window_days: 2,
+      days: [
+        { day: "2026-06-28", neurons: 30 },
+        { day: "2026-06-29", neurons: 42 },
+      ],
+    },
+  },
 };
 
 const trends: TrendsResult = {
@@ -106,12 +117,15 @@ describe("Usage SSR", () => {
     expect(html).toMatch(/data-tip-body="[\d,]+ writes \(KROGER_KV [\d,]+ · ns_b [\d,]+\)"/);
   });
 
-  it("renders the AI neuron meter + per-model breakdown, with a plain note (no fabricated 30-day series)", () => {
+  it("renders the AI neuron meter + per-model breakdown, plus a 30-day neuron sparkline", () => {
     const html = render(UsagePage({ usage, trends, tools }));
     expect(html).toContain("42 neurons");
     expect(html).toContain("bge");
-    // No AI sparkline is rendered — the note explains why, rather than faking a history series.
-    expect(html).toContain("do not expose a confirmed daily-history series");
+    // The neuron sparkline renders with the shared data-tip-* hover tooltip primitive.
+    expect(html).toContain("ai-spark");
+    expect(html).toMatch(/data-tip-title="2026-06-28"/);
+    expect(html).toMatch(/data-tip-body="30 neurons"/);
+    expect(html).toMatch(/data-tip-body="42 neurons"/);
   });
 
   it("renders per-job trend sparklines from fetchUsageTrends data, unchanged", () => {

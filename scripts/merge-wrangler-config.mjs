@@ -47,13 +47,26 @@ export function mergeWranglerConfig(code, operator) {
     if (code[k] !== undefined) out[k] = code[k];
   }
 
-  // vars: OPERATOR ONLY. The code repo's vars are the maintainer's and must never
-  // propagate; the deploy injects DATA_OWNER/REPO/REF via --var on top at deploy time.
-  if (operator.vars !== undefined) out.vars = operator.vars;
-
   // kv_namespaces: binding SET from code (new bindings propagate); each id from the
   // OPERATOR by binding, else omitted -> auto-provisioned. Code ids dropped unconditionally.
   out.kv_namespaces = mergeKvNamespaces(code.kv_namespaces, operator.kv_namespaces);
+
+  // KV_NAMESPACE_LABELS (usage-observability): derived from the JUST-COMPUTED out.kv_namespaces
+  // (id + binding, the operator's own provisioned ids) — NOT operator-authored, NOT a runtime
+  // Cloudflare API lookup. Only namespaces with a known id contribute (cold-start: an operator's
+  // very first deploy has no ids yet, since wrangler auto-provisions + pinKvIds pins them back
+  // only AFTER that first deploy — so this is correctly ABSENT, not an empty string, until the
+  // next deploy). Folded into out.vars below so it coexists with (and, if the operator happens to
+  // also set it, wins over) any operator-authored vars.
+  const kvLabels = kvNamespaceLabels(out.kv_namespaces);
+
+  // vars: OPERATOR ONLY, plus the deploy-derived KV_NAMESPACE_LABELS folded in (not clobbering
+  // the operator's other vars). The code repo's vars are the maintainer's and must never
+  // propagate; the deploy injects DATA_OWNER/REPO/REF via --var on top at deploy time.
+  if (operator.vars !== undefined || kvLabels !== undefined) {
+    out.vars = { ...(operator.vars ?? {}) };
+    if (kvLabels !== undefined) out.vars.KV_NAMESPACE_LABELS = kvLabels;
+  }
 
   // d1_databases: same rule as KV. The binding SET (and its `database_name` /
   // `migrations_dir`) comes from code so a new binding propagates to every operator;
@@ -99,6 +112,22 @@ export function mergeWranglerConfig(code, operator) {
   if (code.analytics_engine_datasets !== undefined) out.analytics_engine_datasets = code.analytics_engine_datasets;
 
   return out;
+}
+
+/**
+ * Derive the `KV_NAMESPACE_LABELS` value (`id:BINDING,id:BINDING`, matching the format
+ * `parseNamespaceLabels` in src/usage.ts parses) from a merged `kv_namespaces` array — only
+ * namespaces that have a known `id` contribute. Returns `undefined` (not an empty string) when
+ * NO namespace has an id yet, so the cold-start case (an operator's very first deploy, before
+ * `pinKvIds` has pinned any provisioned id back) leaves `KV_NAMESPACE_LABELS` absent rather than
+ * writing a var with no content — the Usage page falls straight to the raw-id label fallback for
+ * that one deploy and self-heals on the next.
+ */
+function kvNamespaceLabels(kvNamespaces = []) {
+  const pairs = (kvNamespaces ?? [])
+    .filter((n) => n && n.binding && n.id)
+    .map((n) => `${n.id}:${n.binding}`);
+  return pairs.length > 0 ? pairs.join(",") : undefined;
 }
 
 function mergeKvNamespaces(codeKv = [], operatorKv = []) {

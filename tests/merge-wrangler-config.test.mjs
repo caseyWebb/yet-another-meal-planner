@@ -138,6 +138,51 @@ test("an operator-declared id-less binding stays id-less", () => {
   assert.equal(kroger.id, undefined);
 });
 
+// --- KV_NAMESPACE_LABELS (usage-observability: Fix 3 — deploy-derived namespace labels) ---
+
+test("KV_NAMESPACE_LABELS is derived from the merged kv_namespaces (id:BINDING,...), coexisting with operator vars", () => {
+  const out = mergeWranglerConfig(code, {
+    ...operator,
+    kv_namespaces: [
+      { binding: "KROGER_KV", id: "OP_KROGER" },
+      { binding: "TENANT_KV", id: "OP_TENANT" },
+      { binding: "OAUTH_KV", id: "OP_OAUTH" },
+    ],
+  });
+  assert.equal(out.vars.KV_NAMESPACE_LABELS, "OP_KROGER:KROGER_KV,OP_TENANT:TENANT_KV,OP_OAUTH:OAUTH_KV");
+  // Coexists with the operator's other vars — doesn't clobber them.
+  assert.equal(out.vars.OPERATOR_VAR, "op");
+});
+
+test("KV_NAMESPACE_LABELS only includes namespaces with a provisioned id, omitting id-less ones", () => {
+  const out = mergeWranglerConfig(code, {
+    ...operator,
+    kv_namespaces: [{ binding: "KROGER_KV", id: "OP_KROGER" }], // TENANT_KV/OAUTH_KV left id-less
+  });
+  assert.equal(out.vars.KV_NAMESPACE_LABELS, "OP_KROGER:KROGER_KV");
+});
+
+test("KV_NAMESPACE_LABELS is ABSENT (not an empty string) when no namespace has a provisioned id yet (cold start)", () => {
+  const out = mergeWranglerConfig(code, operator); // operator declares no kv_namespaces -> all id-less
+  assert.equal(out.vars.KV_NAMESPACE_LABELS, undefined);
+  // vars still present for the operator's own var, just without the label key.
+  assert.equal(out.vars.OPERATOR_VAR, "op");
+});
+
+test("KV_NAMESPACE_LABELS still gets set even when the operator declares no other vars", () => {
+  const bareOperator = { kv_namespaces: [{ binding: "KROGER_KV", id: "OP_KROGER" }] };
+  const out = mergeWranglerConfig(code, bareOperator);
+  assert.equal(out.vars.KV_NAMESPACE_LABELS, "OP_KROGER:KROGER_KV");
+});
+
+test("KV_NAMESPACE_LABELS wins over an operator-authored value of the same var (deploy-derived is authoritative)", () => {
+  const out = mergeWranglerConfig(code, {
+    vars: { KV_NAMESPACE_LABELS: "stale:HAND_AUTHORED" },
+    kv_namespaces: [{ binding: "KROGER_KV", id: "OP_KROGER" }],
+  });
+  assert.equal(out.vars.KV_NAMESPACE_LABELS, "OP_KROGER:KROGER_KV");
+});
+
 test("the deployed config only contains the curated key set", () => {
   const out = mergeWranglerConfig(code, operator);
   const allowed = new Set([

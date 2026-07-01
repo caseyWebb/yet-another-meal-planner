@@ -14,17 +14,12 @@ import type { Child } from "hono/jsx";
 import { Layout } from "../ui/layout.js";
 import { Card, StatCardGrid, StatCard, DataTable } from "../ui/kit.js";
 import { DatabaseIcon, SparklesIcon, ActivityIcon, CheckCircleIcon } from "../ui/icons.js";
-import type { UsageResult, TrendsResult, ToolUsageResult, KvAction, NamespaceUsage } from "../../usage.js";
+import type { UsageResult, TrendsResult, ToolUsageResult, KvAction, NamespaceUsage, AiHistoryDay } from "../../usage.js";
 
-// NOTE on the Workers AI neuron sparkline: unlike KV operations (`kvOperationsAdaptiveGroups`,
-// widened to a `date`-dimensioned 30-day range — see src/usage.ts), Cloudflare's Workers AI
-// GraphQL analytics dataset (`aiInferenceAdaptiveGroups`) was NOT confirmed, against the live
-// schema, to expose a `date`-grouped daily series the same way. Per this module's own discipline
-// ("Cloudflare evolves these dataset/field names; they are verified against the live schema as
-// part of landing this capability"), this view does not fabricate a 30-day neuron series from an
-// unverified field — it renders today's actual value only. If a future change confirms a daily
-// AI history field against the live schema, extend `fetchUsage`/`mapAccountUsage` with an
-// `ai.history` series (mirroring `kv.history`) and render it here with `SparklineTrack`.
+// The Workers AI neuron sparkline: like the KV meters, `aiInferenceAdaptiveGroups` (confirmed
+// against the live schema to expose a `date` dimension + `sum { totalNeurons }`) is widened to a
+// 30-day range in src/usage.ts (`mapAiHistory`, mirroring `mapKvHistory`'s zero-fill-every-day
+// behavior) — so the neuron meter renders a real per-day history, not a fabricated one.
 
 const KV_ACTIONS: readonly KvAction[] = ["read", "write", "delete", "list"];
 const TICKS = "▁▂▃▄▅▆▇█";
@@ -141,12 +136,13 @@ const KvMeter = ({
 };
 
 /** The Workers AI neurons meter — a plain (non-stacked) progress bar, since neurons aren't
- *  namespace-attributed. No 30-day sparkline: unlike the KV meters, the Cloudflare GraphQL
- *  Workers AI analytics dataset does not have a confirmed daily-history dimension (see the
- *  module-level note above) — this renders today's actual value rather than a fabricated series. */
-const NeuronMeter = ({ used, limit }: { used: number; limit: number }) => {
+ *  namespace-attributed — plus a 30-day neuron sparkline (one column per day, single series, no
+ *  per-namespace stacking) with a per-column `data-tip-*` hover breakdown, the same shared
+ *  tooltip primitive the KV meter's sparkline uses. */
+const NeuronMeter = ({ used, limit, historyDays }: { used: number; limit: number; historyDays: AiHistoryDay[] }) => {
   const level = used >= limit ? "fail" : limit > 0 && used / limit >= 0.8 ? "warn" : "ok";
   const pct = limit > 0 ? Math.min(100, (used / limit) * 100) : 0;
+  const peak = Math.max(1, ...historyDays.map((d) => d.neurons));
   return (
     <div class={`meter ${level}`}>
       <div class="meter-head">
@@ -158,10 +154,23 @@ const NeuronMeter = ({ used, limit }: { used: number; limit: number }) => {
       <div class="progress" role="progressbar" aria-valuenow={Math.round(pct)} aria-valuemin={0} aria-valuemax={100}>
         <span style={`width:${pct}%`} />
       </div>
-      <p class="muted small" style="margin-top:.35rem">
-        Today's value only — Cloudflare's Workers AI analytics do not expose a confirmed daily-history series (unlike KV
-        operations' 30-day trend, above).
-      </p>
+      {historyDays.length > 0 ? (
+        <div class="meter-trend">
+          <div class="spark meter-spark ai-spark">
+            {historyDays.map((d) => (
+              <span
+                class="spark-col"
+                style={`height:${Math.max(6, Math.round((d.neurons / peak) * 100))}%`}
+                data-tip-title={d.day}
+                data-tip-body={`${fmt(d.neurons)} neurons`}
+              >
+                <span class="spark-seg" style="height:100%;background:var(--kv-oauth)" />
+              </span>
+            ))}
+          </div>
+          <span class="meter-peak">peak {fmtK(peak)}</span>
+        </div>
+      ) : null}
     </div>
   );
 };
@@ -178,7 +187,7 @@ const AccountResources = ({ usage }: { usage: Extract<UsageResult, { configured:
     <div class="usage-sep" />
     <div class="usage-sub">Workers AI</div>
     <div class="meter-list">
-      <NeuronMeter used={usage.ai.neurons_used} limit={usage.ai.neurons_limit} />
+      <NeuronMeter used={usage.ai.neurons_used} limit={usage.ai.neurons_limit} historyDays={usage.ai.history.days} />
     </div>
     {usage.ai.by_model.length > 0 ? (
       <div class="summary" style="margin-top:.7rem">

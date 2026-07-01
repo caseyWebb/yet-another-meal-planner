@@ -3,10 +3,11 @@ import {
   fetchUsage,
   fetchUsageTrends,
   fetchToolUsage,
-  fetchNamespaceTitles,
   mapAccountUsage,
   mapKvHistory,
+  mapAiHistory,
   resolveNamespaceLabel,
+  assignNamespaceColors,
   mapTrendRows,
   mapToolUsageRows,
   utcDay,
@@ -97,6 +98,73 @@ describe("utcDay", () => {
   });
 });
 
+describe("assignNamespaceColors", () => {
+  it("assigns each namespace id a distinct color by sorted position", () => {
+    const colors = assignNamespaceColors(["ns_b", "ns_a"]);
+    expect(colors.get("ns_a")).not.toBe(colors.get("ns_b"));
+    // sorted: ns_a first, ns_b second
+    expect(colors.get("ns_a")).toBe("var(--kv-kroger)");
+    expect(colors.get("ns_b")).toBe("var(--kv-oauth)");
+  });
+
+  it("is stable given the same input id set, regardless of input order", () => {
+    const a = assignNamespaceColors(["z", "a", "m"]);
+    const b = assignNamespaceColors(["m", "z", "a"]);
+    expect([...a.entries()]).toEqual([...b.entries()]);
+  });
+
+  it("cycles the palette when there are more namespace ids than palette colors", () => {
+    const colors = assignNamespaceColors(["a", "b", "c", "d", "e"]);
+    // 5 ids, 4-color palette -> the 5th (index 4) wraps back to the 1st color.
+    expect(colors.get("a")).toBe(colors.get("e"));
+  });
+
+  it("de-duplicates repeated ids before assigning positions", () => {
+    const colors = assignNamespaceColors(["a", "a", "b"]);
+    expect(colors.size).toBe(2);
+  });
+});
+
+describe("resolveNamespaceLabel", () => {
+  it("resolves a known id to its mapped binding's label, using the supplied color map", () => {
+    const idToBinding = new Map([["abc", "OAUTH_KV"]]);
+    const colors = assignNamespaceColors(["abc"]);
+    expect(resolveNamespaceLabel("abc", idToBinding, colors)).toEqual({
+      label: "OAUTH_KV",
+      color: colors.get("abc"),
+      unlabeled: false,
+    });
+  });
+
+  it("falls back to the raw id when unmapped, but STILL gets a real (non-generic-shared) color from the position map", () => {
+    const colors = assignNamespaceColors(["deadbeef"]);
+    const resolved = resolveNamespaceLabel("deadbeef", new Map(), colors);
+    expect(resolved.label).toBe("deadbeef");
+    expect(resolved.unlabeled).toBe(true);
+    expect(resolved.color).toBe(colors.get("deadbeef"));
+  });
+
+  it("color is independent of label resolution: an unlabeled id gets a distinct color from a labeled sibling in the same payload", () => {
+    const idToBinding = new Map([["abc", "KROGER_KV"]]);
+    const colors = assignNamespaceColors(["abc", "deadbeef"]);
+    const labeled = resolveNamespaceLabel("abc", idToBinding, colors);
+    const unlabeled = resolveNamespaceLabel("deadbeef", idToBinding, colors);
+    expect(labeled.unlabeled).toBe(false);
+    expect(unlabeled.unlabeled).toBe(true);
+    // Neither color is a shared "grey unlabeled" fallback — both are real, distinct palette colors.
+    expect(labeled.color).not.toBe(unlabeled.color);
+    expect(unlabeled.color).not.toBe("var(--kv-generic-unlabeled)");
+  });
+
+  it("makes no outbound request — it is a pure static-table lookup", () => {
+    const idToBinding = new Map([["abc", "TENANT_KV"]]);
+    const colors = assignNamespaceColors(["abc"]);
+    const a = resolveNamespaceLabel("abc", idToBinding, colors);
+    const b = resolveNamespaceLabel("abc", idToBinding, colors);
+    expect(a).toEqual(b);
+  });
+});
+
 describe("mapAccountUsage", () => {
   it("sums KV operations per namespace and per action, plus a grand total", () => {
     const account = {
@@ -113,19 +181,18 @@ describe("mapAccountUsage", () => {
     expect(usage.kv.totals).toEqual({ read: 5000, write: 1000, delete: 0, list: 12 });
     expect(usage.kv.limits).toEqual(FREE_TIER_LIMITS.kv);
     // ns_a leads (more writes than ns_b); each namespace row is keyed by id, and (with no
-    // id→binding map passed) both resolve to the generic "unlabeled" fallback.
-    expect(usage.kv.namespaces[0]).toEqual({
-      namespace_id: "ns_a",
-      read: 5000,
-      write: 700,
-      delete: 0,
-      list: 0,
-      resolved: { label: "ns_a", color: "var(--kv-unlabeled)", unlabeled: true },
-    });
+    // id→binding map passed) both resolve to the raw id as the label — but STILL get a real,
+    // distinct, position-based color (Fix 2), not a shared grey fallback.
+    expect(usage.kv.namespaces[0].namespace_id).toBe("ns_a");
+    expect(usage.kv.namespaces[0].resolved.label).toBe("ns_a");
+    expect(usage.kv.namespaces[0].resolved.unlabeled).toBe(true);
+    expect(usage.kv.namespaces[1].resolved.unlabeled).toBe(true);
+    // Both unlabeled namespaces still get distinct colors.
+    expect(usage.kv.namespaces[0].resolved.color).not.toBe(usage.kv.namespaces[1].resolved.color);
     expect(usage.kv.namespaces.map((n) => n.namespace_id)).toEqual(["ns_a", "ns_b"]);
   });
 
-  it("resolves namespace labels via the supplied id→binding map", () => {
+  it("resolves namespace labels via the supplied id→binding map, with a color assigned independent of resolution", () => {
     const account = {
       kvOperations: [{ dimensions: { namespaceId: "abc123", actionType: "read" }, sum: { requests: 10 } }],
       aiInference: [],
@@ -133,19 +200,30 @@ describe("mapAccountUsage", () => {
     const idToBinding = new Map([["abc123", "KROGER_KV"]]);
     const usage = mapAccountUsage(account, "2026-06-28", 1, idToBinding);
     if (!usage.configured) throw new Error("expected configured");
-    expect(usage.kv.namespaces[0].resolved).toEqual({ label: "KROGER_KV", color: "var(--kv-kroger)", unlabeled: false });
+    expect(usage.kv.namespaces[0].resolved.label).toBe("KROGER_KV");
+    expect(usage.kv.namespaces[0].resolved.unlabeled).toBe(false);
+    expect(usage.kv.namespaces[0].resolved.color).toBeTruthy();
   });
 
-  it("prefers a supplied REST title over the id→binding map for the same namespace", () => {
+  it("gives an under-scoped/unlabeled namespace a real, non-grey-shared color — the Fix 2 regression case", () => {
+    // Two namespaces, NEITHER resolvable (idToBinding empty) — simulating an operator whose
+    // KV_NAMESPACE_LABELS is unset. Both must still get distinct, real colors, not a single
+    // shared grey "unlabeled" swatch.
     const account = {
-      kvOperations: [{ dimensions: { namespaceId: "abc123", actionType: "read" }, sum: { requests: 10 } }],
+      kvOperations: [
+        { dimensions: { namespaceId: "ns_x", actionType: "read" }, sum: { requests: 1 } },
+        { dimensions: { namespaceId: "ns_y", actionType: "read" }, sum: { requests: 1 } },
+      ],
       aiInference: [],
     };
-    const idToBinding = new Map([["abc123", "TENANT_KV"]]);
-    const restTitles = new Map([["abc123", "worker-KROGER_KV"]]);
-    const usage = mapAccountUsage(account, "2026-06-28", 1, idToBinding, undefined, restTitles);
+    const usage = mapAccountUsage(account, "2026-06-28", 1);
     if (!usage.configured) throw new Error("expected configured");
-    expect(usage.kv.namespaces[0].resolved).toEqual({ label: "worker-KROGER_KV", color: "var(--kv-kroger)", unlabeled: false });
+    const [a, b] = usage.kv.namespaces;
+    expect(a.resolved.unlabeled).toBe(true);
+    expect(b.resolved.unlabeled).toBe(true);
+    expect(a.resolved.color).not.toBe(b.resolved.color);
+    expect(a.resolved.color).toBeTruthy();
+    expect(b.resolved.color).toBeTruthy();
   });
 
   it("sums Workers AI neurons per model and a total, dropping unknown KV actions", () => {
@@ -189,6 +267,7 @@ describe("mapAccountUsage", () => {
     expect(usage.kv.totals).toEqual({ read: 0, write: 0, delete: 0, list: 0 });
     expect(usage.kv.namespaces).toEqual([]);
     expect(usage.ai.neurons_used).toBe(0);
+    expect(usage.ai.history).toEqual({ window_days: TRENDS_WINDOW_DAYS, days: [] });
   });
 });
 
@@ -210,7 +289,7 @@ describe("fetchUsage", () => {
     expect(f.calls).toBe(0);
   });
 
-  it("maps a configured response into the usage payload for the current UTC day", async () => {
+  it("maps a configured response into the usage payload for the current UTC day, with exactly ONE outbound request", async () => {
     const f = fetchReturning(
       graphqlBody({
         kvOperations: [{ dimensions: { namespaceId: "ns_a", actionType: "write" }, sum: { requests: 1440 } }],
@@ -220,9 +299,9 @@ describe("fetchUsage", () => {
     const now = Date.parse("2026-06-28T10:00:00Z");
     const result = await fetchUsage(configuredEnv(), { fetchImpl: f.fetchImpl, now: () => now });
     if (!result.configured) throw new Error("expected configured");
-    // Two outbound calls: the GraphQL usage query, plus the REST namespace-titles lookup
-    // (fallback-chain step (a)) fired in parallel.
-    expect(f.calls).toBe(2);
+    // Exactly one outbound call — the GraphQL usage query. Fix 3 deletes the parallel REST
+    // namespace-titles lookup, so there is no second request.
+    expect(f.calls).toBe(1);
     expect(result.day).toBe("2026-06-28");
     expect(result.kv.totals.write).toBe(1440);
     expect(result.ai.neurons_used).toBe(42);
@@ -232,7 +311,7 @@ describe("fetchUsage", () => {
   // bug was a non-existent node name (`workersKvOperationsAdaptiveGroups`) that Cloudflare rejected
   // with "unknown field". The response-parsing tests above cannot catch that — they feed a canned
   // response and never inspect the request — so assert the request body directly.
-  it("sends the live-schema dataset/field names and a 30-day KV range ending today", async () => {
+  it("sends the live-schema dataset/field names and a 30-day range ending today for BOTH KV and AI", async () => {
     const f = fetchReturning(graphqlBody({}));
     const now = Date.parse("2026-06-28T10:00:00Z");
     await fetchUsage(configuredEnv(), { fetchImpl: f.fetchImpl, now: () => now });
@@ -243,12 +322,12 @@ describe("fetchUsage", () => {
     expect(query).toContain('date_geq: "2026-05-30"'); // 29 days before 2026-06-28 (30-day window)
     expect(query).toContain('date_leq: "2026-06-28"');
     expect(query).toContain("dimensions { namespaceId actionType date }");
-    // AI dataset + its datetimeHour filter + the renamed dimension/metric (today only — AI is unchanged)
+    // AI dataset + ITS OWN widened date-range filter + `date` in dimensions (Fix 4 — mirrors KV).
     expect(query).toContain("aiInferenceAdaptiveGroups");
-    expect(query).toContain('datetimeHour_geq: "2026-06-28T00:00:00Z"');
-    expect(query).toContain('datetimeHour_leq: "2026-06-28T23:00:00Z"');
-    expect(query).toContain("modelId");
+    expect(query).toContain("dimensions { modelId date }");
     expect(query).toContain("totalNeurons");
+    // The old today-only datetimeHour filter must be gone.
+    expect(query).not.toContain("datetimeHour");
     // The old, non-existent names must not reappear.
     expect(query).not.toContain("workersKvOperationsAdaptiveGroups");
     expect(query).not.toContain("workersAiInferenceRequestsAdaptiveGroups");
@@ -257,7 +336,7 @@ describe("fetchUsage", () => {
     expect(f.lastRequest?.variables).toEqual({ accountTag: "acct123" });
   });
 
-  it("populates kv.history from the same widened response, and resolves namespace labels", async () => {
+  it("populates kv.history from the same widened response, and resolves namespace labels from KV_NAMESPACE_LABELS", async () => {
     const f = fetchReturning(
       graphqlBody({
         kvOperations: [
@@ -273,90 +352,62 @@ describe("fetchUsage", () => {
     if (!result.configured) throw new Error("expected configured");
     // Today's snapshot only counts today's row.
     expect(result.kv.totals.read).toBe(20);
-    expect(result.kv.namespaces[0].resolved).toEqual({ label: "KROGER_KV", color: "var(--kv-kroger)", unlabeled: false });
+    expect(result.kv.namespaces[0].resolved.label).toBe("KROGER_KV");
+    expect(result.kv.namespaces[0].resolved.unlabeled).toBe(false);
     // History covers the full window and is zero-filled/ascending.
     expect(result.kv.history.window_days).toBe(TRENDS_WINDOW_DAYS);
     expect(result.kv.history.days).toHaveLength(TRENDS_WINDOW_DAYS);
     expect(result.kv.history.days[0].day).toBe("2026-05-30");
     expect(result.kv.history.days[result.kv.history.days.length - 1].day).toBe("2026-06-28");
     const day27 = result.kv.history.days.find((d) => d.day === "2026-06-27")!;
-    expect(day27.namespaces[0]).toEqual({ namespace_id: "ns_a", read: 10, write: 0, delete: 0, list: 0, resolved: { label: "KROGER_KV", color: "var(--kv-kroger)", unlabeled: false } });
+    expect(day27.namespaces[0]).toMatchObject({ namespace_id: "ns_a", read: 10, write: 0, delete: 0, list: 0 });
+    expect(day27.namespaces[0].resolved.label).toBe("KROGER_KV");
     // A day with literally no rows still appears, zero-filled, not omitted.
     const quietDay = result.kv.history.days.find((d) => d.day === "2026-06-01")!;
-    expect(quietDay.namespaces[0]).toEqual({ namespace_id: "ns_a", read: 0, write: 0, delete: 0, list: 0, resolved: { label: "KROGER_KV", color: "var(--kv-kroger)", unlabeled: false } });
+    expect(quietDay.namespaces[0]).toMatchObject({ namespace_id: "ns_a", read: 0, write: 0, delete: 0, list: 0 });
   });
 
-  it("resolves namespace names via the CF REST API automatically (no KV_NAMESPACE_LABELS needed)", async () => {
-    const requestedUrls: string[] = [];
-    const fetchImpl = (async (url: string) => {
-      requestedUrls.push(url);
-      if (url === "https://api.cloudflare.com/client/v4/graphql") {
-        return new Response(
-          JSON.stringify(
-            graphqlBody({
-              kvOperations: [{ dimensions: { namespaceId: "abc123", actionType: "read", date: "2026-06-28" }, sum: { requests: 5 } }],
-              aiInference: [],
-            }),
-          ),
-          { status: 200 },
-        );
-      }
-      // The REST namespaces call.
-      return new Response(JSON.stringify({ success: true, result: [{ id: "abc123", title: "worker-KROGER_KV" }], result_info: { page: 1, total_pages: 1 } }), {
-        status: 200,
-      });
-    }) as unknown as typeof fetch;
+  it("falls back to the raw id when KV_NAMESPACE_LABELS is unset — but the namespace still gets a real color", async () => {
+    const f = fetchReturning(
+      graphqlBody({
+        kvOperations: [{ dimensions: { namespaceId: "abc123", actionType: "read", date: "2026-06-28" }, sum: { requests: 5 } }],
+        aiInference: [],
+      }),
+    );
     const now = Date.parse("2026-06-28T10:00:00Z");
-    // No KV_NAMESPACE_LABELS set — the name/color must still resolve, via the REST call alone.
-    const result = await fetchUsage(configuredEnv(), { fetchImpl, now: () => now });
+    const result = await fetchUsage(configuredEnv(), { fetchImpl: f.fetchImpl, now: () => now });
     if (!result.configured) throw new Error("expected configured");
-    expect(result.kv.namespaces[0].resolved).toEqual({ label: "worker-KROGER_KV", color: "var(--kv-kroger)", unlabeled: false });
-    expect(requestedUrls.some((u) => u.includes("/storage/kv/namespaces"))).toBe(true);
+    expect(result.kv.namespaces[0].resolved.label).toBe("abc123");
+    expect(result.kv.namespaces[0].resolved.unlabeled).toBe(true);
+    expect(result.kv.namespaces[0].resolved.color).toBeTruthy();
   });
 
-  it("degrades gracefully to KV_NAMESPACE_LABELS when the REST namespaces call 403s (token missing KV-read scope)", async () => {
-    const fetchImpl = (async (url: string) => {
-      if (url === "https://api.cloudflare.com/client/v4/graphql") {
-        return new Response(
-          JSON.stringify(
-            graphqlBody({
-              kvOperations: [{ dimensions: { namespaceId: "abc123", actionType: "read", date: "2026-06-28" }, sum: { requests: 5 } }],
-              aiInference: [],
-            }),
-          ),
-          { status: 200 },
-        );
-      }
-      return new Response(JSON.stringify({ success: false }), { status: 403 });
-    }) as unknown as typeof fetch;
+  it("populates ai.history from the same widened response, zero-filled and ascending", async () => {
+    const f = fetchReturning(
+      graphqlBody({
+        kvOperations: [],
+        aiInference: [
+          { dimensions: { modelId: "m", date: "2026-06-27" }, sum: { totalNeurons: 10 } },
+          { dimensions: { modelId: "m", date: "2026-06-28" }, sum: { totalNeurons: 25 } },
+        ],
+      }),
+    );
     const now = Date.parse("2026-06-28T10:00:00Z");
-    const env = { CF_ACCOUNT_ID: "acct123", CF_ANALYTICS_TOKEN: "tok", KV_NAMESPACE_LABELS: "abc123:KROGER_KV" } as unknown as Env;
-    const result = await fetchUsage(env, { fetchImpl, now: () => now });
+    const result = await fetchUsage(configuredEnv(), { fetchImpl: f.fetchImpl, now: () => now });
     if (!result.configured) throw new Error("expected configured");
-    // The REST call 403'd (degrading to an empty title map), so resolution falls through to
-    // KV_NAMESPACE_LABELS — the page still renders correct names/colors, not "unlabeled".
-    expect(result.kv.namespaces[0].resolved).toEqual({ label: "KROGER_KV", color: "var(--kv-kroger)", unlabeled: false });
-  });
-
-  it("degrades to the raw id when both the REST call and KV_NAMESPACE_LABELS are unavailable", async () => {
-    const fetchImpl = (async (url: string) => {
-      if (url === "https://api.cloudflare.com/client/v4/graphql") {
-        return new Response(
-          JSON.stringify(
-            graphqlBody({
-              kvOperations: [{ dimensions: { namespaceId: "abc123", actionType: "read", date: "2026-06-28" }, sum: { requests: 5 } }],
-              aiInference: [],
-            }),
-          ),
-          { status: 200 },
-        );
-      }
-      return new Response(JSON.stringify({ success: false }), { status: 403 });
-    }) as unknown as typeof fetch;
-    const now = Date.parse("2026-06-28T10:00:00Z");
-    const result = await fetchUsage(configuredEnv(), { fetchImpl, now: () => now });
-    if (!result.configured) throw new Error("expected configured");
-    expect(result.kv.namespaces[0].resolved).toEqual({ label: "abc123", color: "var(--kv-unlabeled)", unlabeled: true });
+    // Today's snapshot only counts today's row.
+    expect(result.ai.neurons_used).toBe(25);
+    expect(result.ai.history.window_days).toBe(TRENDS_WINDOW_DAYS);
+    expect(result.ai.history.days).toHaveLength(TRENDS_WINDOW_DAYS);
+    expect(result.ai.history.days[0].day).toBe("2026-05-30");
+    expect(result.ai.history.days[result.ai.history.days.length - 1].day).toBe("2026-06-28");
+    const day27 = result.ai.history.days.find((d) => d.day === "2026-06-27")!;
+    expect(day27.neurons).toBe(10);
+    const day28 = result.ai.history.days.find((d) => d.day === "2026-06-28")!;
+    expect(day28.neurons).toBe(25);
+    // A day with literally no rows still appears, zero-filled, not omitted.
+    const quietDay = result.ai.history.days.find((d) => d.day === "2026-06-01")!;
+    expect(quietDay.neurons).toBe(0);
   });
 
   it("throws upstream_unavailable on a non-2xx", async () => {
@@ -380,125 +431,6 @@ describe("fetchUsage", () => {
     await expect(fetchUsage(configuredEnv(), { fetchImpl, now: () => 1 })).rejects.toMatchObject({
       code: "upstream_unavailable",
     });
-  });
-});
-
-describe("resolveNamespaceLabel", () => {
-  it("resolves a known id to its mapped binding's label/color", () => {
-    const idToBinding = new Map([["abc", "OAUTH_KV"]]);
-    expect(resolveNamespaceLabel("abc", idToBinding)).toEqual({ label: "OAUTH_KV", color: "var(--kv-oauth)", unlabeled: false });
-  });
-
-  it("falls back to the generic 'unlabeled' marker for an unmapped id, still reporting the raw id", () => {
-    expect(resolveNamespaceLabel("deadbeef", new Map())).toEqual({ label: "deadbeef", color: "var(--kv-unlabeled)", unlabeled: true });
-  });
-
-  it("falls back to unlabeled for an id mapped to a binding outside the known three", () => {
-    const idToBinding = new Map([["xyz", "SOME_FUTURE_KV"]]);
-    expect(resolveNamespaceLabel("xyz", idToBinding)).toEqual({ label: "xyz", color: "var(--kv-unlabeled)", unlabeled: true });
-  });
-
-  it("makes no outbound request — it is a pure static-table lookup", () => {
-    // Type-level guarantee: the function signature takes no fetch/env, only data already in hand.
-    // This test exists for the requirement's "no additional Cloudflare API call" scenario; the
-    // assertion is just that calling it repeatedly produces the same result with no IO performed.
-    const idToBinding = new Map([["abc", "TENANT_KV"]]);
-    const a = resolveNamespaceLabel("abc", idToBinding);
-    const b = resolveNamespaceLabel("abc", idToBinding);
-    expect(a).toEqual(b);
-  });
-
-  // Fallback-chain ordering: (a) REST title auto-resolution wins, (b) KV_NAMESPACE_LABELS is the
-  // fallback, (c) the raw id is the last resort.
-  it("prefers the REST title over KV_NAMESPACE_LABELS when both are available for the same id", () => {
-    const idToBinding = new Map([["abc", "TENANT_KV"]]); // (b) would say TENANT_KV
-    const resolved = resolveNamespaceLabel("abc", idToBinding, "worker-KROGER_KV"); // (a) says KROGER_KV
-    expect(resolved).toEqual({ label: "worker-KROGER_KV", color: "var(--kv-kroger)", unlabeled: false });
-  });
-
-  it("matches a REST title against a known binding by substring (Cloudflare may prefix with the worker name)", () => {
-    expect(resolveNamespaceLabel("id1", new Map(), "my-worker-OAUTH_KV")).toEqual({
-      label: "my-worker-OAUTH_KV",
-      color: "var(--kv-oauth)",
-      unlabeled: false,
-    });
-  });
-
-  it("falls back to KV_NAMESPACE_LABELS when no REST title is supplied for the id", () => {
-    const idToBinding = new Map([["abc", "OAUTH_KV"]]);
-    expect(resolveNamespaceLabel("abc", idToBinding)).toEqual({ label: "OAUTH_KV", color: "var(--kv-oauth)", unlabeled: false });
-  });
-
-  it("shows a REST title verbatim, unlabeled-colored, when it matches none of the known bindings", () => {
-    // A namespace belonging to a different Worker on the same account, or a future 4th binding.
-    expect(resolveNamespaceLabel("id2", new Map(), "some-other-namespace")).toEqual({
-      label: "some-other-namespace",
-      color: "var(--kv-unlabeled)",
-      unlabeled: true,
-    });
-  });
-
-  it("falls all the way back to the raw id when neither a REST title nor KV_NAMESPACE_LABELS resolves it", () => {
-    expect(resolveNamespaceLabel("deadbeef", new Map())).toEqual({ label: "deadbeef", color: "var(--kv-unlabeled)", unlabeled: true });
-  });
-});
-
-describe("fetchNamespaceTitles", () => {
-  it("returns an id → title map from a single-page REST response", async () => {
-    const f = fetchReturning({
-      success: true,
-      result: [
-        { id: "abc123", title: "worker-KROGER_KV" },
-        { id: "def456", title: "worker-OAUTH_KV" },
-      ],
-      result_info: { page: 1, total_pages: 1 },
-    });
-    const titles = await fetchNamespaceTitles("acct123", "tok", { fetchImpl: f.fetchImpl, now: () => 1 });
-    expect(titles.get("abc123")).toBe("worker-KROGER_KV");
-    expect(titles.get("def456")).toBe("worker-OAUTH_KV");
-    expect(f.calls).toBe(1);
-  });
-
-  it("follows pagination across multiple pages", async () => {
-    let call = 0;
-    const fetchImpl = (async () => {
-      call += 1;
-      const body =
-        call === 1
-          ? { success: true, result: [{ id: "a", title: "ns-a" }], result_info: { page: 1, total_pages: 2 } }
-          : { success: true, result: [{ id: "b", title: "ns-b" }], result_info: { page: 2, total_pages: 2 } };
-      return new Response(JSON.stringify(body), { status: 200 });
-    }) as unknown as typeof fetch;
-    const titles = await fetchNamespaceTitles("acct123", "tok", { fetchImpl, now: () => 1 });
-    expect(call).toBe(2);
-    expect(titles.get("a")).toBe("ns-a");
-    expect(titles.get("b")).toBe("ns-b");
-  });
-
-  it("degrades to an empty map (never throws) on a 403 — e.g. a token missing 'Workers KV Storage: Read' scope", async () => {
-    const f = fetchReturning({ success: false, errors: [{ message: "Authentication error" }] }, 403);
-    const titles = await fetchNamespaceTitles("acct123", "tok", { fetchImpl: f.fetchImpl, now: () => 1 });
-    expect(titles.size).toBe(0);
-  });
-
-  it("degrades to an empty map on a transport failure", async () => {
-    const fetchImpl = (async () => {
-      throw new Error("network down");
-    }) as unknown as typeof fetch;
-    const titles = await fetchNamespaceTitles("acct123", "tok", { fetchImpl, now: () => 1 });
-    expect(titles.size).toBe(0);
-  });
-
-  it("degrades to an empty map on an unparseable body", async () => {
-    const fetchImpl = (async () => new Response("not json", { status: 200 })) as unknown as typeof fetch;
-    const titles = await fetchNamespaceTitles("acct123", "tok", { fetchImpl, now: () => 1 });
-    expect(titles.size).toBe(0);
-  });
-
-  it("degrades to an empty map when the body reports success: false", async () => {
-    const f = fetchReturning({ success: false, result: [] });
-    const titles = await fetchNamespaceTitles("acct123", "tok", { fetchImpl: f.fetchImpl, now: () => 1 });
-    expect(titles.size).toBe(0);
   });
 });
 
@@ -551,16 +483,62 @@ describe("mapKvHistory", () => {
     }
   });
 
-  it("resolves each history entry's namespace label/color from the supplied map", () => {
+  it("resolves each history entry's namespace label from the supplied map", () => {
     const rows = [{ dimensions: { namespaceId: "id1", actionType: "read", date: "2026-06-01" }, sum: { requests: 1 } }];
     const result = mapKvHistory(rows, "2026-06-01", "2026-06-01", new Map([["id1", "TENANT_KV"]]));
-    expect(result.days[0].namespaces[0].resolved).toEqual({ label: "TENANT_KV", color: "var(--kv-tenant)", unlabeled: false });
+    expect(result.days[0].namespaces[0].resolved.label).toBe("TENANT_KV");
+    expect(result.days[0].namespaces[0].resolved.unlabeled).toBe(false);
   });
 
   it("tolerates an empty row set, still producing a zero-filled, namespace-less window", () => {
     const result = mapKvHistory([], "2026-06-01", "2026-06-02", new Map());
     expect(result.days).toHaveLength(2);
     expect(result.days[0].namespaces).toEqual([]);
+  });
+});
+
+describe("mapAiHistory", () => {
+  it("groups rows into a per-day series, ascending, summed across models", () => {
+    const rows = [
+      { dimensions: { modelId: "m1", date: "2026-06-01" }, sum: { totalNeurons: 5 } },
+      { dimensions: { modelId: "m2", date: "2026-06-01" }, sum: { totalNeurons: 3 } },
+      { dimensions: { modelId: "m1", date: "2026-06-02" }, sum: { totalNeurons: 7 } },
+    ];
+    const result = mapAiHistory(rows, "2026-06-01", "2026-06-03");
+    expect(result.window_days).toBe(3);
+    expect(result.days.map((d) => d.day)).toEqual(["2026-06-01", "2026-06-02", "2026-06-03"]);
+    expect(result.days[0].neurons).toBe(8); // 5 + 3, summed across models
+    expect(result.days[1].neurons).toBe(7);
+  });
+
+  it("reports a day with zero recorded neuron usage as 0, never an absent entry", () => {
+    const rows = [{ dimensions: { modelId: "m", date: "2026-06-01" }, sum: { totalNeurons: 5 } }];
+    const result = mapAiHistory(rows, "2026-06-01", "2026-06-02");
+    const day2 = result.days.find((d) => d.day === "2026-06-02")!;
+    expect(day2).toBeDefined();
+    expect(day2.neurons).toBe(0);
+  });
+
+  it("rounds fractional neuron sums to integers", () => {
+    const rows = [
+      { dimensions: { modelId: "m1", date: "2026-06-01" }, sum: { totalNeurons: 10.4 } },
+      { dimensions: { modelId: "m2", date: "2026-06-01" }, sum: { totalNeurons: 2.3 } },
+    ];
+    const result = mapAiHistory(rows, "2026-06-01", "2026-06-01");
+    expect(result.days[0].neurons).toBe(13); // round(10.4 + 2.3) = round(12.7) = 13
+    expect(Number.isInteger(result.days[0].neurons)).toBe(true);
+  });
+
+  it("tolerates an empty row set, still producing a zero-filled window", () => {
+    const result = mapAiHistory([], "2026-06-01", "2026-06-02");
+    expect(result.days).toHaveLength(2);
+    expect(result.days.every((d) => d.neurons === 0)).toBe(true);
+  });
+
+  it("drops rows with no date dimension", () => {
+    const rows = [{ dimensions: { modelId: "m" }, sum: { totalNeurons: 99 } }];
+    const result = mapAiHistory(rows, "2026-06-01", "2026-06-01");
+    expect(result.days[0].neurons).toBe(0);
   });
 });
 
