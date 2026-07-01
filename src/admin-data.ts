@@ -66,6 +66,32 @@ export interface RecipeDetail {
 
 const slugRe = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
+/**
+ * The D1 `recipes` row stores list-valued facets (tags, dietary, requires_equipment,
+ * pairs_with, ingredients_key, side_search_terms, perishable_ingredients, course, season, …)
+ * as JSON-encoded TEXT — `PrettyKV` (which renders a genuine JS array as chips) otherwise
+ * receives the raw string `'["a","b"]'` and prints it as plain text. This parses every
+ * string column that decodes to a JSON array back into an array in place, so the detail
+ * view's D1-index panel renders list facets as pills like the R2 frontmatter panel. Only
+ * genuinely-array-shaped JSON is touched — a scalar string, a JSON *object* string (e.g.
+ * `extra`), or malformed JSON is left as the original string untouched (never throws).
+ */
+function inflateJsonListColumns(row: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...row };
+  for (const [key, value] of Object.entries(row)) {
+    if (typeof value !== "string" || value === "") continue;
+    const trimmed = value.trimStart();
+    if (!trimmed.startsWith("[")) continue; // cheap pre-filter before the JSON.parse try
+    try {
+      const parsed: unknown = JSON.parse(value);
+      if (Array.isArray(parsed)) out[key] = parsed;
+    } catch {
+      // Malformed JSON degrades to the raw string — never a throw.
+    }
+  }
+  return out;
+}
+
 function corpus(env: Env): CorpusStore {
   return createR2CorpusStore(env.CORPUS);
 }
@@ -177,7 +203,7 @@ export async function recipeDetail(env: Env, slug: string): Promise<RecipeDetail
     reconcile_message: status === "skipped" ? (reconcile?.message ?? null) : null,
     source,
     body: recipeBody(source),
-    projection,
+    projection: projection ? inflateJsonListColumns(projection) : null,
     derived,
     dispositions: overlay.map((r) => ({
       tenant: r.tenant,

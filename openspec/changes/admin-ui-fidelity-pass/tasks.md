@@ -31,22 +31,22 @@
 
 ## 4. Data > Recipes
 
-- [ ] 4.1 Add an operator-configurable page-size control to the Recipes list, defaulting to 50 (replacing the current fixed `PAGE_SIZE = 6` in `src/admin/pages/data.tsx`), preserving the current filter/search/mode state across a page-size change.
+- [x] 4.1 Add an operator-configurable page-size control to the Recipes list, defaulting to 50 (replacing the current fixed `PAGE_SIZE = 6` in `src/admin/pages/data.tsx`), preserving the current filter/search/mode state across a page-size change.
 
 ## 5. Recipe detail
 
-- [ ] 5.1 Route the D1 index row's array-valued fields (tags, dietary, etc.) through the extended pretty-renderer (1.4) so they render as badge/pill chips instead of raw text/JSON, matching the R2 frontmatter panel's treatment.
-- [ ] 5.2 Audit and improve the markdown-to-HTML rendering fidelity for the recipe body (headings/lists/emphasis rendering quality) against the mock's `RecipeDetail.jsx`.
+- [x] 5.1 Route the D1 index row's array-valued fields (tags, dietary, etc.) through the extended pretty-renderer (1.4) so they render as badge/pill chips instead of raw text/JSON, matching the R2 frontmatter panel's treatment.
+- [x] 5.2 Audit and improve the markdown-to-HTML rendering fidelity for the recipe body (headings/lists/emphasis rendering quality) against the mock's `RecipeDetail.jsx`.
 
 ## 6. Data > Stores
 
-- [ ] 6.1 Verify against the operator's live/remote D1 whether `stores` genuinely has zero rows (matching local dev) or whether it has data the explorer fails to surface; local investigation of `storeList`/`storeDetail` (`src/admin-data.ts`) found no query bug (no incorrect tenant filter, correct table/column names).
-- [ ] 6.2 If 6.1 finds real data the explorer isn't showing, re-diagnose (route wiring, env binding mismatch) and fix; if 6.1 confirms the registry is genuinely empty, close with that finding.
+- [x] 6.1 Verify against the operator's live/remote D1 whether `stores` genuinely has zero rows (matching local dev) or whether it has data the explorer fails to surface; local investigation of `storeList`/`storeDetail` (`src/admin-data.ts`) found no query bug (no incorrect tenant filter, correct table/column names).
+- [x] 6.2 If 6.1 finds real data the explorer isn't showing, re-diagnose (route wiring, env binding mismatch) and fix; if 6.1 confirms the registry is genuinely empty, close with that finding.
 
 ## 7. Guidance
 
-- [ ] 7.1 Strip the YAML frontmatter fence before rendering a `guidance/**` object's markdown, using the shared helper from 1.3, eliminating the stray leading whitespace and `<hr>`.
-- [ ] 7.2 Render the extracted frontmatter as a pretty key/value block (reusing the recipe frontmatter panel's presentation) above the rendered guidance body.
+- [x] 7.1 Strip the YAML frontmatter fence before rendering a `guidance/**` object's markdown, using the shared helper from 1.3, eliminating the stray leading whitespace and `<hr>`.
+- [x] 7.2 Render the extracted frontmatter as a pretty key/value block (reusing the recipe frontmatter panel's presentation) above the rendered guidance body.
 
 ## 8. Usage
 

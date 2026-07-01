@@ -166,6 +166,61 @@ describe("admin Hono app — Data area routing (narrowed to Recipes/Stores/Guida
       expect(res.status).toBe(404);
     }
   });
+
+  // Pins the "Stores explorer shows as empty" diagnosis (admin-ui-fidelity-pass group 6): a
+  // store seeded into `stores` (+ a `store_notes` row + a `sku_cache` row scoped to its
+  // location_id) renders through the real route — `storeList`/`storeDetail` (src/admin-data.ts)
+  // and the SSR page. This exercises the exact reader/render path an operator's browser would
+  // hit, not just the unit-level `admin-data.test.ts` reads. It passes, confirming there is no
+  // reader/render bug: a genuinely-empty `stores` table (nothing added via `add_store` yet) is
+  // the correct explanation for an operator seeing an empty Stores explorer, not a code bug.
+  it("a seeded store (+ note + cached SKU) renders in both the Stores list and its detail page", async () => {
+    const env = makeEnv({
+      DB: fakeD1({
+        tables: {
+          stores: [
+            {
+              slug: "kroger-hp",
+              name: "Kroger Highland Park",
+              domain: "grocery",
+              extra: JSON.stringify({ chain: "kroger", label: "the big one", address: "123 Main St", location_id: "01400943" }),
+            },
+          ],
+          store_notes: [
+            { id: "n1", store: "kroger-hp", author: "casey", body: "produce is in the back left", tags: JSON.stringify(["layout"]), private: 0, created_at: "2026-06-01" },
+          ],
+          sku_cache: [
+            { ingredient: "salmon", location_id: "01400943", sku: "0001111041195", brand: "Kroger", size: "1 lb", last_used: "2026-06-25" },
+          ],
+        },
+      }).env.DB,
+    });
+
+    const listRes = await app.request("/admin/data/stores", {}, env);
+    expect(listRes.status).toBe(200);
+    const listHtml = await listRes.text();
+    expect(listHtml).toContain("Kroger Highland Park");
+    expect(listHtml).toContain("/admin/data/stores/kroger-hp");
+    expect(listHtml).toContain("1 notes");
+    expect(listHtml).toContain("1 SKUs");
+    expect(listHtml).not.toContain("No stores in the shared registry");
+
+    const detailRes = await app.request("/admin/data/stores/kroger-hp", {}, env);
+    expect(detailRes.status).toBe(200);
+    const detailHtml = await detailRes.text();
+    expect(detailHtml).toContain("Kroger Highland Park");
+    expect(detailHtml).toContain("123 Main St");
+    expect(detailHtml).toContain("01400943");
+    expect(detailHtml).toContain("produce is in the back left");
+    expect(detailHtml).toContain("0001111041195");
+  });
+
+  it("an empty stores registry genuinely renders the empty state (not a bug — no store added yet)", async () => {
+    const res = await app.request("/admin/data/stores", {}, makeEnv());
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain("No stores in the shared registry");
+  });
 });
 
 describe("admin Hono app — health-dock injection middleware", () => {

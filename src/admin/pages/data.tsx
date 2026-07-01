@@ -11,9 +11,9 @@
 
 import type { Child } from "hono/jsx";
 import { Hono } from "hono";
-import { marked } from "marked";
 import { Layout } from "../ui/layout.js";
 import { Item, ItemGroup, Badge, TierBadge, Pager, PrettyKV, StageTrack, type StageSpec } from "../ui/kit.js";
+import { parseMarkdownDocument, renderMarkdown } from "../ui/markdown.js";
 import { SearchIcon, XCircleIcon, ChevronLeftIcon, ChevronRightIcon, StoreIcon, FolderIcon, FileTextIcon } from "../ui/icons.js";
 import type { Env } from "../../env.js";
 import { db } from "../../db.js";
@@ -43,10 +43,16 @@ const VIEWS = [
   { slug: "guidance", label: "Guidance" },
 ] as const;
 
-const PAGE_SIZE = 6;
+/** The Recipes list page-size selector's offered values and default (operator-data-explorer's
+ *  "configurable page size, default 50" delta — replaces the old fixed `PAGE_SIZE = 6`). */
+const PAGE_SIZES = [25, 50, 100] as const;
+const DEFAULT_PAGE_SIZE = 50;
 
-function md(src: string): string {
-  return marked.parse(src, { async: false });
+/** Parse a `?size=` query value to one of `PAGE_SIZES`, defaulting to `DEFAULT_PAGE_SIZE` for
+ *  anything absent/unrecognized (never a caller-controlled arbitrary page size). */
+function parsePageSize(raw: string | undefined): number {
+  const n = Number(raw);
+  return (PAGE_SIZES as readonly number[]).includes(n) ? n : DEFAULT_PAGE_SIZE;
 }
 
 function html(node: { toString(): string }): string {
@@ -82,13 +88,16 @@ const STATUS_DOT: Record<string, string> = {
   orphaned: "muted",
 };
 
-/** Build the `/admin/data/recipes` href for a given query/mode/page (omits default-valued
- *  params so the plain-list URL stays clean, matching Discovery's `href` convention). */
-function recipesHref(query: string, mode: SearchMode, page: number): string {
+/** Build the `/admin/data/recipes` href for a given query/mode/page/size (omits default-valued
+ *  params so the plain-list URL stays clean, matching Discovery's `href` convention). `size` is
+ *  preserved across search/pagination whenever it differs from the default, so a page-size
+ *  choice survives a search or a Prev/Next click (deep-linkable, per the page-size delta). */
+function recipesHref(query: string, mode: SearchMode, page: number, size: number = DEFAULT_PAGE_SIZE): string {
   const params = new URLSearchParams();
   if (query) params.set("q", query);
   if (mode !== "keyword") params.set("mode", mode);
   if (page > 0) params.set("page", String(page + 1));
+  if (size !== DEFAULT_PAGE_SIZE) params.set("size", String(size));
   const qs = params.toString();
   return qs ? `/admin/data/recipes?${qs}` : "/admin/data/recipes";
 }
@@ -119,17 +128,19 @@ const RecipesListPage = ({
   query,
   mode,
   page,
+  pageSize = DEFAULT_PAGE_SIZE,
 }: {
   rows: Map<string, RecipeRow>;
   search: RecipeSearchResult;
   query: string;
   mode: SearchMode;
   page: number;
+  pageSize?: number;
 }) => {
   const results = search.results.filter((h) => rows.has(h.slug));
-  const pages = Math.max(1, Math.ceil(results.length / PAGE_SIZE));
+  const pages = Math.max(1, Math.ceil(results.length / pageSize));
   const pg = Math.min(page, pages - 1);
-  const shown = results.slice(pg * PAGE_SIZE, pg * PAGE_SIZE + PAGE_SIZE);
+  const shown = results.slice(pg * pageSize, pg * pageSize + pageSize);
 
   return (
     <DataShell active="recipes">
@@ -140,18 +151,25 @@ const RecipesListPage = ({
           <input class="recipe-search-input" type="text" name="q" placeholder="Search recipes…" value={query} />
           {mode !== "keyword" ? <input type="hidden" name="mode" value={mode} /> : null}
           {query ? (
-            <a class="recipe-search-clear" href={recipesHref("", mode, 0)} aria-label="Clear">
+            <a class="recipe-search-clear" href={recipesHref("", mode, 0, pageSize)} aria-label="Clear">
               <XCircleIcon size={15} />
             </a>
           ) : null}
         </form>
         <div class="seg" role="tablist" aria-label="Search mode">
-          <a class={mode === "keyword" ? "seg-btn active" : "seg-btn"} href={recipesHref(query, "keyword", 0)}>
+          <a class={mode === "keyword" ? "seg-btn active" : "seg-btn"} href={recipesHref(query, "keyword", 0, pageSize)}>
             Keyword
           </a>
-          <a class={mode === "hybrid" ? "seg-btn active" : "seg-btn"} href={recipesHref(query, "hybrid", 0)}>
+          <a class={mode === "hybrid" ? "seg-btn active" : "seg-btn"} href={recipesHref(query, "hybrid", 0, pageSize)}>
             Hybrid
           </a>
+        </div>
+        <div class="seg" role="tablist" aria-label="Page size">
+          {PAGE_SIZES.map((s) => (
+            <a class={s === pageSize ? "seg-btn active" : "seg-btn"} href={recipesHref(query, mode, 0, s)}>
+              {s}
+            </a>
+          ))}
         </div>
       </div>
 
@@ -217,10 +235,10 @@ const RecipesListPage = ({
 
       {pages > 1 ? (
         <Pager
-          info={`Page ${pg + 1} of ${pages} · ${pg * PAGE_SIZE + 1}–${Math.min(results.length, pg * PAGE_SIZE + PAGE_SIZE)} of ${results.length}`}
+          info={`Page ${pg + 1} of ${pages} · ${pg * pageSize + 1}–${Math.min(results.length, pg * pageSize + pageSize)} of ${results.length}`}
           prev={
             pg > 0 ? (
-              <a class="btn" data-variant="outline" data-size="sm" href={recipesHref(query, mode, pg - 1)}>
+              <a class="btn" data-variant="outline" data-size="sm" href={recipesHref(query, mode, pg - 1, pageSize)}>
                 <ChevronLeftIcon size={15} /> Prev
               </a>
             ) : (
@@ -231,7 +249,7 @@ const RecipesListPage = ({
           }
           next={
             pg < pages - 1 ? (
-              <a class="btn" data-variant="outline" data-size="sm" href={recipesHref(query, mode, pg + 1)}>
+              <a class="btn" data-variant="outline" data-size="sm" href={recipesHref(query, mode, pg + 1, pageSize)}>
                 Next <ChevronRightIcon size={15} />
               </a>
             ) : (
@@ -311,7 +329,7 @@ const RecipeDetailPage = ({ detail }: { detail: RecipeDetail }) => {
       <div class="card">
         <section>
           {detail.status !== "orphaned" && detail.body ? (
-            <div class="md" dangerouslySetInnerHTML={{ __html: md(detail.body) }} />
+            <div class="md" dangerouslySetInnerHTML={{ __html: renderMarkdown(detail.body) }} />
           ) : (
             <p class="muted" style="margin:0">
               The R2 source object is gone — this is a stale projection (orphaned). The recipe-index cron will
@@ -584,6 +602,7 @@ const GuidancePage = ({ view }: { view: GuidanceView }) => {
   if (view.kind === "object") {
     const segments = crumbSegments(view.path);
     const fileSeg = segments.pop();
+    const doc = parseMarkdownDocument(view.markdown, "guidance object");
     return (
       <DataShell active="guidance" detail>
         <a class="link-action rd-back" href={`/admin/data/guidance${segments.length ? `?gprefix=${encodeURIComponent(segments.join("/"))}` : ""}`}>
@@ -591,9 +610,16 @@ const GuidancePage = ({ view }: { view: GuidanceView }) => {
         </a>
         <GuidanceBreadcrumb segments={segments} fileSeg={fileSeg} />
         <p class="group-label">{view.path}</p>
+        {doc.frontmatter ? (
+          <div class="card">
+            <section>
+              <PrettyKV obj={doc.frontmatter} />
+            </section>
+          </div>
+        ) : null}
         <div class="card">
           <section>
-            <div class="md" dangerouslySetInnerHTML={{ __html: md(view.markdown) }} />
+            <div class="md" dangerouslySetInnerHTML={{ __html: doc.html }} />
           </section>
         </div>
       </DataShell>
@@ -643,6 +669,7 @@ async function renderRecipesList(c: { env: Env; req: { query(key: string): strin
   const query = c.req.query("q") ?? "";
   const mode: SearchMode = c.req.query("mode") === "hybrid" ? "hybrid" : "keyword";
   const page = Math.max(0, Number(c.req.query("page") ?? "1") - 1);
+  const pageSize = parsePageSize(c.req.query("size"));
   const [{ recipes }, search, facetRows] = await Promise.all([
     recipeList(c.env),
     searchRecipes(c.env, query, mode),
@@ -651,7 +678,7 @@ async function renderRecipesList(c: { env: Env; req: { query(key: string): strin
   const rows = new Map<string, RecipeRow>(
     recipes.map((r) => [r.slug, { ...r, ...(facetRows.get(r.slug) ?? { protein: null, cuisine: null, time_total: null }) }]),
   );
-  return html(<RecipesListPage rows={rows} search={search} query={query} mode={mode} page={page} />);
+  return html(<RecipesListPage rows={rows} search={search} query={query} mode={mode} page={page} pageSize={pageSize} />);
 }
 
 export function registerDataRoutes(app: Hono<{ Bindings: Env }>): void {

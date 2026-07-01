@@ -48,8 +48,35 @@ describe("Recipes list SSR view", () => {
     );
     const hits: RecipeSearchHit[] = Array.from({ length: 8 }, (_, i) => ({ slug: `r${i}`, score: null, semantic: false }));
     const search: RecipeSearchResult = { mode: "keyword", results: hits };
+    const html = render(RecipesListPage({ rows: many, search, query: "", mode: "keyword", page: 0, pageSize: 6 }));
+    expect(html).toContain("Page 1 of 2");
+  });
+
+  it("defaults the page size to 50 and offers a 25/50/100 selector, deep-linkable via ?size=", () => {
+    const rowsOf = (n: number) =>
+      new Map(
+        Array.from({ length: n }, (_, i) => [`r${i}`, { slug: `r${i}`, title: `R${i}`, status: "indexed" as const, protein: null, cuisine: null, time_total: null }]),
+      );
+    const hitsOf = (n: number): RecipeSearchHit[] => Array.from({ length: n }, (_, i) => ({ slug: `r${i}`, score: null, semantic: false }));
+
+    // Default (no explicit pageSize prop) is 50 — 60 rows still paginate at 50/page.
+    const many = rowsOf(60);
+    const search: RecipeSearchResult = { mode: "keyword", results: hitsOf(60) };
     const html = render(RecipesListPage({ rows: many, search, query: "", mode: "keyword", page: 0 }));
     expect(html).toContain("Page 1 of 2");
+    expect(html).toContain("of 60");
+
+    // The selector offers 25/50/100, with the active size highlighted and size preserved
+    // (deep-linkable + carried across a search/pagination href).
+    expect(html).toContain('href="/admin/data/recipes?size=25"');
+    expect(html).toContain('href="/admin/data/recipes?size=100"');
+    expect(html).toMatch(/seg-btn active" href="\/admin\/data\/recipes">50</);
+
+    const html25 = render(RecipesListPage({ rows: many, search, query: "", mode: "keyword", page: 0, pageSize: 25 }));
+    expect(html25).toContain("Page 1 of 3");
+    expect(html25).toContain('seg-btn active" href="/admin/data/recipes?size=25"');
+    // Prev/Next preserve the chosen size.
+    expect(html25).toContain('href="/admin/data/recipes?page=2&amp;size=25"');
   });
 
   it("renders a degraded-search banner and still shows the keyword results, with the mode toggle left on Hybrid", () => {
@@ -115,6 +142,20 @@ describe("Recipe detail SSR view", () => {
     expect(html).not.toContain("rd-raw");
     expect(html).not.toContain("View raw R2 markdown");
     expect(html).toContain("stale projection");
+  });
+
+  it("renders D1 index-row list columns (already inflated to arrays by recipeDetail) as pv-chip pills, not raw JSON text", () => {
+    const detail: RecipeDetail = {
+      ...base,
+      projection: { slug: "miso-soup", title: "Miso Soup", tags: ["quick", "weeknight"], dietary: ["vegetarian"] },
+    };
+    const html = render(RecipeDetailPage({ detail }));
+    expect(html).toContain("pv-chips");
+    expect(html).toContain('<span class="pv-chip">quick</span>');
+    expect(html).toContain('<span class="pv-chip">weeknight</span>');
+    expect(html).toContain('<span class="pv-chip">vegetarian</span>');
+    // Not rendered as a raw JSON string anywhere in the D1 index row panel.
+    expect(html).not.toContain('["quick","weeknight"]');
   });
 
   it("renders attributed notes with author/tags/private badge", () => {
@@ -251,5 +292,28 @@ describe("Guidance browser SSR view", () => {
     expect(html).toContain("Braising");
     expect(html).toContain("Sear first");
     expect(html).toContain("braising.md");
+  });
+
+  it("strips a leading YAML frontmatter fence and renders it as a pretty key/value panel above the body, with no leading <hr>", () => {
+    const markdown = "---\ntitle: Searing\ntags:\n  - technique\n---\n# Searing\n\nGet the pan hot first.\n";
+    const html = render(
+      GuidancePage({ view: { kind: "object", path: "guidance/cooking_techniques/sear.md", markdown } }),
+    );
+    // The frontmatter panel renders as a pretty key/value block (PrettyKV's pkv markup).
+    expect(html).toContain("pkv-row");
+    expect(html).toContain("Searing");
+    expect(html).toContain("technique");
+    // The body renders clean — no stray leading <hr> from an un-stripped fence.
+    expect(html).not.toContain("<hr");
+    expect(html).toContain("Get the pan hot first.");
+  });
+
+  it("renders just the body, no frontmatter panel, for a guidance file with no frontmatter fence", () => {
+    const html = render(
+      GuidancePage({ view: { kind: "object", path: "guidance/cooking_techniques/plain.md", markdown: "# Plain\n\nNo frontmatter here." } }),
+    );
+    expect(html).not.toContain("pkv-row");
+    expect(html).not.toContain("<hr");
+    expect(html).toContain("No frontmatter here.");
   });
 });
