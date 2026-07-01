@@ -10,9 +10,11 @@ import { test, expect, type Page } from "@playwright/test";
 
 // Most areas render their own `<h2>`/`<h3>` heading (Members doesn't — its page has only the
 // shared shell `<h1>` plus stat tiles and a roster, so it's asserted via the "Invite member"
-// button instead, a control unique to that area).
+// button instead, a control unique to that area). Status likewise has no page-owned heading —
+// the fidelity pass moved the "Service health" rollup into the shell's global health dock — so
+// it's asserted via the "Background jobs" section label instead, a landmark unique to the area.
 const AREAS: ReadonlyArray<readonly [name: string, path: string, assert: (page: Page) => Promise<unknown>]> = [
-  ["status", "/admin", (page) => expect(page.getByRole("heading", { name: "Service health" })).toBeVisible()],
+  ["status", "/admin", (page) => expect(page.getByText("Background jobs")).toBeVisible()],
   ["members", "/admin/members", (page) => expect(page.getByRole("button", { name: "Invite member" })).toBeVisible()],
   ["data", "/admin/data", (page) => expect(page.getByRole("heading", { name: "Recipes" })).toBeVisible()],
   ["usage", "/admin/usage", (page) => expect(page.getByRole("heading", { name: "Usage" })).toBeVisible()],

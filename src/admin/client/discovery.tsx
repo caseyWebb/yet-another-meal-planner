@@ -64,9 +64,13 @@ function DiscoveryIsland({
 
   // Delegate clicks on the SSR-shaped Retry/Delete buttons (rendered by the shared DiscoveryView
   // so the card markup — including the progression track and stage detail — stays one source of
-  // truth between first paint and the hydrated re-render). Buttons live inside a <summary>'s
-  // sibling, not the summary itself, so no stopPropagation-from-toggle concern; a data-action
-  // delegate keeps the handler wiring in one place regardless of how deep the button is.
+  // truth between first paint and the hydrated re-render). The buttons live INSIDE <summary> (the
+  // retry-clock/actions row is part of the always-visible collapsed-card content per the fidelity
+  // pass), so a click on them would otherwise also toggle the native <details> disclosure —
+  // `e.preventDefault()` here suppresses that default action (the browser's toggle-on-click for
+  // <summary> is itself a preventDefault-able default action), leaving the disclosure toggle to
+  // fire normally for every OTHER click on the summary. A data-action delegate keeps the handler
+  // wiring in one place regardless of how deep the button is.
   function onListClick(e: Event): void {
     const target = e.target as HTMLElement | null;
     const btn = target?.closest<HTMLElement>("[data-action]");

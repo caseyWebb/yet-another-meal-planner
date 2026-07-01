@@ -19,6 +19,15 @@
 // pure) so the shape logic is unit-testable without the network, the same discipline as
 // src/embedding.ts. NOTE: Cloudflare evolves these dataset/field names; they are verified
 // against the live schema as part of landing this capability (see the change's tasks).
+//
+// Each KV namespace's display label/color resolves via a fallback chain, cheapest/most-
+// automatic first: (a) the Cloudflare REST API's own namespace title (`fetchNamespaceTitles`,
+// a SEPARATE `GET /accounts/{id}/storage/kv/namespaces` call, paginated) — needs no operator
+// config, but needs the token's "Workers KV Storage: Read" scope, distinct from the "Account
+// Analytics: Read" scope the GraphQL calls need; (b) the operator-pasted `KV_NAMESPACE_LABELS`
+// env var, for when that scope is absent; (c) the raw namespace id + a generic color, as a last
+// resort. Step (a) degrades to an empty map (never throws) on a 403/network failure, so a
+// narrowly-scoped token still gets a usable page via (b) or (c).
 
 import type { Env } from "./env.js";
 import { ToolError } from "./errors.js";
@@ -113,14 +122,18 @@ const num = (v: unknown): number => (typeof v === "number" && Number.isFinite(v)
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Namespace label/color resolution (usage-observability: "KV namespace ids resolve to a
-// friendly label and display color"). A Worker cannot map a Cloudflare KV `namespaceId` back to
-// its `wrangler.jsonc` binding name at runtime (the `KVNamespace` binding exposes no id
-// accessor) — so this is a STATIC mapping, never a Cloudflare REST lookup: a small fixed
-// binding-name → {label, color} palette in code, joined against an operator-pasted
-// `KV_NAMESPACE_LABELS` env var (`id:BINDING,id:BINDING`, see env.ts) that records which id is
-// which binding. An id with no entry resolves to the generic "unlabeled" fallback — it still
-// reports its counts, just without a friendly label/color, so aggregate totals stay accurate
-// even when labeling is incomplete (a fresh deploy, or a future 4th namespace).
+// friendly label and display color"). Resolution is a FALLBACK CHAIN, cheapest/most-automatic
+// first:
+//   (a) the Cloudflare REST API's own namespace title (`fetchNamespaceTitles` below) — the
+//       PRIMARY fix, needs no operator config;
+//   (b) the operator-pasted `KV_NAMESPACE_LABELS` env var (`id:BINDING,id:BINDING`, see env.ts),
+//       for when the token lacks KV-read scope or the REST call is otherwise unavailable;
+//   (c) the raw namespace id + the generic "unlabeled" color, as a last resort — it still
+//       reports its counts, just without a friendly label/color, so aggregate totals stay
+//       accurate even when labeling is incomplete.
+// A binding name (from either (a) or (b)) is mapped to a display color via a small fixed
+// palette; the REST title may be prefixed (e.g. `worker-KROGER_KV`), so the match is by
+// substring against the known bindings, not equality.
 
 /** The three known KV bindings (wrangler.jsonc `kv_namespaces`), each a fixed display color from
  *  a small warm categorical palette (mirrors the design mock's `--kv-kroger`/`--kv-oauth`/
@@ -130,6 +143,11 @@ const NAMESPACE_PALETTE: Record<string, { color: string }> = {
   OAUTH_KV: { color: "var(--kv-oauth)" },
   TENANT_KV: { color: "var(--kv-tenant)" },
 };
+
+/** The known binding names, longest-first so `TENANT_KV` isn't shadowed by a hypothetical
+ *  shorter substring match — kept as an explicit array (not just `Object.keys`) so the match
+ *  order is documented, not incidental. */
+const KNOWN_BINDINGS = Object.keys(NAMESPACE_PALETTE);
 
 /** The generic fallback for a namespace id with no resolvable binding name. */
 const UNLABELED_COLOR = "var(--kv-unlabeled)";
@@ -146,11 +164,91 @@ function parseNamespaceLabels(raw: string | undefined): Map<string, string> {
   return out;
 }
 
-/** Resolve a namespace id to its display identity, given the operator's id→binding map. An id
- *  with no entry — or whose mapped binding isn't one of the known three — gets the generic
- *  "unlabeled" fallback (raw id as the label) rather than being dropped. Makes no outbound
- *  request: purely a static-table lookup (the "no additional Cloudflare API call" scenario). */
-export function resolveNamespaceLabel(namespaceId: string, idToBinding: Map<string, string>): NamespaceLabel {
+/** Match a Cloudflare KV namespace title (e.g. `worker-KROGER_KV`, or bare `KROGER_KV`) against
+ *  the known binding names by substring, since the REST API may prefix the title with the
+ *  worker/script name. Returns the matched binding, or null if the title matches none of them
+ *  (an unrecognized namespace — e.g. one belonging to a different Worker on the same account —
+ *  still gets its literal title as the label, just no palette color). */
+function matchKnownBinding(title: string): string | null {
+  return KNOWN_BINDINGS.find((b) => title.includes(b)) ?? null;
+}
+
+/** Resolve a namespace id to its display identity, walking the fallback chain: (a) the
+ *  Cloudflare REST title (`restTitle`, if the caller resolved one for this id) — matched by
+ *  substring against the known bindings for its color, but shown verbatim as the label even
+ *  when unmatched (still friendlier than a raw hex id); (b) the operator's `KV_NAMESPACE_LABELS`
+ *  id→binding map; (c) the raw id + the generic "unlabeled" color. Never throws, never makes a
+ *  network request itself — purely a static-table lookup over already-resolved inputs. */
+// ── Cloudflare REST namespace-title lookup (fallback-chain step (a)) ───────────────────────────
+// `GET /accounts/{id}/storage/kv/namespaces` lists every KV namespace on the account with its
+// `title` — the human name Cloudflare derives from the binding at provision time (often prefixed
+// with the worker/script name, e.g. `worker-KROGER_KV`). This is the ONLY runtime way to map a
+// namespace id back to a name (the `KVNamespace` binding itself exposes no id accessor), so it is
+// the primary, automatic resolution step; `KV_NAMESPACE_LABELS` remains the fallback for when the
+// token lacks the "Workers KV Storage: Read" scope this call needs (distinct from the "Account
+// Analytics: Read" scope `fetchUsage`'s GraphQL call needs) — that case 403s, which this function
+// treats as "no titles available" rather than throwing, so the Usage page degrades to the next
+// link in the chain instead of failing outright.
+
+const KV_NAMESPACES_PAGE_SIZE = 100;
+
+/** One page of `GET /accounts/{id}/storage/kv/namespaces`. Loosely typed — external data. */
+interface KvNamespacesPage {
+  success?: boolean;
+  result?: { id?: string; title?: string }[];
+  result_info?: { page?: number; total_pages?: number };
+}
+
+/**
+ * Fetch every KV namespace's id → title from the Cloudflare REST API (paginated). Returns an
+ * EMPTY map — never throws — on any failure: a network error, a non-2xx (notably a 403 from a
+ * token missing "Workers KV Storage: Read" scope), or an unparseable/unsuccessful body. This lets
+ * the caller fall through to `KV_NAMESPACE_LABELS` or the raw-id fallback without the Usage page
+ * failing when only this ancillary lookup is unavailable.
+ */
+export async function fetchNamespaceTitles(accountTag: string, token: string, deps: UsageDeps = defaultDeps): Promise<Map<string, string>> {
+  const titles = new Map<string, string>();
+  let page = 1;
+  for (;;) {
+    let res: Response;
+    try {
+      res = await deps.fetchImpl(
+        `https://api.cloudflare.com/client/v4/accounts/${accountTag}/storage/kv/namespaces?per_page=${KV_NAMESPACES_PAGE_SIZE}&page=${page}`,
+        { headers: { authorization: `Bearer ${token}` } },
+      );
+    } catch {
+      return titles; // transport failure — degrade to the next fallback-chain step
+    }
+    if (!res.ok) return titles; // e.g. 403 (missing KV-read scope) — degrade, don't throw
+    let body: KvNamespacesPage;
+    try {
+      body = (await res.json()) as KvNamespacesPage;
+    } catch {
+      return titles;
+    }
+    if (body.success === false) return titles;
+    for (const ns of body.result ?? []) {
+      if (ns.id && ns.title) titles.set(ns.id, ns.title);
+    }
+    const totalPages = body.result_info?.total_pages ?? 1;
+    if (page >= totalPages || (body.result?.length ?? 0) === 0) break;
+    page += 1;
+  }
+  return titles;
+}
+
+/** Resolve a namespace id to its display identity, walking the fallback chain: (a) the
+ *  Cloudflare REST title (`restTitle`, if the caller resolved one for this id) — matched by
+ *  substring against the known bindings for its color, but shown verbatim as the label even
+ *  when unmatched (still friendlier than a raw hex id); (b) the operator's `KV_NAMESPACE_LABELS`
+ *  id→binding map; (c) the raw id + the generic "unlabeled" color. Never throws, never makes a
+ *  network request itself — purely a static-table lookup over already-resolved inputs. */
+export function resolveNamespaceLabel(namespaceId: string, idToBinding: Map<string, string>, restTitle?: string): NamespaceLabel {
+  if (restTitle) {
+    const binding = matchKnownBinding(restTitle);
+    const color = binding ? NAMESPACE_PALETTE[binding].color : UNLABELED_COLOR;
+    return { label: restTitle, color, unlabeled: !binding };
+  }
   const binding = idToBinding.get(namespaceId);
   const swatch = binding ? NAMESPACE_PALETTE[binding] : undefined;
   if (binding && swatch) return { label: binding, color: swatch.color, unlabeled: false };
@@ -168,8 +266,9 @@ interface AccountAnalytics {
  * Pure mapping of one account's analytics rows into the `UsageResult` payload. Sums KV
  * operations per namespace and per action (plus a grand total), and Workers AI neurons per
  * model (plus a total). Unknown action classes are dropped; missing numbers read as 0. Resolves
- * each namespace's label/color via the static `idToBinding` map (empty map → every namespace
- * "unlabeled", still correctly totaled).
+ * each namespace's label/color via the fallback chain (REST `restTitles` first, then the static
+ * `idToBinding` map, then the raw id — empty maps → every namespace "unlabeled", still correctly
+ * totaled).
  */
 export function mapAccountUsage(
   account: AccountAnalytics,
@@ -177,6 +276,7 @@ export function mapAccountUsage(
   nowMs: number,
   idToBinding: Map<string, string> = new Map(),
   history: { window_days: number; days: KvHistoryDay[] } = { window_days: TRENDS_WINDOW_DAYS, days: [] },
+  restTitles: Map<string, string> = new Map(),
 ): UsageResult {
   const byNamespace = new Map<string, KvCounts>();
   const totals = zeroCounts();
@@ -193,7 +293,11 @@ export function mapAccountUsage(
     totals[action] += requests;
   }
   const namespaces: NamespaceUsage[] = [...byNamespace.entries()]
-    .map(([namespace_id, counts]) => ({ namespace_id, ...counts, resolved: resolveNamespaceLabel(namespace_id, idToBinding) }))
+    .map(([namespace_id, counts]) => ({
+      namespace_id,
+      ...counts,
+      resolved: resolveNamespaceLabel(namespace_id, idToBinding, restTitles.get(namespace_id)),
+    }))
     .sort((a, b) => b.write - a.write || b.read - a.read);
 
   const byModel = new Map<string, number>();
@@ -238,6 +342,7 @@ export function mapKvHistory(
   windowStartDay: string,
   windowEndDay: string,
   idToBinding: Map<string, string>,
+  restTitles: Map<string, string> = new Map(),
 ): { window_days: number; days: KvHistoryDay[] } {
   // byDay[day][nsId] = counts
   const byDay = new Map<string, Map<string, KvCounts>>();
@@ -268,7 +373,7 @@ export function mapKvHistory(
     const dayMap = byDay.get(day);
     const namespaces: NamespaceUsage[] = nsIds.map((namespace_id) => {
       const counts = dayMap?.get(namespace_id) ?? zeroCounts();
-      return { namespace_id, ...counts, resolved: resolveNamespaceLabel(namespace_id, idToBinding) };
+      return { namespace_id, ...counts, resolved: resolveNamespaceLabel(namespace_id, idToBinding, restTitles.get(namespace_id)) };
     });
     return { day, namespaces };
   });
@@ -349,6 +454,11 @@ export async function fetchUsage(env: Env, deps: UsageDeps = defaultDeps): Promi
   const today = utcDay(nowMs);
   const windowStartDay = utcDayMinus(nowMs, TRENDS_WINDOW_DAYS - 1);
   const idToBinding = parseNamespaceLabels(env.KV_NAMESPACE_LABELS);
+  // Fallback-chain step (a): resolve namespace titles from the REST API in parallel with the
+  // GraphQL usage query below (independent requests). `fetchNamespaceTitles` never throws — a
+  // missing "Workers KV Storage: Read" scope (403) or any other failure degrades to an empty map,
+  // so resolution falls through to `idToBinding` (step (b)) or the raw id (step (c)).
+  const restTitlesPromise = fetchNamespaceTitles(accountTag, token, deps);
   let res: Response;
   try {
     res = await deps.fetchImpl(GRAPHQL_ENDPOINT, {
@@ -381,8 +491,9 @@ export async function fetchUsage(env: Env, deps: UsageDeps = defaultDeps): Promi
   // to `date === today`), not a separate request — `mapAccountUsage` keeps its existing
   // single-day aggregation, fed only the rows for today.
   const todayRows = (account.kvOperations ?? []).filter((r) => r.dimensions?.date === today || r.dimensions?.date == null);
-  const history = mapKvHistory(account.kvOperations ?? [], windowStartDay, today, idToBinding);
-  return mapAccountUsage({ ...account, kvOperations: todayRows }, today, nowMs, idToBinding, history);
+  const restTitles = await restTitlesPromise;
+  const history = mapKvHistory(account.kvOperations ?? [], windowStartDay, today, idToBinding, restTitles);
+  return mapAccountUsage({ ...account, kvOperations: todayRows }, today, nowMs, idToBinding, history, restTitles);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -3,7 +3,7 @@
 // SSR reader for /admin/discovery, wrapping readDiscoveryLog).
 
 import { describe, it, expect } from "vitest";
-import { deriveHalt, readDiscoveryCandidates, type DiscoveryLogRow } from "../src/discovery-db.js";
+import { deriveHalt, matchScoresFromDetail, readDiscoveryCandidates, type DiscoveryLogRow } from "../src/discovery-db.js";
 import type { Env } from "../src/env.js";
 
 function row(over: Partial<DiscoveryLogRow> & Pick<DiscoveryLogRow, "id" | "outcome">): DiscoveryLogRow {
@@ -138,6 +138,39 @@ describe("deriveHalt — exhaustive over the real Outcome union", () => {
   });
 });
 
+describe("matchScoresFromDetail", () => {
+  it("extracts a well-shaped match_scores array", () => {
+    expect(matchScoresFromDetail({ stage: "match", match_scores: [{ tenant: "casey", score: 0.52 }] })).toEqual([
+      { tenant: "casey", score: 0.52 },
+    ]);
+  });
+
+  it("returns null when detail carries no match_scores (e.g. a triage-stage rejection)", () => {
+    expect(matchScoresFromDetail({ stage: "triage" })).toBeNull();
+  });
+
+  it("returns null for null/non-object detail", () => {
+    expect(matchScoresFromDetail(null)).toBeNull();
+    expect(matchScoresFromDetail(undefined)).toBeNull();
+    expect(matchScoresFromDetail("not an object")).toBeNull();
+  });
+
+  it("returns null when match_scores is present but empty or malformed", () => {
+    expect(matchScoresFromDetail({ match_scores: [] })).toBeNull();
+    expect(matchScoresFromDetail({ match_scores: "nonsense" })).toBeNull();
+    expect(matchScoresFromDetail({ match_scores: [{ tenant: "casey" }] })).toBeNull(); // missing score
+  });
+
+  it("drops malformed entries but keeps well-shaped ones", () => {
+    expect(
+      matchScoresFromDetail({ match_scores: [{ tenant: "casey", score: 0.5 }, { bogus: true }, { tenant: "sage", score: 0.6 }] }),
+    ).toEqual([
+      { tenant: "casey", score: 0.5 },
+      { tenant: "sage", score: 0.6 },
+    ]);
+  });
+});
+
 // ── readDiscoveryCandidates ──────────────────────────────────────────────────────────────────
 
 interface Row {
@@ -220,5 +253,21 @@ describe("readDiscoveryCandidates", () => {
     const env = { DB: discoveryD1(many) } as unknown as Env;
     const candidates = await readDiscoveryCandidates(env, 3);
     expect(candidates.length).toBe(3);
+  });
+
+  it("exposes the per-member match scores from detail.match_scores on a match-halted row", async () => {
+    const DB = discoveryD1([
+      d1Row({
+        id: "m1",
+        outcome: "no_match",
+        created_at: "2026-06-27T10:00:00.000Z",
+        detail: JSON.stringify({ stage: "match", match_scores: [{ tenant: "casey", score: 0.51 }] }),
+      }),
+      d1Row({ id: "m2", outcome: "no_match", created_at: "2026-06-27T09:00:00.000Z", detail: JSON.stringify({ stage: "triage" }) }),
+    ]);
+    const env = { DB } as unknown as Env;
+    const candidates = await readDiscoveryCandidates(env, 200);
+    expect(candidates.find((c) => c.id === "m1")?.matchScores).toEqual([{ tenant: "casey", score: 0.51 }]);
+    expect(candidates.find((c) => c.id === "m2")?.matchScores).toBeNull();
   });
 });

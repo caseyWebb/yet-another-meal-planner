@@ -76,32 +76,42 @@ describe("Usage SSR", () => {
     expect(html).toContain("1,000");
     // read total (9100) is well under its 100,000 limit → ok state present too
     expect(html).toContain("meter ok");
-    // each namespace contributes its own stacked segment, with a per-segment title breakdown
+    // each namespace contributes its own stacked segment, with a per-segment data-tip-* breakdown
+    // (the shared sparkline-tooltip primitive, not the native title attribute)
     expect(html).toContain('class="kv-seg"');
-    expect(html).toMatch(/title="KROGER_KV: [\d,]+ writes today"/);
+    expect(html).toMatch(/data-tip-title="KROGER_KV"/);
+    expect(html).toMatch(/data-tip-body="[\d,]+ writes today"/);
   });
 
-  it("renders the namespace legend with resolved labels and the unlabeled fallback", () => {
+  it("renders the namespace legend with resolved labels and colors — not the grey 'unlabeled' fallback for a resolved namespace", () => {
     const html = render(UsagePage({ usage, trends, tools }));
     expect(html).toContain("KROGER_KV");
     // the unmapped namespace still appears (raw id), not dropped
     expect(html).toContain("ns_b");
+    // the resolved (KROGER_KV) namespace gets its palette color, never the generic grey fallback
     expect(html).toContain("var(--kv-kroger)");
+    // the genuinely-unresolved namespace still renders — with the generic fallback color, not
+    // dropped — but the resolved one above must NOT have fallen back to it
     expect(html).toContain("var(--kv-unlabeled)");
+    const krogerSegment = html.match(/data-tip-title="KROGER_KV"[^>]*/)?.[0] ?? "";
+    expect(krogerSegment).not.toContain("var(--kv-unlabeled)");
   });
 
-  it("renders a namespace-stacked 30-day sparkline with a per-column title breakdown", () => {
+  it("renders a namespace-stacked 30-day sparkline with a per-column data-tip-* breakdown (hover tooltip)", () => {
     const html = render(UsagePage({ usage, trends, tools }));
     expect(html).toContain("kv-spark");
     expect(html).toContain('class="spark-col"');
     expect(html).toContain('class="spark-seg"');
-    expect(html).toMatch(/title="2026-06-28: [\d,]+ writes \(KROGER_KV [\d,]+ · ns_b [\d,]+\)"/);
+    expect(html).toMatch(/data-tip-title="2026-06-28"/);
+    expect(html).toMatch(/data-tip-body="[\d,]+ writes \(KROGER_KV [\d,]+ · ns_b [\d,]+\)"/);
   });
 
-  it("renders the AI neuron meter + per-model breakdown", () => {
+  it("renders the AI neuron meter + per-model breakdown, with a plain note (no fabricated 30-day series)", () => {
     const html = render(UsagePage({ usage, trends, tools }));
     expect(html).toContain("42 neurons");
     expect(html).toContain("bge");
+    // No AI sparkline is rendered — the note explains why, rather than faking a history series.
+    expect(html).toContain("do not expose a confirmed daily-history series");
   });
 
   it("renders per-job trend sparklines from fetchUsageTrends data, unchanged", () => {
@@ -139,9 +149,20 @@ describe("Usage SSR", () => {
     expect(html).toContain("place_order");
   });
 
-  it("ships no client island (no <script> island bundle reference)", () => {
+  it("ships no dedicated client island (only the shared, page-agnostic sparkline-tip script every admin page loads via Layout — no hydration props, no per-page bundle)", () => {
     const html = render(UsagePage({ usage, trends, tools }));
-    expect(html).not.toContain("/admin/islands/");
     expect(html).not.toContain("application/json");
+    expect(html).toContain("/admin/islands/sparkline-tip.js");
+    expect(html.match(/\/admin\/islands\/[a-z-]+\.js/g)).toEqual(["/admin/islands/sparkline-tip.js"]);
+  });
+
+  it("adds spacing below the 'Cloudflare usage for <day> (UTC)…' caption", () => {
+    const html = render(UsagePage({ usage, trends, tools }));
+    expect(html).toMatch(/class="muted small usage-caption"/);
+  });
+
+  it("uses the wide container (matching Data/Discovery/Logs/Config), not the narrower default, so the 4-column stat grid and stacked meters have room to fit without overflow", () => {
+    const html = render(UsagePage({ usage, trends, tools }));
+    expect(html).toContain('class="wrap wrap-wide"');
   });
 });

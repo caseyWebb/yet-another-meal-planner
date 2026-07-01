@@ -144,9 +144,11 @@ describe("AllJobsLog SSR (all-jobs run log)", () => {
 });
 
 describe("LogsPage SSR shell", () => {
-  it("renders the all-jobs submenu item active by default", () => {
+  it("renders the all-jobs run log as the area's sole, full-width content with no sidebar/submenu", () => {
     const html = render(LogsPage({ runs: [], job: "All", page: 0, now: 1000 }));
     expect(html).toContain("Logs");
-    expect(html).toMatch(/log-source active"[^>]*><a class="log-source-link" href="\/admin\/logs">/);
+    expect(html).not.toContain("log-sources");
+    expect(html).not.toContain("log-source-link");
+    expect(html).not.toContain('class="logs"');
   });
 });

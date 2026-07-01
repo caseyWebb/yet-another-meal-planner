@@ -246,3 +246,22 @@ export const FolderIcon = ({ size }: { size?: number }) => (
     <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
   </Icon>
 );
+
+// ── Status (admin-ui-fidelity-pass) ──────────────────────────────────────────────────────────
+
+export const UtensilsIcon = ({ size }: { size?: number }) => (
+  <Icon size={size}>
+    <path d="M3 2v7c0 1.1.9 2 2 2h0a2 2 0 0 0 2-2V2" />
+    <path d="M7 2v20" />
+    <path d="M21 15V2a5 5 0 0 0-5 5v6c0 1.1.9 2 2 2h3Zm0 0v7" />
+  </Icon>
+);
+
+// ── Config (admin-ui-fidelity-pass) ──────────────────────────────────────────────────────────
+
+export const ArrowRightIcon = ({ size }: { size?: number }) => (
+  <Icon size={size}>
+    <path d="M5 12h14" />
+    <path d="m12 5 7 7-7 7" />
+  </Icon>
+);

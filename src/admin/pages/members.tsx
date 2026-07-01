@@ -71,10 +71,12 @@ export const MembersPage = ({ props }: { props: MembersIslandProps }) => {
         <StatCard icon={<LinkIcon size={15} />} label="Kroger linked" value={c.kroger} />
       </StatCardGrid>
 
-      <p class="group-label">Roster</p>
-      {/* The island replaces this region with the interactive roster (clickable rows + the
-          invite dialog + per-row actions menu) on hydration; this is the first paint. */}
+      {/* The island replaces this region with the interactive roster (the Roster heading + Invite
+          button, clickable rows, the invite dialog, and the per-row actions menu) on hydration;
+          this is the first paint — matching that same structure so there is exactly one "Roster"
+          heading before and after hydration, never two. */}
       <div id="members-island">
+        <p class="group-label">Roster</p>
         {props.members.length === 0 ? (
           <p class="muted">No members yet.</p>
         ) : (

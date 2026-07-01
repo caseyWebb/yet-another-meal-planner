@@ -6,7 +6,7 @@
 // green/amber status badge or nav-pill equivalent).
 
 import type { Child } from "hono/jsx";
-import { CheckCircleIcon, XCircleIcon, MinusCircleIcon } from "./icons.js";
+import { CheckCircleIcon, XCircleIcon, MinusCircleIcon, TrashIcon } from "./icons.js";
 
 /** A Basecoat card. Children render in the padded `<section>`; pass a `<header>`/`<footer>`
  *  among the children when a title or action row is wanted. */
@@ -63,6 +63,17 @@ export const Badge = ({ variant = "default", children }: { variant?: string; chi
   <span class="badge" data-variant={variant === "default" ? undefined : variant}>
     {children}
   </span>
+);
+
+/** An icon-only trash-can remove button (mirrors the mock's `CorpusEditor`/`AlwaysImport`
+ *  `.cfg-remove` — a bare, low-emphasis icon that reddens on hover, replacing the text "remove"
+ *  `btn[data-variant=destructive]` pattern). `disabled` covers the in-flight-removal case; the
+ *  click handler is wired by the consuming island (this stays presentational, like the rest of
+ *  the kit — admin/CLAUDE.md rule 8). */
+export const RemoveButton = ({ onClick, disabled }: { onClick?: () => void; disabled?: boolean }) => (
+  <button type="button" class="cfg-remove" aria-label="Remove" disabled={disabled} onClick={onClick}>
+    <TrashIcon size={14} />
+  </button>
 );
 
 /** A destructive Basecoat alert (the panel's inline error banner). */
@@ -228,6 +239,77 @@ export const Sparkline = ({ values, max }: { values: number[]; max?: number }) =
   );
 };
 
+// ── Sparkline hover-tooltip primitive (admin-ui-fidelity-pass, shared) ─────────────────────────
+// The mock's `useTip()` drives one floating `.bar-tip` bubble imperatively from bar mouse
+// handlers (fixed-positioned, following the cursor) rather than a per-bar React/JSX tooltip node
+// — cheap for a track of hundreds of thin bars. Since the SSR pages that host a sparkline (Status,
+// Usage) ship no island, the SSR side of this primitive only emits `data-tip-title`/
+// `data-tip-body`/`data-tip-variant` attributes on each segment; the interactive half lives in
+// `src/admin/client/sparkline-tip.tsx`, a small progressive-enhancement script (plain DOM
+// listeners, no hono/jsx/dom hydration) that finds every `[data-tip-title]` element on the page
+// and wires mouseenter/mouseleave to show/hide the bubble. `Layout` includes that script's bundle
+// on every page, so any SSR-rendered segment carrying these attributes gets a tooltip for free.
+
+/** One sparkline segment's tip content + the segment's own render (href/onClick-free — those are
+ *  page-specific; this only carries the visual + a11y + tooltip data attributes). */
+export interface TipSegment {
+  /** The segment's fractional value (0–1) driving its height; already scaled by the caller. */
+  frac: number;
+  /** A CSS class suffix appended to `spark-bar`/`uptime-bar` (e.g. "ok"/"fail"). */
+  state?: string;
+  tipTitle?: string;
+  tipBody?: string;
+  /** Selects the `.bar-tip.fail` destructive tooltip skin (mirrors the mock's `variant: "fail"`). */
+  tipVariant?: "fail";
+  href?: string;
+  ariaLabel?: string;
+}
+
+/** A capped-width, right-aligned track of tip-bearing segments (mirrors the mock's
+ *  `uptime-track`): segments never stretch to fill an under-populated series (a still-warming-up
+ *  job's 3-of-30 runs render as 3 normal-width bars flush right, not 3 bars stretched to fill the
+ *  row), and each segment carries the `data-tip-*` attributes the client script reads. `axis`
+ *  renders the "OLDER"/"NOW" caption row beneath the track when true. */
+export const SparklineTrack = ({
+  segments,
+  axis,
+  class: cls,
+}: {
+  segments: TipSegment[];
+  axis?: boolean;
+  class?: string;
+}) => (
+  <div class={cx("spark-track-wrap", cls)}>
+    <div class="spark-track">
+      {segments.map((s) => {
+        const body = (
+          <span
+            class={cx("spark-seg-tip", s.state)}
+            style={`height:${Math.max(8, Math.round(s.frac * 100))}%`}
+            data-tip-title={s.tipTitle}
+            data-tip-body={s.tipBody}
+            data-tip-variant={s.tipVariant}
+            aria-label={s.ariaLabel}
+          />
+        );
+        return s.href != null ? (
+          <a class="spark-seg-link" href={s.href}>
+            {body}
+          </a>
+        ) : (
+          body
+        );
+      })}
+    </div>
+    {axis ? (
+      <div class="spark-axis">
+        <span>OLDER</span>
+        <span>NOW</span>
+      </div>
+    ) : null}
+  </div>
+);
+
 /** A determinate progress bar (0–100). */
 export const Progress = ({ value }: { value: number }) => {
   const pct = Math.max(0, Math.min(100, value));
@@ -246,20 +328,50 @@ export const Switch = ({ name, checked }: { name?: string; checked?: boolean }) 
   </label>
 );
 
-/** A range slider input (an island reads its `input`). */
+/** The `--slider-value` percent. Basecoat's Vega stylesheet does NOT read this var — its track is
+ *  a flat `bg-muted` with no gradient — so `styles.css`'s own `.slider` rule is what consumes it,
+ *  painting a `linear-gradient(to right, var(--accent) 0 var(--slider-value), var(--muted) …)`
+ *  on WebKit (and the `--moz-range-track`/`--moz-range-progress` equivalent on Firefox). Before
+ *  that consumer rule existed, every slider rendered a flat, unfilled `.slider { width: 100% }`
+ *  track regardless of `value` — this var alone did nothing without it. */
+export function sliderFillPct(min: number, max: number, value: number): number {
+  if (max <= min) return 0;
+  return Math.max(0, Math.min(100, ((value - min) / (max - min)) * 100));
+}
+
+/** A range slider input. Sets `--slider-value` from `value` on first (SSR) render so the fill is
+ *  correct on first paint, not just after an island hydrates. `onInput` is optional (kit stays
+ *  presentational for read-only SSR call sites — admin/CLAUDE.md rule 8 — but a genuinely
+ *  interactive caller, like `KnobRow` in client/knob-console.tsx, passes one to both drive its
+ *  own draft state AND recompute the fill var live while dragging, matching `RemoveButton`'s
+ *  optional-`onClick` precedent above). */
 export const Slider = ({
   name,
   min,
   max,
   step,
   value,
+  onInput,
 }: {
   name?: string;
   min: number;
   max: number;
   step?: number;
   value: number;
-}) => <input class="input slider" type="range" name={name} min={min} max={max} step={step ?? 1} value={value} />;
+  onInput?: (e: Event) => void;
+}) => (
+  <input
+    class="input slider"
+    type="range"
+    name={name}
+    min={min}
+    max={max}
+    step={step ?? 1}
+    value={value}
+    style={`--slider-value:${sliderFillPct(min, max, value)}%`}
+    onInput={onInput}
+  />
+);
 
 // ── Knob spec (admin-ui-redesign-config) ────────────────────────────────────
 // A knob is one numeric config field: identity, range, optional safe floor, and help copy.
@@ -370,6 +482,17 @@ export const PrettyKV = ({ obj, nested }: { obj: Record<string, unknown> | null 
     </div>
   );
 };
+
+/** A job/candidate-property pill: `label:value` as a small rounded badge (mirrors the mock's
+ *  `jstat`/`jstat-k`/`jstat-v` — Status renders a job's summary counts as a row of these instead
+ *  of plain key:value text). Presentational; the caller supplies already-stringified values
+ *  (Status's `summaryValue` already formats timestamps vs raw JSON). */
+export const StatPill = ({ label, value }: { label: string; value: Child }) => (
+  <span class="jstat">
+    <span class="jstat-k">{label}</span>
+    <span class="jstat-v">{value}</span>
+  </span>
+);
 
 /** A dropdown menu item: a label, an optional href (link) or it renders as a button shell, and
  *  an optional destructive styling. The open/close behavior is wired by the consuming island. */

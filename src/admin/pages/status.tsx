@@ -14,7 +14,8 @@
 // dependencies as their own group.
 
 import { Layout } from "../ui/layout.js";
-import { StatCardGrid, StatCard, ItemGroup, Item, Badge } from "../ui/kit.js";
+import { StatCardGrid, StatCard, ItemGroup, Item, Badge, SparklineTrack, StatPill, type TipSegment } from "../ui/kit.js";
+import { UtensilsIcon, UsersIcon, RssIcon, DatabaseIcon } from "../ui/icons.js";
 import { assertNever } from "../lib/remote.js";
 import { currentStreakStart, type HealthPayload, type JobStatus, type JobRun } from "../../health.js";
 import type { AdminPosture } from "../../admin.js";
@@ -121,12 +122,9 @@ function gateStateBadgeVariant(s: GateState): string {
 const StateGlyph = ({ cls }: { cls: string }) => <span class={`sglyph ${cls}`}><span class={`dot ${cls}`} /></span>;
 
 const SummaryBlock = ({ pairs }: { pairs: [string, string][] }) => (
-  <div class="summary">
+  <div class="jstats">
     {pairs.map(([k, v]) => (
-      <span class="summary-item">
-        <span class="summary-k muted small">{k}</span>
-        <span class="summary-v small">{v}</span>
-      </span>
+      <StatPill label={k} value={v} />
     ))}
   </div>
 );
@@ -141,13 +139,25 @@ const SinceLabel = ({ ok, since }: { ok: boolean; since: number }) => (
 
 /** The per-job uptime sparkline: recent runs oldest→newest as ok/fail bars, with a % uptime
  *  label. `runs` is newest-first (as `readJobRuns` returns) — reversed for the oldest→newest
- *  bar order the mock specifies. Bar height is binary (ok bars full, fail bars short) since
- *  `Sparkline` scales by value, not by a per-bar color — the color comes from a class override
- *  per bar via inline composition below. */
+ *  bar order the mock specifies. Bar height is binary (ok bars full, fail bars short); each
+ *  segment carries the `data-tip-*` attributes the shared sparkline-tip client script reads
+ *  ("N runs ago", ok/error + "click to view log") and links to the run's Logs deep-link. */
 const Uptime = ({ runs }: { runs: JobRun[] }) => {
   const ordered = [...runs].reverse(); // oldest → newest
   const okCount = runs.filter((r) => r.ok).length;
   const pct = Math.round((okCount / runs.length) * 100);
+  const segments: TipSegment[] = ordered.map((r, i) => {
+    const n = ordered.length - i; // runs ago, 1 = most recent
+    return {
+      frac: r.ok ? 1 : 0.28,
+      state: r.ok ? "ok" : "fail",
+      tipTitle: `${n} ${n === 1 ? "run" : "runs"} ago`,
+      tipBody: `${r.ok ? "completed ok" : "failed"} · click to view log`,
+      tipVariant: r.ok ? undefined : "fail",
+      href: `/admin/logs?run=${r.id}`,
+      ariaLabel: `run ${n} ${n === 1 ? "run" : "runs"} ago — ${r.ok ? "ok" : "failed"}, view log`,
+    };
+  });
   return (
     <div class="uptime">
       <div class="uptime-head">
@@ -156,16 +166,7 @@ const Uptime = ({ runs }: { runs: JobRun[] }) => {
           {pct}% uptime · {runs.length} runs
         </span>
       </div>
-      <div class="spark">
-        {ordered.map((r) => (
-          <a
-            class={`spark-bar ${r.ok ? "ok" : "fail"}`}
-            style={`height:${r.ok ? 100 : 28}%`}
-            title={fmtUtc(r.ran_at)}
-            href={`/admin/logs?run=${r.id}`}
-          />
-        ))}
-      </div>
+      <SparklineTrack segments={segments} axis />
     </div>
   );
 };
@@ -178,6 +179,7 @@ const JobRow = ({ job, now, runs }: { job: JobStatus; now: number; runs: JobRun[
   return (
     <Item
       outline
+      class={cls === "fail" ? "job-item fail" : "job-item"}
       media={<StateGlyph cls={cls} />}
       title={job.name}
       description={
@@ -253,9 +255,8 @@ export const StatusPage = ({
 }) => (
   <Layout title="Status · grocery-agent admin" active="/admin">
     <div class="status-head">
-      <h2>Service health</h2>
       <a href="/admin" class="btn" data-variant="ghost" data-size="sm">
-        Refresh
+        Refresh · checked {relAge(Date.now() - payload.generated_at)}
       </a>
     </div>
     {payload.admin.exposed ? (
@@ -281,10 +282,15 @@ export const StatusPage = ({
     ) : null}
 
     <StatCardGrid>
-      <StatCard label="Recipes" value={counts.recipes.toLocaleString()} href="/admin/data" />
-      <StatCard label="Members" value={counts.members.toLocaleString()} href="/admin/members" />
-      <StatCard label="RSS feeds" value={counts.feeds.toLocaleString()} />
-      <StatCard label="Cached SKUs" value={counts.cached_skus.toLocaleString()} />
+      <StatCard icon={<UtensilsIcon size={15} />} label="Recipes" value={counts.recipes.toLocaleString()} href="/admin/data" />
+      <StatCard icon={<UsersIcon size={15} />} label="Members" value={counts.members.toLocaleString()} href="/admin/members" />
+      <StatCard icon={<RssIcon size={15} />} label="RSS feeds" value={counts.feeds.toLocaleString()} href="/admin/config" />
+      <StatCard
+        icon={<DatabaseIcon size={15} />}
+        label="Cached SKUs"
+        value={counts.cached_skus.toLocaleString()}
+        href="/admin/data/stores"
+      />
     </StatCardGrid>
 
     <p class="group-label">Background jobs</p>

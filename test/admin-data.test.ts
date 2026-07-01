@@ -132,6 +132,72 @@ describe("recipeDetail — cross-tenant aggregate names tenants (no redaction)",
   });
 });
 
+describe("recipeDetail — D1 list-valued columns inflated back to arrays", () => {
+  it("parses JSON-array-shaped columns (tags, dietary, requires_equipment, ingredients_key, …) into real arrays", async () => {
+    const { env } = makeEnv({
+      tables: {
+        recipes: [
+          {
+            slug: "foo",
+            title: "Foo",
+            tags: JSON.stringify(["quick", "weeknight"]),
+            dietary: JSON.stringify(["vegetarian"]),
+            requires_equipment: JSON.stringify(["blender"]),
+            pairs_with: JSON.stringify(["rice"]),
+            ingredients_key: JSON.stringify(["onion", "garlic"]),
+            side_search_terms: JSON.stringify(["a crisp salad"]),
+            perishable_ingredients: JSON.stringify(["cilantro"]),
+            course: JSON.stringify(["main"]),
+            season: JSON.stringify([]),
+          },
+        ],
+      },
+      r2: { "recipes/foo.md": "# Foo" },
+    });
+    const d = await recipeDetail(env, "foo");
+    expect(d.projection).toMatchObject({
+      tags: ["quick", "weeknight"],
+      dietary: ["vegetarian"],
+      requires_equipment: ["blender"],
+      pairs_with: ["rice"],
+      ingredients_key: ["onion", "garlic"],
+      side_search_terms: ["a crisp salad"],
+      perishable_ingredients: ["cilantro"],
+      course: ["main"],
+      season: [],
+    });
+  });
+
+  it("leaves scalar columns (title, protein, slug) as plain strings, not parsed", async () => {
+    const { env } = makeEnv({
+      tables: { recipes: [{ slug: "foo", title: "Foo", protein: "chicken" }] },
+      r2: { "recipes/foo.md": "# Foo" },
+    });
+    const d = await recipeDetail(env, "foo");
+    expect(d.projection?.slug).toBe("foo");
+    expect(d.projection?.title).toBe("Foo");
+    expect(d.projection?.protein).toBe("chicken");
+  });
+
+  it("leaves a JSON-object-shaped column (extra) as the raw string, not parsed into an array", async () => {
+    const { env } = makeEnv({
+      tables: { recipes: [{ slug: "foo", title: "Foo", extra: JSON.stringify({ servings: 4 }) }] },
+      r2: { "recipes/foo.md": "# Foo" },
+    });
+    const d = await recipeDetail(env, "foo");
+    expect(d.projection?.extra).toBe(JSON.stringify({ servings: 4 }));
+  });
+
+  it("degrades malformed JSON in a list column to the raw string rather than throwing", async () => {
+    const { env } = makeEnv({
+      tables: { recipes: [{ slug: "foo", title: "Foo", tags: "[unclosed" }] },
+      r2: { "recipes/foo.md": "# Foo" },
+    });
+    const d = await recipeDetail(env, "foo");
+    expect(d.projection?.tags).toBe("[unclosed");
+  });
+});
+
 describe("recipeList — every slug with status", () => {
   it("surfaces indexed, skipped, and orphaned slugs together", async () => {
     const { env } = makeEnv({

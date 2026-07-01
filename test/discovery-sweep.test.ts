@@ -153,6 +153,16 @@ describe("pure helpers", () => {
     const m = member("c", { rejectVectors: [A] }); // candidate A ≈ a rejected recipe
     expect(matchMembers(A, [], [m], CONFIG).matches).toEqual([]);
   });
+  it("matchMembers returns the computed cosine for EVERY member, not only those that cleared τ", () => {
+    const near = member("near", { tasteVector: A }); // cos(A,A) = 1, clears τ
+    const far = member("far", { tasteVector: B }); // cos(A,B) = 0, does not clear τ
+    const { matches, scores } = matchMembers(A, [], [near, far], CONFIG);
+    expect(matches.map((a) => a.tenant)).toEqual(["near"]);
+    expect(scores).toEqual([
+      { tenant: "near", score: 1 },
+      { tenant: "far", score: 0 },
+    ]);
+  });
   it("isLikelyNonRecipeLink drops social/transactional links, keeps recipe URLs", () => {
     expect(isLikelyNonRecipeLink("https://facebook.com/share/123")).toBe(true);
     expect(isLikelyNonRecipeLink("https://www.instagram.com/p/abc")).toBe(true);
@@ -265,7 +275,7 @@ describe("runDiscoverySweep", () => {
     expect(calls.imported).toEqual(["ragu-a"]);
   });
 
-  it("records dietary_gated when diet removes the only match", async () => {
+  it("records dietary_gated when diet removes the only match, carrying the per-member match scores", async () => {
     const { deps, calls } = makeDeps({
       candidates: [cand("u1", "Pork Belly")],
       members: [member("casey", { dietary: ["vegan"] })],
@@ -275,10 +285,30 @@ describe("runDiscoverySweep", () => {
     const res = await runDiscoverySweep(deps, CONFIG);
     expect(res.dietaryGated).toBe(1);
     expect(calls.imported).toEqual([]);
-    expect(calls.logs[0]).toMatchObject({ outcome: "dietary_gated" });
+    expect(calls.logs[0]).toMatchObject({
+      outcome: "dietary_gated",
+      detail: { stage: "match", match_scores: [{ tenant: "casey", score: 1 }] },
+    });
   });
 
-  it("treats a confirm rejection as no_match (negation-aware)", async () => {
+  it("records no_match at the match stage with the computed per-member scores when no one clears τ", async () => {
+    // Triage embeds on the (title — summary) text; match embeds on the generated description.
+    // Give the triage text vector A (clears the looser triage threshold against a member whose
+    // taste is also A) but the DESCRIPTION vector B (orthogonal — cos 0, fails the match-stage τ).
+    const { deps, calls } = makeDeps({
+      candidates: [cand("u1", "Odd Fish", "s")],
+      members: [member("casey", { tasteVector: A })],
+      vectors: { "Odd Fish — s": A, "DESC:Odd Fish": B },
+    });
+    const res = await runDiscoverySweep(deps, CONFIG);
+    expect(res.noMatch).toBe(1);
+    expect(calls.logs[0]).toMatchObject({
+      outcome: "no_match",
+      detail: { stage: "match", match_scores: [{ tenant: "casey", score: 0 }] },
+    });
+  });
+
+  it("treats a confirm rejection as no_match (negation-aware), carrying the per-member match scores", async () => {
     const { deps, calls } = makeDeps({
       candidates: [cand("u1", "Cilantro Bomb")],
       members: [member("casey")],
@@ -288,7 +318,10 @@ describe("runDiscoverySweep", () => {
     const res = await runDiscoverySweep(deps, CONFIG);
     expect(res.noMatch).toBe(1);
     expect(calls.imported).toEqual([]);
-    expect(calls.logs[0]).toMatchObject({ outcome: "no_match", detail: { stage: "confirm" } });
+    expect(calls.logs[0]).toMatchObject({
+      outcome: "no_match",
+      detail: { stage: "confirm", match_scores: [{ tenant: "casey", score: 1 }] },
+    });
   });
 
   it("attributes only the confirmed subset of matched members", async () => {

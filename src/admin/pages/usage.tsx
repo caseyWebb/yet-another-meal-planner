@@ -6,14 +6,25 @@
 // discriminated result (a `{ configured: false }` shape becomes its own setup card, independent
 // of the other two surfaces — usage-observability/usage-trends/tool-usage-trends). Pure SSR, no
 // client island (admin/CLAUDE.md rule 8): per-segment/per-bar hover detail is carried by the
-// native `title` attribute, the same affordance the Status job uptime sparkline already uses —
-// not a JS tooltip.
+// shared `data-tip-title`/`data-tip-body` sparkline-tooltip primitive (src/admin/ui/kit.tsx +
+// src/admin/client/sparkline-tip.tsx, loaded on every admin page via Layout) rather than the
+// native `title` attribute — the same popover affordance the Status job sparkline uses.
 
 import type { Child } from "hono/jsx";
 import { Layout } from "../ui/layout.js";
 import { Card, StatCardGrid, StatCard, DataTable } from "../ui/kit.js";
 import { DatabaseIcon, SparklesIcon, ActivityIcon, CheckCircleIcon } from "../ui/icons.js";
 import type { UsageResult, TrendsResult, ToolUsageResult, KvAction, NamespaceUsage } from "../../usage.js";
+
+// NOTE on the Workers AI neuron sparkline: unlike KV operations (`kvOperationsAdaptiveGroups`,
+// widened to a `date`-dimensioned 30-day range — see src/usage.ts), Cloudflare's Workers AI
+// GraphQL analytics dataset (`aiInferenceAdaptiveGroups`) was NOT confirmed, against the live
+// schema, to expose a `date`-grouped daily series the same way. Per this module's own discipline
+// ("Cloudflare evolves these dataset/field names; they are verified against the live schema as
+// part of landing this capability"), this view does not fabricate a 30-day neuron series from an
+// unverified field — it renders today's actual value only. If a future change confirms a daily
+// AI history field against the live schema, extend `fetchUsage`/`mapAccountUsage` with an
+// `ai.history` series (mirroring `kv.history`) and render it here with `SparklineTrack`.
 
 const KV_ACTIONS: readonly KvAction[] = ["read", "write", "delete", "list"];
 const TICKS = "▁▂▃▄▅▆▇█";
@@ -35,23 +46,39 @@ const NotConfigured = ({ children }: { children?: Child }) => (
 
 // ── Account resources: per-namespace-stacked KV meters + their 30-day sparkline ────────────────
 
-/** The namespace legend above the meters: one swatch + resolved label + raw id (as the hover
- *  title) per namespace observed in today's snapshot. */
+/** A short per-binding descriptor for the three known KV namespaces (`wrangler.jsonc`
+ *  `kv_namespaces`) — purely a display nicety (this view's own concern, not `src/usage.ts`'s
+ *  data model), so an unresolved/operator-relabeled namespace just omits the note rather than
+ *  guessing at one. */
+const NAMESPACE_NOTES: Record<string, string> = {
+  KROGER_KV: "Kroger SKU/session cache",
+  OAUTH_KV: "OAuth tokens + grants",
+  TENANT_KV: "Per-tenant ephemeral state",
+};
+
+/** The namespace legend above the meters: one swatch + resolved label (the CF-REST-auto-resolved
+ *  or `KV_NAMESPACE_LABELS`-mapped binding name, or the raw id as a last resort) + a short
+ *  descriptor for a known binding + the raw id as the hover title, per namespace observed in
+ *  today's snapshot. */
 const NamespaceLegend = ({ namespaces }: { namespaces: NamespaceUsage[] }) => (
   <div class="kv-legend">
     {namespaces.map((ns) => (
       <span class="kv-leg" title={ns.namespace_id}>
         <span class="kv-leg-dot" style={`background:${ns.resolved.color}`} />
         <span class="kv-leg-name">{ns.resolved.label}</span>
+        {NAMESPACE_NOTES[ns.resolved.label] ? <span class="kv-leg-note muted">{NAMESPACE_NOTES[ns.resolved.label]}</span> : null}
       </span>
     ))}
   </div>
 );
 
 /** One KV-operation meter: a namespace-stacked bar against the daily limit (ok/warn/fail
- *  recolored), with a per-segment `title` breakdown, plus a namespace-stacked 30-day sparkline
- *  (one column per day, stacked bottom→top in namespace order) with a per-column `title`
- *  breakdown summing back to that day's total. */
+ *  recolored), with a per-segment `data-tip-*` breakdown, plus a namespace-stacked 30-day
+ *  sparkline (one column per day, stacked bottom→top in namespace order) with a per-column
+ *  `data-tip-*` breakdown summing back to that day's total. Both use the shared
+ *  `data-tip-title`/`data-tip-body` sparkline-tooltip primitive (the simple `SparklineTrack`
+ *  doesn't cover a stacked-per-namespace column, so the attributes are set directly here — the
+ *  same global client decorator still picks them up). */
 const KvMeter = ({
   action,
   namespaces,
@@ -81,7 +108,8 @@ const KvMeter = ({
           <span
             class="kv-seg"
             style={`width:${limit > 0 ? (ns[action] / limit) * 100 : 0}%;background:${ns.resolved.color}`}
-            title={`${ns.resolved.label}: ${fmt(ns[action])} ${action}s today`}
+            data-tip-title={ns.resolved.label}
+            data-tip-body={`${fmt(ns[action])} ${action}s today`}
           />
         ))}
       </div>
@@ -92,7 +120,12 @@ const KvMeter = ({
               const dt = dayTotals[i];
               const breakdown = d.namespaces.map((ns) => `${ns.resolved.label} ${fmt(ns[action])}`).join(" · ");
               return (
-                <span class="spark-col" style={`height:${Math.max(6, Math.round((dt / peak) * 100))}%`} title={`${d.day}: ${fmt(dt)} ${action}s${breakdown ? ` (${breakdown})` : ""}`}>
+                <span
+                  class="spark-col"
+                  style={`height:${Math.max(6, Math.round((dt / peak) * 100))}%`}
+                  data-tip-title={d.day}
+                  data-tip-body={`${fmt(dt)} ${action}s${breakdown ? ` (${breakdown})` : ""}`}
+                >
                   {d.namespaces.map((ns) => (
                     <span class="spark-seg" style={`height:${dt > 0 ? (ns[action] / dt) * 100 : 0}%;background:${ns.resolved.color}`} />
                   ))}
@@ -108,7 +141,9 @@ const KvMeter = ({
 };
 
 /** The Workers AI neurons meter — a plain (non-stacked) progress bar, since neurons aren't
- *  namespace-attributed. */
+ *  namespace-attributed. No 30-day sparkline: unlike the KV meters, the Cloudflare GraphQL
+ *  Workers AI analytics dataset does not have a confirmed daily-history dimension (see the
+ *  module-level note above) — this renders today's actual value rather than a fabricated series. */
 const NeuronMeter = ({ used, limit }: { used: number; limit: number }) => {
   const level = used >= limit ? "fail" : limit > 0 && used / limit >= 0.8 ? "warn" : "ok";
   const pct = limit > 0 ? Math.min(100, (used / limit) * 100) : 0;
@@ -123,6 +158,10 @@ const NeuronMeter = ({ used, limit }: { used: number; limit: number }) => {
       <div class="progress" role="progressbar" aria-valuenow={Math.round(pct)} aria-valuemin={0} aria-valuemax={100}>
         <span style={`width:${pct}%`} />
       </div>
+      <p class="muted small" style="margin-top:.35rem">
+        Today's value only — Cloudflare's Workers AI analytics do not expose a confirmed daily-history series (unlike KV
+        operations' 30-day trend, above).
+      </p>
     </div>
   );
 };
@@ -269,7 +308,7 @@ export const UsagePage = ({
   trends: TrendsResult;
   tools: ToolUsageResult;
 }) => (
-  <Layout title="Usage · grocery-agent admin" active="/admin/usage">
+  <Layout title="Usage · grocery-agent admin" active="/admin/usage" wide>
     <div class="status-head">
       <h2>Usage</h2>
       <a href="/admin/usage" class="btn" data-variant="ghost" data-size="sm">
@@ -277,7 +316,9 @@ export const UsagePage = ({
       </a>
     </div>
 
-    {usage.configured ? <p class="muted small">Cloudflare usage for {usage.day} (UTC), against the daily free-tier limits.</p> : null}
+    {usage.configured ? (
+      <p class="muted small usage-caption">Cloudflare usage for {usage.day} (UTC), against the daily free-tier limits.</p>
+    ) : null}
     <HeadlineTiles usage={usage} tools={tools} />
 
     <p class="group-label">Account resources · daily free tier</p>

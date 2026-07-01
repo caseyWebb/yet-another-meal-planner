@@ -3,6 +3,7 @@ import {
   fetchUsage,
   fetchUsageTrends,
   fetchToolUsage,
+  fetchNamespaceTitles,
   mapAccountUsage,
   mapKvHistory,
   resolveNamespaceLabel,
@@ -135,6 +136,18 @@ describe("mapAccountUsage", () => {
     expect(usage.kv.namespaces[0].resolved).toEqual({ label: "KROGER_KV", color: "var(--kv-kroger)", unlabeled: false });
   });
 
+  it("prefers a supplied REST title over the id→binding map for the same namespace", () => {
+    const account = {
+      kvOperations: [{ dimensions: { namespaceId: "abc123", actionType: "read" }, sum: { requests: 10 } }],
+      aiInference: [],
+    };
+    const idToBinding = new Map([["abc123", "TENANT_KV"]]);
+    const restTitles = new Map([["abc123", "worker-KROGER_KV"]]);
+    const usage = mapAccountUsage(account, "2026-06-28", 1, idToBinding, undefined, restTitles);
+    if (!usage.configured) throw new Error("expected configured");
+    expect(usage.kv.namespaces[0].resolved).toEqual({ label: "worker-KROGER_KV", color: "var(--kv-kroger)", unlabeled: false });
+  });
+
   it("sums Workers AI neurons per model and a total, dropping unknown KV actions", () => {
     const account = {
       kvOperations: [{ dimensions: { namespaceId: "ns_a", actionType: "bogus" }, sum: { requests: 99 } }],
@@ -207,7 +220,9 @@ describe("fetchUsage", () => {
     const now = Date.parse("2026-06-28T10:00:00Z");
     const result = await fetchUsage(configuredEnv(), { fetchImpl: f.fetchImpl, now: () => now });
     if (!result.configured) throw new Error("expected configured");
-    expect(f.calls).toBe(1);
+    // Two outbound calls: the GraphQL usage query, plus the REST namespace-titles lookup
+    // (fallback-chain step (a)) fired in parallel.
+    expect(f.calls).toBe(2);
     expect(result.day).toBe("2026-06-28");
     expect(result.kv.totals.write).toBe(1440);
     expect(result.ai.neurons_used).toBe(42);
@@ -271,6 +286,79 @@ describe("fetchUsage", () => {
     expect(quietDay.namespaces[0]).toEqual({ namespace_id: "ns_a", read: 0, write: 0, delete: 0, list: 0, resolved: { label: "KROGER_KV", color: "var(--kv-kroger)", unlabeled: false } });
   });
 
+  it("resolves namespace names via the CF REST API automatically (no KV_NAMESPACE_LABELS needed)", async () => {
+    const requestedUrls: string[] = [];
+    const fetchImpl = (async (url: string) => {
+      requestedUrls.push(url);
+      if (url === "https://api.cloudflare.com/client/v4/graphql") {
+        return new Response(
+          JSON.stringify(
+            graphqlBody({
+              kvOperations: [{ dimensions: { namespaceId: "abc123", actionType: "read", date: "2026-06-28" }, sum: { requests: 5 } }],
+              aiInference: [],
+            }),
+          ),
+          { status: 200 },
+        );
+      }
+      // The REST namespaces call.
+      return new Response(JSON.stringify({ success: true, result: [{ id: "abc123", title: "worker-KROGER_KV" }], result_info: { page: 1, total_pages: 1 } }), {
+        status: 200,
+      });
+    }) as unknown as typeof fetch;
+    const now = Date.parse("2026-06-28T10:00:00Z");
+    // No KV_NAMESPACE_LABELS set — the name/color must still resolve, via the REST call alone.
+    const result = await fetchUsage(configuredEnv(), { fetchImpl, now: () => now });
+    if (!result.configured) throw new Error("expected configured");
+    expect(result.kv.namespaces[0].resolved).toEqual({ label: "worker-KROGER_KV", color: "var(--kv-kroger)", unlabeled: false });
+    expect(requestedUrls.some((u) => u.includes("/storage/kv/namespaces"))).toBe(true);
+  });
+
+  it("degrades gracefully to KV_NAMESPACE_LABELS when the REST namespaces call 403s (token missing KV-read scope)", async () => {
+    const fetchImpl = (async (url: string) => {
+      if (url === "https://api.cloudflare.com/client/v4/graphql") {
+        return new Response(
+          JSON.stringify(
+            graphqlBody({
+              kvOperations: [{ dimensions: { namespaceId: "abc123", actionType: "read", date: "2026-06-28" }, sum: { requests: 5 } }],
+              aiInference: [],
+            }),
+          ),
+          { status: 200 },
+        );
+      }
+      return new Response(JSON.stringify({ success: false }), { status: 403 });
+    }) as unknown as typeof fetch;
+    const now = Date.parse("2026-06-28T10:00:00Z");
+    const env = { CF_ACCOUNT_ID: "acct123", CF_ANALYTICS_TOKEN: "tok", KV_NAMESPACE_LABELS: "abc123:KROGER_KV" } as unknown as Env;
+    const result = await fetchUsage(env, { fetchImpl, now: () => now });
+    if (!result.configured) throw new Error("expected configured");
+    // The REST call 403'd (degrading to an empty title map), so resolution falls through to
+    // KV_NAMESPACE_LABELS — the page still renders correct names/colors, not "unlabeled".
+    expect(result.kv.namespaces[0].resolved).toEqual({ label: "KROGER_KV", color: "var(--kv-kroger)", unlabeled: false });
+  });
+
+  it("degrades to the raw id when both the REST call and KV_NAMESPACE_LABELS are unavailable", async () => {
+    const fetchImpl = (async (url: string) => {
+      if (url === "https://api.cloudflare.com/client/v4/graphql") {
+        return new Response(
+          JSON.stringify(
+            graphqlBody({
+              kvOperations: [{ dimensions: { namespaceId: "abc123", actionType: "read", date: "2026-06-28" }, sum: { requests: 5 } }],
+              aiInference: [],
+            }),
+          ),
+          { status: 200 },
+        );
+      }
+      return new Response(JSON.stringify({ success: false }), { status: 403 });
+    }) as unknown as typeof fetch;
+    const now = Date.parse("2026-06-28T10:00:00Z");
+    const result = await fetchUsage(configuredEnv(), { fetchImpl, now: () => now });
+    if (!result.configured) throw new Error("expected configured");
+    expect(result.kv.namespaces[0].resolved).toEqual({ label: "abc123", color: "var(--kv-unlabeled)", unlabeled: true });
+  });
+
   it("throws upstream_unavailable on a non-2xx", async () => {
     const f = fetchReturning("nope", 403);
     await expect(fetchUsage(configuredEnv(), { fetchImpl: f.fetchImpl, now: () => 1 })).rejects.toMatchObject({
@@ -318,6 +406,99 @@ describe("resolveNamespaceLabel", () => {
     const a = resolveNamespaceLabel("abc", idToBinding);
     const b = resolveNamespaceLabel("abc", idToBinding);
     expect(a).toEqual(b);
+  });
+
+  // Fallback-chain ordering: (a) REST title auto-resolution wins, (b) KV_NAMESPACE_LABELS is the
+  // fallback, (c) the raw id is the last resort.
+  it("prefers the REST title over KV_NAMESPACE_LABELS when both are available for the same id", () => {
+    const idToBinding = new Map([["abc", "TENANT_KV"]]); // (b) would say TENANT_KV
+    const resolved = resolveNamespaceLabel("abc", idToBinding, "worker-KROGER_KV"); // (a) says KROGER_KV
+    expect(resolved).toEqual({ label: "worker-KROGER_KV", color: "var(--kv-kroger)", unlabeled: false });
+  });
+
+  it("matches a REST title against a known binding by substring (Cloudflare may prefix with the worker name)", () => {
+    expect(resolveNamespaceLabel("id1", new Map(), "my-worker-OAUTH_KV")).toEqual({
+      label: "my-worker-OAUTH_KV",
+      color: "var(--kv-oauth)",
+      unlabeled: false,
+    });
+  });
+
+  it("falls back to KV_NAMESPACE_LABELS when no REST title is supplied for the id", () => {
+    const idToBinding = new Map([["abc", "OAUTH_KV"]]);
+    expect(resolveNamespaceLabel("abc", idToBinding)).toEqual({ label: "OAUTH_KV", color: "var(--kv-oauth)", unlabeled: false });
+  });
+
+  it("shows a REST title verbatim, unlabeled-colored, when it matches none of the known bindings", () => {
+    // A namespace belonging to a different Worker on the same account, or a future 4th binding.
+    expect(resolveNamespaceLabel("id2", new Map(), "some-other-namespace")).toEqual({
+      label: "some-other-namespace",
+      color: "var(--kv-unlabeled)",
+      unlabeled: true,
+    });
+  });
+
+  it("falls all the way back to the raw id when neither a REST title nor KV_NAMESPACE_LABELS resolves it", () => {
+    expect(resolveNamespaceLabel("deadbeef", new Map())).toEqual({ label: "deadbeef", color: "var(--kv-unlabeled)", unlabeled: true });
+  });
+});
+
+describe("fetchNamespaceTitles", () => {
+  it("returns an id → title map from a single-page REST response", async () => {
+    const f = fetchReturning({
+      success: true,
+      result: [
+        { id: "abc123", title: "worker-KROGER_KV" },
+        { id: "def456", title: "worker-OAUTH_KV" },
+      ],
+      result_info: { page: 1, total_pages: 1 },
+    });
+    const titles = await fetchNamespaceTitles("acct123", "tok", { fetchImpl: f.fetchImpl, now: () => 1 });
+    expect(titles.get("abc123")).toBe("worker-KROGER_KV");
+    expect(titles.get("def456")).toBe("worker-OAUTH_KV");
+    expect(f.calls).toBe(1);
+  });
+
+  it("follows pagination across multiple pages", async () => {
+    let call = 0;
+    const fetchImpl = (async () => {
+      call += 1;
+      const body =
+        call === 1
+          ? { success: true, result: [{ id: "a", title: "ns-a" }], result_info: { page: 1, total_pages: 2 } }
+          : { success: true, result: [{ id: "b", title: "ns-b" }], result_info: { page: 2, total_pages: 2 } };
+      return new Response(JSON.stringify(body), { status: 200 });
+    }) as unknown as typeof fetch;
+    const titles = await fetchNamespaceTitles("acct123", "tok", { fetchImpl, now: () => 1 });
+    expect(call).toBe(2);
+    expect(titles.get("a")).toBe("ns-a");
+    expect(titles.get("b")).toBe("ns-b");
+  });
+
+  it("degrades to an empty map (never throws) on a 403 — e.g. a token missing 'Workers KV Storage: Read' scope", async () => {
+    const f = fetchReturning({ success: false, errors: [{ message: "Authentication error" }] }, 403);
+    const titles = await fetchNamespaceTitles("acct123", "tok", { fetchImpl: f.fetchImpl, now: () => 1 });
+    expect(titles.size).toBe(0);
+  });
+
+  it("degrades to an empty map on a transport failure", async () => {
+    const fetchImpl = (async () => {
+      throw new Error("network down");
+    }) as unknown as typeof fetch;
+    const titles = await fetchNamespaceTitles("acct123", "tok", { fetchImpl, now: () => 1 });
+    expect(titles.size).toBe(0);
+  });
+
+  it("degrades to an empty map on an unparseable body", async () => {
+    const fetchImpl = (async () => new Response("not json", { status: 200 })) as unknown as typeof fetch;
+    const titles = await fetchNamespaceTitles("acct123", "tok", { fetchImpl, now: () => 1 });
+    expect(titles.size).toBe(0);
+  });
+
+  it("degrades to an empty map when the body reports success: false", async () => {
+    const f = fetchReturning({ success: false, result: [] });
+    const titles = await fetchNamespaceTitles("acct123", "tok", { fetchImpl: f.fetchImpl, now: () => 1 });
+    expect(titles.size).toBe(0);
   });
 });
 

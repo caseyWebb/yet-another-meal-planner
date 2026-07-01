@@ -204,19 +204,45 @@ export function deriveHalt(row: DiscoveryLogRow): { haltStage: StageKey; kind: C
   }
 }
 
+/** One member's cosine match score as persisted in a `discovery_log` row's `detail.match_scores`
+ *  (the discovery-sweep spec's "match-stage skip or gate carries the computed member scores"). */
+export interface MatchScore {
+  tenant: string;
+  score: number;
+}
+
+/** Extract the per-member match scores from a row's `detail.match_scores`, if present (only
+ *  populated for a `no_match` row halted at `match`/`confirm`, or a `dietary_gated` row — a
+ *  candidate halted earlier, e.g. at `triage`, or resolved to `imported`, never computed them). */
+export function matchScoresFromDetail(detail: unknown): MatchScore[] | null {
+  if (!detail || typeof detail !== "object") return null;
+  const raw = (detail as Record<string, unknown>).match_scores;
+  if (!Array.isArray(raw)) return null;
+  const scores = raw
+    .map((s) => (s && typeof s === "object" ? (s as Record<string, unknown>) : null))
+    .filter((s): s is Record<string, unknown> => s !== null && typeof s.tenant === "string" && typeof s.score === "number")
+    .map((s) => ({ tenant: s.tenant as string, score: s.score as number }));
+  return scores.length > 0 ? scores : null;
+}
+
 /** One enriched candidate row for the /admin/discovery pipeline view: the raw log row plus its
- *  derived furthest-stage/halt-point presentation. */
+ *  derived furthest-stage/halt-point presentation and, when the row halted at the match stage,
+ *  the per-member cosine scores computed there. */
 export interface DiscoveryCandidate extends DiscoveryLogRow {
   haltStage: StageKey;
   kind: CandidateKind;
   retryable: boolean;
+  /** Per-member match scores from `detail.match_scores`, or null when not applicable/absent
+   *  (e.g. imported, duplicate, or halted before the match stage). */
+  matchScores: MatchScore[] | null;
 }
 
-/** The candidate-pipeline view's read: readDiscoveryLog, enriched per-row with deriveHalt.
- *  Same bounded/degrade-on-storage-error contract as the other readers (no separate query). */
+/** The candidate-pipeline view's read: readDiscoveryLog, enriched per-row with deriveHalt and
+ *  the extracted match scores. Same bounded/degrade-on-storage-error contract as the other
+ *  readers (no separate query). */
 export async function readDiscoveryCandidates(env: Env, limit = 200): Promise<DiscoveryCandidate[]> {
   const rows = await readDiscoveryLog(env, limit);
-  return rows.map((row) => ({ ...row, ...deriveHalt(row) }));
+  return rows.map((row) => ({ ...row, ...deriveHalt(row), matchScores: matchScoresFromDetail(row.detail) }));
 }
 
 /** Due retryable rows — outcome IN ('error','failed'), next_retry_at <= now, not rejected.

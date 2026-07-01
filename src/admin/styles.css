@@ -73,14 +73,12 @@
   .summary { display: flex; flex-wrap: wrap; gap: .15rem .9rem; margin: 0 0 .45rem 1.1rem; }
   .summary-item { display: flex; gap: .35rem; align-items: baseline; }
   .summary-v { font-family: ui-monospace, monospace; color: #444; word-break: break-all; }
-  /* Logs master/detail. */
-  .logs { display: grid; grid-template-columns: 12rem minmax(0, 1fr); gap: 1.25rem; }
-  .logs > * { min-width: 0; }
-  .log-sources { list-style: none; margin: .25rem 0 0; padding: 0; }
-  .log-source { border-radius: .35rem; }
-  .log-source.active { background: #fff7ee; }
-  .log-source-link { display: block; padding: .4rem .6rem; color: #555; text-decoration: none; font-size: .9rem; }
-  .log-source.active .log-source-link { color: #222; font-weight: 600; }
+  /* Job/candidate-property pill (StatPill primitive, ui/kit.tsx) — Status job summary counts. */
+  .jstats { display: flex; flex-wrap: wrap; gap: .35rem .4rem; margin-top: .6rem; }
+  .jstat { display: inline-flex; align-items: center; gap: .35rem; background: color-mix(in oklch, var(--muted) 55%, transparent); border: 1px solid var(--border); border-radius: 999px; padding: .12rem .55rem; font-size: .72rem; }
+  .jstat-k { color: var(--muted-foreground); }
+  .jstat-v { font-family: var(--font-mono); font-weight: 600; color: #2a2a2a; }
+  /* Logs — a single, full-width destination (no sidebar/submenu). */
   .log-head { display: flex; justify-content: space-between; align-items: center; }
   .log-actions { display: flex; gap: .75rem; align-items: center; }
   .entry-list { list-style: none; margin: 0; padding: 0; }
@@ -164,6 +162,10 @@
   .spark-bar.ok { background: #2da44e; }
   .spark-bar.fail { background: #cf222e; opacity: 1; }
 
+  /* A failing job's row gets a subtle red-tinted card so it reads as "wrong" at a glance, not
+     just via its badge/dot. */
+  .job-item.fail { border-color: color-mix(in oklch, var(--destructive) 35%, var(--border)); background: color-mix(in oklch, var(--destructive) 3%, #fff); }
+
   /* Job-row meta line (last-run age · healthy/unhealthy-since) + the run-history uptime block. */
   .job-meta { color: var(--muted-foreground); font-size: .82rem; }
   .job-sep { color: var(--muted-foreground); }
@@ -182,7 +184,42 @@
   .switch-track::after { content: ""; position: absolute; top: 2px; left: 2px; width: 1rem; height: 1rem; border-radius: 50%; background: #fff; transition: transform .12s; }
   .switch input:checked + .switch-track { background: var(--accent); }
   .switch input:checked + .switch-track::after { transform: translateX(.9rem); }
-  .slider { width: 100%; }
+
+  /* Range-input track fill. Basecoat's Vega pack does NOT read `--slider-value` — its own
+     track is a flat `bg-muted` with no gradient — so this rule is the only thing painting the
+     filled portion of a `Slider` (kit.tsx sets `--slider-value` as a percent). WebKit paints the
+     gradient on the runnable-track pseudo-element; Firefox has no equivalent "gradient stop" API,
+     so it gets a flat `--moz-range-track` (muted) with `--moz-range-progress` (accent) layered on
+     top for the filled segment — the two engines' idiomatic mechanisms for the same visual. */
+  .slider { width: 100%; -webkit-appearance: none; appearance: none; background: transparent; height: 1.1rem; }
+  .slider::-webkit-slider-runnable-track {
+    height: .4rem;
+    border-radius: 9999px;
+    background: linear-gradient(to right, var(--accent) 0 var(--slider-value, 0%), var(--muted) var(--slider-value, 0%) 100%);
+  }
+  .slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: .95rem;
+    height: .95rem;
+    margin-top: calc((.4rem - .95rem) / 2);
+    border-radius: 50%;
+    background: #fff;
+    border: 2px solid var(--accent);
+    box-shadow: var(--shadow-sm);
+    cursor: pointer;
+  }
+  .slider::-moz-range-track { height: .4rem; border-radius: 9999px; background: var(--muted); }
+  .slider::-moz-range-progress { height: .4rem; border-radius: 9999px; background: var(--accent); }
+  .slider::-moz-range-thumb {
+    width: .95rem;
+    height: .95rem;
+    border-radius: 50%;
+    background: #fff;
+    border: 2px solid var(--accent);
+    box-shadow: var(--shadow-sm);
+    cursor: pointer;
+  }
 
   /* Dropdown menu (presentational shell; an island toggles [hidden] on the popover). */
   .dropdown-menu { position: relative; display: inline-flex; }
@@ -191,10 +228,27 @@
   .menu-item:hover { background: color-mix(in oklch, var(--muted) 40%, #fff); }
   .menu-item.destructive { color: #cf222e; }
 
-  /* Sparkline hover tooltip (shared by Status · Usage). */
+  /* Sparkline hover tooltip (shared by Status · Usage — src/admin/client/sparkline-tip.tsx). */
   .bar-tip { position: fixed; z-index: 80; transform: translate(-50%, calc(-100% - 8px)); max-width: 17rem; padding: .45rem .6rem; border-radius: var(--radius-md); background: var(--foreground); color: var(--background); box-shadow: var(--shadow-lg); pointer-events: none; }
-  .bar-tip-title { font-size: .72rem; font-weight: 600; }
+  .bar-tip[hidden] { display: none; }
+  .bar-tip-title { font-size: .72rem; font-weight: 600; font-variant-numeric: tabular-nums; }
   .bar-tip-body { font-size: .72rem; opacity: .8; margin-top: .1rem; line-height: 1.35; }
+  .bar-tip.fail { box-shadow: 0 0 0 1px color-mix(in oklch, var(--destructive) 55%, transparent), var(--shadow-lg); }
+  .bar-tip.fail .bar-tip-title { color: #ff8b85; opacity: 1; }
+  .bar-tip.fail .bar-tip-body { opacity: .95; }
+
+  /* SparklineTrack primitive (ui/kit.tsx): a max-width-capped, right-aligned segment track
+     (an under-populated series doesn't stretch to fill the row) + the OLDER/NOW axis caption. */
+  .spark-track-wrap { max-width: 22rem; margin-left: auto; }
+  .spark-track { display: flex; gap: 2px; align-items: stretch; height: 22px; justify-content: flex-end; }
+  .spark-seg-tip, a.spark-seg-link { flex: 1 1 0; min-width: 2px; max-width: 10px; }
+  .spark-seg-tip { display: block; border-radius: 1px; background: var(--accent); opacity: .85; cursor: default; }
+  .spark-seg-tip.ok { background: #2da44e; opacity: 1; }
+  .spark-seg-tip.fail { background: #cf222e; opacity: 1; }
+  a.spark-seg-link { display: flex; align-items: flex-end; text-decoration: none; }
+  a.spark-seg-link .spark-seg-tip { width: 100%; }
+  a.spark-seg-link:hover .spark-seg-tip { opacity: .65; }
+  .spark-axis { display: flex; justify-content: space-between; margin-top: .25rem; font-size: .68rem; color: var(--muted-foreground); max-width: 22rem; margin-left: auto; }
 
   /* ── Global corner health dock ── */
   .health-dock { position: fixed; right: 1.25rem; bottom: 1.25rem; z-index: 60; display: flex; flex-direction: column; align-items: flex-end; gap: .6rem; }
@@ -292,6 +346,9 @@
   .pv-link { color: var(--accent); word-break: break-all; }
 
   /* ── Usage (admin-ui-redesign-usage) ── */
+  /* Spacing below the "Cloudflare usage for <day> (UTC)…" caption, so it doesn't crowd the
+     headline stat-tile grid directly beneath it. */
+  .usage-caption { margin-bottom: 1rem; }
   /* Namespace palette: a small warm categorical trio + the generic "unlabeled" fallback,
      consistent with the mock's --kv-kroger/--kv-oauth/--kv-tenant swatches. Referenced by
      src/usage.ts's static binding→color table (NamespaceUsage.resolved.color). */
@@ -342,7 +399,20 @@
   .pill-count { margin-left: .35rem; font-size: .72rem; opacity: .75; }
   .dc-list { display: flex; flex-direction: column; gap: .65rem; margin-top: .25rem; }
   .dc-card { background: #fff; border: 1px solid var(--border); border-radius: var(--radius-lg); box-shadow: var(--shadow-xs); overflow: hidden; }
-  .dc-main { display: block; width: 100%; text-align: left; background: none; border: 0; font: inherit; padding: .8rem .95rem .6rem; cursor: pointer; }
+  /* The whole collapsed card (headrow, source, stage track, summary, retry clock, and the
+     Details toggle) lives in <summary> — a native, always-visible, bidirectional disclosure
+     control (no client JS), mirroring the Logs area's <details>/<summary> pattern. */
+  .dc-details > summary { list-style: none; cursor: pointer; }
+  .dc-details > summary::-webkit-details-marker,
+  .dc-details > summary::marker { display: none; content: ""; }
+  .dc-main { display: block; width: 100%; text-align: left; background: none; border: 0; font: inherit; padding: .8rem .95rem .6rem; }
+  /* The "Details ▾ / Hide ▴" affordance flips with the <details> open state — always one of the
+     two is visible, so it never reads as undiscoverable, and a second click always collapses. */
+  .dc-expand-open { display: none; }
+  .dc-details[open] .dc-expand-closed { display: none; }
+  .dc-details[open] .dc-expand-open { display: inline-flex; align-items: center; gap: .25rem; }
+  .dc-expand-closed, .dc-expand-open { display: inline-flex; align-items: center; gap: .25rem; }
+  .dc-expand .up { transform: rotate(180deg); }
   .dc-headrow { display: flex; align-items: center; justify-content: space-between; gap: .6rem; }
   .dc-title { font-weight: 500; }
   .dc-src { display: flex; align-items: center; gap: .4rem; color: var(--muted-foreground); font-size: .8rem; margin-top: .2rem; }
@@ -350,6 +420,7 @@
   .dimsep { opacity: .5; }
   .dc-url { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .dc-summary { margin-top: .55rem; font-size: .85rem; color: #333; }
+  .dc-match-scores { display: flex; flex-wrap: wrap; gap: .3rem; margin-top: .45rem; }
   .dc-foot { display: flex; align-items: center; justify-content: space-between; gap: .75rem; padding: .5rem .95rem .75rem; border-top: 1px solid #f4f4f4; }
   .dc-retry { display: flex; align-items: center; gap: .6rem; }
   .dc-retry-state { display: inline-flex; align-items: center; gap: .3rem; }
@@ -418,6 +489,42 @@
   .cfg-add-wide { flex: 1 1 16rem; min-width: 0; }
   .cfg-add-fields { align-items: center; flex-wrap: wrap; }
 
+  /* Icon-only trash "remove" button (RemoveButton primitive, ui/kit.tsx). */
+  .cfg-remove { background: none; border: 0; cursor: pointer; color: #bbb; padding: .25rem; border-radius: var(--radius-sm); vertical-align: middle; display: inline-flex; }
+  .cfg-remove:hover { color: #cf222e; background: color-mix(in oklch, var(--destructive) 8%, transparent); }
+  .cfg-remove:disabled { opacity: .5; cursor: default; }
+
+  /* Corpus editor table (Discovery feeds / Flyer terms / Aliases) — mirrors the mock's
+     CorpusEditor: a bordered `.cfg-table` over a name+mono-url feed cell, tabular-num weight,
+     chip tags, and a right-aligned actions cell holding the per-row probe + trash remove. */
+  .cfg-table-wrap { border: 1px solid var(--border); border-radius: var(--radius-lg); overflow: hidden; background: #fff; box-shadow: var(--shadow-xs); }
+  .cfg-table { width: 100%; border-collapse: collapse; font-size: .85rem; }
+  .cfg-table thead th { text-align: left; font-size: .68rem; text-transform: uppercase; letter-spacing: .04em; color: #888; font-weight: 600; padding: .55rem .8rem; background: color-mix(in oklch, var(--muted) 40%, transparent); border-bottom: 1px solid var(--border); }
+  .cfg-table tbody td { padding: .55rem .8rem; border-bottom: 1px solid #f2f2f2; vertical-align: middle; }
+  .cfg-table tbody tr:last-child td { border-bottom: 0; }
+  .cfg-mono { font-family: var(--font-mono, ui-monospace, monospace); font-size: .82rem; }
+  .cfg-canon { color: #555; display: flex; align-items: center; gap: .3rem; }
+  .cfg-canon svg { color: var(--accent, var(--primary)); }
+  .cfg-num { font-variant-numeric: tabular-nums; }
+  .cfg-feed { display: flex; flex-direction: column; gap: .05rem; }
+  .cfg-feed-name { font-weight: 500; color: #1a1a1a; }
+  .cfg-feed-url { font-family: var(--font-mono, ui-monospace, monospace); font-size: .72rem; }
+  .cfg-tags { display: inline-flex; flex-wrap: wrap; gap: .25rem; }
+  .cfg-tag { font-size: .68rem; background: color-mix(in oklch, var(--muted) 60%, transparent); border: 1px solid var(--border); border-radius: 999px; padding: .02rem .45rem; color: #555; }
+  .cfg-th-act { width: 1%; }
+  .cfg-row-act { white-space: nowrap; text-align: right; }
+  .cfg-mini { font: inherit; font-size: .76rem; background: #fff; border: 1px solid var(--border); border-radius: var(--radius-sm); padding: .15rem .55rem; cursor: pointer; color: #444; margin-right: .4rem; }
+  .cfg-mini:hover { border-color: #bbb; }
+  .cfg-mini:disabled { opacity: .6; cursor: default; }
+  .cfg-probe { font-size: .74rem; margin-right: .5rem; }
+  .cfg-probe.ok { color: #1a7f37; }
+  .cfg-probe.fail { color: #cf222e; }
+
+  /* The "Add" panel beneath a corpus table (feeds / flyer terms / aliases / email sources). */
+  .cfg-add { margin-top: .9rem; background: #fff; border: 1px solid var(--border); border-radius: var(--radius-lg); box-shadow: var(--shadow-xs); padding: .85rem 1rem 1rem; }
+  .cfg-add-label { font-size: .7rem; text-transform: uppercase; letter-spacing: .04em; color: #999; font-weight: 600; display: block; margin-bottom: .1rem; }
+  .cfg-add-norm { width: 10rem; }
+
   /* ── Data explorer (admin-ui-redesign-data) ── */
   /* Recipes/Stores shared list-row vocabulary: title + slug + facet chips + trailing badge. */
   .link-action { display: inline-flex; align-items: center; gap: .3rem; font: inherit; background: none; border: 0; color: var(--muted-foreground); text-decoration: none; cursor: pointer; padding: 0; margin-bottom: .9rem; }
@@ -449,6 +556,27 @@
   /* Relevance bar (Hybrid mode). */
   .relbar { display: inline-block; width: 3.5rem; height: .4rem; border-radius: 9999px; background: var(--muted); overflow: hidden; }
   .relbar-fill { display: block; height: 100%; background: var(--accent); }
+
+  /* Rendered markdown body (Recipe detail, Guidance) — `renderMarkdown`'s output container. */
+  .md { font-size: .9rem; line-height: 1.6; color: #333; }
+  .md > :first-child { margin-top: 0; }
+  .md > :last-child { margin-bottom: 0; }
+  .md h1 { font-size: 1.05rem; font-weight: 600; margin: 1.3rem 0 .5rem; }
+  .md h2 { font-size: .95rem; font-weight: 600; margin: 1.1rem 0 .4rem; }
+  .md h3 { font-size: .88rem; font-weight: 600; margin: 1rem 0 .35rem; }
+  .md p { margin: .45rem 0; }
+  .md ul, .md ol { margin: .3rem 0 .3rem 1.1rem; padding: 0; }
+  .md li { margin: .15rem 0; }
+  .md li > p { margin: .15rem 0; }
+  .md a { color: var(--accent); }
+  .md blockquote { margin: .6rem 0; padding: .1rem 0 .1rem .9rem; border-left: 2px solid var(--border); color: var(--muted-foreground); }
+  .md code { font-family: var(--font-mono); font-size: .85em; background: var(--muted); padding: .05rem .3rem; border-radius: 4px; }
+  .md pre { background: var(--muted); border: 1px solid var(--border); border-radius: var(--radius-md); padding: .7rem .9rem; overflow: auto; }
+  .md pre code { background: none; padding: 0; }
+  .md hr { border: 0; border-top: 1px solid var(--border); margin: 1rem 0; }
+  .md table { border-collapse: collapse; width: 100%; margin: .5rem 0; font-size: .85rem; }
+  .md th, .md td { border: 1px solid var(--border); padding: .3rem .55rem; text-align: left; }
+  .md th { background: color-mix(in oklch, var(--muted) 45%, transparent); font-weight: 600; }
 
   /* Recipe/Store detail header + pipeline strip. */
   .rd-head { display: flex; align-items: flex-start; justify-content: space-between; gap: .75rem; margin-bottom: .5rem; }

@@ -12,6 +12,9 @@
 // (/admin/discovery — admin-ui-redesign-discovery), not under Logs. A `discovery-sweep` run's
 // expanded detail links out there for per-candidate granularity; the legacy
 // `/admin/logs/discovery` route (src/admin/app.tsx) redirects to it.
+//
+// The Logs area is a single destination — the all-jobs run log — so it renders full-width with
+// no sidebar/submenu (admin-ui-fidelity-pass).
 
 import { Layout } from "../ui/layout.js";
 import { ItemGroup, Pager, PrettyKV } from "../ui/kit.js";
@@ -188,20 +191,9 @@ export const AllJobsLog = ({
   );
 };
 
-/** The Logs submenu. Today it has one destination (a future log source is added here per the
- *  "A new log source is added as a submenu destination" scenario) — the Discovery candidate log
- *  is NOT one of them; it lives at the top-level Discovery area (/admin/discovery). */
-const LogSubnav = ({ active }: { active: "all" }) => (
-  <ul class="log-sources">
-    <li class={active === "all" ? "log-source active" : "log-source"}>
-      <a class="log-source-link" href="/admin/logs">
-        All jobs
-      </a>
-    </li>
-  </ul>
-);
-
-/** The all-jobs run log — the default `/admin/logs` content, and the area's sole content. Pure SSR. */
+/** The all-jobs run log — the default `/admin/logs` content, and the area's sole content: a
+ *  full-width, single-column page with no sidebar/submenu (the Discovery candidate log lives at
+ *  the top-level Discovery area, /admin/discovery, not here). Pure SSR. */
 export const LogsPage = ({
   runs,
   job,
@@ -216,9 +208,6 @@ export const LogsPage = ({
   highlightId?: string | null;
 }) => (
   <Layout title="Logs · grocery-agent admin" active="/admin/logs" wide>
-    <div class="logs">
-      <LogSubnav active="all" />
-      <AllJobsLog runs={runs} job={job} page={page} now={now} highlightId={highlightId} />
-    </div>
+    <AllJobsLog runs={runs} job={job} page={page} now={now} highlightId={highlightId} />
   </Layout>
 );

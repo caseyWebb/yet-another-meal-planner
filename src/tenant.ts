@@ -146,8 +146,12 @@ export async function touchTenantActivity(env: Env, tenantId: string, nowMs = Da
         nowMs,
       );
     }
-  } catch {
-    // Best-effort: a storage hiccup here must never fail tenant resolution.
+  } catch (e) {
+    // Best-effort: a storage hiccup here must never fail tenant resolution — but a genuine
+    // write failure must not present identically to "no activity yet" (design.md Risk: a
+    // silently swallowed error here made the Members "awaiting connection" status
+    // undiagnosable). Log it; never throw, never add latency to the caller.
+    console.warn(`[tenant] touchTenantActivity write failed for ${tenantId}:`, e instanceof Error ? e.message : e);
   }
 }
 
