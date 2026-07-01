@@ -352,6 +352,40 @@ describe("oauthGrantTenantIds", () => {
     };
     await expect(oauthGrantTenantIds(failingKv)).resolves.toEqual(new Set());
   });
+
+  it("follows cursor-based pagination across multiple list() pages — a member whose grant key ONLY appears on the second page must still resolve as connected, proving the multi-page loop isn't truncated to the first page", async () => {
+    // page 1: incomplete, no grant keys yet (just noise + a cursor to continue)
+    // page 2: complete, holds the only grant key for "noor"
+    const pagingKv: KvStore = {
+      async get() { return null; },
+      async put() {},
+      async delete() {},
+      async list({ cursor }: { prefix?: string; cursor?: string } = {}) {
+        if (!cursor) {
+          return {
+            keys: [{ name: "client:abc" }],
+            list_complete: false,
+            cursor: "page2",
+          };
+        }
+        return {
+          keys: [{ name: "grant:noor:11111111-1111-1111-1111-111111111111" }],
+          list_complete: true,
+        };
+      },
+    } as unknown as KvStore;
+    const ids = await oauthGrantTenantIds(pagingKv);
+    expect(ids).toEqual(new Set(["noor"]));
+  });
+
+  it("skips a malformed grant key with no second colon rather than mis-parsing a corrupted tenant id", async () => {
+    const kv = memKv({
+      "grant:foo": JSON.stringify({ id: "malformed" }), // no `<userId>:<grantId>` split
+      "grant:casey:11111111-1111-1111-1111-111111111111": JSON.stringify({ id: "g1" }),
+    });
+    const ids = await oauthGrantTenantIds(kv as unknown as KvStore);
+    expect(ids).toEqual(new Set(["casey"]));
+  });
 });
 
 describe("rotate", () => {

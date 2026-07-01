@@ -33,6 +33,6 @@
 
 ## 5. Cross-cutting
 
-- [ ] 5.1 Run `aubr typecheck` and `aubr test` after each fix lands to keep the branch green incrementally
-- [ ] 5.2 Confirm no `docs/TOOLS.md`/`docs/SCHEMAS.md`/`docs/ARCHITECTURE.md` drift remains once all four fixes are implemented (per the "keep contract docs in lockstep, same pass" rule)
-- [ ] 5.3 Note in the PR description that Data > Stores being empty is confirmed not-a-bug (zero rows in the operator's `stores` table) and is out of scope for this change
+- [x] 5.1 Run `aubr typecheck` and `aubr test` after each fix lands to keep the branch green incrementally
+- [x] 5.2 Confirm no `docs/TOOLS.md`/`docs/SCHEMAS.md`/`docs/ARCHITECTURE.md` drift remains once all four fixes are implemented (per the "keep contract docs in lockstep, same pass" rule)
+- [x] 5.3 Note in the PR description that Data > Stores being empty is confirmed not-a-bug (zero rows in the operator's `stores` table) and is out of scope for this change

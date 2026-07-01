@@ -259,7 +259,9 @@ export async function oauthGrantTenantIds(kv: KvStore): Promise<Set<string>> {
       const res = await kv.list({ prefix: OAUTH_GRANT_PREFIX, cursor });
       for (const k of res.keys) {
         const rest = k.name.slice(OAUTH_GRANT_PREFIX.length);
-        const userId = rest.slice(0, rest.indexOf(":"));
+        const idx = rest.indexOf(":");
+        if (idx < 0) continue; // malformed key (no `<userId>:<grantId>` split) — skip rather than derive a corrupted tenant id
+        const userId = rest.slice(0, idx);
         if (userId) ids.add(userId);
       }
       if (res.list_complete) break;
