@@ -48,7 +48,7 @@ import { LogsPage, PAGE_SIZE as LOGS_PAGE_SIZE } from "./pages/logs.js";
 import { DiscoveryPage } from "./pages/discovery.js";
 import { ScrapersPage } from "./pages/scrapers.js";
 import { NormalizePage, parseQuery } from "./pages/normalize.js";
-import { readNormalizationPage } from "../normalize-admin.js";
+import { readNormalizationPage, readNodesPage } from "../normalize-admin.js";
 import { readReconcileObservability } from "../reconcile-admin.js";
 import { addAliases, deleteAlias, enqueueNovelTerms, deleteNormalizationLog } from "../corpus-db.js";
 import { getDiscoveryConfig, putDiscoveryConfig, analyzeDiscovery, dryRunDiscovery, testFeed, getOperatorConfig, putOperatorConfig, listCorpus, addCorpus, deleteCorpus } from "./config-api.js";
@@ -322,11 +322,12 @@ registerConfigRoutes(app);
 // client/normalize.tsx. The Aliases tab subsumes the retired Config › Aliases editor.
 app.get("/normalize", async (c) => {
   const query = parseQuery(new URL(c.req.url));
-  const [data, reconcile] = await Promise.all([
+  const [data, reconcile, nodes] = await Promise.all([
     readNormalizationPage(c.env, { now: Date.now() }),
     readReconcileObservability(c.env),
+    readNodesPage(c.env),
   ]);
-  return c.html(page(<NormalizePage data={data} query={query} now={Date.now()} reconcile={reconcile} />));
+  return c.html(page(<NormalizePage data={data} query={query} now={Date.now()} reconcile={reconcile} nodes={nodes} />));
 });
 
 app.get("/discovery", async (c) => {

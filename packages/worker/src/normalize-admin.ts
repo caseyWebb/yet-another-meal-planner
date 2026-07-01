@@ -119,6 +119,125 @@ function makeResolve(rows: { id: string; representative: string | null }[]): (id
   };
 }
 
+// === Nodes lens =============================================================
+// The identity-graph structure surface: every canonical node (base / base::detail, concrete
+// products + abstract concept classes) with its directed satisfies-edges laid on one left→right
+// axis. Edges read "from satisfies to"; incoming = "satisfied by", outgoing = "satisfies". A
+// CONCRETE, non-merged node with zero edges is an ORPHAN — the audit signal for a below-floor
+// mint that never got linked. Edge endpoints are representative-resolved (mirroring
+// IngredientContext.satisfiesAmong) so a merged-away id shows on its survivor.
+
+/** One directed satisfies-edge touching a node (the other endpoint + the edge kind). */
+export interface NodeEdge {
+  /** The adjacent node's canonical id (representative-resolved). */
+  id: string;
+  /** The satisfies-edge kind: general | containment | membership (unknown kinds pass through). */
+  kind: string;
+}
+
+/** One canonical node with its identity + adjacency for the Nodes lens. */
+export interface GraphNode {
+  id: string;
+  base: string;
+  detail: string | null;
+  /** true = a buyable product; false = an abstract concept class. */
+  concrete: boolean;
+  /** The representative id this node was merged into, or null when it survives. */
+  rep: string | null;
+  /** Surface forms that resolve to this node, sorted. */
+  aliases: string[];
+  source: "auto" | "human";
+  /** What satisfies THIS node (edges pointing in). */
+  incoming: NodeEdge[];
+  /** What THIS node satisfies (edges pointing out). */
+  outgoing: NodeEdge[];
+}
+
+export interface NodesStats {
+  total: number;
+  concrete: number;
+  concepts: number;
+  orphans: number;
+}
+
+export interface NodesPage {
+  nodes: GraphNode[];
+  /** Ids of the orphans (concrete, non-merged, zero-degree) — the audit set. */
+  orphans: string[];
+  stats: NodesStats;
+}
+
+/**
+ * Read the identity-graph structure for the Nodes lens: the node list (identity + aliases +
+ * source), each node's incoming/outgoing satisfies-adjacency, the orphan set, and the stats.
+ * Edge endpoints are representative-resolved so a merged member's edge shows on its survivor
+ * (an edge is dropped only if an endpoint has no identity node at all). Pure read over `src/db.ts`;
+ * an empty graph degrades to an empty-but-renderable model. Nodes sort by id for a stable list.
+ */
+export async function readNodesPage(env: Env): Promise<NodesPage> {
+  const d = db(env);
+  const [identityRows, aliasRows, edgeRows] = await Promise.all([
+    d.all<{ id: string; base: string; detail: string | null; concrete: number; representative: string | null; source: string | null }>(
+      "SELECT id, base, detail, concrete, representative, source FROM ingredient_identity",
+    ),
+    d.all<{ variant: string; id: string }>("SELECT variant, id FROM ingredient_alias"),
+    d.all<{ from_id: string; to_id: string; kind: string }>("SELECT from_id, to_id, kind FROM ingredient_edge"),
+  ]);
+
+  const byId = new Map(identityRows.map((r) => [r.id, r]));
+  const resolve = makeResolve(identityRows);
+
+  // Group aliases by their surviving id (the node the variant ultimately resolves to).
+  const aliasesFor = new Map<string, string[]>();
+  for (const a of aliasRows) {
+    const surv = resolve(a.id);
+    const list = aliasesFor.get(surv) ?? [];
+    list.push(a.variant);
+    aliasesFor.set(surv, list);
+  }
+
+  // Build adjacency over representative-resolved endpoints (keep only edges whose BOTH endpoints
+  // are real identity nodes). Self-loops (an endpoint that resolves onto itself) are dropped.
+  const outFor = new Map<string, NodeEdge[]>();
+  const inFor = new Map<string, NodeEdge[]>();
+  for (const e of edgeRows) {
+    const from = resolve(e.from_id);
+    const to = resolve(e.to_id);
+    if (from === to || !byId.has(from) || !byId.has(to)) continue;
+    (outFor.get(from) ?? outFor.set(from, []).get(from)!).push({ id: to, kind: e.kind });
+    (inFor.get(to) ?? inFor.set(to, []).get(to)!).push({ id: from, kind: e.kind });
+  }
+
+  const nodes: GraphNode[] = identityRows
+    .map((r) => ({
+      id: r.id,
+      base: r.base,
+      detail: r.detail,
+      concrete: r.concrete !== 0,
+      rep: r.representative,
+      aliases: (aliasesFor.get(r.id) ?? []).slice().sort(),
+      source: r.source === "human" ? ("human" as const) : ("auto" as const),
+      incoming: inFor.get(r.id) ?? [],
+      outgoing: outFor.get(r.id) ?? [],
+    }))
+    .sort((a, b) => a.id.localeCompare(b.id));
+
+  const isOrphan = (n: GraphNode): boolean =>
+    n.concrete && n.rep == null && n.incoming.length === 0 && n.outgoing.length === 0;
+  const orphans = nodes.filter(isOrphan);
+
+  return {
+    nodes,
+    orphans: orphans.map((n) => n.id),
+    stats: {
+      total: nodes.length,
+      concrete: nodes.filter((n) => n.concrete).length,
+      concepts: nodes.filter((n) => !n.concrete).length,
+      orphans: orphans.length,
+    },
+  };
+}
+
 /** The whole Normalization area payload in one read pass (SSR seeds the island from it). */
 export async function readNormalizationPage(env: Env, opts: { decisionLimit?: number; now: number }): Promise<NormalizationPage> {
   const d = db(env);

@@ -20,13 +20,24 @@ import {
   TrashIcon,
   ArrowRightIcon,
   ChevronDownIcon,
+  ChevronRightIcon,
+  ChevronLeftIcon,
   SearchIcon,
   XCircleIcon,
   MinusCircleIcon,
   UsersIcon,
+  LayersIcon,
+  TargetIcon,
 } from "../ui/icons.js";
 import { relAge, relFuture } from "../logs-shared.js";
-import type { NormalizationPage, NormalizationDecision, AliasRow } from "../../normalize-admin.js";
+import type {
+  NormalizationPage,
+  NormalizationDecision,
+  AliasRow,
+  NodesPage,
+  GraphNode,
+  NodeEdge,
+} from "../../normalize-admin.js";
 import type { ReconcileObservability } from "../../reconcile-admin.js";
 import { ReconcileCard } from "./reconcile.js";
 
@@ -54,17 +65,23 @@ const FILTERS: Array<{ key: string; label: string }> = [
 
 /** Query-param state the SSR view + island both read. */
 export interface NormalizeQuery {
-  tab: "decisions" | "queue" | "aliases" | "reconcile";
+  tab: "decisions" | "queue" | "aliases" | "reconcile" | "nodes";
   filter: string;
   q: string;
   src: string;
   page: number;
+  /** Selected node id on the Nodes tab (SSR browse selection); "" = the node list. */
+  node: string;
+  /** Node-list facet on the Nodes tab: all | base | detail | concept | orphan. */
+  facet: string;
 }
 
 export function parseQuery(url: URL): NormalizeQuery {
   const tabRaw = url.searchParams.get("tab");
   const tab =
-    tabRaw === "queue" || tabRaw === "aliases" || tabRaw === "reconcile" ? tabRaw : "decisions";
+    tabRaw === "queue" || tabRaw === "aliases" || tabRaw === "reconcile" || tabRaw === "nodes"
+      ? tabRaw
+      : "decisions";
   const pageRaw = Number(url.searchParams.get("page") ?? "1");
   const page = Number.isFinite(pageRaw) && pageRaw > 0 ? pageRaw - 1 : 0;
   return {
@@ -73,6 +90,8 @@ export function parseQuery(url: URL): NormalizeQuery {
     q: url.searchParams.get("q") ?? "",
     src: url.searchParams.get("src") ?? "all",
     page,
+    node: url.searchParams.get("node") ?? "",
+    facet: url.searchParams.get("facet") ?? "all",
   };
 }
 
@@ -83,6 +102,8 @@ function href(part: Partial<NormalizeQuery>, cur: NormalizeQuery): string {
   if (q.filter !== "all") p.set("filter", q.filter);
   if (q.q) p.set("q", q.q);
   if (q.src !== "all") p.set("src", q.src);
+  if (q.node) p.set("node", q.node);
+  if (q.facet !== "all") p.set("facet", q.facet);
   if (q.page > 0) p.set("page", String(q.page + 1));
   const s = p.toString();
   return s ? `/admin/normalize?${s}` : "/admin/normalize";
@@ -142,7 +163,28 @@ const Candidates = ({ d }: { d: NormalizationDecision }) => {
   );
 };
 
-const DecisionCard = ({ d, now }: { d: NormalizationDecision; now: number }) => (
+/** The canonical id a decision resolved to (base or base::detail), for the Nodes deep-link. */
+function decisionNodeId(d: NormalizationDecision): string {
+  const id = d.outcome === "merge" ? (d.mergeInto ?? d.base) : d.detail ? `${d.base}::${d.detail}` : d.base;
+  return id;
+}
+
+/** The resolved-id, linked into its node when one exists in the graph (a deep-link to the Nodes tab). */
+const ResolvedDecId = ({ d, query, nodeIds }: { d: NormalizationDecision; query: NormalizeQuery; nodeIds: Set<string> }) => {
+  const id = decisionNodeId(d);
+  const inner =
+    d.outcome === "merge" ? <ResolvedId base={d.mergeInto ?? d.base} detail={null} /> : <ResolvedId base={d.base} detail={d.detail} concept={d.concept} />;
+  if (nodeIds.has(id)) {
+    return (
+      <a class="nz-resolve-link" href={href({ tab: "nodes", node: id, filter: "all", q: "", page: 0 }, query)} title="View in the node graph">
+        {inner}
+      </a>
+    );
+  }
+  return inner;
+};
+
+const DecisionCard = ({ d, now, query, nodeIds }: { d: NormalizationDecision; now: number; query: NormalizeQuery; nodeIds: Set<string> }) => (
   <div class={`nz-card oc-${d.outcome}`} data-term={d.term}>
     <details class="nz-details">
       <summary class="nz-main">
@@ -151,11 +193,16 @@ const DecisionCard = ({ d, now }: { d: NormalizationDecision; now: number }) => 
             <div class="nz-term">{d.term}</div>
             <div class="nz-resolve">
               <ArrowRightIcon size={13} />
-              {d.outcome === "merge" ? <ResolvedId base={d.mergeInto ?? d.base} detail={null} /> : <ResolvedId base={d.base} detail={d.detail} concept={d.concept} />}
+              <ResolvedDecId d={d} query={query} nodeIds={nodeIds} />
             </div>
           </div>
           <div class="nz-badges">
             <OutcomeBadge d={d} />
+            {d.reconfirm ? (
+              <span class="nz-reconfirm" title="From the periodic re-confirm pass, not the initial capture">
+                <RotateIcon size={11} /> re-confirm
+              </span>
+            ) : null}
             <span class={d.source === "human" ? "nz-src human" : "nz-src"}>
               {d.source === "human" ? (
                 <>
@@ -444,21 +491,407 @@ const AliasesTab = ({ data, query }: { data: NormalizationPage; query: Normalize
   );
 };
 
-/** The Normalization area's SSR content. `query` (tab/filter/q/src/page) is route state so every
- *  combination is deep-linkable; `now` is the render clock for relative times. `reconcile` feeds the
- *  Reconcile tab's convergence card (read-only — no island). */
+// === Nodes tab ==============================================================
+// A read-only browse over the identity graph: a node list (facet-filtered, deep-linkable by
+// ?facet) opens a relationship detail (?node=<id>) that lays a node's incoming ("satisfied by")
+// and outgoing ("satisfies") edges on one left→right axis — the edges are directional and
+// asymmetric, so the two sides differ. Orphans (edgeless concrete non-merged nodes) are the audit
+// signal, filterable. Pure SSR — selection is a query param, no client JS.
+
+const NODE_PAGE_SIZE = 25;
+
+/** Edge-kind badge presentation. general=blue · containment=amber · membership=violet. */
+const EDGE_KIND_GLOSS: Record<string, string> = {
+  general: "a specific type satisfies its base",
+  containment: "a whole satisfies a part",
+  membership: "a member satisfies a concept class",
+};
+
+const KindBadge = ({ kind }: { kind: string }) => <span class={`ng-kind k-${kind}`}>{kind}</span>;
+
+/** A node's "kind" label for the list sub-line. */
+function nodeKindLabel(n: GraphNode): string {
+  return !n.concrete ? "concept class" : n.detail ? "specialization" : "base";
+}
+
+function isNodeOrphan(n: GraphNode): boolean {
+  return n.concrete && n.rep == null && n.incoming.length === 0 && n.outgoing.length === 0;
+}
+
+const NODE_FACETS: Array<{ key: string; label: string; test: (n: GraphNode) => boolean }> = [
+  { key: "all", label: "All", test: () => true },
+  { key: "base", label: "Bases", test: (n) => n.concrete && !n.detail && n.rep == null },
+  { key: "detail", label: "Specializations", test: (n) => !!n.detail },
+  { key: "concept", label: "Concepts", test: (n) => !n.concrete },
+  { key: "orphan", label: "Orphans", test: isNodeOrphan },
+];
+
+/** One directed edge chip on the satisfies axis. The arrow always points RIGHT (the global
+ *  "satisfies" flow), so `dir` only orders the pill vs the arrow — incoming reads other→node,
+ *  outgoing reads node→other. A known-node endpoint deep-links to that node. */
+const EdgeChip = ({ e, dir, byId, query }: { e: NodeEdge; dir: "in" | "out"; byId: Map<string, GraphNode>; query: NormalizeQuery }) => {
+  const other = byId.get(e.id);
+  const arrow = (
+    <span class="ng-arrow-wire">
+      <KindBadge kind={e.kind} />
+      <ArrowRightIcon size={13} />
+    </span>
+  );
+  const pill = (
+    <span class="ng-edge-node">
+      {other ? <ResolvedId base={other.base} detail={other.detail} concept={!other.concrete} /> : <code>{e.id}</code>}
+    </span>
+  );
+  const body = dir === "in" ? (
+    <>
+      {pill}
+      {arrow}
+    </>
+  ) : (
+    <>
+      {arrow}
+      {pill}
+    </>
+  );
+  if (other) {
+    return (
+      <a class="ng-edge" href={href({ node: e.id }, query)} title={EDGE_KIND_GLOSS[e.kind] ?? e.kind}>
+        {body}
+      </a>
+    );
+  }
+  return <span class="ng-edge disabled" title={EDGE_KIND_GLOSS[e.kind] ?? e.kind}>{body}</span>;
+};
+
+/** The relationship detail for one selected node — identity facts + the satisfies axis. */
+const NodeDetail = ({ node, byId, query }: { node: GraphNode; byId: Map<string, GraphNode>; query: NormalizeQuery }) => {
+  const orphan = isNodeOrphan(node);
+  const inc = node.incoming;
+  const out = node.outgoing;
+  return (
+    <div class="node-detail">
+      <a class="btn nd-back" data-variant="outline" data-size="sm" href={href({ node: "" }, query)}>
+        <ChevronLeftIcon size={15} /> Nodes
+      </a>
+
+      <div class="nd-head">
+        <div class="nd-id">
+          <span class={`ng-row-glyph big${!node.concrete ? " concept" : orphan ? " orphan" : ""}`}>
+            {!node.concrete ? <LayersIcon size={20} /> : node.rep ? <GitMergeIcon size={20} /> : <TargetIcon size={20} />}
+          </span>
+          <div class="nd-id-text">
+            <div class="nd-id-main">
+              <ResolvedId base={node.base} detail={node.detail} concept={!node.concrete} />
+            </div>
+            <div class="nd-id-sub">
+              {!node.concrete ? "abstract concept class" : node.detail ? <>specialization of <code>{node.base}</code></> : "canonical base"}
+            </div>
+          </div>
+        </div>
+        {orphan ? (
+          <span class="ng-orphan-chip big">
+            <AlertTriangleIcon size={13} /> orphan
+          </span>
+        ) : null}
+      </div>
+
+      <dl class="nd-facts">
+        <div class="nd-fact">
+          <dt>Kind</dt>
+          <dd>
+            {!node.concrete ? (
+              <span class="ng-fact-concept">
+                <LayersIcon size={13} /> concept class
+              </span>
+            ) : (
+              <span class="ng-fact-concrete">
+                <TargetIcon size={13} /> concrete product
+              </span>
+            )}
+          </dd>
+        </div>
+        <div class="nd-fact">
+          <dt>Base</dt>
+          <dd>
+            <code>{node.base}</code>
+          </dd>
+        </div>
+        <div class="nd-fact">
+          <dt>Detail</dt>
+          <dd>{node.detail ? <code>{node.detail}</code> : <span class="pv-null">—</span>}</dd>
+        </div>
+        <div class="nd-fact">
+          <dt>Source</dt>
+          <dd>
+            <span class={node.source === "human" ? "nz-src human" : "nz-src"}>
+              {node.source === "human" ? (
+                <>
+                  <UsersIcon size={11} /> human
+                </>
+              ) : (
+                "auto"
+              )}
+            </span>
+          </dd>
+        </div>
+        <div class="nd-fact">
+          <dt>Edges</dt>
+          <dd>
+            <span class="ng-fact-edges">
+              {inc.length} in <span class="nz-id-dot">·</span> {out.length} out
+            </span>
+          </dd>
+        </div>
+        {node.rep ? (
+          <div class="nd-fact">
+            <dt>Merged into</dt>
+            <dd>
+              <a class="nd-rep-link" href={href({ node: node.rep }, query)}>
+                <code>{node.rep}</code>
+              </a>
+            </dd>
+          </div>
+        ) : null}
+      </dl>
+
+      {node.rep ? (
+        <div class="nd-rep">
+          <GitMergeIcon size={14} />
+          <span>
+            Merged into{" "}
+            <a class="nd-rep-link" href={href({ node: node.rep }, query)}>
+              <code>{node.rep}</code>
+            </a>{" "}
+            — requests for this id re-key to the representative.
+          </span>
+        </div>
+      ) : null}
+
+      {node.aliases.length > 0 ? (
+        <div class="nd-block">
+          <p class="nz-detail-label">
+            Aliases <span class="muted">· surface forms that resolve here</span>
+          </p>
+          <div class="nd-aliases">
+            {node.aliases.map((a) => (
+              <code class="nd-alias">{a}</code>
+            ))}
+          </div>
+        </div>
+      ) : null}
+
+      <div class="nd-block">
+        <p class="nz-detail-label">
+          Relationships <span class="muted">· directed "satisfies" edges — left to right</span>
+        </p>
+
+        {orphan ? (
+          <div class="nd-orphan-note">
+            <AlertTriangleIcon size={16} />
+            <div>
+              <strong>No satisfies-edges — this node is orphaned.</strong>
+              <p class="muted small">
+                A concrete node with zero edges. Nothing satisfies it and it satisfies nothing, so it can't be matched through the
+                graph — a below-floor mint that never got linked, and a candidate for a pinned alias/override.
+              </p>
+            </div>
+          </div>
+        ) : (
+          <div class="ng-axis">
+            <div class="ng-axis-col in">
+              <div class="ng-axis-cap">
+                <ChevronRightIcon size={12} class="ng-cap-in" /> Satisfied by<span class="ng-axis-n">{inc.length}</span>
+              </div>
+              {inc.length ? (
+                inc.map((e) => <EdgeChip e={e} dir="in" byId={byId} query={query} />)
+              ) : (
+                <span class="ng-axis-empty">nothing points in</span>
+              )}
+            </div>
+
+            <div class="ng-axis-center">
+              <div class="ng-center-node">
+                <ResolvedId base={node.base} detail={node.detail} concept={!node.concrete} />
+              </div>
+              <span class="ng-axis-flow">satisfies →</span>
+            </div>
+
+            <div class="ng-axis-col out">
+              <div class="ng-axis-cap">
+                Satisfies<span class="ng-axis-n">{out.length}</span>
+                <ChevronRightIcon size={12} class="ng-cap-out" />
+              </div>
+              {out.length ? (
+                out.map((e) => <EdgeChip e={e} dir="out" byId={byId} query={query} />)
+              ) : (
+                <span class="ng-axis-empty">points to nothing</span>
+              )}
+            </div>
+          </div>
+        )}
+
+        <div class="nd-legend">
+          {Object.keys(EDGE_KIND_GLOSS).map((k) => (
+            <span class="nd-legend-item">
+              <KindBadge kind={k} />
+              <span class="muted small">{EDGE_KIND_GLOSS[k]}</span>
+            </span>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+/** The Nodes tab: the node list (facet-filtered + paged), or the selected node's detail. */
+const NodesTab = ({ nodes, query }: { nodes: NodesPage; query: NormalizeQuery }) => {
+  const byId = new Map(nodes.nodes.map((n) => [n.id, n]));
+
+  const selected = query.node ? byId.get(query.node) : undefined;
+  if (selected) {
+    return <NodeDetail node={selected} byId={byId} query={query} />;
+  }
+
+  const facetTest = (NODE_FACETS.find((f) => f.key === query.facet) ?? NODE_FACETS[0]).test;
+  const rows = nodes.nodes.filter(facetTest);
+  const pages = Math.max(1, Math.ceil(rows.length / NODE_PAGE_SIZE));
+  const pg = Math.min(query.page, pages - 1);
+  const shown = rows.slice(pg * NODE_PAGE_SIZE, pg * NODE_PAGE_SIZE + NODE_PAGE_SIZE);
+
+  return (
+    <div class="nodes">
+      <p class="nz-queue-blurb muted small">
+        Every canonical node in the identity graph — <code>base</code> or <code>base::detail</code>, concrete products and abstract
+        concept classes — with its directed satisfies-edges. Pick a node to audit what it is and how it's connected. Edgeless
+        concrete nodes surface under{" "}
+        <a class="ng-inline-filter" href={href({ facet: "orphan", page: 0 }, query)}>
+          Orphans
+        </a>
+        .
+      </p>
+
+      <div class="data-nav ng-facets">
+        {NODE_FACETS.map((f) => {
+          const n = nodes.nodes.filter(f.test).length;
+          return (
+            <a
+              class={`pill${f.key === "orphan" ? " ng-pill-orphan" : ""}${query.facet === f.key ? " active" : ""}`}
+              href={href({ facet: f.key, page: 0 }, query)}
+              aria-disabled={n === 0 && f.key !== "all"}
+            >
+              {f.key === "orphan" ? <AlertTriangleIcon size={12} /> : null}
+              {f.label}
+              {n > 0 ? <span class="pill-count">{n}</span> : null}
+            </a>
+          );
+        })}
+      </div>
+
+      {shown.length === 0 ? (
+        <p class="nz-al-empty muted small">No nodes match this filter.</p>
+      ) : (
+        <div class="ng-list">
+          {shown.map((n) => {
+            const orphan = isNodeOrphan(n);
+            return (
+              <a class={`ng-row${orphan ? " orphan" : ""}`} href={href({ node: n.id }, query)}>
+                <span class={`ng-row-glyph${!n.concrete ? " concept" : orphan ? " orphan" : ""}`}>
+                  {!n.concrete ? <LayersIcon size={15} /> : n.rep ? <GitMergeIcon size={15} /> : <TargetIcon size={15} />}
+                </span>
+                <span class="ng-row-main">
+                  <span class="ng-row-id">
+                    <ResolvedId base={n.base} detail={n.detail} concept={!n.concrete} />
+                  </span>
+                  <span class="ng-row-sub">
+                    <span class="ng-row-kind">{nodeKindLabel(n)}</span>
+                    <span class="nz-id-dot">·</span>
+                    <span>
+                      {n.aliases.length} {n.aliases.length === 1 ? "alias" : "aliases"}
+                    </span>
+                    {n.rep ? (
+                      <>
+                        <span class="nz-id-dot">·</span>
+                        <span class="ng-row-merged">
+                          <GitMergeIcon size={11} /> merged → <code>{n.rep}</code>
+                        </span>
+                      </>
+                    ) : null}
+                  </span>
+                </span>
+                <span class="ng-row-trail">
+                  {orphan ? (
+                    <span class="ng-orphan-chip">
+                      <AlertTriangleIcon size={11} /> orphan
+                    </span>
+                  ) : (
+                    <span class="ng-deg">
+                      <span class="ng-deg-part" title="satisfied by (incoming)">
+                        <ChevronRightIcon size={12} class="ng-deg-in" />
+                        {n.incoming.length}
+                      </span>
+                      <span class="ng-deg-part" title="satisfies (outgoing)">
+                        {n.outgoing.length}
+                        <ChevronRightIcon size={12} class="ng-deg-out" />
+                      </span>
+                    </span>
+                  )}
+                  <ChevronRightIcon size={16} class="ng-row-chev" />
+                </span>
+              </a>
+            );
+          })}
+        </div>
+      )}
+
+      {pages > 1 ? (
+        <div class="nz-pager">
+          {pg > 0 ? (
+            <a class="btn" data-variant="outline" data-size="sm" href={href({ page: pg - 1 }, query)}>
+              Prev
+            </a>
+          ) : (
+            <button class="btn" data-variant="outline" data-size="sm" disabled>
+              Prev
+            </button>
+          )}
+          <span class="muted small">
+            Page {pg + 1} of {pages} · {rows.length} nodes
+          </span>
+          {pg < pages - 1 ? (
+            <a class="btn" data-variant="outline" data-size="sm" href={href({ page: pg + 1 }, query)}>
+              Next
+            </a>
+          ) : (
+            <button class="btn" data-variant="outline" data-size="sm" disabled>
+              Next
+            </button>
+          )}
+        </div>
+      ) : null}
+    </div>
+  );
+};
+
+/** The Normalization area's SSR content. `query` (tab/filter/q/src/page/node/facet) is route state so
+ *  every combination is deep-linkable; `now` is the render clock for relative times. `reconcile` feeds
+ *  the Reconcile tab's convergence card and `nodes` the Nodes tab (both read-only — no island). */
 export const NormalizeView = ({
   data,
   query,
   now,
   reconcile,
+  nodes,
 }: {
   data: NormalizationPage;
   query: NormalizeQuery;
   now: number;
   reconcile: ReconcileObservability;
+  nodes: NodesPage;
 }) => {
   const stats = data.stats;
+  // The set of node ids a decision's resolved id can deep-link into (the whole node list, so a
+  // merged-away id still links). Built once for the Decisions cards.
+  const nodeIds = new Set(nodes.nodes.map((n) => n.id));
   const cards: Array<{ icon: Child; label: string; value: Child; sub?: string; warn?: boolean; bad?: boolean }> = [
     { icon: <DatabaseIcon size={15} />, label: "Canonical nodes", value: stats.nodes.toLocaleString() },
     { icon: <LinkIcon size={15} />, label: "Aliases", value: stats.aliases.toLocaleString() },
@@ -484,6 +917,10 @@ export const NormalizeView = ({
           Aliases
           {data.aliases.length > 0 ? <span class="pill-count">{data.aliases.length}</span> : null}
         </a>
+        <a class={query.tab === "nodes" ? "pill active" : "pill"} href={href({ tab: "nodes", page: 0, node: "", facet: "all" }, query)}>
+          Nodes
+          {nodes.stats.total > 0 ? <span class="pill-count">{nodes.stats.total}</span> : null}
+        </a>
         <a class={query.tab === "reconcile" ? "pill active" : "pill"} href={href({ tab: "reconcile", page: 0 }, query)}>
           <span class={`rk-tab-dot ${reconcile.state}`} />
           Reconcile
@@ -507,6 +944,8 @@ export const NormalizeView = ({
         <QueueTable data={data} now={now} />
       ) : query.tab === "aliases" ? (
         <AliasesTab data={data} query={query} />
+      ) : query.tab === "nodes" ? (
+        <NodesTab nodes={nodes} query={query} />
       ) : query.tab === "reconcile" ? (
         <div class="nz-reconcile">
           <ReconcileCard s={reconcile} now={now} />
@@ -530,7 +969,7 @@ export const NormalizeView = ({
           ) : (
             <div class="nz-list">
               {filteredDecisions.map((d) => (
-                <DecisionCard d={d} now={now} />
+                <DecisionCard d={d} now={now} query={query} nodeIds={nodeIds} />
               ))}
             </div>
           )}
@@ -600,29 +1039,31 @@ export const NormalizeView = ({
   );
 };
 
-function serializeProps(data: NormalizationPage, reconcile: ReconcileObservability): string {
-  return JSON.stringify({ data, reconcile }).replace(/</g, "\\u003c");
+function serializeProps(data: NormalizationPage, reconcile: ReconcileObservability, nodes: NodesPage): string {
+  return JSON.stringify({ data, reconcile, nodes }).replace(/</g, "\\u003c");
 }
 
 /** The `/admin/normalize` shell: the area SSR'd (first paint carries the data) + the mutation
- *  island's hydration props + script (Override / Re-queue / Delete / Add-alias). The Reconcile tab
- *  is read-only (no island), so its `reconcile` model rides the SSR only. */
+ *  island's hydration props + script (Override / Re-queue / Delete / Add-alias). The Reconcile and
+ *  Nodes tabs are read-only (no island), so their models ride the SSR only. */
 export const NormalizePage = ({
   data,
   query,
   now,
   reconcile,
+  nodes,
 }: {
   data: NormalizationPage;
   query: NormalizeQuery;
   now: number;
   reconcile: ReconcileObservability;
+  nodes: NodesPage;
 }) => (
   <Layout title="Normalization · grocery-agent admin" active="/admin/normalize" wide>
     <div id="normalize-island">
-      <NormalizeView data={data} query={query} now={now} reconcile={reconcile} />
+      <NormalizeView data={data} query={query} now={now} reconcile={reconcile} nodes={nodes} />
     </div>
-    <script type="application/json" id="normalize-props" dangerouslySetInnerHTML={{ __html: serializeProps(data, reconcile) }} />
+    <script type="application/json" id="normalize-props" dangerouslySetInnerHTML={{ __html: serializeProps(data, reconcile, nodes) }} />
     <script type="module" src="/admin/islands/normalize.js" />
   </Layout>
 );
