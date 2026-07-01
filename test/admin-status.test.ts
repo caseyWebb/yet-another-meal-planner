@@ -118,6 +118,16 @@ describe("StatusPage SSR — per-job uptime + since", () => {
     expect(html).toContain("spark-bar fail");
   });
 
+  it("renders each sparkline bar as a link to its Logs deep-link, not a bare span", () => {
+    const runs = [run({ id: "r2", ok: true, ran_at: 2000 }), run({ id: "r1", ok: false, ran_at: 1000 })];
+    const html = render(payload(), counts(), { "flyer-warm": runs });
+    expect(html).toContain('<a class="spark-bar ok"');
+    expect(html).toContain('href="/admin/logs?run=r2"');
+    expect(html).toContain('<a class="spark-bar fail"');
+    expect(html).toContain('href="/admin/logs?run=r1"');
+    expect(html).not.toMatch(/<span class="spark-bar/);
+  });
+
   it("shows Healthy since with the current-streak start instant", () => {
     const runs = [
       run({ id: "r3", ok: true, ran_at: 3_000 }),

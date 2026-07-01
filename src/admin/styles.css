@@ -94,6 +94,19 @@
   .entry-time { min-width: 11rem; text-align: right; }
   .entry-more { color: #1a5; white-space: nowrap; }
   .detail-blob { margin-top: .5rem; }
+  /* All-jobs run log (job_runs, merged). One <details> per run — zero-JS expand/collapse. */
+  .log-list { gap: 0; }
+  .log-entry { background: #fff; border: 1px solid var(--border); border-radius: var(--radius-lg); margin-bottom: .5rem; overflow: hidden; }
+  .log-entry.hl { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in oklch, var(--accent) 30%, transparent); }
+  .log-row { display: flex; align-items: center; gap: .6rem; padding: .65rem .9rem; cursor: pointer; list-style: none; }
+  .log-row::-webkit-details-marker { display: none; }
+  .log-job { font-family: ui-monospace, monospace; font-size: .85rem; min-width: 9rem; }
+  .log-outcome { font-size: .8rem; font-weight: 600; min-width: 4.5rem; }
+  .log-outcome.ok { color: #1a7f37; } .log-outcome.fail { color: #cf222e; }
+  .log-time { min-width: 8rem; }
+  .log-dur { min-width: 4.5rem; text-align: right; }
+  .log-detail { padding: 0 .9rem .9rem 2.05rem; }
+  .log-summary-label { text-transform: uppercase; letter-spacing: .04em; margin: 0 0 .35rem; }
   /* Recipe projection-status badge (indexed / skipped / pending / orphaned). */
   .tier { font-size: .75rem; font-weight: 600; padding: .1rem .55rem; border-radius: 999px; border: 1px solid; }
   .tier.indexed { color: #1a7f37; border-color: #1a7f37; }

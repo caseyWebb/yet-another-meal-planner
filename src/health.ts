@@ -162,6 +162,13 @@ export interface JobRun {
   summary: Record<string, unknown>;
 }
 
+/** A `JobRun` carrying which job it belongs to — what the cross-job readers (`readAllJobRuns`,
+ *  `readJobRunById`) return; the per-job `readJobRuns` omits `job` because its caller already
+ *  knows it (the query is scoped to one job). */
+export interface JobRunWithJob extends JobRun {
+  job: string;
+}
+
 /** Retention cap: the most recent N runs kept per job (older rows pruned on every append). */
 export const JOB_RUNS_PER_JOB_CAP = 100;
 
@@ -177,6 +184,11 @@ interface JobRunRow {
   summary: string;
 }
 
+/** A `JobRunRow` plus the `job` column — what the cross-job queries select. */
+interface JobRunRowWithJob extends JobRunRow {
+  job: string;
+}
+
 /** Decode a `job_runs` row into a `JobRun`. A malformed `summary` degrades to `{}` rather than
  *  throwing — a corrupt row must not break the whole history read (mirrors `rowToHealth`). */
 function rowToRun(row: JobRunRow): JobRun {
@@ -188,6 +200,11 @@ function rowToRun(row: JobRunRow): JobRun {
     // leave summary as {}
   }
   return { id: row.id, ok: row.ok === 1, ran_at: row.ran_at, duration_ms: row.duration_ms, summary };
+}
+
+/** Decode a `job_runs` row (with `job`) into a `JobRunWithJob` (mirrors `rowToRun`). */
+function rowToRunWithJob(row: JobRunRowWithJob): JobRunWithJob {
+  return { ...rowToRun(row), job: row.job };
 }
 
 /**
@@ -233,6 +250,44 @@ export async function readJobRuns(env: Env, name: string, limit: number): Promis
     return rows.map(rowToRun);
   } catch {
     return [];
+  }
+}
+
+/**
+ * Read the most recent runs across EVERY job, newest-first, bounded by `limit` — the Logs area's
+ * all-jobs run log (operator-admin). Unlike `readJobRuns`, the `job` column rides along on each
+ * row (the caller doesn't already know it, since runs from many jobs are merged into one list).
+ * Degrades to an EMPTY array on a storage error, mirroring `readJobRuns` — the Logs page must
+ * stay renderable even when D1 is flaky.
+ */
+export async function readAllJobRuns(env: Env, limit: number): Promise<JobRunWithJob[]> {
+  try {
+    const rows = await db(env).all<JobRunRowWithJob>(
+      "SELECT id, job, ok, ran_at, duration_ms, summary FROM job_runs ORDER BY ran_at DESC LIMIT ?1",
+      limit,
+    );
+    return rows.map(rowToRunWithJob);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Read one `job_runs` record by id — the Status sparkline's "tick → Logs entry" deep-link lookup
+ * (operator-admin). Returns `null` both when the id was never written and when it has since been
+ * pruned past the retention cap (the two are indistinguishable, and the caller's fallback for
+ * both is the same: render the default unfiltered view, not an error). Degrades to `null` on a
+ * storage error, mirroring `readJobRuns`'s degrade-to-empty.
+ */
+export async function readJobRunById(env: Env, id: string): Promise<JobRunWithJob | null> {
+  try {
+    const row = await db(env).first<JobRunRowWithJob>(
+      "SELECT id, job, ok, ran_at, duration_ms, summary FROM job_runs WHERE id = ?1",
+      id,
+    );
+    return row ? rowToRunWithJob(row) : null;
+  } catch {
+    return null;
   }
 }
 

@@ -158,7 +158,12 @@ const Uptime = ({ runs }: { runs: JobRun[] }) => {
       </div>
       <div class="spark">
         {ordered.map((r) => (
-          <span class={`spark-bar ${r.ok ? "ok" : "fail"}`} style={`height:${r.ok ? 100 : 28}%`} title={fmtUtc(r.ran_at)} />
+          <a
+            class={`spark-bar ${r.ok ? "ok" : "fail"}`}
+            style={`height:${r.ok ? 100 : 28}%`}
+            title={fmtUtc(r.ran_at)}
+            href={`/admin/logs?run=${r.id}`}
+          />
         ))}
       </div>
     </div>

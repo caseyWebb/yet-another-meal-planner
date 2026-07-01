@@ -7,7 +7,9 @@ import {
   isAiQuotaError,
   notifyFailure,
   probeD1,
+  readAllJobRuns,
   readJobHealth,
+  readJobRunById,
   readJobRuns,
   recordUsagePoint,
   renderHealthSvg,
@@ -485,6 +487,16 @@ function fakeJobRunsD1(opts: { reachable?: boolean } = {}): D1Database {
       const matched = rows.filter((r) => r.job === job).sort((a, b) => b.ran_at - a.ran_at);
       return { results: matched.slice(0, limit) };
     }
+    if (/SELECT id, job, ok, ran_at, duration_ms, summary FROM job_runs ORDER BY ran_at DESC LIMIT \?1/i.test(sql)) {
+      const limit = binds[0] as number;
+      const ordered = [...rows].sort((a, b) => b.ran_at - a.ran_at);
+      return { results: ordered.slice(0, limit) };
+    }
+    if (/SELECT id, job, ok, ran_at, duration_ms, summary FROM job_runs WHERE id = \?1/i.test(sql)) {
+      const id = binds[0] as string;
+      const found = rows.filter((r) => r.id === id);
+      return { results: found };
+    }
     return { results: [] };
   };
   return {
@@ -571,6 +583,55 @@ describe("writeJobRun / readJobRuns (per-run history)", () => {
   it("a read failure degrades to an empty array (never throws)", async () => {
     const env = { DB: fakeJobRunsD1({ reachable: false }) } as unknown as Env;
     expect(await readJobRuns(env, "flyer-warm", 10)).toEqual([]);
+  });
+});
+
+describe("readAllJobRuns (the Logs area's cross-job reader)", () => {
+  it("merges runs across every job, newest-first, regardless of which job produced each one", async () => {
+    const env = jobRunsEnv();
+    await writeJobRun(env, "flyer-warm", runInput(true, 1000));
+    await writeJobRun(env, "email", runInput(true, 3000));
+    await writeJobRun(env, "flyer-warm", runInput(false, 2000, { error: "boom" }));
+    const runs = await readAllJobRuns(env, 10);
+    expect(runs.map((r) => r.ran_at)).toEqual([3000, 2000, 1000]);
+    expect(runs.map((r) => r.job)).toEqual(["email", "flyer-warm", "flyer-warm"]);
+    expect(runs[1]).toMatchObject({ job: "flyer-warm", ok: false, summary: { error: "boom" } });
+  });
+
+  it("respects the limit bound across the merged set", async () => {
+    const env = jobRunsEnv();
+    await writeJobRun(env, "flyer-warm", runInput(true, 1000));
+    await writeJobRun(env, "email", runInput(true, 2000));
+    await writeJobRun(env, "recipe-index", runInput(true, 3000));
+    const runs = await readAllJobRuns(env, 2);
+    expect(runs).toHaveLength(2);
+    expect(runs.map((r) => r.ran_at)).toEqual([3000, 2000]);
+  });
+
+  it("degrades to an empty array on a storage error (never throws)", async () => {
+    const env = { DB: fakeJobRunsD1({ reachable: false }) } as unknown as Env;
+    expect(await readAllJobRuns(env, 10)).toEqual([]);
+  });
+});
+
+describe("readJobRunById (the Status sparkline → Logs deep-link lookup)", () => {
+  it("finds a run by id, carrying its job", async () => {
+    const env = jobRunsEnv();
+    await writeJobRun(env, "flyer-warm", runInput(true, 1000));
+    const [run] = await readJobRuns(env, "flyer-warm", 10);
+    const found = await readJobRunById(env, run.id);
+    expect(found).toMatchObject({ id: run.id, job: "flyer-warm", ok: true, ran_at: 1000 });
+  });
+
+  it("returns null for an unknown id", async () => {
+    const env = jobRunsEnv();
+    await writeJobRun(env, "flyer-warm", runInput(true, 1000));
+    expect(await readJobRunById(env, "nonexistent-id")).toBeNull();
+  });
+
+  it("degrades to null on a storage error (never throws)", async () => {
+    const env = { DB: fakeJobRunsD1({ reachable: false }) } as unknown as Env;
+    expect(await readJobRunById(env, "any-id")).toBeNull();
   });
 });
 

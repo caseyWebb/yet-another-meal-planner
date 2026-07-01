@@ -21,7 +21,15 @@ import {
   randomInviteCode,
   type AdminDeps,
 } from "../admin.js";
-import { buildHealthPayload, readJobRuns, HEALTH_JOBS, type JobRun } from "../health.js";
+import {
+  buildHealthPayload,
+  readJobRuns,
+  readAllJobRuns,
+  readJobRunById,
+  HEALTH_JOBS,
+  JOB_RUNS_PER_JOB_CAP,
+  type JobRun,
+} from "../health.js";
 import { corpusCounts, memberDetail, recipeTitles } from "../admin-data.js";
 import { MembersPage } from "./pages/members.js";
 import { MemberDetailPage, PendingMemberDetailPage, sectionOfSlug } from "./pages/member-detail.js";
@@ -33,7 +41,7 @@ import { readDiscoveryLog, readDiscoveryRowById, deleteDiscoveryRow } from "../d
 import { buildDiscoveryDeps, processCandidate, DEFAULT_CONFIG } from "../discovery-sweep.js";
 import { addDiscoveryRejection } from "../corpus-db.js";
 import { canonicalizeUrl } from "../url.js";
-import { LogsPage } from "./pages/logs.js";
+import { LogsPage, DiscoveryLogsPage, PAGE_SIZE as LOGS_PAGE_SIZE } from "./pages/logs.js";
 import { getDiscoveryConfig, putDiscoveryConfig, analyzeDiscovery, dryRunDiscovery, testFeed, getOperatorConfig, putOperatorConfig, listCorpus, addCorpus, deleteCorpus } from "./config-api.js";
 import { registerConfigRoutes } from "./pages/config.js";
 import { Layout } from "./ui/layout.js";
@@ -275,10 +283,35 @@ app.get("/usage", async (c) => {
   return c.html(page(<UsagePage usage={usage} trends={trends} tools={tools} />));
 });
 
-// Logs area (operator-admin): the discovery sweep's outcome log (master/detail), SSR'd; the
-// entries hydrate as an island for per-row retry/delete + the detail dialog.
-app.get("/logs", async (c) => c.html(page(<LogsPage entries={await readDiscoveryLog(c.env, 200)} />)));
-app.get("/logs/discovery", async (c) => c.html(page(<LogsPage entries={await readDiscoveryLog(c.env, 200)} />)));
+// Logs area (operator-admin): the default content is the all-cron-jobs run log (job_runs,
+// merged newest-first, SSR — query-param filter + pagination, native-disclosure expand). The
+// `?run=<id>` param (the Status sparkline's deep-link) resolves server-side to the run's job
+// filter + page + a highlighted, pre-expanded entry, falling back to the default view when the
+// id is unresolvable (pruned past the retention cap). The Discovery sweep's per-candidate
+// outcome log keeps its own route + island for Retry/Delete, unchanged.
+app.get("/logs", async (c) => {
+  const runs = await readAllJobRuns(c.env, JOB_RUNS_PER_JOB_CAP * HEALTH_JOBS.length);
+  const now = Date.now();
+  const runId = c.req.query("run");
+  if (runId) {
+    const linked = await readJobRunById(c.env, runId);
+    if (linked) {
+      const filtered = runs.filter((r) => r.job === linked.job);
+      const idx = filtered.findIndex((r) => r.id === linked.id);
+      const resolvedPage = idx >= 0 ? Math.floor(idx / LOGS_PAGE_SIZE) : 0;
+      return c.html(
+        page(<LogsPage runs={runs} job={linked.job} page={resolvedPage} now={now} highlightId={linked.id} />),
+      );
+    }
+    // The linked run is gone (pruned past the retention cap since the link was rendered) —
+    // degrade to the default unfiltered, first-page view rather than an error.
+  }
+  const job = c.req.query("job") ?? "All";
+  const pageParam = Number(c.req.query("page") ?? "1");
+  const requestedPage = Number.isFinite(pageParam) && pageParam > 0 ? pageParam - 1 : 0;
+  return c.html(page(<LogsPage runs={runs} job={job} page={requestedPage} now={now} />));
+});
+app.get("/logs/discovery", async (c) => c.html(page(<DiscoveryLogsPage entries={await readDiscoveryLog(c.env, 200)} />)));
 
 // Static islands + styles fall through to the ASSETS binding (already past the Access gate;
 // `ASSETS.fetch` bypasses run_worker_first, so this never re-enters and loops).

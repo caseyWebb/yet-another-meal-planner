@@ -145,3 +145,127 @@ describe("handleAdmin (logs › discovery)", () => {
   });
 
 });
+
+// ── /admin/logs — the all-jobs run log route (job filter, pagination, and the ?run= deep-link
+// resolution) ────────────────────────────────────────────────────────────────────────────────
+
+interface JobRunRow {
+  id: string;
+  job: string;
+  ok: number;
+  ran_at: number;
+  duration_ms: number;
+  summary: string;
+}
+
+/** A fake D1 backing the `/admin/logs` route's two queries over `job_runs`: the merged
+ *  newest-first scan (`readAllJobRuns`) and the by-id lookup (`readJobRunById`). Also answers
+ *  `discovery_log` as empty (the route never reads it) so the gate + any incidental query don't
+ *  throw. */
+function jobRunsD1(rows: JobRunRow[]): Env["DB"] {
+  const makeStmt = (sql: string) => {
+    let binds: unknown[] = [];
+    const stmt = {
+      bind(...v: unknown[]) {
+        binds = v;
+        return stmt;
+      },
+      async all<T>() {
+        if (/SELECT id, job, ok, ran_at, duration_ms, summary FROM job_runs ORDER BY ran_at DESC LIMIT/i.test(sql)) {
+          const limit = Number(binds[0]);
+          const ordered = [...rows].sort((a, b) => b.ran_at - a.ran_at);
+          return { results: ordered.slice(0, limit) as unknown as T[], success: true as const, meta: { changes: 0 } };
+        }
+        return { results: [] as T[], success: true as const, meta: { changes: 0 } };
+      },
+      async first<T>() {
+        if (/SELECT id, job, ok, ran_at, duration_ms, summary FROM job_runs WHERE id = \?1/i.test(sql)) {
+          const id = binds[0] as string;
+          return (rows.find((r) => r.id === id) as unknown as T) ?? null;
+        }
+        return null as T | null;
+      },
+      async run() {
+        return { success: true as const, meta: { changes: 0 } };
+      },
+    };
+    return stmt;
+  };
+  return {
+    prepare: (sql: string) => makeStmt(sql) as unknown as D1PreparedStatement,
+    async batch() {
+      return [];
+    },
+  } as unknown as Env["DB"];
+}
+
+function jobRun(over: Partial<JobRunRow> & Pick<JobRunRow, "id" | "job" | "ran_at">): JobRunRow {
+  return { ok: 1, duration_ms: 10, summary: "{}", ...over };
+}
+
+describe("handleAdmin (logs › all-jobs run log)", () => {
+  it("renders the all-jobs run log by default, newest-first across jobs", async () => {
+    const DB = jobRunsD1([
+      jobRun({ id: "a", job: "flyer-warm", ran_at: 1000 }),
+      jobRun({ id: "b", job: "email", ran_at: 2000 }),
+    ]);
+    const env = { TENANT_KV: memKv(), KROGER_KV: memKv(), DB, ADMIN_DEV_BYPASS: "1" } as unknown as Env;
+    const res = await handleAdmin(new Request("http://localhost/admin/logs"), env);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    const ib = html.indexOf('data-run-id="b"');
+    const ia = html.indexOf('data-run-id="a"');
+    expect(ib).toBeGreaterThan(-1);
+    expect(ia).toBeGreaterThan(-1);
+    expect(ib).toBeLessThan(ia); // b (ran_at 2000) before a (ran_at 1000)
+  });
+
+  it("filters by the ?job= query param", async () => {
+    const DB = jobRunsD1([
+      jobRun({ id: "a", job: "flyer-warm", ran_at: 1000 }),
+      jobRun({ id: "b", job: "email", ran_at: 2000 }),
+    ]);
+    const env = { TENANT_KV: memKv(), KROGER_KV: memKv(), DB, ADMIN_DEV_BYPASS: "1" } as unknown as Env;
+    const res = await handleAdmin(new Request("http://localhost/admin/logs?job=email"), env);
+    const html = await res.text();
+    expect(html).toContain('data-run-id="b"');
+    expect(html).not.toContain('data-run-id="a"');
+  });
+
+  it("resolves ?run=<id> to the run's job filter, page, and a highlighted, pre-expanded entry", async () => {
+    const DB = jobRunsD1([
+      jobRun({ id: "target", job: "email", ran_at: 5000, summary: JSON.stringify({ accepted: true }) }),
+      jobRun({ id: "other", job: "flyer-warm", ran_at: 9000 }),
+    ]);
+    const env = { TENANT_KV: memKv(), KROGER_KV: memKv(), DB, ADMIN_DEV_BYPASS: "1" } as unknown as Env;
+    const res = await handleAdmin(new Request("http://localhost/admin/logs?run=target"), env);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toMatch(/pill active"[^>]*>email/); // job filter resolved to the run's job
+    expect(html).toMatch(/<details class="log-entry hl" data-run-id="target" open/); // highlighted + pre-expanded
+    expect(html).not.toContain('data-run-id="other"'); // filtered to email only
+  });
+
+  it("falls back to the default unfiltered view when the linked run id is unresolvable (pruned)", async () => {
+    const DB = jobRunsD1([jobRun({ id: "a", job: "flyer-warm", ran_at: 1000 })]);
+    const env = { TENANT_KV: memKv(), KROGER_KV: memKv(), DB, ADMIN_DEV_BYPASS: "1" } as unknown as Env;
+    const res = await handleAdmin(new Request("http://localhost/admin/logs?run=gone"), env);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    // Default view: "All jobs" pill active, no error banner, the existing run still renders.
+    expect(html).toMatch(/pill active"[^>]*>All jobs/);
+    expect(html).toContain('data-run-id="a"');
+    expect(html).not.toContain("error");
+  });
+
+  it("/admin/logs/discovery still renders the unchanged Discovery candidate log", async () => {
+    const { DB } = discoveryD1([row({ id: "x", outcome: "imported", created_at: "2026-06-27T10:00:00.000Z", title: "T" })]);
+    const env = { TENANT_KV: memKv(), KROGER_KV: memKv(), DB, ADMIN_DEV_BYPASS: "1" } as unknown as Env;
+    const res = await handleAdmin(new Request("http://localhost/admin/logs/discovery"), env);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain("Discovery");
+    expect(html).toContain("T");
+    expect(html).toContain('id="logs-island"');
+  });
+});
