@@ -28,6 +28,7 @@ import { createR2CorpusStore } from "./corpus-store.js";
 import { handleHealthRequest, handleHealthSvgRequest, writeJobHealth, writeJobRun, recordUsagePoint, notifyFailure } from "./health.js";
 import { handleCookbook } from "./cookbook.js";
 import { handleSource } from "./source.js";
+import { handleIngest } from "./ingest.js";
 import adminApp from "./admin/app.js";
 
 /**
@@ -71,6 +72,11 @@ const defaultHandler = {
     }
     if (url.pathname === "/authorize") return handleAuthorize(request, env);
     if (url.pathname.startsWith("/oauth/")) return handleOAuth(env, url);
+    // Key-authed carve-out from the Access gate: exactly POST /admin/api/ingest is
+    // authenticated by an ingest key in handleIngest (a headless scraper has no Access JWT),
+    // handled BEFORE the /admin dispatch so it never reaches the admin app's Access
+    // middleware. Every other /admin* path stays Access-gated (adminApp below).
+    if (url.pathname === "/admin/api/ingest") return handleIngest(request, env);
     if (url.pathname === "/admin" || url.pathname.startsWith("/admin/")) {
       // The operator admin panel (Hono SSR + islands), gated by Cloudflare Access in the app
       // middleware. `run_worker_first` routes /admin* here before any static asset is served.

@@ -31,6 +31,11 @@ export interface DiscoveryLogRow {
   attempts: number;
   /** ISO timestamp when this row next enters the retry stream; null = terminal (not retryable). */
   next_retry_at: string | null;
+  /** True when the candidate arrived via POST /admin/api/ingest (a scraper push) — its `acquire`
+   *  stage was satisfied from attached content, not a fetch. */
+  pushed: boolean;
+  /** For a pushed row, the batch `source` (provenance) shown in the admin Discovery view. */
+  origin: string | null;
 }
 
 /** Append one per-candidate outcome to the discovery log. */
@@ -46,11 +51,13 @@ export async function recordDiscoveryLog(
     createdAt: string;
     attempts?: number;
     nextRetryAt?: string | null;
+    pushed?: boolean;
+    origin?: string | null;
   },
 ): Promise<void> {
   await db(env).run(
-    "INSERT INTO discovery_log (id, url, title, source, outcome, slug, detail, created_at, attempts, next_retry_at) " +
-      "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+    "INSERT INTO discovery_log (id, url, title, source, outcome, slug, detail, created_at, attempts, next_retry_at, pushed, origin) " +
+      "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
     crypto.randomUUID(),
     entry.url,
     entry.title,
@@ -61,7 +68,22 @@ export async function recordDiscoveryLog(
     entry.createdAt,
     entry.attempts ?? 0,
     entry.nextRetryAt ?? null,
+    entry.pushed ? 1 : 0,
+    entry.origin ?? null,
   );
+}
+
+/** Urls that have SETTLED to a non-park outcome (anything but `error`/`failed`) — the dedup
+ *  set for pushed candidates at arrival. A url whose only prior outcomes are transient/walled
+ *  parks (`error`/`failed`) is NOT settled, so a later push supersedes those parks (the scraper
+ *  now supplies content the Worker's own fetch could not reach). */
+export async function loadSettledUrls(env: Env): Promise<Set<string>> {
+  const rows = await db(env).all<{ url: string | null }>(
+    "SELECT DISTINCT url FROM discovery_log WHERE url IS NOT NULL AND outcome NOT IN ('error', 'failed')",
+  );
+  const set = new Set<string>();
+  for (const { url } of rows) if (url) set.add(url);
+  return set;
 }
 
 /** Every URL already evaluated by a prior tick (the dedup set — don't reprocess). */
@@ -97,11 +119,11 @@ function parseDetail(v: unknown): unknown {
 /** The operator Discovery log — most-recent-first, bounded (admin Logs view / API). */
 export async function readDiscoveryLog(env: Env, limit = 200): Promise<DiscoveryLogRow[]> {
   const rows = await db(env).all<DiscoveryLogRow & { detail: string | null }>(
-    "SELECT id, url, title, source, outcome, slug, detail, created_at, attempts, next_retry_at FROM discovery_log " +
+    "SELECT id, url, title, source, outcome, slug, detail, created_at, attempts, next_retry_at, pushed, origin FROM discovery_log " +
       "ORDER BY created_at DESC LIMIT ?1",
     Math.max(1, Math.min(limit, 1000)),
   );
-  return rows.map((r) => ({ ...r, detail: parseDetail(r.detail) }));
+  return rows.map((r) => ({ ...r, pushed: !!r.pushed, detail: parseDetail(r.detail) }));
 }
 
 /** The parked/failed subset of the log (the agent-readable read_discovery_errors surface):
@@ -110,21 +132,21 @@ export async function readDiscoveryLog(env: Env, limit = 200): Promise<Discovery
  *  infrastructure failures resolve to terminal `error` so /health clears. */
 export async function readDiscoveryErrors(env: Env, limit = 100): Promise<DiscoveryLogRow[]> {
   const rows = await db(env).all<DiscoveryLogRow & { detail: string | null }>(
-    "SELECT id, url, title, source, outcome, slug, detail, created_at, attempts, next_retry_at FROM discovery_log " +
+    "SELECT id, url, title, source, outcome, slug, detail, created_at, attempts, next_retry_at, pushed, origin FROM discovery_log " +
       "WHERE outcome IN ('error', 'failed') ORDER BY created_at DESC LIMIT ?1",
     Math.max(1, Math.min(limit, 1000)),
   );
-  return rows.map((r) => ({ ...r, detail: parseDetail(r.detail) }));
+  return rows.map((r) => ({ ...r, pushed: !!r.pushed, detail: parseDetail(r.detail) }));
 }
 
 /** One log row by id (for the admin per-row retry / delete operations). Returns null if not found. */
 export async function readDiscoveryRowById(env: Env, id: string): Promise<DiscoveryLogRow | null> {
   const row = await db(env).first<DiscoveryLogRow & { detail: string | null }>(
-    "SELECT id, url, title, source, outcome, slug, detail, created_at, attempts, next_retry_at FROM discovery_log WHERE id = ?1",
+    "SELECT id, url, title, source, outcome, slug, detail, created_at, attempts, next_retry_at, pushed, origin FROM discovery_log WHERE id = ?1",
     id,
   );
   if (!row) return null;
-  return { ...row, detail: parseDetail(row.detail) };
+  return { ...row, pushed: !!row.pushed, detail: parseDetail(row.detail) };
 }
 
 // ── Candidate-pipeline enrichment (admin-ui-redesign-discovery) ─────────────────────────────
@@ -261,7 +283,7 @@ export async function loadDueRetries(
     nowIso,
     Math.max(1, Math.min(limit, 500)),
   );
-  return rows.map((r) => ({ ...r, detail: parseDetail(r.detail) }));
+  return rows.map((r) => ({ ...r, pushed: !!r.pushed, detail: parseDetail(r.detail) }));
 }
 
 /** Update an existing log row in place after a retry resolves: set outcome/detail/slug and clear

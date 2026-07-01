@@ -55,6 +55,21 @@ export const IngestBatchSchema = z.object({
 });
 export type IngestBatch = z.infer<typeof IngestBatchSchema>;
 
+/**
+ * The LENIENT envelope schema the Worker endpoint validates against: the batch META
+ * (source + versions) must be valid, but `recipes` is only checked to be a non-empty
+ * array — each item is validated individually with `parseRecipeItem` so one malformed
+ * item is rejected without failing the whole batch. (The scraper uses the strict
+ * `IngestBatchSchema` above to self-validate before sending.)
+ */
+export const IngestEnvelopeSchema = z.object({
+  source: z.string().trim().min(1),
+  scraper_version: z.string().trim().min(1),
+  contract_version: z.string().trim().min(1),
+  recipes: z.array(z.unknown()).min(1),
+});
+export type IngestEnvelope = z.infer<typeof IngestEnvelopeSchema>;
+
 // --- result / error taxonomy -------------------------------------------------
 
 /** Per-item disposition the endpoint reports for each recipe in a batch. */
@@ -98,6 +113,17 @@ export function parseIngestBatch(input: unknown): ParseResult<IngestBatch> {
 /** Validate a single recipe item (used for per-item accept/reject within a batch). */
 export function parseRecipeItem(input: unknown): ParseResult<RecipeItem> {
   const r = RecipeItemSchema.safeParse(input);
+  if (r.success) return { ok: true, value: r.data };
+  return { ok: false, error: r.error.issues.map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`).join("; ") };
+}
+
+/**
+ * Validate the batch ENVELOPE META (source + versions + a non-empty recipes array),
+ * leaving per-item validation to `parseRecipeItem`. The endpoint uses this so a single
+ * bad item does not reject the whole batch.
+ */
+export function parseIngestEnvelope(input: unknown): ParseResult<IngestEnvelope> {
+  const r = IngestEnvelopeSchema.safeParse(input);
   if (r.success) return { ok: true, value: r.data };
   return { ok: false, error: r.error.issues.map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`).join("; ") };
 }

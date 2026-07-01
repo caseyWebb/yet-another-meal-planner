@@ -20,6 +20,7 @@ import type { Env } from "./env.js";
 import { createR2CorpusStore } from "./corpus-store.js";
 import { directoryFromEnv } from "./tenant.js";
 import { readFeeds, readDiscoveryInbox, readDiscoveryRejections } from "./corpus-db.js";
+import { readIngestCandidates, deleteIngestCandidate } from "./ingest-db.js";
 import { recipeSourceMap, loadRecipeEmbeddings } from "./recipe-index.js";
 import { extractRecipeSources, canonicalizeUrl, buildNewRecipe } from "./discovery.js";
 import { parseFeed } from "./feeds.js";
@@ -58,6 +59,14 @@ export interface SweepCandidate {
   existingRowId?: string;
   /** For retry candidates: the current attempt count (used to compute backoff / terminalize). */
   attempts?: number;
+  /** For a PUSHED candidate (arrived via POST /admin/api/ingest): its pre-parsed content, so
+   *  `acquireContent` returns it instead of fetching (the walled fetch already happened on the
+   *  scraper). Present ⇒ `pushed` is true. */
+  content?: RecipeContent;
+  /** True when this candidate arrived via a scraper push (recorded on its discovery_log row). */
+  pushed?: boolean;
+  /** For a pushed candidate, the batch `source` name (provenance shown in the admin views). */
+  origin?: string | null;
 }
 
 /** One member's taste signal for the matcher (vectors resolved by the deps). */
@@ -171,6 +180,10 @@ export interface LogEntry {
   outcome: Outcome;
   slug?: string;
   detail?: Record<string, unknown>;
+  /** True when the candidate arrived via a scraper push (badged in the admin Discovery view). */
+  pushed?: boolean;
+  /** For a pushed candidate, the batch `source` (provenance). */
+  origin?: string | null;
 }
 
 /** Per-member attribution to persist on an import. */
@@ -228,6 +241,10 @@ export interface DiscoveryDeps {
   resolveRow(id: string, entry: LogEntry): Promise<void>;
   /** Bump the retry clock on an existing row when a retry re-fails but hasn't hit the cap. */
   bumpRetry(id: string, attempts: number, nextRetryAt: string): Promise<void>;
+  /** Delete a PUSHED candidate's inbox row once it reaches a terminal outcome (optional — only
+   *  the real deps provide it; a transient `failed` keeps the row so the next tick retries from
+   *  the stored content). */
+  deletePushed?(url: string): Promise<void>;
 }
 
 // --- pure matcher / dedup helpers (the same cosine the search ranker uses) ---
@@ -371,7 +388,9 @@ export async function runDiscoverySweep(
     }
     // Fetch budget guard: a triage survivor we cannot afford to fetch this tick is deferred.
     // Triage non-matches (above) are still cheaply finalized even when the fetch budget is full.
-    if (fetched >= config.fetchMaxPerTick) {
+    // A PUSHED candidate arrives with its content, so it spends NO fetch — the fetch cap does
+    // not gate it (only the classify + rate caps above do).
+    if (!candidate.pushed && fetched >= config.fetchMaxPerTick) {
       res.deferred++;
       continue;
     }
@@ -385,6 +404,13 @@ export async function runDiscoverySweep(
     });
     if (r.didFetch) fetched++;
     if (r.didClassify) classified++;
+
+    // A pushed candidate's inbox row is the retry state: delete it on a TERMINAL outcome
+    // (imported / rejected / contract-park); keep it on a transient `failed` so the next tick
+    // retries from the stored content (no re-fetch — its content persists in ingest_candidates).
+    if (candidate.pushed && r.outcome !== "failed") {
+      await deps.deletePushed?.(candidate.url);
+    }
 
     if (r.outcome === "no_match") res.noMatch++;
     else if (r.outcome === "duplicate") res.duplicate++;
@@ -428,8 +454,8 @@ export async function runDiscoverySweep(
   return res;
 }
 
-function logBase(c: SweepCandidate): Pick<LogEntry, "url" | "title" | "source"> {
-  return { url: c.url, title: c.title, source: c.source };
+function logBase(c: SweepCandidate): Pick<LogEntry, "url" | "title" | "source" | "pushed" | "origin"> {
+  return { url: c.url, title: c.title, source: c.source, pushed: c.pushed, origin: c.origin ?? null };
 }
 
 /** ISO timestamp for the next retry attempt, based on how many have been made so far. */
@@ -586,6 +612,12 @@ export async function processCandidate(
   } catch (e) {
     // An unexpected transient AI/D1 failure — record as `failed` (infra failure, not content error).
     const message = e instanceof Error ? e.message : String(e);
+    // A PUSHED candidate's persisted inbox row IS its retry state: don't write a `failed`
+    // discovery_log row (no spam, no retry-stream entry). The caller keeps the inbox row and
+    // the next tick retries from the stored content.
+    if (candidate.pushed) {
+      return { outcome: "failed", didFetch: false, didClassify: false };
+    }
     try {
       await logPark(
         { ...logBase(candidate), outcome: "failed", detail: { reason: `unexpected: ${message}` } },
@@ -814,6 +846,31 @@ export function buildDiscoveryDeps(env: Env, now: () => number = () => Date.now(
           if (push(m, subject, null, sender)) promoted++;
         }
       }
+
+      // Pushed inbox (POST /admin/api/ingest): pre-parsed candidates. They BYPASS the feed
+      // `seen` set — a push SUPERSEDES a prior walled `unreachable`/`no_jsonld` park for the
+      // same url (the scraper now supplies content the Worker's own fetch could not reach) —
+      // but are still skipped when the url is already a corpus recipe (a race between arrival
+      // and this tick), and that stale inbox row is cleaned up. Their content rides along so
+      // acquireContent returns it without a fetch.
+      const corpusUrls = extractRecipeSources(sourceMap);
+      for (const c of await readIngestCandidates(env)) {
+        if (local.has(c.url)) continue;
+        if (corpusUrls.has(c.url)) {
+          await deleteIngestCandidate(env, c.url).catch(() => {});
+          continue;
+        }
+        local.add(c.url);
+        out.push({
+          url: c.url,
+          title: c.title,
+          summary: c.content.summary ?? null,
+          source: c.origin,
+          pushed: true,
+          origin: c.origin,
+          content: { title: c.title, ingredients: c.content.ingredients, instructions: c.content.instructions },
+        });
+      }
       return out;
     },
 
@@ -853,6 +910,9 @@ export function buildDiscoveryDeps(env: Env, now: () => number = () => Date.now(
     embedMany: (texts) => embedTexts(env, texts),
 
     async acquireContent(candidate) {
+      // A pushed candidate arrives with its pre-parsed content — the walled fetch already
+      // happened on the scraper, so acquire is a no-op return (no external subrequest).
+      if (candidate.content) return { ok: true, content: candidate.content };
       const result = await acquireRecipeContent(candidate.url);
       if (!result.ok) return result;
       return {
@@ -905,6 +965,10 @@ export function buildDiscoveryDeps(env: Env, now: () => number = () => Date.now(
 
     async recordMatches(slug, attributions) {
       await recordDiscoveryMatches(env, slug, attributions, today());
+    },
+
+    async deletePushed(url) {
+      await deleteIngestCandidate(env, url);
     },
 
     async loadRetries(nowIso, limit) {

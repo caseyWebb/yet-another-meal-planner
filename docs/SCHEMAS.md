@@ -481,7 +481,11 @@ detail         TEXT     -- JSON: attribution (imports), the matched-duplicate sl
 created_at     TEXT     -- ISO timestamp (most-recent-first ordering)
 attempts       INTEGER  -- how many acquisition passes this row has had (0 = non-retryable / legacy; ≥1 = retryable park)
 next_retry_at  TEXT     -- ISO timestamp when this row next enters the cron retry stream; NULL = terminal (not retryable)
+pushed         INTEGER  -- 1 when the candidate arrived via POST /admin/api/ingest (a scraper push); 0 otherwise  (0027)
+origin         TEXT     -- for a pushed row, the batch `source` name (provenance shown in the admin Discovery view)  (0027)
 ```
+
+A **pushed** row (`pushed = 1`, `origin = "<source>"`) is a walled-source scraper candidate (see `ingest_candidates` below): its `acquire` stage was satisfied from attached content, not a fetch, so the admin Discovery view badges it (`scraper: <origin>`) and renders `acquire` as arrived-via-push. A pushed candidate's **transient** infrastructure failure is NOT written here — its `ingest_candidates` inbox row is the retry state — so only its terminal outcome ever appears in this log.
 
 For a content **park** (`outcome = 'error'`), `detail.reason` is the **specific** acquisition failure — `unreachable` (the fetch threw or returned a non-2xx; the HTTP status is recorded as `detail.status` when it was a non-2xx), `no_jsonld` (page fetched, no JSON-LD), `not_a_recipe` (JSON-LD present but no schema.org `Recipe`), `incomplete` (a `Recipe` with no ingredients/instructions), or a classification-validation message — **not** a catch-all `unreachable`. This is the same taxonomy `parse_recipe` returns and what the operator feed-probe reports, so a walled/dead source is distinguishable from a feed entry that simply isn't a parseable recipe.
 
@@ -790,6 +794,42 @@ Example rows (one row per email; the `body` carries the recipe links the agent e
 - `body` contains the email's plain-text content (or HTML converted to readable text), truncated to 10,000 characters. The sweep scans it for recipe links; there is no pre-extracted candidate list.
 - Entries are deduped at write-time by `(source, subject, discovered_at)` — the same email forwarded twice is stored only once.
 - An empty table is valid (no discoveries yet) — the sweep simply finds no email candidates that tick.
+
+## ingest_keys (D1 table, shared) — walled-source scraper keys
+
+The **ingest-key roster** (recipe-ingestion). One row per **scraper machine**; a key authenticates `POST /admin/api/ingest` as a bearer credential — a deliberate, key-authed carve-out from the Cloudflare Access gate (a headless home scraper has no Access JWT). The plaintext secret is shown **once** at mint and never stored: only a SHA-256 hash (the lookup key) + a short display prefix are persisted. `last_used_at` and the last-reported scraper/contract versions drive the admin liveness + contract-skew views. Schema: `migrations/d1/0025_ingest_keys.sql`.
+
+```sql
+-- D1 ingest_keys table. PRIMARY KEY (id); UNIQUE (key_hash), indexed for the auth lookup.
+id                    TEXT     -- "ik_<hex>" (PK)
+label                 TEXT     -- scraper machine label (e.g. home-nas-scraper)  NOT NULL
+key_hash              TEXT     -- SHA-256 hex of the secret (the credential + lookup key)  NOT NULL UNIQUE
+key_prefix            TEXT     -- display-only prefix, e.g. "ing_live_9f2a"  NOT NULL
+created_at            INTEGER  -- epoch ms  NOT NULL
+last_used_at          INTEGER  -- epoch ms of the last accepted push; NULL = never
+status                TEXT     -- active | revoked  NOT NULL DEFAULT 'active'
+last_scraper_version  TEXT     -- last reported scraper build
+last_contract_version TEXT     -- last reported targeted contract version (skew source)
+```
+
+Auth is SHA-256 hash equality (`WHERE key_hash = ? AND status = 'active'`) — an indexed DB lookup; the hash **is** the credential, so there is no per-row secret compare. Revoke sets `status = 'revoked'` (the next push with it is rejected `401`).
+
+## ingest_candidates (D1 table, shared) — the pushed-content inbox
+
+The scraper push inbox (recipe-ingestion). `POST /admin/api/ingest` persists each accepted, non-duplicate recipe item here with its **pre-parsed content**; the discovery sweep drains it as a **third intake source** (beside feeds + the email inbox), classifying/matching/importing **without a fetch** (`acquire` returns the attached content). A row lives until the candidate reaches a **terminal** outcome (imported / rejected / contract-park), then it is deleted; a **transient** infrastructure failure KEEPS the row so the next tick retries from the stored content (no re-fetch, no `discovery_log` spam). Deduped by canonical `url`. Schema: `migrations/d1/0026_ingest_candidates.sql`.
+
+```sql
+-- D1 ingest_candidates table. PRIMARY KEY (id); UNIQUE (url) is the dedup key.
+id           TEXT  -- uuid (PK)
+url          TEXT  -- canonical source URL (the dedup key)  NOT NULL UNIQUE
+title        TEXT  -- recipe title  NOT NULL
+content      TEXT  -- JSON { ingredients[], instructions[], summary?, servings?, time_total?, time_active? }  NOT NULL
+origin       TEXT  -- the batch `source` name (the pushed candidate's provenance / discovery_log `origin`)  NOT NULL
+key_id       TEXT  -- the minting ingest key's id  NOT NULL
+received_at  TEXT  -- ISO 8601
+```
+
+**Arrival dedup** (at the endpoint) checks the canonical url against the corpus `source_url`s, `discovery_rejections`, the **settled** `discovery_log` set (outcomes other than `error`/`failed`), and the in-flight inbox — but **not** walled/transient parks, so a push **supersedes** a prior `unreachable`/`no_jsonld` park (the scraper now supplies content the Worker's own fetch could not reach). Walled sources are therefore scraper-owned and SHOULD NOT also be registered as Worker-polled `feeds`.
 
 ## discovery_sources (shared corpus, D1 `discovery_senders` + `discovery_members`)
 

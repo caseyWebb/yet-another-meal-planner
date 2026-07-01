@@ -38,6 +38,9 @@ const PK: Record<string, string[]> = {
   night_vibes: ["tenant", "id"],
   night_vibe_derived: ["tenant", "id"],
   pending_proposals: ["tenant", "id"],
+  // walled-source ingest (recipe-ingestion)
+  ingest_keys: ["id"],
+  ingest_candidates: ["id"],
 };
 
 // Tables whose `id` PK is AUTOINCREMENT: an INSERT that omits `id` gets the next one,
@@ -58,6 +61,8 @@ const GLOBAL_TABLES = new Set([
   "store_notes",
   "recipe_notes",
   "bug_reports",
+  "ingest_keys",
+  "ingest_candidates",
 ]);
 
 export function fakeD1(
@@ -95,6 +100,8 @@ export function fakeD1(
     }
     if (/\bstore = \?1/i.test(sql)) eq("store", 1);
     if (/\bslug = \?1/i.test(sql)) eq("slug", 1);
+    if (/key_hash = \?1/i.test(sql)) eq("key_hash", 1);
+    if (/status = 'active'/i.test(sql)) out = out.filter((r) => r.status === "active");
     if (/\blocation_id = \?1/i.test(sql)) eq("location_id", 1);
     if (/\bname = \?1/i.test(sql)) eq("name", 1);
     if (/normalized_name = \?2/i.test(sql)) eq("normalized_name", 2);
@@ -192,7 +199,11 @@ export function fakeD1(
       }
       // UNIQUE(url) constraint on discovery_candidates: an INSERT OR IGNORE whose url
       // already exists is a no-op even though the PK (id) differs.
-      if (table === "discovery_candidates" && /OR IGNORE/i.test(sql) && "url" in row) {
+      if (
+        (table === "discovery_candidates" || table === "ingest_candidates") &&
+        /OR IGNORE/i.test(sql) &&
+        "url" in row
+      ) {
         if (tables[table].some((r) => r.url === row.url)) return { rows: [], changes: 0 };
       }
       tables[table].push(row);

@@ -16,6 +16,8 @@ function row(over: Partial<DiscoveryLogRow> & Pick<DiscoveryLogRow, "id" | "outc
     created_at: "2026-06-27T10:00:00.000Z",
     attempts: 0,
     next_retry_at: null,
+    pushed: false,
+    origin: null,
     ...over,
   };
 }

@@ -18,6 +18,8 @@ function row(over: Partial<DiscoveryLogRow> = {}): DiscoveryLogRow {
     created_at: "2026-06-29",
     attempts: 0,
     next_retry_at: null,
+    pushed: false,
+    origin: null,
     ...over,
   };
 }

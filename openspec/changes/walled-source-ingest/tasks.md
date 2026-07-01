@@ -8,21 +8,21 @@
 
 ## 2. Worker ingest endpoint + keys (Phase 1)
 
-- [ ] 2.1 Migration: `ingest_keys` table (id, label, key_hash, key_prefix, created_at, last_used_at, status, last_scraper_version, last_contract_version).
-- [ ] 2.2 Migration: `ingest_candidates` table (id, canonical_url, content JSON, origin, key_id, received_at, status) — the pushed-content inbox.
-- [ ] 2.3 Migration: add `pushed` + `origin` columns to `discovery_log`.
-- [ ] 2.4 `src/ingest-db.ts` (through `src/db.ts`): key mint (hash + prefix, secret returned once), revoke, constant-time lookup-by-secret, `last_used`/version update; pushed-candidate insert + read + delete; the derived per-scraper/per-source liveness rollup (fresh/stale/never + skew).
-- [ ] 2.5 `src/ingest.ts`: the `POST /admin/api/ingest` handler — key auth, envelope+item validation against the shared contract, arrival dedup (corpus/rejections/evaluated-log/in-flight inbox, with the walled-park supersede exception), persist accepted candidates, and the `{ received, accepted, deduped, rejected, results }` response; rate-limit the route.
-- [ ] 2.6 `src/index.ts` / admin app: route `POST /admin/api/ingest` as an **explicit key-authed exemption** from the Access gate (exact path+method only; all other `/admin*` stay Access-gated; an ingest key on any other admin path → 403).
+- [x] 2.1 Migration `0025_ingest_keys.sql` (id, label, key_hash, key_prefix, created_at, last_used_at, status, last_scraper_version, last_contract_version).
+- [x] 2.2 Migration `0026_ingest_candidates.sql` (id, url UNIQUE, title, content JSON, origin, key_id, received_at) — the pushed-content inbox.
+- [x] 2.3 Migration `0027_discovery_log_pushed.sql` — add `pushed` + `origin` columns to `discovery_log`.
+- [x] 2.4 `src/ingest-db.ts` (through `src/db.ts`): key mint (hash + prefix, secret returned once), revoke, hash lookup-by-secret, `last_used`/version stamp, list; pushed-candidate insert (INSERT OR IGNORE) + read + url-set + delete. (The per-scraper/per-source **liveness rollup** travels with the admin UI in group 4.)
+- [x] 2.5 `src/ingest.ts`: the `POST /admin/api/ingest` handler — key auth, envelope + per-item validation (`parseIngestEnvelope`/`parseRecipeItem`), arrival dedup (corpus/rejections/**settled**-log/in-flight inbox, with the walled-park supersede exception), persist accepted candidates, `{ received, accepted, deduped, rejected, results }` response; best-effort per-key KV rate limit. Tested in `test/ingest.test.ts`.
+- [x] 2.6 `src/index.ts`: route `POST /admin/api/ingest` to `handleIngest` **before** the `/admin` dispatch — an explicit key-authed exemption from the Access gate (exact path only; every other `/admin*` stays Access-gated).
 
 ## 3. Sweep push-intake arm (Phase 1)
 
-- [ ] 3.1 Extend `SweepCandidate` with optional attached pre-parsed content; make `buildDiscoveryDeps.loadCandidates` read `ingest_candidates` as a third source and emit pushed candidates.
-- [ ] 3.2 Make `acquireContent` return the attached content for a pushed candidate (no fetch); ensure triage/classify/dedup/match/import run unchanged.
-- [ ] 3.3 Record `pushed`/`origin` on the `discovery_log` row for pushed candidates (via `discovery-db.ts`).
-- [ ] 3.4 Pushed-candidate retry semantics: a transient classify/infra failure re-runs classification from stored content (no re-fetch); a contract-invalid classification parks terminally; delete the `ingest_candidates` row once terminal/imported.
-- [ ] 3.5 Enforce "walled sources are scraper-owned, not feeds" (guard/validation so a walled push URL supersedes a prior `unreachable` park and is not re-dropped as evaluated).
-- [ ] 3.6 Unit tests for the push arm (in-memory deps): skip-acquire, taste-match parity with feeds, supersede-walled-park, retry-without-refetch.
+- [x] 3.1 Extended `SweepCandidate` with optional `content`/`pushed`/`origin`; `buildDiscoveryDeps.loadCandidates` reads `ingest_candidates` as a third source and emits pushed candidates (bypassing the feed `seen` set; cleaning up a raced-already-in-corpus row).
+- [x] 3.2 `acquireContent` returns the attached content for a pushed candidate (no fetch); triage/classify/dedup/match/import run unchanged; the fetch cap does not gate a pushed candidate.
+- [x] 3.3 `pushed`/`origin` recorded on the `discovery_log` row (threaded via `logBase` → `recordDiscoveryLog`).
+- [x] 3.4 Retry semantics: a pushed candidate's inbox row is deleted on any terminal outcome; a transient `failed` keeps the row (retried next tick from stored content) and writes **no** `discovery_log` row; a contract-invalid classification parks terminally (`error`) and deletes the row.
+- [x] 3.5 "Walled sources are scraper-owned, not feeds": arrival dedup + the sweep dedup use the **settled** set (not parks), so a push supersedes a prior `unreachable` park; `loadSettledUrls` added.
+- [x] 3.6 Unit tests for the push arm (`test/discovery-sweep-push.test.ts`): skip-acquire, taste-match parity, fetch-cap exemption, retry-without-refetch/keep-row.
 
 ## 4. Worker liveness/health (Phase 2)
 

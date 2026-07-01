@@ -21,6 +21,8 @@ function logRow(over: Partial<DiscoveryLogRow> & Pick<DiscoveryLogRow, "id" | "o
     created_at: "2026-06-30T10:00:00.000Z",
     attempts: 0,
     next_retry_at: null,
+    pushed: false,
+    origin: null,
     ...over,
   };
 }
