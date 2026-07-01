@@ -118,6 +118,8 @@ export function fakeD1(
     if (/source = 'auto'/i.test(sql)) out = out.filter((r) => r.source === "auto");
     if (/concrete = 1/i.test(sql)) out = out.filter((r) => r.concrete === 1);
     if (/representative IS NULL/i.test(sql)) out = out.filter((r) => r.representative == null);
+    // Embedding-backfill batch (embedding IS NOT NULL never reaches the fake; IS NULL does).
+    if (/embedding IS NULL/i.test(sql)) out = out.filter((r) => r.embedding == null);
     if (/reconfirmed_at IS NULL/i.test(sql)) out = out.filter((r) => r.reconfirmed_at == null);
     if (/normalized_name = \?2/i.test(sql)) eq("normalized_name", 2);
     // Attributed notes: privacy rule (private=0 OR author=?2), and self-scoped
@@ -163,6 +165,9 @@ export function fakeD1(
           return av < bv ? -dir : av > bv ? dir : 0;
         });
       }
+      // Honor a bind-parameterized LIMIT (`LIMIT ?N`, the bounded corpus reads).
+      const limit = /LIMIT \?(\d+)/i.exec(sql);
+      if (limit) rows = rows.slice(0, Number(binds[Number(limit[1]) - 1]));
       return { rows: rows.map((r) => ({ ...r })), changes: 0 };
     }
     if (/^DELETE/i.test(sql)) {

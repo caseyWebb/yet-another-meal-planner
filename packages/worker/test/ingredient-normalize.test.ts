@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { reconcileNormalization, type NormalizeDeps } from "../src/ingredient-normalize.js";
-import { validateConfirm, type IdentityConfirm } from "../src/ingredient-classify.js";
+import { reconcileNormalization, validateCanonicalId, type NormalizeDeps } from "../src/ingredient-normalize.js";
+import { validateConfirm, type IdentityConfirm, type ScoredCandidate } from "../src/ingredient-classify.js";
 import type { Resolution, CoResolutionPair } from "../src/corpus-db.js";
 import { ToolError } from "../src/errors.js";
 
@@ -9,29 +9,49 @@ type Harness = {
   committed: Resolution[];
   deferred: string[];
   merges: { loser: string; survivor: string }[];
+  /** Embeddings the backfill stored (id + vector). */
+  stored: { id: string; embedding: number[] }[];
+  /** Every text batch handed to `embed` (backfill readable forms + drained terms). */
+  embedCalls: string[][];
   confirmCalls: number;
 };
 
 function harness(opts: {
   terms: string[];
   identities?: { id: string; embedding: number[] }[];
+  /** Extra existing node ids beyond `identities` (merged losers, unembedded nodes). */
+  knownIds?: string[];
+  /** Surviving node ids with no stored embedding (the backfill batch). */
+  embeddingless?: string[];
   embed?: (texts: string[]) => Promise<number[][]>;
-  confirm?: (term: string, candidates: string[]) => Promise<IdentityConfirm>;
+  confirm?: (term: string, candidates: ScoredCandidate[]) => Promise<IdentityConfirm>;
   coPairs?: CoResolutionPair[];
-  coConfirm?: (term: string, candidates: string[]) => Promise<IdentityConfirm>;
+  coConfirm?: (term: string, candidates: ScoredCandidate[]) => Promise<IdentityConfirm>;
 }): Harness {
   const committed: Resolution[] = [];
   const deferred: string[] = [];
   const merges: { loser: string; survivor: string }[] = [];
-  const h = { committed, deferred, merges, confirmCalls: 0 } as Harness;
+  const stored: { id: string; embedding: number[] }[] = [];
+  const embedCalls: string[][] = [];
+  const h = { committed, deferred, merges, stored, embedCalls, confirmCalls: 0 } as Harness;
+  const embed = opts.embed ?? (async (texts: string[]) => texts.map(() => [1, 0, 0]));
   h.deps = {
     loadBatch: async () => opts.terms,
-    identityEmbeddings: async () => (opts.identities ?? []).map((i) => ({ ...i })),
-    embed: opts.embed ?? (async (texts) => texts.map(() => [1, 0, 0])),
+    // Read-after-write like the real wiring: the backfill stores BEFORE this is read.
+    identityEmbeddings: async () => [...(opts.identities ?? []), ...stored].map((i) => ({ ...i })),
+    knownIds: async () => new Set([...(opts.identities ?? []).map((i) => i.id), ...(opts.knownIds ?? [])]),
+    embeddingless: async (limit) => (opts.embeddingless ?? []).slice(0, limit),
+    storeEmbedding: async (id, embedding) => {
+      stored.push({ id, embedding });
+    },
+    embed: async (texts) => {
+      embedCalls.push(texts);
+      return embed(texts);
+    },
     confirm: async (term, candidates) => {
       h.confirmCalls++;
       // The co-resolution pass reuses `confirm`; let a test route it separately when set.
-      if (opts.coConfirm && candidates.length === 1 && (opts.coPairs ?? []).some((p) => p.b === candidates[0])) {
+      if (opts.coConfirm && candidates.length === 1 && (opts.coPairs ?? []).some((p) => p.b === candidates[0].id)) {
         return opts.coConfirm(term, candidates);
       }
       if (!opts.confirm) throw new Error("confirm not expected");
@@ -50,8 +70,10 @@ function harness(opts: {
     now: () => 1000,
     maxPerTick: 25,
     floor: 0.5,
+    confirmMin: 0.72,
     topK: 10,
     coResolveMaxPerTick: 10,
+    embedBackfillMaxPerTick: 25,
   };
   return h;
 }
@@ -68,6 +90,7 @@ const confirm = (o: Partial<IdentityConfirm>): IdentityConfirm => ({
   outcome: "novel",
   match: null,
   detail: null,
+  canonical: null,
   concrete: true,
   edges: [],
   reason: "",
@@ -207,6 +230,195 @@ describe("reconcileNormalization", () => {
   });
 });
 
+describe("reconcileNormalization — confirm-distance guard", () => {
+  it("rejects a pick whose chosen candidate is below the confirm minimum → verbatim NOVEL, logged", async () => {
+    const h = harness({
+      terms: ["flaky sea salt"],
+      identities: [
+        { id: "sea salt", embedding: [1, 0, 0] }, // cosine 1 — clears the call floor
+        { id: "fish sauce", embedding: [0.6, 0.8, 0] }, // cosine 0.6 — a distant top-K straggler
+      ],
+      // The classifier collapses onto the DISTANT candidate (the production disaster class).
+      confirm: async () => confirm({ outcome: "specialization", match: "fish sauce", detail: "flaky" }),
+    });
+    const s = await reconcileNormalization(h.deps);
+    expect(h.committed[0]).toMatchObject({ term: "flaky sea salt", id: "flaky sea salt" });
+    expect(h.committed[0].log.outcome).toBe("novel");
+    expect(h.committed[0].log.detail).toMatchObject({
+      note: "confirm_below_min",
+      rejected: { outcome: "specialization", match: "fish sauce" },
+    });
+    expect(s).toMatchObject({ novel: 1, specialization: 0 });
+  });
+
+  it("applies a pick at or above the confirm minimum unchanged", async () => {
+    const h = harness({
+      terms: ["scallions"],
+      identities: [{ id: "green onion", embedding: [0.8, 0.6, 0] }], // cosine 0.8 ≥ 0.72
+      confirm: async () => confirm({ outcome: "same", match: "green onion" }),
+    });
+    await reconcileNormalization(h.deps);
+    expect(h.committed[0]).toMatchObject({ term: "scallions", id: "green onion" });
+  });
+
+  it("passes the candidates WITH their cosine scores to the confirm", async () => {
+    let seen: ScoredCandidate[] = [];
+    const h = harness({
+      terms: ["scallions"],
+      identities: [{ id: "green onion", embedding: [1, 0, 0] }],
+      confirm: async (_t, candidates) => {
+        seen = candidates;
+        return confirm({ outcome: "same", match: "green onion" });
+      },
+    });
+    await reconcileNormalization(h.deps);
+    expect(seen).toEqual([{ id: "green onion", score: 1 }]);
+  });
+});
+
+describe("reconcileNormalization — canonical id for confirmed-novel mints", () => {
+  it("mints under the classifier's canonical (noise stripped), aliasing the surface term to it", async () => {
+    const h = harness({
+      terms: ["quick cooking oats (flavored)"],
+      identities: [{ id: "rolled oats", embedding: [1, 0, 0] }],
+      confirm: async () => confirm({ outcome: "novel", canonical: "quick cooking oats" }),
+    });
+    await reconcileNormalization(h.deps);
+    const r = h.committed[0];
+    expect(r).toMatchObject({ term: "quick cooking oats (flavored)", id: "quick cooking oats" });
+    expect(r.node).toMatchObject({ base: "quick cooking oats", detail: null, search_term: "quick cooking oats" });
+    expect(r.log.resolved_id).toBe("quick cooking oats");
+  });
+
+  it("derives base/detail/search term from a base::detail canonical", async () => {
+    const h = harness({
+      terms: ["steel cut oats (bulk bin)"],
+      identities: [{ id: "rolled oats", embedding: [1, 0, 0] }],
+      confirm: async () => confirm({ outcome: "novel", canonical: "oats::steel-cut" }),
+    });
+    await reconcileNormalization(h.deps);
+    expect(h.committed[0].id).toBe("oats::steel-cut");
+    expect(h.committed[0].node).toMatchObject({ base: "oats", detail: "steel-cut", search_term: "oats steel-cut" });
+  });
+
+  it("falls back to the verbatim term on an invalid canonical (never fails the mint)", async () => {
+    const h = harness({
+      terms: ["quick cooking oats (flavored)"],
+      identities: [{ id: "rolled oats", embedding: [1, 0, 0] }],
+      confirm: async () => confirm({ outcome: "novel", canonical: "Quick Oats (bag)" }),
+    });
+    await reconcileNormalization(h.deps);
+    expect(h.committed[0].id).toBe("quick cooking oats (flavored)"); // pre-change behavior
+    expect(h.committed[0].log.detail).toMatchObject({
+      canonical_rejected: "Quick Oats (bag)",
+      canonical_reason: "invalid",
+    });
+  });
+
+  it("falls back to the verbatim term when the canonical collides with an existing node id", async () => {
+    const h = harness({
+      terms: ["fresh rolled oats (new bag)"],
+      identities: [{ id: "rolled oats", embedding: [1, 0, 0] }],
+      confirm: async () => confirm({ outcome: "novel", canonical: "rolled oats" }), // collides
+    });
+    await reconcileNormalization(h.deps);
+    expect(h.committed[0].id).toBe("fresh rolled oats (new bag)"); // never silently alias via collision
+    expect(h.committed[0].log.detail).toMatchObject({ canonical_rejected: "rolled oats", canonical_reason: "collision" });
+  });
+
+  it("checks collisions against merged/unembedded ids too (the full known-id set)", async () => {
+    const h = harness({
+      terms: ["baby courgette (2 pack)"],
+      identities: [{ id: "zucchini", embedding: [1, 0, 0] }],
+      knownIds: ["courgette"], // merged loser — not in the retrieval set, still an existing id
+      confirm: async () => confirm({ outcome: "novel", canonical: "courgette" }),
+    });
+    await reconcileNormalization(h.deps);
+    expect(h.committed[0].id).toBe("baby courgette (2 pack)");
+    expect(h.committed[0].log.detail).toMatchObject({ canonical_reason: "collision" });
+  });
+
+  it("keeps the verbatim mint (no LLM, no canonical) below the floor", async () => {
+    const h = harness({
+      terms: ["gochujang (family size)"],
+      identities: [{ id: "olive oil", embedding: [0, 1, 0] }], // orthogonal → below floor
+    });
+    await reconcileNormalization(h.deps);
+    expect(h.confirmCalls).toBe(0);
+    expect(h.committed[0]).toMatchObject({ id: "gochujang (family size)", node: { base: "gochujang (family size)" } });
+  });
+});
+
+describe("reconcileNormalization — embedding backfill", () => {
+  it("embeds embedding-less nodes before the drain, so they retrieve for this tick's terms", async () => {
+    const h = harness({
+      terms: ["spanish saffron"],
+      identities: [], // "saffron" exists but has NO embedding — invisible without the backfill
+      embeddingless: ["saffron"],
+      confirm: async (_t, candidates) => {
+        expect(candidates).toEqual([{ id: "saffron", score: 1 }]); // backfilled → retrievable
+        return confirm({ outcome: "same", match: "saffron" });
+      },
+    });
+    const s = await reconcileNormalization(h.deps);
+    expect(h.stored).toEqual([{ id: "saffron", embedding: [1, 0, 0] }]);
+    expect(s.embedded).toBe(1);
+    expect(h.committed[0]).toMatchObject({ term: "spanish saffron", id: "saffron" }); // no duplicate mint
+  });
+
+  it("embeds the readable form of a qualified id (base + detail flattened)", async () => {
+    const h = harness({ terms: [], embeddingless: ["chicken::thighs"] });
+    await reconcileNormalization(h.deps);
+    expect(h.embedCalls[0]).toEqual(["chicken thighs"]);
+    expect(h.stored.map((s) => s.id)).toEqual(["chicken::thighs"]);
+  });
+
+  it("a backfill embed failure never fails the tick (the drain still runs)", async () => {
+    const h = harness({
+      terms: ["gochujang"],
+      identities: [{ id: "olive oil", embedding: [0, 1, 0] }],
+      embeddingless: ["mystery"],
+      embed: async (texts) => {
+        if (texts.includes("mystery")) throw new Error("AI down");
+        return texts.map(() => [1, 0, 0]);
+      },
+    });
+    const s = await reconcileNormalization(h.deps);
+    expect(s.embedded).toBe(0);
+    expect(h.stored).toHaveLength(0); // rows stay NULL → retried next tick
+    expect(s.processed).toBe(1); // gochujang still drained (below floor → novel)
+  });
+
+  it("runs even on an empty queue (a human mint becomes retrievable without traffic)", async () => {
+    const h = harness({ terms: [], embeddingless: ["saffron"] });
+    const s = await reconcileNormalization(h.deps);
+    expect(s.embedded).toBe(1);
+    expect(h.stored.map((s2) => s2.id)).toEqual(["saffron"]);
+  });
+});
+
+describe("validateCanonicalId", () => {
+  it("accepts a clean base, a base::detail, and trims", () => {
+    expect(validateCanonicalId("medjool dates")).toBe("medjool dates");
+    expect(validateCanonicalId("ground beef::fat-80-20")).toBe("ground beef::fat-80-20");
+    expect(validateCanonicalId("  medjool dates ")).toBe("medjool dates");
+  });
+
+  it("rejects empties, noise characters, casing, bad segments, and overlength", () => {
+    expect(validateCanonicalId(null)).toBeNull();
+    expect(validateCanonicalId("")).toBeNull();
+    expect(validateCanonicalId("   ")).toBeNull();
+    expect(validateCanonicalId("Medjool Dates")).toBeNull(); // uppercase
+    expect(validateCanonicalId("dates (pitted)")).toBeNull(); // parenthetical noise
+    expect(validateCanonicalId("dates, pitted")).toBeNull(); // comma
+    expect(validateCanonicalId("dates\npitted")).toBeNull(); // newline
+    expect(validateCanonicalId("oats::")).toBeNull(); // empty detail segment
+    expect(validateCanonicalId("oats:steel-cut")).toBeNull(); // stray single colon
+    expect(validateCanonicalId("oats::steel-cut::organic")).toBeNull(); // deeper than base::detail
+    expect(validateCanonicalId("a".repeat(65))).toBeNull(); // over the length bound
+  });
+});
+
 describe("reconcileNormalization — SKU co-resolution merge", () => {
   it("merges two distinct ids sharing a SKU when the confirm says SAME (auto/auto → smaller id survives)", async () => {
     const h = harness({
@@ -321,5 +533,18 @@ describe("validateConfirm", () => {
     );
     expect(v.ok).toBe(true);
     if (v.ok) expect(v.confirm.edges).toEqual([{ from: "NEW", to: "green onion", kind: "membership" }]);
+  });
+
+  it("passes canonical through (trimmed) and NEVER fails the contract on a malformed one", () => {
+    const v = validateConfirm(
+      { outcome: "novel", match: null, detail: null, canonical: "  medjool dates " },
+      cands,
+    );
+    expect(v.ok).toBe(true);
+    if (v.ok) expect(v.confirm.canonical).toBe("medjool dates");
+    // A non-string canonical coerces to null rather than burning a corrective retry.
+    const v2 = validateConfirm({ outcome: "novel", match: null, detail: null, canonical: 42 }, cands);
+    expect(v2.ok).toBe(true);
+    if (v2.ok) expect(v2.confirm.canonical).toBeNull();
   });
 });

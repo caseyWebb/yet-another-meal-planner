@@ -340,6 +340,36 @@ export async function readNovelTermsBatch(env: Env, limit: number, now: number):
   return rows.map((r) => r.term);
 }
 
+/** EVERY identity node id AND alias variant — merged losers and unembedded nodes included. The
+ *  capture job's collision set for a classifier-proposed canonical id: a canonical equal to ANY
+ *  existing id falls back to the verbatim mint (an upsert onto a merged loser would silently
+ *  alias the term through the representative chain), and one equal to ANY alias variant likewise
+ *  (the resolver's front door is the alias map, so a standing variant→other-node row would
+ *  shadow the freshly minted node for every later lookup of that exact string). */
+export async function readIdentityIds(env: Env): Promise<Set<string>> {
+  const [ids, variants] = await Promise.all([
+    db(env).all<{ id: string }>("SELECT id FROM ingredient_identity"),
+    db(env).all<{ variant: string }>("SELECT variant FROM ingredient_alias"),
+  ]);
+  return new Set([...ids.map((r) => r.id), ...variants.map((r) => r.variant)]);
+}
+
+/** Surviving identity nodes with NO stored embedding (e.g. human-minted via update_aliases) —
+ *  the capture job's per-tick backfill batch, oldest decision first. */
+export async function readEmbeddinglessIds(env: Env, limit: number): Promise<string[]> {
+  const rows = await db(env).all<{ id: string }>(
+    "SELECT id FROM ingredient_identity WHERE embedding IS NULL AND representative IS NULL " +
+      "ORDER BY decided_at LIMIT ?1",
+    limit,
+  );
+  return rows.map((r) => r.id);
+}
+
+/** Store a backfilled embedding on an identity node (the capture job's backfill write). */
+export async function writeIdentityEmbedding(env: Env, id: string, embedding: number[]): Promise<void> {
+  await db(env).run("UPDATE ingredient_identity SET embedding = ?2 WHERE id = ?1", id, JSON.stringify(embedding));
+}
+
 /** Survivor identity nodes carrying an embedding, for cosine retrieval by the capture job. */
 export async function readIdentityEmbeddings(env: Env): Promise<{ id: string; embedding: number[] }[]> {
   const rows = await db(env).all<{ id: string; embedding: string }>(
@@ -416,11 +446,71 @@ export async function stampReconfirmed(env: Env, id: string, now: number): Promi
   await db(env).run("UPDATE ingredient_identity SET reconfirmed_at = ?2 WHERE id = ?1", id, now);
 }
 
+/** A proposed edge the commit filter withheld, with why — recorded in the decision's log detail. */
+export interface SkippedEdge {
+  from: string;
+  to: string;
+  kind: string;
+  reason: "self_loop" | "reverse_exists";
+}
+
+/**
+ * The commit-time edge gate (shared by the capture + re-confirm commits): drop any proposed edge
+ * that would contradict the directional "from satisfies to" semantics — a SELF-LOOP once both
+ * endpoints are resolved through the `representative` pointer, or an edge whose REVERSE resolved
+ * pair already exists (any kind) in the table or earlier in the same batch (the 2-cycle guard).
+ * Kept edges keep their ORIGINAL endpoints (resolution stays a read-time concern). Never deletes:
+ * when old and new edges disagree, the existing edge stands and the new one is withheld + logged.
+ * Full-table reads + JS filtering, the module's fake-D1-compatible idiom.
+ */
+async function filterCommittableEdges(
+  d: Db,
+  edges: { from: string; to: string; kind: string }[],
+): Promise<{ kept: { from: string; to: string; kind: string }[]; skipped: SkippedEdge[] }> {
+  if (edges.length === 0) return { kept: [], skipped: [] };
+  const [identities, existing] = await Promise.all([
+    d.all<{ id: string; representative: string | null }>("SELECT id, representative FROM ingredient_identity"),
+    d.all<{ from_id: string; to_id: string }>("SELECT from_id, to_id FROM ingredient_edge"),
+  ]);
+  const resolve = representativeResolver(identities);
+  const key = (from: string, to: string) => `${from} ${to}`;
+  const have = new Set(existing.map((e) => key(resolve(e.from_id), resolve(e.to_id))));
+  const kept: { from: string; to: string; kind: string }[] = [];
+  const skipped: SkippedEdge[] = [];
+  for (const e of edges) {
+    const from = resolve(e.from);
+    const to = resolve(e.to);
+    if (from === to) {
+      skipped.push({ ...e, reason: "self_loop" });
+      continue;
+    }
+    if (have.has(key(to, from))) {
+      skipped.push({ ...e, reason: "reverse_exists" });
+      continue;
+    }
+    have.add(key(from, to));
+    kept.push(e);
+  }
+  return { kept, skipped };
+}
+
+/** Fold withheld edges into a decision log's detail (additive over an existing object detail). */
+function withSkippedEdges(log: NormalizationLog, skipped: SkippedEdge[]): NormalizationLog {
+  if (skipped.length === 0) return log;
+  const base =
+    log.detail && typeof log.detail === "object" && !Array.isArray(log.detail)
+      ? (log.detail as Record<string, unknown>)
+      : {};
+  return { ...log, detail: { ...base, edges_skipped: skipped } };
+}
+
 /**
  * Commit a re-confirm decision that ONLY enriches: insert-or-ignore any proposed edges and append
  * the decision to the log — no node/alias/queue writes (the node already exists). Additive by
  * construction (`INSERT OR IGNORE`), so re-confirm can never remove or downgrade an existing edge.
- * The `log` is written with its `isReconfirm` marker so the Decisions view can distinguish it.
+ * Edges pass the commit-time contradiction gate (`filterCommittableEdges`); withheld ones land in
+ * the log detail. The `log` is written with its `isReconfirm` marker so the Decisions view can
+ * distinguish it.
  */
 export async function commitReconfirmEdges(
   env: Env,
@@ -428,8 +518,9 @@ export async function commitReconfirmEdges(
 ): Promise<void> {
   const d = db(env);
   const now = Date.now();
+  const { kept, skipped } = await filterCommittableEdges(d, r.edges ?? []);
   const stmts: D1PreparedStatement[] = [];
-  for (const e of r.edges ?? []) {
+  for (const e of kept) {
     stmts.push(
       d.prepare(
         "INSERT OR IGNORE INTO ingredient_edge (from_id, to_id, kind, source, decided_at) VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -441,7 +532,7 @@ export async function commitReconfirmEdges(
       ),
     );
   }
-  stmts.push(logStmt(d, r.log, now));
+  stmts.push(logStmt(d, withSkippedEdges(r.log, skipped), now));
   await d.batch(stmts);
 }
 
@@ -487,12 +578,14 @@ export interface Resolution {
  * Commit a term's resolution atomically: (optionally) mint the node + its embedding, upsert the
  * alias front-door, insert any edges, remove the term from the queue, and append the audit log —
  * one D1 batch. Node upserts only fill the embedding on conflict (never downgrade a human node's
- * source); edges are insert-or-ignore. Queued terms have no prior alias, so the alias upsert is
- * effectively an insert.
+ * source); edges are insert-or-ignore after the commit-time contradiction gate
+ * (`filterCommittableEdges`; withheld edges land in the log detail). Queued terms have no prior
+ * alias, so the alias upsert is effectively an insert.
  */
 export async function commitResolution(env: Env, r: Resolution): Promise<void> {
   const d = db(env);
   const now = Date.now();
+  const { kept, skipped } = await filterCommittableEdges(d, r.edges ?? []);
   const stmts: D1PreparedStatement[] = [];
   if (r.node) {
     stmts.push(
@@ -523,7 +616,7 @@ export async function commitResolution(env: Env, r: Resolution): Promise<void> {
       now,
     ),
   );
-  for (const e of r.edges ?? []) {
+  for (const e of kept) {
     stmts.push(
       d.prepare(
         "INSERT OR IGNORE INTO ingredient_edge (from_id, to_id, kind, source, decided_at) VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -536,7 +629,7 @@ export async function commitResolution(env: Env, r: Resolution): Promise<void> {
     );
   }
   stmts.push(d.prepare("DELETE FROM novel_ingredient_terms WHERE term = ?1", r.term));
-  stmts.push(logStmt(d, r.log, now));
+  stmts.push(logStmt(d, withSkippedEdges(r.log, skipped), now));
   await d.batch(stmts);
 }
 

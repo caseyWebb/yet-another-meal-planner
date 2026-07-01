@@ -28,6 +28,13 @@ export interface ConfirmEdge {
   kind: EdgeKind;
 }
 
+/** A retrieval candidate shown to the confirm: the id plus its cosine to the term (absent for
+ *  the co-resolution pass, whose pairing signal is a shared SKU, not embedding distance). */
+export interface ScoredCandidate {
+  id: string;
+  score?: number;
+}
+
 /** The classifier's decision. Ids are constructed by the JOB from `match` + `detail`, not
  *  trusted from the model, so the base stays in the registry's canonical form. */
 export interface IdentityConfirm {
@@ -36,6 +43,9 @@ export interface IdentityConfirm {
   match: string | null;
   /** For specialization: the distinguishing product detail as a kebab token (e.g. "fat-80-20"). */
   detail: string | null;
+  /** For novel: the proposed clean product id (noise stripped). ADVISORY — the job validates it
+   *  and falls back to the verbatim term; it never fails validation here. */
+  canonical: string | null;
   /** false ⇒ a concept class ("a fresh soft cheese"), not a buyable product. */
   concrete: boolean;
   /** Proposed edges; endpoints are "NEW" (the term's node) or a candidate id. */
@@ -46,16 +56,19 @@ export interface IdentityConfirm {
 const EDGE_KINDS = new Set<EdgeKind>(["general", "containment", "membership"]);
 
 const SYSTEM_PROMPT = [
-  "You normalize grocery ingredient terms into a shared identity graph. Given a NEW term and a list of CANDIDATE known ingredient ids (from a fuzzy vector search whose list MAY contain irrelevant noise), decide how the new term relates to the known ingredients.",
+  "You normalize grocery ingredient terms into a shared identity graph. Given a NEW term and a list of CANDIDATE known ingredient ids (from a fuzzy vector search whose list MAY contain irrelevant noise), each with its cosine similarity to the new term when available, decide how the new term relates to the known ingredients.",
   "",
   "An id is `base` or `base::detail`. A base is the general product; a detail narrows it to a spec that changes WHICH PRODUCT you would buy at the store.",
   "",
-  'Return STRICT JSON only, no prose: {"outcome":"same"|"specialization"|"novel","match":"<candidate id, verbatim, or null>","detail":"<kebab detail for specialization, else null>","concrete":true|false,"edges":[{"from":"NEW"|"<candidate id>","to":"NEW"|"<candidate id>","kind":"general"|"containment"|"membership"}],"reason":"<short>"}',
+  'Return STRICT JSON only, no prose: {"outcome":"same"|"specialization"|"novel","match":"<candidate id, verbatim, or null>","detail":"<kebab detail for specialization, else null>","canonical":"<clean product id for novel, else null>","concrete":true|false,"edges":[{"from":"NEW"|"<candidate id>","to":"NEW"|"<candidate id>","kind":"general"|"containment"|"membership"}],"reason":"<short>"}',
   "",
   "Rules:",
   "- same: the new term is a synonym — the SAME product you would buy as a candidate (scallions = green onion). Set match to that candidate id.",
   "- specialization: the new term is a candidate's base product PLUS a spec that changes which SKU (80/20 ground beef specializes ground beef). Set match to that candidate id and detail to a short kebab token (e.g. fat-80-20, type-bread).",
   "- novel: none of the candidates is the same product. Set match and detail to null. This INCLUDES distinct varieties that merely resemble a candidate: cheddar is NOT mozzarella, baking soda is NOT baking powder, chicken broth is NOT vegetable broth.",
+  "- A DISTINCT PRODUCT is NEVER a specialization of a lookalike. A specialization's detail narrows the SAME base product; it must not attach a different product to a similar-sounding candidate. Dried dates are NOT a variety of a dried fruit blend; canned salmon is NOT a form of fresh skin-on salmon fillets; a loaf of bread is NOT a type of bread flour; a sea salt is NOT a kind of fish sauce. When the products differ, choose novel.",
+  "- Each candidate's similarity is its retrieval cosine to the new term. LOW similarity means the retriever considers it distant: the lower it is, the stronger the product-identity evidence must be before you pick same or specialization against it — when similarity is low and identity is not obvious, choose novel.",
+  '- For a novel outcome, ALSO set canonical to the clean store-product name for the new term: lowercase, packaging/quantity/storage-condition noise stripped (parentheticals, bag sizes, "frozen leftovers", "freezer burned"), as `base` or `base::detail`. If the term is already a clean product name, canonical may repeat it. canonical is null for same/specialization.',
   "- Be CONSERVATIVE. Only pick same when truly interchangeable at the store. When in doubt prefer specialization or novel. Never collapse two distinct products.",
   "- GENERALITY DIRECTION: never pick same when the new term is MORE GENERAL than a candidate. A general product (mozzarella cheese) is NOT a synonym of one of its specific varieties (fresh mozzarella) — choose novel and mint the general base instead. When you mint a general base over candidates that are its specific varieties, ALSO add a general edge FROM each such variety TO the new base: {\"from\":\"<variety>\",\"to\":\"NEW\",\"kind\":\"general\"}. A general edge is DIRECTIONAL like containment — a specific variety satisfies a request for the general product (kielbasa satisfies sausage), but the general product does NOT satisfy a request for the variety.",
   "- PREPARATION words that do not change the product (diced, minced, shredded, softened, chopped) are NOT details: pick same on the base product (diced yellow onion = yellow onion).",
@@ -68,25 +81,32 @@ type Msg = { role: "system" | "user" | "assistant"; content: string };
 
 const FEW_SHOT: { user: string; out: IdentityConfirm }[] = [
   {
-    user: 'NEW term: "scallions"\nCANDIDATES: ["all-purpose flour","cilantro","green onion"]',
-    out: { outcome: "same", match: "green onion", detail: null, concrete: true, edges: [], reason: "synonym of green onion" },
+    user: 'NEW term: "scallions"\nCANDIDATES: [{"id":"all-purpose flour","similarity":0.41},{"id":"cilantro","similarity":0.62},{"id":"green onion","similarity":0.84}]',
+    out: { outcome: "same", match: "green onion", detail: null, canonical: null, concrete: true, edges: [], reason: "synonym of green onion" },
   },
   {
-    user: 'NEW term: "80/20 ground beef"\nCANDIDATES: ["ground beef","lean ground beef"]',
-    out: { outcome: "specialization", match: "ground beef", detail: "fat-80-20", concrete: true, edges: [], reason: "ground beef at a specific fat ratio" },
+    user: 'NEW term: "80/20 ground beef"\nCANDIDATES: [{"id":"ground beef","similarity":0.88},{"id":"lean ground beef","similarity":0.83}]',
+    out: { outcome: "specialization", match: "ground beef", detail: "fat-80-20", canonical: null, concrete: true, edges: [], reason: "ground beef at a specific fat ratio" },
   },
   {
-    user: 'NEW term: "baking powder"\nCANDIDATES: ["baking soda","flour"]',
-    out: { outcome: "novel", match: null, detail: null, concrete: true, edges: [], reason: "distinct product from baking soda" },
+    user: 'NEW term: "baking powder"\nCANDIDATES: [{"id":"baking soda","similarity":0.83},{"id":"flour","similarity":0.55}]',
+    out: { outcome: "novel", match: null, detail: null, canonical: "baking powder", concrete: true, edges: [], reason: "distinct product from baking soda" },
+  },
+  {
+    // A distinct product over a lookalike candidate, from noisy pantry free-text: novel (never a
+    // specialization of the lookalike), with the noise stripped into the canonical.
+    user: 'NEW term: "dried medjool dates (pitted)"\nCANDIDATES: [{"id":"dried fruit blend","similarity":0.74},{"id":"raisins","similarity":0.66}]',
+    out: { outcome: "novel", match: null, detail: null, canonical: "medjool dates", concrete: true, edges: [], reason: "dates are a distinct product, not a dried fruit blend variety" },
   },
   {
     // A GENERAL base arriving over specific varieties: mint the base novel AND back-link each
     // variety to it with a directional general edge (kielbasa satisfies sausage, not the reverse).
-    user: 'NEW term: "sausage"\nCANDIDATES: ["kielbasa","andouille","bratwurst"]',
+    user: 'NEW term: "sausage"\nCANDIDATES: [{"id":"kielbasa","similarity":0.78},{"id":"andouille","similarity":0.74},{"id":"bratwurst","similarity":0.73}]',
     out: {
       outcome: "novel",
       match: null,
       detail: null,
+      canonical: "sausage",
       concrete: true,
       edges: [
         { from: "kielbasa", to: "NEW", kind: "general" },
@@ -98,13 +118,21 @@ const FEW_SHOT: { user: string; out: IdentityConfirm }[] = [
   },
 ];
 
-function messages(term: string, candidates: string[]): Msg[] {
+/** The candidate as the prompt shows it: id + rounded similarity (omitted when unscored). */
+function promptCandidate(c: ScoredCandidate): { id: string; similarity?: number } {
+  return c.score === undefined ? { id: c.id } : { id: c.id, similarity: Math.round(c.score * 1000) / 1000 };
+}
+
+function messages(term: string, candidates: ScoredCandidate[]): Msg[] {
   const msgs: Msg[] = [{ role: "system", content: SYSTEM_PROMPT }];
   for (const ex of FEW_SHOT) {
     msgs.push({ role: "user", content: ex.user });
     msgs.push({ role: "assistant", content: JSON.stringify(ex.out) });
   }
-  msgs.push({ role: "user", content: `NEW term: ${JSON.stringify(term)}\nCANDIDATES: ${JSON.stringify(candidates)}` });
+  msgs.push({
+    role: "user",
+    content: `NEW term: ${JSON.stringify(term)}\nCANDIDATES: ${JSON.stringify(candidates.map(promptCandidate))}`,
+  });
   return msgs;
 }
 
@@ -139,6 +167,9 @@ export function validateConfirm(
   }
   const detail = typeof raw.detail === "string" && raw.detail.trim() ? raw.detail.trim() : null;
   if (outcome === "specialization" && !detail) errors.push("specialization requires a non-empty detail");
+  // Advisory only — the JOB validates the canonical and falls back to the verbatim term, so a
+  // malformed value must never fail the contract (or burn a corrective retry).
+  const canonical = typeof raw.canonical === "string" && raw.canonical.trim() ? raw.canonical.trim() : null;
   const concrete = raw.concrete !== false; // default concrete unless explicitly false
   const edges: ConfirmEdge[] = [];
   if (Array.isArray(raw.edges)) {
@@ -159,6 +190,7 @@ export function validateConfirm(
       outcome: outcome as IdentityConfirm["outcome"],
       match,
       detail,
+      canonical,
       concrete,
       edges,
       reason: typeof raw.reason === "string" ? raw.reason : "",
@@ -189,15 +221,16 @@ async function runModel(env: Env, msgs: Msg[]): Promise<Record<string, unknown> 
 export async function confirmIdentity(
   env: Env,
   term: string,
-  candidates: string[],
+  candidates: ScoredCandidate[],
   maxRetries: number = NORMALIZE_MAX_RETRIES,
 ): Promise<IdentityConfirm> {
   const msgs = messages(term, candidates);
+  const candidateIds = candidates.map((c) => c.id);
   let lastErrors: string[] = ["model did not return a JSON object"];
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     const raw = await runModel(env, msgs);
     if (raw) {
-      const v = validateConfirm(raw, candidates);
+      const v = validateConfirm(raw, candidateIds);
       if (v.ok) return v.confirm;
       lastErrors = v.errors;
       msgs.push({ role: "assistant", content: JSON.stringify(raw) });

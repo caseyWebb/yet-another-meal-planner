@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { reconfirmIdentities, type ReconfirmDeps } from "../src/ingredient-reconfirm.js";
 import { readReconfirmBatch } from "../src/corpus-db.js";
 import type { ReconfirmNode, NormalizationLog } from "../src/corpus-db.js";
-import type { IdentityConfirm } from "../src/ingredient-classify.js";
+import type { IdentityConfirm, ScoredCandidate } from "../src/ingredient-classify.js";
 import { fakeD1 } from "./fake-d1.js";
 import { ToolError } from "../src/errors.js";
 
@@ -19,7 +19,7 @@ type Harness = {
 function harness(opts: {
   nodes: ReconfirmNode[];
   identities?: { id: string; embedding: number[] }[];
-  confirm?: (term: string, candidates: string[]) => Promise<IdentityConfirm>;
+  confirm?: (term: string, candidates: ScoredCandidate[]) => Promise<IdentityConfirm>;
 }): Harness {
   const committed: CommittedEdges[] = [];
   const merges: { loser: string; survivor: string }[] = [];
@@ -60,6 +60,7 @@ const confirm = (o: Partial<IdentityConfirm>): IdentityConfirm => ({
   outcome: "novel",
   match: null,
   detail: null,
+  canonical: null,
   concrete: true,
   edges: [],
   reason: "",
@@ -85,8 +86,8 @@ describe("reconfirmIdentities", () => {
     expect(s).toMatchObject({ reconfirmed: 1, edges_added: 1, merged: 0, still_novel: 1, skipped: 0 });
   });
 
-  it("excludes the node itself from the confirm candidates", async () => {
-    let seen: string[] = [];
+  it("excludes the node itself from the confirm candidates (which carry their cosine)", async () => {
+    let seen: ScoredCandidate[] = [];
     const h = harness({
       nodes: [node({ id: "kielbasa" })],
       identities: [
@@ -99,7 +100,7 @@ describe("reconfirmIdentities", () => {
       },
     });
     await reconfirmIdentities(h.deps);
-    expect(seen).toEqual(["sausage"]); // never the node itself
+    expect(seen).toEqual([{ id: "sausage", score: 1 }]); // never the node itself; scored
   });
 
   it("merges a `same` synonym via the representative (this node is always the loser)", async () => {

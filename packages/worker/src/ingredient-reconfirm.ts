@@ -31,7 +31,7 @@ import {
   type ReconfirmNode,
   type NormalizationLog,
 } from "./corpus-db.js";
-import { confirmIdentity, NORMALIZE_MODEL, type IdentityConfirm } from "./ingredient-classify.js";
+import { confirmIdentity, NORMALIZE_MODEL, type IdentityConfirm, type ScoredCandidate } from "./ingredient-classify.js";
 import { NORMALIZE_TOP_K } from "./ingredient-normalize.js";
 import { writeJobHealth, writeJobRun } from "./health.js";
 
@@ -41,7 +41,7 @@ export const RECONFIRM_MAX_PER_TICK = 10;
 export interface ReconfirmDeps {
   loadBatch(limit: number): Promise<ReconfirmNode[]>;
   identityEmbeddings(): Promise<{ id: string; embedding: number[] }[]>;
-  confirm(term: string, candidates: string[]): Promise<IdentityConfirm>;
+  confirm(term: string, candidates: ScoredCandidate[]): Promise<IdentityConfirm>;
   /** Insert-or-ignore any edges + append the (re-confirm-marked) decision log. */
   commitEdges(r: { edges?: { from: string; to: string; kind: string }[]; log: NormalizationLog }): Promise<void>;
   /** Set `loser`'s representative to `survivor` (the union-find merge), logged as a re-confirm. */
@@ -117,11 +117,10 @@ async function reconfirmOne(
     return { outcome: "novel", edges_added: 0 };
   }
 
-  const candidateIds = ranked.map((r) => r.id);
-  const known = new Set(candidateIds);
+  const known = new Set(ranked.map((r) => r.id));
   let confirm: IdentityConfirm;
   try {
-    confirm = await deps.confirm(term, candidateIds);
+    confirm = await deps.confirm(term, ranked); // scored — the confirm sees each candidate's cosine
   } catch (e) {
     // Contract-invalid confirm → fail safe to a no-op (stamp, change nothing). A transient AI/D1
     // error → rethrow so the caller skips the node (stamp left null, retried next tick).

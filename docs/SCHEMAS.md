@@ -630,6 +630,13 @@ source  TEXT NOT NULL DEFAULT 'auto'
 -- is_reconfirm INTEGER NOT NULL DEFAULT 0  -- 1 = decision from the re-confirm pass, not initial capture
 ```
 
+The log's `detail` JSON carries per-decision context: `reason` (the classifier's short rationale);
+`note` — `confirm_failed_safe` (contract-invalid confirm → fail-safe NOVEL) or `confirm_below_min`
+(the distance guard rejected a same/specialization pick, with `rejected {outcome, match, score}`);
+`canonical_rejected` + `canonical_reason` (`invalid` | `collision`) when a classifier-proposed
+canonical id fell back to the verbatim term; and `edges_skipped [{from, to, kind, reason:
+"self_loop" | "reverse_exists"}]` for edges withheld by the commit-time contradiction gate.
+
 Example identity rows (id / base / detail):
 
 | id | base | detail |

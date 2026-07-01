@@ -7,6 +7,11 @@ import {
   deleteAlias,
   enqueueNovelTerms,
   commitResolution,
+  commitReconfirmEdges,
+  readIdentityIds,
+  readEmbeddinglessIds,
+  writeIdentityEmbedding,
+  readIdentityEmbeddings,
   mergeIdentities,
   readSkuCoResolutionPairs,
   readSkuCache,
@@ -110,6 +115,139 @@ describe("ingredient identity / normalization (D1)", () => {
     const resolver = await readResolver(env);
     expect(resolver.toId["80/20 ground beef"]).toBe("ground beef::fat-80-20");
     expect(resolver.searchTerms["ground beef::fat-80-20"]).toBe("80/20 ground beef");
+  });
+
+  it("commitResolution skips an edge whose REVERSE pair already exists (any kind), logging it", async () => {
+    const { env, tables } = fakeD1({
+      tables: {
+        ingredient_identity: [
+          { id: "whole cardamom pods", base: "whole cardamom pods", representative: null },
+          { id: "ground cardamom", base: "ground cardamom", representative: null },
+          { id: "cardamom", base: "cardamom", representative: null },
+        ],
+        ingredient_alias: [],
+        ingredient_edge: [
+          { from_id: "whole cardamom pods", to_id: "ground cardamom", kind: "containment" },
+        ],
+        novel_ingredient_terms: [{ term: "ground cardamom pods", first_seen: 1 }],
+        ingredient_normalization_log: [],
+      },
+    });
+    await commitResolution(env, {
+      term: "ground cardamom pods",
+      id: "ground cardamom",
+      edges: [
+        { from: "ground cardamom", to: "whole cardamom pods", kind: "general" }, // reverse of existing → skipped
+        { from: "ground cardamom", to: "cardamom", kind: "general" }, // clean → kept
+      ],
+      log: { term: "ground cardamom pods", outcome: "same", resolved_id: "ground cardamom" },
+    });
+    expect(tables.ingredient_edge).toHaveLength(2); // the pre-existing edge + the one kept edge
+    expect(tables.ingredient_edge).toContainEqual(
+      expect.objectContaining({ from_id: "ground cardamom", to_id: "cardamom", kind: "general" }),
+    );
+    const detail = JSON.parse(String(tables.ingredient_normalization_log[0].detail));
+    expect(detail.edges_skipped).toEqual([
+      { from: "ground cardamom", to: "whole cardamom pods", kind: "general", reason: "reverse_exists" },
+    ]);
+  });
+
+  it("commitResolution skips a same-batch reverse pair and a post-merge self-loop", async () => {
+    const { env, tables } = fakeD1({
+      tables: {
+        ingredient_identity: [
+          { id: "scallion", base: "scallion", representative: "green onion" }, // merged loser
+          { id: "green onion", base: "green onion", representative: null },
+          { id: "chive", base: "chive", representative: null },
+        ],
+        ingredient_alias: [],
+        ingredient_edge: [],
+        novel_ingredient_terms: [{ term: "spring onion", first_seen: 1 }],
+        ingredient_normalization_log: [],
+      },
+    });
+    await commitResolution(env, {
+      term: "spring onion",
+      id: "green onion",
+      edges: [
+        { from: "green onion", to: "chive", kind: "general" }, // kept
+        { from: "chive", to: "green onion", kind: "membership" }, // reverse of the edge above → skipped
+        { from: "scallion", to: "green onion", kind: "general" }, // scallion resolves to green onion → self-loop
+      ],
+      log: { term: "spring onion", outcome: "same", resolved_id: "green onion" },
+    });
+    expect(tables.ingredient_edge).toEqual([
+      expect.objectContaining({ from_id: "green onion", to_id: "chive", kind: "general" }),
+    ]);
+    const detail = JSON.parse(String(tables.ingredient_normalization_log[0].detail));
+    expect(detail.edges_skipped).toEqual([
+      { from: "chive", to: "green onion", kind: "membership", reason: "reverse_exists" },
+      { from: "scallion", to: "green onion", kind: "general", reason: "self_loop" },
+    ]);
+  });
+
+  it("commitReconfirmEdges applies the same contradiction gate, folding skips into the log detail", async () => {
+    const { env, tables } = fakeD1({
+      tables: {
+        ingredient_identity: [
+          { id: "chicken::whole", base: "chicken", representative: null },
+          { id: "chicken::thighs", base: "chicken", representative: null },
+        ],
+        ingredient_edge: [{ from_id: "chicken::whole", to_id: "chicken::thighs", kind: "containment" }],
+        ingredient_normalization_log: [],
+      },
+    });
+    await commitReconfirmEdges(env, {
+      edges: [{ from: "chicken::thighs", to: "chicken::whole", kind: "general" }], // reverse → skipped
+      log: { term: "chicken thighs", outcome: "novel", resolved_id: "chicken::thighs", isReconfirm: true },
+    });
+    expect(tables.ingredient_edge).toHaveLength(1); // nothing inserted
+    const detail = JSON.parse(String(tables.ingredient_normalization_log[0].detail));
+    expect(detail.edges_skipped).toEqual([
+      { from: "chicken::thighs", to: "chicken::whole", kind: "general", reason: "reverse_exists" },
+    ]);
+  });
+
+  it("readIdentityIds returns EVERY node id and alias variant (merged + unembedded included)", async () => {
+    const { env } = fakeD1({
+      tables: {
+        ingredient_identity: [
+          { id: "zucchini", base: "zucchini", representative: null, embedding: "[1]" },
+          { id: "courgette", base: "courgette", representative: "zucchini" }, // merged loser
+          { id: "saffron", base: "saffron", representative: null }, // no embedding
+        ],
+        // a standing variant→node row shadows any later node minted under the same name — it
+        // must be in the collision set even though "scallion" is not itself a node id
+        ingredient_alias: [{ variant: "scallion", id: "zucchini" }],
+      },
+    });
+    expect(await readIdentityIds(env)).toEqual(new Set(["zucchini", "courgette", "saffron", "scallion"]));
+  });
+
+  it("readEmbeddinglessIds returns only unembedded SURVIVORS, oldest first, bounded", async () => {
+    const { env } = fakeD1({
+      tables: {
+        ingredient_identity: [
+          { id: "zucchini", base: "zucchini", representative: null, embedding: "[1]", decided_at: 1 },
+          { id: "courgette", base: "courgette", representative: "zucchini", decided_at: 2 }, // merged → excluded
+          { id: "saffron", base: "saffron", representative: null, decided_at: 4 },
+          { id: "sumac", base: "sumac", representative: null, decided_at: 3 },
+        ],
+      },
+    });
+    expect(await readEmbeddinglessIds(env, 10)).toEqual(["sumac", "saffron"]); // oldest decided_at first
+    expect(await readEmbeddinglessIds(env, 1)).toEqual(["sumac"]); // bounded
+  });
+
+  it("writeIdentityEmbedding stores the vector so the node joins the retrieval read", async () => {
+    const { env, tables } = fakeD1({
+      tables: {
+        ingredient_identity: [{ id: "saffron", base: "saffron", representative: null, embedding: null }],
+      },
+    });
+    await writeIdentityEmbedding(env, "saffron", [0.1, 0.2]);
+    expect(tables.ingredient_identity[0].embedding).toBe("[0.1,0.2]");
+    expect(await readIdentityEmbeddings(env)).toEqual([{ id: "saffron", embedding: [0.1, 0.2] }]);
   });
 
   it("mergeIdentities points the loser at the survivor (union-find), logging the merge", async () => {
