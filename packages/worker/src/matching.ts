@@ -39,8 +39,14 @@ export interface MatchDeps {
   search(term: string): Promise<KrogerCandidate[]>;
   /** Revalidate a cached SKU (current price + fulfillment) at the resolved location. */
   productById(productId: string): Promise<KrogerCandidate | null>;
-  /** `aliases` table map (variant → canonical). */
+  /** `aliases` table map (variant → canonical id). */
   aliases: Record<string, string>;
+  /**
+   * Canonical id → human Kroger search phrase, for qualified ids whose id string is not a
+   * search term (`ground beef::fat-80-20` → "80/20 ground beef"). Absent id (a bare base)
+   * searches as-is. Optional so unit tests can omit it.
+   */
+  searchTerms?: Record<string, string>;
   /** `preferences` `[brands]` (key → ranked list; `[]` = don't-care). */
   brands: Record<string, string[]>;
   /** The shared D1 `sku_cache` mappings (location-tagged, D7). */
@@ -166,17 +172,31 @@ function effectivePrice(c: KrogerCandidate): number {
 
 /**
  * Strip a single leading quantity token and optional unit, e.g. "2 lb ",
- * "1 cup ", "16.9 fl oz ", "3 ". Expects already-lowercased input. Shared by
- * `normalizeIngredient` and the recipe-line parser so the unit vocabulary stays
- * single-sourced.
+ * "1 cup ", "16.9 fl oz ", "3 ", "1/2 cup ". Expects already-lowercased input.
+ *
+ * A **slash-fraction** (`\d+/\d+`) is stripped ONLY when a unit follows it, so a
+ * ratio-style PRODUCT QUALIFIER like `80/20` in "80/20 ground beef" is preserved for
+ * the resolver rather than silently discarded as a quantity (a plain integer/decimal
+ * still strips with or without a unit, so "2 eggs" → "eggs" is unchanged). This keeps
+ * "80/20 ground beef" and "1 lb 80/20 ground beef" normalizing to the SAME term.
  */
 export function stripLeadingQuantity(s: string): string {
   return s
     .replace(
-      /^\d+(?:\.\d+)?(?:\/\d+)?\s*(?:fl\s*oz|oz|lb|lbs|g|kg|ml|l|cup|cups|tbsp|tsp|pt|qt|gal|ct|count|pack|cloves?|cans?|bunch(?:es)?|pieces?)?\.?\s+/,
+      /^(?:\d+\s+)?\d+\/\d+\s*(?:fl\s*oz|oz|lb|lbs|g|kg|ml|l|cup|cups|tbsp|tsp|pt|qt|gal|ct|count|pack|cloves?|cans?|bunch(?:es)?|pieces?)\.?\s+|^\d+(?:\.\d+)?\s*(?:fl\s*oz|oz|lb|lbs|g|kg|ml|l|cup|cups|tbsp|tsp|pt|qt|gal|ct|count|pack|cloves?|cans?|bunch(?:es)?|pieces?)?\.?\s+/,
       "",
     )
     .trim();
+}
+
+/**
+ * The BASE of a canonical id — the segment up to the first `::` (a pure string op, so
+ * "same base?" needs no schema). A bare base id is its own base. Details after `::` are
+ * opaque discriminators; deterministic code compares only full-id or base equality.
+ */
+export function baseOf(id: string): string {
+  const i = id.indexOf("::");
+  return i === -1 ? id : id.slice(0, i);
 }
 
 /**
@@ -387,7 +407,11 @@ export async function matchIngredient(
   const normalized = normalizeIngredient(ingredient, deps.aliases);
   const key = brandKey(normalized);
   const dietary = context.dietary;
-  const queryTokens = relevanceTokens(normalized);
+  // The canonical id keys the cache + brand prefs, but Kroger search and identity relevance
+  // run on a human PHRASE: the stored search_term for a qualified id, else the id with any
+  // `::` detail markers flattened to spaces (a bare base is already a fine search phrase).
+  const searchPhrase = deps.searchTerms?.[normalized] ?? normalized.split("::").join(" ");
+  const queryTokens = relevanceTokens(searchPhrase);
 
   // Step 2 — cache lookup + revalidation (no TTL). The cache is SHARED across the
   // group (D7), so a hit may have been resolved by another tenant at another store.
@@ -413,8 +437,8 @@ export async function matchIngredient(
     }
   }
 
-  // Step 3 — term search.
-  const candidates = await deps.search(normalized);
+  // Step 3 — term search (on the human phrase, not the raw id).
+  const candidates = await deps.search(searchPhrase);
 
   // Step 4 — availability is one near-hard constraint.
   const fulfillable = candidates.filter(isFulfillable);

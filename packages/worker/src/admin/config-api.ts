@@ -105,10 +105,10 @@ export async function putOperatorConfig(env: Env, body: Record<string, unknown>)
   return { config: await loadOperatorConfig(env) };
 }
 
-// --- Shared-corpus editors (aliases / flyer-terms / feeds / senders / members) ----------------
+// --- Shared-corpus editors (flyer-terms / feeds / senders / members) ---------------------------
 
 /** Validate the `<table>` slug (404 on unknown), narrowing it to the corpus-table union. */
-function corpusTable(table: string): "aliases" | "flyer-terms" | "feeds" | "senders" | "members" {
+function corpusTable(table: string): "flyer-terms" | "feeds" | "senders" | "members" {
   if (!isCorpusTable(table)) throw new ToolError("not_found", `No corpus table ${table}`, { table });
   return table;
 }

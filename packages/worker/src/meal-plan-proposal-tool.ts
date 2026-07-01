@@ -24,14 +24,17 @@ import { assembleProposal, type ProposalCtx } from "./meal-plan-proposal.js";
 import type { DiversifyCandidate, DiversifyParams } from "./diversify.js";
 import { readPantry } from "./session-db.js";
 import { deriveAtRiskDemand } from "./use-it-up.js";
+import { emptyIngredientContext, type IngredientContext } from "./corpus-db.js";
 
 /** The buildServer closures this tool reuses (memoized per-request reads). */
 export interface ProposeDeps {
   getOverlay: () => Promise<Overlay>;
   getLastCookedMap: () => Promise<Map<string, string>>;
   getOwnedEquipment: () => Promise<string[]>;
-  getAliases: () => Promise<Record<string, string>>;
-  normalizeItems: (value: unknown, aliases: Record<string, string>) => string[];
+  /** The shared ingredient-normalization funnel (resolve + capture + search terms). Every
+   *  perishable/key/pantry/boost name the planner sets-maths over routes through `resolveNames`,
+   *  so the corpus vocabulary and the pantry line up on the SAME canonical ids. */
+  getIngredientContext: () => Promise<IngredientContext>;
 }
 
 /** Per-slot recall: how many candidates to rank before the cross-slot diversify narrows. */
@@ -73,7 +76,7 @@ export function registerProposeMealPlanTool(server: McpServer, env: Env, tenant:
         const resolvedSeed = seed ?? Number(now.toISOString().slice(0, 10).replace(/-/g, ""));
         const excludeSet = new Set((exclude ?? []).map((s) => s.toLowerCase()));
 
-        const [index, overlay, lastCooked, owned, embeddings, prefs, operatorConfig, aliases, palette, vibeVectors, lastSatisfied, pantry] =
+        const [index, overlay, lastCooked, owned, embeddings, prefs, operatorConfig, ctx, palette, vibeVectors, lastSatisfied, pantry] =
           await Promise.all([
             loadRecipeIndex(env).catch((e) => {
               throw new ToolError("index_unavailable", `the recipe index is unavailable: ${e instanceof Error ? e.message : String(e)}`);
@@ -84,7 +87,7 @@ export function registerProposeMealPlanTool(server: McpServer, env: Env, tenant:
             loadRecipeEmbeddings(env),
             readPreferences(env, tenant.id).catch(() => null),
             loadOperatorConfig(env).catch(() => null),
-            deps.getAliases().catch(() => ({}) as Record<string, string>),
+            deps.getIngredientContext().catch(() => emptyIngredientContext(env)),
             readNightVibes(env, tenant.id),
             readNightVibeVectors(env, tenant.id),
             readVibeLastSatisfied(env, tenant.id),
@@ -117,7 +120,7 @@ export function registerProposeMealPlanTool(server: McpServer, env: Env, tenant:
           }
         }
         const rankParams = resolveRankParams(prefs, operatorConfig ?? undefined);
-        const boostItems = deps.normalizeItems(boost_ingredients, aliases);
+        const boostItems = ctx.resolveNames(boost_ingredients);
         const diversifyParams: Partial<DiversifyParams> = {};
         // More variety → lower λ, but clamp to the 0.4 floor below which relevance collapses.
         if (typeof nudges?.variety === "number") diversifyParams.lambda = Math.max(0.4, 1 - nudges.variety);
@@ -129,11 +132,11 @@ export function registerProposeMealPlanTool(server: McpServer, env: Env, tenant:
         // normalized through the SAME alias table as the candidate ingredients, so they line up.
         const perishableVocab = new Set<string>();
         for (const entry of Object.values(effective)) {
-          for (const item of deps.normalizeItems((entry as Record<string, unknown>).perishable_ingredients, aliases)) perishableVocab.add(item);
+          for (const item of ctx.resolveNames((entry as Record<string, unknown>).perishable_ingredients)) perishableVocab.add(item);
         }
         const atRiskDemand = deriveAtRiskDemand(
           pantry.map((row) => ({
-            normalizedName: deps.normalizeItems([(row as Record<string, unknown>).name], aliases)[0] ?? "",
+            normalizedName: ctx.resolveNames([(row as Record<string, unknown>).name])[0] ?? "",
             quantity: typeof (row as Record<string, unknown>).quantity === "string" ? ((row as Record<string, unknown>).quantity as string) : null,
             addedAt: typeof (row as Record<string, unknown>).added_at === "string" ? ((row as Record<string, unknown>).added_at as string) : null,
           })),
@@ -161,7 +164,7 @@ export function registerProposeMealPlanTool(server: McpServer, env: Env, tenant:
             // `effective[slug]` is a FLAT index entry (frontmatter fields directly on it) — NOT
             // a `{ frontmatter }` wrapper (that shape only comes from filterRecipes). Pass it as-is.
             const e = entry as Record<string, unknown>;
-            locked.push(toDiversify(realSlug, e, vec, 1, deps.normalizeItems(e.perishable_ingredients, aliases), deps.normalizeItems(e.ingredients_key, aliases)));
+            locked.push(toDiversify(realSlug, e, vec, 1, ctx.resolveNames(e.perishable_ingredients), ctx.resolveNames(e.ingredients_key)));
           } else {
             lockedUnresolved.push(raw);
           }
@@ -202,7 +205,7 @@ export function registerProposeMealPlanTool(server: McpServer, env: Env, tenant:
             poolByVibe.set(slot.id, []); // unembedded / missing → explicit empty slot
             continue;
           }
-          poolByVibe.set(slot.id, buildPool(effective, vibe, vibeVec, embeddings, lastCooked, favoriteVecs, rankParams, now, owned, aliases, deps, excludeSet, nudges?.max_time_total));
+          poolByVibe.set(slot.id, buildPool(effective, vibe, vibeVec, embeddings, lastCooked, favoriteVecs, rankParams, now, owned, ctx, excludeSet, nudges?.max_time_total));
           if (slot.reason === "pinned") whyByVibe.set(slot.id, [`your regular “${vibe.vibe}”`]);
           else if (slot.reason === "overdue") whyByVibe.set(slot.id, [`“${vibe.vibe}” is due to come back around`]);
         }
@@ -210,7 +213,7 @@ export function registerProposeMealPlanTool(server: McpServer, env: Env, tenant:
         const frontmatterBySlug = new Map<string, Record<string, unknown>>();
         for (const [slug, entry] of Object.entries(effective)) frontmatterBySlug.set(slug, entry as Record<string, unknown>);
 
-        const ctx: ProposalCtx = {
+        const proposalCtx: ProposalCtx = {
           slots: shape.slots,
           poolByVibe,
           locked,
@@ -224,7 +227,7 @@ export function registerProposeMealPlanTool(server: McpServer, env: Env, tenant:
           params: diversifyParams,
           whyByVibe,
         };
-        const result = assembleProposal(ctx);
+        const result = assembleProposal(proposalCtx);
         return { ...result, diagnostics: { ...result.diagnostics, rolled_over: shape.rolledOver } };
       }),
   );
@@ -241,8 +244,7 @@ function buildPool(
   rankParams: ReturnType<typeof resolveRankParams>,
   now: Date,
   owned: string[],
-  aliases: Record<string, string>,
-  deps: ProposeDeps,
+  ctx: IngredientContext,
   excludeSet: Set<string>,
   maxTime: number | undefined,
 ): DiversifyCandidate[] {
@@ -263,8 +265,8 @@ function buildPool(
       time_total: num(fm.time_total),
       embedding: vec,
       last_cooked: lastCooked.get(s.slug) ?? null,
-      ingredients_key: deps.normalizeItems(fm.ingredients_key, aliases),
-      perishable_ingredients: deps.normalizeItems(fm.perishable_ingredients, aliases),
+      ingredients_key: ctx.resolveNames(fm.ingredients_key),
+      perishable_ingredients: ctx.resolveNames(fm.perishable_ingredients),
     });
   }
   // Pool score is PURE vibe relevance (cosine + favorite + freshness) — NO use-it-up boost here.

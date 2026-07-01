@@ -16,9 +16,6 @@
 import type { Env } from "./env.js";
 import { ToolError } from "./errors.js";
 import {
-  readAliases,
-  addAliases,
-  deleteAlias,
   readFlyerTerms,
   addFlyerTerms,
   deleteFlyerTerm,
@@ -31,8 +28,9 @@ import {
   deleteMember,
 } from "./corpus-db.js";
 
-/** The five editable shared-corpus tables, by their URL slug. */
-export const CORPUS_TABLES = ["aliases", "flyer-terms", "feeds", "senders", "members"] as const;
+/** The editable shared-corpus tables, by their URL slug. (Ingredient aliases moved to the
+ *  Normalization area's Aliases tab — organic-ingredient-normalization.) */
+export const CORPUS_TABLES = ["flyer-terms", "feeds", "senders", "members"] as const;
 export type CorpusTable = (typeof CORPUS_TABLES)[number];
 
 export function isCorpusTable(slug: string): slug is CorpusTable {
@@ -49,11 +47,6 @@ export interface CorpusTablePage {
 /** List a corpus table's rows (group-wide; the column order is the server's). */
 export async function listCorpusTable(env: Env, table: CorpusTable): Promise<CorpusTablePage> {
   switch (table) {
-    case "aliases": {
-      const map = await readAliases(env);
-      const rows = Object.entries(map).map(([variant, canonical]) => ({ variant, canonical }));
-      return { table, columns: ["variant", "canonical"], rows };
-    }
     case "flyer-terms": {
       const rows = (await readFlyerTerms(env)).map((term) => ({ term }));
       return { table, columns: ["term"], rows };
@@ -103,11 +96,6 @@ function requireAddress(body: Record<string, unknown>): string {
  */
 export async function addCorpusRow(env: Env, table: CorpusTable, body: Record<string, unknown>): Promise<{ added: number }> {
   switch (table) {
-    case "aliases": {
-      const variant = requireString(body, "variant");
-      const canonical = requireString(body, "canonical");
-      return { added: await addAliases(env, [{ variant, canonical }]) };
-    }
     case "flyer-terms": {
       const term = requireString(body, "term");
       return { added: await addFlyerTerms(env, [term]) };
@@ -146,8 +134,6 @@ export async function addCorpusRow(env: Env, table: CorpusTable, body: Record<st
  */
 export async function deleteCorpusRow(env: Env, table: CorpusTable, key: string): Promise<{ removed: boolean }> {
   switch (table) {
-    case "aliases":
-      return { removed: await deleteAlias(env, key) };
     case "flyer-terms":
       return { removed: await deleteFlyerTerm(env, key) };
     case "feeds":

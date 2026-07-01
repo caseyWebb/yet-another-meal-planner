@@ -11,7 +11,7 @@ Concrete schemas with example values for every data file in the repo. Keep this 
 The data lives in three tiers (see `ARCHITECTURE.md`): the authored markdown corpus in an **R2 bucket** (bound as `CORPUS`), all operational/relational + derived data in **D1**, and ephemeral infra in **KV**. Every artifact below lives in exactly one:
 
 - **Authored markdown (R2 bucket `CORPUS`)** — the human-editable tier (an Obsidian vault synced to the same bucket): `recipes/*.md` (objective frontmatter + body) and the `guidance/**/*.md` umbrella (`guidance/ingredient_storage/` — curated put-away advice, read-only; `guidance/cooking_techniques/` — technique memories, agent-writable via `save_guidance`; `guidance/purchasing/` — buy-side selection advice, also agent-writable). Object keys are repo-relative paths (`recipes/<slug>.md`, `guidance/<domain>/<slug>.md`); read/written through `src/corpus-store.ts`. There is no GitHub App or data repo on the data path.
-- **Shared corpus (D1, `migrations/d1/0006_shared_corpus.sql`)** — objective, single-source, read by everyone: `aliases(variant, canonical)`, `sku_cache(ingredient, location_id, …)`, `flyer_terms(term)`, `stores(slug, name, domain, extra /*json*/)` (in-store-walk registry — identity columns `slug`/`name`/`domain` are top-level; optional identity fields `label`/`chain`/`address`/`location_id` are stored in the `extra` JSON column; layout lives in store notes), `feeds(url, …)` (RSS discovery feeds), `discovery_candidates(id, url UNIQUE, status, …)` (forwarded-newsletter inbox + group-wide rejection log; `status` values: `pending` | `rejected` — `pending` is the default for unprocessed candidates, `rejected` is set by `reject_discovery`), `discovery_senders`/`discovery_members` (inbound-email allowlist). Written + validated at the Worker write tools; read by query. The recipe index is the derived D1 `recipes` table — there is no `_indexes/recipes.json`.
+- **Shared corpus (D1, `migrations/d1/0006_shared_corpus.sql` + `0025_ingredient_identity.sql`)** — objective, single-source, read by everyone: the ingredient identity graph (`ingredient_identity`/`ingredient_alias`/`ingredient_edge` + the `novel_ingredient_terms` queue + `ingredient_normalization_log`), `sku_cache(ingredient, location_id, …)`, `flyer_terms(term)`, `stores(slug, name, domain, extra /*json*/)` (in-store-walk registry — identity columns `slug`/`name`/`domain` are top-level; optional identity fields `label`/`chain`/`address`/`location_id` are stored in the `extra` JSON column; layout lives in store notes), `feeds(url, …)` (RSS discovery feeds), `discovery_candidates(id, url UNIQUE, status, …)` (forwarded-newsletter inbox + group-wide rejection log; `status` values: `pending` | `rejected` — `pending` is the default for unprocessed candidates, `rejected` is set by `reject_discovery`), `discovery_senders`/`discovery_members` (inbound-email allowlist). Written + validated at the Worker write tools; read by query. The recipe index is the derived D1 `recipes` table — there is no `_indexes/recipes.json`.
 - **Attributed records (D1 `recipe_notes` / `store_notes`)** — each member's attributed recipe/store notes, stored in D1 tables carrying `author` (the writing tenant, set by the Worker) + a `private` flag. Both tables use `id TEXT PRIMARY KEY` (a generated stable key); `recipe`/`slug` (the recipe or store slug), `author`, `body`, `tags`, `private`, and `created_at` are ordinary columns (not the primary key). `read_recipe_notes` returns own-private + group-shared in one query, joined with the overlay favorites.
 - **Per-tenant D1 (the profile)** — each member's grocery **profile** lives in normalized D1 tables (`migrations/d1/0004_profile.sql`): a singleton `profile` row (the markdown fields `taste`/`diet_principles`, the preference scalars `default_cooking_nights`/`planning_cadence_days`/`lunch_strategy`/`ready_to_eat_default_action`, the JSON columns `stores`/`dietary`/`rotation`/`custom`/`kitchen_notes`, `freezer_capacity_estimate`, and `last_planned_at` — the per-tenant planning watermark, migration 0016, stamped by `update_meal_plan` on an add and read by `list_new_for_me`), plus child tables `brand_prefs(tenant, term, ranks)`, `kitchen_equipment(tenant, slug)`, `staples(tenant, name, normalized_name, perishable)`, `overlay(tenant, recipe, favorite, reject)` (the two mutually-exclusive disposition marks; there is no `status` lifecycle or `rating` column), `ready_to_eat(tenant, slug, meal, name, favorite, reject, category, source, brand, notes)`, and `stockup(tenant, name, normalized_name, unit, typical_purchase, notes, baseline_price, buy_at_or_below)`. `idx_overlay_recipe` powers the cross-tenant group-favorites query. Reads assemble the agent-facing objects from these rows (`src/profile-db.ts`); writes mutate rows — no document format on the profile path.
 - **Per-tenant D1 (session state)** — each member's working state lives in D1 row tables (`migrations/d1/0005_session_state.sql`): `pantry(tenant, name, normalized_name, quantity, category, prepared_from, added_at, last_verified_at, notes)`, `meal_plan(tenant, recipe, planned_for, sides /*json*/, from_vibe /*night-vibe slot provenance, migration 0026; advisory, never slug-resolved*/)`, `grocery_list(tenant, name, normalized_name, quantity, kind, domain, status, source, for_recipes /*json*/, note, added_at, ordered_at)` — keyed by normalized name (pantry/grocery) or recipe slug (meal plan), with `idx_grocery_status(tenant, status)` and `idx_pantry_category(tenant, category)` backing the read filters. Adds are row upserts (`INSERT … ON CONFLICT DO UPDATE`), removes/status changes are targeted row statements — no whole-array rewrite, strong read-after-write consistency. (The detailed item shapes are below.) The Worker read path has **no** GitHub/KV fallback — a miss returns empty/null.
@@ -579,29 +579,60 @@ Example rows (`brand_prefs`):
 | alice | butter | ["Kerrygold","Plugra"] |
 | alice | yellow_onion | [] |
 
-**`[brands]` is tri-state and drives matching confidence.** The Kroger matching pipeline reads a key's *presence* as the confidence signal: absent → ambiguous (Claude asks); `[]` → "don't care," pick cheapest acceptable without asking; a non-empty list → ranked preference, **list order is rank**. Keys are the canonical normalized ingredient term with spaces as underscores (`extra virgin olive oil` → normalize via the aliases table → `olive oil` → key `olive_oil`). A non-empty list whose brands are all unavailable falls back to ambiguous.
+**`[brands]` is tri-state and drives matching confidence.** The Kroger matching pipeline reads a key's *presence* as the confidence signal: absent → ambiguous (Claude asks); `[]` → "don't care," pick cheapest acceptable without asking; a non-empty list → ranked preference, **list order is rank**. Keys are the canonical id with spaces as underscores (`extra virgin olive oil` → resolve via the ingredient identity graph → `olive oil` → key `olive_oil`). A non-empty list whose brands are all unavailable falls back to ambiguous.
 
 **`[stores].primary` is the fulfillment mode** (in-store-fulfillment). It is either the literal `kroger` (online mode — the agent flushes the grocery list with `place_order`, using `preferred_location` for the Kroger API) **or** a mapped store slug from `stores/` (walk mode — the agent runs the in-store walk for that store instead). The agent picks the flush from the resolved mode and SHALL NOT assume Kroger. Mode is a property of the **preference/trip, not the chain** — a store can be online-capable and/or walk-capable. **Naming a store for one trip** ("I'm going to the West 7th Tom Thumb") overrides the standing `primary` for that trip only, without rewriting it. An unknown store-slug `primary` is **not a hard failure** (preferences is parse-only curated config) — the agent resolves it conversationally (offer to map the store, or fall back to online). `preferred_location` stays meaningful in walk mode too (it still drives Kroger pricing for sale checks).
 
-## aliases (shared corpus, D1 `aliases` table)
+## ingredient identity (shared corpus, D1)
 
-Ingredient name variants. Agent edits only when directed (it can suggest additions during matching pipeline runs).
+The ingredient normalization layer — a directed identity graph the cron grows itself
+(organic-ingredient-normalization). A canonical **id** is `base` or `base::detail[::detail]`;
+the **base** (the id up to the first `::`) keeps the existing lowercase/space form (`ground beef`,
+`olive oil`) so pre-change `sku_cache`/`brand_prefs` keys resolve unchanged, and details are
+opaque discriminators to deterministic code (which compares only full-id or base equality). The
+front-door `ingredient_alias` maps a surface form → id; the `ingredient_identity` registry holds
+the node (with a union-find `representative` pointer, a `concrete` flag, and a cron-owned
+embedding); `ingredient_edge` holds directed `satisfies` edges. The `readResolver` load bakes the
+`representative` chain into the variant→id map. `update_aliases` writes `source='human'` (never
+overwritten by the auto capture pass).
 
 ```sql
--- D1 aliases table — ingredient name canonicalization. PRIMARY KEY (variant).
-variant    TEXT  -- the raw/alternate form (e.g. "EVOO", "extra virgin olive oil")
-canonical  TEXT  -- the normalized canonical form (e.g. "olive oil")  NOT NULL
+-- ingredient_identity — canonical nodes. PRIMARY KEY (id).
+id             TEXT  -- canonical id: `base` or `base::detail`
+base           TEXT  -- id up to the first "::"  NOT NULL
+detail         TEXT  -- the "::"-joined detail suffix, or NULL for a bare base
+search_term    TEXT  -- human Kroger search phrase for a qualified id ("80/20 ground beef")
+representative TEXT  -- union-find pointer to the surviving id, or NULL (self)
+concrete       INTEGER NOT NULL DEFAULT 1  -- 0 = concept node (queryable class, not buyable)
+embedding      TEXT  -- JSON array of EMBED_DIM floats; cron-owned, NULL until embedded
+source         TEXT NOT NULL DEFAULT 'auto'  -- 'auto' | 'human'
+decided_at     INTEGER
+
+-- ingredient_alias — surface form → id (hot-path exact match). PRIMARY KEY (variant).
+variant    TEXT  -- lowercased, quantity-stripped surface form
+id         TEXT  -- → ingredient_identity.id (pre-representative)  NOT NULL
+source     TEXT NOT NULL DEFAULT 'auto'
+confidence REAL
+decided_at INTEGER
+
+-- ingredient_edge — directed "satisfies" edges. PRIMARY KEY (from_id, to_id, kind).
+from_id TEXT  -- A satisfies a request for to_id (reachability)
+to_id   TEXT
+kind    TEXT  -- 'general' | 'containment' | 'membership'
+source  TEXT NOT NULL DEFAULT 'auto'
+
+-- novel_ingredient_terms — the capture queue (surface forms not yet placed). PK (term).
+-- ingredient_normalization_log — the decision audit log + evaluated-set (mirrors discovery_log).
 ```
 
-Example rows:
+Example identity rows (id / base / detail):
 
-| variant | canonical |
-|---------|-----------|
-| EVOO | olive oil |
-| extra virgin olive oil | olive oil |
-| chx thighs | chicken thighs |
-| chicken thigh | chicken thighs |
-| cherry tomato | cherry tomatoes |
+| id | base | detail |
+|----|------|--------|
+| olive oil | olive oil | *(null)* |
+| ground beef::fat-80-20 | ground beef | fat-80-20 |
+| green onion | green onion | *(null)* — with alias `scallions → green onion` |
+| chicken::thighs | chicken | thighs — edge `chicken::whole → chicken::thighs` (containment) |
 
 ## flyer_terms (shared corpus, D1 `flyer_terms` table)
 
@@ -720,7 +751,7 @@ The operator admin panel (operator-admin) is a **Hono** app at `/admin` — serv
 
 ### Data explorer (SSR at `/admin/data/*`, operator-data-explorer)
 
-The **Data** area is **server-rendered** (`src/admin-data.ts`, navigated by query/path params — no JSON API): read-only, cross-tenant views over D1 and the R2 corpus, behind the same Access gate (so they 404 with the rest of the surface when it is disabled). Its sub-nav is narrowed to three purpose-built explorers — **Recipes**, **Stores**, **Guidance** — each with its own reader(s); there is no generic per-table view. Member data lives at `/admin/members` (reusing the same `memberDetail` reader); the `aliases`/`flyer_terms`/`feeds` shared-corpus tables are edited at `/admin/config/*`; the discovery pipeline tables are `/admin/discovery`'s concern; `reconcile_errors`/`bug_reports`/`schema_meta` ("System") have no admin-panel surface — inspect them via `wrangler d1 execute DB --command "…"` (`--remote` against a deployed database). Each reader runs a **fixed** query (no operator-supplied SQL), goes through `src/db.ts` / `src/corpus-store.ts`, and performs **no redaction** — `private` notes are shown and cross-tenant aggregates name their tenants. Scope is D1 domain data + the R2 corpus only; no KV secret is reachable.
+The **Data** area is **server-rendered** (`src/admin-data.ts`, navigated by query/path params — no JSON API): read-only, cross-tenant views over D1 and the R2 corpus, behind the same Access gate (so they 404 with the rest of the surface when it is disabled). Its sub-nav is narrowed to three purpose-built explorers — **Recipes**, **Stores**, **Guidance** — each with its own reader(s); there is no generic per-table view. Member data lives at `/admin/members` (reusing the same `memberDetail` reader); the `flyer_terms`/`feeds` shared-corpus tables are edited at `/admin/config/*` and the ingredient identity graph at `/admin/normalize`; the discovery pipeline tables are `/admin/discovery`'s concern; `reconcile_errors`/`bug_reports`/`schema_meta` ("System") have no admin-panel surface — inspect them via `wrangler d1 execute DB --command "…"` (`--remote` against a deployed database). Each reader runs a **fixed** query (no operator-supplied SQL), goes through `src/db.ts` / `src/corpus-store.ts`, and performs **no redaction** — `private` notes are shown and cross-tenant aggregates name their tenants. Scope is D1 domain data + the R2 corpus only; no KV secret is reachable.
 
 **Recipes** (`/admin/data/recipes`, `/admin/data/recipes/<slug>`):
 
@@ -739,10 +770,10 @@ The **Data** area is **server-rendered** (`src/admin-data.ts`, navigated by quer
 
 ### Shared-corpus editors (`/admin/api/corpus/*`, operator-admin)
 
-The **Config** area's *writable* companion to the read-only Data explorer (`src/admin-corpus.ts`) — the operator curation surface for five group-wide shared-corpus tables, behind the same Access gate (404 with the rest of the surface when disabled). `<table>` is one of `aliases` | `flyer-terms` | `feeds` | `senders` | `members`; an unknown table is `404`. Distinct from the read-only SSR Data explorer (these are writable JSON routes). **Removal is operator-only** — no MCP tool deletes these — so the agent adds (via `update_aliases`/`update_feeds`/`update_discovery_sources`) and the operator prunes. All writes go through `src/corpus-db.ts` (→ `src/db.ts`, structured errors).
+The **Config** area's *writable* companion to the read-only Data explorer (`src/admin-corpus.ts`) — the operator curation surface for the group-wide shared-corpus lookup tables, behind the same Access gate (404 with the rest of the surface when disabled). `<table>` is one of `flyer-terms` | `feeds` | `senders` | `members`; an unknown table is `404`. (Ingredient aliases moved to the Normalization area's Aliases tab — see *ingredient identity* — so they are no longer a corpus editor here.) Distinct from the read-only SSR Data explorer (these are writable JSON routes). **Removal is operator-only** — no MCP tool deletes these — so the agent adds (via `update_feeds`/`update_discovery_sources`) and the operator prunes. All writes go through `src/corpus-db.ts` (→ `src/db.ts`, structured errors).
 
-- `GET /admin/api/corpus/<table>` → `{ table, columns, rows }` — the table's rows (server-fixed column order): `aliases` → `{variant, canonical}`, `flyer-terms` → `{term}`, `feeds` → `{url, name, weight, tags}`, `senders`/`members` → `{address}`.
-- `POST /admin/api/corpus/<table>` `{...row}` → `{ added }` — add one validated row. `aliases` upserts by `variant` (re-adding overwrites `canonical`); the rest insert-or-ignore (add-only dedup). Validation rejects a bad/empty key with `400` (`validation_failed`), writing nothing (`feeds` needs a `url`, a numeric `weight` defaulting to 1, and `tags` as a string array; addresses are normalized).
+- `GET /admin/api/corpus/<table>` → `{ table, columns, rows }` — the table's rows (server-fixed column order): `flyer-terms` → `{term}`, `feeds` → `{url, name, weight, tags}`, `senders`/`members` → `{address}`.
+- `POST /admin/api/corpus/<table>` `{...row}` → `{ added }` — add one validated row (insert-or-ignore, add-only dedup). Validation rejects a bad/empty key with `400` (`validation_failed`), writing nothing (`feeds` needs a `url`, a numeric `weight` defaulting to 1, and `tags` as a string array; addresses are normalized).
 - `DELETE /admin/api/corpus/<table>/<key>` → `{ removed }` — remove by primary key. Idempotent: an absent key is `{ removed: false }`, not a `404`. Address keys (`senders`/`members`) are normalized (trim + lowercase) to match storage.
 
 ## feeds (shared corpus, D1 `feeds` table)

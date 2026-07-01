@@ -42,22 +42,6 @@ const post = (body: unknown) =>
   ({ method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }) as RequestInit;
 
 describe("Config › shared-corpus editors (SSR pages)", () => {
-  it("server-renders the Aliases group page seeding the corpus island from listCorpus", async () => {
-    const { env } = devEnv({ aliases: [{ variant: "EVOO", canonical: "olive oil" }] });
-    const res = await app.request("/admin/config/aliases", {}, env);
-    expect(res.status).toBe(200);
-    expect(res.headers.get("content-type")).toContain("text/html");
-    const html = await res.text();
-    expect(html).toContain("<!doctype html>");
-    expect(html).toContain("Ingredient aliases");
-    // The sub-nav pill is marked active for the current group.
-    expect(html).toContain('class="pill active"');
-    // The seeded row + table config ride in the props, and the generic editor island bootstraps.
-    expect(html).toContain("EVOO");
-    expect(html).toContain("olive oil");
-    expect(html).toContain("/admin/islands/corpus.js");
-  });
-
   it("404s an unknown Config group slug as a structured not_found, not a 500", async () => {
     const { env } = devEnv({ aliases: [] });
     const res = await app.request("/admin/config/nonsense", {}, env);
@@ -112,24 +96,21 @@ describe("Config › four consolidated groups", () => {
     expect(html).toMatch(/class="pill active">\s*Ranking/);
   });
 
-  it("/admin/config/aliases is deep-linkable and unchanged in function", async () => {
-    const { env } = devEnv({ aliases: [{ variant: "scallion", canonical: "green onion" }] });
+  it("/admin/config/aliases redirects to the Normalization Aliases tab (bookmark preserved)", async () => {
+    const { env } = devEnv({});
     const res = await app.request("/admin/config/aliases", {}, env);
-    expect(res.status).toBe(200);
-    const html = await res.text();
-    expect(html).toContain("scallion");
-    expect(html).toContain("green onion");
-    expect(html).toMatch(/class="pill active">\s*Aliases/);
+    expect(res.status).toBe(302);
+    expect(res.headers.get("location")).toBe("/admin/normalize?tab=aliases");
   });
 
-  it("the sub-nav lists exactly the four group labels, in order", async () => {
+  it("the sub-nav lists exactly the three group labels, in order", async () => {
     const { env } = devEnv({});
     const res = await app.request("/admin/config", {}, env);
     const html = await res.text();
     const navMatch = html.match(/<div class="data-nav">.*?<\/div>/s);
     expect(navMatch).not.toBeNull();
     const subNav = navMatch![0];
-    const labels = ["Discovery", "Kroger Flyer", "Ranking", "Aliases"];
+    const labels = ["Discovery", "Kroger Flyer", "Ranking"];
     let lastIndex = -1;
     for (const label of labels) {
       const idx = subNav.indexOf(`>${label}</a>`);
@@ -146,14 +127,20 @@ describe("Config › four consolidated groups", () => {
 
 describe("Config › shared-corpus editors (typed API routes)", () => {
   it("lists a table via GET /admin/api/corpus/:table", async () => {
-    const { env } = devEnv({ aliases: [{ variant: "EVOO", canonical: "olive oil" }] });
-    const res = await app.request("/admin/api/corpus/aliases", {}, env);
+    const { env } = devEnv({ flyer_terms: [{ term: "cheese" }] });
+    const res = await app.request("/admin/api/corpus/flyer-terms", {}, env);
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({
-      table: "aliases",
-      columns: ["variant", "canonical"],
-      rows: [{ variant: "EVOO", canonical: "olive oil" }],
+      table: "flyer-terms",
+      columns: ["term"],
+      rows: [{ term: "cheese" }],
     });
+  });
+
+  it("404s a retired corpus table (aliases moved to Normalization)", async () => {
+    const { env } = devEnv({});
+    const res = await app.request("/admin/api/corpus/aliases", {}, env);
+    expect(res.status).toBe(404);
   });
 
   it("adds a row via POST and removes it via DELETE", async () => {
@@ -180,16 +167,16 @@ describe("Config › shared-corpus editors (typed API routes)", () => {
     expect((await res.json()) as { error: string }).toMatchObject({ error: "not_found" });
   });
 
-  it("rejects an invalid add (missing canonical) with a structured 400, writing nothing", async () => {
-    const { env, tables } = devEnv({ aliases: [] });
+  it("rejects an invalid add (missing required field) with a structured 400, writing nothing", async () => {
+    const { env, tables } = devEnv({ flyer_terms: [] });
     const res = await app.request(
-      "/admin/api/corpus/aliases",
-      { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ variant: "EVOO" }) },
+      "/admin/api/corpus/flyer-terms",
+      { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ notterm: "x" }) },
       env,
     );
     expect(res.status).toBe(400);
     expect((await res.json()) as { error: string }).toMatchObject({ error: "validation_failed" });
-    expect(tables.aliases).toHaveLength(0);
+    expect(tables.flyer_terms).toHaveLength(0);
   });
 
   it("rejects feed tags that are not a string array (400)", async () => {

@@ -11,7 +11,12 @@ import type { Tenant } from "./tenant.js";
 import { directoryFromEnv } from "./tenant.js";
 import { createR2CorpusStore, readCorpusFile } from "./corpus-store.js";
 import { parseMarkdown } from "./parse.js";
-import { readAliases, readSkuCache } from "./corpus-db.js";
+import {
+  readSkuCache,
+  ingredientContext,
+  emptyIngredientContext,
+  type IngredientContext,
+} from "./corpus-db.js";
 import { ToolError, runTool } from "./errors.js";
 import { instrumentTools, type ToolRegistrar } from "./tool-instrumentation.js";
 import { registerWriteTools } from "./write-tools.js";
@@ -58,7 +63,6 @@ import {
   matchIngredient,
   isFulfillable,
   isOnSale,
-  normalizeIngredient,
   MIN_FLYER_DISCOUNT,
   type CachedMapping,
   type MatchContext,
@@ -128,24 +132,6 @@ const unitPriceItemShape = {
 
 const READY_TO_EAT_MEALS = ["breakfast", "lunch", "dinner"] as const;
 
-/** Normalize an ingredient-name array through the alias table (lowercase/trim/alias per
- *  entry, drop empties, dedupe). Tolerates a missing/non-array/non-string value → []. The
- *  shared boundary normalizer for `search_recipes`'s pantry-overlap set math. */
-function normalizeItems(value: unknown, aliases: Record<string, string>): string[] {
-  if (!Array.isArray(value)) return [];
-  const seen = new Set<string>();
-  const out: string[] = [];
-  for (const entry of value) {
-    if (typeof entry !== "string") continue;
-    const norm = normalizeIngredient(entry, aliases);
-    if (norm && !seen.has(norm)) {
-      seen.add(norm);
-      out.push(norm);
-    }
-  }
-  return out;
-}
-
 /** One product row for the list-returning Kroger lookups (kroger_prices, ready_to_eat). */
 function productRow(c: KrogerCandidate): Record<string, unknown> {
   return {
@@ -213,14 +199,14 @@ export function buildServer(env: Env, tenant: Tenant, origin?: string): McpServe
     return locationPromise;
   }
 
-  // Shared matcher wiring: aliases, [brands], and the SKU cache are read once and
-  // reused by both match_ingredient_to_kroger_sku and place_order's resolution.
-  let aliasesPromise: Promise<Record<string, string>> | null = null;
-  function getAliases(): Promise<Record<string, string>> {
-    if (!aliasesPromise) {
-      aliasesPromise = readAliases(env);
-    }
-    return aliasesPromise;
+  // Shared matcher wiring: the ingredient context (the normalization funnel — resolve +
+  // capture-on-miss + search terms + satisfies-edges over one `readResolver` load) is built
+  // once and reused by match_ingredient_to_kroger_sku, place_order's resolution, and the
+  // search-recipes boost normalization.
+  let ctxPromise: Promise<IngredientContext> | null = null;
+  function getIngredientContext(): Promise<IngredientContext> {
+    if (!ctxPromise) ctxPromise = ingredientContext(env);
+    return ctxPromise;
   }
 
   async function getCacheMappings(): Promise<CachedMapping[]> {
@@ -278,8 +264,13 @@ export function buildServer(env: Env, tenant: Tenant, origin?: string): McpServe
   ): Promise<MatchResult> {
     const locationId = await getLocationId();
     const brands = await readBrandPrefs(env, tenant.id);
-    const aliases = await getAliases();
+    const ctx = await getIngredientContext();
     const cache = await getCacheMappings();
+    // Capture a novel surface form for the cron (best-effort, non-blocking; the hot path
+    // is unchanged — a hit resolves through the map, a miss returns the cleaned term). The
+    // context's resolve() does the normalize-and-capture; the matcher re-normalizes over the
+    // injected resolver deps (it stays pure over plain aliases/searchTerms data).
+    ctx.resolve(ingredient);
     const deps: MatchDeps = {
       search: (term: string): Promise<KrogerCandidate[]> =>
         // Kroger's per-request max (50) — the matcher returns the full ranked
@@ -287,7 +278,8 @@ export function buildServer(env: Env, tenant: Tenant, origin?: string): McpServe
         kroger.search(term, { locationId, limit: 50 }),
       productById: (productId: string): Promise<KrogerCandidate | null> =>
         kroger.productById(productId, locationId),
-      aliases,
+      aliases: ctx.resolver.toId,
+      searchTerms: ctx.resolver.searchTerms,
       brands,
       cache,
       locationId,
@@ -364,14 +356,15 @@ export function buildServer(env: Env, tenant: Tenant, origin?: string): McpServe
           };
         }
 
-        // Ranking path: load the embeddings + rotation prefs + operator config + alias table,
-        // embed the vibe-bearing specs' vibes in ONE Workers AI call (vibe-less specs make no
-        // contribution to the embed batch and stay in membership mode).
-        const [embeddings, prefs, operatorConfig, aliases] = await Promise.all([
+        // Ranking path: load the embeddings + rotation prefs + operator config + ingredient
+        // context (the normalization funnel — boost/index terms normalize AND capture through
+        // it), embed the vibe-bearing specs' vibes in ONE Workers AI call (vibe-less specs make
+        // no contribution to the embed batch and stay in membership mode).
+        const [embeddings, prefs, operatorConfig, ctx] = await Promise.all([
           loadRecipeEmbeddings(env),
           readPreferences(env, tenant.id).catch(() => null),
           loadOperatorConfig(env).catch(() => null),
-          getAliases().catch(() => ({}) as Record<string, string>),
+          getIngredientContext().catch(() => emptyIngredientContext(env)),
         ]);
 
         // Favorites = the caller's favorited recipes that are embedded — the
@@ -406,9 +399,9 @@ export function buildServer(env: Env, tenant: Tenant, origin?: string): McpServe
           if (!vibeVec) {
             return { label: spec.label, recipes: survivors };
           }
-          // Normalize the spec's boost items through the SAME alias table the index's
-          // ingredient arrays are normalized against, so the overlap is exact set math.
-          const boostItems = normalizeItems(spec.boost_ingredients, aliases);
+          // Normalize the spec's boost items through the SAME funnel the index's ingredient
+          // arrays are normalized against, so the overlap is exact set math.
+          const boostItems = ctx.resolveNames(spec.boost_ingredients);
           // Resolve each survivor's embedding + freshness; drop the unembedded (not yet
           // reconciled) — they stay reachable via a vibe-less membership spec.
           const candidates: SearchCandidate[] = [];
@@ -428,8 +421,8 @@ export function buildServer(env: Env, tenant: Tenant, origin?: string): McpServe
               // Normalize at the boundary so the ranker does plain set membership.
               // perishable_ingredients is already normalized at import; ingredients_key
               // is conventionally-but-not-guaranteed normalized, so alias-collapse it too.
-              ingredients_key: normalizeItems(fm.ingredients_key, aliases),
-              perishable_ingredients: normalizeItems(fm.perishable_ingredients, aliases),
+              ingredients_key: ctx.resolveNames(fm.ingredients_key),
+              perishable_ingredients: ctx.resolveNames(fm.perishable_ingredients),
             });
           }
           const recipes = rankCandidates(
@@ -771,8 +764,7 @@ export function buildServer(env: Env, tenant: Tenant, origin?: string): McpServe
     getOverlay,
     getLastCookedMap,
     getOwnedEquipment,
-    getAliases,
-    normalizeItems,
+    getIngredientContext,
   });
 
   // Profile reconciliation: member confirm (list_/confirm_proposal) + operator-gated

@@ -2,8 +2,13 @@ import { describe, it, expect } from "vitest";
 import { fakeD1 } from "./fake-d1.js";
 import {
   readAliases,
+  readResolver,
   addAliases,
   deleteAlias,
+  enqueueNovelTerms,
+  commitResolution,
+  mergeIdentities,
+  readSkuCoResolutionPairs,
   readSkuCache,
   upsertSkuMappings,
   readFlyerTerms,
@@ -22,26 +27,175 @@ import {
   addDiscoveryRejection,
 } from "../src/corpus-db.js";
 
-describe("aliases (D1)", () => {
-  it("reads variant→canonical and upserts by variant", async () => {
-    const { env, tables } = fakeD1({ tables: { aliases: [{ variant: "EVOO", canonical: "olive oil" }] } });
-    expect(await readAliases(env)).toEqual({ EVOO: "olive oil" });
+describe("ingredient identity / normalization (D1)", () => {
+  it("reads variant→id and upserts into the identity + alias tables (lowercased, human)", async () => {
+    const { env, tables } = fakeD1({
+      tables: {
+        ingredient_identity: [{ id: "olive oil", base: "olive oil", representative: null }],
+        ingredient_alias: [{ variant: "evoo", id: "olive oil" }],
+      },
+    });
+    expect(await readAliases(env)).toEqual({ evoo: "olive oil" });
 
     const n = await addAliases(env, [
-      { variant: "EVOO", canonical: "extra virgin olive oil" }, // upsert
+      { variant: "EVOO", canonical: "extra virgin olive oil" }, // upsert, lowercased key
       { variant: "chx", canonical: "chicken" },
       { variant: "", canonical: "skip" }, // skipped (empty variant)
     ]);
     expect(n).toBe(2);
-    expect(await readAliases(env)).toEqual({ EVOO: "extra virgin olive oil", chx: "chicken" });
-    expect(tables.aliases).toHaveLength(2);
+    expect(await readAliases(env)).toEqual({ evoo: "extra virgin olive oil", chx: "chicken" });
+    // Both the front-door alias and the identity node are written, source='human'.
+    expect(tables.ingredient_alias.map((r) => r.variant).sort()).toEqual(["chx", "evoo"]);
+    expect(tables.ingredient_identity.some((r) => r.id === "chicken" && r.source === "human")).toBe(true);
   });
 
-  it("deletes an alias by variant, reporting whether a row went", async () => {
-    const { env, tables } = fakeD1({ tables: { aliases: [{ variant: "EVOO", canonical: "olive oil" }] } });
+  it("resolves a variant through a representative (union-find) merge", async () => {
+    const { env } = fakeD1({
+      tables: {
+        ingredient_identity: [
+          { id: "scallion", base: "scallion", representative: "green onion" },
+          { id: "green onion", base: "green onion", representative: null },
+        ],
+        ingredient_alias: [{ variant: "scallions", id: "scallion" }],
+      },
+    });
+    const resolver = await readResolver(env);
+    expect(resolver.toId["scallions"]).toBe("green onion"); // merged survivor
+    expect(resolver.ids.has("green onion")).toBe(true);
+    expect(resolver.ids.has("scallion")).toBe(false); // resolves away to its representative
+  });
+
+  it("deletes an alias by variant (case-insensitively), reporting whether a row went", async () => {
+    const { env, tables } = fakeD1({
+      tables: { ingredient_alias: [{ variant: "evoo", id: "olive oil" }] },
+    });
     expect(await deleteAlias(env, "EVOO")).toBe(true);
     expect(await deleteAlias(env, "EVOO")).toBe(false); // already gone
-    expect(tables.aliases).toHaveLength(0);
+    expect(tables.ingredient_alias).toHaveLength(0);
+  });
+
+  it("enqueues novel terms (insert-or-ignore, deduped, blanks dropped)", async () => {
+    const { env, tables } = fakeD1({ tables: { novel_ingredient_terms: [] } });
+    await enqueueNovelTerms(env, ["gochujang", "gochujang", "  "]);
+    expect(tables.novel_ingredient_terms.map((r) => r.term)).toEqual(["gochujang"]);
+    await enqueueNovelTerms(env, ["gochujang"]); // dup ignored
+    expect(tables.novel_ingredient_terms).toHaveLength(1);
+  });
+
+  it("commitResolution mints a node + alias + edge, dequeues the term, and logs", async () => {
+    const { env, tables } = fakeD1({
+      tables: {
+        ingredient_identity: [{ id: "ground beef", base: "ground beef", representative: null }],
+        ingredient_alias: [],
+        ingredient_edge: [],
+        novel_ingredient_terms: [{ term: "80/20 ground beef", first_seen: 1 }],
+        ingredient_normalization_log: [],
+      },
+    });
+    await commitResolution(env, {
+      term: "80/20 ground beef",
+      id: "ground beef::fat-80-20",
+      node: { base: "ground beef", detail: "fat-80-20", search_term: "80/20 ground beef", concrete: true, embedding: [0.1, 0.2] },
+      edges: [{ from: "ground beef::fat-80-20", to: "ground beef", kind: "general" }],
+      log: { term: "80/20 ground beef", outcome: "specialization", resolved_id: "ground beef::fat-80-20" },
+    });
+    expect(tables.ingredient_identity.some((r) => r.id === "ground beef::fat-80-20")).toBe(true);
+    expect(tables.ingredient_alias).toContainEqual(
+      expect.objectContaining({ variant: "80/20 ground beef", id: "ground beef::fat-80-20", source: "auto" }),
+    );
+    expect(tables.ingredient_edge).toHaveLength(1);
+    expect(tables.novel_ingredient_terms).toHaveLength(0); // dequeued
+    expect(tables.ingredient_normalization_log).toHaveLength(1);
+    // The minted node is now resolvable and carries its Kroger search phrase.
+    const resolver = await readResolver(env);
+    expect(resolver.toId["80/20 ground beef"]).toBe("ground beef::fat-80-20");
+    expect(resolver.searchTerms["ground beef::fat-80-20"]).toBe("80/20 ground beef");
+  });
+
+  it("mergeIdentities points the loser at the survivor (union-find), logging the merge", async () => {
+    const { env, tables } = fakeD1({
+      tables: {
+        ingredient_identity: [
+          { id: "courgette", base: "courgette", representative: null },
+          { id: "zucchini", base: "zucchini", representative: null },
+        ],
+        ingredient_alias: [{ variant: "courgette", id: "courgette" }],
+        ingredient_normalization_log: [],
+      },
+    });
+    await mergeIdentities(env, "courgette", "zucchini");
+    const resolver = await readResolver(env);
+    expect(resolver.toId["courgette"]).toBe("zucchini"); // resolves through the representative pointer
+    expect(tables.ingredient_normalization_log[0]).toMatchObject({ outcome: "merge", resolved_id: "zucchini" });
+  });
+
+  it("readSkuCoResolutionPairs groups distinct survivors sharing a SKU (with source + search_term)", async () => {
+    const { env } = fakeD1({
+      tables: {
+        ingredient_identity: [
+          { id: "courgette", base: "courgette", representative: null, source: "human", search_term: "courgette" },
+          { id: "zucchini", base: "zucchini", representative: null, source: "auto", search_term: null },
+        ],
+        sku_cache: [
+          { ingredient: "courgette", location_id: "035", sku: "SKU-A" },
+          { ingredient: "zucchini", location_id: "070", sku: "SKU-A" }, // same SKU, different location → still a pair
+        ],
+      },
+    });
+    const pairs = await readSkuCoResolutionPairs(env, 10);
+    expect(pairs).toEqual([
+      { a: "courgette", b: "zucchini", sku: "SKU-A", aSource: "human", bSource: "auto", aTerm: "courgette" },
+    ]);
+  });
+
+  it("readSkuCoResolutionPairs ignores a SKU mapped by only one id", async () => {
+    const { env } = fakeD1({
+      tables: {
+        ingredient_identity: [{ id: "milk", base: "milk", representative: null, source: "auto", search_term: null }],
+        sku_cache: [
+          { ingredient: "milk", location_id: "035", sku: "SKU-A" },
+          { ingredient: "milk", location_id: "070", sku: "SKU-A" }, // same id twice → not a pair
+        ],
+      },
+    });
+    expect(await readSkuCoResolutionPairs(env, 10)).toEqual([]);
+  });
+
+  it("readSkuCoResolutionPairs collapses already-merged ids to one survivor (not re-proposed)", async () => {
+    const { env } = fakeD1({
+      tables: {
+        ingredient_identity: [
+          { id: "scallion", base: "scallion", representative: "green onion", source: "auto", search_term: null },
+          { id: "green onion", base: "green onion", representative: null, source: "auto", search_term: null },
+        ],
+        sku_cache: [
+          { ingredient: "scallion", location_id: "035", sku: "SKU-A" },
+          { ingredient: "green onion", location_id: "035", sku: "SKU-A" }, // both resolve to green onion
+        ],
+      },
+    });
+    // scallion resolves through its representative to green onion → one survivor → no pair.
+    expect(await readSkuCoResolutionPairs(env, 10)).toEqual([]);
+  });
+
+  it("readSkuCoResolutionPairs caps the returned pairs at the limit", async () => {
+    const { env } = fakeD1({
+      tables: {
+        ingredient_identity: [
+          { id: "a", base: "a", representative: null, source: "auto", search_term: null },
+          { id: "b", base: "b", representative: null, source: "auto", search_term: null },
+          { id: "c", base: "c", representative: null, source: "auto", search_term: null },
+        ],
+        // Three distinct survivors on one SKU → three unordered pairs (a-b, a-c, b-c); cap at 2.
+        sku_cache: [
+          { ingredient: "a", location_id: "", sku: "SKU-A" },
+          { ingredient: "b", location_id: "", sku: "SKU-A" },
+          { ingredient: "c", location_id: "", sku: "SKU-A" },
+        ],
+      },
+    });
+    const pairs = await readSkuCoResolutionPairs(env, 2);
+    expect(pairs).toHaveLength(2);
   });
 });
 

@@ -1,7 +1,7 @@
 // Holistic use-it-up: derive the at-risk DEMAND multiset from the caller's pantry (holistic-use-it-up
 // capability). PURE — the tool wrapper reads the pantry rows, builds the corpus perishable vocabulary,
-// and alias-normalizes names (via the same `normalizeItems` the ranking uses, so pantry items line up
-// with a recipe's `perishable_ingredients` / `ingredients_key`); this turns those into the
+// and normalizes names (via the same `IngredientContext.resolveNames` the ranking uses, so pantry
+// items line up with a recipe's `perishable_ingredients` / `ingredients_key`); this turns those into the
 // `{ item → count }` demand the planner's coverage term consumes and decrements.
 //
 // "At-risk" is derived, not asked: an item counts when it is a PERISHABLE a recipe can actually use
@@ -27,7 +27,7 @@ export const DEFAULT_AT_RISK_PARAMS: AtRiskParams = {
 
 /** A pantry row reduced to what the derivation needs (alias-normalized name + loose quantity + age). */
 export interface AtRiskInput {
-  /** Alias-normalized item name (via the ranking's `normalizeItems`), so it lines up with recipes. */
+  /** Normalized item name (via the ranking's `IngredientContext.resolveNames`), so it lines up with recipes. */
   normalizedName: string;
   /** The loose pantry `quantity` ("full" | "partial" | "low" | a count | null). */
   quantity: string | null;

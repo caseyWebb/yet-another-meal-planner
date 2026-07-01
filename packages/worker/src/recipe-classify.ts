@@ -26,7 +26,7 @@ import type { CorpusStore } from "./corpus-store.js";
 import { parseMarkdown } from "./parse.js";
 import { classifyRecipe, CLASSIFY_MAX_RETRIES } from "./discovery-classify.js";
 import { normalizeIngredientList } from "./matching.js";
-import { readAliases } from "./corpus-db.js";
+import { ingredientContext, type IngredientContext } from "./corpus-db.js";
 import { hashText } from "./hash.js";
 import { normalizeFacetCourse, EMPTY_FACETS, type ClassifiedFacets } from "./recipe-facets.js";
 import { isAiQuotaError, notifyFailure, recordUsagePoint, writeJobHealth, writeJobRun } from "./health.js";
@@ -274,7 +274,13 @@ export async function seedRecipeFacets(
     CLASSIFY_MAX_RETRIES,
     courseOverride && courseOverride.length ? { course: courseOverride } : undefined,
   );
-  const facets = extractFacets(result.frontmatter, await readAliases(env));
+  // Funnel through the ONE ingredient context: normalize the derived facets AND best-effort
+  // capture any novel corpus vocab. The seed writes a gate hash the classify pass matches (so the
+  // cron won't reclassify this recipe), which means THIS is the recipe's only capture opportunity
+  // — without it a newly imported recipe's novel ingredients would never reach the identity graph.
+  const ctx = await ingredientContext(env);
+  const facets = extractFacets(result.frontmatter, ctx.resolver.toId);
+  ctx.resolveList([...facets.ingredients_key, ...facets.perishable_ingredients]);
   await db(env).run(UPSERT_SQL, ...facetBinds(slug, facets, facetGateHash(body, overrides)));
 }
 
@@ -292,15 +298,21 @@ export async function seedClassifiedFacets(
   classifiedFm: Record<string, unknown>,
   body: string,
 ): Promise<void> {
-  const facets = extractFacets(classifiedFm, await readAliases(env));
+  // Same funnel as seedRecipeFacets: normalize + capture novel vocab through the one context,
+  // since the matching gate hash means the classify cron won't revisit this recipe to capture it.
+  const ctx = await ingredientContext(env);
+  const facets = extractFacets(classifiedFm, ctx.resolver.toId);
+  ctx.resolveList([...facets.ingredients_key, ...facets.perishable_ingredients]);
   await db(env).run(UPSERT_SQL, ...facetBinds(slug, facets, facetGateHash(body, {})));
 }
 
-/** Wire the real R2 corpus + Workers AI + D1 + aliases for the scheduled handler. */
+/** Wire the real R2 corpus + Workers AI + D1 + the ingredient context for the scheduled handler. */
 export function buildFacetDeps(env: Env, store: CorpusStore): DerivedFacetDeps {
   const d = db(env);
-  let aliasesCache: Record<string, string> | null = null;
-  const aliases = async () => (aliasesCache ??= await readAliases(env));
+  // The classify step funnels novel corpus vocab through the ONE ingredient context (resolve +
+  // capture), like every other consumer, instead of open-coding readResolver + enqueueNovelTerms.
+  let ctxCache: IngredientContext | null = null;
+  const context = async () => (ctxCache ??= await ingredientContext(env));
 
   return {
     async loadRecipes() {
@@ -341,7 +353,13 @@ export function buildFacetDeps(env: Env, store: CorpusStore): DerivedFacetDeps {
         CLASSIFY_MAX_RETRIES,
         recipe.courseOverride && recipe.courseOverride.length ? { course: recipe.courseOverride } : undefined,
       );
-      return extractFacets(result.frontmatter, await aliases());
+      const ctx = await context();
+      const facets = extractFacets(result.frontmatter, ctx.resolver.toId);
+      // Continuous bootstrap: seed the identity registry with any novel corpus ingredient terms
+      // so the capture cron places them. resolveList normalizes AND best-effort-captures each
+      // miss through the same funnel — the already-normalized facet arrays re-resolve as no-ops.
+      ctx.resolveList([...facets.ingredients_key, ...facets.perishable_ingredients]);
+      return facets;
     },
     async upsertFacets(slug, facets, bodyHash) {
       await d.run(UPSERT_SQL, ...facetBinds(slug, facets, bodyHash));

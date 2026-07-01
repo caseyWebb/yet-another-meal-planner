@@ -81,3 +81,14 @@ Only on a trigger above. Design pre-decided (see "Considered and deferred").
 - Supersedes this ADR's own earlier "ingredient knowledge graph" North Star and the `aliases → pure reasoning / matcher refactor` follow-up. Ingredients stay strings; `aliases.toml` stays.
 - `verify_pantry` and the recipe-ingredient parser are retired in Phase 0.
 - `docs/ARCHITECTURE.md`'s determinism-boundary section reflects the `capture → retrieve → narrow` framing and the recipe-side-retrieval direction.
+
+## Amendment — 2026-07-01: the identity-only revival fired (organic-ingredient-normalization)
+
+The deferred "ingredient knowledge graph" is **partially revived**, on the concrete trigger this ADR named — fragmentation pain the deterministic join keys under `sku_cache` / `brand_prefs` / `ingredients_key` / grocery-list dedup suffer that read-time reasoning can't reach (those stores aren't loaded), plus the quantity-stripper actively *destroying* the `80/20` qualifier. Scope is deliberately narrow and consistent with the decisions above:
+
+- **Identity/containment/membership only, not substitution.** The graph holds *factual* edges (synonym, base+detail, `whole → thighs` containment, concept membership). Taste-substitution stays read-time LLM (Phase 0). So this grows the normalization layer this ADR *kept*, not the substitution graph it *deferred*.
+- **The "curated tables go uncurated" objection is answered by removing the human from the loop.** The layer grows organically on the cron (embedding proposes → cheap classifier disposes → written once), with `update_aliases` as an optional human override (`source='human'` wins), not a maintenance burden.
+- **Open-world (decision #1) holds:** edges are accelerant-not-ceiling hints for read-time reasoning; the matcher can still `bypass_cache`; a missing edge degrades to world knowledge.
+- **The "freezes at the capturing model's competence" cost is accepted narrowly:** identity is far more stable than substitution judgment, the store is auditable/overridable, and the volatile part (substitution) still rides model improvements at read time. Periodic re-confirm is out of scope (a future benchmarking feature).
+
+The pre-decided design points from "Considered and deferred" are honored: granular nodes joined by edges (not collapsed), edges carry the relationship kind, per-decision audit. The realized shape and the design spike are in `openspec/changes/archive/…/organic-ingredient-normalization/` and the *ingredient-normalization capture* section of `docs/ARCHITECTURE.md`.

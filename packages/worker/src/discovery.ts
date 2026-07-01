@@ -5,8 +5,7 @@
 
 import type { Env } from "./env.js";
 import type { CorpusStore } from "./corpus-store.js";
-import { readAliases } from "./corpus-db.js";
-import { normalizeIngredientList } from "./matching.js";
+import { ingredientContext } from "./corpus-db.js";
 import { serializeMarkdown } from "./serialize.js";
 import { facetsFromFrontmatter, type RecipeFacets } from "./description.js";
 import { ToolError } from "./errors.js";
@@ -146,10 +145,12 @@ export async function buildNewRecipe(
   // at create the same way the verify matcher normalizes, so overlap lines up across
   // recipes.
   if ("perishable_ingredients" in fm || "ingredients_key" in fm) {
-    const aliases = await readAliases(env);
+    // Canonicalize + capture through the one ingredient funnel (resolveList == the pure
+    // normalizeIngredientList plus best-effort novel-term capture for the cron).
+    const ctx = await ingredientContext(env);
     if ("perishable_ingredients" in fm)
-      fm.perishable_ingredients = normalizeIngredientList(fm.perishable_ingredients, aliases);
-    if ("ingredients_key" in fm) fm.ingredients_key = normalizeIngredientList(fm.ingredients_key, aliases);
+      fm.perishable_ingredients = ctx.resolveList(fm.perishable_ingredients);
+    if ("ingredients_key" in fm) fm.ingredients_key = ctx.resolveList(fm.ingredients_key);
   }
   // The full required-field contract is enforced on the serialized content by the
   // create_recipe handler's validateFile step (a missing/empty required field or a

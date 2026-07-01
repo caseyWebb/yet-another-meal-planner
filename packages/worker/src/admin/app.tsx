@@ -47,6 +47,9 @@ import { canonicalizeUrl } from "../url.js";
 import { LogsPage, PAGE_SIZE as LOGS_PAGE_SIZE } from "./pages/logs.js";
 import { DiscoveryPage } from "./pages/discovery.js";
 import { ScrapersPage } from "./pages/scrapers.js";
+import { NormalizePage, parseQuery } from "./pages/normalize.js";
+import { readNormalizationPage } from "../normalize-admin.js";
+import { addAliases, deleteAlias, enqueueNovelTerms, deleteNormalizationLog } from "../corpus-db.js";
 import { getDiscoveryConfig, putDiscoveryConfig, analyzeDiscovery, dryRunDiscovery, testFeed, getOperatorConfig, putOperatorConfig, listCorpus, addCorpus, deleteCorpus } from "./config-api.js";
 import { registerConfigRoutes } from "./pages/config.js";
 import { buildHealthRollup, renderHealthDock } from "./ui/health-dock.js";
@@ -270,7 +273,33 @@ const routes = app
   )
   .delete("/api/corpus/:table/:key", async (c) =>
     c.json(await deleteCorpus(c.env, c.req.param("table"), decodeURIComponent(c.req.param("key")))),
-  );
+  )
+  // Normalization area (operator-admin): the identity-graph mutations the Normalize island calls.
+  // Override + Add-alias both write a HUMAN alias (source='human', which the auto cron never
+  // overwrites) via addAliases; Re-queue re-enqueues the term for the next capture pass; the two
+  // deletes prune an alias row / a failed decision row. All go through src/corpus-db.ts.
+  .post("/api/normalization/alias", validator("json", (v) => v as { variant?: string; canonicalId?: string }), async (c) => {
+    const { variant, canonicalId } = c.req.valid("json");
+    if (!variant?.trim() || !canonicalId?.trim()) {
+      throw new ToolError("validation_failed", "A non-empty variant and canonical id are required");
+    }
+    const updated = await addAliases(c.env, [{ variant, canonical: canonicalId }]);
+    return c.json({ updated });
+  })
+  .delete("/api/normalization/alias/:variant", async (c) =>
+    c.json({ removed: await deleteAlias(c.env, decodeURIComponent(c.req.param("variant"))) }),
+  )
+  .post("/api/normalization/requeue", validator("json", (v) => v as { term?: string }), async (c) => {
+    const term = c.req.valid("json").term;
+    if (!term?.trim()) throw new ToolError("validation_failed", "A non-empty term is required");
+    await enqueueNovelTerms(c.env, [term.trim()]);
+    return c.json({ requeued: term.trim() });
+  })
+  .delete("/api/normalization/decision/:id", async (c) => {
+    const id = Number(c.req.param("id"));
+    if (!Number.isFinite(id)) throw new ToolError("validation_failed", "A numeric decision id is required");
+    return c.json({ removed: await deleteNormalizationLog(c.env, id) });
+  });
 
 // Data explorer area (operator-data-explorer): read-only SSR views over D1 + the R2 corpus.
 registerDataRoutes(app);
@@ -282,6 +311,15 @@ registerConfigRoutes(app);
 // the paginated per-candidate progression-track cards, SSR'd from readDiscoveryCandidates. The
 // area's SOLE content; it absorbed the candidate log formerly at /admin/logs/discovery (that
 // route now redirects here — see the Logs section below).
+// Normalization area (operator-admin): the ingredient-identity audit + override surface — three
+// tabs (Decisions / Queue / Aliases), SSR'd from readNormalizationPage; the mutations hydrate via
+// client/normalize.tsx. The Aliases tab subsumes the retired Config › Aliases editor.
+app.get("/normalize", async (c) => {
+  const query = parseQuery(new URL(c.req.url));
+  const data = await readNormalizationPage(c.env, { now: Date.now() });
+  return c.html(page(<NormalizePage data={data} query={query} now={Date.now()} />));
+});
+
 app.get("/discovery", async (c) => {
   const [candidates, liveness] = await Promise.all([readDiscoveryCandidates(c.env, 200), readScraperLiveness(c.env)]);
   const filter = c.req.query("filter") ?? "all";

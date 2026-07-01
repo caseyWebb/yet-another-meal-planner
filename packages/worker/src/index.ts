@@ -22,6 +22,7 @@ import { runArchetypeDerivationJob } from "./night-vibe-suggest.js";
 import { buildFacetDeps, runFacetJob } from "./recipe-classify.js";
 import { buildProjectionDeps, runProjectionJob } from "./recipe-projection.js";
 import { buildDiscoveryDeps, runDiscoverySweepJob } from "./discovery-sweep.js";
+import { buildNormalizeDeps, runNormalizeJob } from "./ingredient-normalize.js";
 import { loadDiscoveryConfig } from "./discovery-calibration.js";
 import { loadOperatorConfig } from "./operator-config.js";
 import { createR2CorpusStore } from "./corpus-store.js";
@@ -190,6 +191,9 @@ export default {
     const phase1 = await Promise.allSettled([
       runWarmJob(env, buildWarmDeps(env), warmConfig),
       runFacetJob(env, buildFacetDeps(env, corpus)),
+      // The ingredient-normalization capture job is independent of the recipe pipeline
+      // (it drains the novel-term queue); it rides the internal env.AI/D1 budget like classify.
+      runNormalizeJob(env, buildNormalizeDeps(env)),
     ]);
     // Phase 2: the index projection (merges the fresh classified facets + authored overrides).
     const phase2 = await Promise.allSettled([runProjectionJob(env, buildProjectionDeps(env, corpus))]);

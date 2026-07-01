@@ -19,7 +19,6 @@ const GROUPS: { slug: string; label: string }[] = [
   { slug: "ingest-keys", label: "Ingest Keys" },
   { slug: "flyer", label: "Kroger Flyer" },
   { slug: "ranking", label: "Ranking" },
-  { slug: "aliases", label: "Aliases" },
 ];
 
 type AddKind = "text" | "number" | "tags";
@@ -59,18 +58,6 @@ const FEEDS_EDITOR: { title: string; config: CorpusEditorConfig } = {
 const FLYER_TERMS_EDITOR: { title: string; config: CorpusEditorConfig } = {
   title: "Flyer terms",
   config: { slug: "flyer-terms", pkColumn: "term", addFields: [{ key: "term", label: "term", kind: "text", required: true }] },
-};
-
-const ALIASES_EDITOR: { title: string; config: CorpusEditorConfig } = {
-  title: "Ingredient aliases",
-  config: {
-    slug: "aliases",
-    pkColumn: "variant",
-    addFields: [
-      { key: "variant", label: "variant", kind: "text", required: true },
-      { key: "canonical", label: "canonical", kind: "text", required: true },
-    ],
-  },
 };
 
 // The Ranking/Flyer knob specs — floor annotations mirror operator-config.ts's
@@ -225,19 +212,6 @@ const RankingGroupPage = ({ config }: { config: import("../../operator-config.js
   </ConfigShell>
 );
 
-// ── Aliases group: alias table only (unchanged from today, restyled) ──────────────────────
-const AliasesGroupPage = ({ page }: { page: CorpusPageData }) => (
-  <ConfigShell active="aliases">
-    <Section
-      title={ALIASES_EDITOR.title}
-      blurb="Group-wide alias map — a variant name resolves to its canonical ingredient for pantry + flyer matching."
-    >
-      <CorpusIslandHost id="aliases" config={ALIASES_EDITOR.config} page={page} />
-      <script type="module" src="/admin/islands/corpus.js" />
-    </Section>
-  </ConfigShell>
-);
-
 // ── Ingest Keys group: the walled-source scraper key roster (island) ──────────────────────
 const IngestKeysGroupPage = ({ scrapers }: { scrapers: ScraperLiveness[] }) => (
   <ConfigShell active="ingest-keys">
@@ -280,8 +254,7 @@ export function registerConfigRoutes(app: Hono<{ Bindings: Env }>): void {
     return c.html(html(<RankingGroupPage config={config} />));
   });
 
-  app.get("/config/aliases", async (c) => {
-    const page = await listCorpus(c.env, "aliases");
-    return c.html(html(<AliasesGroupPage page={page} />));
-  });
+  // Retired: ingredient aliases moved to the Normalization area's Aliases tab (which subsumes
+  // this editor's browse/add/prune). Preserve the bookmark rather than 404 (like /logs/discovery).
+  app.get("/config/aliases", (c) => c.redirect("/admin/normalize?tab=aliases", 302));
 }

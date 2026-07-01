@@ -23,7 +23,11 @@ const PK: Record<string, string[]> = {
   grocery_list: ["tenant", "normalized_name"],
   tenant_activity: ["tenant"],
   // shared-corpus (d1-shared-corpus)
-  aliases: ["variant"],
+  ingredient_identity: ["id"],
+  ingredient_alias: ["variant"],
+  ingredient_edge: ["from_id", "to_id", "kind"],
+  novel_ingredient_terms: ["term"],
+  ingredient_normalization_log: ["id"],
   feeds: ["url"],
   discovery_members: ["address"],
   discovery_senders: ["address"],
@@ -46,12 +50,16 @@ const PK: Record<string, string[]> = {
 
 // Tables whose `id` PK is AUTOINCREMENT: an INSERT that omits `id` gets the next one,
 // so successive inserts don't collide on an undefined id (mirrors SQLite autoincrement).
-const AUTOINCREMENT_TABLES = new Set(["bug_reports"]);
+const AUTOINCREMENT_TABLES = new Set(["bug_reports", "ingredient_normalization_log"]);
 
 // Shared-corpus tables have no `tenant` column — SELECT/DELETE over them are global,
 // filtered only by explicit WHERE equality clauses below.
 const GLOBAL_TABLES = new Set([
-  "aliases",
+  "ingredient_identity",
+  "ingredient_alias",
+  "ingredient_edge",
+  "novel_ingredient_terms",
+  "ingredient_normalization_log",
   "feeds",
   "discovery_members",
   "discovery_senders",

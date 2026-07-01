@@ -12,8 +12,7 @@ import { z } from "zod";
 import type { Env } from "./env.js";
 import { db } from "./db.js";
 import { type CorpusStore, readCorpusFile } from "./corpus-store.js";
-import { readAliases, addAliases } from "./corpus-db.js";
-import { normalizeIngredientList } from "./matching.js";
+import { addAliases, ingredientContext } from "./corpus-db.js";
 import { parseMarkdown } from "./parse.js";
 import { serializeMarkdown } from "./serialize.js";
 import { validateFile } from "./validate.js";
@@ -83,11 +82,13 @@ export async function buildRecipeUpdate(
   // re-rank) lines up. Only when the caller is writing the field — a non-array passes
   // through unchanged for the contract validator to reject.
   if ("perishable_ingredients" in updates || "ingredients_key" in updates) {
-    const aliases = await readAliases(env);
+    // Route through the one ingredient funnel: resolveList canonicalizes exactly like
+    // normalizeIngredientList AND best-effort-captures any novel surface form for the cron.
+    const ctx = await ingredientContext(env);
     if ("perishable_ingredients" in updates)
-      merged.perishable_ingredients = normalizeIngredientList(merged.perishable_ingredients, aliases);
+      merged.perishable_ingredients = ctx.resolveList(merged.perishable_ingredients);
     if ("ingredients_key" in updates)
-      merged.ingredients_key = normalizeIngredientList(merged.ingredients_key, aliases);
+      merged.ingredients_key = ctx.resolveList(merged.ingredients_key);
   }
   // The full required-field contract is enforced on the serialized (merged) content by
   // the update_recipe handler's validateFile step BEFORE the R2 put (the commit engine

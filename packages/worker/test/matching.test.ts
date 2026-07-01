@@ -3,6 +3,7 @@ import {
   matchIngredient,
   normalizeIngredient,
   normalizePerishables,
+  baseOf,
   brandKey,
   tiebreak,
   relevanceScore,
@@ -31,6 +32,7 @@ function makeDeps(opts: Partial<MatchDeps> & { byId?: Record<string, KrogerCandi
     search: opts.search ?? (async () => []),
     productById: opts.productById ?? (async (id: string) => opts.byId?.[id] ?? null),
     aliases: opts.aliases ?? {},
+    searchTerms: opts.searchTerms,
     brands: opts.brands ?? {},
     cache: opts.cache ?? [],
     locationId: opts.locationId ?? "L1",
@@ -124,6 +126,15 @@ describe("normalizeIngredient", () => {
     expect(normalizeIngredient("3 onions", {})).toBe("onions");
   });
 
+  it("preserves a ratio-style product qualifier (a fraction is stripped only with a unit)", () => {
+    // The fat ratio must NOT be discarded as a leading quantity — and both forms agree.
+    expect(normalizeIngredient("80/20 ground beef", {})).toBe("80/20 ground beef");
+    expect(normalizeIngredient("1 lb 80/20 ground beef", {})).toBe("80/20 ground beef");
+    // A genuine fraction quantity WITH a unit still strips.
+    expect(normalizeIngredient("1/2 cup milk", {})).toBe("milk");
+    expect(normalizeIngredient("2 eggs", {})).toBe("eggs"); // plain count still strips
+  });
+
   it("applies aliases case-insensitively", () => {
     expect(normalizeIngredient("EVOO", { EVOO: "olive oil" })).toBe("olive oil");
     expect(normalizeIngredient("Extra Virgin Olive Oil", { "extra virgin olive oil": "olive oil" })).toBe(
@@ -133,6 +144,40 @@ describe("normalizeIngredient", () => {
 
   it("derives the [brands] key by underscoring spaces", () => {
     expect(brandKey("olive oil")).toBe("olive_oil");
+  });
+});
+
+describe("baseOf", () => {
+  it("returns the segment up to the first :: (a bare base is its own base)", () => {
+    expect(baseOf("ground beef")).toBe("ground beef");
+    expect(baseOf("ground beef::fat-80-20")).toBe("ground beef");
+    expect(baseOf("cheese::mozzarella::low-moisture")).toBe("cheese");
+  });
+});
+
+describe("matchIngredient — qualified id search term", () => {
+  it("searches Kroger with the stored human phrase, not the raw `::` id", async () => {
+    let searchedFor = "";
+    const beef = cand({
+      productId: "B1",
+      brand: "Kroger",
+      description: "80/20 Ground Beef",
+      categories: ["Ground Beef"],
+      price: { regular: 5.99, promo: 0 },
+      fulfillment: { curbside: true, delivery: false, inStore: false },
+    });
+    const deps = makeDeps({
+      aliases: { "80/20 ground beef": "ground beef::fat-80-20" },
+      searchTerms: { "ground beef::fat-80-20": "80/20 ground beef" },
+      brands: { "ground_beef::fat-80-20": [] }, // don't-care → resolves confidently
+      search: async (term: string) => {
+        searchedFor = term;
+        return [beef];
+      },
+    });
+    const res = await matchIngredient(deps, "80/20 ground beef");
+    expect(searchedFor).toBe("80/20 ground beef"); // the phrase, not the id
+    expect(res).toMatchObject({ resolved: true, sku: "B1" });
   });
 });
 

@@ -12,10 +12,11 @@
 // flag; the read filters apply own-private + group-shared (private=0 OR author=?).
 
 import type { Env } from "./env.js";
-import { db } from "./db.js";
+import { db, type Db } from "./db.js";
 import { canonicalizeUrl, isPublicHttpUrl } from "./url.js";
 import { ToolError } from "./errors.js";
 import type { CachedMapping } from "./matching.js";
+import { baseOf, normalizeIngredient, normalizeIngredientList } from "./matching.js";
 
 /** Parse a JSON column, tolerating null/empty/garbage as `[]`. */
 function parseJsonArray(value: string | null): string[] {
@@ -28,47 +29,537 @@ function parseJsonArray(value: string | null): string[] {
   }
 }
 
-// === Aliases =================================================================
+// === Ingredient identity / normalization =====================================
+// The organic normalization layer (organic-ingredient-normalization): an alias
+// front-door (variant → canonical id) over a node registry with union-find
+// `representative` merges. `readResolver` bakes the representative chain into the
+// variant→id map so the hot path stays a plain lookup; `readAliases` returns just that
+// map, preserving the matcher's `MatchDeps.aliases` contract.
 
-/** Read the shared ingredient-alias map (variant → canonical). Empty when none. */
-export async function readAliases(env: Env): Promise<Record<string, string>> {
-  const rows = await db(env).all<{ variant: string; canonical: string }>(
-    "SELECT variant, canonical FROM aliases",
-  );
-  const out: Record<string, string> = {};
-  for (const { variant, canonical } of rows) out[variant] = canonical;
-  return out;
+/** The hot-path normalization state: variant→id map (representative-resolved) + the id set. */
+export interface Resolver {
+  /** Lowercased variant → surviving canonical id. Passed to the matcher as `aliases`. */
+  toId: Record<string, string>;
+  /** The surviving canonical ids. A normalized term in this set is "known" (not novel). */
+  ids: Set<string>;
+  /** Surviving canonical id → human Kroger search phrase (only for ids that store one). */
+  searchTerms: Record<string, string>;
+}
+
+/** Build a union-find resolver over the identity rows: id → surviving id (cycle-safe). */
+function representativeResolver(
+  rows: { id: string; representative: string | null }[],
+): (id: string) => string {
+  const rep = new Map<string, string | null>();
+  for (const r of rows) rep.set(r.id, r.representative);
+  return (id: string): string => {
+    let cur = id;
+    const seen = new Set<string>();
+    for (;;) {
+      const next = rep.get(cur);
+      if (!next || next === cur || seen.has(next)) return cur;
+      seen.add(cur);
+      cur = next;
+    }
+  };
 }
 
 /**
- * Add alias mappings (variant → canonical), upserting each by variant. Returns the
- * count added/updated. An empty variant or canonical is skipped.
+ * Load the shared normalization resolver: the alias front-door + identity registry,
+ * with `representative` merges followed so every variant maps to its SURVIVING id and
+ * `ids` holds the survivor set. Small, group-shared, loaded wholesale (like the old
+ * `readAliases`) — embeddings are NOT loaded here (cron-only).
+ */
+export async function readResolver(env: Env): Promise<Resolver> {
+  const d = db(env);
+  const [identities, aliases] = await Promise.all([
+    d.all<{ id: string; representative: string | null; search_term: string | null }>(
+      "SELECT id, representative, search_term FROM ingredient_identity",
+    ),
+    d.all<{ variant: string; id: string }>("SELECT variant, id FROM ingredient_alias"),
+  ]);
+  const resolve = representativeResolver(identities);
+  const ids = new Set<string>();
+  const searchTerms: Record<string, string> = {};
+  for (const r of identities) {
+    const surv = resolve(r.id);
+    ids.add(surv);
+    // Prefer the survivor's own search_term; else let a merged member's fill in.
+    if (r.search_term && (r.id === surv || !(surv in searchTerms))) searchTerms[surv] = r.search_term;
+  }
+  const toId: Record<string, string> = {};
+  for (const { variant, id } of aliases) toId[variant] = resolve(id);
+  return { toId, ids, searchTerms };
+}
+
+/** Read the shared ingredient-alias map (variant → surviving canonical id). Empty when none. */
+export async function readAliases(env: Env): Promise<Record<string, string>> {
+  return (await readResolver(env)).toId;
+}
+
+// --- IngredientContext: the single consumption funnel (design D9) -------------
+// One accessor loaded once per request/tick that centralizes the whole ingredient
+// pipeline so a consumer doesn't re-wire "load resolver → normalize → enqueue-on-miss
+// → thread search terms". The pure core (`normalizeIngredient`/`normalizeIngredientList`/
+// `baseOf`) stays in src/matching.ts; the façade COMPOSES it and layers on the env
+// side-effects (best-effort novel-term capture, the §3.4 edge read). It is built from the
+// existing `readResolver` (no duplicate representative logic). The matcher stays pure over
+// injected `MatchDeps` — the façade is the CALLER-side funnel, not a matcher dependency.
+
+/** One directed satisfies-edge, endpoints representative-resolved (the §3.4 read shape). */
+export interface SatisfiesEdge {
+  from: string;
+  to: string;
+  kind: string;
+}
+
+/** The single ingredient-pipeline accessor consumers funnel through (design D9). */
+export interface IngredientContext {
+  /** Normalize a surface form to its canonical id AND capture it if novel (best-effort enqueue). */
+  resolve(term: string): string;
+  /**
+   * Normalize a list to canonical ids (dedup/drop-empty like `normalizeIngredientList`),
+   * capturing every miss. A non-array / non-string entry passes through unchanged so
+   * write/build validation can reject the bad shape (matches `normalizeIngredientList`).
+   */
+  resolveList(value: unknown): unknown;
+  /**
+   * Resolve a name array to canonical ids for internal set-math (pantry overlap, perishable
+   * vocab, key-ingredient sets): resolve+capture each string entry, drop non-strings, dedupe,
+   * drop empties → always a `string[]`. Unlike `resolveList` (which passes a bad shape through
+   * so write/build validation can reject it), this is the lenient set-builder read-time ranking
+   * wants — the SAME funnel, so a novel boost/index/pantry term is captured here too.
+   */
+  resolveNames(value: unknown): string[];
+  /** The base of an id (`baseOf`) — the readable grouping / search-term fallback. */
+  base(id: string): string;
+  /** The Kroger search phrase for an id (stored `search_term`, else the flattened base). */
+  searchTerm(id: string): string;
+  /**
+   * §3.4 read path — the satisfies-edges AMONG a given id set: only edges where BOTH
+   * endpoints, resolved through the representative pointer, are in the set. Lazy: the
+   * `ingredient_edge` table is loaded (and memoized) on the first call, never when the
+   * context is built (the hot path never needs edges).
+   */
+  satisfiesAmong(ids: string[]): Promise<SatisfiesEdge[]>;
+  /** The underlying resolver (for callers that feed `toId`/`searchTerms` into `MatchDeps`). */
+  resolver: Resolver;
+}
+
+/**
+ * Build the per-request/tick ingredient context from the shared resolver. The resolver is
+ * read once here; edges are NOT — `satisfiesAmong` lazy-loads them so a hot-path caller that
+ * only resolves pays no edge read. `resolve` returns the pure normalized id and, when that id
+ * is NOT a known survivor (a novel surface form), enqueues it via `enqueueNovelTerms` —
+ * deduped within the context (a `Set` of already-enqueued terms) and best-effort (the enqueue
+ * is fire-and-forget and swallows its own errors, so it never throws into the caller).
+ */
+export async function ingredientContext(env: Env): Promise<IngredientContext> {
+  return contextFromResolver(env, await readResolver(env));
+}
+
+/** An empty (no-alias) context — the graceful-degradation fallback when a resolver read fails
+ *  in a non-critical path: normalization degrades to lowercase/strip and capture is DISABLED
+ *  (a read failure must not flood the novel-term queue with un-resolved surface forms). It
+ *  reads no D1, so it never throws. */
+export function emptyIngredientContext(env: Env): IngredientContext {
+  return contextFromResolver(env, { toId: {}, ids: new Set(), searchTerms: {} }, { capture: false });
+}
+
+/** The context builder over an already-loaded resolver (shared by the live + fallback paths). */
+function contextFromResolver(
+  env: Env,
+  resolver: Resolver,
+  opts: { capture: boolean } = { capture: true },
+): IngredientContext {
+  const enqueued = new Set<string>();
+  // Lazily-loaded, then memoized: representative resolver + the surviving-endpoint edge list.
+  let edgesPromise: Promise<{ resolve: (id: string) => string; edges: SatisfiesEdge[] }> | null = null;
+
+  /** Enqueue a novel (unknown) canonical form once per context, best-effort. */
+  const captureIfNovel = (id: string): void => {
+    if (!opts.capture || !id || resolver.ids.has(id) || enqueued.has(id)) return;
+    enqueued.add(id);
+    // Fire-and-forget; enqueueNovelTerms already swallows its own errors (best-effort).
+    void enqueueNovelTerms(env, [id]);
+  };
+
+  const loadEdges = (): Promise<{ resolve: (id: string) => string; edges: SatisfiesEdge[] }> => {
+    if (!edgesPromise) {
+      edgesPromise = (async () => {
+        const d = db(env);
+        const [identities, edges] = await Promise.all([
+          d.all<{ id: string; representative: string | null }>(
+            "SELECT id, representative FROM ingredient_identity",
+          ),
+          d.all<{ from_id: string; to_id: string; kind: string }>(
+            "SELECT from_id, to_id, kind FROM ingredient_edge",
+          ),
+        ]);
+        const resolve = representativeResolver(identities);
+        return {
+          resolve,
+          edges: edges.map((e) => ({ from: resolve(e.from_id), to: resolve(e.to_id), kind: e.kind })),
+        };
+      })();
+    }
+    return edgesPromise;
+  };
+
+  /** Normalize one surface form to its canonical id and capture it if novel. */
+  const resolveOne = (term: string): string => {
+    const id = normalizeIngredient(term, resolver.toId);
+    captureIfNovel(id);
+    return id;
+  };
+
+  return {
+    resolver,
+    resolve(term: string): string {
+      return resolveOne(term);
+    },
+    resolveList(value: unknown): unknown {
+      const out = normalizeIngredientList(value, resolver.toId);
+      // A returned array is the normalized-ids case; a passthrough (non-array/non-string
+      // present) is the reject-later shape — capture only the real ids.
+      if (Array.isArray(out) && out !== value) {
+        for (const id of out) captureIfNovel(id as string);
+      }
+      return out;
+    },
+    resolveNames(value: unknown): string[] {
+      if (!Array.isArray(value)) return [];
+      const seen = new Set<string>();
+      const out: string[] = [];
+      for (const entry of value) {
+        if (typeof entry !== "string") continue;
+        const norm = resolveOne(entry);
+        if (norm && !seen.has(norm)) {
+          seen.add(norm);
+          out.push(norm);
+        }
+      }
+      return out;
+    },
+    base(id: string): string {
+      return baseOf(id);
+    },
+    searchTerm(id: string): string {
+      return resolver.searchTerms[id] ?? id.split("::").join(" ");
+    },
+    async satisfiesAmong(ids: string[]): Promise<SatisfiesEdge[]> {
+      const { resolve, edges } = await loadEdges();
+      // Resolve the requested set through the representative pointer so a merged id matches
+      // its survivor endpoint; keep only edges with BOTH endpoints in that set.
+      const want = new Set(ids.map((id) => resolve(id)));
+      return edges.filter((e) => want.has(e.from) && want.has(e.to));
+    },
+  };
+}
+
+/**
+ * Add alias mappings (variant → canonical id), upserting each by variant as a HUMAN edit
+ * (source='human', which the auto capture pass never overwrites). Ensures the target id
+ * exists as a base-level identity node. Returns the count written. Empty entries skipped.
  */
 export async function addAliases(
   env: Env,
   mappings: { variant: string; canonical: string }[],
 ): Promise<number> {
   const d = db(env);
+  const now = Date.now();
   const stmts: D1PreparedStatement[] = [];
   for (const { variant, canonical } of mappings) {
-    if (!variant.trim() || !canonical.trim()) continue;
+    const v = variant.trim().toLowerCase();
+    const id = canonical.trim();
+    if (!v || !id) continue;
     stmts.push(
       d.prepare(
-        "INSERT INTO aliases (variant, canonical) VALUES (?1, ?2) " +
-          "ON CONFLICT(variant) DO UPDATE SET canonical = excluded.canonical",
-        variant,
-        canonical,
+        "INSERT INTO ingredient_identity (id, base, detail, source, decided_at) VALUES (?1, ?2, ?3, ?4, ?5) " +
+          "ON CONFLICT(id) DO UPDATE SET source = excluded.source",
+        id,
+        baseOf(id),
+        id.includes("::") ? id.slice(id.indexOf("::") + 2) : null,
+        "human",
+        now,
+      ),
+      d.prepare(
+        "INSERT INTO ingredient_alias (variant, id, source, decided_at) VALUES (?1, ?2, ?3, ?4) " +
+          "ON CONFLICT(variant) DO UPDATE SET id = excluded.id, source = excluded.source, decided_at = excluded.decided_at",
+        v,
+        id,
+        "human",
+        now,
       ),
     );
   }
   if (stmts.length > 0) await d.batch(stmts);
-  return stmts.length;
+  return mappings.filter((m) => m.variant.trim() && m.canonical.trim()).length;
 }
 
 /** Delete an alias by variant (its PK). Returns whether a row was removed. */
 export async function deleteAlias(env: Env, variant: string): Promise<boolean> {
-  const res = await db(env).run("DELETE FROM aliases WHERE variant = ?1", variant);
+  const res = await db(env).run(
+    "DELETE FROM ingredient_alias WHERE variant = ?1",
+    variant.trim().toLowerCase(),
+  );
   return res.changes > 0;
+}
+
+/**
+ * Enqueue novel surface forms for the capture job (insert-or-ignore). BEST-EFFORT: a
+ * queue-write failure is swallowed so it never breaks the read/match it rides alongside.
+ * Callers pass only terms that did NOT resolve to a known id.
+ */
+export async function enqueueNovelTerms(env: Env, terms: string[]): Promise<void> {
+  const unique = [...new Set(terms.map((t) => t.trim()).filter(Boolean))];
+  if (unique.length === 0) return;
+  try {
+    const d = db(env);
+    const now = Date.now();
+    await d.batch(
+      unique.map((term) =>
+        d.prepare("INSERT OR IGNORE INTO novel_ingredient_terms (term, first_seen) VALUES (?1, ?2)", term, now),
+      ),
+    );
+  } catch {
+    // best-effort: never fail the caller on a queue write
+  }
+}
+
+// --- capture-job helpers (the cron drains the queue; see src/ingredient-normalize.ts) ---
+
+/** A due batch of queued novel terms (oldest first), skipping backed-off retries. */
+export async function readNovelTermsBatch(env: Env, limit: number, now: number): Promise<string[]> {
+  const rows = await db(env).all<{ term: string }>(
+    "SELECT term FROM novel_ingredient_terms WHERE next_retry_at IS NULL OR next_retry_at <= ?1 " +
+      "ORDER BY first_seen LIMIT ?2",
+    now,
+    limit,
+  );
+  return rows.map((r) => r.term);
+}
+
+/** Survivor identity nodes carrying an embedding, for cosine retrieval by the capture job. */
+export async function readIdentityEmbeddings(env: Env): Promise<{ id: string; embedding: number[] }[]> {
+  const rows = await db(env).all<{ id: string; embedding: string }>(
+    "SELECT id, embedding FROM ingredient_identity WHERE embedding IS NOT NULL AND representative IS NULL",
+  );
+  const out: { id: string; embedding: number[] }[] = [];
+  for (const r of rows) {
+    const v = parseJsonNumbers(r.embedding);
+    if (v) out.push({ id: r.id, embedding: v });
+  }
+  return out;
+}
+
+function parseJsonNumbers(s: string): number[] | null {
+  try {
+    const v = JSON.parse(s);
+    return Array.isArray(v) && v.every((n) => typeof n === "number") ? (v as number[]) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** One decision to append to the normalization audit log. */
+export interface NormalizationLog {
+  term: string;
+  outcome: "same" | "specialization" | "novel" | "merge" | "error" | "failed";
+  resolved_id?: string | null;
+  candidates?: { id: string; score: number }[];
+  model?: string | null;
+  detail?: unknown;
+}
+
+function logStmt(d: Db, entry: NormalizationLog, now: number): D1PreparedStatement {
+  return d.prepare(
+    "INSERT INTO ingredient_normalization_log (term, outcome, resolved_id, candidates, model, detail, created_at) " +
+      "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+    entry.term,
+    entry.outcome,
+    entry.resolved_id ?? null,
+    entry.candidates ? JSON.stringify(entry.candidates) : null,
+    entry.model ?? null,
+    entry.detail !== undefined ? JSON.stringify(entry.detail) : null,
+    now,
+  );
+}
+
+/** A resolved term: the id it maps to, an optional new node to mint, and any proposed edges. */
+export interface Resolution {
+  term: string;
+  id: string;
+  /** Present when a NEW node is minted (specialization / novel); absent for SAME. */
+  node?: { base: string; detail: string | null; search_term: string; concrete: boolean; embedding: number[] };
+  edges?: { from: string; to: string; kind: string }[];
+  confidence?: number;
+  log: NormalizationLog;
+}
+
+/**
+ * Commit a term's resolution atomically: (optionally) mint the node + its embedding, upsert the
+ * alias front-door, insert any edges, remove the term from the queue, and append the audit log —
+ * one D1 batch. Node upserts only fill the embedding on conflict (never downgrade a human node's
+ * source); edges are insert-or-ignore. Queued terms have no prior alias, so the alias upsert is
+ * effectively an insert.
+ */
+export async function commitResolution(env: Env, r: Resolution): Promise<void> {
+  const d = db(env);
+  const now = Date.now();
+  const stmts: D1PreparedStatement[] = [];
+  if (r.node) {
+    stmts.push(
+      d.prepare(
+        "INSERT INTO ingredient_identity (id, base, detail, search_term, concrete, embedding, source, decided_at) " +
+          "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) " +
+          "ON CONFLICT(id) DO UPDATE SET embedding = excluded.embedding, " +
+          "search_term = COALESCE(ingredient_identity.search_term, excluded.search_term)",
+        r.id,
+        r.node.base,
+        r.node.detail,
+        r.node.search_term,
+        r.node.concrete ? 1 : 0,
+        JSON.stringify(r.node.embedding),
+        "auto",
+        now,
+      ),
+    );
+  }
+  stmts.push(
+    d.prepare(
+      "INSERT INTO ingredient_alias (variant, id, source, confidence, decided_at) VALUES (?1, ?2, ?3, ?4, ?5) " +
+        "ON CONFLICT(variant) DO UPDATE SET id = excluded.id, confidence = excluded.confidence, decided_at = excluded.decided_at",
+      r.term,
+      r.id,
+      "auto",
+      r.confidence ?? null,
+      now,
+    ),
+  );
+  for (const e of r.edges ?? []) {
+    stmts.push(
+      d.prepare(
+        "INSERT OR IGNORE INTO ingredient_edge (from_id, to_id, kind, source, decided_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+        e.from,
+        e.to,
+        e.kind,
+        "auto",
+        now,
+      ),
+    );
+  }
+  stmts.push(d.prepare("DELETE FROM novel_ingredient_terms WHERE term = ?1", r.term));
+  stmts.push(logStmt(d, r.log, now));
+  await d.batch(stmts);
+}
+
+/** Delete a decision from the audit log by its id (operator prune of a failed row). */
+export async function deleteNormalizationLog(env: Env, id: number): Promise<boolean> {
+  const res = await db(env).run("DELETE FROM ingredient_normalization_log WHERE id = ?1", id);
+  return res.changes > 0;
+}
+
+/** Defer a term after a transient failure: bump attempts and set the next retry time (kept queued). */
+export async function deferNovelTerm(env: Env, term: string, nextRetryAt: number): Promise<void> {
+  await db(env).run(
+    "UPDATE novel_ingredient_terms SET attempts = attempts + 1, next_retry_at = ?2 WHERE term = ?1",
+    term,
+    nextRetryAt,
+  );
+}
+
+/**
+ * Merge two existing identities via the union-find `representative` pointer (no key rewrites),
+ * logging the merge. Used by the SKU-cache co-resolution signal for cross-lexical synonyms the
+ * embedder can't retrieve. `loser`'s representative is set to `survivor`.
+ */
+export async function mergeIdentities(env: Env, loser: string, survivor: string): Promise<void> {
+  if (loser === survivor) return;
+  const d = db(env);
+  const now = Date.now();
+  await d.batch([
+    d.prepare("UPDATE ingredient_identity SET representative = ?2 WHERE id = ?1", loser, survivor),
+    logStmt(d, { term: loser, outcome: "merge", resolved_id: survivor }, now),
+  ]);
+}
+
+/**
+ * A candidate cross-lexical merge: two distinct surviving ids that resolve to the same Kroger SKU
+ * in `sku_cache`. The signal embeddings can't produce (zucchini/courgette rank far apart), so the
+ * co-resolution pass confirms these before merging. `source` per id lets the caller protect human
+ * nodes (a human node is always the survivor, never merged away).
+ */
+export interface CoResolutionPair {
+  a: string;
+  b: string;
+  sku: string;
+  aSource: "auto" | "human";
+  bSource: "auto" | "human";
+  /** A's Kroger search phrase (or A itself when the node stores none) — the confirm's `term`. */
+  aTerm: string;
+}
+
+const normSource = (s: string | null | undefined): "auto" | "human" => (s === "human" ? "human" : "auto");
+
+/**
+ * Candidate cross-lexical merge pairs from the shared SKU cache: distinct SURVIVING ids that map
+ * to the same Kroger SKU. Each `sku_cache.ingredient` is resolved through the representative chain
+ * to its survivor first, then grouped by `sku` alone (a shared SKU across locations is still strong
+ * evidence). A SKU covered by ≥2 distinct survivors yields one pair per unordered survivor combo,
+ * with each side's identity `source`. Grouping/counting is done in JS (the fake-d1 can't `GROUP BY`).
+ * Ids are sorted so the output is deterministic (stable for tests). Pairs already unified (same
+ * survivor) never appear. `limit` caps the returned pairs.
+ */
+export async function readSkuCoResolutionPairs(env: Env, limit: number): Promise<CoResolutionPair[]> {
+  const d = db(env);
+  const [identities, skus] = await Promise.all([
+    d.all<{ id: string; representative: string | null; source: string | null; search_term: string | null }>(
+      "SELECT id, representative, source, search_term FROM ingredient_identity",
+    ),
+    d.all<{ ingredient: string; sku: string }>("SELECT ingredient, sku FROM sku_cache"),
+  ]);
+  const resolve = representativeResolver(identities);
+  const sourceOf = new Map(identities.map((r) => [r.id, normSource(r.source)] as const));
+  const searchTermOf = new Map(identities.map((r) => [r.id, r.search_term] as const));
+
+  // sku → set of surviving ids that resolve to it.
+  const bySku = new Map<string, Set<string>>();
+  for (const row of skus) {
+    if (!row.ingredient || !row.sku) continue;
+    const surv = resolve(row.ingredient);
+    let set = bySku.get(row.sku);
+    if (!set) bySku.set(row.sku, (set = new Set()));
+    set.add(surv);
+  }
+
+  // Emit one deterministic pair per (sku, unordered survivor combo). Dedup pairs across SKUs by
+  // key so the same synonym candidate proposed by multiple SKUs is confirmed once per tick.
+  const pairs: CoResolutionPair[] = [];
+  const seen = new Set<string>();
+  for (const [sku, set] of [...bySku].sort((x, y) => (x[0] < y[0] ? -1 : x[0] > y[0] ? 1 : 0))) {
+    if (set.size < 2) continue;
+    const ids = [...set].sort();
+    for (let i = 0; i < ids.length; i++) {
+      for (let j = i + 1; j < ids.length; j++) {
+        const a = ids[i];
+        const b = ids[j];
+        const key = `${a} ${b}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        pairs.push({
+          a,
+          b,
+          sku,
+          aSource: sourceOf.get(a) ?? "auto",
+          bSource: sourceOf.get(b) ?? "auto",
+          aTerm: searchTermOf.get(a) || a,
+        });
+        if (pairs.length >= limit) return pairs;
+      }
+    }
+  }
+  return pairs;
 }
 
 // === SKU cache ===============================================================

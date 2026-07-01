@@ -1,0 +1,48 @@
+## 1. Data model & migration
+
+- [x] 1.1 Write the D1 migration: `ingredient_identity(id PK, base, detail, search_term, representative, concrete, embedding, source, decided_at)`, `ingredient_alias(variant PK, id, source, confidence, decided_at)`, `ingredient_edge(from_id, to_id, kind[containment|general|membership], source, decided_at)`, `novel_ingredient_terms(term PK, first_seen, attempts, next_retry_at)`, `ingredient_normalization_log(...)` (mirror `discovery_log`'s shape). *(migrations/d1/0025_ingredient_identity.sql)*
+- [x] 1.2 Backfill: migrate every existing `aliases` row to a base-level `ingredient_identity` (id = canonical, no `::`, `source: human`) + an `ingredient_alias(variant → id, source: human)`; `aliases` table dropped (superseded), variants lowercased.
+- [x] 1.3 Update `docs/SCHEMAS.md` with the new tables and the `base::detail` id format.
+
+## 2. Resolver (hot path, deterministic)
+
+- [x] 2.1 Tighten `stripLeadingQuantity` in `src/matching.ts` so a leading **fraction** is stripped only when a unit follows (so `80/20` survives; plain counts like `2 eggs` still strip), with tests.
+- [x] 2.2 Add a resolver that takes the alias front-door + representative pointer to the **full canonical id** (the deterministic join key — never a base-equality collapse); add a `baseOf(id)` helper. Keep `normalizeIngredient(str) → str` returning the id string.
+- [x] 2.3 Rework `readAliases`/`addAliases`/`deleteAlias` in `src/corpus-db.ts` onto the new tables + add `readResolver` (alias → representative-resolved id, + the `ids` set) and `enqueueNovelTerms`, all over `src/db.ts`. *(cron-only identity/edge/log writers land in §4.3)*
+- [x] 2.4 On a normalization **miss**, enqueue the cleaned surface form to `novel_ingredient_terms` (insert-or-ignore, best-effort). Wired into the matcher (`resolveIngredient`); the corpus-vocab source (`recipe-classify`) is covered by the §4 bootstrap + ongoing classify pass.
+- [x] 2.5 `normalizeIngredientList` returns **full canonical ids** (synonym-merged via the resolver) for cross-recipe overlap; idempotent (re-normalizing an id is a no-op — delegates to `normalizeIngredient`).
+- [x] 2.6 Unit tests: hit resolves through representative; enqueue dedups/drops blanks; base extraction; `80/20` preservation; idempotency. *(test/corpus-db.test.ts, test/matching.test.ts)*
+
+## 3. Matcher integration
+
+- [x] 3.1 `sku_cache` and `brand_prefs` already key on the canonical id (`normalized`); existing base-level rows resolve unchanged (a bare base id == its old normalized string).
+- [x] 3.2 Search Kroger using the identity's stored `search_term` for qualified ids (`ground beef::fat-80-20` → "80/20 ground beef"), bare base otherwise — id keys the cache/brand, the phrase drives search + relevance. Threaded via `MatchDeps.searchTerms` / `Resolver.searchTerms`.
+- [x] 3.3 Matcher test for the qualified-search path (searches the phrase, not the `::` id).
+- [x] 3.4 Edge read path (decision #7a) delivered as the **`IngredientContext` façade** (`ingredientContext(env)` in `src/corpus-db.ts`): the single accessor consumers funnel through — `resolve`/`resolveList`/`resolveNames` (normalize + best-effort novel-term capture, deduped per context; `resolveList` passes a bad shape through for write/build validation, `resolveNames` is the lenient always-`string[]` set-builder for read-time ranking), `base`/`searchTerm`, and `satisfiesAmong(ids)`, the read path returning the `satisfies` edges whose BOTH endpoints (representative-resolved) are in the given id set. `satisfiesAmong` **lazy-loads** `ingredient_edge` on first call (memoized) so the hot path never reads edges. Consolidated the scattered resolver+normalize+enqueue wiring at every ingredient-touching consumer onto this one funnel: `search_recipes` + the matcher in `src/tools.ts` (`ctx.resolveNames` / `ctx.resolver`, the local `normalizeItems` helper retired), `propose_meal_plan` in `src/meal-plan-proposal-tool.ts` (its `ProposeDeps` now carries `getIngredientContext`, all perishable/key/pantry/boost set-math routes through `ctx.resolveNames`), `buildFacetDeps` **and the synchronous import-time seeds** `seedRecipeFacets`/`seedClassifiedFacets` in `src/recipe-classify.ts` (the seeds write a gate hash the classify cron matches, so they are a discovered/ingested recipe's only capture opportunity — they now `resolveList` the derived ingredient arrays), `buildNewRecipe` in `src/discovery.ts`, and `buildRecipeUpdate` in `src/write-tools.ts`. The pure core (`normalizeIngredient`/`normalizeIngredientList`/`baseOf`) stays in `src/matching.ts`; the façade composes it. No MCP tool/HTTP route for `satisfiesAmong` yet — it lands with the first wired consumer (reasoning agent / web-app).
+
+## 4. Capture job (cron)
+
+- [x] 4.1 New `src/ingredient-normalize.ts` capture job: drains a bounded batch from `novel_ingredient_terms`; embeds via `embedTexts`; cosines against `ingredient_identity` embeddings; below the floor (0.5) → mints a NOVEL node with no LLM call; a same-tick mint is visible to later terms.
+- [x] 4.2 Classifier confirm (`src/ingredient-classify.ts`) reusing the discovery-classify machinery: 3-outcome contract (SAME / SPECIALIZATION(base,detail) / NOVEL) + proposed `satisfies` edges + a `concrete` flag, corrective retry; prompt encodes the conservative-collapse bias, the generality-direction rule, prep-vs-product stripping, edge directionality, and the distinct-node lines (spike prompt ported as fixtures). Ids constructed deterministically from `match`+`detail` (base stays in registry form).
+- [x] 4.3 Write the resolution (`commitResolution`): `ingredient_alias` upsert, `ingredient_identity` insert for new nodes (+ embedding + `concrete`), `ingredient_edge` insert-or-ignore (conservative — invalid endpoints dropped at validate), dequeue, append `ingredient_normalization_log` — one atomic batch. `mergeIdentities` sets the `representative` pointer (co-resolution primitive). Node upserts only fill the embedding on conflict (human nodes keep their source).
+- [x] 4.4 Failure handling by kind: transient (env.AI/D1) defers the term with backoff + writes nothing; a contract-invalid confirm fails safe to a NOVEL mint (logged `confirm_failed_safe`); `ingredient-normalize` job_health + job_run record; bounded per tick on the internal env.AI/D1 budget (no external subrequests).
+- [x] 4.5 Wire the job into `scheduled()` in `src/index.ts` (phase 1, beside flyer-warm + classify).
+- [x] 4.6 Continuous bootstrap: enqueue novel `ingredients_key`/`perishable_ingredients` terms from the recipe-classify pass, so corpus vocabulary seeds the registry. *(Matcher already enqueues user terms; recipe-vocab wiring pending.)*
+- [x] 4.7 **SKU-cache co-resolution merge signal** — `readSkuCoResolutionPairs` groups distinct surviving ids sharing a Kroger SKU (JS grouping, representative-resolved); a per-tick pass in `reconcileNormalization` confirms each pair via the same conservative `confirmIdentity` gate and merges via `mergeIdentities` on a `same`-outcome. Survivor selection: a `human` node always wins, two-human pairs are skipped, auto/auto picks the lexicographically smaller id; counts folded into the job summary.
+- [x] 4.8 Tests (`test/ingredient-normalize.test.ts`, `test/corpus-db.test.ts`): below-floor no-LLM mint; SAME merges to one join key; SPECIALIZATION preserves detail + general edge; distinct-base near-neighbor not merged; directional containment edge mapping; transient defer; contract failure → fail-safe NOVEL; same-tick node visibility; `commitResolution`/`mergeIdentities` D1 write paths; `validateConfirm` (match/edge validation).
+
+## 5. Operator surface & audit
+
+- [x] 5.1 Admin normalization view reusing the discovery per-decision pattern (term, outcome, candidates + cosine, model) with correct/override actions; corrections write `source: human` and win over auto.
+- [x] 5.2 `update_aliases` writes `source: human` variants against canonical ids; update its tool description in `docs/TOOLS.md`.
+
+## 6. Docs & ADR
+
+- [x] 6.1 `docs/ARCHITECTURE.md`: update Kroger matching pipeline step 1 (structured id resolution) and add an "ingredient normalization" capture section alongside the other scheduled-capture jobs.
+- [x] 6.2 Amend `docs/adr/0001-...md`: record that the identity-only revival fired on its named trigger, scoped explicitly away from the deferred substitution graph, with the "freezes at model competence" mitigation.
+
+## 7. Verification
+
+- [x] 7.1 `aubr typecheck` + `aubr test` (+ `aubr test:tooling` if tooling touched) green.
+- [x] 7.2 `openspec validate "organic-ingredient-normalization" --strict` passes.
+- [x] 7.3 Live integration test (test/ingredient-normalize.live.test.ts, NORMALIZE_LIVE=1) against real Workers AI — seed a few novel terms (a synonym, an `80/20`-style qualifier, a distinct-base near-neighbor), run the local cron path, confirm the resolutions and log entries, and confirm hot-path hits afterward spend no model call.

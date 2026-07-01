@@ -39,7 +39,8 @@ function fakeD1(slugs: string[]): FakeStore {
     kitchen_equipment: [],
     ready_to_eat: [],
     pantry: [],
-    aliases: [],
+    ingredient_identity: [],
+    ingredient_alias: [],
   };
 
   function tableOf(sql: string): string | null {
@@ -91,9 +92,11 @@ function fakeD1(slugs: string[]): FakeStore {
                 ? ["tenant", "slug"]
                 : table === "kitchen_equipment"
                   ? ["tenant", "slug"]
-                  : table === "aliases"
+                  : table === "ingredient_alias"
                     ? ["variant"]
-                    : ["tenant", "normalized_name"];
+                    : table === "ingredient_identity"
+                      ? ["id"]
+                      : ["tenant", "normalized_name"];
       const idx = tables[table].findIndex((r) => pk.every((k) => r[k] === row[k]));
       if (idx >= 0 && /ON CONFLICT/i.test(sql)) {
         tables[table][idx] = { ...tables[table][idx], ...row };
@@ -340,7 +343,7 @@ function collectTools(store: CorpusStore, username: string, env: Env = fakeD1([]
 }
 
 describe("update_aliases (D1-backed)", () => {
-  it("upserts mappings into the D1 aliases table, no git commit", async () => {
+  it("upserts mappings into the D1 identity + alias tables as human edits, no git commit", async () => {
     const d1 = fakeD1([]);
     const handlers = collectTools(storeWith({}), "everett", d1.env);
     const res = await handlers.get("update_aliases")!({
@@ -349,10 +352,13 @@ describe("update_aliases (D1-backed)", () => {
     const out = JSON.parse(res.content[0].text) as { updated: number; commit_sha?: string };
     expect(out.updated).toBe(2);
     expect(out.commit_sha).toBeUndefined(); // D1-backed: not a GitHub commit
-    expect(d1.tables.aliases).toEqual([
-      { variant: "EVOO", canonical: "olive oil" },
-      { variant: "scallions", canonical: "green onions" },
+    // Variants are lowercased and written source='human' into the alias front-door.
+    expect(d1.tables.ingredient_alias.map((r) => ({ variant: r.variant, id: r.id, source: r.source }))).toEqual([
+      { variant: "evoo", id: "olive oil", source: "human" },
+      { variant: "scallions", id: "green onions", source: "human" },
     ]);
+    // The target ids are minted as base-level identity nodes.
+    expect(d1.tables.ingredient_identity.map((r) => r.id).sort()).toEqual(["green onions", "olive oil"]);
   });
 
   it("re-writing a variant upserts (no duplicate row)", async () => {
@@ -360,7 +366,9 @@ describe("update_aliases (D1-backed)", () => {
     const handlers = collectTools(storeWith({}), "everett", d1.env);
     await handlers.get("update_aliases")!({ aliases: { EVOO: "olive oil" } });
     await handlers.get("update_aliases")!({ aliases: { EVOO: "extra virgin olive oil" } });
-    expect(d1.tables.aliases).toEqual([{ variant: "EVOO", canonical: "extra virgin olive oil" }]);
+    expect(d1.tables.ingredient_alias.map((r) => ({ variant: r.variant, id: r.id }))).toEqual([
+      { variant: "evoo", id: "extra virgin olive oil" },
+    ]);
   });
 });
 
