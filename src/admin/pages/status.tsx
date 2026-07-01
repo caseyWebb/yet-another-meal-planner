@@ -181,7 +181,7 @@ const JobRow = ({ job, now, runs }: { job: JobStatus; now: number; runs: JobRun[
           {streakStart != null ? (
             <>
               <span class="job-sep"> · </span>
-              <SinceLabel ok={job.ok === true} since={streakStart} />
+              <SinceLabel ok={runs[0].ok} since={streakStart} />
             </>
           ) : null}
         </span>

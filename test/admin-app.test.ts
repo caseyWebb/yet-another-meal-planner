@@ -127,3 +127,57 @@ describe("admin Hono app", () => {
     expect((await res.json()) as { error: string }).toMatchObject({ error: "not_found" });
   });
 });
+
+describe("admin Hono app — health-dock injection middleware", () => {
+  it("injects the health dock into an admin HTML page, before </body>", async () => {
+    const res = await app.request("/admin/members", {}, makeEnv({}, ["casey"]));
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain('id="health-dock"');
+    expect(html).toContain('id="health-props"');
+    const bodyIdx = html.indexOf("</body>");
+    const dockIdx = html.indexOf('id="health-dock"');
+    expect(dockIdx).toBeGreaterThan(-1);
+    expect(bodyIdx).toBeGreaterThan(-1);
+    expect(dockIdx).toBeLessThan(bodyIdx);
+  });
+
+  it("leaves a JSON response from /admin/api/* completely untouched", async () => {
+    const res = await app.request("/admin/api/tenants", {}, makeEnv({}, ["casey"]));
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("application/json");
+    const text = await res.text();
+    expect(text).not.toContain("health-dock");
+    expect(text).not.toContain("health-props");
+    // Still valid, parseable JSON — untouched by the splice.
+    expect(() => JSON.parse(text)).not.toThrow();
+    const body = JSON.parse(text) as { tenants: { id: string }[] };
+    expect(body.tenants.map((t) => t.id)).toEqual(["casey"]);
+  });
+
+  it("after injection, content-length is absent or matches the new (spliced) body length", async () => {
+    const res = await app.request("/admin/members", {}, makeEnv({}, ["casey"]));
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    const contentLength = res.headers.get("content-length");
+    if (contentLength !== null) {
+      expect(Number(contentLength)).toBe(new TextEncoder().encode(html).length);
+    }
+  });
+
+  it("passes a text/html response with no </body> through unchanged (the real middleware, via a probe app)", async () => {
+    // No real admin page lacks a </body> (every page renders through `Layout`), so the
+    // passthrough branch can't be reached via `/admin/*`. Mount the SAME exported middleware
+    // (`injectHealthDock` — not a re-implementation) onto a throwaway Hono app to reach it.
+    const { Hono } = await import("hono");
+    const { injectHealthDock } = await import("../src/admin/app.js");
+    const probe = new Hono<{ Bindings: Env }>();
+    probe.use("*", injectHealthDock);
+    const fragment = "<!doctype html><html><body><p>no closing tag in this fixture</p>";
+    probe.get("/", (c) => c.html(fragment));
+    const res = await probe.request("/", {}, makeEnv({}, ["casey"]));
+    const html = await res.text();
+    expect(html).toBe(fragment);
+    expect(html).not.toContain("health-dock");
+  });
+});

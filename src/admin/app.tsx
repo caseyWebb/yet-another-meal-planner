@@ -84,7 +84,9 @@ app.use("*", accessGate);
 // gate — it builds the same `buildHealthPayload` the Status home uses (no new Worker route) and
 // splices the dock (SSR pill + island props + island script) before `</body>`. Acts only on
 // `text/html` responses, so `/admin/api/*` JSON and static island/asset fetches pass through.
-app.use("*", async (c, next) => {
+// Exported (not just inlined into `app.use`) so a test can exercise the exact middleware through
+// a real Hono dispatch, rather than re-implementing its decision logic.
+export const injectHealthDock: MiddlewareHandler<{ Bindings: Env }> = async (c, next) => {
   await next();
   const contentType = c.res.headers.get("content-type") ?? "";
   if (!contentType.includes("text/html")) return;
@@ -101,7 +103,9 @@ app.use("*", async (c, next) => {
     statusText: c.res.statusText,
     headers,
   });
-});
+};
+
+app.use("*", injectHealthDock);
 
 // Tools/operations throw structured `ToolError`s; surface them as their structured shape +
 // status (a structured error is data, never an unhandled 500).

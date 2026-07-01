@@ -76,5 +76,5 @@ const propsEl = document.getElementById("health-props");
 if (host && propsEl) {
   const rollup = JSON.parse(propsEl.textContent ?? "{}") as HealthRollup;
   host.replaceChildren();
-  render(<HealthDockIsland ok={rollup.ok} failingJobs={rollup.failingJobs} deps={rollup.deps} />, host);
+  render(<HealthDockIsland {...rollup} />, host);
 }
