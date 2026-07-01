@@ -203,6 +203,23 @@ export interface RecipeSearchHit {
   semantic: boolean;
 }
 
+/**
+ * `searchRecipes`'s result, discriminated on how the ranking was actually produced —
+ * NOT the mode the caller asked for. Keyword mode always returns `"keyword"` (it never
+ * touches Workers AI, so it cannot degrade). Hybrid mode returns `"hybrid"` when the
+ * embed call + `recipe_derived` read both succeeded, or `"hybrid-degraded"` when either
+ * failed (a Workers AI outage or neuron-quota exhaustion, both real and expected —
+ * `/health` has its own `ai_quota_exhausted` flag for the same condition) — in which
+ * case `results` falls back to the plain keyword match for the same query rather than
+ * throwing into the read path. The degraded state is a variant of the result, not a
+ * boolean bolted onto a hybrid success, so a caller can't render "hybrid" chrome over
+ * keyword data by mistake.
+ */
+export type RecipeSearchResult =
+  | { mode: "keyword"; results: RecipeSearchHit[] }
+  | { mode: "hybrid"; results: RecipeSearchHit[] }
+  | { mode: "hybrid-degraded"; results: RecipeSearchHit[] };
+
 /** The indexed metadata one recipe's keyword/semantic search reads — a superset of
  *  `RecipeListEntry`, pulled once per search (title/slug/facets), joined against a
  *  `recipe_derived.embedding` bulk read for Hybrid mode. */
@@ -251,29 +268,52 @@ function tokenCoverage(tokens: string[], haystack: string): number {
  * no meaning for a cross-tenant operator search (design.md Decision 1). A recipe with no
  * stored embedding is excluded from Hybrid's ranking but stays findable in Keyword mode.
  * An empty query returns the full corpus unranked in either mode — no AI call.
+ *
+ * Hybrid mode DEGRADES rather than throws: if the query embed (`embedText`) or the
+ * `recipe_derived` vector read fails — a Workers AI outage or neuron-quota exhaustion,
+ * both real, expected states, not a caller bug — this falls back to the plain keyword
+ * match for the same query and returns `mode: "hybrid-degraded"` instead of propagating
+ * the `ToolError`. Matches the admin readers' "degrade rather than throw into the read
+ * path" discipline: the operator's recipe explorer stays usable during an AI outage
+ * instead of hard-500ing the whole list. Keyword mode is untouched — it never calls
+ * Workers AI, so it cannot degrade.
  */
-export async function searchRecipes(env: Env, query: string, mode: SearchMode): Promise<RecipeSearchHit[]> {
+export async function searchRecipes(env: Env, query: string, mode: SearchMode): Promise<RecipeSearchResult> {
   const rows = await db(env).all<SearchableRecipe>(
     "SELECT slug, title, protein, cuisine, course, tags, ingredients_key FROM recipes",
   );
   const q = query.trim();
-  if (q === "") return rows.map((r) => ({ slug: r.slug, score: null, semantic: false }));
+  if (q === "") {
+    const results = rows.map((r) => ({ slug: r.slug, score: null, semantic: false }));
+    return { mode, results };
+  }
 
   const tokens = tokenize(q);
 
-  if (mode === "keyword") {
-    return rows
+  const keywordResults = (): RecipeSearchHit[] =>
+    rows
       .filter((r) => tokenCoverage(tokens, keywordHaystack(r)) === 1)
       .map((r) => ({ slug: r.slug, score: null, semantic: false }));
+
+  if (mode === "keyword") {
+    return { mode: "keyword", results: keywordResults() };
   }
 
-  // Hybrid: one embed call for the query, one bulk read of stored recipe vectors.
-  const [queryVector, derivedRows] = await Promise.all([
-    embedText(env, q),
-    db(env).all<{ slug: string; embedding: string }>(
-      "SELECT slug, embedding FROM recipe_derived WHERE embedding IS NOT NULL",
-    ),
-  ]);
+  // Hybrid: one embed call for the query, one bulk read of stored recipe vectors. Either
+  // failing (Workers AI outage/quota) degrades to the keyword results rather than throwing.
+  let queryVector: number[];
+  let derivedRows: { slug: string; embedding: string }[];
+  try {
+    [queryVector, derivedRows] = await Promise.all([
+      embedText(env, q),
+      db(env).all<{ slug: string; embedding: string }>(
+        "SELECT slug, embedding FROM recipe_derived WHERE embedding IS NOT NULL",
+      ),
+    ]);
+  } catch {
+    return { mode: "hybrid-degraded", results: keywordResults() };
+  }
+
   const vectors = new Map<string, number[]>();
   for (const d of derivedRows) {
     try {
@@ -296,7 +336,7 @@ export async function searchRecipes(env: Env, query: string, mode: SearchMode): 
     hits.push({ slug: r.slug, score, semantic });
   }
   hits.sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
-  return hits;
+  return { mode: "hybrid", results: hits };
 }
 
 // --- Member 360 view ---------------------------------------------------------

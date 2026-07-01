@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { RecipesListPage, RecipeDetailPage, StoresListPage, StoreDetailPage, GuidancePage, pipelineHalt } from "../src/admin/pages/data.js";
-import type { RecipeDetail, RecipeSearchHit, StoreListEntry, StoreDetail, GuidanceListing } from "../src/admin-data.js";
+import type { RecipeDetail, RecipeSearchHit, RecipeSearchResult, StoreListEntry, StoreDetail, GuidanceListing } from "../src/admin-data.js";
 
 const render = (node: unknown): string => (node as { toString(): string }).toString();
 
@@ -15,7 +15,8 @@ describe("Recipes list SSR view", () => {
       { slug: "miso-soup", score: null, semantic: false },
       { slug: "orphan", score: null, semantic: false },
     ];
-    const html = render(RecipesListPage({ rows, hits, query: "", mode: "keyword", page: 0 }));
+    const search: RecipeSearchResult = { mode: "keyword", results: hits };
+    const html = render(RecipesListPage({ rows, search, query: "", mode: "keyword", page: 0 }));
     expect(html).toContain("/admin/data/recipes/miso-soup");
     expect(html).toContain("tier indexed");
     expect(html).toContain("indexed");
@@ -27,7 +28,8 @@ describe("Recipes list SSR view", () => {
 
   it("shows a relevance bar and the semantic badge for a hybrid hit", () => {
     const hits: RecipeSearchHit[] = [{ slug: "miso-soup", score: 0.62, semantic: true }];
-    const html = render(RecipesListPage({ rows, hits, query: "cozy", mode: "hybrid", page: 0 }));
+    const search: RecipeSearchResult = { mode: "hybrid", results: hits };
+    const html = render(RecipesListPage({ rows, search, query: "cozy", mode: "hybrid", page: 0 }));
     expect(html).toContain("relbar");
     expect(html).toContain("semantic");
     expect(html).toContain("ranked by relevance");
@@ -35,7 +37,8 @@ describe("Recipes list SSR view", () => {
 
   it("filters out a hit whose slug isn't in the joined row map", () => {
     const hits: RecipeSearchHit[] = [{ slug: "ghost", score: null, semantic: false }];
-    const html = render(RecipesListPage({ rows, hits, query: "x", mode: "keyword", page: 0 }));
+    const search: RecipeSearchResult = { mode: "keyword", results: hits };
+    const html = render(RecipesListPage({ rows, search, query: "x", mode: "keyword", page: 0 }));
     expect(html).toContain("No recipes match");
   });
 
@@ -44,8 +47,18 @@ describe("Recipes list SSR view", () => {
       Array.from({ length: 8 }, (_, i) => [`r${i}`, { slug: `r${i}`, title: `R${i}`, status: "indexed" as const, protein: null, cuisine: null, time_total: null }]),
     );
     const hits: RecipeSearchHit[] = Array.from({ length: 8 }, (_, i) => ({ slug: `r${i}`, score: null, semantic: false }));
-    const html = render(RecipesListPage({ rows: many, hits, query: "", mode: "keyword", page: 0 }));
+    const search: RecipeSearchResult = { mode: "keyword", results: hits };
+    const html = render(RecipesListPage({ rows: many, search, query: "", mode: "keyword", page: 0 }));
     expect(html).toContain("Page 1 of 2");
+  });
+
+  it("renders a degraded-search banner and still shows the keyword results, with the mode toggle left on Hybrid", () => {
+    const hits: RecipeSearchHit[] = [{ slug: "miso-soup", score: null, semantic: false }];
+    const search: RecipeSearchResult = { mode: "hybrid-degraded", results: hits };
+    const html = render(RecipesListPage({ rows, search, query: "miso", mode: "hybrid", page: 0 }));
+    expect(html).toContain("Semantic ranking unavailable");
+    expect(html).toContain("/admin/data/recipes/miso-soup");
+    expect(html).toContain('seg-btn active" href="/admin/data/recipes?q=miso&amp;mode=hybrid"');
   });
 });
 

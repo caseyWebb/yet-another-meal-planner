@@ -28,7 +28,7 @@ import {
   guidanceObject,
   type RecipeDetail,
   type RecipeListEntry,
-  type RecipeSearchHit,
+  type RecipeSearchResult,
   type SearchMode,
   type StoreListEntry,
   type StoreDetail,
@@ -115,18 +115,18 @@ interface RecipeRow extends RecipeListEntry {
 
 const RecipesListPage = ({
   rows,
-  hits,
+  search,
   query,
   mode,
   page,
 }: {
   rows: Map<string, RecipeRow>;
-  hits: RecipeSearchHit[];
+  search: RecipeSearchResult;
   query: string;
   mode: SearchMode;
   page: number;
 }) => {
-  const results = hits.filter((h) => rows.has(h.slug));
+  const results = search.results.filter((h) => rows.has(h.slug));
   const pages = Math.max(1, Math.ceil(results.length / PAGE_SIZE));
   const pg = Math.min(page, pages - 1);
   const shown = results.slice(pg * PAGE_SIZE, pg * PAGE_SIZE + PAGE_SIZE);
@@ -161,6 +161,12 @@ const RecipesListPage = ({
         {query && mode === "keyword" ? " · keyword match over indexed metadata" : null}
         {!query ? " in the corpus and index" : null}
       </p>
+
+      {search.mode === "hybrid-degraded" ? (
+        <div class="alert">
+          <section>Semantic ranking unavailable (Workers AI) — showing keyword matches.</section>
+        </div>
+      ) : null}
 
       {shown.length === 0 ? (
         <p class="muted">
@@ -637,7 +643,7 @@ async function renderRecipesList(c: { env: Env; req: { query(key: string): strin
   const query = c.req.query("q") ?? "";
   const mode: SearchMode = c.req.query("mode") === "hybrid" ? "hybrid" : "keyword";
   const page = Math.max(0, Number(c.req.query("page") ?? "1") - 1);
-  const [{ recipes }, hits, facetRows] = await Promise.all([
+  const [{ recipes }, search, facetRows] = await Promise.all([
     recipeList(c.env),
     searchRecipes(c.env, query, mode),
     recipeFacets(c.env),
@@ -645,7 +651,7 @@ async function renderRecipesList(c: { env: Env; req: { query(key: string): strin
   const rows = new Map<string, RecipeRow>(
     recipes.map((r) => [r.slug, { ...r, ...(facetRows.get(r.slug) ?? { protein: null, cuisine: null, time_total: null }) }]),
   );
-  return html(<RecipesListPage rows={rows} hits={hits} query={query} mode={mode} page={page} />);
+  return html(<RecipesListPage rows={rows} search={search} query={query} mode={mode} page={page} />);
 }
 
 export function registerDataRoutes(app: Hono<{ Bindings: Env }>): void {

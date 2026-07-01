@@ -198,26 +198,28 @@ describe("searchRecipes — keyword mode (AND-of-tokens, no ranking, zero AI cal
         ],
       },
     });
-    const hits = await searchRecipes(env, "miso salmon", "keyword");
-    expect(hits.map((h) => h.slug)).toEqual(["miso-butter-salmon"]);
-    expect(hits[0].score).toBeNull();
-    expect(hits[0].semantic).toBe(false);
+    const { mode, results } = await searchRecipes(env, "miso salmon", "keyword");
+    expect(mode).toBe("keyword");
+    expect(results.map((h) => h.slug)).toEqual(["miso-butter-salmon"]);
+    expect(results[0].score).toBeNull();
+    expect(results[0].semantic).toBe(false);
   });
 
   it("excludes a recipe matching only some tokens", async () => {
     const { env } = makeEnv({
       tables: { recipes: [{ slug: "miso-butter-salmon", title: "Miso Butter Salmon", protein: "fish", cuisine: "japanese", course: "main", tags: "[]", ingredients_key: "[]" }] },
     });
-    const hits = await searchRecipes(env, "miso beef", "keyword");
-    expect(hits).toEqual([]);
+    const { results } = await searchRecipes(env, "miso beef", "keyword");
+    expect(results).toEqual([]);
   });
 
   it("an empty query returns the full corpus unranked", async () => {
     const { env } = makeEnv({
       tables: { recipes: [{ slug: "a", title: "A", protein: null, cuisine: null, course: null, tags: null, ingredients_key: null }] },
     });
-    const hits = await searchRecipes(env, "", "keyword");
-    expect(hits).toEqual([{ slug: "a", score: null, semantic: false }]);
+    const { mode, results } = await searchRecipes(env, "", "keyword");
+    expect(mode).toBe("keyword");
+    expect(results).toEqual([{ slug: "a", score: null, semantic: false }]);
   });
 
   it("makes zero AI calls in keyword mode", async () => {
@@ -260,24 +262,25 @@ describe("searchRecipes — hybrid mode (embed once, blend, semantic-surfaced fl
 
   it("returns a blended relevance score per hit", async () => {
     const { env } = makeHybridEnv();
-    const hits = await searchRecipes(env, "cozy umami dinner", "hybrid");
-    expect(hits.length).toBe(1);
-    expect(hits[0].slug).toBe("miso-butter-salmon");
-    expect(hits[0].score).toBeGreaterThan(0);
+    const { mode, results } = await searchRecipes(env, "cozy umami dinner", "hybrid");
+    expect(mode).toBe("hybrid");
+    expect(results.length).toBe(1);
+    expect(results[0].slug).toBe("miso-butter-salmon");
+    expect(results[0].score).toBeGreaterThan(0);
   });
 
   it("flags a hit surfaced via the semantic term without a full keyword match", async () => {
     const { env } = makeHybridEnv();
-    const hits = await searchRecipes(env, "cozy umami dinner", "hybrid");
-    expect(hits[0].semantic).toBe(true);
+    const { results } = await searchRecipes(env, "cozy umami dinner", "hybrid");
+    expect(results[0].semantic).toBe(true);
   });
 
   it("excludes an unembedded recipe from hybrid ranking but keeps it in keyword mode", async () => {
     const { env } = makeHybridEnv();
     const hybrid = await searchRecipes(env, "unembedded", "hybrid");
-    expect(hybrid.find((h) => h.slug === "unembedded-recipe")).toBeUndefined();
+    expect(hybrid.results.find((h) => h.slug === "unembedded-recipe")).toBeUndefined();
     const keyword = await searchRecipes(env, "unembedded", "keyword");
-    expect(keyword.map((h) => h.slug)).toEqual(["unembedded-recipe"]);
+    expect(keyword.results.map((h) => h.slug)).toEqual(["unembedded-recipe"]);
   });
 
   it("makes exactly one embed call per hybrid search, never one per recipe", async () => {
@@ -288,10 +291,64 @@ describe("searchRecipes — hybrid mode (embed once, blend, semantic-surfaced fl
 
   it("an empty query returns the full corpus unranked, without an embed call", async () => {
     const { env, getEmbedCalls } = makeHybridEnv();
-    const hits = await searchRecipes(env, "", "hybrid");
-    expect(hits.map((h) => h.slug).sort()).toEqual(["miso-butter-salmon", "unembedded-recipe"]);
-    expect(hits.every((h) => h.score === null)).toBe(true);
+    const { mode, results } = await searchRecipes(env, "", "hybrid");
+    expect(mode).toBe("hybrid");
+    expect(results.map((h) => h.slug).sort()).toEqual(["miso-butter-salmon", "unembedded-recipe"]);
+    expect(results.every((h) => h.score === null)).toBe(true);
     expect(getEmbedCalls()).toBe(0);
+  });
+
+  it("degrades to keyword results when embedText throws (Workers AI outage/quota exhaustion)", async () => {
+    const { env } = makeEnv({
+      tables: {
+        recipes: [
+          { slug: "miso-butter-salmon", title: "Miso Butter Salmon", protein: "fish", cuisine: "japanese", course: "main", tags: "[]", ingredients_key: "[]" },
+          { slug: "weeknight-dal", title: "Weeknight Dal", protein: "vegan", cuisine: "indian", course: "main", tags: "[]", ingredients_key: "[]" },
+        ],
+        recipe_derived: [{ slug: "miso-butter-salmon", embedding: JSON.stringify(UNIT_VECTOR_768) }],
+      },
+    });
+    (env as unknown as { AI: { run: () => unknown } }).AI = {
+      run: () => {
+        throw new Error("Workers AI neuron quota exhausted");
+      },
+    };
+    const { mode, results } = await searchRecipes(env, "miso salmon", "hybrid");
+    expect(mode).toBe("hybrid-degraded");
+    // Falls back to the plain keyword match for the same query — unranked, no scores.
+    expect(results).toEqual([{ slug: "miso-butter-salmon", score: null, semantic: false }]);
+  });
+
+  it("degrades to keyword results when the recipe_derived vector read fails", async () => {
+    const { env } = makeEnv({
+      tables: {
+        recipes: [{ slug: "miso-butter-salmon", title: "Miso Butter Salmon", protein: "fish", cuisine: "japanese", course: "main", tags: "[]", ingredients_key: "[]" }],
+      },
+    });
+    (env as unknown as { AI: { run: (model: string, opts: { text: string }) => Promise<{ data: number[][] }> } }).AI = {
+      run: async () => ({ data: [UNIT_VECTOR_768] }),
+    };
+    // Wrap DB.prepare so the recipe_derived read specifically fails, exercising the
+    // "embed succeeded but the vector read failed" half of the degrade path.
+    const realDB = (env as unknown as { DB: D1Database }).DB;
+    (env as unknown as { DB: D1Database }).DB = {
+      ...realDB,
+      prepare(sql: string) {
+        if (/FROM recipe_derived/i.test(sql)) {
+          return {
+            bind: () => ({
+              all: async () => {
+                throw new Error("D1 unavailable");
+              },
+            }),
+          } as unknown as D1PreparedStatement;
+        }
+        return realDB.prepare(sql);
+      },
+    } as unknown as D1Database;
+    const { mode, results } = await searchRecipes(env, "miso salmon", "hybrid");
+    expect(mode).toBe("hybrid-degraded");
+    expect(results).toEqual([{ slug: "miso-butter-salmon", score: null, semantic: false }]);
   });
 });
 
