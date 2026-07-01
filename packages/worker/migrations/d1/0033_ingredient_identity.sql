@@ -1,4 +1,4 @@
--- 0025_ingredient_identity — organic ingredient normalization
+-- 0033_ingredient_identity — organic ingredient normalization
 -- (organic-ingredient-normalization). Generalizes the flat `aliases(variant, canonical)`
 -- table into a directed identity graph the cron grows itself: an alias front-door
 -- (variant -> canonical id), a node registry (base + optional detail + a union-find

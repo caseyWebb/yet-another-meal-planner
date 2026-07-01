@@ -1,6 +1,6 @@
 ## 1. Data model & migration
 
-- [x] 1.1 Write the D1 migration: `ingredient_identity(id PK, base, detail, search_term, representative, concrete, embedding, source, decided_at)`, `ingredient_alias(variant PK, id, source, confidence, decided_at)`, `ingredient_edge(from_id, to_id, kind[containment|general|membership], source, decided_at)`, `novel_ingredient_terms(term PK, first_seen, attempts, next_retry_at)`, `ingredient_normalization_log(...)` (mirror `discovery_log`'s shape). *(migrations/d1/0025_ingredient_identity.sql)*
+- [x] 1.1 Write the D1 migration: `ingredient_identity(id PK, base, detail, search_term, representative, concrete, embedding, source, decided_at)`, `ingredient_alias(variant PK, id, source, confidence, decided_at)`, `ingredient_edge(from_id, to_id, kind[containment|general|membership], source, decided_at)`, `novel_ingredient_terms(term PK, first_seen, attempts, next_retry_at)`, `ingredient_normalization_log(...)` (mirror `discovery_log`'s shape). *(migrations/d1/0033_ingredient_identity.sql)*
 - [x] 1.2 Backfill: migrate every existing `aliases` row to a base-level `ingredient_identity` (id = canonical, no `::`, `source: human`) + an `ingredient_alias(variant → id, source: human)`; `aliases` table dropped (superseded), variants lowercased.
 - [x] 1.3 Update `docs/SCHEMAS.md` with the new tables and the `base::detail` id format.
 
