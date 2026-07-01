@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import {
   resolveTenant,
   resolveInvite,
@@ -209,6 +209,26 @@ describe("touchTenantActivity (admin-ui-redesign-members: throttled last-seen)",
       },
     } as unknown as Env;
     await expect(touchTenantActivity(throwing, "casey")).resolves.toBeUndefined();
+  });
+
+  it("logs a structured warning on a swallowed write failure, so it is diagnosable (not silent)", async () => {
+    const throwing = {
+      DB: {
+        prepare() {
+          throw new Error("boom");
+        },
+      },
+    } as unknown as Env;
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await touchTenantActivity(throwing, "casey");
+      expect(warn).toHaveBeenCalledTimes(1);
+      const [message] = warn.mock.calls[0];
+      expect(String(message)).toContain("touchTenantActivity");
+      expect(String(message)).toContain("casey");
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
 

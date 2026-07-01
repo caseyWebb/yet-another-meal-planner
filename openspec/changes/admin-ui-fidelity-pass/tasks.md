@@ -22,12 +22,12 @@
 
 ## 3. Members
 
-- [ ] 3.1 Remove the duplicate "ROSTER" heading (keep exactly one roster-section label).
-- [ ] 3.2 Fix the per-row actions-menu trigger button in `src/admin/client/members.tsx` (`RowMenu`) to call `preventDefault()`/`stopPropagation()` on its own `onClick` (matching the `stop()` guard already used by its Rotate/Kroger-link/Revoke action buttons), so opening the menu never navigates to the member detail page.
-- [ ] 3.3 Rebuild the admin islands (`aubr build:admin`) and manually verify the dropdown no longer navigates — rule out a stale bundle as a contributing cause alongside the code fix.
-- [ ] 3.4 Investigate the "both members show awaiting claude.ai connection" report against the *operator's* live/remote environment: confirm `migrations/d1/0024_tenant_activity.sql` is applied `--remote`, and confirm a real MCP tool call from each member's Claude.ai session writes a `tenant_activity` row (verifies `touchTenantActivity`'s wiring end-to-end, not just by local code reading).
-- [ ] 3.5 If 3.4 confirms activity truly isn't being recorded, replace `touchTenantActivity`'s silent `catch {}` (`src/tenant.ts`) with a structured (non-throwing) log/metric so a future write failure is diagnosable instead of presenting identically to "no activity yet."
-- [ ] 3.6 If 3.4 confirms the members simply haven't connected since the redeploy, close this item with that finding (no code change) and note it for the operator.
+- [x] 3.1 Remove the duplicate "ROSTER" heading (keep exactly one roster-section label).
+- [x] 3.2 Fix the per-row actions-menu trigger button in `src/admin/client/members.tsx` (`RowMenu`) to call `preventDefault()`/`stopPropagation()` on its own `onClick` (matching the `stop()` guard already used by its Rotate/Kroger-link/Revoke action buttons), so opening the menu never navigates to the member detail page.
+- [x] 3.3 Rebuild the admin islands (`aubr build:admin`) and manually verify the dropdown no longer navigates — rule out a stale bundle as a contributing cause alongside the code fix.
+- [x] 3.4 Investigate the "both members show awaiting claude.ai connection" report against the *operator's* live/remote environment: confirm `migrations/d1/0024_tenant_activity.sql` is applied `--remote`, and confirm a real MCP tool call from each member's Claude.ai session writes a `tenant_activity` row (verifies `touchTenantActivity`'s wiring end-to-end, not just by local code reading).
+- [x] 3.5 If 3.4 confirms activity truly isn't being recorded, replace `touchTenantActivity`'s silent `catch {}` (`src/tenant.ts`) with a structured (non-throwing) log/metric so a future write failure is diagnosable instead of presenting identically to "no activity yet."
+- [x] 3.6 If 3.4 confirms the members simply haven't connected since the redeploy, close this item with that finding (no code change) and note it for the operator.
 
 ## 4. Data > Recipes
 
@@ -58,9 +58,9 @@
 
 ## 9. Discovery
 
-- [ ] 9.1 Extend `matchMembers`'s call sites in `src/discovery-sweep.ts` so a `no_match` (stage `match` or `confirm`) or `dietary_gated` outcome's logged `detail` includes the computed per-member match scores (currently computed in `matchMembers` and discarded), per the `discovery-sweep` spec delta.
-- [ ] 9.2 Surface those per-member match scores on the Discovery area's candidate card when a candidate halted at the match stage, per the `operator-admin` spec delta.
-- [ ] 9.3 Make the candidate card's expand/collapse ("Details") affordance consistent in both directions: show the toggle's current-state label before first expansion (not only after), and make a second click on "Details" collapse the card back — mirror the mock's `DiscoveryScreen.jsx` toggle behavior.
+- [x] 9.1 Extend `matchMembers`'s call sites in `src/discovery-sweep.ts` so a `no_match` (stage `match` or `confirm`) or `dietary_gated` outcome's logged `detail` includes the computed per-member match scores (currently computed in `matchMembers` and discarded), per the `discovery-sweep` spec delta.
+- [x] 9.2 Surface those per-member match scores on the Discovery area's candidate card when a candidate halted at the match stage, per the `operator-admin` spec delta.
+- [x] 9.3 Make the candidate card's expand/collapse ("Details") affordance consistent in both directions: show the toggle's current-state label before first expansion (not only after), and make a second click on "Details" collapse the card back — mirror the mock's `DiscoveryScreen.jsx` toggle behavior.
 
 ## 10. Logs
 

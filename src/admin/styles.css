@@ -357,7 +357,20 @@
   .pill-count { margin-left: .35rem; font-size: .72rem; opacity: .75; }
   .dc-list { display: flex; flex-direction: column; gap: .65rem; margin-top: .25rem; }
   .dc-card { background: #fff; border: 1px solid var(--border); border-radius: var(--radius-lg); box-shadow: var(--shadow-xs); overflow: hidden; }
-  .dc-main { display: block; width: 100%; text-align: left; background: none; border: 0; font: inherit; padding: .8rem .95rem .6rem; cursor: pointer; }
+  /* The whole collapsed card (headrow, source, stage track, summary, retry clock, and the
+     Details toggle) lives in <summary> — a native, always-visible, bidirectional disclosure
+     control (no client JS), mirroring the Logs area's <details>/<summary> pattern. */
+  .dc-details > summary { list-style: none; cursor: pointer; }
+  .dc-details > summary::-webkit-details-marker,
+  .dc-details > summary::marker { display: none; content: ""; }
+  .dc-main { display: block; width: 100%; text-align: left; background: none; border: 0; font: inherit; padding: .8rem .95rem .6rem; }
+  /* The "Details ▾ / Hide ▴" affordance flips with the <details> open state — always one of the
+     two is visible, so it never reads as undiscoverable, and a second click always collapses. */
+  .dc-expand-open { display: none; }
+  .dc-details[open] .dc-expand-closed { display: none; }
+  .dc-details[open] .dc-expand-open { display: inline-flex; align-items: center; gap: .25rem; }
+  .dc-expand-closed, .dc-expand-open { display: inline-flex; align-items: center; gap: .25rem; }
+  .dc-expand .up { transform: rotate(180deg); }
   .dc-headrow { display: flex; align-items: center; justify-content: space-between; gap: .6rem; }
   .dc-title { font-weight: 500; }
   .dc-src { display: flex; align-items: center; gap: .4rem; color: var(--muted-foreground); font-size: .8rem; margin-top: .2rem; }
@@ -365,6 +378,7 @@
   .dimsep { opacity: .5; }
   .dc-url { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .dc-summary { margin-top: .55rem; font-size: .85rem; color: #333; }
+  .dc-match-scores { display: flex; flex-wrap: wrap; gap: .3rem; margin-top: .45rem; }
   .dc-foot { display: flex; align-items: center; justify-content: space-between; gap: .75rem; padding: .5rem .95rem .75rem; border-top: 1px solid #f4f4f4; }
   .dc-retry { display: flex; align-items: center; gap: .6rem; }
   .dc-retry-state { display: inline-flex; align-items: center; gap: .3rem; }

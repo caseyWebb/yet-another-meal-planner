@@ -269,17 +269,23 @@ export function dietaryOk(candidateDietary: string[], restrictions: string[]): b
   return restrictions.every((r) => have.has(r.toLowerCase()));
 }
 
-/** Cosine-match a candidate against members: clears τ, not repelled by a reject, passes diet. */
+/** Cosine-match a candidate against members: clears τ, not repelled by a reject, passes diet.
+ *  `scores` carries EVERY member's computed cosine (not only those that cleared the threshold),
+ *  so a halted candidate's log entry can show how close each member came, not only pass/fail
+ *  (the `discovery-sweep` spec's "match-stage skip or gate carries the computed member scores"). */
 export function matchMembers(
   vec: number[],
   candidateDietary: string[],
   members: SweepMember[],
   config: DiscoveryConfig,
-): { matches: Attribution[]; gatedByDiet: boolean } {
+): { matches: Attribution[]; gatedByDiet: boolean; scores: Attribution[] } {
   const matches: Attribution[] = [];
+  const scores: Attribution[] = [];
   let gatedByDiet = false;
   for (const m of members) {
     const score = bestTasteCosine(vec, m);
+    const rounded = Math.round(score * 1e4) / 1e4;
+    scores.push({ tenant: m.tenant, score: rounded });
     if (score < config.tasteThreshold) continue;
     // Repel: a near-duplicate of something this member rejected is not for them.
     if (favoriteAffinity(vec, m.rejectVectors) >= config.dedupThreshold) continue;
@@ -287,9 +293,9 @@ export function matchMembers(
       gatedByDiet = true;
       continue;
     }
-    matches.push({ tenant: m.tenant, score: Math.round(score * 1e4) / 1e4 });
+    matches.push({ tenant: m.tenant, score: rounded });
   }
-  return { matches, gatedByDiet: gatedByDiet && matches.length === 0 };
+  return { matches, gatedByDiet: gatedByDiet && matches.length === 0, scores };
 }
 
 function asStringArray(v: unknown): string[] {
@@ -539,7 +545,7 @@ export async function processCandidate(
     }
 
     // [6] match (cosine + repel + dietary gate), then the negation-aware LLM confirm.
-    const { matches, gatedByDiet } = matchMembers(
+    const { matches, gatedByDiet, scores } = matchMembers(
       descVec,
       asStringArray(frontmatter.dietary),
       members,
@@ -547,14 +553,20 @@ export async function processCandidate(
     );
     if (matches.length === 0) {
       const outcome: Outcome = gatedByDiet ? "dietary_gated" : "no_match";
-      await logSuccess({ ...logBase(candidate), outcome, detail: { stage: "match" } });
+      // Carry the per-member cosine scores computed at this stage so a halted candidate is
+      // auditable — how close each member came, not only pass/fail (discovery-sweep spec).
+      await logSuccess({ ...logBase(candidate), outcome, detail: { stage: "match", match_scores: scores } });
       return { outcome, didFetch: true, didClassify: true };
     }
     const matchMembersList = members.filter((m) => matches.some((a) => a.tenant === m.tenant));
     const confirmed = new Set(await deps.confirmMatches(candidate.title, description, matchMembersList));
     const attributions = matches.filter((a) => confirmed.has(a.tenant));
     if (attributions.length === 0) {
-      await logSuccess({ ...logBase(candidate), outcome: "no_match", detail: { stage: "confirm" } });
+      await logSuccess({
+        ...logBase(candidate),
+        outcome: "no_match",
+        detail: { stage: "confirm", match_scores: scores },
+      });
       return { outcome: "no_match", didFetch: true, didClassify: true };
     }
 

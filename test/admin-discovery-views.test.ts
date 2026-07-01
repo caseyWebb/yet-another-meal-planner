@@ -5,7 +5,7 @@
 import { describe, it, expect } from "vitest";
 import { DiscoveryView, STAGES } from "../src/admin/pages/discovery.js";
 import { StageTrack } from "../src/admin/ui/kit.js";
-import { deriveHalt, type DiscoveryCandidate, type DiscoveryLogRow } from "../src/discovery-db.js";
+import { deriveHalt, matchScoresFromDetail, type DiscoveryCandidate, type DiscoveryLogRow } from "../src/discovery-db.js";
 
 const render = (node: unknown): string => (node as { toString(): string }).toString();
 
@@ -27,7 +27,7 @@ function logRow(over: Partial<DiscoveryLogRow> & Pick<DiscoveryLogRow, "id" | "o
 
 function candidate(over: Partial<DiscoveryLogRow> & Pick<DiscoveryLogRow, "id" | "outcome">): DiscoveryCandidate {
   const row = logRow(over);
-  return { ...row, ...deriveHalt(row) };
+  return { ...row, ...deriveHalt(row), matchScores: matchScoresFromDetail(row.detail) };
 }
 
 describe("StageTrack primitive", () => {
@@ -144,6 +144,70 @@ describe("DiscoveryView SSR — candidate cards", () => {
     expect(html).toContain("terminal");
     expect(html).not.toContain('data-action="retry"');
     expect(html).toContain('data-action="delete"');
+  });
+});
+
+describe("DiscoveryView SSR — match scores", () => {
+  it("shows per-member match scores on a candidate halted at the match stage", () => {
+    const candidates = [
+      candidate({
+        id: "1",
+        outcome: "no_match",
+        detail: { stage: "match", match_scores: [{ tenant: "casey", score: 0.52 }, { tenant: "sage", score: 0.61 }] },
+      }),
+    ];
+    const html = render(DiscoveryView({ candidates, filter: "all", page: 0, now: NOW }));
+    expect(html).toContain("dc-match-scores");
+    expect(html).toContain("@casey");
+    expect(html).toContain("0.52");
+    expect(html).toContain("@sage");
+    expect(html).toContain("0.61");
+  });
+
+  it("shows per-member match scores on a dietary-gated candidate", () => {
+    const candidates = [
+      candidate({
+        id: "1",
+        outcome: "dietary_gated",
+        detail: { stage: "match", restriction: "pork-free", tenant: "sage", match_scores: [{ tenant: "sage", score: 0.71 }] },
+      }),
+    ];
+    const html = render(DiscoveryView({ candidates, filter: "all", page: 0, now: NOW }));
+    expect(html).toContain("dc-match-scores");
+    expect(html).toContain("@sage");
+    expect(html).toContain("0.71");
+  });
+
+  it("renders no match-scores block when the row carries none (e.g. a triage-stage rejection)", () => {
+    const candidates = [candidate({ id: "1", outcome: "no_match", detail: { stage: "triage" } })];
+    const html = render(DiscoveryView({ candidates, filter: "all", page: 0, now: NOW }));
+    expect(html).not.toContain("dc-match-scores");
+  });
+
+  it("renders no match-scores block for an imported candidate", () => {
+    const candidates = [candidate({ id: "1", outcome: "imported", detail: { attribution: [{ tenant: "casey", score: 0.7 }] } })];
+    const html = render(DiscoveryView({ candidates, filter: "all", page: 0, now: NOW }));
+    expect(html).not.toContain("dc-match-scores");
+  });
+});
+
+describe("DiscoveryView SSR — expand/collapse toggle (native <details>)", () => {
+  it("wraps each card in a <details> whose <summary> carries a persistent, bidirectional Details/Hide affordance", () => {
+    const candidates = [candidate({ id: "1", outcome: "no_match", detail: { stage: "triage" } })];
+    const html = render(DiscoveryView({ candidates, filter: "all", page: 0, now: NOW }));
+    // The disclosure is a native <details class="dc-details">, not a click-driven div.
+    expect(html).toMatch(/<details class="dc-details">/);
+    // Both the closed-state and open-state labels are always present in markup (CSS flips which
+    // is visible via `.dc-details[open]`), so the affordance is visible before AND after
+    // expansion, and a second click on the same <summary> always collapses it back (native
+    // <details> toggle semantics — no JS state to get out of sync).
+    expect(html).toContain("dc-expand-closed");
+    expect(html).toContain("dc-expand-open");
+    expect(html).toContain("Details");
+    expect(html).toContain("Hide");
+    // The retry-clock/actions row (dc-foot) is inside <summary> — always visible on the
+    // collapsed card, not gated behind expansion.
+    expect(html).toMatch(/<summary class="dc-main">[\s\S]*dc-foot[\s\S]*<\/summary>/);
   });
 });
 

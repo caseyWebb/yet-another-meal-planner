@@ -24,7 +24,7 @@ import {
   ScanIcon,
 } from "../ui/icons.js";
 import { relAge, relFuture, isRetryable, entryTitle } from "../logs-shared.js";
-import type { DiscoveryCandidate, StageKey } from "../../discovery-db.js";
+import type { DiscoveryCandidate, MatchScore, StageKey } from "../../discovery-db.js";
 import { DEFAULT_CONFIG } from "../../discovery-sweep.js";
 
 /** Candidates per page. */
@@ -179,6 +179,24 @@ const RetryReadout = ({ c, now }: { c: DiscoveryCandidate; now: number }) => {
   return null;
 };
 
+/** The per-member match scores computed at the match stage (operator-admin's "A match-halted
+ *  candidate shows its per-member scores" requirement) — best score first, so the operator sees
+ *  at a glance how close the nearest member came, not only the pass/fail outcome. Renders
+ *  nothing when the row carries no scores (e.g. halted before the match stage, or imported). */
+const MatchScores = ({ scores }: { scores: MatchScore[] | null }) => {
+  if (!scores || scores.length === 0) return null;
+  const sorted = [...scores].sort((a, b) => b.score - a.score);
+  return (
+    <div class="dc-match-scores">
+      {sorted.map((s) => (
+        <span class="badge" data-variant="outline">
+          @{s.tenant} {s.score.toFixed(2)}
+        </span>
+      ))}
+    </div>
+  );
+};
+
 const StageDetail = ({ c }: { c: DiscoveryCandidate }) => {
   const haltIx = STAGE_IX[c.haltStage];
   const imported = c.outcome === "imported";
@@ -224,7 +242,11 @@ const CandidateCard = ({ c, now }: { c: DiscoveryCandidate; now: number }) => {
   };
   return (
     <div class={`dc-card kind-${c.kind}`} data-candidate-id={c.id}>
-      <details>
+      <details class="dc-details">
+        {/* Everything visible on the collapsed card — including the retry clock/actions and the
+            Details toggle affordance — lives inside <summary> so it is the ONE clickable native
+            disclosure control: always visible, and correctly bidirectional (open ↔ closed) with
+            zero client JS (mirrors the Logs area's <details>/<summary> pattern). */}
         <summary class="dc-main">
           <div class="dc-headrow">
             <span class="dc-title">{entryTitle(c)}</span>
@@ -252,14 +274,20 @@ const CandidateCard = ({ c, now }: { c: DiscoveryCandidate; now: number }) => {
           />
 
           <div class="dc-summary">{summaryLine(c)}</div>
-        </summary>
+          <MatchScores scores={c.matchScores} />
 
-        <div class="dc-foot">
-          <RetryReadout c={c} now={now} />
-          <span class="dc-expand">
-            Details <ChevronDownIcon size={14} />
-          </span>
-        </div>
+          <div class="dc-foot">
+            <RetryReadout c={c} now={now} />
+            <span class="dc-expand">
+              <span class="dc-expand-closed">
+                Details <ChevronDownIcon size={14} />
+              </span>
+              <span class="dc-expand-open">
+                Hide <span class="up"><ChevronDownIcon size={14} /></span>
+              </span>
+            </span>
+          </div>
+        </summary>
 
         <div class="dc-detail">
           <StageDetail c={c} />

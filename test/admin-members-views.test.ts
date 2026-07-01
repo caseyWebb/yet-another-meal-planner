@@ -74,6 +74,12 @@ describe("Members roster SSR page", () => {
     expect(html).toContain('"owner":true');
     expect(html).toContain("/admin/islands/members.js");
   });
+
+  it("renders exactly one Roster group-label, not a duplicate", () => {
+    const html = render(MembersPage({ props: { members: [ACTIVE, PENDING] } }));
+    const matches = html.match(/class="group-label"[^>]*>Roster</g) ?? [];
+    expect(matches.length).toBe(1);
+  });
 });
 
 describe("Member-detail section helpers", () => {

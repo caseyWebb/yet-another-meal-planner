@@ -156,7 +156,11 @@ function RowMenu({
         aria-haspopup="menu"
         aria-expanded={open}
         aria-label="Member actions"
-        onClick={() => setOpen((v) => !v)}
+        onClick={(e: Event) => {
+          e.preventDefault();
+          e.stopPropagation();
+          setOpen((v) => !v);
+        }}
       >
         <MoreIcon size={16} />
       </button>
