@@ -124,6 +124,22 @@ This project is licensed **AGPL-3.0-only**, and it is **dual-licensed**: the mai
 
 The CLA is **not** a copyright assignment — you keep ownership of your work. You grant the maintainer a license to use your contribution under the AGPL **and** under other terms (including commercial), so the public project stays AGPL while a commercial/managed offering remains the maintainer's to make. **Submitting a contribution — opening a pull request — means you agree to [CLA.md](CLA.md).** Read it once; it covers your future contributions too.
 
+### Verified commits from Claude Code web sessions
+
+Web sessions run on an Anthropic-managed VM whose default git signer (`gpg.ssh.program=/tmp/code-sign`) is keyed to a non-operator identity, so a commit *authored* as you does not come out **Verified** as you — the CLA check keys on authorship, GitHub's badge on the signature. To satisfy both, provision your own GPG signing key and let [`.claude/hooks/session-start.sh`](.claude/hooks/session-start.sh) sign with it: when the **`GPG_SIGNING_KEY_B64`** environment variable is set, the hook imports the key and switches git to sign every web-session commit with it; unset, it is a no-op and the VM default is kept.
+
+Provision once, on your own machine:
+
+```bash
+gpg --batch --pinentry-mode loopback --passphrase '' \
+  --quick-generate-key "Your Name <you@example.com>" ed25519 sign never   # dedicated key, no passphrase
+KEYID=$(gpg --list-secret-keys --with-colons you@example.com | awk -F: '/^fpr:/{print $10; exit}')
+gpg --armor --export "$KEYID"                            # → GitHub → Settings → SSH and GPG keys → New GPG key
+gpg --armor --export-secret-keys "$KEYID" | base64 -w0   # → set as GPG_SIGNING_KEY_B64 in the web environment settings
+```
+
+Use an email verified on your GitHub account. There is no encrypted secrets store yet — environment variables are visible to anyone who can edit the environment — so use a **dedicated, revocable** signing key, not your primary one.
+
 ## Opening a pull request
 
 Every PR is prefilled from [`.github/pull_request_template.md`](.github/pull_request_template.md): a short **What & why** plus a **considerations checklist** drawn from the rules above (docs in lockstep, the tool/skill boundary, D1 via `src/db.ts`, the `merge-wrangler-config.mjs` allowlist, migrations, `plugin/` regen, OpenSpec sync, no-secrets). Each item is a *consideration* — checking it means "I weighed this," and the not-applicable case is folded into the wording, so every box is honestly checkable on every PR. **Fill the What & why and check every box.** This applies to PRs the repo's own agent opens too — leaving the template unfilled blocks the PR.
