@@ -474,6 +474,42 @@ function esc(s: string): string {
     .replace(/'/g, "&#39;");
 }
 
+/** Per-character advance width (px) used to size `/health.svg` columns from content. The
+ *  card's font is 13px monospace (~7.8px/char); rounded up to a safe over-estimate so the
+ *  narrower 12px (age) and 11px (footer) rows only ever get extra slack, never overlap. */
+export const HEALTH_SVG_CHAR_W = 8;
+
+/** Minimum gap (px) between adjacent `/health.svg` columns. */
+export const HEALTH_SVG_GUTTER = 12;
+
+/** Left/right padding (px) of the `/health.svg` card — shared by the column math and the
+ *  renderer so the header/floor geometry can't drift out of sync. */
+const HEALTH_SVG_PAD_X = 14;
+
+/** x where the name column starts: card padding + the leading status dot's gutter. Fixed,
+ *  since the dot + name column never varies with content. */
+const HEALTH_SVG_NAME_X = HEALTH_SVG_PAD_X + 18;
+
+/**
+ * Derive the `/health.svg` card's column x-positions (and overall width) from the actual
+ * row content, so a long label (e.g. "reconcile-signals") or word (e.g. "quota exhausted")
+ * repacks the layout instead of overlapping the next column. Monospace text makes this
+ * exact via a simple `chars * HEALTH_SVG_CHAR_W` estimate — no real font-metrics needed.
+ */
+export function healthSvgColumns(
+  rows: { label: string; word: string; age: string }[],
+): { nameX: number; wordX: number; ageX: number; width: number } {
+  const nameX = HEALTH_SVG_NAME_X;
+  const w = (s: string) => s.length * HEALTH_SVG_CHAR_W;
+  const nameW = Math.max(0, ...rows.map((r) => w(r.label)));
+  const wordW = Math.max(0, ...rows.map((r) => w(r.word)));
+  const ageW = Math.max(0, ...rows.map((r) => w(r.age)));
+  const wordX = nameX + nameW + HEALTH_SVG_GUTTER;
+  const ageX = wordX + wordW + HEALTH_SVG_GUTTER;
+  const width = Math.max(320, Math.ceil(ageX + ageW + HEALTH_SVG_PAD_X));
+  return { nameX, wordX, ageX, width };
+}
+
 /**
  * Render the aggregate health payload as a self-contained SVG **card** for a README
  * badge. Tenant-data-free by construction — it reads only the payload's job states,
@@ -481,7 +517,8 @@ function esc(s: string): string {
  * The card draws its own opaque panel so it reads on both light and dark GitHub themes
  * (the design's theme-neutral choice). A never-run job renders amber ("pending"), not
  * red, so a fresh deploy doesn't look broken; the headline mirrors `payload.ok`.
- * Layout uses a monospace font + fixed columns, so no font-metric width math is needed.
+ * Layout uses a monospace font + content-derived columns (`healthSvgColumns`), so no
+ * hand-tuned coordinate can drift out of sync with the actual row content.
  */
 export function renderHealthSvg(payload: HealthPayload): string {
   const C = {
@@ -527,16 +564,15 @@ export function renderHealthSvg(payload: HealthPayload): string {
   const headWord = payload.ok ? "healthy" : "degraded";
   const headColor = payload.ok ? C.ok : C.fail;
 
-  // Fixed layout (px). Columns are left-anchored at constant x; monospace keeps each
-  // column internally aligned without measuring text.
-  const width = 320;
-  const padX = 14;
+  // Layout (px). Columns are left-anchored; monospace keeps each column internally
+  // aligned without measuring text. wordX/ageX/width are DERIVED from the actual row
+  // content (see healthSvgColumns) so a long label (e.g. "reconcile-signals") or word
+  // (e.g. "quota exhausted") never overlaps the next column.
+  const padX = HEALTH_SVG_PAD_X;
   const rowH = 22;
   const firstRow = 60;
   const dotX = padX + 4;
-  const nameX = padX + 18;
-  const wordX = 150;
-  const ageX = 232;
+  const { nameX, wordX, ageX, width } = healthSvgColumns(rows);
   const lastRow = firstRow + (rows.length - 1) * rowH;
   const footerY = lastRow + 26;
   const height = footerY + 12;

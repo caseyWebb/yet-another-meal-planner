@@ -4,6 +4,7 @@ import {
   currentStreakStart,
   handleHealthRequest,
   handleHealthSvgRequest,
+  healthSvgColumns,
   isAiQuotaError,
   notifyFailure,
   probeD1,
@@ -15,6 +16,9 @@ import {
   renderHealthSvg,
   writeJobHealth,
   writeJobRun,
+  HEALTH_JOBS,
+  HEALTH_SVG_CHAR_W,
+  HEALTH_SVG_GUTTER,
   JOB_RUNS_PER_JOB_CAP,
   type JobHealth,
   type JobRun,
@@ -301,6 +305,67 @@ describe("renderHealthSvg", () => {
     expect(svg).toContain("ai");
     expect(svg).toContain("quota exhausted");
     expect(svg).toContain("degraded");
+  });
+});
+
+describe("healthSvgColumns (content-derived /health.svg layout)", () => {
+  // Mirrors the row shapes renderHealthSvg builds: every registered job (worst case the
+  // longest label, "reconcile-signals") plus the fixed d1/admin/ai rows (whose word can be
+  // "quota exhausted").
+  const representativeRows = [
+    ...HEALTH_JOBS.map((name) => ({ label: name, word: "ok", age: "2h ago" })),
+    { label: "reconcile-signals", word: "fail", age: "just now" },
+    { label: "d1", word: "ok", age: "" },
+    { label: "admin", word: "gated", age: "" },
+    { label: "ai", word: "quota exhausted", age: "" },
+  ];
+
+  it("keeps every label clear of the word column (no overlap), including the longest label", () => {
+    const { nameX, wordX } = healthSvgColumns(representativeRows);
+    for (const r of representativeRows) {
+      expect(nameX + r.label.length * HEALTH_SVG_CHAR_W).toBeLessThanOrEqual(wordX);
+    }
+    const longest = representativeRows.find((r) => r.label === "reconcile-signals")!;
+    expect(nameX + longest.label.length * HEALTH_SVG_CHAR_W).toBeLessThanOrEqual(wordX);
+    // The gutter is honored, not just "doesn't overlap" — the widest label leaves exactly
+    // (or more than) HEALTH_SVG_GUTTER before wordX.
+    const nameW = Math.max(0, ...representativeRows.map((r) => r.label.length * HEALTH_SVG_CHAR_W));
+    expect(wordX - (nameX + nameW)).toBeGreaterThanOrEqual(HEALTH_SVG_GUTTER);
+    // Pin the exact arithmetic with an independently-written expression (literal name-column
+    // start = 32) so this fails if the helper drops the gutter or uses a wrong nameX/CHAR_W —
+    // not only if a hardcoded coordinate comes back.
+    const longestLabelLen = Math.max(...representativeRows.map((r) => r.label.length));
+    expect(wordX).toBe(32 + longestLabelLen * HEALTH_SVG_CHAR_W + HEALTH_SVG_GUTTER);
+  });
+
+  it("keeps every status word clear of the age column (no overlap), including 'quota exhausted'", () => {
+    const { wordX, ageX } = healthSvgColumns(representativeRows);
+    for (const r of representativeRows) {
+      expect(wordX + r.word.length * HEALTH_SVG_CHAR_W).toBeLessThanOrEqual(ageX);
+    }
+    const quotaRow = representativeRows.find((r) => r.word === "quota exhausted")!;
+    expect(wordX + quotaRow.word.length * HEALTH_SVG_CHAR_W).toBeLessThanOrEqual(ageX);
+    // Pin the exact arithmetic: ageX = wordX + widest word + gutter.
+    const longestWordLen = Math.max(...representativeRows.map((r) => r.word.length));
+    expect(ageX).toBe(wordX + longestWordLen * HEALTH_SVG_CHAR_W + HEALTH_SVG_GUTTER);
+  });
+
+  it("repacks (wider width/columns) for a label longer than any real job name — proving the layout is content-derived, not hand-tuned", () => {
+    const baseline = healthSvgColumns(
+      HEALTH_JOBS.map((name) => ({ label: name, word: "ok", age: "2h ago" })),
+    );
+    const withLongerLabel = healthSvgColumns([
+      ...HEALTH_JOBS.map((name) => ({ label: name, word: "ok", age: "2h ago" })),
+      { label: "a-truly-enormous-synthetic-job-name", word: "ok", age: "2h ago" },
+    ]);
+    expect(withLongerLabel.wordX).toBeGreaterThan(baseline.wordX);
+    expect(withLongerLabel.ageX).toBeGreaterThan(baseline.ageX);
+    expect(withLongerLabel.width).toBeGreaterThan(baseline.width);
+  });
+
+  it("never shrinks below the 320px minimum card width for short content", () => {
+    const { width } = healthSvgColumns([{ label: "d1", word: "ok", age: "" }]);
+    expect(width).toBe(320);
   });
 });
 
