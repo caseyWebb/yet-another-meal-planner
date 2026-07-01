@@ -32,6 +32,7 @@ function seeded() {
         { id: 4, term: "courgette", outcome: "merge", resolved_id: "zucchini", candidates: null, model: "m", detail: null, created_at: NOW - 3_600_000 },
         { id: 5, term: "weird xyz", outcome: "novel", resolved_id: "weird xyz", candidates: null, model: "m", detail: JSON.stringify({ note: "confirm_failed_safe" }), created_at: NOW - 7_200_000 },
         { id: 6, term: "a fresh soft cheese", outcome: "novel", resolved_id: "fresh-soft-cheese", candidates: null, model: "m", detail: JSON.stringify({ reason: "concept" }), created_at: NOW - 8_000_000 },
+        { id: 7, term: "kielbasa", outcome: "specialization", resolved_id: "kielbasa", candidates: null, model: "m", detail: JSON.stringify({ reason: "satisfies sausage" }), is_reconfirm: 1, created_at: NOW - 9_000_000 },
       ],
       job_health: [{ name: "ingredient-normalize", ok: 1, last_run_at: NOW - 180_000, summary: "{}" }],
     },
@@ -70,7 +71,11 @@ describe("readNormalizationPage", () => {
     expect(byTerm["a fresh soft cheese"].members).toEqual(["fresh mozzarella"]);
 
     // Newest-first ordering (by id desc).
-    expect(page.decisions.map((d) => d.id)).toEqual([6, 5, 4, 3, 2, 1]);
+    expect(page.decisions.map((d) => d.id)).toEqual([7, 6, 5, 4, 3, 2, 1]);
+
+    // Re-confirm marker surfaced on the decision row (a capture-time row reads false).
+    expect(byTerm["kielbasa"].reconfirm).toBe(true);
+    expect(byTerm["scallions"].reconfirm).toBe(false);
 
     // Aliases: courgette resolves through the representative to zucchini (merged); evoo is a
     // legacy id with no node; source flags preserved.
@@ -85,7 +90,7 @@ describe("readNormalizationPage", () => {
       aliases: 3,
       satisfies: 2,
       pending: 1,
-      decisions24h: 6,
+      decisions24h: 7,
       needsAttention: 1, // the fail-safe row
     });
     expect(page.queue).toEqual([{ term: "gochugaru", firstSeenAt: NOW - 60_000, attempts: 0, nextRetryAt: null }]);

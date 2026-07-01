@@ -114,6 +114,11 @@ export function fakeD1(
     if (/status = 'active'/i.test(sql)) out = out.filter((r) => r.status === "active");
     if (/\blocation_id = \?1/i.test(sql)) eq("location_id", 1);
     if (/\bname = \?1/i.test(sql)) eq("name", 1);
+    // Re-confirm eligibility (literal predicates on ingredient_identity, no positional binds).
+    if (/source = 'auto'/i.test(sql)) out = out.filter((r) => r.source === "auto");
+    if (/concrete = 1/i.test(sql)) out = out.filter((r) => r.concrete === 1);
+    if (/representative IS NULL/i.test(sql)) out = out.filter((r) => r.representative == null);
+    if (/reconfirmed_at IS NULL/i.test(sql)) out = out.filter((r) => r.reconfirmed_at == null);
     if (/normalized_name = \?2/i.test(sql)) eq("normalized_name", 2);
     // Attributed notes: privacy rule (private=0 OR author=?2), and self-scoped
     // findOwnNote (author=?2 AND created_at=?3).

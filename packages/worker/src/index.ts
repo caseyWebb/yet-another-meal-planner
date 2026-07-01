@@ -23,6 +23,7 @@ import { buildFacetDeps, runFacetJob } from "./recipe-classify.js";
 import { buildProjectionDeps, runProjectionJob } from "./recipe-projection.js";
 import { buildDiscoveryDeps, runDiscoverySweepJob } from "./discovery-sweep.js";
 import { buildNormalizeDeps, runNormalizeJob } from "./ingredient-normalize.js";
+import { buildReconfirmDeps, runReconfirmJob } from "./ingredient-reconfirm.js";
 import { reconcileGroceryPantryKeys } from "./grocery-pantry-reconcile.js";
 import { loadDiscoveryConfig } from "./discovery-calibration.js";
 import { loadOperatorConfig } from "./operator-config.js";
@@ -195,6 +196,11 @@ export default {
       // The ingredient-normalization capture job is independent of the recipe pipeline
       // (it drains the novel-term queue); it rides the internal env.AI/D1 budget like classify.
       runNormalizeJob(env, buildNormalizeDeps(env)),
+      // The periodic re-confirm pass runs AFTER the capture pass so it sees the freshest registry:
+      // it re-examines edgeless concrete auto-nodes against the now-denser graph and enriches them
+      // (adds satisfies edges / merges a clear synonym). Bounded + one-shot-stamped, so it quiesces
+      // to a no-op once the under-connected backlog is drained.
+      runReconfirmJob(env, buildReconfirmDeps(env)),
       // Re-key stale FOOD grocery/pantry rows onto the canonical id (D2 backfill). Idempotent +
       // bounded; a no-op once every row is canonical, so it self-terminates. Independent of the
       // recipe pipeline (touches only the per-tenant pantry/grocery tables).

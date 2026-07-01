@@ -362,6 +362,89 @@ function parseJsonNumbers(s: string): number[] | null {
   }
 }
 
+// --- re-confirm-pass helpers (periodic-identity-reconfirm; see src/ingredient-reconfirm.ts) ---
+
+/** One under-connected node the re-confirm pass re-examines: id + readable base/detail + vector. */
+export interface ReconfirmNode {
+  id: string;
+  base: string;
+  detail: string | null;
+  embedding: number[];
+}
+
+/**
+ * A batch of nodes ELIGIBLE for re-confirm, oldest `decided_at` first, bounded by `limit`.
+ * Eligible = `source='auto' AND concrete=1 AND representative IS NULL AND reconfirmed_at IS NULL`
+ * AND EDGELESS (the id is neither a `from_id` nor a `to_id` in `ingredient_edge`) — precisely the
+ * below-floor bare mints. The `representative IS NULL` filter excludes an already-merged-away loser
+ * (a co-resolution merge sets its representative but writes no edge and no stamp, so it would
+ * otherwise re-qualify and let re-confirm silently redirect an existing merge). The edgeless filter
+ * is done in JS (select the candidate rows + the distinct edge endpoints, then exclude in code)
+ * rather than a SQL subquery/UNION, so it exercises against the fake D1. A node with no stored
+ * embedding is dropped (the pass can't retrieve neighbors for it — capture will embed it, then it
+ * becomes eligible next tick).
+ */
+export async function readReconfirmBatch(env: Env, limit: number): Promise<ReconfirmNode[]> {
+  const d = db(env);
+  const [candidates, edges] = await Promise.all([
+    d.all<{ id: string; base: string; detail: string | null; embedding: string | null }>(
+      "SELECT id, base, detail, embedding FROM ingredient_identity " +
+        "WHERE source = 'auto' AND concrete = 1 AND representative IS NULL AND reconfirmed_at IS NULL " +
+        "ORDER BY decided_at",
+    ),
+    d.all<{ from_id: string; to_id: string }>("SELECT from_id, to_id FROM ingredient_edge"),
+  ]);
+  const hasEdge = new Set<string>();
+  for (const e of edges) {
+    hasEdge.add(e.from_id);
+    hasEdge.add(e.to_id);
+  }
+  const out: ReconfirmNode[] = [];
+  for (const r of candidates) {
+    if (hasEdge.has(r.id)) continue; // an edge means already connected — skip
+    if (!r.embedding) continue;
+    const v = parseJsonNumbers(r.embedding);
+    if (!v) continue;
+    out.push({ id: r.id, base: r.base, detail: r.detail, embedding: v });
+    if (out.length >= limit) break;
+  }
+  return out;
+}
+
+/** Stamp a node re-confirmed (one-shot eligibility filter; `reconfirmed_at` = `now`). */
+export async function stampReconfirmed(env: Env, id: string, now: number): Promise<void> {
+  await db(env).run("UPDATE ingredient_identity SET reconfirmed_at = ?2 WHERE id = ?1", id, now);
+}
+
+/**
+ * Commit a re-confirm decision that ONLY enriches: insert-or-ignore any proposed edges and append
+ * the decision to the log — no node/alias/queue writes (the node already exists). Additive by
+ * construction (`INSERT OR IGNORE`), so re-confirm can never remove or downgrade an existing edge.
+ * The `log` is written with its `isReconfirm` marker so the Decisions view can distinguish it.
+ */
+export async function commitReconfirmEdges(
+  env: Env,
+  r: { edges?: { from: string; to: string; kind: string }[]; log: NormalizationLog },
+): Promise<void> {
+  const d = db(env);
+  const now = Date.now();
+  const stmts: D1PreparedStatement[] = [];
+  for (const e of r.edges ?? []) {
+    stmts.push(
+      d.prepare(
+        "INSERT OR IGNORE INTO ingredient_edge (from_id, to_id, kind, source, decided_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+        e.from,
+        e.to,
+        e.kind,
+        "auto",
+        now,
+      ),
+    );
+  }
+  stmts.push(logStmt(d, r.log, now));
+  await d.batch(stmts);
+}
+
 /** One decision to append to the normalization audit log. */
 export interface NormalizationLog {
   term: string;
@@ -370,18 +453,21 @@ export interface NormalizationLog {
   candidates?: { id: string; score: number }[];
   model?: string | null;
   detail?: unknown;
+  /** True when this decision came from the periodic re-confirm pass (vs the initial capture). */
+  isReconfirm?: boolean;
 }
 
 function logStmt(d: Db, entry: NormalizationLog, now: number): D1PreparedStatement {
   return d.prepare(
-    "INSERT INTO ingredient_normalization_log (term, outcome, resolved_id, candidates, model, detail, created_at) " +
-      "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+    "INSERT INTO ingredient_normalization_log (term, outcome, resolved_id, candidates, model, detail, is_reconfirm, created_at) " +
+      "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
     entry.term,
     entry.outcome,
     entry.resolved_id ?? null,
     entry.candidates ? JSON.stringify(entry.candidates) : null,
     entry.model ?? null,
     entry.detail !== undefined ? JSON.stringify(entry.detail) : null,
+    entry.isReconfirm ? 1 : 0,
     now,
   );
 }
@@ -472,15 +558,22 @@ export async function deferNovelTerm(env: Env, term: string, nextRetryAt: number
 /**
  * Merge two existing identities via the union-find `representative` pointer (no key rewrites),
  * logging the merge. Used by the SKU-cache co-resolution signal for cross-lexical synonyms the
- * embedder can't retrieve. `loser`'s representative is set to `survivor`.
+ * embedder can't retrieve, and by the re-confirm pass for a `same`-outcome synonym. `loser`'s
+ * representative is set to `survivor`. `opts.isReconfirm` marks the log row so a re-confirm merge
+ * is distinguishable from a capture-time one.
  */
-export async function mergeIdentities(env: Env, loser: string, survivor: string): Promise<void> {
+export async function mergeIdentities(
+  env: Env,
+  loser: string,
+  survivor: string,
+  opts: { isReconfirm?: boolean } = {},
+): Promise<void> {
   if (loser === survivor) return;
   const d = db(env);
   const now = Date.now();
   await d.batch([
     d.prepare("UPDATE ingredient_identity SET representative = ?2 WHERE id = ?1", loser, survivor),
-    logStmt(d, { term: loser, outcome: "merge", resolved_id: survivor }, now),
+    logStmt(d, { term: loser, outcome: "merge", resolved_id: survivor, isReconfirm: opts.isReconfirm }, now),
   ]);
 }
 

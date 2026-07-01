@@ -594,7 +594,10 @@ front-door `ingredient_alias` maps a surface form → id; the `ingredient_identi
 the node (with a union-find `representative` pointer, a `concrete` flag, and a cron-owned
 embedding); `ingredient_edge` holds directed `satisfies` edges. The `readResolver` load bakes the
 `representative` chain into the variant→id map. `update_aliases` writes `source='human'` (never
-overwritten by the auto capture pass).
+overwritten by the auto capture pass). A sibling re-confirm pass re-examines edgeless auto-minted
+nodes against the denser registry and stamps `ingredient_identity.reconfirmed_at` once processed
+(NULL = still eligible), so each node is only ever re-confirmed once; its decisions land in
+`ingredient_normalization_log` alongside capture's, flagged by `is_reconfirm`.
 
 ```sql
 -- ingredient_identity — canonical nodes. PRIMARY KEY (id).
@@ -607,6 +610,7 @@ concrete       INTEGER NOT NULL DEFAULT 1  -- 0 = concept node (queryable class,
 embedding      TEXT  -- JSON array of EMBED_DIM floats; cron-owned, NULL until embedded
 source         TEXT NOT NULL DEFAULT 'auto'  -- 'auto' | 'human'
 decided_at     INTEGER
+reconfirmed_at INTEGER  -- one-shot re-confirm stamp; NULL = eligible/not-yet-re-confirmed
 
 -- ingredient_alias — surface form → id (hot-path exact match). PRIMARY KEY (variant).
 variant    TEXT  -- lowercased, quantity-stripped surface form
@@ -623,6 +627,7 @@ source  TEXT NOT NULL DEFAULT 'auto'
 
 -- novel_ingredient_terms — the capture queue (surface forms not yet placed). PK (term).
 -- ingredient_normalization_log — the decision audit log + evaluated-set (mirrors discovery_log).
+-- is_reconfirm INTEGER NOT NULL DEFAULT 0  -- 1 = decision from the re-confirm pass, not initial capture
 ```
 
 Example identity rows (id / base / detail):

@@ -35,6 +35,8 @@ export interface NormalizationDecision {
   model: string | null;
   belowFloor: boolean;
   failedSafe: boolean;
+  /** True when this decision came from the periodic re-confirm pass (vs the initial capture). */
+  reconfirm: boolean;
   mergeInto: string | null;
   candidates: DecisionCandidate[];
   edges: DecisionEdge[];
@@ -130,9 +132,10 @@ export async function readNormalizationPage(env: Env, opts: { decisionLimit?: nu
       candidates: string | null;
       model: string | null;
       detail: string | null;
+      is_reconfirm: number | null;
       created_at: number | null;
     }>(
-      "SELECT id, term, outcome, resolved_id, candidates, model, detail, created_at FROM ingredient_normalization_log " +
+      "SELECT id, term, outcome, resolved_id, candidates, model, detail, is_reconfirm, created_at FROM ingredient_normalization_log " +
         "ORDER BY id DESC LIMIT ?1",
       opts.decisionLimit ?? 200,
     ),
@@ -210,6 +213,7 @@ export async function readNormalizationPage(env: Env, opts: { decisionLimit?: nu
       model: r.model,
       belowFloor,
       failedSafe,
+      reconfirm: r.is_reconfirm === 1,
       mergeInto: r.outcome === "merge" ? r.resolved_id : null,
       candidates: parseCandidates(r.candidates, r.resolved_id),
       edges: r.resolved_id ? (edgesFor.get(r.resolved_id) ?? []) : [],
