@@ -256,3 +256,12 @@ export const UtensilsIcon = ({ size }: { size?: number }) => (
     <path d="M21 15V2a5 5 0 0 0-5 5v6c0 1.1.9 2 2 2h3Zm0 0v7" />
   </Icon>
 );
+
+// ── Config (admin-ui-fidelity-pass) ──────────────────────────────────────────────────────────
+
+export const ArrowRightIcon = ({ size }: { size?: number }) => (
+  <Icon size={size}>
+    <path d="M5 12h14" />
+    <path d="m12 5 7 7-7 7" />
+  </Icon>
+);

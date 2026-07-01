@@ -13,7 +13,7 @@
 import { render, useState } from "hono/jsx/dom";
 import { hc } from "hono/client";
 import type { AdminApp } from "../app.js";
-import { Badge } from "../ui/kit.js";
+import { Badge, RemoveButton } from "../ui/kit.js";
 
 const client = hc<AdminApp>(location.origin);
 
@@ -115,44 +115,35 @@ function EmailSourcesIsland({ members, senders }: { members: CorpusPage; senders
             </section>
             <aside class="item-actions">
               <Badge variant="outline">{row.kind === "member" ? "member" : "automated"}</Badge>
-              <button
-                class="btn"
-                data-variant="destructive"
-                data-size="sm"
-                disabled={busy}
-                onClick={() => remove(row)}
-              >
-                {busy && action.t === "busy" && action.op.op === "remove" && action.op.address === row.address ? "removing…" : "remove"}
-              </button>
+              <RemoveButton disabled={busy} onClick={() => remove(row)} />
             </aside>
           </div>
         ))}
       </div>
 
-      <div class="card">
-        <section class="grid gap-4">
-          <h2>Add address</h2>
-          <div class="form-actions cfg-add-fields">
-            <input
-              class="input cfg-add-wide"
-              type="text"
-              placeholder="email address"
-              value={draft.address}
-              onInput={(e: Event) => setDraft({ ...draft, address: (e.target as HTMLInputElement).value })}
-            />
-            <select
-              class="input"
-              value={draft.kind}
-              onChange={(e: Event) => setDraft({ ...draft, kind: (e.target as HTMLSelectElement).value as Kind })}
-            >
-              <option value="member">member</option>
-              <option value="automated">automated forward</option>
-            </select>
-            <button class="btn" data-size="sm" disabled={busy} onClick={add}>
-              {busy && action.t === "busy" && action.op.op === "add" ? "adding…" : "add"}
-            </button>
-          </div>
-        </section>
+      <div class="cfg-add">
+        <span class="cfg-add-label">Add address</span>
+        <div class="cfg-add-fields">
+          <input
+            class="input cfg-add-wide"
+            type="text"
+            placeholder="email address"
+            aria-label="email address"
+            value={draft.address}
+            onInput={(e: Event) => setDraft({ ...draft, address: (e.target as HTMLInputElement).value })}
+          />
+          <select
+            class="input cfg-add-norm"
+            value={draft.kind}
+            onChange={(e: Event) => setDraft({ ...draft, kind: (e.target as HTMLSelectElement).value as Kind })}
+          >
+            <option value="member">member</option>
+            <option value="automated">automated forward</option>
+          </select>
+          <button class="btn" data-size="sm" disabled={busy} onClick={add}>
+            {busy && action.t === "busy" && action.op.op === "add" ? "adding…" : "Add"}
+          </button>
+        </div>
       </div>
     </div>
   );

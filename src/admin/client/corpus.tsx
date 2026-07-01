@@ -4,13 +4,19 @@
 // add + remove-by-PK, refetching after each write so the view is the authoritative server
 // state. The in-flight mutation + its target + its failure are one `Action` union
 // (one-at-a-time structural). The Feeds table additionally offers a read-only feed-probe
-// test (per row + on the drafted URL), independent of the add/remove action. Restyled onto
-// `ui/kit.tsx`'s DataTable/Badge primitives + Basecoat classes (admin-ui-redesign-config).
+// test (per row + on the drafted URL), independent of the add/remove action. Matches the
+// design mock's `CorpusEditor` (`ConfigScreen.jsx`): a `.cfg-table` with per-table cell
+// rendering (feeds get a name+mono-url stacked cell, tabular weight, and chip tags; flyer
+// terms + aliases render mono cells, aliases with an arrow between variant → canonical), a
+// right-aligned actions cell (`.cfg-row-act`) holding the per-row probe (`.cfg-mini`/
+// `.cfg-probe`) and the icon-only trash `RemoveButton`, and a `.cfg-add` panel below.
 
 import { render, useState } from "hono/jsx/dom";
 import { hc } from "hono/client";
+import type { Child } from "hono/jsx";
 import type { AdminApp } from "../app.js";
-import { DataTable, type Column } from "../ui/kit.js";
+import { RemoveButton } from "../ui/kit.js";
+import { ArrowRightIcon } from "../ui/icons.js";
 import type { FeedProbeResult } from "../../discovery-probe.js";
 
 const client = hc<AdminApp>(location.origin);
@@ -118,36 +124,68 @@ function CorpusEditor({ config, page }: { config: TableConfig; page: CorpusPage 
     }
   }
 
-  const testCell = (key: string, url: string) => (
-    <span class="log-actions">
-      <button class="btn" data-variant="ghost" data-size="sm" disabled={test.t === "testing"} onClick={() => runTest(url, key)}>
+  const probeCell = (key: string, url: string) => (
+    <>
+      <button class="cfg-mini" disabled={test.t === "testing"} onClick={() => runTest(url, key)}>
         {test.t === "testing" && test.key === key ? "testing…" : "test"}
       </button>
-      {test.t === "result" && test.key === key ? (
-        <span class={test.ok ? "muted small" : "small"} style={test.ok ? "" : "color:var(--destructive)"}>
-          {test.summary}
-        </span>
-      ) : null}
-    </span>
+      {test.t === "result" && test.key === key ? <span class={`cfg-probe ${test.ok ? "ok" : "fail"}`}>{test.summary}</span> : null}
+    </>
   );
 
-  const columns: (string | Column)[] = [...rows.columns, { key: "__actions", label: "", align: "right" }];
-  const tableRows = rows.rows.map((row) => {
-    const key = String(row[config.pkColumn] ?? "");
-    const cells: Record<string, unknown> = {};
-    for (const c of rows.columns) cells[c] = cell(row[c]);
-    return {
-      ...cells,
-      __actions: (
-        <span class="form-actions">
-          {config.testUrlColumn ? testCell(key, String(row[config.testUrlColumn] ?? "")) : null}
-          <button class="btn" data-variant="destructive" data-size="sm" disabled={busy} onClick={() => remove(key)}>
-            {busy && action.t === "busy" && action.op.op === "remove" && action.op.key === key ? "removing…" : "remove"}
-          </button>
-        </span>
-      ),
-    };
-  });
+  /** Per-table cell layout mirroring the mock's `renderCells` (design mock's `ConfigScreen.jsx`
+   *  `GroupDiscovery`/`GroupFlyer`/`GroupAliases`) — feeds get a stacked name+mono-url cell,
+   *  tabular weight, and chip tags; flyer terms render one mono cell; aliases render a mono
+   *  variant → mono canonical pair with an arrow between. Any other table (defensive fallback,
+   *  never hit by the three configured editors) falls back to plain text cells. */
+  function rowCells(row: Record<string, unknown>): Child {
+    if (config.slug === "feeds") {
+      const tags = Array.isArray(row.tags) ? (row.tags as unknown[]) : [];
+      return (
+        <>
+          <td>
+            <div class="cfg-feed">
+              <span class="cfg-feed-name">{cell(row.name) || "—"}</span>
+              <span class="cfg-feed-url muted">{cell(row.url).replace(/^https?:\/\//, "")}</span>
+            </div>
+          </td>
+          <td class="cfg-num">{Number(row.weight ?? 1).toFixed(1)}</td>
+          <td>
+            {tags.length ? (
+              <span class="cfg-tags">
+                {tags.map((t) => (
+                  <span class="cfg-tag">{String(t)}</span>
+                ))}
+              </span>
+            ) : (
+              <span class="muted">—</span>
+            )}
+          </td>
+        </>
+      );
+    }
+    if (config.slug === "aliases") {
+      return (
+        <>
+          <td class="cfg-mono">{cell(row.variant)}</td>
+          <td class="cfg-mono cfg-canon">
+            <ArrowRightIcon size={12} /> {cell(row.canonical)}
+          </td>
+        </>
+      );
+    }
+    return (
+      <>
+        {rows.columns.map((c) => (
+          <td class="cfg-mono">{cell(row[c])}</td>
+        ))}
+      </>
+    );
+  }
+
+  /** The table's header labels — mirrors the mock's per-table `columns` arrays (feeds:
+   *  feed/weight/tags; aliases: variant/canonical; flyer-terms: term). */
+  const headLabels = config.slug === "feeds" ? ["feed", "weight", "tags"] : config.slug === "aliases" ? ["variant", "canonical"] : rows.columns;
 
   return (
     <div class="cfg-corpus">
@@ -159,48 +197,67 @@ function CorpusEditor({ config, page }: { config: TableConfig; page: CorpusPage 
         </div>
       ) : null}
 
-      <DataTable columns={columns} rows={tableRows} />
+      <div class="cfg-table-wrap">
+        <table class="cfg-table">
+          <thead>
+            <tr>
+              {headLabels.map((h) => (
+                <th>{h}</th>
+              ))}
+              <th class="cfg-th-act" />
+            </tr>
+          </thead>
+          <tbody>
+            {rows.rows.map((row) => {
+              const key = String(row[config.pkColumn] ?? "");
+              return (
+                <tr>
+                  {rowCells(row)}
+                  <td class="cfg-row-act">
+                    {config.testUrlColumn ? probeCell(key, String(row[config.testUrlColumn] ?? "")) : null}
+                    <RemoveButton
+                      disabled={busy}
+                      onClick={() => remove(key)}
+                    />
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
 
-      <div class="card">
-        <section class="grid gap-4">
-          <h2>Add</h2>
+      <div class="cfg-add">
+        <span class="cfg-add-label">Add</span>
+        <div class="cfg-add-fields">
           {config.addFields.map((f) => (
-            <div class="grid gap-2">
-              <label class="label" for={f.key}>
-                {f.label}
-                {f.required ? "" : " (optional)"}
-              </label>
-              <input
-                class="input"
-                id={f.key}
-                type={f.kind === "number" ? "number" : "text"}
-                value={draft[f.key] ?? ""}
-                onInput={(e: Event) => setDraft({ ...draft, [f.key]: (e.target as HTMLInputElement).value })}
-              />
-            </div>
+            <input
+              class={`input ${f.key === config.addFields[0]?.key && config.addFields.length > 1 ? "cfg-add-wide" : "cfg-add-norm"}`}
+              type={f.kind === "number" ? "number" : "text"}
+              placeholder={f.label}
+              aria-label={f.label}
+              value={draft[f.key] ?? ""}
+              onInput={(e: Event) => setDraft({ ...draft, [f.key]: (e.target as HTMLInputElement).value })}
+            />
           ))}
-          <div class="form-actions">
-            <button class="btn" data-size="sm" disabled={busy} onClick={add}>
-              {busy && action.t === "busy" && action.op.op === "add" ? "adding…" : "add"}
+          <button class="btn" data-size="sm" disabled={busy} onClick={add}>
+            {busy && action.t === "busy" && action.op.op === "add" ? "adding…" : "Add"}
+          </button>
+          {config.testUrlColumn ? (
+            <button
+              class="btn"
+              data-variant="ghost"
+              data-size="sm"
+              disabled={test.t === "testing"}
+              onClick={() => runTest(draft[config.testUrlColumn!] ?? "", "__draft__")}
+            >
+              Test url
             </button>
-            {config.testUrlColumn ? (
-              <button
-                class="btn"
-                data-variant="ghost"
-                data-size="sm"
-                disabled={test.t === "testing"}
-                onClick={() => runTest(draft[config.testUrlColumn!] ?? "", "__draft__")}
-              >
-                test url
-              </button>
-            ) : null}
-          </div>
-          {config.testUrlColumn && test.t === "result" && test.key === "__draft__" ? (
-            <p class={test.ok ? "muted small" : "small"} style={test.ok ? "" : "color:var(--destructive)"}>
-              {test.summary}
-            </p>
           ) : null}
-        </section>
+        </div>
+        {config.testUrlColumn && test.t === "result" && test.key === "__draft__" ? (
+          <span class={`cfg-probe ${test.ok ? "ok" : "fail"}`}>{test.summary}</span>
+        ) : null}
       </div>
     </div>
   );

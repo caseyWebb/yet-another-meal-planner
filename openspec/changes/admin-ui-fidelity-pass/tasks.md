@@ -68,11 +68,11 @@
 
 ## 11. Config
 
-- [ ] 11.1 Bring the Discovery-feeds editor's layout/styling in line with the mock's `CorpusEditor` (`ConfigScreen.jsx`'s `GroupDiscovery`).
-- [ ] 11.2 Bring the flyer-terms editor's layout/styling in line with the mock's `CorpusEditor` (`GroupFlyer`).
-- [ ] 11.3 Bring the aliases editor's layout/styling in line with the mock's `CorpusEditor` (`GroupAliases`).
-- [ ] 11.4 Replace every corpus-editor row's text "remove" button with the shared trash-icon button (1.2) — feeds, flyer terms, aliases, and the Email Sources (always-import) editor.
-- [ ] 11.5 Verify the slider-fill fix (1.6) resolves the reported "fixed amount for all sliders" bug across every knob console (Discovery calibration, Kroger Flyer, Ranking).
+- [x] 11.1 Bring the Discovery-feeds editor's layout/styling in line with the mock's `CorpusEditor` (`ConfigScreen.jsx`'s `GroupDiscovery`).
+- [x] 11.2 Bring the flyer-terms editor's layout/styling in line with the mock's `CorpusEditor` (`GroupFlyer`).
+- [x] 11.3 Bring the aliases editor's layout/styling in line with the mock's `CorpusEditor` (`GroupAliases`).
+- [x] 11.4 Replace every corpus-editor row's text "remove" button with the shared trash-icon button (1.2) — feeds, flyer terms, aliases, and the Email Sources (always-import) editor.
+- [x] 11.5 Verify the slider-fill fix (1.6) resolves the reported "fixed amount for all sliders" bug across every knob console (Discovery calibration, Kroger Flyer, Ranking).
 
 ## 12. Overall fidelity pass
 

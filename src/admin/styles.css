@@ -455,6 +455,37 @@
   .cfg-remove:hover { color: #cf222e; background: color-mix(in oklch, var(--destructive) 8%, transparent); }
   .cfg-remove:disabled { opacity: .5; cursor: default; }
 
+  /* Corpus editor table (Discovery feeds / Flyer terms / Aliases) — mirrors the mock's
+     CorpusEditor: a bordered `.cfg-table` over a name+mono-url feed cell, tabular-num weight,
+     chip tags, and a right-aligned actions cell holding the per-row probe + trash remove. */
+  .cfg-table-wrap { border: 1px solid var(--border); border-radius: var(--radius-lg); overflow: hidden; background: #fff; box-shadow: var(--shadow-xs); }
+  .cfg-table { width: 100%; border-collapse: collapse; font-size: .85rem; }
+  .cfg-table thead th { text-align: left; font-size: .68rem; text-transform: uppercase; letter-spacing: .04em; color: #888; font-weight: 600; padding: .55rem .8rem; background: color-mix(in oklch, var(--muted) 40%, transparent); border-bottom: 1px solid var(--border); }
+  .cfg-table tbody td { padding: .55rem .8rem; border-bottom: 1px solid #f2f2f2; vertical-align: middle; }
+  .cfg-table tbody tr:last-child td { border-bottom: 0; }
+  .cfg-mono { font-family: var(--font-mono, ui-monospace, monospace); font-size: .82rem; }
+  .cfg-canon { color: #555; display: flex; align-items: center; gap: .3rem; }
+  .cfg-canon svg { color: var(--accent, var(--primary)); }
+  .cfg-num { font-variant-numeric: tabular-nums; }
+  .cfg-feed { display: flex; flex-direction: column; gap: .05rem; }
+  .cfg-feed-name { font-weight: 500; color: #1a1a1a; }
+  .cfg-feed-url { font-family: var(--font-mono, ui-monospace, monospace); font-size: .72rem; }
+  .cfg-tags { display: inline-flex; flex-wrap: wrap; gap: .25rem; }
+  .cfg-tag { font-size: .68rem; background: color-mix(in oklch, var(--muted) 60%, transparent); border: 1px solid var(--border); border-radius: 999px; padding: .02rem .45rem; color: #555; }
+  .cfg-th-act { width: 1%; }
+  .cfg-row-act { white-space: nowrap; text-align: right; }
+  .cfg-mini { font: inherit; font-size: .76rem; background: #fff; border: 1px solid var(--border); border-radius: var(--radius-sm); padding: .15rem .55rem; cursor: pointer; color: #444; margin-right: .4rem; }
+  .cfg-mini:hover { border-color: #bbb; }
+  .cfg-mini:disabled { opacity: .6; cursor: default; }
+  .cfg-probe { font-size: .74rem; margin-right: .5rem; }
+  .cfg-probe.ok { color: #1a7f37; }
+  .cfg-probe.fail { color: #cf222e; }
+
+  /* The "Add" panel beneath a corpus table (feeds / flyer terms / aliases / email sources). */
+  .cfg-add { margin-top: .1rem; background: #fff; border: 1px solid var(--border); border-radius: var(--radius-lg); box-shadow: var(--shadow-xs); padding: .85rem 1rem 1rem; }
+  .cfg-add-label { font-size: .7rem; text-transform: uppercase; letter-spacing: .04em; color: #999; font-weight: 600; display: block; margin-bottom: .1rem; }
+  .cfg-add-norm { width: 10rem; }
+
   /* ── Data explorer (admin-ui-redesign-data) ── */
   /* Recipes/Stores shared list-row vocabulary: title + slug + facet chips + trailing badge. */
   .link-action { display: inline-flex; align-items: center; gap: .3rem; font: inherit; background: none; border: 0; color: var(--muted-foreground); text-decoration: none; cursor: pointer; padding: 0; margin-bottom: .9rem; }
