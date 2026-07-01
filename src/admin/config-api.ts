@@ -95,10 +95,11 @@ export async function getOperatorConfig(env: Env): Promise<{ config: OperatorCon
   return { config: await loadOperatorConfig(env) };
 }
 
-/** Write the operator ranking/flyer overrides, range-validated (no confirm gate). */
+/** Write the operator ranking/flyer overrides, range- and floor-validated (the two flyer
+ *  cadence knobs gate on `confirm`, mirroring putDiscoveryConfig's confirm handling). */
 export async function putOperatorConfig(env: Env, body: Record<string, unknown>): Promise<{ config: OperatorConfig }> {
   const patch = parseOperatorConfigPatch(body);
-  const err = validateOperatorConfig(patch as Record<string, unknown>);
+  const err = validateOperatorConfig(patch as Record<string, unknown>, { confirm: body.confirm === true });
   if (err) throw err;
   await saveOperatorConfig(env, patch);
   return { config: await loadOperatorConfig(env) };

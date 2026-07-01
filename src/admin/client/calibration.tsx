@@ -1,151 +1,82 @@
-// The discovery calibration island (operator-admin): the sweep's tunable knobs as a form, with
-// Analyze (cheap, no-AI) and Dry-run (full pipeline, no writes) previews and a confirm-gated Save.
-// The form is one union — Clean | Dirty | NeedsConfirm — so "unsaved edits", "the floor warning",
-// and "saved" cannot contradict (admin/CLAUDE.md). A below-floor Save returns a structured
-// needsConfirm error; the UI surfaces it and re-submits with confirm:true. Seeded from SSR props.
+// The discovery calibration island (operator-admin): the sweep's tunable knobs, rendered by
+// the shared KnobConsole (client/knob-console.tsx), plus Analyze (cheap, no-AI) and Dry-run
+// (full pipeline, no writes) preview panels below it. Save is confirm-gated exactly like
+// Ranking/Flyer's opconfig.tsx now — this island supplies the knob spec + the PUT wiring
+// (client/knob-console.tsx owns the Clean|Dirty|NeedsConfirm state machine itself).
 
 import { render, useState } from "hono/jsx/dom";
 import { hc } from "hono/client";
 import type { AdminApp } from "../app.js";
 import { type Loadable, notAsked, loading, success, failure } from "../lib/remote.js";
+import type { KnobSpec } from "../ui/kit.js";
+import { KnobConsole, toPatch, floorWarningFromResponse, type Draft } from "./knob-console.js";
 import type { DiscoveryConfig } from "../../discovery-sweep.js";
 import type { AnalyzeResult, DryRunOutcome } from "../../discovery-calibration.js";
 
 const client = hc<AdminApp>(location.origin);
 
-const KNOBS = [
-  { key: "tasteThreshold", label: "τ taste threshold", step: "0.01" },
-  { key: "triageThreshold", label: "triage threshold", step: "0.01" },
-  { key: "dedupThreshold", label: "δ dedup threshold", step: "0.01" },
-  { key: "classifyMaxPerTick", label: "classify cap", step: "1" },
-  { key: "rateCap", label: "rate cap", step: "1" },
-  { key: "fetchMaxPerTick", label: "fetch max / tick", step: "1" },
-  { key: "maxCandidatesPerTick", label: "max candidates / tick", step: "1" },
-  { key: "retryMaxAttempts", label: "retry max attempts", step: "1" },
-  { key: "logRetentionDays", label: "log retention days", step: "1" },
-] as const;
-
-type Knob = (typeof KNOBS)[number]["key"];
-type Draft = Record<Knob, string>;
-interface FloorWarning {
-  field: string;
-  message: string;
-}
-type FormState = { t: "clean" } | { t: "dirty"; draft: Draft } | { t: "needsConfirm"; draft: Draft; warning: FloorWarning };
-
-function toDraft(config: DiscoveryConfig): Draft {
-  const d = {} as Draft;
-  for (const { key } of KNOBS) d[key] = String(config[key]);
-  return d;
-}
-
-function toPatch(draft: Draft): Record<string, number> {
-  const patch: Record<string, number> = {};
-  for (const { key } of KNOBS) {
-    const n = Number(draft[key]);
-    if (Number.isFinite(n)) patch[key] = n;
-  }
-  return patch;
-}
-
-async function floorWarning(res: { json: () => Promise<unknown> }): Promise<FloorWarning | null> {
-  const body = (await res.json().catch(() => null)) as
-    | { message?: string; detail?: { field?: string; needsConfirm?: boolean } }
-    | null;
-  if (body?.detail?.needsConfirm) return { field: body.detail.field ?? "", message: body.message ?? "Below the safe floor." };
-  return null;
-}
+const KNOBS: KnobSpec[] = [
+  { key: "tasteThreshold", label: "τ taste threshold", step: 0.01, min: 0, max: 1, floor: 0.2, help: "Cosine a candidate must clear against a member's taste to match them." },
+  { key: "triageThreshold", label: "triage threshold", step: 0.01, min: 0, max: 1, help: "Looser gate on the cheap title+summary embed before the expensive fetch/classify." },
+  { key: "dedupThreshold", label: "δ dedup threshold", step: 0.01, min: 0, max: 1, floor: 0.7, help: "At/above this cosine vs the corpus, a candidate is treated as a near-duplicate." },
+  { key: "classifyMaxPerTick", label: "classify cap", step: 1, min: 1, max: 100, help: "Max env.AI classification calls per sweep tick." },
+  { key: "rateCap", label: "rate cap", step: 1, min: 1, max: 200, help: "Max imports per tick — the corpus-bloat governor." },
+  { key: "fetchMaxPerTick", label: "fetch max / tick", step: 1, min: 1, max: 100, help: "Max external recipe-page fetches per tick." },
+  { key: "maxCandidatesPerTick", label: "max candidates / tick", step: 10, min: 10, max: 1000, help: "Bounds the triage-embed + log-write cost per invocation." },
+  { key: "retryMaxAttempts", label: "retry max attempts", step: 1, min: 1, max: 20, help: "Retryable parks/failures stop retrying after this many attempts." },
+  { key: "logRetentionDays", label: "log retention days", step: 1, min: 1, max: 730, help: "How long discovery_log rows are kept for audit + dedup." },
+];
 
 function CalibrationIsland({ config }: { config: DiscoveryConfig }) {
   const [saved, setSaved] = useState<DiscoveryConfig>(config);
-  const [form, setForm] = useState<FormState>({ t: "clean" });
   const [analyze, setAnalyze] = useState<Loadable<AnalyzeResult>>(notAsked);
   const [dryRun, setDryRun] = useState<Loadable<DryRunOutcome[]>>(notAsked);
 
-  const currentDraft = (): Draft => (form.t === "clean" ? toDraft(saved) : form.draft);
-
-  function onField(key: Knob, value: string): void {
-    setForm({ t: "dirty", draft: { ...currentDraft(), [key]: value } });
-  }
-
-  async function runAnalyze(): Promise<void> {
+  async function runAnalyze(draft: Draft): Promise<void> {
     setAnalyze(loading);
-    const res = await client.admin.api.discovery.analyze.$post({ json: toPatch(currentDraft()) });
+    const res = await client.admin.api.discovery.analyze.$post({ json: toPatch(KNOBS, draft) });
     setAnalyze(res.ok ? success(await res.json()) : failure({ error: "upstream", message: `HTTP ${res.status}` }));
   }
 
-  async function runDryRun(): Promise<void> {
+  async function runDryRun(draft: Draft): Promise<void> {
     setDryRun(loading);
-    const res = await client.admin.api.discovery["dry-run"].$post({ json: toPatch(currentDraft()) });
+    const res = await client.admin.api.discovery["dry-run"].$post({ json: toPatch(KNOBS, draft) });
     setDryRun(res.ok ? success((await res.json()).outcomes) : failure({ error: "upstream", message: `HTTP ${res.status}` }));
   }
 
-  async function save(confirm: boolean): Promise<void> {
-    const draft = currentDraft();
-    const res = await client.admin.api.discovery.config.$put({ json: { ...toPatch(draft), confirm } });
+  async function save(patch: Record<string, number>, confirm: boolean) {
+    const res = await client.admin.api.discovery.config.$put({ json: { ...patch, confirm } });
     if (res.ok) {
-      setSaved((await res.json()).config);
-      setForm({ t: "clean" });
-      setAnalyze(notAsked);
-      setDryRun(notAsked);
-      return;
+      const config = (await res.json()).config as unknown as Record<string, number>;
+      return { ok: true as const, config };
     }
-    const warning = await floorWarning(res);
-    if (warning) setForm({ t: "needsConfirm", draft, warning });
+    const warning = await floorWarningFromResponse(res);
+    return { ok: false as const, warning };
   }
 
-  const draft = currentDraft();
-  const dirty = form.t !== "clean";
+  function onSaved(config: Record<string, number>): void {
+    setSaved(config as unknown as DiscoveryConfig);
+    setAnalyze(notAsked);
+    setDryRun(notAsked);
+  }
 
   return (
     <div>
       <div class="card">
-        <section class="grid gap-4">
-          <fieldset class="grid gap-4" style="border:0;padding:0;margin:0">
-            {KNOBS.map((k) => (
-              <div class="grid gap-2">
-                <label class="label" for={k.key}>
-                  {k.label}
-                </label>
-                <input
-                  class="input"
-                  id={k.key}
-                  type="number"
-                  step={k.step}
-                  value={draft[k.key]}
-                  onInput={(e: Event) => onField(k.key, (e.target as HTMLInputElement).value)}
-                />
-              </div>
-            ))}
-          </fieldset>
-
-          {form.t === "needsConfirm" ? (
-            <div class="grid gap-2">
-              <div class="alert" data-variant="destructive">
-                <section>{form.warning.message}</section>
-              </div>
-              <div class="form-actions">
-                <button class="btn" data-variant="destructive" data-size="sm" onClick={() => save(true)}>
-                  Confirm &amp; save
+        <section>
+          <KnobConsole knobs={KNOBS} saved={saved as unknown as Record<string, number>} onSaved={onSaved} save={save}>
+            {(draft) => (
+              <div class="cfg-preview-actions">
+                <button class="btn" data-variant="outline" data-size="sm" onClick={() => runAnalyze(draft)}>
+                  Analyze
                 </button>
-                <button class="btn" data-variant="ghost" data-size="sm" onClick={() => setForm({ t: "dirty", draft: form.draft })}>
-                  Cancel
+                <button class="btn" data-variant="outline" data-size="sm" onClick={() => runDryRun(draft)}>
+                  Dry-run
                 </button>
+                <span class="muted small">Analyze is cheap (no AI). Dry-run runs the full pipeline with no writes.</span>
               </div>
-            </div>
-          ) : (
-            <div class="form-actions">
-              <button class="btn" data-size="sm" disabled={!dirty} onClick={() => save(false)}>
-                Save
-              </button>
-              <button class="btn" data-variant="ghost" data-size="sm" onClick={runAnalyze}>
-                Analyze
-              </button>
-              <button class="btn" data-variant="ghost" data-size="sm" onClick={runDryRun}>
-                Dry-run
-              </button>
-            </div>
-          )}
+            )}
+          </KnobConsole>
         </section>
       </div>
 

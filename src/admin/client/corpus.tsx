@@ -1,13 +1,16 @@
-// The shared-corpus editor island (operator-admin) — one generic editor for all five tables
-// (aliases / flyer-terms / feeds / senders / members); the table's identity, columns, PK, and
-// add-form fields ride in the props. List + add + remove-by-PK, refetching after each write so the
-// view is the authoritative server state. The in-flight mutation + its target + its failure are one
-// `Action` union (one-at-a-time structural). The Feeds table additionally offers a read-only
-// feed-probe test (per row + on the drafted URL), independent of the add/remove action.
+// The shared-corpus editor island (operator-admin) — one generic editor for the three
+// remaining group-wide corpus tables not folded into Email Sources (aliases / flyer-terms /
+// feeds); the table's identity, columns, PK, and add-form fields ride in the props. List +
+// add + remove-by-PK, refetching after each write so the view is the authoritative server
+// state. The in-flight mutation + its target + its failure are one `Action` union
+// (one-at-a-time structural). The Feeds table additionally offers a read-only feed-probe
+// test (per row + on the drafted URL), independent of the add/remove action. Restyled onto
+// `ui/kit.tsx`'s DataTable/Badge primitives + Basecoat classes (admin-ui-redesign-config).
 
 import { render, useState } from "hono/jsx/dom";
 import { hc } from "hono/client";
 import type { AdminApp } from "../app.js";
+import { DataTable, type Column } from "../ui/kit.js";
 import type { FeedProbeResult } from "../../discovery-probe.js";
 
 const client = hc<AdminApp>(location.origin);
@@ -36,6 +39,7 @@ type Test = { t: "none" } | { t: "testing"; key: string } | { t: "result"; key: 
 
 function cell(v: unknown): string {
   if (v === null || v === undefined) return "";
+  if (Array.isArray(v)) return v.join(", ");
   if (typeof v === "string") return v;
   return JSON.stringify(v);
 }
@@ -120,15 +124,33 @@ function CorpusEditor({ config, page }: { config: TableConfig; page: CorpusPage 
         {test.t === "testing" && test.key === key ? "testing…" : "test"}
       </button>
       {test.t === "result" && test.key === key ? (
-        <span class={test.ok ? "muted small" : "small"} style={test.ok ? "" : "color:var(--danger)"}>
+        <span class={test.ok ? "muted small" : "small"} style={test.ok ? "" : "color:var(--destructive)"}>
           {test.summary}
         </span>
       ) : null}
     </span>
   );
 
+  const columns: (string | Column)[] = [...rows.columns, { key: "__actions", label: "", align: "right" }];
+  const tableRows = rows.rows.map((row) => {
+    const key = String(row[config.pkColumn] ?? "");
+    const cells: Record<string, unknown> = {};
+    for (const c of rows.columns) cells[c] = cell(row[c]);
+    return {
+      ...cells,
+      __actions: (
+        <span class="form-actions">
+          {config.testUrlColumn ? testCell(key, String(row[config.testUrlColumn] ?? "")) : null}
+          <button class="btn" data-variant="destructive" data-size="sm" disabled={busy} onClick={() => remove(key)}>
+            {busy && action.t === "busy" && action.op.op === "remove" && action.op.key === key ? "removing…" : "remove"}
+          </button>
+        </span>
+      ),
+    };
+  });
+
   return (
-    <div>
+    <div class="cfg-corpus">
       {action.t === "failed" ? (
         <div class="alert" data-variant="destructive">
           <section>
@@ -136,34 +158,8 @@ function CorpusEditor({ config, page }: { config: TableConfig; page: CorpusPage 
           </section>
         </div>
       ) : null}
-      <table class="table">
-        <thead>
-          <tr>
-            {rows.columns.map((c) => (
-              <th>{c}</th>
-            ))}
-            <th />
-          </tr>
-        </thead>
-        <tbody>
-          {rows.rows.map((row) => {
-            const key = String(row[config.pkColumn] ?? "");
-            return (
-              <tr>
-                {rows.columns.map((c) => (
-                  <td class="small">{cell(row[c])}</td>
-                ))}
-                <td class="form-actions">
-                  {config.testUrlColumn ? testCell(key, String(row[config.testUrlColumn] ?? "")) : null}
-                  <button class="btn" data-variant="destructive" data-size="sm" disabled={busy} onClick={() => remove(key)}>
-                    {busy && action.t === "busy" && action.op.op === "remove" && action.op.key === key ? "removing…" : "remove"}
-                  </button>
-                </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
+
+      <DataTable columns={columns} rows={tableRows} />
 
       <div class="card">
         <section class="grid gap-4">
@@ -188,13 +184,19 @@ function CorpusEditor({ config, page }: { config: TableConfig; page: CorpusPage 
               {busy && action.t === "busy" && action.op.op === "add" ? "adding…" : "add"}
             </button>
             {config.testUrlColumn ? (
-              <button class="btn" data-variant="ghost" data-size="sm" disabled={test.t === "testing"} onClick={() => runTest(draft[config.testUrlColumn!] ?? "", "__draft__")}>
+              <button
+                class="btn"
+                data-variant="ghost"
+                data-size="sm"
+                disabled={test.t === "testing"}
+                onClick={() => runTest(draft[config.testUrlColumn!] ?? "", "__draft__")}
+              >
                 test url
               </button>
             ) : null}
           </div>
           {config.testUrlColumn && test.t === "result" && test.key === "__draft__" ? (
-            <p class={test.ok ? "muted small" : "small"} style={test.ok ? "" : "color:var(--danger)"}>
+            <p class={test.ok ? "muted small" : "small"} style={test.ok ? "" : "color:var(--destructive)"}>
               {test.summary}
             </p>
           ) : null}
@@ -204,9 +206,13 @@ function CorpusEditor({ config, page }: { config: TableConfig; page: CorpusPage 
   );
 }
 
-const host = document.getElementById("config-island");
-const propsEl = document.getElementById("config-props");
-if (host && propsEl) {
+// A Config group page may host more than one corpus editor (e.g. Discovery's Feeds editor
+// alongside its calibration console), so this island mounts EVERY `[data-corpus-host]`
+// element it finds, each paired with its own props script via a shared `data-id`.
+for (const host of Array.from(document.querySelectorAll<HTMLElement>("[data-corpus-host]"))) {
+  const id = host.dataset.id ?? "";
+  const propsEl = document.getElementById(`corpus-props-${id}`) ?? document.getElementById("config-props");
+  if (!propsEl) continue;
   const props = JSON.parse(propsEl.textContent ?? "{}") as { config: TableConfig; page: CorpusPage };
   host.replaceChildren();
   render(<CorpusEditor config={props.config} page={props.page} />, host);

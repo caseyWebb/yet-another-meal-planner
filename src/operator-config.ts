@@ -117,7 +117,27 @@ export async function saveOperatorConfig(env: Env, patch: Partial<OperatorConfig
 
 // --- Validation -------------------------------------------------------------
 
-export function validateOperatorConfig(patch: Record<string, unknown>): ToolError | null {
+/** Hard floors: values AT OR BELOW these thresholds need an explicit confirm (mirrors
+ *  discovery-calibration.ts's FLOOR_TASTE/FLOOR_DEDUP/CEILING_RATE_CAP pattern). The five
+ *  ranking weight knobs intentionally carry NO floor — 0 is a legitimate "no effect" value
+ *  for a weight, not a footgun, so only the two flyer-cadence knobs below get a confirm gate. */
+export const FLOOR_FLYER_REFRESH_HOURS = 6;
+export const FLOOR_FLYER_BATCH_UNITS = 4;
+
+export interface ValidateOperatorConfigOpts {
+  /** When true, allow values that breach a hard floor (the operator explicitly confirmed). */
+  confirm?: boolean;
+}
+
+/**
+ * Server-side guard for an operator-config write. Enforces:
+ *   - range checks (always enforced, even with confirm=true)
+ *   - hard floors on flyerRefreshHours/flyerBatchUnits → rejected unless confirm=true
+ * Returns a structured error (never throws) — same `ToolError | null` shape as before,
+ * so `putOperatorConfig` doesn't need to change its `if (err) throw err` call site.
+ */
+export function validateOperatorConfig(patch: Record<string, unknown>, opts: ValidateOperatorConfigOpts = {}): ToolError | null {
+  const { confirm = false } = opts;
   const checks: Array<[string, unknown, (n: number) => boolean, string]> = [
     ["favoriteWeight", patch.favoriteWeight, (n) => n >= 0 && n <= 2, "must be in [0, 2]"],
     ["noveltyBoost", patch.noveltyBoost, (n) => n >= 0 && n <= 2, "must be in [0, 2]"],
@@ -133,6 +153,25 @@ export function validateOperatorConfig(patch: Record<string, unknown>): ToolErro
     if (val === undefined || val === null) continue;
     if (typeof val !== "number" || !isFinite(val) || !check(val)) {
       return new ToolError("validation_failed", `${field}: ${msg}`);
+    }
+  }
+
+  // Floor checks (require explicit confirm to override) — evaluated only after range checks
+  // pass, so a below-floor value is also known in-range before it can trigger a confirm gate.
+  if (!confirm) {
+    if (typeof patch.flyerRefreshHours === "number" && patch.flyerRefreshHours <= FLOOR_FLYER_REFRESH_HOURS) {
+      return new ToolError(
+        "validation_failed",
+        `flyerRefreshHours ≤ ${FLOOR_FLYER_REFRESH_HOURS} risks hammering the Kroger flyer endpoint every tick — pass confirm:true to override`,
+        { field: "flyerRefreshHours", floor: FLOOR_FLYER_REFRESH_HOURS, needsConfirm: true },
+      );
+    }
+    if (typeof patch.flyerBatchUnits === "number" && patch.flyerBatchUnits <= FLOOR_FLYER_BATCH_UNITS) {
+      return new ToolError(
+        "validation_failed",
+        `flyerBatchUnits ≤ ${FLOOR_FLYER_BATCH_UNITS} under-batches, inflating per-tick embedding call overhead — pass confirm:true to override`,
+        { field: "flyerBatchUnits", floor: FLOOR_FLYER_BATCH_UNITS, needsConfirm: true },
+      );
     }
   }
   return null;

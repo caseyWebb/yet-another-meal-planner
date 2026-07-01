@@ -261,6 +261,30 @@ export const Slider = ({
   value: number;
 }) => <input class="input slider" type="range" name={name} min={min} max={max} step={step ?? 1} value={value} />;
 
+// ── Knob spec (admin-ui-redesign-config) ────────────────────────────────────
+// A knob is one numeric config field: identity, range, optional safe floor, and help copy.
+// The row itself (label + numeric input + Slider + help/floor-warning text) needs an
+// `onInput` handler, so it is genuinely interactive and lives in the shared client module
+// (src/admin/client/knob-console.tsx) as `KnobRow`, not here — kit.tsx stays handler-free
+// per its "presentational only" convention (admin/CLAUDE.md rule 8). This interface is the
+// one shared shape both the client `KnobRow`/`KnobConsole` and each group's island import.
+
+/** A knob's static spec. A knob with `floor` left undefined has no safe-floor concept for
+ *  that config — it never renders the below-floor warning and never drives a NeedsConfirm
+ *  state (see operator-config.ts's ranking weights, which are intentionally floor-free). */
+export interface KnobSpec {
+  key: string;
+  label: string;
+  min: number;
+  max: number;
+  step: number;
+  /** Percent-displayed knobs store a 0–1 fraction but render/edit as a whole-number percent. */
+  pct?: boolean;
+  /** The safe floor (raw units, pre-`pct` scaling). Omit when the knob has no footgun floor. */
+  floor?: number;
+  help?: string;
+}
+
 /** A column spec for `DataTable`: a key, a header label, and an optional right alignment. A
  *  bare string is shorthand for `{ key, label: key }`. */
 export interface Column {
