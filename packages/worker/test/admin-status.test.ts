@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { StatusPage, jobStateOf, gateStateOf, relAge } from "../src/admin/pages/status.js";
+import { StatusPage, STATUS_SPARKLINE_WINDOW, jobStateOf, gateStateOf, relAge } from "../src/admin/pages/status.js";
 import type { HealthPayload, JobRun } from "../src/health.js";
 import type { CorpusCounts } from "../src/admin-data.js";
 
@@ -145,12 +145,31 @@ describe("StatusPage SSR — per-job uptime + since", () => {
     expect(html).toContain('data-tip-variant="fail"');
   });
 
-  it("renders the sparkline track capped-width and right-aligned, with an OLDER/NOW axis", () => {
+  it("pads an under-populated series to the full window with non-interactive ghost slots, keeping the newest run anchored right and an OLDER/NOW axis", () => {
     const runs = [run({ id: "r1", ok: true, ran_at: 1000 })];
     const html = render(payload(), counts(), { "flyer-warm": runs });
     expect(html).toContain('class="spark-track-wrap"');
     expect(html).toContain("OLDER");
     expect(html).toContain("NOW");
+    // One real run fills the NOW (right) edge; the rest of the fixed window is ghost-padded on the
+    // older (left) side so the track fills its container instead of a narrow right-pinned band.
+    const ghosts = (html.match(/class="spark-seg-tip ghost"/g) ?? []).length;
+    expect(ghosts).toBe(STATUS_SPARKLINE_WINDOW - 1);
+    // Ghost slots are inert: aria-hidden, never wrapped in a Logs deep-link, no hover-tip data.
+    expect(html).toContain('<span class="spark-seg-tip ghost" aria-hidden="true"></span>');
+    expect((html.match(/class="spark-seg-link"/g) ?? []).length).toBe(1); // only the one real run links
+    // Ghosts are not counted in the labels — one real ok run reads as 100% over 1 run.
+    expect(html).toContain("100% uptime");
+    expect(html).toContain("1 runs");
+  });
+
+  it("renders no ghost slots once the series fills the window", () => {
+    const runs = Array.from({ length: STATUS_SPARKLINE_WINDOW }, (_, i) =>
+      run({ id: `r${i}`, ok: true, ran_at: 1000 + i }),
+    );
+    const html = render(payload(), counts(), { "flyer-warm": runs });
+    expect(html).not.toContain('class="spark-seg-tip ghost"');
+    expect((html.match(/class="spark-seg-link"/g) ?? []).length).toBe(STATUS_SPARKLINE_WINDOW);
   });
 
   it("shows Healthy since with the current-streak start instant", () => {

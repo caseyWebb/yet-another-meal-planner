@@ -17,6 +17,6 @@
 
 ## 4. Verify
 
-- [ ] 4.1 `aubr build:admin` (Tailwind-compile + esbuild) succeeds; `aubr typecheck` and `aubr test` are green.
-- [ ] 4.2 Manually verify in `aubr dev`: a fully-populated job fills the row edge-to-edge with head/axis aligned; a job with few runs shows ghost slots on the left with real bars anchored right; a job with no runs shows no sparkline; a real bar still deep-links to its Logs entry and ghosts do not.
-- [ ] 4.3 `openspec validate "status-uptime-full-width"` passes.
+- [x] 4.1 `build:admin` (Tailwind-compile + esbuild) succeeds; `typecheck` and `test` are green.
+- [x] 4.2 Behavior verified via SSR render assertions in `test/admin-status.test.ts`: an under-populated series ghost-pads the older/left side to the full window with the newest run anchored right; a full window renders no ghosts; ghosts are `aria-hidden`, non-linking, and excluded from the `% uptime`/run-count labels; a job with no runs omits the sparkline. (Pixel-level look is covered by the non-blocking `admin-visual` CI screenshots.)
+- [x] 4.3 `openspec validate "status-uptime-full-width" --strict` passes.
