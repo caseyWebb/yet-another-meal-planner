@@ -105,11 +105,12 @@ the Kroger Developer API · pure-JS parsers (`js-yaml`, JSON-LD via `HTMLRewrite
 ## Quickstart (development)
 
 The toolchain is pinned with [mise](https://mise.jdx.dev); **aube** is the package manager (`aubr`
-= `aube run`). Don't install anything globally — `package-lock.json` stays the lockfile.
+= `aube run`). Don't install anything globally — `aube-lock.yaml` is the lockfile and
+`pnpm-workspace.yaml` defines the `packages/*` workspaces.
 
 ```bash
 mise install          # Node 22 + aube, pinned in mise.toml
-aube install          # dependencies (reads package-lock.json in place)
+aube install          # dependencies (reads aube-lock.yaml in place)
 
 aubr dev              # wrangler dev — a local Worker; point MCP Inspector at the local URL
 aubr typecheck        # tsc --noEmit

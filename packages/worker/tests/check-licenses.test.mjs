@@ -4,7 +4,7 @@
 // deprecated array forms).
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { isLicenseAllowed, licenseOf, ALLOWED_LICENSES } from "../scripts/check-licenses.mjs";
+import { isLicenseAllowed, licenseOf, ALLOWED_LICENSES, flattenProdTree } from "../scripts/check-licenses.mjs";
 
 test("isLicenseAllowed accepts permissive + v3-copyleft-family ids", () => {
   for (const id of ["MIT", "MIT-0", "ISC", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause", "0BSD", "MPL-2.0"]) {
@@ -63,4 +63,38 @@ test("licenseOf reads string, deprecated object, and deprecated array forms", ()
 test("the allowlist excludes GPLv2-only by construction (guards an accidental re-add)", () => {
   assert.equal(ALLOWED_LICENSES.has("GPL-2.0-only"), false);
   assert.equal(ALLOWED_LICENSES.has("GPL-2.0"), false);
+});
+
+test("flattenProdTree dedups, recurses into nested deps, and drops workspace links", () => {
+  // Shape mirrors `aube list --prod --recursive --json`: top-level workspace entries, each with a
+  // `dependencies` map whose values may carry a nested `dependencies` (the transitive closure).
+  const tree = [
+    {
+      name: "@grocery-agent/worker",
+      path: "/repo/packages/worker",
+      dependencies: {
+        hono: { version: "4.12.27" },
+        "@grocery-agent/contract": {}, // workspace link — dropped
+        zod: { version: "4.4.3", dependencies: { "some-dep": { version: "1.0.0" } } },
+      },
+    },
+    {
+      name: "@grocery-agent/scraper",
+      path: "/repo/packages/scraper",
+      dependencies: {
+        zod: { version: "4.4.3" }, // duplicate of worker's — deduped by name@version
+        "smol-toml": { version: "1.3.1" },
+      },
+    },
+  ];
+  const flat = flattenProdTree(tree);
+  const ids = flat.map((d) => `${d.name}@${d.version}`).sort();
+  assert.deepEqual(ids, ["hono@4.12.27", "smol-toml@1.3.1", "some-dep@1.0.0", "zod@4.4.3"]);
+  assert.equal(flat.some((d) => d.name.startsWith("@grocery-agent/")), false);
+});
+
+test("flattenProdTree tolerates a non-array / empty input", () => {
+  assert.deepEqual(flattenProdTree(undefined), []);
+  assert.deepEqual(flattenProdTree([]), []);
+  assert.deepEqual(flattenProdTree([{ dependencies: {} }]), []);
 });

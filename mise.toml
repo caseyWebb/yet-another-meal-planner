@@ -3,7 +3,8 @@ node = "22.17.1"
 # aube is the package manager (https://aube.jdx.dev). The github backend extracts
 # the release tarball, which ships the aube/aubr/aubx multicall binaries (aubr =
 # `aube run`, aubx = `aube dlx`). Use `aube install` / `aube ci` / `aubr <script>`
-# in place of npm; package-lock.json stays the lockfile, read/written in place.
+# in place of npm; aube-lock.yaml is the lockfile (with pnpm-workspace.yaml defining the
+# workspaces), read/written in place.
 "github:endevco/aube" = "1.25.1"
 
 [env]

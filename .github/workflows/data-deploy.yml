@@ -87,7 +87,7 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.local/share/aube/store
-          key: aube-store-${{ runner.os }}-${{ hashFiles('_code/package-lock.json') }}
+          key: aube-store-${{ runner.os }}-${{ hashFiles('_code/aube-lock.yaml') }}
           restore-keys: aube-store-${{ runner.os }}-
 
       - name: Install dependencies

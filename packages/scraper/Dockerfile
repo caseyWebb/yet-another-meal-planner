@@ -6,19 +6,29 @@
 # to node:22-slim, but the Playwright base keeps `login`/browser sources working out of the box.
 FROM mcr.microsoft.com/playwright:v1.61.1-jammy
 
-# The image is monorepo-aware: it vendors the workspace so @grocery-agent/contract (a
-# workspace TS package resolved at runtime via tsx) is present alongside the scraper.
 WORKDIR /app
 
+# --- toolchain ----------------------------------------------------------------
+# The monorepo installs with aube (the workspace package manager), not npm: the packages use
+# the `workspace:*` protocol npm can't resolve, and the lockfile is aube's `aube-lock.yaml`.
+# mise provides the pinned Node + aube exactly as in CI/dev (mise.toml is the single source).
+ENV MISE_YES=1
+RUN curl -fsSL https://mise.run | sh
+ENV PATH="/root/.local/bin:/root/.local/share/mise/shims:${PATH}"
+COPY mise.toml ./
+RUN mise install
+
 # --- dependencies -------------------------------------------------------------
-# Copy the lockfile + the two workspace package manifests first for a cached install layer.
-COPY package.json package-lock.json ./
+# Copy the workspace manifests + lockfile first for a cached install layer. All three workspace
+# manifests are copied so the frozen `aube ci` matches `aube-lock.yaml` (which records every
+# importer); the scraper image thus also carries the worker's dev deps — a size cost accepted in
+# exchange for a lockfile-faithful, npm-free install. `@grocery-agent/contract` resolves at
+# runtime via tsx, so no build step is needed.
+COPY pnpm-workspace.yaml package.json aube-lock.yaml ./
 COPY packages/contract/package.json packages/contract/package.json
 COPY packages/scraper/package.json packages/scraper/package.json
-# NOT --omit=dev: the runtime executes TypeScript via `tsx` (a devDependency), and the ENTRYPOINT
-# is `npx tsx`. Scoped to the scraper workspace (+ root) so the Worker's deps aren't pulled in.
-# The lockfile is standard npm format (lockfileVersion 3, kept in sync by aube).
-RUN npm ci --workspace @grocery-agent/scraper --include-workspace-root
+COPY packages/worker/package.json packages/worker/package.json
+RUN mise exec -- aube ci
 
 # --- source -------------------------------------------------------------------
 # The scraper + the shared contract source (both run as TS via tsx — no build step).
@@ -37,7 +47,7 @@ VOLUME ["/config"]
 # Default: run the recurring daemon. Override the CMD for one-off verbs, e.g.:
 #   docker run ... <image> test example-paid-http https://paid.example/recipes/one
 #   docker run ... <image> backfill example-paid-http
-ENTRYPOINT ["npx", "tsx", "src/cli.ts"]
+ENTRYPOINT ["mise", "exec", "--", "npx", "tsx", "src/cli.ts"]
 CMD ["run", "--watch"]
 
 # NOTE on `login`: it opens a HEADFUL browser and therefore needs a display, which a headless

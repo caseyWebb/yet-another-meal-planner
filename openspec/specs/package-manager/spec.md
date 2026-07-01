@@ -4,16 +4,16 @@
 TBD - created by archiving change adopt-aube-package-manager. Update Purpose after archive.
 ## Requirements
 ### Requirement: aube is the repo's package manager, installed via mise
-The repository SHALL use **aube** as its Node package manager, installed through `mise` as an entry in `mise.toml` `[tools]` alongside the pinned `node`. `package-lock.json` SHALL remain the lockfile, read and written in place by aube; the repo SHALL NOT introduce an `aube.lock` or `pnpm-lock.yaml`.
+The repository SHALL use **aube** as its Node package manager, installed through `mise` as an entry in `mise.toml` `[tools]` alongside the pinned `node`. Because the repo is an aube workspace monorepo whose packages cross-depend via the `workspace:*` protocol (which npm cannot resolve), **`aube-lock.yaml`** (aube's native, pnpm-flavored lockfile) SHALL be the committed lockfile, read and written in place by aube, and **`pnpm-workspace.yaml`** SHALL declare the `packages/*` workspaces; the repo SHALL NOT commit an npm `package-lock.json`.
 
 #### Scenario: Toolchain provides aube
 - **WHEN** a contributor runs `mise install` in a fresh clone
 - **THEN** `mise.toml` SHALL install both the pinned `node` and `aube`, making the `aube`, `aubr`, and `aubx` binaries available on the path
 
-#### Scenario: Lockfile is unchanged in kind
+#### Scenario: aube's native lockfile is the committed lockfile
 - **WHEN** aube installs or updates dependencies
-- **THEN** it SHALL read and write the existing `package-lock.json`
-- **THEN** no `aube.lock` or `pnpm-lock.yaml` SHALL be committed
+- **THEN** it SHALL read and write `aube-lock.yaml` (with `pnpm-workspace.yaml` declaring the workspaces)
+- **THEN** no npm `package-lock.json` SHALL be committed
 
 ### Requirement: Project-local binaries are on PATH via mise
 `mise.toml` SHALL prepend the project's `node_modules/.bin` to `PATH` (via `[env]._.path`) so locally-installed binaries (e.g. `openspec`) run as bare commands in the project and resolve to the `package.json`-pinned version rather than any global install.
@@ -58,16 +58,16 @@ The repository SHALL commit aube's release cooling window rather than rely on th
 - **THEN** aube SHALL fall back to the newest version at least 7 days old rather than installing the day-zero release
 
 ### Requirement: CI runs on mise with tool and dependency caching
-CI workflows that install dependencies (`ci.yml`, `data-deploy.yml`) SHALL set up the toolchain via `jdx/mise-action` and install via `aube ci`, with caching enabled at two tiers: the mise tool cache (node + aube binaries, provided by `jdx/mise-action`) and an `actions/cache` of aube's content-addressable store (`~/.local/share/aube/store`) keyed on the hash of `package-lock.json`. The dependency-free `data-build-plugin.yml` workflow SHALL set up node via mise only and SHALL NOT install dependencies or cache the aube store. New action references SHALL be SHA-pinned with a version comment.
+CI workflows that install dependencies (`ci.yml`, `data-deploy.yml`) SHALL set up the toolchain via `jdx/mise-action` and install via `aube ci`, with caching enabled at two tiers: the mise tool cache (node + aube binaries, provided by `jdx/mise-action`) and an `actions/cache` of aube's content-addressable store (`~/.local/share/aube/store`) keyed on the hash of `aube-lock.yaml`. The dependency-free `data-build-plugin.yml` workflow SHALL set up node via mise only and SHALL NOT install dependencies or cache the aube store. New action references SHALL be SHA-pinned with a version comment.
 
 #### Scenario: Dependency cache is restored on a warm run
-- **WHEN** an installing CI job runs with an unchanged `package-lock.json` from a prior run
+- **WHEN** an installing CI job runs with an unchanged `aube-lock.yaml` from a prior run
 - **THEN** the `actions/cache` step SHALL restore `~/.local/share/aube/store`
 - **THEN** `aube ci` SHALL rebuild `node_modules` by re-linking the cached tarballs rather than re-downloading them
 
 #### Scenario: Cache key tracks the lockfile
-- **WHEN** `package-lock.json` changes
-- **THEN** the store cache key SHALL change (it is keyed on `hashFiles('package-lock.json')`), falling back to the `aube-store-<os>-` restore-key for partial reuse
+- **WHEN** `aube-lock.yaml` changes
+- **THEN** the store cache key SHALL change (it is keyed on `hashFiles('aube-lock.yaml')`), falling back to the `aube-store-<os>-` restore-key for partial reuse
 
 #### Scenario: Plugin build stays dependency-free
 - **WHEN** `data-build-plugin.yml` runs

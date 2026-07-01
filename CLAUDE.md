@@ -15,11 +15,11 @@ Read the deep docs rather than reverse-engineering from code:
 
 ## Toolchain & commands
 
-Build tooling is managed with **mise** (`mise.toml` pins Node 22 + **aube**, the package manager). Don't install globally. `aubr` = `aube run` (use it instead of `npm run`); `aube ci` is the lockfile-strict CI install. `package-lock.json` stays the lockfile.
+Build tooling is managed with **mise** (`mise.toml` pins Node 22 + **aube**, the package manager). Don't install globally. `aubr` = `aube run` (use it instead of `npm run`); `aube ci` is the lockfile-strict CI install. **`aube-lock.yaml` is the lockfile** and **`pnpm-workspace.yaml` defines the `packages/*` workspaces** — aube is pnpm-flavored (the packages depend on each other via the `workspace:*` protocol), so npm can't drive this repo; don't reintroduce a `package-lock.json`.
 
 ```bash
 mise install                 # Node + aube (pinned in mise.toml)
-aube install                 # deps (reads package-lock.json in place)
+aube install                 # deps (reads aube-lock.yaml in place)
 
 aubr dev                     # wrangler dev — local Worker; point MCP Inspector at the local URL
 aubr typecheck               # tsc --noEmit

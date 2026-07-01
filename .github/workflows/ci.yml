@@ -46,7 +46,7 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.local/share/aube/store
-          key: aube-store-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+          key: aube-store-${{ runner.os }}-${{ hashFiles('aube-lock.yaml') }}
           restore-keys: aube-store-${{ runner.os }}-
 
       - name: Install dependencies
@@ -112,7 +112,7 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.local/share/aube/store
-          key: aube-store-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+          key: aube-store-${{ runner.os }}-${{ hashFiles('aube-lock.yaml') }}
           restore-keys: aube-store-${{ runner.os }}-
       - name: Install dependencies
         run: aube ci
@@ -155,7 +155,7 @@ jobs:
         # skills, and the deploy is Worker-first so it redeploys the (unchanged) Worker
         # before publishing, which is safe. admin/dist/ is built at deploy time, not committed.
         run: |
-          git diff --name-only HEAD^ HEAD -- packages/worker/src/ packages/worker/wrangler.jsonc packages/contract/ package.json package-lock.json packages/worker/AGENT_INSTRUCTIONS.md packages/worker/scripts/build-plugin.mjs packages/worker/scripts/build-admin.mjs \
+          git diff --name-only HEAD^ HEAD -- packages/worker/src/ packages/worker/wrangler.jsonc packages/contract/ package.json aube-lock.yaml pnpm-workspace.yaml packages/worker/AGENT_INSTRUCTIONS.md packages/worker/scripts/build-plugin.mjs packages/worker/scripts/build-admin.mjs \
             | grep -q . \
             && echo "relevant=true" >> "$GITHUB_OUTPUT" \
             || echo "relevant=false" >> "$GITHUB_OUTPUT"

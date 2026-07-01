@@ -9,17 +9,33 @@
 //   node scripts/check-licenses.mjs           scan prod deps; exit 1 on any violation
 //   node scripts/check-licenses.mjs --list    print every prod license seen (calibration aid)
 //
-// "What's in production" comes from package-lock.json's `packages` map (entries flagged `dev` or
-// `devOptional` are excluded — build/test tooling and the dev-only optional tree). `optional: true`
-// is kept in scope on purpose. Each package's license is read from its own installed package.json
-// (authoritative), falling back to the lockfile entry's `license` field.
+// "What's in production" comes from `aube list --prod --recursive --json` (the production
+// dependency graph across every workspace — aube, not a lockfile, since this repo is aube-native
+// with no npm package-lock.json to walk). Each package's license is read from its own installed
+// package.json (authoritative), found by walking aube's on-disk virtual store (node_modules/.aube)
+// — reading the file directly, since an `exports` map can block `require.resolve('pkg/package.json')`.
 
-import { readFileSync, realpathSync } from "node:fs";
+import { readFileSync, readdirSync, realpathSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const ROOT = join(HERE, "..");
+// The monorepo root (where aube's virtual store `node_modules/.aube` and `pnpm-workspace.yaml`
+// live) — walk up from packages/worker/scripts/ until the workspace manifest is found.
+function findRoot(start) {
+  let dir = start;
+  for (let i = 0; i < 8; i++) {
+    try {
+      readFileSync(join(dir, "pnpm-workspace.yaml"));
+      return dir;
+    } catch {
+      dir = join(dir, "..");
+    }
+  }
+  return join(start, "..", "..", ".."); // fallback: packages/worker/scripts -> repo root
+}
+const ROOT = findRoot(HERE);
 
 // SPDX ids an AGPL-3.0-only work may redistribute: permissive licenses (one-way compatible into
 // AGPL), the GPL/LGPL/AGPL **v3** copyleft family (same-or-compatible), and weak-copyleft MPL-2.0.
@@ -144,43 +160,109 @@ function readJson(path) {
 }
 
 /**
- * Walk package-lock.json's `packages` map and return one record per PRODUCTION dependency:
- * `{ name, version, license, path }`. The root (""), workspace links, and the dev-only tree
- * (`dev` / `devOptional`) are skipped. `optional: true` is kept IN scope: an optional dependency
- * can be a genuine runtime path, not just a platform binary, so its license still matters — an
- * addon that can't load on workerd simply never ships, but we'd rather flag an incompatible
- * optional license than silently pass it. License comes from the installed package.json, falling
- * back to the lockfile entry's `license`.
+ * Flatten an `aube list --prod --recursive --json` tree into unique `{ name, version }` production
+ * dependency records. The tree's top-level entries are the workspace packages themselves (they carry
+ * a `path`); their nested `dependencies` are the third-party production closure. Workspace
+ * cross-links (`@grocery-agent/*`, emitted without a version) are internal first-party code, not
+ * redistributable third-party deps, so they're skipped. Pure over the parsed JSON (testable).
  */
-export function collectProductionDeps(lock, root = ROOT) {
+export function flattenProdTree(tree) {
+  const seen = new Set();
   const out = [];
-  const packages = lock.packages || {};
-  for (const [path, entry] of Object.entries(packages)) {
-    if (path === "" || !path.includes("node_modules/")) continue;
-    if (entry.dev === true || entry.devOptional === true || entry.link === true) continue;
-    const installed = readJson(join(root, path, "package.json"));
-    const name = installed?.name || path.slice(path.lastIndexOf("node_modules/") + "node_modules/".length);
-    const version = installed?.version || entry.version || "";
-    const license = licenseOf(installed) || (typeof entry.license === "string" ? entry.license : "");
-    out.push({ name, version, license, path });
-  }
+  const visit = (deps) => {
+    for (const [name, info] of Object.entries(deps || {})) {
+      if (!name.startsWith("@grocery-agent/")) {
+        const version = info?.version || "";
+        const id = `${name}@${version}`;
+        if (!seen.has(id)) {
+          seen.add(id);
+          out.push({ name, version });
+        }
+      }
+      if (info?.dependencies) visit(info.dependencies);
+    }
+  };
+  for (const entry of Array.isArray(tree) ? tree : []) visit(entry.dependencies);
   return out;
+}
+
+/**
+ * Index every installed package by `name@version` (and by bare `name` as a fallback) → license, by
+ * walking aube's on-disk virtual store (`node_modules/.aube`). Recursion stops at each package
+ * boundary (a directory holding a `package.json`), so a package's own bundled `node_modules` isn't
+ * descended into and the walk stays bounded. Reads each `package.json` from disk directly.
+ */
+export function buildLicenseIndex(root = ROOT) {
+  const byId = new Map();
+  const byName = new Map();
+  const walk = (dir, depth) => {
+    if (depth > 6) return;
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    if (entries.some((e) => e.name === "package.json")) {
+      const pkg = readJson(join(dir, "package.json"));
+      if (pkg?.name && typeof pkg.version === "string") {
+        const license = licenseOf(pkg);
+        byId.set(`${pkg.name}@${pkg.version}`, license);
+        if (!byName.has(pkg.name)) byName.set(pkg.name, license);
+      }
+      return; // package boundary — don't descend into its bundled node_modules
+    }
+    for (const e of entries) {
+      if (e.isDirectory() || e.isSymbolicLink()) walk(join(dir, e.name), depth + 1);
+    }
+  };
+  walk(join(root, "node_modules", ".aube"), 0);
+  return { byId, byName };
+}
+
+/**
+ * The production dependencies to license-check, each as `{ name, version, license, installed }`.
+ * Enumerated from `aube list --prod --recursive --json` and licensed from the installed-store index.
+ * `installed` is false for a dependency present in the graph but not on disk — the platform-specific
+ * optional native binaries (`fsevents`, `lightningcss-<os>`, `@rolldown/binding-<os>`, …) that only
+ * install on their matching OS/arch. Those never ship in this build's artifact, so the CLI skips
+ * them (and reports the count) rather than flagging them as unlicensed.
+ */
+export function collectProductionDeps(root = ROOT) {
+  const raw = execFileSync("aube", ["list", "--prod", "--recursive", "--depth", "999", "--json"], {
+    cwd: root,
+    encoding: "utf8",
+    maxBuffer: 128 * 1024 * 1024,
+  });
+  const deps = flattenProdTree(JSON.parse(raw));
+  const { byId, byName } = buildLicenseIndex(root);
+  return deps.map(({ name, version }) => {
+    const license = byId.get(`${name}@${version}`) ?? byName.get(name) ?? "";
+    return { name, version, license, installed: byId.has(`${name}@${version}`) || byName.has(name) };
+  });
 }
 
 // --- CLI ---
 const isMain = process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url);
 if (isMain) {
   const list = process.argv.includes("--list");
-  const lock = readJson(join(ROOT, "package-lock.json"));
-  if (!lock) {
-    console.error("check-licenses: cannot read package-lock.json");
+  let deps;
+  try {
+    deps = collectProductionDeps();
+  } catch (e) {
+    console.error(`check-licenses: cannot enumerate production deps via 'aube list': ${e.message}`);
     process.exit(2);
   }
-  const deps = collectProductionDeps(lock);
+
+  // Uninstalled deps are the platform-specific optional native binaries for other OS/arch; they
+  // never ship in this build's artifact, so they're out of scope (and carry no readable license
+  // locally). Reported, not silently dropped.
+  const installed = deps.filter((d) => d.installed);
+  const skipped = deps.length - installed.length;
 
   if (list) {
     const byLicense = new Map();
-    for (const d of deps) {
+    for (const d of installed) {
       const key = d.license || "(none)";
       if (!byLicense.has(key)) byLicense.set(key, []);
       byLicense.get(key).push(`${d.name}@${d.version}`);
@@ -188,12 +270,13 @@ if (isMain) {
     for (const key of [...byLicense.keys()].sort()) {
       console.log(`${isLicenseAllowed(key) ? "ok " : "NO "} ${key}  (${byLicense.get(key).length})`);
     }
+    if (skipped) console.log(`(skipped ${skipped} uninstalled platform-optional dep(s))`);
     process.exit(0);
   }
 
   const violations = [];
   const seen = new Set();
-  for (const d of deps) {
+  for (const d of installed) {
     const id = `${d.name}@${d.version}`;
     if (seen.has(id)) continue;
     seen.add(id);
@@ -210,5 +293,6 @@ if (isMain) {
     console.error(`or add "<name>@<version>" to PACKAGE_EXCEPTIONS with a reason. Otherwise, do not ship the dependency.`);
     process.exit(1);
   }
-  console.log(`check-licenses: ${seen.size} production dependencies, all licenses AGPL-3.0-compatible.`);
+  const tail = skipped ? ` (${skipped} uninstalled platform-optional dep(s) out of scope)` : "";
+  console.log(`check-licenses: ${seen.size} production dependencies, all licenses AGPL-3.0-compatible.${tail}`);
 }
