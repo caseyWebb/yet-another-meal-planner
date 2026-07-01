@@ -52,6 +52,7 @@ function adminDeps(env: Env): AdminDeps {
   return {
     tenantKv: env.TENANT_KV,
     krogerKv: env.KROGER_KV as unknown as KvStore,
+    oauthKv: env.OAUTH_KV as unknown as KvStore,
     db: db(env),
     randomCode: randomInviteCode,
   };

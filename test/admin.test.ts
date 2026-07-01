@@ -7,6 +7,7 @@ import {
   rotate,
   revoke,
   listTenants,
+  oauthGrantTenantIds,
   TENANT_TABLES,
   AUTHOR_TABLES,
   type AdminDeps,
@@ -64,18 +65,24 @@ function fakeDb(seed: FakeRosterData = {}): { db: Db; batches: { sql: string; bi
   return { db, batches };
 }
 
-function makeDeps(initial: Record<string, string> = {}, rosterSeed: FakeRosterData = {}) {
+function makeDeps(
+  initial: Record<string, string> = {},
+  rosterSeed: FakeRosterData = {},
+  oauthInitial: Record<string, string> = {},
+) {
   const tenantKv = memKv(initial);
   const krogerKv = memKv();
+  const oauthKv = memKv(oauthInitial);
   const { db, batches } = fakeDb(rosterSeed);
   let n = 0;
   const deps: AdminDeps = {
     tenantKv,
     krogerKv: krogerKv as unknown as KvStore,
+    oauthKv: oauthKv as unknown as KvStore,
     db,
     randomCode: () => `code${n++}`,
   };
-  return { deps, tenantKv, krogerKv, batches };
+  return { deps, tenantKv, krogerKv, oauthKv, batches };
 }
 
 describe("requireAccess", () => {
@@ -223,10 +230,36 @@ describe("listTenants", () => {
     expect(tenants.map((t) => t.id)).toEqual(["alice", "casey"]);
   });
 
-  it("derives active vs pending from tenant_activity presence", async () => {
+  it("derives active status from an OAuth grant, not tenant_activity — a connected-but-idle member reports active", async () => {
+    // Regression: casey has a persisted grant but NO tenant_activity row (no recent MCP tool
+    // call) — must still report active, not "pending / awaiting connection".
+    const { deps } = makeDeps(
+      { "tenant:casey": JSON.stringify({ id: "casey" }), "tenant:noor": JSON.stringify({ id: "noor" }) },
+      {},
+      { "grant:casey:g1": JSON.stringify({ id: "g1" }) },
+    );
+    const { tenants } = await listTenants(env(), deps);
+    expect(byId(tenants, "casey")).toMatchObject({ status: "active" });
+    expect(byId(tenants, "noor")).toMatchObject({ status: "pending" });
+  });
+
+  it("reports pending for a never-connected member even with a stray tenant_activity row", async () => {
+    // Regression (inverse direction): a tenant_activity row alone must NOT be enough for
+    // "active" once status is OAuth-grant-derived.
+    const { deps } = makeDeps(
+      { "tenant:casey": JSON.stringify({ id: "casey" }) },
+      { activity: [{ tenant: "casey", first_seen_at: 100, last_seen_at: 200 }] },
+      {},
+    );
+    const { tenants } = await listTenants(env(), deps);
+    expect(byId(tenants, "casey")).toMatchObject({ status: "pending" });
+  });
+
+  it("still sources joined/lastActive from tenant_activity regardless of grant status", async () => {
     const { deps } = makeDeps(
       { "tenant:casey": JSON.stringify({ id: "casey" }), "tenant:noor": JSON.stringify({ id: "noor" }) },
       { activity: [{ tenant: "casey", first_seen_at: 100, last_seen_at: 200 }] },
+      { "grant:casey:g1": JSON.stringify({ id: "g1" }) },
     );
     const { tenants } = await listTenants(env(), deps);
     expect(byId(tenants, "casey")).toMatchObject({ status: "active", joined: 100, lastActive: 200 });
@@ -278,12 +311,80 @@ describe("listTenants", () => {
         cooked: [{ tenant: "casey", n: 5 }],
         favorites: [{ tenant: "casey", n: 2 }],
       },
+      { "grant:casey:g1": JSON.stringify({ id: "g1" }) },
     );
     await krogerKv.put("kroger:refresh:casey", "tok");
     const { tenants } = await listTenants(env({ OWNER_TENANT_ID: "casey" }), deps);
     expect(tenants).toEqual([
       { id: "casey", owner: true, status: "active", kroger: "linked", joined: 1000, lastActive: 2000, cooked: 5, favorites: 2 },
     ]);
+  });
+});
+
+describe("oauthGrantTenantIds", () => {
+  it("parses the userId segment out of a grant:<userId>:<grantId> key — a SYNTHETIC key so a", async () => {
+    // future @cloudflare/workers-oauth-provider bump that changes this format fails loudly here
+    // rather than silently misreporting every member as pending (design.md's stated mitigation).
+    const kv = memKv({
+      "grant:casey:11111111-1111-1111-1111-111111111111": JSON.stringify({ id: "g1" }),
+      "grant:noor:some-grant-id-with-no-dashes": JSON.stringify({ id: "g2" }),
+      "client:abc": JSON.stringify({}), // non-grant OAUTH_KV entry — must be ignored
+    });
+    const ids = await oauthGrantTenantIds(kv as unknown as KvStore);
+    expect(ids).toEqual(new Set(["casey", "noor"]));
+  });
+
+  it("de-dupes multiple grants for the same tenant to one entry", async () => {
+    const kv = memKv({
+      "grant:casey:g1": JSON.stringify({ id: "g1" }),
+      "grant:casey:g2": JSON.stringify({ id: "g2" }),
+    });
+    const ids = await oauthGrantTenantIds(kv as unknown as KvStore);
+    expect(ids).toEqual(new Set(["casey"]));
+  });
+
+  it("degrades to an empty set (never throws) when the KV list call fails", async () => {
+    const failingKv: KvStore = {
+      async get() { return null; },
+      async put() {},
+      async delete() {},
+      async list() { throw new Error("KV unavailable"); },
+    };
+    await expect(oauthGrantTenantIds(failingKv)).resolves.toEqual(new Set());
+  });
+
+  it("follows cursor-based pagination across multiple list() pages — a member whose grant key ONLY appears on the second page must still resolve as connected, proving the multi-page loop isn't truncated to the first page", async () => {
+    // page 1: incomplete, no grant keys yet (just noise + a cursor to continue)
+    // page 2: complete, holds the only grant key for "noor"
+    const pagingKv: KvStore = {
+      async get() { return null; },
+      async put() {},
+      async delete() {},
+      async list({ cursor }: { prefix?: string; cursor?: string } = {}) {
+        if (!cursor) {
+          return {
+            keys: [{ name: "client:abc" }],
+            list_complete: false,
+            cursor: "page2",
+          };
+        }
+        return {
+          keys: [{ name: "grant:noor:11111111-1111-1111-1111-111111111111" }],
+          list_complete: true,
+        };
+      },
+    } as unknown as KvStore;
+    const ids = await oauthGrantTenantIds(pagingKv);
+    expect(ids).toEqual(new Set(["noor"]));
+  });
+
+  it("skips a malformed grant key with no second colon rather than mis-parsing a corrupted tenant id", async () => {
+    const kv = memKv({
+      "grant:foo": JSON.stringify({ id: "malformed" }), // no `<userId>:<grantId>` split
+      "grant:casey:11111111-1111-1111-1111-111111111111": JSON.stringify({ id: "g1" }),
+    });
+    const ids = await oauthGrantTenantIds(kv as unknown as KvStore);
+    expect(ids).toEqual(new Set(["casey"]));
   });
 });
 

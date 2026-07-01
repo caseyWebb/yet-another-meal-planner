@@ -349,9 +349,11 @@
   /* Spacing below the "Cloudflare usage for <day> (UTC)…" caption, so it doesn't crowd the
      headline stat-tile grid directly beneath it. */
   .usage-caption { margin-bottom: 1rem; }
-  /* Namespace palette: a small warm categorical trio + the generic "unlabeled" fallback,
-     consistent with the mock's --kv-kroger/--kv-oauth/--kv-tenant swatches. Referenced by
-     src/usage.ts's static binding→color table (NamespaceUsage.resolved.color). */
+  /* Namespace color palette: a small warm categorical set of 4, cycled by a namespace id's
+     SORTED POSITION among the ids present in a Usage payload (src/usage.ts assignNamespaceColors)
+     — never a function of whether the namespace's friendly label resolves. --kv-unlabeled is one
+     of the 4 cycling colors, not a "no label" grey fallback: an unresolved-label namespace still
+     gets a real, distinct color from this set. Referenced by src/usage.ts's COLOR_PALETTE. */
   :root {
     --kv-kroger: #f4a259;
     --kv-oauth: #c97b3a;

@@ -64,6 +64,9 @@ export interface AdminDeps {
   tenantKv: KVNamespace;
   /** KROGER_KV: holds the per-tenant `kroger:refresh:<id>` token revoke must purge. */
   krogerKv: KvStore;
+  /** OAUTH_KV: the `@cloudflare/workers-oauth-provider` store — read (never written) here for its
+   *  `grant:<userId>:<grantId>` keys, the source of the roster's active/pending status. */
+  oauthKv: KvStore;
   /** The D1 access layer (src/db.ts) for the per-tenant purge. */
   db: Db;
   /** Mint a fresh invite code (16 hex chars, matching the retired workflow's `openssl rand -hex 8`). */
@@ -209,7 +212,8 @@ export interface TenantRosterRow {
   id: string;
   /** True iff `id === env.OWNER_TENANT_ID`. Unset env -> no member is owner. */
   owner: boolean;
-  /** `active` once the member has completed an MCP OAuth exchange at least once; `pending` until then. */
+  /** `active` once the member has a persisted OAuth grant (completed the Claude.ai
+   *  connection at least once); `pending` until then, or again if the grant is revoked. */
   status: "active" | "pending";
   /** Whether a Kroger refresh token exists for this member (`kroger:refresh:<id>` in KROGER_KV). */
   kroger: "linked" | "unlinked";
@@ -223,11 +227,59 @@ export interface TenantRosterRow {
   favorites: number;
 }
 
+/** The `@cloudflare/workers-oauth-provider` grant-key prefix — see `oauthGrantTenantIds`. */
+const OAUTH_GRANT_PREFIX = "grant:";
+
+/**
+ * Derive the set of tenant ids with at least one persisted OAuth grant in `OAUTH_KV`, by a
+ * single prefix `list()` over `grant:` (mirroring the Kroger-linked `listAllKeys` pattern —
+ * one unbounded-pagination pass, no per-tenant get). `@cloudflare/workers-oauth-provider`
+ * persists every completed authorization under the key `grant:<userId>:<grantId>` (see
+ * `saveGrantWithTTL`/`listUserGrants` in the installed package, and `src/authorize.ts`'s
+ * `completeAuthorization({ userId: tenantId, ... })`, which is what puts the tenant id in that
+ * `userId` slot) — so the tenant id is the FIRST `:`-delimited segment after the `grant:`
+ * prefix, not a fixed-length suffix (the grant id follows it and may itself contain no `:`,
+ * but we only need the segment immediately after the prefix regardless).
+ *
+ * A grant, not a live/unexpired token, is the "connected" signal: access/refresh tokens
+ * rotate and expire, but the grant persists until explicitly revoked (e.g. the member
+ * disconnects in Claude.ai), so its presence is the durable "has this member ever completed
+ * the OAuth connection" fact this function answers.
+ *
+ * THROW-FREE: a KV list failure degrades to an empty set (every tenant reports `pending`)
+ * rather than throwing — the roster must still render every allowlisted member, and
+ * mislabeling a connected member as pending during a transient KV outage is preferable to
+ * the whole roster failing to load.
+ */
+export async function oauthGrantTenantIds(kv: KvStore): Promise<Set<string>> {
+  const ids = new Set<string>();
+  try {
+    let cursor: string | undefined;
+    for (;;) {
+      const res = await kv.list({ prefix: OAUTH_GRANT_PREFIX, cursor });
+      for (const k of res.keys) {
+        const rest = k.name.slice(OAUTH_GRANT_PREFIX.length);
+        const idx = rest.indexOf(":");
+        if (idx < 0) continue; // malformed key (no `<userId>:<grantId>` split) — skip rather than derive a corrupted tenant id
+        const userId = rest.slice(0, idx);
+        if (userId) ids.add(userId);
+      }
+      if (res.list_complete) break;
+      cursor = res.cursor;
+    }
+  } catch {
+    return new Set();
+  }
+  return ids;
+}
+
 /**
  * List every allowlisted member as a structured roster row (operational status only, no
  * domain data — see the "Tenant listing is operational-only" requirement). Assembled from:
  *  - the `tenant:*` KV allowlist (ids),
- *  - `tenant_activity` (joined/last-active/status — absent row => pending),
+ *  - a single prefix `list` over OAUTH_KV's `grant:<userId>:<grantId>` keys (active/pending
+ *    status — see `oauthGrantTenantIds`; degrades to "pending" on a KV failure, never throws),
+ *  - `tenant_activity` (joined/last-active ONLY — no longer the status source),
  *  - a single prefix `list` over KROGER_KV (Kroger-linked status, no N+1 gets),
  *  - two single `GROUP BY tenant` D1 aggregates (cooked, favorites — no N+1 queries),
  *  - `env.OWNER_TENANT_ID` (owner flag; unset => no member is owner).
@@ -235,10 +287,11 @@ export interface TenantRosterRow {
 export async function listTenants(env: Env, deps: AdminDeps): Promise<{ tenants: TenantRosterRow[] }> {
   const ids = [...(await kvTenantStore(deps.tenantKv).list())].sort();
 
-  const [activityRows, krogerKeys, cookedRows, favoriteRows] = await Promise.all([
+  const [activityRows, connectedIds, krogerKeys, cookedRows, favoriteRows] = await Promise.all([
     deps.db.all<{ tenant: string; first_seen_at: number; last_seen_at: number }>(
       "SELECT tenant, first_seen_at, last_seen_at FROM tenant_activity",
     ),
+    oauthGrantTenantIds(deps.oauthKv),
     listAllKeys(deps.krogerKv, KROGER_REFRESH_PREFIX),
     deps.db.all<{ tenant: string; n: number }>("SELECT tenant, COUNT(*) AS n FROM cooking_log GROUP BY tenant"),
     deps.db.all<{ tenant: string; n: number }>(
@@ -257,7 +310,7 @@ export async function listTenants(env: Env, deps: AdminDeps): Promise<{ tenants:
     return {
       id,
       owner: ownerId !== null && id === ownerId,
-      status: activity ? "active" : "pending",
+      status: connectedIds.has(id) ? "active" : "pending",
       kroger: krogerLinked.has(id) ? "linked" : "unlinked",
       joined: activity?.first_seen_at ?? null,
       lastActive: activity?.last_seen_at ?? null,

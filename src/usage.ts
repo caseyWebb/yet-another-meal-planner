@@ -20,14 +20,14 @@
 // src/embedding.ts. NOTE: Cloudflare evolves these dataset/field names; they are verified
 // against the live schema as part of landing this capability (see the change's tasks).
 //
-// Each KV namespace's display label/color resolves via a fallback chain, cheapest/most-
-// automatic first: (a) the Cloudflare REST API's own namespace title (`fetchNamespaceTitles`,
-// a SEPARATE `GET /accounts/{id}/storage/kv/namespaces` call, paginated) — needs no operator
-// config, but needs the token's "Workers KV Storage: Read" scope, distinct from the "Account
-// Analytics: Read" scope the GraphQL calls need; (b) the operator-pasted `KV_NAMESPACE_LABELS`
-// env var, for when that scope is absent; (c) the raw namespace id + a generic color, as a last
-// resort. Step (a) degrades to an empty map (never throws) on a 403/network failure, so a
-// narrowly-scoped token still gets a usable page via (b) or (c).
+// Each KV namespace's display LABEL resolves via a two-step fallback chain, cheapest/most-
+// automatic first: (a) the deploy-populated `KV_NAMESPACE_LABELS` env var — derived at deploy
+// time by `scripts/merge-wrangler-config.mjs` from the operator's own merged `kv_namespaces`
+// (never operator-authored, never a runtime Cloudflare API call); (b) the raw namespace id, as a
+// last resort. Display COLOR is a SEPARATE, label-independent concern: every namespace id
+// observed in a payload gets a distinct, stable color assigned by its position in the sorted list
+// of ids present in that payload (see `assignNamespaceColors`) — an unresolved label still gets a
+// real, non-grey color, never a shared "unlabeled" fallback color.
 
 import type { Env } from "./env.js";
 import { ToolError } from "./errors.js";
@@ -53,9 +53,11 @@ const KV_ACTIONS: readonly KvAction[] = ["read", "write", "delete", "list"];
 /** Per-action operation counts for a day (or one namespace's slice of it). */
 export type KvCounts = Record<KvAction, number>;
 
-/** A namespace's resolved display identity: the binding name it maps to and a stable
- *  categorical color, or the "unlabeled" fallback (Decision 2) for an id the Worker has no
- *  mapping for — never dropped, just shown generically. */
+/** A namespace's resolved display identity: a friendly `label` (the binding name, or the raw id
+ *  if unresolved — `unlabeled: true`) plus a `color` assigned PURELY by the namespace id's
+ *  position among the payload's namespace ids (see `assignNamespaceColors`) — the color is never
+ *  a function of whether the label resolved, so an unlabeled namespace still gets a distinct,
+ *  non-generic color. */
 export type NamespaceLabel = { label: string; color: string; unlabeled: false } | { label: string; color: string; unlabeled: true };
 
 /** One namespace's operation counts (keyed by the Analytics namespace id) plus its resolved
@@ -77,6 +79,15 @@ export interface KvHistoryDay {
   /** UTC day, `YYYY-MM-DD`. */
   day: string;
   namespaces: NamespaceUsage[];
+}
+
+/** One day's total Workers AI neuron consumption (summed across models) within the history
+ *  window. Every day in the window appears (zero-filled), so a quiet day reports `0`, never an
+ *  absent entry — mirrors `KvHistoryDay`'s zero-fill guarantee. */
+export interface AiHistoryDay {
+  /** UTC day, `YYYY-MM-DD`. */
+  day: string;
+  neurons: number;
 }
 
 /** The Usage payload returned to the admin API. A discriminated union so "configured but
@@ -101,6 +112,12 @@ export type UsageResult =
         neurons_limit: number;
         neurons_used: number;
         by_model: AiModelUsage[];
+        /** Per-day neuron consumption over `history.window_days` (oldest → newest), the same
+         *  window `kv.history` and `usage-trends`/`tool-usage-trends` use — summed across models
+         *  per day. Sourced from the SAME `aiInferenceAdaptiveGroups` query the snapshot uses,
+         *  widened to a date range, mirroring how `kv.history` widens `kvOperationsAdaptiveGroups`
+         *  — zero additional token scope, zero additional query. */
+        history: { window_days: number; days: AiHistoryDay[] };
       };
     };
 
@@ -121,36 +138,16 @@ function asKvAction(raw: unknown): KvAction | null {
 const num = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) ? v : 0);
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Namespace label/color resolution (usage-observability: "KV namespace ids resolve to a
-// friendly label and display color"). Resolution is a FALLBACK CHAIN, cheapest/most-automatic
-// first:
-//   (a) the Cloudflare REST API's own namespace title (`fetchNamespaceTitles` below) — the
-//       PRIMARY fix, needs no operator config;
-//   (b) the operator-pasted `KV_NAMESPACE_LABELS` env var (`id:BINDING,id:BINDING`, see env.ts),
-//       for when the token lacks KV-read scope or the REST call is otherwise unavailable;
-//   (c) the raw namespace id + the generic "unlabeled" color, as a last resort — it still
-//       reports its counts, just without a friendly label/color, so aggregate totals stay
-//       accurate even when labeling is incomplete.
-// A binding name (from either (a) or (b)) is mapped to a display color via a small fixed
-// palette; the REST title may be prefixed (e.g. `worker-KROGER_KV`), so the match is by
-// substring against the known bindings, not equality.
-
-/** The three known KV bindings (wrangler.jsonc `kv_namespaces`), each a fixed display color from
- *  a small warm categorical palette (mirrors the design mock's `--kv-kroger`/`--kv-oauth`/
- *  `--kv-tenant` swatches). Colors are NOT operator-configurable — only the id→binding join is. */
-const NAMESPACE_PALETTE: Record<string, { color: string }> = {
-  KROGER_KV: { color: "var(--kv-kroger)" },
-  OAUTH_KV: { color: "var(--kv-oauth)" },
-  TENANT_KV: { color: "var(--kv-tenant)" },
-};
-
-/** The known binding names, longest-first so `TENANT_KV` isn't shadowed by a hypothetical
- *  shorter substring match — kept as an explicit array (not just `Object.keys`) so the match
- *  order is documented, not incidental. */
-const KNOWN_BINDINGS = Object.keys(NAMESPACE_PALETTE);
-
-/** The generic fallback for a namespace id with no resolvable binding name. */
-const UNLABELED_COLOR = "var(--kv-unlabeled)";
+// Namespace label resolution (usage-observability: "KV namespace ids resolve to a friendly
+// label and display color"). LABEL resolution is a two-step fallback chain, cheapest/most-
+// automatic first:
+//   (a) the deploy-populated `KV_NAMESPACE_LABELS` env var (`id:BINDING,id:BINDING`, see env.ts)
+//       — derived at DEPLOY TIME by scripts/merge-wrangler-config.mjs from the operator's own
+//       merged `kv_namespaces` array, never operator-authored and never a runtime Cloudflare API
+//       call;
+//   (b) the raw namespace id, as a last resort — it still reports its counts, just without a
+//       friendly label, so aggregate totals stay accurate even when labeling is incomplete.
+// COLOR is a separate, label-INDEPENDENT concern — see `assignNamespaceColors` below.
 
 /** Parse the operator's `KV_NAMESPACE_LABELS` var (`id:BINDING,id:BINDING`, whitespace-tolerant)
  *  into an id → binding-name map. Malformed pairs (no `:`, empty id/binding) are dropped rather
@@ -164,111 +161,58 @@ function parseNamespaceLabels(raw: string | undefined): Map<string, string> {
   return out;
 }
 
-/** Match a Cloudflare KV namespace title (e.g. `worker-KROGER_KV`, or bare `KROGER_KV`) against
- *  the known binding names by substring, since the REST API may prefix the title with the
- *  worker/script name. Returns the matched binding, or null if the title matches none of them
- *  (an unrecognized namespace — e.g. one belonging to a different Worker on the same account —
- *  still gets its literal title as the label, just no palette color). */
-function matchKnownBinding(title: string): string | null {
-  return KNOWN_BINDINGS.find((b) => title.includes(b)) ?? null;
+// ── Position-based color assignment (Decision 2 / Fix 2) ───────────────────────────────────────
+// Color is assigned by a namespace id's POSITION in the sorted list of all namespace ids observed
+// in the current payload — cycling a small fixed categorical palette by index — regardless of
+// whether the id's label resolves. This decouples "how do we visually distinguish namespaces"
+// (always answerable) from "what do we call this namespace" (may fall back to the raw id). Two
+// unlabeled namespaces in the same payload still get two different, non-grey colors.
+
+/** The fixed categorical color palette colors cycle through, by sorted-id index. Reuses the
+ *  existing warm CSS custom properties (`--kv-kroger`/`--kv-oauth`/`--kv-tenant`) plus
+ *  `--kv-unlabeled` repurposed as a 4th cycling color (not a "no label" fallback anymore) — a 4th+
+ *  namespace id (not expected at this Worker's fixed 3-binding KV set) reuses palette colors
+ *  round-robin rather than falling back to a shared grey. */
+const COLOR_PALETTE: readonly string[] = ["var(--kv-kroger)", "var(--kv-oauth)", "var(--kv-tenant)", "var(--kv-unlabeled)"];
+
+/** Assign each namespace id in `namespaceIds` a stable color by its position in the SORTED id
+ *  list, cycling `COLOR_PALETTE` by index. Sorting gives a stable assignment across requests
+ *  within a deployment (the same set of namespace ids always sorts the same way) — it is NOT a
+ *  function of label resolution, so an id with no resolvable label still gets a real, distinct
+ *  color. Pure, no IO. */
+export function assignNamespaceColors(namespaceIds: Iterable<string>): Map<string, string> {
+  const sorted = [...new Set(namespaceIds)].sort();
+  return new Map(sorted.map((id, i) => [id, COLOR_PALETTE[i % COLOR_PALETTE.length]]));
 }
 
-/** Resolve a namespace id to its display identity, walking the fallback chain: (a) the
- *  Cloudflare REST title (`restTitle`, if the caller resolved one for this id) — matched by
- *  substring against the known bindings for its color, but shown verbatim as the label even
- *  when unmatched (still friendlier than a raw hex id); (b) the operator's `KV_NAMESPACE_LABELS`
- *  id→binding map; (c) the raw id + the generic "unlabeled" color. Never throws, never makes a
- *  network request itself — purely a static-table lookup over already-resolved inputs. */
-// ── Cloudflare REST namespace-title lookup (fallback-chain step (a)) ───────────────────────────
-// `GET /accounts/{id}/storage/kv/namespaces` lists every KV namespace on the account with its
-// `title` — the human name Cloudflare derives from the binding at provision time (often prefixed
-// with the worker/script name, e.g. `worker-KROGER_KV`). This is the ONLY runtime way to map a
-// namespace id back to a name (the `KVNamespace` binding itself exposes no id accessor), so it is
-// the primary, automatic resolution step; `KV_NAMESPACE_LABELS` remains the fallback for when the
-// token lacks the "Workers KV Storage: Read" scope this call needs (distinct from the "Account
-// Analytics: Read" scope `fetchUsage`'s GraphQL call needs) — that case 403s, which this function
-// treats as "no titles available" rather than throwing, so the Usage page degrades to the next
-// link in the chain instead of failing outright.
-
-const KV_NAMESPACES_PAGE_SIZE = 100;
-
-/** One page of `GET /accounts/{id}/storage/kv/namespaces`. Loosely typed — external data. */
-interface KvNamespacesPage {
-  success?: boolean;
-  result?: { id?: string; title?: string }[];
-  result_info?: { page?: number; total_pages?: number };
-}
-
-/**
- * Fetch every KV namespace's id → title from the Cloudflare REST API (paginated). Returns an
- * EMPTY map — never throws — on any failure: a network error, a non-2xx (notably a 403 from a
- * token missing "Workers KV Storage: Read" scope), or an unparseable/unsuccessful body. This lets
- * the caller fall through to `KV_NAMESPACE_LABELS` or the raw-id fallback without the Usage page
- * failing when only this ancillary lookup is unavailable.
- */
-export async function fetchNamespaceTitles(accountTag: string, token: string, deps: UsageDeps = defaultDeps): Promise<Map<string, string>> {
-  const titles = new Map<string, string>();
-  let page = 1;
-  for (;;) {
-    let res: Response;
-    try {
-      res = await deps.fetchImpl(
-        `https://api.cloudflare.com/client/v4/accounts/${accountTag}/storage/kv/namespaces?per_page=${KV_NAMESPACES_PAGE_SIZE}&page=${page}`,
-        { headers: { authorization: `Bearer ${token}` } },
-      );
-    } catch {
-      return titles; // transport failure — degrade to the next fallback-chain step
-    }
-    if (!res.ok) return titles; // e.g. 403 (missing KV-read scope) — degrade, don't throw
-    let body: KvNamespacesPage;
-    try {
-      body = (await res.json()) as KvNamespacesPage;
-    } catch {
-      return titles;
-    }
-    if (body.success === false) return titles;
-    for (const ns of body.result ?? []) {
-      if (ns.id && ns.title) titles.set(ns.id, ns.title);
-    }
-    const totalPages = body.result_info?.total_pages ?? 1;
-    if (page >= totalPages || (body.result?.length ?? 0) === 0) break;
-    page += 1;
-  }
-  return titles;
-}
-
-/** Resolve a namespace id to its display identity, walking the fallback chain: (a) the
- *  Cloudflare REST title (`restTitle`, if the caller resolved one for this id) — matched by
- *  substring against the known bindings for its color, but shown verbatim as the label even
- *  when unmatched (still friendlier than a raw hex id); (b) the operator's `KV_NAMESPACE_LABELS`
- *  id→binding map; (c) the raw id + the generic "unlabeled" color. Never throws, never makes a
- *  network request itself — purely a static-table lookup over already-resolved inputs. */
-export function resolveNamespaceLabel(namespaceId: string, idToBinding: Map<string, string>, restTitle?: string): NamespaceLabel {
-  if (restTitle) {
-    const binding = matchKnownBinding(restTitle);
-    const color = binding ? NAMESPACE_PALETTE[binding].color : UNLABELED_COLOR;
-    return { label: restTitle, color, unlabeled: !binding };
-  }
+/** Resolve a namespace id to its display identity: the LABEL via the two-step fallback chain
+ *  (the `idToBinding` map from `KV_NAMESPACE_LABELS`, else the raw id), and the COLOR from the
+ *  supplied `colors` map (built by `assignNamespaceColors` over the full namespace-id set the
+ *  caller is rendering) — falling back to the palette's last-resort color only if the caller
+ *  somehow didn't include this id (should not happen in practice, since callers build `colors`
+ *  from the same id set they resolve labels for). Never throws, never makes a network request —
+ *  purely a static-table lookup over already-resolved inputs. */
+export function resolveNamespaceLabel(namespaceId: string, idToBinding: Map<string, string>, colors: Map<string, string>): NamespaceLabel {
   const binding = idToBinding.get(namespaceId);
-  const swatch = binding ? NAMESPACE_PALETTE[binding] : undefined;
-  if (binding && swatch) return { label: binding, color: swatch.color, unlabeled: false };
-  return { label: namespaceId, color: UNLABELED_COLOR, unlabeled: true };
+  const color = colors.get(namespaceId) ?? COLOR_PALETTE[COLOR_PALETTE.length - 1];
+  if (binding) return { label: binding, color, unlabeled: false };
+  return { label: namespaceId, color, unlabeled: true };
 }
 
 /** The slice of the GraphQL response this module reads: one account's two adaptive-group
  *  lists. Everything is optional/loosely typed because it is external data. */
 interface AccountAnalytics {
   kvOperations?: { dimensions?: { namespaceId?: string; actionType?: string; date?: string }; sum?: { requests?: number } }[];
-  aiInference?: { dimensions?: { modelId?: string }; sum?: { totalNeurons?: number } }[];
+  aiInference?: { dimensions?: { modelId?: string; date?: string }; sum?: { totalNeurons?: number } }[];
 }
 
 /**
  * Pure mapping of one account's analytics rows into the `UsageResult` payload. Sums KV
  * operations per namespace and per action (plus a grand total), and Workers AI neurons per
  * model (plus a total). Unknown action classes are dropped; missing numbers read as 0. Resolves
- * each namespace's label/color via the fallback chain (REST `restTitles` first, then the static
- * `idToBinding` map, then the raw id — empty maps → every namespace "unlabeled", still correctly
- * totaled).
+ * each namespace's label via the `KV_NAMESPACE_LABELS`-derived `idToBinding` map (else the raw
+ * id) and its color by sorted position among the namespace ids observed here (Fix 2 — always a
+ * real, distinct color, independent of label resolution).
  */
 export function mapAccountUsage(
   account: AccountAnalytics,
@@ -276,7 +220,7 @@ export function mapAccountUsage(
   nowMs: number,
   idToBinding: Map<string, string> = new Map(),
   history: { window_days: number; days: KvHistoryDay[] } = { window_days: TRENDS_WINDOW_DAYS, days: [] },
-  restTitles: Map<string, string> = new Map(),
+  aiHistory: { window_days: number; days: AiHistoryDay[] } = { window_days: TRENDS_WINDOW_DAYS, days: [] },
 ): UsageResult {
   const byNamespace = new Map<string, KvCounts>();
   const totals = zeroCounts();
@@ -292,11 +236,12 @@ export function mapAccountUsage(
     byNamespace.set(nsId, counts);
     totals[action] += requests;
   }
+  const colors = assignNamespaceColors(byNamespace.keys());
   const namespaces: NamespaceUsage[] = [...byNamespace.entries()]
     .map(([namespace_id, counts]) => ({
       namespace_id,
       ...counts,
-      resolved: resolveNamespaceLabel(namespace_id, idToBinding, restTitles.get(namespace_id)),
+      resolved: resolveNamespaceLabel(namespace_id, idToBinding, colors),
     }))
     .sort((a, b) => b.write - a.write || b.read - a.read);
 
@@ -318,7 +263,7 @@ export function mapAccountUsage(
     generated_at: nowMs,
     day,
     kv: { limits: FREE_TIER_LIMITS.kv, totals, namespaces, history },
-    ai: { neurons_limit: FREE_TIER_LIMITS.aiNeurons, neurons_used: neuronsUsed, by_model: aiByModel },
+    ai: { neurons_limit: FREE_TIER_LIMITS.aiNeurons, neurons_used: neuronsUsed, by_model: aiByModel, history: aiHistory },
   };
 }
 
@@ -342,7 +287,6 @@ export function mapKvHistory(
   windowStartDay: string,
   windowEndDay: string,
   idToBinding: Map<string, string>,
-  restTitles: Map<string, string> = new Map(),
 ): { window_days: number; days: KvHistoryDay[] } {
   // byDay[day][nsId] = counts
   const byDay = new Map<string, Map<string, KvCounts>>();
@@ -369,15 +313,46 @@ export function mapKvHistory(
   for (let t = start; t <= end; t += 86_400_000) days.push(new Date(t).toISOString().slice(0, 10));
 
   const nsIds = [...allNsIds].sort();
+  const colors = assignNamespaceColors(nsIds);
   const historyDays: KvHistoryDay[] = days.map((day) => {
     const dayMap = byDay.get(day);
     const namespaces: NamespaceUsage[] = nsIds.map((namespace_id) => {
       const counts = dayMap?.get(namespace_id) ?? zeroCounts();
-      return { namespace_id, ...counts, resolved: resolveNamespaceLabel(namespace_id, idToBinding, restTitles.get(namespace_id)) };
+      return { namespace_id, ...counts, resolved: resolveNamespaceLabel(namespace_id, idToBinding, colors) };
     });
     return { day, namespaces };
   });
 
+  return { window_days: days.length, days: historyDays };
+}
+
+/** The GraphQL `aiInferenceAdaptiveGroups` row shape shared by the today-snapshot and the
+ *  history-range query (the same dimensions/metric; the history query adds `date`). */
+interface AiInferenceRow {
+  dimensions?: { modelId?: string; date?: string };
+  sum?: { totalNeurons?: number };
+}
+
+/**
+ * Pure mapping of a 30-day-ranged `aiInferenceAdaptiveGroups` response into a per-day neuron
+ * series, ascending by day, summed across models — mirroring `mapKvHistory`'s zero-fill
+ * behavior: every day in `[windowStartDay, windowEndDay]` appears, even one with zero rows,
+ * reporting `0` neurons rather than an absent entry.
+ */
+export function mapAiHistory(rows: AiInferenceRow[], windowStartDay: string, windowEndDay: string): { window_days: number; days: AiHistoryDay[] } {
+  const byDay = new Map<string, number>();
+  for (const row of rows) {
+    const day = typeof row.dimensions?.date === "string" ? row.dimensions.date.slice(0, 10) : "";
+    if (!day) continue;
+    byDay.set(day, (byDay.get(day) ?? 0) + num(row.sum?.totalNeurons));
+  }
+
+  const days: string[] = [];
+  const start = new Date(`${windowStartDay}T00:00:00Z`).getTime();
+  const end = new Date(`${windowEndDay}T00:00:00Z`).getTime();
+  for (let t = start; t <= end; t += 86_400_000) days.push(new Date(t).toISOString().slice(0, 10));
+
+  const historyDays: AiHistoryDay[] = days.map((day) => ({ day, neurons: Math.round(byDay.get(day) ?? 0) }));
   return { window_days: days.length, days: historyDays };
 }
 
@@ -387,20 +362,21 @@ function utcDayMinus(nowMs: number, n: number): string {
 }
 
 /** The GraphQL query for one account's current-day usage PLUS the trailing per-namespace KV
- *  history: KV operations (by namespace + action + date, the date range covering the history
- *  window) from `kvOperationsAdaptiveGroups`, and Workers AI neurons (by model, today only) from
- *  `aiInferenceAdaptiveGroups`. The KV query is intentionally the SAME `kvOperationsAdaptiveGroups`
- *  node the same-day snapshot already used, widened from a single-day filter to a `windowStartDay`..
- *  `today` range with `date` added to `dimensions` (design.md Decision 1 / Decision 4: one widened
- *  query, additive — the existing today-only behavior is the last day of this same series, not a
- *  separate code path). The two datasets filter on different time dimensions — KV by `date`, AI by
- *  `datetimeHour` — so both ranges are inlined (server-controlled `YYYY-MM-DD`, no injection surface)
- *  and only `$accountTag` is a bound variable. Field/dimension/metric names match the live schema: KV
- *  `namespaceId`/`actionType`/`date` with `sum { requests }`; AI `modelId` with `sum { totalNeurons }`.
- *  Row-cap note (design.md Decision 1): `limit: 1000` comfortably covers this Worker's
- *  namespaces(~3) × actions(4) × days(30) ≈ 360 rows; a response landing exactly at 1000 rows would
- *  indicate truncation — not expected at this Worker's namespace count, but worth knowing about if it
- *  ever shows up in production telemetry. */
+ *  history AND the trailing per-day Workers AI neuron history: KV operations (by namespace +
+ *  action + date, the date range covering the history window) from `kvOperationsAdaptiveGroups`,
+ *  and Workers AI neurons (by model + date, the SAME date range) from `aiInferenceAdaptiveGroups`.
+ *  Both queries are intentionally the SAME nodes the same-day snapshot already used, each widened
+ *  from a single-day filter to a `windowStartDay`..`today` range with `date` added to `dimensions`
+ *  (design.md Decision 1 / Decision 4: one widened query per dataset, additive — the existing
+ *  today-only behavior is the last day of this same series, not a separate code path). Both
+ *  ranges are inlined (server-controlled `YYYY-MM-DD`, no injection surface) and only
+ *  `$accountTag` is a bound variable. Field/dimension/metric names match the live schema: KV
+ *  `namespaceId`/`actionType`/`date` with `sum { requests }`; AI `modelId`/`date` with
+ *  `sum { totalNeurons }`. Row-cap note (design.md Decision 1): `limit: 1000` comfortably covers
+ *  this Worker's namespaces(~3) × actions(4) × days(30) ≈ 360 KV rows and models(~2) × days(30) ≈
+ *  60 AI rows; a response landing exactly at 1000 rows would indicate truncation — not expected at
+ *  this Worker's namespace/model count, but worth knowing about if it ever shows up in production
+ *  telemetry. */
 const usageQuery = (windowStartDay: string, today: string) => `query Usage($accountTag: String!) {
   viewer {
     accounts(filter: { accountTag: $accountTag }) {
@@ -413,9 +389,9 @@ const usageQuery = (windowStartDay: string, today: string) => `query Usage($acco
       }
       aiInference: aiInferenceAdaptiveGroups(
         limit: 1000
-        filter: { datetimeHour_geq: "${today}T00:00:00Z", datetimeHour_leq: "${today}T23:00:00Z" }
+        filter: { date_geq: "${windowStartDay}", date_leq: "${today}" }
       ) {
-        dimensions { modelId }
+        dimensions { modelId date }
         sum { totalNeurons }
       }
     }
@@ -438,12 +414,13 @@ export const defaultDeps: UsageDeps = { fetchImpl: fetch.bind(globalThis), now: 
 
 /**
  * Fetch the current UTC day's usage — PLUS the trailing `TRENDS_WINDOW_DAYS`-day per-namespace
- * KV history — from the Cloudflare GraphQL Analytics API. Returns `{ configured: false }` (with
- * NO network call) when `CF_ACCOUNT_ID`/`CF_ANALYTICS_TOKEN` is unset. Maps a transport failure,
- * a non-2xx, or a GraphQL `errors` payload to an `upstream_unavailable` ToolError (the admin
- * route serializes it). Performs no KV operation. The KV rows the widened query returns cover
- * both today (the existing snapshot) and the history window — today's snapshot is the SAME rows
- * re-aggregated without the `date` dimension, not a second query (design.md Decision 4).
+ * KV history and per-day Workers AI neuron history — from the Cloudflare GraphQL Analytics API.
+ * Returns `{ configured: false }` (with NO network call) when `CF_ACCOUNT_ID`/`CF_ANALYTICS_TOKEN`
+ * is unset. Maps a transport failure, a non-2xx, or a GraphQL `errors` payload to an
+ * `upstream_unavailable` ToolError (the admin route serializes it). Performs no KV operation. The
+ * KV and AI rows the widened query returns each cover both today (the existing snapshot) and the
+ * history window — today's snapshot is the SAME rows re-aggregated without the `date` dimension,
+ * not a second query (design.md Decision 4).
  */
 export async function fetchUsage(env: Env, deps: UsageDeps = defaultDeps): Promise<UsageResult> {
   const accountTag = env.CF_ACCOUNT_ID?.trim();
@@ -453,12 +430,10 @@ export async function fetchUsage(env: Env, deps: UsageDeps = defaultDeps): Promi
   const nowMs = deps.now();
   const today = utcDay(nowMs);
   const windowStartDay = utcDayMinus(nowMs, TRENDS_WINDOW_DAYS - 1);
+  // Namespace label resolution: the `KV_NAMESPACE_LABELS` var, populated at DEPLOY TIME by
+  // scripts/merge-wrangler-config.mjs from the operator's own merged `kv_namespaces` — never a
+  // runtime Cloudflare API call (Fix 3). Falls back to the raw id when unset/unmatched.
   const idToBinding = parseNamespaceLabels(env.KV_NAMESPACE_LABELS);
-  // Fallback-chain step (a): resolve namespace titles from the REST API in parallel with the
-  // GraphQL usage query below (independent requests). `fetchNamespaceTitles` never throws — a
-  // missing "Workers KV Storage: Read" scope (403) or any other failure degrades to an empty map,
-  // so resolution falls through to `idToBinding` (step (b)) or the raw id (step (c)).
-  const restTitlesPromise = fetchNamespaceTitles(accountTag, token, deps);
   let res: Response;
   try {
     res = await deps.fetchImpl(GRAPHQL_ENDPOINT, {
@@ -490,10 +465,18 @@ export async function fetchUsage(env: Env, deps: UsageDeps = defaultDeps): Promi
   // Today's snapshot is just today's slice of the same widened response (filter the ranged rows
   // to `date === today`), not a separate request — `mapAccountUsage` keeps its existing
   // single-day aggregation, fed only the rows for today.
-  const todayRows = (account.kvOperations ?? []).filter((r) => r.dimensions?.date === today || r.dimensions?.date == null);
-  const restTitles = await restTitlesPromise;
-  const history = mapKvHistory(account.kvOperations ?? [], windowStartDay, today, idToBinding, restTitles);
-  return mapAccountUsage({ ...account, kvOperations: todayRows }, today, nowMs, idToBinding, history, restTitles);
+  const todayKvRows = (account.kvOperations ?? []).filter((r) => r.dimensions?.date === today || r.dimensions?.date == null);
+  const todayAiRows = (account.aiInference ?? []).filter((r) => r.dimensions?.date === today || r.dimensions?.date == null);
+  const history = mapKvHistory(account.kvOperations ?? [], windowStartDay, today, idToBinding);
+  const aiHistory = mapAiHistory(account.aiInference ?? [], windowStartDay, today);
+  return mapAccountUsage(
+    { ...account, kvOperations: todayKvRows, aiInference: todayAiRows },
+    today,
+    nowMs,
+    idToBinding,
+    history,
+    aiHistory,
+  );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -35,6 +35,7 @@ function makeEnv(over: Partial<Env> = {}, members: string[] = []): Env {
     ADMIN_DEV_BYPASS: "1",
     TENANT_KV: memKv(kvInit),
     KROGER_KV: memKv(),
+    OAUTH_KV: memKv(),
     DB: fakeD1().env.DB,
     CORPUS: fakeR2().bucket,
     ASSETS: { fetch: async () => new Response("not found", { status: 404 }) },
