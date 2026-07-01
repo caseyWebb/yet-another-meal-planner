@@ -49,6 +49,7 @@ import { DiscoveryPage } from "./pages/discovery.js";
 import { ScrapersPage } from "./pages/scrapers.js";
 import { NormalizePage, parseQuery } from "./pages/normalize.js";
 import { readNormalizationPage } from "../normalize-admin.js";
+import { readReconcileObservability } from "../reconcile-admin.js";
 import { addAliases, deleteAlias, enqueueNovelTerms, deleteNormalizationLog } from "../corpus-db.js";
 import { getDiscoveryConfig, putDiscoveryConfig, analyzeDiscovery, dryRunDiscovery, testFeed, getOperatorConfig, putOperatorConfig, listCorpus, addCorpus, deleteCorpus } from "./config-api.js";
 import { registerConfigRoutes } from "./pages/config.js";
@@ -135,10 +136,11 @@ app.onError((err, c) => {
 // the public `/health` uses (no client fetch, no decoder), plus the corpus stat-tile counts and
 // each job's recent run history (for the uptime sparkline + healthy/unhealthy-since label).
 app.get("/", async (c) => {
-  const [payload, counts, liveness] = await Promise.all([
+  const [payload, counts, liveness, reconcile] = await Promise.all([
     buildHealthPayload(c.env, HEALTH_JOBS),
     corpusCounts(c.env),
     readScraperLiveness(c.env),
+    readReconcileObservability(c.env),
   ]);
   const runsByJob: Record<string, JobRun[]> = {};
   await Promise.all(
@@ -147,7 +149,15 @@ app.get("/", async (c) => {
     }),
   );
   return c.html(
-    page(<StatusPage payload={payload} counts={counts} runsByJob={runsByJob} scrapers={liveness.activeScrapers} />),
+    page(
+      <StatusPage
+        payload={payload}
+        counts={counts}
+        runsByJob={runsByJob}
+        reconcile={reconcile}
+        scrapers={liveness.activeScrapers}
+      />,
+    ),
   );
 });
 
@@ -312,8 +322,11 @@ registerConfigRoutes(app);
 // client/normalize.tsx. The Aliases tab subsumes the retired Config › Aliases editor.
 app.get("/normalize", async (c) => {
   const query = parseQuery(new URL(c.req.url));
-  const data = await readNormalizationPage(c.env, { now: Date.now() });
-  return c.html(page(<NormalizePage data={data} query={query} now={Date.now()} />));
+  const [data, reconcile] = await Promise.all([
+    readNormalizationPage(c.env, { now: Date.now() }),
+    readReconcileObservability(c.env),
+  ]);
+  return c.html(page(<NormalizePage data={data} query={query} now={Date.now()} reconcile={reconcile} />));
 });
 
 app.get("/discovery", async (c) => {

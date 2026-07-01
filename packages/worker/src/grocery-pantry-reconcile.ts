@@ -17,6 +17,11 @@ import { ingredientContext, emptyIngredientContext } from "./corpus-db.js";
 import { groceryKey, type GroceryItem } from "./grocery.js";
 import { pantryUpsertStmt, groceryUpsertStmt } from "./session-db.js";
 import type { PantryItem } from "./pantry-write.js";
+import { writeJobHealth, writeJobRun } from "./health.js";
+
+/** The background-job name the reconcile records its health + per-run history under (its
+ *  observability surface reads this back). Distinct from `reconcile-signals` (a different job). */
+export const RECONCILE_JOB = "grocery-reconcile";
 
 /** Max rows re-keyed per tick (writes, not reads). Tiny per-tenant stores converge in one
  *  tick; the bound guards a pathological store and lets convergence span ticks idempotently. */
@@ -265,4 +270,33 @@ export async function reconcileGroceryPantryKeys(env: Env): Promise<ReconcileRes
     console.warn(`[grocery-pantry-reconcile] truncated at ${RECONCILE_MAX_PER_TICK} re-keys/tick; backlog re-keys next tick`);
   }
   return { grocery_rekeyed: groceryRekeyed, pantry_rekeyed: pantryRekeyed, truncated };
+}
+
+/**
+ * One scheduled run: do the reconcile pass, record the `grocery-reconcile` job_health + job_run
+ * rows (a `{ grocery_rekeyed, pantry_rekeyed, truncated }` summary — tenant-clean counts only), and
+ * rethrow so the platform's cron status reflects a hard failure (mirrors runReconfirmJob). The
+ * per-run history is what the observability card reads back (`readReconcileObservability`) to tell
+ * "converging" from "converged". A converged tick is a healthy `ok: true` run that happened to
+ * re-key nothing — not a failure.
+ */
+export async function runReconcileJob(env: Env): Promise<void> {
+  const startedAt = Date.now();
+  try {
+    const s = await reconcileGroceryPantryKeys(env);
+    const summary = { grocery_rekeyed: s.grocery_rekeyed, pantry_rekeyed: s.pantry_rekeyed, truncated: s.truncated };
+    await writeJobHealth(env, RECONCILE_JOB, { ok: true, last_run_at: startedAt, summary });
+    await writeJobRun(env, RECONCILE_JOB, { ok: true, ran_at: startedAt, duration_ms: Date.now() - startedAt, summary });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error("[grocery-pantry-reconcile] pass failed:", msg);
+    await writeJobHealth(env, RECONCILE_JOB, { ok: false, last_run_at: startedAt, summary: { error: msg } }).catch(() => {});
+    await writeJobRun(env, RECONCILE_JOB, {
+      ok: false,
+      ran_at: startedAt,
+      duration_ms: Date.now() - startedAt,
+      summary: { error: msg },
+    }).catch(() => {});
+    throw e;
+  }
 }

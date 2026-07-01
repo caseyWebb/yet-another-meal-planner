@@ -27,6 +27,8 @@ import {
 } from "../ui/icons.js";
 import { relAge, relFuture } from "../logs-shared.js";
 import type { NormalizationPage, NormalizationDecision, AliasRow } from "../../normalize-admin.js";
+import type { ReconcileObservability } from "../../reconcile-admin.js";
+import { ReconcileCard } from "./reconcile.js";
 
 export const ALIAS_PAGE_SIZE = 25;
 
@@ -52,7 +54,7 @@ const FILTERS: Array<{ key: string; label: string }> = [
 
 /** Query-param state the SSR view + island both read. */
 export interface NormalizeQuery {
-  tab: "decisions" | "queue" | "aliases";
+  tab: "decisions" | "queue" | "aliases" | "reconcile";
   filter: string;
   q: string;
   src: string;
@@ -61,7 +63,8 @@ export interface NormalizeQuery {
 
 export function parseQuery(url: URL): NormalizeQuery {
   const tabRaw = url.searchParams.get("tab");
-  const tab = tabRaw === "queue" || tabRaw === "aliases" ? tabRaw : "decisions";
+  const tab =
+    tabRaw === "queue" || tabRaw === "aliases" || tabRaw === "reconcile" ? tabRaw : "decisions";
   const pageRaw = Number(url.searchParams.get("page") ?? "1");
   const page = Number.isFinite(pageRaw) && pageRaw > 0 ? pageRaw - 1 : 0;
   return {
@@ -442,8 +445,19 @@ const AliasesTab = ({ data, query }: { data: NormalizationPage; query: Normalize
 };
 
 /** The Normalization area's SSR content. `query` (tab/filter/q/src/page) is route state so every
- *  combination is deep-linkable; `now` is the render clock for relative times. */
-export const NormalizeView = ({ data, query, now }: { data: NormalizationPage; query: NormalizeQuery; now: number }) => {
+ *  combination is deep-linkable; `now` is the render clock for relative times. `reconcile` feeds the
+ *  Reconcile tab's convergence card (read-only — no island). */
+export const NormalizeView = ({
+  data,
+  query,
+  now,
+  reconcile,
+}: {
+  data: NormalizationPage;
+  query: NormalizeQuery;
+  now: number;
+  reconcile: ReconcileObservability;
+}) => {
   const stats = data.stats;
   const cards: Array<{ icon: Child; label: string; value: Child; sub?: string; warn?: boolean; bad?: boolean }> = [
     { icon: <DatabaseIcon size={15} />, label: "Canonical nodes", value: stats.nodes.toLocaleString() },
@@ -470,6 +484,10 @@ export const NormalizeView = ({ data, query, now }: { data: NormalizationPage; q
           Aliases
           {data.aliases.length > 0 ? <span class="pill-count">{data.aliases.length}</span> : null}
         </a>
+        <a class={query.tab === "reconcile" ? "pill active" : "pill"} href={href({ tab: "reconcile", page: 0 }, query)}>
+          <span class={`rk-tab-dot ${reconcile.state}`} />
+          Reconcile
+        </a>
       </div>
 
       <div class="area-head status-head">
@@ -489,6 +507,10 @@ export const NormalizeView = ({ data, query, now }: { data: NormalizationPage; q
         <QueueTable data={data} now={now} />
       ) : query.tab === "aliases" ? (
         <AliasesTab data={data} query={query} />
+      ) : query.tab === "reconcile" ? (
+        <div class="nz-reconcile">
+          <ReconcileCard s={reconcile} now={now} />
+        </div>
       ) : (
         <>
           <div class="data-nav nz-filters">
@@ -578,18 +600,29 @@ export const NormalizeView = ({ data, query, now }: { data: NormalizationPage; q
   );
 };
 
-function serializeProps(data: NormalizationPage): string {
-  return JSON.stringify({ data }).replace(/</g, "\\u003c");
+function serializeProps(data: NormalizationPage, reconcile: ReconcileObservability): string {
+  return JSON.stringify({ data, reconcile }).replace(/</g, "\\u003c");
 }
 
 /** The `/admin/normalize` shell: the area SSR'd (first paint carries the data) + the mutation
- *  island's hydration props + script (Override / Re-queue / Delete / Add-alias). */
-export const NormalizePage = ({ data, query, now }: { data: NormalizationPage; query: NormalizeQuery; now: number }) => (
+ *  island's hydration props + script (Override / Re-queue / Delete / Add-alias). The Reconcile tab
+ *  is read-only (no island), so its `reconcile` model rides the SSR only. */
+export const NormalizePage = ({
+  data,
+  query,
+  now,
+  reconcile,
+}: {
+  data: NormalizationPage;
+  query: NormalizeQuery;
+  now: number;
+  reconcile: ReconcileObservability;
+}) => (
   <Layout title="Normalization · grocery-agent admin" active="/admin/normalize" wide>
     <div id="normalize-island">
-      <NormalizeView data={data} query={query} now={now} />
+      <NormalizeView data={data} query={query} now={now} reconcile={reconcile} />
     </div>
-    <script type="application/json" id="normalize-props" dangerouslySetInnerHTML={{ __html: serializeProps(data) }} />
+    <script type="application/json" id="normalize-props" dangerouslySetInnerHTML={{ __html: serializeProps(data, reconcile) }} />
     <script type="module" src="/admin/islands/normalize.js" />
   </Layout>
 );

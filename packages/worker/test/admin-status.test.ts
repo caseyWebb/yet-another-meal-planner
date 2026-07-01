@@ -2,6 +2,26 @@ import { describe, it, expect } from "vitest";
 import { StatusPage, STATUS_SPARKLINE_WINDOW, jobStateOf, gateStateOf, relAge } from "../src/admin/pages/status.js";
 import type { HealthPayload, JobRun } from "../src/health.js";
 import type { CorpusCounts } from "../src/admin-data.js";
+import type { ReconcileObservability } from "../src/reconcile-admin.js";
+
+/** A calm "never run" reconcile model — the Status row renders it as a positive idle state. */
+function reconcile(over: Partial<ReconcileObservability> = {}): ReconcileObservability {
+  return {
+    state: "neverRun",
+    grocery_rekeyed: 0,
+    pantry_rekeyed: 0,
+    truncated: false,
+    ticks: [],
+    lifetimeMerged: 0,
+    lastTick: null,
+    startedAt: null,
+    lastMerge: null,
+    convergedAt: null,
+    cap: 500,
+    cadenceMin: 5,
+    ...over,
+  };
+}
 
 function payload(over: Partial<HealthPayload> = {}): HealthPayload {
   return {
@@ -24,7 +44,7 @@ function run(over: Partial<JobRun> = {}): JobRun {
 }
 
 const render = (p: HealthPayload, c: CorpusCounts = counts(), runsByJob: Record<string, JobRun[]> = {}): string =>
-  (StatusPage({ payload: p, counts: c, runsByJob }) as { toString(): string }).toString();
+  (StatusPage({ payload: p, counts: c, runsByJob, reconcile: reconcile() }) as { toString(): string }).toString();
 
 describe("Status helpers (the compiler-opaque logic worth pinning)", () => {
   it("collapses a job's ok/null wire shape to one state", () => {

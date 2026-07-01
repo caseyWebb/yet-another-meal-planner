@@ -830,4 +830,82 @@
   .nz-ov-k { font-size: .68rem; text-transform: uppercase; letter-spacing: .04em; color: #999; }
   .nz-ov-term { font-family: ui-monospace, monospace; font-size: .85rem; background: color-mix(in oklch, var(--muted) 40%, transparent); padding: .3rem .5rem; border-radius: var(--radius-sm); }
   .nz-dialog-foot { display: flex; justify-content: flex-end; gap: .5rem; margin-top: .3rem; }
+
+  /* ── Normalize › Reconcile: the grocery/pantry key-reconcile convergence card + its Status row.
+     Panel-layout classes the Basecoat kit doesn't provide (the design's `rk-*` set), translated to
+     the panel's palette: the two stacked-bar colors are the orange accent (grocery) + a deep terra
+     (pantry); green = the positive "converged" terminal state, amber = a remaining backlog. */
+  /* The convergence card. */
+  .rk-card { border: 1px solid var(--border); border-left: 3px solid var(--accent); border-radius: var(--radius-lg); background: #fff; box-shadow: var(--shadow-xs); padding: 1.05rem 1.2rem 1.15rem; }
+  .rk-card.converged, .rk-card.neverRun { border-left-color: #2da44e; }
+
+  .rk-head { display: flex; align-items: flex-start; gap: .7rem; }
+  .rk-glyph { display: inline-flex; flex: 0 0 auto; margin-top: .05rem; }
+  .rk-glyph.converging { color: var(--accent); }
+  .rk-glyph.converged, .rk-glyph.neverRun { color: #2da44e; }
+  .rk-headline { flex: 1; min-width: 0; }
+  .rk-title-row { display: flex; align-items: center; gap: .6rem; flex-wrap: wrap; }
+  .rk-title { font-family: var(--font-mono); font-size: .95rem; font-weight: 600; color: #1a1a1a; }
+  .rk-badge { font-size: .68rem; font-weight: 600; letter-spacing: .01em; padding: .1rem .5rem; border-radius: 999px; border: 1px solid; white-space: nowrap; }
+  .rk-badge.converging { color: #b4552b; background: color-mix(in oklch, var(--accent) 12%, transparent); border-color: color-mix(in oklch, var(--accent) 40%, var(--border)); }
+  .rk-badge.converged, .rk-badge.neverRun { color: #1a7f37; background: #eafbef; border-color: #b7e4c7; }
+  .rk-sub { margin: .3rem 0 0; font-size: .82rem; line-height: 1.5; color: #555; max-width: 42rem; }
+
+  /* Live (converging) body. */
+  .rk-live { margin-top: 1rem; }
+  .rk-counts { display: flex; gap: 2rem; padding-bottom: 1rem; border-bottom: 1px solid #f2f2f2; }
+  .rk-count { display: flex; flex-direction: column; gap: .25rem; }
+  .rk-count-v { font-size: 1.7rem; font-weight: 600; letter-spacing: -.02em; line-height: 1; font-variant-numeric: tabular-nums; color: #1a1a1a; }
+  .rk-count-tot .rk-count-v { color: var(--accent); }
+  .rk-count-k { display: inline-flex; align-items: center; gap: .35rem; font-size: .74rem; color: var(--muted-foreground); }
+  .rk-dot { width: .5rem; height: .5rem; border-radius: 2px; flex: 0 0 auto; }
+  .rk-dot-g { background: var(--accent); }
+  .rk-dot-p { background: #b4552b; }
+
+  .rk-spark-wrap { margin-top: 1rem; }
+  .rk-spark-cap { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: .4rem; font-size: .72rem; text-transform: uppercase; letter-spacing: .045em; color: #888; font-weight: 600; }
+  .rk-spark-axis { text-transform: none; letter-spacing: 0; font-weight: 400; color: #999; }
+  .rk-spark { display: flex; align-items: flex-end; gap: 3px; height: 42px; }
+  .rk-col { flex: 1 1 0; min-width: 0; height: 100%; display: flex; align-items: flex-end; }
+  .rk-col-stack { display: flex; flex-direction: column; width: 100%; border-radius: 2px; overflow: hidden; min-height: 3px; }
+  .rk-seg { width: 100%; display: block; }
+  .rk-seg-g { background: var(--accent); }
+  .rk-seg-p { background: #b4552b; }
+  .rk-col-zero { width: 100%; height: 2px; background: #e5e5e5; border-radius: 2px; }
+
+  .rk-foot { display: flex; align-items: center; flex-wrap: wrap; gap: .35rem; margin: 1rem 0 0; font-size: .78rem; color: var(--muted-foreground); line-height: 1.5; }
+  .rk-foot svg { color: #999; flex: 0 0 auto; }
+  .rk-sep { opacity: .5; margin: 0 .15rem; }
+
+  .rk-backlog { display: flex; align-items: flex-start; gap: .5rem; margin-top: 1rem; padding: .6rem .8rem; border-radius: var(--radius-md); font-size: .82rem; line-height: 1.5; color: #9a6700; background: #fdf6e3; border: 1px solid color-mix(in oklch, #d4a72c 40%, var(--border)); }
+  .rk-backlog svg { flex: 0 0 auto; margin-top: .1rem; }
+  .rk-backlog strong { font-weight: 600; }
+
+  /* Converged (idle) body. */
+  .rk-done { margin-top: 1rem; }
+  .rk-facts { display: flex; gap: 2.2rem; margin: 0 0 1rem; padding-bottom: 1rem; border-bottom: 1px solid #f2f2f2; }
+  .rk-fact { display: flex; flex-direction: column; gap: .3rem; }
+  .rk-fact dt { font-size: .72rem; text-transform: uppercase; letter-spacing: .04em; color: #888; font-weight: 600; }
+  .rk-fact dd { margin: 0; font-size: 1.15rem; font-weight: 600; color: #1a1a1a; font-variant-numeric: tabular-nums; }
+  .rk-fact dd.rk-noop { font-size: .92rem; font-weight: 500; color: #555; }
+
+  /* Status sibling row extras (the reconcile as a Background-jobs row). */
+  .sglyph.rk-run { color: var(--accent); }
+  .rk-status-spark { margin-top: .7rem; }
+  .rk-spark.compact { height: 24px; }
+  .rk-job-name { background: none; border: 0; padding: 0; font: inherit; font-family: var(--font-mono); font-size: .9rem; font-weight: 500; color: #1a1a1a; text-decoration: none; cursor: pointer; display: inline-flex; align-items: center; gap: .3rem; }
+  .rk-job-name:hover { color: var(--accent); }
+  .rk-job-name svg { color: #999; }
+  .rk-job-name:hover svg { color: var(--accent); }
+
+  /* Reconcile sub-nav pill state dot (a small live/converged indicator in the Normalize sub-nav). */
+  .rk-tab-dot { display: inline-block; vertical-align: middle; width: .5rem; height: .5rem; border-radius: 50%; margin-right: .4rem; margin-top: -1px; }
+  .rk-tab-dot.converging { background: var(--accent); }
+  .rk-tab-dot.converged, .rk-tab-dot.neverRun { background: #2da44e; }
+  .pill.active .rk-tab-dot.converging { background: #222; }
+
+  @media (max-width: 640px) {
+    .rk-counts { gap: 1.25rem; }
+    .rk-facts { flex-wrap: wrap; gap: 1rem 1.5rem; }
+  }
 }

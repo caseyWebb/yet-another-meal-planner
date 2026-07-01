@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { fakeD1 } from "./fake-d1.js";
-import { planReconcile, reconcileGroceryPantryKeys } from "../src/grocery-pantry-reconcile.js";
+import { planReconcile, reconcileGroceryPantryKeys, runReconcileJob, RECONCILE_JOB } from "../src/grocery-pantry-reconcile.js";
+import { readJobHealth } from "../src/health.js";
 
 // The D2 backfill: re-key stale FOOD grocery/pantry rows from a `normalizeName` key onto the
 // canonical id (`resolve`), merging collisions. `planReconcile` is the pure core; the driver
@@ -155,5 +156,46 @@ describe("reconcileGroceryPantryKeys (driver)", () => {
     expect(res.pantry_rekeyed).toBe(1);
     expect(tables.pantry.map((r) => r.normalized_name)).toEqual(["green onion"]);
     expect(tables.pantry[0].quantity).toBe("partial");
+  });
+});
+
+// --- job wrapper: records `grocery-reconcile` health + rethrows on failure ---
+
+describe("runReconcileJob (observability wrapper)", () => {
+  it("records a healthy grocery-reconcile job_health with a counts-only summary", async () => {
+    const { env } = seed([grow({ name: "scallions", normalized_name: "scallions" })]);
+    await runReconcileJob(env);
+    const health = await readJobHealth(env, RECONCILE_JOB);
+    expect(health).not.toBeNull();
+    expect(health!.ok).toBe(true);
+    expect(health!.summary).toEqual({ grocery_rekeyed: 1, pantry_rekeyed: 0, truncated: false });
+  });
+
+  it("rethrows on a storage failure so the cron status reflects it", async () => {
+    // A DB whose every statement throws — the reconcile read fails, the wrapper rethrows.
+    const env = {
+      DB: {
+        prepare() {
+          return {
+            bind() {
+              return this;
+            },
+            async all() {
+              throw new Error("D1_ERROR: unreachable");
+            },
+            async first() {
+              throw new Error("D1_ERROR: unreachable");
+            },
+            async run() {
+              throw new Error("D1_ERROR: unreachable");
+            },
+          };
+        },
+        async batch() {
+          throw new Error("D1_ERROR: unreachable");
+        },
+      },
+    } as unknown as import("../src/env.js").Env;
+    await expect(runReconcileJob(env)).rejects.toThrow();
   });
 });

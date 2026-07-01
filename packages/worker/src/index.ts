@@ -24,7 +24,7 @@ import { buildProjectionDeps, runProjectionJob } from "./recipe-projection.js";
 import { buildDiscoveryDeps, runDiscoverySweepJob } from "./discovery-sweep.js";
 import { buildNormalizeDeps, runNormalizeJob } from "./ingredient-normalize.js";
 import { buildReconfirmDeps, runReconfirmJob } from "./ingredient-reconfirm.js";
-import { reconcileGroceryPantryKeys } from "./grocery-pantry-reconcile.js";
+import { runReconcileJob } from "./grocery-pantry-reconcile.js";
 import { loadDiscoveryConfig } from "./discovery-calibration.js";
 import { loadOperatorConfig } from "./operator-config.js";
 import { createR2CorpusStore } from "./corpus-store.js";
@@ -203,8 +203,9 @@ export default {
       runReconfirmJob(env, buildReconfirmDeps(env)),
       // Re-key stale FOOD grocery/pantry rows onto the canonical id (D2 backfill). Idempotent +
       // bounded; a no-op once every row is canonical, so it self-terminates. Independent of the
-      // recipe pipeline (touches only the per-tenant pantry/grocery tables).
-      reconcileGroceryPantryKeys(env),
+      // recipe pipeline (touches only the per-tenant pantry/grocery tables). The job wrapper records
+      // the `grocery-reconcile` health + per-run history the Normalize › Reconcile card reads back.
+      runReconcileJob(env),
     ]);
     // Phase 2: the index projection (merges the fresh classified facets + authored overrides).
     const phase2 = await Promise.allSettled([runProjectionJob(env, buildProjectionDeps(env, corpus))]);

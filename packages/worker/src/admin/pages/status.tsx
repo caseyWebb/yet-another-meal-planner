@@ -21,6 +21,8 @@ import { currentStreakStart, type HealthPayload, type JobStatus, type JobRun } f
 import type { AdminPosture } from "../../admin.js";
 import type { CorpusCounts } from "../../admin-data.js";
 import type { ScraperLiveness } from "../../ingest-db.js";
+import type { ReconcileObservability } from "../../reconcile-admin.js";
+import { ReconcileStatusRow } from "./reconcile.js";
 import { CONTRACT_VERSION } from "@grocery-agent/contract";
 
 // The run-history window: how many recent runs are fetched, and the fixed number of sparkline
@@ -289,11 +291,13 @@ export const StatusPage = ({
   payload,
   counts,
   runsByJob,
+  reconcile,
   scrapers = [],
 }: {
   payload: HealthPayload;
   counts: CorpusCounts;
   runsByJob: Record<string, JobRun[]>;
+  reconcile: ReconcileObservability;
   scrapers?: ScraperLiveness[];
 }) => (
   <Layout title="Status · grocery-agent admin" active="/admin">
@@ -341,6 +345,10 @@ export const StatusPage = ({
       {payload.jobs.map((job) => (
         <JobRow job={job} now={payload.generated_at} runs={runsByJob[job.name] ?? []} />
       ))}
+      {/* The grocery/pantry key-reconcile: a self-terminating backfill, so it reads as a
+          convergence (re-key history + converging/converged), not an uptime% like the recurring
+          crons — a special-cased sibling row rather than one of `payload.jobs`. */}
+      <ReconcileStatusRow s={reconcile} now={payload.generated_at} />
     </ItemGroup>
 
     {scrapers.length > 0 ? (
