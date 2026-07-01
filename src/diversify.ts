@@ -81,7 +81,7 @@ export const DEFAULT_DIVERSIFY_PARAMS: DiversifyParams = {
  * mixes two comparable [0,1] terms (raw scores can exceed 1 via the boosts; cosine is ≤1). A
  * flat column normalizes to all-1. Returns a fresh slug→normScore map.
  */
-function normalizeScores(candidates: DiversifyCandidate[]): Map<string, number> {
+export function normalizeScores(candidates: DiversifyCandidate[]): Map<string, number> {
   let lo = Infinity;
   let hi = -Infinity;
   for (const c of candidates) {
@@ -134,6 +134,101 @@ function round4(n: number): number {
   return Math.round(n * 1e4) / 1e4;
 }
 
+/** The running selection state MMR threads across picks — already-chosen recipes (for the
+ *  redundancy penalty + dedup) and the facet tallies (for the caps). Shared across a whole
+ *  week when the cross-slot fill wants variety spread over the *week*, not within one pool. */
+export interface DiversifyState {
+  usedSlugs: Set<string>;
+  pickedVecs: number[][];
+  proteinCounts: Map<string, number>;
+  cuisineCounts: Map<string, number>;
+  courseCounts: Map<string, number>;
+}
+
+export function newDiversifyState(): DiversifyState {
+  return {
+    usedSlugs: new Set(),
+    pickedVecs: [],
+    proteinCounts: new Map(),
+    cuisineCounts: new Map(),
+    courseCounts: new Map(),
+  };
+}
+
+/**
+ * Pick the single best candidate from `pool` under MMR + facet caps, given the running
+ * `state`. Mutates `state` with the pick (used slug, picked vector, facet tallies) and returns
+ * it — or null when nothing clears the caps / the pool is exhausted. `norm` is the pool's
+ * normalized relevance (`normalizeScores`); `jitter(slug)` is the seeded tie-break noise. This
+ * is the shared core of both single-pool `diversifySelect` and the cross-slot week fill (which
+ * threads ONE state across per-slot pools so protein/cuisine caps and de-duplication span the
+ * whole week).
+ */
+export function selectOne(
+  pool: DiversifyCandidate[],
+  state: DiversifyState,
+  params: DiversifyParams,
+  norm: Map<string, number>,
+  jitter: (slug: string) => number,
+): DiversifiedPick | null {
+  let best: DiversifyCandidate | null = null;
+  let bestVal = -Infinity;
+  let bestRedundancy = 0;
+  for (const c of pool) {
+    if (state.usedSlugs.has(c.slug)) continue;
+    if (violatesCap(c, params, state.proteinCounts, state.cuisineCounts, state.courseCounts)) continue;
+    let redundancy = 0;
+    for (const v of state.pickedVecs) {
+      const s = cosineSimilarity(c.embedding, v);
+      if (s > redundancy) redundancy = s;
+    }
+    const rel = norm.get(c.slug) ?? 0;
+    const val = params.lambda * rel - (1 - params.lambda) * redundancy + jitter(c.slug);
+    if (val > bestVal || (val === bestVal && best && c.slug.localeCompare(best.slug) < 0)) {
+      bestVal = val;
+      best = c;
+      bestRedundancy = redundancy;
+    }
+  }
+  if (!best) return null;
+  state.usedSlugs.add(best.slug);
+  state.pickedVecs.push(best.embedding);
+  tally(best, state.proteinCounts, state.cuisineCounts, state.courseCounts);
+  return {
+    slug: best.slug,
+    title: best.title,
+    protein: best.protein,
+    cuisine: best.cuisine,
+    course: best.course,
+    time_total: best.time_total,
+    score: best.score,
+    mmr: round4(bestVal),
+    redundancy: round4(bestRedundancy),
+  };
+}
+
+/** Admit a candidate into the state WITHOUT scoring it — for a locked pick the caller has
+ *  already chosen. Marks it used, adds its vector (so later picks diversify away from it), and
+ *  folds it into the facet caps. Idempotent-ish: re-admitting a used slug double-counts, so
+ *  the caller admits each locked recipe once. */
+export function admit(state: DiversifyState, c: DiversifyCandidate): void {
+  if (state.usedSlugs.has(c.slug)) return;
+  state.usedSlugs.add(c.slug);
+  state.pickedVecs.push(c.embedding);
+  tally(c, state.proteinCounts, state.cuisineCounts, state.courseCounts);
+}
+
+/** Build the seeded per-candidate jitter function (stable per slug, seed-determined) over a
+ *  candidate set — the tie-break noise that lets a different seed yield a different week. */
+export function seededJitter(candidates: DiversifyCandidate[], seed: number, magnitude: number): (slug: string) => number {
+  const rng = mulberry32(seed);
+  const by = new Map<string, number>();
+  for (const c of [...candidates].sort((a, b) => a.slug.localeCompare(b.slug))) {
+    by.set(c.slug, (rng() - 0.5) * 2 * magnitude);
+  }
+  return (slug: string) => by.get(slug) ?? 0;
+}
+
 /**
  * Select up to `n` diverse recipes from `candidates` (one slot's pool). Greedy MMR under the
  * facet caps:
@@ -153,56 +248,14 @@ export function diversifySelect(
   params: Partial<DiversifyParams> = {},
 ): DiversifiedPick[] {
   const p: DiversifyParams = { ...DEFAULT_DIVERSIFY_PARAMS, ...params };
-  const rng = mulberry32(seed);
-  // Pre-draw one stable jitter per candidate (slug-ordered, so it's independent of iteration
-  // order — the same seed always assigns the same jitter to the same recipe).
-  const jitterBy = new Map<string, number>();
-  const ordered = [...candidates].sort((a, b) => a.slug.localeCompare(b.slug));
-  for (const c of ordered) jitterBy.set(c.slug, (rng() - 0.5) * 2 * p.jitter);
-
+  const jitter = seededJitter(candidates, seed, p.jitter);
   const norm = normalizeScores(candidates);
+  const state = newDiversifyState();
   const picked: DiversifiedPick[] = [];
-  const pickedVecs: number[][] = [];
-  const usedSlugs = new Set<string>();
-  const proteinCounts = new Map<string, number>();
-  const cuisineCounts = new Map<string, number>();
-  const courseCounts = new Map<string, number>();
-
   while (picked.length < n) {
-    let best: DiversifyCandidate | null = null;
-    let bestVal = -Infinity;
-    let bestRedundancy = 0;
-    for (const c of candidates) {
-      if (usedSlugs.has(c.slug)) continue;
-      if (violatesCap(c, p, proteinCounts, cuisineCounts, courseCounts)) continue;
-      let redundancy = 0;
-      for (const v of pickedVecs) {
-        const s = cosineSimilarity(c.embedding, v);
-        if (s > redundancy) redundancy = s;
-      }
-      const rel = norm.get(c.slug) ?? 0;
-      const val = p.lambda * rel - (1 - p.lambda) * redundancy + (jitterBy.get(c.slug) ?? 0);
-      if (val > bestVal || (val === bestVal && best && c.slug.localeCompare(best.slug) < 0)) {
-        bestVal = val;
-        best = c;
-        bestRedundancy = redundancy;
-      }
-    }
-    if (!best) break; // caps exhausted the pool — return what we have (a real short-slot case)
-    picked.push({
-      slug: best.slug,
-      title: best.title,
-      protein: best.protein,
-      cuisine: best.cuisine,
-      course: best.course,
-      time_total: best.time_total,
-      score: best.score,
-      mmr: round4(bestVal),
-      redundancy: round4(bestRedundancy),
-    });
-    pickedVecs.push(best.embedding);
-    usedSlugs.add(best.slug);
-    tally(best, proteinCounts, cuisineCounts, courseCounts);
+    const pick = selectOne(candidates, state, p, norm, jitter);
+    if (!pick) break; // caps exhausted the pool — return what we have (a real short-slot case)
+    picked.push(pick);
   }
   return picked;
 }

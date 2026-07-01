@@ -313,6 +313,26 @@ Patch an existing vibe — pass only the fields to change. Editing `vibe` re-emb
 
 Remove a vibe by `id` (its derived embedding is pruned on the next tick). Unknown id → `not_found`. Returns `{ id, removed: true }`.
 
+### `propose_meal_plan(nights?, seed?, lock?, exclude?, boost_ingredients?, nudges?)`
+
+Propose a week of dinners from the caller's night-vibe palette — **stateless, deterministic, no Workers AI call** (every query vector is cron-captured), **no writes**. Two levels: **(1) shape** — sample `nights` night-vibe slots weighted by **cadence-debt** (a vibe overdue against its `cadence_days` surfaces; pinned vibes are placed; overdue placement yields ≥1 slot to weather so weather always shapes the week) × **weather** (`weather_affinity` joined to the live forecast's `meal_vibes`); **(2) fill** — retrieve each slot's vibe by meaning (the same ranked retrieval as `search_recipes`) and select a **varied** main by MMR + protein/cuisine caps **across the week** (not the top-3 lookalikes), then compose rung-1 `pairs_with` corpus sides.
+
+**Params:**
+- `nights` (number, optional): dinners to plan (default: `preferences.default_cooking_nights` or 5, max 14).
+- `seed` (number, optional): deterministic seed — the same inputs + seed give the same week; change **only** the seed for "give me another week." Defaults to today's date (stable within a day).
+- `lock` (string[], optional): recipe slugs to keep — returned as leading `locked` slots; the rest of the week diversifies *against* them (won't duplicate/clash). The sampled slot count is `nights − lock.length`.
+- `exclude` (string[], optional): recipe slugs to drop from every pool (swap-out).
+- `boost_ingredients` (string[], optional): the caller's at-risk perishables / on-hand items to bias toward (alias-normalized; a bounded perishable-weighted overlap, never a gate) — the use-it-up signal.
+- `nudges` (object, optional): `{ max_time_total? }` (a hard time gate applied to every slot) and `{ variety? }` (0–1; higher = more diverse, lower λ).
+
+**Returns:**
+- `{ plan, variety, diagnostics }`.
+  - `plan`: one entry per slot — `{ vibe_id, reason (pinned|overdue|sampled|locked), main, sides, uses_perishables, flags, why }`. `main` is `{ slug, title, description, protein, cuisine, time_total, score }` or **`null`** for an **explicit empty slot** (`empty_reason` set — a vibe with no retrievable candidate, or none clearing the caps — never silently dropped). `sides` are rung-1 corpus sides `{ slug, title }`. `flags`: `waste` (single-use perishables no other main shares), `meal_prep`, `novel` (never cooked), `no_corpus_side` (add an open-world side). `why[]` explains the pick.
+  - `variety`: `{ distinct_proteins, distinct_cuisines, mean_pairwise_sim, max_pairwise_sim }` over the chosen mains.
+  - `diagnostics`: `{ seed, lambda, nights, filled, empty, rolled_over }` — `rolled_over` are due vibes that didn't fit this week (debt keeps climbing).
+
+**Notes:** An empty palette returns an empty `plan` with a `note` to add vibes first. The tool never writes — persist an agreed plan with `update_meal_plan`, threading each chosen main's `vibe_id` as the row's `from_vibe` so cooking it advances that vibe's cadence (`satisfied_vibe`). Sides are **corpus-only** (rung-1 `pairs_with`); open-world sides and freeform-text queries are the calling surface's job, so the tool never fabricates a side.
+
 ---
 
 ## Grocery list tools

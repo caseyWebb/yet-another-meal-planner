@@ -14,11 +14,11 @@
 
 ## 3. `propose_meal_plan` tool
 
-- [ ] 3.1 `src/meal-plan-proposal.ts` — pure composition: weather-weighted seeded slot sampling (Level 1) → per-slot `filterRecipes` + `rankCandidates` + `diversifySelect` (Level 2) → deterministic plate composition (pairs_with, then `side_search_terms` retrieval with `course: side`; perishable-waste + meal-prep flags; open-world sides flagged, not fabricated).
-- [ ] 3.2 Tool wiring: accept `{ nights, seed, lock, exclude, nudges, freeform?, seed_slugs?, boost_ingredients? }`; return the structured proposal (`plan[]` with `main`/`sides`/`uses_perishables`/`flags`/`why[]`, `unplaced_new_for_me`, `variety`, `diagnostics`). At most one embed (freeform only); no implicit writes.
-- [ ] 3.3 Empty/thin-slot handling: surface an explicit empty slot with a reason; the rest of the week still returns.
-- [ ] 3.4 Tests: two-level output shape; no-AI path when no freeform; locks survive a re-roll; boost bias without gate violation; empty-slot surfacing.
-- [ ] 3.5 Docs lockstep: `docs/TOOLS.md` (the tool contract), `docs/SCHEMAS.md` (palette + proposal shapes), `docs/ARCHITECTURE.md` (the two-level planner + the model-frequency gradient).
+- [x] 3.1 `src/meal-plan-proposal.ts` — pure `assembleProposal`: cross-slot MMR + facet caps (threads ONE diversify state across per-slot pools, via `selectOne`/`admit` refactored out of `diversifySelect`) → plate composition (rung-1 `pairs_with` corpus sides; single-use perishable-waste, meal-prep, novelty flags; open-world sides **flagged** `no_corpus_side`, not fabricated). Level-1 sampling reuses `sampleWeek`; Level-2 ranking reuses `rankCandidates`.
+- [x] 3.2 `src/meal-plan-proposal-tool.ts` — loads context (palette + vectors + `last_satisfied`, index/embeddings, favorites, prefs, weather) and wires the tool: `{ nights, seed, lock, exclude, boost_ingredients, nudges{max_time_total,variety} }` → `{ plan, variety, diagnostics }`. **No Workers AI call** (all vectors cron-captured; freeform deferred), no writes. Registered in `buildServer` reusing the search-context closures.
+- [x] 3.3 Empty/thin-slot handling: an unretrievable or cap-blocked slot returns an explicit `main: null` + `empty_reason`; the rest of the week still returns; an empty palette returns `plan: []` + a `note`.
+- [x] 3.4 `test/meal-plan-proposal.test.ts` (6 passing): two-level fill + sides/waste/meal-prep/novelty/why; cross-week protein cap empties a slot; empty-pool surfacing; locked-first + dedup; seed determinism. Diversify refactor keeps the original 6 diversify tests green.
+- [x] 3.5 Docs lockstep: `docs/TOOLS.md` (the tool contract), `docs/ARCHITECTURE.md` (the two-level planner + model-frequency gradient). *(SCHEMAS palette shapes landed in Phase 2; the proposal is a returned shape, documented in TOOLS.)*
 
 ## 4. Slot provenance
 
