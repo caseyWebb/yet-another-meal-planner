@@ -1,10 +1,10 @@
 ## 1. Monorepo + shared contract (Phase 0)
 
-- [ ] 1.1 Introduce `aube`/npm workspaces in the root `package.json` (+ lockfile) with a `packages/*` layout; keep `aube ci`/`aubr` working and the session-start hook shims intact.
-- [ ] 1.2 Create `packages/contract` as a **workerd-pure** package (no Node-only deps); add its typecheck/test wiring.
-- [ ] 1.3 Move the recipe-parse spine (`jsonld.ts` extraction + `normalizeRecipe`) into `packages/contract`; re-point the Worker (`recipe-acquire.ts`, `parse_recipe`, sweep) at it with no behavior change; keep tests green.
-- [ ] 1.4 Define the ingest **wire contract** in `packages/contract`: the batch envelope `{ source, scraper_version, contract_version, recipes[] }`, the recipe item shape, a `CONTRACT_VERSION` constant, and a shared validator + the result/error taxonomy (`accepted | deduped | rejected`, `bad_payload`/`bad_key`).
-- [ ] 1.5 Resolve the Worker's package home (relocate to `packages/worker` vs keep at root) per the design's open question; update paths/imports accordingly.
+- [x] 1.1 Introduce `aube`/npm workspaces in the root `package.json` (+ lockfile) with a `packages/*` layout; keep `aube ci`/`aubr` working and the session-start hook shims intact.
+- [x] 1.2 Create `packages/contract` as a **runtime-agnostic** package (workerd + Node; no Node-only or workerd-only deps); add its typecheck wiring.
+- [x] 1.3 Move the recipe-parse spine (the pure `findRecipe`/`normalizeRecipe` layer + `text.ts`) into `packages/contract`; keep the workerd-only `extractJsonLd` (HTMLRewriter) in the Worker; re-point the Worker via re-export shims (`jsonld.ts`/`text.ts`) with no behavior change; tests green.
+- [x] 1.4 Define the ingest **wire contract** in `packages/contract`: the batch envelope `{ source, scraper_version, contract_version, recipes[] }`, the recipe item shape, a `CONTRACT_VERSION` constant, and a shared validator + the result/error taxonomy (`accepted | deduped | rejected`, `bad_payload`/`bad_key`). Locked by `test/contract-ingest.test.ts`.
+- [x] 1.5 Full move: the Worker relocated to `packages/worker` (src/test/tests/scripts/migrations/admin/vault/persona + wrangler/tsconfig/vitest/playwright/.dev.vars.example); `ci.yml` paths + deploy-trigger filter updated; **data-repo `deploy.yml` patch handed off in `deploy-handoff.md`** (out-of-scope repo).
 
 ## 2. Worker ingest endpoint + keys (Phase 1)
 

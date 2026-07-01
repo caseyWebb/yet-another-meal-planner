@@ -1,13 +1,16 @@
 {
-  "name": "grocery-agent",
+  "name": "groceries-agent",
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "grocery-agent: the grocery-mcp Cloudflare Worker (MCP server) + the plugin-build and deploy tooling that data repos run via reusable CI workflows.",
+  "description": "groceries-agent monorepo: the grocery-mcp Cloudflare Worker (packages/worker), the runtime-agnostic shared contract (packages/contract), and the home-network walled-source scraper (packages/scraper).",
   "license": "AGPL-3.0-only",
   "engines": {
     "node": ">=22"
   },
+  "workspaces": [
+    "packages/*"
+  ],
   "aube": {
     "allowBuilds": {
       "esbuild": true,
@@ -20,43 +23,18 @@
     }
   },
   "scripts": {
-    "dev": "wrangler dev",
-    "deploy": "wrangler deploy",
-    "typecheck": "tsc --noEmit && tsc --noEmit -p src/admin/client/tsconfig.json",
-    "test": "vitest run",
-    "test:tooling": "node --test tests/build-plugin.test.mjs tests/build-vault.test.mjs tests/merge-wrangler-config.test.mjs tests/stamp-readme-badge.test.mjs tests/strip-facets.test.mjs tests/check-licenses.test.mjs",
-    "check:licenses": "node scripts/check-licenses.mjs",
-    "build:plugin": "node scripts/build-plugin.mjs",
-    "build:admin": "node scripts/build-admin.mjs",
-    "build:vault": "node scripts/build-vault.mjs",
-    "test:admin": "playwright test"
-  },
-  "dependencies": {
-    "@cloudflare/workers-oauth-provider": "^0.8.1",
-    "@modelcontextprotocol/sdk": "^1.29.0",
-    "agents": "^0.16.2",
-    "fast-xml-parser": "^5.9.3",
-    "gray-matter": "^4.0.3",
-    "hono": "^4.12.27",
-    "jose": "^6.2.3",
-    "js-yaml": "^5.0.0",
-    "marked": "^18.0.5",
-    "postal-mime": "^2.7.4",
-    "ts-pattern": "^5.9.0",
-    "zod": "^4.0.0"
+    "dev": "aube --filter @grocery-agent/worker run dev",
+    "deploy": "aube --filter @grocery-agent/worker run deploy",
+    "typecheck": "aube --recursive run typecheck",
+    "test": "aube --filter @grocery-agent/worker run test",
+    "test:tooling": "aube --filter @grocery-agent/worker run test:tooling",
+    "test:admin": "aube --filter @grocery-agent/worker run test:admin",
+    "check:licenses": "aube --filter @grocery-agent/worker run check:licenses",
+    "build:plugin": "aube --filter @grocery-agent/worker run build:plugin",
+    "build:admin": "aube --filter @grocery-agent/worker run build:admin",
+    "build:vault": "aube --filter @grocery-agent/worker run build:vault"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^4.20260621.1",
-    "@fission-ai/openspec": "^1.4.1",
-    "@playwright/test": "^1.61.1",
-    "@tailwindcss/cli": "^4.3.2",
-    "@types/js-yaml": "^4.0.9",
-    "basecoat-css": "^1.0.1",
-    "esbuild": "^0.28.1",
-    "json5": "^2.2.3",
-    "tailwindcss": "^4.3.2",
-    "typescript": "^6.0.3",
-    "vitest": "^4.1.9",
-    "wrangler": "^4.103.0"
+    "@fission-ai/openspec": "^1.4.1"
   }
 }

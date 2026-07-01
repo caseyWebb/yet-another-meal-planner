@@ -1,0 +1,15 @@
+# Worker-local build artifacts whose paths are anchored to this package.
+# (Broad patterns — dist/, build/, .wrangler/, node_modules/, *.log, playwright-report/,
+# test-results/, .dev.vars* — are matched by the repo-root .gitignore, which is unanchored.)
+
+# The operator-admin island bundles + stylesheet (esbuild embeds env-specific paths).
+admin/dist/
+
+# Playwright (admin visual/smoke harness) run outputs.
+admin/visual/.results/
+
+# Authoring vault: vendored community-plugin binaries (fetched on demand, sha256-verified),
+# and the packaged distributable zip — kept out of the repo.
+vault/.obsidian/plugins/*/main.js
+vault/.obsidian/plugins/*/styles.css
+grocery-authoring-vault*.zip

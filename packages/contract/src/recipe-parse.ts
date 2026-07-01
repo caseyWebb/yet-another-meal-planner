@@ -1,12 +1,11 @@
-// schema.org Recipe extraction + normalization (design D5).
+// The runtime-agnostic recipe-parse spine (shared by the Worker and the scraper).
 //
-// Two layers:
-//   1. extractJsonLd(res) — pull <script type="application/ld+json"> blocks out of
-//      the HTML with HTMLRewriter (the idiomatic Cloudflare tool; workerd-only, so
-//      it's exercised by the live smoke test, not Node unit tests). Thin + mechanical.
-//   2. findRecipe / normalizeRecipe — PURE functions over already-parsed JSON-LD.
-//      All the real complexity (instruction shapes, durations, yield) lives here
-//      and is fully unit-tested with fixtures.
+// This is layer 2 of the recipe parse — PURE functions over already-parsed JSON-LD
+// blocks (instruction shapes, durations, yield). It runs identically on workerd and
+// in Node, so BOTH the Worker (`packages/worker`, via HTMLRewriter for layer 1) and
+// the home-network scraper (`packages/scraper`, via its own Node HTML extraction for
+// layer 1) feed their extracted blocks into `findRecipe` + `normalizeRecipe` here.
+// Layer 1 (HTML → JSON-LD blocks) is runtime-specific and stays with each caller.
 
 import { cleanText } from "./text.js";
 
@@ -30,51 +29,6 @@ export interface NormalizedRecipe {
 export type NormalizeResult =
   | { ok: true; recipe: NormalizedRecipe }
   | { ok: false; missing: string[] };
-
-// --- layer 1: HTML → parsed JSON-LD blocks (workerd, via HTMLRewriter) -------
-
-function tryParseJson(raw: string): unknown {
-  const text = raw.trim();
-  if (!text) return undefined;
-  try {
-    return JSON.parse(text);
-  } catch {
-    // A few sites HTML-encode quotes inside the script; try a minimal decode.
-    try {
-      return JSON.parse(text.replace(/&quot;/g, '"').replace(/&#34;/g, '"').replace(/&amp;/g, "&"));
-    } catch {
-      return undefined;
-    }
-  }
-}
-
-/**
- * Collect and parse every JSON-LD script block from an HTML Response. Script
- * content is raw text bounded by `</script>`, so HTMLRewriter's text chunks are
- * accumulated per element and parsed at its end tag. Unparseable blocks are skipped.
- */
-export async function extractJsonLd(res: Response): Promise<unknown[]> {
-  const blocks: unknown[] = [];
-  let buf = "";
-  const rewriter = new HTMLRewriter().on('script[type="application/ld+json"]', {
-    element(el) {
-      buf = "";
-      el.onEndTag(() => {
-        const parsed = tryParseJson(buf);
-        if (parsed !== undefined) blocks.push(parsed);
-        buf = "";
-      });
-    },
-    text(chunk) {
-      buf += chunk.text;
-    },
-  });
-  // Consuming the transformed body drives the handlers to completion.
-  await rewriter.transform(res).text();
-  return blocks;
-}
-
-// --- layer 2: parsed JSON-LD → NormalizedRecipe (pure, unit-tested) ----------
 
 /** True when `@type` (string or array) names `target`, bare or as schema.org/<target>. */
 function typeIncludes(type: unknown, target: string): boolean {

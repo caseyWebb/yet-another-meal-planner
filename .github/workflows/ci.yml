@@ -66,6 +66,7 @@ jobs:
         # environment-specific module paths, so a committed copy isn't reproducible) — the
         # deploy builds it fresh. Build it here too so a broken island (an esbuild bundling
         # failure) fails CI before the deploy. esbuild-only, no network registry.
+        working-directory: packages/worker
         run: node scripts/build-admin.mjs
 
       - name: Plugin builds from AGENT_INSTRUCTIONS.md
@@ -74,6 +75,7 @@ jobs:
         # source still parses and maps to a well-formed skill set — the same validation
         # the deploy's build runs — catching a broken AGENT_INSTRUCTIONS.md before it
         # reaches any operator's publish.
+        working-directory: packages/worker
         run: node scripts/build-plugin.mjs --check
 
       - name: Authoring vault is current with src/vocab.js
@@ -82,6 +84,7 @@ jobs:
         # constraints can't drift from the server validator. Offline by design (the
         # vendored plugin binaries are fetched separately, never committed), so --check
         # needs no network — same drift discipline as the plugin/admin builds.
+        working-directory: packages/worker
         run: node scripts/build-vault.mjs --check
 
       - name: Dependency licenses are AGPL-3.0-compatible
@@ -89,6 +92,7 @@ jobs:
         # AGPL-3.0 work may redistribute (open-source-license). Fails on an unknown or
         # incompatible license before the dependency can land; dev/optional-only tooling is out
         # of scope. Pure-Node gate, unit-tested in tests/check-licenses.test.mjs.
+        working-directory: packages/worker
         run: node scripts/check-licenses.mjs
 
   admin-visual:
@@ -126,8 +130,8 @@ jobs:
         with:
           name: admin-visual
           path: |
-            playwright-report/
-            admin/visual/.results/
+            packages/worker/playwright-report/
+            packages/worker/admin/visual/.results/
           retention-days: 14
 
   trigger-deploy:
@@ -151,7 +155,7 @@ jobs:
         # skills, and the deploy is Worker-first so it redeploys the (unchanged) Worker
         # before publishing, which is safe. admin/dist/ is built at deploy time, not committed.
         run: |
-          git diff --name-only HEAD^ HEAD -- src/ wrangler.jsonc package.json package-lock.json AGENT_INSTRUCTIONS.md scripts/build-plugin.mjs scripts/build-admin.mjs \
+          git diff --name-only HEAD^ HEAD -- packages/worker/src/ packages/worker/wrangler.jsonc packages/contract/ package.json package-lock.json packages/worker/AGENT_INSTRUCTIONS.md packages/worker/scripts/build-plugin.mjs packages/worker/scripts/build-admin.mjs \
             | grep -q . \
             && echo "relevant=true" >> "$GITHUB_OUTPUT" \
             || echo "relevant=false" >> "$GITHUB_OUTPUT"

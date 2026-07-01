@@ -109,7 +109,7 @@ jobs:
       # strips the code repo's vars/KV ids (the maintainer's) so they never reach an
       # operator. See scripts/merge-wrangler-config.mjs.
       - name: Merge wrangler config (code-level + operator-owned)
-        run: node _code/scripts/merge-wrangler-config.mjs merge "${{ inputs.config_path }}" _code/wrangler.jsonc
+        run: node _code/packages/worker/scripts/merge-wrangler-config.mjs merge "${{ inputs.config_path }}" _code/packages/worker/wrangler.jsonc
 
       # The R2 corpus bucket binding (CORPUS) is bound at deploy but `wrangler deploy`
       # does not create the bucket, so ensure it exists first. Idempotent: re-creating an
@@ -121,7 +121,7 @@ jobs:
         continue-on-error: true
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          workingDirectory: _code
+          workingDirectory: _code/packages/worker
           command: r2 bucket create grocery-corpus
 
       # admin/dist/ is a build artifact (NOT committed — the esbuild bundles embed
@@ -138,14 +138,14 @@ jobs:
         uses: cloudflare/wrangler-action@ebbaa1584979971c8614a24965b4405ff95890e0 # v4.0.0
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          workingDirectory: _code
+          workingDirectory: _code/packages/worker
           command: deploy
 
       # The Worker exists now, so secrets can be put. Only set Kroger creds if the
       # operator provided them as repo secrets — never clobber dashboard-set values
       # with empties. The App private key is intentionally NOT handled here.
       - name: Set Kroger secrets (only if provided)
-        working-directory: _code
+        working-directory: _code/packages/worker
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           KID: ${{ secrets.KROGER_CLIENT_ID }}
@@ -160,13 +160,13 @@ jobs:
 
       # Pin auto-provisioned KV namespace ids AND the D1 database id back into the
       # operator's config so the NEXT deploy reuses the same namespaces/database. Under
-      # the merge, _code/wrangler.jsonc is the FULL deployed config (code-level +
+      # the merge, _code/packages/worker/wrangler.jsonc is the FULL deployed config (code-level +
       # operator), so a wholesale copy-back would re-bloat the operator's slim config
       # with code-level keys — instead we surgically patch only the provisioned ids (by
       # binding) into the operator's config. The same `pin` invocation covers both binding
       # types (merge-wrangler-config.mjs pinBindingIds + bindingIdsChanged).
       #
-      # Assumes `wrangler deploy` writes the provisioned ids into _code/wrangler.jsonc
+      # Assumes `wrangler deploy` writes the provisioned ids into _code/packages/worker/wrangler.jsonc
       # in place; if a wrangler version stops doing so, fetch ids via `wrangler kv
       # namespace list` / `wrangler d1 list` instead (the pin step's input is the only
       # thing that changes).
@@ -174,7 +174,7 @@ jobs:
         env:
           CONFIG: ${{ inputs.config_path }}
         run: |
-          node _code/scripts/merge-wrangler-config.mjs pin _code/wrangler.jsonc "$CONFIG"
+          node _code/packages/worker/scripts/merge-wrangler-config.mjs pin _code/packages/worker/wrangler.jsonc "$CONFIG"
           if git diff --quiet -- "$CONFIG"; then
             echo "No KV/D1 id changes to persist."
           else
@@ -209,7 +209,7 @@ jobs:
           fi
           # Surface the snippet BEFORE any file/commit work, so neither a missing README nor a
           # denied push can rob the operator of the paste fallback.
-          SNIPPET="$(node _code/scripts/stamp-readme-badge.mjs snippet "$HOST")"
+          SNIPPET="$(node _code/packages/worker/scripts/stamp-readme-badge.mjs snippet "$HOST")"
           {
             echo "## Health badge"
             echo ""
@@ -223,7 +223,7 @@ jobs:
             echo "No README.md in the data repo — skipped stamping (snippet is in the summary above)."
             exit 0
           fi
-          node _code/scripts/stamp-readme-badge.mjs stamp README.md "$HOST" >/dev/null
+          node _code/packages/worker/scripts/stamp-readme-badge.mjs stamp README.md "$HOST" >/dev/null
           # `git diff --quiet` ignores UNTRACKED files, so stage first and check the index —
           # else a brand-new README (older-template repo) would be written but never committed.
           git add -A -- README.md
@@ -249,7 +249,7 @@ jobs:
         uses: cloudflare/wrangler-action@ebbaa1584979971c8614a24965b4405ff95890e0 # v4.0.0
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          workingDirectory: _code
+          workingDirectory: _code/packages/worker
           command: d1 migrations apply DB --remote
 
       # Build the plugin bundle with THIS operator's connector URL baked in and publish
@@ -277,7 +277,7 @@ jobs:
           # (a data-repo commit count alone can't be relied on to clear 0.1.126). <count>
           # keeps each republish strictly newer.
           VERSION="0.2.$(git rev-list --count HEAD)"
-          node _code/scripts/build-plugin.mjs --out plugin/grocery-agent --mcp-url "$MCP_URL" --version "$VERSION"
+          node _code/packages/worker/scripts/build-plugin.mjs --out plugin/grocery-agent --mcp-url "$MCP_URL" --version "$VERSION"
           git add plugin/grocery-agent
           # marketplace.json (committed in the data repo, → ./plugin/grocery-agent) ships
           # too if present; the build does not generate it.
