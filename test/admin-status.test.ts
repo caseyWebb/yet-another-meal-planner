@@ -39,16 +39,24 @@ describe("Status helpers (the compiler-opaque logic worth pinning)", () => {
 });
 
 describe("StatusPage SSR", () => {
-  it("renders a healthy headline, job rows, the D1 row, and the gate posture", () => {
+  it("renders the job rows, the D1 row, and the gate posture", () => {
     const html = render(payload());
     expect(html).toContain("Service health");
-    expect(html).toContain("Healthy");
     expect(html).toContain("flyer-warm");
     expect(html).toContain("reachable");
     expect(html).toContain("gated");
   });
 
-  it("renders the exposed warning and a degraded headline when the gate is exposed", () => {
+  it("does not carry the overall healthy/degraded rollup — that lives in the global health dock", () => {
+    // The rollup relocated to the shell-injected health dock (admin-ui-redesign-foundation); the
+    // Status page keeps only the detailed rows, so its own body shows neither headline word.
+    const healthy = render(payload());
+    const degraded = render(payload({ ok: false }));
+    expect(healthy).not.toContain("Healthy");
+    expect(degraded).not.toContain("Degraded");
+  });
+
+  it("still renders the exposed warning when the gate is exposed", () => {
     const html = render(
       payload({
         ok: false,
@@ -56,7 +64,6 @@ describe("StatusPage SSR", () => {
       }),
     );
     expect(html).toContain("Admin gate exposed");
-    expect(html).toContain("Degraded");
     expect(html).toContain("exposed");
   });
 

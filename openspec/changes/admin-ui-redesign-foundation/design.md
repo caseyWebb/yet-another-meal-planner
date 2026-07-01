@@ -25,9 +25,11 @@ The shell calls `buildHealthPayload` server-side (the Status page already does) 
 *Alternative considered:* fetch `/health` from the client (the pre-Hono model). Rejected — re-introduces a client decoder and a load-state the SSR path already eliminates.
 *Alternative considered:* SSR-only dock, no island. Rejected — loses the expandable failing-jobs/deps popover the mock shows.
 
-**2. The dock is mounted by `Layout`, so it is structurally on every area.**
-`Layout` already wraps every page; adding the dock mount there (after `children`) guarantees presence without each page opting in. `Layout` gains the health rollup as a prop the route supplies (every route already has `c.env` to build it), keeping the shell dumb about *how* health is fetched.
-*Alternative considered:* each page renders its own dock. Rejected — duplication and drift; the requirement is "every area," which is a shell concern.
+**2. The dock is injected by a shell middleware, so it is structurally on every area.**
+A single `app`-level middleware (after the access gate) computes `buildHealthPayload` once per HTML page request and injects the dock — its SSR pill, a JSON props block, and the island `<script>` — before `</body>`. Every admin page renders through `Layout` (so every HTML response carries a `</body>`), giving one chokepoint with zero per-route plumbing. The middleware acts only on `text/html` responses, so `/admin/api/*` JSON and static island/asset fetches pass through untouched.
+*Alternative considered:* mount the dock in `Layout` and thread the rollup as a prop through every route. Rejected — Data and Config each register many sub-routes whose shells would all need the prop threaded through; the middleware is the DRY equivalent of "the shell renders it on every area."
+*Alternative considered:* each page renders its own dock. Rejected — duplication and drift; presence-on-every-area is a shell concern.
+*Trade-off:* the rollup's `buildHealthPayload` adds one D1 probe per HTML page load. Acceptable for an operator panel, and the probe already backs the Status home.
 
 **3. Discovery ships as nav entry + placeholder only.**
 Add `{ href: "/admin/discovery", label: "Discovery" }` to `AREAS` and a route returning a server-rendered "coming soon" shell. This satisfies the area-nav requirement and lets the downstream change land purely as a body, with the IA already in place. The existing Discovery *content* (today the Logs page + a Data sub-tab) is untouched by this change.
@@ -56,7 +58,7 @@ The mock's bespoke CSS (stat tiles, `.dot`/`.sglyph` status glyphs, redesigned `
 
 Rollback is a revert — no data migration, no Worker route or schema change.
 
-## Open Questions
+## Resolved Questions
 
-- Should the dock's popover also show the **live dependency** rows (D1 probe, admin gate), or only the failing jobs? The mock shows both; leaning toward both since the payload already carries them.
-- Does the Status area keep a small inline health summary at the top, or rely entirely on the dock for the rollup? Leaning toward dock-only for the rollup (per the spec relocation) while Status keeps the detailed rows.
+- **The dock's popover shows both** the failing jobs **and** the live dependency rows (D1 probe, admin gate) — the payload already carries them, matching the mock.
+- **Dock-only for the rollup.** The Status area renders no inline overall headline; it keeps the detailed per-job / D1 / posture rows, and the rollup lives solely in the global dock (per the spec relocation).

@@ -34,6 +34,8 @@ import { canonicalizeUrl } from "../url.js";
 import { LogsPage } from "./pages/logs.js";
 import { getDiscoveryConfig, putDiscoveryConfig, analyzeDiscovery, dryRunDiscovery, testFeed, getOperatorConfig, putOperatorConfig, listCorpus, addCorpus, deleteCorpus } from "./config-api.js";
 import { registerConfigRoutes } from "./pages/config.js";
+import { Layout } from "./ui/layout.js";
+import { buildHealthRollup, renderHealthDock } from "./ui/health-dock.js";
 
 /** The injectable surface the member-lifecycle operations close over (real bindings here). */
 function adminDeps(env: Env): AdminDeps {
@@ -74,6 +76,30 @@ function page(node: { toString(): string }): string {
 const app = new Hono<{ Bindings: Env }>().basePath("/admin");
 
 app.use("*", accessGate);
+
+// The global service-health dock (operator-admin): injected into every admin HTML page so the
+// healthy/degraded rollup is present on every area, not only Status. One chokepoint after the
+// gate — it builds the same `buildHealthPayload` the Status home uses (no new Worker route) and
+// splices the dock (SSR pill + island props + island script) before `</body>`. Acts only on
+// `text/html` responses, so `/admin/api/*` JSON and static island/asset fetches pass through.
+app.use("*", async (c, next) => {
+  await next();
+  const contentType = c.res.headers.get("content-type") ?? "";
+  if (!contentType.includes("text/html")) return;
+  const html = await c.res.text();
+  if (!html.includes("</body>")) {
+    c.res = new Response(html, c.res);
+    return;
+  }
+  const rollup = buildHealthRollup(await buildHealthPayload(c.env, HEALTH_JOBS));
+  const headers = new Headers(c.res.headers);
+  headers.delete("content-length");
+  c.res = new Response(html.replace("</body>", renderHealthDock(rollup) + "</body>"), {
+    status: c.res.status,
+    statusText: c.res.statusText,
+    headers,
+  });
+});
 
 // Tools/operations throw structured `ToolError`s; surface them as their structured shape +
 // status (a structured error is data, never an unhandled 500).
@@ -181,6 +207,29 @@ registerDataRoutes(app);
 
 // Config area (operator-admin): the discovery calibration console (+ ranking/flyer + corpus editors).
 registerConfigRoutes(app);
+
+// Discovery area (operator-admin): a top-level slot for the autonomous candidate-pipeline view.
+// This foundation change lands the routed placeholder so the IA exists; the pipeline body is a
+// downstream change.
+app.get("/discovery", (c) =>
+  c.html(
+    page(
+      <Layout title="Discovery · grocery-agent admin" active="/admin/discovery">
+        <div class="status-head">
+          <h2>Discovery</h2>
+        </div>
+        <div class="card">
+          <section>
+            <p class="muted">
+              The candidate-pipeline view is coming soon. Discovery outcomes are currently visible under{" "}
+              <a href="/admin/logs/discovery">Logs › Discovery</a>.
+            </p>
+          </section>
+        </div>
+      </Layout>,
+    ),
+  ),
+);
 
 // Usage area (usage-observability / usage-trends / tool-usage-trends): three SSR dashboards.
 app.get("/usage", async (c) => {

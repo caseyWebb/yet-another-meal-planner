@@ -195,12 +195,8 @@ export const StatusPage = ({ payload }: { payload: HealthPayload }) => (
         </section>
       </div>
     ) : null}
-    <div class="card">
-      <section class="headline">
-        <span class={`dot ${payload.ok ? "ok" : "fail"}`} />
-        <strong class={`status-word ${payload.ok ? "ok" : "fail"}`}>{payload.ok ? "Healthy" : "Degraded"}</strong>
-      </section>
-    </div>
+    {/* The overall healthy/degraded rollup lives in the global health dock (shell-injected on
+        every area); this view keeps the detailed per-job / D1 / admin-gate rows. */}
     <div class="card">
       <section>
         {payload.jobs.map((job) => (

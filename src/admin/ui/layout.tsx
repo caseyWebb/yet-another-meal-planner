@@ -17,6 +17,7 @@ const AREAS: Area[] = [
   { href: "/admin/members", label: "Members" },
   { href: "/admin/data", label: "Data" },
   { href: "/admin/usage", label: "Usage" },
+  { href: "/admin/discovery", label: "Discovery" },
   { href: "/admin/logs", label: "Logs" },
   { href: "/admin/config", label: "Config" },
 ];

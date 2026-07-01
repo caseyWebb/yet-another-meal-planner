@@ -100,4 +100,108 @@
   .tier.skipped { color: #cf222e; border-color: #cf222e; }
   .tier.pending { color: #9a6700; border-color: #9a6700; }
   .tier.orphaned { color: #57606a; border-color: #57606a; }
+
+  /* ── Redesign foundation (admin-ui-redesign-foundation) ── */
+  /* Group labels above a list/section. */
+  .group-label { font-size: .72rem; text-transform: uppercase; letter-spacing: .05em; color: #999; font-weight: 600; margin: 1.5rem 0 .65rem; }
+
+  /* Status glyphs (filled vs the small dot). */
+  .sglyph { display: inline-flex; }
+  .sglyph svg { width: 20px; height: 20px; }
+  .sglyph.ok { color: #2da44e; }
+  .sglyph.fail { color: #cf222e; }
+  .sglyph.never { color: #d4a72c; }
+
+  /* Page-level corpus stat tiles. */
+  .stat-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: .75rem; margin-bottom: 1.75rem; }
+  .stat-card { background: #fff; border: 1px solid var(--border); border-radius: var(--radius-lg); padding: .9rem 1rem 1rem; box-shadow: var(--shadow-xs); }
+  .stat-top { display: flex; align-items: center; gap: .4rem; color: var(--muted-foreground); }
+  .stat-ico { display: inline-flex; }
+  .stat-ico svg { width: 15px; height: 15px; }
+  .stat-label { font-size: .72rem; text-transform: uppercase; letter-spacing: .04em; font-weight: 500; white-space: nowrap; }
+  .stat-value { font-size: 1.7rem; font-weight: 600; letter-spacing: -.02em; margin-top: .45rem; line-height: 1; }
+  .stat-sub { font-size: .74rem; color: var(--muted-foreground); margin-top: .3rem; }
+  /* A stat tile that links into its area. */
+  a.stat-card-link { display: block; text-decoration: none; color: inherit; transition: border-color .15s, box-shadow .15s; }
+  a.stat-card-link:hover { border-color: var(--accent); box-shadow: var(--shadow-sm); }
+  a.stat-card-link:focus-visible { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in oklch, var(--accent) 35%, transparent); }
+
+  /* List items (Item / ItemGroup) — a bordered row with media · body · actions. */
+  .item-group { display: flex; flex-direction: column; gap: .5rem; }
+  .item { display: flex; align-items: center; gap: .75rem; padding: .7rem .9rem; background: #fff; border-radius: var(--radius-lg); box-shadow: var(--shadow-xs); }
+  .item-outline { border: 1px solid var(--border); }
+  .item-media { margin: 0; flex: 0 0 auto; display: inline-flex; }
+  .item-body { flex: 1; min-width: 0; }
+  .item-title { font-weight: 500; color: #1a1a1a; }
+  .item-desc { color: var(--muted-foreground); font-size: .82rem; margin-top: .1rem; }
+  .item-actions { flex: 0 0 auto; display: inline-flex; align-items: center; gap: .5rem; }
+
+  /* Initials avatar. */
+  .avatar { margin: 0; width: 2rem; height: 2rem; border-radius: 50%; background: color-mix(in oklch, var(--accent) 22%, #fff); color: #8a4f1f; display: inline-flex; align-items: center; justify-content: center; font-size: .72rem; font-weight: 600; }
+  .avatar-lg { width: 2.5rem; height: 2.5rem; font-size: .82rem; }
+
+  /* Pager. */
+  .pager { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-top: 1.25rem; }
+  .pager-info { text-align: center; }
+
+  /* Sparkline. */
+  .spark { display: flex; align-items: flex-end; gap: 2px; height: 30px; }
+  .spark-bar { flex: 1 1 0; min-width: 0; background: var(--accent); border-radius: 1px; opacity: .85; }
+
+  /* Progress bar (Basecoat ships no progress in this pack). */
+  .progress { height: .5rem; border-radius: 9999px; background: var(--muted); overflow: hidden; }
+  .progress > span { display: block; height: 100%; background: var(--accent); }
+
+  /* Switch + slider. */
+  .switch { display: inline-flex; align-items: center; cursor: pointer; }
+  .switch input { position: absolute; opacity: 0; width: 0; height: 0; }
+  .switch-track { width: 2.1rem; height: 1.2rem; border-radius: 9999px; background: #ccc; position: relative; transition: background .12s; }
+  .switch-track::after { content: ""; position: absolute; top: 2px; left: 2px; width: 1rem; height: 1rem; border-radius: 50%; background: #fff; transition: transform .12s; }
+  .switch input:checked + .switch-track { background: var(--accent); }
+  .switch input:checked + .switch-track::after { transform: translateX(.9rem); }
+  .slider { width: 100%; }
+
+  /* Dropdown menu (presentational shell; an island toggles [hidden] on the popover). */
+  .dropdown-menu { position: relative; display: inline-flex; }
+  .dropdown-pop { position: absolute; right: 0; top: calc(100% + .25rem); z-index: 30; min-width: 11rem; background: #fff; border: 1px solid var(--border); border-radius: var(--radius-md); box-shadow: var(--shadow-lg); padding: .25rem; display: flex; flex-direction: column; }
+  .menu-item { display: block; width: 100%; text-align: left; background: none; border: 0; font: inherit; font-size: .85rem; color: #222; padding: .4rem .55rem; border-radius: var(--radius-sm); cursor: pointer; text-decoration: none; }
+  .menu-item:hover { background: color-mix(in oklch, var(--muted) 40%, #fff); }
+  .menu-item.destructive { color: #cf222e; }
+
+  /* Sparkline hover tooltip (shared by Status · Usage). */
+  .bar-tip { position: fixed; z-index: 80; transform: translate(-50%, calc(-100% - 8px)); max-width: 17rem; padding: .45rem .6rem; border-radius: var(--radius-md); background: var(--foreground); color: var(--background); box-shadow: var(--shadow-lg); pointer-events: none; }
+  .bar-tip-title { font-size: .72rem; font-weight: 600; }
+  .bar-tip-body { font-size: .72rem; opacity: .8; margin-top: .1rem; line-height: 1.35; }
+
+  /* ── Global corner health dock ── */
+  .health-dock { position: fixed; right: 1.25rem; bottom: 1.25rem; z-index: 60; display: flex; flex-direction: column; align-items: flex-end; gap: .6rem; }
+  .health-host { display: flex; flex-direction: column; align-items: flex-end; gap: .6rem; }
+  .health-pill { display: inline-flex; align-items: center; gap: .55rem; background: #fff; border: 1px solid var(--border); border-radius: 999px; padding: .5rem .85rem .5rem .8rem; box-shadow: var(--shadow-md); cursor: pointer; font: inherit; font-size: .82rem; font-weight: 500; color: #1a1a1a; }
+  .health-pill:hover { box-shadow: var(--shadow-lg); }
+  .health-pill.fail { border-color: color-mix(in oklch, var(--destructive) 35%, var(--border)); }
+  .health-pill .hp-caret { color: var(--muted-foreground); }
+  .health-pill .hp-caret.up { transform: rotate(180deg); }
+  .hp-count { background: #cf222e; color: #fff; border-radius: 999px; font-size: .7rem; font-weight: 600; min-width: 1.15rem; height: 1.15rem; display: inline-flex; align-items: center; justify-content: center; padding: 0 .3rem; }
+  .pulse-dot { position: relative; width: .55rem; height: .55rem; border-radius: 50%; flex: 0 0 auto; }
+  .pulse-dot.ok { background: #2da44e; }
+  .pulse-dot.fail { background: #cf222e; }
+  .pulse-dot::after { content: ""; position: absolute; inset: 0; border-radius: 50%; background: inherit; animation: hpulse 2.4s ease-out infinite; }
+  @keyframes hpulse { 0% { transform: scale(1); opacity: .55; } 70%, 100% { transform: scale(2.8); opacity: 0; } }
+  @media (prefers-reduced-motion: reduce) { .pulse-dot::after { animation: none; } }
+  .health-pop { width: 19rem; background: #fff; border: 1px solid var(--border); border-radius: var(--radius-lg); box-shadow: var(--shadow-lg); padding: .9rem; font-size: .82rem; }
+  .hp-head { display: flex; align-items: center; gap: .5rem; padding-bottom: .65rem; border-bottom: 1px solid #f0f0f0; }
+  .hp-fail-list { list-style: none; margin: .6rem 0 0; padding: .5rem .6rem; background: color-mix(in oklch, var(--destructive) 5%, #fff); border: 1px solid color-mix(in oklch, var(--destructive) 25%, var(--border)); border-radius: var(--radius-md); display: flex; flex-direction: column; gap: .35rem; }
+  .hp-fail-list li { display: flex; align-items: center; gap: .45rem; }
+  .hp-fail-name { font-family: ui-monospace, monospace; font-size: .8rem; }
+  .hp-fail-list .muted { margin-left: auto; }
+  .hp-deps { display: flex; flex-direction: column; gap: .4rem; margin: .75rem 0; padding-top: .7rem; border-top: 1px solid #f0f0f0; }
+  .hp-dep { display: flex; align-items: center; gap: .5rem; }
+  .hp-dep-name { font-family: ui-monospace, monospace; font-size: .8rem; color: #444; }
+  .hp-dep .status-word { margin-left: auto; }
+  .hp-link { width: 100%; justify-content: center; }
+
+  @media (max-width: 640px) {
+    .stat-grid { grid-template-columns: repeat(2, 1fr); }
+    .health-pop { width: 16rem; }
+  }
 }
