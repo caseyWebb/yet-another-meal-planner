@@ -42,28 +42,28 @@
 
 ## 7. Scraper package (Phase 3)
 
-- [ ] 7.1 `packages/scraper` (Node + Playwright) skeleton: config loader (TOML sources + non-secret settings), scheduler, dedup cursor, `packages/contract` import.
-- [ ] 7.2 Adapter plugin model: the `{ authenticate, discover, extract }` interface, the injected SDK (shared parse + fetch tiers + session helpers), base-adapter loading + mounted operator-adapter loading; validate adapter output against the shared contract before push.
-- [ ] 7.3 Tiered fetch runtime: plain-HTTP + cookie-replay default; Playwright/CDP browser tier (one process, per-source contexts) for sources that declare it; per-source override.
-- [ ] 7.4 Session capture: `login` (headful) + cookie-import producing a `storageState` file on the mounted volume; daemon consumes it read-only; `auth_expired` detection surfaced in the push/heartbeat.
-- [ ] 7.5 Batch-and-push: per-source batches to `/admin/api/ingest` with `scraper_version`/`contract_version`; strip to functional facts; push-failure backoff.
-- [ ] 7.6 Operator CLI verbs: `login`, `test` (dry-run an adapter + print/validate the wire shape), `backfill`, `run`; Dockerfile (with the noVNC login fallback mode) + sample `docker-compose.yml`.
-- [ ] 7.7 Base adapters for the initial paid sources built on session-replay only (no login automation / no bot-detection defeat), with fixture-based unit tests (no live sites in CI).
+- [x] 7.1 `packages/scraper` (Node + Playwright) skeleton: config loader (TOML sources + non-secret settings), scheduler, dedup cursor, `packages/contract` import.
+- [x] 7.2 Adapter plugin model: the `{ authenticate, discover, extract }` interface, the injected SDK (shared parse + fetch tiers + session helpers), base-adapter loading + mounted operator-adapter loading; validate adapter output against the shared contract before push. (Adapter interface is `discover`/`extract` with session via the injected SDK — session establishment decoupled from the daemon, per design.)
+- [x] 7.3 Tiered fetch runtime: plain-HTTP + cookie-replay default; Playwright/CDP browser tier (one process, per-source contexts) for sources that declare it; per-source override.
+- [x] 7.4 Session capture: `login` (headful) + cookie-import producing a `storageState` file on the mounted volume; daemon consumes it read-only; `auth_expired` detection surfaced in the push/heartbeat.
+- [x] 7.5 Batch-and-push: per-source batches to `/admin/api/ingest` with `scraper_version`/`contract_version`; strip to functional facts; push-failure backoff.
+- [x] 7.6 Operator CLI verbs: `login`, `test`, `backfill`, `run [--watch]` (+ `cookie-import` for headless capture); Dockerfile (Playwright base; cookie-import / noVNC documented for headless login) + `docker-compose.example.yml`.
+- [x] 7.7 Base adapters for the initial paid sources built on session-replay only (no login automation / no bot-detection defeat), with fixture-based unit tests (no live sites in CI).
 
 ## 8. CI + distribution (Phase 3)
 
-- [ ] 8.1 Make CI workspace-aware: typecheck + test the worker, contract, and scraper packages; scope the Worker deploy-trigger path filters to the Worker package; fan a `packages/contract` change to both sides.
-- [ ] 8.2 Scraper release workflow: on a `scraper-v*` tag, build the image, push to GHCR, and cut a GitHub Release using `GITHUB_TOKEN` (no new secret), independent of the Worker deploy; embed build + contract version in the image.
+- [x] 8.1 Make CI workspace-aware: typecheck + test the worker, contract, and scraper packages; scope the Worker deploy-trigger path filters to the Worker package; fan a `packages/contract` change to both sides.
+- [x] 8.2 Scraper release workflow: on a `scraper-v*` tag, build the image, push to GHCR, and cut a GitHub Release using `GITHUB_TOKEN` (no new secret), independent of the Worker deploy; embed build + contract version in the image.
 
 ## 9. Docs (in lockstep)
 
-- [ ] 9.1 ARCHITECTURE.md: the scraper as the push intake arm on the sweep + the "walled sources are scraper-owned, not feeds" rule + the `/admin/api/ingest` Access carve-out.
-- [ ] 9.2 SCHEMAS.md: `ingest_keys`, `ingest_candidates`, and the `discovery_log` `pushed`/`origin` columns.
-- [ ] 9.3 SELF_HOSTING.md: run the scraper container, mint a key, capture/refresh a session (laptop `login` / cookie-import / noVNC), configure sources.
-- [ ] 9.4 Confirm TOOLS.md needs no change (no new MCP tool); note the ingest surface where appropriate.
+- [x] 9.1 ARCHITECTURE.md: the scraper as the push intake arm on the sweep + the "walled sources are scraper-owned, not feeds" rule + the `/admin/api/ingest` Access carve-out.
+- [x] 9.2 SCHEMAS.md: `ingest_keys`, `ingest_candidates`, and the `discovery_log` `pushed`/`origin` columns.
+- [x] 9.3 SELF_HOSTING.md: run the scraper container, mint a key, capture/refresh a session (laptop `login` / cookie-import / noVNC), configure sources.
+- [x] 9.4 Confirm TOOLS.md needs no change (no new MCP tool); note the ingest surface where appropriate.
 
 ## 10. Verification
 
-- [ ] 10.1 `aubr typecheck` + `aubr test` + `aubr test:tooling` green across the workspace; scraper package tests green.
-- [ ] 10.2 End-to-end (local `wrangler dev` + local D1): mint a key, POST a batch to `/admin/api/ingest`, confirm arrival dedup, a sweep tick imports a pushed candidate skipping acquire, and the admin Scrapers/Status views + Discovery badges render.
-- [ ] 10.3 `openspec validate "walled-source-ingest" --strict` passes; run `/code-review` on the diff before opening a PR.
+- [x] 10.1 `aubr typecheck` + `aubr test` + `aubr test:tooling` green across the workspace; scraper package tests green.
+- [ ] 10.2 End-to-end (live smoke) — **deferred to a real deploy.** Each leg is covered in isolation by the test suite (`test/ingest.test.ts`: mint → POST → arrival dedup + supersede; `test/discovery-sweep-push.test.ts`: a sweep tick imports a pushed candidate skipping acquire; `test/ingest.test.ts`: the liveness rollup; the admin SSR/islands build + render). The single live `wrangler dev` flow isn't runnable in the sandbox — the sweep's classify leg needs Workers AI (no local creds) — so the combined E2E is best run against a deployed Worker.
+- [x] 10.3 `openspec validate "walled-source-ingest" --strict` passes; run `/code-review` on the diff before opening a PR.
