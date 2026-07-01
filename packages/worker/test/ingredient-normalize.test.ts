@@ -142,6 +142,30 @@ describe("reconcileNormalization", () => {
     expect(r.edges).toContainEqual({ from: "chicken::whole", to: "chicken::thighs", kind: "containment" });
   });
 
+  it("back-links specific varieties to a newly-minted general base (kielbasa → sausage, directional)", async () => {
+    const h = harness({
+      terms: ["sausage"],
+      identities: [
+        { id: "kielbasa", embedding: [1, 0, 0] },
+        { id: "andouille", embedding: [1, 0, 0] },
+      ],
+      confirm: async () =>
+        confirm({
+          outcome: "novel",
+          edges: [
+            { from: "kielbasa", to: "NEW", kind: "general" },
+            { from: "andouille", to: "NEW", kind: "general" },
+          ],
+        }),
+    });
+    await reconcileNormalization(h.deps);
+    const r = h.committed[0];
+    expect(r.id).toBe("sausage"); // the general base is its own node, not merged into a variety
+    // Each variety → the new base (a specific satisfies the general); never the reverse.
+    expect(r.edges).toContainEqual({ from: "kielbasa", to: "sausage", kind: "general" });
+    expect(r.edges).toContainEqual({ from: "andouille", to: "sausage", kind: "general" });
+  });
+
   it("defers (re-queues) a term on a transient AI/D1 error, writing nothing", async () => {
     const h = harness({
       terms: ["mystery"],

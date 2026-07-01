@@ -57,7 +57,7 @@ const SYSTEM_PROMPT = [
   "- specialization: the new term is a candidate's base product PLUS a spec that changes which SKU (80/20 ground beef specializes ground beef). Set match to that candidate id and detail to a short kebab token (e.g. fat-80-20, type-bread).",
   "- novel: none of the candidates is the same product. Set match and detail to null. This INCLUDES distinct varieties that merely resemble a candidate: cheddar is NOT mozzarella, baking soda is NOT baking powder, chicken broth is NOT vegetable broth.",
   "- Be CONSERVATIVE. Only pick same when truly interchangeable at the store. When in doubt prefer specialization or novel. Never collapse two distinct products.",
-  "- GENERALITY DIRECTION: never pick same when the new term is MORE GENERAL than a candidate. A general product (mozzarella cheese) is NOT a synonym of one of its specific varieties (fresh mozzarella) — choose novel and mint the general base instead.",
+  "- GENERALITY DIRECTION: never pick same when the new term is MORE GENERAL than a candidate. A general product (mozzarella cheese) is NOT a synonym of one of its specific varieties (fresh mozzarella) — choose novel and mint the general base instead. When you mint a general base over candidates that are its specific varieties, ALSO add a general edge FROM each such variety TO the new base: {\"from\":\"<variety>\",\"to\":\"NEW\",\"kind\":\"general\"}. A general edge is DIRECTIONAL like containment — a specific variety satisfies a request for the general product (kielbasa satisfies sausage), but the general product does NOT satisfy a request for the variety.",
   "- PREPARATION words that do not change the product (diced, minced, shredded, softened, chopped) are NOT details: pick same on the base product (diced yellow onion = yellow onion).",
   "- CONTAINMENT edges are DIRECTIONAL: a more complete form satisfies a request for a sub-part. A whole chicken satisfies chicken thighs, but a thigh does NOT satisfy a whole chicken — emit {\"from\":\"<whole>\",\"to\":\"NEW\",\"kind\":\"containment\"}, never the reverse.",
   "- concrete=false only for a generic CLASS (a fresh soft cheese); then add membership edges FROM fitting candidate members TO the new concept: {\"from\":\"<member>\",\"to\":\"NEW\",\"kind\":\"membership\"}.",
@@ -78,6 +78,23 @@ const FEW_SHOT: { user: string; out: IdentityConfirm }[] = [
   {
     user: 'NEW term: "baking powder"\nCANDIDATES: ["baking soda","flour"]',
     out: { outcome: "novel", match: null, detail: null, concrete: true, edges: [], reason: "distinct product from baking soda" },
+  },
+  {
+    // A GENERAL base arriving over specific varieties: mint the base novel AND back-link each
+    // variety to it with a directional general edge (kielbasa satisfies sausage, not the reverse).
+    user: 'NEW term: "sausage"\nCANDIDATES: ["kielbasa","andouille","bratwurst"]',
+    out: {
+      outcome: "novel",
+      match: null,
+      detail: null,
+      concrete: true,
+      edges: [
+        { from: "kielbasa", to: "NEW", kind: "general" },
+        { from: "andouille", to: "NEW", kind: "general" },
+        { from: "bratwurst", to: "NEW", kind: "general" },
+      ],
+      reason: "general sausage base; each candidate variety satisfies it",
+    },
   },
 ];
 
