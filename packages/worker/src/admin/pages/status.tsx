@@ -20,6 +20,8 @@ import { assertNever } from "../lib/remote.js";
 import { currentStreakStart, type HealthPayload, type JobStatus, type JobRun } from "../../health.js";
 import type { AdminPosture } from "../../admin.js";
 import type { CorpusCounts } from "../../admin-data.js";
+import type { ScraperLiveness } from "../../ingest-db.js";
+import { CONTRACT_VERSION } from "@grocery-agent/contract";
 
 type JobState = "healthy" | "failing" | "neverRun";
 
@@ -244,14 +246,51 @@ const WarnIcon = () => (
   </svg>
 );
 
+/** One home-network scraper row (walled-source ingest): health glyph, source count, last push,
+ *  24h count, and a contract-skew warning when behind the Worker's current contract. */
+const ScraperRow = ({ s, now }: { s: ScraperLiveness; now: number }) => {
+  const cls = s.health === "fresh" ? "ok" : s.health === "stale" ? "fail" : "never";
+  return (
+    <Item
+      outline
+      media={<StateGlyph cls={cls} />}
+      title={s.label}
+      description={
+        <span class="job-meta">
+          {s.sourceCount} {s.sourceCount === 1 ? "source" : "sources"}
+          <span class="job-sep"> · </span>
+          {s.lastPush == null ? "no pushes yet" : `last push ${relAge(now - s.lastPush)}`}
+          {s.lastPush != null ? (
+            <>
+              <span class="job-sep"> · </span>
+              {s.pushes24h} in 24h
+            </>
+          ) : null}
+          {s.skew ? (
+            <>
+              <span class="job-sep"> · </span>
+              <span class="txt-bad">
+                contract {s.contractVersion} → behind {CONTRACT_VERSION}
+              </span>
+            </>
+          ) : null}
+        </span>
+      }
+      actions={<Badge variant={cls === "ok" ? "secondary" : cls === "fail" ? "destructive" : "outline"}>{s.health}</Badge>}
+    />
+  );
+};
+
 export const StatusPage = ({
   payload,
   counts,
   runsByJob,
+  scrapers = [],
 }: {
   payload: HealthPayload;
   counts: CorpusCounts;
   runsByJob: Record<string, JobRun[]>;
+  scrapers?: ScraperLiveness[];
 }) => (
   <Layout title="Status · grocery-agent admin" active="/admin">
     <div class="status-head">
@@ -299,6 +338,17 @@ export const StatusPage = ({
         <JobRow job={job} now={payload.generated_at} runs={runsByJob[job.name] ?? []} />
       ))}
     </ItemGroup>
+
+    {scrapers.length > 0 ? (
+      <>
+        <p class="group-label">Ingest scrapers</p>
+        <ItemGroup>
+          {scrapers.map((s) => (
+            <ScraperRow s={s} now={payload.generated_at} />
+          ))}
+        </ItemGroup>
+      </>
+    ) : null}
 
     <p class="group-label">Dependencies</p>
     <ItemGroup>

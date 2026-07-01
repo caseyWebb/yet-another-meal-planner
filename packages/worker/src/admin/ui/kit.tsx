@@ -6,7 +6,7 @@
 // green/amber status badge or nav-pill equivalent).
 
 import type { Child } from "hono/jsx";
-import { CheckCircleIcon, XCircleIcon, MinusCircleIcon, TrashIcon } from "./icons.js";
+import { CheckCircleIcon, XCircleIcon, MinusCircleIcon, TrashIcon, InboxIcon } from "./icons.js";
 
 /** A Basecoat card. Children render in the padded `<section>`; pass a `<header>`/`<footer>`
  *  among the children when a title or action row is wanted. */
@@ -544,6 +544,7 @@ export const StageTrack = ({
   haltIndex,
   kind,
   imported,
+  pushedAcquireIndex,
 }: {
   /** The stages in pipeline order. */
   stages: StageSpec[];
@@ -553,16 +554,22 @@ export const StageTrack = ({
   kind: string;
   /** True when the halt stage is fully PASSED, not a stop (e.g. an imported candidate). */
   imported?: boolean;
+  /** For a PUSHED candidate, the index of the `acquire` stage — rendered as arrived-via-push
+   *  (an inbox glyph, satisfied-not-fetched) rather than a plain check. Null/absent otherwise. */
+  pushedAcquireIndex?: number | null;
 }) => (
   <div class="pl-track" role="list" aria-label="pipeline progression">
     {stages.map((s, i) => {
       const isHalt = i === haltIndex && !imported;
       const done = i < haltIndex || (i === haltIndex && imported);
+      const isPush = pushedAcquireIndex != null && i === pushedAcquireIndex && done;
       const state = done ? "done" : isHalt ? kind : "todo";
       return (
-        <div class={cx("pl-stage", state, isHalt && "halt")} role="listitem">
+        <div class={cx("pl-stage", state, isHalt && "halt", isPush && "push")} role="listitem">
           <div class="pl-node">
-            {done ? (
+            {isPush ? (
+              <InboxIcon size={15} />
+            ) : done ? (
               <CheckCircleIcon size={15} />
             ) : isHalt ? (
               kind === "park" || kind === "fail" ? (

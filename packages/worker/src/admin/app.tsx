@@ -46,6 +46,7 @@ import { addDiscoveryRejection } from "../corpus-db.js";
 import { canonicalizeUrl } from "../url.js";
 import { LogsPage, PAGE_SIZE as LOGS_PAGE_SIZE } from "./pages/logs.js";
 import { DiscoveryPage } from "./pages/discovery.js";
+import { ScrapersPage } from "./pages/scrapers.js";
 import { getDiscoveryConfig, putDiscoveryConfig, analyzeDiscovery, dryRunDiscovery, testFeed, getOperatorConfig, putOperatorConfig, listCorpus, addCorpus, deleteCorpus } from "./config-api.js";
 import { registerConfigRoutes } from "./pages/config.js";
 import { buildHealthRollup, renderHealthDock } from "./ui/health-dock.js";
@@ -135,14 +136,20 @@ const STATUS_SPARKLINE_WINDOW = 30;
 // the public `/health` uses (no client fetch, no decoder), plus the corpus stat-tile counts and
 // each job's recent run history (for the uptime sparkline + healthy/unhealthy-since label).
 app.get("/", async (c) => {
-  const [payload, counts] = await Promise.all([buildHealthPayload(c.env, HEALTH_JOBS), corpusCounts(c.env)]);
+  const [payload, counts, liveness] = await Promise.all([
+    buildHealthPayload(c.env, HEALTH_JOBS),
+    corpusCounts(c.env),
+    readScraperLiveness(c.env),
+  ]);
   const runsByJob: Record<string, JobRun[]> = {};
   await Promise.all(
     HEALTH_JOBS.map(async (name) => {
       runsByJob[name] = await readJobRuns(c.env, name, STATUS_SPARKLINE_WINDOW);
     }),
   );
-  return c.html(page(<StatusPage payload={payload} counts={counts} runsByJob={runsByJob} />));
+  return c.html(
+    page(<StatusPage payload={payload} counts={counts} runsByJob={runsByJob} scrapers={liveness.activeScrapers} />),
+  );
 });
 
 // SSR: the Members roster, read by calling `listTenants` directly (no client fetch).
@@ -276,11 +283,26 @@ registerConfigRoutes(app);
 // area's SOLE content; it absorbed the candidate log formerly at /admin/logs/discovery (that
 // route now redirects here — see the Logs section below).
 app.get("/discovery", async (c) => {
-  const candidates = await readDiscoveryCandidates(c.env, 200);
+  const [candidates, liveness] = await Promise.all([readDiscoveryCandidates(c.env, 200), readScraperLiveness(c.env)]);
   const filter = c.req.query("filter") ?? "all";
   const pageParam = Number(c.req.query("page") ?? "1");
   const requestedPage = Number.isFinite(pageParam) && pageParam > 0 ? pageParam - 1 : 0;
-  return c.html(page(<DiscoveryPage candidates={candidates} filter={filter} page={requestedPage} now={Date.now()} />));
+  const ingest = {
+    activeScrapers: liveness.stats.activeScrapers,
+    fresh: liveness.stats.fresh,
+    stale: liveness.stats.stale,
+    pushedToday: liveness.funnel.arrival.received,
+    warn: liveness.stats.stale > 0 || liveness.activeScrapers.some((s) => s.skew),
+  };
+  return c.html(
+    page(<DiscoveryPage candidates={candidates} filter={filter} page={requestedPage} now={Date.now()} ingest={ingest} />),
+  );
+});
+
+// Discovery › Scrapers (recipe-ingestion): the read-only walled-source ingest liveness view.
+app.get("/discovery/scrapers", async (c) => {
+  const rollup = await readScraperLiveness(c.env);
+  return c.html(page(<ScrapersPage rollup={rollup} now={Date.now()} />));
 });
 
 // Insights area (group-insights): a group-wide popularity dashboard over the recipe corpus. SSR'd

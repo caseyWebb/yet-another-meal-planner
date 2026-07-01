@@ -35,10 +35,10 @@
 
 ## 6. Admin — Discovery › Scrapers + Status (Phase 2)
 
-- [ ] 6.1 SSR reader for the Scrapers view + Status section (liveness cards, throughput funnel, recent-pushes log) backed by the health/ingest rollups.
-- [ ] 6.2 Discovery area: **Candidates | Scrapers** sub-tabs (per `DiscoveryScreen.jsx`); the `ScrapersView` (per `IngestScreen.jsx`/`ingest-data.jsx`); the Candidates **ingest strip** (warns on stale/skew).
-- [ ] 6.3 Discovery candidate cards: `scraper: <origin>` provenance badge for pushed rows and the `acquire` stage rendered **arrived-via-push** in both the mini track and expanded stage list; fix the candidate card shell to `div role="button"` (no nested button).
-- [ ] 6.4 Status homepage: **Ingest scrapers** section (per `StatusScreen.jsx`).
+- [x] 6.1 `ScrapersView`/`ScrapersPage` (`pages/scrapers.tsx`) + the Status Ingest-scrapers section, both SSR from `readScraperLiveness` (liveness cards, throughput funnel, recent-pushes log).
+- [x] 6.2 Discovery area **Candidates | Scrapers** sub-nav + the `/admin/discovery/scrapers` route; the Candidates **ingest strip** (`N scrapers · X fresh · Y pushed today →`, warns on stale/skew, links to Scrapers) — threaded through the SSR page + the discovery island props so it survives hydration.
+- [x] 6.3 Pushed candidate cards: `scraper: <origin>` badge + inbox icon; `acquire` rendered **arrived-via-push** in both the mini `StageTrack` (new `pushedAcquireIndex` prop + `InboxIcon`) and the expanded stage list. (The mock's nested-`<button>` fix is N/A — the repo card already uses `<details>/<summary>`.)
+- [x] 6.4 Status homepage **Ingest scrapers** section (per active scraper: health glyph, source count, last push, 24h count, contract-skew warning), wired via the `/` route + an optional `scrapers` prop.
 
 ## 7. Scraper package (Phase 3)
 

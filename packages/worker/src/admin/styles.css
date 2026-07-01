@@ -709,4 +709,35 @@
   .ins-submetric svg { color: #bbb; }
   .ins-subrecipe-go { display: inline-flex; color: var(--muted-foreground); flex: 0 0 auto; }
   .ins-subrecipe:hover .ins-subrecipe-go { color: var(--accent); }
+
+  /* Walled-source ingest (recipe-ingestion): the Discovery ingest strip, the arrived-via-push
+     stage accent, and the Scrapers liveness cards + funnel. */
+  .dc-ingest-strip { display: flex; align-items: center; gap: .6rem; background: #fff; border: 1px solid var(--border); border-radius: var(--radius-lg); padding: .55rem .85rem; margin: .35rem 0 1rem; color: var(--foreground); text-decoration: none; font-size: .85rem; }
+  .dc-ingest-strip:hover { border-color: var(--accent); }
+  .dc-ingest-strip.warn { border-color: color-mix(in oklch, var(--destructive) 35%, var(--border)); background: color-mix(in oklch, var(--destructive) 3%, #fff); }
+  .dc-ingest-strip .dc-strip-go { margin-left: auto; color: var(--muted-foreground); flex: 0 0 auto; }
+
+  .pl-stage.push .pl-node { color: var(--primary); border-color: color-mix(in oklch, var(--primary) 55%, var(--border)); }
+  .dcs-row.push .dcs-ico { color: var(--primary); }
+  .dcs-tag.push { background: color-mix(in oklch, var(--primary) 18%, transparent); color: var(--primary-foreground); border-radius: 999px; padding: .05rem .45rem; font-size: .68rem; }
+
+  .badge-row { display: inline-flex; flex-wrap: wrap; gap: .25rem; }
+  .cfg-table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: var(--radius-lg); }
+  .cfg-key-revoked { opacity: .55; }
+
+  .ig-live-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr)); gap: .75rem; }
+  .ig-live-card { background: #fff; border: 1px solid var(--border); border-radius: var(--radius-lg); padding: .85rem; display: flex; flex-direction: column; gap: .5rem; }
+  .ig-live-head { display: flex; justify-content: space-between; align-items: flex-start; gap: .5rem; }
+  .ig-live-when { font-size: .85rem; }
+  .ig-src-list { display: flex; flex-direction: column; gap: .3rem; }
+  .ig-src { display: flex; align-items: center; gap: .4rem; font-size: .8rem; }
+  .ig-src-name { flex: 1 1 auto; }
+  .ig-live-foot { border-top: 1px solid var(--border); padding-top: .5rem; }
+  .ig-live-foot code { font-size: .72rem; }
+
+  .ig-funnel { display: flex; flex-direction: column; gap: .75rem; }
+  .ig-arrival { display: flex; flex-wrap: wrap; gap: .5rem; }
+  .ig-fstep { flex: 1 1 8rem; background: #fff; border: 1px solid var(--border); border-radius: var(--radius-lg); padding: .6rem .75rem; }
+  .ig-fval { font-size: 1.4rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .ig-down { display: flex; flex-wrap: wrap; gap: .35rem; }
 }

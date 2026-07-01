@@ -39,11 +39,13 @@ function DiscoveryIsland({
   filter,
   page,
   now,
+  ingest,
 }: {
   initial: DiscoveryCandidate[];
   filter: string;
   page: number;
   now: number;
+  ingest?: import("../pages/discovery.js").IngestStripData;
 }) {
   const [action, setAction] = useState<ActionState>({ status: "idle" });
   const busyId = action.status === "busy" ? action.op.id : action.status === "failed" ? action.op.id : null;
@@ -93,7 +95,7 @@ function DiscoveryIsland({
           </section>
         </div>
       ) : null}
-      <DiscoveryView candidates={initial} filter={filter} page={page} now={now} />
+      <DiscoveryView candidates={initial} filter={filter} page={page} now={now} ingest={ingest} />
       {busyId != null && action.status === "busy" ? <p class="muted small">Working…</p> : null}
     </div>
   );
@@ -102,11 +104,14 @@ function DiscoveryIsland({
 const host = document.getElementById("discovery-island");
 const propsEl = document.getElementById("discovery-props");
 if (host && propsEl) {
-  const props = JSON.parse(propsEl.textContent ?? "{}") as { candidates: DiscoveryCandidate[] };
+  const props = JSON.parse(propsEl.textContent ?? "{}") as {
+    candidates: DiscoveryCandidate[];
+    ingest?: import("../pages/discovery.js").IngestStripData;
+  };
   const url = new URL(location.href);
   const filter = url.searchParams.get("filter") ?? "all";
   const pageParam = Number(url.searchParams.get("page") ?? "1");
   const page = Number.isFinite(pageParam) && pageParam > 0 ? pageParam - 1 : 0;
   host.replaceChildren();
-  render(<DiscoveryIsland initial={props.candidates} filter={filter} page={page} now={Date.now()} />, host);
+  render(<DiscoveryIsland initial={props.candidates} filter={filter} page={page} now={Date.now()} ingest={props.ingest} />, host);
 }

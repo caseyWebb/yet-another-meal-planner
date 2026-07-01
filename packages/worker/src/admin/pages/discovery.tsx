@@ -22,6 +22,7 @@ import {
   FileTextIcon,
   GitMergeIcon,
   ScanIcon,
+  InboxIcon,
 } from "../ui/icons.js";
 import { relAge, relFuture, isRetryable, entryTitle } from "../logs-shared.js";
 import type { DiscoveryCandidate, MatchScore, StageKey } from "../../discovery-db.js";
@@ -205,14 +206,17 @@ const StageDetail = ({ c }: { c: DiscoveryCandidate }) => {
       {STAGES.map((s, i) => {
         const done = i < haltIx || (i === haltIx && imported);
         const halt = i === haltIx && !imported;
-        const rowClass = done ? "dcs-row done" : halt ? `dcs-row halt ${c.kind}` : "dcs-row todo";
+        const isPush = c.pushed && s.key === "acquire" && done;
+        const rowClass = done ? `dcs-row done${isPush ? " push" : ""}` : halt ? `dcs-row halt ${c.kind}` : "dcs-row todo";
         return (
           <div class={rowClass}>
-            <span class="dcs-ico">{done ? <CheckCircleIcon size={15} /> : s.icon}</span>
+            <span class="dcs-ico">{isPush ? <InboxIcon size={15} /> : done ? <CheckCircleIcon size={15} /> : s.icon}</span>
             <div class="dcs-body">
               <div class="dcs-name">
                 {s.label}
-                {done ? (
+                {isPush ? (
+                  <span class="dcs-tag push">arrived via push</span>
+                ) : done ? (
                   <span class="dcs-tag ok">passed</span>
                 ) : halt ? (
                   <span class="dcs-tag halt">stopped here</span>
@@ -255,8 +259,13 @@ const CandidateCard = ({ c, now }: { c: DiscoveryCandidate; now: number }) => {
             </Badge>
           </div>
           <div class="dc-src">
-            {email ? <MailIcon size={13} /> : <RssIcon size={13} />}
+            {c.pushed ? <InboxIcon size={13} /> : email ? <MailIcon size={13} /> : <RssIcon size={13} />}
             <span class="dc-src-name">{c.source ?? ""}</span>
+            {c.pushed ? (
+              <span class="badge" data-variant="outline">
+                scraper: {c.origin ?? "?"}
+              </span>
+            ) : null}
             {c.created_at ? (
               <>
                 <span class="dimsep">·</span>
@@ -271,6 +280,7 @@ const CandidateCard = ({ c, now }: { c: DiscoveryCandidate; now: number }) => {
             haltIndex={STAGE_IX[c.haltStage]}
             kind={c.kind}
             imported={c.outcome === "imported"}
+            pushedAcquireIndex={c.pushed ? STAGE_IX.acquire : null}
           />
 
           <div class="dc-summary">{summaryLine(c)}</div>
@@ -301,6 +311,29 @@ const CandidateCard = ({ c, now }: { c: DiscoveryCandidate; now: number }) => {
   );
 };
 
+/** Summary of the ingest scrapers for the Candidates ingest strip (computed from the liveness
+ *  rollup in the route). `warn` when any active scraper is stale or on a behind contract. */
+export interface IngestStripData {
+  activeScrapers: number;
+  fresh: number;
+  stale: number;
+  pushedToday: number;
+  warn: boolean;
+}
+
+/** The Candidates | Scrapers sub-nav (inlined here to keep server-only scrapers.tsx out of the
+ *  Discovery client-island bundle). */
+const SubNav = ({ active }: { active: "candidates" | "scrapers" }) => (
+  <div class="data-nav">
+    <a href="/admin/discovery" class={active === "candidates" ? "pill active" : "pill"}>
+      Candidates
+    </a>
+    <a href="/admin/discovery/scrapers" class={active === "scrapers" ? "pill active" : "pill"}>
+      Scrapers
+    </a>
+  </div>
+);
+
 /** The Discovery area's SSR content: stat tiles, filter pills, the paginated candidate list.
  *  `filter`/`page` are route query params so every combination is deep-linkable. */
 export const DiscoveryView = ({
@@ -308,11 +341,13 @@ export const DiscoveryView = ({
   filter,
   page,
   now,
+  ingest,
 }: {
   candidates: DiscoveryCandidate[];
   filter: string;
   page: number;
   now: number;
+  ingest?: IngestStripData;
 }) => {
   const total = candidates.length;
   // `readDiscoveryCandidates` orders newest-first, so the freshest row's `created_at` is the
@@ -337,6 +372,19 @@ export const DiscoveryView = ({
           Refresh{lastSweepAt != null ? ` · last sweep ${relAge(lastSweepAt, now)}` : ""}
         </a>
       </div>
+
+      <SubNav active="candidates" />
+
+      {ingest && ingest.activeScrapers > 0 ? (
+        <a href="/admin/discovery/scrapers" class={ingest.warn ? "dc-ingest-strip warn" : "dc-ingest-strip"}>
+          <InboxIcon size={13} />
+          <span>
+            <strong>{ingest.activeScrapers} scrapers</strong> · {ingest.fresh} fresh
+            {ingest.stale ? <span class="txt-bad"> · {ingest.stale} stale</span> : null} · {ingest.pushedToday} recipes pushed today
+          </span>
+          <span class="dc-strip-go">Scrapers →</span>
+        </a>
+      ) : null}
 
       <StatCardGrid>
         <StatCard icon={<CompassIcon size={15} />} label="Candidates" value={total} />
@@ -399,8 +447,8 @@ export const DiscoveryView = ({
   );
 };
 
-function serializeProps(candidates: DiscoveryCandidate[]): string {
-  return JSON.stringify({ candidates }).replace(/</g, "\\u003c");
+function serializeProps(candidates: DiscoveryCandidate[], ingest?: IngestStripData): string {
+  return JSON.stringify({ candidates, ingest }).replace(/</g, "\\u003c");
 }
 
 /** The `/admin/discovery` page shell: the pipeline view SSR'd (first paint carries the data),
@@ -411,17 +459,19 @@ export const DiscoveryPage = ({
   filter,
   page,
   now,
+  ingest,
 }: {
   candidates: DiscoveryCandidate[];
   filter: string;
   page: number;
   now: number;
+  ingest?: IngestStripData;
 }) => (
   <Layout title="Discovery · grocery-agent admin" active="/admin/discovery" wide>
     <div id="discovery-island">
-      <DiscoveryView candidates={candidates} filter={filter} page={page} now={now} />
+      <DiscoveryView candidates={candidates} filter={filter} page={page} now={now} ingest={ingest} />
     </div>
-    <script type="application/json" id="discovery-props" dangerouslySetInnerHTML={{ __html: serializeProps(candidates) }} />
+    <script type="application/json" id="discovery-props" dangerouslySetInnerHTML={{ __html: serializeProps(candidates, ingest) }} />
     <script type="module" src="/admin/islands/discovery.js" />
   </Layout>
 );
