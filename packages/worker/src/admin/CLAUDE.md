@@ -88,6 +88,16 @@ Islands (`client/*.tsx`) run in the browser and are typechecked under
 
 ## Styling — the Basecoat design system
 
+**Designs come from the companion Claude Design project — don't wing them.** The panel's visual
+design is authored in a companion **Claude Design** project (claude.ai/design) that holds the
+BasecoatUI design-system awareness and is the source of truth for the look. When a surface needs a
+new design or an existing one changes, don't improvise the markup/styling here: write the user a
+prompt describing the change for them to run in that Claude Design project, then take the updated
+bundle it hands back (the exported zip) as the basis for the local change and translate it into the
+Basecoat markup below. Always routing design through the project produces better designs and keeps
+the project and the panel from drifting apart — never fork the design in this repo instead of
+updating it upstream.
+
 The panel is styled with **Basecoat** (the Vega style pack), a Tailwind CSS component system
 (shadcn/ui-compatible tokens, no React). `src/admin/styles.css` is the **Tailwind entry**:
 `@import "tailwindcss"; @import "basecoat-css/vega";` + the operator theme (`--primary` → the
