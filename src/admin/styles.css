@@ -567,7 +567,17 @@
   .md h2 { font-size: .95rem; font-weight: 600; margin: 1.1rem 0 .4rem; }
   .md h3 { font-size: .88rem; font-weight: 600; margin: 1rem 0 .35rem; }
   .md p { margin: .45rem 0; }
-  .md ul, .md ol { margin: .3rem 0 .3rem 1.1rem; padding: 0; }
+  /* Tailwind Preflight resets `ul`/`ol` to `list-style: none` globally, so restore the markers
+     here or markdown lists render as unmarked, unindented blocks. `padding-left` (not a left
+     margin) holds the `outside` markers inside the `.md` box instead of letting them clip. */
+  .md ul, .md ol { margin: .3rem 0; padding-left: 1.4rem; }
+  .md ul { list-style: disc; }
+  .md ol { list-style: decimal; }
+  .md ul ul { list-style: circle; }
+  .md ul ul ul { list-style: square; }
+  /* GFM task-list items (`- [ ] …`) carry their own checkbox — drop the bullet so they aren't
+     doubly-marked (`renderMarkdown` enables gfm). */
+  .md li:has(> input[type="checkbox"]) { list-style: none; }
   .md li { margin: .15rem 0; }
   .md li > p { margin: .15rem 0; }
   .md a { color: var(--accent); }
