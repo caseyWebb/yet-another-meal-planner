@@ -1,0 +1,32 @@
+## Why
+
+The Config area (`/admin/config`) already exists — a discovery calibration console (`client/calibration.tsx`), a Ranking/Flyer weights form (`client/opconfig.tsx`), and five shared-corpus editors (`client/corpus.tsx`) — but it predates the Basecoat kit the foundation change (`admin-ui-redesign-foundation`) landed, and it is organized as eight flat sub-nav destinations rather than the four operator-facing groups the handoff mock consolidates them into (Discovery / Kroger Flyer / Ranking / Aliases). The calibration console's Clean/Dirty/NeedsConfirm floor-confirm gate — the redesign's centerpiece UX — already works for discovery's τ/δ/rateCap knobs but has no equivalent for Ranking or Flyer, whose `operator_config` knobs carry range validation only and no floor concept at all. This change restyles the existing Config area onto the kit and consolidates its sub-nav, and closes that one real gap so every knob console in Config behaves the same way.
+
+## What Changes
+
+- **Group sub-nav.** Replace the eight-destination flat sub-nav (`Calibration, Ranking, Flyer, Aliases, Flyer terms, Feeds, Senders, Members`) with four groups — **Discovery** (calibration + feeds + email sources), **Kroger Flyer** (flyer knobs + flyer terms), **Ranking** (ranking knobs), **Aliases** (the alias table) — each rendering its knob console(s) and corpus editor(s) together on one screen, per the mock's `ConfigScreen.jsx`/`config-data.jsx`. The discovery senders + members tables are consolidated into one **Email Sources** editor (member vs. automated-forward addresses) inside the Discovery group, restyling two existing corpus tables into one presentation without changing what they store.
+- **KnobConsole (kit primitive).** Add a `KnobConsole`/`Knob` pair to `src/admin/ui/kit.tsx`/the calibration-style islands: a per-knob label + numeric input + `Slider` + help text, with a below-floor warning; the console tracks Clean | Dirty | NeedsConfirm exactly as `client/calibration.tsx` already does, generalized so `client/opconfig.tsx` (Ranking, Flyer) can adopt the identical state machine instead of its current plain clean/dirty/saved/error form.
+- **Extend the floor-confirm gate to Ranking and Flyer.** `operator-config.ts` gains a documented safe floor per knob (mirroring `discovery-calibration.ts`'s `FLOOR_TASTE`/`FLOOR_DEDUP`/`CEILING_RATE_CAP` pattern) and `validateOperatorConfig` gains the same `confirm`-gated floor/ceiling rejection `validateDiscoveryConfig` already has, returning the same `needsConfirm` structured-error shape. `PUT /admin/api/operator-config` accepts a `confirm` flag. This is new backend behavior, not restyle — Ranking/Flyer writes currently have no such gate.
+- **Restyle onto the kit.** All three consoles (Calibration, Ranking, Flyer) and all corpus editors (Feeds, Flyer terms, Aliases, Email Sources) recompose onto `src/admin/ui/kit.tsx` primitives (`Slider`, `Badge`, `Item`/`ItemGroup`, `DataTable`, `Field`, `Dialog` where applicable) and Basecoat classes, replacing the current ad hoc `<div class="grid gap-2">`/`<table class="table">` hand-rolled markup — a presentation change with the same SSR-page + typed-route-island split (`admin/CLAUDE.md` rule 8), same endpoints.
+- **Feeds probe stays.** The Feeds editor's per-row/drafted-URL "test" action (`POST /admin/api/discovery/test-feed`) is carried forward unchanged, restyled onto the kit's row-action affordance.
+
+## Capabilities
+
+### New Capabilities
+
+<!-- None — restyles/consolidates the existing Config area; extends validation on an existing capability. -->
+
+### Modified Capabilities
+
+- `operator-admin`: the "Config area hosts the calibration console and the shared-corpus editors" requirement is **MODIFIED** — the sub-navigation becomes four groups (Discovery / Kroger Flyer / Ranking / Aliases) instead of eight flat destinations, each knob console is a Clean/Dirty/NeedsConfirm state machine (generalized from the discovery-only description to cover Ranking and Flyer too), and the console composition is restated in terms of the shared kit. The "Operator edits shared-corpus tables under Config" requirement is **MODIFIED** to note the senders + members tables render as one consolidated Email Sources editor within the Discovery group (same underlying tables, same add/remove contract). The feed-probe and discovery-calibration-endpoint requirements are unchanged in contract, restated only where their UI home moves.
+- `discovery-calibration`: unchanged — this change does not touch the sweep, its knobs, or the existing footgun-floor requirement; it only restyles the console that edits it.
+
+## Impact
+
+- `src/admin/pages/config.tsx` — the `VIEWS` sub-nav collapses from eight slugs to four group slugs (`discovery` default, `flyer`, `ranking`, `aliases`); each group page composes its knob console(s) + corpus editor(s) SSR props together (one `<script type="application/json">` per group page, seeding one island).
+- `src/admin/client/calibration.tsx`, `client/opconfig.tsx`, `client/corpus.tsx` — restyled onto `ui/kit.tsx` primitives; `opconfig.tsx`'s save lifecycle is generalized from its current 4-state union to the Clean/Dirty/NeedsConfirm union `calibration.tsx` already uses, so both consoles share one state shape and (likely) one rendering component.
+- `src/admin/ui/kit.tsx` — a new `Knob`/`KnobConsole` presentational pair (or the calibration island's existing per-field markup lifted into the kit), reusable by both Discovery calibration and Ranking/Flyer.
+- `src/operator-config.ts` — add per-knob floor/ceiling constants and extend `validateOperatorConfig` with a `confirm`-gated rejection path (mirrors `discovery-calibration.ts`'s `validateDiscoveryConfig`); `src/admin/config-api.ts`'s `putOperatorConfig` passes the `confirm` flag through.
+- `src/admin/app.tsx` — `PUT /admin/api/operator-config` request body gains an optional `confirm: boolean` field (backward compatible — omitted `confirm` behaves as `false`, matching current behavior for values that don't breach a floor).
+- `docs/TOOLS.md` — no change (no MCP tool surface touched; these are operator/cross-tenant admin routes only). `docs/SCHEMAS.md` — no change (no D1 schema change; floors are compiled constants, not stored columns, matching `discovery-calibration.ts`'s precedent). `docs/ARCHITECTURE.md` — no change.
+- Depends on `admin-ui-redesign-foundation` (archived — the kit primitives and area-nav shell this composes onto).
