@@ -65,6 +65,15 @@ describe("reconcileNightVibeVectors", () => {
     expect(h.pruned).toEqual([{ tenant: "a", id: "gone" }]);
   });
 
+  it("prunes a spaced-tenant orphan by its real (tenant, id), not a mis-split of the key", async () => {
+    // A tenant id containing a space would break a `split(" ")`-based key reversal; the prune
+    // must target {tenant:"casey smith", id:"soup"}, never a mangled {tenant:"casey", id:"smith"}.
+    const h = harness([], [{ tenant: "casey smith", id: "soup", vibe_hash: "x" }]);
+    const r = await reconcileNightVibeVectors(h.deps);
+    expect(r.pruned).toBe(1);
+    expect(h.pruned).toEqual([{ tenant: "casey smith", id: "soup" }]);
+  });
+
   it("handles a mixed pass (one new, one unchanged, one orphan)", async () => {
     const h = harness(
       [

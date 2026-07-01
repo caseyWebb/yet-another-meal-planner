@@ -37,7 +37,7 @@ const PK: Record<string, string[]> = {
   job_health: ["name"],
   night_vibes: ["tenant", "id"],
   night_vibe_derived: ["tenant", "id"],
-  pending_proposals: ["id"],
+  pending_proposals: ["tenant", "id"],
 };
 
 // Tables whose `id` PK is AUTOINCREMENT: an INSERT that omits `id` gets the next one,

@@ -9,13 +9,11 @@
 // Pure (no I/O) so it is unit-testable off `workerd`; the cron wrapper (runReconcileSignalsJob,
 // below) injects the D1/tenant reads.
 
-import { db } from "./db.js";
 import type { Env } from "./env.js";
-import { hashText } from "./hash.js";
 import { directoryFromEnv } from "./tenant.js";
-import { readNightVibes, type NightVibe } from "./night-vibe-db.js";
-import { readVibeLastSatisfied } from "./night-vibe-db.js";
+import { readNightVibes, readVibeLastSatisfied, type NightVibe } from "./night-vibe-db.js";
 import { writeJobHealth, writeJobRun, recordUsagePoint, notifyFailure } from "./health.js";
+import { enqueueProposal } from "./reconcile-db.js";
 
 /** A vibe the member added but has ignored this long (days) before we suggest pruning it. */
 const STALE_NEVER_DAYS = 60;
@@ -80,12 +78,6 @@ export function draftProposals(palette: NightVibe[], lastSatisfied: Map<string, 
   return drafts;
 }
 
-/** Stable, dedup-ing proposal id: same (tenant, kind, target) → same id, so re-drafting is a
- *  no-op INSERT and a rejected proposal is never re-surfaced. */
-export function proposalId(tenant: string, kind: string, target: string): string {
-  return hashText(`${tenant}|${kind}|${target}`);
-}
-
 // --- the scheduled deterministic-signal job -----------------------------------
 
 /**
@@ -107,7 +99,7 @@ export async function runReconcileSignalsJob(env: Env, now: () => number = () =>
       const drafts = draftProposals(palette, lastSatisfied, nowDate);
       drafted += drafts.length;
       for (const d of drafts) {
-        const inserted = await enqueueDraft(env, tenant, d, "signal-cron", nowIso);
+        const { inserted } = await enqueueProposal(env, tenant, d, "signal-cron", nowIso);
         if (inserted) enqueued++;
       }
     }
@@ -124,25 +116,4 @@ export async function runReconcileSignalsJob(env: Env, now: () => number = () =>
     await notifyFailure(env, "reconcile-signals", msg);
     throw e;
   }
-}
-
-/** Idempotent enqueue used by the cron (thin wrapper around the store, kept here so the job is
- *  self-contained). Returns true when a NEW row was inserted (existing id → no-op). */
-async function enqueueDraft(env: Env, tenant: string, d: ProposalDraft, producer: string, nowIso: string): Promise<boolean> {
-  const id = proposalId(tenant, d.kind, d.target);
-  const r = await db(env).run(
-    "INSERT OR IGNORE INTO pending_proposals (id, tenant, kind, target, payload, rationale, evidence, status, producer, created_at) " +
-      "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-    id,
-    tenant,
-    d.kind,
-    d.target,
-    JSON.stringify(d.payload),
-    d.rationale,
-    JSON.stringify(d.evidence),
-    "pending",
-    producer,
-    nowIso,
-  );
-  return r.changes > 0;
 }

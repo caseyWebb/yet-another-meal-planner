@@ -307,7 +307,7 @@ Add a night vibe. `vibe` (required) is the craving/query phrase; `id` defaults t
 
 ### `update_night_vibe(id, …patch)`
 
-Patch an existing vibe — pass only the fields to change. Editing `vibe` re-embeds it on the next cron tick. Unknown id → `not_found`. Returns `{ id, updated_fields }`.
+Patch an existing vibe — pass only the fields to change. Editing `vibe` re-embeds it on the next cron tick. An un-passed field is **preserved** (there is no clear-a-field path — remove and re-add to drop one). Unknown id → `not_found`. Returns `{ id, updated_fields }`.
 
 ### `remove_night_vibe(id)`
 
@@ -320,7 +320,7 @@ Propose a week of dinners from the caller's night-vibe palette — **stateless, 
 **Params:**
 - `nights` (number, optional): dinners to plan (default: `preferences.default_cooking_nights` or 5, max 14).
 - `seed` (number, optional): deterministic seed — the same inputs + seed give the same week; change **only** the seed for "give me another week." Defaults to today's date (stable within a day).
-- `lock` (string[], optional): recipe slugs to keep — returned as leading `locked` slots; the rest of the week diversifies *against* them (won't duplicate/clash). The sampled slot count is `nights − lock.length`.
+- `lock` (string[], optional): recipe slugs to keep — returned as leading `locked` slots; the rest of the week diversifies *against* them (won't duplicate/clash). Slugs resolve **case-insensitively** and **respect the reject hard gate**; a lock that's unknown, not-yet-embedded, or rejected is returned as an **explicit empty `locked` slot** (never silently dropped). Each lock occupies one night, so the sampled slot count is `nights − lock.length`.
 - `exclude` (string[], optional): recipe slugs to drop from every pool (swap-out).
 - `boost_ingredients` (string[], optional): the caller's at-risk perishables / on-hand items to bias toward (alias-normalized; a bounded perishable-weighted overlap, never a gate) — the use-it-up signal.
 - `nudges` (object, optional): `{ max_time_total? }` (a hard time gate applied to every slot) and `{ variety? }` (0–1; higher = more diverse, lower λ).

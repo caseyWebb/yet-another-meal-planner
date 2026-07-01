@@ -86,7 +86,7 @@ export function registerNightVibeTools(server: McpServer, env: Env, tenant: stri
     "update_night_vibe",
     {
       description:
-        "Patch an existing night vibe by `id` — pass only the fields to change (`vibe`, `facets`, `cadence_days`, `pinned`, `base_weight`, `weather_affinity`, `weather_antipathy`, `season`). Editing `vibe` re-embeds it on the next cron tick. Unknown id returns `not_found`. Returns { id, updated_fields }.",
+        "Patch an existing night vibe by `id` — pass only the fields to change (`vibe`, `facets`, `cadence_days`, `pinned`, `base_weight`, `weather_affinity`, `weather_antipathy`, `season`). Editing `vibe` re-embeds it on the next cron tick. An un-passed field is PRESERVED (there is no clear-a-field path); to drop an optional field, remove and re-add the vibe. Unknown id returns `not_found`. Returns { id, updated_fields }.",
       inputSchema: {
         id: z.string().min(1),
         vibe: z.string().min(1).optional(),

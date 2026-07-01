@@ -77,6 +77,11 @@ export interface ProposalCtx {
   poolByVibe: Map<string, DiversifyCandidate[]>;
   /** Locked picks the caller pinned — pre-seeded into the diversify state and returned first. */
   locked?: DiversifyCandidate[];
+  /** Raw lock slugs that couldn't be resolved (unknown / unembedded / rejected) — surfaced as
+   *  explicit empty `locked` slots so a lock is never silently dropped. */
+  lockedUnresolved?: string[];
+  /** The nights the caller requested (for honest diagnostics when locks/palette under-fill). */
+  requestedNights?: number;
   /** slug → recipe frontmatter (for sides / waste / meal-prep). */
   frontmatterBySlug: Map<string, Record<string, unknown>>;
   /** slug → embedding (for the variety diagnostics). */
@@ -126,15 +131,16 @@ export function assembleProposal(ctx: ProposalCtx): ProposalResult {
   const jitter = seededJitter(union, ctx.seed, p.jitter);
   const state = newDiversifyState();
 
-  const chosen: { slot: ProposedSlot; cand: DiversifyCandidate | null }[] = [];
+  const chosen: ProposedSlot[] = [];
 
   // Locked picks first — seed the state so the rest diversify away from them.
   for (const lc of locked) {
     admit(state, lc);
-    chosen.push({
-      cand: lc,
-      slot: { vibe_id: null, reason: "locked", main: mainOf(lc, ctx.frontmatterBySlug.get(lc.slug)), sides: [], uses_perishables: [], flags: {}, why: ["locked"] },
-    });
+    chosen.push({ vibe_id: null, reason: "locked", main: mainOf(lc, ctx.frontmatterBySlug.get(lc.slug)), sides: [], uses_perishables: [], flags: {}, why: ["locked"] });
+  }
+  // Unresolved locks become explicit empty locked slots (never silently dropped).
+  for (const raw of ctx.lockedUnresolved ?? []) {
+    chosen.push({ vibe_id: null, reason: "locked", main: null, empty_reason: `locked recipe '${raw}' is unavailable (unknown, unembedded, or rejected)`, sides: [], uses_perishables: [], flags: {}, why: [] });
   }
 
   // Then fill the sampled slots.
@@ -142,31 +148,30 @@ export function assembleProposal(ctx: ProposalCtx): ProposalResult {
     const pool = ctx.poolByVibe.get(slot.id) ?? [];
     const why = [...(ctx.whyByVibe?.get(slot.id) ?? [])];
     if (pool.length === 0) {
-      chosen.push({ cand: null, slot: { vibe_id: slot.id, reason: slot.reason, main: null, empty_reason: "no retrievable candidate for this vibe", sides: [], uses_perishables: [], flags: {}, why } });
+      chosen.push({ vibe_id: slot.id, reason: slot.reason, main: null, empty_reason: "no retrievable candidate for this vibe", sides: [], uses_perishables: [], flags: {}, why });
       continue;
     }
     const norm = normalizeScores(pool);
     const pick = selectOne(pool, state, p, norm, jitter);
     if (!pick) {
-      chosen.push({ cand: null, slot: { vibe_id: slot.id, reason: slot.reason, main: null, empty_reason: "no candidate cleared the variety caps", sides: [], uses_perishables: [], flags: {}, why } });
+      chosen.push({ vibe_id: slot.id, reason: slot.reason, main: null, empty_reason: "no candidate cleared the variety caps", sides: [], uses_perishables: [], flags: {}, why });
       continue;
     }
-    const cand = pool.find((c) => c.slug === pick.slug) ?? null;
-    chosen.push({ cand, slot: { vibe_id: slot.id, reason: slot.reason, main: mainOf(pick, ctx.frontmatterBySlug.get(pick.slug)), sides: [], uses_perishables: [], flags: {}, why } });
+    chosen.push({ vibe_id: slot.id, reason: slot.reason, main: mainOf(pick, ctx.frontmatterBySlug.get(pick.slug)), sides: [], uses_perishables: [], flags: {}, why });
   }
 
   // Compose each plate now that all mains are chosen (waste needs the full set).
   const boost = new Set(ctx.boostItems);
   // Which perishables does each chosen main use (for the "single-use" cross-main check)?
   const perishByMain = new Map<string, string[]>();
-  for (const { slot } of chosen) {
+  for (const slot of chosen) {
     if (!slot.main) continue;
     perishByMain.set(slot.main.slug, strArray(ctx.frontmatterBySlug.get(slot.main.slug)?.perishable_ingredients));
   }
   const perishUseCount = new Map<string, number>();
   for (const list of perishByMain.values()) for (const item of new Set(list)) perishUseCount.set(item, (perishUseCount.get(item) ?? 0) + 1);
 
-  for (const { slot } of chosen) {
+  for (const slot of chosen) {
     if (!slot.main) continue;
     const fm = ctx.frontmatterBySlug.get(slot.main.slug);
     const perish = perishByMain.get(slot.main.slug) ?? [];
@@ -195,13 +200,13 @@ export function assembleProposal(ctx: ProposalCtx): ProposalResult {
     for (const item of uses) slot.why.push(`uses your ${item}`);
   }
 
-  const mains = chosen.map((c) => c.slot.main).filter((m): m is ProposedMain => m != null);
+  const mains = chosen.map((s) => s.main).filter((m): m is ProposedMain => m != null);
   const wd = weekDiversity(
     mains.map((m) => ({ slug: m.slug, protein: m.protein, cuisine: m.cuisine })),
     ctx.embeddingBySlug,
   );
 
-  const plan = chosen.map((c) => c.slot);
+  const plan = chosen;
   const filled = mains.length;
   return {
     plan,
@@ -211,7 +216,13 @@ export function assembleProposal(ctx: ProposalCtx): ProposalResult {
       mean_pairwise_sim: wd.meanPairwiseSim,
       max_pairwise_sim: wd.maxPairwiseSim,
     },
-    diagnostics: { seed: ctx.seed, lambda: p.lambda, nights: ctx.slots.length + locked.length, filled, empty: plan.length - filled },
+    diagnostics: {
+      seed: ctx.seed,
+      lambda: p.lambda,
+      nights: ctx.requestedNights ?? ctx.slots.length + locked.length + (ctx.lockedUnresolved?.length ?? 0),
+      filled,
+      empty: plan.length - filled,
+    },
   };
 }
 

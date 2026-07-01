@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
-import { draftProposals, proposalId } from "../src/reconcile-signals.js";
+import { draftProposals } from "../src/reconcile-signals.js";
 import type { NightVibe } from "../src/night-vibe-db.js";
-import { enqueueProposal, readProposals, setProposalStatus, getProposal } from "../src/reconcile-db.js";
+import { proposalId, enqueueProposal, readProposals, setProposalStatus, getProposal } from "../src/reconcile-db.js";
 import { fakeD1 } from "./fake-d1.js";
 
 const NOW = new Date("2026-07-01T00:00:00Z");
@@ -41,9 +41,16 @@ describe("draftProposals", () => {
     expect(drafts).toHaveLength(0);
   });
 
-  it("gives a stable, dedup-ing id per (tenant, kind, target)", () => {
-    expect(proposalId("a", "prune_vibe", "salad")).toBe(proposalId("a", "prune_vibe", "salad"));
-    expect(proposalId("a", "prune_vibe", "salad")).not.toBe(proposalId("b", "prune_vibe", "salad"));
+  it("gives a stable id per (kind, target), bucketing adjust_cadence by suggested value", () => {
+    expect(proposalId("prune_vibe", "salad")).toBe(proposalId("prune_vibe", "salad"));
+    expect(proposalId("prune_vibe", "salad")).not.toBe(proposalId("prune_vibe", "soup"));
+    // adjust_cadence folds a coarse ~weekly bucket in, so a materially different suggestion is new
+    expect(proposalId("adjust_cadence", "pasta", { cadence_days: 7 })).not.toBe(
+      proposalId("adjust_cadence", "pasta", { cadence_days: 60 }),
+    );
+    expect(proposalId("adjust_cadence", "pasta", { cadence_days: 7 })).toBe(
+      proposalId("adjust_cadence", "pasta", { cadence_days: 8 }), // same ~weekly bucket
+    );
   });
 });
 
@@ -65,5 +72,17 @@ describe("pending_proposals store", () => {
     expect(ok).toBe(true);
     expect(await readProposals(d1.env, "everett", "pending")).toHaveLength(0);
     expect((await getProposal(d1.env, first.id, "everett"))?.status).toBe("rejected");
+  });
+
+  it("keeps two tenants' same-(kind,target) proposals distinct (PK is (tenant, id))", async () => {
+    const d1 = fakeD1({ tables: { pending_proposals: [] } });
+    const draft = { kind: "prune_vibe" as const, target: "salad", payload: { id: "salad" }, rationale: "drop it?", evidence: {} };
+    const a = await enqueueProposal(d1.env, "alice", draft, "signal-cron", NOW.toISOString());
+    const b = await enqueueProposal(d1.env, "bob", draft, "signal-cron", NOW.toISOString());
+    expect(a.id).toBe(b.id); // same hash (tenant excluded)
+    expect(a.inserted).toBe(true);
+    expect(b.inserted).toBe(true); // but the (tenant, id) PK keeps both — no cross-tenant clobber
+    expect(await readProposals(d1.env, "alice", "pending")).toHaveLength(1);
+    expect(await readProposals(d1.env, "bob", "pending")).toHaveLength(1);
   });
 });

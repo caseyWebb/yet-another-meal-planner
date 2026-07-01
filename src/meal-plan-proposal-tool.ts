@@ -48,7 +48,7 @@ export function registerProposeMealPlanTool(server: McpServer, env: Env, tenant:
     "propose_meal_plan",
     {
       description:
-        "Propose a week of dinners from the caller's NIGHT-VIBE PALETTE, deterministically and statelessly. Two levels: (1) SHAPE — sample `nights` night-vibe slots weighted by cadence-debt (overdue vibes surface) and weather; (2) FILL — retrieve each slot's vibe by meaning and select a VARIED main (MMR + protein/cuisine caps across the week, not the top-3 lookalikes). Composes rung-1 `pairs_with` corpus sides, flags single-use perishable waste + meal-prep + novelty, and returns per-main `why`. Iterate by re-calling with `lock` (keep these recipes), `exclude` (swap these out), `nudges` (max_time_total, variety strength), and a `seed` (change it for 'give me another week'). Reads cron-captured vectors only — no Workers AI call, no writes (persist a chosen plan with update_meal_plan, threading each main's vibe id as `from_vibe`). Returns { plan, variety, diagnostics }; an unfillable slot is returned as an explicit empty slot, never dropped.",
+        "Propose a week of dinners from the caller's NIGHT-VIBE PALETTE, deterministically and statelessly. Two levels: (1) SHAPE — sample `nights` night-vibe slots weighted by cadence-debt (overdue vibes surface) and weather; (2) FILL — retrieve each slot's vibe by meaning and select a VARIED main (MMR + protein/cuisine caps across the week, not the top-3 lookalikes). Composes rung-1 `pairs_with` corpus sides, flags single-use perishable waste + meal-prep + novelty, and returns per-main `why`. Iterate by re-calling with `lock` (keep these recipes — resolved case-insensitively, respecting your rejects; a lock that's unknown, not-yet-embedded, or rejected comes back as an explicit empty locked slot), `exclude` (swap these out), `nudges` (max_time_total, variety strength — clamped so it can't collapse relevance), and a `seed` (change it for 'give me another week'). Reads cron-captured vectors only — no Workers AI call, no writes (persist a chosen plan with update_meal_plan, threading each main's vibe id as `from_vibe`). Returns { plan, variety, diagnostics }; an unfillable slot is returned as an explicit empty slot, never dropped.",
       inputSchema: {
         nights: z.number().int().positive().max(14).optional(),
         seed: z.number().int().optional(),
@@ -109,12 +109,29 @@ export function registerProposeMealPlanTool(server: McpServer, env: Env, tenant:
         const rankParams = resolveRankParams(prefs, operatorConfig ?? undefined);
         const boostItems = deps.normalizeItems(boost_ingredients, aliases);
         const diversifyParams: Partial<DiversifyParams> = {};
-        if (typeof nudges?.variety === "number") diversifyParams.lambda = 1 - nudges.variety; // more variety → lower λ
+        // More variety → lower λ, but clamp to the 0.4 floor below which relevance collapses.
+        if (typeof nudges?.variety === "number") diversifyParams.lambda = Math.max(0.4, 1 - nudges.variety);
 
-        // Level 1 — shape the week. Cadence-debt per vibe (no cadence → no pressure), then
-        // sample `nights - locked` slots weighted by debt × weather.
-        const lockedSlugs = (lock ?? []).map((s) => s.toLowerCase()).filter((s) => !excludeSet.has(s));
-        const nightsToFill = Math.max(0, nightCount - lockedSlugs.length);
+        // Resolve locks case-insensitively against the index (corpus slugs are NOT lowercased),
+        // dropping any also in `exclude`. A lock that resolves to a real, embedded, NON-rejected
+        // recipe becomes a locked main; anything else (unknown / unembedded / rejected) becomes an
+        // explicit empty locked slot — so a lock is never silently dropped and the reject hard
+        // gate still holds. Each lock (resolved or not) occupies one night; the rest are sampled.
+        const slugByLower = new Map(Object.keys(effective).map((s) => [s.toLowerCase(), s]));
+        const lockList = (lock ?? []).filter((s) => !excludeSet.has(s.toLowerCase()));
+        const locked: DiversifyCandidate[] = [];
+        const lockedUnresolved: string[] = [];
+        for (const raw of lockList) {
+          const realSlug = slugByLower.get(raw.toLowerCase());
+          const entry = realSlug ? effective[realSlug] : undefined;
+          const vec = realSlug ? embeddings.get(realSlug) : undefined;
+          if (realSlug && entry && vec && !(entry as { reject?: unknown }).reject) {
+            locked.push(toDiversify(realSlug, entry.frontmatter as Record<string, unknown>, vec, 1));
+          } else {
+            lockedUnresolved.push(raw);
+          }
+        }
+        const nightsToFill = Math.max(0, nightCount - lockList.length);
 
         const debtByVibe = new Map<string, number>();
         for (const v of palette) {
@@ -148,14 +165,6 @@ export function registerProposeMealPlanTool(server: McpServer, env: Env, tenant:
           else if (slot.reason === "overdue") whyByVibe.set(slot.id, [`“${vibe.vibe}” is due to come back around`]);
         }
 
-        // Locked picks → resolved candidates (skip unembedded / gated-out).
-        const locked: DiversifyCandidate[] = [];
-        for (const slug of lockedSlugs) {
-          const entry = effective[slug];
-          const vec = embeddings.get(slug);
-          if (entry && vec) locked.push(toDiversify(slug, entry.frontmatter as Record<string, unknown>, vec, 1));
-        }
-
         const frontmatterBySlug = new Map<string, Record<string, unknown>>();
         for (const [slug, entry] of Object.entries(effective)) frontmatterBySlug.set(slug, entry.frontmatter as Record<string, unknown>);
 
@@ -163,6 +172,8 @@ export function registerProposeMealPlanTool(server: McpServer, env: Env, tenant:
           slots: shape.slots,
           poolByVibe,
           locked,
+          lockedUnresolved,
+          requestedNights: nightCount,
           frontmatterBySlug,
           embeddingBySlug: embeddings,
           boostItems,

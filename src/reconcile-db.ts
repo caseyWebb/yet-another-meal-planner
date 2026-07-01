@@ -4,8 +4,43 @@
 
 import { db } from "./db.js";
 import type { Env } from "./env.js";
-import { proposalId, type ProposalDraft } from "./reconcile-signals.js";
+import { hashText } from "./hash.js";
+import type { ProposalDraft } from "./reconcile-signals.js";
 import { readNightVibes, upsertNightVibe, deleteNightVibe, type NightVibe } from "./night-vibe-db.js";
+
+/** Stable, dedup-ing proposal id. Same `(kind, target[, cadence bucket])` → same id, so
+ *  re-drafting is a no-op `INSERT OR IGNORE` and a rejected proposal is not re-surfaced. Tenant
+ *  is NOT in the hash — the table's PRIMARY KEY is `(tenant, id)`, so a 32-bit hash collision can
+ *  at worst clobber WITHIN one tenant, never across members. For `adjust_cadence` a coarse
+ *  ~weekly bucket of the suggested value is folded in, so a materially different later suggestion
+ *  is a genuinely NEW proposal rather than being suppressed by an earlier reject/accept. */
+export function proposalId(kind: string, target: string, payload?: Record<string, unknown>): string {
+  let key = `${kind}|${target}`;
+  if (kind === "adjust_cadence" && typeof payload?.cadence_days === "number") {
+    key += `|c${Math.round(payload.cadence_days / 7)}`;
+  }
+  return hashText(key);
+}
+
+/** Coerce an untrusted (operator) `add_vibe` payload into a well-typed NightVibe, dropping
+ *  wrong-typed fields, or null when it lacks a usable id/vibe. */
+function sanitizeNightVibe(p: Record<string, unknown>): NightVibe | null {
+  if (typeof p.id !== "string" || !p.id || typeof p.vibe !== "string" || !p.vibe) return null;
+  const strArr = (v: unknown): string[] | undefined =>
+    Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : undefined;
+  const vibe: NightVibe = { id: p.id, vibe: p.vibe };
+  if (typeof p.cadence_days === "number") vibe.cadence_days = p.cadence_days;
+  if (typeof p.pinned === "boolean") vibe.pinned = p.pinned;
+  if (typeof p.base_weight === "number") vibe.base_weight = p.base_weight;
+  const wa = strArr(p.weather_affinity);
+  if (wa) vibe.weather_affinity = wa;
+  const wan = strArr(p.weather_antipathy);
+  if (wan) vibe.weather_antipathy = wan;
+  const se = strArr(p.season);
+  if (se) vibe.season = se;
+  if (p.facets && typeof p.facets === "object") vibe.facets = p.facets as Record<string, unknown>;
+  return vibe;
+}
 
 /** One decoded proposal row. */
 export interface PendingProposal {
@@ -78,7 +113,7 @@ export async function getProposal(env: Env, id: string, tenant: string): Promise
 /** Idempotent enqueue (stable id → INSERT OR IGNORE): re-drafting a live/decided proposal is a
  *  no-op, so a rejected proposal is never re-surfaced. Returns true when a NEW row was inserted. */
 export async function enqueueProposal(env: Env, tenant: string, draft: ProposalDraft, producer: string, nowIso: string): Promise<{ id: string; inserted: boolean }> {
-  const id = proposalId(tenant, draft.kind, draft.target);
+  const id = proposalId(draft.kind, draft.target, draft.payload);
   const r = await db(env).run(
     "INSERT OR IGNORE INTO pending_proposals (id, tenant, kind, target, payload, rationale, evidence, status, producer, created_at) " +
       "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
@@ -130,8 +165,8 @@ export async function applyProposal(env: Env, tenant: string, proposal: PendingP
       return `adjusted ${id} cadence to ${cadence}`;
     }
     case "add_vibe": {
-      const vibe = p as unknown as NightVibe;
-      if (!vibe.id || !vibe.vibe) return "add_vibe payload missing id/vibe";
+      const vibe = sanitizeNightVibe(p);
+      if (!vibe) return "add_vibe payload missing/invalid id or vibe";
       await upsertNightVibe(env, tenant, vibe, nowIso);
       return `added night vibe ${vibe.id}`;
     }
