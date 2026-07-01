@@ -14,7 +14,7 @@ repo is what *builds* it.
 
 - **Plans your week.** Proposes a menu from your recipe corpus, weighted by your taste, the
   season, the weather, what you've cooked recently, what's on sale, and what's about to spoil in
-  your fridge — then builds the grocery list.
+  your fridge — then builds your grocery list.
 - **Tracks your kitchen.** Pantry, staples, and equipment, with a nudge about perishables before
   they turn and storage tips when fresh produce comes in.
 - **Fills your Kroger cart.** Resolves each ingredient to a specific SKU and writes your cart,
