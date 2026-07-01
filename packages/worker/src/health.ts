@@ -482,26 +482,31 @@ export const HEALTH_SVG_CHAR_W = 8;
 /** Minimum gap (px) between adjacent `/health.svg` columns. */
 export const HEALTH_SVG_GUTTER = 12;
 
+/** Left/right padding (px) of the `/health.svg` card — shared by the column math and the
+ *  renderer so the header/floor geometry can't drift out of sync. */
+const HEALTH_SVG_PAD_X = 14;
+
+/** x where the name column starts: card padding + the leading status dot's gutter. Fixed,
+ *  since the dot + name column never varies with content. */
+const HEALTH_SVG_NAME_X = HEALTH_SVG_PAD_X + 18;
+
 /**
  * Derive the `/health.svg` card's column x-positions (and overall width) from the actual
  * row content, so a long label (e.g. "reconcile-signals") or word (e.g. "quota exhausted")
  * repacks the layout instead of overlapping the next column. Monospace text makes this
  * exact via a simple `chars * HEALTH_SVG_CHAR_W` estimate — no real font-metrics needed.
- * `nameX` is fixed (`padX + 18`, mirrored here so callers don't need `renderHealthSvg`'s
- * internals) since the leading status dot + name column never varies with content.
  */
 export function healthSvgColumns(
   rows: { label: string; word: string; age: string }[],
 ): { nameX: number; wordX: number; ageX: number; width: number } {
-  const nameX = 32; // padX (14) + 18 — MUST match renderHealthSvg's nameX
-  const padX = 14;
+  const nameX = HEALTH_SVG_NAME_X;
   const w = (s: string) => s.length * HEALTH_SVG_CHAR_W;
   const nameW = Math.max(0, ...rows.map((r) => w(r.label)));
   const wordW = Math.max(0, ...rows.map((r) => w(r.word)));
   const ageW = Math.max(0, ...rows.map((r) => w(r.age)));
   const wordX = nameX + nameW + HEALTH_SVG_GUTTER;
   const ageX = wordX + wordW + HEALTH_SVG_GUTTER;
-  const width = Math.max(320, Math.ceil(ageX + ageW + padX));
+  const width = Math.max(320, Math.ceil(ageX + ageW + HEALTH_SVG_PAD_X));
   return { nameX, wordX, ageX, width };
 }
 
@@ -563,7 +568,7 @@ export function renderHealthSvg(payload: HealthPayload): string {
   // aligned without measuring text. wordX/ageX/width are DERIVED from the actual row
   // content (see healthSvgColumns) so a long label (e.g. "reconcile-signals") or word
   // (e.g. "quota exhausted") never overlaps the next column.
-  const padX = 14;
+  const padX = HEALTH_SVG_PAD_X;
   const rowH = 22;
   const firstRow = 60;
   const dotX = padX + 4;
