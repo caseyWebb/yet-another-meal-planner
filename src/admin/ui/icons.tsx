@@ -87,3 +87,27 @@ export const ChevronLeftIcon = ({ size }: { size?: number }) => (
     <path d="m15 18-6-6 6-6" />
   </Icon>
 );
+
+export const DatabaseIcon = ({ size }: { size?: number }) => (
+  <Icon size={size}>
+    <ellipse cx="12" cy="5" rx="9" ry="3" />
+    <path d="M3 5V19A9 3 0 0 0 21 19V5" />
+    <path d="M3 12A9 3 0 0 0 21 12" />
+  </Icon>
+);
+
+export const SparklesIcon = ({ size }: { size?: number }) => (
+  <Icon size={size}>
+    <path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z" />
+    <path d="M20 3v4" />
+    <path d="M22 5h-4" />
+    <path d="M4 17v2" />
+    <path d="M5 18H3" />
+  </Icon>
+);
+
+export const ActivityIcon = ({ size }: { size?: number }) => (
+  <Icon size={size}>
+    <path d="M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2" />
+  </Icon>
+);

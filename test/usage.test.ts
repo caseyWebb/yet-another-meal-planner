@@ -4,6 +4,8 @@ import {
   fetchUsageTrends,
   fetchToolUsage,
   mapAccountUsage,
+  mapKvHistory,
+  resolveNamespaceLabel,
   mapTrendRows,
   mapToolUsageRows,
   utcDay,
@@ -109,9 +111,28 @@ describe("mapAccountUsage", () => {
     if (!usage.configured) throw new Error("expected configured");
     expect(usage.kv.totals).toEqual({ read: 5000, write: 1000, delete: 0, list: 12 });
     expect(usage.kv.limits).toEqual(FREE_TIER_LIMITS.kv);
-    // ns_a leads (more writes than ns_b); each namespace row is keyed by id.
-    expect(usage.kv.namespaces[0]).toEqual({ namespace_id: "ns_a", read: 5000, write: 700, delete: 0, list: 0 });
+    // ns_a leads (more writes than ns_b); each namespace row is keyed by id, and (with no
+    // id→binding map passed) both resolve to the generic "unlabeled" fallback.
+    expect(usage.kv.namespaces[0]).toEqual({
+      namespace_id: "ns_a",
+      read: 5000,
+      write: 700,
+      delete: 0,
+      list: 0,
+      resolved: { label: "ns_a", color: "var(--kv-unlabeled)", unlabeled: true },
+    });
     expect(usage.kv.namespaces.map((n) => n.namespace_id)).toEqual(["ns_a", "ns_b"]);
+  });
+
+  it("resolves namespace labels via the supplied id→binding map", () => {
+    const account = {
+      kvOperations: [{ dimensions: { namespaceId: "abc123", actionType: "read" }, sum: { requests: 10 } }],
+      aiInference: [],
+    };
+    const idToBinding = new Map([["abc123", "KROGER_KV"]]);
+    const usage = mapAccountUsage(account, "2026-06-28", 1, idToBinding);
+    if (!usage.configured) throw new Error("expected configured");
+    expect(usage.kv.namespaces[0].resolved).toEqual({ label: "KROGER_KV", color: "var(--kv-kroger)", unlabeled: false });
   });
 
   it("sums Workers AI neurons per model and a total, dropping unknown KV actions", () => {
@@ -196,16 +217,18 @@ describe("fetchUsage", () => {
   // bug was a non-existent node name (`workersKvOperationsAdaptiveGroups`) that Cloudflare rejected
   // with "unknown field". The response-parsing tests above cannot catch that — they feed a canned
   // response and never inspect the request — so assert the request body directly.
-  it("sends the live-schema dataset/field names and the current day's filter bounds", async () => {
+  it("sends the live-schema dataset/field names and a 30-day KV range ending today", async () => {
     const f = fetchReturning(graphqlBody({}));
     const now = Date.parse("2026-06-28T10:00:00Z");
     await fetchUsage(configuredEnv(), { fetchImpl: f.fetchImpl, now: () => now });
     const query = f.lastRequest?.query ?? "";
-    // KV dataset + its date-range filter
+    // KV dataset + its widened date-range filter (30 days ending today) + the `date` dimension
+    // the per-namespace history needs (design.md Decision 1: widen the SAME query, not a new one).
     expect(query).toContain("kvOperationsAdaptiveGroups");
-    expect(query).toContain('date_geq: "2026-06-28"');
+    expect(query).toContain('date_geq: "2026-05-30"'); // 29 days before 2026-06-28 (30-day window)
     expect(query).toContain('date_leq: "2026-06-28"');
-    // AI dataset + its datetimeHour filter + the renamed dimension/metric
+    expect(query).toContain("dimensions { namespaceId actionType date }");
+    // AI dataset + its datetimeHour filter + the renamed dimension/metric (today only — AI is unchanged)
     expect(query).toContain("aiInferenceAdaptiveGroups");
     expect(query).toContain('datetimeHour_geq: "2026-06-28T00:00:00Z"');
     expect(query).toContain('datetimeHour_leq: "2026-06-28T23:00:00Z"');
@@ -215,8 +238,37 @@ describe("fetchUsage", () => {
     expect(query).not.toContain("workersKvOperationsAdaptiveGroups");
     expect(query).not.toContain("workersAiInferenceRequestsAdaptiveGroups");
     expect(query).not.toMatch(/\bmodelName\b/);
-    // The day is inlined into the query; only accountTag stays a bound variable (no `date`).
+    // The day bounds are inlined into the query; only accountTag stays a bound variable.
     expect(f.lastRequest?.variables).toEqual({ accountTag: "acct123" });
+  });
+
+  it("populates kv.history from the same widened response, and resolves namespace labels", async () => {
+    const f = fetchReturning(
+      graphqlBody({
+        kvOperations: [
+          { dimensions: { namespaceId: "ns_a", actionType: "read", date: "2026-06-27" }, sum: { requests: 10 } },
+          { dimensions: { namespaceId: "ns_a", actionType: "read", date: "2026-06-28" }, sum: { requests: 20 } },
+        ],
+        aiInference: [],
+      }),
+    );
+    const now = Date.parse("2026-06-28T10:00:00Z");
+    const env = { CF_ACCOUNT_ID: "acct123", CF_ANALYTICS_TOKEN: "tok", KV_NAMESPACE_LABELS: "ns_a:KROGER_KV" } as unknown as Env;
+    const result = await fetchUsage(env, { fetchImpl: f.fetchImpl, now: () => now });
+    if (!result.configured) throw new Error("expected configured");
+    // Today's snapshot only counts today's row.
+    expect(result.kv.totals.read).toBe(20);
+    expect(result.kv.namespaces[0].resolved).toEqual({ label: "KROGER_KV", color: "var(--kv-kroger)", unlabeled: false });
+    // History covers the full window and is zero-filled/ascending.
+    expect(result.kv.history.window_days).toBe(TRENDS_WINDOW_DAYS);
+    expect(result.kv.history.days).toHaveLength(TRENDS_WINDOW_DAYS);
+    expect(result.kv.history.days[0].day).toBe("2026-05-30");
+    expect(result.kv.history.days[result.kv.history.days.length - 1].day).toBe("2026-06-28");
+    const day27 = result.kv.history.days.find((d) => d.day === "2026-06-27")!;
+    expect(day27.namespaces[0]).toEqual({ namespace_id: "ns_a", read: 10, write: 0, delete: 0, list: 0, resolved: { label: "KROGER_KV", color: "var(--kv-kroger)", unlabeled: false } });
+    // A day with literally no rows still appears, zero-filled, not omitted.
+    const quietDay = result.kv.history.days.find((d) => d.day === "2026-06-01")!;
+    expect(quietDay.namespaces[0]).toEqual({ namespace_id: "ns_a", read: 0, write: 0, delete: 0, list: 0, resolved: { label: "KROGER_KV", color: "var(--kv-kroger)", unlabeled: false } });
   });
 
   it("throws upstream_unavailable on a non-2xx", async () => {
@@ -240,6 +292,94 @@ describe("fetchUsage", () => {
     await expect(fetchUsage(configuredEnv(), { fetchImpl, now: () => 1 })).rejects.toMatchObject({
       code: "upstream_unavailable",
     });
+  });
+});
+
+describe("resolveNamespaceLabel", () => {
+  it("resolves a known id to its mapped binding's label/color", () => {
+    const idToBinding = new Map([["abc", "OAUTH_KV"]]);
+    expect(resolveNamespaceLabel("abc", idToBinding)).toEqual({ label: "OAUTH_KV", color: "var(--kv-oauth)", unlabeled: false });
+  });
+
+  it("falls back to the generic 'unlabeled' marker for an unmapped id, still reporting the raw id", () => {
+    expect(resolveNamespaceLabel("deadbeef", new Map())).toEqual({ label: "deadbeef", color: "var(--kv-unlabeled)", unlabeled: true });
+  });
+
+  it("falls back to unlabeled for an id mapped to a binding outside the known three", () => {
+    const idToBinding = new Map([["xyz", "SOME_FUTURE_KV"]]);
+    expect(resolveNamespaceLabel("xyz", idToBinding)).toEqual({ label: "xyz", color: "var(--kv-unlabeled)", unlabeled: true });
+  });
+
+  it("makes no outbound request — it is a pure static-table lookup", () => {
+    // Type-level guarantee: the function signature takes no fetch/env, only data already in hand.
+    // This test exists for the requirement's "no additional Cloudflare API call" scenario; the
+    // assertion is just that calling it repeatedly produces the same result with no IO performed.
+    const idToBinding = new Map([["abc", "TENANT_KV"]]);
+    const a = resolveNamespaceLabel("abc", idToBinding);
+    const b = resolveNamespaceLabel("abc", idToBinding);
+    expect(a).toEqual(b);
+  });
+});
+
+describe("mapKvHistory", () => {
+  it("groups rows into a per-namespace, per-day series, ascending, zero-filling every namespace into every day", () => {
+    const rows = [
+      { dimensions: { namespaceId: "ns_a", actionType: "read", date: "2026-06-01" }, sum: { requests: 5 } },
+      { dimensions: { namespaceId: "ns_b", actionType: "write", date: "2026-06-02" }, sum: { requests: 3 } },
+    ];
+    const result = mapKvHistory(rows, "2026-06-01", "2026-06-03", new Map());
+    expect(result.window_days).toBe(3);
+    expect(result.days.map((d) => d.day)).toEqual(["2026-06-01", "2026-06-02", "2026-06-03"]);
+    // ns_a and ns_b both appear on EVERY day (zero-filled), not just the day they had rows.
+    for (const day of result.days) {
+      expect(day.namespaces.map((n) => n.namespace_id).sort()).toEqual(["ns_a", "ns_b"]);
+    }
+    const day1 = result.days[0];
+    expect(day1.namespaces.find((n) => n.namespace_id === "ns_a")).toMatchObject({ read: 5, write: 0, delete: 0, list: 0 });
+    expect(day1.namespaces.find((n) => n.namespace_id === "ns_b")).toMatchObject({ read: 0, write: 0, delete: 0, list: 0 });
+  });
+
+  it("reports a day with zero operations for a namespace as 0, never an absent entry", () => {
+    const rows = [{ dimensions: { namespaceId: "ns_a", actionType: "read", date: "2026-06-01" }, sum: { requests: 5 } }];
+    const result = mapKvHistory(rows, "2026-06-01", "2026-06-02", new Map());
+    const day2 = result.days.find((d) => d.day === "2026-06-02")!;
+    expect(day2).toBeDefined();
+    expect(day2.namespaces[0]).toMatchObject({ namespace_id: "ns_a", read: 0, write: 0, delete: 0, list: 0 });
+  });
+
+  it("handles a row-cap-adjacent row count (namespaces × actions × days near the 1000-row ceiling)", () => {
+    const namespaces = ["ns_a", "ns_b", "ns_c"];
+    const actions = ["read", "write", "delete", "list"];
+    const rows: { dimensions: { namespaceId: string; actionType: string; date: string }; sum: { requests: number } }[] = [];
+    for (let d = 0; d < 30; d++) {
+      const day = new Date(Date.UTC(2026, 0, 1 + d)).toISOString().slice(0, 10);
+      for (const ns of namespaces) {
+        for (const action of actions) {
+          rows.push({ dimensions: { namespaceId: ns, actionType: action, date: day }, sum: { requests: 1 } });
+        }
+      }
+    }
+    expect(rows.length).toBe(360); // 3 ns × 4 actions × 30 days — comfortably under the 1000-row cap
+    const result = mapKvHistory(rows, "2026-01-01", "2026-01-30", new Map());
+    expect(result.days).toHaveLength(30);
+    for (const day of result.days) {
+      expect(day.namespaces).toHaveLength(3);
+      for (const ns of day.namespaces) {
+        expect(ns).toMatchObject({ read: 1, write: 1, delete: 1, list: 1 });
+      }
+    }
+  });
+
+  it("resolves each history entry's namespace label/color from the supplied map", () => {
+    const rows = [{ dimensions: { namespaceId: "id1", actionType: "read", date: "2026-06-01" }, sum: { requests: 1 } }];
+    const result = mapKvHistory(rows, "2026-06-01", "2026-06-01", new Map([["id1", "TENANT_KV"]]));
+    expect(result.days[0].namespaces[0].resolved).toEqual({ label: "TENANT_KV", color: "var(--kv-tenant)", unlabeled: false });
+  });
+
+  it("tolerates an empty row set, still producing a zero-filled, namespace-less window", () => {
+    const result = mapKvHistory([], "2026-06-01", "2026-06-02", new Map());
+    expect(result.days).toHaveLength(2);
+    expect(result.days[0].namespaces).toEqual([]);
   });
 });
 

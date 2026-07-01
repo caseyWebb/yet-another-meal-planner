@@ -90,6 +90,19 @@ export interface Env {
    * dataset); confirm the token's scope also grants AE SQL read on a connected account.
    */
   CF_ANALYTICS_TOKEN?: string;
+  /**
+   * OPTIONAL non-secret mapping from a Cloudflare KV `namespace_id` (the opaque hex id the
+   * GraphQL Analytics API reports) to the `wrangler.jsonc` binding name it corresponds to —
+   * `KROGER_KV`/`TENANT_KV`/`OAUTH_KV` — so the Usage view's per-namespace KV meters can show a
+   * friendly label instead of a raw id. A Worker cannot resolve this itself at runtime (the
+   * `KVNamespace` binding exposes no id accessor), so it is operator-pasted once, the same moment
+   * the operator already records each namespace's id when pinning it into `wrangler.jsonc` (see
+   * docs/SELF_HOSTING.md "Persisting your namespace + database ids"): comma-separated
+   * `id:BINDING` pairs, e.g. `a1b2…:KROGER_KV,c3d4…:OAUTH_KV`. Unset, or an id with no entry,
+   * renders that namespace "unlabeled" (its raw id, a generic color) rather than being dropped —
+   * aggregate totals stay accurate either way.
+   */
+  KV_NAMESPACE_LABELS?: string;
 
   // --- Usage trends (usage-trends). Code-level binding, no operator config. ---
   /**

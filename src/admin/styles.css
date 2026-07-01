@@ -277,4 +277,49 @@
   .pv-chips { display: inline-flex; flex-wrap: wrap; gap: .3rem; }
   .pv-chip { font-size: .78rem; background: var(--muted); border-radius: .3rem; padding: .05rem .45rem; }
   .pv-link { color: var(--accent); word-break: break-all; }
+
+  /* ── Usage (admin-ui-redesign-usage) ── */
+  /* Namespace palette: a small warm categorical trio + the generic "unlabeled" fallback,
+     consistent with the mock's --kv-kroger/--kv-oauth/--kv-tenant swatches. Referenced by
+     src/usage.ts's static binding→color table (NamespaceUsage.resolved.color). */
+  :root {
+    --kv-kroger: #f4a259;
+    --kv-oauth: #c97b3a;
+    --kv-tenant: #8a4f1f;
+    --kv-unlabeled: #c7c7c7;
+  }
+
+  /* One Account-resources meter: label + value row, a stacked usage bar, and a stacked 30-day
+     trend beneath it. Recolored ok/warn/fail as the total nears or exceeds the daily limit. */
+  .meter-list { display: flex; flex-direction: column; gap: 1rem; }
+  .meter-head { display: flex; align-items: baseline; justify-content: space-between; gap: .5rem; }
+  .meter-label { font-size: .82rem; font-weight: 500; text-transform: capitalize; }
+  .meter-val { font-size: .85rem; font-variant-numeric: tabular-nums; }
+  .meter-lim { color: var(--muted-foreground); }
+  .meter.warn .meter-val { color: #9a6700; }
+  .meter.fail .meter-val { color: #cf222e; }
+  .meter-trend { display: flex; align-items: flex-end; gap: .5rem; margin-top: .35rem; }
+  .meter-spark { flex: 1; height: 22px; }
+  .meter-peak { font-size: .7rem; color: var(--muted-foreground); white-space: nowrap; padding-bottom: 2px; }
+  .usage-sub { font-size: .8rem; font-weight: 600; margin: 0 0 .55rem; }
+  .usage-sep { border-top: 1px solid #f0f0f0; margin: 1.1rem 0; }
+  .usage-card section { display: flex; flex-direction: column; }
+
+  /* The namespace legend above the KV meters: one swatch + label + note per known namespace. */
+  .kv-legend { display: flex; flex-wrap: wrap; gap: .9rem; margin-bottom: .85rem; }
+  .kv-leg { display: inline-flex; align-items: baseline; gap: .35rem; font-size: .78rem; }
+  .kv-leg-dot { display: inline-block; width: .55rem; height: .55rem; border-radius: 50%; align-self: center; }
+  .kv-leg-name { font-weight: 600; }
+  .kv-leg-note { font-size: .74rem; }
+
+  /* The stacked usage bar (one KV-op meter): a single-row track whose segments are each
+     namespace's share of the daily limit, left-to-right in namespace order. */
+  .kv-bar { display: flex; height: .6rem; border-radius: 9999px; overflow: hidden; background: var(--muted); }
+  .kv-seg { display: block; height: 100%; min-width: 0; }
+
+  /* The stacked 30-day sparkline: one column per day, each column itself stacked by namespace
+     (bottom → top, namespace order), height scaled to the day's total against the window peak. */
+  .kv-spark { gap: 2px; }
+  .spark-col { display: flex; flex-direction: column-reverse; min-width: 0; flex: 1 1 0; border-radius: 1px; overflow: hidden; }
+  .spark-seg { display: block; width: 100%; }
 }
