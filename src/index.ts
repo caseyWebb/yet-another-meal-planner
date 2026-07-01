@@ -36,7 +36,9 @@ import adminApp from "./admin/app.js";
 const apiHandler = {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const props = (ctx as unknown as { props?: { tenantId?: string } }).props;
-    const resolved = await resolveTenant(env, props?.tenantId, directoryFromEnv(env));
+    // recordSeen=true: this IS the MCP hot path, so a successful resolution here is a
+    // genuine "tenant is active" signal (best-effort, throttled — see touchTenantActivity).
+    const resolved = await resolveTenant(env, props?.tenantId, directoryFromEnv(env), true);
     if ("error" in resolved) {
       return new Response(JSON.stringify(resolved), {
         status: 401,

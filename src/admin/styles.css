@@ -214,4 +214,67 @@
     .stat-grid { grid-template-columns: repeat(2, 1fr); }
     .health-pop { width: 16rem; }
   }
+
+  /* ── Members (admin-ui-redesign-members) ── */
+  /* A roster row wrapped in a link (the Item is the visual row; the anchor carries the
+     click-to-detail navigation). The per-row actions menu stops propagation so it never
+     also navigates (operator-admin "row actions menu" requirement). */
+  a.item-link { display: block; text-decoration: none; color: inherit; }
+  a.item-link:hover .item { box-shadow: var(--shadow-sm); }
+  .member-head { display: flex; align-items: center; gap: .4rem; }
+  .roster-head { display: flex; justify-content: space-between; align-items: center; margin: 1.5rem 0 .65rem; }
+
+  /* Member-detail header + sub-nav. */
+  .md-head { display: flex; flex-direction: column; gap: .3rem; margin: .25rem 0 1.1rem; }
+  .md-id { display: flex; align-items: center; gap: .45rem; font-size: 1.15rem; font-weight: 600; }
+  .md-stats { margin: 0; }
+
+  /* Meal plan rows. */
+  .md-plan { display: flex; flex-direction: column; gap: .1rem; }
+  .md-plan-row { display: flex; align-items: baseline; gap: .75rem; padding: .55rem 0; border-bottom: 1px solid #f2f2f2; }
+  .md-plan-row:last-child { border-bottom: 0; }
+  .md-plan-day { min-width: 7rem; color: var(--muted-foreground); font-size: .82rem; }
+  .md-plan-recipe { display: flex; align-items: baseline; gap: .4rem; flex: 1; }
+  .md-plan-sides { color: var(--muted-foreground); font-size: .82rem; }
+  .md-recipe-link { font: inherit; background: none; border: 0; color: inherit; text-decoration: underline; cursor: pointer; padding: 0; }
+  .md-recipe-link.sm { font-size: .8rem; }
+  .rslug { color: var(--muted-foreground); font-size: .75rem; margin-left: .35rem; font-family: ui-monospace, monospace; }
+
+  /* Grocery list rows. */
+  .md-grocery-list { display: flex; flex-direction: column; }
+  .md-gitem { display: flex; align-items: flex-start; gap: .6rem; padding: .55rem 0; border-bottom: 1px solid #f2f2f2; }
+  .md-gitem:last-child { border-bottom: 0; }
+  .md-gstatus { width: .55rem; height: .55rem; border-radius: 50%; background: #8b949e; margin-top: .35rem; flex: 0 0 auto; }
+  .md-gstatus.in-cart { background: #2da44e; }
+  .md-gmain { flex: 1; min-width: 0; }
+  .md-gtop { display: flex; align-items: baseline; gap: .5rem; }
+  .md-gname { font-weight: 500; }
+  .md-incart { color: #1a7f37; font-size: .75rem; font-weight: 600; }
+  .md-gsub { display: flex; align-items: baseline; gap: .5rem; margin-top: .15rem; flex-wrap: wrap; }
+  .rfacet { font-size: .72rem; text-transform: uppercase; letter-spacing: .03em; color: var(--muted-foreground); background: var(--muted); border-radius: .3rem; padding: .05rem .4rem; }
+  .pv-null { color: #bbb; }
+  .md-prep { font-size: .78rem; color: #8a4f1f; }
+
+  /* Cooking-log type tag. */
+  .md-type { font-size: .72rem; font-weight: 600; padding: .05rem .5rem; border-radius: 999px; border: 1px solid; }
+  .md-type-cooked { color: #1a7f37; border-color: #1a7f37; }
+  .md-type-takeout, .md-type-leftovers, .md-type-home { color: #57606a; border-color: #57606a; }
+
+  /* Notes (reuse Recipe-detail's note card vocabulary). */
+  .rd-notes { display: flex; flex-direction: column; gap: .65rem; }
+  .rd-note { background: #fff; border: 1px solid var(--border); border-radius: var(--radius-md); padding: .7rem .9rem; }
+  .rd-note-head { display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; }
+  .rd-note-time { margin-left: auto; }
+  .rd-note-body { margin-top: .35rem; font-size: .88rem; }
+
+  /* PrettyKV (member Profile, recipe frontmatter). */
+  .pkv { display: flex; flex-direction: column; gap: .35rem; }
+  .pkv-nested { padding-left: .75rem; border-left: 2px solid #f0f0f0; margin-top: .25rem; }
+  .pkv-row { display: flex; gap: .75rem; align-items: baseline; }
+  .pkv-k { min-width: 11rem; color: #666; font-size: .82rem; font-family: ui-monospace, monospace; }
+  .pkv-v { font-size: .88rem; }
+  .pv-null { color: #bbb; }
+  .pv-chips { display: inline-flex; flex-wrap: wrap; gap: .3rem; }
+  .pv-chip { font-size: .78rem; background: var(--muted); border-radius: .3rem; padding: .05rem .45rem; }
+  .pv-link { color: var(--accent); word-break: break-all; }
 }

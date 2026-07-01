@@ -21,6 +21,7 @@ const PK: Record<string, string[]> = {
   pantry: ["tenant", "normalized_name"],
   meal_plan: ["tenant", "recipe"],
   grocery_list: ["tenant", "normalized_name"],
+  tenant_activity: ["tenant"],
   // shared-corpus (d1-shared-corpus)
   aliases: ["variant"],
   feeds: ["url"],

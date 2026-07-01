@@ -19,6 +19,10 @@ function memKv(): KvStore {
     async delete(key) {
       store.delete(key);
     },
+    async list({ prefix = "" } = {}) {
+      const keys = [...store.keys()].filter((k) => k.startsWith(prefix)).map((name) => ({ name }));
+      return { keys, list_complete: true };
+    },
   };
 }
 

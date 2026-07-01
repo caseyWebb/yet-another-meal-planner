@@ -28,7 +28,9 @@ const CART_ADD_URL = "https://api.kroger.com/v1/cart/add";
 // granted on the public-tier app and triggers invalid_scope at authorize).
 export const CART_SCOPE = "cart.basic:write";
 /** Per-tenant KV key for the rotating Kroger refresh token. */
-const refreshKeyFor = (tenantId: string): string => `kroger:refresh:${tenantId}`;
+export const refreshKeyFor = (tenantId: string): string => `kroger:refresh:${tenantId}`;
+/** The KV key prefix every tenant's refresh-token key shares (for a prefix `list`). */
+export const KROGER_REFRESH_PREFIX = "kroger:refresh:";
 const EXPIRY_SKEW_MS = 30_000;
 
 /** Thrown when Kroger rejects the stored refresh token; maps to `reauth_required`. */
@@ -50,6 +52,13 @@ export interface KvStore {
   get(key: string): Promise<string | null>;
   put(key: string, value: string, options?: { expirationTtl?: number }): Promise<void>;
   delete(key: string): Promise<void>;
+  /** List keys by prefix (single page is fine for callers that paginate themselves, like the
+   *  admin's Kroger-linked roster check — a friend-group-sized KV namespace fits one page). */
+  list(options?: { prefix?: string; cursor?: string }): Promise<{
+    keys: { name: string }[];
+    list_complete: boolean;
+    cursor?: string;
+  }>;
 }
 
 export interface KrogerUserClient {

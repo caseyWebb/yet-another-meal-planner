@@ -63,10 +63,12 @@ describe("admin Hono app", () => {
     expect(html).toContain("/admin/islands/members.js");
   });
 
-  it("lists tenants via the typed GET route", async () => {
+  it("lists tenants via the typed GET route, as structured roster rows", async () => {
     const res = await app.request("/admin/api/tenants", {}, makeEnv({}, ["casey"]));
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ tenants: ["casey"] });
+    const body = (await res.json()) as { tenants: { id: string }[] };
+    expect(body.tenants.map((t) => t.id)).toEqual(["casey"]);
+    expect(body.tenants[0]).toMatchObject({ owner: false, status: "pending", kroger: "unlinked", cooked: 0, favorites: 0 });
   });
 
   it("onboards a member, returning the once-shown invite + connector url", async () => {

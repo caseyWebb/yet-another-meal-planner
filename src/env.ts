@@ -48,6 +48,13 @@ export interface Env {
    * deployed Worker. (Only the literal `1` enables it; e.g. `"true"` is a no-op.)
    */
   ADMIN_DEV_BYPASS?: string;
+  /**
+   * OPTIONAL: the tenant id (allowlisted username) the Members roster badges as "owner". A
+   * plain, non-secret var — the operator's identity is already known out-of-band, so this is
+   * an explicit declaration rather than an inference from onboarding order (no tenant is
+   * structurally "first"). Unset means NO member is shown as owner (no badge), never a guess.
+   */
+  OWNER_TENANT_ID?: string;
 
   // --- AGPL §13 source offer (open-source-license). OPTIONAL, non-secret. ---
   /**

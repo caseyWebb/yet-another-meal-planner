@@ -22,8 +22,9 @@ import {
   type AdminDeps,
 } from "../admin.js";
 import { buildHealthPayload, readJobRuns, HEALTH_JOBS, type JobRun } from "../health.js";
-import { corpusCounts } from "../admin-data.js";
+import { corpusCounts, memberDetail, recipeTitles } from "../admin-data.js";
 import { MembersPage } from "./pages/members.js";
+import { MemberDetailPage, PendingMemberDetailPage, sectionOfSlug } from "./pages/member-detail.js";
 import { StatusPage } from "./pages/status.js";
 import { registerDataRoutes } from "./pages/data.js";
 import { fetchUsage, fetchUsageTrends, fetchToolUsage } from "../usage.js";
@@ -128,16 +129,37 @@ app.get("/", async (c) => {
   return c.html(page(<StatusPage payload={payload} counts={counts} runsByJob={runsByJob} />));
 });
 
-// SSR: the Members list, read by calling `listTenants` directly (no client fetch).
+// SSR: the Members roster, read by calling `listTenants` directly (no client fetch).
 app.get("/members", async (c) => {
-  const { tenants } = await listTenants(adminDeps(c.env));
+  const { tenants } = await listTenants(c.env, adminDeps(c.env));
   return c.html(page(<MembersPage props={{ members: tenants }} />));
 });
+
+// SSR: member-detail, at its own deep-linkable URL per section (design.md decision 2). A
+// pending member (no tenant_activity row yet) renders the not-yet-connected empty state and
+// never attempts the `memberDetail` read (3.8) — there is nothing to read yet.
+async function renderMemberDetail(c: { env: Env; req: { param(name: string): string } }, section: string) {
+  const id = decodeURIComponent(c.req.param("id"));
+  const { tenants } = await listTenants(c.env, adminDeps(c.env));
+  const row = tenants.find((t) => t.id === id);
+  if (!row) throw new ToolError("not_found", `No member ${id} on the allowlist`);
+  if (row.status === "pending") return page(<PendingMemberDetailPage row={row} />);
+
+  const detail = await memberDetail(c.env, row.id);
+  const slugs = [
+    ...detail.meal_plan.map((p) => p.recipe),
+    ...detail.cooking_log.map((r) => (typeof r.recipe === "string" ? r.recipe : null)).filter((s): s is string => !!s),
+  ];
+  const titles = await recipeTitles(c.env, slugs);
+  return page(<MemberDetailPage row={row} detail={detail} section={sectionOfSlug(section)} titles={titles} />);
+}
+app.get("/members/:id", async (c) => c.html(await renderMemberDetail(c, "profile")));
+app.get("/members/:id/:section", async (c) => c.html(await renderMemberDetail(c, c.req.param("section"))));
 
 // The typed mutation routes the Members island calls via `hc`. Chained so their
 // request/response types accumulate into `AdminApp` for the client (zero codegen).
 const routes = app
-  .get("/api/tenants", async (c) => c.json(await listTenants(adminDeps(c.env))))
+  .get("/api/tenants", async (c) => c.json(await listTenants(c.env, adminDeps(c.env))))
   .post("/api/tenants", async (c) => {
     const body = await c.req.json<{ username?: string; invite_code?: string }>();
     const result = await onboard(

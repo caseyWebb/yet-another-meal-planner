@@ -56,6 +56,14 @@ type DotState = "ok" | "fail" | "never" | "muted";
 
 export const Dot = ({ state }: { state: DotState }) => <span class={`dot ${state}`} />;
 
+/** A Basecoat badge (status/role pills — owner, active/pending, kroger-linked, …). `default`
+ *  is Basecoat's default variant, so it emits no `data-variant` attribute. */
+export const Badge = ({ variant = "default", children }: { variant?: string; children?: Child }) => (
+  <span class="badge" data-variant={variant === "default" ? undefined : variant}>
+    {children}
+  </span>
+);
+
 /** A destructive Basecoat alert (the panel's inline error banner). */
 export const ErrorBanner = ({ message }: { message: string }) => (
   <div class="alert" data-variant="destructive">
@@ -288,6 +296,55 @@ export const DataTable = ({ columns, rows }: { columns: (string | Column)[]; row
     </tbody>
   </table>
 );
+
+// ── PrettyKV: a readable key/value renderer for structured records (member-detail Profile,
+// recipe frontmatter) — arrays render as chips, null as an em-dash, http(s) strings as links,
+// nested objects recurse as an indented sub-table. Presentational, SSR-safe (no handlers).
+
+function prettyValue(v: unknown): Child {
+  if (v === null || v === undefined) return <span class="pv-null">—</span>;
+  if (typeof v === "boolean") return <span class="pv-bool">{String(v)}</span>;
+  if (typeof v === "number") return <span class="pv-num">{v.toLocaleString()}</span>;
+  if (Array.isArray(v)) {
+    return v.length ? (
+      <span class="pv-chips">
+        {v.map((x) => (
+          <span class="pv-chip">{typeof x === "object" && x !== null ? JSON.stringify(x) : String(x)}</span>
+        ))}
+      </span>
+    ) : (
+      <span class="pv-null">empty</span>
+    );
+  }
+  if (typeof v === "object") return <PrettyKV obj={v as Record<string, unknown>} nested />;
+  if (typeof v === "string" && /^https?:\/\//.test(v)) {
+    return (
+      <a class="pv-link" href={v} target="_blank" rel="noreferrer">
+        {v}
+      </a>
+    );
+  }
+  return <span class="pv-str">{String(v)}</span>;
+}
+
+/** A plain object rendered as a readable key/value table. `nested` is for the recursive case
+ *  (an object-valued field), applying a tighter indent. */
+export const PrettyKV = ({ obj, nested }: { obj: Record<string, unknown> | null | undefined; nested?: boolean }) => {
+  const entries = Object.entries(obj ?? {});
+  if (entries.length === 0) return <p class="muted" style="margin:0">(empty)</p>;
+  return (
+    <div class={cx("pkv", nested && "pkv-nested")}>
+      {entries.map(([k, v]) => (
+        <div class="pkv-row">
+          <span class="pkv-k">{k}</span>
+          <span class="pkv-v">
+            {prettyValue(v)}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+};
 
 /** A dropdown menu item: a label, an optional href (link) or it renders as a button shell, and
  *  an optional destructive styling. The open/close behavior is wired by the consuming island. */

@@ -12,6 +12,7 @@
 // `resolveInvite` maps a code to an allowlisted username at the authorize step.
 
 import type { Env } from "./env.js";
+import { db } from "./db.js";
 
 /** The per-request tenant context. Assembled by `resolveTenant`. */
 export interface Tenant {
@@ -106,15 +107,65 @@ export function tenantFromRecord(_env: Env, record: TenantRecord): Tenant {
   return { id: normalizeTenantId(record.id) };
 }
 
+// How stale `last_seen_at` must be before a resolution re-writes it (admin-ui-redesign-members).
+// Keeps the write a THROTTLED, best-effort signal rather than a write on every tool call — a
+// chatty session costs at most one `tenant_activity` write per hour, not one per MCP request.
+const LAST_SEEN_THROTTLE_MS = 60 * 60 * 1000; // 1 hour
+
+/**
+ * Best-effort, throttled tenant-activity touch: write-once `first_seen_at`, and refresh
+ * `last_seen_at` only when the stored value is missing or older than the throttle window.
+ * Never throws — a `tenant_activity` write failure must not fail the MCP request it rides
+ * alongside (D4: tools/identity resolution stay throw-free on storage hiccups).
+ */
+export async function touchTenantActivity(env: Env, tenantId: string, nowMs = Date.now()): Promise<void> {
+  try {
+    const row = await db(env).first<{ first_seen_at: number; last_seen_at: number }>(
+      "SELECT first_seen_at, last_seen_at FROM tenant_activity WHERE tenant = ?1",
+      tenantId,
+    );
+    if (!row) {
+      await db(env).run(
+        "INSERT INTO tenant_activity (tenant, first_seen_at, last_seen_at) VALUES (?1, ?2, ?3) " +
+          "ON CONFLICT(tenant) DO UPDATE SET last_seen_at = excluded.last_seen_at",
+        tenantId,
+        nowMs,
+        nowMs,
+      );
+      return;
+    }
+    if (nowMs - row.last_seen_at >= LAST_SEEN_THROTTLE_MS) {
+      // An upsert (not a bare UPDATE) so the write is idempotent against a racing first-touch
+      // INSERT from a near-simultaneous request — "eventually consistent" is an accepted
+      // trade-off for this best-effort signal (design.md Risks).
+      await db(env).run(
+        "INSERT INTO tenant_activity (tenant, first_seen_at, last_seen_at) VALUES (?1, ?2, ?3) " +
+          "ON CONFLICT(tenant) DO UPDATE SET last_seen_at = excluded.last_seen_at",
+        tenantId,
+        nowMs,
+        nowMs,
+      );
+    }
+  } catch {
+    // Best-effort: a storage hiccup here must never fail tenant resolution.
+  }
+}
+
 /**
  * Resolve a provider-validated `tenantId` (from grant `props`) to its `Tenant`,
  * re-checking it against the allowlist. Returns a structured `unauthorized` when
  * the id is missing or absent from the directory. No tool runs until this succeeds.
+ *
+ * `recordSeen` (default false) fires the best-effort, throttled `tenant_activity` touch —
+ * pass `true` only from the MCP request path (`src/index.ts`), NOT from operator-driven
+ * resolutions (the admin Kroger-consent mint, the Data explorer's member lookup), which
+ * resolve a tenant without that tenant actually being active.
  */
 export async function resolveTenant(
   env: Env,
   tenantId: string | null | undefined,
   directory: TenantStore,
+  recordSeen = false,
 ): Promise<Tenant | Unauthorized> {
   if (!tenantId) {
     return { error: "unauthorized", message: "No tenant on the request" };
@@ -126,6 +177,10 @@ export async function resolveTenant(
   const record = await directory.get(id);
   if (!record) {
     return { error: "unauthorized", message: `Username ${id} is not on the allowlist` };
+  }
+  if (recordSeen) {
+    // Fire-and-forget: never let the activity touch delay or fail tenant resolution.
+    void touchTenantActivity(env, id);
   }
   return tenantFromRecord(env, record);
 }

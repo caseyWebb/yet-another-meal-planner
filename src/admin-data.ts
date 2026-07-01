@@ -248,6 +248,23 @@ export async function memberDetail(env: Env, tenantId: string): Promise<MemberDe
   };
 }
 
+/**
+ * Batch-resolve recipe titles for a small set of slugs (the member-detail meal-plan/grocery
+ * sections need a title alongside the slug `memberDetail()` already returns; cooking_log
+ * carries its own protein/cuisine columns directly, so it needs no join). One `IN (...)`
+ * query, never N per-slug reads. Slugs missing from `recipes` are simply absent from the map.
+ */
+export async function recipeTitles(env: Env, slugs: string[]): Promise<Map<string, string>> {
+  const unique = [...new Set(slugs)].filter(Boolean);
+  if (unique.length === 0) return new Map();
+  const placeholders = unique.map((_, i) => `?${i + 1}`).join(", ");
+  const rows = await db(env).all<{ slug: string; title: string }>(
+    `SELECT slug, title FROM recipes WHERE slug IN (${placeholders})`,
+    ...unique,
+  );
+  return new Map(rows.map((r) => [r.slug, r.title]));
+}
+
 // --- Corpus-counts (Status stat tiles) ---------------------------------------
 
 /** The Status area's page-level corpus stat tiles — aggregate counts only, no per-tenant data. */

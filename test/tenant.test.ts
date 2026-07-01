@@ -5,12 +5,15 @@ import {
   tenantFromRecord,
   kvTenantStore,
   normalizeTenantId,
+  touchTenantActivity,
   type TenantRecord,
   type TenantStore,
   type Unauthorized,
   type Tenant,
 } from "../src/tenant.js";
 import type { Env } from "../src/env.js";
+import { fakeD1 } from "./fake-d1.js";
+import { db } from "../src/db.js";
 
 const env = {} as unknown as Env;
 
@@ -155,5 +158,79 @@ describe("kvTenantStore", () => {
     // from list(); a non-canonical key must not leak its casing downstream.
     const s = kvTenantStore(memKv({ "tenant:Casey": JSON.stringify({ id: "Casey" }) }));
     expect(await s.list()).toEqual(["casey"]);
+  });
+});
+
+describe("touchTenantActivity (admin-ui-redesign-members: throttled last-seen)", () => {
+  function fakeEnv() {
+    const fake = fakeD1({ tables: { tenant_activity: [] } });
+    return fake.env;
+  }
+
+  it("writes first_seen_at and last_seen_at on the first touch", async () => {
+    const e = fakeEnv();
+    await touchTenantActivity(e, "casey", 1000);
+    const row = await db(e).first<{ first_seen_at: number; last_seen_at: number }>(
+      "SELECT first_seen_at, last_seen_at FROM tenant_activity WHERE tenant = ?1",
+      "casey",
+    );
+    expect(row).toMatchObject({ first_seen_at: 1000, last_seen_at: 1000 });
+  });
+
+  it("does NOT re-write last_seen_at within the throttle window", async () => {
+    const e = fakeEnv();
+    await touchTenantActivity(e, "casey", 1000);
+    await touchTenantActivity(e, "casey", 1000 + 30 * 60 * 1000); // 30 minutes later
+    const row = await db(e).first<{ first_seen_at: number; last_seen_at: number }>(
+      "SELECT first_seen_at, last_seen_at FROM tenant_activity WHERE tenant = ?1",
+      "casey",
+    );
+    expect(row).toMatchObject({ first_seen_at: 1000, last_seen_at: 1000 }); // unchanged — still within the hour window
+  });
+
+  it("DOES refresh last_seen_at once the throttle window has elapsed, leaving first_seen_at untouched", async () => {
+    const e = fakeEnv();
+    await touchTenantActivity(e, "casey", 1000);
+    const later = 1000 + 61 * 60 * 1000; // just past 1 hour
+    await touchTenantActivity(e, "casey", later);
+    const row = await db(e).first<{ first_seen_at: number; last_seen_at: number }>(
+      "SELECT first_seen_at, last_seen_at FROM tenant_activity WHERE tenant = ?1",
+      "casey",
+    );
+    expect(row).toMatchObject({ first_seen_at: 1000, last_seen_at: later });
+  });
+
+  it("is best-effort: a storage failure never throws", async () => {
+    const throwing = {
+      DB: {
+        prepare() {
+          throw new Error("boom");
+        },
+      },
+    } as unknown as Env;
+    await expect(touchTenantActivity(throwing, "casey")).resolves.toBeUndefined();
+  });
+});
+
+describe("resolveTenant recordSeen (admin-ui-redesign-members)", () => {
+  it("touches tenant_activity only when recordSeen is true", async () => {
+    const fake = fakeD1({ tables: { tenant_activity: [] } });
+    const dir = store({ casey: { id: "casey" } });
+
+    await resolveTenant(fake.env, "casey", dir, false);
+    expect(await db(fake.env).all("SELECT * FROM tenant_activity")).toEqual([]);
+
+    await resolveTenant(fake.env, "casey", dir, true);
+    // Fire-and-forget: give the un-awaited touch a microtask tick to land.
+    await new Promise((r) => setTimeout(r, 0));
+    expect(await db(fake.env).all("SELECT * FROM tenant_activity")).toHaveLength(1);
+  });
+
+  it("defaults recordSeen to false (operator-driven resolutions don't count as activity)", async () => {
+    const fake = fakeD1({ tables: { tenant_activity: [] } });
+    const dir = store({ casey: { id: "casey" } });
+    await resolveTenant(fake.env, "casey", dir);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(await db(fake.env).all("SELECT * FROM tenant_activity")).toEqual([]);
   });
 });

@@ -13,9 +13,8 @@
 // per-job rows (with their run-history uptime sparkline + healthy/unhealthy-since), and the live
 // dependencies as their own group.
 
-import type { Child } from "hono/jsx";
 import { Layout } from "../ui/layout.js";
-import { StatCardGrid, StatCard, ItemGroup, Item } from "../ui/kit.js";
+import { StatCardGrid, StatCard, ItemGroup, Item, Badge } from "../ui/kit.js";
 import { assertNever } from "../lib/remote.js";
 import { currentStreakStart, type HealthPayload, type JobStatus, type JobRun } from "../../health.js";
 import type { AdminPosture } from "../../admin.js";
@@ -120,12 +119,6 @@ function gateStateBadgeVariant(s: GateState): string {
 
 /** A state glyph: a filled dot in the job/dependency's state color (the row's media slot). */
 const StateGlyph = ({ cls }: { cls: string }) => <span class={`sglyph ${cls}`}><span class={`dot ${cls}`} /></span>;
-
-const Badge = ({ variant, children }: { variant: string; children?: Child }) => (
-  <span class="badge" data-variant={variant === "default" ? undefined : variant}>
-    {children}
-  </span>
-);
 
 const SummaryBlock = ({ pairs }: { pairs: [string, string][] }) => (
   <div class="summary">

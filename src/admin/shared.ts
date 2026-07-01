@@ -2,9 +2,11 @@
 // embedded in the page, so they MUST be JSON-serializable (no Date/Map) — the island
 // hydrates with state matching the server-render. Shared by the SSR page and the island.
 
-/** Seed for the Members island: the current allowlisted member ids (operational only). */
+import type { TenantRosterRow } from "../admin.js";
+
+/** Seed for the Members island: the current roster rows (operational status only). */
 export interface MembersIslandProps {
-  members: string[];
+  members: TenantRosterRow[];
 }
 
 /** A live dependency state for the health dock (D1 probe, admin gate). `state` drives the dot

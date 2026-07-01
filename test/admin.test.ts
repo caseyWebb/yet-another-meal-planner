@@ -10,6 +10,7 @@ import {
   TENANT_TABLES,
   AUTHOR_TABLES,
   type AdminDeps,
+  type TenantRosterRow,
 } from "../src/admin.js";
 import { handleAdmin } from "./admin-request.js";
 import type { Env } from "../src/env.js";
@@ -31,8 +32,18 @@ function memKv(initial: Record<string, string> = {}): KVNamespace {
   } as unknown as KVNamespace;
 }
 
-/** Fake Db that records every batched statement so the revoke purge is assertable. */
-function fakeDb(): { db: Db; batches: { sql: string; binds: unknown[] }[][] } {
+/** Seed data the `listTenants` aggregate queries read (tenant_activity, cooking_log, overlay). */
+interface FakeRosterData {
+  activity?: { tenant: string; first_seen_at: number; last_seen_at: number }[];
+  cooked?: { tenant: string; n: number }[];
+  favorites?: { tenant: string; n: number }[];
+}
+
+/** Fake Db that records every batched statement so the revoke purge is assertable, and
+ *  answers the `listTenants` roster aggregate reads (tenant_activity / cooking_log /
+ *  overlay GROUP BY) from injected fixture rows — exercising the SAME single-query-per-
+ *  aggregate shape `listTenants` issues, without a live D1. */
+function fakeDb(seed: FakeRosterData = {}): { db: Db; batches: { sql: string; binds: unknown[] }[][] } {
   const batches: { sql: string; binds: unknown[] }[][] = [];
   const db = {
     prepare(sql: string, ...binds: unknown[]) {
@@ -42,16 +53,21 @@ function fakeDb(): { db: Db; batches: { sql: string; binds: unknown[] }[][] } {
       batches.push(stmts.map((s) => s as unknown as { sql: string; binds: unknown[] }));
     },
     async first() { return null; },
-    async all() { return []; },
+    async all(sql: string) {
+      if (/FROM tenant_activity/i.test(sql)) return seed.activity ?? [];
+      if (/FROM cooking_log/i.test(sql)) return seed.cooked ?? [];
+      if (/FROM overlay/i.test(sql)) return seed.favorites ?? [];
+      return [];
+    },
     async run() { return { changes: 0 }; },
   } as unknown as Db;
   return { db, batches };
 }
 
-function makeDeps(initial: Record<string, string> = {}) {
+function makeDeps(initial: Record<string, string> = {}, rosterSeed: FakeRosterData = {}) {
   const tenantKv = memKv(initial);
   const krogerKv = memKv();
-  const { db, batches } = fakeDb();
+  const { db, batches } = fakeDb(rosterSeed);
   let n = 0;
   const deps: AdminDeps = {
     tenantKv,
@@ -194,13 +210,80 @@ describe("onboard", () => {
 });
 
 describe("listTenants", () => {
-  it("returns canonical ids, sorted, ignoring non-tenant keys", async () => {
+  const env = (over: Partial<Env> = {}): Env => ({ ...over }) as unknown as Env;
+  const byId = (rows: TenantRosterRow[], id: string) => rows.find((r) => r.id === id);
+
+  it("returns structured rows, sorted by id, ignoring non-tenant keys", async () => {
     const { deps } = makeDeps({
       "tenant:casey": JSON.stringify({ id: "casey" }),
       "tenant:alice": JSON.stringify({ id: "alice" }),
       "invite:CODE": "casey",
     });
-    expect(await listTenants(deps)).toEqual({ tenants: ["alice", "casey"] });
+    const { tenants } = await listTenants(env(), deps);
+    expect(tenants.map((t) => t.id)).toEqual(["alice", "casey"]);
+  });
+
+  it("derives active vs pending from tenant_activity presence", async () => {
+    const { deps } = makeDeps(
+      { "tenant:casey": JSON.stringify({ id: "casey" }), "tenant:noor": JSON.stringify({ id: "noor" }) },
+      { activity: [{ tenant: "casey", first_seen_at: 100, last_seen_at: 200 }] },
+    );
+    const { tenants } = await listTenants(env(), deps);
+    expect(byId(tenants, "casey")).toMatchObject({ status: "active", joined: 100, lastActive: 200 });
+    expect(byId(tenants, "noor")).toMatchObject({ status: "pending", joined: null, lastActive: null });
+  });
+
+  it("derives the owner flag from OWNER_TENANT_ID (case/whitespace-normalized), no owner when unset", async () => {
+    const { deps } = makeDeps({
+      "tenant:casey": JSON.stringify({ id: "casey" }),
+      "tenant:alice": JSON.stringify({ id: "alice" }),
+    });
+    const owned = await listTenants(env({ OWNER_TENANT_ID: " Casey " }), deps);
+    expect(byId(owned.tenants, "casey")?.owner).toBe(true);
+    expect(byId(owned.tenants, "alice")?.owner).toBe(false);
+
+    const unowned = await listTenants(env(), deps);
+    expect(unowned.tenants.every((t) => t.owner === false)).toBe(true);
+  });
+
+  it("derives Kroger-linked status from a single prefix list over KROGER_KV (no per-tenant get)", async () => {
+    const { deps, krogerKv } = makeDeps({
+      "tenant:casey": JSON.stringify({ id: "casey" }),
+      "tenant:alice": JSON.stringify({ id: "alice" }),
+    });
+    await krogerKv.put("kroger:refresh:casey", "tok");
+    let gets = 0;
+    const countingKv = { ...krogerKv, get: (...a: Parameters<typeof krogerKv.get>) => { gets++; return krogerKv.get(...a); } };
+    const { tenants } = await listTenants(env(), { ...deps, krogerKv: countingKv as unknown as AdminDeps["krogerKv"] });
+    expect(byId(tenants, "casey")?.kroger).toBe("linked");
+    expect(byId(tenants, "alice")?.kroger).toBe("unlinked");
+    expect(gets).toBe(0); // the Kroger-linked check is a list, never a per-tenant get
+  });
+
+  it("derives cooked/favorites from one batched GROUP BY aggregate each, not per-tenant", async () => {
+    const { deps } = makeDeps(
+      { "tenant:casey": JSON.stringify({ id: "casey" }), "tenant:alice": JSON.stringify({ id: "alice" }) },
+      { cooked: [{ tenant: "casey", n: 12 }], favorites: [{ tenant: "casey", n: 3 }, { tenant: "alice", n: 1 }] },
+    );
+    const { tenants } = await listTenants(env(), deps);
+    expect(byId(tenants, "casey")).toMatchObject({ cooked: 12, favorites: 3 });
+    expect(byId(tenants, "alice")).toMatchObject({ cooked: 0, favorites: 1 });
+  });
+
+  it("assembles a full roster row from every source at once", async () => {
+    const { deps, krogerKv } = makeDeps(
+      { "tenant:casey": JSON.stringify({ id: "casey" }) },
+      {
+        activity: [{ tenant: "casey", first_seen_at: 1000, last_seen_at: 2000 }],
+        cooked: [{ tenant: "casey", n: 5 }],
+        favorites: [{ tenant: "casey", n: 2 }],
+      },
+    );
+    await krogerKv.put("kroger:refresh:casey", "tok");
+    const { tenants } = await listTenants(env({ OWNER_TENANT_ID: "casey" }), deps);
+    expect(tenants).toEqual([
+      { id: "casey", owner: true, status: "active", kroger: "linked", joined: 1000, lastActive: 2000, cooked: 5, favorites: 2 },
+    ]);
   });
 });
 
@@ -288,16 +371,33 @@ describe("handleAdmin (routing + gate)", () => {
     expect(await tenantKv.get("tenant:casey")).toBe(JSON.stringify({ id: "casey" }));
   });
 
-  it("lists members via GET", async () => {
+  it("lists members via GET, as structured roster rows", async () => {
+    // A real D1Database-shaped fake (not the src/db.ts `Db` wrapper): `prepare` returns a
+    // chainable stmt whose `first`/`all`/`run` all resolve empty, so every `listTenants`
+    // aggregate read (tenant_activity / cooking_log / overlay) comes back empty without error.
+    const emptyAggDb = {
+      prepare() {
+        const stmt = {
+          bind: () => stmt,
+          first: async () => null,
+          all: async () => ({ results: [], success: true, meta: { changes: 0 } }),
+          run: async () => ({ success: true, meta: { changes: 0 } }),
+        };
+        return stmt as unknown as D1PreparedStatement;
+      },
+      async batch() { return []; },
+    } as unknown as Env["DB"];
     const env = {
       TENANT_KV: memKv({ "tenant:bob": JSON.stringify({ id: "bob" }) }),
       KROGER_KV: memKv(),
-      DB: throwingD1(),
+      DB: emptyAggDb,
       ADMIN_DEV_BYPASS: "1",
     } as unknown as Env;
     const res = await handleAdmin(new Request("http://localhost/admin/api/tenants"), env);
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ tenants: ["bob"] });
+    expect(await res.json()).toEqual({
+      tenants: [{ id: "bob", owner: false, status: "pending", kroger: "unlinked", joined: null, lastActive: null, cooked: 0, favorites: 0 }],
+    });
   });
 
   // Bug reports are surfaced by the Hono data explorer (the `bug_reports` system table), not a

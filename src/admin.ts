@@ -29,7 +29,7 @@ import {
   type Tenant,
 } from "./tenant.js";
 import { buildKrogerConsentUrl } from "./oauth.js";
-import type { KvStore } from "./kroger-user.js";
+import { KROGER_REFRESH_PREFIX, type KvStore } from "./kroger-user.js";
 
 const TENANT_PREFIX = "tenant:"; // mirrors src/tenant.ts (the allowlist directory)
 const INVITE_PREFIX = "invite:"; // mirrors src/tenant.ts (invite:<code> -> username)
@@ -204,10 +204,81 @@ export function adminPosture(env: Env): AdminPosture {
 
 // --- Member lifecycle operations (pure over AdminDeps) ----------------------
 
-/** List the allowlisted member ids (canonical lowercase, sorted) — operational only, no domain data. */
-export async function listTenants(deps: AdminDeps): Promise<{ tenants: string[] }> {
-  const ids = await kvTenantStore(deps.tenantKv).list();
-  return { tenants: [...ids].sort() };
+/** One member's roster row — operational status only, never per-tenant domain data. */
+export interface TenantRosterRow {
+  id: string;
+  /** True iff `id === env.OWNER_TENANT_ID`. Unset env -> no member is owner. */
+  owner: boolean;
+  /** `active` once the member has completed an MCP OAuth exchange at least once; `pending` until then. */
+  status: "active" | "pending";
+  /** Whether a Kroger refresh token exists for this member (`kroger:refresh:<id>` in KROGER_KV). */
+  kroger: "linked" | "unlinked";
+  /** First-seen epoch ms (≈ onboarding/first connection), or null for a pending member. */
+  joined: number | null;
+  /** Most recent best-effort activity touch (epoch ms), or null for a pending member. */
+  lastActive: number | null;
+  /** COUNT(*) over cooking_log for this tenant. */
+  cooked: number;
+  /** COUNT(*) over overlay WHERE favorite = 1 for this tenant. */
+  favorites: number;
+}
+
+/**
+ * List every allowlisted member as a structured roster row (operational status only, no
+ * domain data — see the "Tenant listing is operational-only" requirement). Assembled from:
+ *  - the `tenant:*` KV allowlist (ids),
+ *  - `tenant_activity` (joined/last-active/status — absent row => pending),
+ *  - a single prefix `list` over KROGER_KV (Kroger-linked status, no N+1 gets),
+ *  - two single `GROUP BY tenant` D1 aggregates (cooked, favorites — no N+1 queries),
+ *  - `env.OWNER_TENANT_ID` (owner flag; unset => no member is owner).
+ */
+export async function listTenants(env: Env, deps: AdminDeps): Promise<{ tenants: TenantRosterRow[] }> {
+  const ids = [...(await kvTenantStore(deps.tenantKv).list())].sort();
+
+  const [activityRows, krogerKeys, cookedRows, favoriteRows] = await Promise.all([
+    deps.db.all<{ tenant: string; first_seen_at: number; last_seen_at: number }>(
+      "SELECT tenant, first_seen_at, last_seen_at FROM tenant_activity",
+    ),
+    listAllKeys(deps.krogerKv, KROGER_REFRESH_PREFIX),
+    deps.db.all<{ tenant: string; n: number }>("SELECT tenant, COUNT(*) AS n FROM cooking_log GROUP BY tenant"),
+    deps.db.all<{ tenant: string; n: number }>(
+      "SELECT tenant, COUNT(*) AS n FROM overlay WHERE favorite = 1 GROUP BY tenant",
+    ),
+  ]);
+
+  const activityById = new Map(activityRows.map((r) => [r.tenant, r]));
+  const krogerLinked = new Set(krogerKeys.map((name) => name.slice(KROGER_REFRESH_PREFIX.length)));
+  const cookedById = new Map(cookedRows.map((r) => [r.tenant, r.n]));
+  const favoritesById = new Map(favoriteRows.map((r) => [r.tenant, r.n]));
+  const ownerId = env.OWNER_TENANT_ID ? normalizeTenantId(env.OWNER_TENANT_ID) : null;
+
+  const tenants: TenantRosterRow[] = ids.map((id) => {
+    const activity = activityById.get(id);
+    return {
+      id,
+      owner: ownerId !== null && id === ownerId,
+      status: activity ? "active" : "pending",
+      kroger: krogerLinked.has(id) ? "linked" : "unlinked",
+      joined: activity?.first_seen_at ?? null,
+      lastActive: activity?.last_seen_at ?? null,
+      cooked: cookedById.get(id) ?? 0,
+      favorites: favoritesById.get(id) ?? 0,
+    };
+  });
+  return { tenants };
+}
+
+/** Page through every key under `prefix` in one KV namespace, returning the full key-name list. */
+async function listAllKeys(kv: KvStore, prefix: string): Promise<string[]> {
+  const names: string[] = [];
+  let cursor: string | undefined;
+  for (;;) {
+    const res = await kv.list({ prefix, cursor });
+    for (const k of res.keys) names.push(k.name);
+    if (res.list_complete) break;
+    cursor = res.cursor;
+  }
+  return names;
 }
 
 /** Delete every `invite:*` whose value resolves to `id`. Returns how many were removed. */
