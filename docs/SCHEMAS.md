@@ -405,7 +405,7 @@ Example rows:
 ## discovery_log (D1 table, shared)
 
 The **discovery sweep**'s per-candidate **outcome log** — **one table serving three roles** (design Decision 11), so the audit surface and the operational state aren't three tables:
-- the **operator audit log** — recent rows, any outcome (ordered by `created_at`), the admin **Logs › Discovery** view;
+- the **operator audit log** — recent rows, any outcome (ordered by `created_at`), the admin **Discovery** area's candidate-pipeline view;
 - the intake **"already evaluated" dedup set** — any row for a `url` marks it handled, so a re-run never reprocesses a candidate (the log **is** the sweep's progress state — there is no separate cursor);
 - the **parked/failed surface** — `WHERE outcome IN ('error', 'failed')`, read by the agent-readable `read_discovery_errors` tool; the `failed` count also flips the `discovery-sweep` health record's `ok`.
 
@@ -451,7 +451,7 @@ Example rows:
 **Notes:**
 - `outcome` is one of `imported` | `duplicate` | `no_match` | `rejected_source` | `dietary_gated` | `error` | `failed`. `error` is a **content park** (an un-importable page — unreachable/walled/invalid), an expected steady state; `failed` is an **infrastructure failure** (a transient env.AI/D1 error), which degrades the `discovery-sweep` health record (`countDiscoveryFailures`) until cleared or terminalized. `read_discovery_errors` returns both; `failed` rows are transient/in-retry until their attempt cap is exhausted (then they terminalize to `error`).
 - The dedup set is **every** distinct `url` in the table regardless of outcome, so a `duplicate`/`no_match`/`error`/`failed` candidate is not re-fetched as a fresh candidate — retryable rows re-enter via the explicit retry stream only.
-- The full log (every outcome) is served to the operator at `GET /admin/api/logs/discovery` → `{ entries: [...] }` (Access-gated, most-recent-first, bounded) — the **Logs › Discovery** admin view. Per-row **Retry** and **Delete** buttons appear for `error`/`failed` rows.
+- The full log (every outcome) is served to the operator at `GET /admin/api/logs/discovery` → `{ entries: [...] }` (Access-gated, most-recent-first, bounded), and enriched per-row (furthest pipeline stage, halt point, retry status — no schema change) by `readDiscoveryCandidates`/`deriveHalt` for the **Discovery** admin area (`/admin/discovery`), the candidate-pipeline view. Per-candidate **Retry** and **Delete** actions appear for `error`/`failed` rows.
 
 ## meal plan (per-tenant, D1 session state)
 

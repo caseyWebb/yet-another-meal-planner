@@ -416,3 +416,108 @@ describe("DELETE /admin/api/discovery/:id", () => {
     expect(body.deleted).toBe("row1");
   });
 });
+
+// --- GET /admin/discovery — the candidate-pipeline view (admin-ui-redesign-discovery) --------
+
+interface DiscoveryLogFakeRow {
+  id: string;
+  url: string | null;
+  title: string | null;
+  source: string | null;
+  outcome: string;
+  slug: string | null;
+  detail: string | null;
+  created_at: string | null;
+  attempts: number;
+  next_retry_at: string | null;
+}
+
+function candidateD1(rows: DiscoveryLogFakeRow[]): Env["DB"] {
+  const makeStmt = (sql: string) => {
+    let binds: unknown[] = [];
+    const stmt = {
+      bind(...v: unknown[]) {
+        binds = v;
+        return stmt;
+      },
+      async all<T>() {
+        if (/FROM discovery_log/i.test(sql)) {
+          const limit = Number(binds[0]);
+          const ordered = [...rows].sort((a, b) =>
+            (a.created_at ?? "") < (b.created_at ?? "") ? 1 : (a.created_at ?? "") > (b.created_at ?? "") ? -1 : 0,
+          );
+          return { results: ordered.slice(0, limit) as unknown as T[], success: true as const, meta: { changes: 0 } };
+        }
+        return { results: [] as T[], success: true as const, meta: { changes: 0 } };
+      },
+      async first<T>() {
+        return null as T | null;
+      },
+      async run() {
+        return { success: true as const, meta: { changes: 0 } };
+      },
+    };
+    return stmt;
+  };
+  return {
+    prepare: (sql: string) => makeStmt(sql) as unknown as D1PreparedStatement,
+    async batch() {
+      return [];
+    },
+  } as unknown as Env["DB"];
+}
+
+function candidateRow(over: Partial<DiscoveryLogFakeRow> & Pick<DiscoveryLogFakeRow, "id" | "outcome" | "created_at">): DiscoveryLogFakeRow {
+  return {
+    url: "https://example.com/r",
+    title: "T",
+    source: "feed",
+    slug: null,
+    detail: null,
+    attempts: 0,
+    next_retry_at: null,
+    ...over,
+  };
+}
+
+describe("GET /admin/discovery", () => {
+  it("renders the candidate-pipeline view — stat tiles, filter pills, the card list — not a placeholder", async () => {
+    const DB = candidateD1([
+      candidateRow({ id: "a", outcome: "imported", created_at: "2026-06-27T10:00:00.000Z" }),
+      candidateRow({ id: "b", outcome: "error", created_at: "2026-06-27T11:00:00.000Z", detail: JSON.stringify({ reason: "unreachable" }) }),
+    ]);
+    const env = devEnv(DB);
+    const res = await handleAdmin(new Request("http://localhost/admin/discovery"), env);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).not.toContain("coming soon");
+    expect(html).toContain("Candidates");
+    expect(html).toContain("Imported");
+    expect(html).toContain("Parked / failed");
+    expect(html).toContain("In retry queue");
+    expect(html).toContain('data-candidate-id="a"');
+    expect(html).toContain('data-candidate-id="b"');
+  });
+
+  it("filters via ?filter= and paginates via ?page=", async () => {
+    const DB = candidateD1([
+      candidateRow({ id: "a", outcome: "imported", created_at: "2026-06-27T10:00:00.000Z" }),
+      candidateRow({ id: "b", outcome: "duplicate", created_at: "2026-06-27T11:00:00.000Z", detail: JSON.stringify({ duplicate_of: "x" }) }),
+    ]);
+    const env = devEnv(DB);
+    const res = await handleAdmin(new Request("http://localhost/admin/discovery?filter=duplicate"), env);
+    const html = await res.text();
+    expect(html).toContain('data-candidate-id="b"');
+    expect(html).not.toContain('data-candidate-id="a"');
+  });
+
+  it("hydrates the discovery island for the Retry/Delete mutations", async () => {
+    const DB = candidateD1([candidateRow({ id: "a", outcome: "error", created_at: "2026-06-27T10:00:00.000Z", detail: JSON.stringify({ reason: "unreachable" }) })]);
+    const env = devEnv(DB);
+    const res = await handleAdmin(new Request("http://localhost/admin/discovery"), env);
+    const html = await res.text();
+    expect(html).toContain('id="discovery-island"');
+    expect(html).toContain('id="discovery-props"');
+    expect(html).toContain('src="/admin/islands/discovery.js"');
+  });
+});

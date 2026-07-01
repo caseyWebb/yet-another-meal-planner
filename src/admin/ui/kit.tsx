@@ -6,6 +6,7 @@
 // green/amber status badge or nav-pill equivalent).
 
 import type { Child } from "hono/jsx";
+import { CheckCircleIcon, XCircleIcon, MinusCircleIcon } from "./icons.js";
 
 /** A Basecoat card. Children render in the padded `<section>`; pass a `<header>`/`<footer>`
  *  among the children when a title or action row is wanted. */
@@ -374,5 +375,62 @@ export const DropdownMenu = ({ trigger, items }: { trigger: Child; items: MenuIt
         ),
       )}
     </div>
+  </div>
+);
+
+// ── StageTrack (admin-ui-redesign-discovery) ────────────────────────────────────────────────
+// A generic stage-progression track: a connected horizontal sequence of `stages`, each marked
+// done / halt / todo relative to `haltIndex`. No discovery-specific knowledge is baked in
+// beyond what the caller passes, so a future stage-pipeline view can reuse it. Presentational
+// only (no handlers), SSR-safe. Emits `pl-track`/`pl-stage`/`pl-node`/`pl-seg` classes ported
+// from the design mock's CSS naming (see styles.css).
+
+/** A generic stage's identity: a stable key + display label (the caller owns the icon slot). */
+export interface StageSpec {
+  key: string;
+  label: string;
+  icon?: Child;
+}
+
+export const StageTrack = ({
+  stages,
+  haltIndex,
+  kind,
+  imported,
+}: {
+  /** The stages in pipeline order. */
+  stages: StageSpec[];
+  /** Index into `stages` of the candidate's furthest/halt stage. */
+  haltIndex: number;
+  /** The outcome-kind coloring the halt node (ignored when `imported`). */
+  kind: string;
+  /** True when the halt stage is fully PASSED, not a stop (e.g. an imported candidate). */
+  imported?: boolean;
+}) => (
+  <div class="pl-track" role="list" aria-label="pipeline progression">
+    {stages.map((s, i) => {
+      const isHalt = i === haltIndex && !imported;
+      const done = i < haltIndex || (i === haltIndex && imported);
+      const state = done ? "done" : isHalt ? kind : "todo";
+      return (
+        <div class={cx("pl-stage", state, isHalt && "halt")} role="listitem">
+          <div class="pl-node">
+            {done ? (
+              <CheckCircleIcon size={15} />
+            ) : isHalt ? (
+              kind === "park" || kind === "fail" ? (
+                <XCircleIcon size={15} />
+              ) : (
+                <MinusCircleIcon size={15} />
+              )
+            ) : (
+              (s.icon ?? null)
+            )}
+          </div>
+          <span class="pl-label">{s.label}</span>
+          {i < stages.length - 1 ? <span class={cx("pl-seg", i < haltIndex ? "done" : "todo")} /> : null}
+        </div>
+      );
+    })}
   </div>
 );

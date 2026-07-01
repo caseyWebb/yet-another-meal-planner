@@ -258,14 +258,11 @@ describe("handleAdmin (logs › all-jobs run log)", () => {
     expect(html).not.toContain("error");
   });
 
-  it("/admin/logs/discovery still renders the unchanged Discovery candidate log", async () => {
+  it("/admin/logs/discovery redirects to the top-level Discovery area (bookmark-preserving, not a 404)", async () => {
     const { DB } = discoveryD1([row({ id: "x", outcome: "imported", created_at: "2026-06-27T10:00:00.000Z", title: "T" })]);
     const env = { TENANT_KV: memKv(), KROGER_KV: memKv(), DB, ADMIN_DEV_BYPASS: "1" } as unknown as Env;
     const res = await handleAdmin(new Request("http://localhost/admin/logs/discovery"), env);
-    expect(res.status).toBe(200);
-    const html = await res.text();
-    expect(html).toContain("Discovery");
-    expect(html).toContain("T");
-    expect(html).toContain('id="logs-island"');
+    expect(res.status).toBe(302);
+    expect(res.headers.get("location")).toBe("/admin/discovery");
   });
 });

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { EntriesList, AllJobsLog, LogsPage, PAGE_SIZE } from "../src/admin/pages/logs.js";
+import { AllJobsLog, LogsPage, PAGE_SIZE } from "../src/admin/pages/logs.js";
 import { outcomeClassWord, isRetryable, hasDetail, entryTitle } from "../src/admin/logs-shared.js";
 import type { DiscoveryLogRow } from "../src/discovery-db.js";
 import type { JobRunWithJob } from "../src/health.js";
@@ -47,21 +47,6 @@ describe("Logs helpers", () => {
     expect(entryTitle(row({ title: "T" }))).toBe("T");
     expect(entryTitle(row({ title: null, url: "http://x" }))).toBe("http://x");
     expect(entryTitle(row({ title: null, url: null }))).toBe("(untitled)");
-  });
-});
-
-describe("Logs SSR entries", () => {
-  it("renders entries with outcome badges", () => {
-    const html = render(
-      EntriesList({ entries: [row({ outcome: "error", title: "Boom" }), row({ id: "2", outcome: "imported", title: "OK" })] }),
-    );
-    expect(html).toContain("Boom");
-    expect(html).toContain("entry-outcome fail");
-    expect(html).toContain("OK");
-  });
-
-  it("renders the empty state", () => {
-    expect(render(EntriesList({ entries: [] }))).toContain("No discovery activity");
   });
 });
 
@@ -115,10 +100,11 @@ describe("AllJobsLog SSR (all-jobs run log)", () => {
     expect(html).toContain("boom");
   });
 
-  it("a discovery-sweep run links out to the candidate-level Discovery log", () => {
+  it("a discovery-sweep run links out to the top-level Discovery area, not the legacy Logs route", () => {
     const runs = [run({ id: "a", job: "discovery-sweep" })];
     const html = render(AllJobsLog({ runs, job: "All", page: 0, now: NOW }));
-    expect(html).toContain('href="/admin/logs/discovery"');
+    expect(html).toContain('href="/admin/discovery"');
+    expect(html).not.toContain('href="/admin/logs/discovery"');
     expect(html).toContain("View discovery candidates");
   });
 

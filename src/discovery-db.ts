@@ -15,6 +15,8 @@
 
 import { db } from "./db.js";
 import type { Env } from "./env.js";
+import type { Outcome } from "./discovery-sweep.js";
+import type { AcquireReason } from "./recipe-acquire.js";
 
 export interface DiscoveryLogRow {
   id: string;
@@ -123,6 +125,98 @@ export async function readDiscoveryRowById(env: Env, id: string): Promise<Discov
   );
   if (!row) return null;
   return { ...row, detail: parseDetail(row.detail) };
+}
+
+// ── Candidate-pipeline enrichment (admin-ui-redesign-discovery) ─────────────────────────────
+// readDiscoveryCandidates / deriveHalt derive, from the EXISTING discovery_log row shape, what
+// the flat log doesn't show: the furthest pipeline stage a candidate reached and the halt point
+// (colored by outcome kind) — for the /admin/discovery candidate-pipeline view. No schema
+// change, no new write path; this is a read-side interpretation of `outcome`/`detail` only.
+
+/** The `discovery-sweep` pipeline's 7 stages, in their real execution order. */
+export const STAGE_KEYS = ["triage", "acquire", "classify", "describe", "dedup", "match", "import"] as const;
+export type StageKey = (typeof STAGE_KEYS)[number];
+
+/** The outcome-kind coloring the progression track + filter pills key off. */
+export type CandidateKind = "accepted" | "dup" | "reject" | "park" | "fail" | "defer";
+
+const ACQUIRE_REASONS = new Set<AcquireReason>(["unreachable", "no_jsonld", "not_a_recipe", "incomplete"]);
+
+/** Compile-time exhaustiveness — mirrors src/admin/lib/remote.ts's assertNever, without the
+ *  layering of a core reader importing from the admin panel. */
+function assertNeverOutcome(x: never): never {
+  throw new Error(`Unhandled discovery outcome: ${JSON.stringify(x)}`);
+}
+
+/** Derive an `error`-outcome row's halt stage from its `detail.reason` shape (Decision 1): the
+ *  acquisition-park taxonomy → acquire; an `"import: "`-prefixed reason → import; anything else
+ *  (a classify-stage validation park, or a legacy/unshaped reason) → classify. */
+function haltStageForError(detail: unknown): StageKey {
+  const reason = detail && typeof detail === "object" ? (detail as Record<string, unknown>).reason : undefined;
+  if (typeof reason === "string") {
+    if (ACQUIRE_REASONS.has(reason as AcquireReason)) return "acquire";
+    if (reason.startsWith("import: ")) return "import";
+  }
+  return "classify";
+}
+
+/** Derive a `no_match` row's halt stage from its `detail.stage` (Decision 1): a triage-stage
+ *  reject halts at `triage`; a `confirm`/`match`/absent (legacy) stage halts at `match`. */
+function haltStageForNoMatch(detail: unknown): StageKey {
+  const stage = detail && typeof detail === "object" ? (detail as Record<string, unknown>).stage : undefined;
+  return stage === "triage" ? "triage" : "match";
+}
+
+/**
+ * Derive a row's furthest-stage/halt-point presentation from its stored `outcome` + `detail`
+ * (Decision 1 of admin-ui-redesign-discovery's design.md) — a pure function, unit-testable
+ * without D1. Switches EXHAUSTIVELY over the real `Outcome` union imported from
+ * discovery-sweep.ts, so a future outcome addition is a compile error here, not a silent gap.
+ *
+ * `failed` rows are a documented approximation: `processCandidate`'s outer catch wraps the
+ * whole pipeline and does not record which stage was active, so a `failed` row renders at
+ * `acquire` — "at least this far," not an exact stage attribution.
+ */
+export function deriveHalt(row: DiscoveryLogRow): { haltStage: StageKey; kind: CandidateKind; retryable: boolean } {
+  const retryable = row.next_retry_at !== null;
+  const outcome = row.outcome as Outcome;
+  switch (outcome) {
+    case "imported":
+      return { haltStage: "import", kind: "accepted", retryable };
+    case "duplicate":
+      return { haltStage: "dedup", kind: "dup", retryable };
+    case "no_match":
+      return { haltStage: haltStageForNoMatch(row.detail), kind: "reject", retryable };
+    case "dietary_gated":
+      return { haltStage: "match", kind: "reject", retryable };
+    case "rejected_source":
+      return { haltStage: "triage", kind: "reject", retryable };
+    case "deferred":
+      return { haltStage: "import", kind: "defer", retryable };
+    case "error":
+      return { haltStage: haltStageForError(row.detail), kind: "park", retryable };
+    case "failed":
+      // Approximation (design.md Risk: "failed-outcome halt stage is not stored") — the
+      // catch-all handler doesn't tag the active stage; acquire is the labeled best guess.
+      return { haltStage: "acquire", kind: "fail", retryable };
+    default:
+      return assertNeverOutcome(outcome);
+  }
+}
+
+/** One enriched candidate row for the /admin/discovery pipeline view: the raw log row plus its
+ *  derived furthest-stage/halt-point presentation. */
+export interface DiscoveryCandidate extends DiscoveryLogRow {
+  haltStage: StageKey;
+  kind: CandidateKind;
+  retryable: boolean;
+}
+
+/** The candidate-pipeline view's read: readDiscoveryLog, enriched per-row with deriveHalt.
+ *  Same bounded/degrade-on-storage-error contract as the other readers (no separate query). */
+export async function readDiscoveryCandidates(env: Env, limit = 200): Promise<DiscoveryCandidate[]> {
+  const rows = await readDiscoveryLog(env, limit);
+  return rows.map((row) => ({ ...row, ...deriveHalt(row) }));
 }
 
 /** Due retryable rows — outcome IN ('error','failed'), next_retry_at <= now, not rejected.

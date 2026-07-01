@@ -37,14 +37,14 @@ import { StatusPage } from "./pages/status.js";
 import { registerDataRoutes } from "./pages/data.js";
 import { fetchUsage, fetchUsageTrends, fetchToolUsage } from "../usage.js";
 import { UsagePage } from "./pages/usage.js";
-import { readDiscoveryLog, readDiscoveryRowById, deleteDiscoveryRow } from "../discovery-db.js";
+import { readDiscoveryLog, readDiscoveryCandidates, readDiscoveryRowById, deleteDiscoveryRow } from "../discovery-db.js";
 import { buildDiscoveryDeps, processCandidate, DEFAULT_CONFIG } from "../discovery-sweep.js";
 import { addDiscoveryRejection } from "../corpus-db.js";
 import { canonicalizeUrl } from "../url.js";
-import { LogsPage, DiscoveryLogsPage, PAGE_SIZE as LOGS_PAGE_SIZE } from "./pages/logs.js";
+import { LogsPage, PAGE_SIZE as LOGS_PAGE_SIZE } from "./pages/logs.js";
+import { DiscoveryPage } from "./pages/discovery.js";
 import { getDiscoveryConfig, putDiscoveryConfig, analyzeDiscovery, dryRunDiscovery, testFeed, getOperatorConfig, putOperatorConfig, listCorpus, addCorpus, deleteCorpus } from "./config-api.js";
 import { registerConfigRoutes } from "./pages/config.js";
-import { Layout } from "./ui/layout.js";
 import { buildHealthRollup, renderHealthDock } from "./ui/health-dock.js";
 
 /** The injectable surface the member-lifecycle operations close over (real bindings here). */
@@ -192,8 +192,9 @@ const routes = app
   .delete("/api/tenants/:id", async (c) => {
     return c.json(await revoke(adminDeps(c.env), decodeURIComponent(c.req.param("id"))));
   })
-  // Logs › Discovery: the row actions the Logs island calls. Retry/Delete reuse the sweep's
-  // own functions (shared logic, not a re-implementation) — same outcome as the autonomous sweep.
+  // Discovery: the raw log read (kept as a stable JSON surface at its existing path) and the
+  // per-candidate row actions the Discovery island calls. Retry/Delete reuse the sweep's own
+  // functions (shared logic, not a re-implementation) — same outcome as the autonomous sweep.
   .get("/api/logs/discovery", async (c) => c.json({ entries: await readDiscoveryLog(c.env, 200) }))
   .post("/api/discovery/:id/retry", async (c) => {
     const id = c.req.param("id");
@@ -254,28 +255,17 @@ registerDataRoutes(app);
 // Config area (operator-admin): the discovery calibration console (+ ranking/flyer + corpus editors).
 registerConfigRoutes(app);
 
-// Discovery area (operator-admin): a top-level slot for the autonomous candidate-pipeline view.
-// This foundation change lands the routed placeholder so the IA exists; the pipeline body is a
-// downstream change.
-app.get("/discovery", (c) =>
-  c.html(
-    page(
-      <Layout title="Discovery · grocery-agent admin" active="/admin/discovery">
-        <div class="status-head">
-          <h2>Discovery</h2>
-        </div>
-        <div class="card">
-          <section>
-            <p class="muted">
-              The candidate-pipeline view is coming soon. Discovery outcomes are currently visible under{" "}
-              <a href="/admin/logs/discovery">Logs › Discovery</a>.
-            </p>
-          </section>
-        </div>
-      </Layout>,
-    ),
-  ),
-);
+// Discovery area (operator-admin): the candidate-pipeline view — stat tiles, filter pills, and
+// the paginated per-candidate progression-track cards, SSR'd from readDiscoveryCandidates. The
+// area's SOLE content; it absorbed the candidate log formerly at /admin/logs/discovery (that
+// route now redirects here — see the Logs section below).
+app.get("/discovery", async (c) => {
+  const candidates = await readDiscoveryCandidates(c.env, 200);
+  const filter = c.req.query("filter") ?? "all";
+  const pageParam = Number(c.req.query("page") ?? "1");
+  const requestedPage = Number.isFinite(pageParam) && pageParam > 0 ? pageParam - 1 : 0;
+  return c.html(page(<DiscoveryPage candidates={candidates} filter={filter} page={requestedPage} now={Date.now()} />));
+});
 
 // Usage area (usage-observability / usage-trends / tool-usage-trends): three SSR dashboards.
 app.get("/usage", async (c) => {
@@ -287,8 +277,9 @@ app.get("/usage", async (c) => {
 // merged newest-first, SSR — query-param filter + pagination, native-disclosure expand). The
 // `?run=<id>` param (the Status sparkline's deep-link) resolves server-side to the run's job
 // filter + page + a highlighted, pre-expanded entry, falling back to the default view when the
-// id is unresolvable (pruned past the retention cap). The Discovery sweep's per-candidate
-// outcome log keeps its own route + island for Retry/Delete, unchanged.
+// id is unresolvable (pruned past the retention cap). The Logs area does NOT host a
+// candidate-level Discovery destination — that lives at the top-level Discovery area
+// (/admin/discovery); the legacy /admin/logs/discovery route redirects there (below).
 app.get("/logs", async (c) => {
   const runs = await readAllJobRuns(c.env, JOB_RUNS_PER_JOB_CAP * HEALTH_JOBS.length);
   const now = Date.now();
@@ -311,7 +302,8 @@ app.get("/logs", async (c) => {
   const requestedPage = Number.isFinite(pageParam) && pageParam > 0 ? pageParam - 1 : 0;
   return c.html(page(<LogsPage runs={runs} job={job} page={requestedPage} now={now} />));
 });
-app.get("/logs/discovery", async (c) => c.html(page(<DiscoveryLogsPage entries={await readDiscoveryLog(c.env, 200)} />)));
+// Legacy destination — preserves any bookmark rather than 404ing (admin-ui-redesign-discovery).
+app.get("/logs/discovery", (c) => c.redirect("/admin/discovery", 302));
 
 // Static islands + styles fall through to the ASSETS binding (already past the Access gate;
 // `ASSETS.fetch` bypasses run_worker_first, so this never re-enters and loops).

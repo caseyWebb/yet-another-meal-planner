@@ -8,15 +8,14 @@
 // page, and a pre-expanded, highlighted entry — degrading to the default view when the run id
 // no longer exists (pruned past the retention cap).
 //
-// The Discovery sweep's existing per-candidate outcome log keeps its own route
-// (`/admin/logs/discovery`) and its own island (`client/logs.tsx`) for Retry/Delete — UNCHANGED.
-// A `discovery-sweep` run's expanded detail links out to it for per-candidate granularity.
+// The Discovery sweep's per-candidate outcome log lives at the top-level Discovery area
+// (/admin/discovery — admin-ui-redesign-discovery), not under Logs. A `discovery-sweep` run's
+// expanded detail links out there for per-candidate granularity; the legacy
+// `/admin/logs/discovery` route (src/admin/app.tsx) redirects to it.
 
 import { Layout } from "../ui/layout.js";
 import { ItemGroup, Pager, PrettyKV } from "../ui/kit.js";
-import { outcomeClassWord, entryTitle } from "../logs-shared.js";
 import { HEALTH_JOBS, type JobRunWithJob } from "../../health.js";
-import type { DiscoveryLogRow } from "../../discovery-db.js";
 
 /** Entries per page of the all-jobs run log — exported so the route's `?run=` resolution can
  *  compute the same page index the view itself paginates by. */
@@ -99,7 +98,7 @@ const RunEntry = ({ run, now, highlighted }: { run: JobRunWithJob; now: number; 
         {pairs.length === 0 && run.ok ? <p class="muted small">(no summary)</p> : null}
         {run.job === "discovery-sweep" ? (
           <p class="small">
-            <a href="/admin/logs/discovery">View discovery candidates →</a>
+            <a href="/admin/discovery">View discovery candidates →</a>
           </p>
         ) : null}
       </div>
@@ -189,53 +188,20 @@ export const AllJobsLog = ({
   );
 };
 
-function serializeProps(entries: DiscoveryLogRow[]): string {
-  return JSON.stringify({ entries }).replace(/</g, "\\u003c");
-}
-
-/** The first-paint read-only Discovery entries list; the island replaces #logs-island with
- *  interactive rows (Retry/Delete + detail dialog). Unchanged in scope. */
-const DiscoveryEntriesList = ({ entries }: { entries: DiscoveryLogRow[] }) => (
-  <div>
-    <div class="log-head">
-      <h2>Discovery</h2>
-    </div>
-    {entries.length === 0 ? (
-      <p class="muted">No discovery activity yet.</p>
-    ) : (
-      <ul class="entry-list">
-        {entries.map((e) => {
-          const [cls, word] = outcomeClassWord(e.outcome);
-          return (
-            <li class="entry-row">
-              <span class={`entry-outcome ${cls}`}>{word}</span>
-              <span class="entry-title">{entryTitle(e)}</span>
-              <span class="entry-source muted small">{e.source ?? ""}</span>
-              <span class="entry-time muted small">{e.created_at ?? ""}</span>
-            </li>
-          );
-        })}
-      </ul>
-    )}
-  </div>
-);
-
-const LogSubnav = ({ active }: { active: "all" | "discovery" }) => (
+/** The Logs submenu. Today it has one destination (a future log source is added here per the
+ *  "A new log source is added as a submenu destination" scenario) — the Discovery candidate log
+ *  is NOT one of them; it lives at the top-level Discovery area (/admin/discovery). */
+const LogSubnav = ({ active }: { active: "all" }) => (
   <ul class="log-sources">
     <li class={active === "all" ? "log-source active" : "log-source"}>
       <a class="log-source-link" href="/admin/logs">
         All jobs
       </a>
     </li>
-    <li class={active === "discovery" ? "log-source active" : "log-source"}>
-      <a class="log-source-link" href="/admin/logs/discovery">
-        Discovery
-      </a>
-    </li>
   </ul>
 );
 
-/** The all-jobs run log — the default `/admin/logs` content. Pure SSR. */
+/** The all-jobs run log — the default `/admin/logs` content, and the area's sole content. Pure SSR. */
 export const LogsPage = ({
   runs,
   job,
@@ -256,25 +222,3 @@ export const LogsPage = ({
     </div>
   </Layout>
 );
-
-/** The Discovery candidate log at `/admin/logs/discovery` — unchanged behavior, now reachable
- *  via the two-destination submenu instead of being the area's only content. */
-export const DiscoveryLogsPage = ({ entries }: { entries: DiscoveryLogRow[] }) => (
-  <Layout title="Logs · Discovery · grocery-agent admin" active="/admin/logs" wide>
-    <div class="logs">
-      <LogSubnav active="discovery" />
-      <div id="logs-island">
-        <DiscoveryEntriesList entries={entries} />
-      </div>
-    </div>
-    <script
-      type="application/json"
-      id="logs-props"
-      dangerouslySetInnerHTML={{ __html: serializeProps(entries) }}
-    />
-    <script type="module" src="/admin/islands/logs.js" />
-  </Layout>
-);
-
-// Exported for unit tests.
-export { DiscoveryEntriesList as EntriesList };
