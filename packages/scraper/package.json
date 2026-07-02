@@ -1,6 +1,6 @@
 {
   "name": "@grocery-agent/scraper",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "type": "module",
   "description": "The home-network walled-source recipe scraper (walled-source-scraper): authenticates to paid recipe sites with the operator's own session, extracts recipes to the shared wire contract, and POSTs them to the grocery-mcp Worker's /admin/api/ingest.",
