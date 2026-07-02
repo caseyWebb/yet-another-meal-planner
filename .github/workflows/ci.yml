@@ -254,6 +254,70 @@ jobs:
             packages/worker/admin/visual/.screenshots/
           retention-days: 14
 
+  scraper-version:
+    # Version single-source-of-truth gate (build-automation): packages/scraper/package.json
+    # `version` is the scraper's one version — the value the running scraper reports as
+    # `scraper_version` on every ingest batch. A PR that touches the scraper OR the shared
+    # contract it imports (a contract change reshapes the
+    # scraper) MUST bump that version to a strictly-greater semver, or this gate fails. PR-only
+    # (a push to main has no base to diff against) and bot-exempt (an automated dependency PR
+    # can't bump the version) in one guard, mirroring pr-checklist.yml. Reads git only — the
+    # built-in GITHUB_TOKEN, never DATA_REPO_ACTIONS_TOKEN — and never commits a bump: the author
+    # bumps it in the PR. Blocks merge once added to main's required status checks (an operator
+    # repo-settings step, as with the other gates).
+    if: github.event_name == 'pull_request' && !endsWith(github.event.pull_request.user.login, '[bot]')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          # Full history so the PR base ref is present for the path diff and the base
+          # package.json read (the HEAD^ trick the other jobs use gives the merge commit's
+          # first parent, not the base tip we compare versions against).
+          fetch-depth: 0
+
+      - name: Require a scraper version bump when the scraper or contract changed
+        env:
+          BASE: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          git fetch --quiet origin "$BASE"
+          # Three-dot: the changes this PR introduces since the merge-base with the base branch.
+          changed=$(git diff --name-only "origin/$BASE...HEAD" -- packages/scraper packages/contract)
+          if [ -z "$changed" ]; then
+            echo "No packages/scraper or packages/contract changes in this PR; scraper version bump not required."
+            exit 0
+          fi
+          echo "Scraper/contract files changed in this PR:"
+          echo "$changed" | sed 's/^/  - /'
+          base_pkg="$(git show "origin/$BASE:packages/scraper/package.json")" || { echo "::error::packages/scraper/package.json not found on base $BASE — cannot compare the scraper version."; exit 1; }
+          head_pkg="$(cat packages/scraper/package.json)" || { echo "::error::packages/scraper/package.json missing in this PR — the scraper package must keep its version manifest."; exit 1; }
+          # Dependency-free strictly-greater semver compare (plain MAJOR.MINOR.PATCH).
+          BASE_PKG="$base_pkg" HEAD_PKG="$head_pkg" node -e '
+            const parse = (json, where) => {
+              let v;
+              try { v = JSON.parse(json).version; } catch { v = undefined; }
+              const m = /^(\d+)\.(\d+)\.(\d+)/.exec(String(v ?? "").trim());
+              if (!m) {
+                console.error(`::error::Cannot read a MAJOR.MINOR.PATCH version from the ${where} packages/scraper/package.json (got ${JSON.stringify(v)}).`);
+                process.exit(1);
+              }
+              return { v, t: [Number(m[1]), Number(m[2]), Number(m[3])] };
+            };
+            const base = parse(process.env.BASE_PKG, "base");
+            const head = parse(process.env.HEAD_PKG, "head");
+            console.log(`Base version: ${base.v}`);
+            console.log(`Head version: ${head.v}`);
+            const [b, h] = [base.t, head.t];
+            const gt = h[0] > b[0] || (h[0] === b[0] && (h[1] > b[1] || (h[1] === b[1] && h[2] > b[2])));
+            if (!gt) {
+              console.error(`::error::This PR touches packages/scraper/** or packages/contract/** but packages/scraper/package.json version (${head.v}) is not strictly greater than the base (${base.v}). Bump the "version" field — it is the version the running scraper reports as scraper_version.`);
+              process.exit(1);
+            }
+            console.log(`Scraper version bumped ${base.v} -> ${head.v} — OK`);
+          '
+
   trigger-deploy:
     # Auto-trigger the data-repo deploy on Worker-relevant changes to main.
     # Only fires on push (not PRs or workflow_dispatch) — the push trigger above

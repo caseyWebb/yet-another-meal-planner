@@ -67,6 +67,10 @@ gh run watch  --repo caseyWebb/groceries-agent-data                # optional: f
 
 (`aubr deploy` is a local escape hatch, but the data-repo workflow is the source of truth — it gates on typecheck + tests first.)
 
+### Scraper versioning
+
+`packages/scraper/package.json` `version` is the scraper's version — the value the running scraper reports to the Worker as `scraper_version`, stamped on every ingest batch. A PR that touches `packages/scraper/**` **or** the shared `packages/contract/**` (a contract change reshapes the scraper) must bump that `version` to a **strictly-greater** semver. The `scraper-version` gate in `ci.yml` (PR-only, bot-exempt) diffs against the PR base and fails the PR otherwise; it never commits the bump — you bump it in your PR. Like the other gates, it blocks merge only once `scraper-version` is added to `main`'s branch protection as a required status check.
+
 ## The corpus + the index (no CI data build)
 
 The authored corpus (`recipes/*.md` + `guidance/**/*.md`) lives in the operator's R2 `CORPUS` bucket, read/written through `src/corpus-store.ts`. There is **no CI index/site build**: the recipe index is projected by the Worker's scheduled reconcile, and the cookbook is served by the Worker. The corpus is copied/edited with `rclone` (R2 is S3-compatible) — the one-time seed and the bulk-edit round-trip are documented in [`docs/SELF_HOSTING.md`](docs/SELF_HOSTING.md):
