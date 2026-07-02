@@ -75,6 +75,7 @@ const SYSTEM_PROMPT = [
   "- A term that differs from a candidate id only by punctuation, pluralization, or word order is the SAME product — pick same (salmon fillets skin-on = salmon fillets, skin-on).",
   "- CONTAINMENT edges are DIRECTIONAL: a more complete form satisfies a request for a sub-part. A whole chicken satisfies chicken thighs, but a thigh does NOT satisfy a whole chicken — emit {\"from\":\"<whole>\",\"to\":\"NEW\",\"kind\":\"containment\"}, never the reverse.",
   "- concrete=false only for a generic CLASS (a fresh soft cheese); then add membership edges FROM fitting candidate members TO the new concept: {\"from\":\"<member>\",\"to\":\"NEW\",\"kind\":\"membership\"}.",
+  '- A DISJUNCTION is never a product: a term of the form "X or Y" names acceptable alternatives (a purchase constraint), not a buyable product. Deterministic code disposes such terms before you see them; if one reaches you anyway, choose novel with concrete=false, and NEVER propose a canonical containing " or " between product names.',
   "- Ignore irrelevant noise candidates.",
 ].join("\n");
 

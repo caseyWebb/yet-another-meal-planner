@@ -121,6 +121,8 @@ export function fakeD1(
     // Re-confirm eligibility (literal predicates on ingredient_identity, no positional binds).
     if (/source = 'auto'/i.test(sql)) out = out.filter((r) => r.source === "auto");
     if (/concrete = 1/i.test(sql)) out = out.filter((r) => r.concrete === 1);
+    // Concept-node set (readConceptIds): literal concrete = 0 — a NULL concrete is not 0 in SQL.
+    if (/concrete = 0/i.test(sql)) out = out.filter((r) => r.concrete === 0);
     if (/representative IS NULL/i.test(sql)) out = out.filter((r) => r.representative == null);
     // Embedding-backfill batch (embedding IS NOT NULL never reaches the fake; IS NULL does).
     if (/embedding IS NULL/i.test(sql)) out = out.filter((r) => r.embedding == null);

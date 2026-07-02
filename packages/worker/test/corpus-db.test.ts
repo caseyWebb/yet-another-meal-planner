@@ -26,6 +26,8 @@ import {
   readCoResolutionRejections,
   upsertCoResolutionRejection,
   repairSegmentOverflow,
+  applyDisjunctionRepair,
+  readConceptIds,
   insertAuditedEdge,
   readUnreplayedEdgeDrops,
   markEdgeDropReplayed,
@@ -478,8 +480,42 @@ describe("ingredient identity / normalization (D1)", () => {
     });
     const pairs = await readSkuCoResolutionPairs(env, 10);
     expect(pairs).toEqual([
-      { a: "courgette", b: "zucchini", sku: "SKU-A", aSource: "human", bSource: "auto", aTerm: "courgette" },
+      {
+        a: "courgette",
+        b: "zucchini",
+        sku: "SKU-A",
+        aSource: "human",
+        bSource: "auto",
+        aConcrete: true,
+        bConcrete: true,
+        aTerm: "courgette",
+      },
     ]);
+  });
+
+  it("readSkuCoResolutionPairs carries each survivor's concrete flag (the concept–concrete guard's input)", async () => {
+    const { env } = fakeD1({
+      tables: {
+        ingredient_identity: [
+          { id: "jalapenos", base: "jalapenos", representative: null, source: "auto", search_term: null, concrete: 1 },
+          {
+            id: "white or yellow onion",
+            base: "white or yellow onion",
+            representative: null,
+            source: "auto",
+            search_term: "white onion",
+            concrete: 0,
+          },
+        ],
+        sku_cache: [
+          { ingredient: "jalapenos", location_id: "035", sku: "SKU-B" },
+          { ingredient: "white or yellow onion", location_id: "035", sku: "SKU-B" },
+        ],
+      },
+    });
+    const pairs = await readSkuCoResolutionPairs(env, 10);
+    expect(pairs).toHaveLength(1);
+    expect(pairs[0]).toMatchObject({ aConcrete: true, bConcrete: false });
   });
 
   it("readSkuCoResolutionPairs ignores a SKU mapped by only one id", async () => {
@@ -588,6 +624,145 @@ describe("normalization audit calibration (D1)", () => {
       note: "segment_overflow",
       minted_prefix: true,
     });
+  });
+
+  it("applyDisjunctionRepair FLIP turns a concrete disjunction node abstract with a member search_term, logged reshape", async () => {
+    const { env, tables } = fakeD1({
+      tables: {
+        ingredient_identity: [
+          { id: "white or yellow onion", base: "white or yellow onion", representative: null, source: "auto", concrete: 1, search_term: "white or yellow onion" },
+        ],
+        ingredient_normalization_log: [],
+      },
+    });
+    await applyDisjunctionRepair(env, {
+      base: "white or yellow onion",
+      searchTerm: "white onion",
+      mintBase: false,
+      reroot: false,
+      flip: true,
+      children: [],
+    });
+    expect(tables.ingredient_identity[0]).toMatchObject({ concrete: 0, search_term: "white onion" });
+    const log = tables.ingredient_normalization_log[0];
+    expect(log).toMatchObject({ term: "white or yellow onion", outcome: "reshape", resolved_id: "white or yellow onion" });
+    expect(JSON.parse(String(log.detail))).toMatchObject({ note: "disjunction_flip", search_term: "white onion" });
+  });
+
+  it("applyDisjunctionRepair FOLD flips the base and points the child at it, logged merge", async () => {
+    const BASE = "anaheim or cubanelle peppers";
+    const CHILD = "anaheim or cubanelle peppers::form-roasted";
+    const { env, tables } = fakeD1({
+      tables: {
+        ingredient_identity: [
+          { id: BASE, base: BASE, representative: null, source: "auto", concrete: 1 },
+          { id: CHILD, base: BASE, representative: null, source: "auto", concrete: 1 },
+        ],
+        ingredient_normalization_log: [],
+      },
+    });
+    await applyDisjunctionRepair(env, {
+      base: BASE,
+      searchTerm: "anaheim peppers",
+      mintBase: false,
+      reroot: false,
+      flip: true,
+      children: [CHILD],
+    });
+    const byId = new Map(tables.ingredient_identity.map((r) => [r.id, r]));
+    expect(byId.get(BASE)).toMatchObject({ concrete: 0, search_term: "anaheim peppers", representative: null });
+    expect(byId.get(CHILD)?.representative).toBe(BASE);
+    expect(tables.ingredient_normalization_log.map((l) => l.outcome)).toEqual(["reshape", "merge"]);
+    const fold = tables.ingredient_normalization_log[1];
+    expect(fold).toMatchObject({ term: CHILD, outcome: "merge", resolved_id: BASE });
+    expect(JSON.parse(String(fold.detail))).toMatchObject({ note: "disjunction_child_fold" });
+  });
+
+  it("applyDisjunctionRepair REROOT re-roots the inverted serrano family at the abstract base", async () => {
+    const BASE = "serrano or jalapeño peppers";
+    const CHILD = "serrano or jalapeño peppers::form-diced";
+    const { env, tables } = fakeD1({
+      tables: {
+        ingredient_identity: [
+          { id: BASE, base: BASE, representative: CHILD, source: "auto", concrete: 1, search_term: BASE },
+          { id: CHILD, base: BASE, representative: null, source: "auto", concrete: 1, search_term: "diced jalapeños" },
+        ],
+        ingredient_normalization_log: [],
+      },
+    });
+    await applyDisjunctionRepair(env, {
+      base: BASE,
+      searchTerm: "serrano peppers",
+      mintBase: false,
+      reroot: true,
+      flip: true,
+      children: [CHILD],
+    });
+    const byId = new Map(tables.ingredient_identity.map((r) => [r.id, r]));
+    expect(byId.get(BASE)).toMatchObject({ representative: null, concrete: 0, search_term: "serrano peppers" });
+    expect(byId.get(CHILD)?.representative).toBe(BASE);
+    const reshape = tables.ingredient_normalization_log[0];
+    expect(JSON.parse(String(reshape.detail))).toMatchObject({ note: "disjunction_flip", reroot: true });
+    expect(tables.ingredient_normalization_log.map((l) => l.outcome)).toEqual(["reshape", "merge"]);
+  });
+
+  it("applyDisjunctionRepair MINT-BASE inserts the abstract base (embedding NULL) and points the orphan child", async () => {
+    const BASE = "serrano or jalapeño peppers";
+    const CHILD = "serrano or jalapeño peppers::form-diced";
+    const { env, tables } = fakeD1({
+      tables: {
+        ingredient_identity: [{ id: CHILD, base: BASE, representative: null, source: "auto", concrete: 1 }],
+        ingredient_normalization_log: [],
+      },
+    });
+    await applyDisjunctionRepair(env, {
+      base: BASE,
+      searchTerm: "serrano peppers",
+      mintBase: true,
+      reroot: false,
+      flip: false,
+      children: [CHILD],
+    });
+    const minted = tables.ingredient_identity.find((r) => r.id === BASE);
+    expect(minted).toMatchObject({ base: BASE, search_term: "serrano peppers", concrete: 0, source: "auto" });
+    expect(minted?.embedding ?? null).toBeNull(); // the capture backfill embeds it
+    expect(tables.ingredient_identity.find((r) => r.id === CHILD)?.representative).toBe(BASE);
+    const fold = tables.ingredient_normalization_log[0];
+    expect(fold).toMatchObject({ term: CHILD, outcome: "merge", resolved_id: BASE });
+    expect(JSON.parse(String(fold.detail))).toMatchObject({ note: "disjunction_child_fold", minted_base: true });
+  });
+
+  it("applyDisjunctionRepair FOLD + membership edge: the folded family's member edge lands born-stamped", async () => {
+    const BASE = "white or yellow onion";
+    const { env, tables } = fakeD1({
+      tables: {
+        ingredient_identity: [
+          { id: BASE, base: BASE, representative: null, source: "auto", concrete: 1 },
+          { id: "white onion", base: "white onion", representative: null, source: "auto", concrete: 1 },
+        ],
+        ingredient_edge: [],
+        ingredient_normalization_log: [],
+      },
+    });
+    await applyDisjunctionRepair(env, { base: BASE, searchTerm: "white onion", mintBase: false, reroot: false, flip: true, children: [] });
+    await insertAuditedEdge(env, "white onion", BASE, "membership");
+    expect(tables.ingredient_edge).toHaveLength(1);
+    expect(tables.ingredient_edge[0]).toMatchObject({ from_id: "white onion", to_id: BASE, kind: "membership", source: "auto" });
+    expect(tables.ingredient_edge[0].audited_at).not.toBeNull(); // born-stamped, never enters the audit backlog
+  });
+
+  it("readConceptIds returns exactly the concrete=0 ids", async () => {
+    const { env } = fakeD1({
+      tables: {
+        ingredient_identity: [
+          { id: "white or yellow onion", base: "white or yellow onion", representative: null, source: "auto", concrete: 0 },
+          { id: "peppers", base: "peppers", representative: null, source: "auto", concrete: 0 },
+          { id: "jalapenos", base: "jalapenos", representative: null, source: "auto", concrete: 1 },
+          { id: "onions", base: "onions", representative: null, source: "auto" },
+        ],
+      },
+    });
+    expect(await readConceptIds(env)).toEqual(new Set(["white or yellow onion", "peppers"]));
   });
 
   it("insertAuditedEdge born-stamps, is insert-or-ignore, and can mint a missing base", async () => {

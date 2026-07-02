@@ -34,13 +34,26 @@ import {
   readCoResolutionRejections,
   upsertCoResolutionRejection,
   representativeResolver,
+  readAllEdges,
+  insertAuditedEdge,
+  enqueueNovelTerms,
+  appendNormalizationLog,
+  applyDisjunctionRepair,
   type Resolution,
   type NormalizationLog,
   type CoResolutionPair,
   type CoResolutionRejection,
   type IdentitySourceRow,
   type AliasAuditRow,
+  type EdgeRow,
+  type DisjunctionRepairPlan,
 } from "./corpus-db.js";
+import {
+  isDisjunctiveTerm,
+  disjunctionResolution,
+  reconcileDisjunctions,
+  DISJUNCTION_MAX_WRITES_PER_TICK,
+} from "./ingredient-disjunction.js";
 import { confirmIdentity, NORMALIZE_MODEL, type IdentityConfirm, type ScoredCandidate } from "./ingredient-classify.js";
 import { writeJobHealth, writeJobRun } from "./health.js";
 
@@ -102,6 +115,17 @@ export interface NormalizeDeps {
   mergeRejections(): Promise<CoResolutionRejection[]>;
   /** Remember (or refresh) a rejected co-resolution pair — `(a, b)` ordered a < b. */
   rememberRejection(a: string, b: string, now: number): Promise<void>;
+  /** The full edge table — the disjunction reconcile's either-direction pair check. */
+  allEdges(): Promise<EdgeRow[]>;
+  /** Insert a satisfies edge BORN-STAMPED (the disjunction membership guarantee). */
+  insertEdge(from: string, to: string, kind: string): Promise<void>;
+  /** Enqueue unresolved disjunct terms for capture (insert-or-ignore, best-effort). */
+  enqueue(terms: string[]): Promise<void>;
+  /** Append a standalone normalization-log row (the membership-edge audit trail). */
+  log(entry: NormalizationLog): Promise<void>;
+  /** Apply one disjunctive family's shape repair (flip / fold / reroot / mint-base). */
+  applyRepair(plan: DisjunctionRepairPlan): Promise<void>;
+  disjunctionMaxPerTick: number;
   now(): number;
   maxPerTick: number;
   floor: number;
@@ -135,6 +159,18 @@ export interface NormalizeSummary {
   segmentSkipped: number;
   /** Co-resolution pairs suppressed by a remembered rejection (no confirm call spent). */
   mergeSuppressed: number;
+  /** Disjunctive terms disposed as abstract concepts at capture (no classifier call). */
+  disjunctionCaptured: number;
+  /** Wrongly-concrete disjunction bases flipped abstract by the shape sweep. */
+  disjunctionFlipped: number;
+  /** `::detail` children folded into their disjunction base (incl. the re-root shape). */
+  disjunctionFolded: number;
+  /** Member -[membership]→ concept edges inserted born-stamped by the reconcile. */
+  disjunctionEdges: number;
+  /** Unresolved disjunct terms enqueued for capture by the reconcile. */
+  disjunctionEnqueued: number;
+  /** Human-sourced disjunction nodes skipped by the sweep (never flipped or folded). */
+  disjunctionSkipped: number;
 }
 
 /** Top-K nearest identity ids to a vector, by cosine, descending. */
@@ -300,6 +336,11 @@ export function buildResolution(
   if (canonical && canonical !== term) {
     if (knownIds.has(canonical)) {
       detail = { ...detail, canonical_rejected: canonical, canonical_reason: "collision" };
+    } else if (isDisjunctiveTerm(canonical)) {
+      // A disjunction is a constraint, not a product — a classifier-proposed "X or Y" canonical
+      // must never mint a concrete disjunctive identity. (A disjunctive QUEUED term never reaches
+      // here — the capture gate disposes it — so the verbatim fallback is safe.)
+      detail = { ...detail, canonical_rejected: canonical, canonical_reason: "disjunctive" };
     } else {
       id = canonical;
     }
@@ -341,6 +382,13 @@ async function resolveOne(
       edges: [],
       log: { term, outcome: "same", resolved_id: hit, candidates: [], model: null, detail: { note: "lexical_match" } },
     };
+  }
+  // Disjunction gate (after lexical, before the floor): "X or Y" is a satisfaction constraint,
+  // never a concrete identity — dispose it deterministically as an abstract concept, spending
+  // no classifier call. The classifier demonstrably mints these as "distinct products"
+  // (production's three families), so the gate is deterministic, not advisory.
+  if (isDisjunctiveTerm(term)) {
+    return disjunctionResolution(term, vec);
   }
   const ranked = nearest(vec, identityVecs, deps.topK);
   // Below the floor (or nothing to compare) → NOVEL, no confirm call spent.
@@ -387,6 +435,12 @@ function emptySummary(): NormalizeSummary {
     segmentRepaired: 0,
     segmentSkipped: 0,
     mergeSuppressed: 0,
+    disjunctionCaptured: 0,
+    disjunctionFlipped: 0,
+    disjunctionFolded: 0,
+    disjunctionEdges: 0,
+    disjunctionEnqueued: 0,
+    disjunctionSkipped: 0,
   };
 }
 
@@ -514,6 +568,13 @@ async function reconcileCoResolution(deps: NormalizeDeps, summary: NormalizeSumm
       summary.mergeSuppressed++;
       continue;
     }
+    // Concept–concrete guard (disjunctive-term-modeling): a member and its concept legitimately
+    // share a SKU once a concept-keyed cache row exists — a shared SKU is NOT synonym evidence
+    // across the concrete boundary, so the pair is never merge-proposed (no confirm call spent).
+    if ((pair.aConcrete ?? true) !== (pair.bConcrete ?? true)) {
+      summary.mergeSkipped++;
+      continue;
+    }
     // Never auto-collapse two operator-pinned nodes — respect the human intent on both sides.
     if (pair.aSource === "human" && pair.bSource === "human") {
       summary.mergeSkipped++;
@@ -589,6 +650,7 @@ export async function reconcileNormalization(deps: NormalizeDeps): Promise<Norma
       summary[r.log.outcome as "same" | "specialization" | "novel"]++;
       const note = r.log.detail && typeof r.log.detail === "object" ? (r.log.detail as { note?: unknown }).note : undefined;
       if (note === "lexical_match") summary.lexical++;
+      if (note === "disjunction_concept") summary.disjunctionCaptured++;
       // Let later terms this tick match a node just minted (append to the retrieval +
       // canonical-collision sets).
       if (r.node) {
@@ -608,6 +670,11 @@ export async function reconcileNormalization(deps: NormalizeDeps): Promise<Norma
   // backlog converges without traffic). Runs BEFORE the co-resolution pass so a repaired chain
   // is what the pairing reads.
   await reconcileSegmentOverflow(deps, summary);
+
+  // The disjunction reconcile (shape sweep + membership guarantee + disjunct enqueue) —
+  // deterministic, runs even on an empty queue, BEFORE co-resolution so the pairing reads
+  // post-fold chains (see src/ingredient-disjunction.ts).
+  await reconcileDisjunctions(deps, summary);
 
   // After the queue drain, propose cross-lexical merges from the shared SKU cache (a signal the
   // embedding retrieval can't produce). Runs even on an empty queue — a merge candidate can arise
@@ -635,6 +702,12 @@ export function buildNormalizeDeps(env: Env): NormalizeDeps {
     repairOverflow: (plan) => repairSegmentOverflow(env, plan),
     mergeRejections: () => readCoResolutionRejections(env),
     rememberRejection: (a, b, now) => upsertCoResolutionRejection(env, a, b, now),
+    allEdges: () => readAllEdges(env),
+    insertEdge: (from, to, kind) => insertAuditedEdge(env, from, to, kind),
+    enqueue: (terms) => enqueueNovelTerms(env, terms),
+    log: (entry) => appendNormalizationLog(env, entry),
+    applyRepair: (plan) => applyDisjunctionRepair(env, plan),
+    disjunctionMaxPerTick: DISJUNCTION_MAX_WRITES_PER_TICK,
     now: () => Date.now(),
     maxPerTick: NORMALIZE_MAX_PER_TICK,
     floor: NORMALIZE_FLOOR,

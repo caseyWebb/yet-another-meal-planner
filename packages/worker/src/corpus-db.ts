@@ -544,7 +544,7 @@ export async function commitReconfirmEdges(
 /** One decision to append to the normalization audit log. */
 export interface NormalizationLog {
   term: string;
-  outcome: "same" | "specialization" | "novel" | "merge" | "error" | "failed" | "edge_drop" | "edge_keep" | "edge_restore";
+  outcome: "same" | "specialization" | "novel" | "merge" | "error" | "failed" | "edge_drop" | "edge_keep" | "edge_restore" | "reshape";
   resolved_id?: string | null;
   candidates?: { id: string; score: number }[];
   model?: string | null;
@@ -719,6 +719,10 @@ export interface CoResolutionPair {
   sku: string;
   aSource: "auto" | "human";
   bSource: "auto" | "human";
+  /** Whether each survivor is a concrete product (false = concept node) — the concept–concrete
+   *  merge guard's input. Optional so pre-existing fixtures stay valid (absent = concrete). */
+  aConcrete?: boolean;
+  bConcrete?: boolean;
   /** A's Kroger search phrase (or A itself when the node stores none) — the confirm's `term`. */
   aTerm: string;
 }
@@ -737,14 +741,15 @@ const normSource = (s: string | null | undefined): "auto" | "human" => (s === "h
 export async function readSkuCoResolutionPairs(env: Env, limit: number): Promise<CoResolutionPair[]> {
   const d = db(env);
   const [identities, skus] = await Promise.all([
-    d.all<{ id: string; representative: string | null; source: string | null; search_term: string | null }>(
-      "SELECT id, representative, source, search_term FROM ingredient_identity",
+    d.all<{ id: string; representative: string | null; source: string | null; search_term: string | null; concrete: number | null }>(
+      "SELECT id, representative, source, search_term, concrete FROM ingredient_identity",
     ),
     d.all<{ ingredient: string; sku: string }>("SELECT ingredient, sku FROM sku_cache"),
   ]);
   const resolve = representativeResolver(identities);
   const sourceOf = new Map(identities.map((r) => [r.id, normSource(r.source)] as const));
   const searchTermOf = new Map(identities.map((r) => [r.id, r.search_term] as const));
+  const concreteOf = new Map(identities.map((r) => [r.id, r.concrete] as const));
 
   // sku → set of surviving ids that resolve to it.
   const bySku = new Map<string, Set<string>>();
@@ -776,6 +781,8 @@ export async function readSkuCoResolutionPairs(env: Env, limit: number): Promise
           sku,
           aSource: sourceOf.get(a) ?? "auto",
           bSource: sourceOf.get(b) ?? "auto",
+          aConcrete: (concreteOf.get(a) ?? 1) !== 0,
+          bConcrete: (concreteOf.get(b) ?? 1) !== 0,
           aTerm: searchTermOf.get(a) || a,
         });
         if (pairs.length >= limit) return pairs;
@@ -845,6 +852,13 @@ export async function readIdentitySources(env: Env): Promise<IdentitySourceRow[]
     "SELECT id, representative, source, concrete FROM ingredient_identity",
   );
   return rows.map((r) => ({ id: r.id, representative: r.representative, source: normSource(r.source), concrete: r.concrete }));
+}
+
+/** The concept-node id set (`concrete = 0`) — the re-confirm pass's merge guard (a `same`
+ *  outcome never merges a concrete node into a concept survivor). */
+export async function readConceptIds(env: Env): Promise<Set<string>> {
+  const rows = await db(env).all<{ id: string }>("SELECT id FROM ingredient_identity WHERE concrete = 0");
+  return new Set(rows.map((r) => r.id));
 }
 
 /** One directed edge under audit (its composite PK). */
@@ -1002,6 +1016,88 @@ export async function repairSegmentOverflow(
     ),
   );
   await d.batch(stmts);
+}
+
+/**
+ * One disjunctive family's shape repair (disjunctive-term-modeling): a disjunction "X or Y" is a
+ * satisfaction constraint, so its node must be an ABSTRACT concept. `flip` turns a surviving
+ * wrongly-concrete base abstract (member-phrase `search_term`, so the matcher never sends the
+ * disjunctive phrase to Kroger); `children` folds surviving `base::detail` children into the base
+ * via the representative pointer; `reroot` first clears the base's own representative (the
+ * production serrano inversion — the base was merged INTO its child); `mintBase` inserts the base
+ * abstract when it never existed (embedding NULL — the capture backfill embeds it).
+ */
+export interface DisjunctionRepairPlan {
+  base: string;
+  /** The member phrase (first disjunct) written as the base's `search_term`. */
+  searchTerm: string;
+  mintBase: boolean;
+  reroot: boolean;
+  flip: boolean;
+  children: string[];
+}
+
+/** Apply one family's repair atomically: mint → reroot → flip → child folds, one D1 batch, with
+ *  a `reshape` log row for the flip and a `merge` row per folded child. */
+export async function applyDisjunctionRepair(env: Env, plan: DisjunctionRepairPlan): Promise<void> {
+  const d = db(env);
+  const now = Date.now();
+  const stmts: D1PreparedStatement[] = [];
+  if (plan.mintBase) {
+    stmts.push(
+      d.prepare(
+        "INSERT OR IGNORE INTO ingredient_identity (id, base, search_term, concrete, source, decided_at) " +
+          "VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        plan.base,
+        plan.base,
+        plan.searchTerm,
+        0,
+        "auto",
+        now,
+      ),
+    );
+  }
+  if (plan.reroot) {
+    stmts.push(d.prepare("UPDATE ingredient_identity SET representative = ?2 WHERE id = ?1", plan.base, null));
+  }
+  if (plan.flip) {
+    stmts.push(
+      d.prepare(
+        "UPDATE ingredient_identity SET concrete = ?2, search_term = ?3 WHERE id = ?1",
+        plan.base,
+        0,
+        plan.searchTerm,
+      ),
+    );
+    stmts.push(
+      logStmt(
+        d,
+        {
+          term: plan.base,
+          outcome: "reshape",
+          resolved_id: plan.base,
+          detail: { note: "disjunction_flip", search_term: plan.searchTerm, ...(plan.reroot ? { reroot: true } : {}) },
+        },
+        now,
+      ),
+    );
+  }
+  for (const child of plan.children) {
+    stmts.push(d.prepare("UPDATE ingredient_identity SET representative = ?2 WHERE id = ?1", child, plan.base));
+    stmts.push(
+      logStmt(
+        d,
+        {
+          term: child,
+          outcome: "merge",
+          resolved_id: plan.base,
+          detail: { note: "disjunction_child_fold", ...(plan.mintBase ? { minted_base: true } : {}) },
+        },
+        now,
+      ),
+    );
+  }
+  if (stmts.length > 0) await d.batch(stmts);
 }
 
 /**

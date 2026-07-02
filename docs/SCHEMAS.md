@@ -635,7 +635,10 @@ base           TEXT  -- id up to the first "::"  NOT NULL
 detail         TEXT  -- the "::"-joined detail suffix, or NULL for a bare base
 search_term    TEXT  -- human Kroger search phrase for a qualified id ("80/20 ground beef")
 representative TEXT  -- union-find pointer to the surviving id, or NULL (self)
-concrete       INTEGER NOT NULL DEFAULT 1  -- 0 = concept node (queryable class, not buyable)
+concrete       INTEGER NOT NULL DEFAULT 1  -- 0 = concept node (queryable class, not buyable);
+                                           --   disjunctive ids ("x or y") are always concepts —
+                                           --   their search_term is a member phrase (first
+                                           --   disjunct), never the disjunctive phrase
 embedding      TEXT  -- JSON array of EMBED_DIM floats; cron-owned, NULL until embedded
 source         TEXT NOT NULL DEFAULT 'auto'  -- 'auto' | 'human'
 decided_at     INTEGER
@@ -661,7 +664,7 @@ audited_at INTEGER  -- one-shot edge-audit stamp; NULL = un-audited backlog; bor
 
 -- novel_ingredient_terms — the capture queue (surface forms not yet placed). PK (term).
 -- ingredient_normalization_log — the decision audit log + evaluated-set (mirrors discovery_log).
--- outcome: same | specialization | novel | merge | error | failed | edge_drop | edge_keep | edge_restore
+-- outcome: same | specialization | novel | merge | error | failed | edge_drop | edge_keep | edge_restore | reshape
 --   (edge_* rows are the edge audit's decisions — edge-shaped, filtered out of the admin
 --    Decisions stream, queryable here)
 -- is_reconfirm INTEGER NOT NULL DEFAULT 0  -- 1 = decision from the re-confirm pass, not initial capture
@@ -671,7 +674,8 @@ The log's `detail` JSON carries per-decision context: `reason` (the classifier's
 `note` — `confirm_failed_safe` (contract-invalid confirm → fail-safe NOVEL, or a re-audit's
 keep-and-stamp) or `confirm_below_min` (the distance guard rejected a same/specialization pick,
 with `rejected {outcome, match, score}`); `canonical_rejected` + `canonical_reason` (`invalid` |
-`collision`) when a classifier-proposed canonical id fell back to the verbatim term; and
+`collision` | `disjunctive` — a proposed "x or y" canonical never mints a concrete disjunctive
+identity) when a classifier-proposed canonical id fell back to the verbatim term; and
 `edges_skipped [{from, to, kind, reason: "self_loop" | "reverse_exists"}]` for edges withheld by
 the commit-time contradiction gate. Re-audit decisions carry an `audit` marker: alias-audit rows
 `audit: "alias"` + `previous_id` (the mapping the re-decision replaced); edge-audit rows
@@ -690,7 +694,18 @@ keeps that only re-derive the standing mapping log `note: "specialization_demote
 repair (`reroot: true` for the re-root shape, `minted_prefix: true` when the prefix was minted).
 A `merge` row with `note: "merge_cycle_skip"` records a refused merge: the survivor
 already resolved into the loser's tree, so writing the representative would have closed a cycle
-and the merge no-opped instead.
+and the merge no-opped instead. Disjunction rows (disjunctive-term-modeling): a `novel` row with
+`note: "disjunction_concept"` (+ `disjuncts`) is the deterministic capture disposal of an
+"x or y" term into an abstract concept (no model call; the alias re-audit's parity branch adds
+its `audit: "alias"` marker); a `reshape` row with `note: "disjunction_flip"` is the shape sweep
+flipping a wrongly-concrete disjunction node abstract (`search_term` = the member phrase;
+`reroot: true` when the inverted family was re-rooted at the base); a `merge` row with
+`note: "disjunction_child_fold"` is a `::detail` child folded into its disjunction base
+(`minted_base: true` when the base was minted for an orphan child); an `edge_restore` row with
+`note: "disjunction_membership"` is a member → concept membership edge inserted born-stamped by
+the disjunction reconcile; and a re-confirm row with `note: "concept_survivor"` (with
+`rejected {outcome, match}`) is the concept–concrete merge guard rejecting a `same` pick whose
+survivor is a concept node — nothing merged, the node stamped.
 
 Example identity rows (id / base / detail):
 

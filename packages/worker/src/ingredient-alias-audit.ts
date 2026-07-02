@@ -52,6 +52,7 @@ import {
   NORMALIZE_CONFIRM_MIN,
   NORMALIZE_TOP_K,
 } from "./ingredient-normalize.js";
+import { isDisjunctiveTerm, disjunctionResolution } from "./ingredient-disjunction.js";
 import { writeJobHealth, writeJobRun } from "./health.js";
 
 /** The background-job name the pass records its health + per-run history under. */
@@ -193,6 +194,37 @@ async function auditOne(
       merged = true;
     }
     return { kind: "repointed", mergedOrphan: merged };
+  }
+
+  // Disjunction disposal, capture parity (disjunctive-term-modeling): a variant of the form
+  // "X or Y" is a satisfaction constraint, never a concrete identity — dispose it to its
+  // disjunction concept deterministically (minted abstract when absent), no confirm call.
+  if (isDisjunctiveTerm(row.variant)) {
+    const resolution = brandAudit(disjunctionResolution(row.variant, vec), previous);
+    await deps.commit(resolution);
+    if (resolution.node) {
+      ctx.identityVecs.push({ id: resolution.id, embedding: resolution.node.embedding });
+      ctx.knownIds.add(resolution.id);
+      if (!ctx.rep.has(resolution.id)) ctx.rep.set(resolution.id, null);
+      if (!ctx.sourceOf.has(resolution.id)) ctx.sourceOf.set(resolution.id, "auto");
+    }
+    ctx.aliasTarget.set(row.variant, resolution.id);
+    const target = resolveVia(ctx.rep, resolution.id);
+    if (target === previous) return { kind: "kept", mergedOrphan: false };
+    let stillReferenced = false;
+    for (const id of ctx.aliasTarget.values()) {
+      if (resolveVia(ctx.rep, id) === previous) {
+        stillReferenced = true;
+        break;
+      }
+    }
+    let mergedOrphan = false;
+    if (!stillReferenced && ctx.sourceOf.get(previous) !== "human") {
+      await deps.merge(previous, target);
+      ctx.rep.set(previous, target);
+      mergedOrphan = true;
+    }
+    return { kind: "minted", mergedOrphan };
   }
 
   // Candidates: cosine top-K over the registry, plus the currently-mapped survivor when

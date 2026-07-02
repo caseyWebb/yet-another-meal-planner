@@ -201,8 +201,10 @@ interface AuditView {
  * self-loop rule reaches only un-stamped rows — a segment-overflow repair can turn a born-stamped
  * structural edge into a self-loop); (b) guarantee every surviving `base::detail` node an edge
  * of some kind to its exact base — a missing one is inserted born-stamped (`general`), minting
- * the base node when absent (embedding NULL → the capture backfill embeds it). Idempotent and
- * write-capped; a converged registry plans nothing.
+ * the base node when absent (embedding NULL → the capture backfill embeds it), EXCEPT when the
+ * base resolves to the same survivor as the node (an inverted family — the insert would be a
+ * rep-resolved self-loop and (a)/(b) would churn forever). Idempotent and write-capped; a
+ * converged registry plans nothing.
  */
 async function ensureStructuralEdges(deps: EdgeAuditDeps, summary: EdgeAuditSummary, view: AuditView): Promise<void> {
   let writes = 0;
@@ -232,6 +234,12 @@ async function ensureStructuralEdges(deps: EdgeAuditDeps, summary: EdgeAuditSumm
     if (seg.length !== 2 || !seg[1]) continue;
     const base = seg[0];
     if (pairs.has(`${r.id} ${base}`)) continue; // any-kind edge to the base already stands
+    // Oscillation guard (disjunctive-term-modeling): never guarantee an edge that is CURRENTLY a
+    // representative-resolved self-loop. When the base resolves to the same survivor as the node
+    // (the base was merged into its own child — the inverted-family shape), inserting here would
+    // only feed the (a) sweep: delete + re-insert, churning every tick. The guard makes any
+    // inversion quiescent; converging the SHAPE belongs to a shape-owning pass, not the guarantee.
+    if (view.resolve(base) === view.resolve(r.id)) continue;
     try {
       await deps.insertEdge(r.id, base, "general", view.ids.has(base) ? undefined : { mintBase: { id: base } });
       const row: EdgeRow = { from_id: r.id, to_id: base, kind: "general", source: "auto", audited_at: view.now };

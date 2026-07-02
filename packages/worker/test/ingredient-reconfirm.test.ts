@@ -20,6 +20,8 @@ function harness(opts: {
   nodes: ReconfirmNode[];
   identities?: { id: string; embedding: number[] }[];
   confirm?: (term: string, candidates: ScoredCandidate[]) => Promise<IdentityConfirm>;
+  /** Concept-node ids (`concrete=0`) — the same-merge guard's input. */
+  concepts?: string[];
 }): Harness {
   const committed: CommittedEdges[] = [];
   const merges: { loser: string; survivor: string }[] = [];
@@ -28,6 +30,7 @@ function harness(opts: {
   h.deps = {
     loadBatch: async (limit) => opts.nodes.slice(0, limit),
     identityEmbeddings: async () => (opts.identities ?? []).map((i) => ({ ...i })),
+    conceptIds: async () => new Set(opts.concepts ?? []),
     confirm: async (term, candidates) => {
       h.confirmCalls++;
       if (!opts.confirm) throw new Error("confirm not expected");
@@ -300,5 +303,36 @@ describe("readReconfirmBatch eligibility", () => {
     });
     const batch = await readReconfirmBatch(f.env, 2);
     expect(batch.map((n) => n.id)).toEqual(["a", "b"]);
+  });
+});
+
+describe("reconfirmIdentities — concept–concrete merge guard (disjunctive-term-modeling)", () => {
+  it("rejects a `same` pick whose survivor is a concept node to a logged no-op", async () => {
+    const h = harness({
+      nodes: [node({ id: "sweet chili sauce" })],
+      identities: [{ id: "hot sauces (various)", embedding: [1, 0, 0] }],
+      concepts: ["hot sauces (various)"],
+      confirm: async () => confirm({ outcome: "same", match: "hot sauces (various)" }),
+    });
+    const s = await reconfirmIdentities(h.deps);
+    expect(h.merges).toEqual([]); // never a concrete node merged INTO a concept
+    expect(h.stamped).toEqual(["sweet chili sauce"]);
+    expect(h.committed[0].log.detail).toMatchObject({
+      note: "concept_survivor",
+      rejected: { outcome: "same", match: "hot sauces (various)" },
+    });
+    expect(s).toMatchObject({ reconfirmed: 1, merged: 0, still_novel: 1 });
+  });
+
+  it("a `same` pick on a concrete survivor still merges (guard is concept-only)", async () => {
+    const h = harness({
+      nodes: [node({ id: "scallions" })],
+      identities: [{ id: "green onion", embedding: [1, 0, 0] }],
+      concepts: [],
+      confirm: async () => confirm({ outcome: "same", match: "green onion" }),
+    });
+    const s = await reconfirmIdentities(h.deps);
+    expect(h.merges).toEqual([{ loser: "scallions", survivor: "green onion" }]);
+    expect(s).toMatchObject({ merged: 1 });
   });
 });

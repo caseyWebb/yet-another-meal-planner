@@ -1,7 +1,16 @@
 import { describe, it, expect } from "vitest";
 import { reconcileNormalization, validateCanonicalId, type NormalizeDeps } from "../src/ingredient-normalize.js";
 import { validateConfirm, type IdentityConfirm, type ScoredCandidate } from "../src/ingredient-classify.js";
-import type { Resolution, CoResolutionPair, CoResolutionRejection, IdentitySourceRow, AliasAuditRow } from "../src/corpus-db.js";
+import type {
+  Resolution,
+  CoResolutionPair,
+  CoResolutionRejection,
+  IdentitySourceRow,
+  AliasAuditRow,
+  EdgeRow,
+  NormalizationLog,
+  DisjunctionRepairPlan,
+} from "../src/corpus-db.js";
 import { ToolError } from "../src/errors.js";
 
 type RepairPlan = {
@@ -25,6 +34,14 @@ type Harness = {
   repairs: RepairPlan[];
   /** Co-resolution rejections remembered this run. */
   remembered: { a: string; b: string; now: number }[];
+  /** Born-stamped membership edges inserted by the disjunction reconcile. */
+  insertedEdges: { from: string; to: string; kind: string }[];
+  /** Disjunct terms enqueued for capture by the disjunction reconcile. */
+  enqueued: string[];
+  /** Standalone log rows appended (the membership-edge audit trail). */
+  logged: NormalizationLog[];
+  /** Disjunction family repair plans applied by the shape sweep. */
+  disjunctionRepairs: DisjunctionRepairPlan[];
 };
 
 function harness(opts: {
@@ -45,6 +62,8 @@ function harness(opts: {
   /** Remembered co-resolution rejections. */
   rejections?: CoResolutionRejection[];
   rejectBackoffMs?: number;
+  /** The full edge table for the disjunction reconcile's pair check. */
+  allEdges?: EdgeRow[];
 }): Harness {
   const committed: Resolution[] = [];
   const deferred: string[] = [];
@@ -53,7 +72,24 @@ function harness(opts: {
   const embedCalls: string[][] = [];
   const repairs: RepairPlan[] = [];
   const remembered: { a: string; b: string; now: number }[] = [];
-  const h = { committed, deferred, merges, stored, embedCalls, confirmCalls: 0, repairs, remembered } as Harness;
+  const insertedEdges: { from: string; to: string; kind: string }[] = [];
+  const enqueued: string[] = [];
+  const logged: NormalizationLog[] = [];
+  const disjunctionRepairs: DisjunctionRepairPlan[] = [];
+  const h = {
+    committed,
+    deferred,
+    merges,
+    stored,
+    embedCalls,
+    confirmCalls: 0,
+    repairs,
+    remembered,
+    insertedEdges,
+    enqueued,
+    logged,
+    disjunctionRepairs,
+  } as Harness;
   const embed = opts.embed ?? (async (texts: string[]) => texts.map(() => [1, 0, 0]));
   h.deps = {
     loadBatch: async () => opts.terms,
@@ -100,6 +136,20 @@ function harness(opts: {
     rememberRejection: async (a, b, now) => {
       remembered.push({ a, b, now });
     },
+    allEdges: async () => (opts.allEdges ?? []).map((e) => ({ ...e })),
+    insertEdge: async (from, to, kind) => {
+      insertedEdges.push({ from, to, kind });
+    },
+    enqueue: async (terms) => {
+      enqueued.push(...terms);
+    },
+    log: async (entry) => {
+      logged.push(entry);
+    },
+    applyRepair: async (plan) => {
+      disjunctionRepairs.push(plan);
+    },
+    disjunctionMaxPerTick: 10,
     now: () => 1000,
     maxPerTick: 25,
     floor: 0.5,
@@ -781,5 +831,73 @@ describe("validateConfirm", () => {
     const v2 = validateConfirm({ outcome: "novel", match: null, detail: null, canonical: 42 }, cands);
     expect(v2.ok).toBe(true);
     if (v2.ok) expect(v2.confirm.canonical).toBeNull();
+  });
+});
+
+describe("reconcileNormalization — disjunction gate (disjunctive-term-modeling)", () => {
+  it("disposes a disjunctive term as an abstract concept with NO confirm call", async () => {
+    const h = harness({
+      terms: ["chicken or vegetable broth"],
+      identities: [{ id: "chicken broth", embedding: [1, 0, 0] }], // score 1 would otherwise force a confirm
+    });
+    const s = await reconcileNormalization(h.deps);
+    expect(h.confirmCalls).toBe(0);
+    expect(h.committed).toHaveLength(1);
+    const r = h.committed[0];
+    expect(r.id).toBe("chicken or vegetable broth");
+    expect(r.node?.concrete).toBe(false);
+    expect(r.node?.search_term).toBe("chicken broth"); // head-distributed first disjunct
+    expect(r.edges).toEqual([]);
+    expect(r.log.detail).toMatchObject({ note: "disjunction_concept", disjuncts: ["chicken broth", "vegetable broth"] });
+    expect(s).toMatchObject({ novel: 1, disjunctionCaptured: 1 });
+  });
+
+  it("the lexical fast path wins BEFORE the gate (a punctuation variant re-uses the concept)", async () => {
+    const h = harness({
+      terms: ["white or yellow onion."],
+      identities: [{ id: "white or yellow onion", embedding: [1, 0, 0] }],
+      identitySources: [{ id: "white or yellow onion", representative: null, source: "auto", concrete: 0 }],
+    });
+    const s = await reconcileNormalization(h.deps);
+    expect(h.confirmCalls).toBe(0);
+    expect(h.committed[0].id).toBe("white or yellow onion");
+    expect(h.committed[0].node).toBeUndefined(); // resolved SAME, no second concept minted
+    expect(s).toMatchObject({ lexical: 1, disjunctionCaptured: 0 });
+  });
+
+  it("rejects a classifier-proposed disjunctive canonical to the verbatim mint", async () => {
+    const h = harness({
+      terms: ["mystery broth"],
+      identities: [{ id: "stock", embedding: [1, 0, 0] }],
+      confirm: async () =>
+        ({ outcome: "novel", match: null, detail: null, canonical: "chicken or vegetable broth", concrete: true, edges: [], reason: "" }),
+    });
+    await reconcileNormalization(h.deps);
+    const r = h.committed[0];
+    expect(r.id).toBe("mystery broth"); // verbatim fallback, never a concrete disjunctive id
+    expect(r.log.detail).toMatchObject({ canonical_rejected: "chicken or vegetable broth", canonical_reason: "disjunctive" });
+  });
+
+  it("skips a mixed-concreteness co-resolution pair with no confirm call (concept–concrete guard)", async () => {
+    const h = harness({
+      terms: [],
+      coPairs: [coPair({ a: "jalapenos", b: "serrano or jalapeño peppers", aConcrete: true, bConcrete: false })],
+    });
+    const s = await reconcileNormalization(h.deps);
+    expect(h.confirmCalls).toBe(0);
+    expect(h.merges).toEqual([]);
+    expect(s).toMatchObject({ mergeSkipped: 1, merged: 0 });
+  });
+
+  it("wires the disjunction shape sweep into the tick (flip-only family)", async () => {
+    const h = harness({
+      terms: [],
+      identitySources: [{ id: "white or yellow onion", representative: null, source: "auto", concrete: 1 }],
+    });
+    const s = await reconcileNormalization(h.deps);
+    expect(h.disjunctionRepairs).toEqual([
+      { base: "white or yellow onion", searchTerm: "white onion", mintBase: false, reroot: false, flip: true, children: [] },
+    ]);
+    expect(s).toMatchObject({ disjunctionFlipped: 1, disjunctionFolded: 0 });
   });
 });
