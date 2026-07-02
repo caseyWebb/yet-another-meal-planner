@@ -81,6 +81,10 @@ The container mounts `./config` at `/config` (holding `scraper.toml`, `sessions/
 The image is built on the Playwright base, so Chromium (browser tier + `login`) is preinstalled.
 `login` needs a display — on a headless server use **cookie-import** or attach a noVNC/X sidecar.
 
+Each `scraper-v*` release publishes a prebuilt **multi-arch** image (`linux/amd64` + `linux/arm64`)
+to GHCR at `ghcr.io/<owner>/groceries-scraper`, so an Apple-Silicon home host runs it natively
+without emulation — reference that tag in place of the compose `build:` block to skip building.
+
 ## CLI verbs
 
 | Verb | What it does |

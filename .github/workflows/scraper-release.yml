@@ -26,6 +26,15 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
+      - name: Set up QEMU
+        # Registers the arm64 emulation handlers so the amd64 runner can cross-build the
+        # linux/arm64 variant. version-tagged to match the docker/* actions below.
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        # A Buildx builder that can emit a multi-arch manifest list in one push.
+        uses: docker/setup-buildx-action@v3
+
       - name: Derive version + targeted contract version
         id: v
         # The scraper's build version comes from the tag (scraper-v1.2.3 → 1.2.3); the recipe
@@ -57,6 +66,11 @@ jobs:
         with:
           context: .
           file: packages/scraper/Dockerfile
+          # Multi-arch: the image runs natively on x86 home servers (amd64) AND Apple-Silicon
+          # home hosts (arm64) — so the browser tier's Chromium is native, not emulated. The
+          # Playwright base is multi-arch and the Node toolchain is arch-agnostic, so this just
+          # cross-builds the arm64 variant under QEMU and pushes a manifest list under each tag.
+          platforms: linux/amd64,linux/arm64
           push: true
           tags: |
             ${{ steps.v.outputs.image }}:${{ steps.v.outputs.version }}
