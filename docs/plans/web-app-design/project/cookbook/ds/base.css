@@ -1,0 +1,41 @@
+/* Basecoat — Base reset & document defaults.
+   Mirrors Basecoat's @layer base: neutral box model, the page surface painted
+   in --background / --foreground, default border color, and antialiasing. */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  border-color: var(--border);
+}
+
+html {
+  scroll-behavior: smooth;
+  -webkit-text-size-adjust: 100%;
+  tab-size: 4;
+}
+
+body {
+  margin: 0;
+  background-color: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm--line-height);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overscroll-behavior: none;
+}
+
+/* Headings/paragraphs inherit by default — Basecoat is utility-driven, so it
+   does NOT impose heading sizes globally. Keep them unstyled so component and
+   page CSS stays in control. */
+h1, h2, h3, h4, h5, h6, p, figure { margin: 0; }
+
+a { color: inherit; text-decoration: inherit; }
+
+:focus-visible { outline: none; }
+
+code, kbd, samp, pre { font-family: var(--font-mono); }
+
+::selection { background: var(--primary); color: var(--primary-foreground); }
