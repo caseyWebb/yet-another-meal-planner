@@ -4,8 +4,11 @@ import {
   filterByMinSavings,
   mergeFlyerItems,
   normalizeTerms,
-  readFlyerRollup,
+  readStoreFlyer,
+  writeStoreRollup,
   rollupKey,
+  legacyRollupKey,
+  KROGER_STORE,
   runWarmJob,
   runWarmTick,
   type FlyerRollup,
@@ -165,17 +168,20 @@ describe("runWarmTick sweep", () => {
     expect(scanCalls).toHaveLength(4); // all units scanned exactly once
   });
 
-  it("writes a per-location rollup readable via readFlyerRollup", async () => {
+  it("writes a store-namespaced rollup readable via readStoreFlyer", async () => {
     const { deps, kv } = harness();
     await runWarmTick(deps, { batchUnits: 99 }); // build
     await runWarmTick(deps, { batchUnits: 99 }); // scan all + complete
 
-    const a = await readFlyerRollup(kv, "locA");
+    // The Kroger warm writes the `kroger` namespace: flyer:kroger:{locationId}.
+    expect(kv.store.has(rollupKey(KROGER_STORE, "locA"))).toBe(true);
+    const a = await readStoreFlyer(kv, KROGER_STORE, "locA");
     expect(a).not.toBeNull();
     expect(a!.items.map((i) => i.sku).sort()).toEqual(["locA:eggs", "locA:milk"]);
-    expect(typeof a!.as_of).toBe("string");
+    expect(a!.store).toBe("kroger");
+    expect(a!.location_id).toBe("locA");
     // different store gets an independent rollup
-    const b = await readFlyerRollup(kv, "locB");
+    const b = await readStoreFlyer(kv, KROGER_STORE, "locB");
     expect(b!.items.map((i) => i.sku).sort()).toEqual(["locB:eggs", "locB:milk"]);
   });
 
@@ -218,17 +224,46 @@ describe("runWarmTick sweep", () => {
 });
 
 describe("read-path helpers", () => {
-  it("readFlyerRollup returns null for a cold cache", async () => {
+  it("readStoreFlyer returns null for a cold cache", async () => {
     const kv = fakeKv();
-    expect(await readFlyerRollup(kv, "locX")).toBeNull();
+    expect(await readStoreFlyer(kv, KROGER_STORE, "locX")).toBeNull();
   });
 
-  it("readFlyerRollup surfaces as_of as an ISO string", async () => {
+  it("readStoreFlyer reads the store-namespaced key with a raw epoch-ms as_of", async () => {
     const kv = fakeKv();
-    const rollup: FlyerRollup = { sweep_id: "s1", as_of: 1_700_000_000_000, items: [] };
-    await kv.put(rollupKey("locA"), JSON.stringify(rollup));
-    const read = await readFlyerRollup(kv, "locA");
-    expect(read!.as_of).toBe(new Date(1_700_000_000_000).toISOString());
+    const rollup: FlyerRollup = { sweep_id: "s1", as_of: 1_700_000_000_000, items: [], store: "kroger", location_id: "locA" };
+    await kv.put(rollupKey(KROGER_STORE, "locA"), JSON.stringify(rollup));
+    const read = await readStoreFlyer(kv, KROGER_STORE, "locA");
+    expect(read!.as_of).toBe(1_700_000_000_000);
+  });
+
+  it("readStoreFlyer falls back to the legacy flyer:{locationId} key for kroger (no cold gap)", async () => {
+    const kv = fakeKv();
+    // A pre-namespacing rollup (no store markers) at the legacy key.
+    const legacy: FlyerRollup = { sweep_id: "s0", as_of: 1_699_000_000_000, items: [] };
+    await kv.put(legacyRollupKey("locLegacy"), JSON.stringify(legacy));
+    // No namespaced key yet → the read serves the legacy value.
+    const read = await readStoreFlyer(kv, KROGER_STORE, "locLegacy");
+    expect(read!.as_of).toBe(1_699_000_000_000);
+    // Once the namespaced key exists it wins (the fallback stops mattering).
+    await writeStoreRollup(kv, KROGER_STORE, "locLegacy", [], 1_700_500_000_000);
+    expect((await readStoreFlyer(kv, KROGER_STORE, "locLegacy"))!.as_of).toBe(1_700_500_000_000);
+  });
+
+  it("readStoreFlyer does NOT fall back to the legacy key for a non-Kroger store", async () => {
+    const kv = fakeKv();
+    await kv.put(legacyRollupKey("T-1"), JSON.stringify({ sweep_id: "x", as_of: 1, items: [] }));
+    // A satellite store never had a legacy un-namespaced key — the fallback is Kroger-only.
+    expect(await readStoreFlyer(kv, "target", "T-1")).toBeNull();
+  });
+
+  it("writeStoreRollup replaces a store's rollup at a fresh as_of", async () => {
+    const kv = fakeKv();
+    await writeStoreRollup(kv, "target", "T-9", [flyerItem("a", 10, 8, [])], 1_800_000_000_000);
+    const read = await readStoreFlyer(kv, "target", "T-9");
+    expect(read!.items.map((i) => i.sku)).toEqual(["a"]);
+    expect(read!.store).toBe("target");
+    expect(read!.as_of).toBe(1_800_000_000_000);
   });
 
   it("filterByMinSavings applies the deal floor at read", () => {
