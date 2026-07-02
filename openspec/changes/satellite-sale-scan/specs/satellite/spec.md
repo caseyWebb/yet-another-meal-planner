@@ -7,12 +7,17 @@
 
 ### Requirement: The satellite declares its capabilities; recipe-scrape and sale-scan are defined
 
-A satellite SHALL declare one or more **capabilities** it runs, and every push or claim SHALL carry the `capability` it reports/claims under. Two capabilities are defined: `recipe-scrape` (extract functional recipe facts from an authenticated source, delivered by the satellite **pushing** observations) and `sale-scan` (observe in-store/loyalty sale prices at a store the Worker has no API for, delivered by the satellite **claiming** operator-scope work over the pull channel and reporting `sale` observations). The capability set SHALL remain a closed, extensible enumeration so a later capability can be added without redefining the envelope. The Worker SHALL reject a batch whose declared `capability` it does not implement, and the pull channel SHALL hand a satellite only task kinds matching its declared capabilities.
+A satellite SHALL declare one or more **capabilities** it runs, and every push or claim SHALL carry the `capability` it reports/claims under. Two capabilities are defined: `recipe-scrape` (extract functional recipe facts from an authenticated source, delivered by the satellite **pushing** observations) and `sale-scan` (observe in-store/loyalty sale prices at a store the Worker has no API for, delivered by the satellite **claiming** operator-scope work over the pull channel and reporting `sale` observations). The capability set SHALL remain a closed, extensible enumeration so a later capability can be added without redefining the envelope. The Worker SHALL reject a batch whose declared `capability` it does not implement, and the pull channel SHALL hand a satellite only task kinds matching its declared capabilities. Delivery is **per-capability**: recipe-scrape is the self-directed **push**, and sale-scan is Worker-directed **pull** — so a `sale` observation SHALL be accepted only over the pull channel as a claimed `sale-scan` task's result, and a `sale` item arriving on the `/admin/api/ingest` push path SHALL be rejected (its being a valid member of the observation union governs only its wire shape, not that the push endpoint lands it).
 
 #### Scenario: A recipe-scrape batch declares its capability
 
 - **WHEN** a satellite pushes recipes it extracted
 - **THEN** the batch declares `capability: "recipe-scrape"` and the Worker processes it
+
+#### Scenario: A sale pushed on the recipe-scrape push path is rejected
+
+- **WHEN** a `sale` observation is pushed to `/admin/api/ingest` (with any declared capability) rather than reported for a claimed `sale-scan` task
+- **THEN** the Worker rejects the `sale` item and writes no rollup, because sale-scan is pull-channel-only (recipe items in the same batch are unaffected)
 
 #### Scenario: A sale-scan satellite claims and reports under its capability
 

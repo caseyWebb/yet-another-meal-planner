@@ -1000,10 +1000,12 @@ The **claim/result wire shapes** (defined once in `@grocery-agent/contract`, `sa
 POST /satellite/tasks/claim   { capabilities: string[], max?: number }
    → { tasks: TaskEnvelope[] }          TaskEnvelope = { id, kind, scope: "operator"|"tenant", payload }  (payload opaque)
 POST /satellite/results       { task_id, status: "done"|"failed", reason?, observations?: ObservationItem[] }
-   → { task: { id, status }, results? }  results = per-observation { disposition: "accepted"|"deduped"|"rejected", … }
+   → { task: { id, status }, results?, notice? }  results = per-observation { disposition: "accepted"|"deduped"|"rejected", … };
+                                                   notice = operator-visible marker set when a sale-scan `done` reported
+                                                            items but ZERO survived validation (the rollup converged empty)
 ```
 
-A results report is correlated by `task_id`; an unknown (or out-of-the-key's-scope, masked to avoid leaking existence) `task_id` yields a structured `not_found`. On `status: "done"` the `observations[]` (the change-1 discriminated union — `recipe` and `sale`) enter the **same raw-observation intake** as `/admin/api/ingest` (shared `intakeObservations`, dispatched by observation `kind` — same validation + arrival dedup per arm), then the task transitions terminal (idempotent — a late/repeat report is a safe no-op). On `status: "failed"` the Worker counts the attempt and returns the task to claimable, or parks it terminal `failed` at the cap. `TaskEnvelope`'s `kind` is a **closed, extensible** set, so a consumer of the current set keeps validating claim batches unchanged when a later capability adds a kind.
+A results report is correlated by `task_id`; an unknown (or out-of-the-key's-scope, masked to avoid leaking existence) `task_id` yields a structured `not_found`. On `status: "done"` the `observations[]` (the change-1 discriminated union — `recipe` and `sale`) enter the **same raw-observation intake** as `/admin/api/ingest` (shared `intakeObservations`, dispatched by observation `kind` — same validation + arrival dedup per arm), then the task transitions terminal (idempotent — a late/repeat report is a safe no-op). For a `sale-scan` task the results handler threads the **claimed task's** `(store, locationId)` into the sale arm as the authoritative rollup key (a `sale` is pull-channel-only — the push path lands only `recipe`), and a `done` converges that store's rollup even when empty/all-rejected. On `status: "failed"` the Worker counts the attempt and returns the task to claimable, or parks it terminal `failed` at the cap. `TaskEnvelope`'s `kind` is a **closed, extensible** set, so a consumer of the current set keeps validating claim batches unchanged when a later capability adds a kind.
 
 The **`sale-scan` task payload** (`@grocery-agent/contract`, `satellite-pull.ts`) and the **`sale` observation** (`ingest.ts`) — the concrete shapes riding the opaque `payload` / the observation union for satellite-sale-scan:
 
@@ -1017,6 +1019,11 @@ sale observation         { kind: "sale", store, locationId, productId, descripti
    -- promo>0 && promo<regular), savings (regular-promo), and the min_savings_pct deal floor (at READ, never stored),
    -- so a `sale` and a first-party Kroger scan of the same product derive an IDENTICAL FlyerItem. productId → FlyerItem.sku
    -- (the merge/dedup identity within a store); url is retained on the item for spot-checkability.
+   -- store/locationId are PROVENANCE ONLY: the rollup WRITE key `flyer:{store}:{locationId}` is authoritative
+   -- from the CLAIMED sale-scan task's payload, never the observation. Sale intake is pull-channel-only (a `sale`
+   -- pushed to /admin/api/ingest is rejected), an observation disagreeing with its task's store is rejected, and
+   -- the arm never writes the Worker-owned `kroger` namespace (guarded after lowercasing). A `done` converges the
+   -- task's store even when empty/all-rejected (clears stale sales); a `failed` does not.
 ```
 
 ## discovery_sources (shared corpus, D1 `discovery_senders` + `discovery_members`)
