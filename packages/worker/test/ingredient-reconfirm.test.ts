@@ -44,6 +44,7 @@ function harness(opts: {
     },
     now: () => 1000,
     maxPerTick: 10,
+    confirmMin: 0.72,
     topK: 10,
   };
   return h;
@@ -143,11 +144,56 @@ describe("reconfirmIdentities", () => {
         { id: "andouille", embedding: [1, 0, 0] },
         { id: "sausage", embedding: [1, 0, 0] },
       ],
-      // match is not in the neighbor set → validateConfirm would reject it live, but guard anyway.
+      // match is not in the neighbor set → validateConfirm would reject it live; the distance
+      // guard formally handles it now (an unfindable pick has no cosine → rejected no-op).
       confirm: async () => confirm({ outcome: "specialization", match: "charcuterie", detail: "cajun" }),
     });
     await reconfirmIdentities(h.deps);
-    expect(h.committed[0].edges).toEqual([]); // no invented edge to an unknown base
+    expect(h.committed[0].edges ?? []).toEqual([]); // no invented edge to an unknown base
+    expect(h.committed[0].log).toMatchObject({
+      detail: { note: "confirm_below_min", rejected: { match: "charcuterie", score: null } },
+    });
+  });
+
+  it("rejects a below-guard `same` pick to a logged no-op — no merge (capture guard parity)", async () => {
+    const h = harness({
+      nodes: [node({ id: "flaky sea salt" })],
+      identities: [
+        { id: "flaky sea salt", embedding: [1, 0, 0] },
+        { id: "fish sauce", embedding: [0, 1, 0] }, // cosine 0 — below the 0.72 guard
+      ],
+      confirm: async () => confirm({ outcome: "same", match: "fish sauce" }),
+    });
+    const s = await reconfirmIdentities(h.deps);
+    expect(h.merges).toHaveLength(0); // the distant pick must NOT drive the merge
+    expect(h.committed[0].edges ?? []).toEqual([]);
+    expect(h.committed[0].log).toMatchObject({
+      outcome: "novel",
+      isReconfirm: true,
+      detail: {
+        note: "confirm_below_min",
+        rejected: { outcome: "same", match: "fish sauce", score: 0 },
+      },
+    });
+    expect(h.stamped).toEqual(["flaky sea salt"]);
+    expect(s).toMatchObject({ reconfirmed: 1, merged: 0, still_novel: 1 });
+  });
+
+  it("rejects a below-guard `specialization` pick — no edge invented", async () => {
+    const h = harness({
+      nodes: [node({ id: "half loaf sourdough bread" })],
+      identities: [
+        { id: "half loaf sourdough bread", embedding: [1, 0, 0] },
+        { id: "bread flour", embedding: [0, 1, 0] },
+      ],
+      confirm: async () => confirm({ outcome: "specialization", match: "bread flour", detail: "type-sourdough" }),
+    });
+    await reconfirmIdentities(h.deps);
+    expect(h.committed[0].edges ?? []).toEqual([]); // no general edge onto the distant base
+    expect(h.committed[0].log).toMatchObject({
+      detail: { note: "confirm_below_min", rejected: { outcome: "specialization", match: "bread flour" } },
+    });
+    expect(h.stamped).toEqual(["half loaf sourdough bread"]);
   });
 
   it("skips a node on a transient error, leaving it un-stamped (retried next tick), nothing written", async () => {

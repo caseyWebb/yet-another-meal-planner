@@ -291,7 +291,11 @@ export async function readNormalizationPage(env: Env, opts: { decisionLimit?: nu
   }
 
   let failed = 0;
-  const decisions: NormalizationDecision[] = logRows.map((r) => {
+  // The Decisions stream is term→identity-shaped (base/detail/candidates); the edge re-audit's
+  // `edge_drop`/`edge_keep` log rows are edge-shaped and would mis-render as novel decisions, so
+  // they stay out of this view (still queryable in ingredient_normalization_log). Filtered in JS
+  // after the bounded read (a page holding edge-audit rows renders slightly short — acceptable).
+  const decisions: NormalizationDecision[] = logRows.filter((r) => !r.outcome.startsWith("edge_")).map((r) => {
     let detailObj: Record<string, unknown> = {};
     if (r.detail) {
       try {

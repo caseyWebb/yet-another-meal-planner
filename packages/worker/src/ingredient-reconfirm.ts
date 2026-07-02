@@ -32,7 +32,7 @@ import {
   type NormalizationLog,
 } from "./corpus-db.js";
 import { confirmIdentity, NORMALIZE_MODEL, type IdentityConfirm, type ScoredCandidate } from "./ingredient-classify.js";
-import { NORMALIZE_TOP_K } from "./ingredient-normalize.js";
+import { NORMALIZE_CONFIRM_MIN, NORMALIZE_TOP_K } from "./ingredient-normalize.js";
 import { writeJobHealth, writeJobRun } from "./health.js";
 
 /** Under-connected nodes re-examined per scheduled tick (bounded; the rest wait for a later tick). */
@@ -50,6 +50,8 @@ export interface ReconfirmDeps {
   stamp(id: string, now: number): Promise<void>;
   now(): number;
   maxPerTick: number;
+  /** Confirm-distance guard on the pass's same/specialization picks (capture parity). */
+  confirmMin: number;
   topK: number;
 }
 
@@ -131,6 +133,21 @@ async function reconfirmOne(
     throw e;
   }
 
+  // Distance guard, capture parity: a same/specialization pick whose CHOSEN candidate's own
+  // cosine is below the confirm minimum is rejected to a logged no-op — no merge, no edges (a
+  // merge is the pass's one destructive-ish write, so a distant pick must not drive it).
+  if ((confirm.outcome === "same" || confirm.outcome === "specialization") && confirm.match) {
+    const chosen = ranked.find((r) => r.id === confirm.match);
+    if (!chosen || chosen.score < deps.confirmMin) {
+      await deps.commitEdges({
+        log: reconfirmLog(node, "novel", ranked, NORMALIZE_MODEL, "confirm_below_min", undefined, {
+          rejected: { outcome: confirm.outcome, match: confirm.match, score: chosen ? chosen.score : null },
+        }),
+      });
+      return { outcome: "novel", edges_added: 0 };
+    }
+  }
+
   if (confirm.outcome === "same" && confirm.match) {
     // Clear synonym → merge THIS node into the survivor (the node is always the loser, so a human
     // survivor is fine and a human node is never a loser). The merge writes its own re-confirm log.
@@ -161,8 +178,9 @@ function reconfirmLog(
   model: string | null = null,
   note?: string,
   reason?: string,
+  extra?: Record<string, unknown>,
 ): NormalizationLog {
-  const detail: Record<string, unknown> = {};
+  const detail: Record<string, unknown> = { ...(extra ?? {}) };
   if (note) detail.note = note;
   if (reason) detail.reason = reason;
   return {
@@ -215,6 +233,7 @@ export function buildReconfirmDeps(env: Env): ReconfirmDeps {
     stamp: (id, now) => stampReconfirmed(env, id, now),
     now: () => Date.now(),
     maxPerTick: RECONFIRM_MAX_PER_TICK,
+    confirmMin: NORMALIZE_CONFIRM_MIN,
     topK: NORMALIZE_TOP_K,
   };
 }

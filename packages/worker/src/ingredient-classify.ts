@@ -246,3 +246,113 @@ export async function confirmIdentity(
     errors: lastErrors,
   });
 }
+
+// --- satisfies-direction check (normalization-decision-reaudit) --------------
+// The edge re-audit's cheap validator: given a standing (or 2-cycle) satisfies edge FROM → TO,
+// which direction does satisfaction actually hold in? Same env.AI + contract discipline as the
+// identity confirm above (strict JSON, corrective retry, storage_error/validation_failed split),
+// and the same hardened distinct-product rules — a superficially-similar product is NOT a
+// substitute, which is exactly the class of pre-hardening edge this pass exists to drop.
+
+/** The direction verdict for a FROM/TO pair: which way "having X satisfies a request for Y" holds. */
+export type SatisfiesDirection = "forward" | "reverse" | "both" | "neither";
+
+export interface DirectionCheck {
+  direction: SatisfiesDirection;
+  reason: string;
+}
+
+const DIRECTION_VALUES = new Set<SatisfiesDirection>(["forward", "reverse", "both", "neither"]);
+
+const DIRECTION_SYSTEM_PROMPT = [
+  "You audit directed substitution edges in a grocery ingredient identity graph. An edge FROM → TO means: having FROM on hand satisfies a recipe or shopping request for TO. Given ingredients FROM and TO, decide in which direction satisfaction truly holds.",
+  "",
+  'Return STRICT JSON only, no prose: {"direction":"forward"|"reverse"|"both"|"neither","reason":"<short>"}',
+  "",
+  "Rules:",
+  "- forward: having FROM satisfies a request for TO (and not the other way around).",
+  "- reverse: having TO satisfies a request for FROM (and not the other way around).",
+  "- both: truly interchangeable at the store — either satisfies the other.",
+  "- neither: neither satisfies the other.",
+  "- A more complete form satisfies its derived form, never the reverse: whole spices satisfy a ground-spice request (they can be ground), a whole chicken satisfies chicken thighs; ground cannot become whole, a thigh is not a whole bird.",
+  "- A specific variety satisfies its general product (kielbasa satisfies sausage), but the general product does NOT satisfy a request for the specific variety.",
+  "- DISTINCT PRODUCTS never satisfy each other, however similar they look: different flours (semolina is not all-purpose), a different packing medium (tuna in oil is not tuna in water), a raw ingredient vs a prepared product (a hot pepper is not a hot sauce; garlic powder is not italian seasoning), a different preservation state (frozen fruit is not dried fruit), a different shape a shopper would not accept (spaghetti is not rigatoni). When substituting would change which product the shopper buys, answer neither.",
+  "- Be CONSERVATIVE: when satisfaction is not clearly true in a direction, do not claim it.",
+].join("\n");
+
+const DIRECTION_FEW_SHOT: { user: string; out: DirectionCheck }[] = [
+  {
+    user: 'FROM: "whole cardamom pods"\nTO: "ground cardamom"',
+    out: { direction: "forward", reason: "whole pods can be ground; ground cannot become whole pods" },
+  },
+  {
+    user: 'FROM: "ground nutmeg"\nTO: "whole nutmeg"',
+    out: { direction: "reverse", reason: "whole nutmeg grinds down; ground cannot substitute for whole" },
+  },
+  {
+    user: 'FROM: "semolina flour"\nTO: "all-purpose flour"',
+    out: { direction: "neither", reason: "distinct flours; substituting changes the product" },
+  },
+  {
+    user: 'FROM: "kielbasa"\nTO: "sausage"',
+    out: { direction: "forward", reason: "a specific variety satisfies the general product, not the reverse" },
+  },
+];
+
+/** Validate + coerce a raw model object into a DirectionCheck, or return the reasons it failed. */
+export function validateDirection(
+  raw: Record<string, unknown>,
+): { ok: true; check: DirectionCheck } | { ok: false; errors: string[] } {
+  const direction = raw.direction;
+  if (typeof direction !== "string" || !DIRECTION_VALUES.has(direction as SatisfiesDirection)) {
+    return { ok: false, errors: ['direction must be "forward", "reverse", "both", or "neither"'] };
+  }
+  return {
+    ok: true,
+    check: {
+      direction: direction as SatisfiesDirection,
+      reason: typeof raw.reason === "string" ? raw.reason : "",
+    },
+  };
+}
+
+/**
+ * Check which way satisfaction holds between an edge's endpoints (their readable forms). Throws
+ * `validation_failed` when the model can't produce a valid verdict within the retry budget (the
+ * edge audit catches it and keeps the edge — never a delete on an undecidable) and lets a
+ * `storage_error` (AI outage) propagate so the edge stays un-stamped for a later tick.
+ */
+export async function confirmSatisfiesDirection(
+  env: Env,
+  from: string,
+  to: string,
+  maxRetries: number = NORMALIZE_MAX_RETRIES,
+): Promise<DirectionCheck> {
+  const msgs: Msg[] = [{ role: "system", content: DIRECTION_SYSTEM_PROMPT }];
+  for (const ex of DIRECTION_FEW_SHOT) {
+    msgs.push({ role: "user", content: ex.user });
+    msgs.push({ role: "assistant", content: JSON.stringify(ex.out) });
+  }
+  msgs.push({ role: "user", content: `FROM: ${JSON.stringify(from)}\nTO: ${JSON.stringify(to)}` });
+  let lastErrors: string[] = ["model did not return a JSON object"];
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    const raw = await runModel(env, msgs);
+    if (raw) {
+      const v = validateDirection(raw);
+      if (v.ok) return v.check;
+      lastErrors = v.errors;
+      msgs.push({ role: "assistant", content: JSON.stringify(raw) });
+      msgs.push({
+        role: "user",
+        content: `That failed validation:\n- ${lastErrors.join("\n- ")}\nReturn the corrected JSON object only.`,
+      });
+    } else {
+      msgs.push({ role: "user", content: "Return ONLY a single JSON object, no prose." });
+    }
+  }
+  throw new ToolError(
+    "validation_failed",
+    `Satisfies-direction check invalid after ${maxRetries + 1} attempts: ${lastErrors.join("; ")}`,
+    { errors: lastErrors },
+  );
+}

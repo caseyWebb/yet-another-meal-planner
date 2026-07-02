@@ -14,6 +14,15 @@ import {
   readIdentityEmbeddings,
   mergeIdentities,
   readSkuCoResolutionPairs,
+  readAliasAuditBatch,
+  stampAliasAudited,
+  readAliasTargets,
+  readIdentitySources,
+  readEdgeAuditBatch,
+  readAllEdges,
+  deleteIngredientEdge,
+  stampEdgeAudited,
+  appendNormalizationLog,
   readSkuCache,
   upsertSkuMappings,
   readFlyerTerms,
@@ -208,6 +217,145 @@ describe("ingredient identity / normalization (D1)", () => {
     ]);
   });
 
+  it("commitResolution born-stamps audited_at on the alias + edge rows it writes", async () => {
+    const { env, tables } = fakeD1({
+      tables: {
+        ingredient_identity: [{ id: "ground beef", base: "ground beef", representative: null }],
+        ingredient_alias: [],
+        ingredient_edge: [],
+        novel_ingredient_terms: [{ term: "80/20 ground beef", first_seen: 1 }],
+        ingredient_normalization_log: [],
+      },
+    });
+    await commitResolution(env, {
+      term: "80/20 ground beef",
+      id: "ground beef::fat-80-20",
+      node: { base: "ground beef", detail: "fat-80-20", search_term: "80/20 ground beef", concrete: true, embedding: [0.1] },
+      edges: [{ from: "ground beef::fat-80-20", to: "ground beef", kind: "general" }],
+      log: { term: "80/20 ground beef", outcome: "specialization", resolved_id: "ground beef::fat-80-20" },
+    });
+    // Born-audited: post-hardening decisions never enter the re-audit backlog.
+    expect(typeof tables.ingredient_alias[0].audited_at).toBe("number");
+    expect(typeof tables.ingredient_edge[0].audited_at).toBe("number");
+  });
+
+  it("commitReconfirmEdges born-stamps audited_at on the edges it inserts", async () => {
+    const { env, tables } = fakeD1({
+      tables: {
+        ingredient_identity: [
+          { id: "kielbasa", base: "kielbasa", representative: null },
+          { id: "sausage", base: "sausage", representative: null },
+        ],
+        ingredient_edge: [],
+        ingredient_normalization_log: [],
+      },
+    });
+    await commitReconfirmEdges(env, {
+      edges: [{ from: "kielbasa", to: "sausage", kind: "general" }],
+      log: { term: "kielbasa", outcome: "novel", resolved_id: "kielbasa", isReconfirm: true },
+    });
+    expect(typeof tables.ingredient_edge[0].audited_at).toBe("number");
+  });
+
+  it("readAliasAuditBatch selects only auto + un-stamped mappings, oldest decided first, bounded", async () => {
+    const { env } = fakeD1({
+      tables: {
+        ingredient_alias: [
+          { variant: "flaky sea salt", id: "fish sauce::type-sea-salt", source: "auto", decided_at: 30, audited_at: null },
+          { variant: "sesame seeds", id: "toasted sesame seeds::toast", source: "auto", decided_at: 10, audited_at: null },
+          // excluded: human mapping (authoritative — never re-audited)
+          { variant: "evoo", id: "olive oil", source: "human", decided_at: 5, audited_at: null },
+          // excluded: already stamped (born-audited or a previous audit tick)
+          { variant: "scallions", id: "green onion", source: "auto", decided_at: 1, audited_at: 999 },
+        ],
+      },
+    });
+    const batch = await readAliasAuditBatch(env, 10);
+    // The fake D1 returns whole rows (no column projection) — compare the selected fields.
+    expect(batch.map((r) => ({ variant: r.variant, id: r.id }))).toEqual([
+      { variant: "sesame seeds", id: "toasted sesame seeds::toast" },
+      { variant: "flaky sea salt", id: "fish sauce::type-sea-salt" },
+    ]);
+    expect(await readAliasAuditBatch(env, 1)).toHaveLength(1);
+  });
+
+  it("stampAliasAudited stamps exactly the given variant; readAliasTargets sees every mapping", async () => {
+    const { env, tables } = fakeD1({
+      tables: {
+        ingredient_alias: [
+          { variant: "a", id: "x", source: "auto", decided_at: 1, audited_at: null },
+          { variant: "b", id: "y", source: "human", decided_at: 2, audited_at: null },
+        ],
+      },
+    });
+    await stampAliasAudited(env, "a", 777);
+    expect(tables.ingredient_alias.find((r) => r.variant === "a")?.audited_at).toBe(777);
+    expect(tables.ingredient_alias.find((r) => r.variant === "b")?.audited_at).toBeNull();
+    expect((await readAliasTargets(env)).map((r) => ({ variant: r.variant, id: r.id }))).toEqual([
+      { variant: "a", id: "x" },
+      { variant: "b", id: "y" },
+    ]);
+  });
+
+  it("readIdentitySources normalizes source; readEdgeAuditBatch/readAllEdges cover the edge audit reads", async () => {
+    const { env } = fakeD1({
+      tables: {
+        ingredient_identity: [
+          { id: "zucchini", base: "zucchini", representative: null, source: "human" },
+          { id: "courgette", base: "courgette", representative: "zucchini", source: null }, // null → auto
+        ],
+        ingredient_edge: [
+          { from_id: "a", to_id: "b", kind: "general", source: "auto", decided_at: 20, audited_at: null },
+          { from_id: "c", to_id: "d", kind: "containment", source: "auto", decided_at: 10, audited_at: null },
+          // excluded from the batch: human edge + stamped edge (both still in readAllEdges)
+          { from_id: "e", to_id: "f", kind: "general", source: "human", decided_at: 1, audited_at: null },
+          { from_id: "g", to_id: "h", kind: "general", source: "auto", decided_at: 2, audited_at: 111 },
+        ],
+      },
+    });
+    expect(await readIdentitySources(env)).toEqual([
+      { id: "zucchini", representative: null, source: "human" },
+      { id: "courgette", representative: "zucchini", source: "auto" },
+    ]);
+    expect((await readEdgeAuditBatch(env, 10)).map((e) => e.from_id)).toEqual(["c", "a"]);
+    expect((await readEdgeAuditBatch(env, 1)).map((e) => e.from_id)).toEqual(["c"]);
+    expect(await readAllEdges(env)).toHaveLength(4);
+    expect((await readAllEdges(env)).find((e) => e.from_id === "e")?.source).toBe("human");
+  });
+
+  it("deleteIngredientEdge/stampEdgeAudited address exactly one composite-PK row", async () => {
+    const { env, tables } = fakeD1({
+      tables: {
+        ingredient_edge: [
+          { from_id: "a", to_id: "b", kind: "general", source: "auto", audited_at: null },
+          { from_id: "a", to_id: "b", kind: "containment", source: "auto", audited_at: null }, // same pair, other kind
+          { from_id: "b", to_id: "a", kind: "general", source: "auto", audited_at: null }, // the reverse
+        ],
+      },
+    });
+    await deleteIngredientEdge(env, "a", "b", "general");
+    expect(tables.ingredient_edge).toHaveLength(2); // only the exact (from,to,kind) row went
+    await stampEdgeAudited(env, "b", "a", "general", 555);
+    expect(tables.ingredient_edge.find((r) => r.from_id === "b")?.audited_at).toBe(555);
+    expect(tables.ingredient_edge.find((r) => r.kind === "containment")?.audited_at).toBeNull();
+  });
+
+  it("appendNormalizationLog writes a standalone (edge-audit-shaped) decision row", async () => {
+    const { env, tables } = fakeD1({ tables: { ingredient_normalization_log: [] } });
+    await appendNormalizationLog(env, {
+      term: "spaghetti -[general]-> rigatoni",
+      outcome: "edge_drop",
+      model: "m",
+      detail: { audit: "edge", direction: "neither" },
+    });
+    expect(tables.ingredient_normalization_log).toHaveLength(1);
+    expect(tables.ingredient_normalization_log[0]).toMatchObject({ outcome: "edge_drop", model: "m" });
+    expect(JSON.parse(String(tables.ingredient_normalization_log[0].detail))).toEqual({
+      audit: "edge",
+      direction: "neither",
+    });
+  });
+
   it("readIdentityIds returns EVERY node id and alias variant (merged + unembedded included)", async () => {
     const { env } = fakeD1({
       tables: {
@@ -265,6 +413,48 @@ describe("ingredient identity / normalization (D1)", () => {
     const resolver = await readResolver(env);
     expect(resolver.toId["courgette"]).toBe("zucchini"); // resolves through the representative pointer
     expect(tables.ingredient_normalization_log[0]).toMatchObject({ outcome: "merge", resolved_id: "zucchini" });
+  });
+
+  it("mergeIdentities refuses a merge that would close a representative cycle, logging the skip", async () => {
+    // Direct: an older merge already points scallion at green onion; merging green onion INTO
+    // scallion would close the cycle — the choke point every pass uses refuses and logs instead.
+    const direct = fakeD1({
+      tables: {
+        ingredient_identity: [
+          { id: "scallion", base: "scallion", representative: "green onion" },
+          { id: "green onion", base: "green onion", representative: null },
+        ],
+        ingredient_normalization_log: [],
+      },
+    });
+    await mergeIdentities(direct.env, "green onion", "scallion");
+    expect(direct.tables.ingredient_identity.find((r) => r.id === "green onion")?.representative).toBeNull();
+    expect(direct.tables.ingredient_normalization_log).toHaveLength(1);
+    expect(direct.tables.ingredient_normalization_log[0]).toMatchObject({
+      term: "green onion",
+      outcome: "merge",
+      resolved_id: "scallion",
+    });
+    expect(JSON.parse(String(direct.tables.ingredient_normalization_log[0].detail))).toMatchObject({
+      note: "merge_cycle_skip",
+    });
+
+    // Transitive: a → b → c; merging c into a would spin the chain — refused the same way.
+    const transitive = fakeD1({
+      tables: {
+        ingredient_identity: [
+          { id: "a", base: "a", representative: "b" },
+          { id: "b", base: "b", representative: "c" },
+          { id: "c", base: "c", representative: null },
+        ],
+        ingredient_normalization_log: [],
+      },
+    });
+    await mergeIdentities(transitive.env, "c", "a");
+    expect(transitive.tables.ingredient_identity.find((r) => r.id === "c")?.representative).toBeNull();
+    expect(
+      JSON.parse(String(transitive.tables.ingredient_normalization_log[0].detail)),
+    ).toMatchObject({ note: "merge_cycle_skip" });
   });
 
   it("readSkuCoResolutionPairs groups distinct survivors sharing a SKU (with source + search_term)", async () => {

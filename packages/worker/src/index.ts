@@ -24,6 +24,9 @@ import { buildProjectionDeps, runProjectionJob } from "./recipe-projection.js";
 import { buildDiscoveryDeps, runDiscoverySweepJob } from "./discovery-sweep.js";
 import { buildNormalizeDeps, runNormalizeJob } from "./ingredient-normalize.js";
 import { buildReconfirmDeps, runReconfirmJob } from "./ingredient-reconfirm.js";
+import { buildAliasAuditDeps, runAliasAuditJob } from "./ingredient-alias-audit.js";
+import { buildEdgeAuditDeps, runEdgeAuditJob } from "./ingredient-edge-audit.js";
+import { runSkuRekeyJob } from "./sku-cache-rekey.js";
 import { runReconcileJob } from "./grocery-pantry-reconcile.js";
 import { loadDiscoveryConfig } from "./discovery-calibration.js";
 import { loadOperatorConfig } from "./operator-config.js";
@@ -206,6 +209,22 @@ export default {
       // recipe pipeline (touches only the per-tenant pantry/grocery tables). The job wrapper records
       // the `grocery-reconcile` health + per-run history the Normalize › Reconcile card reads back.
       runReconcileJob(env),
+      // The normalization re-audit passes (normalization-decision-reaudit): converge the
+      // pre-hardening AUTO backlog to the hardened rules with no operator action. Both are
+      // bounded per tick, one-shot-stamped (`audited_at`; new decisions are born-stamped), and
+      // quiesce to a no-op once the backlog drains — the same ≈0-LLM steady state as capture.
+      //   * alias audit — self-aliases stamp free; every other auto mapping gets one hardened
+      //     classifier re-decision, applied through capture's own commit (re-point / mint /
+      //     orphan merge). Rides the internal env.AI/D1 budget.
+      runAliasAuditJob(env, buildAliasAuditDeps(env)),
+      //   * edge audit — deletes rep-resolved self-loops deterministically, resolves 2-cycles
+      //     with one direction check, validates standing satisfies edges (drop on no).
+      runEdgeAuditJob(env, buildEdgeAuditDeps(env)),
+      // Re-key sku_cache rows onto the canonical id as capture moves resolution under them —
+      // the cache's counterpart to the grocery/pantry reconcile above. Plain code, no LLM,
+      // idempotent every tick (a converged pass plans nothing); no capture side effect, so
+      // non-food legacy keys never enter the graph.
+      runSkuRekeyJob(env),
     ]);
     // Phase 2: the index projection (merges the fresh classified facets + authored overrides).
     const phase2 = await Promise.allSettled([runProjectionJob(env, buildProjectionDeps(env, corpus))]);

@@ -47,7 +47,7 @@ export interface Resolver {
 }
 
 /** Build a union-find resolver over the identity rows: id → surviving id (cycle-safe). */
-function representativeResolver(
+export function representativeResolver(
   rows: { id: string; representative: string | null }[],
 ): (id: string) => string {
   const rep = new Map<string, string | null>();
@@ -510,7 +510,8 @@ function withSkippedEdges(log: NormalizationLog, skipped: SkippedEdge[]): Normal
  * construction (`INSERT OR IGNORE`), so re-confirm can never remove or downgrade an existing edge.
  * Edges pass the commit-time contradiction gate (`filterCommittableEdges`); withheld ones land in
  * the log detail. The `log` is written with its `isReconfirm` marker so the Decisions view can
- * distinguish it.
+ * distinguish it. Edge inserts are born-audited (`audited_at` stamped) so the edge re-audit never
+ * re-enters them.
  */
 export async function commitReconfirmEdges(
   env: Env,
@@ -523,11 +524,13 @@ export async function commitReconfirmEdges(
   for (const e of kept) {
     stmts.push(
       d.prepare(
-        "INSERT OR IGNORE INTO ingredient_edge (from_id, to_id, kind, source, decided_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+        "INSERT OR IGNORE INTO ingredient_edge (from_id, to_id, kind, source, decided_at, audited_at) " +
+          "VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         e.from,
         e.to,
         e.kind,
         "auto",
+        now,
         now,
       ),
     );
@@ -539,7 +542,7 @@ export async function commitReconfirmEdges(
 /** One decision to append to the normalization audit log. */
 export interface NormalizationLog {
   term: string;
-  outcome: "same" | "specialization" | "novel" | "merge" | "error" | "failed";
+  outcome: "same" | "specialization" | "novel" | "merge" | "error" | "failed" | "edge_drop" | "edge_keep";
   resolved_id?: string | null;
   candidates?: { id: string; score: number }[];
   model?: string | null;
@@ -580,7 +583,8 @@ export interface Resolution {
  * one D1 batch. Node upserts only fill the embedding on conflict (never downgrade a human node's
  * source); edges are insert-or-ignore after the commit-time contradiction gate
  * (`filterCommittableEdges`; withheld edges land in the log detail). Queued terms have no prior
- * alias, so the alias upsert is effectively an insert.
+ * alias, so the alias upsert is effectively an insert. Alias + edge writes are born-audited
+ * (`audited_at` stamped) so the re-audit passes never re-enter post-hardening decisions.
  */
 export async function commitResolution(env: Env, r: Resolution): Promise<void> {
   const d = db(env);
@@ -607,23 +611,27 @@ export async function commitResolution(env: Env, r: Resolution): Promise<void> {
   }
   stmts.push(
     d.prepare(
-      "INSERT INTO ingredient_alias (variant, id, source, confidence, decided_at) VALUES (?1, ?2, ?3, ?4, ?5) " +
-        "ON CONFLICT(variant) DO UPDATE SET id = excluded.id, confidence = excluded.confidence, decided_at = excluded.decided_at",
+      "INSERT INTO ingredient_alias (variant, id, source, confidence, decided_at, audited_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6) " +
+        "ON CONFLICT(variant) DO UPDATE SET id = excluded.id, confidence = excluded.confidence, " +
+        "decided_at = excluded.decided_at, audited_at = excluded.audited_at",
       r.term,
       r.id,
       "auto",
       r.confidence ?? null,
+      now,
       now,
     ),
   );
   for (const e of kept) {
     stmts.push(
       d.prepare(
-        "INSERT OR IGNORE INTO ingredient_edge (from_id, to_id, kind, source, decided_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+        "INSERT OR IGNORE INTO ingredient_edge (from_id, to_id, kind, source, decided_at, audited_at) " +
+          "VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         e.from,
         e.to,
         e.kind,
         "auto",
+        now,
         now,
       ),
     );
@@ -651,9 +659,14 @@ export async function deferNovelTerm(env: Env, term: string, nextRetryAt: number
 /**
  * Merge two existing identities via the union-find `representative` pointer (no key rewrites),
  * logging the merge. Used by the SKU-cache co-resolution signal for cross-lexical synonyms the
- * embedder can't retrieve, and by the re-confirm pass for a `same`-outcome synonym. `loser`'s
- * representative is set to `survivor`. `opts.isReconfirm` marks the log row so a re-confirm merge
- * is distinguishable from a capture-time one.
+ * embedder can't retrieve, by the re-confirm pass for a `same`-outcome synonym, and by the alias
+ * audit's orphan cleanup. `loser`'s representative is set to `survivor`. `opts.isReconfirm` marks
+ * the log row so a re-confirm merge is distinguishable from a capture-time one. Every pass
+ * funnels through here, so this is the one choke point that guards the representative graph:
+ * before writing, the SURVIVOR is resolved through the current chain — when it lands on the
+ * loser (a concurrent/older merge already points the survivor's tree at it) or the two already
+ * share a root, the write would close (or is redundant to) a representative cycle, so the merge
+ * no-ops and logs the refusal (`detail {note:"merge_cycle_skip"}`) instead.
  */
 export async function mergeIdentities(
   env: Env,
@@ -664,6 +677,28 @@ export async function mergeIdentities(
   if (loser === survivor) return;
   const d = db(env);
   const now = Date.now();
+  const rows = await d.all<{ id: string; representative: string | null }>(
+    "SELECT id, representative FROM ingredient_identity",
+  );
+  const resolve = representativeResolver(rows);
+  if (resolve(survivor) === resolve(loser)) {
+    // Covers both resolve(survivor) === loser (the direct cycle) and the transitive shared-root
+    // case — writing loser→survivor would spin resolution or is already implied.
+    await d.batch([
+      logStmt(
+        d,
+        {
+          term: loser,
+          outcome: "merge",
+          resolved_id: survivor,
+          isReconfirm: opts.isReconfirm,
+          detail: { note: "merge_cycle_skip" },
+        },
+        now,
+      ),
+    ]);
+    return;
+  }
   await d.batch([
     d.prepare("UPDATE ingredient_identity SET representative = ?2 WHERE id = ?1", loser, survivor),
     logStmt(d, { term: loser, outcome: "merge", resolved_id: survivor, isReconfirm: opts.isReconfirm }, now),
@@ -746,6 +781,118 @@ export async function readSkuCoResolutionPairs(env: Env, limit: number): Promise
     }
   }
   return pairs;
+}
+
+// --- re-audit-pass helpers (normalization-decision-reaudit; see src/ingredient-alias-audit.ts
+// and src/ingredient-edge-audit.ts) ---
+
+/** One auto alias mapping awaiting re-audit: the surface variant + its (pre-representative) id. */
+export interface AliasAuditRow {
+  variant: string;
+  id: string;
+}
+
+/** A batch of alias mappings ELIGIBLE for re-audit — `source='auto' AND audited_at IS NULL`
+ *  (the pre-hardening backlog; post-hardening writes are born-stamped) — oldest `decided_at`
+ *  first, bounded by `limit`. Human mappings are never selected. */
+export async function readAliasAuditBatch(env: Env, limit: number): Promise<AliasAuditRow[]> {
+  return db(env).all<AliasAuditRow>(
+    "SELECT variant, id FROM ingredient_alias WHERE source = 'auto' AND audited_at IS NULL " +
+      "ORDER BY decided_at LIMIT ?1",
+    limit,
+  );
+}
+
+/** Stamp an alias mapping audited (the one-shot backlog filter; `audited_at` = `now`). */
+export async function stampAliasAudited(env: Env, variant: string, now: number): Promise<void> {
+  await db(env).run("UPDATE ingredient_alias SET audited_at = ?2 WHERE variant = ?1", variant, now);
+}
+
+/** EVERY alias mapping (variant → pre-representative id) — the alias audit's orphan-check
+ *  reference set (an auto node with no remaining alias after a re-point is merged away). */
+export async function readAliasTargets(env: Env): Promise<AliasAuditRow[]> {
+  return db(env).all<AliasAuditRow>("SELECT variant, id FROM ingredient_alias");
+}
+
+/** An identity row as the audit passes need it: representative resolution + human protection. */
+export interface IdentitySourceRow {
+  id: string;
+  representative: string | null;
+  source: "auto" | "human";
+}
+
+/** Every identity row's id/representative/source (full-table + JS, the module's idiom). */
+export async function readIdentitySources(env: Env): Promise<IdentitySourceRow[]> {
+  const rows = await db(env).all<{ id: string; representative: string | null; source: string | null }>(
+    "SELECT id, representative, source FROM ingredient_identity",
+  );
+  return rows.map((r) => ({ id: r.id, representative: r.representative, source: normSource(r.source) }));
+}
+
+/** One directed edge under audit (its composite PK). */
+export interface EdgeAuditRow {
+  from_id: string;
+  to_id: string;
+  kind: string;
+}
+
+/** An edge row with its `source` — the reverse-pair lookup set (a human reverse wins a 2-cycle). */
+export interface EdgeRow extends EdgeAuditRow {
+  source: "auto" | "human";
+}
+
+/** A batch of edges ELIGIBLE for re-audit — `source='auto' AND audited_at IS NULL`, oldest
+ *  `decided_at` first, bounded. Human edges are never selected. */
+export async function readEdgeAuditBatch(env: Env, limit: number): Promise<EdgeAuditRow[]> {
+  return db(env).all<EdgeAuditRow>(
+    "SELECT from_id, to_id, kind FROM ingredient_edge WHERE source = 'auto' AND audited_at IS NULL " +
+      "ORDER BY decided_at LIMIT ?1",
+    limit,
+  );
+}
+
+/** The full edge table (with `source`) — the edge audit's reverse-pair lookup set. */
+export async function readAllEdges(env: Env): Promise<EdgeRow[]> {
+  const rows = await db(env).all<{ from_id: string; to_id: string; kind: string; source: string | null }>(
+    "SELECT from_id, to_id, kind, source FROM ingredient_edge",
+  );
+  return rows.map((r) => ({ from_id: r.from_id, to_id: r.to_id, kind: r.kind, source: normSource(r.source) }));
+}
+
+/** Delete one edge by its composite PK — the edge audit's correction write. Only ever pointed
+ *  at auto edges (the audit never selects a human edge as its subject). */
+export async function deleteIngredientEdge(env: Env, from: string, to: string, kind: string): Promise<void> {
+  await db(env).run(
+    "DELETE FROM ingredient_edge WHERE from_id = ?1 AND to_id = ?2 AND kind = ?3",
+    from,
+    to,
+    kind,
+  );
+}
+
+/** Stamp an edge audited (it survived the audit; never re-selected). */
+export async function stampEdgeAudited(
+  env: Env,
+  from: string,
+  to: string,
+  kind: string,
+  now: number,
+): Promise<void> {
+  await db(env).run(
+    "UPDATE ingredient_edge SET audited_at = ?4 WHERE from_id = ?1 AND to_id = ?2 AND kind = ?3",
+    from,
+    to,
+    kind,
+    now,
+  );
+}
+
+/** Append one standalone decision to the normalization audit log — the edge audit's log write
+ *  (its corrections don't ride a resolution commit). Batched so a D1 failure surfaces as the
+ *  same structured `storage_error` every other write here produces. */
+export async function appendNormalizationLog(env: Env, entry: NormalizationLog): Promise<void> {
+  const d = db(env);
+  await d.batch([logStmt(d, entry, Date.now())]);
 }
 
 // === SKU cache ===============================================================
