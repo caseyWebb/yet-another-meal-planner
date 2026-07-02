@@ -110,8 +110,9 @@ function nearest(
 }
 
 /** A NOVEL resolution (below-floor no-LLM mint, the fail-safe on a bad confirm, or the
- *  distance-guard fallback) — always the VERBATIM term (no classifier canonical to trust). */
-function novelResolution(
+ *  distance-guard fallback) — always the VERBATIM term (no classifier canonical to trust).
+ *  Exported for the alias re-audit pass, whose guard fallback is the same verbatim mint. */
+export function novelResolution(
   term: string,
   vec: number[],
   candidates: { id: string; score: number }[],

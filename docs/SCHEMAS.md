@@ -597,7 +597,15 @@ embedding); `ingredient_edge` holds directed `satisfies` edges. The `readResolve
 overwritten by the auto capture pass). A sibling re-confirm pass re-examines edgeless auto-minted
 nodes against the denser registry and stamps `ingredient_identity.reconfirmed_at` once processed
 (NULL = still eligible), so each node is only ever re-confirmed once; its decisions land in
-`ingredient_normalization_log` alongside capture's, flagged by `is_reconfirm`.
+`ingredient_normalization_log` alongside capture's, flagged by `is_reconfirm`. Two rolling
+re-audit passes converge `source='auto'` rows to the hardened classifier rules, self-quiescing on
+the one-shot `audited_at` stamps (NULL = the un-audited backlog): the **alias audit** stamps
+self-aliases (variant = node id) deterministically and re-decides every other auto mapping via
+the classifier (re-point / mint / merge — a stranded alias-less auto node merges into the
+re-decision's node), and the **edge audit** deletes representative-resolved self-loops, resolves
+reverse-pair 2-cycles with one satisfies-direction check, and drops standing auto edges whose
+FROM→TO direction does not hold. Alias + edge rows written by capture/re-confirm are born-stamped
+(`audited_at` set at write time); human rows are never selected by either audit.
 
 ```sql
 -- ingredient_identity — canonical nodes. PRIMARY KEY (id).
@@ -618,24 +626,36 @@ id         TEXT  -- → ingredient_identity.id (pre-representative)  NOT NULL
 source     TEXT NOT NULL DEFAULT 'auto'
 confidence REAL
 decided_at INTEGER
+audited_at INTEGER  -- one-shot alias-audit stamp; NULL = un-audited backlog; born-set on new writes
 
 -- ingredient_edge — directed "satisfies" edges. PRIMARY KEY (from_id, to_id, kind).
-from_id TEXT  -- A satisfies a request for to_id (reachability)
-to_id   TEXT
-kind    TEXT  -- 'general' | 'containment' | 'membership'
-source  TEXT NOT NULL DEFAULT 'auto'
+from_id    TEXT  -- A satisfies a request for to_id (reachability)
+to_id      TEXT
+kind       TEXT  -- 'general' | 'containment' | 'membership'
+source     TEXT NOT NULL DEFAULT 'auto'
+audited_at INTEGER  -- one-shot edge-audit stamp; NULL = un-audited backlog; born-set on new writes
 
 -- novel_ingredient_terms — the capture queue (surface forms not yet placed). PK (term).
 -- ingredient_normalization_log — the decision audit log + evaluated-set (mirrors discovery_log).
+-- outcome: same | specialization | novel | merge | error | failed | edge_drop | edge_keep
+--   (edge_* rows are the edge audit's decisions — edge-shaped, filtered out of the admin
+--    Decisions stream, queryable here)
 -- is_reconfirm INTEGER NOT NULL DEFAULT 0  -- 1 = decision from the re-confirm pass, not initial capture
 ```
 
 The log's `detail` JSON carries per-decision context: `reason` (the classifier's short rationale);
-`note` — `confirm_failed_safe` (contract-invalid confirm → fail-safe NOVEL) or `confirm_below_min`
-(the distance guard rejected a same/specialization pick, with `rejected {outcome, match, score}`);
-`canonical_rejected` + `canonical_reason` (`invalid` | `collision`) when a classifier-proposed
-canonical id fell back to the verbatim term; and `edges_skipped [{from, to, kind, reason:
-"self_loop" | "reverse_exists"}]` for edges withheld by the commit-time contradiction gate.
+`note` — `confirm_failed_safe` (contract-invalid confirm → fail-safe NOVEL, or a re-audit's
+keep-and-stamp) or `confirm_below_min` (the distance guard rejected a same/specialization pick,
+with `rejected {outcome, match, score}`); `canonical_rejected` + `canonical_reason` (`invalid` |
+`collision`) when a classifier-proposed canonical id fell back to the verbatim term; and
+`edges_skipped [{from, to, kind, reason: "self_loop" | "reverse_exists"}]` for edges withheld by
+the commit-time contradiction gate. Re-audit decisions carry an `audit` marker: alias-audit rows
+`audit: "alias"` + `previous_id` (the mapping the re-decision replaced); edge-audit rows
+`audit: "edge"` + the `direction` verdict (`forward | reverse | both | neither`) or a `note`
+(`self_loop` — a deterministic delete; `human_reverse` — the auto side of a 2-cycle lost to a
+human edge). A `merge` row with `note: "merge_cycle_skip"` records a refused merge: the survivor
+already resolved into the loser's tree, so writing the representative would have closed a cycle
+and the merge no-opped instead.
 
 Example identity rows (id / base / detail):
 
@@ -1181,7 +1201,7 @@ Example rows:
 
 ## sku_cache (D1, shared corpus)
 
-Machine-maintained SKU cache in the **shared corpus** (`sku_cache` table) — a mapping resolved by any member warms it for everyone. Written by `place_order` as the matching pipeline resolves ingredients. Each entry is **tagged with the `location_id`** it was resolved at.
+Machine-maintained SKU cache in the **shared corpus** (`sku_cache` table) — a mapping resolved by any member warms it for everyone. Written by `place_order` as the matching pipeline resolves ingredients. Each entry is **tagged with the `location_id`** it was resolved at. Keys converge to the canonical ingredient id on the cron: the `sku-cache-rekey` reconcile resolves every `ingredient` key through the current alias/representative chain each tick and re-keys rows whose resolution differs — on a (canonical, location) collision the row with the newer `last_used` wins whole. Keys that resolve to nothing (non-food or never-captured terms) stay as-is; the re-key has no capture side effect.
 
 ```sql
 -- D1 sku_cache table (migrations/d1/0006_shared_corpus.sql)

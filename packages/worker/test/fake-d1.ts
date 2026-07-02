@@ -121,6 +121,8 @@ export function fakeD1(
     // Embedding-backfill batch (embedding IS NOT NULL never reaches the fake; IS NULL does).
     if (/embedding IS NULL/i.test(sql)) out = out.filter((r) => r.embedding == null);
     if (/reconfirmed_at IS NULL/i.test(sql)) out = out.filter((r) => r.reconfirmed_at == null);
+    // Re-audit eligibility (alias/edge backlog: un-stamped rows only).
+    if (/audited_at IS NULL/i.test(sql)) out = out.filter((r) => r.audited_at == null);
     if (/normalized_name = \?2/i.test(sql)) eq("normalized_name", 2);
     // Attributed notes: privacy rule (private=0 OR author=?2), and self-scoped
     // findOwnNote (author=?2 AND created_at=?3).
@@ -174,11 +176,14 @@ export function fakeD1(
       if (!table || !tables[table]) return { rows: [], changes: 0 };
       const before = tables[table].length;
       if (GLOBAL_TABLES.has(table)) {
-        // A single-column equality `WHERE <col> = ?1` deletes the matching row(s); any
-        // other shape is a table-wide delete.
-        const eq = /\bWHERE\s+(\w+) = \?1\s*$/i.exec(sql);
+        // Column-equality WHERE (single, or AND-joined multi — the edge/sku composite-PK
+        // deletes) removes the matching row(s); any other shape is a table-wide delete.
+        const where = /\bWHERE\s+(.+)$/is.exec(sql);
+        const conds = where
+          ? [...where[1].matchAll(/(\w+)\s*=\s*\?(\d+)/g)].map((x) => ({ col: x[1], n: Number(x[2]) }))
+          : [];
         const keep = (r: Record<string, unknown>): boolean => {
-          if (eq) return r[eq[1]] !== binds[0];
+          if (conds.length) return !conds.every(({ col, n }) => r[col] === binds[n - 1]);
           return false; // table-wide delete
         };
         tables[table] = tables[table].filter((r) => keep(r));
@@ -234,14 +239,18 @@ export function fakeD1(
     }
     if (/^UPDATE/i.test(sql)) {
       if (!table || !tables[table]) return { rows: [], changes: 0 };
-      // Note edits: UPDATE <table> SET body=?1, tags=?2, private=?3 WHERE id=?N.
-      const m = /SET\s+(.+?)\s+WHERE\s+id = \?(\d+)/is.exec(sql);
+      // Column-equality UPDATE: SET col=?N[, …] WHERE colA = ?N [AND colB = ?N …] — note
+      // edits by id, the re-confirm/re-audit stamps by id/variant/edge composite PK. A SET
+      // expression that isn't a plain `col = ?N` bind (e.g. `attempts = attempts + 1`) is
+      // not simulated; a WHERE with no equality binds is a no-op.
+      const m = /SET\s+(.+?)\s+WHERE\s+(.+)$/is.exec(sql);
       if (!m) return { rows: [], changes: 0 };
       const setCols = [...m[1].matchAll(/(\w+)\s*=\s*\?(\d+)/g)].map((x) => ({ col: x[1], n: Number(x[2]) }));
-      const idVal = binds[Number(m[2]) - 1];
+      const conds = [...m[2].matchAll(/(\w+)\s*=\s*\?(\d+)/g)].map((x) => ({ col: x[1], n: Number(x[2]) }));
+      if (conds.length === 0) return { rows: [], changes: 0 };
       let changes = 0;
       for (const r of tables[table]) {
-        if (r.id === idVal) {
+        if (conds.every(({ col, n }) => r[col] === binds[n - 1])) {
           for (const { col, n } of setCols) r[col] = binds[n - 1] ?? null;
           changes++;
         }
