@@ -4,6 +4,8 @@ import {
   parseClaimRequest,
   parseResultRequest,
   parseObservationItem,
+  parseSaleScanPayload,
+  SALE_SCAN_KIND,
   DEFAULT_CLAIM_MAX,
   MAX_CLAIM_TASKS,
   TASK_SCOPES,
@@ -95,11 +97,45 @@ describe("parseResultRequest", () => {
     expect(parseResultRequest({ task_id: "st_x", status: "cancelled" }).ok).toBe(false);
   });
 
-  it("a future observation kind rides through the envelope (raw) and is rejected only per-item", () => {
-    // The result envelope keeps observations opaque, so a not-yet-implemented kind does not sink
-    // the report parse; the per-item validator is where an unknown kind is individually rejected.
+  it("a structurally-incomplete observation rides through the envelope (raw) and is rejected only per-item", () => {
+    // The result envelope keeps observations opaque, so a malformed item does not sink the report
+    // parse; the per-item validator is where it is individually rejected. (`sale` is a defined kind
+    // now, but this item is missing its required raw facts, so it still fails per-item.)
     const r = parseResultRequest({ task_id: "st_x", status: "done", observations: [{ kind: "sale", regular: 4.99, promo: 3.49 }] });
     expect(r.ok).toBe(true);
     if (r.ok) expect(parseObservationItem(r.value.observations![0]).ok).toBe(false);
+  });
+});
+
+describe("parseSaleScanPayload (the first concrete task payload)", () => {
+  it("exposes the sale-scan kind constant", () => {
+    expect(SALE_SCAN_KIND).toBe("sale-scan");
+  });
+
+  it("round-trips a well-formed sale-scan payload", () => {
+    const r = parseSaleScanPayload({ store: "target", locationId: "T-1234", terms: ["milk", "eggs"] });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value.store).toBe("target");
+      expect(r.value.locationId).toBe("T-1234");
+      expect(r.value.terms).toEqual(["milk", "eggs"]);
+    }
+  });
+
+  it("accepts an empty terms list (the satellite scans nothing and reports an empty set)", () => {
+    expect(parseSaleScanPayload({ store: "target", locationId: "T-1", terms: [] }).ok).toBe(true);
+  });
+
+  it("rejects a payload missing store/locationId or with a blank term", () => {
+    expect(parseSaleScanPayload({ locationId: "T-1", terms: [] }).ok).toBe(false);
+    expect(parseSaleScanPayload({ store: "target", terms: [] }).ok).toBe(false);
+    expect(parseSaleScanPayload({ store: "target", locationId: "T-1", terms: [""] }).ok).toBe(false);
+  });
+
+  it("rides through the channel as an opaque envelope payload, interpreted only by the capability", () => {
+    // The channel keeps payload opaque (parseTaskEnvelope doesn't interpret it); the capability parses it.
+    const env = parseTaskEnvelope({ id: "st_1", kind: SALE_SCAN_KIND, scope: "operator", payload: { store: "target", locationId: "T-1", terms: ["milk"] } });
+    expect(env.ok).toBe(true);
+    if (env.ok) expect(parseSaleScanPayload(env.value.payload).ok).toBe(true);
   });
 });

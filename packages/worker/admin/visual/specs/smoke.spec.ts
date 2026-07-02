@@ -77,6 +77,14 @@ test.describe("seeded fixtures render", () => {
     await statusPage.jobs.expectJob(SEED.jobs[0]!);
   });
 
+  test("status renders the sale-scan-plan job row", async ({ statusPage }) => {
+    // The sale-scan producer is a registered background job (HEALTH_JOBS) — a data-only addition to
+    // the existing registered-jobs render (seeded healthy in SEED.jobs; never-run is the same render).
+    await statusPage.goto();
+    await statusPage.jobs.expectJob("sale-scan-plan");
+    await statusPage.captureForReview("status-sale-scan-plan");
+  });
+
   test("status shows the identity-audit row and the recipe backfill gauge", async ({ statusPage }) => {
     await statusPage.goto();
     await statusPage.expectAuditRow();

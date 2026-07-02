@@ -53,8 +53,35 @@ describe("parseConfig (shape validation)", () => {
     );
   });
 
-  it("requires at least one source", () => {
+  it("requires at least one source or scan_store", () => {
     expect(() => parseConfig({ connector_url: "https://x.example", sources: [] })).toThrow(/at least one/);
+    expect(() => parseConfig({ connector_url: "https://x.example" })).toThrow(/at least one/);
+  });
+
+  it("accepts a machine that ONLY runs sale-scan (no recipe sources)", () => {
+    const cfg = parseConfig({
+      connector_url: "https://x.example",
+      scan_stores: [{ store: "target", adapter: "target-sales", fetch_tier: "browser" }],
+    });
+    expect(cfg.sources).toEqual([]);
+    expect(cfg.scan_stores).toEqual([{ store: "target", adapter: "target-sales", fetch_tier: "browser" }]);
+  });
+
+  it("validates scan_stores fields and rejects duplicates / bad tiers", () => {
+    expect(() => parseConfig({ connector_url: "https://x.example", scan_stores: [{ adapter: "a" }] })).toThrow(/scan_stores\[0\]\.store/);
+    expect(() => parseConfig({ connector_url: "https://x.example", scan_stores: [{ store: "s" }] })).toThrow(/scan_stores\[0\]\.adapter/);
+    expect(() =>
+      parseConfig({ connector_url: "https://x.example", scan_stores: [{ store: "s", adapter: "a", fetch_tier: "pigeon" }] }),
+    ).toThrow(/fetch_tier/);
+    expect(() =>
+      parseConfig({
+        connector_url: "https://x.example",
+        scan_stores: [
+          { store: "dup", adapter: "a" },
+          { store: "dup", adapter: "b" },
+        ],
+      }),
+    ).toThrow(/duplicate scan_stores/);
   });
 
   it("rejects an unknown fetch_tier", () => {

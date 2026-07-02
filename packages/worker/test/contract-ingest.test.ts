@@ -4,6 +4,7 @@ import {
   parseSatelliteBatch,
   parseObservationItem,
   parseRecipeItem,
+  parseSaleObservation,
   parseSatelliteEnvelope,
   type SatelliteBatch,
 } from "@grocery-agent/contract";
@@ -50,8 +51,15 @@ describe("v2 satellite batch", () => {
   });
 
   it("rejects a v2 batch declaring an unimplemented capability", () => {
-    const r = parseSatelliteBatch({ ...validBatch, capability: "sale-scan" });
+    // `order-fill` is the still-unimplemented capability (recipe-scrape + sale-scan are defined).
+    const r = parseSatelliteBatch({ ...validBatch, capability: "order-fill" });
     expect(r.ok).toBe(false);
+  });
+
+  it("accepts a v2 batch declaring the sale-scan capability", () => {
+    const r = parseSatelliteBatch({ ...validBatch, capability: "sale-scan", observations: [validSale] });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value.capability).toBe("sale-scan");
   });
 });
 
@@ -78,8 +86,71 @@ describe("observation items", () => {
   });
 
   it("rejects an unknown observation kind", () => {
-    const r = parseObservationItem({ kind: "sale", regular: 4.99, promo: 3.49 });
+    const r = parseObservationItem({ kind: "order", regular: 4.99, promo: 3.49 });
     expect(r.ok).toBe(false);
+  });
+});
+
+const validSale = {
+  kind: "sale" as const,
+  store: "target",
+  locationId: "T-1234",
+  productId: "sku-abc",
+  description: "Organic 2% Milk",
+  size: "1 gal",
+  regular: 4.99,
+  promo: 3.49,
+  brand: "Good & Gather",
+  categories: ["Dairy"],
+  url: "https://www.target.com/p/milk/-/A-123",
+};
+
+describe("sale observations (sensor-not-judge)", () => {
+  it("round-trips a well-formed sale observation", () => {
+    const r = parseObservationItem(validSale);
+    expect(r.ok).toBe(true);
+    if (r.ok && r.value.kind === "sale") {
+      expect(r.value.regular).toBe(4.99);
+      expect(r.value.promo).toBe(3.49);
+      expect(r.value.productId).toBe("sku-abc");
+    }
+  });
+
+  it("accepts a bare sale (only the required raw facts)", () => {
+    const bare = { kind: "sale" as const, store: "target", locationId: "T-1", productId: "s", description: "d", regular: 2, promo: 1 };
+    expect(parseObservationItem(bare).ok).toBe(true);
+  });
+
+  it("carries NO derived saving on the wire — a set `savings`/`savings_pct` is stripped, not modeled", () => {
+    // sensor-not-judge: the satellite reports only raw facts; a smuggled saving is silently dropped
+    // (default object strip) so it can never influence the Worker's re-derivation.
+    const r = parseSaleObservation({ ...validSale, savings: 1.5, savings_pct: 30, on_sale: true });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value).not.toHaveProperty("savings");
+      expect(r.value).not.toHaveProperty("savings_pct");
+      expect(r.value).not.toHaveProperty("on_sale");
+    }
+  });
+
+  it("parses an implausible-but-structural sale (plausibility is Worker-side, not contract-side)", () => {
+    // promo >= regular is structurally valid (both are just numbers); the Worker rejects it per-item.
+    expect(parseObservationItem({ ...validSale, promo: 9.99 }).ok).toBe(true);
+    // A 99% markdown is structurally valid too — the Worker's markdown ceiling catches it.
+    expect(parseSaleObservation({ ...validSale, regular: 100, promo: 0.5 }).ok).toBe(true);
+  });
+
+  it("rejects a sale missing a required raw fact or with a bad price type", () => {
+    const { productId: _drop, ...noProduct } = validSale;
+    expect(parseObservationItem(noProduct).ok).toBe(false);
+    expect(parseObservationItem({ ...validSale, regular: 0 }).ok).toBe(false); // regular must be positive
+    expect(parseObservationItem({ ...validSale, promo: -1 }).ok).toBe(false); // promo must be non-negative
+    expect(parseObservationItem({ ...validSale, url: "ftp://x/y" }).ok).toBe(false); // http(s) only
+  });
+
+  it("leaves the recipe arm unaffected — a recipe observation still validates alongside the sale arm", () => {
+    expect(parseObservationItem(validObservation).ok).toBe(true);
+    expect(parseRecipeItem(validItem).ok).toBe(true);
   });
 });
 

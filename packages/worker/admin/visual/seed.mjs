@@ -53,6 +53,7 @@ export const SEED = {
   // Status row renders never-run).
   jobs: [
     "flyer-warm",
+    "sale-scan-plan",
     "recipe-classify",
     "recipe-index",
     "recipe-embed",

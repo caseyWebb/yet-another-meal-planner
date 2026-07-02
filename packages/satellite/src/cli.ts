@@ -10,13 +10,15 @@
 // selected fetch tier reusing one browser, the built-in + operator adapters) into runTick;
 // the pure orchestration lives in scheduler.ts.
 
-import { loadRuntimeContext, type RuntimeContext, type SourceConfig } from "./config.js";
+import { loadRuntimeContext, type RuntimeContext, type SourceConfig, type ScanStoreConfig } from "./config.js";
 import { loadAdapters } from "./adapter.js";
 import { createBrowserTier, selectTier, type FetchTier } from "./fetch.js";
 import { parsePageToRecipe } from "./jsonld.js";
 import { loadSession, saveSession, importSession, looksLikeAuthWall, type StorageState } from "./session.js";
 import { Cursor } from "./cursor.js";
 import { runTick, type TickDeps } from "./scheduler.js";
+import { runPullTick, buildPullDeps } from "./pull.js";
+import { loadSaleAdapters, runScanAdapter, type ScanSdk } from "./sale-adapter.js";
 import { SATELLITE_VERSION } from "./push.js";
 
 /** A plain console logger — structured extras are appended as JSON for grep-ability. */
@@ -38,6 +40,22 @@ function requireSource(ctx: RuntimeContext, id: string): SourceConfig {
     process.exit(1);
   }
   return source;
+}
+
+/**
+ * Resolve a SESSION SCOPE (for `login`/`cookie-import`) — a recipe source id OR a sale-scan store
+ * slug, since both key a session file the same way (by that id). Returns the id + a start URL to
+ * seed the login browser; exits with a clear message when the id is neither.
+ */
+function requireSessionScope(ctx: RuntimeContext, id: string): { id: string; startUrl: string } {
+  const source = ctx.config.sources.find((s) => s.id === id);
+  if (source) return { id, startUrl: source.sitemap_url ?? source.feed_url ?? ctx.config.connector_url };
+  const store = ctx.config.scan_stores?.find((s) => s.store === id);
+  if (store) return { id, startUrl: ctx.config.connector_url };
+  const sources = ctx.config.sources.map((s) => s.id);
+  const stores = (ctx.config.scan_stores ?? []).map((s) => s.store);
+  console.error(`unknown session scope "${id}". sources: ${sources.join(", ") || "(none)"}; scan_stores: ${stores.join(", ") || "(none)"}`);
+  process.exit(1);
 }
 
 /** Build the real deps for the scheduler, sharing one browser tier across browser-tier sources. */
@@ -86,22 +104,67 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
 
 // --- verbs -------------------------------------------------------------------
 
-/** `run [--watch]` — one tick, or loop on the schedule. */
+/** `run [--watch]` — one tick, or loop on the schedule. Runs the recipe push tick AND (when the
+ *  machine declares `[[scan_stores]]`) the outbound-only sale-scan pull tick, sharing one browser. */
 async function cmdRun(watch: boolean): Promise<void> {
   const ctx = loadRuntimeContext();
   const browserTier = createBrowserTier();
+  const scanStores = ctx.config.scan_stores ?? [];
   try {
     const deps = await buildTickDeps(ctx, browserTier);
+    const pullDeps = scanStores.length
+      ? await buildPullDeps(ctx.config, ctx.ingestKey, ctx.configDir, browserTier, loadSession, selectTier, log)
+      : null;
     do {
-      log.info("tick start", { sources: ctx.config.sources.length, version: SATELLITE_VERSION });
-      const summaries = await runTick(ctx.config, deps);
-      reportSummaries(summaries);
+      log.info("tick start", { sources: ctx.config.sources.length, scan_stores: scanStores.length, version: SATELLITE_VERSION });
+      if (ctx.config.sources.length) {
+        const summaries = await runTick(ctx.config, deps);
+        reportSummaries(summaries);
+      }
+      if (pullDeps) {
+        const pull = await runPullTick(ctx.config, pullDeps);
+        log.info("sale-scan pull result", { ...pull });
+      }
       if (watch) {
         const ms = scheduleToMs(ctx.config.schedule);
         log.info("sleeping until next tick", { ms });
         await sleep(ms);
       }
     } while (watch);
+  } finally {
+    await browserTier.close();
+  }
+}
+
+/**
+ * `test <store> <locationId> [terms...]` — dry-run a SALE-SCAN adapter (satellite-sale-scan):
+ * run the operator adapter behind the store's session, validate each emitted `sale` observation
+ * locally against the shared contract, and PRINT them — reporting NOTHING to the Worker. Lets the
+ * operator verify a scan adapter before going live.
+ */
+async function cmdTestScan(store: ScanStoreConfig, locationId: string, terms: string[]): Promise<void> {
+  const ctx = loadRuntimeContext();
+  const browserTier = createBrowserTier();
+  try {
+    const adapters = await loadSaleAdapters(ctx.config);
+    const factory = adapters[store.adapter];
+    if (!factory) {
+      console.error(`no sale adapter "${store.adapter}" for store "${store.store}" (drop it in ${ctx.config.adapters_dir ?? "adapters_dir"})`);
+      process.exit(1);
+    }
+    const session = loadSession(ctx.configDir, store.store);
+    const tier = selectTier(store, browserTier);
+    const sdk: ScanSdk = { store, config: ctx.config, session, fetch: (u: string) => tier.fetch(u, session), log };
+    const adapter = factory(sdk);
+    const outcome = await runScanAdapter(sdk, adapter, { store: store.store, locationId, terms });
+    if ("error" in outcome) {
+      console.error(`scan error: ${outcome.error}`);
+      process.exit(2);
+    }
+    for (const r of outcome.rejected) console.error(`rejected (would NOT report): ${r.reason}`);
+    log.info("scan dry-run", { store: store.store, locationId, terms, observations: outcome.observations.length, rejected: outcome.rejected.length });
+    // The validated observations it WOULD report (nothing is sent).
+    console.log(JSON.stringify(outcome.observations, null, 2));
   } finally {
     await browserTier.close();
   }
@@ -173,8 +236,8 @@ async function cmdBackfill(sourceId: string): Promise<void> {
  */
 async function cmdLogin(sourceId: string): Promise<void> {
   const ctx = loadRuntimeContext();
-  const source = requireSource(ctx, sourceId);
-  const startUrl = source.sitemap_url ?? source.feed_url ?? ctx.config.connector_url;
+  // A recipe source id OR a sale-scan store slug — both capture a session keyed by that id.
+  const { startUrl } = requireSessionScope(ctx, sourceId);
   const { chromium } = await import("playwright");
   const browser = await chromium.launch({ headless: false });
   try {
@@ -198,10 +261,10 @@ async function cmdLogin(sourceId: string): Promise<void> {
   }
 }
 
-/** `cookie-import <source> <storageState.json>` — import an exported browser session. */
+/** `cookie-import <source|store> <storageState.json>` — import an exported browser session. */
 function cmdCookieImport(sourceId: string, path: string): void {
   const ctx = loadRuntimeContext();
-  requireSource(ctx, sourceId);
+  requireSessionScope(ctx, sourceId); // a recipe source id OR a sale-scan store slug
   const state = importSession(ctx.configDir, sourceId, path);
   log.info("session imported", { source: sourceId, cookies: state.cookies.length });
 }
@@ -224,8 +287,9 @@ function usage(): never {
     [
       "grocery-satellite <verb> [args]",
       "",
-      "  run [--watch]                     one scrape tick over all sources (--watch loops on schedule)",
-      "  test <source> <url>               dry-run one URL: fetch+extract+validate, print item, no POST",
+      "  run [--watch]                     one tick: recipe push + sale-scan pull (--watch loops on schedule)",
+      "  test <source> <url>               dry-run one recipe URL: fetch+extract+validate, print item, no POST",
+      "  test <store> <loc> [terms...]     dry-run a sale-scan adapter for a store: print observations, no report",
       "  login <source>                    headful browser to capture + save the source's session",
       "  cookie-import <source> <file>     import an exported storageState JSON as the source's session",
       "  backfill <source>                 discover + push the whole archive for one source",
@@ -241,9 +305,13 @@ async function main(): Promise<void> {
       await cmdRun(rest.includes("--watch"));
       break;
     case "test": {
-      const [sourceId, url] = rest;
-      if (!sourceId || !url) usage();
-      await cmdTest(sourceId, url);
+      const [first, second, ...more] = rest;
+      if (!first || !second) usage();
+      // A configured scan-store slug as the first arg → the sale-scan dry-run (store, locationId,
+      // terms…); otherwise the recipe dry-run (source, url). Detection avoids a second verb.
+      const scanStore = loadRuntimeContext().config.scan_stores?.find((s) => s.store === first);
+      if (scanStore) await cmdTestScan(scanStore, second, more);
+      else await cmdTest(first, second);
       break;
     }
     case "backfill": {

@@ -219,6 +219,22 @@ export async function failTask(env: Env, taskId: string, reason: string | null, 
   return rows.length ? rows[0].status : null;
 }
 
+/**
+ * Prune TERMINAL (`done`/`failed`) tasks of a `kind` whose `updated_at` is older than `olderThan`
+ * epoch ms. A recurring producer (e.g. sale-scan) re-enqueues every refresh cycle, so without this
+ * the terminal rows would accumulate unbounded; pruning keeps the queue bounded. Only terminal rows
+ * are removed — a `pending`/`claimed` row is never touched. Through `src/db.ts`, so a D1 failure is
+ * a structured storage_error. Returns the pruned row count.
+ */
+export async function pruneTerminalTasks(env: Env, kind: string, olderThan: number): Promise<number> {
+  const res = await db(env).run(
+    "DELETE FROM satellite_tasks WHERE kind = ?1 AND status IN ('done', 'failed') AND updated_at < ?2",
+    kind,
+    olderThan,
+  );
+  return res.changes;
+}
+
 /** Load one task row by id (the results endpoint's correlation lookup; NULL = unknown task_id). */
 export async function getTask(env: Env, taskId: string): Promise<SatelliteTaskRow | null> {
   const row = await db(env).first<SatelliteTaskRow>(

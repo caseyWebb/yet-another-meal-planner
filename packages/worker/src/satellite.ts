@@ -14,7 +14,16 @@
 // like a recipe push — which is what makes a double-run safe (correctness rests on that dedup,
 // not on the lease). Handlers return STRUCTURED errors, never throw.
 
-import { parseClaimRequest, parseResultRequest, type ClaimResponse, type ResultResponse, type TaskStatus } from "@grocery-agent/contract";
+import {
+  parseClaimRequest,
+  parseResultRequest,
+  parseSaleScanPayload,
+  SALE_SCAN_KIND,
+  type BatchResponse,
+  type ClaimResponse,
+  type ResultResponse,
+  type TaskStatus,
+} from "@grocery-agent/contract";
 import type { Env } from "./env.js";
 import { bearer, underRateLimit, intakeObservations } from "./ingest.js";
 import { lookupIngestKey, type IngestKeyRow } from "./ingest-db.js";
@@ -122,17 +131,52 @@ export async function handleSatelliteResults(request: Request, env: Env, now: nu
       return json(response, 200);
     }
 
-    // status === "done": run any observations through the SHARED raw-observation intake (same
+    // status === "done": land any observations through the SHARED raw-observation intake (same
     // validation + arrival dedup as a recipe push — so a late/double report dedups to the same
     // landed rows), then transition the task terminal. Correctness rests on this dedup, not the lease.
-    let results;
-    if (req.observations && req.observations.length > 0) {
-      results = (await intakeObservations(env, req.observations, `satellite-pull:${task.kind}`, key.id, now)).results;
+    //
+    // Sale intake is TASK-SCOPED: for a `sale-scan` task the rollup `(store, locationId)` is
+    // AUTHORITATIVE from the CLAIMED task's payload (Worker-created by the producer, which excludes
+    // Kroger) — never from the observation. A `done` therefore ALWAYS converges that store's rollup,
+    // INCLUDING an empty / all-rejected scan (a genuine "no sales today" must clear stale sales),
+    // which is why the sale intake runs even with zero observations. (A `failed` report never
+    // converges — handled above.) Recipe tasks keep the "only when observations present" path.
+    let intake: BatchResponse | undefined;
+    let notice: string | undefined;
+    if (task.kind === SALE_SCAN_KIND) {
+      let payload: unknown = null;
+      try {
+        payload = JSON.parse(task.payload);
+      } catch {
+        payload = null;
+      }
+      const sp = parseSaleScanPayload(payload);
+      if (sp.ok) {
+        intake = await intakeObservations(env, req.observations ?? [], `satellite-pull:${task.kind}`, key.id, now, {
+          saleTask: { store: sp.value.store, locationId: sp.value.locationId },
+        });
+        // Broken-adapter signal: items reported but ZERO survived validation → the store converged
+        // to EMPTY. Surface it (an operator-visible marker + a job-style log line) rather than
+        // passing a silent zeroing off as a clean success.
+        const survived = intake.accepted + intake.deduped;
+        if (intake.received > 0 && survived === 0) {
+          notice = `reported ${intake.received} items, 0 survived validation`;
+          console.warn("[satellite] " + JSON.stringify({ event: "sale_scan_zero_survivors", task_id: task.id, received: intake.received }));
+        }
+      } else {
+        // A corrupt/legacy sale-scan payload yields no authoritative rollup key — do NOT converge
+        // (never guess a store); surface it and still transition the task terminal.
+        notice = `sale-scan task payload invalid, no rollup written: ${sp.error}`;
+        console.warn("[satellite] " + JSON.stringify({ event: "sale_scan_bad_payload", task_id: task.id, error: sp.error }));
+      }
+    } else if (req.observations && req.observations.length > 0) {
+      intake = await intakeObservations(env, req.observations, `satellite-pull:${task.kind}`, key.id, now);
     }
     const resulting = await completeTask(env, task.id, now); // null when already terminal (idempotent no-op)
     const response: ResultResponse = {
       task: { id: task.id, status: (resulting ?? task.status) as TaskStatus },
-      ...(results !== undefined ? { results } : {}),
+      ...(intake !== undefined ? { results: intake.results } : {}),
+      ...(notice !== undefined ? { notice } : {}),
     };
     return json(response, 200);
   } catch (e) {

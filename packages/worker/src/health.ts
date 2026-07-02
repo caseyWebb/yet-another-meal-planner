@@ -17,6 +17,7 @@ import type { Env } from "./env.js";
 /** The registered background jobs `/health` aggregates. */
 export const HEALTH_JOBS = [
   "flyer-warm",
+  "sale-scan-plan",
   "recipe-classify",
   "recipe-index",
   "recipe-embed",

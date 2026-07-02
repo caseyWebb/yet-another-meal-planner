@@ -26,6 +26,10 @@ import { readDiscoveryRejections } from "./corpus-db.js";
 import { loadSettledUrls } from "./discovery-db.js";
 import { recipeSourceMap } from "./recipe-index.js";
 import { extractRecipeSources, canonicalizeUrl } from "./discovery.js";
+import { writeStoreRollup, KROGER_STORE } from "./flyer-warm.js";
+import type { FlyerItem } from "./matching.js";
+import type { KvStore } from "./kroger-user.js";
+import { validateSale } from "./sale-intake.js";
 import { ToolError } from "./errors.js";
 
 /** Per-key fixed-window rate limit (best-effort, KV-backed; fail-open on a KV error). */
@@ -58,15 +62,39 @@ export async function underRateLimit(env: Env, keyId: string, now: number): Prom
   }
 }
 
+/** Join a (store, locationId) into a Map key with a NUL delimiter: a locationId that is a raw
+ *  `preferred_location` label can contain spaces, so a bare-space join could collide two pairs. */
+const salePairKey = (store: string, locationId: string): string => `${store}\u0000${locationId}`;
+
 /**
- * The SHARED raw-observation intake: dedup reads (corpus / rejections / settled-log / in-flight
- * inbox) + the per-item validate → canonicalize → dedup → persist loop, returning the batch
- * summary. Both `POST /admin/api/ingest` (recipe-scrape push) and the pull channel's
- * `POST /satellite/results` (satellite.ts) run their observations through THIS one function, so
- * the persistence, per-item validation, plausibility bounds, and ARRIVAL DEDUP are identical —
- * a re-push / late report / double-run dedups to the same landed rows. `origin` is the
- * human-readable provenance stored on each candidate. May throw a `storage_error` ToolError on a
- * D1 failure (the caller wraps it into a structured `503`).
+ * Task context for the `sale` arm. Sale intake is TASK-SCOPED (Decision 6).
+ */
+export interface IntakeOptions {
+  /**
+   * Present ONLY when the observations were reported for a CLAIMED `sale-scan` task (via
+   * satellite.ts): the task-AUTHORITATIVE `(store, locationId)` the sale rollup is keyed on —
+   * Worker-created by the producer (which excludes Kroger), never taken from the untrusted
+   * observation (which carries store/location for PROVENANCE only). Absent on the push path
+   * (`/admin/api/ingest`), where `sale` items are therefore rejected — sale-scan is pull-channel-only.
+   */
+  saleTask?: { store: string; locationId: string };
+}
+
+/**
+ * The SHARED raw-observation intake, DISPATCHED BY observation `kind` (Decision 6): `recipe` →
+ * the recipe-candidate path (dedup on canonical URL → insert `ingest_candidates`); `sale` → the
+ * store-rollup path (re-derive + replace `flyer:{store}:{locationId}`). Both `POST /admin/api/ingest`
+ * (recipe-scrape push) and the pull channel's `POST /satellite/results` (satellite.ts) run their
+ * observations through THIS one function, so per-item validation and ARRIVAL DEDUP are identical
+ * per arm — a re-push / late report / double-run dedups to the same landed rows (recipe: URL
+ * dedup; sale: productId dedup within the store + rollup REPLACE). `origin` is the human-readable
+ * provenance stored on each recipe candidate (unused by the sale arm).
+ *
+ * The sale arm is TASK-SCOPED: a `sale` observation is valid ONLY as a claimed `sale-scan` task's
+ * result, and the rollup identity is `options.saleTask`'s `(store, locationId)` — never the
+ * observation's, never the Worker-owned `kroger` namespace. Called WITHOUT `saleTask` (the push
+ * path), every `sale` item is rejected (recipe items unaffected). May throw a `storage_error`
+ * ToolError on a D1/KV failure (the caller wraps it into a structured `503`).
  */
 export async function intakeObservations(
   env: Env,
@@ -74,24 +102,60 @@ export async function intakeObservations(
   origin: string,
   keyId: string,
   now: number,
+  options: IntakeOptions = {},
 ): Promise<BatchResponse> {
-  const [sourceMap, rejections, settled, inflight] = await Promise.all([
-    recipeSourceMap(env),
-    readDiscoveryRejections(env),
-    loadSettledUrls(env),
-    ingestCandidateUrls(env),
-  ]);
-  const corpusUrls = extractRecipeSources(sourceMap);
   const receivedAt = new Date(now).toISOString();
-
   const results: ItemResult[] = [];
   let accepted = 0;
   let deduped = 0;
   let rejected = 0;
+
+  // Validate each item up front (one bad item never sinks the batch), preserving input order.
+  const parsedItems = observations.map((raw) => ({ raw, parsed: parseObservationItem(raw) }));
+  const anyRecipe = parsedItems.some((p) => p.parsed.ok && p.parsed.value.kind === "recipe");
+
+  // The recipe arm's arrival-dedup sets are loaded ONLY when the batch carries a recipe — a pure
+  // `sale` batch (the sale-scan case over /satellite/results) skips these corpus/settled/inbox reads.
+  let corpusUrls = new Set<string>();
+  let rejections = new Set<string>();
+  let settled = new Set<string>();
+  let inflight = new Set<string>();
+  if (anyRecipe) {
+    const [sourceMap, rej, set, inf] = await Promise.all([
+      recipeSourceMap(env),
+      readDiscoveryRejections(env),
+      loadSettledUrls(env),
+      ingestCandidateUrls(env),
+    ]);
+    corpusUrls = extractRecipeSources(sourceMap);
+    rejections = rej;
+    settled = set;
+    inflight = inf;
+  }
   const seenThisBatch = new Set<string>();
 
-  for (const raw of observations) {
-    const parsed = parseObservationItem(raw);
+  // Sale intake is TASK-SCOPED (Decision 6): the rollup identity is the CLAIMED `sale-scan` task's
+  // `(store, locationId)`, authoritative over anything the observation claims. Resolve it once, up
+  // front. The store is normalized (trim + lowercase) BEFORE the KROGER-namespace guard so a
+  // `"Kroger"` can't slip a bare `=== "kroger"` check — `flyer:kroger:*` is Worker-owned and a
+  // sensor must NEVER write it (defense in depth; a legit producer task never carries store kroger).
+  const saleTask = options.saleTask;
+  const saleStore = saleTask ? saleTask.store.trim().toLowerCase() : null;
+  const saleLocation = saleTask ? saleTask.locationId.trim() : null;
+  const saleStoreForbidden = saleStore === KROGER_STORE;
+
+  // The sale arm accumulates surviving rows for the TASK's single (store, locationId); after the
+  // loop that store's rollup is REPLACED with the observed set (one sale-scan task = one store's
+  // full current sale set). Seeded up front for a WRITABLE task store, so an empty / all-rejected
+  // `done` still REPLACES the store to empty — a genuine "no sales today" scan converges the same
+  // way a fresh one does, rather than leaving stale sales. No task store (the push path) or a
+  // forbidden (kroger) store → no bucket → no write at all.
+  const saleByStore = new Map<string, { store: string; locationId: string; items: Map<string, FlyerItem> }>();
+  if (saleStore && saleLocation && !saleStoreForbidden) {
+    saleByStore.set(salePairKey(saleStore, saleLocation), { store: saleStore, locationId: saleLocation, items: new Map() });
+  }
+
+  for (const { raw, parsed } of parsedItems) {
     if (!parsed.ok) {
       const src = typeof (raw as { source?: unknown })?.source === "string" ? (raw as { source: string }).source : "";
       results.push({ disposition: "rejected", source: src, reason: parsed.error });
@@ -99,6 +163,52 @@ export async function intakeObservations(
       continue;
     }
     const item = parsed.value;
+
+    // --- sale arm: re-derive + accumulate into the TASK's store rollup (Decision 6/7) ---
+    if (item.kind === "sale") {
+      // Provenance echoed in the ItemResult.source slot: the product url when reported, else its id.
+      const provenance = item.url ?? item.productId;
+      // Pull-channel-only: a `sale` is valid ONLY as a claimed sale-scan task's result. On the push
+      // path (`/admin/api/ingest`) there is no task context, so reject it (recipe items unaffected).
+      if (!saleTask || saleStore === null || saleLocation === null) {
+        results.push({ disposition: "rejected", source: provenance, reason: "sale observation requires a claimed sale-scan task (pull channel only)" });
+        rejected++;
+        continue;
+      }
+      // Defense in depth: never write the Worker-owned `kroger` namespace, even for a forged/buggy task.
+      if (saleStoreForbidden) {
+        results.push({ disposition: "rejected", source: provenance, reason: "sale intake cannot write the kroger namespace" });
+        rejected++;
+        continue;
+      }
+      // The WRITE identity is the TASK's; an observation reporting a DIFFERENT store/location under
+      // this task (a satellite scanning the wrong store) is rejected: it cannot redirect the write.
+      if (item.store.trim().toLowerCase() !== saleStore || item.locationId.trim() !== saleLocation) {
+        results.push({ disposition: "rejected", source: provenance, reason: `observation store/location (${item.store}/${item.locationId}) does not match the claimed sale-scan task` });
+        rejected++;
+        continue;
+      }
+      const v = validateSale(item);
+      if (!v.ok) {
+        results.push({ disposition: "rejected", source: provenance, reason: v.reason });
+        rejected++;
+        continue;
+      }
+      // The bucket is the task's, seeded above (a writable task store is guaranteed at this point).
+      const bucket = saleByStore.get(salePairKey(saleStore, saleLocation))!;
+      if (bucket.items.has(v.item.sku)) {
+        // Arrival dedup by productId within the store — a double-reported product lands once.
+        results.push({ disposition: "deduped", source: provenance });
+        deduped++;
+        continue;
+      }
+      bucket.items.set(v.item.sku, v.item);
+      results.push({ disposition: "accepted", source: provenance });
+      accepted++;
+      continue;
+    }
+
+    // --- recipe arm: dedup on canonical URL → insert ingest_candidates (unchanged) ---
     const url = canonicalizeUrl(item.source);
     if (!url) {
       results.push({ disposition: "rejected", source: item.source, reason: "unresolvable source url" });
@@ -134,6 +244,15 @@ export async function intakeObservations(
       results.push({ disposition: "deduped", source: url });
       deduped++;
     }
+  }
+
+  // Publish the sale arm: REPLACE the TASK's store rollup with its freshly-observed set at `now`
+  // (there is at most one bucket — the claimed task's store). An empty set REPLACES to empty, so a
+  // genuine "no sales today" scan converges rather than leaving stale sales; a late/double report of
+  // the same scan replaces to the same rows (idempotent). Goes through the shared KV store, so a KV
+  // blip surfaces as the caller's structured storage_error like the recipe arm.
+  for (const { store, locationId, items } of saleByStore.values()) {
+    await writeStoreRollup(env.KROGER_KV as unknown as KvStore, store, locationId, [...items.values()], now);
   }
 
   return { received: observations.length, accepted, deduped, rejected, results };

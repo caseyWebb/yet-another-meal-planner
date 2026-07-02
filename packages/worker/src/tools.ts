@@ -43,7 +43,7 @@ import {
   type SearchCandidate,
 } from "./semantic-search.js";
 import { listGuidance, readGuidance, saveGuidance } from "./guidance.js";
-import { loadOperatorConfig } from "./operator-config.js";
+import { loadOperatorConfig, DEFAULT_OPERATOR_CONFIG } from "./operator-config.js";
 import { fetchWeatherForecast } from "./weather.js";
 import { mergeOverlay, type Overlay } from "./overlay.js";
 import { readPantry } from "./session-db.js";
@@ -70,7 +70,7 @@ import {
   type MatchResult,
 } from "./matching.js";
 import { compareUnitPrice } from "./unit-price.js";
-import { readFlyerRollup, filterByMinSavings } from "./flyer-warm.js";
+import { readStoreFlyer, filterByMinSavings, KROGER_STORE } from "./flyer-warm.js";
 import type { KvStore } from "./kroger-user.js";
 
 const SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
@@ -197,6 +197,27 @@ export function buildServer(env: Env, tenant: Tenant, origin?: string): McpServe
       })();
     }
     return locationPromise;
+  }
+
+  /**
+   * Resolve the caller's PRIMARY fulfillment store for `store_flyer`: its slug (`stores.primary`,
+   * default "kroger") + the rollup `locationId`. For Kroger the human `preferred_location` label is
+   * resolved to a numeric locationId (as `kroger_flyer` does); for a satellite-scanned store the
+   * Worker has no API, so the operator's `preferred_location` label IS the locationId the producer
+   * enqueues and the satellite reports under (the `flyer:{store}:{locationId}` rollup key). Throws
+   * `not_found` when no preferred location is set — the tool catches it and degrades to empty.
+   */
+  async function resolveStoreFlyerTarget(): Promise<{ store: string; locationId: string }> {
+    const prefs = await getPreferences();
+    const stores = prefs.stores as Record<string, unknown> | undefined;
+    const primary =
+      typeof stores?.primary === "string" && stores.primary.trim()
+        ? stores.primary.trim().toLowerCase()
+        : KROGER_STORE;
+    const label = typeof stores?.preferred_location === "string" ? stores.preferred_location : null;
+    if (!label) throw new ToolError("not_found", "no preferred store location is set");
+    if (primary === KROGER_STORE) return { store: KROGER_STORE, locationId: await getLocationId() };
+    return { store: primary, locationId: label };
   }
 
   // Shared matcher wiring: the ingredient context (the normalization funnel — resolve +
@@ -669,11 +690,52 @@ export function buildServer(env: Env, tenant: Tenant, origin?: string): McpServe
         const defaultDiscount = operatorFlyerConfig?.minFlyerDiscount ?? MIN_FLYER_DISCOUNT;
         const minDiscount =
           typeof filter?.min_savings_pct === "number" ? filter.min_savings_pct / 100 : defaultDiscount;
-        // Pure cache read: the warm (flyer-warm.ts) stores noise-floor candidates per
-        // location; the 5% deal floor is applied HERE so it stays caller-tunable.
-        const rollup = await readFlyerRollup(env.KROGER_KV as unknown as KvStore, locationId);
+        // Pure cache read: the warm (flyer-warm.ts) stores noise-floor candidates per location at
+        // the Kroger-namespaced key `flyer:kroger:{locationId}` (readStoreFlyer falls back to the
+        // legacy `flyer:{locationId}` while the first namespaced sweep is pending). The 5% deal
+        // floor is applied HERE so it stays caller-tunable.
+        const rollup = await readStoreFlyer(env.KROGER_KV as unknown as KvStore, KROGER_STORE, locationId);
         if (!rollup) return { items: [], as_of: null };
-        return { items: filterByMinSavings(rollup.items, minDiscount), as_of: rollup.as_of };
+        return { items: filterByMinSavings(rollup.items, minDiscount), as_of: new Date(rollup.as_of).toISOString() };
+      }),
+  );
+
+  server.registerTool(
+    "store_flyer",
+    {
+      description:
+        "Synthesized sale scan for the caller's PRIMARY fulfillment store — Kroger or a satellite-scanned store — served from a background-warmed cache (never a live fetch). Returns `{ items, as_of }` in the SAME shape as kroger_flyer: `items` are fulfillable products genuinely on sale (deduped by productId), kept only when marked down at least `min_savings_pct` of the regular price (default 5%, applied at read so you can widen with a lower value); `as_of` is when this store's flyer was last refreshed (ISO 8601), or null when it has not been scanned yet — in which case `items` is empty, NOT an error. A satellite-scanned store's rollup that is older than the operator's staleness ceiling reads as empty (with `as_of` still surfaced) rather than steering on stale sales. Resolves the store from the caller's profile (`stores.primary` + `stores.preferred_location`); Kroger and satellite sales are indistinguishable here except by which store they came from. Issues no flyer FAN-OUT subrequest (the background sweep already did that) — a pure cache read; for a Kroger primary, resolving the `preferred_location` to a numeric locationId may cost one Kroger Locations API call, exactly like kroger_flyer (a satellite store's label IS its rollup locationId, so it needs none). Use this as the general menu-gen flyer read; kroger_flyer remains the Kroger-specific read.",
+      inputSchema: { filter: z.object(flyerFilterShape).optional() },
+    },
+    ({ filter }) =>
+      runTool(async () => {
+        // Resolve the caller's primary fulfillment store (slug + location). A missing/unresolvable
+        // store degrades to empty items (never an error) — the same posture as a cold cache. No
+        // external store subrequest is issued for a satellite store (its label IS the locationId);
+        // a Kroger store resolves its location exactly as kroger_flyer does.
+        const target = await resolveStoreFlyerTarget().catch(() => null);
+        if (!target) return { items: [], as_of: null };
+        const { store, locationId } = target;
+
+        const operatorConfig = await loadOperatorConfig(env).catch(() => null);
+        const defaultDiscount = operatorConfig?.minFlyerDiscount ?? MIN_FLYER_DISCOUNT;
+        const minDiscount =
+          typeof filter?.min_savings_pct === "number" ? filter.min_savings_pct / 100 : defaultDiscount;
+
+        const rollup = await readStoreFlyer(env.KROGER_KV as unknown as KvStore, store, locationId);
+        if (!rollup) return { items: [], as_of: null };
+        const as_of = new Date(rollup.as_of).toISOString();
+
+        // Staleness ceiling — SATELLITE-scanned stores only. Kroger's daily cron re-scan bounds its
+        // freshness, but a satellite that goes offline would leave its last rollup indefinitely, so
+        // past the ceiling a scanned store reads as empty rather than steering on stale sales.
+        if (store !== KROGER_STORE) {
+          const stalenessDays = operatorConfig?.scanStalenessDays ?? DEFAULT_OPERATOR_CONFIG.scanStalenessDays;
+          if (Date.now() - rollup.as_of > stalenessDays * 24 * 60 * 60 * 1000) {
+            return { items: [], as_of };
+          }
+        }
+        return { items: filterByMinSavings(rollup.items, minDiscount), as_of };
       }),
   );
 

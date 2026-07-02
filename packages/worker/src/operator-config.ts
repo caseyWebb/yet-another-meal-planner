@@ -21,6 +21,13 @@ export interface OperatorConfig {
   minFlyerDiscount: number;
   flyerRefreshHours: number;
   flyerBatchUnits: number;
+  // Satellite sale-scan behavior. `scanStalenessDays` is the read-time staleness ceiling
+  // `store_flyer` applies to a SATELLITE-scanned store's rollup only (a dead satellite must
+  // degrade to empty, not steer menu-gen on stale sales); Kroger keeps its cron-refresh
+  // freshness (no ceiling). It rides the config module as a compiled default — no D1 column is
+  // added in this change (that would require a migration; the rollup + queue changes carry
+  // none), so it is not yet DB-tunable; a later change wires the column + save/validate path.
+  scanStalenessDays: number;
 }
 
 export const DEFAULT_OPERATOR_CONFIG: OperatorConfig = {
@@ -33,6 +40,7 @@ export const DEFAULT_OPERATOR_CONFIG: OperatorConfig = {
   minFlyerDiscount: 0.05,
   flyerRefreshHours: 24,
   flyerBatchUnits: 12,
+  scanStalenessDays: 7,
 };
 
 // --- D1 row -----------------------------------------------------------------
@@ -70,6 +78,8 @@ function rowToConfig(row: OperatorConfigRow | null): OperatorConfig {
     minFlyerDiscount: validNum(row.min_flyer_discount, (n) => n >= 0 && n <= 1) ?? DEFAULT_OPERATOR_CONFIG.minFlyerDiscount,
     flyerRefreshHours: validNum(row.flyer_refresh_hours, (n) => n > 0 && Number.isInteger(n)) ?? DEFAULT_OPERATOR_CONFIG.flyerRefreshHours,
     flyerBatchUnits: validNum(row.flyer_batch_units, (n) => n > 0 && Number.isInteger(n)) ?? DEFAULT_OPERATOR_CONFIG.flyerBatchUnits,
+    // No D1 column yet (see the field doc) — always the compiled default this change.
+    scanStalenessDays: DEFAULT_OPERATOR_CONFIG.scanStalenessDays,
   };
 }
 

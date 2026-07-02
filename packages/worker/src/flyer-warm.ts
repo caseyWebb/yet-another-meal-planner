@@ -25,11 +25,19 @@ import { readPreferences } from "./profile-db.js";
 import { readFlyerTerms } from "./corpus-db.js";
 import { notifyFailure, recordUsagePoint, writeJobHealth, writeJobRun } from "./health.js";
 
-// KV keys. Rollups are per-location (`flyer:{locationId}`); the cursor and the
-// persisted sweep plan are single keys. All live in the existing KROGER_KV namespace.
+// KV keys. Rollups are STORE-NAMESPACED (`flyer:{store}:{locationId}`) so first-party Kroger
+// sales and satellite-scanned sales converge in one raw layer keyed by store; the Kroger sweep's
+// cursor + persisted plan stay single keys. A rollup key always carries a `locationId` segment,
+// so it never collides with `flyer:cursor`/`flyer:plan`. All live in the existing KROGER_KV.
 const CURSOR_KEY = "flyer:cursor";
 const PLAN_KEY = "flyer:plan";
-export const rollupKey = (locationId: string): string => `flyer:${locationId}`;
+/** The Kroger store namespace — the Worker scans Kroger itself via this flyer warm. */
+export const KROGER_STORE = "kroger";
+/** Store-namespaced rollup key: `flyer:{store}:{locationId}` (Kroger writes `flyer:kroger:{loc}`). */
+export const rollupKey = (store: string, locationId: string): string => `flyer:${store}:${locationId}`;
+/** The pre-namespacing Kroger rollup key, retained ONLY as the read-time fallback while a deploy's
+ *  first namespaced sweep is still pending — no cold read-gap, no data migration. */
+export const legacyRollupKey = (locationId: string): string => `flyer:${locationId}`;
 
 // Per-term scan depth — mirrors the original `kroger_flyer` (a bounded, relevance-
 // ranked head of each category; explicitly non-exhaustive).
@@ -76,13 +84,18 @@ export interface SweepCursor {
   completed_at: number | null;
 }
 
-/** The cached per-location rollup. Stores noise-floor candidates (the 5% deal floor
- *  is applied at READ time, so `min_savings_pct` stays caller-tunable). */
+/** The cached per-(store,location) rollup. Stores noise-floor candidates (the 5% deal floor
+ *  is applied at READ time, so `min_savings_pct` stays caller-tunable). One shape for a Kroger
+ *  sweep and a satellite sale scan, so `store_flyer` reads them uniformly. */
 export interface FlyerRollup {
   sweep_id: string;
   /** Epoch ms of the latest contribution to this rollup. Surfaced to readers as `as_of`. */
   as_of: number;
   items: FlyerItem[];
+  /** Store + location markers (added with store-namespacing). Optional so a legacy
+   *  `flyer:{locationId}` value read via the fallback still parses. */
+  store?: string;
+  location_id?: string;
 }
 
 /** Injected dependencies — fakes in tests, real clients via `buildWarmDeps`. */
@@ -216,10 +229,12 @@ async function publish(
 ): Promise<void> {
   for (const [locationId, perTerm] of byLoc) {
     const incoming = dedupeFlyerHits(perTerm);
-    const existing = await readJson<FlyerRollup>(deps.kv, rollupKey(locationId));
+    const key = rollupKey(KROGER_STORE, locationId);
+    const existing = await readJson<FlyerRollup>(deps.kv, key);
     const base = existing && existing.sweep_id === sweepId ? existing.items : [];
     const items = mergeFlyerItems(base, incoming);
-    await putJson(deps.kv, rollupKey(locationId), { sweep_id: sweepId, as_of: now, items });
+    const value: FlyerRollup = { sweep_id: sweepId, as_of: now, items, store: KROGER_STORE, location_id: locationId };
+    await putJson(deps.kv, key, value);
   }
 }
 
@@ -335,15 +350,40 @@ function logSweep(plan: SweepPlan, errors: number): void {
   );
 }
 
-/** Read a location's warmed rollup for `kroger_flyer`. Returns null when no rollup
- *  exists yet (cold cache / a store not yet swept) — the tool degrades to empty. */
-export async function readFlyerRollup(
+/**
+ * Read a store's warmed rollup for the store-aware reads (`kroger_flyer` / `store_flyer`). Reads
+ * the store-namespaced key `flyer:{store}:{locationId}`; for the KROGER namespace it falls back to
+ * the LEGACY `flyer:{locationId}` key while the namespaced key is absent — so a deploy has no cold
+ * read-gap and no data migration is needed (the first namespaced sweep converges the cache and the
+ * fallback stops mattering). Returns the raw rollup (epoch-ms `as_of`) so a caller applies its own
+ * staleness ceiling + ISO formatting; null when neither key exists (cold cache / not yet scanned).
+ */
+export async function readStoreFlyer(kv: KvStore, store: string, locationId: string): Promise<FlyerRollup | null> {
+  const primary = await readJson<FlyerRollup>(kv, rollupKey(store, locationId));
+  if (primary) return primary;
+  if (store === KROGER_STORE) {
+    const legacy = await readJson<FlyerRollup>(kv, legacyRollupKey(locationId));
+    if (legacy) return legacy;
+  }
+  return null;
+}
+
+/**
+ * REPLACE a store's rollup with a freshly-observed item set stamped `as_of: now`. The
+ * store-agnostic write the satellite sale intake uses: one `sale-scan` task = one store's full
+ * current sale set, so a re-scan SUPERSEDES the prior scan (a partial cannot clobber). Writes the
+ * SAME `FlyerRollup` shape the Kroger warm's `publish` writes, so Kroger and satellite sales
+ * converge at one raw layer and `store_flyer` reads them uniformly.
+ */
+export async function writeStoreRollup(
   kv: KvStore,
+  store: string,
   locationId: string,
-): Promise<{ items: FlyerItem[]; as_of: string } | null> {
-  const rollup = await readJson<FlyerRollup>(kv, rollupKey(locationId));
-  if (!rollup) return null;
-  return { items: rollup.items, as_of: new Date(rollup.as_of).toISOString() };
+  items: FlyerItem[],
+  now: number,
+): Promise<void> {
+  const value: FlyerRollup = { sweep_id: `scan-${now}`, as_of: now, items, store, location_id: locationId };
+  await putJson(kv, rollupKey(store, locationId), value);
 }
 
 /**

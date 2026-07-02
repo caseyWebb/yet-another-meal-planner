@@ -530,7 +530,19 @@ Synthesized sale scan for the caller's store, served from a **cache warmed in th
   - `matched_terms` (array of strings): every broad term that surfaced this product during the sweep.
   - `as_of` (string | null): ISO 8601 timestamp of this store's last warm, or `null` when the store has not been swept yet.
 
-**Notes:** Pure cache read — issues **no** external Kroger subrequest. Cold/absent cache returns `{ items: [], as_of: null }` (never an error), the same graceful degradation as an absent/empty flyer-terms set (the D1 `flyer_terms` table, which now feeds the **warm job**, not this tool). The flyer may be a few hours stale; for a specific purchase the order path re-prices live. There are **no** ad-hoc `terms` / `against_stockup` params — checking whether a specific stockup item or substitute candidate is on sale lives in the place-groceries flow, not here.
+**Notes:** Pure cache read — issues **no** external Kroger subrequest. Reads the store-namespaced `flyer:kroger:{locationId}` rollup, falling back to the legacy `flyer:{locationId}` key while a deploy's first namespaced sweep is pending (no cold gap). Cold/absent cache returns `{ items: [], as_of: null }` (never an error), the same graceful degradation as an absent/empty flyer-terms set (the D1 `flyer_terms` table, which now feeds the **warm job**, not this tool). The flyer may be a few hours stale; for a specific purchase the order path re-prices live. There are **no** ad-hoc `terms` / `against_stockup` params — checking whether a specific stockup item or substitute candidate is on sale lives in the place-groceries flow, not here. `store_flyer` (below) is the store-aware generalization that also serves a satellite-scanned store; `kroger_flyer` is the retained Kroger-specific read.
+
+### `store_flyer(filter)`
+
+Synthesized sale scan for the caller's **primary fulfillment store** — Kroger **or** a satellite-scanned store — served from the same background-warmed cache, in the **same shape** as `kroger_flyer`. Resolves the store from the profile (`stores.primary` + `stores.preferred_location`), reads its `flyer:{store}:{locationId}` rollup, and applies the `min_savings_pct` deal floor at read. Kroger and satellite-scanned sales are **indistinguishable** to the reader (both re-derive `savings` from raw `{ regular, promo }`) except by which store they came from. Use this as the general menu-gen flyer read; `kroger_flyer` remains the Kroger-specific read.
+
+**Params:**
+- `filter` (object, optional): `{ min_savings_pct? }` — same as `kroger_flyer` (default **5%**, applied at read).
+
+**Returns:**
+- `{ items: [{ sku, brand, description, size, price: { regular, promo }, savings, categories, matched_terms }], as_of }` — the same item shape as `kroger_flyer`. For a satellite-scanned store `matched_terms` is empty (the satellite doesn't report which broad term surfaced each product).
+
+**Notes:** Pure cache read — issues **no** flyer **fan-out** subrequest (the background sweep already did that). For a **satellite** store the `preferred_location` label IS its rollup `locationId`, so no subrequest at all; for a **Kroger** primary, resolving that label to a numeric `locationId` may cost **one** Kroger Locations API call (inherited from `kroger_flyer`) — no flyer scan either way. Cold/absent/unresolvable store returns `{ items: [], as_of: null }` (never an error). A **satellite-scanned** store's rollup older than the operator staleness ceiling (default ~7 days) reads as **empty** (with `as_of` still surfaced) rather than steering menu-gen on stale sales — a dead satellite degrades to empty, not to stale; Kroger keeps its cron-refresh freshness (no ceiling).
 
 ### `kroger_prices(ingredients)`
 

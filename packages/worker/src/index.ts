@@ -15,6 +15,7 @@ import { handleOAuth } from "./oauth.js";
 import { handleAuthorize } from "./authorize.js";
 import { handleInboundEmail, rejectReasonFor, type InboundMessage } from "./email.js";
 import { buildWarmDeps, runWarmJob } from "./flyer-warm.js";
+import { buildSaleScanPlanDeps, runSaleScanPlanJob } from "./sale-scan-plan.js";
 import { buildEmbedDeps, runEmbedJob } from "./recipe-embeddings.js";
 import { runNightVibeVectorJob } from "./night-vibe-vector.js";
 import { runReconcileSignalsJob } from "./reconcile-signals.js";
@@ -200,8 +201,13 @@ export default {
     const warmConfig = operatorConfig
       ? { batchUnits: operatorConfig.flyerBatchUnits, refreshMs: operatorConfig.flyerRefreshHours * 60 * 60 * 1000 }
       : {};
+    // The sale-scan producer is a sibling of the flyer warm (NOT folded in): it only ENQUEUES
+    // `sale-scan` tasks for non-Kroger stores (the satellite scans), spending zero external
+    // subrequests. Refresh-gated on the same daily cadence as the flyer warm (operator-tunable).
+    const saleScanConfig = operatorConfig ? { refreshMs: operatorConfig.flyerRefreshHours * 60 * 60 * 1000 } : {};
     const phase1 = await Promise.allSettled([
       runWarmJob(env, buildWarmDeps(env), warmConfig),
+      runSaleScanPlanJob(env, buildSaleScanPlanDeps(env), saleScanConfig),
       runFacetJob(env, buildFacetDeps(env, corpus)),
       // The ingredient-normalization capture job is independent of the recipe pipeline
       // (it drains the novel-term queue); it rides the internal env.AI/D1 budget like classify.

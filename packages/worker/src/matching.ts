@@ -100,9 +100,11 @@ export function isFulfillable(c: KrogerCandidate): boolean {
  * DISCOUNT — `promo > 0` AND `promo < regular`. Kroger returns `promo == regular`
  * (and an occasional `promo >= regular`) for non-sale items, so `promo > 0` alone
  * over-reports sales (savings 0). The single source of truth for "on sale" across
- * the matcher, the flyer scan, and price reporting.
+ * the matcher, the flyer scan, price reporting, AND the satellite sale intake —
+ * so a `sale` observation and a Kroger scan are judged by the identical rule.
+ * Takes just the `{ price }` a candidate or a re-derived sale row carries.
  */
-export function isOnSale(c: KrogerCandidate): boolean {
+export function isOnSale(c: { price: { regular: number; promo: number } }): boolean {
   return c.price.promo > 0 && c.price.promo < c.price.regular;
 }
 
@@ -118,6 +120,16 @@ export const MIN_FLYER_DISCOUNT = 0.05;
 /** Flyer-worthy: a genuine sale whose markdown clears `minDiscount` (default `MIN_FLYER_DISCOUNT`). */
 export function isFlyerWorthy(c: KrogerCandidate, minDiscount: number = MIN_FLYER_DISCOUNT): boolean {
   return isOnSale(c) && c.price.regular - c.price.promo >= c.price.regular * minDiscount;
+}
+
+/**
+ * Re-derive a rollup item's `savings` from its raw `{ regular, promo }` — the SINGLE source of
+ * truth shared by the Kroger flyer scan (`dedupeFlyerHits`) and the satellite sale intake, so a
+ * `sale` observation and a first-party Kroger scan of the same product derive an IDENTICAL
+ * `FlyerItem` (indistinguishable downstream except by provenance). Rounded to cents.
+ */
+export function deriveSavings(price: { regular: number; promo: number }): number {
+  return Math.round((price.regular - price.promo) * 100) / 100;
 }
 
 /** One synthesized flyer row (the kroger_flyer output item shape). */
@@ -156,7 +168,7 @@ export function dedupeFlyerHits(
         description: c.description,
         size: c.size,
         price: c.price,
-        savings: Math.round((c.price.regular - c.price.promo) * 100) / 100,
+        savings: deriveSavings(c.price),
         categories: c.categories,
         matched_terms: [term],
       });

@@ -13,6 +13,7 @@ export {
   loadRuntimeContext,
   type SatelliteConfig,
   type SourceConfig,
+  type ScanStoreConfig,
   type RuntimeContext,
 } from "./config.js";
 
@@ -70,3 +71,27 @@ export { Cursor, canonicalizeUrl, cursorPath } from "./cursor.js";
 
 // scheduler
 export { runTick, type TickDeps, type SourceSummary } from "./scheduler.js";
+
+// sale-scan adapters (satellite-sale-scan) — operator-authored, no built-in named-retailer driver
+export {
+  loadSaleAdapters,
+  validateSaleEmit,
+  runScanAdapter,
+  type SaleScanAdapter,
+  type SaleAdapterFactory,
+  type ScanSdk,
+  type ScanTarget,
+  type ScanOutcome,
+} from "./sale-adapter.js";
+
+// pull-channel client (satellite-sale-scan) — outbound-only claim/report + the pull tick
+export {
+  claimTasks,
+  reportResult,
+  runPullTick,
+  buildPullDeps,
+  type PullDeps,
+  type PullTickResult,
+  type ClaimOutcome,
+  type ReportOutcome,
+} from "./pull.js";

@@ -8,7 +8,6 @@
 // process is reused across sources; each fetch gets its own context built from that
 // source's storageState (Playwright's own session format), then disposed.
 
-import type { SourceConfig } from "./config.js";
 import { cookieHeaderFor, type StorageState } from "./session.js";
 // Import the Playwright TYPES only (erased at compile time by verbatimModuleSyntax +
 // `import type`), so no runtime dependency is created — the value import is dynamic below.
@@ -103,10 +102,11 @@ export function createBrowserTier(): FetchTier {
 }
 
 /**
- * Pick the tier for a source: plain HTTP by default, the (shared) browser tier when the
- * source declares `fetch_tier = "browser"`. The browser tier is passed in so one process
- * is reused across all browser sources in a tick; pass a fresh HTTP tier otherwise.
+ * Pick the tier for a source or a scan store: plain HTTP by default, the (shared) browser tier when
+ * it declares `fetch_tier = "browser"`. The browser tier is passed in so one process is reused
+ * across all browser fetchers in a tick; pass a fresh HTTP tier otherwise. Takes just the
+ * `{ fetch_tier }` a `SourceConfig` or a `ScanStoreConfig` carries.
  */
-export function selectTier(source: SourceConfig, browserTier: FetchTier): FetchTier {
+export function selectTier(source: { fetch_tier?: "http" | "browser" }, browserTier: FetchTier): FetchTier {
   return source.fetch_tier === "browser" ? browserTier : httpTier;
 }
