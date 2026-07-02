@@ -1,6 +1,6 @@
 // Tiny runtime-agnostic text helpers shared by the feed parser and the JSON-LD
 // normalizer. No dependency, no DOM — pure string work that runs identically on
-// workerd (the Worker) and in Node (the scraper + the project's test runtime).
+// workerd (the Worker) and in Node (the satellite + the project's test runtime).
 
 /** Decode the common HTML/XML entities. `&amp;` is decoded last to avoid re-entrancy. */
 export function decodeEntities(s: string): string {

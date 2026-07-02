@@ -40,13 +40,13 @@ import { UsagePage } from "./pages/usage.js";
 import { readInsights } from "../insights.js";
 import { InsightsPage } from "./pages/insights.js";
 import { readDiscoveryLog, readDiscoveryCandidates, readDiscoveryRowById, deleteDiscoveryRow } from "../discovery-db.js";
-import { mintIngestKey, revokeIngestKey, readScraperLiveness } from "../ingest-db.js";
+import { mintIngestKey, revokeIngestKey, readSatelliteLiveness } from "../ingest-db.js";
 import { buildDiscoveryDeps, processCandidate, DEFAULT_CONFIG } from "../discovery-sweep.js";
 import { addDiscoveryRejection } from "../corpus-db.js";
 import { canonicalizeUrl } from "../url.js";
 import { LogsPage, PAGE_SIZE as LOGS_PAGE_SIZE } from "./pages/logs.js";
 import { DiscoveryPage } from "./pages/discovery.js";
-import { ScrapersPage } from "./pages/scrapers.js";
+import { SatellitesPage } from "./pages/satellites.js";
 import { NormalizePage, parseQuery } from "./pages/normalize.js";
 import { readNormalizationPage, readNodesPage } from "../normalize-admin.js";
 import { readReconcileObservability } from "../reconcile-admin.js";
@@ -140,7 +140,7 @@ app.get("/", async (c) => {
   const [payload, counts, liveness, reconcile, audit] = await Promise.all([
     buildHealthPayload(c.env, HEALTH_JOBS),
     corpusCounts(c.env),
-    readScraperLiveness(c.env),
+    readSatelliteLiveness(c.env),
     readReconcileObservability(c.env),
     readAuditObservability(c.env),
   ]);
@@ -158,7 +158,7 @@ app.get("/", async (c) => {
         runsByJob={runsByJob}
         reconcile={reconcile}
         audit={audit}
-        scrapers={liveness.activeScrapers}
+        satellites={liveness.activeSatellites}
       />,
     ),
   );
@@ -215,13 +215,13 @@ const routes = app
   .delete("/api/tenants/:id", async (c) => {
     return c.json(await revoke(adminDeps(c.env), decodeURIComponent(c.req.param("id"))));
   })
-  // Config › Ingest Keys: the walled-source scraper key roster (recipe-ingestion). GET returns
-  // the liveness rollup's per-scraper rows (label/prefix/sources/status/versions/skew — no
-  // secret); mint returns the plaintext secret ONCE; revoke is immediate.
-  .get("/api/ingest/keys", async (c) => c.json({ scrapers: (await readScraperLiveness(c.env)).scrapers }))
+  // Config › Ingest Keys: the satellite key roster (recipe-ingestion). GET returns the liveness
+  // rollup's per-satellite rows (label/prefix/sources/status/versions/skew — no secret); mint
+  // returns the plaintext secret ONCE; revoke is immediate.
+  .get("/api/ingest/keys", async (c) => c.json({ satellites: (await readSatelliteLiveness(c.env)).satellites }))
   .post("/api/ingest/keys", validator("json", (v) => v as { label?: string }), async (c) => {
     const label = String(c.req.valid("json").label ?? "").trim();
-    if (!label) throw new ToolError("validation_failed", "an ingest key needs a scraper label");
+    if (!label) throw new ToolError("validation_failed", "an ingest key needs a satellite label");
     return c.json(await mintIngestKey(c.env, label));
   })
   .post("/api/ingest/keys/:id/revoke", async (c) =>
@@ -335,26 +335,26 @@ app.get("/normalize", async (c) => {
 });
 
 app.get("/discovery", async (c) => {
-  const [candidates, liveness] = await Promise.all([readDiscoveryCandidates(c.env, 200), readScraperLiveness(c.env)]);
+  const [candidates, liveness] = await Promise.all([readDiscoveryCandidates(c.env, 200), readSatelliteLiveness(c.env)]);
   const filter = c.req.query("filter") ?? "all";
   const pageParam = Number(c.req.query("page") ?? "1");
   const requestedPage = Number.isFinite(pageParam) && pageParam > 0 ? pageParam - 1 : 0;
   const ingest = {
-    activeScrapers: liveness.stats.activeScrapers,
+    activeSatellites: liveness.stats.activeSatellites,
     fresh: liveness.stats.fresh,
     stale: liveness.stats.stale,
     pushedToday: liveness.funnel.arrival.received,
-    warn: liveness.stats.stale > 0 || liveness.activeScrapers.some((s) => s.skew),
+    warn: liveness.stats.stale > 0 || liveness.activeSatellites.some((s) => s.skew),
   };
   return c.html(
     page(<DiscoveryPage candidates={candidates} filter={filter} page={requestedPage} now={Date.now()} ingest={ingest} />),
   );
 });
 
-// Discovery › Scrapers (recipe-ingestion): the read-only walled-source ingest liveness view.
-app.get("/discovery/scrapers", async (c) => {
-  const rollup = await readScraperLiveness(c.env);
-  return c.html(page(<ScrapersPage rollup={rollup} now={Date.now()} />));
+// Discovery › Satellites (recipe-ingestion): the read-only satellite ingest liveness view.
+app.get("/discovery/satellites", async (c) => {
+  const rollup = await readSatelliteLiveness(c.env);
+  return c.html(page(<SatellitesPage rollup={rollup} now={Date.now()} />));
 });
 
 // Insights area (group-insights): a group-wide popularity dashboard over the recipe corpus. SSR'd

@@ -1,5 +1,5 @@
 // Discovery (/admin/discovery) — the candidate-pipeline view (stat strip, filter pills,
-// progression-track cards); Scrapers is its sub-page. Fixtures: SEED.discovery rows in
+// progression-track cards); Satellites is its sub-page. Fixtures: SEED.discovery rows in
 // discovery_log — a retryable error (non-null next_retry_at → Retry/Delete buttons), a
 // dietary-gated skip, and an import — see seed.mjs.
 import { expect, type Page } from "@playwright/test";
@@ -19,18 +19,18 @@ export class DiscoveryPage extends AdminPage {
     await expect(this.page.getByText(title).first()).toBeVisible();
   }
 
-  scrapers(): ScrapersPage {
-    return new ScrapersPage(this.page);
+  satellites(): SatellitesPage {
+    return new SatellitesPage(this.page);
   }
 }
 
-/** Discovery › Scrapers (/admin/discovery/scrapers) — the walled-source ingest liveness view.
- *  No fixtures: with zero ingest keys it renders its explicit "No scrapers yet" empty state
+/** Discovery › Satellites (/admin/discovery/satellites) — the satellite ingest liveness view.
+ *  No fixtures: with zero ingest keys it renders its explicit "No satellites yet" empty state
  *  (minting a key would require a real key hash — out of the seed's scope by design), so the
  *  landmark is the unconditional Throughput section label, not the liveness grid's. */
-export class ScrapersPage extends AdminPage {
-  readonly path = "/admin/discovery/scrapers";
-  readonly area = "discovery-scrapers";
+export class SatellitesPage extends AdminPage {
+  readonly path = "/admin/discovery/satellites";
+  readonly area = "discovery-satellites";
 
   constructor(page: Page) {
     super(page);

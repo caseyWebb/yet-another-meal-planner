@@ -79,7 +79,7 @@ const defaultHandler = {
     if (url.pathname === "/authorize") return handleAuthorize(request, env);
     if (url.pathname.startsWith("/oauth/")) return handleOAuth(env, url);
     // Key-authed carve-out from the Access gate: exactly POST /admin/api/ingest is
-    // authenticated by an ingest key in handleIngest (a headless scraper has no Access JWT),
+    // authenticated by an ingest key in handleIngest (a headless satellite has no Access JWT),
     // handled BEFORE the /admin dispatch so it never reaches the admin app's Access
     // middleware. Every other /admin* path stays Access-gated (adminApp below).
     if (url.pathname === "/admin/api/ingest") return handleIngest(request, env);

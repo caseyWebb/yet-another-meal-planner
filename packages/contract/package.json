@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Runtime-agnostic code shared by the Worker (workerd) and the scraper (Node): the recipe-parse spine and the walled-source ingest wire contract.",
+  "description": "Runtime-agnostic code shared by the Worker (workerd) and the satellite (Node): the recipe-parse spine and the satellite ingest wire contract.",
   "license": "AGPL-3.0-only",
   "exports": {
     ".": "./src/index.ts"

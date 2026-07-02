@@ -1,4 +1,4 @@
-// The Ingest Keys island (recipe-ingestion): hydrates Config › Ingest Keys with the scraper
+// The Ingest Keys island (recipe-ingestion): hydrates Config › Ingest Keys with the satellite
 // key roster + the mint / revoke flows. Mirrors the Members island (members.tsx): the in-flight
 // mutation + target + failure are ONE union (ActionState); the freshly-minted secret is a single
 // `banner` variant shown once. Mutations call the typed /admin/api/* routes via hc<AdminApp>.
@@ -6,7 +6,7 @@
 import { render, useState, useRef, useEffect } from "hono/jsx/dom";
 import { hc } from "hono/client";
 import type { AdminApp } from "../app.js";
-import type { ScraperLiveness } from "../../ingest-db.js";
+import type { SatelliteLiveness } from "../../ingest-db.js";
 import { KeyIcon, TrashIcon } from "../ui/icons.js";
 
 const client = hc<AdminApp>(location.origin);
@@ -68,7 +68,7 @@ function MintDialog({
           <h2 id="mint-key-title">Mint ingest key</h2>
         </header>
         <section>
-          <p class="muted small">Name the scraper machine this key is for. The secret is shown once after minting.</p>
+          <p class="muted small">Name the satellite machine this key is for. The secret is shown once after minting.</p>
           <div class="grid gap-2">
             <label class="label" for="mint-key-label">
               Label
@@ -77,11 +77,11 @@ function MintDialog({
               class="input"
               id="mint-key-label"
               type="text"
-              placeholder="home-nas-scraper"
+              placeholder="home-nas-satellite"
               value={label}
               onInput={(e: Event) => setLabel((e.target as HTMLInputElement).value)}
             />
-            <p class="muted small">A name for the scraper — lowercase, no spaces.</p>
+            <p class="muted small">A name for the satellite — lowercase, no spaces.</p>
           </div>
         </section>
         <footer class="form-actions">
@@ -103,7 +103,7 @@ function RevokeDialog({
   onConfirm,
   onClose,
 }: {
-  row: ScraperLiveness | null;
+  row: SatelliteLiveness | null;
   busy: boolean;
   onConfirm: () => void;
   onClose: () => void;
@@ -122,7 +122,7 @@ function RevokeDialog({
       </header>
       <section>
         <p class="muted small">
-          The next push from this scraper will be rejected immediately. This can't be undone — mint a new key to reconnect the machine.
+          The next push from this satellite will be rejected immediately. This can't be undone — mint a new key to reconnect the machine.
         </p>
       </section>
       <footer class="form-actions">
@@ -137,7 +137,7 @@ function RevokeDialog({
   );
 }
 
-function KeyRow({ s, now, busy, onRevoke }: { s: ScraperLiveness; now: number; busy: boolean; onRevoke: () => void }) {
+function KeyRow({ s, now, busy, onRevoke }: { s: SatelliteLiveness; now: number; busy: boolean; onRevoke: () => void }) {
   const revoked = s.status === "revoked";
   return (
     <tr class={revoked ? "cfg-key-revoked" : ""}>
@@ -178,19 +178,19 @@ function KeyRow({ s, now, busy, onRevoke }: { s: ScraperLiveness; now: number; b
   );
 }
 
-function IngestKeysIsland(initial: { scrapers: ScraperLiveness[] }) {
-  const [rows, setRows] = useState<ScraperLiveness[]>(initial.scrapers);
+function IngestKeysIsland(initial: { satellites: SatelliteLiveness[] }) {
+  const [rows, setRows] = useState<SatelliteLiveness[]>(initial.satellites);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [label, setLabel] = useState("");
   const [action, setAction] = useState<ActionState>({ status: "idle" });
   const [banner, setBanner] = useState<Banner | null>(null);
-  const [confirm, setConfirm] = useState<ScraperLiveness | null>(null);
+  const [confirm, setConfirm] = useState<SatelliteLiveness | null>(null);
   const now = Date.now();
   const busy = action.status === "busy";
 
   async function refresh(): Promise<void> {
     const res = await client.admin.api.ingest.keys.$get();
-    if (res.ok) setRows((await res.json()).scrapers);
+    if (res.ok) setRows((await res.json()).satellites);
   }
 
   async function doMint(e: Event): Promise<void> {
@@ -232,7 +232,7 @@ function IngestKeysIsland(initial: { scrapers: ScraperLiveness[] }) {
               Dismiss
             </button>
           </div>
-          <p class="once">Shown once — copy it now and store it in the scraper's config. You won't see this secret again; revoke and re-mint if it's lost.</p>
+          <p class="once">Shown once — copy it now and store it in the satellite's config. You won't see this secret again; revoke and re-mint if it's lost.</p>
           <div class="row">
             <span class="k">secret</span>
             <span class="v">{banner.secret}</span>
@@ -255,13 +255,13 @@ function IngestKeysIsland(initial: { scrapers: ScraperLiveness[] }) {
       </div>
 
       {rows.length === 0 ? (
-        <p class="muted">No ingest keys yet — mint one for your home scraper (a box on your network that logs in to a paid recipe site, extracts recipes, and pushes them here).</p>
+        <p class="muted">No ingest keys yet — mint one for your home satellite (a box on your network that logs in to a paid recipe site, extracts recipes, and pushes them here).</p>
       ) : (
         <div class="cfg-table-wrap">
           <table class="table">
             <thead>
               <tr>
-                <th>Scraper</th>
+                <th>Satellite</th>
                 <th>Sources</th>
                 <th>Created</th>
                 <th>Last used</th>
@@ -287,7 +287,7 @@ function IngestKeysIsland(initial: { scrapers: ScraperLiveness[] }) {
 const host = document.getElementById("ingest-keys-island");
 const propsEl = document.getElementById("ingest-keys-props");
 if (host && propsEl) {
-  const props = JSON.parse(propsEl.textContent ?? "{}") as { scrapers: ScraperLiveness[] };
+  const props = JSON.parse(propsEl.textContent ?? "{}") as { satellites: SatelliteLiveness[] };
   host.replaceChildren();
-  render(<IngestKeysIsland scrapers={props.scrapers} />, host);
+  render(<IngestKeysIsland satellites={props.satellites} />, host);
 }

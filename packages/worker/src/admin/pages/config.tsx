@@ -11,7 +11,7 @@ import { Layout } from "../ui/layout.js";
 import type { Env } from "../../env.js";
 import type { KnobSpec } from "../ui/kit.js";
 import { getDiscoveryConfig, getOperatorConfig, listCorpus } from "../config-api.js";
-import { readScraperLiveness, type ScraperLiveness } from "../../ingest-db.js";
+import { readSatelliteLiveness, type SatelliteLiveness } from "../../ingest-db.js";
 
 /** The Config groups (slug "" = the bare /admin/config Discovery default). */
 const GROUPS: { slug: string; label: string }[] = [
@@ -212,17 +212,17 @@ const RankingGroupPage = ({ config }: { config: import("../../operator-config.js
   </ConfigShell>
 );
 
-// ── Ingest Keys group: the walled-source scraper key roster (island) ──────────────────────
-const IngestKeysGroupPage = ({ scrapers }: { scrapers: ScraperLiveness[] }) => (
+// ── Ingest Keys group: the satellite key roster (island) ──────────────────────────────────
+const IngestKeysGroupPage = ({ satellites }: { satellites: SatelliteLiveness[] }) => (
   <ConfigShell active="ingest-keys">
     <Section
       title="Ingest keys"
-      blurb="One key per home-network scraper — a machine that logs in to paid recipe sites, extracts recipes, and POSTs them to the Worker, feeding the discovery sweep. Mint a key per scraper; the secret is shown once."
+      blurb="One key per home-network satellite — a machine that logs in to paid recipe sites, extracts recipes, and POSTs them to the Worker, feeding the discovery sweep. Mint a key per satellite; the secret is shown once."
     >
       <div id="ingest-keys-island">
         <p class="muted">Loading…</p>
       </div>
-      <script type="application/json" id="ingest-keys-props" dangerouslySetInnerHTML={{ __html: serialize({ scrapers }) }} />
+      <script type="application/json" id="ingest-keys-props" dangerouslySetInnerHTML={{ __html: serialize({ satellites }) }} />
       <script type="module" src="/admin/islands/ingest-keys.js" />
     </Section>
   </ConfigShell>
@@ -230,8 +230,8 @@ const IngestKeysGroupPage = ({ scrapers }: { scrapers: ScraperLiveness[] }) => (
 
 export function registerConfigRoutes(app: Hono<{ Bindings: Env }>): void {
   app.get("/config/ingest-keys", async (c) => {
-    const { scrapers } = await readScraperLiveness(c.env);
-    return c.html(html(<IngestKeysGroupPage scrapers={scrapers} />));
+    const { satellites } = await readSatelliteLiveness(c.env);
+    return c.html(html(<IngestKeysGroupPage satellites={satellites} />));
   });
 
   app.get("/config", async (c) => {

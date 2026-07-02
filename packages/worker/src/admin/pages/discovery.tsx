@@ -263,7 +263,7 @@ const CandidateCard = ({ c, now }: { c: DiscoveryCandidate; now: number }) => {
             <span class="dc-src-name">{c.source ?? ""}</span>
             {c.pushed ? (
               <span class="badge" data-variant="outline">
-                scraper: {c.origin ?? "?"}
+                satellite: {c.origin ?? "?"}
               </span>
             ) : null}
             {c.created_at ? (
@@ -311,25 +311,25 @@ const CandidateCard = ({ c, now }: { c: DiscoveryCandidate; now: number }) => {
   );
 };
 
-/** Summary of the ingest scrapers for the Candidates ingest strip (computed from the liveness
- *  rollup in the route). `warn` when any active scraper is stale or on a behind contract. */
+/** Summary of the ingest satellites for the Candidates ingest strip (computed from the liveness
+ *  rollup in the route). `warn` when any active satellite is stale or on a behind contract. */
 export interface IngestStripData {
-  activeScrapers: number;
+  activeSatellites: number;
   fresh: number;
   stale: number;
   pushedToday: number;
   warn: boolean;
 }
 
-/** The Candidates | Scrapers sub-nav (inlined here to keep server-only scrapers.tsx out of the
+/** The Candidates | Satellites sub-nav (inlined here to keep server-only satellites.tsx out of the
  *  Discovery client-island bundle). */
-const SubNav = ({ active }: { active: "candidates" | "scrapers" }) => (
+const SubNav = ({ active }: { active: "candidates" | "satellites" }) => (
   <div class="data-nav">
     <a href="/admin/discovery" class={active === "candidates" ? "pill active" : "pill"}>
       Candidates
     </a>
-    <a href="/admin/discovery/scrapers" class={active === "scrapers" ? "pill active" : "pill"}>
-      Scrapers
+    <a href="/admin/discovery/satellites" class={active === "satellites" ? "pill active" : "pill"}>
+      Satellites
     </a>
   </div>
 );
@@ -375,14 +375,14 @@ export const DiscoveryView = ({
 
       <SubNav active="candidates" />
 
-      {ingest && ingest.activeScrapers > 0 ? (
-        <a href="/admin/discovery/scrapers" class={ingest.warn ? "dc-ingest-strip warn" : "dc-ingest-strip"}>
+      {ingest && ingest.activeSatellites > 0 ? (
+        <a href="/admin/discovery/satellites" class={ingest.warn ? "dc-ingest-strip warn" : "dc-ingest-strip"}>
           <InboxIcon size={13} />
           <span>
-            <strong>{ingest.activeScrapers} scrapers</strong> · {ingest.fresh} fresh
+            <strong>{ingest.activeSatellites} satellites</strong> · {ingest.fresh} fresh
             {ingest.stale ? <span class="txt-bad"> · {ingest.stale} stale</span> : null} · {ingest.pushedToday} recipes pushed today
           </span>
-          <span class="dc-strip-go">Scrapers →</span>
+          <span class="dc-strip-go">Satellites →</span>
         </a>
       ) : null}
 

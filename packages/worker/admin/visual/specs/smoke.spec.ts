@@ -1,6 +1,6 @@
 // The all-areas smoke: every registered area renders its shell + area landmark + the global
 // health dock, and captures its full-page review screenshot (published on admin-UI PRs — see
-// admin/visual/README.md). Plus the routed sub-surfaces (member detail, Discovery › Scrapers,
+// admin/visual/README.md). Plus the routed sub-surfaces (member detail, Discovery › Satellites,
 // Normalize › Reconcile) and the seeded-content checks proving each data-hungry area renders
 // its fixtures, not an empty state.
 import { test } from "../fixtures";
@@ -24,11 +24,11 @@ test("member detail renders for the connected member", async ({ membersPage }) =
   await detail.captureForReview();
 });
 
-test("discovery scrapers sub-page renders", async ({ discoveryPage }) => {
-  const scrapers = discoveryPage.scrapers();
-  await scrapers.goto();
-  await scrapers.landmark();
-  await scrapers.captureForReview();
+test("discovery satellites sub-page renders", async ({ discoveryPage }) => {
+  const satellites = discoveryPage.satellites();
+  await satellites.goto();
+  await satellites.landmark();
+  await satellites.captureForReview();
 });
 
 test("normalize reconcile tab renders its convergence card", async ({ normalizePage }) => {

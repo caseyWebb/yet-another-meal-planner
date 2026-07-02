@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "groceries-agent monorepo: the grocery-mcp Cloudflare Worker (packages/worker), the runtime-agnostic shared contract (packages/contract), and the home-network walled-source scraper (packages/scraper).",
+  "description": "groceries-agent monorepo: the grocery-mcp Cloudflare Worker (packages/worker), the runtime-agnostic shared contract (packages/contract), and the home-network satellite (packages/satellite).",
   "license": "AGPL-3.0-only",
   "engines": {
     "node": ">=22"
@@ -26,7 +26,7 @@
     "dev": "aube --filter @grocery-agent/worker run dev",
     "deploy": "aube --filter @grocery-agent/worker run deploy",
     "typecheck": "aube --recursive run typecheck",
-    "test": "aube --filter @grocery-agent/worker --filter @grocery-agent/scraper run test",
+    "test": "aube --filter @grocery-agent/worker --filter @grocery-agent/satellite run test",
     "test:tooling": "aube --filter @grocery-agent/worker run test:tooling",
     "test:admin": "aube --filter @grocery-agent/worker run test:admin",
     "check:licenses": "aube --filter @grocery-agent/worker run check:licenses",

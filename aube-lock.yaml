@@ -22,7 +22,7 @@ importers:
         specifier: ^6.0.3
         version: 6.0.3
 
-  packages/scraper:
+  packages/satellite:
     dependencies:
       '@grocery-agent/contract':
         specifier: workspace:*

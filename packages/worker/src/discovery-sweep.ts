@@ -62,9 +62,9 @@ export interface SweepCandidate {
   attempts?: number;
   /** For a PUSHED candidate (arrived via POST /admin/api/ingest): its pre-parsed content, so
    *  `acquireContent` returns it instead of fetching (the walled fetch already happened on the
-   *  scraper). Present ⇒ `pushed` is true. */
+   *  satellite). Present ⇒ `pushed` is true. */
   content?: RecipeContent;
-  /** True when this candidate arrived via a scraper push (recorded on its discovery_log row). */
+  /** True when this candidate arrived via a satellite push (recorded on its discovery_log row). */
   pushed?: boolean;
   /** For a pushed candidate, the batch `source` name (provenance shown in the admin views). */
   origin?: string | null;
@@ -181,7 +181,7 @@ export interface LogEntry {
   outcome: Outcome;
   slug?: string;
   detail?: Record<string, unknown>;
-  /** True when the candidate arrived via a scraper push (badged in the admin Discovery view). */
+  /** True when the candidate arrived via a satellite push (badged in the admin Discovery view). */
   pushed?: boolean;
   /** For a pushed candidate, the batch `source` (provenance). */
   origin?: string | null;
@@ -854,7 +854,7 @@ export function buildDiscoveryDeps(env: Env, now: () => number = () => Date.now(
 
       // Pushed inbox (POST /admin/api/ingest): pre-parsed candidates. They BYPASS the feed
       // `seen` set — a push SUPERSEDES a prior walled `unreachable`/`no_jsonld` park for the
-      // same url (the scraper now supplies content the Worker's own fetch could not reach) —
+      // same url (the satellite now supplies content the Worker's own fetch could not reach) —
       // but are still skipped when the url is already a corpus recipe (a race between arrival
       // and this tick), and that stale inbox row is cleaned up. Their content rides along so
       // acquireContent returns it without a fetch.
@@ -921,7 +921,7 @@ export function buildDiscoveryDeps(env: Env, now: () => number = () => Date.now(
 
     async acquireContent(candidate) {
       // A pushed candidate arrives with its pre-parsed content — the walled fetch already
-      // happened on the scraper, so acquire is a no-op return (no external subrequest).
+      // happened on the satellite, so acquire is a no-op return (no external subrequest).
       if (candidate.content) return { ok: true, content: candidate.content };
       const result = await acquireRecipeContent(candidate.url);
       if (!result.ok) return result;

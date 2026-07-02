@@ -1,15 +1,19 @@
-// D1 layer for walled-source ingest (recipe-ingestion): the ingest-key roster
+// D1 layer for satellite ingest (recipe-ingestion): the ingest-key roster
 // (ingest_keys) and the pushed-content inbox (ingest_candidates). All access goes
 // through src/db.ts so a D1 failure surfaces as a structured storage_error, never a
 // raw throw. The plaintext key secret is shown ONCE at mint and never stored — only a
 // SHA-256 hash (the lookup key) + a short display prefix are persisted.
+//
+// NOTE: the DB objects keep their `ingest_*` names and the `ingest_keys.last_scraper_version`
+// column is retained (renaming a deployed DB object is out of bounds); only the in-code
+// vocabulary reads "satellite". The v2 wire field `satellite_version` maps onto that column.
 
 import { db } from "./db.js";
 import type { Env } from "./env.js";
 import { CONTRACT_VERSION, type PushResult } from "@grocery-agent/contract";
 import { countPushedOutcomesSince } from "./discovery-db.js";
 
-/** A scraper is `fresh` if its most recent push is within this window, else `stale`; `never` = no push. */
+/** A satellite is `fresh` if its most recent push is within this window, else `stale`; `never` = no push. */
 export const FRESH_WINDOW_MS = 6 * 60 * 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -40,7 +44,7 @@ export interface IngestKeyRow {
 }
 
 /**
- * Mint a key for a scraper `label`. Returns the full `secret` ONCE (caller shows it once
+ * Mint a key for a satellite `label`. Returns the full `secret` ONCE (caller shows it once
  * and discards it); only its hash + prefix are stored. Secret format `ing_live_<hex>`,
  * prefix the first 13 chars (`ing_live_` + 4 hex).
  */
@@ -96,11 +100,12 @@ export async function lookupIngestKey(env: Env, secret: string): Promise<IngestK
   return row ?? null;
 }
 
-/** Stamp last_used + the reported scraper/contract version after a successful auth. Best-effort. */
+/** Stamp last_used + the reported satellite/contract version after a successful auth. Best-effort.
+ *  `satelliteVersion` is persisted into the retained `last_scraper_version` column (unchanged). */
 export async function touchIngestKey(
   env: Env,
   id: string,
-  scraperVersion: string,
+  satelliteVersion: string,
   contractVersion: string,
   now: number = Date.now(),
 ): Promise<void> {
@@ -108,7 +113,7 @@ export async function touchIngestKey(
     "UPDATE ingest_keys SET last_used_at = ?2, last_scraper_version = ?3, last_contract_version = ?4 WHERE id = ?1",
     id,
     now,
-    scraperVersion,
+    satelliteVersion,
     contractVersion,
   );
 }
@@ -241,7 +246,7 @@ export async function pruneIngestPushes(env: Env, beforeMs: number): Promise<num
   return res.changes;
 }
 
-// ── the liveness rollup (Discovery › Scrapers + Status) ───────────────────────
+// ── the liveness rollup (Discovery › Satellites + Status) ─────────────────────
 
 export type Health = "fresh" | "stale" | "never";
 
@@ -252,13 +257,14 @@ export interface SourceLiveness {
   pushes24h: number;
   pushes7d: number;
 }
-export interface ScraperLiveness {
+export interface SatelliteLiveness {
   id: string;
   label: string;
   prefix: string;
   created: number;
   status: string;
-  scraperVersion: string | null;
+  /** The machine's last reported build (persisted in the retained `last_scraper_version` column). */
+  satelliteVersion: string | null;
   contractVersion: string | null;
   skew: boolean;
   lastPush: number | null;
@@ -271,20 +277,20 @@ export interface ScraperLiveness {
 export interface RecentPush {
   id: string;
   at: number;
-  scraper: string;
+  satellite: string;
   source: string;
   count: number;
   deduped: number;
   rejected: number;
   result: PushResult;
 }
-export interface ScraperRollup {
+export interface SatelliteRollup {
   contractVersion: string;
-  scrapers: ScraperLiveness[];
-  activeScrapers: ScraperLiveness[];
+  satellites: SatelliteLiveness[];
+  activeSatellites: SatelliteLiveness[];
   funnel: { arrival: { received: number; accepted: number; deduped: number; swept: number }; downstream: { imported: number; noMatch: number; duplicate: number; parked: number } };
   pushes: RecentPush[];
-  stats: { activeScrapers: number; fresh: number; stale: number; sources: number; pushes24h: number };
+  stats: { activeSatellites: number; fresh: number; stale: number; sources: number; pushes24h: number };
 }
 
 function healthFor(lastPush: number | null, now: number): Health {
@@ -293,12 +299,12 @@ function healthFor(lastPush: number | null, now: number): Health {
 }
 
 /**
- * The admin liveness rollup — per-scraper + per-source health/skew/counts, the 24h throughput
+ * The admin liveness rollup — per-satellite + per-source health/skew/counts, the 24h throughput
  * funnel (arrival from ingest_pushes; downstream from pushed discovery_log outcomes), and the
  * recent-pushes log. Computed in JS from the key roster + a bounded push read (the fake-D1 has
  * no GROUP BY, and the row counts are small).
  */
-export async function readScraperLiveness(env: Env, now: number = Date.now()): Promise<ScraperRollup> {
+export async function readSatelliteLiveness(env: Env, now: number = Date.now()): Promise<SatelliteRollup> {
   const since7d = now - 7 * DAY_MS;
   const since24h = now - DAY_MS;
   const [keys, pushes7d, downstream] = await Promise.all([
@@ -308,7 +314,7 @@ export async function readScraperLiveness(env: Env, now: number = Date.now()): P
   ]);
   const labelOf = new Map(keys.map((k) => [k.id, k.label]));
 
-  const scrapers: ScraperLiveness[] = keys.map((k) => {
+  const satellites: SatelliteLiveness[] = keys.map((k) => {
     const mine = pushes7d.filter((p) => p.key_id === k.id);
     // Per-source rollup (accepted-bearing pushes count toward last-push/counts).
     const bySource = new Map<string, IngestPushRow[]>();
@@ -332,7 +338,7 @@ export async function readScraperLiveness(env: Env, now: number = Date.now()): P
       prefix: k.key_prefix,
       created: k.created_at,
       status: k.status,
-      scraperVersion: k.last_scraper_version,
+      satelliteVersion: k.last_scraper_version,
       contractVersion: k.last_contract_version,
       skew: k.last_contract_version != null && k.last_contract_version !== CONTRACT_VERSION,
       lastPush,
@@ -343,7 +349,7 @@ export async function readScraperLiveness(env: Env, now: number = Date.now()): P
       sources,
     };
   });
-  const activeScrapers = scrapers.filter((s) => s.status === "active");
+  const activeSatellites = satellites.filter((s) => s.status === "active");
 
   const in24h = pushes7d.filter((p) => p.created_at >= since24h);
   const arrival = {
@@ -355,7 +361,7 @@ export async function readScraperLiveness(env: Env, now: number = Date.now()): P
   const pushes: RecentPush[] = pushes7d.slice(0, 40).map((p) => ({
     id: p.id,
     at: p.created_at,
-    scraper: labelOf.get(p.key_id) ?? p.key_id,
+    satellite: labelOf.get(p.key_id) ?? p.key_id,
     source: p.source,
     count: p.accepted,
     deduped: p.deduped,
@@ -365,16 +371,16 @@ export async function readScraperLiveness(env: Env, now: number = Date.now()): P
 
   return {
     contractVersion: CONTRACT_VERSION,
-    scrapers,
-    activeScrapers,
+    satellites,
+    activeSatellites,
     funnel: { arrival, downstream },
     pushes,
     stats: {
-      activeScrapers: activeScrapers.length,
-      fresh: activeScrapers.filter((s) => s.health === "fresh").length,
-      stale: activeScrapers.filter((s) => s.health === "stale").length,
-      sources: activeScrapers.reduce((n, s) => n + s.sourceCount, 0),
-      pushes24h: activeScrapers.reduce((n, s) => n + s.pushes24h, 0),
+      activeSatellites: activeSatellites.length,
+      fresh: activeSatellites.filter((s) => s.health === "fresh").length,
+      stale: activeSatellites.filter((s) => s.health === "stale").length,
+      sources: activeSatellites.reduce((n, s) => n + s.sourceCount, 0),
+      pushes24h: activeSatellites.reduce((n, s) => n + s.pushes24h, 0),
     },
   };
 }

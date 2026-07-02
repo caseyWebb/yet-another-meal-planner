@@ -31,7 +31,7 @@ export interface DiscoveryLogRow {
   attempts: number;
   /** ISO timestamp when this row next enters the retry stream; null = terminal (not retryable). */
   next_retry_at: string | null;
-  /** True when the candidate arrived via POST /admin/api/ingest (a scraper push) — its `acquire`
+  /** True when the candidate arrived via POST /admin/api/ingest (a satellite push) — its `acquire`
    *  stage was satisfied from attached content, not a fetch. */
   pushed: boolean;
   /** For a pushed row, the batch `source` (provenance) shown in the admin Discovery view. */
@@ -75,7 +75,7 @@ export async function recordDiscoveryLog(
 
 /** Urls that have SETTLED to a non-park outcome (anything but `error`/`failed`) — the dedup
  *  set for pushed candidates at arrival. A url whose only prior outcomes are transient/walled
- *  parks (`error`/`failed`) is NOT settled, so a later push supersedes those parks (the scraper
+ *  parks (`error`/`failed`) is NOT settled, so a later push supersedes those parks (the satellite
  *  now supplies content the Worker's own fetch could not reach). */
 export async function loadSettledUrls(env: Env): Promise<Set<string>> {
   const rows = await db(env).all<{ url: string | null }>(

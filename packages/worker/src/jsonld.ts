@@ -7,7 +7,7 @@
 //      This layer stays HERE (workerd-specific).
 //   2. findRecipe / normalizeRecipe — PURE functions over already-parsed JSON-LD.
 //      All the real complexity (instruction shapes, durations, yield) lives in the
-//      runtime-agnostic @grocery-agent/contract package (shared with the scraper),
+//      runtime-agnostic @grocery-agent/contract package (shared with the satellite),
 //      re-exported below so existing `./jsonld.js` importers are unchanged.
 
 export {

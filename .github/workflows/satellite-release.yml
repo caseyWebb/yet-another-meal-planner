@@ -1,0 +1,154 @@
+name: satellite-release
+
+# Publish the home-network satellite (packages/satellite) as a MULTI-ARCH container image
+# + a GitHub Release (build-automation). The published version is packages/satellite/package.json
+# `version` — the single source of truth the running satellite also reports as satellite_version; the
+# satellite-v<version> tag is DERIVED from it (never a hand-typed tag), so the tag, the GHCR image
+# label, and the reported version can't drift. Independent of the Worker deploy control plane: this
+# builds + pushes the image to GHCR and cuts the Release; it never redeploys the Worker, and a
+# Worker deploy never publishes a satellite image. Uses the built-in GITHUB_TOKEN (packages: write) —
+# NO new stored Actions secret, preserving the public repo's secret-free rule.
+#
+# Triggers: `workflow_call` (invoked by ci.yml's release-satellite job when a merge to main bumps the
+# version — the auto path) and `workflow_dispatch` (manual fallback; version derived from
+# package.json). There is deliberately NO `on: push: tags` trigger — with package.json as the source
+# of truth a hand-pushed tag would only reintroduce tag/version drift, and a tag pushed by the
+# built-in GITHUB_TOKEN can't trigger a workflow anyway, so the auto path publishes INLINE instead of
+# pushing a tag and waiting for a retrigger.
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: "The satellite version to publish; must equal packages/satellite/package.json."
+        type: string
+        required: true
+  workflow_dispatch: {}
+
+permissions:
+  contents: write # create the GitHub Release (and its satellite-v<version> tag)
+  packages: write # push the image to GHCR
+
+# Serialize releases: two near-simultaneous version pushes (or a manual dispatch overlapping the
+# auto path) must not race on the shared `:latest` tag. `cancel-in-progress: false` never aborts an
+# in-flight publish (it's mid-push to GHCR and must run to completion). Note GitHub keeps only one
+# *pending* run per group, so in a burst of 3+ overlapping publishes a superseded pending run can be
+# dropped — benign for a single operator (the newest version still publishes). Covers both the
+# workflow_call and workflow_dispatch entry points because it is evaluated per called-workflow run.
+concurrency:
+  group: satellite-release
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Derive + verify version and targeted contract version
+        id: v
+        # The version is packages/satellite/package.json `version` — the single source of truth. On the
+        # workflow_call path the caller passes the version it detected; we re-read package.json and
+        # FAIL if they disagree (main advanced under the caller between detect and here), so
+        # package.json always wins and the tag can't drift. The recipe CONTRACT version it targets is
+        # read from the shared contract source for the Release notes. The satellite reports both at
+        # runtime (version from package.json, contract from the @grocery-agent/contract import), so
+        # nothing here is baked as a Docker build-arg.
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./packages/satellite/package.json').version")"
+          if [ -n "${INPUT_VERSION:-}" ] && [ "$INPUT_VERSION" != "$version" ]; then
+            echo "::error::caller version ($INPUT_VERSION) != packages/satellite/package.json ($version) — package.json is the source of truth."
+            exit 1
+          fi
+          contract="$(grep -oE 'CONTRACT_VERSION = "[^"]+"' packages/contract/src/ingest.ts | sed -E 's/.*"([^"]+)".*/\1/')"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=satellite-v$version" >> "$GITHUB_OUTPUT"
+          echo "contract=$contract" >> "$GITHUB_OUTPUT"
+          echo "image=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/groceries-satellite" >> "$GITHUB_OUTPUT"
+
+      - name: Skip if this version is already published
+        id: guard
+        # Idempotence, failing CLOSED. The satellite-v<version> Release/tag is the atomic "this version
+        # shipped" marker: if it exists (gh exit 0), a re-run / a workflow_dispatch at the current
+        # version / an unrelated push must NOT double-publish → already=true (no-op). A GENUINE
+        # not-found (gh prints "release not found" / HTTP 404) → already=false → proceed. ANY OTHER
+        # non-zero (network, rate-limit, auth) must NOT be misread as "not released" and cut a
+        # spurious duplicate — refuse and fail the job so the release can be safely re-run later.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.v.outputs.tag }}
+        run: |
+          set -uo pipefail
+          if err="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" 2>&1 >/dev/null)"; then
+            echo "already=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::$TAG already released — skipping publish."
+          elif printf '%s' "$err" | grep -qiE 'release not found|not found|HTTP 404'; then
+            echo "already=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::gh release view failed (not a not-found) — refusing to publish blindly: ${err}"
+            exit 1
+          fi
+
+      - name: Set up QEMU
+        if: steps.guard.outputs.already == 'false'
+        # Registers the arm64 emulation handlers so the amd64 runner can cross-build the
+        # linux/arm64 variant. version-tagged to match the docker/* actions below.
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        if: steps.guard.outputs.already == 'false'
+        # A Buildx builder that can emit a multi-arch manifest list in one push.
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        if: steps.guard.outputs.already == 'false'
+        # version-tagged (not SHA-pinned) — pin to a SHA to match the repo convention when convenient.
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push the satellite image
+        if: steps.guard.outputs.already == 'false'
+        # Context is the REPO ROOT (the satellite imports the @grocery-agent/contract workspace
+        # package), with the package's own Dockerfile. Multi-arch: the image runs natively on x86
+        # home servers (amd64) AND Apple-Silicon home hosts (arm64) — the browser tier's Chromium is
+        # native, not emulated. The Playwright base is multi-arch and the Node toolchain is
+        # arch-agnostic, so this just cross-builds the arm64 variant under QEMU and pushes one
+        # manifest list per tag. The image "embeds" its build + contract version by carrying the
+        # copied package.json + contract source it reads at runtime — no build-args needed.
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: packages/satellite/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ steps.v.outputs.image }}:${{ steps.v.outputs.version }}
+            ${{ steps.v.outputs.image }}:latest
+
+      - name: Create the GitHub Release
+        if: steps.guard.outputs.already == 'false'
+        # tag_name is the DERIVED satellite-v<version> (NOT github.ref_name, which on workflow_call /
+        # workflow_dispatch is the branch, e.g. main). softprops creates this tag as part of cutting
+        # the Release — inline, in this same run — so there is no cross-workflow retrigger and no loop.
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.v.outputs.tag }}
+          name: satellite v${{ steps.v.outputs.version }}
+          generate_release_notes: true
+          body: |
+            Home-network satellite (recipe-scrape capability) — multi-arch container image (linux/amd64 + linux/arm64).
+
+            **Image:** `${{ steps.v.outputs.image }}:${{ steps.v.outputs.version }}`
+            **Targets recipe contract:** `${{ steps.v.outputs.contract }}`
+
+            Pull and run (see `packages/satellite/README.md` and `docker-compose.example.yml`):
+
+            ```
+            docker pull ${{ steps.v.outputs.image }}:${{ steps.v.outputs.version }}
+            ```

@@ -1,7 +1,7 @@
 // The all-areas registry: the ordered list of top-nav areas the smoke spec iterates (landmark +
 // review screenshot per entry). Adding a new admin area = its page object + one entry here (+ a
 // seed block when it needs data); the smoke coverage picks it up with no other spec edits.
-// Sub-surfaces (member detail, scrapers, the reconcile tab) are reached through their parent
+// Sub-surfaces (member detail, satellites, the reconcile tab) are reached through their parent
 // page objects and captured by dedicated smoke tests, not registry entries.
 import type { AdminPage, Page } from "./pages/base.page";
 import { StatusPage } from "./pages/status.page";

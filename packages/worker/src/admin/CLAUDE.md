@@ -140,7 +140,7 @@ route or selector** — those live in the page/component objects.
 
 - **Layout.** `pages/` — one page object per top-nav area (extends `base.page.ts`'s `AdminPage`:
   shell assertion, nav + health-dock components, `captureForReview`); sub-surfaces (member
-  detail, Scrapers, the Reconcile tab) are sub-page objects/methods on their parent. `components/`
+  detail, Satellites, the Reconcile tab) are sub-page objects/methods on their parent. `components/`
   — the shared shell pieces (nav, health dock, stat tiles, dialogs, tables). `fixtures.ts` — the
   extended `test` specs import (one fixture per page object). `registry.ts` — the ordered
   all-areas list the smoke spec iterates. `seed.mjs` — the deterministic fixture set (+ its

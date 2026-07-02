@@ -254,12 +254,12 @@ jobs:
             packages/worker/admin/visual/.screenshots/
           retention-days: 14
 
-  scraper-version:
-    # Version single-source-of-truth gate (build-automation): packages/scraper/package.json
-    # `version` is the scraper's one version — the value the running scraper reports as
-    # `scraper_version` on every ingest batch. A PR that touches the scraper OR the shared
+  satellite-version:
+    # Version single-source-of-truth gate (build-automation): packages/satellite/package.json
+    # `version` is the satellite's one version — the value the running satellite reports as
+    # `satellite_version` on every ingest batch. A PR that touches the satellite OR the shared
     # contract it imports (a contract change reshapes the
-    # scraper) MUST bump that version to a strictly-greater semver, or this gate fails. PR-only
+    # satellite) MUST bump that version to a strictly-greater semver, or this gate fails. PR-only
     # (a push to main has no base to diff against) and bot-exempt (an automated dependency PR
     # can't bump the version) in one guard, mirroring pr-checklist.yml. Reads git only — the
     # built-in GITHUB_TOKEN, never DATA_REPO_ACTIONS_TOKEN — and never commits a bump: the author
@@ -277,22 +277,25 @@ jobs:
           # first parent, not the base tip we compare versions against).
           fetch-depth: 0
 
-      - name: Require a scraper version bump when the scraper or contract changed
+      - name: Require a satellite version bump when the satellite or contract changed
         env:
           BASE: ${{ github.base_ref }}
         run: |
           set -euo pipefail
           git fetch --quiet origin "$BASE"
           # Three-dot: the changes this PR introduces since the merge-base with the base branch.
-          changed=$(git diff --name-only "origin/$BASE...HEAD" -- packages/scraper packages/contract)
+          changed=$(git diff --name-only "origin/$BASE...HEAD" -- packages/satellite packages/contract)
           if [ -z "$changed" ]; then
-            echo "No packages/scraper or packages/contract changes in this PR; scraper version bump not required."
+            echo "No packages/satellite or packages/contract changes in this PR; satellite version bump not required."
             exit 0
           fi
-          echo "Scraper/contract files changed in this PR:"
+          echo "Satellite/contract files changed in this PR:"
           echo "$changed" | sed 's/^/  - /'
-          base_pkg="$(git show "origin/$BASE:packages/scraper/package.json")" || { echo "::error::packages/scraper/package.json not found on base $BASE — cannot compare the scraper version."; exit 1; }
-          head_pkg="$(cat packages/scraper/package.json)" || { echo "::error::packages/scraper/package.json missing in this PR — the scraper package must keep its version manifest."; exit 1; }
+          if ! base_pkg="$(git show "origin/$BASE:packages/satellite/package.json" 2>/dev/null)"; then
+            echo "packages/satellite/package.json does not exist on base $BASE — the satellite package is new on this branch (e.g. the scraper→satellite rename), so there is no base version to compare and the bump gate does not apply. The push-side detect-satellite-version job publishes the first release on merge."
+            exit 0
+          fi
+          head_pkg="$(cat packages/satellite/package.json)" || { echo "::error::packages/satellite/package.json missing in this PR — the satellite package must keep its version manifest."; exit 1; }
           # Dependency-free strictly-greater semver compare (plain MAJOR.MINOR.PATCH).
           BASE_PKG="$base_pkg" HEAD_PKG="$head_pkg" node -e '
             const parse = (json, where) => {
@@ -300,7 +303,7 @@ jobs:
               try { v = JSON.parse(json).version; } catch { v = undefined; }
               const m = /^(\d+)\.(\d+)\.(\d+)/.exec(String(v ?? "").trim());
               if (!m) {
-                console.error(`::error::Cannot read a MAJOR.MINOR.PATCH version from the ${where} packages/scraper/package.json (got ${JSON.stringify(v)}).`);
+                console.error(`::error::Cannot read a MAJOR.MINOR.PATCH version from the ${where} packages/satellite/package.json (got ${JSON.stringify(v)}).`);
                 process.exit(1);
               }
               return { v, t: [Number(m[1]), Number(m[2]), Number(m[3])] };
@@ -312,15 +315,15 @@ jobs:
             const [b, h] = [base.t, head.t];
             const gt = h[0] > b[0] || (h[0] === b[0] && (h[1] > b[1] || (h[1] === b[1] && h[2] > b[2])));
             if (!gt) {
-              console.error(`::error::This PR touches packages/scraper/** or packages/contract/** but packages/scraper/package.json version (${head.v}) is not strictly greater than the base (${base.v}). Bump the "version" field — it is the version the running scraper reports as scraper_version.`);
+              console.error(`::error::This PR touches packages/satellite/** or packages/contract/** but packages/satellite/package.json version (${head.v}) is not strictly greater than the base (${base.v}). Bump the "version" field — it is the version the running satellite reports as satellite_version.`);
               process.exit(1);
             }
-            console.log(`Scraper version bumped ${base.v} -> ${head.v} — OK`);
+            console.log(`Satellite version bumped ${base.v} -> ${head.v} — OK`);
           '
 
-  detect-scraper-version:
-    # Push-side complement to the PR-only `scraper-version` gate: on a merge to main, detect whether
-    # packages/scraper/package.json `version` changed across THIS push. If it did, the release-scraper
+  detect-satellite-version:
+    # Push-side complement to the PR-only `satellite-version` gate: on a merge to main, detect whether
+    # packages/satellite/package.json `version` changed across THIS push. If it did, the release-satellite
     # job below auto-publishes that version (build-automation) — no tag push, no commit-back.
     # Push-only: a PR/dispatch has nothing to auto-publish (the PR gate owns PRs).
     if: github.event_name == 'push'
@@ -333,7 +336,7 @@ jobs:
         with:
           fetch-depth: 0 # full history so the push pre-image (github.event.before) is reachable
 
-      - name: Detect a scraper version change
+      - name: Detect a satellite version change
         id: detect
         # Baseline is the push PRE-IMAGE (github.event.before), NOT HEAD^ — so a rebase-merge or a
         # multi-commit push whose bump isn't in the tip commit is still caught (HEAD^ would silently
@@ -345,11 +348,11 @@ jobs:
           BEFORE: ${{ github.event.before }}
         run: |
           set -euo pipefail
-          new="$(node -p "require('./packages/scraper/package.json').version")"
+          new="$(node -p "require('./packages/satellite/package.json').version")"
           ZERO="0000000000000000000000000000000000000000"
           if [ -z "${BEFORE:-}" ] || [ "$BEFORE" = "$ZERO" ] || ! git cat-file -e "${BEFORE}^{commit}" 2>/dev/null; then
             old="" # no reachable baseline → force changed=true
-          elif old_json="$(git show "${BEFORE}:packages/scraper/package.json" 2>/dev/null)"; then
+          elif old_json="$(git show "${BEFORE}:packages/satellite/package.json" 2>/dev/null)"; then
             old="$(printf '%s' "$old_json" | node -p "JSON.parse(require('fs').readFileSync(0,'utf8')).version" 2>/dev/null || echo "")"
           else
             old="" # file absent/unparseable at the baseline → force changed=true
@@ -360,24 +363,24 @@ jobs:
             echo "changed=false" >> "$GITHUB_OUTPUT"
           fi
           echo "version=$new" >> "$GITHUB_OUTPUT"
-          echo "scraper version: before='${BEFORE:-}' old='${old}' new='${new}'"
+          echo "satellite version: before='${BEFORE:-}' old='${old}' new='${new}'"
 
-  release-scraper:
-    # Auto-publish the scraper release when the version changed on this push to main. Calls the
-    # reusable scraper-release.yml INLINE (a GITHUB_TOKEN-pushed tag can't retrigger on: push, so we
+  release-satellite:
+    # Auto-publish the satellite release when the version changed on this push to main. Calls the
+    # reusable satellite-release.yml INLINE (a GITHUB_TOKEN-pushed tag can't retrigger on: push, so we
     # never push a tag and wait for a tag-trigger). Gated on green CI (test + no-open-changes) so a
-    # broken build never publishes; the scraper's own package is covered by `test` (workspace-aware),
-    # so admin-ui — the Worker admin-panel browser gate, unrelated to the scraper — is deliberately
-    # NOT in this gate. Separate control plane from the Worker deploy: this fires on a scraper
+    # broken build never publishes; the satellite's own package is covered by `test` (workspace-aware),
+    # so admin-ui — the Worker admin-panel browser gate, unrelated to the satellite — is deliberately
+    # NOT in this gate. Separate control plane from the Worker deploy: this fires on a satellite
     # version change (not on Worker paths) and never dispatches the data-repo deploy.
-    needs: [detect-scraper-version, test, no-open-changes]
-    if: github.event_name == 'push' && needs.detect-scraper-version.outputs.changed == 'true'
+    needs: [detect-satellite-version, test, no-open-changes]
+    if: github.event_name == 'push' && needs.detect-satellite-version.outputs.changed == 'true'
     permissions:
-      contents: write # the reusable workflow creates the Release + its scraper-v<version> tag
+      contents: write # the reusable workflow creates the Release + its satellite-v<version> tag
       packages: write # …and pushes the multi-arch image to GHCR
-    uses: ./.github/workflows/scraper-release.yml
+    uses: ./.github/workflows/satellite-release.yml
     with:
-      version: ${{ needs.detect-scraper-version.outputs.version }}
+      version: ${{ needs.detect-satellite-version.outputs.version }}
 
   trigger-deploy:
     # Auto-trigger the data-repo deploy on Worker-relevant changes to main.

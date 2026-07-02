@@ -20,7 +20,7 @@ import { assertNever } from "../lib/remote.js";
 import { currentStreakStart, type HealthPayload, type JobStatus, type JobRun } from "../../health.js";
 import type { AdminPosture } from "../../admin.js";
 import type { CorpusCounts } from "../../admin-data.js";
-import type { ScraperLiveness } from "../../ingest-db.js";
+import type { SatelliteLiveness } from "../../ingest-db.js";
 import type { ReconcileObservability } from "../../reconcile-admin.js";
 import { deriveRecipeBackfill, type AuditObservability, type RecipeBackfill } from "../../audit-admin.js";
 import { ReconcileStatusRow } from "./reconcile.js";
@@ -259,9 +259,9 @@ const WarnIcon = () => (
   </svg>
 );
 
-/** One home-network scraper row (walled-source ingest): health glyph, source count, last push,
+/** One home-network satellite row (satellite ingest): health glyph, source count, last push,
  *  24h count, and a contract-skew warning when behind the Worker's current contract. */
-const ScraperRow = ({ s, now }: { s: ScraperLiveness; now: number }) => {
+const SatelliteRow = ({ s, now }: { s: SatelliteLiveness; now: number }) => {
   const cls = s.health === "fresh" ? "ok" : s.health === "stale" ? "fail" : "never";
   return (
     <Item
@@ -300,14 +300,14 @@ export const StatusPage = ({
   runsByJob,
   reconcile,
   audit,
-  scrapers = [],
+  satellites = [],
 }: {
   payload: HealthPayload;
   counts: CorpusCounts;
   runsByJob: Record<string, JobRun[]>;
   reconcile: ReconcileObservability;
   audit: AuditObservability;
-  scrapers?: ScraperLiveness[];
+  satellites?: SatelliteLiveness[];
 }) => (
   <Layout title="Status · grocery-agent admin" active="/admin">
     <div class="status-head">
@@ -370,12 +370,12 @@ export const StatusPage = ({
       <AuditStatusRow s={audit} now={payload.generated_at} />
     </ItemGroup>
 
-    {scrapers.length > 0 ? (
+    {satellites.length > 0 ? (
       <>
-        <p class="group-label">Ingest scrapers</p>
+        <p class="group-label">Ingest satellites</p>
         <ItemGroup>
-          {scrapers.map((s) => (
-            <ScraperRow s={s} now={payload.generated_at} />
+          {satellites.map((s) => (
+            <SatelliteRow s={s} now={payload.generated_at} />
           ))}
         </ItemGroup>
       </>

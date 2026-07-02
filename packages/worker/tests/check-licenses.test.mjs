@@ -79,8 +79,8 @@ test("flattenProdTree dedups, recurses into nested deps, and drops workspace lin
       },
     },
     {
-      name: "@grocery-agent/scraper",
-      path: "/repo/packages/scraper",
+      name: "@grocery-agent/satellite",
+      path: "/repo/packages/satellite",
       dependencies: {
         zod: { version: "4.4.3" }, // duplicate of worker's — deduped by name@version
         "smol-toml": { version: "1.3.1" },

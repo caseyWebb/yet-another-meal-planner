@@ -711,8 +711,8 @@
   .ins-subrecipe-go { display: inline-flex; color: var(--muted-foreground); flex: 0 0 auto; }
   .ins-subrecipe:hover .ins-subrecipe-go { color: var(--accent); }
 
-  /* Walled-source ingest (recipe-ingestion): the Discovery ingest strip, the arrived-via-push
-     stage accent, and the Scrapers liveness cards + funnel. */
+  /* Satellite ingest (recipe-ingestion): the Discovery ingest strip, the arrived-via-push
+     stage accent, and the Satellites liveness cards + funnel. */
   .dc-ingest-strip { display: flex; align-items: center; gap: .6rem; background: #fff; border: 1px solid var(--border); border-radius: var(--radius-lg); padding: .55rem .85rem; margin: .35rem 0 1rem; color: var(--foreground); text-decoration: none; font-size: .85rem; }
   .dc-ingest-strip:hover { border-color: var(--accent); }
   .dc-ingest-strip.warn { border-color: color-mix(in oklch, var(--destructive) 35%, var(--border)); background: color-mix(in oklch, var(--destructive) 3%, #fff); }
