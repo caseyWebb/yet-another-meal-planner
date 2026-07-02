@@ -83,6 +83,10 @@ The container mounts `./config` at `/config` (holding `satellite.toml`, `session
 The image is built on the Playwright base, so Chromium (browser tier + `login`) is preinstalled.
 `login` needs a display — on a headless server use **cookie-import** or attach a noVNC/X sidecar.
 
+Each `satellite-v*` release publishes a prebuilt **multi-arch** image (`linux/amd64` + `linux/arm64`)
+to GHCR at `ghcr.io/<owner>/groceries-satellite`, so an Apple-Silicon home host runs it natively
+without emulation — reference that tag in place of the compose `build:` block to skip building.
+
 ## CLI verbs
 
 | Verb | What it does |

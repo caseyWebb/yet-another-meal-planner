@@ -254,6 +254,131 @@ jobs:
             packages/worker/admin/visual/.screenshots/
           retention-days: 14
 
+  satellite-version:
+    # Version single-source-of-truth gate (build-automation): packages/satellite/package.json
+    # `version` is the satellite's one version — the value the running satellite reports as
+    # `satellite_version` on every ingest batch. A PR that touches the satellite OR the shared
+    # contract it imports (a contract change reshapes the
+    # satellite) MUST bump that version to a strictly-greater semver, or this gate fails. PR-only
+    # (a push to main has no base to diff against) and bot-exempt (an automated dependency PR
+    # can't bump the version) in one guard, mirroring pr-checklist.yml. Reads git only — the
+    # built-in GITHUB_TOKEN, never DATA_REPO_ACTIONS_TOKEN — and never commits a bump: the author
+    # bumps it in the PR. Blocks merge once added to main's required status checks (an operator
+    # repo-settings step, as with the other gates).
+    if: github.event_name == 'pull_request' && !endsWith(github.event.pull_request.user.login, '[bot]')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          # Full history so the PR base ref is present for the path diff and the base
+          # package.json read (the HEAD^ trick the other jobs use gives the merge commit's
+          # first parent, not the base tip we compare versions against).
+          fetch-depth: 0
+
+      - name: Require a satellite version bump when the satellite or contract changed
+        env:
+          BASE: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          git fetch --quiet origin "$BASE"
+          # Three-dot: the changes this PR introduces since the merge-base with the base branch.
+          changed=$(git diff --name-only "origin/$BASE...HEAD" -- packages/satellite packages/contract)
+          if [ -z "$changed" ]; then
+            echo "No packages/satellite or packages/contract changes in this PR; satellite version bump not required."
+            exit 0
+          fi
+          echo "Satellite/contract files changed in this PR:"
+          echo "$changed" | sed 's/^/  - /'
+          base_pkg="$(git show "origin/$BASE:packages/satellite/package.json")" || { echo "::error::packages/satellite/package.json not found on base $BASE — cannot compare the satellite version."; exit 1; }
+          head_pkg="$(cat packages/satellite/package.json)" || { echo "::error::packages/satellite/package.json missing in this PR — the satellite package must keep its version manifest."; exit 1; }
+          # Dependency-free strictly-greater semver compare (plain MAJOR.MINOR.PATCH).
+          BASE_PKG="$base_pkg" HEAD_PKG="$head_pkg" node -e '
+            const parse = (json, where) => {
+              let v;
+              try { v = JSON.parse(json).version; } catch { v = undefined; }
+              const m = /^(\d+)\.(\d+)\.(\d+)/.exec(String(v ?? "").trim());
+              if (!m) {
+                console.error(`::error::Cannot read a MAJOR.MINOR.PATCH version from the ${where} packages/satellite/package.json (got ${JSON.stringify(v)}).`);
+                process.exit(1);
+              }
+              return { v, t: [Number(m[1]), Number(m[2]), Number(m[3])] };
+            };
+            const base = parse(process.env.BASE_PKG, "base");
+            const head = parse(process.env.HEAD_PKG, "head");
+            console.log(`Base version: ${base.v}`);
+            console.log(`Head version: ${head.v}`);
+            const [b, h] = [base.t, head.t];
+            const gt = h[0] > b[0] || (h[0] === b[0] && (h[1] > b[1] || (h[1] === b[1] && h[2] > b[2])));
+            if (!gt) {
+              console.error(`::error::This PR touches packages/satellite/** or packages/contract/** but packages/satellite/package.json version (${head.v}) is not strictly greater than the base (${base.v}). Bump the "version" field — it is the version the running satellite reports as satellite_version.`);
+              process.exit(1);
+            }
+            console.log(`Satellite version bumped ${base.v} -> ${head.v} — OK`);
+          '
+
+  detect-satellite-version:
+    # Push-side complement to the PR-only `satellite-version` gate: on a merge to main, detect whether
+    # packages/satellite/package.json `version` changed across THIS push. If it did, the release-satellite
+    # job below auto-publishes that version (build-automation) — no tag push, no commit-back.
+    # Push-only: a PR/dispatch has nothing to auto-publish (the PR gate owns PRs).
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.detect.outputs.changed }}
+      version: ${{ steps.detect.outputs.version }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0 # full history so the push pre-image (github.event.before) is reachable
+
+      - name: Detect a satellite version change
+        id: detect
+        # Baseline is the push PRE-IMAGE (github.event.before), NOT HEAD^ — so a rebase-merge or a
+        # multi-commit push whose bump isn't in the tip commit is still caught (HEAD^ would silently
+        # miss it → nothing publishes → unrecoverable). Edges degrade to changed=true (the release's
+        # idempotence guard prevents an actual double-publish): an all-zero `before` (branch just
+        # created), an unresolvable `before` (a force-push rewrote history), or an absent/unparseable
+        # old package.json (first import).
+        env:
+          BEFORE: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          new="$(node -p "require('./packages/satellite/package.json').version")"
+          ZERO="0000000000000000000000000000000000000000"
+          if [ -z "${BEFORE:-}" ] || [ "$BEFORE" = "$ZERO" ] || ! git cat-file -e "${BEFORE}^{commit}" 2>/dev/null; then
+            old="" # no reachable baseline → force changed=true
+          elif old_json="$(git show "${BEFORE}:packages/satellite/package.json" 2>/dev/null)"; then
+            old="$(printf '%s' "$old_json" | node -p "JSON.parse(require('fs').readFileSync(0,'utf8')).version" 2>/dev/null || echo "")"
+          else
+            old="" # file absent/unparseable at the baseline → force changed=true
+          fi
+          if [ "$new" != "$old" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "version=$new" >> "$GITHUB_OUTPUT"
+          echo "satellite version: before='${BEFORE:-}' old='${old}' new='${new}'"
+
+  release-satellite:
+    # Auto-publish the satellite release when the version changed on this push to main. Calls the
+    # reusable satellite-release.yml INLINE (a GITHUB_TOKEN-pushed tag can't retrigger on: push, so we
+    # never push a tag and wait for a tag-trigger). Gated on green CI (test + no-open-changes) so a
+    # broken build never publishes; the satellite's own package is covered by `test` (workspace-aware),
+    # so admin-ui — the Worker admin-panel browser gate, unrelated to the satellite — is deliberately
+    # NOT in this gate. Separate control plane from the Worker deploy: this fires on a satellite
+    # version change (not on Worker paths) and never dispatches the data-repo deploy.
+    needs: [detect-satellite-version, test, no-open-changes]
+    if: github.event_name == 'push' && needs.detect-satellite-version.outputs.changed == 'true'
+    permissions:
+      contents: write # the reusable workflow creates the Release + its satellite-v<version> tag
+      packages: write # …and pushes the multi-arch image to GHCR
+    uses: ./.github/workflows/satellite-release.yml
+    with:
+      version: ${{ needs.detect-satellite-version.outputs.version }}
+
   trigger-deploy:
     # Auto-trigger the data-repo deploy on Worker-relevant changes to main.
     # Only fires on push (not PRs or workflow_dispatch) — the push trigger above

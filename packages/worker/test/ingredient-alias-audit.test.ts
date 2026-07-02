@@ -375,3 +375,43 @@ describe("auditAliases — calibration guards (normalization-audit-calibration)"
     expect(s).toMatchObject({ audited: 1, repointed: 1, merged: 1 });
   });
 });
+
+describe("auditAliases — disjunctive variant disposal (disjunctive-term-modeling)", () => {
+  it("re-points a disjunctive variant to a freshly-minted disjunction concept with NO confirm call", async () => {
+    const h = harness({
+      batch: [{ variant: "white or yellow onion", id: "onions" }],
+      aliases: [
+        { variant: "white or yellow onion", id: "onions" },
+        { variant: "onions", id: "onions" }, // keeps the previous target referenced (no orphan merge)
+      ],
+      identities: [auto("onions")],
+      vectors: [{ id: "onions", embedding: [1, 0, 0] }],
+    });
+    const s = await auditAliases(h.deps);
+    expect(h.confirmCalls).toBe(0);
+    expect(h.committed).toHaveLength(1);
+    const r = h.committed[0];
+    expect(r.id).toBe("white or yellow onion");
+    expect(r.node).toMatchObject({ concrete: false, search_term: "white onion" });
+    expect(r.log.detail).toMatchObject({ audit: "alias", previous_id: "onions", note: "disjunction_concept" });
+    expect(h.merges).toEqual([]); // "onions" still holds its own alias
+    expect(s).toMatchObject({ audited: 1, minted: 1, kept: 0, repointed: 0 });
+  });
+
+  it("a disjunctive variant lexically matching the standing concept keeps it (lexical runs first)", async () => {
+    const h = harness({
+      batch: [{ variant: "white or yellow onion!", id: "white or yellow onion" }],
+      aliases: [
+        { variant: "white or yellow onion!", id: "white or yellow onion" },
+        { variant: "white or yellow onion", id: "white or yellow onion" },
+      ],
+      identities: [auto("white or yellow onion")],
+      vectors: [],
+    });
+    const s = await auditAliases(h.deps);
+    expect(h.confirmCalls).toBe(0);
+    expect(h.committed[0]).toMatchObject({ id: "white or yellow onion" });
+    expect(h.committed[0].node).toBeUndefined(); // lexical keep, no second concept
+    expect(s).toMatchObject({ audited: 1, kept: 1 });
+  });
+});

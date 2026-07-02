@@ -4,7 +4,10 @@
 # preinstalled at a known PLAYWRIGHT_BROWSERS_PATH — so the browser tier and the `login` verb
 # work with no runtime download. If you only ever use the plain-HTTP tier you could slim this
 # to node:22-slim, but the Playwright base keeps `login`/browser sources working out of the box.
-FROM mcr.microsoft.com/playwright:v1.61.1-jammy
+# Use the `noble` (Ubuntu 24.04, glibc 2.39) variant, NOT `jammy` (22.04, glibc 2.35): the arm64
+# `aube` binary links against glibc 2.38/2.39, so `aube ci` fails on jammy for the linux/arm64
+# leg of the multi-arch build. noble satisfies both arches.
+FROM mcr.microsoft.com/playwright:v1.61.1-noble
 
 WORKDIR /app
 

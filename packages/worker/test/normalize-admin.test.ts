@@ -14,11 +14,14 @@ function seeded() {
         { id: "courgette", base: "courgette", detail: null, concrete: 1, representative: "zucchini" }, // merged away
         { id: "zucchini", base: "zucchini", detail: null, concrete: 1, representative: null },
         { id: "fresh-soft-cheese", base: "fresh-soft-cheese", detail: null, concrete: 0, representative: null }, // concept
+        { id: "kale", base: "kale", detail: null, concrete: 1, representative: null },
       ],
       ingredient_alias: [
         { variant: "scallions", id: "green onion", source: "auto" },
         { variant: "evoo", id: "olive oil", source: "human" }, // id has no identity node (legacy)
-        { variant: "courgette", id: "courgette", source: "auto" }, // resolves through rep to zucchini
+        { variant: "courgette", id: "courgette", source: "auto" }, // self-entry of a merged-away loser
+        { variant: "zuke", id: "courgette", source: "auto" }, // real mapping resolving through rep to zucchini
+        { variant: "kale", id: "kale", source: "auto" }, // canonical self-entry (front-door row)
       ],
       ingredient_edge: [
         { from_id: "ground beef::fat-80-20", to_id: "ground beef", kind: "general" },
@@ -77,17 +80,21 @@ describe("readNormalizationPage", () => {
     expect(byTerm["kielbasa"].reconfirm).toBe(true);
     expect(byTerm["scallions"].reconfirm).toBe(false);
 
-    // Aliases: courgette resolves through the representative to zucchini (merged); evoo is a
-    // legacy id with no node; source flags preserved.
+    // Aliases: mappings only — the canonical self-entries (kale → kale, and courgette → courgette,
+    // a stored self-entry even though its node merged away) are excluded and counted instead.
+    // zuke resolves through the representative to zucchini (merged); evoo is a legacy id with no
+    // node; source flags preserved.
     const al = Object.fromEntries(page.aliases.map((a) => [a.variant, a]));
-    expect(al["courgette"]).toMatchObject({ base: "zucchini", merged: true, source: "auto" });
+    expect(page.aliases.map((a) => a.variant).sort()).toEqual(["evoo", "scallions", "zuke"]);
+    expect(page.aliasSelfCount).toBe(2);
+    expect(al["zuke"]).toMatchObject({ base: "zucchini", merged: true, source: "auto" });
     expect(al["evoo"]).toMatchObject({ base: "olive oil", source: "human" });
     expect(al["scallions"]).toMatchObject({ base: "green onion", merged: false });
 
-    // Stats.
+    // Stats. The Aliases tile counts the WHOLE front-door (self-entries included).
     expect(page.stats).toMatchObject({
-      nodes: 5, // survivors (courgette merged away)
-      aliases: 3,
+      nodes: 6, // survivors (courgette merged away)
+      aliases: 5,
       satisfies: 2,
       pending: 1,
       decisions24h: 7,

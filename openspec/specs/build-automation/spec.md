@@ -44,12 +44,33 @@ CI SHALL typecheck and test **every** workspace package (the Worker, the shared 
 
 ### Requirement: The satellite is published as a container image on a tagged release
 
-A scoped release tag (`satellite-v*`) SHALL build the satellite **container image**, publish it to the GitHub Container Registry (GHCR), and cut a **GitHub Release** for that tag. This publish SHALL run in the code repository using the built-in `GITHUB_TOKEN` (with package-write permission) — it SHALL NOT require a new stored Actions secret, preserving the "no Actions secrets in the public code repo" invariant. The satellite release SHALL be independent of the Worker deploy control plane (a satellite tag SHALL NOT deploy the Worker, and a Worker deploy SHALL NOT publish a satellite image). The image SHALL embed the satellite's build version and the recipe-**contract** version it targets, so a running satellite can report both to the Worker for the admin liveness/skew view.
+The satellite SHALL be published as a **multi-architecture container image** — a manifest list covering `linux/amd64` and `linux/arm64`, so it runs natively on both x86 home servers and Apple-Silicon/arm64 home hosts (the browser tier's headless Chromium included) with no CPU emulation — to the GitHub Container Registry (GHCR), together with a **GitHub Release** for a `satellite-v<version>` tag.
 
-#### Scenario: A satellite tag publishes an image and a release
+The published `<version>` SHALL be the `version` field of `packages/satellite/package.json` — the same single source of truth the running satellite reports as `satellite_version`. The `satellite-v<version>` tag SHALL be **derived** from it, and the release workflow SHALL read and verify the version from `packages/satellite/package.json` rather than from a hand-typed tag or a dispatch input, so the tag, the published image label, and the version the running satellite reports can never drift.
 
-- **WHEN** a `satellite-v*` tag is pushed
-- **THEN** CI builds the satellite container image, pushes it to GHCR, and creates a GitHub Release for the tag, using `GITHUB_TOKEN`
+The publish SHALL run **automatically on merge to `main`**: when a push to `main` changes the satellite `version` relative to the state before the push, CI SHALL publish that version's image and Release, with **no human tag push** and **no commit-back** to the repository (the `satellite-v<version>` tag is created only as part of cutting the Release, in the same workflow run). When a push to `main` does NOT change the satellite `version`, nothing SHALL be published. The publish SHALL be **idempotent**: when a `satellite-v<version>` release/tag already exists, a re-run or an unrelated push SHALL NOT publish that version again. A manual `workflow_dispatch` fallback SHALL publish the version `packages/satellite/package.json` currently declares, subject to the same idempotence guard.
+
+This publish SHALL run in the code repository using the built-in `GITHUB_TOKEN` (with package-write permission) — it SHALL NOT require a new stored Actions secret, preserving the "no Actions secrets in the public code repo" invariant. The satellite release SHALL be independent of the Worker deploy control plane (a satellite version change SHALL NOT deploy the Worker, and a Worker deploy SHALL NOT publish a satellite image). The image SHALL embed the satellite's build version (from `packages/satellite/package.json`) and the recipe-**contract** version it targets, so a running satellite can report both to the Worker for the admin liveness/skew view.
+
+#### Scenario: A version bump on merge publishes the image and release
+
+- **WHEN** a push to `main` changes `packages/satellite/package.json` `version` relative to the state before the push
+- **THEN** CI builds the multi-architecture satellite image (`linux/amd64` + `linux/arm64`), pushes it to GHCR, and creates a GitHub Release for `satellite-v<version>` using the built-in `GITHUB_TOKEN`, without deploying the Worker
+
+#### Scenario: An unchanged version publishes nothing
+
+- **WHEN** a push to `main` leaves `packages/satellite/package.json` `version` unchanged
+- **THEN** no image is pushed and no Release is cut
+
+#### Scenario: An already-published version is not double-published
+
+- **WHEN** the publish runs for a version whose `satellite-v<version>` release/tag already exists
+- **THEN** it detects the existing release and publishes nothing
+
+#### Scenario: The published image is multi-arch
+
+- **WHEN** a satellite version change publishes a release
+- **THEN** the pushed image is a manifest list carrying both `linux/amd64` and `linux/arm64`, so an Apple-Silicon home host runs it natively without emulation
 
 #### Scenario: Publishing needs no stored secret
 
@@ -58,6 +79,40 @@ A scoped release tag (`satellite-v*`) SHALL build the satellite **container imag
 
 #### Scenario: The satellite release does not deploy the Worker
 
-- **WHEN** a `satellite-v*` tag is pushed
+- **WHEN** a satellite version change publishes a release
 - **THEN** the Worker deploy control plane is not triggered
+
+### Requirement: Satellite version is single-sourced and bump-gated on pull requests
+
+`packages/satellite/package.json` `version` (semver) SHALL be the single source of truth for the satellite's version — the value the running satellite reports to the Worker as `satellite_version` on every ingest batch. A pull request that changes any file under `packages/satellite/**` or under the shared contract package `packages/contract/**` SHALL bump that `version` to a value strictly greater (by semver) than the value on the pull request's base branch. A merge-blocking CI gate SHALL enforce this: it SHALL run only on `pull_request` events, determine the changed paths by diffing against the pull request's base ref, and FAIL the pull request when the satellite or the shared contract is touched without a strictly-greater bump. The gate SHALL pass as a no-op when the pull request touches neither the satellite nor the shared contract. The gate SHALL use only the built-in `GITHUB_TOKEN` and SHALL NOT require any stored Actions secret, and SHALL NOT itself commit a version bump — the version is bumped by the pull request's author. The gate SHALL exempt bot-authored pull requests (author login ending in `[bot]`) with a neutral pass, so that automated dependency pull requests are not permanently blocked.
+
+#### Scenario: A satellite change without a bump fails
+
+- **WHEN** a pull request changes a file under `packages/satellite/**` and does not raise `packages/satellite/package.json` `version` above the base branch's value
+- **THEN** the version-bump gate fails the pull request
+
+#### Scenario: A contract change without a bump fails
+
+- **WHEN** a pull request changes a file under `packages/contract/**` and does not raise `packages/satellite/package.json` `version` above the base branch's value
+- **THEN** the version-bump gate fails the pull request
+
+#### Scenario: A strictly-greater bump passes
+
+- **WHEN** a pull request changes the satellite or the shared contract and raises `packages/satellite/package.json` `version` to a strictly-greater semver
+- **THEN** the version-bump gate passes
+
+#### Scenario: A change touching neither is a no-op
+
+- **WHEN** a pull request touches neither `packages/satellite/**` nor `packages/contract/**`
+- **THEN** the version-bump gate passes without requiring any version change
+
+#### Scenario: The gate runs only on pull requests
+
+- **WHEN** CI runs on a push to `main` or a `workflow_dispatch`
+- **THEN** the version-bump gate does not run, because there is no base revision to compare against
+
+#### Scenario: Bot-authored pull requests are exempt
+
+- **WHEN** a bot (author login ending in `[bot]`) opens a pull request that touches the satellite or the shared contract without a version bump
+- **THEN** the version-bump gate passes with a neutral result
 

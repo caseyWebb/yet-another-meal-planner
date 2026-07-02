@@ -25,6 +25,7 @@ import {
   SearchIcon,
   XCircleIcon,
   MinusCircleIcon,
+  CheckCircleIcon,
   UsersIcon,
   LayersIcon,
   TargetIcon,
@@ -39,7 +40,9 @@ import type {
   NodeEdge,
 } from "../../normalize-admin.js";
 import type { ReconcileObservability } from "../../reconcile-admin.js";
+import type { AuditSurface, EdgeDecisionCard } from "../../audit-admin.js";
 import { ReconcileCard } from "./reconcile.js";
+import { AuditsTab } from "./audits.js";
 
 export const ALIAS_PAGE_SIZE = 25;
 
@@ -65,7 +68,9 @@ const FILTERS: Array<{ key: string; label: string }> = [
 
 /** Query-param state the SSR view + island both read. */
 export interface NormalizeQuery {
-  tab: "decisions" | "queue" | "aliases" | "reconcile" | "nodes";
+  tab: "decisions" | "audits" | "queue" | "aliases" | "reconcile" | "nodes";
+  /** Decisions-tab stream segment: the term stream (default) or the edge-verdict stream. */
+  stream: "terms" | "edges";
   filter: string;
   q: string;
   src: string;
@@ -79,13 +84,14 @@ export interface NormalizeQuery {
 export function parseQuery(url: URL): NormalizeQuery {
   const tabRaw = url.searchParams.get("tab");
   const tab =
-    tabRaw === "queue" || tabRaw === "aliases" || tabRaw === "reconcile" || tabRaw === "nodes"
+    tabRaw === "audits" || tabRaw === "queue" || tabRaw === "aliases" || tabRaw === "reconcile" || tabRaw === "nodes"
       ? tabRaw
       : "decisions";
   const pageRaw = Number(url.searchParams.get("page") ?? "1");
   const page = Number.isFinite(pageRaw) && pageRaw > 0 ? pageRaw - 1 : 0;
   return {
     tab,
+    stream: url.searchParams.get("stream") === "edges" ? "edges" : "terms",
     filter: url.searchParams.get("filter") ?? "all",
     q: url.searchParams.get("q") ?? "",
     src: url.searchParams.get("src") ?? "all",
@@ -99,6 +105,7 @@ function href(part: Partial<NormalizeQuery>, cur: NormalizeQuery): string {
   const q = { ...cur, ...part };
   const p = new URLSearchParams();
   if (q.tab !== "decisions") p.set("tab", q.tab);
+  if (q.stream !== "terms") p.set("stream", q.stream);
   if (q.filter !== "all") p.set("filter", q.filter);
   if (q.q) p.set("q", q.q);
   if (q.src !== "all") p.set("src", q.src);
@@ -299,6 +306,90 @@ const DecisionCard = ({ d, now, query, nodeIds }: { d: NormalizationDecision; no
   </div>
 );
 
+// === Decisions › Edges segment ==============================================================
+// Verdicts on directed satisfies-edges from the edge audit — shaped differently from term
+// decisions: a from→to edge, KEEP/DROP, an amber flag for self-loop/cycle drops, the check's
+// reason, and (for drops later revisited by the replay) a pointer into the Audits tab's
+// restorations log. Pure SSR — the filter is a query param like the term-stream pills.
+
+const EDGE_FILTERS: Array<{ key: string; label: string }> = [
+  { key: "all", label: "All" },
+  { key: "keep", label: "Kept" },
+  { key: "drop", label: "Dropped" },
+];
+
+/** A short human verdict line for an edge decision (derived — the log stores the parts). */
+function edgeVerdict(d: EdgeDecisionCard): string {
+  if (d.outcome === "keep") {
+    if (d.note === "structural") return "structural — a spec satisfies its base";
+    if (d.note === "confirm_failed_safe") return "undecidable — kept fail-safe";
+    if (d.direction === "both") return "holds both ways";
+    return "direction holds";
+  }
+  if (d.flag === "self-loop") return "self-loop — an id can't satisfy itself";
+  if (d.flag === "cycle") return "closed a cycle — this direction lost";
+  return "direction doesn't hold";
+}
+
+const EdgeStream = ({ edges, query, now }: { edges: EdgeDecisionCard[]; query: NormalizeQuery; now: number }) => {
+  const shown = edges.filter((d) => query.filter === "all" || d.outcome === query.filter);
+  return (
+    <>
+      <div class="data-nav nz-filters">
+        {EDGE_FILTERS.map((f) => {
+          const n = f.key === "all" ? edges.length : edges.filter((d) => d.outcome === f.key).length;
+          return (
+            <a
+              class={query.filter === f.key ? `pill nz-pill oc-edge_${f.key} active` : `pill nz-pill oc-edge_${f.key}`}
+              href={href({ filter: f.key, page: 0 }, query)}
+              aria-disabled={n === 0 && f.key !== "all"}
+            >
+              {f.label}
+              {n > 0 ? <span class="pill-count">{n}</span> : null}
+            </a>
+          );
+        })}
+      </div>
+
+      {shown.length === 0 ? (
+        <p class="muted">No edge decisions match this filter.</p>
+      ) : (
+        <div class="nz-list">
+          {shown.map((d) => (
+            <div class={`nz-card ec-card oc-edge_${d.outcome}`} id={`edge-${d.id}`}>
+              <div class="ec-main">
+                <div class="ec-lead">
+                  <div class="ec-edge">
+                    <code>{d.from}</code>
+                    <ArrowRightIcon size={14} />
+                    <code>{d.to}</code>
+                    <span class="ec-rel">{d.kind}</span>
+                  </div>
+                  <div class="nz-badges">
+                    <span class={`nz-badge oc-edge_${d.outcome}`}>{d.outcome === "keep" ? "Kept" : "Dropped"}</span>
+                    {d.flag ? <span class="ec-flag">{d.flag}</span> : null}
+                    {d.createdAt ? <span class="nz-time muted">{relAge(d.createdAt, now)}</span> : null}
+                  </div>
+                </div>
+                <div class="ec-verdict">
+                  <span class="ec-verdict-glyph">{d.outcome === "keep" ? <CheckCircleIcon size={13} /> : <MinusCircleIcon size={13} />}</span>
+                  {edgeVerdict(d)}
+                </div>
+                {d.reason ? <div class="ec-reason">"{d.reason}"</div> : null}
+                {d.revisitedBy != null ? (
+                  <a class="ec-restored" href={href({ tab: "audits", stream: "terms", filter: "all", page: 0 }, query) + `#rst-${d.revisitedBy}`}>
+                    <RotateIcon size={12} /> later revisited by the edge audit — see Restorations
+                  </a>
+                ) : null}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </>
+  );
+};
+
 const QueueTable = ({ data, now }: { data: NormalizationPage; now: number }) => (
   <div class="nz-queue">
     <p class="nz-queue-blurb muted small">
@@ -395,6 +486,17 @@ const AliasesTab = ({ data, query }: { data: NormalizationPage; query: Normalize
             </a>
           ))}
         </div>
+        {data.aliasSelfCount > 0 ? (
+          // The canonical self-entry population (variant === id, the resolver front-door row
+          // every mint writes) — real rows in the table, but not mappings; a count, not a list.
+          <span
+            class="badge nz-al-selfcount"
+            data-variant="outline"
+            title="Front-door rows mapping a canonical id to itself — not shown as mappings"
+          >
+            {data.aliasSelfCount} canonical {data.aliasSelfCount === 1 ? "entry" : "entries"}
+          </span>
+        ) : null}
         <button class="btn nz-al-add" data-size="sm" data-action="alias-add">
           + Add mapping
         </button>
@@ -872,21 +974,24 @@ const NodesTab = ({ nodes, query }: { nodes: NodesPage; query: NormalizeQuery })
   );
 };
 
-/** The Normalization area's SSR content. `query` (tab/filter/q/src/page/node/facet) is route state so
- *  every combination is deep-linkable; `now` is the render clock for relative times. `reconcile` feeds
- *  the Reconcile tab's convergence card and `nodes` the Nodes tab (both read-only — no island). */
+/** The Normalization area's SSR content. `query` (tab/stream/filter/q/src/page/node/facet) is route
+ *  state so every combination is deep-linkable; `now` is the render clock for relative times.
+ *  `reconcile` feeds the Reconcile tab's convergence card, `nodes` the Nodes tab, and `audit` the
+ *  Audits tab + the Decisions › Edges segment (all read-only — no island). */
 export const NormalizeView = ({
   data,
   query,
   now,
   reconcile,
   nodes,
+  audit,
 }: {
   data: NormalizationPage;
   query: NormalizeQuery;
   now: number;
   reconcile: ReconcileObservability;
   nodes: NodesPage;
+  audit: AuditSurface;
 }) => {
   const stats = data.stats;
   // The set of node ids a decision's resolved id can deep-link into (the whole node list, so a
@@ -908,6 +1013,10 @@ export const NormalizeView = ({
       <div class="data-nav nz-subnav">
         <a class={query.tab === "decisions" ? "pill active" : "pill"} href={href({ tab: "decisions", page: 0 }, query)}>
           Decisions
+        </a>
+        <a class={query.tab === "audits" ? "pill active" : "pill"} href={href({ tab: "audits", page: 0 }, query)}>
+          <span class={`rk-tab-dot ${audit.obs.state}`} />
+          Audits
         </a>
         <a class={query.tab === "queue" ? "pill active" : "pill"} href={href({ tab: "queue", page: 0 }, query)}>
           Queue
@@ -950,28 +1059,52 @@ export const NormalizeView = ({
         <div class="nz-reconcile">
           <ReconcileCard s={reconcile} now={now} />
         </div>
+      ) : query.tab === "audits" ? (
+        <AuditsTab s={audit.obs} restorations={audit.restorations} rejections={audit.rejections} backoffDays={audit.backoffDays} now={now} />
       ) : (
         <>
-          <div class="data-nav nz-filters">
-            {FILTERS.map((f) => {
-              const n = f.key === "all" ? data.decisions.length : data.decisions.filter((d) => d.outcome === f.key).length;
-              return (
-                <a class={query.filter === f.key ? `pill nz-pill oc-${f.key} active` : `pill nz-pill oc-${f.key}`} href={href({ filter: f.key, page: 0 }, query)} aria-disabled={n === 0 && f.key !== "all"}>
-                  {f.label}
-                  {n > 0 ? <span class="pill-count">{n}</span> : null}
-                </a>
-              );
-            })}
+          {/* The Terms / Edges stream segment — two decision shapes, one deep-linkable param.
+              Switching streams resets the filter (the two segments' filter keys differ). */}
+          <div class="nz-stream-bar">
+            <div class="seg nz-stream-seg">
+              <a class={query.stream === "terms" ? "seg-btn active" : "seg-btn"} href={href({ stream: "terms", filter: "all", page: 0 }, query)}>
+                Terms<span class="nz-stream-n">{data.decisions.length}</span>
+              </a>
+              <a class={query.stream === "edges" ? "seg-btn active" : "seg-btn"} href={href({ stream: "edges", filter: "all", page: 0 }, query)}>
+                Edges<span class="nz-stream-n">{audit.edges.length}</span>
+              </a>
+            </div>
+            <span class="nz-stream-hint muted small">
+              {query.stream === "terms" ? "surface term → canonical id" : "directed satisfies-edge · keep or drop"}
+            </span>
           </div>
 
-          {filteredDecisions.length === 0 ? (
-            <p class="muted">No decisions match this filter.</p>
+          {query.stream === "edges" ? (
+            <EdgeStream edges={audit.edges} query={query} now={now} />
           ) : (
-            <div class="nz-list">
-              {filteredDecisions.map((d) => (
-                <DecisionCard d={d} now={now} query={query} nodeIds={nodeIds} />
-              ))}
-            </div>
+            <>
+              <div class="data-nav nz-filters">
+                {FILTERS.map((f) => {
+                  const n = f.key === "all" ? data.decisions.length : data.decisions.filter((d) => d.outcome === f.key).length;
+                  return (
+                    <a class={query.filter === f.key ? `pill nz-pill oc-${f.key} active` : `pill nz-pill oc-${f.key}`} href={href({ filter: f.key, page: 0 }, query)} aria-disabled={n === 0 && f.key !== "all"}>
+                      {f.label}
+                      {n > 0 ? <span class="pill-count">{n}</span> : null}
+                    </a>
+                  );
+                })}
+              </div>
+
+              {filteredDecisions.length === 0 ? (
+                <p class="muted">No decisions match this filter.</p>
+              ) : (
+                <div class="nz-list">
+                  {filteredDecisions.map((d) => (
+                    <DecisionCard d={d} now={now} query={query} nodeIds={nodeIds} />
+                  ))}
+                </div>
+              )}
+            </>
           )}
         </>
       )}
@@ -1039,31 +1172,34 @@ export const NormalizeView = ({
   );
 };
 
-function serializeProps(data: NormalizationPage, reconcile: ReconcileObservability, nodes: NodesPage): string {
-  return JSON.stringify({ data, reconcile, nodes }).replace(/</g, "\\u003c");
+function serializeProps(data: NormalizationPage, reconcile: ReconcileObservability, nodes: NodesPage, audit: AuditSurface): string {
+  return JSON.stringify({ data, reconcile, nodes, audit }).replace(/</g, "\\u003c");
 }
 
 /** The `/admin/normalize` shell: the area SSR'd (first paint carries the data) + the mutation
- *  island's hydration props + script (Override / Re-queue / Delete / Add-alias). The Reconcile and
- *  Nodes tabs are read-only (no island), so their models ride the SSR only. */
+ *  island's hydration props + script (Override / Re-queue / Delete / Add-alias). The Reconcile,
+ *  Nodes, and Audits tabs (and the Edges segment) are read-only (no island of their own), but
+ *  their models still ride the props block — the island re-renders the whole view. */
 export const NormalizePage = ({
   data,
   query,
   now,
   reconcile,
   nodes,
+  audit,
 }: {
   data: NormalizationPage;
   query: NormalizeQuery;
   now: number;
   reconcile: ReconcileObservability;
   nodes: NodesPage;
+  audit: AuditSurface;
 }) => (
   <Layout title="Normalization · grocery-agent admin" active="/admin/normalize" wide>
     <div id="normalize-island">
-      <NormalizeView data={data} query={query} now={now} reconcile={reconcile} nodes={nodes} />
+      <NormalizeView data={data} query={query} now={now} reconcile={reconcile} nodes={nodes} audit={audit} />
     </div>
-    <script type="application/json" id="normalize-props" dangerouslySetInnerHTML={{ __html: serializeProps(data, reconcile, nodes) }} />
+    <script type="application/json" id="normalize-props" dangerouslySetInnerHTML={{ __html: serializeProps(data, reconcile, nodes, audit) }} />
     <script type="module" src="/admin/islands/normalize.js" />
   </Layout>
 );

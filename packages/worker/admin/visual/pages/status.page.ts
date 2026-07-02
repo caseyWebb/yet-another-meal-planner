@@ -23,4 +23,32 @@ export class StatusPage extends AdminPage {
       await this.tiles.expectTile(label);
     }
   }
+
+  // --- The identity-audit convergence row + the recipe-backfill gauge
+  // (admin-audit-observability): a self-terminating backlog, so the row carries a burndown
+  // and NEVER an uptime% (assert its absence — the design's one negative guarantee).
+
+  /** The one identity-audit sibling row: name link, backlog burndown, no uptime%. */
+  async expectAuditRow(): Promise<void> {
+    const row = this.page.locator(".au-job");
+    await expect(row).toBeVisible();
+    await expect(row.locator(".rk-job-name", { hasText: "identity-audit" })).toBeVisible();
+    await expect(row.getByText("Backlog burndown")).toBeVisible();
+    await expect(row.getByText(/% uptime/)).toHaveCount(0);
+  }
+
+  /** Expand the audit row's per-pass disclosure and assert the three passes' counts render. */
+  async expandAuditPasses(): Promise<void> {
+    await this.page.locator(".au-job-passes > summary").click();
+    for (const pass of ["alias audit", "edge audit", "sku-cache re-key"]) {
+      await expect(this.page.locator(".au-job-passes .jstat-k", { hasText: pass })).toBeVisible();
+    }
+  }
+
+  /** The recipe-index row's inline backfill gauge (unresolved burndown + calm degraded chip). */
+  async expectRecipeBackfillGauge(): Promise<void> {
+    await expect(this.page.getByText("Recipe backfill")).toBeVisible();
+    await expect(this.page.getByText(/unresolved · \d+% resolved/)).toBeVisible();
+    await expect(this.page.locator(".bf-degraded")).toBeVisible();
+  }
 }

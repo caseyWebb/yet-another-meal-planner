@@ -40,6 +40,7 @@ const PK: Record<string, string[]> = {
   recipe_notes: ["id"],
   bug_reports: ["id"],
   job_health: ["name"],
+  job_runs: ["id"],
   night_vibes: ["tenant", "id"],
   night_vibe_derived: ["tenant", "id"],
   pending_proposals: ["tenant", "id"],
@@ -75,6 +76,7 @@ const GLOBAL_TABLES = new Set([
   "ingest_keys",
   "ingest_candidates",
   "ingest_pushes",
+  "job_runs",
 ]);
 
 export function fakeD1(
@@ -119,6 +121,8 @@ export function fakeD1(
     // Re-confirm eligibility (literal predicates on ingredient_identity, no positional binds).
     if (/source = 'auto'/i.test(sql)) out = out.filter((r) => r.source === "auto");
     if (/concrete = 1/i.test(sql)) out = out.filter((r) => r.concrete === 1);
+    // Concept-node set (readConceptIds): literal concrete = 0 — a NULL concrete is not 0 in SQL.
+    if (/concrete = 0/i.test(sql)) out = out.filter((r) => r.concrete === 0);
     if (/representative IS NULL/i.test(sql)) out = out.filter((r) => r.representative == null);
     // Embedding-backfill batch (embedding IS NOT NULL never reaches the fake; IS NULL does).
     if (/embedding IS NULL/i.test(sql)) out = out.filter((r) => r.embedding == null);
@@ -127,6 +131,14 @@ export function fakeD1(
     if (/audited_at IS NULL/i.test(sql)) out = out.filter((r) => r.audited_at == null);
     // Edge-drop replay selection (normalization-audit-calibration).
     if (/\boutcome = \?1/i.test(sql)) eq("outcome", 1);
+    // The admin edge-decision stream (audit-admin): literal outcome IN ('a', 'b', …).
+    const outcomeIn = /\boutcome IN \(([^)]+)\)/i.exec(sql);
+    if (outcomeIn) {
+      const values = [...outcomeIn[1].matchAll(/'([^']*)'/g)].map((x) => x[1]);
+      out = out.filter((r) => values.includes(String(r.outcome)));
+    }
+    // Per-job run-history reads (readJobRuns).
+    if (/\bjob = \?1/i.test(sql)) eq("job", 1);
     if (/normalized_name = \?2/i.test(sql)) eq("normalized_name", 2);
     // Attributed notes: privacy rule (private=0 OR author=?2), and self-scoped
     // findOwnNote (author=?2 AND created_at=?3).
@@ -160,6 +172,9 @@ export function fakeD1(
           ? tables[table].filter((r) => r.tenant === binds[0])
           : tables[table];
       let rows = applyWhere(sql, binds, base);
+      // COUNT(*) AS <alias> — the admin backlog counts (audit-admin). Applied after WHERE.
+      const count = /^SELECT\s+COUNT\(\*\)\s+AS\s+(\w+)/i.exec(sql);
+      if (count) return { rows: [{ [count[1]]: rows.length }], changes: 0 };
       // Honor the simple ORDER BY clauses the corpus reads use.
       const order = /ORDER BY\s+(\w+)(\s+DESC)?/i.exec(sql);
       if (order) {

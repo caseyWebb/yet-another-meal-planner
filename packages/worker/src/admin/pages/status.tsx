@@ -22,7 +22,9 @@ import type { AdminPosture } from "../../admin.js";
 import type { CorpusCounts } from "../../admin-data.js";
 import type { SatelliteLiveness } from "../../ingest-db.js";
 import type { ReconcileObservability } from "../../reconcile-admin.js";
+import { deriveRecipeBackfill, type AuditObservability, type RecipeBackfill } from "../../audit-admin.js";
 import { ReconcileStatusRow } from "./reconcile.js";
+import { AuditStatusRow, RecipeBackfillGauge } from "./audits.js";
 import { CONTRACT_VERSION } from "@grocery-agent/contract";
 
 // The run-history window: how many recent runs are fetched, and the fixed number of sparkline
@@ -179,10 +181,14 @@ const Uptime = ({ runs }: { runs: JobRun[] }) => {
   );
 };
 
-const JobRow = ({ job, now, runs }: { job: JobStatus; now: number; runs: JobRun[] }) => {
+const JobRow = ({ job, now, runs, backfill }: { job: JobStatus; now: number; runs: JobRun[]; backfill?: RecipeBackfill | null }) => {
   const state = jobStateOf(job);
   const [cls] = jobStateClassWord(state);
-  const pairs = Object.entries(job.summary ?? {}).map(([k, v]) => [k, summaryValue(v)] as [string, string]);
+  // When the row carries the backfill gauge, `unresolved`/`degraded` render THERE — keep them
+  // out of the summary chips so the same facts don't show twice.
+  const pairs = Object.entries(job.summary ?? {})
+    .filter(([k]) => !(backfill && (k === "unresolved" || k === "degraded")))
+    .map(([k, v]) => [k, summaryValue(v)] as [string, string]);
   const streakStart = currentStreakStart(runs);
   return (
     <Item
@@ -205,6 +211,7 @@ const JobRow = ({ job, now, runs }: { job: JobStatus; now: number; runs: JobRun[
     >
       {runs.length > 0 ? <Uptime runs={runs} /> : null}
       {pairs.length > 0 ? <SummaryBlock pairs={pairs} /> : undefined}
+      {backfill ? <RecipeBackfillGauge b={backfill} now={now} /> : null}
     </Item>
   );
 };
@@ -292,12 +299,14 @@ export const StatusPage = ({
   counts,
   runsByJob,
   reconcile,
+  audit,
   satellites = [],
 }: {
   payload: HealthPayload;
   counts: CorpusCounts;
   runsByJob: Record<string, JobRun[]>;
   reconcile: ReconcileObservability;
+  audit: AuditObservability;
   satellites?: SatelliteLiveness[];
 }) => (
   <Layout title="Status · grocery-agent admin" active="/admin">
@@ -343,12 +352,22 @@ export const StatusPage = ({
     <p class="group-label">Background jobs</p>
     <ItemGroup>
       {payload.jobs.map((job) => (
-        <JobRow job={job} now={payload.generated_at} runs={runsByJob[job.name] ?? []} />
+        <JobRow
+          job={job}
+          now={payload.generated_at}
+          runs={runsByJob[job.name] ?? []}
+          // The recipe-index row carries the inline recipe-backfill gauge — its run summaries
+          // report `unresolved` per tick, a direct convergence series over the same runs.
+          backfill={job.name === "recipe-index" ? deriveRecipeBackfill(runsByJob[job.name] ?? []) : null}
+        />
       ))}
       {/* The grocery/pantry key-reconcile: a self-terminating backfill, so it reads as a
           convergence (re-key history + converging/converged), not an uptime% like the recurring
           crons — a special-cased sibling row rather than one of `payload.jobs`. */}
       <ReconcileStatusRow s={reconcile} now={payload.generated_at} />
+      {/* The identity audit (alias + edge re-audit + sku re-key) as ONE convergence sibling:
+          backlog burndown, no uptime% — a draining backlog has no meaningful uptime. */}
+      <AuditStatusRow s={audit} now={payload.generated_at} />
     </ItemGroup>
 
     {satellites.length > 0 ? (

@@ -47,7 +47,7 @@ The batch envelope SHALL carry no more than a bounded number of items (`MAX_BATC
 
 ### Requirement: Ingest keys authenticate the endpoint as a carve-out from the Access gate
 
-The `POST /admin/api/ingest` route SHALL be authenticated by a bearer **ingest key** — NOT by Cloudflare Access — as an explicit, allowlisted exemption to the `/admin*` Access gate, because a headless scraper carries no Access JWT. The Worker SHALL authenticate by hashing the presented bearer token (SHA-256) and looking the digest up against the stored key hashes — the plaintext secret is never compared byte-by-byte, so the lookup exposes no per-secret timing signal and the reversible secret is never stored. It SHALL reject a missing/unknown/revoked key with `401` (`bad_key`), and SHALL run no persistence for an unauthenticated request. The exemption SHALL apply to **only** `/admin/api/ingest`; every other `/admin*` path SHALL remain Access-gated unchanged. On a successful authentication the Worker SHALL record the key's `last_used` and the batch's reported `scraper_version` / `contract_version`, and SHALL bound abusive request volume (rate limit) on this open, key-authed route.
+The `POST /admin/api/ingest` route SHALL be authenticated by a bearer **ingest key** — NOT by Cloudflare Access — as an explicit, allowlisted exemption to the `/admin*` Access gate, because a headless satellite carries no Access JWT. The Worker SHALL authenticate by hashing the presented bearer token (SHA-256) and looking the digest up against the stored key hashes — the plaintext secret is never compared byte-by-byte, so the lookup exposes no per-secret timing signal and the reversible secret is never stored. It SHALL reject a missing/unknown/revoked key with `401` (`bad_key`), and SHALL run no persistence for an unauthenticated request. The exemption SHALL apply to **only** `/admin/api/ingest`; every other `/admin*` path SHALL remain Access-gated unchanged. On a successful authentication the Worker SHALL record the key's `last_used` and the batch's reported `satellite_version` / `contract_version`, and SHALL bound abusive request volume (rate limit) on this open, key-authed route.
 
 #### Scenario: A revoked or unknown key is rejected
 
@@ -61,12 +61,12 @@ The `POST /admin/api/ingest` route SHALL be authenticated by a bearer **ingest k
 
 #### Scenario: A successful auth records liveness
 
-- **WHEN** a valid key authenticates a batch reporting its `scraper_version` and `contract_version`
+- **WHEN** a valid key authenticates a batch reporting its `satellite_version` and `contract_version`
 - **THEN** the Worker updates that key's `last_used` and the reported versions used for the admin liveness/skew view
 
 ### Requirement: Ingest keys are minted once, stored hashed, and revocable
 
-The Worker SHALL support minting an ingest key bound to a scraper **label** (one key per machine): minting SHALL return the full secret **exactly once** and SHALL persist only a **hash** of the secret plus a short non-secret **prefix** (for display), the label, and the created timestamp — never the plaintext secret. Revoking a key SHALL take effect immediately (the next push with that key is rejected `401`). The stored roster SHALL surface, per key: label, prefix, created, `last_used`, status (`active` | `revoked`), and the last-reported scraper/contract version and per-source push activity used by the admin views.
+The Worker SHALL support minting an ingest key bound to a satellite **label** (one key per machine): minting SHALL return the full secret **exactly once** and SHALL persist only a **hash** of the secret plus a short non-secret **prefix** (for display), the label, and the created timestamp — never the plaintext secret. Revoking a key SHALL take effect immediately (the next push with that key is rejected `401`). The stored roster SHALL surface, per key: label, prefix, created, `last_used`, status (`active` | `revoked`), and the last-reported satellite/contract version and per-source push activity used by the admin views.
 
 #### Scenario: Minting reveals the secret once and stores only a hash
 
@@ -75,12 +75,12 @@ The Worker SHALL support minting an ingest key bound to a scraper **label** (one
 
 #### Scenario: Revocation is immediate
 
-- **WHEN** the operator revokes a key and a scraper subsequently pushes with that key
+- **WHEN** the operator revokes a key and a satellite subsequently pushes with that key
 - **THEN** the push is rejected `401` and nothing is persisted
 
 ### Requirement: Accepted candidates are deduped on arrival and persisted for the sweep
 
-On accepting a batch item, the Worker SHALL dedup its **canonical** source URL (tracker query strings / fragments / trailing slashes stripped) against the corpus `source_url` set, `discovery_rejections`, the `discovery_log` evaluated set, and the not-yet-swept pushed-candidate inbox — persisting a new **pushed candidate** (its pre-parsed content, canonical source URL, the batch `source` as `origin`, and the minting key's id) only when it is not already known. A re-push of an already-known URL SHALL count as `deduped` and persist nothing (idempotent). As the **one exception** to the evaluated-set check, a URL whose only prior `discovery_log` outcome is a transient/walled acquisition park (`error` with an acquisition reason, e.g. `unreachable` / `no_jsonld`) SHALL be admitted and SHALL supersede that park — because the scraper has now supplied the content the Worker's own fetch could never reach.
+On accepting a batch item, the Worker SHALL dedup its **canonical** source URL (tracker query strings / fragments / trailing slashes stripped) against the corpus `source_url` set, `discovery_rejections`, the `discovery_log` evaluated set, and the not-yet-swept pushed-candidate inbox — persisting a new **pushed candidate** (its pre-parsed content, canonical source URL, the batch `source` as `origin`, and the minting key's id) only when it is not already known. A re-push of an already-known URL SHALL count as `deduped` and persist nothing (idempotent). As the **one exception** to the evaluated-set check, a URL whose only prior `discovery_log` outcome is a transient/walled acquisition park (`error` with an acquisition reason, e.g. `unreachable` / `no_jsonld`) SHALL be admitted and SHALL supersede that park — because the satellite has now supplied the content the Worker's own fetch could never reach.
 
 #### Scenario: An already-imported URL is deduped on arrival
 

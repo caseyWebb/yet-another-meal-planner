@@ -37,6 +37,14 @@ test("normalize reconcile tab renders its convergence card", async ({ normalizeP
   await normalizePage.captureForReview("normalize-reconcile");
 });
 
+test("normalize audits tab renders the convergence surface and its logs", async ({ normalizePage }) => {
+  await normalizePage.gotoTab("audits");
+  await normalizePage.expectAuditsSurface();
+  await normalizePage.expectRestoration(SEED.audit.droppedEdge);
+  await normalizePage.expectRejection(SEED.audit.rejection);
+  await normalizePage.captureForReview("normalize-audits");
+});
+
 test("data sub-nav routes to stores and guidance", async ({ dataPage }) => {
   await dataPage.gotoStores();
   await dataPage.captureForReview("data-stores");
@@ -58,6 +66,14 @@ test.describe("seeded fixtures render", () => {
     await statusPage.goto();
     await statusPage.expectStatTiles();
     await statusPage.jobs.expectJob(SEED.jobs[0]!);
+  });
+
+  test("status shows the identity-audit row and the recipe backfill gauge", async ({ statusPage }) => {
+    await statusPage.goto();
+    await statusPage.expectAuditRow();
+    await statusPage.expectRecipeBackfillGauge();
+    await statusPage.expandAuditPasses();
+    await statusPage.captureForReview("status-identity-audit");
   });
 
   test("data lists the seeded recipe", async ({ dataPage }) => {

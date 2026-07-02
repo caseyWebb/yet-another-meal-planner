@@ -74,7 +74,11 @@ export interface NormalizationPage {
   stats: NormalizationStats;
   decisions: NormalizationDecision[];
   queue: QueueRow[];
+  /** Real mappings only (stored variant ≠ stored id) — self-entries never reach the page model. */
   aliases: AliasRow[];
+  /** Canonical self-entries (variant === stored id, the front-door row every mint writes for
+   *  its own node) — presented as a count chip, not rows. */
+  aliasSelfCount: number;
   knownIds: string[];
   lastSweep: number | null;
 }
@@ -345,7 +349,13 @@ export async function readNormalizationPage(env: Env, opts: { decisionLimit?: nu
     };
   });
 
-  const aliases: AliasRow[] = aliasRows.map((a) => {
+  // The listing carries real mappings only: a canonical self-entry (stored variant === stored
+  // id) is the resolver front-door by design, not a mapping — 500+ of them would drown the ~80
+  // rows an operator reviews. The STORED comparison (not post-chain) matches the alias audit's
+  // self definition; the retarget reconcile re-points a merged-away self row, which then lists
+  // as the real mapping it became.
+  const mappingRows = aliasRows.filter((a) => a.variant !== a.id);
+  const aliases: AliasRow[] = mappingRows.map((a) => {
     const surv = resolve(a.id);
     const node = byId.get(surv);
     return {
@@ -382,6 +392,7 @@ export async function readNormalizationPage(env: Env, opts: { decisionLimit?: nu
       nextRetryAt: num(q.next_retry_at),
     })),
     aliases,
+    aliasSelfCount: aliasRows.length - mappingRows.length,
     knownIds,
     lastSweep: num(health?.last_run_at ?? null),
   };

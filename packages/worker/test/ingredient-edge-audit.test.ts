@@ -679,3 +679,64 @@ describe("auditEdges — edge-drop replay", () => {
     expect(s.replayed).toBe(1); // the second row waits for the next tick
   });
 });
+
+describe("auditEdges — structural guarantee oscillation guard (disjunctive-term-modeling)", () => {
+  const BASE = "serrano or jalapeño peppers";
+  const CHILD = "serrano or jalapeño peppers::form-diced";
+
+  it("sweeps the inverted family's stamped self-loop ONCE and never re-inserts (the live serrano churn)", async () => {
+    // The production shape: the base was merged INTO its own surviving ::detail child, so the
+    // stamped structural edge child→base is a rep-resolved self-loop. Pre-guard, step (a)
+    // deleted it and step (b) re-inserted it every tick (16 drops / 14 restores logged in prod).
+    const h = harness({
+      batch: [],
+      edges: [{ from_id: CHILD, to_id: BASE, kind: "general", source: "auto", audited_at: 500 }],
+      identities: [idRow(BASE, CHILD), idRow(CHILD)],
+    });
+    const s = await auditEdges(h.deps);
+    expect(h.deleted).toEqual([{ from_id: CHILD, to_id: BASE, kind: "general" }]);
+    expect(h.inserted).toHaveLength(0); // the guard: never guarantee a rep-resolved self-loop
+    expect(s).toMatchObject({ self_loops_swept: 1, structural_restored: 0 });
+    expect(h.checkCalls).toHaveLength(0);
+  });
+
+  it("the post-sweep inverted family is fully quiescent — churn ends BEFORE any shape sweep runs", async () => {
+    const h = harness({
+      batch: [],
+      edges: [],
+      identities: [idRow(BASE, CHILD), idRow(CHILD)],
+    });
+    const s = await auditEdges(h.deps);
+    expect(h.deleted).toHaveLength(0);
+    expect(h.inserted).toHaveLength(0);
+    expect(s).toMatchObject({ self_loops_swept: 0, structural_restored: 0 });
+  });
+
+  it("the POST-FOLD family sweeps its stale structural edge once and never re-inserts (child no longer survives)", async () => {
+    // After the disjunction shape sweep folds the child into the (now abstract) base, the old
+    // structural edge child→base resolves to a self-loop: swept once by (a); (b) skips the
+    // child entirely (it no longer survives) — the churn cannot restart.
+    const h = harness({
+      batch: [],
+      edges: [{ from_id: CHILD, to_id: BASE, kind: "general", source: "auto", audited_at: 500 }],
+      identities: [idRow(BASE), idRow(CHILD, BASE)],
+    });
+    const s = await auditEdges(h.deps);
+    expect(h.deleted).toEqual([{ from_id: CHILD, to_id: BASE, kind: "general" }]);
+    expect(h.inserted).toHaveLength(0);
+    expect(s).toMatchObject({ self_loops_swept: 1, structural_restored: 0 });
+  });
+
+  it("a healthy detail node whose base resolves elsewhere still gets its guarantee edge", async () => {
+    const h = harness({
+      batch: [],
+      edges: [],
+      identities: [idRow("rotel (original)::heat-mild"), idRow("rotel (original)")],
+    });
+    const s = await auditEdges(h.deps);
+    expect(h.inserted).toEqual([
+      { from: "rotel (original)::heat-mild", to: "rotel (original)", kind: "general", mintBase: null },
+    ]);
+    expect(s).toMatchObject({ structural_restored: 1 });
+  });
+});

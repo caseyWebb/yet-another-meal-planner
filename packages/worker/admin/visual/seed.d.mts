@@ -16,12 +16,21 @@ export interface SeedLiterals {
     readonly importedId: string;
     readonly importedTitle: string;
   };
-  /** Normalization fixtures: a decision row (Override button), a queued term, an alias row. */
+  /** Normalization fixtures: a decision row (Override button), a queued term, an alias row,
+   *  and a canonical self-entry (variant === id — the Aliases chip, never a listed row). */
   readonly normalize: {
     readonly decisionTerm: string;
     readonly queueTerm: string;
     readonly aliasVariant: string;
     readonly canonicalId: string;
+    readonly selfEntryVariant: string;
+  };
+  /** Audit-surface fixtures: a kept edge decision, a dropped-then-restored edge decision
+   *  (restorations log + "revisited" pointer), and a merge-rejection pair. */
+  readonly audit: {
+    readonly keptEdge: { readonly from: string; readonly to: string };
+    readonly droppedEdge: { readonly from: string; readonly to: string };
+    readonly rejection: { readonly a: string; readonly b: string };
   };
   /** The registered background jobs seeded into job_health/job_runs (mirrors HEALTH_JOBS). */
   readonly jobs: readonly string[];

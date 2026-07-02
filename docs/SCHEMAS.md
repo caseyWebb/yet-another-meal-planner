@@ -635,7 +635,10 @@ base           TEXT  -- id up to the first "::"  NOT NULL
 detail         TEXT  -- the "::"-joined detail suffix, or NULL for a bare base
 search_term    TEXT  -- human Kroger search phrase for a qualified id ("80/20 ground beef")
 representative TEXT  -- union-find pointer to the surviving id, or NULL (self)
-concrete       INTEGER NOT NULL DEFAULT 1  -- 0 = concept node (queryable class, not buyable)
+concrete       INTEGER NOT NULL DEFAULT 1  -- 0 = concept node (queryable class, not buyable);
+                                           --   disjunctive ids ("x or y") are always concepts —
+                                           --   their search_term is a member phrase (first
+                                           --   disjunct), never the disjunctive phrase
 embedding      TEXT  -- JSON array of EMBED_DIM floats; cron-owned, NULL until embedded
 source         TEXT NOT NULL DEFAULT 'auto'  -- 'auto' | 'human'
 decided_at     INTEGER
@@ -643,7 +646,10 @@ reconfirmed_at INTEGER  -- one-shot re-confirm stamp; NULL = eligible/not-yet-re
 
 -- ingredient_alias — surface form → id (hot-path exact match). PRIMARY KEY (variant).
 variant    TEXT  -- lowercased, quantity-stripped surface form
-id         TEXT  -- → ingredient_identity.id (pre-representative)  NOT NULL
+id         TEXT  -- → ingredient_identity.id  NOT NULL — converges to the SURVIVING id: the
+                 -- sku-cache-rekey pass re-points audited/human rows whose id the representative
+                 -- chain merged away (id column only; source/confidence/decided_at/audited_at
+                 -- untouched); an un-audited auto row converges via the alias re-audit instead
 source     TEXT NOT NULL DEFAULT 'auto'
 confidence REAL
 decided_at INTEGER
@@ -658,7 +664,7 @@ audited_at INTEGER  -- one-shot edge-audit stamp; NULL = un-audited backlog; bor
 
 -- novel_ingredient_terms — the capture queue (surface forms not yet placed). PK (term).
 -- ingredient_normalization_log — the decision audit log + evaluated-set (mirrors discovery_log).
--- outcome: same | specialization | novel | merge | error | failed | edge_drop | edge_keep | edge_restore
+-- outcome: same | specialization | novel | merge | error | failed | edge_drop | edge_keep | edge_restore | reshape
 --   (edge_* rows are the edge audit's decisions — edge-shaped, filtered out of the admin
 --    Decisions stream, queryable here)
 -- is_reconfirm INTEGER NOT NULL DEFAULT 0  -- 1 = decision from the re-confirm pass, not initial capture
@@ -668,7 +674,8 @@ The log's `detail` JSON carries per-decision context: `reason` (the classifier's
 `note` — `confirm_failed_safe` (contract-invalid confirm → fail-safe NOVEL, or a re-audit's
 keep-and-stamp) or `confirm_below_min` (the distance guard rejected a same/specialization pick,
 with `rejected {outcome, match, score}`); `canonical_rejected` + `canonical_reason` (`invalid` |
-`collision`) when a classifier-proposed canonical id fell back to the verbatim term; and
+`collision` | `disjunctive` — a proposed "x or y" canonical never mints a concrete disjunctive
+identity) when a classifier-proposed canonical id fell back to the verbatim term; and
 `edges_skipped [{from, to, kind, reason: "self_loop" | "reverse_exists"}]` for edges withheld by
 the commit-time contradiction gate. Re-audit decisions carry an `audit` marker: alias-audit rows
 `audit: "alias"` + `previous_id` (the mapping the re-decision replaced); edge-audit rows
@@ -687,7 +694,18 @@ keeps that only re-derive the standing mapping log `note: "specialization_demote
 repair (`reroot: true` for the re-root shape, `minted_prefix: true` when the prefix was minted).
 A `merge` row with `note: "merge_cycle_skip"` records a refused merge: the survivor
 already resolved into the loser's tree, so writing the representative would have closed a cycle
-and the merge no-opped instead.
+and the merge no-opped instead. Disjunction rows (disjunctive-term-modeling): a `novel` row with
+`note: "disjunction_concept"` (+ `disjuncts`) is the deterministic capture disposal of an
+"x or y" term into an abstract concept (no model call; the alias re-audit's parity branch adds
+its `audit: "alias"` marker); a `reshape` row with `note: "disjunction_flip"` is the shape sweep
+flipping a wrongly-concrete disjunction node abstract (`search_term` = the member phrase;
+`reroot: true` when the inverted family was re-rooted at the base); a `merge` row with
+`note: "disjunction_child_fold"` is a `::detail` child folded into its disjunction base
+(`minted_base: true` when the base was minted for an orphan child); an `edge_restore` row with
+`note: "disjunction_membership"` is a member → concept membership edge inserted born-stamped by
+the disjunction reconcile; and a re-confirm row with `note: "concept_survivor"` (with
+`rejected {outcome, match}`) is the concept–concrete merge guard rejecting a `same` pick whose
+survivor is a concept node — nothing merged, the node stamped.
 
 Example identity rows (id / base / detail):
 
@@ -755,7 +773,7 @@ Derived, time-bound state written by the flyer warm into the `KROGER_KV` namespa
 
 Derived operational state for the `/health` endpoint (background-job-health). Each background process upserts one row per run; `/health` aggregates them. Tenant-data-free by construction — counts, timestamps, and error classes only. It lives in D1 (not KV) because persisting per-job liveness on every cron tick is standing write load that belongs in D1's far larger budget (migration `0019_job_health`).
 
-- `job_health` table — columns `name` (TEXT PRIMARY KEY), `ok` (INTEGER 0/1), `last_run_at` (INTEGER epoch ms), `summary` (TEXT, a JSON object). One upserted row per registered job (`flyer-warm`, `recipe-classify`, `recipe-index`, `recipe-embed`, `discovery-sweep`, `email`), written through `src/db.ts`. `ok` is the last run's success; `summary` is small tenant-clean detail (the warm carries `{ action, done, sweep_started_at, sweep_completed_at, errors }`; the recipe-index projection carries `{ projected, skipped, unresolved, degraded }` — `unresolved` is the distinct projected ingredient terms the current resolver has not placed, the capture-convergence gauge; `degraded` is true when the resolver read failed and the pass ran on the empty context (which also counts every term unresolved) — the alertable signal, since the projection itself still reports ok; the recipe-facet classify pass carries `{ classified, pending, parked, errored, pruned, quota_exhausted, timed_out }`; the discovery sweep carries `{ processed, imported, duplicate, no_match, dietary_gated, parked, deferred, taste_updated, log_pruned }`; the email handler carries the gate outcome `{ accepted, reason, written }`).
+- `job_health` table — columns `name` (TEXT PRIMARY KEY), `ok` (INTEGER 0/1), `last_run_at` (INTEGER epoch ms), `summary` (TEXT, a JSON object). One upserted row per registered job (`flyer-warm`, `recipe-classify`, `recipe-index`, `recipe-embed`, `discovery-sweep`, `email`), written through `src/db.ts`. `ok` is the last run's success; `summary` is small tenant-clean detail (the warm carries `{ action, done, sweep_started_at, sweep_completed_at, errors }`; the recipe-index projection carries `{ projected, skipped, unresolved, degraded }` — `unresolved` is the distinct projected ingredient terms the current resolver has not placed, the capture-convergence gauge; `degraded` is true when the resolver read failed and the pass ran on the empty context (which also counts every term unresolved) — the alertable signal, since the projection itself still reports ok; the recipe-facet classify pass carries `{ classified, pending, parked, errored, pruned, quota_exhausted, timed_out }`; the discovery sweep carries `{ processed, imported, duplicate, no_match, dietary_gated, parked, deferred, taste_updated, log_pruned }`; the email handler carries the gate outcome `{ accepted, reason, written }`; the alias re-audit carries `{ audited, self_stamped, kept, repointed, minted, merged, skipped }`; the edge re-audit carries `{ audited, self_loops, cycles, dropped, kept, skipped, structural, structural_restored, self_loops_swept, replayed, restored }`; the sku-cache re-key carries `{ rekeyed, merged, truncated }`).
 - `GET /health` → `{ ok, generated_at, jobs: [{ name, ok, last_run_at, never_run?, summary? }], d1: { ok }, admin: { access_configured, email_allowlist, dev_bypass_set, exposed }, ai_quota_exhausted }` — **open and tenant-clean** (no token; the D1 probe is coarsened to a boolean so no raw `storage_error` string is exposed; the `admin` posture is booleans only — never the allowlisted emails). Aggregate-only. Overall `ok` is false when a job is *explicitly* failing, the D1 probe failed, the admin gate is `exposed` (the dev bypass set on a surface Access doesn't protect — only the loopback guard stands between it and an open panel), or `ai_quota_exhausted` is true; a never-run job is reported with `ok: null, never_run: true`. The top-level **`ai_quota_exhausted`** boolean is aggregated from the AI jobs' summaries (an explicit `quota_exhausted` flag or a 4006/"neurons" error string) and **names** Workers AI's daily-allocation exhaustion rather than leaving a generic job-fail — `/health.svg` renders an explicit `ai  quota exhausted` row and the admin Status view banners it. HTTP status is 200 when ok, 503 when failing (so plain HTTP-status monitors trip). Restricting reads is an edge concern (Cloudflare Access / WAF), not Worker config.
 - `GET /health.svg` → the same aggregate payload rendered as an SVG **card** (`content-type: image/svg+xml`) for a README badge (data-repo-health-badge). **Open** like `/health` (no token — a public README badge must be anonymously fetchable), but **always HTTP 200** — degraded state is shown by color, not status, because an image proxy (GitHub Camo) may not render a non-200 as an image — with a short `Cache-Control` so it refreshes on a TTL. Tenant-data-free; a never-run job renders amber (pending), not red, and the `admin` row shows the gate state (green `gated` / muted `disabled`|`dev` / red `exposed`). It's a glance, not an alarm: point real HTTP-status/freshness monitors at `/health` (JSON), not `.svg`.
 
@@ -763,7 +781,7 @@ Derived operational state for the `/health` endpoint (background-job-health). Ea
 
 The per-run **history** behind `job_health`'s last-state row (background-job-health), backing the admin Status area's per-job uptime sparkline and "healthy/unhealthy since" label (and, downstream, the Logs area's all-jobs run log). `job_health` upserts ONE row per job; `job_runs` is the per-run series — appended beside every `job_health` write, never updated, and bounded per job (migration `0023_job_runs`).
 
-- `job_runs` table — columns `id` (TEXT PRIMARY KEY, a writer-stamped unique id), `job` (TEXT), `ok` (INTEGER 0/1), `ran_at` (INTEGER epoch ms), `duration_ms` (INTEGER), `summary` (TEXT, a JSON object — the SAME tenant-clean shape as the paired `job_health.summary` for that run). Indexed on `(job, ran_at DESC)`. One inserted row per run, written through `src/db.ts` by `writeJobRun` (`src/health.ts`) at every `writeJobHealth` call site (`src/index.ts`'s `email` handler, and `flyer-warm.ts`/`recipe-classify.ts`/`recipe-projection.ts`/`recipe-embeddings.ts`/`discovery-sweep.ts`/`ingredient-normalize.ts`/`ingredient-reconfirm.ts`/`grocery-pantry-reconcile.ts`'s scheduled-run wrappers). A history-write failure degrades to a no-op (never blocks or fails the job it instruments), exactly like `writeJobHealth`'s call-site `.catch(() => {})`.
+- `job_runs` table — columns `id` (TEXT PRIMARY KEY, a writer-stamped unique id), `job` (TEXT), `ok` (INTEGER 0/1), `ran_at` (INTEGER epoch ms), `duration_ms` (INTEGER), `summary` (TEXT, a JSON object — the SAME tenant-clean shape as the paired `job_health.summary` for that run). Indexed on `(job, ran_at DESC)`. One inserted row per run, written through `src/db.ts` by `writeJobRun` (`src/health.ts`) at every `writeJobHealth` call site (`src/index.ts`'s `email` handler, and `flyer-warm.ts`/`recipe-classify.ts`/`recipe-projection.ts`/`recipe-embeddings.ts`/`discovery-sweep.ts`/`ingredient-normalize.ts`/`ingredient-reconfirm.ts`/`ingredient-alias-audit.ts`/`ingredient-edge-audit.ts`/`sku-cache-rekey.ts`/`grocery-pantry-reconcile.ts`'s scheduled-run wrappers). A history-write failure degrades to a no-op (never blocks or fails the job it instruments), exactly like `writeJobHealth`'s call-site `.catch(() => {})`.
 - **Retention:** bounded per job at `JOB_RUNS_PER_JOB_CAP` (100) — `writeJobRun` prunes that job's rows beyond the cap on every append, so the table cannot grow without limit.
 - `readJobRuns(env, name, limit)` → the named job's most recent `limit` runs, newest-first, each `{ id, ok, ran_at, duration_ms, summary }`. Degrades to `[]` when D1 is unreachable rather than throwing (the Status page must stay renderable; the live D1 probe carries that signal separately).
 - `currentStreakStart(runs)` → the earliest `ran_at` in the unbroken run of the job's current `ok` value, given a newest-first `runs` array (as `readJobRuns` returns) — the "healthy since" / "unhealthy since" instant the Status job rows render. Returns `null` for an empty history (no sparkline / since-label shown in that case).

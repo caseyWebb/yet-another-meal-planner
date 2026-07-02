@@ -31,6 +31,16 @@ export const SEED = {
     queueTerm: "guanciale",
     aliasVariant: "scallions",
     canonicalId: "green-onion",
+    // A canonical self-entry (variant === id): counted by the Aliases tab's chip, never listed.
+    selfEntryVariant: "butter",
+  },
+  // The audit surface (Normalize › Audits + Decisions › Edges + the Status identity-audit row):
+  // one kept edge decision, one dropped-then-restored edge decision (the restorations log +
+  // the "revisited" pointer), and one merge-rejection pair.
+  audit: {
+    keptEdge: { from: "green-onion", to: "allium" },
+    droppedEdge: { from: "chives", to: "green-onion" },
+    rejection: { a: "chives", b: "green-onion" },
   },
   // Mirrors src/health.ts HEALTH_JOBS (every registered job gets health + run history so no
   // Status row renders never-run).
@@ -75,7 +85,16 @@ export function d1Statements(now) {
       // flipping current health (ok=1 above).
       const ranAt = now - 2 * HOUR - (7 - k) * 6 * HOUR;
       const ok = k === 4 ? 0 : 1;
-      const summary = ok ? '{"processed":3}' : '{"error":"upstream timeout"}';
+      // recipe-index runs carry the recipe-backfill convergence (unresolved draining toward
+      // zero; the NEWEST tick degraded so the calm amber chip renders); other jobs get a
+      // generic summary. The failure run keeps its {error} shape (no unresolved — the gauge
+      // derivation skips it).
+      const RECIPE_INDEX_UNRESOLVED = [259, 210, 168, 141, 128, 120, 114, 112];
+      const summary = !ok
+        ? '{"error":"upstream timeout"}'
+        : job === "recipe-index"
+          ? JSON.stringify({ projected: 3, skipped: 0, unresolved: RECIPE_INDEX_UNRESOLVED[k], degraded: k === 7 })
+          : '{"processed":3}';
       stmts.push(
         `INSERT INTO job_runs (id, job, ok, ran_at, duration_ms, summary) VALUES (${q(`viz-run-${job}-${k}`)}, ${q(job)}, ${ok}, ${ranAt}, 1200, '${summary}');`,
       );
@@ -87,6 +106,45 @@ export function d1Statements(now) {
     stmts.push(
       `INSERT INTO job_runs (id, job, ok, ran_at, duration_ms, summary) VALUES (${q(`viz-run-reconcile-${k}`)}, 'grocery-reconcile', 1, ${ranAt}, 800, '{"grocery_rekeyed":3,"pantry_rekeyed":1,"truncated":false}');`,
     );
+  }
+  // The identity-audit passes (Normalize › Audits + the Status identity-audit row): three
+  // self-terminating convergence jobs, each with a draining worked-per-tick history (the
+  // burndown series back-sums these onto the live un-audited counts).
+  const auditRuns = {
+    "ingredient-alias-audit": [40, 32, 25, 18, 10, 6].map((audited) => {
+      const repointed = Math.round(audited * 0.15);
+      const minted = Math.round(audited * 0.05);
+      const merged = Math.round(audited * 0.05);
+      const kept = audited - repointed - minted - merged;
+      return { audited, self_stamped: Math.round(kept * 0.6), kept, repointed, minted, merged, skipped: 0 };
+    }),
+    "ingredient-edge-audit": [12, 9, 7, 5, 3, 2].map((audited, k) => {
+      const self_loops = k < 2 ? 1 : 0;
+      const cycles = k === 1 ? 1 : 0;
+      const dropped = self_loops + cycles + (k === 3 ? 1 : 0);
+      return {
+        audited,
+        self_loops,
+        cycles,
+        dropped,
+        kept: audited - dropped,
+        skipped: 0,
+        structural: 1,
+        structural_restored: k === 3 ? 1 : 0,
+        self_loops_swept: 0,
+        replayed: k === 5 ? 1 : 0,
+        restored: k === 5 ? 1 : 0,
+      };
+    }),
+    "sku-cache-rekey": [5, 4, 3, 2, 1, 0].map((rekeyed, k) => ({ rekeyed, merged: k < 2 ? 1 : 0, truncated: false })),
+  };
+  for (const [job, runs] of Object.entries(auditRuns)) {
+    for (const [k, summary] of runs.entries()) {
+      const ranAt = now - 2 * HOUR - (runs.length - 1 - k) * 2 * HOUR;
+      stmts.push(
+        `INSERT INTO job_runs (id, job, ok, ran_at, duration_ms, summary) VALUES (${q(`viz-run-${job}-${k}`)}, ${q(job)}, 1, ${ranAt}, 600, ${q(JSON.stringify(summary))});`,
+      );
+    }
   }
 
   // --- Discovery: a retryable park (non-null next_retry_at → Retry/Delete buttons), a
@@ -134,29 +192,55 @@ export function d1Statements(now) {
 
   // --- Normalization: an identity graph corner (two concrete nodes + a concept + edges), an
   // alias row, a decision row (carries the Override button), and one queued novel term.
-  stmts.push(`DELETE FROM ingredient_identity WHERE id IN ('butter','green-onion','allium');`);
+  stmts.push(`DELETE FROM ingredient_identity WHERE id IN ('butter','green-onion','allium','chives');`);
   stmts.push(
     `INSERT INTO ingredient_identity (id, base, detail, concrete, source, decided_at) VALUES` +
       ` ('butter', 'butter', NULL, 1, 'human', ${now - 10 * DAY}),` +
       ` ('green-onion', 'green onion', NULL, 1, 'auto', ${now - 8 * DAY}),` +
+      ` ('chives', 'chives', NULL, 1, 'auto', ${now - 8 * DAY}),` +
       ` ('allium', 'allium', NULL, 0, 'auto', ${now - 8 * DAY});`,
   );
-  stmts.push(`DELETE FROM ingredient_edge WHERE from_id = 'green-onion';`);
+  // One un-audited edge (the audit backlog) + one already-stamped edge (audited_at set).
+  stmts.push(`DELETE FROM ingredient_edge WHERE from_id IN ('green-onion', 'chives');`);
   stmts.push(
-    `INSERT INTO ingredient_edge (from_id, to_id, kind, source, decided_at) VALUES ('green-onion', 'allium', 'membership', 'auto', ${now - 8 * DAY});`,
+    `INSERT INTO ingredient_edge (from_id, to_id, kind, source, decided_at, audited_at) VALUES` +
+      ` ('green-onion', 'allium', 'membership', 'auto', ${now - 8 * DAY}, NULL),` +
+      ` ('chives', 'allium', 'membership', 'auto', ${now - 8 * DAY}, ${now - 2 * HOUR});`,
   );
   stmts.push(
-    `DELETE FROM ingredient_alias WHERE variant IN (${q(normalize.decisionTerm)}, ${q(normalize.aliasVariant)});`,
+    `DELETE FROM ingredient_alias WHERE variant IN (${q(normalize.decisionTerm)}, ${q(normalize.aliasVariant)}, ${q(normalize.selfEntryVariant)});`,
   );
+  // One audited alias + one un-audited alias (the alias half of the audit backlog) + one
+  // canonical self-entry (variant === id — the Aliases tab's chip, not a listed row; audited
+  // so it stays out of the backlog burndown).
   stmts.push(
-    `INSERT INTO ingredient_alias (variant, id, source, confidence, decided_at) VALUES` +
-      ` (${q(normalize.decisionTerm)}, 'butter', 'auto', 0.97, ${now - 90 * MIN}),` +
-      ` (${q(normalize.aliasVariant)}, ${q(normalize.canonicalId)}, 'auto', 0.93, ${now - 8 * DAY});`,
+    `INSERT INTO ingredient_alias (variant, id, source, confidence, decided_at, audited_at) VALUES` +
+      ` (${q(normalize.decisionTerm)}, 'butter', 'auto', 0.97, ${now - 90 * MIN}, ${now - 2 * HOUR}),` +
+      ` (${q(normalize.aliasVariant)}, ${q(normalize.canonicalId)}, 'auto', 0.93, ${now - 8 * DAY}, NULL),` +
+      ` (${q(normalize.selfEntryVariant)}, ${q(normalize.selfEntryVariant)}, 'auto', 1, ${now - 8 * DAY}, ${now - 2 * HOUR});`,
   );
   stmts.push(`DELETE FROM ingredient_normalization_log WHERE term IN (${q(normalize.decisionTerm)});`);
   stmts.push(
     `INSERT INTO ingredient_normalization_log (term, outcome, resolved_id, candidates, model, created_at) VALUES` +
       ` (${q(normalize.decisionTerm)}, 'same', 'butter', '[{"id":"butter","score":0.97}]', 'bge', ${now - 90 * MIN});`,
+  );
+  // Edge-decision log rows (Decisions › Edges + the Audits restorations log): a structured
+  // keep, a deterministic self-loop drop, a LEGACY drop (edge encoded only in the term — the
+  // strict `from -[kind]-> to` parse), and the replay restore that revisits it (replay_of →
+  // the drop's fixed id). Fixed high ids so replay_of links deterministically.
+  const au = SEED.audit;
+  stmts.push(`DELETE FROM ingredient_normalization_log WHERE id IN (9101, 9102, 9103, 9104);`);
+  stmts.push(
+    `INSERT INTO ingredient_normalization_log (id, term, outcome, resolved_id, candidates, model, detail, created_at) VALUES` +
+      ` (9101, '${au.keptEdge.from} -[membership]-> ${au.keptEdge.to}', 'edge_keep', NULL, NULL, 'bge', '${JSON.stringify({ audit: "edge", from: au.keptEdge.from, to: au.keptEdge.to, kind: "membership", direction: "forward", reason: "a green onion is an allium" })}', ${now - 3 * HOUR}),` +
+      ` (9102, 'butter -[general]-> butter', 'edge_drop', NULL, NULL, NULL, '${JSON.stringify({ audit: "edge", from: "butter", to: "butter", kind: "general", note: "self_loop", replayed_at: now - 2 * HOUR })}', ${now - 2 * HOUR}),` +
+      ` (9103, '${au.droppedEdge.from} -[general]-> ${au.droppedEdge.to}', 'edge_drop', NULL, NULL, 'bge', '${JSON.stringify({ direction: "neither", reason: "distinct alliums — not interchangeable" })}', ${now - 5 * HOUR}),` +
+      ` (9104, '${au.droppedEdge.from} -[general]-> ${au.droppedEdge.to}', 'edge_restore', NULL, NULL, 'bge', '${JSON.stringify({ audit: "edge", replay_of: 9103, direction: "forward", reason: "satisfies holds on re-check", from: au.droppedEdge.from, to: au.droppedEdge.to, kind: "general" })}', ${now - 90 * MIN});`,
+  );
+  // The merge-rejection memory (co-resolution pair under backoff).
+  stmts.push(`DELETE FROM ingredient_coresolution_rejection WHERE a = ${q(au.rejection.a)} AND b = ${q(au.rejection.b)};`);
+  stmts.push(
+    `INSERT INTO ingredient_coresolution_rejection (a, b, decided_at) VALUES (${q(au.rejection.a)}, ${q(au.rejection.b)}, ${now - 3 * DAY});`,
   );
   stmts.push(`DELETE FROM novel_ingredient_terms WHERE term = ${q(normalize.queueTerm)};`);
   stmts.push(

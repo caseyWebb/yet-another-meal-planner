@@ -25,6 +25,7 @@ import { cosineSimilarity } from "./embedding.js";
 import {
   readReconfirmBatch,
   readIdentityEmbeddings,
+  readConceptIds,
   stampReconfirmed,
   commitReconfirmEdges,
   mergeIdentities,
@@ -41,6 +42,8 @@ export const RECONFIRM_MAX_PER_TICK = 10;
 export interface ReconfirmDeps {
   loadBatch(limit: number): Promise<ReconfirmNode[]>;
   identityEmbeddings(): Promise<{ id: string; embedding: number[] }[]>;
+  /** The concept-node id set (`concrete=0`) — a `same` merge never takes a concept survivor. */
+  conceptIds(): Promise<Set<string>>;
   confirm(term: string, candidates: ScoredCandidate[]): Promise<IdentityConfirm>;
   /** Insert-or-ignore any edges + append the (re-confirm-marked) decision log. */
   commitEdges(r: { edges?: { from: string; to: string; kind: string }[]; log: NormalizationLog }): Promise<void>;
@@ -110,6 +113,7 @@ async function reconfirmOne(
   deps: ReconfirmDeps,
   node: ReconfirmNode,
   neighborVecs: { id: string; embedding: number[] }[],
+  concepts: Set<string>,
 ): Promise<{ outcome: "same" | "novel"; edges_added: number }> {
   const term = readableForm(node);
   const ranked = nearest(node.id, node.embedding, neighborVecs, deps.topK);
@@ -149,6 +153,17 @@ async function reconfirmOne(
   }
 
   if (confirm.outcome === "same" && confirm.match) {
+    // Concept–concrete guard (disjunctive-term-modeling): a concrete node is never merged INTO a
+    // concept survivor — a concept is a queryable class, not the same product (this is exactly how
+    // the production serrano disjunction base inverted into its own child). Logged no-op; stamp.
+    if (concepts.has(confirm.match)) {
+      await deps.commitEdges({
+        log: reconfirmLog(node, "novel", ranked, NORMALIZE_MODEL, "concept_survivor", undefined, {
+          rejected: { outcome: "same", match: confirm.match },
+        }),
+      });
+      return { outcome: "novel", edges_added: 0 };
+    }
     // Clear synonym → merge THIS node into the survivor (the node is always the loser, so a human
     // survivor is fine and a human node is never a loser). The merge writes its own re-confirm log.
     await deps.merge(node.id, confirm.match);
@@ -201,11 +216,11 @@ export async function reconfirmIdentities(deps: ReconfirmDeps): Promise<Reconfir
   const summary = emptySummary();
   if (nodes.length === 0) return summary; // self-quiesced: nothing eligible, no model calls this tick
 
-  const identityVecs = await deps.identityEmbeddings();
+  const [identityVecs, concepts] = await Promise.all([deps.identityEmbeddings(), deps.conceptIds()]);
 
   for (const node of nodes) {
     try {
-      const res = await reconfirmOne(deps, node, identityVecs);
+      const res = await reconfirmOne(deps, node, identityVecs, concepts);
       await deps.stamp(node.id, now); // one-shot: stamp AFTER a terminal decision (never re-processed)
       summary.reconfirmed++;
       summary.edges_added += res.edges_added;
@@ -227,6 +242,7 @@ export function buildReconfirmDeps(env: Env): ReconfirmDeps {
   return {
     loadBatch: (limit) => readReconfirmBatch(env, limit),
     identityEmbeddings: () => readIdentityEmbeddings(env),
+    conceptIds: () => readConceptIds(env),
     confirm: (term, candidates) => confirmIdentity(env, term, candidates),
     commitEdges: (r) => commitReconfirmEdges(env, r),
     merge: (loser, survivor) => mergeIdentities(env, loser, survivor, { isReconfirm: true }),

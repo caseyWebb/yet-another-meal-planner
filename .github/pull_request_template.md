@@ -16,6 +16,7 @@ of each item's wording, so there's no honest reason to leave one unchecked.
 - [ ] **D1 migrations.** A schema change ships a `migrations/d1/NNNN_*.sql` file (or no schema change).
 - [ ] **Generated plugin.** `plugin/` was not hand-edited; `AGENT_INSTRUCTIONS.md` or a quoted tool-description change was followed by `aubr build:plugin` (or no such change).
 - [ ] **OpenSpec.** If this was an OpenSpec change, it's archived and the deltas are synced into `openspec/specs/` (or not an OpenSpec change).
+- [ ] **Satellite version.** A PR touching `packages/satellite/**` or the shared `packages/contract/**` bumped `packages/satellite/package.json` `version` (strictly greater) — enforced by the `satellite-version` gate (or no satellite/contract change).
 - [ ] **No secrets.** No secrets, tokens, or personal data added — this repo is public.
 - [ ] **Admin UI tests.** An admin-panel change (`src/admin/**`, its styles/islands, or the harness) extended the Playwright page objects + specs, `aubr test:admin` passes, and the PR's screenshot comment was reviewed (or no admin-UI change).
 - [ ] **Code review.** I ran the repo's `/code-review` skill (adversarial review of the *whole* PR diff, not just the latest commit) and addressed or triaged its findings.

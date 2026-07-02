@@ -14,6 +14,7 @@ import { hc } from "hono/client";
 import type { AdminApp } from "../app.js";
 import type { NormalizationPage, NodesPage } from "../../normalize-admin.js";
 import type { ReconcileObservability } from "../../reconcile-admin.js";
+import type { AuditSurface } from "../../audit-admin.js";
 import { NormalizeView, parseQuery } from "../pages/normalize.js";
 
 const client = hc<AdminApp>(location.origin);
@@ -44,7 +45,17 @@ function dialog(id: string): HTMLDialogElement | null {
   return document.getElementById(id) as HTMLDialogElement | null;
 }
 
-function NormalizeIsland({ data, reconcile, nodes }: { data: NormalizationPage; reconcile: ReconcileObservability; nodes: NodesPage }) {
+function NormalizeIsland({
+  data,
+  reconcile,
+  nodes,
+  audit,
+}: {
+  data: NormalizationPage;
+  reconcile: ReconcileObservability;
+  nodes: NodesPage;
+  audit: AuditSurface;
+}) {
   const [action, setAction] = useState<ActionState>({ status: "idle" });
   const query = parseQuery(new URL(location.href));
 
@@ -137,7 +148,7 @@ function NormalizeIsland({ data, reconcile, nodes }: { data: NormalizationPage; 
           <section>Action failed: {action.message}</section>
         </div>
       ) : null}
-      <NormalizeView data={data} query={query} now={Date.now()} reconcile={reconcile} nodes={nodes} />
+      <NormalizeView data={data} query={query} now={Date.now()} reconcile={reconcile} nodes={nodes} audit={audit} />
       {busy ? <p class="muted small">Working…</p> : null}
     </div>
   );
@@ -146,7 +157,12 @@ function NormalizeIsland({ data, reconcile, nodes }: { data: NormalizationPage; 
 const host = document.getElementById("normalize-island");
 const propsEl = document.getElementById("normalize-props");
 if (host && propsEl) {
-  const props = JSON.parse(propsEl.textContent ?? "{}") as { data: NormalizationPage; reconcile: ReconcileObservability; nodes: NodesPage };
+  const props = JSON.parse(propsEl.textContent ?? "{}") as {
+    data: NormalizationPage;
+    reconcile: ReconcileObservability;
+    nodes: NodesPage;
+    audit: AuditSurface;
+  };
   host.replaceChildren();
-  render(<NormalizeIsland data={props.data} reconcile={props.reconcile} nodes={props.nodes} />, host);
+  render(<NormalizeIsland data={props.data} reconcile={props.reconcile} nodes={props.nodes} audit={props.audit} />, host);
 }

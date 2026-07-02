@@ -909,6 +909,144 @@
     .rk-facts { flex-wrap: wrap; gap: 1rem 1.5rem; }
   }
 
+  /* ── Normalize › Audits + Decisions › Edges + the Status gauges (admin-audit-observability).
+     The self-healing audit surface — shares the reconcile (`rk-*`) convergence vocabulary,
+     translated from the Audit Surface design bundle to the panel palette. Burndown-to-zero is
+     the GOOD state: an empty backlog draws green ("clean"/"settled"), never a dead gray 0.
+     Tones: alias=accent(g) · edge=terra(p) · recipe backfill=blue(b). */
+
+  /* Edge-decision outcome tokens (Decisions › Edges): kept=green left border, dropped=neutral. */
+  .oc-edge_keep { --oc: #1a7f37; }
+  .oc-edge_drop { --oc: #6e7781; }
+
+  /* Decisions stream segment (Terms / Edges). */
+  .nz-stream-bar { display: flex; align-items: center; gap: .8rem; margin: .25rem 0 1rem; flex-wrap: wrap; }
+  .nz-stream-seg { flex: 0 0 auto; }
+  .nz-stream-n { margin-left: .4rem; font-variant-numeric: tabular-nums; opacity: .55; font-size: .82em; }
+  .seg-btn.active .nz-stream-n { opacity: .8; }
+  .nz-stream-hint { flex: 1 1 auto; }
+
+  /* Edge-decision cards. */
+  .ec-card .ec-main { padding: .8rem 1rem .85rem; display: flex; flex-direction: column; gap: .5rem; }
+  .ec-lead { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
+  .ec-edge { display: inline-flex; align-items: center; gap: .4rem; flex-wrap: wrap; min-width: 0; }
+  .ec-edge code { font-family: var(--font-mono, ui-monospace, monospace); font-size: .86rem; color: #1a1a1a; }
+  .ec-edge svg { color: #bbb; flex: 0 0 auto; }
+  .ec-rel { font-size: .62rem; text-transform: uppercase; letter-spacing: .04em; font-weight: 600; color: #888; border: 1px solid #e5e5e5; border-radius: 999px; padding: .04rem .4rem; }
+  .ec-flag { font-size: .62rem; text-transform: uppercase; letter-spacing: .04em; font-weight: 700; color: #9a6700; background: #fdf6e3; border: 1px solid color-mix(in oklch, #d4a72c 45%, var(--border)); border-radius: 999px; padding: .05rem .45rem; }
+  .ec-verdict { display: flex; align-items: center; gap: .4rem; font-size: .84rem; font-weight: 500; color: #333; }
+  .ec-verdict-glyph { display: inline-flex; color: var(--oc, #555); flex: 0 0 auto; }
+  .ec-reason { font-size: .82rem; font-style: italic; color: #555; line-height: 1.5; }
+  a.ec-restored { display: inline-flex; align-items: center; gap: .35rem; align-self: flex-start; font-size: .74rem; color: #0969da; background: #eaf3fb; border: 1px solid color-mix(in oklch, #0969da 30%, var(--border)); border-radius: 999px; padding: .12rem .55rem; text-decoration: none; }
+  a.ec-restored:hover { border-color: #0969da; }
+  a.ec-restored svg { flex: 0 0 auto; }
+
+  /* Audits tab. */
+  .au-section-note { max-width: 44rem; margin: 0 0 .8rem; line-height: 1.5; }
+
+  /* Burndown hero. */
+  .au-hero { border: 1px solid var(--border); border-left: 3px solid var(--accent); border-radius: var(--radius-lg); background: #fff; box-shadow: var(--shadow-xs); padding: 1.05rem 1.2rem 1.15rem; margin-bottom: 1.5rem; }
+  .au-hero.converged { border-left-color: #2da44e; }
+  .au-hero-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; margin-top: 1.1rem; padding-bottom: 1rem; border-bottom: 1px solid #f2f2f2; }
+  .au-burn-head { display: flex; flex-direction: column; gap: .55rem; }
+  .au-burn-count { display: flex; flex-direction: column; gap: .25rem; }
+  .au-burn-v { font-size: 1.7rem; font-weight: 600; letter-spacing: -.02em; line-height: 1; font-variant-numeric: tabular-nums; color: #1a1a1a; }
+  .au-burn-v.zero { color: #1a7f37; }
+  .au-burn-k { display: inline-flex; align-items: center; gap: .35rem; font-size: .74rem; color: var(--muted-foreground); }
+  .au-dot { width: .5rem; height: .5rem; border-radius: 2px; flex: 0 0 auto; }
+  .au-dot-alias { background: var(--accent); }
+  .au-dot-edge { background: #b4552b; }
+
+  /* Burndown sparkline (remaining backlog per tick → a green floor). */
+  .au-burn { display: flex; align-items: flex-end; gap: 3px; height: 44px; }
+  .au-burn.compact { height: 26px; }
+  .au-burn-col { flex: 1 1 0; min-width: 0; height: 100%; display: flex; align-items: flex-end; }
+  .au-burn-bar { width: 100%; display: block; border-radius: 2px; min-height: 3px; }
+  .au-burn-bar.g { background: var(--accent); }
+  .au-burn-bar.p { background: #b4552b; }
+  .au-burn-bar.b { background: #0969da; }
+  .au-burn-floor { width: 100%; height: 2px; background: #2da44e; border-radius: 2px; }
+
+  /* Audit pass cards. */
+  .au-pass-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: .75rem; margin-bottom: .5rem; }
+  .au-pass { border: 1px solid var(--border); border-top: 2px solid var(--accent); border-radius: var(--radius-lg); background: #fff; box-shadow: var(--shadow-xs); padding: .9rem 1rem 1rem; display: flex; flex-direction: column; gap: .6rem; }
+  .au-pass.converged { border-top-color: #2da44e; }
+  .au-pass-head { display: flex; align-items: center; gap: .5rem; }
+  .au-pass-ico { display: inline-flex; color: var(--accent); flex: 0 0 auto; }
+  .au-pass-ico.converged { color: #2da44e; }
+  .au-pass-name { font-family: var(--font-mono, ui-monospace, monospace); font-size: .86rem; font-weight: 600; color: #1a1a1a; flex: 1; min-width: 0; }
+  .au-pass-badge { font-size: .64rem; font-weight: 600; letter-spacing: .01em; padding: .08rem .45rem; border-radius: 999px; border: 1px solid; white-space: nowrap; }
+  .au-pass-badge.converging { color: #b4552b; background: color-mix(in oklch, var(--accent) 12%, transparent); border-color: color-mix(in oklch, var(--accent) 40%, var(--border)); }
+  .au-pass-badge.converged { color: #1a7f37; background: #eafbef; border-color: #b7e4c7; }
+  .au-pass-blurb { margin: 0; font-size: .76rem; line-height: 1.5; color: #555; }
+  .au-pass-spark-cap { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: .35rem; font-size: .68rem; color: var(--muted-foreground); }
+  .au-pass-axis { color: #bbb; white-space: nowrap; }
+  .au-spark { display: flex; align-items: flex-end; gap: 2px; height: 34px; }
+  .au-spark-zero { width: 100%; height: 2px; background: #e5e5e5; border-radius: 2px; }
+  .au-spark-stack { width: 100%; display: flex; flex-direction: column; border-radius: 2px; overflow: hidden; min-height: 3px; }
+  .au-spark-seg { width: 100%; display: block; }
+  .au-spark-seg.changed { background: var(--accent); }
+  .au-spark-seg.kept { background: color-mix(in oklch, var(--accent) 30%, var(--muted)); }
+  .au-pass-stats { margin-top: .1rem; }
+  .au-pass-stats .jstat { font-size: .72rem; padding: .1rem .45rem; }
+  .au-pass-foot { margin: 0; display: flex; align-items: center; flex-wrap: wrap; gap: .2rem; font-size: .72rem; color: var(--muted-foreground); }
+  .au-pass-foot svg { color: #bbb; flex: 0 0 auto; margin-right: .15rem; }
+
+  /* Restorations / replay log. */
+  .au-restore { display: flex; flex-direction: column; gap: .5rem; margin-bottom: .5rem; }
+  .au-restore-empty { display: block; }
+  .au-rst { display: flex; gap: .7rem; border: 1px solid var(--border); border-left: 3px solid #e5e5e5; border-radius: var(--radius-lg); background: #fff; box-shadow: var(--shadow-xs); padding: .7rem .9rem .75rem; }
+  .au-rst.tone-ok { border-left-color: #2da44e; }
+  .au-rst.tone-info { border-left-color: #0969da; }
+  .au-rst-ico { display: inline-flex; flex: 0 0 auto; margin-top: .1rem; color: #888; }
+  .au-rst.tone-ok .au-rst-ico { color: #1a7f37; }
+  .au-rst.tone-info .au-rst-ico { color: #0969da; }
+  .au-rst-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: .3rem; }
+  .au-rst-top { display: flex; align-items: center; gap: .55rem; flex-wrap: wrap; }
+  .au-rst-kind { font-size: .64rem; text-transform: uppercase; letter-spacing: .04em; font-weight: 700; padding: .06rem .45rem; border-radius: 999px; border: 1px solid; white-space: nowrap; }
+  .au-rst-kind.tone-ok { color: #1a7f37; background: #eafbef; border-color: #b7e4c7; }
+  .au-rst-kind.tone-info { color: #0969da; background: #eaf3fb; border-color: color-mix(in oklch, #0969da 30%, var(--border)); }
+  .au-rst-edge { display: inline-flex; align-items: center; gap: .35rem; flex-wrap: wrap; min-width: 0; }
+  .au-rst-edge code { font-family: var(--font-mono, ui-monospace, monospace); font-size: .8rem; color: #1a1a1a; }
+  .au-rst-edge svg { color: #bbb; flex: 0 0 auto; }
+  .au-rst-rel { font-size: .6rem; text-transform: uppercase; letter-spacing: .04em; font-weight: 600; color: #888; }
+  .au-rst-time { margin-left: auto; font-size: .76rem; white-space: nowrap; }
+  .au-rst-verdict { font-size: .82rem; color: #333; line-height: 1.45; }
+  .au-rst-origin { font-size: .74rem; color: var(--muted-foreground); display: inline-flex; align-items: center; gap: .35rem; flex-wrap: wrap; }
+  .au-rst-link { font-size: .74rem; display: inline-flex; align-items: center; gap: .3rem; color: var(--muted-foreground); text-decoration: none; }
+  .au-rst-was { font-family: var(--font-mono, ui-monospace, monospace); color: #cf222e; }
+  .au-rst-link code { color: #555; border-bottom: 1px dotted #bbb; }
+  .au-rst-link:hover code { color: var(--accent); border-bottom-color: var(--accent); }
+
+  /* Merge-rejection memory table. */
+  .au-rej-wrap { margin-bottom: .5rem; }
+  .au-rej-table td { font-size: .84rem; vertical-align: middle; }
+  .au-rej-pair { display: inline-flex; align-items: center; gap: .4rem; }
+  .au-rej-pair code { font-family: var(--font-mono, ui-monospace, monospace); font-size: .8rem; color: #1a1a1a; }
+  .au-rej-x { display: inline-flex; color: #cf222e; }
+  .au-rej-until { display: inline-flex; align-items: center; gap: .3rem; color: #555; }
+  .au-rej-until svg { color: #bbb; }
+
+  /* Status: the identity-audit row + the recipe-backfill gauge. */
+  .au-status-burns { display: flex; gap: 1.5rem; margin-top: .1rem; }
+  .au-status-burn { flex: 1 1 0; min-width: 0; }
+  .au-status-lab { display: block; margin-top: .2rem; font-size: .66rem; text-transform: uppercase; letter-spacing: .04em; color: #888; }
+  .au-job-passes { margin-top: .5rem; }
+  .au-job-passes > summary { cursor: pointer; list-style: none; display: inline-flex; align-items: center; gap: .25rem; }
+  .au-job-passes > summary::-webkit-details-marker { display: none; }
+  .au-job-passes > summary::after { content: "▾"; font-size: .7em; opacity: .6; }
+  .au-job-passes[open] > summary::after { content: "▴"; }
+  .bf-gauge { margin-top: .7rem; }
+  .bf-foot { display: flex; align-items: center; gap: .6rem; flex-wrap: wrap; margin-top: .4rem; }
+  .bf-note { font-size: .74rem; color: var(--muted-foreground); line-height: 1.4; }
+  .bf-degraded { display: inline-flex; align-items: center; gap: .3rem; font-size: .7rem; font-weight: 600; color: #9a6700; background: #fdf6e3; border: 1px solid color-mix(in oklch, #d4a72c 45%, var(--border)); border-radius: 999px; padding: .1rem .5rem; white-space: nowrap; }
+  .bf-degraded svg { flex: 0 0 auto; }
+
+  @media (max-width: 640px) {
+    .au-hero-grid { grid-template-columns: 1fr; gap: 1.1rem; }
+    .au-pass-grid { grid-template-columns: 1fr; }
+  }
+
   /* ── Decisions refinements (deep-link into a node + the re-confirm marker) ── */
   /* A decision's resolved id links to its node in the graph when one exists. */
   .nz-resolve-link { text-decoration: none; border-radius: var(--radius-sm); }
