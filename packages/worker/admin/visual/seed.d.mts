@@ -32,6 +32,11 @@ export interface SeedLiterals {
     readonly droppedEdge: { readonly from: string; readonly to: string };
     readonly rejection: { readonly a: string; readonly b: string };
   };
+  /** Ingest-key fixtures (satellite-pull-channel): one operator-global key + one tenant-bound key. */
+  readonly ingestKeys: {
+    readonly global: { readonly id: string; readonly label: string; readonly prefix: string };
+    readonly bound: { readonly id: string; readonly label: string; readonly prefix: string; readonly tenant: string };
+  };
   /** The registered background jobs seeded into job_health/job_runs (mirrors HEALTH_JOBS). */
   readonly jobs: readonly string[];
 }

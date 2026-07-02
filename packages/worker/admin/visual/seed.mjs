@@ -42,6 +42,13 @@ export const SEED = {
     droppedEdge: { from: "chives", to: "green-onion" },
     rejection: { a: "chives", b: "green-onion" },
   },
+  // Config › Ingest Keys: one operator-global key (no tenant binding) + one key bound to the
+  // connected member — so the roster's binding column renders both the muted "operator-global"
+  // and a bound-member badge, and the mint dialog's tenant selector offers the allowlist.
+  ingestKeys: {
+    global: { id: "ik-viz-global", label: "kitchen-nas", prefix: "ing_live_a1b2" },
+    bound: { id: "ik-viz-bound", label: "casey-laptop", prefix: "ing_live_c3d4", tenant: "casey" },
+  },
   // Mirrors src/health.ts HEALTH_JOBS (every registered job gets health + run history so no
   // Status row renders never-run).
   jobs: [
@@ -271,6 +278,17 @@ export function d1Statements(now) {
   // --- Status stat tiles: one discovery feed (the RSS-feeds count; the SKU tile counting 0 is
   // fine — a Kroger cache row needs live-API shapes the seed deliberately doesn't fake).
   stmts.push(`INSERT OR REPLACE INTO feeds (url, name, weight, tags) VALUES ('https://example-kitchen.com/feed.xml', 'Example Kitchen', 1.0, '["demo"]');`);
+
+  // --- Config › Ingest Keys: an operator-global key + a tenant-bound key (satellite-pull-channel).
+  // Only a dummy hash/prefix is stored (the roster never shows the secret); the binding column
+  // renders NULL as "operator-global" and the bound id as a badge.
+  const ik = SEED.ingestKeys;
+  stmts.push(`DELETE FROM ingest_keys WHERE id IN (${q(ik.global.id)}, ${q(ik.bound.id)});`);
+  stmts.push(
+    `INSERT INTO ingest_keys (id, label, key_hash, key_prefix, created_at, last_used_at, status, tenant) VALUES` +
+      ` (${q(ik.global.id)}, ${q(ik.global.label)}, 'viz-hash-global', ${q(ik.global.prefix)}, ${now - 20 * DAY}, ${now - 3 * HOUR}, 'active', NULL),` +
+      ` (${q(ik.bound.id)}, ${q(ik.bound.label)}, 'viz-hash-bound', ${q(ik.bound.prefix)}, ${now - 5 * DAY}, NULL, 'active', ${q(ik.bound.tenant)});`,
+  );
 
   return stmts;
 }
