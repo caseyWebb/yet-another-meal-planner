@@ -1,39 +1,57 @@
-# Admin visual + smoke harness (`operator-admin`)
+# Admin UI harness (`admin-ui-testing`)
 
-Playwright drives the real admin panel in a browser against a local `wrangler dev`, for two things:
+Playwright drives the real admin panel in Chromium against a seeded local `wrangler dev`. It is
+the **blocking browser-level gate** for the panel (CI's `admin-ui` job): every top-nav area
+asserts its landmark alongside the shared shell + health dock, the native dialogs (Members
+invite, Normalize override/add-alias) open for real, and every area captures a full-page review
+screenshot. The vitest suite (`aubr test`) remains the functional gate for Worker logic; this
+harness gates the browser-level admin surface.
 
-1. **Smoke / E2E** — each area's heading renders, the Logs detail opens as a native `<dialog>`.
-   These assertions are stable across browser versions.
-2. **Visual regression** — a full-page `toHaveScreenshot` per area (+ the open dialog), compared
-   to the committed baselines under `admin.spec.ts-snapshots/`. Every run also captures a
-   screenshot per test (uploaded as a CI artifact).
+There is **no pixel-snapshot gating**: no baselines are committed and nothing fails on image
+drift. Visual regression review is human — over the screenshots this harness produces, which CI
+publishes inline on the PR (see below).
 
-The functional gate for the panel is the **vitest** suite (`aubr test`), which drives the same
-Hono app in-process. This harness is the browser-level visual aid on top.
+## Layout
+
+```
+fixtures.ts       # the extended `test` specs import — one fixture per page object
+registry.ts       # ordered all-areas list the smoke spec iterates
+seed.mjs          # deterministic D1/KV fixtures + the literals page objects assert on
+seed.d.mts        # hand-maintained types for the seed literals (keep in lockstep)
+setup.mjs         # webServer entrypoint: build → migrate → seed → wrangler dev
+pages/            # one page object per area (base.page.ts is the shell contract)
+components/       # shared shell pieces: nav, health dock, stat tiles, dialogs, tables
+specs/            # smoke (all areas), members, normalize, navigation
+.screenshots/     # per-area review PNGs (gitignored; stable ASCII names)
+.results/         # Playwright output (gitignored)
+```
+
+How to add coverage for a new admin surface — and the landmark/determinism rules — live in the
+"Testing" section of [`../../src/admin/CLAUDE.md`](../../src/admin/CLAUDE.md).
 
 ## Run it
 
 ```bash
-aubr test:admin                      # run against wrangler dev (Playwright starts/seeds it)
-aubr test:admin -- --update-snapshots   # regenerate baselines
+aubr test:admin                                        # from packages/worker; boots everything itself
+PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers aubr test:admin   # web-session sandboxes (pre-installed Chromium)
+PW_PORT=8788 aubr test:admin                           # when 8787 is taken
 ```
 
-`playwright.config.ts`'s `webServer` runs `admin/visual/setup.mjs`, which builds the bundle,
-applies the D1 migrations to the **local** SQLite, seeds a deterministic discovery-log fixture
-(so the Logs dialog has stable content), and serves with `ADMIN_DEV_BYPASS`. All local + offline.
+`playwright.config.ts`'s `webServer` runs `setup.mjs`: builds the admin bundle, applies the D1
+migrations to the **local** SQLite, applies `seed.mjs` (D1 rows + the tenant/OAuth/Kroger KV
+entries; timestamps relative to the run's clock so relative-age labels render stable text), and
+serves with `ADMIN_DEV_BYPASS`. All local + offline. If the pinned `@playwright/test` has
+outpaced the sandbox's pre-installed browsers, `npx playwright install chromium` fetches the
+matching build; `PW_CHROMIUM_PATH` points at a bare Chromium binary as the last resort.
 
-In a sandbox whose only browser is the pre-installed one, point Playwright at it:
-`PW_CHROMIUM_PATH=/opt/pw-browsers/chromium-1194/chrome-linux/chrome aubr test:admin`.
+## CI
 
-## Baselines & CI
-
-Screenshot baselines are **browser-version-specific**. `@playwright/test` pins a Chromium
-version that this repo's coding sandbox can't install, so the committed baselines are a **dev
-bootstrap** generated with the sandbox's Chromium. CI runs the version Playwright installs (a
-different build), so its pixels won't byte-match the bootstrap — the **CI job is therefore
-`continue-on-error`** and uploads the screenshots + diffs as PR artifacts (a review aid), while
-vitest stays the hard gate.
-
-To make the visual job a true gate: regenerate the baselines in CI's environment
-(`aubr test:admin -- --update-snapshots` in the `admin-visual` job, commit the result), then drop
-`continue-on-error` from the job in `.github/workflows/ci.yml`.
+The `admin-ui` job in `.github/workflows/ci.yml` runs the suite as a blocking check on every
+PR/push (browser cached by lockfile hash). On a **same-repo PR touching admin-UI paths**
+(`src/admin/`, this harness, `scripts/build-admin.mjs`, `playwright.config.ts`), the job pushes
+`.screenshots/*.png` to the `admin-screenshots` orphan branch under `pr-<n>/` and upserts **one**
+sticky PR comment (`<!-- admin-ui-screenshots -->`) of commit-SHA-pinned raw images — they render
+inline on github.com and in the GitHub mobile app. Fork PRs (read-only token) skip the publish;
+the artifact upload (report + results + screenshots) covers every run. A closed PR's directory
+is pruned from the branch by `admin-screenshots-prune.yml`. Merge-blocking once `admin-ui` is a
+required status check on `main` (a one-time repo setting, like `pr-checklist`).

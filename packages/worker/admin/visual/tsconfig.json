@@ -1,0 +1,22 @@
+{
+  // Typechecks the Playwright harness (page objects / components / fixtures / specs) as its own
+  // pass — the root tsconfig is workerd-typed (src + test) and must not absorb browser-driving
+  // test code, mirroring how src/admin/client gets its own DOM-typed pass. No ambient type
+  // packages: everything the harness uses is an explicit @playwright/test import, and the seed
+  // literals are typed by seed.d.mts beside seed.mjs. Wired into `aubr typecheck`.
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2022"],
+    "types": [],
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "verbatimModuleSyntax": true
+  },
+  "include": ["components", "pages", "specs", "fixtures.ts", "registry.ts", "seed.d.mts"]
+}

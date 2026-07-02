@@ -17,5 +17,6 @@ of each item's wording, so there's no honest reason to leave one unchecked.
 - [ ] **Generated plugin.** `plugin/` was not hand-edited; `AGENT_INSTRUCTIONS.md` or a quoted tool-description change was followed by `aubr build:plugin` (or no such change).
 - [ ] **OpenSpec.** If this was an OpenSpec change, it's archived and the deltas are synced into `openspec/specs/` (or not an OpenSpec change).
 - [ ] **No secrets.** No secrets, tokens, or personal data added — this repo is public.
+- [ ] **Admin UI tests.** An admin-panel change (`src/admin/**`, its styles/islands, or the harness) extended the Playwright page objects + specs, `aubr test:admin` passes, and the PR's screenshot comment was reviewed (or no admin-UI change).
 - [ ] **Code review.** I ran the repo's `/code-review` skill (adversarial review of the *whole* PR diff, not just the latest commit) and addressed or triaged its findings.
 - [ ] **Checks.** `aubr typecheck`, `aubr test`, and `aubr test:tooling` pass locally or on CI.
