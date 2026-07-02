@@ -21,6 +21,19 @@ function normBinds(binds: unknown[]): unknown[] {
   return binds.map((b) => (b === undefined ? null : b));
 }
 
+// D1 binds positionally (`.bind(v0, v1, …)`) but the codebase's SQL uses numbered `?N`
+// placeholders. Node 22.17.1's node:sqlite rejects numbered `?N` when fed positional args
+// ("column index out of range"); it only accepts them as a named-parameters object. Emulate
+// D1's positional→numbered mapping (the i-th bind fills `?{i+1}`) so any numbered SQL — including
+// reuse or gaps — binds correctly across Node 22.17.x/.22. An empty object is a valid no-param bind.
+function asNamed(binds: unknown[]): Record<string, unknown> {
+  const named: Record<string, unknown> = {};
+  binds.forEach((v, i) => {
+    named[String(i + 1)] = v;
+  });
+  return named;
+}
+
 function makeD1(raw: DatabaseSync): D1Database {
   const prepare = (sql: string): D1PreparedStatement => {
     let binds: unknown[] = [];
@@ -30,15 +43,15 @@ function makeD1(raw: DatabaseSync): D1Database {
         return stmt;
       },
       async first<T>() {
-        const row = raw.prepare(sql).get(...binds);
+        const row = raw.prepare(sql).get(asNamed(binds));
         return (row ?? null) as T | null;
       },
       async all<T>() {
-        const results = raw.prepare(sql).all(...binds) as T[];
+        const results = raw.prepare(sql).all(asNamed(binds)) as T[];
         return { results, success: true as const, meta: { changes: 0 } };
       },
       async run() {
-        const res = raw.prepare(sql).run(...binds);
+        const res = raw.prepare(sql).run(asNamed(binds));
         return { success: true as const, meta: { changes: Number(res.changes) } };
       },
       __sql: () => sql,
@@ -54,7 +67,7 @@ function makeD1(raw: DatabaseSync): D1Database {
         const out: unknown[] = [];
         for (const s of stmts) {
           const stmt = s as { __sql: () => string; __binds: () => unknown[] };
-          out.push(raw.prepare(stmt.__sql()).run(...stmt.__binds()));
+          out.push(raw.prepare(stmt.__sql()).run(asNamed(stmt.__binds())));
         }
         raw.exec("COMMIT");
         return out;
