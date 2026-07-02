@@ -318,6 +318,60 @@ jobs:
             console.log(`Scraper version bumped ${base.v} -> ${head.v} — OK`);
           '
 
+  detect-scraper-version:
+    # Push-side complement to the PR-only `scraper-version` gate: on a merge to main, detect whether
+    # packages/scraper/package.json `version` changed vs the previous commit. If it did, the
+    # release-scraper job below auto-publishes that version (build-automation) — no tag push, no
+    # commit-back. Push-only: a PR/dispatch has nothing to auto-publish (the PR gate owns PRs).
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.detect.outputs.changed }}
+      version: ${{ steps.detect.outputs.version }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 2 # HEAD + its first parent (the prior main tip) for the version diff
+
+      - name: Detect a scraper version change
+        id: detect
+        # Compare packages/scraper/package.json `version` at HEAD vs HEAD^. If the file was
+        # absent/unparseable on the parent (first import / shallow edge), treat the version as
+        # CHANGED and let the release's idempotence guard (gh release view) prevent an actual
+        # double-publish — degrade safely toward "publish once".
+        run: |
+          set -euo pipefail
+          new="$(node -p "require('./packages/scraper/package.json').version")"
+          if old_json="$(git show HEAD^:packages/scraper/package.json 2>/dev/null)"; then
+            old="$(printf '%s' "$old_json" | node -p "JSON.parse(require('fs').readFileSync(0,'utf8')).version" 2>/dev/null || echo "")"
+          else
+            old=""
+          fi
+          if [ "$new" != "$old" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "version=$new" >> "$GITHUB_OUTPUT"
+          echo "scraper version: old='${old}' new='${new}'"
+
+  release-scraper:
+    # Auto-publish the scraper release when the version changed on this push to main. Calls the
+    # reusable scraper-release.yml INLINE (a GITHUB_TOKEN-pushed tag can't retrigger on: push, so we
+    # never push a tag and wait for a tag-trigger). Gated on green CI (test + no-open-changes) so a
+    # broken build never publishes; the scraper's own package is covered by `test` (workspace-aware),
+    # so admin-ui — the Worker admin-panel browser gate, unrelated to the scraper — is deliberately
+    # NOT in this gate. Separate control plane from the Worker deploy: this fires on a scraper
+    # version change (not on Worker paths) and never dispatches the data-repo deploy.
+    needs: [detect-scraper-version, test, no-open-changes]
+    if: github.event_name == 'push' && needs.detect-scraper-version.outputs.changed == 'true'
+    permissions:
+      contents: write # the reusable workflow creates the Release + its scraper-v<version> tag
+      packages: write # …and pushes the multi-arch image to GHCR
+    uses: ./.github/workflows/scraper-release.yml
+    with:
+      version: ${{ needs.detect-scraper-version.outputs.version }}
+
   trigger-deploy:
     # Auto-trigger the data-repo deploy on Worker-relevant changes to main.
     # Only fires on push (not PRs or workflow_dispatch) — the push trigger above

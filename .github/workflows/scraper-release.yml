@@ -1,23 +1,32 @@
 name: scraper-release
 
-# Publish the home-network walled-source scraper (packages/scraper) as a container image on a
-# scoped `scraper-v*` tag (build-automation). Independent of the Worker deploy control plane: a
-# scraper tag builds + pushes the image to GHCR and cuts a GitHub Release; it never redeploys the
-# Worker, and a Worker deploy never publishes a scraper image. Uses the built-in GITHUB_TOKEN
-# (packages: write) — NO new stored Actions secret, preserving the public repo's secret-free rule.
+# Publish the home-network walled-source scraper (packages/scraper) as a MULTI-ARCH container image
+# + a GitHub Release (build-automation). The published version is packages/scraper/package.json
+# `version` — the single source of truth the running scraper also reports as scraper_version; the
+# scraper-v<version> tag is DERIVED from it (never a hand-typed tag), so the tag, the GHCR image
+# label, and the reported version can't drift. Independent of the Worker deploy control plane: this
+# builds + pushes the image to GHCR and cuts the Release; it never redeploys the Worker, and a
+# Worker deploy never publishes a scraper image. Uses the built-in GITHUB_TOKEN (packages: write) —
+# NO new stored Actions secret, preserving the public repo's secret-free rule.
+#
+# Triggers: `workflow_call` (invoked by ci.yml's release-scraper job when a merge to main bumps the
+# version — the auto path) and `workflow_dispatch` (manual fallback; version derived from
+# package.json). There is deliberately NO `on: push: tags` trigger — with package.json as the source
+# of truth a hand-pushed tag would only reintroduce tag/version drift, and a tag pushed by the
+# built-in GITHUB_TOKEN can't trigger a workflow anyway, so the auto path publishes INLINE instead of
+# pushing a tag and waiting for a retrigger.
 
 on:
-  push:
-    tags: ["scraper-v*"]
-  workflow_dispatch:
+  workflow_call:
     inputs:
       version:
-        description: "Version to build (without the scraper-v prefix), for a manual run."
+        description: "The scraper version to publish; must equal packages/scraper/package.json."
         type: string
         required: true
+  workflow_dispatch: {}
 
 permissions:
-  contents: write # create the GitHub Release
+  contents: write # create the GitHub Release (and its scraper-v<version> tag)
   packages: write # push the image to GHCR
 
 jobs:
@@ -26,32 +35,60 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
+      - name: Derive + verify version and targeted contract version
+        id: v
+        # The version is packages/scraper/package.json `version` — the single source of truth. On the
+        # workflow_call path the caller passes the version it detected; we re-read package.json and
+        # FAIL if they disagree (main advanced under the caller between detect and here), so
+        # package.json always wins and the tag can't drift. The recipe CONTRACT version it targets is
+        # read from the shared contract source for the Release notes. The scraper reports both at
+        # runtime (version from package.json, contract from the @grocery-agent/contract import), so
+        # nothing here is baked as a Docker build-arg.
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./packages/scraper/package.json').version")"
+          if [ -n "${INPUT_VERSION:-}" ] && [ "$INPUT_VERSION" != "$version" ]; then
+            echo "::error::caller version ($INPUT_VERSION) != packages/scraper/package.json ($version) — package.json is the source of truth."
+            exit 1
+          fi
+          contract="$(grep -oE 'CONTRACT_VERSION = "[^"]+"' packages/contract/src/ingest.ts | sed -E 's/.*"([^"]+)".*/\1/')"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=scraper-v$version" >> "$GITHUB_OUTPUT"
+          echo "contract=$contract" >> "$GITHUB_OUTPUT"
+          echo "image=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/groceries-scraper" >> "$GITHUB_OUTPUT"
+
+      - name: Skip if this version is already published
+        id: guard
+        # Idempotence: the scraper-v<version> Release/tag is the atomic "this version shipped"
+        # marker. If it already exists, a re-run / a workflow_dispatch at the current version / an
+        # unrelated push must NOT double-publish — no second Release, no re-created tag. `gh release
+        # view` exits non-zero when the release is absent (→ proceed with the publish steps below).
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if gh release view "${{ steps.v.outputs.tag }}" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "already=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::${{ steps.v.outputs.tag }} already released — skipping publish."
+          else
+            echo "already=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Set up QEMU
+        if: steps.guard.outputs.already == 'false'
         # Registers the arm64 emulation handlers so the amd64 runner can cross-build the
         # linux/arm64 variant. version-tagged to match the docker/* actions below.
         uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
+        if: steps.guard.outputs.already == 'false'
         # A Buildx builder that can emit a multi-arch manifest list in one push.
         uses: docker/setup-buildx-action@v3
 
-      - name: Derive version + targeted contract version
-        id: v
-        # The scraper's build version comes from the tag (scraper-v1.2.3 → 1.2.3); the recipe
-        # CONTRACT version it targets is read from the shared contract source so the image embeds
-        # both — the running scraper reports them to the Worker for the admin skew view.
-        run: |
-          if [ -n "${{ inputs.version }}" ]; then
-            version="${{ inputs.version }}"
-          else
-            version="${GITHUB_REF_NAME#scraper-v}"
-          fi
-          contract="$(grep -oE 'CONTRACT_VERSION = "[^"]+"' packages/contract/src/ingest.ts | sed -E 's/.*"([^"]+)".*/\1/')"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "contract=$contract" >> "$GITHUB_OUTPUT"
-          echo "image=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/groceries-scraper" >> "$GITHUB_OUTPUT"
-
       - name: Log in to GHCR
+        if: steps.guard.outputs.already == 'false'
         # version-tagged (not SHA-pinned) — pin to a SHA to match the repo convention when convenient.
         uses: docker/login-action@v3
         with:
@@ -60,33 +97,36 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push the scraper image
+        if: steps.guard.outputs.already == 'false'
         # Context is the REPO ROOT (the scraper imports the @grocery-agent/contract workspace
-        # package), with the package's own Dockerfile. The image embeds its build + contract version.
+        # package), with the package's own Dockerfile. Multi-arch: the image runs natively on x86
+        # home servers (amd64) AND Apple-Silicon home hosts (arm64) — the browser tier's Chromium is
+        # native, not emulated. The Playwright base is multi-arch and the Node toolchain is
+        # arch-agnostic, so this just cross-builds the arm64 variant under QEMU and pushes one
+        # manifest list per tag. The image "embeds" its build + contract version by carrying the
+        # copied package.json + contract source it reads at runtime — no build-args needed.
         uses: docker/build-push-action@v6
         with:
           context: .
           file: packages/scraper/Dockerfile
-          # Multi-arch: the image runs natively on x86 home servers (amd64) AND Apple-Silicon
-          # home hosts (arm64) — so the browser tier's Chromium is native, not emulated. The
-          # Playwright base is multi-arch and the Node toolchain is arch-agnostic, so this just
-          # cross-builds the arm64 variant under QEMU and pushes a manifest list under each tag.
           platforms: linux/amd64,linux/arm64
           push: true
           tags: |
             ${{ steps.v.outputs.image }}:${{ steps.v.outputs.version }}
             ${{ steps.v.outputs.image }}:latest
-          build-args: |
-            SCRAPER_VERSION=${{ steps.v.outputs.version }}
-            CONTRACT_VERSION=${{ steps.v.outputs.contract }}
 
       - name: Create the GitHub Release
+        if: steps.guard.outputs.already == 'false'
+        # tag_name is the DERIVED scraper-v<version> (NOT github.ref_name, which on workflow_call /
+        # workflow_dispatch is the branch, e.g. main). softprops creates this tag as part of cutting
+        # the Release — inline, in this same run — so there is no cross-workflow retrigger and no loop.
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name }}
+          tag_name: ${{ steps.v.outputs.tag }}
           name: scraper v${{ steps.v.outputs.version }}
           generate_release_notes: true
           body: |
-            Home-network walled-source recipe scraper — container image.
+            Home-network walled-source recipe scraper — multi-arch container image (linux/amd64 + linux/arm64).
 
             **Image:** `${{ steps.v.outputs.image }}:${{ steps.v.outputs.version }}`
             **Targets recipe contract:** `${{ steps.v.outputs.contract }}`
