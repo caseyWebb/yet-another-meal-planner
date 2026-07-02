@@ -42,10 +42,11 @@ component mapping is near-1:1.
 
 One SPA stack for both interfaces; the Worker stays the only backend.
 
-- **Frontend:** React 19 + Vite, TanStack Query (data cache, optimistic
-  mutations, offline persistence) + TanStack Router (history-API, type-safe;
-  **no hash routing**), shadcn/ui + Tailwind, `vite-plugin-pwa` (Workbox)
-  service worker + manifest.
+- **Frontend:** React 19 + Vite on the Rolldown core (Rust — see the §8
+  tooling principle), TanStack Query (data cache, optimistic mutations, offline
+  persistence) + TanStack Router (history-API, type-safe; **no hash routing**),
+  shadcn/ui + Tailwind v4, `vite-plugin-pwa` (Workbox) service worker +
+  manifest.
 - **Two bundles, one shared package:**
   - `packages/app` — member app, mounted at **`/`** (replaces the plain-text
     liveness banner; `/health` remains the machine liveness check).
@@ -273,8 +274,32 @@ code with the query layer.
 
 ## 8. Toolchain, CI, deploy
 
-- New workspaces: `packages/app`, `packages/ui` (pnpm/aube `workspace:*`; Vite
-  enters the toolchain via mise/aube — no global installs; respect
+**Tooling selection principle (apply broadly and consistently):** prefer modern
+Rust-based (or otherwise native) build tooling over JavaScript-based tooling
+whenever a widely community-supported option exists. "Widely supported" is the
+gate — do not adopt a niche tool because it is Rust; do not keep a JS tool that
+has a mature native successor. Re-evaluate at each phase's start, since this
+space moves fast. Current concrete picks:
+
+- **Bundler/dev server:** Vite on the **Rolldown** core (`rolldown-vite`, or
+  plain Vite once Rolldown is its default) — Rust bundler, unchanged Vite
+  plugin ecosystem (`vite-plugin-pwa` etc.). If the PWA story is equivalent at
+  implementation time, Rsbuild is the acceptable alternative; plain
+  Rollup-based Vite is not the target.
+- **Transforms:** SWC/Oxc React transform (`@vitejs/plugin-react-swc` or the
+  Oxc equivalent) — no Babel.
+- **CSS:** Tailwind v4 (Rust Oxide engine + Lightning CSS) — this also
+  supersedes the current admin Tailwind-compile step when P6 lands.
+- **Lint/format for the new packages:** Oxlint (the design bundle already ships
+  an `_adherence.oxlintrc.json` for the design system) + Biome as formatter —
+  no ESLint/Prettier in the new packages.
+- **Where no native successor is ready, keep the standard:** `tsc` for
+  typechecking (switch to the native TypeScript compiler when it is production-
+  stable), Vitest for Worker unit tests, Playwright for the UI gate. The
+  esbuild islands step is retired with P6, not migrated.
+
+- New workspaces: `packages/app`, `packages/ui` (pnpm/aube `workspace:*`;
+  the bundler enters the toolchain via mise/aube — no global installs; respect
   `aube-lock.yaml`).
 - Scripts: `aubr dev` gains a mode running Vite dev (proxying `/api` to
   `wrangler dev`) alongside the Worker; `aubr build:app` → `packages/app/dist`
