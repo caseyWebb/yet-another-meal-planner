@@ -67,6 +67,29 @@ describe("satellite-tasks-db: lifecycle", () => {
     expect(after).toEqual([]);
   });
 
+  it("parks a SILENTLY DROPPED task terminal at the attempt cap — re-claimed, never reported, still parked", async () => {
+    const { env } = sqliteEnv();
+    const { id } = await enqueueTask(env, { ...opTask("ghost"), maxAttempts: 2 }, NOW);
+
+    // The satellite claims, then dies mid-work and NEVER reports (no failTask ever). The only driver
+    // is the next claim after each lease expiry — lazy reclaim, no sweeper. Each claim re-leases and
+    // bumps attempts until the cap; then the next claim parks it terminal instead of re-leasing.
+    let t = NOW;
+    for (let i = 0; i < 5; i++) {
+      await claimTasks(env, { keyId: "ik_dropper", tenant: null, capabilities: ["scan"], now: t });
+      t += LEASE_DURATION_MS + 1; // let the lease expire before the next claim
+    }
+
+    const row = await getTask(env, id);
+    // Terminal failed (surfaced to the operator) — NOT re-claimed indefinitely — despite no explicit
+    // failure report. `attempts` never runs past the cap; the park stamps a default reason.
+    expect(row?.status).toBe("failed");
+    expect(row?.attempts).toBe(2);
+    expect(row?.last_error).toBe("lease expired at attempt cap");
+    // No further claim ever re-leases the parked row.
+    expect(await claimTasks(env, { keyId: "ik_dropper", tenant: null, capabilities: ["scan"], now: t + LEASE_DURATION_MS * 10 })).toEqual([]);
+  });
+
   it("idempotent enqueue: no second in-flight row per dedup_key; a terminal key is re-enqueuable", async () => {
     const { env, rows } = sqliteEnv();
     const first = await enqueueTask(env, opTask("x", "scan", "unit-42"), NOW);
@@ -157,5 +180,35 @@ describe("satellite-tasks-db: scope + capability filtering", () => {
     expect(claimed).toHaveLength(2);
     // Oldest-first (created_at order).
     expect(claimed.map(who)).toEqual(["t0", "t1"]);
+  });
+});
+
+describe("satellite-tasks-db: scope/tenant consistency CHECK", () => {
+  it("the CHECK keeps the two consistent combos writable and both impossible ones unwritable", async () => {
+    const { raw } = sqliteEnv();
+    const ins = (scope: string, tenant: string | null) =>
+      raw
+        .prepare(
+          "INSERT INTO satellite_tasks (id, kind, scope, tenant, dedup_key, payload, status, attempts, max_attempts, created_at, updated_at) " +
+            "VALUES (?, 'scan', ?, ?, ?, '{}', 'pending', 0, 3, 1, 1)",
+        )
+        .run(`st_${scope}_${tenant}`, scope, tenant, `${scope}:${tenant}`);
+
+    // Consistent: operator-scope carries no tenant; tenant-scope names its owner.
+    expect(() => ins("operator", null)).not.toThrow();
+    expect(() => ins("tenant", "casey")).not.toThrow();
+    // Impossible: operator-scope with a tenant, tenant-scope with no owner — rejected by the CHECK.
+    expect(() => ins("operator", "casey")).toThrow();
+    expect(() => ins("tenant", null)).toThrow();
+  });
+
+  it("a producer's inconsistent enqueue writes no row (the real INSERT-OR-IGNORE path)", async () => {
+    const { env, rows } = sqliteEnv();
+    // Fresh dedup keys, so a false `enqueued` can only be the CHECK skipping the row (not a dedup hit).
+    const a = await enqueueTask(env, { kind: "scan", scope: "tenant", tenant: null, dedupKey: "bad-a", payload: {} }, NOW);
+    const b = await enqueueTask(env, { kind: "scan", scope: "operator", tenant: "casey", dedupKey: "bad-b", payload: {} }, NOW);
+    expect(a.enqueued).toBe(false);
+    expect(b.enqueued).toBe(false);
+    expect(rows("satellite_tasks")).toHaveLength(0);
   });
 });

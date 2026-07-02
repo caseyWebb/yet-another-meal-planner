@@ -81,6 +81,24 @@ describe("/satellite/* auth", () => {
     expect(res.status).toBe(400);
     expect(((await res.json()) as { error: string }).error).toBe("bad_payload");
   });
+
+  it("a D1 blip during key lookup is a structured 503, not an unstructured throw (auth is inside the try)", async () => {
+    const { env } = sqliteEnv();
+    // The key lookup happens in authKey; a D1 failure there surfaces as a thrown storage_error
+    // ToolError. A DB whose every prepare throws simulates the blip on BOTH handlers' auth path.
+    const brokenEnv = {
+      ...env,
+      DB: { prepare() { throw new Error("D1_ERROR: connection reset"); } },
+    } as unknown as Env;
+
+    const claim = await handleSatelliteClaim(claimReq("ing_live_whatever", { capabilities: ["scan"] }), brokenEnv, NOW);
+    expect(claim.status).toBe(503);
+    expect(((await claim.json()) as { error: string }).error).toBe("storage_error");
+
+    const results = await handleSatelliteResults(resultsReq("ing_live_whatever", { task_id: "st_x", status: "done" }), brokenEnv, NOW);
+    expect(results.status).toBe(503);
+    expect(((await results.json()) as { error: string }).error).toBe("storage_error");
+  });
 });
 
 describe("/satellite/tasks/claim scope (end-to-end)", () => {

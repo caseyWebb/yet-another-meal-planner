@@ -24,7 +24,11 @@ CREATE TABLE satellite_tasks (
   max_attempts      INTEGER NOT NULL DEFAULT 3,      -- attempt cap; at/above it a failed task is parked terminal
   last_error        TEXT,                            -- last reported failure reason (surfaced to the operator)
   created_at        INTEGER NOT NULL,                -- epoch ms
-  updated_at        INTEGER NOT NULL                 -- epoch ms of the last lifecycle write
+  updated_at        INTEGER NOT NULL,                -- epoch ms of the last lifecycle write
+  -- Scope/tenant consistency (the multi-tenancy invariant): an operator-scope task is deliberately
+  -- cross-tenant so it carries NO tenant; a tenant-scope task MUST name its owning tenant. This makes
+  -- the impossible states (operator+tenant, tenant+NULL) unwritable by any future producer.
+  CHECK ((scope = 'operator' AND tenant IS NULL) OR (scope = 'tenant' AND tenant IS NOT NULL))
 );
 -- The claim scan: claimable rows filtered by scope × tenant × kind, oldest first.
 CREATE INDEX satellite_tasks_claimable ON satellite_tasks (status, scope, tenant, kind, created_at);

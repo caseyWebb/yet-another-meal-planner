@@ -55,20 +55,22 @@ function keyCanAccessTask(key: IngestKeyRow, task: SatelliteTaskRow): boolean {
 
 /** POST /satellite/tasks/claim — atomically lease a scope- & capability-filtered batch of tasks. */
 export async function handleSatelliteClaim(request: Request, env: Env, now: number = Date.now()): Promise<Response> {
-  const auth = await authKey(request, env, now);
-  if ("reject" in auth) return auth.reject;
-  const { key } = auth;
-
-  let body: unknown;
   try {
-    body = await request.json();
-  } catch {
-    return json({ error: "bad_payload", message: "body is not valid JSON" }, 400);
-  }
-  const parsed = parseClaimRequest(body);
-  if (!parsed.ok) return json({ error: "bad_payload", message: parsed.error }, 400);
+    // Key lookup goes through db.ts, so a D1 blip surfaces as a thrown storage_error ToolError —
+    // caught here (auth is INSIDE the try) so it becomes a structured 503, never an unstructured throw.
+    const auth = await authKey(request, env, now);
+    if ("reject" in auth) return auth.reject;
+    const { key } = auth;
 
-  try {
+    let body: unknown;
+    try {
+      body = await request.json();
+    } catch {
+      return json({ error: "bad_payload", message: "body is not valid JSON" }, 400);
+    }
+    const parsed = parseClaimRequest(body);
+    if (!parsed.ok) return json({ error: "bad_payload", message: parsed.error }, 400);
+
     const tasks = await claimTasks(env, {
       keyId: key.id,
       tenant: key.tenant, // NULL = operator-global (operator-scope only); else + own tenant's work
@@ -79,6 +81,8 @@ export async function handleSatelliteClaim(request: Request, env: Env, now: numb
     const response: ClaimResponse = { tasks };
     return json(response, 200);
   } catch (e) {
+    // A D1 failure anywhere (the auth key lookup or the atomic claim). Structured storage_error
+    // (503, retryable) rather than a throw — the handler's contract is to return structured errors.
     const message = e instanceof ToolError ? e.message : "claim storage failure";
     return json({ error: "storage_error", message }, 503);
   }
@@ -86,21 +90,23 @@ export async function handleSatelliteClaim(request: Request, env: Env, now: numb
 
 /** POST /satellite/results — land a claimed task's observations (shared intake) + transition its lifecycle. */
 export async function handleSatelliteResults(request: Request, env: Env, now: number = Date.now()): Promise<Response> {
-  const auth = await authKey(request, env, now);
-  if ("reject" in auth) return auth.reject;
-  const { key } = auth;
-
-  let body: unknown;
   try {
-    body = await request.json();
-  } catch {
-    return json({ error: "bad_payload", message: "body is not valid JSON" }, 400);
-  }
-  const parsed = parseResultRequest(body);
-  if (!parsed.ok) return json({ error: "bad_payload", message: parsed.error }, 400);
-  const req = parsed.value;
+    // Key lookup goes through db.ts, so a D1 blip surfaces as a thrown storage_error ToolError —
+    // caught here (auth is INSIDE the try) so it becomes a structured 503, never an unstructured throw.
+    const auth = await authKey(request, env, now);
+    if ("reject" in auth) return auth.reject;
+    const { key } = auth;
 
-  try {
+    let body: unknown;
+    try {
+      body = await request.json();
+    } catch {
+      return json({ error: "bad_payload", message: "body is not valid JSON" }, 400);
+    }
+    const parsed = parseResultRequest(body);
+    if (!parsed.ok) return json({ error: "bad_payload", message: parsed.error }, 400);
+    const req = parsed.value;
+
     const task = await getTask(env, req.task_id);
     // Unknown task_id — OR a task outside this key's scope (masked as not_found so another
     // tenant's task existence is never revealed) — is a structured not_found, nothing persisted.
@@ -130,8 +136,8 @@ export async function handleSatelliteResults(request: Request, env: Env, now: nu
     };
     return json(response, 200);
   } catch (e) {
-    // A D1 failure anywhere (getTask / intake / transition). Structured storage_error (503,
-    // retryable) — arrival dedup + idempotent transition make the satellite's retry safe.
+    // A D1 failure anywhere (the auth key lookup / getTask / intake / transition). Structured
+    // storage_error (503, retryable) — arrival dedup + idempotent transition make the retry safe.
     const message = e instanceof ToolError ? e.message : "results storage failure";
     return json({ error: "storage_error", message }, 503);
   }

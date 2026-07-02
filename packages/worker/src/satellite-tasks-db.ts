@@ -115,8 +115,10 @@ export interface ClaimOptions {
  * tenant binding and the declared `capabilities`. One conditional `UPDATE … RETURNING` (D1 is
  * SQLite — single-writer, statements serialized), so two concurrent claims cannot both acquire
  * a row: the loser sees it already `claimed` (fresh lease) and skips it. A `pending` row, OR a
- * `claimed` row whose lease has EXPIRED, is claimable; the claim stamps owner + lease + bumps
- * `attempts`. Scope: an operator-global key (tenant NULL) claims `operator`-scope only; a
+ * `claimed` row whose lease has EXPIRED and is still UNDER its attempt cap, is claimable; the claim
+ * stamps owner + lease + bumps `attempts`. An expired lease AT/ABOVE the cap (a task claimed then
+ * silently dropped up to the cap) is first parked terminal `failed`, not re-leased forever (D5).
+ * Scope: an operator-global key (tenant NULL) claims `operator`-scope only; a
  * tenant-bound key claims `operator`-scope PLUS its own tenant's `tenant`-scope, never another
  * tenant's. An empty `capabilities` list matches no kind → returns `[]` without a query.
  */
@@ -127,6 +129,21 @@ export async function claimTasks(env: Env, opts: ClaimOptions): Promise<TaskEnve
   const leaseMs = opts.leaseMs ?? LEASE_DURATION_MS;
   const max = Math.min(Math.max(1, opts.max ?? DEFAULT_CLAIM_MAX), MAX_CLAIM_TASKS);
   const leaseExpiresAt = now + leaseMs;
+
+  // Lazy parking (D5): a claimed row whose lease has expired AT/ABOVE the attempt cap was
+  // SILENTLY DROPPED on every claim (the satellite died mid-work and never reported) — enforce the
+  // same cap `failTask` applies to explicit failures so it can't be re-leased forever. This is the
+  // silent-drop arm of the poison-task cap; reclaim stays lazy (driven by this claim, no cron
+  // sweeper), and `attempts` was bumped at claim time so the cap counts claims. The re-lease SELECT
+  // below then excludes these parked rows (`AND attempts < max_attempts`).
+  await db(env).run(
+    "UPDATE satellite_tasks " +
+      "SET status = 'failed', last_error = COALESCE(last_error, 'lease expired at attempt cap'), " +
+      "updated_at = ?1, claimed_by = NULL, claimed_at = NULL, lease_expires_at = NULL " +
+      "WHERE status = 'claimed' AND lease_expires_at < ?2 AND attempts >= max_attempts",
+    now,
+    now,
+  );
 
   // Build positional placeholders as we accumulate binds so the dynamic capability list (and the
   // optional tenant bind) never desync from their `?N` positions.
@@ -154,7 +171,7 @@ export async function claimTasks(env: Env, opts: ClaimOptions): Promise<TaskEnve
     `lease_expires_at = ${leaseP}, attempts = attempts + 1, updated_at = ${updatedP} ` +
     "WHERE id IN (" +
     "SELECT id FROM satellite_tasks " +
-    `WHERE (status = 'pending' OR (status = 'claimed' AND lease_expires_at < ${nowP})) ` +
+    `WHERE (status = 'pending' OR (status = 'claimed' AND lease_expires_at < ${nowP} AND attempts < max_attempts)) ` +
     `AND kind IN (${capsP}) ` +
     `AND ${scopeClause} ` +
     `ORDER BY created_at, id LIMIT ${limitP}` +
