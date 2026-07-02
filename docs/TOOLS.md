@@ -542,7 +542,7 @@ Synthesized sale scan for the caller's **primary fulfillment store** — Kroger 
 **Returns:**
 - `{ items: [{ sku, brand, description, size, price: { regular, promo }, savings, categories, matched_terms }], as_of }` — the same item shape as `kroger_flyer`. For a satellite-scanned store `matched_terms` is empty (the satellite doesn't report which broad term surfaced each product).
 
-**Notes:** Pure cache read — issues **no** external store subrequest (a satellite store's `preferred_location` label IS its rollup `locationId`). Cold/absent/unresolvable store returns `{ items: [], as_of: null }` (never an error). A **satellite-scanned** store's rollup older than the operator staleness ceiling (default ~7 days) reads as **empty** (with `as_of` still surfaced) rather than steering menu-gen on stale sales — a dead satellite degrades to empty, not to stale; Kroger keeps its cron-refresh freshness (no ceiling).
+**Notes:** Pure cache read — issues **no** flyer **fan-out** subrequest (the background sweep already did that). For a **satellite** store the `preferred_location` label IS its rollup `locationId`, so no subrequest at all; for a **Kroger** primary, resolving that label to a numeric `locationId` may cost **one** Kroger Locations API call (inherited from `kroger_flyer`) — no flyer scan either way. Cold/absent/unresolvable store returns `{ items: [], as_of: null }` (never an error). A **satellite-scanned** store's rollup older than the operator staleness ceiling (default ~7 days) reads as **empty** (with `as_of` still surfaced) rather than steering menu-gen on stale sales — a dead satellite degrades to empty, not to stale; Kroger keeps its cron-refresh freshness (no ceiling).
 
 ### `kroger_prices(ingredients)`
 

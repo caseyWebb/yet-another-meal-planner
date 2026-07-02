@@ -121,6 +121,20 @@ describe("runSaleScanPlan", () => {
     expect(h.pruneCalls).toEqual([NOW - 5000]);
   });
 
+  it("does not collide two distinct (store, locationId) pairs that share a bare-space join", async () => {
+    // A `locationId` that is a raw `preferred_location` label can contain spaces, so a bare-space
+    // join ("market" + " " + "5 a" === "market 5" + " " + "a") would collapse these two DISTINCT
+    // pairs into one plan entry. The NUL-delimited key keeps them separate → two tasks enqueued.
+    const h = harness({
+      listTenantIds: async () => ["alice", "bob"],
+      readTenantStore: async (id) =>
+        ({ alice: { store: "market", locationId: "5 a" }, bob: { store: "market 5", locationId: "a" } })[id] ?? null,
+    });
+    const r = await runSaleScanPlan(h.deps);
+    expect(r.pairs).toBe(2); // NOT collapsed to 1 by a colliding bare-space key
+    expect(h.enqueued.map((t) => t.dedupKey).sort()).toEqual(["sale-scan:market 5:a", "sale-scan:market:5 a"]);
+  });
+
   it("skips tenants with no store set", async () => {
     const h = harness({
       readTenantStore: async (id) => (id === "alice" ? { store: "target", locationId: "T-9" } : null),

@@ -114,7 +114,9 @@ export async function runSaleScanPlan(deps: SaleScanPlanDeps, config: SaleScanPl
     const target = await deps.readTenantStore(id);
     if (!target) continue;
     if (target.store === KROGER_STORE) continue;
-    pairs.set(`${target.store} ${target.locationId}`, target);
+    // NUL-join the dedup identity: a `locationId` that is a raw `preferred_location` label can
+    // contain spaces, so a bare-space join could collide two distinct (store, locationId) pairs.
+    pairs.set(`${target.store}\u0000${target.locationId}`, target);
   }
 
   // The full broad-term set rides in EACH task's payload (one task per store scans every term in
