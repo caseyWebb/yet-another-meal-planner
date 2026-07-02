@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { intakeObservations } from "../src/ingest.js";
 import { validateSale, SALE_MAX_MARKDOWN } from "../src/sale-intake.js";
-import { readStoreFlyer, KROGER_STORE } from "../src/flyer-warm.js";
+import { readStoreFlyer } from "../src/flyer-warm.js";
 import { dedupeFlyerHits } from "../src/matching.js";
 import { fakeD1 } from "./fake-d1.js";
 import type { KvStore } from "../src/kroger-user.js";
