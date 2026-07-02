@@ -31,6 +31,8 @@ export const SEED = {
     queueTerm: "guanciale",
     aliasVariant: "scallions",
     canonicalId: "green-onion",
+    // A canonical self-entry (variant === id): counted by the Aliases tab's chip, never listed.
+    selfEntryVariant: "butter",
   },
   // The audit surface (Normalize › Audits + Decisions › Edges + the Status identity-audit row):
   // one kept edge decision, one dropped-then-restored edge decision (the restorations log +
@@ -206,13 +208,16 @@ export function d1Statements(now) {
       ` ('chives', 'allium', 'membership', 'auto', ${now - 8 * DAY}, ${now - 2 * HOUR});`,
   );
   stmts.push(
-    `DELETE FROM ingredient_alias WHERE variant IN (${q(normalize.decisionTerm)}, ${q(normalize.aliasVariant)});`,
+    `DELETE FROM ingredient_alias WHERE variant IN (${q(normalize.decisionTerm)}, ${q(normalize.aliasVariant)}, ${q(normalize.selfEntryVariant)});`,
   );
-  // One audited alias + one un-audited alias (the alias half of the audit backlog).
+  // One audited alias + one un-audited alias (the alias half of the audit backlog) + one
+  // canonical self-entry (variant === id — the Aliases tab's chip, not a listed row; audited
+  // so it stays out of the backlog burndown).
   stmts.push(
     `INSERT INTO ingredient_alias (variant, id, source, confidence, decided_at, audited_at) VALUES` +
       ` (${q(normalize.decisionTerm)}, 'butter', 'auto', 0.97, ${now - 90 * MIN}, ${now - 2 * HOUR}),` +
-      ` (${q(normalize.aliasVariant)}, ${q(normalize.canonicalId)}, 'auto', 0.93, ${now - 8 * DAY}, NULL);`,
+      ` (${q(normalize.aliasVariant)}, ${q(normalize.canonicalId)}, 'auto', 0.93, ${now - 8 * DAY}, NULL),` +
+      ` (${q(normalize.selfEntryVariant)}, ${q(normalize.selfEntryVariant)}, 'auto', 1, ${now - 8 * DAY}, ${now - 2 * HOUR});`,
   );
   stmts.push(`DELETE FROM ingredient_normalization_log WHERE term IN (${q(normalize.decisionTerm)});`);
   stmts.push(

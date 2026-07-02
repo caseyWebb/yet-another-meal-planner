@@ -486,6 +486,17 @@ const AliasesTab = ({ data, query }: { data: NormalizationPage; query: Normalize
             </a>
           ))}
         </div>
+        {data.aliasSelfCount > 0 ? (
+          // The canonical self-entry population (variant === id, the resolver front-door row
+          // every mint writes) — real rows in the table, but not mappings; a count, not a list.
+          <span
+            class="badge nz-al-selfcount"
+            data-variant="outline"
+            title="Front-door rows mapping a canonical id to itself — not shown as mappings"
+          >
+            {data.aliasSelfCount} canonical {data.aliasSelfCount === 1 ? "entry" : "entries"}
+          </span>
+        ) : null}
         <button class="btn nz-al-add" data-size="sm" data-action="alias-add">
           + Add mapping
         </button>

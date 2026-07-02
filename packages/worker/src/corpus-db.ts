@@ -810,10 +810,24 @@ export async function stampAliasAudited(env: Env, variant: string, now: number):
   await db(env).run("UPDATE ingredient_alias SET audited_at = ?2 WHERE variant = ?1", variant, now);
 }
 
+/** One alias mapping with its ownership fields: `audited_at`/`source` decide whether the
+ *  retarget reconcile may re-point the row (audited or human) or the alias re-audit still owns
+ *  it (un-audited auto — its re-decision is the re-point). */
+export interface AliasTargetRow {
+  variant: string;
+  id: string;
+  source: "auto" | "human";
+  audited_at: number | null;
+}
+
 /** EVERY alias mapping (variant → pre-representative id) — the alias audit's orphan-check
- *  reference set (an auto node with no remaining alias after a re-point is merged away). */
-export async function readAliasTargets(env: Env): Promise<AliasAuditRow[]> {
-  return db(env).all<AliasAuditRow>("SELECT variant, id FROM ingredient_alias");
+ *  reference set (an auto node with no remaining alias after a re-point is merged away) and
+ *  the retarget reconcile's scan. */
+export async function readAliasTargets(env: Env): Promise<AliasTargetRow[]> {
+  const rows = await db(env).all<{ variant: string; id: string; source: string | null; audited_at: number | null }>(
+    "SELECT variant, id, source, audited_at FROM ingredient_alias",
+  );
+  return rows.map((r) => ({ variant: r.variant, id: r.id, source: normSource(r.source), audited_at: r.audited_at ?? null }));
 }
 
 /** An identity row as the audit passes need it: representative resolution + human protection. */

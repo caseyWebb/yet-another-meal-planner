@@ -86,6 +86,26 @@ export class NormalizePage extends AdminPage {
     return this.page.locator('[data-action="alias-add"]');
   }
 
+  // --- The Aliases tab's mappings-only listing (alias-target-convergence): real mappings
+  // (variant ≠ id) render as rows; canonical self-entries collapse into a count chip.
+
+  /** An alias row's variant cell, matched exactly (a variant may be a substring of another). */
+  aliasRowVariant(variant: string): Locator {
+    return this.page.locator(".nz-al-table .nz-al-variant").filter({ hasText: new RegExp(`^${variant}$`) });
+  }
+
+  /** The canonical self-entry count chip beside the source pills. */
+  get selfEntryChip(): Locator {
+    return this.page.locator(".nz-al-selfcount");
+  }
+
+  /** A real mapping lists; a canonical self-entry never renders a row, only the chip's count. */
+  async expectMappingsOnly(mappingVariant: string, selfVariant: string, selfCount: number): Promise<void> {
+    await expect(this.aliasRowVariant(mappingVariant)).toBeVisible();
+    await expect(this.aliasRowVariant(selfVariant)).toHaveCount(0);
+    await expect(this.selfEntryChip).toHaveText(`${selfCount} canonical ${selfCount === 1 ? "entry" : "entries"}`);
+  }
+
   overrideDialog(): DialogComponent {
     return new DialogComponent(this.page.locator("dialog#nz-override"));
   }

@@ -15,6 +15,12 @@ test("add-alias opens as a native dialog on the aliases tab", async ({ normalize
   await expect(dialog.title("Add alias mapping")).toBeVisible();
 });
 
+test("aliases tab lists real mappings only, self-entries as a count chip", async ({ normalizePage }) => {
+  await normalizePage.gotoTab("aliases");
+  await normalizePage.expectMappingsOnly(SEED.normalize.aliasVariant, SEED.normalize.selfEntryVariant, 1);
+  await normalizePage.captureForReview("normalize-aliases-mappings");
+});
+
 test("decisions edges segment lists verdicts and links a revisited drop to restorations", async ({ normalizePage }) => {
   await normalizePage.gotoEdgesStream();
   await expect(normalizePage.streamSegment).toBeVisible();

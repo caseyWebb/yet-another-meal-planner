@@ -47,7 +47,7 @@ describe("deriveAuditObservability", () => {
         run("a1", NOW - 6 * MIN, { audited: 30, self_stamped: 20, kept: 6, repointed: 2, minted: 1, merged: 1, skipped: 0 }),
       ],
       edgeRuns: [run("e1", NOW - 2 * MIN, { audited: 8, self_loops: 1, cycles: 1, dropped: 2, kept: 6, skipped: 0, structural: 3, structural_restored: 1, self_loops_swept: 0, replayed: 2, restored: 1 })],
-      skuRuns: [run("s1", NOW - 3 * MIN, { rekeyed: 4, merged: 1, truncated: false })],
+      skuRuns: [run("s1", NOW - 3 * MIN, { rekeyed: 4, merged: 1, alias_retargeted: 2, truncated: false })],
       aliasBacklog: 50,
       edgeBacklog: 10,
     });
@@ -74,7 +74,23 @@ describe("deriveAuditObservability", () => {
       ["skipped", 0],
     ]);
     expect(edge).toMatchObject({ id: "edge", worked: 8, changed: 2, settled: false });
-    expect(sku).toMatchObject({ id: "sku", worked: 5, changed: 5, settled: false });
+    expect(sku).toMatchObject({ id: "sku", worked: 7, changed: 7, settled: false }); // rekeyed+merged+alias_retargeted
+    expect(sku.summary).toEqual([
+      ["rekeyed", 4],
+      ["merged", 1],
+      ["alias_retargeted", 2],
+    ]);
+  });
+
+  it("counts an alias-retarget-only sku tick as work, never a settled no-op", () => {
+    const obs = deriveAuditObservability({
+      aliasRuns: [],
+      edgeRuns: [],
+      skuRuns: [run("s", NOW, { rekeyed: 0, merged: 0, alias_retargeted: 3, truncated: false })],
+      aliasBacklog: 0,
+      edgeBacklog: 0,
+    });
+    expect(obs.passes[2]).toMatchObject({ id: "sku", worked: 3, changed: 3, settled: false });
   });
 
   it("is converged only when BOTH backlogs are zero, and passes settle on healthy no-ops", () => {

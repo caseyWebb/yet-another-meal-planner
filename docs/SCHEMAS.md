@@ -643,7 +643,10 @@ reconfirmed_at INTEGER  -- one-shot re-confirm stamp; NULL = eligible/not-yet-re
 
 -- ingredient_alias — surface form → id (hot-path exact match). PRIMARY KEY (variant).
 variant    TEXT  -- lowercased, quantity-stripped surface form
-id         TEXT  -- → ingredient_identity.id (pre-representative)  NOT NULL
+id         TEXT  -- → ingredient_identity.id  NOT NULL — converges to the SURVIVING id: the
+                 -- sku-cache-rekey pass re-points audited/human rows whose id the representative
+                 -- chain merged away (id column only; source/confidence/decided_at/audited_at
+                 -- untouched); an un-audited auto row converges via the alias re-audit instead
 source     TEXT NOT NULL DEFAULT 'auto'
 confidence REAL
 decided_at INTEGER

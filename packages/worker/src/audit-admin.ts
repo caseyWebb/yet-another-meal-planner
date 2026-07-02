@@ -116,7 +116,7 @@ const EDGE_FIELDS = [
   "replayed",
   "restored",
 ] as const;
-const SKU_FIELDS = ["rekeyed", "merged"] as const;
+const SKU_FIELDS = ["rekeyed", "merged", "alias_retargeted"] as const;
 
 /** worked/changed per run, per pass. Alias/edge work is `audited` (their backlog drain); a
  *  sku tick's work IS its changes (every re-key/merge is a mutation). Changed counts stay
@@ -133,7 +133,8 @@ function tickOf(run: JobRun, id: AuditPassId): AuditTick {
       return { worked, changed: Math.min(numField(run.summary, "dropped"), worked) };
     }
     case "sku": {
-      const worked = numField(run.summary, "rekeyed") + numField(run.summary, "merged");
+      const worked =
+        numField(run.summary, "rekeyed") + numField(run.summary, "merged") + numField(run.summary, "alias_retargeted");
       return { worked, changed: worked };
     }
   }
