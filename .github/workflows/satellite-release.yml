@@ -1,18 +1,19 @@
-name: scraper-release
+name: satellite-release
 
-# Publish the home-network walled-source scraper (packages/scraper) as a container image on a
-# scoped `scraper-v*` tag (build-automation). Independent of the Worker deploy control plane: a
-# scraper tag builds + pushes the image to GHCR and cuts a GitHub Release; it never redeploys the
-# Worker, and a Worker deploy never publishes a scraper image. Uses the built-in GITHUB_TOKEN
-# (packages: write) — NO new stored Actions secret, preserving the public repo's secret-free rule.
+# Publish the home-network satellite (packages/satellite) as a container image on a scoped
+# `satellite-v*` tag (build-automation). Old `scraper-v*` tags/images remain valid and pullable;
+# this only changes the tag/image for new releases. Independent of the Worker deploy control
+# plane: a satellite tag builds + pushes the image to GHCR and cuts a GitHub Release; it never
+# redeploys the Worker, and a Worker deploy never publishes a satellite image. Uses the built-in
+# GITHUB_TOKEN (packages: write) — NO new stored Actions secret, preserving the secret-free rule.
 
 on:
   push:
-    tags: ["scraper-v*"]
+    tags: ["satellite-v*"]
   workflow_dispatch:
     inputs:
       version:
-        description: "Version to build (without the scraper-v prefix), for a manual run."
+        description: "Version to build (without the satellite-v prefix), for a manual run."
         type: string
         required: true
 
@@ -28,19 +29,19 @@ jobs:
 
       - name: Derive version + targeted contract version
         id: v
-        # The scraper's build version comes from the tag (scraper-v1.2.3 → 1.2.3); the recipe
+        # The satellite's build version comes from the tag (satellite-v1.2.3 → 1.2.3); the recipe
         # CONTRACT version it targets is read from the shared contract source so the image embeds
-        # both — the running scraper reports them to the Worker for the admin skew view.
+        # both — the running satellite reports them to the Worker for the admin skew view.
         run: |
           if [ -n "${{ inputs.version }}" ]; then
             version="${{ inputs.version }}"
           else
-            version="${GITHUB_REF_NAME#scraper-v}"
+            version="${GITHUB_REF_NAME#satellite-v}"
           fi
           contract="$(grep -oE 'CONTRACT_VERSION = "[^"]+"' packages/contract/src/ingest.ts | sed -E 's/.*"([^"]+)".*/\1/')"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "contract=$contract" >> "$GITHUB_OUTPUT"
-          echo "image=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/groceries-scraper" >> "$GITHUB_OUTPUT"
+          echo "image=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/groceries-satellite" >> "$GITHUB_OUTPUT"
 
       - name: Log in to GHCR
         # version-tagged (not SHA-pinned) — pin to a SHA to match the repo convention when convenient.
@@ -50,34 +51,34 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push the scraper image
-        # Context is the REPO ROOT (the scraper imports the @grocery-agent/contract workspace
+      - name: Build and push the satellite image
+        # Context is the REPO ROOT (the satellite imports the @grocery-agent/contract workspace
         # package), with the package's own Dockerfile. The image embeds its build + contract version.
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: packages/scraper/Dockerfile
+          file: packages/satellite/Dockerfile
           push: true
           tags: |
             ${{ steps.v.outputs.image }}:${{ steps.v.outputs.version }}
             ${{ steps.v.outputs.image }}:latest
           build-args: |
-            SCRAPER_VERSION=${{ steps.v.outputs.version }}
+            SATELLITE_VERSION=${{ steps.v.outputs.version }}
             CONTRACT_VERSION=${{ steps.v.outputs.contract }}
 
       - name: Create the GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
-          name: scraper v${{ steps.v.outputs.version }}
+          name: satellite v${{ steps.v.outputs.version }}
           generate_release_notes: true
           body: |
-            Home-network walled-source recipe scraper — container image.
+            Home-network satellite (recipe-scrape capability) — container image.
 
             **Image:** `${{ steps.v.outputs.image }}:${{ steps.v.outputs.version }}`
             **Targets recipe contract:** `${{ steps.v.outputs.contract }}`
 
-            Pull and run (see `packages/scraper/README.md` and `docker-compose.example.yml`):
+            Pull and run (see `packages/satellite/README.md` and `docker-compose.example.yml`):
 
             ```
             docker pull ${{ steps.v.outputs.image }}:${{ steps.v.outputs.version }}
