@@ -148,6 +148,13 @@ export interface ResultResponse {
   task: { id: string; status: TaskStatus };
   /** Present when observations were reported — their per-item accept/dedup/reject dispositions. */
   results?: ItemResult[];
+  /**
+   * An operator-visible marker set when a `sale-scan` `done` report carried observations but ZERO
+   * survived validation — the store's rollup converged to EMPTY, so this flags a likely-broken
+   * adapter ("reported N items, 0 survived validation") rather than passing off a silent zeroing as
+   * a clean success. Absent on a healthy report (some accepted/deduped) or a genuine empty scan.
+   */
+  notice?: string;
 }
 
 // --- validation helpers ------------------------------------------------------

@@ -158,6 +158,39 @@ describe("handleIngest", () => {
     expect(rej).toBeDefined();
   });
 
+  it("rejects a `sale` pushed to /admin/api/ingest and writes NO rollup (sale-scan is pull-channel-only)", async () => {
+    const f = freshEnv();
+    const { secret } = await mintIngestKey(f.env, "home-nas", NOW);
+    // A tiny KV so we can prove the first-party Kroger flyer is never touched by the push path.
+    const kvStore = new Map<string, string>();
+    const env = {
+      ...(f.env as object),
+      KROGER_KV: {
+        async get(k: string) {
+          return kvStore.has(k) ? kvStore.get(k)! : null;
+        },
+        async put(k: string, v: string) {
+          kvStore.set(k, v);
+        },
+        async delete(k: string) {
+          kvStore.delete(k);
+        },
+      },
+    } as unknown as typeof f.env;
+
+    // The blocker attack: a plain push declaring `sale-scan` with a `sale` item targeting the victim
+    // Kroger flyer location. No claimed task → the sale arm rejects it per-item and writes nothing.
+    const saleObs = { kind: "sale", store: "kroger", locationId: "03500493", productId: "p1", description: "Milk", regular: 100, promo: 10 };
+    const res = await handleIngest(req(secret, batch([saleObs], { capability: "sale-scan" })), env, NOW);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as BatchResponse;
+    expect(body).toMatchObject({ received: 1, accepted: 0, rejected: 1 });
+    expect(body.results[0].disposition).toBe("rejected");
+    expect(body.results[0].reason).toContain("pull channel only");
+    // No flyer rollup written (the rate limiter may write its own `ingest:rl:*` bucket key).
+    expect([...kvStore.keys()].some((k) => k.startsWith("flyer:"))).toBe(false);
+  });
+
   it("dedups a re-push of an already-inboxed url", async () => {
     const f = freshEnv();
     const { secret } = await mintIngestKey(f.env, "home-nas", NOW);

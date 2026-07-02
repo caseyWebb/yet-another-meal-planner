@@ -2,7 +2,8 @@ import { describe, it, expect } from "vitest";
 import { handleSatelliteClaim, handleSatelliteResults } from "../src/satellite.js";
 import { mintIngestKey, revokeIngestKey } from "../src/ingest-db.js";
 import { enqueueTask, getTask, claimTasks } from "../src/satellite-tasks-db.js";
-import { readStoreFlyer } from "../src/flyer-warm.js";
+import { readStoreFlyer, writeStoreRollup } from "../src/flyer-warm.js";
+import type { FlyerItem } from "../src/matching.js";
 import { SALE_SCAN_KIND, type ClaimResponse, type ResultResponse, type TaskEnvelope } from "@grocery-agent/contract";
 import { sqliteEnv } from "./sqlite-d1.js";
 import type { Env } from "../src/env.js";
@@ -214,5 +215,94 @@ describe("/satellite/results", () => {
     const rollup = await readStoreFlyer(env.KROGER_KV as unknown as KvStore, "target", "T-1");
     expect(rollup!.items.map((i) => i.sku)).toEqual(["p1"]);
     expect(rollup!.items[0].savings).toBe(1); // Worker-re-derived (4 - 3)
+  });
+
+  // A `sale-scan` task threads its Worker-created `(store, locationId)` into the sale intake as the
+  // AUTHORITATIVE rollup key — the observation cannot redirect the write, and a `done` always
+  // converges that store (Decision 6, blocker + should-fix #2/#3).
+
+  /** Enqueue + claim a sale-scan task for a (store, locationId), returning its id. */
+  async function claimedSaleScan(env: Env, secret: string, store: string, locationId: string): Promise<string> {
+    const { id } = await enqueueTask(
+      env,
+      { kind: SALE_SCAN_KIND, scope: "operator", tenant: null, dedupKey: `sale-scan:${store}:${locationId}`, payload: { store, locationId, terms: ["milk"] } },
+      NOW,
+    );
+    await claimTasks(env, { keyId: "ik_x", tenant: null, capabilities: [SALE_SCAN_KIND], now: NOW });
+    void secret;
+    return id;
+  }
+
+  const flyerItem = (sku: string): FlyerItem => ({
+    sku,
+    brand: "",
+    description: "Stale item",
+    size: null,
+    price: { regular: 4, promo: 3 },
+    savings: 1,
+    categories: [],
+    matched_terms: [],
+  });
+
+  it("a `done` with EMPTY observations converges the task's store to empty (clears stale sales)", async () => {
+    const { env } = sqliteEnv();
+    const { secret } = await mintIngestKey(env, "home-nas", NOW);
+    const kv = env.KROGER_KV as unknown as KvStore;
+    await writeStoreRollup(kv, "target", "T-1", [flyerItem("stale")], NOW); // a stale prior rollup
+    const id = await claimedSaleScan(env, secret, "target", "T-1");
+
+    const res = await handleSatelliteResults(resultsReq(secret, { task_id: id, status: "done", observations: [] }), env, NOW + 1);
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as ResultResponse).task).toEqual({ id, status: "done" });
+    // The store's rollup is REPLACED with the empty observed set — the stale sale is gone.
+    expect((await readStoreFlyer(kv, "target", "T-1"))!.items).toHaveLength(0);
+  });
+
+  it("a `failed` report does NOT converge the store (only `done` does)", async () => {
+    const { env } = sqliteEnv();
+    const { secret } = await mintIngestKey(env, "home-nas", NOW);
+    const kv = env.KROGER_KV as unknown as KvStore;
+    await writeStoreRollup(kv, "target", "T-1", [flyerItem("keep")], NOW);
+    const id = await claimedSaleScan(env, secret, "target", "T-1");
+
+    const res = await handleSatelliteResults(resultsReq(secret, { task_id: id, status: "failed", reason: "session expired" }), env, NOW + 1);
+    expect(res.status).toBe(200);
+    // The prior rollup is untouched — a failed scan must not clear real sales.
+    expect((await readStoreFlyer(kv, "target", "T-1"))!.items.map((i) => i.sku)).toEqual(["keep"]);
+  });
+
+  it("surfaces a `notice` when items were reported but ZERO survived validation (broken adapter)", async () => {
+    const { env } = sqliteEnv();
+    const { secret } = await mintIngestKey(env, "home-nas", NOW);
+    const kv = env.KROGER_KV as unknown as KvStore;
+    const id = await claimedSaleScan(env, secret, "target", "T-1");
+
+    // Two items, both non-sales (promo >= regular) → all rejected → the store converges to empty.
+    const bad = [
+      { kind: "sale", store: "target", locationId: "T-1", productId: "a", description: "A", regular: 4, promo: 4 },
+      { kind: "sale", store: "target", locationId: "T-1", productId: "b", description: "B", regular: 5, promo: 6 },
+    ];
+    const res = await handleSatelliteResults(resultsReq(secret, { task_id: id, status: "done", observations: bad }), env, NOW + 1);
+    const body = (await res.json()) as ResultResponse & { notice?: string };
+    expect(body.notice).toBe("reported 2 items, 0 survived validation");
+    expect(body.results?.every((r) => r.disposition === "rejected")).toBe(true);
+    expect((await readStoreFlyer(kv, "target", "T-1"))!.items).toHaveLength(0); // still converges to empty, but visibly
+  });
+
+  it("rejects a `sale` claiming store `kroger`/`Kroger` under a non-Kroger task; never writes flyer:kroger:*", async () => {
+    for (const forged of ["kroger", "Kroger"]) {
+      const { env } = sqliteEnv();
+      const { secret } = await mintIngestKey(env, "home-nas", NOW);
+      const kv = env.KROGER_KV as unknown as KvStore;
+      const id = await claimedSaleScan(env, secret, "target", "T-1"); // a legit non-Kroger task
+
+      const obs = { kind: "sale", store: forged, locationId: "03500493", productId: "p1", description: "Milk", regular: 4, promo: 3 };
+      const res = await handleSatelliteResults(resultsReq(secret, { task_id: id, status: "done", observations: [obs] }), env, NOW + 1);
+      const body = (await res.json()) as ResultResponse;
+      expect(body.task).toEqual({ id, status: "done" });
+      expect(body.results?.[0].disposition).toBe("rejected"); // disagrees with the task's store
+      // The first-party Kroger flyer is untouched — the write key was the task's (flyer:target:T-1).
+      expect(await readStoreFlyer(kv, "kroger", "03500493")).toBeNull();
+    }
   });
 });
