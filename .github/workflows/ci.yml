@@ -320,9 +320,9 @@ jobs:
 
   detect-scraper-version:
     # Push-side complement to the PR-only `scraper-version` gate: on a merge to main, detect whether
-    # packages/scraper/package.json `version` changed vs the previous commit. If it did, the
-    # release-scraper job below auto-publishes that version (build-automation) — no tag push, no
-    # commit-back. Push-only: a PR/dispatch has nothing to auto-publish (the PR gate owns PRs).
+    # packages/scraper/package.json `version` changed across THIS push. If it did, the release-scraper
+    # job below auto-publishes that version (build-automation) — no tag push, no commit-back.
+    # Push-only: a PR/dispatch has nothing to auto-publish (the PR gate owns PRs).
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     outputs:
@@ -331,21 +331,28 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          fetch-depth: 2 # HEAD + its first parent (the prior main tip) for the version diff
+          fetch-depth: 0 # full history so the push pre-image (github.event.before) is reachable
 
       - name: Detect a scraper version change
         id: detect
-        # Compare packages/scraper/package.json `version` at HEAD vs HEAD^. If the file was
-        # absent/unparseable on the parent (first import / shallow edge), treat the version as
-        # CHANGED and let the release's idempotence guard (gh release view) prevent an actual
-        # double-publish — degrade safely toward "publish once".
+        # Baseline is the push PRE-IMAGE (github.event.before), NOT HEAD^ — so a rebase-merge or a
+        # multi-commit push whose bump isn't in the tip commit is still caught (HEAD^ would silently
+        # miss it → nothing publishes → unrecoverable). Edges degrade to changed=true (the release's
+        # idempotence guard prevents an actual double-publish): an all-zero `before` (branch just
+        # created), an unresolvable `before` (a force-push rewrote history), or an absent/unparseable
+        # old package.json (first import).
+        env:
+          BEFORE: ${{ github.event.before }}
         run: |
           set -euo pipefail
           new="$(node -p "require('./packages/scraper/package.json').version")"
-          if old_json="$(git show HEAD^:packages/scraper/package.json 2>/dev/null)"; then
+          ZERO="0000000000000000000000000000000000000000"
+          if [ -z "${BEFORE:-}" ] || [ "$BEFORE" = "$ZERO" ] || ! git cat-file -e "${BEFORE}^{commit}" 2>/dev/null; then
+            old="" # no reachable baseline → force changed=true
+          elif old_json="$(git show "${BEFORE}:packages/scraper/package.json" 2>/dev/null)"; then
             old="$(printf '%s' "$old_json" | node -p "JSON.parse(require('fs').readFileSync(0,'utf8')).version" 2>/dev/null || echo "")"
           else
-            old=""
+            old="" # file absent/unparseable at the baseline → force changed=true
           fi
           if [ "$new" != "$old" ]; then
             echo "changed=true" >> "$GITHUB_OUTPUT"
@@ -353,7 +360,7 @@ jobs:
             echo "changed=false" >> "$GITHUB_OUTPUT"
           fi
           echo "version=$new" >> "$GITHUB_OUTPUT"
-          echo "scraper version: old='${old}' new='${new}'"
+          echo "scraper version: before='${BEFORE:-}' old='${old}' new='${new}'"
 
   release-scraper:
     # Auto-publish the scraper release when the version changed on this push to main. Calls the

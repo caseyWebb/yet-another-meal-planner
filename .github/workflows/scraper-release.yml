@@ -29,6 +29,16 @@ permissions:
   contents: write # create the GitHub Release (and its scraper-v<version> tag)
   packages: write # push the image to GHCR
 
+# Serialize releases: two near-simultaneous version pushes (or a manual dispatch overlapping the
+# auto path) must not race on the shared `:latest` tag. `cancel-in-progress: false` never aborts an
+# in-flight publish (it's mid-push to GHCR and must run to completion). Note GitHub keeps only one
+# *pending* run per group, so in a burst of 3+ overlapping publishes a superseded pending run can be
+# dropped — benign for a single operator (the newest version still publishes). Covers both the
+# workflow_call and workflow_dispatch entry points because it is evaluated per called-workflow run.
+concurrency:
+  group: scraper-release
+  cancel-in-progress: false
+
 jobs:
   publish:
     runs-on: ubuntu-latest
@@ -61,19 +71,25 @@ jobs:
 
       - name: Skip if this version is already published
         id: guard
-        # Idempotence: the scraper-v<version> Release/tag is the atomic "this version shipped"
-        # marker. If it already exists, a re-run / a workflow_dispatch at the current version / an
-        # unrelated push must NOT double-publish — no second Release, no re-created tag. `gh release
-        # view` exits non-zero when the release is absent (→ proceed with the publish steps below).
+        # Idempotence, failing CLOSED. The scraper-v<version> Release/tag is the atomic "this version
+        # shipped" marker: if it exists (gh exit 0), a re-run / a workflow_dispatch at the current
+        # version / an unrelated push must NOT double-publish → already=true (no-op). A GENUINE
+        # not-found (gh prints "release not found" / HTTP 404) → already=false → proceed. ANY OTHER
+        # non-zero (network, rate-limit, auth) must NOT be misread as "not released" and cut a
+        # spurious duplicate — refuse and fail the job so the release can be safely re-run later.
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.v.outputs.tag }}
         run: |
-          set -euo pipefail
-          if gh release view "${{ steps.v.outputs.tag }}" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+          set -uo pipefail
+          if err="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" 2>&1 >/dev/null)"; then
             echo "already=true" >> "$GITHUB_OUTPUT"
-            echo "::notice::${{ steps.v.outputs.tag }} already released — skipping publish."
-          else
+            echo "::notice::$TAG already released — skipping publish."
+          elif printf '%s' "$err" | grep -qiE 'release not found|not found|HTTP 404'; then
             echo "already=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::gh release view failed (not a not-found) — refusing to publish blindly: ${err}"
+            exit 1
           fi
 
       - name: Set up QEMU
