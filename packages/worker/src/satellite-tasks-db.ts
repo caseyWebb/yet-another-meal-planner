@@ -85,7 +85,7 @@ export async function enqueueTask(env: Env, task: NewTask, now: number = Date.no
   const res = await db(env).run(
     "INSERT OR IGNORE INTO satellite_tasks " +
       "(id, kind, scope, tenant, dedup_key, payload, status, attempts, max_attempts, created_at, updated_at) " +
-      "VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'pending', 0, ?7, ?8, ?8)",
+      "VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'pending', 0, ?7, ?8, ?9)",
     id,
     task.kind,
     task.scope,
@@ -93,7 +93,8 @@ export async function enqueueTask(env: Env, task: NewTask, now: number = Date.no
     task.dedupKey,
     JSON.stringify(task.payload ?? null),
     task.maxAttempts ?? 3,
-    now,
+    now, // created_at (?8)
+    now, // updated_at (?9) — bound separately; D1 rejects a reused placeholder
   );
   return { enqueued: res.changes > 0, id };
 }
