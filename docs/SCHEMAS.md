@@ -940,9 +940,12 @@ last_used_at          INTEGER  -- epoch ms of the last accepted push; NULL = nev
 status                TEXT     -- active | revoked  NOT NULL DEFAULT 'active'
 last_scraper_version  TEXT     -- last reported satellite build (column name retained; carries satellite_version)
 last_contract_version TEXT     -- last reported targeted contract version (skew source; current = "v2")
+tenant                TEXT     -- OPTIONAL tenant BINDING (satellite-pull-channel); NULL = operator-global
 ```
 
-Auth is SHA-256 hash equality (`WHERE key_hash = ? AND status = 'active'`) — an indexed DB lookup; the hash **is** the credential, so there is no per-row secret compare. Revoke sets `status = 'revoked'` (the next push with it is rejected `401`).
+Auth is SHA-256 hash equality (`WHERE key_hash = ? AND status = 'active'`) — an indexed DB lookup; the hash **is** the credential, so there is no per-row secret compare. Revoke sets `status = 'revoked'` (the next push or pull-channel request with it is rejected `401`).
+
+The additive, nullable **`tenant`** column (migration `0037`) is the key's optional **tenant binding**, governing the pull channel's claim scope (`satellite-pull-channel`, below): **NULL** = **operator-global** (every already-minted recipe-scrape key reads this way — the default is unaffected) and claims **operator-scope** work only; a **bound** key (`tenant = <id>`) additionally claims its own tenant's **tenant-scope** work, never another tenant's. The binding is set at mint (resolved against the operator allowlist; a non-allowlisted target mints nothing), **immutable** for the key's life (re-mint to rebind), and does **not** change the recipe-scrape push path, which stays operator-global regardless.
 
 ## ingest_candidates (D1 table, shared) — the pushed-content inbox
 
@@ -962,6 +965,44 @@ received_at  TEXT  -- ISO 8601
 **Arrival dedup** (at the endpoint) checks the canonical url against the corpus `source_url`s, `discovery_rejections`, the **settled** `discovery_log` set (outcomes other than `error`/`failed`), and the in-flight inbox — but **not** walled/transient parks, so a push **supersedes** a prior `unreachable`/`no_jsonld` park (the satellite now supplies content the Worker's own fetch could not reach). Walled sources are therefore satellite-owned and SHOULD NOT also be registered as Worker-polled `feeds`.
 
 The v2 wire envelope the endpoint accepts is `{ capability, source, satellite_version, contract_version, observations: [...] }`, where `observations[]` is a **discriminated union keyed by `kind`** (`{ kind: "recipe", title, ingredients[], instructions[], source, summary?, servings?, time_total?, time_active? }` — the only kind today). The endpoint also accepts the legacy v1 recipe batch (`{ source, scraper_version, contract_version, recipes[] }`), normalizing it inward to the recipe-scrape capability; a batch declaring an unimplemented `capability` is rejected `bad_payload`. The wire contract is defined once in `@grocery-agent/contract` and imported by both the Worker and the satellite.
+
+## satellite_tasks (D1 table, shared) — the pull-channel queue
+
+The **outbound-only pull channel's** work queue (satellite-pull-channel). The satellite is strictly outbound-only, so the Worker cannot push Worker-decided work at it; instead the satellite **claims** work over `POST /satellite/tasks/claim` and reports outcomes over `POST /satellite/results` — sibling `/satellite/*` routes to the retained `POST /admin/api/ingest` push, authenticated by the **same** ingest-key bearer + rate limit, outside `/admin*` so the Access gate never applies. Rows move through a **claim/lease lifecycle**: `pending → claimed → done` (success) or `→ failed` (terminal at the attempt cap). There is **no concrete task `kind`** today — the table is the seam a later capability (sale-scan, order-fill) fills with a producer + kinds; the channel treats `payload` as opaque JSON. All access goes through `src/satellite-tasks-db.ts` → `src/db.ts`. Schema: `migrations/d1/0037_satellite_pull_channel.sql`.
+
+```sql
+-- D1 satellite_tasks table. PRIMARY KEY (id).
+id                TEXT     -- "st_<hex>" opaque task id (the results correlation key)  (PK)
+kind              TEXT     -- discriminated-union discriminant (no concrete kind yet)  NOT NULL
+scope             TEXT     -- 'operator' (cross-tenant, public-derived) | 'tenant'  NOT NULL
+tenant            TEXT     -- NULL for operator-scope; the owning tenant id for tenant-scope
+dedup_key         TEXT     -- logical task identity for idempotent enqueue  NOT NULL
+payload           TEXT     -- JSON task body, opaque to the channel  NOT NULL
+status            TEXT     -- 'pending' | 'claimed' | 'done' | 'failed'  NOT NULL DEFAULT 'pending'
+claimed_by        TEXT     -- ingest key id holding the lease
+claimed_at        INTEGER  -- epoch ms of the claim
+lease_expires_at  INTEGER  -- epoch ms; a 'claimed' row past this is re-claimable
+attempts          INTEGER  -- claims counted (each claim bumps it)  NOT NULL DEFAULT 0
+max_attempts      INTEGER  -- attempt cap; at/above it a failed task is parked terminal  NOT NULL DEFAULT 3
+last_error        TEXT     -- last reported failure reason (surfaced to the operator)
+created_at        INTEGER  -- epoch ms  NOT NULL
+updated_at        INTEGER  -- epoch ms of the last lifecycle write  NOT NULL
+-- INDEX satellite_tasks_claimable (status, scope, tenant, kind, created_at) — the claim scan.
+-- UNIQUE INDEX satellite_tasks_dedup (dedup_key) WHERE status IN ('pending','claimed') — idempotent enqueue.
+```
+
+**Claim (atomic).** One conditional `UPDATE … RETURNING` (D1 is SQLite — single-writer, statements serialized) selects claimable rows — `pending`, OR `claimed` with an **expired** `lease_expires_at` — filtered by the key's scope (operator-global → `scope='operator'`; tenant-bound → `scope='operator' OR (scope='tenant' AND tenant=<key tenant>)`) **and** the claim's declared `capabilities` (`kind IN (…)`), oldest first, `LIMIT max`, stamping owner + lease + `attempts+1`. Two concurrent claims cannot both acquire a row (the loser sees it already `claimed`). **Enqueue is idempotent per `dedup_key`**: the partial-unique index admits at most one non-terminal row per logical key (`INSERT OR IGNORE` no-ops while in flight); once terminal, the key is enqueuable afresh. **Correctness rests on result-side dedup, not the lease** — a lease can expire mid-work, so a task may run more than once; the results are **observations** that dedup on arrival (see below), so a double-run is safe and the lease is a pure optimization.
+
+The **claim/result wire shapes** (defined once in `@grocery-agent/contract`, `satellite-pull.ts`):
+
+```
+POST /satellite/tasks/claim   { capabilities: string[], max?: number }
+   → { tasks: TaskEnvelope[] }          TaskEnvelope = { id, kind, scope: "operator"|"tenant", payload }  (payload opaque)
+POST /satellite/results       { task_id, status: "done"|"failed", reason?, observations?: ObservationItem[] }
+   → { task: { id, status }, results? }  results = per-observation { disposition: "accepted"|"deduped"|"rejected", … }
+```
+
+A results report is correlated by `task_id`; an unknown (or out-of-the-key's-scope, masked to avoid leaking existence) `task_id` yields a structured `not_found`. On `status: "done"` the `observations[]` (the change-1 discriminated union — recipe today) enter the **same raw-observation intake** as `/admin/api/ingest` (shared `intakeObservations` — same validation + arrival dedup), then the task transitions terminal (idempotent — a late/repeat report is a safe no-op). On `status: "failed"` the Worker counts the attempt and returns the task to claimable, or parks it terminal `failed` at the cap. `TaskEnvelope`'s `kind` is a **closed, extensible** set with **no concrete member today**, so a consumer of the current set keeps validating claim batches unchanged when a later capability adds a kind.
 
 ## discovery_sources (shared corpus, D1 `discovery_senders` + `discovery_members`)
 
