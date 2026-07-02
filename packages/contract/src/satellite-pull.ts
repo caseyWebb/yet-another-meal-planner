@@ -6,10 +6,10 @@
 //
 // The channel is CAPABILITY-AGNOSTIC: a task is an envelope carrying an opaque `id`, a
 // `kind` discriminant, its `scope`, and an opaque per-kind `payload`. The `kind` set is a
-// closed, EXTENSIBLE enumeration with NO concrete kind today — it is the seam a later
-// capability (sale-scan, order-fill) extends, exactly as the observation union in
-// ./ingest.ts is extended. The channel never interprets `payload`; only the later
-// capability that owns a `kind` does. Results reuse ./ingest.ts's ObservationItem union.
+// closed, EXTENSIBLE enumeration; `sale-scan` (satellite-sale-scan) is its first concrete
+// member, and `order-fill` extends it later, exactly as the observation union in ./ingest.ts
+// is extended. The channel never interprets `payload`; only the capability that owns a `kind`
+// does (the `sale-scan` payload shape below). Results reuse ./ingest.ts's ObservationItem union.
 //
 // See openspec specs/satellite-pull-channel.
 
@@ -63,6 +63,33 @@ export const TaskEnvelopeSchema = z.object({
   scope: z.enum(TASK_SCOPES),
   payload: z.unknown(),
 });
+
+/**
+ * The `sale-scan` task kind — the FIRST concrete task kind (satellite-sale-scan). The channel
+ * still treats `TaskEnvelope.payload` as opaque; only this capability interprets it.
+ */
+export const SALE_SCAN_KIND = "sale-scan";
+
+/**
+ * The `sale-scan` task payload: it instructs the satellite WHAT to observe (a `store`, a
+ * `locationId`, a set of broad `terms`) and carries NO derived conclusion or judgment
+ * (sensor-not-judge, inherited). `terms` are the broad flyer terms to scan (may be empty →
+ * the satellite scans nothing and reports an empty sale set). The channel keeps `payload`
+ * opaque; the Worker producer builds it and a `sale-scan` adapter reads it.
+ */
+export const SaleScanPayloadSchema = z.object({
+  store: z.string().trim().min(1),
+  locationId: z.string().trim().min(1),
+  terms: z.array(z.string().trim().min(1)),
+});
+export type SaleScanPayload = z.infer<typeof SaleScanPayloadSchema>;
+
+/** Validate a task envelope's opaque payload as a `sale-scan` payload (the satellite's adapter dispatch). */
+export function parseSaleScanPayload(input: unknown): ParseResult<SaleScanPayload> {
+  const r = SaleScanPayloadSchema.safeParse(input);
+  if (r.success) return { ok: true, value: r.data };
+  return { ok: false, error: fmtIssues(r.error) };
+}
 
 /**
  * Default / hard cap on tasks handed back in one claim. A claim leases at most `max` rows so

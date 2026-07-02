@@ -4,11 +4,11 @@
 // envelope + observation-item shapes can never drift between the two runtimes.
 //
 // The v2 contract is a CAPABILITY-TAGGED envelope carrying an array of OBSERVATION
-// ITEMS as a discriminated union keyed by `kind`. `recipe-scrape` is the only
-// capability today (`kind: "recipe"` the only observation kind); the enum + union
-// are the clean extension points for later capabilities (scan/order) — no scan/order
-// members are defined here. The Worker also accepts the prior v1 recipe batch,
-// normalizing it inward to the recipe-scrape capability (see parseSatelliteEnvelope).
+// ITEMS as a discriminated union keyed by `kind`. Two capabilities are defined:
+// `recipe-scrape` (`kind: "recipe"`) and `sale-scan` (`kind: "sale"`); the enum + union
+// stay the clean extension point for later capabilities (order). The Worker also accepts
+// the prior v1 recipe batch, normalizing it inward to the recipe-scrape capability (see
+// parseSatelliteEnvelope).
 //
 // See openspec specs/recipe-ingestion and specs/satellite.
 
@@ -22,12 +22,14 @@ import { z } from "zod";
 export const CONTRACT_VERSION = "v2";
 
 /**
- * The capabilities a satellite can run. `recipe-scrape` (extract functional recipe
- * facts from an authenticated source) is the ONLY one in this change; the enum is the
- * clean extension point for later capabilities (e.g. scan/order) — do not add members
- * here without their contract + code.
+ * The capabilities a satellite can run. `recipe-scrape` (extract functional recipe facts
+ * from an authenticated source, delivered by PUSHING observations) and `sale-scan` (observe
+ * in-store/loyalty sale prices at a store the Worker has no API for, delivered by CLAIMING
+ * operator-scope work over the pull channel and reporting `sale` observations). The enum is
+ * the closed, extensible extension point for later capabilities (e.g. order) — do not add
+ * members here without their contract + code.
  */
-export const CAPABILITIES = ["recipe-scrape"] as const;
+export const CAPABILITIES = ["recipe-scrape", "sale-scan"] as const;
 export type Capability = (typeof CAPABILITIES)[number];
 
 /**
@@ -82,11 +84,39 @@ export const RecipeObservationSchema = z.object({ kind: z.literal("recipe"), ...
 export type RecipeObservation = z.infer<typeof RecipeObservationSchema>;
 
 /**
- * An observation item — a discriminated union keyed by `kind`. `recipe` is the only kind
- * today; a later capability adds its kind here without breaking a consumer that handles
- * only the existing kinds.
+ * The RAW price facts of one observed sale — sensor-not-judge: only independently-checkable
+ * measurements, NEVER a derived saving. `store`/`locationId` are the rollup key + provenance;
+ * `productId` is the merge/dedup identity within a store (named store-neutrally, mapped to
+ * `FlyerItem.sku` at intake); `regular`/`promo` are the RAW shelf/loyalty prices as observed.
+ * There is NO `savings`/`savings_pct`/on-sale field — the Worker re-derives "on sale" and the
+ * saving from `{ regular, promo }`, the same single source of truth the Kroger flyer uses, and
+ * applies the deal floor at READ. Any `savings`-like field an adapter set is DROPPED here
+ * (default object strip), so it can never reach the wire. `url` (when present) is the product
+ * page, retained for spot-checkability.
  */
-export const ObservationItemSchema = z.discriminatedUnion("kind", [RecipeObservationSchema]);
+const saleFields = {
+  store: z.string().trim().min(1),
+  locationId: z.string().trim().min(1),
+  productId: z.string().trim().min(1),
+  description: z.string().trim().min(1),
+  size: z.string().optional(),
+  regular: z.number().positive(),
+  promo: z.number().nonnegative(),
+  brand: z.string().optional(),
+  categories: z.array(z.string()).optional(),
+  url: z.string().refine(isHttpUrl, { message: "url must be a public http(s) URL" }).optional(),
+} as const;
+
+/** A `sale` observation item: the raw price facts tagged with its discriminant `kind`. */
+export const SaleObservationSchema = z.object({ kind: z.literal("sale"), ...saleFields });
+export type SaleObservation = z.infer<typeof SaleObservationSchema>;
+
+/**
+ * An observation item — a discriminated union keyed by `kind`: `recipe` (recipe-scrape) and
+ * `sale` (sale-scan). A later capability adds its kind here without breaking a consumer that
+ * handles only the existing kinds.
+ */
+export const ObservationItemSchema = z.discriminatedUnion("kind", [RecipeObservationSchema, SaleObservationSchema]);
 export type ObservationItem = z.infer<typeof ObservationItemSchema>;
 
 /**
@@ -180,6 +210,17 @@ export function parseObservationItem(input: unknown): ParseResult<ObservationIte
 /** Validate a single recipe item's functional facts (an adapter validates its emit with this). */
 export function parseRecipeItem(input: unknown): ParseResult<RecipeItem> {
   const r = RecipeItemSchema.safeParse(input);
+  if (r.success) return { ok: true, value: r.data };
+  return { ok: false, error: fmtIssues(r.error) };
+}
+
+/**
+ * Validate a single `sale` observation (a sale-scan adapter self-validates its emit with this
+ * before the satellite will report it — so a non-contract shape, or a smuggled `savings` field,
+ * never reaches the wire). Returns the parsed observation with any unmodeled field stripped.
+ */
+export function parseSaleObservation(input: unknown): ParseResult<SaleObservation> {
+  const r = SaleObservationSchema.safeParse(input);
   if (r.success) return { ok: true, value: r.data };
   return { ok: false, error: fmtIssues(r.error) };
 }
