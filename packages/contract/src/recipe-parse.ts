@@ -1,9 +1,9 @@
-// The runtime-agnostic recipe-parse spine (shared by the Worker and the scraper).
+// The runtime-agnostic recipe-parse spine (shared by the Worker and the satellite).
 //
 // This is layer 2 of the recipe parse — PURE functions over already-parsed JSON-LD
 // blocks (instruction shapes, durations, yield). It runs identically on workerd and
 // in Node, so BOTH the Worker (`packages/worker`, via HTMLRewriter for layer 1) and
-// the home-network scraper (`packages/scraper`, via its own Node HTML extraction for
+// the home-network satellite (`packages/satellite`, via its own Node HTML extraction for
 // layer 1) feed their extracted blocks into `findRecipe` + `normalizeRecipe` here.
 // Layer 1 (HTML → JSON-LD blocks) is runtime-specific and stays with each caller.
 
