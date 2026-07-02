@@ -2,9 +2,11 @@ import { describe, it, expect } from "vitest";
 import { handleSatelliteClaim, handleSatelliteResults } from "../src/satellite.js";
 import { mintIngestKey, revokeIngestKey } from "../src/ingest-db.js";
 import { enqueueTask, getTask, claimTasks } from "../src/satellite-tasks-db.js";
-import type { ClaimResponse, ResultResponse, TaskEnvelope } from "@grocery-agent/contract";
+import { readStoreFlyer } from "../src/flyer-warm.js";
+import { SALE_SCAN_KIND, type ClaimResponse, type ResultResponse, type TaskEnvelope } from "@grocery-agent/contract";
 import { sqliteEnv } from "./sqlite-d1.js";
 import type { Env } from "../src/env.js";
+import type { KvStore } from "../src/kroger-user.js";
 
 // The pull-channel ENDPOINTS (satellite-pull-channel) end-to-end over the real-SQLite env: the
 // shared ingest-key auth + rate limit, the atomic claim (scope/capability), and the idempotent,
@@ -187,5 +189,30 @@ describe("/satellite/results", () => {
     expect(res.status).toBe(200);
     expect(((await res.json()) as ResultResponse).task.status).toBe("failed");
     expect(await getTask(env, id).then((r) => r?.last_error)).toBe("unreachable");
+  });
+
+  it("lands a `sale` results report for a sale-scan task into the store rollup (no channel change)", async () => {
+    const { env } = sqliteEnv();
+    const { secret } = await mintIngestKey(env, "home-nas", NOW);
+    // An operator-scope sale-scan task (the producer's shape); the channel treats payload opaquely.
+    const { id } = await enqueueTask(
+      env,
+      { kind: SALE_SCAN_KIND, scope: "operator", tenant: null, dedupKey: `sale-scan:target:T-1`, payload: { store: "target", locationId: "T-1", terms: ["milk"] } },
+      NOW,
+    );
+    await claimTasks(env, { keyId: "ik_x", tenant: null, capabilities: [SALE_SCAN_KIND], now: NOW });
+
+    const saleObs = { kind: "sale", store: "target", locationId: "T-1", productId: "p1", description: "Milk", regular: 4, promo: 3 };
+    const res = await handleSatelliteResults(resultsReq(secret, { task_id: id, status: "done", observations: [saleObs] }), env, NOW + 1);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as ResultResponse;
+    expect(body.task).toEqual({ id, status: "done" });
+    expect(body.results?.[0].disposition).toBe("accepted");
+    expect(body.results?.[0].source).toBe("p1"); // provenance echo (productId; url when reported)
+
+    // The sale converged into the store-namespaced rollup via the SAME shared intake as a recipe push.
+    const rollup = await readStoreFlyer(env.KROGER_KV as unknown as KvStore, "target", "T-1");
+    expect(rollup!.items.map((i) => i.sku)).toEqual(["p1"]);
+    expect(rollup!.items[0].savings).toBe(1); // Worker-re-derived (4 - 3)
   });
 });

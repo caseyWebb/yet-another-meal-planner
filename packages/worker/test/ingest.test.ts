@@ -93,7 +93,8 @@ describe("handleIngest", () => {
   it("rejects a batch declaring an unimplemented capability as bad_payload", async () => {
     const f = freshEnv();
     const { secret } = await mintIngestKey(f.env, "home-nas", NOW);
-    const res = await handleIngest(req(secret, batch([obs(1)], { capability: "sale-scan" })), f.env, NOW);
+    // `order-fill` is the still-unimplemented capability (recipe-scrape + sale-scan are defined).
+    const res = await handleIngest(req(secret, batch([obs(1)], { capability: "order-fill" })), f.env, NOW);
     expect(res.status).toBe(400);
     expect(((await res.json()) as { error: string }).error).toBe("bad_payload");
     expect(f.tables.ingest_candidates).toHaveLength(0);

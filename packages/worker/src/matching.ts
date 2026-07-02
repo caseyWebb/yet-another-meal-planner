@@ -100,9 +100,11 @@ export function isFulfillable(c: KrogerCandidate): boolean {
  * DISCOUNT — `promo > 0` AND `promo < regular`. Kroger returns `promo == regular`
  * (and an occasional `promo >= regular`) for non-sale items, so `promo > 0` alone
  * over-reports sales (savings 0). The single source of truth for "on sale" across
- * the matcher, the flyer scan, and price reporting.
+ * the matcher, the flyer scan, price reporting, AND the satellite sale intake —
+ * so a `sale` observation and a Kroger scan are judged by the identical rule.
+ * Takes just the `{ price }` a candidate or a re-derived sale row carries.
  */
-export function isOnSale(c: KrogerCandidate): boolean {
+export function isOnSale(c: { price: { regular: number; promo: number } }): boolean {
   return c.price.promo > 0 && c.price.promo < c.price.regular;
 }
 
