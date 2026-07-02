@@ -1,38 +1,37 @@
-// Playwright harness for the operator admin panel (operator-admin, design-system Phase 8).
-// Drives the REAL panel in a browser against a local `wrangler dev`: each area gets a
-// functional smoke assertion (the stable check) plus a full-page screenshot, and
-// `toHaveScreenshot` adds pixel-regression where committed baselines exist.
+// Playwright harness for the operator admin panel (admin-ui-testing): the blocking functional
+// gate over the browser-level admin surface. Drives the REAL panel in Chromium against a local
+// `wrangler dev` (admin/visual/setup.mjs builds, migrates, seeds, serves). Specs live in
+// admin/visual/specs and consume the page-object fixtures (admin/visual/fixtures.ts); every
+// area captures a full-page review screenshot into admin/visual/.screenshots/ (published as a
+// sticky comment on admin-UI PRs — see admin/visual/README.md). No pixel baselines: the gate is
+// functional assertions; visual review is human, over the published screenshots.
 //
-// Baselines are browser-version-specific. This repo's sandbox can only run the pre-installed
-// Chromium, which differs from the version `@playwright/test` pins (and from CI's), so the
-// committed baselines are a dev bootstrap and the CI job (which runs CI's pinned Chromium) is
-// continue-on-error + uploads diffs as artifacts. Promote it to a gate by regenerating
-// baselines in CI: `aubr test:admin -- --update-snapshots` (see admin/visual/README.md).
-//
-// Local run: `aubr test:admin`. A sandbox with a pre-installed browser points at it via
-// PW_CHROMIUM_PATH; CI leaves it unset and uses the version Playwright installs.
+// Local run: `aubr test:admin`. Web-session sandboxes point at the pre-installed browser tree
+// with PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers (matching the pinned @playwright/test build);
+// PW_CHROMIUM_PATH remains the escape hatch for an environment with only a bare Chromium binary.
+// CI leaves both unset and installs the pinned browser. PW_PORT picks a non-default port when
+// 8787 is taken (setup.mjs serves wherever it says).
 import { defineConfig } from "@playwright/test";
 
-const PORT = 8787;
+const PORT = Number(process.env.PW_PORT || 8787);
 const localChromium = process.env.PW_CHROMIUM_PATH;
 
 export default defineConfig({
-  testDir: "admin/visual",
+  testDir: "admin/visual/specs",
   fullyParallel: false,
   workers: 1,
   forbidOnly: !!process.env.CI,
   reporter: process.env.CI ? [["github"], ["html", { open: "never" }]] : [["list"]],
   outputDir: "admin/visual/.results",
-  expect: { toHaveScreenshot: { maxDiffPixelRatio: 0.02 } },
   use: {
     baseURL: `http://127.0.0.1:${PORT}`,
     viewport: { width: 1100, height: 900 },
-    screenshot: "on",
+    screenshot: "only-on-failure",
     ...(localChromium ? { launchOptions: { executablePath: localChromium, args: ["--no-sandbox"] } } : {}),
   },
   projects: [{ name: "chromium", use: { browserName: "chromium" } }],
   webServer: {
-    // Builds the admin bundle, migrates + seeds the local D1, then serves it with the
+    // Builds the admin bundle, migrates + seeds the local D1/KV, then serves it with the
     // Access dev-bypass. Long-running (wrangler dev is the server).
     command: "node admin/visual/setup.mjs",
     url: `http://127.0.0.1:${PORT}/admin`,

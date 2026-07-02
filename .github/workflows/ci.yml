@@ -95,16 +95,34 @@ jobs:
         working-directory: packages/worker
         run: node scripts/check-licenses.mjs
 
-  admin-visual:
-    # Browser-level visual + smoke aid for the operator admin panel: drives the real panel via a
-    # local `wrangler dev` and uploads per-area screenshots (+ pixel diffs vs the committed
-    # baselines) as PR artifacts. NON-BLOCKING (continue-on-error) — the baselines are a dev
-    # bootstrap and CI's pinned Chromium differs, so this surfaces diffs without gating; the
-    # vitest `test` job is the functional gate. See admin/visual/README.md to promote it to a gate.
+  admin-ui:
+    # BLOCKING browser-level gate for the operator admin panel (admin-ui-testing): Playwright
+    # drives the real panel via a local `wrangler dev` (page objects per area, deterministic
+    # seeded fixtures) and asserts every area's landmark + the dialog interactions. Functional
+    # assertions only — no pixel baselines are committed, so nothing here fails on byte-level
+    # image drift; visual regression review is human, over the screenshots this job publishes.
+    # On a same-repo PR whose diff touches admin-UI paths, the publish step pushes the per-area
+    # screenshots to the `admin-screenshots` branch and upserts ONE sticky PR comment embedding
+    # them as commit-SHA-pinned raw.githubusercontent images (they render inline on github.com
+    # and in the GitHub mobile app). Fork PRs get a read-only token, so the publish step skips
+    # and the artifact upload below stays their surface. Runs on every PR/push (a Worker change
+    # can break the panel's SSR); blocks merge once added to main's required status checks.
     runs-on: ubuntu-latest
-    continue-on-error: true
+    # One run per PR at a time (a superseded push's run is cancelled, so two runs of the same
+    # PR never race the branch push or the comment upsert). Push events key on the sha — unique,
+    # so pushes to main are never queued behind each other.
+    concurrency:
+      group: admin-ui-${{ github.event.pull_request.number || github.sha }}
+      cancel-in-progress: true
+    permissions:
+      contents: write # push screenshots to the admin-screenshots branch (same-repo PRs only)
+      pull-requests: write # upsert the sticky screenshot comment
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          # The publish step's path filter diffs the PR merge commit against its base (HEAD^1),
+          # mirroring trigger-deploy's approach.
+          fetch-depth: 2
       - uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959d # v4.2.0
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -116,34 +134,134 @@ jobs:
           restore-keys: aube-store-${{ runner.os }}-
       - name: Install dependencies
         run: aube ci
-      # Installs the Chromium build @playwright/test pins (+ its OS deps). This differs from the
-      # browser the bootstrap baselines were captured with, hence the non-blocking job above.
-      # Runs in packages/worker: playwright is that workspace's dep, so its bin is linked there
-      # (not at the monorepo root) in aube's pnpm-style layout.
+      # The Chromium build @playwright/test pins, cached by lockfile hash (a Playwright bump
+      # rotates the key). Runs in packages/worker: playwright is that workspace's dep, so its
+      # bin is linked there (not at the monorepo root) in aube's pnpm-style layout.
+      - name: Cache Playwright browsers
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('aube-lock.yaml') }}
       - name: Install Playwright Chromium
         working-directory: packages/worker
         run: npx playwright install --with-deps chromium
-      - name: Admin visual + smoke tests
+      - name: Admin UI tests
         run: aubr test:admin
+      - name: Detect admin-UI paths
+        # Publish only when the PR actually touches what the panel renders or how it's tested:
+        # the panel source (SSR pages, islands, styles), the harness, the admin build script, or
+        # the Playwright config. Same-repo PRs only — a fork's GITHUB_TOKEN can neither push the
+        # branch nor comment, so the step degrades to the artifact upload below.
+        id: adminpaths
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        run: |
+          git diff --name-only HEAD^1 HEAD -- \
+              packages/worker/src/admin/ \
+              packages/worker/admin/visual/ \
+              packages/worker/scripts/build-admin.mjs \
+              packages/worker/playwright.config.ts \
+            | grep -q . \
+            && echo "relevant=true" >> "$GITHUB_OUTPUT" \
+            || echo "relevant=false" >> "$GITHUB_OUTPUT"
+      - name: Publish screenshots to the PR
+        if: steps.adminpaths.outputs.relevant == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          REPO: ${{ github.repository }}
+        # Push this run's per-area PNGs to the dedicated orphan `admin-screenshots` branch under
+        # pr-<n>/ (normal commits, never force-push — the sticky comment's SHA-pinned image URLs
+        # must not dangle), then upsert the single marker-identified comment. SHA-pinned raw
+        # URLs render via camo on web + mobile and are immune to branch-URL cache staleness.
+        # The branch is orphaned (no shared history) and pruned per-PR on close (see
+        # admin-screenshots-prune.yml); the operator can delete it any time.
+        run: |
+          set -euo pipefail
+          BRANCH=admin-screenshots
+          SHOTS=packages/worker/admin/visual/.screenshots
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # Ensure the branch exists (an empty root commit), then work on it in a temp worktree.
+          if ! git fetch origin "$BRANCH" 2>/dev/null; then
+            EMPTY_TREE=$(git hash-object -t tree /dev/null)
+            ROOT=$(git commit-tree "$EMPTY_TREE" -m "init admin-screenshots (admin-ui-testing)")
+            # Tolerate losing the branch-creation race to a parallel run — the fetch below
+            # picks up whichever root landed.
+            git push origin "$ROOT:refs/heads/$BRANCH" || true
+            git fetch origin "$BRANCH"
+          fi
+          git worktree add /tmp/shots FETCH_HEAD
+          rm -rf "/tmp/shots/pr-$PR" && mkdir -p "/tmp/shots/pr-$PR"
+          cp "$SHOTS"/*.png "/tmp/shots/pr-$PR/"
+          git -C /tmp/shots add -A
+          git -C /tmp/shots commit -m "admin-ui screenshots for PR #$PR @ $HEAD_SHA" || true
+          # Push with a fetch-rebase retry: another PR's run can land on the shared branch
+          # between our fetch and push (per-PR concurrency doesn't cover cross-PR contention),
+          # and a non-fast-forward must not fail the required check. Directories are per-PR, so
+          # the rebase is conflict-free by construction; the image SHA is taken from the final
+          # pushed commit.
+          for attempt in 1 2 3; do
+            if git -C /tmp/shots push origin "HEAD:refs/heads/$BRANCH"; then
+              break
+            fi
+            if [ "$attempt" = 3 ]; then
+              echo "::error::could not push $BRANCH after 3 attempts"
+              exit 1
+            fi
+            git -C /tmp/shots fetch origin "$BRANCH"
+            git -C /tmp/shots rebase FETCH_HEAD || { git -C /tmp/shots rebase --abort; echo "::error::rebase onto $BRANCH failed"; exit 1; }
+          done
+          SHA=$(git -C /tmp/shots rev-parse HEAD)
+          # One sticky comment, found by its hidden marker and edited in place — never a second.
+          MARKER='<!-- admin-ui-screenshots -->'
+          {
+            echo "$MARKER"
+            echo "### Admin UI screenshots"
+            echo
+            echo "_Captured by the \`admin-ui\` suite at \`$HEAD_SHA\` — this comment is updated in place on each push._"
+            for f in "/tmp/shots/pr-$PR"/*.png; do
+              n=$(basename "$f" .png)
+              echo
+              echo "<details><summary><b>$n</b></summary>"
+              echo
+              echo "![$n](https://raw.githubusercontent.com/$REPO/$SHA/pr-$PR/$n.png)"
+              echo
+              echo "</details>"
+            done
+          } > /tmp/comment.md
+          find_comment() {
+            gh api "repos/$REPO/issues/$PR/comments" --paginate \
+              --jq "[.[] | select(.body | startswith(\"$MARKER\"))][0].id // empty"
+          }
+          CID=$(find_comment)
+          # Best-effort dedup: re-query just before creating, in case a parallel run posted
+          # the comment between our first lookup and now (PATCH of an existing id is safe).
+          [ -n "$CID" ] || CID=$(find_comment)
+          if [ -n "$CID" ]; then
+            gh api -X PATCH "repos/$REPO/issues/comments/$CID" -F body=@/tmp/comment.md > /dev/null
+          else
+            gh api "repos/$REPO/issues/$PR/comments" -F body=@/tmp/comment.md > /dev/null
+          fi
       - name: Upload screenshots + report
         if: ${{ always() }}
-        # NOTE: version-tagged (not SHA-pinned like the actions above) — pin to a SHA to match the
-        # repo's convention when convenient.
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: admin-visual
+          name: admin-ui
           path: |
             packages/worker/playwright-report/
             packages/worker/admin/visual/.results/
+            packages/worker/admin/visual/.screenshots/
           retention-days: 14
 
   trigger-deploy:
     # Auto-trigger the data-repo deploy on Worker-relevant changes to main.
     # Only fires on push (not PRs or workflow_dispatch) — the push trigger above
     # is already filtered to branches: [main], so no extra branch guard needed.
-    # Gated on both CI jobs so a deploy never fires when tests are red.
+    # Gated on the CI jobs (incl. the admin-ui browser gate) so a deploy never fires when
+    # tests are red.
     if: github.event_name == 'push'
-    needs: [no-open-changes, test]
+    needs: [no-open-changes, test, admin-ui]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0

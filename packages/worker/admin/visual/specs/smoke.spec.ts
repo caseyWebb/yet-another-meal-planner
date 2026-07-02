@@ -1,0 +1,88 @@
+// The all-areas smoke: every registered area renders its shell + area landmark + the global
+// health dock, and captures its full-page review screenshot (published on admin-UI PRs — see
+// admin/visual/README.md). Plus the routed sub-surfaces (member detail, Discovery › Scrapers,
+// Normalize › Reconcile) and the seeded-content checks proving each data-hungry area renders
+// its fixtures, not an empty state.
+import { test } from "../fixtures";
+import { AREAS } from "../registry";
+import { SEED } from "../seed.mjs";
+
+for (const { area, make } of AREAS) {
+  test(`${area} area renders`, async ({ page }) => {
+    const po = make(page);
+    await po.goto();
+    await po.landmark();
+    await po.healthDock.expectPresent();
+    await po.captureForReview();
+  });
+}
+
+test("member detail renders for the connected member", async ({ membersPage }) => {
+  const detail = membersPage.memberDetail(SEED.members.active);
+  await detail.goto();
+  await detail.landmark();
+  await detail.captureForReview();
+});
+
+test("discovery scrapers sub-page renders", async ({ discoveryPage }) => {
+  const scrapers = discoveryPage.scrapers();
+  await scrapers.goto();
+  await scrapers.landmark();
+  await scrapers.captureForReview();
+});
+
+test("normalize reconcile tab renders its convergence card", async ({ normalizePage }) => {
+  await normalizePage.gotoTab("reconcile");
+  await normalizePage.expectReconcileCard();
+  await normalizePage.captureForReview("normalize-reconcile");
+});
+
+test("data sub-nav routes to stores and guidance", async ({ dataPage }) => {
+  await dataPage.gotoStores();
+  await dataPage.captureForReview("data-stores");
+  await dataPage.gotoGuidance();
+  await dataPage.captureForReview("data-guidance");
+});
+
+test("config sub-nav routes to its four groups", async ({ configPage }) => {
+  await configPage.gotoIngestKeys();
+  await configPage.captureForReview("config-ingest-keys");
+  await configPage.gotoFlyer();
+  await configPage.captureForReview("config-flyer");
+  await configPage.gotoRanking();
+  await configPage.captureForReview("config-ranking");
+});
+
+test.describe("seeded fixtures render", () => {
+  test("status shows the stat tiles and a registered job", async ({ statusPage }) => {
+    await statusPage.goto();
+    await statusPage.expectStatTiles();
+    await statusPage.jobs.expectJob(SEED.jobs[0]!);
+  });
+
+  test("data lists the seeded recipe", async ({ dataPage }) => {
+    await dataPage.goto();
+    await dataPage.expectSeededRecipe();
+  });
+
+  test("insights boards include the seeded recipe", async ({ insightsPage }) => {
+    await insightsPage.goto();
+    await insightsPage.expectSeededRecipeOnBoard();
+  });
+
+  test("usage renders its three dashboard sections", async ({ usagePage }) => {
+    await usagePage.goto();
+    await usagePage.expectSections();
+  });
+
+  test("discovery shows the seeded candidates", async ({ discoveryPage }) => {
+    await discoveryPage.goto();
+    await discoveryPage.expectCandidate(SEED.discovery.errTitle);
+    await discoveryPage.expectCandidate(SEED.discovery.importedTitle);
+  });
+
+  test("logs show a seeded run entry", async ({ logsPage }) => {
+    await logsPage.goto();
+    await logsPage.expectSeededRun();
+  });
+});

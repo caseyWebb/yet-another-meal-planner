@@ -22,9 +22,9 @@ vault/.obsidian/plugins/*/styles.css
 # Packaged distributable (the zip an author downloads).
 grocery-authoring-vault*.zip
 
-# Playwright (admin visual/smoke harness): run outputs + the HTML report are artifacts. The
-# committed baselines under admin/visual/admin.spec.ts-snapshots/ are kept (a dev bootstrap — see
-# admin/visual/README.md; CI's pinned Chromium differs, so the CI job is non-blocking).
+# Playwright (the admin-ui harness): run outputs, the HTML report, and the per-area review
+# screenshots are artifacts — no pixel baselines are committed (the CI gate is functional;
+# screenshots are published on admin-UI PRs — see admin/visual/README.md).
 admin/visual/.results/
 playwright-report/
 blob-report/

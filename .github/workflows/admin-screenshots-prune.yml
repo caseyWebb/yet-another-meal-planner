@@ -1,0 +1,42 @@
+name: Admin Screenshots Prune
+
+# Hygiene for the `admin-screenshots` orphan branch (admin-ui-testing): when a PR closes, its
+# pr-<n>/ screenshot directory is removed so the branch only carries open PRs' images. Its own
+# workflow (not a ci.yml job) because it needs the `closed` PR event, which the CI workflow
+# deliberately doesn't subscribe to — adding `closed` there would re-run every test job on
+# close. Same-repo PRs only (a fork PR never published screenshots — its token couldn't push).
+# No repo code runs here: the checkout is the screenshots branch itself, plain git after that.
+# Closing a PR leaves its historical comment revisions pointing at commits that may eventually
+# GC — acceptable; the live comment belongs to an open PR by definition.
+
+on:
+  pull_request:
+    types: [closed]
+
+permissions:
+  contents: write
+
+jobs:
+  prune:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - name: Remove the closed PR's screenshots
+        env:
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          BRANCH=admin-screenshots
+          URL="https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git"
+          # Nothing to prune when the branch (or the PR's directory) doesn't exist.
+          git ls-remote --exit-code "$URL" "refs/heads/$BRANCH" > /dev/null 2>&1 || exit 0
+          git clone --depth 1 --branch "$BRANCH" "$URL" shots
+          cd shots
+          [ -d "pr-$PR" ] || exit 0
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm -r --quiet "pr-$PR"
+          git commit -m "prune admin-ui screenshots for closed PR #$PR"
+          git push origin "HEAD:refs/heads/$BRANCH"

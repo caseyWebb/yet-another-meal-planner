@@ -131,6 +131,43 @@ tree for the utility classes you use.
   middleware). Islands just call same-origin `/admin/api/*` and trust the gate — keep auth logic
   out of the client.
 
+## Testing — the Playwright harness (`admin/visual/`)
+
+The panel's browser-level gate is the Playwright suite under [`admin/visual/`](../../admin/visual/)
+(`aubr test:admin`, CI's blocking `admin-ui` job). It drives the real panel in Chromium against a
+seeded local `wrangler dev` and is organized on the Page Object Model: **specs never hard-code a
+route or selector** — those live in the page/component objects.
+
+- **Layout.** `pages/` — one page object per top-nav area (extends `base.page.ts`'s `AdminPage`:
+  shell assertion, nav + health-dock components, `captureForReview`); sub-surfaces (member
+  detail, Scrapers, the Reconcile tab) are sub-page objects/methods on their parent. `components/`
+  — the shared shell pieces (nav, health dock, stat tiles, dialogs, tables). `fixtures.ts` — the
+  extended `test` specs import (one fixture per page object). `registry.ts` — the ordered
+  all-areas list the smoke spec iterates. `seed.mjs` — the deterministic fixture set (+ its
+  hand-maintained types in `seed.d.mts`). `specs/` — the suite. Typechecked by its own
+  `admin/visual/tsconfig.json` pass inside `aubr typecheck`.
+- **Adding an admin area is one seam:** write its page object (route, landmark, expected
+  fixtures), register it in `registry.ts` and `fixtures.ts`, and extend `seed.mjs` when the area
+  needs data — the all-areas smoke (landmark + screenshot + health dock) picks it up with no
+  other spec edits. Interaction flows (dialogs, forms) get their own spec next to
+  `members.spec.ts` / `normalize.spec.ts`.
+- **Landmark discipline.** A landmark is SSR-rendered (never behind island hydration),
+  unique to its area, and **time-free**. Never assert relative-age text ("5m ago") — the seed
+  keeps those labels stable by computing timestamps relative to the run's clock at mid-bucket
+  offsets, but they are fixture plumbing, not assertion surface. Island interactions (a dialog
+  open) go through `DialogComponent.openVia`, which retries the trigger click until the native
+  `<dialog>` reports `open` (a click can land before hydration attaches the listener).
+- **Screenshots are review output, not assertions.** Every area captures a full-page PNG into
+  `admin/visual/.screenshots/` under a stable ASCII name; CI publishes them as the PR's single
+  sticky screenshot comment (mobile-renderable) on admin-UI PRs. There are **no pixel
+  baselines** — visual regression review is human, over those screenshots.
+- **Running locally.** `aubr test:admin` from `packages/worker` boots everything itself (build →
+  migrate → seed → `wrangler dev`). Web-session sandboxes: set
+  `PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers` (the pre-installed Chromium matching the pinned
+  `@playwright/test`); when a Playwright bump outpaces the sandbox image, fall back to
+  `npx playwright install chromium`. `PW_PORT=<port>` when 8787 is taken; `PW_CHROMIUM_PATH`
+  points at a bare Chromium binary as the last resort. The `/admin-ui` skill packages this loop.
+
 ## Sources
 
 - Richard Feldman — [*Making Impossible States Impossible*](https://www.youtube.com/watch?v=IcgmSRJHu_8)
