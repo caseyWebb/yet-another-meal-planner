@@ -356,6 +356,21 @@ async function cmdOrder(rest: string[]): Promise<void> {
     log,
   });
   const { url } = await helper.listen(host, port);
+  // On Ctrl-C / termination, close the helper — which stops any open drive and closes its headful
+  // browser page — before exiting, so a fill in progress never leaves an orphaned browser behind.
+  let shuttingDown = false;
+  const shutdown = async (): Promise<void> => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    try {
+      await helper.close();
+    } catch {
+      // best-effort shutdown
+    }
+    process.exit(0);
+  };
+  process.on("SIGINT", () => void shutdown());
+  process.on("SIGTERM", () => void shutdown());
   console.log("");
   console.log(`  Order helper for "${store.store}" is running.`);
   console.log(`  Open:  ${url}`);

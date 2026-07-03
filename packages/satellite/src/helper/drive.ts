@@ -46,12 +46,14 @@ const PROGRESS_STATES = new Set<ItemState>(["pending", "adding", "carted", "subs
  *   item          a per-item transition (with the matched product, once carted/substituted)
  *   checkpoint    an ambiguity awaiting the human's resolution (blocks the adapter)
  *   review-ready  TERMINAL success — the cart is filled and the adapter stopped at review
+ *   cancelled     TERMINAL — the human stopped the fill (the page is closed; a fresh fill is allowed)
  *   error         TERMINAL failure — the adapter errored / threw / the browser failed to launch
  */
 export type DriveEvent =
   | { type: "item"; item_id: string; state: ItemState; product?: OrderProduct; note?: string }
   | { type: "checkpoint"; checkpoint_id: string; item_id: string; message: string; options: OrderProduct[] }
   | { type: "review-ready"; count: number }
+  | { type: "cancelled" }
   | { type: "error"; code: string; message: string };
 
 /**
@@ -108,7 +110,7 @@ export interface DriveDeps {
  */
 export class Drive {
   readonly id: string;
-  phase: "running" | "review-ready" | "error" = "running";
+  phase: "running" | "review-ready" | "cancelled" | "error" = "running";
   error: { code: string; message: string } | null = null;
   /** The last-known per-item state (the snapshot the status route serves + the UI reconciles against). */
   readonly items = new Map<string, { state: ItemState; product?: OrderProduct; note?: string }>();
@@ -121,6 +123,10 @@ export class Drive {
   private readonly subscribers = new Set<(e: DriveEvent) => void>();
   private readonly resolvers = new Map<string, (r: CheckpointResolution) => void>();
   private cpSeq = 0;
+  /** The live page handle — held OPEN past `fill()` on success (the human checks out in it), else closed. */
+  private handle: PageHandle | null = null;
+  /** Set by `stop()` so a late `fill()` return doesn't override the cancelled terminal state. */
+  private cancelled = false;
 
   constructor(id: string) {
     this.id = id;
@@ -147,6 +153,9 @@ export class Drive {
       this.pendingCheckpoint = { checkpoint_id: e.checkpoint_id, item_id: e.item_id, message: e.message, options: e.options };
     } else if (e.type === "review-ready") {
       this.phase = "review-ready";
+      this.pendingCheckpoint = null;
+    } else if (e.type === "cancelled") {
+      this.phase = "cancelled";
       this.pendingCheckpoint = null;
     } else if (e.type === "error") {
       this.phase = "error";
@@ -203,9 +212,48 @@ export class Drive {
   }
 
   /**
+   * Close the held page (idempotent). Called on a fill FAILURE, an explicit `stop`, a superseding
+   * fill/refresh, or server shutdown — NEVER on the success (review-ready) path, where the human keeps
+   * driving the same headful window to checkout.
+   */
+  async closePage(): Promise<void> {
+    const h = this.handle;
+    this.handle = null;
+    if (!h) return;
+    try {
+      await h.close();
+    } catch {
+      // A close failure is non-fatal — the fill outcome already stands.
+    }
+  }
+
+  /**
+   * Cancel the drive (the UI's Stop control): unblock any pending checkpoint with an abort so a blocked
+   * adapter returns, close the page, and mark the drive terminal (`cancelled`). Idempotent — on an
+   * already-terminal drive it just ensures the page is closed. Prevents an orphaned headful browser and
+   * lets a fresh `/api/fill` start afterward.
+   */
+  async stop(): Promise<void> {
+    if (this.phase !== "running") {
+      await this.closePage();
+      return;
+    }
+    this.cancelled = true;
+    for (const resolve of this.resolvers.values()) resolve({ action: "abort" });
+    this.resolvers.clear();
+    await this.closePage();
+    this.emit({ type: "cancelled" });
+  }
+
+  /**
    * Run the fill: seed pending items, open the page, build the SDK, run the adapter, then validate and
-   * collect its emitted observations and finish `review-ready` (or `error`). Never throws — an adapter
-   * throw / structured error / browser-launch failure becomes a terminal `error` event.
+   * collect its emitted observations and finish `review-ready` (or `error`/`cancelled`). Never throws —
+   * an adapter throw / structured error / browser-launch failure becomes a terminal `error` event.
+   *
+   * On the review-ready path the page is left OPEN: `fill()` returns exactly when the adapter has driven
+   * to the store's review page and stopped, so the authenticated headful window MUST survive for the
+   * human to complete checkout (Decision 6/7). The page is closed only on a fill failure here, or later
+   * by `stop()` / a superseding fill / server shutdown.
    */
   async run(deps: DriveDeps, lines: OrderLine[]): Promise<void> {
     for (const line of lines) this.emit({ type: "item", item_id: line.item_id, state: "pending" });
@@ -217,6 +265,7 @@ export class Drive {
       this.emit({ type: "error", code: "browser_launch_failed", message: (err as Error).message });
       return;
     }
+    this.handle = handle;
 
     const sdk: OrderSdk = {
       store: deps.store,
@@ -227,27 +276,32 @@ export class Drive {
       checkpoint: (prompt) => this.raiseCheckpoint(prompt),
     };
 
-    let result: OrderObservation[] | { error: string };
+    let result: OrderObservation[] | { error: string } | null = null;
+    let threw: Error | null = null;
     try {
       const adapter = deps.adapterFactory(sdk);
       result = await adapter.fill(sdk, lines);
     } catch (err) {
-      this.emit({ type: "error", code: "fill_threw", message: (err as Error).message });
-      return;
-    } finally {
-      try {
-        await handle.close();
-      } catch {
-        // A close failure is non-fatal — the fill outcome already stands.
-      }
+      threw = err as Error;
     }
 
+    // A `stop()` during the fill already aborted the pending checkpoint, closed the page, and marked the
+    // drive `cancelled` — don't override that terminal state with a late review-ready / error.
+    if (this.cancelled) return;
+
+    if (threw) {
+      // The fill did NOT reach review — close the page (there is no checkout hand-off to preserve).
+      this.emit({ type: "error", code: "fill_threw", message: threw.message });
+      await this.closePage();
+      return;
+    }
     if (result && typeof result === "object" && "error" in result) {
       this.emit({ type: "error", code: "adapter_error", message: result.error });
+      await this.closePage();
       return;
     }
 
-    for (const raw of result) {
+    for (const raw of result as OrderObservation[]) {
       const v = validateOrderEmit(raw);
       if (!v.ok) {
         // A non-contract / smuggled-derived-state emit is dropped from the receipt and surfaced.
@@ -258,6 +312,7 @@ export class Drive {
       this.observations.push(obs);
       this.emit({ type: "item", item_id: obs.item_id, state: obs.disposition, product: obs.product, note: obs.note });
     }
+    // Success — leave the page OPEN for the human to complete checkout.
     this.emit({ type: "review-ready", count: this.observations.length });
   }
 }

@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { Drive, toCheckpointResolution, type DriveDeps, type DriveEvent } from "../src/helper/drive.js";
+import { describe, expect, it, vi } from "vitest";
+import { Drive, toCheckpointResolution, type DriveDeps, type DriveEvent, type PageHandle } from "../src/helper/drive.js";
 import type { OrderAdapterFactory } from "../src/order-adapter.js";
 import type { OrderLine, OrderObservation } from "@grocery-agent/contract";
 
@@ -142,5 +142,61 @@ describe("toCheckpointResolution — wire → SDK mapping (human is the only res
     expect(toCheckpointResolution({ pick: {} })).toBeNull();
     expect(toCheckpointResolution(null)).toBeNull();
     expect(toCheckpointResolution("skip")).toBeNull();
+  });
+});
+
+describe("Drive — page lifecycle (the headful window survives for checkout)", () => {
+  /** DriveDeps whose openPage returns a page with a close SPY, so we can assert when it is closed. */
+  const depsWithClose = (adapterFactory: OrderAdapterFactory, close: () => Promise<void>): DriveDeps => ({
+    ...deps(adapterFactory),
+    openPage: async (): Promise<PageHandle> => ({ page: fakePage(), close }),
+  });
+
+  it("leaves the page OPEN on review-ready — the human completes checkout in that window", async () => {
+    const close = vi.fn(async () => {});
+    const factory: OrderAdapterFactory = () => ({
+      id: "ok",
+      async fill() {
+        return [{ kind: "order", item_id: "milk", disposition: "carted", product: { productId: "p1", description: "Milk" } }];
+      },
+    });
+    const d = new Drive("open1");
+    await d.run(depsWithClose(factory, close), lines);
+    expect(d.phase).toBe("review-ready");
+    expect(close).not.toHaveBeenCalled();
+    // An explicit closePage() then works (a supersede / refresh / shutdown path).
+    await d.closePage();
+    expect(close).toHaveBeenCalledTimes(1);
+  });
+
+  it("closes the page on a fill failure (no review reached, no checkout to hand off)", async () => {
+    const close = vi.fn(async () => {});
+    const factory: OrderAdapterFactory = () => ({ id: "e", async fill() { return { error: "session expired" }; } });
+    const d = new Drive("open2");
+    await d.run(depsWithClose(factory, close), lines);
+    expect(d.phase).toBe("error");
+    expect(close).toHaveBeenCalledTimes(1);
+  });
+
+  it("stop() unblocks a pending checkpoint with abort, closes the page, and marks cancelled", async () => {
+    const close = vi.fn(async () => {});
+    let sawAbort = false;
+    const factory: OrderAdapterFactory = () => ({
+      id: "cp",
+      async fill(sdk) {
+        const res = await sdk.checkpoint({ item_id: "milk", message: "pick", options: [] });
+        if (res.action === "abort") sawAbort = true;
+        return [];
+      },
+    });
+    const d = new Drive("stop1");
+    const done = d.run(depsWithClose(factory, close), lines);
+    await waitFor(() => d.pendingCheckpoint !== null);
+    await d.stop();
+    await done;
+    expect(sawAbort).toBe(true);
+    expect(d.phase).toBe("cancelled");
+    expect(d.pendingCheckpoint).toBeNull();
+    expect(close).toHaveBeenCalledTimes(1);
   });
 });

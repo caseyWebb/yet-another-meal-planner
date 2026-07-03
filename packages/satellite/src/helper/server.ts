@@ -255,12 +255,14 @@ export function createHelper(deps: HelperDeps): Helper {
       return;
     }
     orderList = outcome.list;
-    // A fresh list supersedes any prior drive (a stale fill's observations no longer apply).
+    // A fresh list supersedes any prior drive (a stale fill's observations no longer apply). Stop it
+    // first — closing an open page — so an abandoned/finished drive never leaks the headful browser.
+    if (drive) await drive.stop();
     drive = null;
     sendJson(res, 200, { ok: true, ...(adaptList(outcome.list) as object) });
   }
 
-  function handleFill(res: ServerResponse): void {
+  async function handleFill(res: ServerResponse): Promise<void> {
     if (!orderList) {
       sendJson(res, 200, { ok: false, error: { code: "no_list", message: "refresh the to-buy list first" } });
       return;
@@ -273,12 +275,25 @@ export function createHelper(deps: HelperDeps): Helper {
       sendJson(res, 200, { ok: false, error: { code: "drive_in_progress", message: "a fill is already running" } });
       return;
     }
+    // A terminal (review-ready / cancelled / error) drive CAN be superseded — close its page first so a
+    // completed-but-not-checked-out or abandoned fill never leaks the headful browser.
+    if (drive) await drive.stop();
     const d = new Drive(`drive_${randomBytes(6).toString("hex")}`);
     drive = d;
     const adapterFactory = deps.adapterFactory;
     // Fire-and-forget: return 202 immediately; progress streams over SSE / the status route.
     void d.run({ store: deps.store, config: deps.config, session: deps.session, adapterFactory, openPage: deps.openPage, log: deps.log }, orderList.items);
     sendJson(res, 202, { ok: true, drive_id: d.id });
+  }
+
+  async function handleStop(res: ServerResponse): Promise<void> {
+    if (!drive) {
+      sendJson(res, 200, { ok: false, error: { code: "no_drive", message: "no active fill" } });
+      return;
+    }
+    // Cancel the current fill (abort a pending checkpoint, close the page). A fresh /api/fill is allowed after.
+    await drive.stop();
+    sendJson(res, 200, { ok: true });
   }
 
   function handleFillStatus(res: ServerResponse): void {
@@ -429,6 +444,7 @@ export function createHelper(deps: HelperDeps): Helper {
       if (!hasCsrf(req)) return apiError(res, 403, "csrf", "missing or invalid CSRF token");
       if (path === "/api/list") return handleList(res);
       if (path === "/api/fill") return handleFill(res);
+      if (path === "/api/fill/stop") return handleStop(res);
       if (path === "/api/checkpoint/resolve") return handleResolve(req, res);
       if (path === "/api/receipt") return handleReceipt(res);
       if (path === "/api/mark-placed") return handleMarkPlaced(res);
@@ -464,8 +480,16 @@ export function createHelper(deps: HelperDeps): Helper {
         });
       });
     },
-    close() {
-      return new Promise((resolve) => {
+    async close() {
+      // Stop any open drive first so its headful browser page never leaks past shutdown.
+      if (drive) {
+        try {
+          await drive.stop();
+        } catch {
+          // shutdown must not throw
+        }
+      }
+      await new Promise<void>((resolve) => {
         if (!httpServer) {
           resolve();
           return;

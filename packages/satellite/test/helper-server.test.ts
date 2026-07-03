@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createHelper, type Helper } from "../src/helper/server.js";
 import type { FetchImpl } from "../src/push.js";
 import type { OrderListResponse, OrderObservation, OrderReceiptResponse } from "@grocery-agent/contract";
@@ -220,5 +220,125 @@ describe("helper server — the fill → checkpoint → receipt round-trip", () 
       const receipt = await (await fetch(`${base}/api/receipt`, { method: "POST", headers: authedPost, body: "{}" })).json();
       expect(receipt).toMatchObject({ ok: false, error: { code: "not_ready" } });
     });
+  });
+});
+
+describe("helper server — drive lifecycle (browser stays open for checkout, no leaks)", () => {
+  /** A helper whose openPage tracks each page's close SPY, so we can assert when the browser closes. */
+  function buildLifecycle(adapterFactory: unknown = fakeAdapterFactory): { helper: Helper; pages: { close: ReturnType<typeof vi.fn> }[] } {
+    const pages: { close: ReturnType<typeof vi.fn> }[] = [];
+    const helper = createHelper({
+      store: { store: "target", adapter: "target" },
+      config: { connector_url: "https://mcp.example", sources: [] },
+      connectorUrl: "https://mcp.example",
+      ingestKey: "ingest-123",
+      session: null,
+      adapterFactory: adapterFactory as never,
+      openPage: async () => {
+        const close = vi.fn(async () => {});
+        pages.push({ close });
+        return { page: {} as never, close };
+      },
+      fetchImpl: fakeFetch(),
+      clientOptions: { baseDelayMs: 0, sleep: () => Promise.resolve() },
+      log: { info() {}, warn() {}, error() {} },
+      tokens: { session: SESSION, csrf: CSRF },
+    });
+    return { helper, pages };
+  }
+
+  /** Drive the fake adapter through its milk checkpoint to review-ready. */
+  async function driveToReview(base: string): Promise<void> {
+    await fetch(`${base}/api/list`, { method: "POST", headers: authedPost, body: "{}" });
+    await fetch(`${base}/api/fill`, { method: "POST", headers: authedPost, body: "{}" });
+    const withCp = await waitFor(
+      async () => (await (await fetch(`${base}/api/fill/status`, { headers: authed })).json()).drive,
+      (d: { checkpoint: { checkpoint_id: string } | null }) => d.checkpoint !== null,
+    );
+    await fetch(`${base}/api/checkpoint/resolve`, {
+      method: "POST",
+      headers: authedPost,
+      body: JSON.stringify({ checkpoint_id: withCp.checkpoint!.checkpoint_id, resolution: { pick: { productId: "p1" } } }),
+    });
+    await waitFor(
+      async () => (await (await fetch(`${base}/api/fill/status`, { headers: authed })).json()).drive,
+      (d: { phase: string }) => d.phase === "review-ready",
+    );
+  }
+
+  it("keeps the browser OPEN at review-ready; /api/fill/stop closes it and allows a fresh fill", async () => {
+    const { helper, pages } = buildLifecycle();
+    const { url } = await helper.listen("127.0.0.1", 0);
+    try {
+      await driveToReview(url);
+      expect(pages[0].close).not.toHaveBeenCalled();
+
+      const stop = await (await fetch(`${url}/api/fill/stop`, { method: "POST", headers: authedPost, body: "{}" })).json();
+      expect(stop.ok).toBe(true);
+      expect(pages[0].close).toHaveBeenCalledTimes(1);
+
+      // A fresh fill is allowed after a stop — it opens a new page.
+      const refill = await fetch(`${url}/api/fill`, { method: "POST", headers: authedPost, body: "{}" });
+      expect(refill.status).toBe(202);
+      expect(pages.length).toBe(2);
+    } finally {
+      await helper.close();
+    }
+  });
+
+  it("a new /api/fill after review-ready supersedes the prior drive and closes its open page", async () => {
+    const { helper, pages } = buildLifecycle();
+    const { url } = await helper.listen("127.0.0.1", 0);
+    try {
+      await driveToReview(url);
+      expect(pages[0].close).not.toHaveBeenCalled();
+      const refill = await fetch(`${url}/api/fill`, { method: "POST", headers: authedPost, body: "{}" });
+      expect(refill.status).toBe(202);
+      expect(pages[0].close).toHaveBeenCalledTimes(1);
+      expect(pages.length).toBe(2);
+    } finally {
+      await helper.close();
+    }
+  });
+
+  it("a refresh (/api/list) closes an open drive's page and resets the drive", async () => {
+    const { helper, pages } = buildLifecycle();
+    const { url } = await helper.listen("127.0.0.1", 0);
+    try {
+      await driveToReview(url);
+      expect(pages[0].close).not.toHaveBeenCalled();
+      await fetch(`${url}/api/list`, { method: "POST", headers: authedPost, body: "{}" });
+      expect(pages[0].close).toHaveBeenCalledTimes(1);
+      const status = await (await fetch(`${url}/api/fill/status`, { headers: authed })).json();
+      expect(status.drive.phase).toBe("none");
+    } finally {
+      await helper.close();
+    }
+  });
+
+  it("helper shutdown (close) closes an open drive's page", async () => {
+    const { helper, pages } = buildLifecycle();
+    const { url } = await helper.listen("127.0.0.1", 0);
+    await driveToReview(url);
+    expect(pages[0].close).not.toHaveBeenCalled();
+    await helper.close();
+    expect(pages[0].close).toHaveBeenCalledTimes(1);
+  });
+
+  it("a fill FAILURE closes the page", async () => {
+    const failFactory = () => ({ id: "e", async fill() { return { error: "session expired" }; } });
+    const { helper, pages } = buildLifecycle(failFactory);
+    const { url } = await helper.listen("127.0.0.1", 0);
+    try {
+      await fetch(`${url}/api/list`, { method: "POST", headers: authedPost, body: "{}" });
+      await fetch(`${url}/api/fill`, { method: "POST", headers: authedPost, body: "{}" });
+      await waitFor(
+        async () => (await (await fetch(`${url}/api/fill/status`, { headers: authed })).json()).drive,
+        (d: { phase: string }) => d.phase === "error",
+      );
+      expect(pages[0].close).toHaveBeenCalledTimes(1);
+    } finally {
+      await helper.close();
+    }
   });
 });

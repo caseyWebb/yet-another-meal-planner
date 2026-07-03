@@ -10,8 +10,9 @@
     GET  /api/session                                            -> { store, connectorReachable, helperAddr }
     POST /api/list                                               -> { order_list_id, store, items, partials }
     POST /api/fill                                               -> 202 { drive_id }
+    POST /api/fill/stop                                          -> { ok }   (cancel; closes the browser)
     GET  /api/fill/status                                        -> { drive: { phase, items, checkpoint, ... } }
-    GET  /api/fill/events        (SSE: item | checkpoint | review-ready | error)
+    GET  /api/fill/events        (SSE: item | checkpoint | review-ready | cancelled | error)
     POST /api/checkpoint/resolve { checkpoint_id, resolution }   -> { ok }
     POST /api/receipt                                            -> { order_list, results }
     POST /api/mark-placed                                        -> { order_list, results }
