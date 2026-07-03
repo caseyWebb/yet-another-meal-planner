@@ -1,52 +1,27 @@
 <!doctype html>
-<!--
-  PLACEHOLDER — the real Order Helper UI lands in the next phase (satellite-order-cart-fill §6/§7 UI).
-  This file is served verbatim at `GET /` by the helper server (src/helper/server.ts). The frontend
-  phase replaces it (and drops built assets under this `public/` directory) to build against the
-  helper's JSON + SSE API — see the API contract in the phase-C report / docs.
-
-  Backend API this UI drives (all same-origin):
-    POST /api/unlock            { token }                       -> { csrf_token, store, ... }  (+ httpOnly cookie)
-    GET  /api/session                                            -> { store, connectorReachable, helperAddr }
-    POST /api/list                                               -> { order_list_id, store, items, partials }
-    POST /api/fill                                               -> 202 { drive_id }
-    POST /api/fill/stop                                          -> { ok }   (cancel; closes the browser)
-    GET  /api/fill/status                                        -> { drive: { phase, items, checkpoint, ... } }
-    GET  /api/fill/events        (SSE: item | checkpoint | review-ready | cancelled | error)
-    POST /api/checkpoint/resolve { checkpoint_id, resolution }   -> { ok }
-    POST /api/receipt                                            -> { order_list, results }
-    POST /api/mark-placed                                        -> { order_list, results }
-  Session token: Authorization: Bearer <token> OR the oh_session cookie set by /api/unlock.
-  CSRF: state-changing POSTs echo the unlock response's csrf_token in the `x-oh-csrf` header.
--->
 <html lang="en">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="color-scheme" content="light dark" />
     <title>Order Helper</title>
-    <style>
-      :root { color-scheme: light dark; }
-      body {
-        margin: 0;
-        min-height: 100vh;
-        display: grid;
-        place-items: center;
-        font: 15px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif;
-        background: Canvas;
-        color: CanvasText;
-      }
-      main { max-width: 34rem; padding: 2rem; text-align: center; }
-      h1 { font-size: 1.4rem; margin: 0 0 0.5rem; }
-      p { margin: 0.5rem 0; opacity: 0.85; }
-      code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.9em; }
-    </style>
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="/assets/app.css" />
+    <script>
+      /* Apply the saved / OS-preferred theme before paint to avoid a flash. */
+      (function () {
+        try {
+          var t = localStorage.getItem("oh:theme");
+          if (t !== "light" && t !== "dark") {
+            t = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+          }
+          if (t === "dark") document.documentElement.classList.add("dark");
+        } catch (e) {}
+      })();
+    </script>
   </head>
   <body>
-    <main>
-      <h1>Order Helper</h1>
-      <p>The local cart-fill helper is running and serving its API.</p>
-      <p>The interactive UI ships in a later phase; this placeholder is served at <code>/</code> until then.</p>
-    </main>
+    <div id="oh-root"></div>
+    <script src="/assets/app.js"></script>
   </body>
 </html>

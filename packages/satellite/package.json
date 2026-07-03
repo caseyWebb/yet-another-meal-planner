@@ -14,7 +14,9 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "start": "tsx src/cli.ts run"
+    "start": "tsx src/cli.ts run",
+    "build:helper-ui": "node scripts/build-helper-ui.mjs",
+    "check:helper-ui": "node scripts/build-helper-ui.mjs --check"
   },
   "dependencies": {
     "@grocery-agent/contract": "workspace:*",
@@ -24,6 +26,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
+    "esbuild": "^0.28.1",
     "tsx": "^4.19.2",
     "typescript": "^6.0.3",
     "vitest": "^4.1.9"

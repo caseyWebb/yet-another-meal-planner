@@ -11,7 +11,7 @@
 // selected fetch tier reusing one browser, the built-in + operator adapters) into runTick;
 // the pure orchestration lives in scheduler.ts.
 
-import { loadRuntimeContext, type RuntimeContext, type SourceConfig, type ScanStoreConfig } from "./config.js";
+import { loadRuntimeContext, type RuntimeContext, type SourceConfig, type ScanStoreConfig, type SatelliteConfig } from "./config.js";
 import { loadAdapters } from "./adapter.js";
 import { createBrowserTier, selectTier, type FetchTier } from "./fetch.js";
 import { parsePageToRecipe } from "./jsonld.js";
@@ -23,6 +23,7 @@ import { loadSaleAdapters, runScanAdapter, type ScanSdk } from "./sale-adapter.j
 import { loadOrderAdapters } from "./order-adapter.js";
 import { createHelper } from "./helper/server.js";
 import type { PageHandle } from "./helper/drive.js";
+import { DEMO_STORE, DEMO_SESSION, demoFetchImpl, demoAdapterFactory, demoOpenPage } from "./helper/demo.js";
 import { SATELLITE_VERSION } from "./push.js";
 
 /** A plain console logger — structured extras are appended as JSON for grep-ability. */
@@ -298,19 +299,18 @@ function realOpenPage(session: StorageState | null): () => Promise<PageHandle> {
 }
 
 /**
- * `order [<store>] [--host 127.0.0.1] [--port 4319]` — launch the localhost cart-fill helper
+ * `order [<store>] [--host 127.0.0.1] [--port 4319] [--demo]` — launch the localhost cart-fill helper
  * (satellite-order-cart-fill), the FIRST verb that opens a port. Loads the `[[order_stores]]` entry,
  * its operator adapter, and its captured session, then binds the helper server. Binds LOOPBACK by
  * default; a `--host` other than loopback is an explicit LAN opt-in (warned). The helper fills the
  * cart and stops at review — the human completes checkout in the store's own page.
+ *
+ * `--demo` (or `OH_DEMO=1`) serves canned fixtures through the helper's existing injection seams —
+ * no Worker, no real store, no browser — so the whole UI can be walked offline (QA + operator
+ * preview). The real drive path is untouched; only the injected deps differ.
  */
 async function cmdOrder(rest: string[]): Promise<void> {
-  const ctx = loadRuntimeContext();
-  const orderStores = ctx.config.order_stores ?? [];
-  if (orderStores.length === 0) {
-    console.error("no [[order_stores]] configured — declare one (store + adapter) to run the cart-fill helper");
-    process.exit(1);
-  }
+  const demo = rest.includes("--demo") || process.env.OH_DEMO === "1";
 
   let host = "127.0.0.1";
   let port = 4319;
@@ -319,42 +319,71 @@ async function cmdOrder(rest: string[]): Promise<void> {
     const arg = rest[i];
     if (arg === "--host") host = rest[++i] ?? host;
     else if (arg === "--port") port = parseInt(rest[++i] ?? "", 10) || port;
+    else if (arg === "--demo") continue;
     else if (!arg.startsWith("--")) storeSlug = arg;
   }
 
-  const store = storeSlug ? orderStores.find((s) => s.store === storeSlug) : orderStores[0];
-  if (!store) {
-    console.error(`unknown order store "${storeSlug}". configured: ${orderStores.map((s) => s.store).join(", ")}`);
-    process.exit(1);
-  }
-
-  const adapters = await loadOrderAdapters(ctx.config);
-  const adapterFactory = adapters[store.adapter];
-  if (!adapterFactory) {
-    log.warn(`no order adapter "${store.adapter}" in adapters_dir — Refresh works, but Fill will fail until you add it`, {
-      store: store.store,
-      adapters_dir: ctx.config.adapters_dir,
-    });
-  }
-  const session = loadSession(ctx.configDir, store.store);
-  if (!session) {
-    log.warn(`no captured session for "${store.store}" — run: grocery-satellite login ${store.store}`);
-  }
   const loopback = host === "127.0.0.1" || host === "localhost" || host === "::1";
   if (!loopback) {
     log.warn(`binding to ${host} exposes the helper on your LAN — anyone on the network with the session token can drive a fill`);
   }
 
-  const helper = createHelper({
-    store,
-    config: ctx.config,
-    connectorUrl: ctx.config.connector_url,
-    ingestKey: ctx.ingestKey,
-    session,
-    adapterFactory,
-    openPage: realOpenPage(session),
-    log,
-  });
+  let helper: ReturnType<typeof createHelper>;
+  let storeLabel: string;
+
+  if (demo) {
+    log.info("starting the Order Helper in DEMO mode — canned fixtures, no Worker and no real store");
+    const config: SatelliteConfig = { connector_url: "http://demo.local", sources: [], order_stores: [DEMO_STORE] };
+    storeLabel = `${DEMO_STORE.store} (demo)`;
+    helper = createHelper({
+      store: DEMO_STORE,
+      config,
+      connectorUrl: config.connector_url,
+      ingestKey: "demo-ingest-key",
+      session: DEMO_SESSION,
+      adapterFactory: demoAdapterFactory,
+      openPage: demoOpenPage,
+      fetchImpl: demoFetchImpl,
+      clientOptions: { baseDelayMs: 0, maxAttempts: 1 },
+      log,
+    });
+  } else {
+    const ctx = loadRuntimeContext();
+    const orderStores = ctx.config.order_stores ?? [];
+    if (orderStores.length === 0) {
+      console.error("no [[order_stores]] configured — declare one (store + adapter) to run the cart-fill helper (or pass --demo to preview the UI)");
+      process.exit(1);
+    }
+    const store = storeSlug ? orderStores.find((s) => s.store === storeSlug) : orderStores[0];
+    if (!store) {
+      console.error(`unknown order store "${storeSlug}". configured: ${orderStores.map((s) => s.store).join(", ")}`);
+      process.exit(1);
+    }
+    const adapters = await loadOrderAdapters(ctx.config);
+    const adapterFactory = adapters[store.adapter];
+    if (!adapterFactory) {
+      log.warn(`no order adapter "${store.adapter}" in adapters_dir — Refresh works, but Fill will fail until you add it`, {
+        store: store.store,
+        adapters_dir: ctx.config.adapters_dir,
+      });
+    }
+    const session = loadSession(ctx.configDir, store.store);
+    if (!session) {
+      log.warn(`no captured session for "${store.store}" — run: grocery-satellite login ${store.store}`);
+    }
+    storeLabel = store.store;
+    helper = createHelper({
+      store,
+      config: ctx.config,
+      connectorUrl: ctx.config.connector_url,
+      ingestKey: ctx.ingestKey,
+      session,
+      adapterFactory,
+      openPage: realOpenPage(session),
+      log,
+    });
+  }
+
   const { url } = await helper.listen(host, port);
   // On Ctrl-C / termination, close the helper — which stops any open drive and closes its headful
   // browser page — before exiting, so a fill in progress never leaves an orphaned browser behind.
@@ -372,7 +401,7 @@ async function cmdOrder(rest: string[]): Promise<void> {
   process.on("SIGINT", () => void shutdown());
   process.on("SIGTERM", () => void shutdown());
   console.log("");
-  console.log(`  Order helper for "${store.store}" is running.`);
+  console.log(`  Order helper for "${storeLabel}" is running.`);
   console.log(`  Open:  ${url}`);
   console.log(`  Token: ${helper.sessionToken}`);
   console.log("");
@@ -404,7 +433,7 @@ function usage(): never {
       "  login <source>                    headful browser to capture + save the source's session",
       "  cookie-import <source> <file>     import an exported storageState JSON as the source's session",
       "  backfill <source>                 discover + push the whole archive for one source",
-      "  order [<store>] [--host h] [--port n]  launch the localhost cart-fill helper (opens a port)",
+      "  order [<store>] [--host h] [--port n] [--demo]  launch the localhost cart-fill helper (--demo = canned fixtures)",
     ].join("\n"),
   );
   process.exit(1);
