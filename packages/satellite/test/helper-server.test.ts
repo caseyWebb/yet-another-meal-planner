@@ -341,4 +341,50 @@ describe("helper server — drive lifecycle (browser stays open for checkout, no
       await helper.close();
     }
   });
+
+  it("two concurrent /api/fill against a terminal drive create exactly ONE new drive (no orphaned browser)", async () => {
+    const { helper, pages } = buildLifecycle();
+    const { url } = await helper.listen("127.0.0.1", 0);
+    try {
+      await driveToReview(url); // drive is review-ready; pages[0] is the (open) prior page
+      expect(pages).toHaveLength(1);
+      expect(pages[0].close).not.toHaveBeenCalled();
+
+      // Fire two fills without awaiting between them — they race past the terminal-drive check together.
+      const [r1, r2] = await Promise.all([
+        fetch(`${url}/api/fill`, { method: "POST", headers: authedPost, body: "{}" }),
+        fetch(`${url}/api/fill`, { method: "POST", headers: authedPost, body: "{}" }),
+      ]);
+      // Exactly one is accepted (202); the other is rejected drive_in_progress (the synchronous claim).
+      expect([r1.status, r2.status].sort()).toEqual([200, 202]);
+      const bodies = await Promise.all([r1.json(), r2.json()]);
+      const rejected = bodies.find((b) => b.ok === false);
+      expect(rejected?.error.code).toBe("drive_in_progress");
+
+      // Only ONE new drive was created → openPage ran once more (pages[1]); no second Chromium orphaned.
+      expect(pages).toHaveLength(2);
+      // The prior (terminal) drive's page was closed exactly once; the new drive's page stays open.
+      expect(pages[0].close).toHaveBeenCalledTimes(1);
+      expect(pages[1].close).not.toHaveBeenCalled();
+    } finally {
+      await helper.close();
+    }
+  });
+});
+
+describe("helper server — constant-time token comparison", () => {
+  it("rejects an equal-length but wrong session/CSRF token", async () => {
+    await withServer(async (base) => {
+      // Wrong session token, same length as "sess-tok" → 401 (exercises the timingSafeEqual branch).
+      const badSession = await fetch(`${base}/api/session`, { headers: { authorization: "Bearer sess-toX" } });
+      expect(badSession.status).toBe(401);
+      // Valid session but an equal-length wrong CSRF token → 403.
+      const badCsrf = await fetch(`${base}/api/list`, {
+        method: "POST",
+        headers: { ...authed, "content-type": "application/json", "x-oh-csrf": "csrf-toX" },
+        body: "{}",
+      });
+      expect(badCsrf.status).toBe(403);
+    });
+  });
 });

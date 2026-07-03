@@ -256,6 +256,9 @@ export class Drive {
    * by `stop()` / a superseding fill / server shutdown.
    */
   async run(deps: DriveDeps, lines: OrderLine[]): Promise<void> {
+    // Stopped before we even started (a concurrent stop/refresh in the fire-and-forget window) — don't
+    // open a browser for a drive that's already been superseded.
+    if (this.cancelled) return;
     for (const line of lines) this.emit({ type: "item", item_id: line.item_id, state: "pending" });
 
     let handle: PageHandle;
@@ -266,6 +269,12 @@ export class Drive {
       return;
     }
     this.handle = handle;
+    // Stopped while the page was opening — close it now rather than driving a cancelled fill (stop()
+    // ran when this.handle was still null, so it could not close this page itself).
+    if (this.cancelled) {
+      await this.closePage();
+      return;
+    }
 
     const sdk: OrderSdk = {
       store: deps.store,

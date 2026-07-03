@@ -17,7 +17,7 @@
 // with a top-level `{ ok }` so the UI's fetch handling is uniform.
 
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from "node:http";
-import { randomBytes } from "node:crypto";
+import { randomBytes, timingSafeEqual } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { extname, join, normalize, sep, dirname } from "node:path";
@@ -78,6 +78,19 @@ const CONTENT_TYPES: Record<string, string> = {
   ".ico": "image/x-icon",
   ".woff2": "font/woff2",
 };
+
+/**
+ * Constant-time secret comparison for the session / CSRF tokens. An unequal length returns false
+ * WITHOUT calling `timingSafeEqual` (which throws on a length mismatch — so length is never leaked via
+ * a throw), and equal-length inputs are compared without short-circuiting on the first differing byte.
+ */
+function safeEqual(provided: string | undefined, expected: string): boolean {
+  if (typeof provided !== "string") return false;
+  const a = Buffer.from(provided);
+  const b = Buffer.from(expected);
+  if (a.length !== b.length) return false;
+  return timingSafeEqual(a, b);
+}
 
 /** Build the helper. Nothing binds a port until `listen`. */
 export function createHelper(deps: HelperDeps): Helper {
@@ -144,11 +157,11 @@ export function createHelper(deps: HelperDeps): Helper {
     return undefined;
   }
   function hasSession(req: IncomingMessage): boolean {
-    return bearerToken(req) === sessionToken || cookie(req, "oh_session") === sessionToken;
+    return safeEqual(bearerToken(req), sessionToken) || safeEqual(cookie(req, "oh_session"), sessionToken);
   }
   function hasCsrf(req: IncomingMessage): boolean {
     const h = req.headers["x-oh-csrf"];
-    return typeof h === "string" && h === csrfToken;
+    return typeof h === "string" && safeEqual(h, csrfToken);
   }
 
   // --- view helpers ---------------------------------------------------------------------------------
@@ -227,7 +240,7 @@ export function createHelper(deps: HelperDeps): Helper {
       return;
     }
     const provided = typeof (body as { token?: unknown })?.token === "string" ? (body as { token: string }).token : bearerToken(req);
-    if (provided !== sessionToken) {
+    if (!safeEqual(provided, sessionToken)) {
       apiError(res, 401, "unauthorized", "invalid session token");
       return;
     }
@@ -275,13 +288,18 @@ export function createHelper(deps: HelperDeps): Helper {
       sendJson(res, 200, { ok: false, error: { code: "drive_in_progress", message: "a fill is already running" } });
       return;
     }
-    // A terminal (review-ready / cancelled / error) drive CAN be superseded — close its page first so a
-    // completed-but-not-checked-out or abandoned fill never leaks the headful browser.
-    if (drive) await drive.stop();
+    // CLAIM THE SLOT SYNCHRONOUSLY — before any await. A new Drive is `phase: "running"` by default, so a
+    // concurrent second POST /api/fill now sees THIS drive as running and is rejected `drive_in_progress`,
+    // instead of both racing past the terminal-drive check and each opening a headful browser (orphaning
+    // one). The prior terminal drive is still superseded — its page is closed via `previous.stop()`.
+    const previous = drive;
     const d = new Drive(`drive_${randomBytes(6).toString("hex")}`);
     drive = d;
+    if (previous) await previous.stop();
     const adapterFactory = deps.adapterFactory;
-    // Fire-and-forget: return 202 immediately; progress streams over SSE / the status route.
+    // Fire-and-forget: return 202 immediately; progress streams over SSE / the status route. (If a
+    // concurrent /api/list or /api/fill/stop cancelled `d` during the await above, `run` closes the page
+    // and bails on its cancelled guard rather than driving a superseded fill.)
     void d.run({ store: deps.store, config: deps.config, session: deps.session, adapterFactory, openPage: deps.openPage, log: deps.log }, orderList.items);
     sendJson(res, 202, { ok: true, drive_id: d.id });
   }
