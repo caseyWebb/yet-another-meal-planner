@@ -33,7 +33,7 @@ The satellite SHALL communicate with the Worker over **outbound** connections on
 
 ### Requirement: The push wire contract is capability-tagged with observation items as a discriminated union
 
-The push payload SHALL be a **capability-tagged batch envelope** carrying the reported `capability`, the human-readable `source` provenance, the machine's `satellite_version`, the targeted `contract_version`, and an array of **observation items**. The observation items SHALL be a **discriminated union keyed by an item `kind`**: `kind: "recipe"` for `recipe-scrape` (functional recipe facts) and `kind: "sale"` for `sale-scan` (raw store/product/`{ regular, promo }` price facts), so a later item kind can be added without breaking a consumer that handles only the existing kinds. The `contract_version` SHALL be `"v2"`. The batch envelope SHALL carry no more than `MAX_BATCH_ITEMS` observation items. The wire contract SHALL be defined once in the shared, runtime-agnostic contract package that both the Worker and the satellite import, so the shape can never drift between the two runtimes.
+The push payload SHALL be a **capability-tagged batch envelope** carrying the reported `capability`, the human-readable `source` provenance, the machine's `satellite_version`, the targeted `contract_version`, and an array of **observation items**. The observation items SHALL be a **discriminated union keyed by an item `kind`**: `kind: "recipe"` for `recipe-scrape` (functional recipe facts), `kind: "sale"` for `sale-scan` (raw store/product/`{ regular, promo }` price facts), and `kind: "order"` for `order-fill` (a per-item cart-fill disposition — `carted`/`substituted`/`unavailable`, with the matched or substitute store product — keyed to the canonical ingredient id the pull-list carried), so a later item kind can be added without breaking a consumer that handles only the existing kinds. An `order` observation is delivered over the order-receipt endpoint rather than the capability-tagged push batch, so the batch envelope's `capability` enumeration is unchanged by it (as `sale` is delivered over the pull channel, not the push path). The `contract_version` SHALL be `"v2"`. The batch envelope SHALL carry no more than `MAX_BATCH_ITEMS` observation items. The wire contract SHALL be defined once in the shared, runtime-agnostic contract package that both the Worker and the satellite import, so the shape can never drift between the two runtimes.
 
 #### Scenario: A v2 batch is a capability-tagged discriminated union
 
@@ -44,6 +44,11 @@ The push payload SHALL be a **capability-tagged batch envelope** carrying the re
 
 - **WHEN** a satellite reports a `sale` observation
 - **THEN** it is a `{ kind: "sale", store, locationId, productId, description, regular, promo, ... }` member of the same discriminated union, validated against the shared contract, and a consumer that handles only `recipe` continues to validate and process `recipe` batches unchanged
+
+#### Scenario: An order observation is a defined member of the union
+
+- **WHEN** a satellite reports an `order` observation on the receipt endpoint
+- **THEN** it is a `{ kind: "order", item_id, disposition, product? }` member of the same discriminated union, validated against the shared contract, and a consumer that handles only `recipe`/`sale` is unaffected
 
 #### Scenario: A new observation kind does not break existing consumers
 
@@ -99,12 +104,17 @@ The Worker SHALL trust a satellite's **outputs only after validation** — a len
 
 ### Requirement: Irreversible actions stay human-gated against ground truth
 
-No satellite report SHALL, by itself, cause an **irreversible action**. Any irreversible action derived from satellite data SHALL remain gated on a **human verifying the ground truth** (e.g. the store's own UI) before it commits. This requirement is forward-looking — it is realized fully by a later capability that stops short of the irreversible step (an order capability that fills a cart but never completes checkout) — and it SHALL bind every capability: a capability MAY observe and prepare, but the irreversible commit stays with a human.
+No satellite report SHALL, by itself, cause an **irreversible action**. Any irreversible action derived from satellite data SHALL remain gated on a **human verifying the ground truth** (e.g. the store's own UI) before it commits. This requirement is **realized by the `order-fill` capability**, which stops short of the irreversible step — it fills a store cart but never completes checkout — and it SHALL bind every capability: a capability MAY observe and prepare, but the irreversible commit stays with a human.
 
 #### Scenario: A satellite cannot commit an irreversible action alone
 
 - **WHEN** satellite data would drive an irreversible action
 - **THEN** the action is not committed by the satellite or automatically by the Worker; it is prepared and left for a human to verify against ground truth and complete
+
+#### Scenario: Cart-fill prepares but does not commit
+
+- **WHEN** the order-fill capability fills a store cart
+- **THEN** it stops at the store's review page and the purchase is completed by the human in the store's own UI, so no satellite report alone commits an order
 
 ### Requirement: Source adapters are a plugin model over a shared SDK
 
@@ -181,9 +191,9 @@ The satellite SHALL provide operator verbs — at minimum `login` (capture a ses
 - **WHEN** the operator runs the container's `run` verb with the config/session volume mounted and the ingest key in the environment
 - **THEN** the satellite polls its configured sources on schedule and pushes batches to the Worker
 
-### Requirement: The satellite declares its capabilities; recipe-scrape and sale-scan are defined
+### Requirement: The satellite declares its capabilities; recipe-scrape, sale-scan, and order-fill are defined
 
-A satellite SHALL declare one or more **capabilities** it runs, and every push or claim SHALL carry the `capability` it reports/claims under. Two capabilities are defined: `recipe-scrape` (extract functional recipe facts from an authenticated source, delivered by the satellite **pushing** observations) and `sale-scan` (observe in-store/loyalty sale prices at a store the Worker has no API for, delivered by the satellite **claiming** operator-scope work over the pull channel and reporting `sale` observations). The capability set SHALL remain a closed, extensible enumeration so a later capability can be added without redefining the envelope. The Worker SHALL reject a batch whose declared `capability` it does not implement, and the pull channel SHALL hand a satellite only task kinds matching its declared capabilities. Delivery is **per-capability**: recipe-scrape is the self-directed **push**, and sale-scan is Worker-directed **pull** — so a `sale` observation SHALL be accepted only over the pull channel as a claimed `sale-scan` task's result, and a `sale` item arriving on the `/admin/api/ingest` push path SHALL be rejected (its being a valid member of the observation union governs only its wire shape, not that the push endpoint lands it).
+A satellite SHALL declare one or more **capabilities** it runs, and every push or claim SHALL carry the `capability` it reports/claims under. **Three** capabilities are defined: `recipe-scrape` (extract functional recipe facts from an authenticated source, delivered by the satellite **pushing** observations), `sale-scan` (observe in-store/loyalty sale prices at a store the Worker has no API for, delivered by the satellite **claiming** operator-scope work over the pull channel and reporting `sale` observations), and `order-fill` (fill the cart at a store the Worker has no API for, delivered by the satellite's local helper making **direct** tenant-scoped request/response calls — a pull-list request and a receipt post — neither a push batch nor a claimed task). The capability set SHALL remain a closed, extensible enumeration so a later capability can be added without redefining the envelope. The Worker SHALL reject a batch whose declared `capability` it does not implement, and the pull channel SHALL hand a satellite only task kinds matching its declared capabilities. Delivery is **per-capability**: recipe-scrape is the self-directed **push**, sale-scan is Worker-directed **pull**, and order-fill is human-directed **direct request/response** (it carries no capability-tagged batch envelope and claims no task; its two endpoints are authed by the tenant-bound ingest key). So a `sale` observation SHALL be accepted only over the pull channel as a claimed `sale-scan` task's result, a `sale` item arriving on the `/admin/api/ingest` push path SHALL be rejected, and an `order` observation SHALL be accepted only on the order-receipt endpoint against an issued order-list (rejected on the push and pull-results paths).
 
 #### Scenario: A recipe-scrape batch declares its capability
 
@@ -199,6 +209,16 @@ A satellite SHALL declare one or more **capabilities** it runs, and every push o
 
 - **WHEN** a satellite that declares `sale-scan` claims a `sale-scan` task and reports its scan
 - **THEN** it claims and reports under the `sale-scan` capability, and the Worker processes the `sale` observations it returns
+
+#### Scenario: An order-fill satellite drives cart-fill via direct request/response
+
+- **WHEN** a satellite that declares `order-fill` fills a tenant's store cart
+- **THEN** its local helper requests the pull-list and posts the receipt over the two direct `/satellite/order/*` endpoints (authed by the tenant-bound ingest key), carrying no capability-tagged batch envelope and claiming no task
+
+#### Scenario: An order observation off the receipt endpoint is rejected
+
+- **WHEN** an `order` observation arrives on the `/admin/api/ingest` push path or as a pull-channel result
+- **THEN** the Worker rejects it, because order-fill is served only by the order-receipt endpoint against an issued order-list
 
 #### Scenario: An unknown capability is rejected
 
