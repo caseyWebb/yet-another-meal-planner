@@ -164,6 +164,7 @@ export async function handleSatelliteResults(request: Request, env: Env, now: nu
       if (sp.ok) {
         intake = await intakeObservations(env, req.observations ?? [], `satellite-pull:${task.kind}`, key.id, now, {
           saleTask: { store: sp.value.store, locationId: sp.value.locationId },
+          keyTenant: key.tenant,
         });
         // Broken-adapter signal: items reported but ZERO survived validation → the store converged
         // to EMPTY. Surface it (an operator-visible marker + a job-style log line) rather than
@@ -180,7 +181,7 @@ export async function handleSatelliteResults(request: Request, env: Env, now: nu
         console.warn("[satellite] " + JSON.stringify({ event: "sale_scan_bad_payload", task_id: task.id, error: sp.error }));
       }
     } else if (req.observations && req.observations.length > 0) {
-      intake = await intakeObservations(env, req.observations, `satellite-pull:${task.kind}`, key.id, now);
+      intake = await intakeObservations(env, req.observations, `satellite-pull:${task.kind}`, key.id, now, { keyTenant: key.tenant });
     }
     const resulting = await completeTask(env, task.id, now); // null when already terminal (idempotent no-op)
     const response: ResultResponse = {
@@ -315,7 +316,7 @@ export async function handleOrderReceipt(request: Request, env: Env, now: number
 
     // Land the observations through the SHARED intake with the order-list as authoritative context.
     const orderList = { id: row.id, tenant: row.tenant, store: row.store, locationId: row.location_id, itemIds: parseItemIds(row.item_ids) };
-    const intake = await intakeObservations(env, req.observations ?? [], `satellite-order:${row.id}`, key.id, now, { orderList });
+    const intake = await intakeObservations(env, req.observations ?? [], `satellite-order:${row.id}`, key.id, now, { orderList, keyTenant: key.tenant });
 
     // Optional mark-placed: advance the issued lines that are (now) `in_cart` to `ordered`. Read a
     // FRESH index so it reflects any `in_cart` advance the intake just performed in this same call.

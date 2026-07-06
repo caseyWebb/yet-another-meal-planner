@@ -38,6 +38,7 @@ import { handleSource } from "./source.js";
 import { handleIngest } from "./ingest.js";
 import { handleSatelliteClaim, handleSatelliteResults, handleOrderList, handleOrderReceipt } from "./satellite.js";
 import { pruneStaleOrderLists, ORDER_LIST_RETENTION_MS } from "./order-lists-db.js";
+import { pruneSatelliteRejections } from "./satellite-audit-db.js";
 import adminApp from "./admin/app.js";
 
 /**
@@ -201,6 +202,9 @@ export default {
     const corpus = createR2CorpusStore(env.CORPUS);
     // Load operator config once; used for flyer warm pacing and sweep (below).
     const operatorConfig = await loadOperatorConfig(env).catch(() => null);
+    // The sparse-override discovery config (merged over DEFAULT_CONFIG) — loaded once and reused by
+    // the phase-1 satellite-rejection prune (its retention knob) AND the phase-4 sweep below.
+    const sweepConfig = await loadDiscoveryConfig(env);
     // Phase 1: the facet classify pass (derives the descriptive facets the projection merges)
     // + the flyer warm (independent of the index), in parallel. Classify runs BEFORE the
     // projection so the projection materializes the EFFECTIVE facets (recipe-facet-derivation).
@@ -249,6 +253,10 @@ export default {
       // abandon leaves it forever. Delete `issued` rows past the retention window (received rows are
       // kept as the audit trail) — the order-fill analog of sale-scan-plan's terminal-task prune.
       pruneStaleOrderLists(env, Date.now() - ORDER_LIST_RETENTION_MS),
+      // Rolling-prune the satellite rejection ledger (satellite-source-audit): a rejection is a
+      // point-in-time event, so it ages out on the operator's log-retention window — the same knob
+      // that prunes ingest_pushes. Best-effort tail beside the order-list reap.
+      pruneSatelliteRejections(env, Date.now() - sweepConfig.logRetentionDays * 86_400_000),
     ]);
     // Phase 2: the index projection (merges the fresh classified facets + authored overrides).
     const phase2 = await Promise.allSettled([runProjectionJob(env, buildProjectionDeps(env, corpus))]);
@@ -257,8 +265,7 @@ export default {
     // change-driven (hash gates), so they coexist without competing for the flyer's 50-subrequest cap.
     const phase3 = await Promise.allSettled([runEmbedJob(env, buildEmbedDeps(env)), runNightVibeVectorJob(env)]);
     // Phase 4: the sweep runs after the index + embeddings are fresh (it dedups + matches against
-    // them). Load the operator's stored config (sparse override merged over DEFAULT_CONFIG).
-    const sweepConfig = await loadDiscoveryConfig(env);
+    // them), using the operator's stored config loaded once above.
     const phase4 = await Promise.allSettled([runDiscoverySweepJob(env, buildDiscoveryDeps(env), sweepConfig)]);
     // Phase 5: profile-reconciliation producers — the deterministic signal pass (no model) plus
     // the generative archetype-derivation pass (self-gated to ~daily; names new archetypes on the

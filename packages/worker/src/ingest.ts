@@ -32,6 +32,7 @@ import type { KvStore } from "./kroger-user.js";
 import { validateSale } from "./sale-intake.js";
 import { advanceInCartRows, readGroceryKeyIndex, isoDay } from "./session-db.js";
 import { markOrderListReceived } from "./order-lists-db.js";
+import { appendRejection, bumpAcceptTally, getQuarantine } from "./satellite-audit-db.js";
 import { ToolError } from "./errors.js";
 
 /** Per-key fixed-window rate limit (best-effort, KV-backed; fail-open on a KV error). */
@@ -89,6 +90,13 @@ export interface IntakeOptions {
    * order-receipt-only.
    */
   orderList?: { id: string; tenant: string; store: string; locationId: string | null; itemIds: string[] };
+  /**
+   * The CARRYING ingest key's tenant binding (satellite-source-audit): NULL for an operator-global
+   * key, else the bound tenant. Threaded from the call site so the rejection ledger, the accept-tally,
+   * and the per-source quarantine check all key off the KEY (not the kind) — sale is operator-global,
+   * order tenant-bound, but recipe MAY be either. Absent ⇒ null (an unbound/synthesized origin).
+   */
+  keyTenant?: string | null;
 }
 
 /**
@@ -153,6 +161,44 @@ export async function intakeObservations(
   }
   const seenThisBatch = new Set<string>();
 
+  // --- source-audit setup (satellite-source-audit) ---------------------------------------------
+  // The ledger/tally/quarantine key off the carrying KEY's tenant binding (not the kind): sale is
+  // operator-global, order tenant-bound, recipe MAY be either — so `keyTenant` is threaded in.
+  const keyTenant = options.keyTenant ?? null;
+  // The audit source per arm: recipe → the batch source; sale/order → the store slug (from the
+  // authoritative task/order-list context). Used for the ledger, the accept-tally, and the quarantine
+  // gate. A parse-failed item (no resolved kind) is attributed to the batch's implied kind/source.
+  const saleAuditSource = options.saleTask?.store ?? null;
+  const orderAuditSource = options.orderList?.store ?? null;
+  const batchKind = options.orderList ? "order" : options.saleTask ? "sale" : "recipe";
+  const batchSource = orderAuditSource ?? saleAuditSource ?? origin;
+
+  // Quarantine set (Decision E): loaded ONCE per batch (not per item), keyed {tenant, kind, source}
+  // off THIS key's tenant. A quarantined source's items are rejected before acceptance and ledgered
+  // `origin: worker, reason: "quarantined"`, persisting nothing downstream.
+  const quarantineRows = await getQuarantine(env);
+  const quarantineSet = new Set(quarantineRows.map((q) => `${q.tenant ?? ""} ${q.kind} ${q.source}`));
+  const isQuarantinedArm = (kind: string, source: string | null): boolean =>
+    source != null && quarantineSet.has(`${keyTenant ?? ""} ${kind} ${source}`);
+  const recipeQuarantined = isQuarantinedArm("recipe", origin);
+  const saleQuarantined = isQuarantinedArm("sale", saleAuditSource);
+  const orderQuarantined = isQuarantinedArm("order", orderAuditSource);
+
+  // Append one ledger row for a Worker-side reject (origin: worker). Awaited so a D1 failure surfaces
+  // as the caller's structured storage_error, exactly like the existing intake D1 access.
+  const ledgerReject = (kind: string, source: string, reason: string, provenance: string | null): Promise<void> =>
+    appendRejection(env, { tenant: keyTenant, keyId, kind, source, origin: "worker", reason, provenance }, now);
+
+  // The per-{kind, source} accept-tally accumulator — the uniform rate denominator. Flushed once per
+  // source after the loop (a dedup counts too; last_accepted_at advances only on a real accept).
+  const acceptTally = new Map<string, { kind: string; source: string; accepted: number; deduped: number }>();
+  const tally = (kind: string, source: string, field: "accepted" | "deduped"): void => {
+    const k = `${kind} ${source}`;
+    const e = acceptTally.get(k) ?? { kind, source, accepted: 0, deduped: 0 };
+    e[field]++;
+    acceptTally.set(k, e);
+  };
+
   // Sale intake is TASK-SCOPED (Decision 6): the rollup identity is the CLAIMED `sale-scan` task's
   // `(store, locationId)`, authoritative over anything the observation claims. Resolve it once, up
   // front. The store is normalized (trim + lowercase) BEFORE the KROGER-namespace guard so a
@@ -170,7 +216,9 @@ export async function intakeObservations(
   // way a fresh one does, rather than leaving stale sales. No task store (the push path) or a
   // forbidden (kroger) store → no bucket → no write at all.
   const saleByStore = new Map<string, { store: string; locationId: string; items: Map<string, FlyerItem> }>();
-  if (saleStore && saleLocation && !saleStoreForbidden) {
+  // A quarantined sale source is NOT seeded — so its all-rejected scan never REPLACEs the store's
+  // rollup (a quarantine must land nothing, not zero out the existing sales).
+  if (saleStore && saleLocation && !saleStoreForbidden && !saleQuarantined) {
     saleByStore.set(salePairKey(saleStore, saleLocation), { store: saleStore, locationId: saleLocation, items: new Map() });
   }
 
@@ -188,6 +236,8 @@ export async function intakeObservations(
     if (!parsed.ok) {
       const src = typeof (raw as { source?: unknown })?.source === "string" ? (raw as { source: string }).source : "";
       results.push({ disposition: "rejected", source: src, reason: parsed.error });
+      // A parse-failed item has no resolved kind — attribute it to the batch's implied kind/source.
+      await ledgerReject(batchKind, batchSource, parsed.error, src || null);
       rejected++;
       continue;
     }
@@ -197,29 +247,47 @@ export async function intakeObservations(
     if (item.kind === "sale") {
       // Provenance echoed in the ItemResult.source slot: the product url when reported, else its id.
       const provenance = item.url ?? item.productId;
+      // The audit source is the TASK's store (when present); on the no-task push path it degrades to
+      // the observation's claimed store so the reject is still ledgered against something legible.
+      const saleSrc = saleAuditSource ?? item.store;
+      // Quarantine gate (Decision E): a quarantined sale source is rejected before acceptance; the
+      // bucket was never seeded, so no rollup REPLACE runs and nothing lands.
+      if (saleQuarantined) {
+        results.push({ disposition: "rejected", source: provenance, reason: "quarantined" });
+        await ledgerReject("sale", saleSrc, "quarantined", provenance);
+        rejected++;
+        continue;
+      }
       // Pull-channel-only: a `sale` is valid ONLY as a claimed sale-scan task's result. On the push
       // path (`/admin/api/ingest`) there is no task context, so reject it (recipe items unaffected).
       if (!saleTask || saleStore === null || saleLocation === null) {
-        results.push({ disposition: "rejected", source: provenance, reason: "sale observation requires a claimed sale-scan task (pull channel only)" });
+        const reason = "sale observation requires a claimed sale-scan task (pull channel only)";
+        results.push({ disposition: "rejected", source: provenance, reason });
+        await ledgerReject("sale", saleSrc, reason, provenance);
         rejected++;
         continue;
       }
       // Defense in depth: never write the Worker-owned `kroger` namespace, even for a forged/buggy task.
       if (saleStoreForbidden) {
-        results.push({ disposition: "rejected", source: provenance, reason: "sale intake cannot write the kroger namespace" });
+        const reason = "sale intake cannot write the kroger namespace";
+        results.push({ disposition: "rejected", source: provenance, reason });
+        await ledgerReject("sale", saleSrc, reason, provenance);
         rejected++;
         continue;
       }
       // The WRITE identity is the TASK's; an observation reporting a DIFFERENT store/location under
       // this task (a satellite scanning the wrong store) is rejected: it cannot redirect the write.
       if (item.store.trim().toLowerCase() !== saleStore || item.locationId.trim() !== saleLocation) {
-        results.push({ disposition: "rejected", source: provenance, reason: `observation store/location (${item.store}/${item.locationId}) does not match the claimed sale-scan task` });
+        const reason = `observation store/location (${item.store}/${item.locationId}) does not match the claimed sale-scan task`;
+        results.push({ disposition: "rejected", source: provenance, reason });
+        await ledgerReject("sale", saleSrc, reason, provenance);
         rejected++;
         continue;
       }
       const v = validateSale(item);
       if (!v.ok) {
         results.push({ disposition: "rejected", source: provenance, reason: v.reason });
+        await ledgerReject("sale", saleSrc, v.reason, provenance);
         rejected++;
         continue;
       }
@@ -228,11 +296,13 @@ export async function intakeObservations(
       if (bucket.items.has(v.item.sku)) {
         // Arrival dedup by productId within the store — a double-reported product lands once.
         results.push({ disposition: "deduped", source: provenance });
+        tally("sale", saleSrc, "deduped");
         deduped++;
         continue;
       }
       bucket.items.set(v.item.sku, v.item);
       results.push({ disposition: "accepted", source: provenance });
+      tally("sale", saleSrc, "accepted");
       accepted++;
       continue;
     }
@@ -241,23 +311,39 @@ export async function intakeObservations(
     if (item.kind === "order") {
       // Provenance echoed in the ItemResult.source slot: the product url/id when reported, else the item_id.
       const provenance = item.product?.url ?? item.product?.productId ?? item.item_id;
+      // The audit source is the order-list's store (when present); degrades to a legible sentinel on
+      // the no-list path (an order pushed to the wrong endpoint has no authoritative store).
+      const orderSrc = orderAuditSource ?? "unknown";
+      // Quarantine gate (Decision E): a quarantined order source is rejected before acceptance; no
+      // line advances and the order-list is not marked received (nothing lands downstream).
+      if (orderQuarantined) {
+        results.push({ disposition: "rejected", source: item.item_id, reason: "quarantined" });
+        await ledgerReject("order", orderSrc, "quarantined", provenance);
+        rejected++;
+        continue;
+      }
       // Order-receipt-only: an `order` is valid ONLY against an issued order-list. On the push path
       // (`/admin/api/ingest`) or the pull-results path there is no order-list context, so reject it.
       if (!orderList || !orderIssuedIds) {
-        results.push({ disposition: "rejected", source: item.item_id, reason: "order observation requires an issued order-list (order-receipt endpoint only)" });
+        const reason = "order observation requires an issued order-list (order-receipt endpoint only)";
+        results.push({ disposition: "rejected", source: item.item_id, reason });
+        await ledgerReject("order", orderSrc, reason, provenance);
         rejected++;
         continue;
       }
       // Issued-set membership: an item_id the Worker did not issue for this list is rejected per-item
       // (a receipt cannot invent an item or graft in another list's id).
       if (!orderIssuedIds.has(item.item_id)) {
-        results.push({ disposition: "rejected", source: item.item_id, reason: "item_id is not in the issued order-list" });
+        const reason = "item_id is not in the issued order-list";
+        results.push({ disposition: "rejected", source: item.item_id, reason });
+        await ledgerReject("order", orderSrc, reason, provenance);
         rejected++;
         continue;
       }
       // Arrival dedup by item_id within the receipt — a double-reported line lands once.
       if (orderSeenIds.has(item.item_id)) {
         results.push({ disposition: "deduped", source: provenance });
+        tally("order", orderSrc, "deduped");
         deduped++;
         continue;
       }
@@ -266,19 +352,31 @@ export async function intakeObservations(
       // unavailable collects nothing (the line stays active to retry on the next order).
       if (item.disposition === "carted" || item.disposition === "substituted") orderCartedIds.push(item.item_id);
       results.push({ disposition: "accepted", source: provenance });
+      tally("order", orderSrc, "accepted");
       accepted++;
       continue;
     }
 
-    // --- recipe arm: dedup on canonical URL → insert ingest_candidates (unchanged) ---
+    // --- recipe arm: dedup on canonical URL → insert ingest_candidates ---
+    // Quarantine gate (Decision E): a quarantined recipe source is rejected before acceptance; no
+    // candidate is inboxed.
+    if (recipeQuarantined) {
+      results.push({ disposition: "rejected", source: item.source, reason: "quarantined" });
+      await ledgerReject("recipe", origin, "quarantined", item.source);
+      rejected++;
+      continue;
+    }
     const url = canonicalizeUrl(item.source);
     if (!url) {
-      results.push({ disposition: "rejected", source: item.source, reason: "unresolvable source url" });
+      const reason = "unresolvable source url";
+      results.push({ disposition: "rejected", source: item.source, reason });
+      await ledgerReject("recipe", origin, reason, item.source);
       rejected++;
       continue;
     }
     if (corpusUrls.has(url) || rejections.has(url) || settled.has(url) || inflight.has(url) || seenThisBatch.has(url)) {
       results.push({ disposition: "deduped", source: url });
+      tally("recipe", origin, "deduped");
       deduped++;
       continue;
     }
@@ -300,10 +398,12 @@ export async function intakeObservations(
     seenThisBatch.add(url);
     if (written) {
       results.push({ disposition: "accepted", source: url });
+      tally("recipe", origin, "accepted");
       accepted++;
     } else {
       // A concurrent insert won the UNIQUE(url) race — count as deduped, not accepted.
       results.push({ disposition: "deduped", source: url });
+      tally("recipe", origin, "deduped");
       deduped++;
     }
   }
@@ -321,7 +421,7 @@ export async function intakeObservations(
   // `in_cart` via the SAME helper `place_order` uses, keyed by canonical id — but ONLY ids still
   // on the list as `active`, so a stale pull-list can't resurrect a removed line or regress an
   // `ordered`/`in_cart` one. Then mark the order-list `received` (idempotent — a re-post converges).
-  if (orderList) {
+  if (orderList && !orderQuarantined) {
     if (orderCartedIds.length > 0) {
       const idx = await readGroceryKeyIndex(env, orderList.tenant);
       // Pass each active row's DISPLAY name (not the id) so `advanceInCartRows`' resolve keys it to
@@ -334,6 +434,15 @@ export async function intakeObservations(
       if (advanceLines.length > 0) await advanceInCartRows(env, orderList.tenant, advanceLines, isoDay(now));
     }
     await markOrderListReceived(env, orderList.id, now);
+  }
+
+  // Flush the accept-tally (satellite-source-audit): one upsert per source with this batch's
+  // accepted/deduped counts, so B's rate math has a uniform per-source denominator across all three
+  // arms. Left untouched: `ingest_pushes` (Decision B — the recipe recency view keeps its own log).
+  for (const e of acceptTally.values()) {
+    if (e.accepted > 0 || e.deduped > 0) {
+      await bumpAcceptTally(env, { tenant: keyTenant, kind: e.kind, source: e.source, accepted: e.accepted, deduped: e.deduped }, now);
+    }
   }
 
   return { received: observations.length, accepted, deduped, rejected, results };
@@ -390,7 +499,7 @@ export async function handleIngest(request: Request, env: Env, now: number = Dat
   // goes through `db()`, which THROWS on a D1 failure; wrap it so a transient db blip returns a
   // structured storage_error, not a bare 500 (this endpoint is wired raw in index.ts).
   try {
-  const response = await intakeObservations(env, batch.observations, batch.source, key.id, now);
+  const response = await intakeObservations(env, batch.observations, batch.source, key.id, now, { keyTenant: key.tenant });
   // Record the push for the admin liveness/recent-pushes view (best-effort).
   await recordIngestPush(
     env,
