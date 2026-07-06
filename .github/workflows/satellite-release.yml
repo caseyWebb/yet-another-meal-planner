@@ -101,7 +101,7 @@ jobs:
       - name: Set up Docker Buildx
         if: steps.guard.outputs.already == 'false'
         # A Buildx builder that can emit a multi-arch manifest list in one push.
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Log in to GHCR
         if: steps.guard.outputs.already == 'false'
