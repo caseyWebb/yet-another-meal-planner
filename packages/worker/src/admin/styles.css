@@ -741,6 +741,91 @@
   .ig-fstep { flex: 1 1 8rem; background: #fff; border: 1px solid var(--border); border-radius: var(--radius-lg); padding: .6rem .75rem; }
   .ig-fval { font-size: 1.4rem; font-weight: 600; font-variant-numeric: tabular-nums; }
   .ig-down { display: flex; flex-wrap: wrap; gap: .35rem; }
+
+  /* ── Source-health audit (satellite-source-audit) ── */
+  /* Stat-tile tones: amber "degrading", red "quarantined" (non-neutral counts). */
+  .stat-card.stat-warn { border-color: color-mix(in oklch, #d4a72c 55%, var(--border)); background: color-mix(in oklch, #d4a72c 7%, #fff); }
+  .stat-card.stat-warn .stat-value { color: #9a6700; }
+  .stat-card.stat-bad { border-color: color-mix(in oklch, var(--destructive) 45%, var(--border)); background: color-mix(in oklch, var(--destructive) 6%, #fff); }
+  .stat-card.stat-bad .stat-value { color: #cf222e; }
+
+  /* Liveness + audit hero: one wide card per satellite. */
+  .ig-sat-list { display: flex; flex-direction: column; gap: .75rem; }
+  .ig-live-card.wide { padding: 0; gap: 0; }
+  .ig-live-card.wide .ig-live-head { padding: .8rem .9rem; }
+  .ig-live-id { display: flex; flex-direction: column; gap: .1rem; }
+  .ig-live-headright { display: flex; align-items: center; gap: .6rem; }
+  .ig-live-ago { font-size: .85rem; font-variant-numeric: tabular-nums; }
+  .ig-live-ago.none { color: var(--muted-foreground); }
+  .ig-live-card.wide .ig-live-foot { padding: .55rem .9rem; }
+  .ig-skew { color: #9a6700; font-weight: 500; display: inline-flex; align-items: center; gap: .15rem; }
+
+  /* Per-source rows (expand-in-place). */
+  .ig-srcx-list { display: flex; flex-direction: column; border-top: 1px solid var(--border); }
+  .ig-srcx { border-bottom: 1px solid #f2f2f2; }
+  .ig-srcx:last-child { border-bottom: 0; }
+  .ig-srcx.q-degrading { background: color-mix(in oklch, #d4a72c 5%, transparent); }
+  .ig-srcx.q-quarantined { background: color-mix(in oklch, var(--destructive) 4%, transparent); }
+  .ig-srcx-head { display: flex; align-items: center; gap: .6rem; padding: .55rem .9rem; cursor: pointer; }
+  .ig-srcx-head:hover { background: color-mix(in oklch, var(--muted) 35%, transparent); }
+  .ig-srcx-head:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+  .ig-srcx-name { flex: 0 0 auto; font-weight: 500; font-size: .88rem; min-width: 8rem; }
+  .ig-srcx-meta { flex: 0 0 auto; margin-left: auto; font-variant-numeric: tabular-nums; }
+  .ig-srcx-chev { color: var(--muted-foreground); transition: transform .15s; }
+  .ig-srcx-chev.up { transform: rotate(180deg); }
+
+  /* Quality cell: accept/fail bar + label (recency stays the dot + meta). */
+  .ig-qual { display: inline-flex; align-items: center; gap: .5rem; flex: 1 1 auto; min-width: 0; }
+  .ig-qbar { display: inline-flex; width: 5.5rem; height: .5rem; border-radius: 999px; overflow: hidden; background: color-mix(in oklch, var(--muted) 60%, transparent); flex: 0 0 auto; }
+  .ig-qbar-ok { background: #2da44e; }
+  .ig-qbar-bad { background: #cf222e; }
+  .ig-qbar.held .ig-qbar-ok { background: #b0b0b0; }
+  .ig-qual-lbl { font-size: .76rem; font-weight: 600; font-variant-numeric: tabular-nums; display: inline-flex; align-items: center; gap: .2rem; }
+  .ig-qual-lbl.q-ok { color: #1a7f37; }
+  .ig-qual-lbl.q-warn { color: #9a6700; }
+  .ig-qual-lbl.q-held { color: #cf222e; }
+  .ig-qual-lbl.muted { color: var(--muted-foreground); font-weight: 500; }
+
+  /* Recommendation chip (degrading → the entry point to quarantine). */
+  .ig-rec { display: flex; align-items: center; gap: .55rem; margin: 0 .9rem .6rem; padding: .55rem .7rem; border-radius: var(--radius-lg); background: color-mix(in oklch, #d4a72c 10%, #fff); border: 1px solid color-mix(in oklch, #d4a72c 35%, transparent); }
+  .ig-rec-ico { color: #9a6700; display: inline-flex; flex: 0 0 auto; }
+  .ig-rec-text { font-size: .82rem; flex: 1 1 auto; }
+  .ig-rec-btn { flex: 0 0 auto; display: inline-flex; align-items: center; gap: .3rem; font: inherit; font-size: .78rem; font-weight: 600; padding: .3rem .6rem; border-radius: var(--radius-sm); border: 1px solid color-mix(in oklch, var(--destructive) 40%, transparent); background: #fff; color: #cf222e; cursor: pointer; }
+  .ig-rec-btn:hover { background: color-mix(in oklch, var(--destructive) 8%, #fff); }
+
+  /* Quarantined block (the unmistakable held state; the actor is intentionally not shown). */
+  .ig-quar { display: flex; align-items: center; flex-wrap: wrap; gap: .5rem; margin: 0 .9rem .6rem; padding: .55rem .7rem; border-radius: var(--radius-lg); background: color-mix(in oklch, var(--destructive) 7%, #fff); border: 1px solid color-mix(in oklch, var(--destructive) 30%, transparent); }
+  .ig-quar-badge { display: inline-flex; align-items: center; gap: .3rem; font-size: .74rem; font-weight: 700; text-transform: uppercase; letter-spacing: .03em; color: #cf222e; }
+  .ig-quar-meta { font-size: .8rem; color: var(--muted-foreground); flex: 1 1 auto; }
+  .ig-quar-why { color: #555; }
+  .ig-quar-undo { flex: 0 0 auto; display: inline-flex; align-items: center; gap: .3rem; font: inherit; font-size: .78rem; font-weight: 600; padding: .3rem .6rem; border-radius: var(--radius-sm); border: 1px solid var(--border); background: #fff; cursor: pointer; }
+  .ig-quar-undo:hover { border-color: var(--accent); }
+  .ig-island-pending { display: flex; align-items: center; gap: .35rem; margin: 0 .9rem .6rem; font-size: .8rem; color: var(--muted-foreground); }
+
+  /* Drill-down: the per-source rejection ledger. */
+  .ig-drill { padding: .1rem .9rem .8rem; }
+  .ig-drill-head { display: flex; align-items: baseline; gap: .5rem; margin-bottom: .4rem; flex-wrap: wrap; }
+  .ig-drill-title { font-size: .78rem; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; color: #888; }
+  .ig-rej-list { display: flex; flex-direction: column; gap: .25rem; }
+  .ig-rej { display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; font-size: .8rem; padding: .3rem .4rem; border-radius: var(--radius-sm); background: color-mix(in oklch, var(--muted) 25%, transparent); }
+  .ig-rej-count { font-variant-numeric: tabular-nums; font-weight: 600; min-width: 2.4rem; color: #cf222e; }
+  .ig-rej-reason { font-family: ui-monospace, monospace; font-size: .75rem; padding: .05rem .35rem; border-radius: var(--radius-sm); background: color-mix(in oklch, var(--destructive) 10%, transparent); color: #b1361a; }
+  .ig-rej-reason.rr-quarantined { background: color-mix(in oklch, var(--muted) 55%, transparent); color: #555; }
+  .ig-rej-when { margin-left: auto; }
+
+  /* Origin badge (worker vs local) + provenance (URL = actionable, else a redacted sample). */
+  .ig-origin { display: inline-flex; align-items: center; gap: .2rem; font-size: .68rem; font-weight: 600; padding: .05rem .35rem; border-radius: 999px; }
+  .ig-o-worker { background: color-mix(in oklch, #0969da 12%, transparent); color: #0969da; }
+  .ig-o-local { background: color-mix(in oklch, #d4a72c 16%, transparent); color: #9a6700; }
+  .ig-prov { font-size: .72rem; display: inline-flex; align-items: center; gap: .2rem; min-width: 0; }
+  .ig-prov code { font-size: .72rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 22rem; }
+  .ig-prov-url { color: #0969da; text-decoration: none; }
+  .ig-prov-url:hover { text-decoration: underline; }
+  .ig-prov-sample { color: #555; }
+  .ig-drill-foot { margin-top: .5rem; display: flex; align-items: center; gap: .3rem; flex-wrap: wrap; }
+  .ig-drill-empty { font-size: .82rem; color: var(--muted-foreground); padding: .4rem 0; }
+  .ig-confirm-stat { font-size: .85rem; margin: .5rem 0; }
+
   /* ── Normalization (organic-ingredient-normalization) ── */
   .nz-subnav { margin-bottom: 1.1rem; }
   .nz-filters { align-items: center; }

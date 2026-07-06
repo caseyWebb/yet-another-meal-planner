@@ -1074,6 +1074,67 @@ order observation   { kind: "order", item_id, disposition: "carted"|"substituted
 
 **Receipt reconciliation** (`grocery_list` reused unchanged — no schema change): `carted` and `substituted` lines advance to **`in_cart`** via the **same** `advanceInCartRows` `place_order` uses (keyed by canonical id — a substitute still satisfies the canonical ingredient), but ONLY for ids still on the list as `active`, so a stale pull-list cannot resurrect a removed line or regress an `ordered` one; an `unavailable` line stays `active` to retry on the next order. No line advances past `in_cart` automatically (the satellite stops at the store's review page and never checks out — see `docs/ARCHITECTURE.md`). The optional **mark-placed** re-post (`mark_placed: true`, no new observations) advances the issued `in_cart` lines to **`ordered`** (`advanceOrderedRows`); unused, a line stays `in_cart`, identical to an unconfirmed Kroger cart. Application is **idempotent** — a re-posted receipt converges rather than double-advancing.
 
+## satellite_rejections / satellite_source_stats / satellite_quarantine (D1 tables, shared) — the source-audit
+
+The **sensor-health audit** substrate (satellite-source-audit): a rejection **ledger**, a per-source **accept-tally** (the reliability rate denominator), and a per-source **quarantine flag** (a reversible operator-confirmed Worker-side reject). All three are accessed only through `src/satellite-audit-db.ts` → `src/db.ts` (throw-free → structured `storage_error`). Schema: `migrations/d1/0039_satellite_rejections.sql`. The whole spine starts **empty** and populates from an operator's first reject after deploy (no backfill). The `tenant` column on all three follows the **carrying ingest key's binding** (NULL = operator-global, else the bound tenant) — keyed off the **key**, not the kind (sale is operator-global, order tenant-bound, recipe MAY be either).
+
+**`satellite_rejections`** — an **append-with-rolling-prune LOG** (NOT the DELETE + re-insert idiom of `reconcile_errors`): each rejected observation is a point-in-time event, appended and pruned by **age** (`pruneSatelliteRejections`, wired into `scheduled()`'s phase-1 reap beside `pruneStaleOrderLists`, retention = the operator's `logRetentionDays` — the same knob that prunes `ingest_pushes`). Fed by every Worker-side reject across the three `intakeObservations` arms (`origin: worker`, one row, `count = 1`) — including a quarantined source's dropped observations (`reason: "quarantined"`) — **and** by satellite-reported local rejects (`origin: local`, `count = N`, `reason` = the category, `provenance` = the redacted sample; see the wire field below). Surfaced by the agent-readable `read_satellite_rejections` tool and the admin Satellites page.
+
+```sql
+-- D1 satellite_rejections table. PRIMARY KEY (id). An append-with-rolling-prune LOG.
+id           TEXT     -- uuid  (PK)
+tenant       TEXT     -- the carrying key's tenant binding: NULL = operator-global, else the bound tenant
+key_id       TEXT     -- the ingest key that carried it (NULL for a synthesized origin)
+kind         TEXT     -- 'recipe' | 'sale' | 'order'  NOT NULL
+source       TEXT     -- recipe: the batch/feed source; sale/order: the store slug  NOT NULL
+origin       TEXT     -- 'worker' (rejected at intake) | 'local' (a satellite-reported, pre-aggregated summary)  NOT NULL
+reason       TEXT     -- the reject reason (worker) or the reason-category (local)  NOT NULL
+provenance   TEXT     -- nullable: the offending url / productId / item_id / a redacted local sample
+count        INTEGER  -- 1 for a worker reject; N for a pre-aggregated local-summary entry  NOT NULL DEFAULT 1
+rejected_at  INTEGER  -- epoch ms  NOT NULL
+-- INDEX satellite_rejections_source (kind, source, rejected_at) — per-source most-recent-first reads.
+-- INDEX satellite_rejections_age (rejected_at) — the rolling-prune scan.
+```
+
+**The `local_rejects` wire field (the local-reject reporting path)** — the loudest breakage never reaches a Worker-side-only ledger: the satellite's own validators (`validateSaleEmit`/`validateOrderEmit`/the recipe adapter's contract check) drop a malformed or judgment-smuggling item **before the wire**. So the satellite attaches a compact, **pre-aggregated** local-reject summary to each of its three delivery envelopes — the push batch (`SatelliteBatchSchema` / `POST /admin/api/ingest`), the pull-channel results (`POST /satellite/results`), and the order-receipt (`POST /satellite/order/receipt`) — and the Worker records each entry as one `origin: local` ledger row. The field is defined **once** in `@grocery-agent/contract` and is **additive + OPTIONAL** on all three envelopes, so it keeps `CONTRACT_VERSION: "v2"` (a satellite that omits it is unaffected; an older Worker ignores an unknown field):
+
+```jsonc
+// local_rejects?: LocalReject[]  — set only when non-empty (a clean delivery omits it)
+{ "category": "contract_invalid" | "judgment_smuggled",
+  "count": 12,                    // positive int — items dropped under this category in THIS delivery
+  "sample": "…redacted reason…" } // optional: ONE truncated example reason, never a raw body (leak risk)
+```
+
+The two categories map 1:1 to the satellite's local validators: **`contract_invalid`** = the emit failed the shared-contract parse (`parseSaleObservation`/`parseOrderObservation`/`parseRecipeItem` — the "DOM changed / adapter rotted" signal); **`judgment_smuggled`** = the emit carried a derived JUDGMENT field a sensor must never report (`JUDGMENT_KEYS` — the sensor-not-judge violation). The Worker sets `kind`/`source` from the envelope's implied context (the push `source`; the claimed sale-scan task's store; the order-list's store) and `tenant` from the carrying key's binding. Local rejects do **not** bump the accept-tally (they were never accepted); they raise the source's fail-rate exactly as a Worker-side reject does — a locally-dropped flood becomes visible. A whole-task failure (session expired / source unreachable) is **not** a local-item reject and rides the existing `failed`/`reason` path, out of this summary.
+
+**`satellite_source_stats`** — the per-`{tenant, kind, source, day}` **accept-tally**, the uniform denominator the reliability rollup needs across all three arms (`ingest_pushes` is left untouched — Decision B: zero blast radius on the shipped recency view). **DAY-BUCKETED**: `day` is an epoch-day (`floor(bump_ms / 86_400_000)`), so the rollup can sum accepts over a RECENT window comparably to how it counts rejects over that window — a huge STALE accept history must not dilute the windowed fail-rate below the quarantine threshold. Bumped once per batch per source into today's bucket from the single `intakeObservations` choke point; `last_accepted_at` advances only on a real accept (a dedup bumps `deduped` without touching recency). The unique key is `COALESCE(tenant,'')` + kind + source + **day** so an operator-global (NULL-tenant) source keeps **one** row per day (a plain UNIQUE would treat NULLs as distinct); the upsert targets that index with `ON CONFLICT`. Buckets age out on the SAME rolling prune as the ledger (`pruneSourceStats`, retention = `logRetentionDays`), wired into `scheduled()`'s phase-1 reap beside `pruneSatelliteRejections`.
+
+```sql
+-- D1 satellite_source_stats table — the accept-tally. UNIQUE (COALESCE(tenant,''), kind, source, day).
+tenant           TEXT     -- the key's tenant binding (NULL = operator-global)
+kind             TEXT     -- 'recipe' | 'sale' | 'order'  NOT NULL
+source           TEXT     -- as satellite_rejections.source  NOT NULL
+day              INTEGER  -- epoch-day bucket = floor(bump_ms / 86_400_000); the windowing/prune key  NOT NULL
+accepted         INTEGER  -- accepted observations for this source in this bucket  NOT NULL DEFAULT 0
+deduped          INTEGER  -- deduped (benign re-report; excluded from the rate denominators)  NOT NULL DEFAULT 0
+last_accepted_at INTEGER  -- epoch ms of the most recent accept in this bucket (NULL until first); staleness = now − max over buckets
+-- INDEX satellite_source_stats_day (day) — the rolling-prune scan (pruneSourceStats).
+```
+
+The **reliability signal** is computed on read (`readSourceQuality`, volume is a household's satellites), **WINDOWED to a recent span W** (defaults to `logRetentionDays`, the same knob the prunes use): per `{tenant, kind, source}`, acceptance rate = `accepted / (accepted + rejected)` and fail rate = `rejected / (accepted + rejected)` where accepts are summed over the **day buckets within W** and rejects are the ledger's per-source reject `count`s with **`rejected_at ≥ now − W`** — so both sides of the rate are windowed and comparable (windowed-rejects / all-time-accepts was biased DOWN, and the recommendation never fired when a long-healthy source finally broke). Dedups are excluded from both denominators; `reason: "quarantined"` rows are excluded from the numerator (a block, not a validation failure); staleness = `now − last_accepted_at` (max over in-window buckets). A source over a **fixed** fail-rate threshold (0.3) with a minimum sample (20) is marked `recommendQuarantine` — a pure numeric rule, **no model**; it never auto-quarantines.
+
+**`satellite_quarantine`** — the per-source **quarantine flag**: a `{tenant, kind, source}` marked here has its future observations **rejected at intake** before acceptance (`origin: worker, reason: "quarantined"`), persisting nothing downstream (no corpus candidate, no flyer-rollup REPLACE, no grocery-list advance / receipt mark). Reversible — clearing the row lets the next observation flow again. **Never auto-applied**: the Satellites page surfaces a recommendation when a source crosses the threshold and the operator toggles it (the standing "quarantinable through the pipeline" SHALL as a per-source lever, complementing whole-machine `revokeIngestKey`). Same `COALESCE(tenant,'')` unique key as the accept-tally.
+
+```sql
+-- D1 satellite_quarantine table — the reversible per-source Worker-side reject flag.
+tenant         TEXT     -- the key's tenant binding (NULL = operator-global)
+kind           TEXT     -- 'recipe' | 'sale' | 'order'  NOT NULL
+source         TEXT     -- as satellite_rejections.source  NOT NULL
+quarantined_at INTEGER  -- epoch ms the operator toggled it on  NOT NULL
+note           TEXT     -- nullable operator note
+-- UNIQUE INDEX satellite_quarantine_key (COALESCE(tenant,''), kind, source) — one flag per source.
+```
+
 ## discovery_sources (shared corpus, D1 `discovery_senders` + `discovery_members`)
 
 **Shared** (D1 shared corpus), allowlist config. The trust gate for inbound-email discovery: only mail from a listed source is processed. Two tables — `discovery_members` (friend-group personal addresses: anything they forward gets indexed) and `discovery_senders` (newsletter `From` addresses: auto-forwarded mail from them gets indexed). Editable by `update_discovery_sources` (anyone trusted with the MCP can widen intake), deduped by `address`.

@@ -33,6 +33,7 @@ import { registerCookingTools } from "./cooking-tools.js";
 import { filterRecipes, type RecipeIndex } from "./recipes.js";
 import { loadRecipeIndex, loadRecipeEmbeddings, recipeDescription } from "./recipe-index.js";
 import { readReconcileErrors } from "./recipe-projection.js";
+import { readRejections, getQuarantine } from "./satellite-audit-db.js";
 import { recordBugReport } from "./bug-reports.js";
 import { embedTexts } from "./embedding.js";
 import {
@@ -513,6 +514,26 @@ export function buildServer(env: Env, tenant: Tenant, origin?: string): McpServe
       inputSchema: {},
     },
     () => runTool(async () => ({ errors: await readReconcileErrors(env) })),
+  );
+
+  server.registerTool(
+    "read_satellite_rejections",
+    {
+      description:
+        "List a satellite's recently REJECTED observations — the source-audit rear-view mirror ({ rejections: [{ kind, source, origin, reason, provenance, count, rejected_at }], quarantined: [{ kind, source, quarantined_at }] }), most-recent-first and bounded. A satellite is a member's home helper that scrapes recipes / scans a non-Kroger store's sale flyer / fills a store cart; the Worker re-validates everything it sends and DROPS what fails. This read reflects ONLY rejected observations — an accepted one NEVER appears (so an empty `rejections` means everything the satellite sent lately landed cleanly). Fields: `kind` is recipe | sale | order; `source` is the feed/site (recipe) or the store slug (sale/order); `origin` is `worker` (the Worker rejected it at intake — a bad shape, a wrong-endpoint item, or a quarantined source with `reason: \"quarantined\"`) or `local` (a satellite-reported, pre-aggregated summary of what its own validators dropped before the wire — `reason` is the reported category); `count` is 1 for a worker reject or N for a pre-aggregated local-summary entry; `provenance` is the offending url/id or a redacted sample. `quarantined` lists the sources an operator has flagged as a Worker-side reject (their observations are dropped until un-flagged). Optional `source` filters to one exact source. Visibility: recipe and sale rejections/quarantines are operator-global (shared across the whole group), but `order`-kind rows are per-member PRIVATE (order-fill is a member's own store cart) — you see only your own order rejections, never another member's. Use it when a member says their satellite's recipes/sales aren't showing up: read it and relay the specific defect (e.g. \"seriouseats: 12 rejects in the last day — the adapter likely broke\"). The only parameter is the optional `source`.",
+      inputSchema: { source: z.string().optional() },
+    },
+    ({ source }) =>
+      runTool(async () => ({
+        // Tenant isolation: recipe/sale rejections are operator-global (tenant IS NULL → household-wide),
+        // but `order`-kind rejections are tenant-PRIVATE (provenance = product url/id) — so scope the read
+        // to rows VISIBLE to the caller (operator-global OR this tenant), never another member's orders.
+        rejections: await readRejections(env, { source, tenantScope: tenant.id }),
+        // Same visibility rule for the quarantine set, trimmed to design F's {kind, source, quarantined_at}.
+        quarantined: (await getQuarantine(env))
+          .filter((q) => q.tenant == null || q.tenant === tenant.id)
+          .map((q) => ({ kind: q.kind, source: q.source, quarantined_at: q.quarantined_at })),
+      })),
   );
 
   server.registerTool(

@@ -10,7 +10,7 @@
 // initiative principle (core ships host + contract + SDK, users ship the ToS-hostile drivers), NO
 // built-in named-retailer sale adapter ships: scan adapters load only from the mounted adapters_dir.
 
-import { parseSaleObservation, type SaleObservation, type SaleScanPayload } from "@grocery-agent/contract";
+import { parseSaleObservation, type SaleObservation, type SaleScanPayload, type LocalRejectCategory } from "@grocery-agent/contract";
 import { pathToFileURL } from "node:url";
 import { readdirSync } from "node:fs";
 import { join } from "node:path";
@@ -60,24 +60,33 @@ const JUDGMENT_KEYS = ["savings", "savings_pct", "savingsPct", "on_sale", "onSal
  * (`savings`/`on_sale`/…) is REJECTED loudly rather than silently stripped, so a misbehaving adapter
  * surfaces to the operator instead of quietly shipping a judgment (the Worker also strips defensively).
  */
-export function validateSaleEmit(emitted: unknown): { ok: true; value: SaleObservation } | { ok: false; error: string } {
+export function validateSaleEmit(
+  emitted: unknown,
+): { ok: true; value: SaleObservation } | { ok: false; error: string; category: LocalRejectCategory } {
   if (emitted !== null && typeof emitted === "object") {
     for (const k of JUDGMENT_KEYS) {
       if (k in (emitted as Record<string, unknown>)) {
-        return { ok: false, error: `sensor-not-judge violation: adapter emitted a derived "${k}" field (report only raw { regular, promo })` };
+        return {
+          ok: false,
+          error: `sensor-not-judge violation: adapter emitted a derived "${k}" field (report only raw { regular, promo })`,
+          category: "judgment_smuggled",
+        };
       }
     }
   }
   const parsed = parseSaleObservation(emitted);
-  if (!parsed.ok) return { ok: false, error: `adapter emitted an invalid sale observation: ${parsed.error}` };
+  if (!parsed.ok) return { ok: false, error: `adapter emitted an invalid sale observation: ${parsed.error}`, category: "contract_invalid" };
   return { ok: true, value: parsed.value };
 }
 
 /** The outcome of running one store's scan adapter: the validated observations + any local rejects. */
 export interface ScanOutcome {
   observations: SaleObservation[];
-  /** Emitted items rejected locally (a non-contract shape / smuggled saving) — logged, never reported. */
-  rejected: { reason: string }[];
+  /**
+   * Emitted items rejected locally (a non-contract shape / smuggled saving) — logged, never reported.
+   * Each carries its `category` so the pull-report can assemble the `local_rejects` summary.
+   */
+  rejected: { category: LocalRejectCategory; reason: string }[];
 }
 
 /**
@@ -100,11 +109,11 @@ export async function runScanAdapter(
   if (emitted && typeof emitted === "object" && "error" in emitted) return { error: emitted.error };
 
   const observations: SaleObservation[] = [];
-  const rejected: { reason: string }[] = [];
+  const rejected: { category: LocalRejectCategory; reason: string }[] = [];
   for (const raw of emitted as unknown[]) {
     const v = validateSaleEmit(raw);
     if (v.ok) observations.push(v.value);
-    else rejected.push({ reason: v.error });
+    else rejected.push({ category: v.category, reason: v.error });
   }
   return { observations, rejected };
 }

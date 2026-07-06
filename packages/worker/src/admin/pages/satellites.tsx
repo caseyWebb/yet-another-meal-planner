@@ -1,14 +1,46 @@
-// Discovery › Satellites (recipe-ingestion): the read-only operator liveness view of satellite
-// ingest — one card per satellite machine (health in the /health fresh/stale/never posture,
-// reported satellite + contract version with a skew chip, per-source breakdown), the 24h throughput
-// funnel, and the recent-pushes log. Pure SSR (admin/CLAUDE.md rule 8): no island, no mutation —
-// key management lives in Config › Ingest Keys. Seeded from readSatelliteLiveness.
+// Discovery › Satellites (satellite-source-audit): the operator liveness view of satellite ingest —
+// one card per satellite machine (recency health, reported satellite + contract version with a skew
+// chip) — now with a SOURCE-HEALTH AUDIT layered onto each source row. Two dimensions per source:
+// RECENCY (did it push recently — fresh/stale/never, owned by liveness) and QUALITY (is what it
+// reports any good — accept/fail over the reliability window). A source is healthy, degrading (fail
+// rate over threshold → a calm quarantine RECOMMENDATION), or quarantined (its observations rejected
+// on purpose). A per-source rejection ledger opens in a drill-down; a reversible, operator-confirmed
+// quarantine toggle is the only mutation.
+//
+// SSR-first-paint + one island (admin/CLAUDE.md rule 8): the page derives the joined audit rows
+// server-side, renders the hero statically for first paint inside the island host, and seeds them
+// into a <script type="application/json"> props block (never a fetch-on-mount). client/satellite-audit.tsx
+// re-renders the SAME shared `AuditHero` with real handlers + the quarantine confirm dialog. The
+// funnel + recent-pushes table stay pure SSR.
 
 import { Layout } from "../ui/layout.js";
 import { StatCardGrid, StatCard, Badge } from "../ui/kit.js";
-import { InboxIcon, ActivityIcon, DownloadIcon, ShieldIcon, AlertTriangleIcon } from "../ui/icons.js";
+import {
+  InboxIcon,
+  ActivityIcon,
+  AlertTriangleIcon,
+  BanIcon,
+  ShieldIcon,
+  ScanIcon,
+  RotateIcon,
+  ChevronDownIcon,
+  ExternalLinkIcon,
+} from "../ui/icons.js";
 import { relAge } from "../logs-shared.js";
-import type { SatelliteRollup, SatelliteLiveness, RecentPush, Health } from "../../ingest-db.js";
+import type { SatelliteRollup, RecentPush } from "../../ingest-db.js";
+import type { RejectionRow, QuarantineRow } from "../../satellite-audit-db.js";
+import {
+  REJECT_REASONS,
+  REJECT_ORIGINS,
+  AUDIT_WINDOW_LABEL,
+  AUDIT_FAIL_THRESHOLD,
+  isUrlProvenance,
+  shortUrl,
+  pct,
+  type AuditSatellite,
+  type AuditSource,
+  type AuditRejection,
+} from "../satellite-audit-shared.js";
 
 /** The Candidates | Satellites sub-nav shared by both Discovery views. */
 export const DiscoverySubNav = ({ active }: { active: "candidates" | "satellites" }) => (
@@ -22,10 +54,6 @@ export const DiscoverySubNav = ({ active }: { active: "candidates" | "satellites
   </div>
 );
 
-const HealthBadge = ({ health }: { health: Health }) => (
-  <Badge variant={health === "fresh" ? "secondary" : health === "stale" ? "destructive" : "outline"}>{health}</Badge>
-);
-
 const RESULT_LABEL: Record<RecentPush["result"], string> = {
   accepted: "Accepted",
   partial: "Partially deduped",
@@ -33,49 +61,361 @@ const RESULT_LABEL: Record<RecentPush["result"], string> = {
   bad_key: "Rejected · bad key",
 };
 
-const LivenessCard = ({ s, now, contractVersion }: { s: SatelliteLiveness; now: number; contractVersion: string }) => (
-  <div class="ig-live-card">
-    <div class="ig-live-head">
-      <div>
-        <div class="item-title">{s.label}</div>
-        <span class="muted small">{s.sourceCount ? `${s.sourceCount} ${s.sourceCount === 1 ? "source" : "sources"}` : "no sources yet"}</span>
-      </div>
-      <HealthBadge health={s.health} />
-    </div>
-    <div class="ig-live-when">
-      <span class={s.lastPush == null ? "muted" : ""}>{s.lastPush == null ? "no pushes yet" : relAge(s.lastPush, now)}</span>
-      {s.lastPush != null ? <span class="muted small"> · {s.pushes24h} in 24h</span> : null}
-    </div>
-    {s.sources.length > 0 ? (
-      <div class="ig-src-list">
-        {s.sources.map((src) => (
-          <div class="ig-src">
-            <span class={`dot ${src.health === "fresh" ? "ok" : src.health === "stale" ? "fail" : "never"}`} />
-            <span class="ig-src-name">{src.name}</span>
-            <span class="muted small">
-              {src.lastPush == null ? "never" : relAge(src.lastPush, now)} · {src.pushes24h}/24h
-            </span>
-          </div>
-        ))}
-      </div>
-    ) : null}
-    <div class="ig-live-foot muted small">
-      {s.satelliteVersion ? (
-        <>
-          satellite <code>v{s.satelliteVersion}</code> · contract <code>{s.contractVersion}</code>
-          {s.skew ? (
-            <span class="txt-bad">
-              {" "}
-              <AlertTriangleIcon size={11} /> behind {contractVersion}
-            </span>
-          ) : null}
-        </>
-      ) : (
-        <span>key minted — no satellite has authenticated</span>
-      )}
-    </div>
+// ── Derivation: join the audit dimension onto each satellite's source rows ──────────────────────
+
+/** NUL-delimited composite key matching the Worker's `{tenant, kind, source}` accounting keys. */
+const qKey = (tenant: string | null, kind: string, source: string): string =>
+  `${tenant ?? ""}\u0000${kind}\u0000${source}`;
+
+/**
+ * Build the per-satellite audit rows: join the Worker's per-`{tenant, kind, source}` quality rollup,
+ * the ledger's rejections, and the quarantine flags onto each satellite's liveness source rows by name
+ * (ruling #1). Liveness sources come from the recipe push log (`ingest_pushes`), so they are `recipe`
+ * kind, keyed off the satellite's tenant binding — every join is `{tenant: sat.tenant, kind: "recipe",
+ * source}`, and `kind` is threaded through props/route/`readRejections` (ruling #2) so a same-named
+ * source of another kind never merges. Ledger rows are aggregated by (reason, origin, provenance) with
+ * counts summed (ruling #3) — the Worker's count-1 rejects collapse and a pre-aggregated local flood
+ * keeps its count.
+ */
+export function buildAuditSources(
+  rollup: SatelliteRollup,
+  rejections: RejectionRow[],
+  quarantine: QuarantineRow[],
+): AuditSatellite[] {
+  const qualityIx = new Map(rollup.quality.map((q) => [qKey(q.tenant, q.kind, q.source), q]));
+  const quarantineIx = new Map(quarantine.map((q) => [qKey(q.tenant, q.kind, q.source), q]));
+
+  // Group ledger rows by {tenant, kind, source} → aggregated (reason, origin, provenance) rows.
+  const rejByKey = new Map<string, AuditRejection[]>();
+  for (const r of rejections) {
+    const k = qKey(r.tenant, r.kind, r.source);
+    let group = rejByKey.get(k);
+    if (!group) rejByKey.set(k, (group = []));
+    const gk = `${r.reason}\u0000${r.origin}\u0000${r.provenance ?? ""}`;
+    const existing = group.find((x) => `${x.reason}\u0000${x.origin}\u0000${x.provenance ?? ""}` === gk);
+    if (existing) {
+      existing.count += r.count;
+      existing.rejected_at = Math.max(existing.rejected_at, r.rejected_at);
+    } else {
+      group.push({ reason: r.reason, origin: r.origin, provenance: r.provenance, count: r.count, rejected_at: r.rejected_at });
+    }
+  }
+
+  return rollup.activeSatellites.map((sat): AuditSatellite => {
+    const sources: AuditSource[] = sat.sources.map((src): AuditSource => {
+      const kind = "recipe"; // liveness sources are recipe pushes; kind is threaded for correctness
+      const key = qKey(sat.tenant, kind, src.name);
+      const q = qualityIx.get(key);
+      const quarantined = quarantineIx.get(key) ?? null;
+      const quality = {
+        accepted: q?.accepted ?? 0,
+        rejected: q?.rejected ?? 0,
+        sample: q?.sample ?? 0,
+        acceptanceRate: q?.acceptanceRate ?? 0,
+        failRate: q?.failRate ?? 0,
+        recommendQuarantine: q?.recommendQuarantine ?? false,
+      };
+      const qstate = quarantined ? "quarantined" : quality.recommendQuarantine ? "degrading" : "healthy";
+      const rejs = (rejByKey.get(key) ?? []).slice().sort((a, b) => b.rejected_at - a.rejected_at);
+      return {
+        key: `${sat.id}::${kind}::${src.name}`,
+        satelliteId: sat.id,
+        satelliteLabel: sat.label,
+        kind,
+        source: src.name,
+        tenant: sat.tenant,
+        qstate,
+        quality,
+        recency: { health: src.health, lastPush: src.lastPush, pushes24h: src.pushes24h },
+        rejections: rejs,
+        quarantine: quarantined ? { quarantined_at: quarantined.quarantined_at, note: quarantined.note } : null,
+      };
+    });
+    return {
+      id: sat.id,
+      label: sat.label,
+      health: sat.health,
+      lastPush: sat.lastPush,
+      pushes24h: sat.pushes24h,
+      sourceCount: sat.sourceCount,
+      satelliteVersion: sat.satelliteVersion,
+      contractVersion: sat.contractVersion,
+      skew: sat.skew,
+      sources,
+    };
+  });
+}
+
+// ── Shared view (admin/CLAUDE.md: one source of truth between SSR first paint and the island) ───
+// Every interactive slot is an OPTIONAL callback prop: the SSR pass passes none (static, all
+// drill-downs closed, nothing pending); the island passes real handlers + the confirm dialog.
+
+const HealthDot = ({ health }: { health: "fresh" | "stale" | "never" }) => (
+  <span class={`dot ${health === "fresh" ? "ok" : health === "stale" ? "fail" : "never"}`} />
+);
+
+/** The compact accept/fail bar beside recency (ruling #6: quality only — recency is the dot/meta). */
+const QualityCell = ({ src }: { src: AuditSource }) => {
+  const acc = Math.round(src.quality.acceptanceRate * 100);
+  const fail = Math.round(src.quality.failRate * 100);
+  if (src.qstate === "quarantined") {
+    return (
+      <span class="ig-qual quarantined" title="observations are being rejected on purpose">
+        <span class="ig-qbar held">
+          <span class="ig-qbar-ok" style={`width:${acc}%`} />
+          <span class="ig-qbar-bad" style={`width:${100 - acc}%`} />
+        </span>
+        <span class="ig-qual-lbl q-held">
+          <BanIcon size={11} /> rejecting
+        </span>
+      </span>
+    );
+  }
+  if (src.quality.sample === 0) {
+    return (
+      <span class="ig-qual" title="no observations in the audit window yet">
+        <span class="ig-qbar" />
+        <span class="ig-qual-lbl muted">awaiting signal</span>
+      </span>
+    );
+  }
+  const degrading = src.qstate === "degrading";
+  return (
+    <span class="ig-qual" title={`${acc}% accepted · ${fail}% failing validation, last ${AUDIT_WINDOW_LABEL}`}>
+      <span class="ig-qbar">
+        <span class="ig-qbar-ok" style={`width:${acc}%`} />
+        <span class="ig-qbar-bad" style={`width:${fail}%`} />
+      </span>
+      <span class={`ig-qual-lbl ${degrading ? "q-warn" : "q-ok"}`}>{degrading ? `${fail}% failing` : `${acc}% ok`}</span>
+    </span>
+  );
+};
+
+/** Where the reject happened — worker (rejected on arrival) vs local (dropped before the wire). */
+const OriginBadge = ({ origin }: { origin: "worker" | "local" }) => (
+  <span class={`ig-origin ig-o-${origin}`} title={REJECT_ORIGINS[origin].gloss}>
+    {origin === "local" ? <ScanIcon size={11} /> : <ShieldIcon size={11} />}
+    {REJECT_ORIGINS[origin].label}
+  </span>
+);
+
+/** Provenance is actionable when it's a URL (ruling #5: clickable, new-tab, stopPropagation so it
+ *  doesn't toggle the drill-down); otherwise a redacted sample rendered as a code chip. */
+const Provenance = ({ prov }: { prov: string | null }) => {
+  if (prov == null) return null;
+  if (isUrlProvenance(prov)) {
+    return (
+      <a
+        class="ig-prov ig-prov-url"
+        href={prov}
+        target="_blank"
+        rel="noopener noreferrer"
+        title={prov}
+        onClick={(e: Event) => e.stopPropagation()}
+      >
+        <code>{shortUrl(prov)}</code>
+        <ExternalLinkIcon size={11} />
+      </a>
+    );
+  }
+  return (
+    <code class="ig-prov ig-prov-sample" title="redacted sample of the rejected payload">
+      {prov}
+    </code>
+  );
+};
+
+const RejectionRow = ({ r, now }: { r: AuditRejection; now: number }) => (
+  <div class="ig-rej">
+    <span class="ig-rej-count">{r.count ? `${r.count}×` : "—"}</span>
+    <span class={`ig-rej-reason rr-${r.reason}`} title={REJECT_REASONS[r.reason] ?? ""}>
+      {r.reason}
+    </span>
+    <OriginBadge origin={r.origin} />
+    <Provenance prov={r.provenance} />
+    <span class="ig-rej-when muted small">{relAge(r.rejected_at, now)}</span>
   </div>
 );
+
+const RecommendationChip = ({ src, onQuarantine }: { src: AuditSource; onQuarantine?: (src: AuditSource) => void }) => (
+  <div class="ig-rec">
+    <span class="ig-rec-ico">
+      <AlertTriangleIcon size={14} />
+    </span>
+    <span class="ig-rec-text">
+      <strong>{pct(src.quality.failRate)}</strong> of the last {src.quality.sample} observations failed validation — a
+      broken adapter, most likely. Quarantine this source?
+    </span>
+    <button type="button" class="ig-rec-btn" onClick={onQuarantine ? () => onQuarantine(src) : undefined}>
+      <BanIcon size={13} /> Quarantine
+    </button>
+  </div>
+);
+
+const QuarantinedBlock = ({ src, now, onUnquarantine }: { src: AuditSource; now: number; onUnquarantine?: (src: AuditSource) => void }) => (
+  <div class="ig-quar">
+    <span class="ig-quar-badge">
+      <BanIcon size={13} /> quarantined
+    </span>
+    <span class="ig-quar-meta">
+      since {src.quarantine ? relAge(src.quarantine.quarantined_at, now) : "now"}
+      {src.quarantine?.note ? <span class="ig-quar-why"> — {src.quarantine.note}</span> : null}
+    </span>
+    <button type="button" class="ig-quar-undo" onClick={onUnquarantine ? () => onUnquarantine(src) : undefined}>
+      <RotateIcon size={13} /> Un-quarantine
+    </button>
+  </div>
+);
+
+const Drilldown = ({ src, now }: { src: AuditSource; now: number }) => (
+  <div class="ig-drill">
+    {src.rejections.length > 0 ? (
+      <>
+        <div class="ig-drill-head">
+          <span class="ig-drill-title">Rejection ledger</span>
+          <span class="muted small">why the Worker (or the satellite) dropped observations · last {AUDIT_WINDOW_LABEL}</span>
+        </div>
+        <div class="ig-rej-list">
+          {src.rejections.map((r) => (
+            <RejectionRow r={r} now={now} />
+          ))}
+        </div>
+        <div class="ig-drill-foot muted small">
+          <ScanIcon size={11} /> <strong>local</strong> = dropped on the satellite before sending (adapter broke){" "}
+          <span class="dimsep">·</span> <ShieldIcon size={11} /> <strong>worker</strong> = rejected on arrival
+        </div>
+      </>
+    ) : (
+      <div class="ig-drill-empty">No rejections in the last {AUDIT_WINDOW_LABEL} — this source is clean.</div>
+    )}
+  </div>
+);
+
+interface HeroHandlers {
+  openKey?: string | null;
+  busyKey?: string | null;
+  onToggle?: (key: string) => void;
+  onQuarantine?: (src: AuditSource) => void;
+  onUnquarantine?: (src: AuditSource) => void;
+}
+
+const SourceRow = ({ src, now, openKey, busyKey, onToggle, onQuarantine, onUnquarantine }: { src: AuditSource; now: number } & HeroHandlers) => {
+  const isOpen = openKey === src.key;
+  const isBusy = busyKey === src.key;
+  const toggle = onToggle ? () => onToggle(src.key) : undefined;
+  return (
+    <div class={`ig-srcx q-${src.qstate}${isOpen ? " open" : ""}`}>
+      <div
+        class="ig-srcx-head"
+        role="button"
+        tabIndex={0}
+        aria-expanded={isOpen ? "true" : "false"}
+        onClick={toggle}
+        onKeyDown={
+          onToggle
+            ? (e: Event) => {
+                const key = (e as unknown as { key: string }).key;
+                if (key === "Enter" || key === " ") {
+                  e.preventDefault();
+                  onToggle(src.key);
+                }
+              }
+            : undefined
+        }
+      >
+        <HealthDot health={src.recency.health} />
+        <span class="ig-srcx-name">{src.source}</span>
+        <QualityCell src={src} />
+        <span class="ig-srcx-meta muted small">
+          {src.recency.lastPush == null ? "never" : relAge(src.recency.lastPush, now)} <span class="dimsep">·</span>{" "}
+          {src.recency.pushes24h}/24h
+        </span>
+        <ChevronDownIcon size={15} class={`ig-srcx-chev${isOpen ? " up" : ""}`} />
+      </div>
+
+      {src.qstate === "degrading" && !isBusy ? <RecommendationChip src={src} onQuarantine={onQuarantine} /> : null}
+      {src.qstate === "quarantined" && !isBusy ? <QuarantinedBlock src={src} now={now} onUnquarantine={onUnquarantine} /> : null}
+      {isBusy ? (
+        <div class="ig-island-pending">
+          <RotateIcon size={13} /> updating quarantine…
+        </div>
+      ) : null}
+
+      {isOpen ? <Drilldown src={src} now={now} /> : null}
+    </div>
+  );
+};
+
+const SatelliteAuditCard = ({ sat, now, contractVersion, ...handlers }: { sat: AuditSatellite; now: number; contractVersion: string } & HeroHandlers) => {
+  const never = sat.health === "never";
+  return (
+    <div class={`ig-live-card wide${never ? " never" : ""}`}>
+      <div class="ig-live-head">
+        <div class="ig-live-id">
+          <span class="ig-live-source item-title">{sat.label}</span>
+          <span class="ig-live-label muted small">
+            {sat.sourceCount ? `${sat.sourceCount} ${sat.sourceCount === 1 ? "source" : "sources"}` : "no sources configured"}
+          </span>
+        </div>
+        <div class="ig-live-headright">
+          <span class={`ig-live-ago${never ? " none" : ""}`}>{never ? "no pushes yet" : relAge(sat.lastPush ?? now, now)}</span>
+          <Badge variant={sat.health === "fresh" ? "secondary" : sat.health === "stale" ? "destructive" : "outline"}>
+            {sat.health}
+          </Badge>
+        </div>
+      </div>
+
+      {sat.sources.length > 0 ? (
+        <div class="ig-srcx-list">
+          {sat.sources.map((src) => (
+            <SourceRow src={src} now={now} {...handlers} />
+          ))}
+        </div>
+      ) : null}
+
+      <div class="ig-live-foot muted small">
+        {sat.satelliteVersion ? (
+          <>
+            satellite <code>v{sat.satelliteVersion}</code> <span class="dimsep">·</span> contract <code>{sat.contractVersion}</code>
+            {sat.skew ? (
+              <span class="ig-skew" title={`Worker is on contract ${contractVersion}`}>
+                {" "}
+                <AlertTriangleIcon size={11} /> behind {contractVersion}
+              </span>
+            ) : null}
+          </>
+        ) : (
+          <span>key minted — no satellite has authenticated</span>
+        )}
+      </div>
+    </div>
+  );
+};
+
+/** The satellite liveness + source-health hero — the shared surface both render passes emit. */
+export const AuditHero = ({
+  satellites,
+  now,
+  contractVersion,
+  ...handlers
+}: { satellites: AuditSatellite[]; now: number; contractVersion: string } & HeroHandlers) => {
+  if (satellites.length === 0) {
+    return (
+      <p class="muted">
+        No satellites yet. Mint an ingest key in Config › Ingest Keys, then run a satellite on your network that pushes recipes here.
+      </p>
+    );
+  }
+  return (
+    <div class="ig-sat-list">
+      {satellites.map((sat) => (
+        <SatelliteAuditCard sat={sat} now={now} contractVersion={contractVersion} {...handlers} />
+      ))}
+    </div>
+  );
+};
+
+// ── SSR page ────────────────────────────────────────────────────────────────────────────────────
 
 const Funnel = ({ rollup }: { rollup: SatelliteRollup }) => {
   const a = rollup.funnel.arrival;
@@ -113,77 +453,106 @@ const Funnel = ({ rollup }: { rollup: SatelliteRollup }) => {
   );
 };
 
-export const SatellitesView = ({ rollup, now }: { rollup: SatelliteRollup; now: number }) => (
-  <div class="satellites">
-    <DiscoverySubNav active="satellites" />
+/** Serialize the audit props for the island block (`<` escaped so it can't break out of `<script>`;
+ *  mirrors pages/insights.tsx's serializeProps). */
+function serializeProps(satellites: AuditSatellite[], contractVersion: string): string {
+  return JSON.stringify({ satellites, contractVersion }).replace(/</g, "\\u003c");
+}
 
-    <StatCardGrid>
-      <StatCard icon={<InboxIcon size={15} />} label="Satellites" value={rollup.stats.activeSatellites} sub={`${rollup.stats.sources} sources`} />
-      <StatCard icon={<ActivityIcon size={15} />} label="Fresh" value={rollup.stats.fresh} sub={rollup.stats.stale ? `${rollup.stats.stale} stale` : "all live"} />
-      <StatCard icon={<DownloadIcon size={15} />} label="Pushes · 24h" value={rollup.stats.pushes24h} />
-      <StatCard icon={<ShieldIcon size={15} />} label="Contract" value={rollup.contractVersion} sub="worker" />
-    </StatCardGrid>
+export const SatellitesView = ({ rollup, satellites, now }: { rollup: SatelliteRollup; satellites: AuditSatellite[]; now: number }) => {
+  const degrading = satellites.reduce((n, s) => n + s.sources.filter((x) => x.qstate === "degrading").length, 0);
+  const quarantined = satellites.reduce((n, s) => n + s.sources.filter((x) => x.qstate === "quarantined").length, 0);
+  return (
+    <div class="satellites">
+      <DiscoverySubNav active="satellites" />
 
-    {rollup.activeSatellites.length === 0 ? (
-      <p class="muted">
-        No satellites yet. Mint an ingest key in Config › Ingest Keys, then run a satellite on your network that pushes recipes here.
-      </p>
-    ) : (
-      <>
-        <p class="group-label">Satellite liveness</p>
-        <div class="ig-live-grid">
-          {rollup.activeSatellites.map((s) => (
-            <LivenessCard s={s} now={now} contractVersion={rollup.contractVersion} />
-          ))}
-        </div>
-      </>
-    )}
+      <StatCardGrid>
+        <StatCard icon={<InboxIcon size={15} />} label="Satellites" value={rollup.stats.activeSatellites} sub={`${rollup.stats.sources} sources`} />
+        <StatCard icon={<ActivityIcon size={15} />} label="Fresh" value={rollup.stats.fresh} sub={rollup.stats.stale ? `${rollup.stats.stale} stale` : "all live"} />
+        <StatCard
+          icon={<AlertTriangleIcon size={15} />}
+          label="Degrading"
+          value={degrading}
+          sub={degrading ? `fail rate over ${pct(AUDIT_FAIL_THRESHOLD)}` : "all clean"}
+          tone={degrading > 0 ? "warn" : undefined}
+        />
+        <StatCard
+          icon={<BanIcon size={15} />}
+          label="Quarantined"
+          value={quarantined}
+          sub={quarantined ? "held by operator" : "none held"}
+          tone={quarantined > 0 ? "bad" : undefined}
+        />
+      </StatCardGrid>
 
-    <p class="group-label">Throughput · last 24h</p>
-    <Funnel rollup={rollup} />
-
-    <p class="group-label">Recent pushes</p>
-    {rollup.pushes.length === 0 ? (
-      <p class="muted">No pushes yet.</p>
-    ) : (
-      <div class="cfg-table-wrap">
-        <table class="table">
-          <thead>
-            <tr>
-              <th>When</th>
-              <th>Satellite</th>
-              <th>Source</th>
-              <th>Batch</th>
-              <th>Result</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rollup.pushes.map((p) => (
-              <tr>
-                <td class="muted small">{relAge(p.at, now)}</td>
-                <td>{p.satellite}</td>
-                <td>{p.source}</td>
-                <td>{p.count}</td>
-                <td>
-                  <Badge variant={p.result === "accepted" ? "secondary" : p.result === "partial" ? "outline" : "destructive"}>
-                    {RESULT_LABEL[p.result]}
-                  </Badge>
-                  {p.result === "partial" && p.deduped > 0 ? <span class="muted small"> {p.deduped} deduped</span> : null}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+      {/* Satellite liveness + source-health audit — the hero. SSR for first paint inside the island
+          host; client/satellite-audit.tsx re-renders the SAME AuditHero interactively. */}
+      <p class="group-label">Satellite liveness &amp; source health</p>
+      <div id="satellite-audit-island">
+        <AuditHero satellites={satellites} now={now} contractVersion={rollup.contractVersion} />
       </div>
-    )}
-  </div>
-);
+      <script type="application/json" id="satellite-audit-props" dangerouslySetInnerHTML={{ __html: serializeProps(satellites, rollup.contractVersion) }} />
+      <script type="module" src="/admin/islands/satellite-audit.js" />
 
-export const SatellitesPage = ({ rollup, now }: { rollup: SatelliteRollup; now: number }) => (
-  <Layout title="Satellites · grocery-agent admin" active="/admin/discovery" wide>
-    <div class="area-head status-head">
-      <h2>Discovery</h2>
+      <p class="group-label">Throughput · last 24h</p>
+      <Funnel rollup={rollup} />
+
+      <p class="group-label">Recent pushes</p>
+      {rollup.pushes.length === 0 ? (
+        <p class="muted">No pushes yet.</p>
+      ) : (
+        <div class="cfg-table-wrap">
+          <table class="table">
+            <thead>
+              <tr>
+                <th>When</th>
+                <th>Satellite</th>
+                <th>Source</th>
+                <th>Batch</th>
+                <th>Result</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rollup.pushes.map((p) => (
+                <tr>
+                  <td class="muted small">{relAge(p.at, now)}</td>
+                  <td>{p.satellite}</td>
+                  <td>{p.source}</td>
+                  <td>{p.count}</td>
+                  <td>
+                    <Badge variant={p.result === "accepted" ? "secondary" : p.result === "partial" ? "outline" : "destructive"}>
+                      {RESULT_LABEL[p.result]}
+                    </Badge>
+                    {p.result === "partial" && p.deduped > 0 ? <span class="muted small"> {p.deduped} deduped</span> : null}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
-    <SatellitesView rollup={rollup} now={now} />
-  </Layout>
-);
+  );
+};
+
+export const SatellitesPage = ({
+  rollup,
+  rejections,
+  quarantine,
+  now,
+}: {
+  rollup: SatelliteRollup;
+  rejections: RejectionRow[];
+  quarantine: QuarantineRow[];
+  now: number;
+}) => {
+  const satellites = buildAuditSources(rollup, rejections, quarantine);
+  return (
+    <Layout title="Satellites · grocery-agent admin" active="/admin/discovery" wide>
+      <div class="area-head status-head">
+        <h2>Discovery</h2>
+      </div>
+      <SatellitesView rollup={rollup} satellites={satellites} now={now} />
+    </Layout>
+  );
+};

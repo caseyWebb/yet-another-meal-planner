@@ -157,6 +157,62 @@ export const ObservationItemSchema = z.discriminatedUnion("kind", [
 ]);
 export type ObservationItem = z.infer<typeof ObservationItemSchema>;
 
+// --- local-reject summary (satellite-source-audit, Decision D) ----------------
+//
+// The satellite's local validators (`validateSaleEmit`/`validateOrderEmit`/the recipe adapter's
+// contract check) drop a malformed or judgment-smuggling item BEFORE the wire — invisible to a
+// Worker-side-only ledger. So the satellite attaches a compact, PRE-AGGREGATED local-reject summary
+// to each delivery envelope, and the Worker records it into the ledger with `origin: local`. The
+// field is ADDITIVE + OPTIONAL on all three envelopes, so it keeps `CONTRACT_VERSION: "v2"` (a
+// satellite that omits it is unaffected; an older Worker ignores an unknown field).
+
+/**
+ * The two categories a local reject maps to. `contract_invalid` — the emitted item failed the shared
+ * contract parse (`parseSaleObservation`/`parseOrderObservation`/`parseRecipeItem`): a missing/mistyped
+ * field, an out-of-shape body — the "DOM changed / adapter rotted" signal. `judgment_smuggled` — the
+ * adapter emitted a derived JUDGMENT field a sensor must never report (`JUDGMENT_KEYS`) — the
+ * "adapter is trying to be a judge" (sensor-not-judge) signal.
+ */
+export const LOCAL_REJECT_CATEGORIES = ["contract_invalid", "judgment_smuggled"] as const;
+export type LocalRejectCategory = (typeof LOCAL_REJECT_CATEGORIES)[number];
+
+/**
+ * Bound on a `local_rejects` array — logically ≤ 2 categories (`contract_invalid`/`judgment_smuggled`),
+ * with modest headroom. The Worker records each entry with one awaited D1 INSERT (`recordLocalRejects`),
+ * so this caps the per-envelope write fan-out an authenticated-but-buggy/hostile satellite can drive.
+ */
+export const MAX_LOCAL_REJECTS = 16;
+/**
+ * Per-entry `count` cap — a sane upper bound on items dropped under one category in ONE delivery, so a
+ * runaway count can't arbitrarily inflate a source's fail-rate numerator. A home satellite's real
+ * per-delivery drop count is far under this; a genuine broken-adapter flood still trips the quarantine
+ * recommendation at the cap.
+ */
+export const MAX_LOCAL_REJECT_COUNT = 10_000;
+/**
+ * Max `sample` length — one short redacted example, matching (with headroom) the satellite-side 200-char
+ * truncation; caps the `provenance` bloat a multi-MB body would otherwise carry (the satellite-side
+ * truncation is advisory-only, so the Worker enforces the ceiling here).
+ */
+export const MAX_LOCAL_REJECT_SAMPLE = 256;
+
+/**
+ * ONE pre-aggregated local-reject summary entry: the `category`, the `count` of items dropped under
+ * it in this delivery (bounded), and ONE redacted/truncated example `reason` `sample` (bounded; never
+ * a raw body — a leak risk, since a malformed body may carry session/PII fragments). Defined ONCE here
+ * so the Worker (validates inbound) and the satellite (assembles outbound) can never drift, and so the
+ * Worker's parse ENFORCES the bounds rather than trusting the satellite's own truncation/aggregation.
+ */
+export const LocalRejectSchema = z.object({
+  category: z.enum(LOCAL_REJECT_CATEGORIES),
+  count: z.number().int().positive().max(MAX_LOCAL_REJECT_COUNT),
+  sample: z.string().max(MAX_LOCAL_REJECT_SAMPLE).optional(),
+});
+export type LocalReject = z.infer<typeof LocalRejectSchema>;
+
+/** The optional `local_rejects` array carried, ADDITIVELY, on all three delivery envelopes (bounded). */
+export const LocalRejectsSchema = z.array(LocalRejectSchema).max(MAX_LOCAL_REJECTS);
+
 /**
  * The v2 batch envelope a satellite POSTs. `capability` is the reported capability, `source`
  * is the human-readable source name (required — the provenance the admin views group by),
@@ -168,6 +224,8 @@ export const SatelliteBatchSchema = z.object({
   satellite_version: z.string().trim().min(1).max(100),
   contract_version: z.string().trim().min(1).max(100),
   observations: z.array(ObservationItemSchema).min(1).max(MAX_BATCH_ITEMS),
+  /** Additive, OPTIONAL local-reject summary (satellite-source-audit) — omitting it keeps v2. */
+  local_rejects: LocalRejectsSchema.optional(),
 });
 export type SatelliteBatch = z.infer<typeof SatelliteBatchSchema>;
 
@@ -184,6 +242,7 @@ const SatelliteEnvelopeSchema = z.object({
   satellite_version: z.string().trim().min(1).max(100),
   contract_version: z.string().trim().min(1).max(100),
   observations: z.array(z.unknown()).min(1).max(MAX_BATCH_ITEMS),
+  local_rejects: LocalRejectsSchema.optional(),
 });
 
 /**
@@ -290,6 +349,8 @@ export interface NormalizedBatch {
   contractVersion: string;
   /** Raw observation items — validate each with `parseObservationItem`. */
   observations: unknown[];
+  /** The satellite-reported local-reject summary (satellite-source-audit) — v2 only; absent on v1. */
+  localRejects?: LocalReject[];
 }
 
 /** Wrap a v1 recipe (raw) as a `recipe` observation item; forces `kind: "recipe"`. */
@@ -326,6 +387,7 @@ export function parseSatelliteEnvelope(input: unknown): ParseResult<NormalizedBa
         satelliteVersion: r.data.satellite_version,
         contractVersion: r.data.contract_version,
         observations: r.data.observations,
+        ...(r.data.local_rejects !== undefined ? { localRejects: r.data.local_rejects } : {}),
       },
     };
   }

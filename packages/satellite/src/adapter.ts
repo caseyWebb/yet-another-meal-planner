@@ -10,7 +10,7 @@
 // contract (parseRecipeItem) before the satellite will push it — an adapter cannot smuggle a
 // non-contract shape onto the wire.
 
-import { parseRecipeItem, type RecipeItem } from "@grocery-agent/contract";
+import { parseRecipeItem, type RecipeItem, type LocalRejectCategory } from "@grocery-agent/contract";
 import { pathToFileURL } from "node:url";
 import { readdirSync } from "node:fs";
 import { join } from "node:path";
@@ -60,13 +60,16 @@ export type AdapterFactory = (sdk: Sdk) => SourceAdapter;
 
 /**
  * Validate an adapter's emitted extract() result against the shared contract. Passes a
- * structured error through unchanged; validates a claimed item and converts a contract
- * violation into a structured error so the daemon skips it rather than pushing garbage.
+ * structured error through unchanged (a fetch/extract skip — NOT a local-reject); validates a
+ * claimed item and converts a contract violation into a structured error TAGGED `contract_invalid`
+ * so the daemon skips it rather than pushing garbage, and the scheduler can fold that drop into the
+ * push batch's `local_rejects` summary (satellite-source-audit). Only the contract-parse branch
+ * carries a `category`; a passed-through adapter error does not (it is not a shape reject).
  */
-export function validateEmit(emitted: RecipeItem | { error: string }): RecipeItem | { error: string } {
+export function validateEmit(emitted: RecipeItem | { error: string }): RecipeItem | { error: string; category?: LocalRejectCategory } {
   if ("error" in emitted) return emitted;
   const parsed = parseRecipeItem(emitted);
-  if (!parsed.ok) return { error: `adapter emitted an invalid item: ${parsed.error}` };
+  if (!parsed.ok) return { error: `adapter emitted an invalid item: ${parsed.error}`, category: "contract_invalid" };
   return parsed.value;
 }
 

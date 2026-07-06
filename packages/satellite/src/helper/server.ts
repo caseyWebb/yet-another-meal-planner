@@ -26,6 +26,7 @@ import { fetchOrderList, postReceipt, type OrderListOutcome, type ReceiptOutcome
 import type { FetchImpl, PushOptions } from "../push.js";
 import { Drive, toCheckpointResolution, type PageHandle } from "./drive.js";
 import { validateOrderEmit, type OrderAdapterFactory } from "../order-adapter.js";
+import { summarizeLocalRejects } from "../local-rejects.js";
 import type { OrderStoreConfig, SatelliteConfig } from "../config.js";
 import type { StorageState } from "../session.js";
 import type { Logger } from "../adapter.js";
@@ -405,7 +406,14 @@ export function createHelper(deps: HelperDeps): Helper {
       const v = validateOrderEmit(obs);
       if (v.ok) observations.push(v.value);
     }
-    const receipt: OrderReceiptRequest = { order_list_id: orderList.order_list_id, observations };
+    // Assemble the compact local-reject summary from the emits the drive dropped (per category) and
+    // attach it to the receipt — only when non-empty, so a clean fill stays additive (satellite-source-audit).
+    const localRejects = summarizeLocalRejects(drive.localRejects);
+    const receipt: OrderReceiptRequest = {
+      order_list_id: orderList.order_list_id,
+      observations,
+      ...(localRejects.length > 0 ? { local_rejects: localRejects } : {}),
+    };
     const outcome = await postReceipt(deps.connectorUrl, deps.ingestKey, receipt, fetchImpl, clientOptions);
     if (outcome.result !== "ok") {
       sendJson(res, 200, { ok: false, error: mapReceiptError(outcome) });

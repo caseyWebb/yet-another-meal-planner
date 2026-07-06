@@ -184,20 +184,24 @@ export const Avatar = ({ fallback, size }: { fallback: string; size?: "lg" }) =>
 export const StatCardGrid = ({ children }: { children?: Child }) => <div class="stat-grid">{children}</div>;
 
 /** One stat tile: an icon + uppercase label and a large value, with an optional sub-line. When
- *  `href` is given the whole tile is a link (the redesign's "drill into this area" affordance). */
+ *  `href` is given the whole tile is a link (the redesign's "drill into this area" affordance).
+ *  `tone` tints the tile for a non-neutral count ("warn" = amber degrading, "bad" = red held). */
 export const StatCard = ({
   icon,
   label,
   value,
   sub,
   href,
+  tone,
 }: {
   icon?: Child;
   label: string;
   value: Child;
   sub?: Child;
   href?: string;
+  tone?: "warn" | "bad";
 }) => {
+  const toneClass = tone === "warn" ? " stat-warn" : tone === "bad" ? " stat-bad" : "";
   const body = (
     <>
       <div class="stat-top">
@@ -209,11 +213,11 @@ export const StatCard = ({
     </>
   );
   return href != null ? (
-    <a class="stat-card stat-card-link" href={href}>
+    <a class={`stat-card stat-card-link${toneClass}`} href={href}>
       {body}
     </a>
   ) : (
-    <div class="stat-card">{body}</div>
+    <div class={`stat-card${toneClass}`}>{body}</div>
   );
 };
 

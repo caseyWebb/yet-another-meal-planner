@@ -12,6 +12,7 @@ import {
   CONTRACT_VERSION,
   parseSatelliteBatch,
   type BatchResponse,
+  type LocalReject,
   type SatelliteBatch,
   type RecipeItem,
 } from "@grocery-agent/contract";
@@ -35,15 +36,18 @@ export const SATELLITE_VERSION = readSatelliteVersion();
 
 /**
  * Build a validated-shape v2 batch for one source under the `recipe-scrape` capability, tagging
- * each functional-facts item with its observation `kind`. Does not self-validate — pushBatch does.
+ * each functional-facts item with its observation `kind`. The optional pre-aggregated `localRejects`
+ * summary (satellite-source-audit) is attached only when non-empty, so it stays additive (a clean
+ * batch omits it and remains `contract_version: "v2"`). Does not self-validate — pushBatch does.
  */
-export function buildBatch(source: string, items: RecipeItem[]): SatelliteBatch {
+export function buildBatch(source: string, items: RecipeItem[], localRejects: LocalReject[] = []): SatelliteBatch {
   return {
     capability: "recipe-scrape",
     source,
     satellite_version: SATELLITE_VERSION,
     contract_version: CONTRACT_VERSION,
     observations: items.map((item) => ({ kind: "recipe" as const, ...item })),
+    ...(localRejects.length > 0 ? { local_rejects: localRejects } : {}),
   };
 }
 

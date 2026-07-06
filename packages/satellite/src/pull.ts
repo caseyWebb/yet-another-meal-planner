@@ -11,6 +11,7 @@ import {
   parseSaleScanPayload,
   SALE_SCAN_KIND,
   type ClaimResponse,
+  type LocalReject,
   type SaleObservation,
   type TaskEnvelope,
 } from "@grocery-agent/contract";
@@ -20,6 +21,7 @@ import type { StorageState } from "./session.js";
 import type { Logger } from "./adapter.js";
 import type { FetchImpl, PushOptions } from "./push.js";
 import { loadSaleAdapters, runScanAdapter, type SaleAdapterFactory, type ScanSdk } from "./sale-adapter.js";
+import { summarizeLocalRejects } from "./local-rejects.js";
 
 const defaultSleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
@@ -117,7 +119,7 @@ export async function claimTasks(
 export async function reportResult(
   connectorUrl: string,
   key: string,
-  report: { task_id: string; status: "done" | "failed"; reason?: string; observations?: SaleObservation[] },
+  report: { task_id: string; status: "done" | "failed"; reason?: string; observations?: SaleObservation[]; local_rejects?: LocalReject[] },
   fetchImpl: FetchImpl,
   options: PushOptions = {},
 ): Promise<ReportOutcome> {
@@ -221,7 +223,15 @@ export async function runPullTick(config: SatelliteConfig, deps: PullDeps): Prom
     }
     result.rejectedObservations += outcome.rejected.length;
     for (const r of outcome.rejected) deps.log.warn("rejected observation (not reported)", { store: store.store, reason: r.reason });
-    await report(deps, task.id, { status: "done", observations: outcome.observations }, result);
+    // Assemble the compact local-reject summary from the already-collected drops (per category) and
+    // attach it to the report — only when non-empty, so a clean scan stays additive (satellite-source-audit).
+    const localRejects = summarizeLocalRejects(outcome.rejected);
+    await report(
+      deps,
+      task.id,
+      { status: "done", observations: outcome.observations, ...(localRejects.length > 0 ? { local_rejects: localRejects } : {}) },
+      result,
+    );
   }
 
   return result;
@@ -231,7 +241,7 @@ export async function runPullTick(config: SatelliteConfig, deps: PullDeps): Prom
 async function report(
   deps: PullDeps,
   taskId: string,
-  r: { status: "done" | "failed"; reason?: string; observations?: SaleObservation[] },
+  r: { status: "done" | "failed"; reason?: string; observations?: SaleObservation[]; local_rejects?: LocalReject[] },
   tick: PullTickResult,
 ): Promise<void> {
   const outcome = await reportResult(deps.connectorUrl, deps.ingestKey, { task_id: taskId, ...r }, deps.fetchImpl, deps.options);

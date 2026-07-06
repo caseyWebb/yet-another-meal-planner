@@ -78,6 +78,19 @@ List the recipes the index reconcile **SKIPPED** because they failed validation 
 
 **Notes:** Use it when a member reports a recipe they authored/edited (e.g. via Obsidian) isn't showing up, or proactively after a bulk edit — then relay the specific fix so they can correct the source.
 
+### `read_satellite_rejections(source?)`
+
+List a satellite's recently **REJECTED** observations — the source-audit rear-view mirror (satellite-source-audit). A satellite is a member's home helper that scrapes recipes / scans a non-Kroger store's sale flyer / fills a store cart; the Worker re-validates everything it sends and **DROPS** what fails. This read reflects **only rejected** observations — an accepted one **NEVER** appears (so an empty `rejections` means everything the satellite sent lately landed cleanly). Bounded, most-recent-first; never writes. **Visibility:** recipe and sale rejections/quarantines are operator-global (**shared** across the group), but `order`-kind rows are per-member **PRIVATE** (order-fill is a member's own store cart) — the caller sees only their own order rejections, never another member's. The optional `source` filters to one exact source (a feed/site for recipe, a store slug for sale/order).
+
+**Returns:**
+- `{ rejections: [{ kind, source, origin, reason, provenance, count, rejected_at }], quarantined: [{ kind, source, quarantined_at }] }`.
+  - `kind` is `recipe` | `sale` | `order`; `source` is the feed/site (recipe) or the store slug (sale/order).
+  - `origin` is `worker` (rejected by the Worker at intake — a bad shape, a wrong-endpoint item, or a **quarantined** source with `reason: "quarantined"`) or `local` (a satellite-reported, pre-aggregated summary of what its own validators dropped before the wire — `reason` is the reported category).
+  - `count` is `1` for a Worker reject or `N` for a pre-aggregated local-summary entry; `provenance` is the offending url/id or a redacted sample.
+  - `quarantined` lists the sources an operator has flagged as a Worker-side reject (their observations are dropped at intake until un-flagged), scoped to the same visibility rule as `rejections`.
+
+**Notes:** Use it when a member says their satellite's recipes/sales aren't showing up: read it and relay the **specific defect** (e.g. "seriouseats: 12 items failed as `contract_invalid` in the last day — the adapter likely broke"). It is a health gauge, not a security boundary (the satellite runs on the operator's own network under the operator's own session; the audit trusts its honesty and reports operational breakage, not lies).
+
 ### `update_recipe(slug, updates)`
 
 Edit a recipe's **objective shared content** (frontmatter/body) — the same recipe everyone in the group sees. `favorite`/`reject` are NOT settable here (they are the caller's personal disposition — use `toggle_favorite` / `toggle_reject`), nor is `last_cooked` (derived from the cooking log — record a cooked meal via `log_cooked`).

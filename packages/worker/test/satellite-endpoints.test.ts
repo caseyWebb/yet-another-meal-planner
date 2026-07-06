@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import { handleSatelliteClaim, handleSatelliteResults } from "../src/satellite.js";
 import { mintIngestKey, revokeIngestKey } from "../src/ingest-db.js";
 import { enqueueTask, getTask, claimTasks } from "../src/satellite-tasks-db.js";
+import { readSourceStats } from "../src/satellite-audit-db.js";
 import { readStoreFlyer, writeStoreRollup } from "../src/flyer-warm.js";
 import type { FlyerItem } from "../src/matching.js";
 import { SALE_SCAN_KIND, type ClaimResponse, type ResultResponse, type TaskEnvelope } from "@grocery-agent/contract";
@@ -144,21 +145,26 @@ describe("/satellite/results", () => {
     expect(await getTask(env, id).then((r) => r?.status)).toBe("done");
   });
 
-  it("is idempotent: a double / late report dedups on arrival and the transition is a safe no-op", async () => {
+  it("is idempotent: a repeat report on an already-terminal task skips intake (no re-bump, no re-run)", async () => {
     const { env, rows } = sqliteEnv();
     const { secret } = await mintIngestKey(env, "home-nas", NOW);
     const { id } = await enqueueTask(env, { kind: "scan", scope: "operator", tenant: null, dedupKey: "d", payload: {} }, NOW);
 
     const first = await handleSatelliteResults(resultsReq(secret, { task_id: id, status: "done", observations: [recipeObs(1)] }), env, NOW + 1);
     expect(first.status).toBe(200);
-    // A repeat report (e.g. the original claimer's late report after a re-claim): still 200, the
-    // observation dedups on arrival (no duplicate row), and the terminal transition is a no-op.
+    // The accept-tally reflects the one accepted recipe after the first landing.
+    expect((await readSourceStats(env)).reduce((n, s) => n + s.accepted, 0)).toBe(1);
+
+    // A repeat report (e.g. the original claimer's late report after a re-claim, or a retry when the
+    // satellite missed the first response): still 200, reports the prior terminal status, but the guard
+    // short-circuits BEFORE intake — so nothing re-runs and the monotonic accept-tally is NOT re-bumped.
     const second = await handleSatelliteResults(resultsReq(secret, { task_id: id, status: "done", observations: [recipeObs(1)] }), env, NOW + 2);
     expect(second.status).toBe(200);
     const body = (await second.json()) as ResultResponse;
     expect(body.task.status).toBe("done");
-    expect(body.results?.[0].disposition).toBe("deduped");
+    expect(body.results).toBeUndefined(); // no intake re-run → no per-item results
     expect(rows("ingest_candidates")).toHaveLength(1); // still exactly one landed row
+    expect((await readSourceStats(env)).reduce((n, s) => n + s.accepted, 0)).toBe(1); // NOT double-bumped
   });
 
   it("an unknown task_id is a structured not_found (404) with nothing persisted", async () => {

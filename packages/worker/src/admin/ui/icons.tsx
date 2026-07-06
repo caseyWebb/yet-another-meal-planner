@@ -218,8 +218,8 @@ export const ShieldIcon = ({ size }: { size?: number }) => (
   </Icon>
 );
 
-export const ChevronDownIcon = ({ size }: { size?: number }) => (
-  <Icon size={size}>
+export const ChevronDownIcon = ({ size, class: cls }: { size?: number; class?: string }) => (
+  <Icon size={size} class={cls}>
     <path d="m6 9 6 6 6-6" />
   </Icon>
 );
@@ -235,6 +235,23 @@ export const AlertTriangleIcon = ({ size }: { size?: number }) => (
     <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z" />
     <path d="M12 9v4" />
     <path d="M12 17h.01" />
+  </Icon>
+);
+
+/** A crossed circle — the source-audit quarantine glyph (a block, not a delete). */
+export const BanIcon = ({ size }: { size?: number }) => (
+  <Icon size={size}>
+    <circle cx="12" cy="12" r="10" />
+    <path d="m4.9 4.9 14.2 14.2" />
+  </Icon>
+);
+
+/** Opens-in-a-new-tab — marks an actionable (URL) provenance in the rejection drill-down. */
+export const ExternalLinkIcon = ({ size }: { size?: number }) => (
+  <Icon size={size}>
+    <path d="M15 3h6v6" />
+    <path d="M10 14 21 3" />
+    <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
   </Icon>
 );
 

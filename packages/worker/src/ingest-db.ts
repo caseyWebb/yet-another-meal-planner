@@ -12,6 +12,7 @@ import { db } from "./db.js";
 import type { Env } from "./env.js";
 import { CONTRACT_VERSION, type PushResult } from "@grocery-agent/contract";
 import { countPushedOutcomesSince } from "./discovery-db.js";
+import { readSourceQuality, type SourceQuality } from "./satellite-audit-db.js";
 
 /** A satellite is `fresh` if its most recent push is within this window, else `stale`; `never` = no push. */
 export const FRESH_WINDOW_MS = 6 * 60 * 60 * 1000;
@@ -300,6 +301,10 @@ export interface SatelliteRollup {
   activeSatellites: SatelliteLiveness[];
   funnel: { arrival: { received: number; accepted: number; deduped: number; swept: number }; downstream: { imported: number; noMatch: number; duplicate: number; parked: number } };
   pushes: RecentPush[];
+  /** The source-audit reliability signal (satellite-source-audit): a per-`{kind, source}` quality
+   *  dimension (acceptance/fail rate + staleness + quarantine state/recommendation) BESIDE the
+   *  recency above — the compute-on-read rollup the admin Satellites page's quality column reads. */
+  quality: SourceQuality[];
   stats: { activeSatellites: number; fresh: number; stale: number; sources: number; pushes24h: number };
 }
 
@@ -317,10 +322,13 @@ function healthFor(lastPush: number | null, now: number): Health {
 export async function readSatelliteLiveness(env: Env, now: number = Date.now()): Promise<SatelliteRollup> {
   const since7d = now - 7 * DAY_MS;
   const since24h = now - DAY_MS;
-  const [keys, pushes7d, downstream] = await Promise.all([
+  const [keys, pushes7d, downstream, quality] = await Promise.all([
     listIngestKeys(env),
     readIngestPushes(env, since7d),
     countPushedOutcomesSince(env, new Date(since24h).toISOString()),
+    // The source-audit quality dimension (satellite-source-audit), folded in beside the recency
+    // rollup so there is one reader and one place the admin Satellites page reads.
+    readSourceQuality(env, now),
   ]);
   const labelOf = new Map(keys.map((k) => [k.id, k.label]));
 
@@ -386,6 +394,7 @@ export async function readSatelliteLiveness(env: Env, now: number = Date.now()):
     activeSatellites,
     funnel: { arrival, downstream },
     pushes,
+    quality,
     stats: {
       activeSatellites: activeSatellites.length,
       fresh: activeSatellites.filter((s) => s.health === "fresh").length,

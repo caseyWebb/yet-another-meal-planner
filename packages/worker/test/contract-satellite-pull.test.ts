@@ -105,6 +105,24 @@ describe("parseResultRequest", () => {
     expect(r.ok).toBe(true);
     if (r.ok) expect(parseObservationItem(r.value.observations![0]).ok).toBe(false);
   });
+
+  it("carries the optional local_rejects summary (satellite-source-audit) and stays additive", () => {
+    // WITH the summary: it round-trips off the results envelope.
+    const withSummary = parseResultRequest({
+      task_id: "st_x",
+      status: "done",
+      observations: [],
+      local_rejects: [{ category: "judgment_smuggled", count: 3, sample: "sensor-not-judge violation" }],
+    });
+    expect(withSummary.ok).toBe(true);
+    if (withSummary.ok) expect(withSummary.value.local_rejects).toEqual([{ category: "judgment_smuggled", count: 3, sample: "sensor-not-judge violation" }]);
+    // WITHOUT it: an omitting report is unaffected (no field on the parsed value).
+    const without = parseResultRequest({ task_id: "st_x", status: "done", observations: [] });
+    expect(without.ok).toBe(true);
+    if (without.ok) expect(without.value.local_rejects).toBeUndefined();
+    // A malformed entry sinks the parse (validated at the boundary).
+    expect(parseResultRequest({ task_id: "st_x", status: "done", local_rejects: [{ category: "nope", count: 1 }] }).ok).toBe(false);
+  });
 });
 
 describe("parseSaleScanPayload (the first concrete task payload)", () => {

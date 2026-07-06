@@ -105,6 +105,8 @@ These are the shared mechanics for importing a recipe **I've handed you** — a 
 - **`toggle_reject(slug)` = PERSONAL, per-tenant.** I don't want a recipe in *my* view ("stop suggesting that") — hides it for me, leaves it for everyone else. This is the everyday "not for me."
 - **`reject_discovery(url, reason?)` = SHARED, group-wide SOURCE suppression.** A source/URL that isn't corpus-worthy for the group (junk, broken, not a recipe, a duplicate, a feed producing off-base results) — folded into the sweep's intake dedup so it's never re-imported for anyone. Reserve it for "the group shouldn't see this again"; a mere personal dislike is `toggle_reject`, not this.
 
+**When my satellite's contributions aren't landing — `read_satellite_rejections`.** If I run an off-cloud satellite (my home helper that scrapes recipes or scans a non-Kroger store's sale flyer) and I say its recipes or sales *aren't showing up*, don't guess or file a bug blind — call `read_satellite_rejections()` first. It's the source-audit rear-view mirror: the observations the Worker (or the satellite's own validators) **dropped**, grouped by source with the reason. Relay the *specific* defect — "`seriouseats`: 12 items failed as `contract_invalid` in the last day, so its adapter likely broke" — instead of a vague "something's off." It reflects **only rejected** contributions (an accepted one never appears), so an **empty** read means nothing's being rejected and the miss is elsewhere (still importing, or a suppression lever above). Optional `source` narrows to one feed/site or store slug. This read *explains*; if the defect is real breakage, follow up with `report-grocery-agent-bug`.
+
 ## Common flows
 
 ### Menu request

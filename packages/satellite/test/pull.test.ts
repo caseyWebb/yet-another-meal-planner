@@ -20,7 +20,7 @@ const CONFIG: SatelliteConfig = {
 /** A canned transport: records every request, returns a claim batch then 200 for reports. */
 function fakeTransport(tasks: TaskEnvelope[]) {
   const claims: unknown[] = [];
-  const reports: { task_id: string; status: string; observations?: SaleObservation[]; reason?: string }[] = [];
+  const reports: { task_id: string; status: string; observations?: SaleObservation[]; reason?: string; local_rejects?: { category: string; count: number; sample?: string }[] }[] = [];
   const fetchImpl = async (url: string, init: { method: string; headers: Record<string, string>; body: string }) => {
     const body = JSON.parse(init.body);
     if (url.endsWith("/satellite/tasks/claim")) {
@@ -130,6 +130,21 @@ describe("runPullTick", () => {
     expect(reported.map((o) => o.productId)).toEqual(["ok"]);
     // No derived saving ever reaches the wire.
     for (const o of reported) expect(o).not.toHaveProperty("savings");
+    // satellite-source-audit: the two drops ride the report as a per-category local_rejects summary.
+    const summary = transport.reports[0].local_rejects ?? [];
+    expect(summary.map((s) => s.category).sort()).toEqual(["contract_invalid", "judgment_smuggled"]);
+    expect(summary.find((s) => s.category === "judgment_smuggled")).toMatchObject({ count: 1 });
+    expect(summary.find((s) => s.category === "contract_invalid")).toMatchObject({ count: 1 });
+    // The sample is a redacted reason string, never a raw offending body.
+    expect(summary.every((s) => typeof s.sample === "string" && s.sample.length > 0)).toBe(true);
+  });
+
+  it("omits local_rejects entirely on a clean scan (stays additive)", async () => {
+    const transport = fakeTransport([saleTask()]);
+    const adapter: SaleScanAdapter = { id: "target-sales", async scan() { return [rawSale({ productId: "ok" })] as SaleObservation[]; } };
+    await runPullTick(CONFIG, deps({ transport, adapter }));
+    expect(transport.reports[0].status).toBe("done");
+    expect(transport.reports[0]).not.toHaveProperty("local_rejects");
   });
 
   it("reports failed when the adapter returns a structured error", async () => {
