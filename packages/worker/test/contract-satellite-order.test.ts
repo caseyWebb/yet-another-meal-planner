@@ -106,4 +106,19 @@ describe("parseOrderReceiptRequest (observations kept RAW for per-item validatio
     expect(r.ok).toBe(true);
     if (r.ok) expect(parseObservationItem(r.value.observations![0]).ok).toBe(false);
   });
+
+  it("carries the optional local_rejects summary (satellite-source-audit) and stays additive", () => {
+    const withSummary = parseOrderReceiptRequest({
+      order_list_id: "ol_x",
+      observations: [cartedObs],
+      local_rejects: [{ category: "contract_invalid", count: 5, sample: "adapter emitted an invalid order observation" }],
+    });
+    expect(withSummary.ok).toBe(true);
+    if (withSummary.ok) expect(withSummary.value.local_rejects?.[0]).toMatchObject({ category: "contract_invalid", count: 5 });
+    // Omitting it is unaffected; a malformed entry sinks the parse.
+    const without = parseOrderReceiptRequest({ order_list_id: "ol_x", observations: [cartedObs] });
+    expect(without.ok).toBe(true);
+    if (without.ok) expect(without.value.local_rejects).toBeUndefined();
+    expect(parseOrderReceiptRequest({ order_list_id: "ol_x", local_rejects: [{ category: "contract_invalid", count: 0 }] }).ok).toBe(false);
+  });
 });

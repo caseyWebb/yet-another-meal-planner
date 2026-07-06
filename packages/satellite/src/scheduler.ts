@@ -6,13 +6,14 @@
 // cursor, logger), so the whole flow is testable with in-memory fakes — no network, no
 // browser, no filesystem. The CLI wires the real deps; tests wire fakes.
 
-import { MAX_BATCH_ITEMS, type RecipeItem } from "@grocery-agent/contract";
+import { MAX_BATCH_ITEMS, type LocalRejectCategory, type RecipeItem } from "@grocery-agent/contract";
 import type { SatelliteConfig, SourceConfig } from "./config.js";
 import type { AdapterFactory, Sdk, SourceAdapter } from "./adapter.js";
 import { validateEmit } from "./adapter.js";
 import type { FetchResult, FetchTier } from "./fetch.js";
 import { parsePageToRecipe } from "./jsonld.js";
 import { buildBatch, pushBatch, type FetchImpl, type PushOptions, type PushOutcome } from "./push.js";
+import { summarizeLocalRejects, type LocalDrop } from "./local-rejects.js";
 import type { StorageState } from "./session.js";
 import { looksLikeAuthWall } from "./session.js";
 import type { Logger } from "./adapter.js";
@@ -61,7 +62,7 @@ async function processCandidate(
   tier: FetchTier,
   session: StorageState | null,
   url: string,
-): Promise<{ kind: "item"; item: RecipeItem } | { kind: "auth_expired" } | { kind: "skip"; reason: string }> {
+): Promise<{ kind: "item"; item: RecipeItem } | { kind: "auth_expired" } | { kind: "skip"; reason: string; category?: LocalRejectCategory }> {
   let fetched: FetchResult;
   try {
     fetched = await tier.fetch(url, session);
@@ -73,7 +74,9 @@ async function processCandidate(
 
   const emitted = adapter.extract(sdk, url, fetched.html);
   const validated = validateEmit(emitted);
-  if ("error" in validated) return { kind: "skip", reason: validated.error };
+  // A CONTRACT-PARSE drop carries a `category` (a local-reject the push batch's `local_rejects`
+  // summary reports); an adapter's own extract error (no recipe on the page) has none — a benign skip.
+  if ("error" in validated) return { kind: "skip", reason: validated.error, category: validated.category };
   return { kind: "item", item: validated };
 }
 
@@ -134,9 +137,10 @@ async function runSource(config: SatelliteConfig, source: SourceConfig, deps: Ti
     source.mode === "backfill" ? discovered : discovered.filter((u) => !deps.cursor.has(u));
   summary.skippedSeen = discovered.length - candidates.length;
 
-  // Fetch + extract + validate each candidate; collect the items.
+  // Fetch + extract + validate each candidate; collect the items + the local contract-parse drops.
   const items: RecipeItem[] = [];
   const pushedUrls: string[] = [];
+  const localDrops: LocalDrop[] = [];
   for (const url of candidates) {
     const result = await processCandidate(sdk, adapter, tier, session, url);
     if (result.kind === "auth_expired") {
@@ -148,6 +152,9 @@ async function runSource(config: SatelliteConfig, source: SourceConfig, deps: Ti
     if (result.kind === "skip") {
       deps.log.info("skipped candidate", { source: source.id, url, reason: result.reason });
       summary.failed++;
+      // Only a contract-parse drop (the adapter emitted a non-contract shape) is a local reject the
+      // summary reports; a fetch/http/no-recipe skip is operational, not a shape reject.
+      if (result.category) localDrops.push({ category: result.category, reason: result.reason });
       continue;
     }
     items.push(result.item);
@@ -164,7 +171,10 @@ async function runSource(config: SatelliteConfig, source: SourceConfig, deps: Ti
   for (let i = 0; i < items.length; i += MAX_BATCH_ITEMS) {
     const chunkItems = items.slice(i, i + MAX_BATCH_ITEMS);
     const chunkUrls = pushedUrls.slice(i, i + MAX_BATCH_ITEMS);
-    const batch = buildBatch(source.id, chunkItems);
+    // The per-source local-reject summary rides the FIRST chunk only, so a multi-chunk backfill
+    // records it ONCE (each chunk is a separate push landing separate ledger rows).
+    const localRejects = i === 0 ? summarizeLocalRejects(localDrops) : [];
+    const batch = buildBatch(source.id, chunkItems, localRejects);
     const outcome = await pushBatch(deps.connectorUrl, deps.ingestKey, batch, deps.fetchImpl, deps.pushOptions);
     summary.push = outcome.result;
 

@@ -19,6 +19,7 @@
 // before it is collected for the receipt, so a non-contract or smuggled-derived-state emit is dropped.
 
 import { validateOrderEmit, type OrderAdapterFactory, type OrderSdk, type CheckpointPrompt, type CheckpointResolution } from "../order-adapter.js";
+import type { LocalDrop } from "../local-rejects.js";
 import type { OrderLine, OrderObservation } from "@grocery-agent/contract";
 import type { OrderStoreConfig, SatelliteConfig } from "../config.js";
 import type { StorageState } from "../session.js";
@@ -118,6 +119,11 @@ export class Drive {
   pendingCheckpoint: { checkpoint_id: string; item_id: string; message: string; options: OrderProduct[] } | null = null;
   /** The validated observations collected from the completed fill — the receipt is assembled from these. */
   readonly observations: OrderObservation[] = [];
+  /**
+   * The emits `validateOrderEmit` dropped during the fill, tagged by category (satellite-source-audit) —
+   * the receipt assembles its `local_rejects` summary from these. A whole-fill error is NOT collected here.
+   */
+  readonly localRejects: LocalDrop[] = [];
 
   private readonly events: DriveEvent[] = [];
   private readonly subscribers = new Set<(e: DriveEvent) => void>();
@@ -313,8 +319,10 @@ export class Drive {
     for (const raw of result as OrderObservation[]) {
       const v = validateOrderEmit(raw);
       if (!v.ok) {
-        // A non-contract / smuggled-derived-state emit is dropped from the receipt and surfaced.
+        // A non-contract / smuggled-derived-state emit is dropped from the receipt and surfaced —
+        // and its category collected so the receipt's `local_rejects` summary reports the drop.
         deps.log.warn("order emit rejected — not added to the receipt", { reason: v.error });
+        this.localRejects.push({ category: v.category, reason: v.error });
         continue;
       }
       const obs = v.value;

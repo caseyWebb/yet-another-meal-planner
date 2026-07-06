@@ -10,6 +10,7 @@
 
 import { db } from "./db.js";
 import type { Env } from "./env.js";
+import type { LocalReject } from "@grocery-agent/contract";
 
 /** A satellite rejection's origin: caught Worker-side at intake, or reported by the satellite's local validators. */
 export type RejectionOrigin = "worker" | "local";
@@ -65,6 +66,28 @@ export async function appendRejection(env: Env, entry: RejectionEntry, now: numb
     entry.count ?? 1,
     now,
   );
+}
+
+/**
+ * Record a satellite-reported local-reject summary (satellite-source-audit, Decision D) into the
+ * ledger — ONE row per entry, `origin: "local"`, carrying the pre-aggregated `count` and the redacted
+ * `sample` as `provenance`; `reason` is the category. Local rejects do NOT bump the accept-tally
+ * (they were never accepted) — they raise the source's fail-rate exactly as a Worker-side reject does,
+ * which is the point: a locally-dropped flood (a broken adapter) becomes visible. Reuses
+ * `appendRejection` (no duplicated logic); awaited so a D1 failure surfaces as the caller's 503.
+ */
+export async function recordLocalRejects(
+  env: Env,
+  ctx: { entries: LocalReject[]; tenant: string | null; keyId: string | null; kind: string; source: string },
+  now: number = Date.now(),
+): Promise<void> {
+  for (const e of ctx.entries) {
+    await appendRejection(
+      env,
+      { tenant: ctx.tenant, keyId: ctx.keyId, kind: ctx.kind, source: ctx.source, origin: "local", reason: e.category, provenance: e.sample ?? null, count: e.count },
+      now,
+    );
+  }
 }
 
 /** Read options for the ledger: an optional recency floor + an optional exact-source filter, bounded. */

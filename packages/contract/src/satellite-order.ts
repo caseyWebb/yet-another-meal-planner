@@ -13,7 +13,7 @@
 // See openspec specs/satellite-order-cart-fill.
 
 import { z } from "zod";
-import { MAX_BATCH_ITEMS, type ItemResult, type ParseResult } from "./ingest.js";
+import { MAX_BATCH_ITEMS, LocalRejectsSchema, type ItemResult, type ParseResult, type LocalReject } from "./ingest.js";
 
 /** Format a ZodError's issues into a compact, field-scoped message (mirrors ./ingest.ts). */
 function fmtIssues(err: z.ZodError): string {
@@ -68,6 +68,12 @@ export interface OrderReceiptRequest {
   observations?: unknown[];
   /** True on the optional mark-placed re-post (advance issued in_cart lines to ordered). */
   mark_placed?: boolean;
+  /**
+   * Additive, OPTIONAL local-reject summary (satellite-source-audit) — the emits the cart-fill
+   * adapter's validator dropped locally, pre-aggregated per category. Recorded `origin: local` by
+   * the Worker.
+   */
+  local_rejects?: LocalReject[];
 }
 
 /** The LENIENT receipt envelope the Worker validates against (observations stay raw for per-item validation). */
@@ -75,6 +81,7 @@ const OrderReceiptEnvelopeSchema = z.object({
   order_list_id: z.string().trim().min(1),
   observations: z.array(z.unknown()).max(MAX_BATCH_ITEMS).optional(),
   mark_placed: z.boolean().optional(),
+  local_rejects: LocalRejectsSchema.optional(),
 });
 
 /** The receipt endpoint's response: the order-list's post-application status + the per-item intake results. */
@@ -93,6 +100,7 @@ export function parseOrderReceiptRequest(input: unknown): ParseResult<OrderRecei
         order_list_id: r.data.order_list_id,
         ...(r.data.observations !== undefined ? { observations: r.data.observations } : {}),
         ...(r.data.mark_placed !== undefined ? { mark_placed: r.data.mark_placed } : {}),
+        ...(r.data.local_rejects !== undefined ? { local_rejects: r.data.local_rejects } : {}),
       },
     };
   }

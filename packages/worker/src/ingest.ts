@@ -32,7 +32,7 @@ import type { KvStore } from "./kroger-user.js";
 import { validateSale } from "./sale-intake.js";
 import { advanceInCartRows, readGroceryKeyIndex, isoDay } from "./session-db.js";
 import { markOrderListReceived } from "./order-lists-db.js";
-import { appendRejection, bumpAcceptTally, getQuarantine } from "./satellite-audit-db.js";
+import { appendRejection, bumpAcceptTally, getQuarantine, recordLocalRejects } from "./satellite-audit-db.js";
 import { ToolError } from "./errors.js";
 
 /** Per-key fixed-window rate limit (best-effort, KV-backed; fail-open on a KV error). */
@@ -500,6 +500,14 @@ export async function handleIngest(request: Request, env: Env, now: number = Dat
   // structured storage_error, not a bare 500 (this endpoint is wired raw in index.ts).
   try {
   const response = await intakeObservations(env, batch.observations, batch.source, key.id, now, { keyTenant: key.tenant });
+  // Record any satellite-reported local rejects (satellite-source-audit) — origin: local, one ledger
+  // row per entry, keyed to this envelope's kind + source. The push batch is the recipe-scrape
+  // delivery path; map the declared capability to its observation kind. Inside the try so a D1
+  // failure surfaces as the structured storage_error below (they do NOT bump the accept-tally).
+  if (batch.localRejects && batch.localRejects.length > 0) {
+    const kind = batch.capability === "sale-scan" ? "sale" : "recipe";
+    await recordLocalRejects(env, { entries: batch.localRejects, tenant: key.tenant, keyId: key.id, kind, source: batch.source }, now);
+  }
   // Record the push for the admin liveness/recent-pushes view (best-effort).
   await recordIngestPush(
     env,

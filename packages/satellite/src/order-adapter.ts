@@ -12,7 +12,7 @@
 // It is also browser-ONLY: a fill needs a live authenticated store session, so unlike the recipe/
 // sale SDKs there is no plain-HTTP tier here — the SDK always carries a live Playwright `page`.
 
-import { parseOrderObservation, type OrderLine, type OrderObservation } from "@grocery-agent/contract";
+import { parseOrderObservation, type OrderLine, type OrderObservation, type LocalRejectCategory } from "@grocery-agent/contract";
 import { pathToFileURL } from "node:url";
 import { readdirSync } from "node:fs";
 import { join } from "node:path";
@@ -90,19 +90,20 @@ const JUDGMENT_KEYS = ["status", "in_cart", "inCart", "ordered", "grocery_status
  */
 export function validateOrderEmit(
   emitted: unknown,
-): { ok: true; value: OrderObservation } | { ok: false; error: string } {
+): { ok: true; value: OrderObservation } | { ok: false; error: string; category: LocalRejectCategory } {
   if (emitted !== null && typeof emitted === "object") {
     for (const k of JUDGMENT_KEYS) {
       if (k in (emitted as Record<string, unknown>)) {
         return {
           ok: false,
           error: `sensor-not-judge violation: adapter emitted a derived grocery-list "${k}" field (report only the raw { item_id, disposition, product })`,
+          category: "judgment_smuggled",
         };
       }
     }
   }
   const parsed = parseOrderObservation(emitted);
-  if (!parsed.ok) return { ok: false, error: `adapter emitted an invalid order observation: ${parsed.error}` };
+  if (!parsed.ok) return { ok: false, error: `adapter emitted an invalid order observation: ${parsed.error}`, category: "contract_invalid" };
   return { ok: true, value: parsed.value };
 }
 

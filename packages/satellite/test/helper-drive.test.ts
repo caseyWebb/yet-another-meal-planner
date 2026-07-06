@@ -84,18 +84,24 @@ describe("Drive — the checkpoint blocking round-trip", () => {
 });
 
 describe("Drive — the sensor-not-judge gate and terminal errors", () => {
-  it("drops a returned emit that smuggles a derived grocery-list state field", async () => {
+  it("drops a returned emit that smuggles a derived grocery-list state field, collecting it as a local reject", async () => {
     const factory: OrderAdapterFactory = () => ({
       id: "bad",
       async fill() {
-        // `status` is a derived grocery-list field — validateOrderEmit rejects it, so it is NOT collected.
-        return [{ kind: "order", item_id: "milk", disposition: "carted", status: "in_cart" } as unknown as OrderObservation];
+        // `status` is a derived grocery-list field — validateOrderEmit rejects it, so it is NOT collected
+        // into observations, but IS collected as a `judgment_smuggled` local reject for the receipt summary.
+        return [
+          { kind: "order", item_id: "milk", disposition: "carted", status: "in_cart" } as unknown as OrderObservation,
+          { kind: "order", item_id: "eggs", disposition: "bogus" } as unknown as OrderObservation, // contract_invalid
+        ];
       },
     });
     const d = new Drive("d3");
     await d.run(deps(factory), lines);
     expect(d.phase).toBe("review-ready");
     expect(d.observations).toHaveLength(0);
+    // satellite-source-audit: the drops are collected, tagged by category, for the receipt's local_rejects.
+    expect(d.localRejects.map((r) => r.category).sort()).toEqual(["contract_invalid", "judgment_smuggled"]);
   });
 
   it("surfaces an adapter structured error as a terminal error", async () => {

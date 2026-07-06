@@ -1,11 +1,13 @@
 import { describe, it, expect } from "vitest";
 import {
   CONTRACT_VERSION,
+  LOCAL_REJECT_CATEGORIES,
   parseSatelliteBatch,
   parseObservationItem,
   parseRecipeItem,
   parseSaleObservation,
   parseSatelliteEnvelope,
+  type LocalReject,
   type SatelliteBatch,
 } from "@grocery-agent/contract";
 
@@ -157,6 +159,62 @@ describe("sale observations (sensor-not-judge)", () => {
 describe("parseRecipeItem (adapter self-validation)", () => {
   it("accepts the bare functional-facts shape", () => {
     expect(parseRecipeItem(validItem).ok).toBe(true);
+  });
+});
+
+describe("local_rejects wire summary (satellite-source-audit) — additive + optional, stays v2", () => {
+  const localRejects: LocalReject[] = [
+    { category: "contract_invalid", count: 12, sample: "adapter emitted an invalid sale observation: productId: Required" },
+    { category: "judgment_smuggled", count: 2, sample: 'sensor-not-judge violation: adapter emitted a derived "savings" field' },
+  ];
+
+  it("exposes exactly the two reason categories", () => {
+    expect([...LOCAL_REJECT_CATEGORIES]).toEqual(["contract_invalid", "judgment_smuggled"]);
+  });
+
+  it("(a) a batch WITHOUT local_rejects still validates and reports contract_version v2", () => {
+    // The additive field being absent is the common case — it must not perturb the v2 contract.
+    expect(CONTRACT_VERSION).toBe("v2");
+    const r = parseSatelliteBatch(validBatch);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value.contract_version).toBe("v2");
+      expect(r.value).not.toHaveProperty("local_rejects");
+    }
+    // The lenient Worker-side envelope parse agrees and carries no summary.
+    const e = parseSatelliteEnvelope(validBatch);
+    expect(e.ok).toBe(true);
+    if (e.ok) {
+      expect(e.value.contractVersion).toBe("v2");
+      expect(e.value.localRejects).toBeUndefined();
+    }
+  });
+
+  it("(b) a batch WITH local_rejects validates, round-trips, and STAYS v2", () => {
+    const withSummary = { ...validBatch, local_rejects: localRejects };
+    const r = parseSatelliteBatch(withSummary);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value.contract_version).toBe("v2"); // additive ⇒ no version bump
+      expect(r.value.local_rejects).toEqual(localRejects);
+    }
+    // A receiving Worker reads the summary off the lenient envelope (localRejects threaded through).
+    const e = parseSatelliteEnvelope(withSummary);
+    expect(e.ok).toBe(true);
+    if (e.ok) expect(e.value.localRejects).toEqual(localRejects);
+  });
+
+  it("(c) rejects a malformed entry — an unknown category or a non-positive count", () => {
+    expect(parseSatelliteBatch({ ...validBatch, local_rejects: [{ category: "bogus", count: 1 }] }).ok).toBe(false);
+    expect(parseSatelliteBatch({ ...validBatch, local_rejects: [{ category: "contract_invalid", count: -1 }] }).ok).toBe(false);
+    expect(parseSatelliteBatch({ ...validBatch, local_rejects: [{ category: "contract_invalid", count: 0 }] }).ok).toBe(false);
+    expect(parseSatelliteBatch({ ...validBatch, local_rejects: [{ category: "contract_invalid", count: 1.5 }] }).ok).toBe(false);
+  });
+
+  it("accepts an entry without the optional sample", () => {
+    const r = parseSatelliteBatch({ ...validBatch, local_rejects: [{ category: "contract_invalid", count: 3 }] });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value.local_rejects?.[0].sample).toBeUndefined();
   });
 });
 

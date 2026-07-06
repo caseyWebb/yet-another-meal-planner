@@ -157,6 +157,41 @@ export const ObservationItemSchema = z.discriminatedUnion("kind", [
 ]);
 export type ObservationItem = z.infer<typeof ObservationItemSchema>;
 
+// --- local-reject summary (satellite-source-audit, Decision D) ----------------
+//
+// The satellite's local validators (`validateSaleEmit`/`validateOrderEmit`/the recipe adapter's
+// contract check) drop a malformed or judgment-smuggling item BEFORE the wire — invisible to a
+// Worker-side-only ledger. So the satellite attaches a compact, PRE-AGGREGATED local-reject summary
+// to each delivery envelope, and the Worker records it into the ledger with `origin: local`. The
+// field is ADDITIVE + OPTIONAL on all three envelopes, so it keeps `CONTRACT_VERSION: "v2"` (a
+// satellite that omits it is unaffected; an older Worker ignores an unknown field).
+
+/**
+ * The two categories a local reject maps to. `contract_invalid` — the emitted item failed the shared
+ * contract parse (`parseSaleObservation`/`parseOrderObservation`/`parseRecipeItem`): a missing/mistyped
+ * field, an out-of-shape body — the "DOM changed / adapter rotted" signal. `judgment_smuggled` — the
+ * adapter emitted a derived JUDGMENT field a sensor must never report (`JUDGMENT_KEYS`) — the
+ * "adapter is trying to be a judge" (sensor-not-judge) signal.
+ */
+export const LOCAL_REJECT_CATEGORIES = ["contract_invalid", "judgment_smuggled"] as const;
+export type LocalRejectCategory = (typeof LOCAL_REJECT_CATEGORIES)[number];
+
+/**
+ * ONE pre-aggregated local-reject summary entry: the `category`, the `count` of items dropped under
+ * it in this delivery, and ONE redacted/truncated example `reason` `sample` (never a raw body — a
+ * leak risk, since a malformed body may carry session/PII fragments). Defined ONCE here so the
+ * Worker (validates inbound) and the satellite (assembles outbound) can never drift.
+ */
+export const LocalRejectSchema = z.object({
+  category: z.enum(LOCAL_REJECT_CATEGORIES),
+  count: z.number().int().positive(),
+  sample: z.string().optional(),
+});
+export type LocalReject = z.infer<typeof LocalRejectSchema>;
+
+/** The optional `local_rejects` array carried, ADDITIVELY, on all three delivery envelopes. */
+export const LocalRejectsSchema = z.array(LocalRejectSchema);
+
 /**
  * The v2 batch envelope a satellite POSTs. `capability` is the reported capability, `source`
  * is the human-readable source name (required — the provenance the admin views group by),
@@ -168,6 +203,8 @@ export const SatelliteBatchSchema = z.object({
   satellite_version: z.string().trim().min(1).max(100),
   contract_version: z.string().trim().min(1).max(100),
   observations: z.array(ObservationItemSchema).min(1).max(MAX_BATCH_ITEMS),
+  /** Additive, OPTIONAL local-reject summary (satellite-source-audit) — omitting it keeps v2. */
+  local_rejects: LocalRejectsSchema.optional(),
 });
 export type SatelliteBatch = z.infer<typeof SatelliteBatchSchema>;
 
@@ -184,6 +221,7 @@ const SatelliteEnvelopeSchema = z.object({
   satellite_version: z.string().trim().min(1).max(100),
   contract_version: z.string().trim().min(1).max(100),
   observations: z.array(z.unknown()).min(1).max(MAX_BATCH_ITEMS),
+  local_rejects: LocalRejectsSchema.optional(),
 });
 
 /**
@@ -290,6 +328,8 @@ export interface NormalizedBatch {
   contractVersion: string;
   /** Raw observation items — validate each with `parseObservationItem`. */
   observations: unknown[];
+  /** The satellite-reported local-reject summary (satellite-source-audit) — v2 only; absent on v1. */
+  localRejects?: LocalReject[];
 }
 
 /** Wrap a v1 recipe (raw) as a `recipe` observation item; forces `kind: "recipe"`. */
@@ -326,6 +366,7 @@ export function parseSatelliteEnvelope(input: unknown): ParseResult<NormalizedBa
         satelliteVersion: r.data.satellite_version,
         contractVersion: r.data.contract_version,
         observations: r.data.observations,
+        ...(r.data.local_rejects !== undefined ? { localRejects: r.data.local_rejects } : {}),
       },
     };
   }

@@ -33,6 +33,7 @@ import { bearer, underRateLimit, intakeObservations } from "./ingest.js";
 import { lookupIngestKey, type IngestKeyRow } from "./ingest-db.js";
 import { claimTasks, completeTask, failTask, getTask, type SatelliteTaskRow } from "./satellite-tasks-db.js";
 import { insertOrderList, getOrderList, parseItemIds } from "./order-lists-db.js";
+import { recordLocalRejects } from "./satellite-audit-db.js";
 import { readPreferences } from "./profile-db.js";
 import { readGroceryList, readPantryNames, readGroceryKeyIndex, advanceOrderedRows, isoDay } from "./session-db.js";
 import { computeToBuy } from "./order.js";
@@ -173,6 +174,11 @@ export async function handleSatelliteResults(request: Request, env: Env, now: nu
         if (intake.received > 0 && survived === 0) {
           notice = `reported ${intake.received} items, 0 survived validation`;
           console.warn("[satellite] " + JSON.stringify({ event: "sale_scan_zero_survivors", task_id: task.id, received: intake.received }));
+        }
+        // Record any satellite-reported local rejects (satellite-source-audit) — origin: local, keyed
+        // to the claimed task's AUTHORITATIVE store. On a `done` report only (a failure has none).
+        if (req.local_rejects && req.local_rejects.length > 0) {
+          await recordLocalRejects(env, { entries: req.local_rejects, tenant: key.tenant, keyId: key.id, kind: "sale", source: sp.value.store }, now);
         }
       } else {
         // A corrupt/legacy sale-scan payload yields no authoritative rollup key — do NOT converge
@@ -317,6 +323,12 @@ export async function handleOrderReceipt(request: Request, env: Env, now: number
     // Land the observations through the SHARED intake with the order-list as authoritative context.
     const orderList = { id: row.id, tenant: row.tenant, store: row.store, locationId: row.location_id, itemIds: parseItemIds(row.item_ids) };
     const intake = await intakeObservations(env, req.observations ?? [], `satellite-order:${row.id}`, key.id, now, { orderList, keyTenant: key.tenant });
+
+    // Record any satellite-reported local rejects (satellite-source-audit) — origin: local, keyed to
+    // the issued order-list's store. They do NOT bump the accept-tally (never accepted).
+    if (req.local_rejects && req.local_rejects.length > 0) {
+      await recordLocalRejects(env, { entries: req.local_rejects, tenant: key.tenant, keyId: key.id, kind: "order", source: row.store }, now);
+    }
 
     // Optional mark-placed: advance the issued lines that are (now) `in_cart` to `ordered`. Read a
     // FRESH index so it reflects any `in_cart` advance the intake just performed in this same call.

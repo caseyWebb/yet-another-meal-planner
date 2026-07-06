@@ -14,7 +14,7 @@
 // See openspec specs/satellite-pull-channel.
 
 import { z } from "zod";
-import { MAX_BATCH_ITEMS, type ItemResult } from "./ingest.js";
+import { MAX_BATCH_ITEMS, LocalRejectsSchema, type ItemResult, type LocalReject } from "./ingest.js";
 
 /** Format a ZodError's issues into a compact, field-scoped message (mirrors ./ingest.ts). */
 function fmtIssues(err: z.ZodError): string {
@@ -128,6 +128,12 @@ export interface ResultRequest {
   reason?: string;
   /** Present on success — the gathered observations; each is validated individually downstream. */
   observations?: unknown[];
+  /**
+   * Additive, OPTIONAL local-reject summary (satellite-source-audit) — the items the sale-scan
+   * adapter's validators dropped locally, pre-aggregated per category. Present only on a `done`
+   * report; a whole-task failure rides `reason`, not this. Recorded `origin: local` by the Worker.
+   */
+  local_rejects?: LocalReject[];
 }
 
 /**
@@ -141,6 +147,7 @@ const ResultEnvelopeSchema = z.object({
   status: z.enum(["done", "failed"]),
   reason: z.string().max(500).optional(),
   observations: z.array(z.unknown()).max(MAX_BATCH_ITEMS).optional(),
+  local_rejects: LocalRejectsSchema.optional(),
 });
 
 /** The results endpoint's response: the task's post-transition lifecycle + the per-observation dispositions. */
@@ -177,6 +184,7 @@ export function parseResultRequest(input: unknown): ParseResult<ResultRequest> {
         status: r.data.status,
         ...(r.data.reason !== undefined ? { reason: r.data.reason } : {}),
         ...(r.data.observations !== undefined ? { observations: r.data.observations } : {}),
+        ...(r.data.local_rejects !== undefined ? { local_rejects: r.data.local_rejects } : {}),
       },
     };
   }
