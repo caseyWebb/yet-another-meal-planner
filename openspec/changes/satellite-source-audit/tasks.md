@@ -1,0 +1,70 @@
+# Tasks — satellite-source-audit
+
+Ordered **Worker-first**: the ledger substrate and intake wiring (§1–§4) land and can deploy as a
+dormant no-op (the production spike shows zero satellite data), before the shared contract field +
+satellite reporting (§5) and the admin surface (§6, which carries the Claude Design + Playwright
+dependency). Implementation stays **serial** across the shared surfaces (`intakeObservations`,
+`readSatelliteLiveness`, the contract package, the Satellites page). **No spike tasks** — the open
+questions (B's denominator, local-reject granularity/categories, the quarantine tenancy keying) are
+settled in `design.md` against the production spike.
+
+## 1. D1: the rejection ledger, the accept-tally, and the quarantine flag
+
+- [ ] 1.1 Add `packages/worker/migrations/d1/0039_satellite_rejections.sql` (next available number) creating: `satellite_rejections` (the ledger — `id`, `tenant` nullable, `key_id` nullable, `kind`, `source`, `origin`, `reason`, `provenance` nullable, `count` NOT NULL DEFAULT 1, `rejected_at`) + an index on `(kind, source, rejected_at)`; `satellite_source_stats` (the accept-tally — `tenant` nullable, `kind`, `source`, `accepted`, `deduped`, `last_accepted_at`, keyed uniquely on `(tenant, kind, source)`); and `satellite_quarantine` (`tenant` nullable, `kind`, `source`, `quarantined_at`, `note` nullable, keyed uniquely on `(tenant, kind, source)`). Header comment states the ledger is append-with-rolling-prune (NOT wholesale-replace like `reconcile_errors`) and that `count > 1` is a pre-aggregated local-reject summary entry.
+- [ ] 1.2 Add `packages/worker/src/satellite-audit-db.ts` (all access via `src/db.ts`, throw-free → `storage_error`): `recordRejection(entry)` (append one ledger row); `bumpSourceStats({tenant, kind, source, accepted, deduped, now})` (upsert the accept-tally, advancing `last_accepted_at`); `readRejections({sinceMs?, source?, limit})` + `readSourceStats()` (bounded reads for the rollup); `setQuarantine`/`clearQuarantine`/`readQuarantine` (the flag CRUD); and `pruneSatelliteRejections(env, beforeMs)` (`DELETE FROM satellite_rejections WHERE rejected_at < ?`, returning `res.changes` — the direct analog of `pruneIngestPushes`).
+
+## 2. Worker: intake wiring — ledger append + accept-tally bump (all three arms)
+
+- [ ] 2.1 In `packages/worker/src/ingest.ts`, at every `results.push({ disposition: "rejected", … })` site across the `recipe`, `sale`, and `order` arms of `intakeObservations`, also append a `satellite_rejections` row via `recordRejection` (`origin: worker`, the arm's `kind`, the resolved `source`, the existing `reason` string, the item's url/productId/item_id as `provenance`). Resolve the per-arm `source`: recipe → `origin` (batch source); sale → `options.saleTask.store`; order → `options.orderList.store`. Keep the intake throw-free (a ledger-write failure surfaces as the caller's structured `storage_error`, same as the existing D1 access).
+- [ ] 2.2 On accept/dedup, bump `satellite_source_stats` for the arm's `{tenant, kind, source}` (`accepted++` / `deduped++`, advance `last_accepted_at`) — one upsert per batch per source after the loop (using the batch's accepted/deduped tallies the function already computes), so the denominator is recorded uniformly for all three intake paths. `ingest_pushes` is left untouched (Decision B).
+- [ ] 2.3 Worker tests: a Worker-side reject in each arm writes exactly one ledger row with the right `origin`/`kind`/`source`/`reason`; an accepted batch bumps `satellite_source_stats` but writes no ledger row; a dedup writes neither an accept nor a ledger row; a D1 failure in the ledger append maps to `503 storage_error`.
+
+## 3. Worker: the per-source reliability rollup
+
+- [ ] 3.1 Extend `readSatelliteLiveness` (`packages/worker/src/ingest-db.ts`) — or a sibling reader it composes — to fold a **quality** dimension per `{kind, source}` beside the existing recency: acceptance rate + validation-fail rate (from `satellite_source_stats.accepted`/`deduped` as the denominator and the ledger's per-`{kind, source}` reject `count` as the numerator, dedups excluded) and staleness (`now − last_accepted_at`). Compute on read (volume is a household's satellites). Add the recommendation flag: a source over a fixed fail-rate threshold with a minimum sample is marked `recommendQuarantine: true` (a pure numeric rule — no model).
+- [ ] 3.2 Include the current quarantine state per source in the rollup (from `readQuarantine`) so the admin page renders a quarantined source's state.
+- [ ] 3.3 Worker tests: a source with N accepts + M rejects reports the right fail-rate; a source over the threshold sets `recommendQuarantine`; a source under sample size does not; a quarantined source is flagged quarantined in the rollup.
+
+## 4. Worker: the quarantine intake check + the admin mutation route + the read tool + the prune
+
+- [ ] 4.1 In `intakeObservations`, before accepting an item, check `readQuarantine` for the item's `{kind, source}` (resolve the tenant per the capability's scope — NULL for recipe/sale, the tenant for order); a quarantined source's items are rejected before acceptance and appended to the ledger with `origin: worker, reason: "quarantined"`, persisting nothing downstream. Load the quarantine set once per batch (not per item).
+- [ ] 4.2 Add the typed admin mutation route `POST /admin/api/satellites/quarantine` (`packages/worker/src/admin/…`) that calls `setQuarantine`/`clearQuarantine` — the island's target (§6.3). Reuse the admin app's `accessGate`; validate `{kind, source, quarantined: boolean}` at the boundary.
+- [ ] 4.3 Register the `read_satellite_rejections` MCP read in `packages/worker/src/tools.ts`, modeled on `read_reconcile_errors`: `() => runTool(async () => ({ rejections: await readRejections(env, …), quarantined: await readQuarantine(env) }))`, returning the recent rejections (`kind`, `source`, `origin`, `reason`, `provenance`, `count`, `rejected_at`) + the quarantined sources, bounded + most-recent-first, optional `source` filter. Write the tool description to own the field semantics and the guarantee that only *rejected* observations appear (an accepted one never does) — so a skill-less agent can use it safely from the description alone.
+- [ ] 4.4 Wire `pruneSatelliteRejections(env, now - RETENTION_MS)` into the `scheduled()` phase-1 reap in `packages/worker/src/index.ts` beside `pruneStaleOrderLists` (retention = the operator's log-retention knob, same as `pruneIngestPushes`). Test the reap deletes an old row and spares a fresh one.
+- [ ] 4.5 Worker tests: a quarantined source's next observation is rejected at intake with `reason: quarantined` and persists nothing, while a sibling source of the same key is accepted; clearing the flag lets the next observation through; `read_satellite_rejections` returns only rejected rows + the quarantine set.
+
+## 5. Shared contract + satellite: the additive `local_rejects` summary
+
+- [ ] 5.1 In `packages/contract/src/ingest.ts` define the summary shape once: `LocalRejectCategory` = `"contract_invalid" | "judgment_smuggled"`; `LocalRejectSummarySchema` = `z.array(z.object({ category, count: z.number().int().nonnegative(), sample: z.string().optional() }))`; add it as an **optional** `local_rejects` field on `SatelliteBatchSchema` + `SatelliteEnvelopeSchema`. Add the same optional field to the pull-channel results envelope (`packages/contract/src/satellite-pull.ts` `ResultEnvelopeSchema`/`ResultRequest`) and the order-receipt envelope (`packages/contract/src/satellite-order.ts` `OrderReceiptEnvelopeSchema`/`OrderReceiptRequest`). Export the type/schema from `index.ts`. Keep `CONTRACT_VERSION = "v2"` (additive + optional).
+- [ ] 5.2 Contract unit tests: an envelope WITH and WITHOUT `local_rejects` both validate at `"v2"`; an unknown category is rejected; a receiving parser reads the summary and an omitting one is unaffected (the v2-stays-v2 lock).
+- [ ] 5.3 Worker: in the pull-results handler (`satellite.ts`) and the order-receipt handler, and in the push handler (`ingest.ts`), read any `local_rejects` summary off the validated envelope and record each entry into the ledger via `recordRejection` (`origin: local`, `kind` = the envelope's kind, `source` = the envelope's implied source, `reason` = the category, `count` = the reported count, `provenance` = the sample). Local rejects do NOT bump the accept-tally. Test: a batch carrying a `local_rejects` summary writes one `origin: local` ledger row per entry with the reported count.
+- [ ] 5.4 Satellite: assemble the compact summary from the already-collected local drops and attach it to the outbound envelope — `ScanOutcome.rejected` on the sale-scan pull report (`packages/satellite/src/pull.ts`), the order-fill emit rejects on the receipt (`packages/satellite/src/order.ts`/helper), and the recipe adapter's emit rejects on the push batch (`packages/satellite/src/push.ts`). Roll them up per `{category, count, sample}` (map `validateSaleEmit`/`validateOrderEmit`'s two failure branches to the two categories; `sample` = the first reason string, truncated). Set the field only when non-empty (stays additive).
+- [ ] 5.5 Satellite tests: a run with some locally-dropped items attaches a `local_rejects` summary rolled up per category (not per body); a clean run omits the field entirely.
+
+## 6. Admin panel: the Satellites quality surface (routes its design through Claude Design; ships Playwright)
+
+- [ ] 6.1 Draft (architect) the **Claude Design** prompt describing the new Satellites surfaces — the per-source **quality column** (acceptance/fail rate + staleness, the quarantine-recommendation chip), the **per-source rejection detail** (recent ledger rows: reason + provenance + an `origin` local/worker badge), and the **quarantine toggle** (with its recommended/on/off states) — per `src/admin/CLAUDE.md`. Run it in the companion Claude Design project and take the exported bundle as the basis for §6.2–§6.3. *(If the project is unreachable at implementation time, defer with an explicit `*(Not performed — …)*` note and build the surfaces in the plainest defensible Basecoat idiom, flagged for a design pass — mirroring prior deferrals.)*
+- [ ] 6.2 Extend the Satellites page (`packages/worker/src/admin/pages/satellites.tsx`) — SSR from the extended `readSatelliteLiveness` rollup — with the quality column per source and the per-source rejection detail, translated from the Claude Design bundle into Basecoat markup.
+- [ ] 6.3 Add the quarantine toggle as an **island** (`src/admin/client/…`) hitting `POST /admin/api/satellites/quarantine` (§4.2) via the typed `hc` client, modeled with the `Loadable` remote-data union + a discriminated action state (per `src/admin/CLAUDE.md` rules) — the page's first mutation, so it graduates from pure-SSR to SSR + one island.
+- [ ] 6.4 Extend the Playwright coverage under `packages/worker/admin/visual/`: update the Satellites page object (new landmarks — the quality column, the quarantine toggle), extend `seed.mjs` (+ `seed.d.mts`) with a source carrying rejections + a quarantine-recommended source + a quarantined source, add an interaction spec for the quarantine toggle, and register any new expectations. Run `aubr test:admin` (web sessions: `PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers`) and surface the per-area screenshots for review (the blocking `admin-ui` job publishes them as the sticky comment). The `/admin-ui` skill runs this loop.
+
+## 7. Persona
+
+- [ ] 7.1 In `packages/worker/AGENT_INSTRUCTIONS.md`, add a brief note that `read_satellite_rejections` explains why a member's satellite contributions aren't landing (a per-source defect the agent relays), so the agent reaches for it when a member reports missing recipes/sales. Rebuild the plugin skills from source (no hand-edit of a generated bundle). Validate conversationally.
+
+## 8. Docs in lockstep
+
+- [ ] 8.1 `docs/SCHEMAS.md` — the `satellite_rejections` ledger, the `satellite_source_stats` accept-tally, and the `satellite_quarantine` tables; the additive optional `local_rejects` wire field on the three delivery envelopes (and that it keeps `contract_version: "v2"`).
+- [ ] 8.2 `docs/ARCHITECTURE.md` — the sensor-audit / source-quarantine surface (the ledger fed by every Worker-side reject + the local-reject summary; the compute-on-read reliability signal; the reversible operator-confirmed per-source quarantine enforced at intake, complementing key revocation); the **fallible-only threat model** (no ground-truth sampling, and why); **Model identity: none**.
+- [ ] 8.3 `docs/TOOLS.md` — the `read_satellite_rejections` read tool (params/returns, and the guarantee it reflects only rejected observations).
+
+## 9. Version bump
+
+- [ ] 9.1 Bump `satellite-version` (`packages/satellite/package.json` `version`) since the contract + satellite packages are touched (the new `local_rejects` field flows onto the wire) — so an operator's liveness view reflects the new build, exactly as prior satellite changes bumped it.
+
+## 10. Verification
+
+- [ ] 10.1 `aubr typecheck` + `aubr test` (Worker) + `aubr test:tooling` + the new contract/Worker/satellite tests green; `aubr test:admin` green with reviewed screenshots.
+- [ ] 10.2 Acceptance fixture: after deploy, since production has no satellite data (spike), seed a satellite key + a source, then drive (a) a Worker-side reject → a `satellite_rejections` row (`origin: worker`); (b) a delivery carrying a `local_rejects` summary → an `origin: local` row; (c) a source over the fail-rate threshold → the quarantine recommendation on the Satellites page; (d) toggling quarantine → the next observation rejected at intake with `reason: quarantined`; (e) `read_satellite_rejections` returning those rows + the quarantine set. The observed seeded rows are the fixture (verified against production).
+- [ ] 10.3 `npx -y @fission-ai/openspec@1.4.1 validate "satellite-source-audit" --strict` passes.
+- [ ] 10.4 Run `/code-review` on the full PR diff before opening the PR; fill the PR template (every consideration box, incl. the Admin UI tests box).
