@@ -475,7 +475,7 @@ async function filterCommittableEdges(
     d.all<{ from_id: string; to_id: string }>("SELECT from_id, to_id FROM ingredient_edge"),
   ]);
   const resolve = representativeResolver(identities);
-  const key = (from: string, to: string) => `${from} ${to}`;
+  const key = (from: string, to: string) => `${from}\u0000${to}`;
   const have = new Set(existing.map((e) => key(resolve(e.from_id), resolve(e.to_id))));
   const kept: { from: string; to: string; kind: string }[] = [];
   const skipped: SkippedEdge[] = [];
@@ -772,7 +772,7 @@ export async function readSkuCoResolutionPairs(env: Env, limit: number): Promise
       for (let j = i + 1; j < ids.length; j++) {
         const a = ids[i];
         const b = ids[j];
-        const key = `${a} ${b}`;
+        const key = `${a}\u0000${b}`;
         if (seen.has(key)) continue;
         seen.add(key);
         pairs.push({

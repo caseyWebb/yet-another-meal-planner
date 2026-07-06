@@ -90,6 +90,11 @@ function connectorUrl(reqUrl: string): string {
   return `${new URL(reqUrl).origin}/mcp`;
 }
 
+/** The observation kinds a source-audit quarantine flag may key on (matches the ledger's `kind`). */
+const QUARANTINE_KINDS: readonly string[] = ["recipe", "sale", "order"];
+/** Cap the operator quarantine note before it lands in D1 (matches the local-reject `sample` bound). */
+const QUARANTINE_NOTE_MAX = 256;
+
 /** Render a full HTML document for a page component, with a doctype. */
 function page(node: { toString(): string }): string {
   return "<!doctype html>" + node.toString();
@@ -256,8 +261,11 @@ const routes = app
       const kind = String(body.kind ?? "").trim();
       const source = String(body.source ?? "").trim();
       if (!kind || !source) throw new ToolError("validation_failed", "quarantine needs a kind and a source");
+      if (!QUARANTINE_KINDS.includes(kind)) {
+        throw new ToolError("validation_failed", `quarantine kind must be one of ${QUARANTINE_KINDS.join(", ")}`, { field: "kind" });
+      }
       const tenant = body.tenant == null || body.tenant === "" ? null : String(body.tenant);
-      const note = body.note?.trim() ? body.note.trim() : null;
+      const note = body.note?.trim() ? body.note.trim().slice(0, QUARANTINE_NOTE_MAX) : null;
       await setQuarantine(c.env, { tenant, kind, source }, note);
       return c.json({ quarantined: true, kind, source, tenant });
     },
@@ -270,6 +278,9 @@ const routes = app
       const kind = String(body.kind ?? "").trim();
       const source = String(body.source ?? "").trim();
       if (!kind || !source) throw new ToolError("validation_failed", "un-quarantine needs a kind and a source");
+      if (!QUARANTINE_KINDS.includes(kind)) {
+        throw new ToolError("validation_failed", `quarantine kind must be one of ${QUARANTINE_KINDS.join(", ")}`, { field: "kind" });
+      }
       const tenant = body.tenant == null || body.tenant === "" ? null : String(body.tenant);
       const cleared = await clearQuarantine(c.env, { tenant, kind, source });
       return c.json({ cleared, kind, source, tenant });
