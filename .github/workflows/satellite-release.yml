@@ -96,7 +96,7 @@ jobs:
         if: steps.guard.outputs.already == 'false'
         # Registers the arm64 emulation handlers so the amd64 runner can cross-build the
         # linux/arm64 variant. version-tagged to match the docker/* actions below.
-        uses: docker/setup-qemu-action@v3
+        uses: docker/setup-qemu-action@v4
 
       - name: Set up Docker Buildx
         if: steps.guard.outputs.already == 'false'
