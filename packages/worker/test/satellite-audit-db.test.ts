@@ -10,8 +10,10 @@ import {
   getQuarantine,
   isQuarantined,
   readSourceQuality,
+  pruneSourceStats,
   QUARANTINE_FAIL_RATE_THRESHOLD,
   QUARANTINE_MIN_SAMPLE,
+  DEFAULT_SOURCE_QUALITY_WINDOW_MS,
 } from "../src/satellite-audit-db.js";
 import { sqliteEnv } from "./sqlite-d1.js";
 
@@ -180,5 +182,74 @@ describe("satellite-audit-db: the reliability rollup (compute-on-read)", () => {
     expect(q.quarantined).toBe(true);
     expect(q.rejected).toBe(2); // the 5 quarantine blocks are excluded
     expect(q.sample).toBe(12);
+  });
+});
+
+describe("satellite-audit-db: per-tenant rollup keying (no cross-tenant merge)", () => {
+  it("keeps two tenants sharing {order, target} as SEPARATE quality rows, each correctly attributed", async () => {
+    const { env } = sqliteEnv();
+    // Order-store slugs are shared across a friend group: alice's `target` is healthy, bob's is broken.
+    // Pre-fix, these collapsed into ONE {order, target} aggregate (tenant = whoever sorted first),
+    // blaming alice for bob's breakage AND letting a quarantine of one miss the other.
+    await bumpAcceptTally(env, { tenant: "alice", kind: "order", source: "target", accepted: 25, deduped: 0 }, NOW);
+    await appendRejection(env, { tenant: "bob", keyId: "kb", kind: "order", source: "target", origin: "worker", reason: "bad", provenance: null, count: 25 }, NOW);
+
+    const quality = await readSourceQuality(env, NOW);
+    expect(quality).toHaveLength(2); // two rows, not one merged aggregate
+    const byTenant = new Map(quality.map((q) => [q.tenant, q]));
+    expect(byTenant.get("alice")).toMatchObject({ kind: "order", source: "target", accepted: 25, rejected: 0, failRate: 0, recommendQuarantine: false });
+    expect(byTenant.get("bob")).toMatchObject({ kind: "order", source: "target", accepted: 0, rejected: 25, recommendQuarantine: true });
+    expect(byTenant.get("bob")!.failRate).toBeCloseTo(1, 6);
+
+    // Quarantining alice's source must NOT flag bob's (the failing) source — the flag is per-tenant.
+    await setQuarantine(env, { tenant: "alice", kind: "order", source: "target" }, null, NOW);
+    const after = new Map((await readSourceQuality(env, NOW)).map((q) => [q.tenant, q]));
+    expect(after.get("alice")!.quarantined).toBe(true);
+    expect(after.get("bob")!.quarantined).toBe(false);
+  });
+});
+
+describe("satellite-audit-db: windowed accept-tally (recent rate, not lifetime)", () => {
+  const OUT_OF_WINDOW = DEFAULT_SOURCE_QUALITY_WINDOW_MS + 30 * DAY; // comfortably older than W
+
+  it("a large STALE accept history no longer dilutes the fail-rate — a broken source now trips recommendQuarantine", async () => {
+    const { env } = sqliteEnv();
+    // 500 accepts months ago (OUT of the window) + a small recent accept + a recent reject flood.
+    await bumpAcceptTally(env, { tenant: null, kind: "recipe", source: "seriouseats", accepted: 500, deduped: 0 }, NOW - OUT_OF_WINDOW);
+    await bumpAcceptTally(env, { tenant: null, kind: "recipe", source: "seriouseats", accepted: 5, deduped: 0 }, NOW - 2 * DAY);
+    await appendRejection(env, { tenant: null, keyId: "k", kind: "recipe", source: "seriouseats", origin: "worker", reason: "adapter rotted", provenance: null, count: 25 }, NOW - DAY);
+
+    const q = (await readSourceQuality(env, NOW))[0];
+    // Only the in-window accept (5) counts — the 500 stale accepts are dropped by the window.
+    expect(q.accepted).toBe(5);
+    expect(q.rejected).toBe(25);
+    expect(q.sample).toBe(30);
+    expect(q.failRate).toBeCloseTo(25 / 30, 6); // ≈0.83, well over threshold
+    expect(q.recommendQuarantine).toBe(true);
+    // Sanity: with the stale accepts included (the pre-fix behavior) the rate would be 25/525 ≈ 0.048 < 0.3.
+  });
+
+  it("a source healthy WITHIN the window does not trip the recommendation", async () => {
+    const { env } = sqliteEnv();
+    await bumpAcceptTally(env, { tenant: null, kind: "recipe", source: "nyt", accepted: 30, deduped: 0 }, NOW - 3 * DAY);
+    await appendRejection(env, { tenant: null, keyId: "k", kind: "recipe", source: "nyt", origin: "worker", reason: "bad", provenance: null, count: 2 }, NOW - DAY);
+
+    const q = (await readSourceQuality(env, NOW))[0];
+    expect(q.sample).toBe(32);
+    expect(q.failRate).toBeCloseTo(2 / 32, 6);
+    expect(q.recommendQuarantine).toBe(false);
+  });
+
+  it("pruneSourceStats reaps buckets older than the retention window, sparing fresh ones", async () => {
+    const { env } = sqliteEnv();
+    await bumpAcceptTally(env, { tenant: null, kind: "recipe", source: "nyt", accepted: 3, deduped: 0 }, NOW - OUT_OF_WINDOW);
+    await bumpAcceptTally(env, { tenant: null, kind: "recipe", source: "nyt", accepted: 4, deduped: 0 }, NOW - DAY);
+    expect(await readSourceStats(env)).toHaveLength(2); // two distinct day buckets
+
+    const removed = await pruneSourceStats(env, NOW - DEFAULT_SOURCE_QUALITY_WINDOW_MS);
+    expect(removed).toBe(1);
+    const left = await readSourceStats(env);
+    expect(left).toHaveLength(1);
+    expect(left[0].accepted).toBe(4); // the fresh bucket survives
   });
 });

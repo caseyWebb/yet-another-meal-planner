@@ -190,7 +190,32 @@ describe("read_satellite_rejections tool", () => {
     const result = out.result as { rejections: { reason: string; count: number }[]; quarantined: { kind: string; source: string }[] };
     expect(result.rejections.map((r) => r.reason)).toEqual(["contract_invalid", "old"]);
     expect(result.rejections[0].count).toBe(12);
-    expect(result.quarantined).toEqual([{ tenant: null, kind: "sale", source: "target", quarantined_at: NOW, note: "flooding" }]);
+    // Trimmed to design F's {kind, source, quarantined_at} — the raw tenant/note are dropped from the tool surface.
+    expect(result.quarantined).toEqual([{ kind: "sale", source: "target", quarantined_at: NOW }]);
+  });
+
+  it("scopes order-kind rejections to the CALLER's tenant while keeping recipe/sale household-wide", async () => {
+    const { env } = sqliteEnv();
+    // Operator-global recipe + sale rejections (tenant NULL — shared across the group).
+    await appendRejection(env, { tenant: null, keyId: "k", kind: "recipe", source: "NYT", origin: "worker", reason: "recipe-reject", provenance: null }, NOW);
+    await appendRejection(env, { tenant: null, keyId: "k", kind: "sale", source: "target", origin: "worker", reason: "sale-reject", provenance: null }, NOW + 1);
+    // Casey's OWN order reject + ANOTHER member's (sam) private order reject.
+    await appendRejection(env, { tenant: "casey", keyId: "kc", kind: "order", source: "shop", origin: "worker", reason: "casey-order", provenance: "olive oil" }, NOW + 2);
+    await appendRejection(env, { tenant: "sam", keyId: "ks", kind: "order", source: "shop", origin: "worker", reason: "sam-order", provenance: "saffron" }, NOW + 3);
+    // Quarantines: an operator-global sale flag (shared) + another member's private order flag (hidden).
+    await setQuarantine(env, { tenant: null, kind: "sale", source: "target" }, "flooding", NOW);
+    await setQuarantine(env, { tenant: "sam", kind: "order", source: "shop" }, "sam-only", NOW);
+
+    const out = await withServer(buildServer(serverEnv(env), tenant, "https://host"), (c) => invokeTool(c, "read_satellite_rejections", {}));
+    const result = out.result as { rejections: { reason: string }[]; quarantined: { kind: string; source: string }[] };
+    const reasons = result.rejections.map((r) => r.reason);
+    // Casey sees the shared recipe/sale rejects + her OWN order reject, but NOT sam's private order reject.
+    expect(reasons).toContain("recipe-reject");
+    expect(reasons).toContain("sale-reject");
+    expect(reasons).toContain("casey-order");
+    expect(reasons).not.toContain("sam-order");
+    // Quarantine set: the shared sale flag is visible; sam's private order flag is not.
+    expect(result.quarantined).toEqual([{ kind: "sale", source: "target", quarantined_at: NOW }]);
   });
 
   it("filters to one source when given", async () => {

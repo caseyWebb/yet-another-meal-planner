@@ -142,6 +142,18 @@ export async function handleSatelliteResults(request: Request, env: Env, now: nu
       return json(response, 200);
     }
 
+    // Idempotency guard (satellite-source-audit): a `done` results POST for an ALREADY-TERMINAL task
+    // (the common retry — the Worker completed the task but the satellite missed the response and
+    // retried) must NOT re-run intake. The rollup REPLACE + `completeTask` transition are idempotent,
+    // but `intakeObservations` re-bumps the per-source ACCEPT-TALLY (a monotonic counter, not a REPLACE)
+    // and re-appends the reported local-reject rows — inflating the reliability signal on every retry.
+    // Short-circuit to the prior terminal status. (Residual: intake succeeded but `completeTask` then
+    // failed, then a retry — may still double-count once; acceptable for a health metric.)
+    if (task.status === "done" || task.status === "failed") {
+      const response: ResultResponse = { task: { id: task.id, status: task.status as TaskStatus } };
+      return json(response, 200);
+    }
+
     // status === "done": land any observations through the SHARED raw-observation intake (same
     // validation + arrival dedup as a recipe push — so a late/double report dedups to the same
     // landed rows), then transition the task terminal. Correctness rests on this dedup, not the lease.
@@ -320,14 +332,25 @@ export async function handleOrderReceipt(request: Request, env: Env, now: number
       return json({ error: "not_found", message: `no order-list ${req.order_list_id}` }, 404);
     }
 
-    // Land the observations through the SHARED intake with the order-list as authoritative context.
+    // Idempotency guard (satellite-source-audit): a receipt for an ALREADY-received order-list (the
+    // common retry — the Worker landed the receipt but the satellite missed the response and retried)
+    // must NOT re-run intake, which re-bumps the per-source ACCEPT-TALLY (a monotonic counter) and
+    // re-appends the reported local-reject rows — inflating the reliability signal. The `in_cart`
+    // advance + `received` mark are idempotent, but the tally is not. So the intake (and its
+    // local-reject recording) runs ONLY on the FIRST landing; a `mark_placed` re-post (which carries no
+    // observations by design) still advances the issued `in_cart` lines below. (Residual: intake
+    // succeeded but `markOrderListReceived` then failed, then a retry — may still double-count once.)
     const orderList = { id: row.id, tenant: row.tenant, store: row.store, locationId: row.location_id, itemIds: parseItemIds(row.item_ids) };
-    const intake = await intakeObservations(env, req.observations ?? [], `satellite-order:${row.id}`, key.id, now, { orderList, keyTenant: key.tenant });
+    let intake: BatchResponse | undefined;
+    if (row.status !== "received") {
+      // Land the observations through the SHARED intake with the order-list as authoritative context.
+      intake = await intakeObservations(env, req.observations ?? [], `satellite-order:${row.id}`, key.id, now, { orderList, keyTenant: key.tenant });
 
-    // Record any satellite-reported local rejects (satellite-source-audit) — origin: local, keyed to
-    // the issued order-list's store. They do NOT bump the accept-tally (never accepted).
-    if (req.local_rejects && req.local_rejects.length > 0) {
-      await recordLocalRejects(env, { entries: req.local_rejects, tenant: key.tenant, keyId: key.id, kind: "order", source: row.store }, now);
+      // Record any satellite-reported local rejects (satellite-source-audit) — origin: local, keyed to
+      // the issued order-list's store. They do NOT bump the accept-tally (never accepted).
+      if (req.local_rejects && req.local_rejects.length > 0) {
+        await recordLocalRejects(env, { entries: req.local_rejects, tenant: key.tenant, keyId: key.id, kind: "order", source: row.store }, now);
+      }
     }
 
     // Optional mark-placed: advance the issued lines that are (now) `in_cart` to `ordered`. Read a
@@ -345,7 +368,9 @@ export async function handleOrderReceipt(request: Request, env: Env, now: number
     const after = await getOrderList(env, row.id);
     const response: OrderReceiptResponse = {
       order_list: { id: row.id, status: after?.status ?? "received" },
-      results: intake.results,
+      // A first landing returns its per-item dispositions; an idempotent replay of an already-received
+      // list ran no intake, so it reports no new per-item results (the satellite got them the first time).
+      results: intake?.results ?? [],
     };
     return json(response, 200);
   } catch (e) {

@@ -95,6 +95,14 @@ export interface ReadRejectionsOpts {
   sinceMs?: number;
   /** Exact `source` match (a store slug or feed/site source). */
   source?: string;
+  /**
+   * When set, restrict to rows VISIBLE to this tenant: operator-global (`tenant IS NULL`) OR this
+   * exact tenant. `read_satellite_rejections` passes it so an `order`-kind row (tenant-private,
+   * provenance = product url/id) stays scoped to its owner while recipe/sale (operator-global) stay
+   * household-wide. Applied in SQL (not post-LIMIT) so a flood of another tenant's rows can't crowd
+   * the caller's out of the bounded window. Unset ⇒ no tenant restriction (the admin household view).
+   */
+  tenantScope?: string;
   limit?: number;
 }
 
@@ -113,6 +121,10 @@ export async function readRejections(env: Env, opts: ReadRejectionsOpts = {}): P
     binds.push(opts.source);
     where += ` AND source = ?${binds.length}`;
   }
+  if (opts.tenantScope !== undefined) {
+    binds.push(opts.tenantScope);
+    where += ` AND (tenant IS NULL OR tenant = ?${binds.length})`;
+  }
   binds.push(limit);
   const limitP = `?${binds.length}`;
   return db(env).all<RejectionRow>(
@@ -130,11 +142,18 @@ export async function pruneSatelliteRejections(env: Env, beforeMs: number): Prom
 
 // ── satellite_source_stats (the accept-tally = the uniform rate denominator) ──────────────────────
 
-/** A raw accept-tally row. */
+/** One epoch-day (86_400_000 ms). The accept-tally's `day` bucket + the reliability window floor. */
+const DAY_MS = 86_400_000;
+/** The epoch-day bucket a timestamp falls in — the accept-tally key + the windowing/prune boundary. */
+const epochDay = (ms: number): number => Math.floor(ms / DAY_MS);
+
+/** A raw accept-tally row (one per `{tenant, kind, source, day}` bucket). */
 export interface SourceStatsRow {
   tenant: string | null;
   kind: string;
   source: string;
+  /** The epoch-day bucket this counter accumulates into (the windowing/prune key). */
+  day: number;
   accepted: number;
   deduped: number;
   last_accepted_at: number | null;
@@ -150,37 +169,54 @@ export interface AcceptTally {
 }
 
 /**
- * Upsert the per-source accept-tally, advancing `last_accepted_at` ONLY on an accept (a dedup bumps
- * the deduped counter without touching recency — a dedup is a benign re-report). Targets the
- * COALESCE(tenant,'') unique index so operator-global (NULL-tenant) sources keep a single row rather
- * than accumulating one per batch. Called once per batch per source from the intake choke point.
+ * Upsert the per-source accept-tally into TODAY's day bucket, advancing `last_accepted_at` ONLY on an
+ * accept (a dedup bumps the deduped counter without touching recency — a dedup is a benign re-report).
+ * Targets the COALESCE(tenant,'') unique index (now including `day`) so operator-global (NULL-tenant)
+ * sources keep a single row per day rather than accumulating one per batch. Called once per batch per
+ * source from the intake choke point. Bucketing by day is what lets the reliability rollup sum accepts
+ * over a RECENT window comparable to its windowed reject count (Decision B / the windowed-rate fix).
  */
 export async function bumpAcceptTally(env: Env, t: AcceptTally, now: number = Date.now()): Promise<void> {
   const firstAccept = t.accepted > 0 ? now : null;
+  const day = epochDay(now);
   await db(env).run(
-    "INSERT INTO satellite_source_stats (tenant, kind, source, accepted, deduped, last_accepted_at) " +
-      "VALUES (?1, ?2, ?3, ?4, ?5, ?6) " +
-      "ON CONFLICT (COALESCE(tenant, ''), kind, source) DO UPDATE SET " +
-      "accepted = accepted + ?7, deduped = deduped + ?8, " +
-      "last_accepted_at = CASE WHEN ?9 > 0 THEN ?10 ELSE last_accepted_at END",
-    t.tenant,
-    t.kind,
-    t.source,
-    t.accepted,
-    t.deduped,
-    firstAccept,
-    t.accepted, // ?7 — bound separately (no reused placeholder)
-    t.deduped, // ?8
-    t.accepted, // ?9
-    now, // ?10
+    "INSERT INTO satellite_source_stats (tenant, kind, source, day, accepted, deduped, last_accepted_at) " +
+      "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) " +
+      "ON CONFLICT (COALESCE(tenant, ''), kind, source, day) DO UPDATE SET " +
+      "accepted = accepted + ?8, deduped = deduped + ?9, " +
+      "last_accepted_at = CASE WHEN ?10 > 0 THEN ?11 ELSE last_accepted_at END",
+    t.tenant, // ?1
+    t.kind, // ?2
+    t.source, // ?3
+    day, // ?4
+    t.accepted, // ?5
+    t.deduped, // ?6
+    firstAccept, // ?7
+    t.accepted, // ?8 — bound separately (no reused placeholder)
+    t.deduped, // ?9
+    t.accepted, // ?10
+    now, // ?11
   );
 }
 
-/** Every accept-tally row (bounded by a household's satellites; read for the reliability rollup). */
+/** Every accept-tally bucket (bounded by a household's satellites × the retention window; the
+ *  reliability rollup windows these by `day` on read). */
 export async function readSourceStats(env: Env): Promise<SourceStatsRow[]> {
   return db(env).all<SourceStatsRow>(
-    "SELECT tenant, kind, source, accepted, deduped, last_accepted_at FROM satellite_source_stats",
+    "SELECT tenant, kind, source, day, accepted, deduped, last_accepted_at FROM satellite_source_stats",
   );
+}
+
+/**
+ * Prune accept-tally buckets whose `day` is older than the day containing `beforeMs` (the SAME
+ * retention window as the ledger prune — `logRetentionDays`). Day-granular: keeps the bucket that
+ * straddles the window edge, matching `readSourceQuality`'s `day >= floor((now − W) / DAY)` floor, so
+ * the prune never drops a bucket the rollup would still count. Returns rows removed — the accept-tally's
+ * analog of `pruneSatelliteRejections`; wired into `scheduled()`'s phase-1 reap beside it.
+ */
+export async function pruneSourceStats(env: Env, beforeMs: number): Promise<number> {
+  const res = await db(env).run("DELETE FROM satellite_source_stats WHERE day < ?1", epochDay(beforeMs));
+  return res.changes;
 }
 
 // ── satellite_quarantine (the per-source reversible Worker-side reject flag) ───────────────────────
@@ -262,7 +298,17 @@ export async function isQuarantined(env: Env, key: QuarantineKey): Promise<boole
 export const QUARANTINE_FAIL_RATE_THRESHOLD = 0.3;
 export const QUARANTINE_MIN_SAMPLE = 20;
 
-/** The per-`{kind, source}` reliability signal (acceptance/fail rate + staleness + the quarantine hints). */
+/**
+ * The reliability WINDOW W — the recent span the rollup sums accepts over AND counts rejects over, so
+ * the two are comparable (a windowed fail-rate, not windowed-rejects / all-time-accepts). Defaults to
+ * the operator log-retention default (`discovery-sweep`'s `DEFAULT_CONFIG.logRetentionDays`), the same
+ * knob the reject/tally prune uses; a caller MAY pass a tighter/wider window. Kept as a local constant
+ * (not imported from discovery-sweep) so this D1 layer stays free of the sweep's config surface.
+ */
+export const SOURCE_QUALITY_WINDOW_DAYS = 60;
+export const DEFAULT_SOURCE_QUALITY_WINDOW_MS = SOURCE_QUALITY_WINDOW_DAYS * DAY_MS;
+
+/** The per-`{tenant, kind, source}` reliability signal (acceptance/fail rate + staleness + the quarantine hints). */
 export interface SourceQuality {
   /** The tenant binding this source's accounting carries (NULL = operator-global). */
   tenant: string | null;
@@ -277,33 +323,50 @@ export interface SourceQuality {
   acceptanceRate: number;
   failRate: number;
   lastAcceptedAt: number | null;
-  /** now − lastAcceptedAt, or null when the source has never accepted. */
+  /** now − lastAcceptedAt, or null when the source has no accept within the reliability window. */
   staleMs: number | null;
   quarantined: boolean;
   /** A fixed numeric rule: over the fail-rate threshold with a minimum sample. */
   recommendQuarantine: boolean;
 }
 
-/** A composite `{kind, source}` map key (NUL-delimited, as elsewhere). */
-const qKey = (kind: string, source: string): string => `${kind}\u0000${source}`;
+/** A composite `{tenant, kind, source}` map key (NUL-delimited, as elsewhere). Includes `tenant` so
+ *  two tenant-distinct rows sharing a `{kind, source}` (order/sale store slugs are shared across a
+ *  friend group) never collapse into one aggregate mislabeled with whichever tenant sorted first. */
+const qKey = (tenant: string | null, kind: string, source: string): string =>
+  `${tenant ?? ""}\u0000${kind}\u0000${source}`;
 
 /**
- * The compute-on-read per-`{kind, source}` reliability rollup (Decision B). Folds the accept-tally
- * (the uniform denominator) with the ledger's per-source reject counts and the quarantine flags into
- * one health signal per source: acceptance/fail rate (dedups excluded from the denominator, and
- * quarantine rejects excluded from the fail numerator — they are a block, not a validation failure),
- * staleness, and the numeric quarantine recommendation. Volume is a household's satellites, so it
- * reads the (retention-bounded) ledger + tally + flags whole and aggregates in JS — no GROUP BY, so
- * it stays robust to the fake-D1 idiom the rest of the readers use.
+ * The compute-on-read per-`{tenant, kind, source}` reliability rollup (Decision B). Folds the
+ * accept-tally (the uniform denominator) with the ledger's per-source reject counts and the quarantine
+ * flags into one health signal per source: acceptance/fail rate (dedups excluded from the denominator,
+ * and quarantine rejects excluded from the fail numerator — they are a block, not a validation
+ * failure), staleness, and the numeric quarantine recommendation. Both sides of the rate are WINDOWED
+ * to the same recent span `windowMs` — accepts summed over the day buckets on/after the floor day, and
+ * rejects counted with `rejected_at >= now − windowMs` — so a huge STALE accept history no longer
+ * dilutes the fail-rate below the quarantine threshold (windowed-rejects / all-time-accepts was biased
+ * DOWN, and the recommendation never fired when a long-healthy source finally broke). Keyed by
+ * `{tenant, kind, source}` (consistent with the accept-tally + quarantine keying), so per-tenant rows
+ * of a shared store slug stay separate and correctly attributed. Volume is a household's satellites, so
+ * it reads the (retention-bounded) tally + windowed ledger + flags whole and aggregates in JS — no
+ * GROUP BY, so it stays robust to the fake-D1 idiom the rest of the readers use.
  */
-export async function readSourceQuality(env: Env, now: number = Date.now()): Promise<SourceQuality[]> {
+export async function readSourceQuality(
+  env: Env,
+  now: number = Date.now(),
+  windowMs: number = DEFAULT_SOURCE_QUALITY_WINDOW_MS,
+): Promise<SourceQuality[]> {
+  const sinceMs = now - windowMs;
+  const sinceDay = epochDay(sinceMs);
   const [stats, rejections, quarantine] = await Promise.all([
     readSourceStats(env),
-    readRejections(env, { limit: 1000 }),
+    // Window the reject numerator by TIME (not a bare row cap) so it matches the windowed accepts; the
+    // 1000-row cap remains a safety bound (rejects land pre-aggregated per local-summary entry).
+    readRejections(env, { sinceMs, limit: 1000 }),
     getQuarantine(env),
   ]);
 
-  const quarantinedSet = new Set(quarantine.map((q) => qKey(q.kind, q.source)));
+  const quarantinedSet = new Set(quarantine.map((q) => qKey(q.tenant, q.kind, q.source)));
 
   interface Agg {
     tenant: string | null;
@@ -315,8 +378,8 @@ export async function readSourceQuality(env: Env, now: number = Date.now()): Pro
     lastAcceptedAt: number | null;
   }
   const agg = new Map<string, Agg>();
-  const get = (kind: string, source: string, tenant: string | null): Agg => {
-    const k = qKey(kind, source);
+  const get = (tenant: string | null, kind: string, source: string): Agg => {
+    const k = qKey(tenant, kind, source);
     let e = agg.get(k);
     if (!e) {
       e = { tenant, kind, source, accepted: 0, deduped: 0, rejected: 0, lastAcceptedAt: null };
@@ -326,7 +389,12 @@ export async function readSourceQuality(env: Env, now: number = Date.now()): Pro
   };
 
   for (const s of stats) {
-    const e = get(s.kind, s.source, s.tenant);
+    // Only day buckets within W count toward the (windowed) accept denominator — a stale accept
+    // history outside the window is excluded so the rate reflects RECENT health. A source whose
+    // accepts all age out but whose recent rejects flood still appears (via the reject loop below),
+    // rate ≈ 1.0.
+    if (s.day < sinceDay) continue;
+    const e = get(s.tenant, s.kind, s.source);
     e.accepted += s.accepted;
     e.deduped += s.deduped;
     if (s.last_accepted_at != null) e.lastAcceptedAt = Math.max(e.lastAcceptedAt ?? 0, s.last_accepted_at);
@@ -335,7 +403,7 @@ export async function readSourceQuality(env: Env, now: number = Date.now()): Pro
     // A quarantine reject is a block, not a validation/plausibility failure — exclude it from the
     // fail numerator so an already-quarantined source's rate reflects its pre-quarantine health.
     if (r.reason === "quarantined") continue;
-    const e = get(r.kind, r.source, r.tenant);
+    const e = get(r.tenant, r.kind, r.source);
     e.rejected += r.count;
   }
 
@@ -356,9 +424,14 @@ export async function readSourceQuality(env: Env, now: number = Date.now()): Pro
         failRate,
         lastAcceptedAt: e.lastAcceptedAt,
         staleMs: e.lastAcceptedAt != null ? now - e.lastAcceptedAt : null,
-        quarantined: quarantinedSet.has(qKey(e.kind, e.source)),
+        quarantined: quarantinedSet.has(qKey(e.tenant, e.kind, e.source)),
         recommendQuarantine: sample >= QUARANTINE_MIN_SAMPLE && failRate >= QUARANTINE_FAIL_RATE_THRESHOLD,
       };
     })
-    .sort((a, b) => a.kind.localeCompare(b.kind) || a.source.localeCompare(b.source));
+    .sort(
+      (a, b) =>
+        a.kind.localeCompare(b.kind) ||
+        a.source.localeCompare(b.source) ||
+        (a.tenant ?? "").localeCompare(b.tenant ?? ""),
+    );
 }

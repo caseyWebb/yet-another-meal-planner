@@ -177,9 +177,11 @@ export async function intakeObservations(
   // off THIS key's tenant. A quarantined source's items are rejected before acceptance and ledgered
   // `origin: worker, reason: "quarantined"`, persisting nothing downstream.
   const quarantineRows = await getQuarantine(env);
-  const quarantineSet = new Set(quarantineRows.map((q) => `${q.tenant ?? ""} ${q.kind} ${q.source}`));
+  // NUL-delimited to match qKey/salePairKey (a store-slug `source` can contain spaces, so a
+  // bare-space join could collide two distinct {tenant, kind, source} keys).
+  const quarantineSet = new Set(quarantineRows.map((q) => `${q.tenant ?? ""}\u0000${q.kind}\u0000${q.source}`));
   const isQuarantinedArm = (kind: string, source: string | null): boolean =>
-    source != null && quarantineSet.has(`${keyTenant ?? ""} ${kind} ${source}`);
+    source != null && quarantineSet.has(`${keyTenant ?? ""}\u0000${kind}\u0000${source}`);
   const recipeQuarantined = isQuarantinedArm("recipe", origin);
   const saleQuarantined = isQuarantinedArm("sale", saleAuditSource);
   const orderQuarantined = isQuarantinedArm("order", orderAuditSource);
@@ -193,7 +195,7 @@ export async function intakeObservations(
   // source after the loop (a dedup counts too; last_accepted_at advances only on a real accept).
   const acceptTally = new Map<string, { kind: string; source: string; accepted: number; deduped: number }>();
   const tally = (kind: string, source: string, field: "accepted" | "deduped"): void => {
-    const k = `${kind} ${source}`;
+    const k = `${kind}\u0000${source}`;
     const e = acceptTally.get(k) ?? { kind, source, accepted: 0, deduped: 0 };
     e[field]++;
     acceptTally.set(k, e);

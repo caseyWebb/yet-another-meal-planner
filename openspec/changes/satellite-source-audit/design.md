@@ -164,9 +164,13 @@ per-`{kind, source}` reject rows.
   sense (different grain, different consumer), and it buys a **single uniform denominator** so B's
   rate math never forks per kind. Noted for the architect as the one trade-off of this choice.
 
-`satellite_source_stats` prunes/ages the same way (or is a pure counter with `last_accepted_at` for
-staleness; a stale source simply stops being bumped). Both the ledger and the tally are in the one
-`0039` migration.
+`satellite_source_stats` prunes/ages the same way. It is **day-bucketed** (`{tenant, kind, source, day}`,
+`day` = epoch-day) so B computes a **WINDOWED** rate: accepts are summed over the day buckets within a
+recent window W (defaulting to `logRetentionDays`) and rejects are counted over that same window
+(`rejected_at ≥ now − W`), keeping the two sides comparable — a windowed-rejects / all-time-accepts
+rate is biased DOWN, so a source healthy for months then broken would never trip the quarantine
+recommendation. The buckets prune on the same window (`pruneSourceStats`, phase-1 reap). Both the
+ledger and the tally are in the one `0039` migration.
 
 ### C. DROP ground-truth sampling (the deliberate omission)
 
@@ -286,6 +290,12 @@ safely from its description alone.
   buys a uniform denominator + zero disruption to the shipped recency view. The small recipe
   double-count is called out above (Decision B) for the architect to override if they'd rather
   extend `ingest_pushes` with a `kind` column instead.
+- **The accept-tally is day-bucketed, so B's rate is windowed, not lifetime.** *Mitigation:* both sides
+  of the rate share one window W (= `logRetentionDays`) — accepts summed over in-window day buckets,
+  rejects counted over the same window — so the fail-rate reflects RECENT health and a long-healthy
+  source that breaks now trips the recommendation (a lifetime accept denominator diluted it below
+  threshold). Buckets prune on that window beside the ledger; a source with no in-window activity simply
+  drops out of the rollup.
 - **The ledger could grow under a flapping source.** *Mitigation:* it is append-with-rolling-prune
   (same idiom as `ingest_pushes`), local rejects land pre-aggregated (one row per `{source,
   category}` per envelope, not per item), and volume is a household's satellites. The prune joins the

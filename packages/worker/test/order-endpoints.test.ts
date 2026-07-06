@@ -3,6 +3,7 @@ import { handleOrderList, handleOrderReceipt, handleSatelliteResults } from "../
 import { mintIngestKey } from "../src/ingest-db.js";
 import { enqueueTask, claimTasks } from "../src/satellite-tasks-db.js";
 import { insertOrderList, getOrderList, markOrderListReceived, pruneStaleOrderLists } from "../src/order-lists-db.js";
+import { readSourceStats } from "../src/satellite-audit-db.js";
 import { setProfileFields } from "../src/profile-db.js";
 import { addGroceryRow, readGroceryList, removeGroceryRow } from "../src/session-db.js";
 import { normalizeName } from "../src/grocery.js";
@@ -215,6 +216,27 @@ describe("/satellite/order/receipt (issued-set-authoritative reconciliation)", (
     const groceryRows = rows<{ status: string }>("grocery_list");
     expect(groceryRows).toHaveLength(1);
     expect(groceryRows[0].status).toBe("in_cart");
+  });
+
+  it("a re-posted receipt does NOT double-bump the accept-tally (Fix 3 idempotency guard)", async () => {
+    const { env } = sqliteEnv(["casey"]);
+    const { secret } = await mintIngestKey(env, "casey-box", NOW, "casey");
+    await setStores(env, "casey", { primary: "target", fulfillment: "satellite" });
+    await addGroceryRow(env, "casey", { name: "Olive Oil" }, TODAY);
+    const list = await pullList(env, secret);
+    const obs = [{ kind: "order", item_id: "olive oil", disposition: "carted", product: { productId: "T-1", description: "EVOO" } }];
+    const body = { order_list_id: list.order_list_id, observations: obs };
+
+    // First receipt lands the item + marks the list received → tally = 1 accept for {order, target}.
+    await handleOrderReceipt(receiptReq(secret, body), env, NOW + 1);
+    const afterFirst = (await readSourceStats(env)).reduce((n, s) => n + s.accepted, 0);
+    expect(afterFirst).toBe(1);
+
+    // A retry (the satellite missed the first response) re-sends the SAME receipt. The list is already
+    // `received`, so the guard skips intake — the accept-tally must NOT climb to 2.
+    const second = await handleOrderReceipt(receiptReq(secret, body), env, NOW + 2);
+    expect(second.status).toBe(200);
+    expect((await readSourceStats(env)).reduce((n, s) => n + s.accepted, 0)).toBe(1);
   });
 
   it("mark_placed advances the issued in_cart lines to ordered", async () => {

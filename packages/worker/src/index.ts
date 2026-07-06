@@ -22,7 +22,7 @@ import { runReconcileSignalsJob } from "./reconcile-signals.js";
 import { runArchetypeDerivationJob } from "./night-vibe-suggest.js";
 import { buildFacetDeps, runFacetJob } from "./recipe-classify.js";
 import { buildProjectionDeps, runProjectionJob } from "./recipe-projection.js";
-import { buildDiscoveryDeps, runDiscoverySweepJob } from "./discovery-sweep.js";
+import { buildDiscoveryDeps, runDiscoverySweepJob, DEFAULT_CONFIG } from "./discovery-sweep.js";
 import { buildNormalizeDeps, runNormalizeJob } from "./ingredient-normalize.js";
 import { buildReconfirmDeps, runReconfirmJob } from "./ingredient-reconfirm.js";
 import { buildAliasAuditDeps, runAliasAuditJob } from "./ingredient-alias-audit.js";
@@ -38,7 +38,7 @@ import { handleSource } from "./source.js";
 import { handleIngest } from "./ingest.js";
 import { handleSatelliteClaim, handleSatelliteResults, handleOrderList, handleOrderReceipt } from "./satellite.js";
 import { pruneStaleOrderLists, ORDER_LIST_RETENTION_MS } from "./order-lists-db.js";
-import { pruneSatelliteRejections } from "./satellite-audit-db.js";
+import { pruneSatelliteRejections, pruneSourceStats } from "./satellite-audit-db.js";
 import adminApp from "./admin/app.js";
 
 /**
@@ -203,8 +203,10 @@ export default {
     // Load operator config once; used for flyer warm pacing and sweep (below).
     const operatorConfig = await loadOperatorConfig(env).catch(() => null);
     // The sparse-override discovery config (merged over DEFAULT_CONFIG) — loaded once and reused by
-    // the phase-1 satellite-rejection prune (its retention knob) AND the phase-4 sweep below.
-    const sweepConfig = await loadDiscoveryConfig(env);
+    // the phase-1 satellite-rejection/accept-tally prune (its retention knob) AND the phase-4 sweep
+    // below. A transient discovery_config read failure must NOT sink the independent phase-1 jobs
+    // (flyer-warm/classify/projection/embeddings), so fall back to the defaults on a read error.
+    const sweepConfig = await loadDiscoveryConfig(env).catch(() => DEFAULT_CONFIG);
     // Phase 1: the facet classify pass (derives the descriptive facets the projection merges)
     // + the flyer warm (independent of the index), in parallel. Classify runs BEFORE the
     // projection so the projection materializes the EFFECTIVE facets (recipe-facet-derivation).
@@ -257,6 +259,10 @@ export default {
       // point-in-time event, so it ages out on the operator's log-retention window — the same knob
       // that prunes ingest_pushes. Best-effort tail beside the order-list reap.
       pruneSatelliteRejections(env, Date.now() - sweepConfig.logRetentionDays * 86_400_000),
+      // Rolling-prune the accept-tally's day buckets on the SAME retention window as the ledger, so
+      // the windowed reliability rate keeps a bounded, recent denominator (the accept-tally's analog
+      // of the rejection-ledger prune above). Best-effort tail beside it.
+      pruneSourceStats(env, Date.now() - sweepConfig.logRetentionDays * 86_400_000),
     ]);
     // Phase 2: the index projection (merges the fresh classified facets + authored overrides).
     const phase2 = await Promise.allSettled([runProjectionJob(env, buildProjectionDeps(env, corpus))]);

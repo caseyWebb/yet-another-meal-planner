@@ -177,20 +177,41 @@ export const LOCAL_REJECT_CATEGORIES = ["contract_invalid", "judgment_smuggled"]
 export type LocalRejectCategory = (typeof LOCAL_REJECT_CATEGORIES)[number];
 
 /**
+ * Bound on a `local_rejects` array — logically ≤ 2 categories (`contract_invalid`/`judgment_smuggled`),
+ * with modest headroom. The Worker records each entry with one awaited D1 INSERT (`recordLocalRejects`),
+ * so this caps the per-envelope write fan-out an authenticated-but-buggy/hostile satellite can drive.
+ */
+export const MAX_LOCAL_REJECTS = 16;
+/**
+ * Per-entry `count` cap — a sane upper bound on items dropped under one category in ONE delivery, so a
+ * runaway count can't arbitrarily inflate a source's fail-rate numerator. A home satellite's real
+ * per-delivery drop count is far under this; a genuine broken-adapter flood still trips the quarantine
+ * recommendation at the cap.
+ */
+export const MAX_LOCAL_REJECT_COUNT = 10_000;
+/**
+ * Max `sample` length — one short redacted example, matching (with headroom) the satellite-side 200-char
+ * truncation; caps the `provenance` bloat a multi-MB body would otherwise carry (the satellite-side
+ * truncation is advisory-only, so the Worker enforces the ceiling here).
+ */
+export const MAX_LOCAL_REJECT_SAMPLE = 256;
+
+/**
  * ONE pre-aggregated local-reject summary entry: the `category`, the `count` of items dropped under
- * it in this delivery, and ONE redacted/truncated example `reason` `sample` (never a raw body — a
- * leak risk, since a malformed body may carry session/PII fragments). Defined ONCE here so the
- * Worker (validates inbound) and the satellite (assembles outbound) can never drift.
+ * it in this delivery (bounded), and ONE redacted/truncated example `reason` `sample` (bounded; never
+ * a raw body — a leak risk, since a malformed body may carry session/PII fragments). Defined ONCE here
+ * so the Worker (validates inbound) and the satellite (assembles outbound) can never drift, and so the
+ * Worker's parse ENFORCES the bounds rather than trusting the satellite's own truncation/aggregation.
  */
 export const LocalRejectSchema = z.object({
   category: z.enum(LOCAL_REJECT_CATEGORIES),
-  count: z.number().int().positive(),
-  sample: z.string().optional(),
+  count: z.number().int().positive().max(MAX_LOCAL_REJECT_COUNT),
+  sample: z.string().max(MAX_LOCAL_REJECT_SAMPLE).optional(),
 });
 export type LocalReject = z.infer<typeof LocalRejectSchema>;
 
-/** The optional `local_rejects` array carried, ADDITIVELY, on all three delivery envelopes. */
-export const LocalRejectsSchema = z.array(LocalRejectSchema);
+/** The optional `local_rejects` array carried, ADDITIVELY, on all three delivery envelopes (bounded). */
+export const LocalRejectsSchema = z.array(LocalRejectSchema).max(MAX_LOCAL_REJECTS);
 
 /**
  * The v2 batch envelope a satellite POSTs. `capability` is the reported capability, `source`

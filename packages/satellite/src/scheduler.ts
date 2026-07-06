@@ -161,6 +161,12 @@ async function runSource(config: SatelliteConfig, source: SourceConfig, deps: Ti
     pushedUrls.push(url);
   }
 
+  // Asymmetry worth noting (satellite-source-audit): a 100%-fail recipe source yields zero surviving
+  // items and returns here WITHOUT pushing a batch, so its `local_rejects` summary (which only rides the
+  // first chunk of an actual push) never reaches the Worker — a fully-broken recipe adapter is invisible
+  // to the reject ledger; recency-staleness (the source simply stops pushing) is the backstop. Sale/order
+  // differ: they report over the pull-results / order-receipt path even with zero survivors, so their
+  // local rejects (and an empty/all-rejected scan) always reach the Worker.
   if (items.length === 0) return summary;
 
   // Chunk into batches that stay under the Worker's per-invocation subrequest budget (a backfill

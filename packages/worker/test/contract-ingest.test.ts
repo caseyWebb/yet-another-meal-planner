@@ -2,6 +2,9 @@ import { describe, it, expect } from "vitest";
 import {
   CONTRACT_VERSION,
   LOCAL_REJECT_CATEGORIES,
+  MAX_LOCAL_REJECTS,
+  MAX_LOCAL_REJECT_COUNT,
+  MAX_LOCAL_REJECT_SAMPLE,
   parseSatelliteBatch,
   parseObservationItem,
   parseRecipeItem,
@@ -215,6 +218,25 @@ describe("local_rejects wire summary (satellite-source-audit) — additive + opt
     const r = parseSatelliteBatch({ ...validBatch, local_rejects: [{ category: "contract_invalid", count: 3 }] });
     expect(r.ok).toBe(true);
     if (r.ok) expect(r.value.local_rejects?.[0].sample).toBeUndefined();
+  });
+
+  it("(d) enforces bounds — an over-long array, an over-cap count, and an over-long sample are rejected", () => {
+    // Over the array cap (MAX_LOCAL_REJECTS = 16): an authenticated-but-buggy satellite can't drive an
+    // unbounded run of sequential D1 writes with one envelope.
+    const tooMany = Array.from({ length: MAX_LOCAL_REJECTS + 1 }, () => ({ category: "contract_invalid" as const, count: 1 }));
+    expect(parseSatelliteBatch({ ...validBatch, local_rejects: tooMany }).ok).toBe(false);
+    // Over the per-entry count cap (MAX_LOCAL_REJECT_COUNT): can't arbitrarily inflate the fail-rate numerator.
+    expect(parseSatelliteBatch({ ...validBatch, local_rejects: [{ category: "contract_invalid", count: MAX_LOCAL_REJECT_COUNT + 1 }] }).ok).toBe(false);
+    // Over the sample-length cap (MAX_LOCAL_REJECT_SAMPLE): can't bloat provenance with a multi-MB body.
+    const bigSample = "x".repeat(MAX_LOCAL_REJECT_SAMPLE + 1);
+    expect(parseSatelliteBatch({ ...validBatch, local_rejects: [{ category: "contract_invalid", count: 1, sample: bigSample }] }).ok).toBe(false);
+
+    // The at-cap values are accepted (the satellite's 200-char truncation sits under the 256 sample cap).
+    const atCap = parseSatelliteBatch({
+      ...validBatch,
+      local_rejects: [{ category: "contract_invalid", count: MAX_LOCAL_REJECT_COUNT, sample: "y".repeat(MAX_LOCAL_REJECT_SAMPLE) }],
+    });
+    expect(atCap.ok).toBe(true);
   });
 });
 

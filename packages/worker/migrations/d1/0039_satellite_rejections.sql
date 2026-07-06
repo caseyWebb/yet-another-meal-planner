@@ -32,20 +32,28 @@ CREATE INDEX satellite_rejections_age ON satellite_rejections (rejected_at);
 -- The per-source accept-tally — the uniform denominator the reliability rate-math needs. Bumped from
 -- the ONE intakeObservations choke point for all three arms (ingest_pushes is left UNTOUCHED —
 -- Decision B: zero blast radius on the shipped recency view): a tiny counter per {tenant, kind,
--- source}, advancing last_accepted_at on an accept. `deduped` is counted but excluded from the rate
--- denominators (a benign re-report, not a health signal). A stale source simply stops being bumped.
+-- source, DAY}, advancing last_accepted_at on an accept. `deduped` is counted but excluded from the
+-- rate denominators (a benign re-report, not a health signal). A stale source simply stops being
+-- bumped. DAY-BUCKETED (an epoch-day, floor(rejected_at / 86_400_000)) so the reliability rollup can
+-- sum accepts over a RECENT window W the same way it counts rejects over that window — a huge STALE
+-- accept history must not dilute the windowed fail-rate below the quarantine threshold. The buckets
+-- age out on the same rolling prune as the ledger (`pruneSourceStats`, retention = logRetentionDays).
 CREATE TABLE satellite_source_stats (
   tenant           TEXT,                       -- the key's tenant binding (NULL = operator-global)
   kind             TEXT NOT NULL,              -- recipe | sale | order
   source           TEXT NOT NULL,              -- as satellite_rejections.source
+  day              INTEGER NOT NULL,           -- epoch-day bucket = floor(bump_ms / 86_400_000); the windowing/prune key
   accepted         INTEGER NOT NULL DEFAULT 0,
   deduped          INTEGER NOT NULL DEFAULT 0,
-  last_accepted_at INTEGER                     -- epoch ms of the most recent accept (NULL until first); staleness = now − this
+  last_accepted_at INTEGER                     -- epoch ms of the most recent accept in this bucket (NULL until first); staleness = now − max over buckets
 );
--- One tally row per source. A plain UNIQUE(tenant, kind, source) would NOT collide two operator-
--- global rows (SQLite treats NULLs as distinct in a UNIQUE), so the key is COALESCE(tenant,'') — the
--- upsert targets this exact index with ON CONFLICT, keeping a single row per operator-global source.
-CREATE UNIQUE INDEX satellite_source_stats_key ON satellite_source_stats (COALESCE(tenant, ''), kind, source);
+-- One tally row per {source, day}. A plain UNIQUE(tenant, kind, source, day) would NOT collide two
+-- operator-global rows (SQLite treats NULLs as distinct in a UNIQUE), so the key is COALESCE(tenant,'')
+-- — the upsert targets this exact index with ON CONFLICT, keeping a single row per operator-global
+-- source per day.
+CREATE UNIQUE INDEX satellite_source_stats_key ON satellite_source_stats (COALESCE(tenant, ''), kind, source, day);
+-- Rolling-prune scan by bucket age (pruneSourceStats), the accept-tally's analog of satellite_rejections_age.
+CREATE INDEX satellite_source_stats_day ON satellite_source_stats (day);
 
 -- The per-source quarantine flag — a reversible, operator-confirmed Worker-side reject (the standing
 -- "quarantinable through the pipeline" SHALL as a per-source lever, complementing whole-machine key
