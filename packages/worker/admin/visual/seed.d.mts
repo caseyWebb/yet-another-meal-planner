@@ -37,6 +37,13 @@ export interface SeedLiterals {
     readonly global: { readonly id: string; readonly label: string; readonly prefix: string };
     readonly bound: { readonly id: string; readonly label: string; readonly prefix: string; readonly tenant: string };
   };
+  /** Source-audit fixtures (satellite-source-audit): the operator-global key's three recipe sources
+   *  — one clean, one degrading (quarantine-recommended), one quarantined. */
+  readonly satellites: {
+    readonly clean: { readonly source: string };
+    readonly degrading: { readonly source: string; readonly localCount: number };
+    readonly quarantined: { readonly source: string };
+  };
   /** The registered background jobs seeded into job_health/job_runs (mirrors HEALTH_JOBS). */
   readonly jobs: readonly string[];
 }

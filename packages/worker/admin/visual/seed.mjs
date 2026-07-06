@@ -49,6 +49,15 @@ export const SEED = {
     global: { id: "ik-viz-global", label: "kitchen-nas", prefix: "ing_live_a1b2" },
     bound: { id: "ik-viz-bound", label: "casey-laptop", prefix: "ing_live_c3d4", tenant: "casey" },
   },
+  // Discovery › Satellites source-audit (satellite-source-audit): the operator-global key's three
+  // recipe sources, one per quality state — a CLEAN source (empty drill-down), a DEGRADING source
+  // (a quarantine recommendation; an aggregatable worker reject + a pre-aggregated local flood in
+  // the ledger), and a QUARANTINED source (the held block + the un-quarantine toggle).
+  satellites: {
+    clean: { source: "NYT Cooking" },
+    degrading: { source: "Bon Appétit", localCount: 40 },
+    quarantined: { source: "Cook's Illustrated" },
+  },
   // Mirrors src/health.ts HEALTH_JOBS (every registered job gets health + run history so no
   // Status row renders never-run).
   jobs: [
@@ -285,10 +294,65 @@ export function d1Statements(now) {
   // renders NULL as "operator-global" and the bound id as a badge.
   const ik = SEED.ingestKeys;
   stmts.push(`DELETE FROM ingest_keys WHERE id IN (${q(ik.global.id)}, ${q(ik.bound.id)});`);
+  // The global key reports a build on the current contract (no skew); the bound key never authenticated.
   stmts.push(
-    `INSERT INTO ingest_keys (id, label, key_hash, key_prefix, created_at, last_used_at, status, tenant) VALUES` +
-      ` (${q(ik.global.id)}, ${q(ik.global.label)}, 'viz-hash-global', ${q(ik.global.prefix)}, ${now - 20 * DAY}, ${now - 3 * HOUR}, 'active', NULL),` +
-      ` (${q(ik.bound.id)}, ${q(ik.bound.label)}, 'viz-hash-bound', ${q(ik.bound.prefix)}, ${now - 5 * DAY}, NULL, 'active', ${q(ik.bound.tenant)});`,
+    `INSERT INTO ingest_keys (id, label, key_hash, key_prefix, created_at, last_used_at, status, tenant, last_scraper_version, last_contract_version) VALUES` +
+      ` (${q(ik.global.id)}, ${q(ik.global.label)}, 'viz-hash-global', ${q(ik.global.prefix)}, ${now - 20 * DAY}, ${now - 3 * HOUR}, 'active', NULL, '1.4.2', 'v2'),` +
+      ` (${q(ik.bound.id)}, ${q(ik.bound.label)}, 'viz-hash-bound', ${q(ik.bound.prefix)}, ${now - 5 * DAY}, NULL, 'active', ${q(ik.bound.tenant)}, NULL, NULL);`,
+  );
+
+  // --- Discovery › Satellites source-audit (satellite-source-audit): three recipe sources on the
+  // operator-global key exercising all three quality states + the drill-down. Recipe pushes give the
+  // recency; satellite_source_stats the windowed accept denominator; satellite_rejections the ledger;
+  // satellite_quarantine the held flag. All operator-global (tenant NULL) recipe — the SAME key the
+  // intake quarantine check uses, so the toggle's flag actually keys to the source's accounting.
+  const sat = SEED.satellites;
+  const auditDay = Math.floor(now / DAY); // epoch-day bucket = floor(now / 86_400_000)
+  const srcs = [sat.clean.source, sat.degrading.source, sat.quarantined.source];
+  // Recency: one accepted-bearing push per source (2h/3h buckets → fresh, stable relative labels).
+  stmts.push(`DELETE FROM ingest_pushes WHERE id LIKE 'viz-push-%';`);
+  stmts.push(
+    `INSERT INTO ingest_pushes (id, key_id, source, received, accepted, deduped, rejected, result, created_at) VALUES` +
+      ` ('viz-push-clean', ${q(ik.global.id)}, ${q(sat.clean.source)}, 8, 8, 0, 0, 'accepted', ${now - 2 * HOUR}),` +
+      ` ('viz-push-degrading', ${q(ik.global.id)}, ${q(sat.degrading.source)}, 12, 9, 1, 2, 'partial', ${now - 2 * HOUR - 5 * MIN}),` +
+      ` ('viz-push-quarantined', ${q(ik.global.id)}, ${q(sat.quarantined.source)}, 4, 2, 0, 2, 'partial', ${now - 3 * HOUR});`,
+  );
+  // Accept-tally (the windowed rate denominator), today's day bucket, operator-global.
+  stmts.push(`DELETE FROM satellite_source_stats WHERE kind = 'recipe' AND source IN (${srcs.map(q).join(",")});`);
+  stmts.push(
+    `INSERT INTO satellite_source_stats (tenant, kind, source, day, accepted, deduped, last_accepted_at) VALUES` +
+      ` (NULL, 'recipe', ${q(sat.clean.source)}, ${auditDay}, 50, 3, ${now - 2 * HOUR}),` +
+      ` (NULL, 'recipe', ${q(sat.degrading.source)}, ${auditDay}, 30, 2, ${now - 2 * HOUR - 5 * MIN}),` +
+      ` (NULL, 'recipe', ${q(sat.quarantined.source)}, ${auditDay}, 3, 0, ${now - 2 * DAY});`,
+  );
+  // Ledger: the degrading source's five identical worker rejects (aggregate to 5×) + a pre-aggregated
+  // local flood (40×), and the quarantined source's pre-quarantine local flood (30×) + the on-arrival
+  // quarantine rejects (22×). The clean source has none → the empty drill-down state.
+  const degradingUrl = "https://www.bonappetit.com/recipe/miso-glazed-salmon";
+  const localSample = "ingredients: [] (expected ≥1) — selector '.ingredient-list li' matched 0";
+  stmts.push(`DELETE FROM satellite_rejections WHERE id LIKE 'viz-srej-%';`);
+  const rejRows = [];
+  for (let k = 0; k < 5; k++) {
+    rejRows.push(
+      `('viz-srej-deg-w${k}', NULL, ${q(ik.global.id)}, 'recipe', ${q(sat.degrading.source)}, 'worker', 'contract_invalid', ${q(degradingUrl)}, 1, ${now - 3 * HOUR - k * MIN})`,
+    );
+  }
+  rejRows.push(
+    `('viz-srej-deg-local', NULL, ${q(ik.global.id)}, 'recipe', ${q(sat.degrading.source)}, 'local', 'contract_invalid', ${q(localSample)}, ${sat.degrading.localCount}, ${now - 35 * MIN})`,
+  );
+  rejRows.push(
+    `('viz-srej-quar-local', NULL, ${q(ik.global.id)}, 'recipe', ${q(sat.quarantined.source)}, 'local', 'contract_invalid', ${q("recipe-card selector returned null on 30 pages")}, 30, ${now - 2 * DAY - 1 * HOUR})`,
+  );
+  rejRows.push(
+    `('viz-srej-quar-worker', NULL, ${q(ik.global.id)}, 'recipe', ${q(sat.quarantined.source)}, 'worker', 'quarantined', ${q("https://www.cooksillustrated.com/recipes/12345-classic-pot-roast")}, 22, ${now - 20 * MIN})`,
+  );
+  stmts.push(
+    `INSERT INTO satellite_rejections (id, tenant, key_id, kind, source, origin, reason, provenance, count, rejected_at) VALUES ${rejRows.join(", ")};`,
+  );
+  // The held flag on the quarantined source (operator-global recipe).
+  stmts.push(`DELETE FROM satellite_quarantine WHERE kind = 'recipe' AND source = ${q(sat.quarantined.source)};`);
+  stmts.push(
+    `INSERT INTO satellite_quarantine (tenant, kind, source, quarantined_at, note) VALUES (NULL, 'recipe', ${q(sat.quarantined.source)}, ${now - 2 * DAY}, ${q("adapter flooding contract_invalid after a site redesign")});`,
   );
 
   return stmts;

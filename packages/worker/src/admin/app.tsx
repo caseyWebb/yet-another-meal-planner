@@ -41,6 +41,7 @@ import { readInsights } from "../insights.js";
 import { InsightsPage } from "./pages/insights.js";
 import { readDiscoveryLog, readDiscoveryCandidates, readDiscoveryRowById, deleteDiscoveryRow } from "../discovery-db.js";
 import { mintIngestKey, revokeIngestKey, readSatelliteLiveness } from "../ingest-db.js";
+import { readRejections, getQuarantine, setQuarantine, clearQuarantine, DEFAULT_SOURCE_QUALITY_WINDOW_MS } from "../satellite-audit-db.js";
 import { directoryFromEnv, normalizeTenantId } from "../tenant.js";
 import { buildDiscoveryDeps, processCandidate, DEFAULT_CONFIG } from "../discovery-sweep.js";
 import { addDiscoveryRejection } from "../corpus-db.js";
@@ -241,6 +242,39 @@ const routes = app
   .post("/api/ingest/keys/:id/revoke", async (c) =>
     c.json({ id: c.req.param("id"), revoked: await revokeIngestKey(c.env, c.req.param("id")) }),
   )
+  // Discovery › Satellites source-audit (satellite-source-audit): the per-source quarantine toggle
+  // the audit island hits. Operator-only (behind accessGate); the flag keys on {tenant, kind, source}
+  // — the SAME key the intake quarantine check uses (off the carrying key's tenant, not the kind) — so
+  // setting it actually suppresses that source's intake. `tenant` comes from the source's own audit
+  // row (operator-global recipe/sale = null; a tenant-bound source carries its binding). Structured
+  // ToolErrors surface via app.onError; satellite-audit-db maps D1 failures to storage_error.
+  .post(
+    "/api/satellites/quarantine",
+    validator("json", (v) => v as { kind?: string; source?: string; tenant?: string | null; note?: string }),
+    async (c) => {
+      const body = c.req.valid("json");
+      const kind = String(body.kind ?? "").trim();
+      const source = String(body.source ?? "").trim();
+      if (!kind || !source) throw new ToolError("validation_failed", "quarantine needs a kind and a source");
+      const tenant = body.tenant == null || body.tenant === "" ? null : String(body.tenant);
+      const note = body.note?.trim() ? body.note.trim() : null;
+      await setQuarantine(c.env, { tenant, kind, source }, note);
+      return c.json({ quarantined: true, kind, source, tenant });
+    },
+  )
+  .post(
+    "/api/satellites/quarantine/clear",
+    validator("json", (v) => v as { kind?: string; source?: string; tenant?: string | null }),
+    async (c) => {
+      const body = c.req.valid("json");
+      const kind = String(body.kind ?? "").trim();
+      const source = String(body.source ?? "").trim();
+      if (!kind || !source) throw new ToolError("validation_failed", "un-quarantine needs a kind and a source");
+      const tenant = body.tenant == null || body.tenant === "" ? null : String(body.tenant);
+      const cleared = await clearQuarantine(c.env, { tenant, kind, source });
+      return c.json({ cleared, kind, source, tenant });
+    },
+  )
   // Discovery: the raw log read (kept as a stable JSON surface at its existing path) and the
   // per-candidate row actions the Discovery island calls. Retry/Delete reuse the sweep's own
   // functions (shared logic, not a re-implementation) — same outcome as the autonomous sweep.
@@ -365,10 +399,18 @@ app.get("/discovery", async (c) => {
   );
 });
 
-// Discovery › Satellites (recipe-ingestion): the read-only satellite ingest liveness view.
+// Discovery › Satellites (satellite-source-audit): the satellite ingest liveness view + the
+// per-source health audit. The rollup carries the compute-on-read quality dimension; the ledger +
+// quarantine flags are fetched alongside it so the page can join the audit onto each source row and
+// seed the quarantine island (windowed to the same reliability span the quality rollup uses).
 app.get("/discovery/satellites", async (c) => {
-  const rollup = await readSatelliteLiveness(c.env);
-  return c.html(page(<SatellitesPage rollup={rollup} now={Date.now()} />));
+  const now = Date.now();
+  const [rollup, rejections, quarantine] = await Promise.all([
+    readSatelliteLiveness(c.env, now),
+    readRejections(c.env, { sinceMs: now - DEFAULT_SOURCE_QUALITY_WINDOW_MS, limit: 1000 }),
+    getQuarantine(c.env),
+  ]);
+  return c.html(page(<SatellitesPage rollup={rollup} rejections={rejections} quarantine={quarantine} now={now} />));
 });
 
 // Insights area (group-insights): a group-wide popularity dashboard over the recipe corpus. SSR'd

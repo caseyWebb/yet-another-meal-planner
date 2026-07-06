@@ -90,11 +90,17 @@ export async function recordLocalRejects(
   }
 }
 
-/** Read options for the ledger: an optional recency floor + an optional exact-source filter, bounded. */
+/** Read options for the ledger: an optional recency floor + optional exact source/kind filters, bounded. */
 export interface ReadRejectionsOpts {
   sinceMs?: number;
   /** Exact `source` match (a store slug or feed/site source). */
   source?: string;
+  /**
+   * Exact `kind` match (recipe | sale | order). Pairs with `source` so a same-NAMED source of a
+   * different kind (a store slug that is also a recipe feed name) does not merge into one drill-down —
+   * the admin Satellites detail fetches a source's ledger by `{kind, source}`.
+   */
+  kind?: string;
   /**
    * When set, restrict to rows VISIBLE to this tenant: operator-global (`tenant IS NULL`) OR this
    * exact tenant. `read_satellite_rejections` passes it so an `order`-kind row (tenant-private,
@@ -120,6 +126,10 @@ export async function readRejections(env: Env, opts: ReadRejectionsOpts = {}): P
   if (opts.source !== undefined) {
     binds.push(opts.source);
     where += ` AND source = ?${binds.length}`;
+  }
+  if (opts.kind !== undefined) {
+    binds.push(opts.kind);
+    where += ` AND kind = ?${binds.length}`;
   }
   if (opts.tenantScope !== undefined) {
     binds.push(opts.tenantScope);
