@@ -24,7 +24,7 @@
     "@cloudflare/workers-oauth-provider": "^0.8.1",
     "@grocery-agent/contract": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "agents": "^0.16.2",
+    "agents": "^0.17.1",
     "fast-xml-parser": "^5.9.3",
     "gray-matter": "^4.0.3",
     "hono": "^4.12.27",
