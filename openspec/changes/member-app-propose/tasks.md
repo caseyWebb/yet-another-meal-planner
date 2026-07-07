@@ -25,36 +25,36 @@ question is settled in design.md (D1–D12) against the code and the production 
 
 ## 2. Worker: W1 planner extensions (D2, D3, D4, D9, D10)
 
-- [ ] 2.1 `semantic-search.ts`: `rankCandidates` gains optional bounded-nudge params
+- [x] 2.1 `semantic-search.ts`: `rankCandidates` gains optional bounded-nudge params
   (`nudge?: { vec: number[]; weight: number }`, `proteinWants?: string[]` with a `+0.15`-scale
   boost constant) — absent for every existing caller; unit-test that omission is bit-identical
   to today and that each term reorders without admitting non-candidates.
-- [ ] 2.2 `night-vibe-schedule.ts`: `WeekSlot` gains optional `category?: WeatherCategory`,
+- [x] 2.2 `night-vibe-schedule.ts`: `WeekSlot` gains optional `category?: WeatherCategory`,
   stamped when a sampled slot is drawn from a non-`mild` category quota (flex/pinned/overdue
   slots carry none). Allocation math untouched; extend the existing `sampleWeek` tests to pin
   the annotation and that quotas/rollover are unchanged.
-- [ ] 2.3 `meal-plan-proposal-tool.ts`: add the `slots` param (array of
+- [x] 2.3 `meal-plan-proposal-tool.ts`: add the `slots` param (array of
   `{ vibe_id, protein?, cuisine?, max_time_total? (nullable), vibe?, recipe? }`) and
   `nudges.freeform`/`nudges.proteins` to the zod schema; thread per-slot facet pins into
   `buildPool` with precedence **slot pin > global `nudges.max_time_total` > vibe facet**
   (`max_time_total: null` deletes the cap for that slot); constraints for unsampled vibe ids
   are inert. Embed freeform + override phrases (cache misses batched) via `embedTextsCached`;
   a request with no such text makes zero AI calls.
-- [ ] 2.4 `meal-plan-proposal-tool.ts` + `meal-plan-proposal.ts`: per-slot vibe override — the
+- [x] 2.4 `meal-plan-proposal-tool.ts` + `meal-plan-proposal.ts`: per-slot vibe override — the
   embedded phrase replaces that slot's query vector (gate + vibe identity unchanged, response
   `vibe_override: true`; an unembedded vibe with an override becomes fillable). Freeform vector
   + protein wants threaded as the `rankCandidates` nudges; `why[]` lines per D4.
-- [ ] 2.5 `meal-plan-proposal.ts`: recipe pins — resolve `slots[].recipe` with the lock rules
+- [x] 2.5 `meal-plan-proposal.ts`: recipe pins — resolve `slots[].recipe` with the lock rules
   (case-insensitive, embedded, non-rejected, not excluded; unresolvable → explicit empty slot
   with reason), admit resolved pins into the `DiversifyState` up-front alongside locks, return
   them in slot position with `vibe_id`/`reason` intact, `recipe_pinned: true`, `why` leading
   "your pick".
-- [ ] 2.6 `meal-plan-proposal.ts`: alternates — per vibe slot, over its pool minus the week's
+- [x] 2.6 `meal-plan-proposal.ts`: alternates — per vibe slot, over its pool minus the week's
   used slugs: `alternates` (top-6 lites `{ slug, title, protein, cuisine, time_total }`),
   `alt_similar` (max cosine to the chosen main), `alt_different` (highest-ranked
   different-cuisine); `[]`/`null` on locked slots and exhausted pools; empty vibe slots keep
   their pool's alternates. Fold `WeekSlot.category` into the slot's `why` + `weather_category`.
-- [ ] 2.7 Unit tests: pin-precedence matrix (pin > nudge > facet; `null` lifts the vibe's cap);
+- [x] 2.7 Unit tests: pin-precedence matrix (pin > nudge > facet; `null` lifts the vibe's cap);
   inert unsampled-vibe constraints; exclude beats a recipe pin; recipe pin preserves
   `vibe_id` and diversifies the rest of the week away from it; alternates are gate survivors,
   week-deduped, deterministic; override slot fills an unembedded vibe; **the D10 determinism

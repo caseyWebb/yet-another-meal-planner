@@ -247,3 +247,117 @@ describe("assembleProposal", () => {
     expect(r.uncovered_at_risk).toEqual(["ground beef"]);
   });
 });
+
+// --- member-app-propose: pins, alternates, weather legibility (D3/D9) ------------------------
+
+describe("assembleProposal — recipe pins + alternates", () => {
+  it("a locked slot has no pool: alternates [] and both alt fields null", () => {
+    const locked = cand("locked-dish", "fish", "japanese", [0, 0, 1], 1);
+    const other = cand("other-dish", "beef", "italian", [1, 0, 0], 0.8);
+    const ctx = baseCtx({
+      slots: [slot("s")],
+      poolByVibe: new Map([["s", [other]]]),
+      locked: [locked],
+      embeddingBySlug: embMap(locked, other),
+    });
+    const r = assembleProposal(ctx);
+    const lockedSlot = r.plan.find((x) => x.reason === "locked")!;
+    expect(lockedSlot.alternates).toEqual([]);
+    expect(lockedSlot.alt_similar).toBeNull();
+    expect(lockedSlot.alt_different).toBeNull();
+  });
+
+  it("a caps-emptied vibe slot KEEPS its pool's alternates (the escape hatch)", () => {
+    const c1 = cand("chx1", "chicken", "american", [1, 0, 0], 0.9);
+    const c2 = cand("chx2", "chicken", "american", [0, 1, 0], 0.8);
+    const ctx = baseCtx({
+      slots: [slot("a"), slot("b")],
+      poolByVibe: new Map([
+        ["a", [c1]],
+        ["b", [c2]],
+      ]),
+      embeddingBySlug: embMap(c1, c2),
+      params: { proteinCap: 1 }, // the second chicken is blocked by the cap, not the gate
+    });
+    const r = assembleProposal(ctx);
+    const empty = r.plan.find((s) => !s.main)!;
+    expect(empty.empty_reason).toMatch(/variety caps/);
+    expect(empty.alternates.map((a) => a.slug)).toEqual([expect.stringMatching(/^chx/)]);
+  });
+
+  it("a pinned vibe sampled twice consumes the pin once; the second slot fills from the pool", () => {
+    const pinned = cand("pinned-dish", "pork", "italian", [1, 0, 0], 1);
+    const poolA = cand("pool-a", "none", "italian", [0.9, 0.1, 0], 0.8);
+    const ctx = baseCtx({
+      slots: [slot("pasta"), slot("pasta")],
+      poolByVibe: new Map([["pasta", [pinned, poolA]]]),
+      pinnedByVibe: new Map([["pasta", pinned]]),
+      embeddingBySlug: embMap(pinned, poolA),
+    });
+    const r = assembleProposal(ctx);
+    const pastaSlots = r.plan.filter((s) => s.vibe_id === "pasta");
+    expect(pastaSlots).toHaveLength(2);
+    expect(pastaSlots[0].main!.slug).toBe("pinned-dish");
+    expect(pastaSlots[0].recipe_pinned).toBe(true);
+    expect(pastaSlots[0].why[0]).toBe("your pick");
+    expect(pastaSlots[1].main!.slug).toBe("pool-a");
+    expect(pastaSlots[1].recipe_pinned).toBeUndefined();
+  });
+
+  it("alt_similar is nearest-by-cosine to the main; alt_different is the best other-cuisine pick", () => {
+    const main = cand("main-dish", "fish", "japanese", [1, 0, 0], 0.95);
+    const near = cand("near-dish", "fish", "japanese", [0.95, 0.05, 0], 0.5);
+    const far = cand("far-dish", "beef", "mexican", [0, 1, 0], 0.9);
+    const ctx = baseCtx({
+      slots: [slot("x")],
+      poolByVibe: new Map([["x", [main, far, near]]]), // pool rank: main, far, near
+      embeddingBySlug: embMap(main, near, far),
+    });
+    const r = assembleProposal(ctx);
+    const s = r.plan[0];
+    expect(s.main!.slug).toBe("main-dish");
+    expect(s.alternates.map((a) => a.slug)).toEqual(["far-dish", "near-dish"]); // pool order, main removed
+    expect(s.alt_similar!.slug).toBe("near-dish"); // cosine, not rank
+    expect(s.alt_different!.slug).toBe("far-dish"); // highest-ranked different cuisine
+  });
+});
+
+describe("assembleProposal — weather-category legibility (D9)", () => {
+  it("a category-stamped slot returns weather_category and the weather-fit why", () => {
+    const a = cand("grill-dish", "beef", "american", [1, 0, 0]);
+    const ctx = baseCtx({
+      slots: [{ ...slot("g"), category: "grill" as const }],
+      poolByVibe: new Map([["g", [a]]]),
+      embeddingBySlug: embMap(a),
+    });
+    const r = assembleProposal(ctx);
+    expect(r.plan[0].weather_category).toBe("grill");
+    expect(r.plan[0].why).toContain("fits this window's grill weather");
+  });
+
+  it("a recipe-pinned slot keeps the structural category but not the weather why (the member chose it)", () => {
+    const pin = cand("my-pick", "fish", "thai", [1, 0, 0]);
+    const ctx = baseCtx({
+      slots: [{ ...slot("g"), category: "grill" as const }],
+      poolByVibe: new Map([["g", [pin]]]),
+      pinnedByVibe: new Map([["g", pin]]),
+      embeddingBySlug: embMap(pin),
+    });
+    const r = assembleProposal(ctx);
+    expect(r.plan[0].weather_category).toBe("grill");
+    expect(r.plan[0].why[0]).toBe("your pick");
+    expect(r.plan[0].why).not.toContain("fits this window's grill weather");
+  });
+
+  it("marks vibe-overridden slots", () => {
+    const a = cand("a-dish", "fish", "thai", [1, 0, 0]);
+    const ctx = baseCtx({
+      slots: [slot("v")],
+      poolByVibe: new Map([["v", [a]]]),
+      overriddenVibes: new Set(["v"]),
+      embeddingBySlug: embMap(a),
+    });
+    const r = assembleProposal(ctx);
+    expect(r.plan[0].vibe_override).toBe(true);
+  });
+});

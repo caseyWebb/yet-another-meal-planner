@@ -373,6 +373,11 @@ export interface WeekSlot {
   reason: "pinned" | "overdue" | "sampled";
   debt: number;
   weight: number;
+  /** The non-`mild` weather-category quota this SAMPLED slot filled (pure annotation —
+   *  allocation math untouched). Absent on pinned/overdue/flex slots, so the proposal
+   *  can explain "fits this window's grill weather" only where a quota actually placed
+   *  the slot (member-app-propose D9). */
+  category?: WeatherCategory;
 }
 
 export interface SampledWeek {
@@ -515,7 +520,9 @@ export function sampleWeek(
       }
       const drawn = drawBoundedMultiplicity(state, eligible, quota, rng);
       for (const s of drawn) {
-        slots.push({ id: s.id, reason: "sampled", debt: round4(s.debt), weight: round4(s.weight) });
+        // Stamp WHICH non-`mild` quota placed this slot (weather legibility, D9) —
+        // pure annotation on the slot; the allocation math above is untouched.
+        slots.push({ id: s.id, reason: "sampled", debt: round4(s.debt), weight: round4(s.weight), category: cat });
         used.add(s.id);
       }
       // Fewer than `quota` were drawable (pool exhausted its caps) — the shortfall joins flex.

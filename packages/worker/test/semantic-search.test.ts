@@ -7,6 +7,7 @@ import {
   rankCandidates,
   resolveRankParams,
   DEFAULT_RANK_PARAMS,
+  PROTEIN_WANT_BOOST,
   type SearchCandidate,
   type RankParams,
 } from "../src/semantic-search.js";
@@ -366,5 +367,47 @@ describe("search_recipes mode fork (membership vs ranked)", () => {
     );
     expect(ranked).toEqual(["embedded"]);
     expect(ranked).not.toContain("fresh"); // unembedded dropped in ranked mode
+  });
+});
+
+// --- bounded rank nudges (member-app-propose D4) -------------------------------------------
+
+describe("rankCandidates — optional nudges (freeform vector + protein wants)", () => {
+  const a = cand({ slug: "a", protein: "chicken", embedding: [1, 0, 0] });
+  const b = cand({ slug: "b", protein: "fish", embedding: [0.9, 0.1, 0] });
+  const query = [1, 0, 0];
+
+  it("omitting the nudge params is bit-identical to today's call shape", () => {
+    const bare = rankCandidates([a, b], query, [], [], NOW, DEFAULT_RANK_PARAMS, 10);
+    const explicit = rankCandidates([a, b], query, [], [], NOW, DEFAULT_RANK_PARAMS, 10, undefined, undefined);
+    const emptyWants = rankCandidates([a, b], query, [], [], NOW, DEFAULT_RANK_PARAMS, 10, undefined, []);
+    expect(explicit).toEqual(bare);
+    expect(emptyWants).toEqual(bare);
+    expect(bare.map((r) => r.slug)).toEqual(["a", "b"]); // pure cosine order
+  });
+
+  it("a freeform nudge reorders gate survivors without admitting non-candidates", () => {
+    // The nudge vector points at b; weight 0.15 outweighs the small cosine gap.
+    const out = rankCandidates([a, b], query, [], [], NOW, DEFAULT_RANK_PARAMS, 10, { vec: [0, 1, 0], weight: 0.15 });
+    expect(out.map((r) => r.slug)).toEqual(["b", "a"]);
+    expect(out).toHaveLength(2); // reorders only — nothing new admitted, nothing dropped
+  });
+
+  it("a protein want adds PROTEIN_WANT_BOOST to matching candidates only", () => {
+    const out = rankCandidates([a, b], query, [], [], NOW, DEFAULT_RANK_PARAMS, 10, undefined, ["fish"]);
+    expect(out.map((r) => r.slug)).toEqual(["b", "a"]); // fish boosted over the closer chicken
+    const bare = rankCandidates([a, b], query, [], [], NOW, DEFAULT_RANK_PARAMS, 10);
+    const bareB = bare.find((r) => r.slug === "b")!;
+    const boostedB = out.find((r) => r.slug === "b")!;
+    expect(boostedB.score).toBeCloseTo(bareB.score + PROTEIN_WANT_BOOST, 4);
+    const bareA = bare.find((r) => r.slug === "a")!;
+    expect(out.find((r) => r.slug === "a")!.score).toBeCloseTo(bareA.score, 4); // non-matching untouched
+  });
+
+  it("a null-protein candidate never matches a want", () => {
+    const noProt = cand({ slug: "np", protein: null, embedding: [1, 0, 0] });
+    const out = rankCandidates([noProt], query, [], [], NOW, DEFAULT_RANK_PARAMS, 10, undefined, ["fish"]);
+    const bare = rankCandidates([noProt], query, [], [], NOW, DEFAULT_RANK_PARAMS, 10);
+    expect(out).toEqual(bare);
   });
 });

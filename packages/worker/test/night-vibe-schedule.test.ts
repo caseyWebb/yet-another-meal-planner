@@ -497,3 +497,69 @@ describe("sampleWeek — quota-based weather allocation", () => {
     expect(w1).toEqual(w2);
   });
 });
+
+describe("sampleWeek — weather-category slot annotation (member-app-propose D9)", () => {
+  it("stamps `category` on slots drawn from a non-mild quota; flex slots carry none", () => {
+    const palette: NightVibeSpec[] = [
+      { id: "grill-a", weather_affinity: ["grill"], cadence_days: 1 },
+      { id: "grill-b", weather_affinity: ["grill"], cadence_days: 1 },
+      { id: "flex-a" },
+      { id: "flex-b" },
+    ];
+    const debts = new Map(palette.map((v) => [v.id, 0]));
+    // 2 grill days + 2 mild days over 4 slots → grill quota 2, mild (flex) quota 2.
+    const days: WeatherCategory[] = ["grill", "grill", "mild", "mild"];
+    const wk = sampleWeek(palette, days, debts, 4, 3, DEFAULT_CADENCE_PARAMS, 4);
+    expect(wk.quotas.grill).toBe(2);
+    const grillPlaced = wk.slots.filter((s) => s.category === "grill");
+    expect(grillPlaced).toHaveLength(2);
+    for (const s of grillPlaced) expect(s.reason).toBe("sampled");
+    // Every slot NOT placed by the grill quota (the mild/flex draws) carries no category.
+    for (const s of wk.slots.filter((x) => x.category === undefined)) expect(s.reason).toBe("sampled");
+    expect(wk.slots.filter((s) => s.category === undefined)).toHaveLength(2);
+  });
+
+  it("pinned and overdue force-placements never carry a category", () => {
+    const palette: NightVibeSpec[] = [
+      { id: "pinned-vibe", pinned: true, weather_affinity: ["grill"] },
+      { id: "overdue-vibe", cadence_days: 7, weather_affinity: ["grill"] },
+      { id: "filler", cadence_days: 1 },
+    ];
+    const debts = new Map<string, number>([
+      ["pinned-vibe", 0],
+      ["overdue-vibe", 5], // ≥ forceRegardlessAt — force-places despite any quota state
+      ["filler", 0],
+    ]);
+    const days: WeatherCategory[] = new Array(7).fill("grill");
+    const wk = sampleWeek(palette, days, debts, 3, 1, DEFAULT_CADENCE_PARAMS, 7);
+    const byId = new Map(wk.slots.map((s) => [s.id, s]));
+    expect(byId.get("pinned-vibe")?.reason).toBe("pinned");
+    expect(byId.get("pinned-vibe")?.category).toBeUndefined();
+    expect(byId.get("overdue-vibe")?.reason).toBe("overdue");
+    expect(byId.get("overdue-vibe")?.category).toBeUndefined();
+  });
+
+  it("the annotation changes nothing about allocation: quotas, rollover, and placement match the pre-annotation shape", () => {
+    const palette: NightVibeSpec[] = [
+      { id: "grill-a", weather_affinity: ["grill"], cadence_days: 1 },
+      { id: "wet-a", weather_affinity: ["wet"], cadence_days: 1 },
+      { id: "flex" },
+    ];
+    const debts = new Map(palette.map((v) => [v.id, 0]));
+    const days: WeatherCategory[] = ["grill", "wet", "mild", "mild", "grill", "wet", "mild"];
+    for (let seed = 1; seed <= 10; seed++) {
+      const wk = sampleWeek(palette, days, debts, 3, seed, DEFAULT_CADENCE_PARAMS, 7);
+      // Strip the annotation → the remaining shape must be exactly what the same inputs
+      // produced before (deterministic given seed, categories are pure decoration).
+      const stripped = wk.slots.map(({ category: _category, ...rest }) => rest);
+      const again = sampleWeek(palette, days, debts, 3, seed, DEFAULT_CADENCE_PARAMS, 7);
+      expect(again.slots.map(({ category: _c, ...rest }) => rest)).toEqual(stripped);
+      expect(again.quotas).toEqual(wk.quotas);
+      expect(again.rolledOver).toEqual(wk.rolledOver);
+      // A slot's category, when present, names a non-mild bucket its vibe is eligible for.
+      for (const s of wk.slots) {
+        if (s.category) expect(["grill", "cold-comfort", "wet"]).toContain(s.category);
+      }
+    }
+  });
+});

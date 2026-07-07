@@ -87,6 +87,18 @@ export const DEFAULT_RANK_PARAMS: RankParams = {
 export const DEFAULT_K = 10;
 export const MAX_K = 50;
 
+/** The week-level protein-want boost (`propose_meal_plan` `nudges.proteins`): a bounded
+ *  additive term on the `favoriteWeight` scale — soft, never a gate (the per-slot
+ *  `protein` pin is the hard version). */
+export const PROTEIN_WANT_BOOST = 0.15;
+
+/** An optional bounded additive rank nudge: `weight · cosine(vec, candidate)`. Used for
+ *  the propose freeform phrase; absent for every other caller (bit-identical omission). */
+export interface RankNudge {
+  vec: number[];
+  weight: number;
+}
+
 /** Round to 4 decimals — enough to order, compact in the JSON the model reads. */
 function round4(n: number): number {
   return Math.round(n * 1e4) / 1e4;
@@ -175,6 +187,13 @@ export function pantryOverlap(
  * the favorite, freshness, and pantry-overlap boosts, sort descending, return the top
  * `k`. Pure — the caller resolves candidates/embeddings/favorites, normalizes
  * `boostItems` through the alias table, and passes `now`.
+ *
+ * The two trailing nudges (member-app-propose D4) are BOUNDED ADDITIVE terms, absent
+ * for every pre-existing caller (omission is bit-identical to today): `nudge` adds
+ * `weight · cosine(nudge.vec, candidate)` (the propose freeform phrase), and
+ * `proteinWants` adds `PROTEIN_WANT_BOOST` when the candidate's protein is in the set.
+ * Both only REORDER the already-gated candidates — they can never admit a recipe the
+ * hard gate excluded (the `holistic-use-it-up` coverage-term precedent).
  */
 export function rankCandidates(
   candidates: SearchCandidate[],
@@ -184,7 +203,10 @@ export function rankCandidates(
   now: Date,
   params: RankParams,
   k: number,
+  nudge?: RankNudge,
+  proteinWants?: string[],
 ): ScoredRecipe[] {
+  const wants = proteinWants && proteinWants.length > 0 ? new Set(proteinWants) : null;
   const scored = candidates.map((c) => {
     const similarity = cosineSimilarity(queryVec, c.embedding);
     const overlap = pantryOverlap(c, boostItems, params);
@@ -192,7 +214,9 @@ export function rankCandidates(
       similarity +
       params.favoriteWeight * favoriteAffinity(c.embedding, favorites) +
       freshnessBoost(c.last_cooked, now, params) +
-      overlap.boost;
+      overlap.boost +
+      (nudge ? nudge.weight * cosineSimilarity(nudge.vec, c.embedding) : 0) +
+      (wants && c.protein !== null && wants.has(c.protein) ? PROTEIN_WANT_BOOST : 0);
     return {
       slug: c.slug,
       title: c.title,
