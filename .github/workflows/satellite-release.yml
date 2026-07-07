@@ -136,7 +136,7 @@ jobs:
         # tag_name is the DERIVED satellite-v<version> (NOT github.ref_name, which on workflow_call /
         # workflow_dispatch is the branch, e.g. main). softprops creates this tag as part of cutting
         # the Release — inline, in this same run — so there is no cross-workflow retrigger and no loop.
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ steps.v.outputs.tag }}
           name: satellite v${{ steps.v.outputs.version }}
