@@ -1,6 +1,6 @@
 {
   "name": "@grocery-agent/satellite",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "private": true,
   "type": "module",
   "description": "The home-network satellite (satellite): runs off-cloud on the operator's own network, authenticates to walled recipe sites with the operator's own session, extracts recipes to the shared wire contract, and POSTs them to the grocery-mcp Worker's /admin/api/ingest under the recipe-scrape capability.",
