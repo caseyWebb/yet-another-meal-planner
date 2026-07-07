@@ -57,6 +57,6 @@
 
 ## 8. Ship
 
-- [ ] 8.1 `aubr typecheck`, `aubr test`, `aubr test:tooling` green (new packages included); `aubr build:app` + `aubr build:admin` both populate `assets/` cleanly in either order.
-- [ ] 8.2 `aubr test:admin` green (admin URLs unchanged after the assets move) and `aubr test:app` green — the P0 acceptance: the seeded invite code logs into the hello-world SPA at `/` under `wrangler dev`, in Playwright.
+- [x] 8.1 `aubr typecheck`, `aubr test`, `aubr test:tooling` green (new packages included); `aubr build:app` + `aubr build:admin` both populate `assets/` cleanly in either order.
+- [x] 8.2 `aubr test:admin` green (admin URLs unchanged after the assets move) and `aubr test:app` green — the P0 acceptance: the seeded invite code logs into the hello-world SPA at `/` under `wrangler dev`, in Playwright.
 - [ ] 8.3 After merge + deploy: the operator's deployed Worker serves the SPA at `/`, `/api/version` returns the stamped SHA matching the `X-App-Build` header, and `/mcp` + `/cookbook` + `/admin` + `/health` behave unchanged.
