@@ -121,7 +121,7 @@ jobs:
         # arch-agnostic, so this just cross-builds the arm64 variant under QEMU and pushes one
         # manifest list per tag. The image "embeds" its build + contract version by carrying the
         # copied package.json + contract source it reads at runtime — no build-args needed.
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: packages/satellite/Dockerfile
