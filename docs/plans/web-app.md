@@ -6,6 +6,11 @@
 > when the work ships. It intentionally does not use the OpenSpec workflow; each
 > phase below is roughly one OpenSpec-change-sized unit if the orchestrator wants
 > to run them through `/opsx:propose` individually.
+>
+> **Paths:** the repo is a workspace monorepo — Worker code lives under
+> `packages/worker/` (`src/`, `migrations/`, `scripts/`), alongside the existing
+> `packages/contract` and `packages/satellite`. Bare `src/…` references below
+> mean `packages/worker/src/…`.
 
 ## 1. Vision & non-negotiable principles
 
@@ -19,9 +24,13 @@ where it already is:
   archetype derivation, ingredient-identity normalization.
 - **Claude.ai** (existing): conversation, capture, judgment. The app deep-links
   out ("Cook with Claude") rather than embedding a model.
-- **Request-time model calls in the app: at most one** — embedding a freeform
-  phrase for the propose flow (same primitive `search_recipes` ranked mode
-  already uses). Hash-cache it. Nothing else.
+- **Request-time frontier model calls in the app: none.** Two bounded
+  Workers AI touches are sanctioned: (1) embedding a freeform phrase for the
+  propose flow (same primitive `search_recipes` ranked mode already uses;
+  hash-cache it), and (2) the small-model cluster-naming step inside
+  `suggest_night_vibes` — already part of the derivation pipeline, but the app
+  endpoint must reuse the archetype-derivation job's `job_health` gate (~20h)
+  so a member-tappable button cannot spend `env.AI` unboundedly. Nothing else.
 
 Cost posture: the app must round to zero marginal cost per member. Pure-CPU
 planning (cosine over cron-captured vectors), D1/KV/R2 reads, cached static
@@ -67,9 +76,11 @@ One SPA stack for both interfaces; the Worker stays the only backend.
 - `wrangler.jsonc` assets: `not_found_handling: "single-page-application"`;
   `run_worker_first` must enumerate every Worker-owned path (`/mcp`, `/api/*`,
   `/authorize`, `/oauth/*`, `/cookbook*`, `/admin*`, `/health*`, `/source`) so
-  the SPA fallback cannot shadow them. **This config change must be added to
-  `scripts/merge-wrangler-config.mjs`'s allowlist explicitly** or the deploy
-  silently drops it.
+  the SPA fallback cannot shadow them. The deploy's config merge
+  (`packages/worker/scripts/merge-wrangler-config.mjs`) already propagates the
+  top-level `assets` key wholesale, so no allowlist addition is needed —
+  **verify in P0 that `not_found_handling` and `run_worker_first` survive the
+  merged output**, and extend the merge only if a sub-key is dropped.
 - Hashed immutable assets; SW precaches the shell (offline start), with a
   **prompt-to-reload** update flow (never auto-reload someone mid-aisle).
 - **Version skew policy:** API evolution is additive-only. The build stamps a
@@ -123,7 +134,7 @@ browser bundle).
 | `cookbook` | recipe index + bodies (reuse `/cookbook` internals as JSON), keyword + ranked search (`search_recipes`), similar, new-for-me, **trending (new: `cooking_log` GROUP BY)**, picked-for-you (**new: thin wrap of `rankCandidates` favorites-affinity**) |
 | `plan` | read/update meal plan (incl. `from_vibe`, sides), schedule dates |
 | `propose` | `propose_meal_plan` (+ phase-3 extensions), weather (`get_weather_forecast`) |
-| `vibes` | night-vibe CRUD, `suggest_night_vibes`, `list_proposals`/`confirm_proposal` |
+| `vibes` | night-vibe CRUD, `suggest_night_vibes` (behind the derivation job's `job_health` gate — §1), `list_proposals`/`confirm_proposal` |
 | `grocery` | list CRUD, **member `in_cart` toggle (new semantics — see §5)**, **derived to-buy view (new — see §5 W2)**, `place_order` (preview + commit), substitutions (phase 4) |
 | `pantry` | read/update, `mark_pantry_verified` |
 | `log` | `log_cooked` (stamps `satisfied_vibe`), delete, `retrospective` |
@@ -193,15 +204,22 @@ explicit expansion write, make the **derivation itself first-class**:
   `add_to_grocery_list` calls; skills + `docs/TOOLS.md` update in the same pass
   (tool/skill ownership boundary per CONTRIBUTING.md).
 
-**W3 — Member `in_cart` semantics:** today only `place_order` transitions
-status. Add a member-driven `active ⇄ in_cart` toggle (shopping in person) via
-`update_grocery_list`; `ordered` remains `place_order`-only.
+**W3 — Member `in_cart` semantics:** `update_grocery_list` already exposes
+`status: active|in_cart|ordered` unguarded (`grocery-tools.ts`) — the lifecycle
+intent (`place_order` owns `ordered`) lives only in a header comment. W3 is
+therefore an *enforcement* change, not a new toggle: keep the member-driven
+`active ⇄ in_cart` transition, reject member writes to `ordered` (structured
+error), and state the guarantee in the tool description + `docs/TOOLS.md`.
 
 **W4 — Substitutions, deterministic core** (phase 4): same-identity swaps from
 `kroger_prices` + `compare_unit_price` + flyer cache (cheaper / on-sale /
 out-of-stock), and cross-ingredient sibling suggestions as a **graph walk over
-the ingredient-identity registry** (SAME/SPECIALIZATION edges from the
-normalization flow). The SKU matcher keeps its never-substitutes guarantee;
+the ingredient-identity registry**. Design the walk against the persisted
+schema (migration `0033_ingredient_identity.sql`), not the classifier
+vocabulary: SAME verdicts merge nodes via the union-find `representative`
+pointer (no edge), and `ingredient_edge.kind` is
+`general | containment | membership` — SPECIALIZATION persists as a
+containment-style edge. The SKU matcher keeps its never-substitutes guarantee;
 anything beyond price/availability/sibling swaps stays LLM territory in Claude.
 
 **W5 — Aisle capture** (phase 4; the only mockup feature needing new data):
@@ -311,8 +329,9 @@ space moves fast. Current concrete picks:
   Playwright coverage, same as the admin rule today. No phase merges without
   its specs.
 - Deploy: add `packages/app/**` (and `packages/ui/**`) to `ci.yml`'s
-  `trigger-deploy` path filters; add the assets-config shape to
-  `scripts/merge-wrangler-config.mjs`; deploy builds the SPA before publishing.
+  `trigger-deploy` path filters; verify the assets-config shape passes through
+  `packages/worker/scripts/merge-wrangler-config.mjs` (§2 — it already merges
+  `assets`); deploy builds the SPA before publishing.
 - Docs in lockstep, same pass: new tool params/tools → `docs/TOOLS.md`; SKU-cache
   aisle columns + session store → `docs/SCHEMAS.md`; the app's existence, auth
   model, and the member-app mount → `docs/ARCHITECTURE.md` + `README.md` +
@@ -355,11 +374,11 @@ phase parallelizes freely.
   app with the grocery list; check-offs replay on reconnect.*
 - **P6 — Admin SPA:** per §7, then retire SSR/islands and their build step.
 
-## 11. Open decisions for the operator (small; defaults stated)
+## 11. Operator decisions (confirmed 2026-07-07 — all defaults accepted)
 
-1. Member app at `/` (default, recommended) vs `/app`.
-2. Session lifetime (default 90d rolling) and whether login requires the invite
-   code every time a session expires (default: yes — no passwords, no email).
-3. SW update flow: prompt (default) vs auto-on-idle.
-4. Whether W1's propose extensions are also exposed to the MCP tool surface
-   immediately (default: yes — one contract, `docs/TOOLS.md` updated same pass).
+1. Member app at **`/`**.
+2. Session lifetime **90d rolling**; expired session re-enters via the invite
+   code (no passwords, no email).
+3. SW update flow: **prompt-to-reload**.
+4. W1's propose extensions **are exposed on the MCP tool surface in the same
+   pass** (one contract, `docs/TOOLS.md` updated same pass).
