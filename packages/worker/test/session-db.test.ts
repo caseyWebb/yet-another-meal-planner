@@ -299,7 +299,7 @@ describe("grocery list → D1 rows", () => {
     expect(tables.grocery_list[0].ordered_at).toBe(TODAY);
   });
 
-  it("W3: active ⇄ in_cart stays freely writable both ways; ordered → active re-lists", async () => {
+  it("W3: active ⇄ in_cart stays freely writable both ways; ordered → active re-lists and clears the stamp, a later re-advance re-stamps", async () => {
     const { env, tables } = fakeD1({
       tables: { grocery_list: [{ tenant: "everett", name: "Milk", normalized_name: "milk", quantity: "1", kind: "grocery", domain: "grocery", status: "active", source: "ad_hoc", for_recipes: "[]", note: null, added_at: "2026-06-01", ordered_at: null }] },
     });
@@ -307,9 +307,18 @@ describe("grocery list → D1 rows", () => {
     expect((await updateGroceryRow(env, "everett", "milk", { status: "active" })).status).toBe("active");
     // Walk it legally to ordered, then re-list back to active (canceled order).
     await updateGroceryRow(env, "everett", "milk", { status: "in_cart" });
-    await updateGroceryRow(env, "everett", "milk", { status: "ordered" }, TODAY);
-    expect((await updateGroceryRow(env, "everett", "milk", { status: "active" })).status).toBe("active");
+    const advanced = await updateGroceryRow(env, "everett", "milk", { status: "ordered" }, TODAY);
+    expect(advanced.ordered_at).toBe(TODAY); // advance to ordered stamps
+    const relisted = await updateGroceryRow(env, "everett", "milk", { status: "active" });
+    expect(relisted.status).toBe("active");
+    expect(relisted.ordered_at).toBeNull(); // re-list to active clears the stale stamp
     expect(tables.grocery_list[0].status).toBe("active");
+    expect(tables.grocery_list[0].ordered_at).toBeNull();
+    // Walk it to ordered again, on a later day — the re-advance re-stamps fresh.
+    await updateGroceryRow(env, "everett", "milk", { status: "in_cart" });
+    const readvanced = await updateGroceryRow(env, "everett", "milk", { status: "ordered" }, "2026-06-05");
+    expect(readvanced.ordered_at).toBe("2026-06-05"); // re-advance re-stamps
+    expect(tables.grocery_list[0].ordered_at).toBe("2026-06-05");
   });
 
   it("W3: a non-status patch on an ordered row passes the guard untouched", async () => {

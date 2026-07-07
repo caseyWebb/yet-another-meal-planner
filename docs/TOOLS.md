@@ -363,7 +363,7 @@ List the caller's **pending** reconcile proposals — suggested palette edits (p
 
 ### `confirm_proposal(id, accept)`
 
-Accept (`accept: true` → applies the diff: prune/adjust/add a night vibe, marks accepted) or reject (`false` → recorded; the stable id means the same proposal is never re-surfaced) a proposal. Unknown/already-resolved id → `not_found`. Returns `{ id, status, applied? }`.
+Accept (`accept: true` → applies the diff: prune/adjust/add a night vibe, marks accepted) or reject (`false` → recorded; the stable id means the same proposal is never re-surfaced) a proposal. Unknown id → `not_found`; already-resolved id → `conflict` (the earlier resolution stands — treat as converged). Returns `{ id, status, applied? }`.
 
 ### `reconcile_read_signals()` — operator-only
 

@@ -404,9 +404,13 @@ export async function updateGroceryRow(
     throw new ToolError("not_found", `No grocery-list item named: ${name}`, { name });
   }
   let item = result.item;
-  // The legal user-asserted advance stamps ordered_at (the patch path used to leave it null).
+  // The legal user-asserted advance stamps ordered_at (the patch path used to leave it null);
+  // any status write that leaves "ordered" (e.g. re-listing to "active"/"in_cart") clears the
+  // stamp so a later re-advance stamps fresh rather than carrying a stale timestamp.
   if (patch.status === "ordered" && existing.status === "in_cart") {
     item = { ...item, ordered_at: today };
+  } else if (patch.status !== undefined && patch.status !== "ordered") {
+    item = { ...item, ordered_at: null };
   }
   await db(env).batch([groceryUpsertStmt(env, tenant, item, ctx.resolve)]);
   return item;

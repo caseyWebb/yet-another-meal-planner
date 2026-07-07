@@ -125,7 +125,7 @@ export async function readPreferences(env: Env, tenant: string): Promise<Prefere
   const [row, brands] = await Promise.all([
     db(env).first<ProfileRow>(PROFILE_SELECT, tenant),
     db(env).all<{ term: string; ranks: string }>(
-      "SELECT term, ranks FROM brand_prefs WHERE tenant = ?1",
+      "SELECT term, ranks FROM brand_prefs WHERE tenant = ?1 ORDER BY term",
       tenant,
     ),
   ]);
