@@ -133,6 +133,11 @@ tree for the utility classes you use.
 - Auth lives in the Worker (Cloudflare Access on `/admin*`, reused as the app's `accessGate`
   middleware). Islands just call same-origin `/admin/api/*` and trust the gate — keep auth logic
   out of the client.
+- **A missing `/admin/*` static asset must 404, not 200 with the SPA shell.** The merged assets
+  root has `not_found_handling: "single-page-application"`, which answers even an explicit
+  `ASSETS.fetch()` miss with the member SPA's `index.html` at 200 — `app.notFound` in `app.tsx`
+  guards against this by checking the response `content-type` and returning a real 404 when it's
+  HTML (admin assets are only ever js/css/images/maps).
 
 ## Testing — the Playwright harness (`admin/visual/`)
 

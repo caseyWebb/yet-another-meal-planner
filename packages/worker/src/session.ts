@@ -119,13 +119,16 @@ export function clearSessionCookie(c: Context): void {
 export type ApiEnv = { Bindings: Env; Variables: { tenant: Tenant } };
 
 /**
- * Session middleware for the member `/api` surface — mounted on every route except
- * login and `/api/version`. Cookie → KV record → `resolveTenant` (allowlist re-check,
- * `recordSeen: true` — a session-authenticated API request is genuine member activity,
- * same as an MCP call; the touch is throttled + best-effort). Missing/unknown/expired/
- * unresolvable sessions get the structured `unauthorized` 401 (uniform — the SPA
- * branches on the code and shows login). A resolving request rides the throttled
- * rolling refresh, then the handler sees the SAME normalized `Tenant` the MCP path builds.
+ * Session middleware for the member `/api` surface. There is no global default-deny —
+ * it is attached inline as route-level middleware on each session-gated route (e.g.
+ * `.get("/session", requireSession, ...)` in `src/api/session.ts`), so a new route
+ * that needs auth must add it explicitly; forgetting to leaves the route open. Cookie
+ * → KV record → `resolveTenant` (allowlist re-check, `recordSeen: true` — a
+ * session-authenticated API request is genuine member activity, same as an MCP call;
+ * the touch is throttled + best-effort). Missing/unknown/expired/unresolvable sessions
+ * get the structured `unauthorized` 401 (uniform — the SPA branches on the code and
+ * shows login). A resolving request rides the throttled rolling refresh, then the
+ * handler sees the SAME normalized `Tenant` the MCP path builds.
  */
 export const requireSession: MiddlewareHandler<ApiEnv> = async (c, next) => {
   const unauthorized = (message: string) => c.json({ error: "unauthorized" as const, message }, 401);

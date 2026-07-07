@@ -471,8 +471,16 @@ app.get("/logs", async (c) => {
 app.get("/logs/discovery", (c) => c.redirect("/admin/discovery", 302));
 
 // Static islands + styles fall through to the ASSETS binding (already past the Access gate;
-// `ASSETS.fetch` bypasses run_worker_first, so this never re-enters and loops).
-app.notFound((c) => c.env.ASSETS.fetch(c.req.raw));
+// `ASSETS.fetch` bypasses run_worker_first, so this never re-enters and loops). The binding has
+// `not_found_handling: "single-page-application"`, and that fallback answers a `.fetch()` miss
+// with the member SPA's index.html at HTTP 200 — admin static assets are only ever js/css/images/
+// maps, so an HTML response here means a genuine miss (typo'd island, renamed bundle) and must
+// 404 for real rather than silently serving the SPA shell.
+app.notFound(async (c) => {
+  const res = await c.env.ASSETS.fetch(c.req.raw);
+  if (res.headers.get("content-type")?.startsWith("text/html")) return c.text("Not found", 404);
+  return res;
+});
 
 /** The app type the client (`hc<AdminApp>()`) infers request/response types from. */
 export type AdminApp = typeof routes;
