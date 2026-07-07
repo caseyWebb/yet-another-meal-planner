@@ -34,11 +34,11 @@
 
 ## 5. Scripts, CI, deploy
 
-- [ ] 5.1 Root `package.json` scripts: `build:app`, `test:app` (workspace filters), `dev:app` (`node scripts/dev-app.mjs`); new root `scripts/dev-app.mjs` spawning `wrangler dev` (cwd `packages/worker`) + `vite` (cwd `packages/app`), forwarding signals, exiting non-zero when either child dies (design Decision 14).
-- [ ] 5.2 `ci.yml` `test` job: add a `Build member app` step (`aubr build:app`) beside the admin build so a broken SPA build fails CI before deploy; recursive `typecheck` picks up both new packages via their scripts.
-- [ ] 5.3 `ci.yml`: new blocking `app-ui` job mirroring `admin-ui` (mise, aube ci + store cache, Playwright browser cache, `aubr test:app`; concurrency group `app-ui-…`; screenshots to the `admin-screenshots` branch under `pr-<n>-app/` with sticky marker `<!-- app-ui-screenshots -->`, path-filtered per design Decision 15; artifact upload always); add `app-ui` to `trigger-deploy`'s `needs`.
-- [ ] 5.4 `ci.yml` `trigger-deploy` path filter: add `packages/app/` and `packages/ui/`.
-- [ ] 5.5 `data-deploy.yml`: compute `BUILD=$(git -C _code rev-parse --short HEAD)`; add a `Build member app` step (`aubr build:app`, env `VITE_APP_BUILD=$BUILD`) after the admin build; append `--var APP_BUILD:$BUILD` to the wrangler `deploy` command (design Decision 11).
+- [x] 5.1 Root `package.json` scripts: `build:app`, `test:app` (workspace filters), `dev:app` (`node scripts/dev-app.mjs`); new root `scripts/dev-app.mjs` spawning `wrangler dev` (cwd `packages/worker`) + `vite` (cwd `packages/app`), forwarding signals, exiting non-zero when either child dies (design Decision 14).
+- [x] 5.2 `ci.yml` `test` job: add a `Build member app` step (`aubr build:app`) beside the admin build so a broken SPA build fails CI before deploy; recursive `typecheck` picks up both new packages via their scripts.
+- [x] 5.3 `ci.yml`: new blocking `app-ui` job mirroring `admin-ui` (mise, aube ci + store cache, Playwright browser cache, `aubr test:app`; concurrency group `app-ui-…`; screenshots to the `admin-screenshots` branch under `pr-<n>-app/` with sticky marker `<!-- app-ui-screenshots -->`, path-filtered per design Decision 15; artifact upload always); add `app-ui` to `trigger-deploy`'s `needs`.
+- [x] 5.4 `ci.yml` `trigger-deploy` path filter: add `packages/app/` and `packages/ui/`.
+- [x] 5.5 `data-deploy.yml`: compute `BUILD=$(git -C _code rev-parse --short HEAD)`; add a `Build member app` step (`aubr build:app`, env `VITE_APP_BUILD=$BUILD`) after the admin build; append `--var APP_BUILD:$BUILD` to the wrangler `deploy` command (design Decision 11).
 
 ## 6. App Playwright harness (blocking from this PR)
 

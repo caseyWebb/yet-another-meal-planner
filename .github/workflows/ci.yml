@@ -62,12 +62,18 @@ jobs:
         run: aubr test:tooling
 
       - name: Build admin panel islands
-        # admin/dist/ is a build artifact, NOT committed (the esbuild bundles embed
-        # environment-specific module paths, so a committed copy isn't reproducible) — the
-        # deploy builds it fresh. Build it here too so a broken island (an esbuild bundling
-        # failure) fails CI before the deploy. esbuild-only, no network registry.
+        # packages/worker/assets/ is a build artifact, NOT committed (the esbuild bundles
+        # embed environment-specific module paths, so a committed copy isn't reproducible) —
+        # the deploy builds it fresh. Build it here too so a broken island (an esbuild
+        # bundling failure) fails CI before the deploy. esbuild-only, no network registry.
         working-directory: packages/worker
         run: node scripts/build-admin.mjs
+
+      - name: Build member app
+        # The member SPA builds into the same assets/ root (assets/admin/ is the admin
+        # builder's subtree; each cleans only its own). Built on every CI run so a broken
+        # SPA build fails the `test` job before any deploy can fire (build-automation).
+        run: aubr build:app
 
       - name: Plugin builds from AGENT_INSTRUCTIONS.md
         # There is no committed bundle in this repo (the operator's deploy builds and
@@ -254,6 +260,143 @@ jobs:
             packages/worker/admin/visual/.screenshots/
           retention-days: 14
 
+  app-ui:
+    # BLOCKING browser-level gate for the member app (app-ui-testing), mirroring admin-ui:
+    # Playwright drives the real SPA served by a local `wrangler dev` (page objects, seeded
+    # invite login, Worker-path passthrough) via `aubr test:app`. Functional assertions only
+    # — no pixel baselines; visual review is human, over the screenshots this job publishes.
+    # Same-repo PRs touching app-UI paths get their own sticky screenshot comment (its own
+    # marker, its own pr-<n>-app/ directory on the shared screenshots branch — never
+    # colliding with the admin job's pr-<n>/). Fork PRs degrade to the artifact upload.
+    # Runs on every PR/push (a Worker change can break /api or the asset serving); blocks
+    # merge once added to main's required status checks, and gates trigger-deploy below.
+    runs-on: ubuntu-latest
+    concurrency:
+      group: app-ui-${{ github.event.pull_request.number || github.sha }}
+      cancel-in-progress: true
+    permissions:
+      contents: write # push screenshots to the admin-screenshots branch (same-repo PRs only)
+      pull-requests: write # upsert the sticky screenshot comment
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 2
+      - uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959d # v4.2.0
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+      - name: Cache aube store
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.local/share/aube/store
+          key: aube-store-${{ runner.os }}-${{ hashFiles('aube-lock.yaml') }}
+          restore-keys: aube-store-${{ runner.os }}-
+      - name: Install dependencies
+        run: aube ci
+      - name: Cache Playwright browsers
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('aube-lock.yaml') }}
+      - name: Install Playwright Chromium
+        working-directory: packages/worker
+        run: npx playwright install --with-deps chromium
+      - name: App UI tests
+        run: aubr test:app
+      - name: Detect app-UI paths
+        # Publish only when the PR touches what the member app renders or how it's tested:
+        # the app/ui packages, the app harness, the /api + session Worker surface, or the
+        # app Playwright config (design Decision 15). Same-repo PRs only — a fork's token
+        # can neither push the branch nor comment.
+        id: apppaths
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        run: |
+          git diff --name-only HEAD^1 HEAD -- \
+              packages/app/ \
+              packages/ui/ \
+              packages/worker/app/visual/ \
+              packages/worker/src/api/ \
+              packages/worker/src/session.ts \
+              packages/worker/playwright.app.config.ts \
+            | grep -q . \
+            && echo "relevant=true" >> "$GITHUB_OUTPUT" \
+            || echo "relevant=false" >> "$GITHUB_OUTPUT"
+      - name: Publish screenshots to the PR
+        if: steps.apppaths.outputs.relevant == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          REPO: ${{ github.repository }}
+        # The admin-ui publish flow on the SAME orphan branch, under this suite's OWN
+        # pr-<n>-app/ directory and its OWN sticky-comment marker — each job rm -rfs only
+        # its own directory, and the fetch-rebase retry absorbs cross-job races.
+        run: |
+          set -euo pipefail
+          BRANCH=admin-screenshots
+          SHOTS=packages/worker/app/visual/.screenshots
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if ! git fetch origin "$BRANCH" 2>/dev/null; then
+            EMPTY_TREE=$(git hash-object -t tree /dev/null)
+            ROOT=$(git commit-tree "$EMPTY_TREE" -m "init admin-screenshots (admin-ui-testing)")
+            git push origin "$ROOT:refs/heads/$BRANCH" || true
+            git fetch origin "$BRANCH"
+          fi
+          git worktree add /tmp/shots FETCH_HEAD
+          rm -rf "/tmp/shots/pr-$PR-app" && mkdir -p "/tmp/shots/pr-$PR-app"
+          cp "$SHOTS"/*.png "/tmp/shots/pr-$PR-app/"
+          git -C /tmp/shots add -A
+          git -C /tmp/shots commit -m "app-ui screenshots for PR #$PR @ $HEAD_SHA" || true
+          for attempt in 1 2 3; do
+            if git -C /tmp/shots push origin "HEAD:refs/heads/$BRANCH"; then
+              break
+            fi
+            if [ "$attempt" = 3 ]; then
+              echo "::error::could not push $BRANCH after 3 attempts"
+              exit 1
+            fi
+            git -C /tmp/shots fetch origin "$BRANCH"
+            git -C /tmp/shots rebase FETCH_HEAD || { git -C /tmp/shots rebase --abort; echo "::error::rebase onto $BRANCH failed"; exit 1; }
+          done
+          SHA=$(git -C /tmp/shots rev-parse HEAD)
+          MARKER='<!-- app-ui-screenshots -->'
+          {
+            echo "$MARKER"
+            echo "### App UI screenshots"
+            echo
+            echo "_Captured by the \`app-ui\` suite at \`$HEAD_SHA\` — this comment is updated in place on each push._"
+            for f in "/tmp/shots/pr-$PR-app"/*.png; do
+              n=$(basename "$f" .png)
+              echo
+              echo "<details><summary><b>$n</b></summary>"
+              echo
+              echo "![$n](https://raw.githubusercontent.com/$REPO/$SHA/pr-$PR-app/$n.png)"
+              echo
+              echo "</details>"
+            done
+          } > /tmp/comment.md
+          find_comment() {
+            gh api "repos/$REPO/issues/$PR/comments" --paginate \
+              --jq "[.[] | select(.body | startswith(\"$MARKER\"))][0].id // empty"
+          }
+          CID=$(find_comment)
+          [ -n "$CID" ] || CID=$(find_comment)
+          if [ -n "$CID" ]; then
+            gh api -X PATCH "repos/$REPO/issues/comments/$CID" -F body=@/tmp/comment.md > /dev/null
+          else
+            gh api "repos/$REPO/issues/$PR/comments" -F body=@/tmp/comment.md > /dev/null
+          fi
+      - name: Upload screenshots + report
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: app-ui
+          path: |
+            packages/worker/playwright-report/
+            packages/worker/app/visual/.results/
+            packages/worker/app/visual/.screenshots/
+          retention-days: 14
+
   satellite-version:
     # Version single-source-of-truth gate (build-automation): packages/satellite/package.json
     # `version` is the satellite's one version — the value the running satellite reports as
@@ -386,10 +529,10 @@ jobs:
     # Auto-trigger the data-repo deploy on Worker-relevant changes to main.
     # Only fires on push (not PRs or workflow_dispatch) — the push trigger above
     # is already filtered to branches: [main], so no extra branch guard needed.
-    # Gated on the CI jobs (incl. the admin-ui browser gate) so a deploy never fires when
-    # tests are red.
+    # Gated on the CI jobs (incl. BOTH browser gates — admin-ui and app-ui) so a deploy
+    # never fires when tests are red.
     if: github.event_name == 'push'
-    needs: [no-open-changes, test, admin-ui]
+    needs: [no-open-changes, test, admin-ui, app-ui]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -399,12 +542,13 @@ jobs:
       - name: Check for Worker- or plugin-relevant changes
         id: changed
         # Worker paths (src/ — incl. the admin SSR + island source under src/admin/ —
-        # wrangler.jsonc, deps, the admin island builder) plus the plugin sources
+        # wrangler.jsonc, deps, the admin island builder) plus the member app the deploy
+        # builds and serves (packages/app/, packages/ui/) plus the plugin sources
         # (AGENT_INSTRUCTIONS.md, the builder) — a persona-only change must republish the
         # skills, and the deploy is Worker-first so it redeploys the (unchanged) Worker
-        # before publishing, which is safe. admin/dist/ is built at deploy time, not committed.
+        # before publishing, which is safe. assets/ is built at deploy time, not committed.
         run: |
-          git diff --name-only HEAD^ HEAD -- packages/worker/src/ packages/worker/wrangler.jsonc packages/contract/ package.json aube-lock.yaml pnpm-workspace.yaml packages/worker/AGENT_INSTRUCTIONS.md packages/worker/scripts/build-plugin.mjs packages/worker/scripts/build-admin.mjs \
+          git diff --name-only HEAD^ HEAD -- packages/worker/src/ packages/worker/wrangler.jsonc packages/contract/ packages/app/ packages/ui/ package.json aube-lock.yaml pnpm-workspace.yaml packages/worker/AGENT_INSTRUCTIONS.md packages/worker/scripts/build-plugin.mjs packages/worker/scripts/build-admin.mjs \
             | grep -q . \
             && echo "relevant=true" >> "$GITHUB_OUTPUT" \
             || echo "relevant=false" >> "$GITHUB_OUTPUT"

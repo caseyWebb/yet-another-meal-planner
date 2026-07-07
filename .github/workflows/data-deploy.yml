@@ -124,22 +124,39 @@ jobs:
           workingDirectory: _code/packages/worker
           command: r2 bucket create grocery-corpus
 
-      # admin/dist/ is a build artifact (NOT committed — the esbuild bundles embed
+      # The version-skew stamp (member-app-shell): ONE code SHA, computed once, stamped
+      # into BOTH sides of the contract — the SPA bundle (VITE_APP_BUILD, embedded at
+      # build time below) and the deployed Worker (the --var APP_BUILD on the deploy).
+      - name: Compute build id
+        run: echo "BUILD=$(git -C _code rev-parse --short HEAD)" >> "$GITHUB_ENV"
+
+      # assets/ is a build artifact (NOT committed — the esbuild bundles embed
       # environment-specific module paths, so a committed copy isn't reproducible). Build the
-      # operator panel's island bundles + stylesheet so `wrangler deploy`'s ASSETS binding
-      # (./admin/dist) has them. esbuild-only, no network registry.
+      # operator panel's island bundles + stylesheet (assets/admin/) so `wrangler deploy`'s
+      # ASSETS binding (./assets) has them. esbuild-only, no network registry.
       - name: Build admin panel islands
         run: aubr build:admin
         working-directory: _code
 
+      # The member SPA builds into the same assets/ root (index.html + hashed chunks +
+      # the service worker), stamped with the code SHA — the assets binding serves a
+      # FRESH bundle on every deploy, never a committed copy (build-automation).
+      - name: Build member app
+        run: aubr build:app
+        working-directory: _code
+        env:
+          VITE_APP_BUILD: ${{ env.BUILD }}
+
       # Deploy. KV/D1 bindings with no id are auto-provisioned here; the recipe index is
-      # projected by the Worker reconcile (no CI D1 write), not at deploy.
+      # projected by the Worker reconcile (no CI D1 write), not at deploy. APP_BUILD is
+      # the Worker side of the version-skew stamp (echoed as X-App-Build on every /api
+      # response and by GET /api/version).
       - name: Deploy
         uses: cloudflare/wrangler-action@ebbaa1584979971c8614a24965b4405ff95890e0 # v4.0.0
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           workingDirectory: _code/packages/worker
-          command: deploy
+          command: deploy --var APP_BUILD:${{ env.BUILD }}
 
       # The Worker exists now, so secrets can be put. Only set Kroger creds if the
       # operator provided them as repo secrets — never clobber dashboard-set values
