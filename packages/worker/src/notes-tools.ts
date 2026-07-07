@@ -31,8 +31,10 @@ function nowIso(): string {
 
 /** The group-favorites half of read_recipe_notes: the overlay table, scoped to the
  *  group. The favorite cutover replaced the per-rating list with the members who
- *  favorited the recipe — `favorites.length` IS the group signal (COUNT(favorite)). */
-async function groupFavorites(env: Env, slug: string, ids: string[]): Promise<{ author: string }[]> {
+ *  favorited the recipe — `favorites.length` IS the group signal (COUNT(favorite)).
+ *  Exported: the member API's notes read (GET /api/cookbook/recipes/:slug/notes)
+ *  aggregates the same shape. */
+export async function groupFavorites(env: Env, slug: string, ids: string[]): Promise<{ author: string }[]> {
   const inGroup = new Set(ids);
   const rows = await db(env).all<{ tenant: string; favorite: number | null }>(
     "SELECT tenant, favorite FROM overlay WHERE recipe = ?1",

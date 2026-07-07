@@ -89,30 +89,30 @@ within §7 parallelizes freely. **No spike tasks** — every open question is se
 
 ## 5. Worker: the `/api` member route groups
 
-- [ ] 5.1 Create the per-area route modules under `packages/worker/src/api/` (one file per area:
+- [x] 5.1 Create the per-area route modules under `packages/worker/src/api/` (one file per area:
   `cookbook.ts`, `overlay.ts`, `plan.ts`, `grocery.ts`, `pantry.ts`, `log.ts`, `profile.ts`,
   `vibes.ts`), each a chained Hono group mounted by the P0 `/api` app (admin-app idiom:
   chain routes, `export type` per area for `hc`; all handlers call the design.md
   page→endpoint→op map's named ops — no `env.DB` access, no inline tool logic).
-- [ ] 5.2 Extend the **P0-owned shared `/api` error middleware's** code→status table with the
+- [x] 5.2 Extend the **P0-owned shared `/api` error middleware's** code→status table with the
   mappings P1 introduces (D8): `conflict`→409 — and **412** when the conflict is a failed
   `If-Match` precondition — `insufficient_permission`→403, `reauth_required`→401. P0's table
   ships only `validation_failed`→400, `not_found`→404, `unsupported`→405, the storage
   class→503, and the API-layer `unauthorized`→401 / `csrf_rejected`→403 / `rate_limited`→429;
   these additions land in the **shared** table (never per-route), anything unmapped stays 500,
   and bodies keep the structured code. Unit-test each new mapping.
-- [ ] 5.3 Wire the D8 write-class mechanics: class (a) routes (`PATCH /profile/preferences`,
+- [x] 5.3 Wire the D8 write-class mechanics: class (a) routes (`PATCH /profile/preferences`,
   `PUT /profile/taste`, `PUT /profile/diet-principles`, `PATCH /vibes/:id`) require `If-Match`
   against the current representation hash → 412 + structured `conflict` on mismatch; class (b)
   routes never check `If-Match`. `PATCH /grocery/items/:name` validates `status ∈
   {active, in_cart}` at the boundary (the op-layer guard backstops).
-- [ ] 5.4 `POST /api/vibes/suggest` (D7): `readJobHealth("archetype-derive")` — ok and within the
+- [x] 5.4 `POST /api/vibes/suggest` (D7): `readJobHealth("archetype-derive")` — ok and within the
   derivation interval (~20h, the cron's constant) ⇒ `{ throttled: true, retry_after_ms }` with
   **no** `runDerivation` call; else `runDerivation(env, tenant.id, seed, max)` →
   `{ candidates, enqueued }`.
-- [ ] 5.5 Per-route analytics to the existing `TOOL_AE` dataset (or a sibling blob shape) so app
+- [x] 5.5 Per-route analytics to the existing `TOOL_AE` dataset (or a sibling blob shape) so app
   usage sits beside tool usage.
-- [ ] 5.6 Worker tests (route level, `app.request` idiom): each area's happy path returns the
+- [x] 5.6 Worker tests (route level, `app.request` idiom): each area's happy path returns the
   op's data; a `ToolError` surfaces as its mapped status + structured body; 412 on stale
   `If-Match`; the suggest gate throttles without touching AI (assert via a stubbed
   `runDerivation`); the grocery route rejects `status: "ordered"` at the boundary.

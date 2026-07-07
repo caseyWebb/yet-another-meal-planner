@@ -87,11 +87,26 @@ export const usagePoint: MiddlewareHandler<ApiEnv> = async (c, next) => {
   }
 };
 
+/** Parse a JSON request body, mapping a malformed payload to a structured 400 (never a raw 500). */
+export async function jsonBody<T>(c: Context): Promise<T> {
+  try {
+    return await c.req.json<T>();
+  } catch {
+    throw new ToolError("validation_failed", "request body must be JSON");
+  }
+}
+
 /** The ONE ToolError-code → HTTP-status table for the member API (no route maps its own). */
-function statusForToolError(code: string): 400 | 404 | 405 | 500 | 503 {
+function statusForToolError(err: ToolError): 400 | 401 | 403 | 404 | 405 | 409 | 412 | 500 | 503 {
+  const code = err.code;
   if (code === "validation_failed") return 400;
   if (code === "not_found") return 404;
   if (code === "unsupported") return 405;
+  // `conflict` is 409 — except when it IS a failed `If-Match` precondition (the class (a)
+  // two-writer race, marked by the shared precondition helper's context), which is 412.
+  if (code === "conflict") return err.context.precondition ? 412 : 409;
+  if (code === "insufficient_permission") return 403;
+  if (code === "reauth_required") return 401;
   if (code === "storage_error" || code === "index_unavailable" || code === "upstream_unavailable") return 503;
   return 500; // unrecognized codes degrade to a structured 500
 }
@@ -105,7 +120,7 @@ function statusForToolError(code: string): 400 | 404 | 405 | 500 | 503 {
 export function onApiError(err: Error, c: Context<ApiEnv>): Response {
   const res =
     err instanceof ToolError
-      ? c.json(err.toShape(), statusForToolError(err.code))
+      ? c.json(err.toShape(), statusForToolError(err))
       : c.json({ error: "internal", message: err instanceof Error ? err.message : String(err) }, 500);
   res.headers.set("X-App-Build", appBuild(c.env));
   return res;

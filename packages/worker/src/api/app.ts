@@ -10,6 +10,14 @@
 import { Hono } from "hono";
 import type { ApiEnv } from "../session.js";
 import { sessionArea } from "./session.js";
+import { cookbookArea } from "./cookbook.js";
+import { overlayArea } from "./overlay.js";
+import { planArea } from "./plan.js";
+import { groceryArea } from "./grocery.js";
+import { pantryArea } from "./pantry.js";
+import { logArea } from "./log.js";
+import { profileArea } from "./profile.js";
+import { vibesArea } from "./vibes.js";
 import { appBuild, buildHeader, csrfGuard, onApiError, usagePoint } from "./middleware.js";
 
 const app = new Hono<ApiEnv>().basePath("/api");
@@ -28,7 +36,16 @@ const routes = app
   // Version (unauthenticated — a build id is not tenant data, and the SPA needs it
   // pre-login for the update prompt): the version-skew contract's polling endpoint.
   .get("/version", (c) => c.json({ build: appBuild(c.env) }))
-  .route("/", sessionArea);
+  .route("/", sessionArea)
+  // The member core (member-app-core): every area session-gated per route.
+  .route("/", cookbookArea)
+  .route("/", overlayArea)
+  .route("/", planArea)
+  .route("/", groceryArea)
+  .route("/", pantryArea)
+  .route("/", logArea)
+  .route("/", profileArea)
+  .route("/", vibesArea);
 
 /** The composed app type the SPA's `hc<MemberApi>("/")` client infers from. */
 export type MemberApi = typeof routes;

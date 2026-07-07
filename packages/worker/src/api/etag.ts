@@ -7,6 +7,7 @@
 // hash without changing this contract.
 
 import type { Context, TypedResponse } from "hono";
+import { ToolError } from "../errors.js";
 
 /** A weak ETag from a SHA-256 over `body` (the serialized JSON). */
 async function weakEtag(body: string): Promise<string> {
@@ -30,4 +31,27 @@ export async function jsonWithEtag<T>(c: Context, value: T): Promise<Response & 
   }
   const res = c.body(body, 200, { "content-type": "application/json", ETag: etag });
   return res as Response & TypedResponse<T>;
+}
+
+/**
+ * The class (a) write precondition (member-app-core D8): recompute the CURRENT
+ * representation's weak ETag — `current` must be exactly the value the companion GET
+ * serves through `jsonWithEtag` — and require a matching `If-Match`. A missing or
+ * stale precondition throws a structured `conflict` whose `precondition` context marks
+ * it for the shared error table's **412** arm (nothing is stored; the SPA refetches,
+ * rebases, re-presents). Class (b) routes never call this.
+ */
+export async function requireIfMatch(c: Context, current: unknown): Promise<void> {
+  const supplied = c.req.header("If-Match");
+  if (!supplied) {
+    throw new ToolError("conflict", "this write requires an If-Match precondition (read the document first)", {
+      precondition: "missing",
+    });
+  }
+  const etag = await weakEtag(JSON.stringify(current));
+  if (!supplied.split(",").some((v) => v.trim() === etag)) {
+    throw new ToolError("conflict", "the document changed since it was read — refetch, rebase, and retry", {
+      precondition: "failed",
+    });
+  }
 }

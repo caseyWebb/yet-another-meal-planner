@@ -25,8 +25,9 @@ import { recipeSourceMap } from "./recipe-index.js";
 import { addFeedRows, addSourceRows, addDiscoveryRejection } from "./corpus-db.js";
 import { readNewForMe, readDiscoveryErrors } from "./discovery-db.js";
 
-/** Cold-start floor: a never-planned member sees at most this window of recent discoveries. */
-const NEW_FOR_ME_WINDOW_DAYS = 21;
+/** Cold-start floor: a never-planned member sees at most this window of recent discoveries.
+ *  Exported: the member API's new-for-me endpoint computes the SAME floor. */
+export const NEW_FOR_ME_WINDOW_DAYS = 21;
 
 /**
  * Discovery tools (recipe-discovery capability). Discovery is a SHARED, top-level concern:

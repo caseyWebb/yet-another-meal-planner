@@ -110,8 +110,9 @@ export async function runDerivation(env: Env, tenant: string, seed: number, maxS
 }
 
 /** The generative reconcile pass runs at most this often — the naming step spends `env.AI`, and
- *  the dedup makes steady state a no-op, so once a day is plenty to catch a new archetype. */
-const DERIVE_INTERVAL_MS = 20 * 60 * 60 * 1000;
+ *  the dedup makes steady state a no-op, so once a day is plenty to catch a new archetype.
+ *  Exported: the member API's suggest endpoint gates on the SAME constant (D7). */
+export const DERIVE_INTERVAL_MS = 20 * 60 * 60 * 1000;
 
 /**
  * The scheduled generative reconcile producer (the `edge` producer of profile-reconciliation).

@@ -199,6 +199,20 @@ export function fakeD1(
           ? tables[table].filter((r) => r.tenant === binds[0])
           : tables[table];
       let rows = applyWhere(sql, binds, base);
+      // The derived last-satisfied aggregation (readVibeLastSatisfied): MAX(date) per
+      // satisfied_vibe over the caller's provenance-stamped rows.
+      if (/MAX\(date\) AS d/i.test(sql) && /GROUP BY satisfied_vibe/i.test(sql)) {
+        const byVibe = new Map<unknown, unknown>();
+        for (const r of rows) {
+          if (r.satisfied_vibe == null) continue;
+          const prev = byVibe.get(r.satisfied_vibe);
+          if (prev === undefined || String(r.date) > String(prev)) byVibe.set(r.satisfied_vibe, r.date);
+        }
+        return {
+          rows: [...byVibe].map(([satisfied_vibe, d]) => ({ satisfied_vibe, d })),
+          changes: 0,
+        };
+      }
       // The derived last_cooked aggregation (readLastCookedMap): MAX(date) per recipe
       // over the caller's type='recipe' rows.
       if (/MAX\(date\) AS last_cooked/i.test(sql) && /GROUP BY recipe/i.test(sql)) {
