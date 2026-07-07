@@ -177,11 +177,11 @@ within §7 parallelizes freely. **No spike tasks** — every open question is se
 
 ## 9. Docs (lockstep, same pass)
 
-- [ ] 9.1 `docs/TOOLS.md`: `update_grocery_list` guard (§2.5) and `update_meal_plan` `set` op
+- [x] 9.1 `docs/TOOLS.md`: `update_grocery_list` guard (§2.5) and `update_meal_plan` `set` op
   (§3.3) — written as current behavior.
-- [ ] 9.2 `docs/ARCHITECTURE.md`: the member app's P1 surface — the per-area `/api` route groups
+- [x] 9.2 `docs/ARCHITECTURE.md`: the member app's P1 surface — the per-area `/api` route groups
   over shared ops, the write-class posture, the gated suggest endpoint. (`docs/SCHEMAS.md`
   untouched — no schema change; state verified.)
-- [ ] 9.3 Confirm `AGENT_INSTRUCTIONS.md` needs no edit: the documented user-asserted
+- [x] 9.3 Confirm `AGENT_INSTRUCTIONS.md` needs no edit: the documented user-asserted
   `in_cart → ordered` advance remains valid under the guard (D1). If any persona text asserts
   an unguarded transition, correct it in the same pass.

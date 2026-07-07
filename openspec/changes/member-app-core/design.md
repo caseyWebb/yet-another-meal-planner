@@ -276,11 +276,40 @@ idempotency). The detail page splits "Your notes" (own, editable, incl. private)
 other members" (shared only) — exactly the `readRecipeNotes` privacy rule
 (`private=0 OR author=caller`).
 
+### Implementation notes (recorded during apply)
+
+- **D8/map — `GET /api/cookbook/index` shipped as `GET /api/cookbook/recipes`.** hono's
+  `hc` client reserves the `index` object key for a route registered at `"/"`, so a
+  literal `/index` path segment is unreachable through the typed client (it requests the
+  parent path). The collection read keeps the map's shape under the sibling name; nothing
+  else about the endpoint changed.
+- **D8 — class (a) documents got companion GETs.** `If-Match` needs a representation the
+  client can hold, so each class (a) write has a small GET serving exactly the value the
+  precondition hashes: `GET /api/profile/preferences`, `GET /api/profile/taste`,
+  `GET /api/profile/diet-principles`, and `GET /api/vibes/:id` (the RAW vibe row — the
+  derived `last_satisfied` is excluded so an unrelated cook can't fail an edit). A
+  MISSING `If-Match` is refused with the same structured-conflict 412 as a stale one
+  (class (a) writes are conditional, full stop). Mutating responses return the fresh
+  document + ETag so the SPA rebases without a second round-trip.
+- **D11 — the vibe row's weather chips are display-only; editing happens in the form.**
+  The mock's always-live per-chip writes would need a fresh precondition per tap; the
+  edit form (which reads the row + ETag when opened) owns all class (a) mutation instead.
+- **7.13 — replay convergence is asserted at the route level** (`test/api-member.test.ts`
+  replays every class (b) write shape: add-merge, note dedupe, log dedupe, converged
+  deletes, double-confirm conflict, favorite set twice). `packages/app` has no unit
+  runner; the client sends explicit target states by construction, so the server-side
+  assertions are the convergence proof.
+- **Harness actuals.** The app suite logs in ONCE per worker and replays the session
+  cookie (the login limiter allows 10/min/IP); the design-system webfont fetch is aborted
+  in the fixtures (the sandbox is offline and the hanging `@import` stalled every load
+  event); raw session-authenticated writes in specs go through the browser's own `fetch`
+  (the `__Host-` cookie never rides Playwright's request context over http).
+
 ## Page → endpoint → op map (normative)
 
 | page / interaction | endpoint | backing op (file) |
 | --- | --- | --- |
-| Browse: index | `GET /api/cookbook/index` | `loadRecipeIndex` + `toHit` + title sort (`recipe-index.ts`, `cookbook-search.ts`) |
+| Browse: index | `GET /api/cookbook/recipes` | `loadRecipeIndex` + `toHit` + title sort (`recipe-index.ts`, `cookbook-search.ts`) |
 | Browse: New for you | `GET /api/cookbook/new-for-me` | `readNewForMe(env, tenant, floorDay, limit)` (`discovery-db.ts`) |
 | Search | `GET /api/cookbook/search?q=` | `rankByKeyword(index, q)` (`cookbook-search.ts`) |
 | Recipe detail | `GET /api/cookbook/recipes/:slug` | **extracted** `readRecipeDetail` (corpus read + `parseMarkdown` + `mergeOverlay` + `recipeDescription`) |
