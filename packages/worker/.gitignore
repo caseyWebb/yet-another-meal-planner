@@ -7,8 +7,9 @@
 # island bundles + stylesheet under assets/admin/ (esbuild embeds env-specific paths).
 assets/
 
-# Playwright (admin visual/smoke harness) run outputs.
+# Playwright (admin + app visual/smoke harnesses) run outputs.
 admin/visual/.results/
+app/visual/.results/
 
 # Authoring vault: vendored community-plugin binaries (fetched on demand, sha256-verified),
 # and the packaged distributable zip — kept out of the repo.
@@ -16,3 +17,4 @@ vault/.obsidian/plugins/*/main.js
 vault/.obsidian/plugins/*/styles.css
 grocery-authoring-vault*.zip
 admin/visual/.screenshots/
+app/visual/.screenshots/

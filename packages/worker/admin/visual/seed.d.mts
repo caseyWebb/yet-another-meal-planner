@@ -5,6 +5,8 @@
 export interface SeedLiterals {
   /** Allowlisted members: one connected (OAuth grant + activity + domain rows), one pending. */
   readonly members: { readonly active: string; readonly pending: string };
+  /** The invite code mapped to the active member — the app suite's seeded login credential. */
+  readonly invite: string;
   /** The indexed recipe the Data list / Insights boards / cooking log rows reference. */
   readonly recipe: { readonly slug: string; readonly title: string; readonly source: string };
   /** The discovery-log fixture rows (a retryable error + a gated skip + an import). */

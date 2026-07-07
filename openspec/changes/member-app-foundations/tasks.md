@@ -42,10 +42,10 @@
 
 ## 6. App Playwright harness (blocking from this PR)
 
-- [ ] 6.1 Extend `admin/visual/seed.mjs` `kvEntries()` (+ `seed.d.mts`) with the deterministic invite mapping `invite:PW-APP-INVITE` → the seeded active member.
-- [ ] 6.2 `packages/worker/app/visual/`: `setup.mjs` (build app + admin → migrate → seed → `wrangler dev --local` on `PW_APP_PORT`, default 8788), `base.page.ts` + `pages/login.page.ts` + `pages/home.page.ts` (routes, landmarks, `captureForReview` screenshots), `fixtures.ts`, `registry.ts`, its own `tsconfig.json` added to the worker `typecheck` script.
-- [ ] 6.3 Specs: login flow (bad code → uniform error rendered; good code → hello-world landmark; logout → back to `/login`), an all-areas smoke (landmark + screenshot per registered page), and Worker-path passthrough (`/health` returns the health JSON, `/cookbook` returns SSR HTML — not the SPA shell).
-- [ ] 6.4 `playwright.app.config.ts` + worker script `test:app`; verify locally with `PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers aubr test:app` and surface the screenshots for review.
+- [x] 6.1 Extend `admin/visual/seed.mjs` `kvEntries()` (+ `seed.d.mts`) with the deterministic invite mapping `invite:PW-APP-INVITE` → the seeded active member.
+- [x] 6.2 `packages/worker/app/visual/`: `setup.mjs` (build app + admin → migrate → seed → `wrangler dev --local` on `PW_APP_PORT`, default 8788), `base.page.ts` + `pages/login.page.ts` + `pages/home.page.ts` (routes, landmarks, `captureForReview` screenshots), `fixtures.ts`, `registry.ts`, its own `tsconfig.json` added to the worker `typecheck` script.
+- [x] 6.3 Specs: login flow (bad code → uniform error rendered; good code → hello-world landmark; logout → back to `/login`), an all-areas smoke (landmark + screenshot per registered page), and Worker-path passthrough (`/health` returns the health JSON, `/cookbook` returns SSR HTML — not the SPA shell).
+- [x] 6.4 `playwright.app.config.ts` + worker script `test:app`; verify locally with `PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers aubr test:app` and surface the screenshots for review.
 
 ## 7. Docs (same pass — no drift)
 

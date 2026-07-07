@@ -1,0 +1,21 @@
+{
+  // Typechecks the member-app Playwright harness (page objects / fixtures / specs) as its
+  // own pass — the root tsconfig is workerd-typed and must not absorb browser-driving test
+  // code, mirroring admin/visual/tsconfig.json. Seed literals are typed by the shared
+  // admin/visual/seed.d.mts. Wired into `aubr typecheck`.
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2022"],
+    "types": [],
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "verbatimModuleSyntax": true
+  },
+  "include": ["pages", "specs", "fixtures.ts", "registry.ts", "../../admin/visual/seed.d.mts"]
+}

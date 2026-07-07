@@ -13,6 +13,9 @@
 /** The literals the page objects assert on (one source of truth with the SQL below). */
 export const SEED = {
   members: { active: "casey", pending: "pat" },
+  // The deterministic invite mapping (member-app-foundations): the code the APP suite's
+  // login flow submits, resolving to the active member — one fixture set for both suites.
+  invite: "PW-APP-INVITE",
   recipe: {
     slug: "viz-miso-salmon",
     title: "Miso-Glazed Salmon Bowls",
@@ -359,13 +362,14 @@ export function d1Statements(now) {
 }
 
 /** KV seeds ([binding, key, value]) applied via `wrangler kv key put --local`: the member
- *  allowlist (pending = allowlist only), the connected member's OAuth grant (active status)
- *  and Kroger link. */
+ *  allowlist (pending = allowlist only), the connected member's OAuth grant (active status),
+ *  their Kroger link, and the invite code the app suite's login flow submits. */
 export function kvEntries() {
   const { members } = SEED;
   return [
     ["TENANT_KV", `tenant:${members.active}`, JSON.stringify({ id: members.active })],
     ["TENANT_KV", `tenant:${members.pending}`, JSON.stringify({ id: members.pending })],
+    ["TENANT_KV", `invite:${SEED.invite}`, members.active],
     ["OAUTH_KV", `grant:${members.active}:seed-grant`, JSON.stringify({ id: "seed-grant" })],
     ["KROGER_KV", `kroger:refresh:${members.active}`, "seed-refresh-token"],
   ];

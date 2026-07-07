@@ -24,10 +24,12 @@ vault/.obsidian/plugins/*/styles.css
 # Packaged distributable (the zip an author downloads).
 grocery-authoring-vault*.zip
 
-# Playwright (the admin-ui harness): run outputs, the HTML report, and the per-area review
-# screenshots are artifacts — no pixel baselines are committed (the CI gate is functional;
-# screenshots are published on admin-UI PRs — see admin/visual/README.md).
+# Playwright (the admin-ui + app-ui harnesses): run outputs, the HTML report, and the
+# per-area review screenshots are artifacts — no pixel baselines are committed (the CI
+# gates are functional; screenshots are published on UI PRs — see admin/visual/README.md).
 admin/visual/.results/
+app/visual/.results/
+app/visual/.screenshots/
 playwright-report/
 blob-report/
 test-results/
