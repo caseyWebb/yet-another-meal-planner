@@ -130,6 +130,37 @@ authored `## Ingredients` markdown bullets in the R2 body.
   Until a planned recipe converges, the view lists its slug under `underived` — honest,
   structured, self-healing. Import-time seeding (`seedRecipeFacets`/`seedClassifiedFacets`)
   carries the field from day one for new recipes.
+- **The gate-clear is intentional whole-corpus reclassification — blast radius named and
+  bounded.** Clearing `body_hash` makes every recipe stale to the classify pass
+  (`recipe-classify.ts:121` — `state.get(r.slug)?.body_hash !== r.bodyHash`), which re-runs the
+  **whole** classify call per recipe: the exact path a body edit takes, at corpus scale (200
+  recipes, bounded by `maxPerTick` + the wall-clock budget, quota-aware). Expected churn:
+  classifier nondeterminism can flip some existing **Tier A** values (`ingredients_key`,
+  `perishable_ingredients`, `side_search_terms`, `meal_preppable`) and the **classified Tier B
+  defaults** on recipes with no authored override — values that search filtering, the propose
+  pool gates, and the waste callout consume. Second-order cascade: the description's
+  `content_hash` domain includes the projected `ingredients_key`/`course`/`protein`/`cuisine`/
+  `season` (`description.ts:23–32,41–54`), so a churned recipe triggers one description
+  regeneration and, via the `description_hash` embed gate, one re-embed
+  (`recipe-embeddings.ts:5–10`) — each behind its own per-tick cap. (`description` itself is
+  **not** re-derived by the gate-clear directly — it lives in `recipe_derived` behind its own
+  hash; only facet churn reaches it.) All of this is the pipeline's normal reclassification
+  behavior — idempotent writes, hash-gated convergence, no data loss — and task 8.5's
+  post-deploy check watches `job_health` across the convergence window for parked/errored
+  regressions.
+- **Authored Tier B overrides survive reclassification by construction — verified in code.**
+  `recipe_facets` stores only *classified* values; authored overrides live in R2 frontmatter
+  and win at **every** index projection, not at classify time: `recipe-projection.ts:226`
+  calls `mergeEffectiveFacets(frontmatter, classified)`, and `recipe-facets.ts:112–145`
+  implements Tier B authored-wins (`protein`/`cuisine`/`course`/`season`: an authored key —
+  even an explicit null — beats the classified value; `tags` is the stable authored ∪
+  classified union). Re-deriving a `recipe_facets` row therefore cannot displace an authored
+  pin. The reclassify is also override-aware exactly like a fresh classify: the authored
+  `course` threads in as `courseOverride` (`recipe-classify.ts:341,354` cron path;
+  `:268–275` sync seed path), and `facetGateHash` folds the Tier B overrides into the gate
+  (`recipe-classify.ts:196`). Corollary: because the description hash reads the *effective*
+  (merged) values, an override-pinned Tier B field cannot contribute description churn —
+  only Tier A (`ingredients_key`) and unpinned Tier B defaults can.
 - **Staleness**: an authored body edit already flips `facetGateHash` → reclassify → the derived
   needs follow. No new invalidation machinery.
 

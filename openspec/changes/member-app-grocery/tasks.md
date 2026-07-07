@@ -67,9 +67,11 @@ pieces by role and the implementer binds to the landed actuals.
   computation (derived needs ∪ caller `menu_needs`), add `exclude: string[]` (funnel-resolved,
   dropped before resolution) to the schema and the op, and surface `underived` on the result.
   Tool description rewritten: derives the plan's needs itself, `menu_needs` = supplements,
-  `exclude` semantics, `underived` honesty — existing guarantees (checkpoint, partials,
-  overrides pin SKU-not-price, independent best-effort writes, in_cart-after-cart-success)
-  restated unchanged.
+  `exclude` semantics, `underived` honesty — **including the explicit guarantee that a caller
+  passing plan-derived duplicates in `menu_needs` is safe (canonical-id union dedups them; the
+  old-bundle transition window is harmless by construction)** — with the existing guarantees
+  (checkpoint, partials, overrides pin SKU-not-price, independent best-effort writes,
+  in_cart-after-cart-success) restated unchanged.
 - [ ] 3.3 `satellite.ts` `handleOrderList`: thread `deriveMenuNeeds` into the pull-list's
   `computeToBuy` call and surface the underived slugs on the response (contract type in
   `packages/contract` extended additively).
@@ -162,9 +164,12 @@ pieces by role and the implementer binds to the landed actuals.
 ## 8. Docs in lockstep + validation
 
 - [ ] 8.1 `docs/TOOLS.md`: new `read_to_buy` entry; `place_order` — derived plan needs,
-  `menu_needs`-as-supplements, `exclude`, `underived`, unchanged guarantees restated; the
-  grocery-list section notes (shop-time reads point at `read_to_buy`; lifecycle notes
-  unchanged in substance).
+  `menu_needs`-as-supplements, `exclude`, `underived`, unchanged guarantees restated, and an
+  explicit note that `menu_needs` entries duplicating plan-derived (or listed) items merge
+  harmlessly on the canonical id — a caller (e.g. a not-yet-republished plugin bundle whose
+  persona still passes the bulk expansion) cannot cause a double-buy; the grocery-list
+  section notes (shop-time reads point at `read_to_buy`; lifecycle notes unchanged in
+  substance).
 - [ ] 8.2 `docs/SCHEMAS.md`: `ingredients_full` on `recipes`/`recipe_facets` (Tier A,
   snapshot + re-resolution semantics); the grocery lifecycle note — correct the stale
   "`ordered`/`ordered_at` exist in the schema but no path sets them" sentence (user-asserted
