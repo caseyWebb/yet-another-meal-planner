@@ -2,6 +2,8 @@ import { describe, it, expect } from "vitest";
 import { draftProposals } from "../src/reconcile-signals.js";
 import type { NightVibe } from "../src/night-vibe-db.js";
 import { proposalId, enqueueProposal, readProposals, setProposalStatus, getProposal } from "../src/reconcile-db.js";
+import { resolveProposal } from "../src/reconcile-tools.js";
+import { ToolError } from "../src/errors.js";
 import { fakeD1 } from "./fake-d1.js";
 
 const NOW = new Date("2026-07-01T00:00:00Z");
@@ -84,5 +86,62 @@ describe("pending_proposals store", () => {
     expect(b.inserted).toBe(true); // but the (tenant, id) PK keeps both — no cross-tenant clobber
     expect(await readProposals(d1.env, "alice", "pending")).toHaveLength(1);
     expect(await readProposals(d1.env, "bob", "pending")).toHaveLength(1);
+  });
+});
+
+describe("resolveProposal (shared confirm op — tool + member API)", () => {
+  const draft = { kind: "prune_vibe" as const, target: "salad", payload: { id: "salad" }, rationale: "drop it?", evidence: {} };
+
+  it("accepts a pending proposal: applies the diff and records accepted", async () => {
+    const d1 = fakeD1({
+      tables: {
+        pending_proposals: [],
+        night_vibes: [{ tenant: "everett", id: "salad", vibe: "a light salad" }],
+      },
+    });
+    const { id } = await enqueueProposal(d1.env, "everett", draft, "edge", NOW.toISOString());
+    const out = await resolveProposal(d1.env, "everett", id, true);
+    expect(out).toMatchObject({ id, status: "accepted", applied: expect.stringContaining("salad") });
+    expect(d1.tables.night_vibes).toHaveLength(0); // the prune applied
+    expect((await getProposal(d1.env, id, "everett"))?.status).toBe("accepted");
+  });
+
+  it("rejects a pending proposal without applying anything", async () => {
+    const d1 = fakeD1({
+      tables: {
+        pending_proposals: [],
+        night_vibes: [{ tenant: "everett", id: "salad", vibe: "a light salad" }],
+      },
+    });
+    const { id } = await enqueueProposal(d1.env, "everett", draft, "edge", NOW.toISOString());
+    const out = await resolveProposal(d1.env, "everett", id, false);
+    expect(out).toEqual({ id, status: "rejected" });
+    expect(d1.tables.night_vibes).toHaveLength(1); // untouched
+  });
+
+  it("answers a double-confirm with structured conflict, changing nothing (D8)", async () => {
+    const d1 = fakeD1({
+      tables: {
+        pending_proposals: [],
+        night_vibes: [{ tenant: "everett", id: "salad", vibe: "a light salad" }],
+      },
+    });
+    const { id } = await enqueueProposal(d1.env, "everett", draft, "edge", NOW.toISOString());
+    await resolveProposal(d1.env, "everett", id, false);
+    const err = await resolveProposal(d1.env, "everett", id, true).catch((e) => e as ToolError);
+    expect(err).toBeInstanceOf(ToolError);
+    expect((err as ToolError).code).toBe("conflict");
+    expect((err as ToolError).context).toMatchObject({ id, status: "rejected" });
+    // The earlier resolution stands; the vibe was never pruned.
+    expect((await getProposal(d1.env, id, "everett"))?.status).toBe("rejected");
+    expect(d1.tables.night_vibes).toHaveLength(1);
+  });
+
+  it("answers an unknown id (or another tenant's proposal) with not_found", async () => {
+    const d1 = fakeD1({ tables: { pending_proposals: [] } });
+    const { id } = await enqueueProposal(d1.env, "alice", draft, "edge", NOW.toISOString());
+    const err = await resolveProposal(d1.env, "bob", id, true).catch((e) => e as ToolError);
+    expect(err).toBeInstanceOf(ToolError);
+    expect((err as ToolError).code).toBe("not_found");
   });
 });

@@ -44,6 +44,58 @@ const metaSchema = {
   season: z.array(z.enum(["spring", "summer", "fall", "winter"])).optional(),
 };
 
+/** The metadata fields a vibe carries beside its phrase (add + update + the member API). */
+export interface NightVibeMeta {
+  facets?: Record<string, unknown>;
+  cadence_days?: number;
+  pinned?: boolean;
+  base_weight?: number;
+  weather_affinity?: string[];
+  weather_antipathy?: string[];
+  season?: string[];
+}
+
+/**
+ * The `add_night_vibe` core as a shared operation (member-app-core D2): derive/slugify
+ * the id, reject a duplicate with structured `conflict` (replay-converged: a re-added
+ * vibe answers conflict, never duplicates), upsert the row. Called by the MCP tool and
+ * the member API's `POST /api/vibes`.
+ */
+export async function addNightVibe(
+  env: Env,
+  tenant: string,
+  spec: { vibe: string; id?: string } & NightVibeMeta,
+): Promise<{ id: string }> {
+  const { vibe, id, ...meta } = spec;
+  const vibeId = (id && slugify(id)) || slugify(vibe);
+  if (!vibeId) throw new ToolError("validation_failed", "could not derive a vibe id from the input");
+  const existing = await readNightVibes(env, tenant);
+  if (existing.some((v) => v.id === vibeId)) {
+    throw new ToolError("conflict", `night vibe '${vibeId}' already exists; use update_night_vibe`, { id: vibeId });
+  }
+  const row: NightVibe = { id: vibeId, vibe, ...meta };
+  await upsertNightVibe(env, tenant, row, new Date().toISOString());
+  return { id: vibeId };
+}
+
+/**
+ * The `update_night_vibe` core as a shared operation (member-app-core D2): read-merge-
+ * upsert preserving un-passed fields; unknown id → structured `not_found`. Called by
+ * the MCP tool and the member API's `PATCH /api/vibes/:id`.
+ */
+export async function patchNightVibe(
+  env: Env,
+  tenant: string,
+  id: string,
+  patch: { vibe?: string } & NightVibeMeta,
+): Promise<{ id: string; updated_fields: string[] }> {
+  const existing = (await readNightVibes(env, tenant)).find((v) => v.id === id);
+  if (!existing) throw new ToolError("not_found", `no night vibe '${id}'`, { id });
+  const merged: NightVibe = { ...existing, ...patch, id, vibe: patch.vibe ?? existing.vibe };
+  await upsertNightVibe(env, tenant, merged, new Date().toISOString());
+  return { id, updated_fields: Object.keys(patch) };
+}
+
 export function registerNightVibeTools(server: McpServer, env: Env, tenant: string): void {
   server.registerTool(
     "list_night_vibes",
@@ -70,18 +122,7 @@ export function registerNightVibeTools(server: McpServer, env: Env, tenant: stri
         ...metaSchema,
       },
     },
-    ({ vibe, id, ...meta }) =>
-      runTool(async () => {
-        const vibeId = (id && slugify(id)) || slugify(vibe);
-        if (!vibeId) throw new ToolError("validation_failed", "could not derive a vibe id from the input");
-        const existing = await readNightVibes(env, tenant);
-        if (existing.some((v) => v.id === vibeId)) {
-          throw new ToolError("conflict", `night vibe '${vibeId}' already exists; use update_night_vibe`, { id: vibeId });
-        }
-        const row: NightVibe = { id: vibeId, vibe, ...meta };
-        await upsertNightVibe(env, tenant, row, new Date().toISOString());
-        return { id: vibeId };
-      }),
+    ({ vibe, id, ...meta }) => runTool(() => addNightVibe(env, tenant, { vibe, id, ...meta })),
   );
 
   server.registerTool(
@@ -95,14 +136,7 @@ export function registerNightVibeTools(server: McpServer, env: Env, tenant: stri
         ...metaSchema,
       },
     },
-    ({ id, ...patch }) =>
-      runTool(async () => {
-        const existing = (await readNightVibes(env, tenant)).find((v) => v.id === id);
-        if (!existing) throw new ToolError("not_found", `no night vibe '${id}'`, { id });
-        const merged: NightVibe = { ...existing, ...patch, id, vibe: patch.vibe ?? existing.vibe };
-        await upsertNightVibe(env, tenant, merged, new Date().toISOString());
-        return { id, updated_fields: Object.keys(patch) };
-      }),
+    ({ id, ...patch }) => runTool(() => patchNightVibe(env, tenant, id, patch)),
   );
 
   server.registerTool(

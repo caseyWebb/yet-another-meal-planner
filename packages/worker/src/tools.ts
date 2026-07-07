@@ -54,6 +54,7 @@ import {
   readOverlay,
   readOwnedEquipment,
   readBrandPrefs,
+  type AssembledProfile,
   type Preferences,
 } from "./profile-db.js";
 import { db } from "./db.js";
@@ -75,6 +76,105 @@ import { readStoreFlyer, filterByMinSavings, KROGER_STORE } from "./flyer-warm.j
 import type { KvStore } from "./kroger-user.js";
 
 const SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+
+/**
+ * last_cooked per recipe, derived by D1 aggregation: MAX(date) over the caller's
+ * type='recipe' rows, grouped by slug. An empty/absent log yields an empty map.
+ * Shared by the tool closures below (per-request lazy-cached) and the member API's
+ * recipe-detail read.
+ */
+export async function readLastCookedMap(env: Env, tenant: string): Promise<Map<string, string>> {
+  const rows = await db(env).all<{ recipe: string; last_cooked: string }>(
+    "SELECT recipe, MAX(date) AS last_cooked FROM cooking_log " +
+      "WHERE tenant = ?1 AND type = 'recipe' AND recipe IS NOT NULL GROUP BY recipe",
+    tenant,
+  );
+  const map = new Map<string, string>();
+  for (const { recipe, last_cooked } of rows) {
+    if (recipe && last_cooked) map.set(recipe, last_cooked);
+  }
+  return map;
+}
+
+/**
+ * The `read_recipe` assembly as a shared operation (member-app-core D2): corpus read +
+ * `parseMarkdown` + the caller's overlay/last-cooked merge + the derived description.
+ * Throws the same structured `not_found` for an invalid or unknown slug. Called by the
+ * MCP tool and the member API's `GET /api/cookbook/recipes/:slug`.
+ */
+export async function readRecipeDetail(
+  env: Env,
+  tenant: string,
+  slug: string,
+): Promise<{ slug: string; frontmatter: Record<string, unknown>; body: string }> {
+  if (!SLUG_RE.test(slug)) {
+    throw new ToolError("not_found", `Unknown recipe slug: ${slug}`, { slug });
+  }
+  const corpus = createR2CorpusStore(env.CORPUS);
+  const [text, overlay, lastCooked, description] = await Promise.all([
+    readCorpusFile(corpus, `recipes/${slug}.md`, "not_found", `Unknown recipe slug: ${slug}`),
+    readOverlay(env, tenant),
+    readLastCookedMap(env, tenant),
+    recipeDescription(env, slug),
+  ]);
+  const { frontmatter, body } = parseMarkdown(text, `recipes/${slug}.md`);
+  const merged = mergeOverlay(frontmatter, overlay[slug], lastCooked.get(slug));
+  // description is a Worker-DERIVED field (recipe_derived), merged at read time alongside
+  // overlay/last_cooked; null until the reconcile first generates it (never an error).
+  if (description !== null) merged.description = description;
+  return { slug, frontmatter: merged, body };
+}
+
+/** The `read_user_profile` payload: the assembled profile + initialization status. */
+export interface UserProfilePayload extends AssembledProfile {
+  initialized: boolean;
+  missing: string[];
+}
+
+/**
+ * The `read_user_profile` assembly as a shared operation (member-app-core D2):
+ * `readProfile` + the `initialized`/`missing` computation. Called by the MCP tool and
+ * the member API's `GET /api/profile`.
+ */
+export async function assembleUserProfile(env: Env, tenant: string): Promise<UserProfilePayload> {
+  const profile = await readProfile(env, tenant);
+
+  // Each onboarding area maps to a structured field; an area is "missing"
+  // when its field is empty (null preferences/markdown, empty list/inventory).
+  const isEmpty = (v: unknown): boolean => {
+    if (v == null) return true;
+    if (typeof v === "string") return v.trim().length === 0;
+    if (Array.isArray(v)) return v.length === 0;
+    if (typeof v === "object") return Object.keys(v as Record<string, unknown>).length === 0;
+    return false;
+  };
+  const PROFILE_AREAS: ReadonlyArray<readonly [area: string, value: unknown]> = [
+    ["store", profile.preferences],
+    ["taste", profile.taste],
+    ["diet", profile.diet_principles],
+    ["equipment", profile.kitchen.owned.length ? profile.kitchen : null],
+    ["ready-to-eat", profile.ready_to_eat],
+    ["stockup", profile.stockup],
+  ];
+
+  const initialized = profile.preferences !== null;
+  const missing: string[] = [];
+  for (const [area, value] of PROFILE_AREAS) {
+    if (isEmpty(value)) missing.push(area);
+  }
+
+  return {
+    initialized,
+    missing,
+    preferences: profile.preferences,
+    taste: profile.taste,
+    diet_principles: profile.diet_principles,
+    kitchen: profile.kitchen,
+    staples: profile.staples,
+    ready_to_eat: profile.ready_to_eat,
+    stockup: profile.stockup,
+  };
+}
 
 const recipeFiltersShape = {
   protein: z.string().optional(),
@@ -247,23 +347,12 @@ export function buildServer(env: Env, tenant: Tenant, origin?: string): McpServe
     return overlayPromise;
   }
 
-  // last_cooked per recipe is now a D1 aggregation: MAX(date) over the caller's
-  // type='recipe' rows, grouped by slug. An empty/absent log yields an empty map.
+  // last_cooked per recipe is now a D1 aggregation (readLastCookedMap), lazily
+  // cached per request like the overlay.
   let lastCookedPromise: Promise<Map<string, string>> | null = null;
   function getLastCookedMap(): Promise<Map<string, string>> {
     if (!lastCookedPromise) {
-      lastCookedPromise = (async () => {
-        const rows = await db(env).all<{ recipe: string; last_cooked: string }>(
-          "SELECT recipe, MAX(date) AS last_cooked FROM cooking_log " +
-            "WHERE tenant = ?1 AND type = 'recipe' AND recipe IS NOT NULL GROUP BY recipe",
-          tenant.id,
-        );
-        const map = new Map<string, string>();
-        for (const { recipe, last_cooked } of rows) {
-          if (recipe && last_cooked) map.set(recipe, last_cooked);
-        }
-        return map;
-      })();
+      lastCookedPromise = readLastCookedMap(env, tenant.id);
     }
     return lastCookedPromise;
   }
@@ -543,24 +632,7 @@ export function buildServer(env: Env, tenant: Tenant, origin?: string): McpServe
         "Read a single recipe's parsed frontmatter and markdown body by slug. Frontmatter includes `course` (the open-vocabulary dish type — main | side | dessert | breakfast | …), `pairs_with` (slugs of sides remembered for this main), and the AI-generated `description` (merged from the derived store; absent if not yet generated).",
       inputSchema: { slug: z.string() },
     },
-    ({ slug }) =>
-      runTool(async () => {
-        if (!SLUG_RE.test(slug)) {
-          throw new ToolError("not_found", `Unknown recipe slug: ${slug}`, { slug });
-        }
-        const [text, overlay, lastCooked, description] = await Promise.all([
-          readCorpusFile(corpus, `recipes/${slug}.md`, "not_found", `Unknown recipe slug: ${slug}`),
-          getOverlay(),
-          getLastCookedMap(),
-          recipeDescription(env, slug),
-        ]);
-        const { frontmatter, body } = parseMarkdown(text, `recipes/${slug}.md`);
-        const merged = mergeOverlay(frontmatter, overlay[slug], lastCooked.get(slug));
-        // description is a Worker-DERIVED field (recipe_derived), merged at read time alongside
-        // overlay/last_cooked; null until the reconcile first generates it (never an error).
-        if (description !== null) merged.description = description;
-        return { slug, frontmatter: merged, body };
-      }),
+    ({ slug }) => runTool(() => readRecipeDetail(env, tenant.id, slug)),
   );
 
   server.registerTool(
@@ -593,46 +665,7 @@ export function buildServer(env: Env, tenant: Tenant, origin?: string): McpServe
         "Return the caller's full grocery profile in one call, including initialization status. `initialized` is true once preferences are present; `missing` lists onboarding-area keys still absent (store, taste, diet, equipment, ready-to-eat, stockup) — empty when fully set up. Profile fields: preferences (parsed), taste narrative (markdown), diet principles (markdown), kitchen inventory (owned equipment slugs + notes), staples list, ready-to-eat catalog items, stockup watchlist. Absent fields return null or empty. Use this at the start of every session — on initialized:false, run configure-grocery-profile first.",
       inputSchema: {},
     },
-    () =>
-      runTool(async () => {
-        const profile = await readProfile(env, tenant.id);
-
-        // Each onboarding area maps to a structured field; an area is "missing"
-        // when its field is empty (null preferences/markdown, empty list/inventory).
-        const isEmpty = (v: unknown): boolean => {
-          if (v == null) return true;
-          if (typeof v === "string") return v.trim().length === 0;
-          if (Array.isArray(v)) return v.length === 0;
-          if (typeof v === "object") return Object.keys(v as Record<string, unknown>).length === 0;
-          return false;
-        };
-        const PROFILE_AREAS: ReadonlyArray<readonly [area: string, value: unknown]> = [
-          ["store", profile.preferences],
-          ["taste", profile.taste],
-          ["diet", profile.diet_principles],
-          ["equipment", profile.kitchen.owned.length ? profile.kitchen : null],
-          ["ready-to-eat", profile.ready_to_eat],
-          ["stockup", profile.stockup],
-        ];
-
-        const initialized = profile.preferences !== null;
-        const missing: string[] = [];
-        for (const [area, value] of PROFILE_AREAS) {
-          if (isEmpty(value)) missing.push(area);
-        }
-
-        return {
-          initialized,
-          missing,
-          preferences: profile.preferences,
-          taste: profile.taste,
-          diet_principles: profile.diet_principles,
-          kitchen: profile.kitchen,
-          staples: profile.staples,
-          ready_to_eat: profile.ready_to_eat,
-          stockup: profile.stockup,
-        };
-      }),
+    () => runTool(() => assembleUserProfile(env, tenant.id)),
   );
 
   server.registerTool(

@@ -101,6 +101,26 @@ export async function loadRetrospective(
   return retrospective(entries, effective, period, new Date(), retroConfig);
 }
 
+/**
+ * The `update_meal_plan` composition as a shared operation (member-app-core D2):
+ * `applyMealPlanRowOps` + the new-for-me watermark advance (`stampLastPlanned`)
+ * whenever an add APPLIED — bound together so no caller (tool or member API's
+ * `POST /api/plan/ops`) can commit a plan without advancing the watermark.
+ */
+export async function applyMealPlanOpsForTenant(
+  env: Env,
+  tenant: string,
+  ops: MealPlanOp[],
+): Promise<Awaited<ReturnType<typeof applyMealPlanRowOps>>> {
+  const result = await applyMealPlanRowOps(env, tenant, ops);
+  // Committing planned recipes advances the new-for-me watermark, so the next
+  // list_new_for_me returns only discoveries imported after this plan.
+  if (result.applied.some((a) => a.op === "add")) {
+    await stampLastPlanned(env, tenant, new Date().toISOString().slice(0, 10));
+  }
+  return result;
+}
+
 export function registerCookingTools(
   server: McpServer,
   env: Env,
@@ -139,12 +159,7 @@ export function registerCookingTools(
     },
     ({ ops }) =>
       runTool(async () => {
-        const { applied, conflicts } = await applyMealPlanRowOps(env, username, ops as MealPlanOp[]);
-        // Committing planned recipes advances the new-for-me watermark, so the next
-        // list_new_for_me returns only discoveries imported after this plan.
-        if (ops.some((o) => o.op === "add")) {
-          await stampLastPlanned(env, username, new Date().toISOString().slice(0, 10));
-        }
+        const { applied, conflicts } = await applyMealPlanOpsForTenant(env, username, ops as MealPlanOp[]);
         return { applied, conflicts };
       }),
   );

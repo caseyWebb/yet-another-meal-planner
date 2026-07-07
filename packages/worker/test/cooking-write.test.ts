@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { registerCookingWriteTools } from "../src/cooking-write.js";
+import { registerCookingWriteTools, logCooked } from "../src/cooking-write.js";
 import type { Env } from "../src/env.js";
 import { fakeD1, type FakeD1 } from "./fake-d1.js";
 
@@ -109,5 +109,37 @@ describe("log_cooked (D1, transactional meal-plan clear)", () => {
     const out = parse(await handlers.get("log_cooked")!({ type: "recipe", recipe: "tacos", date: "June 21" }));
     expect(out.error).toBe("validation_failed");
     expect(d1.batches).toHaveLength(0);
+  });
+});
+
+describe("logCooked (shared op) — dedupe", () => {
+  it("dedupe OFF (the tool's default) appends even an identical entry — parity with today", async () => {
+    const d1 = fakeD1({ recipes: ["tacos"], tables: { cooking_log: [] } });
+    const first = await logCooked(d1.env, "everett", { type: "recipe", recipe: "tacos", date: "2026-06-20" });
+    const second = await logCooked(d1.env, "everett", { type: "recipe", recipe: "tacos", date: "2026-06-20" });
+    expect(first.deduped).toBeUndefined();
+    expect(second.deduped).toBeUndefined();
+    expect(d1.batches).toHaveLength(2);
+    expect(d1.tables.cooking_log).toHaveLength(2);
+  });
+
+  it("dedupe ON short-circuits an identical (date, type, recipe) replay with { deduped: true }", async () => {
+    const d1 = fakeD1({ recipes: ["tacos"], tables: { cooking_log: [] } });
+    const first = await logCooked(d1.env, "everett", { type: "recipe", recipe: "tacos", date: "2026-06-20" }, { dedupe: true });
+    expect(first.deduped).toBeUndefined();
+    const replay = await logCooked(d1.env, "everett", { type: "recipe", recipe: "tacos", date: "2026-06-20" }, { dedupe: true });
+    expect(replay.deduped).toBe(true);
+    expect(d1.batches).toHaveLength(1); // exactly one insert
+    expect(d1.tables.cooking_log).toHaveLength(1);
+  });
+
+  it("dedupe ON keys non-recipe entries on name, and a different name still logs", async () => {
+    const d1 = fakeD1({ recipes: [], tables: { cooking_log: [] } });
+    await logCooked(d1.env, "everett", { type: "ad_hoc", name: "fridge pasta", date: "2026-06-20" }, { dedupe: true });
+    const replay = await logCooked(d1.env, "everett", { type: "ad_hoc", name: "fridge pasta", date: "2026-06-20" }, { dedupe: true });
+    expect(replay.deduped).toBe(true);
+    const other = await logCooked(d1.env, "everett", { type: "ad_hoc", name: "grilled cheese", date: "2026-06-20" }, { dedupe: true });
+    expect(other.deduped).toBeUndefined();
+    expect(d1.tables.cooking_log).toHaveLength(2);
   });
 });

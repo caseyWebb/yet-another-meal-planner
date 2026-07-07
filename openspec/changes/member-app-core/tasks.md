@@ -10,32 +10,32 @@ within §7 parallelizes freely. **No spike tasks** — every open question is se
 
 ## 1. Worker: op extraction (zero behavior change)
 
-- [ ] 1.1 Extract `readRecipeDetail(env, tenant, slug)` from the `read_recipe` closure
+- [x] 1.1 Extract `readRecipeDetail(env, tenant, slug)` from the `read_recipe` closure
   (`packages/worker/src/tools.ts`): corpus read (`readCorpusFile`) + `parseMarkdown` +
   `mergeOverlay` + `recipeDescription`, throwing the same `not_found`. Re-point the tool at it.
-- [ ] 1.2 Extract `logCooked(env, tenant, entry, opts?)` from the `log_cooked` closure
+- [x] 1.2 Extract `logCooked(env, tenant, entry, opts?)` from the `log_cooked` closure
   (`packages/worker/src/cooking-write.ts`): `validateNewEntry` + slug check + the
   `satisfied_vibe` stamp (read `meal_plan.from_vibe` before the clear) + the log-insert /
   plan-clear single batch. Add `opts.dedupe?: boolean` (default false — tool behavior
   unchanged): when true, an existing identical `(tenant, date, type, recipe|name)` row
   short-circuits to `{ logged, deduped: true }` with no insert (D8).
-- [ ] 1.3 Extract `applyPreferencesPatch(env, tenant, patch)` from the `update_preferences`
+- [x] 1.3 Extract `applyPreferencesPatch(env, tenant, patch)` from the `update_preferences`
   closure (`packages/worker/src/write-tools.ts`): `rejectUnknownPatchKeys` + `mergePatch` +
   `validatePreferences` + the `profileUpsertStmt`/`brandStmt` batch. Re-point the tool.
-- [ ] 1.4 Extract `assembleUserProfile(env, tenant)` from the `read_user_profile` closure
+- [x] 1.4 Extract `assembleUserProfile(env, tenant)` from the `read_user_profile` closure
   (`packages/worker/src/tools.ts`): `readProfile` + the `initialized`/`missing` computation.
-- [ ] 1.5 Extract `addNightVibe(env, tenant, spec)` / `patchNightVibe(env, tenant, id, patch)`
+- [x] 1.5 Extract `addNightVibe(env, tenant, spec)` / `patchNightVibe(env, tenant, id, patch)`
   from the `add_night_vibe`/`update_night_vibe` closures
   (`packages/worker/src/night-vibe-tools.ts`): id slugify + `conflict` on duplicate;
   read-merge-upsert preserving un-passed fields.
-- [ ] 1.6 Extract `resolveProposal(env, tenant, id, accept)` from the `confirm_proposal` closure
+- [x] 1.6 Extract `resolveProposal(env, tenant, id, accept)` from the `confirm_proposal` closure
   (`packages/worker/src/reconcile-tools.ts`): `getProposal` (+ `not_found`), accept →
   `applyProposal` + `setProposalStatus("accepted")`, reject → `setProposalStatus("rejected")`;
   an already-resolved proposal → structured `conflict` (D8 idempotency).
-- [ ] 1.7 Extract the plan-add composition `applyMealPlanOpsForTenant(env, tenant, ops)` from the
+- [x] 1.7 Extract the plan-add composition `applyMealPlanOpsForTenant(env, tenant, ops)` from the
   `update_meal_plan` closure (`packages/worker/src/cooking-tools.ts`): `applyMealPlanRowOps` +
   `stampLastPlanned` when any add applied — so the route cannot skip the new-for-me watermark.
-- [ ] 1.8 `aubr typecheck` + `aubr test` green with **no test edits** except imports — the
+- [x] 1.8 `aubr typecheck` + `aubr test` green with **no test edits** except imports — the
   extractions are behavior-preserving; add small unit tests for `logCooked` dedupe-off parity
   and `resolveProposal` double-confirm `conflict`.
 
