@@ -105,6 +105,36 @@ function uniq(values: string[]): string[] {
   return [...new Set(values)];
 }
 
+/**
+ * The W3 status-transition guard (grocery-list capability), pure. `active ⇄ in_cart`
+ * is freely writable in both directions — and so is re-listing an `ordered` row back
+ * to `active`/`in_cart` (a canceled order is a legitimate member correction). Entering
+ * `ordered` is legal ONLY from `in_cart`: that write is the user-asserted "I placed
+ * the order" advance. Every other path into `ordered` (including re-asserting it on an
+ * already-`ordered` row) is rejected — the order flow's own advances
+ * (`advanceInCartRows` / `advanceOrderedRows`) are separate code paths and never come
+ * through here. Returns the rejection reason, or null when the transition is legal.
+ */
+export function illegalStatusTransition(current: GroceryStatus, next: GroceryStatus): string | null {
+  if (next === "ordered" && current !== "in_cart") {
+    return (
+      `cannot set status "ordered" on a "${current}" item — "ordered" is accepted only as the ` +
+      `user-asserted advance from "in_cart" (order placed); move the item to "in_cart" first`
+    );
+  }
+  return null;
+}
+
+/** Find an item matching `name` (the exported face of the dual-key lookup below). */
+export function findGroceryItem(
+  items: GroceryItem[],
+  name: string,
+  resolve: (n: string) => string = normalizeName,
+): GroceryItem | undefined {
+  const idx = findIndex(items, name, resolve);
+  return idx >= 0 ? items[idx] : undefined;
+}
+
 export interface AddResult {
   items: GroceryItem[];
   item: GroceryItem;

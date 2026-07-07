@@ -6,6 +6,7 @@ import {
   isFoodItem,
   normalizeName,
   type GroceryItem,
+  illegalStatusTransition,
 } from "../src/grocery.js";
 
 const TODAY = "2026-06-09";
@@ -149,5 +150,28 @@ describe("removeGroceryItem", () => {
     const { items, found } = removeGroceryItem(list, "ghee");
     expect(found).toBe(false);
     expect(items).toBe(list);
+  });
+});
+
+describe("illegalStatusTransition (W3 guard matrix)", () => {
+  const legal: [string, string][] = [
+    ["active", "active"],
+    ["active", "in_cart"],
+    ["in_cart", "active"],
+    ["in_cart", "in_cart"],
+    ["in_cart", "ordered"], // the user-asserted order-placed advance
+    ["ordered", "active"], // re-listing a canceled order
+    ["ordered", "in_cart"],
+  ];
+  it.each(legal)("allows %s → %s", (from, to) => {
+    expect(illegalStatusTransition(from as never, to as never)).toBeNull();
+  });
+
+  const illegal: [string, string][] = [
+    ["active", "ordered"], // minting ordered from thin air
+    ["ordered", "ordered"], // re-asserting ordered is not a transition from in_cart
+  ];
+  it.each(illegal)("rejects %s → %s with a reason", (from, to) => {
+    expect(illegalStatusTransition(from as never, to as never)).toMatch(/ordered/);
   });
 });

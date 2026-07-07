@@ -30,6 +30,8 @@ import {
   addToGroceryList,
   updateGroceryItem,
   removeGroceryItem,
+  findGroceryItem,
+  illegalStatusTransition,
   type GroceryItem,
   type GroceryAddInput,
   type GroceryUpdateInput,
@@ -361,23 +363,51 @@ export async function addGroceryRow(
   return { item: result.item, merged: result.merged };
 }
 
-/** Patch one grocery-list item by name. Throws a `not_found` ToolError when absent. */
+/**
+ * Patch one grocery-list item by name. Throws a `not_found` ToolError when absent.
+ * Enforces the W3 status-transition guard (grocery.ts `illegalStatusTransition`) for
+ * EVERY caller — the MCP tool and the member API get the identical guarantee: an
+ * illegal write of `status: "ordered"` is a structured `validation_failed` carrying
+ * `{ name, from, to }`, row unchanged; the legal `in_cart → ordered` (user-asserted
+ * order placed) advance stamps `ordered_at` = `today` (parity with
+ * `advanceOrderedRows`, which is a separate code path and unaffected).
+ */
 export async function updateGroceryRow(
   env: Env,
   tenant: string,
   name: string,
   patch: GroceryUpdateInput,
+  today: string = isoDay(Date.now()),
 ): Promise<GroceryItem> {
   const ctx = await ingredientContext(env).catch(() => emptyIngredientContext(env));
   const current = await readGroceryList(env, tenant);
+  const existing = findGroceryItem(current, name, ctx.resolve);
+  if (!existing) {
+    throw new ToolError("not_found", `No grocery-list item named: ${name}`, { name });
+  }
+  if (patch.status !== undefined) {
+    const illegal = illegalStatusTransition(existing.status, patch.status);
+    if (illegal) {
+      throw new ToolError("validation_failed", illegal, {
+        name: existing.name,
+        from: existing.status,
+        to: patch.status,
+      });
+    }
+  }
   let result: UpdateResult;
   try {
     result = updateGroceryItem(current, name, patch, ctx.resolve);
   } catch {
     throw new ToolError("not_found", `No grocery-list item named: ${name}`, { name });
   }
-  await db(env).batch([groceryUpsertStmt(env, tenant, result.item, ctx.resolve)]);
-  return result.item;
+  let item = result.item;
+  // The legal user-asserted advance stamps ordered_at (the patch path used to leave it null).
+  if (patch.status === "ordered" && existing.status === "in_cart") {
+    item = { ...item, ordered_at: today };
+  }
+  await db(env).batch([groceryUpsertStmt(env, tenant, item, ctx.resolve)]);
+  return item;
 }
 
 /** Remove one grocery-list item by name. `found` is false when no such row existed. */

@@ -41,24 +41,24 @@ within §7 parallelizes freely. **No spike tasks** — every open question is se
 
 ## 2. Worker: W3 — grocery `status` transition guard (D1)
 
-- [ ] 2.1 In `packages/worker/src/grocery.ts`, add the pure transition check (e.g.
+- [x] 2.1 In `packages/worker/src/grocery.ts`, add the pure transition check (e.g.
   `illegalStatusTransition(current: GroceryStatus, next: GroceryStatus): string | null`):
   entering `ordered` is legal iff `current === "in_cart"`; all `active ⇄ in_cart` writes (and
   `ordered → active|in_cart` re-listing) are legal. Unit-test the matrix.
-- [ ] 2.2 In `updateGroceryRow` (`packages/worker/src/session-db.ts`), enforce it before
+- [x] 2.2 In `updateGroceryRow` (`packages/worker/src/session-db.ts`), enforce it before
   persisting: violation → `ToolError("validation_failed", …, { name, from, to })`, row
   unchanged. On the legal `in_cart → ordered` advance, stamp `ordered_at` = today (parity with
   `advanceOrderedRows`).
-- [ ] 2.3 Update the `update_grocery_list` tool **description** (`grocery-tools.ts`) to state the
+- [x] 2.3 Update the `update_grocery_list` tool **description** (`grocery-tools.ts`) to state the
   guarantee: `active ⇄ in_cart` freely writable; `status: "ordered"` accepted only as the
   user-asserted advance from `in_cart` (stamps `ordered_at`); any other `ordered` write returns
   a structured `validation_failed` and changes nothing. Fix the module header comment (it
   currently misstates the lifecycle).
-- [ ] 2.4 Worker tests: `active → ordered` rejected with `validation_failed` + `{from, to}`
+- [x] 2.4 Worker tests: `active → ordered` rejected with `validation_failed` + `{from, to}`
   context and the row unchanged; `in_cart → ordered` accepted and `ordered_at` stamped;
   `active ⇄ in_cart` both ways unchanged; `ordered → active` re-listing allowed;
   `advanceInCartRows`/`advanceOrderedRows` behavior untouched (existing tests stay green).
-- [ ] 2.5 `docs/TOOLS.md`: rewrite the `update_grocery_list` entry + the grocery lifecycle notes
+- [x] 2.5 `docs/TOOLS.md`: rewrite the `update_grocery_list` entry + the grocery lifecycle notes
   (the `place_order` section's user-asserted-transitions text) to state the guard as current
   behavior — no history narration.
 

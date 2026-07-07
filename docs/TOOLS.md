@@ -410,8 +410,14 @@ Add an item (ingredient/product level, no SKU). Keyed by normalized `name` — r
 
 Patch an existing item by name (`quantity`, `kind`, `domain`, `status`, `source`, `for_recipes`, `note`).
 
+**`status` transition guard** (enforced in the shared update operation, so every caller — this tool and the member web app — gets the identical guarantee):
+- `active ⇄ in_cart` is freely writable in both directions, and an `ordered` item may be re-listed back to `active`/`in_cart` (a canceled order is a legitimate correction).
+- `status: "ordered"` is accepted **only** as the user-asserted *"I placed the order"* advance on an item currently `in_cart`; that write stamps `ordered_at` with today's date.
+- Any other write of `ordered` returns a structured `validation_failed` carrying the attempted transition (`{ name, from, to }`) and changes nothing.
+- The order flow's own advances (`place_order`'s in-cart advance, the satellite receipt flush's ordered advance) are separate code paths, unaffected by this guard.
+
 **Returns:**
-- `{ item }` — `not_found` if no such item; D1-backed, no `commit_sha`
+- `{ item }` — `not_found` if no such item; `validation_failed` on an illegal `status` transition; D1-backed, no `commit_sha`
 
 ### `remove_from_grocery_list(name)`
 
@@ -939,7 +945,7 @@ All sections optional. With no args it flushes the current grocery list. Package
 **Partial-failure honesty:** the SKU-cache commit and the cart write are **independent best-effort** operations (the SKU cache is a pure hint). Order: commit the cache → write the cart → advance the list to `in_cart` *only after a successful cart write*. So a cart failure leaves the list `active` (retryable, no silent drop) and **never** reports a populated cart; a cache-commit failure after a successful cart just re-resolves next time. If the cart write fails because the Kroger refresh token was rejected, `cart.code` is `reauth_required` — call [`kroger_login_url`](#kroger_login_url) and give the member the returned link to re-authorize (see `docs/SELF_HOSTING.md`).
 
 **Lifecycle (`active → in_cart → ordered → received`):** `place_order` sets `in_cart`. Because the cart API is write-only and unreadable, the transitions past `in_cart` are **user-asserted**, never agent-verified:
-- *"I placed the order"* → advance `in_cart` items to `ordered` via `update_grocery_list`.
+- *"I placed the order"* → advance `in_cart` items to `ordered` via `update_grocery_list` (stamps `ordered_at`). This is the **only** path into `ordered` that `update_grocery_list` accepts — a write of `ordered` on an item not currently `in_cart` is rejected with a structured `validation_failed` (see [`update_grocery_list`](#update_grocery_listname-patch)).
 - *"I picked up the groceries"* → `received` (terminal): `remove_from_grocery_list` for each, and for `grocery`-kind items only, restock the pantry via `update_pantry`. `household`/`other` items don't touch the pantry.
 
 A **stale-cart reminder** fires when a new order begins while the prior list still has `in_cart` items never confirmed `ordered`: remind the user to clear the Kroger cart manually (the API can't), rather than silently double-adding.

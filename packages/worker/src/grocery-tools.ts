@@ -1,8 +1,12 @@
 // Grocery-list CRUD tools (grocery-list capability). The buy list accumulates
 // SKU-free intent across the week; resolution to a Kroger SKU and the cart write
 // are deferred to order placement. Mutations persist as D1 rows (src/session-db.ts).
-// Lifecycle: this module writes `status: "active"`; the in_cart transition lands with
-// place_order.
+// Lifecycle: new items start `active`; `active ⇄ in_cart` is freely writable here
+// (place_order's resolution also advances resolved lines to `in_cart`); `ordered` is
+// reached ONLY by the user-asserted advance from `in_cart` via update_grocery_list
+// (which stamps `ordered_at`) or by the satellite receipt flush — the shared update
+// op (session-db.ts) guards every other write of `ordered` with a structured
+// `validation_failed` (W3).
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
@@ -58,7 +62,8 @@ export function registerGroceryListTools(
   server.registerTool(
     "update_grocery_list",
     {
-      description: "Patch an existing grocery-list item by name. `domain` (default 'grocery') is the store-type the item is bought at — set it to re-file an item onto a different store's in-store walk.",
+      description:
+        "Patch an existing grocery-list item by name. `domain` (default 'grocery') is the store-type the item is bought at — set it to re-file an item onto a different store's in-store walk. `status` lifecycle guarantee: `active ⇄ in_cart` is freely writable in both directions (and an `ordered` item may be re-listed back to `active`, e.g. a canceled order); `status: \"ordered\"` is accepted ONLY as the user-asserted \"I placed the order\" advance on an item currently `in_cart` — that write stamps `ordered_at` — and ANY other write of `ordered` returns a structured `validation_failed` (with the attempted `{from, to}` transition) and changes nothing.",
       inputSchema: {
         name: z.string(),
         quantity: z.string().optional(),
