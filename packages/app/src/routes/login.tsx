@@ -1,19 +1,13 @@
-// The invite-code login screen (member-session-auth): POST /api/session, structured-
-// error display (`unauthorized` is the Worker's UNIFORM answer — the copy never hints
-// whether a code exists; `rate_limited` asks for patience). A success lands on `/`.
+// The invite-code login screen (member-session-auth, restyled per member-app-core
+// D13): the design bundle's login card — brand mark, ONE invite-code field, submit —
+// over P0's session POST. No roster, no password (the mock's fake-auth affordances);
+// the structured-error copy stays uniform (`unauthorized` never hints whether a code
+// exists; `rate_limited` asks for patience). A success lands on `/`.
 import { useState } from "react";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import {
-  Button,
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-  Input,
-  Label,
-} from "@grocery-agent/ui";
+import { Button, IconBook, Input, Label } from "@grocery-agent/ui";
 import { api, apiError } from "../lib/api";
+import { ThemeFab } from "./_app";
 
 export const Route = createFileRoute("/login")({
   component: LoginPage,
@@ -53,37 +47,42 @@ function LoginPage() {
   }
 
   return (
-    <main className="flex min-h-screen items-center justify-center bg-muted/30 p-6">
-      <Card className="w-full max-w-sm">
-        <CardHeader>
-          <CardTitle className="text-xl">Cookbook</CardTitle>
-          <CardDescription>Sign in with the invite code from your group's operator.</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <form className="flex flex-col gap-4" onSubmit={onSubmit} data-testid="login-form">
-            <div className="flex flex-col gap-2">
-              <Label htmlFor="invite-code">Invite code</Label>
-              <Input
-                id="invite-code"
-                name="invite_code"
-                autoComplete="off"
-                autoFocus
-                value={code}
-                onChange={(e) => setCode(e.target.value)}
-                placeholder="e.g. 1a2b3c4d5e6f7a8b"
-              />
-            </div>
-            {state.status === "failed" ? (
-              <p className="text-sm text-destructive" role="alert" data-testid="login-error">
-                {state.message}
-              </p>
-            ) : null}
-            <Button type="submit" disabled={state.status === "busy" || code.trim() === ""}>
-              {state.status === "busy" ? "Signing in…" : "Sign in"}
-            </Button>
-          </form>
-        </CardContent>
-      </Card>
-    </main>
+    <div className="login-wrap">
+      <ThemeFab />
+      <div className="login-card">
+        <div className="login-brand">
+          <span className="brand-mark">
+            <IconBook />
+          </span>
+          <div>
+            <div className="brand-name">Cookbook</div>
+            <div className="brand-tag">your kitchen, with the agent</div>
+          </div>
+        </div>
+        <form className="login-form" onSubmit={onSubmit} data-testid="login-form">
+          <div className="flex flex-col gap-2">
+            <Label htmlFor="invite-code">Invite code</Label>
+            <Input
+              id="invite-code"
+              name="invite_code"
+              autoComplete="off"
+              autoFocus
+              value={code}
+              onChange={(e) => setCode(e.target.value)}
+              placeholder="e.g. 1a2b3c4d5e6f7a8b"
+            />
+          </div>
+          {state.status === "failed" ? (
+            <p className="text-sm text-destructive" role="alert" data-testid="login-error">
+              {state.message}
+            </p>
+          ) : null}
+          <Button type="submit" className="login-submit" disabled={state.status === "busy" || code.trim() === ""}>
+            {state.status === "busy" ? "Signing in…" : "Sign in"}
+          </Button>
+        </form>
+        <p className="login-note">Sign in with the invite code from your group's operator.</p>
+      </div>
+    </div>
   );
 }

@@ -119,7 +119,7 @@ within §7 parallelizes freely. **No spike tasks** — every open question is se
 
 ## 6. packages/ui: shared components for the member pages
 
-- [ ] 6.1 From the design bundle (`docs/plans/web-app-design/project/cookbook/app.css` + `ds/`),
+- [x] 6.1 From the design bundle (`docs/plans/web-app-design/project/cookbook/app.css` + `ds/`),
   add the shared primitives P1 needs to `packages/ui` (Basecoat → shadcn/ui mapping, tokens
   already established by P0): recipe row + facet chips, page head, empty-state block,
   breadcrumb, token/chip fields, segmented control, combobox (recipe/side pickers), toast,
@@ -127,41 +127,41 @@ within §7 parallelizes freely. **No spike tasks** — every open question is se
 
 ## 7. packages/app: pages (design bundle, pixel-matched; dependency order)
 
-- [ ] 7.1 App shell: sidebar (Cookbook / Favorites / Meal plan / Grocery / Pantry / Cooking log,
+- [x] 7.1 App shell: sidebar (Cookbook / Favorites / Meal plan / Grocery / Pantry / Cooking log,
   client-derived counts), account menu (profile link, Kroger badge from `GET /api/profile`,
   sign out), theme toggle; TanStack Router routes for all P1 pages; area query hooks over the
   typed `hc` client (short `staleTime` + `refetchOnWindowFocus` per plan §6).
-- [ ] 7.2 Login restyle per the design card — single invite-code field over P0's session POST
+- [x] 7.2 Login restyle per the design card — single invite-code field over P0's session POST
   (D13; no roster, no password).
-- [ ] 7.3 Cookbook browse + in-place search: "New for you" (new-for-me) + all-recipes sections
+- [x] 7.3 Cookbook browse + in-place search: "New for you" (new-for-me) + all-recipes sections
   (D5), debounced search over `GET /api/cookbook/search`, row actions (favorite set,
   plan-toggle via plan ops).
-- [ ] 7.4 Recipe detail: title/facets/time/source, **Cook with Claude** deep link
+- [x] 7.4 Recipe detail: title/facets/time/source, **Cook with Claude** deep link
   (`https://claude.ai/new?q=` + encoded `/cook <slug>`), add-to-plan, log-as-cooked, favorite;
   markdown body render; notes section (own editable incl. private, community read-only, D14);
   Similar recipes.
-- [ ] 7.5 Favorites page (overlay ∩ index, empty state).
-- [ ] 7.6 Meal plan page: scheduled/unscheduled groups, date set/clear + side add/remove via the
+- [x] 7.5 Favorites page (overlay ∩ index, empty state).
+- [x] 7.6 Meal plan page: scheduled/unscheduled groups, date set/clear + side add/remove via the
   `set` op (D3), remove, add-recipe combobox. No "Plan my week" entry point (P2).
-- [ ] 7.7 Grocery page (D9): category groups, bottom add-row, in-cart set (optimistic), remove,
+- [x] 7.7 Grocery page (D9): category groups, bottom add-row, in-cart set (optimistic), remove,
   source facet + `for_recipes` links, "In cart" group + "Clear purchased" (remove each
   `in_cart` row).
-- [ ] 7.8 Pantry page: needs-verification section (perishable categories + stale threshold,
+- [x] 7.8 Pantry page: needs-verification section (perishable categories + stale threshold,
   client-derived like the mock), category groups, add form, qty edit (pantry `add` upsert),
   verify, remove. Must stay comfortable at ~100+ rows/tenant (production spike).
-- [ ] 7.9 Cooking log page: most-recent-first list (title links for recipe rows, facet chips,
+- [x] 7.9 Cooking log page: most-recent-first list (title links for recipe rows, facet chips,
   non-cooked type badges), log-a-cook select → `POST /api/log`, per-row remove.
-- [ ] 7.10 Profile page — Taste tab: derived taste read from `GET /api/profile/retrospective` +
+- [x] 7.10 Profile page — Taste tab: derived taste read from `GET /api/profile/retrospective` +
   overlay favorites; `taste` and `diet_principles` markdown editors with If-Match
   rebase-on-412 (D8, D10); read-only owned-equipment card.
-- [ ] 7.11 Profile page — Preferences tab: planning knobs, `lunch_strategy` single-select over
+- [x] 7.11 Profile page — Preferences tab: planning knobs, `lunch_strategy` single-select over
   the real vocab (D10), dietary token fields, stores + ZIP, ranked brands (merge-patch with
   If-Match rebase).
-- [ ] 7.12 Profile page — Night vibes tab: palette rows (production vocab per D11, debt meter
+- [x] 7.12 Profile page — Night vibes tab: palette rows (production vocab per D11, debt meter
   from derived `last_satisfied`), add/edit/delete forms, the reconciliation queue with
   kind-specific actions (D12) rendering dozens of pending rows sanely, and the gated
   "Suggest from your cooking" button (throttled state surfaced quietly) (D7).
-- [ ] 7.13 Every class (b) mutation is an explicit-set optimistic mutation keyed on its canonical
+- [x] 7.13 Every class (b) mutation is an explicit-set optimistic mutation keyed on its canonical
   id (D8) — verify replaying any mutation twice converges (unit-level test on the mutation fns).
 
 ## 8. Playwright coverage (blocking, per the P0 harness)
