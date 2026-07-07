@@ -18,16 +18,16 @@ The operator deploy SHALL build the member SPA (after the admin bundle, before `
 
 ### Requirement: CI is workspace-aware across the monorepo packages
 
-CI SHALL typecheck and test **every** workspace package (the Worker, the shared contract package, the scraper, the member app, and the shared UI package), not only the Worker. Path filters that gate the Worker deploy trigger SHALL be scoped to the packages the deployed Worker serves — the Worker's package paths **plus** the member app and shared UI packages (`packages/app/**`, `packages/ui/**`), since the deploy builds and serves the SPA — so a scraper-only or docs-only change does NOT trigger a Worker deploy, and a Worker change does NOT rebuild the scraper image. A change to the **shared contract package** SHALL fan out to both pipelines (it can break either side), so contract changes SHALL run the Worker CI and be treated as affecting the scraper image. The scraper's tests SHALL use fixture pages and SHALL NOT hit live paid sources in CI.
+CI SHALL typecheck and test **every** workspace package (the Worker, the shared contract package, the satellite, the member app, and the shared UI package), not only the Worker. Path filters that gate the Worker deploy trigger SHALL be scoped to the packages the deployed Worker serves — the Worker's package paths **plus** the member app and shared UI packages (`packages/app/**`, `packages/ui/**`), since the deploy builds and serves the SPA — so a satellite-only or docs-only change does NOT trigger a Worker deploy, and a Worker change does NOT rebuild the satellite image. A change to the **shared contract package** SHALL fan out to both pipelines (it can break either side), so contract changes SHALL run the Worker CI and be treated as affecting the satellite image. The satellite's tests SHALL use fixture pages and SHALL NOT hit live paid sources in CI.
 
 #### Scenario: Every package is typechecked and tested
 
 - **WHEN** CI runs on a push or PR
-- **THEN** the Worker, contract, scraper, app, and ui packages are each typechecked (and tested where they carry tests)
+- **THEN** the Worker, contract, satellite, app, and ui packages are each typechecked (and tested where they carry tests)
 
-#### Scenario: A scraper-only change does not deploy the Worker
+#### Scenario: A satellite-only change does not deploy the Worker
 
-- **WHEN** a change touches only scraper-package paths
+- **WHEN** a change touches only satellite-package paths
 - **THEN** the Worker deploy trigger does not fire
 
 #### Scenario: An app-only change deploys the Worker
@@ -38,4 +38,4 @@ CI SHALL typecheck and test **every** workspace package (the Worker, the shared 
 #### Scenario: A contract change fans out to both sides
 
 - **WHEN** a change touches the shared contract package
-- **THEN** CI runs the Worker checks and treats the change as affecting the scraper image build
+- **THEN** CI runs the Worker checks and treats the change as affecting the satellite image build

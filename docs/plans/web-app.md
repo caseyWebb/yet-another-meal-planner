@@ -9,7 +9,7 @@
 >
 > **Paths:** the repo is a workspace monorepo — Worker code lives under
 > `packages/worker/` (`src/`, `migrations/`, `scripts/`), alongside the existing
-> `packages/contract` and `packages/scraper`. Bare `src/…` references below
+> `packages/contract` and `packages/satellite`. Bare `src/…` references below
 > mean `packages/worker/src/…`.
 
 ## 1. Vision & non-negotiable principles

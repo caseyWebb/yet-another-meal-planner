@@ -28,7 +28,7 @@
 ## 4. Worker asset serving
 
 - [ ] 4.1 Retarget `scripts/build-admin.mjs` output from `admin/dist/admin/*` to `assets/admin/*` (served URLs unchanged); update `.gitignore`/`packages/worker/.gitignore` (`assets/` replaces `admin/dist/`), and the `admin/dist` references in `admin/visual/setup.mjs` comments, `ci.yml`/`data-deploy.yml` comments, and `src/admin/CLAUDE.md`.
-- [ ] 4.2 `wrangler.jsonc`: `assets.directory: "./assets"`, `not_found_handling: "single-page-application"`, `run_worker_first` = the 16-path enumeration from design Decision 2, with a comment carrying the discipline rule (new Worker route ⇒ new entry, same trap class as the merge allowlist).
+- [ ] 4.2 `wrangler.jsonc`: `assets.directory: "./assets"`, `not_found_handling: "single-page-application"`, `run_worker_first` = the 17-path enumeration from design Decision 2, with a comment carrying the discipline rule (new Worker route ⇒ new entry, same trap class as the merge allowlist).
 - [ ] 4.3 Remove the `GET /` liveness-banner branch from `src/index.ts` `defaultHandler` (assets own `/` now; `/health` remains the machine check).
 - [ ] 4.4 Extend `tests/merge-wrangler-config.test.mjs`: the merged output preserves `assets.not_found_handling` and the full `run_worker_first` array verbatim (regression-pins design Decision 1's verification).
 

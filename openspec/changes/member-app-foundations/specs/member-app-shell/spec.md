@@ -2,7 +2,7 @@
 
 ### Requirement: The member SPA is served at the root from Workers Static Assets with an SPA fallback
 
-The Worker SHALL serve the member app at `/` from the Workers Static Assets binding (one merged assets root also carrying the admin bundle at its unchanged URLs), replacing the plain-text liveness banner — `/health` remains the machine liveness check. The assets config SHALL set `not_found_handling: "single-page-application"` so client-side routes deep-link to the shell, and `run_worker_first` SHALL enumerate every Worker-owned path — `/mcp` (+ subpaths), the OAuth provider endpoints (`/token`, `/register`, `/.well-known/*`), `/authorize`, `/oauth/*`, `/api` (+ subpaths), `/admin` (+ subpaths), `/cookbook` (+ subpaths), `/health`, `/health.svg`, and `/source` — so the SPA fallback can never shadow them. App assets SHALL be built with hashed, immutable filenames. The assets root is a build artifact, never committed.
+The Worker SHALL serve the member app at `/` from the Workers Static Assets binding (one merged assets root also carrying the admin bundle at its unchanged URLs), replacing the plain-text liveness banner — `/health` remains the machine liveness check. The assets config SHALL set `not_found_handling: "single-page-application"` so client-side routes deep-link to the shell, and `run_worker_first` SHALL enumerate every Worker-owned path — `/mcp` (+ subpaths), the OAuth provider endpoints (`/token`, `/register`, `/.well-known/*`), `/authorize`, `/oauth/*`, the satellite channel (`/satellite/*`), `/api` (+ subpaths), `/admin` (+ subpaths), `/cookbook` (+ subpaths), `/health`, `/health.svg`, and `/source` — so the SPA fallback can never shadow them. App assets SHALL be built with hashed, immutable filenames. The assets root is a build artifact, never committed.
 
 #### Scenario: A deep link serves the shell
 
@@ -11,7 +11,7 @@ The Worker SHALL serve the member app at `/` from the Workers Static Assets bind
 
 #### Scenario: Worker-owned paths are untouched by the fallback
 
-- **WHEN** requests arrive for `/mcp`, `/api/*`, `/authorize`, `/oauth/*`, `/cookbook`, `/admin`, `/health`, or `/source`
+- **WHEN** requests arrive for `/mcp`, `/api/*`, `/authorize`, `/oauth/*`, `/satellite/*`, `/cookbook`, `/admin`, `/health`, or `/source`
 - **THEN** each is handled by the Worker exactly as before the SPA existed — never answered with the SPA shell
 
 #### Scenario: The admin bundle survives the shared assets root

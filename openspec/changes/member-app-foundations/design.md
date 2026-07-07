@@ -39,6 +39,7 @@ With `not_found_handling: "single-page-application"`, any path not routed to the
   "/token", "/register", "/.well-known/*",
   "/authorize",
   "/oauth/*",
+  "/satellite/*",
   "/api", "/api/*",
   "/admin", "/admin/*",
   "/cookbook", "/cookbook/*",
@@ -47,7 +48,7 @@ With `not_found_handling: "single-page-application"`, any path not routed to the
 ]
 ```
 
-(16 rules — far under wrangler's 100-rule cap.) The `GET /` liveness banner branch in `defaultHandler` is removed (unreachable — assets now own `/`); `/health` remains the machine liveness check. **Discipline rule (spec'd + documented in CONTRIBUTING.md):** adding a Worker-owned route means adding its `run_worker_first` entry in the same change, or the SPA fallback silently swallows it — the same class of trap as the merge allowlist, guarded the same way (stated rule + Playwright passthrough assertions on `/health` and `/cookbook`).
+(17 rules — far under wrangler's 100-rule cap. `/satellite/*` covers the satellite pull channel's claim/results/order endpoints as one wildcard, so new satellite endpoints under the prefix don't need individual entries.) The `GET /` liveness banner branch in `defaultHandler` is removed (unreachable — assets now own `/`); `/health` remains the machine liveness check. **Discipline rule (spec'd + documented in CONTRIBUTING.md):** adding a Worker-owned route means adding its `run_worker_first` entry in the same change, or the SPA fallback silently swallows it — the same class of trap as the merge allowlist, guarded the same way (stated rule + Playwright passthrough assertions on `/health` and `/cookbook`).
 
 ### 3. Session store: `TENANT_KV` `session:<token>`, 90d rolling TTL, throttled refresh
 
