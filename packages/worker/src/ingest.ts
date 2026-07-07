@@ -33,6 +33,7 @@ import { validateSale } from "./sale-intake.js";
 import { advanceInCartRows, readGroceryKeyIndex, isoDay } from "./session-db.js";
 import { markOrderListReceived } from "./order-lists-db.js";
 import { appendRejection, bumpAcceptTally, getQuarantine, recordLocalRejects } from "./satellite-audit-db.js";
+import { underRateLimit as underFixedWindow } from "./rate-limit.js";
 import { ToolError } from "./errors.js";
 
 /** Per-key fixed-window rate limit (best-effort, KV-backed; fail-open on a KV error). */
@@ -50,19 +51,11 @@ export function bearer(request: Request): string | null {
   return m ? m[1].trim() : null;
 }
 
-/** Best-effort per-key fixed-window limiter over KROGER_KV. Returns true when the request is allowed.
+/** Best-effort per-key fixed-window limiter over KROGER_KV (the shared `src/rate-limit.ts`
+ *  limiter, keyed `ingest:rl:<keyId>:<bucket>`). Returns true when the request is allowed.
  *  Shared by `/admin/api/ingest` (push) and `/satellite/*` (pull) so one key shares one rate bucket. */
 export async function underRateLimit(env: Env, keyId: string, now: number): Promise<boolean> {
-  try {
-    const bucket = Math.floor(now / 1000 / RL_WINDOW_S);
-    const k = `ingest:rl:${keyId}:${bucket}`;
-    const cur = Number.parseInt((await env.KROGER_KV.get(k)) ?? "0", 10) || 0;
-    if (cur >= RL_MAX) return false;
-    await env.KROGER_KV.put(k, String(cur + 1), { expirationTtl: RL_WINDOW_S * 2 });
-    return true;
-  } catch {
-    return true; // never let the limiter's own failure reject a valid push
-  }
+  return underFixedWindow(env.KROGER_KV, `ingest:rl:${keyId}`, RL_MAX, RL_WINDOW_S, now);
 }
 
 /** Join a (store, locationId) into a Map key with a NUL delimiter: a locationId that is a raw
