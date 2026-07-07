@@ -35,7 +35,7 @@ import { loadRecipeIndex, loadRecipeEmbeddings, recipeDescription } from "./reci
 import { readReconcileErrors } from "./recipe-projection.js";
 import { readRejections, getQuarantine } from "./satellite-audit-db.js";
 import { recordBugReport } from "./bug-reports.js";
-import { embedTexts } from "./embedding.js";
+import { embedTextsCached } from "./embedding.js";
 import {
   rankCandidates,
   resolveRankParams,
@@ -491,11 +491,14 @@ export function buildServer(env: Env, tenant: Tenant, origin?: string): McpServe
         const params = resolveRankParams(prefs, operatorConfig ?? undefined);
 
         // One embed call for ALL vibe-bearing specs, mapped back to their spec index so a
-        // mix of membership and ranked specs in one call stays aligned.
+        // mix of membership and ranked specs in one call stays aligned. Routed through the
+        // query-embedding cache (member-app-propose D5): a recently-embedded vibe phrase —
+        // by this tool or the propose surface — is a KV hit, and only misses hit Workers AI
+        // (still one batched call; byte-identical to the plain embed on a cold cache).
         const vibeSpecs = specs
           .map((spec, i) => ({ spec, i }))
           .filter((x) => typeof x.spec.vibe === "string" && x.spec.vibe.length > 0);
-        const vibeVecs = await embedTexts(
+        const vibeVecs = await embedTextsCached(
           env,
           vibeSpecs.map((x) => x.spec.vibe as string),
         );

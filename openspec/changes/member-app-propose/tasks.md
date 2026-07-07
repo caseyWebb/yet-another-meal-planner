@@ -10,15 +10,15 @@ question is settled in design.md (D1–D12) against the code and the production 
 
 ## 1. Worker: the query-embedding cache (D5)
 
-- [ ] 1.1 Add `embedTextsCached(env, texts)` to `packages/worker/src/embedding.ts`: normalize
+- [x] 1.1 Add `embedTextsCached(env, texts)` to `packages/worker/src/embedding.ts`: normalize
   (lowercase, trim, collapse inner whitespace), key `embed:<sha256-hex(EMBED_MODEL + "\n" +
   normalized)>` via `crypto.subtle`, KV-get each from `KROGER_KV`, batch **all misses into one
   `embedTexts` call**, best-effort put-back (`expirationTtl` 30 d). KV get/put failures fail
   open to the plain embed; a malformed cached value (wrong length/shape) is treated as a miss.
-- [ ] 1.2 Re-point `search_recipes` ranked mode's vibe-embed batch (`tools.ts`) at
+- [x] 1.2 Re-point `search_recipes` ranked mode's vibe-embed batch (`tools.ts`) at
   `embedTextsCached` — results byte-identical on a cold cache (same `embedTexts` under the
   hood).
-- [ ] 1.3 Unit tests (stub `env.AI` + in-memory KV): miss → one batched embed + puts; hit → zero
+- [x] 1.3 Unit tests (stub `env.AI` + in-memory KV): miss → one batched embed + puts; hit → zero
   AI calls; mixed batch embeds only misses, preserving input order; KV failure falls open;
   malformed entry re-embeds; two texts differing only in case/whitespace share one key; the key
   changes when `EMBED_MODEL` changes.

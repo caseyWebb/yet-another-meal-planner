@@ -96,3 +96,108 @@ export async function embedTexts(env: Env, texts: string[]): Promise<number[][]>
   }
   return vectors;
 }
+
+// --- the request-time query-embedding cache (member-app-propose D5) --------------------
+//
+// Request-time query texts (the propose freeform/override phrases, `search_recipes`
+// ranked-mode vibes) repeat: a member reroll re-sends the same phrase, an agent
+// re-searches a saved vibe. Each embed is a Workers AI subrequest, so they're served
+// through a content-addressed KV cache. The scheduled reconciles (recipe-embeddings.ts,
+// night-vibe-vector.ts) deliberately do NOT route through this — they already hash-gate
+// their embeds in D1 and never re-embed unchanged text.
+
+/** Cache entry lifetime. Fixed at put (no rolling re-put — an expiry costs one cheap re-embed). */
+export const EMBED_CACHE_TTL_S = 30 * 24 * 60 * 60;
+
+/** Normalize query text for cache addressing: lowercase, trim, inner whitespace collapsed —
+ *  so "Cozy Soup" and "cozy  soup" share one entry (and one vector, first-writer's). */
+export function normalizeEmbedText(text: string): string {
+  return text.toLowerCase().trim().replace(/\s+/g, " ");
+}
+
+/**
+ * The cache key for one query text: `embed:<sha256-hex(model + "\n" + normalized)>`.
+ * Folding the model id into the hashed material welds the cache to `EMBED_MODEL` — a
+ * model change (which re-embeds the whole index anyway) orphans old entries to TTL
+ * expiry with no version constant to bump. SHA-256 via `crypto.subtle` (the ETag-helper
+ * precedent), NOT `hashText`: the 8-hex FNV-1a is a change-detection key, and a 32-bit
+ * collision here would silently serve the wrong *vector*, which does not self-heal.
+ */
+export async function embedCacheKey(text: string, model: string = EMBED_MODEL): Promise<string> {
+  const material = `${model}\n${normalizeEmbedText(text)}`;
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(material));
+  const hex = [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+  return `embed:${hex}`;
+}
+
+/** A cached value must be exactly what `embedTexts` returned: an `EMBED_DIM` float array.
+ *  Anything else (bad JSON, wrong length, non-numbers) is treated as a miss. */
+function parseCachedVector(raw: string | null): number[] | null {
+  if (!raw) return null;
+  try {
+    const v = JSON.parse(raw);
+    if (Array.isArray(v) && v.length === EMBED_DIM && v.every((n) => typeof n === "number")) {
+      return v as number[];
+    }
+  } catch {
+    // malformed entry → miss (re-embed overwrites it)
+  }
+  return null;
+}
+
+/**
+ * Embed query texts through the content-addressed KV cache (`KROGER_KV`, the
+ * ephemeral-infra namespace): KV-get each key, batch **all misses into one
+ * `embedTexts` call** (deduped by key, original text embedded — a cold cache is
+ * byte-identical to plain `embedTexts`), then best-effort put-back with the fixed TTL.
+ * Returns vectors in input order. The cache FAILS OPEN: a KV read/write failure or a
+ * malformed cached value degrades to the plain embed and never fails the request (the
+ * ingest limiter's posture). Cross-tenant by design — a vector is a pure function of a
+ * public model and the text, the flyer-cache precedent.
+ */
+export async function embedTextsCached(env: Env, texts: string[]): Promise<number[][]> {
+  if (texts.length === 0) return [];
+  const keys = await Promise.all(texts.map((t) => embedCacheKey(t)));
+
+  // Read each key (failures → miss); identical keys within the batch share one lookup.
+  const cachedByKey = new Map<string, number[] | null>();
+  await Promise.all(
+    [...new Set(keys)].map(async (key) => {
+      let vec: number[] | null = null;
+      try {
+        vec = parseCachedVector(await env.KROGER_KV.get(key));
+      } catch {
+        // KV read failure → treat as a miss (fail open)
+      }
+      cachedByKey.set(key, vec);
+    }),
+  );
+
+  // Batch the misses — deduped by key, first occurrence's ORIGINAL text — into ONE call.
+  const missKeys: string[] = [];
+  const missTexts: string[] = [];
+  const seen = new Set<string>();
+  texts.forEach((text, i) => {
+    const key = keys[i];
+    if (cachedByKey.get(key) || seen.has(key)) return;
+    seen.add(key);
+    missKeys.push(key);
+    missTexts.push(text);
+  });
+  const embedded = await embedTexts(env, missTexts);
+  const freshByKey = new Map<string, number[]>();
+  missKeys.forEach((key, j) => freshByKey.set(key, embedded[j]));
+
+  // Best-effort put-back (a write failure never fails the request).
+  await Promise.all(
+    missKeys.map(async (key) => {
+      try {
+        await env.KROGER_KV.put(key, JSON.stringify(freshByKey.get(key)), { expirationTtl: EMBED_CACHE_TTL_S });
+      } catch {
+        // fail open — the next request just re-embeds
+      }
+    }),
+  );
+
+  return texts.map((_, i) => cachedByKey.get(keys[i]) ?? freshByKey.get(keys[i])!);
+}
