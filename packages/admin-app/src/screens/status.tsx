@@ -177,7 +177,7 @@ const Uptime = ({ runs }: { runs: JobRun[] }) => {
       tipVariant: r.ok ? undefined : ("fail" as const),
       href: `/admin/logs?run=${r.id}`,
       // TODO: the Logs agent adds the validated `run` search param to /logs.
-      onNavigate: () => navigate({ to: "/logs", search: { run: r.id } as never }),
+      onNavigate: () => navigate({ to: "/logs", search: { job: "All", page: 1, run: r.id } }),
       ariaLabel: `run ${n} ${n === 1 ? "run" : "runs"} ago — ${r.ok ? "ok" : "failed"}, view log`,
     };
   });
