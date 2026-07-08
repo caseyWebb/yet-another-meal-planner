@@ -9,7 +9,8 @@
     "node": ">=22"
   },
   "exports": {
-    "./api": "./src/api/app.ts"
+    "./api": "./src/api/app.ts",
+    "./order-shapes": "./src/order-shapes.ts"
   },
   "scripts": {
     "dev": "wrangler dev",

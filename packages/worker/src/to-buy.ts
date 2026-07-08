@@ -13,10 +13,16 @@
 
 import type { Env } from "./env.js";
 import { computeToBuy, type MenuNeed } from "./order.js";
-import { normalizeName, groceryKey, type GroceryItem, type GroceryKind } from "./grocery.js";
+import { normalizeName, groceryKey, type GroceryItem } from "./grocery.js";
 import { readGroceryList, readMealPlan, readPantryByKey } from "./session-db.js";
 import { recipeIngredientsFull } from "./recipe-index.js";
 import { ingredientContext, emptyIngredientContext } from "./corpus-db.js";
+import type { ToBuyViewLine, PantryCoveredLine, InCartLine, ToBuyView } from "./order-shapes.js";
+
+// The view's line shapes live in the leaf order-shapes.ts (member-app-grocery D9 — the
+// app imports them directly instead of hand-mirroring); re-exported so every existing
+// importer is unchanged.
+export type { ToBuyViewLine, PantryCoveredLine, InCartLine, ToBuyView } from "./order-shapes.js";
 
 /** What the plan derives: presence-only needs (no quantities — the no-portion-math stance). */
 export interface DerivedMenuNeeds {
@@ -82,45 +88,6 @@ export function dropInFlightNeeds(
   );
   if (inFlight.size === 0) return needs;
   return needs.filter((n) => !inFlight.has(resolve(n.name)));
-}
-
-/** One to-buy line of the derived view: the order-time line + its provenance. */
-export interface ToBuyViewLine {
-  name: string;
-  /** Package count the order would use; derived rows default to 1 (`assumed_quantity`). */
-  quantity: number;
-  assumed_quantity: boolean;
-  for_recipes: string[];
-  /** `list` = an explicit row the plan does not need; `plan` = a virtual (derived) line
-   *  with no stored row; `both` = a stored row the plan also needs (a materialization). */
-  origin: "list" | "plan" | "both";
-  /** The canonical merge key — the `grocery_list.normalized_name` a materialization of
-   *  this line upserts under (so stored row + derived need can never duplicate). */
-  key: string;
-  kind: GroceryKind;
-  domain: string;
-  note?: string | null;
-}
-
-/** A need the pantry cancels, joined with the pantry row's verify metadata. */
-export interface PantryCoveredLine {
-  name: string;
-  for_recipes: string[];
-  on_hand: { quantity?: string; category?: string; last_verified_at?: string };
-}
-
-/** A stored `in_cart` row — the deterministic stale-cart signal. */
-export interface InCartLine {
-  name: string;
-  added_at: string;
-}
-
-/** The derived to-buy view (identical from the tool and the endpoint). */
-export interface ToBuyView {
-  to_buy: ToBuyViewLine[];
-  pantry_covered: PantryCoveredLine[];
-  in_cart: InCartLine[];
-  underived: string[];
 }
 
 /**

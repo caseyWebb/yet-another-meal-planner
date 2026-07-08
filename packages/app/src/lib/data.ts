@@ -7,6 +7,18 @@
 // helpers with the rebase-on-412 loop.
 import { useQuery, type QueryClient } from "@tanstack/react-query";
 import { api, apiError } from "./api";
+import type {
+  ToBuyViewLine as ToBuyLine,
+  PantryCoveredLine as PantryCovered,
+  ToBuyView,
+  CandidateView as OrderCandidate,
+  ResolvedLine as OrderResolvedLine,
+  CheckpointLine as OrderCheckpointLine,
+  PlaceOrderOutcome as OrderOutcome,
+  PlaceOrderInput as OrderRequest,
+} from "@grocery-agent/worker/order-shapes";
+
+export type { ToBuyLine, PantryCovered, ToBuyView, OrderCandidate, OrderResolvedLine, OrderCheckpointLine, OrderOutcome, OrderRequest };
 
 /** Plan §6 posture: near-live reads, no long client cache. */
 const STALE_MS = 15_000;
@@ -56,80 +68,10 @@ export interface GroceryRow {
 }
 
 // The derived to-buy view (member-app-grocery D1) — the shape GET /api/grocery/to-buy
-// serves (one shared op with the MCP read_to_buy tool).
-export interface ToBuyLine {
-  name: string;
-  quantity: number;
-  assumed_quantity: boolean;
-  for_recipes: string[];
-  origin: "list" | "plan" | "both";
-  key: string;
-  kind: "grocery" | "household" | "other";
-  domain: string;
-  note?: string | null;
-}
-
-export interface PantryCovered {
-  name: string;
-  for_recipes: string[];
-  on_hand: { quantity?: string; category?: string; last_verified_at?: string };
-}
-
-export interface ToBuyView {
-  to_buy: ToBuyLine[];
-  pantry_covered: PantryCovered[];
-  in_cart: { name: string; added_at: string }[];
-  underived: string[];
-}
-
-// The order operation's result (member-app-grocery D7) — POST /api/grocery/order's JSON
-// (the place_order tool's exact shape; the Worker exports it as PlaceOrderOutcome).
-export interface OrderCandidate {
-  sku: string;
-  brand: string;
-  size: string | null;
-  price: { regular: number; promo: number };
-  on_sale: boolean;
-  unit_price?: number;
-}
-
-export interface OrderResolvedLine {
-  name: string;
-  sku: string;
-  brand: string;
-  size: string | null;
-  quantity: number;
-  assumed_quantity: boolean;
-  price?: { regular: number; promo: number };
-  on_sale?: boolean;
-}
-
-export interface OrderCheckpointLine {
-  name: string;
-  kind: "ambiguous" | "unavailable";
-  candidates?: OrderCandidate[];
-  message: string;
-}
-
-export interface OrderOutcome {
-  resolved: OrderResolvedLine[];
-  checkpoint: OrderCheckpointLine[];
-  sku_cache: { committed: boolean; error?: string };
-  cart: { written: boolean; count?: number; error?: string; code?: string };
-  list: { advanced: boolean; error?: string };
-  preview: boolean;
-  partials: { name: string; for_recipes: string[] }[];
-  underived: string[];
-}
-
-export interface OrderRequest {
-  menu_needs?: { name: string; quantity?: number; for_recipes?: string[] }[];
-  quantities?: Record<string, number>;
-  include_partials?: string[];
-  overrides?: { name: string; sku: string; brand?: string; size?: string | null }[];
-  exclude?: string[];
-  preview?: boolean;
-}
+// serves (one shared op with the MCP read_to_buy tool), and the order operation's
+// request/result (member-app-grocery D7) — POST /api/grocery/order's JSON (the
+// place_order tool's exact shape) — are the Worker's real wire types, imported above
+// from the workerd-free leaf `order-shapes.ts` rather than hand-mirrored here.
 
 export interface PantryRow {
   name: string;

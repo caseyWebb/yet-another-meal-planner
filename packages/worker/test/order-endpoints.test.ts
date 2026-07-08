@@ -260,6 +260,28 @@ describe("/satellite/order/receipt (issued-set-authoritative reconciliation)", (
     expect(await statusOf(env, "casey", "Scallions")).toBeUndefined(); // stays gone — not resurrected
   });
 
+  it("does not resurrect a plan-DERIVED line whose recipe was removed from the plan before the receipt", async () => {
+    const h = sqliteEnv(["casey"]);
+    const { env, raw } = h;
+    const { secret } = await mintIngestKey(env, "casey-box", NOW, "casey");
+    await setStores(env, "casey", { primary: "target", fulfillment: "satellite" });
+    raw.prepare("INSERT INTO recipes (slug, title, ingredients_full) VALUES (?, ?, ?)").run("honey-mustard-salmon", "honey-mustard-salmon", JSON.stringify(["salmon"]));
+    raw.prepare("INSERT INTO meal_plan (tenant, recipe, planned_for) VALUES ('casey', ?, NULL)").run("honey-mustard-salmon");
+    const list = await pullList(env, secret);
+    expect(list.items.map((i) => i.item_id)).toEqual(["salmon"]);
+    expect(await statusOf(env, "casey", "salmon")).toBeUndefined(); // truly virtual — no row minted
+    // The user drops the recipe from the plan between Refresh and receipt.
+    raw.prepare("DELETE FROM meal_plan WHERE tenant = 'casey' AND recipe = ?").run("honey-mustard-salmon");
+
+    const obs = [{ kind: "order", item_id: "salmon", disposition: "carted", product: { productId: "T-7", description: "Atlantic salmon" } }];
+    const res = await handleOrderReceipt(receiptReq(secret, { order_list_id: list.order_list_id, observations: obs }), env, NOW + 1);
+    expect(res.status).toBe(200);
+    // The re-derive at receipt time finds the id no longer needed, so the insert-on-missing
+    // branch never fires — no row is minted or advanced (the same no-resurrection guard a
+    // removed explicit row gets).
+    expect(await statusOf(env, "casey", "salmon")).toBeUndefined();
+  });
+
   it("converges on a re-posted receipt (no double-advance)", async () => {
     const { env, rows } = sqliteEnv(["casey"]);
     const { secret } = await mintIngestKey(env, "casey-box", NOW, "casey");
