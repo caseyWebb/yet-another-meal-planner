@@ -140,16 +140,16 @@ question is settled in design.md (D1–D12) against the code and the production 
 
 ## 8. Docs (lockstep, same pass)
 
-- [ ] 8.1 `docs/TOOLS.md`: rewrite the `propose_meal_plan` entry — `slots` constraints,
+- [x] 8.1 `docs/TOOLS.md`: rewrite the `propose_meal_plan` entry — `slots` constraints,
   `nudges.freeform`/`nudges.proteins`, alternates/`alt_similar`/`alt_different`,
   `recipe_pinned`/`vibe_override`/`weather_category`, and the embed guarantee (*at most one
   batched, cache-gated embedding call, only for freeform/override text; no text ⇒ no AI call*)
   replacing the "no Workers AI call" absolute. Written as current behavior, no history.
-- [ ] 8.2 `docs/SCHEMAS.md`: the query-embedding-cache KV section (key derivation, value shape,
+- [x] 8.2 `docs/SCHEMAS.md`: the query-embedding-cache KV section (key derivation, value shape,
   TTL, namespace) beside the flyer-cache section.
-- [ ] 8.3 `docs/ARCHITECTURE.md`: the propose surface (shared op, endpoint, client-side
+- [x] 8.3 `docs/ARCHITECTURE.md`: the propose surface (shared op, endpoint, client-side
   session) and the one sanctioned request-time embed + cache in the determinism-boundary
   narrative.
-- [ ] 8.4 Confirm `AGENT_INSTRUCTIONS.md`: update any propose-flow persona text that asserts
+- [x] 8.4 Confirm `AGENT_INSTRUCTIONS.md`: update any propose-flow persona text that asserts
   "never makes an AI call" or predates the iteration params; the tool description itself owns
   the params/guarantees (tool/skill boundary).

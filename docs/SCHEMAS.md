@@ -778,6 +778,14 @@ Derived, time-bound state written by the flyer warm (and the satellite sale inta
 - `flyer:plan` → `{ sweep_id, units }` — the Kroger sweep's ordered `(locationId, term)` unit list, built once per sweep so later ticks don't re-enumerate.
 - `sale-scan:cursor` → `{ last_refresh_at }` — the sale-scan producer's refresh marker (mirrors `flyer:cursor`), gating a fresh enqueue cycle to the daily cadence; between cycles the producer is a cheap no-op. (A rollup key always carries a `locationId` segment, so it never collides with these `flyer:cursor`/`flyer:plan`/`sale-scan:cursor` markers.)
 
+## Query-embedding cache (KV, not a repo file)
+
+Content-addressed request-time query vectors (member-app-propose D5), in the `KROGER_KV` namespace beside the flyer cache — the ephemeral-infra home for derived, self-expiring, deliberately **cross-tenant** state (a vector is a pure function of a public model and the text; there is no tenant dimension to leak). Written/read by `embedTextsCached` (`src/embedding.ts`); nothing edits it by hand.
+
+- `embed:<sha256-hex(EMBED_MODEL + "\n" + normalized)>` → the raw JSON `EMBED_DIM`-float array, exactly as Workers AI returned it (full precision, no rounding — while an entry lives, every re-submission of the phrase ranks with the byte-identical vector). `normalized` is the query text lowercased, trimmed, inner whitespace collapsed, so case/spacing variants share one entry. Folding the model id into the hashed material **welds the cache to the model**: an `EMBED_MODEL` change (which re-embeds the whole index anyway) orphans old entries to TTL expiry — no version constant to bump, and a mismatched vector can never be served. SHA-256 (not the 8-hex FNV-1a `hashText`) because a hash collision here would silently serve the wrong *vector*, which does not self-heal.
+- Written with `expirationTtl` = 30 days, fixed at put (no rolling re-put — an expiry costs one cheap re-embed). Misses within one request are embedded in a **single batched** Workers AI call and written back best-effort; a KV read/write failure or a malformed value **fails open** to the plain embed (never fails the request).
+- Callers: the propose operation (`nudges.freeform` + `slots[].vibe` phrases) and `search_recipes` ranked mode's vibe embeds — a phrase recently embedded by either surface is a warm hit for both. The scheduled reconciles (`recipe-embeddings.ts`, `night-vibe-vector.ts`) do **not** route through it: they already hash-gate their embeds in D1 and never re-embed unchanged text.
+
 ## Web sessions (KV, not a repo file)
 
 The member web app's session store (member-session-auth), in the `TENANT_KV` namespace beside the `tenant:*` allowlist and `invite:*` codes — identity-adjacent operational state, never domain data. Written/read by `src/session.ts`; nothing edits it by hand.
