@@ -93,9 +93,14 @@
 .group-h-row { display: flex; align-items: center; justify-content: space-between; }
 
 /* ── search + recipe list ────────────────────────────────────────────────── */
-.searchbar { position: relative; margin: 0 auto 0.5rem; }
+.searchbar { position: relative; width: 100%; margin: 0 auto 0.5rem; }
 .searchbar > svg { position: absolute; left: 0.85rem; top: 50%; transform: translateY(-50%); width: 1.05rem; height: 1.05rem; color: var(--muted-foreground); pointer-events: none; }
-.searchbar input.input { height: 2.85rem; padding-left: 2.6rem; padding-right: 2.6rem; font-size: var(--text-base); border-radius: var(--radius-lg); }
+.searchbar input.input { width: 100%; height: 2.85rem; padding-left: 2.6rem; padding-right: 2.6rem; font-size: var(--text-base); border-radius: var(--radius-lg); }
+/* type="search" ships a native clear affordance that doubles the custom .search-clear
+   button — suppress it (the custom button is the one clear control). */
+.searchbar input[type="search"] { -webkit-appearance: none; appearance: none; }
+.searchbar input[type="search"]::-webkit-search-cancel-button { -webkit-appearance: none; appearance: none; display: none; }
+.searchbar input[type="search"]::-webkit-search-decoration { -webkit-appearance: none; appearance: none; }
 .search-clear { position: absolute; right: 0.5rem; top: 50%; transform: translateY(-50%); border: 0; background: transparent; color: var(--muted-foreground); width: 2rem; height: 2rem; border-radius: var(--radius-md); cursor: pointer; display: none; align-items: center; justify-content: center; }
 .search-clear svg { width: 1rem; height: 1rem; }
 .search-clear:hover { background: var(--muted); color: var(--foreground); }
@@ -569,27 +574,8 @@ ul.recipes > li:last-child { border-bottom: 0; }
 .propose-intro { margin-top: 1rem; padding: 1rem 1.1rem; border: 1px dashed var(--border); border-radius: var(--radius-lg); background: color-mix(in oklch, var(--muted) 25%, transparent); }
 .propose-intro p { font-size: var(--text-sm); color: var(--muted-foreground); line-height: 1.6; display: flex; gap: 0.4rem; }
 .propose-intro svg { width: 1rem; height: 1rem; color: var(--brand); flex: 0 0 auto; margin-top: 0.15rem; }
-.propose-note { margin-top: 1.25rem; line-height: 1.5; }
 .empty [data-slot="button"] { margin-top: 0.25rem; }
 .empty [data-slot="button"] svg { width: 0.95rem; height: 0.95rem; }
-
-/* weather strip (the bundle ships the CSS as the strip's spec — D11 deviation (1)) */
-.wx-strip { display: grid; grid-template-columns: repeat(7, 1fr); gap: 0.4rem; margin: 0.25rem 0 1.25rem; }
-.wx-day { display: flex; flex-direction: column; align-items: center; gap: 0.15rem; padding: 0.6rem 0.3rem; border-radius: var(--radius-md); border: 1px solid var(--border); background: var(--card); border-top: 3px solid var(--muted-foreground); text-align: center; }
-.wx-day[data-cond="cold"] { border-top-color: #6ea8fe; }
-.wx-day[data-cond="rainy"] { border-top-color: #7c93b0; }
-.wx-day[data-cond="cool"] { border-top-color: #74b0c9; }
-.wx-day[data-cond="mild"] { border-top-color: #7bc47f; }
-.wx-day[data-cond="warm"] { border-top-color: #f0a24b; }
-.wx-day[data-cond="hot"] { border-top-color: #e8663f; }
-.wx-dow { font-size: 0.66rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted-foreground); }
-.wx-temp { font-size: var(--text-base); font-weight: 600; }
-.wx-cond { font-size: 0.62rem; text-transform: capitalize; color: var(--muted-foreground); }
-.wx-vibes { font-size: 0.58rem; color: var(--muted-foreground); line-height: 1.3; }
-@media (max-width: 640px) { .wx-strip { grid-template-columns: repeat(4, 1fr); } }
-/* the quiet no-location state (never an error page) */
-.wx-nolocation { display: flex; align-items: center; gap: 0.45rem; margin: 0.25rem 0 1.25rem; padding: 0.55rem 0.8rem; border: 1px dashed var(--border); border-radius: var(--radius-md); color: var(--muted-foreground); font-size: var(--text-xs); }
-.wx-nolocation svg { width: 0.9rem; height: 0.9rem; flex: 0 0 auto; }
 
 /* controls */
 .propose-controls { padding: 1rem; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--card); margin-bottom: 1.25rem; }

@@ -33,6 +33,9 @@ function CookbookPage() {
     timer.current = setTimeout(() => setQ(v.trim()), 180); // the mock's debounce
   }
   function clear() {
+    // Cancel any pending debounce — otherwise a clear clicked within the debounce
+    // window is overwritten when the stale timer fires and re-applies the old query.
+    if (timer.current) clearTimeout(timer.current);
     setText("");
     setQ("");
   }

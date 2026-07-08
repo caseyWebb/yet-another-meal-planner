@@ -63,7 +63,11 @@ export interface PlaceOrderResult {
   checkpoint: CheckpointLine[];
   sku_cache: { committed: boolean; error?: string };
   cart: { written: boolean; count?: number; error?: string; code?: string };
-  list: { advanced: boolean; error?: string };
+  /** The list advance runs BEFORE the cart write (double-add guard). On a cart
+   *  failure the advance is rolled back to `active` (`rolled_back: true`); a failed
+   *  rollback reports `{ advanced: true, rolled_back: false, error }` — items are
+   *  marked in_cart with NO cart write, and a retried order will not re-add them. */
+  list: { advanced: boolean; rolled_back?: boolean; error?: string };
   preview: boolean;
 }
 

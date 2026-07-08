@@ -1,7 +1,7 @@
 // Plan your week (member-app-propose): the propose flow's page object — the intro /
-// empty-palette states, the controls row (nights, nudges, freeform), the weather
-// strip / no-location chip, slot-card interactions (lock, swap, exclude, facet pins,
-// pick list), and commit. Also owns the API-level palette provisioning the specs use:
+// empty-palette states, the controls row (nights, nudges, freeform), slot-card
+// interactions (lock, swap, exclude, facet pins, pick list), and commit. Also owns
+// the API-level palette provisioning the specs use:
 // the SHARED seed keeps the palette deliberately empty (production's first render),
 // so the propose specs create their own vibes through the real member API — against
 // vibe ids whose cron-shaped derived vectors the seed pre-planted (D12).
@@ -93,10 +93,6 @@ export class ProposePage extends AppPage {
 
   async expectIntro(): Promise<void> {
     await expect(this.page.getByTestId("propose-intro")).toBeVisible();
-  }
-
-  async expectNoLocationChip(): Promise<void> {
-    await expect(this.page.getByTestId("wx-nolocation")).toBeVisible();
   }
 
   // --- controls -------------------------------------------------------------------

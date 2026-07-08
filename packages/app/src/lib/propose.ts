@@ -156,38 +156,6 @@ export function usePropose(request: ProposeRequest | null) {
   });
 }
 
-export interface WeatherView {
-  noLocation?: boolean;
-  unavailable?: boolean;
-  forecast?: { location: string; forecast: { date: string; high_f: number; low_f: number; precipitation_chance: number; condition: string; meal_vibes: string[] }[] };
-}
-
-/** The weather strip's read: 404/no_location is the quiet set-your-ZIP state, and any
- *  upstream trouble degrades the strip away — the rest of the flow works regardless. */
-export function useProposeWeather() {
-  return useQuery({
-    queryKey: ["propose-weather"],
-    staleTime: 10 * 60_000,
-    retry: false,
-    queryFn: async (): Promise<WeatherView> => {
-      const res = await api.api.propose.weather.$get({ query: {} }).catch(() => null);
-      if (!res) return { unavailable: true };
-      if (res.status === 404) return { noLocation: true };
-      if (!res.ok) return { unavailable: true };
-      return { forecast: (await res.json()) as WeatherView["forecast"] };
-    },
-  });
-}
-
-/** Client-side mirror of the Worker's day→category collapse (presentation accent only —
- *  the Worker's quota allocation is the real engine; D11 deviation (3)). */
-export function dayCategory(mealVibes: string[]): "grill" | "cold-comfort" | "wet" | "mild" {
-  if (mealVibes.includes("no-grill")) return "wet";
-  if (mealVibes.includes("soup")) return "cold-comfort";
-  if (mealVibes.includes("grill-friendly") || mealVibes.includes("light")) return "grill";
-  return "mild";
-}
-
 /**
  * Client-assigned open dates for a commit (D8): the next dates within the planning
  * window not already taken by a scheduled plan row — pure date math over the cached

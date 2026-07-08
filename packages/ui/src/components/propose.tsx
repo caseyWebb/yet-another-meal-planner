@@ -1,10 +1,9 @@
 // Propose-flow primitives (member-app-propose 5.1), transcribed from the design
 // bundle's app-propose-ui.js markup + app-propose.css: nights stepper, nudge bar
 // (adventurousness slider, protein-want chips, the 400 ms-debounced freeform input),
-// weather strip (built to the bundle's .wx-strip CSS spec — D11 deviation (1): the
-// mock shipped the CSS without markup), variety bar + commit, and the slot card with
-// its head actions, facet chips + popovers, swap menu, pick list, vibe panel, why /
-// side / flag chips, and the empty-slot state with clearable pins. Presentational:
+// variety bar + commit, and the slot card with its head actions, facet chips +
+// popovers, swap menu, pick list, vibe panel, why / side / flag chips, and the
+// empty-slot state with clearable pins. Presentational:
 // the page owns the client propose session and every callback; nothing here holds
 // server state. Router-agnostic (slot titles render through `renderTitle`).
 import * as React from "react";
@@ -184,53 +183,6 @@ export function NudgeBar(props: {
           onChange={(e) => emit(e.target.value)}
         />
       </div>
-    </div>
-  );
-}
-
-// ── weather strip (built to app-propose.css's .wx-strip spec) ───────────────
-
-export interface WeatherStripDay {
-  date: string;
-  high: number;
-  low: number;
-  condition: string;
-  /** The derived category accent (grill / cold-comfort / wet / mild). */
-  category: "grill" | "cold-comfort" | "wet" | "mild";
-}
-
-/** Map a day's category to the CSS accent vocabulary (`.wx-day[data-cond]`). */
-function accentOf(day: WeatherStripDay): string {
-  if (day.category === "grill") return "hot";
-  if (day.category === "cold-comfort") return "cold";
-  if (day.category === "wet") return "rainy";
-  return "mild";
-}
-
-const DOW = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-
-export function WeatherStrip(props: { days: WeatherStripDay[] }) {
-  if (props.days.length === 0) return null;
-  return (
-    <div className="wx-strip" data-testid="wx-strip">
-      {props.days.slice(0, 7).map((d) => (
-        <div className="wx-day" key={d.date} data-cond={accentOf(d)}>
-          <span className="wx-dow">{DOW[new Date(`${d.date}T00:00:00`).getDay()] ?? d.date.slice(5)}</span>
-          <span className="wx-temp">{Math.round(d.high)}°</span>
-          <span className="wx-cond">{d.condition.replace(/_/g, " ")}</span>
-          <span className="wx-vibes">{Math.round(d.low)}° low</span>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-/** The quiet no-location state (never an error page): a set-your-ZIP affordance. */
-export function WeatherNoLocation(props: { action?: React.ReactNode }) {
-  return (
-    <div className="wx-nolocation" data-testid="wx-nolocation">
-      <IconAlert /> No forecast — set your ZIP in your profile to plan around the weather.
-      {props.action}
     </div>
   );
 }

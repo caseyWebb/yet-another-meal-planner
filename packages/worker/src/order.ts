@@ -9,11 +9,15 @@
 //
 //   placeOrder — the order-time flush orchestrator. Resolves each to-buy item,
 //     batches ambiguous/unavailable into one checkpoint (never added
-//     unilaterally), then runs the two INDEPENDENT best-effort writes in the
-//     design's order: (1) commit the SKU-cache append, (2) PUT the cart,
-//     (3) advance the list to in_cart only AFTER a successful cart write (so the
-//     list never claims in_cart for items that aren't actually in the cart).
-//     Every outcome is reported honestly and independently.
+//     unilaterally), then runs the writes in double-add-safe order: (1) commit
+//     the SKU-cache append (a pure hint, best-effort), (2) advance the list to
+//     in_cart BEFORE the cart write, (3) PUT the cart — rolling the advance back
+//     to active if the cart write fails. Advance-first because PUT /v1/cart/add
+//     is ADDITIVE and unreadable: items left `active` after a successful cart
+//     write would be silently re-added by a retry (double-order, costs money),
+//     whereas items marked in_cart without a cart write are a visible under-buy
+//     (the stale-cart reminder + human checkout surface them) that a retry never
+//     compounds. Every outcome is reported honestly and independently.
 
 import { normalizeName, groceryKey, type GroceryItem } from "./grocery.js";
 import type { MatchResult } from "./matching.js";
@@ -190,8 +194,20 @@ export interface PlaceOrderDeps {
   commitSkuCache(mappings: NewMapping[]): Promise<string | null>;
   /** Write the resolved lines to the Kroger cart. Throws on failure. */
   cartAdd(lines: ResolvedLine[]): Promise<void>;
-  /** Advance the resolved lines to status:in_cart in the grocery list (D1-backed). Throws on failure. */
-  advanceInCart(lines: ResolvedLine[]): Promise<void>;
+  /** Advance the resolved lines to status:in_cart in the grocery list (D1-backed),
+   *  inserting rows for lines not yet listed (menu-plan-derived needs). Returns the
+   *  receipt of what was INSERTED so a rollback can compensate exactly. Throws on failure. */
+  advanceInCart(lines: ResolvedLine[]): Promise<InCartAdvance>;
+  /** Undo an advanceInCart (the compensation for a failed cart write): pre-existing
+   *  rows flip back to status:active; rows the advance INSERTED (per the receipt) are
+   *  deleted rather than stranded as never-listed active items. Throws on failure. */
+  rollbackInCart(lines: ResolvedLine[], advance: InCartAdvance): Promise<void>;
+}
+
+/** The advanceInCart receipt: which canonical keys the advance INSERTED (vs updated) —
+ *  threaded into rollbackInCart so an inserted row is deleted, not flipped to active. */
+export interface InCartAdvance {
+  inserted: string[];
 }
 
 export interface PlaceOrderOptions {
@@ -235,9 +251,10 @@ function toMapping(line: ResolvedLine, normalize: (name: string) => string): New
 
 /**
  * Resolve the to-buy set and (unless preview) flush it: SKU-cache commit, then
- * cart write, then in_cart advancement gated on cart success. The three writes
- * are independent best-effort — a failure of one never corrupts another, and the
- * cart is never reported populated when its write failed.
+ * the in_cart advancement, then the cart write (rolled back on cart failure).
+ * The SKU-cache commit is independent best-effort; the advance/cart pair is
+ * ordered so a retried order can never double-add to the (additive, unreadable)
+ * Kroger cart — and the cart is never reported populated when its write failed.
  */
 export async function placeOrder(
   deps: PlaceOrderDeps,
@@ -337,22 +354,42 @@ export async function placeOrder(
     result.sku_cache = { committed: false, error: msg(e) };
   }
 
-  // 2. Cart write — independent of the commit above.
+  // 2. Advance the list to in_cart BEFORE the cart write. Failure ordering is
+  //    deliberate: an under-buy (items marked in_cart that never reached the cart)
+  //    is visible and self-healing, while the inverse — items left `active` after
+  //    a cart write — makes a retried order double-add to the ADDITIVE, unreadable
+  //    Kroger cart (silent, costs money). A failed advance skips the cart write
+  //    entirely, so nothing was carted and the whole order is safe to retry.
+  let advance: InCartAdvance;
+  try {
+    advance = await deps.advanceInCart(resolved);
+    result.list = { advanced: true };
+  } catch (e) {
+    result.list = { advanced: false, error: msg(e) };
+    result.cart = {
+      written: false,
+      error: `cart write skipped: list advance failed (${msg(e)}); nothing was added to the cart — safe to retry`,
+    };
+    return result;
+  }
+
+  // 3. Cart write. On failure, undo the advance (pre-existing rows back to
+  //    `active`, advance-inserted rows deleted — per the receipt) so the next
+  //    order retries them. If the ROLLBACK itself fails, do NOT throw: report
+  //    { advanced: true, rolled_back: false } — the items are marked in_cart
+  //    with no cart write (a visible under-buy: the stale-cart reminder and the
+  //    human checkout surface it), and critically a retried place_order will
+  //    NOT re-add them (in_cart is filtered out of computeToBuy).
   try {
     await deps.cartAdd(resolved);
     result.cart = { written: true, count: resolved.length };
   } catch (e) {
     result.cart = { written: false, error: msg(e), code: codeOf(e) };
-  }
-
-  // 3. Advance the list to in_cart ONLY when the cart actually took the items;
-  //    otherwise the items stay `active` and the next order retries them.
-  if (result.cart.written) {
     try {
-      await deps.advanceInCart(resolved);
-      result.list = { advanced: true };
-    } catch (e) {
-      result.list = { advanced: false, error: msg(e) };
+      await deps.rollbackInCart(resolved, advance);
+      result.list = { advanced: false, rolled_back: true };
+    } catch (rollbackErr) {
+      result.list = { advanced: true, rolled_back: false, error: msg(rollbackErr) };
     }
   }
 

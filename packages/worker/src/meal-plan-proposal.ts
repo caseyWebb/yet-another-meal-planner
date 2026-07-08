@@ -75,7 +75,8 @@ export interface ProposedSlot {
    *  not merely any perishable it lists (holistic use-it-up). */
   uses_perishables: string[];
   flags: {
-    /** Perishables this main uses that no other proposed main shares (single-use waste risk). */
+    /** Alias-resolved perishables (canonical ids, the same form as `uses_perishables`) this main
+     *  uses that no other proposed main shares (single-use waste risk). */
     waste?: string[];
     /** The recipe keeps well / batches (`meal_preppable`). */
     meal_prep?: boolean;
@@ -182,6 +183,10 @@ export function assembleProposal(ctx: ProposalCtx): ProposalResult {
   for (const [item, count] of ctx.atRiskDemand) state.remainingAtRisk.set(item, count);
 
   const chosen: ProposedSlot[] = [];
+  /** slug → the chosen candidate's ALIAS-RESOLVED perishable ids, captured at choose time.
+   *  The cross-main single-use waste check counts over these — the raw frontmatter strings
+   *  would miss sharing across surface forms ("scallions" vs "green onions" are one id). */
+  const perishBySlug = new Map<string, string[]>();
   /** Every slot starts with empty swap material; the alternates pass below fills it in. */
   const noSwap = () => ({ alternates: [] as AlternateLite[], alt_similar: null, alt_different: null });
 
@@ -189,6 +194,7 @@ export function assembleProposal(ctx: ProposalCtx): ProposalResult {
   // at-risk items the locked recipe uses, so they aren't re-covered or reported as still at risk).
   for (const lc of locked) {
     const claimed = admit(state, lc, p);
+    perishBySlug.set(lc.slug, lc.perishable_ingredients ?? []);
     chosen.push({ vibe_id: null, reason: "locked", main: mainOf(lc, ctx.frontmatterBySlug.get(lc.slug)), ...noSwap(), sides: [], uses_perishables: claimed, flags: {}, why: ["locked"] });
   }
   // Unresolved locks become explicit empty locked slots (never silently dropped).
@@ -221,6 +227,7 @@ export function assembleProposal(ctx: ProposalCtx): ProposalResult {
     const pin = pinnedByVibe.get(slot.id);
     if (pin && !pinConsumed.has(slot.id)) {
       pinConsumed.add(slot.id);
+      perishBySlug.set(pin.slug, pin.perishable_ingredients ?? []);
       chosen.push({ vibe_id: slot.id, reason: slot.reason, main: mainOf(pin, ctx.frontmatterBySlug.get(pin.slug)), ...noSwap(), ...marks, recipe_pinned: true, sides: [], uses_perishables: pinClaims.get(slot.id) ?? [], flags: {}, why: ["your pick", ...why] });
       continue;
     }
@@ -246,6 +253,8 @@ export function assembleProposal(ctx: ProposalCtx): ProposalResult {
       chosen.push({ vibe_id: slot.id, reason: slot.reason, main: null, empty_reason: "no candidate cleared the variety caps", ...noSwap(), ...marks, sides: [], uses_perishables: [], flags: {}, why });
       continue;
     }
+    // The pick is a lite `DiversifiedPick`; its resolved perishables live on its pool candidate.
+    perishBySlug.set(pick.slug, pool.find((c) => c.slug === pick.slug)?.perishable_ingredients ?? []);
     chosen.push({ vibe_id: slot.id, reason: slot.reason, main: mainOf(pick, ctx.frontmatterBySlug.get(pick.slug)), ...noSwap(), ...marks, sides: [], uses_perishables: pick.claimed, flags: {}, why });
   }
 
@@ -279,18 +288,15 @@ export function assembleProposal(ctx: ProposalCtx): ProposalResult {
 
   // Compose each plate now that all mains are chosen (waste needs the full set).
   // Which perishables does each chosen main use (for the "single-use" cross-main check)?
-  const perishByMain = new Map<string, string[]>();
-  for (const slot of chosen) {
-    if (!slot.main) continue;
-    perishByMain.set(slot.main.slug, strArray(ctx.frontmatterBySlug.get(slot.main.slug)?.perishable_ingredients));
-  }
+  // Counted over the candidates' alias-RESOLVED ids (`perishBySlug`, captured at choose time),
+  // so two mains sharing one ingredient under different surface forms count as sharing it.
   const perishUseCount = new Map<string, number>();
-  for (const list of perishByMain.values()) for (const item of new Set(list)) perishUseCount.set(item, (perishUseCount.get(item) ?? 0) + 1);
+  for (const list of perishBySlug.values()) for (const item of new Set(list)) perishUseCount.set(item, (perishUseCount.get(item) ?? 0) + 1);
 
   for (const slot of chosen) {
     if (!slot.main) continue;
     const fm = ctx.frontmatterBySlug.get(slot.main.slug);
-    const perish = perishByMain.get(slot.main.slug) ?? [];
+    const perish = perishBySlug.get(slot.main.slug) ?? [];
 
     // Sides: rung-1 curated pairs_with (corpus sides).
     const pairs = strArray(fm?.pairs_with);
@@ -312,7 +318,7 @@ export function assembleProposal(ctx: ProposalCtx): ProposalResult {
 
     // Use-it-up: `uses_perishables` was set at fill time to the at-risk items this main actually
     // CLAIMED (decremented from the demand) — not merely any perishable it lists. Explain each.
-    for (const item of slot.uses_perishables) slot.why.push(`uses your ${item} (going bad)`);
+    for (const item of slot.uses_perishables) slot.why.push(`uses your ${item}`);
   }
 
   const mains = chosen.map((s) => s.main).filter((m): m is ProposedMain => m != null);

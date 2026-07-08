@@ -39,3 +39,9 @@ interface BrowserIDBDatabase {
   close(): void;
 }
 declare const indexedDB: { open(name: string): BrowserIDBRequest<BrowserIDBDatabase> };
+
+// cookbook.spec's searchbar assertions: computed styles (incl. pseudo-elements).
+declare function getComputedStyle(
+  el: unknown,
+  pseudoElt?: string,
+): { display: string; appearance: string };

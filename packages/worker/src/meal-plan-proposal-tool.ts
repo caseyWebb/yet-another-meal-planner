@@ -321,8 +321,9 @@ export async function runProposeMealPlan(env: Env, tenant: Tenant, input: Propos
     }
     if (overrideVec) overriddenVibes.add(slot.id);
     poolByVibe.set(slot.id, buildPool(effective, vibe, queryVec, embeddings, lastCooked, favoriteVecs, rankParams, now, owned, ctx, excludeSet, nudges?.max_time_total, constraintByVibe.get(slot.id), freeformNudge, proteinWants));
+    // Only pinned slots get a scheduling why-chip; an overdue placement already reads as
+    // its `reason` — no member-facing badge (the slot's why[] may legitimately be empty).
     if (slot.reason === "pinned") whyByVibe.set(slot.id, [`your regular “${vibe.vibe}”`]);
-    else if (slot.reason === "overdue") whyByVibe.set(slot.id, [`“${vibe.vibe}” is due to come back around`]);
   }
 
   // Recipe pins (D3): lock resolution rules + exclude-wins — an excluded or otherwise

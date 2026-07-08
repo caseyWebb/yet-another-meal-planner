@@ -16,6 +16,7 @@ import { normalizeIngredient, type MatchContext, type MatchResult } from "./matc
 import {
   computeToBuy,
   placeOrder,
+  type InCartAdvance,
   type NewMapping,
   type Override,
   type PlaceOrderDeps,
@@ -29,7 +30,7 @@ import type { PlaceOrderInput, PlaceOrderOutcome } from "./order-shapes.js";
 export type { PlaceOrderInput, PlaceOrderOutcome } from "./order-shapes.js";
 import { deriveMenuNeeds, dropInFlightNeeds } from "./to-buy.js";
 import { createKrogerUserClient, toToolError, type KvStore } from "./kroger-user.js";
-import { readGroceryList, readPantryNames, advanceInCartRows } from "./session-db.js";
+import { readGroceryList, readPantryNames, advanceInCartRows, rollbackInCartRows } from "./session-db.js";
 
 function today(): string {
   return new Date().toISOString().slice(0, 10);
@@ -153,10 +154,19 @@ function makeCommitSkuCache(env: Env, getLocationId: () => Promise<string>) {
   };
 }
 
-/** Advance the resolved lines to status:in_cart, adding any missing list entries. */
+/** Advance the resolved lines to status:in_cart, adding any missing list entries;
+ *  returns the inserted-keys receipt the rollback compensates with. */
 function makeAdvanceInCart(env: Env, username: string) {
-  return async (lines: ResolvedLine[]): Promise<void> => {
-    await advanceInCartRows(env, username, lines, today());
+  return async (lines: ResolvedLine[]): Promise<InCartAdvance> => {
+    return advanceInCartRows(env, username, lines, today());
+  };
+}
+
+/** Undo a failed-cart-write advance: pre-existing rows back to status:active,
+ *  advance-inserted rows deleted (per the receipt). */
+function makeRollbackInCart(env: Env, username: string) {
+  return async (lines: ResolvedLine[], advance: InCartAdvance): Promise<void> => {
+    await rollbackInCartRows(env, username, lines, advance.inserted);
   };
 }
 
@@ -180,6 +190,7 @@ export async function runPlaceOrder(
   const userClient = createKrogerUserClient(env, kv, tenantId);
   const commitSkuCache = makeCommitSkuCache(env, wiring.getLocationId);
   const advanceInCart = makeAdvanceInCart(env, tenantId);
+  const rollbackInCart = makeRollbackInCart(env, tenantId);
 
   const list = await readGroceryList(env, tenantId);
   const pantryNames = await readPantryNames(env, tenantId);
@@ -239,6 +250,7 @@ export async function runPlaceOrder(
       }
     },
     advanceInCart,
+    rollbackInCart,
   };
 
   const result = await placeOrder(deps, lines, {
@@ -288,7 +300,7 @@ export function registerOrderTools(
     "place_order",
     {
       description:
-        "Order-time flush: resolve the WHOLE to-buy set against current Kroger availability, write the cart (PUT /v1/cart/add), and cache learned SKU mappings to the shared SKU cache. The to-buy set is the active grocery list ∪ the MEAL PLAN'S OWN INGREDIENT NEEDS − pantry on-hand, joined on canonical ingredient ids: the tool derives the plan's needs SERVER-SIDE from each planned recipe's derived full ingredient list — do NOT hand-expand planned recipes into `menu_needs`. `menu_needs` is for SUPPLEMENTS only (open-world side ingredients, spontaneous extras); passing an item the plan already derives (or the list already holds) is harmless — the canonical-id union merges duplicates into one line, never a double-buy. Planned recipes whose ingredient list is not yet derived are returned in `underived` (their items are NOT in the set — compensate explicitly rather than assuming they were bought). `exclude: [names]` drops lines from the to-buy set BEFORE resolution — an order-scoped opt-out (a derived line has no row to remove); it persists nowhere beyond this call. Ambiguous/unavailable items return as a single `checkpoint` (NOT added) for the user to disposition; pantry overlaps return as `partials` to prompt on (confirm via `include_partials`). Resolved items advance to status:in_cart only after a successful cart write. `overrides: [{ name, sku, brand?, size? }]` forces a specific SKU for a line — to disposition an ambiguous/unavailable item OR to lock a SKU you verified (e.g. an on-sale one from `kroger_prices`); a forced SKU bypasses the matcher but is still revalidated for current availability and returned with FRESH price/on_sale, and one that has gone unavailable is checkpointed rather than carted. NOTE: overrides pin the SKU, not the price — the cart write carries only SKU + quantity, so whether a sale price realizes is Kroger's call at fulfillment (against possibly-stale flyer data). Resolved lines carry `price`/`on_sale` so you can spot a lapsed deal at preview. SKU-cache commit and cart write are independent best-effort — partial status is reported honestly; the cart is never reported populated when its write failed (check `cart.code` for `reauth_required`). The mapping commit covers EVERY resolved line (cache hits included) and carries each resolved product's aisle placement when Kroger reports one; an already-cached row is skipped only when its learned fields (SKU/brand/size/aisle) are identical, otherwise refreshed in place — mappings and placements converge with each order (feeding read_to_buy's with_aisles walk). The ONLY tool that writes a Kroger cart. Default buy = 1 package per item; set a count via `menu_needs[].quantity` (or the `quantities` map, which overrides it). Lines that defaulted to 1 are returned with `assumed_quantity: true`. preview=true resolves and reports without writing anything.",
+        "Order-time flush: resolve the WHOLE to-buy set against current Kroger availability, write the cart (PUT /v1/cart/add), and cache learned SKU mappings to the shared SKU cache. The to-buy set is the active grocery list ∪ the MEAL PLAN'S OWN INGREDIENT NEEDS − pantry on-hand, joined on canonical ingredient ids: the tool derives the plan's needs SERVER-SIDE from each planned recipe's derived full ingredient list — do NOT hand-expand planned recipes into `menu_needs`. `menu_needs` is for SUPPLEMENTS only (open-world side ingredients, spontaneous extras); passing an item the plan already derives (or the list already holds) is harmless — the canonical-id union merges duplicates into one line, never a double-buy. Planned recipes whose ingredient list is not yet derived are returned in `underived` (their items are NOT in the set — compensate explicitly rather than assuming they were bought). `exclude: [names]` drops lines from the to-buy set BEFORE resolution — an order-scoped opt-out (a derived line has no row to remove); it persists nowhere beyond this call. Ambiguous/unavailable items return as a single `checkpoint` (NOT added) for the user to disposition; pantry overlaps return as `partials` to prompt on (confirm via `include_partials`). Resolved items advance to status:in_cart BEFORE the cart write and are rolled back to active if the cart write fails (retryable); if the rollback itself fails, `list` reports `{ advanced: true, rolled_back: false }` — those items are marked in_cart with NO cart write (a visible under-buy), and a retried place_order will NOT re-add them. `overrides: [{ name, sku, brand?, size? }]` forces a specific SKU for a line — to disposition an ambiguous/unavailable item OR to lock a SKU you verified (e.g. an on-sale one from `kroger_prices`); a forced SKU bypasses the matcher but is still revalidated for current availability and returned with FRESH price/on_sale, and one that has gone unavailable is checkpointed rather than carted. NOTE: overrides pin the SKU, not the price — the cart write carries only SKU + quantity, so whether a sale price realizes is Kroger's call at fulfillment (against possibly-stale flyer data). Resolved lines carry `price`/`on_sale` so you can spot a lapsed deal at preview. SKU-cache commit and cart write are independent best-effort — partial status is reported honestly; the cart is never reported populated when its write failed (check `cart.code` for `reauth_required`). The mapping commit covers EVERY resolved line (cache hits included) and carries each resolved product's aisle placement when Kroger reports one; an already-cached row is skipped only when its learned fields (SKU/brand/size/aisle) are identical, otherwise refreshed in place — mappings and placements converge with each order (feeding read_to_buy's with_aisles walk). The ONLY tool that writes a Kroger cart. Default buy = 1 package per item; set a count via `menu_needs[].quantity` (or the `quantities` map, which overrides it). Lines that defaulted to 1 are returned with `assumed_quantity: true`. preview=true resolves and reports without writing anything.",
       inputSchema: PLACE_ORDER_INPUT_SHAPE,
     },
     (input) => runTool(() => runPlaceOrder(env, tenantId, input, wiring)),

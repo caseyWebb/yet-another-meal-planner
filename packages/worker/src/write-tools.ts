@@ -63,6 +63,16 @@ function today(): string {
  */
 const SUBJECTIVE_KEYS = ["favorite", "reject", "rating", "status"] as const;
 
+/**
+ * The mutable fields of a ready-to-eat item — `update_ready_to_eat`'s documented
+ * contract: the two disposition marks plus the in-place content edits. Everything
+ * else is identity/provenance (`slug`, `meal`, `discovery_source`/`source`, any
+ * added/discovered timestamp) and is rejected (validation_failed, nothing
+ * committed) rather than silently written — mirroring `update_recipe`'s
+ * protected-key rejection.
+ */
+const READY_TO_EAT_MUTABLE_KEYS = ["name", "category", "brand", "notes", "favorite", "reject"] as const;
+
 // --- file-level builders (return a TreeFile for the atomic commit) -----------
 
 /** Build an objective-content update for a shared recipe (root `recipes/<slug>.md`). */
@@ -134,12 +144,26 @@ export function readyToEatManager(existing: Record<string, unknown>[]) {
       return slug;
     },
     /**
-     * Find an item by slug, apply updates. Throws not_found if absent. `favorite` and
-     * `reject` are mutually exclusive: setting one true clears the other.
+     * Find an item by slug (not_found if absent — checked FIRST, so an unknown slug
+     * is reported as such regardless of what the patch carries), then apply updates.
+     * Only the documented mutable fields (READY_TO_EAT_MUTABLE_KEYS) may change — any
+     * other key throws validation_failed listing the offenders, and nothing is
+     * committed. `favorite` and `reject` are mutually exclusive: setting one true
+     * clears the other.
      */
     update(slug: string, updates: Record<string, unknown>) {
       const idx = list.findIndex((it) => it.slug === slug);
       if (idx < 0) throw new ToolError("not_found", `No ready-to-eat item with slug: ${slug}`, { slug });
+      const rejected = Object.keys(updates).filter(
+        (k) => !(READY_TO_EAT_MUTABLE_KEYS as readonly string[]).includes(k),
+      );
+      if (rejected.length > 0) {
+        throw new ToolError(
+          "validation_failed",
+          `${rejected.join("/")} ${rejected.length > 1 ? "are" : "is"} not updatable on a ready-to-eat item — only ${READY_TO_EAT_MUTABLE_KEYS.join("/")} may change (slug, meal, discovery source, and timestamps are identity/provenance); nothing was written`,
+          { fields: rejected },
+        );
+      }
       const next = { ...list[idx], ...updates };
       if (updates.favorite) next.reject = false;
       if (updates.reject) next.favorite = false;
@@ -476,7 +500,7 @@ export function registerWriteTools(
     "update_ready_to_eat",
     {
       description:
-        "Disposition or update a ready-to-eat item in the caller's catalog, addressed by slug. Set `favorite` (loved) and/or `reject` (stop suggesting it) — mutually exclusive, mirroring recipes; there is no status or rating. Other fields (name, category, brand, notes) update in place. Unknown slug → not_found.",
+        "Disposition or update a ready-to-eat item in the caller's catalog, addressed by slug. Set `favorite` (loved) and/or `reject` (stop suggesting it) — mutually exclusive, mirroring recipes; there is no status or rating. Other fields (name, category, brand, notes) update in place. Those six are the ONLY updatable keys: any other key — `slug`, `meal`, the discovery source, timestamps — is identity/provenance and is rejected (validation_failed listing the offending keys, nothing written). Unknown slug → not_found.",
       inputSchema: { slug: z.string(), updates: z.record(z.string(), z.unknown()) },
     },
     ({ slug, updates }) =>

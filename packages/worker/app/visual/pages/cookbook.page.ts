@@ -93,6 +93,25 @@ export class CookbookPage extends AppPage {
     }
   }
 
+  // --- the searchbar (one custom clear affordance; the native one is suppressed) ---
+
+  searchbar(): Locator {
+    return this.page.locator(".searchbar");
+  }
+
+  searchInput(): Locator {
+    return this.page.getByLabel("Search recipes");
+  }
+
+  /** The custom clear button — the ONE clear affordance (CSS-hidden until text). */
+  clearButton(): Locator {
+    return this.searchbar().locator(".search-clear");
+  }
+
+  async clearSearch(): Promise<void> {
+    await this.clearButton().click();
+  }
+
   async search(q: string): Promise<void> {
     await this.page.getByLabel("Search recipes").fill(q);
   }

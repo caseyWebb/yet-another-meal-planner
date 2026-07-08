@@ -14,7 +14,11 @@ import { dump as dumpYaml } from "js-yaml";
 
 /** Reassemble a markdown file from frontmatter + body (inverse of parseMarkdown). */
 export function serializeMarkdown(frontmatter: Record<string, unknown>, body: string): string {
-  // dumpYaml ends with a trailing newline; quotes date-like strings to keep them strings.
+  // dumpYaml ends with a trailing newline. Date handling is settled on both sides:
+  // dumpYaml single-quotes a date-like STRING ("2026-06-09" → '2026-06-09') so it
+  // reparses as a string, and parseMarkdown normalizes any Date value to a string
+  // (see parse.ts normalizeDateValue) — so parse → serialize is a fixed point and
+  // a `discovered_at: 2026-06-09` never drifts to a full ISO timestamp on rewrite.
   const yaml = dumpYaml(frontmatter, { lineWidth: -1 });
   return `---\n${yaml}---\n${body}`;
 }

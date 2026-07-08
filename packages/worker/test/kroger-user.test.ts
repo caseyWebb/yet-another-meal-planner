@@ -133,6 +133,77 @@ describe("Kroger user-context client — token rotation", () => {
   });
 });
 
+describe("Kroger user-context client — refresh coalescing", () => {
+  it("coalesces simultaneous getAccessToken calls into exactly ONE token POST", async () => {
+    const kv = memKv({ [REFRESH_KEY]: "R0" });
+    let tokenPosts = 0;
+    const fetchMock = (async (url: string) => {
+      if (url.startsWith(TOKEN_URL)) {
+        tokenPosts++;
+        // Hold the refresh open across a macrotask so both callers overlap in flight.
+        await new Promise((r) => setTimeout(r, 5));
+        return json({ access_token: "A1", refresh_token: "R1", expires_in: 1800 });
+      }
+      return new Response(null, { status: 204 });
+    }) as unknown as typeof fetch;
+
+    const client = createKrogerUserClient(env, kv, TENANT, { fetch: fetchMock, cache: freshCache(), now: () => 1000 });
+    const [a, b] = await Promise.all([client.getAccessToken(), client.getAccessToken()]);
+
+    expect(tokenPosts).toBe(1); // the single-use refresh token was consumed once, not raced
+    expect(a).toBe("A1");
+    expect(b).toBe("A1");
+    expect(await kv.get(REFRESH_KEY)).toBe("R1"); // rotated exactly once
+  });
+
+  it("a failed refresh is not sticky — the next call starts a fresh attempt", async () => {
+    const kv = memKv({ [REFRESH_KEY]: "R0" });
+    let tokenPosts = 0;
+    const fetchMock = (async (url: string) => {
+      if (url.startsWith(TOKEN_URL)) {
+        tokenPosts++;
+        if (tokenPosts === 1) return new Response("boom", { status: 503 });
+        return json({ access_token: "A2", refresh_token: "R2", expires_in: 1800 });
+      }
+      return new Response(null, { status: 204 });
+    }) as unknown as typeof fetch;
+
+    const client = createKrogerUserClient(env, kv, TENANT, { fetch: fetchMock, cache: freshCache(), now: () => 1000 });
+    await expect(client.getAccessToken()).rejects.toBeInstanceOf(KrogerError);
+    // The in-flight slot cleared on rejection: this is a NEW refresh, and it succeeds.
+    await expect(client.getAccessToken()).resolves.toBe("A2");
+    expect(tokenPosts).toBe(2);
+  });
+
+  it("coalescing stays per-tenant: two tenants refreshing concurrently issue one POST each", async () => {
+    __resetUserTokenCache();
+    const kv = memKv({ "kroger:refresh:alice": "RA0", "kroger:refresh:bob": "RB0" });
+    let tokenPosts = 0;
+    const fetchMock = (async (url: string, init?: RequestInit) => {
+      if (url.startsWith(TOKEN_URL)) {
+        tokenPosts++;
+        const tok = new URLSearchParams(String(init?.body)).get("refresh_token");
+        await new Promise((r) => setTimeout(r, 5));
+        return json({ access_token: `A-${tok}`, refresh_token: `${tok}-rot`, expires_in: 1800 });
+      }
+      return new Response(null, { status: 204 });
+    }) as unknown as typeof fetch;
+
+    const alice = createKrogerUserClient(env, kv, "alice", { fetch: fetchMock, now: () => 1000 });
+    const bob = createKrogerUserClient(env, kv, "bob", { fetch: fetchMock, now: () => 1000 });
+    const [a1, a2, b1] = await Promise.all([
+      alice.getAccessToken(),
+      alice.getAccessToken(),
+      bob.getAccessToken(),
+    ]);
+
+    expect(tokenPosts).toBe(2); // alice's two calls coalesced; bob's did not join hers
+    expect(a1).toBe("A-RA0");
+    expect(a2).toBe("A-RA0");
+    expect(b1).toBe("A-RB0");
+  });
+});
+
 describe("Kroger user-context client — cart write", () => {
   it("succeeds on a 204 from PUT /v1/cart/add", async () => {
     const kv = memKv({ [REFRESH_KEY]: "R0" });

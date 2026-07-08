@@ -11,6 +11,8 @@
 //   - On refresh, the NEW refresh token is written to KV *before* the new access
 //     token is used for any Kroger request, so a crash mid-refresh cannot strand
 //     the account on a token Kroger has already consumed.
+//   - Concurrent expiries COALESCE onto one in-flight refresh per tenant (the
+//     refresh token is single-use — parallel refreshes would race to consume it).
 //   - A Kroger-rejected refresh surfaces as a structured `reauth_required` (run
 //     the one-time /oauth/init again), never a silent failure or generic 5xx.
 //   - The read-side `client_credentials` client (kroger.ts) is unaffected: it is
@@ -75,6 +77,9 @@ export interface KrogerUserClient {
 /** Isolate-lifetime cache of one tenant's user access token (the refresh token lives in KV). */
 export interface UserTokenCache {
   token: { accessToken: string; expiresAt: number } | null;
+  /** The in-flight refresh, shared by concurrent callers (coalescing). Cleared on
+   *  settle — resolve AND reject — so a failed refresh is never sticky. */
+  refreshing?: Promise<string> | null;
 }
 
 // Per-tenant isolate caches, keyed by tenant id. A tenant only ever reads its own
@@ -205,7 +210,18 @@ export function createKrogerUserClient(
     if (cache.token && cache.token.expiresAt > now() + EXPIRY_SKEW_MS) {
       return cache.token.accessToken;
     }
-    return refresh();
+    // Coalesce concurrent refreshes on the per-tenant cache: the refresh token is
+    // SINGLE-USE, so two parallel refresh() calls would race to consume it — the
+    // loser gets a 4xx and a spurious reauth_required. The first expired caller
+    // starts the token POST; everyone else awaits the same in-flight promise. The
+    // slot clears on settle (finally covers reject too), so a failed refresh never
+    // poisons the next attempt.
+    if (!cache.refreshing) {
+      cache.refreshing = refresh().finally(() => {
+        cache.refreshing = null;
+      });
+    }
+    return cache.refreshing;
   }
 
   async function addToCart(lines: CartLine[]): Promise<void> {

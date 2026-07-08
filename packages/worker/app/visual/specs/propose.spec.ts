@@ -33,16 +33,13 @@ test.describe("with the self-provisioned palette", () => {
     await proposePage.goto();
   });
 
-  test("first propose: intro → slots, variety bar, and the quiet no-location chip", async ({
+  test("first propose: intro → slots and the variety bar", async ({
     proposePage,
   }) => {
     await proposePage.expectIntro();
     await proposePage.awaitPropose(() => proposePage.start());
     await expect(proposePage.slotCards()).toHaveCount(2);
     await expect(proposePage.varietyBar()).toBeVisible();
-    // The seeded member has no resolvable ZIP: the weather strip degrades to the quiet
-    // set-your-ZIP chip while the whole flow keeps working (D9).
-    await proposePage.expectNoLocationChip();
     const mains = await proposePage.mains();
     expect(mains).toHaveLength(2);
     await proposePage.captureForReview("propose");

@@ -259,7 +259,7 @@ export function buildOrderWiring(env: Env, tenant: string): OrderWiring {
  * fetch the Open-Meteo daily forecast. Throws the structured `no_location` when no ZIP is
  * resolvable; upstream failures come back as the fetch's VALUE-shaped `WeatherError`
  * (`forecast_unavailable` / `no_results`), exactly as the MCP tool has always returned
- * them. Called by the tool and the member API's `GET /api/propose/weather`.
+ * them. Called by the `get_weather_forecast` tool and the propose op's server-side forecast.
  */
 export async function resolveTenantForecast(env: Env, tenant: string, days = 7): Promise<WeatherForecast | WeatherError> {
   const prefs = (await readPreferences(env, tenant)) ?? {};

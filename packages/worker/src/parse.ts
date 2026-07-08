@@ -15,6 +15,23 @@ export interface ParsedMarkdown {
 const FENCE = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/;
 
 /**
+ * Normalize a Date-valued frontmatter value back to the string it was authored
+ * as. js-yaml's own default schema keeps an unquoted `2026-06-09` a plain string,
+ * but a YAML 1.1 timestamp resolver (other authoring tooling, older js-yaml) turns
+ * it into a JS Date — and re-serializing that Date dumps `2026-06-09T00:00:00.000Z`,
+ * drifting the file on every write. Normalizing at PARSE makes the data self-heal
+ * on the next write: a midnight-UTC Date collapses to its authored `YYYY-MM-DD`
+ * form; a Date carrying a real time component keeps the full ISO string (preserve
+ * information, never truncate a genuine timestamp). Exported for direct testing —
+ * the bundled js-yaml never produces Dates, so this can't be exercised via text.
+ */
+export function normalizeDateValue(value: unknown): unknown {
+  if (!(value instanceof Date)) return value;
+  const iso = value.toISOString();
+  return iso.endsWith("T00:00:00.000Z") ? iso.slice(0, 10) : iso;
+}
+
+/**
  * Split a markdown document into parsed YAML frontmatter and the remaining
  * body. A document without a leading `---` fence yields empty frontmatter and
  * the whole text as body.
@@ -35,6 +52,12 @@ export function parseMarkdown(text: string, label = "document"): ParsedMarkdown 
 
   const frontmatter =
     parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : {};
+  // Date values never leave the parser (see normalizeDateValue) — so a subsequent
+  // serializeMarkdown of this frontmatter is round-trip stable.
+  for (const [key, value] of Object.entries(frontmatter)) {
+    const normalized = normalizeDateValue(value);
+    if (normalized !== value) frontmatter[key] = normalized;
+  }
   const body = text.slice(match[0].length);
   return { frontmatter, body };
 }

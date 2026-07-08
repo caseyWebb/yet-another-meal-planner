@@ -18,6 +18,41 @@ test("browse renders the all-recipes list; search narrows and clears", async ({ 
   await cookbookPage.expectNoMatches();
 });
 
+test("the searchbar spans the content column with exactly ONE clear affordance", async ({
+  cookbookPage,
+  page,
+}) => {
+  await cookbookPage.landmark();
+
+  // Full width: the input fills the searchbar, and the searchbar fills the page's
+  // content column (no shrunken default-size input).
+  const [inputBox, barBox, colBox] = await Promise.all([
+    cookbookPage.searchInput().boundingBox(),
+    cookbookPage.searchbar().boundingBox(),
+    page.getByTestId("cookbook-page").boundingBox(),
+  ]);
+  expect(inputBox!.width).toBeGreaterThanOrEqual(barBox!.width - 2);
+  expect(barBox!.width).toBeGreaterThanOrEqual(colBox!.width - 2);
+
+  // Empty box: no clear affordance at all.
+  await expect(cookbookPage.clearButton()).toBeHidden();
+
+  // With text: the custom button is the one visible clear control — the input's
+  // computed `appearance: none` is what suppresses the native type="search" cancel
+  // affordance in Blink/WebKit (the pseudo-element itself is not introspectable via
+  // getComputedStyle, so the appearance reset is the assertable contract).
+  await cookbookPage.search("salmon");
+  await expect(cookbookPage.clearButton()).toBeVisible();
+  expect(await cookbookPage.searchInput().evaluate((el) => getComputedStyle(el).appearance)).toBe("none");
+  await cookbookPage.captureForReview("cookbook-search-clear");
+
+  // The custom button clears back to browse.
+  await cookbookPage.clearSearch();
+  await expect(cookbookPage.searchInput()).toHaveValue("");
+  await expect(cookbookPage.clearButton()).toBeHidden();
+  await expect(cookbookPage.allRecipesSection()).toBeVisible();
+});
+
 test("the detail page renders the corpus body, facets, and the deep link", async ({ cookbookPage, recipePage }) => {
   await cookbookPage.openRecipe(SEED.recipe.slug);
   await recipePage.landmark();

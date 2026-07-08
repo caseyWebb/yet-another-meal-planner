@@ -520,14 +520,17 @@ export async function advanceOrderedRows(
 
 /**
  * Advance the given resolved lines to status:in_cart, inserting any line not yet on
- * the list. Mirrors the old KV advance — row-level upserts in one batch.
+ * the list (a menu-plan-derived need has no stored row). Mirrors the old KV advance —
+ * row-level upserts in one batch. Returns the canonical keys of the rows it INSERTED
+ * (vs merely updated), so `rollbackInCartRows` can compensate an insert by deleting
+ * the row instead of stranding a never-listed `active` item.
  */
 export async function advanceInCartRows(
   env: Env,
   tenant: string,
   lines: { name: string }[],
   today: string,
-): Promise<void> {
+): Promise<{ inserted: string[] }> {
   const ctx = await ingredientContext(env).catch(() => emptyIngredientContext(env));
   const current = await readGroceryList(env, tenant);
   // Advanced lines are resolved grocery purchases (food) — key existing rows by their
@@ -535,9 +538,11 @@ export async function advanceInCartRows(
   // food purchase matches its row across surface forms.
   const byKey = new Map(current.map((it) => [groceryKey(it.name, it.kind, it.domain, ctx.resolve), it]));
   const stmts: D1PreparedStatement[] = [];
+  const inserted: string[] = [];
   for (const line of lines) {
     const key = ctx.resolve(line.name);
     const existing = byKey.get(key);
+    if (!existing) inserted.push(key);
     const next: GroceryItem = existing
       ? { ...existing, status: "in_cart" }
       : {
@@ -553,6 +558,40 @@ export async function advanceInCartRows(
           ordered_at: null,
         };
     stmts.push(groceryUpsertStmt(env, tenant, next, ctx.resolve));
+  }
+  if (stmts.length > 0) await db(env).batch(stmts);
+  return { inserted };
+}
+
+/**
+ * Undo an `advanceInCartRows` — the compensation `place_order` runs when the cart
+ * write fails after the pre-write advance. A row the advance INSERTED (its canonical
+ * key is in `inserted`) is DELETED — the member never listed it, so flipping it to
+ * `active` would strand an orphaned grocery item; a pre-existing row flips from
+ * in_cart back to `active`. Both legs are in_cart-guarded and never insert: a line
+ * with no row is skipped, and a row in any other status (`active`, `ordered`) is left
+ * alone — only the advance this call compensates is undone. Mirrors the advance's keying.
+ */
+export async function rollbackInCartRows(
+  env: Env,
+  tenant: string,
+  lines: { name: string }[],
+  inserted: string[] = [],
+): Promise<void> {
+  const ctx = await ingredientContext(env).catch(() => emptyIngredientContext(env));
+  const current = await readGroceryList(env, tenant);
+  const byKey = new Map(current.map((it) => [groceryKey(it.name, it.kind, it.domain, ctx.resolve), it]));
+  const insertedKeys = new Set(inserted);
+  const stmts: D1PreparedStatement[] = [];
+  for (const line of lines) {
+    const key = ctx.resolve(line.name);
+    const existing = byKey.get(key);
+    if (!existing || existing.status !== "in_cart") continue;
+    stmts.push(
+      insertedKeys.has(key)
+        ? db(env).prepare("DELETE FROM grocery_list WHERE tenant = ?1 AND normalized_name = ?2", tenant, key)
+        : groceryUpsertStmt(env, tenant, { ...existing, status: "active" }, ctx.resolve),
+    );
   }
   if (stmts.length > 0) await db(env).batch(stmts);
 }

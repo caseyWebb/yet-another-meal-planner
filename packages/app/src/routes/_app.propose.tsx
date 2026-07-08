@@ -1,9 +1,10 @@
 // Plan your week (member-app-propose 6.2–6.5, D7/D8/D11): the design bundle's propose
 // flow over the stateless `POST /api/propose`. The intro and empty-palette states, the
 // controls row (nights 2–6, adventurousness ↔ `nudges.variety`, protein wants, the
-// debounced freeform phrase), the weather strip (quiet `no_location` chip), the variety
-// bar + commit, and one card per slot with lock / swap / exclude / facet pins / vibe
-// override. Every change updates the client-side session (localStorage) and re-queries;
+// debounced freeform phrase), the variety bar + commit, and one card per slot with
+// lock / swap / exclude / facet pins / vibe override. The forecast shapes the proposal
+// server-side only (slots carry `weather_category`); no client forecast display.
+// Every change updates the client-side session (localStorage) and re-queries;
 // the previous week stays rendered (dimmed) until the next one lands. Commit maps
 // filled slots onto P1's plan ops with `from_vibe` + client-assigned open dates, then
 // clears the session and lands on the plan page.
@@ -19,25 +20,20 @@ import {
   RerollButton,
   SlotCard,
   VarietyBar,
-  WeatherNoLocation,
-  WeatherStrip,
   toast,
   type ProposeSlotView,
   type SlotPanel,
-  type WeatherStripDay,
 } from "@grocery-agent/ui";
 import { useIndex, usePlan, useProfile, useVibes, type PlanOp } from "../lib/data";
 import { usePlanOps } from "../lib/mutations";
 import { useOnline } from "../lib/online";
 import {
   buildRequest,
-  dayCategory,
   defaultSession,
   loadSession,
   nextOpenDates,
   saveSession,
   usePropose,
-  useProposeWeather,
   type ProposeSession,
   type ProposeSlotPayload,
 } from "../lib/propose";
@@ -51,7 +47,6 @@ function ProposePage() {
   const index = useIndex();
   const profile = useProfile();
   const plan = usePlan();
-  const weather = useProposeWeather();
   const planOps = usePlanOps();
   const online = useOnline();
   const navigate = useNavigate();
@@ -196,14 +191,6 @@ function ProposePage() {
     if (m.cuisine) mainCuisines.add(m.cuisine);
   }
 
-  const wxDays: WeatherStripDay[] = (weather.data?.forecast?.forecast ?? []).map((d) => ({
-    date: d.date,
-    high: d.high_f,
-    low: d.low_f,
-    condition: d.condition,
-    category: dayCategory(d.meal_vibes),
-  }));
-
   async function commit() {
     if (!data) return;
     setCommitting(true);
@@ -244,17 +231,6 @@ function ProposePage() {
       {crumbs}
       {head}
       {controls}
-      {weather.data?.noLocation ? (
-        <WeatherNoLocation
-          action={
-            <Link to="/profile" className="muted small">
-              Open profile
-            </Link>
-          }
-        />
-      ) : wxDays.length ? (
-        <WeatherStrip days={wxDays} />
-      ) : null}
       {data ? (
         <VarietyBar
           nights={filled.length}
@@ -345,10 +321,6 @@ function ProposePage() {
           />
         ))}
       </div>
-      <p className="propose-note muted small">
-        Adjust any dial above and the week updates live — same choices in, same week out. Everything suggested already
-        fits what you eat; your dietary rules are never broken.
-      </p>
     </div>
   );
 }

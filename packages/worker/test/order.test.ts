@@ -197,11 +197,26 @@ function makeDeps(
     skuCacheThrows?: boolean;
     cartThrows?: Error;
     advanceThrows?: boolean;
+    rollbackThrows?: boolean;
+    /** The inserted-keys receipt advanceInCart reports (menu-derived lines it minted). */
+    advanceInserted?: string[];
     /** Per-SKU revalidation results; absent SKUs default to fulfillable. */
     revalidations?: Record<string, RevalidatedSku | null>;
   } = {},
 ) {
-  const calls = { sku: 0, cart: 0, advance: 0, reval: 0, cartLines: [] as unknown[], mappings: [] as { ingredient: string }[] };
+  const calls = {
+    sku: 0,
+    cart: 0,
+    advance: 0,
+    rollback: 0,
+    reval: 0,
+    /** Write-leg invocation order, for advance-before-cart assertions. */
+    order: [] as string[],
+    cartLines: [] as unknown[],
+    mappings: [] as { ingredient: string }[],
+    /** The advance receipt placeOrder handed to rollbackInCart (receipt threading). */
+    rollbackAdvance: null as { inserted: string[] } | null,
+  };
   const fulfillable: RevalidatedSku = { brand: "Kroger", size: null, price: { regular: 1, promo: 0 }, on_sale: false };
   const deps: PlaceOrderDeps = {
     resolve: async (name) => resolutions[name.toLowerCase()] ?? unavailable,
@@ -215,18 +230,28 @@ function makeDeps(
     normalize: (name) => normalizeIngredient(name, {}),
     commitSkuCache: async (mappings) => {
       calls.sku++;
+      calls.order.push("sku");
       calls.mappings = mappings;
       if (opts.skuCacheThrows) throw new Error("commit failed");
       return "sku-sha";
     },
     cartAdd: async (lines) => {
       calls.cart++;
+      calls.order.push("cart");
       calls.cartLines = lines;
       if (opts.cartThrows) throw opts.cartThrows;
     },
     advanceInCart: async () => {
       calls.advance++;
+      calls.order.push("advance");
       if (opts.advanceThrows) throw new Error("advance failed");
+      return { inserted: opts.advanceInserted ?? [] };
+    },
+    rollbackInCart: async (_lines, advance) => {
+      calls.rollback++;
+      calls.order.push("rollback");
+      calls.rollbackAdvance = advance;
+      if (opts.rollbackThrows) throw new Error("rollback failed");
     },
   };
   return { deps, calls };
@@ -236,7 +261,7 @@ const toBuy = (...names: string[]): ToBuyItem[] =>
   names.map((name) => ({ name, key: name, quantity: 1, for_recipes: [], assumed_quantity: true }));
 
 describe("placeOrder", () => {
-  it("resolves, commits the cache, writes the cart, then advances the list", async () => {
+  it("resolves, commits the cache, advances the list, then writes the cart (advance-first)", async () => {
     const { deps, calls } = makeDeps({ milk: confident("S1"), eggs: confident("S2") });
     const res = await placeOrder(deps, toBuy("milk", "eggs"));
 
@@ -245,7 +270,9 @@ describe("placeOrder", () => {
     expect(res.sku_cache).toEqual({ committed: true });
     expect(res.cart).toEqual({ written: true, count: 2 });
     expect(res.list).toEqual({ advanced: true });
-    expect(calls).toMatchObject({ sku: 1, cart: 1, advance: 1 });
+    expect(calls).toMatchObject({ sku: 1, cart: 1, advance: 1, rollback: 0 });
+    // The double-add guard: the in_cart advance strictly precedes the cart write.
+    expect(calls.order).toEqual(["sku", "advance", "cart"]);
   });
 
   it("caches the learned mapping under the CANONICAL id (matcher's read key), not the raw name", async () => {
@@ -269,15 +296,143 @@ describe("placeOrder", () => {
     expect(calls.cartLines).toHaveLength(1);
   });
 
-  it("honest partial: cart fails but cache committed → cart not reported populated", async () => {
-    const { deps } = makeDeps({ milk: confident("S1") }, { cartThrows: new Error("upstream 503") });
+  it("honest partial: cart fails but cache committed → cart not reported populated, advance rolled back", async () => {
+    const { deps, calls } = makeDeps(
+      { milk: confident("S1") },
+      // milk is a menu-derived line with no stored row — the advance minted it.
+      { cartThrows: new Error("upstream 503"), advanceInserted: ["milk"] },
+    );
     const res = await placeOrder(deps, toBuy("milk"));
 
     expect(res.sku_cache.committed).toBe(true);
     expect(res.cart.written).toBe(false);
     expect(res.cart.error).toContain("upstream 503");
-    // List is NOT advanced when the cart write failed (items stay retryable).
+    // The pre-write advance is rolled back to active (items stay retryable).
+    expect(calls.rollback).toBe(1);
+    expect(res.list).toEqual({ advanced: false, rolled_back: true });
+    // The advance receipt reached the rollback, so the compensation can DELETE the
+    // rows the advance inserted rather than stranding them as active items.
+    expect(calls.rollbackAdvance).toEqual({ inserted: ["milk"] });
+  });
+
+  it("advance failure skips the cart write entirely (nothing carted, safe to retry)", async () => {
+    const { deps, calls } = makeDeps({ milk: confident("S1") }, { advanceThrows: true });
+    const res = await placeOrder(deps, toBuy("milk"));
+
+    expect(calls.cart).toBe(0); // the cart write never happened
+    expect(calls.rollback).toBe(0); // nothing advanced, nothing to roll back
+    expect(res.cart.written).toBe(false);
+    expect(res.cart.error).toContain("skipped");
     expect(res.list.advanced).toBe(false);
+    expect(res.list.error).toContain("advance failed");
+  });
+
+  it("a failed rollback is surfaced, not thrown: list reports advanced without a cart write", async () => {
+    const { deps, calls } = makeDeps(
+      { milk: confident("S1") },
+      { cartThrows: new Error("upstream 503"), rollbackThrows: true },
+    );
+    const res = await placeOrder(deps, toBuy("milk"));
+
+    expect(calls.order).toEqual(["sku", "advance", "cart", "rollback"]);
+    expect(res.cart.written).toBe(false);
+    // Items are marked in_cart with NO cart write — visible to the agent, and a
+    // retried order won't re-add them (in_cart is filtered from computeToBuy).
+    expect(res.list).toEqual({ advanced: true, rolled_back: false, error: "rollback failed" });
+  });
+
+  it("never double-adds across a retry when the first order failed after advancing", async () => {
+    // Shared list state across the two invocations, as D1 would hold it.
+    const list = [item("milk")];
+    let cartAdds = 0;
+    let cartFails = true;
+    const deps: PlaceOrderDeps = {
+      resolve: async () => confident("S1"),
+      revalidateSku: async () => null,
+      normalize: (name) => normalizeIngredient(name, {}),
+      commitSkuCache: async () => null,
+      cartAdd: async () => {
+        cartAdds++;
+        if (cartFails) throw new Error("kroger 503");
+      },
+      advanceInCart: async (lines) => {
+        for (const l of lines) {
+          const row = list.find((it) => it.name === l.name);
+          if (row) row.status = "in_cart";
+        }
+        return { inserted: [] }; // milk pre-existed — nothing minted
+      },
+      rollbackInCart: async () => {
+        throw new Error("d1 unavailable"); // the worst leg: rollback fails too
+      },
+    };
+
+    // First order: advance lands, the cart write fails, and so does the rollback —
+    // the row is left in_cart with no cart write.
+    const first = await placeOrder(deps, computeToBuy({ list, pantryNames: new Set() }).to_buy);
+    expect(cartAdds).toBe(1);
+    expect(first.cart.written).toBe(false);
+    expect(first.list).toEqual({ advanced: true, rolled_back: false, error: "d1 unavailable" });
+
+    // Retried order: the in_cart row is filtered out of the to-buy set, so the
+    // (additive, unreadable) Kroger cart is never written a second time.
+    cartFails = false;
+    const retryLines = computeToBuy({ list, pantryNames: new Set() }).to_buy;
+    expect(retryLines).toEqual([]);
+    await placeOrder(deps, retryLines);
+    expect(cartAdds).toBe(1); // exactly one cart write attempt across both orders
+  });
+
+  it("rollback deletes an advance-inserted (menu-derived) line instead of stranding it active", async () => {
+    // Shared list state, as D1 would hold it: milk pre-exists; flour is a
+    // menu-derived need with NO stored row — the advance mints its in_cart row.
+    const list = [item("milk")];
+    const deps: PlaceOrderDeps = {
+      resolve: async (name) => confident(name === "milk" ? "S1" : "S2"),
+      revalidateSku: async () => null,
+      normalize: (name) => normalizeIngredient(name, {}),
+      commitSkuCache: async () => null,
+      cartAdd: async () => {
+        throw new Error("kroger 503");
+      },
+      advanceInCart: async (lines) => {
+        const inserted: string[] = [];
+        for (const l of lines) {
+          const row = list.find((it) => it.name === l.name);
+          if (row) {
+            row.status = "in_cart";
+          } else {
+            list.push(item(l.name, { status: "in_cart", source: "menu" }));
+            inserted.push(l.name);
+          }
+        }
+        return { inserted };
+      },
+      rollbackInCart: async (lines, advance) => {
+        // The compensation semantics rollbackInCartRows implements: delete what the
+        // advance inserted, flip pre-existing in_cart rows back to active.
+        const insertedKeys = new Set(advance.inserted);
+        for (const l of lines) {
+          const idx = list.findIndex((it) => it.name === l.name && it.status === "in_cart");
+          if (idx < 0) continue;
+          if (insertedKeys.has(l.name)) list.splice(idx, 1);
+          else list[idx].status = "active";
+        }
+      },
+    };
+
+    const lines = computeToBuy({
+      list,
+      menuNeeds: [{ name: "flour" }],
+      pantryNames: new Set(),
+    }).to_buy;
+    const res = await placeOrder(deps, lines);
+
+    expect(res.cart.written).toBe(false);
+    expect(res.list).toEqual({ advanced: false, rolled_back: true });
+    // The pre-existing row is back to active; the menu-derived line did NOT
+    // survive the rollback as an orphaned active grocery item.
+    expect(list.map((it) => [it.name, it.status])).toEqual([["milk", "active"]]);
   });
 
   it("honest partial: cache commit fails but cart write succeeds", async () => {

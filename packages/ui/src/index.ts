@@ -38,12 +38,9 @@ export {
   SlotCard,
   TIME_TIERS,
   VarietyBar,
-  WeatherNoLocation,
-  WeatherStrip,
   type ProposeAlt,
   type ProposeSlotView,
   type SlotPanel,
-  type WeatherStripDay,
 } from "./components/propose";
 export { Combobox, type ComboOption } from "./components/combobox";
 export { Toaster, toast } from "./components/toast";

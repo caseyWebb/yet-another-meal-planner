@@ -5,6 +5,7 @@ import {
   registerWriteTools,
 } from "../src/write-tools.js";
 import { applyPantryOperations, markVerified, type PantryItem } from "../src/pantry-write.js";
+import { ToolError } from "../src/errors.js";
 import { serializeMarkdown } from "../src/serialize.js";
 import { parseMarkdown } from "../src/parse.js";
 import { createR2CorpusStore, type CorpusStore } from "../src/corpus-store.js";
@@ -198,6 +199,20 @@ describe("readyToEatManager", () => {
     expect(() => mgr.update("ghost", { reject: true })).toThrowError(/not.*found|ghost/i);
   });
 
+  it("an unknown slug is not_found even when the patch also carries protected keys", () => {
+    // The slug lookup runs FIRST: the caller addressed a nonexistent item, and that
+    // is the more actionable error than what the patch happened to contain.
+    const mgr = readyToEatManager([{ name: "Lasagna", slug: "lasagna", meal: "dinner" }]);
+    try {
+      mgr.update("ghost", { slug: "renamed" });
+      expect.unreachable("should have thrown");
+    } catch (e) {
+      expect(e).toBeInstanceOf(ToolError);
+      expect((e as ToolError).code).toBe("not_found");
+    }
+    expect(mgr.touched()).toBe(false);
+  });
+
   it("favorite and reject are mutually exclusive on update", () => {
     const existing = [{ name: "Lasagna", slug: "lasagna", meal: "dinner", reject: true }];
     const mgr = readyToEatManager(existing);
@@ -208,6 +223,71 @@ describe("readyToEatManager", () => {
   it("touched() is false when nothing was changed", () => {
     const mgr = readyToEatManager([]);
     expect(mgr.touched()).toBe(false);
+  });
+
+  it("update accepts every documented mutable field in place", () => {
+    const existing = [{ name: "Lasagna", slug: "lasagna", meal: "dinner", category: null, brand: null, notes: null }];
+    const mgr = readyToEatManager(existing);
+    mgr.update("lasagna", {
+      name: "Frozen Lasagna",
+      category: "frozen",
+      brand: "Kroger",
+      notes: "425F for 50 min",
+      favorite: true,
+    });
+    expect(mgr.touched()).toBe(true);
+    expect(mgr.items()[0]).toMatchObject({
+      slug: "lasagna",
+      meal: "dinner",
+      name: "Frozen Lasagna",
+      category: "frozen",
+      brand: "Kroger",
+      notes: "425F for 50 min",
+      favorite: true,
+    });
+  });
+
+  it("update rejects identity/provenance keys with validation_failed listing the offenders", () => {
+    const existing = [{ name: "Lasagna", slug: "lasagna", meal: "dinner", discovery_source: "kroger-flyer" }];
+    const mgr = readyToEatManager(existing);
+    try {
+      mgr.update("lasagna", {
+        slug: "renamed",
+        meal: "lunch",
+        discovery_source: "hand-edit",
+        added_at: "2026-01-01",
+        discovered_at: "2026-01-01",
+      });
+      expect.unreachable("should have thrown");
+    } catch (e) {
+      expect(e).toBeInstanceOf(ToolError);
+      expect((e as ToolError).code).toBe("validation_failed");
+      expect((e as ToolError).context.fields).toEqual([
+        "slug",
+        "meal",
+        "discovery_source",
+        "added_at",
+        "discovered_at",
+      ]);
+    }
+    // Nothing committed: the item is untouched and the manager reports no change.
+    expect(mgr.touched()).toBe(false);
+    expect(mgr.items()[0]).toMatchObject({ slug: "lasagna", meal: "dinner", discovery_source: "kroger-flyer" });
+  });
+
+  it("update rejects a mixed patch (allowed + protected keys) wholesale — nothing committed", () => {
+    const existing = [{ name: "Lasagna", slug: "lasagna", meal: "dinner" }];
+    const mgr = readyToEatManager(existing);
+    try {
+      mgr.update("lasagna", { name: "Better Lasagna", slug: "better-lasagna" });
+      expect.unreachable("should have thrown");
+    } catch (e) {
+      expect(e).toBeInstanceOf(ToolError);
+      expect((e as ToolError).code).toBe("validation_failed");
+      expect((e as ToolError).context.fields).toEqual(["slug"]); // only the offenders are listed
+    }
+    expect(mgr.touched()).toBe(false);
+    expect(mgr.items()[0].name).toBe("Lasagna"); // the allowed edit did NOT partially apply
   });
 });
 
