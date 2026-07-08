@@ -34,9 +34,9 @@ export class ConfigPage extends AdminPage {
   }
 
   ingestKeyMintDialog(): DialogComponent {
-    // The island renders two <dialog class="dialog"> (Mint + Revoke) — scope to the mint one by
-    // its labelled title so the open-state assertion is unambiguous.
-    return new DialogComponent(this.page.locator('dialog.dialog[aria-labelledby="mint-key-title"]'));
+    // The screen renders two Radix dialogs (Mint + Revoke) — scope to the mint one by its
+    // accessible name so the open-state assertion is unambiguous.
+    return new DialogComponent(this.page.getByRole("dialog", { name: "Mint ingest key" }));
   }
 
   /** Open the mint dialog (hydration-safe retry lives in the dialog component). */
