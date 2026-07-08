@@ -1,0 +1,204 @@
+// The derived to-buy view op (member-app-grocery D1/D3) over the REAL-SQLite env:
+// deriveMenuNeeds (plan × projected ingredients_full) and computeToBuyView (the unchanged
+// computeToBuy algebra post-partitioned into origin: list | plan | both, with the
+// pantry-coverage metadata join, the in_cart stale-cart section, underived honesty, and
+// the no-materialization guarantee).
+import { describe, it, expect } from "vitest";
+import { deriveMenuNeeds, computeToBuyView } from "../src/to-buy.js";
+import { addGroceryRow, updateGroceryRow } from "../src/session-db.js";
+import { normalizeName } from "../src/grocery.js";
+import { sqliteEnv, type SqliteEnv } from "./sqlite-d1.js";
+import type { Env } from "../src/env.js";
+
+const TODAY = "2026-07-08";
+const T = "casey";
+
+/** Insert a projected `recipes` row carrying (or lacking) ingredients_full. */
+function seedRecipe(h: SqliteEnv, slug: string, full: string[] | null): void {
+  h.raw
+    .prepare("INSERT INTO recipes (slug, title, ingredients_full) VALUES (?, ?, ?)")
+    .run(slug, slug, full ? JSON.stringify(full) : null);
+}
+
+function seedPlan(h: SqliteEnv, recipe: string, sides: string[] = []): void {
+  h.raw
+    .prepare("INSERT INTO meal_plan (tenant, recipe, planned_for, sides) VALUES (?, ?, NULL, ?)")
+    .run(T, recipe, JSON.stringify(sides));
+}
+
+function seedPantry(h: SqliteEnv, name: string, key: string, extra: { quantity?: string; category?: string; last_verified_at?: string } = {}): void {
+  h.raw
+    .prepare(
+      "INSERT INTO pantry (tenant, name, normalized_name, quantity, category, added_at, last_verified_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+    )
+    .run(T, name, key, extra.quantity ?? null, extra.category ?? null, TODAY, extra.last_verified_at ?? null);
+}
+
+/** Register the scallions ≡ green-onion alias so canonical-id merges are exercised. */
+function seedAlias(h: SqliteEnv): void {
+  h.raw
+    .prepare("INSERT INTO ingredient_identity (id, base, concrete, source) VALUES ('green-onion', 'green onion', 1, 'auto')")
+    .run();
+  h.raw
+    .prepare("INSERT INTO ingredient_alias (variant, id, source, confidence) VALUES ('scallions', 'green-onion', 'auto', 0.95)")
+    .run();
+}
+
+describe("deriveMenuNeeds", () => {
+  it("derives one need per canonical id, merging for_recipes across planned recipes", async () => {
+    const h = sqliteEnv([T]);
+    seedRecipe(h, "stew", ["chicken", "black beans", "cilantro"]);
+    seedRecipe(h, "salmon", ["salmon", "cilantro"]);
+    seedPlan(h, "stew");
+    seedPlan(h, "salmon");
+    const { needs, underived } = await deriveMenuNeeds(h.env, T);
+    expect(underived).toEqual([]);
+    const cilantro = needs.find((n) => n.name === "cilantro")!;
+    expect(cilantro.for_recipes!.sort()).toEqual(["salmon", "stew"]);
+    expect(needs.map((n) => n.name).sort()).toEqual(["black beans", "chicken", "cilantro", "salmon"]);
+    // Presence-only: no quantities derived.
+    expect(needs.every((n) => n.quantity === undefined)).toBe(true);
+  });
+
+  it("reports a planned slug with no index row, a NULL facet, or an empty facet as underived", async () => {
+    const h = sqliteEnv([T]);
+    seedRecipe(h, "null-facet", null);
+    seedRecipe(h, "empty-facet", []);
+    seedPlan(h, "null-facet");
+    seedPlan(h, "empty-facet");
+    seedPlan(h, "no-row"); // planned but never projected
+    const { needs, underived } = await deriveMenuNeeds(h.env, T);
+    expect(needs).toEqual([]);
+    expect(underived.sort()).toEqual(["empty-facet", "no-row", "null-facet"]);
+  });
+
+  it("ignores open-world sides (they have no recipe to derive from)", async () => {
+    const h = sqliteEnv([T]);
+    seedRecipe(h, "stew", ["chicken"]);
+    seedPlan(h, "stew", ["roasted broccoli"]);
+    const { needs, underived } = await deriveMenuNeeds(h.env, T);
+    expect(needs.map((n) => n.name)).toEqual(["chicken"]);
+    expect(underived).toEqual([]); // a side string is not an underived recipe
+  });
+
+  it("derives nothing for an empty plan", async () => {
+    const h = sqliteEnv([T]);
+    expect(await deriveMenuNeeds(h.env, T)).toEqual({ needs: [], underived: [] });
+  });
+});
+
+describe("computeToBuyView", () => {
+  it("partitions lines into origin plan / list / both and unions for_recipes on both", async () => {
+    const h = sqliteEnv([T]);
+    seedRecipe(h, "stew", ["chicken", "black beans"]);
+    seedPlan(h, "stew");
+    await addGroceryRow(h.env, T, { name: "paper towels", kind: "household" }, TODAY); // list-only
+    await addGroceryRow(h.env, T, { name: "chicken", source: "menu", for_recipes: ["old-note"], quantity: "2" }, TODAY); // materialized
+
+    const view = await computeToBuyView(h.env, T);
+    const byName = new Map(view.to_buy.map((l) => [l.name, l]));
+    expect(byName.get("black beans")!.origin).toBe("plan");
+    expect(byName.get("black beans")!.for_recipes).toEqual(["stew"]);
+    expect(byName.get("black beans")!.assumed_quantity).toBe(true);
+    expect(byName.get("black beans")!.quantity).toBe(1);
+    expect(byName.get("paper towels")!.origin).toBe("list");
+    expect(byName.get("paper towels")!.kind).toBe("household");
+    const both = byName.get("chicken")!;
+    expect(both.origin).toBe("both");
+    expect(both.for_recipes.sort()).toEqual(["old-note", "stew"]); // stored ∪ derived
+    expect(view.underived).toEqual([]);
+  });
+
+  it("merges a derived need with a stored row across surface forms (canonical-id join)", async () => {
+    const h = sqliteEnv([T]);
+    seedAlias(h);
+    seedRecipe(h, "soup", ["green-onion"]); // the projected facet carries the canonical id
+    seedPlan(h, "soup");
+    await addGroceryRow(h.env, T, { name: "Scallions" }, TODAY); // stored under the alias's id
+
+    const view = await computeToBuyView(h.env, T);
+    expect(view.to_buy).toHaveLength(1);
+    expect(view.to_buy[0].origin).toBe("both");
+    expect(view.to_buy[0].key).toBe("green-onion");
+  });
+
+  it("a pantry item covers a derived need across surface forms, with verify metadata joined", async () => {
+    const h = sqliteEnv([T]);
+    seedAlias(h);
+    seedRecipe(h, "soup", ["green-onion", "chicken"]);
+    seedPlan(h, "soup");
+    seedPantry(h, "Green onion", "green-onion", { quantity: "1 bunch", category: "produce", last_verified_at: "2026-06-20" });
+
+    const view = await computeToBuyView(h.env, T);
+    expect(view.to_buy.map((l) => l.name)).toEqual(["chicken"]); // green-onion diverted to coverage
+    expect(view.pantry_covered).toHaveLength(1);
+    expect(view.pantry_covered[0].for_recipes).toEqual(["soup"]);
+    expect(view.pantry_covered[0].on_hand).toEqual({
+      quantity: "1 bunch",
+      category: "produce",
+      last_verified_at: "2026-06-20",
+    });
+  });
+
+  it("returns the in_cart rows (the stale-cart signal) without them entering to_buy", async () => {
+    const h = sqliteEnv([T]);
+    await addGroceryRow(h.env, T, { name: "olive oil" }, TODAY);
+    await updateGroceryRow(h.env, T, "olive oil", { status: "in_cart" }, TODAY);
+    await addGroceryRow(h.env, T, { name: "salt" }, TODAY);
+
+    const view = await computeToBuyView(h.env, T);
+    expect(view.in_cart).toEqual([{ name: "olive oil", added_at: TODAY }]);
+    expect(view.to_buy.map((l) => l.name)).toEqual(["salt"]);
+  });
+
+  it("writes NOTHING: repeated reads return the same lines and leave every table untouched", async () => {
+    const h = sqliteEnv([T]);
+    seedRecipe(h, "stew", ["chicken", "mystery leaf"]);
+    seedPlan(h, "stew");
+    await addGroceryRow(h.env, T, { name: "salt" }, TODAY);
+
+    const snapshot = (table: string) => JSON.stringify(h.rows(table));
+    const before = {
+      grocery: snapshot("grocery_list"),
+      pantry: snapshot("pantry"),
+      plan: snapshot("meal_plan"),
+      novel: snapshot("novel_ingredient_terms"),
+    };
+    const a = await computeToBuyView(h.env, T);
+    const b = await computeToBuyView(h.env, T);
+    expect(b).toEqual(a);
+    expect(snapshot("grocery_list")).toBe(before.grocery);
+    expect(snapshot("pantry")).toBe(before.pantry);
+    expect(snapshot("meal_plan")).toBe(before.plan);
+    // Resolve-only context: even the novel "mystery leaf" term is NOT captured by a read.
+    expect(snapshot("novel_ingredient_terms")).toBe(before.novel);
+  });
+
+  it("keeps a non-food row on its normalizeName key (never the capture funnel)", async () => {
+    const h = sqliteEnv([T]);
+    await addGroceryRow(h.env, T, { name: "AA Batteries", kind: "household" }, TODAY);
+    const view = await computeToBuyView(h.env, T);
+    expect(view.to_buy[0].key).toBe(normalizeName("AA Batteries"));
+    expect(view.to_buy[0].origin).toBe("list");
+  });
+
+  it("still serves the view when the resolver read degrades (empty context)", async () => {
+    const h = sqliteEnv([T]);
+    seedRecipe(h, "stew", ["chicken"]);
+    seedPlan(h, "stew");
+    // Break ONLY the resolver tables' read; session tables keep working.
+    const realPrepare = (h.env.DB as D1Database).prepare.bind(h.env.DB as D1Database);
+    const env = {
+      ...h.env,
+      DB: {
+        prepare(sql: string) {
+          if (/ingredient_identity|ingredient_alias/.test(sql)) throw new Error("D1_ERROR: blip");
+          return realPrepare(sql);
+        },
+        batch: (h.env.DB as D1Database).batch.bind(h.env.DB as D1Database),
+      },
+    } as unknown as Env;
+    const view = await computeToBuyView(env, T);
+    expect(view.to_buy.map((l) => l.name)).toEqual(["chicken"]);
+  });
+});

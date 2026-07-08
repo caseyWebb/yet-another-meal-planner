@@ -11,26 +11,26 @@ pieces by role and the implementer binds to the landed actuals.
 
 ## 1. Worker: the `ingredients_full` derived facet (D2)
 
-- [ ] 1.1 Migration (`packages/worker/migrations/d1/`, next number — 0040 at authoring): add
+- [x] 1.1 Migration (`packages/worker/migrations/d1/`, next number — 0040 at authoring): add
   `ingredients_full TEXT` (JSON array, NULL until derived) to `recipe_facets` **and**
   `recipes`, then `UPDATE recipe_facets SET body_hash = NULL` — the gate-clear that makes the
   bounded classify pass re-derive the corpus organically (no manual backfill). Update
   `docs/SCHEMAS.md`'s `recipes` + `recipe_facets` sections in the same commit.
-- [ ] 1.2 `discovery-classify.ts`: add `ingredients_full` to the classifier's output fields,
+- [x] 1.2 `discovery-classify.ts`: add `ingredients_full` to the classifier's output fields,
   prompt instruction ("EVERY ingredient the body lists — plain names, no quantities, no prep
   clauses, no optional-markers; a disjunctive line records its primary"), the few-shot
   examples, and the contract validator (required non-empty string array on a classify;
   superset-of-`ingredients_key` is NOT enforced — the two are independent outputs).
-- [ ] 1.3 `recipe-facets.ts` + `recipe-classify.ts`: carry the field through
+- [x] 1.3 `recipe-facets.ts` + `recipe-classify.ts`: carry the field through
   `ClassifiedFacets`/`EMPTY_FACETS`, `extractFacets` (normalize via `normalizeIngredientList`
   + `ctx.resolveList` capture, exactly as `ingredients_key`), `facetBinds`/`UPSERT_SQL`, and
   both import-time seed paths (`seedRecipeFacets`, `seedClassifiedFacets`). Tier A: no vault
   control, no authored override (`facetGateHash` inputs unchanged).
-- [ ] 1.4 `recipe-projection.ts` + `recipe-index.ts`: project `ingredients_full` into
+- [x] 1.4 `recipe-projection.ts` + `recipe-index.ts`: project `ingredients_full` into
   `recipes` (JSON column list + the effective-facet merge as Tier A) and re-resolve it
   through the current resolver at each projection alongside
   `ingredients_key`/`perishable_ingredients`; index read reconstruction mirrors the column.
-- [ ] 1.5 Unit tests (`packages/worker/test/`): classify-contract acceptance/rejection for the
+- [x] 1.5 Unit tests (`packages/worker/test/`): classify-contract acceptance/rejection for the
   new field; extract/normalize (prep-clause-free names resolve to canonical ids; novel terms
   enqueue); projection round-trip + re-resolution; seed paths carry the field; the gate-clear
   migration leaves every facet row stale (re-derivable) without touching stored values.

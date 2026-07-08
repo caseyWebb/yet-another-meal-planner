@@ -188,6 +188,33 @@ export async function markPantryVerifiedRows(
   return { verified, missing };
 }
 
+/** One pantry row's verify metadata, keyed for the to-buy view's coverage join. */
+export interface PantryMeta {
+  name: string;
+  quantity: string | null;
+  category: string | null;
+  last_verified_at: string | null;
+}
+
+/**
+ * The caller's pantry rows keyed by their stored `normalized_name` (the canonical id) —
+ * the to-buy view's `pantry_covered` join (member-app-grocery D3): a covered line carries
+ * the pantry row's quantity/category/last-verified so verification nudges are renderable.
+ * Read directly by the stored key (no re-resolution), like `readGroceryKeyIndex`.
+ */
+export async function readPantryByKey(env: Env, tenant: string): Promise<Map<string, PantryMeta>> {
+  const rows = await db(env).all<{ name: string; normalized_name: string } & Omit<PantryMeta, "name">>(
+    "SELECT name, normalized_name, quantity, category, last_verified_at FROM pantry WHERE tenant = ?1",
+    tenant,
+  );
+  return new Map(
+    rows.map((r) => [
+      r.normalized_name,
+      { name: r.name, quantity: r.quantity, category: r.category, last_verified_at: r.last_verified_at },
+    ]),
+  );
+}
+
 /** The caller's pantry item names, normalized — for the order-time set algebra. */
 export async function readPantryNames(env: Env, tenant: string): Promise<Set<string>> {
   const rows = await db(env).all<{ normalized_name: string }>(
