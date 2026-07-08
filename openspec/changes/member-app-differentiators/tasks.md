@@ -144,11 +144,11 @@ and the implementer binds to the landed actuals (e.g. `buildOrderWiring`, `compu
 
 ## 7. Docs in lockstep, same pass
 
-- [ ] 7.1 `docs/TOOLS.md`: `suggest_substitutions` entry; `read_to_buy` `with_aisles`;
+- [x] 7.1 `docs/TOOLS.md`: `suggest_substitutions` entry; `read_to_buy` `with_aisles`;
   `place_order` commit-semantics note (refresh-on-difference, aisle capture).
-- [ ] 7.2 `docs/SCHEMAS.md`: `sku_cache` aisle columns (write points, convergence posture,
+- [x] 7.2 `docs/SCHEMAS.md`: `sku_cache` aisle columns (write points, convergence posture,
   NULL until an order resolves the line at that location).
-- [ ] 7.3 `docs/ARCHITECTURE.md`: the multi-tenancy paragraph names the group-wide trending
+- [x] 7.3 `docs/ARCHITECTURE.md`: the multi-tenancy paragraph names the group-wide trending
   read (counts only) beside the cross-tenant flyer cache; the substitution read as a
   capture→retrieve→narrow instance (graph proposes + labels, LLM/member judges).
 
