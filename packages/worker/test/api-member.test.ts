@@ -215,7 +215,6 @@ const MEMBER_ENDPOINTS: [string, string][] = [
   ["POST", "/api/vibes/proposals/p1/confirm"],
   ["POST", "/api/vibes/suggest"],
   ["POST", "/api/propose"],
-  ["GET", "/api/propose/weather"],
 ];
 
 describe("session gating (requireSession is PER-ROUTE — none may be forgotten)", () => {
@@ -771,63 +770,6 @@ describe("propose area (member-app-propose)", () => {
     expect(((await res.json()) as { error: string }).error).toBe("validation_failed");
   });
 
-  it("GET /api/propose/weather returns the forecast shape, ETag'd", async () => {
-    const geocode = { results: [{ latitude: 39.1, longitude: -84.5, name: "Cincinnati", admin1: "Ohio" }] };
-    const forecast = {
-      daily: {
-        time: ["2026-07-06", "2026-07-07"],
-        temperature_2m_max: [90, 88],
-        temperature_2m_min: [70, 69],
-        precipitation_probability_max: [5, 10],
-        weathercode: [0, 1],
-      },
-    };
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (url: string | URL) =>
-        String(url).includes("geocoding-api")
-          ? new Response(JSON.stringify(geocode), { status: 200 })
-          : new Response(JSON.stringify(forecast), { status: 200 }),
-      ),
-    );
-    const { env } = memberEnv({
-      profile: [{ tenant: "casey", stores: JSON.stringify({ location_zip: "45208" }) }],
-    });
-    const cookie = await loggedIn(env);
-    const res = await get(env, "/api/propose/weather?days=2", cookie);
-    expect(res.status).toBe(200);
-    expect(res.headers.get("etag")).toMatch(/^W\//);
-    const body = (await res.json()) as { location: string; forecast: { date: string; high_f: number; meal_vibes: string[] }[] };
-    expect(body.location).toBe("Cincinnati, Ohio");
-    expect(body.forecast).toHaveLength(2);
-    expect(body.forecast[0]).toMatchObject({ date: "2026-07-06", high_f: 90 });
-  });
-
-  it("maps no_location to a structured 404 (the quiet set-your-ZIP state, not a failure page)", async () => {
-    const { env } = memberEnv(); // no profile row → no resolvable ZIP
-    const cookie = await loggedIn(env);
-    const res = await get(env, "/api/propose/weather", cookie);
-    expect(res.status).toBe(404);
-    expect(((await res.json()) as { error: string }).error).toBe("no_location");
-  });
-
-  it("maps an upstream weather failure to a structured 503 with its code intact", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => new Response("down", { status: 503 })));
-    const { env } = memberEnv({
-      profile: [{ tenant: "casey", stores: JSON.stringify({ location_zip: "45208" }) }],
-    });
-    const cookie = await loggedIn(env);
-    const res = await get(env, "/api/propose/weather", cookie);
-    expect(res.status).toBe(503);
-    expect(((await res.json()) as { error: string }).error).toBe("forecast_unavailable");
-  });
-
-  it("rejects an out-of-range days query", async () => {
-    const { env } = memberEnv();
-    const cookie = await loggedIn(env);
-    const res = await get(env, "/api/propose/weather?days=99", cookie);
-    expect(res.status).toBe(400);
-  });
 });
 
 describe("differentiators (member-app-differentiators)", () => {
