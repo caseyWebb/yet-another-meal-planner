@@ -1,0 +1,39 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": [
+    "react",
+    "import",
+    "typescript"
+  ],
+  "categories": {
+    "correctness": "error",
+    "suspicious": "warn"
+  },
+  "rules": {
+    "no-restricted-imports": [
+      "warn",
+      {
+        "patterns": [
+          {
+            "group": [
+              "@grocery-agent/ui/src/*"
+            ],
+            "message": "Import design-system components from '@grocery-agent/ui', not component internals."
+          }
+        ]
+      }
+    ],
+    "react/react-in-jsx-scope": "off",
+    "import/no-unassigned-import": [
+      "warn",
+      {
+        "allow": [
+          "**/*.css"
+        ]
+      }
+    ]
+  },
+  "ignorePatterns": [
+    "**/routeTree.gen.ts"
+  ]
+}

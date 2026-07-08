@@ -1,0 +1,23 @@
+{
+  // The admin SPA's typecheck-only pass (Vite/Rolldown does the building). DOM lib + react-jsx;
+  // @cloudflare/workers-types is loaded so the TYPE-ONLY import of the Worker's AdminApp
+  // resolves (src/env.ts globals) under the DOM lib, with skipLibCheck suppressing the
+  // DOM-vs-workers global overlaps — the packages/app precedent.
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": ["@cloudflare/workers-types", "vite/client"],
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "verbatimModuleSyntax": true,
+    "jsx": "react-jsx"
+  },
+  "include": ["src"]
+}

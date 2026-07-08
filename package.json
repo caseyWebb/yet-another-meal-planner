@@ -28,7 +28,7 @@
     "dev:app": "node scripts/dev-app.mjs",
     "deploy": "aube --filter @grocery-agent/worker run deploy",
     "typecheck": "aube --recursive run typecheck",
-    "test": "aube --filter @grocery-agent/worker --filter @grocery-agent/satellite run test",
+    "test": "aube --filter @grocery-agent/worker --filter @grocery-agent/satellite --filter @grocery-agent/admin-app run test",
     "test:tooling": "aube --filter @grocery-agent/worker run test:tooling",
     "test:admin": "aube --filter @grocery-agent/worker run test:admin",
     "test:app": "aube --filter @grocery-agent/worker run test:app",
