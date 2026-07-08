@@ -145,19 +145,19 @@ pieces by role and the implementer binds to the landed actuals.
 
 ## 7. Persona consolidation (D10 — `packages/worker/AGENT_INSTRUCTIONS.md` only; bundle is generated)
 
-- [ ] 7.1 "The grocery list and the cart": plan ingredients are never hand-copied; the
+- [x] 7.1 "The grocery list and the cart": plan ingredients are never hand-copied; the
   derived to-buy set follows the plan; `read_to_buy` is the shop-time read.
-- [ ] 7.2 Menu-request skill: step 6 → post-save `read_to_buy` review (pantry-covered verify
+- [x] 7.2 Menu-request skill: step 6 → post-save `read_to_buy` review (pantry-covered verify
   nudges, optional-ingredient asks, underived honesty; `read_recipe`/`read_recipe_notes` kept
   for cooking judgment/notes); step 8 → `update_meal_plan` + only open-world-side
   ingredients/extras/materializations via `add_to_grocery_list` (doubling = materialized
   quantity annotation + note); the per-ingredient expansion text deleted.
-- [ ] 7.3 Shop-groceries: all branches open with `read_to_buy` (+ profile); Kroger online —
+- [x] 7.3 Shop-groceries: all branches open with `read_to_buy` (+ profile); Kroger online —
   stale-cart from the view's `in_cart`, preview without bulk `menu_needs`, dispositions
   unchanged, "skip it" → `exclude`; in-store/map+walk branches walk the `to_buy` lines
   (attribution shown; picked virtual line completes via pantry restock — no row to remove);
   satellite branch text now true as written (pull-list carries derived needs).
-- [ ] 7.4 `aubr build:plugin -- --check` (source validation; nothing generated is committed);
+- [x] 7.4 `aubr build:plugin -- --check` (source validation; nothing generated is committed);
   read the diff against the tool/skill ownership boundary (descriptions own guarantees,
   skills own flow).
 
