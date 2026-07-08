@@ -130,15 +130,15 @@ and the implementer binds to the landed actuals (e.g. `buildOrderWiring`, `compu
 
 ## 6. Persona (`packages/worker/AGENT_INSTRUCTIONS.md`) (D4, D6)
 
-- [ ] 6.1 Shop-groceries, Kroger-online branch: a **substitutions pass** at preview — call
+- [x] 6.1 Shop-groceries, Kroger-online branch: a **substitutions pass** at preview — call
   `suggest_substitutions` for the to-buy lines, present cheaper/on-sale/out-of-stock findings
   and labeled siblings, map accepted swaps to `overrides` (same-identity) or
   add/remove/materialize+`exclude` (cross-ingredient) before commit; judgment (fitness for
   the dish, "lower fat"-style reasoning) stays the agent's, grounded in the tool's data.
-- [ ] 6.2 Kroger in-store walk / map+walk branches: read `read_to_buy` with `with_aisles` when
+- [x] 6.2 Kroger in-store walk / map+walk branches: read `read_to_buy` with `with_aisles` when
   the primary is Kroger; walk captured placements aisle-by-aisle, store-note `location` pins
   still winning; unchanged degradation for lines without placements and non-Kroger stores.
-- [ ] 6.3 Tool descriptions in the same pass (the ownership boundary): `suggest_substitutions`
+- [x] 6.3 Tool descriptions in the same pass (the ownership boundary): `suggest_substitutions`
   (what/guarantees per 2.3), `read_to_buy` (param addendum per 3.2), `place_order` (mapping
   commit now refreshes learned fields incl. aisle placement).
 
