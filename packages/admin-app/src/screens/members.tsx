@@ -165,7 +165,11 @@ function RowMenu({
           <MoreIcon size={16} />
         </Button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="end">
+      {/* The row is a <Link>; a menu-item click bubbles up the REACT tree (Radix portals the
+          content in the DOM, but synthetic events still propagate to React ancestors) and would
+          trigger the row's navigation. Stop it here so Rotate/Revoke run without leaving the page —
+          the trigger button guards its own click the same way. */}
+      <DropdownMenuContent align="end" onClick={(e) => e.stopPropagation()}>
         <DropdownMenuItem disabled={busy} onSelect={onRotate}>
           <KeyIcon size={13} /> {busyOp?.kind === "rotate" && busyOp.id === m.id ? "Rotating…" : "Rotate invite"}
         </DropdownMenuItem>

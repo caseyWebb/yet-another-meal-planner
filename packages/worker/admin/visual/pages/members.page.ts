@@ -35,6 +35,34 @@ export class MembersPage extends AdminPage {
     return this.page.locator("a.item-link", { hasText: `@${id}` }).first();
   }
 
+  /** A member row's per-row actions menu trigger (the ⋯ button inside the row link). */
+  rowMenuTrigger(id: string): Locator {
+    return this.rosterRow(id).getByRole("button", { name: "Member actions" });
+  }
+
+  /** Open a member's per-row actions menu; returns the opened (portaled) menu. */
+  async openRowMenu(id: string): Promise<Locator> {
+    await this.rowMenuTrigger(id).click();
+    const menu = this.page.getByRole("menu");
+    await expect(menu).toBeVisible();
+    return menu;
+  }
+
+  /** A menu item by its accessible name ("Rotate invite" / "Revoke invite" | "Revoke access"). */
+  menuItem(name: string): Locator {
+    return this.page.getByRole("menuitem", { name });
+  }
+
+  /** The once-shown minted-credentials banner (a rotate/onboard result). */
+  get mintedBanner(): Locator {
+    return this.page.locator(".minted");
+  }
+
+  /** The revoke confirmation (the shared Radix AlertDialog). */
+  revokeDialog(): Locator {
+    return this.page.getByRole("alertdialog", { name: "Revoke member" });
+  }
+
   memberDetail(id: string): MemberDetailPage {
     return new MemberDetailPage(this.page, id);
   }
