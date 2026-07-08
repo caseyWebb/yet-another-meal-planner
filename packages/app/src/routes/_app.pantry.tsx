@@ -5,7 +5,6 @@
 // per-row queries).
 import * as React from "react";
 import { createFileRoute } from "@tanstack/react-router";
-import { useQueryClient, type QueryClient } from "@tanstack/react-query";
 import {
   Button,
   EmptyState,
@@ -15,31 +14,14 @@ import {
   IconPlus,
   IconTrash,
   PageHead,
-  toast,
 } from "@grocery-agent/ui";
-import { api } from "../lib/api";
 import { usePantry, type PantryRow } from "../lib/data";
+import { usePantryOps, usePantryVerify } from "../lib/mutations";
 import { PERISHABLE, STALE_DAYS, daysSince } from "../lib/format";
 
 export const Route = createFileRoute("/_app/pantry")({
   component: PantryPage,
 });
-
-async function pantryOps(qc: QueryClient, operations: unknown[]): Promise<boolean> {
-  const res = await api.api.pantry.ops.$post({ json: { operations } }).catch(() => null);
-  if (!res?.ok) {
-    toast("Couldn't update the pantry — try again");
-    return false;
-  }
-  await qc.invalidateQueries({ queryKey: ["pantry"] });
-  return true;
-}
-
-async function verifyItems(qc: QueryClient, items: string[]): Promise<void> {
-  const res = await api.api.pantry.verify.$post({ json: { items } }).catch(() => null);
-  if (!res?.ok) toast("Couldn't verify — try again");
-  await qc.invalidateQueries({ queryKey: ["pantry"] });
-}
 
 function isStale(p: PantryRow): boolean {
   return (
@@ -104,14 +86,15 @@ function PantryPage() {
 }
 
 function PantryItem({ item, stale = false }: { item: PantryRow; stale?: boolean }) {
-  const qc = useQueryClient();
+  const pantryOps = usePantryOps();
+  const pantryVerify = usePantryVerify();
   const [qty, setQty] = React.useState(item.quantity ?? "");
   React.useEffect(() => setQty(item.quantity ?? ""), [item.quantity]);
 
   // Qty edit is the pantry `add` upsert (canonical-id keyed, merge rule preserves added_at).
-  async function commitQty() {
+  function commitQty() {
     if ((item.quantity ?? "") === qty) return;
-    await pantryOps(qc, [{ op: "add", item: { name: item.name, quantity: qty, category: item.category } }]);
+    pantryOps.mutate({ operations: [{ op: "add", item: { name: item.name, quantity: qty, category: item.category } }] });
   }
 
   return (
@@ -137,7 +120,7 @@ function PantryItem({ item, stale = false }: { item: PantryRow; stale?: boolean 
         }}
       />
       {stale ? (
-        <Button size="sm" variant="outline" data-testid="pantry-verify" onClick={() => void verifyItems(qc, [item.name])}>
+        <Button size="sm" variant="outline" data-testid="pantry-verify" onClick={() => pantryVerify.mutate({ items: [item.name] })}>
           <IconCheck /> Verify
         </Button>
       ) : (
@@ -146,7 +129,7 @@ function PantryItem({ item, stale = false }: { item: PantryRow; stale?: boolean 
           className="icon-btn"
           title="Mark verified today"
           data-testid="pantry-verify"
-          onClick={() => void verifyItems(qc, [item.name])}
+          onClick={() => pantryVerify.mutate({ items: [item.name] })}
         >
           <IconCheck />
         </button>
@@ -156,7 +139,7 @@ function PantryItem({ item, stale = false }: { item: PantryRow; stale?: boolean 
         className="icon-btn"
         title="Remove"
         data-testid="pantry-remove"
-        onClick={() => void pantryOps(qc, [{ op: "remove", name: item.name }])}
+        onClick={() => pantryOps.mutate({ operations: [{ op: "remove", name: item.name }] })}
       >
         <IconTrash />
       </button>
@@ -165,29 +148,30 @@ function PantryItem({ item, stale = false }: { item: PantryRow; stale?: boolean 
 }
 
 function AddForm() {
-  const qc = useQueryClient();
+  const pantryOps = usePantryOps();
   const [name, setName] = React.useState("");
   const [category, setCategory] = React.useState("");
   const [qty, setQty] = React.useState("");
 
-  async function onSubmit(e: React.FormEvent) {
+  function onSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!name.trim()) return;
-    const ok = await pantryOps(qc, [
-      {
-        op: "add",
-        item: {
-          name: name.trim(),
-          category: category.trim().toLowerCase() || "other",
-          ...(qty.trim() ? { quantity: qty.trim() } : {}),
+    // Fire-and-clear (offline it queues; failures toast via the registered defaults).
+    pantryOps.mutate({
+      operations: [
+        {
+          op: "add",
+          item: {
+            name: name.trim(),
+            category: category.trim().toLowerCase() || "other",
+            ...(qty.trim() ? { quantity: qty.trim() } : {}),
+          },
         },
-      },
-    ]);
-    if (ok) {
-      setName("");
-      setCategory("");
-      setQty("");
-    }
+      ],
+    });
+    setName("");
+    setCategory("");
+    setQty("");
   }
 
   return (

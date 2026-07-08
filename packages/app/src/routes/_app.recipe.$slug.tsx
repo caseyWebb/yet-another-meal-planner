@@ -5,7 +5,6 @@
 // shared notes read-only), and Similar recipes — the design bundle's detail page.
 import * as React from "react";
 import { Link, createFileRoute, useLoaderData } from "@tanstack/react-router";
-import { useQueryClient } from "@tanstack/react-query";
 import {
   Button,
   Crumbs,
@@ -26,10 +25,7 @@ import {
   Textarea,
   toast,
 } from "@grocery-agent/ui";
-import { api } from "../lib/api";
 import {
-  applyPlanOps,
-  setFavorite,
   useNotes,
   useOverlay,
   usePlan,
@@ -37,6 +33,14 @@ import {
   useSimilar,
   type NoteRow,
 } from "../lib/data";
+import {
+  useLogAdd,
+  useNoteAdd,
+  useNoteEdit,
+  useNoteRemove,
+  usePlanOps,
+  useSetFavorite,
+} from "../lib/mutations";
 import { RecipeList } from "../components/recipe-list";
 import { mdToHtml } from "../lib/md";
 import { relAge, isoToday } from "../lib/format";
@@ -47,8 +51,10 @@ export const Route = createFileRoute("/_app/recipe/$slug")({
 
 function RecipeDetailPage() {
   const { slug } = Route.useParams();
-  const qc = useQueryClient();
   const recipe = useRecipe(slug);
+  const planOps = usePlanOps();
+  const favorite = useSetFavorite();
+  const logAdd = useLogAdd();
   const similar = useSimilar(slug);
   const notes = useNotes(slug);
   const overlay = useOverlay();
@@ -89,27 +95,17 @@ function RecipeDetailPage() {
   const timeTotal = typeof fm.time_total === "number" ? fm.time_total : null;
   const source = typeof fm.source === "string" ? fm.source : null;
 
-  async function onAddToPlan() {
-    try {
-      await applyPlanOps(qc, [{ op: "add", recipe: slug }]);
-      toast("Added to meal plan");
-    } catch {
-      toast("Couldn't update the plan — try again");
-    }
+  function onAddToPlan() {
+    planOps.mutate({ ops: [{ op: "add", recipe: slug }] }, { onSuccess: () => toast("Added to meal plan") });
   }
 
-  async function onLogCooked() {
-    const res = await api.api.log
-      .$post({ json: { type: "recipe", recipe: slug, date: isoToday() } })
-      .catch(() => null);
-    if (res?.ok) {
-      toast("Logged as cooked");
-      await qc.invalidateQueries({ queryKey: ["log"] });
-      await qc.invalidateQueries({ queryKey: ["plan"] }); // a cook clears its planned row
-      await qc.invalidateQueries({ queryKey: ["vibes"] }); // …and advances last_satisfied
-    } else {
-      toast("Couldn't log the cook — try again");
-    }
+  function onLogCooked() {
+    // Registry mutation: the defaults invalidate log/plan/vibes on settle (a cook
+    // clears its planned row and advances last_satisfied).
+    logAdd.mutate(
+      { type: "recipe", recipe: slug, date: isoToday() },
+      { onSuccess: () => toast("Logged as cooked") },
+    );
   }
 
   return (
@@ -131,7 +127,7 @@ function RecipeDetailPage() {
             aria-pressed={fav}
             title={fav ? "Unfavorite" : "Favorite"}
             data-testid="detail-fav"
-            onClick={() => setFavorite(qc, slug, !fav).catch(() => toast("Couldn't update favorites"))}
+            onClick={() => favorite.mutate({ slug, favorite: !fav })}
           >
             {fav ? <IconHeartFill /> : <IconHeart />}
           </button>
@@ -192,7 +188,7 @@ function RecipeDetailPage() {
 // --- notes (D14: own editable incl. private; community read-only) ----------------
 
 function NotesSection({ slug, notes }: { slug: string; notes: NoteRow[] }) {
-  const qc = useQueryClient();
+  const noteAdd = useNoteAdd();
   const session = useSessionTenant();
   const mine = notes.filter((n) => n.author === session);
   const community = notes.filter((n) => n.author !== session && !n.private);
@@ -201,28 +197,21 @@ function NotesSection({ slug, notes }: { slug: string; notes: NoteRow[] }) {
   const [tag, setTag] = React.useState("");
   const [priv, setPriv] = React.useState(false);
 
-  async function addNote(e: React.FormEvent) {
+  function addNote(e: React.FormEvent) {
     e.preventDefault();
     if (!body.trim()) return;
-    // Client-minted created_at is the idempotency key (D8/D14).
-    const args = {
-      param: { slug },
-      json: {
-        body: body.trim(),
-        tags: tag.trim() ? [tag.trim()] : [],
-        private: priv,
-        created_at: new Date().toISOString(),
-      },
-    };
-    const res = await api.api.cookbook.recipes[":slug"].notes.$post(args).catch(() => null);
-    if (res?.ok) {
-      setBody("");
-      setTag("");
-      setPriv(false);
-      await qc.invalidateQueries({ queryKey: ["cookbook", "notes", slug] });
-    } else {
-      toast("Couldn't add the note — try again");
-    }
+    // Client-minted created_at is the idempotency key (D8/D14) — a replayed queued
+    // delivery upserts, never duplicates. Fire-and-clear.
+    noteAdd.mutate({
+      slug,
+      body: body.trim(),
+      tags: tag.trim() ? [tag.trim()] : [],
+      private: priv,
+      created_at: new Date().toISOString(),
+    });
+    setBody("");
+    setTag("");
+    setPriv(false);
   }
 
   return (
@@ -278,26 +267,18 @@ function NotesSection({ slug, notes }: { slug: string; notes: NoteRow[] }) {
 }
 
 function OwnNote({ slug, note }: { slug: string; note: NoteRow }) {
-  const qc = useQueryClient();
+  const noteEdit = useNoteEdit();
+  const noteRemove = useNoteRemove();
   const [editing, setEditing] = React.useState(false);
   const [draft, setDraft] = React.useState(note.body);
 
-  async function save() {
-    const args = { param: { slug, created_at: note.created_at }, json: { body: draft.trim() } };
-    const res = await api.api.cookbook.recipes[":slug"].notes[":created_at"].$patch(args).catch(() => null);
-    if (res?.ok) {
-      setEditing(false);
-      await qc.invalidateQueries({ queryKey: ["cookbook", "notes", slug] });
-    } else {
-      toast("Couldn't save the note — try again");
-    }
+  function save() {
+    noteEdit.mutate({ slug, created_at: note.created_at, body: draft.trim() });
+    setEditing(false);
   }
 
-  async function remove() {
-    const res = await api.api.cookbook.recipes[":slug"].notes[":created_at"]
-      .$delete({ param: { slug, created_at: note.created_at } })
-      .catch(() => null);
-    if (res?.ok) await qc.invalidateQueries({ queryKey: ["cookbook", "notes", slug] });
+  function remove() {
+    noteRemove.mutate({ slug, created_at: note.created_at });
   }
 
   return (

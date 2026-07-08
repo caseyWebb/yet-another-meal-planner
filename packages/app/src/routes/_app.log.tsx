@@ -5,7 +5,6 @@
 // empty state matters.
 import * as React from "react";
 import { Link, createFileRoute } from "@tanstack/react-router";
-import { useQueryClient } from "@tanstack/react-query";
 import {
   Button,
   EmptyState,
@@ -16,8 +15,8 @@ import {
   RecipeFacets,
   toast,
 } from "@grocery-agent/ui";
-import { api } from "../lib/api";
 import { useIndex, useLog, type LogRow } from "../lib/data";
+import { useLogAdd, useLogRemove } from "../lib/mutations";
 import { fmtDay, isoToday } from "../lib/format";
 
 export const Route = createFileRoute("/_app/log")({
@@ -27,26 +26,21 @@ export const Route = createFileRoute("/_app/log")({
 function LogPage() {
   const log = useLog();
   const index = useIndex();
-  const qc = useQueryClient();
+  const logAdd = useLogAdd();
   const [slug, setSlug] = React.useState("");
 
   const entries = log.data?.entries ?? [];
 
-  async function logCook(e: React.FormEvent) {
+  function logCook(e: React.FormEvent) {
     e.preventDefault();
     if (!slug) return;
-    const res = await api.api.log
-      .$post({ json: { type: "recipe", recipe: slug, date: isoToday() } })
-      .catch(() => null);
-    if (res?.ok) {
-      toast("Logged as cooked");
-      setSlug("");
-      await qc.invalidateQueries({ queryKey: ["log"] });
-      await qc.invalidateQueries({ queryKey: ["plan"] }); // logging clears the planned row
-      await qc.invalidateQueries({ queryKey: ["vibes"] });
-    } else {
-      toast("Couldn't log the cook — try again");
-    }
+    // Registry mutation: defaults invalidate log/plan/vibes on settle; the server's
+    // (date,type,recipe) dedupe makes a replayed delivery converge.
+    logAdd.mutate(
+      { type: "recipe", recipe: slug, date: isoToday() },
+      { onSuccess: () => toast("Logged as cooked") },
+    );
+    setSlug("");
   }
 
   const head = (
@@ -86,13 +80,10 @@ function LogPage() {
 }
 
 function LogRowView({ entry }: { entry: LogRow }) {
-  const qc = useQueryClient();
+  const logRemove = useLogRemove();
 
-  async function remove() {
-    const res = await api.api.log[":id"].$delete({ param: { id: String(entry.id) } }).catch(() => null);
-    if (!res?.ok) toast("Couldn't remove the entry — try again");
-    await qc.invalidateQueries({ queryKey: ["log"] });
-    await qc.invalidateQueries({ queryKey: ["vibes"] }); // derived recency heals organically
+  function remove() {
+    logRemove.mutate({ id: entry.id });
   }
 
   const title = entry.title ?? entry.name ?? entry.recipe ?? "—";

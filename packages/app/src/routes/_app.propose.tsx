@@ -9,7 +9,6 @@
 // clears the session and lands on the plan page.
 import * as React from "react";
 import { Link, createFileRoute, useNavigate } from "@tanstack/react-router";
-import { useQueryClient } from "@tanstack/react-query";
 import {
   Button,
   Crumbs,
@@ -27,7 +26,9 @@ import {
   type SlotPanel,
   type WeatherStripDay,
 } from "@grocery-agent/ui";
-import { applyPlanOps, useIndex, usePlan, useProfile, useVibes, type PlanOp } from "../lib/data";
+import { useIndex, usePlan, useProfile, useVibes, type PlanOp } from "../lib/data";
+import { usePlanOps } from "../lib/mutations";
+import { useOnline } from "../lib/online";
 import {
   buildRequest,
   dayCategory,
@@ -51,7 +52,8 @@ function ProposePage() {
   const profile = useProfile();
   const plan = usePlan();
   const weather = useProposeWeather();
-  const qc = useQueryClient();
+  const planOps = usePlanOps();
+  const online = useOnline();
   const navigate = useNavigate();
 
   const [session, setSessionState] = React.useState<ProposeSession | null>(loadSession);
@@ -129,7 +131,8 @@ function ProposePage() {
         <div className="pc-actions">
           {session ? (
             <>
-              <RerollButton onClick={() => update((s) => ({ ...s, seed: s.seed + 1 }))} />
+              {/* Propose is an online query (D5): re-rolling needs the server. */}
+              <RerollButton disabled={!online} onClick={() => update((s) => ({ ...s, seed: s.seed + 1 }))} />
               <Button variant="outline" data-testid="propose-reset" onClick={() => setSession(null)}>
                 Start over
               </Button>
@@ -219,7 +222,9 @@ function ProposePage() {
           sides: s.payload.sides.map((x) => x.title),
           planned_for: dates[i],
         }));
-        await applyPlanOps(qc, ops);
+        // The commit is P1's class (b) plan-ops registry mutation; awaiting settle is
+        // fine here — the propose flow itself is online-only, so the commit runs live.
+        await planOps.mutateAsync({ ops });
         const skipped = filled.length - fresh.length;
         toast(
           `Committed ${fresh.length} night${fresh.length === 1 ? "" : "s"} to your meal plan${skipped ? ` — ${skipped} already there` : ""}`,

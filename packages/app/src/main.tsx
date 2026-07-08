@@ -12,7 +12,12 @@ import {
   shouldDehydrateQuery,
   shouldDehydrateMutation,
 } from "./lib/persist";
+import { registerMutationDefaults } from "./lib/mutations";
 import "./styles.css";
+
+// The class (b) registry's defaults must exist BEFORE restore: resumed paused
+// mutations re-bind their persisted variables to these functions by mutationKey.
+registerMutationDefaults(queryClient);
 
 // Prompt-posture service worker (registerType: "prompt"): registration only in P0 —
 // the update-prompt UX and offline layers are P5 (the callback seam is already here).

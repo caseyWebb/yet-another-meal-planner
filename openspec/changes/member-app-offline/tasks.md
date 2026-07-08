@@ -35,7 +35,7 @@ pieces by role and the implementer binds to the landed actuals.
 
 ## 2. The class (b) mutation registry (D4, D5)
 
-- [ ] 2.1 New `packages/app/src/lib/mutations.ts`: `registerMutationDefaults(queryClient)`
+- [x] 2.1 New `packages/app/src/lib/mutations.ts`: `registerMutationDefaults(queryClient)`
   installing `setMutationDefaults` for every registry row in design D4's table (grocery
   add/set/remove, pantry ops/verify, overlay favorite, plan ops, log add/remove, notes
   add/edit/remove, vibes add/remove, proposals confirm) — plain-JSON variables, `mutationFn`
@@ -45,10 +45,10 @@ pieces by role and the implementer binds to the landed actuals.
   per-op hooks (`useGrocerySet()` etc. — thin `useMutation({ mutationKey })` wrappers) and
   the registered-key set 1.2's `shouldDehydrateMutation` checks. Called from `main.tsx`
   before render (defaults must exist before restore/resume).
-- [ ] 2.2 `packages/app/src/lib/data.ts`: `setFavorite` / `applyPlanOps` become registry
+- [x] 2.2 `packages/app/src/lib/data.ts`: `setFavorite` / `applyPlanOps` become registry
   hooks (callers updated); `readWithEtag` and the class (a) write paths stay imperative
   (design D5 — never mutations).
-- [ ] 2.3 Convert the call sites (each page independently, same pattern: fire the registry
+- [x] 2.3 Convert the call sites (each page independently, same pattern: fire the registry
   hook's `mutate`, stop awaiting network settle for UI progression, keep per-item loops
   per-item): `_app.grocery.tsx` (in-cart set, add-row, materialize, buy-fresh, remove,
   clear-purchased, mark-order-placed, pantry verify nudge), `_app.pantry.tsx` (ops, verify),
@@ -58,7 +58,7 @@ pieces by role and the implementer binds to the landed actuals.
   proposal confirm). The online-only surfaces (order preview/commit, substitutions, suggest,
   session, class (a) editors, propose POST) are left as direct calls — verify none acquires
   a `mutationKey` (D5's construction).
-- [ ] 2.4 Offline affordance pass (design D10): `useOnline()` over `onlineManager`; the shell
+- [x] 2.4 Offline affordance pass (design D10): `useOnline()` over `onlineManager`; the shell
   offline pill (`data-testid="offline-pill"`); disable-with-hint on the order button, the
   substitutions button, vibe suggest, the class (a) editors, and propose re-roll while
   offline. Small chrome from existing tokens; flag for a Claude Design pass in the PR notes.

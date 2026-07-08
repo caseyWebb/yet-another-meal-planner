@@ -13,6 +13,13 @@ import * as React from "react";
 import { Link, createFileRoute } from "@tanstack/react-router";
 import { useQueryClient, type QueryClient } from "@tanstack/react-query";
 import {
+  useGroceryAdd,
+  useGroceryRemove,
+  useGrocerySet,
+  usePantryVerify,
+} from "../lib/mutations";
+import { useOnline } from "../lib/online";
+import {
   Button,
   EmptyState,
   FacetChip,
@@ -62,52 +69,14 @@ async function refreshGrocery(qc: QueryClient): Promise<void> {
   await qc.invalidateQueries({ queryKey: ["grocery"] });
 }
 
-/** EXPLICIT in-cart set (never a toggle — D8), optimistic on the stored-rows cache. */
-async function setInCart(qc: QueryClient, name: string, inCart: boolean): Promise<void> {
-  qc.setQueryData<{ items: GroceryRow[] }>(["grocery"], (cur) =>
-    cur
-      ? { items: cur.items.map((i) => (i.name === name ? { ...i, status: inCart ? "in_cart" : "active" } : i)) }
-      : cur,
-  );
-  const args = { param: { name }, json: { status: inCart ? "in_cart" : "active" } };
-  const res = await api.api.grocery.items[":name"].$patch(args).catch(() => null);
-  if (!res || !res.ok) {
-    if (res) toast((await apiError(res)).message);
-    else toast("Couldn't update the item — try again");
-  }
-  await refreshGrocery(qc);
-}
-
-async function removeItem(qc: QueryClient, name: string): Promise<void> {
-  const res = await api.api.grocery.items[":name"].$delete({ param: { name } }).catch(() => null);
-  if (!res?.ok) toast("Couldn't remove the item — try again");
-  await refreshGrocery(qc);
-}
-
 /**
  * MATERIALIZE a derived (plan-origin) line as an explicit `source:"menu"` row (D6): the
  * standard add upsert under the same canonical key, carrying the derived `for_recipes` —
  * so the stored row and the derived need merge (`origin:"both"` on the next read).
- * Class (b): replay-idempotent.
+ * Class (b): the registry's grocery-add variables.
  */
-async function materialize(qc: QueryClient, line: ToBuyLine, edits: { quantity?: string; note?: string } = {}): Promise<boolean> {
-  const res = await api.api.grocery.items
-    .$post({
-      json: {
-        name: line.name,
-        source: "menu",
-        for_recipes: line.for_recipes,
-        ...(edits.quantity ? { quantity: edits.quantity } : {}),
-        ...(edits.note ? { note: edits.note } : {}),
-      },
-    })
-    .catch(() => null);
-  if (!res?.ok) {
-    toast("Couldn't pin the item — try again");
-    return false;
-  }
-  await refreshGrocery(qc);
-  return true;
+function materializeVars(line: ToBuyLine): { name: string; source: string; for_recipes: string[] } {
+  return { name: line.name, source: "menu", for_recipes: line.for_recipes };
 }
 
 /** A grouped rendering of the to-buy lines: label + optional department sub-groups. */
@@ -190,6 +159,9 @@ function GroceryPage() {
   const toBuy = useToBuy(groupMode === "aisle");
   const profile = useProfile();
   const qc = useQueryClient();
+  const online = useOnline();
+  const setMutation = useGrocerySet();
+  const removeMutation = useGroceryRemove();
   const [orderOpen, setOrderOpen] = React.useState(false);
   // The substitutions panel (5.2) + the staged swap state it feeds the order commit:
   // per-session client state only (D4) — nothing persists until the order is placed.
@@ -251,29 +223,19 @@ function GroceryPage() {
     await refreshGrocery(qc);
   }
 
-  async function clearPurchased() {
-    // Received is terminal REMOVAL (docs/TOOLS.md): drop each in_cart row.
-    for (const g of inCart) {
-      await api.api.grocery.items[":name"].$delete({ param: { name: g.name } }).catch(() => null);
-    }
+  function clearPurchased() {
+    // Received is terminal REMOVAL (docs/TOOLS.md): drop each in_cart row — per-item
+    // registry mutations (each queues independently offline; replay stays row-wise).
+    for (const g of inCart) removeMutation.mutate({ name: g.name });
     toast("Purchased items cleared");
-    await refreshGrocery(qc);
   }
 
-  async function markOrderPlaced() {
+  function markOrderPlaced() {
     // The user-asserted in_cart → ordered advance, per item (class (b) explicit set);
-    // the shared W3 guard enforces the transition and stamps ordered_at.
-    let failed = 0;
-    for (const g of inCart) {
-      const args = { param: { name: g.name }, json: { status: "ordered" } };
-      const res = await api.api.grocery.items[":name"].$patch(args).catch(() => null);
-      if (!res?.ok) {
-        failed++;
-        if (res) toast((await apiError(res)).message);
-      }
-    }
-    if (!failed) toast("Order marked placed");
-    await refreshGrocery(qc);
+    // the shared W3 guard enforces the transition and stamps ordered_at. Failures
+    // surface through the registry's error toast.
+    for (const g of inCart) setMutation.mutate({ name: g.name, status: "ordered" });
+    toast("Order marked placed");
   }
 
   const groups: LineGroup[] =
@@ -304,11 +266,26 @@ function GroceryPage() {
               onChange={setGroupMode}
             />
           </div>
-          <Button variant="outline" size="sm" data-testid="subs-open" onClick={() => setSubsOpen(true)}>
+          {/* Substitutions + ordering are ONLINE-ONLY (D5/D10): disabled with a hint
+              offline, never queued — reconnect re-enables, nothing auto-fires. */}
+          <Button
+            variant="outline"
+            size="sm"
+            data-testid="subs-open"
+            disabled={!online}
+            title={online ? undefined : "You're offline — substitutions need the store"}
+            onClick={() => setSubsOpen(true)}
+          >
             <IconSwap /> Propose substitutions
           </Button>
           {krogerReady ? (
-            <Button size="sm" data-testid="order-open" onClick={() => setOrderOpen(true)}>
+            <Button
+              size="sm"
+              data-testid="order-open"
+              disabled={!online}
+              title={online ? undefined : "You're offline — ordering needs Kroger"}
+              onClick={() => setOrderOpen(true)}
+            >
               <IconCart /> Add all to Kroger cart
             </Button>
           ) : null}
@@ -372,10 +349,10 @@ function GroceryPage() {
               <div className="group-h-row">
                 <GroupHeading>In cart</GroupHeading>
                 <span>
-                  <Button variant="outline" size="sm" data-testid="mark-order-placed" onClick={() => void markOrderPlaced()}>
+                  <Button variant="outline" size="sm" data-testid="mark-order-placed" onClick={markOrderPlaced}>
                     Mark order placed
                   </Button>{" "}
-                  <Button variant="ghost" size="sm" data-testid="clear-purchased" onClick={() => void clearPurchased()}>
+                  <Button variant="ghost" size="sm" data-testid="clear-purchased" onClick={clearPurchased}>
                     Clear purchased
                   </Button>
                 </span>
@@ -395,16 +372,19 @@ function GroceryPage() {
 
 /** One to-buy line: explicit (P1 behaviors) or virtual (plan cue, pin, no remove — D6). */
 function ToBuyItem({ line, row }: { line: ToBuyLine; row?: GroceryRow }) {
-  const qc = useQueryClient();
+  const addMutation = useGroceryAdd();
+  const setMutation = useGrocerySet();
+  const removeMutation = useGroceryRemove();
   const virtual = line.origin === "plan";
 
-  async function toggleCart() {
+  function toggleCart() {
     if (virtual) {
-      // A virtual line has no row to advance — materialize first (D6), then set in-cart.
-      if (await materialize(qc, line)) await setInCart(qc, line.name, true);
-      return;
+      // A virtual line has no row to advance — materialize first (D6), then set
+      // in-cart. Both fire immediately: the shared class (b) scope serializes them
+      // (online and on replay), and both persist if the app closes offline between.
+      addMutation.mutate(materializeVars(line));
     }
-    await setInCart(qc, line.name, true);
+    setMutation.mutate({ name: line.name, status: "in_cart" });
   }
 
   return (
@@ -420,7 +400,7 @@ function ToBuyItem({ line, row }: { line: ToBuyLine; row?: GroceryRow }) {
         aria-pressed={false}
         title="Mark in cart"
         data-testid="cart-toggle"
-        onClick={() => void toggleCart()}
+        onClick={toggleCart}
       >
         {null}
       </button>
@@ -468,7 +448,7 @@ function ToBuyItem({ line, row }: { line: ToBuyLine; row?: GroceryRow }) {
           className="icon-btn"
           title="Keep on list (pin)"
           data-testid="grocery-pin"
-          onClick={() => void materialize(qc, line)}
+          onClick={() => addMutation.mutate(materializeVars(line))}
         >
           <IconPlus />
         </button>
@@ -478,7 +458,7 @@ function ToBuyItem({ line, row }: { line: ToBuyLine; row?: GroceryRow }) {
           className="icon-btn"
           title="Remove"
           data-testid="grocery-remove"
-          onClick={() => void removeItem(qc, line.name)}
+          onClick={() => removeMutation.mutate({ name: line.name })}
         >
           <IconTrash />
         </button>
@@ -489,7 +469,8 @@ function ToBuyItem({ line, row }: { line: ToBuyLine; row?: GroceryRow }) {
 
 /** An in-cart stored row (the P1 rendering: un-cart toggle, remove). */
 function InCartItem({ item }: { item: GroceryRow }) {
-  const qc = useQueryClient();
+  const setMutation = useGrocerySet();
+  const removeMutation = useGroceryRemove();
   return (
     <li className="g-item in-cart" data-testid="grocery-item" data-name={item.name}>
       <button
@@ -498,7 +479,7 @@ function InCartItem({ item }: { item: GroceryRow }) {
         aria-pressed={true}
         title="Move back to list"
         data-testid="cart-toggle"
-        onClick={() => void setInCart(qc, item.name, false)}
+        onClick={() => setMutation.mutate({ name: item.name, status: "active" })}
       >
         <IconCheck />
       </button>
@@ -518,7 +499,7 @@ function InCartItem({ item }: { item: GroceryRow }) {
         className="icon-btn"
         title="Remove"
         data-testid="grocery-remove"
-        onClick={() => void removeItem(qc, item.name)}
+        onClick={() => removeMutation.mutate({ name: item.name })}
       >
         <IconTrash />
       </button>
@@ -528,25 +509,23 @@ function InCartItem({ item }: { item: GroceryRow }) {
 
 /** "Already in your pantry" — the view's coverage rows with verify / buy-fresh nudges. */
 function PantryHave({ covered }: { covered: PantryCovered[] }) {
-  const qc = useQueryClient();
+  const addMutation = useGroceryAdd();
+  const verifyMutation = usePantryVerify();
 
-  async function verify(name: string) {
-    const res = await api.api.pantry.verify.$post({ json: { items: [name] } }).catch(() => null);
-    if (!res?.ok) toast("Couldn't verify — try again");
-    else toast(`${name} verified`);
-    await qc.invalidateQueries({ queryKey: ["pantry"] });
-    await refreshGrocery(qc);
+  function verify(name: string) {
+    verifyMutation.mutate(
+      { items: [name] },
+      { onSuccess: () => toast(`${name} verified`) },
+    );
   }
 
-  async function buyFresh(item: PantryCovered) {
+  function buyFresh(item: PantryCovered) {
     // Materialize onto the list (the pantry still covers it in the view; at order time it
     // returns as a `partial` the member confirms — the include_partials intent).
-    const res = await api.api.grocery.items
-      .$post({ json: { name: item.name, source: "menu", for_recipes: item.for_recipes } })
-      .catch(() => null);
-    if (!res?.ok) toast("Couldn't add — try again");
-    else toast(`${item.name} added to the list — confirm it at order time (pantry still has some)`);
-    await refreshGrocery(qc);
+    addMutation.mutate(
+      { name: item.name, source: "menu", for_recipes: item.for_recipes },
+      { onSuccess: () => toast(`${item.name} added to the list — confirm it at order time (pantry still has some)`) },
+    );
   }
 
   const rank = (c: PantryCovered) => {
@@ -603,10 +582,10 @@ function PantryHave({ covered }: { covered: PantryCovered[] }) {
               </div>
               {stale ? (
                 <div className="ph-actions">
-                  <Button size="sm" variant="outline" data-testid="ph-verify" onClick={() => void verify(c.name)}>
+                  <Button size="sm" variant="outline" data-testid="ph-verify" onClick={() => verify(c.name)}>
                     <IconCheck /> Verify
                   </Button>
-                  <Button size="sm" variant="ghost" data-testid="ph-buy" onClick={() => void buyFresh(c)}>
+                  <Button size="sm" variant="ghost" data-testid="ph-buy" onClick={() => buyFresh(c)}>
                     Buy fresh
                   </Button>
                 </div>
@@ -1186,24 +1165,19 @@ function OrderResult({ result, onRelink }: { result: OrderOutcome; onRelink: () 
 
 /** The keyboard-driven add row, rendered at the BOTTOM of the list (the mock). */
 function AddRow() {
-  const qc = useQueryClient();
+  const addMutation = useGroceryAdd();
   const [name, setName] = React.useState("");
   const [qty, setQty] = React.useState("");
   const nameRef = React.useRef<HTMLInputElement>(null);
 
-  async function onSubmit(e: React.FormEvent) {
+  function onSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!name.trim()) return;
-    const res = await api.api.grocery.items
-      .$post({ json: { name: name.trim(), ...(qty.trim() ? { quantity: qty.trim() } : {}) } })
-      .catch(() => null);
-    if (res?.ok) {
-      setName("");
-      setQty("");
-      await refreshGrocery(qc);
-    } else {
-      toast("Couldn't add the item — try again");
-    }
+    // Fire-and-clear: the optimistic row is the feedback (offline it queues; a
+    // failure surfaces through the registry's error toast).
+    addMutation.mutate({ name: name.trim(), ...(qty.trim() ? { quantity: qty.trim() } : {}) });
+    setName("");
+    setQty("");
     nameRef.current?.focus();
   }
 

@@ -18,6 +18,7 @@ import {
 } from "@grocery-agent/ui";
 import { api } from "../lib/api";
 import { useGrocery, useOverlay, usePlan, useProfile } from "../lib/data";
+import { useOnline } from "../lib/online";
 
 export const Route = createFileRoute("/_app")({
   loader: async () => {
@@ -73,6 +74,24 @@ const NAV = [
   { to: "/log", label: "Cooking log", icon: IconClock, count: null },
 ] as const;
 
+/** The shell's offline indicator (member-app-offline D10): driven by the SAME
+ *  onlineManager that pauses/resumes the class (b) queue, so it can never disagree
+ *  with replay behavior. Small chrome from existing tokens — flagged for a future
+ *  Claude Design pass rather than inventing new design language here. */
+function OfflinePill() {
+  const online = useOnline();
+  if (online) return null;
+  return (
+    <div
+      className="fixed bottom-4 left-1/2 z-50 -translate-x-1/2 whitespace-nowrap rounded-full border bg-card px-3 py-1.5 text-xs text-muted-foreground shadow-md"
+      role="status"
+      data-testid="offline-pill"
+    >
+      Offline — changes sync when you're back
+    </div>
+  );
+}
+
 function AppShell() {
   const { tenant } = Route.useLoaderData();
   // Sidebar counts derive client-side from the already-cached area queries (design:
@@ -124,6 +143,7 @@ function AppShell() {
       <main className="app-content" id="app-content">
         <Outlet />
       </main>
+      <OfflinePill />
       <Toaster />
     </div>
   );

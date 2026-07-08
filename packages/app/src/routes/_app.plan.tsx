@@ -5,7 +5,6 @@
 // propose flow (member-app-propose).
 import * as React from "react";
 import { Link, createFileRoute } from "@tanstack/react-router";
-import { useQueryClient } from "@tanstack/react-query";
 import {
   Button,
   Combobox,
@@ -19,7 +18,8 @@ import {
   PageHead,
   toast,
 } from "@grocery-agent/ui";
-import { applyPlanOps, useIndex, usePlan, type PlannedRow } from "../lib/data";
+import { useIndex, usePlan, type PlannedRow } from "../lib/data";
+import { usePlanOps } from "../lib/mutations";
 
 export const Route = createFileRoute("/_app/plan")({
   component: PlanPage,
@@ -28,7 +28,7 @@ export const Route = createFileRoute("/_app/plan")({
 function PlanPage() {
   const plan = usePlan();
   const index = useIndex();
-  const qc = useQueryClient();
+  const planOps = usePlanOps();
 
   const items = plan.data?.planned ?? [];
   const scheduled = items
@@ -45,13 +45,10 @@ function PlanPage() {
       sub: [r.protein, r.cuisine].filter(Boolean).join(" · "),
     }));
 
-  async function addRecipe(slug: string) {
-    try {
-      await applyPlanOps(qc, [{ op: "add", recipe: slug }]);
-      toast("Added to meal plan");
-    } catch {
-      toast("Couldn't update the plan — try again");
-    }
+  function addRecipe(slug: string) {
+    // Fire-and-forget registry mutation: offline it queues (the pill explains);
+    // failures toast through the registered defaults.
+    planOps.mutate({ ops: [{ op: "add", recipe: slug }] }, { onSuccess: () => toast("Added to meal plan") });
   }
 
   const actions = (
@@ -61,7 +58,7 @@ function PlanPage() {
         placeholder="Add a recipe…"
         ariaLabel="Add a recipe to the plan"
         emptyText="No recipes match"
-        onSelect={(slug) => void addRecipe(slug)}
+        onSelect={addRecipe}
       />
       <Button asChild variant="outline" data-testid="plan-my-week">
         <Link to="/propose">
@@ -114,25 +111,17 @@ function titleOf(recipes: { slug: string; title: string }[] | undefined) {
 }
 
 function PlanRow({ row, titleOf }: { row: PlannedRow; titleOf: (slug: string) => string }) {
-  const qc = useQueryClient();
+  const planOps = usePlanOps();
   const [addingSide, setAddingSide] = React.useState(false);
   const sides = row.sides ?? [];
 
   // Every edit is a `set` (D3): sides replace wholesale; planned_for null clears.
-  async function set(patch: { planned_for?: string | null; sides?: string[] }) {
-    try {
-      await applyPlanOps(qc, [{ op: "set", recipe: row.recipe, ...patch }]);
-    } catch {
-      toast("Couldn't update the plan — try again");
-    }
+  function set(patch: { planned_for?: string | null; sides?: string[] }) {
+    planOps.mutate({ ops: [{ op: "set", recipe: row.recipe, ...patch }] });
   }
 
-  async function remove() {
-    try {
-      await applyPlanOps(qc, [{ op: "remove", recipe: row.recipe }]);
-    } catch {
-      toast("Couldn't update the plan — try again");
-    }
+  function remove() {
+    planOps.mutate({ ops: [{ op: "remove", recipe: row.recipe }] });
   }
 
   return (
@@ -144,7 +133,7 @@ function PlanRow({ row, titleOf }: { row: PlannedRow; titleOf: (slug: string) =>
           value={row.planned_for ?? ""}
           aria-label="Planned date"
           data-testid="plan-date"
-          onChange={(e) => void set({ planned_for: e.target.value || null })}
+          onChange={(e) => set({ planned_for: e.target.value || null })}
         />
       </div>
       <div className="plan-main">
@@ -160,7 +149,7 @@ function PlanRow({ row, titleOf }: { row: PlannedRow; titleOf: (slug: string) =>
                 className="side-x"
                 title="Remove side"
                 aria-label={`Remove side ${s}`}
-                onClick={() => void set({ sides: sides.filter((x) => x !== s) })}
+                onClick={() => set({ sides: sides.filter((x) => x !== s) })}
               >
                 <IconX />
               </button>
@@ -177,7 +166,7 @@ function PlanRow({ row, titleOf }: { row: PlannedRow; titleOf: (slug: string) =>
                 emptyText="Type a side and press Enter"
                 onSelect={(v) => {
                   const side = v.trim().toLowerCase();
-                  if (side && !sides.includes(side)) void set({ sides: [...sides, side] });
+                  if (side && !sides.includes(side)) set({ sides: [...sides, side] });
                   setAddingSide(false);
                 }}
                 onCancel={() => setAddingSide(false)}

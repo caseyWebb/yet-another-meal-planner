@@ -41,6 +41,8 @@ import {
   type ProposalRow,
   type VibeRow,
 } from "../lib/data";
+import { useProposalConfirm, useVibeAdd, useVibeRemove } from "../lib/mutations";
+import { useOnline } from "../lib/online";
 import { mdToHtml } from "../lib/md";
 import { capitalize, daysSince, relAge } from "../lib/format";
 
@@ -219,6 +221,7 @@ function TasteRead() {
  *  draft, surfaces the rebase notice, and refreshes the precondition for the retry. */
 function MdField(props: { field: "taste" | "diet-principles"; label: string; hint?: string; content: string | null }) {
   const qc = useQueryClient();
+  const online = useOnline();
   const [editing, setEditing] = React.useState(false);
   const [draft, setDraft] = React.useState("");
   const [etag, setEtag] = React.useState("");
@@ -274,7 +277,16 @@ function MdField(props: { field: "taste" | "diet-principles"; label: string; hin
           {props.hint ? <span className="muted"> — {props.hint}</span> : null}
         </label>
         {!editing ? (
-          <Button variant="ghost" size="sm" data-testid={`md-edit-${props.field}`} onClick={openEditor}>
+          // Class (a) editing is ONLINE-ONLY (D5): the read-fresh -> If-Match loop
+          // requires a live server, so the affordance disables with a hint offline.
+          <Button
+            variant="ghost"
+            size="sm"
+            data-testid={`md-edit-${props.field}`}
+            disabled={!online}
+            title={online ? undefined : "You're offline — editing needs the server"}
+            onClick={openEditor}
+          >
             <IconPencil /> Edit
           </Button>
         ) : null}
@@ -644,6 +656,7 @@ function VibesTab() {
   const vibes = useVibes();
   const proposals = useProposals();
   const qc = useQueryClient();
+  const online = useOnline();
   const [adding, setAdding] = React.useState(false);
 
   async function suggest() {
@@ -676,7 +689,15 @@ function VibesTab() {
           </p>
         </div>
         <div className="palette-head-actions">
-          <Button variant="outline" size="sm" data-testid="vibe-suggest" onClick={suggest}>
+          {/* Suggest is ONLINE-ONLY (D5): a gated trigger, never queued or replayed. */}
+          <Button
+            variant="outline"
+            size="sm"
+            data-testid="vibe-suggest"
+            disabled={!online}
+            title={online ? undefined : "You're offline — suggestions need the server"}
+            onClick={suggest}
+          >
             <IconSparkle /> Suggest from your cooking
           </Button>
           <Button variant="outline" size="sm" data-testid="vibe-add-open" onClick={() => setAdding(true)}>
@@ -737,24 +758,16 @@ function proposalTitle(p: ProposalRow): string {
 }
 
 function ReconcileQueue({ proposals }: { proposals: ProposalRow[] }) {
-  const qc = useQueryClient();
+  const confirmMutation = useProposalConfirm();
   if (!proposals.length) return null;
 
-  async function confirm(id: string, accept: boolean) {
-    const args = { param: { id }, json: { accept } };
-    const res = await api.api.vibes.proposals[":id"].confirm.$post(args).catch(() => null);
-    if (!res) {
-      toast("Couldn't resolve the suggestion — try again");
-      return;
-    }
-    if (!res.ok && res.status !== 409) {
-      toast((await apiError(res)).message);
-    } else if (res.ok && accept) {
-      toast("Palette updated");
-    }
-    // 409 = already resolved elsewhere — converged either way; refresh both surfaces.
-    await qc.invalidateQueries({ queryKey: ["proposals"] });
-    await qc.invalidateQueries({ queryKey: ["vibes"] });
+  function confirm(id: string, accept: boolean) {
+    // Registry mutation: 409 (already resolved elsewhere) counts as converged inside
+    // the registered mutationFn; a replay the server rejects toasts via the defaults.
+    confirmMutation.mutate(
+      { id, accept },
+      { onSuccess: () => (accept ? toast("Palette updated") : undefined) },
+    );
   }
 
   return (
@@ -776,11 +789,11 @@ function ReconcileQueue({ proposals }: { proposals: ProposalRow[] }) {
               {p.rationale ? <p className="rec-why">{p.rationale}</p> : null}
             </div>
             <div className="rec-actions">
-              <Button size="sm" data-testid="proposal-accept" onClick={() => void confirm(p.id, true)}>
+              <Button size="sm" data-testid="proposal-accept" onClick={() => confirm(p.id, true)}>
                 {p.kind === "add_vibe" ? <IconPlus /> : p.kind === "prune_vibe" ? <IconTrash /> : null}
                 {actionLabel(p)}
               </Button>
-              <Button size="sm" variant="ghost" data-testid="proposal-dismiss" onClick={() => void confirm(p.id, false)}>
+              <Button size="sm" variant="ghost" data-testid="proposal-dismiss" onClick={() => confirm(p.id, false)}>
                 Dismiss
               </Button>
             </div>
@@ -793,6 +806,7 @@ function ReconcileQueue({ proposals }: { proposals: ProposalRow[] }) {
 
 function VibeRowView({ vibe }: { vibe: VibeRow }) {
   const qc = useQueryClient();
+  const online = useOnline();
   const [editing, setEditing] = React.useState(false);
   const st = statusOf(vibe);
   const meter = (Math.min(st.d, 2) / 2) * 100;
@@ -808,7 +822,14 @@ function VibeRowView({ vibe }: { vibe: VibeRow }) {
           </span>
         </div>
         <div className="vibe-row-actions">
-          <button type="button" className="icon-btn" title="Edit vibe" data-testid="vibe-edit" onClick={() => setEditing((e) => !e)}>
+          <button
+            type="button"
+            className="icon-btn"
+            title={online ? "Edit vibe" : "You're offline — editing needs the server"}
+            data-testid="vibe-edit"
+            disabled={!online}
+            onClick={() => setEditing((e) => !e)}
+          >
             <IconPencil />
           </button>
         </div>
@@ -868,6 +889,8 @@ function VibeRowView({ vibe }: { vibe: VibeRow }) {
  *  season list, facets, cadence, pinned. Edit is class (a): If-Match from the raw
  *  row's GET; create is the class (b)-shaped POST (duplicate → conflict toast). */
 function VibeForm(props: { vibe?: VibeRow; onDone: () => Promise<void>; onCancel: () => void }) {
+  const vibeAdd = useVibeAdd();
+  const vibeRemove = useVibeRemove();
   const v = props.vibe;
   const f = v?.facets ?? {};
   const [text, setText] = React.useState(v?.vibe ?? "");
@@ -898,7 +921,8 @@ function VibeForm(props: { vibe?: VibeRow; onDone: () => Promise<void>; onCancel
     e.preventDefault();
     if (!text.trim()) return;
     if (v) {
-      // Edit: precondition on the raw row (GET /vibes/:id → ETag → PATCH).
+      // Edit is class (a) — ONLINE-ONLY, imperative (D5): precondition on the raw
+      // row (GET /vibes/:id → ETag → PATCH); never a queued mutation.
       const read = await api.api.vibes[":id"].$get({ param: { id: v.id } }).catch(() => null);
       if (!read?.ok) {
         toast("Couldn't load the vibe — try again");
@@ -911,19 +935,18 @@ function VibeForm(props: { vibe?: VibeRow; onDone: () => Promise<void>; onCancel
         toast(res?.status === 412 ? "This vibe changed elsewhere — reopen and retry" : "Couldn't save the vibe");
         return;
       }
-    } else {
-      const res = await api.api.vibes.$post({ json: payload() }).catch(() => null);
-      if (!res?.ok) {
-        toast(res?.status === 409 ? "You already have a vibe like that" : "Couldn't add the vibe");
-        return;
-      }
+      await props.onDone();
+      return;
     }
+    // Create is the class (b)-shaped POST — a registry mutation (duplicate → the
+    // defaults' conflict toast). Fire-and-close; offline it queues.
+    vibeAdd.mutate(payload());
     await props.onDone();
   }
 
   async function remove() {
     if (!v) return;
-    await api.api.vibes[":id"].$delete({ param: { id: v.id } }).catch(() => null);
+    vibeRemove.mutate({ id: v.id });
     await props.onDone();
   }
 

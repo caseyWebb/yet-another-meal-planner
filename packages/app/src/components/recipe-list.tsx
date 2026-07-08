@@ -4,7 +4,6 @@
 // the target state from the cached overlay/plan and sends it.
 import type * as React from "react";
 import { Link } from "@tanstack/react-router";
-import { useQueryClient } from "@tanstack/react-query";
 import {
   RecipeFacets,
   IconCalendar,
@@ -12,30 +11,28 @@ import {
   IconHeartFill,
   toast,
 } from "@grocery-agent/ui";
-import { setFavorite, applyPlanOps, useOverlay, usePlan, type Hit } from "../lib/data";
+import { useOverlay, usePlan, type Hit } from "../lib/data";
+import { usePlanOps, useSetFavorite } from "../lib/mutations";
 
 export function RecipeRow({ recipe, annotation }: { recipe: Hit; annotation?: React.ReactNode }) {
-  const qc = useQueryClient();
   const overlay = useOverlay();
   const plan = usePlan();
+  const planOps = usePlanOps();
+  const favorite = useSetFavorite();
   const fav = Boolean(overlay.data?.overlay[recipe.slug]?.favorite);
   const planned = Boolean(plan.data?.planned.some((p) => p.recipe.toLowerCase() === recipe.slug.toLowerCase()));
 
-  async function onPlanToggle() {
-    try {
-      await applyPlanOps(qc, [{ op: planned ? "remove" : "add", recipe: recipe.slug }]);
-      toast(planned ? "Removed from meal plan" : "Added to meal plan");
-    } catch {
-      toast("Couldn't update the plan — try again");
-    }
+  function onPlanToggle() {
+    // Registry mutation (fire-and-forget): errors toast via the registered defaults.
+    planOps.mutate(
+      { ops: [{ op: planned ? "remove" : "add", recipe: recipe.slug }] },
+      { onSuccess: () => toast(planned ? "Removed from meal plan" : "Added to meal plan") },
+    );
   }
 
-  async function onFavorite() {
-    try {
-      await setFavorite(qc, recipe.slug, !fav);
-    } catch {
-      toast("Couldn't update favorites — try again");
-    }
+  function onFavorite() {
+    // EXPLICIT set (never a toggle — D8), optimistic via the registered defaults.
+    favorite.mutate({ slug: recipe.slug, favorite: !fav });
   }
 
   return (

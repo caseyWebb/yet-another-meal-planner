@@ -5,7 +5,7 @@
 // EXPLICIT target state keyed on its canonical id, so a replayed delivery converges
 // (the row tests on the Worker side pin that); class (a) writes ride If-Match
 // helpers with the rebase-on-412 loop.
-import { useQuery, type QueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { api, apiError } from "./api";
 import { GC_TIME_MS } from "./persist";
 import type {
@@ -370,24 +370,11 @@ export function useProposals() {
   });
 }
 
-// --- shared mutations ------------------------------------------------------------
-
-/** EXPLICIT favorite set (never a toggle — D8): the caller computes the target state. */
-export async function setFavorite(qc: QueryClient, slug: string, favorite: boolean): Promise<void> {
-  // Optimistic: flip the overlay cache immediately; the invalidate reconciles.
-  qc.setQueryData<{ overlay: Overlay }>(["overlay"], (cur) => {
-    if (!cur) return cur;
-    const next = { ...cur.overlay };
-    if (favorite) next[slug] = { ...next[slug], favorite: true, reject: undefined };
-    else next[slug] = { ...next[slug], favorite: undefined };
-    return { overlay: next };
-  });
-  const res = await api.api.overlay.favorite.$put({ json: { slug, favorite } });
-  if (!res.ok) throw await apiError(res);
-  await qc.invalidateQueries({ queryKey: ["overlay"] });
-  // Picked-for-you is a pure function of the favorites set (D12) — recompute it.
-  await qc.invalidateQueries({ queryKey: ["cookbook", "picked-for-you"] });
-}
+// --- shared write shapes -----------------------------------------------------------
+// The class (b) writes themselves live in lib/mutations.ts (member-app-offline D4):
+// registered mutations that pause offline and replay on reconnect. Class (a) stays
+// imperative here — its read-fresh → If-Match → rebase-on-412 loop requires a live
+// server (D5) and must never queue.
 
 export interface PlanOp {
   op: "add" | "remove" | "set";
@@ -395,14 +382,6 @@ export interface PlanOp {
   planned_for?: string | null;
   sides?: string[];
   from_vibe?: string | null;
-}
-
-/** Row-level plan ops (class (b), keyed by recipe slug). */
-export async function applyPlanOps(qc: QueryClient, ops: PlanOp[]): Promise<void> {
-  const res = await api.api.plan.ops.$post({ json: { ops } });
-  if (!res.ok) throw await apiError(res);
-  await qc.invalidateQueries({ queryKey: ["plan"] });
-  await qc.invalidateQueries({ queryKey: ["cookbook", "new-for-me"] });
 }
 
 /** A read whose response ETag feeds a class (a) If-Match write. */
