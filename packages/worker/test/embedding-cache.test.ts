@@ -11,6 +11,7 @@ import {
   normalizeEmbedText,
 } from "../src/embedding.js";
 import type { Env } from "../src/env.js";
+import { SEED, kvEntries } from "../admin/visual/seed.mjs";
 
 /** A deterministic fake vector per text: EMBED_DIM floats keyed off the text length. */
 function fakeVec(text: string): number[] {
@@ -67,6 +68,15 @@ describe("normalizeEmbedText / embedCacheKey", () => {
     const other = await embedCacheKey("cozy soup", "@cf/other/model");
     expect(current).toBe(await embedCacheKey("cozy soup", EMBED_MODEL));
     expect(other).not.toBe(current);
+  });
+});
+
+describe("admin/visual/seed.mjs lockstep with the product embed cache", () => {
+  it("the seeded freeform KV key matches the product embedCacheKey, and the seeded vector is EMBED_DIM long", async () => {
+    const expectedKey = await embedCacheKey(SEED.app.propose.freeform);
+    const row = kvEntries().find(([binding, key]) => binding === "KROGER_KV" && key === expectedKey);
+    expect(row).toBeTruthy();
+    expect(JSON.parse(row![2]).length).toBe(EMBED_DIM);
   });
 });
 

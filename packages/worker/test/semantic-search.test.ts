@@ -410,4 +410,13 @@ describe("rankCandidates — optional nudges (freeform vector + protein wants)",
     const bare = rankCandidates([noProt], query, [], [], NOW, DEFAULT_RANK_PARAMS, 10);
     expect(out).toEqual(bare);
   });
+
+  it("a protein want matches case-insensitively", () => {
+    const out = rankCandidates([a, b], query, [], [], NOW, DEFAULT_RANK_PARAMS, 10, undefined, ["Fish"]);
+    expect(out.map((r) => r.slug)).toEqual(["b", "a"]); // "Fish" still boosts protein: "fish"
+    const bare = rankCandidates([a, b], query, [], [], NOW, DEFAULT_RANK_PARAMS, 10);
+    const bareB = bare.find((r) => r.slug === "b")!;
+    const boostedB = out.find((r) => r.slug === "b")!;
+    expect(boostedB.score).toBeCloseTo(bareB.score + PROTEIN_WANT_BOOST, 4);
+  });
 });

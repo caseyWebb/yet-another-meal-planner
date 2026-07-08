@@ -191,8 +191,8 @@ export function pantryOverlap(
  * The two trailing nudges (member-app-propose D4) are BOUNDED ADDITIVE terms, absent
  * for every pre-existing caller (omission is bit-identical to today): `nudge` adds
  * `weight · cosine(nudge.vec, candidate)` (the propose freeform phrase), and
- * `proteinWants` adds `PROTEIN_WANT_BOOST` when the candidate's protein is in the set.
- * Both only REORDER the already-gated candidates — they can never admit a recipe the
+ * `proteinWants` adds `PROTEIN_WANT_BOOST` when the candidate's protein is in the set
+ * (case-insensitive). Both only REORDER the already-gated candidates — they can never admit a recipe the
  * hard gate excluded (the `holistic-use-it-up` coverage-term precedent).
  */
 export function rankCandidates(
@@ -206,7 +206,8 @@ export function rankCandidates(
   nudge?: RankNudge,
   proteinWants?: string[],
 ): ScoredRecipe[] {
-  const wants = proteinWants && proteinWants.length > 0 ? new Set(proteinWants) : null;
+  const wants =
+    proteinWants && proteinWants.length > 0 ? new Set(proteinWants.map((p) => p.toLowerCase())) : null;
   const scored = candidates.map((c) => {
     const similarity = cosineSimilarity(queryVec, c.embedding);
     const overlap = pantryOverlap(c, boostItems, params);
@@ -216,7 +217,7 @@ export function rankCandidates(
       freshnessBoost(c.last_cooked, now, params) +
       overlap.boost +
       (nudge ? nudge.weight * cosineSimilarity(nudge.vec, c.embedding) : 0) +
-      (wants && c.protein !== null && wants.has(c.protein) ? PROTEIN_WANT_BOOST : 0);
+      (wants && c.protein !== null && wants.has(c.protein.toLowerCase()) ? PROTEIN_WANT_BOOST : 0);
     return {
       slug: c.slug,
       title: c.title,
