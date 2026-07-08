@@ -163,26 +163,26 @@ pieces by role and the implementer binds to the landed actuals.
 
 ## 8. Docs in lockstep + validation
 
-- [ ] 8.1 `docs/TOOLS.md`: new `read_to_buy` entry; `place_order` — derived plan needs,
+- [x] 8.1 `docs/TOOLS.md`: new `read_to_buy` entry; `place_order` — derived plan needs,
   `menu_needs`-as-supplements, `exclude`, `underived`, unchanged guarantees restated, and an
   explicit note that `menu_needs` entries duplicating plan-derived (or listed) items merge
   harmlessly on the canonical id — a caller (e.g. a not-yet-republished plugin bundle whose
   persona still passes the bulk expansion) cannot cause a double-buy; the grocery-list
   section notes (shop-time reads point at `read_to_buy`; lifecycle notes unchanged in
   substance).
-- [ ] 8.2 `docs/SCHEMAS.md`: `ingredients_full` on `recipes`/`recipe_facets` (Tier A,
+- [x] 8.2 `docs/SCHEMAS.md`: `ingredients_full` on `recipes`/`recipe_facets` (Tier A,
   snapshot + re-resolution semantics); the grocery lifecycle note — correct the stale
   "`ordered`/`ordered_at` exist in the schema but no path sets them" sentence (user-asserted
   advance + satellite mark-placed + `ordered_at` stamping) and state the lifecycle as
   `active → in_cart → ordered` + terminal receive action; the satellite pull-list paragraph
   gains the plan-derived union.
-- [ ] 8.3 `docs/ARCHITECTURE.md`: the derived to-buy read as a capture→retrieve→narrow
+- [x] 8.3 `docs/ARCHITECTURE.md`: the derived to-buy read as a capture→retrieve→narrow
   instance (classify-time capture of `ingredients_full` → deterministic derivation →
   LLM/member dispositions); the app's order surface and its online-only posture.
-- [ ] 8.4 `openspec validate member-app-grocery --strict` green; `aubr typecheck`,
+- [x] 8.4 `openspec validate member-app-grocery --strict` green; `aubr typecheck`,
   `aubr test`, `aubr test:tooling` green; existing order/grocery/satellite tests pass
   unmodified except where a task above names them.
-- [ ] 8.5 **Production acceptance (post-deploy, read-only):** after the facet convergence
+- [ ] 8.5 *(cannot run pre-merge — post-deploy only, the P0 task-8.3 precedent; run after the deploy + facet-convergence ticks)* **Production acceptance (post-deploy, read-only):** after the facet convergence
   ticks complete, verify against production D1 that the 4 existing `meal_plan` rows (2
   tenants) yield derived to-buy lines via the deployed read — e.g. `honey-mustard-salmon`
   derives `salmon`/`mustard`/`honey` to-buy with `mayonnaise` pantry-covered for its tenant —

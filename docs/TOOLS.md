@@ -396,14 +396,37 @@ The grocery list is the SKU-free buy list for the next order (D1-backed, `grocer
 
 ### `read_grocery_list()`
 
-Return the current buy list.
+Return the current buy list — the **stored rows only** (all statuses). This does **not** include the meal plan's derived ingredient needs: for any shop-time read (what would an order buy, a store walk, the stale-cart check) use [`read_to_buy`](#read_to_buy) instead. Use this read when the raw rows themselves are the subject (status/source/note edits, the receive flow).
 
 **Returns:**
 - `{ items: [...] }`
 
+### `read_to_buy()`
+
+The **derived to-buy view** — what an order placed right now would buy: the `active` grocery list ∪ the **meal plan's derived ingredient needs** (each planned recipe's derived `ingredients_full`) − pantry on-hand, joined on canonical ingredient ids. This is the **same set algebra `place_order` flushes** (and the satellite pull-list serves), so "what would we buy?" has one answer on every surface. One shared operation with the member app's `GET /api/grocery/to-buy`.
+
+**Guarantees:** read-only and cheap — **zero Kroger calls, zero AI calls, and it writes nothing** (derived lines exist only in the read; no reconcile or cron materializes them into rows). The plan is the derived lines' source of truth: editing the plan changes the next read with no sync step.
+
+**Returns:**
+```
+{
+  to_buy:        [{ name, quantity, assumed_quantity, for_recipes, origin, key, kind, domain, note? }],
+  pantry_covered:[{ name, for_recipes, on_hand: { quantity?, category?, last_verified_at? } }],
+  in_cart:       [{ name, added_at }],
+  underived:     ["<slug>", ...]
+}
+```
+
+- `origin` — `"list"` (an explicit row the plan doesn't need), `"plan"` (a **virtual** line derived from a planned recipe; no stored row exists — an `add_to_grocery_list` of the same name **materializes/pins** it under the same canonical `key`), or `"both"` (a stored row the plan also needs, merged with unioned `for_recipes`).
+- `quantity` is the package count the order would use; derived lines default to 1 with `assumed_quantity: true` (derivation is **presence-only** — no portion math).
+- `pantry_covered` — the needs the pantry cancels: the **same set `place_order` returns as `partials`**, each joined with the pantry row's verify metadata so a stale-verified perishable earns a "still good?" nudge instead of a silent skip.
+- `in_cart` — the stored in-cart rows: the deterministic **stale-cart signal** (non-empty at order time ⇒ a prior order was never confirmed placed).
+- `underived` — planned recipes whose full ingredient list is **not yet derived**; their items are NOT in `to_buy` (reported, never silently dropped) — compensate explicitly.
+- A derived need whose canonical id matches an **in-flight** (`in_cart`/`ordered`) row is suppressed from `to_buy` — it is already being bought (it shows under `in_cart`); receiving (pantry restock) or re-listing the row resolves it.
+
 ### `add_to_grocery_list(item)`
 
-Add an item (ingredient/product level, no SKU). Keyed by normalized `name` — re-adding an existing name **merges** (union `for_recipes`, reconcile `quantity`) rather than duplicating. New items start `status: "active"`.
+Add an item (ingredient/product level, no SKU). Keyed by normalized `name` — re-adding an existing name **merges** (union `for_recipes`, reconcile `quantity`) rather than duplicating. New items start `status: "active"`. A **planned recipe's ingredient needs no add** — the to-buy set derives it from the meal plan automatically; adding one anyway **materializes/pins** it as an explicit row (do this to carry a quantity annotation or note) — it upserts under the same canonical id, so the row and the derived need merge into one line, never a duplicate.
 
 **Params:**
 - `name` (string, required)
@@ -437,7 +460,7 @@ Remove an item by name.
 **Returns:**
 - `{ removed: bool }` — D1-backed, no `commit_sha`
 
-**Notes:** Promoting a low/out pantry item onto the list is a **prompted** decision (record `source: "pantry_low"`), never automatic. The lifecycle past `active` (`in_cart` → `ordered` → `received`) is driven by `place_order` and the user-asserted transitions — see [`place_order`](#place_orderpayload) below.
+**Notes:** Promoting a low/out pantry item onto the list is a **prompted** decision (record `source: "pantry_low"`), never automatic. Removing a **materialized** (`source: "menu"`) row while its recipe stays planned un-pins, it doesn't un-plan — the ingredient re-derives as a virtual to-buy line on the next `read_to_buy`. The lifecycle past `active` (`in_cart` → `ordered` → the terminal receive action) is driven by `place_order` and the user-asserted transitions — see [`place_order`](#place_orderpayload) below.
 
 ---
 
@@ -922,7 +945,7 @@ Add, remove, or edit planned meal entries. D1-backed — no commit, no `commit_s
 
 The order-time flush — the **only** tool that writes a Kroger cart. Resolves the whole to-buy set against *current* Kroger availability, writes the cart (`PUT /v1/cart/add`), and caches learned ingredient→SKU mappings to the shared SKU cache. Backed by the Kroger `authorization_code` + PKCE user-context client and the KV-backed rotating refresh token.
 
-**To-buy set (order-time dedup):** `grocery_list ∪ menu_needs − pantry_has`. Only `active` list items participate. A name present in the pantry is **not** silently dropped — it returns in `partials` for you to prompt on, and is bought only if the user confirms it via `include_partials` (the no-auto-decide rule). Default buy quantity is **1 package** per item unless overridden.
+**To-buy set (order-time dedup):** `grocery_list ∪ menu needs − pantry_has`, joined on canonical ingredient ids — where **menu needs are the union of the meal plan's server-derived ingredient needs and any caller-supplied `menu_needs`**. The tool derives each planned recipe's needs itself from its derived `ingredients_full` (the same derivation [`read_to_buy`](#read_to_buy) and the satellite pull-list use), so a caller never hand-expands the plan; `menu_needs` is for **supplements** only (open-world side ingredients not yet captured, spontaneous extras). **A caller passing plan-derived (or already-listed) duplicates in `menu_needs` is safe**: the canonical-id union merges them into one line — a not-yet-republished plugin bundle whose persona still passes the bulk expansion cannot cause a double-buy. Planned recipes whose ingredient list is not yet derived return in `underived` (their items are NOT in the set — compensate explicitly rather than silently under-buying). A derived need whose row is already in flight (`in_cart`/`ordered`) is suppressed — a repeat order never re-buys the lines the last order carted. Only `active` list items participate. A name present in the pantry is **not** silently dropped — it returns in `partials` for you to prompt on, and is bought only if the user confirms it via `include_partials` (the no-auto-decide rule). A caller-supplied **`exclude`** list drops named lines (resolved through the same canonical-id funnel) from the to-buy set **before resolution** — an order-scoped opt-out for a line with no row to remove (a derived one); it is never persisted, so the line returns on the next read/order. Default buy quantity is **1 package** per item unless overridden.
 
 **Quantity (package count):** supply it per item via `menu_needs[].quantity`, or via the `quantities` map; the `quantities` map **overrides** `menu_needs[].quantity` when both are present (precedence: `quantities` → `menu_needs[].quantity` → default 1). A line that fell back to the default carries `assumed_quantity: true`. The tool reports that fact but does **not** classify "by-the-each produce" or do portion math — at `preview`, *you* reconcile any `assumed_quantity` by-the-each produce (peppers, tomatillos, …) against the recipe's required amount and set an explicit quantity before the real flush. (`grocery_list` items' string `quantity` like "2 lbs" is a human need-annotation, not a package count.)
 
@@ -933,14 +956,15 @@ The order-time flush — the **only** tool that writes a Kroger cart. Resolves t
 **Params:**
 ```
 {
-  menu_needs:       [{ name, quantity?, for_recipes? }],  // needs not yet on the list (quantity: 1–99 integer)
+  menu_needs:       [{ name, quantity?, for_recipes? }],  // SUPPLEMENTS only (plan needs are derived server-side); quantity: 1–99 integer
   quantities:       { "<name>": <packages> },             // per-item package count, 1–99 integer (default 1)
   include_partials: ["<name>", ...],                       // pantry items the user confirmed buying anyway
   overrides:        [{ name, sku, brand?, size? }],        // force a SKU: disposition, or lock a verified/on-sale SKU
+  exclude:          ["<name>", ...],                       // drop lines from the to-buy set BEFORE resolution (order-scoped, never persisted)
   preview:          bool                                    // resolve + report only; no cart write, no commits
 }
 ```
-All sections optional. With no args it flushes the current grocery list. Package counts (`quantities` and `menu_needs[].quantity`) must be positive integers ≤ 99 — a fractional, zero, or oversized value is rejected before any cart write (`place_order` is the only tool that writes a real Kroger cart).
+All sections optional. With no args it flushes the current to-buy set (list ∪ derived plan needs − pantry). Package counts (`quantities` and `menu_needs[].quantity`) must be positive integers ≤ 99 — a fractional, zero, or oversized value is rejected before any cart write (`place_order` is the only tool that writes a real Kroger cart).
 
 **Returns:**
 ```
@@ -951,7 +975,8 @@ All sections optional. With no args it flushes the current grocery list. Package
   sku_cache: { committed, error? },
   cart:      { written, count?, error?, code? },   // code carries reauth_required etc.
   list:      { advanced, error? },        // D1-backed (no commit_sha)
-  preview:   bool
+  preview:   bool,
+  underived: ["<slug>", ...]              // planned recipes whose items are NOT in this order
 }
 ```
 
@@ -961,7 +986,9 @@ All sections optional. With no args it flushes the current grocery list. Package
 - *"I placed the order"* → advance `in_cart` items to `ordered` via `update_grocery_list` (stamps `ordered_at`). This is the **only** path into `ordered` that `update_grocery_list` accepts — a write of `ordered` on an item not currently `in_cart` is rejected with a structured `validation_failed` (see [`update_grocery_list`](#update_grocery_listname-patch)).
 - *"I picked up the groceries"* → `received` (terminal): `remove_from_grocery_list` for each, and for `grocery`-kind items only, restock the pantry via `update_pantry`. `household`/`other` items don't touch the pantry.
 
-A **stale-cart reminder** fires when a new order begins while the prior list still has `in_cart` items never confirmed `ordered`: remind the user to clear the Kroger cart manually (the API can't), rather than silently double-adding.
+A **stale-cart reminder** fires when a new order begins while the prior list still has `in_cart` items never confirmed `ordered` (the deterministic signal is [`read_to_buy`](#read_to_buy)'s `in_cart` section — the member app's order dialog leads with the same warning): remind the user to clear the Kroger cart manually (the API can't), rather than silently double-adding.
+
+**One shared operation.** The tool body is the extracted `runPlaceOrder` op; the member app's `POST /api/grocery/order` calls the same operation over fresh `buildOrderWiring` deps (preview and commit are the same endpoint discriminated by `preview`), with the tool's observable behavior unchanged. The endpoint is gated to Kroger-online fulfillment — a non-Kroger primary receives a structured `unsupported` naming the correct flow — and the app's commit is **online-only** (never queued/replayed: the cart write is not idempotent).
 
 **`place_order` stays Kroger-only.** The parallel **satellite cart-fill flush** for an API-less store (satellite-order-cart-fill) adds **no MCP tool** and does not touch `place_order`: it is served by the two direct `/satellite/order/*` endpoints (see `docs/SCHEMAS.md`), driven by the tenant's local helper, and the agent routes to it from the `preferences.stores.fulfillment === "satellite"` marker it already reads at the start of `shop-groceries` — no `place_order`-shaped tool is minted for it (there is nothing Worker-side to mint; the helper URL/token live on the tenant's machine). Carted/substituted lines advance to `in_cart` exactly as `place_order` does, and the same `active → in_cart → ordered → received` lifecycle + user-asserted transitions apply.
 
