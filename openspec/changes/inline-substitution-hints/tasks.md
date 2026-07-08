@@ -74,27 +74,31 @@ the landed actuals (`suggestSubstitutions`, `identitySiblings`, `computeToBuyVie
 
 ## 4. Frontend: drop the panel, inline the hints, move alternatives to the order dialog
 
-- [ ] 4.1 `_app.grocery.tsx`: remove the "Propose substitutions" trigger (`subs-open`) and
+- [x] 4.1 `_app.grocery.tsx`: remove the "Propose substitutions" trigger (`subs-open`) and
   `SubsPanel`; `useToBuy` always requests the enriched read (`enrich`) so hints render under both
   grouping modes. `lib/data.ts`: `useToBuy` gains `enrich`; retire the panel's `fetchSubstitutions`
   path.
-- [ ] 4.2 `ToBuyItem`: render each `substitutes[]` entry inline on its row — relation label
+- [x] 4.2 `ToBuyItem`: render each `substitutes[]` entry inline on its row — relation label
   (`RELATION_LABEL`), the `in_pantry` pill (`subs-pantry-hit`) and the `on_sale_hint` pill with
   the real price (`subs-sale-hint`), a per-row **accept** (Swap) mapping to the existing writes
   by origin (explicit → add+remove; virtual → materialize + staged order `exclude`) and a
   per-session **dismiss**. Rows with no substitute render unchanged.
-- [ ] 4.3 `OrderPreview`: render the slim op's `alternatives` per line — the reason pills the
+- [x] 4.3 `OrderPreview`: render the slim op's `alternatives` per line — the reason pills the
   panel used (`cheaper — $a vs $c`, `on sale — $promo (was $regular)`, `in stock now`) with an
   accept that stages `overrides` on the commit. Fetch the alternatives at preview (online-only,
   never queued).
-- [ ] 4.4 App Playwright: move `subs-pantry-hit` / `subs-sale-hint` onto the inline rows (live
+- [x] 4.4 App Playwright: move `subs-pantry-hit` / `subs-sale-hint` onto the inline rows (live
   against the seeded Worker — the P4 seed's pantry rows + sibling edge family + flyer rollup drive
   them); the alternatives pills assert in the order dialog against the intercepted order/substitutions
   fixture; delete the panel page object. Surface the per-area screenshots.
+  (Landed with new seed fixtures the pantry row + flyer rollup did not yet exist in
+  `admin/visual/seed.mjs` — added a to-buy row + pantry row for the seeded cabbage
+  sibling family and a warmed `flyer:kroger:{location}` KV rollup so the inline-hint
+  assertions run live, not mocked.)
 
 ## 5. Persona
 
-- [ ] 5.1 `AGENT_INSTRUCTIONS.md` `shop-groceries`: split step 4. The in-pantry/sale **substitute
+- [x] 5.1 `AGENT_INSTRUCTIONS.md` `shop-groceries`: split step 4. The in-pantry/sale **substitute
   hints** move to the list-review read (step 1 / the `read_to_buy` `enrich` read, present in every
   branch — walk/satellite included, which get them for the first time); the same-identity
   **alternatives** stay at preview after `place_order(preview)`. Thread the order-scoped `exclude`
@@ -104,10 +108,10 @@ the landed actuals (`suggestSubstitutions`, `identitySiblings`, `computeToBuyVie
 
 ## 6. Docs (same PR)
 
-- [ ] 6.1 `docs/TOOLS.md`: `read_to_buy` gains the `enrich` param and the `substitutes[]` /
+- [x] 6.1 `docs/TOOLS.md`: `read_to_buy` gains the `enrich` param and the `substitutes[]` /
   `flyer_as_of` return; `suggest_substitutions` slims to alternatives-only (drop the sibling/
   pantry/flyer paragraph, keep the closed vocabulary + budget + no-location degradation).
-- [ ] 6.2 `docs/SCHEMAS.md`: document the to-buy line's `substitutes[]` (the `SiblingSuggestion`
+- [x] 6.2 `docs/SCHEMAS.md`: document the to-buy line's `substitutes[]` (the `SiblingSuggestion`
   shape) on the enriched read; note it is derived (identity graph + pantry + flyer rollup), never
   stored.
 
