@@ -9,6 +9,14 @@
 
 import type { GroceryKind } from "./grocery.js";
 
+/** A Kroger per-item aisle placement at one store (the `KrogerCandidate.aisleLocation`
+ *  shape, mirrored here so the leaf stays workerd-free — member-app-differentiators D5). */
+export interface AisleLocation {
+  number: string;
+  description: string;
+  side?: string;
+}
+
 /** One product candidate as surfaced to a caller (an ambiguous match / checkpoint pick). */
 export interface CandidateView {
   sku: string;
@@ -32,6 +40,9 @@ export interface ResolvedLine {
   price?: { regular: number; promo: number };
   /** Whether the resolved SKU is on sale at resolution (lets the agent spot a lapsed deal). */
   on_sale?: boolean;
+  /** The resolved product's aisle placement at the caller's location, when Kroger
+   *  reports one — threaded into the SKU-cache commit's aisle capture (D5). */
+  aisleLocation?: AisleLocation | null;
 }
 
 export interface CheckpointLine {
@@ -95,6 +106,20 @@ export interface ToBuyViewLine {
   kind: GroceryKind;
   domain: string;
   note?: string | null;
+  /** Aisle-enriched read only (`read_to_buy` `with_aisles` / `?aisles=1` — D6): the
+   *  line's captured placement at the caller's location, `department` derived from the
+   *  identity graph when no aisle is captured. ABSENT on the default read (byte-identical). */
+  placement?: LinePlacement | null;
+}
+
+/** A to-buy line's placement on the aisle-enriched read (member-app-differentiators D6). */
+export interface LinePlacement {
+  aisle_number?: string;
+  aisle_description?: string;
+  aisle_side?: string;
+  /** Graph-derived department fallback (the key's parent via out-edges, precedence
+   *  membership → general → containment). Absent when the key has no parent. */
+  department?: string;
 }
 
 /** A need the pantry cancels, joined with the pantry row's verify metadata. */
@@ -116,4 +141,78 @@ export interface ToBuyView {
   pantry_covered: PantryCoveredLine[];
   in_cart: InCartLine[];
   underived: string[];
+  /** Aisle-enriched read only (D6): the store the placements are for — null when no
+   *  Kroger location is resolvable (placements then carry `department` only). ABSENT
+   *  on the default read (byte-identical). */
+  location?: { id: string } | null;
+}
+
+// --- the substitution read (member-app-differentiators D1–D3) ----------------------
+
+/** The `suggest_substitutions` / POST /api/grocery/substitutions input. */
+export interface SuggestSubstitutionsInput {
+  /** Absent = the caller's current derived to-buy set, in view order. */
+  names?: string[];
+  /** Per-call line budget; defaults to and is capped at 12 (D1). */
+  max_lines?: number;
+}
+
+/** A product as the substitution read reports it (current pick / alternative). */
+export interface SubstitutionProduct {
+  sku: string;
+  brand: string;
+  description: string;
+  size: string | null;
+  price: { regular: number; promo: number };
+  on_sale: boolean;
+  available: boolean;
+  unit_price?: number;
+  base_unit?: string;
+  aisleLocation: AisleLocation | null;
+}
+
+/** The closed, deterministic reason vocabulary (D2) — nothing else is ever produced. */
+export type SubstitutionReason = "cheaper" | "on_sale" | "in_stock";
+
+/** A same-identity alternative from the one term search, `compareUnitPrice`-ranked. */
+export interface SubstitutionAlternative extends SubstitutionProduct {
+  reasons: SubstitutionReason[];
+}
+
+/** A cross-ingredient sibling from the depth-1 identity-graph walk (D3), relation-labeled. */
+export interface SiblingSuggestion {
+  /** The suggestion's canonical ingredient id (representative-resolved, concrete). */
+  id: string;
+  /** Human-readable label (base + detail). */
+  label: string;
+  relation: {
+    role: "satisfies" | "sibling" | "generalization";
+    kind: "general" | "containment" | "membership";
+    /** The shared parent, for `role: "sibling"`. */
+    via?: string;
+  };
+  /** A pantry row exists for this id — already on hand. */
+  in_pantry: boolean;
+  /** The primary store's flyer rollup carries a matching sale item (default sale floor). */
+  on_sale_hint?: { sku: string; description: string; price: { regular: number; promo: number }; savings: number };
+}
+
+/** One line's substitution suggestions. */
+export interface LineSuggestions {
+  for: { name: string; key: string; origin?: "list" | "plan" | "both" };
+  status: "ok" | "current_unavailable" | "no_cached_pick";
+  current: SubstitutionProduct | null;
+  alternatives: SubstitutionAlternative[];
+  siblings: SiblingSuggestion[];
+}
+
+/** The substitution read's result — shared by the tool and the endpoint (D1). */
+export interface SuggestSubstitutionsResult {
+  suggestions: LineSuggestions[];
+  /** Names not processed this call (the per-call budget) — call again with these. */
+  remaining: string[];
+  /** The resolved Kroger location, or null (walk-store degradation — graph half only). */
+  location: { id: string } | null;
+  /** When the primary store's flyer rollup was last refreshed (ISO), or null. */
+  flyer_as_of: string | null;
 }

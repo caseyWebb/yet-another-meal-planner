@@ -1222,22 +1222,36 @@ interface SkuRow {
   sku: string;
   brand: string | null;
   size: string | null;
+  aisle_number: string | null;
+  aisle_description: string | null;
+  aisle_side: string | null;
+  aisle_captured_at: string | null;
 }
 
 /**
  * Read the shared SKU cache as the matcher's CachedMapping[]. `location_id` '' (the
  * untagged backfill sentinel) reads as absent so the matcher's same-location
- * preference treats it as legacy/untagged.
+ * preference treats it as legacy/untagged. Aisle placement columns (D5) ride as an
+ * optional `aisle` — the matcher ignores them; the order commit's identical-skip and
+ * the to-buy aisle enrichment read them.
  */
 export async function readSkuCache(env: Env): Promise<CachedMapping[]> {
   const rows = await db(env).all<SkuRow>(
-    "SELECT ingredient, location_id, sku, brand, size FROM sku_cache",
+    "SELECT ingredient, location_id, sku, brand, size, aisle_number, aisle_description, aisle_side, aisle_captured_at FROM sku_cache",
   );
   return rows.map((r) => {
     const m: CachedMapping = { ingredient: r.ingredient, sku: r.sku };
     if (r.brand != null) m.brand = r.brand;
     if (r.size != null) m.size = r.size;
     if (r.location_id) m.locationId = r.location_id;
+    if (r.aisle_number != null || r.aisle_description != null) {
+      m.aisle = {
+        number: r.aisle_number ?? "",
+        description: r.aisle_description ?? "",
+        ...(r.aisle_side != null ? { side: r.aisle_side } : {}),
+      };
+    }
+    if (r.aisle_captured_at != null) m.aisleCapturedAt = r.aisle_captured_at;
     return m;
   });
 }
@@ -1250,6 +1264,12 @@ export interface NewSkuMapping {
   size?: string;
   locationId?: string;
   last_used?: string;
+  /** Aisle placement columns (D5) — written together; `aisle_captured_at` is stamped
+   *  by the caller only when placement data is present. */
+  aisle_number?: string | null;
+  aisle_description?: string | null;
+  aisle_side?: string | null;
+  aisle_captured_at?: string | null;
 }
 
 /**
@@ -1265,16 +1285,22 @@ export async function upsertSkuMappings(env: Env, mappings: NewSkuMapping[]): Pr
     if (!m.ingredient || !m.sku) continue;
     stmts.push(
       d.prepare(
-        "INSERT INTO sku_cache (ingredient, location_id, sku, brand, size, last_used) " +
-          "VALUES (?1, ?2, ?3, ?4, ?5, ?6) " +
+        "INSERT INTO sku_cache (ingredient, location_id, sku, brand, size, last_used, aisle_number, aisle_description, aisle_side, aisle_captured_at) " +
+          "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10) " +
           "ON CONFLICT(ingredient, location_id) DO UPDATE SET " +
-          "sku = excluded.sku, brand = excluded.brand, size = excluded.size, last_used = excluded.last_used",
+          "sku = excluded.sku, brand = excluded.brand, size = excluded.size, last_used = excluded.last_used, " +
+          "aisle_number = excluded.aisle_number, aisle_description = excluded.aisle_description, " +
+          "aisle_side = excluded.aisle_side, aisle_captured_at = excluded.aisle_captured_at",
         m.ingredient,
         m.locationId ?? "",
         m.sku,
         m.brand ?? null,
         m.size ?? null,
         m.last_used ?? null,
+        m.aisle_number ?? null,
+        m.aisle_description ?? null,
+        m.aisle_side ?? null,
+        m.aisle_captured_at ?? null,
       ),
     );
   }

@@ -9,6 +9,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { Env } from "./env.js";
+import type { KrogerCandidate } from "./kroger.js";
 import { runTool } from "./errors.js";
 import { upsertSkuMappings, readSkuCache, ingredientContext, type NewSkuMapping } from "./corpus-db.js";
 import { normalizeIngredient, type MatchContext, type MatchResult } from "./matching.js";
@@ -52,31 +53,53 @@ export interface OrderWiring {
   resolve: Resolver;
   revalidateSku: Revalidator;
   getLocationId(): Promise<string>;
+  /** Raw term search at the resolved location (member-app-differentiators D1) — the
+   *  substitution read's one-search-per-line; `placeOrder` itself never calls it. */
+  search(term: string): Promise<KrogerCandidate[]>;
+  /** Raw product revalidation at the resolved location (fresh price/fulfillment/aisle). */
+  productById(sku: string): Promise<KrogerCandidate | null>;
+}
+
+/** The learned fields the commit compares for its identical-skip (D5): SKU, brand,
+ *  size, and the aisle placement — nulls/absents folded so "no aisle" matches "no aisle". */
+function learnedFieldsKey(m: {
+  sku: string;
+  brand?: string | null;
+  size?: string | null;
+  aisle?: { number?: string; description?: string; side?: string } | null;
+}): string {
+  const a = m.aisle ?? null;
+  return [m.sku, m.brand ?? "", m.size ?? "", a?.number ?? "", a?.description ?? "", a?.side ?? ""].join("\0");
 }
 
 /**
- * Upsert genuinely new (ingredient, location) SKU mappings into the D1 `sku_cache`
- * table (the indexed lookup the matcher reads). Each entry is tagged with the
- * caller's resolved `locationId` (D7) so a cross-tenant cache hit revalidates against
- * the right store, and stamped `last_used` today (for revalidation/pruning). The SKU
- * cache is shared corpus — no tenant column. Returns null (D1 has no commit sha).
+ * Upsert learned (ingredient, location) SKU mappings into the D1 `sku_cache` table
+ * (the indexed lookup the matcher reads). Each entry is tagged with the caller's
+ * resolved `locationId` (D7) so a cross-tenant cache hit revalidates against the
+ * right store, and stamped `last_used` today (for revalidation/pruning). A key that
+ * is already cached is skipped ONLY when its learned fields (SKU/brand/size/aisle)
+ * are identical (D5) — a differing row refreshes in place, so aisle placements and
+ * mappings converge organically with each order instead of freezing at first
+ * capture. The SKU cache is shared corpus — no tenant column. Returns null (D1 has
+ * no commit sha).
  */
 function makeCommitSkuCache(env: Env, getLocationId: () => Promise<string>) {
   return async (mappings: NewMapping[]): Promise<string | null> => {
     if (mappings.length === 0) return null;
-    // Skip mappings already cached for the resolved location (the old (ingredient,sku)
-    // de-dup, now keyed by the table's (ingredient, location_id) PK).
     const locationId = await getLocationId();
     const existing = await readSkuCache(env);
-    const have = new Set(
-      existing.map((m) => `${m.ingredient}\0${m.locationId ?? ""}`),
+    const have = new Map(
+      existing.map((m) => [`${m.ingredient}\0${m.locationId ?? ""}`, learnedFieldsKey(m)]),
     );
     const stamp = today();
     const toWrite: NewSkuMapping[] = [];
     for (const m of mappings) {
       const key = `${m.ingredient}\0${locationId}`;
-      if (have.has(key)) continue;
-      have.add(key);
+      const fresh = learnedFieldsKey({ sku: m.sku, brand: m.brand, size: m.size, aisle: m.aisleLocation });
+      // Identical learned fields → no write churn; a differing row upserts in place.
+      if (have.get(key) === fresh) continue;
+      have.set(key, fresh);
+      const aisle = m.aisleLocation ?? null;
       toWrite.push({
         ingredient: m.ingredient,
         sku: m.sku,
@@ -84,6 +107,11 @@ function makeCommitSkuCache(env: Env, getLocationId: () => Promise<string>) {
         size: m.size,
         locationId,
         last_used: stamp,
+        aisle_number: aisle ? aisle.number : null,
+        aisle_description: aisle ? aisle.description : null,
+        aisle_side: aisle?.side ?? null,
+        // Stamped only when placement data is present — NULL says "never captured".
+        aisle_captured_at: aisle ? stamp : null,
       });
     }
     if (toWrite.length > 0) await upsertSkuMappings(env, toWrite);
@@ -220,12 +248,8 @@ export function registerOrderTools(
   server: McpServer,
   env: Env,
   tenantId: string,
-  resolve: Resolver,
-  revalidateSku: Revalidator,
-  getLocationId: () => Promise<string>,
+  wiring: OrderWiring,
 ): void {
-  const wiring: OrderWiring = { resolve, revalidateSku, getLocationId };
-
   server.registerTool(
     "place_order",
     {

@@ -231,10 +231,24 @@ export function buildOrderWiring(env: Env, tenant: string): OrderWiring {
       size: fresh.size,
       price: fresh.price,
       on_sale: isOnSale(fresh),
+      aisleLocation: fresh.aisleLocation,
     };
   }
 
-  return { resolve, revalidateSku, getLocationId };
+  // Raw product reads at the caller's location (member-app-differentiators D1): the
+  // substitution op's ≤ 1 revalidation + 1 term search per line ride these — the same
+  // client + location resolution the matcher uses, without entering the matcher.
+  async function search(term: string): Promise<KrogerCandidate[]> {
+    const locationId = await getLocationId();
+    return kroger.search(term, { locationId, limit: 50 });
+  }
+
+  async function productById(sku: string): Promise<KrogerCandidate | null> {
+    const locationId = await getLocationId();
+    return kroger.productById(sku, locationId);
+  }
+
+  return { resolve, revalidateSku, getLocationId, search, productById };
 }
 
 /**
@@ -429,7 +443,6 @@ export function buildServer(env: Env, tenant: Tenant, origin?: string): McpServe
   const orderWiring = buildOrderWiring(env, tenant.id);
   const getLocationId = orderWiring.getLocationId;
   const resolveIngredient = orderWiring.resolve;
-  const revalidateSku = orderWiring.revalidateSku;
 
   /**
    * Resolve the caller's PRIMARY fulfillment store for `store_flyer`: its slug (`stores.primary`,
@@ -1012,7 +1025,7 @@ export function buildServer(env: Env, tenant: Tenant, origin?: string): McpServe
 
   // place_order — the order-time flush: resolve the list, write the Kroger cart,
   // persist learned SKUs to the SHARED cache. The one tool that reaches the cart.
-  registerOrderTools(server, env, tenant.id, resolveIngredient, revalidateSku, getLocationId);
+  registerOrderTools(server, env, tenant.id, orderWiring);
 
   // get_weather_forecast — read-only Open-Meteo fetch; location resolved from
   // the caller's preferences (location_zip → parse preferred_location). Used by

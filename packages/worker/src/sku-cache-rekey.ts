@@ -53,6 +53,12 @@ export interface SkuCacheRekeyRow {
   brand: string | null;
   size: string | null;
   last_used: string | null;
+  /** Aisle placement columns (member-app-differentiators D5) — carried whole through
+   *  the delete+reinsert so a re-key never erases a captured placement. */
+  aisle_number: string | null;
+  aisle_description: string | null;
+  aisle_side: string | null;
+  aisle_captured_at: string | null;
 }
 
 /** One (target key, location) group needing convergence: the stale PKs to DELETE plus the
@@ -169,7 +175,7 @@ export async function rekeySkuCache(env: Env): Promise<SkuRekeyResult> {
   }
   const d = db(env);
   const rows = await d.all<SkuCacheRekeyRow>(
-    "SELECT ingredient, location_id, sku, brand, size, last_used FROM sku_cache",
+    "SELECT ingredient, location_id, sku, brand, size, last_used, aisle_number, aisle_description, aisle_side, aisle_captured_at FROM sku_cache",
   );
   const plans = planSkuRekey(rows, resolveTerm);
 
@@ -195,16 +201,22 @@ export async function rekeySkuCache(env: Env): Promise<SkuRekeyResult> {
     if (p.upsert) {
       stmts.push(
         d.prepare(
-          "INSERT INTO sku_cache (ingredient, location_id, sku, brand, size, last_used) " +
-            "VALUES (?1, ?2, ?3, ?4, ?5, ?6) " +
+          "INSERT INTO sku_cache (ingredient, location_id, sku, brand, size, last_used, aisle_number, aisle_description, aisle_side, aisle_captured_at) " +
+            "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10) " +
             "ON CONFLICT(ingredient, location_id) DO UPDATE SET " +
-            "sku = excluded.sku, brand = excluded.brand, size = excluded.size, last_used = excluded.last_used",
+            "sku = excluded.sku, brand = excluded.brand, size = excluded.size, last_used = excluded.last_used, " +
+            "aisle_number = excluded.aisle_number, aisle_description = excluded.aisle_description, " +
+            "aisle_side = excluded.aisle_side, aisle_captured_at = excluded.aisle_captured_at",
           p.upsert.ingredient,
           p.upsert.location_id,
           p.upsert.sku,
           p.upsert.brand,
           p.upsert.size,
           p.upsert.last_used,
+          p.upsert.aisle_number,
+          p.upsert.aisle_description,
+          p.upsert.aisle_side,
+          p.upsert.aisle_captured_at,
         ),
       );
     }

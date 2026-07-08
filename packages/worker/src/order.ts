@@ -17,7 +17,7 @@
 
 import { normalizeName, groceryKey, type GroceryItem } from "./grocery.js";
 import type { MatchResult } from "./matching.js";
-import type { CheckpointLine, PartialItem, PlaceOrderResult, ResolvedLine } from "./order-shapes.js";
+import type { AisleLocation, CheckpointLine, PartialItem, PlaceOrderResult, ResolvedLine } from "./order-shapes.js";
 
 // The pure line/result shapes live in the leaf order-shapes.ts (member-app-grocery D9 —
 // the app harness types its order fixtures against them); re-exported so every existing
@@ -145,6 +145,8 @@ export interface NewMapping {
   size?: string;
   /** The Kroger locationId this mapping was resolved at (D7). */
   locationId?: string;
+  /** The resolved candidate's aisle placement, when Kroger reported one (D5). */
+  aisleLocation?: AisleLocation | null;
 }
 
 /** Caller-supplied force of a specific SKU for a line — to disposition a
@@ -162,6 +164,8 @@ export interface RevalidatedSku {
   size: string | null;
   price: { regular: number; promo: number };
   on_sale: boolean;
+  /** The revalidated product's aisle placement, when Kroger reported one (D5). */
+  aisleLocation?: AisleLocation | null;
 }
 
 export interface PlaceOrderDeps {
@@ -223,6 +227,9 @@ function toMapping(line: ResolvedLine, normalize: (name: string) => string): New
     sku: line.sku,
     brand: line.brand || undefined,
     size: line.size ?? undefined,
+    // Aisle capture (D5): the resolution's placement rides the mapping so the commit
+    // can refresh a cached row whose placement moved.
+    aisleLocation: line.aisleLocation ?? null,
   };
 }
 
@@ -273,6 +280,7 @@ export async function placeOrder(
           assumed_quantity: item.assumed_quantity,
           price: fresh.price,
           on_sale: fresh.on_sale,
+          aisleLocation: fresh.aisleLocation ?? null,
         };
         return { item, line };
       }
@@ -300,6 +308,7 @@ export async function placeOrder(
         assumed_quantity: item.assumed_quantity,
         price: r.price,
         on_sale: r.on_sale,
+        aisleLocation: r.aisleLocation ?? null,
       });
     } else if ("ambiguous" in r) {
       checkpoint.push({ name: item.name, kind: "ambiguous", candidates: r.candidates, message: r.reason });

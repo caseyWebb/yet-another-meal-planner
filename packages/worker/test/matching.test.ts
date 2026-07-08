@@ -482,3 +482,26 @@ describe("tiebreak", () => {
     expect(tiebreak([a, b]).productId).toBe("a");
   });
 });
+
+describe("aisleLocation pass-through (member-app-differentiators D5)", () => {
+  const AISLE = { number: "11", description: "Meat & Seafood", side: "L" };
+
+  it("a cache-revalidation confident match carries the fresh candidate's aisleLocation", async () => {
+    const deps = makeDeps({
+      cache: [{ ingredient: "milk", sku: "S1" }],
+      byId: { S1: cand({ productId: "S1", aisleLocation: AISLE }) },
+    });
+    const res = await matchIngredient(deps, "milk");
+    expect(res).toMatchObject({ resolved: true, sku: "S1", aisleLocation: AISLE });
+  });
+
+  it("a search-pick confident match carries its candidate's aisleLocation (null when absent)", async () => {
+    const withAisle = cand({ productId: "A", description: "whole milk", size: "1 gal", price: { regular: 3, promo: 0 }, aisleLocation: AISLE });
+    const res = await matchIngredient(makeDeps({ search: async () => [withAisle], brands: { milk: [] } }), "milk");
+    expect(res).toMatchObject({ resolved: true, sku: "A", aisleLocation: AISLE });
+
+    const noAisle = cand({ productId: "B", description: "whole milk", size: "1 gal", price: { regular: 3, promo: 0 } });
+    const res2 = await matchIngredient(makeDeps({ search: async () => [noAisle], brands: { milk: [] } }), "milk");
+    expect(res2).toMatchObject({ resolved: true, sku: "B", aisleLocation: null });
+  });
+});

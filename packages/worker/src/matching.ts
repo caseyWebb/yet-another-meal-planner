@@ -16,7 +16,7 @@
 
 import type { KrogerCandidate } from "./kroger.js";
 import { compareUnitPrice, parseSize, type UnitPriceItem } from "./unit-price.js";
-import type { CandidateView } from "./order-shapes.js";
+import type { AisleLocation, CandidateView } from "./order-shapes.js";
 
 /** A cached SKU mapping from the shared D1 `sku_cache` table. */
 export interface CachedMapping {
@@ -26,6 +26,11 @@ export interface CachedMapping {
   size?: string;
   /** The Kroger locationId this mapping was resolved at (D7). Absent = legacy/untagged. */
   locationId?: string;
+  /** Captured aisle placement at this row's location (member-app-differentiators D5).
+   *  Absent until an order captures one; the matcher itself never reads it. */
+  aisle?: AisleLocation;
+  /** ISO date the placement was last captured. */
+  aisleCapturedAt?: string;
 }
 
 export interface MatchContext {
@@ -64,6 +69,10 @@ export interface ConfidentMatch {
   price: { regular: number; promo: number };
   on_sale: boolean;
   reason: string;
+  /** The picked candidate's aisle placement at the resolved location, passed through
+   *  from the Kroger response (member-app-differentiators D5). Additive — no scoring
+   *  or step change; the resolve-only / never-substitutes contracts are untouched. */
+  aisleLocation?: AisleLocation | null;
 }
 
 // CandidateView lives in the leaf order-shapes.ts (member-app-grocery D9 — the app
@@ -370,6 +379,7 @@ function confident(c: KrogerCandidate, reason: string): ConfidentMatch {
     price: c.price,
     on_sale: isOnSale(c),
     reason,
+    aisleLocation: c.aisleLocation,
   };
 }
 

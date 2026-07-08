@@ -11,6 +11,10 @@ const sku = (
   brand: null,
   size: null,
   last_used: null,
+  aisle_number: null,
+  aisle_description: null,
+  aisle_side: null,
+  aisle_captured_at: null,
   ...o,
 });
 
@@ -311,5 +315,42 @@ describe("planSkuRekey", () => {
   it("plans nothing for canonical singletons (pure and idempotent)", () => {
     const rows = [sku({ ingredient: "milk::whole", sku: "1" }), sku({ ingredient: "eggs", sku: "2" })];
     expect(planSkuRekey(rows, (t) => t)).toEqual([]);
+  });
+});
+
+describe("rekeySkuCache — aisle column carry (member-app-differentiators D5)", () => {
+  it("a re-keyed row travels WHOLE with its aisle placement columns", async () => {
+    const { env, tables } = fakeD1({
+      tables: {
+        ingredient_identity: [{ id: "milk::whole", base: "milk", representative: null }],
+        ingredient_alias: [{ variant: "whole milk", id: "milk::whole" }],
+        sku_cache: [
+          sku({
+            ingredient: "whole milk",
+            sku: "123",
+            brand: "Kroger",
+            size: "1 gal",
+            last_used: "2026-06-01",
+            aisle_number: "7",
+            aisle_description: "Dairy",
+            aisle_side: "R",
+            aisle_captured_at: "2026-06-01",
+          }),
+        ],
+      },
+    });
+    const s = await rekeySkuCache(env);
+    expect(s.rekeyed).toBe(1);
+    // Without the column carry the delete+reinsert would silently erase the placement.
+    expect(tables.sku_cache).toEqual([
+      expect.objectContaining({
+        ingredient: "milk::whole",
+        sku: "123",
+        aisle_number: "7",
+        aisle_description: "Dairy",
+        aisle_side: "R",
+        aisle_captured_at: "2026-06-01",
+      }),
+    ]);
   });
 });

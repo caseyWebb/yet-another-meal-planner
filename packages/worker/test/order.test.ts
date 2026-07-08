@@ -306,6 +306,7 @@ describe("placeOrder", () => {
     const res = await placeOrder(deps, toBuy("cheese"), { overrides });
 
     // Brand/size/price come from revalidation, not the caller-supplied (stale) override fields.
+    // aisleLocation rides the revalidation too (D5) — null when the recheck carries none.
     expect(res.resolved).toEqual([
       {
         name: "cheese",
@@ -316,6 +317,7 @@ describe("placeOrder", () => {
         assumed_quantity: true,
         price: { regular: 5, promo: 3.5 },
         on_sale: true,
+        aisleLocation: null,
       },
     ]);
     expect(res.checkpoint).toEqual([]);

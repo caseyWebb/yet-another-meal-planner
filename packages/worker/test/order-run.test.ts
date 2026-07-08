@@ -43,6 +43,8 @@ function fakeWiring(overrides: Partial<OrderWiring> = {}): OrderWiring & { resol
     },
     revalidateSku: async () => ({ brand: "Store Brand", size: null, price: { regular: 2.5, promo: 2.0 }, on_sale: true }),
     getLocationId: async () => "loc-1",
+    search: async () => [],
+    productById: async () => null,
     ...overrides,
   };
 }
@@ -175,5 +177,117 @@ describe("runPlaceOrder — unchanged baseline (no plan, no new params)", () => 
     const expected = await placeOrder(deps, to_buy, { preview: true, resolveKey: (n) => ctx.resolve(n) });
 
     expect(result).toEqual({ ...expected, partials, underived: [] });
+  });
+});
+
+describe("runPlaceOrder — SKU-cache aisle capture (member-app-differentiators D5)", () => {
+  const AISLE = { number: "11", description: "Meat & Seafood", side: "L" };
+  const isoToday = () => new Date().toISOString().slice(0, 10);
+
+  function seedSkuRow(h: SqliteEnv, over: Record<string, unknown> = {}): void {
+    const row = {
+      ingredient: "olive oil",
+      location_id: "loc-1",
+      sku: "SKU-olive oil",
+      brand: "Store Brand",
+      size: null,
+      last_used: "2026-01-01",
+      aisle_number: null,
+      aisle_description: null,
+      aisle_side: null,
+      aisle_captured_at: null,
+      ...over,
+    };
+    h.raw
+      .prepare(
+        "INSERT INTO sku_cache (ingredient, location_id, sku, brand, size, last_used, aisle_number, aisle_description, aisle_side, aisle_captured_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      )
+      .run(...Object.values(row));
+  }
+
+  it("skips an already-cached row whose learned fields (SKU/brand/size/aisle) are identical", async () => {
+    const h = sqliteEnv([T]);
+    await addGroceryRow(h.env, T, { name: "olive oil" }, TODAY);
+    seedSkuRow(h); // identical to what the fake wiring resolves (no aisle either side)
+    const result = await run(h, {}, fakeWiring());
+    expect(result.sku_cache.committed).toBe(true);
+    // No write churn: the row is untouched (last_used keeps its old stamp).
+    expect(h.rows<{ last_used: string }>("sku_cache")).toEqual([
+      expect.objectContaining({ ingredient: "olive oil", sku: "SKU-olive oil", last_used: "2026-01-01" }),
+    ]);
+  });
+
+  it("refreshes a cache-hit row in place when the fresh resolution carries a differing aisle", async () => {
+    const h = sqliteEnv([T]);
+    await addGroceryRow(h.env, T, { name: "olive oil" }, TODAY);
+    seedSkuRow(h); // cached, but no placement yet
+    const wiring = fakeWiring({
+      resolve: async (name: string): Promise<MatchResult> => ({
+        resolved: true,
+        sku: `SKU-${name.toLowerCase()}`,
+        brand: "Store Brand",
+        size: null,
+        price: { regular: 2.5, promo: 0 },
+        on_sale: false,
+        reason: "cache hit (revalidated)",
+        aisleLocation: AISLE,
+      }),
+    });
+    const result = await run(h, {}, wiring);
+    expect(result.sku_cache.committed).toBe(true);
+    // The SAME (ingredient, location) row gained the placement + a fresh last_used.
+    expect(h.rows("sku_cache")).toEqual([
+      expect.objectContaining({
+        ingredient: "olive oil",
+        location_id: "loc-1",
+        sku: "SKU-olive oil",
+        aisle_number: "11",
+        aisle_description: "Meat & Seafood",
+        aisle_side: "L",
+        aisle_captured_at: isoToday(),
+        last_used: isoToday(),
+      }),
+    ]);
+  });
+
+  it("a newly-learned mapping lands with its aisle placement and capture stamp", async () => {
+    const h = sqliteEnv([T]);
+    await addGroceryRow(h.env, T, { name: "salmon" }, TODAY);
+    const wiring = fakeWiring({
+      resolve: async (name: string): Promise<MatchResult> => ({
+        resolved: true,
+        sku: `SKU-${name.toLowerCase()}`,
+        brand: "Store Brand",
+        size: "1 lb",
+        price: { regular: 9, promo: 0 },
+        on_sale: false,
+        reason: "test",
+        aisleLocation: { number: "15", description: "Seafood" },
+      }),
+    });
+    await run(h, {}, wiring);
+    expect(h.rows("sku_cache")).toEqual([
+      expect.objectContaining({
+        ingredient: "salmon",
+        aisle_number: "15",
+        aisle_description: "Seafood",
+        aisle_side: null,
+        aisle_captured_at: isoToday(),
+      }),
+    ]);
+  });
+
+  it("a resolution with NO aisle data writes NULL placement and no capture stamp", async () => {
+    const h = sqliteEnv([T]);
+    await addGroceryRow(h.env, T, { name: "salmon" }, TODAY);
+    await run(h, {}, fakeWiring());
+    expect(h.rows("sku_cache")).toEqual([
+      expect.objectContaining({
+        ingredient: "salmon",
+        aisle_number: null,
+        aisle_description: null,
+        aisle_captured_at: null,
+      }),
+    ]);
   });
 });

@@ -1464,16 +1464,22 @@ Example rows:
 Machine-maintained SKU cache in the **shared corpus** (`sku_cache` table) — a mapping resolved by any member warms it for everyone. Written by `place_order` as the matching pipeline resolves ingredients. Each entry is **tagged with the `location_id`** it was resolved at. Keys converge to the canonical ingredient id on the cron: the `sku-cache-rekey` reconcile resolves every `ingredient` key through the current alias/representative chain each tick and re-keys rows whose resolution differs — on a (canonical, location) collision the row with the newer `last_used` wins whole. Keys that resolve to nothing (non-food or never-captured terms) stay as-is; the re-key has no capture side effect.
 
 ```sql
--- D1 sku_cache table (migrations/d1/0006_shared_corpus.sql)
+-- D1 sku_cache table (migrations/d1/0006_shared_corpus.sql + 0041_sku_cache_aisle.sql)
 -- PRIMARY KEY (ingredient, location_id)
 
-ingredient   TEXT  -- normalized ingredient name (e.g. "olive oil")
-location_id  TEXT  -- Kroger locationId this was resolved at
-sku          TEXT  -- resolved Kroger SKU
-brand        TEXT  -- brand name of the resolved product
-size         TEXT  -- size/weight string of the resolved product (e.g. "16.9 fl oz")
-last_used    TEXT  -- ISO date of last use (informational; used for cache pruning)
+ingredient        TEXT  -- normalized ingredient name (e.g. "olive oil")
+location_id       TEXT  -- Kroger locationId this was resolved at
+sku               TEXT  -- resolved Kroger SKU
+brand             TEXT  -- brand name of the resolved product
+size              TEXT  -- size/weight string of the resolved product (e.g. "16.9 fl oz")
+last_used         TEXT  -- ISO date of last use (informational; used for cache pruning)
+aisle_number      TEXT  -- captured aisle number at this location (e.g. "11"); NULL until captured
+aisle_description TEXT  -- captured aisle/section description (e.g. "Meat & Seafood")
+aisle_side        TEXT  -- aisle side marker when Kroger reports one (e.g. "L")
+aisle_captured_at TEXT  -- ISO date the aisle placement was last captured; NULL = never
 ```
+
+**Aisle placement columns** carry the resolved product's Kroger `aisleLocation` at this row's `location_id`, written by `place_order`'s SKU-cache commit: the commit covers **every** resolved line (cache hits included — their revalidation carries fresh placement) and skips a row only when all learned fields (SKU, brand, size, aisle) are identical, so placements refresh organically with each order. They start NULL (no backfill) and converge order-by-order; `read_to_buy`'s `with_aisles` enrichment and the grocery page's aisle grouping read them at the caller's location (with the untagged-`''` legacy fallback).
 
 Example rows:
 
