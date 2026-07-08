@@ -18,19 +18,20 @@ export class PlanPage extends AppPage {
   /** Make sure the recipe is planned (add it through the combobox when absent). */
   async ensureRow(recipe: string, title: string): Promise<void> {
     const row = this.row(recipe);
+    // Gate on the plan query being LOADED before deciding whether to add. The plan-page
+    // landmark renders during the loading state too, so reading row.count() early races the
+    // plan query: it can report 0 (still loading), commit us to clicking a combobox option,
+    // then resolve with the recipe already planned — which filters that option out from under
+    // the click ("element was detached from the DOM", the 30s timeout). Once the query has
+    // loaded the page shows either at least one plan row or the empty state.
+    await this.page.locator('[data-testid="plan-row"], .empty').first().waitFor();
+    if ((await row.count()) > 0) return; // already planned — nothing to add
+    // Plan is loaded and this recipe isn't in it, so its option is stable (the plan query
+    // won't drop it mid-click).
     const input = this.page.locator(".plan-add-inline").getByRole("combobox");
     await input.fill(title);
-    // Wait for whichever renders first: the existing plan row (the plan query was
-    // still loading when we checked) or the combobox option (index loaded, recipe
-    // not planned). An immediate count()/Enter races both queries.
-    const option = this.page.locator(".cb-option", { hasText: title }).first();
-    await row.or(option).first().waitFor();
-    if ((await row.count()) === 0) {
-      await option.click();
-      await row.waitFor();
-    } else {
-      await input.press("Escape");
-    }
+    await this.page.locator(".cb-option", { hasText: title }).first().click();
+    await row.waitFor();
   }
 
   async setDate(recipe: string, isoDay: string): Promise<void> {

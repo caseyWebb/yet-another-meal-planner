@@ -303,8 +303,14 @@ function registryRows(qc: QueryClient): RegistryRow[] {
       key: ["overlay", "favorite"],
       defaults: {
         mutationFn: async (vars: FavoriteVars) => okOrThrow(await api.api.overlay.favorite.$put({ json: vars })),
-        onMutate: (vars: FavoriteVars) => {
-          // The existing favorite optimism: flip the overlay cache immediately.
+        onMutate: async (vars: FavoriteVars) => {
+          // Cancel any in-flight overlay read FIRST. Without this, a GET /api/overlay already on
+          // the wire when the click lands resolves AFTER this optimistic write and overwrites it
+          // with the pre-click server value — the favorite silently flicking back to
+          // un-favorited (the `["overlay"]` query is always mounted, so a stray refetch is common
+          // e.g. the boot-time invalidate or refetch-on-focus). Snapshot for rollback, then flip.
+          await qc.cancelQueries({ queryKey: ["overlay"] });
+          const prev = qc.getQueryData<{ overlay: Overlay }>(["overlay"]);
           qc.setQueryData<{ overlay: Overlay }>(["overlay"], (cur) => {
             if (!cur) return cur;
             const next = { ...cur.overlay };
@@ -312,8 +318,16 @@ function registryRows(qc: QueryClient): RegistryRow[] {
             else next[vars.slug] = { ...next[vars.slug], favorite: undefined };
             return { overlay: next };
           });
+          return { prev };
         },
-        onError: (err: unknown) => toast(messageOf(err, "Couldn't update favorites — try again")),
+        onError: (err: unknown, _vars: FavoriteVars, ctx: { prev: { overlay: Overlay } | undefined } | undefined) => {
+          // Roll the optimistic flip back to the pre-click cache before surfacing the failure.
+          // (A mutation resumed after a reload carries its persisted, now-stale snapshot as
+          // context; rolling back to it is harmless because the onSettled invalidate below
+          // re-derives the truth from the server.)
+          if (ctx && ctx.prev !== undefined) qc.setQueryData(["overlay"], ctx.prev);
+          toast(messageOf(err, "Couldn't update favorites — try again"));
+        },
         onSettled: () =>
           Promise.all([
             qc.invalidateQueries({ queryKey: ["overlay"] }),

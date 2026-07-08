@@ -20,6 +20,12 @@ export default defineConfig({
   testDir: "app/visual/specs",
   fullyParallel: false,
   workers: 1,
+  // One CI retry as a safety net for residual environmental flakes — the suite drives one
+  // long-lived `wrangler dev`, and Playwright tearing down per-test contexts with in-flight
+  // /api requests logs benign workerd "Broken pipe" noise. This absorbs a genuine flake but
+  // NEVER masks a real regression (a deterministic failure fails both attempts); `trace`
+  // below retains the failing attempt so any recurrence is diagnosable, not silently retried.
+  retries: process.env.CI ? 1 : 0,
   forbidOnly: !!process.env.CI,
   reporter: process.env.CI ? [["github"], ["html", { open: "never" }]] : [["list"]],
   outputDir: "app/visual/.results",
@@ -27,6 +33,7 @@ export default defineConfig({
     baseURL: `http://127.0.0.1:${PORT}`,
     viewport: { width: 1100, height: 900 },
     screenshot: "only-on-failure",
+    trace: "on-first-retry",
     ...(localChromium ? { launchOptions: { executablePath: localChromium, args: ["--no-sandbox"] } } : {}),
   },
   projects: [{ name: "chromium", use: { browserName: "chromium" } }],
