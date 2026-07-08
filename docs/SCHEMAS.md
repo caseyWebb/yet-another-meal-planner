@@ -144,6 +144,19 @@ The **classify pass**'s home for each recipe's **derived descriptive facets** (m
 
 **Effective-facet merge** (the projection, `src/recipe-facets.ts`): Tier A → classified (authored legacy only as fallback); Tier B → `authored ?? classified`; `tags` → `authored ∪ classified`; Tier C (`dietary`, `requires_equipment`, `time_total`, `pairs_with`) → authored, untouched. A not-yet-classified recipe projects its derived facets as empty (not an error). After the merge, the projection re-resolves the effective `ingredients_key`/`ingredients_full`/`perishable_ingredients` through the current ingredient resolver (see the recipe schema notes above) — this covers the authored Tier-A fallbacks too.
 
+## title_audit (D1 `title_audit` table — Worker-owned, shared)
+
+The **title re-audit**'s one-shot convergence stamp (migration 0044, `recipe-title-audit`). The scheduled pass (`src/title-audit.ts`, the `title-audit` job in `scheduled()` phase 1) audits each projected recipe **once**: it runs the guarded title-clean judgment (the discovery classifier's word-subset guard — a cleaned title may only *remove* words, fail-open), rewrites only the R2 frontmatter `title` when the accepted clean name differs, and stamps the outcome here. A recipe with a row never re-enters the backlog (`recipes.slug NOT IN title_audit`); **new writes are born-stamped** by both import paths (the sweep's import and `create_recipe`, `outcome = 'kept'` — their titles are clean at birth), so the pass drains exactly the pre-existing corpus and quiesces to a ~0-LLM no-op. A **sibling of `recipes`** keyed by `slug` (like `recipe_facets`/`recipe_derived`) because the `recipes` projection is rebuilt wholesale and cannot carry a durable stamp. Slugs are **immutable ids** — the audit never renames a slug or moves an R2 object; only the display title converges, and it reaches the index/description/embedding through the existing reconciles (the recipe-derived `content_hash` covers the title; the facet gate hash does not, so no reclassification).
+
+```sql
+-- D1 title_audit table — one-shot title-audit stamp. PRIMARY KEY (slug).
+slug         TEXT     -- recipe id (immutable; never renamed by the audit)
+audited_at   INTEGER  -- epoch ms of the stamp
+outcome      TEXT     -- 'kept' | 'cleaned'
+before_title TEXT     -- the title as audited (or at birth, for a born-stamp)
+after_title  TEXT     -- the rewritten title ('cleaned' outcomes only; NULL on 'kept')
+```
+
 ## taste_derived (per-member, D1 `taste_derived` table — Worker-derived)
 
 Each member's **taste-text embedding** — the cold-start/taste signal the **discovery sweep**'s matcher scores a candidate against (alongside the member's favorited-recipe vectors). Derived from the member's authored `profile.taste` text via `env.AI` and **content-hash gated**, mirroring `recipe_derived`'s description/embedding gate exactly: it regenerates only when the taste text changes, so a steady profile does ~no work. Refreshed at the **start of each discovery-sweep tick** (a small reconcile pass, `src/taste-vector.ts`) and pruned for a member who clears their taste text or leaves the group. A NULL/absent vector means the member is matched on **favorites alone** (or the cold-start fallback). Keyed by `tenant`. Migration 0016.

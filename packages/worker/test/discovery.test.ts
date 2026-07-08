@@ -5,6 +5,7 @@ import {
   indexSourceToSlug,
   buildCandidates,
   slugify,
+  stripParenthetical,
   buildNewRecipe,
   type FeedEntry,
 } from "../src/discovery.js";
@@ -100,6 +101,20 @@ describe("slugify", () => {
   });
 });
 
+describe("stripParenthetical (the slug basis, not the title)", () => {
+  it("drops parenthetical segments and collapses whitespace", () => {
+    expect(stripParenthetical("Jatjuk (Pine Nut Porridge)")).toBe("Jatjuk");
+    expect(stripParenthetical("Pasta alla Caponata (Sicilian Eggplant Pasta Salad)")).toBe("Pasta alla Caponata");
+    expect(stripParenthetical("Chinese Soup (30 Minutes) Recipe")).toBe("Chinese Soup Recipe");
+  });
+  it("returns an empty string for an all-parenthetical title (the caller falls back)", () => {
+    expect(stripParenthetical("(Untitled)")).toBe("");
+  });
+  it("leaves a gloss-free title untouched", () => {
+    expect(stripParenthetical("Beer Can Chicken")).toBe("Beer Can Chicken");
+  });
+});
+
 const BODY = "## Ingredients\n- a\n\n## Instructions\n1. do it\n";
 
 describe("buildNewRecipe", () => {
@@ -134,6 +149,32 @@ describe("buildNewRecipe", () => {
   it("rejects when no title/slug is derivable", async () => {
     const store = storeWith({});
     await expect(buildNewRecipe(store, env, {}, BODY)).rejects.toMatchObject({ code: "validation_failed" });
+  });
+
+  it("derives the slug from the dish name — the parenthetical gloss stays in the title only", async () => {
+    const store = storeWith({});
+    const { slug, file } = await buildNewRecipe(store, env, { title: "Jatjuk (Pine Nut Porridge)" }, BODY);
+    expect(slug).toBe("jatjuk");
+    expect(file.path).toBe("recipes/jatjuk.md");
+    expect(parseMarkdown(file.content).frontmatter.title).toBe("Jatjuk (Pine Nut Porridge)");
+  });
+
+  it("derives a plain clean-title slug unchanged", async () => {
+    const store = storeWith({});
+    const { slug } = await buildNewRecipe(store, env, { title: "Beer Can Chicken" }, BODY);
+    expect(slug).toBe("beer-can-chicken");
+  });
+
+  it("falls back to the full-title basis when the strip empties the slug", async () => {
+    const store = storeWith({});
+    const { slug } = await buildNewRecipe(store, env, { title: "(Untitled)" }, BODY);
+    expect(slug).toBe("untitled");
+  });
+
+  it("an explicit slugOverride still wins over derivation", async () => {
+    const store = storeWith({});
+    const { slug } = await buildNewRecipe(store, env, { title: "Jatjuk (Pine Nut Porridge)" }, BODY, "my-jatjuk");
+    expect(slug).toBe("my-jatjuk");
   });
 });
 

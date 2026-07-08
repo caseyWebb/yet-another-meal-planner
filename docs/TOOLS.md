@@ -150,12 +150,12 @@ Hide a recipe from the **caller** — `reject: true` removes it from the caller'
 
 ### `create_recipe(frontmatter, body, slug?)`
 
-Write a **new** recipe to the **shared corpus** (read by everyone), from agent-assembled frontmatter + body, as **one R2 object**. The slug derives from the title unless `slug` is supplied. The body MUST contain `## Ingredients` and `## Instructions` H2 sections (guarded — a body missing them is rejected, never written). A recipe is shared and single-source: if the `source` URL is already in the corpus, the write is refused (`already_exists`) so the existing recipe is reused, not duplicated.
+Write a **new** recipe to the **shared corpus** (read by everyone), from agent-assembled frontmatter + body, as **one R2 object**. The slug derives from the title's **dish name** — any parenthetical gloss is excluded from the slug basis ("Jatjuk (Pine Nut Porridge)" → `jatjuk`, with the gloss kept in the `title`; a title that is *only* a parenthetical falls back to the full-title basis) — unless `slug` is supplied. The body MUST contain `## Ingredients` and `## Instructions` H2 sections (guarded — a body missing them is rejected, never written). A recipe is shared and single-source: if the `source` URL is already in the corpus, the write is refused (`already_exists`) so the existing recipe is reused, not duplicated.
 
 **Params:**
 - `frontmatter` (object, required) — recipe frontmatter. The **descriptive facets are derived on the cron** (`recipe-facet-derivation`), so you author only the gates + identity: **required** `title`; `source` (URL or `null`); `time_total` (number or `null`); `dietary` and `requires_equipment` (the two **hard gates** — author them; may be `[]`); `pairs_with` (may be `[]`). You **may** supply `protein`/`cuisine`/`course`/`season`/`tags` as an optional authored **override** (vocab-validated; wins over the classifier; `tags` is unioned) but needn't — the classify pass and the import seed fill them. `ingredients_key`/`perishable_ingredients`/`side_search_terms`/`meal_preppable` are derived (a supplied value is only a legacy fallback). Other fields are free-form. **No `status`** is stamped — an imported recipe lands available to the group by default. Discovery imports should set `discovered_at`/`discovery_source`. `description` is **not** an input — it is AI-generated and stored in D1 (`recipe_derived`).
 - `body` (string, required) — markdown body with the `## Ingredients` / `## Instructions` sections.
-- `slug` (string, optional) — overrides the title-derived slug.
+- `slug` (string, optional) — overrides the derived slug entirely.
 
 **Returns:**
 - `{ slug }` — the slug the recipe was written at. **No `commit_sha`** — the recipe is a single R2 object, not a git commit.

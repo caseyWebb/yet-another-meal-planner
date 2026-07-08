@@ -15,6 +15,7 @@
 // progress state and a re-run never reprocesses a handled candidate.
 
 import { cosineSimilarity, embedText, embedTexts } from "./embedding.js";
+import { ToolError } from "./errors.js";
 import { favoriteAffinity } from "./semantic-search.js";
 import type { Env } from "./env.js";
 import { createR2CorpusStore } from "./corpus-store.js";
@@ -32,6 +33,7 @@ import { CLASSIFY_MODEL } from "./discovery-classify.js";
 import { validateFile } from "./validate.js";
 import { seedRecipeDescription, EMBED_INPUT_BATCH } from "./recipe-embeddings.js";
 import { seedClassifiedFacets } from "./recipe-classify.js";
+import { stampTitleAudit } from "./title-audit.js";
 import { readOverlay, readProfile } from "./profile-db.js";
 import { readTasteVectors, reconcileTasteVectors, buildTasteDeps } from "./taste-vector.js";
 import {
@@ -694,6 +696,41 @@ export function selectFeedBatch<T>(feeds: T[], cursor: number, k: number): { bat
   return { batch, nextCursor: (start + take) % n };
 }
 
+/** Highest numeric suffix the sweep tries on a cleaned-title slug collision (`-2` … `-9`).
+ *  Past it the candidate parks as today — a 9-deep pileup means something is wrong. */
+export const SLUG_SUFFIX_MAX = 9;
+
+/**
+ * Run a slug-deriving build, resolving a `slug_exists` collision with a bounded deterministic
+ * numeric suffix (`<slug>-2` … `<slug>-{SLUG_SUFFIX_MAX}`, first free wins). The UNATTENDED
+ * import leg's behavior only: by the time the sweep imports, the candidate has survived URL
+ * dedup AND semantic dedup, so a residual collision is a same-name-different-dish — parking it
+ * would silently drop a wanted recipe. Titles may legitimately duplicate; slugs stay unique.
+ * When the suffix range is exhausted (or the error carries no slug) the last `slug_exists`
+ * rethrows and the candidate parks. `create_recipe` deliberately does NOT ride this — it keeps
+ * its structured `slug_exists` error for the conversational agent to resolve.
+ */
+export async function buildWithSlugSuffix<T>(build: (slugOverride?: string) => Promise<T>): Promise<T> {
+  let lastErr: ToolError;
+  try {
+    return await build();
+  } catch (e) {
+    if (!(e instanceof ToolError) || e.code !== "slug_exists") throw e;
+    lastErr = e;
+  }
+  const base = typeof lastErr.context.slug === "string" ? lastErr.context.slug : null;
+  if (!base) throw lastErr;
+  for (let n = 2; n <= SLUG_SUFFIX_MAX; n++) {
+    try {
+      return await build(`${base}-${n}`);
+    } catch (e) {
+      if (!(e instanceof ToolError) || e.code !== "slug_exists") throw e;
+      lastErr = e;
+    }
+  }
+  throw lastErr;
+}
+
 function renderContent(c: RecipeContent): string {
   return (
     `Ingredients:\n${c.ingredients.map((i) => `- ${i}`).join("\n")}\n\n` +
@@ -955,9 +992,23 @@ export function buildDiscoveryDeps(env: Env, now: () => number = () => Date.now(
       // identity the classifier produced (dietary/requires_equipment/time_total/title/source/pairs_with).
       const fm: Record<string, unknown> = { ...frontmatter, discovered_at: today(), discovery_source: "discovery-sweep" };
       for (const k of DERIVED_FACET_FIELDS) delete fm[k];
-      const { slug, file } = await buildNewRecipe(store, env, fm, body);
-      validateFile(file.path, file.content);
+      // A residual slug collision (same clean name, different dish — semantic dedup already
+      // cleared it) disambiguates with a bounded numeric suffix instead of parking.
+      const { slug, file } = await buildWithSlugSuffix(async (slugOverride) => {
+        const built = await buildNewRecipe(store, env, fm, body, slugOverride);
+        validateFile(built.file.path, built.file.content);
+        return built;
+      });
       await store.put(file.path, file.content);
+      // Born-stamp the title audit (recipe-title-audit): the title was cleaned at import, so
+      // this recipe never enters the re-audit backlog. Best-effort — a failed stamp must not
+      // fail the committed import (the pass later re-checks a clean title and stamps `kept`).
+      try {
+        const fmTitle = typeof fm.title === "string" ? fm.title : null;
+        await stampTitleAudit(env, { slug, outcome: "kept", before: fmTitle }, now());
+      } catch (e) {
+        console.error(`[discovery-sweep] title-audit born-stamp failed for ${slug}:`, e);
+      }
       // Seed the description + the derived facets so the recipe reads well + is faceted before the
       // reconcile (embeddings left to the reconcile, as create_recipe does). Both best-effort.
       try {
