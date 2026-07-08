@@ -20,6 +20,29 @@ vi.mock("../src/night-vibe-suggest.js", async (importOriginal) => {
   };
 });
 import { runDerivation } from "../src/night-vibe-suggest.js";
+
+// Fake ORDER WIRING (member-app-grocery D9): the order route builds its matcher/location
+// deps via tools.js `buildOrderWiring`; stub JUST that factory so preview/commit/partial
+// paths cross the HTTP boundary with zero Kroger — everything else in tools.js stays real.
+vi.mock("../src/tools.js", async (importOriginal) => {
+  const mod = await importOriginal<typeof import("../src/tools.js")>();
+  return {
+    ...mod,
+    buildOrderWiring: vi.fn(() => ({
+      resolve: async (name: string) => ({
+        resolved: true as const,
+        sku: `SKU-${name.toLowerCase().replace(/\s+/g, "-")}`,
+        brand: "Store Brand",
+        size: null,
+        price: { regular: 2.5, promo: 0 },
+        on_sale: false,
+        reason: "test",
+      }),
+      revalidateSku: async () => null,
+      getLocationId: async () => "loc-1",
+    })),
+  };
+});
 import app from "../src/api/app.js";
 
 /** In-memory KV (get/put/delete/list). */
@@ -135,6 +158,8 @@ const MEMBER_ENDPOINTS: [string, string][] = [
   ["GET", "/api/plan"],
   ["POST", "/api/plan/ops"],
   ["GET", "/api/grocery"],
+  ["GET", "/api/grocery/to-buy"],
+  ["POST", "/api/grocery/order"],
   ["POST", "/api/grocery/items"],
   ["PATCH", "/api/grocery/items/milk"],
   ["DELETE", "/api/grocery/items/milk"],
@@ -271,7 +296,7 @@ describe("grocery area", () => {
     added_at: "2026-07-01", ordered_at: null,
   });
 
-  it("in-cart is an explicit set; the boundary rejects status: ordered outright", async () => {
+  it("in-cart is an explicit set; ordered is accepted ONLY as the in_cart advance (W3)", async () => {
     const { env, d1 } = memberEnv({ grocery_list: [groceryRow("active")] });
     const cookie = await loggedIn(env);
 
@@ -281,13 +306,20 @@ describe("grocery area", () => {
     const back = await send(env, "PATCH", "/api/grocery/items/milk", cookie, { status: "active" });
     expect(back.status).toBe(200);
 
-    // The member boundary rejects "ordered" even from in_cart — no order affordance in P1.
+    // From active, "ordered" is refused by the shared W3 transition guard (the route
+    // boundary now allows the VALUE — P3's mark-order-placed — but never the transition).
+    const illegal = await send(env, "PATCH", "/api/grocery/items/milk", cookie, { status: "ordered" });
+    expect(illegal.status).toBe(400);
+    const shape = (await illegal.json()) as { error: string; context?: { from?: string; to?: string } };
+    expect(shape.error).toBe("validation_failed");
+    expect(d1.tables.grocery_list[0].status).toBe("active"); // unchanged
+
+    // The legal user-asserted advance: in_cart → ordered, ordered_at stamped.
     await send(env, "PATCH", "/api/grocery/items/milk", cookie, { status: "in_cart" });
     const ordered = await send(env, "PATCH", "/api/grocery/items/milk", cookie, { status: "ordered" });
-    expect(ordered.status).toBe(400);
-    const shape = (await ordered.json()) as { error: string; message: string };
-    expect(shape.error).toBe("validation_failed");
-    expect(d1.tables.grocery_list[0].status).toBe("in_cart"); // unchanged
+    expect(ordered.status).toBe(200);
+    expect(d1.tables.grocery_list[0].status).toBe("ordered");
+    expect(d1.tables.grocery_list[0].ordered_at).toMatch(/^\d{4}-\d{2}-\d{2}$/);
   });
 
   it("add merges on re-delivery; remove reports converged on the second delivery", async () => {
@@ -304,6 +336,132 @@ describe("grocery area", () => {
     const again = await send(env, "DELETE", "/api/grocery/items/olive%20oil", cookie);
     expect(again.status).toBe(200);
     expect(((await again.json()) as { removed: boolean }).removed).toBe(false);
+  });
+});
+
+describe("grocery power (member-app-grocery)", () => {
+  const STEW_ROW = {
+    ...RECIPE_ROW,
+    slug: "stew",
+    title: "Stew",
+    ingredients_full: '["chicken","black beans","cilantro"]',
+  };
+  function groceryTables(extra: Record<string, Record<string, unknown>[]> = {}) {
+    return {
+      recipes: [RECIPE_ROW, STEW_ROW], // RECIPE_ROW ("tacos") has NO ingredients_full → underived
+      meal_plan: [
+        { tenant: "casey", recipe: "stew", planned_for: null, sides: "[]", from_vibe: null },
+        { tenant: "casey", recipe: "tacos", planned_for: null, sides: "[]", from_vibe: null },
+      ],
+      pantry: [
+        { tenant: "casey", name: "Cilantro", normalized_name: "cilantro", quantity: "1 bunch", category: "produce", prepared_from: null, added_at: "2026-06-01", last_verified_at: "2026-06-20", notes: null },
+      ],
+      grocery_list: [
+        { tenant: "casey", name: "chicken", normalized_name: "chicken", quantity: "2 lb", kind: "grocery", domain: "grocery", status: "active", source: "menu", for_recipes: "[]", note: null, added_at: "2026-07-01", ordered_at: null },
+        { tenant: "casey", name: "olive oil", normalized_name: "olive oil", quantity: "1", kind: "grocery", domain: "grocery", status: "in_cart", source: "stockup", for_recipes: "[]", note: null, added_at: "2026-07-01", ordered_at: null },
+      ],
+      profile: [{ tenant: "casey", stores: JSON.stringify({ primary: "kroger", preferred_location: "Kroger — Hyde Park" }) }],
+      ...extra,
+    };
+  }
+
+  it("GET /grocery/to-buy returns the partitioned view (origin, coverage, in_cart, underived), ETagged with 304", async () => {
+    const { env } = memberEnv(groceryTables());
+    const cookie = await loggedIn(env);
+    const res = await get(env, "/api/grocery/to-buy", cookie);
+    expect(res.status).toBe(200);
+    const etag = res.headers.get("etag")!;
+    expect(etag).toMatch(/^W\//);
+    const view = (await res.json()) as {
+      to_buy: { name: string; origin: string; for_recipes: string[]; assumed_quantity: boolean }[];
+      pantry_covered: { name: string; on_hand: { last_verified_at?: string } }[];
+      in_cart: { name: string }[];
+      underived: string[];
+    };
+    const byName = new Map(view.to_buy.map((l) => [l.name, l]));
+    expect(byName.get("chicken")!.origin).toBe("both"); // stored row the plan also needs
+    expect(byName.get("black beans")!.origin).toBe("plan"); // virtual — no row written
+    expect(byName.get("black beans")!.for_recipes).toEqual(["stew"]);
+    expect(view.pantry_covered.map((p) => p.name)).toEqual(["cilantro"]);
+    expect(view.pantry_covered[0].on_hand.last_verified_at).toBe("2026-06-20");
+    expect(view.in_cart.map((i) => i.name)).toEqual(["olive oil"]);
+    expect(view.underived).toEqual(["tacos"]);
+
+    const cached = await get(env, "/api/grocery/to-buy", cookie, { "If-None-Match": etag });
+    expect(cached.status).toBe(304);
+  });
+
+  it("the view derives without writing: grocery_list is unchanged after the read", async () => {
+    const { env, d1 } = memberEnv(groceryTables());
+    const cookie = await loggedIn(env);
+    const before = JSON.stringify(d1.tables.grocery_list);
+    await get(env, "/api/grocery/to-buy", cookie);
+    expect(JSON.stringify(d1.tables.grocery_list)).toBe(before);
+  });
+
+  it("POST /grocery/order with preview: true resolves the derived set and writes nothing", async () => {
+    const { env, d1 } = memberEnv(groceryTables({ sku_cache: [] }));
+    const cookie = await loggedIn(env);
+    const res = await send(env, "POST", "/api/grocery/order", cookie, { preview: true });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      preview: boolean;
+      resolved: { name: string; sku: string }[];
+      underived: string[];
+      cart: { written: boolean };
+      sku_cache: { committed: boolean };
+    };
+    expect(body.preview).toBe(true);
+    // The plan's derived needs rode in without the caller enumerating them.
+    expect(body.resolved.map((l) => l.name).sort()).toEqual(["black beans", "chicken"]);
+    expect(body.underived).toEqual(["tacos"]);
+    expect(body.cart.written).toBe(false);
+    expect(body.sku_cache.committed).toBe(false);
+    expect(d1.tables.sku_cache).toHaveLength(0);
+    expect(d1.tables.grocery_list).toHaveLength(2); // nothing materialized/advanced
+  });
+
+  it("commit reports the failed cart honestly (reauth_required rides the result; list not advanced)", async () => {
+    const { env, d1 } = memberEnv(groceryTables({ sku_cache: [] }));
+    const cookie = await loggedIn(env);
+    const res = await send(env, "POST", "/api/grocery/order", cookie, { exclude: ["black beans"] });
+    expect(res.status).toBe(200); // an honest partial result, not a thrown error
+    const body = (await res.json()) as {
+      resolved: { name: string }[];
+      cart: { written: boolean; code?: string };
+      list: { advanced: boolean };
+      sku_cache: { committed: boolean };
+    };
+    expect(body.resolved.map((l) => l.name)).toEqual(["chicken"]); // exclude dropped the derived line
+    // No Kroger link in KV → the cart write fails structurally, never silently succeeds.
+    expect(body.cart.written).toBe(false);
+    expect(body.cart.code).toBe("reauth_required");
+    expect(body.list.advanced).toBe(false);
+    expect(d1.tables.grocery_list.find((r) => r.name === "chicken")!.status).toBe("active");
+    // The SKU-cache commit is independent best-effort and landed.
+    expect(body.sku_cache.committed).toBe(true);
+  });
+
+  it("refuses a non-Kroger primary with a structured unsupported naming the right flow (nothing resolved)", async () => {
+    const { env } = memberEnv(
+      groceryTables({
+        profile: [{ tenant: "casey", stores: JSON.stringify({ primary: "target", fulfillment: "satellite" }) }],
+      }),
+    );
+    const cookie = await loggedIn(env);
+    const res = await send(env, "POST", "/api/grocery/order", cookie, { preview: true });
+    expect(res.status).toBe(405);
+    const body = (await res.json()) as { error: string; flow?: string };
+    expect(body.error).toBe("unsupported");
+    expect(body.flow).toBe("satellite-cart-fill"); // ToolError context spreads onto the body
+  });
+
+  it("boundary-rejects a malformed order body as a structured 400", async () => {
+    const { env } = memberEnv(groceryTables());
+    const cookie = await loggedIn(env);
+    const res = await send(env, "POST", "/api/grocery/order", cookie, { exclude: "salmon" });
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toBe("validation_failed");
   });
 });
 

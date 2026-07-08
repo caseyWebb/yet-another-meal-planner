@@ -88,16 +88,16 @@ pieces by role and the implementer binds to the landed actuals.
 
 ## 4. Worker: order + to-buy routes (D7, D12)
 
-- [ ] 4.1 Grocery route group (P1's `src/api/` grocery area): `GET /grocery/to-buy` →
+- [x] 4.1 Grocery route group (P1's `src/api/` grocery area): `GET /grocery/to-buy` →
   `computeToBuyView` (ETagged read, P0 middleware). `POST /grocery/order` →
   `runPlaceOrder` over `buildOrderWiring`, accepting the tool input shape (`menu_needs`,
   `quantities`, `include_partials`, `overrides`, `exclude`, `preview`); gate to Kroger-online
   fulfillment (non-Kroger primary → structured `unsupported` directing to the right flow —
   the satellite pull-list's precedent) before any resolution.
-- [ ] 4.2 Widen the member PATCH boundary (`PATCH /grocery/items/:name`) to accept
+- [x] 4.2 Widen the member PATCH boundary (`PATCH /grocery/items/:name`) to accept
   `status: "ordered"` — the route-level allowlist only; the W3 transition guard in
   `updateGroceryRow` stays the enforcement (untouched).
-- [ ] 4.3 Route tests (fake wiring injected): to-buy GET shape + ETag/304; order preview vs
+- [x] 4.3 Route tests (fake wiring injected): to-buy GET shape + ETag/304; order preview vs
   commit; honest partial (`cart.written:false` + `reauth_required` code crosses the boundary
   with P1's 401 mapping); fulfillment-mode refusal; PATCH `ordered` legal from `in_cart`
   (stamps `ordered_at`), `validation_failed` (400) from `active`; exports stay `import type`

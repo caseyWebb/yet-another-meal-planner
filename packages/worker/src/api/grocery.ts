@@ -1,21 +1,36 @@
-// The `grocery` area (member-app-core): the list read and the row-level writes, keyed
-// by canonical ingredient id (class (b), replayable — an add re-delivery merges, a
-// remove re-delivery reports converged). The member boundary accepts ONLY
-// `active | in_cart` for `status` (D1/D9 — the web UI has no order-placed affordance);
-// the shared op layer's W3 transition guard backstops every path. Session-gated per route.
+// The `grocery` area (member-app-core + member-app-grocery): the list read, the
+// row-level writes keyed by canonical ingredient id (class (b), replayable — an add
+// re-delivery merges, a remove re-delivery reports converged), the DERIVED to-buy view
+// (`GET /grocery/to-buy` → the same `computeToBuyView` the `read_to_buy` tool wraps),
+// and the order flow (`POST /grocery/order` → the same `runPlaceOrder` the `place_order`
+// tool wraps, over fresh `buildOrderWiring` deps; ONLINE-ONLY — the cart write is not
+// idempotent, so the client never queues/replays it). The member boundary accepts
+// `active | in_cart | ordered` for `status` — `ordered` is the user-asserted
+// mark-order-placed advance; the shared op layer's W3 transition guard (legal only from
+// `in_cart`, stamps `ordered_at`) is the enforcement on every path. Session-gated per route.
 
 import { Hono } from "hono";
+import { z } from "zod";
 import { ToolError } from "../errors.js";
 import { requireSession, type ApiEnv } from "../session.js";
 import { jsonWithEtag } from "./etag.js";
 import { jsonBody } from "./middleware.js";
 import { readGroceryList, addGroceryRow, updateGroceryRow, removeGroceryRow, isoDay } from "../session-db.js";
+import { computeToBuyView } from "../to-buy.js";
+import { runPlaceOrder, PLACE_ORDER_INPUT_SHAPE } from "../order-tools.js";
+import { buildOrderWiring } from "../tools.js";
+import { readPreferences } from "../profile-db.js";
+import { KROGER_STORE } from "../flyer-warm.js";
 import type { GroceryAddInput, GroceryUpdateInput } from "../grocery.js";
 
 const KINDS = new Set(["grocery", "household", "other"]);
 const SOURCES = new Set(["ad_hoc", "menu", "pantry_low", "stockup"]);
-/** The member boundary's writable statuses (never "ordered" — D1). */
-const MEMBER_STATUSES = new Set(["active", "in_cart"]);
+/** The member boundary's writable statuses. `ordered` is P3's mark-order-placed advance —
+ *  the route allowlist only; the W3 guard in `updateGroceryRow` enforces the transition. */
+const MEMBER_STATUSES = new Set(["active", "in_cart", "ordered"]);
+
+/** The order route validates the tool's EXACT input shape (one contract, D7). */
+const orderInput = z.object(PLACE_ORDER_INPUT_SHAPE);
 
 function str(v: unknown): string | undefined {
   return typeof v === "string" ? v : undefined;
@@ -57,7 +72,45 @@ export const groceryArea = new Hono<ApiEnv>()
     const items = await readGroceryList(c.env, tenant.id);
     return jsonWithEtag(c, { items });
   })
-  // Add — canonical-id upsert: a re-added name MERGES into its row (replay-safe).
+  // The derived to-buy view (D1/D3): one shared op with the MCP read_to_buy tool.
+  // Pure D1 read (no Kroger, no AI, no writes); ETagged like every JSON GET.
+  .get("/grocery/to-buy", requireSession, async (c) => {
+    const tenant = c.get("tenant");
+    const view = await computeToBuyView(c.env, tenant.id);
+    return jsonWithEtag(c, view);
+  })
+  // The order flow (D7): the place_order op behind the tool's exact input/result shape.
+  // Preview and commit are the same endpoint discriminated by `preview` (the op's own
+  // contract). Gated to Kroger-online fulfillment BEFORE any resolution — a non-Kroger
+  // primary gets a structured `unsupported` naming the correct flow (the satellite
+  // pull-list's 409-with-direction precedent), never a cart write.
+  .post("/grocery/order", requireSession, async (c) => {
+    const tenant = c.get("tenant");
+    const parsed = orderInput.safeParse(await jsonBody<unknown>(c));
+    if (!parsed.success) {
+      const issue = parsed.error.issues[0];
+      throw new ToolError("validation_failed", `${issue?.path.join(".") || "body"}: ${issue?.message ?? "invalid"}`);
+    }
+    const prefs = await readPreferences(c.env, tenant.id);
+    const stores = prefs?.stores as Record<string, unknown> | undefined;
+    const primary =
+      typeof stores?.primary === "string" && stores.primary.trim() ? stores.primary.trim().toLowerCase() : KROGER_STORE;
+    if (primary !== KROGER_STORE) {
+      const fulfillment = typeof stores?.fulfillment === "string" ? stores.fulfillment : null;
+      throw new ToolError(
+        "unsupported",
+        fulfillment === "satellite"
+          ? "the primary store is satellite-fulfilled — the cart is filled by the satellite helper, not a Kroger order"
+          : "the primary store is a walk store — shop it as an in-store walk, not a Kroger order",
+        { primary, flow: fulfillment === "satellite" ? "satellite-cart-fill" : "in-store-walk" },
+      );
+    }
+    const result = await runPlaceOrder(c.env, tenant.id, parsed.data, buildOrderWiring(c.env, tenant.id));
+    return c.json(result);
+  })
+  // Add — canonical-id upsert: a re-added name MERGES into its row (replay-safe). Also
+  // the MATERIALIZE write for a derived (plan-origin) view line: same canonical key, so
+  // the stored row and the derived need merge in every later read (D6).
   .post("/grocery/items", requireSession, async (c) => {
     const tenant = c.get("tenant");
     const body = await jsonBody<Record<string, unknown>>(c);
@@ -67,8 +120,9 @@ export const groceryArea = new Hono<ApiEnv>()
     const { item, merged } = await addGroceryRow(c.env, tenant.id, input, isoDay(Date.now()));
     return c.json({ item, merged });
   })
-  // Patch — the boundary accepts only active | in_cart for status; the shared op's W3
-  // guard backstops (an illegal transition is a structured validation_failed either way).
+  // Patch — the boundary accepts active | in_cart | ordered; the shared op's W3 guard
+  // enforces the transition (ordered is legal ONLY from in_cart and stamps ordered_at —
+  // an illegal transition is a structured validation_failed either way).
   .patch("/grocery/items/:name", requireSession, async (c) => {
     const tenant = c.get("tenant");
     const name = c.req.param("name");
@@ -78,7 +132,7 @@ export const groceryArea = new Hono<ApiEnv>()
       if (!MEMBER_STATUSES.has(String(body.status))) {
         throw new ToolError(
           "validation_failed",
-          'the member surface writes status as "active" or "in_cart" only — "ordered" belongs to the order flow',
+          'status must be "active", "in_cart", or "ordered" (the user-asserted order-placed advance)',
           { name, to: String(body.status) },
         );
       }
