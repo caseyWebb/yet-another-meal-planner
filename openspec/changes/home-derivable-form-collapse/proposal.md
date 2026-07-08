@@ -27,7 +27,7 @@ The production census (design.md spike) shows the blast radius is tiny and the f
 ## Impact
 
 - **Worker:** `src/ingredient-classify.ts` only — the confirm `SYSTEM_PROMPT` rule text + `FEW_SHOT` additions. No changes to `ingredient-normalize.ts`, `ingredient-alias-audit.ts`, `ingredient-edge-audit.ts`, or any matching/read path — the convergence is entirely data-driven through the re-opened audit.
-- **One D1 migration:** `packages/worker/migrations/d1/0042_reopen_detail_alias_audit.sql` (next available) — `UPDATE ingredient_alias SET audited_at = NULL WHERE source='auto' AND id LIKE '%::%'`. Data-gate change only; no schema shape change.
+- **One D1 migration:** `packages/worker/migrations/d1/0043_reopen_detail_alias_audit.sql` (next available) — `UPDATE ingredient_alias SET audited_at = NULL WHERE source='auto' AND id LIKE '%::%'`. Data-gate change only; no schema shape change.
 - **Tests:** unit fixtures for the alias re-audit's SAME-onto-base re-point + stranded-node merge in the lime shape; live-test hard cases (`lime wedges` → SAME `lime`; `diced tomatoes` stays a specialization; `lime juice` stays NOVEL/distinct) in `test/ingredient-normalize.live.test.ts`.
 - **Docs: no drift.** No tool param/return change (`docs/TOOLS.md`), no file/D1 shape change (`docs/SCHEMAS.md` — the migration writes data, adds no columns), no architectural shift (`docs/ARCHITECTURE.md`).
 - **Budget:** ≤113 classifier confirms worked through the re-audit's existing per-tick bound on the internal `env.AI`/D1 bucket, then the pass re-quiesces (born-stamped writes are untouched).

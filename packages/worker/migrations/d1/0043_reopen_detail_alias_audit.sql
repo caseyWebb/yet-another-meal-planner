@@ -1,4 +1,4 @@
--- 0042_reopen_detail_alias_audit — home-derivable-form-collapse.
+-- 0043_reopen_detail_alias_audit — home-derivable-form-collapse.
 -- The purchasable-distinction hardening of the identity confirm (a `::detail` is legitimate
 -- only when it names a purchasable distinction; home-derivable cut/prep forms collapse to the
 -- base) re-opens the DRAINED detail-node alias backlog — 113 stamped rows in production — so

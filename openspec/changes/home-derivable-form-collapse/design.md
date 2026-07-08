@@ -62,7 +62,7 @@ Rejected alternative: a deterministic prep-word suffix stripper (e.g. strip trai
 
 ### D2 — Convergence via re-opening the existing re-audit gate (one migration), not a new pass
 
-Spike 3 shows all 113 detail-target alias rows are stamped: the re-audit has quiesced and will never revisit them. The convergence lever ratified for this class is a migration clearing the relevant gate. Migration `0042_reopen_detail_alias_audit.sql`:
+Spike 3 shows all 113 detail-target alias rows are stamped: the re-audit has quiesced and will never revisit them. The convergence lever ratified for this class is a migration clearing the relevant gate. Migration `0043_reopen_detail_alias_audit.sql`:
 
 ```sql
 UPDATE ingredient_alias SET audited_at = NULL

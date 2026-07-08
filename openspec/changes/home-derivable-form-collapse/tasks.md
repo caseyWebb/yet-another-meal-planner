@@ -19,7 +19,7 @@ acceptance verification.
 
 ## 3. D1 migration — re-open the detail-node alias backlog
 
-- [x] 3.1 Add `packages/worker/migrations/d1/0042_reopen_detail_alias_audit.sql` (next available number): `UPDATE ingredient_alias SET audited_at = NULL WHERE source = 'auto' AND id LIKE '%::%';` with a header comment stating why (home-derivable-form-collapse: the purchasable-distinction hardening re-opens the drained detail-node backlog — 113 stamped rows in production — so the rolling alias re-audit re-decides them organically; human rows and base-target rows are out of scope; no schema shape change, so no `docs/SCHEMAS.md` drift).
+- [x] 3.1 Add `packages/worker/migrations/d1/0043_reopen_detail_alias_audit.sql` (next available number): `UPDATE ingredient_alias SET audited_at = NULL WHERE source = 'auto' AND id LIKE '%::%';` with a header comment stating why (home-derivable-form-collapse: the purchasable-distinction hardening re-opens the drained detail-node backlog — 113 stamped rows in production — so the rolling alias re-audit re-decides them organically; human rows and base-target rows are out of scope; no schema shape change, so no `docs/SCHEMAS.md` drift).
 - [x] 3.2 Verify locally: `npx wrangler d1 migrations apply DB --local`, seed a stamped auto detail-target row + a human row + a base-target auto row, apply, and confirm only the auto detail-target row's `audited_at` is NULL.
 
 ## 4. OpenSpec + docs
