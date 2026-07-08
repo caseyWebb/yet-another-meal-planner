@@ -323,7 +323,7 @@ export async function readIdentityNeighbors(env: Env, ids: string[]): Promise<Ma
     const from = resolve(e.from_id);
     const to = resolve(e.to_id);
     if (from === to) continue;
-    const key = `${from} ${to} ${e.kind}`;
+    const key = `${from}\u0000${to}\u0000${e.kind}`;
     if (seen.has(key)) continue;
     seen.add(key);
     resolved.push({ from, to, kind: e.kind });
@@ -352,7 +352,7 @@ export async function readIdentityNeighbors(env: Env, ids: string[]): Promise<Ma
         // Co-children of this parent through the SAME kind (two edges through one parent).
         for (const f of resolved) {
           if (f.to !== e.to || f.kind !== e.kind || f.from === x) continue;
-          const key = `${f.from} ${f.kind} ${e.to}`;
+          const key = `${f.from}\u0000${f.kind}\u0000${e.to}`;
           if (coSeen.has(key)) continue;
           coSeen.add(key);
           coChildren.push(neighbor(f.from, f.kind, e.to));

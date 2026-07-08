@@ -154,7 +154,7 @@ and the implementer binds to the landed actuals (e.g. `buildOrderWiring`, `compu
 
 ## 8. Acceptance (gates before PR)
 
-- [ ] 8.1 `aubr typecheck`, `aubr test`, `aubr test:admin` (untouched — assert no admin
+- [x] 8.1 `aubr typecheck`, `aubr test`, `aubr test:admin` (untouched — assert no admin
   changes), app Playwright suite green with screenshots surfaced;
   `openspec validate member-app-differentiators --strict` green.
 - [ ] 8.2 Production convergence checks, post-deploy: (a) an order against the live location
