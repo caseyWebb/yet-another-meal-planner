@@ -480,44 +480,23 @@ function candidateRow(over: Partial<DiscoveryLogFakeRow> & Pick<DiscoveryLogFake
   };
 }
 
-describe("GET /admin/discovery", () => {
-  it("renders the candidate-pipeline view — stat tiles, filter pills, the card list — not a placeholder", async () => {
+describe("GET /admin/api/discovery/candidates", () => {
+  it("serves the bounded candidate list + the liveness ingest strip as one aggregate read", async () => {
     const DB = candidateD1([
       candidateRow({ id: "a", outcome: "imported", created_at: "2026-06-27T10:00:00.000Z" }),
       candidateRow({ id: "b", outcome: "error", created_at: "2026-06-27T11:00:00.000Z", detail: JSON.stringify({ reason: "unreachable" }) }),
     ]);
     const env = devEnv(DB);
-    const res = await handleAdmin(new Request("http://localhost/admin/discovery"), env);
+    const res = await handleAdmin(new Request("http://localhost/admin/api/discovery/candidates"), env);
     expect(res.status).toBe(200);
-    const html = await res.text();
-    expect(html).not.toContain("coming soon");
-    expect(html).toContain("Candidates");
-    expect(html).toContain("Imported");
-    expect(html).toContain("Parked / failed");
-    expect(html).toContain("In retry queue");
-    expect(html).toContain('data-candidate-id="a"');
-    expect(html).toContain('data-candidate-id="b"');
-  });
-
-  it("filters via ?filter= and paginates via ?page=", async () => {
-    const DB = candidateD1([
-      candidateRow({ id: "a", outcome: "imported", created_at: "2026-06-27T10:00:00.000Z" }),
-      candidateRow({ id: "b", outcome: "duplicate", created_at: "2026-06-27T11:00:00.000Z", detail: JSON.stringify({ duplicate_of: "x" }) }),
-    ]);
-    const env = devEnv(DB);
-    const res = await handleAdmin(new Request("http://localhost/admin/discovery?filter=duplicate"), env);
-    const html = await res.text();
-    expect(html).toContain('data-candidate-id="b"');
-    expect(html).not.toContain('data-candidate-id="a"');
-  });
-
-  it("hydrates the discovery island for the Retry/Delete mutations", async () => {
-    const DB = candidateD1([candidateRow({ id: "a", outcome: "error", created_at: "2026-06-27T10:00:00.000Z", detail: JSON.stringify({ reason: "unreachable" }) })]);
-    const env = devEnv(DB);
-    const res = await handleAdmin(new Request("http://localhost/admin/discovery"), env);
-    const html = await res.text();
-    expect(html).toContain('id="discovery-island"');
-    expect(html).toContain('id="discovery-props"');
-    expect(html).toContain('src="/admin/islands/discovery.js"');
+    const body = (await res.json()) as {
+      candidates: { id: string; outcome: string }[];
+      ingest: { activeSatellites: number; warn: boolean };
+      now: number;
+    };
+    // Newest-first, both rows present; the SPA's filter pills/pager work client-side over this.
+    expect(body.candidates.map((c) => c.id)).toEqual(["b", "a"]);
+    expect(body.ingest).toMatchObject({ activeSatellites: 0, warn: false });
+    expect(body.now).toBeGreaterThan(0);
   });
 });

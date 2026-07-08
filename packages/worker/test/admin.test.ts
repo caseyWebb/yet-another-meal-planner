@@ -522,7 +522,7 @@ describe("handleAdmin (routing + gate)", () => {
   // The SPA shell is gone — the Hono app SSRs every page — so only a genuine asset miss falls
   // through to ASSETS (still 404, the gate already passed):
 
-  it("keeps a genuine asset 404 (no SSR route → ASSETS fallthrough → 404)", async () => {
+  it("keeps a genuine asset 404 (the admin asset namespace guards the SPA fallback)", async () => {
     const asked: string[] = [];
     const env = {
       TENANT_KV: memKv(),
@@ -536,9 +536,9 @@ describe("handleAdmin (routing + gate)", () => {
         },
       },
     } as unknown as Env;
-    const res = await handleAdmin(new Request("http://localhost/admin/islands/nonexistent.js"), env);
+    const res = await handleAdmin(new Request("http://localhost/admin/assets/nonexistent.js"), env);
     expect(res.status).toBe(404);
-    // No SSR route matched, so the request fell through to ASSETS — asked for the asset itself.
-    expect(asked).toEqual(["/admin/islands/nonexistent.js"]);
+    // The asset namespace asked ASSETS for the asset itself (no shell substitution).
+    expect(asked).toEqual(["/admin/assets/nonexistent.js"]);
   });
 });

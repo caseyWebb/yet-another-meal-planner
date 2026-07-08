@@ -57,27 +57,13 @@ function seeded() {
 }
 
 describe("Normalization admin area", () => {
-  it("SSR-renders the Decisions tab with stat tiles + the decision stream", async () => {
+  it("serves the Normalize page model via GET /admin/api/normalization/page", async () => {
     const { env } = devEnv(seeded());
-    const res = await app.request("/admin/normalize", {}, env);
+    const res = await app.request("/admin/api/normalization/page", {}, env);
     expect(res.status).toBe(200);
-    const html = await res.text();
-    expect(html).toContain("<!doctype html>");
-    expect(html).toContain("Normalization");
-    expect(html).toContain("Canonical nodes");
-    expect(html).toContain("scallions"); // a decision term
-    expect(html).toContain("ground beef"); // the resolved base
-    expect(html).toContain("/admin/islands/normalize.js"); // the mutation island bootstraps
-    expect(html).toContain("nz-known-ids"); // the typeahead datalist
-  });
-
-  it("SSR-renders the Aliases tab with the live variant→id map", async () => {
-    const { env } = devEnv(seeded());
-    const res = await app.request("/admin/normalize?tab=aliases", {}, env);
-    expect(res.status).toBe(200);
-    const html = await res.text();
-    expect(html).toContain("scallions");
-    expect(html).toContain("Add mapping");
+    const body = (await res.json()) as { data: { decisions: { term: string }[]; aliases: unknown[] }; now: number };
+    expect(body.data.decisions.map((d) => d.term)).toContain("scallions");
+    expect(body.now).toBeGreaterThan(0);
   });
 
   it("adds a human alias via POST /api/normalization/alias", async () => {
