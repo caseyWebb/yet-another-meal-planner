@@ -708,6 +708,15 @@ function VibesTab() {
           </p>
         )}
       </div>
+      {rows.length ? (
+        <div className="palette-foot">
+          <Button asChild data-testid="palette-plan-week">
+            <Link to="/propose">
+              <IconSparkle /> Plan a week from these
+            </Link>
+          </Button>
+        </div>
+      ) : null}
     </section>
   );
 }

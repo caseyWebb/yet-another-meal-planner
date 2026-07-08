@@ -31,6 +31,20 @@ export {
   type CrumbItem,
 } from "./components/page";
 export { SegmentedControl, ToggleChip, TokenField } from "./components/controls";
+export {
+  NightsStepper,
+  NudgeBar,
+  RerollButton,
+  SlotCard,
+  TIME_TIERS,
+  VarietyBar,
+  WeatherNoLocation,
+  WeatherStrip,
+  type ProposeAlt,
+  type ProposeSlotView,
+  type SlotPanel,
+  type WeatherStripDay,
+} from "./components/propose";
 export { Combobox, type ComboOption } from "./components/combobox";
 export { Toaster, toast } from "./components/toast";
 export * from "./components/icons";

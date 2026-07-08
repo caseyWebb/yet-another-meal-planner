@@ -115,3 +115,27 @@ export const IconMoon = icon(<path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z" />);
 export const IconThermo = icon(
   <path d="M14 14.76V3.5a2.5 2.5 0 0 0-5 0v11.26a4.5 4.5 0 1 0 5 0Z" />,
 );
+export const IconSwap = icon(
+  <path d="M16 3h5v5M4 20 21 3M21 16v5h-5M15 15l6 6M4 4l5 5" />,
+);
+export const IconLock = icon(
+  <>
+    <rect x="3" y="11" width="18" height="11" rx="2" />
+    <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+  </>,
+);
+export const IconUnlock = icon(
+  <>
+    <rect x="3" y="11" width="18" height="11" rx="2" />
+    <path d="M7 11V7a5 5 0 0 1 9.9-1" />
+  </>,
+);
+export const IconDice = icon(
+  <>
+    <rect x="3" y="3" width="18" height="18" rx="3" />
+    <circle cx="8.5" cy="8.5" r="1.2" fill="currentColor" />
+    <circle cx="15.5" cy="15.5" r="1.2" fill="currentColor" />
+    <circle cx="15.5" cy="8.5" r="1.2" fill="currentColor" />
+    <circle cx="8.5" cy="15.5" r="1.2" fill="currentColor" />
+  </>,
+);

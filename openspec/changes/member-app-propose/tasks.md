@@ -95,7 +95,7 @@ question is settled in design.md (D1–D12) against the code and the production 
 
 ## 5. packages/ui: propose primitives
 
-- [ ] 5.1 From the design bundle (`app-propose-ui.js` + `app-propose.css`): slot card (head
+- [x] 5.1 From the design bundle (`app-propose-ui.js` + `app-propose.css`): slot card (head
   actions, why/side/flag chips, empty-slot state with clearable pins), facet chip + popover,
   swap menu, vibe panel (typed phrase + palette presets + reset), nudge bar (slider, chip
   toggles, debounced input), variety bar, weather strip (`.wx-strip` per its CSS spec — D11),
@@ -104,23 +104,23 @@ question is settled in design.md (D1–D12) against the code and the production 
 
 ## 6. packages/app: the propose flow (D7, D8, D11)
 
-- [ ] 6.1 Client propose session: the mock's option shape persisted client-side (localStorage),
+- [x] 6.1 Client propose session: the mock's option shape persisted client-side (localStorage),
   serialized canonically into the `POST /api/propose` body; TanStack Query keyed by the
   serialized request with `keepPreviousData`; reroll = seed + 1; reset clears the session.
   **No server persistence** — verify no propose state crosses the wire outside the request.
-- [ ] 6.2 `/propose` route + page: intro (no session) and empty-palette states, controls row
+- [x] 6.2 `/propose` route + page: intro (no session) and empty-palette states, controls row
   (nights 2–6, adventurousness ↔ `nudges.variety`, protein wants, freeform debounced 400 ms),
   weather strip from `GET /api/propose/weather` (quiet `no_location` chip), variety bar,
   slot list.
-- [ ] 6.3 Slot interactions → request mapping per D7: lock/swap/pick-list → `slots[].recipe`;
+- [x] 6.3 Slot interactions → request mapping per D7: lock/swap/pick-list → `slots[].recipe`;
   exclude → `exclude` (+ clear the slot's pin); facet popovers → `slots[].{protein, cuisine,
   max_time_total}` (protein/cuisine option universes derived client-side from the cached
   index); vibe panel → `slots[].vibe`; empty slots render their pins clearable in place.
-- [ ] 6.4 Commit (D8): filled slots → P1 `POST /api/plan/ops` adds with `from_vibe`, side
+- [x] 6.4 Commit (D8): filled slots → P1 `POST /api/plan/ops` adds with `from_vibe`, side
   titles, and client-assigned next-open dates; already-planned recipes merge with the mock's
   toast copy; session cleared; navigate to the plan page. Entry points added: meal-plan page
   "Plan my week" + palette footer link.
-- [ ] 6.5 Mutation/query hooks respect the D8 exemption: the propose query is never retried as
+- [x] 6.5 Mutation/query hooks respect the D8 exemption: the propose query is never retried as
   a mutation, never queued offline (a stale propose is just re-requested); commit reuses P1's
   class (b) plan-ops mutation.
 

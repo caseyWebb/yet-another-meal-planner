@@ -1,16 +1,19 @@
 // Meal plan (member-app-core 7.6, D3): scheduled/unscheduled groups over the plan
 // read; date set/CLEAR and side add/REMOVE ride the `set` op (replace semantics —
 // the only way to remove a side or unschedule a night), remove drops the row, and
-// the add-recipe combobox pulls from the cached index. No "Plan my week" entry (P2).
+// the add-recipe combobox pulls from the cached index. "Plan my week" opens the
+// propose flow (member-app-propose).
 import * as React from "react";
 import { Link, createFileRoute } from "@tanstack/react-router";
 import { useQueryClient } from "@tanstack/react-query";
 import {
+  Button,
   Combobox,
   EmptyState,
   GroupHeading,
   IconCalendar,
   IconPlus,
+  IconSparkle,
   IconTrash,
   IconX,
   PageHead,
@@ -60,6 +63,11 @@ function PlanPage() {
         emptyText="No recipes match"
         onSelect={(slug) => void addRecipe(slug)}
       />
+      <Button asChild variant="outline" data-testid="plan-my-week">
+        <Link to="/propose">
+          <IconSparkle /> Plan my week
+        </Link>
+      </Button>
     </div>
   );
 
