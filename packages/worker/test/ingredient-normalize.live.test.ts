@@ -150,3 +150,41 @@ describe.skipIf(!LIVE)("satisfies-direction check (live Workers AI, recalibrated
     expect(confirm.match).toBe("salmon fillets, skin-on");
   }, 120_000);
 });
+
+describe.skipIf(!LIVE)("purchasable-distinction confirm hard cases (home-derivable-form-collapse)", () => {
+  const env = { AI: { run: async (m: string, i: unknown) => aiRun(m, i) } } as unknown as Env;
+
+  it("collapses a home-derivable cut form to its base (lime wedges = lime)", async () => {
+    const confirm = await confirmIdentity(env, "lime wedges", [
+      { id: "lime", score: 0.89 },
+      { id: "lemon", score: 0.74 },
+      { id: "lime juice", score: 0.72 },
+    ]);
+    // eslint-disable-next-line no-console
+    console.log("lime wedges confirm:", confirm.outcome, confirm.match, "—", confirm.reason);
+    expect(confirm.outcome).toBe("same");
+    expect(confirm.match).toBe("lime");
+  }, 120_000);
+
+  it("keeps a purchasable form of the same word (diced tomatoes is not a same-collapse onto tomatoes)", async () => {
+    const confirm = await confirmIdentity(env, "diced tomatoes", [
+      { id: "tomatoes", score: 0.9 },
+      { id: "tomato paste", score: 0.77 },
+    ]);
+    // eslint-disable-next-line no-console
+    console.log("diced tomatoes confirm:", confirm.outcome, confirm.match, confirm.detail, "—", confirm.reason);
+    // A specialization on `tomatoes` (or, with a standing tomatoes::form-diced among the
+    // candidates, a same on it) is correct; the failure mode is a same-collapse onto the base.
+    expect(confirm.outcome === "same" && confirm.match === "tomatoes").toBe(false);
+  }, 120_000);
+
+  it("never collapses the purchasable extraction onto its source (lime juice is not lime)", async () => {
+    const confirm = await confirmIdentity(env, "lime juice", [
+      { id: "lime", score: 0.85 },
+      { id: "lemon juice", score: 0.8 },
+    ]);
+    // eslint-disable-next-line no-console
+    console.log("lime juice confirm:", confirm.outcome, confirm.match, "—", confirm.reason);
+    expect(confirm.outcome).toBe("novel");
+  }, 120_000);
+});

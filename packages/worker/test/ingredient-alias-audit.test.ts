@@ -376,6 +376,57 @@ describe("auditAliases — calibration guards (normalization-audit-calibration)"
   });
 });
 
+describe("auditAliases — home-derivable form collapse (home-derivable-form-collapse)", () => {
+  it("re-points a home-derivable cut form to its base and merges the stranded detail node (the lime fixture)", async () => {
+    // Issue #215: 'lime wedges' → lime::form-wedges was re-opened by the 0042 migration; the
+    // hardened confirm answers SAME on the base. The alias re-points to `lime` (a re-commit,
+    // fresh auto decided_at, born-stamped) and the detail node — its ONLY alias just moved —
+    // is merged into `lime` via the representative pointer. The edge-audit pre-pass then
+    // sweeps its structural edge as a self-loop (covered by ingredient-edge-audit.test.ts).
+    const h = harness({
+      batch: [{ variant: "lime wedges", id: "lime::form-wedges" }],
+      identities: [auto("lime::form-wedges"), auto("lime")],
+      vectors: [
+        { id: "lime::form-wedges", embedding: [1, 0, 0] },
+        { id: "lime", embedding: [1, 0, 0] }, // above the confirm-distance guard
+      ],
+      confirm: async () => confirm({ outcome: "same", match: "lime" }),
+    });
+    const s = await auditAliases(h.deps);
+    expect(h.confirmCalls).toBe(1);
+    const r = h.committed[0];
+    expect(r.id).toBe("lime"); // the re-point — an alias upsert, not a mint
+    expect(r.node).toBeUndefined();
+    expect(r.log).toMatchObject({
+      outcome: "same",
+      resolved_id: "lime",
+      detail: { audit: "alias", previous_id: "lime::form-wedges" },
+    });
+    expect(h.merges).toEqual([{ loser: "lime::form-wedges", survivor: "lime" }]);
+    expect(s).toMatchObject({ audited: 1, repointed: 1, merged: 1, minted: 0, kept: 0 });
+  });
+
+  it("keeps a purchasable detail mapping the confirm re-derives — no churn, no merge", async () => {
+    // The re-opened backlog is ~110 legitimate specializations; re-deriving the standing
+    // mapping (SAME on the survivor) is a keep + re-stamp, never a re-point or merge.
+    const h = harness({
+      batch: [{ variant: "pickle chips", id: "pickles::form-chips" }],
+      identities: [auto("pickles::form-chips"), auto("pickles")],
+      vectors: [
+        { id: "pickles::form-chips", embedding: [1, 0, 0] },
+        { id: "pickles", embedding: [1, 0, 0] },
+      ],
+      confirm: async () => confirm({ outcome: "same", match: "pickles::form-chips" }),
+    });
+    const s = await auditAliases(h.deps);
+    const r = h.committed[0];
+    expect(r.id).toBe("pickles::form-chips"); // re-committed = kept + born-stamped
+    expect(r.node).toBeUndefined();
+    expect(h.merges).toHaveLength(0);
+    expect(s).toMatchObject({ audited: 1, kept: 1, repointed: 0, minted: 0, merged: 0 });
+  });
+});
+
 describe("auditAliases — disjunctive variant disposal (disjunctive-term-modeling)", () => {
   it("re-points a disjunctive variant to a freshly-minted disjunction concept with NO confirm call", async () => {
     const h = harness({

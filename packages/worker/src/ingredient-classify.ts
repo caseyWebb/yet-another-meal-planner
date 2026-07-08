@@ -67,11 +67,12 @@ const SYSTEM_PROMPT = [
   "- specialization: the new term is a candidate's base product PLUS a spec that changes which SKU (80/20 ground beef specializes ground beef). Set match to that candidate id and detail to a short kebab token (e.g. fat-80-20, type-bread).",
   "- novel: none of the candidates is the same product. Set match and detail to null. This INCLUDES distinct varieties that merely resemble a candidate: cheddar is NOT mozzarella, baking soda is NOT baking powder, chicken broth is NOT vegetable broth.",
   "- A DISTINCT PRODUCT is NEVER a specialization of a lookalike. A specialization's detail narrows the SAME base product; it must not attach a different product to a similar-sounding candidate. Dried dates are NOT a variety of a dried fruit blend; canned salmon is NOT a form of fresh skin-on salmon fillets; a loaf of bread is NOT a type of bread flour; a sea salt is NOT a kind of fish sauce. When the products differ, choose novel.",
+  "- A home-derived EXTRACTION that is ALSO a distinct purchasable product in its own right (lime juice — sold bottled) is a DISTINCT BASE: it is NEVER same as its source product, in EITHER direction (lime juice is not lime; lime is not lime juice), and never a specialization of it. Choose novel (or the standing extraction candidate).",
   "- Each candidate's similarity is its retrieval cosine to the new term. LOW similarity means the retriever considers it distant: the lower it is, the stronger the product-identity evidence must be before you pick same or specialization against it — when similarity is low and identity is not obvious, choose novel.",
   '- For a novel outcome, ALSO set canonical to the clean store-product name for the new term: lowercase, packaging/quantity/storage-condition noise stripped (parentheticals, bag sizes, "frozen leftovers", "freezer burned"), as `base` or `base::detail`. If the term is already a clean product name, canonical may repeat it. canonical is null for same/specialization.',
   "- Be CONSERVATIVE. Only pick same when truly interchangeable at the store. When in doubt prefer specialization or novel. Never collapse two distinct products.",
+  '- PURCHASABLE DISTINCTION: a qualifier is load-bearing (a detail) ONLY when the qualified form is a DIFFERENT product on the store shelf a shopper would buy (fat ratio, flour type, egg size, a varietal, or a canned/dried/pickled/ground/toasted form sold as its own SKU: pickle chips, canned tuna, dried thyme, cinnamon sticks). A PREPARATION or CUT form the shopper derives at home from the purchased base by ordinary kitchen work (diced, minced, shredded, softened, chopped, wedges, slices, quarters, zest) is NOT a detail: pick same on the base product (lime wedges = lime; diced yellow onion = yellow onion) — the form serves the recipe, not the store; it names the same purchase. Judge purchasability PER PRODUCT, not by word list: the SAME word may dispose either way ("diced tomatoes" names a canned shelf product — a specialization; "diced yellow onion" is knife work — same).',
   "- GENERALITY DIRECTION: never pick same when the new term is MORE GENERAL than a candidate. A general product (mozzarella cheese) is NOT a synonym of one of its specific varieties (fresh mozzarella) — choose novel and mint the general base instead. When you mint a general base over candidates that are its specific varieties, ALSO add a general edge FROM each such variety TO the new base: {\"from\":\"<variety>\",\"to\":\"NEW\",\"kind\":\"general\"}. A general edge is DIRECTIONAL like containment — a specific variety satisfies a request for the general product (kielbasa satisfies sausage), but the general product does NOT satisfy a request for the variety.",
-  "- PREPARATION words that do not change the product (diced, minced, shredded, softened, chopped) are NOT details: pick same on the base product (diced yellow onion = yellow onion).",
   "- A term that differs from a candidate id only by punctuation, pluralization, or word order is the SAME product — pick same (salmon fillets skin-on = salmon fillets, skin-on).",
   "- CONTAINMENT edges are DIRECTIONAL: a more complete form satisfies a request for a sub-part. A whole chicken satisfies chicken thighs, but a thigh does NOT satisfy a whole chicken — emit {\"from\":\"<whole>\",\"to\":\"NEW\",\"kind\":\"containment\"}, never the reverse.",
   "- concrete=false only for a generic CLASS (a fresh soft cheese); then add membership edges FROM fitting candidate members TO the new concept: {\"from\":\"<member>\",\"to\":\"NEW\",\"kind\":\"membership\"}.",
@@ -130,6 +131,34 @@ const FEW_SHOT: { user: string; out: IdentityConfirm }[] = [
         { from: "bratwurst", to: "NEW", kind: "general" },
       ],
       reason: "general sausage base; each candidate variety satisfies it",
+    },
+  },
+  {
+    // A home-derivable cut form: never a detail — SAME on the base (the live defect: 'lime
+    // wedges' minted lime::form-wedges, hiding the pantry lime from exact-id matching).
+    user: 'NEW term: "lime wedges"\nCANDIDATES: [{"id":"lime","similarity":0.89},{"id":"lime juice","similarity":0.78},{"id":"lemon","similarity":0.72}]',
+    out: {
+      outcome: "same",
+      match: "lime",
+      detail: null,
+      canonical: null,
+      concrete: true,
+      edges: [],
+      reason: "wedges are knife work on the purchased lime, not a shelf product",
+    },
+  },
+  {
+    // The purchasable contrast for the same word: unlike knife-work 'diced yellow onion',
+    // canned diced tomatoes are their own shelf SKU — the qualifier IS load-bearing here.
+    user: 'NEW term: "diced tomatoes"\nCANDIDATES: [{"id":"tomatoes","similarity":0.9},{"id":"tomato paste","similarity":0.77}]',
+    out: {
+      outcome: "specialization",
+      match: "tomatoes",
+      detail: "form-diced",
+      canonical: null,
+      concrete: true,
+      edges: [],
+      reason: "canned diced tomatoes are a distinct shelf product, not knife work",
     },
   },
 ];
