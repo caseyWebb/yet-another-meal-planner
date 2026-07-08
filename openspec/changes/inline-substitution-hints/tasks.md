@@ -13,52 +13,62 @@ the landed actuals (`suggestSubstitutions`, `identitySiblings`, `computeToBuyVie
 
 ## 1. Worker: extract the shared substitute annotator
 
-- [ ] 1.1 In `substitutions.ts`, extract the cheap half into
+- [x] 1.1 In `substitutions.ts`, extract the cheap half into
   `annotateSubstitutes(lineKeys, deps)`: the `identitySiblings` walk (unchanged) + the
   `in_pantry: pantry.has(id)` join (`readPantryNames`) + the `on_sale_hint = flyerHint(...)` match
   over the warmed rollup (`readStoreFlyer` + `filterByMinSavings` + satellite-staleness
   suppression). Deps are the loaded identity+edge pair, the pantry names set, and the resolved
   primary-store flyer rollup (all already assembled in `suggestSubstitutions` today). Pure D1 +
   KV — no `productById`, no `search`. Returns `Map<lineKey, SiblingSuggestion[]>`.
-- [ ] 1.2 Batch the neighbor read: `annotateSubstitutes` loads edges for **all** requested line
+  (Landed in a new sibling leaf `src/substitute-annotator.ts`, not inline in
+  `substitutions.ts`, to dodge a module cycle: `substitutions.ts` still calls
+  `computeToBuyView` from `to-buy.ts` for its default line source, and `to-buy.ts` now
+  calls `annotateSubstitutes` — the annotator lives where both can import it without
+  circularity. `substitutions.ts` re-exports `identitySiblings`/`annotateSubstitutes` for
+  discoverability.)
+- [x] 1.2 Batch the neighbor read: `annotateSubstitutes` loads edges for **all** requested line
   ids in one `readIdentityNeighbors` call (no per-line N+1), since the enriched read covers the
   whole to-buy set, not a 12-line budget.
-- [ ] 1.3 `order-shapes.ts` (workerd-free leaf): keep `SiblingSuggestion` as the annotator's
+- [x] 1.3 `order-shapes.ts` (workerd-free leaf): keep `SiblingSuggestion` as the annotator's
   output; it becomes the element type of the new `ToBuyViewLine.substitutes?`. Leave
   `SubstitutionAlternative` / `LineSuggestions` for the slimmed op (§2).
-- [ ] 1.4 Unit tests: `annotateSubstitutes` reproduces the exact sibling/pantry/flyer output the
+- [x] 1.4 Unit tests: `annotateSubstitutes` reproduces the exact sibling/pantry/flyer output the
   P4 op produced for the same fixtures (the `cabbage` family, an `in_pantry` hit, an
   `on_sale_hint` from a seeded rollup, and an empty result for a no-edge line); no Kroger call is
   issued.
 
 ## 2. Worker: slim `suggest_substitutions` to alternatives-only
 
-- [ ] 2.1 `suggestSubstitutions` drops the sibling/pantry/flyer half (now `annotateSubstitutes`)
+- [x] 2.1 `suggestSubstitutions` drops the sibling/pantry/flyer half (now `annotateSubstitutes`)
   and returns `LineSuggestions` with `siblings` **removed** — the current pick status +
   `alternatives` (`cheaper`/`on_sale`/`in_stock`, capped 5) only. The 12-line budget +
   `remaining` pagination + no-location degradation (empty `alternatives`, `location: null`)
   are retained on this half.
-- [ ] 2.2 Update `SuggestSubstitutionsResult` / `LineSuggestions` in `order-shapes.ts` to drop
+- [x] 2.2 Update `SuggestSubstitutionsResult` / `LineSuggestions` in `order-shapes.ts` to drop
   `siblings`; `flyer_as_of` moves to the enriched to-buy view (§3), not the alternatives result.
-- [ ] 2.3 Unit tests: the slimmed op still ranks by `compareUnitPrice`, tags the closed reason
+- [x] 2.3 Unit tests: the slimmed op still ranks by `compareUnitPrice`, tags the closed reason
   vocabulary, paginates over 12, and degrades with no location — the pre-existing alternatives
   tests pass with the sibling assertions removed.
 
 ## 3. Worker: the enriched read + the route/tool contract
 
-- [ ] 3.1 `to-buy.ts`: generalize the enrichment from `withAisles` to `enrich`. When set, after
+- [x] 3.1 `to-buy.ts`: generalize the enrichment from `withAisles` to `enrich`. When set, after
   the single `resolveLocationId`, call `annotateSubstitutes` for the to-buy line set and attach
   `substitutes?` per line **alongside** the existing aisle `placement`; add `flyer_as_of` to the
   view. The default (`enrich` absent) read is byte-identical — no walk, no resolve, no
   `substitutes`/`flyer_as_of` keys.
-- [ ] 3.2 ETag (D8): the enriched read's ETag folds the pantry rowset/verify marker, `flyer_as_of`,
+- [x] 3.2 ETag (D8): the enriched read's ETag folds the pantry rowset/verify marker, `flyer_as_of`,
   and the identity edge-set marker so a warmed flyer or pantry edit invalidates cached hints.
-- [ ] 3.3 `tools.ts`: rename the `read_to_buy` param `with_aisles` → `enrich`; its description
+  (No new ETag machinery needed: `jsonWithEtag` already hashes the exact serialized response
+  body, and `substitutes[]`/`flyer_as_of` now ride that body, freshly recomputed from live
+  pantry/flyer/identity-graph state on every call — so any change to those inputs that alters
+  what's served already changes the hash. Documented inline at the route.)
+- [x] 3.3 `tools.ts`: rename the `read_to_buy` param `with_aisles` → `enrich`; its description
   documents that the enriched read carries aisle placement **and** substitute hints under one
   Locations resolve, read-only, and that acting on a hint reuses existing writes. `src/api/grocery.ts`:
   `?aisles=1` → `?enrich=1`; slim the `POST /api/grocery/substitutions` handler's result to the
   alternatives-only shape.
-- [ ] 3.4 Route/tool tests: `GET /api/grocery/to-buy?enrich=1` returns `substitutes[]` +
+- [x] 3.4 Route/tool tests: `GET /api/grocery/to-buy?enrich=1` returns `substitutes[]` +
   `flyer_as_of` + `placement`; the default read is byte-identical (the P4 byte-identical assertion
   retargeted to `enrich`); the tool and endpoint return the same enriched view.
 

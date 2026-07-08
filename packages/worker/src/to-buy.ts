@@ -14,13 +14,22 @@
 import type { Env } from "./env.js";
 import { computeToBuy, type MenuNeed } from "./order.js";
 import { normalizeName, groceryKey, type GroceryItem } from "./grocery.js";
-import { readGroceryList, readMealPlan, readPantryByKey } from "./session-db.js";
+import { readGroceryList, readMealPlan, readPantryByKey, readPantryNames } from "./session-db.js";
 import { recipeIngredientsFull } from "./recipe-index.js";
-import { ingredientContext, emptyIngredientContext, readIdentityNeighbors, readSkuCache } from "./corpus-db.js";
+import {
+  ingredientContext,
+  emptyIngredientContext,
+  readIdentityNeighbors,
+  readSkuCache,
+  type IngredientContext,
+} from "./corpus-db.js";
 import { readPreferences } from "./profile-db.js";
 import { createKrogerClient } from "./kroger.js";
-import { KROGER_STORE } from "./flyer-warm.js";
-import type { CachedMapping } from "./matching.js";
+import { readStoreFlyer, filterByMinSavings, isSatelliteRollupStale, KROGER_STORE, type FlyerRollup } from "./flyer-warm.js";
+import { loadOperatorConfig, DEFAULT_OPERATOR_CONFIG } from "./operator-config.js";
+import type { KvStore } from "./kroger-user.js";
+import { annotateSubstitutes } from "./substitute-annotator.js";
+import { MIN_FLYER_DISCOUNT, type CachedMapping } from "./matching.js";
 import type { ToBuyViewLine, PantryCoveredLine, InCartLine, LinePlacement, ToBuyView } from "./order-shapes.js";
 
 // The view's line shapes live in the leaf order-shapes.ts (member-app-grocery D9 — the
@@ -101,19 +110,23 @@ export function dropInFlightNeeds(
  * (joined with the pantry rows' verify metadata — the same set `place_order` prompts on);
  * the stored `in_cart` rows ride along as the stale-cart signal. Writes nothing.
  *
- * `opts.withAisles` (member-app-differentiators D6) is OPT-IN aisle enrichment: absent,
- * the read is byte-identical to the plain view and keeps its zero-Kroger guarantee
- * absolute. Set, each line gains a `placement` — captured aisle fields from the
- * `sku_cache` row at (key, caller's location) with the legacy `''` fallback, plus a
- * `department` derived from the identity graph's parents — and the result carries the
- * resolved `location`. Cost: at most ONE Kroger Locations resolve (label → locationId,
- * exactly `kroger_flyer`'s posture) and ZERO product searches; no resolvable location
- * (non-Kroger primary, unresolvable label) means placements carry `department` only.
+ * `opts.enrich` (member-app-differentiators D6, generalized by inline-substitution-
+ * hints D2) is OPT-IN enrichment: absent, the read is byte-identical to the plain view
+ * and keeps its zero-Kroger guarantee absolute. Set, each line gains a `placement`
+ * (captured aisle fields from the `sku_cache` row at (key, caller's location) with the
+ * legacy `''` fallback, plus a `department` derived from the identity graph's parents)
+ * AND `substitutes[]` (the shared annotator's identity-graph siblings, each carrying
+ * `in_pantry` + `on_sale_hint` — inline-substitution-hints D1/D3), and the result
+ * carries the resolved `location` plus `flyer_as_of` (D8). Cost: at most ONE Kroger
+ * Locations resolve (label → locationId, exactly `kroger_flyer`'s posture) and ZERO
+ * product searches; no resolvable Kroger location (non-Kroger primary, unresolvable
+ * label) means placements carry `department` only, while `substitutes[].in_pantry`
+ * (pure D1) and a satellite store's label-keyed `on_sale_hint` are still served.
  */
 export async function computeToBuyView(
   env: Env,
   tenant: string,
-  opts: { withAisles?: boolean } = {},
+  opts: { enrich?: boolean } = {},
 ): Promise<ToBuyView> {
   // Resolve-only context (capture OFF) — a read never enqueues; degrade to the empty
   // context (cleaned passthrough) rather than failing the view on a resolver-read blip.
@@ -183,8 +196,8 @@ export async function computeToBuyView(
     .map((it) => ({ name: it.name, added_at: it.added_at }));
 
   const view: ToBuyView = { to_buy: lines, pantry_covered, in_cart, underived: derived.underived };
-  if (!opts.withAisles) return view; // the default read: byte-identical, zero Kroger
-  return enrichWithAisles(env, tenant, view);
+  if (!opts.enrich) return view; // the default read: byte-identical, zero Kroger
+  return enrichView(env, tenant, view, ctx);
 }
 
 /** Precedence for the graph-derived department fallback (D6): membership parents are
@@ -201,34 +214,62 @@ function placementRow(cache: CachedMapping[], key: string, locationId: string | 
 }
 
 /**
- * The D6 aisle enrichment over an already-computed view: one Locations resolve at
- * most, one `sku_cache` read, one identity-graph read — zero product searches, no
- * writes. Lines gain `placement` ({} fields optional; null when nothing is known),
- * the view gains the resolved `location` (null when none is resolvable).
+ * The enriched view over an already-computed plain view (member-app-differentiators
+ * D6, generalized by inline-substitution-hints D2): one Locations resolve at most, one
+ * `sku_cache` read, one identity-graph read (department fallback), one flyer-rollup
+ * read, one pantry-names read, and the shared annotator's own batched identity-graph
+ * read — zero product searches, no writes. Lines gain `placement` ({} fields optional;
+ * null when nothing is known) AND `substitutes` (always an array — empty for a
+ * no-edge line), the view gains the resolved `location` (null when none is resolvable)
+ * and `flyer_as_of` (null when no rollup was used).
  */
-async function enrichWithAisles(env: Env, tenant: string, view: ToBuyView): Promise<ToBuyView> {
-  // Resolve the caller's Kroger location — the ONE Locations call. Only a Kroger
-  // primary has a deterministic placement source; anything else degrades to the
-  // graph department (non-Kroger layout stays agent territory — store notes).
+async function enrichView(env: Env, tenant: string, view: ToBuyView, ctx: IngredientContext): Promise<ToBuyView> {
+  // Resolve the caller's primary fulfillment store + (Kroger only) its numeric
+  // locationId — the ONE Locations call this whole enrichment pays. Only a Kroger
+  // primary has a deterministic aisle-placement source; anything else degrades to the
+  // graph department (non-Kroger layout stays agent territory — store notes). A
+  // satellite store's label IS its own flyer-rollup locationId (`store_flyer`'s
+  // posture), so `on_sale_hint` below still reaches a walk/satellite tenant.
+  const prefs = await readPreferences(env, tenant).catch(() => null);
+  const stores = prefs?.stores as Record<string, unknown> | undefined;
+  const primary =
+    typeof stores?.primary === "string" && stores.primary.trim() ? stores.primary.trim().toLowerCase() : KROGER_STORE;
+  const label = typeof stores?.preferred_location === "string" ? stores.preferred_location : null;
+
   let locationId: string | null = null;
-  try {
-    const prefs = await readPreferences(env, tenant);
-    const stores = prefs?.stores as Record<string, unknown> | undefined;
-    const primary =
-      typeof stores?.primary === "string" && stores.primary.trim() ? stores.primary.trim().toLowerCase() : KROGER_STORE;
-    const label = typeof stores?.preferred_location === "string" ? stores.preferred_location : null;
-    if (primary === KROGER_STORE && label) {
-      locationId = await createKrogerClient(env).resolveLocationId(label);
-    }
-  } catch {
-    locationId = null; // unresolvable → placements carry department only
+  if (primary === KROGER_STORE && label) {
+    locationId = await createKrogerClient(env).resolveLocationId(label).catch(() => null);
   }
 
+  // The primary store's warmed flyer rollup (inline-substitution-hints D3), resolved
+  // + staleness-filtered HERE so `annotateSubstitutes` stays a pure join: a Kroger
+  // primary keys on the resolved locationId; a satellite's label IS its rollup
+  // locationId. Suppressed entirely past the operator's staleness ceiling
+  // (`store_flyer`'s posture) rather than hinting off a stale sale — `flyer_as_of`
+  // then reflects that nothing was actually used.
+  const kv = env.KROGER_KV as unknown as KvStore;
+  const flyerLocation = primary === KROGER_STORE ? locationId : label;
+  let rollup: FlyerRollup | null = null;
+  if (label && flyerLocation) {
+    rollup = await readStoreFlyer(kv, primary, flyerLocation).catch(() => null);
+  }
+  if (rollup) {
+    const operatorConfig = await loadOperatorConfig(env).catch(() => null);
+    const stalenessDays = operatorConfig?.scanStalenessDays ?? DEFAULT_OPERATOR_CONFIG.scanStalenessDays;
+    if (isSatelliteRollupStale(primary, rollup.as_of, stalenessDays)) rollup = null;
+  }
+  const saleItems = rollup ? filterByMinSavings(rollup.items, MIN_FLYER_DISCOUNT) : [];
+  const flyer_as_of = rollup ? new Date(rollup.as_of).toISOString() : null;
+
   const keys = view.to_buy.map((l) => l.key);
-  const [cache, neighborsByKey] = await Promise.all([
+  const [cache, neighborsByKey, pantry] = await Promise.all([
     locationId !== null ? readSkuCache(env) : Promise.resolve([] as CachedMapping[]),
     readIdentityNeighbors(env, keys),
+    readPantryNames(env, tenant),
   ]);
+  // The shared cheap-half annotator (inline-substitution-hints D1/D3): one batched
+  // neighbor read of its own over the SAME key set (no per-line N+1).
+  const substitutesByKey = await annotateSubstitutes(env, keys, { pantry, saleItems, ctx });
 
   const to_buy = view.to_buy.map((line) => {
     const placement: LinePlacement = {};
@@ -250,8 +291,12 @@ async function enrichWithAisles(env: Env, tenant: string, view: ToBuyView): Prom
         break;
       }
     }
-    return { ...line, placement: Object.keys(placement).length > 0 ? placement : null };
+    return {
+      ...line,
+      placement: Object.keys(placement).length > 0 ? placement : null,
+      substitutes: substitutesByKey.get(line.key) ?? [],
+    };
   });
 
-  return { ...view, to_buy, location: locationId !== null ? { id: locationId } : null };
+  return { ...view, to_buy, location: locationId !== null ? { id: locationId } : null, flyer_as_of };
 }
