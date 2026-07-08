@@ -14,6 +14,7 @@ import { GroceryPage } from "./pages/grocery.page";
 import { PantryPage } from "./pages/pantry.page";
 import { LogPage } from "./pages/log.page";
 import { ProfilePage } from "./pages/profile.page";
+import { ProposePage } from "./pages/propose.page";
 import { SEED } from "../../admin/visual/seed.mjs";
 
 interface AppFixtures {
@@ -27,6 +28,7 @@ interface AppFixtures {
   pantryPage: PantryPage;
   logPage: LogPage;
   profilePage: ProfilePage;
+  proposePage: ProposePage;
   /** Log in as the seeded member (lands on /). Most authed specs start here. */
   asMember: () => Promise<void>;
 }
@@ -52,6 +54,7 @@ export const test = base.extend<AppFixtures>({
   pantryPage: async ({ page }, use) => use(new PantryPage(page)),
   logPage: async ({ page }, use) => use(new LogPage(page)),
   profilePage: async ({ page }, use) => use(new ProfilePage(page)),
+  proposePage: async ({ page }, use) => use(new ProposePage(page)),
   asMember: async ({ page, context }, use) => {
     await use(async () => {
       // ONE UI login per worker, then the session cookie is replayed — the login

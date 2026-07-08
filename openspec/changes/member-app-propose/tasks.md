@@ -126,16 +126,16 @@ question is settled in design.md (D1–D12) against the code and the production 
 
 ## 7. Playwright (blocking, zero model calls — D12)
 
-- [ ] 7.1 Seed additions: deterministic palette (`night_vibes`), synthetic
+- [x] 7.1 Seed additions: deterministic palette (`night_vibes`), synthetic
   `night_vibe_derived` + `recipe_derived` vectors (equal dimension, distinct directions),
   at-risk pantry rows; pre-warm the KV embed cache with the freeform spec's exact phrase key.
-- [ ] 7.2 Page objects + specs: empty-palette intro; first propose (slots, variety bar, weather
+- [x] 7.2 Page objects + specs: empty-palette intro; first propose (slots, variety bar, weather
   strip or `no_location` chip); reroll changes the week and same-request stability holds; lock
   survives reroll; facet pin narrows a slot + over-constrained empty state with clearable pins;
   swap-similar applies `alt_similar`; exclude refills; freeform (cache-warmed) shows the
   "matches your ask" why; commit lands plan rows whose `from_vibe`/sides/dates the plan page
   read confirms.
-- [ ] 7.3 Run the suite (`PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers` in web sessions), surface
+- [x] 7.3 Run the suite (`PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers` in web sessions), surface
   per-area screenshots; the CI job stays blocking.
 
 ## 8. Docs (lockstep, same pass)

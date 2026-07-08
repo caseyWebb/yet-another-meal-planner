@@ -61,7 +61,19 @@ export interface SeedLiterals {
     };
     readonly note: { readonly body: string; readonly tag: string };
     readonly tasteLead: string;
-    readonly zip: string;
+    /** Propose-flow fixtures (member-app-propose D12): the self-provisioned palette's
+     *  vibe ids (their derived vectors are pre-seeded), the cache-warmed freeform
+     *  phrase, and the corpus rows the specs assert on. */
+    readonly propose: {
+      readonly vibes: {
+        readonly seafood: { readonly id: string; readonly vibe: string };
+        readonly comfort: { readonly id: string; readonly vibe: string };
+      };
+      readonly freeform: string;
+      readonly soup: { readonly slug: string; readonly title: string };
+      readonly side: { readonly slug: string; readonly title: string };
+      readonly extraRecipes: readonly string[];
+    };
   };
   /** The registered background jobs seeded into job_health/job_runs (mirrors HEALTH_JOBS). */
   readonly jobs: readonly string[];

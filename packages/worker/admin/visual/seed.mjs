@@ -10,6 +10,8 @@
 // Idempotent: every statement DELETEs its fixed ids (or upserts by PK) before inserting, so a
 // re-run against a previously-seeded local D1 converges instead of duplicating.
 
+import { createHash } from "node:crypto";
+
 /** The literals the page objects assert on (one source of truth with the SQL below). */
 export const SEED = {
   members: { active: "casey", pending: "pat" },
@@ -78,7 +80,23 @@ export const SEED = {
     },
     note: { body: "Swapped honey for the brown sugar — better glaze.", tag: "tweak" },
     tasteLead: "Big on bold heat and acid",
-    zip: "45208",
+    // The propose flow (member-app-propose D12): the shared seed keeps the PALETTE empty
+    // (production's first render — the profile + propose empty states assert it), and
+    // pre-plants everything the propose specs' SELF-PROVISIONED palette needs to fill a
+    // week with ZERO model calls: night_vibe_derived vectors for these exact vibe ids
+    // (the spec creates the night_vibes rows through the real API), recipe_derived
+    // embeddings for the whole corpus, and the pre-warmed query-embedding cache entry
+    // for the exact freeform phrase the spec types.
+    propose: {
+      vibes: {
+        seafood: { id: "viz-vibe-seafood", vibe: "something from the sea" },
+        comfort: { id: "viz-vibe-comfort", vibe: "cozy comfort food" },
+      },
+      freeform: "more cozy soup",
+      soup: { slug: "viz-chicken-soup", title: "Weeknight Chicken Soup" },
+      side: { slug: "viz-garlic-bread", title: "Garlic Bread" },
+      extraRecipes: ["viz-fish-tacos", "viz-beef-ragu", "viz-spinach-curry", "viz-cacio-pepe"],
+    },
   },
   // Mirrors src/health.ts HEALTH_JOBS (every registered job gets health + run history so no
   // Status row renders never-run).
@@ -101,6 +119,27 @@ const HOUR = 3_600_000;
 const DAY = 86_400_000;
 
 const q = (s) => `'${String(s).replace(/'/g, "''")}'`;
+
+// --- synthetic embeddings (member-app-propose D12) -------------------------------
+// Deterministic EMBED_DIM one-hot-ish vectors: equal dimension, distinct directions, so
+// cosine ordering across the seeded corpus/vibes/freeform phrase is stable and the
+// propose flow computes entirely from these — zero Workers AI calls in the harness.
+/** Must match src/embedding.ts EMBED_DIM/EMBED_MODEL (the cache validates both). */
+const EMBED_DIM = 768;
+const EMBED_MODEL = "@cf/baai/bge-base-en-v1.5";
+/** JSON vector with weight w at each given index ([[i, w], …]), zeros elsewhere. */
+function embedVec(on) {
+  const v = new Array(EMBED_DIM).fill(0);
+  for (const [i, w] of on) v[i] = w;
+  return JSON.stringify(v);
+}
+/** The query-embedding cache key for a phrase — sha256(model + "\n" + normalized),
+ *  mirroring src/embedding.ts embedCacheKey (keep in lockstep). */
+function embedCacheKey(text) {
+  const normalized = text.toLowerCase().trim().replace(/\s+/g, " ");
+  const hex = createHash("sha256").update(`${EMBED_MODEL}\n${normalized}`).digest("hex");
+  return `embed:${hex}`;
+}
 
 /** The D1 seed statements for `wrangler d1 execute --command` (now = the run's epoch ms). */
 export function d1Statements(now) {
@@ -219,10 +258,30 @@ export function d1Statements(now) {
 
   // --- Data / Insights: one indexed recipe (D1-only renders as "orphaned" in the Data list —
   // fine, the local R2 corpus is empty by design) + cooks and a favorite for the boards.
-  stmts.push(`DELETE FROM recipes WHERE slug = ${q(recipe.slug)};`);
+  // The propose corpus (member-app-propose D12): the seeded recipe plus a small varied
+  // set (distinct proteins/cuisines/times) so slot pools, alternates, facet pins, and the
+  // swap menu all have material. Perishables line up with the at-risk pantry row below
+  // (baby spinach) so uses_perishables/waste flags render. `viz-garlic-bread` is a corpus
+  // SIDE (pairs_with target, deliberately unembedded — sides need no vector).
+  const proposeRecipes = [
+    [recipe.slug, recipe.title, "fish", "japanese", 35, recipe.source, '["weeknight"]', '["salmon","rice","miso"]', null, null],
+    ["viz-chicken-soup", "Weeknight Chicken Soup", "chicken", "american", 40, null, '["cozy"]', '["chicken","stock"]', '["baby spinach"]', '["viz-garlic-bread"]'],
+    ["viz-fish-tacos", "Charred Fish Tacos", "fish", "mexican", 25, null, '["weeknight"]', '["white fish","tortillas"]', null, null],
+    ["viz-beef-ragu", "Sunday Beef Ragu", "beef", "italian", 90, null, '["project"]', '["beef","tomato"]', null, null],
+    ["viz-spinach-curry", "Spinach Coconut Curry", "vegetarian", "indian", 45, null, '["cozy"]', '["coconut milk","chickpeas"]', '["baby spinach"]', null],
+    ["viz-cacio-pepe", "Cacio e Pepe", null, "italian", 30, null, '["fast"]', '["pasta","pecorino"]', null, null],
+    ["viz-garlic-bread", "Garlic Bread", null, "italian", 15, null, '["side"]', '["bread","butter"]', null, null],
+  ];
+  stmts.push(`DELETE FROM recipes WHERE slug IN (${proposeRecipes.map((r) => q(r[0])).join(", ")});`);
   stmts.push(
-    `INSERT INTO recipes (slug, title, protein, cuisine, time_total, source_url, tags, ingredients_key) VALUES` +
-      ` (${q(recipe.slug)}, ${q(recipe.title)}, 'fish', 'japanese', 35, ${q(recipe.source)}, '["weeknight"]', '["salmon","rice","miso"]');`,
+    "INSERT INTO recipes (slug, title, protein, cuisine, time_total, source_url, tags, ingredients_key, perishable_ingredients, pairs_with, course) VALUES " +
+      proposeRecipes
+        .map(
+          ([slug, title, protein, cuisine, time, source, tags, keys, perishable, pairs]) =>
+            `(${q(slug)}, ${q(title)}, ${protein ? q(protein) : "NULL"}, ${q(cuisine)}, ${time}, ${source ? q(source) : "NULL"}, ${q(tags)}, ${q(keys)}, ${perishable ? q(perishable) : "NULL"}, ${pairs ? q(pairs) : "NULL"}, ${slug === "viz-garlic-bread" ? q('["side"]') : "NULL"})`,
+        )
+        .join(", ") +
+      ";",
   );
   stmts.push(`DELETE FROM cooking_log WHERE tenant IN (${q(members.active)}, ${q(members.pending)});`);
   stmts.push(
@@ -414,16 +473,40 @@ export function d1Statements(now) {
     "INSERT INTO recipe_notes (id, recipe, author, body, tags, private, created_at) VALUES " +
       `(${q(`${members.pending} ${recipe.slug} viz-note`)}, ${q(recipe.slug)}, ${q(members.pending)}, ${q(app.note.body)}, ${q(JSON.stringify([app.note.tag]))}, 0, ${q(iso(now - 4 * DAY))});`,
   );
-  // The derived description (recipe_derived; embedding stays NULL — similar stays empty).
-  stmts.push(`DELETE FROM recipe_derived WHERE slug = ${q(recipe.slug)};`);
+  // The derived layer (recipe_derived): the description the detail page renders, plus
+  // SYNTHETIC deterministic embeddings (equal dimension, distinct directions — cosine
+  // ordering is stable and assertable) so the propose flow fills slots with zero model
+  // calls (member-app-propose D12). The garlic-bread side stays unembedded on purpose.
+  const derived = [
+    [recipe.slug, "Miso-lacquered salmon over rice with quick-pickled cucumber.", embedVec([[0, 1]])],
+    ["viz-chicken-soup", "A bright weeknight chicken soup with greens.", embedVec([[2, 1]])],
+    ["viz-fish-tacos", "Charred white fish in warm tortillas.", embedVec([[1, 1], [0, 0.2]])],
+    ["viz-beef-ragu", "A long-simmered Sunday ragu.", embedVec([[3, 1], [2, 0.2]])],
+    ["viz-spinach-curry", "Coconut-braised chickpeas and spinach.", embedVec([[4, 1]])],
+    ["viz-cacio-pepe", "Pasta, pecorino, black pepper — fifteen minutes.", embedVec([[5, 1], [2, 0.3]])],
+    ["viz-garlic-bread", "Buttered, toasted, essential.", null],
+  ];
+  stmts.push(`DELETE FROM recipe_derived WHERE slug IN (${derived.map((r) => q(r[0])).join(", ")});`);
   stmts.push(
-    `INSERT INTO recipe_derived (slug, description) VALUES (${q(recipe.slug)}, 'Miso-lacquered salmon over rice with quick-pickled cucumber.');`,
+    "INSERT INTO recipe_derived (slug, description, embedding) VALUES " +
+      derived.map(([slug, desc, vec]) => `(${q(slug)}, ${q(desc)}, ${vec ? q(vec) : "NULL"})`).join(", ") +
+      ";",
+  );
+  // Cron-shaped vibe vectors for the propose specs' self-provisioned palette: derived
+  // rows for vibe ids that do NOT yet exist in night_vibes (invisible to every other
+  // surface — the palette stays empty until the spec creates the vibes via the API).
+  const pv = app.propose.vibes;
+  stmts.push(`DELETE FROM night_vibe_derived WHERE tenant = ${q(members.active)};`);
+  stmts.push(
+    "INSERT INTO night_vibe_derived (tenant, id, embedding) VALUES " +
+      `(${q(members.active)}, ${q(pv.seafood.id)}, ${q(embedVec([[0, 0.8], [1, 0.6]]))}), ` +
+      `(${q(members.active)}, ${q(pv.comfort.id)}, ${q(embedVec([[2, 0.8], [3, 0.4], [5, 0.4]]))});`,
   );
   // The profile row + one ranked brand (taste markdown, planning knobs, stores, dietary).
   stmts.push(`DELETE FROM profile WHERE tenant = ${q(members.active)};`);
   stmts.push(
     "INSERT INTO profile (tenant, taste, diet_principles, default_cooking_nights, lunch_strategy, ready_to_eat_default_action, stores, dietary, rotation) VALUES " +
-      `(${q(members.active)}, ${q(`**${app.tasteLead}** — weeknights lean Asian, weekends get a project.`)}, ${q("- Keep shellfish off the table\n- Go easy on red meat")}, 3, NULL, 'opt-in', ${q(JSON.stringify({ primary: "kroger", preferred_location: "Kroger — Hyde Park", location_zip: app.zip }))}, ${q(JSON.stringify({ avoid: ["shellfish"], limit: ["red meat"] }))}, ${q(JSON.stringify({ resurface_after_days: 30, novelty_boost: 0.2 }))});`,
+      `(${q(members.active)}, ${q(`**${app.tasteLead}** — weeknights lean Asian, weekends get a project.`)}, ${q("- Keep shellfish off the table\n- Go easy on red meat")}, 3, NULL, 'opt-in', ${q(JSON.stringify({ primary: "kroger", preferred_location: "Kroger — Hyde Park" }))}, ${q(JSON.stringify({ avoid: ["shellfish"], limit: ["red meat"] }))}, ${q(JSON.stringify({ resurface_after_days: 30, novelty_boost: 0.2 }))});`,
   );
   stmts.push(`DELETE FROM brand_prefs WHERE tenant = ${q(members.active)};`);
   stmts.push(
@@ -444,5 +527,9 @@ export function kvEntries() {
     ["TENANT_KV", `invite:${SEED.invite}`, members.active],
     ["OAUTH_KV", `grant:${members.active}:seed-grant`, JSON.stringify({ id: "seed-grant" })],
     ["KROGER_KV", `kroger:refresh:${members.active}`, "seed-refresh-token"],
+    // The pre-warmed query-embedding cache entry (member-app-propose D12): the exact
+    // freeform phrase the propose spec types, pointed at the chicken-soup axis — so the
+    // freeform path runs as a deterministic cache HIT (no Workers AI in the harness).
+    ["KROGER_KV", embedCacheKey(SEED.app.propose.freeform), embedVec([[2, 1]])],
   ];
 }
