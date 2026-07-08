@@ -1,0 +1,57 @@
+# Tasks — admin-spa
+
+## 1. Typed read routes (the API growth; D4)
+
+- [ ] 1.1 `src/admin/app.tsx`: add the chained read routes `GET /admin/api/status` (StatusPage aggregate: `buildHealthPayload` + `corpusCounts` + `readSatelliteLiveness` + `readReconcileObservability` + `readAuditObservability` + per-job `readJobRuns` over `STATUS_SPARKLINE_WINDOW`), `GET /admin/api/members/:id` (`listTenants` row + `memberDetail` + `recipeTitles`; pending → `{ row }` only; unknown → structured `not_found`), and `GET /admin/api/logs/runs` (`readAllJobRuns`, existing cap).
+- [ ] 1.2 Add `GET /admin/api/data/recipes` (`?q/mode/page/size` — the SSR list/search assembly incl. facet join, server-paginated), `GET /admin/api/data/recipes/:slug` (`recipeDetail` + rendered-markdown `html` via the relocated `src/admin/markdown.ts`), `GET /admin/api/data/stores` + `/:slug`, `GET /admin/api/data/guidance` (`?gpath/gprefix`, rendered `html` for objects).
+- [ ] 1.3 Add `GET /admin/api/insights` (`readInsights`), `GET /admin/api/usage` (`fetchUsage` + `fetchUsageTrends` + `fetchToolUsage`, structural not-configured/failure states), `GET /admin/api/discovery/candidates` (`readDiscoveryCandidates(200)` + the liveness ingest strip), `GET /admin/api/satellites` (`readSatelliteLiveness` + windowed `readRejections` + `getQuarantine`).
+- [ ] 1.4 Add `GET /admin/api/normalization/page`, `GET /admin/api/normalization/nodes`, `GET /admin/api/normalization/audit`, `GET /admin/api/reconcile` (the four Normalize-area reads, split per tab; payloads are the SSR props verbatim).
+- [ ] 1.5 Relocate `src/admin/ui/markdown.ts` → `src/admin/markdown.ts` (used by 1.2 only; no behavior change).
+- [ ] 1.6 Vitest coverage (`test/admin-api-reads.test.ts`): each new route returns the assembly's shape against seeded fixtures; pending-member and unknown-member paths on 1.1; degraded health payload returns 200-with-payload (D6); all behind the Access gate (401/404 posture unchanged — reuse the existing admin-app test harness).
+- [ ] 1.7 Worker `package.json`: add `"./admin-api": "./src/admin/app.ts"` to `exports` (types-only consumer; the `"./api"` precedent).
+
+## 2. Workspace scaffold (D1, D10)
+
+- [ ] 2.1 `packages/ui`: vendor the additional shadcn/ui primitives the admin screens need (Dialog, AlertDialog, DropdownMenu, Select, Slider, Switch, Progress, Table, Badge, Empty, Pagination, Combobox/Command, Tooltip) with their Radix deps; export from `src/index.ts`; typecheck/lint clean.
+- [ ] 2.2 Scaffold `packages/admin-app` (`@grocery-agent/admin-app`): Vite ^8 + `@vitejs/plugin-react` + `@tanstack/react-router`/router-plugin + `@tanstack/react-query` + `@tailwindcss/vite`, oxlint + Biome, **no** `vite-plugin-pwa`; `vite.config.ts` with `base: "/admin/"`, `outDir: ../worker/assets/admin`, `emptyOutDir: false` + clean-own-subtree plugin (mirror of `cleanAppOutputs`), dev server port 5174 with `/admin/api` proxy → `127.0.0.1:8787`. Record any new `aube.allowBuilds` decisions; respect `aube-lock.yaml`.
+- [ ] 2.3 App entry: typed `hc<AdminApp>` client over the shared fetch wrapper with the D7 `access_expired` classifier (unit-tested in the package); `QueryClient` (staleTime 15 s, refetch-on-focus); router root layout — top nav (9 areas), `HealthIndicator` popover on the shared `["status"]` query (refetchInterval 60 s), the blocking Access-expired reload overlay, dark-mode toggle (`ga-theme`, pre-paint inline script in `index.html`), operator theme layer (`--primary` #f4a259 + bundle neutrals) over `@grocery-agent/ui/theme.css`.
+- [ ] 2.4 Shared admin components (`src/components/`): stat-tile grid, sparkline + hover tip, `PrettyKV`, `ListFooter` (page-size select + pagination), pipeline/progression track, status dots/badges, `assertNever` in `src/lib/assert.ts` — translated from the design bundle's primitives.
+
+## 3. Screens, in groups — each group lands with its page-object/spec port (D5, D12)
+
+- [ ] 3.1 **Status + shell**: `/` route on `["status"]` — stat tiles, background-jobs group (uptime sparklines linking `/logs?run=<id>`, healthy/unhealthy-since, recipe-backfill gauge), reconcile + identity-audit rows, dependencies, ingest-satellites section; port `status` page object + smoke assertions; nav + health-dock component objects updated (client-side routing, popover indicator).
+- [ ] 3.2 **Members + member detail**: `/members` on `["tenants"]` — tiles, roster, action menu (rotate / kroger-login / revoke), invite dialog + shown-once banners (invite code / consent URL variants); `/members/$id(/$section)` on `["member",id]` — six section pills, pending empty state; mutations invalidate `["tenants"]`; port `members.spec.ts` + member-detail objects.
+- [ ] 3.3 **Data explorers**: `/data/recipes` (search box + Keyword/Hybrid toggle + relevance bars + page-size select, server-parameterized query with `keepPreviousData`), `/data/recipes/$slug` (pipeline strip, rendered body, PrettyKV frontmatter/index row, collapsible raw markdown, orphaned omission), `/data/stores(/$slug)`, `/data/guidance` (breadcrumb browser); port `data` page object + assertions.
+- [ ] 3.4 **Insights + Usage + Logs**: `/insights` on `["insights"]` (window/sort/expand client state — zero requests on toggle), `/usage` on `["usage"]` (tiles, stacked KV meters + sparklines, AI meter, per-job trends, tool table, explicit not-configured states), `/logs` on `["logs","runs"]` (job pills, hint line, pager, inline expand, `?run=` highlight resolved client-side with pruned-id fallback); port their page objects.
+- [ ] 3.5 **Discovery + Satellites**: `/discovery` (tiles, 9 filter pills with counts as search params, candidate cards with 7-stage progression track incl. pushed/arrived-via-push state, per-member match scores, retry countdowns; Retry/Delete `useMutation` per card, one-at-a-time, invalidating the candidates query); `/discovery/satellites` (liveness cards, funnel, recent-pushes log, rejection drill-downs, quarantine confirm dialog with the optimistic hold); port `satellite-audit.spec.ts` + discovery objects.
+- [ ] 3.6 **Normalize**: `/normalize` with `?tab/stream/filter/q/src/page/node/facet` search params over the four per-tab queries — Decisions (Terms/Edges streams, decision cards, override + add-alias dialogs), Queue (requeue), Aliases (mappings-only + self-entry chip, add/delete), Nodes (read-only browse per D11), Audits (burndown hero, pass cards, restorations log with `replay_of` pointer into Audits, rejection table), Reconcile card; mutations invalidate `["normalize","page"]`; port `normalize.spec.ts`.
+- [ ] 3.7 **Config**: `/config` (Discovery group: calibration knob console with Clean/Dirty/NeedsConfirm + below-floor confirm, Analyze/Dry-run/test-feed previews as mutations rendering result panels, feeds editor, email-sources editor), `/config/flyer` + `/config/ranking` (opconfig knobs + flyer-terms editor), `/config/ingest-keys` (roster with tenant binding, mint dialog with shown-once secret + member select, revoke behind destructive confirm, empty state); port `ingest-keys.spec.ts` + config object.
+
+## 4. Serving cutover + retirement (D2, D13)
+
+- [ ] 4.1 `src/admin/app.tsx` → `src/admin/app.ts`: drop the SSR page routes, `registerDataRoutes`/`registerConfigRoutes` page halves, `injectHealthDock`, and `page()`; add the dispatch tail — kept 302 redirects, `GET /admin/assets/*` (+ favicon) via `ASSETS.fetch` with the HTML→404 guard, catch-all `GET`/`HEAD` serving `/admin/index.html`, non-GET non-API → 404. `AdminApp` type export and gate order unchanged.
+- [ ] 4.2 Delete `src/admin/pages/`, `src/admin/client/` (+ its tsconfig), `src/admin/ui/` (kit/layout/icons/health-dock; markdown already relocated), `src/admin/styles.css`, `src/admin/logs-shared.ts`, `src/admin/satellite-audit-shared.ts`, `src/admin/shared.ts` (fold surviving types into route payloads / admin-app); delete the `injectHealthDock` test; delete `scripts/build-admin.mjs`.
+- [ ] 4.3 Worker `package.json`: drop the `build:admin` script, the `src/admin/client` typecheck pass, and the `esbuild`/`tailwindcss`/`@tailwindcss/cli`/`basecoat-css` devDeps; confirm no worker tsconfig JSX residue is needed (no `.tsx` remains under `src/`).
+- [ ] 4.4 Vitest: update admin-app dispatch tests — shell served for a deep-link GET, `/admin/api/*` precedence, redirects, missing-asset 404, non-GET 404; gate posture (404 unconfigured / 403 denied / loopback bypass) re-asserted through the new dispatch.
+
+## 5. Harness + CI + scripts (D12, D13)
+
+- [ ] 5.1 `admin/visual/setup.mjs`: build via `npx vite build` (cwd `packages/admin-app`) instead of `build-admin.mjs`; boot pipeline otherwise unchanged (migrate → shared seed → `wrangler dev --local --var ADMIN_DEV_BYPASS:1`, readiness `/admin`).
+- [ ] 5.2 Harness model updates: `base.page.ts` landmark posture (query-rendered, auto-wait, time-free), `NavComponent` client-side routing, `DialogComponent` → Radix `role="dialog"`; add the `/admin/api` JSON passthrough spec; keep the missing-asset 404 spec and every seeded-fixture assertion (specs 3.1–3.7 ported in place).
+- [ ] 5.3 Full suite green: `PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers aubr test:admin` — all areas, sub-surfaces, dialogs, and screenshots on the SPA; surface the per-area screenshots for review.
+- [ ] 5.4 Root `package.json`: `build:admin` → `aube --filter @grocery-agent/admin-app run build`; add `dev:admin` + `scripts/dev-admin.mjs` (wrangler + Vite:5174, `/admin/api` proxy, signal-forwarding — the `dev-app.mjs` twin).
+- [ ] 5.5 `ci.yml`: test job's admin build step → `aubr build:admin`; `admin-ui` job's screenshot path filter gains `packages/admin-app/**` + `packages/ui/**` and drops `scripts/build-admin.mjs`; `trigger-deploy` path filter gains `packages/admin-app/` (and drops the build script). `data-deploy.yml` needs no change (verify `aubr build:admin` resolves in its steps).
+- [ ] 5.6 `aubr test:app` green (member suite untouched — the shared seed and merged assets root still serve both).
+
+## 6. Docs (same pass — no drift)
+
+- [ ] 6.1 Rewrite `src/admin/CLAUDE.md` per D9: Query-state discipline (status unions + `assertNever`, no server-state copies, mutation-state as the op union), URL-search-param rule, shadcn/`packages/ui` styling contract (Claude Design project rule kept verbatim), Vite build/serve section, harness section (SPA landmark discipline).
+- [ ] 6.2 Root `CLAUDE.md` + `CONTRIBUTING.md`: admin panel described as the React SPA under `packages/admin-app` served at `/admin` from `assets/admin/`; `build:admin`/`dev:admin` command text; current-state prose only (no history narration).
+- [ ] 6.3 `docs/ARCHITECTURE.md`: the admin surface paragraph (SPA over typed `/admin/api` reads/mutations, Access gate + shell serving); `README.md` surfaces overview.
+- [ ] 6.4 On archive: refresh the `operator-admin` and `group-insights` spec **Purpose** lines (they narrate SSR + islands) to the SPA description.
+
+## 7. Ship
+
+- [ ] 7.1 `aubr typecheck`, `aubr test`, `aubr test:tooling` green across workspaces; `aubr build:admin` + `aubr build:app` populate `assets/` cleanly in either order.
+- [ ] 7.2 `aubr test:admin` + `aubr test:app` green; `openspec validate admin-spa --strict` green.
+- [ ] 7.3 After merge + deploy: `/admin` serves the SPA behind Access; a deep link (`/admin/normalize?tab=audits`) resolves; `/admin/api/status` returns the aggregate; a missing `/admin/assets/*` file 404s; `/mcp`, `/api`, `/cookbook`, `/health` unchanged.
