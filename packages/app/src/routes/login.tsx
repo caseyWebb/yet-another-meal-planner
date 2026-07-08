@@ -3,7 +3,7 @@
 // over P0's session POST. No roster, no password (the mock's fake-auth affordances);
 // the structured-error copy stays uniform (`unauthorized` never hints whether a code
 // exists; `rate_limited` asks for patience). A success lands on `/`.
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { Button, IconBook, Input, Label } from "@grocery-agent/ui";
 import { api, apiError } from "../lib/api";
@@ -30,6 +30,14 @@ function LoginPage() {
   const navigate = useNavigate();
   const [code, setCode] = useState("");
   const [state, setState] = useState<LoginState>({ status: "idle" });
+
+  // One-shot version check (member-app-offline D7 / P0 D11's stated pre-login
+  // purpose): a login screen makes no other request until submit, so this is the
+  // only thing that can feed the skew store before sign-in. The response header
+  // rides the shared fetch wrapper's X-App-Build tap; failures are irrelevant.
+  useEffect(() => {
+    api.api.version.$get().catch(() => {});
+  }, []);
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();

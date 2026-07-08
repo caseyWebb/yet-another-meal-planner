@@ -21,15 +21,29 @@ async function weakEtag(body: string): Promise<string> {
  * empty-body 304. The return is typed as the 200 shape so `hc` clients infer `value`'s
  * type end-to-end (the 304 arm carries no body by construction — a conditional client
  * keeps its cached copy).
+ *
+ * `Cache-Control: private, no-cache` makes the browser's store-then-revalidate
+ * deterministic (member-app-offline D6): the validator is kept (store) but every reuse
+ * revalidates at the server first — 304s stay cheap, per-tenant bodies never land in a
+ * shared cache, and a class (a) read is always validated-fresh before its If-Match
+ * write. Both arms carry it (HTTP folds 304 headers into the stored response).
  */
 export async function jsonWithEtag<T>(c: Context, value: T): Promise<Response & TypedResponse<T>> {
   const body = JSON.stringify(value);
   const etag = await weakEtag(body);
+  const cacheControl = "private, no-cache";
   const inm = c.req.header("If-None-Match");
   if (inm && inm.split(",").some((v) => v.trim() === etag)) {
-    return new Response(null, { status: 304, headers: { ETag: etag } }) as Response & TypedResponse<T>;
+    return new Response(null, {
+      status: 304,
+      headers: { ETag: etag, "Cache-Control": cacheControl },
+    }) as Response & TypedResponse<T>;
   }
-  const res = c.body(body, 200, { "content-type": "application/json", ETag: etag });
+  const res = c.body(body, 200, {
+    "content-type": "application/json",
+    ETag: etag,
+    "Cache-Control": cacheControl,
+  });
   return res as Response & TypedResponse<T>;
 }
 

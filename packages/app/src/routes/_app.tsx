@@ -17,12 +17,12 @@ import {
   IconMoon,
   IconPantry,
   IconSun,
-  Toaster,
   Button,
 } from "@grocery-agent/ui";
 import { api } from "../lib/api";
 import { useGrocery, useOverlay, usePlan, useProfile } from "../lib/data";
 import { useOnline } from "../lib/online";
+import { promptInstall, useInstallAvailable } from "../lib/install";
 import { purgeLocalMemberData, readTenantStamp, writeTenantStamp } from "../lib/persist";
 
 export const Route = createFileRoute("/_app")({
@@ -165,7 +165,6 @@ function AppShell() {
         <Outlet />
       </main>
       <OfflinePill />
-      <Toaster />
     </div>
   );
 }
@@ -176,6 +175,9 @@ function AccountMenu({ tenant }: { tenant: string }) {
   const navigate = useNavigate();
   const router = useRouter();
   const profile = useProfile();
+  // "Install app" renders ONLY when the browser offered beforeinstallprompt and the
+  // app isn't already standalone (D10) — platforms without the event get no dead item.
+  const installable = useInstallAvailable();
 
   React.useEffect(() => {
     if (!open) return;
@@ -236,6 +238,20 @@ function AccountMenu({ tenant }: { tenant: string }) {
           <Link className="sb-menu-item" role="menuitem" to="/profile" onClick={() => setOpen(false)}>
             Profile &amp; preferences
           </Link>
+          {installable ? (
+            <button
+              type="button"
+              className="sb-menu-item"
+              role="menuitem"
+              data-testid="install-app"
+              onClick={() => {
+                promptInstall();
+                setOpen(false);
+              }}
+            >
+              Install app
+            </button>
+          ) : null}
           <button type="button" className="sb-menu-item" role="menuitem" data-testid="logout" onClick={logout}>
             Sign out
           </button>

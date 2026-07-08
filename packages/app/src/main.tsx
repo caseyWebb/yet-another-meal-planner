@@ -2,7 +2,6 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { RouterProvider, createRouter } from "@tanstack/react-router";
 import { PersistQueryClientProvider } from "@tanstack/react-query-persist-client";
-import { registerSW } from "virtual:pwa-register";
 import { routeTree } from "./routeTree.gen";
 import { APP_BUILD } from "./lib/api";
 import {
@@ -18,10 +17,6 @@ import "./styles.css";
 // The class (b) registry's defaults must exist BEFORE restore: resumed paused
 // mutations re-bind their persisted variables to these functions by mutationKey.
 registerMutationDefaults(queryClient);
-
-// Prompt-posture service worker (registerType: "prompt"): registration only in P0 —
-// the update-prompt UX and offline layers are P5 (the callback seam is already here).
-registerSW({});
 
 const router = createRouter({ routeTree });
 

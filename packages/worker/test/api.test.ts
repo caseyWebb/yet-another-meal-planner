@@ -169,6 +169,9 @@ describe("GET /api/session (whoami) + ETag", () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ tenant: { id: "casey" } });
     expect(res.headers.get("etag")).toMatch(/^W\/"[0-9a-f]{64}"$/);
+    // Deterministic store-then-revalidate (member-app-offline D6): the browser keeps
+    // the validator but never reuses the body without asking.
+    expect(res.headers.get("cache-control")).toBe("private, no-cache");
   });
 
   it("answers a matching If-None-Match with an empty-body 304", async () => {
@@ -184,6 +187,8 @@ describe("GET /api/session (whoami) + ETag", () => {
     expect(second.status).toBe(304);
     expect(await second.text()).toBe("");
     expect(second.headers.get("etag")).toBe(etag);
+    // The 304 arm carries the same posture (folded into the stored response).
+    expect(second.headers.get("cache-control")).toBe("private, no-cache");
   });
 });
 

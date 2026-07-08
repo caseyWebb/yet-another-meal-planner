@@ -50,13 +50,28 @@ export default defineConfig({
         display: "standalone",
         background_color: "#ffffff",
         theme_color: "#f4a259",
-        icons: [{ src: "/icon.svg", sizes: "any", type: "image/svg+xml", purpose: "any" }],
+        // Real installability (member-app-offline): PNG 192/512 + a padded maskable
+        // variant beside the SVG (committed under public/, rasterized from icon.svg).
+        icons: [
+          { src: "/icon.svg", sizes: "any", type: "image/svg+xml", purpose: "any" },
+          { src: "/icon-192.png", sizes: "192x192", type: "image/png", purpose: "any" },
+          { src: "/icon-512.png", sizes: "512x512", type: "image/png", purpose: "any" },
+          { src: "/icon-512-maskable.png", sizes: "512x512", type: "image/png", purpose: "maskable" },
+        ],
       },
       workbox: {
+        // EXPLICIT precache globs (member-app-offline D8): the Workbox default omits
+        // images, which would leave the icons out of the offline shell. NO
+        // runtimeCaching — a spec'd negative guarantee: the persisted query cache is
+        // the ONLY client cache of API data; /api requests pass through the SW
+        // untouched (which is exactly what lets them offline-fail in the page and
+        // hand the job to the persisted-read + mutation-replay layers).
+        globPatterns: ["**/*.{js,css,html,svg,png,webmanifest}"],
         // Precache the app shell ONLY — never the admin bundle sharing this assets root.
         globIgnores: ["admin/**"],
         // The SPA fallback must never shadow a Worker-owned path client-side either:
-        // mirror wrangler.jsonc's run_worker_first enumeration (member-app-shell).
+        // mirror wrangler.jsonc's run_worker_first enumeration (member-app-shell) —
+        // pinned by tests/navigate-denylist.test.mjs against config drift.
         navigateFallback: "index.html",
         navigateFallbackDenylist: [
           /^\/(mcp|api|admin|oauth|authorize|token|register|satellite|cookbook|health|source|\.well-known)(\/|$|\.)/,

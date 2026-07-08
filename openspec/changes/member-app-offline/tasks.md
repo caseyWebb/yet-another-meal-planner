@@ -75,29 +75,29 @@ pieces by role and the implementer binds to the landed actuals.
 
 ## 4. SW, update prompt, skew, install (D6, D7, D8, D10)
 
-- [ ] 4.1 `packages/worker/src/api/etag.ts`: stamp `Cache-Control: private, no-cache` on
+- [x] 4.1 `packages/worker/src/api/etag.ts`: stamp `Cache-Control: private, no-cache` on
   `jsonWithEtag`'s 200 and 304 arms (design D6); extend the existing etag unit coverage
   (`test/api-member.test.ts` family) to pin the header on both arms.
-- [ ] 4.2 `packages/app/src/lib/api.ts`: the fetch wrapper grows the `X-App-Build` response
+- [x] 4.2 `packages/app/src/lib/api.ts`: the fetch wrapper grows the `X-App-Build` response
   tap → a subscribable skew store (`useSyncExternalStore`-shaped; signal only when both ids
   are non-`"dev"` and differ) that also fires a throttled SW `registration.update()`.
-- [ ] 4.3 `ReloadPrompt` in `__root.tsx` over `useRegisterSW`
+- [x] 4.3 `ReloadPrompt` in `__root.tsx` over `useRegisterSW`
   (`virtual:pwa-register/react`; retire `main.tsx`'s bare `registerSW({})`): banner on
   `needRefresh` OR skew (action: `updateServiceWorker(true)`, falling back to a plain
   reload on the skew-only path), one-shot `offlineReady` toast, hourly-throttled
   `registration.update()` on visibility-visible. Login page: one-shot `GET /api/version`
   check on mount feeding the same skew store. Nothing auto-reloads (spec'd).
-- [ ] 4.4 `packages/app/vite.config.ts`: `globPatterns:
+- [x] 4.4 `packages/app/vite.config.ts`: `globPatterns:
   ["**/*.{js,css,html,svg,png,webmanifest}"]` (explicit precache incl. icons;
   `globIgnores: ["admin/**"]` unchanged); NO `runtimeCaching` (the negative guarantee —
   keep it that way, per spec); manifest gains the PNG icons (192, 512, 512-maskable).
-- [ ] 4.5 Install assets + affordance: rasterize the committed `public/icon.svg` to
+- [x] 4.5 Install assets + affordance: rasterize the committed `public/icon.svg` to
   `icon-192.png`, `icon-512.png`, `icon-512-maskable.png` (padded safe zone),
   `apple-touch-icon.png` (180) — committed files in `packages/app/public/`; `index.html`
   gains the `apple-touch-icon` link; account menu gains "Install app" gated on a captured
   `beforeinstallprompt` + not `display-mode: standalone` (design D10 — no iOS dead
   affordance).
-- [ ] 4.6 New tooling drift test `packages/worker/tests/navigate-denylist.test.mjs`
+- [x] 4.6 New tooling drift test `packages/worker/tests/navigate-denylist.test.mjs`
   (`aubr test:tooling`): parse `run_worker_first` from `wrangler.jsonc` and the
   `navigateFallbackDenylist` regex source from `packages/app/vite.config.ts`; assert every
   Worker-owned top-level prefix (including `/health.svg`-style dotted paths) matches.

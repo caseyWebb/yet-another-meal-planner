@@ -6,7 +6,7 @@
 // (the row tests on the Worker side pin that); class (a) writes ride If-Match
 // helpers with the rebase-on-412 loop.
 import { useQuery } from "@tanstack/react-query";
-import { api, apiError } from "./api";
+import { api, apiError, appFetch } from "./api";
 import { GC_TIME_MS } from "./persist";
 import type {
   ToBuyViewLine as ToBuyLine,
@@ -269,8 +269,9 @@ export function useToBuy(withAisles = false) {
     queryFn: async () =>
       withAisles
         ? // The enriched variant (?aisles=1) — the query string isn't in the typed
-          // client's route params, so this one read goes through plain same-origin fetch.
-          jsonOf<ToBuyView>(await fetch("/api/grocery/to-buy?aisles=1"))
+          // client's route params, so this one read goes through the shared wrapper
+          // directly (same-origin, and it must ride the X-App-Build skew tap).
+          jsonOf<ToBuyView>(await appFetch("/api/grocery/to-buy?aisles=1"))
         : jsonOf<ToBuyView>(await api.api.grocery["to-buy"].$get()),
   });
 }
