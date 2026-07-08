@@ -68,6 +68,53 @@ describe("assembleProposal", () => {
     expect(r.uncovered_at_risk).toEqual([]); // cilantro was covered
   });
 
+  it("waste counts ALIAS-RESOLVED perishables: 'scallions' vs 'green onions' is shared, not single-use", () => {
+    // The raw frontmatter lists different surface forms; the candidates carry the resolver's
+    // canonical id (as toDiversify builds them via ctx.resolveNames) — the cross-main check
+    // must count over the resolved ids, so NEITHER main is flagged single-use.
+    const chili = cand("white-chicken-chili", "chicken", "american", [1, 0, 0], 0.8, ["green onion"]);
+    const rice = cand("kimchi-fried-rice", "pork", "korean", [0, 1, 0], 0.8, ["green onion"]);
+    const ctx = baseCtx({
+      slots: [slot("cozy"), slot("quick")],
+      poolByVibe: new Map([
+        ["cozy", [chili]],
+        ["quick", [rice]],
+      ]),
+      frontmatterBySlug: new Map<string, Record<string, unknown>>([
+        ["white-chicken-chili", { title: "White Chicken Chili", perishable_ingredients: ["scallions"], pairs_with: ["x"] }],
+        ["kimchi-fried-rice", { title: "Kimchi Fried Rice", perishable_ingredients: ["green onions"], pairs_with: ["x"] }],
+      ]),
+      embeddingBySlug: embMap(chili, rice),
+    });
+    const r = assembleProposal(ctx);
+    expect(r.plan).toHaveLength(2);
+    for (const s of r.plan) expect(s.flags.waste).toBeUndefined(); // shared after resolution
+  });
+
+  it("a truly single-use perishable is still flagged, displayed as the resolver's canonical id", () => {
+    // The frontmatter's raw surface form ("fresh cilantro") never leaks into the flag — the
+    // waste list shows the candidate's resolved id, the same form as `uses_perishables`.
+    const tacos = cand("fish-tacos", "fish", "mexican", [1, 0, 0], 0.8, ["cilantro"]);
+    const ragu = cand("beef-ragu", "beef", "italian", [0, 1, 0], 0.8, []);
+    const ctx = baseCtx({
+      slots: [slot("fresh"), slot("cozy")],
+      poolByVibe: new Map([
+        ["fresh", [tacos]],
+        ["cozy", [ragu]],
+      ]),
+      frontmatterBySlug: new Map<string, Record<string, unknown>>([
+        ["fish-tacos", { title: "Fish Tacos", perishable_ingredients: ["fresh cilantro"], pairs_with: ["x"] }],
+        ["beef-ragu", { title: "Beef Ragu", pairs_with: ["x"] }],
+      ]),
+      embeddingBySlug: embMap(tacos, ragu),
+    });
+    const r = assembleProposal(ctx);
+    const s = r.plan.find((x) => x.main?.slug === "fish-tacos")!;
+    expect(s.flags.waste).toEqual(["cilantro"]); // canonical id, not the raw "fresh cilantro"
+    const other = r.plan.find((x) => x.main?.slug === "beef-ragu")!;
+    expect(other.flags.waste).toBeUndefined();
+  });
+
   it("enforces the protein cap ACROSS the week (empties a slot rather than repeating)", () => {
     const c1 = cand("chx1", "chicken", "american", [1, 0, 0], 0.9);
     const c2 = cand("chx2", "chicken", "american", [0, 1, 0], 0.8);
