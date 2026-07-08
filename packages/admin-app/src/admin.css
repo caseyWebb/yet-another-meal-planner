@@ -9,9 +9,13 @@
    Generic primitives (button/card/input/badge/alert/table/dialog/dropdown) are NOT styled
    here — they are the vendored shadcn components from @grocery-agent/ui. */
 
-@import url("https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap");
 @import "tailwindcss";
 @import "@grocery-agent/ui/theme.css";
+
+/* Scan this app AND the shared UI package for utility classes (Tailwind v4 does not
+   auto-detect workspace-linked sources — the member app does the same). */
+@source "./";
+@source "../../ui/src";
 
 /* ── Operator theme layer: the bundle's custom-palette aliases. Light values mirror the
    original design exactly; html.dark remaps them (DS tokens flip in theme.css on .dark). ── */
