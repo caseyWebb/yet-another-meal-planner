@@ -119,10 +119,11 @@ export const SEED = {
     // tenants — deleting the active member's own rows drops it below the guard for
     // the empty-state test), the picked-for-you expectation (nearest embedded
     // neighbor of the favorited recipe's vector), the pre-resolved Kroger locationId
-    // the aisle specs PATCH into preferences (whitespace-free → the client
-    // short-circuit, zero Kroger network), the aisle-tagged sku_cache rows, and the
-    // production-shaped sibling edge family (edges born-audited so the edge-audit
-    // backlog the admin suite pins stays at 1).
+    // that IS the seeded profile's default `preferred_location` (a bare id, whitespace-
+    // free → the client short-circuit, zero Kroger network on every enriched grocery
+    // read — the app suite's default state, not something a spec PATCHes in), the
+    // aisle-tagged sku_cache rows, and the production-shaped sibling edge family (edges
+    // born-audited so the edge-audit backlog the admin suite pins stays at 1).
     differentiators: {
       topPick: "viz-fish-tacos",
       location: "03500520",
@@ -569,7 +570,7 @@ export function d1Statements(now) {
   stmts.push(`DELETE FROM profile WHERE tenant = ${q(members.active)};`);
   stmts.push(
     "INSERT INTO profile (tenant, taste, diet_principles, default_cooking_nights, lunch_strategy, ready_to_eat_default_action, stores, dietary, rotation) VALUES " +
-      `(${q(members.active)}, ${q(`**${app.tasteLead}** — weeknights lean Asian, weekends get a project.`)}, ${q("- Keep shellfish off the table\n- Go easy on red meat")}, 3, NULL, 'opt-in', ${q(JSON.stringify({ primary: "kroger", preferred_location: "Kroger — Hyde Park" }))}, ${q(JSON.stringify({ avoid: ["shellfish"], limit: ["red meat"] }))}, ${q(JSON.stringify({ resurface_after_days: 30, novelty_boost: 0.2 }))});`,
+      `(${q(members.active)}, ${q(`**${app.tasteLead}** — weeknights lean Asian, weekends get a project.`)}, ${q("- Keep shellfish off the table\n- Go easy on red meat")}, 3, NULL, 'opt-in', ${q(JSON.stringify({ primary: "kroger", preferred_location: app.differentiators.location }))}, ${q(JSON.stringify({ avoid: ["shellfish"], limit: ["red meat"] }))}, ${q(JSON.stringify({ resurface_after_days: 30, novelty_boost: 0.2 }))});`,
   );
   stmts.push(`DELETE FROM brand_prefs WHERE tenant = ${q(members.active)};`);
   stmts.push(
@@ -642,9 +643,9 @@ export function kvEntries() {
     ["KROGER_KV", embedCacheKey(SEED.app.propose.freeform), embedVec([[2, 1]])],
     // The warmed flyer rollup (inline-substitution-hints D1/D3/D8): a sale item whose
     // `matched_terms` carries the cabbage family's shared base term, so the enriched
-    // to-buy read's `on_sale_hint` lights up for the family's siblings once the app
-    // suite's inline-hint spec points the profile's preferred_location at this
-    // pre-resolved bare id (no whitespace → no live Kroger Locations call).
+    // to-buy read's `on_sale_hint` lights up for the family's siblings off the seeded
+    // default `preferred_location` (the same pre-resolved bare id, no whitespace → no
+    // live Kroger Locations call needed to reach it).
     [
       "KROGER_KV",
       `flyer:kroger:${SEED.app.differentiators.location}`,

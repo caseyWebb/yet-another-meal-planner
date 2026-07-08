@@ -139,16 +139,13 @@ test("the enriched read's cross-ingredient siblings render inline, relation-labe
   await expect(greenRow.getByTestId("subs-pantry-hit")).toHaveCount(0); // only the seeded pantry row's sibling
   await groceryPage.captureForReview("grocery-inline-subs-pantry");
 
-  // on_sale_hint needs the resolved store's warmed rollup: point preferred_location at
-  // the pre-resolved bare id (no whitespace → no live Kroger Locations call) to light
-  // it up, then restore the seeded label for later specs.
-  await groceryPage.setStores({ preferred_location: DIFF.location });
-  await groceryPage.goto();
-  await expect(groceryPage.subRows(lineName).nth(0).getByTestId("subs-sale-hint")).toContainText(
+  // on_sale_hint needs the resolved store's warmed rollup — the seeded default
+  // preferred_location IS the pre-resolved bare id already (no whitespace → no live
+  // Kroger Locations call), so it lights up off the same load, no PATCH needed.
+  await expect(rows.nth(0).getByTestId("subs-sale-hint")).toContainText(
     `$${DIFF.siblings.saleHit.price.promo.toFixed(2)} at your store`,
   );
   await groceryPage.captureForReview("grocery-inline-subs-sale");
-  await groceryPage.setStores({ preferred_location: "Kroger — Hyde Park" }); // restore
 });
 
 test("a to-buy line with no graph neighbors renders with no hint affordance", async ({ groceryPage }) => {

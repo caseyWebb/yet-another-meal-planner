@@ -216,9 +216,9 @@ function placementRow(cache: CachedMapping[], key: string, locationId: string | 
 /**
  * The enriched view over an already-computed plain view (member-app-differentiators
  * D6, generalized by inline-substitution-hints D2): one Locations resolve at most, one
- * `sku_cache` read, one identity-graph read (department fallback), one flyer-rollup
- * read, one pantry-names read, and the shared annotator's own batched identity-graph
- * read — zero product searches, no writes. Lines gain `placement` ({} fields optional;
+ * `sku_cache` read, one identity-graph read (department fallback), shared with the
+ * annotator (threaded in, not re-read), one flyer-rollup read, one pantry-names read —
+ * zero product searches, no writes. Lines gain `placement` ({} fields optional;
  * null when nothing is known) AND `substitutes` (always an array — empty for a
  * no-edge line), the view gains the resolved `location` (null when none is resolvable)
  * and `flyer_as_of` (null when no rollup was used).
@@ -267,9 +267,10 @@ async function enrichView(env: Env, tenant: string, view: ToBuyView, ctx: Ingred
     readIdentityNeighbors(env, keys),
     readPantryNames(env, tenant),
   ]);
-  // The shared cheap-half annotator (inline-substitution-hints D1/D3): one batched
-  // neighbor read of its own over the SAME key set (no per-line N+1).
-  const substitutesByKey = await annotateSubstitutes(env, keys, { pantry, saleItems, ctx });
+  // The shared cheap-half annotator (inline-substitution-hints D1/D3): reuses the
+  // identity-graph read above (same `keys` set) instead of a second batched read —
+  // one identity-graph scan for the whole enriched view, not two.
+  const substitutesByKey = await annotateSubstitutes(env, keys, { pantry, saleItems, ctx, neighborsByKey });
 
   const to_buy = view.to_buy.map((line) => {
     const placement: LinePlacement = {};

@@ -120,22 +120,29 @@ export interface AnnotateSubstitutesDeps {
   pantry: ReadonlySet<string>;
   saleItems: FlyerItem[];
   ctx: Pick<IngredientContext, "searchTerm">;
+  /** Pre-loaded `readIdentityNeighbors` result over the SAME `lineKeys` set — e.g.
+   *  `to-buy.ts`'s own read for its department fallback. When supplied, this function
+   *  reuses it instead of issuing a second identical identity-graph scan. Absent, it
+   *  loads its own (the standalone posture the isolation unit tests exercise). */
+  neighborsByKey?: Map<string, IdentityNeighbors>;
 }
 
 /**
  * The shared cheap half (D1/D3): one batched `readIdentityNeighbors` call over EVERY
- * `lineKeys` entry, each line's walk excluded against the survivor ids of that SAME
- * set (a suggestion never proposes an id already in the caller's own to-buy set),
- * every sibling annotated `in_pantry` + `on_sale_hint`. Pure D1 + already-resolved
- * inputs — no KV touch, no Kroger call. Returns one entry per requested key (an
- * empty array for a no-edge line, never omitted — honest sparsity).
+ * `lineKeys` entry (or the caller's own pre-loaded read over the identical set, via
+ * `deps.neighborsByKey` — see `to-buy.ts`'s enriched read), each line's walk excluded
+ * against the survivor ids of that SAME set (a suggestion never proposes an id already
+ * in the caller's own to-buy set), every sibling annotated `in_pantry` + `on_sale_hint`.
+ * Pure D1 + already-resolved inputs — no KV touch, no Kroger call. Returns one entry
+ * per requested key (an empty array for a no-edge line, never omitted — honest
+ * sparsity).
  */
 export async function annotateSubstitutes(
   env: Env,
   lineKeys: string[],
   deps: AnnotateSubstitutesDeps,
 ): Promise<Map<string, SiblingSuggestion[]>> {
-  const neighborsByKey = await readIdentityNeighbors(env, lineKeys);
+  const neighborsByKey = deps.neighborsByKey ?? (await readIdentityNeighbors(env, lineKeys));
 
   // A suggestion never proposes an id already in the caller's OWN to-buy set — the
   // exclusion set is the survivor ids of every requested line (representative-resolved).

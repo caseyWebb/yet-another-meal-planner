@@ -34,8 +34,19 @@ test.describe("with the self-provisioned palette", () => {
   });
 
   test("first propose: intro → slots, variety bar, and the quiet no-location chip", async ({
+    page,
     proposePage,
   }) => {
+    // The seeded default preferred_location is a bare Kroger location id (the resolvable-
+    // for-Kroger, whitespace-free posture the grocery/substitution specs need) whose
+    // digits happen to parse as a ZIP by the weather strip's fallback — a live Open-Meteo
+    // geocode this suite must not depend on. Intercept it as the same `no_location` shape
+    // the resolver throws when no ZIP is configured at all, then reload: the propose
+    // session hasn't started yet, so this is just a fresh, deterministic first mount.
+    await page.route("**/api/propose/weather**", (route) =>
+      route.fulfill({ status: 404, json: { error: "no_location", message: "no location configured" } }),
+    );
+    await proposePage.goto();
     await proposePage.expectIntro();
     await proposePage.awaitPropose(() => proposePage.start());
     await expect(proposePage.slotCards()).toHaveCount(2);
