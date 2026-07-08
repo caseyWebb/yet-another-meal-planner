@@ -16,7 +16,13 @@
 //     Every outcome is reported honestly and independently.
 
 import { normalizeName, groceryKey, type GroceryItem } from "./grocery.js";
-import type { MatchResult, CandidateView } from "./matching.js";
+import type { MatchResult } from "./matching.js";
+import type { CheckpointLine, PartialItem, PlaceOrderResult, ResolvedLine } from "./order-shapes.js";
+
+// The pure line/result shapes live in the leaf order-shapes.ts (member-app-grocery D9 —
+// the app harness types its order fixtures against them); re-exported so every existing
+// importer is unchanged.
+export type { CandidateView, CheckpointLine, PartialItem, PlaceOrderResult, ResolvedLine } from "./order-shapes.js";
 
 /** A computed buy line before resolution: ingredient-level, package count. */
 export interface ToBuyItem {
@@ -33,12 +39,6 @@ export interface ToBuyItem {
    * non-food row (and would run the capture-resolver on a non-food term). `place_order` ignores it.
    */
   key: string;
-}
-
-/** An item skipped because the pantry already has it (prompt candidate). */
-export interface PartialItem {
-  name: string;
-  for_recipes: string[];
 }
 
 export interface ToBuyResult {
@@ -137,27 +137,6 @@ export function computeToBuy(input: ComputeToBuyInput): ToBuyResult {
 
 // --- orchestrator -----------------------------------------------------------
 
-export interface ResolvedLine {
-  name: string;
-  sku: string;
-  brand: string;
-  size: string | null;
-  quantity: number;
-  /** Carried from the to-buy line: quantity defaulted to 1 (no count supplied). */
-  assumed_quantity: boolean;
-  /** Fresh price at resolution — surfaced so the agent can sanity-check at preview. */
-  price?: { regular: number; promo: number };
-  /** Whether the resolved SKU is on sale at resolution (lets the agent spot a lapsed deal). */
-  on_sale?: boolean;
-}
-
-export interface CheckpointLine {
-  name: string;
-  kind: "ambiguous" | "unavailable";
-  candidates?: CandidateView[];
-  message: string;
-}
-
 /** A learned ingredient→SKU mapping to append to the shared D1 `sku_cache` table. */
 export interface NewMapping {
   ingredient: string;
@@ -226,15 +205,6 @@ export interface PlaceOrderOptions {
    * an un-threaded caller keeps today's behavior.
    */
   resolveKey?: (n: string) => string;
-}
-
-export interface PlaceOrderResult {
-  resolved: ResolvedLine[];
-  checkpoint: CheckpointLine[];
-  sku_cache: { committed: boolean; error?: string };
-  cart: { written: boolean; count?: number; error?: string; code?: string };
-  list: { advanced: boolean; error?: string };
-  preview: boolean;
 }
 
 function msg(e: unknown): string {

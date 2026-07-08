@@ -184,6 +184,18 @@ New `packages/worker/src/to-buy.ts`:
   `in_cart` rows (name + `added_at`).
 - `computeToBuy` itself is **unchanged** — the partition is a post-pass over `key`, and every
   existing caller/test keeps its exact behavior.
+- **Implementation note (in-flight suppression, 2026-07-08):** the design as written
+  double-buys: `computeToBuy` skips non-`active` rows but knows nothing of derived needs, so
+  a derived line the last order advanced to `in_cart` re-derives as to-buy on the very next
+  read/flush (the pre-derivation world never hit this — the materialized row advanced with
+  the order and no need was re-supplied). Closest faithful fix: a pre-pass
+  (`dropInFlightNeeds`, `to-buy.ts`) drops a **derived** need whose canonical id matches an
+  `in_cart`/`ordered` row, applied by all three composition sites (the view, `runPlaceOrder`,
+  the pull-list) before `computeToBuy` — which stays unchanged. Caller `menu_needs` are NOT
+  suppressed (they re-bought under an in-flight row before this change too — the unchanged
+  baseline). The suppression clears organically: receive removes the row and the pantry
+  restock covers the need; a canceled order re-lists the row `active` (merging back to
+  `both`).
 
 ### D4 — Every flush surface converges on the derivation
 

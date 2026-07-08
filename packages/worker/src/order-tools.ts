@@ -17,13 +17,16 @@ import {
   placeOrder,
   type NewMapping,
   type Override,
-  type PartialItem,
   type PlaceOrderDeps,
-  type PlaceOrderResult,
   type ResolvedLine,
   type RevalidatedSku,
 } from "./order.js";
-import { deriveMenuNeeds } from "./to-buy.js";
+import type { PlaceOrderInput, PlaceOrderOutcome } from "./order-shapes.js";
+
+// The op's input/outcome shapes live in the leaf order-shapes.ts (member-app-grocery D9
+// — the app harness types its order fixtures against them); re-exported unchanged.
+export type { PlaceOrderInput, PlaceOrderOutcome } from "./order-shapes.js";
+import { deriveMenuNeeds, dropInFlightNeeds } from "./to-buy.js";
 import { createKrogerUserClient, toToolError, type KvStore } from "./kroger-user.js";
 import { readGroceryList, readPantryNames, advanceInCartRows } from "./session-db.js";
 
@@ -49,27 +52,6 @@ export interface OrderWiring {
   resolve: Resolver;
   revalidateSku: Revalidator;
   getLocationId(): Promise<string>;
-}
-
-/** The order operation's input — the tool's schema shape, shared with the route. */
-export interface PlaceOrderInput {
-  menu_needs?: { name: string; quantity?: number; for_recipes?: string[] }[];
-  quantities?: Record<string, number>;
-  include_partials?: string[];
-  overrides?: { name: string; sku: string; brand?: string; size?: string | null }[];
-  /** Order-scoped opt-out: names resolved through the same funnel and dropped from the
-   *  to-buy set BEFORE resolution — never persisted (member-app-grocery D4/D6). */
-  exclude?: string[];
-  preview?: boolean;
-}
-
-/** The order operation's result — the tool's return shape, shared with the route (and the
- *  app's order-dialog test fixtures type against it). */
-export interface PlaceOrderOutcome extends PlaceOrderResult {
-  partials: PartialItem[];
-  /** Planned recipe slugs whose ingredient list is not yet derived — the caller can
-   *  compensate (ask/add explicitly) rather than silently under-buy. */
-  underived: string[];
 }
 
 /**
@@ -148,7 +130,11 @@ export async function runPlaceOrder(
   // spontaneous extras), no longer the bulk plan expansion. The canonical-id merge in
   // `computeToBuy` dedups any caller-passed plan duplicate into one line.
   const derived = await deriveMenuNeeds(env, tenantId);
-  const menuNeeds = [...derived.needs, ...(input.menu_needs ?? [])];
+  // An in-flight (in_cart/ordered) row suppresses its DERIVED need — without this,
+  // every repeat order would re-buy the lines the last order already carted. Caller
+  // menu_needs are not suppressed (the unchanged pre-derivation baseline).
+  const planNeeds = dropInFlightNeeds(derived.needs, list, (n) => ingredientCtx.resolve(n));
+  const menuNeeds = [...planNeeds, ...(input.menu_needs ?? [])];
 
   // Key the user-supplied buy-name maps through the SAME funnel computeToBuy resolves
   // food keys by (user-supplied buy-names are treated as food), so they line up with

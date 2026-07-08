@@ -13,7 +13,7 @@
 
 import type { Env } from "./env.js";
 import { computeToBuy, type MenuNeed } from "./order.js";
-import { normalizeName, groceryKey, type GroceryKind } from "./grocery.js";
+import { normalizeName, groceryKey, type GroceryItem, type GroceryKind } from "./grocery.js";
 import { readGroceryList, readMealPlan, readPantryByKey } from "./session-db.js";
 import { recipeIngredientsFull } from "./recipe-index.js";
 import { ingredientContext, emptyIngredientContext } from "./corpus-db.js";
@@ -55,6 +55,33 @@ export async function deriveMenuNeeds(env: Env, tenant: string): Promise<Derived
     }
   }
   return { needs: [...needsByName.values()], underived };
+}
+
+/**
+ * Drop derived needs already IN FLIGHT: a need whose canonical id matches a stored
+ * `in_cart`/`ordered` row is being bought by the current order — re-deriving it would
+ * put the same ingredient back on to-buy and double-buy it on every subsequent flush
+ * (the pre-derivation world never hit this: the materialized row advanced with the
+ * order and no need was re-supplied). Applied by every composition site (the view,
+ * `place_order`, the satellite pull-list) BEFORE `computeToBuy`, which itself stays
+ * unchanged. Caller-supplied `menu_needs` are deliberately NOT suppressed — passing
+ * one while its row is in flight re-bought it before this change too (the unchanged
+ * baseline). The suppression clears organically: receiving removes the row (and the
+ * pantry restock then covers the need), while a canceled order re-lists it `active`.
+ */
+export function dropInFlightNeeds(
+  needs: MenuNeed[],
+  list: GroceryItem[],
+  resolve: (n: string) => string,
+): MenuNeed[] {
+  if (needs.length === 0) return needs;
+  const inFlight = new Set(
+    list
+      .filter((it) => it.status !== "active")
+      .map((it) => groceryKey(it.name, it.kind, it.domain, resolve)),
+  );
+  if (inFlight.size === 0) return needs;
+  return needs.filter((n) => !inFlight.has(resolve(n.name)));
 }
 
 /** One to-buy line of the derived view: the order-time line + its provenance. */
@@ -113,10 +140,13 @@ export async function computeToBuyView(env: Env, tenant: string): Promise<ToBuyV
     deriveMenuNeeds(env, tenant),
   ]);
   const resolve = (n: string) => ctx.resolve(n);
+  // An in-flight (in_cart/ordered) row suppresses its derived need — it is already
+  // being bought; it reappears via the in_cart section, not as a to-buy line.
+  const needs = dropInFlightNeeds(derived.needs, list, resolve);
 
   const { to_buy, partials } = computeToBuy({
     list,
-    menuNeeds: derived.needs,
+    menuNeeds: needs,
     pantryNames: new Set(pantryByKey.keys()),
     resolve,
   });
@@ -129,7 +159,7 @@ export async function computeToBuyView(env: Env, tenant: string): Promise<ToBuyV
       .filter((it) => it.status === "active")
       .map((it) => [groceryKey(it.name, it.kind, it.domain, resolve), it] as const),
   );
-  const planKeys = new Set(derived.needs.map((n) => resolve(n.name)));
+  const planKeys = new Set(needs.map((n) => resolve(n.name)));
 
   const lines: ToBuyViewLine[] = to_buy.map((line) => {
     const stored = storedByKey.get(line.key);

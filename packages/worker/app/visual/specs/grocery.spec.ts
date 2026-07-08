@@ -1,10 +1,14 @@
-// Grocery (member-app-core 7.7, D9/W3): category groups, the explicit in-cart set in
-// both directions, Clear purchased (terminal removal), the bottom add-row, and the
-// status guard — the member surface can NEVER mint `ordered` (structured rejection).
+// Grocery (member-app-core 7.7 + member-app-grocery 6.2): the P1 stored-row flows
+// (category groups, explicit in-cart set, Clear purchased, add-row) now rendered from
+// the DERIVED to-buy view, plus the view itself LIVE against the seeded Worker —
+// virtual rows with plan attribution, the canonical-id both-merge, pantry coverage with
+// the stale-verify nudge, materialize-on-pin (and un-pin re-derives), the underived
+// notice — and the widened W3 boundary (ordered accepted ONLY as the in_cart advance).
 import { test, expect } from "../fixtures";
 import { SEED } from "../../../admin/visual/seed.mjs";
 
 const G = SEED.app.grocery;
+const TB = SEED.app.toBuy;
 
 test.beforeEach(async ({ asMember, groceryPage }) => {
   await asMember();
@@ -21,15 +25,79 @@ test("items group by category; household goods sit apart from groceries", async 
 test("the in-cart control is an explicit set, both directions", async ({ groceryPage }) => {
   await groceryPage.toggleCart(G.active[1]);
   await groceryPage.expectInCartGroup(G.active[1]);
-  await groceryPage.toggleCart(G.active[1]); // back to the list
+  await groceryPage.uncart(G.active[1]); // back to the list
   await groceryPage.expectInCategoryGroup(G.active[1], "grocery");
+});
+
+test("virtual rows derive from the plan with attribution; a stored row the plan needs reads both", async ({
+  groceryPage,
+}) => {
+  await groceryPage.setPlan([TB.planned]);
+  await groceryPage.goto();
+  // A derived-only line: no grocery row exists, yet it renders — from the plan.
+  await groceryPage.expectOrigin(TB.virtual, "plan");
+  await expect(groceryPage.originCue(TB.virtual)).toBeVisible();
+  await expect(groceryPage.item(TB.virtual).locator(".g-for")).toContainText(TB.planned);
+  // No remove on a virtual row (D6) — only the pin affordance.
+  await expect(groceryPage.item(TB.virtual).getByTestId("grocery-remove")).toHaveCount(0);
+  await expect(groceryPage.item(TB.virtual).getByTestId("grocery-pin")).toBeVisible();
+  // The seeded active row the plan also needs merged on the canonical id: ONE line, both.
+  await groceryPage.expectOrigin(TB.both, "both");
+  await expect(groceryPage.item(TB.both)).toHaveCount(1);
+  await groceryPage.captureForReview("grocery-derived-view");
+});
+
+test("pantry coverage renders with the stale-verify nudge and the buy-fresh materialize", async ({
+  groceryPage,
+}) => {
+  await groceryPage.setPlan([TB.planned]);
+  await groceryPage.goto();
+  // The stale-verified perishable covering a derived need sits in Already-in-your-pantry
+  // (NOT in to-buy), flagged with the unchecked duration + both actions.
+  await expect(groceryPage.coveredItem(TB.covered)).toBeVisible();
+  await expect(groceryPage.item(TB.covered)).toHaveCount(0);
+  await expect(groceryPage.staleFlag(TB.covered)).toContainText(/\d+d unchecked/);
+  await expect(groceryPage.coveredItem(TB.covered).getByTestId("ph-verify")).toBeVisible();
+  await groceryPage.captureForReview("grocery-pantry-have");
+  // Buy fresh MATERIALIZES the item onto the list (the pantry still covers it in the
+  // view — order-time partials confirm the buy); verifying stays the pantry spec's flow
+  // (this spec must not stamp the seeded row, which pantry.spec asserts is still stale).
+  await groceryPage.buyFresh(TB.covered);
+  await expect.poll(() => groceryPage.rowStatus(TB.covered)).toBe("active");
+  await groceryPage.removeRow(TB.covered); // leave the seeded state for later specs
+});
+
+test("pinning a virtual row materializes it (origin both); removing the row re-derives it", async ({
+  groceryPage,
+}) => {
+  await groceryPage.setPlan([TB.planned]);
+  await groceryPage.goto();
+  await groceryPage.pin(TB.virtual);
+  await groceryPage.expectOrigin(TB.virtual, "both"); // merged under the same canonical id
+  await expect.poll(() => groceryPage.rowStatus(TB.virtual)).toBe("active");
+  // Un-pinning (removing the materialized row) un-pins, not un-plans (D6): the next
+  // read derives the line again as a virtual row.
+  await groceryPage.removeRow(TB.virtual);
+  await groceryPage.goto();
+  await groceryPage.expectOrigin(TB.virtual, "plan");
+});
+
+test("an underived planned recipe surfaces as the quiet notice, never silently dropped", async ({
+  groceryPage,
+}) => {
+  await groceryPage.setPlan([TB.planned, TB.underived]);
+  await groceryPage.goto();
+  await expect(groceryPage.underivedNotice()).toContainText(TB.underived);
+  await groceryPage.setPlan([TB.planned]); // restore
+  await groceryPage.goto();
+  await expect(groceryPage.underivedNotice()).toHaveCount(0);
 });
 
 test("Clear purchased removes each in_cart row (received is terminal removal)", async ({
   groceryPage,
 }) => {
   await groceryPage.clearPurchased();
-  await expect(groceryPage.item(G.inCart)).toHaveCount(0);
+  await expect(groceryPage.anyItem(G.inCart)).toHaveCount(0);
 });
 
 test("the bottom add-row appends an item into its category group", async ({ groceryPage }) => {
@@ -38,16 +106,21 @@ test("the bottom add-row appends an item into its category group", async ({ groc
   await groceryPage.captureForReview("grocery-after-add");
 });
 
-test("W3: no interaction can mint ordered — a forced write is refused structurally", async ({
+test("W3: ordered is refused from active and accepted only as the in_cart advance", async ({
   groceryPage,
 }) => {
-  // Straight to ordered from active: the member boundary rejects it.
-  const fromActive = await groceryPage.attemptOrderedWrite(G.active[0]);
+  await groceryPage.addRow("w3 probe");
+  await groceryPage.goto();
+  // Straight to ordered from active: the shared W3 guard rejects it (the boundary now
+  // allows the VALUE — mark-order-placed — but never the transition).
+  const fromActive = await groceryPage.attemptOrderedWrite("w3 probe");
   expect(fromActive.status).toBe(400);
   expect(fromActive.error).toBe("validation_failed");
-  // Even from in_cart, the member surface refuses (ordered belongs to the order flow).
-  await groceryPage.toggleCart(G.active[0]);
-  const fromInCart = await groceryPage.attemptOrderedWrite(G.active[0]);
-  expect(fromInCart.status).toBe(400);
-  expect(fromInCart.error).toBe("validation_failed");
+  // From in_cart, the user-asserted advance succeeds and stamps ordered_at.
+  await groceryPage.toggleCart("w3 probe");
+  await groceryPage.expectInCartGroup("w3 probe");
+  const fromInCart = await groceryPage.attemptOrderedWrite("w3 probe");
+  expect(fromInCart.status).toBe(200);
+  expect(fromInCart.ordered_at).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+  await groceryPage.removeRow("w3 probe"); // cleanup
 });

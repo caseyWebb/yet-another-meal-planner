@@ -74,6 +74,16 @@ export interface SeedLiterals {
       readonly side: { readonly slug: string; readonly title: string };
       readonly extraRecipes: readonly string[];
     };
+    /** Derived to-buy fixtures (member-app-grocery D9): the planned recipe with a seeded
+     *  `ingredients_full`, a derived-only line, the both-origin merge row, the covered
+     *  pantry item, and the underived recipe the specs plan. */
+    readonly toBuy: {
+      readonly planned: string;
+      readonly virtual: string;
+      readonly both: string;
+      readonly covered: string;
+      readonly underived: string;
+    };
   };
   /** The registered background jobs seeded into job_health/job_runs (mirrors HEALTH_JOBS). */
   readonly jobs: readonly string[];

@@ -140,6 +140,24 @@ describe("computeToBuyView", () => {
     });
   });
 
+  it("suppresses a derived need whose row is IN FLIGHT (no re-buy after a carted order)", async () => {
+    const h = sqliteEnv([T]);
+    seedRecipe(h, "stew", ["chicken", "black beans"]);
+    seedPlan(h, "stew");
+    // The last order carted chicken: its row is in_cart. The derived need must NOT
+    // re-surface it as to-buy — it rides the in_cart section instead.
+    await addGroceryRow(h.env, T, { name: "chicken", source: "menu" }, TODAY);
+    await updateGroceryRow(h.env, T, "chicken", { status: "in_cart" }, TODAY);
+
+    const view = await computeToBuyView(h.env, T);
+    expect(view.to_buy.map((l) => l.name)).toEqual(["black beans"]);
+    expect(view.in_cart.map((i) => i.name)).toEqual(["chicken"]);
+    // Re-listing the row to active brings the merged line back (a canceled order).
+    await updateGroceryRow(h.env, T, "chicken", { status: "active" }, TODAY);
+    const again = await computeToBuyView(h.env, T);
+    expect(again.to_buy.find((l) => l.name === "chicken")?.origin).toBe("both");
+  });
+
   it("returns the in_cart rows (the stale-cart signal) without them entering to_buy", async () => {
     const h = sqliteEnv([T]);
     await addGroceryRow(h.env, T, { name: "olive oil" }, TODAY);

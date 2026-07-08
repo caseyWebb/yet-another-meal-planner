@@ -128,19 +128,19 @@ pieces by role and the implementer binds to the landed actuals.
 
 ## 6. App Playwright coverage (D9)
 
-- [ ] 6.1 Extend the shared seed (`admin/visual/seed.mjs`): recipes with `ingredients_full`
+- [x] 6.1 Extend the shared seed (`admin/visual/seed.mjs`): recipes with `ingredients_full`
   (+ `recipe_facets` rows), `meal_plan` rows for the seeded member, pantry rows (one
   stale-verified perishable covering a planned ingredient), and grocery rows (one `active`
   ad-hoc, one `in_cart`).
-- [ ] 6.2 Grocery page objects + specs (`packages/worker/app/visual/`): live to-buy view —
+- [x] 6.2 Grocery page objects + specs (`packages/worker/app/visual/`): live to-buy view —
   virtual rows with attribution, pantry coverage + verify nudge, materialize-on-edit
   (`origin:"both"` after), underived notice, add/remove/in-cart P1 regressions.
-- [ ] 6.3 Order-flow specs via `page.route()` interception of `POST /api/grocery/order`,
+- [x] 6.3 Order-flow specs via `page.route()` interception of `POST /api/grocery/order`,
   fulfilling fixtures **typed against the exported op result type**: clean resolve → commit;
   checkpoint + partials + assumed-quantity disposition round-trip (asserting the commit
   request body carries `overrides`/`include_partials`/`quantities`/`exclude`); failed cart +
   `reauth_required` honest rendering; mark-order-placed against the live seeded Worker.
-- [ ] 6.4 Run `aubr test:admin` + the app suite (web sessions:
+- [x] 6.4 Run `aubr test:admin` + the app suite (web sessions:
   `PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers`); surface the per-area screenshots for review.
 
 ## 7. Persona consolidation (D10 — `packages/worker/AGENT_INSTRUCTIONS.md` only; bundle is generated)

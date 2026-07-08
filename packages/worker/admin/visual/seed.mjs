@@ -97,6 +97,19 @@ export const SEED = {
       side: { slug: "viz-garlic-bread", title: "Garlic Bread" },
       extraRecipes: ["viz-fish-tacos", "viz-beef-ragu", "viz-spinach-curry", "viz-cacio-pepe"],
     },
+    // The derived to-buy view (member-app-grocery D9): the seeded meal_plan row's recipe
+    // carries `ingredients_full`, so the grocery page renders REAL virtual rows. `virtual`
+    // is a derived-only line (no grocery row); `both` is the seeded active row the plan
+    // also needs (canonical-id merge); `covered` is the stale-verified perishable pantry
+    // row that cancels a derived need (the verify nudge); `underived` is a recipe the
+    // specs plan that has NO ingredients_full (the honesty notice).
+    toBuy: {
+      planned: "viz-miso-salmon",
+      virtual: "salmon",
+      both: "scallions",
+      covered: "baby spinach",
+      underived: "viz-beef-ragu",
+    },
   },
   // Mirrors src/health.ts HEALTH_JOBS (every registered job gets health + run history so no
   // Status row renders never-run).
@@ -263,24 +276,37 @@ export function d1Statements(now) {
   // swap menu all have material. Perishables line up with the at-risk pantry row below
   // (baby spinach) so uses_perishables/waste flags render. `viz-garlic-bread` is a corpus
   // SIDE (pairs_with target, deliberately unembedded — sides need no vector).
+  // The last element is `ingredients_full` (member-app-grocery): derived for the planned
+  // miso-salmon (the to-buy view's virtual rows) and the soup; NULL elsewhere so a spec
+  // that plans viz-beef-ragu exercises the honest `underived` report.
   const proposeRecipes = [
-    [recipe.slug, recipe.title, "fish", "japanese", 35, recipe.source, '["weeknight"]', '["salmon","rice","miso"]', null, null],
-    ["viz-chicken-soup", "Weeknight Chicken Soup", "chicken", "american", 40, null, '["cozy"]', '["chicken","stock"]', '["baby spinach"]', '["viz-garlic-bread"]'],
-    ["viz-fish-tacos", "Charred Fish Tacos", "fish", "mexican", 25, null, '["weeknight"]', '["white fish","tortillas"]', null, null],
-    ["viz-beef-ragu", "Sunday Beef Ragu", "beef", "italian", 90, null, '["project"]', '["beef","tomato"]', null, null],
-    ["viz-spinach-curry", "Spinach Coconut Curry", "vegetarian", "indian", 45, null, '["cozy"]', '["coconut milk","chickpeas"]', '["baby spinach"]', null],
-    ["viz-cacio-pepe", "Cacio e Pepe", null, "italian", 30, null, '["fast"]', '["pasta","pecorino"]', null, null],
-    ["viz-garlic-bread", "Garlic Bread", null, "italian", 15, null, '["side"]', '["bread","butter"]', null, null],
+    [recipe.slug, recipe.title, "fish", "japanese", 35, recipe.source, '["weeknight"]', '["salmon","rice","miso"]', null, null, '["salmon","rice","miso","scallions","baby spinach"]'],
+    ["viz-chicken-soup", "Weeknight Chicken Soup", "chicken", "american", 40, null, '["cozy"]', '["chicken","stock"]', '["baby spinach"]', '["viz-garlic-bread"]', '["chicken","stock","carrots","baby spinach"]'],
+    ["viz-fish-tacos", "Charred Fish Tacos", "fish", "mexican", 25, null, '["weeknight"]', '["white fish","tortillas"]', null, null, null],
+    ["viz-beef-ragu", "Sunday Beef Ragu", "beef", "italian", 90, null, '["project"]', '["beef","tomato"]', null, null, null],
+    ["viz-spinach-curry", "Spinach Coconut Curry", "vegetarian", "indian", 45, null, '["cozy"]', '["coconut milk","chickpeas"]', '["baby spinach"]', null, null],
+    ["viz-cacio-pepe", "Cacio e Pepe", null, "italian", 30, null, '["fast"]', '["pasta","pecorino"]', null, null, null],
+    ["viz-garlic-bread", "Garlic Bread", null, "italian", 15, null, '["side"]', '["bread","butter"]', null, null, null],
   ];
   stmts.push(`DELETE FROM recipes WHERE slug IN (${proposeRecipes.map((r) => q(r[0])).join(", ")});`);
   stmts.push(
-    "INSERT INTO recipes (slug, title, protein, cuisine, time_total, source_url, tags, ingredients_key, perishable_ingredients, pairs_with, course) VALUES " +
+    "INSERT INTO recipes (slug, title, protein, cuisine, time_total, source_url, tags, ingredients_key, perishable_ingredients, pairs_with, course, ingredients_full) VALUES " +
       proposeRecipes
         .map(
-          ([slug, title, protein, cuisine, time, source, tags, keys, perishable, pairs]) =>
-            `(${q(slug)}, ${q(title)}, ${protein ? q(protein) : "NULL"}, ${q(cuisine)}, ${time}, ${source ? q(source) : "NULL"}, ${q(tags)}, ${q(keys)}, ${perishable ? q(perishable) : "NULL"}, ${pairs ? q(pairs) : "NULL"}, ${slug === "viz-garlic-bread" ? q('["side"]') : "NULL"})`,
+          ([slug, title, protein, cuisine, time, source, tags, keys, perishable, pairs, full]) =>
+            `(${q(slug)}, ${q(title)}, ${protein ? q(protein) : "NULL"}, ${q(cuisine)}, ${time}, ${source ? q(source) : "NULL"}, ${q(tags)}, ${q(keys)}, ${perishable ? q(perishable) : "NULL"}, ${pairs ? q(pairs) : "NULL"}, ${slug === "viz-garlic-bread" ? q('["side"]') : "NULL"}, ${full ? q(full) : "NULL"})`,
         )
         .join(", ") +
+      ";",
+  );
+  // The classify-time snapshot rows for the derived recipes (recipe_facets mirrors what a
+  // real classify pass would have stored; the projected `recipes` value above is what the
+  // Worker reads — the sibling row keeps the harness's data model honest).
+  const facetRows = proposeRecipes.filter((r) => r[10]);
+  stmts.push(`DELETE FROM recipe_facets WHERE slug IN (${facetRows.map((r) => q(r[0])).join(", ")});`);
+  stmts.push(
+    "INSERT INTO recipe_facets (slug, body_hash, ingredients_key, ingredients_full) VALUES " +
+      facetRows.map((r) => `(${q(r[0])}, 'viz-seeded', ${q(r[7])}, ${q(r[10])})`).join(", ") +
       ";",
   );
   stmts.push(`DELETE FROM cooking_log WHERE tenant IN (${q(members.active)}, ${q(members.pending)});`);

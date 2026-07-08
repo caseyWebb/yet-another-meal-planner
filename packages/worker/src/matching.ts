@@ -16,6 +16,7 @@
 
 import type { KrogerCandidate } from "./kroger.js";
 import { compareUnitPrice, parseSize, type UnitPriceItem } from "./unit-price.js";
+import type { CandidateView } from "./order-shapes.js";
 
 /** A cached SKU mapping from the shared D1 `sku_cache` table. */
 export interface CachedMapping {
@@ -65,15 +66,10 @@ export interface ConfidentMatch {
   reason: string;
 }
 
-export interface CandidateView {
-  sku: string;
-  brand: string;
-  size: string | null;
-  price: { regular: number; promo: number };
-  on_sale: boolean;
-  unit_price?: number;
-  fulfillment: { curbside: boolean; delivery: boolean };
-}
+// CandidateView lives in the leaf order-shapes.ts (member-app-grocery D9 — the app
+// harness types its order fixtures against it); re-exported here so every existing
+// importer is unchanged.
+export type { CandidateView } from "./order-shapes.js";
 
 export interface AmbiguousMatch {
   resolved: false;

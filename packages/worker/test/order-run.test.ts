@@ -78,6 +78,22 @@ describe("runPlaceOrder — plan-needs union (D4)", () => {
   });
 });
 
+describe("runPlaceOrder — in-flight suppression", () => {
+  it("does not re-resolve a derived line the last order already carted", async () => {
+    const h = sqliteEnv([T]);
+    seedRecipe(h, "stew", ["chicken", "black beans"]);
+    seedPlan(h, "stew");
+    // Simulate the prior order's advance: an in_cart row for the derived chicken line.
+    await addGroceryRow(h.env, T, { name: "chicken", source: "menu" }, TODAY);
+    h.raw.prepare("UPDATE grocery_list SET status = 'in_cart' WHERE tenant = ? AND normalized_name = 'chicken'").run(T);
+
+    const wiring = fakeWiring();
+    const result = await run(h, { preview: true }, wiring);
+    expect(result.resolved.map((l) => l.name)).toEqual(["black beans"]); // no chicken re-buy
+    expect(wiring.resolvedNames).toEqual(["black beans"]);
+  });
+});
+
 describe("runPlaceOrder — exclude (order-scoped opt-out)", () => {
   it("drops an excluded line BEFORE resolution — not resolved, not checkpointed, not carted", async () => {
     const h = sqliteEnv([T]);
