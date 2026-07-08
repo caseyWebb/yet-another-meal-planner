@@ -76,16 +76,16 @@ Playwright surface change.
 
 ## 6. Docs lockstep + acceptance (same pass)
 
-- [ ] 6.1 `docs/TOOLS.md`: `propose_meal_plan` gains the default main-gate guarantee (pool +
+- [x] 6.1 `docs/TOOLS.md`: `propose_meal_plan` gains the default main-gate guarantee (pool +
   alternates gated; vibe `facets.course` overrides; locks/pins exempt; fail-open for
   unclassified) — and the tool's registered description in `meal-plan-proposal-tool.ts` says
   the same (the tool-description-owns-guarantees boundary). `search_recipes`' course notes and
   `read_recipe`'s open-vocab example lists mention `component` among the conventional values.
-- [ ] 6.2 `docs/SCHEMAS.md`: wherever the open `course` conventional values are enumerated, add
+- [x] 6.2 `docs/SCHEMAS.md`: wherever the open `course` conventional values are enumerated, add
   `component`; note the meal-candidate semantics beside the `recipes.course` column if course
   semantics are described there. `docs/ARCHITECTURE.md`: no structural shift — touch only if it
   enumerates course values.
-- [ ] 6.3 Sweep `AGENT_INSTRUCTIONS.md` for course-convention claims (e.g. lists of course
+- [x] 6.3 Sweep `AGENT_INSTRUCTIONS.md` for course-convention claims (e.g. lists of course
   values, side-sourcing guidance) and align — current state only, no history narration.
 - [ ] 6.4 Post-deploy acceptance (read-only, against production): immediately after deploy,
   `fresh-pasta` and `homemade-pasta-dough` appear in no propose pool/alternates and no
