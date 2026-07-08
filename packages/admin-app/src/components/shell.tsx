@@ -128,6 +128,28 @@ export function HealthIndicator(): React.ReactElement | null {
   );
 }
 
+// ── Deployed-build footer ──
+
+/** A persistent footer showing the code SHA the Worker is actually running (`env.APP_BUILD`,
+ *  surfaced on the status payload; "dev" locally and in tests) plus the contract version — so the
+ *  operator can confirm at a glance what's live after a deploy. Reads the SAME shared ["status"]
+ *  query the health indicator does (no extra fetch); renders once it resolves. */
+export function AppFooter(): React.ReactElement | null {
+  const status = useQuery(statusQuery);
+  if (status.status !== "success") return null;
+  return (
+    <footer className="app-footer" data-testid="app-footer">
+      <span>
+        build <code>{status.data.appBuild}</code>
+      </span>
+      <span aria-hidden="true">·</span>
+      <span>
+        contract <code>{status.data.contractVersion}</code>
+      </span>
+    </footer>
+  );
+}
+
 // ── Access-expired overlay (D7) ──
 
 function useAccessExpired(): boolean {

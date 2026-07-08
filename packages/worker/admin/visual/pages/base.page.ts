@@ -43,6 +43,12 @@ export abstract class AdminPage {
     await expect(this.page.getByRole("heading", { name: "grocery-agent admin" })).toBeVisible();
   }
 
+  /** The persistent deployed-build footer (rendered in the shell on every area; the harness
+   *  Worker has no `APP_BUILD`, so it reads "dev" — assert its stable label, never the value). */
+  get footer(): Locator {
+    return this.page.getByTestId("app-footer");
+  }
+
   /** Full-page review screenshot under a stable per-area name (not a pixel assertion). */
   async captureForReview(name: string = this.area): Promise<void> {
     await this.page.screenshot({ path: `${SCREENSHOT_DIR}/${name}.png`, fullPage: true });

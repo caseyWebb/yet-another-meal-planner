@@ -15,6 +15,19 @@ test("nav pills route across every area", async ({ statusPage }) => {
   }
 });
 
+test("the shell footer shows the deployed build on every area", async ({ statusPage }) => {
+  // The footer lives in the root layout (reads the shared ["status"] query), so it persists
+  // across every client-side area navigation — assert that, don't just infer it. The harness
+  // Worker has no APP_BUILD → "dev"; assert the stable labels, never the value.
+  await statusPage.goto();
+  await expect(statusPage.footer).toContainText("build");
+  await expect(statusPage.footer).toContainText("contract");
+  for (const { label } of NAV_AREAS.slice(1)) {
+    await statusPage.nav.goto(label);
+    await expect(statusPage.footer).toContainText("build");
+  }
+});
+
 test("a missing admin static asset 404s instead of falling back to a SPA shell", async ({ page }) => {
   // The merged assets root's `not_found_handling: "single-page-application"` answers a genuine
   // miss with the member SPA's index.html at 200 unless the admin app's asset namespace guards

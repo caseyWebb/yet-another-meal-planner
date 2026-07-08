@@ -5,7 +5,7 @@
 // current location (the SSR Layout's `active`/`wide` props, derived instead of passed).
 import * as React from "react";
 import { createRootRoute, Link, Outlet, useRouterState } from "@tanstack/react-router";
-import { HealthIndicator, AccessExpiredOverlay, ThemeToggle } from "../components/shell";
+import { HealthIndicator, AccessExpiredOverlay, ThemeToggle, AppFooter } from "../components/shell";
 import { useSparklineTips } from "../components/kit";
 
 const AREAS = [
@@ -55,6 +55,7 @@ function RootLayout(): React.ReactElement {
           ))}
         </nav>
         <Outlet />
+        <AppFooter />
       </div>
       <HealthIndicator />
       <ThemeToggle />
