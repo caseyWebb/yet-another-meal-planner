@@ -49,28 +49,28 @@ Playwright surface change.
 
 ## 4. Classifier vocabulary: `component` (D6)
 
-- [ ] 4.1 `packages/worker/src/discovery-classify.ts` `SYSTEM_PROMPT` course line: add
+- [x] 4.1 `packages/worker/src/discovery-classify.ts` `SYSTEM_PROMPT` course line: add
   `component` to the example list and a rule sentence — a sub-recipe/building block (fresh
   pasta dough, stock, spice blend, a base sauce used inside other dishes), not plated as its
   own course; components are not mains, so `side_search_terms` is `[]` for them.
-- [ ] 4.2 Add one few-shot exemplar to `FEW_SHOT`: a plain fresh pasta dough (flour, eggs;
+- [x] 4.2 Add one few-shot exemplar to `FEW_SHOT`: a plain fresh pasta dough (flour, eggs;
   knead/rest/roll) → `course: ["component"]`, `protein: null`, `side_search_terms: []`,
   `meal_preppable: true`, season `[]` — the convergence target for the production defect rows.
-- [ ] 4.3 `packages/worker/src/vocab.js` `COURSE_SUGGESTIONS`: add `"component"` (suggestion
+- [x] 4.3 `packages/worker/src/vocab.js` `COURSE_SUGGESTIONS`: add `"component"` (suggestion
   list only — do NOT wire course into `validateRecipeContract`). Run `aubr build:vault` so the
   regenerated dropdown matches (CI's `build-vault --check` drift gate).
-- [ ] 4.4 Tests: extend the classifier suite (`test/discovery-classify*.test.ts` or equivalent)
+- [x] 4.4 Tests: extend the classifier suite (`test/discovery-classify*.test.ts` or equivalent)
   to pin that the prompt names `component` and the exemplar set contains the dough exemplar;
   extend any vocab/vault fixture test that enumerates `COURSE_SUGGESTIONS`.
 
 ## 5. Re-convergence migration (D7)
 
-- [ ] 5.1 New `packages/worker/migrations/d1/0042_component_course_reclassify.sql` (next free
+- [x] 5.1 New `packages/worker/migrations/d1/0042_component_course_reclassify.sql` (next free
   number at implementation time), modeled on `0040_ingredients_full.sql`'s gate-clear block:
   a header comment explaining the intentional whole-corpus reclassification for the
   component-aware course prompt, then `UPDATE recipe_facets SET body_hash = NULL;` — no schema
   change, no facet values touched (no empty-course window; authored overrides survive at merge).
-- [ ] 5.2 Verify locally: `npx wrangler d1 migrations apply DB --local`, then confirm the
+- [x] 5.2 Verify locally: `npx wrangler d1 migrations apply DB --local`, then confirm the
   classify pass re-derives (bounded per tick) and the projection keeps serving the previous
   facet values for not-yet-reclassified recipes.
 

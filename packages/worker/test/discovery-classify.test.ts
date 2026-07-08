@@ -109,4 +109,25 @@ describe("classifyRecipe", () => {
     expect(retries).toBe(1);
     expect(frontmatter.protein).toBe("chicken");
   });
+
+  it("the prompt names the component course and carries the pasta-dough exemplar", async () => {
+    const seen: unknown[][] = [];
+    const env = fakeEnv([VALID_MAIN], (m) => seen.push(m as unknown[]));
+    await classifyRecipe(env, { title: "X", content: "..." }, null);
+    const msgs = seen[0] as { role: string; content: string }[];
+    // The system prompt's course line anchors the sub-recipe bucket…
+    expect(msgs[0].role).toBe("system");
+    expect(msgs[0].content).toContain("component");
+    expect(msgs[0].content).toMatch(/SUB-RECIPE/i);
+    // …and a few-shot exemplar pins the exact convergence target: a plain pasta dough
+    // -> ["component"], no protein focus, empty side terms, meal-preppable.
+    const exemplars = msgs
+      .filter((m) => m.role === "assistant")
+      .map((m) => JSON.parse(m.content) as Record<string, unknown>);
+    const dough = exemplars.find((e) => Array.isArray(e.course) && (e.course as string[]).includes("component"));
+    expect(dough).toBeDefined();
+    expect(dough!.protein).toBeNull();
+    expect(dough!.side_search_terms).toEqual([]);
+    expect(dough!.meal_preppable).toBe(true);
+  });
 });

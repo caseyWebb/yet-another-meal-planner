@@ -72,7 +72,7 @@ export const SYSTEM_PROMPT = [
   "- cuisine: the single best bucket, or null. One of: " +
     CUISINE_VOCAB.join(" | ") +
     ". If a dish's tradition is not on this list, pick the CLOSEST bucket (e.g. a Middle-Eastern/Levantine dish -> mediterranean; a Tex-Mex dish -> southwestern or mexican). Use null only when the dish is genuinely cuisine-agnostic (a smoothie, plain roasted vegetables, buttered toast). NEVER invent a cuisine not on this list.",
-  "- course: a NON-EMPTY array describing the dish type. Open vocabulary — use the natural word: main | side | dessert | breakfast | snack | sauce | drink | baked_good, etc. Use multiple ONLY when it genuinely plates both ways (a hearty grain salad -> [main, side]). Most dishes are a single course.",
+  '- course: a NON-EMPTY array describing the dish type. Open vocabulary — use the natural word: main | side | dessert | breakfast | snack | sauce | drink | baked_good | component, etc. Use "component" for a SUB-RECIPE / building block — a fresh pasta dough, a stock, a spice blend, a base sauce made to be used inside other dishes — something not plated as its own course (a component is not a main, so its side_search_terms is []). Use multiple ONLY when it genuinely plates both ways (a hearty grain salad -> [main, side]). Most dishes are a single course.',
   "- time_total: total minutes as a number, or null if not stated and not obviously inferable.",
   "- ingredients_key: an array of the 5-7 DEFINING ingredients (plain names, no quantities), the ones that make the dish what it is — skip salt, pepper, water, oil unless central.",
   '- ingredients_full: a NON-EMPTY array of EVERY ingredient the body lists — plain names only: no quantities, no prep clauses ("cut into strips", "chopped"), no optional-markers. A disjunctive line ("soy sauce or tamari") records its PRIMARY only. Include the staples ingredients_key skips (salt, oil) when the body lists them; never invent an ingredient the body does not list.',
@@ -136,6 +136,28 @@ const FEW_SHOT: Exemplar[] = [
       requires_equipment: [],
       side_search_terms: [],
       meal_preppable: false,
+    },
+  },
+  {
+    // Anchors: a sub-recipe/building block -> component (not main/side/baked_good), with
+    // side_search_terms [] — the silent-failure class where doughs/stocks scatter across
+    // meal courses and then surface as dinner suggestions.
+    title: "Fresh Pasta Dough",
+    body: "Ingredients: 00 flour, eggs, salt, olive oil.\nInstructions: Mound the flour, work in the eggs and salt, knead until smooth, rest 30 minutes, then roll into sheets.",
+    output: {
+      protein: null,
+      cuisine: "italian",
+      course: ["component"],
+      time_total: 45,
+      ingredients_key: ["flour", "eggs"],
+      ingredients_full: ["00 flour", "eggs", "salt", "olive oil"],
+      dietary: ["vegetarian"],
+      season: [],
+      tags: ["from-scratch", "pasta"],
+      perishable_ingredients: [],
+      requires_equipment: [],
+      side_search_terms: [],
+      meal_preppable: true,
     },
   },
   {

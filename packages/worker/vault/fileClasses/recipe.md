@@ -56,6 +56,7 @@ fields:
         "9": salad
         "10": sauce
         "11": drink
+        "12": component
     path: ""
     id: m9bm1k
   - name: protein
