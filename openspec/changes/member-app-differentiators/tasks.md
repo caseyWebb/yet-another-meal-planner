@@ -92,13 +92,13 @@ and the implementer binds to the landed actuals (e.g. `buildOrderWiring`, `compu
 
 ## 4. Worker: the /api routes (D1, D6–D8, D12)
 
-- [ ] 4.1 `src/api/grocery.ts`: `POST /grocery/substitutions` (session-gated, `jsonBody`,
+- [x] 4.1 `src/api/grocery.ts`: `POST /grocery/substitutions` (session-gated, `jsonBody`,
   fake-wiring-injectable like P3's order route; **no ETag** — online-only class) and the
   `?aisles=1` variant on the to-buy GET (same ETag machinery, param in the representation).
-- [ ] 4.2 `src/api/cookbook.ts`: `GET /cookbook/trending` + `GET /cookbook/picked-for-you`
+- [x] 4.2 `src/api/cookbook.ts`: `GET /cookbook/trending` + `GET /cookbook/picked-for-you`
   (session-gated, `jsonWithEtag`), registered before the `:slug` param route per the P1
   ordering note.
-- [ ] 4.3 Route tests (`api-member.test.ts` pattern): substitutions POST over injected fake
+- [x] 4.3 Route tests (`api-member.test.ts` pattern): substitutions POST over injected fake
   wiring (result shape, budget `remaining`, 401 sweep); the two GETs (ETag/304, empty states);
   aisles variant vs byte-identical default; `MEMBER_ENDPOINTS` gains every new route so the
   session-gating sweep covers them.

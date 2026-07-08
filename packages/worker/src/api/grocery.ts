@@ -17,6 +17,7 @@ import { jsonWithEtag } from "./etag.js";
 import { jsonBody } from "./middleware.js";
 import { readGroceryList, addGroceryRow, updateGroceryRow, removeGroceryRow, isoDay } from "../session-db.js";
 import { computeToBuyView } from "../to-buy.js";
+import { suggestSubstitutions } from "../substitutions.js";
 import { runPlaceOrder, PLACE_ORDER_INPUT_SHAPE } from "../order-tools.js";
 import { buildOrderWiring } from "../tools.js";
 import { readPreferences } from "../profile-db.js";
@@ -31,6 +32,12 @@ const MEMBER_STATUSES = new Set(["active", "in_cart", "ordered"]);
 
 /** The order route validates the tool's EXACT input shape (one contract, D7). */
 const orderInput = z.object(PLACE_ORDER_INPUT_SHAPE);
+
+/** The substitutions route validates the tool's exact input shape (one contract, D1). */
+const substitutionsInput = z.object({
+  names: z.array(z.string()).optional(),
+  max_lines: z.number().int().positive().optional(),
+});
 
 function str(v: unknown): string | undefined {
   return typeof v === "string" ? v : undefined;
@@ -74,10 +81,28 @@ export const groceryArea = new Hono<ApiEnv>()
   })
   // The derived to-buy view (D1/D3): one shared op with the MCP read_to_buy tool.
   // Pure D1 read (no Kroger, no AI, no writes); ETagged like every JSON GET.
+  // `?aisles=1` (member-app-differentiators D6) opts into the aisle enrichment —
+  // captured sku_cache placements + graph-derived departments, at most one Kroger
+  // Locations resolve, zero product searches; the default stays byte-identical (the
+  // param is part of the ETagged representation — the client keys its cache on it).
   .get("/grocery/to-buy", requireSession, async (c) => {
     const tenant = c.get("tenant");
-    const view = await computeToBuyView(c.env, tenant.id);
+    const view = await computeToBuyView(c.env, tenant.id, { withAisles: c.req.query("aisles") === "1" });
     return jsonWithEtag(c, view);
+  })
+  // The substitution read (member-app-differentiators D1): one shared op with the
+  // suggest_substitutions tool, over fresh order wiring. Member-initiated and
+  // ONLINE-ONLY (D12) — no ETag, never offline-queued or replayed; read-only on the
+  // server (the op writes nothing; acting on a suggestion reuses the existing writes).
+  .post("/grocery/substitutions", requireSession, async (c) => {
+    const tenant = c.get("tenant");
+    const parsed = substitutionsInput.safeParse(await jsonBody<unknown>(c));
+    if (!parsed.success) {
+      const issue = parsed.error.issues[0];
+      throw new ToolError("validation_failed", `${issue?.path.join(".") || "body"}: ${issue?.message ?? "invalid"}`);
+    }
+    const result = await suggestSubstitutions(c.env, tenant.id, parsed.data, buildOrderWiring(c.env, tenant.id));
+    return c.json(result);
   })
   // The order flow (D7): the place_order op behind the tool's exact input/result shape.
   // Preview and commit are the same endpoint discriminated by `preview` (the op's own

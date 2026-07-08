@@ -40,6 +40,30 @@ vi.mock("../src/tools.js", async (importOriginal) => {
       }),
       revalidateSku: async () => null,
       getLocationId: async () => "loc-1",
+      // The substitution read's raw closures (member-app-differentiators D1): one
+      // fulfillable comparable alternative per search; a fulfillable current pick per sku.
+      search: async () => [
+        {
+          productId: "ALT-1",
+          brand: "Store Brand",
+          description: "alternative",
+          categories: [],
+          size: "32 oz",
+          price: { regular: 9.92, promo: 0 },
+          fulfillment: { curbside: true, delivery: true, inStore: true },
+          aisleLocation: null,
+        },
+      ],
+      productById: async (sku: string) => ({
+        productId: sku,
+        brand: "Store Brand",
+        description: "current pick",
+        categories: [],
+        size: "16 oz",
+        price: { regular: 6.72, promo: 0 },
+        fulfillment: { curbside: true, delivery: true, inStore: true },
+        aisleLocation: { number: "4", description: "Dairy" },
+      }),
     })),
   };
 });
@@ -146,6 +170,8 @@ function send(env: Env, method: string, path: string, cookie: string, body?: unk
 const MEMBER_ENDPOINTS: [string, string][] = [
   ["GET", "/api/cookbook/recipes"],
   ["GET", "/api/cookbook/new-for-me"],
+  ["GET", "/api/cookbook/trending"],
+  ["GET", "/api/cookbook/picked-for-you"],
   ["GET", "/api/cookbook/search?q=tacos"],
   ["GET", "/api/cookbook/recipes/tacos"],
   ["GET", "/api/cookbook/recipes/tacos/similar"],
@@ -159,7 +185,9 @@ const MEMBER_ENDPOINTS: [string, string][] = [
   ["POST", "/api/plan/ops"],
   ["GET", "/api/grocery"],
   ["GET", "/api/grocery/to-buy"],
+  ["GET", "/api/grocery/to-buy?aisles=1"],
   ["POST", "/api/grocery/order"],
+  ["POST", "/api/grocery/substitutions"],
   ["POST", "/api/grocery/items"],
   ["PATCH", "/api/grocery/items/milk"],
   ["DELETE", "/api/grocery/items/milk"],
@@ -799,5 +827,117 @@ describe("propose area (member-app-propose)", () => {
     const cookie = await loggedIn(env);
     const res = await get(env, "/api/propose/weather?days=99", cookie);
     expect(res.status).toBe(400);
+  });
+});
+
+describe("differentiators (member-app-differentiators)", () => {
+  it("POST /grocery/substitutions returns the op result over the injected fake wiring — no ETag", async () => {
+    const { env } = memberEnv({ grocery_list: [], sku_cache: [], pantry: [], meal_plan: [] });
+    const cookie = await loggedIn(env);
+    // One active row + its cached pick at the mocked wiring's location.
+    await send(env, "POST", "/api/grocery/items", cookie, { name: "milk" });
+    const { d1 } = { d1: null };
+    void d1;
+    const res = await send(env, "POST", "/api/grocery/substitutions", cookie, {});
+    expect(res.status).toBe(200);
+    expect(res.headers.get("etag")).toBeNull(); // online-only class (D12) — no ETag
+    const body = (await res.json()) as {
+      suggestions: { for: { name: string; key: string }; status: string; alternatives: { sku: string; reasons: string[] }[]; siblings: unknown[] }[];
+      remaining: string[];
+      location: { id: string } | null;
+      flyer_as_of: string | null;
+    };
+    expect(body.location).toEqual({ id: "loc-1" });
+    expect(body.remaining).toEqual([]);
+    expect(body.suggestions).toHaveLength(1);
+    const line = body.suggestions[0];
+    expect(line.for).toMatchObject({ name: "milk", key: "milk" });
+    // No sku_cache mapping seeded → an honest no_cached_pick with the search's alternative.
+    expect(line.status).toBe("no_cached_pick");
+    expect(line.alternatives.map((a) => a.sku)).toEqual(["ALT-1"]);
+    expect(line.siblings).toEqual([]);
+  });
+
+  it("POST /grocery/substitutions paginates past the 12-line budget with honest remaining", async () => {
+    const { env } = memberEnv({ grocery_list: [], sku_cache: [], pantry: [], meal_plan: [] });
+    const cookie = await loggedIn(env);
+    const names = Array.from({ length: 15 }, (_, i) => `item-${String(i).padStart(2, "0")}`);
+    const res = await send(env, "POST", "/api/grocery/substitutions", cookie, { names });
+    const body = (await res.json()) as { suggestions: unknown[]; remaining: string[] };
+    expect(body.suggestions).toHaveLength(12);
+    expect(body.remaining).toEqual(names.slice(12));
+    // A malformed body is a 400 boundary rejection, not a 500.
+    const bad = await send(env, "POST", "/api/grocery/substitutions", cookie, { names: "milk" });
+    expect(bad.status).toBe(400);
+    expect(((await bad.json()) as { error: string }).error).toBe("validation_failed");
+  });
+
+  it("GET /grocery/to-buy default stays byte-identical; ?aisles=1 adds placement + location", async () => {
+    const { env } = memberEnv({ grocery_list: [], sku_cache: [], pantry: [], meal_plan: [] });
+    const cookie = await loggedIn(env);
+    await send(env, "POST", "/api/grocery/items", cookie, { name: "milk" });
+
+    const plain = await get(env, "/api/grocery/to-buy", cookie);
+    const plainBody = (await plain.json()) as { to_buy: Record<string, unknown>[]; location?: unknown };
+    expect("location" in plainBody).toBe(false);
+    expect("placement" in plainBody.to_buy[0]).toBe(false);
+
+    const enriched = await get(env, "/api/grocery/to-buy?aisles=1", cookie);
+    expect(enriched.status).toBe(200);
+    const enrichedBody = (await enriched.json()) as { to_buy: Record<string, unknown>[]; location: unknown };
+    // No profile/preferred location in this env → no resolvable store: an honest
+    // null location with department-only (here: null) placements — never an error.
+    expect(enrichedBody.location).toBeNull();
+    expect("placement" in enrichedBody.to_buy[0]).toBe(true);
+    expect(enrichedBody.to_buy[0].placement).toBeNull();
+  });
+
+  it("GET /cookbook/trending is ETagged, min-signal-guarded, and counts-only", async () => {
+    // The production-shaped sparse log: one cook — the guard yields an EMPTY set.
+    const sparse = memberEnv({ cooking_log: [{ id: 1, tenant: "casey", date: "2026-07-01", type: "recipe", recipe: "tacos" }] });
+    const cookie = await loggedIn(sparse.env);
+    const empty = await get(sparse.env, "/api/cookbook/trending", cookie);
+    expect(empty.status).toBe(200);
+    expect(((await empty.json()) as { recipes: unknown[] }).recipes).toEqual([]);
+
+    // A threshold-crossing log (2 tenants) trends with counts only + 304 on re-read.
+    const crossing = memberEnv({
+      cooking_log: [
+        { id: 1, tenant: "casey", date: "2026-07-01", type: "recipe", recipe: "tacos" },
+        { id: 2, tenant: "pat", date: "2026-07-03", type: "recipe", recipe: "tacos" },
+      ],
+    });
+    const cookie2 = await loggedIn(crossing.env);
+    const res = await get(crossing.env, "/api/cookbook/trending", cookie2);
+    const etag = res.headers.get("etag");
+    expect(etag).toMatch(/^W\//);
+    const body = (await res.json()) as { recipes: { slug: string; cooks: number; cooks_by: number }[]; window_days: number };
+    expect(body.window_days).toBe(60);
+    expect(body.recipes).toHaveLength(1);
+    expect(body.recipes[0]).toMatchObject({ slug: "tacos", cooks: 2, cooks_by: 2, title: "Tacos" });
+    const again = await get(crossing.env, "/api/cookbook/trending", cookie2, { "If-None-Match": etag! });
+    expect(again.status).toBe(304);
+  });
+
+  it("GET /cookbook/picked-for-you: empty without favorites, populated (favorites excluded) with them", async () => {
+    const cold = memberEnv();
+    const cookie = await loggedIn(cold.env);
+    const empty = await get(cold.env, "/api/cookbook/picked-for-you", cookie);
+    expect(empty.status).toBe(200);
+    expect(empty.headers.get("etag")).toMatch(/^W\//);
+    expect(((await empty.json()) as { recipes: unknown[] }).recipes).toEqual([]);
+
+    const warm = memberEnv({
+      recipes: [RECIPE_ROW, { ...RECIPE_ROW, slug: "enchiladas", title: "Enchiladas" }],
+      recipe_derived: [
+        { slug: "tacos", description: null, embedding: JSON.stringify([1, 0]) },
+        { slug: "enchiladas", description: null, embedding: JSON.stringify([0.9, 0.1]) },
+      ],
+      overlay: [{ tenant: "casey", recipe: "tacos", favorite: 1, reject: 0 }],
+    });
+    const cookie2 = await loggedIn(warm.env);
+    const res = await get(warm.env, "/api/cookbook/picked-for-you", cookie2);
+    const body = (await res.json()) as { recipes: { slug: string }[] };
+    expect(body.recipes.map((r) => r.slug)).toEqual(["enchiladas"]); // the favorite never re-picked
   });
 });

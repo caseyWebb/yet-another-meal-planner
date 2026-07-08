@@ -17,6 +17,7 @@ import { nearestNeighbors } from "../cookbook-similar.js";
 import { readRecipeDetail } from "../tools.js";
 import { readNewForMe } from "../discovery-db.js";
 import { NEW_FOR_ME_WINDOW_DAYS } from "../discovery-tools.js";
+import { readTrending, readPickedForYou } from "../cookbook-rows.js";
 import {
   readRecipeNotes,
   insertRecipeNote,
@@ -65,6 +66,21 @@ export const cookbookArea = new Hono<ApiEnv>()
     const floor = new Date(Date.now() - NEW_FOR_ME_WINDOW_DAYS * 86_400_000).toISOString().slice(0, 10);
     const recipes = await readNewForMe(c.env, tenant.id, floor);
     return jsonWithEtag(c, { recipes });
+  })
+  // Browse: "New & trending"'s trending half (member-app-differentiators D7) — the
+  // group-wide windowed cooking_log aggregation, counts only, min-signal-guarded
+  // (sparse single-cook history reads as an honest EMPTY set), caller's rejects
+  // filtered. Registered before the :slug param routes (the P1 ordering note).
+  .get("/cookbook/trending", requireSession, async (c) => {
+    const tenant = c.get("tenant");
+    return jsonWithEtag(c, await readTrending(c.env, tenant.id));
+  })
+  // Browse: "Picked for you" (member-app-differentiators D8) — the deterministic
+  // favorites-centroid rankCandidates wrap over stored vectors (zero AI calls);
+  // no favorites → an empty list, never a backfill from the general index.
+  .get("/cookbook/picked-for-you", requireSession, async (c) => {
+    const tenant = c.get("tenant");
+    return jsonWithEtag(c, await readPickedForYou(c.env, tenant.id));
   })
   // Keyword search — the SAME pure ranker the public /cookbook/search serves (D6).
   .get("/cookbook/search", requireSession, async (c) => {
