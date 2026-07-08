@@ -170,6 +170,12 @@ export async function applyProposal(env: Env, tenant: string, proposal: PendingP
       await upsertNightVibe(env, tenant, vibe, nowIso);
       return `added night vibe ${vibe.id}`;
     }
+    case "merge_recipes":
+      // Corpus curation (recipe-dedup): accept records the DECISION only — no profile or
+      // corpus write here. The merge itself is agent-guided through the corpus write tools
+      // (fold into the survivor + `duplicate_of` tombstone via update_recipe), performed
+      // BEFORE confirmation (merge-then-accept, so an interrupted flow stays pending).
+      return `recorded merge decision for ${proposal.target ?? "pair"} (the merge itself is agent-guided via update_recipe)`;
     default:
       return `unknown proposal kind ${proposal.kind}`;
   }
