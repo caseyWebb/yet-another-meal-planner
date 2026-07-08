@@ -96,4 +96,5 @@ export const COURSE_SUGGESTIONS = Object.freeze([
   "salad",
   "sauce",
   "drink",
+  "component",
 ]);

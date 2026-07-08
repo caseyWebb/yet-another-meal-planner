@@ -8,15 +8,18 @@
 //     cooked what. The MIN-SIGNAL GUARD is the sparse-data design: a recipe trends
 //     only with ≥ 2 cooks or ≥ 2 distinct cooking tenants in the window; production's
 //     single-cook log yields an EMPTY set rather than fake trending. Results join the
-//     projected index (unprojected slugs dropped) and are filtered by the CALLER's
-//     overlay rejects (group fact, personal lens). The aggregation (GROUP BY / HAVING
+//     projected index (unprojected slugs dropped), are filtered by the CALLER's
+//     overlay rejects (group fact, personal lens), and are restricted to MEAL
+//     candidates (`isMealCourse` — course includes `main` or is empty, fail-open).
+//     The aggregation (GROUP BY / HAVING
 //     in the design) is computed in JS over the windowed rows — the module idiom
 //     (fake-D1-compatible full-read + JS), semantics identical to the D7 SQL.
 //
 //   readPickedForYou — a deterministic favorites-centroid wrap of `rankCandidates`:
 //     the query vector is the normalized centroid of the caller's STORED favorite
 //     embeddings (cron-captured — zero env.AI calls at request time), candidates are
-//     the embedded index minus favorites/rejects/dietary-avoid conflicts, and one
+//     the embedded index minus favorites/rejects/dietary-avoid conflicts/non-meal
+//     courses (the same `isMealCourse` gate), and one
 //     plain rankCandidates call orders them (P2's optional nudge params ABSENT —
 //     omission is bit-identical by P2's contract). No favorites → an EMPTY result,
 //     never a silent backfill from the general index.
@@ -32,7 +35,7 @@ import {
   resolveRankParams,
   type SearchCandidate,
 } from "./semantic-search.js";
-import type { IndexedRecipe } from "./recipes.js";
+import { isMealCourse, type IndexedRecipe } from "./recipes.js";
 
 /** The compact recipe row both browse reads return (the new-for-me lite shape). */
 export interface CookbookRowRecipe {
@@ -111,6 +114,9 @@ export async function readTrending(
     const entry = index[slug];
     if (!entry) continue; // unprojected — dropped
     if (overlay[slug]?.reject) continue; // the caller's personal lens
+    // Meal candidates only (fail-open for an empty, not-yet-classified course): a
+    // component the group cooked twice is real history, but not a meal to suggest.
+    if (!isMealCourse(entry.course)) continue;
     qualified.push({ ...toLite(slug, entry), cooks: e.cooks, cooks_by: e.tenants.size, last_cooked: e.last });
   }
 
@@ -205,6 +211,9 @@ export async function readPickedForYou(
     const row = overlay[slug];
     if (row?.favorite || row?.reject) continue; // never re-pick a favorite; rejects never surface
     if (conflictsWithAvoids(entry, avoids)) continue;
+    // Meal candidates only (fail-open for an empty course): picked-for-you suggests
+    // meals — a component/sub-recipe near the centroid is never a pick.
+    if (!isMealCourse(entry.course)) continue;
     const vec = embeddings.get(slug);
     if (!vec) continue; // stored vectors only — an unembedded recipe is "not yet indexed"
     const lite = toLite(slug, entry);

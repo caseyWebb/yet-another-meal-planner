@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { filterRecipes, type RecipeIndex } from "../src/recipes.js";
+import { filterRecipes, isMealCourse, type RecipeIndex } from "../src/recipes.js";
 
 // Entries carry the caller's effective per-tenant view (overlay-merged): `reject` is
 // the only disposition the filter gates on. There is no `status` and no active set —
@@ -117,6 +117,34 @@ describe("filterRecipes", () => {
     expect(item.slug).toBe("visible1");
     expect(item.title).toBe("Visible One");
     expect(item.frontmatter.protein).toBe("beef");
+  });
+});
+
+describe("isMealCourse — the default meal-candidate gate", () => {
+  it("admits a course set containing main (alone or dual-use)", () => {
+    expect(isMealCourse(["main"])).toBe(true);
+    expect(isMealCourse(["main", "side"])).toBe(true);
+    expect(isMealCourse(["side", "main"])).toBe(true);
+  });
+
+  it("rejects a non-empty set without main", () => {
+    expect(isMealCourse(["side"])).toBe(false);
+    expect(isMealCourse(["component"])).toBe(false);
+    expect(isMealCourse(["baked_good"])).toBe(false);
+    expect(isMealCourse(["dessert", "snack"])).toBe(false);
+  });
+
+  it("fails OPEN for an empty/missing course (not yet classified — never silently hidden)", () => {
+    expect(isMealCourse([])).toBe(true);
+    expect(isMealCourse(undefined)).toBe(true);
+    expect(isMealCourse(null)).toBe(true);
+  });
+
+  it("tolerates a defensive scalar and case/whitespace", () => {
+    expect(isMealCourse("main")).toBe(true);
+    expect(isMealCourse("side")).toBe(false);
+    expect(isMealCourse([" Main "])).toBe(true);
+    expect(isMealCourse(["SIDE"])).toBe(false);
   });
 });
 

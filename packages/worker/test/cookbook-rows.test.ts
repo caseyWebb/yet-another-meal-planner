@@ -19,10 +19,16 @@ const OTHER = "pat";
 const DAY = 86_400_000;
 const day = (offset: number) => new Date(Date.now() - offset * DAY).toISOString().slice(0, 10);
 
-function seedRecipe(h: SqliteEnv, slug: string, over: { protein?: string; keys?: string[] } = {}): void {
+function seedRecipe(h: SqliteEnv, slug: string, over: { protein?: string; keys?: string[]; course?: string[] } = {}): void {
   h.raw
-    .prepare("INSERT INTO recipes (slug, title, protein, cuisine, time_total, ingredients_key) VALUES (?, ?, ?, 'x', 30, ?)")
-    .run(slug, slug.toUpperCase(), over.protein ?? null, over.keys ? JSON.stringify(over.keys) : null);
+    .prepare("INSERT INTO recipes (slug, title, protein, cuisine, time_total, ingredients_key, course) VALUES (?, ?, ?, 'x', 30, ?, ?)")
+    .run(
+      slug,
+      slug.toUpperCase(),
+      over.protein ?? null,
+      over.keys ? JSON.stringify(over.keys) : null,
+      over.course ? JSON.stringify(over.course) : null,
+    );
 }
 
 function seedCook(h: SqliteEnv, tenant: string, recipe: string, date: string): void {
@@ -114,6 +120,23 @@ describe("readTrending — the min-signal guard (D7)", () => {
     const other = await readTrending(h.env, OTHER);
     expect(other.recipes.map((r) => r.slug)).toEqual(["rejected-dish"]);
   });
+
+  it("a repeat-cooked non-main never trends; a main and an unclassified recipe still do", async () => {
+    const h = sqliteEnv([T, OTHER]);
+    // Twice-cooked component (real history, not a meal suggestion) + a side, both gated;
+    // a twice-cooked main and a twice-cooked NOT-YET-CLASSIFIED recipe (empty course —
+    // the fail-open case) both still trend.
+    seedRecipe(h, "pasta-dough", { course: ["component"] });
+    seedRecipe(h, "garlic-bread", { course: ["side"] });
+    seedRecipe(h, "ragu", { course: ["main", "side"] });
+    seedRecipe(h, "fresh-import"); // course NULL — unclassified
+    for (const slug of ["pasta-dough", "garlic-bread", "ragu", "fresh-import"]) {
+      seedCook(h, T, slug, day(2));
+      seedCook(h, OTHER, slug, day(4));
+    }
+    const res = await readTrending(h.env, T);
+    expect(res.recipes.map((r) => r.slug)).toEqual(["fresh-import", "ragu"]);
+  });
 });
 
 describe("readPickedForYou — deterministic favorites-centroid ranking (D8)", () => {
@@ -170,6 +193,19 @@ describe("readPickedForYou — deterministic favorites-centroid ranking (D8)", (
     h.raw
       .prepare("INSERT INTO profile (tenant, dietary) VALUES (?, ?)")
       .run(T, JSON.stringify({ avoid: ["shellfish"], limit: [] }));
+    const res = await readPickedForYou(h.env, T);
+    expect(res.recipes.map((r) => r.slug)).toEqual(["near-fav", "far-dish"]);
+  });
+
+  it("a non-main near the centroid is never a pick; an unclassified (empty-course) recipe stays eligible", async () => {
+    const h = sqliteEnv([T]);
+    seedCorpus(h); // near-fav / far-dish have a NULL course (unclassified — fail-open)
+    // A component sub-recipe nearer the favorites centroid than every real candidate.
+    seedRecipe(h, "pasta-dough", { course: ["component"] });
+    seedEmbedding(h, "pasta-dough", [0.99, 0.01, 0, 0]);
+    seedRecipe(h, "garlic-bread", { course: ["side"] });
+    seedEmbedding(h, "garlic-bread", [0.98, 0.02, 0, 0]);
+    armAiTrap(h);
     const res = await readPickedForYou(h.env, T);
     expect(res.recipes.map((r) => r.slug)).toEqual(["near-fav", "far-dish"]);
   });

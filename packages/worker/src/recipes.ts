@@ -52,6 +52,23 @@ function isoDay(d: Date): string {
  *   annotated with `missing_equipment` instead of dropping (the named-dish path).
  */
 
+/**
+ * The DEFAULT meal-candidate gate shared by every meal-suggestion surface (the propose
+ * pool, picked-for-you, trending): a recipe is a meal candidate when its effective
+ * `course` includes `main`, or is EMPTY — fail-open, because an empty course means
+ * *not yet classified* (unknown, not known-non-main), and silently hiding unclassified
+ * recipes from every suggestion surface would make a fresh corpus propose nothing.
+ * Normalizes scalar/array/missing exactly as `filterRecipes`' course filter does —
+ * but this is deliberately NOT that filter: the explicit `course` filter is a caller's
+ * ask with fail-closed exact-containment semantics (the data-read-tools contract).
+ */
+export function isMealCourse(course: unknown): boolean {
+  const courses = (Array.isArray(course) ? course : course != null ? [course] : []).map((c) =>
+    String(c).trim().toLowerCase(),
+  );
+  return courses.length === 0 || courses.includes("main");
+}
+
 /** Connectives dropped from a query so "chicken and rice" ≡ "chicken rice". */
 const QUERY_STOPWORDS = new Set([
   "and",

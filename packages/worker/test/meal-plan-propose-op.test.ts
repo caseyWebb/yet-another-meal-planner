@@ -33,6 +33,8 @@ interface RecipeFixture {
   cuisine: string;
   time_total: number;
   vec: number[];
+  /** Effective course array; omitted → a NULL column (unclassified — the fail-open case). */
+  course?: string[];
 }
 
 // A small corpus with distinct axes: the "seafood" direction is axis 0/3, "comfort" 1/2.
@@ -44,8 +46,8 @@ const CORPUS: RecipeFixture[] = [
   { slug: "veggie-curry", title: "Veggie Curry", protein: "vegetarian", cuisine: "indian", time_total: 45, vec: axis([4, 1]) },
 ];
 
-function recipeRows() {
-  return CORPUS.map((r) => ({
+function recipeRows(corpus: RecipeFixture[]) {
+  return corpus.map((r) => ({
     slug: r.slug,
     title: r.title,
     protein: r.protein,
@@ -54,7 +56,7 @@ function recipeRows() {
     ingredients_key: null,
     source_url: null,
     tags: null,
-    course: null,
+    course: r.course ? JSON.stringify(r.course) : null,
     season: null,
     dietary: null,
     pairs_with: null,
@@ -64,8 +66,8 @@ function recipeRows() {
     discovered_at: null,
   }));
 }
-function derivedRows() {
-  return CORPUS.map((r) => ({ slug: r.slug, embedding: JSON.stringify(r.vec), description: null }));
+function derivedRows(corpus: RecipeFixture[]) {
+  return corpus.map((r) => ({ slug: r.slug, embedding: JSON.stringify(r.vec), description: null }));
 }
 
 /** In-memory KV (the embed cache). */
@@ -92,11 +94,15 @@ interface Vibe {
 /** Assemble the op's env: fakeD1 domain tables + embed-cache KV + a spy AI binding that
  *  embeds by a fixed phrase→vector table (throwing on anything unexpected keeps the
  *  zero-AI-call assertions honest). */
-function proposeEnv(vibes: Vibe[], opts: { phraseVecs?: Record<string, number[]>; profile?: Record<string, unknown> } = {}) {
+function proposeEnv(
+  vibes: Vibe[],
+  opts: { phraseVecs?: Record<string, number[]>; profile?: Record<string, unknown>; corpus?: RecipeFixture[] } = {},
+) {
+  const corpus = opts.corpus ?? CORPUS;
   const d1 = fakeD1({
     tables: {
-      recipes: recipeRows(),
-      recipe_derived: derivedRows(),
+      recipes: recipeRows(corpus),
+      recipe_derived: derivedRows(corpus),
       night_vibes: vibes.map((v) => ({
         tenant: TENANT.id,
         id: v.id,
@@ -464,6 +470,119 @@ describe("weather-category legibility (D9)", () => {
     for (const slot of withCategory) {
       expect(slot.why).toContain("fits this window's grill weather");
     }
+  });
+});
+
+describe("the default meal-course gate (gate-meal-suggestions-to-mains)", () => {
+  // A component sub-recipe sitting EXACTLY on the seafood vibe's own vector — the top
+  // candidate by cosine, so its absence proves the gate (not the ranking) excluded it.
+  const DOUGH: RecipeFixture = {
+    slug: "pasta-dough",
+    title: "Fresh Pasta Dough",
+    protein: "egg",
+    cuisine: "italian",
+    time_total: 45,
+    vec: axis([0, 1], [3, 0.6]),
+    course: ["component"],
+  };
+  // A side on the comfort vibe's vector — the other non-main course class.
+  const SLAW: RecipeFixture = {
+    slug: "charred-slaw",
+    title: "Charred Slaw",
+    protein: "vegetarian",
+    cuisine: "american",
+    time_total: 15,
+    vec: axis([1, 1], [2, 0.6]),
+    course: ["side"],
+  };
+
+  it("a non-main never appears in any slot's main, alternates, alt_similar, or alt_different", async () => {
+    const { env } = proposeEnv([SEAFOOD, COMFORT], { corpus: [...CORPUS, DOUGH, SLAW] });
+    const r = await runProposeMealPlan(env, TENANT, BASE, stubDeps(env));
+    expect(r.diagnostics.filled).toBe(2); // the gate narrows pools, it doesn't empty them
+    for (const slot of r.plan) {
+      for (const slug of [slot.main?.slug, slot.alt_similar?.slug, slot.alt_different?.slug, ...slot.alternates.map((a) => a.slug)]) {
+        expect(slug).not.toBe("pasta-dough");
+        expect(slug).not.toBe("charred-slaw");
+      }
+    }
+  });
+
+  it("an empty-course (not-yet-classified) recipe still pools — the gate fails open", async () => {
+    // Same top-of-pool position as the dough, but with course [] (awaiting its classify tick).
+    const fresh: RecipeFixture = { ...DOUGH, slug: "mystery-import", title: "Mystery Import", course: [] };
+    const { env } = proposeEnv([SEAFOOD, COMFORT], { corpus: [...CORPUS, fresh] });
+    const r = await runProposeMealPlan(env, TENANT, BASE, stubDeps(env));
+    const seafood = slotOf(r, SEAFOOD.id);
+    expect(seafood.main?.slug).toBe("mystery-import");
+  });
+
+  it("a vibe's explicit course facet suppresses the default — breakfast-for-dinner pools breakfast", async () => {
+    const pancakes: RecipeFixture = {
+      slug: "pancakes",
+      title: "Buttermilk Pancakes",
+      protein: "egg",
+      cuisine: "american",
+      time_total: 25,
+      vec: axis([6, 1]),
+      course: ["breakfast"],
+    };
+    const brunch: Vibe = { id: "brunch-night", vibe: "breakfast for dinner", facets: { course: "breakfast" }, vec: axis([6, 1]) };
+    const { env } = proposeEnv([SEAFOOD, brunch], { corpus: [...CORPUS, pancakes] });
+    const r = await runProposeMealPlan(env, TENANT, BASE, stubDeps(env));
+    // The explicit course facet gates by containment alone — the non-main fills its slot.
+    expect(slotOf(r, brunch.id).main?.slug).toBe("pancakes");
+    expect(slotOf(r, SEAFOOD.id).main).not.toBeNull(); // the other slot gates as usual
+  });
+
+  it("a lock and a slots[].recipe pin of a non-main still fill — the gate never vetoes a caller's explicit choice", async () => {
+    const { env } = proposeEnv([SEAFOOD, COMFORT], { corpus: [...CORPUS, DOUGH] });
+    const deps = stubDeps(env);
+    const locked = await runProposeMealPlan(env, TENANT, { ...BASE, lock: ["Pasta-Dough"] }, deps);
+    expect(locked.plan.find((s) => s.reason === "locked")?.main?.slug).toBe("pasta-dough");
+    const pinned = await runProposeMealPlan(
+      env,
+      TENANT,
+      { ...BASE, slots: [{ vibe_id: COMFORT.id, recipe: "pasta-dough" }] },
+      deps,
+    );
+    const slot = slotOf(pinned, COMFORT.id);
+    expect(slot.main?.slug).toBe("pasta-dough");
+    expect(slot.recipe_pinned).toBe(true);
+  });
+
+  it("a vibe whose entire pool the gate empties returns the existing explicit empty slot; the rest of the week proposes", async () => {
+    // The facet gate admits exactly one recipe (the only shellfish) — a side, so the
+    // course gate empties the pool entirely.
+    const shrimpSide: RecipeFixture = {
+      slug: "shrimp-side",
+      title: "Chilled Shrimp Salad",
+      protein: "shellfish",
+      cuisine: "american",
+      time_total: 15,
+      vec: axis([5, 1]),
+      course: ["side"],
+    };
+    const shellfishNight: Vibe = { id: "shellfish-night", vibe: "something with shrimp", facets: { protein: "shellfish" }, vec: axis([5, 1]) };
+    const { env } = proposeEnv([SEAFOOD, shellfishNight], { corpus: [...CORPUS, shrimpSide] });
+    const r = await runProposeMealPlan(env, TENANT, BASE, stubDeps(env));
+    const empty = slotOf(r, shellfishNight.id);
+    expect(empty.main).toBeNull();
+    expect(empty.empty_reason).toMatch(/no retrievable candidate/);
+    expect(empty.alternates).toEqual([]); // no gate survivor exists — nothing to offer
+    expect(r.diagnostics.empty).toBe(1);
+    expect(r.diagnostics.filled).toBe(1); // the rest of the week still proposes
+  });
+
+  it("an all-mains corpus is untouched: the week is identical to the unclassified baseline, run-to-run deterministic", async () => {
+    const allMains = CORPUS.map((r) => ({ ...r, course: ["main"] }));
+    const { env } = proposeEnv([SEAFOOD, COMFORT], { corpus: allMains });
+    const deps = stubDeps(env);
+    const r1 = await runProposeMealPlan(env, TENANT, BASE, deps);
+    const r2 = await runProposeMealPlan(env, TENANT, BASE, deps);
+    expect(r1).toEqual(r2);
+    // The same mains the null-course baseline pins — no candidate was gated, nothing moved.
+    expect(r1.plan.map((s) => s.main?.slug).sort()).toEqual(["chicken-soup", "salmon-rice"]);
   });
 });
 

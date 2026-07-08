@@ -1,0 +1,17 @@
+-- 0042_component_course_reclassify — re-converge the corpus on the component-aware course
+-- prompt (gate-meal-suggestions-to-mains).
+--
+-- The classify prompt's course guidance now names `component` (a sub-recipe / building
+-- block — doughs, stocks, spice blends, base sauces made to be used inside other dishes —
+-- not plated as its own course), so sub-recipes stop scattering across main/side/baked_good
+-- and the meal-suggestion gates (the propose pool, picked-for-you, trending) exclude them by
+-- course. The classify gate hash covers only the body + authored Tier B overrides, so a
+-- prompt change alone re-classifies nothing.
+--
+-- Gate-clear (the 0040_ingredients_full precedent): make every recipe stale to the classify
+-- pass so the corpus re-derives ORGANICALLY over the bounded scheduled ticks (no manual
+-- backfill, no hand-edited rows). Stored facet VALUES are untouched here — each recipe keeps
+-- its previous derived facets until its re-classification lands, so there is no empty-course
+-- window — and authored Tier B overrides survive by construction (the projection-time merge,
+-- not classify time).
+UPDATE recipe_facets SET body_hash = NULL;
