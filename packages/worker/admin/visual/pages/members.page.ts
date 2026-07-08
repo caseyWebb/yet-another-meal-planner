@@ -58,6 +58,21 @@ export class MembersPage extends AdminPage {
     return this.page.locator(".minted");
   }
 
+  /** The minted banner's Dismiss button — a body-level control, so clicking it proves the page
+   *  isn't `pointer-events`-locked after the (non-modal) row-menu flow. Scoped under the banner so
+   *  it stays unambiguous if another surface ever grows a "Dismiss". */
+  get bannerDismiss(): Locator {
+    return this.mintedBanner.getByRole("button", { name: "Dismiss" });
+  }
+
+  /** Assert the page isn't pointer-events-locked. A modal Radix layer sets `pointer-events: none`
+   *  on <body> — a per-row actions menu must never do that, so this holds even while the menu is
+   *  open. Deterministic: it fails on a modal menu the instant it opens, independent of the flaky
+   *  close-cleanup timing. */
+  async expectNotPointerLocked(): Promise<void> {
+    await expect(this.page.locator("body")).not.toHaveCSS("pointer-events", "none");
+  }
+
   /** The revoke confirmation (the shared Radix AlertDialog). */
   revokeDialog(): Locator {
     return this.page.getByRole("alertdialog", { name: "Revoke member" });

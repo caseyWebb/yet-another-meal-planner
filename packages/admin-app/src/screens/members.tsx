@@ -132,9 +132,13 @@ const MintedRow = ({ label, value }: { label: string; value: string }) => (
   </div>
 );
 
-// A per-row actions menu (shared Radix DropdownMenu). The trigger's click is
-// prevented/stopped so opening the menu never also navigates the row's wrapping link; the
-// menu content renders in a portal, outside the link.
+// A per-row actions menu (shared Radix DropdownMenu). `modal={false}` because a row actions
+// menu must not trap the page: a modal Radix menu sets `pointer-events: none` on <body> so only
+// the menu is interactive, and that lock is not reliably lifted on close — leaving the whole page
+// click-dead. Non-modal is the right posture here and sidesteps the body-lock entirely (outside
+// clicks still dismiss the menu; they now also pass through to whatever was clicked, which is fine
+// for a row menu). The trigger's click is prevented/stopped so opening the menu never also
+// navigates the row's wrapping link; the menu content renders in a portal, outside the link.
 function RowMenu({
   m,
   busy,
@@ -151,7 +155,7 @@ function RowMenu({
   onRevoke: () => void;
 }) {
   return (
-    <DropdownMenu>
+    <DropdownMenu modal={false}>
       <DropdownMenuTrigger asChild>
         <Button
           variant="ghost"

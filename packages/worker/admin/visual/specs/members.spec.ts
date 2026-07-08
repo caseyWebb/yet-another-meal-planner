@@ -28,18 +28,32 @@ test("pending member detail shows the not-yet-connected state", async ({ members
 test("rotate runs from the row menu without navigating away", async ({ membersPage, page }) => {
   await membersPage.goto();
   await membersPage.openRowMenu(SEED.members.pending);
+  // The open menu must not lock the page — a modal Radix menu sets `pointer-events: none` on
+  // <body> the instant it opens (the bug that left the whole admin page click-dead). Deterministic,
+  // so it reddens on a modal menu regardless of close-cleanup timing.
+  await membersPage.expectNotPointerLocked();
   await membersPage.menuItem("Rotate invite").click();
   await expect(membersPage.mintedBanner).toContainText("Invite minted");
   await expect(membersPage.mintedBanner).toContainText(`@${SEED.members.pending}`);
   await expect(page).toHaveURL(/\/admin\/members$/);
   await membersPage.captureForReview("members-rotate");
+  // And a body-level click still lands after the flow (end-to-end interactivity).
+  await membersPage.bannerDismiss.click();
+  await expect(membersPage.mintedBanner).toBeHidden();
 });
 
 test("revoke opens its confirm dialog from the row menu without navigating away", async ({ membersPage, page }) => {
   await membersPage.goto();
   await membersPage.openRowMenu(SEED.members.pending);
+  await membersPage.expectNotPointerLocked(); // the non-modal menu doesn't lock the page
   await membersPage.menuItem("Revoke invite").click(); // pending member → "Revoke invite"
   await expect(membersPage.revokeDialog()).toBeVisible();
   await expect(page).toHaveURL(/\/admin\/members$/);
   await membersPage.captureForReview("members-revoke");
+  // Closing the confirm dialog must leave the page interactive — the dropdown→AlertDialog handoff
+  // is where overlapping-layer pointer-events leaks historically surface. (Cancel, not confirm, so
+  // the destructive revoke never runs against the shared seed.)
+  await membersPage.revokeDialog().getByRole("button", { name: "Cancel" }).click();
+  await expect(membersPage.revokeDialog()).toBeHidden();
+  await membersPage.expectNotPointerLocked();
 });
