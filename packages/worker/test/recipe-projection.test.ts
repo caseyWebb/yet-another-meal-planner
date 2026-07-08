@@ -150,7 +150,7 @@ describe("reconcileRecipeIndex — valid corpus", () => {
 
     // The main's pairs_with column (a JSON-array TEXT column) carries the resolved ref.
     const main = written.recipes.find((r) => r[0] === "miso-salmon")!;
-    const pairsCol = main[1 + 5 + 1 + 5]; // slug + 5 scalars + source_url + (pairs_with is the 5th JSON col)
+    const pairsCol = main[1 + 5 + 1 + 6]; // slug + 5 scalars + source_url + (pairs_with is the 6th JSON col)
     expect(JSON.parse(pairsCol as string)).toEqual(["cucumber-salad"]);
   });
 
@@ -225,7 +225,8 @@ describe("reconcileRecipeIndex — dangling pairs_with is flagged corpus-wide", 
 // Positional JSON-column offsets in a projected row (RECIPE_COLUMNS order):
 // slug + 5 scalars + source_url, then the JSON columns.
 const COL_INGREDIENTS_KEY = 7;
-const COL_PERISHABLE = 13;
+const COL_INGREDIENTS_FULL = 8;
+const COL_PERISHABLE = 14;
 
 describe("reconcileRecipeIndex — projection-time re-resolution (the IngredientContext funnel)", () => {
   it("writes surviving canonical ids; an unmapped term projects as its cleaned form", async () => {
@@ -236,6 +237,7 @@ describe("reconcileRecipeIndex — projection-time re-resolution (the Ingredient
         {
           ...EMPTY_FACETS,
           ingredients_key: ["scallions", "Mystery Leaf"],
+          ingredients_full: ["scallions", "Mystery Leaf", "olive oil"],
           perishable_ingredients: ["scallions"],
         },
       ],
@@ -245,9 +247,11 @@ describe("reconcileRecipeIndex — projection-time re-resolution (the Ingredient
 
     const row = written.recipes[0];
     expect(JSON.parse(row[COL_INGREDIENTS_KEY] as string)).toEqual(["green-onion", "mystery leaf"]);
+    // ingredients_full re-resolves through the SAME funnel and round-trips its own column.
+    expect(JSON.parse(row[COL_INGREDIENTS_FULL] as string)).toEqual(["green-onion", "mystery leaf", "olive oil"]);
     expect(JSON.parse(row[COL_PERISHABLE] as string)).toEqual(["green-onion"]);
-    // "mystery leaf" is the one projected id the resolver has not placed.
-    expect(res.unresolved).toBe(1);
+    // "mystery leaf" + "olive oil" are the projected ids the resolver has not placed.
+    expect(res.unresolved).toBe(2);
   });
 
   it("does not silently re-point a stored canonical id that has no alias-variant row", async () => {

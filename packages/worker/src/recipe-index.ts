@@ -30,6 +30,7 @@ const SCALAR_COLUMNS = ["title", "protein", "cuisine", "time_total", "descriptio
 /** JSON-encoded columns (TEXT holding a JSON value) — JSON.parse on load. */
 const JSON_COLUMNS = [
   "ingredients_key",
+  "ingredients_full",
   "tags",
   "course",
   "season",
@@ -50,6 +51,7 @@ interface RecipeRow {
   description: string | null;
   discovered_at: string | null;
   ingredients_key: string | null;
+  ingredients_full: string | null;
   source_url: string | null;
   tags: string | null;
   course: string | null;
@@ -184,6 +186,33 @@ export async function recipeSlugForSource(env: Env, sourceUrl: string): Promise<
     sourceUrl,
   );
   return row?.slug ?? null;
+}
+
+/**
+ * The projected `ingredients_full` for a set of slugs (the plan→to-buy derivation's source,
+ * member-app-grocery D2/D3) — a targeted query, not a whole-index load. The map holds an
+ * entry for every slug that HAS a `recipes` row: the parsed canonical-id array, or `null`
+ * when the facet is not yet derived (NULL column, unparseable, or empty — empty is treated
+ * as underived: the classify contract requires a non-empty list on a successful classify).
+ * A slug absent from the map has no index row at all (also underived to the caller).
+ */
+export async function recipeIngredientsFull(
+  env: Env,
+  slugs: string[],
+): Promise<Map<string, string[] | null>> {
+  const map = new Map<string, string[] | null>();
+  if (slugs.length === 0) return map;
+  const placeholders = slugs.map((_, i) => `?${i + 1}`).join(", ");
+  const rows = await db(env).all<{ slug: string; ingredients_full: string | null }>(
+    `SELECT slug, ingredients_full FROM recipes WHERE slug IN (${placeholders})`,
+    ...slugs,
+  );
+  for (const { slug, ingredients_full } of rows) {
+    const parsed = parseJsonColumn(ingredients_full);
+    const list = Array.isArray(parsed) ? parsed.filter((s): s is string => typeof s === "string") : null;
+    map.set(slug, list && list.length > 0 ? list : null);
+  }
+  return map;
 }
 
 /** Minimal per-slug metadata for retrospective's mixes (protein/cuisine). */

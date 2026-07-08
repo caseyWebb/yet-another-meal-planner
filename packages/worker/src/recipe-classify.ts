@@ -6,8 +6,8 @@
 // classified; tags unioned; Tier A classified-wins) into `recipes`, so every reader is
 // unchanged.
 //
-//   - Tier A (derived-only): ingredients_key, perishable_ingredients, side_search_terms,
-//     meal_preppable.
+//   - Tier A (derived-only): ingredients_key, ingredients_full, perishable_ingredients,
+//     side_search_terms, meal_preppable.
 //   - Tier B (classified default, authored override wins at merge): protein, cuisine,
 //     course, season, tags.
 //   - Tier C (dietary, requires_equipment, time_total): authored, NOT derived here.
@@ -206,10 +206,12 @@ export function facetGateHash(body: string, overrides: Record<string, unknown>):
 const LOAD_STATE_SQL = "SELECT slug, body_hash FROM recipe_facets";
 const UPSERT_SQL =
   "INSERT INTO recipe_facets (slug, body_hash, protein, cuisine, course, season, tags, ingredients_key, " +
-  "perishable_ingredients, side_search_terms, meal_preppable) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11) " +
+  "ingredients_full, perishable_ingredients, side_search_terms, meal_preppable) " +
+  "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12) " +
   "ON CONFLICT(slug) DO UPDATE SET body_hash = excluded.body_hash, protein = excluded.protein, " +
   "cuisine = excluded.cuisine, course = excluded.course, season = excluded.season, tags = excluded.tags, " +
-  "ingredients_key = excluded.ingredients_key, perishable_ingredients = excluded.perishable_ingredients, " +
+  "ingredients_key = excluded.ingredients_key, ingredients_full = excluded.ingredients_full, " +
+  "perishable_ingredients = excluded.perishable_ingredients, " +
   "side_search_terms = excluded.side_search_terms, meal_preppable = excluded.meal_preppable";
 
 function facetBinds(slug: string, f: ClassifiedFacets, bodyHash: string): unknown[] {
@@ -222,6 +224,7 @@ function facetBinds(slug: string, f: ClassifiedFacets, bodyHash: string): unknow
     JSON.stringify(f.season),
     JSON.stringify(f.tags),
     JSON.stringify(f.ingredients_key),
+    JSON.stringify(f.ingredients_full),
     JSON.stringify(f.perishable_ingredients),
     JSON.stringify(f.side_search_terms),
     f.meal_preppable == null ? null : f.meal_preppable ? 1 : 0,
@@ -243,6 +246,7 @@ export function extractFacets(fm: Record<string, unknown>, aliases: Record<strin
     season: strArray(fm.season),
     tags: strArray(fm.tags),
     ingredients_key: normalizeIngredientList(strArray(fm.ingredients_key), aliases) as string[],
+    ingredients_full: normalizeIngredientList(strArray(fm.ingredients_full), aliases) as string[],
     perishable_ingredients: normalizeIngredientList(strArray(fm.perishable_ingredients), aliases) as string[],
     side_search_terms: strArray(fm.side_search_terms),
     meal_preppable: typeof fm.meal_preppable === "boolean" ? fm.meal_preppable : null,
@@ -280,7 +284,7 @@ export async function seedRecipeFacets(
   // — without it a newly imported recipe's novel ingredients would never reach the identity graph.
   const ctx = await ingredientContext(env);
   const facets = extractFacets(result.frontmatter, ctx.resolver.toId);
-  ctx.resolveList([...facets.ingredients_key, ...facets.perishable_ingredients]);
+  ctx.resolveList([...facets.ingredients_key, ...facets.ingredients_full, ...facets.perishable_ingredients]);
   await db(env).run(UPSERT_SQL, ...facetBinds(slug, facets, facetGateHash(body, overrides)));
 }
 
@@ -302,7 +306,7 @@ export async function seedClassifiedFacets(
   // since the matching gate hash means the classify cron won't revisit this recipe to capture it.
   const ctx = await ingredientContext(env);
   const facets = extractFacets(classifiedFm, ctx.resolver.toId);
-  ctx.resolveList([...facets.ingredients_key, ...facets.perishable_ingredients]);
+  ctx.resolveList([...facets.ingredients_key, ...facets.ingredients_full, ...facets.perishable_ingredients]);
   await db(env).run(UPSERT_SQL, ...facetBinds(slug, facets, facetGateHash(body, {})));
 }
 
@@ -358,7 +362,7 @@ export function buildFacetDeps(env: Env, store: CorpusStore): DerivedFacetDeps {
       // Continuous bootstrap: seed the identity registry with any novel corpus ingredient terms
       // so the capture cron places them. resolveList normalizes AND best-effort-captures each
       // miss through the same funnel — the already-normalized facet arrays re-resolve as no-ops.
-      ctx.resolveList([...facets.ingredients_key, ...facets.perishable_ingredients]);
+      ctx.resolveList([...facets.ingredients_key, ...facets.ingredients_full, ...facets.perishable_ingredients]);
       return facets;
     },
     async upsertFacets(slug, facets, bodyHash) {

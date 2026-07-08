@@ -68,6 +68,7 @@ export function deriveSlug(path: string): string {
 const RECIPE_SCALAR_COLUMNS = ["title", "protein", "cuisine", "time_total", "discovered_at"];
 const RECIPE_JSON_COLUMNS = [
   "ingredients_key",
+  "ingredients_full",
   "tags",
   "course",
   "season",
@@ -230,8 +231,9 @@ export async function reconcileRecipeIndex(deps: ProjectionDeps): Promise<Projec
     // snapshot. Post-merge covers both the classified values and the pre-migration
     // authored Tier-A fallbacks; unplaced ids are collected for the batched capture flush.
     effective.ingredients_key = ctx.resolveNames(effective.ingredients_key);
+    effective.ingredients_full = ctx.resolveNames(effective.ingredients_full);
     effective.perishable_ingredients = ctx.resolveNames(effective.perishable_ingredients);
-    for (const id of [...effective.ingredients_key, ...effective.perishable_ingredients]) {
+    for (const id of [...effective.ingredients_key, ...effective.ingredients_full, ...effective.perishable_ingredients]) {
       if (!ctx.resolver.ids.has(id)) unplaced.add(id);
     }
     valid[slug] = normalizeValue({
@@ -271,7 +273,7 @@ export async function reconcileRecipeIndex(deps: ProjectionDeps): Promise<Projec
   // this gauge counts projected rows only.
   const unresolvedIds = new Set<string>();
   for (const r of Object.values(valid)) {
-    for (const field of ["ingredients_key", "perishable_ingredients"] as const) {
+    for (const field of ["ingredients_key", "ingredients_full", "perishable_ingredients"] as const) {
       const ids = Array.isArray(r[field]) ? (r[field] as unknown[]) : [];
       for (const id of ids) if (typeof id === "string" && !ctx.resolver.ids.has(id)) unresolvedIds.add(id);
     }
@@ -346,7 +348,7 @@ export function buildProjectionDeps(env: Env, store: CorpusStore, now: () => num
     },
     async loadClassifiedFacets() {
       const rows = await d.all<RawFacetRow>(
-        "SELECT slug, protein, cuisine, course, season, tags, ingredients_key, " +
+        "SELECT slug, protein, cuisine, course, season, tags, ingredients_key, ingredients_full, " +
           "perishable_ingredients, side_search_terms, meal_preppable FROM recipe_facets",
       );
       return new Map(rows.map((r) => [r.slug, parseFacetRow(r)]));

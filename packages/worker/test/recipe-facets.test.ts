@@ -6,10 +6,15 @@ const classified = (over: Partial<ClassifiedFacets> = {}): ClassifiedFacets => (
 describe("mergeEffectiveFacets", () => {
   it("Tier A — classified wins over an authored legacy value", () => {
     const eff = mergeEffectiveFacets(
-      { ingredients_key: ["legacy"], perishable_ingredients: ["old"] },
-      classified({ ingredients_key: ["chicken", "rice"], perishable_ingredients: ["cilantro"] }),
+      { ingredients_key: ["legacy"], perishable_ingredients: ["old"], ingredients_full: ["stale"] },
+      classified({
+        ingredients_key: ["chicken", "rice"],
+        ingredients_full: ["chicken", "rice", "garlic"],
+        perishable_ingredients: ["cilantro"],
+      }),
     );
     expect(eff.ingredients_key).toEqual(["chicken", "rice"]);
+    expect(eff.ingredients_full).toEqual(["chicken", "rice", "garlic"]);
     expect(eff.perishable_ingredients).toEqual(["cilantro"]);
   });
 
@@ -83,6 +88,7 @@ describe("parseFacetRow", () => {
       season: "[]",
       tags: '["weeknight"]',
       ingredients_key: '["chicken","rice"]',
+      ingredients_full: '["chicken","rice","garlic","soy sauce"]',
       perishable_ingredients: '["cilantro"]',
       side_search_terms: '["a crisp salad"]',
       meal_preppable: 1,
@@ -91,6 +97,7 @@ describe("parseFacetRow", () => {
     expect(f.cuisine).toBeNull();
     expect(f.course).toEqual(["main", "side"]);
     expect(f.tags).toEqual(["weeknight"]);
+    expect(f.ingredients_full).toEqual(["chicken", "rice", "garlic", "soy sauce"]);
     expect(f.meal_preppable).toBe(true);
   });
 
@@ -103,12 +110,14 @@ describe("parseFacetRow", () => {
       season: "not json",
       tags: null,
       ingredients_key: null,
+      ingredients_full: null,
       perishable_ingredients: null,
       side_search_terms: null,
       meal_preppable: null,
     });
     expect(f.course).toEqual([]);
     expect(f.season).toEqual([]);
+    expect(f.ingredients_full).toEqual([]); // a pre-0040 row reads as not-yet-derived
     expect(f.meal_preppable).toBeNull();
   });
 });

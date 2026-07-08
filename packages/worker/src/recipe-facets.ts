@@ -7,8 +7,9 @@
 // The merge rules (design D5/D7):
 //   - Tier B (protein, cuisine, course, season): authored frontmatter override wins; else classified.
 //   - tags: UNION of authored + classified (an editorial tag never discards the classifier's tags).
-//   - Tier A (ingredients_key, perishable_ingredients, side_search_terms, meal_preppable):
-//     classified wins; an authored value is only a legacy fallback (pre-migration), then empty.
+//   - Tier A (ingredients_key, ingredients_full, perishable_ingredients, side_search_terms,
+//     meal_preppable): classified wins; an authored value is only a legacy fallback
+//     (pre-migration), then empty.
 
 /** The descriptive facets the classify pass derives + the projection merges (the recipe_facets row). */
 export interface ClassifiedFacets {
@@ -20,6 +21,9 @@ export interface ClassifiedFacets {
   tags: string[];
   // Tier A — derived only (an authored value is a pre-migration legacy fallback).
   ingredients_key: string[];
+  /** The COMPLETE ingredient list (member-app-grocery D2) — the plan→to-buy derivation's
+   *  source. Empty until derived; consumers treat empty as underived, never as no-needs. */
+  ingredients_full: string[];
   perishable_ingredients: string[];
   side_search_terms: string[];
   meal_preppable: boolean | null;
@@ -33,6 +37,7 @@ export const EMPTY_FACETS: ClassifiedFacets = {
   season: [],
   tags: [],
   ingredients_key: [],
+  ingredients_full: [],
   perishable_ingredients: [],
   side_search_terms: [],
   meal_preppable: null,
@@ -71,6 +76,7 @@ export interface RawFacetRow {
   season: string | null;
   tags: string | null;
   ingredients_key: string | null;
+  ingredients_full: string | null;
   perishable_ingredients: string | null;
   side_search_terms: string | null;
   meal_preppable: number | null;
@@ -85,6 +91,7 @@ export function parseFacetRow(row: RawFacetRow): ClassifiedFacets {
     season: parseJsonArr(row.season),
     tags: parseJsonArr(row.tags),
     ingredients_key: parseJsonArr(row.ingredients_key),
+    ingredients_full: parseJsonArr(row.ingredients_full),
     perishable_ingredients: parseJsonArr(row.perishable_ingredients),
     side_search_terms: parseJsonArr(row.side_search_terms),
     meal_preppable: row.meal_preppable == null ? null : !!row.meal_preppable,
@@ -106,7 +113,7 @@ function unionStable(a: string[], b: string[]): string[] {
 /**
  * The effective facet overlay merged into a projected recipe row, given the recipe's authored
  * frontmatter and its classified facets (or null if not yet classified). Returns exactly the
- * nine facet fields the projection overwrites on the recipe object — Tier C (`dietary`,
+ * ten facet fields the projection overwrites on the recipe object — Tier C (`dietary`,
  * `requires_equipment`, `time_total`, `pairs_with`) is untouched (it stays authored).
  */
 export function mergeEffectiveFacets(
@@ -134,6 +141,7 @@ export function mergeEffectiveFacets(
     season: has(authored, "season") ? strArray(authored.season) : c?.season ?? [],
     tags: unionStable(strArray(authored.tags), c?.tags ?? []),
     ingredients_key: tierA(c?.ingredients_key, authored.ingredients_key),
+    ingredients_full: tierA(c?.ingredients_full, authored.ingredients_full),
     perishable_ingredients: tierA(c?.perishable_ingredients, authored.perishable_ingredients),
     side_search_terms: tierA(c?.side_search_terms, authored.side_search_terms),
     meal_preppable: c

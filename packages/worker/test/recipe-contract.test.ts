@@ -21,6 +21,7 @@ function compliant(overrides: Record<string, unknown> = {}): Record<string, unkn
     season: [],
     tags: [],
     ingredients_key: ["x"],
+    ingredients_full: ["x", "salt"],
     perishable_ingredients: [],
     side_search_terms: ["a crisp green salad"],
     meal_preppable: false,
@@ -36,6 +37,7 @@ const DERIVED_FACETS = [
   "season",
   "tags",
   "ingredients_key",
+  "ingredients_full",
   "perishable_ingredients",
   "side_search_terms",
   "meal_preppable",
@@ -131,6 +133,17 @@ describe("validateRecipeContract", () => {
       expect(validateRecipeContract(compliant({ ingredients_key: [] })).some((e) => /ingredients_key/.test(e))).toBe(
         true,
       );
+    });
+
+    it("rejects an empty or non-string-array ingredients_full when present", () => {
+      // The classifier sets every key, so this is the required-on-classify backstop; an
+      // authored file simply omits it (accepted — the omitted-facet loop above covers that).
+      expect(
+        validateRecipeContract(compliant({ ingredients_full: [] })).some((e) => /ingredients_full/.test(e)),
+      ).toBe(true);
+      expect(
+        validateRecipeContract(compliant({ ingredients_full: [1] })).some((e) => /ingredients_full/.test(e)),
+      ).toBe(true);
     });
 
     it("accepts canonical season tokens; rejects off-vocab / autumn / casing", () => {

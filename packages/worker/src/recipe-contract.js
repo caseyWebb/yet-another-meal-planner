@@ -37,7 +37,7 @@ export const REQUIRED_ARRAYS = ['dietary', 'pairs_with', 'requires_equipment'];
 // a pre-migration legacy fallback). The classifier's output sets every key, so its output is
 // fully validated by these same rules.
 export const OPTIONAL_TIER_B = ['protein', 'cuisine', 'course', 'season', 'tags'];
-export const OPTIONAL_TIER_A = ['ingredients_key', 'perishable_ingredients', 'side_search_terms', 'meal_preppable'];
+export const OPTIONAL_TIER_A = ['ingredients_key', 'ingredients_full', 'perishable_ingredients', 'side_search_terms', 'meal_preppable'];
 
 // The complete required AUTHORED-field set (for docs / tool-description enumeration).
 export const REQUIRED_FIELDS = [
@@ -147,6 +147,12 @@ export function validateRecipeContract(fm) {
   // ingredients_key — a non-empty array of strings, when present.
   if (has('ingredients_key') && (!isStringArray(fm.ingredients_key) || fm.ingredients_key.length === 0))
     errors.push(`\`ingredients_key\` must be a non-empty array of strings when present (got ${JSON.stringify(fm.ingredients_key)})`);
+
+  // ingredients_full — a non-empty array of strings, when present (the classifier sets every
+  // key, so a classify is REQUIRED to produce it; superset-of-ingredients_key is deliberately
+  // NOT enforced — the two are independent outputs).
+  if (has('ingredients_full') && (!isStringArray(fm.ingredients_full) || fm.ingredients_full.length === 0))
+    errors.push(`\`ingredients_full\` must be a non-empty array of strings when present (got ${JSON.stringify(fm.ingredients_full)})`);
 
   // perishable_ingredients — an array of strings, when present.
   if (has('perishable_ingredients') && !isStringArray(fm.perishable_ingredients))

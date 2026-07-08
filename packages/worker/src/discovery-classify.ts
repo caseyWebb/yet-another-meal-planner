@@ -34,6 +34,7 @@ export const CLASSIFIED_FIELDS = [
   "course",
   "time_total",
   "ingredients_key",
+  "ingredients_full",
   "dietary",
   "season",
   "tags",
@@ -56,6 +57,7 @@ export const DERIVED_FACET_FIELDS = [
   "tags",
   // Tier A — derived only, no authored override.
   "ingredients_key",
+  "ingredients_full",
   "perishable_ingredients",
   "side_search_terms",
   "meal_preppable",
@@ -73,6 +75,7 @@ export const SYSTEM_PROMPT = [
   "- course: a NON-EMPTY array describing the dish type. Open vocabulary — use the natural word: main | side | dessert | breakfast | snack | sauce | drink | baked_good, etc. Use multiple ONLY when it genuinely plates both ways (a hearty grain salad -> [main, side]). Most dishes are a single course.",
   "- time_total: total minutes as a number, or null if not stated and not obviously inferable.",
   "- ingredients_key: an array of the 5-7 DEFINING ingredients (plain names, no quantities), the ones that make the dish what it is — skip salt, pepper, water, oil unless central.",
+  '- ingredients_full: a NON-EMPTY array of EVERY ingredient the body lists — plain names only: no quantities, no prep clauses ("cut into strips", "chopped"), no optional-markers. A disjunctive line ("soy sauce or tamari") records its PRIMARY only. Include the staples ingredients_key skips (salt, oil) when the body lists them; never invent an ingredient the body does not list.',
   "- dietary: an array of dietary labels the dish ALREADY satisfies as written — e.g. vegetarian, vegan, gluten-free, dairy-free. [] if none apply. (Vegan implies vegetarian — include both when vegan.)",
   "- season: an array drawn ONLY from " +
     SEASON_VOCAB.join(" | ") +
@@ -106,6 +109,7 @@ const FEW_SHOT: Exemplar[] = [
       course: ["main"],
       time_total: 30,
       ingredients_key: ["clams", "linguine", "garlic", "white wine", "parsley"],
+      ingredients_full: ["linguine", "clams", "garlic", "white wine", "red pepper flakes", "parsley", "olive oil"],
       dietary: ["dairy-free"],
       season: [],
       tags: ["quick", "seafood"],
@@ -124,6 +128,7 @@ const FEW_SHOT: Exemplar[] = [
       course: ["side"],
       time_total: 15,
       ingredients_key: ["asparagus", "lemon", "olive oil"],
+      ingredients_full: ["asparagus", "olive oil", "lemon", "flaky salt"],
       dietary: ["vegan", "vegetarian", "gluten-free"],
       season: ["spring"],
       tags: ["quick", "grilled"],
@@ -143,6 +148,7 @@ const FEW_SHOT: Exemplar[] = [
       course: ["main"],
       time_total: 35,
       ingredients_key: ["chickpeas", "coconut milk", "spinach", "curry powder", "tomatoes"],
+      ingredients_full: ["chickpeas", "coconut milk", "onion", "garlic", "ginger", "curry powder", "tomatoes", "spinach"],
       dietary: ["vegan", "vegetarian", "gluten-free"],
       season: [],
       tags: ["one-pot", "weeknight"],

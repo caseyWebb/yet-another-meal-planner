@@ -10,6 +10,7 @@ const VALID_MAIN = {
   course: ["main"],
   time_total: 30,
   ingredients_key: ["chicken", "tomato", "basil"],
+  ingredients_full: ["chicken", "tomato", "basil", "garlic", "olive oil"],
   dietary: ["gluten-free"],
   season: [],
   tags: ["weeknight"],
@@ -71,6 +72,19 @@ describe("classifyRecipe", () => {
     expect(corrective.role).toBe("user");
     expect(corrective.content).toMatch(/failed validation/i);
     expect(corrective.content).toMatch(/protein/);
+  });
+
+  it("requires a non-empty ingredients_full on a classify (retries the omission, then accepts)", async () => {
+    // The classifier sets EVERY key, so an omitted/empty ingredients_full is caught by the
+    // validated-when-present rule — the required-on-classify backstop (member-app-grocery D2).
+    const bad = { ...VALID_MAIN, ingredients_full: [] };
+    const seen: unknown[][] = [];
+    const env = fakeEnv([bad, VALID_MAIN], (m) => seen.push(m as unknown[]));
+    const { frontmatter, retries } = await classifyRecipe(env, { title: "X", content: "..." }, null);
+    expect(retries).toBe(1);
+    expect(frontmatter.ingredients_full).toEqual(VALID_MAIN.ingredients_full);
+    const corrective = (seen[1] as { role: string; content: string }[]).at(-1)!;
+    expect(corrective.content).toMatch(/ingredients_full/);
   });
 
   it("parks (throws validation_failed) when it never produces a compliant classification", async () => {

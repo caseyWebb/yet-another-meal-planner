@@ -205,6 +205,7 @@ describe("extractFacets", () => {
         season: ["summer"],
         tags: ["quick"],
         ingredients_key: ["EVOO", "chx thighs"],
+        ingredients_full: ["EVOO", "chx thighs", "garlic"],
         perishable_ingredients: ["EVOO"],
         side_search_terms: ["a crisp salad"],
         meal_preppable: true,
@@ -212,6 +213,7 @@ describe("extractFacets", () => {
       aliases,
     );
     expect(f.ingredients_key).toEqual(["olive oil", "chicken thighs"]);
+    expect(f.ingredients_full).toEqual(["olive oil", "chicken thighs", "garlic"]);
     expect(f.perishable_ingredients).toEqual(["olive oil"]);
     expect(f.course).toEqual(["main"]);
     expect(f.meal_preppable).toBe(true);
@@ -221,6 +223,7 @@ describe("extractFacets", () => {
     const f = extractFacets({ protein: "beef" }, {});
     expect(f.meal_preppable).toBeNull();
     expect(f.ingredients_key).toEqual([]);
+    expect(f.ingredients_full).toEqual([]);
     expect(f.course).toEqual([]);
     expect(f.cuisine).toBeNull();
   });
