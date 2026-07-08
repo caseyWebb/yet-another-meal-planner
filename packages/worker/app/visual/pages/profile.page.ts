@@ -78,6 +78,16 @@ export class ProfilePage extends AppPage {
     return this.proposalRows().filter({ hasText: rationaleOrTitle });
   }
 
+  /** A row's accept button — absent by design for kinds with no backing op (merge_recipes). */
+  proposalAccept(text: string): Locator {
+    return this.proposal(text).getByTestId("proposal-accept");
+  }
+
+  /** The merge_recipes row's "merge with your agent in chat" hint. */
+  mergeChatHint(): Locator {
+    return this.page.getByTestId("merge-chat-hint");
+  }
+
   async acceptProposal(text: string): Promise<void> {
     await this.proposal(text).getByTestId("proposal-accept").click();
   }

@@ -81,6 +81,15 @@ export const SEED = {
       addA: { id: "viz-prop-add-a", vibe: "cozy weeknight noodles" },
       addB: { id: "viz-prop-add-b", vibe: "a bright citrusy salad night" },
       prune: { id: "viz-prop-prune", target: "forgotten-stir-fry" },
+      // A dup-scan merge_recipes pair (recipe-dedup): Dismiss-only in the app — the
+      // merge itself is chat-guided, so no accept button renders for this kind.
+      merge: {
+        id: "viz-prop-merge",
+        target: "fresh-pasta+homemade-pasta-dough",
+        titles: ["Fresh Pasta", "Homemade Pasta Dough"],
+        rationale:
+          "“Fresh Pasta” and “Homemade Pasta Dough” look like the same dish — description similarity 0.77, sharing eggs and flour. Review and merge?",
+      },
     },
     note: { body: "Swapped honey for the brown sugar — better glaze.", tag: "tweak" },
     tasteLead: "Big on bold heat and acid",
@@ -522,7 +531,8 @@ export function d1Statements(now) {
     "INSERT INTO pending_proposals (id, tenant, kind, target, payload, rationale, evidence, status, producer, created_at) VALUES " +
       `(${q(prop.addA.id)}, ${q(members.active)}, 'add_vibe', 'cozy-noodles', ${q(JSON.stringify({ id: "cozy-noodles", vibe: prop.addA.vibe, cadence_days: 10 }))}, 'You keep cooking dishes like this — set a night aside for it?', '{}', 'pending', 'edge', ${q(iso(now - 3 * DAY))}), ` +
       `(${q(prop.addB.id)}, ${q(members.active)}, 'add_vibe', 'citrus-salad', ${q(JSON.stringify({ id: "citrus-salad", vibe: prop.addB.vibe, cadence_days: 14 }))}, 'Three bright salads in two weeks — make it a rotation slot?', '{}', 'pending', 'edge', ${q(iso(now - 2 * DAY))}), ` +
-      `(${q(prop.prune.id)}, ${q(members.active)}, 'prune_vibe', ${q(prop.prune.target)}, ${q(JSON.stringify({ id: prop.prune.target }))}, 'Added months ago and never cooked from — retire it?', '{}', 'pending', 'edge', ${q(iso(now - 1 * DAY))});`,
+      `(${q(prop.prune.id)}, ${q(members.active)}, 'prune_vibe', ${q(prop.prune.target)}, ${q(JSON.stringify({ id: prop.prune.target }))}, 'Added months ago and never cooked from — retire it?', '{}', 'pending', 'edge', ${q(iso(now - 1 * DAY))}), ` +
+      `(${q(prop.merge.id)}, ${q(members.active)}, 'merge_recipes', ${q(prop.merge.target)}, ${q(JSON.stringify({ slugs: prop.merge.target.split("+"), titles: prop.merge.titles, cosine: 0.767, shared_ingredients: ["eggs", "flour"], jaccard: 0.67, detector: "corroborated" }))}, ${q(prop.merge.rationale)}, '{}', 'pending', 'dup-scan', ${q(iso(now - 0.5 * DAY))});`,
   );
   // A shared community note from the pending member (the detail page's group half).
   stmts.push(`DELETE FROM recipe_notes WHERE recipe = ${q(recipe.slug)};`);
