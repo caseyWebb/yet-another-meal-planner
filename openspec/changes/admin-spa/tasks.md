@@ -29,10 +29,10 @@
 
 ## 4. Serving cutover + retirement (D2, D13)
 
-- [ ] 4.1 `src/admin/app.tsx` → `src/admin/app.ts`: drop the SSR page routes, `registerDataRoutes`/`registerConfigRoutes` page halves, `injectHealthDock`, and `page()`; add the dispatch tail — kept 302 redirects, `GET /admin/assets/*` (+ favicon) via `ASSETS.fetch` with the HTML→404 guard, catch-all `GET`/`HEAD` serving `/admin/index.html`, non-GET non-API → 404. `AdminApp` type export and gate order unchanged.
+- [ ] 4.1 `src/admin/app.tsx` → `src/admin/app.ts`: drop the SSR page routes, `registerDataRoutes`/`registerConfigRoutes` page halves, `injectHealthDock`, and `page()`; add the dispatch tail — kept 302 redirects, `GET /admin/assets/*` (+ favicon) via `ASSETS.fetch` with the HTML→404 guard, catch-all `GET`/`HEAD` serving `/admin/index.html` — **excluding `/admin/api/*`** (an unmatched API-shaped path returns a plain 404, never the shell, keeping the D7 HTML-means-access-expired classification sound), non-GET non-API → 404. `AdminApp` type export and gate order unchanged.
 - [ ] 4.2 Delete `src/admin/pages/`, `src/admin/client/` (+ its tsconfig), `src/admin/ui/` (kit/layout/icons/health-dock; markdown already relocated), `src/admin/styles.css`, `src/admin/logs-shared.ts`, `src/admin/satellite-audit-shared.ts`, `src/admin/shared.ts` (fold surviving types into route payloads / admin-app); delete the `injectHealthDock` test; delete `scripts/build-admin.mjs`.
 - [ ] 4.3 Worker `package.json`: drop the `build:admin` script, the `src/admin/client` typecheck pass, and the `esbuild`/`tailwindcss`/`@tailwindcss/cli`/`basecoat-css` devDeps; confirm no worker tsconfig JSX residue is needed (no `.tsx` remains under `src/`).
-- [ ] 4.4 Vitest: update admin-app dispatch tests — shell served for a deep-link GET, `/admin/api/*` precedence, redirects, missing-asset 404, non-GET 404; gate posture (404 unconfigured / 403 denied / loopback bypass) re-asserted through the new dispatch.
+- [ ] 4.4 Vitest: update admin-app dispatch tests — shell served for a deep-link GET, `/admin/api/*` precedence, unknown-API-route 404 (not the shell), redirects, missing-asset 404, non-GET 404; gate posture (404 unconfigured / 403 denied / loopback bypass) re-asserted through the new dispatch.
 
 ## 5. Harness + CI + scripts (D12, D13)
 

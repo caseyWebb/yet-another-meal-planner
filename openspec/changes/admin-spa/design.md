@@ -92,8 +92,11 @@ precedent. Admin-only composites (sparkline + hover tip, stat-tile grid, `Pretty
    genuine miss, so return a real 404 (the existing `navigation.spec.ts` assertion carries
    over).
 5. Catch-all `GET`/`HEAD`: serve the shell — `ASSETS.fetch(new URL("/admin/index.html",
-   request.url))`. Deep link, refresh, and client-route URLs all land here. Non-GET non-API →
-   404.
+   request.url))`. Deep link, refresh, and client-route URLs all land here. The catch-all
+   **excludes `/admin/api/*`**: an API-shaped path that matched no registered route (a typo,
+   or a client newer than the Worker) returns a plain 404 — today's semantics for an unknown
+   API route — never the shell's HTML, so D7's HTML-means-`access_expired` classification
+   stays sound. Non-GET non-API → 404.
 
 The Vite build sets `base: "/admin/"` and `outDir: ../worker/assets/admin` with
 `emptyOutDir: false` plus a clean-own-subtree plugin (the mirror of the member app's

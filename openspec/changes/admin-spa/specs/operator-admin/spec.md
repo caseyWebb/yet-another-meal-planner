@@ -12,7 +12,7 @@
 
 The admin UI SHALL be served by the Worker from the **same origin** as its `/admin/api/*` operations, so the browser makes no cross-origin request and the deployment needs no CORS configuration. The UI SHALL be a **single-page React application** (`packages/admin-app`, on the member app's stack) whose shell and hashed bundle live under the `assets/admin/` subtree of the Worker's one merged static-assets root, served through the static-assets binding.
 
-Because `/admin*` is routed worker-first, the Worker SHALL serve the SPA itself: a GET for an `/admin/*` path that is neither an `/admin/api/*` route nor a real static asset SHALL be answered with the admin shell (`assets/admin/index.html`, fetched through the assets binding), whose client router renders that route's surface — so a deep link or refresh to any admin route loads that surface directly, without a redirect and without re-entering the worker-first route. A request for a **missing** admin static asset SHALL receive a real `404`, never any SPA shell (the merged root's single-page-application fallback answers asset misses with the member shell's HTML; the admin app guards against passing that through).
+Because `/admin*` is routed worker-first, the Worker SHALL serve the SPA itself: a GET for an `/admin/*` path that is neither an `/admin/api/*`-shaped path nor a real static asset SHALL be answered with the admin shell (`assets/admin/index.html`, fetched through the assets binding), whose client router renders that route's surface — so a deep link or refresh to any admin route loads that surface directly, without a redirect and without re-entering the worker-first route. An `/admin/api/*` path that matches **no registered route** SHALL receive a plain `404` — never the shell's HTML — so an API caller can rely on every `/admin/api/*` response being JSON-or-404, and an HTML response on the API surface remains an unambiguous gate (Access) signal. A request for a **missing** admin static asset SHALL likewise receive a real `404`, never any SPA shell (the merged root's single-page-application fallback answers asset misses with the member shell's HTML; the admin app guards against passing that through).
 
 The bundle SHALL be built from source by the admin app's build (Vite) into `assets/admin/` — a **build artifact that is NOT committed** (gitignored), built fresh by CI and by the deploy (and for local `wrangler dev`); the generated bundle SHALL NOT be hand-edited. The build SHALL NOT depend on a network package registry being reachable, so any sandbox can rebuild it. The static-assets binding SHALL be carried through the operator config merge so it reaches every operator's deployment.
 
@@ -45,6 +45,11 @@ The bundle SHALL be built from source by the admin app's build (Vite) into `asse
 
 - **WHEN** a GET arrives for a nonexistent file under the admin bundle's static namespace (e.g. a renamed chunk)
 - **THEN** the response is `404`, not the member SPA's shell and not the admin shell
+
+#### Scenario: An unknown API route is a 404, not the shell
+
+- **WHEN** a GET arrives for an `/admin/api/*` path that matches no registered route (a typo, or a client newer than the Worker)
+- **THEN** the response is a plain `404` — never the admin shell's HTML — so the client cannot misread a route mismatch as an expired Access session
 
 ### Requirement: Admin panel is organized into top-level areas with client-side routing
 
