@@ -25,7 +25,8 @@ import { registerNightVibeTools } from "./night-vibe-tools.js";
 import { registerProposeMealPlanTool, type ProposeDeps } from "./meal-plan-proposal-tool.js";
 import { registerReconcileTools } from "./reconcile-tools.js";
 import { registerSuggestNightVibesTool } from "./night-vibe-suggest.js";
-import { registerOrderTools } from "./order-tools.js";
+import { registerOrderTools, type OrderWiring } from "./order-tools.js";
+import { computeToBuyView } from "./to-buy.js";
 import { registerDiscoveryTools } from "./discovery-tools.js";
 import { registerNoteTools, registerStoreNoteTools } from "./notes-tools.js";
 import { registerStoreTools } from "./stores-tools.js";
@@ -142,6 +143,98 @@ export function buildProposeDeps(env: Env, tenant: string): ProposeDeps {
     getOwnedEquipment: () => (ownedP ??= readOwnedEquipment(env, tenant)),
     getIngredientContext: () => (ctxP ??= ingredientContext(env)),
   };
+}
+
+/**
+ * Fresh order wiring for the order operation (member-app-grocery D8): the matcher
+ * resolve, the override-SKU revalidation, and the location resolution over the SAME
+ * underlying reads (preferences → location, brand prefs, ingredient context, SKU cache)
+ * the MCP server memoizes per request — lazily and memoized within one wiring, the
+ * `buildProposeDeps` precedent. `buildServer` calls this ONCE per request and reuses the
+ * closures across its tools; the member API's `POST /api/grocery/order` builds one per
+ * request.
+ */
+export function buildOrderWiring(env: Env, tenant: string): OrderWiring {
+  const kroger = createKrogerClient(env);
+
+  let prefsP: Promise<Preferences> | null = null;
+  const getPreferences = (): Promise<Preferences> =>
+    (prefsP ??= (async () => {
+      const prefs = await readPreferences(env, tenant);
+      if (prefs === null) {
+        throw new ToolError("not_found", "no preferences are set up");
+      }
+      return prefs;
+    })());
+
+  let locationP: Promise<string> | null = null;
+  const getLocationId = (): Promise<string> =>
+    (locationP ??= (async () => {
+      const prefs = await getPreferences();
+      const stores = prefs.stores as Record<string, unknown> | undefined;
+      const label =
+        typeof stores?.preferred_location === "string" ? stores.preferred_location : null;
+      if (!label) {
+        throw new ToolError(
+          "not_found",
+          "no preferred store location is set; cannot price Kroger products",
+        );
+      }
+      return kroger.resolveLocationId(label);
+    })());
+
+  let ctxP: Promise<IngredientContext> | null = null;
+  const getIngredientContext = (): Promise<IngredientContext> => (ctxP ??= ingredientContext(env));
+
+  /** Run the resolve-only matcher for one ingredient with the shared deps. */
+  async function resolve(
+    ingredient: string,
+    context: MatchContext = {},
+    bypassCache = false,
+  ): Promise<MatchResult> {
+    const locationId = await getLocationId();
+    const brands = await readBrandPrefs(env, tenant);
+    const ctx = await getIngredientContext();
+    const cache: CachedMapping[] = await readSkuCache(env);
+    // Capture a novel surface form for the cron (best-effort, non-blocking; the hot path
+    // is unchanged — a hit resolves through the map, a miss returns the cleaned term). The
+    // context's resolve() does the normalize-and-capture; the matcher re-normalizes over the
+    // injected resolver deps (it stays pure over plain aliases/searchTerms data).
+    ctx.resolve(ingredient);
+    const deps: MatchDeps = {
+      search: (term: string): Promise<KrogerCandidate[]> =>
+        // Kroger's per-request max (50) — the matcher returns the full ranked
+        // fulfillable set when ambiguous, so we want the complete relevant pool.
+        kroger.search(term, { locationId, limit: 50 }),
+      productById: (productId: string): Promise<KrogerCandidate | null> =>
+        kroger.productById(productId, locationId),
+      aliases: ctx.resolver.toId,
+      searchTerms: ctx.resolver.searchTerms,
+      brands,
+      cache,
+      locationId,
+    };
+    return matchIngredient(deps, ingredient, context, bypassCache);
+  }
+
+  /**
+   * Revalidate a forced-override SKU (place_order) against current availability +
+   * price at the resolved location — the same one-shot recheck the matcher's cache
+   * path does. Returns the fresh state when fulfillable, or null when it is not.
+   */
+  async function revalidateSku(sku: string) {
+    const locationId = await getLocationId();
+    const fresh = await kroger.productById(sku, locationId);
+    if (!fresh || !isFulfillable(fresh)) return null;
+    return {
+      brand: fresh.brand,
+      size: fresh.size,
+      price: fresh.price,
+      on_sale: isOnSale(fresh),
+    };
+  }
+
+  return { resolve, revalidateSku, getLocationId };
 }
 
 /**
@@ -329,25 +422,14 @@ export function buildServer(env: Env, tenant: Tenant, origin?: string): McpServe
     return prefsPromise;
   }
 
-  let locationPromise: Promise<string> | null = null;
-  function getLocationId(): Promise<string> {
-    if (!locationPromise) {
-      locationPromise = (async () => {
-        const prefs = await getPreferences();
-        const stores = prefs.stores as Record<string, unknown> | undefined;
-        const label =
-          typeof stores?.preferred_location === "string" ? stores.preferred_location : null;
-        if (!label) {
-          throw new ToolError(
-            "not_found",
-            "no preferred store location is set; cannot price Kroger products",
-          );
-        }
-        return kroger.resolveLocationId(label);
-      })();
-    }
-    return locationPromise;
-  }
+  // The order wiring (member-app-grocery D8): resolveIngredient / revalidateSku /
+  // getLocationId over lazily-memoized preferences/brands/ingredient-context/SKU-cache
+  // reads — built ONCE per request and shared by every tool below that needs them
+  // (match_ingredient_to_kroger_sku, place_order, the Kroger price/flyer lookups).
+  const orderWiring = buildOrderWiring(env, tenant.id);
+  const getLocationId = orderWiring.getLocationId;
+  const resolveIngredient = orderWiring.resolve;
+  const revalidateSku = orderWiring.revalidateSku;
 
   /**
    * Resolve the caller's PRIMARY fulfillment store for `store_flyer`: its slug (`stores.primary`,
@@ -380,10 +462,6 @@ export function buildServer(env: Env, tenant: Tenant, origin?: string): McpServe
     return ctxPromise;
   }
 
-  async function getCacheMappings(): Promise<CachedMapping[]> {
-    return readSkuCache(env);
-  }
-
   // Per-request lazy reads of the caller's subjective layer. The overlay
   // supplies favorite+reject from the D1 `overlay` table; the cooking log supplies
   // last_cooked from the D1 `cooking_log` table. Both are merged onto shared
@@ -414,54 +492,6 @@ export function buildServer(env: Env, tenant: Tenant, origin?: string): McpServe
       ownedPromise = readOwnedEquipment(env, tenant.id);
     }
     return ownedPromise;
-  }
-
-  /** Run the resolve-only matcher for one ingredient with the shared deps. */
-  async function resolveIngredient(
-    ingredient: string,
-    context: MatchContext = {},
-    bypassCache = false,
-  ): Promise<MatchResult> {
-    const locationId = await getLocationId();
-    const brands = await readBrandPrefs(env, tenant.id);
-    const ctx = await getIngredientContext();
-    const cache = await getCacheMappings();
-    // Capture a novel surface form for the cron (best-effort, non-blocking; the hot path
-    // is unchanged — a hit resolves through the map, a miss returns the cleaned term). The
-    // context's resolve() does the normalize-and-capture; the matcher re-normalizes over the
-    // injected resolver deps (it stays pure over plain aliases/searchTerms data).
-    ctx.resolve(ingredient);
-    const deps: MatchDeps = {
-      search: (term: string): Promise<KrogerCandidate[]> =>
-        // Kroger's per-request max (50) — the matcher returns the full ranked
-        // fulfillable set when ambiguous, so we want the complete relevant pool.
-        kroger.search(term, { locationId, limit: 50 }),
-      productById: (productId: string): Promise<KrogerCandidate | null> =>
-        kroger.productById(productId, locationId),
-      aliases: ctx.resolver.toId,
-      searchTerms: ctx.resolver.searchTerms,
-      brands,
-      cache,
-      locationId,
-    };
-    return matchIngredient(deps, ingredient, context, bypassCache);
-  }
-
-  /**
-   * Revalidate a forced-override SKU (place_order) against current availability +
-   * price at the resolved location — the same one-shot recheck the matcher's cache
-   * path does. Returns the fresh state when fulfillable, or null when it is not.
-   */
-  async function revalidateSku(sku: string) {
-    const locationId = await getLocationId();
-    const fresh = await kroger.productById(sku, locationId);
-    if (!fresh || !isFulfillable(fresh)) return null;
-    return {
-      brand: fresh.brand,
-      size: fresh.size,
-      price: fresh.price,
-      on_sale: isOnSale(fresh),
-    };
   }
 
   server.registerTool(
@@ -967,6 +997,18 @@ export function buildServer(env: Env, tenant: Tenant, origin?: string): McpServe
   // analog) — layout lives in layout/location/stock-tagged store notes.
   registerStoreTools(server, env);
   registerStoreNoteTools(server, tenant.id, env);
+
+  // read_to_buy — the derived to-buy view (member-app-grocery D1): one shared op with
+  // the member API's GET /api/grocery/to-buy (computeToBuyView).
+  server.registerTool(
+    "read_to_buy",
+    {
+      description:
+        "The DERIVED to-buy view: what an order placed right now would buy — the active grocery list ∪ the meal plan's ingredient needs − pantry on-hand, joined on canonical ingredient ids. This is the SAME set algebra `place_order` flushes, so \"what would we buy?\" has one answer; use it as the shop-time read (read_grocery_list returns only the stored rows and misses the plan's derived needs). READ-ONLY and cheap: zero Kroger calls, zero AI calls, and it writes nothing — derived lines exist only in this read; the plan is their source of truth (editing the plan changes the next read with no sync step). Returns { to_buy, pantry_covered, in_cart, underived }. `to_buy` lines carry `origin`: \"list\" (an explicit row the plan doesn't need), \"plan\" (a VIRTUAL line derived from a planned recipe — no stored row exists; add_to_grocery_list materializes/pins it under the same canonical `key` if the user edits it), or \"both\" (a stored row the plan also needs, merged with unioned `for_recipes`); derived lines default to quantity 1 with `assumed_quantity: true` (derivation is presence-only). `pantry_covered` lists the needs the pantry cancels — the same set `place_order` would return as `partials` — each with the pantry row's quantity/category/last_verified_at so you can nudge verification (\"still good?\") instead of silently skipping. `in_cart` is the current in-cart rows (the stale-cart signal: non-empty at order time means a prior order was never confirmed placed — remind the user to clear the store cart). `underived` names planned recipes whose full ingredient list is not yet derived — their items are NOT in `to_buy` (never silently dropped); offer to add them explicitly. Takes no parameters.",
+      inputSchema: {},
+    },
+    () => runTool(() => computeToBuyView(env, tenant.id)),
+  );
 
   // place_order — the order-time flush: resolve the list, write the Kroger cart,
   // persist learned SKUs to the SHARED cache. The one tool that reaches the cart.

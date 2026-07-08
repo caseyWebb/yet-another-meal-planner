@@ -27,7 +27,8 @@ export function registerGroceryListTools(
   server.registerTool(
     "read_grocery_list",
     {
-      description: "Return the current grocery list (the SKU-free buy list for the next order).",
+      description:
+        "Return the current grocery list — the STORED rows only (the SKU-free buy list's explicit entries, all statuses). This does NOT include the meal plan's derived ingredient needs: for any shop-time read (what would an order buy, a store walk, a stale-cart check) use `read_to_buy`, which computes list ∪ plan needs − pantry on-hand. Use this read when you need the raw stored rows themselves (row status/source/note edits, receive/remove flows).",
       inputSchema: {},
     },
     () =>
@@ -41,7 +42,7 @@ export function registerGroceryListTools(
     "add_to_grocery_list",
     {
       description:
-        "Add an item to the grocery list (ingredient/product level, no SKU). Re-adding an existing name merges into it (union for_recipes, reconcile quantity) rather than duplicating. New items start status=active. `domain` (default 'grocery') is the kind of store it's bought at (grocery | home-improvement | garden | pharmacy | …) — set it for a non-grocery item (e.g. '2x4 lumber' → 'home-improvement').",
+        "Add an item to the grocery list (ingredient/product level, no SKU). Re-adding an existing name merges into it (union for_recipes, reconcile quantity) rather than duplicating. New items start status=active. A PLANNED recipe's ingredient needs NO add — the to-buy set derives them from the meal plan automatically (`read_to_buy`); adding one anyway MATERIALIZES/pins it as an explicit row (do this to carry a quantity annotation or note, e.g. a double-batch scaling) — it upserts under the same canonical id, so the row and the derived need merge into one line, never a duplicate. `domain` (default 'grocery') is the kind of store it's bought at (grocery | home-improvement | garden | pharmacy | …) — set it for a non-grocery item (e.g. '2x4 lumber' → 'home-improvement').",
       inputSchema: {
         name: z.string(),
         quantity: z.string().optional(),

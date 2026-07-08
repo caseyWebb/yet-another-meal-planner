@@ -31,6 +31,7 @@ import type { FlyerItem } from "./matching.js";
 import type { KvStore } from "./kroger-user.js";
 import { validateSale } from "./sale-intake.js";
 import { advanceInCartRows, readGroceryKeyIndex, isoDay } from "./session-db.js";
+import { deriveMenuNeeds } from "./to-buy.js";
 import { markOrderListReceived } from "./order-lists-db.js";
 import { appendRejection, bumpAcceptTally, getQuarantine, recordLocalRejects } from "./satellite-audit-db.js";
 import { underRateLimit as underFixedWindow } from "./rate-limit.js";
@@ -110,9 +111,11 @@ export interface IntakeOptions {
  * The `order` arm is ORDER-SCOPED (satellite-order-cart-fill): an `order` observation is valid ONLY
  * against an ISSUED order-list (`options.orderList`), keyed by canonical `item_id`. A per-item
  * `item_id` NOT in the issued `itemIds` set is rejected; `carted`/`substituted` lines advance to
- * `in_cart` (via the SAME `advanceInCartRows` `place_order` uses, filtered to still-`active` rows so
- * a stale pull-list can't resurrect a removed line), an `unavailable` line stays `active`, and the
- * order-list is marked `received`. Called WITHOUT `orderList` (the push path OR the pull-results
+ * `in_cart` (via the SAME `advanceInCartRows` `place_order` uses, filtered to still-`active` rows —
+ * plus, for an issued id with NO stored row, to ids the meal plan still derives (member-app-grocery
+ * D4: a carted plan-derived line lands through the insert-on-missing branch) — so a stale pull-list
+ * can't resurrect a removed line), an `unavailable` line stays `active`, and the order-list is
+ * marked `received`. Called WITHOUT `orderList` (the push path OR the pull-results
  * path), every `order` item is rejected. Application is idempotent (a re-post converges). May throw
  * a `storage_error` ToolError on a D1/KV failure (the caller wraps it into a structured `503`).
  */
@@ -419,12 +422,22 @@ export async function intakeObservations(
   if (orderList && !orderQuarantined) {
     if (orderCartedIds.length > 0) {
       const idx = await readGroceryKeyIndex(env, orderList.tenant);
+      // A carted issued id with NO stored row may be a PLAN-DERIVED line (the pull-list
+      // unions the meal plan's derived needs — member-app-grocery D4): re-derive and, when
+      // the plan STILL needs the id, let it advance through `advanceInCartRows`' insert-on-
+      // missing branch (a derived need's name IS its canonical id, so the insert keys under
+      // the exact issued item_id). A missing id the plan no longer derives stays skipped —
+      // the same no-resurrection guard a removed explicit row gets.
+      const derivedIds = orderCartedIds.some((id) => !idx.has(id))
+        ? new Set((await deriveMenuNeeds(env, orderList.tenant)).needs.map((n) => n.name))
+        : new Set<string>();
       // Pass each active row's DISPLAY name (not the id) so `advanceInCartRows`' resolve keys it to
-      // the existing row exactly — never hitting its insert-missing branch for the filtered set.
+      // the existing row exactly — the insert-missing branch fires only for derived lines.
       const advanceLines: { name: string }[] = [];
       for (const id of orderCartedIds) {
         const row = idx.get(id);
         if (row && row.status === "active") advanceLines.push({ name: row.name });
+        else if (!row && derivedIds.has(id)) advanceLines.push({ name: id });
       }
       if (advanceLines.length > 0) await advanceInCartRows(env, orderList.tenant, advanceLines, isoDay(now));
     }

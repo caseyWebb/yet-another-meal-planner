@@ -46,6 +46,10 @@ export interface OrderPartial {
  * to-buy set, the tenant's primary store slug + location id, and the issued `order_list_id` (the
  * receipt correlation key + authoritative issued-set record). `location_id` MAY be null (a
  * satellite store's location is the operator's `preferred_location` label, which may be unset).
+ * The to-buy set includes the meal plan's server-derived ingredient needs (the same derivation
+ * `place_order` and the to-buy read use); `underived` names the planned recipes whose ingredient
+ * list is not yet derived, so the human at the helper knows the list may be incomplete (an
+ * additive field — older Workers omit it, so consumers treat absent as empty).
  */
 export interface OrderListResponse {
   order_list_id: string;
@@ -53,6 +57,7 @@ export interface OrderListResponse {
   location_id: string | null;
   items: OrderLine[];
   partials: OrderPartial[];
+  underived?: string[];
 }
 
 /**

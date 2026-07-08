@@ -7,7 +7,7 @@ import { readSourceStats } from "../src/satellite-audit-db.js";
 import { setProfileFields } from "../src/profile-db.js";
 import { addGroceryRow, readGroceryList, removeGroceryRow } from "../src/session-db.js";
 import { normalizeName } from "../src/grocery.js";
-import { sqliteEnv } from "./sqlite-d1.js";
+import { sqliteEnv, type SqliteEnv } from "./sqlite-d1.js";
 import type { Env } from "../src/env.js";
 import type { OrderListResponse, OrderReceiptResponse } from "@grocery-agent/contract";
 
@@ -137,6 +137,64 @@ describe("/satellite/order/list (pull-list)", () => {
     expect(res.status).toBe(200);
     expect(((await res.json()) as OrderReceiptResponse).results[0].disposition).toBe("accepted");
     expect(await statusOf(env, "casey", "AA Batteries")).toBe("in_cart");
+  });
+});
+
+describe("/satellite/order/list (plan-derived needs, member-app-grocery D4)", () => {
+  function seedPlanned(env: Env, raw: SqliteEnv["raw"], recipe: string, full: string[] | null): void {
+    void env;
+    raw.prepare("INSERT INTO recipes (slug, title, ingredients_full) VALUES (?, ?, ?)").run(recipe, recipe, full ? JSON.stringify(full) : null);
+    raw.prepare("INSERT INTO meal_plan (tenant, recipe, planned_for) VALUES ('casey', ?, NULL)").run(recipe);
+  }
+
+  it("unions the plan's derived needs into the pull-list with canonical item_ids + for_recipes, and reports underived", async () => {
+    const h = sqliteEnv(["casey"]);
+    const { env } = h;
+    const { secret } = await mintIngestKey(env, "casey-box", NOW, "casey");
+    await setStores(env, "casey", { primary: "target", fulfillment: "satellite" });
+    seedPlanned(env, h.raw, "honey-mustard-salmon", ["salmon", "mustard", "honey"]);
+    seedPlanned(env, h.raw, "not-derived-yet", null);
+    await addGroceryRow(env, "casey", { name: "Olive Oil" }, TODAY); // an explicit row rides along
+
+    const body = await pullList(env, secret);
+    expect(body.items.map((i) => i.item_id).sort()).toEqual(["honey", "mustard", "olive oil", "salmon"]);
+    const salmon = body.items.find((i) => i.item_id === "salmon")!;
+    expect(salmon.for_recipes).toEqual(["honey-mustard-salmon"]);
+    expect(salmon.assumed_quantity).toBe(true); // derivation is presence-only
+    expect(body.underived).toEqual(["not-derived-yet"]); // honesty: the list may be incomplete
+    // The issued set records the derived ids too — they are receipt-advanceable.
+    const ol = h.rows<{ item_ids: string }>("order_lists")[0];
+    expect(JSON.parse(ol.item_ids).sort()).toEqual(["honey", "mustard", "olive oil", "salmon"]);
+  });
+
+  it("a carted DERIVED line (no stored row) advances via the existing insert-on-missing keying", async () => {
+    const h = sqliteEnv(["casey"]);
+    const { env } = h;
+    const { secret } = await mintIngestKey(env, "casey-box", NOW, "casey");
+    await setStores(env, "casey", { primary: "target", fulfillment: "satellite" });
+    seedPlanned(env, h.raw, "honey-mustard-salmon", ["salmon"]);
+    const list = await pullList(env, secret);
+    expect(await statusOf(env, "casey", "salmon")).toBeUndefined(); // truly virtual — no row minted
+
+    const obs = [{ kind: "order", item_id: "salmon", disposition: "carted", product: { productId: "T-7", description: "Atlantic salmon" } }];
+    const res = await handleOrderReceipt(receiptReq(secret, { order_list_id: list.order_list_id, observations: obs }), env, NOW + 1);
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as OrderReceiptResponse).results[0].disposition).toBe("accepted");
+    // Insert-on-missing: the derived line now exists as an in_cart row keyed by its canonical id.
+    expect(await statusOf(env, "casey", "salmon")).toBe("in_cart");
+  });
+
+  it("pantry coverage diverts a derived need to partials, not items", async () => {
+    const h = sqliteEnv(["casey"]);
+    const { env } = h;
+    const { secret } = await mintIngestKey(env, "casey-box", NOW, "casey");
+    await setStores(env, "casey", { primary: "target", fulfillment: "satellite" });
+    seedPlanned(env, h.raw, "honey-mustard-salmon", ["salmon", "mayonnaise"]);
+    h.raw.prepare("INSERT INTO pantry (tenant, name, normalized_name, added_at) VALUES ('casey', 'Mayonnaise', 'mayonnaise', ?)").run(TODAY);
+
+    const body = await pullList(env, secret);
+    expect(body.items.map((i) => i.item_id)).toEqual(["salmon"]);
+    expect(body.partials.map((p) => p.name)).toEqual(["mayonnaise"]);
   });
 });
 

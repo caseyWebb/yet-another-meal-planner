@@ -204,6 +204,17 @@ New `packages/worker/src/to-buy.ts`:
   The receipt path is untouched: a derived line that gets carted advances via the existing
   insert-on-missing `advanceInCartRows` keying (the line's `item_id` **is** the canonical key a
   materialized row would use — `computeToBuy.key`'s documented contract).
+- **Implementation note (receipt advance, 2026-07-08):** "the receipt path is untouched" was
+  impossible as written — the receipt's publish step (`ingest.ts`) advances only issued ids
+  **still on the list as `active`** (the deliberate no-resurrection guard), so a carted
+  *derived* line (which has no row) was silently skipped, contradicting this decision's own
+  insert-on-missing claim and the satellite spec's scenario. Closest faithful implementation:
+  the publish step, on seeing a carted issued id with **no stored row**, re-derives the plan
+  needs and advances the id **iff the plan still derives it** (through `advanceInCartRows`'
+  insert-on-missing branch — a derived need's name IS its canonical id). A missing id the plan
+  no longer needs stays skipped, preserving the no-resurrection guard for removed explicit
+  rows. The receipt *endpoints* are untouched; only the shared publish filter learned about
+  derived lines.
 - **In-store walks** (persona): the walk branches read `read_to_buy` instead of
   `read_grocery_list`, so plan-derived ingredients appear on a walk with their `for_recipes`
   attribution. Completion (received = remove + restock) is unchanged — a picked **virtual** row

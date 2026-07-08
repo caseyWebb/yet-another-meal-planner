@@ -37,6 +37,7 @@ import { recordLocalRejects } from "./satellite-audit-db.js";
 import { readPreferences } from "./profile-db.js";
 import { readGroceryList, readPantryNames, readGroceryKeyIndex, advanceOrderedRows, isoDay } from "./session-db.js";
 import { computeToBuy } from "./order.js";
+import { deriveMenuNeeds } from "./to-buy.js";
 import { ingredientContext } from "./corpus-db.js";
 import { KROGER_STORE } from "./flyer-warm.js";
 import { ToolError } from "./errors.js";
@@ -231,8 +232,12 @@ export async function handleSatelliteResults(request: Request, env: Env, now: nu
  * === "satellite"`): a Kroger/Worker-native primary gets a structured error directing to `place_order`,
  * and a non-Kroger primary WITHOUT the marker (a plain walk store) gets one directing to the in-store
  * walk (so a walk-only tenant can't mint an order-list by accident). The to-buy set is `computeToBuy`
- * over the current `active` grocery list minus pantry on-hand, each line keyed to its canonical id;
- * the mint records the exact issued id set the receipt is later validated against. A POST (not GET)
+ * over the current `active` grocery list ∪ the meal plan's server-derived ingredient needs
+ * (`deriveMenuNeeds` — the same derivation `place_order` and the to-buy read use, so every flush
+ * surface sees the same set) minus pantry on-hand, each line keyed to its canonical id; planned
+ * recipes whose ingredient list is not yet derived ride the response as `underived` so the human at
+ * the helper knows the list may be incomplete. The mint records the exact issued id set the receipt
+ * is later validated against. A POST (not GET)
  * because it MUTATES state (it records the issued set). The list is NOT resolved against store product
  * availability — product matching is the satellite's browser job.
  */
@@ -263,12 +268,20 @@ export async function handleOrderList(request: Request, env: Env, now: number = 
     // to resolve it), which may be unset → a null location_id on the pull-list.
     const locationId = typeof stores?.preferred_location === "string" ? stores.preferred_location : null;
 
-    // Resolve the to-buy set (active list − pantry on-hand) via the same food-guarded funnel
-    // `place_order` uses. No menu-needs / quantities / include-partials — the standing list is the input.
+    // Resolve the to-buy set (active list ∪ plan-derived needs − pantry on-hand) via the same
+    // food-guarded funnel `place_order` uses. No quantities / include-partials — the standing list
+    // + the plan are the input; a derived line's `item_id` is the canonical id a materialized row
+    // would use, so a carted disposition advances via the existing insert-on-missing keying.
     const list = await readGroceryList(env, tenant);
     const pantryNames = await readPantryNames(env, tenant);
     const ctx = await ingredientContext(env);
-    const { to_buy, partials } = computeToBuy({ list, pantryNames, resolve: (n) => ctx.resolve(n) });
+    const derived = await deriveMenuNeeds(env, tenant);
+    const { to_buy, partials } = computeToBuy({
+      list,
+      menuNeeds: derived.needs,
+      pantryNames,
+      resolve: (n) => ctx.resolve(n),
+    });
     // `item_id` is the line's stored `normalized_name` (`computeToBuy`'s food-guarded `key`), NOT a
     // re-derived `resolve(name)` — the latter diverges for a non-food row (household/other or a
     // non-grocery domain), which would both leak the row's term into the ingredient graph and cause a
@@ -287,7 +300,14 @@ export async function handleOrderList(request: Request, env: Env, now: number = 
       { tenant, store: primary, locationId, itemIds: items.map((i) => i.item_id) },
       now,
     );
-    const response: OrderListResponse = { order_list_id: orderListId, store: primary, location_id: locationId, items, partials };
+    const response: OrderListResponse = {
+      order_list_id: orderListId,
+      store: primary,
+      location_id: locationId,
+      items,
+      partials,
+      underived: derived.underived,
+    };
     return json(response, 200);
   } catch (e) {
     const message = e instanceof ToolError ? e.message : "order-list storage failure";

@@ -37,17 +37,17 @@ pieces by role and the implementer binds to the landed actuals.
 
 ## 2. Worker: the to-buy derivation + view op (D1, D3)
 
-- [ ] 2.1 New `packages/worker/src/to-buy.ts`: `deriveMenuNeeds(env, tenant)` →
+- [x] 2.1 New `packages/worker/src/to-buy.ts`: `deriveMenuNeeds(env, tenant)` →
   `{ needs: MenuNeed[], underived: string[] }` over `meal_plan` rows × projected
   `recipes.ingredients_full` (merge `for_recipes` across recipes; open-world `sides` strings
   contribute nothing; a planned slug with no recipe row or a NULL/empty derived list →
   `underived`). Presence-only: no quantities.
-- [ ] 2.2 `computeToBuyView(env, tenant)` in the same file: list + pantry + ingredient context
+- [x] 2.2 `computeToBuyView(env, tenant)` in the same file: list + pantry + ingredient context
   → the **unchanged** `computeToBuy` with the derived needs → partition lines by `key` vs
   stored rows into `origin: "list" | "plan" | "both"`; join `partials` to `readPantry` rows
   for `pantry_covered` (`quantity`/`category`/`last_verified_at`); collect `in_cart` rows
   (`name`, `added_at`); return the D1 view shape.
-- [ ] 2.3 Unit tests over the real local SQLite env (`sqlite-d1.ts`): derived-only, list-only,
+- [x] 2.3 Unit tests over the real local SQLite env (`sqlite-d1.ts`): derived-only, list-only,
   and merged (`both`) lines; canonical-id merge across surface forms (a pantry "green onion"
   covers a derived "scallions" need); underived reporting; open-world sides ignored;
   `pantry_covered` metadata join; `in_cart` section; repeated reads write nothing (the
@@ -55,14 +55,14 @@ pieces by role and the implementer binds to the landed actuals.
 
 ## 3. Worker: `read_to_buy` + `place_order` convergence (D1, D4, D8)
 
-- [ ] 3.1 `tools.ts`: extract `buildOrderWiring(env, tenantId)` from the `buildServer` closures
+- [x] 3.1 `tools.ts`: extract `buildOrderWiring(env, tenantId)` from the `buildServer` closures
   (`resolveIngredient`, `revalidateSku`, `getLocationId` over the same
   preferences/brands/ingredient-context/SKU-cache reads — the P2 `buildProposeDeps`
   precedent); `buildServer` keeps per-request memoization by calling it once. Register
   **`read_to_buy`** (no params) over `computeToBuyView`, description carrying D1's guarantees
   (read-only; zero Kroger/AI calls; the same set algebra `place_order` flushes;
   `pantry_covered` ≙ `partials`; `in_cart` = the stale-cart signal; `underived` honesty).
-- [ ] 3.2 `order-tools.ts`: extract the tool closure body into
+- [x] 3.2 `order-tools.ts`: extract the tool closure body into
   `runPlaceOrder(env, tenantId, input, wiring)`; thread `deriveMenuNeeds` into the to-buy
   computation (derived needs ∪ caller `menu_needs`), add `exclude: string[]` (funnel-resolved,
   dropped before resolution) to the schema and the op, and surface `underived` on the result.
@@ -72,17 +72,17 @@ pieces by role and the implementer binds to the landed actuals.
   old-bundle transition window is harmless by construction)** — with the existing guarantees
   (checkpoint, partials, overrides pin SKU-not-price, independent best-effort writes,
   in_cart-after-cart-success) restated unchanged.
-- [ ] 3.3 `satellite.ts` `handleOrderList`: thread `deriveMenuNeeds` into the pull-list's
+- [x] 3.3 `satellite.ts` `handleOrderList`: thread `deriveMenuNeeds` into the pull-list's
   `computeToBuy` call and surface the underived slugs on the response (contract type in
   `packages/contract` extended additively).
-- [ ] 3.4 Unit tests: `runPlaceOrder` with `PlaceOrderDeps`/wiring fakes — plan-needs union
+- [x] 3.4 Unit tests: `runPlaceOrder` with `PlaceOrderDeps`/wiring fakes — plan-needs union
   (derived + caller + materialized row dedup to one line), `exclude` drops before resolution,
   preview writes nothing, `underived` rides the result, and an **unchanged-baseline** test (no
   plan, no new params ⇒ result deep-equals today's behavior; existing `order.test.ts` and
   tool tests pass unmodified). `order-endpoints.test.ts`: pull-list includes derived needs
   with correct `item_id`s; a carted derived line advances via the existing insert-on-missing
   keying; Kroger-primary refusal unchanged.
-- [ ] 3.5 `add_to_grocery_list` / `read_grocery_list` descriptions (`grocery-tools.ts`): the
+- [x] 3.5 `add_to_grocery_list` / `read_grocery_list` descriptions (`grocery-tools.ts`): the
   materialization note (a plan ingredient needs no add; adding one pins it — merge semantics
   unchanged) and the pointer to `read_to_buy` for shop-time reads.
 
