@@ -1,6 +1,7 @@
-// Home (/admin) — the Status service-health view (screen lands with group 3).
+// Home (/admin) — the Status service-health view.
 import { createFileRoute } from "@tanstack/react-router";
+import { StatusScreen } from "../screens/status";
 
 export const Route = createFileRoute("/")({
-  component: () => <p className="screen-loading">Status</p>,
+  component: StatusScreen,
 });

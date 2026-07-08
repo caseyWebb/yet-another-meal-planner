@@ -1,0 +1,2 @@
+/* Audits-surface rules the SPA stylesheet lacks (ported from the SSR panel's styles.css). */
+.au-burn-v.sm { font-size: 1.15rem; }

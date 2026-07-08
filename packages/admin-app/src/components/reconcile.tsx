@@ -12,7 +12,6 @@
 // The model is typed via the wire payload (`ReconcileData` = the reconcile read's body;
 // `StatusData["reconcile"]` is the same shape and satisfies the props structurally).
 
-import * as React from "react";
 import { Link } from "@tanstack/react-router";
 import { Item, Badge } from "./kit";
 import { CheckCircleIcon, GitMergeIcon, ClockIcon, AlertTriangleIcon, ArrowRightIcon } from "./icons";
