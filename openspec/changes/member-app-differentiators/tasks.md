@@ -105,22 +105,22 @@ and the implementer binds to the landed actuals (e.g. `buildOrderWiring`, `compu
 
 ## 5. App: panel, grouping, browse rows (D4, D6, D9, D10)
 
-- [ ] 5.1 `packages/app/src/lib/data.ts`: hooks for the four surfaces — the substitutions
+- [x] 5.1 `packages/app/src/lib/data.ts`: hooks for the four surfaces — the substitutions
   mutation registered **online-only** (never persisted/replayed, D12); trending +
   picked-for-you queries invalidated by the favorites mutation.
-- [ ] 5.2 `_app.grocery.tsx` + `packages/ui`: the substitutions panel per the bundle's
+- [x] 5.2 `_app.grocery.tsx` + `packages/ui`: the substitutions panel per the bundle's
   subs-panel section pattern — toolbar toggle, suggestion rows (line-through original →
   replacement, reason pill **with real prices** per D10, sibling rows labeled with
   `via`/relation + pantry/sale hints), per-row Swap/Keep, dismiss-all, the mock's empty-state
   copy; swap-accept wired per origin (D4: staged override / add+remove / materialize+staged
   exclude, with the "swapped from …" note); dismissals per-session client state.
-- [ ] 5.3 `_app.grocery.tsx`: aisle/category grouping toggle — aisle groups ordered
+- [x] 5.3 `_app.grocery.tsx`: aisle/category grouping toggle — aisle groups ordered
   numerically, the honest "Aisle unknown" bucket sub-grouped by department, department→kind
   fallback tiers with no location; in-cart group + check-off behavior unchanged (P1/P3).
-- [ ] 5.4 `_app.index.tsx`: slot 1 → "New & trending" (new-for-me first, trending backfill,
+- [x] 5.4 `_app.index.tsx`: slot 1 → "New & trending" (new-for-me first, trending backfill,
   dedup, cap 8), slot 2 → "Picked for you" (+ sub-copy + empty state); "All recipes" remains
   as the third section (D9); `RecipeList`/`browse-section` structure unchanged.
-- [ ] 5.5 Playwright (P0 harness rule — no phase merges without its specs):
+- [x] 5.5 Playwright (P0 harness rule — no phase merges without its specs):
   `admin/visual/seed.mjs` gains threshold-crossing `cooking_log` rows, favorites with
   `recipe_derived` vectors, aisle-tagged `sku_cache` rows, and the sibling edge family;
   `cookbook.page.ts`/`grocery.page.ts` + specs cover the rows (live), the grouping (live),

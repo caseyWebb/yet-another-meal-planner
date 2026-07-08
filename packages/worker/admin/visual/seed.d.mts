@@ -84,6 +84,22 @@ export interface SeedLiterals {
       readonly covered: string;
       readonly underived: string;
     };
+    /** Differentiator fixtures (member-app-differentiators D11): the picked-for-you
+     *  expectation, the pre-resolved Kroger locationId the aisle specs PATCH into
+     *  preferences, the aisle-tagged sku_cache rows, and the sibling edge family. */
+    readonly differentiators: {
+      readonly topPick: string;
+      readonly location: string;
+      readonly aisles: {
+        readonly meat: { readonly ingredient: string; readonly number: string; readonly description: string };
+        readonly produce: { readonly ingredient: string; readonly number: string; readonly description: string };
+      };
+      readonly siblings: {
+        readonly line: string;
+        readonly family: readonly string[];
+        readonly parent: string;
+      };
+    };
   };
   /** The registered background jobs seeded into job_health/job_runs (mirrors HEALTH_JOBS). */
   readonly jobs: readonly string[];

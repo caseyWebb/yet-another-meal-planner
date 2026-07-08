@@ -1,13 +1,14 @@
-// Grocery (member-app-core 7.7 + member-app-grocery 5.x): the page renders the DERIVED
-// to-buy view (GET /api/grocery/to-buy) — explicit and virtual (plan-derived) lines in
-// one list with `origin` attribution, the "Already in your pantry" coverage section
-// with verify / buy-fresh nudges, the `underived` quiet notice — plus the P1 stored-row
-// interactions (explicit in-cart set, remove on explicit rows, bottom add-row, Clear
-// purchased) and the order flow: a preview → disposition → commit panel over
-// POST /api/grocery/order (Kroger-gated; ONLINE-ONLY — plain fetches, nothing queued or
-// replayed: the cart write is not idempotent), and the in-cart group's user-asserted
-// "Mark order placed" advance (PATCH status: ordered; the W3 guard enforces).
-// No store picker / aisles / substitutions — later phases (P4).
+// Grocery (member-app-core 7.7 + member-app-grocery 5.x + member-app-differentiators
+// 5.2/5.3): the page renders the DERIVED to-buy view — explicit and virtual
+// (plan-derived) lines with `origin` attribution, pantry coverage, the `underived`
+// notice — plus the P1 stored-row interactions, the order flow (preview → disposition
+// → commit; ONLINE-ONLY), and the P4 differentiators: the SUBSTITUTIONS PANEL (the
+// deterministic read behind POST /api/grocery/substitutions — reason pills with real
+// prices, relation-labeled siblings, per-row Swap/Keep mapped to the REAL writes per
+// line origin (staged order override / add+remove / materialize+staged exclude),
+// per-session dismissals) and the AISLE/CATEGORY grouping toggle over the enriched
+// to-buy read (?aisles=1) with the honest "Aisle unknown" bucket — never a fabricated
+// aisle number; no multi-store picker (placements are the Kroger primary's only).
 import * as React from "react";
 import { Link, createFileRoute } from "@tanstack/react-router";
 import { useQueryClient, type QueryClient } from "@tanstack/react-query";
@@ -19,22 +20,30 @@ import {
   IconAlert,
   IconCart,
   IconCheck,
+  IconChevronRight,
   IconPlus,
+  IconSwap,
   IconTrash,
   IconX,
+  SegmentedControl,
   PageHead,
   toast,
 } from "@grocery-agent/ui";
 import { api, apiError } from "../lib/api";
 import { PERISHABLE, STALE_DAYS, daysSince } from "../lib/format";
 import {
+  fetchSubstitutions,
   useGrocery,
   useProfile,
   useToBuy,
   type GroceryRow,
+  type LineSuggestions,
   type OrderOutcome,
   type OrderRequest,
   type PantryCovered,
+  type SiblingSuggestion,
+  type SubstitutionAlternative,
+  type SubstitutionsResult,
   type ToBuyLine,
 } from "../lib/data";
 
@@ -101,12 +110,93 @@ async function materialize(qc: QueryClient, line: ToBuyLine, edits: { quantity?:
   return true;
 }
 
+/** A grouped rendering of the to-buy lines: label + optional department sub-groups. */
+interface LineGroup {
+  id: string;
+  label: string;
+  lines: ToBuyLine[];
+  /** Sub-groups (the "Aisle unknown" bucket's departments); lines above render first. */
+  subs?: { label: string; lines: ToBuyLine[] }[];
+}
+
+const KIND_LABEL: Record<ToBuyLine["kind"], string> = {
+  grocery: "Groceries",
+  household: "Home goods",
+  other: "Other",
+};
+
+/**
+ * Aisle-mode grouping (D6, client-side over the enriched read): numeric aisle groups
+ * first; lines without a captured aisle collect in an EXPLICIT "Aisle unknown" bucket
+ * sub-grouped by department — never a fabricated aisle number. With no resolvable
+ * store location at all, groups fall back to department, then the kind buckets.
+ */
+function groupByAisle(lines: ToBuyLine[], hasLocation: boolean): LineGroup[] {
+  if (!hasLocation) {
+    // Department tiers (the graph fallback), then kind buckets for the rest.
+    const byDept = new Map<string, ToBuyLine[]>();
+    const rest: ToBuyLine[] = [];
+    for (const l of lines) {
+      const dept = l.placement?.department;
+      if (dept) (byDept.get(dept) ?? byDept.set(dept, []).get(dept)!).push(l);
+      else rest.push(l);
+    }
+    const groups: LineGroup[] = [...byDept.entries()]
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([dept, ls]) => ({ id: `dept-${dept}`, label: dept, lines: ls }));
+    for (const grp of KIND_GROUPS) {
+      const ls = rest.filter((l) => l.kind === grp.kind);
+      if (ls.length) groups.push({ id: grp.kind, label: `Category: ${grp.label}`, lines: ls });
+    }
+    return groups;
+  }
+
+  const byAisle = new Map<string, ToBuyLine[]>();
+  const unknown: ToBuyLine[] = [];
+  for (const l of lines) {
+    const n = l.placement?.aisle_number;
+    if (n) (byAisle.get(n) ?? byAisle.set(n, []).get(n)!).push(l);
+    else unknown.push(l);
+  }
+  const groups: LineGroup[] = [...byAisle.entries()]
+    .sort((a, b) => Number(a[0]) - Number(b[0]) || a[0].localeCompare(b[0]))
+    .map(([n, ls]) => {
+      const desc = ls.find((l) => l.placement?.aisle_description)?.placement?.aisle_description;
+      return { id: `aisle-${n}`, label: `Aisle ${n}${desc ? ` · ${desc}` : ""}`, lines: ls };
+    });
+  if (unknown.length) {
+    const byDept = new Map<string, ToBuyLine[]>();
+    const noDept: ToBuyLine[] = [];
+    for (const l of unknown) {
+      const dept = l.placement?.department ?? (l.kind !== "grocery" ? KIND_LABEL[l.kind] : null);
+      if (dept) (byDept.get(dept) ?? byDept.set(dept, []).get(dept)!).push(l);
+      else noDept.push(l);
+    }
+    groups.push({
+      id: "unknown",
+      label: "Aisle unknown",
+      lines: noDept,
+      subs: [...byDept.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([label, ls]) => ({ label, lines: ls })),
+    });
+  }
+  return groups;
+}
+
 function GroceryPage() {
   const grocery = useGrocery();
-  const toBuy = useToBuy();
+  // The grouping toggle (5.3): aisle mode opts into the enriched read (?aisles=1);
+  // category mode keeps the default (zero-Kroger) read byte-identical.
+  const [groupMode, setGroupMode] = React.useState<"category" | "aisle">("category");
+  const toBuy = useToBuy(groupMode === "aisle");
   const profile = useProfile();
   const qc = useQueryClient();
   const [orderOpen, setOrderOpen] = React.useState(false);
+  // The substitutions panel (5.2) + the staged swap state it feeds the order commit:
+  // per-session client state only (D4) — nothing persists until the order is placed.
+  const [subsOpen, setSubsOpen] = React.useState(false);
+  const [dismissed, setDismissed] = React.useState<ReadonlySet<string>>(new Set());
+  const [stagedPicks, setStagedPicks] = React.useState<Record<string, string>>({});
+  const [stagedExcludes, setStagedExcludes] = React.useState<ReadonlySet<string>>(new Set());
 
   const rows = grocery.data?.items ?? [];
   const view = toBuy.data;
@@ -119,6 +209,47 @@ function GroceryPage() {
   const stores = (profile.data?.preferences?.stores ?? {}) as { primary?: string };
   const krogerPrimary = (stores.primary ?? "kroger").toLowerCase() === "kroger";
   const krogerReady = krogerPrimary && profile.data?.kroger.linked === true;
+
+  function dismiss(keys: string[]) {
+    setDismissed((cur) => new Set([...cur, ...keys]));
+  }
+
+  /** Same-identity swap accept (D4): staged as an order `override` — no server state
+   *  changes until the order commit, where the forced SKU is revalidated. The row
+   *  stays visible showing its staged state (Keep still un-stages nothing — it only
+   *  hides the row; the stage is undone by not committing). */
+  function stageSwap(line: LineSuggestions, alt: SubstitutionAlternative) {
+    setStagedPicks((cur) => ({ ...cur, [line.for.name]: alt.sku }));
+    toast(`Swap staged — ${line.for.name} orders as ${alt.brand || alt.description} at the next Kroger order`);
+  }
+
+  /** Cross-ingredient swap accept (D4), mapped per line origin. */
+  async function swapSibling(line: LineSuggestions, sib: SiblingSuggestion, rowKey: string) {
+    const origin = line.for.origin;
+    // The replacement lands as an explicit row carrying the mock's provenance note.
+    const added = await api.api.grocery.items
+      .$post({ json: { name: sib.id, note: `swapped from ${line.for.name}` } })
+      .catch(() => null);
+    if (!added?.ok) {
+      toast("Couldn't add the replacement — try again");
+      return;
+    }
+    if (origin === "list" || origin === "both") {
+      await api.api.grocery.items[":name"].$delete({ param: { name: line.for.name } }).catch(() => null);
+    }
+    if (origin === "plan" || origin === "both") {
+      // A derived line has no row to remove (and removing a `both` row un-pins, not
+      // un-plans): exclude it from THIS order only — the plan still lists it.
+      setStagedExcludes((cur) => new Set([...cur, line.for.name]));
+    }
+    dismiss([rowKey]);
+    toast(
+      origin === "list"
+        ? `Swapped ${line.for.name} for ${sib.label}`
+        : `Added ${sib.label}; ${line.for.name} is excluded from this order — the plan still lists it`,
+    );
+    await refreshGrocery(qc);
+  }
 
   async function clearPurchased() {
     // Received is terminal REMOVAL (docs/TOOLS.md): drop each in_cart row.
@@ -145,10 +276,14 @@ function GroceryPage() {
     await refreshGrocery(qc);
   }
 
-  const groups = KIND_GROUPS.map((grp) => ({
-    ...grp,
-    lines: lines.filter((l) => l.kind === grp.kind),
-  })).filter((grp) => grp.lines.length > 0);
+  const groups: LineGroup[] =
+    groupMode === "aisle"
+      ? groupByAisle(lines, view?.location != null)
+      : KIND_GROUPS.map((grp) => ({
+          id: grp.kind,
+          label: `Category: ${grp.label}`,
+          lines: lines.filter((l) => l.kind === grp.kind),
+        })).filter((grp) => grp.lines.length > 0);
 
   const empty = view && lines.length === 0 && rows.length === 0;
 
@@ -158,14 +293,44 @@ function GroceryPage() {
         title="Grocery list"
         sub={`${lines.length} to buy${inCart.length ? ` · ${inCart.length} in cart` : ""}.`}
       />
-      {krogerReady && lines.length > 0 ? (
+      {lines.length > 0 ? (
         <div className="g-toolbar">
-          <Button size="sm" data-testid="order-open" onClick={() => setOrderOpen(true)}>
-            <IconCart /> Add all to Kroger cart
+          <div className="g-groupmode" data-testid="group-mode">
+            <SegmentedControl
+              name="group-mode"
+              value={groupMode}
+              options={["category", "aisle"] as const}
+              labelFor={(v) => (v === "aisle" ? "Aisle" : "Category")}
+              onChange={setGroupMode}
+            />
+          </div>
+          <Button variant="outline" size="sm" data-testid="subs-open" onClick={() => setSubsOpen(true)}>
+            <IconSwap /> Propose substitutions
           </Button>
+          {krogerReady ? (
+            <Button size="sm" data-testid="order-open" onClick={() => setOrderOpen(true)}>
+              <IconCart /> Add all to Kroger cart
+            </Button>
+          ) : null}
         </div>
       ) : null}
-      {orderOpen ? <OrderPanel inCartCount={inCart.length} onClose={() => setOrderOpen(false)} /> : null}
+      {subsOpen ? (
+        <SubsPanel
+          dismissed={dismissed}
+          stagedPicks={stagedPicks}
+          onDismiss={dismiss}
+          onSwap={(l, a) => stageSwap(l, a)}
+          onSwapSibling={(l, s, k) => void swapSibling(l, s, k)}
+          onClose={() => setSubsOpen(false)}
+        />
+      ) : null}
+      {orderOpen ? (
+        <OrderPanel
+          inCartCount={inCart.length}
+          staged={{ picks: stagedPicks, excludes: stagedExcludes }}
+          onClose={() => setOrderOpen(false)}
+        />
+      ) : null}
       {view?.pantry_covered.length ? <PantryHave covered={view.pantry_covered} /> : null}
       {view?.underived.length ? (
         <p className="g-underived" data-testid="grocery-underived">
@@ -180,13 +345,25 @@ function GroceryPage() {
       ) : (
         <>
           {groups.map((grp) => (
-            <div className="g-group" key={grp.kind} data-testid={`grocery-group-${grp.kind}`}>
-              <GroupHeading>Category: {grp.label}</GroupHeading>
-              <ul className="g-list">
-                {grp.lines.map((l) => (
-                  <ToBuyItem key={l.key} line={l} row={rowByName.get(l.name.toLowerCase())} />
-                ))}
-              </ul>
+            <div className="g-group" key={grp.id} data-testid={`grocery-group-${grp.id}`}>
+              <GroupHeading>{grp.label}</GroupHeading>
+              {grp.lines.length ? (
+                <ul className="g-list">
+                  {grp.lines.map((l) => (
+                    <ToBuyItem key={l.key} line={l} row={rowByName.get(l.name.toLowerCase())} />
+                  ))}
+                </ul>
+              ) : null}
+              {grp.subs?.map((sub) => (
+                <div className="g-subgroup" key={sub.label} data-testid="grocery-subgroup" data-dept={sub.label}>
+                  <h3 className="g-subhead">{sub.label}</h3>
+                  <ul className="g-list">
+                    {sub.lines.map((l) => (
+                      <ToBuyItem key={l.key} line={l} row={rowByName.get(l.name.toLowerCase())} />
+                    ))}
+                  </ul>
+                </div>
+              ))}
             </div>
           ))}
           <AddRow />
@@ -442,6 +619,194 @@ function PantryHave({ covered }: { covered: PantryCovered[] }) {
   );
 }
 
+// ── The substitutions panel (member-app-differentiators 5.2, D1-D4, D10) ─────────────
+
+/** Human unit price: base units (g/ml/ct) rendered in shopper units (oz / fl oz / ea). */
+function unitPriceLabel(unitPrice: number | undefined, baseUnit: string | undefined): string | null {
+  if (unitPrice === undefined || baseUnit === undefined) return null;
+  if (baseUnit === "g") return `$${(unitPrice * 28.3495).toFixed(2)}/oz`;
+  if (baseUnit === "ml") return `$${(unitPrice * 29.5735).toFixed(2)}/fl oz`;
+  return `$${unitPrice.toFixed(2)}/ea`;
+}
+
+/** The alternative's reason pills — the CLOSED vocabulary, substantiated with numbers. */
+function reasonPills(line: LineSuggestions, alt: SubstitutionAlternative): string[] {
+  const pills: string[] = [];
+  for (const r of alt.reasons) {
+    if (r === "cheaper") {
+      const a = unitPriceLabel(alt.unit_price, alt.base_unit);
+      const c = unitPriceLabel(line.current?.unit_price, line.current?.base_unit);
+      pills.push(a && c ? `cheaper — ${a} vs ${c}` : "cheaper");
+    } else if (r === "on_sale") {
+      pills.push(`on sale — $${alt.price.promo.toFixed(2)} (was $${alt.price.regular.toFixed(2)})`);
+    } else {
+      pills.push("in stock now");
+    }
+  }
+  return pills;
+}
+
+const RELATION_LABEL: Record<SiblingSuggestion["relation"]["role"], string> = {
+  satisfies: "can stand in",
+  sibling: "same family",
+  generalization: "the general form",
+};
+
+function SubsPanel(props: {
+  dismissed: ReadonlySet<string>;
+  stagedPicks: Record<string, string>;
+  onDismiss: (rowKeys: string[]) => void;
+  onSwap: (line: LineSuggestions, alt: SubstitutionAlternative) => void;
+  onSwapSibling: (line: LineSuggestions, sib: SiblingSuggestion, rowKey: string) => void;
+  onClose: () => void;
+}) {
+  // ONLINE-ONLY (D12): one explicit fetch on open — never queued, replayed, or cached.
+  const [state, setState] = React.useState<
+    { at: "loading" } | { at: "error"; message: string } | { at: "ready"; result: SubstitutionsResult }
+  >({ at: "loading" });
+
+  React.useEffect(() => {
+    let cancelled = false;
+    fetchSubstitutions({})
+      .then((result) => {
+        if (!cancelled) setState({ at: "ready", result });
+      })
+      .catch((e: { message?: string }) => {
+        if (!cancelled) setState({ at: "error", message: e.message || "Couldn't fetch suggestions" });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  /** One renderable suggestion row: the top alternative per line, plus each sibling. */
+  interface Row {
+    key: string;
+    line: LineSuggestions;
+    alt?: SubstitutionAlternative;
+    sib?: SiblingSuggestion;
+  }
+  const rows: Row[] = [];
+  if (state.at === "ready") {
+    for (const line of state.result.suggestions) {
+      const alt = line.alternatives[0];
+      // A same-identity alternative row only when there is something to say (a reason,
+      // or the current pick is out of stock) — never a swap for swap's sake.
+      if (alt && (alt.reasons.length > 0 || line.status === "current_unavailable")) {
+        rows.push({ key: `${line.for.key}::alt:${alt.sku}`, line, alt });
+      }
+      for (const sib of line.siblings) {
+        rows.push({ key: `${line.for.key}::sib:${sib.id}`, line, sib });
+      }
+    }
+  }
+  const visible = rows.filter((r) => !props.dismissed.has(r.key));
+
+  function dismissAll() {
+    props.onDismiss(visible.map((r) => r.key));
+    props.onClose();
+  }
+
+  return (
+    <section className="subs-panel" data-testid="subs-panel">
+      <header className="subs-head">
+        <div>
+          <h2>
+            <IconSwap /> Proposed substitutions
+          </h2>
+          <p>Swaps found for what's on your list — out of stock, on sale, or already on hand.</p>
+        </div>
+        <button className="icon-btn" data-testid="subs-close" title="Dismiss all" onClick={dismissAll}>
+          <IconX />
+        </button>
+      </header>
+
+      {state.at === "loading" ? <p className="subs-empty">Checking your list…</p> : null}
+      {state.at === "error" ? (
+        <p className="subs-empty" data-testid="subs-error">
+          {state.message}
+        </p>
+      ) : null}
+
+      {state.at === "ready" ? (
+        visible.length ? (
+          <ul className="subs-list">
+            {visible.map((r) => (
+              <li className="subs-row" key={r.key} data-testid="subs-row" data-for={r.line.for.name}>
+                {r.alt ? (
+                  <div className="subs-swap">
+                    <span className="subs-from">{r.line.for.name}</span>
+                    {r.line.status === "current_unavailable" ? (
+                      <span className="subs-why warn" data-testid="subs-out-of-stock">
+                        out of stock
+                      </span>
+                    ) : null}
+                    <IconChevronRight />
+                    <span className="subs-to">
+                      {r.alt.brand ? `${r.alt.brand} · ` : ""}
+                      {r.alt.description}
+                      {r.alt.size ? ` · ${r.alt.size}` : ""}
+                    </span>
+                    {reasonPills(r.line, r.alt).map((p) => (
+                      <span className="subs-why" key={p} data-testid="subs-reason">
+                        {p}
+                      </span>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="subs-swap">
+                    <span className="subs-from">{r.line.for.name}</span>
+                    <IconChevronRight />
+                    <span className="subs-to">{r.sib!.label}</span>
+                    <span className="subs-why" data-testid="subs-relation">
+                      {RELATION_LABEL[r.sib!.relation.role]}
+                      {r.sib!.relation.via ? ` · via ${r.sib!.relation.via}` : ""}
+                    </span>
+                    {r.sib!.in_pantry ? (
+                      <span className="subs-why" data-testid="subs-pantry-hit">
+                        in your pantry
+                      </span>
+                    ) : null}
+                    {r.sib!.on_sale_hint ? (
+                      <span className="subs-why" data-testid="subs-sale-hint">
+                        on sale — ${r.sib!.on_sale_hint.price.promo.toFixed(2)} at your store
+                      </span>
+                    ) : null}
+                  </div>
+                )}
+                <div className="subs-actions">
+                  {r.alt ? (
+                    props.stagedPicks[r.line.for.name] === r.alt.sku ? (
+                      <Button size="sm" variant="outline" disabled data-testid="subs-staged">
+                        Staged for the next order
+                      </Button>
+                    ) : (
+                      <Button size="sm" data-testid="subs-accept" onClick={() => props.onSwap(r.line, r.alt!)}>
+                        Swap
+                      </Button>
+                    )
+                  ) : (
+                    <Button size="sm" data-testid="subs-accept" onClick={() => props.onSwapSibling(r.line, r.sib!, r.key)}>
+                      Swap
+                    </Button>
+                  )}
+                  <Button size="sm" variant="ghost" data-testid="subs-dismiss" onClick={() => props.onDismiss([r.key])}>
+                    Keep
+                  </Button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="subs-empty" data-testid="subs-empty">
+            No substitutions to suggest right now — your list looks good.
+          </p>
+        )
+      ) : null}
+    </section>
+  );
+}
+
 // ── The order panel (D7/D11): preview → disposition → commit over one endpoint. ──────
 
 type OrderPhase =
@@ -451,13 +816,24 @@ type OrderPhase =
   | { at: "committing"; result: OrderOutcome }
   | { at: "done"; result: OrderOutcome };
 
-function OrderPanel({ inCartCount, onClose }: { inCartCount: number; onClose: () => void }) {
+function OrderPanel({
+  inCartCount,
+  staged,
+  onClose,
+}: {
+  inCartCount: number;
+  /** Swaps staged from the substitutions panel (D4): overrides (same-identity picks)
+   *  and order-scoped excludes for swapped-away derived lines — client state until commit. */
+  staged?: { picks: Record<string, string>; excludes: ReadonlySet<string> };
+  onClose: () => void;
+}) {
   const qc = useQueryClient();
   const [phase, setPhase] = React.useState<OrderPhase>({ at: "loading" });
-  // Dispositions, keyed by line name (the op resolves them through the canonical funnel).
-  const [excluded, setExcluded] = React.useState<Set<string>>(new Set());
+  // Dispositions, keyed by line name (the op resolves them through the canonical
+  // funnel) — seeded with the substitutions panel's staged swaps.
+  const [excluded, setExcluded] = React.useState<Set<string>>(new Set(staged?.excludes ?? []));
   const [quantities, setQuantities] = React.useState<Record<string, number>>({});
-  const [picks, setPicks] = React.useState<Record<string, string>>({});
+  const [picks, setPicks] = React.useState<Record<string, string>>({ ...(staged?.picks ?? {}) });
   const [confirmedPartials, setConfirmedPartials] = React.useState<Set<string>>(new Set());
   const [cartAcknowledged, setCartAcknowledged] = React.useState(false);
 
@@ -471,7 +847,17 @@ function OrderPanel({ inCartCount, onClose }: { inCartCount: number; onClose: ()
 
   React.useEffect(() => {
     let cancelled = false;
-    post({ preview: true })
+    // The preview carries any staged swaps so the member reviews the REAL cart:
+    // forced SKUs are revalidated by the op's contract; excludes drop before resolution.
+    const stagedPicks = staged?.picks ?? {};
+    const stagedExcludes = staged?.excludes ?? new Set<string>();
+    post({
+      preview: true,
+      ...(Object.keys(stagedPicks).length
+        ? { overrides: Object.entries(stagedPicks).map(([name, sku]) => ({ name, sku })) }
+        : {}),
+      ...(stagedExcludes.size ? { exclude: [...stagedExcludes] } : {}),
+    })
       .then((result) => {
         if (!cancelled) setPhase({ at: "preview", result });
       })
@@ -481,6 +867,8 @@ function OrderPanel({ inCartCount, onClose }: { inCartCount: number; onClose: ()
     return () => {
       cancelled = true;
     };
+    // staged is captured at open — the panel owns disposition state from here.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [post]);
 
   async function commit(preview: OrderOutcome) {

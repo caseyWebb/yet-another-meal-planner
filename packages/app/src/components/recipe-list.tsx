@@ -2,6 +2,7 @@
 // description / facet chips as the row link, with the plan-toggle and favorite
 // actions on the right. Actions are EXPLICIT sets on the wire (D8): the row computes
 // the target state from the cached overlay/plan and sends it.
+import type * as React from "react";
 import { Link } from "@tanstack/react-router";
 import { useQueryClient } from "@tanstack/react-query";
 import {
@@ -13,7 +14,7 @@ import {
 } from "@grocery-agent/ui";
 import { setFavorite, applyPlanOps, useOverlay, usePlan, type Hit } from "../lib/data";
 
-export function RecipeRow({ recipe }: { recipe: Hit }) {
+export function RecipeRow({ recipe, annotation }: { recipe: Hit; annotation?: React.ReactNode }) {
   const qc = useQueryClient();
   const overlay = useOverlay();
   const plan = usePlan();
@@ -44,6 +45,7 @@ export function RecipeRow({ recipe }: { recipe: Hit }) {
         {recipe.description ? <span className="rdesc">{recipe.description}</span> : null}
         <span className="rfacets">
           <RecipeFacets protein={recipe.protein} cuisine={recipe.cuisine} />
+          {annotation ?? null}
         </span>
       </Link>
       <div className="rrow-actions">
@@ -72,11 +74,18 @@ export function RecipeRow({ recipe }: { recipe: Hit }) {
   );
 }
 
-export function RecipeList({ recipes }: { recipes: Hit[] }) {
+export function RecipeList({
+  recipes,
+  annotate,
+}: {
+  recipes: Hit[];
+  /** Optional per-row annotation (the New & trending row's honest counts chip). */
+  annotate?: (slug: string) => React.ReactNode;
+}) {
   return (
     <ul className="recipes">
       {recipes.map((r) => (
-        <RecipeRow key={r.slug} recipe={r} />
+        <RecipeRow key={r.slug} recipe={r} annotation={annotate?.(r.slug)} />
       ))}
     </ul>
   );

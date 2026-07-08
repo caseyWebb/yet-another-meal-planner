@@ -253,6 +253,87 @@ export class GroceryPage extends AppPage {
     return this.page.getByTestId("order-relink");
   }
 
+  // --- the substitutions panel (member-app-differentiators 5.2) -------------------
+
+  async openSubs(): Promise<void> {
+    await this.page.getByTestId("subs-open").click();
+  }
+
+  subsPanel(): Locator {
+    return this.page.getByTestId("subs-panel");
+  }
+
+  /** A suggestion row for a to-buy line (there may be several — alternative + siblings). */
+  subsRow(forName: string): Locator {
+    return this.page.locator(`[data-testid="subs-row"][data-for="${forName}"]`);
+  }
+
+  subsEmpty(): Locator {
+    return this.page.getByTestId("subs-empty");
+  }
+
+  async acceptSubsRow(row: Locator): Promise<void> {
+    await row.getByTestId("subs-accept").click();
+  }
+
+  async dismissSubsRow(row: Locator): Promise<void> {
+    await row.getByTestId("subs-dismiss").click();
+  }
+
+  async dismissAllSubs(): Promise<void> {
+    await this.page.getByTestId("subs-close").click();
+  }
+
+  // --- the grouping toggle + aisle groups (member-app-differentiators 5.3) --------
+
+  async setGroupMode(mode: "category" | "aisle"): Promise<void> {
+    await this.page
+      .getByTestId("group-mode")
+      .locator("button", { hasText: mode === "aisle" ? "Aisle" : "Category" })
+      .click();
+  }
+
+  aisleGroup(number: string): Locator {
+    return this.page.getByTestId(`grocery-group-aisle-${number}`);
+  }
+
+  /** Every numeric aisle group (the no-location degradation asserts none render). */
+  aisleGroups(): Locator {
+    return this.page.locator('[data-testid^="grocery-group-aisle-"]');
+  }
+
+  /** A graph-derived department group (the no-location fallback tier). */
+  deptGroup(department: string): Locator {
+    return this.page.getByTestId(`grocery-group-dept-${department}`);
+  }
+
+  /** A kind bucket (the final fallback tier — same testids as category mode). */
+  kindGroup(kind: "grocery" | "household" | "other"): Locator {
+    return this.page.getByTestId(`grocery-group-${kind}`);
+  }
+
+  unknownGroup(): Locator {
+    return this.page.getByTestId("grocery-group-unknown");
+  }
+
+  /** A department sub-group inside the "Aisle unknown" bucket. */
+  unknownDept(label: string): Locator {
+    return this.unknownGroup().locator(`[data-testid="grocery-subgroup"][data-dept="${label}"]`);
+  }
+
+  /** Patch the profile's stores block through the real class-(a) preferences write. */
+  async setStores(stores: Record<string, unknown>): Promise<void> {
+    await this.page.evaluate(async (s: Record<string, unknown>) => {
+      const res = await fetch("/api/profile/preferences");
+      const etag = res.headers.get("etag") ?? "";
+      await fetch("/api/profile/preferences", {
+        method: "PATCH",
+        headers: { "content-type": "application/json", "X-App-Csrf": "1", "If-Match": etag },
+        body: JSON.stringify({ patch: { stores: s } }),
+      });
+    }, stores);
+  }
+
   /** The W3 boundary check, through the BROWSER's session-authenticated fetch
    *  (the __Host- session cookie only rides browser requests — Playwright's
    *  request context refuses Secure cookies over http). */

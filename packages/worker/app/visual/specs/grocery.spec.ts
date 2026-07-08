@@ -124,3 +124,62 @@ test("W3: ordered is refused from active and accepted only as the in_cart advanc
   expect(fromInCart.ordered_at).toMatch(/^\d{4}-\d{2}-\d{2}$/);
   await groceryPage.removeRow("w3 probe"); // cleanup
 });
+
+// ── Aisle grouping (member-app-differentiators 5.3/D6), LIVE against the seeded
+// Worker: captured sku_cache placements at the pre-resolved location the spec
+// PATCHes into preferences (whitespace-free label → the client short-circuit, zero
+// Kroger network), the honest "Aisle unknown" bucket with department sub-groups,
+// and the no-location degradation. State restored for later specs.
+
+const DIFF = SEED.app.differentiators;
+
+test("aisle mode walks captured placements and collects the rest under an honest Aisle unknown", async ({
+  groceryPage,
+}) => {
+  await groceryPage.setPlan([TB.planned]);
+  await groceryPage.setStores({ preferred_location: DIFF.location });
+  await groceryPage.goto();
+  await groceryPage.setGroupMode("aisle");
+  // Captured placements order the list by real aisle numbers…
+  await expect(groceryPage.aisleGroup(DIFF.aisles.produce.number)).toContainText(
+    `Aisle ${DIFF.aisles.produce.number} · ${DIFF.aisles.produce.description}`,
+  );
+  await expect(
+    groceryPage.aisleGroup(DIFF.aisles.produce.number).locator(`[data-testid="grocery-item"][data-name="${TB.both}"]`),
+  ).toBeVisible(); // the scallions row keys under green-onion — the captured produce aisle
+  await expect(
+    groceryPage
+      .aisleGroup(DIFF.aisles.meat.number)
+      .locator(`[data-testid="grocery-item"][data-name="${DIFF.aisles.meat.ingredient}"]`),
+  ).toBeVisible();
+  // …and uncaptured lines land in the labeled bucket — never a fabricated number.
+  await expect(groceryPage.unknownGroup()).toContainText("Aisle unknown");
+  await expect(
+    groceryPage.unknownGroup().locator(`[data-testid="grocery-item"][data-name="${G.active[2]}"]`),
+  ).toBeVisible(); // coconut milk: no placement, no department
+  await expect(
+    groceryPage.unknownDept("Home goods").locator(`[data-testid="grocery-item"][data-name="${G.household}"]`),
+  ).toBeVisible(); // the kind fallback sub-group
+  await groceryPage.captureForReview("grocery-aisle-grouping");
+  // Category mode is one toggle away, unchanged from the shipped page.
+  await groceryPage.setGroupMode("category");
+  await groceryPage.expectInCategoryGroup(G.active[0], "grocery");
+  // Restore the seeded store label for later specs.
+  await groceryPage.setStores({ preferred_location: "Kroger — Hyde Park" });
+});
+
+test("aisle mode with no resolvable location degrades to departments/categories — no error, no picker", async ({
+  groceryPage,
+}) => {
+  // A walk-store primary has no deterministic placement source (D6/D10): no store
+  // picker exists, and grouping falls back honestly.
+  await groceryPage.setStores({ primary: "aldi" });
+  await groceryPage.goto();
+  await groceryPage.setGroupMode("aisle");
+  await expect(groceryPage.aisleGroups()).toHaveCount(0);
+  // The seeded green-onion membership edge (allium) yields a department tier; the
+  // household row keeps its kind bucket.
+  await expect(groceryPage.deptGroup("allium")).toBeVisible();
+  await expect(groceryPage.kindGroup("household")).toBeVisible();
+  await groceryPage.setStores({ primary: "kroger" }); // restore
+});

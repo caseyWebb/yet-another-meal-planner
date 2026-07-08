@@ -11,14 +11,35 @@ import type {
   ToBuyViewLine as ToBuyLine,
   PantryCoveredLine as PantryCovered,
   ToBuyView,
+  LinePlacement,
   CandidateView as OrderCandidate,
   ResolvedLine as OrderResolvedLine,
   CheckpointLine as OrderCheckpointLine,
   PlaceOrderOutcome as OrderOutcome,
   PlaceOrderInput as OrderRequest,
+  SuggestSubstitutionsInput as SubstitutionsRequest,
+  SuggestSubstitutionsResult as SubstitutionsResult,
+  LineSuggestions,
+  SubstitutionAlternative,
+  SiblingSuggestion,
 } from "@grocery-agent/worker/order-shapes";
 
-export type { ToBuyLine, PantryCovered, ToBuyView, OrderCandidate, OrderResolvedLine, OrderCheckpointLine, OrderOutcome, OrderRequest };
+export type {
+  ToBuyLine,
+  PantryCovered,
+  ToBuyView,
+  LinePlacement,
+  OrderCandidate,
+  OrderResolvedLine,
+  OrderCheckpointLine,
+  OrderOutcome,
+  OrderRequest,
+  SubstitutionsRequest,
+  SubstitutionsResult,
+  LineSuggestions,
+  SubstitutionAlternative,
+  SiblingSuggestion,
+};
 
 /** Plan §6 posture: near-live reads, no long client cache. */
 const STALE_MS = 15_000;
@@ -227,12 +248,58 @@ export function useGrocery() {
   });
 }
 
-export function useToBuy() {
+export function useToBuy(withAisles = false) {
   return useQuery({
-    queryKey: ["grocery", "to-buy"],
+    // The aisles param is part of the representation (D12): its own cache entry,
+    // still under the "grocery" prefix so the shared invalidation refreshes both.
+    queryKey: ["grocery", "to-buy", withAisles ? "aisles" : "plain"],
     staleTime: STALE_MS,
-    queryFn: async () => jsonOf<ToBuyView>(await api.api.grocery["to-buy"].$get()),
+    queryFn: async () =>
+      withAisles
+        ? // The enriched variant (?aisles=1) — the query string isn't in the typed
+          // client's route params, so this one read goes through plain same-origin fetch.
+          jsonOf<ToBuyView>(await fetch("/api/grocery/to-buy?aisles=1"))
+        : jsonOf<ToBuyView>(await api.api.grocery["to-buy"].$get()),
   });
+}
+
+/** Trending (group-wide, counts only, min-signal-guarded — empty on sparse history). */
+export interface TrendingRecipe extends Hit {
+  time_total: number | null;
+  cooks: number;
+  cooks_by: number;
+  last_cooked: string;
+}
+
+export function useTrending() {
+  return useQuery({
+    queryKey: ["cookbook", "trending"],
+    staleTime: STALE_MS,
+    queryFn: async () =>
+      jsonOf<{ recipes: TrendingRecipe[]; window_days: number }>(await api.api.cookbook.trending.$get()),
+  });
+}
+
+export function usePickedForYou() {
+  return useQuery({
+    queryKey: ["cookbook", "picked-for-you"],
+    staleTime: STALE_MS,
+    queryFn: async () =>
+      jsonOf<{ recipes: (Hit & { time_total: number | null })[] }>(
+        await api.api.cookbook["picked-for-you"].$get(),
+      ),
+  });
+}
+
+/**
+ * The substitution read — member-initiated and ONLINE-ONLY (D12): a plain fetch
+ * through the typed client, never a persisted/replayed mutation (the read fans out to
+ * Kroger server-side; results are per-session client state, no query cache entry).
+ */
+export async function fetchSubstitutions(input: SubstitutionsRequest = {}): Promise<SubstitutionsResult> {
+  const res = await api.api.grocery.substitutions.$post({ json: input });
+  if (!res.ok) throw await apiError(res);
+  return (await res.json()) as SubstitutionsResult;
 }
 
 export function usePantry() {
@@ -305,6 +372,8 @@ export async function setFavorite(qc: QueryClient, slug: string, favorite: boole
   const res = await api.api.overlay.favorite.$put({ json: { slug, favorite } });
   if (!res.ok) throw await apiError(res);
   await qc.invalidateQueries({ queryKey: ["overlay"] });
+  // Picked-for-you is a pure function of the favorites set (D12) — recompute it.
+  await qc.invalidateQueries({ queryKey: ["cookbook", "picked-for-you"] });
 }
 
 export interface PlanOp {

@@ -110,6 +110,28 @@ export const SEED = {
       covered: "baby spinach",
       underived: "viz-beef-ragu",
     },
+    // Differentiator fixtures (member-app-differentiators D11): the trending row's
+    // threshold-crossing cook (pat's cook of the seeded recipe makes 3 cooks / 2
+    // tenants — deleting the active member's own rows drops it below the guard for
+    // the empty-state test), the picked-for-you expectation (nearest embedded
+    // neighbor of the favorited recipe's vector), the pre-resolved Kroger locationId
+    // the aisle specs PATCH into preferences (whitespace-free → the client
+    // short-circuit, zero Kroger network), the aisle-tagged sku_cache rows, and the
+    // production-shaped sibling edge family (edges born-audited so the edge-audit
+    // backlog the admin suite pins stays at 1).
+    differentiators: {
+      topPick: "viz-fish-tacos",
+      location: "03500520",
+      aisles: {
+        meat: { ingredient: "chicken thighs", number: "11", description: "Meat & Seafood" },
+        produce: { ingredient: "green-onion", number: "3", description: "Produce" },
+      },
+      siblings: {
+        line: "cabbage::type-napa",
+        family: ["cabbage::color-green", "cabbage::color-red"],
+        parent: "cabbage",
+      },
+    },
   },
   // Mirrors src/health.ts HEALTH_JOBS (every registered job gets health + run history so no
   // Status row renders never-run).
@@ -314,6 +336,11 @@ export function d1Statements(now) {
     `INSERT INTO cooking_log (tenant, date, type, recipe, name) VALUES` +
       ` (${q(members.active)}, ${q(day(now - 1 * DAY))}, 'recipe', ${q(recipe.slug)}, NULL),` +
       ` (${q(members.active)}, ${q(day(now - 3 * DAY))}, 'recipe', ${q(recipe.slug)}, NULL),` +
+      // The pending member's cook (member-app-differentiators D11): the seeded recipe
+      // crosses the trending min-signal guard GROUP-WIDE (3 cooks, 2 distinct tenants),
+      // and stays below it (1 cook, 1 tenant) once the active member deletes their own
+      // rows — the browse spec's empty-state provisioning.
+      ` (${q(members.pending)}, ${q(day(now - 2 * DAY))}, 'recipe', ${q(recipe.slug)}, NULL),` +
       ` (${q(members.active)}, ${q(day(now - 5 * DAY))}, 'ad_hoc', NULL, 'Fridge pasta');`,
   );
   stmts.push(`DELETE FROM overlay WHERE tenant = ${q(members.active)};`);
@@ -537,6 +564,39 @@ export function d1Statements(now) {
   stmts.push(`DELETE FROM brand_prefs WHERE tenant = ${q(members.active)};`);
   stmts.push(
     `INSERT INTO brand_prefs (tenant, term, ranks) VALUES (${q(members.active)}, 'butter', '["Kerrygold","store brand"]');`,
+  );
+
+  // --- Differentiators (member-app-differentiators D11) ---------------------------
+  const diff = app.differentiators;
+  // Aisle-tagged sku_cache rows at the pre-resolved location the aisle spec PATCHes
+  // into preferences: two seeded to-buy lines gain captured placements ("chicken
+  // thighs" by its own key; the scallions row keys under the green-onion alias), the
+  // rest stay honest "Aisle unknown". Keys are canonical fixpoints, so the sku-cache
+  // re-key burndown the admin suite pins stays converged (plan empty).
+  stmts.push(`DELETE FROM sku_cache WHERE location_id = ${q(diff.location)};`);
+  stmts.push(
+    "INSERT INTO sku_cache (ingredient, location_id, sku, brand, size, last_used, aisle_number, aisle_description, aisle_side, aisle_captured_at) VALUES " +
+      `(${q(diff.aisles.meat.ingredient)}, ${q(diff.location)}, '0001111091234', 'Kroger', '1.5 lb', ${q(day(now - 4 * DAY))}, ${q(diff.aisles.meat.number)}, ${q(diff.aisles.meat.description)}, 'L', ${q(day(now - 4 * DAY))}), ` +
+      `(${q(diff.aisles.produce.ingredient)}, ${q(diff.location)}, '0001111046025', 'Kroger', '1 bunch', ${q(day(now - 4 * DAY))}, ${q(diff.aisles.produce.number)}, ${q(diff.aisles.produce.description)}, NULL, ${q(day(now - 4 * DAY))});`,
+  );
+  // The production-shaped sibling edge family (the spike's cabbage fixture): three
+  // concrete specializations satisfying the concrete base, kind `general`. Edges are
+  // BORN-AUDITED (audited_at set) so the edge-audit backlog stays exactly 1.
+  const fam = [diff.siblings.line, ...diff.siblings.family];
+  stmts.push(`DELETE FROM ingredient_edge WHERE to_id = ${q(diff.siblings.parent)};`);
+  stmts.push(`DELETE FROM ingredient_identity WHERE id IN (${[diff.siblings.parent, ...fam].map(q).join(", ")});`);
+  stmts.push(
+    "INSERT INTO ingredient_identity (id, base, detail, concrete, source, decided_at) VALUES " +
+      `(${q(diff.siblings.parent)}, ${q(diff.siblings.parent)}, NULL, 1, 'auto', ${now - 9 * DAY}), ` +
+      fam
+        .map((id) => `(${q(id)}, ${q(id.slice(0, id.indexOf("::")))}, ${q(id.slice(id.indexOf("::") + 2))}, 1, 'auto', ${now - 9 * DAY})`)
+        .join(", ") +
+      ";",
+  );
+  stmts.push(
+    "INSERT INTO ingredient_edge (from_id, to_id, kind, source, decided_at, audited_at) VALUES " +
+      fam.map((id) => `(${q(id)}, ${q(diff.siblings.parent)}, 'general', 'auto', ${now - 9 * DAY}, ${now - 9 * DAY})`).join(", ") +
+      ";",
   );
 
   return stmts;
