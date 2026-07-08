@@ -1,6 +1,13 @@
-// /data/recipes — placeholder (screen lands with group 3).
+// /data/recipes — the Recipes list (search + mode + page/size ride the URL, defaults omitted).
 import { createFileRoute } from "@tanstack/react-router";
+import { RecipesListScreen, validateRecipesSearch } from "../screens/data-recipes";
 
 export const Route = createFileRoute("/data/recipes/")({
-  component: () => <p className="screen-loading">DataRecipesIndex</p>,
+  validateSearch: validateRecipesSearch,
+  component: DataRecipesIndexRoute,
 });
+
+function DataRecipesIndexRoute() {
+  const search = Route.useSearch();
+  return <RecipesListScreen search={search} />;
+}

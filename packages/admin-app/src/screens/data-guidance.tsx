@@ -166,6 +166,6 @@ export function GuidanceScreen({ search }: { search: GuidanceSearch }) {
     case "success":
       return <GuidanceView payload={query.data} />;
     default:
-      return assertNever(query.status);
+      return assertNever(query);
   }
 }

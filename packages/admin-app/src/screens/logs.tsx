@@ -93,16 +93,11 @@ const LogsView = ({ data, onRefresh }: { data: LogsRunsData; onRefresh: () => vo
   const okCount = filtered.filter((r) => r.ok).length;
   const failCount = filtered.length - okCount;
 
-  /** Navigate to a filter/page combination, defaults omitted (bare /logs is the default view);
-   *  any `?run=` highlight is a one-shot deep-link and drops on the first filter/page change. */
+  /** Navigate to a filter/page combination (the route's stripSearchParams middleware omits the
+   *  defaults, so the unfiltered first page is the bare /logs); any `?run=` highlight is a
+   *  one-shot deep-link and drops on the first filter/page change. */
   const go = (nextJob: string, nextPage: number) =>
-    navigate({
-      search: {
-        job: nextJob === "All" ? undefined : nextJob,
-        page: nextPage > 0 ? nextPage + 1 : undefined,
-        run: undefined,
-      },
-    });
+    navigate({ search: { job: nextJob, page: nextPage + 1, run: undefined } });
 
   return (
     <div>

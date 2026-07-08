@@ -68,7 +68,7 @@ export function StoresScreen() {
       case "success":
         return <StoresList stores={query.data.stores} />;
       default:
-        return assertNever(query.status);
+        return assertNever(query);
     }
   })();
 
@@ -194,6 +194,6 @@ export function StoreDetailScreen({ slug }: { slug: string }) {
     case "success":
       return <StoreDetail payload={query.data} />;
     default:
-      return assertNever(query.status);
+      return assertNever(query);
   }
 }

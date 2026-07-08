@@ -1,6 +1,12 @@
-// /data/stores/$slug — placeholder (screen lands with group 3).
+// /data/stores/$slug — one store's identity/SKU/notes detail (full-width; the sub-nav hides).
 import { createFileRoute } from "@tanstack/react-router";
+import { StoreDetailScreen } from "../screens/data-stores";
 
 export const Route = createFileRoute("/data/stores/$slug")({
-  component: () => <p className="screen-loading">StoreDetail</p>,
+  component: DataStoreDetailRoute,
 });
+
+function DataStoreDetailRoute() {
+  const { slug } = Route.useParams();
+  return <StoreDetailScreen slug={slug} />;
+}

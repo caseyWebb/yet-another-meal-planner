@@ -243,7 +243,7 @@ export function RecipesListScreen({ search }: { search: RecipesSearch }) {
       case "success":
         return <RecipesList data={query.data} q={q} mode={mode} size={size} />;
       default:
-        return assertNever(query.status);
+        return assertNever(query);
     }
   })();
 
@@ -437,6 +437,6 @@ export function RecipeDetailScreen({ slug }: { slug: string }) {
     case "success":
       return <RecipeDetail payload={query.data} />;
     default:
-      return assertNever(query.status);
+      return assertNever(query);
   }
 }
