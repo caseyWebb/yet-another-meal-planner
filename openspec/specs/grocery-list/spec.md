@@ -43,7 +43,7 @@ The grocery list SHALL be an ingredient-level, **SKU-free** buy list of committe
 
 ### Requirement: Grocery list CRUD tools
 
-The system SHALL provide `read_grocery_list`, `add_to_grocery_list`, `update_grocery_list`, and `remove_from_grocery_list` for single-item live edits, each a row-level D1 operation that returns without a `commit_sha`. `add_to_grocery_list` SHALL be keyed by a **normalized name** and MERGE a re-added name into the existing row (union `for_recipes`, reconcile `quantity`) via upsert rather than creating a duplicate. The normalized key SHALL be resolved through the shared `IngredientContext` funnel (the canonical ingredient id — normalize **and** capture) for a **food** row, and through `normalizeName` (lowercase + whitespace-collapse) for a **non-food** row, where a row is food iff its `kind` is `grocery` and its `domain` is grocery (or absent). A non-food row SHALL NOT be resolved or captured, so the ingredient identity graph only ever ingests real food vocabulary. `remove_from_grocery_list` SHALL resolve its query through the same funnel so a case/quantity/alias-varying removal hits its row. New items SHALL be created with `status: active`. Because each write is a single-row D1 upsert/update/delete (no whole-file read-modify-write), several mutations in one turn are simply a sequence of row-level writes — there is no batch/commit tool and no full-file replay to drop concurrent updates.
+The system SHALL provide `read_grocery_list`, `add_to_grocery_list`, `update_grocery_list`, and `remove_from_grocery_list` for single-item live edits, each a row-level D1 operation that returns without a `commit_sha`. `add_to_grocery_list` SHALL be keyed by a **normalized name** and MERGE a re-added name into the existing row (union `for_recipes`, reconcile `quantity`) via upsert rather than creating a duplicate. The normalized key SHALL be resolved through the shared `IngredientContext` funnel (the canonical ingredient id — normalize **and** capture) for a **food** row, and through `normalizeName` (lowercase + whitespace-collapse) for a **non-food** row, where a row is food iff its `kind` is `grocery` and its `domain` is grocery (or absent). A non-food row SHALL NOT be resolved or captured, so the ingredient identity graph only ever ingests real food vocabulary. `remove_from_grocery_list` SHALL resolve its query through the same funnel so a case/quantity/alias-varying removal hits its row. New items SHALL be created with `status: active`. `update_grocery_list` SHALL guard the `status` lifecycle in the shared update operation (so every caller — the tool and any HTTP surface — gets the identical guarantee): transitions between `active` and `in_cart` SHALL be freely writable in both directions (including re-listing an `ordered` row back to `active`); a write of `status: "ordered"` SHALL be accepted **only** when the row's current status is `in_cart` (the user-asserted "I placed the order" advance) and SHALL stamp `ordered_at`; any other write of `ordered` SHALL be rejected with a structured `validation_failed` error carrying the attempted transition, leaving the row unchanged. The order-flow advance operations (`place_order`'s in-cart advance and the satellite receipt flush's ordered advance) are distinct code paths and SHALL be unaffected by the guard. The tool description SHALL state this guarantee. Because each write is a single-row D1 upsert/update/delete (no whole-file read-modify-write), several mutations in one turn are simply a sequence of row-level writes — there is no batch/commit tool and no full-file replay to drop concurrent updates.
 
 #### Scenario: Re-adding an existing item merges
 
@@ -74,6 +74,21 @@ The system SHALL provide `read_grocery_list`, `add_to_grocery_list`, `update_gro
 
 - **WHEN** a menu capture adds several to-buy items at once
 - **THEN** each item is upserted as its own `grocery_list` row (no batch commit tool, no per-item git commit)
+
+#### Scenario: Cart moves are freely writable
+
+- **WHEN** `update_grocery_list` sets an `active` item to `in_cart`, or an `in_cart` item back to `active`
+- **THEN** the write is applied unconditionally, in either direction
+
+#### Scenario: The user-asserted order-placed advance stamps ordered_at
+
+- **WHEN** `update_grocery_list` sets an `in_cart` item to `ordered` (the user asserting the order was placed)
+- **THEN** the row advances to `ordered` and `ordered_at` is stamped with today's date
+
+#### Scenario: Ordered cannot be minted from active
+
+- **WHEN** `update_grocery_list` attempts to set an `active` item directly to `ordered`
+- **THEN** the write is rejected with a structured `validation_failed` error carrying the attempted transition, and the row is unchanged
 
 ### Requirement: Prompted promotion from pantry
 
