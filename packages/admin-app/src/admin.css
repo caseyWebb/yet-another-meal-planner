@@ -63,6 +63,10 @@ html.dark {
 
   /* Top-level area nav. */
   .nav { display: flex; gap: .25rem; margin: .75rem 0 1.5rem; border-bottom: 1px solid var(--c-line2); }
+
+  /* Deployed-build footer: the code SHA the Worker is running + the contract version. */
+  .app-footer { margin-top: 3rem; padding-top: 1rem; border-top: 1px solid var(--c-line2); display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; font-size: .8rem; color: var(--c-soft); }
+  .app-footer code { color: var(--c-mid); }
   .nav-link { background: none; border: 0; font: inherit; cursor: pointer; color: var(--c-mid); padding: .5rem .75rem; border-bottom: 2px solid transparent; margin-bottom: -1px; }
   .nav-link:hover { color: var(--c-ink); }
   .nav-link.active { color: var(--c-ink); border-bottom-color: var(--accent); font-weight: 600; }

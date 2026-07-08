@@ -11,6 +11,7 @@ import type { BlankSchema } from "hono/types";
 import { validator } from "hono/validator";
 import type { Env } from "../env.js";
 import { db } from "../db.js";
+import { appBuild } from "../api/middleware.js";
 import { ToolError } from "../errors.js";
 import type { KvStore } from "../kroger-user.js";
 import {
@@ -298,7 +299,19 @@ export function registerApiRoutes(app: Hono<{ Bindings: Env }, BlankSchema, "/ad
             runsByJob[name] = await readJobRuns(c.env, name, STATUS_SPARKLINE_WINDOW);
           }),
         );
-        return c.json({ payload, counts, runsByJob, reconcile, audit, satellites: liveness.activeSatellites, contractVersion: CONTRACT_VERSION });
+        // `appBuild` is the code SHA the Worker is actually running (deploy stamps it via
+        // `--var APP_BUILD:<sha>`; "dev" locally) — the admin footer renders it so the operator
+        // can confirm at a glance what's live. Mirrors the `contractVersion` precedent here.
+        return c.json({
+          payload,
+          counts,
+          runsByJob,
+          reconcile,
+          audit,
+          satellites: liveness.activeSatellites,
+          contractVersion: CONTRACT_VERSION,
+          appBuild: appBuild(c.env),
+        });
       })
       // Member detail: the roster row + the member-360 read + recipe-title resolution. A pending
       // member returns `{ row, detail: null }` ONLY — no per-tenant detail read is attempted for
