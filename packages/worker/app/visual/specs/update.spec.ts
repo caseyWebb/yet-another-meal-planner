@@ -1,50 +1,41 @@
-// The prompt-to-reload / version-skew UX (member-app-offline D7, D11). Service
-// workers are BLOCKED here so `page.route` interception is classical — the harness
-// stamps both sides `pw-harness`, and this spec fabricates a DIFFERING `X-App-Build`
-// to drive the skew store.
+// The prompt-to-reload / version-skew UX (member-app-offline D7, D11). Service workers
+// are BLOCKED here so `page.route` interception is classical — the harness stamps both
+// sides `pw-harness`, and this spec fabricates a DIFFERING `X-App-Build` to drive the
+// skew tap.
 //
-// HONEST SPLIT (recorded per D11): a genuinely WAITING second SW build is not
-// fabricated in the harness (it would need two full builds swapped mid-test). The
-// `needRefresh` trigger is library-provided (vite-plugin-pwa's registerSW contract)
-// and drives the SAME banner component and the SAME member-initiated action this spec
-// exercises through the skew trigger; the SW-side offline reality (precache serving
-// the shell) is asserted for real by offline.spec.ts.
+// HONEST SPLIT (recorded per D11): the reload banner is driven by `needRefresh` — a
+// genuinely WAITING second service-worker build — which is library-provided
+// (vite-plugin-pwa's registerSW contract) and NOT fabricated here (it would need two
+// full builds swapped mid-test; the SW-side offline reality is asserted for real by
+// offline.spec.ts). What this spec owns is the deterministic negative: a bare
+// `X-App-Build` mismatch must NEVER prompt on its own — it only nudges a bounded SW
+// update check — so the member never sees a "new version" banner the app can't deliver.
 import { test, expect } from "../fixtures";
 
 test.use({ serviceWorkers: "block" });
 
-test("a fabricated build skew renders the reload prompt, and only the member's action reloads", async ({
+test("a build skew never prompts on its own — the header only nudges an update check", async ({
   page,
-  loginPage,
+  asMember,
   shellPage,
 }) => {
-  // The login screen's one-shot GET /api/version answers with a DIFFERENT stamped id.
-  await page.route("**/api/version", (route) =>
-    route.fulfill({
-      status: 200,
-      headers: { "content-type": "application/json", "X-App-Build": "pw-other-build" },
-      body: JSON.stringify({ build: "pw-other-build" }),
-    }),
-  );
-  await loginPage.goto();
-  await loginPage.landmark();
-  await expect(shellPage.reloadBanner()).toBeVisible();
-
-  // Nothing auto-reloads: the page is still the same document while the banner shows.
-  await page.evaluate(() => {
-    (window as { __preReload?: boolean }).__preReload = true;
+  // Advertise a DIFFERING stamped build on EVERY /api response, so the skew tap fires
+  // repeatedly — the exact condition under which a header-driven banner would (wrongly)
+  // appear and, on reload, loop. With no waiting worker there is no `needRefresh`, so
+  // the banner must stay absent no matter how many responses skew.
+  await page.route("**/api/**", async (route) => {
+    const res = await route.fetch();
+    await route.fulfill({ response: res, headers: { ...res.headers(), "x-app-build": "pw-other-build" } });
   });
-  await expect(shellPage.reloadBanner()).toBeVisible();
-  expect(await page.evaluate(() => (window as { __preReload?: boolean }).__preReload)).toBe(true);
 
-  // Stop fabricating, then act on the banner: the member-initiated action navigates,
-  // and the fresh document (equal ids again) shows no banner.
-  await page.unroute("**/api/version");
-  await shellPage.applyReload();
-  await expect
-    .poll(() => page.evaluate(() => (window as { __preReload?: boolean }).__preReload ?? null))
-    .toBe(null); // a real navigation happened — the marker died with the old document
-  await loginPage.landmark();
+  await asMember();
+  await shellPage.landmark();
+  await expect(shellPage.reloadBanner()).toHaveCount(0);
+
+  // Navigating fires fresh /api queries through the same tap — still no false prompt.
+  await shellPage.navTo("Meal plan");
+  await expect(shellPage.reloadBanner()).toHaveCount(0);
+  await shellPage.navTo("Grocery list");
   await expect(shellPage.reloadBanner()).toHaveCount(0);
 });
 

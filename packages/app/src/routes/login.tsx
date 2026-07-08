@@ -34,8 +34,8 @@ function LoginPage() {
 
   // One-shot version check (member-app-offline D7 / P0 D11's stated pre-login
   // purpose): a login screen makes no other request until submit, so this is the
-  // only thing that can feed the skew store before sign-in. The response header
-  // rides the shared fetch wrapper's X-App-Build tap; failures are irrelevant.
+  // only thing that can trigger a pre-login service-worker update check. The response
+  // header rides the shared fetch wrapper's X-App-Build tap; failures are irrelevant.
   useEffect(() => {
     api.api.version.$get().catch(() => {});
   }, []);

@@ -17,14 +17,9 @@ export class ShellPage extends AppPage {
     return this.page.getByTestId("offline-pill");
   }
 
-  /** The prompt-to-reload banner (D7) — renders on needRefresh OR detected skew. */
+  /** The prompt-to-reload banner (D7) — renders only on a waiting SW (`needRefresh`). */
   reloadBanner(): Locator {
     return this.page.getByTestId("reload-banner");
-  }
-
-  /** The banner's member-initiated action. */
-  async applyReload(): Promise<void> {
-    await this.page.getByTestId("reload-apply").click();
   }
 
   /** The account menu's install affordance (rendered only when the browser offered

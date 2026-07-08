@@ -9,24 +9,14 @@ import type { MemberApi } from "@grocery-agent/worker/api";
  *  (the version-skew contract). `"dev"` when unstamped (local dev; the harness). */
 export const APP_BUILD: string = import.meta.env.VITE_APP_BUILD ?? "dev";
 
-// --- the version-skew store (member-app-offline D7) ---------------------------------
-// Passive detection: the shared fetch wrapper below taps every response's
-// `X-App-Build`; a skew is signaled ONLY when both ids are stamped (non-"dev") and
-// differ — local dev and the unstamped case stay inert. Subscribable
-// (useSyncExternalStore-shaped) for the reload prompt; a detected skew also fires a
-// throttled SW update check so `needRefresh` can materialize. No polling loop.
-
-let skewDetected = false;
-const skewListeners = new Set<() => void>();
-
-export function subscribeSkew(onChange: () => void): () => void {
-  skewListeners.add(onChange);
-  return () => skewListeners.delete(onChange);
-}
-
-export function skewSnapshot(): boolean {
-  return skewDetected;
-}
+// --- version-skew detection (member-app-offline D7) ---------------------------------
+// The shared fetch wrapper below taps every response's `X-App-Build`. A mismatch means
+// the Worker is ahead of the running bundle — but a bare header mismatch is NOT proof a
+// new bundle is downloaded and ready, so it does not itself prompt: it only kicks a
+// throttled service-worker update check so a WAITING worker (`needRefresh`) can
+// materialize, and that — not the header — is what renders the reload prompt. Inert
+// unless both ids are stamped (non-"dev") and differ; local dev and the harness
+// baseline never fire. No polling loop, no subscribable skew flag.
 
 const UPDATE_CHECK_THROTTLE_MS = 60 * 60_000;
 let lastUpdateCheckAt = 0;
@@ -41,16 +31,16 @@ export function requestSwUpdateCheck(): void {
     ?.getRegistration()
     .then((reg) => reg?.update())
     .catch(() => {
-      // no registration / blocked SW — the skew banner's plain-reload path covers it
+      // no registration / blocked SW — nothing to check; the banner is needRefresh-only,
+      // so it simply won't fire (a no-SW client updates on its next natural refresh)
     });
 }
 
 function noteServerBuild(header: string | null): void {
   if (!header || header === "dev" || APP_BUILD === "dev" || header === APP_BUILD) return;
+  // Worker is ahead: nudge a bounded SW update check so a new build can download and
+  // wait (surfacing as `needRefresh`). The header alone never prompts.
   requestSwUpdateCheck();
-  if (skewDetected) return;
-  skewDetected = true;
-  for (const l of skewListeners) l();
 }
 
 /**

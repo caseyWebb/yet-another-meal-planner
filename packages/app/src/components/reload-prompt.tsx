@@ -1,17 +1,17 @@
-// The prompt-to-reload update flow (member-app-offline D7): ONE banner, TWO triggers,
-// member-initiated always. `needRefresh` (a new SW downloaded and WAITING — the
-// registerType:"prompt" posture means it never activates by itself) and the passive
-// version-skew flag (lib/api.ts's X-App-Build tap) render the same banner; the action
-// activates the waiting SW and reloads — or, on the skew-only path (header arrived
-// before any SW check found the build), attempts the update and plain-reloads.
-// NOTHING ever auto-reloads: a member mid-grocery-aisle is never interrupted.
+// The prompt-to-reload update flow (member-app-offline D7): the banner appears ONLY when
+// a new service worker has downloaded and is WAITING (`needRefresh` — the
+// registerType:"prompt" posture means it never activates by itself), so it never shows
+// unless an update is genuinely ready to apply, and the action always lands on the new
+// bundle. A detected build skew (lib/api.ts's X-App-Build tap) does NOT itself prompt —
+// a bare header mismatch is not proof a new bundle exists to load — it only kicks a
+// bounded SW update check so a waiting worker can materialize. NOTHING ever auto-reloads:
+// a member mid-grocery-aisle is never interrupted.
 import * as React from "react";
 import { useRegisterSW } from "virtual:pwa-register/react";
 import { Button, toast } from "@grocery-agent/ui";
-import { requestSwUpdateCheck, skewSnapshot, subscribeSkew } from "../lib/api";
+import { requestSwUpdateCheck } from "../lib/api";
 
 export function ReloadPrompt() {
-  const skewed = React.useSyncExternalStore(subscribeSkew, skewSnapshot, () => false);
   const {
     needRefresh: [needRefresh],
     offlineReady: [offlineReady, setOfflineReady],
@@ -36,23 +36,7 @@ export function ReloadPrompt() {
     return () => document.removeEventListener("visibilitychange", onVisible);
   }, []);
 
-  if (!needRefresh && !skewed) return null;
-
-  async function reload() {
-    if (needRefresh) {
-      // Activate the waiting SW and reload onto the new bundle.
-      await updateServiceWorker(true);
-      return;
-    }
-    // Skew-only: try to pick the new SW up, then plain-reload (covers the window
-    // where the header arrives before any SW update check has found the build).
-    try {
-      await updateServiceWorker(true);
-    } catch {
-      // fall through to the reload
-    }
-    window.location.reload();
-  }
+  if (!needRefresh) return null;
 
   return (
     <div
@@ -61,7 +45,9 @@ export function ReloadPrompt() {
       data-testid="reload-banner"
     >
       <span>A new version is ready.</span>
-      <Button size="sm" data-testid="reload-apply" onClick={() => void reload()}>
+      {/* A waiting worker always exists here, so this skip-waits into it and reloads
+          onto the new bundle — no plain-reload path that could re-serve the old shell. */}
+      <Button size="sm" data-testid="reload-apply" onClick={() => void updateServiceWorker(true)}>
         Reload
       </Button>
     </div>

@@ -181,27 +181,37 @@ automated drift check so a new Worker-owned route cannot be silently swallowed c
 - **THEN** the automated check fails, before any member can be served the SPA shell in place
   of the Worker route
 
-### Requirement: Updates are prompt-to-reload and version skew is surfaced
+### Requirement: Updates are prompt-to-reload and prompt only when ready to apply
 
-The app SHALL apply updates only through member action: a waiting service worker or a
-detected build skew renders a reload prompt, and nothing reloads or activates automatically.
-Skew detection SHALL compare each API response's `X-App-Build` (and a one-shot
-`GET /api/version` on the login screen) against the bundle's embedded build id, signaling
-only when both are stamped (non-`"dev"`) and differ; a detected skew SHALL trigger a
-service-worker update check. Update checks SHALL be bounded (skew-triggered plus a throttled
-check on returning to the foreground) — no polling loop.
+The app SHALL apply updates only through member action, and SHALL prompt only when an
+update is genuinely ready to apply: the reload prompt renders when a new service worker
+has downloaded and is WAITING (`needRefresh`), whose action activates it and lands on the
+new bundle, and nothing reloads or activates automatically. A detected build skew SHALL
+NOT itself render the prompt — a bare header mismatch is not proof a new bundle exists to
+load — it SHALL only trigger a bounded service-worker update check so a waiting worker can
+materialize. Skew detection SHALL compare each API response's `X-App-Build` (and a one-shot
+`GET /api/version` on the login screen) against the bundle's embedded build id, firing a
+check only when both are stamped (non-`"dev"`) and differ. Update checks SHALL be bounded
+(skew-triggered plus a throttled check on returning to the foreground) — no polling loop.
 
-#### Scenario: A stale bundle prompts instead of reloading
+#### Scenario: A stale bundle nudges an update check, never a bare prompt
 
 - **WHEN** a deployed Worker answers with an `X-App-Build` differing from the running
   bundle's stamped build id
-- **THEN** the member sees the reload prompt and the app continues working untouched until
-  they act — a member mid-grocery-aisle is never auto-reloaded
+- **THEN** the app requests a service-worker update check and continues working untouched,
+  prompting only once a new worker has downloaded and is waiting — never on the header
+  alone, so a spurious or transient skew never shows a reload the app cannot deliver
+
+#### Scenario: A waiting build prompts and reloading applies it
+
+- **WHEN** a new service worker has downloaded and is waiting (`needRefresh`)
+- **THEN** the member sees the reload prompt and their action activates the waiting worker
+  and lands on the new bundle — a member mid-grocery-aisle is never auto-reloaded
 
 #### Scenario: Skew detection is inert when unstamped
 
 - **WHEN** either side reports the `"dev"` build id (local dev, tests)
-- **THEN** no skew is signaled and no prompt renders
+- **THEN** no update check fires and no prompt renders
 
 ### Requirement: The app is installable with real icons and an offered install affordance
 
