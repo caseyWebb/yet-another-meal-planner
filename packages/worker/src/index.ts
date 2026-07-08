@@ -27,6 +27,7 @@ import { buildNormalizeDeps, runNormalizeJob } from "./ingredient-normalize.js";
 import { buildReconfirmDeps, runReconfirmJob } from "./ingredient-reconfirm.js";
 import { buildAliasAuditDeps, runAliasAuditJob } from "./ingredient-alias-audit.js";
 import { buildEdgeAuditDeps, runEdgeAuditJob } from "./ingredient-edge-audit.js";
+import { buildTitleAuditDeps, runTitleAuditJob } from "./title-audit.js";
 import { runSkuRekeyJob } from "./sku-cache-rekey.js";
 import { runReconcileJob } from "./grocery-pantry-reconcile.js";
 import { loadDiscoveryConfig } from "./discovery-calibration.js";
@@ -248,6 +249,12 @@ export default {
       //   * edge audit — deletes rep-resolved self-loops deterministically, resolves 2-cycles
       //     with one direction check, validates standing satisfies edges (drop on no).
       runEdgeAuditJob(env, buildEdgeAuditDeps(env)),
+      // The corpus TITLE re-audit (recipe-title-audit): converge pre-existing flowery imported
+      // titles to the naming contract — bounded per tick, one-shot-stamped (`title_audit`; new
+      // imports born-stamped), guarded word-subset title-clean, frontmatter `title` only (slugs
+      // are immutable ids). Runs in phase 1, BEFORE the phase-2 projection, so a rewrite is
+      // re-indexed the same tick; quiesces to a ~0-LLM no-op once the backlog drains.
+      runTitleAuditJob(env, buildTitleAuditDeps(env, corpus)),
       // Re-key sku_cache rows onto the canonical id as capture moves resolution under them —
       // the cache's counterpart to the grocery/pantry reconcile above. Plain code, no LLM,
       // idempotent every tick (a converged pass plans nothing); no capture side effect, so

@@ -26,6 +26,7 @@ export const HEALTH_JOBS = [
   "discovery-sweep",
   "reconcile-signals",
   "archetype-derive",
+  "title-audit",
 ] as const;
 
 /** One job's stored health record. `summary` MUST stay tenant-data-free. */
