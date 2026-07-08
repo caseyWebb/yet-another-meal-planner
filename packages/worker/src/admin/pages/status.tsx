@@ -28,8 +28,10 @@ import { AuditStatusRow, RecipeBackfillGauge } from "./audits.js";
 import { CONTRACT_VERSION } from "@grocery-agent/contract";
 
 // The run-history window: how many recent runs are fetched, and the fixed number of sparkline
-// slots rendered (a shorter history is ghost-padded up to it).
-export const STATUS_SPARKLINE_WINDOW = 30;
+// slots rendered (a shorter history is ghost-padded up to it). Owned by the API layer (the
+// status read fetches the same window); re-exported for this page's existing consumers.
+import { STATUS_SPARKLINE_WINDOW } from "../api.js";
+export { STATUS_SPARKLINE_WINDOW };
 
 type JobState = "healthy" | "failing" | "neverRun";
 

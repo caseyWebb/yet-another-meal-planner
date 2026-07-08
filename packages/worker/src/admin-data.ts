@@ -365,6 +365,26 @@ export async function searchRecipes(env: Env, query: string, mode: SearchMode): 
   return { mode: "hybrid", results: hits };
 }
 
+/** The facet fields the Recipes-list rows chip alongside title/slug/status. */
+export interface RecipeFacetRow {
+  protein: string | null;
+  cuisine: string | null;
+  time_total: number | null;
+}
+
+/**
+ * Bulk facet read (protein/cuisine/time_total) for the Recipes list rows — one query,
+ * joined against `recipeList`'s slug/title/status in memory (mirrors `recipeList`'s own
+ * "no per-slug fetch" discipline). Slugs missing from `recipes` (skipped/pending) simply
+ * have no facet entry, which the list renders as no chips.
+ */
+export async function recipeFacets(env: Env): Promise<Map<string, RecipeFacetRow>> {
+  const rows = await db(env).all<{ slug: string } & RecipeFacetRow>(
+    "SELECT slug, protein, cuisine, time_total FROM recipes",
+  );
+  return new Map(rows.map((r) => [r.slug, { protein: r.protein, cuisine: r.cuisine, time_total: r.time_total }]));
+}
+
 // --- Member 360 view ---------------------------------------------------------
 
 /** One member's complete per-tenant state. Reuses the canonical profile/session readers. */

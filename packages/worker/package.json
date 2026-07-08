@@ -10,6 +10,7 @@
   },
   "exports": {
     "./api": "./src/api/app.ts",
+    "./admin-api": "./src/admin/api.ts",
     "./order-shapes": "./src/order-shapes.ts"
   },
   "scripts": {

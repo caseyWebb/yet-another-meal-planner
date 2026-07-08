@@ -7,7 +7,7 @@
 // is one splitter, not two.
 
 import { marked } from "marked";
-import { parseMarkdown } from "../../parse.js";
+import { parseMarkdown } from "../parse.js";
 
 export interface MarkdownDocument {
   /** Parsed YAML frontmatter, or `null` when the source had no leading `---` fence at all

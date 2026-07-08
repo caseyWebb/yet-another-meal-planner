@@ -4,7 +4,7 @@
 // bare) and confirms the body renders without leaking the fence into the HTML output.
 
 import { describe, it, expect } from "vitest";
-import { parseMarkdownDocument, renderMarkdown } from "../src/admin/ui/markdown.js";
+import { parseMarkdownDocument, renderMarkdown } from "../src/admin/markdown.js";
 
 describe("parseMarkdownDocument", () => {
   it("splits a leading YAML frontmatter fence from the body and parses it", () => {

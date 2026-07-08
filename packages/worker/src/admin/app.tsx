@@ -3,24 +3,15 @@
 // middleware. Pages are server-rendered by calling the Worker's own `src/` operation
 // functions directly; interactive islands call the typed `/admin/api/*` routes via `hc`.
 // Both transports call the SAME `src/` functions — one source of truth per operation.
+// The typed route surface (mutations + the SPA's aggregate reads) lives in ./api.ts
+// (JSX-free, so the worker package can export its `AdminApp` type to the admin app).
 
 import { Hono } from "hono";
 import type { MiddlewareHandler } from "hono";
-import { validator } from "hono/validator";
 import type { Env } from "../env.js";
-import { db } from "../db.js";
 import { ToolError } from "../errors.js";
-import type { KvStore } from "../kroger-user.js";
-import {
-  requireAccess,
-  listTenants,
-  onboard,
-  rotate,
-  revoke,
-  krogerConsentLink,
-  randomInviteCode,
-  type AdminDeps,
-} from "../admin.js";
+import { requireAccess } from "../admin.js";
+import { listTenants } from "../admin.js";
 import {
   buildHealthPayload,
   readJobRuns,
@@ -31,21 +22,18 @@ import {
   type JobRun,
 } from "../health.js";
 import { corpusCounts, memberDetail, recipeTitles } from "../admin-data.js";
+import { registerApiRoutes, adminDeps, STATUS_SPARKLINE_WINDOW } from "./api.js";
 import { MembersPage } from "./pages/members.js";
 import { MemberDetailPage, PendingMemberDetailPage, sectionOfSlug } from "./pages/member-detail.js";
-import { StatusPage, STATUS_SPARKLINE_WINDOW } from "./pages/status.js";
+import { StatusPage } from "./pages/status.js";
 import { registerDataRoutes } from "./pages/data.js";
 import { fetchUsage, fetchUsageTrends, fetchToolUsage } from "../usage.js";
 import { UsagePage } from "./pages/usage.js";
 import { readInsights } from "../insights.js";
 import { InsightsPage } from "./pages/insights.js";
-import { readDiscoveryLog, readDiscoveryCandidates, readDiscoveryRowById, deleteDiscoveryRow } from "../discovery-db.js";
-import { mintIngestKey, revokeIngestKey, readSatelliteLiveness } from "../ingest-db.js";
-import { readRejections, getQuarantine, setQuarantine, clearQuarantine, DEFAULT_SOURCE_QUALITY_WINDOW_MS } from "../satellite-audit-db.js";
-import { directoryFromEnv, normalizeTenantId } from "../tenant.js";
-import { buildDiscoveryDeps, processCandidate, DEFAULT_CONFIG } from "../discovery-sweep.js";
-import { addDiscoveryRejection } from "../corpus-db.js";
-import { canonicalizeUrl } from "../url.js";
+import { readDiscoveryCandidates } from "../discovery-db.js";
+import { readSatelliteLiveness } from "../ingest-db.js";
+import { readRejections, getQuarantine, DEFAULT_SOURCE_QUALITY_WINDOW_MS } from "../satellite-audit-db.js";
 import { LogsPage, PAGE_SIZE as LOGS_PAGE_SIZE } from "./pages/logs.js";
 import { DiscoveryPage } from "./pages/discovery.js";
 import { SatellitesPage } from "./pages/satellites.js";
@@ -53,21 +41,8 @@ import { NormalizePage, parseQuery } from "./pages/normalize.js";
 import { readNormalizationPage, readNodesPage } from "../normalize-admin.js";
 import { readReconcileObservability } from "../reconcile-admin.js";
 import { readAuditObservability, readAuditSurface } from "../audit-admin.js";
-import { addAliases, deleteAlias, enqueueNovelTerms, deleteNormalizationLog } from "../corpus-db.js";
-import { getDiscoveryConfig, putDiscoveryConfig, analyzeDiscovery, dryRunDiscovery, testFeed, getOperatorConfig, putOperatorConfig, listCorpus, addCorpus, deleteCorpus } from "./config-api.js";
 import { registerConfigRoutes } from "./pages/config.js";
 import { buildHealthRollup, renderHealthDock } from "./ui/health-dock.js";
-
-/** The injectable surface the member-lifecycle operations close over (real bindings here). */
-function adminDeps(env: Env): AdminDeps {
-  return {
-    tenantKv: env.TENANT_KV,
-    krogerKv: env.KROGER_KV as unknown as KvStore,
-    oauthKv: env.OAUTH_KV as unknown as KvStore,
-    db: db(env),
-    randomCode: randomInviteCode,
-  };
-}
 
 /** The Cloudflare Access gate as middleware — `requireAccess` reused verbatim (the opt-in /
  *  dev-bypass / email-allowlist posture is the function's, unchanged). */
@@ -85,15 +60,6 @@ function statusForToolError(code: string): 400 | 404 | 405 | 500 {
   if (code === "unsupported") return 405;
   return 500;
 }
-
-function connectorUrl(reqUrl: string): string {
-  return `${new URL(reqUrl).origin}/mcp`;
-}
-
-/** The observation kinds a source-audit quarantine flag may key on (matches the ledger's `kind`). */
-const QUARANTINE_KINDS: readonly string[] = ["recipe", "sale", "order"];
-/** Cap the operator quarantine note before it lands in D1 (matches the local-reject `sample` bound). */
-const QUARANTINE_NOTE_MAX = 256;
 
 /** Render a full HTML document for a page component, with a doctype. */
 function page(node: { toString(): string }): string {
@@ -198,176 +164,10 @@ async function renderMemberDetail(c: { env: Env; req: { param(name: string): str
 app.get("/members/:id", async (c) => c.html(await renderMemberDetail(c, "profile")));
 app.get("/members/:id/:section", async (c) => c.html(await renderMemberDetail(c, c.req.param("section"))));
 
-// The typed mutation routes the Members island calls via `hc`. Chained so their
-// request/response types accumulate into `AdminApp` for the client (zero codegen).
-const routes = app
-  .get("/api/tenants", async (c) => c.json(await listTenants(c.env, adminDeps(c.env))))
-  .post("/api/tenants", async (c) => {
-    const body = await c.req.json<{ username?: string; invite_code?: string }>();
-    const result = await onboard(
-      adminDeps(c.env),
-      String(body.username ?? ""),
-      body.invite_code != null ? String(body.invite_code) : undefined,
-    );
-    return c.json({ ...result, connector_url: connectorUrl(c.req.url) });
-  })
-  .post("/api/tenants/:id/rotate", async (c) => {
-    const result = await rotate(adminDeps(c.env), decodeURIComponent(c.req.param("id")));
-    return c.json({ ...result, connector_url: connectorUrl(c.req.url) });
-  })
-  // Mint a single-use Kroger consent link for an allowlisted member (for one with no /mcp session yet).
-  .post("/api/tenants/:id/kroger-login", async (c) =>
-    c.json(await krogerConsentLink(c.env, adminDeps(c.env), decodeURIComponent(c.req.param("id")), new URL(c.req.url).origin)),
-  )
-  .delete("/api/tenants/:id", async (c) => {
-    return c.json(await revoke(adminDeps(c.env), decodeURIComponent(c.req.param("id"))));
-  })
-  // Config › Ingest Keys: the satellite key roster (recipe-ingestion). GET returns the liveness
-  // rollup's per-satellite rows (label/prefix/sources/status/versions/skew — no secret); mint
-  // returns the plaintext secret ONCE; revoke is immediate.
-  .get("/api/ingest/keys", async (c) => c.json({ satellites: (await readSatelliteLiveness(c.env)).satellites }))
-  .post("/api/ingest/keys", validator("json", (v) => v as { label?: string; tenant?: string | null }), async (c) => {
-    const body = c.req.valid("json");
-    const label = String(body.label ?? "").trim();
-    if (!label) throw new ToolError("validation_failed", "an ingest key needs a satellite label");
-    // Optional tenant BINDING (satellite-pull-channel): absent/blank = operator-global. A bound
-    // tenant is resolved against the SAME allowlist the rest of /admin* uses; a non-allowlisted
-    // target mints nothing. The binding is immutable for the key's life.
-    let tenant: string | null = null;
-    const rawTenant = body.tenant == null ? "" : String(body.tenant).trim();
-    if (rawTenant) {
-      const id = normalizeTenantId(rawTenant);
-      if (!(await directoryFromEnv(c.env).get(id))) {
-        throw new ToolError("validation_failed", `tenant ${id} is not on the allowlist`, { field: "tenant" });
-      }
-      tenant = id;
-    }
-    return c.json(await mintIngestKey(c.env, label, Date.now(), tenant));
-  })
-  .post("/api/ingest/keys/:id/revoke", async (c) =>
-    c.json({ id: c.req.param("id"), revoked: await revokeIngestKey(c.env, c.req.param("id")) }),
-  )
-  // Discovery › Satellites source-audit (satellite-source-audit): the per-source quarantine toggle
-  // the audit island hits. Operator-only (behind accessGate); the flag keys on {tenant, kind, source}
-  // — the SAME key the intake quarantine check uses (off the carrying key's tenant, not the kind) — so
-  // setting it actually suppresses that source's intake. `tenant` comes from the source's own audit
-  // row (operator-global recipe/sale = null; a tenant-bound source carries its binding). Structured
-  // ToolErrors surface via app.onError; satellite-audit-db maps D1 failures to storage_error.
-  .post(
-    "/api/satellites/quarantine",
-    validator("json", (v) => v as { kind?: string; source?: string; tenant?: string | null; note?: string }),
-    async (c) => {
-      const body = c.req.valid("json");
-      const kind = String(body.kind ?? "").trim();
-      const source = String(body.source ?? "").trim();
-      if (!kind || !source) throw new ToolError("validation_failed", "quarantine needs a kind and a source");
-      if (!QUARANTINE_KINDS.includes(kind)) {
-        throw new ToolError("validation_failed", `quarantine kind must be one of ${QUARANTINE_KINDS.join(", ")}`, { field: "kind" });
-      }
-      const tenant = body.tenant == null || body.tenant === "" ? null : String(body.tenant);
-      const note = body.note?.trim() ? body.note.trim().slice(0, QUARANTINE_NOTE_MAX) : null;
-      await setQuarantine(c.env, { tenant, kind, source }, note);
-      return c.json({ quarantined: true, kind, source, tenant });
-    },
-  )
-  .post(
-    "/api/satellites/quarantine/clear",
-    validator("json", (v) => v as { kind?: string; source?: string; tenant?: string | null }),
-    async (c) => {
-      const body = c.req.valid("json");
-      const kind = String(body.kind ?? "").trim();
-      const source = String(body.source ?? "").trim();
-      if (!kind || !source) throw new ToolError("validation_failed", "un-quarantine needs a kind and a source");
-      if (!QUARANTINE_KINDS.includes(kind)) {
-        throw new ToolError("validation_failed", `quarantine kind must be one of ${QUARANTINE_KINDS.join(", ")}`, { field: "kind" });
-      }
-      const tenant = body.tenant == null || body.tenant === "" ? null : String(body.tenant);
-      const cleared = await clearQuarantine(c.env, { tenant, kind, source });
-      return c.json({ cleared, kind, source, tenant });
-    },
-  )
-  // Discovery: the raw log read (kept as a stable JSON surface at its existing path) and the
-  // per-candidate row actions the Discovery island calls. Retry/Delete reuse the sweep's own
-  // functions (shared logic, not a re-implementation) — same outcome as the autonomous sweep.
-  .get("/api/logs/discovery", async (c) => c.json({ entries: await readDiscoveryLog(c.env, 200) }))
-  .post("/api/discovery/:id/retry", async (c) => {
-    const id = c.req.param("id");
-    const row = await readDiscoveryRowById(c.env, id);
-    if (!row) throw new ToolError("not_found", `No discovery row with id ${id}`);
-    if (row.outcome !== "error" && row.outcome !== "failed") {
-      throw new ToolError("unsupported", `Row ${id} has outcome "${row.outcome}" — only error/failed rows can be retried`);
-    }
-    const deps = buildDiscoveryDeps(c.env);
-    const members = await deps.loadMembers();
-    const corpus = await deps.loadCorpusVectors();
-    await processCandidate(
-      deps,
-      DEFAULT_CONFIG,
-      { url: row.url ?? "", title: row.title ?? "", summary: null, source: row.source ?? "", existingRowId: id, attempts: row.attempts },
-      { triageVec: null, members, corpus, importedVectors: [], nowMs: Date.now() },
-      { bypassCap: true },
-    );
-    return c.json(await readDiscoveryRowById(c.env, id));
-  })
-  .delete("/api/discovery/:id", async (c) => {
-    const id = c.req.param("id");
-    const row = await readDiscoveryRowById(c.env, id);
-    if (!row) throw new ToolError("not_found", `No discovery row with id ${id}`);
-    if (row.url) {
-      await addDiscoveryRejection(c.env, {
-        url: canonicalizeUrl(row.url),
-        reason: "operator-deleted",
-        rejectedBy: "admin",
-        rejectedAt: new Date().toISOString(),
-      });
-    }
-    await deleteDiscoveryRow(c.env, id);
-    return c.json({ deleted: id });
-  })
-  // Config › Calibration: the discovery knob store + analyze/dry-run previews + the edge feed-probe.
-  .get("/api/discovery/config", async (c) => c.json(await getDiscoveryConfig(c.env)))
-  .put("/api/discovery/config", async (c) => c.json(await putDiscoveryConfig(c.env, await c.req.json())))
-  .post("/api/discovery/analyze", async (c) => c.json(await analyzeDiscovery(c.env, await c.req.json())))
-  .post("/api/discovery/dry-run", async (c) => c.json(await dryRunDiscovery(c.env, await c.req.json())))
-  .post("/api/discovery/test-feed", async (c) => c.json(await testFeed(c.env, await c.req.json())))
-  // Config › Ranking + Flyer: the operator ranking/flyer config store.
-  .get("/api/operator-config", async (c) => c.json(await getOperatorConfig(c.env)))
-  .put("/api/operator-config", async (c) => c.json(await putOperatorConfig(c.env, await c.req.json())))
-  // Config › shared-corpus editors: list/add/remove the five group-wide lookup tables. The add
-  // route declares its JSON body via a validator so the typed client accepts it alongside :table.
-  .get("/api/corpus/:table", async (c) => c.json(await listCorpus(c.env, c.req.param("table"))))
-  .post("/api/corpus/:table", validator("json", (v) => v as Record<string, unknown>), async (c) =>
-    c.json(await addCorpus(c.env, c.req.param("table"), c.req.valid("json"))),
-  )
-  .delete("/api/corpus/:table/:key", async (c) =>
-    c.json(await deleteCorpus(c.env, c.req.param("table"), decodeURIComponent(c.req.param("key")))),
-  )
-  // Normalization area (operator-admin): the identity-graph mutations the Normalize island calls.
-  // Override + Add-alias both write a HUMAN alias (source='human', which the auto cron never
-  // overwrites) via addAliases; Re-queue re-enqueues the term for the next capture pass; the two
-  // deletes prune an alias row / a failed decision row. All go through src/corpus-db.ts.
-  .post("/api/normalization/alias", validator("json", (v) => v as { variant?: string; canonicalId?: string }), async (c) => {
-    const { variant, canonicalId } = c.req.valid("json");
-    if (!variant?.trim() || !canonicalId?.trim()) {
-      throw new ToolError("validation_failed", "A non-empty variant and canonical id are required");
-    }
-    const updated = await addAliases(c.env, [{ variant, canonical: canonicalId }]);
-    return c.json({ updated });
-  })
-  .delete("/api/normalization/alias/:variant", async (c) =>
-    c.json({ removed: await deleteAlias(c.env, decodeURIComponent(c.req.param("variant"))) }),
-  )
-  .post("/api/normalization/requeue", validator("json", (v) => v as { term?: string }), async (c) => {
-    const term = c.req.valid("json").term;
-    if (!term?.trim()) throw new ToolError("validation_failed", "A non-empty term is required");
-    await enqueueNovelTerms(c.env, [term.trim()]);
-    return c.json({ requeued: term.trim() });
-  })
-  .delete("/api/normalization/decision/:id", async (c) => {
-    const id = Number(c.req.param("id"));
-    if (!Number.isFinite(id)) throw new ToolError("validation_failed", "A numeric decision id is required");
-    return c.json({ removed: await deleteNormalizationLog(c.env, id) });
-  });
+// The typed `/admin/api/*` surface: every mutation/preview route the islands call plus the
+// SPA's per-screen aggregate reads (admin-spa) — chained in ./api.ts so their request/response
+// types accumulate into `AdminApp` for the `hc` client (zero codegen).
+registerApiRoutes(app);
 
 // Data explorer area (operator-data-explorer): read-only SSR views over D1 + the R2 corpus.
 registerDataRoutes(app);
@@ -483,5 +283,5 @@ app.notFound(async (c) => {
 });
 
 /** The app type the client (`hc<AdminApp>()`) infers request/response types from. */
-export type AdminApp = typeof routes;
+export type { AdminApp } from "./api.js";
 export default app;

@@ -13,14 +13,14 @@ import type { Child } from "hono/jsx";
 import { Hono } from "hono";
 import { Layout } from "../ui/layout.js";
 import { Item, ItemGroup, Badge, TierBadge, Pager, PrettyKV, StageTrack, type StageSpec } from "../ui/kit.js";
-import { parseMarkdownDocument, renderMarkdown } from "../ui/markdown.js";
+import { parseMarkdownDocument, renderMarkdown } from "../markdown.js";
 import { SearchIcon, XCircleIcon, ChevronLeftIcon, ChevronRightIcon, StoreIcon, FolderIcon, FileTextIcon } from "../ui/icons.js";
 import type { Env } from "../../env.js";
-import { db } from "../../db.js";
 import { parseMarkdown } from "../../parse.js";
 import {
   recipeList,
   recipeDetail,
+  recipeFacets,
   searchRecipes,
   storeList,
   storeDetail,
@@ -708,19 +708,6 @@ export function registerDataRoutes(app: Hono<{ Bindings: Env }>): void {
     const listing = await guidanceListing(c.env, prefix || undefined);
     return c.html(html(<GuidancePage view={{ kind: "listing", prefix, listing }} />));
   });
-}
-
-/** Bulk facet read (protein/cuisine/time_total) for the Recipes list rows — one query,
- *  joined against `recipeList`'s slug/title/status in memory (mirrors `recipeList`'s own
- *  "no per-slug fetch" discipline). Slugs missing from `recipes` (skipped/pending) simply
- *  have no facet entry, which the list renders as no chips. */
-async function recipeFacets(
-  env: Env,
-): Promise<Map<string, { protein: string | null; cuisine: string | null; time_total: number | null }>> {
-  const rows = await db(env).all<{ slug: string; protein: string | null; cuisine: string | null; time_total: number | null }>(
-    "SELECT slug, protein, cuisine, time_total FROM recipes",
-  );
-  return new Map(rows.map((r) => [r.slug, { protein: r.protein, cuisine: r.cuisine, time_total: r.time_total }]));
 }
 
 // Exported for unit tests (rendering the views with fixed data).
