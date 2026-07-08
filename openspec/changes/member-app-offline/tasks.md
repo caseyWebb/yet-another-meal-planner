@@ -65,11 +65,11 @@ pieces by role and the implementer binds to the landed actuals.
 
 ## 3. Offline boot + local-data lifecycle (D3, D9)
 
-- [ ] 3.1 `_app.tsx` loader: catch the whoami fetch rejection → stamped-tenant fallback
+- [x] 3.1 `_app.tsx` loader: catch the whoami fetch rejection → stamped-tenant fallback
   (render the shell offline) or redirect to `/login` when no stamp; a definitive 401 →
   `purgeLocalMemberData()` + redirect (today's behavior plus the purge); other non-OK
   statuses keep today's throw. Successful whoami refreshes the stamp.
-- [ ] 3.2 `login.tsx`: on submit success, purge first when the stamp names a *different*
+- [x] 3.2 `login.tsx`: on submit success, purge first when the stamp names a *different*
   tenant (compare before the navigate), then stamp the new tenant. `_app.tsx` logout: purge
   before navigating (replaces the bare `router.clearCache()`).
 

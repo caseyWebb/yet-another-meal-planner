@@ -1,7 +1,11 @@
 // The session-gated app shell (member-app-core 7.1): fixed sidebar (nav + client-
 // derived counts + account menu) and the scrolling content outlet — the design
 // bundle's app frame (app-main.js renderFrame), ported. The loader's whoami is the
-// boot check: a 401 redirects to /login; the resolved tenant feeds the account menu.
+// boot check, disambiguated per member-app-offline D3: a definitive 401 purges local
+// member data and redirects to /login; a NETWORK failure (offline) falls back to the
+// locally stamped identity and renders the shell over the persisted cache — the stamp
+// is a boot/display hint only, never an authority (every online request still rides
+// the cookie session).
 import * as React from "react";
 import { Link, Outlet, createFileRoute, redirect, useNavigate, useRouter } from "@tanstack/react-router";
 import {
@@ -19,13 +23,30 @@ import {
 import { api } from "../lib/api";
 import { useGrocery, useOverlay, usePlan, useProfile } from "../lib/data";
 import { useOnline } from "../lib/online";
+import { purgeLocalMemberData, readTenantStamp, writeTenantStamp } from "../lib/persist";
 
 export const Route = createFileRoute("/_app")({
-  loader: async () => {
-    const res = await api.api.session.$get();
-    if (res.status === 401) throw redirect({ to: "/login" });
+  loader: async (): Promise<{ tenant: { id: string } }> => {
+    const res = await api.api.session.$get().catch(() => null);
+    if (res === null) {
+      // No server reachable (offline / network error): render the shell for the
+      // stamped member over the persisted cache; with no stamp, present login
+      // (the SW serves it offline). NEVER purge here — an offline device keeps
+      // its own member's data (D9).
+      const stamped = readTenantStamp();
+      if (stamped) return { tenant: { id: stamped } };
+      throw redirect({ to: "/login" });
+    }
+    if (res.status === 401) {
+      // A definitive rejection (revocation/expiry) must not leave member data at
+      // rest — the stamp never overrides the server's no.
+      await purgeLocalMemberData();
+      throw redirect({ to: "/login" });
+    }
     if (!res.ok) throw new Error(`whoami failed (${res.status})`);
-    return res.json();
+    const data = (await res.json()) as { tenant: { id: string } };
+    writeTenantStamp(data.tenant.id);
+    return data;
   },
   component: AppShell,
 });
@@ -167,6 +188,9 @@ function AccountMenu({ tenant }: { tenant: string }) {
 
   async function logout() {
     await api.api.session.$delete();
+    // The deliberate identity event (D9): no member data at rest after sign-out —
+    // the persisted cache, queued writes, stamp, and propose session all go.
+    await purgeLocalMemberData();
     router.clearCache();
     void navigate({ to: "/login" });
   }

@@ -7,6 +7,7 @@ import { useState } from "react";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { Button, IconBook, Input, Label } from "@grocery-agent/ui";
 import { api, apiError } from "../lib/api";
+import { purgeLocalMemberData, readTenantStamp, writeTenantStamp } from "../lib/persist";
 import { ThemeFab } from "./_app";
 
 export const Route = createFileRoute("/login")({
@@ -35,6 +36,14 @@ function LoginPage() {
     setState({ status: "busy" });
     const res = await api.api.session.$post({ json: { invite_code: code.trim() } }).catch(() => null);
     if (res?.ok) {
+      const { tenant } = (await res.json()) as { tenant: { id: string } };
+      // A DIFFERENT member than the device's stamp purges first (member-app-offline
+      // D9): no query, queued mutation, or propose state crosses identities. The
+      // same member re-entering (session expiry) keeps the cache — offline
+      // continuity is the point.
+      const stamped = readTenantStamp();
+      if (stamped && stamped !== tenant.id) await purgeLocalMemberData();
+      writeTenantStamp(tenant.id);
       void navigate({ to: "/" });
       return;
     }
