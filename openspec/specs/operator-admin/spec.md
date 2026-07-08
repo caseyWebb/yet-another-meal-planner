@@ -2,7 +2,7 @@
 
 ## Purpose
 
-The operator admin surface is a gated, Cloudflare-Access-protected panel serving the group-wide operator for background-job monitoring, member management, data exploration, and discovery/corpus tuning — a single server-rendered Hono app with typed RPC routes and client islands for live interactions.
+The operator admin surface is a gated, Cloudflare-Access-protected panel serving the group-wide operator for background-job monitoring, member management, data exploration, and discovery/corpus tuning — a React single-page app (`packages/admin-app`, on the member app's stack) served by the Worker at `/admin`, reading and mutating through the typed `/admin/api/*` routes.
 ## Requirements
 ### Requirement: Operator admin surface gated by Cloudflare Access
 
@@ -146,42 +146,52 @@ A member's active/pending status SHALL be derived from whether the member has co
 
 ### Requirement: Admin UI served as same-origin static assets
 
-The admin UI SHALL be served by the Worker from the **same origin** as its `/admin/api/*` operations, so the browser makes no cross-origin request and the deployment needs no CORS configuration. The UI SHALL be a **Hono application** that **server-renders** its pages (HTML produced in the Worker via Hono JSX) and **hydrates** its interactive surfaces as **islands** — client bundles that attach to server-rendered markup. Both the server-render and the island bundles SHALL be served same-origin: the HTML from the Worker (worker-first on `/admin*`), the island bundles and other static files from the Worker's static-assets binding.
+The admin UI SHALL be served by the Worker from the **same origin** as its `/admin/api/*` operations, so the browser makes no cross-origin request and the deployment needs no CORS configuration. The UI SHALL be a **single-page React application** (`packages/admin-app`, on the member app's stack) whose shell and hashed bundle live under the `assets/admin/` subtree of the Worker's one merged static-assets root, served through the static-assets binding.
 
-The island bundles and any static files SHALL be built from source by a build script into the `admin/dist/` output directory — a **build artifact that is NOT committed** (it is gitignored), built fresh by CI and by the deploy (and for local `wrangler dev`) — served via the static-assets binding; the generated bundle SHALL NOT be hand-edited. The build SHALL NOT depend on a network package registry being reachable, so any sandbox can rebuild it. The static-assets binding SHALL be carried through the operator config merge so it reaches every operator's deployment.
+Because `/admin*` is routed worker-first, the Worker SHALL serve the SPA itself: a GET for an `/admin/*` path that is neither an `/admin/api/*`-shaped path nor a real static asset SHALL be answered with the admin shell (`assets/admin/index.html`, fetched through the assets binding), whose client router renders that route's surface — so a deep link or refresh to any admin route loads that surface directly, without a redirect and without re-entering the worker-first route. An `/admin/api/*` path that matches **no registered route** SHALL receive a plain `404` — never the shell's HTML — so an API caller can rely on every `/admin/api/*` response being JSON-or-404, and an HTML response on the API surface remains an unambiguous gate (Access) signal. A request for a **missing** admin static asset SHALL likewise receive a real `404`, never any SPA shell (the merged root's single-page-application fallback answers asset misses with the member shell's HTML; the admin app guards against passing that through).
 
-Because `/admin*` is routed worker-first, the Worker SHALL produce each in-app route's page server-side (it owns the routes under `/admin/*`), so a deep link or refresh to any admin route loads that surface directly. A GET for an `/admin/*` path that is neither an `/admin/api/*` route nor a real static asset SHALL be handled by the Hono app's page router (rendering that route's page), not by a redirect — so it does not re-enter the worker-first route and loop.
+The bundle SHALL be built from source by the admin app's build (Vite) into `assets/admin/` — a **build artifact that is NOT committed** (gitignored), built fresh by CI and by the deploy (and for local `wrangler dev`); the generated bundle SHALL NOT be hand-edited. The build SHALL NOT depend on a network package registry being reachable, so any sandbox can rebuild it. The static-assets binding SHALL be carried through the operator config merge so it reaches every operator's deployment.
 
 #### Scenario: UI and API share an origin (no CORS)
 
-- **WHEN** an admin island calls an `/admin/api/*` route (or a page is server-rendered)
+- **WHEN** the admin app calls an `/admin/api/*` route
 - **THEN** the call is same-origin and succeeds with no CORS preflight or `Access-Control-*` configuration
 
 #### Scenario: Bundle is built from source, not hand-edited
 
 - **WHEN** the admin UI changes
-- **THEN** the change is made in the TypeScript UI source and the island bundle is rebuilt by the build script, and `admin/dist/` is not edited by hand (it is a gitignored build artifact, rebuilt fresh by CI and the deploy)
+- **THEN** the change is made in the TypeScript UI source and the bundle is rebuilt by the admin app's build, and `assets/admin/` is not edited by hand (it is a gitignored build artifact, rebuilt fresh by CI and the deploy)
 
 #### Scenario: Bundle builds without a package registry
 
 - **WHEN** the admin UI is built in a sandbox with no access to a language package registry
-- **THEN** the build script still produces the committed bundle (the toolchain has no network-registry build dependency)
+- **THEN** the build still produces the bundle (the toolchain has no network-registry build dependency)
 
 #### Scenario: The assets binding survives the operator config merge
 
 - **WHEN** the deploy merges the code-level config into an operator's config
 - **THEN** the static-assets binding is present in the deployed config (it is on the merge allowlist) and the admin UI is served
 
-#### Scenario: Routes are served their page server-side
+#### Scenario: A deep link is served the shell and resolves
 
-- **WHEN** a GET arrives for an `/admin/*` path that is not an `/admin/api/*` route and not a built static asset (e.g. `/admin/dev/tools/place_order`)
-- **THEN** the Hono app renders that route's page (without redirect-looping), and the surface resolves directly
+- **WHEN** a GET arrives for an `/admin/*` path that is not an `/admin/api/*` route and not a built static asset (e.g. `/admin/normalize?tab=audits`)
+- **THEN** the Worker serves the admin shell (without redirect-looping) and the client router renders that route's surface directly
+
+#### Scenario: A missing admin asset is a real 404
+
+- **WHEN** a GET arrives for a nonexistent file under the admin bundle's static namespace (e.g. a renamed chunk)
+- **THEN** the response is `404`, not the member SPA's shell and not the admin shell
+
+#### Scenario: An unknown API route is a 404, not the shell
+
+- **WHEN** a GET arrives for an `/admin/api/*` path that matches no registered route (a typo, or a client newer than the Worker)
+- **THEN** the response is a plain `404` — never the admin shell's HTML — so the client cannot misread a route mismatch as an expired Access session
 
 ### Requirement: Admin panel is organized into top-level areas with client-side routing
 
-The admin panel SHALL organize its surfaces into top-level areas — a **Status** area (the operator-facing background-job health view), a **Members** area (member management), a **Data** area (the read-only data explorer over D1 and the R2 corpus, narrowed to its **Recipes / Stores / Guidance** sub-nav — see the operator-data-explorer capability), an **Insights** area (the group-popularity dashboard over the recipe corpus — see the group-insights capability), a **Usage** area (the usage-observability dashboards), a **Discovery** area (the autonomous candidate-pipeline view), a **Logs** area (operator-auditable activity logs, organized by a left submenu of log sources), and a **Config** area (the discovery calibration console and the shared-corpus editors, as routed sub-views) — each with its own URL, so a new surface is added as its own routed page rather than another card on a single page. The panel's **home** route (`/admin`) SHALL be the Status view; member management SHALL be reached at `/admin/members`, the data explorer under `/admin/data/*` (its sub-nav destinations being Recipes, Stores, and Guidance), the insights dashboard at `/admin/insights`, the usage dashboards at `/admin/usage`, the discovery view at `/admin/discovery`, the logs under `/admin/logs` (with the selected source as a sub-route, e.g. `/admin/logs/discovery`), and configuration under `/admin/config` (with the selected sub-view as a sub-route, e.g. `/admin/config/feeds`), not at the panel root.
+The admin panel SHALL organize its surfaces into top-level areas — a **Status** area (the operator-facing background-job health view), a **Members** area (member management), a **Data** area (the read-only data explorer over D1 and the R2 corpus, narrowed to its **Recipes / Stores / Guidance** sub-nav — see the operator-data-explorer capability), an **Insights** area (the group-popularity dashboard over the recipe corpus — see the group-insights capability), a **Usage** area (the usage-observability dashboards), a **Discovery** area (the autonomous candidate-pipeline view), a **Logs** area (the all-jobs run log), and a **Config** area (the discovery calibration console and the shared-corpus editors, as routed sub-views) — each with its own URL, so a new surface is added as its own routed page rather than another card on a single page. The panel's **home** route (`/admin`) SHALL be the Status view; member management SHALL be reached at `/admin/members`, the data explorer under `/admin/data/*` (its sub-nav destinations being Recipes, Stores, and Guidance), the insights dashboard at `/admin/insights`, the usage dashboards at `/admin/usage`, the discovery view at `/admin/discovery`, the run log at `/admin/logs`, and configuration under `/admin/config` (with the selected sub-view as a sub-route, e.g. `/admin/config/ingest-keys`), not at the panel root.
 
-Each area's page SHALL be **server-rendered** for its URL, and its interactive controls SHALL be hydrated as islands. Navigating to a surface SHALL load that surface (server-rendered) at its own URL, and a deep link or refresh to a surface's URL SHALL load that surface directly. Within a hydrated surface, an interaction (e.g. opening a detail dialog, editing a config form) MAY update state client-side without a full navigation.
+Each area SHALL render client-side via the panel's router at its own URL; a deep link or refresh to a surface's URL SHALL load that surface directly (the Worker serves the shell; the router resolves the route). Any filter, tab, page, or selection state a deep link should reproduce SHALL be expressed in the URL (path and/or query parameters), so those states are independently navigable and shareable. Within a surface, an interaction (opening a dialog, editing a form, expanding a row) MAY update state client-side without a navigation.
 
 #### Scenario: Each surface has its own URL
 
@@ -196,27 +206,27 @@ Each area's page SHALL be **server-rendered** for its URL, and its interactive c
 #### Scenario: Discovery is a top-level area
 
 - **WHEN** the operator opens `/admin/discovery` directly (or refreshes there)
-- **THEN** the Worker server-renders the Discovery area as its own top-level surface, reached from the area nav alongside Status, Members, Data, Insights, Usage, Logs, and Config
+- **THEN** the Discovery area renders as its own top-level surface, reached from the area nav alongside Status, Members, Data, Insights, Usage, Logs, and Config
 
 #### Scenario: Insights is a top-level area
 
 - **WHEN** the operator opens `/admin/insights` directly (or refreshes there)
-- **THEN** the Worker server-renders the Insights area as its own top-level surface, reached from the area nav between Data and Usage
-
-#### Scenario: Deep link to a log
-
-- **WHEN** the operator opens `/admin/logs/discovery` directly (or refreshes there)
-- **THEN** the Worker server-renders the Logs area with the Discovery log selected
+- **THEN** the Insights area renders as its own top-level surface, reached from the area nav between Data and Usage
 
 #### Scenario: Deep link to a config sub-view
 
-- **WHEN** the operator opens a config editor route such as `/admin/config/feeds` directly (or refreshes there)
-- **THEN** the Worker server-renders the Config area with that shared-corpus editor selected
+- **WHEN** the operator opens a config editor route such as `/admin/config/ingest-keys` directly (or refreshes there)
+- **THEN** the Config area renders with that sub-view selected
 
 #### Scenario: Deep link to a data view
 
 - **WHEN** the operator opens a data-explorer route such as `/admin/data/recipes/<slug>` directly (or refreshes there)
-- **THEN** the Worker server-renders that data view
+- **THEN** that data view renders directly
+
+#### Scenario: Deep link to a query-param state
+
+- **WHEN** the operator opens a URL carrying a surface's filter/tab/page state (e.g. `/admin/normalize?tab=aliases` or `/admin/discovery?filter=duplicate`)
+- **THEN** the surface renders in exactly that state, and changing the state in the UI updates the URL so the new state is shareable
 
 #### Scenario: Data area sub-nav is narrowed to Recipes, Stores, and Guidance
 
@@ -229,9 +239,7 @@ The admin panel SHALL present the aggregate `/health` state in its **Status** ho
 
 The admin posture SHALL be rendered as a single derived gate state — **exposed / gated / dev / disabled** — computed from the section's booleans with the same precedence the Worker badge uses (`exposed` over `access_configured` over `dev_bypass_set` over otherwise), with the `email_allowlist` boolean shown as a defense-in-depth sub-detail of the gated state. An **`exposed`** gate (the panel's own Access surface could admit a tokenless request) SHALL be rendered as a prominent warning.
 
-Because `/health` returns HTTP `503` when a job is failing, the D1 probe fails, or the admin gate is `exposed` — a response that still carries the full JSON payload — the panel SHALL treat a decoded degraded payload as a **successful read** (rendering the degraded detail from the payload), NOT as a load failure. Load-failure handling SHALL be reserved for a genuine transport error or a body that does not decode as a health payload. The view's per-job and dependency states SHALL derive from the payload, not from any HTTP status code.
-
-The Status view SHALL NOT introduce any per-tenant data beyond what the tenant-data-free `/health` payload already contains, and SHALL add no Worker-side route or secret (it consumes the existing health payload).
+The view's data SHALL arrive via the panel's Access-gated **status read** (`GET /admin/api/status`), which aggregates the same `buildHealthPayload` the public `/health` serves (plus the Status view's existing companion reads) and returns the payload as data regardless of health — a decoded **degraded** payload is a **successful read** (rendering the degraded detail from the payload), NOT a load failure. Load-failure handling SHALL be reserved for a genuine transport error or a body that does not decode. The view's per-job and dependency states SHALL derive from the payload, not from any HTTP status code. The status read SHALL introduce no per-tenant data beyond what the tenant-data-free health payload and the existing Status companion reads already contain, no new health computation, and no secret.
 
 #### Scenario: Healthy payload renders the status detail
 
@@ -255,12 +263,12 @@ The Status view SHALL NOT introduce any per-tenant data beyond what the tenant-d
 
 #### Scenario: A transport failure shows a load error
 
-- **WHEN** the health read fails at the transport layer or returns a body that does not decode as a health payload
+- **WHEN** the status read fails at the transport layer or returns a body that does not decode
 - **THEN** the Status view shows a load-failure state, distinct from a successfully-read degraded payload
 
 ### Requirement: Logs area with a left submenu and a detail dialog
 
-The admin panel SHALL provide a top-level **Logs** area, server-rendered, whose sole content is the **all-cron-jobs run log**: a filterable, paginated list of individual `job_runs` records across every registered background job (see "Logs area shows the all-jobs run log" below). The Logs area SHALL render this view directly, with **no left submenu or sidebar** — it is a single-destination area, not a sectioned one. The Logs area SHALL NOT host a candidate-level Discovery destination — the per-candidate discovery pipeline is reached at the top-level **Discovery** area (`/admin/discovery`; see "Discovery area shows the candidate pipeline"), not under Logs. The legacy route `/admin/logs/discovery` SHALL respond with a **302 redirect** to `/admin/discovery` (preserving the link for any existing bookmark) rather than serving its own content.
+The admin panel SHALL provide a top-level **Logs** area whose sole content is the **all-cron-jobs run log**: a filterable, paginated list of individual `job_runs` records across every registered background job (see "Logs area shows the all-jobs run log" below). The Logs area SHALL render this view directly, with **no left submenu or sidebar** — it is a single-destination area, not a sectioned one. The Logs area SHALL NOT host a candidate-level Discovery destination — the per-candidate discovery pipeline is reached at the top-level **Discovery** area (`/admin/discovery`; see "Discovery area shows the candidate pipeline"), not under Logs. The legacy route `/admin/logs/discovery` SHALL respond with a **302 redirect** (served by the Worker, so bookmarks resolve without the app) to `/admin/discovery` rather than serving its own content.
 
 When an individual run-log entry expands to more than a row's worth of detail, it SHALL render inline (the summary key/value detail), not in a separate dialog.
 
@@ -509,79 +517,30 @@ The Access-gated admin surface SHALL mint a Kroger consent link for the operator
 - **WHEN** the consent-link endpoint names a tenant that is not on the allowlist
 - **THEN** the surface returns an `unauthorized`/`not_found`-class error and mints no nonce
 
-### Requirement: Panel data flows by SSR for reads and typed RPC for interactions
-
-The admin panel SHALL obtain a surface's **initial data** by calling the Worker's existing `src/` operation functions **directly** during server-render (in the same Worker isolate), embedding the result into the page and the island's hydration props — with **no client fetch and no hand-written response decoder** for the first paint. After hydration, an island's **interactions** — mutations (e.g. onboard / revoke / rotate, corpus add / remove, config save, tool invoke, discovery retry / delete) and **live previews** (e.g. discovery Analyze / Dry-run, feed test) — SHALL call typed Hono routes through Hono's RPC client (`hc`), whose request and response types are **inferred from the route definitions** with no codegen and no separately-maintained decoder. Both the server-render path and the typed routes SHALL call the **same** `src/` functions, so there is one source of truth for each operation regardless of transport.
-
-The island hydration props SHALL be JSON-serializable, so the client hydrates with state matching the server-render. A route that an island calls SHALL return the operation's structured result or structured error verbatim (a tool/operation structured error is data for the island to render, not an HTTP 500), preserving the existing structured-error contract.
-
-#### Scenario: Initial read is server-rendered without a client fetch
-
-- **WHEN** the operator opens an admin surface (e.g. the Data recipe list, or the Config calibration console)
-- **THEN** the Worker calls the corresponding `src/` function during server-render and the page arrives populated, with no client-side fetch or decoder for the initial data
-
-#### Scenario: An island interaction calls a typed route
-
-- **WHEN** the operator triggers a mutation or live preview from a hydrated island (e.g. runs Analyze, or saves the discovery config)
-- **THEN** the island calls a typed Hono route via `hc`, the route runs the same `src/` operation the server-render would, and the island receives the typed structured result or structured error
-
-#### Scenario: One source of truth across transports
-
-- **WHEN** an operation is reachable both as initial server-rendered data and as an island-invoked route
-- **THEN** both call the same `src/` function (the route is not a re-implementation), so their results cannot diverge
-
 ### Requirement: Panel UI models impossible states impossible in TypeScript
 
-The admin UI SHALL carry forward the panel's data-modeling discipline in TypeScript: a surface's loaded remote data SHALL be a **discriminated union** over the load's states (not-asked / loading / failure-with-error / success-with-value), never a `boolean` loading flag beside an optional error and optional value; a finite set of UI states SHALL be a discriminated union, not a `string` or parallel booleans; an in-flight mutation together with which operation is running and its failure SHALL be a **single** union value (so "busy", "which operation", and "the error" cannot contradict, and one-mutation-at-a-time is structural); and an error SHALL carry its type inside the failing state, not a detached `string`. Exhaustiveness over these unions SHALL be enforced (e.g. an exhaustiveness check that fails the build when a variant is unhandled), so adding a state flags every site that must handle it. The discipline SHALL be documented in `admin/CLAUDE.md` in its TypeScript form.
+The admin UI SHALL carry forward the panel's data-modeling discipline in TypeScript, expressed through the query layer's own state unions: a surface's loaded remote data SHALL be handled as the query's **discriminated status union** (pending / error-with-error / success-with-data, with not-asked as a disabled query) — never destructured into a `boolean` loading flag beside an optional error and optional value that can recombine contradictorily; a finite set of UI states SHALL be a discriminated union, not a `string` or parallel booleans; an in-flight mutation together with which operation is running and its failure SHALL be handled as a **single** mutation-state value (its status plus its variables identify the operation and target, so "busy", "which operation", and "the error" cannot contradict), with one-at-a-time enforced by gating on that pending state, never a parallel flag; and an error SHALL carry its structured type inside the failing state, not a detached `string`. **Server state SHALL NOT be copied into component state** — the query cache is the single source of truth, and mutations edit it (invalidation or cache update), never a shadow copy. Exhaustiveness over these unions SHALL be enforced (an exhaustiveness check that fails the build when a variant is unhandled), so adding a state flags every site that must handle it. The discipline SHALL be documented in `src/admin/CLAUDE.md` in its query-layer form.
 
-#### Scenario: Remote data is a four-state union
+#### Scenario: Remote data is handled as a status union
 
 - **WHEN** a surface loads data from the Worker
-- **THEN** its state is a discriminated union whose variants are not-asked, loading, failure (carrying the error), and success (carrying the value) — and the impossible combinations are unrepresentable
+- **THEN** the view branches on the query's discriminated status union (pending, error carrying the error, success carrying the value) with the impossible combinations unrepresentable, not on recombined loose flags
 
 #### Scenario: An in-flight mutation and its failure are one value
 
 - **WHEN** a surface performs a mutation that can fail (e.g. a corpus add or a member revoke)
-- **THEN** the in-flight operation, which row/operation it targets, and its failure are one union value, so a second overlapping mutation and a contradictory "busy but errored" state are unrepresentable
+- **THEN** the in-flight operation, which row/operation it targets, and its failure are one mutation-state value, so a second overlapping mutation and a contradictory "busy but errored" state are unrepresentable
 
 #### Scenario: Adding a UI state is caught by exhaustiveness
 
 - **WHEN** a developer adds a new variant to one of the panel's UI-state unions
 - **THEN** the build's exhaustiveness check flags every `switch`/match that does not yet handle the new variant
 
-### Requirement: Admin visual layer is a Basecoat design system compiled by Tailwind
-
-The admin panel's visual layer SHALL be the **Basecoat** component system (a Tailwind CSS component library using shadcn/ui-compatible CSS-variable tokens), applied through Basecoat's documented class API — a root component class plus `data-variant`/`data-size` attributes (e.g. `<button class="btn" data-variant="destructive">`) — rather than a bespoke hand-authored stylesheet. The panel SHALL use a single pinned Basecoat **style pack**, and its theme tokens (e.g. `--primary`) SHALL be overridable in a project theme layer so the operator accent is preserved without forking the pack.
-
-The served stylesheet SHALL be **compiled by the admin build**: the `build-admin` script SHALL run Tailwind over the panel's source to produce `admin/dist/admin/styles.css`, including the Basecoat component layer and only the Tailwind utilities the panel's source uses. Consistent with the admin build model, `admin/dist/` is a **gitignored build artifact** built fresh by CI, the deploy, and local `wrangler dev` — not committed. This build SHALL NOT fetch from a network package registry (it runs from installed dependencies), preserving the panel's "any sandbox can rebuild it" guarantee.
-
-Interactive surfaces SHALL use Basecoat's **CSS-only** components — including the native `<dialog>` element for modals and a native styled select — and SHALL keep their behavior in the panel's own island state; the panel SHALL NOT load Basecoat's component JavaScript, so read-only pages continue to ship no client JavaScript and no second runtime mutates island-owned DOM.
-
-#### Scenario: Components use the Basecoat class API
-
-- **WHEN** the component kit renders a primitive (button, card, input, badge, alert, table, dialog)
-- **THEN** it emits Basecoat's documented markup and `data-variant`/`data-size` API, styled by the compiled Basecoat stylesheet, not a bespoke per-component class
-
-#### Scenario: Stylesheet is compiled from source without a registry
-
-- **WHEN** the admin bundle is built (including in a sandbox with no package-registry access)
-- **THEN** the build compiles `admin/dist/admin/styles.css` from the panel source via Tailwind with no network fetch (a gitignored artifact built fresh, not a committed bundle)
-
-#### Scenario: Operator accent is preserved through theme tokens
-
-- **WHEN** the panel is themed
-- **THEN** the Basecoat style pack's tokens are overridden in a project theme layer (e.g. `--primary` set to the operator accent), with the style pack itself unforked
-
-#### Scenario: Interactive surfaces load no Basecoat JavaScript
-
-- **WHEN** an island provides interactivity (e.g. a detail dialog, a member action, a config form)
-- **THEN** it uses Basecoat CSS-only components (native `<dialog>`, native select) with behavior held in island state, and no Basecoat component JavaScript is loaded — so read-only pages ship no client JavaScript
-
 ### Requirement: Global service-health indicator present on every area
 
-The admin shell SHALL render a **global service-health indicator** — a fixed corner control present on every admin area, not only the Status home — that surfaces the aggregate health rollup the panel already builds from `buildHealthPayload`. The indicator SHALL show the overall **healthy / degraded** state derived from the payload's `ok` and, when degraded, the count of failing jobs. Activating the indicator SHALL reveal a summary (the failing jobs and the live dependency states) and SHALL offer a link to the Status area for the full per-job detail.
+The admin shell SHALL render a **global service-health indicator** — a fixed corner control present on every admin area, not only the Status home — that surfaces the aggregate health rollup derived from `buildHealthPayload`. The indicator SHALL show the overall **healthy / degraded** state derived from the payload's `ok` and, when degraded, the count of failing jobs. Activating the indicator SHALL reveal a summary (the failing jobs and the live dependency states) and SHALL offer a link to the Status area for the full per-job detail.
 
-The indicator SHALL derive its healthy-vs-degraded distinction from the payload's `ok`, not from any HTTP status. When the admin gate posture is **`exposed`** (the panel's own Access surface could admit a tokenless request), the rollup SHALL render as degraded, consistent with the Status area's prominent posture warning. The indicator SHALL introduce no per-tenant data beyond the tenant-data-free health payload and SHALL add no Worker-side route or secret.
+The indicator SHALL derive its healthy-vs-degraded distinction from the payload's `ok`, not from any HTTP status. When the admin gate posture is **`exposed`** (the panel's own Access surface could admit a tokenless request), the rollup SHALL render as degraded, consistent with the Status area's prominent posture warning. The indicator SHALL consume the **same status read** (and the same client cache entry) the Status area uses — no indicator-specific route — and SHALL keep itself honest across long client-side sessions by refetching that read periodically and on window focus. It SHALL introduce no per-tenant data beyond the tenant-data-free health payload and no secret.
 
 #### Scenario: Indicator is present on a non-Status area
 
@@ -598,19 +557,24 @@ The indicator SHALL derive its healthy-vs-degraded distinction from the payload'
 - **WHEN** the health payload reports `ok` true (every job healthy, D1 reachable, gate not exposed)
 - **THEN** the indicator renders the healthy state without a failing-job count
 
+#### Scenario: The indicator and the Status area share one read
+
+- **WHEN** the operator navigates between areas with the panel open
+- **THEN** the indicator renders from the same cached status read the Status area consumes (refreshed on focus and on its periodic interval), not from a second health route
+
 ### Requirement: Shared component kit provides the redesign primitives
 
-The admin component kit (`src/admin/ui/kit.tsx`) SHALL provide the presentational primitives the redesigned areas compose from, each emitted in Basecoat's class API plus Tailwind utilities per the Basecoat visual-layer requirement: a list **Item**/**ItemGroup**, an **Avatar**, a **DropdownMenu**, a **Slider**, a **Switch**, a **Progress** bar, a tabular **Table**, and the **Dialog**/**Field** form primitives — plus the panel-specific layout primitives the mock reuses across areas: a **stat-card grid**, a **pager**, **sub-nav pills**, and a **sparkline + hover-tooltip** pair. These primitives SHALL be presentational only; any interactivity (a dropdown's open state, a slider/switch's change, a sparkline's hover tooltip) SHALL be driven by the panel's own island state, and the kit SHALL load no Basecoat component JavaScript — so read-only pages continue to ship no client JavaScript.
+The admin panel SHALL compose its surfaces from shared primitives rather than re-deriving markup per area: the **generic** primitives (button, card, input, badge, alert, table, dialog, dropdown menu, select, slider, switch, progress, pagination) come from `packages/ui` per the visual-layer requirement, and the **panel-specific composites** the areas reuse — a stat-card grid, a pager/list footer, sub-nav pills, a sparkline + hover-tooltip pair, a key/value detail renderer, and the pipeline progression track — SHALL each be a single shared component within the admin app, consumed by every area that renders that pattern. Composites SHALL be presentational, with interactivity held in the consuming surface's component state.
 
 #### Scenario: Areas compose from the shared primitives
 
-- **WHEN** a redesigned area renders a roster, a stat-tile row, a paginated list, or a sub-nav
-- **THEN** it composes the corresponding kit primitive (Item/ItemGroup, stat-card grid, pager, pills) rather than re-deriving the markup, and the primitive emits Basecoat-class + Tailwind output
+- **WHEN** an area renders a roster, a stat-tile row, a paginated list, or a sub-nav
+- **THEN** it composes the corresponding shared primitive/composite (Item-style rows, stat-card grid, pager, pills) rather than re-deriving the markup
 
-#### Scenario: Interactive primitives keep behavior in islands
+#### Scenario: A panel composite is single-sourced
 
-- **WHEN** an interactive primitive is used (DropdownMenu, Slider, Switch, or a sparkline hover tooltip)
-- **THEN** its behavior is held in the panel's island state with no Basecoat component JavaScript loaded
+- **WHEN** two areas render the same panel pattern (e.g. Status and Usage sparklines, or Discovery and Normalize key/value detail)
+- **THEN** both compose the same shared component, so the pattern cannot drift between areas
 
 ### Requirement: Status area shows corpus stat tiles
 
@@ -713,12 +677,12 @@ The Members area SHALL mint a new member's invite through a dialog (the kit `Dia
 
 ### Requirement: Member detail view with a sectioned sub-nav
 
-The admin surface SHALL provide a member-detail view, reached by activating a roster row, server-rendered at its own URL (`/admin/members/<id>`, with each section as its own sub-route, e.g. `/admin/members/<id>/pantry`) so a deep link or refresh loads that member's selected section directly. The view SHALL render a header (the member's `@username`, owner/status/Kroger badges, and activity stats) and a pills sub-nav over six sections — Profile, Pantry, Meal plan, Grocery, Cooking log, Notes — each server-rendered from the existing `memberDetail` read (profile as key-value detail, pantry and cooking log as tabular data, meal plan and grocery list as their own row layouts, notes as note cards). A pending (not-yet-connected) member SHALL render an empty state explaining the member has not connected yet, instead of the sectioned sub-nav.
+The admin surface SHALL provide a member-detail view, reached by activating a roster row, at its own URL (`/admin/members/<id>`, with each section as its own sub-route, e.g. `/admin/members/<id>/pantry`) so a deep link or refresh loads that member's selected section directly. The view SHALL render a header (the member's `@username`, owner/status/Kroger badges, and activity stats) and a pills sub-nav over six sections — Profile, Pantry, Meal plan, Grocery, Cooking log, Notes — each rendered from the panel's one typed member-detail read (which assembles the existing `memberDetail` read; profile as key-value detail, pantry and cooking log as tabular data, meal plan and grocery list as their own row layouts, notes as note cards). A pending (not-yet-connected) member SHALL render an empty state explaining the member has not connected yet, instead of the sectioned sub-nav — and the read SHALL NOT attempt to assemble per-tenant detail that does not exist yet.
 
 #### Scenario: Detail view deep-links to a section
 
 - **WHEN** the operator opens `/admin/members/<id>/pantry` directly (or refreshes there)
-- **THEN** the Worker server-renders that member's detail view with the Pantry section selected, with no client-side fetch for the section's data
+- **THEN** the member's detail view loads with the Pantry section selected
 
 #### Scenario: Header shows identity and activity
 
@@ -728,23 +692,23 @@ The admin surface SHALL provide a member-detail view, reached by activating a ro
 #### Scenario: Pending member shows an empty state
 
 - **WHEN** the operator opens the detail view for a member who has not yet connected
-- **THEN** the view shows an empty state explaining the member hasn't connected, and does not render the sectioned sub-nav or attempt to read per-tenant data that doesn't exist yet
+- **THEN** the view shows an empty state explaining the member hasn't connected, and no per-tenant detail read is attempted for data that doesn't exist yet
 
 #### Scenario: Each section renders from the existing member-detail read
 
 - **WHEN** the operator selects a section (Profile, Pantry, Meal plan, Grocery, Cooking log, or Notes)
-- **THEN** that section's content is server-rendered from the same `memberDetail` read the Data area's per-tenant explorer uses, with no separate or duplicated read path
+- **THEN** that section's content renders from the same `memberDetail`-backed read (one read for all six sections — switching sections makes no additional request), with no separate or duplicated read path
 
 ### Requirement: Usage area presents headline tiles, per-namespace KV meters, AI neurons, job trends, and tool usage
 
-The Usage area (`/admin/usage`) SHALL present its four observability surfaces composed from the shared admin component kit (`src/admin/ui/kit.tsx`), in place of the prior bare status-row lists:
+The Usage area (`/admin/usage`) SHALL present its four observability surfaces composed from the panel's shared primitives, in place of the prior bare status-row lists:
 
-1. A headline **stat-tile row** (kit `StatCardGrid`/`StatCard`) showing KV operations today (the sum of the day's read/write/delete/list totals), Workers AI neurons used today (against the daily limit), MCP tool calls over the trends window, and the tool error rate over the same window.
-2. An **Account resources** card with one KV-operation meter per action (read/write/delete/list), each rendered as a `Progress` bar **stacked by namespace** (a categorical color per labeled namespace, per the usage-observability namespace-label requirement) against that action's daily free-tier limit, recolored (ok/warn/fail) as the total approaches or exceeds the cap; each meter SHALL be paired with a **30-day sparkline** also stacked by namespace, sourced from the per-namespace history (usage-observability). The same card SHALL show a Workers AI neurons meter (used vs. daily limit) and a per-model breakdown row (model name + neurons consumed).
+1. A headline **stat-tile row** showing KV operations today (the sum of the day's read/write/delete/list totals), Workers AI neurons used today (against the daily limit), MCP tool calls over the trends window, and the tool error rate over the same window.
+2. An **Account resources** card with one KV-operation meter per action (read/write/delete/list), each rendered as a progress bar **stacked by namespace** (a categorical color per labeled namespace, per the usage-observability namespace-label requirement) against that action's daily free-tier limit, recolored (ok/warn/fail) as the total approaches or exceeds the cap; each meter SHALL be paired with a **30-day sparkline** also stacked by namespace, sourced from the per-namespace history (usage-observability). The same card SHALL show a Workers AI neurons meter (used vs. daily limit) and a per-model breakdown row (model name + neurons consumed).
 3. A **per-job trends** list: one sparkline row per background job showing its runs/day over the trends window, its total run count, and its average duration, sourced from `fetchUsageTrends`.
-4. A **tool usage** table (kit `DataTable`) listing each tool's call count, error count and rate, and p50/p95 latency over the trends window, sourced from `fetchToolUsage`, busiest tool first.
+4. A **tool usage** table listing each tool's call count, error count and rate, and p50/p95 latency over the trends window, sourced from `fetchToolUsage`, busiest tool first.
 
-Each surface SHALL preserve its existing not-configured and upstream-failure-detail behavior (per the usage-observability/usage-trends/tool-usage-trends capabilities) — an unconfigured or failing surface renders its existing explicit state, not a broken or blank composition. The area SHALL remain pure SSR with no client island (consistent with the panel's read-only-page rule): a per-segment or per-bar hover detail SHALL be carried by a native, no-JavaScript affordance (e.g. a `title` attribute), not a client-side tooltip component.
+Each surface SHALL preserve its existing not-configured and upstream-failure-detail behavior (per the usage-observability/usage-trends/tool-usage-trends capabilities) — an unconfigured or failing surface renders its existing explicit state, not a broken or blank composition; the area's read SHALL carry those states structurally, as data. Per-segment or per-bar hover detail MAY be a client-side tooltip.
 
 #### Scenario: Headline tiles summarize the four top-line numbers
 
@@ -764,17 +728,12 @@ Each surface SHALL preserve its existing not-configured and upstream-failure-det
 #### Scenario: Per-job and tool-usage surfaces are unchanged in data, redesigned in presentation
 
 - **WHEN** the operator views the per-job trends list or the tool-usage table
-- **THEN** the data shown (runs/day, average duration, calls, errors, p50/p95) is the same `fetchUsageTrends`/`fetchToolUsage` data the prior implementation read, now composed from the kit's sparkline/table primitives
+- **THEN** the data shown (runs/day, average duration, calls, errors, p50/p95) is the same `fetchUsageTrends`/`fetchToolUsage` data, composed from the shared sparkline/table primitives
 
 #### Scenario: An unconfigured or failing surface keeps its explicit state
 
 - **WHEN** usage analytics is unconfigured, or an upstream request fails
 - **THEN** the affected surface (snapshot, trends, or tool usage) renders its existing explicit not-configured or upstream-failure-detail state, and the rest of the page's configured surfaces still render
-
-#### Scenario: The Usage area ships no client island
-
-- **WHEN** the Usage area is rendered
-- **THEN** it is pure server-rendered HTML with no client-side island, and any per-segment hover detail uses a native, no-JavaScript affordance
 
 ### Requirement: Logs area shows the all-jobs run log
 
@@ -786,7 +745,7 @@ The Logs area's default view SHALL render every registered background job's run 
 - **Pagination** over the filtered list, with a fixed page size, when the filtered count exceeds one page.
 - Each entry SHALL be **expandable** to show its stored `summary` (the same tenant-clean counts the job upserts to `job_health`) rendered as key/value pairs, and, when the run failed, the run's error.
 
-The view SHALL be server-rendered (no client island): the job filter and the page SHALL be expressed in the route (query parameters and/or a job sub-route), so each filter/page combination is independently navigable and deep-linkable; per-entry expand/collapse SHALL require no server round-trip and no client-side JavaScript bundle (e.g. a native disclosure element).
+The job filter and the page SHALL be expressed in the route's query parameters, so each filter/page combination is independently navigable and deep-linkable. The run list SHALL be fetched as the area's one bounded read (the same cap as the health capability's retention) and filtered/paginated client-side; per-entry expand/collapse SHALL require no server round-trip.
 
 A job with zero recorded runs SHALL still appear as a filter pill (consistent with the Status area always listing a registered job, even never-run) but SHALL show no entries under that filter.
 
@@ -808,7 +767,7 @@ A job with zero recorded runs SHALL still appear as a filter pill (consistent wi
 #### Scenario: Expanding a run shows its summary
 
 - **WHEN** the operator expands a run entry
-- **THEN** the entry's stored `summary` renders as key/value detail beneath it, without navigating away from the list
+- **THEN** the entry's stored `summary` renders as key/value detail beneath it, without navigating away from the list and without a server round-trip
 
 #### Scenario: Expanding a failed run shows its error
 
@@ -848,7 +807,7 @@ When the linked run id no longer exists in `job_runs` (pruned by the retention c
 
 ### Requirement: Discovery area shows the candidate pipeline
 
-The admin panel's **Discovery** area (`/admin/discovery`) SHALL render, server-rendered, the autonomous candidate pipeline (`discovery-sweep`): page-level stat tiles, a filter-pill row, and a paginated list of per-candidate cards — the area's sole content (replacing any placeholder body).
+The admin panel's **Discovery** area (`/admin/discovery`) SHALL render the autonomous candidate pipeline (`discovery-sweep`): page-level stat tiles, a filter-pill row, and a paginated list of per-candidate cards — the area's sole content (replacing any placeholder body).
 
 **Stat tiles** SHALL show: total **Candidates**, **Imported** count with its import rate (imported ÷ total, as a percentage), **Parked / failed** count (content `error` parks plus infrastructure `failed` rows), and the count **In retry queue** (rows with `next_retry_at` not null).
 
@@ -856,7 +815,7 @@ The admin panel's **Discovery** area (`/admin/discovery`) SHALL render, server-r
 
 Each **candidate card** SHALL show: the candidate's title, source (with an icon distinguishing a feed vs. an email source) and its relative discovery age, an outcome badge, a **7-stage progression track** (triage → acquire → classify → describe → dedup → match → import — the `discovery-sweep` pipeline's real stage order) rendered per the "Discovery candidate progression track" requirement, and a one-line plain-language summary of where/why the candidate stands (e.g. an import's member attribution, a duplicate's matched recipe, a park's specific reason, a dietary gate's restriction). A candidate halted at the `match` stage (outcome `no_match` with `detail.stage` of `"match"` or `"confirm"`, or `dietary_gated`) SHALL additionally show the per-member match scores carried in its log entry's `detail` (see the `discovery-sweep` capability's "Sweep outcomes are recorded as an operator-auditable log" requirement), so the operator can see how close each member came to a match rather than only the pass/fail outcome. A retryable candidate (outcome `error` or `failed` with `next_retry_at` not null) SHALL show its attempt count against the retry cap and a relative countdown to its next automatic retry; a terminal parked/failed candidate (attempt cap exhausted) SHALL show that it is terminal rather than a countdown. The list SHALL be paginated with a fixed page size.
 
-Expanding a card SHALL reveal: a per-stage breakdown (each of the 7 stages marked passed / stopped here / not reached, with a short description of what that stage does) and the underlying `discovery_log` row rendered as key/value detail (via the shared `PrettyKV` kit primitive) — id, url, outcome, slug, attempts, the next-retry countdown, and the outcome's `detail` payload (including the per-member match scores when present).
+Expanding a card SHALL reveal: a per-stage breakdown (each of the 7 stages marked passed / stopped here / not reached, with a short description of what that stage does) and the underlying `discovery_log` row rendered as key/value detail (via the shared key/value composite) — id, url, outcome, slug, attempts, the next-retry countdown, and the outcome's `detail` payload (including the per-member match scores when present).
 
 #### Scenario: Discovery area renders the pipeline view by default
 
@@ -962,7 +921,7 @@ The Discovery area's candidate-card list SHALL provide, for each retryable candi
 
 ### Requirement: Config area hosts an Ingest Keys editor
 
-The admin **Config** area SHALL host an **Ingest Keys** editor (an island that mutates via `/admin/api/*`) for managing the home-network satellite ingest keys (`recipe-ingestion`). It SHALL list keys in a table — satellite label + key prefix, the key's **tenant binding** (a muted "operator-global" when unbound, else the bound member id), configured/observed sources, created, last-used (a muted "never" when unused), and status (`active`/`revoked`) — and provide a **Mint key** action that takes a label and an **optional tenant binding** and reveals the new secret **once** in a callout with a copy control and a "shown once — you won't see it again" warning, mirroring the invite-code flow (the row persists showing only the prefix; the secret is not stored). The Mint action's tenant-binding control SHALL default to **operator-global** (no binding) and SHALL offer the allowlisted members as bind targets; a binding SHALL be validated against the allowlist server-side (a non-allowlisted target mints nothing). Each active key SHALL have a **Revoke** action behind a destructive confirm. An empty roster SHALL render an explanatory empty state.
+The admin **Config** area SHALL host an **Ingest Keys** editor (mutating via the existing typed `/admin/api/*` routes) for managing the home-network satellite ingest keys (`recipe-ingestion`). It SHALL list keys in a table — satellite label + key prefix, the key's **tenant binding** (a muted "operator-global" when unbound, else the bound member id), configured/observed sources, created, last-used (a muted "never" when unused), and status (`active`/`revoked`) — and provide a **Mint key** action that takes a label and an **optional tenant binding** and reveals the new secret **once** in a callout with a copy control and a "shown once — you won't see it again" warning, mirroring the invite-code flow (the row persists showing only the prefix; the secret is not stored). The Mint action's tenant-binding control SHALL default to **operator-global** (no binding) and SHALL offer the allowlisted members as bind targets; a binding SHALL be validated against the allowlist server-side (a non-allowlisted target mints nothing). Each active key SHALL have a **Revoke** action behind a destructive confirm. An empty roster SHALL render an explanatory empty state.
 
 #### Scenario: Minting reveals the secret once
 
@@ -991,7 +950,7 @@ The admin **Config** area SHALL host an **Ingest Keys** editor (an island that m
 
 ### Requirement: Discovery area has a Satellites liveness sub-tab
 
-The admin **Discovery** area SHALL present **Candidates | Satellites** sub-tabs. The **Satellites** sub-tab SHALL be a read-only (pure SSR) view showing: a **liveness** section with one card per active satellite (machine) carrying its overall health badge in the `/health` posture language (`fresh`/`stale`/`never`), its last-push relative time, its reported satellite + contract version with a **skew** chip when the machine's contract is behind the Worker's, and a per-source breakdown (each source's own health dot, last push, and 24h count); a **throughput funnel** (Received → Accepted → Deduped on arrival → handed to sweep, then the downstream pipeline outcomes Imported / No-match / Duplicate / Parked, reusing the Discovery outcome vocabulary); and a **recent-pushes** log (when · satellite · source · batch count · result, where result is `accepted` / `partially-deduped` / `rejected-bad-payload` / `rejected-bad-key`). The **Candidates** sub-tab SHALL additionally show a compact **ingest strip** ("N satellites · X fresh · Y pushed today →") that turns to a warning tone on any stale satellite or version skew and links to the Satellites sub-tab.
+The admin **Discovery** area SHALL present **Candidates | Satellites** sub-tabs. The **Satellites** sub-tab SHALL be a read-only view showing: a **liveness** section with one card per active satellite (machine) carrying its overall health badge in the `/health` posture language (`fresh`/`stale`/`never`), its last-push relative time, its reported satellite + contract version with a **skew** chip when the machine's contract is behind the Worker's, and a per-source breakdown (each source's own health dot, last push, and 24h count); a **throughput funnel** (Received → Accepted → Deduped on arrival → handed to sweep, then the downstream pipeline outcomes Imported / No-match / Duplicate / Parked, reusing the Discovery outcome vocabulary); and a **recent-pushes** log (when · satellite · source · batch count · result, where result is `accepted` / `partially-deduped` / `rejected-bad-payload` / `rejected-bad-key`). The **Candidates** sub-tab SHALL additionally show a compact **ingest strip** ("N satellites · X fresh · Y pushed today →") that turns to a warning tone on any stale satellite or version skew and links to the Satellites sub-tab.
 
 #### Scenario: A machine's liveness and skew are visible
 
@@ -1014,7 +973,7 @@ The admin **Status** homepage SHALL include an **Ingest satellites** section lis
 
 ### Requirement: Normalize area has an Audits tab showing audit convergence
 
-The Normalize area SHALL have an **Audits** sub-nav tab (deep-linkable by query param) presenting the self-healing audit pipeline as a convergence surface, server-rendered with no client JS. It SHALL show: (1) a **backlog-burndown hero** with the live count of unaudited alias rows and unaudited edge rows (`source='auto' AND audited_at IS NULL`), each with a short recent burndown series derived from the audit jobs' run history; (2) **pass cards** — alias audit, edge audit, sku-cache re-key, and a compact disjunction-sweep card — each with its latest-run summary counts from the job's `job_runs` summary, a per-tick worked-rows sparkline (audit passes), and **its own burndown status**: the pass's remaining-backlog count, a compact burndown-trend sparkline, and a converging/converged state chip driven by that backlog (converged = the green positive terminal state); (3) a **restorations log** of `edge_restore` decisions, each linking the origin decision it revisits (via the structured `replay_of` detail); and (4) a **merge-rejection table** over `ingredient_coresolution_rejection` (pair, rejected-at, backoff expiry). A fully drained backlog (both counts zero) SHALL render as a **positive terminal state** (green, "holds at zero" language) — never as a dead zero or a failure.
+The Normalize area SHALL have an **Audits** sub-nav tab (deep-linkable by query param) presenting the self-healing audit pipeline as a convergence surface. It SHALL show: (1) a **backlog-burndown hero** with the live count of unaudited alias rows and unaudited edge rows (`source='auto' AND audited_at IS NULL`), each with a short recent burndown series derived from the audit jobs' run history; (2) **pass cards** — alias audit, edge audit, sku-cache re-key, and a compact disjunction-sweep card — each with its latest-run summary counts from the job's `job_runs` summary, a per-tick worked-rows sparkline (audit passes), and **its own burndown status**: the pass's remaining-backlog count, a compact burndown-trend sparkline, and a converging/converged state chip driven by that backlog (converged = the green positive terminal state); (3) a **restorations log** of `edge_restore` decisions, each linking the origin decision it revisits (via the structured `replay_of` detail); and (4) a **merge-rejection table** over `ingredient_coresolution_rejection` (pair, rejected-at, backoff expiry). A fully drained backlog (both counts zero) SHALL render as a **positive terminal state** (green, "holds at zero" language) — never as a dead zero or a failure.
 
 Per-pass burndown semantics: the **alias** and **edge** cards SHALL reuse the hero's live unaudited counts and back-summed series (no re-query). The **edge** card SHALL additionally surface the one-shot replay's state from the un-replayed `edge_drop` backlog (a SQL-bounded probe re-validated by the replay's own selection predicate, display-capped): a pending count while drops await replay, and an explicit done-state at zero. The **sku-cache re-key** card (stampless) SHALL gauge its backlog as the live plan size — pending re-key groups plus eligible alias retargets from the pass's own pure planners over current resolver state — rendered with a capped overflow display (e.g. "200+") and never an unbounded number. The **disjunction-sweep** card SHALL show the live count of concrete disjunctive ids the sweep will actually flip/fold — the sweep's quiesce predicate mirrored at family level (human rows and human-pinned families excluded, bases merged elsewhere not counted), so the count reaches zero exactly when the sweep quiesces — burning to zero, with a trend back-summed from the normalize job's persisted `disjunction*` run counters and the latest run's counters as summary chips; it SHALL NOT alter the hero's or the Status row's converged semantics (those remain alias+edge only).
 
@@ -1113,4 +1072,51 @@ The Normalize area's alias listing SHALL list only real mappings — alias rows 
 
 - **WHEN** the alias-target convergence re-points a self-entry of a merged-away node so its variant no longer equals its stored target
 - **THEN** the row appears in the listing as a real mapping on the next page load
+
+### Requirement: Panel data flows through typed reads and typed mutations
+
+The admin panel SHALL obtain every surface's data through **typed Hono routes** on the Worker, consumed via Hono's RPC client (`hc`) whose request and response types are **inferred from the route definitions** — no codegen and no separately-maintained decoder. Each screen's data SHALL come from one (or few) Access-gated `/admin/api/*` **read route(s)** whose payload is assembled by calling the Worker's existing `src/` operation functions; a surface's **interactions** — mutations (e.g. onboard / revoke / rotate, corpus add / remove, config save, discovery retry / delete) and **live previews** (e.g. discovery Analyze / Dry-run, feed test) — SHALL call typed routes the same way. A read route and the operation routes it neighbors SHALL call the **same** `src/` functions, so there is one source of truth for each operation regardless of transport.
+
+Reads SHALL flow through the panel's query layer (a per-screen cache): a successful mutation SHALL be reflected by invalidating/refetching the affected screen's query — never by a full page reload. A route SHALL return the operation's structured result or structured error verbatim (a tool/operation structured error is data for the screen to render, not an HTTP 500), preserving the existing structured-error contract.
+
+#### Scenario: A screen reads through its typed route
+
+- **WHEN** the operator opens an admin surface (e.g. the Data recipe list, or the Config calibration console)
+- **THEN** the app fetches that surface's typed `/admin/api/*` read, whose payload the Worker assembled from the corresponding `src/` functions, with no hand-written response decoder
+
+#### Scenario: An interaction calls a typed route
+
+- **WHEN** the operator triggers a mutation or live preview (e.g. runs Analyze, or saves the discovery config)
+- **THEN** the app calls a typed Hono route via `hc`, the route runs the same `src/` operation, and the screen receives the typed structured result or structured error
+
+#### Scenario: One source of truth across transports
+
+- **WHEN** an operation's data is reachable both through a screen's read route and through an interaction route
+- **THEN** both call the same `src/` function (neither is a re-implementation), so their results cannot diverge
+
+#### Scenario: A mutation refreshes its surface without a reload
+
+- **WHEN** a mutation succeeds (e.g. a discovery retry, an alias override, a quarantine toggle)
+- **THEN** the affected screen's cached read is invalidated and refetched and the surface reflects the result in place, with no full-page reload or navigation
+
+### Requirement: Admin visual layer is the shared shadcn/ui system built by the admin app
+
+The admin panel's visual layer SHALL be the repository's **shared shadcn/ui component system** — the vendored primitives and Tailwind v4 theme tokens in `packages/ui`, the same package the member app consumes — rather than a bespoke hand-authored stylesheet or a second component system. The panel SHALL apply an **admin theme layer** over the shared tokens (e.g. `--primary` set to the operator accent) without forking the shared package, and the member app's appearance SHALL be unaffected by that layer.
+
+The served stylesheet and bundle SHALL be **compiled by the admin app's build** (Vite with the Tailwind v4 plugin) into the gitignored `assets/admin/` artifact — built fresh by CI, the deploy, and local `wrangler dev`; not committed. This build SHALL NOT fetch from a network package registry (it runs from installed dependencies), preserving the panel's "any sandbox can rebuild it" guarantee. Interactive surfaces (dialogs, menus, selects) SHALL use the shared package's accessible primitives, with their behavior held in the panel's own component state.
+
+#### Scenario: Components come from the shared package
+
+- **WHEN** a surface renders a primitive (button, card, input, badge, alert, table, dialog, dropdown)
+- **THEN** it composes the `packages/ui` component rather than re-deriving bespoke markup, styled by the shared tokens plus the admin theme layer
+
+#### Scenario: Stylesheet is compiled from source without a registry
+
+- **WHEN** the admin bundle is built (including in a sandbox with no package-registry access)
+- **THEN** the build compiles the panel's stylesheet and bundle from source with no network fetch (a gitignored artifact built fresh, not a committed bundle)
+
+#### Scenario: Operator accent is preserved through theme tokens
+
+- **WHEN** the panel is themed
+- **THEN** the shared tokens are overridden in the admin theme layer (e.g. `--primary` set to the operator accent), with `packages/ui` itself unforked and the member app's look unchanged
 

@@ -48,7 +48,7 @@
 - [x] 6.1 Rewrite `src/admin/CLAUDE.md` per D9: Query-state discipline (status unions + `assertNever`, no server-state copies, mutation-state as the op union), URL-search-param rule, shadcn/`packages/ui` styling contract (Claude Design project rule kept verbatim), Vite build/serve section, harness section (SPA landmark discipline).
 - [x] 6.2 Root `CLAUDE.md` + `CONTRIBUTING.md`: admin panel described as the React SPA under `packages/admin-app` served at `/admin` from `assets/admin/`; `build:admin`/`dev:admin` command text; current-state prose only (no history narration).
 - [x] 6.3 `docs/ARCHITECTURE.md`: the admin surface paragraph (SPA over typed `/admin/api` reads/mutations, Access gate + shell serving); `README.md` surfaces overview.
-- [ ] 6.4 On archive: refresh the `operator-admin` and `group-insights` spec **Purpose** lines (they narrate SSR + islands) to the SPA description.
+- [x] 6.4 On archive: refresh the `operator-admin` and `group-insights` spec **Purpose** lines (they narrate SSR + islands) to the SPA description.
 
 ## 7. Ship
 
