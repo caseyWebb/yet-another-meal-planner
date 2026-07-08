@@ -193,14 +193,15 @@ export interface Env {
    * Workers Static Assets binding over the ONE merged assets root (`assets/`, a
    * gitignored artifact built fresh at CI/deploy time): the member SPA at `/`
    * (`index.html` + hashed chunks, built by `packages/app`; SPA fallback via
-   * `not_found_handling`) AND the admin panel's island bundles + stylesheet under
-   * `assets/admin/` (built by `scripts/build-admin.mjs`, served at the unchanged
-   * `/admin/*` URLs). The Hono admin app (`src/admin/app.tsx`) SSRs every page and falls
-   * back to `env.ASSETS.fetch()` for `/admin/islands/*` + `/admin/styles.css` — past the
-   * Access gate, so that static surface is gated too. `run_worker_first` enumerates every
-   * Worker-owned path so the SPA fallback can never shadow one. Code-level binding (no
-   * operator id); propagated by the deploy merge (`scripts/merge-wrangler-config.mjs`
-   * allowlist).
+   * `not_found_handling`) AND the admin panel's SPA bundle under `assets/admin/`
+   * (built by the admin app's Vite build, `packages/admin-app` → `assets/admin/`, served
+   * at the unchanged `/admin/*` URLs). The Hono admin app (`src/admin/app.ts`) gates every
+   * `/admin*` request behind Cloudflare Access, serves the typed `/admin/api/*` routes
+   * itself, and falls back to `env.ASSETS.fetch()` for `/admin/assets/*` plus the SPA
+   * shell on any other GET — past the Access gate, so that static surface is gated too.
+   * `run_worker_first` enumerates every Worker-owned path so the member SPA's own fallback
+   * can never shadow one. Code-level binding (no operator id); propagated by the deploy
+   * merge (`scripts/merge-wrangler-config.mjs` allowlist).
    */
   ASSETS: Fetcher;
 

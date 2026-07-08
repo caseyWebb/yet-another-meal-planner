@@ -48,7 +48,7 @@ matching build; `PW_CHROMIUM_PATH` points at a bare Chromium binary as the last 
 
 The `admin-ui` job in `.github/workflows/ci.yml` runs the suite as a blocking check on every
 PR/push (browser cached by lockfile hash). On a **same-repo PR touching admin-UI paths**
-(`src/admin/`, this harness, `scripts/build-admin.mjs`, `playwright.config.ts`), the job pushes
+(`packages/admin-app/`, `packages/ui/`, `src/admin/`, this harness, `playwright.config.ts`), the job pushes
 `.screenshots/*.png` to the `admin-screenshots` orphan branch under `pr-<n>/` and upserts **one**
 sticky PR comment (`<!-- admin-ui-screenshots -->`) of commit-SHA-pinned raw images — they render
 inline on github.com and in the GitHub mobile app. Fork PRs (read-only token) skip the publish;

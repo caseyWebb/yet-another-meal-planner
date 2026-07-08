@@ -10,8 +10,9 @@
 // SAME VOCABULARY the server validator uses — so an author cannot type `poltry`, and
 // the dropdowns can never disagree with src/validate.ts because both read src/vocab.js.
 //
-// Mirrors build-admin.mjs/build-plugin.mjs: ESM, hand-rolled, deterministic (stable
-// field order + stable ids), with a --check validate-only mode (the CI drift gate)
+// Mirrors build-plugin.mjs (the admin panel's bundle is built by Vite instead, not a
+// hand-rolled script): ESM, hand-rolled, deterministic (stable field order + stable ids),
+// with a --check validate-only mode (the CI drift gate)
 // that fails if the committed vault is stale against vocab.js or the template.
 //
 // PLUGINS. The three community plugins (Metadata Menu, Templater, Remotely Save) are
