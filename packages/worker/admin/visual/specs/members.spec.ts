@@ -16,3 +16,30 @@ test("pending member detail shows the not-yet-connected state", async ({ members
   await detail.landmark();
   await detail.expectPendingEmptyState();
 });
+
+// Row actions run in place. The roster row is a <Link>, and a menu-item click bubbles up the
+// REACT tree (Radix portals the menu content in the DOM, but synthetic events still propagate
+// to React ancestors) — which used to trigger the row's navigation to the member page instead
+// of running the action. These guard that Rotate and Revoke fire without leaving the roster.
+// Rotate re-mints the pending member's invite in the shared local KV — deleting every invite
+// resolving to `pat`, including the app suite's `PW-APP-INVITE-2` login fixture (seed.mjs). The
+// app suite re-seeds `kvEntries()` at its own startup, so don't assert a specific `pat` invite
+// code after this test; the observable here is the freshly-minted banner, not the code itself.
+test("rotate runs from the row menu without navigating away", async ({ membersPage, page }) => {
+  await membersPage.goto();
+  await membersPage.openRowMenu(SEED.members.pending);
+  await membersPage.menuItem("Rotate invite").click();
+  await expect(membersPage.mintedBanner).toContainText("Invite minted");
+  await expect(membersPage.mintedBanner).toContainText(`@${SEED.members.pending}`);
+  await expect(page).toHaveURL(/\/admin\/members$/);
+  await membersPage.captureForReview("members-rotate");
+});
+
+test("revoke opens its confirm dialog from the row menu without navigating away", async ({ membersPage, page }) => {
+  await membersPage.goto();
+  await membersPage.openRowMenu(SEED.members.pending);
+  await membersPage.menuItem("Revoke invite").click(); // pending member → "Revoke invite"
+  await expect(membersPage.revokeDialog()).toBeVisible();
+  await expect(page).toHaveURL(/\/admin\/members$/);
+  await membersPage.captureForReview("members-revoke");
+});
