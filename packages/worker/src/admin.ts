@@ -24,6 +24,7 @@ import { ToolError } from "./errors.js";
 import {
   kvTenantStore,
   normalizeTenantId,
+  parseInviteRecord,
   resolveTenant,
   directoryFromEnv,
   type Tenant,
@@ -59,6 +60,7 @@ export const TENANT_TABLES = [
   "night_vibes", // per-member night-vibe palette (migration 0025)
   "night_vibe_derived", // per-member night-vibe embeddings (migration 0025)
   "pending_proposals", // per-member profile-reconciliation queue (migration 0027)
+  "webauthn_credentials", // enrolled passkeys (migration 0046)
 ] as const;
 export const AUTHOR_TABLES = ["recipe_notes", "store_notes"] as const;
 
@@ -81,6 +83,23 @@ export interface AdminDeps {
 export function randomInviteCode(): string {
   const bytes = crypto.getRandomValues(new Uint8Array(8));
   return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/**
+ * Single-use bootstrap invite lifetime (webauthn-passkey-auth): the window a member has to
+ * enroll a passkey with a freshly issued code before the operator must re-issue via `rotate`.
+ * Enforced as the KV `expirationTtl`, so an unredeemed code self-expires and cannot linger as a
+ * standing secret.
+ */
+export const BOOTSTRAP_INVITE_TTL_S = 30 * 24 * 60 * 60; // 30 days
+
+/**
+ * A single-use bootstrap invite record (JSON), consumed on the member's first passkey enrollment
+ * (`src/api/passkey.ts`). `tenant` is the canonical id; `expires_at` mirrors the KV TTL for
+ * display/debugging (the KV TTL is the authoritative clock). `parseInviteRecord` decodes it.
+ */
+function bootstrapInvite(tenant: string, nowMs: number): string {
+  return JSON.stringify({ v: 1, tenant, single_use: true, expires_at: nowMs + BOOTSTRAP_INVITE_TTL_S * 1000 });
 }
 
 // --- Cloudflare Access gate -------------------------------------------------
@@ -338,15 +357,17 @@ async function listAllKeys(kv: KvStore, prefix: string): Promise<string[]> {
   return names;
 }
 
-/** Delete every `invite:*` whose value resolves to `id`. Returns how many were removed. */
-async function deleteInvitesFor(kv: KVNamespace, id: string): Promise<number> {
+/** Delete every `invite:*` whose value resolves to `id` — both the JSON bootstrap shape and
+ *  the legacy bare-string value (via `parseInviteRecord`). Returns how many were removed. Exported
+ *  so first-passkey-enrollment (src/api/passkey.ts) consumes a member's bootstrap code the same way. */
+export async function deleteInvitesFor(kv: KVNamespace, id: string): Promise<number> {
   let removed = 0;
   let cursor: string | undefined;
   for (;;) {
     const res = await kv.list({ prefix: INVITE_PREFIX, cursor });
     for (const k of res.keys) {
-      const value = await kv.get(k.name);
-      if (value !== null && normalizeTenantId(value) === id) {
+      const parsed = parseInviteRecord(await kv.get(k.name));
+      if (parsed && normalizeTenantId(parsed.tenant) === id) {
         await kv.delete(k.name);
         removed++;
       }
@@ -385,9 +406,10 @@ async function deleteSessionsFor(kv: KVNamespace, id: string): Promise<number> {
 }
 
 /**
- * Onboard a member: write the allowlist entry + an invite mapping (canonical
- * lowercase). Generates a code when none is supplied. The caller surfaces the
- * returned code once; it is never logged.
+ * Onboard a member: write the allowlist entry + a single-use bootstrap invite mapping
+ * (canonical lowercase, JSON, KV-TTL'd — consumed on the member's first passkey enrollment).
+ * Generates a code when none is supplied. The caller surfaces the returned code once; it is
+ * never logged.
  */
 export async function onboard(
   deps: AdminDeps,
@@ -398,14 +420,19 @@ export async function onboard(
   if (!id) throw new ToolError("validation_failed", "A username is required");
   const code = (inviteCode ?? "").trim() || deps.randomCode();
   await deps.tenantKv.put(`${TENANT_PREFIX}${id}`, JSON.stringify({ id }));
-  await deps.tenantKv.put(`${INVITE_PREFIX}${code}`, id);
+  await deps.tenantKv.put(`${INVITE_PREFIX}${code}`, bootstrapInvite(id, Date.now()), {
+    expirationTtl: BOOTSTRAP_INVITE_TTL_S,
+  });
   return { username: id, invite_code: code };
 }
 
 /**
- * Rotate a member's invite: delete their prior invite mapping(s) and mint a new
- * one, leaving the allowlist entry and per-tenant data untouched. Errors if the
- * member is not on the allowlist.
+ * Rotate a member's invite: delete their prior invite mapping(s) and mint a new single-use
+ * bootstrap, leaving the allowlist entry and per-tenant data untouched. Errors if the member is
+ * not on the allowlist. This is the RECOVERY primitive (webauthn-passkey-auth): a bootstrap code
+ * authenticates regardless of the `INVITE_GRACE` control, so it admits a member who lost every
+ * device or who never enrolled before grace was turned off — they redeem it once to enroll a
+ * (new) passkey, which consumes it.
  */
 export async function rotate(
   deps: AdminDeps,
@@ -418,7 +445,9 @@ export async function rotate(
   }
   await deleteInvitesFor(deps.tenantKv, id);
   const code = deps.randomCode();
-  await deps.tenantKv.put(`${INVITE_PREFIX}${code}`, id);
+  await deps.tenantKv.put(`${INVITE_PREFIX}${code}`, bootstrapInvite(id, Date.now()), {
+    expirationTtl: BOOTSTRAP_INVITE_TTL_S,
+  });
   return { username: id, invite_code: code };
 }
 

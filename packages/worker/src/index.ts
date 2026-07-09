@@ -12,7 +12,7 @@ import type { Env } from "./env.js";
 import { buildServer } from "./tools.js";
 import { resolveTenant, directoryFromEnv } from "./tenant.js";
 import { handleOAuth } from "./oauth.js";
-import { handleAuthorize } from "./authorize.js";
+import { handleAuthorize, handleAuthorizeStatus } from "./authorize.js";
 import { handleInboundEmail, rejectReasonFor, type InboundMessage } from "./email.js";
 import { buildWarmDeps, runWarmJob } from "./flyer-warm.js";
 import { buildSaleScanPlanDeps, runSaleScanPlanJob } from "./sale-scan-plan.js";
@@ -82,6 +82,7 @@ const defaultHandler = {
     // wrangler.jsonc `assets` block; SPA fallback for client-side routes). `/health`
     // remains the machine liveness check.
     if (url.pathname === "/authorize") return handleAuthorize(request, env);
+    if (url.pathname === "/authorize/status") return handleAuthorizeStatus(request, env);
     if (url.pathname.startsWith("/oauth/")) return handleOAuth(env, url);
     // The member web app's JSON API (member-api): cookie-session-authenticated Hono
     // sub-apps under /api (src/api/app.ts) — dispatched BEFORE the /admin dispatch.

@@ -17,6 +17,7 @@
   },
   "dependencies": {
     "@grocery-agent/ui": "workspace:*",
+    "@simplewebauthn/browser": "^13.3.0",
     "@tanstack/react-query": "^5.101.2",
     "@tanstack/react-query-persist-client": "^5.101.2",
     "@tanstack/react-router": "^1.170.17",

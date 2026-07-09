@@ -10,6 +10,15 @@ export interface SeedLiterals {
   /** A second invite code mapped to the PENDING member — the app suite's different-tenant
    *  login spec (member-app-offline D9). */
   readonly inviteAlt: string;
+  /** Cross-device MCP approval fixtures (webauthn-passkey-auth): the pending `authz:<ref>`
+   *  records the /connect screen reads (viewRef) and approves (approveRef), plus the
+   *  requesting client name and the verification code shown on both screens. */
+  readonly connect: {
+    readonly clientName: string;
+    readonly code: string;
+    readonly viewRef: string;
+    readonly approveRef: string;
+  };
   /** The indexed recipe the Data list / Insights boards / cooking log rows reference. */
   readonly recipe: { readonly slug: string; readonly title: string; readonly source: string };
   /** The discovery-log fixture rows (a retryable error + a gated skip + an import). */

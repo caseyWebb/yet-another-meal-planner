@@ -8,7 +8,7 @@
 
 import { Hono } from "hono";
 import { getCookie } from "hono/cookie";
-import { resolveInvite } from "../tenant.js";
+import { resolveInvite, inviteAccepted } from "../tenant.js";
 import { underRateLimit } from "../rate-limit.js";
 import {
   createSession,
@@ -41,14 +41,14 @@ export const sessionArea = new Hono<ApiEnv>()
     } catch {
       // A malformed body falls through to the same uniform 401 as an unknown code.
     }
-    const tenant = code ? await resolveInvite(c.env.TENANT_KV, code) : null;
-    if (!tenant) {
-      // UNIFORM for unknown code / revoked member / missing code — never distinguish.
+    const inv = code ? await resolveInvite(c.env.TENANT_KV, code) : null;
+    if (!inv || !inviteAccepted(inv, c.env)) {
+      // UNIFORM for unknown / expired / revoked / grace-rejected legacy code — never distinguish.
       return c.json({ error: "unauthorized" as const, message: "That invite code didn't work" }, 401);
     }
-    const token = await createSession(c.env.TENANT_KV, tenant);
+    const token = await createSession(c.env.TENANT_KV, inv.tenant);
     setSessionCookie(c, token);
-    return c.json({ tenant: { id: tenant } });
+    return c.json({ tenant: { id: inv.tenant } });
   })
   // Whoami — the SPA's boot check, and the ETag helper's living demonstrator.
   .get("/session", requireSession, async (c) => jsonWithEtag(c, { tenant: c.get("tenant") }))

@@ -45,6 +45,7 @@ const PK: Record<string, string[]> = {
   night_vibes: ["tenant", "id"],
   night_vibe_derived: ["tenant", "id"],
   pending_proposals: ["tenant", "id"],
+  webauthn_credentials: ["credential_id"],
   // walled-source ingest (recipe-ingestion)
   ingest_keys: ["id"],
   ingest_candidates: ["id"],
@@ -115,6 +116,7 @@ export function fakeD1(
     }
     if (/\bstore = \?1/i.test(sql)) eq("store", 1);
     if (/\bslug = \?1/i.test(sql)) eq("slug", 1);
+    if (/credential_id = \?1/i.test(sql)) eq("credential_id", 1);
     if (/key_hash = \?1/i.test(sql)) eq("key_hash", 1);
     if (/status = 'active'/i.test(sql)) out = out.filter((r) => r.status === "active");
     if (/\blocation_id = \?1/i.test(sql)) eq("location_id", 1);

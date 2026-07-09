@@ -2,6 +2,8 @@ import { describe, it, expect, vi } from "vitest";
 import {
   resolveTenant,
   resolveInvite,
+  inviteAccepted,
+  inviteGraceEnabled,
   tenantFromRecord,
   kvTenantStore,
   normalizeTenantId,
@@ -86,9 +88,17 @@ describe("tenantFromRecord", () => {
 });
 
 describe("resolveInvite (the §3.2 identity step)", () => {
-  it("maps a valid code to its allowlisted username", async () => {
+  it("maps a valid legacy (bare-string) code to its allowlisted username", async () => {
     const kv = memKv({ "invite:LET-ME-IN": "alice", "tenant:alice": JSON.stringify(ALICE) });
-    expect(await resolveInvite(kv, "LET-ME-IN")).toBe("alice");
+    expect(await resolveInvite(kv, "LET-ME-IN")).toEqual({ tenant: "alice", kind: "legacy" });
+  });
+
+  it("maps a JSON bootstrap code to its allowlisted username", async () => {
+    const kv = memKv({
+      "invite:BOOT": JSON.stringify({ v: 1, tenant: "alice", single_use: true, expires_at: 0 }),
+      "tenant:alice": JSON.stringify(ALICE),
+    });
+    expect(await resolveInvite(kv, "BOOT")).toEqual({ tenant: "alice", kind: "bootstrap" });
   });
 
   it("returns null for an unknown code", async () => {
@@ -110,7 +120,7 @@ describe("resolveInvite (the §3.2 identity step)", () => {
     // Allowlist keyed lowercase (as minted); a stray mixed-case invite target still
     // resolves to the canonical id via the lowercase directory lookup.
     const kv = memKv({ "invite:CODE": "Casey", "tenant:casey": JSON.stringify({ id: "casey" }) });
-    expect(await resolveInvite(kv, "CODE")).toBe("casey");
+    expect(await resolveInvite(kv, "CODE")).toEqual({ tenant: "casey", kind: "legacy" });
   });
 });
 
@@ -252,5 +262,34 @@ describe("resolveTenant recordSeen (admin-ui-redesign-members)", () => {
     await resolveTenant(fake.env, "casey", dir);
     await new Promise((r) => setTimeout(r, 0));
     expect(await db(fake.env).all("SELECT * FROM tenant_activity")).toEqual([]);
+  });
+});
+
+describe("invite grace control (webauthn-passkey-auth)", () => {
+  const on = (override?: string) => ({ INVITE_GRACE: override } as unknown as Env);
+
+  it("grace defaults on when INVITE_GRACE is unset", () => {
+    expect(inviteGraceEnabled({} as Env)).toBe(true);
+  });
+
+  it("grace is on for any value other than 'off'", () => {
+    expect(inviteGraceEnabled(on("on"))).toBe(true);
+    expect(inviteGraceEnabled(on("anything"))).toBe(true);
+  });
+
+  it("grace is off only for exactly 'off'", () => {
+    expect(inviteGraceEnabled(on("off"))).toBe(false);
+  });
+
+  it("a bootstrap code is accepted regardless of grace (the recovery bypass)", () => {
+    const boot = { tenant: "alice", kind: "bootstrap" } as const;
+    expect(inviteAccepted(boot, on("off"))).toBe(true);
+    expect(inviteAccepted(boot, {} as Env)).toBe(true);
+  });
+
+  it("a legacy code is accepted only while grace is on", () => {
+    const legacy = { tenant: "alice", kind: "legacy" } as const;
+    expect(inviteAccepted(legacy, {} as Env)).toBe(true);
+    expect(inviteAccepted(legacy, on("off"))).toBe(false);
   });
 });

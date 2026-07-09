@@ -22,6 +22,16 @@ export const SEED = {
   // D9): the app suite's different-tenant login spec needs two real, independently
   // loggable identities to exercise the stamp-mismatch purge for real.
   inviteAlt: "PW-APP-INVITE-2",
+  // Cross-device MCP approval refs (webauthn-passkey-auth): pending `authz:<ref>` KV records
+  // the /connect approval screen reads + approves. Two independent refs so the view
+  // (smoke screenshot) and the approve round-trip never disturb each other regardless of
+  // test order — the approve test mutates its own ref only.
+  connect: {
+    clientName: "Claude",
+    code: "ABC234",
+    viewRef: "pw-app-authz-view",
+    approveRef: "pw-app-authz-approve",
+  },
   recipe: {
     slug: "viz-miso-salmon",
     title: "Miso-Glazed Salmon Bowls",
@@ -645,6 +655,20 @@ export function kvEntries() {
     ["TENANT_KV", `tenant:${members.pending}`, JSON.stringify({ id: members.pending })],
     ["TENANT_KV", `invite:${SEED.invite}`, members.active],
     ["TENANT_KV", `invite:${SEED.inviteAlt}`, members.pending],
+    // Two pending cross-device approval refs (webauthn-passkey-auth): the connect screen's
+    // viewApproval reads clientName/code/status; `oauth` is any non-empty string (the
+    // /authorize completion path isn't exercised in the app suite). Independent refs so
+    // the approve round-trip never flips the view fixture to "approved".
+    [
+      "TENANT_KV",
+      `authz:${SEED.connect.viewRef}`,
+      JSON.stringify({ oauth: "cGVuZGluZw", clientName: SEED.connect.clientName, code: SEED.connect.code, status: "pending" }),
+    ],
+    [
+      "TENANT_KV",
+      `authz:${SEED.connect.approveRef}`,
+      JSON.stringify({ oauth: "cGVuZGluZw", clientName: SEED.connect.clientName, code: SEED.connect.code, status: "pending" }),
+    ],
     ["OAUTH_KV", `grant:${members.active}:seed-grant`, JSON.stringify({ id: "seed-grant" })],
     ["KROGER_KV", `kroger:refresh:${members.active}`, "seed-refresh-token"],
     // The pre-warmed query-embedding cache entry (member-app-propose D12): the exact

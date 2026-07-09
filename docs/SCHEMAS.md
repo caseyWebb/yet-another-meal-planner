@@ -825,6 +825,41 @@ The member web app's session store (member-session-auth), in the `TENANT_KV` nam
 - `session:<token>` → `{ tenant, created_at, refreshed_at }` (epoch ms) — one record per live web session. `<token>` is 32 bytes from `crypto.getRandomValues`, base64url (256 bits, never logged); the same value rides the `__Host-session` cookie (`HttpOnly`, `Secure`, `SameSite=Lax`, `Path=/`, `Max-Age` 90d). Written with `expirationTtl` ≈ 90 days — **the KV TTL is the single expiry authority** (no second clock). The session middleware re-puts the record with a fresh TTL (rolling lifetime) only when `refreshed_at` is >24 h old, so a chatty session costs ≤1 extension write/day. Deleted on logout, and scanned-and-deleted by member revocation (`revoke()` matches the stored `tenant`); the middleware's `resolveTenant` allowlist re-check makes a missed key moot.
 - **Fixed-window rate-limit counters** (`KROGER_KV` — ephemeral infra, self-expiring): the shared limiter (`src/rate-limit.ts`, `underRateLimit(kv, key, max, windowS, now)` — fail-open, `expirationTtl: windowS × 2`) appends a window bucket to its caller's key. Callers: `ingest:rl:<keyId>:<bucket>` (the satellite push/pull surfaces, 120/min per key) and `login:rl:<ip>:<bucket>` (member login, 10/min per client IP from `CF-Connecting-IP`, `"unknown"` fallback).
 
+## Invite records (KV, not a repo file)
+
+The operator-issued **bootstrap** codes, in the `TENANT_KV` namespace beside the `tenant:*` allowlist and `session:*` records (member-session-auth / passkey-auth). Written by `onboard()`/`rotate()` (`src/admin.ts`), resolved by `resolveInvite` (`src/tenant.ts`); nothing edits them by hand. An invite code is a **single-use bootstrap**, not a standing credential: it authenticates a web `/login` and (while grace is on) a Claude.ai `/authorize` only until the member's first passkey enrollment consumes every `invite:*` mapping resolving to their tenant.
+
+- `invite:<code>` → `{ v, tenant, single_use, expires_at }` (JSON) — a code minted by `onboard()`/`rotate()`. `v` is the record-shape version; `tenant` is the allowlisted member id the code resolves to; `single_use` is `true`; `expires_at` is the code's expiry. Written with a **30-day KV `expirationTtl`**. `rotate()` mints a grace-bypassing single-use bootstrap — the recovery primitive for a member who lost every device or was never enrolled before grace was turned off (see `SELF_HOSTING.md`).
+- **Legacy shape:** a pre-migration invite record is a **bare-string** value (just the tenant id, no JSON). `resolveInvite` parses both shapes — the JSON record and the bare string — so existing codes keep resolving. Whether a legacy bare-string code still *authenticates* is governed by the operator `INVITE_GRACE` grace control (a Worker `var`, default on; see `SELF_HOSTING.md`): honored while grace is on, rejected once it is off. A single-use JSON bootstrap is always honored until consumed/expired, regardless of the grace flag.
+
+## WebAuthn ceremony state (KV, not a repo file)
+
+Ephemeral, single-use ceremony state for passkeys and the cross-device MCP approval (passkey-auth), in the `TENANT_KV` namespace — identity-adjacent, self-expiring, mirroring the Kroger PKCE-nonce pattern. Written/read by `src/webauthn.ts` / `src/authorize.ts`; nothing edits it by hand.
+
+- `webauthn:chal:<challenge>` → the ceremony **purpose** string, `"reg"` or `"auth"` (the challenge string itself is the key; no tenant is bound to the challenge — the enrolling tenant comes from the session at verify time). **Single-use** — deleted on verification — with a short TTL (~5 min). A returned attestation/assertion is verified against the stored challenge; a missing or already-consumed challenge, or a purpose mismatch, fails verification.
+- `authz:<ref>` → `{ oauth, clientName, code, status, tenant? }` — the Claude.ai `/authorize` **approval reference**. `oauth` is the base64-encoded parsed OAuth request; `clientName` is the requesting client's display name; `code` is the short human-readable verification code shown on both the `/authorize` page and the web app's `/connect` screen; `status` is `"pending"` → `"approved"`; `tenant` is bound server-side when a passkey-authenticated member approves (pending-only and one-shot — an approved reference is never re-bound). **Single-use** with a ~10-min TTL — the poll completes `completeAuthorization` EXACTLY ONCE and then deletes the reference; an expired or already-consumed reference is rejected and mints no token.
+
+## webauthn_credentials (per-tenant, D1 `webauthn_credentials` table)
+
+Each member's enrolled **passkeys** (passkey-auth) — one row per device, many per tenant. A member authenticates on both member surfaces with these credentials; the invite code is only the single-use bootstrap that seeds their first login/connection (see *Invite records* above). Written/read through `src/db.ts` (never `env.DB` directly), keyed by the credential id; `idx_webauthn_tenant` on `(tenant)` backs the list-by-tenant read and the revocation purge. Included in the per-tenant `TENANT_TABLES` batch (`src/admin.ts`), so member revocation deletes every row. Passkey login and connect-approve are rate-limited per client IP by the shared fixed-window limiter (`src/rate-limit.ts`, fail-open). Migration `0046_webauthn_credentials`.
+
+Binary fields are stored **base64url** (the Worker runs on `workerd` — no `Buffer`): `credential_id` and `public_key` are base64url text. The verification library is `@simplewebauthn/server@13.3.2` (pure WebCrypto), supporting at least ES256 (`-7`) and RS256 (`-257`); registration is `residentKey: "required"` / `attestation: "none"` with the WebAuthn user handle = the tenant id.
+
+```sql
+-- D1 webauthn_credentials table — one row per enrolled device. PRIMARY KEY (credential_id).
+-- idx_webauthn_tenant on (tenant).
+tenant        TEXT     -- owning member (many rows may share it)
+credential_id TEXT     -- WebAuthn credential id, base64url — the primary key
+public_key    TEXT     -- COSE public key, base64url
+sign_count    INTEGER  -- authenticator signature counter; STORED, NEVER ENFORCED (see below)
+transports    TEXT     -- JSON string[] of reported transports (e.g. ["internal","hybrid"]); may be []
+label         TEXT     -- optional human label for the device (nullable)
+created_at    INTEGER  -- epoch ms of enrollment
+last_used_at  INTEGER  -- epoch ms of the last successful assertion (nullable until first use)
+```
+
+**The signature counter is stored but never enforced.** `sign_count` is updated to the value each assertion reports, but an assertion is NEVER rejected because the counter failed to advance: synced passkeys (iCloud Keychain, Google Password Manager) report `0` or a non-incrementing counter, and enforcing would reject legitimate logins. Counter regression is therefore not treated as a cloning signal that blocks login.
+
 ## Background-job health (D1 `job_health` table)
 
 Derived operational state for the `/health` endpoint (background-job-health). Each background process upserts one row per run; `/health` aggregates them. Tenant-data-free by construction — counts, timestamps, and error classes only. It lives in D1 (not KV) because persisting per-job liveness on every cron tick is standing write load that belongs in D1's far larger budget (migration `0019_job_health`).

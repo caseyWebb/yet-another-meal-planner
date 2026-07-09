@@ -20,6 +20,9 @@ test("the seeded invite code lands on the authenticated shell, and a reload keep
 }) => {
   await loginPage.goto();
   await loginPage.login(SEED.invite);
+  // A bootstrap-code login lands on the first-run passkey nudge (webauthn-passkey-auth);
+  // decline it to reach the app shell.
+  await loginPage.skipEnroll();
   await shellPage.landmark();
   await shellPage.expectSignedInAs(SEED.members.active);
   // Cookie session: a reload re-runs the whoami boot check and stays signed in.
@@ -36,6 +39,7 @@ test("the account menu shows the member's Kroger link badge", async ({ asMember,
 test("logout returns to login, and the gate holds afterward", async ({ loginPage, shellPage }) => {
   await loginPage.goto();
   await loginPage.login(SEED.invite);
+  await loginPage.skipEnroll();
   await shellPage.landmark();
   await shellPage.logout();
   await loginPage.landmark();
@@ -52,6 +56,7 @@ test("an unauthenticated visit to / presents the login screen", async ({ loginPa
 test("logout leaves no member data at rest (member-app-offline D9)", async ({ loginPage, shellPage, page }) => {
   await loginPage.goto();
   await loginPage.login(SEED.invite);
+  await loginPage.skipEnroll();
   await shellPage.landmark();
   // The shell's own subscriptions warm the allowlisted reads; wait until they are
   // AT REST in IndexedDB (the persister throttles ~1 s) so the purge has real work.
@@ -134,6 +139,7 @@ test("a different-tenant login closes the cross-tenant replay window (member-app
 
   await context.setOffline(false);
   await loginPage.login(SEED.inviteAlt); // a real second invite, resolving to the pending member
+  await loginPage.skipEnroll(); // decline the first-run passkey nudge to reach the shell
   await shellPage.landmark();
   await shellPage.expectSignedInAs(SEED.members.pending);
 

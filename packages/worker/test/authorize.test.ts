@@ -1,10 +1,15 @@
 import { describe, it, expect } from "vitest";
-import { handleAuthorize } from "../src/authorize.js";
+import { handleAuthorize, handleAuthorizeStatus } from "../src/authorize.js";
+import { mintApproval, approveApproval } from "../src/connect-approval.js";
 import type { Env } from "../src/env.js";
 
 function memKv(initial: Record<string, string> = {}): KVNamespace {
   const m = new Map(Object.entries(initial));
-  return { async get(key: string) { return m.get(key) ?? null; } } as unknown as KVNamespace;
+  return {
+    async get(key: string) { return m.get(key) ?? null; },
+    async put(key: string, value: string) { m.set(key, value); },
+    async delete(key: string) { m.delete(key); },
+  } as unknown as KVNamespace;
 }
 
 const OAUTH_REQ = {
@@ -44,15 +49,27 @@ function postForm(fields: Record<string, string>): Request {
   });
 }
 
-describe("handleAuthorize — invite-code consent", () => {
-  it("GET renders the invite-code form carrying the parsed request", async () => {
+describe("handleAuthorize — cross-device approval + grace-gated invite fallback", () => {
+  it("GET renders the cross-device approval page (deep link + poll)", async () => {
     const { env } = fakeEnv();
     const res = await handleAuthorize(new Request("https://worker.example/authorize?response_type=code"), env);
     expect(res.status).toBe(200);
     const html = await res.text();
-    expect(html.toLowerCase()).toContain("invite code");
-    expect(html).toContain('name="invite_code"');
-    expect(html).toContain(oauthReqB64); // the round-tripped request
+    expect(html).toContain("/connect?authz="); // the deep link into the web app
+    expect(html).toContain("/authorize/status?authz="); // the poll endpoint
+    expect(html).toContain("Claude"); // the requesting client name
+    expect(html).toMatch(/<div class="qr"><svg[\s\S]*<\/svg><\/div>/); // an inline scannable QR of the deep link
+  });
+
+  it("GET shows the legacy invite form while grace is on, hides it when off", async () => {
+    const onEnv = fakeEnv().env;
+    const graceOn = await (await handleAuthorize(new Request("https://worker.example/authorize"), onEnv)).text();
+    expect(graceOn).toContain('name="invite_code"');
+
+    const offEnv = fakeEnv().env;
+    (offEnv as unknown as { INVITE_GRACE: string }).INVITE_GRACE = "off";
+    const graceOff = await (await handleAuthorize(new Request("https://worker.example/authorize"), offEnv)).text();
+    expect(graceOff).not.toContain('name="invite_code"');
   });
 
   it("GET with a malformed request yields a 400 page, not an uncaught 500", async () => {
@@ -98,5 +115,40 @@ describe("handleAuthorize — invite-code consent", () => {
     const res = await handleAuthorize(postForm({ invite_code: "  CODE  ", oauth_req: oauthReqB64 }), env);
     expect(res.status).toBe(302);
     expect(completeCalls[0].userId).toBe("bob");
+  });
+});
+
+describe("handleAuthorizeStatus — cross-device poll", () => {
+  const statusReq = (ref: string) => new Request(`https://worker.example/authorize/status?authz=${ref}`);
+
+  it("stays pending until approved, then completes the grant EXACTLY once", async () => {
+    const { env, completeCalls } = fakeEnv();
+    const { ref } = await mintApproval(env, oauthReqB64, "Claude");
+
+    const pending = await (await handleAuthorizeStatus(statusReq(ref), env)).json();
+    expect(pending).toEqual({ status: "pending" });
+    expect(completeCalls).toHaveLength(0);
+
+    await approveApproval(env, ref, "casey");
+    const approved = (await (await handleAuthorizeStatus(statusReq(ref), env)).json()) as {
+      status: string;
+      redirect: string;
+    };
+    expect(approved.status).toBe("approved");
+    expect(approved.redirect).toContain("code=GRANT");
+    expect(completeCalls).toHaveLength(1);
+    expect(completeCalls[0]).toEqual({ userId: "casey", props: { tenantId: "casey" } });
+
+    // A second poll after the single completion is a no-op — the ref is consumed.
+    const after = await (await handleAuthorizeStatus(statusReq(ref), env)).json();
+    expect(after).toEqual({ status: "expired" });
+    expect(completeCalls).toHaveLength(1);
+  });
+
+  it("an unknown ref is expired and issues no grant", async () => {
+    const { env, completeCalls } = fakeEnv();
+    const res = await handleAuthorizeStatus(statusReq("nope"), env);
+    expect(await res.json()).toEqual({ status: "expired" });
+    expect(completeCalls).toHaveLength(0);
   });
 });

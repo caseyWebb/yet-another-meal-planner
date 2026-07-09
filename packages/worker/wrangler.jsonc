@@ -98,6 +98,7 @@
 			"/register",
 			"/.well-known/*",
 			"/authorize",
+			"/authorize/status",
 			"/oauth/*",
 			"/satellite/*",
 			"/api",
