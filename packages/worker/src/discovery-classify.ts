@@ -18,6 +18,7 @@
 
 import type { Env } from "./env.js";
 import { ToolError } from "./errors.js";
+import { runAi, type AiTrigger } from "./ai.js";
 import { validateRecipeContract } from "./recipe-contract.js";
 import { PROTEIN_VOCAB, CUISINE_VOCAB, SEASON_VOCAB, EQUIPMENT_VOCAB } from "./vocab.js";
 
@@ -248,12 +249,15 @@ function parseFacets(response: unknown): Record<string, unknown> | null {
   }
 }
 
-async function runModel(env: Env, messages: Msg[]): Promise<Record<string, unknown> | null> {
+async function runModel(env: Env, messages: Msg[], trigger: AiTrigger): Promise<Record<string, unknown> | null> {
   let res: { response?: unknown };
   try {
-    res = (await env.AI.run(CLASSIFY_MODEL, { messages, max_tokens: 700, temperature: 0.1 })) as {
-      response?: unknown;
-    };
+    res = await runAi<{ response?: unknown }>(
+      env,
+      { activity: "classify", trigger, calls: 1 },
+      CLASSIFY_MODEL,
+      { messages, max_tokens: 700, temperature: 0.1 },
+    );
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
     throw new ToolError("storage_error", `Workers AI classification failed: ${message}`, {
@@ -326,12 +330,13 @@ export async function classifyRecipe(
   source: string | null,
   maxRetries: number = CLASSIFY_MAX_RETRIES,
   conditioning?: ClassifyConditioning,
+  trigger: AiTrigger = "cron",
 ): Promise<ClassifyResult> {
   const messages = baseMessages(input, conditioning);
   let lastErrors: string[] = [];
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    const facets = await runModel(env, messages);
+    const facets = await runModel(env, messages, trigger);
     if (facets) {
       const fm = toFrontmatter(facets, input.title, source);
       const errors = validateRecipeContract(fm);

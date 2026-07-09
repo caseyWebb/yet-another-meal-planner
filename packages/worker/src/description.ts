@@ -15,6 +15,7 @@
 import type { Env } from "./env.js";
 import { ToolError } from "./errors.js";
 import { hashText } from "./hash.js";
+import { runAi, type AiTrigger } from "./ai.js";
 
 /** Text-generation model for descriptions. Swappable config; the eval (task 6.1) owns the choice. */
 export const DESC_MODEL = "@cf/mistralai/mistral-small-3.1-24b-instruct";
@@ -135,7 +136,11 @@ interface TextGenResponse {
  * throw — matching the tool-boundary discipline, exactly like src/embedding.ts. Strips wrapping
  * quotes/whitespace some models emit.
  */
-export async function generateDescription(env: Env, facets: RecipeFacets): Promise<string> {
+export async function generateDescription(
+  env: Env,
+  facets: RecipeFacets,
+  trigger: AiTrigger = "cron",
+): Promise<string> {
   const messages = [
     { role: "system", content: SYSTEM_PROMPT },
     ...FEW_SHOT.flatMap((ex) => [
@@ -147,11 +152,12 @@ export async function generateDescription(env: Env, facets: RecipeFacets): Promi
 
   let res: TextGenResponse;
   try {
-    res = (await env.AI.run(DESC_MODEL, {
-      messages,
-      max_tokens: 90,
-      temperature: 0.3,
-    })) as unknown as TextGenResponse;
+    res = await runAi<TextGenResponse>(
+      env,
+      { activity: "describe", trigger, calls: 1 },
+      DESC_MODEL,
+      { messages, max_tokens: 90, temperature: 0.3 },
+    );
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
     throw new ToolError("storage_error", `Workers AI description generation failed: ${message}`, {

@@ -83,7 +83,7 @@ describe("admin/visual/seed.mjs lockstep with the product embed cache", () => {
 describe("embedTextsCached", () => {
   it("cold cache: one batched embed call + a TTL'd put per text", async () => {
     const { env, ai, kv } = cacheEnv();
-    const out = await embedTextsCached(env, ["cozy soup", "bright salad"]);
+    const out = await embedTextsCached(env, { activity: "embed-search", trigger: "request" }, ["cozy soup", "bright salad"]);
     expect(ai).toHaveBeenCalledTimes(1);
     expect((ai.mock.calls[0][1] as { text: string[] }).text).toEqual(["cozy soup", "bright salad"]);
     expect(out).toEqual([fakeVec("cozy soup"), fakeVec("bright salad")]);
@@ -97,7 +97,7 @@ describe("embedTextsCached", () => {
     const kv = memKv();
     kv.store.set(await embedCacheKey("cozy soup"), JSON.stringify(fakeVec("stored!")));
     const { env, ai } = cacheEnv(kv);
-    const out = await embedTextsCached(env, ["Cozy  Soup"]); // hits modulo case/whitespace
+    const out = await embedTextsCached(env, { activity: "embed-search", trigger: "request" }, ["Cozy  Soup"]); // hits modulo case/whitespace
     expect(ai).not.toHaveBeenCalled();
     expect(out).toEqual([fakeVec("stored!")]);
   });
@@ -106,7 +106,7 @@ describe("embedTextsCached", () => {
     const kv = memKv();
     kv.store.set(await embedCacheKey("cached phrase"), JSON.stringify(fakeVec("cached phrase")));
     const { env, ai } = cacheEnv(kv);
-    const out = await embedTextsCached(env, ["miss one", "cached phrase", "miss two"]);
+    const out = await embedTextsCached(env, { activity: "embed-search", trigger: "request" }, ["miss one", "cached phrase", "miss two"]);
     expect(ai).toHaveBeenCalledTimes(1);
     expect((ai.mock.calls[0][1] as { text: string[] }).text).toEqual(["miss one", "miss two"]);
     expect(out).toEqual([fakeVec("miss one"), fakeVec("cached phrase"), fakeVec("miss two")]);
@@ -114,7 +114,7 @@ describe("embedTextsCached", () => {
 
   it("two texts differing only in case/whitespace share one key and one embed row", async () => {
     const { env, ai, kv } = cacheEnv();
-    const out = await embedTextsCached(env, ["Cozy Soup", "cozy   soup"]);
+    const out = await embedTextsCached(env, { activity: "embed-search", trigger: "request" }, ["Cozy Soup", "cozy   soup"]);
     // One deduped miss (the first occurrence's original text), applied to both rows.
     expect((ai.mock.calls[0][1] as { text: string[] }).text).toEqual(["Cozy Soup"]);
     expect(out[0]).toEqual(out[1]);
@@ -123,14 +123,14 @@ describe("embedTextsCached", () => {
 
   it("fails open on a KV read failure (plain embed, request succeeds)", async () => {
     const { env, ai } = cacheEnv(memKv({ failGet: true }));
-    const out = await embedTextsCached(env, ["cozy soup"]);
+    const out = await embedTextsCached(env, { activity: "embed-search", trigger: "request" }, ["cozy soup"]);
     expect(ai).toHaveBeenCalledTimes(1);
     expect(out).toEqual([fakeVec("cozy soup")]);
   });
 
   it("fails open on a KV write failure (vector still returned)", async () => {
     const { env } = cacheEnv(memKv({ failPut: true }));
-    const out = await embedTextsCached(env, ["cozy soup"]);
+    const out = await embedTextsCached(env, { activity: "embed-search", trigger: "request" }, ["cozy soup"]);
     expect(out).toEqual([fakeVec("cozy soup")]);
   });
 
@@ -139,7 +139,7 @@ describe("embedTextsCached", () => {
     kv.store.set(await embedCacheKey("bad json"), "{nope");
     kv.store.set(await embedCacheKey("short vec"), JSON.stringify([1, 2, 3]));
     const { env, ai } = cacheEnv(kv);
-    const out = await embedTextsCached(env, ["bad json", "short vec"]);
+    const out = await embedTextsCached(env, { activity: "embed-search", trigger: "request" }, ["bad json", "short vec"]);
     expect(ai).toHaveBeenCalledTimes(1);
     expect((ai.mock.calls[0][1] as { text: string[] }).text).toEqual(["bad json", "short vec"]);
     expect(out).toEqual([fakeVec("bad json"), fakeVec("short vec")]);
@@ -149,7 +149,7 @@ describe("embedTextsCached", () => {
 
   it("an empty input makes no KV or AI touch", async () => {
     const { env, ai, kv } = cacheEnv();
-    expect(await embedTextsCached(env, [])).toEqual([]);
+    expect(await embedTextsCached(env, { activity: "embed-search", trigger: "request" }, [])).toEqual([]);
     expect(ai).not.toHaveBeenCalled();
     expect(kv.puts).toHaveLength(0);
   });

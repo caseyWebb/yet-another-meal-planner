@@ -106,6 +106,7 @@ test.describe("seeded fixtures render", () => {
   test("usage renders its three dashboard sections", async ({ usagePage }) => {
     await usagePage.goto();
     await usagePage.expectSections();
+    await usagePage.expectNeuronsByActivity();
   });
 
   test("discovery shows the seeded candidates", async ({ discoveryPage }) => {

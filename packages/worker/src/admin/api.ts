@@ -27,6 +27,7 @@ import {
   buildHealthPayload,
   readJobRuns,
   readAllJobRuns,
+  readAiBacklog,
   HEALTH_JOBS,
   JOB_RUNS_PER_JOB_CAP,
   type JobRun,
@@ -48,7 +49,7 @@ import {
 } from "../admin-data.js";
 import { parseMarkdown } from "../parse.js";
 import { parseMarkdownDocument, renderMarkdown } from "./markdown.js";
-import { fetchUsage, fetchUsageTrends, fetchToolUsage } from "../usage.js";
+import { fetchUsage, fetchUsageTrends, fetchToolUsage, fetchAiUsage } from "../usage.js";
 import { readInsights } from "../insights.js";
 import { readDiscoveryLog, readDiscoveryCandidates, readDiscoveryRowById, deleteDiscoveryRow } from "../discovery-db.js";
 import { mintIngestKey, revokeIngestKey, readSatelliteLiveness } from "../ingest-db.js";
@@ -385,11 +386,18 @@ export function registerApiRoutes(app: Hono<{ Bindings: Env }, BlankSchema, "/ad
       // Insights: every window's precomputed aggregates in ONE payload — the SPA's window/sort/
       // expand toggles re-render from it with zero further requests (group-insights).
       .get("/api/insights", async (c) => c.json(await readInsights(c.env)))
-      // Usage: the three observability dashboards. Not-configured / upstream-failure detail
-      // states pass through STRUCTURALLY, as data — never a thrown 500.
+      // Usage: the observability dashboards (account snapshot, per-job trends, per-tool, and
+      // per-activity AI attribution). Not-configured / upstream-failure detail states pass
+      // through STRUCTURALLY, as data — never a thrown 500.
       .get("/api/usage", async (c) => {
-        const [usage, trends, tools] = await Promise.all([fetchUsage(c.env), fetchUsageTrends(c.env), fetchToolUsage(c.env)]);
-        return c.json({ usage, trends, tools });
+        const [usage, trends, tools, aiUsage, aiBacklog] = await Promise.all([
+          fetchUsage(c.env),
+          fetchUsageTrends(c.env),
+          fetchToolUsage(c.env),
+          fetchAiUsage(c.env),
+          readAiBacklog(c.env),
+        ]);
+        return c.json({ usage, trends, tools, aiUsage, aiBacklog });
       })
       // Discovery: the bounded candidate read + the liveness-derived ingest strip (the SPA's
       // filter pills + pager work client-side over this one payload).

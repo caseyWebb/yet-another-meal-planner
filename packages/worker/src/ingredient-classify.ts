@@ -14,6 +14,7 @@
 
 import type { Env } from "./env.js";
 import { ToolError } from "./errors.js";
+import { runAi } from "./ai.js";
 
 /** Confirm model — the spike's pick (shared with the discovery classifier). */
 export const NORMALIZE_MODEL = "@cf/mistralai/mistral-small-3.1-24b-instruct";
@@ -269,9 +270,12 @@ export function validateConfirm(
 async function runModel(env: Env, msgs: Msg[]): Promise<Record<string, unknown> | null> {
   let res: { response?: unknown };
   try {
-    res = (await env.AI.run(NORMALIZE_MODEL, { messages: msgs, max_tokens: 300, temperature: 0 })) as {
-      response?: unknown;
-    };
+    res = await runAi<{ response?: unknown }>(
+      env,
+      { activity: "ingredient-confirm", trigger: "cron", calls: 1 },
+      NORMALIZE_MODEL,
+      { messages: msgs, max_tokens: 300, temperature: 0 },
+    );
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
     throw new ToolError("storage_error", `Workers AI identity confirm failed: ${message}`, { model: NORMALIZE_MODEL });

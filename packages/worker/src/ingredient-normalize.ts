@@ -872,7 +872,7 @@ export function buildNormalizeDeps(env: Env): NormalizeDeps {
     storeEmbedding: (id, embedding) => writeIdentityEmbedding(env, id, embedding),
     displaynameless: (limit) => readDisplayNamelessNodes(env, limit),
     storeDisplayName: (id, displayName) => writeIdentityDisplayName(env, id, displayName),
-    embed: (texts) => embedTexts(env, texts),
+    embed: (texts) => embedTexts(env, { activity: "embed-ingredient" }, texts),
     confirm: (term, candidates) => confirmIdentity(env, term, candidates),
     commit: (r) => commitResolution(env, r),
     defer: (term, nextRetryAt) => deferNovelTerm(env, term, nextRetryAt),

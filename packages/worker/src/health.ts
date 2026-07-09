@@ -390,6 +390,39 @@ export async function readJobHealth(env: Env, name: string): Promise<JobHealth |
   return row ? rowToHealth(row) : null;
 }
 
+/** The AI-job backlog depths the Usage AI panel pairs with per-activity neuron spend, so a
+ *  DRAINING backlog (a non-zero, falling count) reads distinct from steady churn. Tenant-clean
+ *  counts read from the `recipe-classify` / `recipe-embed` `job_health` summaries (the same
+ *  `pending`/`describePending` a job already reports); a missing row or an unreachable D1 degrades
+ *  to zeros rather than throwing out of the Usage read. */
+export interface AiBacklog {
+  /** Recipes awaiting facet classification (`recipe-classify` `pending`) → activity `classify`. */
+  classify: number;
+  /** Recipes awaiting description generation (`recipe-embed` `describePending`) → activity `describe`. */
+  describe: number;
+  /** Recipes awaiting embedding (`recipe-embed` `pending`) → activity `embed-recipe`. */
+  embed: number;
+}
+
+/** Read the AI-job backlog depths for the Usage panel, composing `readJobHealth`. Degrades to zeros
+ *  on any missing row or storage error (the Usage page must stay renderable when D1 is flaky). */
+export async function readAiBacklog(env: Env): Promise<AiBacklog> {
+  const num = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) ? v : 0);
+  try {
+    const [classify, embed] = await Promise.all([
+      readJobHealth(env, "recipe-classify"),
+      readJobHealth(env, "recipe-embed"),
+    ]);
+    return {
+      classify: num(classify?.summary.pending),
+      describe: num(embed?.summary.describePending),
+      embed: num(embed?.summary.pending),
+    };
+  } catch {
+    return { classify: 0, describe: 0, embed: 0 };
+  }
+}
+
 /**
  * Read every `job_health` row into a name→record map. Degrades to an EMPTY map when D1 is
  * unreachable (a `storage_error` from `src/db.ts`) rather than throwing — `/health` must stay

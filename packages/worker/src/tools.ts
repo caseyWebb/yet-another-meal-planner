@@ -594,6 +594,7 @@ export function buildServer(env: Env, tenant: Tenant, origin?: string): McpServe
           .filter((x) => typeof x.spec.vibe === "string" && x.spec.vibe.length > 0);
         const vibeVecs = await embedTextsCached(
           env,
+          { activity: "embed-search", trigger: "request" },
           vibeSpecs.map((x) => x.spec.vibe as string),
         );
         const vibeVecByIndex = new Map<number, number[]>();

@@ -118,7 +118,7 @@ export function buildTasteDeps(
   return {
     loadTasteTexts,
     loadStored: () => d.all<TasteRow>("SELECT tenant, taste_hash FROM taste_derived"),
-    embed: (text) => embedText(env, text),
+    embed: (text) => embedText(env, { activity: "embed-taste" }, text),
     async upsert(tenant, hash, embedding) {
       await d.run(UPSERT_SQL, tenant, hash, JSON.stringify(embedding), new Date(now()).toISOString());
     },

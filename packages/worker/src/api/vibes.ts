@@ -110,7 +110,7 @@ export const vibesArea = new Hono<ApiEnv>()
       });
     }
     const seed = Number(new Date(now).toISOString().slice(0, 10).replace(/-/g, ""));
-    const { candidates, enqueued, superseded, source } = await runDerivation(c.env, tenant.id, seed, DEFAULT_MAX_SUGGESTIONS);
+    const { candidates, enqueued, superseded, source } = await runDerivation(c.env, tenant.id, seed, DEFAULT_MAX_SUGGESTIONS, "request");
     return c.json({ throttled: false as const, candidates, enqueued, superseded, source });
   })
   // One raw vibe row — the class (a) representation the PATCH preconditions on

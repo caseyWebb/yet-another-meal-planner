@@ -331,7 +331,7 @@ export async function searchRecipes(env: Env, query: string, mode: SearchMode): 
   let derivedRows: { slug: string; embedding: string }[];
   try {
     [queryVector, derivedRows] = await Promise.all([
-      embedText(env, q),
+      embedText(env, { activity: "embed-admin-search", trigger: "request" }, q),
       db(env).all<{ slug: string; embedding: string }>(
         "SELECT slug, embedding FROM recipe_derived WHERE embedding IS NOT NULL",
       ),

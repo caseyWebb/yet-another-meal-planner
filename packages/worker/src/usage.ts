@@ -719,3 +719,120 @@ export async function fetchToolUsage(env: Env, deps: UsageDeps = defaultDeps): P
   }
   return mapToolUsageRows(body.data ?? [], nowMs, TRENDS_WINDOW_DAYS);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// AI usage ATTRIBUTION (ai-usage-attribution): the per-ACTIVITY neuron tier, read from the
+// Workers Analytics Engine SQL API over the `yamp_ai` dataset (a THIRD sibling of `yamp_usage`/
+// `yamp_tool`). Every `env.AI.run` inference emits one tenant-clean point (activity, model,
+// trigger, tokens, est_neurons) via the `src/ai.ts` gateway; this reads them back grouped by
+// (activity, model, trigger) so the panel can rank spend by activity and split cron vs import —
+// the attribution the account-level by-model snapshot cannot show. The panel reconciles the summed
+// `est_neurons` against that account-level actual (already in `fetchUsage`'s `ai.by_model`). A
+// THIRD AE SQL client reusing `CF_ACCOUNT_ID` + `CF_ANALYTICS_TOKEN`, performing NO KV or D1.
+
+/** One activity's aggregate AI spend over the window, for one trigger. `est_neurons` is DERIVED
+ *  (tokens × a per-model rate in `src/ai.ts`), an attribution estimate anchored to the account-
+ *  level actual the panel shows alongside — never a billing figure. */
+export interface AiActivityUsage {
+  /** The fixed attribution activity (e.g. `classify`, `describe`, `embed-recipe`). */
+  activity: string;
+  /** Short model label (`mistral-small` | `bge-base`). */
+  model: string;
+  /** Where the spend was driven from (`cron` | `import` | `request`). */
+  trigger: string;
+  /** Calls (text-gen) or batched items (embeddings) in the window. */
+  calls: number;
+  input_tokens: number;
+  output_tokens: number;
+  /** Estimated neurons (tokens × per-model rate) — an attribution estimate, not billing. */
+  est_neurons: number;
+}
+
+/** The AI-attribution payload. A discriminated union mirroring `ToolUsageResult`, so "configured
+ *  but empty" is unrepresentable: an unconfigured deployment is `{ configured: false }`. */
+export type AiUsageResult =
+  | { configured: false }
+  | { configured: true; generated_at: number; window_days: number; activities: AiActivityUsage[] };
+
+/** The AE SQL `data` row shape for the AI query (loosely typed — numbers may arrive as strings). */
+interface AiUsageRow {
+  activity?: unknown;
+  model?: unknown;
+  trigger?: unknown;
+  calls?: unknown;
+  input_tokens?: unknown;
+  output_tokens?: unknown;
+  est_neurons?: unknown;
+}
+
+/**
+ * Pure mapping of AE SQL `data` rows into per-(activity, model, trigger) aggregates, ordered by
+ * estimated neurons descending (ties broken by activity name) so the panel renders costliest-first.
+ * Rows with no activity name are dropped; numeric columns are coerced (missing → 0).
+ */
+export function mapAiUsageRows(rows: AiUsageRow[], nowMs: number, windowDays: number): AiUsageResult {
+  const activities: AiActivityUsage[] = [];
+  for (const row of rows) {
+    const activity = typeof row.activity === "string" ? row.activity : "";
+    if (!activity) continue;
+    activities.push({
+      activity,
+      model: typeof row.model === "string" ? row.model : "",
+      trigger: typeof row.trigger === "string" ? row.trigger : "",
+      calls: toNum(row.calls),
+      input_tokens: toNum(row.input_tokens),
+      output_tokens: toNum(row.output_tokens),
+      est_neurons: toNum(row.est_neurons),
+    });
+  }
+  activities.sort((a, b) => b.est_neurons - a.est_neurons || a.activity.localeCompare(b.activity));
+  return { configured: true, generated_at: nowMs, window_days: windowDays, activities };
+}
+
+/** The AE SQL query: per-(activity, model, trigger) calls, tokens, and estimated neurons over the
+ *  window. Slots per the `yamp_ai` positional contract (see `docs/SCHEMAS.md`): `blob1` activity,
+ *  `blob2` model, `blob3` trigger; `double2` calls, `double3` input tokens, `double4` output
+ *  tokens, `double5` est_neurons. */
+const aiUsageSql = (windowDays: number) =>
+  `SELECT blob1 AS activity, blob2 AS model, blob3 AS trigger, ` +
+  `sum(double2) AS calls, sum(double3) AS input_tokens, ` +
+  `sum(double4) AS output_tokens, sum(double5) AS est_neurons ` +
+  `FROM yamp_ai ` +
+  `WHERE timestamp > now() - INTERVAL '${windowDays}' DAY ` +
+  `GROUP BY activity, model, trigger ORDER BY est_neurons DESC`;
+
+/**
+ * Fetch the per-activity AI usage attribution from the Analytics Engine SQL API. Returns
+ * `{ configured: false }` (with NO network call) when `CF_ACCOUNT_ID`/`CF_ANALYTICS_TOKEN` is
+ * unset. Maps a transport failure, a non-2xx, or an unparseable body to an `upstream_unavailable`
+ * ToolError (the admin route serializes it). Performs no KV or D1 operation.
+ */
+export async function fetchAiUsage(env: Env, deps: UsageDeps = defaultDeps): Promise<AiUsageResult> {
+  const accountTag = env.CF_ACCOUNT_ID?.trim();
+  const token = env.CF_ANALYTICS_TOKEN?.trim();
+  if (!accountTag || !token) return { configured: false };
+
+  const nowMs = deps.now();
+  let res: Response;
+  try {
+    res = await deps.fetchImpl(aeSqlEndpoint(accountTag), {
+      method: "POST",
+      headers: { "content-type": "text/plain", authorization: `Bearer ${token}` },
+      body: aiUsageSql(TRENDS_WINDOW_DAYS),
+    });
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    throw new ToolError("upstream_unavailable", `Analytics Engine SQL request failed: ${message}`);
+  }
+  if (!res.ok) {
+    throw new ToolError("upstream_unavailable", `Analytics Engine SQL returned HTTP ${res.status}`);
+  }
+  let body: { data?: AiUsageRow[] };
+  try {
+    body = (await res.json()) as typeof body;
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    throw new ToolError("upstream_unavailable", `Analytics Engine SQL returned an unparseable body: ${message}`);
+  }
+  return mapAiUsageRows(body.data ?? [], nowMs, TRENDS_WINDOW_DAYS);
+}

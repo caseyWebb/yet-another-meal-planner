@@ -68,9 +68,14 @@
 	// read back by the Usage tool panel via the AE SQL API. The merge copies this whole
 	// array verbatim, so a second instance of the type propagates with no extra allowlist
 	// line (a regression test pins that both bindings survive).
+	// A THIRD dataset (ai-usage-attribution): one tenant-clean point per `env.AI.run`
+	// inference (activity, model, trigger, tokens, estimated neurons) to `yamp_ai` via the
+	// `src/ai.ts` gateway — the per-activity neuron-attribution tier, read back by the Usage
+	// AI panel via the AE SQL API. Rides the same verbatim array copy as the other two.
 	"analytics_engine_datasets": [
 		{ "binding": "USAGE_AE", "dataset": "yamp_usage" },
-		{ "binding": "TOOL_AE", "dataset": "yamp_tool" }
+		{ "binding": "TOOL_AE", "dataset": "yamp_tool" },
+		{ "binding": "AI_AE", "dataset": "yamp_ai" }
 	],
 	// Static assets (member-app-shell + operator-admin): ONE merged, gitignored build root
 	// (./assets) carrying the member SPA at / (index.html + hashed chunks; deep links fall

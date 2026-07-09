@@ -8,6 +8,7 @@
 // candidate rather than breaking the derivation pass.
 
 import type { Env } from "./env.js";
+import { runAi, type AiTrigger } from "./ai.js";
 import { slugify } from "./discovery.js";
 import { WEATHER_BUCKETS, type WeatherCategory } from "./weather.js";
 
@@ -38,20 +39,26 @@ const CLUSTER_SYSTEM =
 export async function nameCluster(
   env: Env,
   input: { descriptions: string[]; cadence_days: number | null },
+  trigger: AiTrigger = "cron",
 ): Promise<{ vibe: string; cadence_days: number | null; weather_affinity?: WeatherCategory[] } | null> {
   const sample = input.descriptions.slice(0, 6);
   if (sample.length === 0) return null;
   const user = `These recipes are all in one group a member cooks:\n${sample.map((d) => `- ${d}`).join("\n")}\n\nName the vibe, then classify its weather label.`;
   let res: TextGenResponse;
   try {
-    res = (await env.AI.run(NAME_MODEL, {
-      messages: [
-        { role: "system", content: CLUSTER_SYSTEM },
-        { role: "user", content: user },
-      ],
-      max_tokens: 32,
-      temperature: 0.3,
-    })) as unknown as TextGenResponse;
+    res = await runAi<TextGenResponse>(
+      env,
+      { activity: "nightvibe-name", trigger, calls: 1 },
+      NAME_MODEL,
+      {
+        messages: [
+          { role: "system", content: CLUSTER_SYSTEM },
+          { role: "user", content: user },
+        ],
+        max_tokens: 32,
+        temperature: 0.3,
+      },
+    );
   } catch {
     return null; // fail soft — a naming hiccup skips one candidate, never the whole pass
   }
@@ -87,19 +94,28 @@ const STARTER_SYSTEM =
  * with too little cooking history to cluster. Returns `{ id, vibe }` candidates (no cadence — a
  * starter vibe has no observed interval yet). Empty on blank taste or a failed generation.
  */
-export async function starterVibesFromTaste(env: Env, tasteText: string | null): Promise<{ id: string; vibe: string }[]> {
+export async function starterVibesFromTaste(
+  env: Env,
+  tasteText: string | null,
+  trigger: AiTrigger = "cron",
+): Promise<{ id: string; vibe: string }[]> {
   const text = (tasteText ?? "").trim();
   if (!text) return [];
   let res: TextGenResponse;
   try {
-    res = (await env.AI.run(NAME_MODEL, {
-      messages: [
-        { role: "system", content: STARTER_SYSTEM },
-        { role: "user", content: `Taste notes:\n${text}\n\nPropose the vibes.` },
-      ],
-      max_tokens: 120,
-      temperature: 0.4,
-    })) as unknown as TextGenResponse;
+    res = await runAi<TextGenResponse>(
+      env,
+      { activity: "nightvibe-name", trigger, calls: 1 },
+      NAME_MODEL,
+      {
+        messages: [
+          { role: "system", content: STARTER_SYSTEM },
+          { role: "user", content: `Taste notes:\n${text}\n\nPropose the vibes.` },
+        ],
+        max_tokens: 120,
+        temperature: 0.4,
+      },
+    );
   } catch {
     return [];
   }

@@ -26,6 +26,7 @@
 // no external subrequests, health-recorded as `title-audit`.
 
 import type { Env } from "./env.js";
+import { runAi } from "./ai.js";
 import type { CorpusStore } from "./corpus-store.js";
 import { createR2CorpusStore } from "./corpus-store.js";
 import { db } from "./db.js";
@@ -251,9 +252,12 @@ async function cleanTitleAI(env: Env, title: string, grounding: string): Promise
   ];
   let res: { response?: unknown };
   try {
-    res = (await env.AI.run(CLASSIFY_MODEL, { messages, max_tokens: 80, temperature: 0.1 })) as {
-      response?: unknown;
-    };
+    res = await runAi<{ response?: unknown }>(
+      env,
+      { activity: "title-clean", trigger: "cron", calls: 1 },
+      CLASSIFY_MODEL,
+      { messages, max_tokens: 80, temperature: 0.1 },
+    );
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
     throw new ToolError("storage_error", `Workers AI title clean failed: ${message}`, { model: CLASSIFY_MODEL });

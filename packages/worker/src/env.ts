@@ -156,6 +156,23 @@ export interface Env {
    */
   TOOL_AE?: AnalyticsEngineDataset;
 
+  // --- AI usage attribution (ai-usage-attribution). Code-level binding, no operator config. ---
+  /**
+   * The Workers Analytics Engine dataset (`yamp_ai`) every `env.AI.run` inference emits one
+   * tenant-clean data point to via the `src/ai.ts` gateway (`recordAiPoint`) — the per-ACTIVITY
+   * neuron-attribution tier (activity, model, trigger, outcome, duration, tokens, estimated
+   * neurons), a THIRD sibling to the per-job `USAGE_AE` and per-tool `TOOL_AE`. It attributes which
+   * of the ~13 AI activities spends the neurons the account-level analytics reports only by model,
+   * and captures cron, import, and request spend (below the embedding cache). Read back by the Usage
+   * page's AI panel via the AE SQL API (`src/usage.ts`). OPTIONAL: an unbound deployment makes
+   * `recordAiPoint` a silent no-op (`AI_AE?.`). AE `writeDataPoint` is non-blocking and draws on
+   * neither the KV nor the D1 budget. Code-level binding (no operator-owned id, like `USAGE_AE`/
+   * `TOOL_AE`), propagated by the deploy merge (`scripts/merge-wrangler-config.mjs` copies the whole
+   * `analytics_engine_datasets` array). The blob/double slot layout is a documented positional
+   * contract (`docs/SCHEMAS.md`); a later change must not reorder existing slots.
+   */
+  AI_AE?: AnalyticsEngineDataset;
+
   // --- KV (ephemeral infra only; all domain data is in D1) ---
   /**
    * Per-tenant Kroger refresh tokens (`kroger:refresh:<tenant>`) plus short-lived

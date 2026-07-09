@@ -297,7 +297,8 @@ export async function runProposeMealPlan(env: Env, tenant: Tenant, input: Propos
     if (text && sampledVibeIds.has(id)) overrideTexts.push({ id, text });
   }
   const embedInputs = [...(freeform ? [freeform] : []), ...overrideTexts.map((o) => o.text)];
-  const embedded = embedInputs.length > 0 ? await embedTextsCached(env, embedInputs) : [];
+  const embedded =
+    embedInputs.length > 0 ? await embedTextsCached(env, { activity: "embed-search", trigger: "request" }, embedInputs) : [];
   const freeformVec = freeform ? embedded[0] : null;
   const overrideVecByVibe = new Map<string, number[]>();
   overrideTexts.forEach((o, j) => overrideVecByVibe.set(o.id, embedded[(freeform ? 1 : 0) + j]));
