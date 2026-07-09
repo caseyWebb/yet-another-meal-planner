@@ -10,6 +10,7 @@
 import { Hono } from "hono";
 import type { ApiEnv } from "../session.js";
 import { sessionArea } from "./session.js";
+import { signupArea } from "./signup.js";
 import { passkeyArea } from "./passkey.js";
 import { cookbookArea } from "./cookbook.js";
 import { overlayArea } from "./overlay.js";
@@ -39,6 +40,8 @@ const routes = app
   // pre-login for the update prompt): the version-skew contract's polling endpoint.
   .get("/version", (c) => c.json({ build: appBuild(c.env) }))
   .route("/", sessionArea)
+  // Self-service signup: redeem a group invite code + chosen username → new tenant + session.
+  .route("/", signupArea)
   // Passkey ceremonies + cross-device connect approval (passkey-auth).
   .route("/", passkeyArea)
   // The member core (member-app-core): every area session-gated per route.

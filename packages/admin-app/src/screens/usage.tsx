@@ -11,12 +11,14 @@ import { useQuery } from "@tanstack/react-query";
 import { usageQuery, type UsageData } from "../lib/queries";
 import { apiErrorOf } from "../lib/api";
 import { assertNever } from "../lib/assert";
-import { Button, Card, DataTable, ErrorBanner, Progress, StatCard, StatCardGrid } from "../components/kit";
+import { Badge, Button, Card, DataTable, ErrorBanner, Progress, StatCard, StatCardGrid, StatPill } from "../components/kit";
 import { DatabaseIcon, SparklesIcon, ActivityIcon, CheckCircleIcon } from "../components/icons";
 
 type UsageResult = UsageData["usage"];
 type TrendsResult = UsageData["trends"];
 type ToolUsageResult = UsageData["tools"];
+type AiUsageResult = UsageData["aiUsage"];
+type AiBacklog = UsageData["aiBacklog"];
 type ConfiguredUsage = Extract<UsageResult, { configured: true }>;
 type NamespaceUsage = ConfiguredUsage["kv"]["namespaces"][number];
 type KvHistoryDay = ConfiguredUsage["kv"]["history"]["days"][number];
@@ -292,6 +294,116 @@ const ToolsPanel = ({ tools }: { tools: ToolUsageResult }) => {
   );
 };
 
+// ── Neurons by activity (ai-usage-attribution) ─────────────────────────────────────────────────
+// The per-activity attribution tier: ranks the window's neuron spend by activity (rows arrive
+// pre-sorted by est_neurons desc), splits it by trigger (cron/import/request — each is its own
+// pre-grouped row, so import-time spend reads as its own line), reconciles the summed ESTIMATE
+// against the account-level actual (usage.ai — the canonical neuron source), and pairs the cron
+// activities with their draining backlog. Not-configured degrades exactly like the sibling panels.
+
+/** Trigger → Badge variant, so cron/import/request are visually distinct in the split column. */
+const TRIGGER_VARIANT: Record<string, string> = { cron: "default", import: "secondary", request: "outline" };
+
+const AiUsagePanel = ({ aiUsage, aiBacklog, usage }: { aiUsage: AiUsageResult; aiBacklog: AiBacklog; usage: UsageResult }) => {
+  if (!aiUsage.configured) {
+    return (
+      <NotConfigured>
+        Neurons by activity not available. Per-activity AI spend comes from the Workers Analytics Engine SQL API (reuses{" "}
+        <code>CF_ACCOUNT_ID</code> and <code>CF_ANALYTICS_TOKEN</code>). Set them to see neurons by activity, split by
+        trigger, over the last 30 days.
+      </NotConfigured>
+    );
+  }
+  const totalEst = aiUsage.activities.reduce((n, a) => n + a.est_neurons, 0);
+  return (
+    <Card>
+      {/* Reconciliation: the summed ESTIMATE against the account-level actual (never billing). */}
+      <div className="usage-sub">Estimate vs account actual</div>
+      <div className="summary">
+        <span className="summary-item">
+          <span className="summary-k muted small">estimated (summed)</span>
+          <span className="summary-v small">{fmt(totalEst)} neurons</span>
+        </span>
+        {usage.configured ? (
+          <span className="summary-item">
+            <span className="summary-k muted small">account actual</span>
+            <span className="summary-v small">{fmt(usage.ai.neurons_used)} neurons</span>
+          </span>
+        ) : null}
+      </div>
+      {usage.configured && usage.ai.by_model.length > 0 ? (
+        <div className="summary">
+          {usage.ai.by_model.map((m) => (
+            <span key={m.model} className="summary-item">
+              <span className="summary-k muted small">{m.model} actual</span>
+              <span className="summary-v small">{fmt(m.neurons)} neurons</span>
+            </span>
+          ))}
+        </div>
+      ) : null}
+      <p className="muted small">
+        Estimated from token counts × a per-model rate — an attribution estimate, not billing. The account actual is
+        Cloudflare&rsquo;s by-model neuron total.
+      </p>
+
+      <div className="usage-sep" />
+
+      {/* Ranked activities: model / trigger / calls / tokens / est neurons, with a per-row share bar. */}
+      {aiUsage.activities.length === 0 ? (
+        <p className="muted">No AI calls recorded yet.</p>
+      ) : (
+        <DataTable
+          columns={[
+            "Activity",
+            "Trigger",
+            "Model",
+            { key: "calls", label: "Calls", align: "right" },
+            { key: "tokens", label: "Tokens", align: "right" },
+            { key: "neurons", label: "Est. neurons", align: "right" },
+          ]}
+          rows={aiUsage.activities.map((a) => {
+            const tokens = a.input_tokens + a.output_tokens;
+            const share = totalEst > 0 ? (a.est_neurons / totalEst) * 100 : 0;
+            const barPct = a.est_neurons > 0 ? Math.max(4, Math.round(share)) : 0;
+            return {
+              Activity: <span className="tool-name">{a.activity}</span>,
+              Trigger: <Badge variant={TRIGGER_VARIANT[a.trigger] ?? "outline"}>{a.trigger || "—"}</Badge>,
+              Model: <span className="muted small">{a.model || "—"}</span>,
+              calls: fmt(a.calls),
+              tokens: (
+                <span data-tip-title={`${a.activity} tokens`} data-tip-body={`${fmt(a.input_tokens)} in · ${fmt(a.output_tokens)} out`}>
+                  {fmt(tokens)}
+                </span>
+              ),
+              neurons: (
+                <div data-tip-title={a.activity} data-tip-body={`${share.toFixed(1)}% of estimated`}>
+                  <div>{fmt(a.est_neurons)}</div>
+                  <div className="ins-bar" style={{ marginTop: ".35rem" }}>
+                    <span className="ins-bar-fill combo" style={{ width: `${barPct}%` }} />
+                  </div>
+                </div>
+              ),
+            };
+          })}
+        />
+      )}
+
+      {/* Backlog: a non-zero, falling count reads as "draining, will finish" vs steady churn. */}
+      <div className="usage-sep" />
+      <div className="usage-sub">Backlog draining</div>
+      <div className="jstats">
+        <StatPill label="classify" value={fmt(aiBacklog.classify)} />
+        <StatPill label="describe" value={fmt(aiBacklog.describe)} />
+        <StatPill label="embed" value={fmt(aiBacklog.embed)} />
+      </div>
+      <p className="muted small">
+        A non-zero, falling backlog means a cron activity is draining a queue (e.g. a whole-corpus reclassify after a
+        schema change) — it will finish. Near-zero backlog with steady neurons is normal churn.
+      </p>
+    </Card>
+  );
+};
+
 // ── Headline stat tiles ──────────────────────────────────────────────────────────────────────
 
 const HeadlineTiles = ({ usage, tools }: { usage: UsageResult; tools: ToolUsageResult }) => {
@@ -322,7 +434,7 @@ const HeadlineTiles = ({ usage, tools }: { usage: UsageResult; tools: ToolUsageR
 };
 
 const UsageView = ({ data, onRefresh }: { data: UsageData; onRefresh: () => void }) => {
-  const { usage, trends, tools } = data;
+  const { usage, trends, tools, aiUsage, aiBacklog } = data;
   return (
     <div>
       <div className="status-head">
@@ -347,6 +459,9 @@ const UsageView = ({ data, onRefresh }: { data: UsageData; onRefresh: () => void
           KV.
         </NotConfigured>
       )}
+
+      <p className="group-label">Neurons by activity · last {aiUsage.configured ? aiUsage.window_days : 30} days</p>
+      <AiUsagePanel aiUsage={aiUsage} aiBacklog={aiBacklog} usage={usage} />
 
       <p className="group-label">Per-job runs · last {trends.configured ? trends.window_days : 30} days</p>
       <TrendsPanel trends={trends} />

@@ -24,6 +24,8 @@ import {
   readIdentityIds,
   readEmbeddinglessIds,
   writeIdentityEmbedding,
+  readDisplayNamelessNodes,
+  writeIdentityDisplayName,
   commitResolution,
   deferNovelTerm,
   readSkuCoResolutionPairs,
@@ -78,6 +80,8 @@ export const NORMALIZE_RETRY_BACKOFF_MS = 30 * 60 * 1000;
 export const NORMALIZE_CORESOLVE_MAX_PER_TICK = 10;
 /** Embedding-less survivor nodes (human mints) backfilled per tick, ahead of the drain. */
 export const NORMALIZE_EMBED_BACKFILL_MAX_PER_TICK = 25;
+/** Null-`display_name` survivor nodes backfilled per tick (deterministic synthesis, no LLM). */
+export const NORMALIZE_DISPLAYNAME_BACKFILL_MAX_PER_TICK = 25;
 /** Backoff before a REJECTED co-resolution pair is re-proposed to the confirm. Long: the pairing
  *  signal (a shared SKU) barely changes tick to tick, and a survivor-changing merge re-opens the
  *  pair immediately anyway (the rejection keys on surviving ids). */
@@ -96,6 +100,11 @@ export interface NormalizeDeps {
   embeddingless(limit: number): Promise<string[]>;
   /** Store a backfilled embedding on an existing node. */
   storeEmbedding(id: string, embedding: number[]): Promise<void>;
+  /** Surviving nodes with no stored display_name — the display-name backfill batch (id + base/detail
+   *  so the pass can synthesize a deterministic label), bounded. */
+  displaynameless(limit: number): Promise<{ id: string; base: string; detail: string | null }[]>;
+  /** Store a backfilled display_name on an existing node (guarded to still-NULL rows). */
+  storeDisplayName(id: string, displayName: string): Promise<void>;
   embed(texts: string[]): Promise<number[][]>;
   confirm(term: string, candidates: ScoredCandidate[]): Promise<IdentityConfirm>;
   commit(r: Resolution): Promise<void>;
@@ -113,7 +122,7 @@ export interface NormalizeDeps {
     overflow: string;
     prefix: string;
     shape: "reroot" | "mint";
-    prefixNode?: { base: string; detail: string; search_term: string; concrete: boolean };
+    prefixNode?: { base: string; detail: string; search_term: string; display_name: string; concrete: boolean };
   }): Promise<void>;
   /** Remembered co-resolution rejections (pairs the confirm kept distinct). */
   mergeRejections(): Promise<CoResolutionRejection[]>;
@@ -137,6 +146,7 @@ export interface NormalizeDeps {
   topK: number;
   coResolveMaxPerTick: number;
   embedBackfillMaxPerTick: number;
+  displayNameBackfillMaxPerTick: number;
   segmentRepairMaxPerTick: number;
   twinMergeMaxPerTick: number;
   rejectBackoffMs: number;
@@ -156,6 +166,8 @@ export interface NormalizeSummary {
   mergeSkipped: number;
   /** Embedding-less nodes (human mints) backfilled into the retrieval set this tick. */
   embedded: number;
+  /** Null-display_name nodes given a deterministic synthesized label this tick. */
+  displayNamed: number;
   /** Terms resolved by the deterministic punctuation-equality fast path (no model call). */
   lexical: number;
   /** Segment-overflow nodes repaired onto their 2-segment prefix this tick. */
@@ -377,7 +389,7 @@ export function buildResolution(
     return {
       term,
       id,
-      node: { base, detail, search_term: term, concrete: confirm.concrete, embedding: vec },
+      node: { base, detail, search_term: term, display_name: confirm.display_name ?? null, concrete: confirm.concrete, embedding: vec },
       edges,
       log: { ...logBase, outcome: "specialization", resolved_id: id, detail: { reason: confirm.reason } },
     };
@@ -411,6 +423,7 @@ export function buildResolution(
       base,
       detail: id.includes("::") ? id.slice(base.length + 2) : null,
       search_term: id === term ? term : id.split("::").join(" "),
+      display_name: confirm.display_name ?? null,
       concrete: confirm.concrete,
       embedding: vec,
     },
@@ -487,6 +500,7 @@ function emptySummary(): NormalizeSummary {
     mergeRejected: 0,
     mergeSkipped: 0,
     embedded: 0,
+    displayNamed: 0,
     lexical: 0,
     segmentRepaired: 0,
     segmentSkipped: 0,
@@ -522,6 +536,30 @@ async function backfillEmbeddings(deps: NormalizeDeps, summary: NormalizeSummary
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     console.error("[ingredient-normalize] embedding backfill failed:", msg);
+  }
+}
+
+/**
+ * The display-name backfill: derive + store a deterministic `display_name` for a bounded batch of
+ * surviving nodes that have none — the pre-existing NULL backlog (the classifier now proposes one
+ * at import, but older rows read NULL and fall through to `labelOf` synthesis on every read). The
+ * stored value is that same synthesis (`base (detail)` / `base`), an acceptable deterministic label
+ * a human (`update_aliases`) or a later classifier pass can still override — the write only touches
+ * rows STILL null, so it never downgrades a human/auto value. Runs alongside `backfillEmbeddings`.
+ * Best-effort: a failure logs and skips (rows stay NULL → retried next tick), never failing the tick.
+ */
+async function backfillDisplayNames(deps: NormalizeDeps, summary: NormalizeSummary): Promise<void> {
+  try {
+    const rows = await deps.displaynameless(deps.displayNameBackfillMaxPerTick);
+    if (rows.length === 0) return;
+    for (const r of rows) {
+      const label = r.detail ? `${r.base} (${r.detail})` : r.base;
+      await deps.storeDisplayName(r.id, label);
+      summary.displayNamed++;
+    }
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error("[ingredient-normalize] display-name backfill failed:", msg);
   }
 }
 
@@ -566,6 +604,9 @@ async function reconcileSegmentOverflow(deps: NormalizeDeps, summary: NormalizeS
             base: segments[0],
             detail: segments[1],
             search_term: `${segments[0]} ${segments[1]}`,
+            // Deterministic display label, matching `labelOf`'s `base (detail)` synthesis (the
+            // null-fallback) so a reshape-minted node renders identically to an un-reified one.
+            display_name: `${segments[0]} (${segments[1]})`,
             concrete: node.concrete !== 0,
           },
         });
@@ -754,6 +795,9 @@ export async function reconcileNormalization(deps: NormalizeDeps): Promise<Norma
   // Backfill first — before the identity read — so a human-minted (embedding-less) node joins
   // the retrieval set for this tick's own terms. Runs even on an empty queue.
   await backfillEmbeddings(deps, summary);
+  // Backfill display names for the pre-classifier NULL backlog (deterministic synthesis,
+  // best-effort) alongside the embedding backfill — converges the label graph without hand-edits.
+  await backfillDisplayNames(deps, summary);
   const terms = await deps.loadBatch(deps.maxPerTick, now);
 
   const identityVecs = terms.length ? await deps.identityEmbeddings() : [];
@@ -826,7 +870,9 @@ export function buildNormalizeDeps(env: Env): NormalizeDeps {
     knownIds: () => readIdentityIds(env),
     embeddingless: (limit) => readEmbeddinglessIds(env, limit),
     storeEmbedding: (id, embedding) => writeIdentityEmbedding(env, id, embedding),
-    embed: (texts) => embedTexts(env, texts),
+    displaynameless: (limit) => readDisplayNamelessNodes(env, limit),
+    storeDisplayName: (id, displayName) => writeIdentityDisplayName(env, id, displayName),
+    embed: (texts) => embedTexts(env, { activity: "embed-ingredient" }, texts),
     confirm: (term, candidates) => confirmIdentity(env, term, candidates),
     commit: (r) => commitResolution(env, r),
     defer: (term, nextRetryAt) => deferNovelTerm(env, term, nextRetryAt),
@@ -850,6 +896,7 @@ export function buildNormalizeDeps(env: Env): NormalizeDeps {
     topK: NORMALIZE_TOP_K,
     coResolveMaxPerTick: NORMALIZE_CORESOLVE_MAX_PER_TICK,
     embedBackfillMaxPerTick: NORMALIZE_EMBED_BACKFILL_MAX_PER_TICK,
+    displayNameBackfillMaxPerTick: NORMALIZE_DISPLAYNAME_BACKFILL_MAX_PER_TICK,
     segmentRepairMaxPerTick: SEGMENT_REPAIR_MAX_PER_TICK,
     twinMergeMaxPerTick: LEXICAL_TWIN_MAX_PER_TICK,
     rejectBackoffMs: NORMALIZE_CORESOLVE_REJECT_BACKOFF_MS,

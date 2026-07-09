@@ -5,6 +5,7 @@
 // first (the login page object owns that flow) — the SPA redirects them to /login otherwise.
 import type { AppPage, Page } from "./pages/base.page";
 import { LoginPage } from "./pages/login.page";
+import { SignupPage } from "./pages/signup.page";
 import { ConnectPage } from "./pages/connect.page";
 import { CookbookPage } from "./pages/cookbook.page";
 import { RecipePage } from "./pages/recipe.page";
@@ -27,6 +28,8 @@ export interface RegisteredArea {
 
 export const AREAS: readonly RegisteredArea[] = [
   { area: "login", authed: false, make: (p) => new LoginPage(p) },
+  // Self-service signup — not authed (reached with no session), like login.
+  { area: "signup", authed: false, make: (p) => new SignupPage(p) },
   // The cross-device MCP approval screen — authed, viewing the pending VIEW ref (non-mutating).
   { area: "connect", authed: true, make: (p) => new ConnectPage(p, SEED.connect.viewRef) },
   { area: "cookbook", authed: true, make: (p) => new CookbookPage(p) },

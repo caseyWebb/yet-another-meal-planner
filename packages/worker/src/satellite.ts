@@ -36,6 +36,7 @@ import { insertOrderList, getOrderList, parseItemIds } from "./order-lists-db.js
 import { recordLocalRejects } from "./satellite-audit-db.js";
 import { readPreferences } from "./profile-db.js";
 import { readGroceryList, readPantryNames, readGroceryKeyIndex, advanceOrderedRows, isoDay } from "./session-db.js";
+import { isFoodItem, storedGroceryKey } from "./grocery.js";
 import { computeToBuy } from "./order.js";
 import { deriveMenuNeeds, dropInFlightNeeds } from "./to-buy.js";
 import { ingredientContext } from "./corpus-db.js";
@@ -288,14 +289,23 @@ export async function handleOrderList(request: Request, env: Env, now: number = 
     // `item_id` is the line's stored `normalized_name` (`computeToBuy`'s food-guarded `key`), NOT a
     // re-derived `resolve(name)` — the latter diverges for a non-food row (household/other or a
     // non-grocery domain), which would both leak the row's term into the ingredient graph and cause a
-    // silent non-advance at receipt time (the issued id would miss the stored key).
-    const items: OrderLine[] = to_buy.map((t) => ({
-      item_id: t.key,
-      name: t.name,
-      quantity: t.quantity,
-      for_recipes: t.for_recipes,
-      assumed_quantity: t.assumed_quantity,
-    }));
+    // silent non-advance at receipt time (the issued id would miss the stored key). The display `name`
+    // is REIFIED for a FOOD id-named line (`name === key` — a legacy id-named row or a plan-derived
+    // virtual line) via `ctx.idLabel` (curated node label, else `base (detail)` synthesis, never a raw
+    // `::` id); a non-food row (whose `name === normalizeName(name)` can collide with a food id) keeps
+    // its raw `name` off the identity graph, and `item_id` stays the canonical id in every case.
+    const storedByKey = new Map(list.map((it) => [storedGroceryKey(it, ctx.resolve), it] as const));
+    const items: OrderLine[] = to_buy.map((t) => {
+      const stored = storedByKey.get(t.key);
+      const foodIdNamed = t.name === t.key && (stored ? isFoodItem(stored.kind, stored.domain) : true);
+      return {
+        item_id: t.key,
+        name: foodIdNamed ? ctx.idLabel(t.key) : t.name,
+        quantity: t.quantity,
+        for_recipes: t.for_recipes,
+        assumed_quantity: t.assumed_quantity,
+      };
+    });
 
     // Mint the issued-set record (the receipt correlation key + authoritative issued ids).
     const orderListId = await insertOrderList(
@@ -380,10 +390,12 @@ export async function handleOrderReceipt(request: Request, env: Env, now: number
     // FRESH index so it reflects any `in_cart` advance the intake just performed in this same call.
     if (req.mark_placed) {
       const idx = await readGroceryKeyIndex(env, row.tenant);
-      const lines: { name: string }[] = [];
+      const lines: { name: string; key: string }[] = [];
       for (const id of orderList.itemIds) {
         const g = idx.get(id);
-        if (g && g.status === "in_cart") lines.push({ name: g.name });
+        // Thread the issued canonical id as `key` so the ordered advance keys on the stored id (an
+        // add-by-id row's `name` is a display, not the id); `name` rides the row's display.
+        if (g && g.status === "in_cart") lines.push({ name: g.name, key: id });
       }
       if (lines.length > 0) await advanceOrderedRows(env, row.tenant, lines, isoDay(now));
     }

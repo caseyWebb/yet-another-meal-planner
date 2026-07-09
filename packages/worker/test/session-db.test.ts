@@ -8,10 +8,12 @@ import {
   applyMealPlanRowOps,
   mealPlanDeleteStmt,
   readGroceryList,
+  readGroceryListReified,
   addGroceryRow,
   updateGroceryRow,
   removeGroceryRow,
   advanceInCartRows,
+  advanceOrderedRows,
   rollbackInCartRows,
 } from "../src/session-db.js";
 import { fakeD1 } from "./fake-d1.js";
@@ -363,6 +365,43 @@ describe("grocery list → D1 rows", () => {
     expect(tables.grocery_list.find((r) => r.normalized_name === "flour")).toBeUndefined();
   });
 
+  it("advances/rolls back an add-by-id row keyed on its STORED id, not resolve(name) (coupling #2)", async () => {
+    // An add-by-id row: name "Red cabbage", stored key "cabbage::color-red". resolve("Red cabbage")
+    // is "red cabbage" (≠ the key), so keying existing rows on a re-derivation of the display would
+    // MISS this row and mint a duplicate. The advance/rollback must key on the stored id.
+    const { env, tables } = fakeD1({
+      tables: {
+        ingredient_identity: [
+          { id: "cabbage::color-red", base: "cabbage", detail: "color-red", representative: null, display_name: "Red cabbage", source: "auto" },
+        ],
+        ingredient_alias: [],
+        novel_ingredient_terms: [],
+        grocery_list: [
+          { tenant: "everett", name: "Red cabbage", normalized_name: "cabbage::color-red", display_name: "Red cabbage", quantity: "1", kind: "grocery", domain: "grocery", status: "active", source: "menu", for_recipes: "[]", note: null, added_at: "2026-06-01", ordered_at: null },
+        ],
+      },
+    });
+    // The pipeline hands the advance the canonical id as the line name.
+    const { inserted } = await advanceInCartRows(env, "everett", [{ name: "cabbage::color-red" }], TODAY);
+    expect(inserted).toEqual([]); // matched the stored key → advanced in place, no duplicate minted
+    expect(tables.grocery_list.filter((r) => r.tenant === "everett")).toHaveLength(1);
+    expect(tables.grocery_list[0].status).toBe("in_cart");
+    expect(tables.grocery_list[0].name).toBe("Red cabbage"); // display untouched
+
+    // Roll it back to active by the stored key.
+    await rollbackInCartRows(env, "everett", [{ name: "cabbage::color-red" }]);
+    expect(tables.grocery_list.filter((r) => r.tenant === "everett")).toHaveLength(1);
+    expect(tables.grocery_list.find((r) => r.normalized_name === "cabbage::color-red")!.status).toBe("active");
+
+    // active → in_cart → ordered, the ordered advance also keying on the stored id.
+    await advanceInCartRows(env, "everett", [{ name: "cabbage::color-red" }], TODAY);
+    await advanceOrderedRows(env, "everett", [{ name: "cabbage::color-red" }], TODAY);
+    const row = tables.grocery_list.find((r) => r.normalized_name === "cabbage::color-red")!;
+    expect(row.status).toBe("ordered");
+    expect(row.ordered_at).toBe(TODAY);
+    expect(tables.grocery_list.filter((r) => r.tenant === "everett")).toHaveLength(1);
+  });
+
   it("rollbackInCartRows deletes advance-inserted rows and flips only pre-existing ones", async () => {
     const { env, tables } = fakeD1({
       tables: {
@@ -383,5 +422,184 @@ describe("grocery list → D1 rows", () => {
     expect(tables.grocery_list.find((r) => r.normalized_name === "flour")).toBeUndefined(); // deleted, not stranded
     expect(tables.grocery_list.find((r) => r.normalized_name === "eggs")!.status).toBe("ordered"); // unrelated row untouched
     expect(tables.grocery_list).toHaveLength(2);
+  });
+});
+
+describe("grocery list add-by-id → D1 rows (reify-ingredient-display-names)", () => {
+  it("a valid id keys the row on the id but names it with the node's idLabel (display_name null); a second add-by-id dedups", async () => {
+    const { env, tables } = fakeD1({
+      tables: {
+        ingredient_identity: [
+          { id: "cabbage::color-red", base: "cabbage", detail: "color-red", representative: null, display_name: "Red cabbage", source: "auto" },
+        ],
+        ingredient_alias: [],
+        novel_ingredient_terms: [],
+      },
+    });
+    // No posted name → the row's display is the node's curated idLabel ("Red cabbage"), never the id.
+    const first = await addGroceryRow(env, "everett", { id: "cabbage::color-red" }, TODAY);
+    expect(first.merged).toBe(false);
+    expect(tables.grocery_list).toHaveLength(1);
+    const row = tables.grocery_list[0];
+    expect(row.normalized_name).toBe("cabbage::color-red"); // the validated id is the key, NOT resolve(name)
+    expect(row.name).toBe("Red cabbage"); // the node's idLabel — a clean display, never the raw id
+    expect(row.name).not.toContain("::");
+    expect(row.display_name).toBeNull(); // no explicit override — the row's `name` carries the display
+
+    // A second add-by-id dedups on the STORED id (not a re-derivation of the surface form); keep-first
+    // preserves the surviving display.
+    const second = await addGroceryRow(env, "everett", { id: "cabbage::color-red", name: "Ruby cabbage" }, TODAY);
+    expect(second.merged).toBe(true);
+    expect(tables.grocery_list).toHaveLength(1);
+    expect(tables.grocery_list[0].name).toBe("Red cabbage"); // keep-first — the first display survives
+    expect(tables.grocery_list[0].normalized_name).toBe("cabbage::color-red");
+  });
+
+  it("a posted name is stored as the add-by-id row's DISPLAY (the id remains the key)", async () => {
+    const { env, tables } = fakeD1({
+      tables: {
+        ingredient_identity: [
+          { id: "cabbage::color-red", base: "cabbage", detail: "color-red", representative: null, display_name: "Red cabbage", source: "auto" },
+        ],
+        ingredient_alias: [],
+        novel_ingredient_terms: [],
+      },
+    });
+    const res = await addGroceryRow(env, "everett", { id: "cabbage::color-red", name: "Red cabbage" }, TODAY);
+    expect(res.merged).toBe(false);
+    expect(tables.grocery_list[0].name).toBe("Red cabbage"); // the posted display
+    expect(tables.grocery_list[0].name).not.toContain("::");
+    expect(tables.grocery_list[0].normalized_name).toBe("cabbage::color-red"); // still keyed on the id
+    expect(tables.grocery_list[0].display_name).toBeNull();
+  });
+
+  it("a well-formed but NON-SURVIVOR id (no live node) is rejected: falls back to name, else validation_failed", async () => {
+    const { env, tables } = fakeD1({
+      tables: {
+        ingredient_identity: [
+          { id: "cabbage::color-red", base: "cabbage", detail: "color-red", representative: null, display_name: "Red cabbage", source: "auto" },
+        ],
+        ingredient_alias: [],
+        novel_ingredient_terms: [],
+      },
+    });
+    // Well-formed id but no live node backs it (a never-minted or merged-away-loser id) → with a
+    // name, drop the id and key on the name; the non-survivor id is never a stored key.
+    const res = await addGroceryRow(env, "everett", { id: "kale::color-purple", name: "Purple kale" }, TODAY);
+    expect(res.merged).toBe(false);
+    expect(tables.grocery_list[0].normalized_name).toBe("purple kale");
+    expect(tables.grocery_list[0].normalized_name).not.toBe("kale::color-purple");
+
+    // The same non-survivor id with NO name is a structured validation_failed — never store an unbacked key.
+    await expect(addGroceryRow(env, "everett", { id: "kale::color-purple" }, TODAY)).rejects.toMatchObject({
+      code: "validation_failed",
+    });
+    expect(tables.grocery_list).toHaveLength(1); // only the fallback row above
+  });
+
+  it("a malformed id WITH a name falls back to the name path and never persists an unresolvable key", async () => {
+    const { env, tables } = fakeD1({
+      tables: { ingredient_identity: [], ingredient_alias: [], novel_ingredient_terms: [] },
+    });
+    const res = await addGroceryRow(env, "everett", { id: "Cabbage (Red)", name: "Red cabbage" }, TODAY);
+    expect(res.merged).toBe(false);
+    expect(tables.grocery_list).toHaveLength(1);
+    // The unresolvable id is dropped: the row keys on the name, never the invalid id.
+    expect(tables.grocery_list[0].normalized_name).toBe("red cabbage");
+    expect(tables.grocery_list[0].normalized_name).not.toBe("Cabbage (Red)");
+  });
+
+  it("an invalid id with NO name is a structured validation_failed and stores nothing", async () => {
+    const { env, tables } = fakeD1({
+      tables: { ingredient_identity: [], ingredient_alias: [], novel_ingredient_terms: [] },
+    });
+    await expect(addGroceryRow(env, "everett", { id: "dates (pitted)" }, TODAY)).rejects.toMatchObject({
+      code: "validation_failed",
+    });
+    expect(tables.grocery_list).toHaveLength(0);
+  });
+
+  it("the id-absent path is unchanged: keyed on resolve(name), display_name null", async () => {
+    const { env, tables } = fakeD1({
+      tables: { ingredient_identity: [], ingredient_alias: [], novel_ingredient_terms: [] },
+    });
+    await addGroceryRow(env, "everett", { name: "Olive Oil" }, TODAY);
+    expect(tables.grocery_list[0].normalized_name).toBe("olive oil");
+    expect(tables.grocery_list[0].display_name).toBeNull();
+  });
+});
+
+describe("readGroceryListReified — legacy id-named rows (reify-ingredient-display-names Move D)", () => {
+  it("reifies a legacy row (name === normalized_name) to the curated node label; leaves a typed row and an override untouched", async () => {
+    const { env } = fakeD1({
+      tables: {
+        ingredient_identity: [
+          { id: "cabbage::color-red", base: "cabbage", detail: "color-red", representative: null, display_name: "Red cabbage", source: "auto" },
+          { id: "kale::type-lacinato", base: "kale", detail: "type-lacinato", representative: null, display_name: null, source: "auto" },
+        ],
+        ingredient_alias: [],
+        novel_ingredient_terms: [],
+        grocery_list: [
+          // A legacy id-named row (name IS the raw id) with a curated node → reify to "Red cabbage".
+          { tenant: "everett", name: "cabbage::color-red", normalized_name: "cabbage::color-red", display_name: null, quantity: "1", kind: "grocery", domain: "grocery", status: "active", source: "menu", for_recipes: "[]", note: null, added_at: TODAY, ordered_at: null },
+          // A legacy id-named row with NO curated display → the deterministic base/detail synthesis.
+          { tenant: "everett", name: "kale::type-lacinato", normalized_name: "kale::type-lacinato", display_name: null, quantity: "1", kind: "grocery", domain: "grocery", status: "active", source: "menu", for_recipes: "[]", note: null, added_at: TODAY, ordered_at: null },
+          // A typed row (member phrasing) — its name is not an id, so it is untouched.
+          { tenant: "everett", name: "Olive Oil", normalized_name: "olive oil", display_name: null, quantity: "1", kind: "grocery", domain: "grocery", status: "active", source: "ad_hoc", for_recipes: "[]", note: null, added_at: TODAY, ordered_at: null },
+          // An id-named row that ALSO carries an explicit override — the override wins, never overwritten.
+          { tenant: "everett", name: "carrot", normalized_name: "carrot", display_name: "Rainbow carrots", quantity: "1", kind: "grocery", domain: "grocery", status: "active", source: "menu", for_recipes: "[]", note: null, added_at: TODAY, ordered_at: null },
+        ],
+      },
+    });
+    const items = await readGroceryListReified(env, "everett");
+    const byKey = new Map(items.map((it) => [it.normalized_name, it]));
+    // Legacy id-named rows: display resolved from the node (curated, else synthesis), never a raw id.
+    expect(byKey.get("cabbage::color-red")!.display_name).toBe("Red cabbage");
+    expect(byKey.get("kale::type-lacinato")!.display_name).toBe("kale (type-lacinato)");
+    for (const it of items) expect(it.display_name ?? "").not.toContain("::");
+    // A typed row (name ≠ id) is a no-op — its member phrasing renders directly, display_name stays null.
+    expect(byKey.get("olive oil")!.display_name).toBeNull();
+    expect(byKey.get("olive oil")!.name).toBe("Olive Oil");
+    // An explicit override is preserved, never re-derived.
+    expect(byKey.get("carrot")!.display_name).toBe("Rainbow carrots");
+  });
+
+  it("is a no-op passthrough when no row is id-named (a NEW add-by-id row already carries a display name)", async () => {
+    const { env } = fakeD1({
+      tables: {
+        ingredient_identity: [
+          { id: "cabbage::color-red", base: "cabbage", detail: "color-red", representative: null, display_name: "Red cabbage", source: "auto" },
+        ],
+        ingredient_alias: [],
+        novel_ingredient_terms: [],
+      },
+    });
+    // A real add-by-id write stores the display as `name` (name ≠ normalized_name), so the reify pass
+    // leaves it null — the row already renders its own clean `name`.
+    await addGroceryRow(env, "everett", { id: "cabbage::color-red", name: "Red cabbage" }, TODAY);
+    const items = await readGroceryListReified(env, "everett");
+    expect(items).toHaveLength(1);
+    expect(items[0].name).toBe("Red cabbage");
+    expect(items[0].display_name).toBeNull(); // not reified — name already carries the display
+  });
+
+  it("does NOT reify a non-food row whose name collides with a food id (the identity graph is food-only)", async () => {
+    const { env } = fakeD1({
+      tables: {
+        ingredient_identity: [
+          { id: "sage", base: "sage", detail: null, representative: null, display_name: "Fresh sage", source: "auto" },
+        ],
+        ingredient_alias: [],
+        novel_ingredient_terms: [],
+        grocery_list: [
+          // A non-food "sage" (a scent/cleaner) — its normalizeName key == its name, colliding with the
+          // food id "sage", but a non-food row must never render a food label.
+          { tenant: "everett", name: "sage", normalized_name: "sage", display_name: null, quantity: "1", kind: "other", domain: "grocery", status: "active", source: "ad_hoc", for_recipes: "[]", note: null, added_at: TODAY, ordered_at: null },
+        ],
+      },
+    });
+    const items = await readGroceryListReified(env, "everett");
+    expect(items[0].display_name).toBeNull(); // not reified (non-food)
+    expect(items[0].name).toBe("sage"); // renders the member's phrasing, not "Fresh sage"
   });
 });

@@ -107,7 +107,7 @@ export function buildNightVibeVectorDeps(
   return {
     loadTexts,
     loadStored: () => d.all<NightVibeDerivedRow>("SELECT tenant, id, vibe_hash FROM night_vibe_derived"),
-    embed: (text) => embedText(env, text),
+    embed: (text) => embedText(env, { activity: "embed-nightvibe" }, text),
     async upsert(tenant, id, hash, embedding) {
       await d.run(
         "INSERT INTO night_vibe_derived (tenant, id, vibe_hash, embedding, updated_at) VALUES (?1, ?2, ?3, ?4, ?5) " +

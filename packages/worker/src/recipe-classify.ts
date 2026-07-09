@@ -277,6 +277,7 @@ export async function seedRecipeFacets(
     null,
     CLASSIFY_MAX_RETRIES,
     courseOverride && courseOverride.length ? { course: courseOverride } : undefined,
+    "import",
   );
   // Funnel through the ONE ingredient context: normalize the derived facets AND best-effort
   // capture any novel corpus vocab. The seed writes a gate hash the classify pass matches (so the

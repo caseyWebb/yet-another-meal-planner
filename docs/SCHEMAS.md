@@ -326,7 +326,8 @@ Live inventory. Agent-writable. Updated as side effect of menu generation and ad
 -- D1 pantry table — one row per item. PRIMARY KEY (tenant, normalized_name).
 -- idx_pantry_category on (tenant, category).
 tenant           TEXT  -- owning user
-name             TEXT  -- display name (e.g. "olive oil")
+name             TEXT  -- surface form / resolver input (e.g. "olive oil"; always member phrasing, never a raw id)
+display_name     TEXT  -- optional explicit label override (usually NULL); a row renders display_name ?? name
 normalized_name  TEXT  -- canonical ingredient id via the IngredientContext funnel (resolve)
 quantity         TEXT  -- full | partial | low | "<count>" for countables
 category         TEXT  -- pantry | fridge | freezer | spices
@@ -338,16 +339,17 @@ notes            TEXT  -- optional short freeform note
 
 Example rows:
 
-| tenant | name | normalized_name | quantity | category | prepared_from | added_at | last_verified_at | notes |
-|--------|------|-----------------|----------|----------|---------------|----------|------------------|-------|
-| alice | olive oil | olive oil | partial | pantry | NULL | 2025-04-01 | 2025-05-12 | NULL |
-| alice | ground beef | ground beef | 3 lb | freezer | NULL | 2025-05-10 | 2025-05-10 | freezer burned, best for stocks or stews |
-| alice | cooked rice | cooked rice | partial | fridge | salmon-with-rice | 2025-05-12 | 2025-05-12 | NULL |
+| tenant | name | display_name | normalized_name | quantity | category | prepared_from | added_at | last_verified_at | notes |
+|--------|------|--------------|-----------------|----------|----------|---------------|----------|------------------|-------|
+| alice | olive oil | NULL | olive oil | partial | pantry | NULL | 2025-04-01 | 2025-05-12 | NULL |
+| alice | ground beef | NULL | ground beef | 3 lb | freezer | NULL | 2025-05-10 | 2025-05-10 | freezer burned, best for stocks or stews |
+| alice | cooked rice | NULL | cooked rice | partial | fridge | salmon-with-rice | 2025-05-12 | 2025-05-12 | NULL |
 
 **Notes:**
 - `quantity` is intentionally loose — "full", "partial", "low" plus optional explicit counts. We don't track precise amounts (whiteboard problem).
 - `prepared_from` set for cooked/prepared items — faster perishability profile, identifies which recipe produced it.
 - `last_verified_at` resets when the user confirms the item is still there during a pantry confirmation pass.
+- `display_name` (nullable) is an optional explicit label override, stored independently of the resolver-input `name` and the canonical `normalized_name`. A pantry row's `name` is always the member's phrasing (never a raw id — `update_pantry` takes no id), so a surface renders `display_name ?? name`. A merge (adding "green onions" onto an existing "scallions" row on the same canonical id) keeps the surviving row's `name`/`display_name`, never overwriting it with the incoming surface form.
 
 ## kitchen (per-tenant, D1 `kitchen_equipment` + `profile.kitchen_notes`)
 
@@ -383,7 +385,8 @@ The buy list — committed intent for the next order. Ingredient/product-level a
 -- D1 grocery_list table — one row per item. PRIMARY KEY (tenant, normalized_name).
 -- idx_grocery_status on (tenant, status).
 tenant           TEXT  -- owning user
-name             TEXT  -- order-time search term (display name; required)
+name             TEXT  -- human display: a typed add's member phrasing, or an add-by-id row's resolved label
+display_name     TEXT  -- optional explicit label override (usually NULL); highest read precedence
 normalized_name  TEXT  -- canonical ingredient id (food) via the IngredientContext funnel, else normalizeName(name)
 quantity         TEXT  -- loose BUY amount: "1 bottle" | "enough for the week" | count
 kind             TEXT  -- grocery | household | other
@@ -398,11 +401,11 @@ ordered_at       TEXT  -- ISO date set when status → ordered; else NULL
 
 Example rows:
 
-| tenant | name | normalized_name | quantity | kind | domain | status | source | for_recipes | note | added_at | ordered_at |
-|--------|------|-----------------|----------|------|--------|--------|--------|-------------|------|----------|------------|
-| alice | extra virgin olive oil | olive oil | 1 bottle | grocery | grocery | active | pantry_low | [] | the fancy one this time | 2026-06-09 | NULL |
-| alice | 2x4 lumber | 2x4 lumber | 6 | other | home-improvement | active | ad_hoc | [] | NULL | 2026-06-09 | NULL |
-| alice | paper towels | paper towels | 1 pack | household | grocery | active | ad_hoc | [] | NULL | 2026-06-09 | NULL |
+| tenant | name | display_name | normalized_name | quantity | kind | domain | status | source | for_recipes | note | added_at | ordered_at |
+|--------|------|--------------|-----------------|----------|------|--------|--------|--------|-------------|------|----------|------------|
+| alice | extra virgin olive oil | NULL | olive oil | 1 bottle | grocery | grocery | active | pantry_low | [] | the fancy one this time | 2026-06-09 | NULL |
+| alice | 2x4 lumber | NULL | 2x4 lumber | 6 | other | home-improvement | active | ad_hoc | [] | NULL | 2026-06-09 | NULL |
+| alice | paper towels | NULL | paper towels | 1 pack | household | grocery | active | ad_hoc | [] | NULL | 2026-06-09 | NULL |
 
 **Notes:**
 - `quantity` is the loose BUY amount (1 package unless told otherwise). Recipe-level needs are NOT stored — they're re-aggregated from `for_recipes` when needed (e.g. the partial-check prompt), keeping the no-portion-math stance.
@@ -410,6 +413,7 @@ Example rows:
 - `domain` (free string, default `grocery`; common values `grocery | home-improvement | garden | pharmacy`) is the kind of **store** the item is bought at — **orthogonal to `kind`**: `kind` governs pantry reconcile on receive, `domain` governs which store-type an in-store walk includes the item in. Absent → read as `grocery` (existing items validate unchanged). Open-vocabulary, not a hard enum — a wrong tag only mis-files an item onto the wrong walk. Validated shape-only (a non-string fails) in the Worker write subset; `add_to_grocery_list` / `update_grocery_list` accept it.
 - `source` carries provenance for order-time dedup/behavior: `pantry_low`/`stockup` were promoted (don't re-prompt); `menu` aggregates with recipe needs; `ad_hoc` is a one-off.
 - `note` holds a **one-off** brand request ("the fancy olive oil this time") — explicitly NOT `preferences` (the D1 profile), which is for standing dispositions.
+- `name` and `normalized_name` are stored separately: an **add-by-id** row (e.g. an accepted sibling swap) stores the human display as `name` ("Red cabbage") and the canonical id as `normalized_name` (`cabbage::color-red`); the set-algebra keys on the stored `normalized_name`, so every surface renders `name` natively. The rendered human label is: the row's explicit `display_name` override when set; else, for an **id-named** row (its `name` equals its `normalized_name` — a **legacy** row from before this capability, or a **plan-derived** virtual line), the identity node's label (its `display_name`, else the `base (detail)` synthesis), resolved at read so it converges as the node is backfilled (a legacy row heals with no row edit); else the stored `name`. `display_name` is nullable and rarely populated — the highest-precedence override, not the primary label source. A merge keeps the surviving row's `name`/`display_name`, never adopting the incoming surface form.
 - Lifecycle: `active → in_cart → ordered` + the terminal **receive action**. The `status` **enum is only `active | in_cart | ordered`** — `received` is not a stored status but the receive *action* (the row is removed and, for `grocery`-kind items, the pantry restocked), identical across every fulfillment mode. `place_order` and the satellite receipt write the `active → in_cart` advance; `ordered` is reached by the **user-asserted** "I placed the order" advance (the `update_grocery_list` tool or the member app's mark-order-placed, both through the shared W3 transition guard — legal only from `in_cart`, stamping `ordered_at`) and by the satellite receipt's optional `mark_placed` re-post (`advanceOrderedRows`). Any status write that leaves `ordered` clears `ordered_at`.
 - **The to-buy set is a derived read, not rows.** The order-time set — `active` rows ∪ the meal plan's derived ingredient needs (each planned recipe's projected `ingredients_full`) − pantry on-hand, on canonical ids — is computed at read time by one shared operation (`read_to_buy` / `GET /api/grocery/to-buy`, the same algebra `place_order` flushes and the satellite pull-list serves). Plan needs are **never materialized into rows automatically**; an explicit `source: "menu"` row is a **materialization** (a derived need pinned/edited, or an open-world side's ingredients) and merges with the derived need under the same canonical id. A derived need whose row is in flight (`in_cart`/`ordered`) is suppressed from to-buy until received or re-listed.
 - **The enriched read's `substitutes[]` is derived, never stored.** With `enrich`/`?enrich=1`, each to-buy line additionally carries a `substitutes[]` array alongside its `placement` (see `sku_cache` below for the placement columns) — cross-ingredient hints computed fresh on every call from three already-persisted sources: a depth-1 walk over the `ingredient_edge` graph (the ingredient identity section below), an `in_pantry` join against the pantry table above (a row exists for the sibling's resolved id — no location needed), and, once the primary store resolves, an `on_sale_hint` match against that store's warmed flyer rollup (the flyer cache section below) — `{ sku, description, price: { regular, promo }, savings }`. Each entry also carries its relation label — `{ role: "satisfies" | "sibling" | "generalization", kind: "general" | "containment" | "membership", via? }` — naming how the walk reached it. Nothing here is written to a table: a line's `substitutes[]` is recomputed from the identity graph, pantry, and flyer rollup's current state on every enriched call, so it converges automatically as those sources change (a new edge, a pantry edit, a re-warmed flyer) with no reconcile of its own. The view's `flyer_as_of` is that rollup's own `as_of` (the flyer cache section below), surfaced alongside the hints it fed. See `docs/TOOLS.md`'s `read_to_buy` for the full shape and precedence.
@@ -744,6 +748,11 @@ id             TEXT  -- canonical id: `base` or `base::detail`
 base           TEXT  -- id up to the first "::"  NOT NULL
 detail         TEXT  -- the "::"-joined detail suffix, or NULL for a bare base
 search_term    TEXT  -- human Kroger search phrase for a qualified id ("80/20 ground beef")
+display_name   TEXT  -- curated human-facing label ("Red cabbage") — distinct from the id (the join
+                     --   key) and from search_term (the Kroger phrase); NULL until set; classifier-
+                     --   proposed at import, human-overridable via update_aliases (source='human',
+                     --   never downgraded by an auto pass), reconcile-backfilled for the null backlog;
+                     --   labelOf(id) returns it, else the `base (detail)` synthesis
 representative TEXT  -- union-find pointer to the surviving id, or NULL (self)
 concrete       INTEGER NOT NULL DEFAULT 1  -- 0 = concept node (queryable class, not buyable);
                                            --   disjunctive ids ("x or y") are always concepts —
@@ -908,8 +917,41 @@ The member web app's session store (member-session-auth), in the `TENANT_KV` nam
 
 The operator-issued **bootstrap** codes, in the `TENANT_KV` namespace beside the `tenant:*` allowlist and `session:*` records (member-session-auth / passkey-auth). Written by `onboard()`/`rotate()` (`src/admin.ts`), resolved by `resolveInvite` (`src/tenant.ts`); nothing edits them by hand. An invite code is a **single-use bootstrap**, not a standing credential: it authenticates a web `/login` and (while grace is on) a Claude.ai `/authorize` only until the member's first passkey enrollment consumes every `invite:*` mapping resolving to their tenant.
 
+This KV bootstrap path is one of **two, deliberately separate, invite systems**. A KV `invite:<code>` **resolves an existing** tenant (operator onboarding + recovery of one named member). A **group invite code** (self-service-signup, in D1 — see *Group invite codes* below) **creates a new** tenant from a self-chosen username. The two never share a namespace or a redemption path.
+
 - `invite:<code>` → `{ v, tenant, single_use, expires_at }` (JSON) — a code minted by `onboard()`/`rotate()`. `v` is the record-shape version; `tenant` is the allowlisted member id the code resolves to; `single_use` is `true`; `expires_at` is the code's expiry. Written with a **30-day KV `expirationTtl`**. `rotate()` mints a grace-bypassing single-use bootstrap — the recovery primitive for a member who lost every device or was never enrolled before grace was turned off (see `SELF_HOSTING.md`).
 - **Legacy shape:** a pre-migration invite record is a **bare-string** value (just the tenant id, no JSON). `resolveInvite` parses both shapes — the JSON record and the bare string — so existing codes keep resolving. Whether a legacy bare-string code still *authenticates* is governed by the operator `INVITE_GRACE` grace control (a Worker `var`, default on; see `SELF_HOSTING.md`): honored while grace is on, rejected once it is off. A single-use JSON bootstrap is always honored until consumed/expired, regardless of the grace flag.
+
+## Group invite codes + the tenant registry (D1: `signup_invites`, `signup_redemptions`, `tenants`)
+
+The self-service-signup store (multi-use group invite codes), all in D1 via `src/signup-db.ts` (never `env.DB` directly). Distinct from the KV `invite:<code>` bootstrap path above: a group code **creates** a tenant, a bootstrap code **resolves** one. An operator mints a group code with a **cap** (max redemptions) and an optional **expiry** + **label**; a friend redeems it at `POST /api/signup` under a chosen username, which atomically creates a new isolated tenant. Redemption is web-app-only (never the MCP `/authorize` surface). Migration `0047_self_service_signup`.
+
+- **`tenants`** — the FIRST strongly-consistent registry of tenant ids, keyed by the canonical lowercase id (`PRIMARY KEY`), the **uniqueness authority** for self-service username claims. A claim does `INSERT … ON CONFLICT(id) DO NOTHING` and wins iff first; the KV `tenant:<id>` allowlist entry (still the hot-path resolution authority) is written only after the claim wins. `via_code` is the group code that created the tenant, or `NULL` for an operator-onboarded member. Existing tenants are backfilled here idempotently on the `scheduled()` reconcile (`backfillTenantRegistry`, `src/signup.ts`). Purged (by `id`) on member revocation.
+- **`signup_invites`** — the group codes. `used` is bumped by a guarded `UPDATE … WHERE used < max_redemptions AND (expires_at IS NULL OR expires_at > ?) AND revoked_at IS NULL` — a single serialized statement that is the **atomic cap gate**, so the cap is never exceeded under concurrency. Revoking sets `revoked_at` (halts further signups; accounts already created are untouched). Operator-owned, NOT per-tenant — never purged on member revoke.
+- **`signup_redemptions`** — provenance: one row per created tenant linking it to the code it came from (`idx_signup_redemptions_code`, `idx_signup_redemptions_tenant`). In the per-tenant `TENANT_TABLES` purge, so member revocation deletes a member's rows.
+
+Redemption is phased so every intermediate state fails toward **under-granting**: spend a slot (guarded UPDATE, `changes === 1`), claim the username (`INSERT tenants … ON CONFLICT DO NOTHING`; on collision **refund** the slot), record provenance. A crash between phases can at worst waste one slot — never exceed the cap or double-claim a name — so no multi-statement transaction is required.
+
+```sql
+-- D1 tenants — the tenant-id uniqueness registry. PRIMARY KEY (id).
+id         TEXT     -- canonical lowercase username (the uniqueness authority)
+created_at INTEGER  -- epoch ms
+via_code   TEXT     -- the group code that created it; NULL for operator-onboarded
+
+-- D1 signup_invites — operator-issued group codes. PRIMARY KEY (code).
+code            TEXT     -- the group invite code (16 hex chars)
+max_redemptions INTEGER  -- the cap
+used            INTEGER  -- redemptions spent (total ever, not decremented on member revoke)
+expires_at      INTEGER  -- epoch ms; NULL = never expires
+revoked_at      INTEGER  -- epoch ms; NULL = active
+label           TEXT     -- optional operator label (nullable)
+created_at      INTEGER  -- epoch ms
+
+-- D1 signup_redemptions — provenance. idx on (code) and (tenant).
+code       TEXT     -- the group code
+tenant     TEXT     -- the created tenant id (isolation column for the revoke purge)
+created_at INTEGER  -- epoch ms
+```
 
 ## WebAuthn ceremony state (KV, not a repo file)
 
@@ -991,6 +1033,23 @@ The **member `/api` surface emits into this same dataset** (member-api): the sha
 
 Tenant-data-free by construction — the tool name (a fixed, low-cardinality enum), the outcome, and the duration only, never a per-tenant id or any call argument. Read back per tool via the AE **SQL API** (see the Tool usage trends dashboard below).
 
+## AI usage attribution (Workers Analytics Engine `yamp_ai` dataset)
+
+The per-AI-call **history** tier (ai-usage-attribution), a **third** sibling of `yamp_usage`/`yamp_tool`. Every `env.AI.run` inference the Worker performs routes through the single `src/ai.ts` gateway (`runAi`), which emits **one tenant-clean data point per call** through `recordAiPoint` to the `yamp_ai` Analytics Engine dataset (binding `AI_AE`). The gateway sits **below the KV embedding cache** (`embedTextsCached` short-circuits on a hit *before* the real inference), so a cache hit spends no neurons and emits **nothing** — a point is written only for a genuine inference. Emission is best-effort (an unbound `AI_AE` or a throwing `writeDataPoint` is a swallowed no-op) and non-blocking, and costs **no KV or D1 budget** — exactly like `recordUsagePoint`/`recordToolPoint`. It captures WHICH of the Worker's ~13 AI activities spent the neurons — the attribution Cloudflare's account-level analytics, which groups only by model, cannot show.
+
+Same positional-contract rule as `yamp_usage`/`yamp_tool` — slots are referenced by position, so a later change must not reorder them. Slot layout:
+
+- `index1` = activity (the sampling key)
+- `blob1` = activity · `blob2` = model label (`"mistral-small"` | `"bge-base"`) · `blob3` = trigger (`"cron"` | `"import"` | `"request"`) · `blob4` = outcome (`"ok"` | `"error"`)
+- `double1` = call duration (ms) · `double2` = calls (1 for a text-gen call; the batch size for a batched embedding call) · `double3` = input tokens (text-gen: the real `usage.prompt_tokens`; embeddings: a `chars/4` length estimate) · `double4` = output tokens (text-gen: `usage.completion_tokens`; embeddings: `0`) · `double5` = est_neurons (DERIVED — see below)
+- `timestamp` = AE-supplied write time
+
+`activity` is a **fixed, documented enum** — finer than a job name (one job spans several) and spanning triggers (the same activity fires from cron and import): the text-gen (mistral-small) activities `classify`, `describe`, `confirm-match`, `title-clean`, `ingredient-confirm`, `nightvibe-name`; the embedding (bge-base) activities `embed-recipe`, `embed-discovery`, `embed-nightvibe`, `embed-taste`, `embed-ingredient`, `embed-search`, `embed-admin-search`. `trigger` makes non-cron spend first-class: `cron` (the reconcile/audit passes), `import` (`create_recipe`'s inline description/facet seeds), `request` (the member/agent tool path — cache-gated to near-zero).
+
+`est_neurons` is a **DERIVED estimate**, never a billing figure: `input_tokens × in-rate + output_tokens × out-rate`, using a per-model neuron rate table in `src/ai.ts` (from Cloudflare's published Workers AI pricing, $0.011 / 1000 neurons) — `mistral-small`: **31876** neurons/M input + **50488** neurons/M output; `bge-base`: **6058** neurons/M input (embeddings produce no output tokens). Storing the raw tokens alongside means a later rate correction recomputes forward from tokens with no schema change. The Usage panel always renders the summed estimate against the account-level by-model actual (`fetchUsage`'s `ai.by_model`, the canonical neuron source), so the estimate's fidelity is self-evident.
+
+Tenant-data-free by construction — the activity (a fixed enum), model, trigger, outcome, and numbers only, never a per-tenant id or any input text. Read back per `(activity, model, trigger)` via the AE **SQL API** (`fetchAiUsage`, `src/usage.ts`; see the Usage dashboards below). AE free-tier retention (≈90 days) bounds the queryable window.
+
 ## Tenant activity (D1 `tenant_activity` table)
 
 Best-effort, throttled first-seen/last-seen tracking per tenant (admin-ui-redesign-members), backing the Members roster's `joined`/`lastActive` timestamps (NOT the active/pending status — see below). Written from the MCP tenant-resolution path (`touchTenantActivity` in `src/tenant.ts`, called from `resolveTenant(..., recordSeen=true)` — only on the `/mcp` request path, never from operator-driven resolutions like the admin Kroger-consent mint or the Data explorer's member lookup, which resolve a tenant without that tenant actually being active).
@@ -1017,6 +1076,7 @@ The operator admin panel (operator-admin) is a **Hono** app at `/admin` — serv
 - **Resource usage** (usage-observability) → `{ configured: true, generated_at, day, kv: { limits, totals, namespaces: [{ namespace_id, read, write, delete, list, resolved }], history: { window_days, days: [{ day, namespaces: [{ namespace_id, read, write, delete, list, resolved }] }] } }, ai: { neurons_limit, neurons_used, by_model: [{ model, neurons }], history: { window_days, days: [{ day, neurons }] } } }` — the current UTC day's account-wide KV operations + Workers AI neurons against the daily free-tier limits, read from the Cloudflare GraphQL Analytics API. `kv.limits`/`kv.totals` are `{ read, write, delete, list }`. `resolved` is `{ label, color, unlabeled }` — the namespace id's display identity. The **label** resolves from the `KV_NAMESPACE_LABELS` env var (`id:BINDING,...`, env.ts) — a **deploy-time** artifact `scripts/merge-wrangler-config.mjs` derives from the operator's own merged `kv_namespaces` array, never a runtime Cloudflare API call — falling back to the raw id (`unlabeled: true`) if unset/unmatched. The **color** is assigned independently of label resolution: every namespace id observed in the current payload gets a distinct, stable color by its position in the sorted list of ids present in that payload (a small fixed categorical palette, cycled) — an unresolved-label namespace still gets a real, distinct color, never a shared grey fallback. `kv.history` is a per-namespace, per-day series over the trailing `window_days` (30, the same window `usage-trends`/`tool-usage-trends` use), ascending oldest→newest, sourced from the SAME `kvOperationsAdaptiveGroups` GraphQL query widened to a date range (not a second query or a new dataset) — every namespace observed anywhere in the window is zero-filled into every day's entry, so a quiet day reports `0`, never an absent entry. `ai.history` is a per-day neuron-consumption series over the same `window_days`, ascending oldest→newest, summed across models, sourced from the SAME `aiInferenceAdaptiveGroups` GraphQL query widened to a date range — zero-filled the same way (a quiet day reports `0`, never an absent entry). Performs **no KV** (observing the budget must not consume it — the snapshot AND both histories); tenant-clean (account/namespace aggregates only); KV rows keyed by namespace **id**.
 - **Usage trends** (usage-trends) → `{ configured: true, generated_at, window_days, jobs: [{ job, days: [{ day, runs, avg_ms, total_ms }] }] }` — each background job's per-day run count and mean/total run duration over the last `window_days` (30), read from the **Analytics Engine SQL API** (`POST /accounts/<id>/analytics_engine/sql`) over the `yamp_usage` dataset. A *different* surface from the resource view's GraphQL (custom AE datasets are SQL; built-in datasets are GraphQL), reusing the same account id + token. `day` is `YYYY-MM-DD` (UTC); `runs` is an integer, `avg_ms`/`total_ms` are numbers; jobs are ordered by name, days ascending. Performs **no KV or D1**; tenant-clean (per-job/per-day aggregates only).
 - **Tool usage trends** (tool-usage-trends) → `{ configured: true, generated_at, window_days, tools: [{ tool, calls, errors, p50_ms, p95_ms }] }` — each MCP tool's call count, error count, and p50/p95 call duration over the last `window_days` (30), read from the **Analytics Engine SQL API** over the `yamp_tool` dataset. Reuses the same account id + token. `calls`/`errors` are integers (the error **rate** is derived in the panel from `errors`/`calls`, never stored); `p50_ms`/`p95_ms` are numbers; tools are ordered by call count descending (ties by name). Performs **no KV or D1**; tenant-clean (per-tool aggregates only, never per-tenant or per-call rows).
+- **AI usage attribution** (ai-usage-attribution) → the `/admin/api/usage` payload's `aiUsage` key (alongside `usage`/`trends`/`tools`): `{ configured: false }` (when `CF_ACCOUNT_ID`/`CF_ANALYTICS_TOKEN` is unset) or `{ configured: true, generated_at, window_days, activities: [{ activity, model, trigger, calls, input_tokens, output_tokens, est_neurons }] }` — each AI activity's per-`(model, trigger)` call count, tokens, and estimated neurons over the last `window_days` (30), read from the **Analytics Engine SQL API** (`fetchAiUsage`, `src/usage.ts`) over the `yamp_ai` dataset (reusing the same account id + token). `activities` are ordered by `est_neurons` descending (ties by activity name); `calls`/`input_tokens`/`output_tokens`/`est_neurons` are numbers. `est_neurons` is the **derived** attribution estimate (tokens × the per-model rate table in `src/ai.ts`), rendered against the account-level by-model actual (the resource view's `ai.by_model`), never billing truth. Paired with the `aiBacklog` key — `{ classify, describe, embed }`, the AI-job backlog depths (recipes awaiting facet classification / description generation / embedding) composed from the `recipe-classify`/`recipe-embed` `job_health` summaries (`readAiBacklog`, `src/health.ts`; degrades to zeros when D1 is flaky) — so a bounded, falling backlog reads as "draining, will finish" rather than steady churn. The AE read performs **no KV or D1** (`aiBacklog` is a bounded D1 health read); tenant-clean (per-activity aggregates + job counts only).
 
 **Insights dashboard** (SSR at `/admin/insights`, rendered in-process from `src/insights.ts` — no JSON route; group-insights): the operator Insights area's group-wide popularity payload, precomputed for all four windows so its island re-scopes without a refetch → `{ windows: [{ key, label }], windowStart: { all, year, month, week }, perWindow: { all|year|month|week: { recipes: RecipeRow[], sources: SourceRow[], totals: { cooks, favorites, activeDays } } }, heatmap: { today, weeks, cells: [{ date, count, level }], months: [{ label, span }] }, generatedAt }`, where `RecipeRow` is `{ slug, title, cuisine, sourceName, favorites, cooks, combined, lastCookedLabel }` and `SourceRow` is `{ key, domain, name, isMember, isFeed, recipeCount, favorites, cooks, combined, recipes: RecipeRow[] }`. Aggregated **group-wide** (across all member-tenants — the admin surface is cross-tenant) from `cooking_log` (a recipe's times-cooked = its `type='recipe'` rows in-window; the heatmap + `totals.cooks` count `type IN ('recipe','ad_hoc')`, excluding `ready_to_eat`), `overlay` (group favorite count per slug — current state, so window-invariant), `recipes` (`title`/`cuisine`/`source_url` → domain), and `feeds` (a source domain matching a feed URL's host is tagged a discovery feed). `windowStart` holds the lexicographic `YYYY-MM-DD` cutoffs (`""` for `all`); `windowStart[win]` drives the heatmap's out-of-window dimming, and `cells` span the trailing 53 weeks (column-major, Sun→Sat; future days omitted), `level` a 0–4 intensity. Performs **no KV**; goes through `src/db.ts`; tenant-clean in presentation (no per-tenant identifier in the payload).
 

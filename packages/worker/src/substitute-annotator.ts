@@ -176,14 +176,23 @@ export async function annotateSubstitutes(
   const out = new Map<string, SiblingSuggestion[]>();
   for (const key of lineKeys) {
     const neighbors = neighborsByKey.get(key);
-    const siblings: SiblingSuggestion[] = (neighbors ? identitySiblings(neighbors, excludeIds) : []).map((s) => ({
-      ...s,
-      in_pantry: deps.pantry.has(s.id),
-      ...(() => {
-        const hint = flyerHint(deps.saleItems, baseOf(s.id), deps.ctx.searchTerm(s.id));
-        return hint ? { on_sale_hint: hint } : {};
-      })(),
-    }));
+    // A sibling's `via` is one of THIS line's satisfies-parents, each already carrying a
+    // curated `labelOf` label — reuse it (reify-ingredient-display-names Tier 2) so the
+    // relation target renders human while `via` keeps the raw parent id.
+    const viaLabels = new Map((neighbors?.satisfies ?? []).map((p) => [p.id, p.label] as const));
+    const siblings: SiblingSuggestion[] = (neighbors ? identitySiblings(neighbors, excludeIds) : []).map((s) => {
+      const relation =
+        s.relation.via !== undefined
+          ? { ...s.relation, via_label: viaLabels.get(s.relation.via) ?? s.relation.via }
+          : s.relation;
+      const hint = flyerHint(deps.saleItems, baseOf(s.id), deps.ctx.searchTerm(s.id));
+      return {
+        ...s,
+        relation,
+        in_pantry: deps.pantry.has(s.id),
+        ...(hint ? { on_sale_hint: hint } : {}),
+      };
+    });
     out.set(key, siblings);
   }
   return out;

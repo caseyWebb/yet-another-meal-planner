@@ -10,6 +10,9 @@ export interface SeedLiterals {
   /** A second invite code mapped to the PENDING member — the app suite's different-tenant
    *  login spec (member-app-offline D9). */
   readonly inviteAlt: string;
+  /** Group invite codes (self-service-signup): `open` is a live redeemable code, `revoked` a
+   *  dead one — the app signup spec + the admin Invite-codes roster fixtures. */
+  readonly groupCode: { readonly open: string; readonly revoked: string };
   /** Cross-device MCP approval fixtures (webauthn-passkey-auth): the pending `authz:<ref>`
    *  records the /connect screen reads (viewRef) and approves (approveRef), plus the
    *  requesting client name and the verification code shown on both screens. */
@@ -118,6 +121,9 @@ export interface SeedLiterals {
         readonly parent: string;
         readonly pantryHit: string;
         readonly saleHit: { readonly sku: string; readonly price: { readonly regular: number; readonly promo: number } };
+        /** Curated `display_name` per concrete family node (reify-ingredient-display-names) —
+         *  distinct from the raw canonical id, keyed by id. */
+        readonly displayNames: Readonly<Record<string, string>>;
       };
     };
   };

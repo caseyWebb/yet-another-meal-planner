@@ -14,6 +14,7 @@
 
 import type { Env } from "./env.js";
 import { ToolError } from "./errors.js";
+import { runAi } from "./ai.js";
 
 /** Confirm model — the spike's pick (shared with the discovery classifier). */
 export const NORMALIZE_MODEL = "@cf/mistralai/mistral-small-3.1-24b-instruct";
@@ -50,8 +51,16 @@ export interface IdentityConfirm {
   concrete: boolean;
   /** Proposed edges; endpoints are "NEW" (the term's node) or a candidate id. */
   edges: ConfirmEdge[];
+  /** A concise human-facing display label for the NEW term (Title-case natural name, e.g.
+   *  "Red cabbage", "80/20 ground beef"). ADVISORY — validated as a clean short string; the JOB
+   *  threads it onto the minted node's `display_name`, and null/absent degrades to the `base
+   *  (detail)` synthesis. NEVER a matcher input or a join key. */
+  display_name?: string | null;
   reason: string;
 }
+
+/** Max length for a classifier-proposed display label (a short name, not prose). */
+const DISPLAY_NAME_MAX_LENGTH = 60;
 
 const EDGE_KINDS = new Set<EdgeKind>(["general", "containment", "membership"]);
 
@@ -60,7 +69,7 @@ const SYSTEM_PROMPT = [
   "",
   "An id is `base` or `base::detail`. A base is the general product; a detail narrows it to a spec that changes WHICH PRODUCT you would buy at the store.",
   "",
-  'Return STRICT JSON only, no prose: {"outcome":"same"|"specialization"|"novel","match":"<candidate id, verbatim, or null>","detail":"<kebab detail for specialization, else null>","canonical":"<clean product id for novel, else null>","concrete":true|false,"edges":[{"from":"NEW"|"<candidate id>","to":"NEW"|"<candidate id>","kind":"general"|"containment"|"membership"}],"reason":"<short>"}',
+  'Return STRICT JSON only, no prose: {"outcome":"same"|"specialization"|"novel","match":"<candidate id, verbatim, or null>","detail":"<kebab detail for specialization, else null>","canonical":"<clean product id for novel, else null>","concrete":true|false,"edges":[{"from":"NEW"|"<candidate id>","to":"NEW"|"<candidate id>","kind":"general"|"containment"|"membership"}],"display_name":"<concise human label for the NEW term>","reason":"<short>"}',
   "",
   "Rules:",
   "- same: the new term is a synonym — the SAME product you would buy as a candidate (scallions = green onion). Set match to that candidate id.",
@@ -78,6 +87,7 @@ const SYSTEM_PROMPT = [
   "- concrete=false only for a generic CLASS (a fresh soft cheese); then add membership edges FROM fitting candidate members TO the new concept: {\"from\":\"<member>\",\"to\":\"NEW\",\"kind\":\"membership\"}.",
   '- A DISJUNCTION is never a product: a term of the form "X or Y" names acceptable alternatives (a purchase constraint), not a buyable product. Deterministic code disposes such terms before you see them; if one reaches you anyway, choose novel with concrete=false, and NEVER propose a canonical containing " or " between product names.',
   "- Ignore irrelevant noise candidates.",
+  '- ALWAYS set display_name to a concise, human-friendly label for the NEW term: a natural, Title-case name a shopper would recognize on a list (e.g. "Red cabbage", "80/20 ground beef", "Cheddar cheese", "Half and half"). Keep it short — strip packaging/quantity/storage noise and parentheticals, no trailing punctuation. This is a DISPLAY label ONLY; it is NEVER used for matching, search, or as an id — so it may read naturally where the id is kebab-case.',
 ].join("\n");
 
 type Msg = { role: "system" | "user" | "assistant"; content: string };
@@ -85,21 +95,21 @@ type Msg = { role: "system" | "user" | "assistant"; content: string };
 const FEW_SHOT: { user: string; out: IdentityConfirm }[] = [
   {
     user: 'NEW term: "scallions"\nCANDIDATES: [{"id":"all-purpose flour","similarity":0.41},{"id":"cilantro","similarity":0.62},{"id":"green onion","similarity":0.84}]',
-    out: { outcome: "same", match: "green onion", detail: null, canonical: null, concrete: true, edges: [], reason: "synonym of green onion" },
+    out: { outcome: "same", match: "green onion", detail: null, canonical: null, concrete: true, edges: [], display_name: "Green onions", reason: "synonym of green onion" },
   },
   {
     user: 'NEW term: "80/20 ground beef"\nCANDIDATES: [{"id":"ground beef","similarity":0.88},{"id":"lean ground beef","similarity":0.83}]',
-    out: { outcome: "specialization", match: "ground beef", detail: "fat-80-20", canonical: null, concrete: true, edges: [], reason: "ground beef at a specific fat ratio" },
+    out: { outcome: "specialization", match: "ground beef", detail: "fat-80-20", canonical: null, concrete: true, edges: [], display_name: "80/20 ground beef", reason: "ground beef at a specific fat ratio" },
   },
   {
     user: 'NEW term: "baking powder"\nCANDIDATES: [{"id":"baking soda","similarity":0.83},{"id":"flour","similarity":0.55}]',
-    out: { outcome: "novel", match: null, detail: null, canonical: "baking powder", concrete: true, edges: [], reason: "distinct product from baking soda" },
+    out: { outcome: "novel", match: null, detail: null, canonical: "baking powder", concrete: true, edges: [], display_name: "Baking powder", reason: "distinct product from baking soda" },
   },
   {
     // A distinct product over a lookalike candidate, from noisy pantry free-text: novel (never a
     // specialization of the lookalike), with the noise stripped into the canonical.
     user: 'NEW term: "dried medjool dates (pitted)"\nCANDIDATES: [{"id":"dried fruit blend","similarity":0.74},{"id":"raisins","similarity":0.66}]',
-    out: { outcome: "novel", match: null, detail: null, canonical: "medjool dates", concrete: true, edges: [], reason: "dates are a distinct product, not a dried fruit blend variety" },
+    out: { outcome: "novel", match: null, detail: null, canonical: "medjool dates", concrete: true, edges: [], display_name: "Medjool dates", reason: "dates are a distinct product, not a dried fruit blend variety" },
   },
   {
     // A punctuation-only variant of an existing node: SAME, never a duplicate mint (the live
@@ -112,6 +122,7 @@ const FEW_SHOT: { user: string; out: IdentityConfirm }[] = [
       canonical: null,
       concrete: true,
       edges: [],
+      display_name: "Salmon fillets, skin-on",
       reason: "punctuation-only variant of the same product",
     },
   },
@@ -130,6 +141,7 @@ const FEW_SHOT: { user: string; out: IdentityConfirm }[] = [
         { from: "andouille", to: "NEW", kind: "general" },
         { from: "bratwurst", to: "NEW", kind: "general" },
       ],
+      display_name: "Sausage",
       reason: "general sausage base; each candidate variety satisfies it",
     },
   },
@@ -144,6 +156,7 @@ const FEW_SHOT: { user: string; out: IdentityConfirm }[] = [
       canonical: null,
       concrete: true,
       edges: [],
+      display_name: "Lime",
       reason: "wedges are knife work on the purchased lime, not a shelf product",
     },
   },
@@ -158,6 +171,7 @@ const FEW_SHOT: { user: string; out: IdentityConfirm }[] = [
       canonical: null,
       concrete: true,
       edges: [],
+      display_name: "Diced tomatoes",
       reason: "canned diced tomatoes are a distinct shelf product, not knife work",
     },
   },
@@ -215,6 +229,15 @@ export function validateConfirm(
   // Advisory only — the JOB validates the canonical and falls back to the verbatim term, so a
   // malformed value must never fail the contract (or burn a corrective retry).
   const canonical = typeof raw.canonical === "string" && raw.canonical.trim() ? raw.canonical.trim() : null;
+  // Advisory, like `canonical` — a clean short label or null; never fails the contract (or burns a
+  // corrective retry). The JOB threads it onto the node; a null/absent value degrades to synthesis.
+  const displayName =
+    typeof raw.display_name === "string" &&
+    raw.display_name.trim() &&
+    raw.display_name.trim().length <= DISPLAY_NAME_MAX_LENGTH &&
+    !/[\n\r]/.test(raw.display_name)
+      ? raw.display_name.trim()
+      : null;
   const concrete = raw.concrete !== false; // default concrete unless explicitly false
   const edges: ConfirmEdge[] = [];
   if (Array.isArray(raw.edges)) {
@@ -238,6 +261,7 @@ export function validateConfirm(
       canonical,
       concrete,
       edges,
+      display_name: displayName,
       reason: typeof raw.reason === "string" ? raw.reason : "",
     },
   };
@@ -246,9 +270,12 @@ export function validateConfirm(
 async function runModel(env: Env, msgs: Msg[]): Promise<Record<string, unknown> | null> {
   let res: { response?: unknown };
   try {
-    res = (await env.AI.run(NORMALIZE_MODEL, { messages: msgs, max_tokens: 300, temperature: 0 })) as {
-      response?: unknown;
-    };
+    res = await runAi<{ response?: unknown }>(
+      env,
+      { activity: "ingredient-confirm", trigger: "cron", calls: 1 },
+      NORMALIZE_MODEL,
+      { messages: msgs, max_tokens: 300, temperature: 0 },
+    );
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
     throw new ToolError("storage_error", `Workers AI identity confirm failed: ${message}`, { model: NORMALIZE_MODEL });

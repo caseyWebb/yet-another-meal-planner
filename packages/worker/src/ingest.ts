@@ -431,13 +431,15 @@ export async function intakeObservations(
       const derivedIds = orderCartedIds.some((id) => !idx.has(id))
         ? new Set((await deriveMenuNeeds(env, orderList.tenant)).needs.map((n) => n.name))
         : new Set<string>();
-      // Pass each active row's DISPLAY name (not the id) so `advanceInCartRows`' resolve keys it to
-      // the existing row exactly — the insert-missing branch fires only for derived lines.
-      const advanceLines: { name: string }[] = [];
+      // Thread the issued canonical id as the line's `key` so `advanceInCartRows` keys on the stored
+      // id directly (an add-by-id row's `name` is a display, not the id, so resolve(name) would miss
+      // it); `name` rides the row's display for an existing row, the id for a plan-derived line. The
+      // insert-missing branch fires only for derived lines.
+      const advanceLines: { name: string; key: string }[] = [];
       for (const id of orderCartedIds) {
         const row = idx.get(id);
-        if (row && row.status === "active") advanceLines.push({ name: row.name });
-        else if (!row && derivedIds.has(id)) advanceLines.push({ name: id });
+        if (row && row.status === "active") advanceLines.push({ name: row.name, key: id });
+        else if (!row && derivedIds.has(id)) advanceLines.push({ name: id, key: id });
       }
       if (advanceLines.length > 0) await advanceInCartRows(env, orderList.tenant, advanceLines, isoDay(now));
     }

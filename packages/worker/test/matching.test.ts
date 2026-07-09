@@ -13,6 +13,8 @@ import {
   type MatchDeps,
 } from "../src/matching.js";
 import type { KrogerCandidate } from "../src/kroger.js";
+import { fakeD1 } from "./fake-d1.js";
+import { readResolver } from "../src/corpus-db.js";
 
 function cand(overrides: Partial<KrogerCandidate> & { productId: string }): KrogerCandidate {
   return {
@@ -454,6 +456,65 @@ describe("matchIngredient — identity relevance gate", () => {
     const res = await matchIngredient(deps, "peppers");
     // All three match "peppers" (relevance 1) → top tier is all → cheapest wins.
     expect(res).toMatchObject({ resolved: true, sku: "jalapeno" });
+  });
+});
+
+describe("matchIngredient — display_name is not a matcher input (reify-ingredient-display-names)", () => {
+  // A node whose display_name differs across two runs, everything else identical. The resolver
+  // exposes display_name, but the tool wires only `toId`/`searchTerms` into MatchDeps — so a
+  // display change must never touch a match result, ranking, search phrase, or matcher-facing key.
+  const seedEnv = (displayName: string | null) =>
+    fakeD1({
+      tables: {
+        ingredient_identity: [
+          { id: "ground beef::fat-80-20", base: "ground beef", detail: "fat-80-20", representative: null, search_term: "80/20 ground beef", display_name: displayName, source: "auto" },
+        ],
+        ingredient_alias: [{ variant: "80/20 ground beef", id: "ground beef::fat-80-20" }],
+      },
+    }).env;
+
+  const beef = cand({
+    productId: "B1",
+    brand: "Kroger",
+    description: "80/20 Ground Beef",
+    categories: ["Ground Beef"],
+    price: { regular: 5.99, promo: 0 },
+    fulfillment: { curbside: true, delivery: false, inStore: false },
+  });
+
+  async function run(displayName: string | null) {
+    const resolver = await readResolver(seedEnv(displayName));
+    let searchedFor = "";
+    const deps = makeDeps({
+      // Exactly the tool's wiring (tools.ts): aliases + searchTerms, NOT displayNames.
+      aliases: resolver.toId,
+      searchTerms: resolver.searchTerms,
+      brands: { "ground_beef::fat-80-20": [] }, // brand key derives from the canonical id, not display
+      search: async (term: string) => {
+        searchedFor = term;
+        return [beef];
+      },
+    });
+    const res = await matchIngredient(deps, "80/20 ground beef");
+    return { resolver, res, searchedFor };
+  }
+
+  it("changing a node's display_name changes no SKU, ranking, search phrase, or matcher-facing key", async () => {
+    const without = await run(null);
+    const withName = await run("Lean 80/20 Ground Beef");
+
+    // The display change is real at the resolver…
+    expect(without.resolver.displayNames["ground beef::fat-80-20"]).toBeUndefined();
+    expect(withName.resolver.displayNames["ground beef::fat-80-20"]).toBe("Lean 80/20 Ground Beef");
+    // …but the matcher-facing resolver outputs are identical.
+    expect(withName.resolver.toId).toEqual(without.resolver.toId);
+    expect(withName.resolver.searchTerms).toEqual(without.resolver.searchTerms);
+    // Kroger is searched with the search_term-derived phrase, never the display, both runs.
+    expect(without.searchedFor).toBe("80/20 ground beef");
+    expect(withName.searchedFor).toBe("80/20 ground beef");
+    // Byte-identical match output: same SKU, same ranking/reason.
+    expect(withName.res).toEqual(without.res);
+    expect(withName.res).toMatchObject({ resolved: true, sku: "B1" });
   });
 });
 

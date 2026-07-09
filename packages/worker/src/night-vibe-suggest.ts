@@ -14,6 +14,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { Env } from "./env.js";
 import type { Tenant } from "./tenant.js";
+import type { AiTrigger } from "./ai.js";
 import { runTool } from "./errors.js";
 import { loadRecipeIndex, loadRecipeEmbeddings } from "./recipe-index.js";
 import type { RecipeIndex } from "./recipes.js";
@@ -50,7 +51,13 @@ export interface DerivationResult {
  * how many pending rows it superseded. Never writes the palette. `maxSuggestions` caps the enqueue;
  * `seed` makes the clustering reproducible.
  */
-export async function runDerivation(env: Env, tenant: string, seed: number, maxSuggestions = DEFAULT_MAX_SUGGESTIONS): Promise<DerivationResult> {
+export async function runDerivation(
+  env: Env,
+  tenant: string,
+  seed: number,
+  maxSuggestions = DEFAULT_MAX_SUGGESTIONS,
+  trigger: AiTrigger = "cron",
+): Promise<DerivationResult> {
   const [index, embeddings, overlay, cookedDates, paletteVecs, existingVibes, profile] = await Promise.all([
     loadRecipeIndex(env).catch(() => ({}) as RecipeIndex),
     loadRecipeEmbeddings(env),
@@ -89,11 +96,11 @@ export async function runDerivation(env: Env, tenant: string, seed: number, maxS
   let candidates: DerivedArchetype[] = [];
   let source: DerivationResult["source"] = "none";
   if (items.length >= MIN_TASTE_ITEMS) {
-    candidates = await deriveArchetypes(items, paletteVectors, seed, { name: (input) => nameCluster(env, input) }, { maxProposals: maxSuggestions });
+    candidates = await deriveArchetypes(items, paletteVectors, seed, { name: (input) => nameCluster(env, input, trigger) }, { maxProposals: maxSuggestions });
     if (candidates.length) source = "clusters";
   }
   if (candidates.length === 0 && existingVibes.length === 0) {
-    const starters = await starterVibesFromTaste(env, profile.taste);
+    const starters = await starterVibesFromTaste(env, profile.taste, trigger);
     candidates = starters.slice(0, maxSuggestions).map((s) => ({ id: s.id, vibe: s.vibe, cadence_days: null, evidence: { member_slugs: [], size: 0 } }));
     if (candidates.length) source = "cold_start";
   }
@@ -124,7 +131,7 @@ export async function runDerivation(env: Env, tenant: string, seed: number, maxS
       ...missingPaletteVibes.map((v) => v.vibe),
     ]),
   ];
-  const embedded = toEmbed.length ? await embedTextsCached(env, toEmbed) : [];
+  const embedded = toEmbed.length ? await embedTextsCached(env, { activity: "embed-nightvibe", trigger }, toEmbed) : [];
   const vecOf = new Map<string, number[]>();
   toEmbed.forEach((t, i) => vecOf.set(t, embedded[i]));
 
@@ -231,7 +238,7 @@ export function registerSuggestNightVibesTool(server: McpServer, env: Env, tenan
     ({ max_suggestions, seed }) =>
       runTool(async () => {
         const resolvedSeed = seed ?? Number(new Date().toISOString().slice(0, 10).replace(/-/g, ""));
-        const result = await runDerivation(env, tenant.id, resolvedSeed, max_suggestions ?? DEFAULT_MAX_SUGGESTIONS);
+        const result = await runDerivation(env, tenant.id, resolvedSeed, max_suggestions ?? DEFAULT_MAX_SUGGESTIONS, "request");
         const note =
           result.source === "none"
             ? "no taste-space to derive from yet — cook a few meals or favorite some recipes, then try again"

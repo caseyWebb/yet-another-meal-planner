@@ -61,7 +61,7 @@ function fakeContext(over: { toId?: Record<string, string>; ids?: string[] } = {
     return toId[cleaned] ?? cleaned;
   };
   return {
-    resolver: { toId, ids, searchTerms: {} },
+    resolver: { toId, ids, searchTerms: {}, displayNames: {} },
     resolve: resolveOne,
     resolveList: (v) => v,
     resolveNames(value: unknown): string[] {
@@ -80,6 +80,8 @@ function fakeContext(over: { toId?: Record<string, string>; ids?: string[] } = {
     },
     base: (id) => id,
     searchTerm: (id) => id,
+    displayName: () => undefined,
+    idLabel: (id) => id,
     satisfiesAmong: async () => [],
   };
 }

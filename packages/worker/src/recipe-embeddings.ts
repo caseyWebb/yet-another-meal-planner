@@ -208,7 +208,7 @@ export function buildEmbedDeps(env: Env): DerivedDeps {
     async upsertDescription(slug, description, ch) {
       await db(env).run(DESC_UPSERT_SQL, slug, description, ch);
     },
-    embedTexts: (texts) => embedTexts(env, texts),
+    embedTexts: (texts) => embedTexts(env, { activity: "embed-recipe" }, texts),
     async upsertEmbeddings(rows) {
       if (rows.length === 0) return;
       await db(env).batch(
@@ -237,7 +237,7 @@ export function buildEmbedDeps(env: Env): DerivedDeps {
  * already-committed import — the reconcile backfills.
  */
 export async function seedRecipeDescription(env: Env, slug: string, facets: RecipeFacets): Promise<void> {
-  const description = await generateDescription(env, facets);
+  const description = await generateDescription(env, facets, "import");
   await db(env).run(DESC_UPSERT_SQL, slug, description, contentHash(facets));
 }
 

@@ -162,6 +162,9 @@ function harness(opts: {
     segmentRepairMaxPerTick: 5,
     twinMergeMaxPerTick: opts.twinMergeMaxPerTick ?? 5,
     rejectBackoffMs: opts.rejectBackoffMs ?? 30 * 24 * 60 * 60 * 1000,
+    displaynameless: async () => [],
+    storeDisplayName: async () => {},
+    displayNameBackfillMaxPerTick: 25,
   };
   return h;
 }
@@ -482,6 +485,48 @@ describe("reconcileNormalization — embedding backfill", () => {
     const s = await reconcileNormalization(h.deps);
     expect(s.embedded).toBe(1);
     expect(h.stored.map((s2) => s2.id)).toEqual(["saffron"]);
+  });
+});
+
+describe("reconcileNormalization — display-name backfill (reify-ingredient-display-names)", () => {
+  const nullRows = [
+    { id: "cabbage::color-red", base: "cabbage", detail: "color-red" },
+    { id: "kale", base: "kale", detail: null },
+    { id: "chicken::thighs", base: "chicken", detail: "thighs" },
+  ];
+
+  it("fills each null-display_name node with the deterministic base (detail)/base synthesis", async () => {
+    const stored: { id: string; label: string }[] = [];
+    let calledLimit = -1;
+    const h = harness({ terms: [] });
+    h.deps.displaynameless = async (limit) => {
+      calledLimit = limit;
+      return nullRows.slice(0, limit);
+    };
+    h.deps.storeDisplayName = async (id, label) => {
+      stored.push({ id, label });
+    };
+    const s = await reconcileNormalization(h.deps);
+    expect(calledLimit).toBe(25); // the tick cap is threaded to the batch read
+    expect(stored).toEqual([
+      { id: "cabbage::color-red", label: "cabbage (color-red)" }, // detail → base (detail)
+      { id: "kale", label: "kale" }, // no detail → base
+      { id: "chicken::thighs", label: "chicken (thighs)" },
+    ]);
+    expect(s.displayNamed).toBe(3);
+  });
+
+  it("is bounded per tick by the cap and converges the remainder later", async () => {
+    const stored: { id: string; label: string }[] = [];
+    const h = harness({ terms: [] });
+    h.deps.displayNameBackfillMaxPerTick = 1;
+    h.deps.displaynameless = async (limit) => nullRows.slice(0, limit);
+    h.deps.storeDisplayName = async (id, label) => {
+      stored.push({ id, label });
+    };
+    const s = await reconcileNormalization(h.deps);
+    expect(stored).toEqual([{ id: "cabbage::color-red", label: "cabbage (color-red)" }]);
+    expect(s.displayNamed).toBe(1);
   });
 });
 
@@ -881,6 +926,7 @@ describe("reconcileNormalization — segment-overflow repair", () => {
           base: "salmon fillets, skin-on",
           detail: "species-atlantic-sockeye",
           search_term: "salmon fillets, skin-on species-atlantic-sockeye",
+          display_name: "salmon fillets, skin-on (species-atlantic-sockeye)",
           concrete: true,
         },
       },

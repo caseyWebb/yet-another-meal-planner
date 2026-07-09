@@ -62,6 +62,7 @@ function alt(over: Partial<SubstitutionAlternative> & { sku: string; reasons: Su
 function resolvedLine(name: string, over: Partial<PlaceOrderOutcome["resolved"][number]> = {}) {
   return {
     name,
+    key: name,
     sku: `000${name.length}`,
     brand: "Store Brand",
     size: "12 oz",
@@ -122,8 +123,12 @@ test.beforeEach(async ({ asMember, groceryPage }) => {
 test("the enriched read's cross-ingredient siblings render inline, relation-labeled, with real in_pantry/on_sale_hint pills", async ({
   groceryPage,
 }) => {
-  const lineName = DIFF.siblings.line; // "cabbage::type-napa" — a seeded explicit row
+  const lineName = DIFF.siblings.line; // "cabbage::type-napa" — a seeded id-named explicit row
   await expect(groceryPage.item(lineName)).toBeVisible();
+  // Located by its canonical id (data-name), the row RENDERS the curated node label resolved at
+  // read (reify-ingredient-display-names read plane) — never the raw `::` id.
+  await expect(groceryPage.item(lineName).locator(".g-name").first()).toHaveText(DIFF.siblings.displayNames[lineName]);
+  await expect(groceryPage.item(lineName).locator(".g-name").first()).not.toContainText("::");
 
   // The depth-1 walk over the seeded family: two general-kind siblings (lexicographic:
   // color-green, color-red) then the generalization ("cabbage" itself) — three total,
@@ -137,6 +142,12 @@ test("the enriched read's cross-ingredient siblings render inline, relation-labe
   await expect(redRow.getByTestId("subs-pantry-hit")).toHaveText("in your pantry");
   const greenRow = rows.nth(0);
   await expect(greenRow.getByTestId("subs-pantry-hit")).toHaveCount(0); // only the seeded pantry row's sibling
+
+  // The offered swap target renders the node's curated `display_name` (via `labelOf`),
+  // never the raw canonical id — reify-ingredient-display-names (read plane, Move C).
+  await expect(groceryPage.subLabel(redRow)).toHaveText(DIFF.siblings.displayNames["cabbage::color-red"]);
+  await expect(groceryPage.subLabel(greenRow)).toHaveText(DIFF.siblings.displayNames["cabbage::color-green"]);
+  await expect(groceryPage.subLabel(redRow)).not.toContainText("::");
   await groceryPage.captureForReview("grocery-inline-subs-pantry");
 
   // on_sale_hint needs the resolved store's warmed rollup — the seeded default
@@ -237,6 +248,80 @@ test("accepting an inline hint on an explicit row is the real add+remove; on a v
   // Cleanup: drop the real rows this accept materialized.
   await groceryPage.removeRow("paneer");
   await groceryPage.removeRow("arctic char");
+});
+
+// ── Accepting a swap materializes a row that RENDERS the clean label, never the raw canonical id
+// (reify-ingredient-display-names 6.6). The sibling is a REAL seeded identity node whose curated
+// `display_name` differs from its id, so the accept exercises the real add-by-id write end to end:
+// `swapSibling` POSTs `{ id: sib.id, name: sib.label }`; the server keys the row on the canonical id
+// and stores the posted label as the row's DISPLAY `name` (key and display stored separately). ──
+test("accepting a sibling swap materializes a row rendering the curated display label, never the raw canonical id", async ({
+  page,
+  groceryPage,
+}) => {
+  const sibId = "cabbage::color-green";
+  const sibLabel = DIFF.siblings.displayNames[sibId]; // "Green cabbage" — the curated label
+  // A probe line pinned by interception (an explicit `list` row), carrying one sibling
+  // that is the seeded green-cabbage node — id != label, and NOT in the seeded pantry, so
+  // the materialized row lands on the to-buy list (not pantry-covered).
+  const view: ToBuyView = {
+    to_buy: [
+      {
+        name: "napa cabbage",
+        quantity: 1,
+        assumed_quantity: true,
+        for_recipes: [],
+        origin: "list",
+        key: DIFF.siblings.line,
+        kind: "grocery",
+        domain: "grocery",
+        substitutes: [
+          {
+            id: sibId,
+            label: sibLabel, // labelOf → the node's curated display_name, not the raw id
+            relation: { role: "sibling", kind: "general", via: DIFF.siblings.parent, via_label: DIFF.siblings.parent },
+            in_pantry: false,
+          },
+        ],
+      },
+    ],
+    pantry_covered: [],
+    in_cart: [],
+    underived: [],
+    location: null,
+    flyer_as_of: null,
+  };
+  await page.route("**/api/grocery/to-buy**", (route) => route.fulfill({ json: view }));
+  await groceryPage.goto();
+
+  // The offered swap shows the curated label — the value `swapSibling` posts as `name`.
+  const probe = groceryPage.subRow("napa cabbage");
+  await expect(groceryPage.subLabel(probe)).toHaveText(sibLabel);
+
+  // Accept → the REAL add-by-id write. The stored row keys on the CANONICAL id (`normalized_name`)
+  // and stores the posted display as its `name` (key and display stored separately), display_name
+  // null — so the row keys on the id while rendering the clean label.
+  await groceryPage.acceptSub(probe);
+  await expect.poll(() => groceryPage.rowStatus(sibId)).toBe("active");
+  const stored = await groceryPage.row(sibId);
+  expect(stored?.name).toBe(sibLabel); // the posted display, not the raw id
+  expect(stored?.name).not.toContain("::");
+  expect(stored?.normalized_name).toBe(sibId); // the canonical id is the key
+  expect(stored?.display_name).toBeNull();
+
+  // Drop the interception and reload: the REAL enriched derivation renders the materialized row's
+  // label via `display_name ?? name` — here the row's own display `name` ("Green cabbage"). Both the
+  // rendered text and the row's `data-name` are that display; the raw canonical id is NEVER rendered.
+  await page.unroute("**/api/grocery/to-buy**");
+  await groceryPage.goto();
+  const rendered = groceryPage.anyItem(sibLabel); // located by its display (data-name = the label)
+  await expect(rendered).toBeVisible();
+  await expect(rendered.locator(".g-name").first()).toHaveText(sibLabel);
+  await expect(groceryPage.anyItem(sibId)).toHaveCount(0); // the raw canonical id is never a rendered row
+  await groceryPage.captureForReview("grocery-swap-reified-label");
+
+  // Cleanup: drop the row this accept materialized (the seeded family rows stay untouched).
+  await groceryPage.removeRow(sibId);
 });
 
 test("dismiss is per-session client state — the hint reappears on reload", async ({ page, groceryPage }) => {

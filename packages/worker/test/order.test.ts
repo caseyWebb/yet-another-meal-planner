@@ -161,6 +161,21 @@ describe("computeToBuy", () => {
     expect(r.partials.map((p) => p.name)).toEqual(["scallions"]);
   });
 
+  it("an add-by-id-shaped row keys on its stored id and emits its display as the line name (pull-list source)", () => {
+    // A row whose `name` is a display and `normalized_name` is the canonical id: computeToBuy keys on
+    // the STORED id (`storedGroceryKey`), and the emitted line carries the display `name` + the id
+    // `key` — exactly what the satellite pull-list turns into { name, item_id }. Re-deriving
+    // groceryKey("Red cabbage") would mint "red cabbage" and misfile the line.
+    const r = computeToBuy({
+      list: [item("Red cabbage", { normalized_name: "cabbage::color-red" })],
+      pantryNames: new Set(),
+    });
+    expect(r.to_buy).toHaveLength(1);
+    expect(r.to_buy[0].key).toBe("cabbage::color-red"); // the stored id, not resolve("Red cabbage")
+    expect(r.to_buy[0].name).toBe("Red cabbage"); // the display rides as the line name
+    expect(r.to_buy[0].name).not.toContain("::");
+  });
+
   it("keeps a non-food item on normalizeName even when a resolver is injected", () => {
     // A household item must NOT be resolved: its key stays normalizeName, so a food resolver
     // that would collapse it is bypassed and it is bought normally.
@@ -275,12 +290,29 @@ describe("placeOrder", () => {
     expect(calls.order).toEqual(["sku", "advance", "cart"]);
   });
 
-  it("caches the learned mapping under the CANONICAL id (matcher's read key), not the raw name", async () => {
-    // A leading quantity in the grocery-list name must not fragment the shared cache: the
-    // matcher reads by normalizeIngredient (quantity-stripped), so the write must key the same.
+  it("caches the learned mapping under the line's CANONICAL key (the stored normalized_name), not the display name", async () => {
+    // The to-buy line's `key` IS the stored canonical id (quantity-stripped at storage by the
+    // resolver), so the SKU-cache write keys on it directly — a leading quantity in the display `name`
+    // never fragments the shared cache the matcher reads back by.
     const { deps, calls } = makeDeps({ "2 lb ground beef": confident("S9") });
-    await placeOrder(deps, toBuy("2 lb ground beef"));
+    await placeOrder(deps, [
+      { name: "2 lb ground beef", key: "ground beef", quantity: 1, for_recipes: [], assumed_quantity: true },
+    ]);
     expect(calls.mappings.map((m) => m.ingredient)).toEqual(["ground beef"]);
+  });
+
+  it("an add-by-id line carries the DISPLAY name on the resolved line and caches under the canonical id", async () => {
+    // An add-by-id line: `name` is the human display ("Red cabbage"), `key` is the canonical id
+    // ("cabbage::color-red"). The resolved line renders the display; the SKU-cache append keys on the
+    // id (de-fragmenting the cache onto the matcher's read key), never the display.
+    const { deps, calls } = makeDeps({ "red cabbage": confident("S7") });
+    const res = await placeOrder(deps, [
+      { name: "Red cabbage", key: "cabbage::color-red", quantity: 1, for_recipes: [], assumed_quantity: true },
+    ]);
+    expect(res.resolved[0].name).toBe("Red cabbage"); // the display, never the raw id
+    expect(res.resolved[0].name).not.toContain("::");
+    expect(res.resolved[0].key).toBe("cabbage::color-red"); // the canonical id rides the resolved line
+    expect(calls.mappings.map((m) => m.ingredient)).toEqual(["cabbage::color-red"]); // cache keyed on the id
   });
 
   it("batches ambiguous/unavailable into the checkpoint and never carts them", async () => {
@@ -465,6 +497,7 @@ describe("placeOrder", () => {
     expect(res.resolved).toEqual([
       {
         name: "cheese",
+        key: "cheese",
         sku: "PICK",
         brand: "Tillamook",
         size: "8 oz",

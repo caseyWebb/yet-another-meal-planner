@@ -22,6 +22,10 @@ export const SEED = {
   // D9): the app suite's different-tenant login spec needs two real, independently
   // loggable identities to exercise the stamp-mismatch purge for real.
   inviteAlt: "PW-APP-INVITE-2",
+  // Group invite codes (self-service-signup): `open` is a live, redeemable code (headroom +
+  // provenance) the app signup spec redeems and the admin roster lists; `revoked` is a dead
+  // code that renders its "revoked" badge. Both D1-backed (signup_invites), not KV.
+  groupCode: { open: "PW-GROUP-OPEN", revoked: "PW-GROUP-REVOKED" },
   // Cross-device MCP approval refs (webauthn-passkey-auth): pending `authz:<ref>` KV records
   // the /connect approval screen reads + approves. Two independent refs so the view
   // (smoke screenshot) and the approve round-trip never disturb each other regardless of
@@ -160,6 +164,17 @@ export const SEED = {
         // intercepted, in the app suite's inline-hint spec.
         pantryHit: "cabbage::color-red",
         saleHit: { sku: "0009999012345", price: { regular: 2.5, promo: 2 } },
+        // reify-ingredient-display-names: a curated `display_name` per CONCRETE family
+        // node, distinct from the raw canonical id — so `labelOf` renders these clean
+        // labels ("Red cabbage", not "cabbage::color-red") on the inline hint, and an
+        // accepted swap materializes a grocery row carrying the clean label. The PARENT
+        // ("cabbage") deliberately gets none: its `via_label` then falls back to the base
+        // synthesis ("cabbage"), which the inline-hint relation assertion pins.
+        displayNames: {
+          "cabbage::type-napa": "Napa cabbage",
+          "cabbage::color-green": "Green cabbage",
+          "cabbage::color-red": "Red cabbage",
+        },
       },
     },
   },
@@ -210,7 +225,7 @@ function embedCacheKey(text) {
 export function d1Statements(now) {
   const iso = (ms) => new Date(ms).toISOString();
   const day = (ms) => iso(ms).slice(0, 10);
-  const { members, recipe, discovery, normalize, jobs } = SEED;
+  const { members, recipe, discovery, normalize, jobs, groupCode } = SEED;
   const stmts = [];
 
   // --- Status / Logs: job_health (current state) + job_runs (sparkline + run-log history).
@@ -527,13 +542,16 @@ export function d1Statements(now) {
   // the taste/preferences tabs render. All additive — the admin suite reads none of it.
   const app = SEED.app;
   stmts.push(`DELETE FROM grocery_list WHERE tenant = ${q(members.active)};`);
+  // `normalized_name` is the canonical id the funnel resolves the name to — for an ALIASED name
+  // (scallions → green-onion) that is the alias target, NOT `name.toLowerCase()`, exactly as
+  // production's write funnel stores it. Pass `key` to pin it; default to the lowercased name.
   const g = (name, kind, status, source, extra = {}) =>
-    `(${q(members.active)}, ${q(name)}, ${q(name.toLowerCase())}, ${q(extra.quantity ?? "1")}, ${q(kind)}, 'grocery', ${q(status)}, ${q(source)}, ${q(JSON.stringify(extra.for_recipes ?? []))}, ${extra.note ? q(extra.note) : "NULL"}, ${q(day(now - 2 * DAY))}, NULL)`;
+    `(${q(members.active)}, ${q(name)}, ${q(extra.key ?? name.toLowerCase())}, ${q(extra.quantity ?? "1")}, ${q(kind)}, 'grocery', ${q(status)}, ${q(source)}, ${q(JSON.stringify(extra.for_recipes ?? []))}, ${extra.note ? q(extra.note) : "NULL"}, ${q(day(now - 2 * DAY))}, NULL)`;
   stmts.push(
     "INSERT INTO grocery_list (tenant, name, normalized_name, quantity, kind, domain, status, source, for_recipes, note, added_at, ordered_at) VALUES " +
       [
         g(app.grocery.active[0], "grocery", "active", "menu", { quantity: "2 lb", for_recipes: [recipe.slug] }),
-        g(app.grocery.active[1], "grocery", "active", "ad_hoc", { note: "the thin ones" }),
+        g(app.grocery.active[1], "grocery", "active", "ad_hoc", { note: "the thin ones", key: SEED.normalize.canonicalId }),
         g(app.grocery.active[2], "grocery", "active", "pantry_low"),
         g(app.grocery.household, "household", "active", "ad_hoc"),
         g(app.grocery.inCart, "grocery", "in_cart", "stockup"),
@@ -614,13 +632,19 @@ export function d1Statements(now) {
   // concrete specializations satisfying the concrete base, kind `general`. Edges are
   // BORN-AUDITED (audited_at set) so the edge-audit backlog stays exactly 1.
   const fam = [diff.siblings.line, ...diff.siblings.family];
+  const dn = diff.siblings.displayNames;
   stmts.push(`DELETE FROM ingredient_edge WHERE to_id = ${q(diff.siblings.parent)};`);
   stmts.push(`DELETE FROM ingredient_identity WHERE id IN (${[diff.siblings.parent, ...fam].map(q).join(", ")});`);
+  // reify-ingredient-display-names: concrete family nodes carry a curated `display_name`
+  // (so `labelOf` yields "Red cabbage", not "cabbage::color-red"); the parent stays NULL.
   stmts.push(
-    "INSERT INTO ingredient_identity (id, base, detail, concrete, source, decided_at) VALUES " +
-      `(${q(diff.siblings.parent)}, ${q(diff.siblings.parent)}, NULL, 1, 'auto', ${now - 9 * DAY}), ` +
+    "INSERT INTO ingredient_identity (id, base, detail, display_name, concrete, source, decided_at) VALUES " +
+      `(${q(diff.siblings.parent)}, ${q(diff.siblings.parent)}, NULL, NULL, 1, 'auto', ${now - 9 * DAY}), ` +
       fam
-        .map((id) => `(${q(id)}, ${q(id.slice(0, id.indexOf("::")))}, ${q(id.slice(id.indexOf("::") + 2))}, 1, 'auto', ${now - 9 * DAY})`)
+        .map(
+          (id) =>
+            `(${q(id)}, ${q(id.slice(0, id.indexOf("::")))}, ${q(id.slice(id.indexOf("::") + 2))}, ${q(dn[id])}, 1, 'auto', ${now - 9 * DAY})`,
+        )
         .join(", ") +
       ";",
   );
@@ -640,6 +664,21 @@ export function d1Statements(now) {
   stmts.push(`DELETE FROM pantry WHERE tenant = ${q(members.active)} AND normalized_name = ${q(diff.siblings.pantryHit)};`);
   stmts.push(
     `INSERT INTO pantry (tenant, name, normalized_name, quantity, category, added_at, last_verified_at) VALUES (${q(members.active)}, 'Red cabbage', ${q(diff.siblings.pantryHit)}, '1 head', 'produce', ${q(day(now - 3 * DAY))}, ${q(day(now - 3 * DAY))});`,
+  );
+
+  // Group invite codes (self-service-signup): an OPEN code with headroom (10 cap, 2 used) and
+  // two provenance rows, plus a REVOKED code. The app signup spec redeems `open` (unique
+  // usernames, so its used count only climbs and never collides); the admin roster lists both.
+  stmts.push(`DELETE FROM signup_invites WHERE code IN (${q(groupCode.open)}, ${q(groupCode.revoked)});`);
+  stmts.push(
+    "INSERT INTO signup_invites (code, max_redemptions, used, expires_at, revoked_at, label, created_at) VALUES " +
+      `(${q(groupCode.open)}, 10, 2, NULL, NULL, 'summer camp crew', ${now - 3 * DAY}), ` +
+      `(${q(groupCode.revoked)}, 5, 5, NULL, ${now - 1 * DAY}, 'closed beta', ${now - 20 * DAY});`,
+  );
+  stmts.push(`DELETE FROM signup_redemptions WHERE code = ${q(groupCode.open)};`);
+  stmts.push(
+    "INSERT INTO signup_redemptions (code, tenant, created_at) VALUES " +
+      `(${q(groupCode.open)}, 'riley', ${now - 2 * DAY}), (${q(groupCode.open)}, 'sky', ${now - 1 * DAY});`,
   );
 
   return stmts;

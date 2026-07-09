@@ -30,6 +30,14 @@ export interface CandidateView {
 
 export interface ResolvedLine {
   name: string;
+  /**
+   * The line's canonical dedup/join key — the `grocery_list.normalized_name` this line advances under
+   * (reify-ingredient-display-names Move C): carried from the to-buy line's `key` so advance/rollback
+   * key on the STORED id (never a re-derivation of the now-independent display `name`) and the
+   * `sku_cache` append keys on the canonical id (byte-identical to `normalize(name)` for a typed row,
+   * de-fragmenting the cache for an add-by-id row whose `name` is a display, not the id).
+   */
+  key: string;
   sku: string;
   brand: string;
   size: string | null;
@@ -110,6 +118,12 @@ export interface ToBuyViewLine {
   kind: GroceryKind;
   domain: string;
   note?: string | null;
+  /** Enriched read only (reify-ingredient-display-names): the reified human label for this
+   *  line — `row.display_name ?? name` for a stored (`list`/`both`) line, the identity node's
+   *  curated `display_name ?? name` for a `plan`-derived / by-id line. The app renders
+   *  `display_name ?? name`. ABSENT on the default read (byte-identical) — the display rides
+   *  the enriched read + the stored row, never the default line. */
+  display_name?: string;
   /** Enriched read only (`read_to_buy` `enrich` / `?enrich=1` — member-app-differentiators
    *  D6): the line's captured placement at the caller's location, `department` derived
    *  from the identity graph when no aisle is captured. ABSENT on the default read
@@ -133,6 +147,11 @@ export interface LinePlacement {
   /** Graph-derived department fallback (the key's parent via out-edges, precedence
    *  membership → general → containment). Absent when the key has no parent. */
   department?: string;
+  /** The curated human label for `department` (the parent node's `labelOf` — its stored
+   *  `display_name`, else the base/detail synthesis) — reify-ingredient-display-names Tier 2.
+   *  Additive display field so the app renders a human heading while still keying/grouping on
+   *  the raw `department` id. Present exactly when `department` is. */
+  department_label?: string;
 }
 
 /** A need the pantry cancels, joined with the pantry row's verify metadata. */
@@ -140,12 +159,21 @@ export interface PantryCoveredLine {
   name: string;
   for_recipes: string[];
   on_hand: { quantity?: string; category?: string; last_verified_at?: string };
+  /** Enriched read only (reify-ingredient-display-names): the reified human label — a
+   *  covering stored row's `display_name ?? name`, else the identity node's curated
+   *  `displayName(key) ?? name`. The app renders `display_name ?? name`. ABSENT on the
+   *  default read (byte-identical). */
+  display_name?: string;
 }
 
 /** A stored `in_cart` row — the deterministic stale-cart signal. */
 export interface InCartLine {
   name: string;
   added_at: string;
+  /** Enriched read only (reify-ingredient-display-names): the stored row's reified label
+   *  (`display_name ?? name` — an in_cart line is always a stored row). The app renders
+   *  `display_name ?? name`. ABSENT on the default read (byte-identical). */
+  display_name?: string;
 }
 
 /** The derived to-buy view (identical from the tool and the endpoint). */
@@ -208,8 +236,12 @@ export interface SiblingSuggestion {
   relation: {
     role: "satisfies" | "sibling" | "generalization" | "substitution";
     kind: "general" | "containment" | "membership" | "substitution";
-    /** The shared parent, for `role: "sibling"`. */
+    /** The shared parent id, for `role: "sibling"`. */
     via?: string;
+    /** The curated human label for `via` (the parent node's `labelOf`) — reify-ingredient-
+     *  display-names Tier 2. Additive display field so the app renders a human relation
+     *  target while still carrying the raw `via` id. Present exactly when `via` is. */
+    via_label?: string;
     /** Substitution relations only (`role: "substitution"`): the accrued observation weight of
      *  the promoted `substitution` edge, and its optional authored qualifier (a sub ratio like
      *  `1:2`, a leavening/cook-time caveat). A substitute is a taste judgment surfaced AFTER every

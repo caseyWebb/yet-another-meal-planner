@@ -553,12 +553,20 @@ export function registerWriteTools(
     "update_aliases",
     {
       description:
-        'Add or update shared ingredient alias mappings (variant → canonical), e.g. { "EVOO": "olive oil" }. Upserts each by variant into the shared corpus (D1). Call only when the user directs an alias edit, or to record one you confirmed during matching. Does not remove aliases.',
-      inputSchema: { aliases: z.record(z.string(), z.string()) },
+        'Add or update shared ingredient alias mappings (variant → canonical), e.g. { "EVOO": "olive oil" }. Upserts each by variant into the shared corpus (D1). Call only when the user directs an alias edit, or to record one you confirmed during matching. Does not remove aliases. Optionally pass `display_names` (a map of canonical id → human label, e.g. { "cabbage::color-red": "Red cabbage" }) to set the curated display name stored on the identity node — written as a HUMAN override (it wins over any auto-derived label and is never downgraded); the rendered label a member sees is this display name (falling back to the resolver name when absent).',
+      inputSchema: {
+        aliases: z.record(z.string(), z.string()),
+        display_names: z.record(z.string(), z.string()).optional(),
+      },
     },
-    ({ aliases }) =>
+    ({ aliases, display_names }) =>
       runTool(async () => {
-        const mappings = Object.entries(aliases).map(([variant, canonical]) => ({ variant, canonical }));
+        const mappings = Object.entries(aliases).map(([variant, canonical]) => ({
+          variant,
+          canonical,
+          // The curated label is keyed by canonical id — addAliases writes it source='human'.
+          display_name: display_names?.[canonical],
+        }));
         const updated = await addAliases(env, mappings);
         return { updated };
       }),

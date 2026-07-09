@@ -13,6 +13,7 @@
 
 import type { Env } from "./env.js";
 import { ToolError } from "./errors.js";
+import { runAi, estimateTokens, type AiEmbedContext } from "./ai.js";
 
 /** The embedding model. Welded to the index's dimension — changing it re-embeds everything. */
 export const EMBED_MODEL = "@cf/baai/bge-base-en-v1.5";
@@ -50,10 +51,15 @@ interface EmbeddingResponse {
  * any AI failure (or an unexpectedly-shaped response) to a structured `storage_error`
  * ToolError — never a raw throw — matching the tool-boundary discipline (D4).
  */
-export async function embedText(env: Env, text: string): Promise<number[]> {
+export async function embedText(env: Env, ctx: AiEmbedContext, text: string): Promise<number[]> {
   let res: EmbeddingResponse;
   try {
-    res = (await env.AI.run(EMBED_MODEL, { text })) as unknown as EmbeddingResponse;
+    res = await runAi<EmbeddingResponse>(
+      env,
+      { activity: ctx.activity, trigger: ctx.trigger, calls: 1, inputTokensEstimate: estimateTokens(text) },
+      EMBED_MODEL,
+      { text },
+    );
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
     throw new ToolError("storage_error", `Workers AI embed failed: ${message}`, { model: EMBED_MODEL });
@@ -75,11 +81,16 @@ export async function embedText(env: Env, text: string): Promise<number[]> {
  * discipline as `embedText`: any AI failure or a response whose row count / dimension
  * doesn't match the request maps to a `storage_error` ToolError, never a raw throw.
  */
-export async function embedTexts(env: Env, texts: string[]): Promise<number[][]> {
+export async function embedTexts(env: Env, ctx: AiEmbedContext, texts: string[]): Promise<number[][]> {
   if (texts.length === 0) return [];
   let res: EmbeddingResponse;
   try {
-    res = (await env.AI.run(EMBED_MODEL, { text: texts })) as unknown as EmbeddingResponse;
+    res = await runAi<EmbeddingResponse>(
+      env,
+      { activity: ctx.activity, trigger: ctx.trigger, calls: texts.length, inputTokensEstimate: estimateTokens(texts.join("\n")) },
+      EMBED_MODEL,
+      { text: texts },
+    );
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
     throw new ToolError("storage_error", `Workers AI embed failed: ${message}`, { model: EMBED_MODEL });
@@ -155,7 +166,7 @@ function parseCachedVector(raw: string | null): number[] | null {
  * ingest limiter's posture). Cross-tenant by design — a vector is a pure function of a
  * public model and the text, the flyer-cache precedent.
  */
-export async function embedTextsCached(env: Env, texts: string[]): Promise<number[][]> {
+export async function embedTextsCached(env: Env, ctx: AiEmbedContext, texts: string[]): Promise<number[][]> {
   if (texts.length === 0) return [];
   const keys = await Promise.all(texts.map((t) => embedCacheKey(t)));
 
@@ -184,7 +195,7 @@ export async function embedTextsCached(env: Env, texts: string[]): Promise<numbe
     missKeys.push(key);
     missTexts.push(text);
   });
-  const embedded = await embedTexts(env, missTexts);
+  const embedded = await embedTexts(env, ctx, missTexts);
   const freshByKey = new Map<string, number[]>();
   missKeys.forEach((key, j) => freshByKey.set(key, embedded[j]));
 

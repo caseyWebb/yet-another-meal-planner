@@ -21,12 +21,16 @@ import {
   revoke,
   krogerConsentLink,
   randomInviteCode,
+  createGroupInvite,
+  listGroupInvites,
+  revokeGroupInvite,
   type AdminDeps,
 } from "../admin.js";
 import {
   buildHealthPayload,
   readJobRuns,
   readAllJobRuns,
+  readAiBacklog,
   HEALTH_JOBS,
   JOB_RUNS_PER_JOB_CAP,
   type JobRun,
@@ -48,7 +52,7 @@ import {
 } from "../admin-data.js";
 import { parseMarkdown } from "../parse.js";
 import { parseMarkdownDocument, renderMarkdown } from "./markdown.js";
-import { fetchUsage, fetchUsageTrends, fetchToolUsage } from "../usage.js";
+import { fetchUsage, fetchUsageTrends, fetchToolUsage, fetchAiUsage } from "../usage.js";
 import { readInsights } from "../insights.js";
 import { readDiscoveryLog, readDiscoveryCandidates, readDiscoveryRowById, deleteDiscoveryRow } from "../discovery-db.js";
 import { mintIngestKey, revokeIngestKey, readSatelliteLiveness } from "../ingest-db.js";
@@ -130,6 +134,22 @@ export function registerApiRoutes(app: Hono<{ Bindings: Env }, BlankSchema, "/ad
       .delete("/api/tenants/:id", async (c) => {
         return c.json(await revoke(adminDeps(c.env), decodeURIComponent(c.req.param("id"))));
       })
+      // Group invite codes (self-service-signup): mint a capped/expiring code (shown once,
+      // never logged), list codes with live usage + provenance, revoke one (halts further
+      // signups; accounts already created are untouched).
+      .get("/api/invite-codes", async (c) => c.json({ codes: await listGroupInvites(c.env) }))
+      .post("/api/invite-codes", async (c) => {
+        const body = await c.req.json<{ cap?: number; expires_at?: number | null; label?: string | null }>();
+        const result = await createGroupInvite(c.env, {
+          cap: Number(body.cap),
+          expiresAt: body.expires_at ?? null,
+          label: body.label ?? null,
+        });
+        return c.json({ ...result, signup_url: `${new URL(c.req.url).origin}/signup` });
+      })
+      .post("/api/invite-codes/:code/revoke", async (c) =>
+        c.json(await revokeGroupInvite(c.env, decodeURIComponent(c.req.param("code")))),
+      )
       // Config › Ingest Keys: the satellite key roster (recipe-ingestion). GET returns the liveness
       // rollup's per-satellite rows (label/prefix/sources/status/versions/skew — no secret); mint
       // returns the plaintext secret ONCE; revoke is immediate.
@@ -385,11 +405,18 @@ export function registerApiRoutes(app: Hono<{ Bindings: Env }, BlankSchema, "/ad
       // Insights: every window's precomputed aggregates in ONE payload — the SPA's window/sort/
       // expand toggles re-render from it with zero further requests (group-insights).
       .get("/api/insights", async (c) => c.json(await readInsights(c.env)))
-      // Usage: the three observability dashboards. Not-configured / upstream-failure detail
-      // states pass through STRUCTURALLY, as data — never a thrown 500.
+      // Usage: the observability dashboards (account snapshot, per-job trends, per-tool, and
+      // per-activity AI attribution). Not-configured / upstream-failure detail states pass
+      // through STRUCTURALLY, as data — never a thrown 500.
       .get("/api/usage", async (c) => {
-        const [usage, trends, tools] = await Promise.all([fetchUsage(c.env), fetchUsageTrends(c.env), fetchToolUsage(c.env)]);
-        return c.json({ usage, trends, tools });
+        const [usage, trends, tools, aiUsage, aiBacklog] = await Promise.all([
+          fetchUsage(c.env),
+          fetchUsageTrends(c.env),
+          fetchToolUsage(c.env),
+          fetchAiUsage(c.env),
+          readAiBacklog(c.env),
+        ]);
+        return c.json({ usage, trends, tools, aiUsage, aiBacklog });
       })
       // Discovery: the bounded candidate read + the liveness-derived ingest strip (the SPA's
       // filter pills + pager work client-side over this one payload).

@@ -15,7 +15,7 @@ import { ToolError } from "../errors.js";
 import { requireSession, type ApiEnv } from "../session.js";
 import { jsonWithEtag } from "./etag.js";
 import { jsonBody } from "./middleware.js";
-import { readGroceryList, addGroceryRow, updateGroceryRow, removeGroceryRow, isoDay } from "../session-db.js";
+import { readGroceryListReified, addGroceryRow, updateGroceryRow, removeGroceryRow, isoDay } from "../session-db.js";
 import { computeToBuyView } from "../to-buy.js";
 import { suggestSubstitutions } from "../substitutions.js";
 import { runPlaceOrder, PLACE_ORDER_INPUT_SHAPE } from "../order-tools.js";
@@ -76,7 +76,7 @@ function coerceCommon(o: Record<string, unknown>): GroceryUpdateInput {
 export const groceryArea = new Hono<ApiEnv>()
   .get("/grocery", requireSession, async (c) => {
     const tenant = c.get("tenant");
-    const items = await readGroceryList(c.env, tenant.id);
+    const items = await readGroceryListReified(c.env, tenant.id);
     return jsonWithEtag(c, { items });
   })
   // The derived to-buy view (D1/D3): one shared op with the MCP read_to_buy tool.
@@ -141,13 +141,20 @@ export const groceryArea = new Hono<ApiEnv>()
   })
   // Add — canonical-id upsert: a re-added name MERGES into its row (replay-safe). Also
   // the MATERIALIZE write for a derived (plan-origin) view line: same canonical key, so
-  // the stored row and the derived need merge in every later read (D6).
+  // the stored row and the derived need merge in every later read (D6). An optional `id`
+  // materializes an accepted sibling swap: it is an ALREADY-CANONICAL key (validated as a live
+  // survivor, not re-resolved in addGroceryRow) that becomes the row's key, while the row's `name`
+  // stores a clean human display (the posted `name` when present, else the identity node's label) —
+  // so name OR id is required.
   .post("/grocery/items", requireSession, async (c) => {
     const tenant = c.get("tenant");
     const body = await jsonBody<Record<string, unknown>>(c);
     const name = str(body.name)?.trim();
-    if (!name) throw new ToolError("validation_failed", "name is required");
-    const input: GroceryAddInput = { name, ...coerceCommon(body) };
+    const id = str(body.id)?.trim();
+    if (!name && !id) throw new ToolError("validation_failed", "name or id is required");
+    const input: GroceryAddInput = { ...coerceCommon(body) };
+    if (name) input.name = name;
+    if (id) input.id = id;
     // Optional taste-substitution capture signal — the recipe ingredient this add stands in for.
     const substitutesFor = str(body.substitutes_for)?.trim();
     if (substitutesFor) input.substitutes_for = substitutesFor;

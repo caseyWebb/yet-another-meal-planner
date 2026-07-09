@@ -1,8 +1,11 @@
 import { describe, it, expect } from "vitest";
 import { fakeD1 } from "./fake-d1.js";
+import { sqliteEnv } from "./sqlite-d1.js";
 import {
   readAliases,
   readResolver,
+  readIdentityNeighbors,
+  ingredientContext,
   addAliases,
   deleteAlias,
   enqueueNovelTerms,
@@ -570,6 +573,112 @@ describe("ingredient identity / normalization (D1)", () => {
   });
 });
 
+describe("ingredient display_name (reify-ingredient-display-names)", () => {
+  /** Seed one identity node (real SQLite, so COALESCE upserts execute for real). */
+  function seedNode(
+    h: ReturnType<typeof sqliteEnv>,
+    node: { id: string; base: string; detail?: string | null; display_name?: string | null; search_term?: string | null; source?: string },
+  ): void {
+    h.raw
+      .prepare(
+        "INSERT INTO ingredient_identity (id, base, detail, search_term, display_name, concrete, source, decided_at) " +
+          "VALUES (?, ?, ?, ?, ?, 1, ?, 1)",
+      )
+      .run(node.id, node.base, node.detail ?? null, node.search_term ?? null, node.display_name ?? null, node.source ?? "auto");
+  }
+  const idRow = (h: ReturnType<typeof sqliteEnv>, id: string) =>
+    h.rows<{ id: string; display_name: string | null; source: string }>("ingredient_identity").find((r) => r.id === id)!;
+
+  it("readResolver / IngredientContext.displayName return the RAW curated value, or undefined — no synthesis", async () => {
+    const h = sqliteEnv();
+    seedNode(h, { id: "cabbage::color-red", base: "cabbage", detail: "color-red", display_name: "Red cabbage" });
+    seedNode(h, { id: "cabbage::color-green", base: "cabbage", detail: "color-green", display_name: null });
+
+    const resolver = await readResolver(h.env);
+    expect(resolver.displayNames).toEqual({ "cabbage::color-red": "Red cabbage" }); // null node absent
+
+    const ctx = await ingredientContext(h.env);
+    expect(ctx.displayName("cabbage::color-red")).toBe("Red cabbage");
+    expect(ctx.displayName("cabbage::color-green")).toBeUndefined(); // no base/detail synthesis here
+  });
+
+  it("idLabel returns the curated display_name, else the base (detail)/base synthesis — never a raw id", async () => {
+    const h = sqliteEnv();
+    seedNode(h, { id: "cabbage::color-red", base: "cabbage", detail: "color-red", display_name: "Red cabbage" });
+    seedNode(h, { id: "cabbage::color-green", base: "cabbage", detail: "color-green", display_name: null });
+    seedNode(h, { id: "flour", base: "flour" });
+
+    const ctx = await ingredientContext(h.env);
+    expect(ctx.idLabel("cabbage::color-red")).toBe("Red cabbage"); // the curated value wins
+    expect(ctx.idLabel("cabbage::color-green")).toBe("cabbage (color-green)"); // null → base (detail)
+    expect(ctx.idLabel("cabbage::color-green")).not.toContain("::");
+    expect(ctx.idLabel("flour")).toBe("flour"); // a bare base → the base itself
+    // An unseeded id still synthesizes a clean label — never the raw `::` id.
+    expect(ctx.idLabel("kale::type-lacinato")).toBe("kale (type-lacinato)");
+    expect(ctx.idLabel("kale::type-lacinato")).not.toContain("::");
+  });
+
+  it("labelOf prefers the stored display_name and falls back to base (detail)/base when null", async () => {
+    const h = sqliteEnv();
+    seedNode(h, { id: "cabbage", base: "cabbage" });
+    seedNode(h, { id: "cabbage::color-red", base: "cabbage", detail: "color-red", display_name: "Red cabbage" });
+    seedNode(h, { id: "cabbage::color-green", base: "cabbage", detail: "color-green", display_name: null });
+    for (const from of ["cabbage::color-red", "cabbage::color-green"]) {
+      h.raw
+        .prepare("INSERT INTO ingredient_edge (from_id, to_id, kind, source, decided_at) VALUES (?, 'cabbage', 'general', 'auto', 1)")
+        .run(from);
+    }
+    const neighbors = await readIdentityNeighbors(h.env, ["cabbage"]);
+    const byId = new Map((neighbors.get("cabbage")?.satisfiedBy ?? []).map((n) => [n.id, n.label] as const));
+    expect(byId.get("cabbage::color-red")).toBe("Red cabbage"); // stored display wins
+    expect(byId.get("cabbage::color-green")).toBe("cabbage (color-green)"); // null → synthesis
+  });
+
+  it("commitResolution persists the classifier's display_name on a fresh mint", async () => {
+    const h = sqliteEnv();
+    seedNode(h, { id: "ground beef", base: "ground beef" });
+    await commitResolution(h.env, {
+      term: "80/20 ground beef",
+      id: "ground beef::fat-80-20",
+      node: { base: "ground beef", detail: "fat-80-20", search_term: "80/20 ground beef", display_name: "80/20 ground beef", concrete: true, embedding: [0.1, 0.2] },
+      edges: [{ from: "ground beef::fat-80-20", to: "ground beef", kind: "general" }],
+      log: { term: "80/20 ground beef", outcome: "specialization", resolved_id: "ground beef::fat-80-20" },
+    });
+    expect(idRow(h, "ground beef::fat-80-20").display_name).toBe("80/20 ground beef");
+    expect((await readResolver(h.env)).displayNames["ground beef::fat-80-20"]).toBe("80/20 ground beef");
+  });
+
+  it("commitResolution COALESCE never downgrades an existing display_name on a re-commit", async () => {
+    const h = sqliteEnv();
+    seedNode(h, { id: "cabbage::color-red", base: "cabbage", detail: "color-red", search_term: "red cabbage", display_name: "Red cabbage" });
+    await commitResolution(h.env, {
+      term: "red cabbage",
+      id: "cabbage::color-red",
+      node: { base: "cabbage", detail: "color-red", search_term: "red cabbage", display_name: "cabbage (color-red)", concrete: true, embedding: [0.2] },
+      log: { term: "red cabbage", outcome: "same", resolved_id: "cabbage::color-red" },
+    });
+    expect(idRow(h, "cabbage::color-red").display_name).toBe("Red cabbage"); // COALESCE(existing, excluded)
+  });
+
+  it("a human addAliases display_name survives a subsequent auto commit (human wins)", async () => {
+    const h = sqliteEnv();
+    const n = await addAliases(h.env, [{ variant: "red cabbage", canonical: "cabbage::color-red", display_name: "Red cabbage" }]);
+    expect(n).toBe(1);
+    expect(idRow(h, "cabbage::color-red")).toMatchObject({ display_name: "Red cabbage", source: "human" });
+
+    // A later auto capture pass re-commits the same id with a synthesized label — it must not win.
+    await commitResolution(h.env, {
+      term: "red cabbage salad mix",
+      id: "cabbage::color-red",
+      node: { base: "cabbage", detail: "color-red", search_term: "red cabbage", display_name: "cabbage (color-red)", concrete: true, embedding: [0.3] },
+      log: { term: "red cabbage salad mix", outcome: "same", resolved_id: "cabbage::color-red" },
+    });
+    const row = idRow(h, "cabbage::color-red");
+    expect(row.display_name).toBe("Red cabbage"); // human value preserved
+    expect(row.source).toBe("human"); // and the human source is never downgraded to auto
+  });
+});
+
 describe("normalization audit calibration (D1)", () => {
   it("upsertCoResolutionRejection inserts, refreshes on conflict, and reads back", async () => {
     const { env, tables } = fakeD1({ tables: { ingredient_coresolution_rejection: [] } });
@@ -615,7 +724,7 @@ describe("normalization audit calibration (D1)", () => {
       overflow: OV,
       prefix: "a::b",
       shape: "mint",
-      prefixNode: { base: "a", detail: "b", search_term: "a b", concrete: true },
+      prefixNode: { base: "a", detail: "b", search_term: "a b", display_name: "a (b)", concrete: true },
     });
     const prefix = tables.ingredient_identity.find((r) => r.id === "a::b");
     expect(prefix).toMatchObject({ base: "a", detail: "b", search_term: "a b", concrete: 1, source: "auto" });

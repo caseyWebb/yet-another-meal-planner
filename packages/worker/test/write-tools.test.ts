@@ -436,6 +436,36 @@ describe("applyPantryOperations", () => {
     expect(res.items[0].quantity).toBe("2 bunches");
     expect(res.items[0].added_at).toBe("2026-01-01"); // preserved
   });
+
+  it("a merge is keep-first: the surviving row keeps its name/display_name, not the incoming surface form (reify-ingredient-display-names)", () => {
+    const normalize = (s: string): string =>
+      ({ scallions: "green onion", "green onions": "green onion" })[s.toLowerCase()] ?? s.toLowerCase();
+    const existing: PantryItem[] = [
+      {
+        name: "scallions",
+        normalized_name: "green onion",
+        display_name: "Scallions",
+        category: "fridge",
+        quantity: "1 bunch",
+        added_at: "2026-01-01",
+        last_verified_at: "2026-06-01",
+      },
+    ];
+    const res = applyPantryOperations(
+      existing,
+      [{ op: "add", item: { name: "green onions", quantity: "2 bunches" } }],
+      "2026-06-09",
+      normalize,
+    );
+    expect(res.items).toHaveLength(1);
+    expect(res.applied).toEqual([{ op: "add", name: "green onions", merged: true }]);
+    const row = res.items[0];
+    expect(row.name).toBe("scallions"); // keep-first: NOT overwritten with "green onions"
+    expect(row.display_name).toBe("Scallions"); // display preserved across the merge
+    expect(row.normalized_name).toBe("green onion"); // stored key preserved
+    expect(row.quantity).toBe("2 bunches"); // other fields still overlaid
+    expect(row.added_at).toBe("2026-01-01"); // original preserved
+  });
 });
 
 describe("markVerified", () => {

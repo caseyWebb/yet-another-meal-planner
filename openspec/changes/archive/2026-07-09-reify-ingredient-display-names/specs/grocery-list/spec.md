@@ -1,0 +1,99 @@
+## MODIFIED Requirements
+
+### Requirement: Grocery list schema
+
+The grocery list SHALL be an ingredient-level, **SKU-free** buy list of committed buy-intent that accumulates across a week. Each item SHALL carry: `name` (required, the member's surface form and the order-time search-term input), `display_name` (nullable, the human-facing label rendered to the member; when null the rendered label falls back to `name`), `quantity` (loose buy amount, same looseness as pantry), `kind` (`grocery` | `household` | `other`, default `grocery`), `domain` (free string identifying the kind of store it's bought at — common values `grocery` | `home-improvement` | `garden` | `pharmacy`; default `grocery`), `status` (`active` | `in_cart` | `ordered`, required), `source` (`ad_hoc` | `menu` | `pantry_low` | `stockup`), `for_recipes` (recipe slugs; may be empty), `note` (freeform or null), `added_at` (ISO date, required), and `ordered_at` (ISO date or null). The `name` and the dedup key (`normalized_name`, the canonical id for a food row) are stored separately, and `display_name` is stored independently of both — a surface a human reads SHALL render `display_name ?? name`, never the raw `normalized_name`/id. **`received` SHALL NOT be a stored status value**: receiving is the terminal receive *action* — the row is removed from the list and, for `grocery`-kind items only, the pantry is restocked — identical across every fulfillment mode (Kroger pickup, satellite checkout, in-store walk). The schema SHALL be documented in `docs/SCHEMAS.md`, and the list SHALL be agent-writable side-effect state (not user-curated config). Items SHALL NOT store a resolved Kroger SKU — resolution is deferred to order time. `domain` is orthogonal to `kind`: `kind` governs pantry reconcile on receive, `domain` governs which store-type a walk includes the item in.
+
+#### Scenario: Item conforms to schema
+
+- **WHEN** an item is written to the `grocery_list` table
+- **THEN** it carries a `name`, a `status` from the legal set (`active` | `in_cart` | `ordered`), an `added_at` date, and no resolved SKU, and it passes write-time validation
+
+#### Scenario: Display name is stored independently of the key
+
+- **WHEN** a row is materialized by canonical id (e.g. accepting a graph-sibling swap) so its `normalized_name` is `cabbage::color-red`
+- **THEN** its `display_name` holds the curated label ("Red cabbage"), the row still dedups/joins on the id, and the rendered label is "Red cabbage" — never the raw id
+
+#### Scenario: Receiving removes the row rather than storing a terminal status
+
+- **WHEN** the user asserts groceries were picked up / received
+- **THEN** each received item's row is removed (and `grocery`-kind items restock the pantry) — no row is ever written with `status: "received"`
+
+#### Scenario: Non-food item is representable
+
+- **WHEN** a household item such as "paper towels" is added
+- **THEN** it is stored with `kind = "household"` and is not tied to any recipe or pantry entry
+
+#### Scenario: Domain defaults to grocery
+
+- **WHEN** an item is added with no `domain` supplied
+- **THEN** it is stored with `domain = "grocery"` and validates unchanged (rows without a `domain` are read as `grocery`)
+
+#### Scenario: Non-grocery item carries its domain
+
+- **WHEN** a "2x4 lumber" item is added with `domain = "home-improvement"`
+- **THEN** it is stored with that domain, included in an in-store walk for a `home-improvement` store, and excluded from a `grocery` walk
+
+### Requirement: Grocery list CRUD tools
+
+The system SHALL provide `read_grocery_list`, `add_to_grocery_list`, `update_grocery_list`, and `remove_from_grocery_list` for single-item live edits, each a row-level D1 operation that returns without a `commit_sha`. `add_to_grocery_list` SHALL be keyed by a **normalized name** and MERGE a re-added name into the existing row (union `for_recipes`, reconcile `quantity`) via upsert rather than creating a duplicate. The normalized key SHALL be resolved through the shared `IngredientContext` funnel (the canonical ingredient id — normalize **and** capture) for a **food** row, and through `normalizeName` (lowercase + whitespace-collapse) for a **non-food** row, where a row is food iff its `kind` is `grocery` and its `domain` is grocery (or absent). `add_to_grocery_list` MAY additionally accept an explicit canonical `id`: when supplied, it SHALL be validated as an already-canonical id that is a **live survivor** in the identity registry (NOT re-resolved through the funnel). The row SHALL store that id as its canonical key (`normalized_name`) and a human **display** as its `name` — the posted `name` when present, else the identity node's label — the two stored separately; the stored key SHALL be threaded through dedup and the set-algebra so the row keys, dedups, matches, and advances on the id while rendering its display `name`. An `id` that is malformed or not a live survivor SHALL fall back to the `name` path when a name is present, else be rejected with `validation_failed` — an unresolvable key is NEVER stored. A non-food row SHALL NOT be resolved or captured, so the ingredient identity graph only ever ingests real food vocabulary. When a re-add or an add-by-id merges into an existing row, the surviving row SHALL keep its existing `name`/`display_name` rather than adopt the incoming surface form, so a merge never fragments or corrupts the rendered label. A surface SHALL render a row's human label as its explicit `display_name` override when set; else, for an **id-named** row (its stored `name` equals its canonical key — a legacy row from before this capability, or a plan-derived virtual line), the identity node's label (`display_name`, else the `base (detail)` synthesis); else the stored `name` (a typed add's member phrasing, or an add-by-id row's stored display). The node label resolved at read converges as the reconcile backfills the node's `display_name`, so a legacy id-named row heals with no row edit. `remove_from_grocery_list` SHALL resolve its query through the same funnel so a case/quantity/alias-varying removal hits its row. New items SHALL be created with `status: active`. `update_grocery_list` SHALL guard the `status` lifecycle in the shared update operation (so every caller — the tool and any HTTP surface — gets the identical guarantee): transitions between `active` and `in_cart` SHALL be freely writable in both directions (including re-listing an `ordered` row back to `active`); a write of `status: "ordered"` SHALL be accepted **only** when the row's current status is `in_cart` (the user-asserted "I placed the order" advance) and SHALL stamp `ordered_at`; any other write of `ordered` SHALL be rejected with a structured `validation_failed` error carrying the attempted transition, leaving the row unchanged. The order-flow advance operations (`place_order`'s in-cart advance and the satellite receipt flush's ordered advance) are distinct code paths and SHALL be unaffected by the guard. The tool description SHALL state this guarantee. Because each write is a single-row D1 upsert/update/delete (no whole-file read-modify-write), several mutations in one turn are simply a sequence of row-level writes — there is no batch/commit tool and no full-file replay to drop concurrent updates.
+
+#### Scenario: Re-adding an existing item merges
+
+- **WHEN** `add_to_grocery_list` is called with a name already present on the list
+- **THEN** the existing row is upserted (merged `for_recipes`, reconciled `quantity`) and no duplicate row is created
+
+#### Scenario: Surface-form variants of a food item merge to one row
+
+- **WHEN** a food item is on the list as "scallions" and `add_to_grocery_list` is called with "green onions" (or "2 lb chicken breast" when "chicken breast" is present)
+- **THEN** both resolve to the same canonical id, so the add MERGES into the existing row rather than creating a second, surface-form-fragmented row
+
+#### Scenario: Adding by canonical id keys exactly and renders a clean display
+
+- **WHEN** `add_to_grocery_list` is called with an explicit `id` of `cabbage::color-red` and a `name` of "Red cabbage" (e.g. the app materializing an accepted sibling swap)
+- **THEN** the row stores `cabbage::color-red` as its key (`normalized_name`) and "Red cabbage" as its `name` (validated as a live survivor, not re-resolved), it dedups/advances against any existing `cabbage::color-red` row via the threaded key, and every surface renders "Red cabbage" — never the raw id
+
+#### Scenario: An id-named row heals as the node label is curated
+
+- **WHEN** a stored row's `name` equals its canonical key (an add-by-id row, or a legacy row created before this capability) and the identity node's `display_name` is later backfilled or curated
+- **THEN** the row's rendered label converges to the node's `display_name` at the next read, with no edit to the row
+
+#### Scenario: A merge keeps the surviving row's display
+
+- **WHEN** a row already exists (as "scallions") and an add for the same canonical id arrives carrying a different surface form or display
+- **THEN** the merged row keeps its existing display ("scallions" / its `display_name`), so the rendered label is stable and never shows the incoming or a corrupted form
+
+#### Scenario: A non-food item is not routed through the ingredient graph
+
+- **WHEN** `add_to_grocery_list` is called with a `household`/`other` item or a non-grocery `domain` (e.g. "AA batteries", "potting soil")
+- **THEN** the row is keyed by `normalizeName` and the name is NOT resolved or enqueued to the novel-term queue
+
+#### Scenario: New item starts active
+
+- **WHEN** a not-yet-present item is added
+- **THEN** a `grocery_list` row is created with `status: "active"` and an `added_at` date, with no `commit_sha`
+
+#### Scenario: Read returns the current list
+
+- **WHEN** `read_grocery_list` is called
+- **THEN** it returns the current rows with their fields, including `status` and `source`, each row's rendered label being `display_name ?? name`
+
+#### Scenario: A multi-item capture is a sequence of row writes
+
+- **WHEN** a menu capture adds several to-buy items at once
+- **THEN** each item is upserted as its own `grocery_list` row (no batch commit tool, no per-item git commit)
+
+#### Scenario: Cart moves are freely writable
+
+- **WHEN** `update_grocery_list` sets an `active` item to `in_cart`, or an `in_cart` item back to `active`
+- **THEN** the write is applied unconditionally, in either direction
+
+#### Scenario: The user-asserted order-placed advance stamps ordered_at
+
+- **WHEN** `update_grocery_list` sets an `in_cart` item to `ordered` (the user asserting the order was placed)
+- **THEN** the row advances to `ordered` and `ordered_at` is stamped with today's date
+
+#### Scenario: Ordered cannot be minted from active
+
+- **WHEN** `update_grocery_list` attempts to set an `active` item directly to `ordered`
+- **THEN** the write is rejected with a structured `validation_failed` error carrying the attempted transition, and the row is unchanged

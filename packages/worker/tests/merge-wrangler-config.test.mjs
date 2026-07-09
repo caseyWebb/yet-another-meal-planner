@@ -63,6 +63,7 @@ const code = {
   analytics_engine_datasets: [
     { binding: "USAGE_AE", dataset: "yamp_usage" },
     { binding: "TOOL_AE", dataset: "yamp_tool" },
+    { binding: "AI_AE", dataset: "yamp_ai" },
   ],
 };
 
@@ -116,14 +117,16 @@ test("the R2 corpus bucket binding propagates verbatim from code (the silent-dro
   assert.deepEqual(out.r2_buckets, [{ binding: "CORPUS", bucket_name: "yamp-corpus" }]);
 });
 
-test("both Analytics Engine dataset bindings propagate verbatim from code (the silent-drop trap)", () => {
-  // usage-trends + tool-usage-trends: the merge copies the WHOLE array by type, so a SECOND
-  // dataset instance rides through. WITHOUT the allowlist line both `env.USAGE_AE` (per-job)
-  // and `env.TOOL_AE` (per-tool-call) are undefined and every operator's points vanish.
+test("all three Analytics Engine dataset bindings propagate verbatim from code (the silent-drop trap)", () => {
+  // usage-trends + tool-usage-trends + ai-usage-attribution: the merge copies the WHOLE array by
+  // type, so the SECOND and THIRD dataset instances ride through. WITHOUT the allowlist line
+  // `env.USAGE_AE` (per-job), `env.TOOL_AE` (per-tool-call), and `env.AI_AE` (per-AI-call) are all
+  // undefined and every operator's points vanish.
   const out = mergeWranglerConfig(code, operator); // operator declares no analytics_engine_datasets
   assert.deepEqual(out.analytics_engine_datasets, [
     { binding: "USAGE_AE", dataset: "yamp_usage" },
     { binding: "TOOL_AE", dataset: "yamp_tool" },
+    { binding: "AI_AE", dataset: "yamp_ai" },
   ]);
 });
 

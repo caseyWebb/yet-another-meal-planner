@@ -19,7 +19,7 @@
 //     (the stale-cart reminder + human checkout surface them) that a retry never
 //     compounds. Every outcome is reported honestly and independently.
 
-import { normalizeName, groceryKey, type GroceryItem } from "./grocery.js";
+import { normalizeName, storedGroceryKey, type GroceryItem } from "./grocery.js";
 import type { MatchResult } from "./matching.js";
 import type { AisleLocation, CheckpointLine, PartialItem, PlaceOrderResult, ResolvedLine } from "./order-shapes.js";
 
@@ -36,11 +36,12 @@ export interface ToBuyItem {
   /** True when no package count was supplied and the line defaulted to 1. */
   assumed_quantity: boolean;
   /**
-   * The line's merge/join key — the food-guarded `groceryKey` (canonical id for a food row,
-   * `normalizeName` for a non-food row), i.e. EXACTLY the `grocery_list.normalized_name` this line is
-   * stored under. Consumers that need the stored row key (the satellite order-fill pull-list's
-   * `item_id`) use this rather than re-deriving with `resolve(name)`, which would diverge for a
-   * non-food row (and would run the capture-resolver on a non-food term). `place_order` ignores it.
+   * The line's merge/join key — EXACTLY the `grocery_list.normalized_name` this line is stored under
+   * (`storedGroceryKey` for a list row: the canonical id for a food row, `normalizeName` for a
+   * non-food row, an explicit id for an add-by-id row; `resolve(need)` for a plan need). Consumers
+   * that need the stored row key (the satellite order-fill pull-list's `item_id`, `place_order`'s
+   * `ResolvedLine.key`) use this rather than re-deriving with `resolve(name)`, which would diverge for
+   * a non-food row and for an add-by-id row whose `name` is a display, not the id.
    */
   key: string;
 }
@@ -92,9 +93,11 @@ export function computeToBuy(input: ComputeToBuyInput): ToBuyResult {
 
   for (const it of input.list) {
     if (it.status !== "active") continue;
-    // Food-guarded per item: a food row keys on the canonical id, a non-food row on
-    // normalizeName — the SAME key its D1 row (and pantry subtraction) is stored under.
-    const key = groceryKey(it.name, it.kind, it.domain, resolve);
+    // Key on the row's STORED `normalized_name` (`storedGroceryKey`) — the trusted D1 PK, never a
+    // re-derivation of the (now-independent) display `name`: an add-by-id row whose `name` is a human
+    // display still keys on its id, and a typed food row's stored key is byte-identical to
+    // `groceryKey(name,…)`. `entry.name` stays the display so surfaces render it natively.
+    const key = storedGroceryKey(it, resolve);
     const entry = merged.get(key) ?? { name: it.name, for_recipes: [] };
     entry.for_recipes = [...new Set([...entry.for_recipes, ...it.for_recipes])];
     merged.set(key, entry);
@@ -131,7 +134,8 @@ export function computeToBuy(input: ComputeToBuyInput): ToBuyResult {
       quantity,
       for_recipes: entry.for_recipes,
       assumed_quantity: !hasOverride && !hasNeed,
-      // The merge key IS the stored `normalized_name` (food-guarded groceryKey / resolve(need)).
+      // The merge key IS the stored `normalized_name` (`storedGroceryKey` for a list row, resolve(need)
+      // for a plan need) — the canonical id the pull-list issues and advance/cache key on.
       key,
     });
   }
@@ -239,7 +243,11 @@ function codeOf(e: unknown): string | undefined {
 
 function toMapping(line: ResolvedLine, normalize: (name: string) => string): NewMapping {
   return {
-    ingredient: normalize(line.name),
+    // Key the cache on the line's canonical id (`ResolvedLine.key` — the stored `normalized_name`):
+    // byte-identical to `normalize(name)` for a typed row, and for an add-by-id row (whose `name` is a
+    // display) it de-fragments the cache onto the id the matcher reads back by. Fall back to
+    // `normalize(name)` defensively for any line missing a key.
+    ingredient: line.key ?? normalize(line.name),
     sku: line.sku,
     brand: line.brand || undefined,
     size: line.size ?? undefined,
@@ -290,6 +298,7 @@ export async function placeOrder(
         }
         const line: ResolvedLine = {
           name: item.name,
+          key: item.key,
           sku: ov.sku,
           brand: fresh.brand || ov.brand || "",
           size: fresh.size ?? ov.size ?? null,
@@ -318,6 +327,7 @@ export async function placeOrder(
     if (r.resolved) {
       resolved.push({
         name: item.name,
+        key: item.key,
         sku: r.sku,
         brand: r.brand,
         size: r.size,

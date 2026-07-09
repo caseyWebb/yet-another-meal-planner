@@ -320,7 +320,8 @@ export async function runProposeMealPlan(env: Env, tenant: Tenant, input: Propos
     // sampling is bypassed for this request; palette-keyed `slots[]` constraints are inert.
     const phrases = ephemeral.map((e) => e.vibe.trim());
     const embedInputs = [...(freeform ? [freeform] : []), ...phrases];
-    const embedded = embedInputs.length > 0 ? await embedTextsCached(env, embedInputs) : [];
+    const embedded =
+      embedInputs.length > 0 ? await embedTextsCached(env, { activity: "embed-search", trigger: "request" }, embedInputs) : [];
     freeformVec = freeform ? embedded[0] : null;
     ephemeral.forEach((e, i) => {
       const id = `ephemeral-${i}`;
@@ -390,7 +391,8 @@ export async function runProposeMealPlan(env: Env, tenant: Tenant, input: Propos
       if (text && sampledVibeIds.has(id)) overrideTexts.push({ id, text });
     }
     const embedInputs = [...(freeform ? [freeform] : []), ...overrideTexts.map((o) => o.text)];
-    const embedded = embedInputs.length > 0 ? await embedTextsCached(env, embedInputs) : [];
+    const embedded =
+      embedInputs.length > 0 ? await embedTextsCached(env, { activity: "embed-search", trigger: "request" }, embedInputs) : [];
     freeformVec = freeform ? embedded[0] : null;
     const overrideVecByVibe = new Map<string, number[]>();
     overrideTexts.forEach((o, j) => overrideVecByVibe.set(o.id, embedded[(freeform ? 1 : 0) + j]));

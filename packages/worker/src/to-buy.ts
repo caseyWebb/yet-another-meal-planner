@@ -13,7 +13,7 @@
 
 import type { Env } from "./env.js";
 import { computeToBuy, type MenuNeed } from "./order.js";
-import { normalizeName, groceryKey, type GroceryItem } from "./grocery.js";
+import { isFoodItem, normalizeName, storedGroceryKey, type GroceryItem } from "./grocery.js";
 import { readGroceryList, readMealPlan, readPantryByKey, readPantryNames } from "./session-db.js";
 import { recipeIngredientsFull } from "./recipe-index.js";
 import {
@@ -97,7 +97,7 @@ export function dropInFlightNeeds(
   const inFlight = new Set(
     list
       .filter((it) => it.status !== "active")
-      .map((it) => groceryKey(it.name, it.kind, it.domain, resolve)),
+      .map((it) => storedGroceryKey(it, resolve)),
   );
   if (inFlight.size === 0) return needs;
   return needs.filter((n) => !inFlight.has(resolve(n.name)));
@@ -150,11 +150,12 @@ export async function computeToBuyView(
 
   // Post-partition (computeToBuy itself is unchanged): a line whose key matches a stored
   // ACTIVE row is list-origin (or both, when the plan also needs it); no stored row = a
-  // virtual plan line. Keys are the rows' stored normalized_name (food-guarded groceryKey).
+  // virtual plan line. Keys are the rows' STORED `normalized_name` (`storedGroceryKey`), so an
+  // add-by-id row (whose `name` is a display) partitions on its id, not a re-derived display key.
   const storedByKey = new Map(
     list
       .filter((it) => it.status === "active")
-      .map((it) => [groceryKey(it.name, it.kind, it.domain, resolve), it] as const),
+      .map((it) => [storedGroceryKey(it, resolve), it] as const),
   );
   const planKeys = new Set(needs.map((n) => resolve(n.name)));
 
@@ -197,7 +198,7 @@ export async function computeToBuyView(
 
   const view: ToBuyView = { to_buy: lines, pantry_covered, in_cart, underived: derived.underived };
   if (!opts.enrich) return view; // the default read: byte-identical, zero Kroger
-  return enrichView(env, tenant, view, ctx);
+  return enrichView(env, tenant, view, ctx, storedByKey, list);
 }
 
 /** Precedence for the graph-derived department fallback (D6): membership parents are
@@ -221,9 +222,24 @@ function placementRow(cache: CachedMapping[], key: string, locationId: string | 
  * zero product searches, no writes. Lines gain `placement` ({} fields optional;
  * null when nothing is known) AND `substitutes` (always an array — empty for a
  * no-edge line), the view gains the resolved `location` (null when none is resolvable)
- * and `flyer_as_of` (null when no rollup was used).
+ * and `flyer_as_of` (null when no rollup was used). Each line also gains the reified
+ * `display_name` (reify-ingredient-display-names Move C) under ONE unified rule across every
+ * line type: an explicit row-level `display_name` override wins; else an id-named line
+ * (`name === key` — an add-by-id row, a legacy id-named row, or a `plan`-derived virtual line)
+ * resolves the curated node label (or its deterministic synthesis) via `ctx.idLabel`, NEVER a
+ * raw `::` id; else a typed row keeps the member's phrasing (`name`). The same rule reifies
+ * `pantry_covered` and `in_cart` (an in_cart line is always a stored row, keyed on its stored
+ * id). All display fields are enriched-only; the default read above returns before this and
+ * stays byte-identical.
  */
-async function enrichView(env: Env, tenant: string, view: ToBuyView, ctx: IngredientContext): Promise<ToBuyView> {
+async function enrichView(
+  env: Env,
+  tenant: string,
+  view: ToBuyView,
+  ctx: IngredientContext,
+  storedByKey: Map<string, GroceryItem>,
+  list: GroceryItem[],
+): Promise<ToBuyView> {
   // Resolve the caller's primary fulfillment store + (Kroger only) its numeric
   // locationId — the ONE Locations call this whole enrichment pays. Only a Kroger
   // primary has a deterministic aisle-placement source; anything else degrades to the
@@ -289,15 +305,55 @@ async function enrichView(env: Env, tenant: string, view: ToBuyView, ctx: Ingred
         .sort((a, b) => a.id.localeCompare(b.id));
       if (ofKind.length > 0) {
         placement.department = ofKind[0].id;
+        // The parent neighbor already carries a curated `labelOf` label — render it as the
+        // department heading, keeping the raw id for grouping/keying (additive Tier 2).
+        placement.department_label = ofKind[0].label;
         break;
       }
     }
+    // The reified display (seam D), ONE unified rule across every line type: an explicit row-level
+    // `display_name` override wins; else a FOOD id-named line (`name === key` — a legacy id-named row
+    // or a plan-derived virtual line) resolves the curated node label (or its synthesis) via
+    // `idLabel`, NEVER a raw `::` id; else the stored `name` (a typed/add-by-id display). The food
+    // guard keeps a non-food row (whose `name === normalizeName(name)` can collide with a food id)
+    // off the identity graph — a line with no backing row is a plan-derived need (food).
+    const stored = storedByKey.get(line.key);
+    const foodIdNamed = line.name === line.key && (stored ? isFoodItem(stored.kind, stored.domain) : true);
+    const display_name = stored?.display_name ?? (foodIdNamed ? ctx.idLabel(line.key) : line.name);
     return {
       ...line,
+      display_name,
       placement: Object.keys(placement).length > 0 ? placement : null,
       substitutes: substitutesByKey.get(line.key) ?? [],
     };
   });
 
-  return { ...view, to_buy, location: locationId !== null ? { id: locationId } : null, flyer_as_of };
+  // Reify pantry_covered + in_cart with the SAME unified rule. A covered line's key is its resolved
+  // name (food need); an active stored row that backs it supplies an override, else an id-named line
+  // resolves via `idLabel`. An in_cart line is always a stored row — look it up in `list` by name
+  // (in_cart rows are not in `storedByKey`, which holds only active rows) and key on its stored id.
+  const pantry_covered = view.pantry_covered.map((line) => {
+    const key = ctx.resolve(line.name);
+    const stored = storedByKey.get(key);
+    const foodIdNamed = line.name === key && (stored ? isFoodItem(stored.kind, stored.domain) : true);
+    const display_name = stored?.display_name ?? (foodIdNamed ? ctx.idLabel(key) : line.name);
+    return { ...line, display_name };
+  });
+  const inCartByName = new Map(list.filter((it) => it.status === "in_cart").map((it) => [it.name, it] as const));
+  const in_cart = view.in_cart.map((line) => {
+    const stored = inCartByName.get(line.name);
+    const key = stored?.normalized_name ?? ctx.resolve(line.name);
+    const foodIdNamed = line.name === key && (stored ? isFoodItem(stored.kind, stored.domain) : true);
+    const display_name = stored?.display_name ?? (foodIdNamed ? ctx.idLabel(key) : line.name);
+    return { ...line, display_name };
+  });
+
+  return {
+    ...view,
+    to_buy,
+    pantry_covered,
+    in_cart,
+    location: locationId !== null ? { id: locationId } : null,
+    flyer_as_of,
+  };
 }

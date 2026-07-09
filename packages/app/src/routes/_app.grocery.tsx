@@ -72,13 +72,14 @@ async function refreshGrocery(qc: QueryClient): Promise<void> {
 }
 
 /**
- * MATERIALIZE a derived (plan-origin) line as an explicit `source:"menu"` row (D6): the
- * standard add upsert under the same canonical key, carrying the derived `for_recipes` —
- * so the stored row and the derived need merge (`origin:"both"` on the next read).
- * Class (b): the registry's grocery-add variables.
+ * MATERIALIZE a derived (plan-origin) line as an explicit `source:"menu"` row (D6): route through
+ * add-by-id on the line's canonical `key` so the row keys on it EXACTLY (a qualified plan line's
+ * `name` is a raw canonical id — posting it as `name` would re-resolve; posting `id` pins the key and
+ * the server resolves the human label at read). Carries the derived `for_recipes` so the stored row
+ * and the derived need merge (`origin:"both"` on the next read). Class (b): grocery-add variables.
  */
-function materializeVars(line: ToBuyLine): { name: string; source: string; for_recipes: string[] } {
-  return { name: line.name, source: "menu", for_recipes: line.for_recipes };
+function materializeVars(line: ToBuyLine): { id: string; name: string; source: string; for_recipes: string[] } {
+  return { id: line.key, name: line.display_name ?? line.name, source: "menu", for_recipes: line.for_recipes };
 }
 
 /** A grouped rendering of the to-buy lines: label + optional department sub-groups. */
@@ -95,6 +96,16 @@ const KIND_LABEL: Record<ToBuyLine["kind"], string> = {
   household: "Home goods",
   other: "Other",
 };
+
+/**
+ * The display heading for a department-keyed group: the graph's curated `department_label`
+ * (reify-ingredient-display-names Tier 2) when the group key is a department id, else the
+ * key verbatim (the `KIND_LABEL` fallback the "Aisle unknown" bucket also groups on).
+ * Grouping/keying stays on the raw department id; only the heading is humanized.
+ */
+function deptGroupLabel(key: string, lines: ToBuyLine[]): string {
+  return lines.find((l) => l.placement?.department === key)?.placement?.department_label ?? key;
+}
 
 /**
  * Aisle-mode grouping (D6, client-side over the enriched read): numeric aisle groups
@@ -114,7 +125,7 @@ function groupByAisle(lines: ToBuyLine[], hasLocation: boolean): LineGroup[] {
     }
     const groups: LineGroup[] = [...byDept.entries()]
       .sort((a, b) => a[0].localeCompare(b[0]))
-      .map(([dept, ls]) => ({ id: `dept-${dept}`, label: dept, lines: ls }));
+      .map(([dept, ls]) => ({ id: `dept-${dept}`, label: deptGroupLabel(dept, ls), lines: ls }));
     for (const grp of KIND_GROUPS) {
       const ls = rest.filter((l) => l.kind === grp.kind);
       if (ls.length) groups.push({ id: grp.kind, label: `Category: ${grp.label}`, lines: ls });
@@ -147,7 +158,9 @@ function groupByAisle(lines: ToBuyLine[], hasLocation: boolean): LineGroup[] {
       id: "unknown",
       label: "Aisle unknown",
       lines: noDept,
-      subs: [...byDept.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([label, ls]) => ({ label, lines: ls })),
+      subs: [...byDept.entries()]
+        .sort((a, b) => a[0].localeCompare(b[0]))
+        .map(([key, ls]) => ({ label: deptGroupLabel(key, ls), lines: ls })),
     });
   }
   return groups;
@@ -179,6 +192,10 @@ function GroceryPage() {
   const inCart = rows.filter((g) => g.status === "in_cart");
   // Stored-row state joined onto the view lines (quantity annotation, note).
   const rowByName = new Map(rows.map((r) => [r.name.toLowerCase(), r]));
+  // The enriched to-buy read carries the reified `display_name` on its in_cart lines
+  // (reify-ingredient-display-names); join it onto the stored in-cart rows by name so the
+  // stale-cart section renders the curated label, never a raw canonical id.
+  const inCartDisplayByName = new Map((view?.in_cart ?? []).map((l) => [l.name, l.display_name] as const));
 
   // The order affordance renders only for a Kroger primary with a linked account (D7).
   const stores = (profile.data?.preferences?.stores ?? {}) as { primary?: string };
@@ -195,9 +212,12 @@ function GroceryPage() {
    *  original, applied at the eventual `place_order` — the plan itself is untouched. */
   async function swapSibling(line: ToBuyLine, sib: SiblingSuggestion, rowKey: string) {
     const origin = line.origin;
-    // The replacement lands as an explicit row carrying the mock's provenance note.
+    // The replacement lands as an explicit row via add-by-id on the canonical `id` (validated as a
+    // live survivor, not re-resolved): the server keys AND names the row on the id and resolves the
+    // human label at read, so no surface renders a raw id. `name` is posted for the fallback path
+    // (an unknown/non-survivor id) but ignored for a live id — reify-ingredient-display-names.
     const added = await api.api.grocery.items
-      .$post({ json: { name: sib.id, note: `swapped from ${line.name}` } })
+      .$post({ json: { id: sib.id, name: sib.label, note: `swapped from ${line.name}` } })
       .catch(() => null);
     if (!added?.ok) {
       toast("Couldn't add the replacement — try again");
@@ -352,7 +372,7 @@ function GroceryPage() {
               </div>
               <ul className="g-list dim">
                 {inCart.map((g) => (
-                  <InCartItem key={g.name} item={g} />
+                  <InCartItem key={g.name} item={g} displayName={inCartDisplayByName.get(g.name)} />
                 ))}
               </ul>
             </div>
@@ -420,7 +440,7 @@ function ToBuyItem({
       </button>
       <div className="g-main">
         <div className="g-top">
-          <span className="g-name">{line.name}</span>
+          <span className="g-name">{line.display_name ?? line.name}</span>
           <span className="g-qty">
             {row ? row.quantity : line.assumed_quantity ? "1 (assumed)" : String(line.quantity)}
           </span>
@@ -462,12 +482,12 @@ function ToBuyItem({
               return (
                 <li className="subs-row" key={sib.id} data-testid="subs-row" data-for={line.name}>
                   <div className="subs-swap">
-                    <span className="subs-from">{line.name}</span>
+                    <span className="subs-from">{line.display_name ?? line.name}</span>
                     <IconChevronRight />
                     <span className="subs-to">{sib.label}</span>
                     <span className="subs-why" data-testid="subs-relation">
                       {RELATION_LABEL[sib.relation.role]}
-                      {sib.relation.via ? ` · via ${sib.relation.via}` : ""}
+                      {sib.relation.via ? ` · via ${sib.relation.via_label ?? sib.relation.via}` : ""}
                     </span>
                     {sib.in_pantry ? (
                       <span className="subs-why" data-testid="subs-pantry-hit">
@@ -525,8 +545,9 @@ function ToBuyItem({
   );
 }
 
-/** An in-cart stored row (the P1 rendering: un-cart toggle, remove). */
-function InCartItem({ item }: { item: GroceryRow }) {
+/** An in-cart stored row (the P1 rendering: un-cart toggle, remove). `displayName` is the
+ *  reified label joined from the enriched to-buy read's in_cart line (absent → render name). */
+function InCartItem({ item, displayName }: { item: GroceryRow; displayName?: string }) {
   const setMutation = useGrocerySet();
   const removeMutation = useGroceryRemove();
   return (
@@ -543,7 +564,7 @@ function InCartItem({ item }: { item: GroceryRow }) {
       </button>
       <div className="g-main">
         <div className="g-top">
-          <span className="g-name">{item.name}</span>
+          <span className="g-name">{displayName ?? item.name}</span>
           <span className="g-qty">{item.quantity}</span>
         </div>
         <div className="g-sub">
@@ -618,7 +639,7 @@ function PantryHave({ covered }: { covered: PantryCovered[] }) {
               </span>
               <div className="ph-main">
                 <div className="ph-top">
-                  <span className="ph-name">{c.name}</span>
+                  <span className="ph-name">{c.display_name ?? c.name}</span>
                   {c.on_hand.quantity ? <span className="ph-qty">{c.on_hand.quantity} on hand</span> : null}
                 </div>
                 <div className="ph-sub">

@@ -3,7 +3,14 @@
 // operations and reports what was applied vs. what conflicted (e.g. a remove
 // whose target isn't present), so the agent can ask the user to resolve.
 
-export type PantryItem = Record<string, unknown> & { name?: unknown };
+export type PantryItem = Record<string, unknown> & {
+  name?: unknown;
+  /** The STORED canonical dedup key (the D1 `normalized_name` / PK). Carried on the shape so the
+   *  match/merge keys on the stored id, never a re-derivation of the (independent) display. */
+  normalized_name?: unknown;
+  /** The human-facing label, stored independently of `name` (resolver input) and the key. */
+  display_name?: unknown;
+};
 
 export interface PantryOperation {
   op: "add" | "remove" | "verify";
@@ -38,7 +45,16 @@ function nameOf(op: PantryOperation): string {
 }
 
 function matches(item: PantryItem, name: string, normalize: (s: string) => string): boolean {
-  return typeof item.name === "string" && normalize(item.name) === normalize(name);
+  // Key the EXISTING item on its STORED `normalized_name` (the trusted key) when present, else the
+  // re-derived `normalize(item.name)` for a fixture — never on a re-derivation of a display that may
+  // no longer equal the key. Only the QUERY side (`name`) derives its key via `normalize`.
+  const key =
+    typeof item.normalized_name === "string"
+      ? item.normalized_name
+      : typeof item.name === "string"
+        ? normalize(item.name)
+        : null;
+  return key !== null && key === normalize(name);
 }
 
 /**
@@ -72,7 +88,10 @@ export function applyPantryOperations(
         next[existingIdx] = {
           ...existing,
           ...op.item,
-          name,
+          // Keep-first display (C3): the surviving row keeps its existing `name` and `display_name`
+          // rather than adopting the incoming surface form, so a merge never fragments the label.
+          name: existing.name,
+          display_name: existing.display_name,
           added_at: existing.added_at,
           last_verified_at: today,
         };

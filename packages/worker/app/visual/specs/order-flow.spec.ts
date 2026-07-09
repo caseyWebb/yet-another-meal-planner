@@ -28,6 +28,7 @@ function outcome(over: Partial<PlaceOrderOutcome>): PlaceOrderOutcome {
 function resolvedLine(name: string, over: Partial<PlaceOrderOutcome["resolved"][number]> = {}) {
   return {
     name,
+    key: name,
     sku: `000${name.length}`,
     brand: "Store Brand",
     size: "12 oz",

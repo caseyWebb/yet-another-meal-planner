@@ -15,6 +15,7 @@
 // progress state and a re-run never reprocesses a handled candidate.
 
 import { cosineSimilarity, embedText, embedTexts } from "./embedding.js";
+import { runAi } from "./ai.js";
 import { ToolError } from "./errors.js";
 import { favoriteAffinity } from "./semantic-search.js";
 import type { Env } from "./env.js";
@@ -794,11 +795,12 @@ async function confirmMatchesAI(
     'Output ONLY JSON: {"fits": ["<member>", ...]} listing the members it fits.\n\nMembers:\n' +
     roster;
   try {
-    const res = (await env.AI.run(CLASSIFY_MODEL, {
-      messages: [{ role: "user", content: prompt }],
-      max_tokens: 200,
-      temperature: 0,
-    })) as { response?: unknown };
+    const res = await runAi<{ response?: unknown }>(
+      env,
+      { activity: "confirm-match", trigger: "cron", calls: 1 },
+      CLASSIFY_MODEL,
+      { messages: [{ role: "user", content: prompt }], max_tokens: 200, temperature: 0 },
+    );
     const parsed = parseJsonObject(res?.response);
     const fits = Array.isArray(parsed?.fits)
       ? (parsed!.fits as unknown[]).filter((x): x is string => typeof x === "string")
@@ -952,9 +954,9 @@ export function buildDiscoveryDeps(env: Env, now: () => number = () => Date.now(
       return [...emb.entries()].map(([slug, vector]) => ({ slug, vector }));
     },
 
-    embed: (text) => embedText(env, text),
+    embed: (text) => embedText(env, { activity: "embed-discovery" }, text),
 
-    embedMany: (texts) => embedTexts(env, texts),
+    embedMany: (texts) => embedTexts(env, { activity: "embed-discovery" }, texts),
 
     async acquireContent(candidate) {
       // A pushed candidate arrives with its pre-parsed content — the walled fetch already

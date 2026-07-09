@@ -18,7 +18,7 @@ vi.mock("../src/embedding.js", async (importOriginal) => {
   const idxByPhrase = new Map<string, number>();
   return {
     ...mod,
-    embedTextsCached: vi.fn(async (_env: unknown, texts: string[]) =>
+    embedTextsCached: vi.fn(async (_env: unknown, _ctx: unknown, texts: string[]) =>
       texts.map((t) => {
         const reg = embedRegistry.get(t);
         if (reg) return reg;

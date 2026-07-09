@@ -44,6 +44,8 @@ export interface Resolver {
   ids: Set<string>;
   /** Surviving canonical id → human Kroger search phrase (only for ids that store one). */
   searchTerms: Record<string, string>;
+  /** Surviving canonical id → curated human display label (only for ids that store one). */
+  displayNames: Record<string, string>;
 }
 
 /** Build a union-find resolver over the identity rows: id → surviving id (cycle-safe). */
@@ -73,23 +75,26 @@ export function representativeResolver(
 export async function readResolver(env: Env): Promise<Resolver> {
   const d = db(env);
   const [identities, aliases] = await Promise.all([
-    d.all<{ id: string; representative: string | null; search_term: string | null }>(
-      "SELECT id, representative, search_term FROM ingredient_identity",
+    d.all<{ id: string; representative: string | null; search_term: string | null; display_name: string | null }>(
+      "SELECT id, representative, search_term, display_name FROM ingredient_identity",
     ),
     d.all<{ variant: string; id: string }>("SELECT variant, id FROM ingredient_alias"),
   ]);
   const resolve = representativeResolver(identities);
   const ids = new Set<string>();
   const searchTerms: Record<string, string> = {};
+  const displayNames: Record<string, string> = {};
   for (const r of identities) {
     const surv = resolve(r.id);
     ids.add(surv);
     // Prefer the survivor's own search_term; else let a merged member's fill in.
     if (r.search_term && (r.id === surv || !(surv in searchTerms))) searchTerms[surv] = r.search_term;
+    // Same precedence for the curated display label (survivor's own wins; else a merged member's).
+    if (r.display_name && (r.id === surv || !(surv in displayNames))) displayNames[surv] = r.display_name;
   }
   const toId: Record<string, string> = {};
   for (const { variant, id } of aliases) toId[variant] = resolve(id);
-  return { toId, ids, searchTerms };
+  return { toId, ids, searchTerms, displayNames };
 }
 
 /** Read the shared ingredient-alias map (variant → surviving canonical id). Empty when none. */
@@ -149,6 +154,21 @@ export interface IngredientContext {
   /** The Kroger search phrase for an id (stored `search_term`, else the flattened base). */
   searchTerm(id: string): string;
   /**
+   * The RAW curated display label for an id (stored `display_name`), or `undefined` when the node
+   * stores none — NO `labelOf`/base synthesis fallback (that is a RENDERED-label concern). The row
+   * plane copies this onto an add-by-id row so the row renders the curated name while keying on the
+   * id; a caller that wants a guaranteed string falls back to `base`/`labelOf` synthesis itself.
+   */
+  displayName(id: string): string | undefined;
+  /**
+   * The RENDERED human label for an id: the curated `display_name` when the node stores one, else a
+   * deterministic synthesis (`base (detail)` / `base`) — NEVER a raw `::` id. This is `labelOf`
+   * exposed at the context level, the read-time face of `displayName` (which returns the raw stored
+   * value or `undefined`). Read surfaces rendering a bare id (an add-by-id / legacy id-named row, a
+   * plan-derived line) resolve the label through this; keys/joins never do.
+   */
+  idLabel(id: string): string;
+  /**
    * §3.4 read path — the satisfies-edges AMONG a given id set: only edges where BOTH
    * endpoints, resolved through the representative pointer, are in the set. Lazy: the
    * `ingredient_edge` table is loaded (and memoized) on the first call, never when the
@@ -178,7 +198,7 @@ export async function ingredientContext(env: Env, opts?: { capture: boolean }): 
  *  (a read failure must not flood the novel-term queue with un-resolved surface forms). It
  *  reads no D1, so it never throws. */
 export function emptyIngredientContext(env: Env): IngredientContext {
-  return contextFromResolver(env, { toId: {}, ids: new Set(), searchTerms: {} }, { capture: false });
+  return contextFromResolver(env, { toId: {}, ids: new Set(), searchTerms: {}, displayNames: {} }, { capture: false });
 }
 
 /** The context builder over an already-loaded resolver (shared by the live + fallback paths). */
@@ -266,6 +286,18 @@ function contextFromResolver(
     searchTerm(id: string): string {
       return resolver.searchTerms[id] ?? id.split("::").join(" ");
     },
+    displayName(id: string): string | undefined {
+      return resolver.displayNames[id];
+    },
+    idLabel(id: string): string {
+      const stored = resolver.displayNames[id];
+      if (stored) return stored;
+      // No curated label → the deterministic synthesis (`labelOf`'s fallback): base (detail) / base,
+      // never the raw `::` id.
+      const base = baseOf(id);
+      const detail = id.includes("::") ? id.slice(base.length + 2) : null;
+      return detail ? `${base} (${detail})` : base;
+    },
     async satisfiesAmong(ids: string[]): Promise<SatisfiesEdge[]> {
       const { resolve, edges } = await loadEdges();
       // Resolve the requested set through the representative pointer so a merged id matches
@@ -342,8 +374,8 @@ export interface IdentityNeighbors {
 export async function readIdentityNeighbors(env: Env, ids: string[]): Promise<Map<string, IdentityNeighbors>> {
   const d = db(env);
   const [identities, edges] = await Promise.all([
-    d.all<{ id: string; base: string | null; detail: string | null; representative: string | null; concrete: number | null }>(
-      "SELECT id, base, detail, representative, concrete FROM ingredient_identity",
+    d.all<{ id: string; base: string | null; detail: string | null; representative: string | null; concrete: number | null; display_name: string | null }>(
+      "SELECT id, base, detail, representative, concrete, display_name FROM ingredient_identity",
     ),
     d.all<{ from_id: string; to_id: string; kind: string; weight: number | null; qualifier: string | null }>(
       "SELECT from_id, to_id, kind, weight, qualifier FROM ingredient_edge",
@@ -351,11 +383,15 @@ export async function readIdentityNeighbors(env: Env, ids: string[]): Promise<Ma
   ]);
   const resolve = representativeResolver(identities);
   const rowOf = new Map(identities.map((r) => [r.id, r] as const));
-  const labelOf = (id: string): string => {
+  // The RAW curated display label (stored `display_name`), or undefined — no synthesis (mirrors
+  // `IngredientContext.displayName`); `labelOf` layers the synthesis fallback on top.
+  const displayName = (id: string): string | undefined => rowOf.get(id)?.display_name ?? undefined;
+  const synthLabel = (id: string): string => {
     const r = rowOf.get(id);
     if (!r || !r.base) return id;
     return r.detail ? `${r.base} (${r.detail})` : r.base;
   };
+  const labelOf = (id: string): string => displayName(id) ?? synthLabel(id);
   const concreteOf = (id: string): boolean => (rowOf.get(id)?.concrete ?? 1) !== 0;
 
   // Resolve + dedup the edge list once; a post-resolution self-loop carries no relation.
@@ -515,26 +551,36 @@ export async function captureSubstitution(
 /**
  * Add alias mappings (variant → canonical id), upserting each by variant as a HUMAN edit
  * (source='human', which the auto capture pass never overwrites). Ensures the target id
- * exists as a base-level identity node. Returns the count written. Empty entries skipped.
+ * exists as a base-level identity node. An optional per-entry `display_name` is written as the
+ * node's curated human label, `source='human'`: it WINS on conflict (a human override always
+ * takes, over an auto value or an earlier human one), while an absent one never clobbers an
+ * existing label — `COALESCE(excluded.display_name, …)`. This is the "human wins" half of the
+ * `display_name` precedence: the auto path (`commitResolution`, the reconcile backfill) only ever
+ * fills a NULL, so it can never downgrade a value written here. Returns the count written. Empty
+ * entries skipped. NOTE: the `update_aliases` tool wiring lives in `write-tools.ts` (out of this
+ * scope) — that caller must thread the member-supplied label into `display_name` for it to persist.
  */
 export async function addAliases(
   env: Env,
-  mappings: { variant: string; canonical: string }[],
+  mappings: { variant: string; canonical: string; display_name?: string }[],
 ): Promise<number> {
   const d = db(env);
   const now = Date.now();
   const stmts: D1PreparedStatement[] = [];
-  for (const { variant, canonical } of mappings) {
+  for (const { variant, canonical, display_name } of mappings) {
     const v = variant.trim().toLowerCase();
     const id = canonical.trim();
     if (!v || !id) continue;
+    const label = typeof display_name === "string" && display_name.trim() ? display_name.trim() : null;
     stmts.push(
       d.prepare(
-        "INSERT INTO ingredient_identity (id, base, detail, source, decided_at) VALUES (?1, ?2, ?3, ?4, ?5) " +
-          "ON CONFLICT(id) DO UPDATE SET source = excluded.source",
+        "INSERT INTO ingredient_identity (id, base, detail, display_name, source, decided_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6) " +
+          "ON CONFLICT(id) DO UPDATE SET source = excluded.source, " +
+          "display_name = COALESCE(excluded.display_name, ingredient_identity.display_name)",
         id,
         baseOf(id),
         id.includes("::") ? id.slice(id.indexOf("::") + 2) : null,
+        label,
         "human",
         now,
       ),
@@ -623,6 +669,32 @@ export async function readEmbeddinglessIds(env: Env, limit: number): Promise<str
 /** Store a backfilled embedding on an identity node (the capture job's backfill write). */
 export async function writeIdentityEmbedding(env: Env, id: string, embedding: number[]): Promise<void> {
   await db(env).run("UPDATE ingredient_identity SET embedding = ?2 WHERE id = ?1", id, JSON.stringify(embedding));
+}
+
+/** Surviving identity nodes with NO stored `display_name` — the reconcile display-name backfill's
+ *  per-tick batch, oldest decision first. Carries `base`/`detail` so the pass can synthesize a
+ *  deterministic label. Mirrors `readEmbeddinglessIds` (survivors only; merged losers resolve to
+ *  their survivor at read time and are never rendered directly). */
+export async function readDisplayNamelessNodes(
+  env: Env,
+  limit: number,
+): Promise<{ id: string; base: string; detail: string | null }[]> {
+  return db(env).all<{ id: string; base: string; detail: string | null }>(
+    "SELECT id, base, detail FROM ingredient_identity WHERE display_name IS NULL AND representative IS NULL " +
+      "ORDER BY decided_at LIMIT ?1",
+    limit,
+  );
+}
+
+/** Store a backfilled `display_name` on an identity node (the reconcile display-name backfill's
+ *  write). Guarded to rows STILL null so a concurrent human override (`addAliases`) landing between
+ *  the batch read and this write is never clobbered — the auto path only ever fills a NULL. */
+export async function writeIdentityDisplayName(env: Env, id: string, displayName: string): Promise<void> {
+  await db(env).run(
+    "UPDATE ingredient_identity SET display_name = ?2 WHERE id = ?1 AND display_name IS NULL",
+    id,
+    displayName,
+  );
 }
 
 /** Survivor identity nodes carrying an embedding, for cosine retrieval by the capture job. */
@@ -833,8 +905,10 @@ function logStmt(d: Db, entry: NormalizationLog, now: number): D1PreparedStateme
 export interface Resolution {
   term: string;
   id: string;
-  /** Present when a NEW node is minted (specialization / novel); absent for SAME. */
-  node?: { base: string; detail: string | null; search_term: string; concrete: boolean; embedding: number[] };
+  /** Present when a NEW node is minted (specialization / novel); absent for SAME. `display_name` is
+   *  the curated human label the classifier proposed — OPTIONAL (a no-LLM verbatim mint and the
+   *  disjunction disposal leave it absent → NULL, and the reconcile backfill synthesizes one). */
+  node?: { base: string; detail: string | null; search_term: string; display_name?: string | null; concrete: boolean; embedding: number[] };
   edges?: { from: string; to: string; kind: string }[];
   confidence?: number;
   log: NormalizationLog;
@@ -857,14 +931,16 @@ export async function commitResolution(env: Env, r: Resolution): Promise<void> {
   if (r.node) {
     stmts.push(
       d.prepare(
-        "INSERT INTO ingredient_identity (id, base, detail, search_term, concrete, embedding, source, decided_at) " +
-          "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) " +
+        "INSERT INTO ingredient_identity (id, base, detail, search_term, display_name, concrete, embedding, source, decided_at) " +
+          "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9) " +
           "ON CONFLICT(id) DO UPDATE SET embedding = excluded.embedding, " +
-          "search_term = COALESCE(ingredient_identity.search_term, excluded.search_term)",
+          "search_term = COALESCE(ingredient_identity.search_term, excluded.search_term), " +
+          "display_name = COALESCE(ingredient_identity.display_name, excluded.display_name)",
         r.id,
         r.node.base,
         r.node.detail,
         r.node.search_term,
+        r.node.display_name ?? null,
         r.node.concrete ? 1 : 0,
         JSON.stringify(r.node.embedding),
         "auto",
@@ -1242,7 +1318,7 @@ export async function repairSegmentOverflow(
     overflow: string;
     prefix: string;
     shape: "reroot" | "mint";
-    prefixNode?: { base: string; detail: string; search_term: string; concrete: boolean };
+    prefixNode?: { base: string; detail: string; search_term: string; display_name: string; concrete: boolean };
   },
 ): Promise<void> {
   const d = db(env);
@@ -1251,12 +1327,13 @@ export async function repairSegmentOverflow(
   if (plan.shape === "mint" && plan.prefixNode) {
     stmts.push(
       d.prepare(
-        "INSERT OR IGNORE INTO ingredient_identity (id, base, detail, search_term, concrete, source, decided_at) " +
-          "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        "INSERT OR IGNORE INTO ingredient_identity (id, base, detail, search_term, display_name, concrete, source, decided_at) " +
+          "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         plan.prefix,
         plan.prefixNode.base,
         plan.prefixNode.detail,
         plan.prefixNode.search_term,
+        plan.prefixNode.display_name,
         plan.prefixNode.concrete ? 1 : 0,
         "auto",
         now,
@@ -1313,10 +1390,11 @@ export async function applyDisjunctionRepair(env: Env, plan: DisjunctionRepairPl
   if (plan.mintBase) {
     stmts.push(
       d.prepare(
-        "INSERT OR IGNORE INTO ingredient_identity (id, base, search_term, concrete, source, decided_at) " +
-          "VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        "INSERT OR IGNORE INTO ingredient_identity (id, base, search_term, display_name, concrete, source, decided_at) " +
+          "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
         plan.base,
         plan.base,
+        plan.searchTerm,
         plan.searchTerm,
         0,
         "auto",

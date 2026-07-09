@@ -127,6 +127,61 @@ describe("addToGroceryList", () => {
   });
 });
 
+describe("add-by-id + keep-first merge (reify-ingredient-display-names, coupling #2)", () => {
+  it("keys an add-by-id row on the id but stores the DISPLAY as name (display_name null), dedups a second add on that stored id", () => {
+    // Add-by-id keys on the id (`normalized_name`) and stores the caller-supplied human DISPLAY as
+    // `name` — the two are stored separately, so the row keys on the id while rendering a clean name;
+    // `display_name` is null. A second add-by-id dedups on the STORED id (coupling #2), not a
+    // re-derivation of the posted surface form; keep-first preserves the surviving display.
+    const first = addToGroceryList([], { id: "cabbage::color-red", name: "Red cabbage" }, TODAY, stubResolve);
+    expect(first.merged).toBe(false);
+    expect(first.item.normalized_name).toBe("cabbage::color-red"); // the id is the key
+    expect(first.item.name).toBe("Red cabbage"); // the DISPLAY, not the raw id
+    expect(first.item.name).not.toContain("::");
+    expect(first.item.display_name).toBeNull();
+
+    const second = addToGroceryList(
+      first.items,
+      { id: "cabbage::color-red", name: "red cabbage", display_name: "Red Cabbage!!", for_recipes: ["slaw"] },
+      TODAY,
+      stubResolve,
+    );
+    expect(second.merged).toBe(true); // matched the STORED id, not resolve("red cabbage")
+    expect(second.items).toHaveLength(1);
+    // Keep-first: the surviving row keeps its original name / display_name / key.
+    expect(second.item.name).toBe("Red cabbage");
+    expect(second.item.display_name).toBeNull();
+    expect(second.item.normalized_name).toBe("cabbage::color-red");
+    expect(second.item.for_recipes).toEqual(["slaw"]);
+  });
+
+  it("a food re-add is keep-first: the surviving row's name/display_name survive the merge", () => {
+    const existing: GroceryItem[] = [
+      {
+        name: "Scallions",
+        normalized_name: "green onion",
+        display_name: "Scallions",
+        quantity: "1",
+        kind: "grocery",
+        domain: "grocery",
+        status: "active",
+        source: "menu",
+        for_recipes: ["stir-fry"],
+        note: null,
+        added_at: "2026-06-01",
+        ordered_at: null,
+      },
+    ];
+    // "green onions" resolves to the same canonical id ("green onion") as the stored "Scallions" row.
+    const { item, merged } = addToGroceryList(existing, { name: "green onions", for_recipes: ["soup"] }, TODAY, stubResolve);
+    expect(merged).toBe(true);
+    expect(item.name).toBe("Scallions"); // NOT overwritten with the incoming surface form
+    expect(item.display_name).toBe("Scallions");
+    expect(item.normalized_name).toBe("green onion");
+    expect(item.for_recipes.sort()).toEqual(["soup", "stir-fry"]);
+  });
+});
+
 describe("updateGroceryItem", () => {
   it("patches an existing item", () => {
     const { item } = updateGroceryItem(base(), "olive oil", { status: "in_cart" });

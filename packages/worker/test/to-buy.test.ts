@@ -35,6 +35,16 @@ function seedPantry(h: SqliteEnv, name: string, key: string, extra: { quantity?:
     .run(T, name, key, extra.quantity ?? null, extra.category ?? null, TODAY, extra.last_verified_at ?? null);
 }
 
+/** Seed one identity node (a live survivor) so an add-by-id accepts its id and `idLabel` can
+ *  resolve a curated `display_name` (or synthesize one) at read. */
+function seedNode(h: SqliteEnv, id: string, display: string | null = null): void {
+  const base = id.includes("::") ? id.slice(0, id.indexOf("::")) : id;
+  const detail = id.includes("::") ? id.slice(id.indexOf("::") + 2) : null;
+  h.raw
+    .prepare("INSERT INTO ingredient_identity (id, base, detail, display_name, concrete, source) VALUES (?, ?, ?, ?, 1, 'auto')")
+    .run(id, base, detail, display);
+}
+
 /** Register the scallions ≡ green-onion alias so canonical-id merges are exercised. */
 function seedAlias(h: SqliteEnv): void {
   h.raw
@@ -238,6 +248,58 @@ describe("computeToBuyView", () => {
   });
 });
 
+describe("computeToBuyView — add-by-id rows (reify-ingredient-display-names blocker regression)", () => {
+  // A REAL add-by-id row: `name` is the human DISPLAY ("Red cabbage") and `normalized_name` is the
+  // canonical id ("cabbage::color-red"), the two stored SEPARATELY. Because the display does NOT
+  // resolve back to the id (no alias), the set-algebra MUST key on the STORED id (`storedGroceryKey`)
+  // — re-deriving `groceryKey(name)` would mint a garbage key ("red cabbage") and miss the row,
+  // causing a double-buy / a missed pantry subtraction / a duplicate plan line. These regressions
+  // exercise a real add-by-id row end to end and MUST fail if the key threading is removed. They also
+  // assert the row renders its clean display, never a raw `::` id.
+
+  it("(a) a pantry row on the same canonical id cancels an add-by-id row — pantry_covered, not to_buy", async () => {
+    const h = sqliteEnv([T]);
+    seedNode(h, "cabbage::color-red", "Red cabbage");
+    await addGroceryRow(h.env, T, { id: "cabbage::color-red", name: "Red cabbage" }, TODAY);
+    seedPantry(h, "Red cabbage", "cabbage::color-red");
+
+    const view = await computeToBuyView(h.env, T);
+    expect(view.to_buy).toHaveLength(0); // the pantry on the SAME id (keys on cabbage::color-red) subtracts it
+    expect(view.pantry_covered.map((l) => l.name)).toEqual(["Red cabbage"]); // renders the display
+    expect(view.pantry_covered[0].name).not.toContain("::");
+  });
+
+  it("(b) a plan need on the same id MERGES with an add-by-id row into one line (no duplicate)", async () => {
+    const h = sqliteEnv([T]);
+    seedNode(h, "cabbage::color-red", "Red cabbage");
+    seedRecipe(h, "slaw", ["cabbage::color-red"]);
+    seedPlan(h, "slaw");
+    await addGroceryRow(h.env, T, { id: "cabbage::color-red", name: "Red cabbage" }, TODAY);
+
+    const view = await computeToBuyView(h.env, T);
+    expect(view.to_buy).toHaveLength(1); // one merged line, never a duplicate
+    expect(view.to_buy[0].key).toBe("cabbage::color-red"); // keyed on the STORED id
+    expect(view.to_buy[0].origin).toBe("both"); // stored row ∪ derived need
+    expect(view.to_buy[0].name).toBe("Red cabbage"); // renders the display
+    expect(view.to_buy[0].name).not.toContain("::");
+  });
+
+  it("(c) an in-flight (in_cart) add-by-id row suppresses its derived need — no double-buy", async () => {
+    const h = sqliteEnv([T]);
+    seedNode(h, "cabbage::color-red", "Red cabbage");
+    seedRecipe(h, "slaw", ["cabbage::color-red", "carrot"]);
+    seedPlan(h, "slaw");
+    await addGroceryRow(h.env, T, { id: "cabbage::color-red", name: "Red cabbage" }, TODAY);
+    // The row keys on the id, so the update finds it by the id (its display does not resolve back).
+    await updateGroceryRow(h.env, T, "cabbage::color-red", { status: "in_cart" }, TODAY);
+
+    const view = await computeToBuyView(h.env, T);
+    expect(view.to_buy.map((l) => l.key)).toEqual(["carrot"]); // the cabbage need is suppressed (keyed on the id)
+    expect(view.in_cart.map((i) => i.name)).toEqual(["Red cabbage"]); // renders the display
+    expect(view.in_cart[0].name).not.toContain("::");
+  });
+});
+
 describe("computeToBuyView — enrich (member-app-differentiators D6, generalized by inline-substitution-hints D2)", () => {
   function seedProfile(h: SqliteEnv, stores: Record<string, unknown>): void {
     h.raw.prepare("INSERT INTO profile (tenant, stores) VALUES (?, ?)").run(T, JSON.stringify(stores));
@@ -334,6 +396,7 @@ describe("computeToBuyView — enrich (member-app-differentiators D6, generalize
       aisle_description: "Baking",
       aisle_side: "L",
       department: "baking",
+      department_label: "baking",
     });
     // No sku row, no graph parent → an honest null placement (never a fake aisle).
     expect(byKey.get("saffron")!.placement).toBeNull();
@@ -358,7 +421,7 @@ describe("computeToBuyView — enrich (member-app-differentiators D6, generalize
     seedSkuAisle(h, "flour", "03500520", { number: "12", description: "Baking" });
     const view = await computeToBuyView(h.env, T, { enrich: true });
     expect(view.location).toBeNull();
-    expect(view.to_buy[0].placement).toEqual({ department: "baking" });
+    expect(view.to_buy[0].placement).toEqual({ department: "baking", department_label: "baking" });
   });
 
   it("carries substitutes[] (siblings + in_pantry + on_sale_hint) and flyer_as_of alongside placement (inline-substitution-hints D1-D3/D8)", async () => {
@@ -415,5 +478,99 @@ describe("computeToBuyView — enrich (member-app-differentiators D6, generalize
     expect(line.substitutes?.find((s) => s.id === "cabbage::color-red")!.in_pantry).toBe(true);
     expect(line.substitutes?.find((s) => s.id === "cabbage::color-green")!.on_sale_hint).toMatchObject({ sku: "F1" });
     expect(view.flyer_as_of).not.toBeNull();
+  });
+
+  it("display fields ride only on the enriched read — the default omits display_name/via_label/department_label on every line type (reify-ingredient-display-names)", async () => {
+    const h = sqliteEnv([T]);
+    seedProfile(h, { primary: "kroger", preferred_location: "03500520" });
+    seedDeptGraph(h); // flour → baking (membership): a department_label source
+    seedSiblingGraph(h); // cabbage family: substitutes carrying a via/via_label
+    seedAlias(h); // green-onion + the scallions alias: for pantry coverage
+
+    // to_buy lines
+    await addGroceryRow(h.env, T, { name: "flour" }, TODAY);
+    await addGroceryRow(h.env, T, { name: "cabbage::type-napa" }, TODAY);
+    // an in_cart line
+    await addGroceryRow(h.env, T, { name: "olive oil" }, TODAY);
+    await updateGroceryRow(h.env, T, "olive oil", { status: "in_cart" }, TODAY);
+    // a pantry_covered line: a planned need the pantry covers
+    seedRecipe(h, "soup", ["green-onion"]);
+    seedPlan(h, "soup");
+    seedPantry(h, "Green onion", "green-onion", { quantity: "1 bunch" });
+
+    // DEFAULT read: no display fields anywhere.
+    const def = await computeToBuyView(h.env, T);
+    expect(def.to_buy.length).toBeGreaterThan(0);
+    for (const l of def.to_buy) {
+      expect("display_name" in l).toBe(false);
+      expect("placement" in l).toBe(false); // department_label lives inside placement
+      expect("substitutes" in l).toBe(false); // via_label lives inside substitutes
+    }
+    expect(def.pantry_covered.length).toBeGreaterThan(0);
+    for (const l of def.pantry_covered) expect("display_name" in l).toBe(false);
+    expect(def.in_cart.length).toBeGreaterThan(0);
+    for (const l of def.in_cart) expect("display_name" in l).toBe(false);
+
+    // ENRICHED read: display fields present on every line type, and NEVER a raw `::` id (an
+    // id-named line resolves through `idLabel`, so a leak of the bare canonical id fails here).
+    const rich = await computeToBuyView(h.env, T, { enrich: true });
+    for (const l of rich.to_buy) {
+      expect(typeof l.display_name).toBe("string");
+      expect(l.display_name).not.toContain("::");
+    }
+    for (const l of rich.pantry_covered) {
+      expect(typeof l.display_name).toBe("string");
+      expect(l.display_name).not.toContain("::");
+    }
+    for (const l of rich.in_cart) {
+      expect(typeof l.display_name).toBe("string");
+      expect(l.display_name).not.toContain("::");
+    }
+    // department_label rides on the flour line's placement (membership department "baking").
+    expect(rich.to_buy.find((l) => l.key === "flour")!.placement?.department_label).toBe("baking");
+    // via_label rides on a cabbage sibling suggestion (co-child via the "cabbage" parent).
+    const napa = rich.to_buy.find((l) => l.key === "cabbage::type-napa")!;
+    const withVia = napa.substitutes?.find((s) => s.relation.via !== undefined);
+    expect(withVia?.relation.via_label).toBeDefined();
+  });
+
+  it("reifies an id-named row's label from the node's curated display (never a raw id) across to_buy / pantry_covered / in_cart", async () => {
+    const h = sqliteEnv([T]);
+    seedProfile(h, { primary: "kroger", preferred_location: "03500520" });
+    // Curated nodes whose display_name differs from the id — so a raw-id leak is observable.
+    seedNode(h, "cabbage::color-red", "Red cabbage");
+    seedNode(h, "cabbage::color-green", "Green cabbage");
+    seedNode(h, "onion::color-yellow", "Yellow onion");
+
+    // to_buy: a PLAN-derived virtual line — its `name` IS the canonical id (name === key), so the
+    // enriched read reifies it via idLabel to the node's curated label (never the raw id).
+    seedRecipe(h, "slaw", ["cabbage::color-red"]);
+    seedPlan(h, "slaw");
+    // in_cart: a LEGACY id-named row (name === normalized_name === the id, display_name null) advanced
+    // in flight — the enriched read reifies its label from the node, converging without a row edit.
+    h.raw
+      .prepare(
+        "INSERT INTO grocery_list (tenant, name, normalized_name, display_name, quantity, kind, domain, status, source, for_recipes, note, added_at, ordered_at) " +
+          "VALUES (?, 'cabbage::color-green', 'cabbage::color-green', NULL, '1', 'grocery', 'grocery', 'in_cart', 'menu', '[]', NULL, ?, NULL)",
+      )
+      .run(T, TODAY);
+    // pantry_covered: a plan need on a curated id the pantry covers (also name === key).
+    seedRecipe(h, "soup", ["onion::color-yellow"]);
+    seedPlan(h, "soup");
+    seedPantry(h, "onion::color-yellow", "onion::color-yellow");
+
+    const rich = await computeToBuyView(h.env, T, { enrich: true });
+
+    const toBuy = rich.to_buy.find((l) => l.key === "cabbage::color-red")!;
+    expect(toBuy.display_name).toBe("Red cabbage"); // the curated node label, not the raw id
+    expect(toBuy.display_name).not.toContain("::");
+
+    const inCart = rich.in_cart.find((l) => l.name === "cabbage::color-green")!;
+    expect(inCart.display_name).toBe("Green cabbage");
+    expect(inCart.display_name).not.toContain("::");
+
+    const covered = rich.pantry_covered.find((l) => l.name === "onion::color-yellow")!;
+    expect(covered.display_name).toBe("Yellow onion");
+    expect(covered.display_name).not.toContain("::");
   });
 });
