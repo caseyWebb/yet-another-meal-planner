@@ -16,7 +16,7 @@ vi.mock("../src/night-vibe-suggest.js", async (importOriginal) => {
   const mod = await importOriginal<typeof import("../src/night-vibe-suggest.js")>();
   return {
     ...mod,
-    runDerivation: vi.fn(async () => ({ candidates: [{ id: "cozy", vibe: "cozy braise" }], enqueued: 1, source: "clusters" })),
+    runDerivation: vi.fn(async () => ({ candidates: [{ id: "cozy", vibe: "cozy braise" }], enqueued: 1, superseded: 0, source: "clusters" })),
   };
 });
 import { runDerivation } from "../src/night-vibe-suggest.js";
