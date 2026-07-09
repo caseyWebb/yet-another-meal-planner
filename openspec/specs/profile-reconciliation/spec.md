@@ -38,14 +38,13 @@ A scheduled, deterministic **signal** pass SHALL compute the reconcile inputs pe
 
 ### Requirement: Pending-proposals queue with member confirmation
 
-Reconcile output SHALL land in a per-member **pending-proposals queue** (a D1 table), each proposal carrying a kind, payload, a human-readable rationale, the evidence signals, and a status. A member SHALL confirm proposals from **either surface** (a chat tool or the web app): **accept** applies the proposal's kind-specific effect; **reject** records the rejection as itself a revealed signal (so the same proposal is not re-surfaced). The queue's **producer SHALL be pluggable** — the consumer path (surface + confirmation) SHALL be identical regardless of which synthesis tier produced the proposal.
-
-For the profile kinds (`add_vibe`, `adjust_cadence`, `prune_vibe`) the payload is the proposed profile diff and accept SHALL apply it to the member's profile/palette. The queue SHALL also carry **corpus-curation kinds** addressed to the **operator tenant** — `merge_recipes` (the `recipe-dedup` capability) — whose payload is review evidence rather than a diff: accepting one SHALL record the decision **without applying any profile or corpus write** (the curation act itself is agent-guided through the corpus write tools), while reject SHALL suppress the proposal permanently exactly as for profile kinds. A corpus-curation proposal SHALL only ever be enqueued for the operator tenant, never a member's queue.
+Reconcile output SHALL land in a per-member **pending-proposals queue** (a D1 table), each proposal carrying a kind, payload (the proposed profile diff), a human-readable rationale, the evidence signals, and a status. A member SHALL confirm proposals from **either surface** (a chat tool or the web app): **accept** applies the diff to profile config; **reject** records the rejection as itself a revealed signal (so the same proposal is not re-surfaced). The queue's **producer SHALL be pluggable** — the consumer path (surface + confirmation) SHALL be identical regardless of which synthesis tier produced the proposal. In addition to the member-resolved statuses, a proposal MAY be resolved as **`superseded`** — a system resolution set only by the derivation convergence sweep, and only on `pending` rows, when the proposal is a near-duplicate of a palette vibe, of a rejected proposal, or of an earlier pending representative. Superseded proposals SHALL be excluded from member-facing pending reads (both surfaces), SHALL answer a confirm attempt with the same structured conflict as any already-resolved proposal, and SHALL be distinct from `rejected`: a member dismissal is a revealed signal only the member can produce, and no system pass may set or alter it.
 
 #### Scenario: Accepting applies the diff
 
-- **WHEN** a profile-kind proposal is accepted
-- **THEN** its diff is applied to the member's profile/palette and the proposal is marked accepted
+- **WHEN** a proposal is accepted
+- **THEN** its diff is applied to the member's profile/palette and the proposal is marked
+  accepted
 
 #### Scenario: Rejecting is itself a signal
 
@@ -57,10 +56,11 @@ For the profile kinds (`add_vibe`, `adjust_cadence`, `prune_vibe`) the payload i
 - **WHEN** either the web app or the chat surface reads the queue
 - **THEN** it sees the same pending proposals irrespective of which tier produced them
 
-#### Scenario: Accepting a corpus-curation proposal applies no diff
+#### Scenario: A superseded proposal leaves the member surfaces
 
-- **WHEN** the operator accepts a `merge_recipes` proposal
-- **THEN** the proposal is marked accepted and the apply path writes nothing to any profile or the corpus — the merge itself was performed through the agent-guided flow before confirmation
+- **WHEN** the convergence sweep marks a pending proposal superseded
+- **THEN** it no longer appears in `list_proposals` or the web app's queue, and a confirm
+  against its id answers a structured conflict naming its status
 
 ### Requirement: Pluggable synthesis across a model-frequency gradient
 
