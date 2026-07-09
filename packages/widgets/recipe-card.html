@@ -1,0 +1,15 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <!-- Stable marker: the Worker's ASSETS read asserts this string so a wrong path
+         (the SPA shell, served by not_found_handling) is detected, not silently served. -->
+    <meta name="mcp-widget" content="recipe-card-widget" />
+    <title>Recipe card</title>
+  </head>
+  <body>
+    <div id="root" data-widget="recipe-card"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

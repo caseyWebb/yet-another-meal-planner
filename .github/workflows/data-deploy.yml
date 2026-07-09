@@ -147,6 +147,14 @@ jobs:
         env:
           VITE_APP_BUILD: ${{ env.BUILD }}
 
+      # The in-chat widget bundles (assets/widgets/) build into the same assets/ root so
+      # `wrangler deploy`'s ASSETS binding (./assets) serves them; without this the
+      # ui://recipe/card resource has no backing asset and the widget never mounts
+      # (build-automation) — the same silently-dropped trap as a missing run_worker_first entry.
+      - name: Build widgets
+        run: aubr build:widgets
+        working-directory: _code
+
       # Deploy. KV/D1 bindings with no id are auto-provisioned here; the recipe index is
       # projected by the Worker reconcile (no CI D1 write), not at deploy. APP_BUILD is
       # the Worker side of the version-skew stamp (echoed as X-App-Build on every /api

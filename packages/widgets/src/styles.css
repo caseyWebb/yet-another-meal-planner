@@ -1,0 +1,26 @@
+/* The widget's Tailwind entry — the member app's chain (packages/app/src/styles.css)
+   MINUS the external Geist webfont @import, because the widget bundle must make ZERO
+   external network requests (it is inlined and served as one self-contained document).
+   Geist's stacks in theme.css carry real system fallbacks, so dropping the webfont is a
+   minor visual delta, not a broken render. The @source globs make Tailwind scan BOTH this
+   package's src/ and the shared ui package's src/ so the utility classes used inside the
+   reused @yamp/ui components are compiled. */
+@import "tailwindcss";
+@import "@yamp/ui/theme.css";
+@import "@yamp/ui/cookbook.css";
+@source "./";
+@source "../../ui/src";
+
+/* Widget document base: the iframe owns its own document, so paint the token background
+   and text onto it (the member app gets this from its shell). `.dark` on <html> flips the
+   token set (theme.css), toggled from prefers-color-scheme in main.tsx; default is light. */
+html {
+  color-scheme: light dark;
+}
+body {
+  margin: 0;
+  padding: 1rem;
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans);
+}
