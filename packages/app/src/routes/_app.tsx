@@ -18,8 +18,10 @@ import {
   IconPantry,
   IconSun,
   Button,
+  toast,
 } from "@yamp/ui";
 import { api } from "../lib/api";
+import { enrollPasskey } from "../lib/passkey";
 import { useGrocery, useOverlay, usePlan, useProfile } from "../lib/data";
 import { useOnline } from "../lib/online";
 import { promptInstall, useInstallAvailable } from "../lib/install";
@@ -55,7 +57,7 @@ export const Route = createFileRoute("/_app")({
 export function applyTheme(mode: "light" | "dark") {
   document.documentElement.classList.toggle("dark", mode === "dark");
   try {
-    localStorage.setItem("yamp:theme", mode);
+    localStorage.setItem("cookbook:theme", mode);
   } catch {
     // private-mode storage failures are fine — the toggle just won't persist
   }
@@ -63,7 +65,7 @@ export function applyTheme(mode: "light" | "dark") {
 
 export function initialTheme(): "light" | "dark" {
   try {
-    return localStorage.getItem("yamp:theme") === "dark" ? "dark" : "light";
+    return localStorage.getItem("cookbook:theme") === "dark" ? "dark" : "light";
   } catch {
     return "light";
   }
@@ -175,6 +177,7 @@ function AccountMenu({ tenant }: { tenant: string }) {
   const navigate = useNavigate();
   const router = useRouter();
   const profile = useProfile();
+  const [enrolling, setEnrolling] = React.useState(false);
   // "Install app" renders ONLY when the browser offered beforeinstallprompt and the
   // app isn't already standalone (D10) — platforms without the event get no dead item.
   const installable = useInstallAvailable();
@@ -187,6 +190,26 @@ function AccountMenu({ tenant }: { tenant: string }) {
     document.addEventListener("mousedown", onDoc);
     return () => document.removeEventListener("mousedown", onDoc);
   }, [open]);
+
+  // Self-service "add another device" (passkey-auth 8.2): the same enroll ceremony the
+  // first-run nudge runs, from an already-authenticated session. Non-fatal — a declined or
+  // failed enrollment leaves the session untouched; the toast is the only feedback.
+  async function addDevice() {
+    if (enrolling) return;
+    setEnrolling(true);
+    try {
+      const outcome = await enrollPasskey();
+      if (outcome.status === "ok") {
+        toast("Passkey added — you can sign in with this device");
+        setOpen(false);
+      } else if (outcome.status === "failed") {
+        toast(outcome.message);
+      }
+      // "cancelled" (dismissed sheet) is a silent non-event.
+    } finally {
+      setEnrolling(false);
+    }
+  }
 
   async function logout() {
     await api.api.session.$delete();
@@ -238,6 +261,16 @@ function AccountMenu({ tenant }: { tenant: string }) {
           <Link className="sb-menu-item" role="menuitem" to="/profile" onClick={() => setOpen(false)}>
             Profile &amp; preferences
           </Link>
+          <button
+            type="button"
+            className="sb-menu-item"
+            role="menuitem"
+            data-testid="add-device"
+            disabled={enrolling}
+            onClick={addDevice}
+          >
+            {enrolling ? "Waiting for your device…" : "Add a device"}
+          </button>
           {installable ? (
             <button
               type="button"

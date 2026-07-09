@@ -1,11 +1,14 @@
-// Grocery (member-app-core 7.7 + member-app-grocery): the derived to-buy view (virtual
-// rows with plan attribution, pantry coverage + verify nudges, materialize-on-pin, the
-// underived notice), the P1 stored-row interactions (category groups, bottom add-row,
-// explicit in-cart set, remove, Clear purchased), the order panel (preview →
-// disposition → commit; driven via route interception in the order specs), and the
-// user-asserted Mark order placed advance. Also owns the API-level plan/list
-// provisioning the specs use (the propose page object's pattern) so each spec pins its
-// own exact derivation inputs.
+// Grocery (member-app-core 7.7 + member-app-grocery, refactored by inline-
+// substitution-hints): the derived to-buy view (virtual rows with plan attribution,
+// pantry coverage + verify nudges, materialize-on-pin, the underived notice) — each
+// row's INLINE substitute hints (siblings + in_pantry/on_sale_hint pills, a per-row
+// accept/dismiss, live against the seeded Worker — no panel) — the P1 stored-row
+// interactions (category groups, bottom add-row, explicit in-cart set, remove, Clear
+// purchased), the order panel (preview → disposition → commit, plus its same-identity
+// alternative rows fetched at preview time; driven via route interception in the order
+// specs), and the user-asserted Mark order placed advance. Also owns the API-level
+// plan/list provisioning the specs use (the propose page object's pattern) so each
+// spec pins its own exact derivation inputs.
 import { expect } from "@playwright/test";
 import { AppPage, type Locator } from "./base.page";
 
@@ -201,6 +204,14 @@ export class GroceryPage extends AppPage {
     return this.page.locator(`[data-testid="order-line"][data-name="${name}"]`);
   }
 
+  /** The order dialog's same-identity alternative row for a resolved line
+   *  (inline-substitution-hints D5) — scoped to the dialog so it never collides with
+   *  the underlying to-buy list's own inline hint rows (`subRow`), which share the
+   *  same testids and stay mounted behind the dialog. */
+  orderSubRow(name: string): Locator {
+    return this.orderPanel().locator(`[data-testid="subs-row"][data-for="${name}"]`);
+  }
+
   async excludeLine(name: string): Promise<void> {
     await this.orderLine(name).getByTestId("order-exclude").click();
   }
@@ -253,35 +264,27 @@ export class GroceryPage extends AppPage {
     return this.page.getByTestId("order-relink");
   }
 
-  // --- the substitutions panel (member-app-differentiators 5.2) -------------------
+  // --- inline substitute hints on the to-buy list (inline-substitution-hints D6/D7) --
+  // Cross-ingredient sibling hints render INLINE on their to-buy row (no panel) —
+  // scoped through `item(name)` so a row's own hints never collide with the order
+  // dialog's alternative rows (`orderSubRow`, below), which reuse the same testids.
 
-  async openSubs(): Promise<void> {
-    await this.page.getByTestId("subs-open").click();
+  /** A to-buy line's inline substitute-hint row(s) — one per `substitutes[]` entry. */
+  subRows(name: string): Locator {
+    return this.item(name).locator('[data-testid="subs-row"]');
   }
 
-  subsPanel(): Locator {
-    return this.page.getByTestId("subs-panel");
+  /** The first (commonly only) inline hint row for a to-buy line. */
+  subRow(name: string): Locator {
+    return this.subRows(name).first();
   }
 
-  /** A suggestion row for a to-buy line (there may be several — alternative + siblings). */
-  subsRow(forName: string): Locator {
-    return this.page.locator(`[data-testid="subs-row"][data-for="${forName}"]`);
-  }
-
-  subsEmpty(): Locator {
-    return this.page.getByTestId("subs-empty");
-  }
-
-  async acceptSubsRow(row: Locator): Promise<void> {
+  async acceptSub(row: Locator): Promise<void> {
     await row.getByTestId("subs-accept").click();
   }
 
-  async dismissSubsRow(row: Locator): Promise<void> {
+  async dismissSub(row: Locator): Promise<void> {
     await row.getByTestId("subs-dismiss").click();
-  }
-
-  async dismissAllSubs(): Promise<void> {
-    await this.page.getByTestId("subs-close").click();
   }
 
   // --- the grouping toggle + aisle groups (member-app-differentiators 5.3) --------

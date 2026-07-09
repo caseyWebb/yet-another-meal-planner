@@ -55,6 +55,16 @@ export interface Env {
    * structurally "first"). Unset means NO member is shown as owner (no badge), never a guess.
    */
   OWNER_TENANT_ID?: string;
+  /**
+   * OPTIONAL invite-code grace control (webauthn-passkey-auth). While unset or any value other
+   * than `"off"`, LEGACY standing invite codes still authenticate at `/login` and `/authorize`
+   * so members onboarded before passkeys migrate organically. Set to exactly `"off"` (in the
+   * operator's own `wrangler.jsonc` `vars`) once every member has enrolled a passkey: legacy
+   * standing codes then stop authenticating everywhere, leaving passkeys and single-use bootstrap
+   * codes (onboarding/rotation) as the only way in. Default-on so deploying this locks no one out.
+   * Non-secret, operator-owned (the deploy merge passes the operator's `vars`).
+   */
+  INVITE_GRACE?: string;
 
   // --- Member app version-skew stamp (member-app-shell). OPTIONAL, non-secret. ---
   /**

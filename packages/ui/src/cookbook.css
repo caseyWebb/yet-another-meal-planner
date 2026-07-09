@@ -48,6 +48,11 @@
 .login-form { display: flex; flex-direction: column; gap: 0.85rem; }
 .login-submit { width: 100%; margin-top: 0.25rem; }
 .login-note { margin-top: 1.25rem; color: var(--muted-foreground); font-size: var(--text-xs); line-height: 1.5; }
+/* The credential separator between passkey sign-in and the invite bootstrap (passkey-auth). */
+.login-divider { display: flex; align-items: center; gap: 0.65rem; margin: 1.1rem 0; color: var(--muted-foreground); font-size: var(--text-xs); }
+.login-divider::before, .login-divider::after { content: ""; flex: 1; height: 1px; background: var(--border); }
+/* The cross-device verification code on /connect — read aloud / compared by eye (passkey-auth). */
+.connect-code { align-self: center; margin: 0.35rem 0; padding: 0.5rem 1rem; border-radius: var(--radius-md); background: var(--muted); font-family: var(--font-mono, monospace); font-size: var(--text-2xl); font-weight: 600; letter-spacing: 0.35em; padding-right: calc(1rem - 0.35em); }
 
 /* ── app shell ───────────────────────────────────────────────────────────── */
 .app-shell { display: grid; grid-template-columns: 15rem 1fr; height: 100vh; }

@@ -190,17 +190,71 @@ export async function resolveTenant(
 }
 
 /**
- * The invite-code identity step (D2): map an operator-issued invite code to its
- * allowlisted username. Returns the username, or null when the code is unknown or
- * maps to a username no longer on the allowlist. Operator provisions a code with
- * `kv put invite:<code> <username>` (and `tenant:<username>` for the allowlist).
+ * The kind of invite record backing a code (webauthn-passkey-auth):
+ *   - `bootstrap` — a single-use JSON record issued by onboarding/rotation, consumed on the
+ *     member's first passkey enrollment. ALWAYS accepted (until consumed/expired), regardless
+ *     of the grace control — this is what makes rotation a grace-bypassing recovery primitive.
+ *   - `legacy`    — a pre-migration bare-string record (a standing, reusable code). Accepted
+ *     only while the operator grace control is on.
  */
-export async function resolveInvite(kv: KVNamespace, code: string): Promise<string | null> {
+export type InviteKind = "bootstrap" | "legacy";
+
+/** A resolved, allowlist-checked invite: the canonical tenant id plus its record kind. */
+export interface ResolvedInvite {
+  tenant: string;
+  kind: InviteKind;
+}
+
+/**
+ * Parse a stored `invite:<code>` value WITHOUT an allowlist re-check. A bootstrap record is
+ * JSON `{ tenant, single_use, expires_at }` (minted by `onboard`/`rotate` with a KV TTL); a
+ * legacy record is the bare canonical username. Returns null for an unparseable/empty value.
+ * The single place the on-disk invite format is decoded — `resolveInvite` and the admin
+ * `deleteInvitesFor` scan both go through here.
+ */
+export function parseInviteRecord(raw: string | null): ResolvedInvite | null {
+  if (raw == null) return null;
+  const s = raw.trim();
+  if (!s) return null;
+  if (s.startsWith("{")) {
+    try {
+      const parsed = JSON.parse(s) as { tenant?: unknown };
+      if (typeof parsed.tenant !== "string" || !parsed.tenant) return null;
+      return { tenant: parsed.tenant, kind: "bootstrap" };
+    } catch {
+      return null;
+    }
+  }
+  return { tenant: s, kind: "legacy" };
+}
+
+/**
+ * The invite-code identity step: map an operator-issued invite code to its allowlisted
+ * username and record kind. Returns null when the code is unknown/expired (KV) or maps to a
+ * username no longer on the allowlist. `get` re-checks the allowlist and returns the canonical
+ * (lowercase) id, so the tenant set from this is already normalized. Acceptance under the grace
+ * control is the CALLER's decision (see `inviteAccepted`) so unknown/expired/grace-rejected all
+ * collapse to one uniform `unauthorized` at the surface (no oracle).
+ */
+export async function resolveInvite(kv: KVNamespace, code: string): Promise<ResolvedInvite | null> {
   if (!code) return null;
-  const tenantId = await kv.get(`${INVITE_PREFIX}${code}`);
-  if (!tenantId) return null;
-  // `get` re-checks the allowlist and returns the canonical (lowercase) id, so the
-  // grant prop set from this is already normalized.
-  const record = await kvTenantStore(kv).get(tenantId);
-  return record ? record.id : null;
+  const parsed = parseInviteRecord(await kv.get(`${INVITE_PREFIX}${code}`));
+  if (!parsed) return null;
+  const record = await kvTenantStore(kv).get(parsed.tenant);
+  return record ? { tenant: record.id, kind: parsed.kind } : null;
+}
+
+/**
+ * Whether LEGACY standing invite codes are still honored (webauthn-passkey-auth grace control).
+ * Default ON — a pre-migration code keeps working until the operator sets `INVITE_GRACE="off"`,
+ * at which point only passkeys and single-use bootstrap codes authenticate. Bootstrap codes are
+ * unaffected by this flag.
+ */
+export function inviteGraceEnabled(env: Env): boolean {
+  return env.INVITE_GRACE !== "off";
+}
+
+/** Whether a resolved invite may authenticate right now: bootstraps always, legacy only under grace. */
+export function inviteAccepted(inv: ResolvedInvite, env: Env): boolean {
+  return inv.kind === "bootstrap" || inviteGraceEnabled(env);
 }

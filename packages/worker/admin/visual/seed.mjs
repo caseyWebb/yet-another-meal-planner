@@ -22,6 +22,16 @@ export const SEED = {
   // D9): the app suite's different-tenant login spec needs two real, independently
   // loggable identities to exercise the stamp-mismatch purge for real.
   inviteAlt: "PW-APP-INVITE-2",
+  // Cross-device MCP approval refs (webauthn-passkey-auth): pending `authz:<ref>` KV records
+  // the /connect approval screen reads + approves. Two independent refs so the view
+  // (smoke screenshot) and the approve round-trip never disturb each other regardless of
+  // test order — the approve test mutates its own ref only.
+  connect: {
+    clientName: "Claude",
+    code: "ABC234",
+    viewRef: "pw-app-authz-view",
+    approveRef: "pw-app-authz-approve",
+  },
   recipe: {
     slug: "viz-miso-salmon",
     title: "Miso-Glazed Salmon Bowls",
@@ -81,6 +91,15 @@ export const SEED = {
       addA: { id: "viz-prop-add-a", vibe: "cozy weeknight noodles" },
       addB: { id: "viz-prop-add-b", vibe: "a bright citrusy salad night" },
       prune: { id: "viz-prop-prune", target: "forgotten-stir-fry" },
+      // A dup-scan merge_recipes pair (recipe-dedup): Dismiss-only in the app — the
+      // merge itself is chat-guided, so no accept button renders for this kind.
+      merge: {
+        id: "viz-prop-merge",
+        target: "fresh-pasta+homemade-pasta-dough",
+        titles: ["Fresh Pasta", "Homemade Pasta Dough"],
+        rationale:
+          "“Fresh Pasta” and “Homemade Pasta Dough” look like the same dish — description similarity 0.77, sharing eggs and flour. Review and merge?",
+      },
     },
     note: { body: "Swapped honey for the brown sugar — better glaze.", tag: "tweak" },
     tasteLead: "Big on bold heat and acid",
@@ -119,10 +138,11 @@ export const SEED = {
     // tenants — deleting the active member's own rows drops it below the guard for
     // the empty-state test), the picked-for-you expectation (nearest embedded
     // neighbor of the favorited recipe's vector), the pre-resolved Kroger locationId
-    // the aisle specs PATCH into preferences (whitespace-free → the client
-    // short-circuit, zero Kroger network), the aisle-tagged sku_cache rows, and the
-    // production-shaped sibling edge family (edges born-audited so the edge-audit
-    // backlog the admin suite pins stays at 1).
+    // that IS the seeded profile's default `preferred_location` (a bare id, whitespace-
+    // free → the client short-circuit, zero Kroger network on every enriched grocery
+    // read — the app suite's default state, not something a spec PATCHes in), the
+    // aisle-tagged sku_cache rows, and the production-shaped sibling edge family (edges
+    // born-audited so the edge-audit backlog the admin suite pins stays at 1).
     differentiators: {
       topPick: "viz-fish-tacos",
       location: "03500520",
@@ -134,6 +154,12 @@ export const SEED = {
         line: "cabbage::type-napa",
         family: ["cabbage::color-green", "cabbage::color-red"],
         parent: "cabbage",
+        // inline-substitution-hints D1-D3/D8: a pantry row for one sibling (the
+        // enriched to-buy read's `in_pantry` hint) and a warmed flyer rollup matching
+        // the family's shared base term (the `on_sale_hint` hint) — both live, not
+        // intercepted, in the app suite's inline-hint spec.
+        pantryHit: "cabbage::color-red",
+        saleHit: { sku: "0009999012345", price: { regular: 2.5, promo: 2 } },
       },
     },
   },
@@ -522,7 +548,8 @@ export function d1Statements(now) {
     "INSERT INTO pending_proposals (id, tenant, kind, target, payload, rationale, evidence, status, producer, created_at) VALUES " +
       `(${q(prop.addA.id)}, ${q(members.active)}, 'add_vibe', 'cozy-noodles', ${q(JSON.stringify({ id: "cozy-noodles", vibe: prop.addA.vibe, cadence_days: 10 }))}, 'You keep cooking dishes like this — set a night aside for it?', '{}', 'pending', 'edge', ${q(iso(now - 3 * DAY))}), ` +
       `(${q(prop.addB.id)}, ${q(members.active)}, 'add_vibe', 'citrus-salad', ${q(JSON.stringify({ id: "citrus-salad", vibe: prop.addB.vibe, cadence_days: 14 }))}, 'Three bright salads in two weeks — make it a rotation slot?', '{}', 'pending', 'edge', ${q(iso(now - 2 * DAY))}), ` +
-      `(${q(prop.prune.id)}, ${q(members.active)}, 'prune_vibe', ${q(prop.prune.target)}, ${q(JSON.stringify({ id: prop.prune.target }))}, 'Added months ago and never cooked from — retire it?', '{}', 'pending', 'edge', ${q(iso(now - 1 * DAY))});`,
+      `(${q(prop.prune.id)}, ${q(members.active)}, 'prune_vibe', ${q(prop.prune.target)}, ${q(JSON.stringify({ id: prop.prune.target }))}, 'Added months ago and never cooked from — retire it?', '{}', 'pending', 'edge', ${q(iso(now - 1 * DAY))}), ` +
+      `(${q(prop.merge.id)}, ${q(members.active)}, 'merge_recipes', ${q(prop.merge.target)}, ${q(JSON.stringify({ slugs: prop.merge.target.split("+"), titles: prop.merge.titles, cosine: 0.767, shared_ingredients: ["eggs", "flour"], jaccard: 0.67, detector: "corroborated" }))}, ${q(prop.merge.rationale)}, '{}', 'pending', 'dup-scan', ${q(iso(now - 0.5 * DAY))});`,
   );
   // A shared community note from the pending member (the detail page's group half).
   stmts.push(`DELETE FROM recipe_notes WHERE recipe = ${q(recipe.slug)};`);
@@ -563,7 +590,7 @@ export function d1Statements(now) {
   stmts.push(`DELETE FROM profile WHERE tenant = ${q(members.active)};`);
   stmts.push(
     "INSERT INTO profile (tenant, taste, diet_principles, default_cooking_nights, lunch_strategy, ready_to_eat_default_action, stores, dietary, rotation) VALUES " +
-      `(${q(members.active)}, ${q(`**${app.tasteLead}** — weeknights lean Asian, weekends get a project.`)}, ${q("- Keep shellfish off the table\n- Go easy on red meat")}, 3, NULL, 'opt-in', ${q(JSON.stringify({ primary: "kroger", preferred_location: "Kroger — Hyde Park" }))}, ${q(JSON.stringify({ avoid: ["shellfish"], limit: ["red meat"] }))}, ${q(JSON.stringify({ resurface_after_days: 30, novelty_boost: 0.2 }))});`,
+      `(${q(members.active)}, ${q(`**${app.tasteLead}** — weeknights lean Asian, weekends get a project.`)}, ${q("- Keep shellfish off the table\n- Go easy on red meat")}, 3, NULL, 'opt-in', ${q(JSON.stringify({ primary: "kroger", preferred_location: app.differentiators.location }))}, ${q(JSON.stringify({ avoid: ["shellfish"], limit: ["red meat"] }))}, ${q(JSON.stringify({ resurface_after_days: 30, novelty_boost: 0.2 }))});`,
   );
   stmts.push(`DELETE FROM brand_prefs WHERE tenant = ${q(members.active)};`);
   stmts.push(
@@ -602,6 +629,18 @@ export function d1Statements(now) {
       fam.map((id) => `(${q(id)}, ${q(diff.siblings.parent)}, 'general', 'auto', ${now - 9 * DAY}, ${now - 9 * DAY})`).join(", ") +
       ";",
   );
+  // The family's LINE as a real to-buy row (inline-substitution-hints D1-D3): the
+  // enriched read's substitutes[] walks from a live grocery_list row, not a mock.
+  stmts.push(`DELETE FROM grocery_list WHERE tenant = ${q(members.active)} AND normalized_name = ${q(diff.siblings.line)};`);
+  stmts.push(
+    "INSERT INTO grocery_list (tenant, name, normalized_name, quantity, kind, domain, status, source, for_recipes, note, added_at, ordered_at) VALUES " +
+      `(${q(members.active)}, ${q(diff.siblings.line)}, ${q(diff.siblings.line)}, '1', 'grocery', 'grocery', 'active', 'ad_hoc', '[]', NULL, ${q(day(now - 2 * DAY))}, NULL);`,
+  );
+  // The pantry hint (D1/D3): a pantry row for one sibling lights up its `in_pantry` flag.
+  stmts.push(`DELETE FROM pantry WHERE tenant = ${q(members.active)} AND normalized_name = ${q(diff.siblings.pantryHit)};`);
+  stmts.push(
+    `INSERT INTO pantry (tenant, name, normalized_name, quantity, category, added_at, last_verified_at) VALUES (${q(members.active)}, 'Red cabbage', ${q(diff.siblings.pantryHit)}, '1 head', 'produce', ${q(day(now - 3 * DAY))}, ${q(day(now - 3 * DAY))});`,
+  );
 
   return stmts;
 }
@@ -616,11 +655,52 @@ export function kvEntries() {
     ["TENANT_KV", `tenant:${members.pending}`, JSON.stringify({ id: members.pending })],
     ["TENANT_KV", `invite:${SEED.invite}`, members.active],
     ["TENANT_KV", `invite:${SEED.inviteAlt}`, members.pending],
+    // Two pending cross-device approval refs (webauthn-passkey-auth): the connect screen's
+    // viewApproval reads clientName/code/status; `oauth` is any non-empty string (the
+    // /authorize completion path isn't exercised in the app suite). Independent refs so
+    // the approve round-trip never flips the view fixture to "approved".
+    [
+      "TENANT_KV",
+      `authz:${SEED.connect.viewRef}`,
+      JSON.stringify({ oauth: "cGVuZGluZw", clientName: SEED.connect.clientName, code: SEED.connect.code, status: "pending" }),
+    ],
+    [
+      "TENANT_KV",
+      `authz:${SEED.connect.approveRef}`,
+      JSON.stringify({ oauth: "cGVuZGluZw", clientName: SEED.connect.clientName, code: SEED.connect.code, status: "pending" }),
+    ],
     ["OAUTH_KV", `grant:${members.active}:seed-grant`, JSON.stringify({ id: "seed-grant" })],
     ["KROGER_KV", `kroger:refresh:${members.active}`, "seed-refresh-token"],
     // The pre-warmed query-embedding cache entry (member-app-propose D12): the exact
     // freeform phrase the propose spec types, pointed at the chicken-soup axis — so the
     // freeform path runs as a deterministic cache HIT (no Workers AI in the harness).
     ["KROGER_KV", embedCacheKey(SEED.app.propose.freeform), embedVec([[2, 1]])],
+    // The warmed flyer rollup (inline-substitution-hints D1/D3/D8): a sale item whose
+    // `matched_terms` carries the cabbage family's shared base term, so the enriched
+    // to-buy read's `on_sale_hint` lights up for the family's siblings off the seeded
+    // default `preferred_location` (the same pre-resolved bare id, no whitespace → no
+    // live Kroger Locations call needed to reach it).
+    [
+      "KROGER_KV",
+      `flyer:kroger:${SEED.app.differentiators.location}`,
+      JSON.stringify({
+        sweep_id: "viz-sweep-1",
+        as_of: Date.now(),
+        store: "kroger",
+        location_id: SEED.app.differentiators.location,
+        items: [
+          {
+            sku: SEED.app.differentiators.siblings.saleHit.sku,
+            brand: "Kroger",
+            description: "Green Cabbage",
+            size: "1 head",
+            price: SEED.app.differentiators.siblings.saleHit.price,
+            savings: SEED.app.differentiators.siblings.saleHit.price.regular - SEED.app.differentiators.siblings.saleHit.price.promo,
+            categories: [],
+            matched_terms: [SEED.app.differentiators.siblings.parent],
+          },
+        ],
+      }),
+    ],
   ];
 }

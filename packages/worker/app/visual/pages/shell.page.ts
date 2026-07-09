@@ -38,6 +38,13 @@ export class ShellPage extends AppPage {
     await expect(this.page.getByTestId("account-menu-panel")).toBeVisible();
   }
 
+  /** Self-service "Add a device" — runs the passkey enrollment ceremony from the menu
+   *  (webauthn-passkey-auth 8.2). */
+  async addDevice(): Promise<void> {
+    await this.openAccountMenu();
+    await this.page.getByTestId("add-device").click();
+  }
+
   /** The account menu carries the member's Kroger link badge. */
   async expectKrogerBadge(linked: boolean): Promise<void> {
     await expect(this.page.getByTestId("kroger-badge")).toContainText(linked ? "kroger" : "kroger unlinked");

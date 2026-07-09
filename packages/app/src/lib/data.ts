@@ -259,19 +259,21 @@ export function useGrocery() {
   });
 }
 
-export function useToBuy(withAisles = false) {
+export function useToBuy(enrich = false) {
   return useQuery({
-    // The aisles param is part of the representation (D12): its own cache entry,
+    // The enrich param is part of the representation (D12): its own cache entry,
     // still under the "grocery" prefix so the shared invalidation refreshes both.
-    queryKey: ["grocery", "to-buy", withAisles ? "aisles" : "plain"],
+    queryKey: ["grocery", "to-buy", enrich ? "enriched" : "plain"],
     staleTime: STALE_MS,
     gcTime: PERSIST_GC_MS,
     queryFn: async () =>
-      withAisles
-        ? // The enriched variant (?aisles=1) — the query string isn't in the typed
+      enrich
+        ? // The enriched variant (?enrich=1) — the query string isn't in the typed
           // client's route params, so this one read goes through the shared wrapper
-          // directly (same-origin, and it must ride the X-App-Build skew tap).
-          jsonOf<ToBuyView>(await appFetch("/api/grocery/to-buy?aisles=1"))
+          // directly (same-origin, and it must ride the X-App-Build skew tap). Carries
+          // aisle placement AND substitute hints under one Locations resolve
+          // (inline-substitution-hints D2).
+          jsonOf<ToBuyView>(await appFetch("/api/grocery/to-buy?enrich=1"))
         : jsonOf<ToBuyView>(await api.api.grocery["to-buy"].$get()),
   });
 }
@@ -305,9 +307,12 @@ export function usePickedForYou() {
 }
 
 /**
- * The substitution read — member-initiated and ONLINE-ONLY (D12): a plain fetch
+ * The alternatives-only substitution read (inline-substitution-hints D4/D5) — fetched
+ * by the ORDER DIALOG at preview time, member-initiated and ONLINE-ONLY: a plain fetch
  * through the typed client, never a persisted/replayed mutation (the read fans out to
- * Kroger server-side; results are per-session client state, no query cache entry).
+ * Kroger server-side; results are per-session client state, no query cache entry). The
+ * cheap cross-ingredient sibling hints ride the enriched `read_to_buy` instead
+ * (`useToBuy(true)` / `ToBuyLine.substitutes`), not this call.
  */
 export async function fetchSubstitutions(input: SubstitutionsRequest = {}): Promise<SubstitutionsResult> {
   const res = await api.api.grocery.substitutions.$post({ json: input });

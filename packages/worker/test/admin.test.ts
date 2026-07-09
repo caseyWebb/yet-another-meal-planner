@@ -200,14 +200,15 @@ describe("onboard", () => {
     const r = await onboard(deps, "Casey");
     expect(r).toEqual({ username: "casey", invite_code: "code0" });
     expect(await tenantKv.get("tenant:casey")).toBe(JSON.stringify({ id: "casey" }));
-    expect(await tenantKv.get("invite:code0")).toBe("casey");
+    // The invite is now a single-use bootstrap JSON record, not a bare-string mapping.
+    expect(JSON.parse((await tenantKv.get("invite:code0"))!)).toMatchObject({ tenant: "casey", single_use: true });
   });
 
   it("honors a supplied invite code", async () => {
     const { deps, tenantKv } = makeDeps();
     const r = await onboard(deps, "bob", "LET-ME-IN");
     expect(r.invite_code).toBe("LET-ME-IN");
-    expect(await tenantKv.get("invite:LET-ME-IN")).toBe("bob");
+    expect(JSON.parse((await tenantKv.get("invite:LET-ME-IN"))!)).toMatchObject({ tenant: "bob", single_use: true });
   });
 
   it("rejects an empty username", async () => {
@@ -396,7 +397,7 @@ describe("rotate", () => {
     expect(r.username).toBe("casey");
     expect(r.invite_code).toBe("code0");
     expect(await tenantKv.get("invite:OLD")).toBeNull();
-    expect(await tenantKv.get("invite:code0")).toBe("casey");
+    expect(JSON.parse((await tenantKv.get("invite:code0"))!)).toMatchObject({ tenant: "casey", single_use: true });
     expect(await tenantKv.get("tenant:casey")).toBe(JSON.stringify({ id: "casey" }));
   });
 

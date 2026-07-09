@@ -51,7 +51,10 @@ export interface PendingProposal {
   payload: Record<string, unknown>;
   rationale: string | null;
   evidence: Record<string, unknown> | null;
-  status: "pending" | "accepted" | "rejected";
+  /** `superseded` is system-set only — by the derivation convergence sweep, only on `pending`
+   *  rows. `accepted`/`rejected` are member verbs; a member dismissal (`rejected`) is never
+   *  rewritten by any pass. */
+  status: "pending" | "accepted" | "rejected" | "superseded";
   producer: string | null;
   created_at: string | null;
 }
@@ -131,7 +134,8 @@ export async function enqueueProposal(env: Env, tenant: string, draft: ProposalD
   return { id, inserted: r.changes > 0 };
 }
 
-/** Move a pending proposal to accepted/rejected. Returns true when a pending row was updated. */
+/** Move a pending proposal to a MEMBER-resolved status (accept/reject). Returns true when a pending
+ *  row was updated. `superseded` is NOT a member verb — the sweep uses `supersedeProposals`. */
 export async function setProposalStatus(env: Env, id: string, tenant: string, status: "accepted" | "rejected", nowIso: string): Promise<boolean> {
   const r = await db(env).run(
     "UPDATE pending_proposals SET status = ?3, resolved_at = ?4 WHERE id = ?1 AND tenant = ?2 AND status = 'pending'",
@@ -141,6 +145,30 @@ export async function setProposalStatus(env: Env, id: string, tenant: string, st
     nowIso,
   );
   return r.changes > 0;
+}
+
+/** The queue-convergence sweep's writer (night-vibe-archetype-derivation): mark near-duplicate
+ *  PENDING `add_vibe` proposals `superseded`, stamping `resolved_at`. Guarded on `status='pending'`
+ *  so a member-resolved row (accepted/rejected) in the id list is NEVER rewritten — the "dismissals
+ *  are never rewritten" guarantee at the store layer. Chunked to stay under D1's bound-parameter
+ *  limit. Returns the number of rows actually flipped. */
+export async function supersedeProposals(env: Env, tenant: string, ids: string[], nowIso: string): Promise<number> {
+  if (ids.length === 0) return 0;
+  const CHUNK = 50;
+  let changed = 0;
+  for (let i = 0; i < ids.length; i += CHUNK) {
+    const chunk = ids.slice(i, i + CHUNK);
+    // Binds: ?1 tenant, ?2 resolved_at, ?3… the id list.
+    const placeholders = chunk.map((_, j) => `?${j + 3}`).join(", ");
+    const r = await db(env).run(
+      `UPDATE pending_proposals SET status = 'superseded', resolved_at = ?2 WHERE tenant = ?1 AND status = 'pending' AND id IN (${placeholders})`,
+      tenant,
+      nowIso,
+      ...chunk,
+    );
+    changed += r.changes;
+  }
+  return changed;
 }
 
 /**
@@ -170,6 +198,12 @@ export async function applyProposal(env: Env, tenant: string, proposal: PendingP
       await upsertNightVibe(env, tenant, vibe, nowIso);
       return `added night vibe ${vibe.id}`;
     }
+    case "merge_recipes":
+      // Corpus curation (recipe-dedup): accept records the DECISION only — no profile or
+      // corpus write here. The merge itself is agent-guided through the corpus write tools
+      // (fold into the survivor + `duplicate_of` tombstone via update_recipe), performed
+      // BEFORE confirmation (merge-then-accept, so an interrupted flow stays pending).
+      return `recorded merge decision for ${proposal.target ?? "pair"} (the merge itself is agent-guided via update_recipe)`;
     default:
       return `unknown proposal kind ${proposal.kind}`;
   }

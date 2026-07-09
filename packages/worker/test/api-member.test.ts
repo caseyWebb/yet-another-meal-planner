@@ -16,7 +16,7 @@ vi.mock("../src/night-vibe-suggest.js", async (importOriginal) => {
   const mod = await importOriginal<typeof import("../src/night-vibe-suggest.js")>();
   return {
     ...mod,
-    runDerivation: vi.fn(async () => ({ candidates: [{ id: "cozy", vibe: "cozy braise" }], enqueued: 1, source: "clusters" })),
+    runDerivation: vi.fn(async () => ({ candidates: [{ id: "cozy", vibe: "cozy braise" }], enqueued: 1, superseded: 0, source: "clusters" })),
   };
 });
 import { runDerivation } from "../src/night-vibe-suggest.js";
@@ -185,7 +185,7 @@ const MEMBER_ENDPOINTS: [string, string][] = [
   ["POST", "/api/plan/ops"],
   ["GET", "/api/grocery"],
   ["GET", "/api/grocery/to-buy"],
-  ["GET", "/api/grocery/to-buy?aisles=1"],
+  ["GET", "/api/grocery/to-buy?enrich=1"],
   ["POST", "/api/grocery/order"],
   ["POST", "/api/grocery/substitutions"],
   ["POST", "/api/grocery/items"],
@@ -784,10 +784,9 @@ describe("differentiators (member-app-differentiators)", () => {
     expect(res.status).toBe(200);
     expect(res.headers.get("etag")).toBeNull(); // online-only class (D12) — no ETag
     const body = (await res.json()) as {
-      suggestions: { for: { name: string; key: string }; status: string; alternatives: { sku: string; reasons: string[] }[]; siblings: unknown[] }[];
+      suggestions: { for: { name: string; key: string }; status: string; alternatives: { sku: string; reasons: string[] }[] }[];
       remaining: string[];
       location: { id: string } | null;
-      flyer_as_of: string | null;
     };
     expect(body.location).toEqual({ id: "loc-1" });
     expect(body.remaining).toEqual([]);
@@ -797,7 +796,10 @@ describe("differentiators (member-app-differentiators)", () => {
     // No sku_cache mapping seeded → an honest no_cached_pick with the search's alternative.
     expect(line.status).toBe("no_cached_pick");
     expect(line.alternatives.map((a) => a.sku)).toEqual(["ALT-1"]);
-    expect(line.siblings).toEqual([]);
+    // Slimmed (inline-substitution-hints D4): no `siblings` on the line, no
+    // `flyer_as_of` on the result — those now ride read_to_buy's `enrich` read.
+    expect("siblings" in line).toBe(false);
+    expect("flyer_as_of" in body).toBe(false);
   });
 
   it("POST /grocery/substitutions paginates past the 12-line budget with honest remaining", async () => {
@@ -814,24 +816,34 @@ describe("differentiators (member-app-differentiators)", () => {
     expect(((await bad.json()) as { error: string }).error).toBe("validation_failed");
   });
 
-  it("GET /grocery/to-buy default stays byte-identical; ?aisles=1 adds placement + location", async () => {
+  it("GET /grocery/to-buy default stays byte-identical; ?enrich=1 adds placement + substitutes + location + flyer_as_of", async () => {
     const { env } = memberEnv({ grocery_list: [], sku_cache: [], pantry: [], meal_plan: [] });
     const cookie = await loggedIn(env);
     await send(env, "POST", "/api/grocery/items", cookie, { name: "milk" });
 
     const plain = await get(env, "/api/grocery/to-buy", cookie);
-    const plainBody = (await plain.json()) as { to_buy: Record<string, unknown>[]; location?: unknown };
+    const plainBody = (await plain.json()) as { to_buy: Record<string, unknown>[]; location?: unknown; flyer_as_of?: unknown };
     expect("location" in plainBody).toBe(false);
+    expect("flyer_as_of" in plainBody).toBe(false);
     expect("placement" in plainBody.to_buy[0]).toBe(false);
+    expect("substitutes" in plainBody.to_buy[0]).toBe(false);
 
-    const enriched = await get(env, "/api/grocery/to-buy?aisles=1", cookie);
+    const enriched = await get(env, "/api/grocery/to-buy?enrich=1", cookie);
     expect(enriched.status).toBe(200);
-    const enrichedBody = (await enriched.json()) as { to_buy: Record<string, unknown>[]; location: unknown };
+    const enrichedBody = (await enriched.json()) as {
+      to_buy: Record<string, unknown>[];
+      location: unknown;
+      flyer_as_of: string | null;
+    };
     // No profile/preferred location in this env → no resolvable store: an honest
     // null location with department-only (here: null) placements — never an error.
     expect(enrichedBody.location).toBeNull();
     expect("placement" in enrichedBody.to_buy[0]).toBe(true);
     expect(enrichedBody.to_buy[0].placement).toBeNull();
+    // Substitute hints (inline-substitution-hints D1-D3): always an array, empty
+    // here (no identity graph seeded) — never omitted on the enriched read.
+    expect(enrichedBody.to_buy[0].substitutes).toEqual([]);
+    expect(enrichedBody.flyer_as_of).toBeNull();
   });
 
   it("GET /cookbook/trending is ETagged, min-signal-guarded, and counts-only", async () => {

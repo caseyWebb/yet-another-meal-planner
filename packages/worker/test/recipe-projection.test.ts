@@ -15,8 +15,10 @@ import type { IngredientContext } from "../src/corpus-db.js";
 import { EMPTY_FACETS, type ClassifiedFacets } from "../src/recipe-facets.js";
 import { serializeMarkdown } from "../src/serialize.js";
 import { createR2CorpusStore } from "../src/corpus-store.js";
+import { buildEmbedDeps } from "../src/recipe-embeddings.js";
 import { fakeR2 } from "./fake-r2.js";
 import { fakeD1 } from "./fake-d1.js";
+import { sqliteEnv } from "./sqlite-d1.js";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -157,7 +159,7 @@ describe("reconcileRecipeIndex — valid corpus", () => {
   it("projects an empty corpus as an empty index (no errors)", async () => {
     const { deps, written } = makeDeps({});
     const res = await reconcileRecipeIndex(deps);
-    expect(res).toEqual({ projected: 0, skipped: 0, unresolved: 0, degraded: false, errors: [] });
+    expect(res).toEqual({ projected: 0, skipped: 0, tombstoned: 0, unresolved: 0, degraded: false, errors: [] });
     expect(written.recipes).toEqual([]);
   });
 });
@@ -219,6 +221,71 @@ describe("reconcileRecipeIndex — dangling pairs_with is flagged corpus-wide", 
     expect(res.skipped).toBe(1);
     expect(written.errors[0]).toMatchObject({ slug: "orphan-main" });
     expect(written.errors[0].message).toMatch(/pairs_with references unknown recipe "ghost-side"/);
+  });
+});
+
+describe("reconcileRecipeIndex — the duplicate_of tombstone (recipe-dedup)", () => {
+  it("excludes a duplicate_of-marked recipe deliberately: no row, no error, counted", async () => {
+    const { deps, written } = makeDeps({
+      "recipes/keep.md": recipeMd({ title: "Keep" }),
+      "recipes/dup.md": recipeMd({ title: "Dup", duplicate_of: "keep" }),
+    });
+    const res = await reconcileRecipeIndex(deps);
+    expect(rowSlugs(written.recipes)).toEqual(["keep"]);
+    expect(res.tombstoned).toBe(1);
+    expect(res.skipped).toBe(0); // a tombstone is a curation decision, not a defect
+    expect(written.errors).toEqual([]);
+  });
+
+  it("removing the marker restores the row on the next run", async () => {
+    const files = {
+      "recipes/keep.md": recipeMd({ title: "Keep" }),
+      "recipes/dup.md": recipeMd({ title: "Dup", duplicate_of: "keep" }),
+    };
+    const first = makeDeps(files);
+    await reconcileRecipeIndex(first.deps);
+    expect(rowSlugs(first.written.recipes)).toEqual(["keep"]);
+
+    files["recipes/dup.md"] = recipeMd({ title: "Dup" }); // marker removed
+    const second = makeDeps(files);
+    const res = await reconcileRecipeIndex(second.deps);
+    expect(rowSlugs(second.written.recipes)).toEqual(["dup", "keep"]);
+    expect(res.tombstoned).toBe(0);
+  });
+
+  it("an EMPTY-string duplicate_of is ignored (projects normally)", async () => {
+    const { deps, written } = makeDeps({
+      "recipes/plain.md": recipeMd({ title: "Plain", duplicate_of: "" }),
+    });
+    const res = await reconcileRecipeIndex(deps);
+    expect(rowSlugs(written.recipes)).toEqual(["plain"]);
+    expect(res.tombstoned).toBe(0);
+    expect(written.errors).toEqual([]);
+  });
+
+  it("integration: after a tombstoned projection the embed reconcile's orphan prune drops the derived row", async () => {
+    // Real migrated SQLite + real projection deps: the tombstoned slug leaves `recipes`,
+    // so the recipe-derived PRUNE_SQL (and, likewise, the dup-scan's stamp prune — both
+    // key off the slug's absence) converges the derived state with no tombstone-specific
+    // machinery.
+    const s = sqliteEnv();
+    const store = createR2CorpusStore(
+      fakeR2({
+        "recipes/keep.md": recipeMd({ title: "Keep" }),
+        "recipes/dup.md": recipeMd({ title: "Dup", duplicate_of: "keep" }),
+      }).bucket,
+    );
+    for (const slug of ["keep", "dup"]) {
+      await (s.env.DB.prepare("INSERT INTO recipe_derived (slug, embedding, description_hash) VALUES (?1, ?2, ?3)")
+        .bind(slug, JSON.stringify([1, 0]), `dh-${slug}`) as unknown as { run(): Promise<unknown> }).run();
+    }
+    const res = await reconcileRecipeIndex(buildProjectionDeps(s.env, store));
+    expect(res.tombstoned).toBe(1);
+    expect(s.rows<{ slug: string }>("recipes").map((r) => r.slug)).toEqual(["keep"]);
+
+    const pruned = await buildEmbedDeps(s.env).pruneOrphans();
+    expect(pruned).toBe(1);
+    expect(s.rows<{ slug: string }>("recipe_derived").map((r) => r.slug)).toEqual(["keep"]);
   });
 });
 
@@ -373,7 +440,7 @@ describe("runProjectionJob — unresolved convergence gauge + degraded flag in t
     const env = fakeD1().env;
     await runProjectionJob(env, deps, () => 1000);
     const health = (await readJobHealth(env, "recipe-index"))!;
-    expect(health.summary).toEqual({ projected: 2, skipped: 0, unresolved: 1, degraded: false });
+    expect(health.summary).toEqual({ projected: 2, skipped: 0, tombstoned: 0, unresolved: 1, degraded: false });
   });
 
   it("reports zero when every projected term resolves", async () => {
@@ -382,7 +449,7 @@ describe("runProjectionJob — unresolved convergence gauge + degraded flag in t
     const env = fakeD1().env;
     await runProjectionJob(env, deps, () => 1000);
     const health = (await readJobHealth(env, "recipe-index"))!;
-    expect(health.summary).toEqual({ projected: 1, skipped: 0, unresolved: 0, degraded: false });
+    expect(health.summary).toEqual({ projected: 1, skipped: 0, tombstoned: 0, unresolved: 0, degraded: false });
   });
 
   it("flags a degraded pass in the summary while the job stays ok", async () => {
@@ -393,7 +460,7 @@ describe("runProjectionJob — unresolved convergence gauge + degraded flag in t
     await runProjectionJob(env, deps, () => 1000);
     const health = (await readJobHealth(env, "recipe-index"))!;
     expect(health.ok).toBe(true); // the projection genuinely succeeded
-    expect(health.summary).toEqual({ projected: 1, skipped: 0, unresolved: 1, degraded: true });
+    expect(health.summary).toEqual({ projected: 1, skipped: 0, tombstoned: 0, unresolved: 1, degraded: true });
   });
 });
 
@@ -472,7 +539,7 @@ describe("runProjectionJob — health record + new-error alert", () => {
 
     const health = (await readJobHealth(env, "recipe-index"))!;
     expect(health.ok).toBe(true);
-    expect(health.summary).toEqual({ projected: 0, skipped: 2, unresolved: 0, degraded: false });
+    expect(health.summary).toEqual({ projected: 0, skipped: 2, tombstoned: 0, unresolved: 0, degraded: false });
     // exactly one alert, naming the NEW failure only
     expect(bodies).toHaveLength(1);
     expect(bodies[0]).toMatch(/1 recipe\(s\) failed to index/);

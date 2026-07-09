@@ -7,6 +7,8 @@ import {
   nearAnyMember,
   isLikelyNonRecipeLink,
   selectFeedBatch,
+  buildWithSlugSuffix,
+  SLUG_SUFFIX_MAX,
   DEFAULT_CONFIG,
   type DiscoveryDeps,
   type DiscoveryConfig,
@@ -15,6 +17,7 @@ import {
   type LogEntry,
   type RecipeContent,
 } from "../src/discovery-sweep.js";
+import { ToolError } from "../src/errors.js";
 
 // Unit basis vectors → exact cosines (cos(A,A)=1, cos(A,B)=0).
 const A = [1, 0, 0];
@@ -451,6 +454,80 @@ describe("runDiscoverySweep", () => {
     expect(calls.acquire).toBe(1);
     expect(res.parked).toBe(1);
     expect(res.deferred).toBe(1);
+  });
+});
+
+describe("the cleaned title flows end-to-end through the sweep", () => {
+  it("imports with the classifier's clean title/slug while the LOG keeps the raw candidate title", async () => {
+    // The classifier (faked here) resolves the flowery page title to the clean dish name —
+    // the import writes the clean frontmatter (clean slug derives from it), but the log row's
+    // `title` stays the RAW candidate title (provenance: what the feed said).
+    const importedFm: Record<string, unknown>[] = [];
+    const { deps, calls } = makeDeps({
+      candidates: [cand("u1", "A Better Beer Can Chicken")],
+      members: [member("casey")],
+      vectors: { "A Better Beer Can Chicken — s": A, "DESC:Beer Can Chicken": A },
+    });
+    deps.classify = async (_content, source) => validFm("Beer Can Chicken", source, []);
+    const origImport = deps.importRecipe;
+    deps.importRecipe = async (fm, content, vec) => {
+      importedFm.push(fm);
+      return origImport(fm, content, vec);
+    };
+    const res = await runDiscoverySweep(deps, CONFIG);
+    expect(res.imported).toBe(1);
+    expect(importedFm[0].title).toBe("Beer Can Chicken");
+    expect(calls.imported).toEqual(["beer-can-chicken"]);
+    const log = calls.logs.at(-1)!;
+    expect(log).toMatchObject({ outcome: "imported", slug: "beer-can-chicken" });
+    expect(log.title).toBe("A Better Beer Can Chicken"); // raw provenance, never the clean name
+  });
+});
+
+describe("buildWithSlugSuffix — cleaned-title slug collisions disambiguate, not park", () => {
+  /** A build fn over a `taken` set, recording the slugs it was asked for. */
+  function fakeBuild(taken: Set<string>, base = "strawberry-icebox-cake") {
+    const asked: (string | undefined)[] = [];
+    const build = async (slugOverride?: string) => {
+      asked.push(slugOverride);
+      const slug = slugOverride ?? base;
+      if (taken.has(slug)) throw new ToolError("slug_exists", `A recipe already exists at recipes/${slug}.md`, { slug });
+      return { slug };
+    };
+    return { build, asked };
+  }
+
+  it("retries a collision with the first free numeric suffix", async () => {
+    const { build } = fakeBuild(new Set(["strawberry-icebox-cake"]));
+    await expect(buildWithSlugSuffix(build)).resolves.toEqual({ slug: "strawberry-icebox-cake-2" });
+  });
+
+  it("walks the suffixes deterministically until one is free", async () => {
+    const { build, asked } = fakeBuild(
+      new Set(["strawberry-icebox-cake", "strawberry-icebox-cake-2", "strawberry-icebox-cake-3"]),
+    );
+    await expect(buildWithSlugSuffix(build)).resolves.toEqual({ slug: "strawberry-icebox-cake-4" });
+    expect(asked).toEqual([undefined, "strawberry-icebox-cake-2", "strawberry-icebox-cake-3", "strawberry-icebox-cake-4"]);
+  });
+
+  it("rethrows slug_exists past the bounded range (the candidate parks as today)", async () => {
+    const taken = new Set(["strawberry-icebox-cake"]);
+    for (let n = 2; n <= SLUG_SUFFIX_MAX; n++) taken.add(`strawberry-icebox-cake-${n}`);
+    const { build } = fakeBuild(taken);
+    await expect(buildWithSlugSuffix(build)).rejects.toMatchObject({ code: "slug_exists" });
+  });
+
+  it("passes a collision-free build through untouched (no suffix probing)", async () => {
+    const { build, asked } = fakeBuild(new Set());
+    await expect(buildWithSlugSuffix(build)).resolves.toEqual({ slug: "strawberry-icebox-cake" });
+    expect(asked).toEqual([undefined]);
+  });
+
+  it("propagates any non-slug_exists error immediately", async () => {
+    const build = async () => {
+      throw new ToolError("validation_failed", "bad body");
+    };
+    await expect(buildWithSlugSuffix(build)).rejects.toMatchObject({ code: "validation_failed" });
   });
 });
 

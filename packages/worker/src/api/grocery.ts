@@ -81,19 +81,25 @@ export const groceryArea = new Hono<ApiEnv>()
   })
   // The derived to-buy view (D1/D3): one shared op with the MCP read_to_buy tool.
   // Pure D1 read (no Kroger, no AI, no writes); ETagged like every JSON GET.
-  // `?aisles=1` (member-app-differentiators D6) opts into the aisle enrichment —
-  // captured sku_cache placements + graph-derived departments, at most one Kroger
-  // Locations resolve, zero product searches; the default stays byte-identical (the
-  // param is part of the ETagged representation — the client keys its cache on it).
+  // `?enrich=1` (member-app-differentiators D6, generalized by inline-substitution-
+  // hints D2) opts into the enriched read — captured sku_cache placements +
+  // graph-derived departments AND per-line substitute hints (`substitutes[]`) +
+  // `flyer_as_of`, at most one Kroger Locations resolve, zero product searches; the
+  // default stays byte-identical (the param is part of the ETagged representation —
+  // the client keys its cache on it, and since the enriched body itself carries
+  // `substitutes`/`flyer_as_of`, a warmed flyer or pantry/identity-graph edit that
+  // changes what would be served changes the ETag too — D8).
   .get("/grocery/to-buy", requireSession, async (c) => {
     const tenant = c.get("tenant");
-    const view = await computeToBuyView(c.env, tenant.id, { withAisles: c.req.query("aisles") === "1" });
+    const view = await computeToBuyView(c.env, tenant.id, { enrich: c.req.query("enrich") === "1" });
     return jsonWithEtag(c, view);
   })
-  // The substitution read (member-app-differentiators D1): one shared op with the
-  // suggest_substitutions tool, over fresh order wiring. Member-initiated and
-  // ONLINE-ONLY (D12) — no ETag, never offline-queued or replayed; read-only on the
-  // server (the op writes nothing; acting on a suggestion reuses the existing writes).
+  // The alternatives-only substitution read (inline-substitution-hints D4): one shared
+  // op with the suggest_substitutions tool, over fresh order wiring. Member-initiated
+  // and ONLINE-ONLY (D12) — no ETag, never offline-queued or replayed; read-only on
+  // the server (the op writes nothing; acting on a suggestion reuses the existing
+  // writes). The sibling/pantry/flyer hints this op used to also carry now ride
+  // `GET /grocery/to-buy?enrich=1` instead.
   .post("/grocery/substitutions", requireSession, async (c) => {
     const tenant = c.get("tenant");
     const parsed = substitutionsInput.safeParse(await jsonBody<unknown>(c));

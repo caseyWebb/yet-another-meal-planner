@@ -6,6 +6,7 @@
 import { test as base, expect, type Cookie } from "@playwright/test";
 import { LoginPage } from "./pages/login.page";
 import { ShellPage } from "./pages/shell.page";
+import { ConnectPage } from "./pages/connect.page";
 import { CookbookPage } from "./pages/cookbook.page";
 import { RecipePage } from "./pages/recipe.page";
 import { FavoritesPage } from "./pages/favorites.page";
@@ -20,6 +21,7 @@ import { SEED } from "../../admin/visual/seed.mjs";
 interface AppFixtures {
   loginPage: LoginPage;
   shellPage: ShellPage;
+  connectPage: ConnectPage;
   cookbookPage: CookbookPage;
   recipePage: RecipePage;
   favoritesPage: FavoritesPage;
@@ -46,6 +48,9 @@ export const test = base.extend<AppFixtures>({
   },
   loginPage: async ({ page }, use) => use(new LoginPage(page)),
   shellPage: async ({ page }, use) => use(new ShellPage(page)),
+  // Bound to the APPROVE ref — the approval spec mutates it; the smoke screenshot uses the
+  // independent VIEW ref (registry.ts), so the two never collide regardless of order.
+  connectPage: async ({ page }, use) => use(new ConnectPage(page, SEED.connect.approveRef)),
   cookbookPage: async ({ page }, use) => use(new CookbookPage(page)),
   recipePage: async ({ page }, use) => use(new RecipePage(page, SEED.recipe.slug)),
   favoritesPage: async ({ page }, use) => use(new FavoritesPage(page)),
@@ -67,6 +72,9 @@ export const test = base.extend<AppFixtures>({
         const login = new LoginPage(page);
         await login.goto();
         await login.login(SEED.invite);
+        // A bootstrap-code login now lands on the first-run passkey enrollment nudge
+        // (webauthn-passkey-auth 8.2); the harness declines it to reach the app shell.
+        await login.skipEnroll();
         // Reach the shell FIRST — the session cookie only exists once the login
         // response landed; capturing on click races Set-Cookie and caches nothing.
         await new ShellPage(page).landmark();

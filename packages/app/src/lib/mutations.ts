@@ -132,9 +132,9 @@ type MutationDefaults = Parameters<QueryClient["setMutationDefaults"]>[1];
 
 const norm = (name: string) => name.trim().toLowerCase();
 
-/** Optimistically drop a name from both to-buy view variants (aisles + plain). */
+/** Optimistically drop a name from both to-buy view variants (enriched + plain). */
 function dropToBuyLine(qc: QueryClient, name: string): void {
-  for (const variant of ["aisles", "plain"]) {
+  for (const variant of ["enriched", "plain"]) {
     qc.setQueryData<ToBuyView>(["grocery", "to-buy", variant], (cur) =>
       cur ? { ...cur, to_buy: cur.to_buy.filter((l) => norm(l.name) !== norm(name)) } : cur,
     );
@@ -176,7 +176,7 @@ function registryRows(qc: QueryClient): RegistryRow[] {
           });
           // …and surface the line on the rendered to-buy view (a derived line it
           // materializes flips to origin "both"; a brand-new name appends as "list").
-          for (const variant of ["aisles", "plain"]) {
+          for (const variant of ["enriched", "plain"]) {
             qc.setQueryData<ToBuyView>(["grocery", "to-buy", variant], (cur) => {
               if (!cur) return cur;
               const existing = cur.to_buy.find((l) => norm(l.name) === norm(vars.name));
@@ -254,7 +254,7 @@ function registryRows(qc: QueryClient): RegistryRow[] {
           // Removing an explicit row the plan still needs un-pins (back to a virtual
           // line), it does not un-plan — mirror that: "both" reverts to "plan",
           // a plain "list" line disappears.
-          for (const variant of ["aisles", "plain"]) {
+          for (const variant of ["enriched", "plain"]) {
             qc.setQueryData<ToBuyView>(["grocery", "to-buy", variant], (cur) =>
               cur
                 ? {

@@ -50,3 +50,15 @@ test("a client-side deep link falls back to the shell", async ({ request }) => {
   expect(res.ok()).toBe(true);
   expect(await res.text()).toContain('<div id="root">');
 });
+
+test("/api/passkey/login/options answers as a Worker route, not the shell", async ({ request }) => {
+  // The passkey endpoints are new Worker-owned /api routes (webauthn-passkey-auth 5.3): the
+  // run_worker_first enumeration must carry them, or the SPA fallback would swallow them.
+  // This representative POST must reach the Worker and return its discoverable-options JSON
+  // (unauthenticated is allowed) — never the SPA shell HTML.
+  const res = await request.post("/api/passkey/login/options", { headers: { "X-App-Csrf": "1" } });
+  expect(res.headers()["content-type"]).toContain("application/json");
+  const body = (await res.json()) as { challenge?: string; error?: string };
+  // The options blob (a challenge) or a structured rate-limit — either is the Worker answering.
+  expect(typeof body.challenge === "string" || typeof body.error === "string").toBe(true);
+});

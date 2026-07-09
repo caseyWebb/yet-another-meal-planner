@@ -12,7 +12,7 @@ import type { Env } from "./env.js";
 import { buildServer } from "./tools.js";
 import { resolveTenant, directoryFromEnv } from "./tenant.js";
 import { handleOAuth } from "./oauth.js";
-import { handleAuthorize } from "./authorize.js";
+import { handleAuthorize, handleAuthorizeStatus } from "./authorize.js";
 import { handleInboundEmail, rejectReasonFor, type InboundMessage } from "./email.js";
 import { buildWarmDeps, runWarmJob } from "./flyer-warm.js";
 import { buildSaleScanPlanDeps, runSaleScanPlanJob } from "./sale-scan-plan.js";
@@ -20,6 +20,7 @@ import { buildEmbedDeps, runEmbedJob } from "./recipe-embeddings.js";
 import { runNightVibeVectorJob } from "./night-vibe-vector.js";
 import { runReconcileSignalsJob } from "./reconcile-signals.js";
 import { runArchetypeDerivationJob } from "./night-vibe-suggest.js";
+import { buildDupScanDeps, runDupScanJob } from "./dup-scan.js";
 import { buildFacetDeps, runFacetJob } from "./recipe-classify.js";
 import { buildProjectionDeps, runProjectionJob } from "./recipe-projection.js";
 import { buildDiscoveryDeps, runDiscoverySweepJob, DEFAULT_CONFIG } from "./discovery-sweep.js";
@@ -27,6 +28,7 @@ import { buildNormalizeDeps, runNormalizeJob } from "./ingredient-normalize.js";
 import { buildReconfirmDeps, runReconfirmJob } from "./ingredient-reconfirm.js";
 import { buildAliasAuditDeps, runAliasAuditJob } from "./ingredient-alias-audit.js";
 import { buildEdgeAuditDeps, runEdgeAuditJob } from "./ingredient-edge-audit.js";
+import { buildTitleAuditDeps, runTitleAuditJob } from "./title-audit.js";
 import { runSkuRekeyJob } from "./sku-cache-rekey.js";
 import { runReconcileJob } from "./grocery-pantry-reconcile.js";
 import { loadDiscoveryConfig } from "./discovery-calibration.js";
@@ -80,6 +82,7 @@ const defaultHandler = {
     // wrangler.jsonc `assets` block; SPA fallback for client-side routes). `/health`
     // remains the machine liveness check.
     if (url.pathname === "/authorize") return handleAuthorize(request, env);
+    if (url.pathname === "/authorize/status") return handleAuthorizeStatus(request, env);
     if (url.pathname.startsWith("/oauth/")) return handleOAuth(env, url);
     // The member web app's JSON API (member-api): cookie-session-authenticated Hono
     // sub-apps under /api (src/api/app.ts) — dispatched BEFORE the /admin dispatch.
@@ -183,8 +186,8 @@ export default {
     if (reason) message.setReject(reason);
   },
   /**
-   * The single cron trigger drives FOUR jobs each tick — kept under one trigger so the
-   * free-tier cron-count limit never bites:
+   * The single cron trigger drives every scheduled job each tick — kept under one trigger so
+   * the free-tier cron-count limit never bites. The data-flow spine, in order:
    *   * flyer warm (flyer-cache-warming) — the cursor sweep in `flyer-warm.ts`.
    *   * recipe-index projection (r2-corpus-store) — `recipe-projection.ts` reads the R2
    *     corpus, validates it, and rebuilds the D1 `recipes` index (replacing the retired
@@ -198,8 +201,11 @@ export default {
    *     outcome. It runs LAST so dedup + matching see a fresh index AND fresh embeddings.
    * The flyer warm is independent of the index, so it runs ALONGSIDE the projection; the
    * embed job runs after so it sees the fresh index; the discovery sweep runs after that.
-   * Each writes its own health record + optional ntfy push, and any hard failure is rethrown
-   * so the platform's native cron status reflects it.
+   * Layered onto that spine are the bounded reconcile/audit passes: phase-1 normalization
+   * audits (alias/edge/title) that converge captured data, and phase-5 signal producers
+   * (reconcile-signals, archetype-derive, dup-scan) that read the fresh index + embeddings
+   * to enqueue proposals. Each job writes its own health record + optional ntfy push, and any
+   * hard failure is rethrown so the platform's native cron status reflects it.
    */
   async scheduled(_controller: ScheduledController, env: Env, _ctx: ExecutionContext): Promise<void> {
     const corpus = createR2CorpusStore(env.CORPUS);
@@ -248,6 +254,12 @@ export default {
       //   * edge audit — deletes rep-resolved self-loops deterministically, resolves 2-cycles
       //     with one direction check, validates standing satisfies edges (drop on no).
       runEdgeAuditJob(env, buildEdgeAuditDeps(env)),
+      // The corpus TITLE re-audit (recipe-title-audit): converge pre-existing flowery imported
+      // titles to the naming contract — bounded per tick, one-shot-stamped (`title_audit`; new
+      // imports born-stamped), guarded word-subset title-clean, frontmatter `title` only (slugs
+      // are immutable ids). Runs in phase 1, BEFORE the phase-2 projection, so a rewrite is
+      // re-indexed the same tick; quiesces to a ~0-LLM no-op once the backlog drains.
+      runTitleAuditJob(env, buildTitleAuditDeps(env, corpus)),
       // Re-key sku_cache rows onto the canonical id as capture moves resolution under them —
       // the cache's counterpart to the grocery/pantry reconcile above. Plain code, no LLM,
       // idempotent every tick (a converged pass plans nothing); no capture side effect, so
@@ -276,10 +288,17 @@ export default {
     // Phase 4: the sweep runs after the index + embeddings are fresh (it dedups + matches against
     // them), using the operator's stored config loaded once above.
     const phase4 = await Promise.allSettled([runDiscoverySweepJob(env, buildDiscoveryDeps(env), sweepConfig)]);
-    // Phase 5: profile-reconciliation producers — the deterministic signal pass (no model) plus
-    // the generative archetype-derivation pass (self-gated to ~daily; names new archetypes on the
-    // small model and enqueues add_vibe proposals). Both feed the pending_proposals queue.
-    const phase5 = await Promise.allSettled([runReconcileSignalsJob(env), runArchetypeDerivationJob(env)]);
+    // Phase 5: the pending_proposals producers — the deterministic profile signal pass (no
+    // model), the generative archetype-derivation pass (self-gated to ~daily; names new
+    // archetypes on the small model and enqueues add_vibe proposals), and the corpus dup-scan
+    // (recipe-dedup): bounded + watermarked pure arithmetic over the phase-2 projection's fresh
+    // ingredients_key and the phase-3 reconcile's fresh vectors (the same freshness ordering the
+    // sweep relies on), surfacing near-duplicate pairs as operator merge_recipes proposals.
+    const phase5 = await Promise.allSettled([
+      runReconcileSignalsJob(env),
+      runArchetypeDerivationJob(env),
+      runDupScanJob(env, buildDupScanDeps(env)),
+    ]);
     const failed = [...phase1, ...phase2, ...phase3, ...phase4, ...phase5].find((r) => r.status === "rejected");
     if (failed && failed.status === "rejected") throw failed.reason;
   },

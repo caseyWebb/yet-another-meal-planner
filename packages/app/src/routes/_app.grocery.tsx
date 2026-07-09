@@ -1,14 +1,18 @@
 // Grocery (member-app-core 7.7 + member-app-grocery 5.x + member-app-differentiators
-// 5.2/5.3): the page renders the DERIVED to-buy view — explicit and virtual
-// (plan-derived) lines with `origin` attribution, pantry coverage, the `underived`
-// notice — plus the P1 stored-row interactions, the order flow (preview → disposition
-// → commit; ONLINE-ONLY), and the P4 differentiators: the SUBSTITUTIONS PANEL (the
-// deterministic read behind POST /api/grocery/substitutions — reason pills with real
-// prices, relation-labeled siblings, per-row Swap/Keep mapped to the REAL writes per
-// line origin (staged order override / add+remove / materialize+staged exclude),
-// per-session dismissals) and the AISLE/CATEGORY grouping toggle over the enriched
-// to-buy read (?aisles=1) with the honest "Aisle unknown" bucket — never a fabricated
-// aisle number; no multi-store picker (placements are the Kroger primary's only).
+// 5.2/5.3, refactored by inline-substitution-hints): the page renders the DERIVED
+// to-buy view — explicit and virtual (plan-derived) lines with `origin` attribution,
+// pantry coverage, the `underived` notice — plus the P1 stored-row interactions, the
+// order flow (preview → disposition → commit; ONLINE-ONLY), and the AISLE/CATEGORY
+// grouping toggle over the ALWAYS-enriched to-buy read (?enrich=1) with the honest
+// "Aisle unknown" bucket — never a fabricated aisle number; no multi-store picker
+// (placements are the Kroger primary's only). The enriched read also carries each
+// line's cheap cross-ingredient `substitutes[]` (siblings + `in_pantry` +
+// `on_sale_hint`), rendered INLINE on the to-buy row (relation label, pantry/sale
+// pills, a per-row Swap mapped to the real writes per line origin — add+remove /
+// materialize+staged exclude — and a per-session dismiss); no separate substitutions
+// panel. The same-identity price/availability alternatives (the slim
+// `suggest_substitutions` op) surface instead in the ORDER DIALOG at preview time
+// (reason pills with real prices, a per-row Swap that stages an order override).
 import * as React from "react";
 import { Link, createFileRoute } from "@tanstack/react-router";
 import { useQueryClient, type QueryClient } from "@tanstack/react-query";
@@ -29,7 +33,6 @@ import {
   IconCheck,
   IconChevronRight,
   IconPlus,
-  IconSwap,
   IconTrash,
   IconX,
   SegmentedControl,
@@ -50,7 +53,6 @@ import {
   type PantryCovered,
   type SiblingSuggestion,
   type SubstitutionAlternative,
-  type SubstitutionsResult,
   type ToBuyLine,
 } from "../lib/data";
 
@@ -153,21 +155,22 @@ function groupByAisle(lines: ToBuyLine[], hasLocation: boolean): LineGroup[] {
 
 function GroceryPage() {
   const grocery = useGrocery();
-  // The grouping toggle (5.3): aisle mode opts into the enriched read (?aisles=1);
-  // category mode keeps the default (zero-Kroger) read byte-identical.
+  // The grouping toggle (5.3) is a pure client-side render choice now — the read is
+  // ALWAYS the enriched view (inline-substitution-hints D1/D2) so substitute hints
+  // render under both modes, not just aisle mode.
   const [groupMode, setGroupMode] = React.useState<"category" | "aisle">("category");
-  const toBuy = useToBuy(groupMode === "aisle");
+  const toBuy = useToBuy(true);
   const profile = useProfile();
   const qc = useQueryClient();
   const online = useOnline();
   const setMutation = useGrocerySet();
   const removeMutation = useGroceryRemove();
   const [orderOpen, setOrderOpen] = React.useState(false);
-  // The substitutions panel (5.2) + the staged swap state it feeds the order commit:
-  // per-session client state only (D4) — nothing persists until the order is placed.
-  const [subsOpen, setSubsOpen] = React.useState(false);
+  // The inline substitute hints' per-session client state (D6/D7): dismissals are
+  // never persisted, and a cross-ingredient swap on a virtual (plan) row stages an
+  // order-scoped exclude carried into the order dialog's preview/commit — nothing
+  // persists server-side until the order is placed.
   const [dismissed, setDismissed] = React.useState<ReadonlySet<string>>(new Set());
-  const [stagedPicks, setStagedPicks] = React.useState<Record<string, string>>({});
   const [stagedExcludes, setStagedExcludes] = React.useState<ReadonlySet<string>>(new Set());
 
   const rows = grocery.data?.items ?? [];
@@ -186,39 +189,33 @@ function GroceryPage() {
     setDismissed((cur) => new Set([...cur, ...keys]));
   }
 
-  /** Same-identity swap accept (D4): staged as an order `override` — no server state
-   *  changes until the order commit, where the forced SKU is revalidated. The row
-   *  stays visible showing its staged state (Keep still un-stages nothing — it only
-   *  hides the row; the stage is undone by not committing). */
-  function stageSwap(line: LineSuggestions, alt: SubstitutionAlternative) {
-    setStagedPicks((cur) => ({ ...cur, [line.for.name]: alt.sku }));
-    toast(`Swap staged — ${line.for.name} orders as ${alt.brand || alt.description} at the next Kroger order`);
-  }
-
-  /** Cross-ingredient swap accept (D4), mapped per line origin. */
-  async function swapSibling(line: LineSuggestions, sib: SiblingSuggestion, rowKey: string) {
-    const origin = line.for.origin;
+  /** Cross-ingredient swap accept (inline list hint, D6/D7), mapped per line origin:
+   *  an explicit row (`list`/`both`) is the real add + remove; a virtual (`plan`) row
+   *  materializes the replacement and stages an order-scoped `exclude` of the
+   *  original, applied at the eventual `place_order` — the plan itself is untouched. */
+  async function swapSibling(line: ToBuyLine, sib: SiblingSuggestion, rowKey: string) {
+    const origin = line.origin;
     // The replacement lands as an explicit row carrying the mock's provenance note.
     const added = await api.api.grocery.items
-      .$post({ json: { name: sib.id, note: `swapped from ${line.for.name}` } })
+      .$post({ json: { name: sib.id, note: `swapped from ${line.name}` } })
       .catch(() => null);
     if (!added?.ok) {
       toast("Couldn't add the replacement — try again");
       return;
     }
     if (origin === "list" || origin === "both") {
-      await api.api.grocery.items[":name"].$delete({ param: { name: line.for.name } }).catch(() => null);
+      await api.api.grocery.items[":name"].$delete({ param: { name: line.name } }).catch(() => null);
     }
     if (origin === "plan" || origin === "both") {
       // A derived line has no row to remove (and removing a `both` row un-pins, not
       // un-plans): exclude it from THIS order only — the plan still lists it.
-      setStagedExcludes((cur) => new Set([...cur, line.for.name]));
+      setStagedExcludes((cur) => new Set([...cur, line.name]));
     }
     dismiss([rowKey]);
     toast(
       origin === "list"
-        ? `Swapped ${line.for.name} for ${sib.label}`
-        : `Added ${sib.label}; ${line.for.name} is excluded from this order — the plan still lists it`,
+        ? `Swapped ${line.name} for ${sib.label}`
+        : `Added ${sib.label}; ${line.name} is excluded from this order — the plan still lists it`,
     );
     await refreshGrocery(qc);
   }
@@ -266,18 +263,8 @@ function GroceryPage() {
               onChange={setGroupMode}
             />
           </div>
-          {/* Substitutions + ordering are ONLINE-ONLY (D5/D10): disabled with a hint
-              offline, never queued — reconnect re-enables, nothing auto-fires. */}
-          <Button
-            variant="outline"
-            size="sm"
-            data-testid="subs-open"
-            disabled={!online}
-            title={online ? undefined : "You're offline — substitutions need the store"}
-            onClick={() => setSubsOpen(true)}
-          >
-            <IconSwap /> Propose substitutions
-          </Button>
+          {/* Ordering is ONLINE-ONLY (D5/D10): disabled with a hint offline, never
+              queued — reconnect re-enables, nothing auto-fires. */}
           {krogerReady ? (
             <Button
               size="sm"
@@ -291,21 +278,10 @@ function GroceryPage() {
           ) : null}
         </div>
       ) : null}
-      {subsOpen ? (
-        <SubsPanel
-          dismissed={dismissed}
-          stagedPicks={stagedPicks}
-          online={online}
-          onDismiss={dismiss}
-          onSwap={(l, a) => stageSwap(l, a)}
-          onSwapSibling={(l, s, k) => void swapSibling(l, s, k)}
-          onClose={() => setSubsOpen(false)}
-        />
-      ) : null}
       {orderOpen ? (
         <OrderPanel
           inCartCount={inCart.length}
-          staged={{ picks: stagedPicks, excludes: stagedExcludes }}
+          staged={{ excludes: stagedExcludes }}
           onClose={() => setOrderOpen(false)}
         />
       ) : null}
@@ -328,7 +304,15 @@ function GroceryPage() {
               {grp.lines.length ? (
                 <ul className="g-list">
                   {grp.lines.map((l) => (
-                    <ToBuyItem key={l.key} line={l} row={rowByName.get(l.name.toLowerCase())} />
+                    <ToBuyItem
+                      key={l.key}
+                      line={l}
+                      row={rowByName.get(l.name.toLowerCase())}
+                      online={online}
+                      dismissed={dismissed}
+                      onDismiss={dismiss}
+                      onSwapSibling={(s, k) => void swapSibling(l, s, k)}
+                    />
                   ))}
                 </ul>
               ) : null}
@@ -337,7 +321,15 @@ function GroceryPage() {
                   <h3 className="g-subhead">{sub.label}</h3>
                   <ul className="g-list">
                     {sub.lines.map((l) => (
-                      <ToBuyItem key={l.key} line={l} row={rowByName.get(l.name.toLowerCase())} />
+                      <ToBuyItem
+                        key={l.key}
+                        line={l}
+                        row={rowByName.get(l.name.toLowerCase())}
+                        online={online}
+                        dismissed={dismissed}
+                        onDismiss={dismiss}
+                        onSwapSibling={(s, k) => void swapSibling(l, s, k)}
+                      />
                     ))}
                   </ul>
                 </div>
@@ -371,12 +363,33 @@ function GroceryPage() {
   );
 }
 
-/** One to-buy line: explicit (P1 behaviors) or virtual (plan cue, pin, no remove — D6). */
-function ToBuyItem({ line, row }: { line: ToBuyLine; row?: GroceryRow }) {
+/** One to-buy line: explicit (P1 behaviors) or virtual (plan cue, pin, no remove — D6),
+ *  plus its INLINE substitute hints (inline-substitution-hints D6/D7): each
+ *  `line.substitutes[]` entry (present only on the enriched read) renders relation-
+ *  labeled, with `in_pantry`/`on_sale_hint` pills, a per-row accept (Swap — the same
+ *  add+remove / materialize+staged-exclude writes `swapSibling` always did) and a
+ *  per-session dismiss. A line with no (or fully dismissed) substitutes renders with
+ *  no extra container — the honest-sparsity contract (D6). */
+function ToBuyItem({
+  line,
+  row,
+  online,
+  dismissed,
+  onDismiss,
+  onSwapSibling,
+}: {
+  line: ToBuyLine;
+  row?: GroceryRow;
+  online: boolean;
+  dismissed: ReadonlySet<string>;
+  onDismiss: (rowKeys: string[]) => void;
+  onSwapSibling: (sib: SiblingSuggestion, rowKey: string) => void;
+}) {
   const addMutation = useGroceryAdd();
   const setMutation = useGrocerySet();
   const removeMutation = useGroceryRemove();
   const virtual = line.origin === "plan";
+  const visibleSubs = (line.substitutes ?? []).filter((s) => !dismissed.has(`${line.key}::sib:${s.id}`));
 
   function toggleCart() {
     if (virtual) {
@@ -442,6 +455,50 @@ function ToBuyItem({ line, row }: { line: ToBuyLine; row?: GroceryRow }) {
           ) : null}
           {line.note ? <span className="g-note">· {line.note}</span> : null}
         </div>
+        {visibleSubs.length > 0 ? (
+          <ul className="subs-list">
+            {visibleSubs.map((sib) => {
+              const rowKey = `${line.key}::sib:${sib.id}`;
+              return (
+                <li className="subs-row" key={sib.id} data-testid="subs-row" data-for={line.name}>
+                  <div className="subs-swap">
+                    <span className="subs-from">{line.name}</span>
+                    <IconChevronRight />
+                    <span className="subs-to">{sib.label}</span>
+                    <span className="subs-why" data-testid="subs-relation">
+                      {RELATION_LABEL[sib.relation.role]}
+                      {sib.relation.via ? ` · via ${sib.relation.via}` : ""}
+                    </span>
+                    {sib.in_pantry ? (
+                      <span className="subs-why" data-testid="subs-pantry-hit">
+                        in your pantry
+                      </span>
+                    ) : null}
+                    {sib.on_sale_hint ? (
+                      <span className="subs-why" data-testid="subs-sale-hint">
+                        on sale — ${sib.on_sale_hint.price.promo.toFixed(2)} at your store
+                      </span>
+                    ) : null}
+                  </div>
+                  <div className="subs-actions">
+                    <Button
+                      size="sm"
+                      data-testid="subs-accept"
+                      disabled={!online}
+                      title={online ? undefined : "You're offline — substitutions need the store"}
+                      onClick={() => onSwapSibling(sib, rowKey)}
+                    >
+                      Swap
+                    </Button>
+                    <Button size="sm" variant="ghost" data-testid="subs-dismiss" onClick={() => onDismiss([rowKey])}>
+                      Keep
+                    </Button>
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        ) : null}
       </div>
       {virtual ? (
         <button
@@ -599,7 +656,9 @@ function PantryHave({ covered }: { covered: PantryCovered[] }) {
   );
 }
 
-// ── The substitutions panel (member-app-differentiators 5.2, D1-D4, D10) ─────────────
+// ── Substitution rendering helpers, shared by the inline list hints (ToBuyItem, above)
+// and the order dialog's alternatives (OrderPreview, below) — inline-substitution-
+// hints D5-D7. ──────────────────────────────────────────────────────────────────────
 
 /** Human unit price: base units (g/ml/ct) rendered in shopper units (oz / fl oz / ea). */
 function unitPriceLabel(unitPrice: number | undefined, baseUnit: string | undefined): string | null {
@@ -632,171 +691,6 @@ const RELATION_LABEL: Record<SiblingSuggestion["relation"]["role"], string> = {
   generalization: "the general form",
 };
 
-function SubsPanel(props: {
-  dismissed: ReadonlySet<string>;
-  stagedPicks: Record<string, string>;
-  /** The substitutions panel is online-only anyway (D5/D12) — a cross-ingredient swap
-   *  is a real add+remove and must not silently no-op its delete if connectivity drops
-   *  mid-session while the panel is still open (D10's disable-with-hint posture). */
-  online: boolean;
-  onDismiss: (rowKeys: string[]) => void;
-  onSwap: (line: LineSuggestions, alt: SubstitutionAlternative) => void;
-  onSwapSibling: (line: LineSuggestions, sib: SiblingSuggestion, rowKey: string) => void;
-  onClose: () => void;
-}) {
-  // ONLINE-ONLY (D12): one explicit fetch on open — never queued, replayed, or cached.
-  const [state, setState] = React.useState<
-    { at: "loading" } | { at: "error"; message: string } | { at: "ready"; result: SubstitutionsResult }
-  >({ at: "loading" });
-
-  React.useEffect(() => {
-    let cancelled = false;
-    fetchSubstitutions({})
-      .then((result) => {
-        if (!cancelled) setState({ at: "ready", result });
-      })
-      .catch((e: { message?: string }) => {
-        if (!cancelled) setState({ at: "error", message: e.message || "Couldn't fetch suggestions" });
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  /** One renderable suggestion row: the top alternative per line, plus each sibling. */
-  interface Row {
-    key: string;
-    line: LineSuggestions;
-    alt?: SubstitutionAlternative;
-    sib?: SiblingSuggestion;
-  }
-  const rows: Row[] = [];
-  if (state.at === "ready") {
-    for (const line of state.result.suggestions) {
-      const alt = line.alternatives[0];
-      // A same-identity alternative row only when there is something to say (a reason,
-      // or the current pick is out of stock) — never a swap for swap's sake.
-      if (alt && (alt.reasons.length > 0 || line.status === "current_unavailable")) {
-        rows.push({ key: `${line.for.key}::alt:${alt.sku}`, line, alt });
-      }
-      for (const sib of line.siblings) {
-        rows.push({ key: `${line.for.key}::sib:${sib.id}`, line, sib });
-      }
-    }
-  }
-  const visible = rows.filter((r) => !props.dismissed.has(r.key));
-
-  function dismissAll() {
-    props.onDismiss(visible.map((r) => r.key));
-    props.onClose();
-  }
-
-  return (
-    <section className="subs-panel" data-testid="subs-panel">
-      <header className="subs-head">
-        <div>
-          <h2>
-            <IconSwap /> Proposed substitutions
-          </h2>
-          <p>Swaps found for what's on your list — out of stock, on sale, or already on hand.</p>
-        </div>
-        <button className="icon-btn" data-testid="subs-close" title="Dismiss all" onClick={dismissAll}>
-          <IconX />
-        </button>
-      </header>
-
-      {state.at === "loading" ? <p className="subs-empty">Checking your list…</p> : null}
-      {state.at === "error" ? (
-        <p className="subs-empty" data-testid="subs-error">
-          {state.message}
-        </p>
-      ) : null}
-
-      {state.at === "ready" ? (
-        visible.length ? (
-          <ul className="subs-list">
-            {visible.map((r) => (
-              <li className="subs-row" key={r.key} data-testid="subs-row" data-for={r.line.for.name}>
-                {r.alt ? (
-                  <div className="subs-swap">
-                    <span className="subs-from">{r.line.for.name}</span>
-                    {r.line.status === "current_unavailable" ? (
-                      <span className="subs-why warn" data-testid="subs-out-of-stock">
-                        out of stock
-                      </span>
-                    ) : null}
-                    <IconChevronRight />
-                    <span className="subs-to">
-                      {r.alt.brand ? `${r.alt.brand} · ` : ""}
-                      {r.alt.description}
-                      {r.alt.size ? ` · ${r.alt.size}` : ""}
-                    </span>
-                    {reasonPills(r.line, r.alt).map((p) => (
-                      <span className="subs-why" key={p} data-testid="subs-reason">
-                        {p}
-                      </span>
-                    ))}
-                  </div>
-                ) : (
-                  <div className="subs-swap">
-                    <span className="subs-from">{r.line.for.name}</span>
-                    <IconChevronRight />
-                    <span className="subs-to">{r.sib!.label}</span>
-                    <span className="subs-why" data-testid="subs-relation">
-                      {RELATION_LABEL[r.sib!.relation.role]}
-                      {r.sib!.relation.via ? ` · via ${r.sib!.relation.via}` : ""}
-                    </span>
-                    {r.sib!.in_pantry ? (
-                      <span className="subs-why" data-testid="subs-pantry-hit">
-                        in your pantry
-                      </span>
-                    ) : null}
-                    {r.sib!.on_sale_hint ? (
-                      <span className="subs-why" data-testid="subs-sale-hint">
-                        on sale — ${r.sib!.on_sale_hint.price.promo.toFixed(2)} at your store
-                      </span>
-                    ) : null}
-                  </div>
-                )}
-                <div className="subs-actions">
-                  {r.alt ? (
-                    props.stagedPicks[r.line.for.name] === r.alt.sku ? (
-                      <Button size="sm" variant="outline" disabled data-testid="subs-staged">
-                        Staged for the next order
-                      </Button>
-                    ) : (
-                      <Button size="sm" data-testid="subs-accept" onClick={() => props.onSwap(r.line, r.alt!)}>
-                        Swap
-                      </Button>
-                    )
-                  ) : (
-                    <Button
-                      size="sm"
-                      data-testid="subs-accept"
-                      disabled={!props.online}
-                      title={props.online ? undefined : "You're offline — substitutions need the store"}
-                      onClick={() => props.onSwapSibling(r.line, r.sib!, r.key)}
-                    >
-                      Swap
-                    </Button>
-                  )}
-                  <Button size="sm" variant="ghost" data-testid="subs-dismiss" onClick={() => props.onDismiss([r.key])}>
-                    Keep
-                  </Button>
-                </div>
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <p className="subs-empty" data-testid="subs-empty">
-            No substitutions to suggest right now — your list looks good.
-          </p>
-        )
-      ) : null}
-    </section>
-  );
-}
-
 // ── The order panel (D7/D11): preview → disposition → commit over one endpoint. ──────
 
 type OrderPhase =
@@ -812,20 +706,26 @@ function OrderPanel({
   onClose,
 }: {
   inCartCount: number;
-  /** Swaps staged from the substitutions panel (D4): overrides (same-identity picks)
-   *  and order-scoped excludes for swapped-away derived lines — client state until commit. */
-  staged?: { picks: Record<string, string>; excludes: ReadonlySet<string> };
+  /** An order-scoped exclude staged by an inline list-hint swap on a virtual (plan)
+   *  row (D7): client state carried from the list into this dialog, applied at the
+   *  preview/commit. Same-identity swaps are staged INSIDE this dialog now (the
+   *  alternatives fetch below), not carried in from the list. */
+  staged?: { excludes: ReadonlySet<string> };
   onClose: () => void;
 }) {
   const qc = useQueryClient();
   const [phase, setPhase] = React.useState<OrderPhase>({ at: "loading" });
   // Dispositions, keyed by line name (the op resolves them through the canonical
-  // funnel) — seeded with the substitutions panel's staged swaps.
+  // funnel) — seeded with the inline hints' staged excludes.
   const [excluded, setExcluded] = React.useState<Set<string>>(new Set(staged?.excludes ?? []));
   const [quantities, setQuantities] = React.useState<Record<string, number>>({});
-  const [picks, setPicks] = React.useState<Record<string, string>>({ ...(staged?.picks ?? {}) });
+  const [picks, setPicks] = React.useState<Record<string, string>>({});
   const [confirmedPartials, setConfirmedPartials] = React.useState<Set<string>>(new Set());
   const [cartAcknowledged, setCartAcknowledged] = React.useState(false);
+  // The same-identity alternatives (inline-substitution-hints D5), keyed by resolved
+  // line name — fetched ONLINE-ONLY at preview time, best-effort: a failure here must
+  // not block the order preview itself, it just shows no alternatives pills.
+  const [alternatives, setAlternatives] = React.useState<Record<string, LineSuggestions>>({});
 
   // The order flow is ONLINE-ONLY (D7/D12): plain fetches through the typed client —
   // never a persisted/replayed mutation (the cart write is not idempotent).
@@ -837,19 +737,29 @@ function OrderPanel({
 
   React.useEffect(() => {
     let cancelled = false;
-    // The preview carries any staged swaps so the member reviews the REAL cart:
-    // forced SKUs are revalidated by the op's contract; excludes drop before resolution.
-    const stagedPicks = staged?.picks ?? {};
+    // The preview carries any staged exclude so the member reviews the REAL cart —
+    // a plan-derived line swapped away inline drops before resolution.
     const stagedExcludes = staged?.excludes ?? new Set<string>();
     post({
       preview: true,
-      ...(Object.keys(stagedPicks).length
-        ? { overrides: Object.entries(stagedPicks).map(([name, sku]) => ({ name, sku })) }
-        : {}),
       ...(stagedExcludes.size ? { exclude: [...stagedExcludes] } : {}),
     })
       .then((result) => {
-        if (!cancelled) setPhase({ at: "preview", result });
+        if (cancelled) return;
+        setPhase({ at: "preview", result });
+        const names = result.resolved.map((l) => l.name);
+        if (names.length === 0) return;
+        // Best-effort — the preview itself already succeeded; a failure here simply
+        // renders no alternatives pills (D5's scenario "No alternatives renders
+        // nothing" degrades the same way as a fetch error).
+        fetchSubstitutions({ names })
+          .then((subs) => {
+            if (cancelled) return;
+            const byName: Record<string, LineSuggestions> = {};
+            for (const line of subs.suggestions) byName[line.for.name] = line;
+            setAlternatives(byName);
+          })
+          .catch(() => {});
       })
       .catch((e: { message?: string }) => {
         if (!cancelled) setPhase({ at: "error", message: e.message || "Preview failed" });
@@ -933,6 +843,7 @@ function OrderPanel({
       {phase.at === "preview" || phase.at === "committing" ? (
         <OrderPreview
           result={phase.result}
+          alternatives={alternatives}
           busy={phase.at === "committing"}
           excluded={excluded}
           setExcluded={setExcluded}
@@ -960,6 +871,9 @@ function priceLabel(l: { price?: { regular: number; promo: number }; on_sale?: b
 
 function OrderPreview(props: {
   result: OrderOutcome;
+  /** The slim substitution op's same-identity alternatives (inline-substitution-hints
+   *  D5), keyed by resolved line name — empty until the online-only fetch resolves. */
+  alternatives: Record<string, LineSuggestions>;
   busy: boolean;
   excluded: Set<string>;
   setExcluded: (v: Set<string>) => void;
@@ -985,6 +899,12 @@ function OrderPreview(props: {
     else next.add(name);
     props.setConfirmedPartials(next);
   };
+  /** Same-identity swap accept (D5/D7): stages a `place_order` `override` — no server
+   *  state changes until the order commit, where the forced SKU is revalidated. */
+  const acceptAlternative = (name: string, alt: SubstitutionAlternative) => {
+    props.setPicks({ ...props.picks, [name]: alt.sku });
+    toast(`Swap staged — ${name} orders as ${alt.brand || alt.description} at the next Kroger order`);
+  };
 
   return (
     <div data-testid="order-preview">
@@ -999,50 +919,92 @@ function OrderPreview(props: {
           {result.resolved.map((l) => {
             const excluded = props.excluded.has(l.name);
             const price = priceLabel(l);
+            const lineSugg = props.alternatives[l.name];
+            const alt = lineSugg?.alternatives[0];
+            // An alternatives row only when there is something to say (a reason, or the
+            // current pick reads out of stock) — never a swap for swap's sake (D5,
+            // reused from the panel's same filter).
+            const showAlt = alt && (alt.reasons.length > 0 || lineSugg?.status === "current_unavailable");
             return (
-              <li className={`order-row${excluded ? " excluded" : ""}`} key={l.name} data-testid="order-line" data-name={l.name}>
-                <div className="order-line">
-                  <span className="order-name">{l.name}</span>
-                  <span className="order-pick">
-                    {l.brand}
-                    {l.size ? ` · ${l.size}` : ""}
-                  </span>
-                  {price ? <span className={`order-price${l.on_sale ? " sale" : ""}`}>{price}</span> : null}
-                </div>
-                <div className="order-actions">
-                  {l.assumed_quantity ? (
-                    <span className="order-qty" data-testid="order-qty">
-                      qty{" "}
-                      <input
-                        className="input"
-                        type="number"
-                        min={1}
-                        max={99}
-                        aria-label={`Quantity for ${l.name}`}
-                        value={props.quantities[l.name] ?? l.quantity}
-                        disabled={excluded || props.busy}
-                        onChange={(e) => {
-                          const n = Number(e.target.value);
-                          if (Number.isInteger(n) && n >= 1 && n <= 99) {
-                            props.setQuantities({ ...props.quantities, [l.name]: n });
-                          }
-                        }}
-                      />
+              <React.Fragment key={l.name}>
+                <li className={`order-row${excluded ? " excluded" : ""}`} data-testid="order-line" data-name={l.name}>
+                  <div className="order-line">
+                    <span className="order-name">{l.name}</span>
+                    <span className="order-pick">
+                      {l.brand}
+                      {l.size ? ` · ${l.size}` : ""}
                     </span>
-                  ) : (
-                    <span className="order-qty">qty {l.quantity}</span>
-                  )}
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    data-testid="order-exclude"
-                    disabled={props.busy}
-                    onClick={() => toggleExclude(l.name)}
-                  >
-                    {excluded ? "Include" : "Skip"}
-                  </Button>
-                </div>
-              </li>
+                    {price ? <span className={`order-price${l.on_sale ? " sale" : ""}`}>{price}</span> : null}
+                  </div>
+                  <div className="order-actions">
+                    {l.assumed_quantity ? (
+                      <span className="order-qty" data-testid="order-qty">
+                        qty{" "}
+                        <input
+                          className="input"
+                          type="number"
+                          min={1}
+                          max={99}
+                          aria-label={`Quantity for ${l.name}`}
+                          value={props.quantities[l.name] ?? l.quantity}
+                          disabled={excluded || props.busy}
+                          onChange={(e) => {
+                            const n = Number(e.target.value);
+                            if (Number.isInteger(n) && n >= 1 && n <= 99) {
+                              props.setQuantities({ ...props.quantities, [l.name]: n });
+                            }
+                          }}
+                        />
+                      </span>
+                    ) : (
+                      <span className="order-qty">qty {l.quantity}</span>
+                    )}
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      data-testid="order-exclude"
+                      disabled={props.busy}
+                      onClick={() => toggleExclude(l.name)}
+                    >
+                      {excluded ? "Include" : "Skip"}
+                    </Button>
+                  </div>
+                </li>
+                {showAlt ? (
+                  <li className="subs-row" data-testid="subs-row" data-for={l.name}>
+                    <div className="subs-swap">
+                      <span className="subs-from">{l.name}</span>
+                      {lineSugg!.status === "current_unavailable" ? (
+                        <span className="subs-why warn" data-testid="subs-out-of-stock">
+                          out of stock
+                        </span>
+                      ) : null}
+                      <IconChevronRight />
+                      <span className="subs-to">
+                        {alt!.brand ? `${alt!.brand} · ` : ""}
+                        {alt!.description}
+                        {alt!.size ? ` · ${alt!.size}` : ""}
+                      </span>
+                      {reasonPills(lineSugg!, alt!).map((p) => (
+                        <span className="subs-why" key={p} data-testid="subs-reason">
+                          {p}
+                        </span>
+                      ))}
+                    </div>
+                    <div className="subs-actions">
+                      {props.picks[l.name] === alt!.sku ? (
+                        <Button size="sm" variant="outline" disabled data-testid="subs-staged">
+                          Staged for the next order
+                        </Button>
+                      ) : (
+                        <Button size="sm" data-testid="subs-accept" onClick={() => acceptAlternative(l.name, alt!)}>
+                          Swap
+                        </Button>
+                      )}
+                    </div>
+                  </li>
+                ) : null}
+              </React.Fragment>
             );
           })}
         </ul>

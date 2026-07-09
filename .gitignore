@@ -83,3 +83,9 @@ Desktop.ini
 # Claude Code agent worktrees — ephemeral, per-agent git worktrees created for
 # isolated background tasks. Local tooling state, never committed.
 .claude/worktrees/
+.ds-sync/
+ds-bundle/
+.design-sync/.cache/
+.design-sync/learnings/
+.design-sync/node_modules
+packages/ui/.ds-compiled.css

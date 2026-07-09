@@ -98,6 +98,7 @@ source: https://www.seriouseats.com/lemon-garlic-roasted-chicken
   pairs_with: []
   ```
 - `favorite`, `reject`, and `last_cooked` are **per-tenant**, not shared content — `favorite`/`reject` live in each member's D1 `overlay` table; `last_cooked` is derived from the D1 `cooking_log` table. The shared D1 `recipes` table carries objective fields only. A shared recipe's frontmatter SHOULD NOT carry them; the reconcile strips them. (`status`/`rating` are likewise *tolerated and ignored*, not forbidden — a lingering value is stripped from the shared index, never validated; `create_recipe` stamps no `status`.) `update_recipe` is objective-only and rejects a `favorite`/`reject` edit toward `toggle_favorite` / `toggle_reject`, which write the caller's D1 overlay row.
+- `duplicate_of`: the **operator-merge tombstone** (`recipe-dedup`) — a non-empty string naming the surviving recipe's slug. Written **only through the operator-confirmed merge flow** (the agent-guided review of a `merge_recipes` proposal; it rides `update_recipe`'s pass-through frontmatter). The projection treats it as a **deliberate exclusion**: the marked file projects **no** `recipes` row and **no** `reconcile_errors` row (a curation decision, not a defect; counted as `tombstoned` in the projection summary), so the recipe leaves search/menu-generation/list on the next tick and its derived rows (`recipe_derived`, the `dup_scan` stamp) converge via the existing orphan prunes. **Reversible and non-destructive**: the R2 file, member notes, and cooking-log history stay intact, and removing the field restores the index row on the next projection. An empty-string value is ignored (projects normally). It is a narrow redirect marker, not a lifecycle state — there is still no `status` field and no `draft` limbo.
 - Disposition is **per-tenant and opt-out**: a recipe with no overlay row is **available** to that member by default. A member's feedback either favorites it (`toggle_favorite`) or hides it (`toggle_reject` → a hard gate that drops it from their `search_recipes` results) — the two are mutually exclusive, and one member's disposition never changes another's. There is no `active`/`draft` lifecycle and no per-member curated set.
 - `pairs_with`: slugs of other recipes, **required (may be `[]`)**. A *plating* edge — recipes eaten together on one plate (a main's companion **corpus** sides). Each slug MUST resolve to a real recipe (a reconcile skip-and-record otherwise — the dangling-`pairs_with` cross-corpus check); corpus sides are themselves recipes, so they reuse the normal import/grocery-list pipeline. Objective **shared content** (carried in the D1 `recipes` table, written by `update_recipe`) — not a per-tenant overlay field. **Primarily authored by the `recipe-sides` flow** — the standalone "sides for X" flow records the edge when a corpus side is confirmed for a corpus main; the **meal-plan** flow only **backfills** it opportunistically, for a pairing it confirms while composing a menu (both filter side candidates with `course: side`). **Open-world sides** — trivial preparations with no recipe file — are not recorded here (no slug to remember) and ride on the main's meal-plan row instead (the D1 `meal_plan` table's `sides` JSON column).
 - `course`: **required, non-empty** — an **open-vocabulary** classification of what kind of dish the recipe is — one or more of `main`, `side`, `dessert`, `breakfast`, `component` by convention (`component` = a **sub-recipe/building block** — a dough, a stock, a spice blend, a base sauce made to be used inside other dishes — not plated as its own course), but **any** string is allowed (e.g. `sauce`, `baked_good`) with **no controlled set and no code change** to extend it (contrast `protein`/`cuisine`, which ARE controlled). Authored as a string or an array of strings; the projection **normalizes** it to a lowercased, trimmed **array** (so `Main` → `["main"]`). A recipe that plates as more than one course carries multiple values (`course: [main, side]`). An absent or empty `course`, or a non-string/array value, is a Worker write-time / reconcile **hard failure** (rejected on write, skip-and-recorded by the reconcile); the *values* are never checked against a set. Objective **shared content** carried in the D1 `recipes` table, classified at import by `create_recipe` (and editable via `update_recipe`); `search_recipes` filters it by **containment**. The **meal-suggestion surfaces** (`propose_meal_plan`'s pools, the app's picked-for-you/trending rows) additionally gate on it by default: a recipe is a **meal candidate** when its effective `course` includes `main` or is empty (fail-open for a not-yet-classified recipe — `isMealCourse`, `src/recipes.ts`), so a component/side is never volunteered as a dinner. (`standalone` is **not** a contract field — whether a main is an already-rounded plate is inferred by the agent at plan time, not persisted; a lingering `standalone` field is ignored, never validated or indexed.)
@@ -144,6 +145,30 @@ The **classify pass**'s home for each recipe's **derived descriptive facets** (m
 
 **Effective-facet merge** (the projection, `src/recipe-facets.ts`): Tier A → classified (authored legacy only as fallback); Tier B → `authored ?? classified`; `tags` → `authored ∪ classified`; Tier C (`dietary`, `requires_equipment`, `time_total`, `pairs_with`) → authored, untouched. A not-yet-classified recipe projects its derived facets as empty (not an error). After the merge, the projection re-resolves the effective `ingredients_key`/`ingredients_full`/`perishable_ingredients` through the current ingredient resolver (see the recipe schema notes above) — this covers the authored Tier-A fallbacks too.
 
+## title_audit (D1 `title_audit` table — Worker-owned, shared)
+
+The **title re-audit**'s one-shot convergence stamp (migration 0044, `recipe-title-audit`). The scheduled pass (`src/title-audit.ts`, the `title-audit` job in `scheduled()` phase 1) audits each projected recipe **once**: it runs the guarded title-clean judgment (the discovery classifier's word-subset guard — a cleaned title may only *remove* words, fail-open), rewrites only the R2 frontmatter `title` when the accepted clean name differs, and stamps the outcome here. A recipe with a row never re-enters the backlog (`recipes.slug NOT IN title_audit`); **new writes are born-stamped** by both import paths (the sweep's import and `create_recipe`, `outcome = 'kept'` — their titles are clean at birth), so the pass drains exactly the pre-existing corpus and quiesces to a ~0-LLM no-op. A **sibling of `recipes`** keyed by `slug` (like `recipe_facets`/`recipe_derived`) because the `recipes` projection is rebuilt wholesale and cannot carry a durable stamp. Slugs are **immutable ids** — the audit never renames a slug or moves an R2 object; only the display title converges, and it reaches the index/description/embedding through the existing reconciles (the recipe-derived `content_hash` covers the title; the facet gate hash does not, so no reclassification).
+
+```sql
+-- D1 title_audit table — one-shot title-audit stamp. PRIMARY KEY (slug).
+slug         TEXT     -- recipe id (immutable; never renamed by the audit)
+audited_at   INTEGER  -- epoch ms of the stamp
+outcome      TEXT     -- 'kept' | 'cleaned'
+before_title TEXT     -- the title as audited (or at birth, for a born-stamp)
+after_title  TEXT     -- the rewritten title ('cleaned' outcomes only; NULL on 'kept')
+```
+
+## dup_scan (D1 `dup_scan` table — Worker-owned, shared)
+
+The **corpus dup-scan**'s per-recipe watermark (migration 0045, `recipe-dedup`). The scheduled scan (`src/dup-scan.ts`, the `dup-scan` job in `scheduled()` phase 5) compares each embedded corpus recipe against the full description-vector set **once per state**: `scanned_hash` is `hashText(description_hash + "|" + ingredients_key JSON)` at scan time, so a recipe whose stamp is missing or differs from its current hash re-queues — a regenerated/re-embedded description changes `description_hash`, and a facet re-derivation that changes the effective `ingredients_key` changes the JSON half. A tick scans at most `DUP_SCAN_MAX_PER_TICK` (25) queued recipes, then stamps them; a fully-stamped corpus plans zero comparisons. Rows whose slug has left `recipe_derived` are **pruned by the job** each tick (so a tombstoned or deleted recipe cannot re-trigger detection). A **sibling of `recipes`** keyed by `slug` (like `recipe_facets`/`title_audit`) because the projection is rebuilt wholesale and cannot carry a durable stamp. When no operator tenant is configured the job stamps **nothing** (a recorded no-op), preserving the backlog for a later operator.
+
+```sql
+-- D1 dup_scan table — the dup-scan's per-recipe watermark. PRIMARY KEY (slug).
+slug         TEXT  -- recipe id
+scanned_hash TEXT  -- hashText(description_hash | ingredients_key JSON) at scan time
+scanned_at   TEXT  -- ISO timestamp of the stamp
+```
+
 ## taste_derived (per-member, D1 `taste_derived` table — Worker-derived)
 
 Each member's **taste-text embedding** — the cold-start/taste signal the **discovery sweep**'s matcher scores a candidate against (alongside the member's favorited-recipe vectors). Derived from the member's authored `profile.taste` text via `env.AI` and **content-hash gated**, mirroring `recipe_derived`'s description/embedding gate exactly: it regenerates only when the taste text changes, so a steady profile does ~no work. Refreshed at the **start of each discovery-sweep tick** (a small reconcile pass, `src/taste-vector.ts`) and pruned for a member who clears their taste text or leaves the group. A NULL/absent vector means the member is matched on **favorites alone** (or the cold-start fallback). Keyed by `tenant`. Migration 0016.
@@ -188,22 +213,26 @@ updated_at TEXT
 
 ## pending_proposals (per-tenant, D1 `pending_proposals` table)
 
-The **profile-reconciliation** queue (migration 0027, `profile-reconciliation` capability): proposed profile edits that reconcile a member's **stated** palette against their **revealed** cooking behavior. Written by the deterministic `reconcile-signals` cron (`src/reconcile-signals.ts`, producer `signal-cron`) and, optionally, by the operator via `reconcile_enqueue_proposal` (producer `operator`); read/resolved by the member via `list_proposals`/`confirm_proposal` (`src/reconcile-db.ts`). `id` is a **stable hash of `(tenant, kind, target)`** so re-drafting is an idempotent `INSERT OR IGNORE` and a rejected proposal is never re-surfaced.
+The **profile-reconciliation** queue (migration 0027, `profile-reconciliation` capability): proposed profile edits that reconcile a member's **stated** palette against their **revealed** cooking behavior. Written by the deterministic `reconcile-signals` cron (`src/reconcile-signals.ts`, producer `signal-cron`) and, optionally, by the operator via `reconcile_enqueue_proposal` (producer `operator`); read/resolved by the member via `list_proposals`/`confirm_proposal` (`src/reconcile-db.ts`). `id` is a **stable hash of `(kind, target)`** so re-drafting is an idempotent `INSERT OR IGNORE` and a rejected proposal is never re-surfaced.
+
+The queue also carries **corpus-curation** proposals addressed to the **operator tenant only**: the `merge_recipes` kind (the `dup-scan` producer, `recipe-dedup` capability) surfaces a suspected near-duplicate recipe pair for review. Its `target` is the lexicographically-sorted pair key `"<slugA>+<slugB>"` and its payload is **review evidence, not a diff**: `{ slugs: [a, b], titles: [ta, tb], cosine, shared_ingredients: [...], jaccard, detector: "cosine" | "corroborated" }`. Accepting one records the decision **without any profile or corpus write** — the merge itself is agent-guided through the corpus write tools (see the `duplicate_of` frontmatter note above), performed before confirmation; rejecting keeps both recipes and suppresses the pair permanently (the stable id blocks re-insert).
 
 ```sql
--- D1 pending_proposals table. PRIMARY KEY (id). idx_pending_proposals_tenant_status on (tenant, status).
-id          TEXT  -- stable hash(tenant|kind|target) — dedup + no-re-propose
-tenant      TEXT  -- the member the proposal is for
-kind        TEXT  -- add_vibe | adjust_cadence | prune_vibe
-target      TEXT  -- the vibe id the proposal acts on
-payload     TEXT  -- JSON: the proposed profile diff (applied verbatim on accept)
+-- D1 pending_proposals table. PRIMARY KEY (tenant, id). idx_pending_proposals_tenant_status on (tenant, status).
+id          TEXT  -- stable hash(kind|target) — dedup + no-re-propose
+tenant      TEXT  -- the member the proposal is for (the operator, for merge_recipes)
+kind        TEXT  -- add_vibe | adjust_cadence | prune_vibe | merge_recipes
+target      TEXT  -- the vibe id the proposal acts on; the sorted "<a>+<b>" pair key for merge_recipes
+payload     TEXT  -- JSON: the proposed profile diff (applied verbatim on accept), or review evidence (merge_recipes)
 rationale   TEXT  -- human-readable "why"
 evidence    TEXT  -- JSON: the signals that triggered it
-status      TEXT  -- pending | accepted | rejected
-producer    TEXT  -- signal-cron | edge | operator
+status      TEXT  -- pending | accepted | rejected | superseded
+producer    TEXT  -- signal-cron | edge | operator | dup-scan
 created_at  TEXT
-resolved_at TEXT  -- when accepted/rejected
+resolved_at TEXT  -- when accepted/rejected/superseded
 ```
+
+`status` values: `pending` (awaiting the member); `accepted`/`rejected` are the **member verbs** (a `rejected` dismissal is a revealed signal, never rewritten by any pass); `superseded` is **system-set only** — the night-vibe derivation convergence sweep (`src/night-vibe-dedupe.ts`) marks a `pending` `add_vibe` proposal superseded when it is a near-duplicate (phrase-embedding cosine) of a palette vibe, a rejected proposal, or an earlier pending representative, so accumulated redundancy heals organically. The sweep only ever touches `pending` rows (`WHERE status='pending'`). Member-facing reads (`list_proposals`, `GET /api/vibes/proposals`) filter to `pending`, so `superseded` rows leave both surfaces; confirming a superseded id answers the same `conflict` as any other resolved status.
 
 ## overlay (per-tenant, D1 `overlay` table)
 
@@ -352,6 +381,7 @@ Example rows:
 - `note` holds a **one-off** brand request ("the fancy olive oil this time") — explicitly NOT `preferences` (the D1 profile), which is for standing dispositions.
 - Lifecycle: `active → in_cart → ordered` + the terminal **receive action**. The `status` **enum is only `active | in_cart | ordered`** — `received` is not a stored status but the receive *action* (the row is removed and, for `grocery`-kind items, the pantry restocked), identical across every fulfillment mode. `place_order` and the satellite receipt write the `active → in_cart` advance; `ordered` is reached by the **user-asserted** "I placed the order" advance (the `update_grocery_list` tool or the member app's mark-order-placed, both through the shared W3 transition guard — legal only from `in_cart`, stamping `ordered_at`) and by the satellite receipt's optional `mark_placed` re-post (`advanceOrderedRows`). Any status write that leaves `ordered` clears `ordered_at`.
 - **The to-buy set is a derived read, not rows.** The order-time set — `active` rows ∪ the meal plan's derived ingredient needs (each planned recipe's projected `ingredients_full`) − pantry on-hand, on canonical ids — is computed at read time by one shared operation (`read_to_buy` / `GET /api/grocery/to-buy`, the same algebra `place_order` flushes and the satellite pull-list serves). Plan needs are **never materialized into rows automatically**; an explicit `source: "menu"` row is a **materialization** (a derived need pinned/edited, or an open-world side's ingredients) and merges with the derived need under the same canonical id. A derived need whose row is in flight (`in_cart`/`ordered`) is suppressed from to-buy until received or re-listed.
+- **The enriched read's `substitutes[]` is derived, never stored.** With `enrich`/`?enrich=1`, each to-buy line additionally carries a `substitutes[]` array alongside its `placement` (see `sku_cache` below for the placement columns) — cross-ingredient hints computed fresh on every call from three already-persisted sources: a depth-1 walk over the `ingredient_edge` graph (the ingredient identity section below), an `in_pantry` join against the pantry table above (a row exists for the sibling's resolved id — no location needed), and, once the primary store resolves, an `on_sale_hint` match against that store's warmed flyer rollup (the flyer cache section below) — `{ sku, description, price: { regular, promo }, savings }`. Each entry also carries its relation label — `{ role: "satisfies" | "sibling" | "generalization", kind: "general" | "containment" | "membership", via? }` — naming how the walk reached it. Nothing here is written to a table: a line's `substitutes[]` is recomputed from the identity graph, pantry, and flyer rollup's current state on every enriched call, so it converges automatically as those sources change (a new edge, a pantry edit, a re-warmed flyer) with no reconcile of its own. The view's `flyer_as_of` is that rollup's own `as_of` (the flyer cache section below), surfaced alongside the hints it fed. See `docs/TOOLS.md`'s `read_to_buy` for the full shape and precedence.
 
 ## cooking_log (D1 table)
 
@@ -794,6 +824,41 @@ The member web app's session store (member-session-auth), in the `TENANT_KV` nam
 
 - `session:<token>` → `{ tenant, created_at, refreshed_at }` (epoch ms) — one record per live web session. `<token>` is 32 bytes from `crypto.getRandomValues`, base64url (256 bits, never logged); the same value rides the `__Host-session` cookie (`HttpOnly`, `Secure`, `SameSite=Lax`, `Path=/`, `Max-Age` 90d). Written with `expirationTtl` ≈ 90 days — **the KV TTL is the single expiry authority** (no second clock). The session middleware re-puts the record with a fresh TTL (rolling lifetime) only when `refreshed_at` is >24 h old, so a chatty session costs ≤1 extension write/day. Deleted on logout, and scanned-and-deleted by member revocation (`revoke()` matches the stored `tenant`); the middleware's `resolveTenant` allowlist re-check makes a missed key moot.
 - **Fixed-window rate-limit counters** (`KROGER_KV` — ephemeral infra, self-expiring): the shared limiter (`src/rate-limit.ts`, `underRateLimit(kv, key, max, windowS, now)` — fail-open, `expirationTtl: windowS × 2`) appends a window bucket to its caller's key. Callers: `ingest:rl:<keyId>:<bucket>` (the satellite push/pull surfaces, 120/min per key) and `login:rl:<ip>:<bucket>` (member login, 10/min per client IP from `CF-Connecting-IP`, `"unknown"` fallback).
+
+## Invite records (KV, not a repo file)
+
+The operator-issued **bootstrap** codes, in the `TENANT_KV` namespace beside the `tenant:*` allowlist and `session:*` records (member-session-auth / passkey-auth). Written by `onboard()`/`rotate()` (`src/admin.ts`), resolved by `resolveInvite` (`src/tenant.ts`); nothing edits them by hand. An invite code is a **single-use bootstrap**, not a standing credential: it authenticates a web `/login` and (while grace is on) a Claude.ai `/authorize` only until the member's first passkey enrollment consumes every `invite:*` mapping resolving to their tenant.
+
+- `invite:<code>` → `{ v, tenant, single_use, expires_at }` (JSON) — a code minted by `onboard()`/`rotate()`. `v` is the record-shape version; `tenant` is the allowlisted member id the code resolves to; `single_use` is `true`; `expires_at` is the code's expiry. Written with a **30-day KV `expirationTtl`**. `rotate()` mints a grace-bypassing single-use bootstrap — the recovery primitive for a member who lost every device or was never enrolled before grace was turned off (see `SELF_HOSTING.md`).
+- **Legacy shape:** a pre-migration invite record is a **bare-string** value (just the tenant id, no JSON). `resolveInvite` parses both shapes — the JSON record and the bare string — so existing codes keep resolving. Whether a legacy bare-string code still *authenticates* is governed by the operator `INVITE_GRACE` grace control (a Worker `var`, default on; see `SELF_HOSTING.md`): honored while grace is on, rejected once it is off. A single-use JSON bootstrap is always honored until consumed/expired, regardless of the grace flag.
+
+## WebAuthn ceremony state (KV, not a repo file)
+
+Ephemeral, single-use ceremony state for passkeys and the cross-device MCP approval (passkey-auth), in the `TENANT_KV` namespace — identity-adjacent, self-expiring, mirroring the Kroger PKCE-nonce pattern. Written/read by `src/webauthn.ts` / `src/authorize.ts`; nothing edits it by hand.
+
+- `webauthn:chal:<challenge>` → the ceremony **purpose** string, `"reg"` or `"auth"` (the challenge string itself is the key; no tenant is bound to the challenge — the enrolling tenant comes from the session at verify time). **Single-use** — deleted on verification — with a short TTL (~5 min). A returned attestation/assertion is verified against the stored challenge; a missing or already-consumed challenge, or a purpose mismatch, fails verification.
+- `authz:<ref>` → `{ oauth, clientName, code, status, tenant? }` — the Claude.ai `/authorize` **approval reference**. `oauth` is the base64-encoded parsed OAuth request; `clientName` is the requesting client's display name; `code` is the short human-readable verification code shown on both the `/authorize` page and the web app's `/connect` screen; `status` is `"pending"` → `"approved"`; `tenant` is bound server-side when a passkey-authenticated member approves (pending-only and one-shot — an approved reference is never re-bound). **Single-use** with a ~10-min TTL — the poll completes `completeAuthorization` EXACTLY ONCE and then deletes the reference; an expired or already-consumed reference is rejected and mints no token.
+
+## webauthn_credentials (per-tenant, D1 `webauthn_credentials` table)
+
+Each member's enrolled **passkeys** (passkey-auth) — one row per device, many per tenant. A member authenticates on both member surfaces with these credentials; the invite code is only the single-use bootstrap that seeds their first login/connection (see *Invite records* above). Written/read through `src/db.ts` (never `env.DB` directly), keyed by the credential id; `idx_webauthn_tenant` on `(tenant)` backs the list-by-tenant read and the revocation purge. Included in the per-tenant `TENANT_TABLES` batch (`src/admin.ts`), so member revocation deletes every row. Passkey login and connect-approve are rate-limited per client IP by the shared fixed-window limiter (`src/rate-limit.ts`, fail-open). Migration `0046_webauthn_credentials`.
+
+Binary fields are stored **base64url** (the Worker runs on `workerd` — no `Buffer`): `credential_id` and `public_key` are base64url text. The verification library is `@simplewebauthn/server@13.3.2` (pure WebCrypto), supporting at least ES256 (`-7`) and RS256 (`-257`); registration is `residentKey: "required"` / `attestation: "none"` with the WebAuthn user handle = the tenant id.
+
+```sql
+-- D1 webauthn_credentials table — one row per enrolled device. PRIMARY KEY (credential_id).
+-- idx_webauthn_tenant on (tenant).
+tenant        TEXT     -- owning member (many rows may share it)
+credential_id TEXT     -- WebAuthn credential id, base64url — the primary key
+public_key    TEXT     -- COSE public key, base64url
+sign_count    INTEGER  -- authenticator signature counter; STORED, NEVER ENFORCED (see below)
+transports    TEXT     -- JSON string[] of reported transports (e.g. ["internal","hybrid"]); may be []
+label         TEXT     -- optional human label for the device (nullable)
+created_at    INTEGER  -- epoch ms of enrollment
+last_used_at  INTEGER  -- epoch ms of the last successful assertion (nullable until first use)
+```
+
+**The signature counter is stored but never enforced.** `sign_count` is updated to the value each assertion reports, but an assertion is NEVER rejected because the counter failed to advance: synced passkeys (iCloud Keychain, Google Password Manager) report `0` or a non-incrementing counter, and enforcing would reject legitimate logins. Counter regression is therefore not treated as a cloning signal that blocks login.
 
 ## Background-job health (D1 `job_health` table)
 
@@ -1479,7 +1544,7 @@ aisle_side        TEXT  -- aisle side marker when Kroger reports one (e.g. "L")
 aisle_captured_at TEXT  -- ISO date the aisle placement was last captured; NULL = never
 ```
 
-**Aisle placement columns** carry the resolved product's Kroger `aisleLocation` at this row's `location_id`, written by `place_order`'s SKU-cache commit: the commit covers **every** resolved line (cache hits included — their revalidation carries fresh placement) and skips a row only when its learned fields (SKU, brand, size — and the aisle too, when the fresh mapping actually carries one) are identical, so placements refresh organically with each order. **Keep-on-null:** a revalidation whose response omits `aisleLocation` never clears a captured placement — it either matches on SKU/brand/size and is skipped, or a genuine SKU/brand/size change carries the stored row's placement forward instead of writing NULL; only a present fresh placement ever overwrites a stored one. They start NULL (no backfill) and converge order-by-order; `read_to_buy`'s `with_aisles` enrichment and the grocery page's aisle grouping read them at the caller's location (with the untagged-`''` legacy fallback).
+**Aisle placement columns** carry the resolved product's Kroger `aisleLocation` at this row's `location_id`, written by `place_order`'s SKU-cache commit: the commit covers **every** resolved line (cache hits included — their revalidation carries fresh placement) and skips a row only when its learned fields (SKU, brand, size — and the aisle too, when the fresh mapping actually carries one) are identical, so placements refresh organically with each order. **Keep-on-null:** a revalidation whose response omits `aisleLocation` never clears a captured placement — it either matches on SKU/brand/size and is skipped, or a genuine SKU/brand/size change carries the stored row's placement forward instead of writing NULL; only a present fresh placement ever overwrites a stored one. They start NULL (no backfill) and converge order-by-order; `read_to_buy`'s `enrich` enrichment and the grocery page's aisle grouping read them at the caller's location (with the untagged-`''` legacy fallback).
 
 Example rows:
 

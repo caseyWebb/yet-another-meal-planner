@@ -19,6 +19,7 @@ import { ToolError, runTool } from "./errors.js";
 import { validateFile } from "./validate.js";
 import { seedRecipeDescription } from "./recipe-embeddings.js";
 import { seedRecipeFacets } from "./recipe-classify.js";
+import { stampTitleAudit } from "./title-audit.js";
 import { acquireRecipeContent } from "./recipe-acquire.js";
 import { buildNewRecipe, canonicalizeUrl, indexSourceToSlug } from "./discovery.js";
 import { recipeSourceMap } from "./recipe-index.js";
@@ -101,7 +102,7 @@ export function registerDiscoveryTools(
     "create_recipe",
     {
       description:
-        "Write a NEW recipe to the SHARED corpus, as a single R2 object. Slug derives from the title unless `slug` is given. An imported recipe lands AVAILABLE to every member by default — there is no `status` to set. The body MUST contain ## Ingredients and ## Instructions. " +
+        "Write a NEW recipe to the SHARED corpus, as a single R2 object. Slug derives from the title's dish name — any parenthetical gloss is excluded from the slug basis (\"Jatjuk (Pine Nut Porridge)\" → `jatjuk`; the gloss stays in the title) — unless `slug` is given. An imported recipe lands AVAILABLE to every member by default — there is no `status` to set. The body MUST contain ## Ingredients and ## Instructions. " +
           "The DESCRIPTIVE facets are DERIVED on the cron from the body — you do NOT need to supply `protein`, `cuisine`, `course`, `season`, `tags`, `ingredients_key`, `perishable_ingredients`, `side_search_terms`, or `meal_preppable`; the classifier fills them and `create_recipe` seeds them at import. You MAY still pass `protein`/`cuisine`/`course`/`season`/`tags` as an OPTIONAL authored OVERRIDE (it wins over the classifier; `tags` is unioned with the classifier's). " +
           "REQUIRED authored fields (rejected with validation_failed if missing) — the gates + identity: `title` (non-empty); `source` (the URL, or `null` if hand-entered; set discovered_at + discovery_source for discovery imports); `time_total` (minutes or `null`); `dietary` (array, may be `[]` — a hard diet/allergen gate, AUTHOR it, do not rely on the classifier); `requires_equipment` (array, may be `[]` — a hard makeability gate; ONLY truly-irreplaceable gear: pressure-cooker | sous-vide-circulator | blender | ice-cream-maker, a wrong tag silently hides a makeable recipe; off-vocab rejected); `pairs_with` (array of recipe slugs, may be `[]`). " +
           "Override vocab when you do supply one: `protein` (chicken | beef | pork | lamb | turkey | fish | shellfish | egg | tofu | vegetarian | vegan | mixed — map shrimp→shellfish, salmon/cod/tuna→fish; `null` for no protein focus, never 'none'), `cuisine` (american | brazilian | cajun | caribbean | chinese | cuban | filipino | french | german | greek | indian | italian | japanese | korean | mediterranean | mexican | moroccan | peruvian | southwestern | spanish | thai | vietnamese; `null` if agnostic), `season` (spring | summer | fall | winter; `[]` year-round; off-vocab incl. `autumn`/capitalized is rejected). " +
@@ -151,6 +152,15 @@ export function registerDiscoveryTools(
           await seedRecipeFacets(env, finalSlug, frontmatter, body);
         } catch (e) {
           console.error(`[create_recipe] facet seed failed for ${finalSlug} (classify pass will backfill):`, e);
+        }
+        // Born-stamp the title audit (recipe-title-audit): the agent cleans the title
+        // conversationally at import, so the recipe never enters the re-audit backlog.
+        // Best-effort — a failed stamp must not fail the already-persisted import.
+        try {
+          const fmTitle = typeof frontmatter.title === "string" ? frontmatter.title : null;
+          await stampTitleAudit(env, { slug: finalSlug, outcome: "kept", before: fmTitle }, Date.now());
+        } catch (e) {
+          console.error(`[create_recipe] title-audit born-stamp failed for ${finalSlug}:`, e);
         }
         return { slug: finalSlug };
       }),

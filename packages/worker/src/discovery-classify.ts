@@ -27,8 +27,12 @@ export const CLASSIFY_MODEL = "@cf/mistralai/mistral-small-3.1-24b-instruct";
 /** Max corrective retries on a contract-invalid classification before parking. */
 export const CLASSIFY_MAX_RETRIES = 2;
 
-/** The judgment facets the model produces (title/source/pairs_with are pipeline-set). */
+/** The judgment fields the model produces (source/pairs_with are pipeline-set). `title` is the
+ *  CLEANED dish name — accepted only through the deterministic word-subset guard
+ *  (`cleanedTitleOrFallback`), falling back to the raw pipeline title on any rejected/missing
+ *  output, so cleaning can never invent an identity or park an import. */
 export const CLASSIFIED_FIELDS = [
+  "title",
   "protein",
   "cuisine",
   "course",
@@ -47,7 +51,10 @@ export const CLASSIFIED_FIELDS = [
 /** The facets the whole-corpus classify pass DERIVES into D1 (recipe-facet-derivation).
  *  A subset of CLASSIFIED_FIELDS: the Tier A (derived-only) + Tier B (override-default)
  *  facets. `time_total`, `dietary`, and `requires_equipment` stay authored (Tier C) and
- *  are NOT derived here even though the model still emits them for the discovery path. */
+ *  are NOT derived here even though the model still emits them for the discovery path.
+ *  `title` is deliberately absent too: the cleaned title is consumed only by the discovery
+ *  import leg and the title re-audit pass — the facet-derivation consumers never read it,
+ *  so an authored title is never overridden through the facet path. */
 export const DERIVED_FACET_FIELDS = [
   // Tier B — classified default, an authored frontmatter value overrides at merge.
   "protein",
@@ -66,6 +73,7 @@ export const DERIVED_FACET_FIELDS = [
 export const SYSTEM_PROMPT = [
   "You classify a recipe into a fixed set of metadata facets for a home-cooking app's recipe index. You are given the title, ingredients, and instructions; you output ONLY a JSON object with these keys and nothing else (no prose, no markdown fence):",
   "",
+  '- title: the CLEAN dish name. Strip SEO suffixes (a trailing or embedded "Recipe"), marketing qualifiers ("the best", "easy", "homemade", "classic", superlatives like "super soft and tender"), and editorial framing ("A Better X", "Our Go-To X", "Summer Dinner Recipe: X", "(Inspired By ...)"). Only REMOVE words — never add or substitute one. KEEP identity-bearing words that change what the dish IS: dietary qualifiers ("Vegan", "Vegetarian"), method qualifiers ("Slow Cooker", "Grilled"), and named variants. KEEP a foreign dish name over its English gloss, and KEEP an informative parenthetical gloss ("Jatjuk (Pine Nut Porridge)" stays as-is). When unsure, return the title unchanged — an already-clean title comes back identical.',
   "- protein: the COARSE protein bucket, or null. Map specifics to the bucket: shrimp/crab/clam/scallop -> shellfish; salmon/cod/tuna/any finfish -> fish; bacon/ham/sausage -> pork. One of: " +
     PROTEIN_VOCAB.join(" | ") +
     '. Use "mixed" only when two or more distinct animal/meat-substitute proteins are co-equal (e.g. shrimp AND egg AND tofu). For a plant protein-FORWARD dish (beans, lentils, tofu): if it has NO animal products at all (no meat, dairy, egg, honey) use "vegan"; if it has dairy or egg use "vegetarian". Use null when the dish has NO protein focus — a vegetable side, a plain grain/noodle dish, a sauce, a drink, OR a dessert (a custard dessert is null even though it has eggs/cream; they are not the focus). NEVER output "none" or any value off this list.',
@@ -97,13 +105,17 @@ interface Exemplar {
   output: Record<string, unknown>;
 }
 
-// Few-shot exemplars (Run-2 spike set) — each anchors a silent-failure call. Kept in sync
-// with scripts/spike-discovery-classify/prompt.mjs (the eval that validated them).
+// Few-shot exemplars (Run-2 spike set) — each anchors a silent-failure call. DIVERGED from
+// scripts/spike-discovery-classify/prompt.mjs (the eval that validated the base set): production
+// additions since the spike are `ingredients_full`, the component-course exemplar, and the
+// cleaned `title` output (the asparagus exemplar carries a flowery input title with the clean
+// output; the others echo their already-clean title so the model learns not to rewrite one).
 const FEW_SHOT: Exemplar[] = [
   {
     title: "Linguine alle Vongole",
     body: "Ingredients: linguine, fresh littleneck clams, garlic, white wine, red pepper flakes, parsley, olive oil.\nInstructions: Steam the clams open in garlic, wine, and pepper flakes; toss with al dente linguine and parsley.",
     output: {
+      title: "Linguine alle Vongole",
       protein: "shellfish",
       cuisine: "italian",
       course: ["main"],
@@ -120,9 +132,12 @@ const FEW_SHOT: Exemplar[] = [
     },
   },
   {
-    title: "Grilled Asparagus with Lemon",
+    // Anchors the title-clean: a flowery page title resolves to the clean dish name (the
+    // method word "Grilled" is identity and stays; "The Best"/"Recipe" framing goes).
+    title: "The Best Grilled Asparagus with Lemon Recipe",
     body: "Ingredients: asparagus, olive oil, lemon, flaky salt.\nInstructions: Toss asparagus in oil, grill until charred and tender, finish with lemon and salt.",
     output: {
+      title: "Grilled Asparagus with Lemon",
       protein: null,
       cuisine: null,
       course: ["side"],
@@ -145,6 +160,7 @@ const FEW_SHOT: Exemplar[] = [
     title: "Fresh Pasta Dough",
     body: "Ingredients: 00 flour, eggs, salt, olive oil.\nInstructions: Mound the flour, work in the eggs and salt, knead until smooth, rest 30 minutes, then roll into sheets.",
     output: {
+      title: "Fresh Pasta Dough",
       protein: null,
       cuisine: "italian",
       course: ["component"],
@@ -165,6 +181,7 @@ const FEW_SHOT: Exemplar[] = [
     title: "Chickpea Coconut Curry",
     body: "Ingredients: chickpeas, coconut milk, onion, garlic, ginger, curry powder, tomatoes, spinach.\nInstructions: Simmer aromatics and spices, add chickpeas, coconut milk, and tomatoes, wilt in spinach.",
     output: {
+      title: "Chickpea Coconut Curry",
       protein: "vegan",
       cuisine: "indian",
       course: ["main"],
@@ -246,10 +263,44 @@ async function runModel(env: Env, messages: Msg[]): Promise<Record<string, unkno
   return parseFacets(res?.response);
 }
 
-/** A candidate frontmatter for contract validation: model facets + pipeline-set fields. */
+/** Lowercased alphanumeric word tokens (case- and punctuation-insensitive comparison basis). */
+function titleWords(s: string): string[] {
+  return s.toLowerCase().match(/[a-z0-9]+/g) ?? [];
+}
+
+/**
+ * The deterministic word-subset guard on the model's cleaned title: accept it only when it is a
+ * non-empty string whose word MULTISET is a subset of the raw title's (compared lowercased on
+ * alphanumeric word boundaries — re-casing is free, removal is allowed, insertion of ANY word
+ * not in the raw title is rejected). On rejection (or a missing/empty/non-string value) the raw
+ * title is returned unchanged — cleaning FAILS OPEN and can never invent a dish identity or
+ * park an import. Shared by the discovery import leg (via `toFrontmatter`) and the title
+ * re-audit pass, so both are safe-by-construction against model drift.
+ */
+export function cleanedTitleOrFallback(raw: string, cleaned: unknown): string {
+  if (typeof cleaned !== "string") return raw;
+  const trimmed = cleaned.trim();
+  if (!trimmed) return raw;
+  const available = new Map<string, number>();
+  for (const w of titleWords(raw)) available.set(w, (available.get(w) ?? 0) + 1);
+  for (const w of titleWords(trimmed)) {
+    const n = available.get(w) ?? 0;
+    if (n === 0) return raw; // a word not in the raw title (or used more times) → reject
+    available.set(w, n - 1);
+  }
+  return trimmed;
+}
+
+/** A candidate frontmatter for contract validation: model facets + pipeline-set fields. The
+ *  model's cleaned `title` is taken only through the word-subset guard (falling back to the raw
+ *  pipeline title), so the sweep and the corrective-retry loop both see the guarded value; the
+ *  contract validator carries NO title-quality clause (fail-open by design). */
 function toFrontmatter(facets: Record<string, unknown>, title: string, source: string | null): Record<string, unknown> {
-  const fm: Record<string, unknown> = { title, source, pairs_with: [] };
-  for (const k of CLASSIFIED_FIELDS) fm[k] = facets[k];
+  const fm: Record<string, unknown> = { title: cleanedTitleOrFallback(title, facets.title), source, pairs_with: [] };
+  for (const k of CLASSIFIED_FIELDS) {
+    if (k === "title") continue; // guarded above, never the model's raw value
+    fm[k] = facets[k];
+  }
   return fm;
 }
 

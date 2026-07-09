@@ -1,0 +1,5 @@
+---
+category: Navigation
+---
+
+Breadcrumb trail.

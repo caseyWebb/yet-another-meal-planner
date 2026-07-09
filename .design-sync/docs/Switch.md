@@ -1,0 +1,5 @@
+---
+category: Forms
+---
+
+Boolean toggle.

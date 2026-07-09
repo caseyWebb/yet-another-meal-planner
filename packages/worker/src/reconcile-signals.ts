@@ -29,10 +29,13 @@ const TIGHTEN_RECENT_INTERVALS = 2;
 /** The tightest cadence a proposal may suggest (days). */
 const TIGHTEN_FLOOR_DAYS = 3;
 
-/** A drafted profile-edit proposal — producer-agnostic (the queue stamps the producer). */
+/** A drafted proposal — producer-agnostic (the queue stamps the producer). The profile
+ *  kinds carry a diff applied on accept; `merge_recipes` (the dup-scan's corpus-curation
+ *  kind, operator-addressed) carries review evidence and accept records the decision only. */
 export interface ProposalDraft {
-  kind: "prune_vibe" | "adjust_cadence" | "add_vibe";
-  /** The vibe id the proposal acts on (part of the stable, dedup-ing proposal id). */
+  kind: "prune_vibe" | "adjust_cadence" | "add_vibe" | "merge_recipes";
+  /** What the proposal acts on (part of the stable, dedup-ing proposal id): the vibe id
+   *  for the profile kinds, the sorted `"<a>+<b>"` pair key for `merge_recipes`. */
   target: string;
   /** The proposed profile diff (applied verbatim on accept). */
   payload: Record<string, unknown>;

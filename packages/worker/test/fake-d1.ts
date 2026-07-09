@@ -45,6 +45,7 @@ const PK: Record<string, string[]> = {
   night_vibes: ["tenant", "id"],
   night_vibe_derived: ["tenant", "id"],
   pending_proposals: ["tenant", "id"],
+  webauthn_credentials: ["credential_id"],
   // walled-source ingest (recipe-ingestion)
   ingest_keys: ["id"],
   ingest_candidates: ["id"],
@@ -115,6 +116,7 @@ export function fakeD1(
     }
     if (/\bstore = \?1/i.test(sql)) eq("store", 1);
     if (/\bslug = \?1/i.test(sql)) eq("slug", 1);
+    if (/credential_id = \?1/i.test(sql)) eq("credential_id", 1);
     if (/key_hash = \?1/i.test(sql)) eq("key_hash", 1);
     if (/status = 'active'/i.test(sql)) out = out.filter((r) => r.status === "active");
     if (/\blocation_id = \?1/i.test(sql)) eq("location_id", 1);
@@ -322,12 +324,26 @@ export function fakeD1(
       const m = /SET\s+(.+?)\s+WHERE\s+(.+)$/is.exec(sql);
       if (!m) return { rows: [], changes: 0 };
       const setCols = [...m[1].matchAll(/(\w+)\s*=\s*\?(\d+)/g)].map((x) => ({ col: x[1], n: Number(x[2]) }));
+      // Literal SET assignments (`col = 'value'`), e.g. the sweep's `status = 'superseded'`.
+      const setLits = [...m[1].matchAll(/(\w+)\s*=\s*'([^']*)'/g)].map((x) => ({ col: x[1], val: x[2] }));
       const conds = [...m[2].matchAll(/(\w+)\s*=\s*\?(\d+)/g)].map((x) => ({ col: x[1], n: Number(x[2]) }));
-      if (conds.length === 0) return { rows: [], changes: 0 };
+      // Literal WHERE equality (`col = 'value'`), e.g. the `status = 'pending'` guard.
+      const condLits = [...m[2].matchAll(/(\w+)\s*=\s*'([^']*)'/g)].map((x) => ({ col: x[1], val: x[2] }));
+      // A single `col IN (?a, ?b, …)` set membership (the chunked supersede sweep).
+      const inMatch = /(\w+)\s+IN\s*\(([^)]+)\)/i.exec(m[2]);
+      const inCond = inMatch
+        ? { col: inMatch[1], values: [...inMatch[2].matchAll(/\?(\d+)/g)].map((x) => binds[Number(x[1]) - 1]) }
+        : null;
+      if (conds.length === 0 && condLits.length === 0 && !inCond) return { rows: [], changes: 0 };
       let changes = 0;
       for (const r of tables[table]) {
-        if (conds.every(({ col, n }) => r[col] === binds[n - 1])) {
+        const ok =
+          conds.every(({ col, n }) => r[col] === binds[n - 1]) &&
+          condLits.every(({ col, val }) => String(r[col]) === val) &&
+          (!inCond || inCond.values.includes(r[inCond.col]));
+        if (ok) {
           for (const { col, n } of setCols) r[col] = binds[n - 1] ?? null;
+          for (const { col, val } of setLits) r[col] = val;
           changes++;
         }
       }

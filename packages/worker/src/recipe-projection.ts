@@ -117,6 +117,12 @@ export interface ProjectionResult {
   /** Invalid recipes skipped (== errors.length). */
   skipped: number;
   /**
+   * Valid recipes DELIBERATELY excluded because their frontmatter carries a non-empty
+   * `duplicate_of` (the operator-merge tombstone, recipe-dedup) — a curation decision,
+   * not a defect, so no `reconcile_errors` row; counted so the exclusion stays observable.
+   */
+  tombstoned: number;
+  /**
    * Distinct projected ingredient ids the current resolver has not placed — the
    * convergence gauge (watch it fall as the capture job drains the queue). A degraded
    * (empty-context) pass counts every term, so a resolver-read failure shows as a spike.
@@ -181,6 +187,7 @@ export async function reconcileRecipeIndex(deps: ProjectionDeps): Promise<Projec
   const errors: ReconcileError[] = [];
   const valid: Record<string, Record<string, unknown>> = {}; // slug -> projected entry
   const seenSlugs = new Map<string, string>(); // slug -> first path (duplicate-slug guard)
+  let tombstoned = 0; // duplicate_of-marked recipes deliberately excluded (recipe-dedup)
 
   for (const path of paths) {
     const slug = deriveSlug(path);
@@ -213,6 +220,17 @@ export async function reconcileRecipeIndex(deps: ProjectionDeps): Promise<Projec
     ];
     if (allErrs.length) {
       errors.push({ slug, path, message: allErrs[0] });
+      continue;
+    }
+
+    // A validated file whose frontmatter carries a non-empty string `duplicate_of` is the
+    // operator-merge TOMBSTONE (recipe-dedup): a deliberate curation exclusion, not a
+    // defect — no `recipes` row AND no `reconcile_errors` row, counted in the summary so
+    // it stays observable. Downstream convergence is all existing machinery (the derived
+    // orphan prunes key off the slug leaving `recipes`); removing the marker restores the
+    // row on the next pass. An empty/non-string value is ignored (projects normally).
+    if (typeof frontmatter.duplicate_of === "string" && frontmatter.duplicate_of.trim() !== "") {
+      tombstoned++;
       continue;
     }
 
@@ -294,7 +312,7 @@ export async function reconcileRecipeIndex(deps: ProjectionDeps): Promise<Projec
     await deps.enqueueNovelTerms([...unplaced].sort()).catch(() => {});
   }
 
-  return { projected: rows.length, skipped: errors.length, unresolved: unresolvedIds.size, degraded, errors };
+  return { projected: rows.length, skipped: errors.length, tombstoned, unresolved: unresolvedIds.size, degraded, errors };
 }
 
 const INSERT_SQL = `INSERT INTO recipes (${RECIPE_COLUMNS.join(", ")}) VALUES (${RECIPE_COLUMNS.map(
@@ -380,10 +398,11 @@ export async function runProjectionJob(env: Env, deps: ProjectionDeps, now: () =
   try {
     const priorSlugs = new Set(await deps.loadErrorSlugs());
     const r = await reconcileRecipeIndex(deps);
-    // `unresolved` is the convergence gauge and `degraded` the resolver-read-failure
-    // flag (the job stays ok: the projection genuinely succeeded); the usage-trends AE
-    // point below stays [projected, skipped] — its doubles are consumed positionally.
-    const summary = { projected: r.projected, skipped: r.skipped, unresolved: r.unresolved, degraded: r.degraded };
+    // `unresolved` is the convergence gauge, `degraded` the resolver-read-failure flag
+    // (the job stays ok: the projection genuinely succeeded), and `tombstoned` the
+    // deliberate duplicate_of exclusions (recipe-dedup); the usage-trends AE point below
+    // stays [projected, skipped] — its doubles are consumed positionally.
+    const summary = { projected: r.projected, skipped: r.skipped, tombstoned: r.tombstoned, unresolved: r.unresolved, degraded: r.degraded };
     await writeJobHealth(env, "recipe-index", { ok: true, last_run_at: startedAt, summary });
     await writeJobRun(env, "recipe-index", {
       ok: true,

@@ -10,6 +10,7 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as LoginRouteImport } from './routes/login'
+import { Route as ConnectRouteImport } from './routes/connect'
 import { Route as AppRouteImport } from './routes/_app'
 import { Route as AppIndexRouteImport } from './routes/_app.index'
 import { Route as AppProposeRouteImport } from './routes/_app.propose'
@@ -24,6 +25,11 @@ import { Route as AppRecipeSlugRouteImport } from './routes/_app.recipe.$slug'
 const LoginRoute = LoginRouteImport.update({
   id: '/login',
   path: '/login',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ConnectRoute = ConnectRouteImport.update({
+  id: '/connect',
+  path: '/connect',
   getParentRoute: () => rootRouteImport,
 } as any)
 const AppRoute = AppRouteImport.update({
@@ -78,6 +84,7 @@ const AppRecipeSlugRoute = AppRecipeSlugRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof AppIndexRoute
+  '/connect': typeof ConnectRoute
   '/login': typeof LoginRoute
   '/favorites': typeof AppFavoritesRoute
   '/grocery': typeof AppGroceryRoute
@@ -89,6 +96,7 @@ export interface FileRoutesByFullPath {
   '/recipe/$slug': typeof AppRecipeSlugRoute
 }
 export interface FileRoutesByTo {
+  '/connect': typeof ConnectRoute
   '/login': typeof LoginRoute
   '/favorites': typeof AppFavoritesRoute
   '/grocery': typeof AppGroceryRoute
@@ -103,6 +111,7 @@ export interface FileRoutesByTo {
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/_app': typeof AppRouteWithChildren
+  '/connect': typeof ConnectRoute
   '/login': typeof LoginRoute
   '/_app/favorites': typeof AppFavoritesRoute
   '/_app/grocery': typeof AppGroceryRoute
@@ -118,6 +127,7 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
+    | '/connect'
     | '/login'
     | '/favorites'
     | '/grocery'
@@ -129,6 +139,7 @@ export interface FileRouteTypes {
     | '/recipe/$slug'
   fileRoutesByTo: FileRoutesByTo
   to:
+    | '/connect'
     | '/login'
     | '/favorites'
     | '/grocery'
@@ -142,6 +153,7 @@ export interface FileRouteTypes {
   id:
     | '__root__'
     | '/_app'
+    | '/connect'
     | '/login'
     | '/_app/favorites'
     | '/_app/grocery'
@@ -156,6 +168,7 @@ export interface FileRouteTypes {
 }
 export interface RootRouteChildren {
   AppRoute: typeof AppRouteWithChildren
+  ConnectRoute: typeof ConnectRoute
   LoginRoute: typeof LoginRoute
 }
 
@@ -166,6 +179,13 @@ declare module '@tanstack/react-router' {
       path: '/login'
       fullPath: '/login'
       preLoaderRoute: typeof LoginRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/connect': {
+      id: '/connect'
+      path: '/connect'
+      fullPath: '/connect'
+      preLoaderRoute: typeof ConnectRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/_app': {
@@ -269,6 +289,7 @@ const AppRouteWithChildren = AppRoute._addFileChildren(AppRouteChildren)
 
 const rootRouteChildren: RootRouteChildren = {
   AppRoute: AppRouteWithChildren,
+  ConnectRoute: ConnectRoute,
   LoginRoute: LoginRoute,
 }
 export const routeTree = rootRouteImport

@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { draftProposals, runReconcileSignalsJob } from "../src/reconcile-signals.js";
 import type { NightVibe } from "../src/night-vibe-db.js";
-import { proposalId, enqueueProposal, readProposals, setProposalStatus, getProposal } from "../src/reconcile-db.js";
+import { proposalId, enqueueProposal, readProposals, setProposalStatus, supersedeProposals, getProposal } from "../src/reconcile-db.js";
 import { resolveProposal } from "../src/reconcile-tools.js";
 import { ToolError } from "../src/errors.js";
 import { fakeD1 } from "./fake-d1.js";
@@ -87,6 +87,47 @@ describe("pending_proposals store", () => {
     expect(await readProposals(d1.env, "alice", "pending")).toHaveLength(1);
     expect(await readProposals(d1.env, "bob", "pending")).toHaveLength(1);
   });
+
+  it("supersedeProposals flips only pending rows, never a member-resolved one, and stamps resolved_at", async () => {
+    const d1 = fakeD1({
+      tables: {
+        pending_proposals: [
+          { tenant: "everett", id: "p1", kind: "add_vibe", status: "pending", created_at: "2026-07-01T00:00:00Z" },
+          { tenant: "everett", id: "p2", kind: "add_vibe", status: "pending", created_at: "2026-07-02T00:00:00Z" },
+          { tenant: "everett", id: "r1", kind: "add_vibe", status: "rejected", created_at: "2026-07-03T00:00:00Z", resolved_at: "2026-07-03T12:00:00Z" },
+          { tenant: "other", id: "p1", kind: "add_vibe", status: "pending", created_at: "2026-07-01T00:00:00Z" },
+        ],
+      },
+    });
+    const changed = await supersedeProposals(d1.env, "everett", ["p1", "r1"], NOW.toISOString());
+    expect(changed).toBe(1); // only the pending p1 flips; the rejected r1 is untouched by the guard
+    const p1 = await getProposal(d1.env, "p1", "everett");
+    expect(p1?.status).toBe("superseded");
+    expect(d1.tables.pending_proposals.find((r) => r.tenant === "everett" && r.id === "p1")?.resolved_at).toBe(NOW.toISOString());
+    // The member dismissal keeps its status AND its original resolved_at — never rewritten.
+    const r1 = d1.tables.pending_proposals.find((r) => r.id === "r1");
+    expect(r1?.status).toBe("rejected");
+    expect(r1?.resolved_at).toBe("2026-07-03T12:00:00Z");
+    // Cross-tenant isolation: the other tenant's same-id pending row is not touched.
+    expect((await getProposal(d1.env, "p1", "other"))?.status).toBe("pending");
+  });
+
+  it("readProposals(pending) excludes superseded rows; superseded answers a structured conflict on confirm", async () => {
+    const d1 = fakeD1({
+      tables: {
+        pending_proposals: [],
+        night_vibes: [],
+      },
+    });
+    const draft = { kind: "add_vibe" as const, target: "cozy", payload: { id: "cozy", vibe: "a cozy braise" }, rationale: "add it?", evidence: {} };
+    const { id } = await enqueueProposal(d1.env, "everett", draft, "edge", NOW.toISOString());
+    await supersedeProposals(d1.env, "everett", [id], NOW.toISOString());
+    expect(await readProposals(d1.env, "everett", "pending")).toHaveLength(0);
+    const err = await resolveProposal(d1.env, "everett", id, true).catch((e) => e as ToolError);
+    expect(err).toBeInstanceOf(ToolError);
+    expect((err as ToolError).code).toBe("conflict");
+    expect((err as ToolError).context).toMatchObject({ id, status: "superseded" });
+  });
 });
 
 describe("resolveProposal (shared confirm op — tool + member API)", () => {
@@ -134,6 +175,28 @@ describe("resolveProposal (shared confirm op — tool + member API)", () => {
     expect((err as ToolError).context).toMatchObject({ id, status: "rejected" });
     // The earlier resolution stands; the vibe was never pruned.
     expect((await getProposal(d1.env, id, "everett"))?.status).toBe("rejected");
+    expect(d1.tables.night_vibes).toHaveLength(1);
+  });
+
+  it("accepting a merge_recipes proposal records the decision and writes NOTHING (recipe-dedup)", async () => {
+    const d1 = fakeD1({
+      tables: {
+        pending_proposals: [],
+        night_vibes: [{ tenant: "casey", id: "salad", vibe: "a light salad" }],
+      },
+    });
+    const merge = {
+      kind: "merge_recipes" as const,
+      target: "fresh-pasta+homemade-pasta-dough",
+      payload: { slugs: ["fresh-pasta", "homemade-pasta-dough"], titles: ["Fresh Pasta", "Homemade Pasta Dough"] },
+      rationale: "same dish?",
+      evidence: {},
+    };
+    const { id } = await enqueueProposal(d1.env, "casey", merge, "dup-scan", NOW.toISOString());
+    const out = await resolveProposal(d1.env, "casey", id, true);
+    expect(out).toMatchObject({ id, status: "accepted", applied: expect.stringContaining("agent-guided") });
+    expect((await getProposal(d1.env, id, "casey"))?.status).toBe("accepted");
+    // The apply path touched no palette row (and there is no corpus write surface here at all).
     expect(d1.tables.night_vibes).toHaveLength(1);
   });
 

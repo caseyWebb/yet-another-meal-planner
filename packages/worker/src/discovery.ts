@@ -96,13 +96,21 @@ export function slugify(title: string): string {
     .replace(/^-+|-+$/g, "");
 }
 
+/** Drop any parenthetical segment(s) from a title — the SLUG basis only (the gloss stays in the
+ *  displayed title): "Jatjuk (Pine Nut Porridge)" → "Jatjuk". Collapses leftover whitespace. */
+export function stripParenthetical(title: string): string {
+  return title.replace(/\([^)]*\)/g, " ").replace(/\s+/g, " ").trim();
+}
+
 /**
- * Build the TreeFile for a new recipe. Derives the slug from the title (or uses
- * `slugOverride`) and guards the `## Ingredients`/`## Instructions` H2 contract so a
- * malformed body can't be committed as a build-breaker. Stamps NO `status`: the
- * per-tenant status lifecycle is retired, so an imported recipe is an available corpus
- * recipe by default (opt-out visibility). Refuses to overwrite an existing recipe
- * (slug_exists).
+ * Build the TreeFile for a new recipe. Derives the slug from the title's DISH NAME — any
+ * parenthetical gloss is excluded from the slug basis ("Jatjuk (Pine Nut Porridge)" →
+ * `jatjuk`, the ReciMe-named-corpus precedent), falling back to the full title when the
+ * strip empties the slug — or uses `slugOverride` verbatim. Guards the
+ * `## Ingredients`/`## Instructions` H2 contract so a malformed body can't be committed
+ * as a build-breaker. Stamps NO `status`: the per-tenant status lifecycle is retired, so
+ * an imported recipe is an available corpus recipe by default (opt-out visibility).
+ * Refuses to overwrite an existing recipe (slug_exists).
  */
 export async function buildNewRecipe(
   store: CorpusStore,
@@ -112,7 +120,7 @@ export async function buildNewRecipe(
   slugOverride?: string,
 ): Promise<{ slug: string; file: { path: string; content: string }; facets: RecipeFacets }> {
   const title = typeof frontmatter.title === "string" ? frontmatter.title : "";
-  const slug = slugOverride ?? slugify(title);
+  const slug = slugOverride ?? (slugify(stripParenthetical(title)) || slugify(title));
   if (!SLUG_RE.test(slug)) {
     throw new ToolError("validation_failed", "create_recipe needs a `title` (or a valid slug) to name the file", {
       slug,
