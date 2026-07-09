@@ -1,0 +1,35 @@
+## Why
+
+Passkeys split the durable credential (the passkey) from the entryway (the invite code, now a single-use bootstrap consumed on enrollment). That decoupling is what makes a shared code safe: before passkeys a reused code meant a *shared identity*; now a reused code is just a shared *doorway*, and everyone who walks through it enrolls their own passkey and becomes their own tenant. Today onboarding is still one-code-per-pre-provisioned-username, so bringing a friend group online is N manual operator steps and the operator must choose every username. This change adds an operator-issued, capped, expiring **group invite code** that a friend can redeem to self-provision their own account under a username they pick — the thing you can drop in a group chat.
+
+## What Changes
+
+- **New multi-use group invite code.** The operator mints a code carrying a **cap** (max redemptions), an optional **expiry**, and an optional **label** ("summer camp crew"). It is a self-service onboarding doorway, not a standing credential and not access to any existing tenant.
+- **New self-service signup flow (web app only).** A `/signup` screen takes the code plus a chosen username, creates a **new, fully isolated tenant** (own recipes, pantry, Kroger link, meal plans — blank at creation, like every tenant today), mints the standard member session, and prompts passkey enrollment. The Claude.ai MCP connection is unchanged: sign up + enroll in the app, then connect via the existing cross-device approval.
+- **Slot and username are claimed atomically at account creation.** Redemption spends one slot and claims the username in a single atomic step; a username collision rolls the whole thing back and spends **no** slot. The cap is enforced exactly; exhausted, expired, or revoked codes are rejected.
+- **Tenant ids get a strongly-consistent D1 registry** as the uniqueness authority, so two people signing up with the same new username at the same instant cannot both land in one tenant. Existing tenants are backfilled into it; the KV `tenant:<id>` allowlist stays the hot-path directory, written only after the claim wins.
+- **Group codes, usage, and provenance persist in D1** (`signup_invites`, `signup_redemptions`), a system deliberately **separate** from the KV `invite:<code>` bootstrap path (which is untouched — `onboard()`/`rotate()` still mint single-use bootstraps for named onboarding and recovery).
+- **Admin surface.** The Members area gains an **Invite codes** section: mint (cap/expiry/label, shown once under the same no-log guarantee as onboarding), list with live usage (`used/max`, expiry, revoked), revoke (stops further signups, leaves already-created accounts intact), and per-code provenance.
+- **Not breaking.** Additive. The `multi-tenancy` "identity is gated by a curated allowlist … not a self-service signup" requirement is amended to permit *operator-authorized, bounded* self-service — the code is the operator's standing authorization, the allowlist and per-request re-check remain the live authority.
+- **One-time process exception:** the admin Invite-codes UI is built directly in this change rather than routed through the companion Claude Design project (which is being rebuilt from scratch); the exported result becomes that project's design starting point. Recorded here so it is a deliberate exception, not silent drift.
+- **Deferred / out of scope:** seeding a new tenant from a template corpus (v1 starts blank); multi-use signup on the Claude.ai `/authorize` surface (signup stays web-app-only); same-device inline flows.
+
+## Capabilities
+
+### New Capabilities
+- `self-service-signup`: the group invite code as a first-class entity (cap, expiry, label, revocation), the web-app redemption that atomically creates a new tenant from a user-chosen username and spends one slot, exact cap/expiry enforcement, the D1 `signup_invites`/`signup_redemptions` store and its separation from the KV bootstrap path, provenance, and the blank-at-creation + half-onboarded-recovery semantics.
+
+### Modified Capabilities
+- `multi-tenancy`: the curated-allowlist requirement is amended so an operator-issued group code authorizes *bounded* self-service (cap + expiry + revocation) whose redeemed usernames still land on the same allowlist under the same per-request re-check; a new requirement makes tenant-id uniqueness hold under concurrent self-service creation via a strongly-consistent D1 tenant registry (backfilled from the existing KV allowlist).
+- `operator-admin`: the operator can mint group invite codes with a cap, optional expiry, and optional label; list them with live usage; and revoke a code (halting further signups without touching accounts already created), all under the existing show-once / no-log guarantee.
+- `member-app-shell`: the login screen offers a self-service signup path and the app serves a `/signup` screen where a visitor redeems a group code and chooses a username.
+
+## Impact
+
+- **Worker (`packages/worker/src/`)**: new `signup.ts` (validate code → atomic claim-and-create tenant → provenance), new `/api/signup` Hono sub-app (`src/api/signup.ts`, mounted in `src/api/app.ts`), operator invite-code routes in `src/admin/api.ts` + lifecycle functions in `src/admin.ts`, `src/db.ts` helpers for the three new tables and the tenant-registry atomic claim.
+- **D1**: migration `migrations/d1/0047_self_service_signup.sql` creating `tenants`, `signup_invites`, `signup_redemptions`; a Worker-side backfill that converges existing KV-allowlist tenants into `tenants` (reconcile-style, existing members as the acceptance fixture). No new binding type (`DB` already bound) → no `scripts/merge-wrangler-config.mjs` change.
+- **Routing**: `/api/signup*` is already covered by the `/api/*` entry and `/admin/api/*` by `/admin/*` in `assets.run_worker_first` — no enumeration change. The `/signup` page is a client route served by the SPA fallback.
+- **Member app (`packages/app/`)**: a `/signup` screen and a "have a group code?" affordance on `/login`; `packages/ui` primitives as needed.
+- **Admin app (`packages/admin-app/`)**: the Members-area **Invite codes** section (mint dialog with cap/expiry/label, a codes roster with live usage, revoke). Built directly here per the one-time exception above.
+- **Tests**: vitest (exact cap enforcement, rollback-on-collision spends no slot, expiry, revoked, concurrent-same-username uniqueness, backfill idempotency, provenance); admin Playwright (`admin/visual/` — an Invite-codes page object + specs: mint → shows cap/expiry → revoke); app Playwright (`app/visual/` — signup: code + username → session → enroll prompt; taken-username surfaced).
+- **Docs (lockstep)**: `docs/SCHEMAS.md` (the three D1 tables + the KV-bootstrap vs D1-signup split), `docs/ARCHITECTURE.md` (tenants gain a D1 uniqueness registry; the two-invite-systems split; the self-service path), `docs/SELF_HOSTING.md` (mint/cap/expiry/label, revoke semantics, the half-onboarded recovery via the session cookie or `rotate()`). `docs/TOOLS.md` unchanged (no agent-facing MCP tool).
