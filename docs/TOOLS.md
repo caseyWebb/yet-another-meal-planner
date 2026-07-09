@@ -840,7 +840,7 @@ Read the caller's full per-tenant profile, assembled from the D1 profile tables 
 {
   initialized:     boolean,          // true once preferences field is non-empty
   missing:         string[],         // onboarding areas still absent: subset of
-                                     //   ["store","taste","diet","equipment","ready-to-eat","stockup"]
+                                     //   ["store","taste","diet","equipment","ready-to-eat","stockup","vibes"]
   preferences:     { ... } | null,   // parsed preferences object (TOML)
   taste:           string | null,    // taste-profile narrative (markdown)
   diet_principles: string | null,    // diet-principles narrative (markdown)
@@ -848,6 +848,11 @@ Read the caller's full per-tenant profile, assembled from the D1 profile tables 
   staples:         [...],            // staples list — bare array (empty when absent)
   ready_to_eat:    [...],            // ready-to-eat catalog items (empty array when absent)
   stockup:         { ... } | null,   // bulk-buy watchlist (parsed TOML)
+  night_vibes:     [...],            // night-vibe palette — each saved vibe plus its derived
+                                     //   last_satisfied and cadence status ("overdue"|"due"|
+                                     //   "soon"|"ok"); empty array when absent (also joins `missing`
+                                     //   as "vibes"). The revealed-preference rhythm read at session
+                                     //   start — a prior for shaping a plan, not a cage.
 }
 ```
 

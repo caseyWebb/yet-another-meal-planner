@@ -2,9 +2,9 @@ Ordered by dependency, serial on the shared surfaces (`propose_meal_plan` / `sch
 
 ## 1. Profile fold-in — palette + cadence as a revealed-preference pillar (D5)
 
-- [ ] 1.1 Extend `assembleUserProfile` (`src/tools.ts`) + `src/profile-db.ts` so `read_user_profile()` returns the night-vibe palette and each vibe's cadence status (`due | overdue | soon | ok`, the `statusOf` derivation the web app already computes over `readVibeLastSatisfied`).
-- [ ] 1.2 Add a `vibes` onboarding-area key to the `profile_status` `missing[]` fixed mapping (`src/tools.ts`), set when the palette is empty; keep `initialized` keyed off `preferences` only.
-- [ ] 1.3 Docs (lockstep): `docs/TOOLS.md` `read_user_profile` payload + `profile_status` mapping.
+- [x] 1.1 Extend `assembleUserProfile` (`src/tools.ts`) so `read_user_profile()` returns the night-vibe palette and each vibe's cadence status (`due | overdue | soon | ok`, the `statusOf` derivation the web app already computes over `readVibeLastSatisfied`), via a `readNightVibePalette` helper in `src/night-vibe-db.ts` — kept off `profile-db.ts`'s hot `readProfile` fan-out path.
+- [x] 1.2 Add a `vibes` onboarding-area key to the `missing[]` mapping in `assembleUserProfile` (`src/tools.ts`), set when the palette is empty; keep `initialized` keyed off `preferences` only. (Note: the living spec's mapping lists `pantry`/`corpus`, but the code's `PROFILE_AREAS` never wired them — pre-existing drift, left out of scope.)
+- [x] 1.3 Docs (lockstep): `docs/TOOLS.md` `read_user_profile` payload + `missing[]` mapping.
 
 ## 2. Cook-time cadence attribution (D4)
 

@@ -135,6 +135,44 @@ export async function readVibeLastSatisfied(env: Env, tenant: string): Promise<M
   return map;
 }
 
+/** A palette vibe's cadence status — the same `overdue | due | soon | ok` bucketing the member
+ *  app computes client-side (`statusOf` in `packages/app/src/routes/_app.profile.tsx`). */
+export type VibeCadenceStatus = "overdue" | "due" | "soon" | "ok";
+
+/**
+ * Bucket one vibe's cadence status, mirroring the member app's `statusOf`/`daysSince` exactly:
+ * a debt ratio `days_since(anchor) / cadence_days` (floor of whole days, `now`-relative) is
+ * bucketed overdue (≥ 1.5) / due (≥ 1) / soon (≥ 0.6) / ok. The anchor is `last_satisfied`, else
+ * the vibe's created date, else none. A vibe with no cadence (unset/≤ 0) or no anchor is `ok`.
+ */
+export function vibeCadenceStatus(vibe: NightVibe, lastSatisfied: string | null, now: Date): VibeCadenceStatus {
+  const cadence = vibe.cadence_days ?? null;
+  let ratio = 0;
+  if (cadence && cadence > 0) {
+    const anchor = lastSatisfied ?? (vibe.created_at ? vibe.created_at.slice(0, 10) : null);
+    if (anchor) ratio = Math.floor((now.getTime() - Date.parse(`${anchor}T00:00:00`)) / 86_400_000) / cadence;
+  }
+  if (ratio >= 1.5) return "overdue";
+  if (ratio >= 1) return "due";
+  if (ratio >= 0.6) return "soon";
+  return "ok";
+}
+
+/** A palette vibe as the profile read surfaces it: the stored vibe, its log-derived
+ *  last-satisfied date, and its derived cadence status. */
+export type ProfilePaletteVibe = NightVibe & { last_satisfied: string | null; status: VibeCadenceStatus };
+
+/** The caller's night-vibe palette for the profile read (data-read-tools D5): each saved vibe
+ *  merged with its derived `last_satisfied` and cadence status, reusing `readNightVibes` +
+ *  `readVibeLastSatisfied` rather than re-querying. Id-ordered, as `readNightVibes` returns. */
+export async function readNightVibePalette(env: Env, tenant: string, now: Date): Promise<ProfilePaletteVibe[]> {
+  const [vibes, last] = await Promise.all([readNightVibes(env, tenant), readVibeLastSatisfied(env, tenant)]);
+  return vibes.map((v) => {
+    const last_satisfied = last.get(v.id) ?? null;
+    return { ...v, last_satisfied, status: vibeCadenceStatus(v, last_satisfied, now) };
+  });
+}
+
 /** The caller's FULL satisfaction history per vibe (dates DESC, most recent first) over
  *  provenance-stamped cooking-log rows (`satisfied_vibe`). The reconcile signal pass reads
  *  this ONE query for both cadence signals: last-satisfied is index 0, and the tighten

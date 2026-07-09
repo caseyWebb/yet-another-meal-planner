@@ -61,6 +61,7 @@ import {
   type Preferences,
 } from "./profile-db.js";
 import { db } from "./db.js";
+import { readNightVibePalette, type ProfilePaletteVibe } from "./night-vibe-db.js";
 import { registerCookingWriteTools } from "./cooking-write.js";
 import { createKrogerClient, type KrogerCandidate } from "./kroger.js";
 import { buildKrogerConsentUrl } from "./oauth.js";
@@ -287,6 +288,10 @@ export async function resolveTenantForecast(env: Env, tenant: string, days = 7):
 export interface UserProfilePayload extends AssembledProfile {
   initialized: boolean;
   missing: string[];
+  /** The caller's night-vibe palette — each saved vibe plus its derived `last_satisfied` and
+   *  cadence status (data-read-tools D5), so session start reads the revealed-preference rhythm
+   *  as the basis for shaping a plan. */
+  night_vibes: ProfilePaletteVibe[];
 }
 
 /**
@@ -295,7 +300,10 @@ export interface UserProfilePayload extends AssembledProfile {
  * the member API's `GET /api/profile`.
  */
 export async function assembleUserProfile(env: Env, tenant: string): Promise<UserProfilePayload> {
-  const profile = await readProfile(env, tenant);
+  const [profile, nightVibes] = await Promise.all([
+    readProfile(env, tenant),
+    readNightVibePalette(env, tenant, new Date()),
+  ]);
 
   // Each onboarding area maps to a structured field; an area is "missing"
   // when its field is empty (null preferences/markdown, empty list/inventory).
@@ -313,6 +321,8 @@ export async function assembleUserProfile(env: Env, tenant: string): Promise<Use
     ["equipment", profile.kitchen.owned.length ? profile.kitchen : null],
     ["ready-to-eat", profile.ready_to_eat],
     ["stockup", profile.stockup],
+    // An empty palette is an onboarding gap `suggest_night_vibes` fills (data-read-tools D5).
+    ["vibes", nightVibes.length ? nightVibes : null],
   ];
 
   const initialized = profile.preferences !== null;
@@ -331,6 +341,7 @@ export async function assembleUserProfile(env: Env, tenant: string): Promise<Use
     staples: profile.staples,
     ready_to_eat: profile.ready_to_eat,
     stockup: profile.stockup,
+    night_vibes: nightVibes,
   };
 }
 
@@ -759,7 +770,7 @@ export function buildServer(env: Env, tenant: Tenant, origin?: string): McpServe
     "read_user_profile",
     {
       description:
-        "Return the caller's full grocery profile in one call, including initialization status. `initialized` is true once preferences are present; `missing` lists onboarding-area keys still absent (store, taste, diet, equipment, ready-to-eat, stockup) — empty when fully set up. Profile fields: preferences (parsed), taste narrative (markdown), diet principles (markdown), kitchen inventory (owned equipment slugs + notes), staples list, ready-to-eat catalog items, stockup watchlist. Absent fields return null or empty. Use this at the start of every session — on initialized:false, run configure-yamp-profile first.",
+        "Return the caller's full grocery profile in one call, including initialization status. `initialized` is true once preferences are present; `missing` lists onboarding-area keys still absent (store, taste, diet, equipment, ready-to-eat, stockup, vibes) — empty when fully set up. Profile fields: preferences (parsed), taste narrative (markdown), diet principles (markdown), kitchen inventory (owned equipment slugs + notes), staples list, ready-to-eat catalog items, stockup watchlist, and night_vibes (the palette — each saved vibe plus its derived last_satisfied and cadence status: overdue|due|soon|ok, the revealed-preference rhythm). Absent fields return null or empty. Use this at the start of every session — on initialized:false, run configure-yamp-profile first.",
       inputSchema: {},
     },
     () => runTool(() => assembleUserProfile(env, tenant.id)),
