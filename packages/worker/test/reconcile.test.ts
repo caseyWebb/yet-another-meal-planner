@@ -319,9 +319,16 @@ describe("runReconcileSignalsJob — the tighten path through the cron wrapper",
           },
         ],
         cooking_log: [
-          { tenant: "casey", date: "2026-06-28", type: "recipe", recipe: "r1", satisfied_vibe: "noodles" },
-          { tenant: "casey", date: "2026-06-21", type: "recipe", recipe: "r2", satisfied_vibe: "noodles" },
-          { tenant: "casey", date: "2026-06-15", type: "recipe", recipe: "r3", satisfied_vibe: "noodles" },
+          { tenant: "casey", id: 1, date: "2026-06-28", type: "recipe", recipe: "r1", satisfied_vibe: "noodles" },
+          { tenant: "casey", id: 2, date: "2026-06-21", type: "recipe", recipe: "r2", satisfied_vibe: "noodles" },
+          { tenant: "casey", id: 3, date: "2026-06-15", type: "recipe", recipe: "r3", satisfied_vibe: "noodles" },
+        ],
+        // readVibeSatisfactionDates derives over vibe_satisfaction (migration 0047 backfilled this
+        // from the provenance-stamped cooks above): the cadence signal's satisfaction history.
+        vibe_satisfaction: [
+          { tenant: "casey", cooking_log_id: 1, vibe_id: "noodles", date: "2026-06-28", score: null },
+          { tenant: "casey", cooking_log_id: 2, vibe_id: "noodles", date: "2026-06-21", score: null },
+          { tenant: "casey", cooking_log_id: 3, vibe_id: "noodles", date: "2026-06-15", score: null },
         ],
         job_health: [],
         job_runs: [],

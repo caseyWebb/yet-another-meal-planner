@@ -25,7 +25,8 @@ import { readPreferences } from "./profile-db.js";
 import { loadOperatorConfig } from "./operator-config.js";
 import { fetchWeatherForecast, deriveCategory, type WeatherCategory } from "./weather.js";
 import { readNightVibes, readNightVibeVectors, readVibeLastSatisfied, type NightVibe } from "./night-vibe-db.js";
-import { debt, sampleWeek, DEFAULT_CADENCE_PARAMS, type NightVibeSpec } from "./night-vibe-schedule.js";
+import { debt, sampleWeek, DEFAULT_CADENCE_PARAMS, type NightVibeSpec, type NewForMeSeed, type WeekSlot } from "./night-vibe-schedule.js";
+import { facetsSchema } from "./night-vibe-tools.js";
 import { assembleProposal, type ProposalCtx, type ProposalResult } from "./meal-plan-proposal.js";
 import type { DiversifyCandidate, DiversifyParams } from "./diversify.js";
 import { readPantry } from "./session-db.js";
@@ -76,6 +77,14 @@ export interface ProposeNudges {
   proteins?: string[];
 }
 
+/** One Claude-authored EPHEMERAL vibe (converge D2): the same primitive as a saved night vibe (a
+ *  `vibe` phrase + optional hard-gate `facets`) but with no cadence history and no persistence —
+ *  it shapes the week for a single request only. */
+export interface ProposeEphemeralVibe {
+  vibe: string;
+  facets?: Record<string, unknown>;
+}
+
 /** The full propose request — the MCP tool's input and the `POST /api/propose` body. */
 export interface ProposeInput {
   nights?: number;
@@ -85,6 +94,17 @@ export interface ProposeInput {
   boost_ingredients?: string[];
   nudges?: ProposeNudges;
   slots?: ProposeSlotConstraint[];
+  /** A Claude-authored ordered ephemeral vibe set (converge D2). When present it SHAPES the week
+   *  — its entries become the slots the engine fills and composes, each embedded + ranked like a
+   *  `slots[].vibe` override and facet-gated — replacing the saved-palette cadence sampling for
+   *  this request. Absent → `sampleWeek` schedules the palette as today. */
+  ephemeral_vibes?: ProposeEphemeralVibe[];
+  /** Accepted new-for-me discovery seeds (converge D3), by recipe slug, in priority order. Each
+   *  resolvable, non-excluded, non-rejected seed is force-placed by `sampleWeek` (below pinned,
+   *  above overdue) within its weather-bucket quota. Threaded through the palette path (the web
+   *  app + a palette-driven agent request); when an `ephemeral_vibes` set drives the week, the
+   *  authored entries are the slots and these seeds are inert. */
+  new_for_me?: string[];
 }
 
 /** The op's result: the assembled proposal + the schedule's rollover diagnostics
@@ -142,6 +162,18 @@ export const PROPOSE_INPUT_SHAPE = {
       }),
     )
     .optional(),
+  // A Claude-authored ephemeral vibe set (converge D2) — the same `{ vibe, facets }` primitive as
+  // a saved night vibe, reusing the vibe facet gate. Present → it shapes the week (see below).
+  ephemeral_vibes: z
+    .array(
+      z.object({
+        vibe: z.string(),
+        facets: facetsSchema,
+      }),
+    )
+    .optional(),
+  // Accepted new-for-me discovery seeds (converge D3) — recipe slugs, in priority order.
+  new_for_me: z.array(z.string()).optional(),
 };
 
 /**
@@ -150,10 +182,13 @@ export const PROPOSE_INPUT_SHAPE = {
  * the MCP wrapper converts via `runTool`, the route via the shared error middleware.
  */
 export async function runProposeMealPlan(env: Env, tenant: Tenant, input: ProposeInput, deps: ProposeDeps): Promise<ProposeResult> {
-  const { nights, seed, lock, exclude, boost_ingredients, nudges, slots } = input;
+  const { nights, seed, lock, exclude, boost_ingredients, nudges, slots, ephemeral_vibes, new_for_me } = input;
   const now = new Date();
   const resolvedSeed = seed ?? Number(now.toISOString().slice(0, 10).replace(/-/g, ""));
   const excludeSet = new Set((exclude ?? []).map((s) => s.toLowerCase()));
+  // D2: a Claude-authored ephemeral vibe set (non-blank entries) shapes the week directly,
+  // bypassing palette cadence sampling. An agent with intent can propose even on an empty palette.
+  const ephemeral = (ephemeral_vibes ?? []).filter((e) => typeof e.vibe === "string" && e.vibe.trim());
 
   const [index, overlay, lastCooked, owned, embeddings, prefs, operatorConfig, ctx, palette, vibeVectors, lastSatisfied, pantry] =
     await Promise.all([
@@ -180,8 +215,8 @@ export async function runProposeMealPlan(env: Env, tenant: Tenant, input: Propos
   // nights (default_cooking_nights already resolved that, above, independent of window).
   const window = num((prefs as Record<string, unknown> | null)?.planning_cadence_days) ?? DEFAULT_PLANNING_WINDOW_DAYS;
 
-  if (palette.length === 0) {
-    return { plan: [], variety: { distinct_proteins: 0, distinct_cuisines: 0, mean_pairwise_sim: 0, max_pairwise_sim: 0 }, uncovered_at_risk: [], diagnostics: { seed: resolvedSeed, lambda: 0, nights: nightCount, filled: 0, empty: 0 }, note: "no night vibes in the palette — add some with add_night_vibe, then propose again" };
+  if (palette.length === 0 && ephemeral.length === 0) {
+    return { plan: [], variety: { distinct_proteins: 0, distinct_cuisines: 0, mean_pairwise_sim: 0, max_pairwise_sim: 0 }, uncovered_at_risk: [], diagnostics: { seed: resolvedSeed, lambda: 0, nights: nightCount, filled: 0, empty: 0 }, note: "no night vibes in the palette — add some with add_night_vibe, or pass an ephemeral_vibes set, then propose again" };
   }
 
   // Effective per-tenant index: merge overlay (favorite/reject) + cooking-log last_cooked
@@ -256,71 +291,141 @@ export async function runProposeMealPlan(env: Env, tenant: Tenant, input: Propos
   }
   const nightsToFill = Math.max(0, nightCount - lockList.length);
 
-  const debtByVibe = new Map<string, number>();
-  for (const v of palette) {
-    debtByVibe.set(v.id, v.cadence_days ? debt(lastSatisfied.get(v.id) ?? null, v.cadence_days, now) : 0);
-  }
-  // The weather forecast horizon IS the planning window (fetchWeatherForecast clamps to
-  // its own supported range, e.g. 1–16 days, rather than failing on an oversized window).
-  // Each day collapses to exactly ONE discrete category (never a flattened union) —
-  // `sampleWeek` histograms this mix into quotas itself (capped at its own reliability
-  // horizon), so no additional bounding happens here beyond the fetch's own day count.
-  const weather = await fetchWeatherForecast(resolveZip(prefs), window).catch(() => null);
-  const dayCategories: WeatherCategory[] =
-    weather && "forecast" in weather ? weather.forecast.map((d) => deriveCategory(d.meal_vibes, d.condition)) : [];
-
-  const specs: NightVibeSpec[] = palette.map((v) => ({
-    id: v.id,
-    base_weight: v.base_weight ?? undefined,
-    pinned: v.pinned,
-    weather_affinity: v.weather_affinity,
-    weather_antipathy: v.weather_antipathy,
-    cadence_days: v.cadence_days,
-  }));
-  const shape = sampleWeek(specs, dayCategories, debtByVibe, nightsToFill, resolvedSeed, DEFAULT_CADENCE_PARAMS, window);
-  const paletteById = new Map(palette.map((v) => [v.id, v]));
-
-  // Per-slot constraints keyed by vibe id (D2). First entry per vibe wins (deterministic);
-  // a constraint whose vibe wasn't sampled this week is INERT — no effect, no error.
+  // Per-slot constraints keyed by PALETTE vibe id (D2). First entry per vibe wins (deterministic);
+  // a constraint whose vibe isn't a slot this week is INERT (no effect, no error) — so with an
+  // ephemeral set (whose slot ids are synthetic `ephemeral-N`) these are naturally inert.
   const constraintByVibe = new Map<string, ProposeSlotConstraint>();
   for (const s of slots ?? []) {
     if (!constraintByVibe.has(s.vibe_id)) constraintByVibe.set(s.vibe_id, s);
   }
-  const sampledVibeIds = new Set(shape.slots.map((s) => s.id));
-
-  // Request-time embeds (D4/D5): the freeform phrase + every SAMPLED slot's vibe-override
-  // phrase, in ONE cache-gated batched call. A request with no such text makes NO AI call.
   const freeform = nudges?.freeform?.trim() ? nudges.freeform.trim() : undefined;
-  const overrideTexts: { id: string; text: string }[] = [];
-  for (const [id, c] of constraintByVibe) {
-    const text = c.vibe?.trim();
-    if (text && sampledVibeIds.has(id)) overrideTexts.push({ id, text });
+
+  // ── Level 1: shape the week ────────────────────────────────────────────────────────────────
+  // Both paths emit a set of slots to fill, each mapped to a `vibe` (facets + phrase) and a query
+  // vector (fed to the shared buildPool loop below): (D2) an ephemeral set authors the slots
+  // directly, or the saved palette is scheduled by `sampleWeek` (cadence-debt × weather + D3
+  // new-for-me). The single cache-gated embed batch (freeform + ephemeral phrases OR sampled
+  // slot-override phrases) is made inside the chosen path — still at most ONE AI call per request.
+  const shapeSlots: WeekSlot[] = [];
+  const vibeForSlot = new Map<string, NightVibe>();
+  const queryVecBySlot = new Map<string, number[]>();
+  const overriddenVibes = new Set<string>();
+  let rolledOver: string[] = [];
+  const placedNewForMe: DiversifyCandidate[] = [];
+  let freeformVec: number[] | null = null;
+
+  if (ephemeral.length > 0) {
+    // Ephemeral path (D2): each authored entry IS a slot — a synthetic vibe (phrase + facets),
+    // its phrase embedded like an override and facet-gated like any slot. Palette cadence
+    // sampling is bypassed for this request; palette-keyed `slots[]` constraints are inert.
+    const phrases = ephemeral.map((e) => e.vibe.trim());
+    const embedInputs = [...(freeform ? [freeform] : []), ...phrases];
+    const embedded =
+      embedInputs.length > 0 ? await embedTextsCached(env, { activity: "embed-search", trigger: "request" }, embedInputs) : [];
+    freeformVec = freeform ? embedded[0] : null;
+    ephemeral.forEach((e, i) => {
+      const id = `ephemeral-${i}`;
+      shapeSlots.push({ id, reason: "sampled", debt: 0, weight: 0 });
+      vibeForSlot.set(id, { id, vibe: e.vibe.trim(), facets: e.facets });
+      queryVecBySlot.set(id, embedded[(freeform ? 1 : 0) + i]);
+    });
+  } else {
+    // Palette path: sample the saved palette by cadence-debt × weather, with the D3 new-for-me
+    // force-placement tier. New-for-me seeds resolve against the index for their recipe candidate
+    // and their weather-bucket membership (the recipe's `tags`); an unresolvable / excluded /
+    // already-locked / duplicate seed is dropped (soft priority — it simply doesn't claim a slot).
+    const debtByVibe = new Map<string, number>();
+    for (const v of palette) {
+      debtByVibe.set(v.id, v.cadence_days ? debt(lastSatisfied.get(v.id) ?? null, v.cadence_days, now) : 0);
+    }
+    const lockedSlugs = new Set(locked.map((c) => c.slug));
+    const newForMeSeeds: NewForMeSeed[] = [];
+    const newForMeCandBySlug = new Map<string, DiversifyCandidate>();
+    for (const raw of new_for_me ?? []) {
+      if (excludeSet.has(raw.toLowerCase())) continue;
+      const cand = resolveCandidate(raw);
+      if (!cand || lockedSlugs.has(cand.slug) || newForMeCandBySlug.has(cand.slug)) continue;
+      const fm = effective[cand.slug] as Record<string, unknown>;
+      const tags = Array.isArray(fm.tags) ? fm.tags.filter((t): t is string => typeof t === "string") : [];
+      newForMeSeeds.push({ id: cand.slug, weather_affinity: tags });
+      newForMeCandBySlug.set(cand.slug, cand);
+    }
+    // The weather forecast horizon IS the planning window (fetchWeatherForecast clamps to
+    // its own supported range, e.g. 1–16 days, rather than failing on an oversized window).
+    // Each day collapses to exactly ONE discrete category (never a flattened union) —
+    // `sampleWeek` histograms this mix into quotas itself (capped at its own reliability
+    // horizon), so no additional bounding happens here beyond the fetch's own day count.
+    const weather = await fetchWeatherForecast(resolveZip(prefs), window).catch(() => null);
+    const dayCategories: WeatherCategory[] =
+      weather && "forecast" in weather ? weather.forecast.map((d) => deriveCategory(d.meal_vibes, d.condition)) : [];
+    const specs: NightVibeSpec[] = palette.map((v) => ({
+      id: v.id,
+      base_weight: v.base_weight ?? undefined,
+      pinned: v.pinned,
+      weather_affinity: v.weather_affinity,
+      weather_antipathy: v.weather_antipathy,
+      cadence_days: v.cadence_days,
+    }));
+    const shape = sampleWeek(specs, dayCategories, debtByVibe, nightsToFill, resolvedSeed, DEFAULT_CADENCE_PARAMS, window, newForMeSeeds);
+    rolledOver = shape.rolledOver;
+    const paletteById = new Map(palette.map((v) => [v.id, v]));
+
+    // Split the scheduler's slots: a new-for-me force-placement resolves to its standalone recipe
+    // candidate (emitted by assembleProposal as a vibe-less slot); the rest are palette vibe slots.
+    const vibeSlots: WeekSlot[] = [];
+    for (const s of shape.slots) {
+      if (s.reason === "new_for_me") {
+        const cand = newForMeCandBySlug.get(s.id);
+        if (cand) placedNewForMe.push(cand);
+        continue;
+      }
+      vibeSlots.push(s);
+    }
+
+    // Request-time embeds (D5): the freeform phrase + every SAMPLED slot's vibe-override phrase,
+    // in ONE cache-gated batched call. A request with no such text makes NO AI call.
+    const sampledVibeIds = new Set(vibeSlots.map((s) => s.id));
+    const overrideTexts: { id: string; text: string }[] = [];
+    for (const [id, c] of constraintByVibe) {
+      const text = c.vibe?.trim();
+      if (text && sampledVibeIds.has(id)) overrideTexts.push({ id, text });
+    }
+    const embedInputs = [...(freeform ? [freeform] : []), ...overrideTexts.map((o) => o.text)];
+    const embedded =
+      embedInputs.length > 0 ? await embedTextsCached(env, { activity: "embed-search", trigger: "request" }, embedInputs) : [];
+    freeformVec = freeform ? embedded[0] : null;
+    const overrideVecByVibe = new Map<string, number[]>();
+    overrideTexts.forEach((o, j) => overrideVecByVibe.set(o.id, embedded[(freeform ? 1 : 0) + j]));
+
+    // A `slots[].vibe` override replaces the slot's QUERY VECTOR only (facet gate + vibe identity
+    // unchanged) — which also makes a not-yet-embedded fresh vibe fillable tonight, not empty.
+    for (const s of vibeSlots) {
+      shapeSlots.push(s);
+      const vibe = paletteById.get(s.id);
+      if (vibe) vibeForSlot.set(s.id, vibe);
+      const overrideVec = overrideVecByVibe.get(s.id);
+      const queryVec = overrideVec ?? vibeVectors.get(s.id);
+      if (queryVec) queryVecBySlot.set(s.id, queryVec);
+      if (overrideVec) overriddenVibes.add(s.id);
+    }
   }
-  const embedInputs = [...(freeform ? [freeform] : []), ...overrideTexts.map((o) => o.text)];
-  const embedded =
-    embedInputs.length > 0 ? await embedTextsCached(env, { activity: "embed-search", trigger: "request" }, embedInputs) : [];
-  const freeformVec = freeform ? embedded[0] : null;
-  const overrideVecByVibe = new Map<string, number[]>();
-  overrideTexts.forEach((o, j) => overrideVecByVibe.set(o.id, embedded[(freeform ? 1 : 0) + j]));
 
   const freeformNudge: RankNudge | undefined = freeformVec ? { vec: freeformVec, weight: FREEFORM_NUDGE_WEIGHT } : undefined;
   const proteinWants = nudges?.proteins && nudges.proteins.length > 0 ? nudges.proteins : undefined;
+  const sampledVibeIds = new Set(shapeSlots.map((s) => s.id));
 
-  // Level 2 — rank each sampled slot's candidates into a pool. A `slots[].vibe` override
-  // replaces the slot's QUERY VECTOR only (facet gate + vibe identity unchanged) — which
-  // also makes a not-yet-embedded fresh vibe fillable tonight instead of an empty slot.
+  // Level 2 — rank each slot's candidates into a pool from its vibe (facets) + query vector (a
+  // palette vibe's cron vector, its override phrase, or an ephemeral entry's embedded phrase). A
+  // slot with no vibe/vector (unembedded, missing) returns an explicit empty slot.
   const poolByVibe = new Map<string, DiversifyCandidate[]>();
   const whyByVibe = new Map<string, string[]>();
-  const overriddenVibes = new Set<string>();
-  for (const slot of shape.slots) {
-    const vibe = paletteById.get(slot.id);
-    const overrideVec = overrideVecByVibe.get(slot.id);
-    const queryVec = overrideVec ?? vibeVectors.get(slot.id);
+  for (const slot of shapeSlots) {
+    const vibe = vibeForSlot.get(slot.id);
+    const queryVec = queryVecBySlot.get(slot.id);
     if (!vibe || !queryVec) {
       poolByVibe.set(slot.id, []); // unembedded / missing → explicit empty slot
       continue;
     }
-    if (overrideVec) overriddenVibes.add(slot.id);
     poolByVibe.set(slot.id, buildPool(effective, vibe, queryVec, embeddings, lastCooked, favoriteVecs, rankParams, now, owned, ctx, excludeSet, nudges?.max_time_total, constraintByVibe.get(slot.id), freeformNudge, proteinWants));
     // Only pinned slots get a scheduling why-chip; an overdue placement already reads as
     // its `reason` — no member-facing badge (the slot's why[] may legitimately be empty).
@@ -344,11 +449,15 @@ export async function runProposeMealPlan(env: Env, tenant: Tenant, input: Propos
   for (const [slug, entry] of Object.entries(effective)) frontmatterBySlug.set(slug, entry as Record<string, unknown>);
 
   const proposalCtx: ProposalCtx = {
-    slots: shape.slots,
+    slots: shapeSlots,
     poolByVibe,
     locked,
     lockedUnresolved,
-    requestedNights: nightCount,
+    newForMe: placedNewForMe,
+    // The palette path reports the REQUESTED nights (honest under-fill diagnostics). The ephemeral
+    // path's slot count is the authored set (not `nights`), so leave requestedNights unset and let
+    // diagnostics.nights fall through to the actual slot count — keeping it in step with plan.length.
+    requestedNights: ephemeral.length > 0 ? undefined : nightCount,
     frontmatterBySlug,
     embeddingBySlug: embeddings,
     atRiskDemand,
@@ -368,7 +477,9 @@ export async function runProposeMealPlan(env: Env, tenant: Tenant, input: Propos
   // the same fold rankCandidates scores with, so a boosted main always earns its why line.
   const proteinWantsLower = new Set((proteinWants ?? []).map((p) => p.toLowerCase()));
   for (const slot of result.plan) {
-    if (!slot.main || slot.reason === "locked" || slot.recipe_pinned) continue;
+    // Locked / recipe-pinned / new-for-me mains were the CALLER's choice (or the discovery tier's
+    // force-placement), not the nudges' pick — so the nudges claim nothing about them.
+    if (!slot.main || slot.reason === "locked" || slot.reason === "new_for_me" || slot.recipe_pinned) continue;
     const vec = embeddings.get(slot.main.slug);
     if (freeform && freeformVec && vec && cosineSimilarity(freeformVec, vec) >= FREEFORM_WHY_FLOOR) {
       slot.why.push(`matches your ask “${freeform}”`);
@@ -377,7 +488,7 @@ export async function runProposeMealPlan(env: Env, tenant: Tenant, input: Propos
       slot.why.push(`the ${slot.main.protein} you asked for`);
     }
   }
-  return { ...result, diagnostics: { ...result.diagnostics, rolled_over: shape.rolledOver } };
+  return { ...result, diagnostics: { ...result.diagnostics, rolled_over: rolledOver } };
 }
 
 export function registerProposeMealPlanTool(server: McpServer, env: Env, tenant: Tenant, deps: ProposeDeps): void {
@@ -385,7 +496,7 @@ export function registerProposeMealPlanTool(server: McpServer, env: Env, tenant:
     "propose_meal_plan",
     {
       description:
-        "Propose a week of dinners from the caller's NIGHT-VIBE PALETTE, deterministically and statelessly. Two levels: (1) SHAPE — sample `nights` night-vibe slots weighted by cadence-debt (overdue vibes surface) and weather; (2) FILL — retrieve each slot's vibe by meaning and select a VARIED main (MMR + protein/cuisine caps across the week, not the top-3 lookalikes). Each slot's pool is COURSE-GATED to meal candidates by default: only recipes whose course includes `main` — or is empty (fail-open: not-yet-classified is never hidden) — are volunteered, so a component/side (a pasta dough, a sauce) never fills a dinner slot and never appears among the alternates; a vibe authored with an explicit `facets.course` (breakfast-for-dinner) suppresses the default for its slot, and `lock`s/`slots[].recipe` pins are exempt (an explicit caller choice is honored regardless of course). A vibe whose entire pool the gate empties returns the existing explicit empty slot (no alternates) — pin a recipe or give the vibe a `course` facet to escape. Does HOLISTIC use-it-up automatically: derives the caller's at-risk perishables from their PANTRY and spreads them across the week's mains (a multi-serving item can be used across two recipes), subordinate to vibe relevance and the hard gate — no param needed. Composes rung-1 `pairs_with` corpus sides, flags single-use perishable waste + meal-prep + novelty, and returns per-main `why` + `uses_perishables` (what each main actually uses up). Iterate by re-calling with `lock` (keep these recipes anywhere in the week, as vibe-less locked slots — resolved case-insensitively, respecting your rejects; a lock that's unknown, not-yet-embedded, or rejected comes back as an explicit empty locked slot), `exclude` (swap these out — an excluded recipe never appears in a pool, an alternate, or a pin), `boost_ingredients` (OVERRIDE — extra items to definitely use up, unioned with the pantry-derived set), `nudges`, `slots`, and a `seed` (change it for 'give me another week'). `nudges`: max_time_total, variety strength (clamped so it can't collapse relevance), `proteins` (week-level SOFT protein boost — reorders, never gates) and `freeform` (a phrase like 'more soup, lighter dinners' — embedded and applied to every slot's ranking as a bounded additive term, never a gate; a main it materially matches says so in `why`). `slots` = per-vibe-slot constraints keyed by vibe_id (inert if that vibe isn't sampled this week): `protein`/`cuisine` facet pins narrowing that night's gate, `max_time_total` (a number caps that night; EXPLICIT null lifts the vibe's own cap — precedence: slot pin > nudges.max_time_total > vibe facet), `vibe` (a typed phrase replacing that slot's query vector — gate + identity unchanged, slot returns vibe_override: true; also fills a fresh not-yet-embedded vibe), and `recipe` (pin that exact recipe INTO the slot keeping its vibe identity + `from_vibe` provenance — the swap-in-place primitive; slot returns recipe_pinned: true, and an unresolvable pin comes back as an explicit empty slot). Each vibe slot also returns swap material from its already-ranked pool: `alternates` (top remaining candidates, week-deduped), `alt_similar` (nearest to the chosen main), `alt_different` (best different-cuisine) — all gate survivors; empty slots keep their alternates as the escape hatch. A slot placed by a non-mild weather quota carries `weather_category` and a weather-fit `why`. Makes at most ONE batched Workers AI embedding call per request — only for `nudges.freeform`/`slots[].vibe` text not already in the query-embedding cache; a request with no such text makes NO AI call (every other vector is cron-captured). NO writes (persist a chosen plan with update_meal_plan, threading each main's vibe id as `from_vibe`). Returns { plan, variety, uncovered_at_risk, diagnostics }; `uncovered_at_risk` names at-risk items the plan couldn't use, and an unfillable slot is returned as an explicit empty slot, never dropped.",
+        "Propose a week of dinners from the caller's NIGHT-VIBE PALETTE, deterministically and statelessly. Two levels: (1) SHAPE — sample `nights` night-vibe slots weighted by cadence-debt (overdue vibes surface) and weather; (2) FILL — retrieve each slot's vibe by meaning and select a VARIED main (MMR + protein/cuisine caps across the week, not the top-3 lookalikes). Each slot's pool is COURSE-GATED to meal candidates by default: only recipes whose course includes `main` — or is empty (fail-open: not-yet-classified is never hidden) — are volunteered, so a component/side (a pasta dough, a sauce) never fills a dinner slot and never appears among the alternates; a vibe authored with an explicit `facets.course` (breakfast-for-dinner) suppresses the default for its slot, and `lock`s/`slots[].recipe` pins are exempt (an explicit caller choice is honored regardless of course). A vibe whose entire pool the gate empties returns the existing explicit empty slot (no alternates) — pin a recipe or give the vibe a `course` facet to escape. Does HOLISTIC use-it-up automatically: derives the caller's at-risk perishables from their PANTRY and spreads them across the week's mains (a multi-serving item can be used across two recipes), subordinate to vibe relevance and the hard gate — no param needed. Composes rung-1 `pairs_with` corpus sides, flags single-use perishable waste + meal-prep + novelty, and returns per-main `why` + `uses_perishables` (what each main actually uses up). Iterate by re-calling with `lock` (keep these recipes anywhere in the week, as vibe-less locked slots — resolved case-insensitively, respecting your rejects; a lock that's unknown, not-yet-embedded, or rejected comes back as an explicit empty locked slot), `exclude` (swap these out — an excluded recipe never appears in a pool, an alternate, or a pin), `boost_ingredients` (OVERRIDE — extra items to definitely use up, unioned with the pantry-derived set), `nudges`, `slots`, and a `seed` (change it for 'give me another week'). `new_for_me` = accepted new-for-me discovery slugs (from list_new_for_me), in priority order: each resolvable one is FORCE-PLACED into the week (below your pinned vibes, above overdue ones) within its weather bucket, seeding the plan rather than competing on cadence — an unresolvable/excluded/already-locked one is simply dropped. `ephemeral_vibes` = an ordered set of authored `{ vibe, facets }` (the same primitive as a saved night vibe, just for this one request): when present it SHAPES the week directly — its entries become the slots (each phrase embedded + facet-gated like a per-slot vibe override), REPLACING the saved-palette cadence sampling for this request (it does NOT bypass the hard gate or the diversify pass, and palette-keyed `slots`/`new_for_me` inputs are inert while it drives). Distill intent into it for a rich request; omit it to let the palette shape a bare 'plan my week'. `nudges`: max_time_total, variety strength (clamped so it can't collapse relevance), `proteins` (week-level SOFT protein boost — reorders, never gates) and `freeform` (a phrase like 'more soup, lighter dinners' — embedded and applied to every slot's ranking as a bounded additive term, never a gate; a main it materially matches says so in `why`). `slots` = per-vibe-slot constraints keyed by vibe_id (inert if that vibe isn't sampled this week): `protein`/`cuisine` facet pins narrowing that night's gate, `max_time_total` (a number caps that night; EXPLICIT null lifts the vibe's own cap — precedence: slot pin > nudges.max_time_total > vibe facet), `vibe` (a typed phrase replacing that slot's query vector — gate + identity unchanged, slot returns vibe_override: true; also fills a fresh not-yet-embedded vibe), and `recipe` (pin that exact recipe INTO the slot keeping its vibe identity + `from_vibe` provenance — the swap-in-place primitive; slot returns recipe_pinned: true, and an unresolvable pin comes back as an explicit empty slot). Each vibe slot also returns swap material from its already-ranked pool: `alternates` (top remaining candidates, week-deduped), `alt_similar` (nearest to the chosen main), `alt_different` (best different-cuisine) — all gate survivors; empty slots keep their alternates as the escape hatch. A slot placed by a non-mild weather quota carries `weather_category` and a weather-fit `why`. Makes at most ONE batched Workers AI embedding call per request — only for `nudges.freeform`/`slots[].vibe`/`ephemeral_vibes[].vibe` text not already in the query-embedding cache; a request with no such text makes NO AI call (every other vector is cron-captured). NO writes (persist a chosen plan with update_meal_plan, threading each main's vibe id as `from_vibe`). Returns { plan, variety, uncovered_at_risk, diagnostics }; `uncovered_at_risk` names at-risk items the plan couldn't use, and an unfillable slot is returned as an explicit empty slot, never dropped.",
       inputSchema: PROPOSE_INPUT_SHAPE,
     },
     (input) => runTool(() => runProposeMealPlan(env, tenant, input, deps)),

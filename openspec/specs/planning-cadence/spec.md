@@ -61,22 +61,22 @@ Within one planning window, a night vibe SHALL be eligible to be sampled into mo
 
 ### Requirement: Repeatability sampling stays deterministic and precedence-preserving
 
-The bounded-multiplicity sampling SHALL remain deterministic given the same seed and inputs, and SHALL preserve the existing precedence order: pinned vibes are placed first, then overdue (debt-forced) vibes, then the remaining slots are filled from the weighted pool honoring each vibe's occurrence cap. Vibes that do not fit SHALL continue to roll over.
+The bounded-multiplicity sampling SHALL remain deterministic given the same seed and inputs, and SHALL preserve the precedence order: pinned vibes are placed first, then **new-for-me discovery seeds** (accepted imports claiming a slot before cadence-weighted fills), then overdue (debt-forced) vibes, then the remaining slots are filled from the weighted pool honoring each vibe's occurrence cap. The new-for-me tier SHALL be seed-deterministic like the others and SHALL respect weather-bucket quotas (the `weather-bucket-planning` capability). Vibes and discoveries that do not fit SHALL continue to roll over.
 
-#### Scenario: Same seed, same plan
+#### Scenario: Precedence order includes new-for-me between pinned and overdue
 
-- **WHEN** the same palette, debts, weather, window, and seed are supplied twice
-- **THEN** the identical set of slots — including which vibes recur and how many times — is returned both times
+- **WHEN** a planning window has a pinned vibe, an accepted new-for-me discovery, and an overdue vibe competing for slots
+- **THEN** the pinned vibe is placed first, the discovery next, the overdue vibe after, and the remaining slots fill from the weighted pool — all deterministic given the seed
 
-#### Scenario: Pinned and overdue vibes are still placed before the weighted pool
+#### Scenario: Sampling stays deterministic with the new tier
 
-- **WHEN** a palette has a pinned vibe, an overdue vibe, and other vibes eligible for weighted sampling
-- **THEN** the pinned vibe is placed, then the overdue vibe is placed (subject to the existing reserve/rollover rules), before any weighted-pool slots are filled
+- **WHEN** `sampleWeek` runs twice with the same seed, palette, discoveries, and forecast
+- **THEN** it produces the identical week both times, including identical new-for-me placements
 
-#### Scenario: Over-subscription still rolls over
+#### Scenario: Overflow rolls over
 
-- **WHEN** more vibes are forced (pinned or overdue) than there are slots to place them
-- **THEN** the vibes that do not fit are reported as rolled over, unchanged from today's behavior
+- **WHEN** more pinned + new-for-me + overdue claims exist than slots
+- **THEN** the ones that do not fit roll over rather than displacing a higher-precedence placement
 
 ### Requirement: Recipe-level repetition is unaffected
 

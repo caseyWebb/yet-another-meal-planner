@@ -162,6 +162,20 @@ The wire shape the `display_recipe` tool returns as its result's `structuredCont
 - `favorite` (boolean, optional) — the caller's `favorite` overlay mark (merged from the per-tenant `overlay` table).
 - `body` (string) — the recipe's markdown body (Ingredients/Instructions), rendered escape-first in the card.
 
+## display_meal_plan structuredContent (ProposeCardData, `@yamp/contract`)
+
+The wire shape the `display_meal_plan` tool returns as its result's `structuredContent`, and the shape the bespoke `ui://plan/propose` widget hydrates its interactive render from (meal-plan-widget). Defined once in the runtime-agnostic `@yamp/contract` package (`packages/contract/src/propose-card.ts`) so the Worker (workerd) that produces it and the browser widget that consumes it share **one** definition and cannot drift. Not stored: it is assembled per call from `runProposeMealPlan`'s result plus a little render context, never persisted. The **result-portion fields** mirror `propose_meal_plan`'s own `ProposeResult` exactly, so the widget parses **both** the initial payload and a dial-triggered `propose_meal_plan` re-invocation (proxied through the host, `App.callServerTool`) with one shape.
+
+- `plan` (ProposeCardSlot[]) — the proposed slots (one card per night), mirroring `propose_meal_plan`'s `plan` field-for-field: `{ vibe_id, reason, main, empty_reason?, alternates, alt_similar, alt_different, vibe_override?, recipe_pinned?, weather_category?, sides, uses_perishables, flags, why }` (see [`TOOLS.md`](TOOLS.md) `propose_meal_plan` returns for each field).
+- `variety` (`{ distinct_proteins, distinct_cuisines, mean_pairwise_sim, max_pairwise_sim }`) — the week's cross-slot diversity summary (the variety bar).
+- `uncovered_at_risk` (string[]) — at-risk items the plan could not cover (the honest "still going bad" list).
+- `diagnostics` (`{ seed, lambda, nights, filled, empty, rolled_over? }`) — the op's diagnostics.
+- `note` (string, optional) — present only on the empty-palette short-circuit (an add-a-vibe nudge).
+- `request` (ProposeCardRequest) — the request that produced `plan` (`{ nights, seed, variety, proteins, freeform, exclude, slots }` — the palette-flow subset the member app's client session serializes); the widget seeds its client session from this and replays an adjusted copy against the stateless op on each dial change.
+- `vibeLabels` (Record<string, string>) — vibe id → its phrase, so each slot renders its vibe name (the result carries only the id).
+- `palettePresets` (string[]) — the palette's vibe phrases, for the per-night "pick one of your vibes" panel.
+- `proteins` (string[]) / `cuisines` (string[]) — the corpus facet universes, for the per-night facet-pin pickers.
+
 ## title_audit (D1 `title_audit` table — Worker-owned, shared)
 
 The **title re-audit**'s one-shot convergence stamp (migration 0044, `recipe-title-audit`). The scheduled pass (`src/title-audit.ts`, the `title-audit` job in `scheduled()` phase 1) audits each projected recipe **once**: it runs the guarded title-clean judgment (the discovery classifier's word-subset guard — a cleaned title may only *remove* words, fail-open), rewrites only the R2 frontmatter `title` when the accepted clean name differs, and stamps the outcome here. A recipe with a row never re-enters the backlog (`recipes.slug NOT IN title_audit`); **new writes are born-stamped** by both import paths (the sweep's import and `create_recipe`, `outcome = 'kept'` — their titles are clean at birth), so the pass drains exactly the pre-existing corpus and quiesces to a ~0-LLM no-op. A **sibling of `recipes`** keyed by `slug` (like `recipe_facets`/`recipe_derived`) because the `recipes` projection is rebuilt wholesale and cannot carry a durable stamp. Slugs are **immutable ids** — the audit never renames a slug or moves an R2 object; only the display title converges, and it reaches the index/description/embedding through the existing reconciles (the recipe-derived `content_hash` covers the title; the facet gate hash does not, so no reclassification).
@@ -420,8 +434,11 @@ name    TEXT     -- dish name; present for ready_to_eat | ad_hoc
 protein TEXT     -- optional inline dimension for non-recipe entries
 cuisine TEXT     -- optional; recipe entries resolve protein/cuisine from `recipes` via a JOIN
 satisfied_vibe TEXT -- night-vibe slot provenance (migration 0026): copied from the cleared meal_plan
-                    -- row's from_vibe on cook, so last_satisfied(vibe) = MAX(date) WHERE satisfied_vibe = id.
-                    -- NULL for an off-plan cook (idx_cooking_log_satisfied_vibe on (tenant, satisfied_vibe))
+                    -- row's from_vibe on cook (NULL for an off-plan cook). Retained for provenance, but
+                    -- last_satisfied is NO LONGER derived from it — cadence attribution moved to the
+                    -- cook-time cosine records in `vibe_satisfaction` (migration 0047; see below). The
+                    -- from_vibe here is the guaranteed-reset prior that seeds one of those records.
+                    -- (idx_cooking_log_satisfied_vibe on (tenant, satisfied_vibe))
 ```
 
 Example rows:
@@ -438,6 +455,28 @@ Example rows:
 - `ready_to_eat` consumption also decrements the item's on-hand stock in the pantry (the `ready_to_eat` catalog stays a pure options list with no stock field) and its accumulating frequency (by `name`) is the favored-item signal for re-order suggestions.
 - Cadence ("cooks/week") counts `recipe` + `ad_hoc` only; `ready_to_eat` is the convenience side of the cook-vs-convenience split.
 - Append-only in normal use; `id` gives a stable handle for an admin UI to edit/delete a mis-logged row.
+
+## vibe_satisfaction (per-tenant, D1 table)
+
+The **cook-time night-vibe satisfaction** records (migration 0047, `cooking-history` + `night-vibe-palette` capabilities). Night-vibe cadence attribution is **revealed at cook time**, not at plan time: when a `type=recipe` cook is logged, `log_cooked` cosine-matches the cooked recipe's cron-captured embedding (`recipe_derived`) against the caller's palette vibe vectors (`night_vibe_derived`) — reusing the ranker's cosine helper, **no new AI call** — and writes **one row per satisfied vibe**, in the **same D1 batch** as the `cooking_log` insert + the meal-plan clear. Attribution unions (a) the cleared plan row's `from_vibe` as a **guaranteed-reset prior** (always recorded, even at a borderline cosine, and even when unembedded) with (b) every palette vibe the recipe matches at/above a calibrated threshold — the single top match resets, weaker matches only when they clear a higher gate (the over-reset guard). A cook MAY satisfy **more than one** vibe; an **off-plan** cook resets any vibe it genuinely matches. Per-tenant PRIVATE, isolated by `tenant`. Schema: `migrations/d1/0047_vibe_satisfaction.sql`.
+
+```sql
+-- D1 vibe_satisfaction table. PRIMARY KEY (tenant, cooking_log_id, vibe_id) — one record per
+-- (cook, vibe). idx_vibe_satisfaction_vibe on (tenant, vibe_id) backs the derived last_satisfied.
+tenant         TEXT     -- owning member
+cooking_log_id INTEGER  -- the cooking_log row that satisfied the vibe (soft ref, no FK)
+vibe_id        TEXT     -- the night_vibes id satisfied (soft ref)
+date           TEXT     -- YYYY-MM-DD of the cook (denormalized from cooking_log — MAX(date) needs no JOIN)
+score          REAL     -- cosine at attribution time (provenance for threshold calibration only; the
+                        -- from_vibe prior stores 0 when the recipe/vibe isn't embedded, NOT NULL — score is
+                        -- NULL only for the migration-backfilled rows, which predate cosine attribution). It
+                        -- does NOT scale the reset: any record fully advances the vibe's cadence to `date`.
+```
+
+**Notes:**
+- A vibe's **`last_satisfied` is derived**, never stored: `last_satisfied(vibe) = MAX(date)` over this table's rows for that `(tenant, vibe_id)` (`readVibeLastSatisfied`). A never-satisfied vibe is simply absent (max cadence debt). This is the sole source for the palette's cadence status in `read_user_profile` and the propose engine's cadence-debt scheduling.
+- **Backfill:** migration 0047 seeds this table from existing `cooking_log.satisfied_vibe` provenance (one row per stamped cook, `cooking_log_id` = the log row's id, `score` NULL), so past attribution is preserved when the derivation switches source. `cooking_log.satisfied_vibe` is kept (still written on cook) but is no longer the derivation input.
+- `cooking_log_id`/`vibe_id` are **soft references** (no FK) — a since-deleted vibe simply never matches a live palette row on read, and history survives an admin edit/delete of the cook.
 
 ## reconcile_errors (D1 table, shared)
 
@@ -650,7 +689,9 @@ the **base** (the id up to the first `::`) keeps the existing lowercase/space fo
 opaque discriminators to deterministic code (which compares only full-id or base equality). The
 front-door `ingredient_alias` maps a surface form → id; the `ingredient_identity` registry holds
 the node (with a union-find `representative` pointer, a `concrete` flag, and a cron-owned
-embedding); `ingredient_edge` holds directed `satisfies` edges. The `readResolver` load bakes the
+embedding); `ingredient_edge` holds directed `satisfies` edges plus the taste-`substitution` kind (a
+capture-first, weighted, satisfies()-EXCLUDED taste swap surfaced only as a read-time suggestion — see
+the *ingredient-normalization capture* section of `docs/ARCHITECTURE.md`). The `readResolver` load bakes the
 `representative` chain into the variant→id map. `update_aliases` writes `source='human'` (never
 overwritten by the auto capture pass). A sibling re-confirm pass re-examines edgeless auto-minted
 nodes against the denser registry and stamps `ingredient_identity.reconfirmed_at` once processed
@@ -687,7 +728,19 @@ human-involved pairs, mixed-concreteness pairs, and 3+-survivor forms are skippe
 the job summary's `lexicalTwinMerged`/`lexicalTwinSkipped`). Alias +
 edge rows written by capture/re-confirm/the guarantee/the replay are born-stamped (`audited_at`
 set at write time), and the edge audit's drop rows are born-marked `replayed_at`; human rows are
-never selected by any audit.
+never selected by any audit. A **`substitution` edge** is born differently — not by the capture
+cron but by the **agent-side capture trigger**: `add_to_grocery_list`'s `substitutes_for` on a food
+add resolves the replaced ingredient X and the added item Y through the same funnel and, by pure set
+logic (Y crosses a canonical-id boundary not already an identity neighbor of X, no classifier),
+records a candidate `substitution` edge X → Y (`captureSubstitution`, `src/corpus-db.ts`). It is
+operator-global: born `weight = 1` (a candidate) and incremented `+1` per repeat observation across
+members, promoting past `SUBSTITUTION_PROMOTE_MIN` (2), and only promoted edges surface (the depth-1
+walk). Because a substitution is a taste judgment, not identity, it is **EXCLUDED by kind from every
+edge-audit read** (`readEdgeAuditBatch`, `readAllEdges`, `filterCommittableEdges`, the re-confirm
+edgeless probe, and the Normalize/Nodes orphan + `satisfies`-count lenses and the audit backlog
+count) — so the satisfies re-audit never selects or deletes it, it never trips the reverse-pair
+2-cycle guard, and a concrete node's ORPHAN signal is never masked behind one. `audited_at` stays
+NULL for it (it is never audited); the exclusion, not a stamp, keeps it out of the backlog.
 
 ```sql
 -- ingredient_identity — canonical nodes. PRIMARY KEY (id).
@@ -721,11 +774,20 @@ confidence REAL
 decided_at INTEGER
 audited_at INTEGER  -- one-shot alias-audit stamp; NULL = un-audited backlog; born-set on new writes
 
--- ingredient_edge — directed "satisfies" edges. PRIMARY KEY (from_id, to_id, kind).
-from_id    TEXT  -- A satisfies a request for to_id (reachability)
+-- ingredient_edge — directed edges: the factual "satisfies" kinds + the taste-`substitution`
+--   kind. PRIMARY KEY (from_id, to_id, kind).
+from_id    TEXT  -- satisfies kinds: A satisfies a request for to_id (reachability);
+                 --   'substitution': A is an observed taste substitute for to_id
 to_id      TEXT
-kind       TEXT  -- 'general' | 'containment' | 'membership'
+kind       TEXT  -- 'general' | 'containment' | 'membership' — FACTUAL, satisfies()-reachable;
+                 --   'substitution' — a taste swap, EXCLUDED from satisfies() (never gates a match
+                 --   or a purchase), surfaced only as a labeled read-time suggestion (depth-1 walk)
 source     TEXT NOT NULL DEFAULT 'auto'
+weight     INTEGER NOT NULL DEFAULT 1  -- substitution edges: observation count; a candidate is born
+                 --   at 1 and PROMOTES past the candidate threshold on repeat (the read surfaces
+                 --   only promoted edges). Factual edges default 1 and never read it.
+qualifier  TEXT  -- substitution edges: an optional caveat authored LATER (a sub ratio like '1:2', a
+                 --   leavening/cook-time note); NULL until authored — a bare weighted edge is useful
 audited_at INTEGER  -- one-shot edge-audit stamp; NULL = un-audited backlog; born-set on new writes
 
 -- novel_ingredient_terms — the capture queue (surface forms not yet placed). PK (term).

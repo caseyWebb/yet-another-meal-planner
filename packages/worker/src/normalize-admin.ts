@@ -185,7 +185,11 @@ export async function readNodesPage(env: Env): Promise<NodesPage> {
       "SELECT id, base, detail, concrete, representative, source FROM ingredient_identity",
     ),
     d.all<{ variant: string; id: string }>("SELECT variant, id FROM ingredient_alias"),
-    d.all<{ from_id: string; to_id: string; kind: string }>("SELECT from_id, to_id, kind FROM ingredient_edge"),
+    // Substitution edges are excluded: the Nodes lens is the FACTUAL satisfies-graph structure, so
+    // a substitution edge must not add spurious adjacency or mask a concrete node's ORPHAN signal.
+    d.all<{ from_id: string; to_id: string; kind: string }>(
+      "SELECT from_id, to_id, kind FROM ingredient_edge WHERE kind != 'substitution'",
+    ),
   ]);
 
   const byId = new Map(identityRows.map((r) => [r.id, r]));
@@ -262,7 +266,12 @@ export async function readNormalizationPage(env: Env, opts: { decisionLimit?: nu
         "ORDER BY id DESC LIMIT ?1",
       opts.decisionLimit ?? 200,
     ),
-    d.all<{ from_id: string; to_id: string; kind: string }>("SELECT from_id, to_id, kind FROM ingredient_edge"),
+    // Substitution edges are excluded: the Decisions view's per-node satisfies/members and the
+    // `satisfies` stat count (edgeRows.length) are FACTUAL-edge concerns; a taste substitution is
+    // surfaced by the depth-1 walk, not the identity-decision audit.
+    d.all<{ from_id: string; to_id: string; kind: string }>(
+      "SELECT from_id, to_id, kind FROM ingredient_edge WHERE kind != 'substitution'",
+    ),
     d.all<{ id: string; base: string; detail: string | null; concrete: number; representative: string | null }>(
       "SELECT id, base, detail, concrete, representative FROM ingredient_identity",
     ),

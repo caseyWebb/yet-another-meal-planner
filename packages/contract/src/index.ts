@@ -84,3 +84,13 @@ export {
   type SaleScanPayload,
 } from "./satellite-pull.js";
 export { type RecipeCardData } from "./recipe-card.js";
+export {
+  type ProposeCardData,
+  type ProposeCardSlot,
+  type ProposeCardMain,
+  type ProposeCardAlt,
+  type ProposeCardSide,
+  type ProposeCardVariety,
+  type ProposeCardRequest,
+  type ProposeCardRequestSlot,
+} from "./propose-card.js";

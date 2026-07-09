@@ -156,6 +156,35 @@ describe("IngredientContext (the ingredient consumption funnel)", () => {
     expect(merged).toEqual([{ from: "green onion", to: "green onion", kind: "general" }]);
   });
 
+  it("satisfiesAmong() EXCLUDES substitution edges — a substitute never completes a match (D7)", async () => {
+    const { env } = fakeD1({
+      tables: {
+        ingredient_identity: [
+          { id: "buttermilk", base: "buttermilk", representative: null },
+          { id: "yogurt::plain", base: "yogurt", detail: "plain", representative: null },
+          { id: "chicken::thighs", base: "chicken", detail: "thighs", representative: null },
+          { id: "chicken", base: "chicken", representative: null },
+        ],
+        ingredient_edge: [
+          // A taste substitute — buttermilk→plain yogurt — must NOT be reachable via satisfies().
+          { from_id: "buttermilk", to_id: "yogurt::plain", kind: "substitution", weight: 3 },
+          // A factual satisfies edge alongside it, to prove the filter is kind-specific.
+          { from_id: "chicken::thighs", to_id: "chicken", kind: "general" },
+        ],
+      },
+    });
+    const ctx = await ingredientContext(env);
+
+    // The ONLY path from buttermilk to plain yogurt is a substitution edge → satisfies() is false
+    // (an empty edge set). The substitution never gates a match or causes a purchase.
+    expect(await ctx.satisfiesAmong(["buttermilk", "yogurt::plain"])).toEqual([]);
+
+    // The factual general edge in the same table is unaffected — only substitution is excluded.
+    expect(await ctx.satisfiesAmong(["chicken::thighs", "chicken"])).toEqual([
+      { from: "chicken::thighs", to: "chicken", kind: "general" },
+    ]);
+  });
+
   it("satisfiesAmong() does NOT load the edge table until first called (lazy), then memoizes", async () => {
     // Wrap the fake DB so we can count reads of the ingredient_edge table.
     const base = fakeD1({

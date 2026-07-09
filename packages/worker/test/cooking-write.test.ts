@@ -2,6 +2,8 @@ import { describe, it, expect } from "vitest";
 import { registerCookingWriteTools, logCooked } from "../src/cooking-write.js";
 import type { Env } from "../src/env.js";
 import { fakeD1, type FakeD1 } from "./fake-d1.js";
+import { sqliteEnv, type SqliteEnv } from "./sqlite-d1.js";
+import { readVibeLastSatisfied } from "../src/night-vibe-db.js";
 
 function collect(env: Env, username: string) {
   const handlers = new Map<string, (input: unknown) => Promise<{ content: { text: string }[] }>>();
@@ -141,5 +143,141 @@ describe("logCooked (shared op) — dedupe", () => {
     const other = await logCooked(d1.env, "everett", { type: "ad_hoc", name: "grilled cheese", date: "2026-06-20" }, { dedupe: true });
     expect(other.deduped).toBeUndefined();
     expect(d1.tables.cooking_log).toHaveLength(2);
+  });
+});
+
+// Cook-time vibe-satisfaction attribution (D4) against REAL SQLite: the migration DDL + backfill
+// apply, the log_cooked batch runs in a true transaction, and the (SELECT MAX(id) FROM cooking_log)
+// subquery resolves to the just-inserted row. sqliteEnv has NO `AI` binding, so a passing run also
+// proves no env.AI call is made at cook time (it reuses the cron-captured embeddings only).
+describe("logCooked — cook-time vibe satisfaction (D4, real SQLite)", () => {
+  const TENANT = "casey";
+  const RECIPE = "miso-salmon";
+
+  /** Seed a recipe (+ optional embedding), a palette (each vibe with an optional vector), and an
+   *  optional plan row carrying `from_vibe`. Returns the migrated env + a `sat()` reader. */
+  function seed(opts: {
+    recipeVec?: number[] | null;
+    vibes: { id: string; vec?: number[] }[];
+    fromVibe?: string;
+  }): {
+    s: SqliteEnv;
+    sat: () => { cooking_log_id: number; vibe_id: string; date: string; score: number | null }[];
+  } {
+    const s = sqliteEnv([TENANT]);
+    const run = (sql: string, ...b: unknown[]) => s.raw.prepare(sql).run(...(b as never[]));
+    run("INSERT INTO recipes (slug, title) VALUES (?, ?)", RECIPE, "Miso Salmon");
+    if (opts.recipeVec) run("INSERT INTO recipe_derived (slug, embedding) VALUES (?, ?)", RECIPE, JSON.stringify(opts.recipeVec));
+    for (const v of opts.vibes) {
+      run("INSERT INTO night_vibes (tenant, id, vibe) VALUES (?, ?, ?)", TENANT, v.id, v.id.replace(/-/g, " "));
+      if (v.vec) run("INSERT INTO night_vibe_derived (tenant, id, embedding) VALUES (?, ?, ?)", TENANT, v.id, JSON.stringify(v.vec));
+    }
+    if (opts.fromVibe) run("INSERT INTO meal_plan (tenant, recipe, from_vibe) VALUES (?, ?, ?)", TENANT, RECIPE, opts.fromVibe);
+    return {
+      s,
+      sat: () =>
+        s.rows<{ cooking_log_id: number; vibe_id: string; date: string; score: number | null }>("vibe_satisfaction"),
+    };
+  }
+
+  const cook = (s: SqliteEnv, date = "2026-06-20") =>
+    logCooked(s.env, TENANT, { type: "recipe", recipe: RECIPE, date });
+
+  it("an on-plan cook records the aimed vibe AND every other vibe it matches (multi-vibe reset)", async () => {
+    // recipe [1,1,0] matches aimed [1,0,0] and other [0,1,0] (both cosine ~0.707 ≥ gate); unrelated
+    // [0,0,1] misses. All three write in the SAME batch as the log insert + plan clear.
+    const { s, sat } = seed({
+      recipeVec: [1, 1, 0],
+      vibes: [
+        { id: "aimed", vec: [1, 0, 0] },
+        { id: "other", vec: [0, 1, 0] },
+        { id: "unrelated", vec: [0, 0, 1] },
+      ],
+      fromVibe: "aimed",
+    });
+    await cook(s);
+
+    const rows = sat();
+    expect(rows.map((r) => r.vibe_id).sort()).toEqual(["aimed", "other"]);
+    expect(rows.every((r) => r.cooking_log_id === 1 && r.date === "2026-06-20")).toBe(true);
+    expect(rows.find((r) => r.vibe_id === "aimed")!.score).toBeCloseTo(0.707, 2);
+
+    // last_satisfied advances for both satisfied vibes and not for the missed one.
+    const last = await readVibeLastSatisfied(s.env, TENANT);
+    expect(last.get("aimed")).toBe("2026-06-20");
+    expect(last.get("other")).toBe("2026-06-20");
+    expect(last.has("unrelated")).toBe(false);
+
+    // The on-plan cook still cleared the meal plan (unchanged behavior).
+    expect(s.rows("meal_plan")).toHaveLength(0);
+  });
+
+  it("an off-plan cook (no plan row) resets every vibe its recipe cosine-matches", async () => {
+    const { s, sat } = seed({
+      recipeVec: [1, 0, 0],
+      vibes: [
+        { id: "match", vec: [1, 0, 0] },
+        { id: "miss", vec: [0, 1, 0] },
+      ],
+    });
+    await cook(s, "2026-07-01");
+
+    expect(sat().map((r) => r.vibe_id)).toEqual(["match"]);
+    const last = await readVibeLastSatisfied(s.env, TENANT);
+    expect(last.get("match")).toBe("2026-07-01");
+    expect(last.has("miss")).toBe(false);
+  });
+
+  it("bounds over-reset: only the top match resets; weaker near-threshold matches do not", async () => {
+    const { s, sat } = seed({
+      recipeVec: [1, 0.875, 0.875], // strong ≈ 0.629 (top, ≥ gate); weak1/weak2 ≈ 0.550 (< gate)
+      vibes: [
+        { id: "strong", vec: [1, 0, 0] },
+        { id: "weak1", vec: [0, 1, 0] },
+        { id: "weak2", vec: [0, 0, 1] },
+      ],
+    });
+    await cook(s);
+    expect(sat().map((r) => r.vibe_id)).toEqual(["strong"]);
+  });
+
+  it("the from_vibe prior resets even at a borderline cosine, alongside genuine cosine matches", async () => {
+    // aimed [0,0,1] is cosine 0 to recipe [1,0,0] (below floor) — still recorded as the prior;
+    // strong [1,0,0] records on its own cosine.
+    const { s, sat } = seed({
+      recipeVec: [1, 0, 0],
+      vibes: [
+        { id: "aimed", vec: [0, 0, 1] },
+        { id: "strong", vec: [1, 0, 0] },
+      ],
+      fromVibe: "aimed",
+    });
+    await cook(s);
+
+    const rows = sat();
+    expect(rows.map((r) => r.vibe_id).sort()).toEqual(["aimed", "strong"]);
+    expect(rows.find((r) => r.vibe_id === "aimed")!.score).toBeCloseTo(0, 5);
+    const last = await readVibeLastSatisfied(s.env, TENANT);
+    expect(last.get("aimed")).toBe("2026-06-20");
+  });
+
+  it("an unembedded recipe fires ONLY the from_vibe prior (no cosine matches)", async () => {
+    const { s, sat } = seed({
+      recipeVec: null, // no recipe_derived row → recipe vector absent
+      vibes: [
+        { id: "aimed", vec: [1, 0, 0] },
+        { id: "other", vec: [0, 1, 0] },
+      ],
+      fromVibe: "aimed",
+    });
+    await cook(s);
+    expect(sat().map((r) => r.vibe_id)).toEqual(["aimed"]);
+    expect(sat()[0].score).toBe(0);
+  });
+
+  it("an off-plan cook with an unembedded recipe records nothing", async () => {
+    const { s, sat } = seed({ recipeVec: null, vibes: [{ id: "aimed", vec: [1, 0, 0] }] });
+    await cook(s);
+    expect(sat()).toHaveLength(0);
   });
 });

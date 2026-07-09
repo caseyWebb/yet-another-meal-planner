@@ -44,6 +44,7 @@ const PK: Record<string, string[]> = {
   job_runs: ["id"],
   night_vibes: ["tenant", "id"],
   night_vibe_derived: ["tenant", "id"],
+  vibe_satisfaction: ["tenant", "cooking_log_id", "vibe_id"],
   pending_proposals: ["tenant", "id"],
   webauthn_credentials: ["credential_id"],
   // walled-source ingest (recipe-ingestion)
@@ -132,6 +133,9 @@ export function fakeD1(
     if (/reconfirmed_at IS NULL/i.test(sql)) out = out.filter((r) => r.reconfirmed_at == null);
     // Re-audit eligibility (alias/edge backlog: un-stamped rows only).
     if (/audited_at IS NULL/i.test(sql)) out = out.filter((r) => r.audited_at == null);
+    // Substitution edges are excluded from the factual/edge-audit `ingredient_edge` reads
+    // (converge-meal-planning-surfaces): the `kind != 'substitution'` literal on those SELECTs.
+    if (/kind\s*(?:!=|<>)\s*'substitution'/i.test(sql)) out = out.filter((r) => r.kind !== "substitution");
     // Edge-drop replay selection (normalization-audit-calibration).
     if (/\boutcome = \?1/i.test(sql)) eq("outcome", 1);
     // The unreplayed-drop gauge probe (audit-admin): the SQL mirror of the replay mark —
@@ -201,17 +205,17 @@ export function fakeD1(
           ? tables[table].filter((r) => r.tenant === binds[0])
           : tables[table];
       let rows = applyWhere(sql, binds, base);
-      // The derived last-satisfied aggregation (readVibeLastSatisfied): MAX(date) per
-      // satisfied_vibe over the caller's provenance-stamped rows.
-      if (/MAX\(date\) AS d/i.test(sql) && /GROUP BY satisfied_vibe/i.test(sql)) {
+      // The derived last-satisfied aggregation (readVibeLastSatisfied): MAX(date) per vibe_id over
+      // the caller's cook-time satisfaction records (vibe_satisfaction, migration 0047).
+      if (/MAX\(date\) AS d/i.test(sql) && /GROUP BY vibe_id/i.test(sql)) {
         const byVibe = new Map<unknown, unknown>();
         for (const r of rows) {
-          if (r.satisfied_vibe == null) continue;
-          const prev = byVibe.get(r.satisfied_vibe);
-          if (prev === undefined || String(r.date) > String(prev)) byVibe.set(r.satisfied_vibe, r.date);
+          if (r.vibe_id == null) continue;
+          const prev = byVibe.get(r.vibe_id);
+          if (prev === undefined || String(r.date) > String(prev)) byVibe.set(r.vibe_id, r.date);
         }
         return {
-          rows: [...byVibe].map(([satisfied_vibe, d]) => ({ satisfied_vibe, d })),
+          rows: [...byVibe].map(([vibe_id, d]) => ({ vibe_id, d })),
           changes: 0,
         };
       }

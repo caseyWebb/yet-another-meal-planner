@@ -155,6 +155,9 @@ export const groceryArea = new Hono<ApiEnv>()
     const input: GroceryAddInput = { ...coerceCommon(body) };
     if (name) input.name = name;
     if (id) input.id = id;
+    // Optional taste-substitution capture signal — the recipe ingredient this add stands in for.
+    const substitutesFor = str(body.substitutes_for)?.trim();
+    if (substitutesFor) input.substitutes_for = substitutesFor;
     const { item, merged } = await addGroceryRow(c.env, tenant.id, input, isoDay(Date.now()));
     return c.json({ item, merged });
   })

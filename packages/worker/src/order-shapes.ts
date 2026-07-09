@@ -234,14 +234,21 @@ export interface SiblingSuggestion {
   /** Human-readable label (base + detail). */
   label: string;
   relation: {
-    role: "satisfies" | "sibling" | "generalization";
-    kind: "general" | "containment" | "membership";
+    role: "satisfies" | "sibling" | "generalization" | "substitution";
+    kind: "general" | "containment" | "membership" | "substitution";
     /** The shared parent id, for `role: "sibling"`. */
     via?: string;
     /** The curated human label for `via` (the parent node's `labelOf`) — reify-ingredient-
      *  display-names Tier 2. Additive display field so the app renders a human relation
      *  target while still carrying the raw `via` id. Present exactly when `via` is. */
     via_label?: string;
+    /** Substitution relations only (`role: "substitution"`): the accrued observation weight of
+     *  the promoted `substitution` edge, and its optional authored qualifier (a sub ratio like
+     *  `1:2`, a leavening/cook-time caveat). A substitute is a taste judgment surfaced AFTER every
+     *  factual identity relation — it never gates a match or a purchase (excluded from
+     *  `satisfies()`); the narrower weighs fitness. */
+    weight?: number;
+    qualifier?: string;
   };
   /** A pantry row exists for this id — already on hand. */
   in_pantry: boolean;

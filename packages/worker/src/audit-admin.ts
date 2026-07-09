@@ -247,7 +247,11 @@ export async function readAuditObservability(env: Env): Promise<AuditObservabili
     readJobRuns(env, EDGE_AUDIT_JOB, AUDIT_RUN_WINDOW),
     readJobRuns(env, SKU_REKEY_JOB, AUDIT_RUN_WINDOW),
     d.first<{ n: number }>("SELECT COUNT(*) AS n FROM ingredient_alias WHERE source = 'auto' AND audited_at IS NULL"),
-    d.first<{ n: number }>("SELECT COUNT(*) AS n FROM ingredient_edge WHERE source = 'auto' AND audited_at IS NULL"),
+    // `kind != 'substitution'`: substitution edges are excluded from the edge re-audit, so they
+    // never carry an `audited_at` stamp — counting them would inflate the backlog that never drains.
+    d.first<{ n: number }>(
+      "SELECT COUNT(*) AS n FROM ingredient_edge WHERE source = 'auto' AND audited_at IS NULL AND kind != 'substitution'",
+    ),
   ]);
   return deriveAuditObservability({
     aliasRuns,

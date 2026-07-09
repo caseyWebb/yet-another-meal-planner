@@ -121,37 +121,97 @@ export async function deleteNightVibe(env: Env, tenant: string, id: string): Pro
   return r.changes > 0;
 }
 
-/** The caller's derived `last_satisfied(vibe)` — `MAX(date)` over cooking-log rows attributed
- *  to each vibe by slot provenance (`satisfied_vibe`). Vibe id → YYYY-MM-DD. Off-plan cooks
- *  (null `satisfied_vibe`) never appear, so an unsatisfied vibe is simply absent (max debt). */
+/** The caller's derived `last_satisfied(vibe)` — `MAX(date)` over the cook-time satisfaction records
+ *  (`vibe_satisfaction`, migration 0047), which cover both the guaranteed `from_vibe` prior AND every
+ *  cosine-matched vibe (multi-vibe, off-plan included). Vibe id → YYYY-MM-DD. A never-satisfied vibe
+ *  is simply absent (max debt). Never stored on the vibe — this is the sole derivation of it. */
 export async function readVibeLastSatisfied(env: Env, tenant: string): Promise<Map<string, string>> {
-  const rows = await db(env).all<{ satisfied_vibe: string; d: string }>(
-    "SELECT satisfied_vibe, MAX(date) AS d FROM cooking_log " +
-      "WHERE tenant = ?1 AND satisfied_vibe IS NOT NULL GROUP BY satisfied_vibe",
+  const rows = await db(env).all<{ vibe_id: string; d: string }>(
+    "SELECT vibe_id, MAX(date) AS d FROM vibe_satisfaction WHERE tenant = ?1 GROUP BY vibe_id",
     tenant,
   );
   const map = new Map<string, string>();
-  for (const r of rows) if (r.satisfied_vibe && r.d) map.set(r.satisfied_vibe, r.d);
+  for (const r of rows) if (r.vibe_id && r.d) map.set(r.vibe_id, r.d);
   return map;
 }
 
-/** The caller's FULL satisfaction history per vibe (dates DESC, most recent first) over
- *  provenance-stamped cooking-log rows (`satisfied_vibe`). The reconcile signal pass reads
- *  this ONE query for both cadence signals: last-satisfied is index 0, and the tighten
- *  rule's recent intervals fall out of the adjacent pairs. A never-satisfied vibe is
- *  simply absent. */
+/** A `vibe_satisfaction` INSERT for one (cook, vibe) satisfaction record, exposed for log_cooked's
+ *  transaction (D4). `cooking_log_id` resolves to the cooking-log row inserted EARLIER in the same
+ *  batch via `(SELECT MAX(id) FROM cooking_log WHERE tenant = ?1)` — AUTOINCREMENT makes that the
+ *  just-inserted row, and the interleaved meal-plan DELETE touches a different table, so the id is
+ *  stable across every satisfaction insert in the batch. */
+export function vibeSatisfactionInsertStmt(
+  env: Env,
+  tenant: string,
+  vibeId: string,
+  date: string,
+  score: number,
+): D1PreparedStatement {
+  return db(env).prepare(
+    "INSERT INTO vibe_satisfaction (tenant, cooking_log_id, vibe_id, date, score) " +
+      "VALUES (?1, (SELECT MAX(id) FROM cooking_log WHERE tenant = ?1), ?2, ?3, ?4)",
+    tenant,
+    vibeId,
+    date,
+    score,
+  );
+}
+
+/** A palette vibe's cadence status — the same `overdue | due | soon | ok` bucketing the member
+ *  app computes client-side (`statusOf` in `packages/app/src/routes/_app.profile.tsx`). */
+export type VibeCadenceStatus = "overdue" | "due" | "soon" | "ok";
+
+/**
+ * Bucket one vibe's cadence status, mirroring the member app's `statusOf`/`daysSince` exactly:
+ * a debt ratio `days_since(anchor) / cadence_days` (floor of whole days, `now`-relative) is
+ * bucketed overdue (≥ 1.5) / due (≥ 1) / soon (≥ 0.6) / ok. The anchor is `last_satisfied`, else
+ * the vibe's created date, else none. A vibe with no cadence (unset/≤ 0) or no anchor is `ok`.
+ */
+export function vibeCadenceStatus(vibe: NightVibe, lastSatisfied: string | null, now: Date): VibeCadenceStatus {
+  const cadence = vibe.cadence_days ?? null;
+  let ratio = 0;
+  if (cadence && cadence > 0) {
+    const anchor = lastSatisfied ?? (vibe.created_at ? vibe.created_at.slice(0, 10) : null);
+    if (anchor) ratio = Math.floor((now.getTime() - Date.parse(`${anchor}T00:00:00`)) / 86_400_000) / cadence;
+  }
+  if (ratio >= 1.5) return "overdue";
+  if (ratio >= 1) return "due";
+  if (ratio >= 0.6) return "soon";
+  return "ok";
+}
+
+/** A palette vibe as the profile read surfaces it: the stored vibe, its log-derived
+ *  last-satisfied date, and its derived cadence status. */
+export type ProfilePaletteVibe = NightVibe & { last_satisfied: string | null; status: VibeCadenceStatus };
+
+/** The caller's night-vibe palette for the profile read (data-read-tools D5): each saved vibe
+ *  merged with its derived `last_satisfied` and cadence status, reusing `readNightVibes` +
+ *  `readVibeLastSatisfied` rather than re-querying. Id-ordered, as `readNightVibes` returns. */
+export async function readNightVibePalette(env: Env, tenant: string, now: Date): Promise<ProfilePaletteVibe[]> {
+  const [vibes, last] = await Promise.all([readNightVibes(env, tenant), readVibeLastSatisfied(env, tenant)]);
+  return vibes.map((v) => {
+    const last_satisfied = last.get(v.id) ?? null;
+    return { ...v, last_satisfied, status: vibeCadenceStatus(v, last_satisfied, now) };
+  });
+}
+
+/** The caller's FULL satisfaction history per vibe (dates DESC, most recent first) over the
+ *  cook-time satisfaction records (`vibe_satisfaction`, migration 0047) — so off-plan / cosine-
+ *  matched cooks count, not just explicitly-aimed ones (the same source `readVibeLastSatisfied`
+ *  derives from). The reconcile signal pass reads this ONE query for both cadence signals:
+ *  last-satisfied is index 0, and the tighten rule's recent intervals fall out of the adjacent
+ *  pairs. A never-satisfied vibe is simply absent. */
 export async function readVibeSatisfactionDates(env: Env, tenant: string): Promise<Map<string, string[]>> {
-  const rows = await db(env).all<{ satisfied_vibe: string; date: string }>(
-    "SELECT satisfied_vibe, date FROM cooking_log " +
-      "WHERE tenant = ?1 AND satisfied_vibe IS NOT NULL ORDER BY date DESC",
+  const rows = await db(env).all<{ vibe_id: string; date: string }>(
+    "SELECT vibe_id, date FROM vibe_satisfaction WHERE tenant = ?1 ORDER BY date DESC",
     tenant,
   );
   const map = new Map<string, string[]>();
   for (const r of rows) {
-    if (!r.satisfied_vibe || !r.date) continue;
-    const dates = map.get(r.satisfied_vibe) ?? [];
+    if (!r.vibe_id || !r.date) continue;
+    const dates = map.get(r.vibe_id) ?? [];
     dates.push(r.date);
-    map.set(r.satisfied_vibe, dates);
+    map.set(r.vibe_id, dates);
   }
   return map;
 }

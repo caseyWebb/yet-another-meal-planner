@@ -1,0 +1,128 @@
+// The propose-widget's wire shape (meal-plan-widget). The `display_meal_plan` MCP tool
+// populates a `ProposeCardData` from `runProposeMealPlan`'s result and returns it as the
+// tool result's `structuredContent`; the bespoke `ui://plan/propose` widget hydrates its
+// interactive render from the SAME shape. Kept here in the runtime-agnostic contract so the
+// Worker (workerd) that produces it and the browser widget that consumes it share ONE
+// definition and cannot drift — the recipe-card precedent (recipe-card.ts).
+//
+// The result-portion fields (`plan`/`variety`/`uncovered_at_risk`/`diagnostics`/`note`)
+// mirror `propose_meal_plan`'s own `ProposeResult` exactly, so the widget parses BOTH the
+// initial payload AND a dial-triggered `propose_meal_plan` re-invocation (proxied through the
+// host, `App.callServerTool`) with one shape. The `request` + render-context fields
+// (`vibeLabels`/`palettePresets`/`proteins`/`cuisines`) are the extra state the widget's dials
+// need to replay an adjusted request client-side and populate the facet/vibe pickers.
+//
+// A `type` (not `interface`), like `RecipeCardData`, so the Worker can pass it directly as an
+// MCP tool result's `structuredContent` (a typed `Record<string, unknown>`) — an object-literal
+// type alias is assignable to an index-signature target; a named interface is not.
+
+/** A compact swap candidate (one row of a slot's ranked pool). */
+export type ProposeCardAlt = {
+  slug: string;
+  title: string;
+  protein: string | null;
+  cuisine: string | null;
+  time_total: number | null;
+};
+
+/** The chosen main for a slot (the compact fields the card renders). */
+export type ProposeCardMain = {
+  slug: string;
+  title: string;
+  description: string | null;
+  protein: string | null;
+  cuisine: string | null;
+  time_total: number | null;
+  score: number;
+};
+
+/** A curated corpus side attached to a main (`pairs_with`). */
+export type ProposeCardSide = { slug: string; title: string };
+
+/** One shaped-and-filled slot — `main: null` is an EXPLICIT empty slot (never dropped). Mirrors
+ *  the propose op's `ProposedSlot` field-for-field so a re-invocation result hydrates identically. */
+export type ProposeCardSlot = {
+  vibe_id: string | null;
+  reason: "pinned" | "new_for_me" | "overdue" | "sampled" | "locked";
+  main: ProposeCardMain | null;
+  empty_reason?: string;
+  alternates: ProposeCardAlt[];
+  alt_similar: ProposeCardAlt | null;
+  alt_different: ProposeCardAlt | null;
+  /** Present (true) when this slot's query vector came from a `slots[].vibe` override. */
+  vibe_override?: true;
+  /** Present (true) when the main was pinned via `slots[].recipe`. */
+  recipe_pinned?: true;
+  /** The non-`mild` weather-category quota that placed this slot, when any. */
+  weather_category?: string;
+  sides: ProposeCardSide[];
+  /** The at-risk items this main actually claimed (holistic use-it-up). */
+  uses_perishables: string[];
+  flags: {
+    waste?: string[];
+    meal_prep?: boolean;
+    novel?: boolean;
+    no_corpus_side?: boolean;
+  };
+  why: string[];
+};
+
+/** The week's cross-slot diversity summary (the variety bar). */
+export type ProposeCardVariety = {
+  distinct_proteins: number;
+  distinct_cuisines: number;
+  mean_pairwise_sim: number;
+  max_pairwise_sim: number;
+};
+
+/** One per-vibe-slot constraint in the replayed request (mirrors the op's `slots[]` entry). */
+export type ProposeCardRequestSlot = {
+  vibe_id: string;
+  protein?: string;
+  cuisine?: string;
+  max_time_total?: number | null;
+  vibe?: string;
+  recipe?: string;
+};
+
+/** The request that produced `plan` — the widget seeds its client session from this and replays
+ *  an adjusted copy against the stateless propose op on every dial change (no model turn). The
+ *  palette-flow subset the member web app's `POST /api/propose` session serializes. */
+export type ProposeCardRequest = {
+  nights: number;
+  seed: number;
+  /** `nudges.variety` (0–1); the adventurousness slider. */
+  variety: number;
+  proteins: string[];
+  freeform: string;
+  exclude: string[];
+  slots: ProposeCardRequestSlot[];
+};
+
+export type ProposeCardData = {
+  /** The proposed slots (one card per night). */
+  plan: ProposeCardSlot[];
+  variety: ProposeCardVariety;
+  /** At-risk items the plan could NOT cover (residual demand) — the honest "still going bad" list. */
+  uncovered_at_risk: string[];
+  diagnostics: {
+    seed: number;
+    lambda: number;
+    nights: number;
+    filled: number;
+    empty: number;
+    rolled_over?: string[];
+  };
+  /** Present only on the empty-palette short-circuit (an add-a-vibe nudge). */
+  note?: string;
+  /** The request that produced `plan`; the widget's dials replay an adjusted copy. */
+  request: ProposeCardRequest;
+  /** vibe id → its phrase, so each slot renders its vibe name (the result carries only the id). */
+  vibeLabels: Record<string, string>;
+  /** The palette's vibe phrases, for the per-night "pick one of your vibes" panel. */
+  palettePresets: string[];
+  /** The corpus protein facet universe, for the per-night protein pin picker. */
+  proteins: string[];
+  /** The corpus cuisine facet universe, for the per-night cuisine pin picker. */
+  cuisines: string[];
+};

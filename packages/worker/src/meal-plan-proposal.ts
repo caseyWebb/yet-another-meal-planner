@@ -49,7 +49,7 @@ export interface ProposedMain {
 /** One shaped-and-filled slot. `main: null` is an EXPLICIT empty slot (never silently dropped). */
 export interface ProposedSlot {
   vibe_id: string | null;
-  reason: "pinned" | "overdue" | "sampled" | "locked";
+  reason: "pinned" | "new_for_me" | "overdue" | "sampled" | "locked";
   main: ProposedMain | null;
   empty_reason?: string;
   /** Swap material from this slot's already-computed ranked pool (member-app-propose D3),
@@ -112,6 +112,12 @@ export interface ProposalCtx {
   poolByVibe: Map<string, DiversifyCandidate[]>;
   /** Locked picks the caller pinned — pre-seeded into the diversify state and returned first. */
   locked?: DiversifyCandidate[];
+  /** New-for-me discoveries the scheduler force-placed (converge D3), in placement order — the
+   *  resolved recipe candidates for the `sampleWeek` `new_for_me` slots. Admitted into the
+   *  diversify state alongside the locks (so the rest of the week diversifies away from them) and
+   *  returned as standalone vibe-less slots marked `new_for_me` (a discovery is not a palette
+   *  vibe). Absent/empty when no discovery seeded the week. */
+  newForMe?: DiversifyCandidate[];
   /** Raw lock slugs that couldn't be resolved (unknown / unembedded / rejected) — surfaced as
    *  explicit empty `locked` slots so a lock is never silently dropped. */
   lockedUnresolved?: string[];
@@ -200,6 +206,16 @@ export function assembleProposal(ctx: ProposalCtx): ProposalResult {
   // Unresolved locks become explicit empty locked slots (never silently dropped).
   for (const raw of ctx.lockedUnresolved ?? []) {
     chosen.push({ vibe_id: null, reason: "locked", main: null, empty_reason: `locked recipe '${raw}' is unavailable (unknown, unembedded, or rejected)`, ...noSwap(), sides: [], uses_perishables: [], flags: {}, why: [] });
+  }
+
+  // New-for-me discoveries the scheduler force-placed (converge D3): admitted up-front ALONGSIDE
+  // the locks so the rest of the week diversifies away from them (and consumes any at-risk items
+  // they use). Returned as standalone vibe-less slots (a discovery is not a palette vibe), marked
+  // `new_for_me` and led with "new to you" — no swap menu, exactly like a lock.
+  for (const nfm of ctx.newForMe ?? []) {
+    const claimed = admit(state, nfm, p);
+    perishBySlug.set(nfm.slug, nfm.perishable_ingredients ?? []);
+    chosen.push({ vibe_id: null, reason: "new_for_me", main: mainOf(nfm, ctx.frontmatterBySlug.get(nfm.slug)), ...noSwap(), sides: [], uses_perishables: claimed, flags: {}, why: ["new to you"] });
   }
 
   // Recipe pins admit up-front ALONGSIDE the locks (D3): a fixed pick shapes the whole
@@ -344,7 +360,7 @@ export function assembleProposal(ctx: ProposalCtx): ProposalResult {
     diagnostics: {
       seed: ctx.seed,
       lambda: p.lambda,
-      nights: ctx.requestedNights ?? ctx.slots.length + locked.length + (ctx.lockedUnresolved?.length ?? 0),
+      nights: ctx.requestedNights ?? ctx.slots.length + locked.length + (ctx.lockedUnresolved?.length ?? 0) + (ctx.newForMe?.length ?? 0),
       filled,
       empty: plan.length - filled,
     },

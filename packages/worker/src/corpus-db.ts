@@ -118,6 +118,19 @@ export interface SatisfiesEdge {
   kind: string;
 }
 
+/** The taste-substitution edge kind (D6/D7): a swap a member actually made whose replacement
+ *  crosses a canonical-id boundary that is not already an identity neighbor. It is NOT a factual
+ *  satisfies kind (`general`/`containment`/`membership`) — "A can stand in for B, with caveats" is
+ *  a taste judgment, not "having A satisfies a request for B" — so it is EXCLUDED from `satisfies()`
+ *  reachability (never gates a match, never causes a purchase) and surfaces only as a labeled
+ *  read-time suggestion via the depth-1 walk. */
+export const SUBSTITUTION_KIND = "substitution";
+/** Observation-count threshold a candidate `substitution` edge reaches to PROMOTE — the read
+ *  surfaces only promoted edges. An edge is born at weight 1 (candidate) and a single repeat
+ *  observation (weight 2) promotes it, mirroring the capture pass's conservative candidate→confirm
+ *  discipline (`NORMALIZE_CONFIRM_MIN`). */
+export const SUBSTITUTION_PROMOTE_MIN = 2;
+
 /** The single ingredient-pipeline accessor consumers funnel through (design D9). */
 export interface IngredientContext {
   /** Normalize a surface form to its canonical id AND capture it if novel (best-effort enqueue). */
@@ -221,7 +234,11 @@ function contextFromResolver(
         const resolve = representativeResolver(identities);
         return {
           resolve,
-          edges: edges.map((e) => ({ from: resolve(e.from_id), to: resolve(e.to_id), kind: e.kind })),
+          // Substitution edges are EXCLUDED from satisfies() reachability (D7): a substitute is a
+          // taste judgment, not identity, so it must never complete a match or cause a purchase.
+          edges: edges
+            .filter((e) => e.kind !== SUBSTITUTION_KIND)
+            .map((e) => ({ from: resolve(e.from_id), to: resolve(e.to_id), kind: e.kind })),
         };
       })();
     }
@@ -312,6 +329,24 @@ export interface IdentityNeighbor {
   via?: string;
 }
 
+/** One promoted `substitution` target of a queried id (D6/D7): a taste substitute the graph
+ *  observed, NOT an identity relation. Depth-1 — surfaced as a labeled read-time suggestion, never
+ *  a satisfies neighbor. NOT pre-filtered by concreteness: `neighbors.substitutions` may carry a
+ *  non-concrete (non-buyable) target, so any non-annotator consumer must filter on `concrete`
+ *  itself (the substitute annotator does). */
+export interface SubstitutionNeighbor {
+  /** The substitution target's surviving canonical id. */
+  id: string;
+  /** Human-readable label (`base (detail)`), else the id. */
+  label: string;
+  /** Whether the target is a concrete (buyable) node; absent rows default concrete. */
+  concrete: boolean;
+  /** Accrued observation weight (≥ `SUBSTITUTION_PROMOTE_MIN` for a surfaced edge). */
+  weight: number;
+  /** Optional authored caveat (a sub ratio like `1:2`, a leavening/cook-time note), when present. */
+  qualifier?: string;
+}
+
 /** The depth-1 neighbor sets of one queried id (all endpoints representative-resolved). */
 export interface IdentityNeighbors {
   /** The queried id's surviving canonical id. */
@@ -322,6 +357,11 @@ export interface IdentityNeighbors {
   satisfies: IdentityNeighbor[];
   /** Co-children sharing one parent through SAME-kind edges (`via` = the parent). */
   coChildren: IdentityNeighbor[];
+  /** Outgoing PROMOTED `substitution`-kind targets (`id → to`, weight ≥ promote threshold),
+   *  each carrying its weight + optional qualifier. Kept SEPARATE from the factual sets so a
+   *  substitute never enters `satisfies()` reachability; the walk surfaces it after all factual
+   *  relations. Empty when the id has no promoted substitution edge. */
+  substitutions: SubstitutionNeighbor[];
 }
 
 /**
@@ -337,7 +377,9 @@ export async function readIdentityNeighbors(env: Env, ids: string[]): Promise<Ma
     d.all<{ id: string; base: string | null; detail: string | null; representative: string | null; concrete: number | null; display_name: string | null }>(
       "SELECT id, base, detail, representative, concrete, display_name FROM ingredient_identity",
     ),
-    d.all<{ from_id: string; to_id: string; kind: string }>("SELECT from_id, to_id, kind FROM ingredient_edge"),
+    d.all<{ from_id: string; to_id: string; kind: string; weight: number | null; qualifier: string | null }>(
+      "SELECT from_id, to_id, kind, weight, qualifier FROM ingredient_edge",
+    ),
   ]);
   const resolve = representativeResolver(identities);
   const rowOf = new Map(identities.map((r) => [r.id, r] as const));
@@ -353,12 +395,43 @@ export async function readIdentityNeighbors(env: Env, ids: string[]): Promise<Ma
   const concreteOf = (id: string): boolean => (rowOf.get(id)?.concrete ?? 1) !== 0;
 
   // Resolve + dedup the edge list once; a post-resolution self-loop carries no relation.
+  // Substitution edges are held SEPARATELY (D6/D7): NEVER folded into the factual neighbor sets
+  // (satisfiedBy/satisfies/coChildren), collected only as PROMOTED (weight ≥ threshold) OUTGOING
+  // targets so a substitute surfaces as a labeled read-time suggestion, never as identity.
   const seen = new Set<string>();
   const resolved: { from: string; to: string; kind: string }[] = [];
+  const subByPair = new Map<string, SubstitutionNeighbor>(); // resolved from+to → the merged sub target
+  const subByFrom = new Map<string, SubstitutionNeighbor[]>(); // resolved from-id → its promoted subs
   for (const e of edges) {
     const from = resolve(e.from_id);
     const to = resolve(e.to_id);
     if (from === to) continue;
+    if (e.kind === SUBSTITUTION_KIND) {
+      const weight = e.weight ?? 1;
+      if (weight < SUBSTITUTION_PROMOTE_MIN) continue; // only promoted edges surface
+      const qualifier = e.qualifier ?? undefined;
+      const pairKey = `${from}\u0000${to}`;
+      const prior = subByPair.get(pairKey);
+      if (prior) {
+        // Two rows resolving to the same pair (a merged endpoint): keep the strongest observation
+        // and the first authored qualifier. The object is shared with `subByFrom`, so both update.
+        prior.weight = Math.max(prior.weight, weight);
+        if (!prior.qualifier && qualifier) prior.qualifier = qualifier;
+        continue;
+      }
+      const sub: SubstitutionNeighbor = {
+        id: to,
+        label: labelOf(to),
+        concrete: concreteOf(to),
+        weight,
+        ...(qualifier ? { qualifier } : {}),
+      };
+      subByPair.set(pairKey, sub);
+      const list = subByFrom.get(from);
+      if (list) list.push(sub);
+      else subByFrom.set(from, [sub]);
+      continue;
+    }
     const key = `${from}\u0000${to}\u0000${e.kind}`;
     if (seen.has(key)) continue;
     seen.add(key);
@@ -405,9 +478,74 @@ export async function readIdentityNeighbors(env: Env, ids: string[]): Promise<Ma
       const bv = b.via ?? "";
       return av < bv ? -1 : av > bv ? 1 : 0;
     });
-    out.set(raw, { id: x, satisfiedBy, satisfies, coChildren });
+    // x's own outgoing promoted substitution targets — depth-1 only (never followed
+    // transitively), lexicographically ordered so the downstream walk's tie is stable.
+    const substitutions = (subByFrom.get(x) ?? [])
+      .slice()
+      .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    out.set(raw, { id: x, satisfiedBy, satisfies, coChildren, substitutions });
   }
   return out;
+}
+
+/**
+ * Capture-first taste-substitution edge write (D6/D7) — the DETERMINISTIC, agent-side capture
+ * trigger. Called when a member ACCEPTS a purchasable swap: an `add_to_grocery_list` annotated with
+ * `substitutes_for` (the recipe ingredient the added item stands in for). `wantedTerm` is the
+ * replaced ingredient X (`substitutes_for`); `addedTerm` is the added item Y. Both resolve through
+ * the SAME `IngredientContext` funnel the add used, then — by PURE SET LOGIC against the identity
+ * graph, no classifier — a candidate `substitution` edge X → Y is recorded ONLY when Y crosses a
+ * canonical-id boundary that is not already an identity relation: X and Y resolve to DISTINCT
+ * survivors AND Y is not a factual neighbor of X (`satisfiedBy` ∪ `satisfies` ∪ `coChildren`, all
+ * representative-resolved — the exact neighbor sets `readIdentityNeighbors` returns). A same-id or
+ * already-neighbor swap is a product/price swap, not a taste substitution, and mints nothing.
+ *
+ * The edge is operator-global like the rest of the identity graph, so observations from different
+ * members accrue to one edge: it is born a weight-1 CANDIDATE and its `weight` increments on each
+ * repeat (`ON CONFLICT … weight = weight + 1`), promoting at `SUBSTITUTION_PROMOTE_MIN` — at which
+ * point the depth-1 walk surfaces it. A single idiosyncratic swap stays an unsurfaced weight-1
+ * candidate until a second observation promotes it, mirroring the capture pass's candidate→confirm
+ * discipline. BEST-EFFORT: every failure (resolution, read, or write) is swallowed, so a capture
+ * miss can NEVER fail the grocery add it rides alongside.
+ */
+export async function captureSubstitution(
+  env: Env,
+  ctx: IngredientContext,
+  wantedTerm: string,
+  addedTerm: string,
+): Promise<void> {
+  try {
+    const x0 = ctx.resolve(wantedTerm);
+    const y0 = ctx.resolve(addedTerm);
+    if (!x0 || !y0 || x0 === y0) return; // empty or trivially identical — nothing to capture
+    // One read gives BOTH the survivor ids AND X's factual neighbor sets (representative-resolved).
+    const neighbors = await readIdentityNeighbors(env, [x0, y0]);
+    const nx = neighbors.get(x0);
+    const ny = neighbors.get(y0);
+    const sx = nx ? nx.id : x0;
+    const sy = ny ? ny.id : y0;
+    if (sx === sy) return; // same surviving identity — a product/price swap, not a taste sub
+    // Pure set logic: Y already an identity neighbor of X (synonym / containment / membership
+    // sibling) → the graph already relates them, so this is identity, not a taste substitution.
+    if (nx && [...nx.satisfiedBy, ...nx.satisfies, ...nx.coChildren].some((n) => n.id === sy)) return;
+    // Upsert the candidate substitution edge X → Y: born weight 1, +1 per repeat observation
+    // (candidate → promoted at SUBSTITUTION_PROMOTE_MIN). audited_at is left NULL — substitution
+    // edges are EXCLUDED (by kind) from the edge-audit reads, so they are never selected or deleted.
+    await db(env).run(
+      "INSERT INTO ingredient_edge (from_id, to_id, kind, source, decided_at, weight) " +
+        "VALUES (?1, ?2, ?3, ?4, ?5, 1) " +
+        "ON CONFLICT(from_id, to_id, kind) DO UPDATE SET weight = ingredient_edge.weight + 1",
+      sx,
+      sy,
+      SUBSTITUTION_KIND,
+      "auto",
+      Date.now(),
+    );
+  } catch (err) {
+    // Best-effort: a capture failure MUST NOT fail the grocery add it rides alongside.
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[corpus-db] substitution capture failed for "${wantedTerm}" → "${addedTerm}":`, msg);
+  }
 }
 
 /**
@@ -611,7 +749,11 @@ export async function readReconfirmBatch(env: Env, limit: number): Promise<Recon
         "WHERE source = 'auto' AND concrete = 1 AND representative IS NULL AND reconfirmed_at IS NULL " +
         "ORDER BY decided_at",
     ),
-    d.all<{ from_id: string; to_id: string }>("SELECT from_id, to_id FROM ingredient_edge"),
+    // Substitution edges are excluded: they are NOT factual connectivity, so a node whose only
+    // edge is a substitution one is still (correctly) edgeless for the re-confirm eligibility test.
+    d.all<{ from_id: string; to_id: string }>(
+      "SELECT from_id, to_id FROM ingredient_edge WHERE kind != 'substitution'",
+    ),
   ]);
   const hasEdge = new Set<string>();
   for (const e of edges) {
@@ -659,7 +801,11 @@ async function filterCommittableEdges(
   if (edges.length === 0) return { kept: [], skipped: [] };
   const [identities, existing] = await Promise.all([
     d.all<{ id: string; representative: string | null }>("SELECT id, representative FROM ingredient_identity"),
-    d.all<{ from_id: string; to_id: string }>("SELECT from_id, to_id FROM ingredient_edge"),
+    // Substitution edges are excluded: they are not satisfies-reachable, so they must never trip
+    // the reverse-pair 2-cycle guard against a factual edge commit.
+    d.all<{ from_id: string; to_id: string }>(
+      "SELECT from_id, to_id FROM ingredient_edge WHERE kind != 'substitution'",
+    ),
   ]);
   const resolve = representativeResolver(identities);
   const key = (from: string, to: string) => `${from}\u0000${to}`;
@@ -1070,7 +1216,11 @@ export interface EdgeRow extends EdgeAuditRow {
  *  `decided_at` first, bounded. Human edges are never selected. */
 export async function readEdgeAuditBatch(env: Env, limit: number): Promise<EdgeAuditRow[]> {
   return db(env).all<EdgeAuditRow>(
-    "SELECT from_id, to_id, kind FROM ingredient_edge WHERE source = 'auto' AND audited_at IS NULL " +
+    // `kind != 'substitution'`: substitution edges are NOT factual satisfies edges, so the edge
+    // re-audit (which validates FROM→TO direction and DELETES edges that fail) must never select
+    // one — a captured taste substitution is not a mis-directed satisfies edge to correct.
+    "SELECT from_id, to_id, kind FROM ingredient_edge " +
+      "WHERE source = 'auto' AND audited_at IS NULL AND kind != 'substitution' " +
       "ORDER BY decided_at LIMIT ?1",
     limit,
   );
@@ -1079,7 +1229,9 @@ export async function readEdgeAuditBatch(env: Env, limit: number): Promise<EdgeA
 /** The full edge table (with `source`) — the edge audit's reverse-pair lookup set. */
 export async function readAllEdges(env: Env): Promise<EdgeRow[]> {
   const rows = await db(env).all<{ from_id: string; to_id: string; kind: string; source: string | null; audited_at: number | null }>(
-    "SELECT from_id, to_id, kind, source, audited_at FROM ingredient_edge",
+    // Substitution edges are excluded: the edge audit's reverse-pair lookup could otherwise delete
+    // one as a factual edge's 2-cycle loser. A substitution edge is never audit input OR output.
+    "SELECT from_id, to_id, kind, source, audited_at FROM ingredient_edge WHERE kind != 'substitution'",
   );
   return rows.map((r) => ({ from_id: r.from_id, to_id: r.to_id, kind: r.kind, source: normSource(r.source), audited_at: r.audited_at }));
 }

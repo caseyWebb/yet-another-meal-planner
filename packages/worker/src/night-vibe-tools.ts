@@ -20,7 +20,10 @@ import { readNightVibes, upsertNightVibe, deleteNightVibe, type NightVibe } from
 // existing palette keeps working. The enum documents the useful values and catches typos.
 const WEATHER_VIBE = z.enum(["grill", "cold-comfort", "wet", "soup", "comfort", "grill-friendly", "light", "no-grill"]);
 
-const facetsSchema = z
+/** The vibe hard-gate facets (the same `search_recipes` facets). Exported so the shared
+ *  `propose_meal_plan` input can reuse it for the Claude-authored EPHEMERAL vibe set (converge
+ *  D2 — an ephemeral vibe is the same primitive as a saved night vibe: a phrase + these facets). */
+export const facetsSchema = z
   .object({
     protein: z.string().optional(),
     cuisine: z.string().optional(),

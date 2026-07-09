@@ -74,6 +74,15 @@ export interface GroceryAddInput {
   source?: GrocerySource;
   for_recipes?: string[];
   note?: string | null;
+  /**
+   * The recipe ingredient this added item STANDS IN FOR (a taste swap the member accepted), when
+   * the add is a substitution — e.g. `add_to_grocery_list("greek yogurt", substitutes_for: "sour
+   * cream")`. Purely a capture signal: the pure grocery ops IGNORE it (it never affects the row's
+   * key, quantity, or merge). The D1 write path (`addGroceryRow`) reads it to record a candidate
+   * `substitution` edge in the identity graph (best-effort; see `captureSubstitution`). Only
+   * honored for a FOOD add — a non-food row never enters the identity graph.
+   */
+  substitutes_for?: string;
 }
 
 /** Fields a caller may patch on an existing item. */

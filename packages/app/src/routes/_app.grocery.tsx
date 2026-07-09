@@ -710,6 +710,9 @@ const RELATION_LABEL: Record<SiblingSuggestion["relation"]["role"], string> = {
   satisfies: "can stand in",
   sibling: "same family",
   generalization: "the general form",
+  // A TASTE substitute (distinct from the factual identity relations) — surfaced after them,
+  // never a satisfies match. See member-app-differentiators / ADR-0001 (2026-07-09).
+  substitution: "taste substitute",
 };
 
 // ── The order panel (D7/D11): preview → disposition → commit over one endpoint. ──────

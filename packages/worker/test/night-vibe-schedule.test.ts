@@ -10,6 +10,7 @@ import {
   resolveBucketMembership,
   DEFAULT_CADENCE_PARAMS,
   type NightVibeSpec,
+  type NewForMeSeed,
 } from "../src/night-vibe-schedule.js";
 import type { WeatherCategory } from "../src/weather.js";
 
@@ -561,5 +562,70 @@ describe("sampleWeek — weather-category slot annotation (member-app-propose D9
         if (s.category) expect(["grill", "cold-comfort", "wet"]).toContain(s.category);
       }
     }
+  });
+});
+
+describe("sampleWeek — new-for-me force-placement (converge D3)", () => {
+  it("force-places a discovery below pinned and above overdue, within its bucket quota, deterministically", () => {
+    const palette: NightVibeSpec[] = [
+      { id: "pinned-vibe", pinned: true },
+      { id: "overdue-vibe", cadence_days: 7 },
+      { id: "filler-a" },
+      { id: "filler-b" },
+    ];
+    const debts = new Map<string, number>([
+      ["pinned-vibe", 0],
+      ["overdue-vibe", DEFAULT_CADENCE_PARAMS.forceDueAt + 1], // overdue, bucketless (never mismatched)
+      ["filler-a", 0],
+      ["filler-b", 0],
+    ]);
+    const days: WeatherCategory[] = new Array(7).fill("grill"); // a grill quota is available
+    const newForMe: NewForMeSeed[] = [{ id: "grilled-fish", weather_affinity: ["grill"] }];
+    const wk = sampleWeek(palette, days, debts, 4, 3, DEFAULT_CADENCE_PARAMS, 7, newForMe);
+
+    const disc = wk.slots.find((s) => s.id === "grilled-fish");
+    expect(disc?.reason).toBe("new_for_me");
+    expect(disc?.category).toBe("grill"); // landed within its own weather bucket
+    // Precedence in the placed order: pinned first, then new-for-me, then overdue.
+    const order = wk.slots.map((s) => s.reason);
+    expect(order.indexOf("pinned")).toBeLessThan(order.indexOf("new_for_me"));
+    expect(order.indexOf("new_for_me")).toBeLessThan(order.indexOf("overdue"));
+    // Seed-deterministic, including the discovery placement.
+    const again = sampleWeek(palette, days, debts, 4, 3, DEFAULT_CADENCE_PARAMS, 7, newForMe);
+    expect(again.slots).toEqual(wk.slots);
+  });
+
+  it("rolls a discovery over rather than force-placing it into a contradicting bucket", () => {
+    const palette: NightVibeSpec[] = [{ id: "a" }, { id: "b" }, { id: "c" }];
+    const debts = new Map(palette.map((v) => [v.id, 0]));
+    const days: WeatherCategory[] = new Array(7).fill("wet"); // grill quota zero, no mild slot either
+    const newForMe: NewForMeSeed[] = [{ id: "grilled-fish", weather_affinity: ["grill"] }];
+    const wk = sampleWeek(palette, days, debts, 2, 1, DEFAULT_CADENCE_PARAMS, 7, newForMe);
+    expect(wk.slots.some((s) => s.id === "grilled-fish")).toBe(false); // never forced into a wet slot
+    expect(wk.rolledOver).toContain("grilled-fish");
+    expect(wk.slots.length).toBe(2); // no slot left empty for it — the palette fills the week
+  });
+
+  it("falls a bucket-zero discovery to a flex/mild slot when one exists", () => {
+    const palette: NightVibeSpec[] = [{ id: "a" }, { id: "b" }, { id: "c" }];
+    const debts = new Map(palette.map((v) => [v.id, 0]));
+    // 2 wet + 2 mild days → the grill discovery's bucket is zero, but a mild/flex slot exists.
+    const days: WeatherCategory[] = ["wet", "wet", "mild", "mild"];
+    const newForMe: NewForMeSeed[] = [{ id: "grilled-fish", weather_affinity: ["grill"] }];
+    const wk = sampleWeek(palette, days, debts, 4, 1, DEFAULT_CADENCE_PARAMS, 4, newForMe);
+    const disc = wk.slots.find((s) => s.id === "grilled-fish");
+    expect(disc?.reason).toBe("new_for_me");
+    expect(disc?.category).toBeUndefined(); // a flex/mild placement carries no weather bucket
+    expect(wk.rolledOver).not.toContain("grilled-fish");
+  });
+
+  it("a bucketless discovery is a universal filler (claims any available slot)", () => {
+    const palette: NightVibeSpec[] = [{ id: "a" }, { id: "b" }];
+    const debts = new Map(palette.map((v) => [v.id, 0]));
+    const days: WeatherCategory[] = new Array(7).fill("wet");
+    const newForMe: NewForMeSeed[] = [{ id: "weeknight-bowl" }]; // no weather_affinity → bucketless
+    const wk = sampleWeek(palette, days, debts, 2, 1, DEFAULT_CADENCE_PARAMS, 7, newForMe);
+    expect(wk.slots.find((s) => s.id === "weeknight-bowl")?.reason).toBe("new_for_me");
+    expect(wk.rolledOver).not.toContain("weeknight-bowl");
   });
 });

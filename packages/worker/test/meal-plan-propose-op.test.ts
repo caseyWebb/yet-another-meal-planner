@@ -637,3 +637,120 @@ describe("determinism across every new param (D10)", () => {
     expect(weeks.size).toBeGreaterThan(1);
   });
 });
+
+describe("the ephemeral vibe set (converge D2)", () => {
+  it("shapes the week from the authored entries, bypassing palette cadence sampling", async () => {
+    const soupPhrase = "big pot of soup";
+    const seaPhrase = "something from the sea";
+    // The palette (SEAFOOD/COMFORT) is present but must NOT drive the shape when a set is authored.
+    const { env } = proposeEnv([SEAFOOD, COMFORT], {
+      phraseVecs: { [soupPhrase]: axis([1, 1]), [seaPhrase]: axis([0, 1]) },
+    });
+    const r = await runProposeMealPlan(
+      env,
+      TENANT,
+      { nights: 2, seed: 7, ephemeral_vibes: [{ vibe: soupPhrase }, { vibe: seaPhrase }] },
+      stubDeps(env),
+    );
+    // The slots ARE the authored entries (synthetic ids) — the palette vibes shaped nothing.
+    expect(r.plan.map((s) => s.vibe_id)).toEqual(["ephemeral-0", "ephemeral-1"]);
+    expect(r.plan.every((s) => s.vibe_id !== SEAFOOD.id && s.vibe_id !== COMFORT.id)).toBe(true);
+    // Each authored phrase's vector picks its own slot's main (soup axis → soup; sea axis → salmon).
+    const byId = new Map(r.plan.map((s) => [s.vibe_id, s.main?.slug]));
+    expect(byId.get("ephemeral-0")).toBe("chicken-soup");
+    expect(byId.get("ephemeral-1")).toBe("salmon-rice");
+    expect(r.diagnostics.filled).toBe(2);
+  });
+
+  it("an absent (or empty) ephemeral set leaves the palette path unchanged", async () => {
+    const { env, ai } = proposeEnv([SEAFOOD, COMFORT]);
+    const deps = stubDeps(env);
+    const base = await runProposeMealPlan(env, TENANT, BASE, deps);
+    const empty = await runProposeMealPlan(env, TENANT, { ...BASE, ephemeral_vibes: [] }, deps);
+    expect(empty).toEqual(base); // the empty form is a no-op, identical to omitting it
+    // The palette vibes (not synthetic ephemeral ids) shaped the week, with no AI call.
+    expect(new Set(base.plan.map((s) => s.vibe_id))).toEqual(new Set([SEAFOOD.id, COMFORT.id]));
+    expect(ai).not.toHaveBeenCalled();
+  });
+
+  it("folds the ephemeral phrases into the SINGLE batched embed call (no new AI-call class)", async () => {
+    const p1 = "cozy braise";
+    const p2 = "bright and green";
+    const freeform = "lighter please";
+    const { env, ai } = proposeEnv([SEAFOOD, COMFORT], {
+      phraseVecs: { [p1]: axis([2, 1]), [p2]: axis([4, 1]), [freeform]: axis([0, 1]) },
+    });
+    const deps = stubDeps(env);
+    const req: ProposeInput = { nights: 2, seed: 7, nudges: { freeform }, ephemeral_vibes: [{ vibe: p1 }, { vibe: p2 }] };
+    const r1 = await runProposeMealPlan(env, TENANT, req, deps); // cold cache — warms it
+    // ONE batched call covered the freeform phrase AND both ephemeral phrases, in order.
+    expect(ai).toHaveBeenCalledTimes(1);
+    expect((ai.mock.calls[0][1] as { text: string[] }).text).toEqual([freeform, p1, p2]);
+    const r2 = await runProposeMealPlan(env, TENANT, req, deps); // warm — byte-identical
+    expect(ai).toHaveBeenCalledTimes(1); // no further AI once cached
+    expect(r2).toEqual(r1);
+  });
+
+  it("does not admit a hard-gate-excluded (rejected) recipe even when the phrase points right at it", async () => {
+    const braise = "slow beef braise";
+    const { env } = proposeEnv([SEAFOOD, COMFORT], { phraseVecs: { [braise]: axis([2, 1]) } });
+    // beef-ragu (axis [2,1]) is the exact target of the ephemeral phrase — but it's rejected.
+    const r = await runProposeMealPlan(
+      env,
+      TENANT,
+      { nights: 1, seed: 7, ephemeral_vibes: [{ vibe: braise }] },
+      stubDeps(env, { overlay: { "beef-ragu": { reject: true } } }),
+    );
+    for (const slot of r.plan) {
+      expect(slot.main?.slug).not.toBe("beef-ragu");
+      expect(slot.alternates.map((a) => a.slug)).not.toContain("beef-ragu");
+    }
+  });
+
+  it("an ephemeral entry's facets gate its slot (the phrase reorders; the facet still gates)", async () => {
+    const fishy = "anything at all";
+    const { env } = proposeEnv([SEAFOOD, COMFORT], { phraseVecs: { [fishy]: axis([2, 1]) } });
+    // The phrase points at the beef axis, but the facet gate pins the slot to fish.
+    const r = await runProposeMealPlan(
+      env,
+      TENANT,
+      { nights: 1, seed: 7, ephemeral_vibes: [{ vibe: fishy, facets: { protein: "fish" } }] },
+      stubDeps(env),
+    );
+    expect(r.plan[0].main?.protein).toBe("fish"); // the facet gate held despite the beef-pointing phrase
+    for (const a of r.plan[0].alternates) expect(a.protein).toBe("fish");
+  });
+});
+
+describe("new-for-me discovery seeds thread through the op (converge D3)", () => {
+  it("force-places an accepted discovery as a filled vibe-less slot; the rest diversify away", async () => {
+    const { env, ai } = proposeEnv([SEAFOOD, COMFORT]);
+    const r = await runProposeMealPlan(env, TENANT, { nights: 2, seed: 7, new_for_me: ["beef-ragu"] }, stubDeps(env));
+    const disc = r.plan.find((s) => s.reason === "new_for_me");
+    expect(disc).toBeDefined();
+    expect(disc!.main?.slug).toBe("beef-ragu");
+    expect(disc!.vibe_id).toBeNull(); // a discovery is not a palette vibe
+    expect(disc!.why).toContain("new to you");
+    // It claims one of the two nights; exactly one palette vibe slot remains, and it isn't the discovery.
+    const vibeSlots = r.plan.filter((s) => s.vibe_id !== null);
+    expect(vibeSlots.length).toBe(1);
+    expect(vibeSlots[0].main?.slug).not.toBe("beef-ragu");
+    expect(r.diagnostics.filled).toBe(2);
+    expect(ai).not.toHaveBeenCalled(); // seeds need no embedding — every vector is cron-captured
+  });
+
+  it("drops an unresolvable / excluded discovery seed (soft priority — it just doesn't claim a slot)", async () => {
+    const { env } = proposeEnv([SEAFOOD, COMFORT]);
+    const deps = stubDeps(env);
+    const base = await runProposeMealPlan(env, TENANT, { nights: 2, seed: 7, exclude: ["salmon-rice"] }, deps);
+    const dropped = await runProposeMealPlan(
+      env,
+      TENANT,
+      { nights: 2, seed: 7, exclude: ["salmon-rice"], new_for_me: ["ghost-recipe", "salmon-rice"] },
+      deps,
+    );
+    // ghost-recipe is unresolvable, salmon-rice is excluded → both dropped, week identical to base.
+    expect(dropped.plan.some((s) => s.reason === "new_for_me")).toBe(false);
+    expect(dropped).toEqual(base);
+  });
+});
