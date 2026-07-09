@@ -28,6 +28,7 @@
   "dependencies": {
     "@cloudflare/workers-oauth-provider": "^0.8.1",
     "@grocery-agent/contract": "workspace:*",
+    "@modelcontextprotocol/ext-apps": "^1.7.4",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "agents": "^0.17.1",
     "fast-xml-parser": "^5.9.3",

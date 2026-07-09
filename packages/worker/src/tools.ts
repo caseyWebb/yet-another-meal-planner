@@ -19,6 +19,7 @@ import {
 } from "./corpus-db.js";
 import { ToolError, runTool } from "./errors.js";
 import { instrumentTools, type ToolRegistrar } from "./tool-instrumentation.js";
+import { registerHelloWidgetSpike } from "./hello-widget-spike.js"; // DIAGNOSTIC SPIKE — remove before merge to main
 import { registerWriteTools } from "./write-tools.js";
 import { registerGroceryListTools } from "./grocery-tools.js";
 import { registerNightVibeTools } from "./night-vibe-tools.js";
@@ -413,6 +414,11 @@ export function buildServer(env: Env, tenant: Tenant, origin?: string): McpServe
   // per-call usage point (tool, ok/error, duration) to the `grocery_tool` AE dataset. Best-effort
   // and non-blocking; never touches the result. Tenant id is deliberately NOT passed.
   instrumentTools(server as unknown as ToolRegistrar, env);
+
+  // DIAGNOSTIC SPIKE — remove before merge to main. Registers hello_widget / echo / the
+  // ui://hello/card view to probe whether claude.ai renders MCP Apps widgets from a
+  // self-hosted custom connector. See src/hello-widget-spike.ts.
+  registerHelloWidgetSpike(server);
 
   // The authored corpus (recipes/ + guidance/) is read/listed/written through the R2
   // corpus store — no GitHub App, installation token, or GitHub API call on the data
