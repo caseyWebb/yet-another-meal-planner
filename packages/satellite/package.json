@@ -1,6 +1,6 @@
 {
   "name": "@yamp/satellite",
-  "version": "0.1.12",
+  "version": "0.1.13",
   "private": true,
   "type": "module",
   "description": "The home-network satellite (satellite): runs off-cloud on the operator's own network, authenticates to walled recipe sites with the operator's own session, extracts recipes to the shared wire contract, and POSTs them to the yamp Worker's /admin/api/ingest under the recipe-scrape capability.",
