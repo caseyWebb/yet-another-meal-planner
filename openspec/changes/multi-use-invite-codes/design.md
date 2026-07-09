@@ -78,6 +78,6 @@ The companion Claude Design project is being rebuilt from scratch, so this once 
 
 ## Open Questions
 
-- **D1 transaction shape:** confirm D1 `batch()` gives all-or-nothing for the guarded `UPDATE` + `INSERT … ON CONFLICT` + provenance insert on `workerd`; if not, adopt an explicit transaction wrapper. (First implementation task — a code/platform question, not a data one.)
-- **Where the backfill runs:** a dedicated reconcile step, folded into the existing `scheduled()` reconcile, or a lazy on-demand convergence. Lean toward an idempotent pass in the existing reconcile so no new cron is added; settle during implementation.
-- **Code format:** reuse `randomInviteCode()`'s 16-hex, or a friendlier grouped format for pasting into a chat. Minor; decide in implementation.
+- **D1 transaction shape — RESOLVED (task 1.1):** we do *not* depend on cross-statement `changes()` semantics inside `batch()`. Redemption is decomposed into individually-atomic single statements — a guarded cap `UPDATE` (the atomic gate; `changes === 1` required), then `INSERT tenants … ON CONFLICT(id) DO NOTHING` (`changes === 1` gate) with a slot **refund** on collision, then the provenance insert. Every intermediate state fails toward under-granting, so the cap is never exceeded and a name is never double-claimed; a crash can at worst waste one slot. Verified against real SQLite (`test/signup.test.ts`, incl. a concurrent-redemption cap test and a direct refund test).
+- **Where the backfill runs — RESOLVED:** an idempotent `backfillTenantRegistry` folded into the existing `scheduled()` phase-1 reconcile (no new cron), converging on every tick to a no-op.
+- **Code format — RESOLVED:** reuse `randomInviteCode()` (16 hex chars), the same shape as bootstrap codes.

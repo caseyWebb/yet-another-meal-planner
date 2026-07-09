@@ -32,6 +32,12 @@ import {
 import { buildKrogerConsentUrl } from "./oauth.js";
 import { KROGER_REFRESH_PREFIX, type KvStore } from "./kroger-user.js";
 import { SESSION_PREFIX } from "./session.js";
+import {
+  createSignupInvite,
+  listSignupInvites,
+  revokeSignupInvite,
+  type SignupInviteWithUsage,
+} from "./signup-db.js";
 
 const TENANT_PREFIX = "tenant:"; // mirrors src/tenant.ts (the allowlist directory)
 const INVITE_PREFIX = "invite:"; // mirrors src/tenant.ts (invite:<code> -> username)
@@ -61,6 +67,7 @@ export const TENANT_TABLES = [
   "night_vibe_derived", // per-member night-vibe embeddings (migration 0025)
   "pending_proposals", // per-member profile-reconciliation queue (migration 0027)
   "webauthn_credentials", // enrolled passkeys (migration 0046)
+  "signup_redemptions", // provenance of a self-service tenant's creating code (migration 0047)
 ] as const;
 export const AUTHOR_TABLES = ["recipe_notes", "store_notes"] as const;
 
@@ -473,6 +480,9 @@ export async function revoke(
   const stmts = [
     ...TENANT_TABLES.map((t) => deps.db.prepare(`DELETE FROM ${t} WHERE tenant = ?1`, id)),
     ...AUTHOR_TABLES.map((t) => deps.db.prepare(`DELETE FROM ${t} WHERE author = ?1`, id)),
+    // The tenant uniqueness registry keys on `id`, not `tenant` — freeing the username so it
+    // can be re-onboarded or re-claimed (the KV allowlist entry is dropped just below).
+    deps.db.prepare(`DELETE FROM tenants WHERE id = ?1`, id),
   ];
   await deps.db.batch(stmts);
   // Then the lock-out: drop the allowlist entry, every invite, the Kroger token, and
@@ -483,6 +493,53 @@ export async function revoke(
   await deps.krogerKv.delete(`kroger:refresh:${id}`);
   const sessionsRemoved = await deleteSessionsFor(deps.tenantKv, id);
   return { username: id, revoked: true, invites_removed: invitesRemoved, sessions_removed: sessionsRemoved };
+}
+
+// --- Group invite codes (self-service-signup) --------------------------------
+
+/**
+ * Mint a multi-use GROUP INVITE CODE authorizing bounded self-service signup. `cap` is the
+ * maximum redemptions; `expiresAt` (epoch ms) and `label` are optional. Returns the code once
+ * — the caller surfaces it under the same no-log guarantee as onboarding, and it is never
+ * written to a log or run summary.
+ */
+export async function createGroupInvite(
+  env: Env,
+  input: { cap: number; expiresAt?: number | null; label?: string | null },
+  now: number = Date.now(),
+): Promise<{ code: string; max_redemptions: number; expires_at: number | null; label: string | null }> {
+  const cap = Math.trunc(Number(input.cap));
+  if (!Number.isFinite(cap) || cap < 1) {
+    throw new ToolError("validation_failed", "A redemption cap of at least 1 is required");
+  }
+  const expiresAt = input.expiresAt != null ? Math.trunc(Number(input.expiresAt)) : null;
+  if (expiresAt != null && (!Number.isFinite(expiresAt) || expiresAt <= now)) {
+    throw new ToolError("validation_failed", "The expiry must be in the future");
+  }
+  const label = input.label?.trim() ? input.label.trim() : null;
+  const code = randomInviteCode();
+  await createSignupInvite(env, { code, maxRedemptions: cap, expiresAt, label, now });
+  return { code, max_redemptions: cap, expires_at: expiresAt, label };
+}
+
+/** Every group invite code with live usage (used/cap, expiry, revoked) + provenance. */
+export async function listGroupInvites(env: Env): Promise<SignupInviteWithUsage[]> {
+  return listSignupInvites(env);
+}
+
+/**
+ * Revoke a group invite code so it admits no further signups. Accounts already created
+ * through it are ordinary tenants and are NOT touched (they are revoked individually).
+ */
+export async function revokeGroupInvite(
+  env: Env,
+  code: string,
+  now: number = Date.now(),
+): Promise<{ code: string; revoked: boolean }> {
+  const trimmed = (code ?? "").trim();
+  if (!trimmed) throw new ToolError("validation_failed", "A code is required");
+  const { revoked } = await revokeSignupInvite(env, trimmed, now);
+  return { code: trimmed, revoked };
 }
 
 // --- Kroger consent-link bootstrap ------------------------------------------
