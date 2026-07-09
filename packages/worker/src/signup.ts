@@ -5,7 +5,7 @@
 // session on success. This is web-app-only; the MCP `/authorize` surface never sees group codes.
 
 import { directoryFromEnv, normalizeTenantId } from "./tenant.js";
-import { redeemGroupInvite, registerExistingTenant } from "./signup-db.js";
+import { getSignupInvite, redeemGroupInvite, registerExistingTenant } from "./signup-db.js";
 import type { Env } from "./env.js";
 
 const TENANT_PREFIX = "tenant:"; // mirrors src/tenant.ts (the allowlist directory)
@@ -44,11 +44,28 @@ export async function redeemGroupCode(
     };
   }
 
-  // Pre-check the KV allowlist: catches a collision with an already-onboarded member even
-  // before the D1 registry backfill runs. The D1 ON CONFLICT in redeemGroupInvite is the
-  // authority for the concurrent brand-new-name race.
-  if (await env.TENANT_KV.get(`${TENANT_PREFIX}${id}`)) return { kind: "username_taken" };
   if (!code) return { kind: "code_unusable" };
+
+  // Gate the `username_taken` disclosure behind a usable code: without this, an unauthenticated
+  // caller holding no valid code could probe which usernames are group members (a membership
+  // oracle) — an unusable code + an existing name would 409, a free name would 401. So an
+  // unusable code fails uniformly regardless of the username. The atomic spend in
+  // redeemGroupInvite stays the real gate; this pre-read only closes the oracle, and any TOCTOU
+  // between it and the spend can only under-grant (safe).
+  const invite = await getSignupInvite(env, code);
+  if (
+    !invite ||
+    invite.revoked_at != null ||
+    (invite.expires_at != null && invite.expires_at <= now) ||
+    invite.used >= invite.max_redemptions
+  ) {
+    return { kind: "code_unusable" };
+  }
+
+  // A plausibly-usable code is held, so `username_taken` is disclosed only to a real redeemer
+  // (design D9). This KV pre-check catches a collision with an already-onboarded member; the D1
+  // ON CONFLICT in redeemGroupInvite is the authority for the concurrent brand-new-name race.
+  if (await env.TENANT_KV.get(`${TENANT_PREFIX}${id}`)) return { kind: "username_taken" };
 
   const outcome = await redeemGroupInvite(env, code, id, now);
   if (outcome.kind !== "ok") return outcome;

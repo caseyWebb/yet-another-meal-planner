@@ -879,7 +879,7 @@ via_code   TEXT     -- the group code that created it; NULL for operator-onboard
 -- D1 signup_invites — operator-issued group codes. PRIMARY KEY (code).
 code            TEXT     -- the group invite code (16 hex chars)
 max_redemptions INTEGER  -- the cap
-used            INTEGER  -- redemptions spent; bumped by the atomic guarded UPDATE
+used            INTEGER  -- redemptions spent (total ever, not decremented on member revoke)
 expires_at      INTEGER  -- epoch ms; NULL = never expires
 revoked_at      INTEGER  -- epoch ms; NULL = active
 label           TEXT     -- optional operator label (nullable)

@@ -117,7 +117,9 @@ export async function redeemGroupInvite(
     code,
   );
   if (claim.changes !== 1) {
-    await d.run(`UPDATE signup_invites SET used = used - 1 WHERE code = ?1`, code);
+    // Refund the slot spent in phase 1 (the `used > 0` guard is defensive — every refunding
+    // request incremented first, so it can never drive the count negative).
+    await d.run(`UPDATE signup_invites SET used = used - 1 WHERE code = ?1 AND used > 0`, code);
     return { kind: "username_taken" };
   }
 

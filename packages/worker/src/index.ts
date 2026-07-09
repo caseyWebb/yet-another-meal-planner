@@ -247,8 +247,13 @@ export default {
       // Backfill the D1 tenant uniqueness registry from the KV allowlist (self-service-signup):
       // register any operator-onboarded tenant not yet in `tenants`, so the registry is the
       // complete forward record for concurrent self-service username claims. Idempotent (ON
-      // CONFLICT DO NOTHING) and converges to a no-op once every member is registered.
-      backfillTenantRegistry(env),
+      // CONFLICT DO NOTHING) and converges to a no-op once every member is registered. Isolated
+      // with .catch so a transient D1 hiccup here never fails the whole tick — correctness of
+      // collision-prevention does not depend on it (onboard writes the registry directly).
+      backfillTenantRegistry(env).catch((e) => {
+        console.warn("tenant-registry backfill failed", e);
+        return { registered: 0 };
+      }),
       // The normalization re-audit passes (normalization-decision-reaudit): converge the
       // pre-hardening AUTO backlog to the hardened rules with no operator action. Both are
       // bounded per tick, one-shot-stamped (`audited_at`; new decisions are born-stamped), and

@@ -2,7 +2,8 @@ import { describe, it, expect } from "vitest";
 import { sqliteEnv } from "./sqlite-d1.js";
 import { redeemGroupCode, backfillTenantRegistry } from "../src/signup.js";
 import { redeemGroupInvite, getSignupInvite, listSignupInvites } from "../src/signup-db.js";
-import { createGroupInvite, revokeGroupInvite, revoke } from "../src/admin.js";
+import { createGroupInvite, revokeGroupInvite, revoke, onboard } from "../src/admin.js";
+import { db } from "../src/db.js";
 
 const NOW = 1_800_000_000_000;
 
@@ -23,6 +24,10 @@ describe("signup: cap enforcement", () => {
   });
 
   it("concurrent redemptions never exceed the cap", async () => {
+    // NOTE: the sqlite harness is synchronous, so `Promise.all` here serializes rather than
+    // truly interleaves — this asserts the cap accounting is correct across many redemptions.
+    // The interleaved-safety argument rests on each guarded statement being individually atomic
+    // (D1 serializes writes), covered by the guarded-UPDATE + ON-CONFLICT logic directly.
     const { env } = sqliteEnv();
     const { code } = await mint(env, 3);
 
@@ -67,6 +72,20 @@ describe("signup: username claim + slot accounting", () => {
     expect((await getSignupInvite(env, code))?.used).toBe(0);
   });
 
+  it("an UNUSABLE code + an existing username stays uniform (no membership oracle)", async () => {
+    // Without a usable code, `username_taken` must NOT be disclosed — otherwise an
+    // unauthenticated caller could probe which usernames are members. Both an existing name and
+    // a free name yield the same code_unusable.
+    const { env } = sqliteEnv(["casey"]);
+    const { code } = await mint(env, 5);
+    await revokeGroupInvite(env, code, NOW); // the code is now unusable
+
+    expect((await redeemGroupCode(env, code, "casey", NOW)).kind).toBe("code_unusable");
+    expect((await redeemGroupCode(env, code, "freename", NOW)).kind).toBe("code_unusable");
+    // An unknown code behaves the same whether the name exists or not.
+    expect((await redeemGroupCode(env, "no-such-code", "casey", NOW)).kind).toBe("code_unusable");
+  });
+
   it("records provenance for each successful redemption", async () => {
     const { env, rows } = sqliteEnv();
     const { code } = await mint(env, 5);
@@ -79,6 +98,28 @@ describe("signup: username claim + slot accounting", () => {
 
     const [listed] = await listSignupInvites(env);
     expect(listed.redemptions.sort()).toEqual(["frank", "grace"]);
+  });
+});
+
+describe("signup: operator onboarding claims the D1 registry", () => {
+  it("onboard writes a tenants row so a concurrent self-service signup for the same name is rejected", async () => {
+    const { env, rows } = sqliteEnv();
+    const deps = {
+      tenantKv: env.TENANT_KV,
+      krogerKv: env.KROGER_KV as never,
+      oauthKv: env.KROGER_KV as never,
+      db: db(env),
+      randomCode: () => "code",
+    };
+    await onboard(deps as never, "Alex"); // normalizes to "alex"
+
+    // The uniqueness authority (not just the KV allowlist) now holds the id — this is the
+    // strong-consistency guarantee the KV pre-check alone can't give for a just-onboarded member.
+    expect(rows<{ id: string; via_code: string | null }>("tenants")).toContainEqual(
+      expect.objectContaining({ id: "alex", via_code: null }),
+    );
+    const { code } = await createGroupInvite(env, { cap: 5, expiresAt: null, label: null }, NOW);
+    expect((await redeemGroupCode(env, code, "alex", NOW)).kind).toBe("username_taken");
   });
 });
 

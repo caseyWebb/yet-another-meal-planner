@@ -426,8 +426,17 @@ export async function onboard(
   const id = normalizeTenantId(username);
   if (!id) throw new ToolError("validation_failed", "A username is required");
   const code = (inviteCode ?? "").trim() || deps.randomCode();
+  const now = Date.now();
+  // Claim the id in the strongly-consistent D1 registry (self-service-signup) so a concurrent
+  // self-service signup for the same username conflicts and is rejected. The KV allowlist alone
+  // is eventually consistent and cannot close that race for a just-onboarded member.
+  await deps.db.run(
+    `INSERT INTO tenants(id, created_at, via_code) VALUES(?1, ?2, NULL) ON CONFLICT(id) DO NOTHING`,
+    id,
+    now,
+  );
   await deps.tenantKv.put(`${TENANT_PREFIX}${id}`, JSON.stringify({ id }));
-  await deps.tenantKv.put(`${INVITE_PREFIX}${code}`, bootstrapInvite(id, Date.now()), {
+  await deps.tenantKv.put(`${INVITE_PREFIX}${code}`, bootstrapInvite(id, now), {
     expirationTtl: BOOTSTRAP_INVITE_TTL_S,
   });
   return { username: id, invite_code: code };
