@@ -145,6 +145,23 @@ export async function loadRecipeEmbeddings(env: Env): Promise<Map<string, number
 }
 
 /**
+ * One recipe's stored embedding (the cron-captured `recipe_derived.embedding`, migration 0013),
+ * as a numeric vector — the cook-time vibe-satisfaction match's recipe side (D4), a targeted point
+ * read rather than the whole-table `loadRecipeEmbeddings`. Returns `null` when the recipe has no
+ * row, no vector yet (NULL until the embed pass fills it), or a cell that fails to parse into a
+ * numeric array — every "not yet indexed" case, treated by the caller as "only the from_vibe prior
+ * can fire", never an error.
+ */
+export async function recipeVector(env: Env, slug: string): Promise<number[] | null> {
+  const row = await db(env).first<{ embedding: string | null }>(
+    "SELECT embedding FROM recipe_derived WHERE slug = ?1 LIMIT 1",
+    slug,
+  );
+  const parsed = parseJsonColumn(row?.embedding ?? null);
+  return Array.isArray(parsed) && parsed.every((n) => typeof n === "number") ? (parsed as number[]) : null;
+}
+
+/**
  * The Worker-derived `description` for one recipe (the read-time merge for `read_recipe`).
  * It lives in `recipe_derived` (migration 0013), not frontmatter — a recipe whose description
  * hasn't been generated yet (just imported, before the next reconcile tick) returns `null`,

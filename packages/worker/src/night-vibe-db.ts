@@ -121,18 +121,40 @@ export async function deleteNightVibe(env: Env, tenant: string, id: string): Pro
   return r.changes > 0;
 }
 
-/** The caller's derived `last_satisfied(vibe)` — `MAX(date)` over cooking-log rows attributed
- *  to each vibe by slot provenance (`satisfied_vibe`). Vibe id → YYYY-MM-DD. Off-plan cooks
- *  (null `satisfied_vibe`) never appear, so an unsatisfied vibe is simply absent (max debt). */
+/** The caller's derived `last_satisfied(vibe)` — `MAX(date)` over the cook-time satisfaction records
+ *  (`vibe_satisfaction`, migration 0047), which cover both the guaranteed `from_vibe` prior AND every
+ *  cosine-matched vibe (multi-vibe, off-plan included). Vibe id → YYYY-MM-DD. A never-satisfied vibe
+ *  is simply absent (max debt). Never stored on the vibe — this is the sole derivation of it. */
 export async function readVibeLastSatisfied(env: Env, tenant: string): Promise<Map<string, string>> {
-  const rows = await db(env).all<{ satisfied_vibe: string; d: string }>(
-    "SELECT satisfied_vibe, MAX(date) AS d FROM cooking_log " +
-      "WHERE tenant = ?1 AND satisfied_vibe IS NOT NULL GROUP BY satisfied_vibe",
+  const rows = await db(env).all<{ vibe_id: string; d: string }>(
+    "SELECT vibe_id, MAX(date) AS d FROM vibe_satisfaction WHERE tenant = ?1 GROUP BY vibe_id",
     tenant,
   );
   const map = new Map<string, string>();
-  for (const r of rows) if (r.satisfied_vibe && r.d) map.set(r.satisfied_vibe, r.d);
+  for (const r of rows) if (r.vibe_id && r.d) map.set(r.vibe_id, r.d);
   return map;
+}
+
+/** A `vibe_satisfaction` INSERT for one (cook, vibe) satisfaction record, exposed for log_cooked's
+ *  transaction (D4). `cooking_log_id` resolves to the cooking-log row inserted EARLIER in the same
+ *  batch via `(SELECT MAX(id) FROM cooking_log WHERE tenant = ?1)` — AUTOINCREMENT makes that the
+ *  just-inserted row, and the interleaved meal-plan DELETE touches a different table, so the id is
+ *  stable across every satisfaction insert in the batch. */
+export function vibeSatisfactionInsertStmt(
+  env: Env,
+  tenant: string,
+  vibeId: string,
+  date: string,
+  score: number,
+): D1PreparedStatement {
+  return db(env).prepare(
+    "INSERT INTO vibe_satisfaction (tenant, cooking_log_id, vibe_id, date, score) " +
+      "VALUES (?1, (SELECT MAX(id) FROM cooking_log WHERE tenant = ?1), ?2, ?3, ?4)",
+    tenant,
+    vibeId,
+    date,
+    score,
+  );
 }
 
 /** A palette vibe's cadence status — the same `overdue | due | soon | ok` bucketing the member

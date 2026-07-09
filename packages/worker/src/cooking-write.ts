@@ -14,6 +14,14 @@
 // derived by query (readLastCookedMap), so logging a recipe implicitly updates the
 // recipe's effective last_cooked with no second write.
 //
+// Cadence side effect (converge-meal-planning-surfaces D4): a recipe entry also attributes
+// night-vibe satisfaction by a COOK-TIME COSINE MATCH — the cooked recipe's cron-captured
+// embedding vs. the palette vibe vectors (`recipe_derived` / `night_vibe_derived`), scored with the
+// SAME cosine helper the ranker uses and NO new AI call. Every matched vibe (unioned with the
+// cleared plan row's `from_vibe` as a guaranteed-reset prior) gets a `vibe_satisfaction` row in the
+// SAME batch, so off-plan and multi-vibe cooks reset cadence too. `last_satisfied` stays a derived
+// MAX(date) query over those rows (readVibeLastSatisfied), never written onto the vibe.
+//
 // The core is the shared `logCooked` operation (member-app-core D2): the MCP tool
 // and the member API's `POST /api/log` both call it. The route passes
 // `opts.dedupe: true` (an identical `(tenant, date, type, recipe|name)` row
@@ -26,6 +34,9 @@ import { db } from "./db.js";
 import { ToolError, runTool } from "./errors.js";
 import { validateNewEntry, type CookingLogEntry } from "./cooking-log.js";
 import { mealPlanDeleteStmt } from "./session-db.js";
+import { recipeVector } from "./recipe-index.js";
+import { readNightVibeVectors, vibeSatisfactionInsertStmt } from "./night-vibe-db.js";
+import { matchCookedVibes } from "./vibe-satisfaction.js";
 
 function today(): string {
   return new Date().toISOString().slice(0, 10);
@@ -50,7 +61,8 @@ export interface LogCookedResult {
 /**
  * The shared log-a-cook operation: structural validation, write-time slug resolution
  * for recipe entries, the `satisfied_vibe` slot-provenance stamp (read from the
- * planned row BEFORE the clear), and the log-INSERT + meal-plan-DELETE in ONE D1
+ * planned row BEFORE the clear), the cook-time cosine vibe-satisfaction attribution
+ * (D4), and the log-INSERT + meal-plan-DELETE + `vibe_satisfaction` INSERTs in ONE D1
  * batch. `opts.dedupe` (route-only; default false — tool behavior unchanged) makes an
  * identical `(tenant, date, type, recipe|name)` row short-circuit to
  * `{ logged, deduped: true }` with no insert, so a replayed mutation cannot double-log.
@@ -100,10 +112,11 @@ export async function logCooked(
     if (existing) return { logged: entry, deduped: true };
   }
 
-  // Slot provenance ("shape in → shape out"): if this recipe was planned to fill a
-  // night-vibe slot, carry that vibe onto the cooking-log row so the cadence scheduler
-  // can advance the vibe's last_satisfied. Read it BEFORE the clear (the DELETE below
-  // removes the row). An off-plan cook (no row, or no from_vibe) leaves it null.
+  // Slot provenance: if this recipe was planned to fill a night-vibe slot, keep that vibe as the
+  // GUARANTEED-RESET PRIOR for the cook-time attribution below (and stamp it onto the cooking-log
+  // row for back-compat provenance). Read it BEFORE the clear (the DELETE below removes the row).
+  // An off-plan cook (no row, or no from_vibe) leaves it null — cadence then rides the cosine match
+  // alone.
   let satisfiedVibe: string | null = null;
   if (entry.type === "recipe" && entry.recipe) {
     const row = await db(env).first<{ from_vibe: string | null }>(
@@ -114,9 +127,24 @@ export async function logCooked(
     satisfiedVibe = row?.from_vibe ?? null;
   }
 
-  // The cooking-log INSERT and (for a recipe entry) the meal-plan row DELETE run
-  // in ONE D1 transaction — both per-tenant tables are in D1, so the clear is
-  // atomic with the log write (resolves the slice-2 cross-store seam).
+  // Cook-time vibe-satisfaction attribution (D4): cosine-match the cooked recipe against the palette
+  // and record every vibe it satisfies, unioned with the from_vibe prior. Both embeddings are
+  // cron-captured (recipe_derived / night_vibe_derived) — NO env.AI call here. Only bother reading
+  // the recipe vector when there is something to attribute (a from_vibe prior or a non-empty
+  // palette); an unembedded recipe or vibe degrades gracefully inside matchCookedVibes.
+  let vibeMatches: { vibe_id: string; score: number }[] = [];
+  if (entry.type === "recipe" && entry.recipe) {
+    const vibeVectors = await readNightVibeVectors(env, tenant);
+    if (satisfiedVibe || vibeVectors.size > 0) {
+      const recipeVec = (await recipeVector(env, entry.recipe)) ?? [];
+      vibeMatches = matchCookedVibes(recipeVec, vibeVectors, satisfiedVibe);
+    }
+  }
+
+  // The cooking-log INSERT, the meal-plan row DELETE (recipe entries), and the vibe_satisfaction
+  // INSERTs run in ONE D1 transaction — all per-tenant tables are in D1, so the clear + attribution
+  // are atomic with the log write. The satisfaction inserts follow the log insert so their
+  // `(SELECT MAX(id) FROM cooking_log …)` resolves to the row just written.
   const stmts: D1PreparedStatement[] = [
     db(env).prepare(
       "INSERT INTO cooking_log (tenant, date, type, recipe, name, protein, cuisine, satisfied_vibe) " +
@@ -133,6 +161,9 @@ export async function logCooked(
   ];
   if (entry.type === "recipe" && entry.recipe) {
     stmts.push(mealPlanDeleteStmt(env, tenant, entry.recipe));
+  }
+  for (const m of vibeMatches) {
+    stmts.push(vibeSatisfactionInsertStmt(env, tenant, m.vibe_id, entry.date, m.score));
   }
   await db(env).batch(stmts);
 

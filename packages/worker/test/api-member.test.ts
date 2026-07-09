@@ -593,6 +593,8 @@ describe("vibes area", () => {
     const { env } = memberEnv({
       night_vibes: [{ tenant: "casey", id: "weeknight", vibe: "fast weeknight pasta", facets: null, cadence_days: 7, pinned: 0, base_weight: null, weather_affinity: null, weather_antipathy: null, season: null, created_at: "2026-06-01T00:00:00Z" }],
       cooking_log: [{ tenant: "casey", id: 1, date: "2026-06-20", type: "recipe", recipe: "tacos", name: null, satisfied_vibe: "weeknight" }],
+      // last_satisfied derives over vibe_satisfaction (migration 0047): the cook-time satisfaction record.
+      vibe_satisfaction: [{ tenant: "casey", cooking_log_id: 1, vibe_id: "weeknight", date: "2026-06-20", score: null }],
     });
     const cookie = await loggedIn(env);
     const res = await get(env, "/api/vibes", cookie);

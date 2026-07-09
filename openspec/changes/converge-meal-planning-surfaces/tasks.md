@@ -8,11 +8,11 @@ Ordered by dependency, serial on the shared surfaces (`propose_meal_plan` / `sch
 
 ## 2. Cook-time cadence attribution (D4)
 
-- [ ] 2.1 Add a cook→vibe satisfaction record (migration `packages/worker/migrations/d1/NNNN_vibe_satisfaction.sql`: `cooking_log_id`, `vibe_id`, `score`) via `src/db.ts` helpers; keep `last_satisfied` a derived `MAX(date)` query over it (never stored on the vibe).
-- [ ] 2.2 In `src/cooking-write.ts` `log_cooked`, compute cosine of the cooked recipe against all palette vibes (reuse `rankCandidates` / the embeddings in `night_vibe_derived`), union the planned row's `from_vibe` as a guaranteed-reset prior, and write a satisfaction record per vibe at/above the threshold — in the same D1 transaction as the cooking-log insert + plan-clear.
-- [ ] 2.3 Over-reset guard: full reset for the top match, gated resets for others; ship a default threshold, calibrated by a planning spike against production cook logs.
-- [ ] 2.4 Update `readVibeLastSatisfied` (`src/night-vibe-db.ts`) to derive over the satisfaction records; keep `from_vibe` on the plan row (`meal-planning`).
-- [ ] 2.5 Docs (lockstep): `docs/TOOLS.md` `log_cooked`; `docs/SCHEMAS.md` satisfaction record.
+- [x] 2.1 Added `vibe_satisfaction(tenant, cooking_log_id, vibe_id, date, score)` migration `0047_vibe_satisfaction.sql` with a backfill from existing `cooking_log.satisfied_vibe` history; helpers routed through the `db()` layer but placed in domain files (`night-vibe-db.ts`, `recipe-index.ts`) per convention, not literally in `src/db.ts` (the thin generic layer). `last_satisfied` stays a derived `MAX(date)` query over the table.
+- [x] 2.2 `src/cooking-write.ts` `log_cooked` cosine-matches the cooked recipe (`recipeVector`) against palette vibe vectors (`readNightVibeVectors`) via `cosineSimilarity` from `src/embedding.ts` — no `env.AI` call — unions `from_vibe` as a guaranteed prior, and writes records in the existing same-transaction batch. New pure module `src/vibe-satisfaction.ts` (`matchCookedVibes`).
+- [x] 2.3 Over-reset guard implemented: `VIBE_SATISFY_FLOOR = 0.5` (top match) < `VIBE_SATISFY_GATE = 0.6` (secondary), `from_vibe` always recorded; commented as pre-calibration defaults.
+- [x] 2.4 `readVibeLastSatisfied` (`src/night-vibe-db.ts`) now derives over `vibe_satisfaction`; `from_vibe` kept on the plan row. (`readVibeSatisfactionDates`, which feeds the `profile-reconciliation` backstop, deliberately stays on `cooking_log.satisfied_vibe` — the reconcile's provenance view is "narrowed, not deleted" per the design.)
+- [x] 2.5 Docs (lockstep): `docs/TOOLS.md` `log_cooked`; `docs/SCHEMAS.md` `vibe_satisfaction` record + backfill.
 
 ## 3. Engine convergence + new-for-me on both surfaces (D1, D2, D3, D10)
 

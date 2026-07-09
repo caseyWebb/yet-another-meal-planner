@@ -416,8 +416,11 @@ name    TEXT     -- dish name; present for ready_to_eat | ad_hoc
 protein TEXT     -- optional inline dimension for non-recipe entries
 cuisine TEXT     -- optional; recipe entries resolve protein/cuisine from `recipes` via a JOIN
 satisfied_vibe TEXT -- night-vibe slot provenance (migration 0026): copied from the cleared meal_plan
-                    -- row's from_vibe on cook, so last_satisfied(vibe) = MAX(date) WHERE satisfied_vibe = id.
-                    -- NULL for an off-plan cook (idx_cooking_log_satisfied_vibe on (tenant, satisfied_vibe))
+                    -- row's from_vibe on cook (NULL for an off-plan cook). Retained for provenance, but
+                    -- last_satisfied is NO LONGER derived from it — cadence attribution moved to the
+                    -- cook-time cosine records in `vibe_satisfaction` (migration 0047; see below). The
+                    -- from_vibe here is the guaranteed-reset prior that seeds one of those records.
+                    -- (idx_cooking_log_satisfied_vibe on (tenant, satisfied_vibe))
 ```
 
 Example rows:
@@ -434,6 +437,27 @@ Example rows:
 - `ready_to_eat` consumption also decrements the item's on-hand stock in the pantry (the `ready_to_eat` catalog stays a pure options list with no stock field) and its accumulating frequency (by `name`) is the favored-item signal for re-order suggestions.
 - Cadence ("cooks/week") counts `recipe` + `ad_hoc` only; `ready_to_eat` is the convenience side of the cook-vs-convenience split.
 - Append-only in normal use; `id` gives a stable handle for an admin UI to edit/delete a mis-logged row.
+
+## vibe_satisfaction (per-tenant, D1 table)
+
+The **cook-time night-vibe satisfaction** records (migration 0047, `cooking-history` + `night-vibe-palette` capabilities). Night-vibe cadence attribution is **revealed at cook time**, not at plan time: when a `type=recipe` cook is logged, `log_cooked` cosine-matches the cooked recipe's cron-captured embedding (`recipe_derived`) against the caller's palette vibe vectors (`night_vibe_derived`) — reusing the ranker's cosine helper, **no new AI call** — and writes **one row per satisfied vibe**, in the **same D1 batch** as the `cooking_log` insert + the meal-plan clear. Attribution unions (a) the cleared plan row's `from_vibe` as a **guaranteed-reset prior** (always recorded, even at a borderline cosine, and even when unembedded) with (b) every palette vibe the recipe matches at/above a calibrated threshold — the single top match resets, weaker matches only when they clear a higher gate (the over-reset guard). A cook MAY satisfy **more than one** vibe; an **off-plan** cook resets any vibe it genuinely matches. Per-tenant PRIVATE, isolated by `tenant`. Schema: `migrations/d1/0047_vibe_satisfaction.sql`.
+
+```sql
+-- D1 vibe_satisfaction table. PRIMARY KEY (tenant, cooking_log_id, vibe_id) — one record per
+-- (cook, vibe). idx_vibe_satisfaction_vibe on (tenant, vibe_id) backs the derived last_satisfied.
+tenant         TEXT     -- owning member
+cooking_log_id INTEGER  -- the cooking_log row that satisfied the vibe (soft ref, no FK)
+vibe_id        TEXT     -- the night_vibes id satisfied (soft ref)
+date           TEXT     -- YYYY-MM-DD of the cook (denormalized from cooking_log — MAX(date) needs no JOIN)
+score          REAL     -- cosine at attribution time (provenance for threshold calibration only; NULL when
+                        -- unknown — the from_vibe prior on an unembedded vibe, and the backfilled rows). It
+                        -- does NOT scale the reset: any record fully advances the vibe's cadence to `date`.
+```
+
+**Notes:**
+- A vibe's **`last_satisfied` is derived**, never stored: `last_satisfied(vibe) = MAX(date)` over this table's rows for that `(tenant, vibe_id)` (`readVibeLastSatisfied`). A never-satisfied vibe is simply absent (max cadence debt). This is the sole source for the palette's cadence status in `read_user_profile` and the propose engine's cadence-debt scheduling.
+- **Backfill:** migration 0047 seeds this table from existing `cooking_log.satisfied_vibe` provenance (one row per stamped cook, `cooking_log_id` = the log row's id, `score` NULL), so past attribution is preserved when the derivation switches source. `cooking_log.satisfied_vibe` is kept (still written on cook) but is no longer the derivation input.
+- `cooking_log_id`/`vibe_id` are **soft references** (no FK) — a since-deleted vibe simply never matches a live palette row on read, and history survives an admin edit/delete of the cook.
 
 ## reconcile_errors (D1 table, shared)
 

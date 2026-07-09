@@ -42,6 +42,11 @@ describe("assembleUserProfile — night-vibe palette (data-read-tools D5)", () =
         cooking_log: [
           { tenant: "casey", id: 1, type: "recipe", recipe: "penne", date: daysAgoIso(100), satisfied_vibe: "weeknight-pasta" },
         ],
+        // last_satisfied derives over vibe_satisfaction (migration 0047 backfilled this from the
+        // provenance-stamped cook above): cosine-match record for the aimed vibe, 100 days ago.
+        vibe_satisfaction: [
+          { tenant: "casey", cooking_log_id: 1, vibe_id: "weeknight-pasta", date: daysAgoIso(100), score: null },
+        ],
       },
     });
 
