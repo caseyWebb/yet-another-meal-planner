@@ -230,6 +230,32 @@ describe("memberDetail — full per-tenant state, no redaction", () => {
     expect(m.recipe_notes).toHaveLength(1);
     expect(m.recipe_notes[0]).toMatchObject({ private: 1, body: "my private note" });
   });
+
+  it("reifies a legacy id-named FOOD grocery row's display; a typed row is unchanged", async () => {
+    const { env } = makeEnv({
+      tables: {
+        ingredient_identity: [
+          { id: "cabbage::color-red", base: "cabbage", detail: "color-red", representative: null, display_name: "Red cabbage", source: "auto" },
+        ],
+        ingredient_alias: [],
+        novel_ingredient_terms: [],
+        grocery_list: [
+          // A legacy id-named FOOD row (name IS the raw id, no display) → reified to the curated label.
+          { tenant: "alice", name: "cabbage::color-red", normalized_name: "cabbage::color-red", display_name: null, quantity: "1", kind: "grocery", domain: "grocery", status: "active", source: "menu", for_recipes: "[]", note: null, added_at: "2026-06-01", ordered_at: null },
+          // A typed row (member phrasing) — name ≠ id, so it passes through untouched.
+          { tenant: "alice", name: "Olive Oil", normalized_name: "olive oil", display_name: null, quantity: "1", kind: "grocery", domain: "grocery", status: "active", source: "ad_hoc", for_recipes: "[]", note: null, added_at: "2026-06-01", ordered_at: null },
+        ],
+      },
+    });
+    const m = await memberDetail(env, "alice");
+    const byKey = new Map(m.grocery_list.map((g) => [g.normalized_name, g]));
+    const cabbage = byKey.get("cabbage::color-red")!;
+    expect(cabbage.display_name).toBe("Red cabbage"); // reified from the curated node, never a raw id
+    expect(cabbage.display_name ?? "").not.toContain("::");
+    const oil = byKey.get("olive oil")!;
+    expect(oil.display_name).toBeNull(); // typed row unchanged
+    expect(oil.name).toBe("Olive Oil");
+  });
 });
 
 describe("readTable — fixed, allowlisted, bounded (discovery/system groups; inert until routed)", () => {

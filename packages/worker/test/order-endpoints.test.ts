@@ -138,6 +138,40 @@ describe("/satellite/order/list (pull-list)", () => {
     expect(((await res.json()) as OrderReceiptResponse).results[0].disposition).toBe("accepted");
     expect(await statusOf(env, "casey", "AA Batteries")).toBe("in_cart");
   });
+
+  it("reifies a FOOD id-named line's display via idLabel while keeping the canonical item_id; a non-food id-named line keeps its raw name", async () => {
+    // A plan-derived FOOD line (`name === key`, virtual — no stored row) renders the curated node
+    // label, never a raw `::` id; a non-food id-named row (kind:other, whose name collides with a food
+    // id) must NOT route through the identity graph. `item_id` stays the canonical id in both cases.
+    const h = sqliteEnv(["casey"]);
+    const { env } = h;
+    const { secret } = await mintIngestKey(env, "casey-box", NOW, "casey");
+    await setStores(env, "casey", { primary: "target", fulfillment: "satellite" });
+    // A curated node for the plan-derived id, and a FOOD "sage" node whose label must NOT leak onto
+    // the non-food row below.
+    h.raw
+      .prepare("INSERT INTO ingredient_identity (id, base, detail, representative, display_name, source) VALUES (?, ?, ?, NULL, ?, 'auto')")
+      .run("cabbage::color-red", "cabbage", "color-red", "Red cabbage");
+    h.raw
+      .prepare("INSERT INTO ingredient_identity (id, base, detail, representative, display_name, source) VALUES (?, ?, NULL, NULL, ?, 'auto')")
+      .run("sage", "sage", "Fresh sage");
+    h.raw.prepare("INSERT INTO recipes (slug, title, ingredients_full) VALUES (?, ?, ?)").run("slaw", "slaw", JSON.stringify(["cabbage::color-red"]));
+    h.raw.prepare("INSERT INTO meal_plan (tenant, recipe, planned_for) VALUES ('casey', ?, NULL)").run("slaw");
+    await addGroceryRow(env, "casey", { name: "sage", kind: "other" }, TODAY); // non-food, name === normalizeName === "sage"
+
+    const body = await pullList(env, secret);
+    // Plan-derived FOOD id-named line: display reified to the curated label, item_id stays the id.
+    const cabbage = body.items.find((i) => i.item_id === "cabbage::color-red")!;
+    expect(cabbage.name).toBe("Red cabbage");
+    expect(cabbage.name).not.toContain("::");
+    expect(cabbage.item_id).toBe("cabbage::color-red"); // keying unchanged
+    // Non-food id-named line: raw name preserved (never routed through idLabel to the food label).
+    const sage = body.items.find((i) => i.item_id === "sage")!;
+    expect(sage.name).toBe("sage");
+    // The issued order-list still records the canonical ids (the receipt correlation key).
+    const ol = h.rows<{ item_ids: string }>("order_lists")[0];
+    expect(JSON.parse(ol.item_ids).sort()).toEqual(["cabbage::color-red", "sage"]);
+  });
 });
 
 describe("/satellite/order/list (plan-derived needs, member-app-grocery D4)", () => {

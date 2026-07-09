@@ -20,7 +20,7 @@ import { ToolError } from "./errors.js";
 import { createR2CorpusStore, type CorpusStore, type DirEntry } from "./corpus-store.js";
 import { parseMarkdown } from "./parse.js";
 import { readProfile } from "./profile-db.js";
-import { readPantry, readMealPlan, readGroceryList } from "./session-db.js";
+import { readPantry, readMealPlan, readGroceryList, readGroceryListReified } from "./session-db.js";
 import { directoryFromEnv } from "./tenant.js";
 import { embedText, cosineSimilarity } from "./embedding.js";
 
@@ -413,7 +413,9 @@ export async function memberDetail(env: Env, tenantId: string): Promise<MemberDe
       readProfile(env, tenantId),
       readPantry(env, tenantId),
       readMealPlan(env, tenantId),
-      readGroceryList(env, tenantId),
+      // A legacy id-named FOOD grocery row reifies to its curated node label at read (never a raw
+      // `::` id); a typed/add-by-id/non-food row passes through unchanged.
+      readGroceryListReified(env, tenantId),
       db(env).all<Record<string, unknown>>(
         "SELECT recipe, favorite, reject FROM overlay WHERE tenant = ?1",
         tenantId,
