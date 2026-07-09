@@ -9,6 +9,7 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
+import { Route as SignupRouteImport } from './routes/signup'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as ConnectRouteImport } from './routes/connect'
 import { Route as AppRouteImport } from './routes/_app'
@@ -22,6 +23,11 @@ import { Route as AppGroceryRouteImport } from './routes/_app.grocery'
 import { Route as AppFavoritesRouteImport } from './routes/_app.favorites'
 import { Route as AppRecipeSlugRouteImport } from './routes/_app.recipe.$slug'
 
+const SignupRoute = SignupRouteImport.update({
+  id: '/signup',
+  path: '/signup',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const LoginRoute = LoginRouteImport.update({
   id: '/login',
   path: '/login',
@@ -86,6 +92,7 @@ export interface FileRoutesByFullPath {
   '/': typeof AppIndexRoute
   '/connect': typeof ConnectRoute
   '/login': typeof LoginRoute
+  '/signup': typeof SignupRoute
   '/favorites': typeof AppFavoritesRoute
   '/grocery': typeof AppGroceryRoute
   '/log': typeof AppLogRoute
@@ -98,6 +105,7 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/connect': typeof ConnectRoute
   '/login': typeof LoginRoute
+  '/signup': typeof SignupRoute
   '/favorites': typeof AppFavoritesRoute
   '/grocery': typeof AppGroceryRoute
   '/log': typeof AppLogRoute
@@ -113,6 +121,7 @@ export interface FileRoutesById {
   '/_app': typeof AppRouteWithChildren
   '/connect': typeof ConnectRoute
   '/login': typeof LoginRoute
+  '/signup': typeof SignupRoute
   '/_app/favorites': typeof AppFavoritesRoute
   '/_app/grocery': typeof AppGroceryRoute
   '/_app/log': typeof AppLogRoute
@@ -129,6 +138,7 @@ export interface FileRouteTypes {
     | '/'
     | '/connect'
     | '/login'
+    | '/signup'
     | '/favorites'
     | '/grocery'
     | '/log'
@@ -141,6 +151,7 @@ export interface FileRouteTypes {
   to:
     | '/connect'
     | '/login'
+    | '/signup'
     | '/favorites'
     | '/grocery'
     | '/log'
@@ -155,6 +166,7 @@ export interface FileRouteTypes {
     | '/_app'
     | '/connect'
     | '/login'
+    | '/signup'
     | '/_app/favorites'
     | '/_app/grocery'
     | '/_app/log'
@@ -170,10 +182,18 @@ export interface RootRouteChildren {
   AppRoute: typeof AppRouteWithChildren
   ConnectRoute: typeof ConnectRoute
   LoginRoute: typeof LoginRoute
+  SignupRoute: typeof SignupRoute
 }
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
+    '/signup': {
+      id: '/signup'
+      path: '/signup'
+      fullPath: '/signup'
+      preLoaderRoute: typeof SignupRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/login': {
       id: '/login'
       path: '/login'
@@ -291,6 +311,7 @@ const rootRouteChildren: RootRouteChildren = {
   AppRoute: AppRouteWithChildren,
   ConnectRoute: ConnectRoute,
   LoginRoute: LoginRoute,
+  SignupRoute: SignupRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

@@ -30,6 +30,13 @@ export const tenantsQuery = queryOptions({
   queryFn: () => unwrap(api.admin.api.tenants.$get()),
 });
 
+/** The group invite codes (self-service-signup), with live usage + provenance — the Members
+ *  "Invite codes" sub-tab. Mutations (mint/revoke) invalidate `["inviteCodes"]`. */
+export const inviteCodesQuery = queryOptions({
+  queryKey: ["inviteCodes"],
+  queryFn: () => unwrap(api.admin.api["invite-codes"].$get()),
+});
+
 export const memberQuery = (id: string) =>
   queryOptions({
     queryKey: ["member", id],
@@ -168,6 +175,8 @@ export const ingestKeysQuery = queryOptions({
 export type StatusData = InferResponseType<typeof api.admin.api.status.$get>;
 export type TenantsData = InferResponseType<typeof api.admin.api.tenants.$get>;
 export type TenantRow = TenantsData["tenants"][number];
+export type InviteCodesData = InferResponseType<(typeof api.admin.api)["invite-codes"]["$get"]>;
+export type InviteCodeRow = InviteCodesData["codes"][number];
 export type MemberData = InferResponseType<(typeof api.admin.api.members)[":id"]["$get"]>;
 export type RecipesData = InferResponseType<typeof api.admin.api.data.recipes.$get>;
 export type RecipeDetailData = InferResponseType<(typeof api.admin.api.data.recipes)[":slug"]["$get"]>;

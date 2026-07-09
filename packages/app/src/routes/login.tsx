@@ -6,7 +6,7 @@
 // The structured-error copy stays uniform (auth failures never hint whether a credential or
 // code exists); a dismissed/absent passkey is a neutral non-event, never a crash.
 import { useEffect, useState } from "react";
-import { createFileRoute, useNavigate, type SearchSchemaInput } from "@tanstack/react-router";
+import { createFileRoute, Link, useNavigate, type SearchSchemaInput } from "@tanstack/react-router";
 import { Button, IconBook, Input, Label } from "@yamp/ui";
 import { api, apiError } from "../lib/api";
 import { enrollPasskey, passkeyLogin } from "../lib/passkey";
@@ -252,9 +252,17 @@ function LoginPage() {
         )}
 
         <p className="login-note">
-          {phase.kind === "enroll"
-            ? "You can add more devices any time from your account menu."
-            : "New here? Sign in with the invite code from your group's operator, then add a passkey."}
+          {phase.kind === "enroll" ? (
+            "You can add more devices any time from your account menu."
+          ) : (
+            <>
+              Have a group invite code?{" "}
+              <Link to="/signup" data-testid="login-to-signup">
+                Create your account
+              </Link>
+              .
+            </>
+          )}
         </p>
       </div>
     </div>

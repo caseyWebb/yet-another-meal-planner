@@ -26,13 +26,13 @@
 
 ## 6. Member app — signup screen (packages/app)
 
-- [ ] 6.1 A `/signup` client route + screen: code + username fields, submit → `POST /api/signup`, on success land on the app shell and trigger the passkey-enrollment prompt (reuse the existing first-run enrollment path).
-- [ ] 6.2 A "have a group code?" affordance on `/login` linking to `/signup`; surface `username_taken` inline (choose another) and every other failure as one uniform error message.
+- [x] 6.1 A `/signup` client route + screen: code + username fields, submit → `POST /api/signup`, on success land on the app shell and trigger the passkey-enrollment prompt (reuse the existing first-run enrollment path).
+- [x] 6.2 A "have a group code?" affordance on `/login` linking to `/signup`; surface `username_taken` inline (choose another) and every other failure as one uniform error message.
 
 ## 7. Admin app — Invite codes section (packages/admin-app)
 
-- [ ] 7.1 Add an **Invite codes** section to the Members area: a mint dialog (cap required; optional expiry + label), a once-shown minted banner (reusing the members `Banner` show-once pattern), a roster of active codes with live usage (`used/max`, expiry, revoked, label) + provenance, and a revoke action with confirm. Build directly on the shared shadcn/ui + operator theme (one-time design-process exception per `design.md` D10).
-- [ ] 7.2 Export the built Invite-codes section as the seed for the rebuilt companion Claude Design project (hand the bundle/prompt to the operator); note the export in the PR so the exception is traceable.
+- [x] 7.1 Add an **Invite codes** section to the Members area: a mint dialog (cap required; optional expiry + label), a once-shown minted banner (reusing the members `Banner` show-once pattern), a roster of active codes with live usage (`used/max`, expiry, revoked, label) + provenance, and a revoke action with confirm. Build directly on the shared shadcn/ui + operator theme (one-time design-process exception per `design.md` D10).
+- [x] 7.2 Export the built Invite-codes section as the seed for the rebuilt companion Claude Design project (hand the bundle/prompt to the operator); note the export in the PR so the exception is traceable.
 
 ## 8. Tests
 
