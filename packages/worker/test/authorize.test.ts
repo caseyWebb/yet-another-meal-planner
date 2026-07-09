@@ -58,6 +58,7 @@ describe("handleAuthorize — cross-device approval + grace-gated invite fallbac
     expect(html).toContain("/connect?authz="); // the deep link into the web app
     expect(html).toContain("/authorize/status?authz="); // the poll endpoint
     expect(html).toContain("Claude"); // the requesting client name
+    expect(html).toMatch(/<div class="qr"><svg[\s\S]*<\/svg><\/div>/); // an inline scannable QR of the deep link
   });
 
   it("GET shows the legacy invite form while grace is on, hides it when off", async () => {

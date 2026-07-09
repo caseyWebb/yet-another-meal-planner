@@ -30,7 +30,7 @@
 
 ## 6. MCP `/authorize` cross-device approval
 
-- [x] 6.1 Rework `src/authorize.ts`: on GET, parse the `AuthRequest`, mint a single-use `authz:<ref>` KV record (short TTL) holding the base64 `oauthReqInfo` + `status: "pending"` + a derived short verification code; render a second-screen page (deep link to `/connect?authz=<ref>`, copyable full URL, verification code) plus client-side polling. Preserve the malformed-request 400 on GET and POST. (QR rendering deferred — no verified pure-JS/workerd encoder pulled in; the copyable URL is the cross-device handoff.)
+- [x] 6.1 Rework `src/authorize.ts`: on GET, parse the `AuthRequest`, mint a single-use `authz:<ref>` KV record (short TTL) holding the base64 `oauthReqInfo` + `status: "pending"` + a derived short verification code; render a second-screen page (deep link to `/connect?authz=<ref>`, a scannable QR of that link via `uqr` rendered server-side to inline SVG, copyable full URL, verification code) plus client-side polling. Preserve the malformed-request 400 on GET and POST.
 - [x] 6.2 Add the approval-poll endpoint: on first observing `status: "approved"`, call `env.OAUTH_PROVIDER.completeAuthorization({ request: oauthReqInfo, userId: tenantId, props: { tenantId } })` EXACTLY ONCE (mark the ref consumed), return `redirectTo`; reject expired/consumed refs.
 - [x] 6.3 Keep the grace-gated legacy invite-code fallback on `/authorize` (accepted only while grace is on) so not-yet-enrolled members can still connect during migration.
 - [x] 6.4 Add the poll endpoint path to `assets.run_worker_first`.

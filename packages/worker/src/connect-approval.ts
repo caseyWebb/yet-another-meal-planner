@@ -80,8 +80,11 @@ export async function viewApproval(env: Env, ref: string): Promise<ApprovalView 
 }
 
 /**
- * Bind a tenant to a pending reference (the member approved on `/connect`). Idempotent for the same
- * tenant; returns `not_found` for an unknown/expired ref. Only a pending record may be approved.
+ * Bind a tenant to a PENDING reference (the member approved on `/connect`). Returns `not_found` for
+ * an unknown/expired ref. Approval is pending-only and one-shot: once a reference is approved it can
+ * NOT be re-bound — a re-approve by the SAME member is an idempotent `ok`, and any other member is
+ * told `not_found` (no re-bind of the confused-deputy kind, and no oracle, even though `ref` is
+ * already a 256-bit unguessable value).
  */
 export async function approveApproval(
   env: Env,
@@ -90,9 +93,11 @@ export async function approveApproval(
 ): Promise<"ok" | "not_found"> {
   const record = await readApproval(env, ref);
   if (!record) return "not_found";
+  if (record.status === "approved") {
+    return record.tenant === tenant ? "ok" : "not_found";
+  }
   const updated: ApprovalRecord = { ...record, status: "approved", tenant };
-  // Preserve the remaining TTL loosely by re-putting with the same window; the record is already
-  // short-lived and single-use, so a small extension on approval is harmless.
+  // Re-put with the same short window; the record stays single-use (claimed = deleted on completion).
   await env.TENANT_KV.put(`${APPROVAL_PREFIX}${ref}`, JSON.stringify(updated), { expirationTtl: APPROVAL_TTL_S });
   return "ok";
 }

@@ -11,6 +11,7 @@
 // codes are accepted there and the legacy form is hidden. A malformed request renders a clean 400
 // on both GET and POST.
 
+import { renderSVG } from "uqr";
 import type { AuthRequest } from "@cloudflare/workers-oauth-provider";
 import type { Env } from "./env.js";
 import { resolveInvite, inviteAccepted, inviteGraceEnabled, normalizeTenantId } from "./tenant.js";
@@ -31,6 +32,7 @@ function page(body: string, status: number): Response {
       `button{font-size:1rem;padding:.6rem 1.2rem;background:#f4a259;border:0;border-radius:.4rem;cursor:pointer}` +
       `a.cta{display:inline-block;text-decoration:none;color:#222;background:#f4a259;padding:.6rem 1.2rem;border-radius:.4rem}` +
       `.code{font-size:1.6rem;letter-spacing:.2em;font-weight:700;font-family:ui-monospace,monospace}` +
+      `.qr{width:180px;margin:.75rem 0}.qr svg{width:100%;height:auto;display:block;border-radius:.3rem}` +
       `.url{word-break:break-all;font-family:ui-monospace,monospace;font-size:.85rem;color:#555;background:#f6f6f6;padding:.5rem;border-radius:.3rem}` +
       `.muted{color:#666;font-size:.9rem}.err{color:#b00020}details{margin-top:2rem}summary{cursor:pointer}` +
       `</style></head><body>${body}</body></html>`,
@@ -55,12 +57,17 @@ function legacyInviteForm(oauthReqB64: string, error?: string): string {
 function renderApproval(env: Env, oauthReqB64: string, clientName: string, ref: string, code: string, origin: string): Response {
   const deepLink = `${origin}/connect?authz=${encodeURIComponent(ref)}`;
   const statusUrl = `/authorize/status?authz=${encodeURIComponent(ref)}`;
+  // A scannable QR of the deep link for the cross-device (desktop → phone) path. Rendered
+  // server-side to a standalone inline <svg> (uqr, zero-dep, workerd-safe) — no client JS, no
+  // external request. `border` is the quiet zone; `M` error-correction survives a little occlusion.
+  const qr = renderSVG(deepLink, { border: 2, ecc: "M" });
   const legacy = inviteGraceEnabled(env) ? legacyInviteForm(oauthReqB64) : "";
   return page(
     `<h1>Connect to grocery-agent</h1>` +
       `<p><strong>${esc(clientName)}</strong> wants to connect. Approve it from your Cookbook app.</p>` +
       `<p><a class="cta" href="${esc(deepLink)}">Open Cookbook to approve</a></p>` +
-      `<p class="muted">On another device? Open this link there:</p>` +
+      `<p class="muted">On another device? Scan this, or open the link:</p>` +
+      `<div class="qr">${qr}</div>` +
       `<p class="url">${esc(deepLink)}</p>` +
       `<p class="muted">Confirm this code matches what Cookbook shows:</p>` +
       `<p class="code">${esc(code)}</p>` +
@@ -110,11 +117,12 @@ export async function handleAuthorize(request: Request, env: Env): Promise<Respo
 
     const inv = await resolveInvite(env.TENANT_KV, code);
     if (!inv || !inviteAccepted(inv, env)) {
-      // Uniform for unknown / expired / grace-rejected legacy code — never distinguish.
-      return page(
-        `<h1>Connect to grocery-agent</h1>` + legacyInviteForm(b64, "That invite code isn't valid. Check it and try again."),
-        400,
-      );
+      // Uniform for unknown / expired / grace-rejected legacy code — never distinguish. Only re-show
+      // the legacy form while grace is on (GET hides it once grace is off; keep POST consistent).
+      const body = inviteGraceEnabled(env)
+        ? legacyInviteForm(b64, "That invite code isn't valid. Check it and try again.")
+        : `<p class="err">That invite code isn't valid. Restart the connection.</p>`;
+      return page(`<h1>Connect to grocery-agent</h1>` + body, 400);
     }
     const tenantId = normalizeTenantId(inv.tenant);
     const { redirectTo } = await env.OAUTH_PROVIDER.completeAuthorization({

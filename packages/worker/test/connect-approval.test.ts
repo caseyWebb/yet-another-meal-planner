@@ -41,4 +41,15 @@ describe("connect-approval (cross-device approval references)", () => {
     expect(await viewApproval(e, "nope")).toBeNull();
     expect(await claimApproved(e, "nope")).toBeNull();
   });
+
+  it("approval is pending-only and one-shot: a different member can't re-bind an approved ref", async () => {
+    const e = env(memKv());
+    const { ref } = await mintApproval(e, OAUTH_B64, "Claude");
+    expect(await approveApproval(e, ref, "casey")).toBe("ok");
+    // Re-approve by the SAME member is idempotent; a DIFFERENT member is refused with no re-bind.
+    expect(await approveApproval(e, ref, "casey")).toBe("ok");
+    expect(await approveApproval(e, ref, "mallory")).toBe("not_found");
+    // The binding is unchanged — the claim still yields casey.
+    expect(await claimApproved(e, ref)).toEqual({ oauth: OAUTH_B64, tenant: "casey" });
+  });
 });
