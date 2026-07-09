@@ -145,6 +145,23 @@ The **classify pass**'s home for each recipe's **derived descriptive facets** (m
 
 **Effective-facet merge** (the projection, `src/recipe-facets.ts`): Tier A → classified (authored legacy only as fallback); Tier B → `authored ?? classified`; `tags` → `authored ∪ classified`; Tier C (`dietary`, `requires_equipment`, `time_total`, `pairs_with`) → authored, untouched. A not-yet-classified recipe projects its derived facets as empty (not an error). After the merge, the projection re-resolves the effective `ingredients_key`/`ingredients_full`/`perishable_ingredients` through the current ingredient resolver (see the recipe schema notes above) — this covers the authored Tier-A fallbacks too.
 
+## display_recipe structuredContent (RecipeCardData, `@yamp/contract`)
+
+The wire shape the `display_recipe` tool returns as its result's `structuredContent`, and the shape the bespoke `ui://recipe/card` widget hydrates its read-only render from (recipe-card-widget). Defined once in the runtime-agnostic `@yamp/contract` package (`packages/contract/src/recipe-card.ts`) so the Worker (workerd) that produces it and the browser widget that consumes it share **one** definition and cannot drift. It is a **read projection** of a recipe read — `read_recipe`'s reader (`readRecipeDetail`) yields the overlay-merged frontmatter + markdown body, mapped onto the display fields the card shows. Not stored: it is assembled per call, never persisted. The card is read-only, so it carries no servings/steps data (that is `recipe_display_v0`'s lane; see [`TOOLS.md`](TOOLS.md)).
+
+- `slug` (string) — the recipe's slug (its stable corpus id).
+- `title` (string) — display title (falls back to the slug when the frontmatter has none).
+- `description` (string, optional) — the AI-derived ~1–2 sentence summary, merged from `recipe_derived` at read time; absent until first generated.
+- `time_total` (number | null) — total time in minutes, or `null` when the recipe declares none.
+- `dietary` (string[]) — dietary hard-gate tags; may be empty.
+- `tags` (string[], optional) — free Tier-B tags, when present.
+- `protein` (string | null, optional) — primary protein facet (Tier B), or `null`.
+- `cuisine` (string | null, optional) — cuisine facet (Tier B), or `null`.
+- `course` (string[], optional) — open-vocabulary dish-type facets (Tier B), when present.
+- `requires_equipment` (string[], optional) — the `EQUIPMENT_VOCAB` slugs the recipe truly requires, when present.
+- `favorite` (boolean, optional) — the caller's `favorite` overlay mark (merged from the per-tenant `overlay` table).
+- `body` (string) — the recipe's markdown body (Ingredients/Instructions), rendered escape-first in the card.
+
 ## title_audit (D1 `title_audit` table — Worker-owned, shared)
 
 The **title re-audit**'s one-shot convergence stamp (migration 0044, `recipe-title-audit`). The scheduled pass (`src/title-audit.ts`, the `title-audit` job in `scheduled()` phase 1) audits each projected recipe **once**: it runs the guarded title-clean judgment (the discovery classifier's word-subset guard — a cleaned title may only *remove* words, fail-open), rewrites only the R2 frontmatter `title` when the accepted clean name differs, and stamps the outcome here. A recipe with a row never re-enters the backlog (`recipes.slug NOT IN title_audit`); **new writes are born-stamped** by both import paths (the sweep's import and `create_recipe`, `outcome = 'kept'` — their titles are clean at birth), so the pass drains exactly the pre-existing corpus and quiesces to a ~0-LLM no-op. A **sibling of `recipes`** keyed by `slug` (like `recipe_facets`/`recipe_derived`) because the `recipes` projection is rebuilt wholesale and cannot carry a durable stamp. Slugs are **immutable ids** — the audit never renames a slug or moves an R2 object; only the display title converges, and it reaches the index/description/embedding through the existing reconciles (the recipe-derived `content_hash` covers the title; the facet gate hash does not, so no reclassification).

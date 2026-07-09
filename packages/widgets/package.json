@@ -1,0 +1,37 @@
+{
+  "name": "@yamp/widgets",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Bespoke MCP Apps widgets (recipe-card-widget): single-file, self-contained HTML views the Worker serves over MCP resources/read. Built with Vite + vite-plugin-singlefile; reuses @yamp/ui + the shared theme/cookbook tokens. Emits into the Worker's assets/widgets/ root.",
+  "license": "AGPL-3.0-only",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "vite build",
+    "typecheck": "tsc --noEmit",
+    "test": "vite build && node --test test/self-contained.test.mjs",
+    "lint": "oxlint src",
+    "format": "biome format --write src"
+  },
+  "dependencies": {
+    "@yamp/contract": "workspace:*",
+    "@yamp/ui": "workspace:*",
+    "@modelcontextprotocol/ext-apps": "^1.7.4",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.5.2",
+    "@tailwindcss/vite": "^4.3.2",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.3",
+    "oxlint": "^1.73.0",
+    "tailwindcss": "^4.3.2",
+    "typescript": "^6.0.3",
+    "vite": "^8.1.3",
+    "vite-plugin-singlefile": "^2.3.0"
+  }
+}

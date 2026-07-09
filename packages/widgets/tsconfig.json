@@ -1,0 +1,22 @@
+{
+  // Typecheck-only pass (Vite/Rolldown does the building). Browser bundle: DOM lib +
+  // react-jsx, mirroring packages/ui. `vite/client` types back the `import.meta` usage
+  // and the `?raw`/asset imports the single-file build relies on.
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": ["vite/client"],
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "verbatimModuleSyntax": true,
+    "jsx": "react-jsx"
+  },
+  "include": ["src"]
+}

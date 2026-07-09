@@ -60,6 +60,18 @@ Read a single recipe's full content (frontmatter + body).
 **Returns:**
 - `{ slug, frontmatter, body }` — `frontmatter` includes the objective shared fields, among them `perishable_ingredients` (a normalized list of the recipe's perishable ingredients; empty when absent), `course` (the open-vocabulary dish-type array — `main | side | dessert | breakfast | component | …`; empty when absent), and `pairs_with` (slugs of suggested corpus sides), plus the AI-generated `description` (merged from the derived `recipe_derived` store; absent until the reconcile first generates it). The `perishable_ingredients` and `course` fields also ride each entry's `frontmatter` from the index-backed `search_recipes`, so the menu-gen waste callout and the mains/sides faceting reason over them without any extra tool.
 
+### `display_recipe(slug)`
+
+Render a recipe as an **inline, branded card** in the conversation — the bespoke in-chat widget (`ui://recipe/card`). Call it when the member wants to **SEE** a recipe; call `read_recipe` instead when you only need to read a recipe to reason over it (cook pre-flight, meal planning), so an internal read never forces a card render. Reuses `read_recipe`'s reader over the shared corpus + the caller's overlay; read-only — it **shows** the recipe but does no servings-scaling or step timers (that lane is the harness-provided `recipe_display_v0`, below).
+
+**Params:**
+- `slug` (string, required)
+
+**Returns:**
+- A **widget-bearing** result: `_meta.ui.resourceUri` is `ui://recipe/card` (the MCP Apps resource the host mounts as an iframe), `structuredContent` carries the recipe's display fields (title, facets, `time_total`/`dietary`, the caller's `favorite` overlay, and the markdown `body` — the `RecipeCardData` shape in [`SCHEMAS.md`](SCHEMAS.md)), and `content` is a plain-text rendering of the same card, the fallback for a host that cannot render the widget.
+
+**Notes:** An unknown slug returns a structured `not_found` (nothing rendered). The `ui://recipe/card` resource is served over MCP `resources/read`, not a Worker HTTP route. Read-only by design — it never scales servings or emits timers; the scalable, timer-bearing cook card is the harness-provided `recipe_display_v0` (below), which `read_recipe` can't feed anyway (no structured `ingredients[]`/`steps[]`). Tool/skill boundary: this tool owns *how* a recipe renders inline; the skill owns *when* to show one — call `display_recipe` to display a recipe, `read_recipe` to reason over one.
+
 ### `recipe_site_url()`
 
 Resolve the URL of the hosted cookbook (the static browse view of the shared corpus), served by the **yamp Worker itself** at `<host>/cookbook` — built from the D1 index + the R2 corpus (`src/cookbook.ts`), no GitHub Pages and no GitHub App token. No parameters; never writes. Used in onboarding to point a member at the full corpus.
@@ -1113,6 +1125,8 @@ Behind the per-tenant gate; a pure D1 write — no GitHub. Driven by the agent's
 ## Harness-provided widgets (NOT MCP tools)
 
 These are **claude.ai built-ins**, not part of `yamp`. They are exposed by the Claude.ai harness, are invisible to the Worker, and appear in the agent's tool set only where the harness exposes them. A skill that uses one MUST guard on its presence and degrade when it is absent — see the guided `cook` flow in [`AGENT_INSTRUCTIONS.md`](../AGENT_INSTRUCTIONS.md). They are documented here so the contract a skill encodes has a single anchor, not because they belong to this surface.
+
+**One bespoke widget sits alongside these built-ins.** `yamp` ships a single **bespoke** MCP Apps widget of its own — the read-only recipe card at `ui://recipe/card`, a real resource this Worker serves over MCP `resources/read` and renders from the `display_recipe` tool (above). It belongs to *this* surface, not to the harness. `recipe_display_v0` below is the **harness-provided** built-in the guided `cook` flow uses for the scalable, timer-bearing cook card — a lane the bespoke card deliberately does not enter (`read_recipe` can't feed structured `ingredients[]`/`steps[]` anyway).
 
 ### `recipe_display_v0`
 
