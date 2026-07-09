@@ -1,7 +1,7 @@
 // IndexedDB condition-poll helpers (member-app-offline D11): the offline and purge
 // specs assert on the PERSISTED client — read through raw indexedDB in the page
 // (idb-keyval's default store: DB "keyval-store", object store "keyval", one
-// "cookbook-query-cache" key) — with Playwright's polling assertions, never fixed
+// "yamp-query-cache" key) — with Playwright's polling assertions, never fixed
 // sleeps. The persister throttles writes (~1 s), so specs poll until the snapshot
 // contains what they need before cutting the network.
 import { expect, type Page } from "@playwright/test";
@@ -26,7 +26,7 @@ export async function persistedSnapshot(page: Page): Promise<PersistedSnapshot> 
           resolve(undefined);
           return;
         }
-        const req = db.transaction("keyval", "readonly").objectStore("keyval").get("cookbook-query-cache");
+        const req = db.transaction("keyval", "readonly").objectStore("keyval").get("yamp-query-cache");
         req.onsuccess = () => {
           db.close();
           resolve(req.result);
@@ -74,7 +74,7 @@ export async function persistedGroceryNames(page: Page): Promise<string[]> {
           resolve(undefined);
           return;
         }
-        const req = db.transaction("keyval", "readonly").objectStore("keyval").get("cookbook-query-cache");
+        const req = db.transaction("keyval", "readonly").objectStore("keyval").get("yamp-query-cache");
         req.onsuccess = () => {
           db.close();
           resolve(req.result);

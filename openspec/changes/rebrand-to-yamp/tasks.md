@@ -46,7 +46,7 @@ Groups 1–7 are repo work (reversible on the branch). Groups 8–11 are the ope
 
 ## 8. Verify (repo-side, before any cutover)
 
-- [ ] 8.1 `aubr typecheck`, `aubr test`, `aubr test:tooling` all green (in a web session: `PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers` for the Playwright suites).
+- [x] 8.1 `aubr typecheck`, `aubr test`, `aubr test:tooling` all green (in a web session: `PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers` for the Playwright suites).
 - [x] 8.2 `openspec validate "rebrand-to-yamp" --strict` passes; `aubr build:plugin --check` validates the rebranded source.
 - [x] 8.3 Targeted residual-brand sweep: no `grocery-mcp`/`grocery-agent`/`groceries-agent`/`@grocery-agent` outside `openspec/changes/archive/**`; confirm the `grocery_list` table/tools, `/api/grocery`, `useGrocery*`, the "Groceries" nav, `shop-groceries`, and `/cookbook` are intact (domain vocabulary, deliberately unchanged).
 
