@@ -64,4 +64,4 @@
 
 - [x] 11.1 `aubr typecheck` + `aubr test` + `aubr test:app` green; apply the migration locally (`wrangler d1 migrations apply DB --local`).
 - [x] 11.2 Run `/verify` on the enroll → passkey-login → cross-device-approval flow against local `wrangler dev`.
-- [ ] 11.3 `openspec validate "webauthn-passkey-auth" --strict`; run `/code-review` on the branch diff before opening the PR.
+- [x] 11.3 `openspec validate "webauthn-passkey-auth" --strict`; run `/code-review` on the branch diff before opening the PR.
