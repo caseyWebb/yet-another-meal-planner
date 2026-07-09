@@ -92,37 +92,37 @@ The `AI_AE` dataset is a **third** `analytics_engine_datasets` binding instance 
 
 ### Requirement: Operator AI-usage attribution view
 
-The Worker SHALL serve a per-activity **AI-usage attribution** view on the Usage page (`/admin/usage`), backed by `GET /admin/api/usage/ai`, reporting each activity's **call count**, **token counts**, and **estimated neurons** over a recent window of days, split by **trigger** (`cron` | `import` | `request`). The endpoint SHALL source the series from the **Analytics Engine SQL API** (`/accounts/<id>/analytics_engine/sql`, reusing `CF_ACCOUNT_ID` and the analytics token) via an outbound request that performs **no KV or D1 operation**. It SHALL be **aggregate-only and tenant-data-free** (per-activity/per-day aggregates, never per-tenant or per-call rows) and inherit the `/admin*` Cloudflare Access gate.
+The Worker SHALL surface a per-activity **AI-usage attribution** view on the Usage page (`/admin/usage`) through the page's **aggregate read** (`GET /admin/api/usage`, the `aiUsage` key — the one-aggregate-read-per-screen pattern the Usage page already uses for its snapshot/trends/tools panels), reporting each activity's **call count**, **token counts**, and **estimated neurons** over a recent window of days, split by **trigger** (`cron` | `import` | `request`). The attribution series SHALL be sourced from the **Analytics Engine SQL API** (`fetchAiUsage`; `/accounts/<id>/analytics_engine/sql`, reusing `CF_ACCOUNT_ID` and the analytics token) via an outbound request that performs **no KV or D1 operation**. It SHALL be **aggregate-only and tenant-data-free** (per-activity aggregates, never per-tenant or per-call rows) and inherit the `/admin*` Cloudflare Access gate.
 
 #### Scenario: Configured view reports per-activity attribution
 
-- **WHEN** the operator opens the AI-usage panel with `CF_ACCOUNT_ID` and the analytics token configured
-- **THEN** it shows each activity's recent-window calls, tokens, and estimated neurons, split by trigger, sourced from the AE SQL API, with no per-tenant data
+- **WHEN** the operator opens the Usage page with `CF_ACCOUNT_ID` and the analytics token configured
+- **THEN** the `aiUsage` payload shows each activity's recent-window calls, tokens, and estimated neurons, split by trigger, sourced from the AE SQL API, with no per-tenant data
 
-#### Scenario: Serving the view performs no KV or D1 operation
+#### Scenario: The attribution series read performs no KV or D1 operation
 
-- **WHEN** `GET /admin/api/usage/ai` handles a request
-- **THEN** it reaches only the Analytics Engine SQL API (and the existing account-total source) and performs no KV or D1 operation
+- **WHEN** `fetchAiUsage` serves the `aiUsage` payload
+- **THEN** it reaches only the Analytics Engine SQL API and performs no KV or D1 operation (the backlog pairing's `job_health` read is a separate, D1-budget-generous read, not part of this series fetch)
 
 ### Requirement: The view distinguishes steady churn from a draining backlog
 
-The AI-usage view SHALL pair each cron activity's neuron series with the corresponding job's **backlog depth** — the pending/remaining counts already carried in the `job_runs` summaries — so the operator can distinguish a **bounded backlog draining** (backlog present and falling, e.g. a whole-corpus reclassify after a schema change) from **steady churn** (spend with little or no backlog). This SHALL reuse the existing health/run readers; it SHALL add no new per-tenant data.
+The AI-usage view SHALL pair the AI activities' neuron spend with the corresponding job's **backlog depth** — the `pending`/`describePending` counts already carried in the `recipe-classify` / `recipe-embed` `job_health` summaries (`aiBacklog`) — so the operator can distinguish a **bounded backlog draining** (backlog present and falling, e.g. a whole-corpus reclassify after a schema change) from **steady churn** (spend with little or no backlog). This SHALL reuse the existing health readers (`readAiBacklog` composing `readJobHealth`) — a cheap D1 read consistent with the Status/Logs pages — and degrade to zeros on a missing row or storage error; it SHALL add no new per-tenant data.
 
 #### Scenario: A draining backlog is distinguishable from steady churn
 
-- **WHEN** a cron activity is spending neurons while its job reports a non-zero, falling backlog
+- **WHEN** an AI activity is spending neurons while its job reports a non-zero, falling backlog
 - **THEN** the view surfaces the backlog alongside the spend, so the operator reads it as a draining backlog rather than an unexplained spike
 
 ### Requirement: AI-usage view degrades gracefully when unconfigured
 
-The AI-usage view SHALL be **opt-in**, reusing the usage-observability config (`CF_ACCOUNT_ID` + the read-only analytics token). When either is unset, `GET /admin/api/usage/ai` SHALL report an explicit not-configured result **without making a request**, and the panel SHALL render an explicit "not available" state rather than an error. A SQL/transport failure SHALL surface as a structured `upstream_unavailable` error whose detail the panel renders (code + message), not a bare HTTP status — mirroring the Usage page's existing panels. The emission side SHALL degrade independently: an unbound `AI_AE` binding is a silent no-op and never blocks capture from being added later.
+The AI-usage view SHALL be **opt-in**, reusing the usage-observability config (`CF_ACCOUNT_ID` + the read-only analytics token). When either is unset, `fetchAiUsage` SHALL report an explicit `{ configured: false }` result **without making a request**, and the panel SHALL render an explicit "not available" state rather than an error. A SQL/transport failure SHALL surface as a structured `upstream_unavailable` error whose detail the panel renders (code + message), not a bare HTTP status — mirroring the Usage page's existing panels. The emission side SHALL degrade independently: an unbound `AI_AE` binding is a silent no-op and never blocks capture from being added later.
 
 #### Scenario: Unconfigured analytics renders a not-available state
 
-- **WHEN** the operator opens the AI-usage panel with the analytics token (or account id) unset
-- **THEN** `GET /admin/api/usage/ai` reports a not-configured result and the panel renders an explicit "not available" state, making no request
+- **WHEN** the operator opens the Usage page with the analytics token (or account id) unset
+- **THEN** `fetchAiUsage` reports a `{ configured: false }` result and the panel renders an explicit "not available" state, making no request
 
 #### Scenario: A query failure is a structured upstream error
 
 - **WHEN** the AE SQL request fails or returns an error
-- **THEN** `GET /admin/api/usage/ai` responds with an `upstream_unavailable` error carrying the upstream detail, and the panel renders the code and message rather than a bare HTTP status
+- **THEN** `fetchAiUsage` responds with an `upstream_unavailable` error carrying the upstream detail, and the panel renders the code and message rather than a bare HTTP status
