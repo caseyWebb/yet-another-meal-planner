@@ -126,10 +126,9 @@ test("W3: ordered is refused from active and accepted only as the in_cart advanc
 });
 
 // ── Aisle grouping (member-app-differentiators 5.3/D6), LIVE against the seeded
-// Worker: captured sku_cache placements at the pre-resolved location the spec
-// PATCHes into preferences (whitespace-free label → the client short-circuit, zero
-// Kroger network), the honest "Aisle unknown" bucket with department sub-groups,
-// and the no-location degradation. State restored for later specs.
+// Worker: captured sku_cache placements at the seeded default preferred_location (a
+// pre-resolved bare id — no whitespace, no live Kroger network), the honest "Aisle
+// unknown" bucket with department sub-groups, and the no-location degradation.
 
 const DIFF = SEED.app.differentiators;
 
@@ -137,7 +136,6 @@ test("aisle mode walks captured placements and collects the rest under an honest
   groceryPage,
 }) => {
   await groceryPage.setPlan([TB.planned]);
-  await groceryPage.setStores({ preferred_location: DIFF.location });
   await groceryPage.goto();
   await groceryPage.setGroupMode("aisle");
   // Captured placements order the list by real aisle numbers…
@@ -164,8 +162,6 @@ test("aisle mode walks captured placements and collects the rest under an honest
   // Category mode is one toggle away, unchanged from the shipped page.
   await groceryPage.setGroupMode("category");
   await groceryPage.expectInCategoryGroup(G.active[0], "grocery");
-  // Restore the seeded store label for later specs.
-  await groceryPage.setStores({ preferred_location: "Kroger — Hyde Park" });
 });
 
 test("aisle mode with no resolvable location degrades to departments/categories — no error, no picker", async ({

@@ -110,10 +110,19 @@ export interface ToBuyViewLine {
   kind: GroceryKind;
   domain: string;
   note?: string | null;
-  /** Aisle-enriched read only (`read_to_buy` `with_aisles` / `?aisles=1` — D6): the
-   *  line's captured placement at the caller's location, `department` derived from the
-   *  identity graph when no aisle is captured. ABSENT on the default read (byte-identical). */
+  /** Enriched read only (`read_to_buy` `enrich` / `?enrich=1` — member-app-differentiators
+   *  D6): the line's captured placement at the caller's location, `department` derived
+   *  from the identity graph when no aisle is captured. ABSENT on the default read
+   *  (byte-identical). */
   placement?: LinePlacement | null;
+  /** Enriched read only (inline-substitution-hints D1–D3): this line's cross-ingredient
+   *  hints from the shared annotator (`annotateSubstitutes`) — identity-graph siblings
+   *  each carrying `in_pantry` and, when the primary store's warmed flyer rollup matches,
+   *  `on_sale_hint`. Computed under the SAME single Locations resolve the aisle
+   *  enrichment pays. Always an array when the enriched read is served (empty, never
+   *  omitted, for a line with no graph neighbors — honest sparsity, not a fabricated
+   *  hint). ABSENT on the default read (byte-identical). */
+  substitutes?: SiblingSuggestion[];
 }
 
 /** A to-buy line's placement on the aisle-enriched read (member-app-differentiators D6). */
@@ -145,10 +154,15 @@ export interface ToBuyView {
   pantry_covered: PantryCoveredLine[];
   in_cart: InCartLine[];
   underived: string[];
-  /** Aisle-enriched read only (D6): the store the placements are for — null when no
+  /** Enriched read only (D6): the store the placements are for — null when no
    *  Kroger location is resolvable (placements then carry `department` only). ABSENT
    *  on the default read (byte-identical). */
   location?: { id: string } | null;
+  /** Enriched read only (inline-substitution-hints D8): when the primary store's
+   *  warmed flyer rollup that fed `substitutes[].on_sale_hint` was last refreshed
+   *  (ISO 8601) — null when no rollup was used (cold cache, suppressed staleness, or
+   *  no resolvable store). ABSENT on the default read (byte-identical). */
+  flyer_as_of?: string | null;
 }
 
 // --- the substitution read (member-app-differentiators D1–D3) ----------------------
@@ -183,7 +197,9 @@ export interface SubstitutionAlternative extends SubstitutionProduct {
   reasons: SubstitutionReason[];
 }
 
-/** A cross-ingredient sibling from the depth-1 identity-graph walk (D3), relation-labeled. */
+/** A cross-ingredient sibling from the depth-1 identity-graph walk (D3), relation-labeled.
+ *  Shared by the enriched to-buy read's per-line `substitutes[]` (`ToBuyViewLine`,
+ *  computed by `annotateSubstitutes` — inline-substitution-hints D1). */
 export interface SiblingSuggestion {
   /** The suggestion's canonical ingredient id (representative-resolved, concrete). */
   id: string;
@@ -201,13 +217,14 @@ export interface SiblingSuggestion {
   on_sale_hint?: { sku: string; description: string; price: { regular: number; promo: number }; savings: number };
 }
 
-/** One line's substitution suggestions. */
+/** One line's substitution suggestions — the alternatives-only op (inline-substitution-
+ *  hints D4). Cross-ingredient sibling suggestions live on the enriched to-buy read's
+ *  `substitutes[]` instead (`ToBuyViewLine`), not here. */
 export interface LineSuggestions {
   for: { name: string; key: string; origin?: "list" | "plan" | "both" };
   status: "ok" | "current_unavailable" | "no_cached_pick";
   current: SubstitutionProduct | null;
   alternatives: SubstitutionAlternative[];
-  siblings: SiblingSuggestion[];
 }
 
 /** The substitution read's result — shared by the tool and the endpoint (D1). */
@@ -215,8 +232,6 @@ export interface SuggestSubstitutionsResult {
   suggestions: LineSuggestions[];
   /** Names not processed this call (the per-call budget) — call again with these. */
   remaining: string[];
-  /** The resolved Kroger location, or null (walk-store degradation — graph half only). */
+  /** The resolved Kroger location, or null (walk-store degradation). */
   location: { id: string } | null;
-  /** When the primary store's flyer rollup was last refreshed (ISO), or null. */
-  flyer_as_of: string | null;
 }

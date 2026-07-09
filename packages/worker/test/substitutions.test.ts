@@ -1,23 +1,24 @@
-// The deterministic substitution read (member-app-differentiators D1–D4): the pure
-// D3 walk over identity/edge fixtures — including the PRODUCTION cabbage and onion
-// families the spike surfaced — and `suggestSubstitutions` over the real-SQLite env
-// with fake order wiring: the closed D2 reason vocabulary against `compareUnitPrice`,
-// the 12-line budget with honest `remaining`, the no-location degradation, the
-// pantry/flyer sibling annotations, and the op-is-read-only guarantee.
+// The pure D3 walk + the shared cheap-half annotator (inline-substitution-hints
+// D1/D3, factored out of member-app-differentiators' original `suggestSubstitutions`)
+// over identity/edge fixtures — including the PRODUCTION cabbage and onion families
+// the P4 spike surfaced — plus the now-ALTERNATIVES-ONLY `suggestSubstitutions` over
+// the real-SQLite env with fake order wiring: the closed D2 reason vocabulary against
+// `compareUnitPrice`, the 12-line budget with honest `remaining`, the no-location
+// degradation, and the op-is-read-only guarantee. The pantry/flyer sibling
+// annotations now live on `annotateSubstitutes` (tested here) and the enriched to-buy
+// read (`to-buy.test.ts`), not on `suggestSubstitutions`.
 import { describe, it, expect } from "vitest";
-import { identitySiblings, suggestSubstitutions, MAX_SUBSTITUTION_LINES } from "../src/substitutions.js";
-import { readIdentityNeighbors } from "../src/corpus-db.js";
-import { addGroceryRow } from "../src/session-db.js";
+import { identitySiblings, annotateSubstitutes } from "../src/substitute-annotator.js";
+import { suggestSubstitutions, MAX_SUBSTITUTION_LINES } from "../src/substitutions.js";
+import { readIdentityNeighbors, emptyIngredientContext } from "../src/corpus-db.js";
+import { readPantryNames, addGroceryRow } from "../src/session-db.js";
 import type { OrderWiring } from "../src/order-tools.js";
 import type { KrogerCandidate } from "../src/kroger.js";
-import type { FlyerRollup } from "../src/flyer-warm.js";
+import type { FlyerItem } from "../src/matching.js";
 import { sqliteEnv, type SqliteEnv } from "./sqlite-d1.js";
 
 const T = "casey";
 const TODAY = "2026-07-08";
-/** A recent `as_of` for fixtures that must read as fresh under the default
- *  `scanStalenessDays` ceiling (member-app-differentiators D1 follow-up). */
-const FRESH_AS_OF = Date.now() - 60_000;
 
 // --- fixtures ---------------------------------------------------------------------
 
@@ -109,10 +110,6 @@ function seedSku(h: SqliteEnv, ingredient: string, locationId: string, sku: stri
   h.raw
     .prepare("INSERT INTO sku_cache (ingredient, location_id, sku, brand, size, last_used) VALUES (?, ?, ?, 'B', NULL, ?)")
     .run(ingredient, locationId, sku, TODAY);
-}
-
-async function kvPutRollup(h: SqliteEnv, key: string, rollup: FlyerRollup): Promise<void> {
-  await (h.env.KROGER_KV as unknown as { put(k: string, v: string): Promise<void> }).put(key, JSON.stringify(rollup));
 }
 
 /** Count write-shaped statements reaching D1 (the op-is-read-only counter). */
@@ -311,6 +308,88 @@ describe("identitySiblings — the D3 walk over the persisted graph", () => {
   });
 });
 
+// --- the shared cheap-half annotator (D1/D3, inline-substitution-hints) -------------
+
+describe("annotateSubstitutes — the shared cheap half, batched over the whole to-buy set", () => {
+  it("reproduces the P4 op's cabbage family output: labeled siblings + in_pantry + on_sale_hint, zero Kroger calls", async () => {
+    const h = sqliteEnv([T]);
+    seedGraph(h, CABBAGE_NODES, CABBAGE_EDGES);
+    h.raw
+      .prepare("INSERT INTO pantry (tenant, name, normalized_name, added_at) VALUES (?, 'Red cabbage', 'cabbage::color-red', ?)")
+      .run(T, TODAY);
+    const pantry = await readPantryNames(h.env, T);
+    const saleItems: FlyerItem[] = [
+      { sku: "K1", brand: "Kroger", description: "Shredded Cabbage Mix", size: "10 oz", price: { regular: 2.5, promo: 2 }, savings: 0.5, categories: [], matched_terms: ["cabbage"] },
+      { sku: "K2", brand: "Kroger", description: "Napa-adjacent", size: null, price: { regular: 4, promo: 3 }, savings: 1, categories: [], matched_terms: ["bok choy"] },
+    ];
+    const ctx = emptyIngredientContext(h.env); // search_term falls back to the flattened base
+
+    const out = await annotateSubstitutes(h.env, ["cabbage::type-napa"], { pantry, saleItems, ctx });
+    const siblings = out.get("cabbage::type-napa")!;
+    expect(siblings.map((s) => s.id)).toEqual(["cabbage::color-green", "cabbage::color-red", "cabbage"]);
+    // in_pantry: only the seeded red-cabbage sibling.
+    expect(siblings.find((s) => s.id === "cabbage::color-red")!.in_pantry).toBe(true);
+    expect(siblings.find((s) => s.id === "cabbage::color-green")!.in_pantry).toBe(false);
+    // on_sale_hint: element match on "cabbage" (the shared family BASE) — every sibling
+    // sharing that base gets the K1 hint, NOT the K2 "bok choy" row (a different term).
+    const expectedHint = { sku: "K1", description: "Shredded Cabbage Mix", price: { regular: 2.5, promo: 2 }, savings: 0.5 };
+    expect(siblings.find((s) => s.id === "cabbage::color-green")!.on_sale_hint).toEqual(expectedHint);
+    expect(siblings.find((s) => s.id === "cabbage::color-red")!.on_sale_hint).toEqual(expectedHint);
+    expect(siblings.find((s) => s.id === "cabbage")!.on_sale_hint).toEqual(expectedHint);
+  });
+
+  it("a satellite rollup's label-keyed match (matched_terms empty by contract) still hints via the description substring", async () => {
+    const h = sqliteEnv([T]);
+    seedGraph(h, CABBAGE_NODES, CABBAGE_EDGES);
+    const pantry = new Set<string>();
+    const saleItems: FlyerItem[] = [
+      { sku: "F1", brand: "", description: "Green Cabbage", size: null, price: { regular: 2, promo: 1.5 }, savings: 0.5, categories: [], matched_terms: [] },
+    ];
+    const ctx = emptyIngredientContext(h.env);
+    const out = await annotateSubstitutes(h.env, ["cabbage::type-napa"], { pantry, saleItems, ctx });
+    const green = out.get("cabbage::type-napa")!.find((s) => s.id === "cabbage::color-green")!;
+    expect(green.on_sale_hint).toEqual({ sku: "F1", description: "Green Cabbage", price: { regular: 2, promo: 1.5 }, savings: 0.5 });
+  });
+
+  it("a no-edge line yields an empty array, never omitted", async () => {
+    const h = sqliteEnv([T]);
+    seedGraph(h, [{ id: "saffron" }], []);
+    const out = await annotateSubstitutes(h.env, ["saffron"], { pantry: new Set(), saleItems: [], ctx: emptyIngredientContext(h.env) });
+    expect(out.get("saffron")).toEqual([]);
+  });
+
+  it("excludes every OTHER requested key's survivor id — a sibling already in the caller's own batch never suggests itself back", async () => {
+    const h = sqliteEnv([T]);
+    seedGraph(h, CABBAGE_NODES, CABBAGE_EDGES);
+    const ctx = emptyIngredientContext(h.env);
+    const out = await annotateSubstitutes(h.env, ["cabbage::type-napa", "cabbage::color-red"], {
+      pantry: new Set(),
+      saleItems: [],
+      ctx,
+    });
+    // color-red is in the SAME requested batch, so napa's walk excludes it.
+    expect(out.get("cabbage::type-napa")!.map((s) => s.id)).toEqual(["cabbage::color-green", "cabbage"]);
+  });
+
+  it("batches ONE readIdentityNeighbors call for the whole key set (no per-line N+1)", async () => {
+    const h = sqliteEnv([T]);
+    seedGraph(h, CABBAGE_NODES, CABBAGE_EDGES);
+    const real = h.env.DB as unknown as { prepare(sql: string): unknown };
+    let identityQueries = 0;
+    const wrapped = {
+      prepare(sql: string) {
+        if (/FROM ingredient_identity/.test(sql)) identityQueries++;
+        return real.prepare(sql);
+      },
+    };
+    (h.env as unknown as { DB: unknown }).DB = wrapped;
+    const ctx = emptyIngredientContext(h.env);
+    const keys = ["cabbage::type-napa", "cabbage::color-green", "cabbage::color-red"];
+    await annotateSubstitutes(h.env, keys, { pantry: new Set(), saleItems: [], ctx });
+    expect(identityQueries).toBe(1); // one batched call, not one per key
+  });
+});
+
 // --- the composed read (D1/D2) -------------------------------------------------------
 
 describe("suggestSubstitutions — reasons against compareUnitPrice (D2)", () => {
@@ -395,7 +474,7 @@ describe("suggestSubstitutions — reasons against compareUnitPrice (D2)", () =>
   });
 });
 
-describe("suggestSubstitutions — budget, degradation, annotations, read-only (D1/D3)", () => {
+describe("suggestSubstitutions — budget, degradation, read-only (D1/D2/D4)", () => {
   it("processes at most 12 lines and returns the rest in remaining, in order", async () => {
     const h = sqliteEnv([T]);
     seedProfile(h, { primary: "kroger", preferred_location: "Kroger - 45219" });
@@ -411,104 +490,21 @@ describe("suggestSubstitutions — budget, degradation, annotations, read-only (
     expect(wide.suggestions).toHaveLength(12);
   });
 
-  it("a walk-store tenant gets the graph half with ZERO Kroger calls (location: null)", async () => {
+  it("a walk-store tenant gets NOTHING from this op (location: null, no alternatives) — the sibling/pantry/flyer half now lives on read_to_buy's enrich", async () => {
     const h = sqliteEnv([T]);
     seedProfile(h, { primary: "aldi", preferred_location: "aldi east" });
-    seedGraph(h, CABBAGE_NODES, CABBAGE_EDGES);
     await addGroceryRow(h.env, T, { name: "cabbage::type-napa" }, TODAY);
-    // The pantry holds a sibling — the best possible suggestion, annotated.
-    h.raw
-      .prepare("INSERT INTO pantry (tenant, name, normalized_name, added_at) VALUES (?, 'Red cabbage', 'cabbage::color-red', ?)")
-      .run(T, TODAY);
-    // The primary store's satellite rollup: matched_terms empty by contract → the
-    // lowercased-description match; at the fixed default 5% sale floor.
-    await kvPutRollup(h, "flyer:aldi:aldi east", {
-      sweep_id: "scan-1",
-      as_of: FRESH_AS_OF,
-      store: "aldi",
-      location_id: "aldi east",
-      items: [
-        { sku: "F1", brand: "", description: "Green Cabbage", size: null, price: { regular: 2, promo: 1.5 }, savings: 0.5, categories: [], matched_terms: [] },
-      ],
-    });
     const { wiring, calls } = fakeWiring({ locationId: null });
     const res = await suggestSubstitutions(h.env, T, {}, wiring);
     expect(res.location).toBeNull();
-    expect(res.flyer_as_of).toBe(new Date(FRESH_AS_OF).toISOString());
     const line = res.suggestions[0];
     expect(line.status).toBe("no_cached_pick");
     expect(line.current).toBeNull();
     expect(line.alternatives).toEqual([]);
-    // The graph half is still served: labeled siblings + pantry + flyer hints.
-    expect(line.siblings.map((s) => s.id)).toEqual(["cabbage::color-green", "cabbage::color-red", "cabbage"]);
-    const green = line.siblings.find((s) => s.id === "cabbage::color-green")!;
-    expect(green.on_sale_hint).toEqual({ sku: "F1", description: "Green Cabbage", price: { regular: 2, promo: 1.5 }, savings: 0.5 });
-    expect(line.siblings.find((s) => s.id === "cabbage::color-red")!.in_pantry).toBe(true);
     expect(calls).toEqual({ search: 0, productById: 0 }); // no Kroger product call issued
-  });
-
-  it("a satellite rollup past the staleness ceiling is suppressed — no hints, flyer_as_of null", async () => {
-    const h = sqliteEnv([T]);
-    seedProfile(h, { primary: "aldi", preferred_location: "aldi east" });
-    seedGraph(h, CABBAGE_NODES, CABBAGE_EDGES);
-    await addGroceryRow(h.env, T, { name: "cabbage::type-napa" }, TODAY);
-    h.raw
-      .prepare("INSERT INTO pantry (tenant, name, normalized_name, added_at) VALUES (?, 'Red cabbage', 'cabbage::color-red', ?)")
-      .run(T, TODAY);
-    // Same shape as the fresh-rollup case above, but stamped WAY past the default
-    // 7-day `scanStalenessDays` ceiling (`store_flyer`'s posture) — a dead satellite
-    // scanner must not keep steering suggestions on a stale sale forever.
-    await kvPutRollup(h, "flyer:aldi:aldi east", {
-      sweep_id: "scan-1",
-      as_of: FRESH_AS_OF - 30 * 24 * 60 * 60 * 1000,
-      store: "aldi",
-      location_id: "aldi east",
-      items: [
-        { sku: "F1", brand: "", description: "Green Cabbage", size: null, price: { regular: 2, promo: 1.5 }, savings: 0.5, categories: [], matched_terms: [] },
-      ],
-    });
-    const { wiring, calls } = fakeWiring({ locationId: null });
-    const res = await suggestSubstitutions(h.env, T, {}, wiring);
-    expect(res.location).toBeNull();
-    // Nothing was actually used — flyer_as_of reflects that, not the stale rollup's timestamp.
-    expect(res.flyer_as_of).toBeNull();
-    const line = res.suggestions[0];
-    // The graph half (siblings) is still served — only the flyer hint is suppressed.
-    expect(line.siblings.map((s) => s.id)).toEqual(["cabbage::color-green", "cabbage::color-red", "cabbage"]);
-    for (const s of line.siblings) expect(s.on_sale_hint).toBeUndefined();
-    expect(line.siblings.find((s) => s.id === "cabbage::color-red")!.in_pantry).toBe(true);
-    expect(calls).toEqual({ search: 0, productById: 0 });
-  });
-
-  it("a Kroger flyer hint matches by matched_terms ELEMENT (base or search_term)", async () => {
-    const h = sqliteEnv([T]);
-    seedProfile(h, { primary: "kroger", preferred_location: "Kroger - 45219" });
-    seedGraph(h, CABBAGE_NODES, CABBAGE_EDGES);
-    await addGroceryRow(h.env, T, { name: "cabbage::type-napa" }, TODAY);
-    await kvPutRollup(h, "flyer:kroger:L1", {
-      sweep_id: "1",
-      as_of: 1751932800000,
-      items: [
-        { sku: "K1", brand: "Kroger", description: "Shredded Cabbage Mix", size: "10 oz", price: { regular: 2.5, promo: 2 }, savings: 0.5, categories: [], matched_terms: ["cabbage"] },
-        { sku: "K2", brand: "Kroger", description: "Napa-adjacent", size: null, price: { regular: 4, promo: 3 }, savings: 1, categories: [], matched_terms: ["bok choy"] },
-      ],
-    });
-    const { wiring } = fakeWiring({});
-    const res = await suggestSubstitutions(h.env, T, {}, wiring);
-    const sib = res.suggestions[0].siblings.find((s) => s.id === "cabbage::color-green")!;
-    expect(sib.on_sale_hint?.sku).toBe("K1"); // element match on the family base, not K2
-  });
-
-  it("siblings already on the caller's to-buy set are excluded", async () => {
-    const h = sqliteEnv([T]);
-    seedProfile(h, { primary: "kroger", preferred_location: "Kroger - 45219" });
-    seedGraph(h, CABBAGE_NODES, CABBAGE_EDGES);
-    await addGroceryRow(h.env, T, { name: "cabbage::type-napa" }, TODAY);
-    await addGroceryRow(h.env, T, { name: "cabbage::color-red" }, TODAY);
-    const { wiring } = fakeWiring({});
-    const res = await suggestSubstitutions(h.env, T, {}, wiring);
-    const napa = res.suggestions.find((s) => s.for.key === "cabbage::type-napa")!;
-    expect(napa.siblings.map((s) => s.id)).toEqual(["cabbage::color-green", "cabbage"]);
+    // Slimmed: no `siblings` field on the line, no `flyer_as_of` on the result.
+    expect("siblings" in line).toBe(false);
+    expect("flyer_as_of" in res).toBe(false);
   });
 
   it("the op is READ-ONLY: zero write statements reach D1 and nothing is enqueued", async () => {

@@ -9,6 +9,7 @@ import { addGroceryRow, updateGroceryRow } from "../src/session-db.js";
 import { normalizeName } from "../src/grocery.js";
 import { sqliteEnv, type SqliteEnv } from "./sqlite-d1.js";
 import type { Env } from "../src/env.js";
+import type { FlyerRollup } from "../src/flyer-warm.js";
 
 const TODAY = "2026-07-08";
 const T = "casey";
@@ -237,7 +238,7 @@ describe("computeToBuyView", () => {
   });
 });
 
-describe("computeToBuyView — with_aisles enrichment (member-app-differentiators D6)", () => {
+describe("computeToBuyView — enrich (member-app-differentiators D6, generalized by inline-substitution-hints D2)", () => {
   function seedProfile(h: SqliteEnv, stores: Record<string, unknown>): void {
     h.raw.prepare("INSERT INTO profile (tenant, stores) VALUES (?, ?)").run(T, JSON.stringify(stores));
   }
@@ -265,6 +266,27 @@ describe("computeToBuyView — with_aisles enrichment (member-app-differentiator
     h.raw
       .prepare("INSERT INTO ingredient_edge (from_id, to_id, kind, source, decided_at) VALUES ('flour', 'powders', 'general', 'auto', 1)")
       .run();
+  }
+  /** The production cabbage family (P4's spike fixture, reused): three general-kind
+   *  specializations of "cabbage" — the same shape `substitutions.test.ts` seeds. */
+  function seedSiblingGraph(h: SqliteEnv): void {
+    for (const id of ["cabbage", "cabbage::type-napa", "cabbage::color-green", "cabbage::color-red"]) {
+      h.raw
+        .prepare("INSERT INTO ingredient_identity (id, base, detail, concrete, source) VALUES (?, ?, ?, 1, 'auto')")
+        .run(
+          id,
+          id.includes("::") ? id.slice(0, id.indexOf("::")) : id,
+          id.includes("::") ? id.slice(id.indexOf("::") + 2) : null,
+        );
+    }
+    for (const from of ["cabbage::type-napa", "cabbage::color-green", "cabbage::color-red"]) {
+      h.raw
+        .prepare("INSERT INTO ingredient_edge (from_id, to_id, kind, source, decided_at) VALUES (?, 'cabbage', 'general', 'auto', 1)")
+        .run(from);
+    }
+  }
+  async function kvPutRollup(h: SqliteEnv, key: string, rollup: FlyerRollup): Promise<void> {
+    await (h.env.KROGER_KV as unknown as { put(k: string, v: string): Promise<void> }).put(key, JSON.stringify(rollup));
   }
 
   it("the DEFAULT read is byte-identical — no placement, no location key, no Kroger read", async () => {
@@ -303,7 +325,7 @@ describe("computeToBuyView — with_aisles enrichment (member-app-differentiator
     await addGroceryRow(h.env, T, { name: "flour" }, TODAY);
     await addGroceryRow(h.env, T, { name: "saffron" }, TODAY);
     seedSkuAisle(h, "flour", "03500520", { number: "12", description: "Baking", side: "L" });
-    const view = await computeToBuyView(h.env, T, { withAisles: true });
+    const view = await computeToBuyView(h.env, T, { enrich: true });
     expect(view.location).toEqual({ id: "03500520" });
     const byKey = new Map(view.to_buy.map((l) => [l.key, l]));
     // Captured aisle + the membership department (precedence over the general parent).
@@ -324,7 +346,7 @@ describe("computeToBuyView — with_aisles enrichment (member-app-differentiator
     seedSkuAisle(h, "flour", "", { number: "9", description: "Legacy" });
     // A row tagged with ANOTHER location never contributes a placement.
     seedSkuAisle(h, "flour", "99999999", { number: "1", description: "Elsewhere" });
-    const view = await computeToBuyView(h.env, T, { withAisles: true });
+    const view = await computeToBuyView(h.env, T, { enrich: true });
     expect(view.to_buy[0].placement).toMatchObject({ aisle_number: "9", aisle_description: "Legacy" });
   });
 
@@ -334,8 +356,64 @@ describe("computeToBuyView — with_aisles enrichment (member-app-differentiator
     seedDeptGraph(h);
     await addGroceryRow(h.env, T, { name: "flour" }, TODAY);
     seedSkuAisle(h, "flour", "03500520", { number: "12", description: "Baking" });
-    const view = await computeToBuyView(h.env, T, { withAisles: true });
+    const view = await computeToBuyView(h.env, T, { enrich: true });
     expect(view.location).toBeNull();
     expect(view.to_buy[0].placement).toEqual({ department: "baking" });
+  });
+
+  it("carries substitutes[] (siblings + in_pantry + on_sale_hint) and flyer_as_of alongside placement (inline-substitution-hints D1-D3/D8)", async () => {
+    const h = sqliteEnv([T]);
+    seedProfile(h, { primary: "kroger", preferred_location: "03500520" });
+    seedSiblingGraph(h);
+    await addGroceryRow(h.env, T, { name: "cabbage::type-napa" }, TODAY);
+    seedPantry(h, "Red cabbage", "cabbage::color-red");
+    await kvPutRollup(h, "flyer:kroger:03500520", {
+      sweep_id: "1",
+      as_of: Date.now() - 60_000,
+      items: [
+        { sku: "K1", brand: "Kroger", description: "Green Cabbage", size: "10 oz", price: { regular: 2.5, promo: 2 }, savings: 0.5, categories: [], matched_terms: ["cabbage"] },
+      ],
+    });
+
+    const view = await computeToBuyView(h.env, T, { enrich: true });
+    const line = view.to_buy.find((l) => l.key === "cabbage::type-napa")!;
+    expect(line.substitutes?.map((s) => s.id)).toEqual(["cabbage::color-green", "cabbage::color-red", "cabbage"]);
+    expect(line.substitutes?.find((s) => s.id === "cabbage::color-red")!.in_pantry).toBe(true);
+    expect(line.substitutes?.find((s) => s.id === "cabbage::color-green")!.on_sale_hint).toMatchObject({ sku: "K1" });
+    expect(line.substitutes?.find((s) => s.id === "cabbage")!.in_pantry).toBe(false);
+    expect(view.flyer_as_of).not.toBeNull();
+  });
+
+  it("a line with no graph neighbors gets an empty substitutes[], never omitted", async () => {
+    const h = sqliteEnv([T]);
+    seedProfile(h, { primary: "kroger", preferred_location: "03500520" });
+    await addGroceryRow(h.env, T, { name: "saffron" }, TODAY);
+    const view = await computeToBuyView(h.env, T, { enrich: true });
+    expect(view.to_buy[0].substitutes).toEqual([]);
+    expect(view.flyer_as_of).toBeNull();
+  });
+
+  it("a walk/satellite primary still gets in_pantry + a label-keyed on_sale_hint with zero Kroger calls", async () => {
+    const h = sqliteEnv([T]);
+    seedProfile(h, { primary: "aldi", preferred_location: "aldi east" });
+    seedSiblingGraph(h);
+    await addGroceryRow(h.env, T, { name: "cabbage::type-napa" }, TODAY);
+    seedPantry(h, "Red cabbage", "cabbage::color-red");
+    await kvPutRollup(h, "flyer:aldi:aldi east", {
+      sweep_id: "scan-1",
+      as_of: Date.now() - 60_000,
+      store: "aldi",
+      location_id: "aldi east",
+      items: [
+        { sku: "F1", brand: "", description: "Green Cabbage", size: null, price: { regular: 2, promo: 1.5 }, savings: 0.5, categories: [], matched_terms: [] },
+      ],
+    });
+
+    const view = await computeToBuyView(h.env, T, { enrich: true });
+    expect(view.location).toBeNull(); // no Kroger placement source
+    const line = view.to_buy.find((l) => l.key === "cabbage::type-napa")!;
+    expect(line.substitutes?.find((s) => s.id === "cabbage::color-red")!.in_pantry).toBe(true);
+    expect(line.substitutes?.find((s) => s.id === "cabbage::color-green")!.on_sale_hint).toMatchObject({ sku: "F1" });
+    expect(view.flyer_as_of).not.toBeNull();
   });
 });

@@ -101,6 +101,8 @@ export interface SeedLiterals {
         readonly line: string;
         readonly family: readonly string[];
         readonly parent: string;
+        readonly pantryHit: string;
+        readonly saleHit: { readonly sku: string; readonly price: { readonly regular: number; readonly promo: number } };
       };
     };
   };
