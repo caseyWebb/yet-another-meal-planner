@@ -41,5 +41,5 @@ Ordered by dependency, serial on the shared surfaces (`propose_meal_plan` / `sch
 
 ## 6. Acceptance (gates before PR)
 
-- [ ] 6.1 `aubr typecheck`, `aubr test`, `aubr test:tooling`, `aubr test:app` (propose passthrough + new-for-me), and `aubr build:plugin --check` green; `npx @fission-ai/openspec validate converge-meal-planning-surfaces --strict` green; `/code-review` triaged.
+- [x] 6.1 All gates green: `aubr typecheck`; `aubr test` (2204 passed / 15 skipped); `aubr test:tooling` (106); `aubr test:app` (4 passed — propose passthrough + new-for-me); `aubr build:plugin --check` (17 skills); `aubr build:widgets`/`build:app` self-contained; `openspec validate --strict`; `/code-review` (4 groups, no blockers, all findings fixed).
 - [ ] 6.2 Production convergence checks, post-deploy: (a) an off-plan cook resets the cosine-matched vibe's cadence (D4); (b) new-for-me imports claim slots in a live web-app propose (D3); (c) `read_user_profile` returns the palette + cadence and an empty palette shows in `missing[]` (D5); (d) a cross-canonical `place_order` override leaves a candidate `substitution` edge that repeated observation promotes, verified against the observed rows as the acceptance fixture (D6).
