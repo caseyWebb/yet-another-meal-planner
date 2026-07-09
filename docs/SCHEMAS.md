@@ -226,11 +226,13 @@ target      TEXT  -- the vibe id the proposal acts on; the sorted "<a>+<b>" pair
 payload     TEXT  -- JSON: the proposed profile diff (applied verbatim on accept), or review evidence (merge_recipes)
 rationale   TEXT  -- human-readable "why"
 evidence    TEXT  -- JSON: the signals that triggered it
-status      TEXT  -- pending | accepted | rejected
+status      TEXT  -- pending | accepted | rejected | superseded
 producer    TEXT  -- signal-cron | edge | operator | dup-scan
 created_at  TEXT
-resolved_at TEXT  -- when accepted/rejected
+resolved_at TEXT  -- when accepted/rejected/superseded
 ```
+
+`status` values: `pending` (awaiting the member); `accepted`/`rejected` are the **member verbs** (a `rejected` dismissal is a revealed signal, never rewritten by any pass); `superseded` is **system-set only** — the night-vibe derivation convergence sweep (`src/night-vibe-dedupe.ts`) marks a `pending` `add_vibe` proposal superseded when it is a near-duplicate (phrase-embedding cosine) of a palette vibe, a rejected proposal, or an earlier pending representative, so accumulated redundancy heals organically. The sweep only ever touches `pending` rows (`WHERE status='pending'`). Member-facing reads (`list_proposals`, `GET /api/vibes/proposals`) filter to `pending`, so `superseded` rows leave both surfaces; confirming a superseded id answers the same `conflict` as any other resolved status.
 
 ## overlay (per-tenant, D1 `overlay` table)
 
