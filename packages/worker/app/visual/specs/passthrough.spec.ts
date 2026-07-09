@@ -62,3 +62,13 @@ test("/api/passkey/login/options answers as a Worker route, not the shell", asyn
   // The options blob (a challenge) or a structured rate-limit — either is the Worker answering.
   expect(typeof body.challenge === "string" || typeof body.error === "string").toBe(true);
 });
+
+test("/api/signup answers as a Worker route, not the shell", async ({ request }) => {
+  // The self-service signup endpoint is a new Worker-owned /api route (self-service-signup): it
+  // nests under the /api/* run_worker_first entry, so the SPA fallback must never swallow it.
+  // An empty body resolves to a uniform structured failure — the Worker answering, not shell HTML.
+  const res = await request.post("/api/signup", { headers: { "X-App-Csrf": "1" }, data: {} });
+  expect(res.headers()["content-type"]).toContain("application/json");
+  const body = (await res.json()) as { error?: string; tenant?: unknown };
+  expect(typeof body.error === "string" || body.tenant !== undefined).toBe(true);
+});

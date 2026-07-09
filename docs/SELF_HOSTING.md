@@ -216,6 +216,18 @@ A friend needs only a Claude.ai account and a Kroger account — no GitHub, no K
 
 They share the recipe corpus (with their own favorites/rejects/notes) and have their own pantry, preferences, and Kroger cart — fully isolated from yours. To remove someone, open `/admin` and **Revoke** them — it removes their allowlist entry + invite(s), purges their per-tenant D1 data, deletes their Kroger token, and deletes their web sessions, so their issued token stops resolving and their session cookie stops authenticating (the web app re-checks the allowlist on every request, so the lock-out is immediate either way). **Rotate** mints a fresh single-use bootstrap without touching their data — the recovery path when a member loses every enrolled device or needs admitting after grace-off (see *Passkeys: rollout, grace, and recovery* below), and the way to retire any code that may have appeared in an Actions log before making the data repo public.
 
+## Onboard a group (a shared invite code)
+
+To bring a whole friend group online at once — without minting a code per person — use a **group invite code**: a multi-use code you can drop in a group chat, and everyone signs up with **their own username** and gets **their own account**.
+
+1. Open `/admin` → **Members** → **Invite codes** → **Mint** and set a **cap** (max sign-ups), and optionally an **expiry** and a **label** (e.g. "summer camp crew"). The code is shown **once** (never logged, like a bootstrap code) — copy it and share it, along with your app URL.
+2. Each friend opens `https://<your-worker-host>/signup`, enters the code, and **picks their own username**. That creates their own isolated (blank) tenant and signs them in; they're then prompted to **enroll a passkey** exactly like a single-onboarded member. They connect Claude.ai afterward by the normal cross-device approval — group codes work **only** in the web app, never at `/authorize`.
+3. The code stops admitting sign-ups once its **cap is reached** or it **expires**. To cut it off early, **Revoke** it (Members → Invite codes) — that halts further sign-ups but does **not** touch accounts already created through it (revoke those individually, as any member).
+
+A group code is a bearer secret while it's live, but a weak one: it only lets someone **create a new blank account** (bounded by the cap, the expiry, revocation, and per-IP rate-limiting) — it never grants access to an existing member's account. A username that collides with an existing member (or a simultaneous sign-up) is rejected; the friend just picks another. If someone signs up but loses their session **before enrolling a passkey**, they're already a member, so recover them with **rotate()** (below), exactly like any never-enrolled member.
+
+*Single onboarding vs a group code:* **onboard**/**rotate** issue a single-use bootstrap for **one named member** whose username you choose; a **group code** admits **many** friends who choose their **own** usernames.
+
 ## Passkeys: rollout, grace, and recovery
 
 Passkeys are the durable member credential on both member surfaces; the invite code is a single-use bootstrap consumed on a member's first enrollment (see *How identity works*, and set your final domain first).

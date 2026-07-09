@@ -446,6 +446,20 @@ describe("revoke", () => {
 
 describe("handleAdmin (routing + gate)", () => {
   const throwingD1 = () => ({}) as unknown as Env["DB"];
+  // A benign no-op D1 for paths that legitimately touch D1 but whose result we don't assert
+  // (e.g. onboard's tenant-registry claim): every statement resolves empty/zero-change.
+  const noopD1 = () =>
+    ({
+      prepare() {
+        const stmt = {
+          bind: () => stmt,
+          first: async () => null,
+          all: async () => ({ results: [], success: true, meta: { changes: 0 } }),
+          run: async () => ({ success: true, meta: { changes: 0 } }),
+        };
+        return stmt;
+      },
+    }) as unknown as Env["DB"];
 
   it("404s when the surface is disabled", async () => {
     const env = { TENANT_KV: memKv(), KROGER_KV: memKv(), DB: throwingD1() } as unknown as Env;
@@ -470,7 +484,7 @@ describe("handleAdmin (routing + gate)", () => {
     const env = {
       TENANT_KV: tenantKv,
       KROGER_KV: memKv(),
-      DB: throwingD1(),
+      DB: noopD1(), // onboard now claims the D1 tenants registry (self-service-signup)
       ADMIN_DEV_BYPASS: "1",
     } as unknown as Env;
     const res = await handleAdmin(

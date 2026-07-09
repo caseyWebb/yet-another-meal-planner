@@ -81,6 +81,47 @@ export class MembersPage extends AdminPage {
   memberDetail(id: string): MemberDetailPage {
     return new MemberDetailPage(this.page, id);
   }
+
+  // --- Invite codes sub-tab (self-service-signup, ?tab=codes) ---------------
+
+  /** Deep-link the Invite-codes sub-tab and wait for its landmark. */
+  async gotoCodes(): Promise<void> {
+    await this.goto("/admin/members?tab=codes");
+    await expect(this.codesLandmark).toBeVisible();
+  }
+
+  /** The Invite-codes section landmark (renders from its primary query, time-free). */
+  get codesLandmark(): Locator {
+    return this.page.locator("p.group-label", { hasText: "Invite codes" });
+  }
+
+  get mintCodeButton(): Locator {
+    return this.page.getByRole("button", { name: "Mint code" });
+  }
+
+  mintCodeDialog(): DialogComponent {
+    return new DialogComponent(this.page.getByRole("dialog", { name: "Mint invite code" }));
+  }
+
+  async openMintCodeDialog(): Promise<DialogComponent> {
+    const dialog = this.mintCodeDialog();
+    await dialog.openVia(this.mintCodeButton);
+    return dialog;
+  }
+
+  /** A group code's roster row (an `.item` carrying the code text). */
+  codeRow(code: string): Locator {
+    return this.page.locator(".item", { hasText: code });
+  }
+
+  revokeCodeButton(code: string): Locator {
+    return this.codeRow(code).getByRole("button", { name: "Revoke" });
+  }
+
+  /** The revoke-code confirmation (the shared Radix AlertDialog). */
+  revokeCodeDialog(): Locator {
+    return this.page.getByRole("alertdialog", { name: "Revoke invite code" });
+  }
 }
 
 /** Member detail (/admin/members/:id[/:section]) — SSR sub-routes under Members. A pending

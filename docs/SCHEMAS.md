@@ -855,8 +855,41 @@ The member web app's session store (member-session-auth), in the `TENANT_KV` nam
 
 The operator-issued **bootstrap** codes, in the `TENANT_KV` namespace beside the `tenant:*` allowlist and `session:*` records (member-session-auth / passkey-auth). Written by `onboard()`/`rotate()` (`src/admin.ts`), resolved by `resolveInvite` (`src/tenant.ts`); nothing edits them by hand. An invite code is a **single-use bootstrap**, not a standing credential: it authenticates a web `/login` and (while grace is on) a Claude.ai `/authorize` only until the member's first passkey enrollment consumes every `invite:*` mapping resolving to their tenant.
 
+This KV bootstrap path is one of **two, deliberately separate, invite systems**. A KV `invite:<code>` **resolves an existing** tenant (operator onboarding + recovery of one named member). A **group invite code** (self-service-signup, in D1 — see *Group invite codes* below) **creates a new** tenant from a self-chosen username. The two never share a namespace or a redemption path.
+
 - `invite:<code>` → `{ v, tenant, single_use, expires_at }` (JSON) — a code minted by `onboard()`/`rotate()`. `v` is the record-shape version; `tenant` is the allowlisted member id the code resolves to; `single_use` is `true`; `expires_at` is the code's expiry. Written with a **30-day KV `expirationTtl`**. `rotate()` mints a grace-bypassing single-use bootstrap — the recovery primitive for a member who lost every device or was never enrolled before grace was turned off (see `SELF_HOSTING.md`).
 - **Legacy shape:** a pre-migration invite record is a **bare-string** value (just the tenant id, no JSON). `resolveInvite` parses both shapes — the JSON record and the bare string — so existing codes keep resolving. Whether a legacy bare-string code still *authenticates* is governed by the operator `INVITE_GRACE` grace control (a Worker `var`, default on; see `SELF_HOSTING.md`): honored while grace is on, rejected once it is off. A single-use JSON bootstrap is always honored until consumed/expired, regardless of the grace flag.
+
+## Group invite codes + the tenant registry (D1: `signup_invites`, `signup_redemptions`, `tenants`)
+
+The self-service-signup store (multi-use group invite codes), all in D1 via `src/signup-db.ts` (never `env.DB` directly). Distinct from the KV `invite:<code>` bootstrap path above: a group code **creates** a tenant, a bootstrap code **resolves** one. An operator mints a group code with a **cap** (max redemptions) and an optional **expiry** + **label**; a friend redeems it at `POST /api/signup` under a chosen username, which atomically creates a new isolated tenant. Redemption is web-app-only (never the MCP `/authorize` surface). Migration `0047_self_service_signup`.
+
+- **`tenants`** — the FIRST strongly-consistent registry of tenant ids, keyed by the canonical lowercase id (`PRIMARY KEY`), the **uniqueness authority** for self-service username claims. A claim does `INSERT … ON CONFLICT(id) DO NOTHING` and wins iff first; the KV `tenant:<id>` allowlist entry (still the hot-path resolution authority) is written only after the claim wins. `via_code` is the group code that created the tenant, or `NULL` for an operator-onboarded member. Existing tenants are backfilled here idempotently on the `scheduled()` reconcile (`backfillTenantRegistry`, `src/signup.ts`). Purged (by `id`) on member revocation.
+- **`signup_invites`** — the group codes. `used` is bumped by a guarded `UPDATE … WHERE used < max_redemptions AND (expires_at IS NULL OR expires_at > ?) AND revoked_at IS NULL` — a single serialized statement that is the **atomic cap gate**, so the cap is never exceeded under concurrency. Revoking sets `revoked_at` (halts further signups; accounts already created are untouched). Operator-owned, NOT per-tenant — never purged on member revoke.
+- **`signup_redemptions`** — provenance: one row per created tenant linking it to the code it came from (`idx_signup_redemptions_code`, `idx_signup_redemptions_tenant`). In the per-tenant `TENANT_TABLES` purge, so member revocation deletes a member's rows.
+
+Redemption is phased so every intermediate state fails toward **under-granting**: spend a slot (guarded UPDATE, `changes === 1`), claim the username (`INSERT tenants … ON CONFLICT DO NOTHING`; on collision **refund** the slot), record provenance. A crash between phases can at worst waste one slot — never exceed the cap or double-claim a name — so no multi-statement transaction is required.
+
+```sql
+-- D1 tenants — the tenant-id uniqueness registry. PRIMARY KEY (id).
+id         TEXT     -- canonical lowercase username (the uniqueness authority)
+created_at INTEGER  -- epoch ms
+via_code   TEXT     -- the group code that created it; NULL for operator-onboarded
+
+-- D1 signup_invites — operator-issued group codes. PRIMARY KEY (code).
+code            TEXT     -- the group invite code (16 hex chars)
+max_redemptions INTEGER  -- the cap
+used            INTEGER  -- redemptions spent (total ever, not decremented on member revoke)
+expires_at      INTEGER  -- epoch ms; NULL = never expires
+revoked_at      INTEGER  -- epoch ms; NULL = active
+label           TEXT     -- optional operator label (nullable)
+created_at      INTEGER  -- epoch ms
+
+-- D1 signup_redemptions — provenance. idx on (code) and (tenant).
+code       TEXT     -- the group code
+tenant     TEXT     -- the created tenant id (isolation column for the revoke purge)
+created_at INTEGER  -- epoch ms
+```
 
 ## WebAuthn ceremony state (KV, not a repo file)
 

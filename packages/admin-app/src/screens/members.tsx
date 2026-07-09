@@ -31,6 +31,7 @@ import {
 import { queryClient, tenantsQuery, type TenantRow } from "../lib/queries";
 import { api, unwrap, apiErrorOf } from "../lib/api";
 import { assertNever } from "../lib/assert";
+import { InviteCodesScreen } from "./invite-codes";
 import { Button, Badge, ErrorBanner, StatCardGrid, StatCard } from "../components/kit";
 import {
   UsersIcon,
@@ -384,7 +385,25 @@ function MembersView({ members }: { members: TenantRow[] }) {
   );
 }
 
-export function MembersScreen(): React.ReactElement {
+export type MembersTab = "roster" | "codes";
+
+export function MembersScreen({ tab = "roster" }: { tab?: MembersTab }): React.ReactElement {
+  return (
+    <>
+      <div className="data-nav">
+        <Link className={tab === "roster" ? "pill active" : "pill"} to="/members" search={{ tab: "roster" }}>
+          Roster
+        </Link>
+        <Link className={tab === "codes" ? "pill active" : "pill"} to="/members" search={{ tab: "codes" }}>
+          Invite codes
+        </Link>
+      </div>
+      {tab === "roster" ? <RosterTab /> : <InviteCodesScreen />}
+    </>
+  );
+}
+
+function RosterTab(): React.ReactElement {
   const q = useQuery(tenantsQuery);
   switch (q.status) {
     case "pending":

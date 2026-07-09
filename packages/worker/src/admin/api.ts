@@ -21,6 +21,9 @@ import {
   revoke,
   krogerConsentLink,
   randomInviteCode,
+  createGroupInvite,
+  listGroupInvites,
+  revokeGroupInvite,
   type AdminDeps,
 } from "../admin.js";
 import {
@@ -131,6 +134,22 @@ export function registerApiRoutes(app: Hono<{ Bindings: Env }, BlankSchema, "/ad
       .delete("/api/tenants/:id", async (c) => {
         return c.json(await revoke(adminDeps(c.env), decodeURIComponent(c.req.param("id"))));
       })
+      // Group invite codes (self-service-signup): mint a capped/expiring code (shown once,
+      // never logged), list codes with live usage + provenance, revoke one (halts further
+      // signups; accounts already created are untouched).
+      .get("/api/invite-codes", async (c) => c.json({ codes: await listGroupInvites(c.env) }))
+      .post("/api/invite-codes", async (c) => {
+        const body = await c.req.json<{ cap?: number; expires_at?: number | null; label?: string | null }>();
+        const result = await createGroupInvite(c.env, {
+          cap: Number(body.cap),
+          expiresAt: body.expires_at ?? null,
+          label: body.label ?? null,
+        });
+        return c.json({ ...result, signup_url: `${new URL(c.req.url).origin}/signup` });
+      })
+      .post("/api/invite-codes/:code/revoke", async (c) =>
+        c.json(await revokeGroupInvite(c.env, decodeURIComponent(c.req.param("code")))),
+      )
       // Config › Ingest Keys: the satellite key roster (recipe-ingestion). GET returns the liveness
       // rollup's per-satellite rows (label/prefix/sources/status/versions/skew — no secret); mint
       // returns the plaintext secret ONCE; revoke is immediate.

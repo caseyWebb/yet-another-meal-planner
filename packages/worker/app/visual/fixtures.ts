@@ -5,6 +5,7 @@
 // organization).
 import { test as base, expect, type Cookie } from "@playwright/test";
 import { LoginPage } from "./pages/login.page";
+import { SignupPage } from "./pages/signup.page";
 import { ShellPage } from "./pages/shell.page";
 import { ConnectPage } from "./pages/connect.page";
 import { CookbookPage } from "./pages/cookbook.page";
@@ -20,6 +21,7 @@ import { SEED } from "../../admin/visual/seed.mjs";
 
 interface AppFixtures {
   loginPage: LoginPage;
+  signupPage: SignupPage;
   shellPage: ShellPage;
   connectPage: ConnectPage;
   cookbookPage: CookbookPage;
@@ -47,6 +49,7 @@ export const test = base.extend<AppFixtures>({
     await use(page);
   },
   loginPage: async ({ page }, use) => use(new LoginPage(page)),
+  signupPage: async ({ page }, use) => use(new SignupPage(page)),
   shellPage: async ({ page }, use) => use(new ShellPage(page)),
   // Bound to the APPROVE ref — the approval spec mutates it; the smoke screenshot uses the
   // independent VIEW ref (registry.ts), so the two never collide regardless of order.

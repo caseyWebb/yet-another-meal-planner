@@ -22,6 +22,10 @@ export const SEED = {
   // D9): the app suite's different-tenant login spec needs two real, independently
   // loggable identities to exercise the stamp-mismatch purge for real.
   inviteAlt: "PW-APP-INVITE-2",
+  // Group invite codes (self-service-signup): `open` is a live, redeemable code (headroom +
+  // provenance) the app signup spec redeems and the admin roster lists; `revoked` is a dead
+  // code that renders its "revoked" badge. Both D1-backed (signup_invites), not KV.
+  groupCode: { open: "PW-GROUP-OPEN", revoked: "PW-GROUP-REVOKED" },
   // Cross-device MCP approval refs (webauthn-passkey-auth): pending `authz:<ref>` KV records
   // the /connect approval screen reads + approves. Two independent refs so the view
   // (smoke screenshot) and the approve round-trip never disturb each other regardless of
@@ -221,7 +225,7 @@ function embedCacheKey(text) {
 export function d1Statements(now) {
   const iso = (ms) => new Date(ms).toISOString();
   const day = (ms) => iso(ms).slice(0, 10);
-  const { members, recipe, discovery, normalize, jobs } = SEED;
+  const { members, recipe, discovery, normalize, jobs, groupCode } = SEED;
   const stmts = [];
 
   // --- Status / Logs: job_health (current state) + job_runs (sparkline + run-log history).
@@ -660,6 +664,21 @@ export function d1Statements(now) {
   stmts.push(`DELETE FROM pantry WHERE tenant = ${q(members.active)} AND normalized_name = ${q(diff.siblings.pantryHit)};`);
   stmts.push(
     `INSERT INTO pantry (tenant, name, normalized_name, quantity, category, added_at, last_verified_at) VALUES (${q(members.active)}, 'Red cabbage', ${q(diff.siblings.pantryHit)}, '1 head', 'produce', ${q(day(now - 3 * DAY))}, ${q(day(now - 3 * DAY))});`,
+  );
+
+  // Group invite codes (self-service-signup): an OPEN code with headroom (10 cap, 2 used) and
+  // two provenance rows, plus a REVOKED code. The app signup spec redeems `open` (unique
+  // usernames, so its used count only climbs and never collides); the admin roster lists both.
+  stmts.push(`DELETE FROM signup_invites WHERE code IN (${q(groupCode.open)}, ${q(groupCode.revoked)});`);
+  stmts.push(
+    "INSERT INTO signup_invites (code, max_redemptions, used, expires_at, revoked_at, label, created_at) VALUES " +
+      `(${q(groupCode.open)}, 10, 2, NULL, NULL, 'summer camp crew', ${now - 3 * DAY}), ` +
+      `(${q(groupCode.revoked)}, 5, 5, NULL, ${now - 1 * DAY}, 'closed beta', ${now - 20 * DAY});`,
+  );
+  stmts.push(`DELETE FROM signup_redemptions WHERE code = ${q(groupCode.open)};`);
+  stmts.push(
+    "INSERT INTO signup_redemptions (code, tenant, created_at) VALUES " +
+      `(${q(groupCode.open)}, 'riley', ${now - 2 * DAY}), (${q(groupCode.open)}, 'sky', ${now - 1 * DAY});`,
   );
 
   return stmts;
