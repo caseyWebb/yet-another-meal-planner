@@ -195,23 +195,23 @@ export async function readNightVibePalette(env: Env, tenant: string, now: Date):
   });
 }
 
-/** The caller's FULL satisfaction history per vibe (dates DESC, most recent first) over
- *  provenance-stamped cooking-log rows (`satisfied_vibe`). The reconcile signal pass reads
- *  this ONE query for both cadence signals: last-satisfied is index 0, and the tighten
- *  rule's recent intervals fall out of the adjacent pairs. A never-satisfied vibe is
- *  simply absent. */
+/** The caller's FULL satisfaction history per vibe (dates DESC, most recent first) over the
+ *  cook-time satisfaction records (`vibe_satisfaction`, migration 0047) — so off-plan / cosine-
+ *  matched cooks count, not just explicitly-aimed ones (the same source `readVibeLastSatisfied`
+ *  derives from). The reconcile signal pass reads this ONE query for both cadence signals:
+ *  last-satisfied is index 0, and the tighten rule's recent intervals fall out of the adjacent
+ *  pairs. A never-satisfied vibe is simply absent. */
 export async function readVibeSatisfactionDates(env: Env, tenant: string): Promise<Map<string, string[]>> {
-  const rows = await db(env).all<{ satisfied_vibe: string; date: string }>(
-    "SELECT satisfied_vibe, date FROM cooking_log " +
-      "WHERE tenant = ?1 AND satisfied_vibe IS NOT NULL ORDER BY date DESC",
+  const rows = await db(env).all<{ vibe_id: string; date: string }>(
+    "SELECT vibe_id, date FROM vibe_satisfaction WHERE tenant = ?1 ORDER BY date DESC",
     tenant,
   );
   const map = new Map<string, string[]>();
   for (const r of rows) {
-    if (!r.satisfied_vibe || !r.date) continue;
-    const dates = map.get(r.satisfied_vibe) ?? [];
+    if (!r.vibe_id || !r.date) continue;
+    const dates = map.get(r.vibe_id) ?? [];
     dates.push(r.date);
-    map.set(r.satisfied_vibe, dates);
+    map.set(r.vibe_id, dates);
   }
   return map;
 }

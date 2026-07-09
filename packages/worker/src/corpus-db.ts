@@ -298,8 +298,10 @@ export interface IdentityNeighbor {
 }
 
 /** One promoted `substitution` target of a queried id (D6/D7): a taste substitute the graph
- *  observed, NOT an identity relation. Depth-1, concrete targets only — surfaced as a labeled
- *  read-time suggestion, never a satisfies neighbor. */
+ *  observed, NOT an identity relation. Depth-1 — surfaced as a labeled read-time suggestion, never
+ *  a satisfies neighbor. NOT pre-filtered by concreteness: `neighbors.substitutions` may carry a
+ *  non-concrete (non-buyable) target, so any non-annotator consumer must filter on `concrete`
+ *  itself (the substitute annotator does). */
 export interface SubstitutionNeighbor {
   /** The substitution target's surviving canonical id. */
   id: string;
@@ -372,7 +374,7 @@ export async function readIdentityNeighbors(env: Env, ids: string[]): Promise<Ma
       const weight = e.weight ?? 1;
       if (weight < SUBSTITUTION_PROMOTE_MIN) continue; // only promoted edges surface
       const qualifier = e.qualifier ?? undefined;
-      const pairKey = `${from} ${to}`;
+      const pairKey = `${from}\u0000${to}`;
       const prior = subByPair.get(pairKey);
       if (prior) {
         // Two rows resolving to the same pair (a merged endpoint): keep the strongest observation

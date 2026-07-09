@@ -452,7 +452,10 @@ export async function runProposeMealPlan(env: Env, tenant: Tenant, input: Propos
     locked,
     lockedUnresolved,
     newForMe: placedNewForMe,
-    requestedNights: nightCount,
+    // The palette path reports the REQUESTED nights (honest under-fill diagnostics). The ephemeral
+    // path's slot count is the authored set (not `nights`), so leave requestedNights unset and let
+    // diagnostics.nights fall through to the actual slot count — keeping it in step with plan.length.
+    requestedNights: ephemeral.length > 0 ? undefined : nightCount,
     frontmatterBySlug,
     embeddingBySlug: embeddings,
     atRiskDemand,

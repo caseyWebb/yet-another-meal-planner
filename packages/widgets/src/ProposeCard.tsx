@@ -9,10 +9,11 @@
 // request against the STATELESS propose op through the host — `App.callServerTool` proxies the
 // call straight to `propose_meal_plan` (no frontier-model turn), and the card re-renders from the
 // new result. This is the exact client-side session-replay the member web app relies on, only the
-// transport is the ext-apps bridge instead of `POST /api/propose`. When the host does not advertise
-// the `serverTools` capability (or the proposal was palette-less), the dials are withheld and the
-// week renders read-only — the plan is never blocked (the MCP text `content` fallback is the floor
-// below that).
+// transport is the ext-apps bridge instead of `POST /api/propose`. The dials are withheld and the
+// week renders read-only when the host does not advertise the `serverTools` capability, the member
+// has no palette, OR the proposal isn't palette-round-trippable (an ephemeral-authored or vibe-less
+// week the palette-flow request can't reproduce) — the plan is never blocked (the MCP text
+// `content` fallback is the floor below that).
 import * as React from "react";
 import type { App } from "@modelcontextprotocol/ext-apps";
 import type { ProposeCardData, ProposeCardSlot } from "@yamp/contract";
@@ -154,7 +155,9 @@ function toView(s: ProposeCardSlot, index: number, session: Session, vibeLabels:
   return {
     key: `${vibeId}:${index}`,
     vibeId,
-    vibeLabel: override ?? vibeLabels[vibeId] ?? vibeId,
+    // A palette / ephemeral slot resolves its phrase from vibeLabels (ephemeral ids are labeled
+    // there too); a vibe-less slot (new_for_me / caller lock → null id) gets the text-fallback name.
+    vibeLabel: override ?? (s.vibe_id ? (vibeLabels[s.vibe_id] ?? s.vibe_id) : s.reason === "new_for_me" ? "new to you" : "your pick"),
     vibeEdited: !!override,
     weatherCategory: s.weather_category ?? null,
     main: s.main,
@@ -184,10 +187,21 @@ export function ProposeCard({ app, data }: { app: App; data: ProposeCardData }) 
   const [session, setSession] = React.useState<Session>(() => initSession(data.request));
   const [openPanel, setOpenPanel] = React.useState<string | null>(null);
   const [busy, setBusy] = React.useState(false);
+  // A monotonic request token: racing dial changes each bump it, and only the LATEST in-flight
+  // rerun is allowed to land its result / clear busy — a slower earlier reply can't clobber a
+  // newer week (only RerollButton was `disabled={busy}`; the NudgeBar/SlotCard dials are not).
+  const seqRef = React.useRef(0);
 
-  // Iteration needs the host to proxy tool calls (`serverTools`) AND a palette to iterate over (an
-  // ephemeral-only proposal has no palette vibes for the dials to reshape). Otherwise: read-only.
-  const canIterate = app.getHostCapabilities()?.serverTools != null && data.palettePresets.length > 0;
+  // Iteration replays the palette-flow request (`buildRequest`) against the stateless op, so it is
+  // only safe when the proposal is palette-round-trippable: every slot keyed by a real palette vibe
+  // id. A vibe-less slot (new_for_me / caller lock → null id) or an ephemeral slot (synthetic
+  // `ephemeral-N` id, minted by the op and absent from the palette) can't be reproduced by
+  // buildRequest — iterating would silently drop it and revert an ephemeral / discovery week to a
+  // plain palette week. Those render read-only. Iteration also needs the host to proxy tool calls
+  // (`serverTools`) and a palette to reshape (an ephemeral-only member has none).
+  const roundTrippable = render.plan.every((s) => s.vibe_id !== null && !s.vibe_id.startsWith("ephemeral-"));
+  const canIterate =
+    app.getHostCapabilities()?.serverTools != null && data.palettePresets.length > 0 && roundTrippable;
 
   /** Apply a session patch and (when iterable) replay it against the stateless op. `session` is the
    *  current render's state — a dial change is a discrete user event, so it is never stale here. */
@@ -199,16 +213,18 @@ export function ProposeCard({ app, data }: { app: App; data: ProposeCardData }) 
 
   async function rerun(next: Session): Promise<void> {
     if (!canIterate) return;
+    const seq = ++seqRef.current;
     setBusy(true);
     try {
       const res = await app.callServerTool({ name: "propose_meal_plan", arguments: buildRequest(next) as unknown as Record<string, unknown> });
       const result = parseProposeResult(res);
-      // On a host/transport hiccup keep the current week rendered rather than blanking the card.
-      if (result) setRender((prev) => ({ ...prev, ...result }));
+      // On a host/transport hiccup keep the current week rendered rather than blanking the card;
+      // ignore a reply that a newer dial change has already superseded (stale-week guard).
+      if (result && seq === seqRef.current) setRender((prev) => ({ ...prev, ...result }));
     } catch {
       // transport failure — the current week stays; the member can retry a dial
     } finally {
-      setBusy(false);
+      if (seq === seqRef.current) setBusy(false);
     }
   }
 
@@ -233,7 +249,9 @@ export function ProposeCard({ app, data }: { app: App; data: ProposeCardData }) 
     );
   }
 
-  const slots = render.plan.filter((s) => s.vibe_id !== null);
+  // Render EVERY slot the op returned — locked / new_for_me / ephemeral slots included — so the card
+  // matches the text fallback and `diagnostics.filled` (a filtered subset would hide real nights).
+  const slots = render.plan;
   const filled = slots.filter((s) => s.main);
   const mainProteins = new Map<string, number>();
   const mainCuisines = new Set<string>();
@@ -274,7 +292,7 @@ export function ProposeCard({ app, data }: { app: App; data: ProposeCardData }) 
       ) : null}
 
       <VarietyBar
-        nights={filled.length}
+        nights={render.diagnostics.filled}
         cuisines={mainCuisines.size}
         proteins={mainProteins.size}
         proteinHist={[...mainProteins.entries()].sort((a, b) => b[1] - a[1])}

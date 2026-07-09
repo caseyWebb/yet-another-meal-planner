@@ -463,8 +463,9 @@ tenant         TEXT     -- owning member
 cooking_log_id INTEGER  -- the cooking_log row that satisfied the vibe (soft ref, no FK)
 vibe_id        TEXT     -- the night_vibes id satisfied (soft ref)
 date           TEXT     -- YYYY-MM-DD of the cook (denormalized from cooking_log — MAX(date) needs no JOIN)
-score          REAL     -- cosine at attribution time (provenance for threshold calibration only; NULL when
-                        -- unknown — the from_vibe prior on an unembedded vibe, and the backfilled rows). It
+score          REAL     -- cosine at attribution time (provenance for threshold calibration only; the
+                        -- from_vibe prior stores 0 when the recipe/vibe isn't embedded, NOT NULL — score is
+                        -- NULL only for the migration-backfilled rows, which predate cosine attribution). It
                         -- does NOT scale the reset: any record fully advances the vibe's cadence to `date`.
 ```
 

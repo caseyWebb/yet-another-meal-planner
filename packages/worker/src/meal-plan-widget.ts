@@ -89,6 +89,14 @@ async function toProposeCardData(env: Env, tenant: Tenant, input: ProposeInput, 
   ]);
   const vibeLabels: Record<string, string> = {};
   for (const v of palette) vibeLabels[v.id] = v.vibe;
+  // Ephemeral-authored slots carry synthetic `ephemeral-N` ids (N = index into the non-blank
+  // ephemeral set, mirroring the op's minting) — label them with the authored phrase so the card
+  // and the text fallback render the vibe, not the raw `ephemeral-N` id.
+  (input.ephemeral_vibes ?? [])
+    .filter((e) => typeof e.vibe === "string" && e.vibe.trim())
+    .forEach((e, i) => {
+      vibeLabels[`ephemeral-${i}`] = e.vibe.trim();
+    });
   const rows = Object.values(index);
   const proteins = [...new Set(rows.map((r) => str((r as Record<string, unknown>).protein)).filter((p): p is string => !!p))].sort();
   const cuisines = [...new Set(rows.map((r) => str((r as Record<string, unknown>).cuisine)).filter((c): c is string => !!c))].sort();
@@ -169,7 +177,7 @@ export function registerMealPlanWidget(server: McpServer, env: Env, tenant: Tena
     {
       title: "Display meal plan proposal",
       description:
-        "Propose a week of dinners from the caller's night-vibe palette AND render it as an inline, interactive planning card in the conversation — the widget twin of propose_meal_plan (same stateless planner, same request shape). Use this when the member wants to SEE and TWEAK a proposed week; use propose_meal_plan when you only need the data to reason over, and read_meal_plan to read the already-saved plan. Takes the same input as propose_meal_plan (nights, seed, lock, exclude, boost_ingredients, nudges, slots, ephemeral_vibes, new_for_me). Returns a widget-bearing result: `_meta.ui.resourceUri` points at the ui://plan/propose view, `structuredContent` carries the proposed slots (mains/alternates/sides/why/flags), variety, uncovered-at-risk, diagnostics, plus the palette + facet context the card's dials need, and `content` is a plain-text rendering of the proposed nights that hosts which cannot render the widget fall back to. The card's dials (nights / variety / lock / swap / exclude / per-slot vibe / re-roll) re-run the stateless proposal client-side, so refinement costs no additional model turn. NO writes — persist a chosen week with update_meal_plan. A structured error (e.g. an empty palette with no ephemeral set) is returned, never thrown.",
+        "Propose a week of dinners from the caller's night-vibe palette AND render it as an inline, interactive planning card in the conversation — the widget twin of propose_meal_plan (same stateless planner, same request shape). Use this when the member wants to SEE and TWEAK a proposed week; use propose_meal_plan when you only need the data to reason over, and read_meal_plan to read the already-saved plan. Takes the same input as propose_meal_plan (nights, seed, lock, exclude, boost_ingredients, nudges, slots, ephemeral_vibes, new_for_me). Returns a widget-bearing result: `_meta.ui.resourceUri` points at the ui://plan/propose view, `structuredContent` carries the proposed slots (mains/alternates/sides/why/flags), variety, uncovered-at-risk, diagnostics, plus the palette + facet context the card's dials need, and `content` is a plain-text rendering of the proposed nights that hosts which cannot render the widget fall back to. The card's dials (nights / variety / lock / swap / exclude / per-slot vibe / re-roll) re-run the stateless proposal client-side, so refinement costs no additional model turn. NO writes — persist a chosen week with update_meal_plan. An empty palette with no ephemeral set returns a `note` and an empty plan (not an error); genuine failures return a structured error, never thrown.",
       inputSchema: PROPOSE_INPUT_SHAPE,
       _meta: { ui: { resourceUri: PLAN_PROPOSE_URI } },
     },

@@ -147,7 +147,7 @@ export async function runReconcileSignalsJob(env: Env, now: () => number = () =>
     let drafted = 0;
     let enqueued = 0;
     for (const tenant of tenants) {
-      // ONE cooking-log query per member: the full dates map carries last-satisfied
+      // ONE vibe_satisfaction query per member: the full dates map carries last-satisfied
       // (index 0, for prune/stretch) AND the tighten rule's recent intervals.
       const [palette, satisfactionDates] = await Promise.all([readNightVibes(env, tenant), readVibeSatisfactionDates(env, tenant)]);
       const drafts = draftProposals(palette, satisfactionDates, nowDate);
