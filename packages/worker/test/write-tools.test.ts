@@ -7,6 +7,7 @@ import {
 import { applyPantryOperations, markVerified, type PantryItem } from "../src/pantry-write.js";
 import { ToolError } from "../src/errors.js";
 import { serializeMarkdown } from "../src/serialize.js";
+import { validateFile } from "../src/validate.js";
 import { parseMarkdown } from "../src/parse.js";
 import { createR2CorpusStore, type CorpusStore } from "../src/corpus-store.js";
 import { fakeR2 } from "./fake-r2.js";
@@ -160,6 +161,30 @@ describe("buildRecipeUpdate", () => {
     });
     const { frontmatter } = parseMarkdown(file.content);
     expect(frontmatter.perishable_ingredients).toEqual(["cilantro", "lime"]);
+  });
+
+  it("accepts a novel duplicate_of field through the pass-through frontmatter (the merge flow's write path)", async () => {
+    // recipe-dedup: the agent-guided merge marks the duplicate `duplicate_of: <survivor>`
+    // via update_recipe — a pass-through field, so an otherwise-compliant recipe stays
+    // valid under the merged-content contract check (validateFile) and the marker rides
+    // through to the serialized frontmatter.
+    const compliant = serializeMarkdown(
+      {
+        title: "Homemade Pasta Dough",
+        source: null,
+        time_total: 45,
+        dietary: [],
+        pairs_with: [],
+        requires_equipment: [],
+      },
+      "## Ingredients\n- flour\n\n## Instructions\n1. knead\n",
+    );
+    const store = storeWith({ "recipes/homemade-pasta-dough.md": compliant });
+    const file = await buildRecipeUpdate(store, env, "homemade-pasta-dough", { duplicate_of: "fresh-pasta" });
+    expect(() => validateFile(file.path, file.content)).not.toThrow();
+    const { frontmatter } = parseMarkdown(file.content);
+    expect(frontmatter.duplicate_of).toBe("fresh-pasta");
+    expect(frontmatter.title).toBe("Homemade Pasta Dough"); // untouched
   });
 
   it("rejects a malformed slug as not_found", async () => {

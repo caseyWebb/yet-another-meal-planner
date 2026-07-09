@@ -27,6 +27,7 @@ export const HEALTH_JOBS = [
   "reconcile-signals",
   "archetype-derive",
   "title-audit",
+  "dup-scan",
 ] as const;
 
 /** One job's stored health record. `summary` MUST stay tenant-data-free. */

@@ -751,6 +751,11 @@ function actionLabel(p: ProposalRow): string {
 }
 
 function proposalTitle(p: ProposalRow): string {
+  if (p.kind === "merge_recipes") {
+    // Corpus curation (recipe-dedup): name BOTH recipes from the payload.
+    const titles = Array.isArray(p.payload.titles) ? p.payload.titles.filter((t): t is string => typeof t === "string") : [];
+    return titles.length === 2 ? `Merge “${titles[0]}” & “${titles[1]}”?` : `Merge ${p.target ?? p.id}?`;
+  }
   const vibe = typeof p.payload.vibe === "string" ? p.payload.vibe : p.target ?? p.id;
   if (p.kind === "add_vibe") return `Add “${vibe}”`;
   if (p.kind === "prune_vibe") return `Retire “${p.target ?? vibe}”`;
@@ -787,12 +792,22 @@ function ReconcileQueue({ proposals }: { proposals: ProposalRow[] }) {
             <div className="rec-main">
               <div className="rec-title">{proposalTitle(p)}</div>
               {p.rationale ? <p className="rec-why">{p.rationale}</p> : null}
+              {p.kind === "merge_recipes" ? (
+                <p className="rec-why" data-testid="merge-chat-hint">
+                  Merging happens with your agent in chat — dismiss to keep both recipes.
+                </p>
+              ) : null}
             </div>
             <div className="rec-actions">
-              <Button size="sm" data-testid="proposal-accept" onClick={() => confirm(p.id, true)}>
-                {p.kind === "add_vibe" ? <IconPlus /> : p.kind === "prune_vibe" ? <IconTrash /> : null}
-                {actionLabel(p)}
-              </Button>
+              {/* D12: no synthetic action without a backing op — the app has no merge
+                  operation, so a merge_recipes row offers Dismiss only (confirm-reject);
+                  accept's meaning ("the merge was performed") exists only in chat. */}
+              {p.kind !== "merge_recipes" ? (
+                <Button size="sm" data-testid="proposal-accept" onClick={() => confirm(p.id, true)}>
+                  {p.kind === "add_vibe" ? <IconPlus /> : p.kind === "prune_vibe" ? <IconTrash /> : null}
+                  {actionLabel(p)}
+                </Button>
+              ) : null}
               <Button size="sm" variant="ghost" data-testid="proposal-dismiss" onClick={() => confirm(p.id, false)}>
                 Dismiss
               </Button>

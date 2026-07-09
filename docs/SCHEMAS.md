@@ -98,6 +98,7 @@ source: https://www.seriouseats.com/lemon-garlic-roasted-chicken
   pairs_with: []
   ```
 - `favorite`, `reject`, and `last_cooked` are **per-tenant**, not shared content — `favorite`/`reject` live in each member's D1 `overlay` table; `last_cooked` is derived from the D1 `cooking_log` table. The shared D1 `recipes` table carries objective fields only. A shared recipe's frontmatter SHOULD NOT carry them; the reconcile strips them. (`status`/`rating` are likewise *tolerated and ignored*, not forbidden — a lingering value is stripped from the shared index, never validated; `create_recipe` stamps no `status`.) `update_recipe` is objective-only and rejects a `favorite`/`reject` edit toward `toggle_favorite` / `toggle_reject`, which write the caller's D1 overlay row.
+- `duplicate_of`: the **operator-merge tombstone** (`recipe-dedup`) — a non-empty string naming the surviving recipe's slug. Written **only through the operator-confirmed merge flow** (the agent-guided review of a `merge_recipes` proposal; it rides `update_recipe`'s pass-through frontmatter). The projection treats it as a **deliberate exclusion**: the marked file projects **no** `recipes` row and **no** `reconcile_errors` row (a curation decision, not a defect; counted as `tombstoned` in the projection summary), so the recipe leaves search/menu-generation/list on the next tick and its derived rows (`recipe_derived`, the `dup_scan` stamp) converge via the existing orphan prunes. **Reversible and non-destructive**: the R2 file, member notes, and cooking-log history stay intact, and removing the field restores the index row on the next projection. An empty-string value is ignored (projects normally). It is a narrow redirect marker, not a lifecycle state — there is still no `status` field and no `draft` limbo.
 - Disposition is **per-tenant and opt-out**: a recipe with no overlay row is **available** to that member by default. A member's feedback either favorites it (`toggle_favorite`) or hides it (`toggle_reject` → a hard gate that drops it from their `search_recipes` results) — the two are mutually exclusive, and one member's disposition never changes another's. There is no `active`/`draft` lifecycle and no per-member curated set.
 - `pairs_with`: slugs of other recipes, **required (may be `[]`)**. A *plating* edge — recipes eaten together on one plate (a main's companion **corpus** sides). Each slug MUST resolve to a real recipe (a reconcile skip-and-record otherwise — the dangling-`pairs_with` cross-corpus check); corpus sides are themselves recipes, so they reuse the normal import/grocery-list pipeline. Objective **shared content** (carried in the D1 `recipes` table, written by `update_recipe`) — not a per-tenant overlay field. **Primarily authored by the `recipe-sides` flow** — the standalone "sides for X" flow records the edge when a corpus side is confirmed for a corpus main; the **meal-plan** flow only **backfills** it opportunistically, for a pairing it confirms while composing a menu (both filter side candidates with `course: side`). **Open-world sides** — trivial preparations with no recipe file — are not recorded here (no slug to remember) and ride on the main's meal-plan row instead (the D1 `meal_plan` table's `sides` JSON column).
 - `course`: **required, non-empty** — an **open-vocabulary** classification of what kind of dish the recipe is — one or more of `main`, `side`, `dessert`, `breakfast`, `component` by convention (`component` = a **sub-recipe/building block** — a dough, a stock, a spice blend, a base sauce made to be used inside other dishes — not plated as its own course), but **any** string is allowed (e.g. `sauce`, `baked_good`) with **no controlled set and no code change** to extend it (contrast `protein`/`cuisine`, which ARE controlled). Authored as a string or an array of strings; the projection **normalizes** it to a lowercased, trimmed **array** (so `Main` → `["main"]`). A recipe that plates as more than one course carries multiple values (`course: [main, side]`). An absent or empty `course`, or a non-string/array value, is a Worker write-time / reconcile **hard failure** (rejected on write, skip-and-recorded by the reconcile); the *values* are never checked against a set. Objective **shared content** carried in the D1 `recipes` table, classified at import by `create_recipe` (and editable via `update_recipe`); `search_recipes` filters it by **containment**. The **meal-suggestion surfaces** (`propose_meal_plan`'s pools, the app's picked-for-you/trending rows) additionally gate on it by default: a recipe is a **meal candidate** when its effective `course` includes `main` or is empty (fail-open for a not-yet-classified recipe — `isMealCourse`, `src/recipes.ts`), so a component/side is never volunteered as a dinner. (`standalone` is **not** a contract field — whether a main is an already-rounded plate is inferred by the agent at plan time, not persisted; a lingering `standalone` field is ignored, never validated or indexed.)
@@ -157,6 +158,17 @@ before_title TEXT     -- the title as audited (or at birth, for a born-stamp)
 after_title  TEXT     -- the rewritten title ('cleaned' outcomes only; NULL on 'kept')
 ```
 
+## dup_scan (D1 `dup_scan` table — Worker-owned, shared)
+
+The **corpus dup-scan**'s per-recipe watermark (migration 0045, `recipe-dedup`). The scheduled scan (`src/dup-scan.ts`, the `dup-scan` job in `scheduled()` phase 5) compares each embedded corpus recipe against the full description-vector set **once per state**: `scanned_hash` is `hashText(description_hash + "|" + ingredients_key JSON)` at scan time, so a recipe whose stamp is missing or differs from its current hash re-queues — a regenerated/re-embedded description changes `description_hash`, and a facet re-derivation that changes the effective `ingredients_key` changes the JSON half. A tick scans at most `DUP_SCAN_MAX_PER_TICK` (25) queued recipes, then stamps them; a fully-stamped corpus plans zero comparisons. Rows whose slug has left `recipe_derived` are **pruned by the job** each tick (so a tombstoned or deleted recipe cannot re-trigger detection). A **sibling of `recipes`** keyed by `slug` (like `recipe_facets`/`title_audit`) because the projection is rebuilt wholesale and cannot carry a durable stamp. When no operator tenant is configured the job stamps **nothing** (a recorded no-op), preserving the backlog for a later operator.
+
+```sql
+-- D1 dup_scan table — the dup-scan's per-recipe watermark. PRIMARY KEY (slug).
+slug         TEXT  -- recipe id
+scanned_hash TEXT  -- hashText(description_hash | ingredients_key JSON) at scan time
+scanned_at   TEXT  -- ISO timestamp of the stamp
+```
+
 ## taste_derived (per-member, D1 `taste_derived` table — Worker-derived)
 
 Each member's **taste-text embedding** — the cold-start/taste signal the **discovery sweep**'s matcher scores a candidate against (alongside the member's favorited-recipe vectors). Derived from the member's authored `profile.taste` text via `env.AI` and **content-hash gated**, mirroring `recipe_derived`'s description/embedding gate exactly: it regenerates only when the taste text changes, so a steady profile does ~no work. Refreshed at the **start of each discovery-sweep tick** (a small reconcile pass, `src/taste-vector.ts`) and pruned for a member who clears their taste text or leaves the group. A NULL/absent vector means the member is matched on **favorites alone** (or the cold-start fallback). Keyed by `tenant`. Migration 0016.
@@ -201,19 +213,21 @@ updated_at TEXT
 
 ## pending_proposals (per-tenant, D1 `pending_proposals` table)
 
-The **profile-reconciliation** queue (migration 0027, `profile-reconciliation` capability): proposed profile edits that reconcile a member's **stated** palette against their **revealed** cooking behavior. Written by the deterministic `reconcile-signals` cron (`src/reconcile-signals.ts`, producer `signal-cron`) and, optionally, by the operator via `reconcile_enqueue_proposal` (producer `operator`); read/resolved by the member via `list_proposals`/`confirm_proposal` (`src/reconcile-db.ts`). `id` is a **stable hash of `(tenant, kind, target)`** so re-drafting is an idempotent `INSERT OR IGNORE` and a rejected proposal is never re-surfaced.
+The **profile-reconciliation** queue (migration 0027, `profile-reconciliation` capability): proposed profile edits that reconcile a member's **stated** palette against their **revealed** cooking behavior. Written by the deterministic `reconcile-signals` cron (`src/reconcile-signals.ts`, producer `signal-cron`) and, optionally, by the operator via `reconcile_enqueue_proposal` (producer `operator`); read/resolved by the member via `list_proposals`/`confirm_proposal` (`src/reconcile-db.ts`). `id` is a **stable hash of `(kind, target)`** so re-drafting is an idempotent `INSERT OR IGNORE` and a rejected proposal is never re-surfaced.
+
+The queue also carries **corpus-curation** proposals addressed to the **operator tenant only**: the `merge_recipes` kind (the `dup-scan` producer, `recipe-dedup` capability) surfaces a suspected near-duplicate recipe pair for review. Its `target` is the lexicographically-sorted pair key `"<slugA>+<slugB>"` and its payload is **review evidence, not a diff**: `{ slugs: [a, b], titles: [ta, tb], cosine, shared_ingredients: [...], jaccard, detector: "cosine" | "corroborated" }`. Accepting one records the decision **without any profile or corpus write** — the merge itself is agent-guided through the corpus write tools (see the `duplicate_of` frontmatter note above), performed before confirmation; rejecting keeps both recipes and suppresses the pair permanently (the stable id blocks re-insert).
 
 ```sql
--- D1 pending_proposals table. PRIMARY KEY (id). idx_pending_proposals_tenant_status on (tenant, status).
-id          TEXT  -- stable hash(tenant|kind|target) — dedup + no-re-propose
-tenant      TEXT  -- the member the proposal is for
-kind        TEXT  -- add_vibe | adjust_cadence | prune_vibe
-target      TEXT  -- the vibe id the proposal acts on
-payload     TEXT  -- JSON: the proposed profile diff (applied verbatim on accept)
+-- D1 pending_proposals table. PRIMARY KEY (tenant, id). idx_pending_proposals_tenant_status on (tenant, status).
+id          TEXT  -- stable hash(kind|target) — dedup + no-re-propose
+tenant      TEXT  -- the member the proposal is for (the operator, for merge_recipes)
+kind        TEXT  -- add_vibe | adjust_cadence | prune_vibe | merge_recipes
+target      TEXT  -- the vibe id the proposal acts on; the sorted "<a>+<b>" pair key for merge_recipes
+payload     TEXT  -- JSON: the proposed profile diff (applied verbatim on accept), or review evidence (merge_recipes)
 rationale   TEXT  -- human-readable "why"
 evidence    TEXT  -- JSON: the signals that triggered it
 status      TEXT  -- pending | accepted | rejected
-producer    TEXT  -- signal-cron | edge | operator
+producer    TEXT  -- signal-cron | edge | operator | dup-scan
 created_at  TEXT
 resolved_at TEXT  -- when accepted/rejected
 ```

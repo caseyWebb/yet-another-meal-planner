@@ -137,6 +137,28 @@ describe("resolveProposal (shared confirm op — tool + member API)", () => {
     expect(d1.tables.night_vibes).toHaveLength(1);
   });
 
+  it("accepting a merge_recipes proposal records the decision and writes NOTHING (recipe-dedup)", async () => {
+    const d1 = fakeD1({
+      tables: {
+        pending_proposals: [],
+        night_vibes: [{ tenant: "casey", id: "salad", vibe: "a light salad" }],
+      },
+    });
+    const merge = {
+      kind: "merge_recipes" as const,
+      target: "fresh-pasta+homemade-pasta-dough",
+      payload: { slugs: ["fresh-pasta", "homemade-pasta-dough"], titles: ["Fresh Pasta", "Homemade Pasta Dough"] },
+      rationale: "same dish?",
+      evidence: {},
+    };
+    const { id } = await enqueueProposal(d1.env, "casey", merge, "dup-scan", NOW.toISOString());
+    const out = await resolveProposal(d1.env, "casey", id, true);
+    expect(out).toMatchObject({ id, status: "accepted", applied: expect.stringContaining("agent-guided") });
+    expect((await getProposal(d1.env, id, "casey"))?.status).toBe("accepted");
+    // The apply path touched no palette row (and there is no corpus write surface here at all).
+    expect(d1.tables.night_vibes).toHaveLength(1);
+  });
+
   it("answers an unknown id (or another tenant's proposal) with not_found", async () => {
     const d1 = fakeD1({ tables: { pending_proposals: [] } });
     const { id } = await enqueueProposal(d1.env, "alice", draft, "edge", NOW.toISOString());
