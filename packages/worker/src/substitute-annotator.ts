@@ -69,6 +69,24 @@ export function identitySiblings(
       },
     }));
 
+  // Promoted substitution targets, ordered + labeled like a tier but sourced from the SEPARATE
+  // `substitutions` field (a `SubstitutionNeighbor` has no edge `kind`/`via` — it carries weight +
+  // an optional qualifier), so it bypasses `admissible`'s EDGE_KINDS gate. Depth-1, concrete only,
+  // and — because substitution edges are excluded from satisfies() — surfacing it changes no match.
+  const subTier: WalkSuggestion[] = [...neighbors.substitutions]
+    .filter((n) => n.concrete && n.id !== x && !exclude.has(n.id))
+    .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+    .map((n) => ({
+      id: n.id,
+      label: n.label,
+      relation: {
+        role: "substitution" as const,
+        kind: "substitution" as const,
+        weight: n.weight,
+        ...(n.qualifier ? { qualifier: n.qualifier } : {}),
+      },
+    }));
+
   const tiers: WalkSuggestion[][] = [
     // satisfies — any kind: the edge's defining semantics (usable where x is requested).
     tier(neighbors.satisfiedBy, "satisfies"),
@@ -80,6 +98,9 @@ export function identitySiblings(
     // membership co-children last + capped: a `vegetables`-style broad family only
     // surfaces when nothing better exists, always labeled with its `via` parent.
     tier(neighbors.coChildren.filter((n) => n.kind === "membership"), "sibling"),
+    // substitution edges LAST: a TASTE substitute always ranks behind every factual identity
+    // relation (first-relation-wins keeps a factual target ahead of a substitution one).
+    subTier,
   ];
 
   const out: WalkSuggestion[] = [];

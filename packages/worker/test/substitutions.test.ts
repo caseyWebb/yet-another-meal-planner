@@ -306,6 +306,49 @@ describe("identitySiblings — the D3 walk over the persisted graph", () => {
     const neighbors = await readIdentityNeighbors(h.env, ["saffron"]);
     expect(identitySiblings(neighbors.get("saffron")!)).toEqual([]);
   });
+
+  it("surfaces PROMOTED substitution edges as a labeled relation, AFTER factual relations (D6/D7)", async () => {
+    const h = sqliteEnv([T]);
+    seedGraph(
+      h,
+      [
+        { id: "buttermilk" },
+        { id: "buttermilk::cultured" }, // a factual sibling (in-edge) — must rank ahead
+        { id: "yogurt::plain" },
+        { id: "sour-cream" },
+        { id: "milk::whole" }, // a CANDIDATE substitute (weight 1) — must NOT surface
+        { id: "cream-cheese" }, // a transitive target hung off yogurt — must NOT be walked
+      ],
+      // One factual satisfies edge; the rest are substitution edges seeded below with weights.
+      [["buttermilk::cultured", "buttermilk", "general"]],
+    );
+    const sub = (from: string, to: string, weight: number, qualifier: string | null): void => {
+      h.raw
+        .prepare(
+          "INSERT INTO ingredient_edge (from_id, to_id, kind, weight, qualifier, source, decided_at) VALUES (?, ?, 'substitution', ?, ?, 'auto', 1)",
+        )
+        .run(from, to, weight, qualifier);
+    };
+    sub("buttermilk", "yogurt::plain", 3, "1:1 thinned"); // promoted, qualified
+    sub("buttermilk", "sour-cream", 2, null); // promoted, no qualifier (still surfaces)
+    sub("buttermilk", "milk::whole", 1, null); // candidate — below the promote threshold
+    sub("yogurt::plain", "cream-cheese", 5, null); // y's own out-edge — never followed from x
+
+    const neighbors = await readIdentityNeighbors(h.env, ["buttermilk"]);
+    const out = identitySiblings(neighbors.get("buttermilk")!);
+
+    // Factual satisfies FIRST, then the promoted substitutes (lexicographic by id: sour-cream <
+    // yogurt::plain). The weight-1 candidate and the transitive cream-cheese never appear.
+    expect(out).toEqual([
+      { id: "buttermilk::cultured", label: "buttermilk (cultured)", relation: { role: "satisfies", kind: "general" } },
+      { id: "sour-cream", label: "sour-cream", relation: { role: "substitution", kind: "substitution", weight: 2 } },
+      {
+        id: "yogurt::plain",
+        label: "yogurt (plain)",
+        relation: { role: "substitution", kind: "substitution", weight: 3, qualifier: "1:1 thinned" },
+      },
+    ]);
+  });
 });
 
 // --- the shared cheap-half annotator (D1/D3, inline-substitution-hints) -------------

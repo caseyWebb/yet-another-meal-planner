@@ -684,7 +684,9 @@ the **base** (the id up to the first `::`) keeps the existing lowercase/space fo
 opaque discriminators to deterministic code (which compares only full-id or base equality). The
 front-door `ingredient_alias` maps a surface form → id; the `ingredient_identity` registry holds
 the node (with a union-find `representative` pointer, a `concrete` flag, and a cron-owned
-embedding); `ingredient_edge` holds directed `satisfies` edges. The `readResolver` load bakes the
+embedding); `ingredient_edge` holds directed `satisfies` edges plus the taste-`substitution` kind (a
+capture-first, weighted, satisfies()-EXCLUDED taste swap surfaced only as a read-time suggestion — see
+the *ingredient-normalization capture* section of `docs/ARCHITECTURE.md`). The `readResolver` load bakes the
 `representative` chain into the variant→id map. `update_aliases` writes `source='human'` (never
 overwritten by the auto capture pass). A sibling re-confirm pass re-examines edgeless auto-minted
 nodes against the denser registry and stamps `ingredient_identity.reconfirmed_at` once processed
@@ -750,11 +752,20 @@ confidence REAL
 decided_at INTEGER
 audited_at INTEGER  -- one-shot alias-audit stamp; NULL = un-audited backlog; born-set on new writes
 
--- ingredient_edge — directed "satisfies" edges. PRIMARY KEY (from_id, to_id, kind).
-from_id    TEXT  -- A satisfies a request for to_id (reachability)
+-- ingredient_edge — directed edges: the factual "satisfies" kinds + the taste-`substitution`
+--   kind. PRIMARY KEY (from_id, to_id, kind).
+from_id    TEXT  -- satisfies kinds: A satisfies a request for to_id (reachability);
+                 --   'substitution': A is an observed taste substitute for to_id
 to_id      TEXT
-kind       TEXT  -- 'general' | 'containment' | 'membership'
+kind       TEXT  -- 'general' | 'containment' | 'membership' — FACTUAL, satisfies()-reachable;
+                 --   'substitution' — a taste swap, EXCLUDED from satisfies() (never gates a match
+                 --   or a purchase), surfaced only as a labeled read-time suggestion (depth-1 walk)
 source     TEXT NOT NULL DEFAULT 'auto'
+weight     INTEGER NOT NULL DEFAULT 1  -- substitution edges: observation count; a candidate is born
+                 --   at 1 and PROMOTES past the candidate threshold on repeat (the read surfaces
+                 --   only promoted edges). Factual edges default 1 and never read it.
+qualifier  TEXT  -- substitution edges: an optional caveat authored LATER (a sub ratio like '1:2', a
+                 --   leavening/cook-time note); NULL until authored — a bare weighted edge is useful
 audited_at INTEGER  -- one-shot edge-audit stamp; NULL = un-audited backlog; born-set on new writes
 
 -- novel_ingredient_terms — the capture queue (surface forms not yet placed). PK (term).

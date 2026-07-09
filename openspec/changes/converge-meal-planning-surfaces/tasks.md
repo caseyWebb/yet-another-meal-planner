@@ -32,12 +32,12 @@ Ordered by dependency, serial on the shared surfaces (`propose_meal_plan` / `sch
 
 ## 5. Capture-first substitution edges + ADR amendment (D6, D7) — parallel thread
 
-- [ ] 5.1 Migration extending `ingredient_edge` with the `substitution` kind + `weight` + optional `qualifier` (`packages/worker/migrations/d1/NNNN_substitution_edges.sql`).
-- [ ] 5.2 Capture: at the `place_order` override commit, when a replacement crosses a canonical-id boundary that is not an existing identity neighbor, upsert a candidate `substitution` edge and increment weight on repeat (`src/corpus-db.ts` + the order path); candidate → promoted mirrors the `NORMALIZE_CONFIRM` band machinery.
-- [ ] 5.3 Exclude `substitution` edges from `satisfies()` reachability (`src/corpus-db.ts` `satisfiesAmong` / `readIdentityNeighbors`); keep them out of any hard match.
-- [ ] 5.4 Surface `substitution`-kind edges as a labeled relation in the depth-1 walk (`src/substitute-annotator.ts`), carrying weight/qualifier; do not add a transitive walk.
-- [ ] 5.5 Append the `## Amendment — 2026-07-09` section (design.md) verbatim to `docs/adr/0001-determinism-boundary-capture-retrieve-narrow.md`; leave front-matter + `**Status:**` untouched.
-- [ ] 5.6 Docs (lockstep): `docs/SCHEMAS.md` the edge kind; `docs/ARCHITECTURE.md` the *ingredient-normalization capture* section.
+- [x] 5.1 Migration `0048_substitution_edges.sql` adds `weight INTEGER NOT NULL DEFAULT 1` + `qualifier TEXT` to `ingredient_edge` (`kind` is unconstrained TEXT, so `'substitution'` needs no CHECK change); the edge-strength `weight` realizes the ADR's strong-sub/weak-sub spectrum.
+- [ ] 5.2 **BLOCKED on a capture-point decision** (design D6's flagged open question). Every deterministic path is messy, structurally non-qualifying, or conflicts with the co-resolution merge signal — the subagent stopped rather than pollute the graph. Three options surfaced (SKU-cache reverse lookup + co-resolution tiebreak / an explicit atomic paired-swap signal / override product re-normalization); awaiting the architect's choice. Also note the edge-audit foot-gun: capture must born-stamp substitution edges `audited_at` (or exclude `kind='substitution'` from `readEdgeAuditBatch`/`filterCommittableEdges`).
+- [x] 5.3 `substitution` edges excluded from `satisfies()`: `loadEdges()` filters `kind !== 'substitution'` before reachability, and `readIdentityNeighbors` routes promoted (`weight ≥ 2`) substitution out-edges into a separate `substitutions` field, never into `satisfiedBy`/`coChildren`. Test: `satisfiesAmong` returns `[]` when the only path is a substitution edge, while a `general` edge still surfaces.
+- [x] 5.4 `identitySiblings` (`substitute-annotator.ts`) appends a substitution tier LAST in the precedence (factual relations always ahead), labeled `{ role/kind: "substitution", weight, qualifier? }`, `concrete=1` targets only, no transitive walk. Weight/qualifier ride the `relation` sub-object.
+- [x] 5.5 `## Amendment — 2026-07-09` appended verbatim to `docs/adr/0001-...md` at EOF; front-matter + `**Status:**` untouched (matches the 2026-07-01 amendment format).
+- [x] 5.6 Docs (lockstep): `docs/SCHEMAS.md` (edge kind + weight/qualifier); `docs/ARCHITECTURE.md` (capture-first + `satisfies()`-excluded); a parenthetical notes the capture trigger is pending 5.2.
 
 ## 6. Acceptance (gates before PR)
 

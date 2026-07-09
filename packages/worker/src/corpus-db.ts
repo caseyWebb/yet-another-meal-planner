@@ -113,6 +113,19 @@ export interface SatisfiesEdge {
   kind: string;
 }
 
+/** The taste-substitution edge kind (D6/D7): a swap a member actually made whose replacement
+ *  crosses a canonical-id boundary that is not already an identity neighbor. It is NOT a factual
+ *  satisfies kind (`general`/`containment`/`membership`) — "A can stand in for B, with caveats" is
+ *  a taste judgment, not "having A satisfies a request for B" — so it is EXCLUDED from `satisfies()`
+ *  reachability (never gates a match, never causes a purchase) and surfaces only as a labeled
+ *  read-time suggestion via the depth-1 walk. */
+export const SUBSTITUTION_KIND = "substitution";
+/** Observation-count threshold a candidate `substitution` edge reaches to PROMOTE — the read
+ *  surfaces only promoted edges. An edge is born at weight 1 (candidate) and a single repeat
+ *  observation (weight 2) promotes it, mirroring the capture pass's conservative candidate→confirm
+ *  discipline (`NORMALIZE_CONFIRM_MIN`). */
+export const SUBSTITUTION_PROMOTE_MIN = 2;
+
 /** The single ingredient-pipeline accessor consumers funnel through (design D9). */
 export interface IngredientContext {
   /** Normalize a surface form to its canonical id AND capture it if novel (best-effort enqueue). */
@@ -201,7 +214,11 @@ function contextFromResolver(
         const resolve = representativeResolver(identities);
         return {
           resolve,
-          edges: edges.map((e) => ({ from: resolve(e.from_id), to: resolve(e.to_id), kind: e.kind })),
+          // Substitution edges are EXCLUDED from satisfies() reachability (D7): a substitute is a
+          // taste judgment, not identity, so it must never complete a match or cause a purchase.
+          edges: edges
+            .filter((e) => e.kind !== SUBSTITUTION_KIND)
+            .map((e) => ({ from: resolve(e.from_id), to: resolve(e.to_id), kind: e.kind })),
         };
       })();
     }
@@ -280,6 +297,22 @@ export interface IdentityNeighbor {
   via?: string;
 }
 
+/** One promoted `substitution` target of a queried id (D6/D7): a taste substitute the graph
+ *  observed, NOT an identity relation. Depth-1, concrete targets only — surfaced as a labeled
+ *  read-time suggestion, never a satisfies neighbor. */
+export interface SubstitutionNeighbor {
+  /** The substitution target's surviving canonical id. */
+  id: string;
+  /** Human-readable label (`base (detail)`), else the id. */
+  label: string;
+  /** Whether the target is a concrete (buyable) node; absent rows default concrete. */
+  concrete: boolean;
+  /** Accrued observation weight (≥ `SUBSTITUTION_PROMOTE_MIN` for a surfaced edge). */
+  weight: number;
+  /** Optional authored caveat (a sub ratio like `1:2`, a leavening/cook-time note), when present. */
+  qualifier?: string;
+}
+
 /** The depth-1 neighbor sets of one queried id (all endpoints representative-resolved). */
 export interface IdentityNeighbors {
   /** The queried id's surviving canonical id. */
@@ -290,6 +323,11 @@ export interface IdentityNeighbors {
   satisfies: IdentityNeighbor[];
   /** Co-children sharing one parent through SAME-kind edges (`via` = the parent). */
   coChildren: IdentityNeighbor[];
+  /** Outgoing PROMOTED `substitution`-kind targets (`id → to`, weight ≥ promote threshold),
+   *  each carrying its weight + optional qualifier. Kept SEPARATE from the factual sets so a
+   *  substitute never enters `satisfies()` reachability; the walk surfaces it after all factual
+   *  relations. Empty when the id has no promoted substitution edge. */
+  substitutions: SubstitutionNeighbor[];
 }
 
 /**
@@ -305,7 +343,9 @@ export async function readIdentityNeighbors(env: Env, ids: string[]): Promise<Ma
     d.all<{ id: string; base: string | null; detail: string | null; representative: string | null; concrete: number | null }>(
       "SELECT id, base, detail, representative, concrete FROM ingredient_identity",
     ),
-    d.all<{ from_id: string; to_id: string; kind: string }>("SELECT from_id, to_id, kind FROM ingredient_edge"),
+    d.all<{ from_id: string; to_id: string; kind: string; weight: number | null; qualifier: string | null }>(
+      "SELECT from_id, to_id, kind, weight, qualifier FROM ingredient_edge",
+    ),
   ]);
   const resolve = representativeResolver(identities);
   const rowOf = new Map(identities.map((r) => [r.id, r] as const));
@@ -317,12 +357,43 @@ export async function readIdentityNeighbors(env: Env, ids: string[]): Promise<Ma
   const concreteOf = (id: string): boolean => (rowOf.get(id)?.concrete ?? 1) !== 0;
 
   // Resolve + dedup the edge list once; a post-resolution self-loop carries no relation.
+  // Substitution edges are held SEPARATELY (D6/D7): NEVER folded into the factual neighbor sets
+  // (satisfiedBy/satisfies/coChildren), collected only as PROMOTED (weight ≥ threshold) OUTGOING
+  // targets so a substitute surfaces as a labeled read-time suggestion, never as identity.
   const seen = new Set<string>();
   const resolved: { from: string; to: string; kind: string }[] = [];
+  const subByPair = new Map<string, SubstitutionNeighbor>(); // resolved from+to → the merged sub target
+  const subByFrom = new Map<string, SubstitutionNeighbor[]>(); // resolved from-id → its promoted subs
   for (const e of edges) {
     const from = resolve(e.from_id);
     const to = resolve(e.to_id);
     if (from === to) continue;
+    if (e.kind === SUBSTITUTION_KIND) {
+      const weight = e.weight ?? 1;
+      if (weight < SUBSTITUTION_PROMOTE_MIN) continue; // only promoted edges surface
+      const qualifier = e.qualifier ?? undefined;
+      const pairKey = `${from} ${to}`;
+      const prior = subByPair.get(pairKey);
+      if (prior) {
+        // Two rows resolving to the same pair (a merged endpoint): keep the strongest observation
+        // and the first authored qualifier. The object is shared with `subByFrom`, so both update.
+        prior.weight = Math.max(prior.weight, weight);
+        if (!prior.qualifier && qualifier) prior.qualifier = qualifier;
+        continue;
+      }
+      const sub: SubstitutionNeighbor = {
+        id: to,
+        label: labelOf(to),
+        concrete: concreteOf(to),
+        weight,
+        ...(qualifier ? { qualifier } : {}),
+      };
+      subByPair.set(pairKey, sub);
+      const list = subByFrom.get(from);
+      if (list) list.push(sub);
+      else subByFrom.set(from, [sub]);
+      continue;
+    }
     const key = `${from}\u0000${to}\u0000${e.kind}`;
     if (seen.has(key)) continue;
     seen.add(key);
@@ -369,7 +440,12 @@ export async function readIdentityNeighbors(env: Env, ids: string[]): Promise<Ma
       const bv = b.via ?? "";
       return av < bv ? -1 : av > bv ? 1 : 0;
     });
-    out.set(raw, { id: x, satisfiedBy, satisfies, coChildren });
+    // x's own outgoing promoted substitution targets — depth-1 only (never followed
+    // transitively), lexicographically ordered so the downstream walk's tie is stable.
+    const substitutions = (subByFrom.get(x) ?? [])
+      .slice()
+      .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    out.set(raw, { id: x, satisfiedBy, satisfies, coChildren, substitutions });
   }
   return out;
 }
