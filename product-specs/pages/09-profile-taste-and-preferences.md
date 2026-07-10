@@ -14,15 +14,23 @@ Two-column card: derived retrospective prose + cuisine/protein/go-to chips (clic
 the left; "In your words — guidance yamp reads" and "Dietary principles — rules every
 plan respects" markdown editors (If-Match, as today) plus read-only "Kitchen equipment —
 set with yamp" chips on the right. Only change: layout, and the prose should become
-meal-aware once cadence is per-meal ("3.8 nights a week" → per-meal counts).
+meal-aware once cadence is per-meal ("3.8 nights a week" → per-meal counts). The taste
+profile stays member-scoped; in household planning it feeds the attendance-weighted
+household blend (D29) — dietary Avoids compose by union across members, taste ranking
+blends member profiles weighted by who's eating.
 
 ## 2. Preferences tab
 
 **Planning card**: **per-meal weekly cadence steppers** Breakfast/Lunch/Dinner, 0–7
 each (story 02 — replaces the single nights control); resurface-after slider (14–60d);
-novelty-boost slider (0.1–0.5). **Lunch strategy and ready-to-eat default action are cut
-(decided, D8)** — the proposal removing them defines the migration onto seeded meal
-vibes (story 02 §3). Add the **weekly budget** control here (story 03 — mock forgot it).
+novelty-boost slider (0.1–0.5). Cadence and resurface-after are household-scoped (D29).
+**Lunch strategy and ready-to-eat default action are cut (decided, D8)** — the proposal
+removing them defines the migration onto seeded meal vibes (story 02 §3). Add the
+**weekly budget** control here (story 03 — mock forgot it); it is mandatory (read by
+band 4). Banding (D25): the planning card + budget control ride the band-2
+`profile-planning-and-vibes-ui` slice, sequenced immediately after band 1's schema
+change; the Preferred-brands card ships with the brand-tier model change (never after
+the order-review rework).
 
 **Dietary card**: Avoid entirely / Limit token fields (exists; add-pill interaction
 tweak).
@@ -30,9 +38,12 @@ tweak).
 **Store card** (story 04): adapter tabs **Kroger / Instacart / Satellites / Offline**.
 Kroger: Connected chip, preferred store (name + address) with gear → **store-modal**
 (ZIP search, distance-sorted results, select), Disconnect / Connect. Instacart (new):
-account, preferred retailer (delivery-ETA metadata) via the same modal, connect flow.
+account, preferred retailer (delivery-ETA metadata) via the same modal, connect flow —
+the preferred retailer is the standing preference the grocery launcher projects, with a
+per-trip "choose another retailer…" override that never rewrites it (story 04 §3).
 Satellites: read-only per-store adapter summary (state chips: Session fresh / Scanning /
-Re-run login) linking to the Satellites tab + "Authoring store adapters →" doc link.
+Re-run login — session freshness comes from the satellite-reported observation, D22)
+linking to the Satellites tab + "Authoring store adapters →" doc link.
 Offline (**decided, D6: a rename of the existing generic non-Kroger stores surface** —
 `list_stores`/`add_store`/store notes, incl. `layout` aisle notes; no new entity): store
 rows (name, optional nickname, mapped/stale/No map chip), gear → **map-modal** aisle
@@ -72,4 +83,8 @@ tier). Order review's "Save as preferred brand" and "don't care" write here (pag
    source.
 4. ~~Offline-store data owner~~ — decided (D6): the existing stores surface. Remaining:
    aisle-map sharing scope (story 04 q2).
-5. Where old `lunch_strategy`/`rte_action` values migrate (which seeded vibes).
+5. ~~Where old `lunch_strategy`/`rte_action` values migrate; what stale agents see.~~ —
+   decided (D21): retired keys are accepted-and-dropped with a `warnings` field for one
+   deprecation window (`default_cooking_nights` aliases to `cadence.dinner`); the value
+   migration onto seeded lunch/breakfast vibes runs as pipeline convergence with
+   pre-migration production rows as acceptance fixtures.

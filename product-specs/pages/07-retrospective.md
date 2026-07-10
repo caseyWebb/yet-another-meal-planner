@@ -39,15 +39,21 @@ Range 4w/8w/12w; deterministic insight banner; KPI tiles (Total spend / Avg per 
 period, "not enough history" fallback); weekly bar chart with **budget line** (member
 weekly-budget preference; over-budget bars highlighted; $0 hides); breakdowns: By
 department, By store, By meal source (Planned vs Impulse); Top cost drivers ("bought
-N×"). All household-scoped, derived from spend events; no LLM in the read path.
+N×"). All household-scoped, derived from D16 spend events over the canonical D17
+department dimension only ("Not mapped" can never appear); no LLM in the read path.
+Lingering in_cart rows surface as "N items awaiting mark-placed" rather than being
+counted (D16). The `retrospective` tool gains read-only household-scoped spend/waste
+aggregate sections; no spend-write tool exists.
 
 ## 4. Waste analyzer (new — contract in story 03)
 
 Same range control; insight banner; KPI tiles (Tossed $ / Items binned "~N a week" /
 Waste rate "% of grocery spend" red ≥10% / Weekly trend); weekly tossed chart; breakdowns:
 By department (incl. Leftovers), By reason, Avoidable vs Hard to avoid; Most-wasted items
-("tossed N×"). Derived from waste events captured at pantry disposition (pages/06);
-$ value and avoidability derived, never asked.
+("tossed N×"). Derived from the D15/D17 waste events captured at pantry disposition
+(pages/06), over the canonical department dimension only; $ value and avoidability
+derived, never asked — avoidability and the Leftovers pseudo-department are read-time
+derivations from the versioned reason table (story 03 §2).
 
 ## 5. Delta vs today
 
@@ -63,7 +69,8 @@ $ value and avoidability derived, never asked.
 
 1. Leftovers semantics (§2) — the one real product decision on the log.
 2. Cost-per-meal denominator (which log types count; breakfasts weigh same as dinners?).
-3. Does the agent-side `retrospective` tool gain spend/waste aggregates in the same pass
-   (recommended: yes, read-only)?
+3. ~~Does the agent-side `retrospective` tool gain spend/waste aggregates in the same
+   pass?~~ — decided (D16 / story 03): yes — read-only household-scoped aggregate
+   sections; no spend-write tool is minted.
 4. `/log` route redirect.
 5. Trend availability rules at range edges; week-start convention (mock: Sunday).

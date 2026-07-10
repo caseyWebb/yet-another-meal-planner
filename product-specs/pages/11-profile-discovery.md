@@ -13,14 +13,23 @@ is a personal relevance signal; polling is pooled (the dedup/memoize principle).
 
 ## 2. Functional requirements
 
-**Followed rows**: name + "you added" provenance badge; health chip (Reachable / Walled /
-Checking… — needs persisted probe/sweep health, new); URL; descriptive tags; "followed by
-N households · brought you N recipes" (attribution rollups — new); Unfollow (never
-removes from the pool).
+**Followed rows**: name + "you added" provenance badge; health chip (Reachable / Walled
+— derived from the persisted `last_status` columns + staleness on the shared feeds
+table, story 05 §1; "Checking…" is client-only during an in-flight probe, never
+persisted); URL; descriptive tags; "followed by N households · brought you N recipes"
+(attribution rollups — the rollup reads `discovery_matches` joined to `discovery_log`
+origin, D13, so attribution and visibility cannot drift); Unfollow (never removes from
+the pool). Agent-added feeds (`update_feeds`) auto-follow the adding member (mirroring
+the member add-with-test path). Sweep-import visibility = the matched members'
+households (D13 — the `discovery_matches` row is the grant). The curated set arrives
+through this same sweep pipeline as a product-maintained pinned public source, landing
+provenance-tagged as the curated tier; a household-level setting can hide the entire
+curated tier from the household's lens (D13 amendment).
 
 **Add a feed**: input with typeahead over the pool (not-followed, not-walled; one-click
 follow) + "Test it and add as a new feed" row for unknown domains. Submit: known
-non-walled domain → follow directly; unknown or walled → **feed-test modal**.
+non-walled domain → follow directly; unknown or walled (off the stored `last_status`) →
+**feed-test modal**.
 
 **Feed-test modal** (member exposure of the existing admin probe): testing spinner
 ("Fetching from yamp's edge and sampling recent posts…") → results: reachable chip +

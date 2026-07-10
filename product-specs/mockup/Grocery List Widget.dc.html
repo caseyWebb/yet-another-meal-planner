@@ -1,0 +1,743 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="_ds/yamp-ui-76ffa1d0-b4bc-4e60-b696-ab3a7227af90/_ds_bundle.css">
+  <link rel="stylesheet" href="_ds/yamp-ui-76ffa1d0-b4bc-4e60-b696-ab3a7227af90/styles.css">
+  <link href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    * { box-sizing: border-box; }
+    html, body { margin: 0; }
+    body { background: var(--background); color: var(--foreground); font-family: var(--font-sans); }
+    .grocery-widget h1 { margin: 0; font-size: var(--text-3xl); font-weight: 600; letter-spacing: -0.02em; line-height: 1.15; }
+    .grocery-widget { max-width: 44rem; margin: 0 auto; }
+    .grocery-widget.embedded { max-width: none; margin: 0; }
+    .grocery-widget [data-slot="card"] { border-color: color-mix(in oklch, var(--border) 55%, var(--card)); }
+    .gl-card { display: block; }
+    .gl-cardhead { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; margin-bottom: 1rem; }
+    a { color: var(--link); text-decoration: underline; text-underline-offset: 2px; }
+    a:hover { opacity: 0.82; }
+    .gl-input:focus { outline: none; border-color: var(--ring); box-shadow: 0 0 0 3px color-mix(in oklch, var(--ring) 25%, transparent); }
+  </style>
+</helmet>
+<div class="yamp-host" style="{{ hostStyle }}">
+  <sc-if value="{{ showChrome }}" hint-placeholder-val="{{ true }}">
+  <div class="host-bar" style="display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap; padding: 0.75rem 1rem; border-bottom: 1px solid var(--border); background: color-mix(in oklch, var(--muted) 35%, var(--background)); position: sticky; top: 0; z-index: 5;">
+    <div style="display: flex; align-items: center; gap: 0.6rem; min-width: 0;">
+      <span style="width: 9px; height: 9px; border-radius: 999px; background: var(--primary); flex: 0 0 auto;"></span>
+      <span style="font-family: var(--font-mono); font-size: var(--text-xs); text-transform: uppercase; letter-spacing: 0.09em; color: var(--muted-foreground);">grocery-list-widget</span>
+    </div>
+    <div style="display: flex; align-items: center; gap: 0.5rem; flex: 0 0 auto;">
+      <div role="tablist" style="display: inline-flex; padding: 3px; gap: 2px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--background);">
+        <button type="button" onClick="{{ setOrderMode }}" style="{{ orderTabStyle }}">Order</button>
+        <button type="button" onClick="{{ setWalkMode }}" style="{{ walkTabStyle }}">Store walk</button>
+      </div>
+      <button type="button" onClick="{{ toggleTheme }}" aria-label="Toggle dark mode" style="display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--background); color: var(--muted-foreground); cursor: pointer; flex: 0 0 auto;">
+        <sc-if value="{{ dark }}" hint-placeholder-val="{{ true }}">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"></path></svg>
+        </sc-if>
+        <sc-if value="{{ light }}" hint-placeholder-val="{{ true }}">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"></path></svg>
+        </sc-if>
+      </button>
+    </div>
+  </div>
+  </sc-if>
+
+  <div class="widget-surface" style="{{ surfaceStyle }}">
+    <div class="{{ rootClass }}">
+      <div class="gl-card">
+        <sc-if value="{{ showHeading }}" hint-placeholder-val="{{ true }}">
+        <div class="gl-cardhead">
+          <h1>Shopping List</h1>
+          <span style="display: inline-flex; align-items: center; gap: 0.35rem; font-family: var(--font-mono); font-size: var(--text-xs); color: var(--muted-foreground); white-space: nowrap;">{{ countLabel }}</span>
+        </div>
+        </sc-if>
+
+        <div class="gl-cardbody">
+
+          <sc-if value="{{ staleShow }}" hint-placeholder-val="{{ false }}">
+            <div style="display: flex; align-items: flex-start; gap: 0.6rem; padding: 0.7rem 0.85rem; margin-bottom: 1rem; border: 1px solid color-mix(in oklch, var(--destructive) 32%, var(--card)); border-radius: var(--radius-md); background: color-mix(in oklch, var(--destructive) 9%, var(--card));">
+              <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="var(--destructive)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex: 0 0 auto; margin-top: 1px;"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0Z"></path><path d="M12 9v4M12 17h.01"></path></svg>
+              <div style="flex: 1; min-width: 0;">
+                <div style="font-size: var(--text-sm); font-weight: 600;">{{ staleTitle }}</div>
+                <div style="font-size: var(--text-sm); color: var(--muted-foreground); line-height: 1.45; margin-top: 0.1rem;">{{ staleBody }}</div>
+              </div>
+              <button type="button" onClick="{{ dismissStale }}" aria-label="Dismiss" style="flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px; border: none; border-radius: var(--radius-sm); background: transparent; color: var(--muted-foreground); cursor: pointer; margin: -0.15rem -0.2rem 0 0;" style-hover="{{ removeHover }}">
+                <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"></path></svg>
+              </button>
+            </div>
+          </sc-if>
+
+          <div style="display: flex; align-items: center; justify-content: space-between; gap: 0.6rem; flex-wrap: wrap; margin-bottom: 0.35rem;">
+            <div style="display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap;" role="radiogroup" aria-label="Group by">
+              <span style="font-family: var(--font-mono); font-size: var(--text-xs); text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted-foreground);">Group by</span>
+              <div style="display: inline-flex; padding: 3px; gap: 2px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--background); flex-wrap: wrap;">
+                <sc-for list="{{ groupTabs }}" as="g" hint-placeholder-count="4">
+                  <button type="button" role="radio" onClick="{{ g.onClick }}" style="{{ g.style }}">{{ g.label }}</button>
+                </sc-for>
+              </div>
+            </div>
+            <sc-if value="{{ embedded }}" hint-placeholder-val="{{ false }}">
+              <span style="display: inline-flex; align-items: center; gap: 0.35rem; font-family: var(--font-mono); font-size: var(--text-xs); color: var(--muted-foreground); white-space: nowrap;">{{ countLabel }}</span>
+            </sc-if>
+          </div>
+
+          <sc-if value="{{ isEmpty }}" hint-placeholder-val="{{ false }}">
+            <div style="text-align: center; padding: 2.5rem 1rem; color: var(--muted-foreground);">
+              <div style="width: 46px; height: 46px; margin: 0 auto 0.75rem; border-radius: 999px; background: color-mix(in oklch, var(--muted) 60%, var(--card)); display: inline-flex; align-items: center; justify-content: center;">
+                <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"></path></svg>
+              </div>
+              <div style="font-size: var(--text-base); font-weight: 600; color: var(--foreground);">Nothing to buy right now</div>
+              <div style="font-size: var(--text-sm); margin-top: 0.25rem;">Your list is clear and the plan's needs are all covered by the pantry.</div>
+            </div>
+          </sc-if>
+
+          <sc-for list="{{ groups }}" as="group" hint-placeholder-count="3">
+            <div style="margin-top: 0.2rem;">
+              <div style="display: flex; align-items: baseline; justify-content: space-between; gap: 0.75rem; margin: 1.15rem 0 0.15rem;">
+                <span style="font-family: var(--font-mono); font-size: var(--text-xs); text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted-foreground); font-weight: 600;">{{ group.heading }}</span>
+                <sc-if value="{{ group.meta }}" hint-placeholder-val="{{ true }}">
+                  <span style="font-family: var(--font-mono); font-size: var(--text-xs); color: var(--muted-foreground); white-space: nowrap;">{{ group.meta }}</span>
+                </sc-if>
+              </div>
+              <sc-for list="{{ group.items }}" as="row" hint-placeholder-count="3">
+                <div style="display: flex; align-items: center; gap: 0.75rem; padding: 0.6rem 0; border-bottom: 1px solid color-mix(in oklch, var(--border) 45%, var(--card));">
+                  <button type="button" onClick="{{ row.toggle }}" aria-label="Toggle item" style="{{ row.boxStyle }}">
+                    <sc-if value="{{ row.checked }}" hint-placeholder-val="{{ false }}">
+                      <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="var(--primary-foreground)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"></path></svg>
+                    </sc-if>
+                  </button>
+                  <div style="flex: 1; min-width: 0;">
+                    <div style="display: flex; align-items: center; gap: 0.4rem; min-width: 0;">
+                      <span style="{{ row.nameStyle }}">{{ row.name }}</span>
+                      <sc-if value="{{ row.subHint }}" hint-placeholder-val="{{ false }}">
+                        <span style="position: relative; flex: 0 0 auto; display: inline-flex;">
+                          <button type="button" onClick="{{ row.toggleSub }}" aria-label="Pantry swap suggestion" aria-expanded="{{ row.subOpen }}" style="{{ row.subBtnStyle }}">
+                            <svg viewBox="0 0 24 24" width="10" height="10" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m17 2 4 4-4 4"></path><path d="M3 11v-1a4 4 0 0 1 4-4h14"></path><path d="m7 22-4-4 4-4"></path><path d="M21 13v1a4 4 0 0 1-4 4H3"></path></svg>
+                          </button>
+                          <sc-if value="{{ row.subOpen }}" hint-placeholder-val="{{ false }}">
+                            <div role="dialog" aria-label="Pantry look-alike" style="position: absolute; top: calc(100% + 9px); left: -8px; z-index: 30; width: 258px; padding: 0.85rem; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--card); text-align: left; cursor: default;">
+                              <div style="position: absolute; top: -6px; left: 13px; width: 10px; height: 10px; background: var(--card); border-left: 1px solid var(--border); border-top: 1px solid var(--border); transform: rotate(45deg);"></div>
+                              <div style="display: flex; align-items: center; gap: 0.4rem; font-family: var(--font-mono); font-size: var(--text-xs); text-transform: uppercase; letter-spacing: 0.08em; color: var(--primary); font-weight: 600;">
+                                <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m17 2 4 4-4 4"></path><path d="M3 11v-1a4 4 0 0 1 4-4h14"></path><path d="m7 22-4-4 4-4"></path><path d="M21 13v1a4 4 0 0 1-4 4H3"></path></svg>
+                                Pantry look-alike
+                              </div>
+                              <div style="font-size: var(--text-sm); line-height: 1.4; margin-top: 0.5rem;">Use <span style="font-weight: 600; color: var(--primary);">{{ row.subLabel }}</span> instead of buying <span style="font-weight: 600;">{{ row.name }}</span>.</div>
+                              <div style="font-size: var(--text-xs); color: var(--muted-foreground); margin-top: 0.2rem;">{{ row.subRelationLabel }} · on hand in your pantry</div>
+                              <div style="display: flex; gap: 0.4rem; margin-top: 0.8rem;">
+                                <button type="button" onClick="{{ row.rejectSub }}" style="flex: 1; padding: 0.42rem 0.6rem; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--background); color: var(--muted-foreground); font: inherit; font-size: var(--text-xs); font-weight: 500; cursor: pointer; white-space: nowrap;" style-hover="{{ ghostHover }}">Keep original</button>
+                                <button type="button" onClick="{{ row.confirmSub }}" style="flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 0.3rem; padding: 0.42rem 0.6rem; border: none; border-radius: var(--radius-sm); background: var(--primary); color: var(--primary-foreground); font: inherit; font-size: var(--text-xs); font-weight: 600; cursor: pointer; white-space: nowrap;">
+                                  <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"></path></svg>
+                                  Swap in
+                                </button>
+                              </div>
+                            </div>
+                          </sc-if>
+                        </span>
+                      </sc-if>
+                    </div>
+                    <div style="display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; margin-top: 0.1rem;">
+                      <sc-if value="{{ row.recipesLabel }}" hint-placeholder-val="{{ true }}">
+                        <span style="font-size: var(--text-xs); color: var(--muted-foreground); display: inline-flex; align-items: center; gap: 0.25rem;">
+                          <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2Z"></path></svg>
+                          {{ row.recipesLabel }}
+                        </span>
+                      </sc-if>
+                      <sc-if value="{{ row.note }}" hint-placeholder-val="{{ true }}">
+                        <span style="font-size: var(--text-xs); color: var(--muted-foreground); font-style: italic;">{{ row.note }}</span>
+                      </sc-if>
+                      <sc-if value="{{ row.aisleLabel }}" hint-placeholder-val="{{ false }}">
+                        <span style="font-size: var(--text-xs); color: var(--muted-foreground);">{{ row.aisleLabel }}</span>
+                      </sc-if>
+                    </div>
+                  </div>
+                  <span style="font-family: var(--font-mono); font-size: var(--text-xs); color: var(--foreground); background: color-mix(in oklch, var(--muted) 55%, var(--card)); padding: 0.15rem 0.45rem; border-radius: var(--radius-sm); white-space: nowrap; flex: 0 0 auto;">{{ row.qtyLabel }}</span>
+                  <sc-if value="{{ row.showBadge }}" hint-placeholder-val="{{ false }}">
+                    <span style="{{ row.badgeStyle }}">{{ row.badgeLabel }}</span>
+                  </sc-if>
+                  <button type="button" onClick="{{ row.remove }}" aria-label="Remove item" style="flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px; border: none; border-radius: var(--radius-sm); background: transparent; color: var(--muted-foreground); cursor: pointer;" style-hover="{{ removeHover }}">
+                    <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"></path></svg>
+                  </button>
+                </div>
+              </sc-for>
+            </div>
+          </sc-for>
+
+          <sc-if value="{{ underivedShow }}" hint-placeholder-val="{{ false }}">
+            <div style="display: flex; align-items: flex-start; gap: 0.5rem; margin-top: 1rem; font-size: var(--text-xs); color: var(--muted-foreground); line-height: 1.5;">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex: 0 0 auto; margin-top: 1px;"><circle cx="12" cy="12" r="9"></circle><path d="M12 8v4M12 16h.01"></path></svg>
+              <span>{{ underivedLabel }}</span>
+            </div>
+          </sc-if>
+
+          <form onSubmit="{{ submitAdd }}" style="display: flex; gap: 0.5rem; margin-top: 1.35rem;">
+            <input class="gl-input" type="text" value="{{ addDraft }}" onInput="{{ onAddInput }}" placeholder="Add an item to the list…" style="flex: 1; min-width: 0; padding: 0.5rem 0.75rem; border: 1px solid var(--input); border-radius: var(--radius-md); background: var(--background); color: var(--foreground); font: inherit; font-size: var(--text-sm);" />
+            <button type="submit" style="display: inline-flex; align-items: center; gap: 0.35rem; padding: 0.5rem 0.95rem; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--background); color: var(--foreground); font: inherit; font-size: var(--text-sm); font-weight: 500; cursor: pointer; white-space: nowrap;">
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M5 12h14"></path></svg>
+              Add
+            </button>
+          </form>
+
+          <sc-if value="{{ pantryShow }}" hint-placeholder-val="{{ false }}">
+            <div style="margin-top: 1.35rem; border: 1px solid var(--border); border-radius: var(--radius-lg); background: color-mix(in oklch, var(--muted) 28%, var(--card)); overflow: hidden;">
+              <button type="button" onClick="{{ togglePantry }}" style="width: 100%; display: flex; align-items: center; gap: 0.6rem; padding: 0.8rem 0.95rem; border: none; background: transparent; color: var(--foreground); font: inherit; cursor: pointer; text-align: left;">
+                <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="var(--primary)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex: 0 0 auto;"><path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"></path><path d="M9 22V12h6v10"></path></svg>
+                <span style="flex: 1; min-width: 0;">
+                  <span style="font-size: var(--text-sm); font-weight: 600;">Pantry covers these — still good?</span>
+                  <span style="display: block; font-size: var(--text-xs); color: var(--muted-foreground); margin-top: 0.1rem;">{{ pantrySub }}</span>
+                </span>
+                <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="var(--muted-foreground)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex: 0 0 auto; transition: transform 0.2s ease; {{ chevronStyle }}"><path d="m6 9 6 6 6-6"></path></svg>
+              </button>
+              <sc-if value="{{ pantryOpen }}" hint-placeholder-val="{{ true }}">
+                <div style="padding: 0 0.95rem 0.5rem;">
+                  <sc-for list="{{ pantryRows }}" as="p" hint-placeholder-count="3">
+                    <div style="display: flex; align-items: center; gap: 0.75rem; padding: 0.65rem 0; border-top: 1px solid color-mix(in oklch, var(--border) 55%, var(--card));">
+                      <span style="{{ p.dotStyle }}"></span>
+                      <div style="flex: 1; min-width: 0;">
+                        <div style="font-size: var(--text-sm); font-weight: 500;">{{ p.name }}</div>
+                        <div style="font-size: var(--text-xs); color: var(--muted-foreground); margin-top: 0.05rem;">{{ p.meta }}</div>
+                      </div>
+                      <sc-if value="{{ p.stale }}" hint-placeholder-val="{{ false }}">
+                        <div style="display: flex; gap: 0.4rem; flex: 0 0 auto;">
+                          <button type="button" onClick="{{ p.stillGood }}" style="padding: 0.3rem 0.65rem; border: 1px solid transparent; border-radius: var(--radius-sm); background: transparent; color: var(--muted-foreground); font: inherit; font-size: var(--text-xs); font-weight: 500; cursor: pointer; white-space: nowrap;" style-hover="{{ ghostHover }}">Still good</button>
+                          <button type="button" onClick="{{ p.buyAnyway }}" style="padding: 0.3rem 0.65rem; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--background); color: var(--foreground); font: inherit; font-size: var(--text-xs); font-weight: 500; cursor: pointer; white-space: nowrap;">Buy anyway</button>
+                        </div>
+                      </sc-if>
+                      <sc-if value="{{ p.fresh }}" hint-placeholder-val="{{ true }}">
+                        <span style="display: inline-flex; align-items: center; gap: 0.25rem; font-size: var(--text-xs); color: var(--muted-foreground); flex: 0 0 auto;">
+                          <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"></path></svg>
+                          covered
+                        </span>
+                      </sc-if>
+                    </div>
+                  </sc-for>
+                </div>
+              </sc-if>
+            </div>
+          </sc-if>
+
+          <sc-if value="{{ subShow }}" hint-placeholder-val="{{ false }}">
+            <div style="margin-top: 1.35rem; border: 1px solid var(--border); border-radius: var(--radius-lg); background: color-mix(in oklch, var(--muted) 28%, var(--card)); overflow: hidden;">
+              <button type="button" onClick="{{ toggleSubs }}" style="width: 100%; display: flex; align-items: center; gap: 0.6rem; padding: 0.8rem 0.95rem; border: none; background: transparent; color: var(--foreground); font: inherit; cursor: pointer; text-align: left;">
+                <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="var(--primary)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex: 0 0 auto;"><path d="m17 2 4 4-4 4"></path><path d="M3 11v-1a4 4 0 0 1 4-4h14"></path><path d="m7 22-4-4 4-4"></path><path d="M21 13v1a4 4 0 0 1-4 4H3"></path></svg>
+                <span style="flex: 1; min-width: 0;">
+                  <span style="font-size: var(--text-sm); font-weight: 600;">Use what you already have</span>
+                  <span style="display: block; font-size: var(--text-xs); color: var(--muted-foreground); margin-top: 0.1rem; line-height: 1.5;">Pantry look-alikes for lines you're about to buy — swap in something on hand, or keep the original.</span>
+                </span>
+                <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="var(--muted-foreground)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="{{ subsChevronStyle }}"><path d="m6 9 6 6 6-6"></path></svg>
+              </button>
+              <sc-if value="{{ subsOpen }}" hint-placeholder-val="{{ true }}">
+              <div style="padding: 0 0.95rem 0.5rem;">
+                <sc-for list="{{ subRows }}" as="sub" hint-placeholder-count="2">
+                  <div style="padding: 0.65rem 0; border-top: 1px solid color-mix(in oklch, var(--border) 55%, var(--card));">
+                    <sc-if value="{{ sub.notConfirmed }}" hint-placeholder-val="{{ true }}">
+                      <div style="display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap;">
+                        <span style="flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px; border-radius: 999px; background: color-mix(in oklch, var(--primary) 12%, var(--card)); color: var(--primary);">
+                          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m17 2 4 4-4 4"></path><path d="M3 11v-1a4 4 0 0 1 4-4h14"></path><path d="m7 22-4-4 4-4"></path><path d="M21 13v1a4 4 0 0 1-4 4H3"></path></svg>
+                        </span>
+                        <div style="flex: 1; min-width: 0;">
+                          <div style="font-size: var(--text-sm); line-height: 1.35;">Buy <span style="font-weight: 600;">{{ sub.forName }}</span> → use <span style="font-weight: 600; color: var(--primary);">{{ sub.label }}</span></div>
+                          <div style="font-size: var(--text-xs); color: var(--muted-foreground); margin-top: 0.15rem;">{{ sub.relationLabel }}</div>
+                        </div>
+                        <div style="display: flex; gap: 0.4rem; flex: 0 0 auto;">
+                          <button type="button" onClick="{{ sub.reject }}" style="padding: 0.35rem 0.7rem; border: 1px solid transparent; border-radius: var(--radius-sm); background: transparent; color: var(--muted-foreground); font: inherit; font-size: var(--text-xs); font-weight: 500; cursor: pointer; white-space: nowrap;" style-hover="{{ ghostHover }}">Keep original</button>
+                          <button type="button" onClick="{{ sub.confirm }}" style="display: inline-flex; align-items: center; gap: 0.3rem; padding: 0.35rem 0.8rem; border: none; border-radius: var(--radius-sm); background: var(--primary); color: var(--primary-foreground); font: inherit; font-size: var(--text-xs); font-weight: 600; cursor: pointer; white-space: nowrap;">
+                            <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"></path></svg>
+                            Swap in
+                          </button>
+                        </div>
+                      </div>
+                    </sc-if>
+                    <sc-if value="{{ sub.confirmed }}" hint-placeholder-val="{{ false }}">
+                      <div style="display: flex; align-items: center; gap: 0.6rem;">
+                        <span style="flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; border-radius: 999px; background: var(--primary); color: var(--primary-foreground);">
+                          <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"></path></svg>
+                        </span>
+                        <div style="flex: 1; min-width: 0; font-size: var(--text-sm); color: var(--muted-foreground);">Using <span style="font-weight: 600; color: var(--foreground);">{{ sub.label }}</span> — <span style="font-weight: 500;">{{ sub.forName }}</span> dropped from the list.</div>
+                        <button type="button" onClick="{{ sub.undo }}" style="flex: 0 0 auto; padding: 0.3rem 0.65rem; border: 1px solid transparent; border-radius: var(--radius-sm); background: transparent; color: var(--muted-foreground); font: inherit; font-size: var(--text-xs); font-weight: 500; cursor: pointer;" style-hover="{{ ghostHover }}">Undo</button>
+                      </div>
+                    </sc-if>
+                  </div>
+                </sc-for>
+              </div>
+              </sc-if>
+            </div>
+          </sc-if>
+
+          <div style="display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-top: 1.5rem; padding-top: 1.1rem; border-top: 1px solid var(--border);">
+            <span style="font-family: var(--font-mono); font-size: var(--text-xs); color: var(--muted-foreground);">{{ footerLabel }}</span>
+            <sc-if value="{{ isWalk }}" hint-placeholder-val="{{ false }}">
+              <button type="button" onClick="{{ placeOrder }}" style="display: inline-flex; align-items: center; gap: 0.45rem; padding: 0.55rem 1.15rem; border: none; border-radius: var(--radius-md); background: var(--primary); color: var(--primary-foreground); font: inherit; font-size: var(--text-sm); font-weight: 600; cursor: pointer;">
+                {{ orderCta }}
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"></path></svg>
+              </button>
+            </sc-if>
+            <sc-if value="{{ isOrder }}" hint-placeholder-val="{{ true }}">
+              <sc-if value="{{ orderPlaced }}" hint-placeholder-val="{{ false }}">
+                <button type="button" disabled="{{ orderPlaced }}" style="display: inline-flex; align-items: center; gap: 0.45rem; padding: 0.55rem 1.15rem; border: none; border-radius: var(--radius-md); background: color-mix(in oklch, var(--primary) 22%, var(--card)); color: var(--primary); font: inherit; font-size: var(--text-sm); font-weight: 600; cursor: default;">
+                  {{ orderCta }}
+                  <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"></path></svg>
+                </button>
+              </sc-if>
+              <sc-if value="{{ orderNotPlaced }}" hint-placeholder-val="{{ true }}">
+                <div data-order-split="true" style="position: relative; display: inline-flex;">
+                  <button type="button" onClick="{{ orderKroger }}" style="display: inline-flex; align-items: center; gap: 0.45rem; padding: 0.55rem 1.1rem; border: none; border-radius: var(--radius-md) 0 0 var(--radius-md); background: var(--primary); color: var(--primary-foreground); font: inherit; font-size: var(--text-sm); font-weight: 600; cursor: pointer;">
+                    {{ orderCta }}
+                  </button>
+                  <button type="button" aria-label="More order options" aria-haspopup="menu" aria-expanded="{{ orderMenuOpen }}" onClick="{{ toggleOrderMenu }}" style="display: inline-flex; align-items: center; justify-content: center; padding: 0.55rem 0.55rem; border: none; border-left: 1px solid color-mix(in oklch, var(--primary-foreground) 30%, transparent); border-radius: 0 var(--radius-md) var(--radius-md) 0; background: var(--primary); color: var(--primary-foreground); cursor: pointer;">
+                    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"></path></svg>
+                  </button>
+                  <sc-if value="{{ orderMenuOpen }}" hint-placeholder-val="{{ false }}">
+                    <div role="menu" style="position: absolute; bottom: calc(100% + 6px); right: 0; z-index: 40; min-width: 18.5rem; background: var(--popover, var(--card)); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.3rem;">
+                      <button type="button" role="menuitem" onClick="{{ orderInstacart }}" style="display: flex; align-items: center; gap: 0.55rem; width: 100%; padding: 0.55rem 0.6rem; background: transparent; border: 0; border-radius: var(--radius-sm); cursor: pointer; font: inherit; font-size: var(--text-sm); color: var(--foreground); text-align: left;" style-hover="background: var(--muted);">
+                        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="21" r="1"></circle><circle cx="19" cy="21" r="1"></circle><path d="M2.05 2.05h2l2.66 12.42a2 2 0 0 0 2 1.58h9.78a2 2 0 0 0 1.95-1.57l1.65-7.43H5.12"></path></svg>
+                        Order with Instacart
+                      </button>
+                      <sc-for list="{{ satelliteStores }}" as="s" hint-placeholder-count="1">
+                        <button type="button" role="menuitem" onClick="{{ s.onOrder }}" disabled="{{ s.disabled }}" style="display: flex; align-items: center; gap: 0.55rem; width: 100%; padding: 0.55rem 0.6rem; background: transparent; border: 0; border-radius: var(--radius-sm); cursor: pointer; font: inherit; font-size: var(--text-sm); color: var(--foreground); text-align: left;" style-hover="background: var(--muted);">
+                        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12a7 7 0 0 1 7-7"></path><path d="M9 12a3 3 0 0 1 3-3"></path><circle cx="12" cy="12" r="1"></circle><path d="m14 14 6 6"></path></svg>
+                        <span style="flex: 1; min-width: 0;">Order with {{ s.name }}</span>
+                        <span style="font-family: var(--font-mono); font-size: 0.6rem; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 700; color: var(--brand); background: color-mix(in oklch, var(--brand) 14%, var(--card)); padding: 0.1rem 0.4rem; border-radius: 999px; flex: 0 0 auto;">Satellite</span>
+                        <sc-if value="{{ s.needsLogin }}" hint-placeholder-val="{{ false }}"><span style="font-size: var(--text-xs); color: var(--muted-foreground); flex: 0 0 auto;">re-run login</span></sc-if>
+                        </button>
+                      </sc-for>
+                      <button type="button" role="menuitem" onClick="{{ logManualShop }}" style="display: flex; align-items: center; gap: 0.55rem; width: 100%; padding: 0.55rem 0.6rem; background: transparent; border: 0; border-radius: var(--radius-sm); cursor: pointer; font: inherit; font-size: var(--text-sm); color: var(--foreground); text-align: left;" style-hover="background: var(--muted);">
+                        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 11l3 3L22 4"></path><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"></path></svg>
+                        Log a manual shop · {{ checkedCount }} checked
+                      </button>
+                    </div>
+                  </sc-if>
+                  <sc-if value="{{ retailerPickerOpen }}" hint-placeholder-val="{{ false }}">
+                    <div role="menu" aria-label="Choose Instacart retailer" style="position: absolute; bottom: calc(100% + 6px); right: 0; z-index: 40; width: 19rem; background: var(--popover, var(--card)); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.4rem;">
+                      <div style="font-family: var(--font-mono); font-size: var(--text-xs); text-transform: uppercase; letter-spacing: 0.07em; color: var(--muted-foreground); padding: 0.3rem 0.5rem 0.45rem;">Order from</div>
+                      <sc-for list="{{ retailerRows }}" as="r" hint-placeholder-count="4">
+                        <button type="button" role="menuitem" onClick="{{ r.onChoose }}" style="display: flex; align-items: center; gap: 0.6rem; width: 100%; padding: 0.5rem 0.55rem; background: transparent; border: 0; border-radius: var(--radius-sm); cursor: pointer; font: inherit; text-align: left;" style-hover="background: var(--muted);">
+                          <span style="display: inline-flex; align-items: center; justify-content: center; width: 1.9rem; height: 1.9rem; border-radius: var(--radius-sm); background: var(--muted); color: var(--foreground); flex: 0 0 auto;"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 3h2l.4 2M7 13h10l4-8H5.4M7 13 5.4 5M7 13l-2.3 4.6A1 1 0 0 0 5.6 19H17"></path><circle cx="9" cy="21" r="1"></circle><circle cx="18" cy="21" r="1"></circle></svg></span>
+                          <span style="flex: 1; min-width: 0;"><span style="display: block; font-size: var(--text-sm); font-weight: 600; color: var(--foreground);">{{ r.name }}</span><span style="display: block; font-size: var(--text-xs); color: var(--muted-foreground);">{{ r.meta }}</span></span>
+                          <sc-if value="{{ r.isDefault }}" hint-placeholder-val="{{ false }}"><span style="font-family: var(--font-mono); font-size: 0.62rem; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 700; color: var(--primary); background: color-mix(in oklch, var(--primary) 15%, var(--card)); padding: 0.1rem 0.4rem; border-radius: 999px; flex: 0 0 auto;">Default</span></sc-if>
+                        </button>
+                      </sc-for>
+                    </div>
+                  </sc-if>
+                </div>
+              </sc-if>
+            </sc-if>
+          </div>
+
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <sc-if value="{{ reviewOpen }}" hint-placeholder-val="{{ false }}">
+    <div onClick="{{ closeReview }}" style="position: fixed; inset: 0; z-index: 200; display: flex; align-items: flex-start; justify-content: center; padding: 1.5rem 1rem; overflow: auto; background: color-mix(in oklch, var(--foreground) 45%, transparent);">
+      <div onClick="{{ stopProp }}" role="dialog" aria-modal="true" aria-label="Kroger order review" style="width: 100%; max-width: 46rem; margin: auto; background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-xl, 0.9rem); box-shadow: 0 24px 60px -18px color-mix(in oklch, var(--foreground) 42%, transparent); overflow: hidden;">
+        <div style="position: sticky; top: 0; z-index: 2; display: flex; align-items: center; gap: 0.6rem; padding: 0.7rem 0.85rem 0.7rem 1.15rem; border-bottom: 1px solid var(--border); background: var(--card);">
+          <span style="width: 8px; height: 8px; border-radius: 999px; background: var(--primary); flex: 0 0 auto;"></span>
+          <span style="flex: 1; min-width: 0; font-family: var(--font-mono); font-size: var(--text-xs); text-transform: uppercase; letter-spacing: 0.09em; color: var(--muted-foreground);">Kroger order</span>
+          <button type="button" onClick="{{ closeReview }}" aria-label="Close order review" style="display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--background); color: var(--muted-foreground); cursor: pointer; flex: 0 0 auto;">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"></path></svg>
+          </button>
+        </div>
+        <div style="padding: 1.35rem 1.4rem 1.6rem;">
+          <dc-import name="Order Review Widget" embedded="{{ true }}" hint-size="100%,900px"></dc-import>
+        </div>
+      </div>
+    </div>
+  </sc-if>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{
+  &quot;$preview&quot;: { &quot;width&quot;: 760, &quot;height&quot;: 940 },
+  &quot;defaultMode&quot;: { &quot;editor&quot;: &quot;enum&quot;, &quot;options&quot;: [&quot;order&quot;, &quot;walk&quot;], &quot;default&quot;: &quot;order&quot;, &quot;tsType&quot;: &quot;\&quot;order\&quot; | \&quot;walk\&quot;&quot;, &quot;section&quot;: &quot;Behavior&quot; },
+  &quot;showPantryNudge&quot;: { &quot;editor&quot;: &quot;boolean&quot;, &quot;default&quot;: true, &quot;tsType&quot;: &quot;boolean&quot;, &quot;section&quot;: &quot;Behavior&quot; },
+  &quot;accent&quot;: { &quot;editor&quot;: &quot;color&quot;, &quot;default&quot;: &quot;&quot;, &quot;options&quot;: [&quot;#D97757&quot;, &quot;#2A6FDB&quot;, &quot;#1F8A5B&quot;, &quot;#7A5AF8&quot;], &quot;tsType&quot;: &quot;string&quot;, &quot;section&quot;: &quot;Theme&quot; },
+  &quot;embedded&quot;: { &quot;editor&quot;: &quot;boolean&quot;, &quot;default&quot;: false, &quot;tsType&quot;: &quot;boolean&quot;, &quot;section&quot;: &quot;Embedding&quot; },
+  &quot;hideHeading&quot;: { &quot;editor&quot;: &quot;boolean&quot;, &quot;default&quot;: false, &quot;tsType&quot;: &quot;boolean&quot;, &quot;section&quot;: &quot;Embedding&quot; }
+}">
+class Component extends DCLogic {
+  state = {
+    dark: false,
+    mode: null,          // null = follow prop; 'order' | 'walk'
+    checked: {},         // { key: true }
+    removed: {},         // { key: true }
+    added: [],           // extra to_buy lines
+    pantryDismissed: {}, // { name: true } → treated fresh
+    pantryPromoted: {},  // { name: true } → moved onto the list
+    pantryOpen: null,    // null = follow default (open)
+    subsOpen: null,      // null = follow default (open)
+    groupBy: null,       // null = follow mode default; category|department|aisle|recipe
+    subConfirmed: {},    // { forKey: true } → swap accepted
+    subRejected: {},     // { forKey: true } → suggestion dismissed
+    addDraft: "",
+    ordered: false,
+    orderVia: null,
+    reviewOpen: false,
+    orderMenuOpen: false,
+    retailerPickerOpen: false,
+    orderRetailer: null,
+    staleDismissed: false,
+    subPopoverKey: null, // which row's swap popover is open
+  };
+
+  componentDidMount() {
+    this.applyTheme(); this.loadDS();
+    this._onDocDown = (e) => {
+      const t = e.target;
+      if ((this.state.orderMenuOpen || this.state.retailerPickerOpen) && !(t && t.closest && t.closest('[data-order-split]'))) this.setState({ orderMenuOpen: false, retailerPickerOpen: false });
+      if (this.state.subPopoverKey == null) return;
+      if (t && t.closest && (t.closest('[role="dialog"]') || t.closest('[aria-label="Pantry swap suggestion"]'))) return;
+      this.setState({ subPopoverKey: null });
+    };
+    document.addEventListener("mousedown", this._onDocDown);
+  }
+  componentWillUnmount() { if (this._onDocDown) document.removeEventListener("mousedown", this._onDocDown); }
+  loadDS() {
+    if (window.GroceryAgentUI || document.getElementById("yamp-ds-bundle")) return;
+    var s = document.createElement("script");
+    s.id = "yamp-ds-bundle";
+    s.src = "_ds/yamp-ui-76ffa1d0-b4bc-4e60-b696-ab3a7227af90/_ds_bundle.js";
+    document.head.appendChild(s);
+  }
+  componentDidUpdate() { this.applyTheme(); }
+  applyTheme() { if (this.props.embedded) return; try { document.documentElement.classList.toggle("dark", this.state.dark); } catch (e) {} }
+
+  slug(s) { return String(s).toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, ""); }
+  now() { return new Date("2026-07-09T12:00:00"); }
+  daysAgo(iso) { return Math.floor((this.now() - new Date(iso)) / 86400000); }
+  verifiedLabel(iso) {
+    const d = this.daysAgo(iso);
+    if (d <= 0) return "verified today";
+    if (d === 1) return "verified yesterday";
+    if (d < 60) return "verified " + d + " days ago";
+    return "verified " + Math.round(d / 30) + " months ago";
+  }
+
+  // ---- mock read_to_buy() ----
+  baseToBuy() {
+    return [
+      { name: "salmon fillets", quantity: "1", for_recipes: ["Sheet-Pan Salmon"], origin: "plan", kind: "grocery", placement: { aisle_number: 12, aisle_description: "Seafood counter", department: "Seafood" } },
+      { name: "green beans", quantity: "1 lb", for_recipes: ["Sheet-Pan Salmon"], origin: "plan", kind: "grocery", placement: { aisle_number: 1, aisle_description: "Produce", department: "Produce" } },
+      { name: "lemon", quantity: "1", for_recipes: ["Sheet-Pan Salmon"], origin: "plan", kind: "grocery", placement: { aisle_number: 1, aisle_description: "Produce", department: "Produce" } },
+      { name: "black beans", quantity: "2 cans", for_recipes: ["Black Bean Tacos"], origin: "plan", kind: "grocery", placement: { aisle_number: 7, aisle_description: "Canned & jarred", department: "Canned & Dry" } },
+      { name: "corn tortillas", quantity: "1 pack", for_recipes: ["Black Bean Tacos"], origin: "plan", kind: "grocery", placement: { aisle_number: 2, aisle_description: "Bakery", department: "Bakery" } },
+      { name: "spaghetti", quantity: "1 box", for_recipes: ["Miso-Butter Pasta"], origin: "plan", kind: "grocery", placement: { aisle_number: 6, aisle_description: "Pasta & sauces", department: "Canned & Dry" } },
+      { name: "white miso", quantity: "1", for_recipes: ["Miso-Butter Pasta"], origin: "both", kind: "grocery", note: "the red one", placement: { aisle_number: 10, aisle_description: "International", department: "International" } },
+      { name: "olive oil", quantity: "1", for_recipes: [], origin: "list", kind: "grocery", placement: { aisle_number: 6, aisle_description: "Oils & vinegars", department: "Canned & Dry" } },
+      { name: "whole milk", quantity: "1 gal", for_recipes: [], origin: "both", kind: "grocery", placement: { aisle_number: 3, aisle_description: "Dairy", department: "Dairy" } },
+      { name: "large eggs", quantity: "1 dozen", for_recipes: [], origin: "list", kind: "grocery", placement: { aisle_number: 3, aisle_description: "Dairy", department: "Dairy" } },
+      { name: "coffee beans", quantity: "1 bag", for_recipes: [], origin: "list", kind: "grocery", note: "dark roast", placement: { aisle_number: 9, aisle_description: "Coffee & tea", department: "Canned & Dry" } },
+      { name: "dish soap", quantity: "1", for_recipes: [], origin: "list", kind: "household", placement: { aisle_number: 14, aisle_description: "Cleaning supplies", department: "Household" } },
+      { name: "paper towels", quantity: "1", for_recipes: [], origin: "list", kind: "household", placement: { aisle_number: 15, aisle_description: "Paper goods", department: "Household" } },
+    ].map((it) => {
+      const staples = new Set(["olive oil", "whole milk", "large eggs", "coffee beans"]);
+      return { ...it, key: this.slug(it.name), badge: staples.has(it.name) ? "staple" : null };
+    });
+  }
+  basePantry() {
+    return [
+      { name: "garlic", for_recipes: ["Sheet-Pan Salmon", "Miso-Butter Pasta"], on_hand: { quantity: "1 head", category: "produce", last_verified_at: "2026-06-05" } },
+      { name: "butter", for_recipes: ["Miso-Butter Pasta"], on_hand: { quantity: "1/2 lb", category: "dairy", last_verified_at: "2026-07-05" } },
+      { name: "dijon mustard", for_recipes: ["Sheet-Pan Salmon"], on_hand: { quantity: "most of a jar", category: "condiments", last_verified_at: "2026-04-04" } },
+      { name: "soy sauce", for_recipes: ["Chicken Katsu Curry"], on_hand: { quantity: "1 bottle", category: "condiments", last_verified_at: "2026-06-27" } },
+    ];
+  }
+  baseInCart() { return [{ name: "oat milk", added_at: "2026-07-06" }]; }
+  // read_to_buy(enrich).to_buy[].substitutes with in_pantry siblings — the pantry look-alikes
+  baseSubs() {
+    return [
+      { forName: "black beans", forKey: "black-beans", label: "pinto beans", relation: { role: "sibling", kind: "membership", via: "beans" }, in_pantry: true },
+      { forName: "spaghetti", forKey: "spaghetti", label: "linguine", relation: { role: "sibling", kind: "general", via: "pasta" }, in_pantry: true },
+      { forName: "lemon", forKey: "lemon", label: "lime", relation: { role: "generalization", kind: "general", via: "citrus" }, in_pantry: true },
+    ];
+  }
+  relationLabel(r) {
+    if (r.role === "satisfies") return "direct substitute";
+    if (r.role === "generalization") return "broader swap" + (r.via ? " · via " + r.via : "");
+    return "same-family swap" + (r.via ? " · via " + r.via : "");
+  }
+  baseUnderived() { return [{ slug: "chicken-katsu-curry", title: "Chicken Katsu Curry" }]; }
+
+  isStale(oh) {
+    const d = this.daysAgo(oh.last_verified_at);
+    const perishable = ["produce", "dairy", "meat", "seafood"].includes(oh.category);
+    return perishable ? d > 14 : d > 60;
+  }
+
+  badgeMeta(badge) {
+    if (!badge) return null;
+    const base = { display: "inline-flex", alignItems: "center", padding: "0.12rem 0.5rem", borderRadius: "999px", fontSize: "var(--text-xs)", fontWeight: 600, letterSpacing: "0.01em", whiteSpace: "nowrap", flex: "0 0 auto" };
+    if (badge === "staple") return { label: "Staple", style: { ...base, background: "color-mix(in oklch, var(--muted) 60%, var(--card))", color: "var(--muted-foreground)", border: "1px solid color-mix(in oklch, var(--border) 60%, var(--card))" } };
+    return null;
+  }
+
+  currentMode() { return this.state.mode || this.props.defaultMode || "order"; }
+
+  visibleToBuy() {
+    const extra = this.state.added;
+    const promoted = Object.keys(this.state.pantryPromoted).map((name) => {
+      const p = this.basePantry().find((x) => x.name === name);
+      return { name, key: this.slug(name), quantity: "1", for_recipes: (p && p.for_recipes) || [], origin: "list", kind: "grocery", placement: null, note: "was pantry-covered" };
+    });
+    return [...this.baseToBuy(), ...promoted, ...extra].filter((it) => !this.state.removed[it.key]);
+  }
+
+  currentGroupBy() { return this.state.groupBy || "department"; }
+  setGroupBy = (g) => this.setState({ groupBy: g });
+
+  buildRow(it, showAisle, recipeGrouped) {
+    const key = it.key;
+    const checked = !!this.state.checked[key];
+    const bm = this.badgeMeta(it.badge);
+    const walk = !!showAisle;
+    const boxBase = { flex: "0 0 auto", display: "inline-flex", alignItems: "center", justifyContent: "center", width: "20px", height: "20px", borderRadius: "var(--radius-sm)", cursor: "pointer", padding: 0 };
+    const boxStyle = checked
+      ? { ...boxBase, background: "var(--primary)", border: "1.5px solid var(--primary)" }
+      : { ...boxBase, background: "var(--background)", border: "1.5px solid color-mix(in oklch, var(--border) 90%, var(--foreground))" };
+    const nameStyle = { fontSize: "var(--text-sm)", fontWeight: 500, lineHeight: 1.3, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", color: checked ? "var(--muted-foreground)" : "var(--foreground)", textDecoration: checked ? "line-through" : "none" };
+    const recipes = it.for_recipes || [];
+    const recipesLabel = recipeGrouped ? null : (recipes.length ? (recipes.length === 1 ? "for " + recipes[0] : "for " + recipes[0] + " +" + (recipes.length - 1)) : null);
+    const aisleLabel = null;
+    const sub = this.baseSubs().find((x) => x.forKey === key);
+    const subHint = !!sub && !this.state.subRejected[key] && !this.state.subConfirmed[key];
+    const subOpen = subHint && this.state.subPopoverKey === key;
+    const subBtnBase = { flex: "0 0 auto", display: "inline-flex", alignItems: "center", justifyContent: "center", width: "17px", height: "17px", borderRadius: "999px", border: "none", cursor: "pointer", padding: 0 };
+    const subBtnStyle = subOpen
+      ? { ...subBtnBase, background: "var(--primary)", color: "var(--primary-foreground)" }
+      : { ...subBtnBase, background: "color-mix(in oklch, var(--primary) 13%, var(--card))", color: "var(--primary)" };
+    return {
+      key, name: it.name, checked, boxStyle, nameStyle, subHint,
+      subOpen, subBtnStyle,
+      subLabel: sub ? sub.label : null,
+      subRelationLabel: sub ? this.relationLabel(sub.relation) : null,
+      toggleSub: () => this.setState((s) => ({ subPopoverKey: s.subPopoverKey === key ? null : key })),
+      confirmSub: () => this.confirmSub(key),
+      rejectSub: () => this.rejectSub(key),
+      qtyLabel: it.quantity, note: it.note || null, recipesLabel, aisleLabel,
+      showBadge: !!bm, badgeLabel: bm ? bm.label : null, badgeStyle: bm ? bm.style : null,
+      toggle: () => this.setState((s) => ({ checked: { ...s.checked, [key]: !s.checked[key] } })),
+      remove: () => this.setState((s) => ({ removed: { ...s.removed, [key]: true }, checked: { ...s.checked, [key]: false } })),
+    };
+  }
+
+  countMeta(n) { return n + (n === 1 ? " item" : " items"); }
+  buildGroups() {
+    const items = this.visibleToBuy();
+    const gb = this.currentGroupBy();
+
+    if (gb === "department") {
+      const byDept = new Map();
+      for (const it of items) {
+        const dept = it.placement ? it.placement.department : "Not mapped";
+        if (!byDept.has(dept)) byDept.set(dept, []);
+        byDept.get(dept).push(it);
+      }
+      const groups = [...byDept.entries()].map(([dept, list]) => {
+        list.sort((a, b) => ((a.placement ? a.placement.aisle_number : 99) - (b.placement ? b.placement.aisle_number : 99)));
+        const aisles = list.filter((x) => x.placement).map((x) => x.placement.aisle_number);
+        return { id: dept, heading: dept, meta: null, sort: aisles.length ? Math.min(...aisles) : 999, items: list.map((it) => this.buildRow(it, true)) };
+      });
+      groups.sort((a, b) => a.sort - b.sort);
+      return groups;
+    }
+
+    if (gb === "aisle") {
+      const byA = new Map();
+      for (const it of items) {
+        const a = it.placement ? it.placement.aisle_number : null;
+        const k = a == null ? "—" : a;
+        if (!byA.has(k)) byA.set(k, []);
+        byA.get(k).push(it);
+      }
+      const groups = [...byA.entries()].map(([a, list]) => ({
+        id: "a" + a, heading: a === "—" ? "Not mapped" : "Aisle " + a,
+        meta: (list[0].placement ? list[0].placement.aisle_description : null),
+        sort: a === "—" ? 999 : a, items: list.map((it) => this.buildRow(it, false)),
+      }));
+      groups.sort((a, b) => a.sort - b.sort);
+      return groups;
+    }
+
+    if (gb === "recipe") {
+      const byR = new Map(); const order = [];
+      for (const it of items) {
+        const r = (it.for_recipes && it.for_recipes[0]) || "__adhoc";
+        if (!byR.has(r)) { byR.set(r, []); order.push(r); }
+        byR.get(r).push(it);
+      }
+      order.sort((a, b) => (a === "__adhoc") - (b === "__adhoc"));
+      return order.map((r) => ({ id: "r" + r, heading: r === "__adhoc" ? "No recipe" : r, meta: this.countMeta(byR.get(r).length), items: byR.get(r).map((it) => this.buildRow(it, false, true)) }));
+    }
+
+    // category (default)
+    const order = [["grocery", "Groceries"], ["household", "Household"], ["other", "Other"]];
+    const groups = [];
+    for (const [kind, heading] of order) {
+      const list = items.filter((it) => (it.kind || "grocery") === kind);
+      if (list.length) groups.push({ id: kind, heading, meta: this.countMeta(list.length), items: list.map((it) => this.buildRow(it, false)) });
+    }
+    return groups;
+  }
+
+  toggleTheme = () => this.setState((s) => ({ dark: !s.dark }));
+  setOrderMode = () => this.setState({ mode: "order", groupBy: null });
+  setWalkMode = () => this.setState({ mode: "walk", groupBy: null });
+  togglePantry = () => this.setState((s) => ({ pantryOpen: !(s.pantryOpen == null ? (this.props.showPantryNudge ?? true) : s.pantryOpen) }));
+  toggleSubs = () => this.setState((s) => ({ subsOpen: !(s.subsOpen == null ? true : s.subsOpen) }));
+  onAddInput = (e) => { const v = e.target.value; this.setState({ addDraft: v }); };
+  submitAdd = (e) => {
+    if (e && e.preventDefault) e.preventDefault();
+    const name = this.state.addDraft.trim();
+    if (!name) return;
+    const key = this.slug(name);
+    this.setState((s) => ({ added: [...s.added, { name, key, quantity: "1", for_recipes: [], origin: "list", kind: "grocery", placement: null }], removed: { ...s.removed, [key]: false }, addDraft: "" }));
+  };
+  placeOrder = () => this.setState({ ordered: true });
+  openReview = () => this.setState({ reviewOpen: true, orderMenuOpen: false, retailerPickerOpen: false });
+  closeReview = () => this.setState({ reviewOpen: false });
+  stopProp = (e) => { if (e && e.stopPropagation) e.stopPropagation(); };
+  placeOrderWith = (via) => this.setState({ ordered: true, orderVia: via, orderMenuOpen: false });
+  toggleOrderMenu = () => this.setState((s) => ({ orderMenuOpen: !s.orderMenuOpen }));
+  openRetailerPicker = () => this.setState({ orderMenuOpen: false, retailerPickerOpen: true });
+  chooseRetailer = (name) => this.setState({ ordered: true, orderVia: "Instacart", orderRetailer: name, retailerPickerOpen: false });
+  chooseSatellite = (name) => this.setState({ ordered: true, orderVia: "Satellite", orderRetailer: name, orderMenuOpen: false });
+  dismissStale = () => this.setState({ staleDismissed: true });
+  confirmSub = (key) => this.setState((s) => ({ subConfirmed: { ...s.subConfirmed, [key]: true }, removed: { ...s.removed, [key]: true }, checked: { ...s.checked, [key]: false } }));
+  rejectSub = (key) => this.setState((s) => ({ subRejected: { ...s.subRejected, [key]: true } }));
+  undoSub = (key) => this.setState((s) => ({ subConfirmed: { ...s.subConfirmed, [key]: false }, removed: { ...s.removed, [key]: false } }));
+
+  renderVals() {
+    const mode = this.currentMode();
+    const walk = mode === "walk";
+    const embedded = !!this.props.embedded;
+    const accent = this.props.accent || null;
+    const hostStyle = embedded ? {} : { minHeight: "100vh", display: "flex", flexDirection: "column", background: "var(--background)" };
+    if (accent) { hostStyle["--primary"] = accent; hostStyle["--primary-foreground"] = "#ffffff"; }
+    const surfaceStyle = embedded ? { padding: 0, background: "transparent" } : { flex: "1", padding: "1rem", background: "var(--background)" };
+    const rootClass = embedded ? "grocery-widget embedded" : "grocery-widget";
+
+    const tabBase = { padding: "0.3rem 0.7rem", border: "none", borderRadius: "calc(var(--radius-md) - 3px)", font: "inherit", fontSize: "var(--text-xs)", fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" };
+    const tabOn = { ...tabBase, background: "var(--primary)", color: "var(--primary-foreground)" };
+    const tabOff = { ...tabBase, background: "transparent", color: "var(--muted-foreground)" };
+
+    const gbTabBase = { padding: "0.25rem 0.6rem", border: "none", borderRadius: "calc(var(--radius-md) - 3px)", font: "inherit", fontSize: "var(--text-xs)", fontWeight: 500, cursor: "pointer", whiteSpace: "nowrap" };
+    const gbOn = { ...gbTabBase, background: "var(--primary)", color: "var(--primary-foreground)", fontWeight: 600 };
+    const gbOff = { ...gbTabBase, background: "transparent", color: "var(--muted-foreground)" };
+    const gb = this.currentGroupBy();
+    const groupTabs = [["department", "Department"], ["recipe", "Recipe"]].map(([v, label]) => ({
+      value: v, label, onClick: () => this.setGroupBy(v), style: gb === v ? gbOn : gbOff,
+    }));
+
+    const groups = this.buildGroups();
+    const items = this.visibleToBuy();
+    const total = items.length;
+    const checkedCount = items.filter((it) => this.state.checked[it.key]).length;
+    const isEmpty = total === 0;
+
+    // stale cart
+    const inCart = this.baseInCart();
+    const staleShow = inCart.length > 0 && !this.state.staleDismissed;
+    const staleTitle = inCart.length + (inCart.length === 1 ? " item is" : " items are") + " still in a cart from an earlier order";
+    const staleBody = inCart.map((c) => c.name + " (added " + this.daysAgo(c.added_at) + " days ago)").join(", ") + " — was that order placed? Clear the cart before ordering again.";
+
+    // underived
+    const under = this.baseUnderived();
+    const underivedShow = under.length > 0;
+    const underivedLabel = under.length + (under.length === 1 ? " planned recipe isn't" : " planned recipes aren't") + " fully derived yet — " + under.map((u) => u.title).join(", ") + (under.length === 1 ? "'s ingredients aren't included below." : " ingredients aren't included below.");
+
+    // pantry
+    const pantry = this.basePantry().filter((p) => !this.state.pantryPromoted[p.name]);
+    const showPantry = (this.props.showPantryNudge ?? true) && pantry.length > 0;
+    const pantryOpen = this.state.pantryOpen == null ? true : this.state.pantryOpen;
+    const staleCount = pantry.filter((p) => this.isStale(p.on_hand) && !this.state.pantryDismissed[p.name]).length;
+    const pantrySub = pantry.length + " covered" + (staleCount ? " · " + staleCount + " worth a look" : " · all recently verified");
+    const pantryRows = pantry.map((p) => {
+      const stale = this.isStale(p.on_hand) && !this.state.pantryDismissed[p.name];
+      const dotStyle = { flex: "0 0 auto", width: "8px", height: "8px", borderRadius: "999px", background: stale ? "var(--primary)" : "color-mix(in oklch, var(--muted-foreground) 45%, transparent)" };
+      const meta = "on hand: " + p.on_hand.quantity + " · " + this.verifiedLabel(p.on_hand.last_verified_at) + (p.for_recipes.length ? " · for " + p.for_recipes[0] + (p.for_recipes.length > 1 ? " +" + (p.for_recipes.length - 1) : "") : "");
+      return {
+        name: p.name, meta, stale, fresh: !stale, dotStyle,
+        stillGood: () => this.setState((s) => ({ pantryDismissed: { ...s.pantryDismissed, [p.name]: true } })),
+        buyAnyway: () => this.setState((s) => ({ pantryPromoted: { ...s.pantryPromoted, [p.name]: true } })),
+      };
+    });
+
+    // pantry substitutions (enrich in_pantry siblings)
+    const subs = this.baseSubs().filter((x) => !this.state.subRejected[x.forKey] && (this.state.subConfirmed[x.forKey] || !this.state.removed[x.forKey]));
+    const subRows = subs.map((x) => {
+      const confirmed = !!this.state.subConfirmed[x.forKey];
+      return {
+        forName: x.forName, label: x.label, relationLabel: this.relationLabel(x.relation), confirmed, notConfirmed: !confirmed,
+        confirm: () => this.confirmSub(x.forKey), reject: () => this.rejectSub(x.forKey), undo: () => this.undoSub(x.forKey),
+      };
+    });
+    const subShow = subRows.length > 0;
+    const subsOpen = this.state.subsOpen == null ? true : this.state.subsOpen;
+
+    return {
+      hostStyle, surfaceStyle, rootClass, embedded,
+      showChrome: !embedded, showHeading: !this.props.hideHeading,
+      dark: this.state.dark, light: !this.state.dark, toggleTheme: this.toggleTheme,
+      subShow, subRows, subsOpen, toggleSubs: this.toggleSubs,
+      subsChevronStyle: { flex: "0 0 auto", transition: "transform 0.2s ease", transform: subsOpen ? "rotate(180deg)" : "rotate(0deg)" },
+      setOrderMode: this.setOrderMode, setWalkMode: this.setWalkMode,
+      orderTabStyle: walk ? tabOff : tabOn, walkTabStyle: walk ? tabOn : tabOff,
+      groupTabs,
+      subhead: walk
+        ? "The same buy list, walked one aisle at a time — reordered by department for the store route."
+        : "What an order placed right now would buy — your list, plus what the plan needs, minus what the pantry covers.",
+      countLabel: total + (total === 1 ? " item" : " items"),
+      groups, isEmpty,
+      staleShow, staleTitle, staleBody, dismissStale: this.dismissStale,
+      underivedShow, underivedLabel,
+      removeHover: { background: "color-mix(in oklch, var(--destructive) 12%, var(--card))", color: "var(--destructive)" },
+      ghostHover: { background: "var(--accent)", color: "var(--accent-foreground)" },
+      addDraft: this.state.addDraft, onAddInput: this.onAddInput, submitAdd: this.submitAdd,
+      pantryShow: showPantry, pantryOpen, togglePantry: this.togglePantry,
+      pantrySub, pantryRows,
+      chevronStyle: pantryOpen ? { transform: "rotate(180deg)" } : { transform: "rotate(0deg)" },
+      footerLabel: checkedCount + " of " + total + " checked",
+      placeOrder: this.placeOrder,
+      checkedCount,
+      isWalk: walk,
+      isOrder: !walk,
+      orderPlaced: this.state.ordered,
+      orderNotPlaced: !this.state.ordered,
+      orderMenuOpen: this.state.orderMenuOpen,
+      retailerPickerOpen: this.state.retailerPickerOpen,
+      retailerRows: [
+        { name: 'Safeway', meta: '1.2 mi · Pinole', def: true },
+        { name: 'Whole Foods Market', meta: '2.1 mi · El Cerrito' },
+        { name: 'Costco', meta: '3.4 mi · Richmond' },
+        { name: 'Wegmans', meta: '4.0 mi · Berkeley' },
+        { name: "Raley's", meta: '2.8 mi · El Sobrante' },
+      ].map((r) => ({ name: r.name, meta: r.meta, isDefault: !!r.def, onChoose: () => this.chooseRetailer(r.name) })),
+      satelliteStores: [
+        { name: 'Berkeley Bowl', ready: true },
+        { name: 'Tokyo Fish Market', ready: false },
+      ].map((s) => ({ name: s.name, disabled: !s.ready || null, needsLogin: !s.ready, onOrder: s.ready ? () => this.chooseSatellite(s.name) : () => {} })),
+      orderKroger: () => this.openReview(),
+      orderInstacart: () => this.openRetailerPicker(),
+      logManualShop: () => this.placeOrderWith("manual"),
+      toggleOrderMenu: this.toggleOrderMenu,
+      reviewOpen: this.state.reviewOpen,
+      closeReview: this.closeReview,
+      stopProp: this.stopProp,
+      orderCta: walk
+        ? (this.state.ordered ? "Walk started" : "Start walk")
+        : (this.state.ordered
+          ? (this.state.orderVia === "Satellite" ? ("Cart filled at " + this.state.orderRetailer) : this.state.orderVia === "Instacart" ? ("Sent to " + (this.state.orderRetailer || "Instacart")) : this.state.orderVia === "manual" ? "Shop logged" : "Order queued")
+          : "Place order with Kroger"),
+    };
+  }
+}
+</script>
+</body>
+</html>

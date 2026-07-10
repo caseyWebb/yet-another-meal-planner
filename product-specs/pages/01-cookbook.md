@@ -33,6 +33,11 @@ for You" (favorites-centroid — exists), "Just Added" (new-for-me watermark —
 Promoted slugs are deduped out of the organic list below. Panel hides in search mode, in
 favorites-only mode, and when zero promoted rows survive the filters (partial panels are
 fine). Row count/refresh cadence: not fixed by the mock (hardcoded 3) — spec decides.
+"Just Added" rule: new-for-me stays discovery-attribution-based (discovered_at +
+discovery_matches), unchanged by visibility events — recipes newly visible through a
+friend link surface via Popular-with-Friends/browse provenance, never as Just Added; the
+curated set's initial landing carries real discovered_at and no member matches, so it
+cannot flood the panel.
 
 **Favorites-only toggle** (new; **control missing from mock markup** — logic, CSS, and
 empty states all exist, and a comment says "Favorites now lives as a Cookbook tab").
@@ -43,16 +48,21 @@ overall → "No favorites yet / Tap the heart on any recipe to save it here." Th
 
 **RecipeRow** (shared primitive, story 06). Body = title, optional description, facet
 chips (protein kind-colored, cuisine, "{n} min"), optional promo badge slot, optional
-trend chip slot ("cooked by 4 friends" — present in the widget contract, never populated
-in the mock; decide in/out with story 01). Actions: favorite heart (aria-pressed), plan
+trend chip slot — trend chips ship (D31), rendered only from the D31-guarded read with
+household-counted copy ("cooked by N friend households"), never "cooked by 1 friend"
+under SaaS. Actions: favorite heart (aria-pressed), plan
 toggle (calendar icon; titles 'Add to my "Want To Cook" list' / 'On your "Want To Cook"
 list — remove') adding an unscheduled dinner row (story 02 default).
 
 **Cold-start / onboarding** (story 01 — not in mock; SaaS profile only per D9): an empty
 cookbook must sell the three ways in — add friends, import with the agent, browse the
-public curated set. Curated-set rows need visible provenance. Under the self-hosted
+public curated set. Curated-set rows need visible provenance; a household-level setting
+can suppress the entire curated tier from the household's lens (D13 amendment — one lens
+rule + one setting), in addition to per-member `toggle_reject`. Under the self-hosted
 profile "Popular with Friends" reads the friend lens over the implicit all-to-all graph,
 i.e. it equals today's deployment-wide trending — one implementation, both profiles.
+Browse and search consume the single D11 lens enforcement point — never a per-surface
+visibility reimplementation.
 
 ## 3. Delta vs today
 
@@ -76,7 +86,8 @@ reason, curated-set provenance.
 1. Favorites control form: filter-bar pill or tab row? (Mock comment says tab.)
 2. Promoted panel sourcing: N rows, refresh cadence, one-per-reason or variable mix?
    Dismissability (mock has none)?
-3. Trend chips ("cooked by N friends") — ship or drop the slot?
+3. ~~Trend chips ("cooked by N friends") — ship or drop the slot?~~ — decided (D31):
+   ship, from the guarded read with household-counted copy (§2).
 4. Filter options: corpus-derived (mock) vs `src/vocab.js` canonical; hide empty options?
 5. Time-filter behavior for recipes lacking `time_total` (mock: excluded).
 6. URL state: which of query/filters/favorites-toggle live in search params (repo

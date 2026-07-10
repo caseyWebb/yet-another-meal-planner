@@ -19,8 +19,18 @@ disagree.
 - **`pages/`** — one spec per mockup page/surface: functional requirements, delta vs. the
   shipped app, what existing specs already cover, resolved decisions, and open questions.
 - **`screens/`** — renders of the mockup captured page-by-page (light theme, 1440px), the
-  visual ground truth the specs cite. The interactive mockup source itself is not
-  committed; re-request the design bundle if a surface needs re-inspection.
+  visual ground truth the specs cite.
+- **`mockup/`** — the interactive Claude Design mockup itself (Member App + widgets +
+  design-system bundle), self-contained and renderable offline — see its README. Come
+  here for microcopy, interactions, or states the screens don't show; it is a painted
+  door (D5), never a mechanism reference.
+- **`CHANGES.md`** — the change backlog: one entry per planned OpenSpec change with its
+  binding decisions, spec-delta obligations, spikes, and collision notes. The file an
+  implementation session opens after this one.
+- **`grill/`** — the adversarial-review appendix behind DECISIONS D10–D33: full findings
+  with evidence, plus the rejected-findings list (settled non-issues — don't re-raise).
+- **`design-requests.md`** — ready-to-run Claude Design project prompts for decided
+  surfaces the mockup doesn't cover; per CLAUDE.md, UI goes through that project.
 
 ## Provenance and confidence
 
@@ -44,10 +54,11 @@ any page/story text it conflicts with. The founding four (2026-07-10):
 3. **Empty corpus on join, cushioned by the graph.** A new household starts with no
    inherited operator corpus. Friend links make existing recipes visible immediately, and
    a small product-maintained public curated recipe set is visible to everyone.
-4. **The widgets are dual-use MCP Apps.** The standalone widgets (Meal Planning, Grocery
-   List, Order Review, Recipe Card, RecipeRow) render both as member-app page components
-   and as MCP Apps inside Claude conversations — one component, two hosts. The existing
-   `meal-plan-widget` and `recipe-card-widget` specs are the precedent.
+4. **The widgets are dual-use MCP Apps.** Four dual-use widgets (Meal Planning, Grocery
+   List, Order Review, Recipe Card) render both as member-app page components and as MCP
+   Apps inside Claude conversations — one component, two hosts; RecipeRow is a shared
+   @yamp/ui primitive consumed by both hosts' list surfaces — not itself an MCP App. The
+   existing `meal-plan-widget` and `recipe-card-widget` specs are the precedent.
 
 See `stories/01-households-and-friends.md` for the full social model and
 `stories/06-dual-use-widgets.md` for the widget-hosting model.

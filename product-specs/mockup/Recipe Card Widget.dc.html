@@ -1,0 +1,907 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="_ds/yamp-ui-76ffa1d0-b4bc-4e60-b696-ab3a7227af90/_ds_bundle.css">
+  <link rel="stylesheet" href="_ds/yamp-ui-76ffa1d0-b4bc-4e60-b696-ab3a7227af90/styles.css">
+  <link href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    * { box-sizing: border-box; }
+    html, body { margin: 0; }
+    body { background: var(--background); color: var(--foreground); font-family: var(--font-sans); }
+    .recipe-card-widget h1 { margin: 0; font-size: var(--text-3xl); font-weight: 600; letter-spacing: -0.02em; line-height: 1.2; }
+    .recipe-card-widget [data-slot="card"] { border-color: color-mix(in oklch, var(--border) 55%, var(--card)); }
+    a { color: var(--link); text-decoration: underline; text-underline-offset: 2px; }
+    a:hover { opacity: 0.82; }
+    .ingredient-ref { text-decoration: underline dotted; text-decoration-color: var(--primary); text-underline-offset: 3px; cursor: help; position: relative; white-space: nowrap; }
+    .ingredient-ref:hover { color: var(--primary); }
+    .ingredient-ref:hover::after { content: attr(data-qty); position: absolute; left: 50%; bottom: 100%; transform: translateX(-50%); margin-bottom: 7px; white-space: nowrap; background: var(--popover); color: var(--popover-foreground); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.3rem 0.55rem; font-family: var(--font-mono); font-size: var(--text-xs); font-weight: 500; letter-spacing: 0; box-shadow: var(--shadow-md); z-index: 30; pointer-events: none; }
+    .ingredient-ref:hover::before { content: ""; position: absolute; left: 50%; bottom: 100%; transform: translateX(-50%); margin-bottom: 2px; border: 5px solid transparent; border-top-color: var(--border); z-index: 30; pointer-events: none; }
+  </style>
+</helmet>
+<div class="yamp-host" style="{{ hostStyle }}">
+  <div class="host-bar" style="display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap; padding: 0.75rem 1rem; border-bottom: 1px solid var(--border); background: color-mix(in oklch, var(--muted) 35%, var(--background)); position: sticky; top: 0; z-index: 5;">
+    <div style="display: flex; align-items: center; gap: 0.75rem; min-width: 0;">
+      <span style="display: inline-flex; align-items: center; gap: 0.4rem; font-family: var(--font-mono); font-size: var(--text-xs); text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted-foreground); white-space: nowrap;">
+        <span style="width: 7px; height: 7px; border-radius: 999px; background: var(--primary);"></span>
+        recipe-card-widget
+      </span>
+      <div style="display: flex; gap: 0.3rem; flex-wrap: wrap;">
+        <sc-for list="{{ tabs }}" as="tab" hint-placeholder-count="4">
+          <button type="button" onClick="{{ tab.onClick }}" style="{{ tab.style }}">{{ tab.title }}</button>
+        </sc-for>
+      </div>
+    </div>
+    <div style="display: flex; align-items: center; gap: 0.5rem; flex: 0 0 auto;">
+      <sc-if value="{{ browsing }}" hint-placeholder-val="{{ true }}">
+        <button type="button" onClick="{{ enterCook }}" style="display: inline-flex; align-items: center; gap: 0.4rem; padding: 0.35rem 0.8rem; border: none; border-radius: var(--radius-md); background: var(--primary); color: var(--primary-foreground); font: inherit; font-size: var(--text-xs); font-weight: 600; cursor: pointer;">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 3l14 9-14 9V3z"></path></svg>
+          Cook
+        </button>
+      </sc-if>
+      <button type="button" onClick="{{ toggleTheme }}" aria-label="Toggle dark mode" style="display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--background); color: var(--muted-foreground); cursor: pointer; flex: 0 0 auto;">
+        <sc-if value="{{ dark }}" hint-placeholder-val="{{ true }}">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"></path></svg>
+        </sc-if>
+        <sc-if value="{{ light }}" hint-placeholder-val="{{ true }}">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"></path></svg>
+        </sc-if>
+      </button>
+    </div>
+  </div>
+
+  <div class="widget-surface" style="flex: 1; padding: 1rem; background: var(--background);">
+    <sc-if value="{{ browsing }}" hint-placeholder-val="{{ true }}">
+      <div class="recipe-card-widget" data-widget="recipe-card" style="max-width: 44rem; margin: 0 auto;">
+        <x-import component-from-global-scope="GroceryAgentUI.Card" hint-size="100%,240px">
+          <x-import component-from-global-scope="GroceryAgentUI.CardHeader" hint-size="100%,48px">
+            <h1 data-testid="recipe-title">{{ title }}</h1>
+            <sc-if value="{{ description }}" hint-placeholder-val="{{ true }}">
+              <p class="detail-source">{{ description }}</p>
+            </sc-if>
+            <div style="grid-column: 1 / -1; display: flex; align-items: stretch; gap: 0.4rem; margin-top: 0.35rem;">
+                <div style="flex: 1 1 0; position: relative; display: flex;">
+                  <button type="button" onClick="{{ enterCook }}" style="flex: 1 1 0; display: inline-flex; align-items: center; justify-content: center; gap: 0.4rem; padding: 0.4rem 0.9rem; border: none; border-radius: var(--radius-md) 0 0 var(--radius-md); background: var(--primary); color: var(--primary-foreground); font: inherit; font-size: var(--text-xs); font-weight: 600; cursor: pointer; white-space: nowrap;">
+                    <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 3l14 9-14 9V3z"></path></svg>
+                    Start Cooking
+                  </button>
+                  <button type="button" onClick="{{ toggleCookMenu }}" aria-label="More cooking options" aria-expanded="{{ cookMenuOpen }}" style="flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; padding: 0.4rem 0.5rem; border: none; border-left: 1px solid color-mix(in oklch, var(--primary-foreground) 32%, transparent); border-radius: 0 var(--radius-md) var(--radius-md) 0; background: var(--primary); color: var(--primary-foreground); font: inherit; cursor: pointer;">
+                    <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="{{ cookCaretStyle }}"><path d="m6 9 6 6 6-6"></path></svg>
+                  </button>
+                  <sc-if value="{{ cookMenuOpen }}" hint-placeholder-val="{{ false }}">
+                    <div style="position: absolute; top: calc(100% + 6px); left: 0; z-index: 40; min-width: 236px; background: var(--popover); color: var(--popover-foreground); border: 1px solid var(--border); border-radius: var(--radius-md); box-shadow: var(--shadow-md); padding: 0.35rem;">
+                      <button type="button" onClick="{{ enterCook }}" style="width: 100%; display: flex; align-items: center; gap: 0.55rem; text-align: left; padding: 0.5rem 0.6rem; border: none; border-radius: var(--radius-md); background: transparent; color: var(--foreground); font: inherit; cursor: pointer;" style-hover="{{ ghostHover }}">
+                        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex: 0 0 auto;"><path d="M5 3l14 9-14 9V3z"></path></svg>
+                        <span style="display: flex; flex-direction: column; gap: 0.1rem;">
+                          <span style="font-size: var(--text-sm); font-weight: 600;">Guided Cooking</span>
+                          <span style="font-size: var(--text-xs); color: var(--muted-foreground);">Step through it yourself</span>
+                        </span>
+                      </button>
+                      <button type="button" onClick="{{ enterCookVoice }}" style="width: 100%; display: flex; align-items: center; gap: 0.55rem; text-align: left; padding: 0.5rem 0.6rem; border: none; border-radius: var(--radius-md); background: transparent; color: var(--foreground); font: inherit; cursor: pointer;" style-hover="{{ ghostHover }}">
+                        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex: 0 0 auto;"><path d="M12 2a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"></path><path d="M19 10v1a7 7 0 0 1-14 0v-1M12 18v4M8 22h8"></path></svg>
+                        <span style="display: flex; flex-direction: column; gap: 0.1rem;">
+                          <span style="font-size: var(--text-sm); font-weight: 600;">Hands-Free Voice Mode</span>
+                          <span style="font-size: var(--text-xs); color: var(--muted-foreground);">Steps read aloud, advance by voice</span>
+                        </span>
+                      </button>
+                    </div>
+                  </sc-if>
+                </div>
+                <button type="button" onClick="{{ copyRecipe }}" aria-label="Copy recipe to clipboard" style="flex: 1 1 0; display: inline-flex; align-items: center; justify-content: center; gap: 0.4rem; padding: 0.4rem 0.7rem; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--background); color: var(--foreground); font: inherit; font-size: var(--text-xs); font-weight: 500; cursor: pointer; white-space: nowrap;">
+                  <sc-if value="{{ copied }}" hint-placeholder-val="{{ false }}">
+                    <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"></path></svg>
+                  </sc-if>
+                  <sc-if value="{{ notCopied }}" hint-placeholder-val="{{ true }}">
+                    <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+                  </sc-if>
+                  {{ copyLabel }}
+                </button>
+                <button type="button" onClick="{{ printRecipe }}" aria-label="Print recipe" style="flex: 1 1 0; display: inline-flex; align-items: center; justify-content: center; gap: 0.4rem; padding: 0.4rem 0.7rem; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--background); color: var(--foreground); font: inherit; font-size: var(--text-xs); font-weight: 500; cursor: pointer; white-space: nowrap;">
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9V2h12v7"></path><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"></path><rect x="6" y="14" width="12" height="8"></rect></svg>
+                  Print
+                </button>
+                <div style="flex: 1 1 0; position: relative;">
+                  <button type="button" onClick="{{ toggleLog }}" aria-label="Log this recipe as cooked" aria-expanded="{{ logOpen }}" style="width: 100%; display: inline-flex; align-items: center; justify-content: center; gap: 0.4rem; padding: 0.4rem 0.7rem; border: 1px solid var(--border); border-radius: var(--radius-md); background: {{ logBtnBg }}; color: {{ logBtnColor }}; font: inherit; font-size: var(--text-xs); font-weight: 500; cursor: pointer; white-space: nowrap;">
+                    <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="18" rx="2"></rect><path d="M16 2v4M8 2v4M3 10h18M9 16l2 2 4-4"></path></svg>
+                    Log cooked
+                  </button>
+                  <sc-if value="{{ logOpen }}" hint-placeholder-val="{{ false }}">
+                    <div style="position: absolute; top: calc(100% + 6px); right: 0; z-index: 40; width: 232px; background: var(--popover); color: var(--popover-foreground); border: 1px solid var(--border); border-radius: var(--radius-md); box-shadow: var(--shadow-md); padding: 0.8rem;">
+                      <div style="font-family: var(--font-mono); font-size: var(--text-xs); text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted-foreground); margin-bottom: 0.55rem;">When did you cook this?</div>
+                      <input type="date" value="{{ logDate }}" max="{{ maxDate }}" onChange="{{ setLogDate }}" style="width: 100%; padding: 0.45rem 0.55rem; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--background); color: var(--foreground); font: inherit; font-size: var(--text-sm); font-family: var(--font-mono);">
+                      <button type="button" onClick="{{ logCooked }}" style="margin-top: 0.65rem; width: 100%; display: inline-flex; align-items: center; justify-content: center; gap: 0.4rem; padding: 0.5rem; border: none; border-radius: var(--radius-md); background: var(--primary); color: var(--primary-foreground); font: inherit; font-size: var(--text-xs); font-weight: 600; cursor: pointer;">
+                        <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"></path></svg>
+                        Log it
+                      </button>
+                    </div>
+                  </sc-if>
+                </div>
+              </div>
+              <sc-if value="{{ showLogged }}" hint-placeholder-val="{{ false }}">
+                <div style="grid-column: 1 / -1; margin-top: 0.5rem; display: inline-flex; align-items: center; gap: 0.4rem; font-family: var(--font-mono); font-size: var(--text-xs); color: var(--primary);">
+                  <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"></path></svg>
+                  Logged as cooked {{ loggedLabel }}
+                </div>
+              </sc-if>
+          </x-import>
+          <x-import component-from-global-scope="GroceryAgentUI.CardContent" hint-size="100%,160px">
+            <sc-if value="{{ hasFacets }}" hint-placeholder-val="{{ true }}">
+              <div class="detail-meta">
+                <sc-if value="{{ protein }}" hint-placeholder-val="{{ true }}">
+                  <span class="facet" data-kind="protein">{{ protein }}</span>
+                </sc-if>
+                <sc-if value="{{ cuisine }}" hint-placeholder-val="{{ true }}">
+                  <span class="facet">{{ cuisine }}</span>
+                </sc-if>
+                <sc-for list="{{ courseList }}" as="c" hint-placeholder-count="0">
+                  <span class="facet">{{ c }}</span>
+                </sc-for>
+                <sc-for list="{{ dietaryList }}" as="d" hint-placeholder-count="0">
+                  <span class="facet">{{ d }}</span>
+                </sc-for>
+                <sc-for list="{{ tagsList }}" as="t" hint-placeholder-count="0">
+                  <span class="facet">{{ t }}</span>
+                </sc-for>
+                <sc-if value="{{ hasTime }}" hint-placeholder-val="{{ true }}">
+                  <span class="detail-time">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M12 7v5l3 2"></path></svg>
+                    {{ time_total }} min
+                  </span>
+                </sc-if>
+              </div>
+            </sc-if>
+            <div style="margin-top: 1.5rem;">
+              <h2 style="margin: 0 0 0.2rem; font-size: var(--text-lg); font-weight: 600; letter-spacing: -0.01em;">Ingredients</h2>
+              <sc-for list="{{ ingredientGroups }}" as="grp" hint-placeholder-count="3">
+                <div style="margin-top: 1rem;">
+                  <div style="display: flex; align-items: center; gap: 0.4rem; margin-bottom: 0.35rem;">
+                    <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="var(--primary)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="{{ grp.icon }}"></path></svg>
+                    <span style="font-family: var(--font-mono); font-size: var(--text-xs); text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted-foreground); font-weight: 600;">{{ grp.location }}</span>
+                  </div>
+                  <ul style="margin: 0; padding-left: 1.3rem; display: flex; flex-direction: column; gap: 0.3rem;">
+                    <sc-for list="{{ grp.items }}" as="ing" hint-placeholder-count="3">
+                      <li style="font-size: var(--text-sm); line-height: 1.5;">{{ ing }}</li>
+                    </sc-for>
+                  </ul>
+                </div>
+              </sc-for>
+            </div>
+
+            {{ proseEl }}
+
+            <sc-if value="{{ hasNotes }}" hint-placeholder-val="{{ false }}">
+              <div style="margin-top: 1.9rem; display: flex; flex-direction: column; gap: 0.5rem;">
+                <div style="font-size: var(--text-lg); font-weight: 600; letter-spacing: -0.01em; color: var(--foreground); margin-bottom: 0.1rem;">Notes</div>
+                <sc-for list="{{ notesList }}" as="note" hint-placeholder-count="1">
+                  <div style="border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.75rem 0.85rem; background: color-mix(in oklch, var(--muted) 25%, var(--background));">
+                    <p style="margin: 0; font-size: var(--text-sm); line-height: 1.5;">{{ note.text }}</p>
+                    <div style="margin-top: 0.55rem; display: flex; align-items: center; gap: 0.45rem;">
+                      <span style="width: 20px; height: 20px; border-radius: 999px; background: var(--primary); color: var(--primary-foreground); font-size: 0.65rem; font-weight: 600; display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto;">{{ note.initial }}</span>
+                      <span style="font-family: var(--font-mono); font-size: var(--text-xs); color: var(--muted-foreground);">{{ note.author }}</span>
+                    </div>
+                  </div>
+                </sc-for>
+              </div>
+            </sc-if>
+          </x-import>
+        </x-import>
+      </div>
+    </sc-if>
+
+    <sc-if value="{{ cooking }}" hint-placeholder-val="{{ false }}">
+      <div class="cook-mode" style="max-width: 44rem; margin: 0 auto; border: 1px solid var(--border); border-radius: 0.9rem; background: var(--card, var(--background)); overflow: hidden; box-shadow: var(--shadow-sm, 0 1px 2px rgba(0,0,0,0.05));">
+        <div style="display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: 1rem 1.25rem; border-bottom: 1px solid var(--border);">
+          <div style="min-width: 0;">
+            <div style="display: flex; align-items: center; gap: 0.45rem;">
+              <span style="font-family: var(--font-mono); font-size: var(--text-xs); text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted-foreground);">{{ phaseLabel }}</span>
+              <sc-if value="{{ voiceOn }}" hint-placeholder-val="{{ false }}">
+                <span style="display: inline-flex; align-items: center; gap: 0.25rem; padding: 0.1rem 0.4rem; border-radius: 999px; background: color-mix(in oklch, var(--primary) 15%, var(--background)); color: var(--primary); font-family: var(--font-mono); font-size: 0.6rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em;">
+                  <svg viewBox="0 0 24 24" width="10" height="10" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"></path><path d="M19 10v1a7 7 0 0 1-14 0v-1M12 18v4M8 22h8"></path></svg>
+                  Voice
+                </span>
+              </sc-if>
+            </div>
+            <div style="font-size: var(--text-lg); font-weight: 600; letter-spacing: -0.01em; line-height: 1.2; margin-top: 0.15rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ title }}</div>
+          </div>
+          <button type="button" onClick="{{ exitCook }}" style="flex: 0 0 auto; display: inline-flex; align-items: center; gap: 0.35rem; padding: 0.4rem 0.75rem; border: 1px solid transparent; border-radius: var(--radius-md); background: transparent; color: var(--muted-foreground); font: inherit; font-size: var(--text-xs); font-weight: 500; cursor: pointer;" style-hover="{{ ghostHover }}">
+            <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 12H5M11 18l-6-6 6-6"></path></svg>
+            Back to Recipe Card
+          </button>
+        </div>
+
+        <div style="height: 4px; background: var(--muted);">
+          <div style="{{ progressBarStyle }}"></div>
+        </div>
+
+        <div style="padding: 1.5rem 1.25rem;">
+          <sc-if value="{{ atMise }}" hint-placeholder-val="{{ false }}">
+            <div style="margin-bottom: 1.1rem;">
+              <h2 style="margin: 0; font-size: var(--text-2xl); font-weight: 600; letter-spacing: -0.02em;">Mise en place</h2>
+              <p style="margin: 0.35rem 0 0; color: var(--muted-foreground); font-size: var(--text-sm); line-height: 1.5;">Gather and prep everything before the heat goes on. Tap each item as it's ready.</p>
+            </div>
+            <div style="display: flex; flex-direction: column; gap: 1.1rem;">
+              <sc-for list="{{ miseGroups }}" as="grp" hint-placeholder-count="3">
+                <div>
+                  <div style="display: flex; align-items: center; gap: 0.4rem; margin-bottom: 0.45rem;">
+                    <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="var(--primary)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="{{ grp.icon }}"></path></svg>
+                    <span style="font-family: var(--font-mono); font-size: var(--text-xs); text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted-foreground); font-weight: 600;">{{ grp.location }}</span>
+                  </div>
+                  <div style="display: flex; flex-direction: column; gap: 0.4rem;">
+                    <sc-for list="{{ grp.items }}" as="ing" hint-placeholder-count="3">
+                      <button type="button" onClick="{{ ing.onToggle }}" style="display: flex; align-items: center; gap: 0.75rem; width: 100%; text-align: left; padding: 0.6rem 0.75rem; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--background); font: inherit; cursor: pointer;">
+                        <span style="{{ ing.boxStyle }}">
+                          <sc-if value="{{ ing.checked }}" hint-placeholder-val="{{ false }}">
+                            <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"></path></svg>
+                          </sc-if>
+                        </span>
+                        <span style="{{ ing.textStyle }}">{{ ing.text }}</span>
+                      </button>
+                    </sc-for>
+                  </div>
+                </div>
+              </sc-for>
+            </div>
+            <div style="display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-top: 1.35rem;">
+              <span style="font-family: var(--font-mono); font-size: var(--text-xs); color: var(--muted-foreground);">{{ miseCountLabel }}</span>
+              <button type="button" onClick="{{ startCooking }}" style="display: inline-flex; align-items: center; gap: 0.4rem; padding: 0.55rem 1.1rem; border: none; border-radius: var(--radius-md); background: var(--primary); color: var(--primary-foreground); font: inherit; font-size: var(--text-sm); font-weight: 600; cursor: pointer;">Start cooking
+                <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"></path></svg>
+              </button>
+            </div>
+          </sc-if>
+
+          <sc-if value="{{ atStep }}" hint-placeholder-val="{{ false }}">
+            <sc-if value="{{ stepTitle }}" hint-placeholder-val="{{ true }}">
+              <div style="margin: 0; font-size: var(--text-xl); font-weight: 600; letter-spacing: -0.01em; line-height: 1.3;">{{ stepTitle }}</div>
+            </sc-if>
+            <p style="margin: 0.35rem 0 0; font-size: var(--text-xl); line-height: 1.5; font-weight: 400;">{{ stepEl }}</p>
+
+            <sc-if value="{{ showTimer }}" hint-placeholder-val="{{ false }}">
+              <div style="margin-top: 1.6rem; display: flex; flex-direction: column; align-items: center; gap: 1.15rem; padding: 1.6rem 1.25rem; border: 1px solid color-mix(in oklch, var(--border) 55%, var(--card)); border-radius: var(--radius-lg); background: color-mix(in oklch, var(--muted) 20%, var(--background));">
+                <div style="position: relative; width: 172px; height: 172px;">
+                  <svg width="172" height="172" viewBox="0 0 120 120" style="transform: rotate(-90deg); display: block;" aria-hidden="true">
+                    <circle cx="60" cy="60" r="53" fill="none" stroke="color-mix(in oklch, var(--muted-foreground) 20%, transparent)" stroke-width="6"></circle>
+                    <circle cx="60" cy="60" r="53" fill="none" stroke="var(--primary)" stroke-width="6" stroke-linecap="round" style="{{ ringStyle }}"></circle>
+                  </svg>
+                  <div style="position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0.2rem;">
+                    <span style="{{ timerTimeStyle }}">{{ timerDisplay }}</span>
+                    <span style="font-family: var(--font-mono); font-size: var(--text-xs); text-transform: uppercase; letter-spacing: 0.12em; color: {{ timerLabelColor }};">{{ timerLabel }}</span>
+                  </div>
+                </div>
+                <div style="display: flex; align-items: center; gap: 0.6rem;">
+                  <button type="button" onClick="{{ toggleTimer }}" style="display: inline-flex; align-items: center; gap: 0.45rem; padding: 0.6rem 1.5rem; border: none; border-radius: 999px; background: var(--primary); color: var(--primary-foreground); font: inherit; font-size: var(--text-sm); font-weight: 600; cursor: pointer;">
+                    <sc-if value="{{ timerRunning }}" hint-placeholder-val="{{ false }}">
+                      <svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor" aria-hidden="true"><rect x="6" y="5" width="4" height="14" rx="1"></rect><rect x="14" y="5" width="4" height="14" rx="1"></rect></svg>
+                    </sc-if>
+                    <sc-if value="{{ timerPaused }}" hint-placeholder-val="{{ true }}">
+                      <svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor" aria-hidden="true"><path d="M6 4.5v15a1 1 0 0 0 1.53.85l12-7.5a1 1 0 0 0 0-1.7l-12-7.5A1 1 0 0 0 6 4.5Z"></path></svg>
+                    </sc-if>
+                    {{ timerBtnLabel }}
+                  </button>
+                  <button type="button" onClick="{{ resetTimer }}" style="display: inline-flex; align-items: center; gap: 0.4rem; padding: 0.6rem 1rem; border: 1px solid transparent; border-radius: 999px; background: transparent; color: var(--muted-foreground); font: inherit; font-size: var(--text-sm); font-weight: 500; cursor: pointer;" style-hover="{{ ghostHover }}">
+                    <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 9-9 9 9 0 0 0-6.36 2.64L3 8"></path><path d="M3 3v5h5"></path></svg>
+                    Reset
+                  </button>
+                </div>
+              </div>
+            </sc-if>
+
+            <div style="display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-top: 1.75rem;">
+              <button type="button" onClick="{{ prevStep }}" style="{{ prevBtnStyle }}" style-hover="{{ prevBtnHover }}">
+                <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 12H5M11 18l-6-6 6-6"></path></svg>
+                Back
+              </button>
+              <button type="button" onClick="{{ nextStep }}" style="display: inline-flex; align-items: center; gap: 0.4rem; padding: 0.55rem 1.2rem; border: none; border-radius: var(--radius-md); background: var(--primary); color: var(--primary-foreground); font: inherit; font-size: var(--text-sm); font-weight: 600; cursor: pointer;">{{ nextLabel }}
+                <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"></path></svg>
+              </button>
+            </div>
+          </sc-if>
+
+          <sc-if value="{{ atDone }}" hint-placeholder-val="{{ false }}">
+            <div style="text-align: center; padding: 1.5rem 0.5rem;">
+              <div style="width: 52px; height: 52px; margin: 0 auto; border-radius: 999px; background: var(--primary); color: var(--primary-foreground); display: inline-flex; align-items: center; justify-content: center;">
+                <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"></path></svg>
+              </div>
+              <h2 style="margin: 1rem 0 0; font-size: var(--text-2xl); font-weight: 600; letter-spacing: -0.02em;">Plated up</h2>
+              <p style="margin: 0.4rem 0 0; color: var(--muted-foreground); font-size: var(--text-sm);">You cooked {{ title }}. Nicely done.</p>
+              <div style="display: flex; gap: 0.5rem; justify-content: center; margin-top: 1.5rem;">
+                <button type="button" onClick="{{ enterCook }}" style="display: inline-flex; align-items: center; gap: 0.4rem; padding: 0.5rem 1.1rem; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--background); color: var(--foreground); font: inherit; font-size: var(--text-sm); font-weight: 500; cursor: pointer;">Cook again</button>
+                <button type="button" onClick="{{ exitCook }}" style="display: inline-flex; align-items: center; gap: 0.4rem; padding: 0.5rem 1.1rem; border: none; border-radius: var(--radius-md); background: var(--primary); color: var(--primary-foreground); font: inherit; font-size: var(--text-sm); font-weight: 600; cursor: pointer;">Back to recipes</button>
+              </div>
+            </div>
+          </sc-if>
+        </div>
+      </div>
+    </sc-if>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{
+  &quot;$preview&quot;: { &quot;width&quot;: 760, &quot;height&quot;: 680 },
+  &quot;accent&quot;: { &quot;editor&quot;: &quot;color&quot;, &quot;default&quot;: &quot;#f4a259&quot;, &quot;tsType&quot;: &quot;string&quot;, &quot;section&quot;: &quot;Appearance&quot;, &quot;options&quot;: [&quot;#f4a259&quot;, &quot;#4f9d69&quot;, &quot;#6c8cff&quot;, &quot;#e5606a&quot;] },
+  &quot;startInCookMode&quot;: { &quot;editor&quot;: &quot;boolean&quot;, &quot;default&quot;: false, &quot;tsType&quot;: &quot;boolean&quot;, &quot;section&quot;: &quot;Cook mode&quot; },
+  &quot;miseEnPlace&quot;: { &quot;editor&quot;: &quot;boolean&quot;, &quot;default&quot;: true, &quot;tsType&quot;: &quot;boolean&quot;, &quot;section&quot;: &quot;Cook mode&quot; },
+  &quot;showTimers&quot;: { &quot;editor&quot;: &quot;boolean&quot;, &quot;default&quot;: true, &quot;tsType&quot;: &quot;boolean&quot;, &quot;section&quot;: &quot;Cook mode&quot; }
+}">
+class Component extends DCLogic {
+  state = {
+    idx: 0,
+    dark: false,
+    cooking: null,        // null = follow startInCookMode prop
+    step: -1,             // -1 = mise en place
+    checked: {},          // { "recipeIdx-ingIdx": true }
+    timerRemaining: null, // null = not yet armed for current step
+    timerRunning: false,
+    logOpen: false,
+    logDate: null,        // null = follow today
+    loggedMsg: null,      // iso date last logged, for confirmation line
+    cookMenuOpen: false,
+    voice: false,
+  };
+
+  componentDidMount() { this.applyTheme(); this.loadDS(); }
+  loadDS() {
+    if (window.GroceryAgentUI || document.getElementById("yamp-ds-bundle")) return;
+    var s = document.createElement("script");
+    s.id = "yamp-ds-bundle";
+    s.src = "_ds/yamp-ui-76ffa1d0-b4bc-4e60-b696-ab3a7227af90/_ds_bundle.js";
+    document.head.appendChild(s);
+  }
+  componentDidUpdate() { this.applyTheme(); }
+  componentWillUnmount() { this.clearTick(); }
+  applyTheme() {
+    try { document.documentElement.classList.toggle("dark", this.state.dark); } catch (e) {}
+  }
+  clearTick() { if (this._iv) { clearInterval(this._iv); this._iv = null; } }
+
+  // ---- ingredient tooltips (explicit {key} / {key|surface text} tokens) ----
+  interpolate(html, keyMap) {
+    if (!keyMap) return html;
+    return html.replace(/\{([a-z0-9_]+)(?:\|([^}]+))?\}/gi, (m, key, custom) => {
+      const tip = keyMap[key];
+      const label = custom != null ? custom : key.replace(/_/g, " ");
+      if (!tip) return this.escHtml(label);
+      return '<span class="ingredient-ref" data-qty="' + this.escHtml(tip) + '">' + this.escHtml(label) + "</span>";
+    });
+  }
+  stripTokens(text) {
+    return text.replace(/\{([a-z0-9_]+)(?:\|([^}]+))?\}/gi, (m, key, custom) => (custom != null ? custom : key.replace(/_/g, " ")));
+  }
+
+  // ---- print & copy ----
+  printRecipe = () => { try { window.print(); } catch (e) {} };
+  copyRecipe = () => {
+    const { r, ingredients, steps } = this.current();
+    const lines = [r.title];
+    if (r.description) lines.push(r.description);
+    if (typeof r.time_total === "number") lines.push("Total time: " + r.time_total + " min");
+    lines.push("", "INGREDIENTS");
+    for (const ing of ingredients) lines.push("- " + ing);
+    lines.push("", "INSTRUCTIONS");
+    steps.forEach((st, i) => lines.push((i + 1) + ". " + this.stripTokens(st.text).replace(/\*\*/g, "").replace(/(^|[^*])\*([^*]+)\*/g, "$1$2")));
+    const text = lines.join("\n");
+    const done = () => { this.setState({ copied: true }); clearTimeout(this._copyT); this._copyT = setTimeout(() => this.setState({ copied: false }), 1800); };
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) { navigator.clipboard.writeText(text).then(done, () => this._fallbackCopy(text, done)); }
+      else this._fallbackCopy(text, done);
+    } catch (e) { this._fallbackCopy(text, done); }
+  };
+  _fallbackCopy(text, done) {
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = text; ta.style.position = "fixed"; ta.style.opacity = "0";
+      document.body.appendChild(ta); ta.select(); document.execCommand("copy"); document.body.removeChild(ta);
+      done();
+    } catch (e) {}
+  }
+
+  // ---- log cooked ----
+  todayIso() { const d = new Date(); const p = (n) => String(n).padStart(2, "0"); return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate()); }
+  formatLogged(iso) {
+    if (iso === this.todayIso()) return "today";
+    const parts = String(iso).split("-").map(Number);
+    if (parts.length !== 3) return iso;
+    const MO = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    return "on " + MO[parts[1] - 1] + " " + parts[2] + ", " + parts[0];
+  }
+  toggleLog = () => this.setState((s) => ({ logOpen: !s.logOpen }));
+  setLogDate = (e) => { const v = e && e.target ? e.target.value : null; if (v) this.setState({ logDate: v }); };
+  logCooked = () => {
+    const date = this.state.logDate || this.todayIso();
+    const { r } = this.current();
+    try {
+      const key = "yamp:cook-log";
+      const arr = JSON.parse(localStorage.getItem(key) || "[]");
+      arr.push({ recipe: r.slug, title: r.title, cooked_on: date, logged_at: Date.now() });
+      localStorage.setItem(key, JSON.stringify(arr));
+    } catch (e) {}
+    this.setState({ logOpen: false, loggedMsg: date });
+    clearTimeout(this._logT);
+    this._logT = setTimeout(() => this.setState({ loggedMsg: null }), 3000);
+  };
+
+  fmt(sec) {
+    sec = Math.max(0, Math.round(sec));
+    const m = Math.floor(sec / 60);
+    const s = sec % 60;
+    return m + ":" + String(s).padStart(2, "0");
+  }
+
+  detectDuration(text) {
+    const m = /(\d+)(?:\s*[\u2013-]\s*(\d+))?\s*(?:minutes?|mins?)\b/i.exec(String(text));
+    if (!m) return null;
+    return parseInt(m[1], 10) * 60;
+  }
+
+  escHtml(s) {
+    const ESC = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
+    return String(s).replace(/[&<>"']/g, (c) => ESC[c]);
+  }
+  mdInline(s) {
+    return this.escHtml(s)
+      .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+      .replace(/(^|[^*])\*([^*]+)\*/g, "$1<em>$2</em>");
+  }
+
+  mdToHtml(src) {
+    const esc = (s) => this.escHtml(s);
+    const inline = (s) => this.mdInline(s).replace(/&amp;/g, "&amp;"); // mdInline already escapes
+    const rawInline = (s) =>
+      esc(s.replace(/\s*@\d+s\b/g, ""))
+        .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+        .replace(/(^|[^*])\*([^*]+)\*/g, "$1<em>$2</em>");
+    const blocks = String(src ?? "").trim().split(/\n{2,}/).filter(Boolean);
+    return blocks.map((b) => {
+      const lines = b.split("\n");
+      const heading = /^(#{1,4})\s+(.*)$/.exec(lines[0]);
+      if (heading && lines.length === 1) {
+        const level = Math.min(Math.max(heading[1].length, 2), 4);
+        return "<h" + level + ">" + rawInline(heading[2]) + "</h" + level + ">";
+      }
+      if (lines.every((l) => /^\s*[-*]\s+/.test(l)))
+        return "<ul>" + lines.map((l) => "<li>" + rawInline(l.replace(/^\s*[-*]\s+/, "")) + "</li>").join("") + "</ul>";
+      if (lines.every((l) => /^\s*\d+[.)]\s+/.test(l)))
+        return "<ol>" + lines.map((l) => "<li>" + rawInline(l.replace(/^\s*\d+[.)]\s+/, "")) + "</li>").join("") + "</ol>";
+      if (heading) {
+        const level = Math.min(Math.max(heading[1].length, 2), 4);
+        const rest = lines.slice(1).join("\n");
+        return "<h" + level + ">" + rawInline(heading[2]) + "</h" + level + "><p>" + rawInline(rest).replace(/\n/g, "<br>") + "</p>";
+      }
+      return "<p>" + rawInline(b).replace(/\n/g, "<br>") + "</p>";
+    }).join("");
+  }
+
+  classifyLocation(ing) {
+    const s = String(ing).toLowerCase();
+    const has = (arr) => arr.some((w) => s.includes(w));
+    if (has(["frozen", "peas", "ice "])) return "Freezer";
+    if (has(["salt", "pepper", "cumin", "paprika", "curry powder", "cinnamon", "chili", "oregano", "spice", "turmeric", "nutmeg"])) return "Spice drawer";
+    if (has(["salmon", "chicken", "beef", "pork", "fish", "shrimp", "milk", "butter", "egg", "cheese", "yogurt", "cream", "dijon", "mustard", "miso", "tofu", "cilantro", "chives", "herb", "scallion", "parsley"])) return "Fridge";
+    if (has(["green bean", "lemon", "lime", "onion", "garlic", "avocado", "tomato", "lettuce", "carrot", "pepper,", "spinach", "kale", "ginger", "mushroom"])) return "Produce";
+    return "Pantry";
+  }
+  parseBody(body) {
+    const ingredients = [];
+    const steps = [];
+    let section = null;
+    for (const raw of String(body ?? "").split("\n")) {
+      const line = raw.trim();
+      if (/^##\s+ingredients/i.test(line)) { section = "ing"; continue; }
+      if (/^##\s+instructions/i.test(line)) { section = "step"; continue; }
+      if (!line) continue;
+      if (section === "ing" && /^[-*]\s+/.test(line)) ingredients.push(line.replace(/^[-*]\s+/, ""));
+      if (section === "step" && /^\d+[.)]\s+/.test(line)) {
+        let text = line.replace(/^\d+[.)]\s+/, "");
+        let seconds = null;
+        const hint = /\s*@(\d+)s\b/.exec(text);
+        if (hint) { seconds = parseInt(hint[1], 10); text = text.replace(/\s*@\d+s\b/, ""); }
+        else seconds = this.detectDuration(text);
+        let title = null, bodyText = text;
+        const tm = /^\*\*([^*]+?):\*\*\s*/.exec(text);
+        if (tm) { title = tm[1]; bodyText = text.slice(tm[0].length); }
+        steps.push({ text, title, body: bodyText, seconds });
+      }
+    }
+    return { ingredients, steps };
+  }
+
+  recipes() {
+    return [
+      {
+        slug: "sheet-pan-salmon-green-beans",
+        title: "Sheet-Pan Salmon & Green Beans",
+        description: "A hands-off weeknight dinner — everything roasts on one pan while the lemon-dijon glaze does the work.",
+        time_total: 30,
+        protein: "salmon",
+        cuisine: "american",
+        dietary: ["gluten-free"],
+        course: ["dinner"],
+        tags: ["one-pan", "weeknight"],
+        favorite: true,
+        body: [
+          "## Ingredients",
+          "",
+          "- 4 salmon fillets (6 oz each)",
+          "- 1 lb green beans, trimmed",
+          "- 2 tbsp olive oil",
+          "- 1 lemon, half juiced + half sliced",
+          "- 1 tbsp dijon mustard",
+          "- 2 cloves garlic, minced",
+          "- Salt & pepper to taste",
+          "",
+          "## Instructions",
+          "",
+          "1. **Preheat oven:** Heat oven to 425°F and line a sheet pan with parchment.",
+          "2. **Season the green beans:** Toss the {green_beans} with 1 tbsp {olive_oil}, salt, and pepper; spread to the edges of the pan.",
+          "3. **Make the glaze:** Whisk the remaining oil, {lemon|lemon juice}, {dijon}, and {garlic} into a glaze.",
+          "4. **Assemble the pan:** Nestle the {salmon|salmon fillets} among the beans, brush with the glaze, and top with lemon slices.",
+          "5. **Roast:** Roast until the salmon flakes and the beans are *just* tender. @780s",
+        ].join("\n"),
+        ingredientKeys: {
+          salmon: "4 salmon fillets (6 oz each)",
+          green_beans: "1 lb green beans, trimmed",
+          olive_oil: "2 tbsp olive oil",
+          lemon: "1 lemon, half juiced + half sliced",
+          dijon: "1 tbsp dijon mustard",
+          garlic: "2 cloves garlic, minced",
+        },
+      },
+      {
+        slug: "black-bean-tacos",
+        title: "20-Minute Black Bean Tacos",
+        description: "Pantry-heavy and fast — smoky beans, quick-pickled onion, and whatever crunch you have on hand.",
+        time_total: 20,
+        protein: "black bean",
+        cuisine: "mexican",
+        dietary: ["vegetarian", "vegan"],
+        course: ["dinner"],
+        tags: ["pantry", "budget"],
+        favorite: false,
+        body: [
+          "## Ingredients",
+          "",
+          "- 2 cans black beans, drained",
+          "- 1 tsp cumin",
+          "- 1 tsp smoked paprika",
+          "- 8 corn tortillas, warmed",
+          "- 1/2 red onion, thinly sliced",
+          "- Juice of 1 lime",
+          "- Cilantro, avocado, hot sauce to serve",
+          "",
+          "## Instructions",
+          "",
+          "1. **Quick-pickle the onion:** Toss the {onion} with the {lime|lime juice} and a pinch of salt; set aside to soften.",
+          "2. **Simmer the beans:** Warm the {black_beans|beans} with {cumin}, {paprika}, and a splash of water until *saucy*. @480s",
+          "3. **Mash for texture:** Mash lightly with the back of a spoon.",
+          "4. **Build the tacos:** Pile onto warm {tortillas} with the pickled onion, {avocado}, and {cilantro}.",
+        ].join("\n"),
+        ingredientKeys: {
+          black_beans: "2 cans black beans, drained",
+          cumin: "1 tsp cumin",
+          paprika: "1 tsp smoked paprika",
+          tortillas: "8 corn tortillas, warmed",
+          onion: "1/2 red onion, thinly sliced",
+          lime: "Juice of 1 lime",
+          avocado: "Cilantro, avocado, hot sauce to serve",
+          cilantro: "Cilantro, avocado, hot sauce to serve",
+        },
+      },
+      {
+        slug: "chicken-katsu-curry",
+        title: "Chicken Katsu Curry",
+        time_total: 55,
+        protein: "chicken",
+        cuisine: "japanese",
+        dietary: [],
+        course: ["dinner"],
+        tags: ["comfort"],
+        favorite: false,
+        body: [
+          "## Ingredients",
+          "",
+          "- 2 chicken breasts, butterflied",
+          "- 1 cup panko",
+          "- 2 eggs, beaten",
+          "- 1/2 cup flour",
+          "- 2 carrots, 1 onion, diced",
+          "- 2 tbsp curry powder",
+          "- 1 tbsp soy sauce + 1 tsp honey",
+          "- Steamed rice, to serve",
+          "",
+          "## Instructions",
+          "",
+          "1. **Build the curry sauce:** Soften the {onion} and {carrot}, stir in the {curry_powder|curry powder}, then add stock and simmer until silky.",
+          "2. **Blend and season:** Blend the sauce smooth and season with {soy|soy sauce} and {honey}.",
+          "3. **Bread and fry the chicken:** Dredge the {chicken} flour → egg → {panko} and fry until deep golden, ~4 minutes a side. @480s",
+          "4. **Rest and serve:** Rest, slice, and serve over {rice} with the sauce poured *around* — never over — the crust.",
+        ].join("\n"),
+        ingredientKeys: {
+          chicken: "2 chicken breasts, butterflied",
+          panko: "1 cup panko",
+          curry_powder: "2 tbsp curry powder",
+          carrot: "2 carrots, 1 onion, diced",
+          onion: "2 carrots, 1 onion, diced",
+          soy: "1 tbsp soy sauce + 1 tsp honey",
+          honey: "1 tbsp soy sauce + 1 tsp honey",
+          rice: "Steamed rice, to serve",
+        },
+      },
+      {
+        slug: "miso-butter-pasta",
+        title: "Miso-Butter Pasta",
+        description: "New this week from your feeds — a 25-minute umami bomb built from three pantry staples.",
+        time_total: 25,
+        protein: null,
+        cuisine: "fusion",
+        dietary: ["vegetarian"],
+        course: [],
+        tags: ["quick", "5-ingredient"],
+        favorite: false,
+        body: [
+          "## Ingredients",
+          "",
+          "- 12 oz spaghetti",
+          "- 3 tbsp white miso",
+          "- 4 tbsp butter",
+          "- 3 cloves garlic, grated",
+          "- Reserved pasta water",
+          "- Chives & black pepper to finish",
+          "",
+          "## Instructions",
+          "",
+          "1. **Boil the pasta:** Boil the {spaghetti|pasta} until *al dente*, reserving **1 cup** of the starchy water. @540s",
+          "2. **Make the miso butter:** Melt the {butter} with the {garlic}, then whisk in the {miso} off the heat.",
+          "3. **Toss with pasta water:** Add the pasta and splashes of water, tossing hard until the sauce turns glossy.",
+          "4. **Finish:** Finish with {chives} and a heavy crack of pepper.",
+        ].join("\n"),
+        ingredientKeys: {
+          spaghetti: "12 oz spaghetti",
+          miso: "3 tbsp white miso",
+          butter: "4 tbsp butter",
+          garlic: "3 cloves garlic, grated",
+          chives: "Chives & black pepper to finish",
+        },
+      },
+    ];
+  }
+
+  notesBySlug() {
+    return {
+      "sheet-pan-salmon-green-beans": [
+        { text: "Pat the fillets really dry before they go in or they'll steam instead of roast — worth the extra paper towel.", author: "@chef_lo" },
+        { text: "I swap the dijon for whole-grain when I want more texture in the glaze.", author: "@marta.k" },
+      ],
+      "black-bean-tacos": [
+        { text: "Char the tortillas straight over the flame for ~10 seconds a side. Total game changer.", author: "@deb.eats" },
+      ],
+      "miso-butter-pasta": [
+        { text: "Brown the butter first for a nuttier, deeper finish before you whisk in the miso.", author: "@okonomi" },
+      ],
+    };
+  }
+
+  current() {
+    const recipes = this.recipes();
+    const idx = Math.min(this.state.idx, recipes.length - 1);
+    const r = recipes[idx];
+    const parsed = this.parseBody(r.body);
+    return { idx, r, ingredients: parsed.ingredients, steps: parsed.steps };
+  }
+
+  // ---- cook-mode navigation ----
+  gotoStep(step) {
+    const { steps } = this.current();
+    this.clearTick();
+    const sec = (step >= 0 && step < steps.length && steps[step].seconds) ? steps[step].seconds : null;
+    this.setState({ cooking: true, step, timerRemaining: sec, timerRunning: false });
+  }
+  enterCook = () => {
+    const mep = this.props.miseEnPlace ?? true;
+    if (mep) { this.clearTick(); this.setState({ cooking: true, step: -1, timerRemaining: null, timerRunning: false }); }
+    else { this.gotoStep(0); }
+  };
+  exitCook = () => { this.clearTick(); this.setState({ cooking: false, step: -1, timerRemaining: null, timerRunning: false, voice: false }); };
+  toggleCookMenu = () => this.setState((s) => ({ cookMenuOpen: !s.cookMenuOpen }));
+  enterCookVoice = () => { this.setState({ cookMenuOpen: false, voice: true }); this.enterCook(); };
+  startCooking = () => this.gotoStep(0);
+  prevStep = () => {
+    const mep = this.props.miseEnPlace ?? true;
+    if (this.state.step <= 0) { if (mep) { this.clearTick(); this.setState({ step: -1, timerRemaining: null, timerRunning: false }); } }
+    else this.gotoStep(this.state.step - 1);
+  };
+  nextStep = () => {
+    const { steps } = this.current();
+    if (this.state.step < steps.length - 1) this.gotoStep(this.state.step + 1);
+    else { this.clearTick(); this.setState({ step: steps.length, timerRunning: false }); }
+  };
+  toggleCheck(key) { this.setState((s) => ({ checked: { ...s.checked, [key]: !s.checked[key] } })); }
+
+  // ---- timer ----
+  currentSeconds() {
+    const { steps } = this.current();
+    const st = this.state.step;
+    return (st >= 0 && st < steps.length && steps[st].seconds) ? steps[st].seconds : null;
+  }
+  startTimer() {
+    const total = this.currentSeconds();
+    if (!total) return;
+    this.clearTick();
+    const start = (this.state.timerRemaining == null || this.state.timerRemaining <= 0) ? total : this.state.timerRemaining;
+    this.setState({ timerRemaining: start, timerRunning: true });
+    this._iv = setInterval(() => {
+      this.setState((s) => {
+        if (s.timerRemaining <= 1) { this.clearTick(); return { timerRemaining: 0, timerRunning: false }; }
+        return { timerRemaining: s.timerRemaining - 1 };
+      });
+    }, 1000);
+  }
+  toggleTimer = () => { if (this.state.timerRunning) { this.clearTick(); this.setState({ timerRunning: false }); } else this.startTimer(); };
+  resetTimer = () => { this.clearTick(); this.setState({ timerRemaining: this.currentSeconds(), timerRunning: false }); };
+
+  renderVals() {
+    const { idx, r, ingredients, steps } = this.current();
+    const mep = this.props.miseEnPlace ?? true;
+    const showTimersProp = this.props.showTimers ?? true;
+    const accent = this.props.accent || null;
+    const total = steps.length;
+
+    // ---- browse tabs ----
+    const tabBase = {
+      padding: "0.3rem 0.7rem", border: "1px solid var(--border)", borderRadius: "var(--radius-md)",
+      background: "var(--background)", color: "var(--muted-foreground)", font: "inherit",
+      fontSize: "var(--text-xs)", fontWeight: 500, cursor: "pointer", whiteSpace: "nowrap",
+    };
+    const tabActive = { background: "var(--primary)", color: "var(--primary-foreground)", borderColor: "var(--primary)" };
+    const tabs = this.recipes().map((rec, i) => ({
+      title: rec.title,
+      onClick: () => { if (i !== idx) { this.clearTick(); this.setState({ idx: i, step: -1, timerRemaining: null, timerRunning: false }); } },
+      style: i === idx ? { ...tabBase, ...tabActive } : tabBase,
+    }));
+
+    const hasFacets =
+      Boolean(r.protein) || Boolean(r.cuisine) || r.dietary.length > 0 ||
+      (r.course?.length ?? 0) > 0 || (r.tags?.length ?? 0) > 0 ||
+      typeof r.time_total === "number";
+
+    const instrIdx = r.body.indexOf("## Instructions");
+    const instrBody = instrIdx >= 0 ? r.body.slice(instrIdx) : r.body;
+    const proseEl = React.createElement("div", {
+      className: "prose", "data-testid": "recipe-body",
+      dangerouslySetInnerHTML: { __html: this.interpolate(this.mdToHtml(instrBody), r.ingredientKeys) },
+    });
+
+    const LOC_ORDER = ["Produce", "Fridge", "Freezer", "Pantry", "Spice drawer"];
+    const LOC_ICON = {
+      "Produce": "M12 2a9 9 0 0 0-9 9c0 5 4 9 9 11 5-2 9-6 9-11a9 9 0 0 0-9-9Z",
+      "Fridge": "M5 2h14a1 1 0 0 1 1 1v18a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1Zm-1 8h16M9 5v2M9 13v3",
+      "Freezer": "M12 2v20M2 12h20M5 5l14 14M19 5 5 19",
+      "Pantry": "m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z",
+      "Spice drawer": "M4 6h16M4 12h16M4 18h16",
+    };
+    const byLoc = {};
+    for (const ing of ingredients) { const loc = this.classifyLocation(ing); (byLoc[loc] = byLoc[loc] || []).push(ing); }
+    const ingredientGroups = LOC_ORDER.filter((l) => byLoc[l]).map((l) => ({ location: l, icon: LOC_ICON[l], items: byLoc[l] }));
+
+    const notesList = (this.notesBySlug()[r.slug] || []).map((n) => ({
+      text: n.text,
+      author: n.author,
+      initial: (n.author.replace(/^@/, "")[0] || "?").toUpperCase(),
+    }));
+    const hasNotes = notesList.length > 0;
+
+    // ---- cook-mode state ----
+    const cooking = this.state.cooking != null ? this.state.cooking : !!(this.props.startInCookMode ?? false);
+    let step = this.state.step;
+    if (cooking && !mep && step < 0) step = 0;
+
+    const atMise = cooking && mep && step < 0;
+    const atDone = cooking && step >= total && total > 0;
+    const atStep = cooking && step >= 0 && step < total;
+    const browsing = !cooking;
+
+    const phaseLabel = atMise ? "Mise en place" : atDone ? "Complete" : "Step " + (step + 1) + " of " + total;
+    const frac = atMise ? 0.05 : atDone ? 1 : total ? (step + 1) / total : 0;
+    const progressBarStyle = { height: "100%", width: (frac * 100) + "%", background: "var(--primary)", transition: "width 0.3s ease" };
+
+    // mise en place rows
+    const boxBase = { width: "20px", height: "20px", borderRadius: "6px", border: "1px solid var(--border)", display: "inline-flex", alignItems: "center", justifyContent: "center", flex: "0 0 auto", color: "var(--primary-foreground)" };
+    const boxChecked = { ...boxBase, background: "var(--primary)", borderColor: "var(--primary)" };
+    let checkedCount = 0;
+    const miseByLoc = {};
+    ingredients.forEach((text, i) => {
+      const key = idx + "-" + i;
+      const checked = !!this.state.checked[key];
+      if (checked) checkedCount++;
+      const row = {
+        text, checked,
+        onToggle: () => this.toggleCheck(key),
+        boxStyle: checked ? boxChecked : boxBase,
+        textStyle: checked
+          ? { fontSize: "var(--text-sm)", textDecoration: "line-through", color: "var(--muted-foreground)" }
+          : { fontSize: "var(--text-sm)" },
+      };
+      const loc = this.classifyLocation(text);
+      (miseByLoc[loc] = miseByLoc[loc] || []).push(row);
+    });
+    const miseGroups = LOC_ORDER.filter((l) => miseByLoc[l]).map((l) => ({ location: l, icon: LOC_ICON[l], items: miseByLoc[l] }));
+    const miseCountLabel = checkedCount + " / " + ingredients.length + " ready";
+
+    // step + timer
+    const stepData = atStep ? steps[step] : null;
+    const stepTitle = stepData ? stepData.title : null;
+    const stepEl = stepData
+      ? React.createElement("span", { dangerouslySetInnerHTML: { __html: this.interpolate(this.mdInline(stepData.body), r.ingredientKeys) } })
+      : null;
+    const stepCountLabel = atStep ? "Step " + (step + 1) : "";
+    const nextLabel = atStep && step >= total - 1 ? "Finish" : "Next";
+
+    const curSec = stepData ? stepData.seconds : null;
+    const showTimer = atStep && showTimersProp && !!curSec;
+    const remaining = this.state.timerRemaining != null ? this.state.timerRemaining : (curSec || 0);
+    const timerDone = showTimer && remaining <= 0;
+    const timerRunning = this.state.timerRunning;
+    const fillPct = curSec ? Math.max(0, Math.min(1, 1 - remaining / curSec)) * 100 : 0;
+
+    const canBack = atStep && (step > 0 || mep);
+    const prevBtnBase = { display: "inline-flex", alignItems: "center", gap: "0.4rem", padding: "0.55rem 1.1rem", border: "1px solid transparent", borderRadius: "var(--radius-md)", background: "transparent", color: "var(--muted-foreground)", font: "inherit", fontSize: "var(--text-sm)", fontWeight: 500, cursor: "pointer" };
+    const prevBtnStyle = canBack ? prevBtnBase : { ...prevBtnBase, opacity: 0.4, cursor: "not-allowed", pointerEvents: "none" };
+    const prevBtnHover = canBack ? { background: "var(--accent)", color: "var(--accent-foreground)" } : {};
+    const ghostHover = { background: "var(--accent)", color: "var(--accent-foreground)" };
+
+    // accent override at the root so tabs, cook button, timer and checks all inherit
+    const hostStyle = { minHeight: "100vh", display: "flex", flexDirection: "column", background: "var(--background)" };
+    if (accent) { hostStyle["--primary"] = accent; hostStyle["--primary-foreground"] = "#ffffff"; }
+
+    return {
+      hostStyle,
+      // browse
+      tabs, dark: this.state.dark, light: !this.state.dark,
+      toggleTheme: () => this.setState((s) => ({ dark: !s.dark })),
+      title: r.title, description: r.description || null,
+      protein: r.protein || null, cuisine: r.cuisine || null,
+      courseList: r.course ?? [], dietaryList: r.dietary ?? [], tagsList: r.tags ?? [],
+      hasFacets, hasTime: typeof r.time_total === "number", time_total: r.time_total, proseEl, ingredientGroups,
+      notesList, hasNotes,
+      copyRecipe: this.copyRecipe, printRecipe: this.printRecipe,
+      copied: !!this.state.copied, notCopied: !this.state.copied,
+      copyLabel: this.state.copied ? "Copied" : "Copy",
+      // log cooked
+      logOpen: this.state.logOpen,
+      logDate: this.state.logDate || this.todayIso(),
+      maxDate: this.todayIso(),
+      toggleLog: this.toggleLog, setLogDate: this.setLogDate, logCooked: this.logCooked,
+      showLogged: !!this.state.loggedMsg,
+      loggedLabel: this.state.loggedMsg ? this.formatLogged(this.state.loggedMsg) : "",
+      logBtnBg: this.state.logOpen ? "var(--accent)" : "var(--background)",
+      logBtnColor: this.state.logOpen ? "var(--accent-foreground)" : "var(--foreground)",
+      // cook mode
+      browsing, cooking, atMise, atStep, atDone,
+      enterCook: this.enterCook, exitCook: this.exitCook,
+      cookMenuOpen: this.state.cookMenuOpen, toggleCookMenu: this.toggleCookMenu, enterCookVoice: this.enterCookVoice,
+      cookCaretStyle: { transition: "transform 0.15s ease", transform: this.state.cookMenuOpen ? "rotate(180deg)" : "none" },
+      voiceOn: cooking && this.state.voice,
+      startCooking: this.startCooking, prevStep: this.prevStep, nextStep: this.nextStep,
+      phaseLabel, progressBarStyle,
+      miseGroups, miseCountLabel,
+      stepTitle, stepEl, stepCountLabel, nextLabel, prevBtnStyle, prevBtnHover, ghostHover,
+      // timer
+      showTimer,
+      timerLabel: timerDone ? "Time's up" : (timerRunning ? "Counting down" : "Ready"),
+      timerLabelColor: timerDone ? "var(--primary)" : "var(--muted-foreground)",
+      timerDisplay: this.fmt(remaining),
+      timerTimeStyle: { fontFamily: "var(--font-mono)", fontSize: "2.35rem", fontWeight: 600, fontVariantNumeric: "tabular-nums", lineHeight: 1, letterSpacing: "-0.01em", color: timerDone ? "var(--primary)" : "var(--foreground)" },
+      ringStyle: (function () { const c = 2 * Math.PI * 53; const frac = curSec ? Math.max(0, Math.min(1, remaining / curSec)) : 0; return { strokeDasharray: c.toFixed(1), strokeDashoffset: (c * (1 - frac)).toFixed(1), transition: "stroke-dashoffset 1s linear" }; })(),
+      timerRunning, timerPaused: !timerRunning,
+      toggleTimer: this.toggleTimer, resetTimer: this.resetTimer,
+      timerBtnLabel: timerRunning ? "Pause" : (remaining <= 0 ? "Restart" : "Start"),
+    };
+  }
+}
+</script>
+</body>
+</html>

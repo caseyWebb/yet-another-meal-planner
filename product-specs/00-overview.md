@@ -61,24 +61,188 @@ member feed follow/unfollow + popular-feeds pool, feed→member import attributi
 
 Dependencies, not a mandate. Each numbered band can be one or more OpenSpec changes.
 
+**Momentum bank**: `connect-modal`, `cookbook-unified-browse` (filter bar over indexed
+facets, favorites toggle, promoted panel — URL-param plumbing only), and
+`recipe-detail-tweaks` (detail page only; the cook-mode widget waits for D32's change)
+are zero/near-zero-backend changes that can land while band 1 is being planned, without
+touching band-1 shared surfaces.
+
+**Sidebar counts** (all three badges, defined once): grocery = the derived to-buy line
+count minus checked (D28) and in-flight rows (the same read the page renders; on the
+offline persist allowlist); plan = meal rows only, `meal != 'project'` (D26); people =
+pending inbound requests, not friends (the mock's friend-count badge is a listed mock
+bug).
+
 1. **Foundations with no UI dependencies**: meal-type dimension on plan/log/vibes/cadence
    (story 02 — schema + tool contracts + propose engine); pantry location dimension +
-   disposition capture (feeds story 03); brand tiers data model.
+   disposition capture (feeds story 03); brand tiers data model; spend-event capture on
+   the existing order-commit path (feeds story 03) — snapshot/materialize contract per
+   D16, banding per D25. Coupling rule (D25): a migration retiring a preference shape the
+   shipped profile/vibes pages edit ships with, or is immediately followed by, its
+   member-UI update.
 2. **Page redesigns over existing data**: Cookbook restructure (filter bar, promoted
    panel, favorites toggle); Meal plan page (slots grid, projects); Plan-your-week widget
-   alignment; Pantry page; Retrospective shell with the existing cooking log tab.
+   alignment; Pantry page; Retrospective shell with the existing cooking log tab. Two
+   named slices: `propose-orchestration-unification` (lift the hand-duplicated
+   ProposeSession/buildRequest/toView orchestration from packages/app/src/lib/propose.ts
+   + packages/widgets/src/ProposeCard.tsx into the shared package with host adapters;
+   lands BEFORE the page-04 redesign; D25) and `profile-planning-and-vibes-ui` (page 09
+   Planning card: per-meal cadence steppers, resurface/novelty sliders, weekly-budget
+   control; page 10 Meal vibes tab; sequenced immediately after band 1's story-02 schema
+   change; the D8 lunch-strategy/RTE → seeded-vibes migration rides this slice). The
+   Preferred-brands management card ships with band 1's brand-tier model change or, at
+   latest, as a band-3 sibling ordered before the order-review rework (D25).
 3. **Order flow + fulfillment**: order review rework (brand decisions, broader/manual
    search, savings, honest confirm); store adapters card; offline stores + aisle maps +
-   member store-walk UI (story 04). Spend capture rides the order flow (story 03).
-4. **Analyzers**: spend analyzer, then waste analyzer (needs 1's disposition capture and
-   3's price capture).
+   member store-walk UI (story 04). The order-review rework EXTENDS band 1's spend
+   capture (impulse lines, flyer-savings tiles reading the same send-record source) and
+   adds the manual-shop/walk capture + estimation path — spend capture rides the shared
+   commit ops (order commit + the shop-commit/receive op), never UI wiring (D16).
+4. **Analyzers**: spend analyzer, then waste analyzer (needs 1's disposition + spend
+   capture).
 5. **Social layer** (story 01): households (multi-member tenants), friend links,
    visibility lenses, curated public set, People page, cookbook/notes lens integration.
    Biggest change; independent of 2–4 except where recommendations read the friend lens.
+   The member identity split (D10) is this band's first change; every member-scoped
+   feature depends on it.
 6. **Ingest surfaces**: member Discovery tab (follow relation, popular pool, test modal)
    and Satellites tab (mostly re-scoping existing admin surfaces to member sessions)
    (story 05). Household-scoped bits depend on 5.
-7. **Account & security + Connect modal**: independent; can land any time.
+7. **Account & security + Connect modal** — three slices (D25): **7a**
+   `account-security-basics` + `connect-modal` (any time; built on tenant-as-member
+   identity; session/grant records gain their member key as a band-5 follow-through —
+   re-key, not rebuild); **7b** after band 5 (handle rename; export scope contract);
+   **7c** `recovery-email` (blocked on an outbound email sender that does not exist —
+   sender choice + magic-link security model resolved by a planning-time spike).
+
+## Routing and config placements (per band)
+
+1. **Invite/join links** — SPA route `/join/:token` + POST under `/api/*`: no
+   `run_worker_first` entry needed; a proposal minting a Worker-rendered join page would
+   need one.
+2. **Export** — GET under `/api/*`: covered; no out-of-band signed URLs (D33).
+3. **Recovery-email verification/magic link** — SPA route + `/api`: no entry.
+4. **Instacart OAuth callback** — Worker-owned; nest under the existing `/oauth/*` (e.g.
+   `/oauth/instacart/callback`) so no new entry; anywhere else requires a same-change
+   entry + app-suite passthrough spec.
+5. **Widget resources** — MCP `resources/read`, never HTTP routes.
+6. **Satellite helper freshness observation** — rides `/satellite/*`: covered (D22).
+7. **Feed probe, walk/manual-shop, people, satellites member surfaces** — all `/api/*`:
+   covered.
+8. **The D9 deployment-profile flag** is new deploy-visible config: each proposal must
+   state its channel — either the D1-config channel (discovery_config precedent,
+   preferred) or a wrangler var explicitly verified to survive
+   scripts/merge-wrangler-config.mjs's allowlist. Implicit friend edges are COMPUTED from
+   the flag at read time, never materialized; flipping self-hosted→SaaS drops the
+   implicit edges (operator may bulk-create real friendships); SaaS→self-hosted is
+   refused unless the deployment has ≤1 non-empty household (consent inversion guard).
+
+## Appendix A — MCP tool delta + /api endpoint inventory
+
+Each band's proposal starts from this; every tool line lands in docs/TOOLS.md in the
+same pass.
+
+**New tools**: `display_grocery_list`, `display_order_review` (D18/D19); post-spike
+Instacart flush sibling of `place_order` (D7).
+
+**Renamed with alias window (D21)**: the `night_vibe` family → `meal_vibe` family; each
+vibe gains `meal`; `update_night_vibe` needs explicit-null field-clearing for the inline
+edit form; vibe cadence stays optional (the mock's mandatory select is a UI default).
+
+**Changed**: `propose_meal_plan` + `display_meal_plan` (per-meal counts map, slots
+grouped by meal, ProposeCardData reshape; attendance input per D29; member-UI dials cut
+per D8/D20 — tool params retained); `update_meal_plan`/`read_meal_plan` (meal column,
+client-mintable row ids + slug-op fan-out per D26, `meal='project'` rows); `log_cooked`
+(meal param, per-(date,meal,type,recipe) dedupe, meal-aware deterministic clear +
+optional row-id param per D26); `retrospective` (meal-aware cadence + household-scoped
+spend/waste aggregate sections, read-only); `update_preferences` (cadence map,
+weekly_budget, brands→tiers, retired keys accepted-and-dropped per D21);
+`read_user_profile` (cadence/vibes/budget/brand-tier shapes; household members +
+nicknames export per D10; deployment profile); `update_pantry`/`read_pantry` (location
+orthogonal to category; disposition on remove); `read_recipe_notes` (tiers + author
+handles per D30/D10); `search_recipes`/`read_recipe`/`display_recipe`/`list_new_for_me`/
+propose pools/`recipe_site_url` (lens scoping per D11); `create_recipe` (already_exists →
+visibility grant per D12); suggest-vibes op (meal classification, cron producer);
+`update_feeds` (auto-follow — records the adding member as follower, TOOLS.md same
+pass); `place_order` (send-record snapshot side effect per D16); store tools get
+"offline adapter" copy only (D6).
+
+**Unchanged**: `kroger_flyer`/`store_flyer`, `kroger_prices`, `match_ingredient` (rule
+internals change with brand tiers), `compare_unit_price`, guidance tools, weather
+(dinner-only buckets initially, story 02 q4), `report_bug`, `kroger_login_url`.
+
+**New /api endpoints**: retrospective spend/waste aggregates; pantry disposition;
+grocery check-off/manual-shop/walk-completion (D28); grocery manual/broader search;
+kroger login-url + disconnect; instacart connect/retailers (post-spike); people
+aggregate + requests CRUD + members (remove, nickname) + invites (mint/revoke); signup
+join-link fork; discovery aggregate + feed test + follow/unfollow + add-feed; satellites
+aggregate + key mint/revoke + disconnect + quarantine/resume + cart-fill meta (D22
+fields only); account: handle change, recovery email, passkey list/remove-ceremony,
+session list/revoke(+others), MCP grant list/revoke(+all), export (streamed GET, D33);
+config/whoami gains `{ profile, operator }` for the connect modal + D9 gating.
+
+## Appendix B — per-band docs/spec lockstep map
+
+Each band's tasks.md carries its checklist; a band PR missing a listed delta is
+incomplete.
+
+- **Band 1**: TOOLS.md (vibe family, propose/display_meal_plan, read/update_meal_plan,
+  log_cooked, retrospective, update_preferences, read_user_profile, read/update_pantry);
+  SCHEMAS.md (night_vibes, meal_plan, cooking_log, preferences block, pantry, brand
+  prefs, spend_events, ProposeCardData); ARCHITECTURE.md (menu-generation); deltas:
+  night-vibe-palette, planning-cadence, weather-bucket-planning, meal-plan-proposal,
+  meal-planning, menu-generation, cooking-history, meal-plan-widget, member-app-propose,
+  member-app-core, profile-reconciliation, night-vibe-archetype-derivation,
+  order-placement (spend snapshot).
+- **Band 2**: TOOLS.md retrospective; deltas: member-app-core,
+  member-app-differentiators, cookbook-search, recipe-notes (tag UI), guided-cook +
+  recipe-card-widget (body annotations — SCHEMAS.md annotation grammar explicitly
+  required by pages/02).
+- **Band 3**: TOOLS.md (place_order, update_grocery_list, read_to_buy, matcher
+  confidence, store tools copy, new display tools); SCHEMAS.md (grocery checked_at, send
+  records, sku_cache, widget payload contracts); ARCHITECTURE.md (Kroger pipeline +
+  flush branches + adapter model incl. Instacart); deltas: member-app-grocery,
+  ingredient-matching, order-placement, in-store-fulfillment, grocery-list,
+  member-app-offline (checked_at re-wording per D28 + online-only surfaces).
+- **Band 4**: SCHEMAS.md event tables + avoidability derivation; ARCHITECTURE.md cron
+  list; TOOLS.md retrospective.
+- **Band 5**: TOOLS.md (lens notes on every corpus read, notes tools, read_user_profile,
+  create_recipe dedup-to-grant); SCHEMAS.md
+  (members/friendships/requests/invites/imports/handles); ARCHITECTURE.md (multi-tenant
+  identity rewrite); deltas: multi-tenancy, shared-corpus (wholesale),
+  member-session-auth, passkey-auth, self-service-signup, group-insights, recipe-notes,
+  member-app-differentiators, claude-ai-connector, operator-admin (D10), cookbook-search,
+  cookbook-similar-recipes, data-read-tools, semantic-recipe-search (D11).
+- **Band 6**: TOOLS.md (update_feeds, read_satellite_rejections visibility); SCHEMAS.md
+  (feeds health/follows/attribution); ARCHITECTURE.md (discovery sweep); deltas:
+  recipe-discovery, discovery-sweep, discovery-calibration, satellite,
+  satellite-source-audit (trust premise per D14), satellite-pull-channel.
+- **Band 7**: SCHEMAS.md (session/grant metadata, export); deltas: member-session-auth,
+  passkey-auth, multi-tenancy (grant metadata), operator-provisioning.
+
+## Appendix C — persona/skills impact map
+
+Each band's tasks include its AGENT_INSTRUCTIONS.md edit + `aubr build:plugin --check`;
+grep the persona for lunch_strategy / ready_to_eat_default_action / night-vibe naming
+before merging a band that retires them.
+
+- **Band 1**: meal-plan/menu-gen flow (per-meal counts, vibe-meal binding, empty-meal
+  nudge); configure-yamp-profile onboarding (per-meal cadence; lunch-strategy +
+  RTE-default questions REMOVED, replaced by seeded vibe suggestions; budget capture);
+  cooked/log flow (meal param); vibe-palette skills (meal-vibe naming).
+- **Band 3**: shop-groceries (RTE default action gone — always offer, never auto-add;
+  receive/"I placed the order" choreography routes through the D16 shared ops; "offline
+  store" naming per D6); put-away/pantry flow (location field; waste-reason capture on
+  spoilage mentions).
+- **Band 4**: retrospective skill acts on spend/waste aggregates, reads only.
+- **Band 5**: session-start profile read carries household members + nicknames; notes
+  flows mention tiers (D30).
+- **Widget bands**: "when to show" lines for display_grocery_list/display_order_review
+  mirroring the existing display_recipe boundary text.
+
+Per the tool/skill ownership test, new guarantees (disposition never asks value; spend
+materializes at the purchase assertion; lens semantics) live in tool descriptions;
+skills carry only choreography.
 
 ## Mockup fidelity warnings
 

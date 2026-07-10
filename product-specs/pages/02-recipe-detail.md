@@ -23,11 +23,17 @@ MCP App via `display_recipe` / guided-cook).
   description + nudge "Cook with Claude to walk through the full ingredient list and
   method step by step."
 - **Notes**: composer gains a **free-text tag field** (chips render on notes; tags are in
-  the backend model already — this is UI) plus the existing Private checkbox. Mock
-  auto-assigns tag `private` when Private is checked with no tag — treat as mock artifact
-  unless wanted. Own notes ("you", newest first); "From other members" read-only with
-  author handle + tag chips — visibility scoped per story 01 tiers. **Mock has no
-  edit/delete on notes; today's app does — keep edit/delete (regression otherwise).**
+  the backend model already — this is UI). The mock's Private checkbox is replaced by a
+  **three-state tier control** `public | friends | private` showing the effective
+  default (`friends`) at authoring time (D30 — no household tier; household members are
+  inside the friends tier by definition). `public` is bounded by the recipe's own lens:
+  a note never renders where its recipe isn't visible, and appears on the anonymous
+  /cookbook surface only where the recipe itself is anonymously visible; `private` =
+  author-only. Migration: private flag → private, non-private → friends. The mock's
+  auto-assigned `private` tag is a mock artifact — drop it. Own notes ("you", newest
+  first); "From other members" read-only with author handle + tag chips — visibility
+  scoped per the D30 tiers. **Mock has no edit/delete on notes; today's app does — keep
+  edit/delete (regression otherwise).**
 - **Similar recipes**: unchanged (cosine path); mock's protein-OR-cuisine fallback is mock
   logic, not the spec.
 
@@ -46,14 +52,30 @@ Cook mode: optional **mise en place** phase (check-off by location, "k/n ready")
 showTimers.
 
 **Body-annotation contract (new)**: ingredient tokens `{key}` / `{key|surface text}`,
-timer hints `@{n}s`, `**Title:**` step leads, and an `ingredientKeys` map. Who produces
-these — authoring conventions, the facet-derivation cron, or render-time parsing — is a
-proposal decision; `docs/SCHEMAS.md` needs the annotation spec in the same pass. Location
-grouping likewise: client heuristic (mock) vs derived data.
+timer hints `@{n}s`, `**Title:**` step leads, and an `ingredientKeys` map. Producer
+(decided — see §5): the body_hash-gated recipe-facet classify pass emits the annotations
+artifact (ingredientKeys keyed to canonical ids, step titles, timer hints) into a
+derived table; the card hydrates from the payload/API and degrades to its deterministic
+client parser; authored in-body annotations stay as overrides; the grammar is documented
+in `docs/SCHEMAS.md` in the same pass. Never render-time LLM.
 
-**MCP App host (story 06)**: log-cooked, favorite, and cook-completion must send context
-updates to the agent; the guided-cook spec already owns the conversational flow — the
-widget is its visual companion, not a replacement.
+**Location grouping**: the vocabulary is page 06's six kitchen locations (drop the
+mock's "Produce"/"Spice drawer" copy); group by the household's actual pantry-row
+location when one resolves (canonical-id join), else a deterministic
+category→default-location map defined once beside the page 06 vocab.
+
+**MCP App host (story 06, D32)**: log-cooked, favorite, and cook-completion must send
+context updates to the agent via the MCP Apps bridge. The dual-use Recipe Card (cook
+mode included) becomes the ONE conversation cooking card once body annotations land —
+it supersedes guided-cook's `recipe_display_v0` dependency. The landing change, same
+pass: (1) deltas recipe-card-widget's read-only requirement (its justification — no
+structured step data — is obsoleted by the annotation contract); (2) deltas guided-cook
+to emit `display_recipe`'s widget, keyed on the host rendering MCP Apps, keeping the
+conversational pre-flight, the plain-text fallback, user-owned timers, and the
+cooked-flow handoff; (3) reconciles the two structured-step paths into one step list
+(the tool/skill supplies cook-mode structuredContent; annotation parsing is the
+member-app/no-skill path). Until that change ships, guided-cook stays on
+`recipe_display_v0` — no interim dual-card state.
 
 ## 4. Delta vs today
 
@@ -63,7 +85,7 @@ widget is its visual companion, not a replacement.
 | Source link line, "In meal plan" disabled state, two-tier body nudge | tweaks |
 | Note tag field UI | **new UI** (model exists) |
 | Log-cooked date popover | **new** (adopt from widget) |
-| Guided cook mode, voice mode, timers, mise en place | **new** (widget; `guided-cook` spec covers the agent flow) |
+| Guided cook mode, voice mode, timers, mise en place | **new** (widget; `guided-cook` needs a delta re-pointing its emit target — D32) |
 | Body annotations + ingredientKeys | **new contract** |
 | Copy/Print | new (widget) |
 
@@ -71,8 +93,9 @@ widget is its visual companion, not a replacement.
 
 1. Detail plan action: disabled state (mock) vs toggle vs "view in plan" link?
 2. Note tags: free text vs vocab; shown on shared notes (mock: yes)?
-3. Body annotations: producer + fallback for unannotated recipes (widget must degrade to
-   plain steps — mock's parser already does).
+3. ~~Body annotations: producer + fallback for unannotated recipes.~~ — decided (§3):
+   the body_hash-gated classify pass produces the annotations artifact; the widget
+   degrades to its deterministic client parser; authored annotations are overrides.
 4. Voice mode scope: real speech synthesis/recognition in the widget, or hand-off to the
    agent conversation (recommend the latter first)?
 5. Where does the widget's "Log cooked" write in each host (log_cooked tool vs /api) —

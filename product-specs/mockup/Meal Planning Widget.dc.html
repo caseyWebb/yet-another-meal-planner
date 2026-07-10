@@ -1,0 +1,618 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="_ds/yamp-ui-76ffa1d0-b4bc-4e60-b696-ab3a7227af90/_ds_bundle.css">
+  <link rel="stylesheet" href="_ds/yamp-ui-76ffa1d0-b4bc-4e60-b696-ab3a7227af90/styles.css">
+  <link href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    * { box-sizing: border-box; }
+    html, body { margin: 0; }
+    body { background: var(--background); color: var(--foreground); font-family: var(--font-sans); }
+    .mp-widget h1 { margin: 0; font-size: var(--text-3xl); font-weight: 600; letter-spacing: -0.02em; line-height: 1.15; }
+    a { color: var(--link); text-decoration: underline; text-underline-offset: 2px; }
+    a:hover { opacity: 0.82; }
+    .slot-title { color: var(--foreground); font-weight: 600; }
+    .mp-widget { max-width: 48rem; margin: 0 auto; }
+    .mp-widget.embedded { max-width: none; margin: 0; }
+    .mp-widget .nudge-wide { display: none; }
+    .mp-steppers { display: flex; align-items: center; width: 100%; }
+    .mp-steppers .nights-step { flex: 1 1 0; justify-content: center; padding: 0.1rem 0.85rem; }
+    .mp-steppers .nights-step + .nights-step { border-left: 2px solid color-mix(in oklch, var(--brand) 45%, transparent); }
+    /* Shared behavioral tweaks — apply in the standalone widget AND the embedded app view. */
+    .mp-widget [data-testid="slot-exclude"] { display: none; }
+    .mp-widget [data-testid="slot-lock"] { display: none; }
+    .mp-widget .slot-wrap { border-radius: var(--radius-lg); background: var(--card); box-shadow: 0 0 0 1px color-mix(in oklch, var(--foreground) 8%, transparent); }
+    .mp-widget .slot-wrap .slot-card { box-shadow: none; background: transparent; border-radius: 0; padding-bottom: 0.4rem; }
+    .mp-widget .slot-wrap .slot-card.locked { box-shadow: none; }
+    .mp-widget .slot-wrap .slot-footer { display: none; }
+    .mp-sidefoot { display: flex; align-items: flex-start; justify-content: space-between; gap: 0.6rem; flex-wrap: wrap; padding: 0.35rem 1.1rem 0.85rem; }
+    .mp-sides { display: flex; align-items: center; flex-wrap: wrap; gap: 0.35rem; min-height: 1.7rem; }
+    .mp-sides-label { font-family: var(--font-mono); font-size: var(--text-xs); text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted-foreground); margin-right: 0.15rem; }
+    .mp-sides .side-chip { gap: 0.2rem; padding-right: 0.3rem; }
+    .mp-sides .side-x { display: inline-flex; align-items: center; justify-content: center; width: 1rem; height: 1rem; border: 0; border-radius: 999px; background: transparent; color: var(--muted-foreground); font-size: 0.95rem; line-height: 1; cursor: pointer; -webkit-appearance: none; appearance: none; }
+    .mp-sides .side-x:hover { background: color-mix(in oklch, var(--foreground) 10%, transparent); color: var(--foreground); }
+    .mp-add-side { display: inline-flex; align-items: center; height: 1.7rem; padding: 0 0.65rem; border: 1px dashed color-mix(in oklch, var(--border) 92%, var(--foreground)); border-radius: 999px; background: transparent; color: var(--muted-foreground); font: inherit; font-size: var(--text-xs); font-weight: 500; cursor: pointer; -webkit-appearance: none; appearance: none; }
+    .mp-add-side:hover { color: var(--brand); border-color: color-mix(in oklch, var(--brand) 55%, var(--border)); }
+    .mp-combo { display: inline-flex; min-width: 15rem; }
+    .mp-sidefoot .slot-flags { display: flex; flex-wrap: wrap; gap: 0.35rem; align-items: center; }
+    .mp-widget .slot-wx { display: none; }
+    .mp-widget .slot-why { display: none; }
+    .mp-widget .variety-stats > .vstat:first-child { display: none; }
+    /* Overlay panels: float as dropdowns over the card instead of pushing content down (compact embed). */
+    .mp-widget.panels-overlay .slot-card { position: relative; }
+    .mp-widget.panels-overlay .slot-menu,
+    .mp-widget.panels-overlay .slot-alts,
+    .mp-widget.panels-overlay .slot-vibes {
+      position: absolute; top: 2.9rem; right: 1.1rem; z-index: 40;
+      margin-top: 0; width: 17rem; max-width: 78vw;
+    }
+    .mp-widget.panels-overlay .slot-facets { anchor-name: --mp-facets; }
+    .mp-widget.panels-overlay .facet-pop {
+      position: absolute; z-index: 40; margin-top: 0.4rem;
+      position-anchor: --mp-facets; top: anchor(bottom); left: anchor(left);
+    }
+  </style>
+</helmet>
+<div class="yamp-host" style="{{ hostStyle }}">
+  <sc-if value="{{ showChrome }}" hint-placeholder-val="{{ true }}">
+  <div class="host-bar" style="display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap; padding: 0.75rem 1rem; border-bottom: 1px solid var(--border); background: color-mix(in oklch, var(--muted) 35%, var(--background)); position: sticky; top: 0; z-index: 5;">
+    <div style="display: flex; align-items: center; gap: 0.6rem; min-width: 0;">
+      <span style="width: 9px; height: 9px; border-radius: 999px; background: var(--primary); flex: 0 0 auto;"></span>
+      <span style="font-family: var(--font-mono); font-size: var(--text-xs); text-transform: uppercase; letter-spacing: 0.09em; color: var(--muted-foreground);">meal-planning-widget</span>
+    </div>
+    <button type="button" onClick="{{ toggleTheme }}" aria-label="Toggle dark mode" style="display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--background); color: var(--muted-foreground); cursor: pointer; flex: 0 0 auto;">
+      <sc-if value="{{ dark }}" hint-placeholder-val="{{ true }}">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"></path></svg>
+      </sc-if>
+      <sc-if value="{{ light }}" hint-placeholder-val="{{ true }}">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"></path></svg>
+      </sc-if>
+    </button>
+  </div>
+  </sc-if>
+
+  <div class="widget-surface" style="{{ surfaceStyle }}">
+    <div class="{{ rootClass }}">
+
+      <!-- ===== COMMITTED (success) ===== -->
+      <sc-if value="{{ showCommitted }}" hint-placeholder-val="{{ false }}">
+        <div style="display: flex; flex-direction: column; gap: 0.35rem; margin-bottom: 1.4rem;">
+          <div style="display: inline-flex; align-items: center; gap: 0.5rem;">
+            <span style="width: 34px; height: 34px; border-radius: 999px; background: var(--primary); color: var(--primary-foreground); display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto;">
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"></path></svg>
+            </span>
+            <h1>Week added to your plan</h1>
+          </div>
+          <p style="margin: 0; color: var(--muted-foreground); font-size: var(--text-sm); line-height: 1.5;">{{ committedSub }}</p>
+        </div>
+        <div style="display: flex; flex-direction: column; gap: 0.6rem;">
+          <sc-for list="{{ committedRows }}" as="m" hint-placeholder-count="3">
+            <div style="display: flex; align-items: center; gap: 0.9rem; padding: 0.85rem 1rem; border: 1px solid color-mix(in oklch, var(--border) 55%, var(--card)); border-radius: var(--radius-lg); background: var(--card);">
+              <span style="font-family: var(--font-mono); font-size: var(--text-xs); text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted-foreground); white-space: nowrap; flex: 0 0 auto; min-width: 5.5rem;">{{ m.day }}</span>
+              <div style="flex: 1; min-width: 0;">
+                <div style="font-size: var(--text-base); font-weight: 600; letter-spacing: -0.01em;">{{ m.title }}</div>
+                <sc-if value="{{ m.sidesLabel }}" hint-placeholder-val="{{ false }}">
+                  <div style="font-size: var(--text-xs); color: var(--muted-foreground); margin-top: 0.15rem;">with {{ m.sidesLabel }}</div>
+                </sc-if>
+              </div>
+              <span style="font-family: var(--font-mono); font-size: var(--text-xs); color: var(--muted-foreground); white-space: nowrap; flex: 0 0 auto;">{{ m.vibe }}</span>
+            </div>
+          </sc-for>
+        </div>
+        <div style="margin-top: 1.5rem;">
+          <button type="button" onClick="{{ planAnother }}" style="display: inline-flex; align-items: center; gap: 0.45rem; padding: 0.55rem 1.15rem; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--background); color: var(--foreground); font: inherit; font-size: var(--text-sm); font-weight: 500; cursor: pointer;">
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1"></path></svg>
+            Plan another week
+          </button>
+        </div>
+      </sc-if>
+
+      <!-- ===== PLANNER ===== -->
+      <sc-if value="{{ showPlanner }}" hint-placeholder-val="{{ true }}">
+        <sc-if value="{{ showHeading }}" hint-placeholder-val="{{ true }}">
+        <div style="margin-bottom: 1.25rem;">
+          <h1>Plan your week</h1>
+          <p style="margin: 0.4rem 0 0; color: var(--muted-foreground); font-size: var(--text-sm); line-height: 1.5;">Build a week from the moods you cook by — balanced across the week and tuned to the forecast.</p>
+        </div>
+        </sc-if>
+
+        <div style="display: flex; flex-direction: column; gap: 1rem; margin-bottom: 1.35rem;">
+          <div class="mp-steppers">
+            <sc-for list="{{ steppers }}" as="s" hint-placeholder-count="3">
+              <div class="nights-step">
+                <span class="nudge-label">{{ s.label }}</span>
+                <button type="button" class="step-btn" aria-label="{{ s.decLabel }}" disabled="{{ s.decDisabled }}" onClick="{{ s.onDec }}">−</button>
+                <span class="nights-n">{{ s.value }}</span>
+                <button type="button" class="step-btn" aria-label="{{ s.incLabel }}" disabled="{{ s.incDisabled }}" onClick="{{ s.onInc }}">+</button>
+              </div>
+            </sc-for>
+          </div>
+          <sc-if value="{{ noSession }}" hint-placeholder-val="{{ true }}">
+            <div style="display: flex;">
+              <button type="button" onClick="{{ onPropose }}" style="display: inline-flex; align-items: center; gap: 0.4rem; padding: 0.5rem 1rem; border: none; border-radius: var(--radius-md); background: var(--primary); color: var(--primary-foreground); font: inherit; font-size: var(--text-sm); font-weight: 600; cursor: pointer;">
+                <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1"></path></svg>
+                Propose meals
+              </button>
+            </div>
+          </sc-if>
+        </div>
+
+        <sc-if value="{{ showProposeIntro }}" hint-placeholder-val="{{ false }}">
+          <div style="display: flex; align-items: flex-start; gap: 0.6rem; padding: 1rem 1.1rem; border: 1px dashed color-mix(in oklch, var(--border) 80%, var(--foreground)); border-radius: var(--radius-lg); background: var(--card);">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="var(--primary)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex: 0 0 auto; margin-top: 1px;"><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1"></path></svg>
+            <p style="margin: 0; font-size: var(--text-sm); color: var(--muted-foreground); line-height: 1.55;">Set how many of each meal you want, then propose — picked from the kinds of meals you cook, spread out so it doesn't feel samey, with the weather taken into account. Tweak any dial and the plan updates live. Nothing's added to your plan until you say so.</p>
+          </div>
+        </sc-if>
+
+        <sc-if value="{{ showProposeResult }}" hint-placeholder-val="{{ true }}">
+          <div class="variety-bar" data-testid="variety-bar">
+            <div class="variety-stats">
+              <span class="vstat"><strong>{{ varNights }}</strong> {{ varNoun }}</span>
+              <span class="vstat"><strong>{{ varCuisines }}</strong> cuisines</span>
+              <span class="vstat"><strong>{{ varProteins }}</strong> proteins</span>
+              <div class="pv-hist">
+                <sc-for list="{{ varHistRows }}" as="h" hint-placeholder-count="3">
+                  <span class="pv-chip{{ h.repClass }}">{{ h.label }}</span>
+                </sc-for>
+              </div>
+            </div>
+            <button type="button" data-testid="propose-commit" disabled="{{ commitDisabled }}" onClick="{{ onCommit }}" style="display: inline-flex; align-items: center; gap: 0.4rem; padding: 0.5rem 1rem; border: none; border-radius: var(--radius-md); background: var(--primary); color: var(--primary-foreground); font: inherit; font-size: var(--text-sm); font-weight: 600; cursor: pointer;">
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="18" rx="2"></rect><path d="M16 2v4M8 2v4M3 10h18"></path></svg>
+              Commit all to meal plan
+            </button>
+          </div>
+          <div style="display: flex; flex-direction: column; gap: 0.85rem; margin-top: 1rem;">
+            <sc-for list="{{ mealSections }}" as="ms" hint-placeholder-count="2">
+              <div>
+                <button type="button" onClick="{{ ms.onToggle }}" aria-expanded="{{ ms.open }}" style="width: 100%; display: flex; align-items: center; gap: 0.6rem; padding: 0.6rem 0.15rem; background: transparent; border: 0; border-bottom: 1px solid var(--border); cursor: pointer; text-align: left; font: inherit; -webkit-appearance: none; appearance: none; color: var(--foreground);">
+                  <span style="display: inline-flex; color: var(--muted-foreground); flex: 0 0 auto;">
+                    <sc-if value="{{ ms.open }}" hint-placeholder-val="{{ true }}"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"></path></svg></sc-if>
+                    <sc-if value="{{ ms.closed }}" hint-placeholder-val="{{ false }}"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 18 6-6-6-6"></path></svg></sc-if>
+                  </span>
+                  <span style="font-size: var(--text-base); font-weight: 600; letter-spacing: -0.01em;">{{ ms.title }}</span>
+                </button>
+                <sc-if value="{{ ms.open }}" hint-placeholder-val="{{ true }}">
+                  <div style="display: flex; flex-direction: column; gap: 0.85rem; padding: 0.85rem 0 0.4rem;">
+                    <sc-for list="{{ ms.slots }}" as="v" hint-placeholder-count="3">
+                      <div class="slot-wrap">
+                        <x-import component-from-global-scope="GroceryAgentUI.SlotCard" slot="{{ v.view }}" panel="{{ v.panel }}" on-panel="{{ v.onPanel }}" proteins="{{ proposeProteins }}" cuisines="{{ cuisinesAll }}" palette-presets="{{ palettePresets }}" render-title="{{ renderTitle }}" on-lock-toggle="{{ v.onLockToggle }}" on-swap-to="{{ v.onSwapTo }}" on-exclude="{{ v.onExclude }}" on-facet-pick="{{ v.onFacetPick }}" on-time-pick="{{ v.onTimePick }}" on-vibe-apply="{{ v.onVibeApply }}" on-vibe-reset="{{ v.onVibeReset }}" hint-size="100%,300px"></x-import>
+                        <div class="mp-sidefoot">
+                          <div class="mp-sides">
+                            <span class="mp-sides-label">Sides</span>
+                            <sc-for list="{{ v.sideRows }}" as="sd" hint-placeholder-count="1">
+                              <span class="side-chip">{{ sd.name }}<button type="button" class="side-x" aria-label="Remove side" onClick="{{ sd.onRemove }}">×</button></span>
+                            </sc-for>
+                            <sc-if value="{{ v.adding }}" hint-placeholder-val="{{ false }}">
+                              <span class="mp-combo">
+                                <x-import component-from-global-scope="GroceryAgentUI.Combobox" options="{{ v.comboOptions }}" allow-custom="{{ true }}" auto-focus="{{ true }}" placeholder="Search or type a side…" aria-label="Add a side" empty-text="Press enter to add your own" on-select="{{ v.onComboSelect }}" on-cancel="{{ v.onComboCancel }}" hint-size="240px,40px"></x-import>
+                              </span>
+                            </sc-if>
+                            <sc-if value="{{ v.notAdding }}" hint-placeholder-val="{{ true }}">
+                              <button type="button" class="mp-add-side" onClick="{{ v.onStartAdd }}">+ side</button>
+                            </sc-if>
+                          </div>
+                          <div class="slot-flags">
+                            <sc-for list="{{ v.flagRows }}" as="f" hint-placeholder-count="0">
+                              <span class="{{ f.cls }}">{{ f.label }}</span>
+                            </sc-for>
+                          </div>
+                        </div>
+                      </div>
+                    </sc-for>
+                  </div>
+                </sc-if>
+              </div>
+            </sc-for>
+          </div>
+        </sc-if>
+      </sc-if>
+
+    </div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{
+  &quot;$preview&quot;: { &quot;width&quot;: 820, &quot;height&quot;: 920 },
+  &quot;accent&quot;: { &quot;editor&quot;: &quot;color&quot;, &quot;default&quot;: &quot;&quot;, &quot;options&quot;: [&quot;#D97757&quot;, &quot;#2A6FDB&quot;, &quot;#1F8A5B&quot;, &quot;#7A5AF8&quot;], &quot;tsType&quot;: &quot;string&quot;, &quot;section&quot;: &quot;Theme&quot; },
+  &quot;defaultNights&quot;: { &quot;editor&quot;: &quot;int&quot;, &quot;default&quot;: 3, &quot;min&quot;: 2, &quot;max&quot;: 6, &quot;tsType&quot;: &quot;number&quot;, &quot;section&quot;: &quot;Behavior&quot; },
+  &quot;autoPropose&quot;: { &quot;editor&quot;: &quot;boolean&quot;, &quot;default&quot;: true, &quot;tsType&quot;: &quot;boolean&quot;, &quot;section&quot;: &quot;Behavior&quot; },
+  &quot;embedded&quot;: { &quot;editor&quot;: &quot;boolean&quot;, &quot;default&quot;: false, &quot;tsType&quot;: &quot;boolean&quot;, &quot;section&quot;: &quot;Embedding&quot; },
+  &quot;panelPlacement&quot;: { &quot;editor&quot;: &quot;enum&quot;, &quot;options&quot;: [&quot;overlay&quot;, &quot;inline&quot;], &quot;default&quot;: &quot;overlay&quot;, &quot;tsType&quot;: &quot;\&quot;overlay\&quot; | \&quot;inline\&quot;&quot;, &quot;section&quot;: &quot;Embedding&quot; },
+  &quot;hideHeading&quot;: { &quot;editor&quot;: &quot;boolean&quot;, &quot;default&quot;: false, &quot;tsType&quot;: &quot;boolean&quot;, &quot;section&quot;: &quot;Embedding&quot; },
+  &quot;sessionKey&quot;: { &quot;editor&quot;: &quot;text&quot;, &quot;default&quot;: &quot;yamp:mp-widget-session&quot;, &quot;tsType&quot;: &quot;string&quot;, &quot;section&quot;: &quot;Embedding&quot; },
+  &quot;onCommit&quot;: { &quot;editor&quot;: null, &quot;tsType&quot;: &quot;(views: any[]) =&gt; void&quot; },
+  &quot;onOpenRecipe&quot;: { &quot;editor&quot;: null, &quot;tsType&quot;: &quot;(slug: string) =&gt; void&quot; }
+}">
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    this.state = {
+      dark: false,
+      proposed: false,
+      nights: { breakfast: 0, lunch: 0, dinner: this.props.defaultNights ?? 3 },
+      shared: this.defaultShared(),
+      perMeal: { breakfast: this.defaultMeal(), lunch: this.defaultMeal(), dinner: this.defaultMeal() },
+      openMeals: { breakfast: true, lunch: true, dinner: true },
+      addingSide: null,
+      openPanel: null,
+      committing: false,
+      committed: null,
+      _init: false,
+    };
+    this.MEALS = [
+      { id: 'breakfast', tab: 'Breakfast', noun: 'breakfast', plural: 'breakfasts', label: 'Breakfasts' },
+      { id: 'lunch', tab: 'Lunch', noun: 'lunch', plural: 'lunches', label: 'Lunches' },
+      { id: 'dinner', tab: 'Dinner', noun: 'dinner', plural: 'dinners', label: 'Dinners' },
+    ];
+    this.RECIPES = [
+      { slug: 'thai-basil-chicken', title: 'Thai Basil Chicken', description: 'Fast weeknight stir-fry with holy basil and chili.', protein: 'chicken', cuisine: 'thai' },
+      { slug: 'shakshuka', title: 'Shakshuka', description: 'Eggs poached in spiced tomato and pepper.', protein: 'egg', cuisine: 'middle-eastern' },
+      { slug: 'miso-salmon', title: 'Miso-Glazed Salmon', description: 'Broiled salmon with a sweet-savory miso glaze.', protein: 'seafood', cuisine: 'japanese' },
+      { slug: 'chickpea-curry', title: 'Coconut Chickpea Curry', description: 'Creamy, weeknight-friendly, and pantry-forward.', protein: 'legume', cuisine: 'indian' },
+      { slug: 'carnitas-tacos', title: 'Carnitas Tacos', description: 'Slow-braised pork, crisped and piled into tortillas.', protein: 'pork', cuisine: 'mexican' },
+      { slug: 'lemon-orzo', title: 'Lemon Orzo with Feta', description: 'Bright one-pot orzo with herbs and feta.', protein: 'vegetarian', cuisine: 'mediterranean' },
+      { slug: 'beef-pho', title: 'Weeknight Beef Pho', description: 'A faster take on the long-simmered classic.', protein: 'beef', cuisine: 'vietnamese' },
+      { slug: 'sheet-pan-gnocchi', title: 'Sheet-Pan Gnocchi', description: 'Crispy gnocchi with blistered tomatoes and greens.', protein: 'vegetarian', cuisine: 'italian' },
+      { slug: 'korean-fried-cauliflower', title: 'Korean Fried Cauliflower', description: 'Crunchy, gochujang-glazed, and shareable.', protein: 'vegetable', cuisine: 'korean' },
+      { slug: 'white-bean-soup', title: 'Tuscan White Bean Soup', description: 'Rustic, brothy, ready in 40 minutes.', protein: 'legume', cuisine: 'italian' },
+      { slug: 'chicken-shawarma', title: 'Sheet-Pan Chicken Shawarma', description: 'Warm-spiced chicken with garlic sauce.', protein: 'chicken', cuisine: 'middle-eastern' },
+      { slug: 'garlic-butter-shrimp', title: 'Garlic Butter Shrimp', description: 'Ten-minute skillet shrimp, lots of garlic.', protein: 'seafood', cuisine: 'american' },
+    ];
+    this.VIBES = [
+      { id: 'weeknight', vibe: 'Weeknight bright', wx: ['grill', 'mild'] },
+      { id: 'comfort', vibe: 'Cozy comfort', wx: ['cold-comfort', 'wet'] },
+      { id: 'light', vibe: 'Light & fresh', wx: ['grill', 'mild'] },
+      { id: 'pantry', vibe: 'Pantry night', wx: ['wet', 'cold-comfort'] },
+      { id: 'adventurous', vibe: 'Something new', wx: [] },
+      { id: 'seafood', vibe: 'Sea night', wx: ['grill', 'mild'] },
+    ];
+    this.VIBE_POOL = {
+      weeknight: ['thai-basil-chicken', 'miso-salmon', 'garlic-butter-shrimp', 'lemon-orzo', 'sheet-pan-gnocchi', 'chicken-shawarma'],
+      comfort: ['carnitas-tacos', 'beef-pho', 'white-bean-soup', 'chickpea-curry', 'chicken-shawarma', 'shakshuka'],
+      light: ['lemon-orzo', 'miso-salmon', 'garlic-butter-shrimp', 'korean-fried-cauliflower', 'shakshuka'],
+      pantry: ['chickpea-curry', 'white-bean-soup', 'sheet-pan-gnocchi', 'shakshuka', 'lemon-orzo'],
+      adventurous: ['korean-fried-cauliflower', 'beef-pho', 'chicken-shawarma', 'thai-basil-chicken', 'chickpea-curry'],
+      seafood: ['miso-salmon', 'garlic-butter-shrimp', 'beef-pho'],
+    };
+    this.TIME = { 'thai-basil-chicken': 25, 'shakshuka': 30, 'miso-salmon': 20, 'chickpea-curry': 35, 'carnitas-tacos': 60, 'lemon-orzo': 25, 'beef-pho': 45, 'sheet-pan-gnocchi': 30, 'korean-fried-cauliflower': 35, 'white-bean-soup': 40, 'chicken-shawarma': 40, 'garlic-butter-shrimp': 15 };
+    this.SIDES = {
+      'thai-basil-chicken': ['jasmine rice', 'fried egg'], 'shakshuka': ['crusty bread', 'herb salad'],
+      'miso-salmon': ['steamed rice', 'bok choy'], 'chickpea-curry': ['basmati rice', 'naan'],
+      'carnitas-tacos': ['refried beans', 'lime slaw'], 'lemon-orzo': ['arugula salad'],
+      'beef-pho': ['bean sprouts', 'thai basil'], 'sheet-pan-gnocchi': ['garlic bread'],
+      'korean-fried-cauliflower': ['steamed rice', 'pickled cucumber'], 'white-bean-soup': ['crusty bread'],
+      'chicken-shawarma': ['garlic sauce', 'pita'], 'garlic-butter-shrimp': ['crusty bread', 'lemon rice'],
+    };
+    this.WASTE = { 'thai-basil-chicken': 'holy basil', 'shakshuka': 'cilantro', 'lemon-orzo': 'fresh dill', 'beef-pho': 'thai basil' };
+    this.SIDE_LIB = ['jasmine rice', 'basmati rice', 'steamed rice', 'lemon rice', 'fried egg', 'crusty bread', 'garlic bread', 'naan', 'pita', 'herb salad', 'arugula salad', 'green salad', 'lime slaw', 'pickled cucumber', 'bok choy', 'roasted vegetables', 'steamed broccoli', 'bean sprouts', 'thai basil', 'refried beans', 'garlic sauce', 'yogurt sauce', 'miso soup', 'kimchi'];
+    this.toggleTheme = this.toggleTheme.bind(this);
+  }
+
+  componentDidMount() {
+    this.applyTheme();
+    this.loadDS();
+    const loaded = this.loadPropose();
+    if (loaded) {
+      this.setState({ nights: loaded.nights, shared: loaded.shared, perMeal: loaded.perMeal, proposed: !!loaded.proposed, _init: true });
+    } else {
+      const auto = this.props.autoPropose ?? true;
+      if (auto) { this.setState({ proposed: true, _init: true }, () => this.persist()); }
+    }
+    this._onDocDown = (e) => {
+      if (!this.state.openPanel) return;
+      const t = e.target;
+      if (t && t.closest && t.closest('.slot-menu, .slot-alts, .slot-vibes, .facet-pop, .slot-actions, .slot-facets')) return;
+      this.setState({ openPanel: null });
+    };
+    document.addEventListener('mousedown', this._onDocDown, true);
+  }
+  componentWillUnmount() {
+    if (this._onDocDown) document.removeEventListener('mousedown', this._onDocDown, true);
+  }
+  loadDS() {
+    if (window.GroceryAgentUI || document.getElementById('yamp-ds-bundle')) return;
+    var s = document.createElement('script');
+    s.id = 'yamp-ds-bundle';
+    s.src = '_ds/yamp-ui-76ffa1d0-b4bc-4e60-b696-ab3a7227af90/_ds_bundle.js';
+    document.head.appendChild(s);
+  }
+  componentDidUpdate() { this.applyTheme(); }
+  applyTheme() { if (this.props.embedded) return; try { document.documentElement.classList.toggle('dark', this.state.dark); } catch (e) {} }
+  toggleTheme() { this.setState((s) => ({ dark: !s.dark })); }
+
+  iso(offsetDays) { const d = new Date(); d.setHours(12, 0, 0, 0); d.setDate(d.getDate() + offsetDays); return d.toISOString().slice(0, 10); }
+  fmtDay(v) {
+    const WD = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+    const MO = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    const d = new Date(`${v}T00:00:00`);
+    if (isNaN(d.getTime())) return String(v);
+    return `${WD[d.getDay()]} ${MO[d.getMonth()]} ${d.getDate()}`;
+  }
+
+  // ---- propose engine ----
+  sessionKey() { return this.props.sessionKey || 'yamp:mp-widget-session'; }
+  mealCfg(id) { return this.MEALS.find((m) => m.id === id) || this.MEALS[2]; }
+  defaultShared() { return { seed: this.dateSeed(), variety: 0.4, proteinWants: [], freeform: '' }; }
+  defaultMeal() { return { locked: {}, overrides: {}, excluded: [], slotProtein: {}, slotCuisine: {}, slotMaxTime: {}, slotVibe: {}, slotSides: {} }; }
+  effSession(mealId) {
+    const sh = this.state.shared; const pm = this.state.perMeal[mealId];
+    return { seed: (sh.seed ^ this.hashStr(mealId)) >>> 0, nights: this.state.nights[mealId], variety: sh.variety, proteinWants: sh.proteinWants, freeform: sh.freeform, locked: pm.locked, overrides: pm.overrides, excluded: pm.excluded, slotProtein: pm.slotProtein, slotCuisine: pm.slotCuisine, slotMaxTime: pm.slotMaxTime, slotVibe: pm.slotVibe, slotSides: pm.slotSides || {} };
+  }
+  anyPlanned() { const n = this.state.nights; return (n.breakfast + n.lunch + n.dinner) > 0; }
+  loadPropose() {
+    try { const raw = localStorage.getItem(this.sessionKey()); if (!raw) return null; const p = JSON.parse(raw); return (p && p.v === 3 && p.nights && p.shared && p.perMeal) ? p : null; } catch (e) { return null; }
+  }
+  persist() {
+    try { const st = this.state; localStorage.setItem(this.sessionKey(), JSON.stringify({ v: 3, nights: st.nights, shared: st.shared, perMeal: st.perMeal, proposed: st.proposed })); } catch (e) {}
+  }
+  dateSeed() { return Number(new Date().toISOString().slice(0, 10).replace(/-/g, '')); }
+  defaultSession(nights) {
+    return { seed: this.dateSeed(), nights: Math.min(6, Math.max(2, nights || 3)), variety: 0.4, proteinWants: [], freeform: '', locked: {}, overrides: {}, excluded: [], slotProtein: {}, slotCuisine: {}, slotMaxTime: {}, slotVibe: {} };
+  }
+  setNights(mealId, n) { this.setState((st) => ({ nights: { ...st.nights, [mealId]: Math.max(0, Math.min(6, n)) }, proposed: true, openPanel: null }), () => this.persist()); }
+  updateShared(patch) { this.setState((st) => ({ shared: patch(st.shared), openPanel: null }), () => this.persist()); }
+  updateMeal(mealId, patch) { this.setState((st) => ({ perMeal: { ...st.perMeal, [mealId]: patch(st.perMeal[mealId]) }, openPanel: null }), () => this.persist()); }
+  toggleMealOpen(mealId) { this.setState((st) => ({ openMeals: { ...st.openMeals, [mealId]: !st.openMeals[mealId] } })); }
+  setSlotSides(mealId, vibeId, list) { this.updateMeal(mealId, (s) => ({ ...s, slotSides: { ...s.slotSides, [vibeId]: list } })); }
+  addSide(mealId, vibeId, current, name) { const n = String(name || '').trim(); if (!n) return; const list = current.some((x) => x.toLowerCase() === n.toLowerCase()) ? current.slice() : [...current, n]; this.setState({ addingSide: null }); this.setSlotSides(mealId, vibeId, list); }
+  removeSide(mealId, vibeId, current, name) { this.setSlotSides(mealId, vibeId, current.filter((x) => x !== name)); }
+  startAddSide(key) { this.setState({ addingSide: key }); }
+  cancelAddSide() { this.setState({ addingSide: null }); }
+  rng(seed) { let a = seed >>> 0; return function () { a |= 0; a = (a + 0x6D2B79F5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
+  hashStr(str) { let h = 2166136261 >>> 0; for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 16777619); } return h >>> 0; }
+  timeOf(r) { return this.TIME[r.slug] != null ? this.TIME[r.slug] : 30; }
+  bySlug(slug) { return this.RECIPES.find((r) => r.slug === slug); }
+  forecast(nights, seed) {
+    const cats = ['grill', 'mild', 'wet', 'cold-comfort', 'mild', 'grill'];
+    const r = this.rng(seed ^ 0x9e3779b9);
+    const start = Math.floor(r() * cats.length);
+    const out = [];
+    for (let i = 0; i < nights; i++) out.push(cats[(start + i) % cats.length]);
+    return out;
+  }
+  wxPhrase(c) { return ({ grill: 'grill-friendly for a warm night', 'cold-comfort': 'warm and hearty for a cold night', wet: 'cozy for a rainy night', mild: 'easy for a mild evening' })[c] || 'fits the week'; }
+  altOf(r) { return { slug: r.slug, title: r.title, protein: r.protein, cuisine: r.cuisine, time_total: this.timeOf(r) }; }
+  emptyReasonFor(p, c, t) {
+    const bits = []; if (p) bits.push(p); if (c) bits.push(c);
+    const f = bits.join(' · ');
+    if (t != null) return `No ${f || 'recipe'} fits under a ${t}-min cap — loosen a filter.`;
+    return `No ${f || 'recipe'} fits this night — try another filter.`;
+  }
+  panelOf(open, key) { if (!open || !open.startsWith(key + '|')) return null; return open.slice(key.length + 1); }
+  nextOpenDates(existing, count) {
+    const taken = new Set(existing.map((r) => r.planned_for).filter(Boolean));
+    const out = []; const d = new Date(); d.setHours(12, 0, 0, 0);
+    while (out.length < count) { d.setDate(d.getDate() + 1); const day = d.toISOString().slice(0, 10); if (!taken.has(day)) { taken.add(day); out.push(day); } }
+    return out;
+  }
+  runPropose(session) {
+    const nights = Math.min(6, Math.max(0, session.nights));
+    const fc = this.forecast(nights, session.seed);
+    const used = new Set();
+    const views = [];
+    for (let i = 0; i < nights; i++) {
+      const vibe = this.VIBES[i % this.VIBES.length];
+      const vibeId = vibe.id;
+      const override = session.slotVibe[vibeId];
+      const pinProtein = session.slotProtein[vibeId] || null;
+      const pinCuisine = session.slotCuisine[vibeId] || null;
+      const hasTime = Object.prototype.hasOwnProperty.call(session.slotMaxTime, vibeId);
+      const maxTime = hasTime ? session.slotMaxTime[vibeId] : null;
+      const forced = session.locked[vibeId] || session.overrides[vibeId] || null;
+      const wx = fc[i];
+      const poolSlugs = this.VIBE_POOL[vibeId] || this.RECIPES.map((r) => r.slug);
+      const pool = poolSlugs.map((s) => this.bySlug(s)).filter(Boolean);
+      const pinned = !!(pinProtein || pinCuisine || hasTime);
+      const passesPins = (r) => {
+        if (pinProtein && r.protein !== pinProtein) return false;
+        if (pinCuisine && r.cuisine !== pinCuisine) return false;
+        if (hasTime && maxTime != null && this.timeOf(r) > maxTime) return false;
+        return true;
+      };
+      const base = pinned ? this.RECIPES.slice() : pool;
+      const filtered = base.filter((r) => !session.excluded.includes(r.slug) && passesPins(r));
+      const rgen = this.rng((session.seed ^ this.hashStr(vibeId) ^ Math.imul(i, 2654435761)) >>> 0);
+      let main = null, emptyReason = null;
+      if (forced) {
+        main = this.bySlug(forced) || null;
+      } else {
+        let avail = filtered.filter((r) => !used.has(r.slug));
+        if (avail.length === 0) avail = filtered;
+        if (avail.length === 0) {
+          emptyReason = this.emptyReasonFor(pinProtein, pinCuisine, maxTime);
+        } else {
+          const scored = avail.map((r) => {
+            let sc = 0;
+            if (session.proteinWants.includes(r.protein)) sc += 3;
+            if (vibe.wx && vibe.wx.includes(wx)) sc += 1;
+            if (wx === 'grill' && this.timeOf(r) <= 25) sc += 0.5;
+            if (wx === 'cold-comfort' && this.timeOf(r) >= 35) sc += 0.6;
+            sc += (1 - Math.abs(this.timeOf(r) - 30) / 60) * 0.4;
+            sc += rgen() * (0.5 + session.variety * 2.2);
+            return { r, sc };
+          }).sort((a, b) => b.sc - a.sc);
+          main = scored[0].r;
+        }
+      }
+      if (main) used.add(main.slug);
+      const altPool = (pinned ? this.RECIPES : pool).filter((r) => (!main || r.slug !== main.slug) && !session.excluded.includes(r.slug));
+      const altPassing = altPool.filter(passesPins);
+      const altList = (altPassing.length ? altPassing : altPool).slice(0, 6).map((r) => this.altOf(r));
+      const altSimilar = main ? (altPool.find((r) => r.slug !== main.slug && (r.protein === main.protein || r.cuisine === main.cuisine)) || null) : null;
+      const altDifferent = main ? (altPool.find((r) => r.slug !== main.slug && r.cuisine !== main.cuisine && (!altSimilar || r.slug !== altSimilar.slug)) || null) : null;
+      const why = [];
+      why.push(`matches your ${(override || vibe.vibe).toLowerCase()} vibe`);
+      if (main && session.proteinWants.includes(main.protein)) why.push(`you wanted ${main.protein}`);
+      why.push(this.wxPhrase(wx));
+      if (main && this.timeOf(main) <= 25) why.push(`quick — ${this.timeOf(main)} min`);
+      views.push({
+        key: `${vibeId}:${i}`,
+        vibeId, vibeLabel: override || vibe.vibe, vibeEdited: !!override,
+        weatherCategory: wx,
+        main: main ? { slug: main.slug, title: main.title, description: main.description, protein: main.protein, cuisine: main.cuisine, time_total: this.timeOf(main) } : null,
+        emptyReason,
+        locked: !!main && session.locked[vibeId] === main.slug,
+        pinnedProtein: pinProtein, pinnedCuisine: pinCuisine,
+        timePin: { explicit: hasTime, value: hasTime ? maxTime : null },
+        why: why.slice(0, 3),
+        sides: main ? (Object.prototype.hasOwnProperty.call(session.slotSides || {}, vibeId) ? session.slotSides[vibeId] : (this.SIDES[main.slug] || [])) : [],
+        flags: [],
+        alternates: altList,
+        altSimilar: altSimilar ? this.altOf(altSimilar) : null,
+        altDifferent: altDifferent ? this.altOf(altDifferent) : null,
+      });
+    }
+    let wasteDone = false;
+    views.forEach((v) => {
+      if (!v.main) return;
+      if (v.main.time_total >= 40) v.flags.push({ type: 'meal-prep', label: 'Meal-preps well' });
+      if (!wasteDone && this.WASTE[v.main.slug]) { v.flags.push({ type: 'waste', label: `Single-use: ${this.WASTE[v.main.slug]}` }); wasteDone = true; }
+    });
+    return views;
+  }
+  allFilledViews() {
+    const out = [];
+    this.MEALS.forEach((m) => {
+      if (!this.state.nights[m.id]) return;
+      this.runPropose(this.effSession(m.id)).forEach((v) => { if (v.main) out.push({ meal: m, view: v }); });
+    });
+    return out;
+  }
+  commitAll() {
+    const rows = this.allFilledViews();
+    const dates = this.nextOpenDates([], rows.length);
+    const committed = rows.map((r, i) => ({ meal: r.meal.label, title: r.view.main.title, day: this.fmtDay(dates[i]), sides: (r.view.sides || []).slice(), vibe: r.view.vibeLabel }));
+    this.setState({ committed, proposed: false, openPanel: null, committing: false }, () => this.persist());
+  }
+  planAnother = () => {
+    this.setState({ committed: null, proposed: true, shared: this.defaultShared(), perMeal: { breakfast: this.defaultMeal(), lunch: this.defaultMeal(), dinner: this.defaultMeal() }, openPanel: null }, () => this.persist());
+  };
+
+  renderVals() {
+    const st = this.state;
+    const embedded = !!this.props.embedded;
+    const overlay = (this.props.panelPlacement ?? 'overlay') === 'overlay';
+    const accent = this.props.accent || null;
+    const hostStyle = embedded ? {} : { minHeight: '100vh', display: 'flex', flexDirection: 'column', background: 'var(--background)' };
+    if (accent) { hostStyle['--primary'] = accent; hostStyle['--primary-foreground'] = '#ffffff'; }
+    const surfaceStyle = embedded ? { padding: 0, background: 'transparent' } : { flex: '1', padding: '1.25rem 1rem 2rem', background: 'var(--background)' };
+    let rootClass = 'mp-widget';
+    if (embedded) rootClass += ' embedded';
+    if (overlay) rootClass += ' panels-overlay';
+    const openRecipe = this.props.onOpenRecipe || null;
+
+    const proteinsAll = [...new Set(this.RECIPES.map((r) => r.protein).filter(Boolean))].sort();
+    const cuisinesAll = [...new Set(this.RECIPES.map((r) => r.cuisine).filter(Boolean))].sort();
+    const presets = this.VIBES.map((v) => v.vibe);
+    const sh = st.shared;
+
+    const anyPlanned = this.anyPlanned();
+    const showResult = !st.committed && st.proposed && anyPlanned;
+
+    const steppers = this.MEALS.map((m) => ({
+      id: m.id, label: m.label, value: st.nights[m.id],
+      decDisabled: st.nights[m.id] <= 0 || null, incDisabled: st.nights[m.id] >= 6 || null,
+      decLabel: `Fewer ${m.plural}`, incLabel: `More ${m.plural}`,
+      onDec: () => this.setNights(m.id, st.nights[m.id] - 1),
+      onInc: () => this.setNights(m.id, st.nights[m.id] + 1),
+    }));
+
+    const hist = new Map(); const cuiSet = new Set(); let totalFilled = 0;
+    const mealSections = [];
+    this.MEALS.forEach((m) => {
+      if (!st.nights[m.id]) return;
+      const views = showResult ? this.runPropose(this.effSession(m.id)) : [];
+      const filled = views.filter((v) => v.main);
+      totalFilled += filled.length;
+      filled.forEach((v) => { if (v.main.protein) hist.set(v.main.protein, (hist.get(v.main.protein) || 0) + 1); if (v.main.cuisine) cuiSet.add(v.main.cuisine); });
+      const mealUpdate = (patch) => this.updateMeal(m.id, patch);
+      const slots = views.map((view) => ({
+        view,
+        panel: this.panelOf(st.openPanel, `${m.id}:${view.key}`),
+        onPanel: (p) => this.setState({ openPanel: p ? `${m.id}:${view.key}|${p}` : null }),
+        onLockToggle: () => mealUpdate((s) => { const n = { ...s, locked: { ...s.locked }, overrides: { ...s.overrides } }; if (n.locked[view.vibeId]) { delete n.locked[view.vibeId]; delete n.overrides[view.vibeId]; } else if (view.main) { n.locked[view.vibeId] = view.main.slug; delete n.overrides[view.vibeId]; } return n; }),
+        onSwapTo: (slug) => mealUpdate((s) => { const n = { ...s, locked: { ...s.locked }, overrides: { ...s.overrides, [view.vibeId]: slug } }; delete n.locked[view.vibeId]; return n; }),
+        onExclude: () => mealUpdate((s) => { if (!view.main) return s; const slug = view.main.slug; const n = { ...s, excluded: s.excluded.includes(slug) ? s.excluded : [...s.excluded, slug], locked: { ...s.locked }, overrides: { ...s.overrides } }; delete n.locked[view.vibeId]; delete n.overrides[view.vibeId]; return n; }),
+        onFacetPick: (kind, value) => mealUpdate((s) => { const field = kind === 'protein' ? 'slotProtein' : 'slotCuisine'; const n = { ...s, [field]: { ...s[field] } }; if (value === null) delete n[field][view.vibeId]; else n[field][view.vibeId] = value; return n; }),
+        onTimePick: (value) => mealUpdate((s) => { const n = { ...s, slotMaxTime: { ...s.slotMaxTime } }; if (value === undefined) delete n.slotMaxTime[view.vibeId]; else n.slotMaxTime[view.vibeId] = value; return n; }),
+        onVibeApply: (text) => mealUpdate((s) => ({ ...s, slotVibe: { ...s.slotVibe, [view.vibeId]: text } })),
+        onVibeReset: () => mealUpdate((s) => { const n = { ...s, slotVibe: { ...s.slotVibe } }; delete n.slotVibe[view.vibeId]; return n; }),
+        sideRows: (view.sides || []).map((name) => ({ name, onRemove: () => this.removeSide(m.id, view.vibeId, view.sides || [], name) })),
+        noSides: (view.sides || []).length === 0 || null,
+        flagRows: (view.flags || []).map((f) => ({ label: f.label, cls: `slot-flag flag-${f.type}` })),
+        adding: (st.addingSide === `${m.id}:${view.vibeId}`) || null,
+        notAdding: (st.addingSide !== `${m.id}:${view.vibeId}`) || null,
+        onStartAdd: () => this.startAddSide(`${m.id}:${view.vibeId}`),
+        onComboSelect: (value) => this.addSide(m.id, view.vibeId, view.sides || [], value),
+        onComboCancel: () => this.cancelAddSide(),
+        comboOptions: this.SIDE_LIB.filter((x) => !(view.sides || []).some((c) => c.toLowerCase() === x.toLowerCase())).map((x) => ({ value: x, label: x })),
+      }));
+      const cset = new Set(filled.map((v) => v.main.cuisine).filter(Boolean));
+      const open = st.openMeals[m.id] !== false;
+      mealSections.push({
+        id: m.id, title: m.label, open: open || null, closed: !open || null,
+        summary: `${filled.length} planned · ${cset.size} cuisine${cset.size === 1 ? '' : 's'}`,
+        slots, onToggle: () => this.toggleMealOpen(m.id),
+      });
+    });
+
+    const committed = st.committed;
+    const committedRows = (committed || []).map((m) => ({
+      title: m.title, day: m.day, vibe: `${m.meal} · ${m.vibe}`,
+      sidesLabel: m.sides.length ? m.sides.join(', ') : null,
+    }));
+    const committedSub = committed
+      ? `${committed.length} meal${committed.length === 1 ? '' : 's'} scheduled over the coming days, sides and all.`
+      : '';
+
+    return {
+      hostStyle, surfaceStyle, rootClass,
+      showChrome: !embedded, showHeading: !this.props.hideHeading,
+      dark: st.dark, light: !st.dark, toggleTheme: this.toggleTheme,
+
+      showCommitted: !!committed,
+      committedRows, committedSub, planAnother: this.planAnother,
+
+      showPlanner: !committed,
+      showProposeIntro: !committed && !showResult,
+      showProposeResult: showResult,
+      hasSession: showResult || null, noSession: !showResult || null,
+
+      steppers,
+      variety: sh.variety, onVariety: (v) => this.updateShared((s) => ({ ...s, variety: v })),
+      proposeProteins: proteinsAll, cuisinesAll, palettePresets: presets,
+      proteinWants: sh.proteinWants,
+      onToggleProtein: (p) => this.updateShared((s) => ({ ...s, proteinWants: s.proteinWants.includes(p) ? s.proteinWants.filter((x) => x !== p) : [...s.proteinWants, p] })),
+      freeform: sh.freeform,
+      onFreeform: (t) => { if (t !== sh.freeform) this.updateShared((s) => ({ ...s, freeform: t })); },
+      onReroll: () => this.updateShared((s) => ({ ...s, seed: s.seed + 1 })),
+      onPropose: () => this.setState({ proposed: true }, () => this.persist()),
+      renderTitle: openRecipe
+        ? (slug, title) => React.createElement('button', { type: 'button', className: 'slot-title', style: { background: 'none', border: 0, padding: 0, cursor: 'pointer', textAlign: 'left', font: 'inherit' }, onClick: () => openRecipe(slug) }, title)
+        : (slug, title) => React.createElement('span', { className: 'slot-title', style: { font: 'inherit' } }, title),
+      mealSections,
+      varNights: totalFilled, varNoun: 'meals', varCuisines: cuiSet.size, varProteins: hist.size,
+      varHistRows: [...hist.entries()].sort((a, b) => b[1] - a[1]).map(([p, n]) => ({ label: n > 1 ? `${p} ×${n}` : p, repClass: n > 1 ? ' rep' : '' })),
+      commitDisabled: (st.committing || totalFilled === 0) || null,
+      onCommit: () => {
+        if (this.props.onCommit) {
+          this.props.onCommit(this.allFilledViews().map((r) => r.view));
+          this.setState({ proposed: false, openPanel: null, committing: false }, () => this.persist());
+        } else {
+          this.commitAll();
+        }
+      },
+      committing: st.committing,
+    };
+  }
+}
+</script>
+</body>
+</html>

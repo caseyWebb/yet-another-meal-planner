@@ -40,9 +40,14 @@ carries its own connection state and preferred store/retailer.
 - **Store walk** — the member-facing walk (pages/05 §walk). List reframed in store-route
   order (departments sorted by aisle), check-off as you go, ends in "Log a manual shop"
   semantics (checked → purchased → spend events, story 03). The agent-guided voice walk
-  (`in-store-fulfillment`) remains; the member UI is the self-serve equivalent. The mock
-  leaves everything past "Start walk" undefined — the walk-session spec (persistence,
-  resume, completion) is the main design work here.
+  (`in-store-fulfillment`) remains; the member UI is the self-serve equivalent. The
+  contract (D28): check-offs write the per-row `checked_at` (class (b) idempotent
+  upserts, offline-queued); walk mode itself is pure client state (no server session
+  entity); completion = the one shared idempotent shop-commit op (receive + pantry
+  restock with verification + D16 spend events at completion), exposed at /api and to
+  the agent voice walk. The walk MUST function with zero connectivity (D15): check-offs
+  and completion are queued writes keyed by the client-minted session id, replayed on
+  reconnect; starting a walk needs no server round-trip.
 - **Satellite cart-fill** — launcher entry per satellite store; the helper runs on the
   member's LAN and stops at the review page (pages/12 §cart-fill).
 - **Log a manual shop** — the no-adapter fallback: checked items become a purchase event.
@@ -54,18 +59,32 @@ carries its own connection state and preferred store/retailer.
   Preferences store card.
 - Department/aisle grouping data (`placement`) comes from the active store's knowledge:
   Kroger aisle data, satellite sale-scan observations, or the offline aisle map. "Not
-  mapped" is an honest state, never a guess.
-- Spend telemetry (story 03) records the fulfillment path + store on every purchase.
+  mapped" is an honest state, never a guess. Placement `{aisle, department}` is
+  presentation-only — never the analytics dimension (D17).
+- Spend telemetry rides story 03 §1's op-anchored contract: fulfillment path + store
+  provenance come from the shared op's context, not per-surface wiring (D16).
+- Instacart launcher entry: one-click to the standing preferred retailer, with a
+  secondary "choose another retailer…" per-trip override that never rewrites the
+  preference (the in-store-fulfillment one-trip rule). Pages 05/09 spec the same
+  control.
+- Satellites (D22): the cart-fill helper URL and session token never leave the satellite
+  host; the launcher's disabled state keys off the satellite-reported per-store
+  session-freshness observation.
 
 ## 4. Open questions
 
 1. Instacart integration feasibility/scope (API availability, auth model, cart handoff) —
    needs a spike before proposal; the mockup only fixes the UX contract.
-2. Offline aisle-map sharing: per-household only, or pooled per real-world store
-   ("community-mapped") — and if pooled, keyed how (store name+ZIP)?
-3. Walk sessions: persisted state (survive app restarts mid-shop), multi-member
-   concurrent walks (household shops split), and whether finishing a walk auto-verifies
-   pantry additions.
+2. ~~Offline aisle-map sharing: per-household only, or pooled per real-world store?~~ —
+   decided: aisle maps pool per shared `stores` registry slug; the map editor edits
+   `layout` store notes on the shared row ("community-mapped" = existing shared-notes
+   behavior with member UI; same cross-household posture as sku_cache/flyer — store
+   facts are public-derived; household-private nicknames stay per-household).
+3. ~~Walk sessions: persisted state, multi-member concurrent walks, and whether
+   finishing a walk auto-verifies pantry additions.~~ — decided (D28): no server session
+   entity; client-held walk state; cross-device/member resume from the D1 `checked_at`
+   rows; concurrent split-shop walks converge as row upserts; completion auto-verifies
+   pantry via the restock write's mark_pantry_verified semantics.
 4. Preferred-store changes mid-list: re-derive placements/prices immediately or on next
    order preview?
 5. ~~Offline vs existing stores surface~~ — decided (D6): Offline IS that surface,

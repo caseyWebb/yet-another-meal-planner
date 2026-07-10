@@ -1,0 +1,884 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="_ds/yamp-ui-76ffa1d0-b4bc-4e60-b696-ab3a7227af90/_ds_bundle.css">
+  <link rel="stylesheet" href="_ds/yamp-ui-76ffa1d0-b4bc-4e60-b696-ab3a7227af90/styles.css">
+  <link href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    * { box-sizing: border-box; }
+    html, body { margin: 0; }
+    body { background: var(--background); color: var(--foreground); font-family: var(--font-sans); }
+    .order-widget h1 { margin: 0; font-size: var(--text-3xl); font-weight: 600; letter-spacing: -0.02em; line-height: 1.15; }
+    .order-widget { max-width: 46rem; margin: 0 auto; }
+    .order-widget.embedded { max-width: none; margin: 0; }
+    a { color: var(--link); text-decoration: underline; text-underline-offset: 2px; }
+    a:hover { opacity: 0.82; }
+    .or-sec-label { font-family: var(--font-mono); font-size: var(--text-xs); text-transform: uppercase; letter-spacing: 0.09em; color: var(--muted-foreground); font-weight: 600; }
+    @keyframes or-spin { to { transform: rotate(360deg); } }
+  </style>
+</helmet>
+<div class="yamp-host" style="{{ hostStyle }}">
+  <sc-if value="{{ showChrome }}" hint-placeholder-val="{{ true }}">
+  <div class="host-bar" style="display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap; padding: 0.75rem 1rem; border-bottom: 1px solid var(--border); background: color-mix(in oklch, var(--muted) 35%, var(--background)); position: sticky; top: 0; z-index: 5;">
+    <div style="display: flex; align-items: center; gap: 0.6rem; min-width: 0;">
+      <span style="width: 9px; height: 9px; border-radius: 999px; background: var(--primary); flex: 0 0 auto;"></span>
+      <span style="font-family: var(--font-mono); font-size: var(--text-xs); text-transform: uppercase; letter-spacing: 0.09em; color: var(--muted-foreground);">order-review-widget</span>
+    </div>
+    <div style="display: flex; align-items: center; gap: 0.5rem; flex: 0 0 auto;">
+      <div role="tablist" style="display: inline-flex; padding: 3px; gap: 2px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--background);">
+        <button type="button" onClick="{{ setReview }}" style="{{ reviewTabStyle }}">Review</button>
+        <button type="button" onClick="{{ setDone }}" style="{{ doneTabStyle }}">Confirmed</button>
+      </div>
+      <button type="button" onClick="{{ toggleTheme }}" aria-label="Toggle dark mode" style="display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--background); color: var(--muted-foreground); cursor: pointer; flex: 0 0 auto;">
+        <sc-if value="{{ dark }}" hint-placeholder-val="{{ true }}">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"></path></svg>
+        </sc-if>
+        <sc-if value="{{ light }}" hint-placeholder-val="{{ true }}">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"></path></svg>
+        </sc-if>
+      </button>
+    </div>
+  </div>
+  </sc-if>
+
+  <div class="widget-surface" style="{{ surfaceStyle }}">
+    <div class="{{ rootClass }}">
+
+      <!-- ============ REVIEW PHASE ============ -->
+      <sc-if value="{{ phaseReview }}" hint-placeholder-val="{{ true }}">
+      <div>
+        <sc-if value="{{ showHeading }}" hint-placeholder-val="{{ true }}">
+        <div style="display: flex; align-items: flex-start; justify-content: space-between; gap: 0.75rem;">
+          <div style="min-width: 0;">
+            <div style="display: flex; align-items: center; gap: 0.55rem;">
+              <span style="display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px; border-radius: 999px; background: color-mix(in oklch, var(--primary) 20%, var(--card)); color: color-mix(in oklch, var(--primary) 62%, var(--foreground)); flex: 0 0 auto;">
+                <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="21" r="1"></circle><circle cx="19" cy="21" r="1"></circle><path d="M2.05 2.05h2l2.66 12.42a2 2 0 0 0 2 1.58h9.78a2 2 0 0 0 1.95-1.57l1.65-7.43H5.12"></path></svg>
+              </span>
+              <h1>Review your Kroger order</h1>
+            </div>
+            <p style="margin: 0.55rem 0 0; font-size: var(--text-sm); color: var(--muted-foreground); line-height: 1.5; max-width: 34rem;">We matched your list against your store and today's sales flyer. Confirm the picks, sort out the flagged items, then send it to your cart.</p>
+          </div>
+          <span style="display: inline-flex; align-items: center; gap: 0.35rem; font-family: var(--font-mono); font-size: var(--text-xs); color: var(--muted-foreground); white-space: nowrap; flex: 0 0 auto; padding-top: 0.35rem;">{{ storeLabel }}</span>
+        </div>
+        </sc-if>
+
+        <!-- summary stats -->
+        <div style="display: flex; gap: 0.6rem; flex-wrap: wrap; margin-top: 1.35rem;">
+          <sc-for list="{{ statItems }}" as="s" hint-placeholder-count="3">
+            <div style="{{ s.boxStyle }}">
+              <div style="font-family: var(--font-mono); font-size: var(--text-xs); text-transform: uppercase; letter-spacing: 0.07em; color: var(--muted-foreground);">{{ s.label }}</div>
+              <div style="{{ s.valueStyle }}">{{ s.value }}</div>
+            </div>
+          </sc-for>
+        </div>
+
+        <!-- stale cart -->
+        <sc-if value="{{ staleShow }}" hint-placeholder-val="{{ false }}">
+          <div style="display: flex; align-items: flex-start; gap: 0.65rem; padding: 0.8rem 0.9rem; margin-top: 1.25rem; border: 1px solid color-mix(in oklch, var(--destructive) 32%, var(--card)); border-radius: var(--radius-md); background: color-mix(in oklch, var(--destructive) 8%, var(--card));">
+            <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="var(--destructive)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex: 0 0 auto; margin-top: 1px;"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0Z"></path><path d="M12 9v4M12 17h.01"></path></svg>
+            <div style="flex: 1; min-width: 0;">
+              <div style="font-size: var(--text-sm); font-weight: 600;">{{ staleTitle }}</div>
+              <div style="font-size: var(--text-sm); color: var(--muted-foreground); line-height: 1.5; margin-top: 0.15rem;">The Kroger cart can't be read back, so clear it in the Kroger app first — otherwise this order double-adds those items.</div>
+              <label style="display: inline-flex; align-items: center; gap: 0.5rem; margin-top: 0.65rem; font-size: var(--text-sm); font-weight: 500; cursor: pointer;">
+                <button type="button" role="checkbox" aria-checked="{{ staleAck }}" onClick="{{ toggleAck }}" style="{{ ackBoxStyle }}">
+                  <sc-if value="{{ staleAck }}" hint-placeholder-val="{{ false }}">
+                    <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="var(--primary-foreground)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"></path></svg>
+                  </sc-if>
+                </button>
+                I've cleared the old Kroger cart
+              </label>
+            </div>
+          </div>
+        </sc-if>
+
+        <!-- resolved -->
+        <div style="display: flex; align-items: baseline; justify-content: space-between; gap: 0.75rem; margin: 1.6rem 0 0.35rem;">
+          <span class="or-sec-label">Matched to your store</span>
+          <span style="font-family: var(--font-mono); font-size: var(--text-xs); color: var(--muted-foreground);">{{ resolvedMeta }}</span>
+        </div>
+
+        <sc-for list="{{ resolvedRows }}" as="row" hint-placeholder-count="6">
+          <div style="{{ row.wrapStyle }}">
+            <div style="display: flex; align-items: flex-start; gap: 0.85rem; padding: 0.75rem 0;">
+              <div style="flex: 1; min-width: 0;">
+                <div style="display: flex; align-items: center; gap: 0.45rem; flex-wrap: wrap;">
+                  <span style="{{ row.nameStyle }}">{{ row.name }}</span>
+                  <sc-if value="{{ row.saleShow }}" hint-placeholder-val="{{ false }}">
+                    <span style="display: inline-flex; align-items: center; gap: 0.25rem; font-family: var(--font-mono); font-size: 0.62rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: var(--brand); background: color-mix(in oklch, var(--brand) 14%, var(--card)); border: 1px solid color-mix(in oklch, var(--brand) 28%, var(--card)); padding: 0.1rem 0.4rem; border-radius: 999px; flex: 0 0 auto;">
+                      <svg viewBox="0 0 24 24" width="10" height="10" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7.5 3.5h6.7a2 2 0 0 1 1.42.59l5.29 5.29a2 2 0 0 1 0 2.83l-6.7 6.7a2 2 0 0 1-2.83 0L6.09 13.6"></path><path d="M3.5 7.5v6.7a2 2 0 0 0 .59 1.42"></path><circle cx="10.5" cy="7.5" r="1.2"></circle></svg>
+                      Flyer deal
+                    </span>
+                  </sc-if>
+                </div>
+                <div style="font-size: var(--text-sm); color: var(--muted-foreground); margin-top: 0.15rem; line-height: 1.4;">{{ row.pickLabel }}</div>
+                <sc-if value="{{ row.recipeLabel }}" hint-placeholder-val="{{ true }}">
+                  <div style="font-size: var(--text-xs); color: var(--muted-foreground); margin-top: 0.15rem; display: inline-flex; align-items: center; gap: 0.3rem;">
+                    <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2Z"></path></svg>
+                    {{ row.recipeLabel }}
+                  </div>
+                </sc-if>
+                <sc-if value="{{ row.hasAltList }}" hint-placeholder-val="{{ true }}">
+                  <div>
+                    <button type="button" onClick="{{ row.toggleAlts }}" style="{{ row.seeAltStyle }}">
+                      <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="{{ row.altsChevron }}"><path d="m6 9 6 6 6-6"></path></svg>
+                      {{ row.seeAltLabel }}
+                    </button>
+                  </div>
+                </sc-if>
+              </div>
+
+              <div style="display: flex; flex-direction: column; align-items: flex-end; gap: 0.5rem; flex: 0 0 auto;">
+                <div style="text-align: right;">
+                  <div style="font-family: var(--font-mono); font-size: var(--text-sm); font-weight: 600; color: var(--foreground);">{{ row.priceMain }}</div>
+                  <sc-if value="{{ row.priceStrike }}" hint-placeholder-val="{{ false }}">
+                    <div style="font-family: var(--font-mono); font-size: var(--text-xs); color: var(--muted-foreground); text-decoration: line-through;">{{ row.priceStrike }}</div>
+                  </sc-if>
+                </div>
+                <div style="display: flex; align-items: center; gap: 0.4rem;">
+                  <sc-if value="{{ row.isAssumed }}" hint-placeholder-val="{{ true }}">
+                    <div style="display: inline-flex; align-items: center; border: 1px solid var(--border); border-radius: var(--radius-md); overflow: hidden;">
+                      <button type="button" onClick="{{ row.decQty }}" aria-label="Decrease quantity" style="{{ row.stepBtnStyle }}">
+                        <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"></path></svg>
+                      </button>
+                      <span style="min-width: 1.6rem; text-align: center; font-family: var(--font-mono); font-size: var(--text-sm); font-weight: 600; padding: 0 0.1rem;">{{ row.qtyValue }}</span>
+                      <button type="button" onClick="{{ row.incQty }}" aria-label="Increase quantity" style="{{ row.stepBtnStyle }}">
+                        <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M5 12h14"></path></svg>
+                      </button>
+                    </div>
+                  </sc-if>
+                  <sc-if value="{{ row.isFixed }}" hint-placeholder-val="{{ false }}">
+                    <span style="font-family: var(--font-mono); font-size: var(--text-xs); color: var(--foreground); background: color-mix(in oklch, var(--muted) 55%, var(--card)); padding: 0.2rem 0.5rem; border-radius: var(--radius-sm); white-space: nowrap;">{{ row.qtyLabel }}</span>
+                  </sc-if>
+                  <button type="button" onClick="{{ row.toggleSkip }}" style="{{ row.skipBtnStyle }}">{{ row.skipLabel }}</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- flyer-driven alternative -->
+            <sc-if value="{{ row.hasAlt }}" hint-placeholder-val="{{ false }}">
+              <div style="{{ row.altWrapStyle }}">
+                <div style="display: flex; align-items: flex-start; gap: 0.6rem; flex: 1; min-width: 0;">
+                  <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="var(--primary)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex: 0 0 auto; margin-top: 2px;"><path d="m17 2 4 4-4 4"></path><path d="M3 11v-1a4 4 0 0 1 4-4h14"></path><path d="m7 22-4-4 4-4"></path><path d="M21 13v1a4 4 0 0 1-4 4H3"></path></svg>
+                  <div style="flex: 1; min-width: 0;">
+                    <div style="font-size: var(--text-sm); line-height: 1.4;"><span style="color: var(--muted-foreground);">Swap for</span> <span style="font-weight: 600;">{{ row.altLabel }}</span></div>
+                    <div style="display: flex; gap: 0.35rem; flex-wrap: wrap; margin-top: 0.4rem;">
+                      <sc-for list="{{ row.altReasons }}" as="p" hint-placeholder-count="2">
+                        <span style="{{ p.style }}">{{ p.label }}</span>
+                      </sc-for>
+                    </div>
+                  </div>
+                </div>
+                <sc-if value="{{ row.altStaged }}" hint-placeholder-val="{{ false }}">
+                  <div style="display: inline-flex; align-items: center; gap: 0.4rem; flex: 0 0 auto;">
+                    <span style="display: inline-flex; align-items: center; gap: 0.3rem; font-size: var(--text-xs); font-weight: 600; color: var(--primary);">
+                      <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"></path></svg>
+                      Swapped in
+                    </span>
+                    <button type="button" onClick="{{ row.unswap }}" style="padding: 0.35rem 0.6rem; border: 1px solid transparent; border-radius: var(--radius-sm); background: transparent; color: var(--muted-foreground); font: inherit; font-size: var(--text-xs); font-weight: 500; cursor: pointer;">Undo</button>
+                  </div>
+                </sc-if>
+                <sc-if value="{{ row.altNotStaged }}" hint-placeholder-val="{{ true }}">
+                  <button type="button" onClick="{{ row.swap }}" style="flex: 0 0 auto; display: inline-flex; align-items: center; gap: 0.3rem; padding: 0.4rem 0.85rem; border: none; border-radius: var(--radius-sm); background: var(--primary); color: var(--primary-foreground); font: inherit; font-size: var(--text-xs); font-weight: 600; cursor: pointer; white-space: nowrap;">Swap</button>
+                </sc-if>
+              </div>
+            </sc-if>
+
+            <!-- full alternatives browser -->
+            <sc-if value="{{ row.altsOpen }}" hint-placeholder-val="{{ false }}">
+              <div style="margin: 0 0 0.85rem; border: 1px solid var(--border); border-radius: var(--radius-lg); background: color-mix(in oklch, var(--muted) 22%, var(--card)); overflow: hidden;">
+                <div style="padding: 0.6rem 0.85rem 0.1rem;" class="or-sec-label">Other options at your store</div>
+                <div style="padding: 0 0.85rem 0.35rem;">
+                  <sc-for list="{{ row.altItems }}" as="a" hint-placeholder-count="2">
+                    <div style="{{ a.rowStyle }}">
+                      <div style="flex: 1; min-width: 0;">
+                        <div style="display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap;">
+                          <span style="font-size: var(--text-sm); font-weight: 500;">{{ a.brand }}</span>
+                          <sc-if value="{{ a.origLabel }}" hint-placeholder-val="{{ false }}">
+                            <span style="font-family: var(--font-mono); font-size: 0.58rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted-foreground); background: color-mix(in oklch, var(--muted) 60%, var(--card)); padding: 0.1rem 0.4rem; border-radius: 999px;">{{ a.origLabel }}</span>
+                          </sc-if>
+                          <sc-if value="{{ a.saleShow }}" hint-placeholder-val="{{ false }}">
+                            <span style="font-family: var(--font-mono); font-size: 0.58rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--brand); background: color-mix(in oklch, var(--brand) 14%, var(--card)); padding: 0.1rem 0.4rem; border-radius: 999px;">Sale</span>
+                          </sc-if>
+                        </div>
+                        <div style="font-size: var(--text-xs); color: var(--muted-foreground); margin-top: 0.1rem;">{{ a.sizeLabel }}</div>
+                        <sc-if value="{{ a.reasons }}" hint-placeholder-val="{{ true }}">
+                          <div style="display: flex; gap: 0.35rem; flex-wrap: wrap; margin-top: 0.35rem;">
+                            <sc-for list="{{ a.reasons }}" as="p" hint-placeholder-count="1">
+                              <span style="{{ p.style }}">{{ p.label }}</span>
+                            </sc-for>
+                          </div>
+                        </sc-if>
+                      </div>
+                      <div style="display: flex; flex-direction: column; align-items: flex-end; gap: 0.4rem; flex: 0 0 auto;">
+                        <div style="text-align: right;">
+                          <span style="font-family: var(--font-mono); font-size: var(--text-sm); font-weight: 600;">{{ a.priceLabel }}</span>
+                          <sc-if value="{{ a.strike }}" hint-placeholder-val="{{ false }}">
+                            <span style="display: block; font-family: var(--font-mono); font-size: var(--text-xs); color: var(--muted-foreground); text-decoration: line-through;">{{ a.strike }}</span>
+                          </sc-if>
+                        </div>
+                        <button type="button" onClick="{{ a.act }}" disabled="{{ a.activeShow }}" style="{{ a.btnStyle }}">
+                          <sc-if value="{{ a.activeShow }}" hint-placeholder-val="{{ false }}">
+                            <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"></path></svg>
+                          </sc-if>
+                          {{ a.actLabel }}
+                        </button>
+                      </div>
+                    </div>
+                  </sc-for>
+                </div>
+              </div>
+            </sc-if>
+          </div>
+        </sc-for>
+
+        <!-- checkpoint -->
+        <sc-if value="{{ checkpointShow }}" hint-placeholder-val="{{ true }}">
+          <div style="display: flex; align-items: baseline; justify-content: space-between; gap: 0.75rem; margin: 1.85rem 0 0.35rem;">
+            <span class="or-sec-label" style="color: var(--brand);">Needs a decision</span>
+            <span style="font-family: var(--font-mono); font-size: var(--text-xs); color: var(--muted-foreground);">{{ checkpointMeta }}</span>
+          </div>
+          <sc-for list="{{ checkpointRows }}" as="cp" hint-placeholder-count="2">
+            <div style="border: 1px solid color-mix(in oklch, var(--brand) 26%, var(--card)); border-radius: var(--radius-lg); background: color-mix(in oklch, var(--brand) 5%, var(--card)); padding: 0.85rem 0.95rem; margin-top: 0.7rem;">
+              <div style="display: flex; align-items: flex-start; gap: 0.6rem;">
+                <span style="{{ cp.iconWrapStyle }}">
+                  <sc-if value="{{ cp.isAmbiguous }}" hint-placeholder-val="{{ true }}">
+                    <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M9.5 9a2.5 2.5 0 0 1 4.5 1.5c0 1.7-2.5 2-2.5 3.5M12 17h.01"></path></svg>
+                  </sc-if>
+                  <sc-if value="{{ cp.isUnavailable }}" hint-placeholder-val="{{ false }}">
+                    <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="m15 9-6 6M9 9l6 6"></path></svg>
+                  </sc-if>
+                </span>
+                <div style="flex: 1; min-width: 0;">
+                  <div style="display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;">
+                    <span style="font-size: var(--text-sm); font-weight: 600;">{{ cp.name }}</span>
+                    <span style="{{ cp.tagStyle }}">{{ cp.tagLabel }}</span>
+                  </div>
+                  <div style="font-size: var(--text-sm); color: var(--muted-foreground); line-height: 1.45; margin-top: 0.15rem;">{{ cp.message }}</div>
+                </div>
+              </div>
+
+              <sc-if value="{{ cp.isAmbiguous }}" hint-placeholder-val="{{ true }}">
+                <div style="display: flex; flex-direction: column; gap: 0.4rem; margin-top: 0.75rem;">
+                  <sc-for list="{{ cp.candidates }}" as="c" hint-placeholder-count="3">
+                    <button type="button" onClick="{{ c.pick }}" style="{{ c.rowStyle }}">
+                      <span style="{{ c.radioStyle }}">
+                        <sc-if value="{{ c.picked }}" hint-placeholder-val="{{ false }}">
+                          <span style="width: 8px; height: 8px; border-radius: 999px; background: var(--primary-foreground);"></span>
+                        </sc-if>
+                      </span>
+                      <span style="flex: 1; min-width: 0; text-align: left;">
+                        <span style="display: block; font-size: var(--text-sm); font-weight: 500;">{{ c.brand }}</span>
+                        <span style="display: block; font-size: var(--text-xs); color: var(--muted-foreground);">{{ c.sizeLabel }}</span>
+                      </span>
+                      <sc-if value="{{ c.saleShow }}" hint-placeholder-val="{{ false }}">
+                        <span style="font-family: var(--font-mono); font-size: 0.6rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--brand); background: color-mix(in oklch, var(--brand) 14%, var(--card)); padding: 0.1rem 0.4rem; border-radius: 999px; flex: 0 0 auto;">Sale</span>
+                      </sc-if>
+                      <span style="font-family: var(--font-mono); font-size: var(--text-sm); font-weight: 600; flex: 0 0 auto;">{{ c.priceLabel }}</span>
+                    </button>
+                  </sc-for>
+                </div>
+                <sc-if value="{{ cp.hasPick }}" hint-placeholder-val="{{ false }}">
+                  <label style="display: flex; align-items: center; gap: 0.6rem; margin-top: 0.7rem; padding: 0.6rem 0.7rem; border: 1px solid color-mix(in oklch, var(--border) 70%, var(--card)); border-radius: var(--radius-md); background: var(--card); cursor: pointer;">
+                    <button type="button" role="switch" aria-checked="{{ cp.savePref }}" onClick="{{ cp.toggleSave }}" style="{{ cp.saveTrackStyle }}">
+                      <span style="{{ cp.saveKnobStyle }}"></span>
+                    </button>
+                    <span style="flex: 1; min-width: 0; font-size: var(--text-sm); line-height: 1.4;">Save <span style="font-weight: 600;">{{ cp.pickedBrand }}</span> as my preferred brand<span style="display: block; font-size: var(--text-xs); color: var(--muted-foreground); margin-top: 0.1rem;">Future orders pick it automatically — no more asking.</span></span>
+                  </label>
+                </sc-if>
+              </sc-if>
+              <sc-if value="{{ cp.isUnavailable }}" hint-placeholder-val="{{ false }}">
+                <!-- resolved via override -->
+                <sc-if value="{{ cp.uResolved }}" hint-placeholder-val="{{ false }}">
+                  <div style="display: flex; align-items: center; gap: 0.6rem; margin-top: 0.75rem; padding: 0.6rem 0.75rem; border: 1px solid color-mix(in oklch, var(--primary) 32%, var(--card)); border-radius: var(--radius-md); background: color-mix(in oklch, var(--primary) 8%, var(--card));">
+                    <span style="flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; border-radius: 999px; background: var(--primary); color: var(--primary-foreground);">
+                      <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"></path></svg>
+                    </span>
+                    <span style="flex: 1; min-width: 0; font-size: var(--text-sm);">Found it — ordering <span style="font-weight: 600;">{{ cp.uPickedLabel }}</span></span>
+                    <button type="button" onClick="{{ cp.uUndo }}" style="flex: 0 0 auto; padding: 0.3rem 0.65rem; border: 1px solid transparent; border-radius: var(--radius-sm); background: transparent; color: var(--muted-foreground); font: inherit; font-size: var(--text-xs); font-weight: 500; cursor: pointer;">Undo</button>
+                  </div>
+                </sc-if>
+
+                <!-- disposition options -->
+                <sc-if value="{{ cp.uNotResolved }}" hint-placeholder-val="{{ true }}">
+                <div style="display: flex; align-items: center; gap: 0.6rem; margin-top: 0.7rem; flex-wrap: wrap;">
+                  <span style="font-size: var(--text-xs); color: var(--muted-foreground); flex: 1; min-width: 8rem;">{{ cp.dropNote }}</span>
+                  <div style="display: flex; gap: 0.45rem; flex: 0 0 auto;">
+                    <button type="button" onClick="{{ cp.tryBroader }}" style="{{ cp.broaderBtnStyle }}">
+                      <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="m21 21-4.3-4.3"></path></svg>
+                      Try a broader search
+                    </button>
+                    <button type="button" onClick="{{ cp.openManual }}" style="{{ cp.manualBtnStyle }}">
+                      <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"></path><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"></path></svg>
+                      Manual search
+                    </button>
+                  </div>
+                </div>
+
+                <!-- broader results -->
+                <sc-if value="{{ cp.broaderTried }}" hint-placeholder-val="{{ false }}">
+                  <div style="margin-top: 0.7rem;">
+                    <div class="or-sec-label" style="margin-bottom: 0.4rem;">Broader matches · looser constraints</div>
+                    <sc-if value="{{ cp.broaderHasResults }}" hint-placeholder-val="{{ true }}">
+                      <div style="display: flex; flex-direction: column; gap: 0.4rem;">
+                        <sc-for list="{{ cp.broaderRows }}" as="c" hint-placeholder-count="2">
+                          <button type="button" onClick="{{ c.pick }}" style="{{ c.rowStyle }}">
+                            <span style="{{ c.radioStyle }}">
+                              <sc-if value="{{ c.picked }}" hint-placeholder-val="{{ false }}"><span style="width: 8px; height: 8px; border-radius: 999px; background: var(--primary-foreground);"></span></sc-if>
+                            </span>
+                            <span style="flex: 1; min-width: 0;">
+                              <span style="display: block; font-size: var(--text-sm); font-weight: 500;">{{ c.brand }}</span>
+                              <span style="display: block; font-size: var(--text-xs); color: var(--muted-foreground);">{{ c.sizeLabel }}<sc-if value="{{ c.note }}" hint-placeholder-val="{{ true }}"> · {{ c.note }}</sc-if></span>
+                            </span>
+                            <sc-if value="{{ c.saleShow }}" hint-placeholder-val="{{ false }}"><span style="font-family: var(--font-mono); font-size: 0.6rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--brand); background: color-mix(in oklch, var(--brand) 14%, var(--card)); padding: 0.1rem 0.4rem; border-radius: 999px; flex: 0 0 auto;">Sale</span></sc-if>
+                            <span style="font-family: var(--font-mono); font-size: var(--text-sm); font-weight: 600; flex: 0 0 auto;">{{ c.priceLabel }}</span>
+                          </button>
+                        </sc-for>
+                      </div>
+                    </sc-if>
+                    <sc-if value="{{ cp.broaderEmpty }}" hint-placeholder-val="{{ false }}">
+                      <p style="font-size: var(--text-sm); color: var(--muted-foreground); margin: 0.2rem 0 0;">Still nothing fulfillable at your store — try a manual search.</p>
+                    </sc-if>
+                  </div>
+                </sc-if>
+
+                <!-- manual search -->
+                <sc-if value="{{ cp.manualOpen }}" hint-placeholder-val="{{ false }}">
+                  <div style="margin-top: 0.7rem;">
+                    <div class="or-sec-label" style="margin-bottom: 0.4rem;">Manual search</div>
+                    <form onSubmit="{{ cp.submitManual }}" style="display: flex; gap: 0.5rem;">
+                      <input type="text" value="{{ cp.manualQuery }}" onInput="{{ cp.onManualInput }}" placeholder="Search Kroger for a product…" style="flex: 1; min-width: 0; padding: 0.5rem 0.7rem; border: 1px solid var(--input); border-radius: var(--radius-md); background: var(--background); color: var(--foreground); font: inherit; font-size: var(--text-sm);" />
+                      <button type="submit" style="display: inline-flex; align-items: center; gap: 0.3rem; padding: 0.5rem 0.9rem; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--background); color: var(--foreground); font: inherit; font-size: var(--text-sm); font-weight: 500; cursor: pointer; white-space: nowrap;">
+                        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="m21 21-4.3-4.3"></path></svg>
+                        Search
+                      </button>
+                    </form>
+                    <sc-if value="{{ cp.manualHasResults }}" hint-placeholder-val="{{ false }}">
+                      <div style="display: flex; flex-direction: column; gap: 0.4rem; margin-top: 0.5rem;">
+                        <sc-for list="{{ cp.manualRows }}" as="c" hint-placeholder-count="2">
+                          <button type="button" onClick="{{ c.pick }}" style="{{ c.rowStyle }}">
+                            <span style="{{ c.radioStyle }}">
+                              <sc-if value="{{ c.picked }}" hint-placeholder-val="{{ false }}"><span style="width: 8px; height: 8px; border-radius: 999px; background: var(--primary-foreground);"></span></sc-if>
+                            </span>
+                            <span style="flex: 1; min-width: 0;">
+                              <span style="display: block; font-size: var(--text-sm); font-weight: 500;">{{ c.brand }}</span>
+                              <span style="display: block; font-size: var(--text-xs); color: var(--muted-foreground);">{{ c.sizeLabel }}<sc-if value="{{ c.note }}" hint-placeholder-val="{{ true }}"> · {{ c.note }}</sc-if></span>
+                            </span>
+                            <sc-if value="{{ c.saleShow }}" hint-placeholder-val="{{ false }}"><span style="font-family: var(--font-mono); font-size: 0.6rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--brand); background: color-mix(in oklch, var(--brand) 14%, var(--card)); padding: 0.1rem 0.4rem; border-radius: 999px; flex: 0 0 auto;">Sale</span></sc-if>
+                            <span style="font-family: var(--font-mono); font-size: var(--text-sm); font-weight: 600; flex: 0 0 auto;">{{ c.priceLabel }}</span>
+                          </button>
+                        </sc-for>
+                      </div>
+                    </sc-if>
+                    <sc-if value="{{ cp.manualEmpty }}" hint-placeholder-val="{{ false }}">
+                      <p style="font-size: var(--text-sm); color: var(--muted-foreground); margin: 0.5rem 0 0;">No products match “{{ cp.manualQueryEcho }}”.</p>
+                    </sc-if>
+                  </div>
+                </sc-if>
+                </sc-if>
+              </sc-if>
+            </div>
+          </sc-for>
+        </sc-if>
+
+        <!-- footer -->
+        <div style="position: sticky; bottom: 0; display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap; margin-top: 1.75rem; padding-top: 1.15rem; border-top: 1px solid var(--border); background: linear-gradient(to top, var(--card) 72%, transparent);">
+          <div style="min-width: 0;">
+            <div style="display: flex; align-items: baseline; gap: 0.5rem;">
+              <span style="font-family: var(--font-mono); font-size: var(--text-xs); text-transform: uppercase; letter-spacing: 0.07em; color: var(--muted-foreground);">Estimated total</span>
+              <span style="font-family: var(--font-mono); font-size: var(--text-xl); font-weight: 600;">{{ footerTotal }}</span>
+            </div>
+            <div style="font-size: var(--text-xs); color: var(--muted-foreground); margin-top: 0.1rem;">{{ footerSub }}</div>
+          </div>
+          <button type="button" onClick="{{ send }}" disabled="{{ sendDisabled }}" style="{{ sendBtnStyle }}">
+            <sc-if value="{{ committing }}" hint-placeholder-val="{{ false }}">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true" style="animation: or-spin 0.7s linear infinite;"><path d="M21 12a9 9 0 1 1-6.22-8.56"></path></svg>
+              Sending…
+            </sc-if>
+            <sc-if value="{{ notCommitting }}" hint-placeholder-val="{{ true }}">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="21" r="1"></circle><circle cx="19" cy="21" r="1"></circle><path d="M2.05 2.05h2l2.66 12.42a2 2 0 0 0 2 1.58h9.78a2 2 0 0 0 1.95-1.57l1.65-7.43H5.12"></path></svg>
+              {{ sendLabel }}
+            </sc-if>
+          </button>
+        </div>
+      </div>
+      </sc-if>
+
+      <!-- ============ CONFIRMED PHASE ============ -->
+      <sc-if value="{{ phaseDone }}" hint-placeholder-val="{{ false }}">
+      <div>
+        <div style="text-align: center; padding: 1.5rem 1rem 0.5rem;">
+          <div style="width: 54px; height: 54px; margin: 0 auto 0.9rem; border-radius: 999px; background: var(--primary); color: var(--primary-foreground); display: inline-flex; align-items: center; justify-content: center;">
+            <svg viewBox="0 0 24 24" width="27" height="27" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"></path></svg>
+          </div>
+          <h1>Order sent to Kroger</h1>
+          <p style="margin: 0.55rem auto 0; font-size: var(--text-sm); color: var(--muted-foreground); line-height: 1.5; max-width: 30rem;">Here's exactly what happened — each step reported on its own.</p>
+        </div>
+
+        <div style="display: flex; flex-direction: column; gap: 0.6rem; margin-top: 1.35rem;">
+          <sc-for list="{{ resultRows }}" as="r" hint-placeholder-count="3">
+            <div style="display: flex; align-items: flex-start; gap: 0.7rem; padding: 0.85rem 0.95rem; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--card);">
+              <span style="{{ r.iconWrapStyle }}">
+                <sc-if value="{{ r.ok }}" hint-placeholder-val="{{ true }}">
+                  <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"></path></svg>
+                </sc-if>
+                <sc-if value="{{ r.info }}" hint-placeholder-val="{{ false }}">
+                  <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M12 8v4M12 16h.01"></path></svg>
+                </sc-if>
+              </span>
+              <div style="flex: 1; min-width: 0;">
+                <div style="font-size: var(--text-sm); font-weight: 600;">{{ r.title }}</div>
+                <div style="font-size: var(--text-sm); color: var(--muted-foreground); line-height: 1.5; margin-top: 0.1rem;">{{ r.body }}</div>
+              </div>
+            </div>
+          </sc-for>
+        </div>
+
+        <div style="margin-top: 1.5rem; padding: 0.95rem 1rem; border: 1px solid var(--border); border-radius: var(--radius-lg); background: color-mix(in oklch, var(--muted) 30%, var(--card));">
+          <div class="or-sec-label" style="margin-bottom: 0.6rem;">Order summary</div>
+          <sc-for list="{{ summaryRows }}" as="s" hint-placeholder-count="3">
+            <div style="display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; padding: 0.3rem 0; font-size: var(--text-sm);">
+              <span style="color: var(--muted-foreground);">{{ s.label }}</span>
+              <span style="font-family: var(--font-mono); font-weight: 600; color: {{ s.color }};">{{ s.value }}</span>
+            </div>
+          </sc-for>
+        </div>
+
+        <div style="display: flex; justify-content: center; margin-top: 1.5rem;">
+          <button type="button" onClick="{{ setReview }}" style="display: inline-flex; align-items: center; gap: 0.4rem; padding: 0.55rem 1.1rem; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--background); color: var(--foreground); font: inherit; font-size: var(--text-sm); font-weight: 500; cursor: pointer;">
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 12H5M12 19l-7-7 7-7"></path></svg>
+            Back to review
+          </button>
+        </div>
+      </div>
+      </sc-if>
+
+    </div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{
+  &quot;$preview&quot;: { &quot;width&quot;: 780, &quot;height&quot;: 1180 },
+  &quot;embedded&quot;: { &quot;editor&quot;: &quot;boolean&quot;, &quot;default&quot;: false, &quot;tsType&quot;: &quot;boolean&quot;, &quot;section&quot;: &quot;Embedding&quot; },
+  &quot;hideHeading&quot;: { &quot;editor&quot;: &quot;boolean&quot;, &quot;default&quot;: false, &quot;tsType&quot;: &quot;boolean&quot;, &quot;section&quot;: &quot;Embedding&quot; },
+  &quot;accent&quot;: { &quot;editor&quot;: &quot;color&quot;, &quot;default&quot;: &quot;&quot;, &quot;options&quot;: [&quot;#f4a259&quot;, &quot;#2A6FDB&quot;, &quot;#1F8A5B&quot;, &quot;#7A5AF8&quot;], &quot;tsType&quot;: &quot;string&quot;, &quot;section&quot;: &quot;Theme&quot; }
+}">
+class Component extends DCLogic {
+  state = {
+    dark: false,
+    phase: "review",
+    skipped: {},        // key -> true
+    qty: {},            // key -> number override
+    pickSku: {},        // resolved line key -> chosen alt sku (undefined = original pick)
+    altsOpen: {},       // resolved line key -> alternatives expanded
+    picks: {},          // checkpoint key -> candidate sku
+    savePref: {},       // checkpoint key -> save preferred brand
+    broaderTried: {},   // unavailable cp key -> broader search run
+    manualOpen: {},     // unavailable cp key -> manual search field open
+    manualQuery: {},    // unavailable cp key -> manual search text
+    staleAck: false,
+    committing: false,
+  };
+
+  componentDidMount() { this.applyTheme(); this.loadDS(); }
+  componentDidUpdate() { this.applyTheme(); }
+  componentWillUnmount() { if (this._t) clearTimeout(this._t); }
+  applyTheme() { if (this.props.embedded) return; try { document.documentElement.classList.toggle("dark", this.state.dark); } catch (e) {} }
+  loadDS() {
+    if (window.GroceryAgentUI || document.getElementById("yamp-ds-bundle")) return;
+    var s = document.createElement("script");
+    s.id = "yamp-ds-bundle";
+    s.src = "_ds/yamp-ui-76ffa1d0-b4bc-4e60-b696-ab3a7227af90/_ds_bundle.js";
+    document.head.appendChild(s);
+  }
+
+  fmt(n) { return "$" + Number(n).toFixed(2); }
+  green() { return "oklch(0.55 0.11 155)"; }
+
+  // ---- data: place_order preview resolved lines ----
+  // `alts` = the same-identity candidate set a term search returns for the line
+  // (suggest_substitutions). One may carry featured:true — the proactive flyer/value
+  // suggestion surfaced up front; the rest live behind "See alternatives".
+  resolvedData() {
+    return [
+      { key: "salmon-fillets", name: "salmon fillets", recipe: "Sheet-Pan Salmon", brand: "Private Selection Wild Alaskan Salmon", size: "12 oz", qty: 1, assumed: true, regular: 12.99, promo: 12.99,
+        alts: [
+          { sku: "kroger-atl", brand: "Kroger Atlantic Salmon Fillets", size: "16 oz", regular: 9.99, promo: 9.99, reasons: [{ kind: "cheaper", altUnit: "$0.62/oz", curUnit: "$1.08/oz" }] },
+          { sku: "sockeye", brand: "Fresh Wild Sockeye Salmon", size: "1 lb", regular: 15.99, promo: 15.99 },
+        ] },
+      { key: "green-beans", name: "green beans", recipe: "Sheet-Pan Salmon", brand: "Simple Truth Organic Green Beans", size: "1 lb", qty: 1, assumed: true, regular: 3.49, promo: 2.49,
+        alts: [
+          { sku: "kroger-frz", brand: "Kroger Frozen Cut Green Beans", size: "12 oz", regular: 1.29, promo: 1.29, reasons: [{ kind: "cheaper", altUnit: "$1.72/lb", curUnit: "$2.49/lb" }] },
+          { sku: "fresh-gb", brand: "Fresh Green Beans (loose)", size: "per lb", regular: 2.99, promo: 2.99 },
+        ] },
+      { key: "black-beans", name: "black beans", recipe: "Black Bean Tacos", brand: "Kroger Black Beans", size: "15 oz", qty: 2, assumed: false, regular: 0.95, promo: 0.95,
+        alts: [
+          { sku: "bush", brand: "Bush's Black Beans", size: "15 oz", regular: 1.19, promo: 1.19 },
+          { sku: "st-bb", brand: "Simple Truth Organic Black Beans", size: "15 oz", regular: 1.29, promo: 1.29 },
+        ] },
+      { key: "corn-tortillas", name: "corn tortillas", recipe: "Black Bean Tacos", brand: "Mission Yellow Corn Tortillas", size: "30 ct", qty: 1, assumed: true, regular: 2.49, promo: 2.49,
+        alts: [
+          { sku: "kroger-ct", brand: "Kroger White Corn Tortillas", size: "30 ct", regular: 1.99, promo: 1.99, reasons: [{ kind: "cheaper", altUnit: "$0.07/ea", curUnit: "$0.08/ea" }] },
+          { sku: "banderita", brand: "La Banderita Corn Tortillas", size: "24 ct", regular: 2.29, promo: 2.29 },
+        ] },
+      { key: "spaghetti", name: "spaghetti", recipe: "Miso-Butter Pasta", brand: "Barilla Spaghetti", size: "16 oz", qty: 1, assumed: true, regular: 1.79, promo: 0.99,
+        alts: [
+          { sku: "kroger-sp", brand: "Kroger Spaghetti", size: "16 oz", regular: 0.89, promo: 0.89 },
+          { sku: "barilla-thin", brand: "Barilla Thin Spaghetti", size: "16 oz", regular: 1.79, promo: 1.79 },
+        ] },
+      { key: "olive-oil", name: "olive oil", recipe: null, brand: "Kroger Extra Virgin Olive Oil", size: "16.9 fl oz", qty: 1, assumed: true, regular: 6.99, promo: 6.99,
+        alts: [
+          { sku: "ps-evoo", featured: true, brand: "Private Selection EVOO", size: "33.8 fl oz", regular: 9.49, promo: 9.49, reasons: [{ kind: "cheaper", altUnit: "$0.28/fl oz", curUnit: "$0.41/fl oz" }] },
+          { sku: "kroger-light", brand: "Kroger Classic Olive Oil", size: "16.9 fl oz", regular: 5.99, promo: 5.99, reasons: [{ kind: "cheaper", altUnit: "$0.35/fl oz", curUnit: "$0.41/fl oz" }] },
+          { sku: "bertolli", brand: "Bertolli Extra Virgin Olive Oil", size: "16.9 fl oz", regular: 8.49, promo: 8.49 },
+        ] },
+      { key: "whole-milk", name: "whole milk", recipe: null, brand: "Kroger Whole Milk", size: "1 gal", qty: 1, assumed: true, regular: 3.49, promo: 3.49,
+        alts: [
+          { sku: "st-milk", featured: true, brand: "Simple Truth Organic Whole Milk", size: "1 gal", regular: 5.99, promo: 3.29, reasons: [{ kind: "on_sale" }, { kind: "cheaper", altUnit: "$3.29/gal", curUnit: "$3.49/gal" }] },
+          { sku: "horizon", brand: "Horizon Organic Whole Milk", size: "1 gal", regular: 6.49, promo: 6.49 },
+          { sku: "fairlife", brand: "Fairlife Whole Ultra-Filtered Milk", size: "52 fl oz", regular: 4.29, promo: 4.29 },
+        ] },
+      { key: "large-eggs", name: "large eggs", recipe: null, brand: "Simple Truth Cage-Free Large Eggs", size: "12 ct", qty: 1, assumed: true, regular: 4.49, promo: 3.29,
+        alts: [
+          { sku: "kroger-eggs", brand: "Kroger Grade A Large Eggs", size: "12 ct", regular: 2.49, promo: 2.49, reasons: [{ kind: "cheaper", altUnit: "$0.21/ea", curUnit: "$0.27/ea" }] },
+          { sku: "st-org-eggs", brand: "Simple Truth Organic Large Eggs", size: "12 ct", regular: 4.99, promo: 4.99 },
+        ] },
+      { key: "paper-towels", name: "paper towels", recipe: null, brand: "Kroger Paper Towels", size: "6 rolls", qty: 1, assumed: true, regular: 5.99, promo: 5.99,
+        alts: [
+          { sku: "kroger-12", brand: "Kroger Paper Towels", size: "12 rolls", regular: 9.99, promo: 9.99, reasons: [{ kind: "cheaper", altUnit: "$0.83/roll", curUnit: "$1.00/roll" }] },
+          { sku: "bounty", brand: "Bounty Select-A-Size", size: "6 rolls", regular: 8.99, promo: 8.99 },
+        ] },
+    ];
+  }
+  featuredAlt(l) { return (l.alts || []).find((a) => a.featured) || null; }
+  altListOf(l) { return (l.alts || []).filter((a) => !a.featured); }
+  activeAlt(l) { const sku = this.state.pickSku[l.key]; return sku ? (l.alts || []).find((a) => a.sku === sku) || null : null; }
+  checkpointData() {
+    return [
+      { key: "white-miso", name: "white miso", kind: "ambiguous", message: "No brand preference saved for this — pick one below, or set \u201cdon't care\u201d in your profile and we'll grab the cheapest next time.",
+        candidates: [
+          { sku: "hikari", brand: "Hikari Organic White Miso", size: "17.6 oz", regular: 6.49, promo: 6.49 },
+          { sku: "miso-master", brand: "Miso Master Mellow White", size: "16 oz", regular: 7.99, promo: 6.99 },
+          { sku: "cold-mtn", brand: "Cold Mountain White Miso", size: "12 oz", regular: 4.49, promo: 4.49 },
+        ] },
+      { key: "coffee-beans", name: "coffee beans", kind: "unavailable", message: "No dark-roast whole-bean option is fulfillable for curbside or delivery at your store right now.",
+        broader: [
+          { sku: "kroger-med-ground", brand: "Kroger Medium Roast Ground", size: "12 oz", regular: 5.49, promo: 5.49, note: "ground, not whole bean" },
+          { sku: "sbux-pike-ground", brand: "Starbucks Pike Place Ground", size: "12 oz", regular: 8.99, promo: 6.99, note: "medium roast \u00b7 on sale" },
+        ],
+        catalog: [
+          { sku: "peets-major", brand: "Peet's Major Dickason's Dark, Whole Bean", size: "12 oz", regular: 10.99, promo: 10.99, note: "delivery only" },
+          { sku: "deathwish", brand: "Death Wish Dark Roast, Whole Bean", size: "16 oz", regular: 14.99, promo: 12.99, note: "on sale \u00b7 curbside" },
+          { sku: "kroger-colombian", brand: "Kroger Colombian, Whole Bean", size: "24 oz", regular: 9.99, promo: 9.99, note: "medium-dark \u00b7 curbside" },
+          { sku: "bustelo-ground", brand: "Caf\u00e9 Bustelo Espresso, Ground", size: "10 oz", regular: 4.99, promo: 4.99, note: "dark \u00b7 ground" },
+          { sku: "lavazza", brand: "Lavazza Super Crema, Whole Bean", size: "2.2 lb", regular: 19.99, promo: 16.99, note: "on sale \u00b7 delivery" },
+        ] },
+    ];
+  }
+  staleData() { return [{ name: "oat milk", days: 4 }]; }
+
+  // ---- derived helpers ----
+  qtyOf(l) { const o = this.state.qty[l.key]; return (o != null && o > 0) ? o : l.qty; }
+  effView(l) {
+    const active = this.activeAlt(l);
+    const src = active || l;
+    const onSale = src.promo > 0 && src.promo < src.regular;
+    return { brand: src.brand, size: src.size, regular: src.regular, promo: src.promo, onSale, eff: onSale ? src.promo : src.regular, swapped: !!active };
+  }
+  includedResolved() { return this.resolvedData().filter((l) => !this.state.skipped[l.key]); }
+  candidateFor(cp) { const sku = this.state.picks[cp.key]; return sku ? this.allCands(cp).find((c) => c.sku === sku) || null : null; }
+  allCands(cp) { return [...(cp.candidates || []), ...(cp.broader || []), ...(cp.catalog || [])]; }
+  candPrice(c) { const onSale = c.promo > 0 && c.promo < c.regular; return { eff: onSale ? c.promo : c.regular, onSale }; }
+
+  estTotal() {
+    let t = 0;
+    for (const l of this.includedResolved()) t += this.effView(l).eff * this.qtyOf(l);
+    for (const cp of this.checkpointData()) { const c = this.candidateFor(cp); if (c) t += this.candPrice(c).eff; }
+    return t;
+  }
+  saleSavings() {
+    let s = 0;
+    for (const l of this.includedResolved()) { const v = this.effView(l); if (v.onSale) s += (v.regular - v.promo) * this.qtyOf(l); }
+    for (const cp of this.checkpointData()) { const c = this.candidateFor(cp); if (c) { const p = this.candPrice(c); if (p.onSale) s += c.regular - c.promo; } }
+    return s;
+  }
+  cartCount() {
+    let n = this.includedResolved().length;
+    for (const cp of this.checkpointData()) if (this.candidateFor(cp)) n += 1;
+    return n;
+  }
+  undecidedCount() { return this.checkpointData().filter((cp) => !this.candidateFor(cp)).length; }
+
+  // ---- handlers ----
+  toggleTheme = () => this.setState((s) => ({ dark: !s.dark }));
+  setReview = () => this.setState({ phase: "review" });
+  setDone = () => this.setState({ phase: "done" });
+  toggleSkip = (key) => this.setState((s) => ({ skipped: { ...s.skipped, [key]: !s.skipped[key] } }));
+  incQty = (l) => this.setState((s) => ({ qty: { ...s.qty, [l.key]: this.qtyOf(l) + 1 } }));
+  decQty = (l) => this.setState((s) => ({ qty: { ...s.qty, [l.key]: Math.max(1, this.qtyOf(l) - 1) } }));
+  chooseAlt = (key, sku) => this.setState((s) => ({ pickSku: { ...s.pickSku, [key]: sku } }));
+  resetAlt = (key) => this.setState((s) => ({ pickSku: { ...s.pickSku, [key]: null } }));
+  toggleAlts = (key) => this.setState((s) => ({ altsOpen: { ...s.altsOpen, [key]: !s.altsOpen[key] } }));
+  pick = (cpKey, sku) => this.setState((s) => { const cleared = s.picks[cpKey] === sku; return { picks: { ...s.picks, [cpKey]: cleared ? null : sku }, savePref: cleared ? { ...s.savePref, [cpKey]: false } : s.savePref }; });
+  toggleSave = (cpKey) => this.setState((s) => ({ savePref: { ...s.savePref, [cpKey]: !s.savePref[cpKey] } }));
+  tryBroader = (key) => this.setState((s) => ({ broaderTried: { ...s.broaderTried, [key]: true } }));
+  openManual = (key) => this.setState((s) => ({ manualOpen: { ...s.manualOpen, [key]: true } }));
+  onManualInput = (key, v) => this.setState((s) => ({ manualQuery: { ...s.manualQuery, [key]: v } }));
+  submitManual = (e) => { if (e && e.preventDefault) e.preventDefault(); };
+  toggleAck = () => this.setState((s) => ({ staleAck: !s.staleAck }));
+  send = () => {
+    if (this.state.committing) return;
+    this.setState({ committing: true });
+    this._t = setTimeout(() => this.setState({ committing: false, phase: "done" }), 950);
+  };
+
+  renderVals() {
+    const embedded = !!this.props.embedded;
+    const accent = this.props.accent || null;
+    const hostStyle = embedded ? {} : { minHeight: "100vh", display: "flex", flexDirection: "column", background: "var(--background)" };
+    if (accent) { hostStyle["--primary"] = accent; hostStyle["--primary-foreground"] = "#ffffff"; }
+    const surfaceStyle = embedded ? { padding: 0, background: "transparent" } : { flex: "1", padding: "1.5rem 1rem", background: "var(--background)" };
+    const rootClass = embedded ? "order-widget embedded" : "order-widget";
+
+    const tabBase = { padding: "0.3rem 0.7rem", border: "none", borderRadius: "calc(var(--radius-md) - 3px)", font: "inherit", fontSize: "var(--text-xs)", fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" };
+    const tabOn = { ...tabBase, background: "var(--primary)", color: "var(--primary-foreground)" };
+    const tabOff = { ...tabBase, background: "transparent", color: "var(--muted-foreground)" };
+    const review = this.state.phase === "review";
+
+    const G = this.green();
+    const fmt = (n) => this.fmt(n);
+
+    // stats
+    const cartCount = this.cartCount();
+    const savings = this.saleSavings();
+    const statBox = { flex: "1 1 8rem", minWidth: "8rem", padding: "0.75rem 0.9rem", border: "1px solid var(--border)", borderRadius: "var(--radius-lg)", background: "var(--card)" };
+    const statVal = { fontFamily: "var(--font-mono)", fontSize: "var(--text-xl)", fontWeight: 600, marginTop: "0.25rem", letterSpacing: "-0.01em" };
+    const statItems = [
+      { label: "Going to cart", value: cartCount + (cartCount === 1 ? " item" : " items"), boxStyle: statBox, valueStyle: statVal },
+      { label: "Estimated total", value: fmt(this.estTotal()), boxStyle: statBox, valueStyle: statVal },
+      { label: "Flyer savings", value: savings > 0 ? "\u2212" + fmt(savings) : "$0.00", boxStyle: { ...statBox, borderColor: savings > 0 ? "color-mix(in oklch, " + G + " 40%, var(--card))" : "var(--border)", background: savings > 0 ? "color-mix(in oklch, " + G + " 7%, var(--card))" : "var(--card)" }, valueStyle: { ...statVal, color: savings > 0 ? G : "var(--foreground)" } },
+    ];
+
+    // stale
+    const stale = this.staleData();
+    const staleShow = stale.length > 0;
+    const staleTitle = stale.length + (stale.length === 1 ? " item is" : " items are") + " still in a cart from an earlier order (" + stale.map((c) => c.name + ", " + c.days + "d ago").join("; ") + ").";
+    const ackBoxBase = { flex: "0 0 auto", display: "inline-flex", alignItems: "center", justifyContent: "center", width: "20px", height: "20px", borderRadius: "var(--radius-sm)", cursor: "pointer", padding: 0 };
+    const ackBoxStyle = this.state.staleAck
+      ? { ...ackBoxBase, background: "var(--primary)", border: "1.5px solid var(--primary)" }
+      : { ...ackBoxBase, background: "var(--background)", border: "1.5px solid color-mix(in oklch, var(--border) 90%, var(--foreground))" };
+
+    // resolved rows
+    const skipBtn = (skipped) => ({ padding: "0.3rem 0.7rem", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", background: skipped ? "var(--primary)" : "var(--background)", color: skipped ? "var(--primary-foreground)" : "var(--muted-foreground)", font: "inherit", fontSize: "var(--text-xs)", fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" });
+    const stepBtnStyle = { display: "inline-flex", alignItems: "center", justifyContent: "center", width: "26px", height: "26px", border: "none", background: "transparent", color: "var(--foreground)", cursor: "pointer", padding: 0 };
+    const pill = (kind) => {
+      const base = { fontSize: "var(--text-xs)", fontWeight: 600, padding: "0.15rem 0.5rem", borderRadius: "999px", whiteSpace: "nowrap", lineHeight: 1.3 };
+      if (kind === "on_sale") return { ...base, color: "var(--brand)", background: "color-mix(in oklch, var(--brand) 12%, var(--card))", border: "1px solid color-mix(in oklch, var(--brand) 26%, var(--card))" };
+      if (kind === "cheaper") return { ...base, color: G, background: "color-mix(in oklch, " + G + " 11%, var(--card))", border: "1px solid color-mix(in oklch, " + G + " 28%, var(--card))" };
+      return { ...base, color: "var(--muted-foreground)", background: "color-mix(in oklch, var(--muted) 55%, var(--card))", border: "1px solid var(--border)" };
+    };
+    const reasonLabel = (r) => {
+      if (r.kind === "on_sale") return "On sale";
+      if (r.kind === "cheaper") return "Cheaper \u00b7 " + r.altUnit + " vs " + r.curUnit;
+      return "In stock now";
+    };
+    const resolvedRows = this.resolvedData().map((l) => {
+      const skipped = !!this.state.skipped[l.key];
+      const v = this.effView(l);
+      const qty = this.qtyOf(l);
+      const nameStyle = { fontSize: "var(--text-base)", fontWeight: 600, color: skipped ? "var(--muted-foreground)" : "var(--foreground)", textDecoration: skipped ? "line-through" : "none" };
+      const pickLabel = v.brand + (v.size ? " \u00b7 " + v.size : "") + (v.swapped ? "  \u2014 swapped" : "");
+      const priceMain = fmt(v.eff * qty) + (qty > 1 ? "  (" + fmt(v.eff) + " ea)" : "");
+      const priceStrike = v.onSale ? fmt(v.regular * qty) : null;
+      const feat = this.featuredAlt(l);
+      const activeSku = this.state.pickSku[l.key];
+      const featPrice = feat ? (feat.promo > 0 && feat.promo < feat.regular ? feat.promo : feat.regular) : 0;
+      // the "See alternatives" list = all non-featured alts, with the current store pick prepended so it's switch-back-able
+      const listSrc = this.altListOf(l);
+      const altsOpen = !!this.state.altsOpen[l.key];
+      const effOf = (a) => (a.promo > 0 && a.promo < a.regular ? a.promo : a.regular);
+      const altItemStyle = (active) => ({ display: "flex", alignItems: "flex-start", gap: "0.75rem", padding: "0.6rem 0", borderTop: "1px solid color-mix(in oklch, var(--border) 45%, var(--card))" });
+      const mkItem = (a, isOriginal) => {
+        const active = isOriginal ? !activeSku : activeSku === a.sku;
+        const onSale = a.promo > 0 && a.promo < a.regular;
+        return {
+          brand: a.brand, sizeLabel: a.size || "",
+          priceLabel: fmt(effOf(a)), strike: onSale ? fmt(a.regular) : null, saleShow: onSale,
+          reasons: (a.reasons || []).map((r) => ({ label: reasonLabel(r), style: pill(r.kind) })),
+          active, rowStyle: altItemStyle(active),
+          isOriginal: !!isOriginal,
+          origLabel: isOriginal ? "Store pick" : null,
+          act: isOriginal ? () => this.resetAlt(l.key) : () => this.chooseAlt(l.key, a.sku),
+          actLabel: active ? "In cart" : (isOriginal ? "Use this" : "Swap in"),
+          btnStyle: active
+            ? { display: "inline-flex", alignItems: "center", gap: "0.3rem", padding: "0.35rem 0.7rem", border: "1px solid transparent", borderRadius: "var(--radius-sm)", background: "transparent", color: "var(--primary)", font: "inherit", fontSize: "var(--text-xs)", fontWeight: 600, cursor: "default", whiteSpace: "nowrap" }
+            : { display: "inline-flex", alignItems: "center", gap: "0.3rem", padding: "0.35rem 0.8rem", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", background: "var(--background)", color: "var(--foreground)", font: "inherit", fontSize: "var(--text-xs)", fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" },
+          activeShow: active,
+        };
+      };
+      const origItem = mkItem({ brand: l.brand, size: l.size, regular: l.regular, promo: l.promo }, true);
+      const altItems = [origItem, ...listSrc.map((a) => mkItem(a, false))];
+      const altCount = listSrc.length;
+      const seeAltStyle = { display: "inline-flex", alignItems: "center", gap: "0.3rem", margin: "0.4rem 0 0", padding: 0, border: "none", background: "transparent", color: "var(--link)", font: "inherit", fontSize: "var(--text-xs)", fontWeight: 600, cursor: "pointer" };
+      return {
+        key: l.key,
+        wrapStyle: { borderBottom: "1px solid color-mix(in oklch, var(--border) 45%, var(--card))", opacity: skipped ? 0.55 : 1 },
+        name: l.name, nameStyle,
+        saleShow: v.onSale && !v.swapped, // flyer deal badge on the current pick
+        pickLabel,
+        recipeLabel: l.recipe ? "for " + l.recipe : null,
+        priceMain, priceStrike,
+        isAssumed: l.assumed && !skipped, isFixed: !l.assumed || skipped,
+        qtyValue: String(qty), qtyLabel: "qty " + qty,
+        incQty: () => this.incQty(l), decQty: () => this.decQty(l), stepBtnStyle,
+        toggleSkip: () => this.toggleSkip(l.key), skipLabel: skipped ? "Add back" : "Skip", skipBtnStyle: skipBtn(skipped),
+        // featured (proactive flyer/value) suggestion
+        hasAlt: !!feat,
+        altLabel: feat ? (feat.brand + (feat.size ? " \u00b7 " + feat.size : "") + " \u2014 " + fmt(featPrice)) : null,
+        altReasons: feat ? feat.reasons.map((r) => ({ label: reasonLabel(r), style: pill(r.kind) })) : [],
+        altWrapStyle: { display: "flex", alignItems: "center", gap: "0.75rem", flexWrap: "wrap", margin: "0 0 0.75rem", padding: "0.7rem 0.8rem", border: "1px dashed color-mix(in oklch, var(--primary) 38%, var(--border))", borderRadius: "var(--radius-md)", background: "color-mix(in oklch, var(--primary) 6%, var(--card))" },
+        altStaged: activeSku === (feat ? feat.sku : "__none"), altNotStaged: activeSku !== (feat ? feat.sku : "__none"),
+        swap: () => this.chooseAlt(l.key, feat ? feat.sku : null), unswap: () => this.resetAlt(l.key),
+        // full alternatives browser
+        hasAltList: altCount > 0,
+        seeAltStyle, seeAltLabel: altsOpen ? "Hide options" : ("See " + altCount + " other option" + (altCount === 1 ? "" : "s")),
+        altsChevron: { transition: "transform 0.15s ease", transform: altsOpen ? "rotate(180deg)" : "rotate(0deg)" },
+        altsOpen, toggleAlts: () => this.toggleAlts(l.key),
+        altItems,
+      };
+    });
+    const resolvedMeta = this.includedResolved().length + " of " + this.resolvedData().length + " lines";
+
+    // checkpoint
+    const cps = this.checkpointData();
+    const tagStyle = (kind) => {
+      const base = { fontFamily: "var(--font-mono)", fontSize: "0.6rem", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em", padding: "0.12rem 0.45rem", borderRadius: "999px", whiteSpace: "nowrap" };
+      if (kind === "unavailable") return { ...base, color: "var(--destructive)", background: "color-mix(in oklch, var(--destructive) 12%, var(--card))" };
+      return { ...base, color: "var(--brand)", background: "color-mix(in oklch, var(--brand) 14%, var(--card))" };
+    };
+    const iconWrap = (kind) => ({ flex: "0 0 auto", display: "inline-flex", alignItems: "center", justifyContent: "center", width: "26px", height: "26px", borderRadius: "999px", background: kind === "unavailable" ? "color-mix(in oklch, var(--destructive) 12%, var(--card))" : "color-mix(in oklch, var(--brand) 14%, var(--card))", color: kind === "unavailable" ? "var(--destructive)" : "var(--brand)" });
+    const saveOn = this.state.savePref;
+    const checkpointRows = cps.map((cp) => {
+      const isAmb = cp.kind === "ambiguous";
+      const pickedSku = this.state.picks[cp.key];
+      const pickedCand = isAmb && pickedSku ? cp.candidates.find((c) => c.sku === pickedSku) : null;
+      const savePref = !!saveOn[cp.key];
+      const saveTrackStyle = { flex: "0 0 auto", position: "relative", display: "inline-flex", alignItems: "center", width: "36px", height: "21px", borderRadius: "999px", border: "none", padding: 0, cursor: "pointer", background: savePref ? "var(--primary)" : "color-mix(in oklch, var(--muted-foreground) 40%, var(--card))", transition: "background 0.15s ease" };
+      const saveKnobStyle = { position: "absolute", top: "2.5px", left: "2.5px", width: "16px", height: "16px", borderRadius: "999px", background: "var(--background)", boxShadow: "0 1px 2px rgba(0,0,0,0.25)", transform: savePref ? "translateX(15px)" : "translateX(0)", transition: "transform 0.15s ease" };
+      // shared candidate-row builder (ambiguous candidates + broader/manual results)
+      const mkCand = (c) => {
+        const p = this.candPrice(c);
+        const picked = this.state.picks[cp.key] === c.sku;
+        return {
+          sku: c.sku, brand: c.brand, sizeLabel: c.size, note: c.note || null, saleShow: p.onSale, priceLabel: fmt(p.eff),
+          picked, pick: () => this.pick(cp.key, c.sku),
+          rowStyle: { display: "flex", alignItems: "flex-start", gap: "0.65rem", width: "100%", padding: "0.55rem 0.7rem", border: picked ? "1.5px solid var(--primary)" : "1px solid var(--border)", borderRadius: "var(--radius-md)", background: picked ? "color-mix(in oklch, var(--primary) 10%, var(--card))" : "var(--background)", cursor: "pointer", font: "inherit", textAlign: "left" },
+          radioStyle: { flex: "0 0 auto", marginTop: "1px", display: "inline-flex", alignItems: "center", justifyContent: "center", width: "18px", height: "18px", borderRadius: "999px", background: picked ? "var(--primary)" : "var(--background)", border: picked ? "1.5px solid var(--primary)" : "1.5px solid color-mix(in oklch, var(--border) 90%, var(--foreground))" },
+        };
+      };
+
+      // unavailable-only: broader search + manual search state
+      const uPicked = !isAmb ? this.candidateFor(cp) : null;
+      const broaderTried = !!this.state.broaderTried[cp.key];
+      const broader = cp.broader || [];
+      const manualOpen = !!this.state.manualOpen[cp.key];
+      const mq = (this.state.manualQuery[cp.key] || "").trim().toLowerCase();
+      const manualHits = mq ? (cp.catalog || []).filter((c) => c.brand.toLowerCase().includes(mq)) : [];
+      const searchBtn = (primaryish) => ({ display: "inline-flex", alignItems: "center", gap: "0.35rem", padding: "0.45rem 0.85rem", border: "1px solid var(--border)", borderRadius: "var(--radius-md)", background: "var(--background)", color: "var(--foreground)", font: "inherit", fontSize: "var(--text-xs)", fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" });
+
+      return {
+        key: cp.key, name: cp.name, message: cp.message,
+        isAmbiguous: isAmb, isUnavailable: !isAmb,
+        hasPick: isAmb && !!pickedCand, pickedBrand: pickedCand ? pickedCand.brand : "",
+        savePref, toggleSave: () => this.toggleSave(cp.key), saveTrackStyle, saveKnobStyle,
+        iconWrapStyle: iconWrap(cp.kind),
+        tagStyle: tagStyle(cp.kind), tagLabel: isAmb ? "Choose one" : "Unavailable",
+        dropNote: "Left out of this order unless you find a product.",
+        candidates: isAmb ? cp.candidates.map(mkCand) : [],
+        // --- unavailable disposition ---
+        uResolved: !!uPicked,
+        uNotResolved: !uPicked,
+        uPickedLabel: uPicked ? (uPicked.brand + (uPicked.size ? " \u00b7 " + uPicked.size : "") + " \u2014 " + fmt(this.candPrice(uPicked).eff)) : null,
+        uUndo: () => { if (uPicked) this.pick(cp.key, uPicked.sku); },
+        tryBroader: () => this.tryBroader(cp.key), broaderBtnStyle: searchBtn(true),
+        openManual: () => this.openManual(cp.key), manualBtnStyle: searchBtn(false),
+        broaderTried,
+        broaderRows: broader.map(mkCand),
+        broaderHasResults: broaderTried && broader.length > 0,
+        broaderEmpty: broaderTried && broader.length === 0,
+        manualOpen, manualQuery: this.state.manualQuery[cp.key] || "",
+        onManualInput: (e) => this.onManualInput(cp.key, e.target.value),
+        submitManual: this.submitManual,
+        manualRows: manualHits.map(mkCand),
+        manualHasResults: manualHits.length > 0,
+        manualEmpty: mq.length > 0 && manualHits.length === 0,
+        manualQueryEcho: this.state.manualQuery[cp.key] || "",
+      };
+    });
+    const checkpointShow = cps.length > 0;
+    const undecided = this.undecidedCount();
+    const checkpointMeta = undecided > 0 ? undecided + " still open" : "all resolved";
+
+    // footer
+    const commitArmed = (!staleShow || this.state.staleAck) && cartCount > 0;
+    const sendDisabled = !commitArmed || this.state.committing || null;
+    const sendBtnStyle = { display: "inline-flex", alignItems: "center", gap: "0.45rem", padding: "0.65rem 1.3rem", border: "none", borderRadius: "var(--radius-md)", background: commitArmed ? "var(--primary)" : "color-mix(in oklch, var(--muted) 60%, var(--card))", color: commitArmed ? "var(--primary-foreground)" : "var(--muted-foreground)", font: "inherit", fontSize: "var(--text-sm)", fontWeight: 600, cursor: commitArmed && !this.state.committing ? "pointer" : "not-allowed", whiteSpace: "nowrap" };
+    let footerSub;
+    if (cartCount === 0) footerSub = "Nothing selected yet.";
+    else if (staleShow && !this.state.staleAck) footerSub = "Confirm the old cart is cleared to continue.";
+    else if (undecided > 0) footerSub = undecided + (undecided === 1 ? " flagged item" : " flagged items") + " will be left off unless you decide.";
+    else footerSub = "Prices are today's — Kroger confirms final pricing at fulfillment.";
+
+    // done / result
+    const carted = cartCount;
+    const learned = this.includedResolved().length + (this.checkpointData().filter((cp) => this.candidateFor(cp)).length);
+    const okIcon = { flex: "0 0 auto", display: "inline-flex", alignItems: "center", justifyContent: "center", width: "28px", height: "28px", borderRadius: "999px", background: "var(--primary)", color: "var(--primary-foreground)" };
+    const infoIcon = { flex: "0 0 auto", display: "inline-flex", alignItems: "center", justifyContent: "center", width: "28px", height: "28px", borderRadius: "999px", background: "color-mix(in oklch, var(--muted) 60%, var(--card))", color: "var(--muted-foreground)" };
+    const resultRows = [
+      { ok: true, info: false, iconWrapStyle: okIcon, title: carted + (carted === 1 ? " item sent to your Kroger cart" : " items sent to your Kroger cart"), body: "Open the Kroger app to review substitutions and check out — this app can't complete the purchase for you." },
+      { ok: true, info: false, iconWrapStyle: okIcon, title: "Moved to \u201cIn cart\u201d on your list", body: "Those lines are marked in-cart so a repeat order won't double-add them. Mark the order placed once you check out." },
+      { ok: true, info: false, iconWrapStyle: okIcon, title: "Learned " + learned + " store matches", body: (() => {
+        const saved = cps.filter((cp) => cp.kind === "ambiguous" && this.state.picks[cp.key] && this.state.savePref[cp.key]).map((cp) => cp.name);
+        const base = "We cached these product picks so next time resolves faster.";
+        return saved.length ? base + " Saved your preferred brand for " + saved.join(" and ") + "." : base;
+      })() },
+    ];
+    if (undecided > 0) {
+      const names = this.checkpointData().filter((cp) => !this.candidateFor(cp)).map((cp) => cp.name);
+      resultRows.push({ ok: false, info: true, iconWrapStyle: infoIcon, title: undecided + (undecided === 1 ? " item was left off" : " items were left off"), body: names.join(" and ") + (undecided === 1 ? " wasn't resolved and stayed" : " weren't resolved and stayed") + " on your to-buy list for next time." });
+    }
+
+    const summaryRows = [
+      { label: "Items carted", value: String(carted), color: "var(--foreground)" },
+      { label: "Estimated total", value: fmt(this.estTotal()), color: "var(--foreground)" },
+      { label: "Saved from the flyer", value: savings > 0 ? "\u2212" + fmt(savings) : "$0.00", color: savings > 0 ? G : "var(--muted-foreground)" },
+    ];
+
+    return {
+      hostStyle, surfaceStyle, rootClass, embedded,
+      showChrome: !embedded, showHeading: !this.props.hideHeading,
+      dark: this.state.dark, light: !this.state.dark, toggleTheme: this.toggleTheme,
+      setReview: this.setReview, setDone: this.setDone,
+      reviewTabStyle: review ? tabOn : tabOff, doneTabStyle: review ? tabOff : tabOn,
+      phaseReview: review, phaseDone: !review,
+      storeLabel: "Kroger \u00b7 Pinole",
+      statItems,
+      staleShow, staleTitle, staleAck: this.state.staleAck, toggleAck: this.toggleAck, ackBoxStyle,
+      resolvedRows, resolvedMeta,
+      checkpointShow, checkpointRows, checkpointMeta,
+      footerTotal: fmt(this.estTotal()), footerSub,
+      sendLabel: "Send to Kroger cart", sendDisabled, send: this.send, sendBtnStyle,
+      committing: this.state.committing, notCommitting: !this.state.committing,
+      resultRows, summaryRows,
+    };
+  }
+}
+</script>
+</body>
+</html>

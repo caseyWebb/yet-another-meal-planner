@@ -23,7 +23,9 @@ stance.
 **Mint ingest key**: one click → `yk_live_…` shown once ("copy now; shown once. One key
 authenticates both push and pull") with Copied → masked row (`yk_live_••••{last4} ·
 minted just now`) + Revoke. Backend mint takes a label + optional tenant binding the mock
-omits — either add a small mint form or spec label-on-first-push enrollment.
+omits — either add a small mint form or spec label-on-first-push enrollment. Authority
+(D14): mint/revoke/quarantine = any member of the owning household; member-minted keys
+are household-bound; operator-global keys stay admin-only.
 
 **Machine cards**: name; capability badges (RECIPE-SCRAPE / SALE-SCAN / CART-FILL);
 freshness chip (Fresh · pushed 8m ago / Stale · last push 2d ago); meta "satellite vX ·
@@ -42,18 +44,22 @@ auto-applied.
 
 **Recent rejections**: kind · source · reason chip (`contract_invalid`, `no_jsonld`,
 `unknown_sku`) · ×count · time · origin (local = "dropped before wire" / worker = URL or
-line detail). Visibility per existing contract: order rejections private to the
-household; recipe/sale shared. Empty state: "Nothing rejected in the last 14 days —
+line detail). Visibility (D14): household-scoped entries only, for ALL kinds; the
+operator admin keeps the superset. Empty state: "Nothing rejected in the last 14 days —
 every observation landed clean."
 
-**Cart-fill helper**: per-store rows — hosting satellite, "filled 2 orders this month ·
-last fill 4d ago", session chip (Session fresh / Re-run login), Open helper ↔ Hide URL
-revealing `http://127.0.0.1:7749 · token …` for fresh sessions. "It stops at the review
-page — you place the order, so a purchase is never made without you." **Data-path
-decision needed**: helper URL/token/session freshness live on the member's machine today;
-either the satellite reports helper metadata home (new wire fields — with a security
-stance on showing a LAN URL+token in a cloud app) or the card degrades to what the Worker
-knows (fills from order_lists, liveness from pushes).
+**Cart-fill helper** (D22 — helper secrets never leave the satellite host; there is no
+URL+token reveal): per-store rows show only Worker-derivable facts — hosting satellite,
+"filled 2 orders this month · last fill 4d ago" (per-store fill count and last-fill time
+from order lists), liveness from push recency, session chip (Session fresh / Re-run
+login) keyed off the satellite-reported per-store session-freshness boolean observation
+(an additive wire field on the existing push path; the same field serves the
+Preferences adapter summary and the grocery launcher's disabled state). "It stops at
+the review page — you place the order, so a purchase is never made without you." "Open
+helper" = static per-deployment instructions ("open the helper on the machine running
+your satellite — it prints its address and token at start"), optionally augmented by a
+member-typed local address kept in browser-local storage only, never synced. The helper
+URL and session token get no wire field, no D1 row, no member/admin API.
 
 ## 3. Delta vs today
 
@@ -63,11 +69,15 @@ machinery, admin-side.
 
 ## 4. Open questions
 
-1. Member authority: who may mint/revoke keys, disconnect machines, quarantine sources —
-   any household member, or key/machine owner? Operator admin remains the superset view.
+1. ~~Member authority: who may mint/revoke keys, disconnect machines, quarantine
+   sources?~~ — decided (D14): any member of the owning household; member-minted keys
+   are household-bound; operator-global keys admin-only. Operator admin remains the
+   superset view.
 2. Tenant-scoped vs global sources under quarantine (NULL-tenant store slugs).
 3. Attention-badge definition (stale machine? contract skew? nonzero rejects? unseen
    keys? outstanding recommendation?).
-4. Cart-fill card data path (§2) + security stance.
+4. ~~Cart-fill card data path (§2) + security stance.~~ — decided (D22): helper
+   URL/token never leave the satellite host; the card shows Worker-derivable facts plus
+   the satellite-reported session-freshness observation.
 5. Key ↔ machine ↔ capability model: capabilities are declared per machine; keys are
    unscoped — good enough, or per-key capability scopes?

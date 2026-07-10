@@ -23,14 +23,16 @@ shown once in the admin panel." + "Open Claude.ai" (claude.ai/new, new tab).
 ## 2. Notes
 
 - Pure guided UI over the existing distribution/connect flow (marketplace publish,
-  `/authorize`, `/connect` approval, Kroger OAuth). No new backend.
+  `/authorize`, `/connect` approval, Kroger OAuth). Zero backend — steps are templated
+  from deployment config (operator repo, name), never hardcoded; `config/whoami` gains
+  `{ profile, operator }` for modal copy + D9 gating.
+- Rides band 7a with `account-security-basics` (D25).
 - The web tab has no Kroger step (agent-initiated via `kroger_login_url` in chat) —
   confirm intentional, or add an optional step for parity.
-- `?tenant={tenant}` in a copyable URL leaks the tenant slug — acceptable? Consider a
-  short-lived opaque ref.
-- Steps must be generated from deployment config (operator repo, name), not hardcoded.
-- Story 01 note: invite codes are per-member in the multi-member model; the footer copy
-  already matches.
+- The `?tenant=` slug in the connect URL is retained — it is the member's own id,
+  already present in existing copyable URLs.
+- Story 01 note (D10): invite codes mint/resolve (tenant, member) pairs; the footer's
+  "codes are minted per member" already matches.
 
 ## 3. Delta
 

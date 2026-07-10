@@ -28,7 +28,13 @@ Seafood, Grains, Bakery, Canned, Condiments, Oils, Spices, Baking, Frozen, Snack
 Beverages); locations = Fridge, Freezer, Pantry, Spice rack, Counter, Cabinet. This
 splits today's location-flavored `category` (`fridge`/`freezer`…) into two orthogonal
 fields — a real schema change (D1 column + migration + `update_pantry`/`read_pantry` +
-SCHEMAS.md same pass). Migration of existing location-flavored values needs a mapping.
+SCHEMAS.md same pass). The controlled category vocab IS the analytics dimension source
+(D17): pantry-add autofill and event stamping share ONE deterministic
+ingredient→category derivation (item → canonical ingredient id via the
+IngredientContext funnel → category, memoized per identity) — closing the autofill
+question. The location vocab (six values) is THE kitchen location vocabulary
+product-wide (pages/02's widget consumes it). Staleness thresholds consume the shared
+threshold table (pages/05 §1).
 
 **Group-by toggle**: Category (alphabetical) | Location (fixed order Fridge, Freezer,
 Pantry, Spice rack, Counter — add Cabinet).
@@ -41,7 +47,8 @@ primary Used = consumed, removes the row; menu → **Mark as waste** → waste m
 **Waste modal**: "Toss '{item}'" / "Why is it going in the bin? This feeds your Waste
 analyzer so it can spot patterns." — single-tap reason list, then remove + persist the
 waste event (mock persists nothing — the event contract is story 03 §2; canonical reason
-enum decided there).
+enum decided there). Disposition-on-remove events carry a client-minted event id (D15)
+and a capture-stamped department (D17).
 
 ## 3. Delta vs today
 
@@ -59,9 +66,17 @@ enum decided there).
    (qty is editable right there — maybe sufficient)?
 2. Does "Used" emit a consumption signal (future use-it-up/staples tuning) or stay pure
    removal?
-3. Recognition source for autofill: client lookup (mock), ingredient-identity funnel, or
-   derived guidance data?
-4. Category migration mapping for existing rows; do agent-side writes (`update_pantry`)
-   gain location as optional?
-5. Prepared leftovers (`prepared_from` rows): same disposition flow covers tossing them
-   (waste "Leftovers" department) — confirm.
+3. ~~Recognition source for autofill: client lookup (mock), ingredient-identity funnel,
+   or derived guidance data?~~ — decided (D17): the ingredient-identity funnel — the
+   same derivation that stamps analytics departments (§2).
+4. ~~Category migration mapping for existing rows; does `update_pantry` gain
+   location?~~ — decided: copy old category → location (pantry→Pantry, fridge→Fridge,
+   freezer→Freezer, spices→Spice rack); set category NULL ("auto"); a cron-shaped
+   backfill pass rides the ingredient-identity machinery to classify NULL categories
+   over time; readers treat NULL as uncategorized, never an error; `update_pantry`
+   gains optional location (validated) + the new category vocab; `read_pantry`'s
+   category filter accepts both vocabularies during convergence; TOOLS.md + SCHEMAS.md
+   same pass.
+5. ~~Prepared leftovers (`prepared_from` rows): same disposition flow covers tossing
+   them?~~ — decided (D17): yes — `prepared_from` rows stamp the Leftovers
+   pseudo-department (waste only), derived at read time (story 03 §2).

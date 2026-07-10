@@ -11,25 +11,63 @@ views, per the capture → retrieve → narrow doctrine.
 `{date/week, item, department, store, amount, provenance: planned|impulse}` at household
 scope, plus a member-set **weekly budget** preference.
 
-- **Primary source: the order flow.** Order commit (Kroger today; Instacart/satellite
-  later — story 04) already resolves per-line prices at preview; persist the committed
-  order's lines as spend events (est. price is acceptable; flyer savings recorded
-  alongside — the Order Review's "estimated total / flyer savings" tiles and the spend
-  analyzer must agree on source).
-- **Store-walk / manual shop**: "Log a manual shop · N checked" marks checked lines
-  purchased; price them best-effort (sku cache / flyer / last-paid memoized per item) and
-  mark estimates as estimates. Offline stores (story 04) price the same way.
+- **Every purchase path is an emitter (D16)**: the Kroger online order, the Kroger
+  in-store walk, the agent-guided voice walk, the member store-walk / "Log a manual
+  shop", and satellite cart-fill. The member walk and the agent voice walk are the same
+  purchase event and MUST emit identically.
+- **Snapshot at send, materialize at the purchase assertion (D16)** — a two-phase
+  contract. SNAPSHOT: `place_order` (and the satellite cart-fill receipt's in_cart
+  advance) persists per-line resolved prices {pick/sku, qty, unit + promo price, flyer
+  savings, store, fulfillment path, provenance} on a send record — the Order Review
+  tiles render this snapshot, which is what makes tiles and analyzer agree on one
+  source. MATERIALIZE: spend events are written by ONE shared src/ writer at the
+  purchase assertion — the in_cart→ordered advance on every path
+  (`update_grocery_list`, member "Mark order placed", satellite mark-placed), or receive
+  of an in_cart row — copying snapshot prices verbatim, idempotent on (send id, line).
+  Emission lives inside the shared ops, never a surface.
+- **Walk / manual shop**: completion emits via the shared shop-commit op, best-effort
+  priced (sku_cache → warmed flyer → per-household last-paid memo, flagged estimated),
+  idempotent on the client-minted session id (D15). Offline stores (story 04) price the
+  same way.
+- **Negative rules (D16)**: rows leaving in_cart without a purchase assertion write no
+  spend; receive prices nothing itself; re-listing an ordered row voids its events;
+  never-marked orders surface as "awaiting mark-placed", not auto-counted.
+- **Banding (D25)**: primary capture is a UI-free band-1 delta on `place_order` — the
+  spend_events table + the weekly-budget preference + the order-placement spec delta.
+  Band 3 extends it (impulse lines, savings tiles, manual-shop/walk path).
 - **Provenance**: `planned` = line derived from plan/list (`for_recipes` or explicit list
   add before the shop); `impulse` = added during order review / at the store / cart
   additions outside the list. This maps onto the existing to-buy `origin` attribution —
-  keep the mapping rule explicit in the proposal.
+  keep the mapping rule explicit in the proposal. Fulfillment path + store come from the
+  shared op's context, not per-surface wiring.
 - **Budget**: one household-level `$N/week` preference (mock prop default $95; $0/unset
   hides the budget line). Lives in preferences (`update_preferences` + Preferences tab —
   note the mock forgot a budget control; add one).
+- **Last-paid memoization is PER-HOUSEHOLD** (behavioral data — the D2 memoization
+  boundary), and waste $ values ride it from band 1.
+- **Agent choreography**: the grocery/receive skills update in the same change so "I
+  placed the order" / "I picked up the groceries" route through the ops that fire the
+  writer; no MCP spend-write tool is minted — the agent reads aggregates via
+  `retrospective`.
+- **The department dimension (D17)**: ONE canonical analytics `department` dimension =
+  page 06's controlled food-category vocab + `Household` + `Leftovers`, stamped
+  immutably on every spend and waste event at capture — never derived at read time,
+  never taken from store placement. Derivation is deterministic and identity-keyed:
+  item → canonical ingredient id (IngredientContext funnel) → category, memoized per
+  identity — the SAME source pantry-add autofill uses. Overrides bypass derivation:
+  grocery `kind: household` → Household; pantry `prepared_from` rows → Leftovers (waste
+  only); non-grocery `domain`/`kind: other` lines map to Household or are excluded from
+  spend. The cost-per-meal exclusion = {Household, Beverages} of this dimension; events
+  keep their capture-time stamp (vocab evolution never rewrites history); "Not mapped"
+  can never reach analytics. Store placement {aisle, department} stays
+  presentation-only for list grouping and the walk. Cross-referenced from §2/§3 and
+  pages 05/06/07.
 
 ## 2. Waste capture
 
-**Target shape**: waste events `{date, item, department, reason, avoidability, value}`.
+**Target shape**: waste events `{event_id (client-minted, D15), date, item id,
+department (capture-stamped per D17), reason, value snapshot once spend history resolves
+it}`.
 
 - **Capture point: pantry disposition** (pages/06). Regular pantry rows lose the bare
   trash button; removal is a disposition — **Used** (consumed; pure removal today, maybe
@@ -39,15 +77,17 @@ scope, plus a member-set **weekly budget** preference.
   disagree — define ONE canonical enum at capture; suggested: spoiled, moldy, over-ripe /
   wilted, expired/past-date, freezer-burned, went-stale, forgot-about-it, bought-too-much,
   never-opened, other. Keep it small enough for a tap-list.
-- **Avoidability**: derived from reason (+ item class), not asked at capture. E.g.
+- **Avoidability**: derived from reason (+ item class), not asked at capture — a
+  versioned reason(+item-class)→avoidable|hard-to-avoid table as constants in src/,
+  applied at analyzer READ time; not stored at capture, not an LLM cron. E.g.
   freezer-burned/bought-too-much/forgot → avoidable; some (item, reason) pairs
-  unavoidable. Derivation table is part of the spec, or LLM-classified in a cron
-  (capture → retrieve → narrow) — decide in proposal.
-- **Value**: derived from spend telemetry (last purchase price of the item, memoized),
-  falling back to sku-cache estimate; never asked at capture. This sequences waste
-  **after** spend capture.
-- **Leftovers waste**: the analyzer shows a "Leftovers" pseudo-department; prepared items
-  already exist in the pantry (`prepared_from`) so the same disposition flow covers them.
+  unavoidable.
+- **Value**: derived from spend telemetry (last purchase price of the item, memoized
+  per-household), falling back to sku-cache estimate; never asked at capture. This
+  sequences waste **after** spend capture.
+- **Leftovers waste**: the analyzer's "Leftovers" pseudo-department is likewise a
+  read-time derivation over `prepared_from`; prepared items already exist in the pantry
+  so the same disposition flow covers them.
 
 ## 3. Analyzer reads (derived, household-scoped)
 
