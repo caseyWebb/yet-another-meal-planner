@@ -15,6 +15,13 @@ import {
 import type { KrogerCandidate } from "../src/kroger.js";
 import { fakeD1 } from "./fake-d1.js";
 import { readResolver } from "../src/corpus-db.js";
+import { projectBrandTiers } from "../src/profile-db.js";
+import type { BrandTierPref } from "../src/preferences.js";
+
+/** Build the matcher's flat `brands` input from stored tier objects (readBrandPrefs). */
+function projectAll(tiers: Record<string, BrandTierPref>): Record<string, string[]> {
+  return Object.fromEntries(Object.entries(tiers).map(([term, pref]) => [term, projectBrandTiers(pref)]));
+}
 
 function cand(overrides: Partial<KrogerCandidate> & { productId: string }): KrogerCandidate {
   return {
@@ -379,6 +386,48 @@ describe("matchIngredient — confidence gate", () => {
     });
     const res = await matchIngredient(deps, "olive oil");
     expect(res).toMatchObject({ resolved: false, ambiguous: true });
+  });
+
+  // The stored brand model is tiers ({ tiers, any_brand }); the matcher consumes the
+  // readBrandPrefs PROJECTION (flatten in tier order; don't-care → []) until band 3's
+  // order-review-rework moves it onto tiers natively. Feeding the gate through the
+  // projection pins that behavior over migrated data is unchanged by construction.
+  describe("fed from the brand-tier projection", () => {
+    it("absent family → ambiguous", async () => {
+      const deps = makeDeps({
+        brands: projectAll({}),
+        search: async () => [
+          cand({ productId: "A", brand: "Brand A", description: "Olive Oil", price: { regular: 5, promo: 0 } }),
+          cand({ productId: "B", brand: "Brand B", description: "Olive Oil", price: { regular: 6, promo: 0 } }),
+        ],
+      });
+      const res = await matchIngredient(deps, "olive oil");
+      expect(res).toMatchObject({ resolved: false, ambiguous: true });
+    });
+
+    it("don't-care ({ tiers: [], any_brand: true }) → confident cheapest acceptable", async () => {
+      const deps = makeDeps({
+        brands: projectAll({ yellow_onion: { tiers: [], any_brand: true } }),
+        search: async () => [
+          cand({ productId: "cheap", description: "Yellow Onion", size: "2 lb", price: { regular: 1.5, promo: 0 } }),
+          cand({ productId: "pricey", description: "Yellow Onion", size: "2 lb", price: { regular: 3.0, promo: 0 } }),
+        ],
+      });
+      const res = await matchIngredient(deps, "yellow onion");
+      expect(res).toMatchObject({ resolved: true, sku: "cheap", reason: "don't-care: cheapest acceptable" });
+    });
+
+    it("singleton tiers project to the ranked ladder (highest tier available wins)", async () => {
+      const deps = makeDeps({
+        brands: projectAll({ olive_oil: { tiers: [["Brand A"], ["Brand B"]], any_brand: false } }),
+        search: async () => [
+          cand({ productId: "b", brand: "Brand B", description: "Brand B Olive Oil", price: { regular: 5, promo: 0 } }),
+          cand({ productId: "a", brand: "Brand A", description: "Brand A Olive Oil", price: { regular: 9, promo: 0 } }),
+        ],
+      });
+      const res = await matchIngredient(deps, "olive oil");
+      expect(res).toMatchObject({ resolved: true, sku: "a", reason: "preferred brand match" });
+    });
   });
 });
 

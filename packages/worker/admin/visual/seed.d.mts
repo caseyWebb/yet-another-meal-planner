@@ -82,6 +82,12 @@ export interface SeedLiterals {
     };
     readonly note: { readonly body: string; readonly tag: string };
     readonly tasteLead: string;
+    /** Brand-tier fixtures (brand-tier model): the Preferred-brands card's seeded
+     *  ladder (singleton tiers, the migrated-production shape) and don't-care family. */
+    readonly brands: {
+      readonly ladder: { readonly term: string; readonly tiers: readonly (readonly string[])[] };
+      readonly dontCare: { readonly term: string };
+    };
     /** Propose-flow fixtures (member-app-propose D12): the self-provisioned palette's
      *  vibe ids (their derived vectors are pre-seeded), the cache-warmed freeform
      *  phrase, and the corpus rows the specs assert on. */

@@ -107,6 +107,13 @@ export const SEED = {
     },
     note: { body: "Swapped honey for the brown sugar — better glaze.", tag: "tweak" },
     tasteLead: "Big on bold heat and acid",
+    // Brand-tier fixtures (brand-tier model): one ladder of singleton tiers (the
+    // migrated-production shape) and one don't-care family, for the Preferred-brands
+    // card's tier moves / any-brand toggle / remove-family specs.
+    brands: {
+      ladder: { term: "butter", tiers: [["Kerrygold"], ["store brand"]] },
+      dontCare: { term: "yellow_onion" },
+    },
     // The propose flow (member-app-propose D12): the shared seed keeps the PALETTE empty
     // (production's first render — the profile + propose empty states assert it), and
     // pre-plants everything the propose specs' SELF-PROVISIONED palette needs to fill a
@@ -612,7 +619,9 @@ export function d1Statements(now) {
   );
   stmts.push(`DELETE FROM brand_prefs WHERE tenant = ${q(members.active)};`);
   stmts.push(
-    `INSERT INTO brand_prefs (tenant, term, ranks) VALUES (${q(members.active)}, 'butter', '["Kerrygold","store brand"]');`,
+    `INSERT INTO brand_prefs (tenant, term, tiers, any_brand) VALUES ` +
+      `(${q(members.active)}, ${q(app.brands.ladder.term)}, ${q(JSON.stringify(app.brands.ladder.tiers))}, 0), ` +
+      `(${q(members.active)}, ${q(app.brands.dontCare.term)}, '[]', 1);`,
   );
 
   // --- Differentiators (member-app-differentiators D11) ---------------------------

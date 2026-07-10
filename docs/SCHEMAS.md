@@ -13,7 +13,7 @@ The data lives in three tiers (see `ARCHITECTURE.md`): the authored markdown cor
 - **Authored markdown (R2 bucket `CORPUS`)** — the human-editable tier (an Obsidian vault synced to the same bucket): `recipes/*.md` (objective frontmatter + body) and the `guidance/**/*.md` umbrella (`guidance/ingredient_storage/` — curated put-away advice, read-only; `guidance/cooking_techniques/` — technique memories, agent-writable via `save_guidance`; `guidance/purchasing/` — buy-side selection advice, also agent-writable). Object keys are repo-relative paths (`recipes/<slug>.md`, `guidance/<domain>/<slug>.md`); read/written through `src/corpus-store.ts`. There is no GitHub App or data repo on the data path.
 - **Shared corpus (D1, `migrations/d1/0006_shared_corpus.sql` + `0033_ingredient_identity.sql`)** — objective, single-source, read by everyone: the ingredient identity graph (`ingredient_identity`/`ingredient_alias`/`ingredient_edge` + the `novel_ingredient_terms` queue + `ingredient_normalization_log`), `sku_cache(ingredient, location_id, …)`, `flyer_terms(term)`, `stores(slug, name, domain, extra /*json*/)` (in-store-walk registry — identity columns `slug`/`name`/`domain` are top-level; optional identity fields `label`/`chain`/`address`/`location_id` are stored in the `extra` JSON column; layout lives in store notes), `feeds(url, …)` (RSS discovery feeds), `discovery_candidates(id, url UNIQUE, status, …)` (forwarded-newsletter inbox + group-wide rejection log; `status` values: `pending` | `rejected` — `pending` is the default for unprocessed candidates, `rejected` is set by `reject_discovery`), `discovery_senders`/`discovery_members` (inbound-email allowlist). Written + validated at the Worker write tools; read by query. The recipe index is the derived D1 `recipes` table — there is no `_indexes/recipes.json`.
 - **Attributed records (D1 `recipe_notes` / `store_notes`)** — each member's attributed recipe/store notes, stored in D1 tables carrying `author` (the writing tenant, set by the Worker) + a `private` flag. Both tables use `id TEXT PRIMARY KEY` (a generated stable key); `recipe`/`slug` (the recipe or store slug), `author`, `body`, `tags`, `private`, and `created_at` are ordinary columns (not the primary key). `read_recipe_notes` returns own-private + group-shared in one query, joined with the overlay favorites.
-- **Per-tenant D1 (the profile)** — each member's grocery **profile** lives in normalized D1 tables (`migrations/d1/0004_profile.sql`): a singleton `profile` row (the markdown fields `taste`/`diet_principles`, the preference scalars `default_cooking_nights`/`planning_cadence_days`/`lunch_strategy`/`ready_to_eat_default_action`, the JSON columns `stores`/`dietary`/`rotation`/`custom`/`kitchen_notes`, `freezer_capacity_estimate`, and `last_planned_at` — the per-tenant planning watermark, migration 0016, stamped by `update_meal_plan` on an add and read by `list_new_for_me`), plus child tables `brand_prefs(tenant, term, ranks)`, `kitchen_equipment(tenant, slug)`, `staples(tenant, name, normalized_name, perishable)`, `overlay(tenant, recipe, favorite, reject)` (the two mutually-exclusive disposition marks; there is no `status` lifecycle or `rating` column), `ready_to_eat(tenant, slug, meal, name, favorite, reject, category, source, brand, notes)`, and `stockup(tenant, name, normalized_name, unit, typical_purchase, notes, baseline_price, buy_at_or_below)`. `idx_overlay_recipe` powers the cross-tenant group-favorites query. Reads assemble the agent-facing objects from these rows (`src/profile-db.ts`); writes mutate rows — no document format on the profile path.
+- **Per-tenant D1 (the profile)** — each member's grocery **profile** lives in normalized D1 tables (`migrations/d1/0004_profile.sql`): a singleton `profile` row (the markdown fields `taste`/`diet_principles`, the preference scalars `default_cooking_nights`/`planning_cadence_days`/`lunch_strategy`/`ready_to_eat_default_action`, the JSON columns `stores`/`dietary`/`rotation`/`custom`/`kitchen_notes`, `freezer_capacity_estimate`, and `last_planned_at` — the per-tenant planning watermark, migration 0016, stamped by `update_meal_plan` on an add and read by `list_new_for_me`), plus child tables `brand_prefs(tenant, term, tiers, any_brand)`, `kitchen_equipment(tenant, slug)`, `staples(tenant, name, normalized_name, perishable)`, `overlay(tenant, recipe, favorite, reject)` (the two mutually-exclusive disposition marks; there is no `status` lifecycle or `rating` column), `ready_to_eat(tenant, slug, meal, name, favorite, reject, category, source, brand, notes)`, and `stockup(tenant, name, normalized_name, unit, typical_purchase, notes, baseline_price, buy_at_or_below)`. `idx_overlay_recipe` powers the cross-tenant group-favorites query. Reads assemble the agent-facing objects from these rows (`src/profile-db.ts`); writes mutate rows — no document format on the profile path.
 - **Per-tenant D1 (session state)** — each member's working state lives in D1 row tables (`migrations/d1/0005_session_state.sql`): `pantry(tenant, name, normalized_name, quantity, category, prepared_from, added_at, last_verified_at, notes)`, `meal_plan(tenant, recipe, planned_for, sides /*json*/, from_vibe /*night-vibe slot provenance, migration 0026; advisory, never slug-resolved*/)`, `grocery_list(tenant, name, normalized_name, quantity, kind, domain, status, source, for_recipes /*json*/, note, added_at, ordered_at)` — keyed by normalized name (pantry/grocery) or recipe slug (meal plan), with `idx_grocery_status(tenant, status)` and `idx_pantry_category(tenant, category)` backing the read filters. Adds are row upserts (`INSERT … ON CONFLICT DO UPDATE`), removes/status changes are targeted row statements — no whole-array rewrite, strong read-after-write consistency. (The detailed item shapes are below.) The Worker read path has **no** GitHub/KV fallback — a miss returns empty/null.
 - **Shared operational D1 (reconcile + bug reports + discovery log)** — group-wide (not per-tenant) operational tables the Worker owns: `reconcile_errors(slug, path, message, recorded_at)` (`migrations/d1/0014_reconcile_errors.sql`) — recipes the index reconcile **skipped**, replaced wholesale each pass; `bug_reports(id, reporter, title, body, created_at, status)` (`migrations/d1/0015_bug_reports.sql`) — agent-filed bug reports, `reporter`/`created_at` attributed server-side; and `discovery_log(id, url, title, source, outcome, slug, detail, created_at)` (`migrations/d1/0016_background_discovery.sql`) — the discovery sweep's per-candidate outcome log, one table serving three roles (operator audit, intake dedup, parked-error surface), retention-pruned. (The detailed shapes are below.)
 - **Sweep-/reconcile-owned per-member D1 (discovery sweep)** — group-wide *attribution + taste* tables the discovery sweep owns (`migrations/d1/0016_background_discovery.sql`): `discovery_matches(recipe, tenant, score, matched_at)` — per-member match attribution (the import gate **and** the `list_new_for_me` filter); and `taste_derived(tenant, taste_hash, embedding, updated_at)` — each member's taste-text embedding, content-hash gated like `recipe_derived`. Like `recipe_derived`, these are **siblings of `recipes`** so the index projection's wholesale `recipes` rebuild never owns them. (The detailed shapes are below.)
@@ -33,13 +33,14 @@ The shared corpus, profile, session state, cooking log, and attributed notes are
   "lunch_strategy": "leftovers",               // "leftovers" | "buy" | "mixed"
   "ready_to_eat_default_action": "opt-in",     // "opt-in" | "auto-add"
   "stores":  { "primary": "kroger", "preferred_location": "Kroger - 76104", "location_zip": "76104" },
-  "brands":  { "olive_oil": ["California Olive Ranch"], "yellow_onion": [] },
+  "brands":  { "olive_oil": { "tiers": [["California Olive Ranch"]], "any_brand": false },
+               "yellow_onion": { "tiers": [], "any_brand": true } },
   "dietary": { "avoid": [], "limit": ["cilantro"] },
   "custom":  { /* arbitrary agent-added keys */ }
 }
 ```
 
-`update_preferences` takes a `patch` and applies **JSON Merge Patch (RFC 7396)**: a present key sets, `null` deletes, nested objects merge to any depth, arrays replace wholesale. Validation is staged — an unknown top-level patch key is rejected toward `custom` (`validation_failed`), then the merged result's types are validated (`malformed_data` on a bad enum/shape, storing nothing). The whole patch applies in one D1 transaction. The `brands` tri-state maps onto rows: a list value UPSERTs a `brand_prefs` row, `[]` is "don't-care/cheapest", `null` DELETEs the row (back to ambiguous = "ask me"); an absent term leaves its row untouched.
+`update_preferences` takes a `patch` and applies **JSON Merge Patch (RFC 7396)**: a present key sets, `null` deletes, nested objects merge to any depth, arrays replace wholesale. Validation is staged — an unknown top-level patch key is rejected toward `custom` (`validation_failed`), then the merged result's types are validated (`malformed_data` on a bad enum/shape, storing nothing). The whole patch applies in one D1 transaction. Each `brands` family value is a **tier object** and maps onto rows: a family present in the patch UPSERTs the **merged** family value into that `brand_prefs` row's `tiers`/`any_brand` columns (a partial family patch like `{ any_brand: true }` merges into the stored object — tiers preserved), `null` DELETEs the row (back to ambiguous = "ask me"), and an absent term leaves its row untouched. For one deprecation window a legacy flat rank list is accepted-and-converted with a `warnings` entry on the return (see docs/TOOLS.md's deprecation convention).
 
 ## Recipe frontmatter (recipes/*.md)
 
@@ -631,7 +632,7 @@ Example rows:
 
 ## preferences (per-tenant, D1 `profile` row + `brand_prefs`)
 
-User-curated. Agent edits only when explicitly directed, via the `update_preferences` **merge-patch** (the defined-surface + `custom` shape and the RFC-7396 contract are described in the storage overview at the top of this doc). Assembled from the `profile` row (scalars + `stores`/`dietary`/`custom` JSON columns) and the `brand_prefs(tenant, term, ranks)` rows. The example below shows the **assembled object** (what `read_user_profile` returns).
+User-curated. Agent edits only when explicitly directed, via the `update_preferences` **merge-patch** (the defined-surface + `custom` shape and the RFC-7396 contract are described in the storage overview at the top of this doc). Assembled from the `profile` row (scalars + `stores`/`dietary`/`custom` JSON columns) and the `brand_prefs(tenant, term, tiers, any_brand)` rows. The example below shows the **assembled object** (what `read_user_profile` returns).
 
 ```sql
 -- D1 profile table — singleton row per tenant. PRIMARY KEY (tenant).
@@ -652,9 +653,11 @@ retrospective_prefs         TEXT     -- JSON: {stale_after_days?, revealed_month
 last_planned_at             TEXT     -- YYYY-MM-DD planning watermark (0016): set by update_meal_plan on an add; bounds list_new_for_me
 
 -- D1 brand_prefs table — one row per (tenant, ingredient term). PRIMARY KEY (tenant, term).
-tenant  TEXT  -- owning user
-term    TEXT  -- normalized ingredient term (e.g. "olive_oil")
-ranks   TEXT  -- JSON array: [] = don't-care/cheapest; non-empty = ranked brand list (first available wins)
+tenant    TEXT     -- owning user
+term      TEXT     -- normalized ingredient term (e.g. "olive_oil")
+tiers     TEXT     -- JSON string[][]: the ordered preference ladder — earlier tiers tried first,
+                   --   brands within a tier equally acceptable (cheapest wins); [] with any_brand=1 = don't-care
+any_brand INTEGER  -- 1 = after the tiers (if any) are exhausted, take the cheapest acceptable instead of asking
 ```
 
 Example rows (`profile`):
@@ -665,13 +668,23 @@ Example rows (`profile`):
 
 Example rows (`brand_prefs`):
 
-| tenant | term | ranks |
-|--------|------|-------|
-| alice | olive_oil | ["California Olive Ranch","Cobram Estate"] |
-| alice | butter | ["Kerrygold","Plugra"] |
-| alice | yellow_onion | [] |
+| tenant | term | tiers | any_brand |
+|--------|------|-------|-----------|
+| alice | butter | [["Challenge"],["Tillamook"],["Kerrygold"]] | 0 |
+| alice | canned_tomatoes | [["DeLallo"],["Muir Glen"],["Cento"]] | 0 |
+| alice | paper_towels | [["Viva"]] | 0 |
+| alice | yellow_onion | [] | 1 |
 
-**`[brands]` is tri-state and drives matching confidence.** The Kroger matching pipeline reads a key's *presence* as the confidence signal: absent → ambiguous (Claude asks); `[]` → "don't care," pick cheapest acceptable without asking; a non-empty list → ranked preference, **list order is rank**. Keys are the canonical id with spaces as underscores (`extra virgin olive oil` → resolve via the ingredient identity graph → `olive oil` → key `olive_oil`). A non-empty list whose brands are all unavailable falls back to ambiguous.
+**`brands` is tri-state and drives matching confidence.** The Kroger matching pipeline reads a family's *presence* as the confidence signal:
+
+| State | Row | Meaning |
+|---|---|---|
+| Ambiguous — ask | absent | no standing disposition; Claude asks |
+| Don't-care — never ask | `{ tiers: [], any_brand: true }` | cheapest acceptable within the top identity-relevance tier |
+| Preference ladder | non-empty `tiers` | earlier tiers first; within a tier, equally fine — cheapest wins |
+| Ladder + never-ask fallback | non-empty `tiers`, `any_brand: 1` | exhausted ladder → cheapest acceptable instead of asking |
+
+"Any brand" is a per-family **flag**, not a tier and not an absence — collapsing it into absence would delete the ask state, and a sentinel tier would put magic values in data. Exactly one representation exists per state: `{ tiers: [], any_brand: 0 }` expresses nothing and is rejected on write (`null` clears the family). Keys are the canonical id with spaces as underscores (`extra virgin olive oil` → resolve via the ingredient identity graph → `olive oil` → key `olive_oil`), unchanged by the tier model. The matcher consumes the ladder through the `readBrandPrefs` projection (tiers flattened in order; don't-care → `[]`), so an exhausted ladder without `any_brand` falls back to ambiguous.
 
 **`[stores].primary` is the fulfillment mode** (in-store-fulfillment). It is either the literal `kroger` (online mode — the agent flushes the grocery list with `place_order`, using `preferred_location` for the Kroger API) **or** a mapped store slug from `stores/` (walk mode — the agent runs the in-store walk for that store instead). The agent picks the flush from the resolved mode and SHALL NOT assume Kroger. Mode is a property of the **preference/trip, not the chain** — a store can be online-capable and/or walk-capable. **Naming a store for one trip** ("I'm going to the West 7th Tom Thumb") overrides the standing `primary` for that trip only, without rewriting it. An unknown store-slug `primary` is **not a hard failure** (preferences is parse-only curated config) — the agent resolves it conversationally (offer to map the store, or fall back to online). `preferred_location` stays meaningful in walk mode too (it still drives Kroger pricing for sale checks).
 
@@ -1692,7 +1705,7 @@ Example rows:
 | olive oil      | 01400376    | 0001111046025  | Simple Truth Organic| 16.9 fl oz  | 2025-05-15 |
 | chicken thighs | 01400943    | 0001111091234  | Kroger              | 1.5 lb pack | 2025-05-14 |
 
-**This is a speed cache, not the source of truth for dispositions.** It stores *resolved SKUs* to skip the expensive search/narrowing; the *disposition* (care / don't-care / ranked) lives in each member's `profile` row / `brand_prefs` rows. **Shared + location-tagged:** an entry tagged with the caller's own location is tried first, but every hit is revalidated against the caller's `preferred_location` for current price + curbside/delivery availability before use — a cross-location entry not carried at the caller's store falls through to a fresh search, so a shared cache can never serve an unavailable SKU. No TTL; `last_used` is informational (for pruning). "Don't care" commodities (`[]` in preferences) carry no pinned SKU here; they re-resolve to cheapest-acceptable each run. (An entry with no `location_id` is treated as same-location and still revalidated.)
+**This is a speed cache, not the source of truth for dispositions.** It stores *resolved SKUs* to skip the expensive search/narrowing; the *disposition* (care / don't-care / ranked) lives in each member's `profile` row / `brand_prefs` rows. **Shared + location-tagged:** an entry tagged with the caller's own location is tried first, but every hit is revalidated against the caller's `preferred_location` for current price + curbside/delivery availability before use — a cross-location entry not carried at the caller's store falls through to a fresh search, so a shared cache can never serve an unavailable SKU. No TTL; `last_used` is informational (for pruning). "Don't care" commodities (an any-brand family with no tiers in `preferences.brands`) carry no pinned SKU here; they re-resolve to cheapest-acceptable each run. (An entry with no `location_id` is treated as same-location and still revalidated.)
 
 ## taste (per-tenant, D1 `profile.taste`)
 

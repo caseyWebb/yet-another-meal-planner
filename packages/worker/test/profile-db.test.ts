@@ -4,6 +4,8 @@ import {
   readPreferences,
   readOverlay,
   readBrandPrefs,
+  readBrandTiers,
+  brandStmt,
   setOverlay,
   setStaples,
 } from "../src/profile-db.js";
@@ -42,6 +44,7 @@ function fakeD1(tables: Record<string, Record<string, unknown>[]>): {
       store[table] = store[table].filter((r) => {
         if (r.tenant !== binds[0]) return true;
         if (sql.includes("recipe = ?2")) return r.recipe !== binds[1];
+        if (sql.includes("term = ?2")) return r.term !== binds[1];
         return false;
       });
       return { rows: [], changes: before - store[table].length };
@@ -50,7 +53,12 @@ function fakeD1(tables: Record<string, Record<string, unknown>[]>): {
       const cols = /INSERT INTO \w+ \(([^)]+)\)/.exec(sql)![1].split(",").map((c) => c.trim());
       const row: Record<string, unknown> = {};
       cols.forEach((c, i) => (row[c] = binds[i] ?? null));
-      const pk = table === "overlay" ? ["tenant", "recipe"] : ["tenant", "normalized_name"];
+      const pk =
+        table === "overlay"
+          ? ["tenant", "recipe"]
+          : table === "brand_prefs"
+            ? ["tenant", "term"]
+            : ["tenant", "normalized_name"];
       const idx = store[table].findIndex((r) => pk.every((k) => r[k] === row[k]));
       if (idx >= 0 && /ON CONFLICT/i.test(sql)) store[table][idx] = { ...store[table][idx], ...row };
       else store[table].push(row);
@@ -102,8 +110,8 @@ describe("readPreferences", () => {
         },
       ],
       brand_prefs: [
-        { tenant: "everett", term: "olive_oil", ranks: '["Cobram"]' },
-        { tenant: "everett", term: "yellow_onion", ranks: "[]" },
+        { tenant: "everett", term: "olive_oil", tiers: '[["Cobram"]]', any_brand: 0 },
+        { tenant: "everett", term: "yellow_onion", tiers: "[]", any_brand: 1 },
       ],
     });
     const prefs = await readPreferences(env, "everett");
@@ -112,8 +120,21 @@ describe("readPreferences", () => {
       lunch_strategy: "leftovers",
       stores: { primary: "kroger" },
       dietary: { avoid: [], limit: ["cilantro"] },
-      brands: { olive_oil: ["Cobram"], yellow_onion: [] },
+      // Canonical tier objects — BOTH fields always present, never a bare array.
+      brands: {
+        olive_oil: { tiers: [["Cobram"]], any_brand: false },
+        yellow_onion: { tiers: [], any_brand: true },
+      },
     });
+  });
+
+  it("tolerates a malformed stored tiers value as don't-care", async () => {
+    const { env } = fakeD1({
+      profile: [{ tenant: "everett", default_cooking_nights: 3 }],
+      brand_prefs: [{ tenant: "everett", term: "butter", tiers: "not json", any_brand: 0 }],
+    });
+    const prefs = await readPreferences(env, "everett");
+    expect(prefs).toMatchObject({ brands: { butter: { tiers: [], any_brand: true } } });
   });
 
   it("returns null when there is no profile row", async () => {
@@ -138,15 +159,69 @@ describe("readPreferences", () => {
   });
 });
 
-describe("readBrandPrefs", () => {
-  it("maps term → rank list ([] preserved)", async () => {
+describe("readBrandTiers", () => {
+  it("maps term → canonical tier object", async () => {
     const { env } = fakeD1({
       brand_prefs: [
-        { tenant: "everett", term: "olive_oil", ranks: '["A","B"]' },
-        { tenant: "everett", term: "onion", ranks: "[]" },
+        { tenant: "everett", term: "olive_oil", tiers: '[["A","B"],["C"]]', any_brand: 0 },
+        { tenant: "everett", term: "onion", tiers: "[]", any_brand: 1 },
       ],
     });
-    expect(await readBrandPrefs(env, "everett")).toEqual({ olive_oil: ["A", "B"], onion: [] });
+    expect(await readBrandTiers(env, "everett")).toEqual({
+      olive_oil: { tiers: [["A", "B"], ["C"]], any_brand: false },
+      onion: { tiers: [], any_brand: true },
+    });
+  });
+});
+
+describe("readBrandPrefs (the matcher-facing projection)", () => {
+  it("flattens singleton tiers byte-identical to the legacy ranked lists", async () => {
+    // The migrated production fixtures (design.md D2): each legacy rank became its
+    // own tier, so the projection reproduces the pre-migration lists exactly.
+    const { env } = fakeD1({
+      brand_prefs: [
+        { tenant: "everett", term: "butter", tiers: '[["Challenge"],["Tillamook"],["Kerrygold"]]', any_brand: 0 },
+        { tenant: "everett", term: "canned_tomatoes", tiers: '[["DeLallo"],["Muir Glen"],["Cento"]]', any_brand: 0 },
+        { tenant: "everett", term: "paper_towels", tiers: '[["Viva"]]', any_brand: 0 },
+      ],
+    });
+    expect(await readBrandPrefs(env, "everett")).toEqual({
+      butter: ["Challenge", "Tillamook", "Kerrygold"],
+      canned_tomatoes: ["DeLallo", "Muir Glen", "Cento"],
+      paper_towels: ["Viva"],
+    });
+  });
+
+  it("flattens a multi-brand tier in tier order, and don't-care to []", async () => {
+    const { env } = fakeD1({
+      brand_prefs: [
+        { tenant: "everett", term: "olive_oil", tiers: '[["A","B"],["C"]]', any_brand: 0 },
+        { tenant: "everett", term: "onion", tiers: "[]", any_brand: 1 },
+      ],
+    });
+    expect(await readBrandPrefs(env, "everett")).toEqual({ olive_oil: ["A", "B", "C"], onion: [] });
+  });
+});
+
+describe("brandStmt", () => {
+  it("UPSERTs the canonical tiers/any_brand columns and DELETEs on null", async () => {
+    const { env, tables } = fakeD1({});
+    const d1 = (env as unknown as { DB: { batch(s: unknown[]): Promise<unknown[]> } }).DB;
+    await d1.batch([brandStmt(env, "everett", "butter", { tiers: [["Challenge"], ["Kerrygold"]] })]);
+    expect(tables.brand_prefs).toContainEqual(
+      expect.objectContaining({
+        tenant: "everett",
+        term: "butter",
+        tiers: '[["Challenge"],["Kerrygold"]]',
+        any_brand: 0,
+      }),
+    );
+    await d1.batch([brandStmt(env, "everett", "butter", { tiers: [], any_brand: true })]);
+    expect(tables.brand_prefs).toContainEqual(
+      expect.objectContaining({ term: "butter", tiers: "[]", any_brand: 1 }),
+    );
+    await d1.batch([brandStmt(env, "everett", "butter", null)]);
+    expect(tables.brand_prefs).toHaveLength(0);
   });
 });
 

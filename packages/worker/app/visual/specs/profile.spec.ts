@@ -100,3 +100,79 @@ test("the suggest trigger surfaces the quiet throttled state (fresh job health)"
   await profilePage.suggest();
   await profilePage.expectToast("Suggestions are fresh");
 });
+
+// --- the Preferred-brands tier card (brand-tier model) -----------------------------
+
+const LADDER = SEED.app.brands.ladder; // butter: [["Kerrygold"], ["store brand"]]
+const DONT_CARE = SEED.app.brands.dontCare; // yellow_onion: any-brand
+
+test("brand chips move across tiers; a past-edge move creates a new tier", async ({
+  profilePage,
+}) => {
+  await profilePage.openTab("prefs");
+  const [top, second] = [LADDER.tiers[0][0], LADDER.tiers[1][0]];
+  await profilePage.expectTierBrands(LADDER.term, 0, [top]);
+  await profilePage.expectTierBrands(LADDER.term, 1, [second]);
+
+  // Mid-ladder ▲ JOINS the tier above (equals — the emptied tier collapses)…
+  await profilePage.moveBrand(LADDER.term, second, "up");
+  await expect(profilePage.brandTiers(LADDER.term)).toHaveCount(1);
+  await profilePage.expectTierBrands(LADDER.term, 0, [top, second]);
+  await expect(profilePage.brandTiers(LADDER.term).first()).toContainText("either works — cheapest wins");
+
+  // …and ▲ from the TOP tier goes past the edge: a new top tier of just that brand.
+  await profilePage.moveBrand(LADDER.term, second, "up");
+  await expect(profilePage.brandTiers(LADDER.term)).toHaveCount(2);
+  await profilePage.expectTierBrands(LADDER.term, 0, [second]);
+  await profilePage.expectTierBrands(LADDER.term, 1, [top]);
+  await profilePage.captureForReview("profile-brands");
+
+  // The structure persisted through the family-scoped merge-patch.
+  await profilePage.goto();
+  await profilePage.openTab("prefs");
+  await profilePage.expectTierBrands(LADDER.term, 0, [second]);
+  await profilePage.expectTierBrands(LADDER.term, 1, [top]);
+});
+
+test("the any-brand toggle is a partial family patch — the tiers are preserved", async ({
+  profilePage,
+}) => {
+  await profilePage.openTab("prefs");
+  await profilePage.expectAnyBrand(LADDER.term, false);
+  await profilePage.toggleAnyBrand(LADDER.term);
+  await profilePage.expectAnyBrand(LADDER.term, true);
+  await expect(profilePage.brandFamily(LADDER.term).getByTestId("brand-any-state")).toBeVisible();
+
+  // Reload: any_brand stuck AND both tiers survived the merge (nothing clobbered).
+  await profilePage.goto();
+  await profilePage.openTab("prefs");
+  await profilePage.expectAnyBrand(LADDER.term, true);
+  await expect(profilePage.brandTiers(LADDER.term)).toHaveCount(2);
+
+  // Toggling back off is the same partial patch.
+  await profilePage.toggleAnyBrand(LADDER.term);
+  await profilePage.expectAnyBrand(LADDER.term, false);
+});
+
+test("remove-family clears to ambiguous; add-family + first brand creates a ladder", async ({
+  profilePage,
+}) => {
+  await profilePage.openTab("prefs");
+  // The seeded don't-care family renders the any-brand state, then clears with `null`.
+  await expect(profilePage.brandFamily(DONT_CARE.term).getByTestId("brand-any-state")).toBeVisible();
+  await profilePage.removeBrandFamily(DONT_CARE.term);
+  await expect(profilePage.brandFamily(DONT_CARE.term)).toHaveCount(0);
+
+  // A new category is a LOCAL draft (an empty tier persists nothing) until its
+  // first brand lands, which writes the family's tier object.
+  await profilePage.addBrandFamily("pasta");
+  await expect(profilePage.brandTiers("pasta")).toHaveCount(1);
+  await profilePage.addBrandToTier("pasta", 0, "De Cecco");
+  await profilePage.expectTierBrands("pasta", 0, ["De Cecco"]);
+
+  // Both edits persisted (the removed family stays gone; the new ladder survives).
+  await profilePage.goto();
+  await profilePage.openTab("prefs");
+  await expect(profilePage.brandFamily(DONT_CARE.term)).toHaveCount(0);
+  await profilePage.expectTierBrands("pasta", 0, ["De Cecco"]);
+});

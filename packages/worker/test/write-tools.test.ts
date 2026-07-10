@@ -707,17 +707,92 @@ describe("update_preferences (merge-patch → D1)", () => {
     expect(stores).toEqual({ primary: "kroger", preferred_location: "Kroger - 76137" });
   });
 
-  it("brands tri-state: value UPSERTs, [] is don't-care, null DELETEs", async () => {
+  it("brands tri-state: tier object UPSERTs, { any_brand: true } is don't-care, null DELETEs", async () => {
     const d1 = fakeD1([]);
-    d1.tables.brand_prefs.push({ tenant: "everett", term: "canola_oil", ranks: '["Crisco"]' });
+    d1.tables.brand_prefs.push({ tenant: "everett", term: "canola_oil", tiers: '[["Crisco"]]', any_brand: 0 });
+    const handlers = collectTools(storeWith({}), "everett", d1.env);
+    const res = await handlers.get("update_preferences")!({
+      patch: {
+        brands: {
+          olive_oil: { tiers: [["Cobram", "California Olive Ranch"], ["Cento"]] },
+          yellow_onion: { any_brand: true },
+          canola_oil: null,
+        },
+      },
+    });
+    const byTerm = Object.fromEntries(d1.tables.brand_prefs.map((r) => [r.term, r]));
+    expect(byTerm.olive_oil).toMatchObject({
+      tiers: '[["Cobram","California Olive Ranch"],["Cento"]]',
+      any_brand: 0,
+    });
+    expect(byTerm.yellow_onion).toMatchObject({ tiers: "[]", any_brand: 1 }); // don't-care
+    expect("canola_oil" in byTerm).toBe(false); // deleted → ambiguous
+    // A fully-current patch carries NO warnings.
+    expect(JSON.parse(res.content[0].text)).toEqual({ updated: "preferences" });
+  });
+
+  it("a partial family patch UPSERTs the MERGED value (stored tiers preserved)", async () => {
+    const d1 = fakeD1([]);
+    d1.tables.profile.push({ tenant: "everett" }); // the write path always upserts the singleton row
+    d1.tables.brand_prefs.push({
+      tenant: "everett",
+      term: "butter",
+      tiers: '[["Challenge"],["Kerrygold"]]',
+      any_brand: 0,
+    });
     const handlers = collectTools(storeWith({}), "everett", d1.env);
     await handlers.get("update_preferences")!({
-      patch: { brands: { olive_oil: ["Cobram"], yellow_onion: [], canola_oil: null } },
+      patch: { brands: { butter: { any_brand: true } } },
     });
-    const byTerm = Object.fromEntries(d1.tables.brand_prefs.map((r) => [r.term, r.ranks]));
-    expect(byTerm.olive_oil).toBe('["Cobram"]');
-    expect(byTerm.yellow_onion).toBe("[]");
-    expect("canola_oil" in byTerm).toBe(false); // deleted → ambiguous
+    expect(d1.tables.brand_prefs).toContainEqual(
+      expect.objectContaining({ term: "butter", tiers: '[["Challenge"],["Kerrygold"]]', any_brand: 1 }),
+    );
+  });
+
+  it("accepts a legacy flat rank list for one window, converting it and warning", async () => {
+    const d1 = fakeD1([]);
+    const handlers = collectTools(storeWith({}), "everett", d1.env);
+    const res = await handlers.get("update_preferences")!({
+      patch: { brands: { butter: ["Challenge", "Kerrygold"], yellow_onion: [] } },
+    });
+    const out = JSON.parse(res.content[0].text) as {
+      updated: string;
+      warnings?: { key: string; reason: string; superseded_by: string }[];
+    };
+    expect(out.updated).toBe("preferences"); // the stale write SUCCEEDS — never bounced
+    expect(out.warnings).toEqual(
+      expect.arrayContaining([
+        { key: "brands.butter", reason: "deprecated_shape", superseded_by: "{ tiers, any_brand }" },
+        { key: "brands.yellow_onion", reason: "deprecated_shape", superseded_by: "{ tiers, any_brand }" },
+      ]),
+    );
+    const byTerm = Object.fromEntries(d1.tables.brand_prefs.map((r) => [r.term, r]));
+    expect(byTerm.butter).toMatchObject({ tiers: '[["Challenge"],["Kerrygold"]]', any_brand: 0 });
+    expect(byTerm.yellow_onion).toMatchObject({ tiers: "[]", any_brand: 1 });
+  });
+
+  it("rejects the all-empty family value toward null, storing nothing", async () => {
+    const d1 = fakeD1([]);
+    const handlers = collectTools(storeWith({}), "everett", d1.env);
+    const res = await handlers.get("update_preferences")!({
+      patch: { brands: { butter: { tiers: [], any_brand: false } } },
+    });
+    const out = JSON.parse(res.content[0].text) as { error: string; message: string };
+    expect(out.error).toBe("malformed_data");
+    expect(out.message).toMatch(/null/);
+    expect(d1.tables.brand_prefs).toHaveLength(0);
+  });
+
+  it("rejects a brand duplicated across tiers, storing nothing", async () => {
+    const d1 = fakeD1([]);
+    const handlers = collectTools(storeWith({}), "everett", d1.env);
+    const res = await handlers.get("update_preferences")!({
+      patch: { brands: { butter: { tiers: [["Kerrygold"], ["kerrygold", "Plugra"]] } } },
+    });
+    const out = JSON.parse(res.content[0].text) as { error: string; message: string };
+    expect(out.error).toBe("malformed_data");
+    expect(out.message).toMatch(/kerrygold/i);
+    expect(d1.tables.brand_prefs).toHaveLength(0);
   });
 
   it("normalizes the brand-pref key to the matcher's lookup form (quantity stripped, brandKey)", async () => {
@@ -726,10 +801,10 @@ describe("update_preferences (merge-patch → D1)", () => {
     // A raw, quantity-prefixed, mixed-case term must land under the SAME key the matcher reads:
     // brandKey(normalizeIngredient("2 lb Ground Beef")) === "ground_beef".
     await handlers.get("update_preferences")!({
-      patch: { brands: { "2 lb Ground Beef": ["Laura's Lean"] } },
+      patch: { brands: { "2 lb Ground Beef": { tiers: [["Laura's Lean"]] } } },
     });
-    const byTerm = Object.fromEntries(d1.tables.brand_prefs.map((r) => [r.term, r.ranks]));
-    expect(byTerm.ground_beef).toBe('["Laura\'s Lean"]');
+    const byTerm = Object.fromEntries(d1.tables.brand_prefs.map((r) => [r.term, r]));
+    expect(byTerm.ground_beef).toMatchObject({ tiers: '[["Laura\'s Lean"]]', any_brand: 0 });
     expect("2 lb Ground Beef" in byTerm).toBe(false);
   });
 
