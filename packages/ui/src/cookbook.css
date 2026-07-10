@@ -113,6 +113,24 @@
 .resultmeta { color: var(--muted-foreground); font-size: var(--text-sm); margin: 1rem 0 0.25rem; }
 .resultmeta strong { color: var(--foreground); font-weight: 500; }
 
+/* ── cookbook filter bar + promoted panel (unified browse; styles from the design
+      mockup's stylesheet — product-specs/mockup) ───────────────────────────── */
+.filterbar { display: flex; flex-wrap: wrap; align-items: center; gap: 0.55rem 0.9rem; margin: 0 0 1rem; padding: 0; }
+.filterbar .fb-group { display: flex; align-items: center; gap: 0.45rem; }
+.filterbar .fb-label { font-family: var(--font-mono); font-size: var(--text-xs); text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted-foreground); white-space: nowrap; }
+.filterbar select.select { height: 2rem; width: auto; min-width: 8rem; font-size: var(--text-xs); text-transform: capitalize; }
+.filterbar .seg button { font-size: var(--text-xs); }
+.filterbar .fb-end { margin-left: auto; display: flex; align-items: center; gap: 0.75rem; }
+.filterbar .fb-count { font-size: var(--text-xs); color: var(--muted-foreground); white-space: nowrap; }
+.filter-empty { padding: 2rem 0; text-align: center; color: var(--muted-foreground); font-size: var(--text-sm); }
+.plain-link { border: 0; background: none; padding: 0; font: inherit; color: var(--link); cursor: pointer; }
+.plain-link:hover { text-decoration: underline; }
+
+.promo-panel { border: 1px solid color-mix(in oklch, var(--brand) 32%, var(--border)); background: color-mix(in oklch, var(--brand) 6%, var(--card)); border-radius: var(--radius-xl, 0.9rem); padding: 0.4rem 1.35rem 0.55rem; margin-bottom: 1.1rem; }
+.promo-cap { display: flex; align-items: center; gap: 0.4rem; font-family: var(--font-mono); font-size: var(--text-xs); font-weight: 600; text-transform: uppercase; letter-spacing: 0.09em; color: var(--brand); padding: 0.8rem 0 0.35rem; }
+.promo-cap svg { width: 0.85rem; height: 0.85rem; }
+.rpromo { display: inline-flex; align-items: center; gap: 0.3rem; font-family: var(--font-mono); font-size: 10px; font-weight: 600; letter-spacing: 0.09em; text-transform: uppercase; color: var(--brand); }
+
 /* ── browse sections ─────────────────────────────────────────────────────── */
 .browse-section { margin-top: 1.75rem; }
 .browse-section:first-of-type { margin-top: 1.25rem; }

@@ -58,6 +58,8 @@ export interface Hit {
   description: string | null;
   protein: string | null;
   cuisine: string | null;
+  /** Total minutes, or null when unauthored — an active time filter excludes null. */
+  time_total: number | null;
 }
 
 export interface RecipeDetail {

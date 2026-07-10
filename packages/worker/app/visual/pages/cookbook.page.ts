@@ -1,8 +1,10 @@
-// Cookbook browse + search (member-app-core 7.3 + member-app-differentiators D7-D9):
-// the landing page — the "New & trending" and "Picked for you" slots, the third
-// all-recipes section, the debounced keyword searchbar, and the shared recipe rows
-// (plan-toggle + favorite actions). Also owns the API-level cooking-log provisioning
-// the trending empty-state spec uses (delete own rows → below the guard → restore).
+// Cookbook — the unified browse page (member-app-core "Cookbook browse and keyword
+// search" + member-app-differentiators' promoted panel): the debounced keyword
+// searchbar, the global filter bar (cuisine/protein selects + time segments + Clear +
+// "N of M match"), the promoted "Recommended for you" panel with its reason badges,
+// the flat organic list, and the favorites view mode (?view=favorites). Also owns the
+// API-level cooking-log provisioning the sparse-trending spec uses (delete own rows →
+// below the guard → restore).
 import { expect } from "@playwright/test";
 import { AppPage, type Locator } from "./base.page";
 
@@ -15,42 +17,88 @@ export class CookbookPage extends AppPage {
     await expect(this.page.getByLabel("Search recipes")).toBeVisible();
   }
 
+  /** Load the page with explicit search params (the URL-state deep-link entrance). */
+  async gotoWith(params: string): Promise<void> {
+    await this.page.goto(params ? `/?${params}` : "/");
+    await this.landmark();
+  }
+
   row(slug: string): Locator {
     return this.page.locator(`[data-testid="recipe-row"][data-slug="${slug}"]`).first();
   }
 
-  // --- the browse slots (member-app-differentiators D9) ---------------------------
+  // --- the global filter bar -------------------------------------------------------
 
-  newTrendingSection(): Locator {
-    return this.page.getByTestId("new-trending");
+  filterBar(): Locator {
+    return this.page.getByTestId("cookbook-filters");
   }
 
-  pickedSection(): Locator {
-    return this.page.getByTestId("picked-for-you");
+  cuisineSelect(): Locator {
+    return this.page.getByLabel("Filter by cuisine");
   }
 
-  allRecipesSection(): Locator {
-    return this.page.getByTestId("all-recipes");
+  proteinSelect(): Locator {
+    return this.page.getByLabel("Filter by protein");
   }
 
-  /** A recipe row inside slot 1 (New & trending). */
-  newTrendingRow(slug: string): Locator {
-    return this.newTrendingSection().locator(`[data-testid="recipe-row"][data-slug="${slug}"]`);
+  /** One time-segment button by its visible label ("Any" / "≤20" / "≤30" / "≤45"). */
+  timeOption(label: string): Locator {
+    return this.filterBar().locator('[data-seg="cook_time"] button', { hasText: label });
   }
 
-  /** The honest group-counts chip on a trending backfill row. */
+  /** The active-only "N of M match" count label. */
+  countLabel(): Locator {
+    return this.page.getByTestId("filter-count");
+  }
+
+  clearFiltersButton(): Locator {
+    return this.page.getByTestId("clear-filters");
+  }
+
+  /** The filtered-empty line (browse or favorites copy) with its inline clear link. */
+  filterEmpty(): Locator {
+    return this.page.getByTestId("filter-empty");
+  }
+
+  inlineClearFilters(): Locator {
+    return this.filterEmpty().locator("button.plain-link");
+  }
+
+  // --- the promoted panel + organic list (member-app-differentiators) ---------------
+
+  promotedPanel(): Locator {
+    return this.page.getByTestId("promoted");
+  }
+
+  promotedRow(slug: string): Locator {
+    return this.promotedPanel().locator(`[data-testid="recipe-row"][data-slug="${slug}"]`);
+  }
+
+  /** A promoted row's uppercase reason badge ("Just Added" / "Trending" / "Picked for You"). */
+  reasonBadge(slug: string): Locator {
+    return this.promotedRow(slug).getByTestId("reason-badge");
+  }
+
+  anyReasonBadges(): Locator {
+    return this.page.getByTestId("reason-badge");
+  }
+
+  organicList(): Locator {
+    return this.page.getByTestId("organic-list");
+  }
+
+  organicRow(slug: string): Locator {
+    return this.organicList().locator(`[data-testid="recipe-row"][data-slug="${slug}"]`);
+  }
+
+  /** The honest group-counts chip on a listed trending recipe (panel or organic). */
   trendingChip(slug: string): Locator {
-    return this.newTrendingRow(slug).getByTestId("trending-chip");
+    return this.row(slug).getByTestId("trending-chip");
   }
 
   /** Every trending chip on the page (the empty-state's no-fake-badge assertion). */
   anyTrendingChips(): Locator {
     return this.page.getByTestId("trending-chip");
-  }
-
-  /** A recipe row inside slot 2 (Picked for you). */
-  pickedRow(slug: string): Locator {
-    return this.pickedSection().locator(`[data-testid="recipe-row"][data-slug="${slug}"]`);
   }
 
   // --- cooking-log provisioning (through the browser's session fetch) --------------
@@ -137,17 +185,26 @@ export class CookbookPage extends AppPage {
   }
 
   /** Drive the favorite to an explicit target state regardless of the seed's. Waits
-   *  for the PUT to land (the row flips optimistically) so back-to-back ensures can
-   *  never race their writes past each other. */
+   *  for each PUT to land (the row flips optimistically), and re-drives if the row
+   *  hasn't converged — the write is an explicit SET, so repeating the intended
+   *  state is idempotent (back-to-back ensures race the promoted panel's
+   *  favorites-driven recomposition; a converging retry is the honest driver). */
   async ensureFavorite(slug: string, target: boolean): Promise<void> {
     const btn = this.row(slug).getByTestId("row-fav");
     await btn.waitFor();
-    if ((await btn.getAttribute("aria-pressed")) !== String(target)) {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      if ((await btn.getAttribute("aria-pressed")) === String(target)) break;
       const done = this.page.waitForResponse(
         (r) => r.url().includes("/api/overlay/favorite") && r.request().method() === "PUT",
       );
       await btn.click();
       await done;
+      // Give the optimistic flip / settle-time refetch a beat before re-driving.
+      const settled = await expect(btn)
+        .toHaveAttribute("aria-pressed", String(target), { timeout: 2_000 })
+        .then(() => true)
+        .catch(() => false);
+      if (settled) break;
     }
     await this.expectFavorited(slug, target);
   }

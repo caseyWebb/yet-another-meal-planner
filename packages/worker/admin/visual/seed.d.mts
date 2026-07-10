@@ -88,6 +88,13 @@ export interface SeedLiterals {
       readonly ladder: { readonly term: string; readonly tiers: readonly (readonly string[])[] };
       readonly dontCare: { readonly term: string };
     };
+    /** Unified cookbook browse fixtures (cookbook-unified-browse): `noTime` has NO
+     *  time_total (an active time cap must exclude it), and `italian` is what
+     *  `cuisine=italian` narrows the corpus to. */
+    readonly cookbook: {
+      readonly noTime: string;
+      readonly italian: readonly string[];
+    };
     /** Propose-flow fixtures (member-app-propose D12): the self-provisioned palette's
      *  vibe ids (their derived vectors are pre-seeded), the cache-warmed freeform
      *  phrase, and the corpus rows the specs assert on. */

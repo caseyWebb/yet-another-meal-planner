@@ -24,6 +24,9 @@ export interface CookbookHit {
   description: string | null;
   protein: string | null;
   cuisine: string | null;
+  /** Total minutes, or null when unauthored — downstream time filters treat null as
+   *  failing any time cap (an unknown time is never claimed under a budget). */
+  time_total: number | null;
 }
 
 /** A loose index entry / search hit → the compact shape the list renderer needs. Pure
@@ -36,6 +39,7 @@ export function toHit(r: Record<string, unknown>): CookbookHit {
     description: typeof r.description === "string" ? r.description : null,
     protein: typeof r.protein === "string" ? r.protein : null,
     cuisine: typeof r.cuisine === "string" ? r.cuisine : null,
+    time_total: typeof r.time_total === "number" ? r.time_total : null,
   };
 }
 
