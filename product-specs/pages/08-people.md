@@ -9,6 +9,10 @@ Story: 01 (the model — tenant = household, friends = tenant links; read it fir
 trade recipes into your cookbook." Sections: Requests inbox → nickname hint → HOUSEHOLD →
 FRIENDS, each with find/invite adders and awaiting-response lists.
 
+**Profile gating (D9)**: under the self-hosted profile the FRIENDS section (and
+friend-tier requests) is hidden — the page is household-only; nicknames still apply to
+everyone in the deployment. The full page ships under the SaaS profile.
+
 ## 2. Functional requirements
 
 **Requests inbox** (only when non-empty): rows = avatar initial, display name or

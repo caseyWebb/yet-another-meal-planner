@@ -30,6 +30,10 @@ questions in §5 are what's left.
 - **Empty corpus on join.** A new household inherits nothing. The cold start is cushioned
   by (a) friend links — the first adopter in a friend group pays the cold-start cost,
   everyone they invite starts warm — and (b) the public curated set as the floor.
+- **Deployment profiles (D9): "self-hosted" and "SaaS".** Self-hosted hides the friends
+  surface and grants implicit all-to-all friendship, reducing the lens model to today's
+  shared-corpus experience (plus household members). SaaS gets the full graph,
+  empty-corpus-on-join, and the curated set. Long-term flags, not migration scaffolding.
 
 ## 2. What each page consumes
 
@@ -73,9 +77,9 @@ questions in §5 are what's left.
   *one household* — the isolation boundary is unchanged, but member-scoped tables gain a
   `member` key within the tenant.
 - `shared-corpus` currently shares the whole corpus deployment-wide (one implicit group).
-  The lens model replaces "everyone sees everything" with scoped visibility — the
-  deployment-wide behavior becomes a degenerate case (single household, no friends,
-  curated set = operator corpus).
+  The lens model replaces "everyone sees everything" with scoped visibility — and the
+  self-hosted profile (D9) reproduces the deployment-wide behavior exactly via implicit
+  all-to-all friendship, so existing deployments migrate with zero data surgery.
 - `group-insights` (operator dashboard) and trending reads stay counts-only/anonymous
   outside the friend lens.
 - Self-service signup (`self-service-signup`) currently creates a new tenant per signup;

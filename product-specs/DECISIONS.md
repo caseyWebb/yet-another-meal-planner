@@ -41,3 +41,16 @@ decided.
   (`member-app-propose` weather strip), the band that lands the surface updates that spec
   in the same change — deltas, not silent drift. Where a cut removes a preference
   (`lunch strategy`, RTE action), its proposal defines the migration onto meal vibes.
+
+- **D9. Deployment profiles (long-term feature flags): "self-hosted" and "SaaS".**
+  The **self-hosted** profile hides the friends functionality and makes everyone in the
+  deployment friends by default — an implicit all-to-all graph. Because visibility is a
+  lens (D2), implicit universal friendship reduces exactly to today's shared-corpus
+  experience: self-hosters see no change beyond gaining household members. The **SaaS**
+  profile enables the full friends surface, empty-corpus-on-join, and the curated set.
+  Profiles are deployment configuration, not migration scaffolding — they live
+  indefinitely. Consequences: no tenant/corpus data surgery for existing deployments;
+  the People page renders household-only under self-hosted; "Popular with Friends" reads
+  the friend lens in both profiles (under self-hosted it equals deployment-wide trending,
+  so no relabel is needed); empty-corpus-on-join and the curated set apply to the SaaS
+  profile only.

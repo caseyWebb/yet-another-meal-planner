@@ -48,9 +48,11 @@ in the mock; decide in/out with story 01). Actions: favorite heart (aria-pressed
 toggle (calendar icon; titles 'Add to my "Want To Cook" list' / 'On your "Want To Cook"
 list — remove') adding an unscheduled dinner row (story 02 default).
 
-**Cold-start / onboarding** (story 01 — not in mock, required by the empty-corpus
-decision): an empty cookbook must sell the three ways in — add friends, import with the
-agent, browse the public curated set. Curated-set rows need visible provenance.
+**Cold-start / onboarding** (story 01 — not in mock; SaaS profile only per D9): an empty
+cookbook must sell the three ways in — add friends, import with the agent, browse the
+public curated set. Curated-set rows need visible provenance. Under the self-hosted
+profile "Popular with Friends" reads the friend lens over the implicit all-to-all graph,
+i.e. it equals today's deployment-wide trending — one implementation, both profiles.
 
 ## 3. Delta vs today
 
