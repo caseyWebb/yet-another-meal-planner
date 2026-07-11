@@ -215,6 +215,10 @@ function makeDeps(
     rollbackThrows?: boolean;
     /** The inserted-keys receipt advanceInCart reports (menu-derived lines it minted). */
     advanceInserted?: string[];
+    /** The send-record id the advance's receipt carries (spend-telemetry snapshot). */
+    advanceSendId?: string;
+    /** A snapshot-BUILD failure the advance degraded around (bare advance + reason). */
+    advanceSendError?: string;
     /** Per-SKU revalidation results; absent SKUs default to fulfillable. */
     revalidations?: Record<string, RevalidatedSku | null>;
   } = {},
@@ -230,7 +234,7 @@ function makeDeps(
     cartLines: [] as unknown[],
     mappings: [] as { ingredient: string }[],
     /** The advance receipt placeOrder handed to rollbackInCart (receipt threading). */
-    rollbackAdvance: null as { inserted: string[] } | null,
+    rollbackAdvance: null as { inserted: string[]; sendId?: string } | null,
   };
   const fulfillable: RevalidatedSku = { brand: "Kroger", size: null, price: { regular: 1, promo: 0 }, on_sale: false };
   const deps: PlaceOrderDeps = {
@@ -260,7 +264,11 @@ function makeDeps(
       calls.advance++;
       calls.order.push("advance");
       if (opts.advanceThrows) throw new Error("advance failed");
-      return { inserted: opts.advanceInserted ?? [] };
+      return {
+        inserted: opts.advanceInserted ?? [],
+        ...(opts.advanceSendId ? { sendId: opts.advanceSendId } : {}),
+        ...(opts.advanceSendError ? { sendError: opts.advanceSendError } : {}),
+      };
     },
     rollbackInCart: async (_lines, advance) => {
       calls.rollback++;
@@ -565,5 +573,58 @@ describe("placeOrder", () => {
     const res = await placeOrder(deps, toBuy("saffron"));
     expect(res.checkpoint).toHaveLength(1);
     expect(calls).toMatchObject({ sku: 0, cart: 0, advance: 0 });
+  });
+});
+
+describe("placeOrder — the send record's honest reporting (spend-telemetry)", () => {
+  it("reports the advance's send record: { recorded: true, id }", async () => {
+    const { deps } = makeDeps({ milk: confident("S1") }, { advanceSendId: "SEND-1" });
+    const res = await placeOrder(deps, toBuy("milk"));
+    expect(res.send).toEqual({ recorded: true, id: "SEND-1" });
+  });
+
+  it("a snapshot-build failure degrades to a bare advance — flush proceeds, send honest", async () => {
+    const { deps, calls } = makeDeps(
+      { milk: confident("S1") },
+      { advanceSendError: "department memo read failed" },
+    );
+    const res = await placeOrder(deps, toBuy("milk"));
+    // Telemetry never costs the member their groceries: advance + cart both landed.
+    expect(res.list).toEqual({ advanced: true });
+    expect(res.cart.written).toBe(true);
+    expect(calls.order).toEqual(["sku", "advance", "cart"]);
+    expect(res.send).toEqual({ recorded: false, error: "department memo read failed" });
+  });
+
+  it("a rolled-back cart write reports no phantom send", async () => {
+    const { deps, calls } = makeDeps(
+      { milk: confident("S1") },
+      { cartThrows: new Error("upstream 503"), advanceSendId: "SEND-1" },
+    );
+    const res = await placeOrder(deps, toBuy("milk"));
+    expect(calls.rollback).toBe(1);
+    // The rollback received the receipt (with the send id) and deleted the record;
+    // the result must not report a send that no longer exists.
+    expect(calls.rollbackAdvance).toMatchObject({ sendId: "SEND-1" });
+    expect(res.send.recorded).toBe(false);
+    expect(res.send.error).toContain("rolled back");
+  });
+
+  it("a FAILED rollback keeps reporting the send (it survives beside the stranded rows)", async () => {
+    const { deps } = makeDeps(
+      { milk: confident("S1") },
+      { cartThrows: new Error("upstream 503"), rollbackThrows: true, advanceSendId: "SEND-1" },
+    );
+    const res = await placeOrder(deps, toBuy("milk"));
+    expect(res.list).toEqual({ advanced: true, rolled_back: false, error: "rollback failed" });
+    expect(res.send).toEqual({ recorded: true, id: "SEND-1" });
+  });
+
+  it("preview and an empty resolve report { recorded: false } — nothing was sent", async () => {
+    const { deps } = makeDeps({ milk: confident("S1") });
+    const preview = await placeOrder(deps, toBuy("milk"), { preview: true });
+    expect(preview.send).toEqual({ recorded: false });
+    const empty = await placeOrder(deps, toBuy("saffron"));
+    expect(empty.send).toEqual({ recorded: false });
   });
 });

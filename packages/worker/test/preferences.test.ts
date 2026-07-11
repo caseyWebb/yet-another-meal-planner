@@ -176,3 +176,16 @@ describe("convertLegacyBrandRanks (the one-window deprecated-shape mapping)", ()
     expect(convertLegacyBrandRanks(["Viva"])).toEqual({ tiers: [["Viva"]], any_brand: false });
   });
 });
+
+describe("validatePreferences — weekly_budget", () => {
+  it("accepts a finite number >= 0 (0 = no budget line)", () => {
+    expect(() => validatePreferences({ weekly_budget: 95 })).not.toThrow();
+    expect(() => validatePreferences({ weekly_budget: 0 })).not.toThrow();
+  });
+
+  it("rejects negative, non-numeric, and non-finite values with malformed_data", () => {
+    for (const bad of [-5, "95", NaN, Infinity, null, { amount: 95 }]) {
+      expect(() => validatePreferences({ weekly_budget: bad })).toThrowError(/weekly_budget/);
+    }
+  });
+});

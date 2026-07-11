@@ -390,6 +390,131 @@ describe("/satellite/order/receipt (issued-set-authoritative reconciliation)", (
   });
 });
 
+describe("/satellite/order/receipt — the send-record snapshot (spend-telemetry)", () => {
+  it("the first landing persists the send record (id = the order-list id) from the observations and stamps sent_in", async () => {
+    const { env, rows } = sqliteEnv(["casey"]);
+    const { secret } = await mintIngestKey(env, "casey-box", NOW, "casey");
+    await setStores(env, "casey", { primary: "target", fulfillment: "satellite" });
+    await addGroceryRow(env, "casey", { name: "Olive Oil" }, TODAY);
+    await addGroceryRow(env, "casey", { name: "Paper Towels", kind: "household" }, TODAY);
+    await addGroceryRow(env, "casey", { name: "Saffron" }, TODAY);
+    const list = await pullList(env, secret);
+
+    const obs = [
+      { kind: "order", item_id: "olive oil", disposition: "carted", product: { productId: "T-1", description: "EVOO", size: "500 ml", price: 6.49 } },
+      // No observed price → NULL-unknown, never fabricated.
+      { kind: "order", item_id: "paper towels", disposition: "substituted", product: { productId: "T-2", description: "Paper towels 6pk" } },
+      { kind: "order", item_id: "saffron", disposition: "unavailable" },
+    ];
+    await handleOrderReceipt(receiptReq(secret, { order_list_id: list.order_list_id, observations: obs }), env, NOW + 1);
+
+    expect(rows("order_sends")).toEqual([
+      expect.objectContaining({
+        id: list.order_list_id,
+        tenant: "casey",
+        store: "target",
+        fulfillment: "satellite",
+        order_list_id: list.order_list_id,
+      }),
+    ]);
+    const lines = rows<Record<string, unknown>>("order_send_lines");
+    expect(lines).toHaveLength(2); // the unavailable line gets NO snapshot line
+    expect(lines.find((l) => l.line_key === "olive oil")).toMatchObject({
+      sku: "T-1",
+      size: "500 ml",
+      unit_price: 6.49,
+      price_regular: null, // a single observed price cannot fabricate the Kroger-shaped fields
+      price_promo: null,
+      on_sale: null,
+      savings: null,
+      estimated: 0,
+      brand: null,
+      quantity: 1,
+      provenance: "planned",
+      department: null, // cold food id — pending classification
+    });
+    expect(lines.find((l) => l.line_key === "paper towels")).toMatchObject({
+      sku: "T-2",
+      unit_price: null,
+      department: "household", // kind override — immediate, never pending
+    });
+    const grocery = rows<{ normalized_name: string; sent_in: string | null }>("grocery_list");
+    expect(grocery.find((r) => r.normalized_name === "olive oil")!.sent_in).toBe(list.order_list_id);
+    expect(grocery.find((r) => r.normalized_name === "paper towels")!.sent_in).toBe(list.order_list_id);
+    expect(grocery.find((r) => r.normalized_name === "saffron")!.sent_in).toBeNull();
+  });
+
+  it("a replayed receipt converges on the deterministic send id — no duplicate lines", async () => {
+    const { env, rows } = sqliteEnv(["casey"]);
+    const { secret } = await mintIngestKey(env, "casey-box", NOW, "casey");
+    await setStores(env, "casey", { primary: "target", fulfillment: "satellite" });
+    await addGroceryRow(env, "casey", { name: "Olive Oil" }, TODAY);
+    const list = await pullList(env, secret);
+    const body = {
+      order_list_id: list.order_list_id,
+      observations: [
+        { kind: "order", item_id: "olive oil", disposition: "carted", product: { productId: "T-1", description: "EVOO", price: 6.49 } },
+      ],
+    };
+    await handleOrderReceipt(receiptReq(secret, body), env, NOW + 1);
+    await handleOrderReceipt(receiptReq(secret, body), env, NOW + 2);
+    expect(rows("order_sends")).toHaveLength(1);
+    expect(rows("order_send_lines")).toHaveLength(1);
+  });
+
+  it("mark_placed materializes the snapshot as spend events VERBATIM, idempotently across a re-post", async () => {
+    const { env, rows } = sqliteEnv(["casey"]);
+    const { secret } = await mintIngestKey(env, "casey-box", NOW, "casey");
+    await setStores(env, "casey", { primary: "target", fulfillment: "satellite" });
+    await addGroceryRow(env, "casey", { name: "Olive Oil" }, TODAY);
+    const list = await pullList(env, secret);
+    const obs = [
+      { kind: "order", item_id: "olive oil", disposition: "carted", product: { productId: "T-1", description: "EVOO", price: 6.49 } },
+    ];
+    await handleOrderReceipt(receiptReq(secret, { order_list_id: list.order_list_id, observations: obs }), env, NOW + 1);
+    expect(rows("spend_events")).toHaveLength(0); // in_cart alone is never auto-counted
+
+    await handleOrderReceipt(receiptReq(secret, { order_list_id: list.order_list_id, mark_placed: true }), env, NOW + 2);
+    await handleOrderReceipt(receiptReq(secret, { order_list_id: list.order_list_id, mark_placed: true }), env, NOW + 3);
+    const events = rows<Record<string, unknown>>("spend_events");
+    expect(events).toHaveLength(1); // the re-posted mark-placed converges
+    expect(events[0]).toMatchObject({
+      send_id: list.order_list_id,
+      line_key: "olive oil",
+      tenant: "casey",
+      unit_price: 6.49,
+      amount: 6.49,
+      store: "target",
+      fulfillment: "satellite",
+      provenance: "planned",
+      voided_at: null,
+    });
+  });
+
+  it("a snapshot-build failure never rejects the receipt — lines advance bare, no send, no spend", async () => {
+    const { env, raw, rows } = sqliteEnv(["casey"]);
+    const { secret } = await mintIngestKey(env, "casey-box", NOW, "casey");
+    await setStores(env, "casey", { primary: "target", fulfillment: "satellite" });
+    await addGroceryRow(env, "casey", { name: "Olive Oil" }, TODAY);
+    const list = await pullList(env, secret);
+    // Force the snapshot build's memo read to throw (the advance's own resolver read
+    // degrades independently) — the receipt must still land the advance.
+    raw.exec("DROP TABLE ingredient_alias");
+
+    const obs = [
+      { kind: "order", item_id: "olive oil", disposition: "carted", product: { productId: "T-1", description: "EVOO", price: 6.49 } },
+    ];
+    const res = await handleOrderReceipt(receiptReq(secret, { order_list_id: list.order_list_id, observations: obs }), env, NOW + 1);
+    expect(res.status).toBe(200);
+    expect(await statusOf(env, "casey", "Olive Oil")).toBe("in_cart");
+    expect(rows("order_sends")).toHaveLength(0);
+    expect(rows<{ sent_in: string | null }>("grocery_list")[0].sent_in).toBeNull();
+    // Those lines simply never produce spend events.
+    await handleOrderReceipt(receiptReq(secret, { order_list_id: list.order_list_id, mark_placed: true }), env, NOW + 2);
+    expect(rows("spend_events")).toHaveLength(0);
+  });
+});
+
 describe("order observations are order-receipt-only", () => {
   it("rejects an `order` observation arriving on /satellite/results (no order-list context)", async () => {
     const { env } = sqliteEnv();

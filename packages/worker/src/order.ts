@@ -209,9 +209,14 @@ export interface PlaceOrderDeps {
 }
 
 /** The advanceInCart receipt: which canonical keys the advance INSERTED (vs updated) —
- *  threaded into rollbackInCart so an inserted row is deleted, not flipped to active. */
+ *  threaded into rollbackInCart so an inserted row is deleted, not flipped to active.
+ *  `sendId` is the send record written in the advance's batch (spend-telemetry) —
+ *  absent when the snapshot build failed, in which case `sendError` says why (the
+ *  advance proceeded bare: telemetry never costs the member their groceries). */
 export interface InCartAdvance {
   inserted: string[];
+  sendId?: string;
+  sendError?: string;
 }
 
 export interface PlaceOrderOptions {
@@ -350,6 +355,7 @@ export async function placeOrder(
     sku_cache: { committed: false },
     cart: { written: false },
     list: { advanced: false },
+    send: { recorded: false },
     preview,
   };
 
@@ -374,6 +380,12 @@ export async function placeOrder(
   try {
     advance = await deps.advanceInCart(resolved);
     result.list = { advanced: true };
+    // The send record rides the advance's batch (spend-telemetry): recorded iff the
+    // advance succeeded. A snapshot-BUILD failure degrades to a bare advance — honest
+    // `recorded: false` + the reason, never a failed flush.
+    result.send = advance.sendId
+      ? { recorded: true, id: advance.sendId }
+      : { recorded: false, ...(advance.sendError ? { error: advance.sendError } : {}) };
   } catch (e) {
     result.list = { advanced: false, error: msg(e) };
     result.cart = {
@@ -398,8 +410,14 @@ export async function placeOrder(
     try {
       await deps.rollbackInCart(resolved, advance);
       result.list = { advanced: false, rolled_back: true };
+      // The compensation deleted the send record too — no phantom order survives.
+      if (advance.sendId) {
+        result.send = { recorded: false, error: "send record rolled back with the failed cart write" };
+      }
     } catch (rollbackErr) {
       result.list = { advanced: true, rolled_back: false, error: msg(rollbackErr) };
+      // Rollback failed: the send remains alongside the stranded in_cart rows (the
+      // existing visible under-buy posture) — result.send keeps reporting it.
     }
   }
 

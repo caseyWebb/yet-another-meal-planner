@@ -81,6 +81,7 @@ function orderOutcome(over: Partial<PlaceOrderOutcome>): PlaceOrderOutcome {
     sku_cache: { committed: false },
     cart: { written: false },
     list: { advanced: false },
+    send: { recorded: false },
     preview: true,
     partials: [],
     underived: [],

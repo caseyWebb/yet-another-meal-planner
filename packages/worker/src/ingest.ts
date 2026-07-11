@@ -30,7 +30,10 @@ import { writeStoreRollup, KROGER_STORE } from "./flyer-warm.js";
 import type { FlyerItem } from "./matching.js";
 import type { KvStore } from "./kroger-user.js";
 import { validateSale } from "./sale-intake.js";
-import { advanceInCartRows, readGroceryKeyIndex, isoDay } from "./session-db.js";
+import { advanceInCartRows, readGroceryKeyIndex, isoDay, type SendBatch } from "./session-db.js";
+import { readIngredientCategoryMemo } from "./corpus-db.js";
+import { departmentForGroceryLine } from "./department.js";
+import { snapshotStatements, type SnapshotLine } from "./spend.js";
 import { deriveMenuNeeds } from "./to-buy.js";
 import { markOrderListReceived } from "./order-lists-db.js";
 import { appendRejection, bumpAcceptTally, getQuarantine, recordLocalRejects } from "./satellite-audit-db.js";
@@ -229,6 +232,10 @@ export async function intakeObservations(
   const orderIssuedIds = orderList ? new Set(orderList.itemIds) : null;
   const orderSeenIds = new Set<string>();
   const orderCartedIds: string[] = [];
+  // The carted/substituted lines' observed products, keyed by issued id — the send-record
+  // snapshot's inputs (spend-telemetry): the single observed price is the effective
+  // unit_price; the Kroger-shaped fields stay NULL-unknown (nothing is fabricated).
+  const orderProducts = new Map<string, { productId?: string; size?: string; price?: number }>();
 
   for (const { raw, parsed } of parsedItems) {
     if (!parsed.ok) {
@@ -348,7 +355,14 @@ export async function intakeObservations(
       orderSeenIds.add(item.item_id);
       // Carted/substituted advance to in_cart (a substitute still satisfies the canonical ingredient);
       // unavailable collects nothing (the line stays active to retry on the next order).
-      if (item.disposition === "carted" || item.disposition === "substituted") orderCartedIds.push(item.item_id);
+      if (item.disposition === "carted" || item.disposition === "substituted") {
+        orderCartedIds.push(item.item_id);
+        orderProducts.set(item.item_id, {
+          productId: item.product?.productId,
+          size: item.product?.size,
+          price: item.product?.price,
+        });
+      }
       results.push({ disposition: "accepted", source: provenance });
       tally("order", orderSrc, "accepted");
       accepted++;
@@ -441,7 +455,71 @@ export async function intakeObservations(
         if (row && row.status === "active") advanceLines.push({ name: row.name, key: id });
         else if (!row && derivedIds.has(id)) advanceLines.push({ name: id, key: id });
       }
-      if (advanceLines.length > 0) await advanceInCartRows(env, orderList.tenant, advanceLines, isoDay(now));
+      if (advanceLines.length > 0) {
+        // The send-record snapshot (spend-telemetry): built from the carted/substituted
+        // observations, send id = the order-list id — DETERMINISTIC, so the residual
+        // double-intake replay converges on insert-or-ignore instead of double-recording.
+        // Honest-best-effort: a snapshot-build failure logs and the advance proceeds
+        // bare (those lines carry no linkage and produce no spend events) — telemetry
+        // never rejects a receipt.
+        let send: SendBatch | undefined;
+        try {
+          // One batched memo read for the food keys (a household/other row stamps
+          // `household` deterministically; a derived issued id is food by construction).
+          const foodKeys = advanceLines
+            .map((l) => l.key)
+            .filter((key) => {
+              const row = idx.get(key);
+              return (row?.kind ?? "grocery") === "grocery" && (row?.domain ?? "grocery") === "grocery";
+            });
+          const memo =
+            foodKeys.length > 0 ? await readIngredientCategoryMemo(env, foodKeys) : new Map<string, string>();
+          const snapLines: SnapshotLine[] = advanceLines.map((l) => {
+            const row = idx.get(l.key);
+            const obs = orderProducts.get(l.key);
+            return {
+              lineKey: l.key,
+              name: l.name,
+              sku: obs?.productId ?? null,
+              brand: null, // the receipt's description does not split a brand out — NULL, never parsed
+              size: obs?.size ?? null,
+              quantity: 1, // the receipt reports one carted product per issued line
+              priceRegular: null, // a single observed price cannot fabricate the Kroger-shaped fields
+              pricePromo: null,
+              onSale: null,
+              unitPrice: obs?.price ?? null,
+              savings: null,
+              estimated: 0,
+              department: departmentForGroceryLine(
+                { key: l.key, kind: row?.kind, domain: row?.domain },
+                (k) => memo.get(k),
+              ),
+              provenance: "planned", // the pull-list is list ∪ plan by construction
+              forRecipes: [],
+            };
+          });
+          send = {
+            id: orderList.id,
+            statements: snapshotStatements(
+              env,
+              {
+                id: orderList.id,
+                tenant: orderList.tenant,
+                store: orderList.store,
+                locationId: orderList.locationId,
+                fulfillment: "satellite",
+                orderListId: orderList.id,
+                createdAt: new Date(now).toISOString(),
+              },
+              snapLines,
+            ),
+          };
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          console.error("[order-intake] send snapshot build failed (advancing without telemetry):", msg);
+        }
+        await advanceInCartRows(env, orderList.tenant, advanceLines, isoDay(now), send);
+      }
     }
     await markOrderListReceived(env, orderList.id, now);
   }

@@ -2,8 +2,9 @@
 // (pantry-disposition-foundations, design D1/D5). Pantry rows carry two orthogonal
 // controlled fields — `location` (where it's kept) and `category` (the food taxonomy,
 // which doubles as the analytics department dimension) — and waste events stamp a
-// `department` at capture through `stampDepartment` below. The sibling
-// spend-capture-on-order-commit change imports this module for the same stamp; no
+// `department` at capture through `stampDepartment` below. Spend capture
+// (spend-capture-on-order-commit) stamps the same dimension on order-send lines and
+// spend events through `departmentForGroceryLine`; no
 // surface re-derives item→department on its own. Pure (no env) — the identity-memo
 // read that feeds `stampDepartment` lives with the other identity reads
 // (`readIngredientCategoryMemo`, src/corpus-db.ts). Band 2 lifts the vocab arrays
@@ -97,3 +98,38 @@ export function stampDepartment(args: {
   }
   return null;
 }
+
+/**
+ * The grocery-line department derivation (spend-capture-on-order-commit — the send-record
+ * snapshot's capture-time stamp, same D17 dimension as `stampDepartment`):
+ *   1. a NON-FOOD line — `kind` of `household`/`other`, or a non-grocery `domain` (the
+ *      "2x4 lumber" fixture) — stamps `household` IMMEDIATELY, never pending: it is
+ *      included in spend but excluded from cost-per-meal, and never enters the
+ *      ingredient graph;
+ *   2. else the identity memo's category for the line's canonical key (any memo value,
+ *      `household` included);
+ *   3. else NULL = pending classification — the `ingredient-category` cron's spend-fill
+ *      phase stamps it once (NULL→value only); a stamped value is never rewritten.
+ * `leftovers` is waste-side only (`prepared_from` rows via `stampDepartment`) — this
+ * derivation can never produce it (the memo vocabulary excludes it). `memoLookup` is the
+ * caller's batched `ingredient_identity.category` read (alias → identity → representative
+ * — `readIngredientCategoryMemo`), threaded as a lookup so this stays pure (no env).
+ */
+export function departmentForGroceryLine(
+  line: { key: string; kind?: string | null; domain?: string | null },
+  memoLookup: (key: string) => string | null | undefined,
+): Department | null {
+  const kind = line.kind ?? "grocery";
+  const domain = line.domain ?? "grocery";
+  if (kind !== "grocery" || domain !== "grocery") return "household";
+  const memo = memoLookup(line.key);
+  if (memo && (IDENTITY_CATEGORIES as readonly string[]).includes(memo)) {
+    return memo as Department;
+  }
+  return null;
+}
+
+/** The cost-per-meal NUMERATOR exclusion set (band 4's analyzer consumes this rather
+ *  than re-deriving it): spend in these departments counts toward totals but never
+ *  toward cost-per-meal. */
+export const COST_PER_MEAL_EXCLUDED: readonly Department[] = ["household", "beverages"];

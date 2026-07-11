@@ -11,6 +11,7 @@ import { validateFile } from "../src/validate.js";
 import { parseMarkdown } from "../src/parse.js";
 import { createR2CorpusStore, type CorpusStore } from "../src/corpus-store.js";
 import { fakeR2 } from "./fake-r2.js";
+import { readPreferences } from "../src/profile-db.js";
 import type { Env } from "../src/env.js";
 
 const RECIPE = "---\ntitle: Salmon\ntime_total: 30\nlast_cooked: null\n---\n\n## Ingredients\n- salmon\n";
@@ -1007,6 +1008,30 @@ describe("update_preferences (merge-patch → D1)", () => {
     expect(d1.tables.novel_ingredient_terms).toContainEqual(
       expect.objectContaining({ term: "dragonfruit jam" }),
     );
+  });
+
+  it("weekly_budget round-trips as a defined scalar: set → read → null deletes", async () => {
+    const d1 = fakeD1([]);
+    const handlers = collectTools(storeWith({}), "everett", d1.env);
+    await handlers.get("update_preferences")!({ patch: { weekly_budget: 95 } });
+    expect(d1.tables.profile[0]).toMatchObject({ tenant: "everett", weekly_budget: 95 });
+    // The assembled preferences object (the read_user_profile source) carries it.
+    expect((await readPreferences(d1.env, "everett"))?.weekly_budget).toBe(95);
+
+    // null deletes back to unset — the profile column clears and the read hides it.
+    await handlers.get("update_preferences")!({ patch: { weekly_budget: null } });
+    expect(d1.tables.profile[0].weekly_budget).toBeNull();
+    expect((await readPreferences(d1.env, "everett"))?.weekly_budget).toBeUndefined();
+  });
+
+  it("weekly_budget rejects a negative or non-numeric value with malformed_data, storing nothing", async () => {
+    const d1 = fakeD1([]);
+    const handlers = collectTools(storeWith({}), "everett", d1.env);
+    for (const bad of [-5, "95"]) {
+      const res = await handlers.get("update_preferences")!({ patch: { weekly_budget: bad } });
+      expect((JSON.parse(res.content[0].text) as { error: string }).error).toBe("malformed_data");
+    }
+    expect(d1.tables.profile).toHaveLength(0);
   });
 
   it("normalizes the brand-pref key to the matcher's lookup form (quantity stripped, brandKey)", async () => {

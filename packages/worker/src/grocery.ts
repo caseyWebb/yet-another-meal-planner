@@ -43,6 +43,15 @@ export interface GroceryItem {
   note: string | null;
   added_at: string;
   ordered_at: string | null;
+  /**
+   * INTERNAL send-record linkage (spend-telemetry): the `order_sends` id whose flush
+   * advanced this row's current in-flight cart state. Stamped ONLY by the snapshot-
+   * writing order-flush advances (never a manual status write — it is NOT a
+   * caller-writable field on any tool or HTTP surface) and cleared when the row leaves
+   * its in-flight send without a purchase assertion. Rides reads harmlessly; the
+   * guarded `in_cart → ordered` advance materializes spend events from it.
+   */
+  sent_in?: string | null;
 }
 
 /** Input for adding an item; everything is optional with sensible defaults, but at least one of

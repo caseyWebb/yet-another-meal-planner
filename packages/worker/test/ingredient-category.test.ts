@@ -19,6 +19,8 @@ interface Store {
   identities: { id: string; display_name: string | null; category: string | null }[];
   pantry: { tenant: string; normalized_name: string; category: string | null }[];
   events: { tenant: string; id: string; item_id: string; department: string | null }[];
+  sendLines: { send_id: string; line_key: string; department: string | null }[];
+  spendEvents: { tenant: string; send_id: string; line_key: string; department: string | null }[];
 }
 
 function depsOver(
@@ -49,6 +51,22 @@ function depsOver(
       const row = store.events.find((r) => r.tenant === tenant && r.id === id);
       if (row && row.department == null) row.department = department;
     },
+    sendLinesPending: async () =>
+      store.sendLines.filter((r) => r.department == null).map(({ send_id, line_key }) => ({ send_id, line_key })),
+    fillSendLineDepartment: async (sendId, lineKey, department) => {
+      const row = store.sendLines.find((r) => r.send_id === sendId && r.line_key === lineKey);
+      if (row && row.department == null) row.department = department;
+    },
+    spendEventsPending: async () =>
+      store.spendEvents
+        .filter((r) => r.department == null)
+        .map(({ tenant, send_id, line_key }) => ({ tenant, send_id, line_key })),
+    fillSpendEventDepartment: async (tenant, sendId, lineKey, department) => {
+      const row = store.spendEvents.find(
+        (r) => r.tenant === tenant && r.send_id === sendId && r.line_key === lineKey,
+      );
+      if (row && row.department == null) row.department = department;
+    },
     memoLookup: async (keys) => {
       const out = new Map<string, string>();
       for (const key of keys) {
@@ -74,6 +92,8 @@ describe("reconcileCategories", () => {
       ],
       pantry: [],
       events: [],
+      sendLines: [],
+      spendEvents: [],
     };
     const summary = await reconcileCategories(
       depsOver(store, async () => ({
@@ -97,6 +117,8 @@ describe("reconcileCategories", () => {
       ],
       pantry: [{ tenant: "casey", normalized_name: "green onion", category: null }],
       events: [],
+      sendLines: [],
+      spendEvents: [],
     };
     const summary = await reconcileCategories(
       depsOver(store, async () => {
@@ -121,6 +143,8 @@ describe("reconcileCategories", () => {
         { tenant: "everett", normalized_name: "green onion", category: "condiments" },
       ],
       events: [],
+      sendLines: [],
+      spendEvents: [],
     };
     const summary = await reconcileCategories(depsOver(store, async () => ({})));
     expect(summary.pantry_filled).toBe(1);
@@ -142,6 +166,8 @@ describe("reconcileCategories", () => {
         { tenant: "casey", id: "01C", item_id: "green onion", department: "leftovers" }, // stamped — immutable
         { tenant: "casey", id: "01D", item_id: "unknown thing", department: null }, // no memo yet — stays pending
       ],
+      sendLines: [],
+      spendEvents: [],
     };
     const summary = await reconcileCategories(depsOver(store, async () => ({})));
     expect(summary.events_stamped).toBe(2);
@@ -151,16 +177,77 @@ describe("reconcileCategories", () => {
     expect(store.events[3].department).toBeNull();
   });
 
+  it("spend fill drains pending send-line/spend-event departments and never rewrites a stamp", async () => {
+    const store: Store = {
+      identities: [
+        { id: "green onion", display_name: null, category: "produce" },
+        { id: "paper towels", display_name: null, category: "household" },
+      ],
+      pantry: [],
+      events: [],
+      sendLines: [
+        { send_id: "S1", line_key: "green onion", department: null },
+        { send_id: "S1", line_key: "paper towels", department: null }, // any memo value, household included
+        { send_id: "S1", line_key: "mystery", department: null }, // no memo yet — stays pending
+        { send_id: "S0", line_key: "green onion", department: "canned" }, // stamped — immutable
+      ],
+      spendEvents: [
+        { tenant: "casey", send_id: "S1", line_key: "green onion", department: null },
+        { tenant: "casey", send_id: "S0", line_key: "green onion", department: "canned" }, // stamped — immutable
+      ],
+    };
+    const summary = await reconcileCategories(depsOver(store, async () => ({})));
+    expect(summary.send_lines_filled).toBe(2);
+    expect(summary.spend_events_filled).toBe(1);
+    expect(store.sendLines[0].department).toBe("produce");
+    expect(store.sendLines[1].department).toBe("household");
+    expect(store.sendLines[2].department).toBeNull(); // pending until its identity classifies
+    expect(store.sendLines[3].department).toBe("canned"); // a stamped value is never rewritten
+    expect(store.spendEvents[0].department).toBe("produce");
+    expect(store.spendEvents[1].department).toBe("canned");
+
+    // A replayed tick rewrites nothing (fill-once): counts drop to the still-pending rows only.
+    const replay = await reconcileCategories(depsOver(store, async () => ({})));
+    expect(replay.send_lines_filled).toBe(0);
+    expect(replay.spend_events_filled).toBe(0);
+    expect(store.sendLines[3].department).toBe("canned");
+  });
+
+  it("a fresh classification this tick fills the same tick's pending spend rows", async () => {
+    const store: Store = {
+      identities: [{ id: "tomatillos", display_name: "Tomatillos", category: null }],
+      pantry: [],
+      events: [],
+      sendLines: [{ send_id: "S1", line_key: "tomatillos", department: null }],
+      spendEvents: [{ tenant: "casey", send_id: "S1", line_key: "tomatillos", department: null }],
+    };
+    const summary = await reconcileCategories(depsOver(store, async () => ({ tomatillos: "produce" })));
+    expect(summary.classified).toBe(1);
+    expect(summary.send_lines_filled).toBe(1);
+    expect(summary.spend_events_filled).toBe(1);
+    expect(store.sendLines[0].department).toBe("produce");
+    expect(store.spendEvents[0].department).toBe("produce");
+  });
+
   it("self-terminates: an empty backlog performs no model calls and reports a no-op run", async () => {
     const store: Store = {
       identities: [{ id: "cilantro", display_name: null, category: "produce" }],
       pantry: [{ tenant: "casey", normalized_name: "cilantro", category: "produce" }],
       events: [{ tenant: "casey", id: "01A", item_id: "cilantro", department: "produce" }],
+      sendLines: [],
+      spendEvents: [],
     };
     const calls = { classify: 0 };
     const summary = await reconcileCategories(depsOver(store, async () => ({}), calls));
     expect(calls.classify).toBe(0); // nothing unclassified → no model call
-    expect(summary).toEqual({ classified: 0, pantry_filled: 0, events_stamped: 0, backlog: 0 });
+    expect(summary).toEqual({
+      classified: 0,
+      pantry_filled: 0,
+      events_stamped: 0,
+      send_lines_filled: 0,
+      spend_events_filled: 0,
+      backlog: 0,
+    });
   });
 
   it("bounds phase 1 to batches × batchSize per tick", async () => {
@@ -168,6 +255,8 @@ describe("reconcileCategories", () => {
       identities: Array.from({ length: 7 }, (_, i) => ({ id: `item-${i}`, display_name: null, category: null })),
       pantry: [],
       events: [],
+      sendLines: [],
+      spendEvents: [],
     };
     const calls = { classify: 0 };
     const summary = await reconcileCategories(
@@ -225,6 +314,8 @@ describe("runCategoryJob (observability wrapper) + buildCategoryDeps SQL", () =>
         novel_ingredient_terms: [],
         pantry: [{ tenant: "casey", name: "Scallions", normalized_name: "green onion", category: null, prepared_from: null }],
         waste_events: [],
+        order_send_lines: [],
+        spend_events: [],
         job_runs: [],
       },
     });
@@ -233,6 +324,12 @@ describe("runCategoryJob (observability wrapper) + buildCategoryDeps SQL", () =>
     expect(health).not.toBeNull();
     expect(health!.ok).toBe(true);
     // No unclassified concrete survivors → zero classify work; the standing memo fills the pantry row.
-    expect(health!.summary).toMatchObject({ classified: 0, pantry_filled: 1, events_stamped: 0 });
+    expect(health!.summary).toMatchObject({
+      classified: 0,
+      pantry_filled: 1,
+      events_stamped: 0,
+      send_lines_filled: 0,
+      spend_events_filled: 0,
+    });
   });
 });

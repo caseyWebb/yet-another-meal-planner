@@ -14,6 +14,13 @@
 //   3. EVENT STAMP: fill NULL (`pending`) `waste_events.department` from the memo via
 //      `item_id` (any memo value, `household` included). NULL→value only — a stamped
 //      department is never rewritten (design D5).
+//   4. SPEND FILL (spend-capture-on-order-commit): fill NULL (`pending`) departments on
+//      `order_send_lines` and `spend_events` from the memo via `line_key` — the same
+//      NULL→value fill-once idiom as the waste-event stamp, so waste and spend share
+//      ONE pending/immutability model. No separate enqueue: every food line key is a
+//      canonical id minted through the IngredientContext funnel, so pending ids appear
+//      in phase 1's existing backlog; non-food keys never enter the registry (the
+//      `household` override stamps them at capture).
 // Self-terminating: once the backlog drains every phase is a cheap no-op scan. Novel
 // identities minted later by the normalize job classify on the FOLLOWING tick —
 // deliberately not bolted onto capture's confirm call, so one owner/prompt/parse path
@@ -58,6 +65,14 @@ export interface CategoryDeps {
   eventsPending(): Promise<{ tenant: string; id: string; item_id: string }[]>;
   /** Stamp one pending event's department (guarded `AND department IS NULL` — fill-once). */
   stampEventDepartment(tenant: string, id: string, department: string): Promise<void>;
+  /** Order-send lines still pending a department (`department IS NULL`). */
+  sendLinesPending(): Promise<{ send_id: string; line_key: string }[]>;
+  /** Fill one pending send line's department (guarded `AND department IS NULL` — fill-once). */
+  fillSendLineDepartment(sendId: string, lineKey: string, department: string): Promise<void>;
+  /** Spend events still pending a department (`department IS NULL`). */
+  spendEventsPending(): Promise<{ tenant: string; send_id: string; line_key: string }[]>;
+  /** Fill one pending spend event's department (guarded `AND department IS NULL` — fill-once). */
+  fillSpendEventDepartment(tenant: string, sendId: string, lineKey: string, department: string): Promise<void>;
   /** The identity funnel's memo lookup (surface key → category), shared with capture-time stamping. */
   memoLookup(keys: string[]): Promise<Map<string, string>>;
   /** The remaining classify backlog (for the run summary's convergence signal). */
@@ -74,6 +89,10 @@ export interface CategorySummary {
   pantry_filled: number;
   /** Pending waste-event departments stamped from the memo this tick. */
   events_stamped: number;
+  /** Pending order-send-line departments filled from the memo this tick. */
+  send_lines_filled: number;
+  /** Pending spend-event departments filled from the memo this tick. */
+  spend_events_filled: number;
   /** Unclassified concrete survivors remaining after the tick (drains to 0). */
   backlog: number;
 }
@@ -134,13 +153,45 @@ async function eventStampPhase(deps: CategoryDeps, summary: CategorySummary): Pr
   }
 }
 
+/** Phase 4: fill pending spend departments (send lines + spend events) from the memo,
+ *  keyed by `line_key` — the spend analog of the waste-event stamp (any memo value,
+ *  `household` included; NULL→value only, bounded by the pending sets, idempotent). */
+async function spendFillPhase(deps: CategoryDeps, summary: CategorySummary): Promise<void> {
+  const [sendLines, spendEvents] = await Promise.all([deps.sendLinesPending(), deps.spendEventsPending()]);
+  if (sendLines.length === 0 && spendEvents.length === 0) return;
+  const keys = [...new Set([...sendLines.map((r) => r.line_key), ...spendEvents.map((r) => r.line_key)])];
+  const memo = await deps.memoLookup(keys);
+  for (const row of sendLines) {
+    const category = memo.get(row.line_key);
+    if (category) {
+      await deps.fillSendLineDepartment(row.send_id, row.line_key, category);
+      summary.send_lines_filled++;
+    }
+  }
+  for (const row of spendEvents) {
+    const category = memo.get(row.line_key);
+    if (category) {
+      await deps.fillSpendEventDepartment(row.tenant, row.send_id, row.line_key, category);
+      summary.spend_events_filled++;
+    }
+  }
+}
+
 /** The core pass, pure w.r.t. its injected deps (unit-testable without env). */
 export async function reconcileCategories(deps: CategoryDeps): Promise<CategorySummary> {
-  const summary: CategorySummary = { classified: 0, pantry_filled: 0, events_stamped: 0, backlog: 0 };
+  const summary: CategorySummary = {
+    classified: 0,
+    pantry_filled: 0,
+    events_stamped: 0,
+    send_lines_filled: 0,
+    spend_events_filled: 0,
+    backlog: 0,
+  };
   await classifyPhase(deps, summary);
-  // Phases 2/3 run AFTER classify so the tick's fresh memos backfill/stamp the same tick.
+  // Phases 2/3/4 run AFTER classify so the tick's fresh memos backfill/stamp the same tick.
   await pantryFillPhase(deps, summary);
   await eventStampPhase(deps, summary);
+  await spendFillPhase(deps, summary);
   summary.backlog = await deps.backlog();
   return summary;
 }
@@ -245,6 +296,31 @@ export function buildCategoryDeps(env: Env): CategoryDeps {
         id,
       );
     },
+    sendLinesPending: () =>
+      db(env).all<{ send_id: string; line_key: string }>(
+        "SELECT send_id, line_key FROM order_send_lines WHERE department IS NULL",
+      ),
+    fillSendLineDepartment: async (sendId, lineKey, department) => {
+      await db(env).run(
+        "UPDATE order_send_lines SET department = ?1 WHERE send_id = ?2 AND line_key = ?3 AND department IS NULL",
+        department,
+        sendId,
+        lineKey,
+      );
+    },
+    spendEventsPending: () =>
+      db(env).all<{ tenant: string; send_id: string; line_key: string }>(
+        "SELECT tenant, send_id, line_key FROM spend_events WHERE department IS NULL",
+      ),
+    fillSpendEventDepartment: async (tenant, sendId, lineKey, department) => {
+      await db(env).run(
+        "UPDATE spend_events SET department = ?1 WHERE tenant = ?2 AND send_id = ?3 AND line_key = ?4 AND department IS NULL",
+        department,
+        tenant,
+        sendId,
+        lineKey,
+      );
+    },
     memoLookup: (keys) => readIngredientCategoryMemo(env, keys),
     backlog: async () => {
       const row = await db(env).first<{ n: number }>(
@@ -260,7 +336,8 @@ export function buildCategoryDeps(env: Env): CategoryDeps {
 
 /**
  * One scheduled run: do the pass, record the `ingredient-category` job_health + job_run rows
- * (a tenant-clean `{ classified, pantry_filled, events_stamped, backlog }` summary), and
+ * (a tenant-clean `{ classified, pantry_filled, events_stamped, send_lines_filled,
+ * spend_events_filled, backlog }` summary), and
  * rethrow so the platform's cron status reflects a hard failure (mirrors runNormalizeJob).
  * The admin jobs surface reads `job_health` generically, so the pass appears with no
  * admin-panel change.

@@ -952,3 +952,75 @@ describe("differentiators (member-app-differentiators)", () => {
     expect(body.recipes.map((r) => r.slug)).toEqual(["enchiladas"]); // the favorite never re-picked
   });
 });
+
+// --- spend inheritance through the shared op (spend-telemetry, route-level) ---------
+// The member PATCH route is a thin adapter over the SAME updateGroceryRow op the MCP
+// tool uses — so the purchase-assertion materialization, the no-linkage rule, and the
+// void-on-relist all hold across the HTTP boundary with zero route-side wiring. Real
+// SQLite (the fake can't join the send tables).
+import { sqliteEnv } from "./sqlite-d1.js";
+import { addGroceryRow, advanceInCartRows } from "../src/session-db.js";
+import { snapshotStatements } from "../src/spend.js";
+
+const send2 = send;
+
+describe("grocery area — spend rides the shared status op (route-level)", () => {
+  async function spendEnv() {
+    const h = sqliteEnv(["casey"]);
+    await h.env.TENANT_KV.put("invite:GOODCODE", "casey");
+    const env = { ...(h.env as object), TOOL_AE: { writeDataPoint: () => {} } } as unknown as Env;
+    return { h, env };
+  }
+
+  it("PATCH status:ordered materializes the linked snapshot; a re-list voids it", async () => {
+    const { h, env } = await spendEnv();
+    await addGroceryRow(env, "casey", { name: "Milk" }, "2026-07-11");
+    const send = {
+      id: "SEND-1",
+      statements: snapshotStatements(
+        env,
+        { id: "SEND-1", tenant: "casey", store: "kroger", locationId: "loc-1", fulfillment: "kroger_online", orderListId: null, createdAt: "2026-07-11T12:00:00Z" },
+        [{ lineKey: "milk", name: "Milk", sku: "S1", brand: null, size: null, quantity: 1, priceRegular: 3.5, pricePromo: 0, onSale: false, unitPrice: 3.5, savings: 0, estimated: 0, department: "dairy", provenance: "planned", forRecipes: [] }],
+      ),
+    };
+    await advanceInCartRows(env, "casey", [{ name: "Milk", key: "milk" }], "2026-07-11", send);
+    const cookie = await loggedIn(env);
+
+    const ordered = await send2(env, "PATCH", "/api/grocery/items/milk", cookie, { status: "ordered" });
+    expect(ordered.status).toBe(200);
+    expect(h.rows<{ amount: number; department: string; voided_at: string | null }>("spend_events")).toEqual([
+      expect.objectContaining({ send_id: "SEND-1", line_key: "milk", amount: 3.5, department: "dairy", voided_at: null }),
+    ]);
+
+    const relist = await send2(env, "PATCH", "/api/grocery/items/milk", cookie, { status: "active" });
+    expect(relist.status).toBe(200);
+    const events = h.rows<{ voided_at: string | null }>("spend_events");
+    expect(events).toHaveLength(1); // voided, never deleted
+    expect(events[0].voided_at).not.toBeNull();
+    expect(h.rows<{ sent_in: string | null }>("grocery_list")[0].sent_in).toBeNull();
+  });
+
+  it("a manual in_cart move through the route carries no linkage — ordered writes nothing", async () => {
+    const { h, env } = await spendEnv();
+    await addGroceryRow(env, "casey", { name: "Milk" }, "2026-07-11");
+    const cookie = await loggedIn(env);
+    await send2(env, "PATCH", "/api/grocery/items/milk", cookie, { status: "in_cart" });
+    await send2(env, "PATCH", "/api/grocery/items/milk", cookie, { status: "ordered" });
+    expect(h.rows("spend_events")).toHaveLength(0);
+    expect(h.rows<{ sent_in: string | null }>("grocery_list")[0].sent_in).toBeNull();
+  });
+
+  it("sent_in is not caller-writable: a PATCH carrying it never reaches the row", async () => {
+    const { h, env } = await spendEnv();
+    await addGroceryRow(env, "casey", { name: "Milk" }, "2026-07-11");
+    const cookie = await loggedIn(env);
+    // The boundary's field allowlist (coerceCommon) has no sent_in — the forged value
+    // is dropped, never applied; the linkage is stamped only by the order-flush ops.
+    const res = await send2(env, "PATCH", "/api/grocery/items/milk", cookie, { sent_in: "SEND-FORGED", note: "hi" });
+    expect(res.status).toBe(200);
+    expect(h.rows<{ sent_in: string | null; note: string }>("grocery_list")[0]).toMatchObject({
+      sent_in: null,
+      note: "hi",
+    });
+  });
+});

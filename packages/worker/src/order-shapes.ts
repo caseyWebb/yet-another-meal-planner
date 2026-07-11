@@ -76,6 +76,14 @@ export interface PlaceOrderResult {
    *  rollback reports `{ advanced: true, rolled_back: false, error }` — items are
    *  marked in_cart with NO cart write, and a retried order will not re-add them. */
   list: { advanced: boolean; rolled_back?: boolean; error?: string };
+  /** The send-record snapshot (spend-telemetry): written in the same batch as the
+   *  list advance on a real flush. Honest independent reporting like `sku_cache`/
+   *  `cart`: `{ recorded: true, id }` when the snapshot landed (and survived — a
+   *  rolled-back cart write deletes it and reports `recorded: false` with the reason);
+   *  `{ recorded: false, error }` when building it failed and the flush proceeded
+   *  WITHOUT telemetry (rows advanced with no send linkage — groceries never blocked).
+   *  Preview (and an empty resolve) reports `{ recorded: false }` — nothing to record. */
+  send: { recorded: boolean; id?: string; error?: string };
   preview: boolean;
 }
 

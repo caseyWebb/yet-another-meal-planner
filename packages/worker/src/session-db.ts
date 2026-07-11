@@ -25,6 +25,7 @@ import {
 } from "./corpus-db.js";
 import { validateCanonicalId } from "./ingredient-normalize.js";
 import { stampDepartment, PANTRY_CATEGORIES, LEGACY_CATEGORY_TO_LOCATION } from "./department.js";
+import { recordPurchaseAssertion, voidSpendEvents, deleteSendStatements } from "./spend.js";
 import {
   applyPantryOperations,
   markVerified,
@@ -486,6 +487,7 @@ interface GroceryRow {
   note: string | null;
   added_at: string | null;
   ordered_at: string | null;
+  sent_in: string | null;
 }
 
 function groceryItemOf(r: GroceryRow): GroceryItem {
@@ -502,12 +504,13 @@ function groceryItemOf(r: GroceryRow): GroceryItem {
     note: r.note ?? null,
     added_at: r.added_at ?? "",
     ordered_at: r.ordered_at ?? null,
+    sent_in: r.sent_in ?? null,
   };
 }
 
 const GROCERY_SELECT =
   "SELECT name, normalized_name, display_name, quantity, kind, domain, status, source, for_recipes, note, " +
-  "added_at, ordered_at FROM grocery_list WHERE tenant = ?1";
+  "added_at, ordered_at, sent_in FROM grocery_list WHERE tenant = ?1";
 
 /** Read the caller's grocery-list rows, with an optional status filter (WHERE). */
 export async function readGroceryList(env: Env, tenant: string, status?: string): Promise<GroceryItem[]> {
@@ -557,13 +560,13 @@ export function groceryUpsertStmt(
 ): D1PreparedStatement {
   return db(env).prepare(
     "INSERT INTO grocery_list (tenant, name, normalized_name, quantity, kind, domain, status, " +
-      "source, for_recipes, note, added_at, ordered_at, display_name) " +
-      "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13) " +
+      "source, for_recipes, note, added_at, ordered_at, display_name, sent_in) " +
+      "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14) " +
       "ON CONFLICT(tenant, normalized_name) DO UPDATE SET " +
       "name = excluded.name, quantity = excluded.quantity, kind = excluded.kind, " +
       "domain = excluded.domain, status = excluded.status, source = excluded.source, " +
       "for_recipes = excluded.for_recipes, note = excluded.note, ordered_at = excluded.ordered_at, " +
-      "display_name = excluded.display_name",
+      "display_name = excluded.display_name, sent_in = excluded.sent_in",
     tenant,
     item.name,
     // Persist the STORED key the item carries (add-by-id rows key on the given id, which is NOT
@@ -579,6 +582,9 @@ export function groceryUpsertStmt(
     item.added_at,
     item.ordered_at,
     item.display_name ?? null,
+    // The internal send linkage rides the in-memory item (stamped/cleared only by the
+    // order-flush and status-transition ops — no tool/route input reaches it).
+    item.sent_in ?? null,
   );
 }
 
@@ -645,6 +651,18 @@ export async function addGroceryRow(
  * `{ name, from, to }`, row unchanged; the legal `in_cart → ordered` (user-asserted
  * order placed) advance stamps `ordered_at` = `today` (parity with
  * `advanceOrderedRows`, which is a separate code path and unaffected).
+ *
+ * Spend hooks (spend-telemetry, D16) — homed HERE in the shared op so every surface
+ * (the MCP tool AND the member PATCH route) gets the identical guarantees:
+ *   - the legal `in_cart → ordered` advance is the PURCHASE ASSERTION: it keeps the
+ *     row's send linkage and materializes the linked send-snapshot lines as spend
+ *     events via the one shared writer (verbatim copy, idempotent) — a row with no
+ *     linkage (a manual `active → in_cart` move) advances without writing spend;
+ *   - `in_cart → active` clears the linkage and writes nothing (the snapshot lines
+ *     simply never materialize);
+ *   - leaving `ordered` (re-listed in either direction) VOIDS the row's materialized
+ *     events (`voided_at`, never a delete) and clears the linkage — the same branch
+ *     that already clears `ordered_at`.
  */
 export async function updateGroceryRow(
   env: Env,
@@ -679,16 +697,48 @@ export async function updateGroceryRow(
   // The legal user-asserted advance stamps ordered_at (the patch path used to leave it null);
   // any status write that leaves "ordered" (e.g. re-listing to "active"/"in_cart") clears the
   // stamp so a later re-advance stamps fresh rather than carrying a stale timestamp.
-  if (patch.status === "ordered" && existing.status === "in_cart") {
+  const asserted = patch.status === "ordered" && existing.status === "in_cart";
+  const leavingOrdered = patch.status !== undefined && patch.status !== "ordered" && existing.status === "ordered";
+  const leavingInCart = patch.status === "active" && existing.status === "in_cart";
+  if (asserted) {
     item = { ...item, ordered_at: today };
   } else if (patch.status !== undefined && patch.status !== "ordered") {
     item = { ...item, ordered_at: null };
   }
+  // Send-linkage transitions (D16): leaving the in-flight send without an assertion
+  // (in_cart → active) or leaving `ordered` (either direction) drops the linkage; the
+  // assertion keeps it (the writer below materializes from it).
+  if (leavingOrdered || leavingInCart) {
+    item = { ...item, sent_in: null };
+  }
   await db(env).batch([groceryUpsertStmt(env, tenant, item, ctx.resolve)]);
+  const lineKey = storedGroceryKey(existing, ctx.resolve);
+  if (asserted && existing.sent_in) {
+    // The purchase assertion: materialize the linked snapshot verbatim (idempotent —
+    // a replayed assertion is rejected by the W3 guard before it ever reaches here,
+    // and the writer's (send_id, line_key) PK absorbs any race the guard misses).
+    // Runs after the row write: if this throws on a storage blip the row is already
+    // ordered+linked and a retry of status:"ordered" dead-ends on the transition guard,
+    // so the event is only recoverable by re-listing first — an accepted telemetry-only
+    // loss (no phantom spend), visible as an ordered row with no event.
+    await recordPurchaseAssertion(env, tenant, [{ sendId: existing.sent_in, lineKey }], today);
+  } else if (leavingOrdered && existing.sent_in) {
+    // Re-listing an ordered row voids its events — never deletes them.
+    await voidSpendEvents(env, tenant, [{ sendId: existing.sent_in, lineKey }]);
+  }
   return item;
 }
 
-/** Remove one grocery-list item by name. `found` is false when no such row existed. */
+/**
+ * Remove one grocery-list item by name. `found` is false when no such row existed.
+ *
+ * NEGATIVE GUARANTEE (spend-telemetry): a removal NEVER writes spend — a remove is
+ * ambiguous (a collapsed receive expressed as removes, or "changed my mind"), so it is
+ * not a purchase assertion; any send linkage dies with the row. The guarantee is this
+ * operation's, independent of any skill. Any future operation that completes a receive
+ * for rows still `in_cart` must perform the purchase assertion FIRST (advance through
+ * the guarded transition, materializing via the shared writer), then remove.
+ */
 export async function removeGroceryRow(
   env: Env,
   tenant: string,
@@ -731,12 +781,22 @@ export async function removeGroceryRow(
 export async function readGroceryKeyIndex(
   env: Env,
   tenant: string,
-): Promise<Map<string, { name: string; status: string }>> {
-  const rows = await db(env).all<{ name: string; normalized_name: string; status: string | null }>(
-    "SELECT name, normalized_name, status FROM grocery_list WHERE tenant = ?1",
-    tenant,
+): Promise<Map<string, { name: string; status: string; kind: string; domain: string }>> {
+  const rows = await db(env).all<{
+    name: string;
+    normalized_name: string;
+    status: string | null;
+    kind: string | null;
+    domain: string | null;
+  }>("SELECT name, normalized_name, status, kind, domain FROM grocery_list WHERE tenant = ?1", tenant);
+  return new Map(
+    rows.map((r) => [
+      r.normalized_name,
+      // kind/domain ride along for the send snapshot's department override (a household
+      // row stamps `household` at capture, never pending).
+      { name: r.name, status: r.status ?? "active", kind: r.kind ?? "grocery", domain: r.domain ?? "grocery" },
+    ]),
   );
-  return new Map(rows.map((r) => [r.normalized_name, { name: r.name, status: r.status ?? "active" }]));
 }
 
 /**
@@ -744,6 +804,16 @@ export async function readGroceryKeyIndex(
  * mark-placed advance the satellite cart-fill flush uses after the human checks out. UPDATE-ONLY:
  * a line with no existing row is skipped (never inserted), unlike `advanceInCartRows` — an order
  * can only be placed for a line already on the list. Mirrors `advanceInCartRows`' keying.
+ *
+ * This is the satellite path's PURCHASE ASSERTION (spend-telemetry, D16): after the
+ * advance, rows carrying a send linkage materialize their send-snapshot lines as spend
+ * events via the one shared writer — verbatim copy, idempotent on `(send_id, line_key)`,
+ * so a replayed mark-placed converges. A row with no linkage advances without writing
+ * spend (nothing was snapshotted for it).
+ *
+ * Status-agnostic by design: callers MUST filter to `in_cart` rows — re-advancing an
+ * already-`ordered` row restamps its `ordered_at` (the event materialize itself stays
+ * idempotent either way).
  */
 export async function advanceOrderedRows(
   env: Env,
@@ -758,12 +828,26 @@ export async function advanceOrderedRows(
   // the resolved line name — closes coupling #2 for the ordered advance.
   const byKey = new Map(current.map((it) => [storedGroceryKey(it, ctx.resolve), it]));
   const stmts: D1PreparedStatement[] = [];
+  const asserted: { sendId: string; lineKey: string }[] = [];
   for (const line of lines) {
-    const existing = byKey.get(line.key ?? ctx.resolve(line.name));
+    const key = line.key ?? ctx.resolve(line.name);
+    const existing = byKey.get(key);
     if (!existing) continue; // update-only — never mint a row on the ordered advance
+    // The linkage rides the row (`...existing`) into `ordered`; the writer keys on it.
     stmts.push(groceryUpsertStmt(env, tenant, { ...existing, status: "ordered", ordered_at: today }, ctx.resolve));
+    if (existing.sent_in) asserted.push({ sendId: existing.sent_in, lineKey: storedGroceryKey(existing, ctx.resolve) });
   }
   if (stmts.length > 0) await db(env).batch(stmts);
+  if (asserted.length > 0) await recordPurchaseAssertion(env, tenant, asserted, today);
+}
+
+/** The send-record rider an order-flush advance composes into its batch (spend-telemetry):
+ *  the send id stamps each advanced row's `sent_in`, and the snapshot statements
+ *  (`snapshotStatements(...)`) land in the SAME batch — the send exists iff the advance
+ *  succeeded. Absent (a bare advance), rows advance with no linkage and no snapshot. */
+export interface SendBatch {
+  id: string;
+  statements: D1PreparedStatement[];
 }
 
 /**
@@ -772,12 +856,18 @@ export async function advanceOrderedRows(
  * row-level upserts in one batch. Returns the canonical keys of the rows it INSERTED
  * (vs merely updated), so `rollbackInCartRows` can compensate an insert by deleting
  * the row instead of stranding a never-listed `active` item.
+ *
+ * With a `send` rider the advance is a SNAPSHOT-WRITING advance (spend-telemetry): the
+ * send-record statements join this same atomic batch and every advanced row is stamped
+ * `sent_in = send.id`. Without one, `sent_in` is left as-is (a bare advance stamps
+ * nothing — a manual or degraded advance never manufactures a linkage).
  */
 export async function advanceInCartRows(
   env: Env,
   tenant: string,
   lines: { name: string; key?: string }[],
   today: string,
+  send?: SendBatch,
 ): Promise<{ inserted: string[] }> {
   const ctx = await ingredientContext(env).catch(() => emptyIngredientContext(env));
   const current = await readGroceryList(env, tenant);
@@ -787,14 +877,14 @@ export async function advanceInCartRows(
   // so a food purchase still matches its row across surface forms; a never-listed line mints a fresh
   // row under that same key.
   const byKey = new Map(current.map((it) => [storedGroceryKey(it, ctx.resolve), it]));
-  const stmts: D1PreparedStatement[] = [];
+  const stmts: D1PreparedStatement[] = send ? [...send.statements] : [];
   const inserted: string[] = [];
   for (const line of lines) {
     const key = line.key ?? ctx.resolve(line.name);
     const existing = byKey.get(key);
     if (!existing) inserted.push(key);
     const next: GroceryItem = existing
-      ? { ...existing, status: "in_cart" }
+      ? { ...existing, status: "in_cart", sent_in: send ? send.id : (existing.sent_in ?? null) }
       : {
           name: line.name,
           normalized_name: key,
@@ -808,6 +898,7 @@ export async function advanceInCartRows(
           note: null,
           added_at: today,
           ordered_at: null,
+          sent_in: send?.id ?? null,
         };
     stmts.push(groceryUpsertStmt(env, tenant, next, ctx.resolve));
   }
@@ -823,12 +914,18 @@ export async function advanceInCartRows(
  * in_cart back to `active`. Both legs are in_cart-guarded and never insert: a line
  * with no row is skipped, and a row in any other status (`active`, `ordered`) is left
  * alone — only the advance this call compensates is undone. Mirrors the advance's keying.
+ *
+ * With a `sendId` (the advance wrote a send record) the compensation also deletes the
+ * send record + its lines in the same batch (a failed cart write means nothing was
+ * sent — no phantom order survives) and clears each flipped row's `sent_in` (rows
+ * leaving the flight without an assertion drop their linkage).
  */
 export async function rollbackInCartRows(
   env: Env,
   tenant: string,
   lines: { name: string; key?: string }[],
   inserted: string[] = [],
+  sendId?: string,
 ): Promise<void> {
   const ctx = await ingredientContext(env).catch(() => emptyIngredientContext(env));
   const current = await readGroceryList(env, tenant);
@@ -836,7 +933,7 @@ export async function rollbackInCartRows(
   // look up by the line's explicit stored key (place_order's `ResolvedLine.key`) or resolve(name).
   const byKey = new Map(current.map((it) => [storedGroceryKey(it, ctx.resolve), it]));
   const insertedKeys = new Set(inserted);
-  const stmts: D1PreparedStatement[] = [];
+  const stmts: D1PreparedStatement[] = sendId ? deleteSendStatements(env, sendId) : [];
   for (const line of lines) {
     const key = line.key ?? ctx.resolve(line.name);
     const existing = byKey.get(key);
@@ -844,7 +941,7 @@ export async function rollbackInCartRows(
     stmts.push(
       insertedKeys.has(key)
         ? db(env).prepare("DELETE FROM grocery_list WHERE tenant = ?1 AND normalized_name = ?2", tenant, key)
-        : groceryUpsertStmt(env, tenant, { ...existing, status: "active" }, ctx.resolve),
+        : groceryUpsertStmt(env, tenant, { ...existing, status: "active", sent_in: null }, ctx.resolve),
     );
   }
   if (stmts.length > 0) await db(env).batch(stmts);
