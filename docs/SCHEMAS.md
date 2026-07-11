@@ -757,6 +757,7 @@ tenant                      TEXT     -- owning user
 taste                       TEXT     -- markdown (see taste section below)
 diet_principles             TEXT     -- markdown (see diet_principles section below)
 default_cooking_nights      INTEGER  -- default number of cooking nights WITHIN the planning window
+cadence                     TEXT     -- JSON {breakfast,lunch,dinner} per-meal weekly counts 0-7 (migration 0052)
 planning_cadence_days       INTEGER  -- how far out the caller plans/shops, in days (0028); unset falls back to a 7-day planning window in propose_meal_plan
 lunch_strategy              TEXT     -- leftovers | buy | mixed
 ready_to_eat_default_action TEXT     -- opt-in | auto-add

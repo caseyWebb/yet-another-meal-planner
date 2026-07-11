@@ -507,12 +507,34 @@ export async function runProposeMealPlan(env: Env, tenant: Tenant, input: Propos
     const vibeSlots: (WeekSlot & { meal: ProposeMeal })[] = [];
     for (const meal of ENGINE_MEALS) {
       const count = meal === "dinner" ? dinnerToFill : counts[meal];
-      if (count <= 0) continue;
+      // New-for-me force-placement is DINNER-only; carry the seeds through every branch so an
+      // accepted discovery is never silently dropped when the dinner pass is short-circuited.
+      const seeds = meal === "dinner" ? newForMeSeeds : [];
+      if (count <= 0) {
+        // No free slots for this meal (a dinner fully consumed by locks) — the accepted
+        // discoveries have nowhere to land, so roll them over rather than drop them.
+        for (const s of seeds) rolledOver.push(s.id);
+        continue;
+      }
       const mealVibes = participating.filter((v) => (v.meal ?? "dinner") === meal);
       if (mealVibes.length === 0) {
         // VIBE-MEAL BINDING: a requested meal with no palette of its own yields
         // EXPLICIT empty slots + an escape note — never a cross-palette fallback.
-        for (let i = 0; i < count; i++) {
+        // Force-placement is vibe-INDEPENDENT, though: an accepted new_for_me discovery
+        // still claims a free dinner slot here (sampleWeek over an EMPTY palette — the same
+        // quota/rollover machinery as the normal pass), and only the LEFTOVER slots stay empty.
+        let placedHere = 0;
+        if (seeds.length > 0) {
+          const shape = sampleWeek([], meal === "dinner" ? dayCategories : [], debtByVibe, count, resolvedSeed, DEFAULT_CADENCE_PARAMS, window, seeds);
+          rolledOver.push(...shape.rolledOver);
+          for (const s of shape.slots) {
+            if (s.reason !== "new_for_me") continue;
+            const cand = newForMeCandBySlug.get(s.id);
+            if (cand) placedNewForMe.push(cand);
+            placedHere++;
+          }
+        }
+        for (let i = 0; i < count - placedHere; i++) {
           emptyMealSlots.push({
             vibe_id: null,
             meal,
@@ -528,9 +550,13 @@ export async function runProposeMealPlan(env: Env, tenant: Tenant, input: Propos
             why: [],
           });
         }
-        notes.push(
-          `no ${meal} vibes in the palette — add one with add_meal_vibe (meal: "${meal}"), or author an ephemeral_vibes entry carrying meal: "${meal}"`,
-        );
+        // Flag the missing palette only when empty slots actually remain — a week whose free
+        // dinner slots were entirely claimed by discoveries has nothing left to escape.
+        if (count - placedHere > 0) {
+          notes.push(
+            `no ${meal} vibes in the palette — add one with add_meal_vibe (meal: "${meal}"), or author an ephemeral_vibes entry carrying meal: "${meal}"`,
+          );
+        }
         continue;
       }
       const specs: NightVibeSpec[] = mealVibes.map((v) => ({
@@ -551,7 +577,7 @@ export async function runProposeMealPlan(env: Env, tenant: Tenant, input: Propos
         resolvedSeed,
         DEFAULT_CADENCE_PARAMS,
         window,
-        meal === "dinner" ? newForMeSeeds : [],
+        seeds,
       );
       rolledOver.push(...shape.rolledOver);
       for (const s of shape.slots) {

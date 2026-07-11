@@ -202,10 +202,11 @@ export async function logCooked(
         const exact = rows.filter((r) => r.meal === entry.meal && r.planned_for === entry.date);
         cleared = earliestDue(exact);
       }
-      // Step 3: earliest-due for the slug, excluding project rows unless the entry's
-      // meal IS 'project' — cooking a dinner never silently consumes a project row.
+      // Step 3: earliest-due for the slug. A 'project' entry clears ONLY project rows;
+      // any other entry excludes project rows — so cooking a dinner never silently
+      // consumes a project row, and cooking a project never clears a dated meal slot.
       if (!cleared) {
-        const eligible = rows.filter((r) => (entry.meal === "project" ? true : r.meal !== "project"));
+        const eligible = rows.filter((r) => (entry.meal === "project" ? r.meal === "project" : r.meal !== "project"));
         cleared = earliestDue(eligible);
       }
       // Step 4: no match → no clear (an off-plan cook, as today).

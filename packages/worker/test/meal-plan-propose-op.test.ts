@@ -759,6 +759,40 @@ describe("new-for-me discovery seeds thread through the op (converge D3)", () =>
     expect(dropped.plan.some((s) => s.reason === "new_for_me")).toBe(false);
     expect(dropped).toEqual(base);
   });
+
+  it("force-places a discovery into a free dinner slot even with NO dinner vibes (lunch-only palette)", async () => {
+    // The grill scenario: a non-empty palette that has only a LUNCH vibe. The dinner pass finds
+    // no dinner vibes but free dinner slots exist — force-placement is vibe-INDEPENDENT, so the
+    // accepted discovery must still land as a dinner slot, never silently dropped with the pass.
+    const { env } = proposeEnv([LUNCH_VIBE]); // no dinner vibe in the palette
+    const r = await runProposeMealPlan(env, TENANT, { meals: { lunch: 1, dinner: 2 }, seed: 7, new_for_me: ["beef-ragu"] }, stubDeps(env));
+    const disc = r.plan.find((s) => s.reason === "new_for_me");
+    expect(disc).toBeDefined();
+    expect(disc!.main?.slug).toBe("beef-ragu");
+    expect(disc!.meal).toBe("dinner");
+    expect(r.diagnostics.rolled_over).not.toContain("beef-ragu"); // placed, not rolled over
+    // The lunch slot fills from its palette; the discovery claims one dinner slot and the
+    // remaining dinner slot stays an EXPLICIT empty (no cross-palette fallback).
+    expect(r.plan.filter((s) => s.meal === "lunch" && s.main)).toHaveLength(1);
+    const emptyDinner = r.plan.filter((s) => s.meal === "dinner" && s.main === null);
+    expect(emptyDinner).toHaveLength(1);
+    expect(emptyDinner[0].empty_reason).toBe("no_palette_for_meal");
+    expect(r.diagnostics.meals.dinner).toEqual({ requested: 2, filled: 1, empty: 1 });
+  });
+
+  it("rolls an accepted discovery OVER when the dinner count is fully consumed by locks (no free slot)", async () => {
+    // dinnerToFill = counts.dinner - locks = 0, so the dinner pass is short-circuited. The
+    // discovery has nowhere to land, but it must surface in diagnostics.rolled_over — never vanish.
+    const { env } = proposeEnv([SEAFOOD, COMFORT]);
+    const r = await runProposeMealPlan(
+      env,
+      TENANT,
+      { meals: { dinner: 2 }, seed: 7, lock: ["salmon-rice", "chicken-soup"], new_for_me: ["beef-ragu"] },
+      stubDeps(env),
+    );
+    expect(r.plan.some((s) => s.reason === "new_for_me")).toBe(false); // no free slot to claim
+    expect(r.diagnostics.rolled_over).toContain("beef-ragu"); // surfaced, not silently dropped
+  });
 });
 
 

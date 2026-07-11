@@ -355,6 +355,19 @@ describe("logCooked — the deterministic clear order (D26-final, real SQLite)",
     expect(r2.logged.meal).toBe("project");
   });
 
+  it("step 3: a 'project' cook clears the PROJECT row even when a same-slug dated dinner is due sooner", async () => {
+    // The exact grill failure scenario: 'sourdough' planned as both an (undated, op-enforced)
+    // project row AND a dated dinner row. earliest-due orders planned_for ASC NULLS LAST, so the
+    // dated dinner sorts ahead of the undated project — the fallback must NOT admit it for a
+    // project cook, or it silently deletes the future dinner and leaves the finished bake planned.
+    const h = harness();
+    seedRow(h, "row-project-1", "sourdough", { meal: "project" });
+    seedRow(h, "row-dinner-01", "sourdough", { meal: "dinner", planned_for: "2026-07-15" });
+    const r = await logCooked(h.env, T, { type: "recipe", recipe: "sourdough", meal: "project", date: "2026-07-20" });
+    expect(r.cleared_plan_row?.id).toBe("row-project-1"); // the project row, not the sooner-due dinner
+    expect(planIds(h)).toEqual(["row-dinner-01"]); // the dated dinner slot survives
+  });
+
   it("one cook clears ONE row — an explicit duplicate survives the first cook (earliest-due picked)", async () => {
     const h = harness();
     seedRow(h, "row-bbbbbbbbbb", "miso-salmon", { planned_for: "2026-07-16" });
