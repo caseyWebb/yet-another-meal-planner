@@ -44,9 +44,14 @@
     .promo-panel { border:1px solid color-mix(in oklch, var(--brand) 32%, var(--border)); background:color-mix(in oklch, var(--brand) 6%, var(--card)); border-radius:var(--radius-xl,0.9rem); padding:0.4rem 1.35rem 0.55rem; margin-bottom:1.1rem; }
     .promo-cap { display:flex; align-items:center; gap:0.4rem; font-family:var(--font-mono); font-size:var(--text-xs); font-weight:600; text-transform:uppercase; letter-spacing:0.09em; color:var(--brand); padding:0.8rem 0 0.35rem; }
     .promo-cap svg { width:0.85rem; height:0.85rem; }
-    .fb-fav-toggle { display:inline-flex; align-items:center; gap:0.35rem; height:2rem; padding:0 0.75rem; border:1px solid var(--border); border-radius:var(--radius-md); background:var(--background); color:var(--foreground); font-family:inherit; font-size:var(--text-xs); font-weight:500; cursor:pointer; -webkit-appearance:none; appearance:none; }
-    .fb-fav-toggle svg { width:0.9rem; height:0.9rem; }
-    .fb-fav-toggle[aria-pressed="true"] { background:var(--primary); border-color:var(--primary); color:var(--primary-foreground); }
+    /* Cookbook view-mode tabs (All / Favorites) — a scope switch, distinct from the AND-filters below */
+    .viewtabs { display:flex; align-items:stretch; gap:0.1rem; margin:0 0 0.85rem; border-bottom:1px solid var(--border); }
+    .viewtabs button { -webkit-appearance:none; appearance:none; border:0; background:transparent; font-family:inherit; cursor:pointer; display:inline-flex; align-items:center; gap:0.42rem; padding:0.5rem 0.9rem 0.55rem; margin-bottom:-1px; font-size:var(--text-sm); font-weight:500; color:var(--muted-foreground); border-bottom:2px solid transparent; transition:color .12s; }
+    .viewtabs button:hover { color:var(--foreground); }
+    .viewtabs button[aria-selected="true"] { color:var(--brand); border-bottom-color:var(--brand); font-weight:600; }
+    .viewtabs button svg { width:0.98rem; height:0.98rem; }
+    .viewtabs .vt-count { font-family:var(--font-mono); font-size:0.66rem; font-weight:600; line-height:1; padding:0.16rem 0.4rem; border-radius:999px; background:var(--muted); color:var(--muted-foreground); }
+    .viewtabs button[aria-selected="true"] .vt-count { background:color-mix(in oklch, var(--brand) 16%, transparent); color:var(--brand); }
     .filterbar { display:flex; flex-wrap:wrap; align-items:center; gap:0.55rem 0.9rem; margin:0 0 1rem; padding:0; border:0; border-radius:0; background:transparent; }
     .filterbar .fb-group { display:flex; align-items:center; gap:0.45rem; }
     .filterbar .fb-label { font-family:var(--font-mono); font-size:var(--text-xs); text-transform:uppercase; letter-spacing:0.08em; color:var(--muted-foreground); white-space:nowrap; }
@@ -73,6 +78,15 @@
     .mp-switch .mp-switch-knob { position:absolute; top:2px; left:2px; width:1rem; height:1rem; border-radius:999px; background:#fff; transition:transform .15s; }
     .mp-switch[data-on="true"] .mp-switch-knob { transform:translateX(1rem); }
     .plan-week { display:flex; flex-direction:column; gap:1.4rem; }
+    /* Meal plan: quieter, less-crowded type scale (header keeps full size) */
+    [data-testid="plan-page"] { --text-xs:0.6875rem; --text-sm:0.75rem; --text-base:0.875rem; --text-lg:1rem; }
+    [data-testid="plan-page"] .page-head { --text-xs:0.75rem; --text-sm:0.875rem; --text-base:1rem; --text-lg:1.125rem; }
+    [data-testid="plan-page"] .plan-title { font-size:var(--text-base); }
+    /* Meal tonal ramp — one warm family, morning gold → midday brand → evening brick */
+    :root { --meal-breakfast:color-mix(in oklch, var(--brand) 46%, #e6ad3c); --meal-lunch:var(--brand); --meal-dinner:color-mix(in oklch, var(--brand) 58%, #5f1f0f); }
+    [data-meal="Breakfast"], [data-meal="breakfast"] { --meal-color:var(--meal-breakfast); }
+    [data-meal="Lunch"], [data-meal="lunch"] { --meal-color:var(--meal-lunch); }
+    [data-meal="Dinner"], [data-meal="dinner"] { --meal-color:var(--meal-dinner); }
     .plan-day-h { margin:0 0 0.15rem; font-size:var(--text-xs); text-transform:uppercase; letter-spacing:0.08em; color:var(--muted-foreground); font-weight:700; }
     .plan-day-slots { display:flex; flex-direction:column; }
     .plan-slot { display:grid; grid-template-columns:5.5rem 1fr; gap:0.9rem; align-items:start; padding:0.9rem 0.25rem; border-bottom:1px solid var(--border); }
@@ -83,6 +97,19 @@
     .plan-add-slot:hover { color:var(--brand); border-color:color-mix(in oklch, var(--brand) 55%, var(--border)); }
     .plan-add-slot svg { width:0.85rem; height:0.85rem; }
     .mp-recipe-combo { display:inline-flex; min-width:15rem; max-width:100%; }
+    .dup-badge { display:inline-flex; align-items:center; height:1.05rem; padding:0 0.34rem; margin-left:0.4rem; border-radius:999px; background:color-mix(in oklch, var(--brand) 14%, var(--card)); color:var(--brand); font-family:var(--font-mono); font-size:0.62rem; font-weight:700; letter-spacing:0.02em; border:1px solid color-mix(in oklch, var(--brand) 30%, var(--card)); }
+    .slot-resolve { display:flex; align-items:center; gap:0.5rem; flex-wrap:wrap; margin-top:0.45rem; padding:0.4rem 0.35rem 0.4rem 0.6rem; border-radius:var(--radius-md); background:color-mix(in oklch, var(--brand) 8%, var(--card)); border:1px solid color-mix(in oklch, var(--brand) 22%, var(--card)); font-size:var(--text-xs); color:var(--muted-foreground); }
+    .slot-resolve > svg { width:0.9rem; height:0.9rem; flex:0 0 auto; color:var(--brand); }
+    .slot-resolve strong { color:var(--foreground); font-weight:600; }
+    .slot-resolve-btn { -webkit-appearance:none; appearance:none; border:1px solid color-mix(in oklch, var(--brand) 45%, var(--border)); background:var(--card); color:var(--brand); font:inherit; font-size:var(--text-xs); font-weight:600; height:1.55rem; padding:0 0.6rem; border-radius:999px; cursor:pointer; white-space:nowrap; }
+    .slot-resolve-btn:hover { background:color-mix(in oklch, var(--brand) 12%, var(--card)); }
+    .slot-resolve-x { -webkit-appearance:none; appearance:none; border:0; background:transparent; color:var(--muted-foreground); cursor:pointer; margin-left:auto; display:inline-flex; padding:0.15rem; border-radius:var(--radius-sm); }
+    .slot-resolve-x:hover { color:var(--foreground); }
+    .slot-resolve-x svg { width:0.85rem; height:0.85rem; }
+    .plan-toast { position:fixed; left:50%; bottom:1.5rem; transform:translateX(-50%); z-index:60; display:flex; align-items:center; gap:0.65rem; padding:0.6rem 0.7rem 0.6rem 0.9rem; border-radius:var(--radius-lg); background:var(--foreground); color:var(--background); font-size:var(--text-sm); font-weight:500; box-shadow:0 10px 30px rgba(0,0,0,0.22); max-width:90vw; }
+    .plan-toast > svg { flex:0 0 auto; }
+    .plan-toast .toast-undo { -webkit-appearance:none; appearance:none; border:0; background:transparent; color:var(--background); font:inherit; font-size:var(--text-sm); font-weight:700; text-decoration:underline; cursor:pointer; padding:0 0.25rem; opacity:0.85; }
+    .plan-toast .toast-undo:hover { opacity:1; }
     .token-add-btn { display:inline-flex; align-items:center; gap:0.3rem; height:1.85rem; padding:0 0.7rem; border:1px dashed color-mix(in oklch, var(--border) 92%, var(--foreground)); border-radius:999px; background:transparent; color:var(--muted-foreground); font:inherit; font-size:var(--text-xs); font-weight:500; cursor:pointer; -webkit-appearance:none; appearance:none; }
     .token-add-btn:hover { color:var(--brand); border-color:color-mix(in oklch, var(--brand) 55%, var(--border)); }
     .token-add-btn svg { width:0.8rem; height:0.8rem; }
@@ -238,6 +265,21 @@
     .vibe-group { display:flex; flex-direction:column; gap:0.7rem; }
     .vibe-group .vibe-group-h { margin-bottom:0; }
     .vibe-wand { color:var(--brand); }
+    .vibe-pin { display:inline-flex; align-items:center; gap:0.25rem; flex:0 0 auto; font-size:0.6rem; font-weight:700; text-transform:uppercase; letter-spacing:0.06em; color:var(--brand); padding:0.12rem 0.5rem 0.12rem 0.4rem; border-radius:2rem; background:color-mix(in oklch, var(--brand) 13%, transparent); border:1px solid color-mix(in oklch, var(--brand) 32%, var(--border)); }
+    .vibe-pin svg { width:0.72rem; height:0.72rem; flex:0 0 auto; }
+    .vibe-row.pinned .vibe-debt { opacity:0.3; }
+    .vibe-row.pinned .vibe-cadence { color:color-mix(in oklch, var(--muted-foreground) 70%, transparent); }
+    .vibe-who { display:flex; flex-wrap:wrap; align-items:center; gap:0.4rem; }
+    .who-chip { display:inline-flex; align-items:center; gap:0.4rem; height:1.95rem; padding:0 0.65rem 0 0.32rem; border:1px solid var(--border); border-radius:999px; background:transparent; color:var(--muted-foreground); font:inherit; font-size:var(--text-xs); font-weight:600; cursor:pointer; -webkit-appearance:none; appearance:none; }
+    .who-chip.everyone { padding:0 0.75rem; }
+    .who-chip:hover { border-color:color-mix(in oklch, var(--brand) 45%, var(--border)); color:var(--foreground); }
+    .who-chip[aria-pressed="true"] { border-color:var(--primary); background:color-mix(in oklch, var(--primary) 12%, transparent); color:var(--foreground); }
+    .who-ava { width:1.4rem; height:1.4rem; border-radius:999px; display:inline-flex; align-items:center; justify-content:center; font-size:0.6rem; font-weight:700; background:color-mix(in oklch, var(--brand) 18%, var(--card)); color:var(--brand); flex:0 0 auto; }
+    .vibe-who-help { margin:0.4rem 0 0; font-size:var(--text-xs); color:var(--muted-foreground); }
+    .vibe-who-tag { display:inline-flex; align-items:center; gap:0.32rem; flex:0 0 auto; font-size:0.62rem; font-weight:600; color:var(--muted-foreground); padding:0.1rem 0.5rem 0.1rem 0.22rem; border-radius:2rem; border:1px solid var(--border); background:var(--card); }
+    .vibe-who-tag .who-stack { display:inline-flex; }
+    .vibe-who-tag .who-ava-sm { width:1.15rem; height:1.15rem; border-radius:999px; display:inline-flex; align-items:center; justify-content:center; font-size:0.55rem; font-weight:700; background:color-mix(in oklch, var(--brand) 18%, var(--card)); color:var(--brand); box-shadow:0 0 0 1.5px var(--card); }
+    .vibe-who-tag .who-ava-sm + .who-ava-sm { margin-left:-0.42rem; }
     .vibe-row.adding .vibe-edit { margin-top:0; padding-top:0; border-top:0; }
     .vibe-add-cap { display:flex; align-items:center; gap:0.4rem; font-family:var(--font-mono); font-size:var(--text-xs); text-transform:uppercase; letter-spacing:0.07em; color:var(--brand); font-weight:600; padding-bottom:0.7rem; }
     .vibe-add-cap svg { flex:0 0 auto; }
@@ -324,9 +366,16 @@
     .cadence-row { display:flex; flex-direction:column; gap:0.55rem; }
     .cadence-item { display:flex; align-items:center; justify-content:space-between; gap:0.5rem; }
     .cadence-meal { font-family:var(--font-mono); font-size:var(--text-xs); text-transform:uppercase; letter-spacing:0.06em; color:var(--muted-foreground); min-width:4.75rem; }
+    .budget-input { position:relative; display:flex; align-items:center; max-width:12rem; }
+    .budget-input .budget-prefix { position:absolute; left:0.7rem; font-size:var(--text-sm); color:var(--muted-foreground); pointer-events:none; }
+    .budget-input .input { padding-left:1.5rem; padding-right:2rem; width:100%; font-variant-numeric:tabular-nums; }
+    .budget-input .budget-clear { position:absolute; right:0.4rem; display:inline-flex; align-items:center; justify-content:center; width:1.4rem; height:1.4rem; border:0; background:transparent; color:var(--muted-foreground); border-radius:999px; cursor:pointer; font-size:1.05rem; line-height:1; -webkit-appearance:none; appearance:none; }
+    .budget-input .budget-clear:hover { color:var(--foreground); background:color-mix(in oklch, var(--foreground) 10%, transparent); }
+    .prof-help { margin:0.3rem 0 0; font-size:var(--text-xs); color:var(--muted-foreground); line-height:1.45; }
+    .prof-help.budget-off { color:var(--muted-foreground); font-style:italic; }
     .unsched-meal { display:grid; grid-template-columns:6rem 1fr; gap:0.25rem 0.75rem; align-items:start; padding:0.5rem 0; }
     .unsched-meal + .unsched-meal { border-top:1px solid var(--border); }
-    .unsched-meal-label { font-family:var(--font-mono); font-size:var(--text-xs); font-weight:600; text-transform:uppercase; letter-spacing:0.09em; color:var(--brand); padding-top:0.55rem; }
+    .unsched-meal-label { font-family:var(--font-mono); font-size:var(--text-xs); font-weight:600; text-transform:uppercase; letter-spacing:0.09em; color:var(--meal-color,var(--brand)); padding-top:0.55rem; }
     .unsched-meal-body { display:grid; grid-template-columns:9.5rem 1fr; gap:1rem 0.75rem; align-items:center; min-width:0; }
     .unsched-cell-date .plan-date { width:100%; }
     .unsched-cell-main { display:flex; align-items:center; justify-content:space-between; gap:0.75rem; min-width:0; }
@@ -411,7 +460,7 @@
     .log-day-entries { display:flex; flex-direction:column; }
     .log-entry { display:grid; grid-template-columns:6.5rem 1fr auto; gap:0.75rem; align-items:center; padding:0.7rem 0.9rem; border-top:1px solid var(--border); }
     .log-entry:first-child { border-top:0; }
-    .log-meal { justify-self:start; display:inline-flex; align-items:center; font-size:0.66rem; font-weight:700; text-transform:uppercase; letter-spacing:0.07em; color:var(--brand); white-space:nowrap; font-family:var(--font-mono); }
+    .log-meal { justify-self:start; display:inline-flex; align-items:center; font-size:0.66rem; font-weight:700; text-transform:uppercase; letter-spacing:0.07em; color:var(--meal-color,var(--brand)); white-space:nowrap; font-family:var(--font-mono); }
     .log-entry-main { min-width:0; }
     .log-entry-title { font-size:var(--text-sm); font-weight:500; }
     .spend-toolbar { display:flex; align-items:center; justify-content:space-between; gap:0.7rem 1.2rem; flex-wrap:wrap; margin-bottom:1.25rem; }
@@ -740,6 +789,14 @@
           <input class="input" type="search" autocomplete="off" spellcheck="false" placeholder="Search recipes…" aria-label="Search recipes" value="{{ query }}" onInput="{{ onSearch }}">
           <button type="button" class="search-clear" aria-label="Clear search" onClick="{{ clearSearch }}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"></path></svg></button>
         </div>
+        <div class="viewtabs" role="tablist" aria-label="Cookbook view">
+          <button type="button" role="tab" aria-selected="{{ notFavOnly }}" onClick="{{ viewAll }}">All recipes</button>
+          <button type="button" role="tab" aria-selected="{{ favOnly }}" onClick="{{ viewFavs }}">
+            <svg viewBox="0 0 24 24" fill="{{ favTabIconFill }}" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.29 1.51 4.04 3 5.5l7 7Z"></path></svg>
+            Favorites
+            <sc-if value="{{ hasFavTab }}" hint-placeholder-val="{{ true }}"><span class="vt-count">{{ favTabCount }}</span></sc-if>
+          </button>
+        </div>
         <div class="filterbar" data-testid="cookbook-filters">
           <div class="fb-group"><span class="fb-label">Cuisine</span><select class="select" aria-label="Filter by cuisine" value="{{ f.cuisine }}" onChange="{{ f.onCuisine }}"><option value="">All cuisines</option><sc-for list="{{ cuisineFilterOptions }}" as="o" hint-placeholder-count="6"><option value="{{ o.v }}">{{ o.label }}</option></sc-for></select></div>
           <div class="fb-group"><span class="fb-label">Protein</span><select class="select" aria-label="Filter by protein" value="{{ f.protein }}" onChange="{{ f.onProtein }}"><option value="">All proteins</option><sc-for list="{{ proteinFilterOptions }}" as="o" hint-placeholder-count="6"><option value="{{ o.v }}">{{ o.label }}</option></sc-for></select></div>
@@ -800,23 +857,41 @@
           <button type="button" role="switch" aria-checked="{{ showEmptySlots }}" class="mp-switch" data-on="{{ showEmptySlots }}" onClick="{{ onToggleEmptySlots }}"><span class="mp-switch-knob"></span></button>
           <span style="font-size:var(--text-sm);font-weight:500;">Show empty meal slots</span>
         </div>
+        <sc-if value="{{ hasToast }}" hint-placeholder-val="{{ false }}">
+          <div class="plan-toast" role="status">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 5 5 9-11"></path></svg>
+            <span>{{ toastText }}</span>
+            <button type="button" class="toast-undo" onClick="{{ onDismissToast }}">Dismiss</button>
+          </div>
+        </sc-if>
         <sc-if value="{{ showEmptySlots }}" hint-placeholder-val="{{ false }}">
           <div class="plan-group" data-testid="plan-week">
             <sc-for list="{{ weekDays }}" as="d" hint-placeholder-count="7">
               <sc-for list="{{ d.slots }}" as="s" hint-placeholder-count="3">
                 <div class="plan-row{{ s.rowBorderClass }}" data-testid="plan-slot" style="grid-template-columns:9.5rem 5.5rem 1fr auto;align-items:start;">
                   <div class="plan-when" style="display:flex;align-items:center;height:2.1rem;font-size:var(--text-xs);text-transform:uppercase;letter-spacing:0.06em;font-weight:600;color:var(--muted-foreground);white-space:nowrap;">{{ s.dayLabel }}</div>
-                  <span class="plan-meal" style="display:flex;align-items:center;height:2.1rem;font-family:var(--font-mono);font-size:var(--text-xs);font-weight:600;text-transform:uppercase;letter-spacing:0.09em;color:var(--brand);white-space:nowrap;">{{ s.meal }}</span>
+                  <span class="plan-meal" data-meal="{{ s.meal }}" style="display:flex;align-items:center;height:2.1rem;font-family:var(--font-mono);font-size:var(--text-xs);font-weight:600;text-transform:uppercase;letter-spacing:0.09em;color:var(--meal-color,var(--brand));white-space:nowrap;">{{ s.meal }}</span>
                   <div class="plan-main">
                     <sc-if value="{{ s.picking }}" hint-placeholder-val="{{ false }}">
                       <span class="mp-recipe-combo"><x-import component-from-global-scope="GroceryAgentUI.Combobox" options="{{ recipeOptions }}" auto-focus="{{ true }}" placeholder="Search recipes…" aria-label="Choose a recipe" empty-text="No match" on-select="{{ s.onPick }}" on-cancel="{{ s.onCancelPick }}" hint-size="240px,40px"></x-import></span>
                     </sc-if>
                     <sc-if value="{{ s.showFilled }}" hint-placeholder-val="{{ false }}">
-                      <button type="button" class="plan-title plain-link" title="Change recipe" onClick="{{ s.onChange }}">{{ s.title }}</button>
+                      <div style="display:flex;align-items:center;flex-wrap:wrap;">
+                        <button type="button" class="plan-title plain-link" title="Change recipe" onClick="{{ s.onChange }}">{{ s.title }}</button>
+                        <sc-if value="{{ s.hasDup }}" hint-placeholder-val="{{ false }}"><span class="dup-badge" title="This recipe is planned in more than one slot">{{ s.dupBadge }}</span></sc-if>
+                      </div>
                       <div class="plan-sides">
                         <sc-for list="{{ s.sides }}" as="sd" hint-placeholder-count="0"><span class="side-chip">{{ sd.label }}<button type="button" class="side-x" title="Remove side" onClick="{{ sd.onRemove }}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"></path></svg></button></span></sc-for>
                         <button type="button" class="side-add" title="Add a side" onClick="{{ s.onAddSide }}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M5 12h14"></path></svg> side</button>
                       </div>
+                      <sc-if value="{{ s.hasResolve }}" hint-placeholder-val="{{ false }}">
+                        <div class="slot-resolve">
+                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14M13 5l7 7-7 7"></path></svg>
+                          <span>Moved from <strong>{{ s.resolveFrom }}</strong> — sides kept.</span>
+                          <button type="button" class="slot-resolve-btn" onClick="{{ s.onAddAgain }}">Add again instead</button>
+                          <button type="button" class="slot-resolve-x" title="Keep as moved" onClick="{{ s.onDismissResolve }}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"></path></svg></button>
+                        </div>
+                      </sc-if>
                     </sc-if>
                     <sc-if value="{{ s.showEmpty }}" hint-placeholder-val="{{ true }}">
                       <button type="button" class="plan-add-slot" onClick="{{ s.onAdd }}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M5 12h14"></path></svg> Add Recipe</button>
@@ -830,12 +905,35 @@
             </sc-for>
           </div>
         </sc-if>
+        <sc-if value="{{ showLater }}" hint-placeholder-val="{{ false }}">
+          <div class="plan-group" data-testid="plan-later">
+            <h2 class="group-h">Later</h2>
+            <p style="margin:-0.3rem 0 0.9rem;color:var(--muted-foreground);font-size:var(--text-sm);line-height:1.45;max-width:34rem;">Scheduled beyond the next 7 days. Change a date to pull one up into the grid.</p>
+            <sc-for list="{{ laterRows }}" as="p" hint-placeholder-count="1">
+              <div class="plan-row{{ p.borderClass }}" data-testid="later-row" style="grid-template-columns:9.5rem 5.5rem 1fr auto;align-items:start;">
+                <div class="plan-when"><input type="date" class="input plan-date" value="{{ p.planned_for }}" aria-label="Planned date" onInput="{{ p.onDate }}" style="width:auto;max-width:100%;"></div>
+                <span class="plan-meal" data-meal="{{ p.meal }}" style="display:flex;align-items:center;height:2.1rem;font-family:var(--font-mono);font-size:var(--text-xs);font-weight:600;text-transform:uppercase;letter-spacing:0.09em;color:var(--meal-color,var(--brand));white-space:nowrap;">{{ p.meal }}</span>
+                <div class="plan-main">
+                  <div style="display:flex;align-items:center;flex-wrap:wrap;">
+                    <button type="button" class="plan-title plain-link" onClick="{{ p.goDetail }}">{{ p.title }}</button>
+                    <sc-if value="{{ p.hasDup }}" hint-placeholder-val="{{ false }}"><span class="dup-badge" title="This recipe is planned in more than one slot">{{ p.dupBadge }}</span></sc-if>
+                  </div>
+                  <div class="plan-sides">
+                    <sc-for list="{{ p.sides }}" as="sd" hint-placeholder-count="0"><span class="side-chip">{{ sd.label }}<button type="button" class="side-x" title="Remove side" onClick="{{ sd.onRemove }}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"></path></svg></button></span></sc-for>
+                    <button type="button" class="side-add" title="Add a side" onClick="{{ p.onAddSide }}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M5 12h14"></path></svg> side</button>
+                  </div>
+                </div>
+                <button type="button" class="icon-btn" title="Remove from plan" onClick="{{ p.onRemove }}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path></svg></button>
+              </div>
+            </sc-for>
+          </div>
+        </sc-if>
         <sc-if value="{{ showScheduledList }}" hint-placeholder-val="{{ true }}">
           <div class="plan-group" data-testid="plan-scheduled">
             <h2 class="group-h">Scheduled</h2>
             <sc-for list="{{ scheduledRows }}" as="p" hint-placeholder-count="2">
               <div class="plan-row{{ p.borderClass }}" data-testid="plan-row" style="grid-template-columns:9.5rem 5.5rem 1fr auto;position:relative;"><div class="plan-day" style="position:absolute;right:100%;margin-right:0.75rem;top:0.9rem;display:flex;align-items:center;height:2.1rem;font-size:var(--text-xs);text-transform:uppercase;letter-spacing:0.06em;font-weight:600;color:var(--muted-foreground);white-space:nowrap;">{{ p.dayLabel }}</div>
-                <div class="plan-when"><input type="date" class="input plan-date" value="{{ p.planned_for }}" aria-label="Planned date" onInput="{{ p.onDate }}" style="width:100%;"></div><span class="plan-meal" style="display:flex;align-items:center;height:2.1rem;font-family:var(--font-mono);font-size:var(--text-xs);font-weight:600;text-transform:uppercase;letter-spacing:0.09em;color:var(--brand);white-space:nowrap;">{{ p.meal }}</span>
+                <div class="plan-when"><input type="date" class="input plan-date" value="{{ p.planned_for }}" aria-label="Planned date" onInput="{{ p.onDate }}" style="width:auto;max-width:100%;"></div><span class="plan-meal" data-meal="{{ p.meal }}" style="display:flex;align-items:center;height:2.1rem;font-family:var(--font-mono);font-size:var(--text-xs);font-weight:600;text-transform:uppercase;letter-spacing:0.09em;color:var(--meal-color,var(--brand));white-space:nowrap;">{{ p.meal }}</span>
                 <div class="plan-main">
                   <button type="button" class="plan-title plain-link" onClick="{{ p.goDetail }}">{{ p.title }}</button>
                   <div class="plan-sides">
@@ -853,7 +951,7 @@
             <h2 class="group-h">Unscheduled</h2>
             <sc-for list="{{ unscheduledMeals }}" as="um" hint-placeholder-count="3">
               <div class="unsched-meal">
-                <div class="unsched-meal-label">{{ um.meal }}</div>
+                <div class="unsched-meal-label" data-meal="{{ um.meal }}">{{ um.meal }}</div>
                 <div class="unsched-meal-body">
                   <sc-for list="{{ um.rows }}" as="p" hint-placeholder-count="0">
                     <div class="unsched-cell-date"><input type="date" class="input plan-date" value="{{ p.planned_for }}" aria-label="Planned date" onInput="{{ p.onDate }}"></div>
@@ -919,7 +1017,7 @@
           <li>Plan your week</li>
         </ol></nav>
         <header class="page-head" style="display:flex;align-items:flex-start;justify-content:space-between;gap:1rem;"><div><h1>Plan your week</h1><p>Build a week from the moods you cook by — balanced across the week and tuned to the forecast.</p></div><button type="button" class="icon-btn" title="Meal vibe settings" aria-label="Meal vibe settings" onClick="{{ goVibeSettings }}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg></button></header>
-        <dc-import name="Meal Planning Widget" embedded="{{ true }}" panel-placement="overlay" hide-heading="{{ true }}" auto-propose="{{ false }}" session-key="yamp:propose-session" on-commit="{{ onWidgetCommit }}" on-open-recipe="{{ onOpenRecipeSlug }}" hint-size="100%,620px"></dc-import>
+        <dc-import name="Meal Planning Widget" embedded="{{ true }}" panel-placement="overlay" hide-heading="{{ true }}" auto-propose="{{ false }}" session-key="yamp:propose-session" typical-week="{{ typicalWeekProp }}" on-commit="{{ onWidgetCommit }}" on-open-recipe="{{ onOpenRecipeSlug }}" hint-size="100%,620px"></dc-import>
       </div>
     </sc-if>
 
@@ -1345,7 +1443,8 @@
               <section class="card prof-card" style="display:flex;flex-direction:column;border:1px solid var(--border);border-radius:var(--radius-xl,0.9rem);background:var(--card);padding:1.5rem;">
                 <header><h3>Planning</h3></header>
                 <section class="prof-fields">
-                  <div class="prof-field"><label>Weekly cooking cadence</label><div class="cadence-row"><sc-for list="{{ cadenceSteppers }}" as="c" hint-placeholder-count="3"><div class="cadence-item"><span class="cadence-meal">{{ c.meal }}</span><div class="nights-step"><button type="button" class="step-btn" aria-label="{{ c.decLabel }}" disabled="{{ c.decDisabled }}" onClick="{{ c.onDec }}">−</button><span class="nights-n">{{ c.value }}</span><button type="button" class="step-btn" aria-label="{{ c.incLabel }}" disabled="{{ c.incDisabled }}" onClick="{{ c.onInc }}">+</button></div></div></sc-for></div></div>
+                  <div class="prof-field" data-testid="typical-week"><label>Typical week</label><p class="prof-help" style="margin:0 0 0.7rem;">Your usual pattern — each new week's plan starts here. Tap a night to add it (✓ = any time); tap again to cap its cook time.</p><div style="display:flex;flex-direction:column;gap:0.9rem;"><sc-for list="{{ typicalMeals }}" as="m" hint-placeholder-count="3"><div><div style="display:flex;align-items:baseline;justify-content:space-between;gap:0.5rem;margin-bottom:0.4rem;"><span style="font-family:var(--font-mono);font-size:var(--text-xs);text-transform:uppercase;letter-spacing:0.06em;color:var(--muted-foreground);">{{ m.label }}</span><span style="font-family:var(--font-mono);font-size:0.6rem;text-transform:uppercase;letter-spacing:0.03em;color:var(--muted-foreground);">{{ m.countLabel }}</span></div><div style="display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:0.3rem;"><sc-for list="{{ m.cells }}" as="c" hint-placeholder-count="7"><button type="button" aria-label="{{ c.aria }}" aria-pressed="{{ c.on }}" onClick="{{ c.onCycle }}" style="height:2.15rem;display:inline-flex;flex-direction:column;align-items:center;justify-content:center;gap:0.06rem;border-radius:0.4rem;cursor:pointer;font:inherit;-webkit-appearance:none;appearance:none;transition:background .12s,border-color .12s;{{ c.style }}"><span style="font-size:0.5rem;font-weight:600;letter-spacing:0.02em;opacity:0.8;">{{ c.day }}</span><sc-if value="{{ c.anyOnly }}" hint-placeholder-val="{{ false }}"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 5 5 9-11"></path></svg></sc-if><sc-if value="{{ c.timed }}" hint-placeholder-val="{{ false }}"><span style="font-size:0.66rem;font-weight:700;font-variant-numeric:tabular-nums;line-height:1;">{{ c.num }}</span></sc-if></button></sc-for></div></div></sc-for></div></div>
+                  <div class="prof-field" data-testid="budget-field"><div style="display:flex;align-items:center;justify-content:space-between;gap:0.6rem;"><label style="margin:0;font-size:var(--text-xs);">Weekly grocery budget</label><div class="budget-input" style="max-width:6.75rem;flex:0 0 auto;"><span class="budget-prefix">$</span><input type="text" inputmode="decimal" class="input" placeholder="No budget" aria-label="Weekly grocery budget in dollars" value="{{ budgetInputVal }}" onInput="{{ onBudgetInput }}" onBlur="{{ onBudgetBlur }}"><sc-if value="{{ budgetIsSet }}" hint-placeholder-val="{{ false }}"><button type="button" class="budget-clear" title="Clear budget" aria-label="Clear budget" onClick="{{ onBudgetClear }}">×</button></sc-if></div></div><sc-if value="{{ budgetUnset }}" hint-placeholder-val="{{ false }}"><p class="prof-help budget-off" style="margin:0.4rem 0 0;">No budget set — the budget line simply won't render.</p></sc-if></div>
                   <div class="prof-field"><label>Resurface recipes after <span class="muted">({{ resurfaceLabel }})</span></label><input type="range" class="input" min="14" max="60" step="1" value="{{ resurfaceVal }}" onChange="{{ onResurface }}"></div>
                   <div class="prof-field"><label>Novelty boost <span class="muted">({{ noveltyLabel }})</span></label><input type="range" class="input" min="0.1" max="0.5" step="0.05" value="{{ novelty }}" onChange="{{ onNovelty }}"></div>
                 </section>
@@ -1748,6 +1847,9 @@
                     </div>
                     <div class="vibe-wx"><span class="vibe-wx-label"><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 14.76V3.5a2.5 2.5 0 0 0-5 0v11.26a4.5 4.5 0 1 0 5 0Z"></path></svg> Weather fit</span><div class="vibe-wx-chips"><sc-for list="{{ weatherOpts }}" as="w" hint-placeholder-count="3"><button type="button" class="wxchip{{ w.onCls }}" aria-pressed="{{ w.on }}" onClick="{{ w.onClick }}">{{ w.label }}</button></sc-for></div></div>
                     <div class="vibe-wx"><span class="vibe-wx-label">Season</span><div class="vibe-wx-chips"><sc-for list="{{ seasonOpts }}" as="s3" hint-placeholder-count="4"><button type="button" class="wxchip{{ s3.onCls }}" aria-pressed="{{ s3.on }}" onClick="{{ s3.onClick }}">{{ s3.label }}</button></sc-for></div><label class="note-priv"><input type="checkbox" checked="{{ vibeForm.pinned }}" onChange="{{ onDraftPinned }}"> Pinned (weekly intent)</label></div>
+                    <sc-if value="{{ showWho }}" hint-placeholder-val="{{ true }}">
+                    <div class="vibe-wx"><span class="vibe-wx-label"><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg> Who's it for</span><div class="vibe-who"><button type="button" class="who-chip everyone" aria-pressed="{{ vibeForm.who.everyoneOn }}" onClick="{{ vibeForm.who.onEveryone }}">Everyone</button><sc-for list="{{ vibeForm.who.chips }}" as="w" hint-placeholder-count="3"><button type="button" class="who-chip" aria-pressed="{{ w.on }}" onClick="{{ w.onClick }}"><span class="who-ava">{{ w.initial }}</span>{{ w.name }}</button></sc-for></div><sc-if value="{{ vibeForm.who.assigned }}" hint-placeholder-val="{{ false }}"><p class="vibe-who-help">Only planned when they're eating that week.</p></sc-if></div>
+                    </sc-if>
                     <div class="vibe-edit-actions"><span></span><span class="vibe-edit-btns"><button type="submit" class="ybtn sm"><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M5 12h14"></path></svg> Add vibe</button></span></div>
                   </form>
                 </div>
@@ -1758,8 +1860,8 @@
                   <sc-for list="{{ vibeGroups }}" as="g" hint-placeholder-count="3">
                   <div class="vibe-group"><h4 class="vibe-group-h">{{ g.label }}</h4>
                   <sc-for list="{{ g.rows }}" as="v" hint-placeholder-count="2">
-                    <div class="vibe-row" data-testid="vibe-row">
-                      <div class="vibe-top"><div class="vibe-headline"><span class="vibe-name">{{ v.name }}</span><span class="vibe-status" data-k="{{ v.statusK }}">{{ v.statusLabel }}</span></div><div class="vibe-row-actions"><sc-if value="{{ v.hasSuggestion }}" hint-placeholder-val="{{ false }}"><button type="button" class="icon-btn vibe-wand" title="Suggestion from your cooking" aria-label="Suggestion from your cooking" onClick="{{ v.onToggleSuggest }}"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v4M12 17v4M3 12h4M17 12h4M5.6 5.6l2.8 2.8M15.6 15.6l2.8 2.8M18.4 5.6l-2.8 2.8M8.4 15.6l-2.8 2.8"></path></svg></button></sc-if><button type="button" class="icon-btn" title="Edit vibe" onClick="{{ v.onEdit }}"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"></path></svg></button></div></div>
+                    <div class="vibe-row{{ v.rowClass }}" data-testid="vibe-row">
+                      <div class="vibe-top"><div class="vibe-headline"><span class="vibe-name">{{ v.name }}</span><sc-if value="{{ v.pinned }}" hint-placeholder-val="{{ false }}"><span class="vibe-pin" title="Pinned — the planner places this every week, regardless of cadence debt"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 17v5"></path><path d="M9 10.8a2 2 0 0 1-1.1 1.8l-1.8.9A2 2 0 0 0 5 15.2V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.8a2 2 0 0 0-1.1-1.7l-1.8-.9A2 2 0 0 1 15 10.8V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"></path></svg>Pinned</span></sc-if><span class="vibe-status" data-k="{{ v.statusK }}">{{ v.statusLabel }}</span><sc-if value="{{ v.assigned }}" hint-placeholder-val="{{ false }}"><span class="vibe-who-tag" title="For {{ v.whoLabel }} — only planned when they're eating that week"><span class="who-stack"><sc-for list="{{ v.whoMembers }}" as="w" hint-placeholder-count="1"><span class="who-ava-sm">{{ w.initial }}</span></sc-for></span>{{ v.whoLabel }}</span></sc-if></div><div class="vibe-row-actions"><sc-if value="{{ v.hasSuggestion }}" hint-placeholder-val="{{ false }}"><button type="button" class="icon-btn vibe-wand" title="Suggestion from your cooking" aria-label="Suggestion from your cooking" onClick="{{ v.onToggleSuggest }}"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v4M12 17v4M3 12h4M17 12h4M5.6 5.6l2.8 2.8M15.6 15.6l2.8 2.8M18.4 5.6l-2.8 2.8M8.4 15.6l-2.8 2.8"></path></svg></button></sc-if><button type="button" class="icon-btn" title="Edit vibe" onClick="{{ v.onEdit }}"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"></path></svg></button></div></div>
                       <sc-if value="{{ v.suggestOpen }}" hint-placeholder-val="{{ false }}"><div class="vibe-suggest"><div class="vibe-suggest-cap"><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v4M12 17v4M3 12h4M17 12h4M5.6 5.6l2.8 2.8M15.6 15.6l2.8 2.8M18.4 5.6l-2.8 2.8M8.4 15.6l-2.8 2.8"></path></svg> Suggestion from your cooking</div><p>{{ v.suggestText }}</p><div class="vibe-suggest-actions"><button type="button" class="ybtn sm" onClick="{{ v.onApplySuggest }}">{{ v.suggestApplyLabel }}</button><button type="button" class="ybtn ghost sm" onClick="{{ v.onDismissSuggest }}">Dismiss</button></div></div></sc-if>
                       <div class="vibe-meta"><sc-for list="{{ v.meta }}" as="m" hint-placeholder-count="2"><span class="facet" data-kind="{{ m.kind }}">{{ m.label }}</span></sc-for><sc-for list="{{ v.seasons }}" as="s2" hint-placeholder-count="0"><span class="facet vibe-season">{{ s2.label }}</span></sc-for><sc-if value="{{ v.hasCadence }}" hint-placeholder-val="{{ true }}"><span class="vibe-cadence"><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M12 7v5l3 2"></path></svg> {{ v.cadenceLabel }}</span></sc-if><span class="vibe-last">{{ v.lastLabel }}</span></div>
                       <div class="vibe-debt" title="cadence debt — how overdue this vibe is"><span class="vibe-debt-fill" data-k="{{ v.statusK }}" style="width:{{ v.meter }};"></span></div>
@@ -1775,6 +1877,9 @@
                           </div>
                           <div class="vibe-wx"><span class="vibe-wx-label"><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 14.76V3.5a2.5 2.5 0 0 0-5 0v11.26a4.5 4.5 0 1 0 5 0Z"></path></svg> Weather fit</span><div class="vibe-wx-chips"><sc-for list="{{ weatherOpts }}" as="w" hint-placeholder-count="3"><button type="button" class="wxchip{{ w.onCls }}" aria-pressed="{{ w.on }}" onClick="{{ w.onClick }}">{{ w.label }}</button></sc-for></div></div>
                           <div class="vibe-wx"><span class="vibe-wx-label">Season</span><div class="vibe-wx-chips"><sc-for list="{{ seasonOpts }}" as="s3" hint-placeholder-count="4"><button type="button" class="wxchip{{ s3.onCls }}" aria-pressed="{{ s3.on }}" onClick="{{ s3.onClick }}">{{ s3.label }}</button></sc-for></div><label class="note-priv"><input type="checkbox" checked="{{ vibeForm.pinned }}" onChange="{{ onDraftPinned }}"> Pinned (weekly intent)</label></div>
+                          <sc-if value="{{ showWho }}" hint-placeholder-val="{{ true }}">
+                          <div class="vibe-wx"><span class="vibe-wx-label"><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg> Who's it for</span><div class="vibe-who"><button type="button" class="who-chip everyone" aria-pressed="{{ vibeForm.who.everyoneOn }}" onClick="{{ vibeForm.who.onEveryone }}">Everyone</button><sc-for list="{{ vibeForm.who.chips }}" as="w" hint-placeholder-count="3"><button type="button" class="who-chip" aria-pressed="{{ w.on }}" onClick="{{ w.onClick }}"><span class="who-ava">{{ w.initial }}</span>{{ w.name }}</button></sc-for></div><sc-if value="{{ vibeForm.who.assigned }}" hint-placeholder-val="{{ false }}"><p class="vibe-who-help">Only planned when they're eating that week.</p></sc-if></div>
+                          </sc-if>
                           <div class="vibe-edit-actions"><button type="button" class="ybtn ghost sm" onClick="{{ deleteCurrentVibe }}"><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg> Delete</button><span class="vibe-edit-btns"><button type="button" class="ybtn ghost sm" onClick="{{ cancelVibe }}">Cancel</button><button type="submit" class="ybtn sm">{{ vibeForm.saveLabel }}</button></span></div>
                         </form>
                       </sc-if>
@@ -2101,8 +2206,10 @@ class Component extends DCLogic {
       justVerified: {},
       pantryAddOpen: false,
       pantryDraft: [{ name: '', quantity: '', category: '', location: '' }],
-      showEmptySlots: false,
+      showEmptySlots: true,
       planPicker: null,
+      planResolve: null,
+      planToast: null,
       disconnectTarget: null,
       disconnectInput: '',
       userNotes: {},
@@ -2136,16 +2243,19 @@ class Component extends DCLogic {
       discSenders: [{ name: 'Serious Eats', address: 'newsletter@seriouseats.com' }, { name: 'Bon App\u00e9tit', address: 'digest@bonappetit.com' }],
       mdEdit: null,
       mdDraft: '',
+      budgetDraft: null,
       prof: {
         taste: "Big on bright, acidic, herby food — Thai, Vietnamese, and Mediterranean are the weeknight defaults. Love a good chili crunch, and I'll put a fried egg on almost anything.\n\n- Weeknights should be 30–40 minutes, one or two pans.\n- Weekends are fair game for a longer braise.\n- Cooking for two, and leftovers for lunch are a plus.",
         diet: "- No pork for one of us — swap to chicken or beef.\n- Keep added sugar low.\n- Fish at least twice a week.",
         owned: ['wok', 'dutch-oven', 'cast-iron-skillet', 'sheet-pans', 'instant-read-thermometer', 'blender', 'rice-cooker'],
         nights: 4,
         cadence: { breakfast: 2, lunch: 3, dinner: 4 },
+        typicalWeek: { cells: { breakfast: this.spreadCells(2), lunch: this.spreadCells(3), dinner: this.spreadCells(4) } },
         lunch: 'leftovers',
         rte: 'opt-in',
         resurface: 30,
         novelty: 0.2,
+        weeklyBudget: (this.props.weeklyBudget != null ? this.props.weeklyBudget : 95),
         avoid: ['pork', 'blue cheese'],
         limit: ['added sugar', 'red meat'],
         zip: '78745',
@@ -2178,11 +2288,11 @@ class Component extends DCLogic {
       },
       vibes: [
         { id: 'v0', vibe: 'Savory eggs', meal: 'Breakfast', facets: { max_time_total: 15 }, cadence_days: 4, weather_affinity: [], season: [], pinned: true, last_satisfied: this.iso(-2) },
-        { id: 'v6', vibe: 'Overnight oats', meal: 'Breakfast', facets: { max_time_total: 10 }, cadence_days: 7, weather_affinity: [], season: [], pinned: false, last_satisfied: this.iso(-8) },
+        { id: 'v6', vibe: 'Overnight oats', meal: 'Breakfast', facets: { max_time_total: 10 }, cadence_days: 7, weather_affinity: [], season: [], pinned: false, members: ['h2'], last_satisfied: this.iso(-8) },
         { id: 'v2', vibe: 'Big salad + protein', meal: 'Lunch', facets: { cuisine: 'mediterranean', max_time_total: 30 }, cadence_days: 7, weather_affinity: [], season: ['summer'], pinned: true, last_satisfied: this.iso(-5) },
         { id: 'v5', vibe: 'Leftovers remix', meal: 'Lunch', facets: { max_time_total: 15 }, cadence_days: 5, weather_affinity: [], season: [], pinned: false, last_satisfied: this.iso(-3) },
         { id: 'v1', vibe: 'Fast noodles', meal: 'Dinner', facets: { cuisine: 'vietnamese', max_time_total: 30 }, cadence_days: 10, weather_affinity: ['wet'], season: [], pinned: false, last_satisfied: this.iso(-12) },
-        { id: 'v3', vibe: 'Sunday sauce', meal: 'Dinner', facets: { cuisine: 'italian', protein: 'beef' }, cadence_days: 21, weather_affinity: ['cold-comfort'], season: ['fall', 'winter'], pinned: false, last_satisfied: this.iso(-9) },
+        { id: 'v3', vibe: 'Sunday sauce', meal: 'Dinner', facets: { cuisine: 'italian', protein: 'beef' }, cadence_days: 21, weather_affinity: ['cold-comfort'], season: ['fall', 'winter'], pinned: true, last_satisfied: this.iso(-9) },
         { id: 'v4', vibe: 'Grill night', meal: 'Dinner', facets: { protein: 'chicken' }, cadence_days: 14, weather_affinity: ['grill'], season: ['summer'], pinned: false, last_satisfied: this.iso(-30) },
       ],
       proposals: [
@@ -2196,10 +2306,12 @@ class Component extends DCLogic {
       vibeSuggestOpen: null,
       favs: ['shakshuka', 'miso-salmon', 'lemon-orzo'],
       plans: [
-        { recipe: 'shakshuka', planned_for: this.iso(1), sides: [], meal: 'Breakfast' },
-        { recipe: 'thai-basil-chicken', planned_for: this.iso(1), sides: ['jasmine rice', 'cucumber salad'], meal: 'Dinner' },
-        { recipe: 'carnitas-tacos', planned_for: this.iso(3), sides: ['refried beans'], meal: 'Lunch' },
-        { recipe: 'chickpea-curry', planned_for: null, sides: [], meal: 'Dinner' },
+        { uid: 'pl1', recipe: 'shakshuka', planned_for: this.iso(1), sides: [], meal: 'Breakfast' },
+        { uid: 'pl2', recipe: 'thai-basil-chicken', planned_for: this.iso(1), sides: ['jasmine rice', 'cucumber salad'], meal: 'Dinner' },
+        { uid: 'pl3', recipe: 'thai-basil-chicken', planned_for: this.iso(4), sides: ['jasmine rice'], meal: 'Dinner' },
+        { uid: 'pl4', recipe: 'carnitas-tacos', planned_for: this.iso(3), sides: ['refried beans'], meal: 'Lunch' },
+        { uid: 'pl5', recipe: 'miso-salmon', planned_for: this.iso(9), sides: ['steamed rice'], meal: 'Dinner' },
+        { uid: 'pl6', recipe: 'chickpea-curry', planned_for: null, sides: [], meal: 'Dinner' },
       ],
       grocery: [
         { key: 'g1', name: 'holy basil', kind: 'grocery', origin: 'plan', quantity: '1 bunch', for_recipes: ['thai-basil-chicken'], source: 'menu' },
@@ -2446,10 +2558,11 @@ class Component extends DCLogic {
   togglePlan(slug) {
     this.setState((s) => {
       const has = s.plans.some((p) => p.recipe === slug);
-      return { plans: has ? s.plans.filter((p) => p.recipe !== slug) : [...s.plans, { recipe: slug, planned_for: null, sides: [], meal: 'Dinner' }] };
+      return { plans: has ? s.plans.filter((p) => p.recipe !== slug) : [...s.plans, { uid: this.nextPlanUid(), recipe: slug, planned_for: null, sides: [], meal: 'Dinner' }] };
     });
   }
-  removePlan(slug) { this.setState((s) => ({ plans: s.plans.filter((p) => p.recipe !== slug) })); }
+  nextPlanUid() { this._planSeq = (this._planSeq || 100) + 1; return 'pl' + this._planSeq; }
+  removePlan(uid) { this.setState((s) => ({ plans: s.plans.filter((p) => p.uid !== uid) })); }
   projectBySlug(slug) { return this.PROJECTS.find((p) => p.slug === slug); }
   addProject(slug) { this.setState((s) => s.projects.includes(slug) ? { planPicker: null } : { projects: [...s.projects, slug], planPicker: null }); }
   removeProject(slug) { this.setState((s) => ({ projects: s.projects.filter((x) => x !== slug) })); }
@@ -2477,34 +2590,67 @@ class Component extends DCLogic {
       return { satUnits: s.satUnits.filter((m) => m.name !== s.disconnectTarget), disconnectTarget: null, disconnectInput: '' };
     });
   }
-  toggleEmptySlots() { this.setState((s) => ({ showEmptySlots: !s.showEmptySlots, planPicker: null })); }
-  openPlanPicker(key) { this.setState({ planPicker: key }); }
+  toggleEmptySlots() { this.setState((s) => ({ showEmptySlots: !s.showEmptySlots, planPicker: null, planResolve: null })); }
+  openPlanPicker(key) { this.setState({ planPicker: key, planResolve: null }); }
   closePlanPicker() { this.setState({ planPicker: null }); }
-  setSlotRecipe(date, meal, slug) {
+  slotLabelOf(date, meal) {
+    if (!date) return `Unscheduled · ${meal}`;
+    const WD = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+    const MO = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    const d = new Date(date + 'T12:00:00');
+    if (isNaN(d.getTime())) return meal;
+    return `${WD[d.getDay()]} ${MO[d.getMonth()]} ${d.getDate()} · ${meal}`;
+  }
+  showToast(text) {
+    const id = 't' + Date.now();
+    this.setState({ planToast: { id, text } });
+    if (this._toastTimer) clearTimeout(this._toastTimer);
+    this._toastTimer = setTimeout(() => { this.setState((s) => (s.planToast && s.planToast.id === id ? { planToast: null } : null)); }, 5000);
+  }
+  dismissToast() { if (this._toastTimer) clearTimeout(this._toastTimer); this.setState({ planToast: null }); }
+  dismissResolve() { this.setState({ planResolve: null }); }
+  addAgain() {
+    const r = this.state.planResolve; if (!r) return;
     this.setState((s) => {
-      const existing = s.plans.find((p) => p.recipe === slug);
-      const sides = existing ? existing.sides : [];
-      const plans = s.plans.filter((p) => !(p.planned_for === date && (p.meal || 'Dinner') === meal) && p.recipe !== slug);
-      plans.push({ recipe: slug, planned_for: date, sides, meal });
-      return { plans, planPicker: null };
+      const plans = s.plans.map((p) => p.uid === r.uid ? { ...p, planned_for: r.prevDate, meal: r.prevMeal } : p);
+      plans.push({ uid: this.nextPlanUid(), recipe: r.recipe, planned_for: r.date, sides: [], meal: r.meal });
+      return { plans, planResolve: null };
     });
   }
+  setSlotRecipe(date, meal, slug) {
+    const inThisSlot = (p) => p.planned_for === date && (p.meal || 'Dinner') === meal;
+    const occupant = this.state.plans.find((p) => inThisSlot(p) && p.recipe !== slug) || null;
+    this.setState((s) => {
+      if (s.plans.some((p) => p.recipe === slug && inThisSlot(p))) return { planPicker: null, planResolve: null };
+      let plans = s.plans.slice();
+      const occ = s.plans.find((p) => inThisSlot(p) && p.recipe !== slug) || null;
+      if (occ) plans = plans.map((p) => p === occ ? { ...p, planned_for: null } : p);
+      const same = s.plans.find((p) => p.recipe === slug && !inThisSlot(p)) || null;
+      if (same) {
+        const resolve = { key: `slot:${date}:${meal}`, uid: same.uid, recipe: slug, fromLabel: this.slotLabelOf(same.planned_for, same.meal || 'Dinner'), prevDate: same.planned_for, prevMeal: same.meal || 'Dinner', date, meal };
+        plans = plans.map((p) => p === same ? { ...p, planned_for: date, meal } : p);
+        return { plans, planPicker: null, planResolve: resolve };
+      }
+      plans = [...plans, { uid: this.nextPlanUid(), recipe: slug, planned_for: date, sides: [], meal }];
+      return { plans, planPicker: null, planResolve: null };
+    }, () => { if (occupant) this.showToast(`Moved ${this.titleOf(occupant.recipe)} to Unscheduled`); });
+  }
   addUnscheduledRecipe(slug) {
-    this.setState((s) => s.plans.some((p) => p.recipe === slug) ? { planPicker: null } : { plans: [...s.plans, { recipe: slug, planned_for: null, sides: [], meal: 'Dinner' }], planPicker: null });
+    this.setState((s) => s.plans.some((p) => p.recipe === slug) ? { planPicker: null } : { plans: [...s.plans, { uid: this.nextPlanUid(), recipe: slug, planned_for: null, sides: [], meal: 'Dinner' }], planPicker: null });
   }
   addUnscheduledForMeal(meal, slug) {
     this.setState((s) => {
       if (s.plans.some((p) => p.recipe === slug)) return { plans: s.plans.map((p) => p.recipe === slug ? { ...p, planned_for: null, meal } : p), planPicker: null };
-      return { plans: [...s.plans, { recipe: slug, planned_for: null, sides: [], meal }], planPicker: null };
+      return { plans: [...s.plans, { uid: this.nextPlanUid(), recipe: slug, planned_for: null, sides: [], meal }], planPicker: null };
     });
   }
-  setPlanDate(slug, date) { this.setState((s) => ({ plans: s.plans.map((p) => p.recipe === slug ? { ...p, planned_for: date || null } : p) })); }
-  removeSide(slug, side) { this.setState((s) => ({ plans: s.plans.map((p) => p.recipe === slug ? { ...p, sides: p.sides.filter((x) => x !== side) } : p) })); }
-  addSide(slug) {
+  setPlanDate(uid, date) { this.setState((s) => ({ plans: s.plans.map((p) => p.uid === uid ? { ...p, planned_for: date || null } : p) })); }
+  removeSide(uid, side) { this.setState((s) => ({ plans: s.plans.map((p) => p.uid === uid ? { ...p, sides: p.sides.filter((x) => x !== side) } : p) })); }
+  addSide(uid) {
     const side = (typeof window !== 'undefined' && window.prompt) ? window.prompt('Add a side') : '';
     if (!side || !side.trim()) return;
     const v = side.trim().toLowerCase();
-    this.setState((s) => ({ plans: s.plans.map((p) => p.recipe === slug && !p.sides.includes(v) ? { ...p, sides: [...p.sides, v] } : p) }));
+    this.setState((s) => ({ plans: s.plans.map((p) => p.uid === uid && !p.sides.includes(v) ? { ...p, sides: [...p.sides, v] } : p) }));
   }
   removePantry(name) { this.setState((s) => ({ pantry: s.pantry.filter((p) => p.name !== name) })); }
   setPantryGroupBy(mode) { this.setState({ pantryGroupBy: mode }); }
@@ -2636,7 +2782,24 @@ class Component extends DCLogic {
   saveMd() { this.setState((s) => { const prof = { ...s.prof }; if (s.mdEdit === 'taste') prof.taste = s.mdDraft; else prof.diet = s.mdDraft; return { prof, mdEdit: null, mdDraft: '' }; }); }
   onMdDraft(e) { this.setState({ mdDraft: e.target.value }); }
   setPref(key, val) { this.setState((s) => ({ prof: { ...s.prof, [key]: val } })); }
+  fmtBudget(n) { return (n == null) ? '' : Number(n).toLocaleString('en-US'); }
+  onBudgetInput(e) { this.setState({ budgetDraft: e.target.value }); }
+  commitBudget() {
+    this.setState((s) => {
+      const draft = s.budgetDraft;
+      if (draft == null) return { budgetDraft: null };
+      const raw = String(draft).trim();
+      if (raw === '') return { prof: { ...s.prof, weeklyBudget: null }, budgetDraft: null };
+      const n = parseFloat(raw.replace(/[^0-9.]/g, ''));
+      if (isNaN(n)) return { budgetDraft: null };
+      return { prof: { ...s.prof, weeklyBudget: Math.max(0, Math.round(n)) }, budgetDraft: null };
+    });
+  }
+  clearBudget() { this.setState((s) => ({ prof: { ...s.prof, weeklyBudget: null }, budgetDraft: null })); }
   setCadence(meal, n) { this.setState((s) => ({ prof: { ...s.prof, cadence: { ...(s.prof.cadence || {}), [meal]: Math.max(0, Math.min(7, n)) } } })); }
+  spreadCells(n) { const a = [null, null, null, null, null, null, null]; n = Math.max(0, Math.min(7, n)); for (let i = 0; i < n; i++) { a[Math.floor(i * 7 / n)] = 0; } return a; }
+  weekDayLabels() { const DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']; const t = new Date(); const out = []; for (let i = 0; i < 7; i++) { const d = new Date(t); d.setDate(t.getDate() + i); out.push(DOW[d.getDay()]); } return out; }
+  cycleTypicalCell(meal, i) { const T = [null, 0, 45, 30, 20]; this.setState((s) => { const tw = s.prof.typicalWeek; const arr = tw.cells[meal].slice(); let idx = T.indexOf(arr[i] == null ? null : arr[i]); if (idx < 0) idx = 0; arr[i] = T[(idx + 1) % T.length]; return { prof: { ...s.prof, typicalWeek: { ...tw, cells: { ...tw.cells, [meal]: arr } } } }; }); }
   addToken(field, val) { const v = String(val || '').trim().toLowerCase(); if (!v) return; this.setState((s) => (s.prof[field].includes(v) ? null : ({ prof: { ...s.prof, [field]: [...s.prof[field], v] } }))); }
   removeToken(field, val) { this.setState((s) => ({ prof: { ...s.prof, [field]: s.prof[field].filter((x) => x !== val) } })); }
   onTokenKey(field, e) { if (e.key === 'Enter') { e.preventDefault(); this.addToken(field, e.target.value); e.target.value = ''; } else if (e.key === 'Escape') { e.preventDefault(); this.setState({ tokenAdding: null }); } }
@@ -2801,14 +2964,14 @@ class Component extends DCLogic {
     };
   }
   confirmProposal(id, accept) { this.setState((s) => { const p = s.proposals.find((x) => x.id === id); let vibes = s.vibes; if (accept && p) { if (p.kind === 'add_vibe') vibes = [...vibes, { id: 'v' + Date.now(), vibe: p.payload.vibe, facets: {}, cadence_days: 14, weather_affinity: [], season: [], pinned: false, last_satisfied: null }]; else if (p.kind === 'prune_vibe') vibes = vibes.filter((v) => v.vibe !== p.target); else vibes = vibes.map((v) => (v.vibe === p.target ? { ...v, cadence_days: p.payload.cadence_days } : v)); } return { proposals: s.proposals.filter((x) => x.id !== id), vibes }; }); }
-  freshVibeDraft() { return { vibe: '', meal: 'Dinner', cuisine: '', protein: '', maxTime: '', cadence: 14, weather: [], season: [], pinned: false }; }
+  freshVibeDraft() { return { vibe: '', meal: 'Dinner', cuisine: '', protein: '', maxTime: '', cadence: 14, weather: [], season: [], pinned: false, members: [] }; }
   deleteVibe(id) { this.setState((s) => ({ vibes: s.vibes.filter((v) => v.id !== id), vibeEditing: 'new', vibeDraft: this.freshVibeDraft() })); }
-  openVibeNew() { this.setState({ vibeEditing: 'new', vibeDraft: { vibe: '', meal: 'Dinner', cuisine: '', protein: '', maxTime: '', cadence: 14, weather: [], season: [], pinned: false } }); }
-  openVibeEdit(id) { this.setState((s) => { const v = s.vibes.find((x) => x.id === id); const f = v.facets || {}; return { vibeEditing: id, vibeDraft: { vibe: v.vibe, meal: v.meal || 'Dinner', cuisine: f.cuisine || '', protein: f.protein || '', maxTime: f.max_time_total ? String(f.max_time_total) : '', cadence: v.cadence_days || 14, weather: [...(v.weather_affinity || [])], season: [...(v.season || [])], pinned: !!v.pinned } }; }); }
+  openVibeNew() { this.setState({ vibeEditing: 'new', vibeDraft: { vibe: '', meal: 'Dinner', cuisine: '', protein: '', maxTime: '', cadence: 14, weather: [], season: [], pinned: false, members: [] } }); }
+  openVibeEdit(id) { this.setState((s) => { const v = s.vibes.find((x) => x.id === id); const f = v.facets || {}; return { vibeEditing: id, vibeDraft: { vibe: v.vibe, meal: v.meal || 'Dinner', cuisine: f.cuisine || '', protein: f.protein || '', maxTime: f.max_time_total ? String(f.max_time_total) : '', cadence: v.cadence_days || 14, weather: [...(v.weather_affinity || [])], season: [...(v.season || [])], pinned: !!v.pinned, members: [...(v.members || [])] } }; }); }
   cancelVibe() { this.setState({ vibeEditing: 'new', vibeDraft: this.freshVibeDraft() }); }
   setVibeDraft(key, val) { this.setState((s) => ({ vibeDraft: { ...s.vibeDraft, [key]: val } })); }
   toggleVibeArr(key, val) { this.setState((s) => { const arr = s.vibeDraft[key]; return { vibeDraft: { ...s.vibeDraft, [key]: arr.includes(val) ? arr.filter((x) => x !== val) : [...arr, val] } }; }); }
-  saveVibe() { this.setState((s) => { const d = s.vibeDraft; if (!d || !d.vibe.trim()) return null; const facets = {}; if (d.cuisine) facets.cuisine = d.cuisine; if (d.protein) facets.protein = d.protein; if (d.maxTime) facets.max_time_total = Number(d.maxTime); const base = { vibe: d.vibe.trim(), meal: d.meal || 'Dinner', facets, cadence_days: Number(d.cadence), weather_affinity: d.weather, season: d.season, pinned: d.pinned }; const vibes = s.vibeEditing === 'new' ? [...s.vibes, { id: 'v' + Date.now(), last_satisfied: null, ...base }] : s.vibes.map((v) => (v.id === s.vibeEditing ? { ...v, ...base } : v)); return { vibes, vibeEditing: 'new', vibeDraft: this.freshVibeDraft() }; }); }
+  saveVibe() { this.setState((s) => { const d = s.vibeDraft; if (!d || !d.vibe.trim()) return null; const facets = {}; if (d.cuisine) facets.cuisine = d.cuisine; if (d.protein) facets.protein = d.protein; if (d.maxTime) facets.max_time_total = Number(d.maxTime); const base = { vibe: d.vibe.trim(), meal: d.meal || 'Dinner', facets, cadence_days: Number(d.cadence), weather_affinity: d.weather, season: d.season, pinned: d.pinned, members: d.members || [] }; const vibes = s.vibeEditing === 'new' ? [...s.vibes, { id: 'v' + Date.now(), last_satisfied: null, ...base }] : s.vibes.map((v) => (v.id === s.vibeEditing ? { ...v, ...base } : v)); return { vibes, vibeEditing: 'new', vibeDraft: this.freshVibeDraft() }; }); }
   vibeStatus(v) { const cadence = v.cadence_days ?? null; let d = 0; if (cadence && cadence > 0) { const anchor = v.last_satisfied ?? (v.created_at ? v.created_at.slice(0, 10) : null); if (anchor) d = this.daysSince(anchor) / cadence; } if (d >= 1.5) return { k: 'overdue', label: 'Overdue', d }; if (d >= 1) return { k: 'due', label: 'Due now', d }; if (d >= 0.6) return { k: 'soon', label: 'Due soon', d }; return { k: 'ok', label: v.last_satisfied ? 'On track' : 'New', d }; }
 
   nextOpenDates(existing, count) {
@@ -2942,13 +3105,15 @@ class Component extends DCLogic {
     const pickedSlugs = ['miso-salmon', 'lemon-orzo', 'garlic-butter-shrimp'];
 
     // plan
+    const recipeCounts = {}; st.plans.forEach((p) => { recipeCounts[p.recipe] = (recipeCounts[p.recipe] || 0) + 1; });
     const planVM = (p) => ({
-      recipe: p.recipe, title: this.titleOf(p.recipe), planned_for: p.planned_for || '', meal: p.meal || 'Dinner',
-      sides: p.sides.map((s) => ({ label: s, onRemove: () => this.removeSide(p.recipe, s) })),
+      uid: p.uid, recipe: p.recipe, title: this.titleOf(p.recipe), planned_for: p.planned_for || '', meal: p.meal || 'Dinner',
+      hasDup: recipeCounts[p.recipe] > 1 || null, dupBadge: recipeCounts[p.recipe] > 1 ? '×' + recipeCounts[p.recipe] : '',
+      sides: p.sides.map((s) => ({ label: s, onRemove: () => this.removeSide(p.uid, s) })),
       goDetail: () => this.openRecipe(p.recipe),
-      onDate: (e) => this.setPlanDate(p.recipe, e.target.value),
-      onRemove: () => this.removePlan(p.recipe),
-      onAddSide: () => this.addSide(p.recipe),
+      onDate: (e) => this.setPlanDate(p.uid, e.target.value),
+      onRemove: () => this.removePlan(p.uid),
+      onAddSide: () => this.addSide(p.uid),
     });
     const MEAL_RANK = { Breakfast: 0, Lunch: 1, Dinner: 2 };
     const mealRank = (p) => MEAL_RANK[p.meal] ?? 2;
@@ -3170,15 +3335,16 @@ class Component extends DCLogic {
     ];
     const weekTotals = rWeeks.map((w) => ({ i: w.i, total: w.items.reduce((s, it) => s + it.amount, 0) }));
     const maxWk = Math.max(1, ...weekTotals.map((x) => x.total));
-    const budget = Number(this.props.weeklyBudget ?? 95) || 0;
-    const scaleMax = Math.max(maxWk, budget) * 1.12;
+    const budgetVal = st.prof.weeklyBudget;
+    const budget = (budgetVal == null) ? null : Math.max(0, Number(budgetVal) || 0);
+    const scaleMax = Math.max(maxWk, budget || 0) * 1.12;
     const PLOT = 150, BASE = 22;
     const spendWeeks = weekTotals.map((x) => {
       const ds = this.weekStart(11 - x.i);
-      return { label: `${ds.getMonth() + 1}/${ds.getDate()}`, amt: money(x.total), h: Math.round(x.total / scaleMax * PLOT) + 'px', over: (budget && x.total > budget) ? 'over' : '', title: `Week of ${MO[ds.getMonth()]} ${ds.getDate()} \u00b7 ${money(x.total)}` };
+      return { label: `${ds.getMonth() + 1}/${ds.getDate()}`, amt: money(x.total), h: Math.round(x.total / scaleMax * PLOT) + 'px', over: (budget != null && x.total > budget) ? 'over' : '', title: `Week of ${MO[ds.getMonth()]} ${ds.getDate()} \u00b7 ${money(x.total)}` };
     });
-    const hasBudget = budget > 0;
-    const budgetBottom = (BASE + budget / scaleMax * PLOT) + 'px';
+    const hasBudget = budget != null;
+    const budgetBottom = (BASE + (budget || 0) / scaleMax * PLOT) + 'px';
     const buildRows = (groups, colorFn) => {
       const arr = Object.values(groups).sort((a, b) => b.amount - a.amount);
       const mx = arr.length ? arr[0].amount : 1;
@@ -3287,13 +3453,20 @@ class Component extends DCLogic {
     const mapPresets = MAP_PRESETS.map((label) => ({ label, onAdd: () => this.addAisle(label) }));
     const adjustProps = st.proposals.filter((p) => p.kind === 'adjust_cadence' || p.kind === 'prune_vibe');
     const addProps = st.proposals.filter((p) => p.kind === 'add_vibe');
+    const memberLabel = (m) => (m.nick && m.nick.trim()) ? m.nick.trim() : (m.you ? 'You' : String(m.handle || '').replace(/\b\w/, (c) => c.toUpperCase()));
+    const hhMembers = (st.household || []).map((m) => { const name = memberLabel(m); return { id: m.id, name, initial: this.initialsOf(name) }; });
+    const showWho = hhMembers.length > 1;
     const vibeRows = st.vibes.map((v) => {
       const s2 = this.vibeStatus(v); const f = v.facets || {}; const meta = [];
       if (f.cuisine) meta.push({ label: f.cuisine, kind: '' });
       if (f.protein) meta.push({ label: f.protein, kind: 'protein' });
       if (typeof f.max_time_total === 'number') meta.push({ label: '\u2264 ' + f.max_time_total + ' min', kind: '' });
       const sug = adjustProps.find((p) => p.target === v.vibe);
-      return { id: v.id, name: v.vibe, meal: v.meal || 'Dinner', statusLabel: s2.label, statusK: s2.k, meter: (Math.min(s2.d, 2) / 2 * 100) + '%', meta, seasons: (v.season || []).map((x) => ({ label: x })), hasCadence: !!v.cadence_days, cadenceLabel: v.cadence_days ? 'every ' + v.cadence_days + ' days' : '', lastLabel: v.last_satisfied ? 'cooked ' + this.relAge(v.last_satisfied) : 'never cooked from this', weather: (v.weather_affinity || []).map((t) => ({ label: t })), hasWeather: (v.weather_affinity || []).length > 0, editing: st.vibeEditing === v.id, onEdit: () => this.openVibeEdit(v.id),
+      const whoMembers = (v.members || []).map((id) => hhMembers.find((x) => x.id === id)).filter(Boolean);
+      const assigned = showWho && whoMembers.length > 0;
+      return { id: v.id, name: v.vibe, meal: v.meal || 'Dinner', pinned: v.pinned || null, rowClass: v.pinned ? ' pinned' : '',
+        assigned: assigned || null, whoMembers, whoLabel: whoMembers.map((w) => w.name).join(', '),
+        statusLabel: s2.label, statusK: s2.k, meter: (Math.min(s2.d, 2) / 2 * 100) + '%', meta, seasons: (v.season || []).map((x) => ({ label: x })), hasCadence: !!v.cadence_days, cadenceLabel: v.cadence_days ? 'every ' + v.cadence_days + ' days' : '', lastLabel: v.last_satisfied ? 'cooked ' + this.relAge(v.last_satisfied) : 'never cooked from this', weather: (v.weather_affinity || []).map((t) => ({ label: t })), hasWeather: (v.weather_affinity || []).length > 0, editing: st.vibeEditing === v.id, onEdit: () => this.openVibeEdit(v.id),
         hasSuggestion: !!sug, suggestOpen: (!!sug && st.vibeSuggestOpen === v.id) || null,
         suggestText: sug ? sug.rationale : '', suggestApplyLabel: sug ? (sug.kind === 'prune_vibe' ? 'Retire' : 'Apply') : '',
         onToggleSuggest: sug ? () => this.setState((s) => ({ vibeSuggestOpen: s.vibeSuggestOpen === v.id ? null : v.id })) : this.noop,
@@ -3407,8 +3580,12 @@ class Component extends DCLogic {
       searchCountLabel: `${searchList.length} result${searchList.length === 1 ? '' : 's'}`,
       noMatchSub: `Nothing matches “${st.query}”. Try a protein, a cuisine, or an ingredient.`,
       searchRows: searchList.map((x) => this.mkRow(x)),
-      // cookbook: global filter bar + favorites toggle
+      // cookbook: global filter bar + favorites view-mode tabs
       favOnly, notFavOnly: !favOnly, toggleFavOnly: () => this.toggleFavOnly(),
+      viewAll: () => this.setState({ favOnly: false }),
+      viewFavs: () => this.setState({ favOnly: true }),
+      favTabCount: favRecipes.length, hasFavTab: favRecipes.length > 0,
+      favTabIconFill: favOnly ? 'currentColor' : 'none',
       favEmpty, notFavEmpty: !favEmpty,
       showPromoted: !favOnly && promotedRows.length > 0,
       promotedRows,
@@ -3453,10 +3630,14 @@ class Component extends DCLogic {
             const picking = st.planPicker === key;
             const dayLabel = mi === 0 ? label : '';
             const rowBorderClass = mi < MEAL_ORDER.length - 1 ? ' no-border' : '';
-            if (p) return { meal, dayLabel, rowBorderClass, picking: picking || null, showFilled: (!picking) || null, showEmpty: null,
-              title: this.titleOf(p.recipe), sides: p.sides.map((s) => ({ label: s, onRemove: () => this.removeSide(p.recipe, s) })),
-              onAddSide: () => this.addSide(p.recipe), onRemove: () => this.removePlan(p.recipe), onChange: () => this.openPlanPicker(key),
-              onPick: (slug) => this.setSlotRecipe(date, meal, slug), onCancelPick: () => this.closePlanPicker() };
+            if (p) { const dupN = recipeCounts[p.recipe] || 1; const resolve = (st.planResolve && st.planResolve.key === key) ? st.planResolve : null; return { meal, dayLabel, rowBorderClass, picking: picking || null, showFilled: (!picking) || null, showEmpty: null,
+              title: this.titleOf(p.recipe),
+              hasDup: dupN > 1 || null, dupBadge: dupN > 1 ? '×' + dupN : '',
+              hasResolve: !!resolve || null, resolveFrom: resolve ? resolve.fromLabel : '',
+              onAddAgain: () => this.addAgain(), onDismissResolve: () => this.dismissResolve(),
+              sides: p.sides.map((s) => ({ label: s, onRemove: () => this.removeSide(p.uid, s) })),
+              onAddSide: () => this.addSide(p.uid), onRemove: () => this.removePlan(p.uid), onChange: () => this.openPlanPicker(key),
+              onPick: (slug) => this.setSlotRecipe(date, meal, slug), onCancelPick: () => this.closePlanPicker() }; }
             return { meal, dayLabel, rowBorderClass, picking: picking || null, showFilled: null, showEmpty: (!picking) || null,
               onAdd: () => this.openPlanPicker(key), onPick: (slug) => this.setSlotRecipe(date, meal, slug), onCancelPick: () => this.closePlanPicker() };
           });
@@ -3464,6 +3645,9 @@ class Component extends DCLogic {
         }
         return out;
       })(),
+      laterRows: (() => { const gd = new Set(); for (let k = 0; k < 7; k++) gd.add(this.iso(k)); const lp = scheduled.filter((p) => !gd.has(p.planned_for)); return lp.map((p, i) => { const vm = planVM(p); vm.borderClass = i === lp.length - 1 ? ' no-border' : ''; return vm; }); })(),
+      showLater: (() => { const gd = new Set(); for (let k = 0; k < 7; k++) gd.add(this.iso(k)); return (st.showEmptySlots && scheduled.some((p) => !gd.has(p.planned_for))) || null; })(),
+      hasToast: !!st.planToast || null, toastText: st.planToast ? st.planToast.text : '', onDismissToast: () => this.dismissToast(),
       scheduledRows: scheduled.map((p, i) => { const vm = planVM(p); const next = scheduled[i + 1]; const prev = scheduled[i - 1]; vm.borderClass = (next && next.planned_for === p.planned_for) ? ' no-border' : ''; vm.dayLabel = (!prev || prev.planned_for !== p.planned_for) ? dayAbbrOf(p.planned_for) : ''; return vm; }),
       unscheduledRows: unscheduled.map((p) => { const vm = planVM(p); vm.borderClass = ''; vm.dayLabel = ''; return vm; }),
 
@@ -3688,6 +3872,8 @@ class Component extends DCLogic {
       equipment: st.prof.owned.map((k) => ({ label: k.replace(/-/g, ' ') })), hasEquipment: st.prof.owned.length > 0,
 
       nightsOpts: ['2', '3', '4', '5'].map((o) => ({ label: o, pressed: String(st.prof.nights) === o, onClick: () => this.setPref('nights', Number(o)) })),
+      typicalMeals: ['Breakfast', 'Lunch', 'Dinner'].map((meal) => { const key = meal.toLowerCase(); const arr = st.prof.typicalWeek.cells[key]; const count = arr.filter((v) => v != null).length; const onS = 'background:var(--brand);border:1px solid var(--brand);color:var(--primary-foreground);'; const offS = 'background:transparent;border:1px solid color-mix(in oklch, var(--foreground) 16%, transparent);color:var(--muted-foreground);'; return { id: key, label: meal, count, countLabel: count === 0 ? 'none' : (count + (count === 1 ? ' night' : ' nights')), cells: this.weekDayLabels().map((d, i) => { const v = arr[i]; const on = v != null; const timed = on && v > 0; return { day: d, on: on || null, timed: timed || null, anyOnly: (on && !timed) || null, num: timed ? String(v) : '', aria: meal + ' ' + d + (on ? (timed ? ' \u2264' + v + ' min' : ' any time') : ' off'), style: on ? onS : offS, onCycle: () => this.cycleTypicalCell(key, i) }; }) }; }),
+      typicalWeekProp: st.prof.typicalWeek,
       cadenceSteppers: ['Breakfast', 'Lunch', 'Dinner'].map((meal) => { const key = meal.toLowerCase(); const val = (st.prof.cadence && st.prof.cadence[key]) || 0; return { meal, value: val, decDisabled: val <= 0 || null, incDisabled: val >= 7 || null, decLabel: `Fewer ${key}`, incLabel: `More ${key}`, onDec: () => this.setCadence(key, val - 1), onInc: () => this.setCadence(key, val + 1) }; }),
       lunchOpts: ['leftovers', 'buy', 'mixed'].map((o) => ({ label: o, pressed: st.prof.lunch === o, onClick: () => this.setPref('lunch', o) })),
       rteOpts: ['opt-in', 'auto-add'].map((o) => ({ label: o, pressed: st.prof.rte === o, onClick: () => this.setPref('rte', o) })),
@@ -3698,6 +3884,10 @@ class Component extends DCLogic {
       limitPill: st.tokenAdding !== 'limit', limitAdding: st.tokenAdding === 'limit',
       openLimit: () => this.setState({ tokenAdding: 'limit' }), closeLimit: () => this.setState({ tokenAdding: null }),
       novelty: st.prof.novelty, noveltyLabel: String(st.prof.novelty), onNovelty: (e) => this.setPref('novelty', Number(e.target.value)),
+      budgetInputVal: (st.budgetDraft != null ? st.budgetDraft : this.fmtBudget(st.prof.weeklyBudget)),
+      budgetIsSet: (st.prof.weeklyBudget != null) || null,
+      budgetUnset: (st.prof.weeklyBudget == null) || null,
+      onBudgetInput: (e) => this.onBudgetInput(e), onBudgetBlur: () => this.commitBudget(), onBudgetClear: () => this.clearBudget(),
       avoidTokens: st.prof.avoid.map((v) => ({ label: v, onRemove: () => this.removeToken('avoid', v) })),
       limitTokens: st.prof.limit.map((v) => ({ label: v, onRemove: () => this.removeToken('limit', v) })),
       onAvoidKey: (e) => this.onTokenKey('avoid', e), onLimitKey: (e) => this.onTokenKey('limit', e),
@@ -3753,8 +3943,9 @@ class Component extends DCLogic {
       proposalRows: st.proposals.map((p) => { let title; if (p.kind === 'add_vibe') title = 'Add \u201c' + p.payload.vibe + '\u201d'; else if (p.kind === 'prune_vibe') title = 'Retire \u201c' + p.target + '\u201d'; else title = 'Adjust \u201c' + p.target + '\u201d'; let label, iconPlus = false, iconTrash = false; if (p.kind === 'add_vibe') { label = 'Add vibe'; iconPlus = true; } else if (p.kind === 'prune_vibe') { label = 'Retire'; iconTrash = true; } else { label = 'Adjust to ' + p.payload.cadence_days + 'd'; } return { id: p.id, title, why: p.rationale, acceptLabel: label, iconPlus, iconTrash, onAccept: () => this.confirmProposal(p.id, true), onDismiss: () => this.confirmProposal(p.id, false) }; }),
       hasProposals: st.proposals.length > 0,
       hasVibes: st.vibes.length > 0, noVibes: st.vibes.length === 0,
+      showWho: showWho || null,
       vibeRows, vibeGroups,
-      vibeForm: st.vibeDraft ? { name: st.vibeDraft.vibe, meal: st.vibeDraft.meal, cuisine: st.vibeDraft.cuisine, protein: st.vibeDraft.protein, maxTime: st.vibeDraft.maxTime, cadence: String(st.vibeDraft.cadence), pinned: st.vibeDraft.pinned, isEdit: st.vibeEditing !== 'new', notEdit: st.vibeEditing === 'new', saveLabel: st.vibeEditing === 'new' ? 'Add vibe' : 'Save vibe', weatherOpts: ['grill', 'cold-comfort', 'wet'].map((t) => ({ label: t, onCls: st.vibeDraft.weather.includes(t) ? ' on' : '', on: st.vibeDraft.weather.includes(t), onClick: () => this.toggleVibeArr('weather', t) })), seasonOpts: ['spring', 'summer', 'fall', 'winter'].map((s3) => ({ label: s3, onCls: st.vibeDraft.season.includes(s3) ? ' on' : '', on: st.vibeDraft.season.includes(s3), onClick: () => this.toggleVibeArr('season', s3) })) } : null,
+      vibeForm: st.vibeDraft ? { name: st.vibeDraft.vibe, meal: st.vibeDraft.meal, cuisine: st.vibeDraft.cuisine, protein: st.vibeDraft.protein, maxTime: st.vibeDraft.maxTime, cadence: String(st.vibeDraft.cadence), pinned: st.vibeDraft.pinned, isEdit: st.vibeEditing !== 'new', notEdit: st.vibeEditing === 'new', saveLabel: st.vibeEditing === 'new' ? 'Add vibe' : 'Save vibe', who: { everyoneOn: (st.vibeDraft.members || []).length === 0, assigned: (st.vibeDraft.members || []).length > 0, onEveryone: () => this.setVibeDraft('members', []), chips: hhMembers.map((m) => ({ id: m.id, name: m.name, initial: m.initial, on: (st.vibeDraft.members || []).includes(m.id), onClick: () => this.toggleVibeArr('members', m.id) })) }, weatherOpts: ['grill', 'cold-comfort', 'wet'].map((t) => ({ label: t, onCls: st.vibeDraft.weather.includes(t) ? ' on' : '', on: st.vibeDraft.weather.includes(t), onClick: () => this.toggleVibeArr('weather', t) })), seasonOpts: ['spring', 'summer', 'fall', 'winter'].map((s3) => ({ label: s3, onCls: st.vibeDraft.season.includes(s3) ? ' on' : '', on: st.vibeDraft.season.includes(s3), onClick: () => this.toggleVibeArr('season', s3) })) } : null,
       weatherOpts: st.vibeDraft ? ['grill', 'cold-comfort', 'wet'].map((t) => ({ label: t, onCls: st.vibeDraft.weather.includes(t) ? ' on' : '', on: st.vibeDraft.weather.includes(t), onClick: () => this.toggleVibeArr('weather', t) })) : [],
       seasonOpts: st.vibeDraft ? ['spring', 'summer', 'fall', 'winter'].map((s3) => ({ label: s3, onCls: st.vibeDraft.season.includes(s3) ? ' on' : '', on: st.vibeDraft.season.includes(s3), onClick: () => this.toggleVibeArr('season', s3) })) : [],
       cuisineOptions: ['japanese', 'indian', 'chinese', 'french', 'american', 'korean', 'thai', 'italian', 'vietnamese', 'mediterranean'].map((c) => ({ v: c, label: c.replace(/\b\w/g, (x) => x.toUpperCase()) })),

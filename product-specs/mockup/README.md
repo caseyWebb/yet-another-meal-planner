@@ -32,5 +32,5 @@ the profile page state object near the end of `Member App.dc.html` (`go('…')`,
 `profileTab`, `retroTab`) is the routing map. The widget `.dc.html` files render
 standalone with their own harness bars (mode/tab switchers, dark-mode toggle).
 
-Not included: the ~108 working-iteration screenshots from the original design bundle
-(superseded by these final pages) and the design bundle's zip packaging.
+Not included: the working-iteration screenshots from the design bundle (superseded by
+these final pages) and the design bundle's zip packaging.

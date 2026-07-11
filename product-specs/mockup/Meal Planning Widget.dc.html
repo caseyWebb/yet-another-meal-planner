@@ -41,6 +41,37 @@
     .mp-add-side { display: inline-flex; align-items: center; height: 1.7rem; padding: 0 0.65rem; border: 1px dashed color-mix(in oklch, var(--border) 92%, var(--foreground)); border-radius: 999px; background: transparent; color: var(--muted-foreground); font: inherit; font-size: var(--text-xs); font-weight: 500; cursor: pointer; -webkit-appearance: none; appearance: none; }
     .mp-add-side:hover { color: var(--brand); border-color: color-mix(in oklch, var(--brand) 55%, var(--border)); }
     .mp-combo { display: inline-flex; min-width: 15rem; }
+    .mp-attend { border: 1px solid color-mix(in oklch, var(--foreground) 8%, transparent); border-radius: var(--radius-lg); background: var(--card); margin-bottom: 1.35rem; overflow: hidden; }
+    .mp-attend-bar { display: flex; align-items: center; gap: 0.65rem; width: 100%; padding: 0.7rem 0.9rem; background: transparent; border: 0; font: inherit; color: var(--foreground); cursor: pointer; text-align: left; -webkit-appearance: none; appearance: none; }
+    .mp-attend-ico, .mp-attend-chev { display: inline-flex; color: var(--muted-foreground); flex: 0 0 auto; }
+    .mp-attend-chev { margin-left: auto; }
+    .mp-attend-label { font-family: var(--font-mono); font-size: var(--text-xs); text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted-foreground); }
+    .mp-attend-summary { font-size: var(--text-sm); font-weight: 500; }
+    .mp-attend-summary.edited { text-decoration: underline dotted; text-decoration-color: var(--brand); text-underline-offset: 3px; }
+    .mp-attend-body { padding: 0 0.9rem 0.85rem; display: flex; flex-direction: column; }
+    .mp-attend-row { display: flex; align-items: center; gap: 0.75rem; padding: 0.55rem 0; border-top: 1px solid color-mix(in oklch, var(--foreground) 7%, transparent); }
+    .mp-avatar { width: 2rem; height: 2rem; border-radius: 999px; background: color-mix(in oklch, var(--brand) 16%, var(--card)); color: var(--brand); display: inline-flex; align-items: center; justify-content: center; font-size: var(--text-sm); font-weight: 600; flex: 0 0 auto; }
+    .mp-attend-row.is-away .mp-avatar { background: var(--muted); color: var(--muted-foreground); }
+    .mp-attend-name { font-size: var(--text-sm); font-weight: 500; flex: 1 1 auto; min-width: 0; }
+    .mp-attend-row.is-away .mp-attend-name { color: var(--muted-foreground); }
+    .mp-attend-ctrls { display: flex; align-items: center; gap: 0.5rem; flex: 0 0 auto; }
+    .mp-back { display: inline-flex; align-items: center; gap: 0.3rem; color: var(--muted-foreground); font-size: var(--text-xs); }
+    .mp-back-sel { height: 1.85rem; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--background); color: var(--foreground); font: inherit; font-size: var(--text-xs); padding: 0 0.35rem; }
+    .mp-seg { display: inline-flex; border: 1px solid var(--border); border-radius: 999px; overflow: hidden; }
+    .mp-seg button { border: 0; background: transparent; color: var(--muted-foreground); font: inherit; font-size: var(--text-xs); font-weight: 600; padding: 0.28rem 0.72rem; cursor: pointer; -webkit-appearance: none; appearance: none; }
+    .mp-seg button + button { border-left: 1px solid var(--border); }
+    .mp-seg button[aria-pressed="true"] { background: var(--primary); color: var(--primary-foreground); }
+    .mp-back-row { display: flex; align-items: center; gap: 0.45rem 0.6rem; padding: 0.1rem 0 0.65rem 2.75rem; flex-wrap: wrap; }
+    .mp-back-lbl { font-family: var(--font-mono); font-size: 0.66rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted-foreground); flex: 0 0 auto; }
+    .mp-seg-days { flex-wrap: wrap; overflow: visible; }
+    .mp-seg-days button { padding: 0.26rem 0.55rem; color: var(--muted-foreground); }
+    .mp-seg-days button[aria-pressed="true"] { background: color-mix(in oklch, var(--brand) 16%, transparent); color: var(--foreground); }
+    .mp-seg-days button:not([aria-pressed="true"]) { text-decoration: line-through; text-decoration-color: color-mix(in oklch, var(--muted-foreground) 55%, transparent); }
+    .mp-attend-foot { display: flex; align-items: center; justify-content: space-between; gap: 0.6rem; flex-wrap: wrap; padding-top: 0.6rem; }
+    .mp-attend-note { font-size: var(--text-xs); color: var(--muted-foreground); }
+    .mp-attend-reset { display: inline-flex; align-items: center; gap: 0.3rem; border: 0; background: transparent; color: var(--muted-foreground); font: inherit; font-size: var(--text-xs); cursor: pointer; padding: 0; white-space: nowrap; -webkit-appearance: none; appearance: none; }
+    .mp-attend-reset:hover { color: var(--foreground); }
+    .mp-attend-reset svg { width: 0.85rem; height: 0.85rem; }
     .mp-sidefoot .slot-flags { display: flex; flex-wrap: wrap; gap: 0.35rem; align-items: center; }
     .mp-widget .slot-wx { display: none; }
     .mp-widget .slot-why { display: none; }
@@ -123,17 +154,61 @@
         </div>
         </sc-if>
 
-        <div style="display: flex; flex-direction: column; gap: 1rem; margin-bottom: 1.35rem;">
-          <div class="mp-steppers">
-            <sc-for list="{{ steppers }}" as="s" hint-placeholder-count="3">
-              <div class="nights-step">
-                <span class="nudge-label">{{ s.label }}</span>
-                <button type="button" class="step-btn" aria-label="{{ s.decLabel }}" disabled="{{ s.decDisabled }}" onClick="{{ s.onDec }}">−</button>
-                <span class="nights-n">{{ s.value }}</span>
-                <button type="button" class="step-btn" aria-label="{{ s.incLabel }}" disabled="{{ s.incDisabled }}" onClick="{{ s.onInc }}">+</button>
+        <sc-if value="{{ showProposeIntro }}" hint-placeholder-val="{{ false }}">
+          <div style="display: flex; align-items: flex-start; gap: 0.6rem; padding: 1rem 1.1rem; border: 1px dashed color-mix(in oklch, var(--border) 80%, var(--foreground)); border-radius: var(--radius-lg); background: var(--card); margin-bottom: 1.35rem;">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="var(--primary)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex: 0 0 auto; margin-top: 1px;"><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1"></path></svg>
+            <p style="margin: 0; font-size: var(--text-sm); color: var(--muted-foreground); line-height: 1.55;">Set how many of each meal you want, then propose — picked from the kinds of meals you cook, spread out so it doesn't feel samey, with the weather taken into account. Tweak any dial and the plan updates live. Nothing's added to your plan until you say so.</p>
+          </div>
+        </sc-if>
+
+        <sc-if value="{{ showAttend }}" hint-placeholder-val="{{ false }}">
+          <div class="mp-attend" data-testid="attendance">
+            <button type="button" class="mp-attend-bar" aria-expanded="{{ attendOpen }}" onClick="{{ onToggleAttend }}">
+              <span class="mp-attend-ico"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg></span>
+              <span style="display: flex; flex-direction: column; gap: 0.1rem; min-width: 0;">
+                <span class="mp-attend-label">Who's eating this week</span>
+                <span class="mp-attend-summary{{ attendSummaryCls }}">{{ attendSummary }}</span>
+              </span>
+              <span class="mp-attend-chev">
+                <sc-if value="{{ attendOpen }}" hint-placeholder-val="{{ false }}"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m18 15-6-6-6 6"></path></svg></sc-if>
+                <sc-if value="{{ attendClosed }}" hint-placeholder-val="{{ true }}"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"></path></svg></sc-if>
+              </span>
+            </button>
+            <sc-if value="{{ attendOpen }}" hint-placeholder-val="{{ false }}">
+              <div class="mp-attend-body">
+                <sc-for list="{{ attendRows }}" as="a" hint-placeholder-count="3">
+                  <div class="mp-attend-row{{ a.rowCls }}">
+                    <span class="mp-avatar" aria-hidden="true">{{ a.initial }}</span>
+                    <span class="mp-attend-name">{{ a.name }}</span>
+                    <span class="mp-attend-ctrls">
+                      <span class="mp-seg mp-seg-days" role="group" aria-label="Days {{ a.name }} is eating">
+                        <sc-for list="{{ a.dayToggles }}" as="d" hint-placeholder-count="7"><button type="button" aria-pressed="{{ d.on }}" onClick="{{ d.onToggle }}" title="{{ d.title }}">{{ d.label }}</button></sc-for>
+                      </span>
+                    </span>
+                  </div>
+                </sc-for>
+                <div class="mp-attend-foot">
+                  <span class="mp-attend-note">Selected days are days each person's eating — deselect the days they're away.</span>
+                  <sc-if value="{{ attendEdited }}" hint-placeholder-val="{{ false }}"><button type="button" class="mp-attend-reset" onClick="{{ onResetAttend }}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"></path><path d="M3 3v5h5"></path></svg> Everyone home</button></sc-if>
+                </div>
               </div>
+            </sc-if>
+          </div>
+        </sc-if>
+
+        <div style="display: flex; flex-direction: column; gap: 1rem; margin-bottom: 1.35rem;">
+          <div class="mp-weekgrid" style="display: grid; grid-template-columns: 5.5rem repeat(7, minmax(0, 1fr)); gap: 0.4rem; align-items: center;">
+            <span></span>
+            <sc-for list="{{ gridDays }}" as="d" hint-placeholder-count="7"><span style="text-align: center; font-family: var(--font-mono); font-size: 0.64rem; text-transform: uppercase; letter-spacing: 0.03em; color: var(--muted-foreground);">{{ d.label }}</span></sc-for>
+            <sc-for list="{{ mealGrid }}" as="m" hint-placeholder-count="3">
+              <span style="display: flex; flex-direction: column; gap: 0.05rem; min-width: 0;">
+                <span style="font-size: var(--text-sm); font-weight: 600;">{{ m.label }}</span>
+                <span style="font-family: var(--font-mono); font-size: 0.6rem; text-transform: uppercase; letter-spacing: 0.03em; color: var(--muted-foreground);">{{ m.countLabel }}</span>
+              </span>
+              <sc-for list="{{ m.cells }}" as="c" hint-placeholder-count="7"><button type="button" aria-label="{{ c.aria }}" aria-pressed="{{ c.on }}" onClick="{{ c.onCycle }}" style="height: 1.95rem; width: 100%; border-radius: 0.5rem; display: inline-flex; align-items: center; justify-content: center; cursor: pointer; font: inherit; font-size: 0.72rem; font-weight: 700; font-variant-numeric: tabular-nums; -webkit-appearance: none; appearance: none; transition: background .12s, border-color .12s; {{ c.style }}"><sc-if value="{{ c.anyOnly }}" hint-placeholder-val="{{ false }}"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 5 5 9-11"></path></svg></sc-if><sc-if value="{{ c.timed }}" hint-placeholder-val="{{ false }}">{{ c.num }}</sc-if></button></sc-for>
             </sc-for>
           </div>
+          <p style="margin: 0.55rem 0 0; font-size: var(--text-xs); color: var(--muted-foreground); line-height: 1.45;">Tap a night to add it (✓ = any time). Tap again to cap its cook time — 45 → 30 → 20 min.</p>
           <sc-if value="{{ noSession }}" hint-placeholder-val="{{ true }}">
             <div style="display: flex;">
               <button type="button" onClick="{{ onPropose }}" style="display: inline-flex; align-items: center; gap: 0.4rem; padding: 0.5rem 1rem; border: none; border-radius: var(--radius-md); background: var(--primary); color: var(--primary-foreground); font: inherit; font-size: var(--text-sm); font-weight: 600; cursor: pointer;">
@@ -144,12 +219,6 @@
           </sc-if>
         </div>
 
-        <sc-if value="{{ showProposeIntro }}" hint-placeholder-val="{{ false }}">
-          <div style="display: flex; align-items: flex-start; gap: 0.6rem; padding: 1rem 1.1rem; border: 1px dashed color-mix(in oklch, var(--border) 80%, var(--foreground)); border-radius: var(--radius-lg); background: var(--card);">
-            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="var(--primary)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex: 0 0 auto; margin-top: 1px;"><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1"></path></svg>
-            <p style="margin: 0; font-size: var(--text-sm); color: var(--muted-foreground); line-height: 1.55;">Set how many of each meal you want, then propose — picked from the kinds of meals you cook, spread out so it doesn't feel samey, with the weather taken into account. Tweak any dial and the plan updates live. Nothing's added to your plan until you say so.</p>
-          </div>
-        </sc-if>
 
         <sc-if value="{{ showProposeResult }}" hint-placeholder-val="{{ true }}">
           <div class="variety-bar" data-testid="variety-bar">
@@ -227,6 +296,7 @@
   &quot;panelPlacement&quot;: { &quot;editor&quot;: &quot;enum&quot;, &quot;options&quot;: [&quot;overlay&quot;, &quot;inline&quot;], &quot;default&quot;: &quot;overlay&quot;, &quot;tsType&quot;: &quot;\&quot;overlay\&quot; | \&quot;inline\&quot;&quot;, &quot;section&quot;: &quot;Embedding&quot; },
   &quot;hideHeading&quot;: { &quot;editor&quot;: &quot;boolean&quot;, &quot;default&quot;: false, &quot;tsType&quot;: &quot;boolean&quot;, &quot;section&quot;: &quot;Embedding&quot; },
   &quot;sessionKey&quot;: { &quot;editor&quot;: &quot;text&quot;, &quot;default&quot;: &quot;yamp:mp-widget-session&quot;, &quot;tsType&quot;: &quot;string&quot;, &quot;section&quot;: &quot;Embedding&quot; },
+  &quot;soloHousehold&quot;: { &quot;editor&quot;: &quot;boolean&quot;, &quot;default&quot;: false, &quot;tsType&quot;: &quot;boolean&quot;, &quot;section&quot;: &quot;Household&quot; },
   &quot;onCommit&quot;: { &quot;editor&quot;: null, &quot;tsType&quot;: &quot;(views: any[]) =&gt; void&quot; },
   &quot;onOpenRecipe&quot;: { &quot;editor&quot;: null, &quot;tsType&quot;: &quot;(slug: string) =&gt; void&quot; }
 }">
@@ -236,7 +306,8 @@ class Component extends DCLogic {
     this.state = {
       dark: false,
       proposed: false,
-      nights: { breakfast: 0, lunch: 0, dinner: this.props.defaultNights ?? 3 },
+      nights: this.initNights(),
+      mealCells: this.initCells(),
       shared: this.defaultShared(),
       perMeal: { breakfast: this.defaultMeal(), lunch: this.defaultMeal(), dinner: this.defaultMeal() },
       openMeals: { breakfast: true, lunch: true, dinner: true },
@@ -244,6 +315,13 @@ class Component extends DCLogic {
       openPanel: null,
       committing: false,
       committed: null,
+      household: [
+        { id: 'm-casey', name: 'Casey' },
+        { id: 'm-alex', name: 'Alex' },
+        { id: 'm-sam', name: 'Sam' },
+      ],
+      attendance: { 'm-alex': { off: ['Wed'] } },
+      attendOpen: false,
       _init: false,
     };
     this.MEALS = [
@@ -300,7 +378,7 @@ class Component extends DCLogic {
     this.loadDS();
     const loaded = this.loadPropose();
     if (loaded) {
-      this.setState({ nights: loaded.nights, shared: loaded.shared, perMeal: loaded.perMeal, proposed: !!loaded.proposed, _init: true });
+      this.setState({ nights: loaded.nights, mealCells: this.migrateCells(loaded), shared: loaded.shared, perMeal: loaded.perMeal, proposed: !!loaded.proposed, _init: true, ...(loaded.attendance ? { attendance: loaded.attendance } : {}) });
     } else {
       const auto = this.props.autoPropose ?? true;
       if (auto) { this.setState({ proposed: true, _init: true }, () => this.persist()); }
@@ -343,20 +421,30 @@ class Component extends DCLogic {
   defaultMeal() { return { locked: {}, overrides: {}, excluded: [], slotProtein: {}, slotCuisine: {}, slotMaxTime: {}, slotVibe: {}, slotSides: {} }; }
   effSession(mealId) {
     const sh = this.state.shared; const pm = this.state.perMeal[mealId];
-    return { seed: (sh.seed ^ this.hashStr(mealId)) >>> 0, nights: this.state.nights[mealId], variety: sh.variety, proteinWants: sh.proteinWants, freeform: sh.freeform, locked: pm.locked, overrides: pm.overrides, excluded: pm.excluded, slotProtein: pm.slotProtein, slotCuisine: pm.slotCuisine, slotMaxTime: pm.slotMaxTime, slotVibe: pm.slotVibe, slotSides: pm.slotSides || {} };
+    return { seed: (sh.seed ^ this.hashStr(mealId) ^ this.attendHash()) >>> 0, nights: this.state.nights[mealId], variety: sh.variety, proteinWants: sh.proteinWants, freeform: sh.freeform, locked: pm.locked, overrides: pm.overrides, excluded: pm.excluded, slotProtein: pm.slotProtein, slotCuisine: pm.slotCuisine, slotMaxTime: pm.slotMaxTime, slotVibe: pm.slotVibe, slotSides: pm.slotSides || {}, slotCaps: this.cellCaps(mealId) };
   }
   anyPlanned() { const n = this.state.nights; return (n.breakfast + n.lunch + n.dinner) > 0; }
+  spreadCells(n) { const a = [null, null, null, null, null, null, null]; n = Math.max(0, Math.min(7, n)); for (let i = 0; i < n; i++) { a[Math.floor(i * 7 / n)] = 0; } return a; }
+  countOf(arr) { return (arr || []).filter((v) => v != null).length; }
+  cellsFromProp(tw) { if (tw && tw.cells) return { breakfast: (tw.cells.breakfast || []).slice(), lunch: (tw.cells.lunch || []).slice(), dinner: (tw.cells.dinner || []).slice() }; return null; }
+  initCells() { const c = this.cellsFromProp(this.props.typicalWeek); if (c) return c; return { breakfast: this.spreadCells(0), lunch: this.spreadCells(0), dinner: this.spreadCells(this.props.defaultNights ?? 3) }; }
+  initNights() { const c = this.initCells(); return { breakfast: this.countOf(c.breakfast), lunch: this.countOf(c.lunch), dinner: this.countOf(c.dinner) }; }
+  migrateCells(loaded) { if (loaded.mealCells) return loaded.mealCells; if (loaded.mealDays) { const tm = loaded.mealTime || {}; const conv = (a, t) => (a || []).map((b) => b ? (t != null ? t : 0) : null); return { breakfast: conv(loaded.mealDays.breakfast, tm.breakfast), lunch: conv(loaded.mealDays.lunch, tm.lunch), dinner: conv(loaded.mealDays.dinner, tm.dinner) }; } const n = loaded.nights || {}; return { breakfast: this.spreadCells(n.breakfast || 0), lunch: this.spreadCells(n.lunch || 0), dinner: this.spreadCells(n.dinner || 0) }; }
+  cellCaps(mealId) { const arr = this.state.mealCells[mealId] || []; const caps = []; arr.forEach((v) => { if (v != null) caps.push(v > 0 ? v : null); }); return caps; }
+  cycleCell(mealId, i) { const T = [null, 0, 45, 30, 20]; this.setState((st) => { const arr = st.mealCells[mealId].slice(); let idx = T.indexOf(arr[i] == null ? null : arr[i]); if (idx < 0) idx = 0; arr[i] = T[(idx + 1) % T.length]; const mc = { ...st.mealCells, [mealId]: arr }; const nights = { ...st.nights, [mealId]: this.countOf(arr) }; return { mealCells: mc, nights, proposed: true, openPanel: null }; }, () => this.persist()); }
+  weekDayLabels() { const DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']; const t = new Date(); const out = []; for (let i = 0; i < 7; i++) { const d = new Date(t); d.setDate(t.getDate() + i); out.push(DOW[d.getDay()]); } return out; }
   loadPropose() {
-    try { const raw = localStorage.getItem(this.sessionKey()); if (!raw) return null; const p = JSON.parse(raw); return (p && p.v === 3 && p.nights && p.shared && p.perMeal) ? p : null; } catch (e) { return null; }
+    try { const raw = localStorage.getItem(this.sessionKey()); if (!raw) return null; const p = JSON.parse(raw); return (p && (p.v === 3 || p.v === 4) && p.nights && p.shared && p.perMeal) ? p : null; } catch (e) { return null; }
   }
   persist() {
-    try { const st = this.state; localStorage.setItem(this.sessionKey(), JSON.stringify({ v: 3, nights: st.nights, shared: st.shared, perMeal: st.perMeal, proposed: st.proposed })); } catch (e) {}
+    try { const st = this.state; localStorage.setItem(this.sessionKey(), JSON.stringify({ v: 4, nights: st.nights, mealCells: st.mealCells, shared: st.shared, perMeal: st.perMeal, proposed: st.proposed, attendance: st.attendance })); } catch (e) {}
   }
   dateSeed() { return Number(new Date().toISOString().slice(0, 10).replace(/-/g, '')); }
   defaultSession(nights) {
     return { seed: this.dateSeed(), nights: Math.min(6, Math.max(2, nights || 3)), variety: 0.4, proteinWants: [], freeform: '', locked: {}, overrides: {}, excluded: [], slotProtein: {}, slotCuisine: {}, slotMaxTime: {}, slotVibe: {} };
   }
   setNights(mealId, n) { this.setState((st) => ({ nights: { ...st.nights, [mealId]: Math.max(0, Math.min(6, n)) }, proposed: true, openPanel: null }), () => this.persist()); }
+  toggleMealDay(mealId, i) { this.setState((st) => { const arr = st.mealDays[mealId].slice(); arr[i] = !arr[i]; const md = { ...st.mealDays, [mealId]: arr }; const nights = { ...st.nights, [mealId]: arr.filter(Boolean).length }; return { mealDays: md, nights, proposed: true, openPanel: null }; }, () => this.persist()); }
   updateShared(patch) { this.setState((st) => ({ shared: patch(st.shared), openPanel: null }), () => this.persist()); }
   updateMeal(mealId, patch) { this.setState((st) => ({ perMeal: { ...st.perMeal, [mealId]: patch(st.perMeal[mealId]) }, openPanel: null }), () => this.persist()); }
   toggleMealOpen(mealId) { this.setState((st) => ({ openMeals: { ...st.openMeals, [mealId]: !st.openMeals[mealId] } })); }
@@ -365,6 +453,11 @@ class Component extends DCLogic {
   removeSide(mealId, vibeId, current, name) { this.setSlotSides(mealId, vibeId, current.filter((x) => x !== name)); }
   startAddSide(key) { this.setState({ addingSide: key }); }
   cancelAddSide() { this.setState({ addingSide: null }); }
+  attendMembers() { const all = this.state.household || []; return this.props.soloHousehold ? all.slice(0, 1) : all; }
+  attendHash() { const a = this.state.attendance || {}; const keys = Object.keys(a).filter((k) => a[k] && a[k].off && a[k].off.length).sort(); if (!keys.length) return 0; return this.hashStr(keys.map((k) => k + '~' + a[k].off.slice().sort().join(',')).join('|')); }
+  toggleAttend() { this.setState((s) => ({ attendOpen: !s.attendOpen })); }
+  toggleDay(id, day) { this.setState((s) => { const at = { ...s.attendance }; const cur = (at[id] && at[id].off) ? at[id].off.slice() : []; const i = cur.indexOf(day); if (i >= 0) cur.splice(i, 1); else cur.push(day); if (cur.length) at[id] = { off: cur }; else delete at[id]; return { attendance: at }; }, () => this.persist()); }
+  resetAttend() { this.setState({ attendance: {} }, () => this.persist()); }
   rng(seed) { let a = seed >>> 0; return function () { a |= 0; a = (a + 0x6D2B79F5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
   hashStr(str) { let h = 2166136261 >>> 0; for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 16777619); } return h >>> 0; }
   timeOf(r) { return this.TIME[r.slug] != null ? this.TIME[r.slug] : 30; }
@@ -393,7 +486,7 @@ class Component extends DCLogic {
     return out;
   }
   runPropose(session) {
-    const nights = Math.min(6, Math.max(0, session.nights));
+    const nights = Math.min(7, Math.max(0, session.nights));
     const fc = this.forecast(nights, session.seed);
     const used = new Set();
     const views = [];
@@ -405,6 +498,7 @@ class Component extends DCLogic {
       const pinCuisine = session.slotCuisine[vibeId] || null;
       const hasTime = Object.prototype.hasOwnProperty.call(session.slotMaxTime, vibeId);
       const maxTime = hasTime ? session.slotMaxTime[vibeId] : null;
+      const idxCap = session.slotCaps ? session.slotCaps[i] : null;
       const forced = session.locked[vibeId] || session.overrides[vibeId] || null;
       const wx = fc[i];
       const poolSlugs = this.VIBE_POOL[vibeId] || this.RECIPES.map((r) => r.slug);
@@ -414,6 +508,7 @@ class Component extends DCLogic {
         if (pinProtein && r.protein !== pinProtein) return false;
         if (pinCuisine && r.cuisine !== pinCuisine) return false;
         if (hasTime && maxTime != null && this.timeOf(r) > maxTime) return false;
+        if (idxCap != null && this.timeOf(r) > idxCap) return false;
         return true;
       };
       const base = pinned ? this.RECIPES.slice() : pool;
@@ -516,15 +611,31 @@ class Component extends DCLogic {
     const anyPlanned = this.anyPlanned();
     const showResult = !st.committed && st.proposed && anyPlanned;
 
-    const steppers = this.MEALS.map((m) => ({
-      id: m.id, label: m.label, value: st.nights[m.id],
-      decDisabled: st.nights[m.id] <= 0 || null, incDisabled: st.nights[m.id] >= 6 || null,
-      decLabel: `Fewer ${m.plural}`, incLabel: `More ${m.plural}`,
-      onDec: () => this.setNights(m.id, st.nights[m.id] - 1),
-      onInc: () => this.setNights(m.id, st.nights[m.id] + 1),
-    }));
+    const gridDayLabels = this.weekDayLabels();
+    const cellOnStyle = 'background: var(--brand); border: 1px solid var(--brand); color: var(--primary-foreground);';
+    const cellOffStyle = 'background: transparent; border: 1px solid color-mix(in oklch, var(--foreground) 14%, transparent); color: var(--muted-foreground);';
+    const mealGrid = this.MEALS.map((m) => { const arr = st.mealCells[m.id]; const count = this.countOf(arr); return {
+      id: m.id, label: m.label, count,
+      countLabel: count === 0 ? 'none' : (count + (count === 1 ? ' night' : ' nights')),
+      cells: gridDayLabels.map((d, i) => { const v = arr[i]; const on = v != null; const timed = on && v > 0; return { day: d, on: on || null, timed: timed || null, anyOnly: (on && !timed) || null, num: timed ? String(v) : '', style: on ? cellOnStyle : cellOffStyle, aria: m.label + ' ' + d + (on ? (timed ? ' \u2264' + v + ' min' : ' any time') : ' off'), onCycle: () => this.cycleCell(m.id, i) }; }),
+    }; });
 
     const hist = new Map(); const cuiSet = new Set(); let totalFilled = 0;
+    const attMembers = this.attendMembers();
+    const showAttend = attMembers.length > 1;
+    const att = st.attendance || {};
+    const awayMembers = attMembers.filter((m) => att[m.id] && att[m.id].off && att[m.id].off.length);
+    const attendEdited = awayMembers.length > 0;
+    let attendSummary;
+    if (!attendEdited) attendSummary = "Everyone's home this week";
+    else if (awayMembers.length === 1) { const o = att[awayMembers[0].id].off; attendSummary = `${awayMembers[0].name} away ${o.length === 1 ? o[0] : o.length + ' days'}`; }
+    else if (awayMembers.length === 2) attendSummary = `${awayMembers[0].name} & ${awayMembers[1].name} away`;
+    else attendSummary = `${awayMembers.length} away this week`;
+    const _DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+    const _today = new Date();
+    const nextDays = [];
+    for (let i = 0; i < 7; i++) { const d = new Date(_today); d.setDate(_today.getDate() + i); nextDays.push(_DOW[d.getDay()]); }
+    const attendRows = attMembers.map((m) => { const off = (att[m.id] && att[m.id].off) ? att[m.id].off : []; const away = off.length > 0; return { id: m.id, name: m.name, initial: m.name.slice(0, 1).toUpperCase(), away: away || null, rowCls: away ? ' is-away' : '', dayToggles: nextDays.map((d) => { const on = off.indexOf(d) < 0; return { label: d, on: on || null, title: on ? `${m.name} eating ${d}` : `${m.name} away ${d}`, onToggle: () => this.toggleDay(m.id, d) }; }) }; });
     const mealSections = [];
     this.MEALS.forEach((m) => {
       if (!st.nights[m.id]) return;
@@ -585,7 +696,13 @@ class Component extends DCLogic {
       showProposeResult: showResult,
       hasSession: showResult || null, noSession: !showResult || null,
 
-      steppers,
+      mealGrid, gridDays: gridDayLabels.map((d) => ({ label: d })),
+      showAttend: showAttend || null,
+      attendOpen: st.attendOpen || null, attendClosed: !st.attendOpen || null,
+      attendSummary, attendSummaryCls: attendEdited ? ' edited' : '',
+      attendEdited: attendEdited || null,
+      attendRows, backDayOptions: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'],
+      onToggleAttend: () => this.toggleAttend(), onResetAttend: () => this.resetAttend(),
       variety: sh.variety, onVariety: (v) => this.updateShared((s) => ({ ...s, variety: v })),
       proposeProteins: proteinsAll, cuisinesAll, palettePresets: presets,
       proteinWants: sh.proteinWants,
