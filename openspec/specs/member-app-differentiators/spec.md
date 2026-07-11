@@ -265,15 +265,17 @@ slugs dropped), filtered by the caller's overlay rejects, restricted to **meal c
 recipes whose effective `course` includes `main` or is empty (fail-open for a not-yet-classified
 recipe; trending is a meal-suggestion surface, and a component/sub-recipe the group cooked twice
 is real history but not a meal to suggest) — and deterministically ordered
-(cooks, then distinct cooks, then recency, then slug). The browse page's first slot SHALL
-render "New & trending": the existing new-for-me items first, then trending backfill,
-deduplicated and capped — with no trending badge fabricated when the trending set is empty.
+(cooks, then distinct cooks, then recency, then slug). The browse page SHALL consume this
+read through the promoted "Recommended for you" panel (the "Trending" reason and the
+per-row honest counts chip) — with no trending badge or chip fabricated when the trending
+set is empty.
 
 #### Scenario: Sparse production history yields an empty trending set
 
 - **WHEN** the log holds only single-cook entries (e.g. two recipes, one cook each — the
   production state at design time)
-- **THEN** the trending set is empty and the browse row renders new-for-me content alone
+- **THEN** the trending set is empty and the browse page renders no "Trending" promotion
+  and no counts chip
 
 #### Scenario: A repeat-cooked recipe trends with counts only
 
@@ -303,15 +305,16 @@ favorites, rejects, recipes conflicting with the profile's dietary avoids (the s
 the propose pool applies), and recipes that are not **meal candidates** — those whose effective
 `course` is non-empty and does not include `main` (fail-open for an empty, not-yet-classified
 `course`; picked-for-you suggests meals, never a component/sub-recipe). With no favorites the
-result SHALL be empty — no backfill from the general index — and the browse row SHALL render
-its empty state inviting favorites. The optional nudge parameters `rankCandidates` carries for
-the propose flow SHALL be absent on this call path.
+result SHALL be empty — no backfill from the general index — and the promoted panel SHALL
+simply omit the "Picked for You" reason rather than inventing generic picks. The optional
+nudge parameters `rankCandidates` carries for the propose flow SHALL be absent on this
+call path.
 
-#### Scenario: No favorites means an honest empty row
+#### Scenario: No favorites means no picked promotion
 
 - **WHEN** the caller has no favorite recipes
-- **THEN** the endpoint returns an empty list and the row renders the favorite-a-few empty
-  state rather than generic picks
+- **THEN** the endpoint returns an empty list and the promoted panel renders without a
+  "Picked for You" row — never generic picks
 
 #### Scenario: Ranking touches no model at request time
 
@@ -330,20 +333,6 @@ the propose flow SHALL be absent on this call path.
   not contain `main` (e.g. a pasta dough near the caller's favorites in embedding space)
 - **THEN** it is absent from the picked-for-you response, while a recipe whose `course` is
   empty (not yet classified) remains eligible
-
-### Requirement: Browse slots are filled without layout change
-
-The browse page SHALL render the trending and picked-for-you rows in the two section slots the
-member core shipped, preserving the section/list structure: slot one as "New & trending" and
-slot two as "Picked for you" with its sub-copy and empty state. The full-index "All recipes"
-section SHALL remain available on the page. Search behavior (browse hidden while a query is
-active) SHALL be unchanged.
-
-#### Scenario: The slots swap content, not structure
-
-- **WHEN** the browse page renders after this change
-- **THEN** the sections use the same section/list components as before, with "New & trending"
-  first, "Picked for you" second, and "All recipes" still reachable below
 
 ### Requirement: The depth-1 walk surfaces captured substitution edges as a labeled relation
 
@@ -368,4 +357,57 @@ The shared depth-1 substitution annotator (`annotateSubstitutes`) SHALL surface 
 
 - **WHEN** the narrower accepts a surfaced substitution (or any other taste swap) and adds the replacement via `add_to_grocery_list(item, substitutes_for: <replaced ingredient>)`
 - **THEN** the agent-side write path records the `substitution` edge through the shared capture (the `ingredient-normalization` capability) — the accept feeds the same graph that surfaced it; the member web app's one-tap accept is a future trigger onto that same `substitutes_for` path
+
+### Requirement: The promoted panel repackages the differentiator signals as reason badges
+
+The browse page SHALL render one visually distinct promoted panel captioned
+"Recommended for you", each row an ordinary recipe row plus an uppercase **reason
+badge** naming why it is promoted. The badge vocabulary SHALL be exactly: **"Just
+Added"** (the new-for-me watermark read — discovery-attribution-based, unchanged),
+**"Trending"** (the group-wide trending read with its minimum-signal guard verbatim),
+and **"Picked for You"** (the favorites-centroid read). **"Popular with Friends" SHALL
+NOT be rendered** — that reason requires the friend visibility lens and ships with the
+change that lands it, not before.
+
+Panel composition SHALL be a pure per-render derivation over those three session reads —
+no new endpoint, no persistence, no pinning, and no dismissal state: at most **one row
+per signal** — each signal's **top-ranked** row — in the fixed precedence Just Added →
+Trending → Picked for You. A top row already promoted by a higher-precedence signal
+contributes nothing (deduplicated, not re-badged), and a top row failing the active
+global filters is dropped, never replaced by a deeper-ranked candidate — the panel
+never misrepresents a signal's actual top recommendation. An empty signal likewise
+contributes nothing — partial panels
+are fine and no reason is ever backfilled from another signal or the general index.
+Displayed promoted slugs SHALL be deduplicated out of the organic list below. The panel
+SHALL hide entirely in search mode, in the favorites view mode, and when zero promoted
+rows survive the filters.
+
+Honest trend chips SHALL be preserved: a listed row (promoted or organic) that appears
+in the guarded trending read carries the existing counts chip with its existing copy;
+no trending badge or chip is fabricated when the trending set is empty.
+
+#### Scenario: Reason badges ride real signals only
+
+- **WHEN** the trending read returns a qualifying recipe and the caller has favorites
+  (a non-empty picked-for-you) but nothing is new-for-me
+- **THEN** the panel renders a "Trending" row and a "Picked for You" row, no "Just
+  Added" row, and no "Popular with Friends" badge anywhere
+
+#### Scenario: Promoted rows dedupe out of the organic list
+
+- **WHEN** a recipe is displayed in the promoted panel
+- **THEN** it does not appear again in the organic list below, and a slug qualifying for
+  two signals appears once, badged with the higher-precedence reason
+
+#### Scenario: The panel respects filters and hides when empty
+
+- **WHEN** the active filters exclude every promoted candidate, or the page is in search
+  mode or the favorites view
+- **THEN** the promoted panel is absent entirely — no empty panel shell
+
+#### Scenario: Sparse history yields no trending promotion
+
+- **WHEN** the group cooking history is below the minimum-signal guard
+- **THEN** no "Trending" row and no counts chip render anywhere on the page, and the
+  panel shows only the other signals' rows (or hides if none survive)
 

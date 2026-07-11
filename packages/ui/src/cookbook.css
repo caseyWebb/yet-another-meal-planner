@@ -131,17 +131,6 @@
 .promo-cap svg { width: 0.85rem; height: 0.85rem; }
 .rpromo { display: inline-flex; align-items: center; gap: 0.3rem; font-family: var(--font-mono); font-size: 10px; font-weight: 600; letter-spacing: 0.09em; text-transform: uppercase; color: var(--brand); }
 
-/* ── browse sections ─────────────────────────────────────────────────────── */
-.browse-section { margin-top: 1.75rem; }
-.browse-section:first-of-type { margin-top: 1.25rem; }
-.section-head { margin-bottom: 0.25rem; }
-.section-head h2 { font-size: var(--text-lg); font-weight: 600; letter-spacing: -0.01em; }
-.section-head p { margin-top: 0.15rem; color: var(--muted-foreground); font-size: var(--text-sm); }
-.see-more { display: inline-flex; align-items: center; gap: 0.3rem; margin-top: 0.9rem; padding: 0.4rem 0.2rem; border: 0; background: none; color: var(--link); font: inherit; font-size: var(--text-sm); font-weight: 500; cursor: pointer; }
-.see-more:hover { text-decoration: underline; }
-.see-more svg { width: 0.95rem; height: 0.95rem; transition: transform 0.15s; }
-.see-more:hover svg { transform: translateY(1px); }
-
 ul.recipes { list-style: none; margin: 0 auto; padding: 0; }
 ul.recipes > li { border-bottom: 1px solid var(--border); }
 ul.recipes > li:first-child { border-top: 1px solid var(--border); }

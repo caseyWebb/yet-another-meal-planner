@@ -36,9 +36,10 @@ existing reads (the momentum-bank "zero/near-zero-backend" slice), not a new dat
   copy (both specced empty states ship). The **toggle control itself is not rendered** —
   its visual form has no design (the mockup ships the view's logic/CSS/empty states but
   not the control; design-requests.md #1 is queued with the operator). The view mode is
-  fully plumbed and URL-addressable; the designed control is a drop-in. The `/favorites`
-  route does **not** retire yet — that retirement completes when the designed control
-  lands (blocked task in tasks.md).
+  fully plumbed and URL-addressable; the designed control is a drop-in. The visible
+  control and the `/favorites` route retirement are the scope of the follow-up change
+  **`cookbook-favorites-toggle`**, created when design-request #1's bundle arrives;
+  until then `/favorites` remains reachable unchanged.
 - **URL-param plumbing only**: all shareable state — query, cuisine, protein, time,
   view — lives in URL search params (validated, defaults stripped), per the repo's
   modeling standard (src/admin/CLAUDE.md; packages/app follows the same).
@@ -58,7 +59,8 @@ existing reads (the momentum-bank "zero/near-zero-backend" slice), not a new dat
   CLAUDE.md the control's UI is not improvised here; design-requests.md #1 is the queued
   prompt (pill-in-filter-bar vs tab row). This change ships the view mode's full
   behavior and URL plumbing; the control mounts into a marked drop-in point when its
-  design lands, and `/favorites` retires in that same follow-up.
+  design lands, and `/favorites` retires in that same follow-up — the named change
+  `cookbook-favorites-toggle`, created fresh when the designed bundle arrives.
 - **q2 — promoted panel sourcing: at most one row per signal (≤3 rows), fixed precedence
   Just Added → Trending → Picked for You, deduped by slug (first reason wins), no
   dismissability, no rotation state.** Each signal contributes its own **top-ranked** row
@@ -140,7 +142,8 @@ existing reads (the momentum-bank "zero/near-zero-backend" slice), not a new dat
 - **Docs**: no `docs/` contract file pins the compact hit row shape or the member browse
   layout (`docs/TOOLS.md`/`SCHEMAS.md`/`ARCHITECTURE.md` unaffected — no tool, D1, or
   architectural change). Spec deltas carry the contract.
-- **Not in scope**: the favorites toggle control's markup (design-requests #1), the
-  `/favorites` retirement/redirect, "Popular with Friends", the friend lens, curated-set
+- **Not in scope**: the favorites toggle control's markup and the `/favorites`
+  retirement/redirect (the follow-up change `cookbook-favorites-toggle`, blocked on
+  design-requests #1), "Popular with Friends", the friend lens, curated-set
   provenance/cold-start (band 5), sidebar counts (separate change), RecipeRow's lift to
   `packages/ui` (story 06, the dual-use widgets change).

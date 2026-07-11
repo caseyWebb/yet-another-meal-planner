@@ -57,12 +57,14 @@
 - [x] 3.4 Run `aubr test:app` (web: `PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers`),
   `aubr typecheck`, `aubr test`; surface the screenshots.
 
-## 4. Blocked — the favorites toggle control (design-requests #1)
+## 4. Deferred — the favorites toggle control
 
-- [ ] 4.1 **BLOCKED on design-requests.md #1** (the operator is running the Claude
-  Design prompt): mount the designed favorites view-mode control (pill vs tab row per
-  the returned bundle) at the marked drop-in point in `_app.index.tsx` — it only needs
-  to read `view` from `Route.useSearch()` and navigate with `view: "favorites" | "all"`
-  (defaults stripped). In the same follow-up: retire `/favorites` (redirect to
-  `/?view=favorites`), drop its nav item/page object/registry entry, and update the
-  favorites specs to enter through the control.
+Deferred to the follow-up change **`cookbook-favorites-toggle`** (blocked on
+design-requests.md #1 — the operator is running the Claude Design prompt; that
+change is created fresh when the designed bundle arrives, not now): mounting the
+designed favorites view-mode control (pill vs tab row per the returned bundle) at
+the marked drop-in point in `_app.index.tsx` — it only needs to read `view` from
+`Route.useSearch()` and navigate with `view: "favorites" | "all"` (defaults
+stripped) — plus, in the same follow-up, retiring `/favorites` (redirect to
+`/?view=favorites`), dropping its nav item/page object/registry entry, and
+updating the favorites specs to enter through the control.

@@ -82,12 +82,12 @@ search param): the organic list is replaced by the member's favorites with the g
 filter state applied, the promoted panel is hidden, and the empty copy swaps — zero
 favorites overall renders "No favorites yet / Tap the heart on any recipe to save it
 here."; favorites that are all excluded by active filters render "None of your favorites
-match these filters." with the inline "Clear filters" link. The view-mode **control's
-visual form is design-blocked** (design-requests #1): the page SHALL NOT improvise the
-control's markup — the view mode is reachable by URL and the designed control mounts
-into the page's marked drop-in point when it lands. Until that control ships, the
-standalone `/favorites` page SHALL remain reachable unchanged; its retirement (redirect
-into the view mode) ships with the control.
+match these filters." with the inline "Clear filters" link. The view mode is URL-only:
+the cookbook page renders no view-mode toggle control, and the standalone `/favorites`
+page SHALL remain reachable unchanged. Scope boundary: the visible toggle control (its
+designed form) and the `/favorites` retirement (redirect into the view mode) belong to
+the follow-up change `cookbook-favorites-toggle` (blocked on design-requests #1) — the
+page SHALL NOT improvise the control's markup ahead of that design.
 
 #### Scenario: Replaying a favorite write converges
 
