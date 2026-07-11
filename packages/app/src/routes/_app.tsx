@@ -23,7 +23,7 @@ import {
 import { api } from "../lib/api";
 import { ConnectClaudeModal, type OperatorInfo } from "../components/connect-claude";
 import { enrollPasskey } from "../lib/passkey";
-import { useGrocery, usePlan, useProfile } from "../lib/data";
+import { useProfile, useSidebarCounts } from "../lib/data";
 import { useOnline } from "../lib/online";
 import { promptInstall, useInstallAvailable } from "../lib/install";
 import { purgeLocalMemberData, readTenantStamp, writeTenantStamp } from "../lib/persist";
@@ -125,14 +125,10 @@ function OfflinePill() {
 function AppShell() {
   const { tenant, operator } = Route.useLoaderData();
   const [connectOpen, setConnectOpen] = React.useState(false);
-  // Sidebar counts derive client-side from the already-cached area queries (design:
-  // no counts endpoint) — the shell subscribing warms them for the pages too.
-  const plan = usePlan();
-  const grocery = useGrocery();
-  const counts: Record<string, number> = {
-    plan: plan.data?.planned.length ?? 0,
-    grocery: grocery.data?.items.filter((g) => g.status !== "in_cart" && g.status !== "ordered").length ?? 0,
-  };
+  // Sidebar counts derive client-side from the already-cached area queries (design: no
+  // counts endpoint), defined once in useSidebarCounts so a badge and its page can't
+  // disagree — the shell subscribing warms those reads for the pages too.
+  const counts: Record<string, number> = useSidebarCounts();
 
   return (
     <div className="app-shell" data-testid="app-shell">

@@ -284,6 +284,32 @@ export function useToBuy(enrich = false) {
   });
 }
 
+/** The sidebar badge counts, derived ONCE from the area reads so a badge and the page it
+ *  mirrors can never disagree (sidebar-live-counts):
+ *  - plan: schedulable meal rows only — project rows (`meal: 'project'`, D26) are excluded,
+ *    matching the meal-plan page's slot/project split.
+ *  - grocery: the derived to-buy line count — the same read the grocery page renders — so
+ *    rows already advanced to `in_cart`/`ordered` are excluded by the derivation and
+ *    plan-derived needs are included. Checked-row subtraction joins when band 3 lands
+ *    `checked_at` (D28); the shape here drops it in without another badge rework.
+ *  Both source reads sit on the offline persist allowlist (member-app-offline), so the
+ *  badges render from the persisted cache offline. The people badge (pending inbound
+ *  requests) is reserved for band 5's People destination — the mock's friend-count badge
+ *  is a listed bug (D5), deliberately not reproduced here. The plain (unenriched) to-buy
+ *  read backs the badge: the aisle/substitute enrichment the page uses adds per-line fields
+ *  but never changes the line count, so the plain variant matches the page's count while
+ *  skipping the enrichment's Locations resolve. It still derives the full to-buy view
+ *  (plan-derived needs included) on every session — the deliberate cost of the badge
+ *  equalling what the grocery page shows, rather than a lighter raw-list count. */
+export function useSidebarCounts(): { plan: number; grocery: number } {
+  const plan = usePlan();
+  const toBuy = useToBuy(false);
+  return {
+    plan: plan.data?.planned.filter((r) => r.meal !== "project").length ?? 0,
+    grocery: toBuy.data?.to_buy.length ?? 0,
+  };
+}
+
 /** Trending (group-wide, counts only, min-signal-guarded — empty on sparse history). */
 export interface TrendingRecipe extends Hit {
   cooks: number;
