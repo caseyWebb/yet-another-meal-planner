@@ -25,6 +25,7 @@ import { buildFacetDeps, runFacetJob } from "./recipe-classify.js";
 import { buildProjectionDeps, runProjectionJob } from "./recipe-projection.js";
 import { buildDiscoveryDeps, runDiscoverySweepJob, DEFAULT_CONFIG } from "./discovery-sweep.js";
 import { buildNormalizeDeps, runNormalizeJob } from "./ingredient-normalize.js";
+import { buildCategoryDeps, runCategoryJob } from "./ingredient-category.js";
 import { buildReconfirmDeps, runReconfirmJob } from "./ingredient-reconfirm.js";
 import { buildAliasAuditDeps, runAliasAuditJob } from "./ingredient-alias-audit.js";
 import { buildEdgeAuditDeps, runEdgeAuditJob } from "./ingredient-edge-audit.js";
@@ -203,7 +204,8 @@ export default {
    * The flyer warm is independent of the index, so it runs ALONGSIDE the projection; the
    * embed job runs after so it sees the fresh index; the discovery sweep runs after that.
    * Layered onto that spine are the bounded reconcile/audit passes: phase-1 normalization
-   * audits (alias/edge/title) that converge captured data, and phase-5 signal producers
+   * audits (alias/edge/title) that converge captured data plus the ingredient-category
+   * memo pass (classify once per identity; capture stamps deterministically), and phase-5 signal producers
    * (reconcile-signals, archetype-derive, dup-scan) that read the fresh index + embeddings
    * to enqueue proposals. Each job writes its own health record + optional ntfy push, and any
    * hard failure is rethrown so the platform's native cron status reflects it.
@@ -234,6 +236,12 @@ export default {
       // The ingredient-normalization capture job is independent of the recipe pipeline
       // (it drains the novel-term queue); it rides the internal env.AI/D1 budget like classify.
       runNormalizeJob(env, buildNormalizeDeps(env)),
+      // The ingredient-category pass fills the identity food-category memo (the ONE D17
+      // item→department derivation), backfills NULL pantry categories, and stamps pending
+      // waste-event departments. Independent of the recipe pipeline, internal env.AI/D1
+      // budget. It trails runNormalizeJob by construction — a brand-new identity minted
+      // this tick classifies on the NEXT tick (one tick of `pending` at worst).
+      runCategoryJob(env, buildCategoryDeps(env)),
       // The periodic re-confirm pass runs AFTER the capture pass so it sees the freshest registry:
       // it re-examines edgeless concrete auto-nodes against the now-denser graph and enriches them
       // (adds satisfies edges / merges a clear synonym). Bounded + one-shot-stamped, so it quiesces

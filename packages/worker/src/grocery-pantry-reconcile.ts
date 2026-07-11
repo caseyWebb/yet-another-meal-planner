@@ -46,8 +46,10 @@ interface PantryRekeyRow {
   tenant: string;
   normalized_name: string;
   name: string;
+  display_name: string | null;
   quantity: string | null;
   category: string | null;
+  location: string | null;
   prepared_from: string | null;
   added_at: string | null;
   last_verified_at: string | null;
@@ -142,11 +144,14 @@ function mergeGrocery(rows: GroceryRekeyRow[]): GroceryRekeyRow {
 }
 
 /** Collision-merge for pantry rows: earliest added_at, freshest last_verified_at, latest
- *  quantity, first non-null category/prepared_from/notes; name from the earliest-added row. */
+ *  quantity, first non-null category/location/prepared_from/notes/display_name; name from
+ *  the earliest-added row. */
 function mergePantry(rows: PantryRekeyRow[]): PantryRekeyRow {
   const rep = [...rows].sort((a, b) => (earliest(a.added_at, b.added_at) === a.added_at ? -1 : 1))[0];
   let quantity = rep.quantity;
   let category = rep.category;
+  let location = rep.location;
+  let displayName = rep.display_name;
   let preparedFrom = rep.prepared_from;
   let notes = rep.notes;
   let addedAt = rep.added_at;
@@ -154,12 +159,24 @@ function mergePantry(rows: PantryRekeyRow[]): PantryRekeyRow {
   for (const r of rows) {
     if (r.quantity != null) quantity = r.quantity; // latest supplied wins (input order)
     if (category == null && r.category != null) category = r.category;
+    if (location == null && r.location != null) location = r.location;
+    if (displayName == null && r.display_name != null) displayName = r.display_name;
     if (preparedFrom == null && r.prepared_from != null) preparedFrom = r.prepared_from;
     if (notes == null && r.notes != null) notes = r.notes;
     addedAt = earliest(addedAt, r.added_at);
     lastVerified = latest(lastVerified, r.last_verified_at);
   }
-  return { ...rep, quantity, category, prepared_from: preparedFrom, notes, added_at: addedAt, last_verified_at: lastVerified };
+  return {
+    ...rep,
+    quantity,
+    category,
+    location,
+    display_name: displayName,
+    prepared_from: preparedFrom,
+    notes,
+    added_at: addedAt,
+    last_verified_at: lastVerified,
+  };
 }
 
 function parseJsonArray(value: string | null): string[] {
@@ -189,8 +206,10 @@ function groceryItemOf(r: GroceryRekeyRow): GroceryItem {
 
 function pantryItemOf(r: PantryRekeyRow): PantryItem {
   const item: PantryItem = { name: r.name };
+  if (r.display_name != null) item.display_name = r.display_name;
   if (r.quantity != null) item.quantity = r.quantity;
   if (r.category != null) item.category = r.category;
+  if (r.location != null) item.location = r.location;
   item.prepared_from = r.prepared_from;
   if (r.added_at != null) item.added_at = r.added_at;
   if (r.last_verified_at != null) item.last_verified_at = r.last_verified_at;
@@ -238,7 +257,7 @@ export async function reconcileGroceryPantryKeys(env: Env): Promise<ReconcileRes
     "SELECT tenant, name, normalized_name, quantity, kind, domain, status, source, for_recipes, note, added_at, ordered_at FROM grocery_list",
   );
   const pantryRows = await d.all<PantryRekeyRow>(
-    "SELECT tenant, name, normalized_name, quantity, category, prepared_from, added_at, last_verified_at, notes FROM pantry",
+    "SELECT tenant, name, normalized_name, display_name, quantity, category, location, prepared_from, added_at, last_verified_at, notes FROM pantry",
   );
 
   const groceryPlan = planReconcile(

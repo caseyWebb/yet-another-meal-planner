@@ -321,17 +321,20 @@ Example rows:
 
 ## pantry (per-tenant, D1 session state)
 
-Live inventory. Agent-writable. Updated as side effect of menu generation and ad-hoc messages. Stored as rows in the D1 `pantry` table (`PRIMARY KEY (tenant, normalized_name)`; `idx_pantry_category(tenant, category)` backs the `read_pantry` category filter). `notes` is an optional short freeform string. Adds are `INSERT … ON CONFLICT DO UPDATE` (keep `added_at`, refresh `last_verified_at`, overlay the rest); reads/writes are row-level and strongly consistent. Pantry has no `kind`/`domain` — it's kitchen inventory, food by construction — so `normalized_name` is always the canonical ingredient id resolved through the `IngredientContext` funnel (`resolve(name)`: normalize **and** capture), the same key `sku_cache` and recipe `ingredients_key` use, so a pantry "chicken breast" and a grocery/menu need for "2 lb chicken breast" join on the same id. The schema below describes each item object's shape:
+Live inventory. Agent-writable. Updated as side effect of menu generation and ad-hoc messages. Stored as rows in the D1 `pantry` table (`PRIMARY KEY (tenant, normalized_name)`; `idx_pantry_category(tenant, category)` and `idx_pantry_location(tenant, location)` back the `read_pantry` filters). `notes` is an optional short freeform string. Adds are `INSERT … ON CONFLICT DO UPDATE` (keep `added_at`, refresh `last_verified_at`, overlay the rest); reads/writes are row-level and strongly consistent. Pantry has no `kind`/`domain` — it's kitchen inventory, food by construction — so `normalized_name` is always the canonical ingredient id resolved through the `IngredientContext` funnel (`resolve(name)`: normalize **and** capture), the same key `sku_cache` and recipe `ingredients_key` use, so a pantry "chicken breast" and a grocery/menu need for "2 lb chicken breast" join on the same id. The schema below describes each item object's shape:
 
 ```sql
 -- D1 pantry table — one row per item. PRIMARY KEY (tenant, normalized_name).
--- idx_pantry_category on (tenant, category).
+-- idx_pantry_category on (tenant, category); idx_pantry_location on (tenant, location).
 tenant           TEXT  -- owning user
 name             TEXT  -- surface form / resolver input (e.g. "olive oil"; always member phrasing, never a raw id)
 display_name     TEXT  -- optional explicit label override (usually NULL); a row renders display_name ?? name
 normalized_name  TEXT  -- canonical ingredient id via the IngredientContext funnel (resolve)
 quantity         TEXT  -- full | partial | low | "<count>" for countables
-category         TEXT  -- pantry | fridge | freezer | spices
+category         TEXT  -- food taxonomy: produce | dairy | meat | seafood | grains | bakery | canned |
+                       --   condiments | oils | spices | baking | frozen | snacks | beverages;
+                       --   NULL = uncategorized (filled by the ingredient-category cron, never an error)
+location         TEXT  -- where it's kept: fridge | freezer | pantry | spice_rack | counter | cabinet; NULL = unassigned
 prepared_from    TEXT  -- recipe slug if this is cooked/prepared from a recipe; else NULL
 added_at         TEXT  -- ISO date when first added
 last_verified_at TEXT  -- ISO date; resets when user confirms item is still present
@@ -340,17 +343,52 @@ notes            TEXT  -- optional short freeform note
 
 Example rows:
 
-| tenant | name | display_name | normalized_name | quantity | category | prepared_from | added_at | last_verified_at | notes |
-|--------|------|--------------|-----------------|----------|----------|---------------|----------|------------------|-------|
-| alice | olive oil | NULL | olive oil | partial | pantry | NULL | 2025-04-01 | 2025-05-12 | NULL |
-| alice | ground beef | NULL | ground beef | 3 lb | freezer | NULL | 2025-05-10 | 2025-05-10 | freezer burned, best for stocks or stews |
-| alice | cooked rice | NULL | cooked rice | partial | fridge | salmon-with-rice | 2025-05-12 | 2025-05-12 | NULL |
+| tenant | name | display_name | normalized_name | quantity | category | location | prepared_from | added_at | last_verified_at | notes |
+|--------|------|--------------|-----------------|----------|----------|----------|---------------|----------|------------------|-------|
+| alice | olive oil | NULL | olive oil | partial | oils | pantry | NULL | 2025-04-01 | 2025-05-12 | NULL |
+| alice | ground beef | NULL | ground beef | 3 lb | meat | freezer | NULL | 2025-05-10 | 2025-05-10 | freezer burned, best for stocks or stews |
+| alice | cooked rice | NULL | cooked rice | partial | NULL | fridge | salmon-with-rice | 2025-05-12 | 2025-05-12 | NULL |
 
 **Notes:**
+- `category` and `location` are **orthogonal, controlled vocabularies** (`src/department.ts`): the food taxonomy vs where the item physically lives. Both are optional on write and nullable in storage; readers treat NULL as unassigned/uncategorized, never an error. A NULL `category` converges through the scheduled `ingredient-category` pass (the identity memo below), which only ever fills NULLs — a member-set value is pinned. Write validation (shared by `update_pantry` and `POST /api/pantry/ops`): an off-vocabulary `location` is a per-op conflict; a legacy location-flavored `category` value (`pantry|fridge|freezer|spices`) transposes onto `location` for one deprecation window; any other off-vocabulary `category` is accepted-and-dropped with a `warnings` entry (see docs/TOOLS.md's deprecation convention). There is deliberately no `other` category value — "don't know" is NULL.
 - `quantity` is intentionally loose — "full", "partial", "low" plus optional explicit counts. We don't track precise amounts (whiteboard problem).
-- `prepared_from` set for cooked/prepared items — faster perishability profile, identifies which recipe produced it.
+- `prepared_from` set for cooked/prepared items — faster perishability profile, identifies which recipe produced it (and stamps `leftovers` on a waste event).
 - `last_verified_at` resets when the user confirms the item is still there during a pantry confirmation pass.
 - `display_name` (nullable) is an optional explicit label override, stored independently of the resolver-input `name` and the canonical `normalized_name`. A pantry row's `name` is always the member's phrasing (never a raw id — `update_pantry` takes no id), so a surface renders `display_name ?? name`. A merge (adding "green onions" onto an existing "scallions" row on the same canonical id) keeps the surviving row's `name`/`display_name`, never overwriting it with the incoming surface form.
+- A row leaves the pantry through plain `remove` (correction/cleanup, records nothing) or `dispose` (`used` | `waste`) — a `waste` dispose deletes the row and appends one `waste_events` row (below) in the same D1 batch.
+
+## waste_events (per-tenant, D1 `waste_events` table)
+
+The waste-telemetry capture (removal-as-disposition): one append-only row per `disposition: "waste"` dispose, written by the shared pantry apply path (`update_pantry` / `POST /api/pantry/ops`). Band 4's waste analyzer is a read surface over this table.
+
+```sql
+-- D1 waste_events table. PRIMARY KEY (tenant, id); idx_waste_events_when on (tenant, occurred_at).
+tenant        TEXT NOT NULL
+id            TEXT NOT NULL   -- client-minted event id (ULID); server-minted when omitted
+name          TEXT NOT NULL   -- the row's display label at capture
+item_id       TEXT NOT NULL   -- canonical ingredient id (the row's stored normalized_name)
+prepared_from TEXT            -- recipe slug snapshot when the tossed row was a leftover
+quantity      TEXT            -- the row's loose quantity at capture
+department    TEXT            -- D17 analytics stamp; NULL ONLY while pending classification
+reason        TEXT NOT NULL   -- spoiled | moldy | over_ripe | expired | freezer_burned | stale |
+                              --   forgot | bought_too_much | never_opened | other
+occurred_at   TEXT NOT NULL   -- ISO date the toss happened (client-stamped; defaults to today)
+created_at    TEXT NOT NULL   -- ISO timestamp recorded
+```
+
+Example rows:
+
+| tenant | id | name | item_id | prepared_from | quantity | department | reason | occurred_at | created_at |
+|--------|----|------|---------|---------------|----------|------------|--------|-------------|------------|
+| alice | 01JZX8… | Cilantro | cilantro | NULL | 1 bunch | produce | over_ripe | 2026-07-08 | 2026-07-08T21:14:02Z |
+| alice | 01JZY2… | cooked rice | cooked rice | salmon-with-rice | partial | leftovers | forgot | 2026-07-10 | 2026-07-10T18:03:11Z |
+
+**Notes:**
+- **`department` is the D17 analytics dimension**: the pantry food taxonomy ∪ `household` (non-food, via the identity memo) ∪ `leftovers` (`prepared_from` rows). Stamped at capture with the precedence leftovers → the row's in-vocabulary `category` → the identity memo → NULL (**pending**); the `ingredient-category` cron fills a pending stamp exactly once (NULL→value), and a stamped department is never rewritten — vocabulary evolution never rewrites history.
+- **The PK includes `tenant`** so a client-minted id can never collide with (or squat on) another tenant's event; the insert is `ON CONFLICT(tenant, id) DO NOTHING`, so a replayed offline dispose converges to exactly one event.
+- **No value column, no value input**: dollar value is never asked at capture — band 4 derives it from spend history.
+- Rows are append-only from the write path (the pending-department fill is the only mutation); the row delete and event insert ride one D1 batch through the `src/db.ts` helpers.
+- `tenant` reads as the household — waste is household-scoped behavioral data.
 
 ## kitchen (per-tenant, D1 `kitchen_equipment` + `profile.kitchen_notes`)
 
@@ -775,6 +813,15 @@ embedding      TEXT  -- JSON array of EMBED_DIM floats; cron-owned, NULL until e
 source         TEXT NOT NULL DEFAULT 'auto'  -- 'auto' | 'human'
 decided_at     INTEGER
 reconfirmed_at INTEGER  -- one-shot re-confirm stamp; NULL = eligible/not-yet-re-confirmed
+category       TEXT  -- the food-category memo (the ONE deterministic item→department source,
+                     --   D17): produce | dairy | meat | seafood | grains | bakery | canned |
+                     --   condiments | oils | spices | baking | frozen | snacks | beverages |
+                     --   household (the non-food catch-all, so classification always terminates).
+                     --   NULL = not yet classified; cron-owned (`ingredient-category`, survivors
+                     --   only). Pantry category autofill, waste-event department stamping, and
+                     --   spend capture all read it through the identity funnel
+                     --   (readIngredientCategoryMemo) — never re-derived per surface. Corrections
+                     --   ship as reclassify migrations (the 0042 precedent).
 
 -- ingredient_alias — surface form → id (hot-path exact match). PRIMARY KEY (variant).
 variant    TEXT  -- lowercased, quantity-stripped surface form
@@ -1057,7 +1104,7 @@ Same positional-contract rule as `yamp_usage`/`yamp_tool` — slots are referenc
 - `double1` = call duration (ms) · `double2` = calls (1 for a text-gen call; the batch size for a batched embedding call) · `double3` = input tokens (text-gen: the real `usage.prompt_tokens`; embeddings: a `chars/4` length estimate) · `double4` = output tokens (text-gen: `usage.completion_tokens`; embeddings: `0`) · `double5` = est_neurons (DERIVED — see below)
 - `timestamp` = AE-supplied write time
 
-`activity` is a **fixed, documented enum** — finer than a job name (one job spans several) and spanning triggers (the same activity fires from cron and import): the text-gen (mistral-small) activities `classify`, `describe`, `confirm-match`, `title-clean`, `ingredient-confirm`, `nightvibe-name`; the embedding (bge-base) activities `embed-recipe`, `embed-discovery`, `embed-nightvibe`, `embed-taste`, `embed-ingredient`, `embed-search`, `embed-admin-search`. `trigger` makes non-cron spend first-class: `cron` (the reconcile/audit passes), `import` (`create_recipe`'s inline description/facet seeds), `request` (the member/agent tool path — cache-gated to near-zero).
+`activity` is a **fixed, documented enum** — finer than a job name (one job spans several) and spanning triggers (the same activity fires from cron and import): the text-gen (mistral-small) activities `classify`, `describe`, `confirm-match`, `title-clean`, `ingredient-confirm`, `ingredient-category`, `nightvibe-name`; the embedding (bge-base) activities `embed-recipe`, `embed-discovery`, `embed-nightvibe`, `embed-taste`, `embed-ingredient`, `embed-search`, `embed-admin-search`. `trigger` makes non-cron spend first-class: `cron` (the reconcile/audit passes), `import` (`create_recipe`'s inline description/facet seeds), `request` (the member/agent tool path — cache-gated to near-zero).
 
 `est_neurons` is a **DERIVED estimate**, never a billing figure: `input_tokens × in-rate + output_tokens × out-rate`, using a per-model neuron rate table in `src/ai.ts` (from Cloudflare's published Workers AI pricing, $0.011 / 1000 neurons) — `mistral-small`: **31876** neurons/M input + **50488** neurons/M output; `bge-base`: **6058** neurons/M input (embeddings produce no output tokens). Storing the raw tokens alongside means a later rate correction recomputes forward from tokens with no schema change. The Usage panel always renders the summed estimate against the account-level by-model actual (`fetchUsage`'s `ai.by_model`, the canonical neuron source), so the estimate's fidelity is self-evident.
 

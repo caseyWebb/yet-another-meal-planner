@@ -17,14 +17,22 @@ import type { Env } from "./env.js";
 import { db } from "./db.js";
 import { ToolError } from "./errors.js";
 import { isFoodItem, normalizeName, storedGroceryKey } from "./grocery.js";
-import { ingredientContext, emptyIngredientContext, captureSubstitution } from "./corpus-db.js";
+import {
+  ingredientContext,
+  emptyIngredientContext,
+  captureSubstitution,
+  readIngredientCategoryMemo,
+} from "./corpus-db.js";
 import { validateCanonicalId } from "./ingredient-normalize.js";
+import { stampDepartment, PANTRY_CATEGORIES, LEGACY_CATEGORY_TO_LOCATION } from "./department.js";
 import {
   applyPantryOperations,
   markVerified,
+  pantryOperationShapeError,
   type PantryItem,
   type PantryOperation,
   type PantryApplyResult,
+  type WasteEventDraft,
 } from "./pantry-write.js";
 import { applyMealPlanOps, type PlannedItem, type MealPlanOp } from "./meal-plan.js";
 import {
@@ -66,6 +74,7 @@ interface PantryRow {
   display_name: string | null;
   quantity: string | null;
   category: string | null;
+  location: string | null;
   prepared_from: string | null;
   added_at: string | null;
   last_verified_at: string | null;
@@ -79,6 +88,7 @@ function pantryItemOf(r: PantryRow): PantryItem {
   if (r.display_name != null) item.display_name = r.display_name;
   if (r.quantity != null) item.quantity = r.quantity;
   if (r.category != null) item.category = r.category;
+  if (r.location != null) item.location = r.location;
   item.prepared_from = r.prepared_from; // null is meaningful (the default)
   if (r.added_at != null) item.added_at = r.added_at;
   if (r.last_verified_at != null) item.last_verified_at = r.last_verified_at;
@@ -88,18 +98,35 @@ function pantryItemOf(r: PantryRow): PantryItem {
 
 export interface PantryFilter {
   category?: string;
+  location?: string;
   preparedOnly?: boolean;
 }
 
-/** Read the caller's pantry rows, with optional category / prepared filters (WHERE). */
+/** Read the caller's pantry rows, with optional category / location / prepared filters (WHERE).
+ *  A LEGACY location-flavored `category` value (pantry|fridge|freezer|spices) is mapped onto the
+ *  `location` filter for one deprecation window (design D7/D21), so cached-skill reads keep
+ *  working across the vocabulary split; an explicit `location` filter wins over the mapping. */
 export async function readPantry(env: Env, tenant: string, filter: PantryFilter = {}): Promise<PantryItem[]> {
+  let category = filter.category;
+  let location = filter.location;
+  if (category !== undefined) {
+    const legacy = LEGACY_CATEGORY_TO_LOCATION[category.trim().toLowerCase()];
+    if (legacy !== undefined) {
+      if (location === undefined) location = legacy;
+      category = undefined;
+    }
+  }
   let sql =
-    "SELECT name, normalized_name, display_name, quantity, category, prepared_from, added_at, last_verified_at, notes " +
+    "SELECT name, normalized_name, display_name, quantity, category, location, prepared_from, added_at, last_verified_at, notes " +
     "FROM pantry WHERE tenant = ?1";
   const binds: unknown[] = [tenant];
-  if (filter.category !== undefined) {
+  if (category !== undefined) {
     sql += ` AND category = ?${binds.length + 1}`;
-    binds.push(filter.category);
+    binds.push(category);
+  }
+  if (location !== undefined) {
+    sql += ` AND location = ?${binds.length + 1}`;
+    binds.push(location);
   }
   if (filter.preparedOnly) {
     sql += " AND prepared_from IS NOT NULL";
@@ -118,10 +145,11 @@ export function pantryUpsertStmt(
 ): D1PreparedStatement {
   const name = String(item.name);
   return db(env).prepare(
-    "INSERT INTO pantry (tenant, name, normalized_name, quantity, category, prepared_from, " +
-      "added_at, last_verified_at, notes, display_name) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10) " +
+    "INSERT INTO pantry (tenant, name, normalized_name, quantity, category, location, prepared_from, " +
+      "added_at, last_verified_at, notes, display_name) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11) " +
       "ON CONFLICT(tenant, normalized_name) DO UPDATE SET " +
       "name = excluded.name, quantity = excluded.quantity, category = excluded.category, " +
+      "location = excluded.location, " +
       "prepared_from = excluded.prepared_from, last_verified_at = excluded.last_verified_at, " +
       "notes = excluded.notes, display_name = excluded.display_name",
     tenant,
@@ -129,6 +157,7 @@ export function pantryUpsertStmt(
     resolve(name),
     item.quantity ?? null,
     item.category ?? null,
+    item.location ?? null,
     item.prepared_from ?? null,
     item.added_at ?? null,
     item.last_verified_at ?? null,
@@ -137,29 +166,126 @@ export function pantryUpsertStmt(
   );
 }
 
+/** Crockford base32 (the ULID alphabet). */
+const ULID_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+
+/** Mint a ULID-shaped event id (48-bit time + 80-bit crypto randomness, 26 chars) — the
+ *  server-side mint for a `dispose` that arrived without a client `event_id` (the agent/MCP
+ *  path is online by construction, so no replay key is needed; design D3). */
+export function mintEventId(now: number = Date.now()): string {
+  let t = now;
+  let time = "";
+  for (let i = 0; i < 10; i++) {
+    time = ULID_ALPHABET[t % 32] + time;
+    t = Math.floor(t / 32);
+  }
+  const rand = crypto.getRandomValues(new Uint8Array(16));
+  let out = time;
+  for (let i = 0; i < 16; i++) out += ULID_ALPHABET[rand[i] & 31];
+  return out;
+}
+
+/** An INSERT for one waste event — idempotent under the client-minted id (design D3/D4):
+ *  `ON CONFLICT(tenant, id) DO NOTHING`, so a replayed dispose can never duplicate. */
+export function wasteEventInsertStmt(
+  env: Env,
+  tenant: string,
+  event: {
+    id: string;
+    name: string;
+    item_id: string;
+    prepared_from: string | null;
+    quantity: string | null;
+    department: string | null;
+    reason: string;
+    occurred_at: string;
+    created_at: string;
+  },
+): D1PreparedStatement {
+  return db(env).prepare(
+    "INSERT INTO waste_events (tenant, id, name, item_id, prepared_from, quantity, department, reason, occurred_at, created_at) " +
+      "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10) ON CONFLICT(tenant, id) DO NOTHING",
+    tenant,
+    event.id,
+    event.name,
+    event.item_id,
+    event.prepared_from,
+    event.quantity,
+    event.department,
+    event.reason,
+    event.occurred_at,
+    event.created_at,
+  );
+}
+
+/** The already-recorded subset of the given waste-event ids (the D3 replay probe). */
+async function existingWasteEventIds(env: Env, tenant: string, ids: string[]): Promise<Set<string>> {
+  const found = new Set<string>();
+  for (const id of ids) {
+    const row = await db(env).first<{ ok: number }>(
+      "SELECT 1 AS ok FROM waste_events WHERE tenant = ?1 AND id = ?2",
+      tenant,
+      id,
+    );
+    if (row) found.add(id);
+  }
+  return found;
+}
+
 /**
- * Apply pantry add/remove/verify operations as row statements. Reads the current rows,
- * runs the pure `applyPantryOperations` (the merge/conflict logic), then emits an
- * UPSERT per applied add/verify and a DELETE per applied remove — one batch.
+ * Apply pantry add/remove/verify/dispose operations as row statements. Shape-validates
+ * every op first (a violation is a whole-call `validation_failed` ToolError — the shared
+ * posture for the MCP tool and `/api`), short-circuits a replayed `dispose` whose
+ * `event_id` is already recorded to applied-with-no-writes (design D3 replay convergence),
+ * reads the current rows, runs the pure `applyPantryOperations` (merge/conflict/vocab
+ * logic), then emits an UPSERT per applied add/verify, a DELETE per applied remove/dispose,
+ * and a waste-event INSERT per waste dispose — one D1 batch, so the row delete and the
+ * event insert land atomically. Waste events stamp their analytics `department` at capture
+ * (`stampDepartment`: leftovers → in-vocab row category → identity memo → NULL pending).
  */
 export async function applyPantryRowOps(
   env: Env,
   tenant: string,
   operations: PantryOperation[],
   today: string,
-): Promise<Pick<PantryApplyResult, "applied" | "conflicts">> {
+): Promise<Pick<PantryApplyResult, "applied" | "conflicts" | "warnings">> {
+  for (let i = 0; i < operations.length; i++) {
+    const err = pantryOperationShapeError(operations[i], i);
+    if (err) throw new ToolError("validation_failed", err, { index: i });
+  }
+
+  // Replay convergence (D3): a dispose whose client event_id is already recorded reports
+  // applied and writes NOTHING — the row is already gone and the event already stands, and
+  // a row re-added since the original toss must not be deleted by the replay.
+  const replayIds = operations
+    .filter((op) => op.op === "dispose" && op.disposition === "waste" && op.event_id !== undefined)
+    .map((op) => op.event_id as string);
+  const recorded = replayIds.length > 0 ? await existingWasteEventIds(env, tenant, replayIds) : new Set<string>();
+  const replayApplied: PantryApplyResult["applied"] = [];
+  const effective = operations.filter((op) => {
+    if (op.op === "dispose" && op.event_id !== undefined && recorded.has(op.event_id)) {
+      replayApplied.push({
+        op: "dispose",
+        name: typeof op.name === "string" ? op.name : String(op.item?.name ?? ""),
+        disposition: op.disposition,
+      });
+      return false;
+    }
+    return true;
+  });
+
   // Pantry is food by construction — funnel every row through the canonical-id resolver
   // (normalize + best-effort capture). A resolver read failure degrades to lowercase/strip
   // with capture disabled, never failing the write.
   const ctx = await ingredientContext(env).catch(() => emptyIngredientContext(env));
   const current = await readPantry(env, tenant);
-  const result = applyPantryOperations(current, operations, today, ctx.resolve);
+  const result = applyPantryOperations(current, effective, today, ctx.resolve);
   const byName = new Map(result.items.map((it) => [ctx.resolve(String(it.name)), it]));
 
   const stmts: D1PreparedStatement[] = [];
   for (const a of result.applied) {
     const key = ctx.resolve(a.name);
-    if (a.op === "remove") {
+    if (a.op === "remove" || a.op === "dispose") {
       stmts.push(
         db(env).prepare("DELETE FROM pantry WHERE tenant = ?1 AND normalized_name = ?2", tenant, key),
       );
@@ -169,8 +295,49 @@ export async function applyPantryRowOps(
       if (item) stmts.push(pantryUpsertStmt(env, tenant, item, ctx.resolve));
     }
   }
+
+  if (result.wasteEvents.length > 0) {
+    // The identity memo backs the department stamp's step 3 — read once, only for drafts a
+    // leftover/row-category stamp doesn't already decide. A memo read failure degrades to
+    // NULL-pending (the cron fills it), never failing the dispose.
+    const needMemo = result.wasteEvents
+      .filter(
+        (d: WasteEventDraft) =>
+          d.prepared_from == null && !(d.category !== null && (PANTRY_CATEGORIES as readonly string[]).includes(d.category)),
+      )
+      .map((d) => d.item_id);
+    const memo =
+      needMemo.length > 0
+        ? await readIngredientCategoryMemo(env, needMemo).catch(() => new Map<string, string>())
+        : new Map<string, string>();
+    const createdAt = new Date().toISOString();
+    for (const draft of result.wasteEvents) {
+      stmts.push(
+        wasteEventInsertStmt(env, tenant, {
+          id: draft.id ?? mintEventId(),
+          name: draft.name,
+          item_id: draft.item_id,
+          prepared_from: draft.prepared_from,
+          quantity: draft.quantity,
+          department: stampDepartment({
+            preparedFrom: draft.prepared_from,
+            rowCategory: draft.category,
+            memoCategory: memo.get(draft.item_id) ?? null,
+          }),
+          reason: draft.reason,
+          occurred_at: draft.occurred_at ?? today,
+          created_at: createdAt,
+        }),
+      );
+    }
+  }
+
   if (stmts.length > 0) await db(env).batch(stmts);
-  return { applied: result.applied, conflicts: result.conflicts };
+  return {
+    applied: [...result.applied, ...replayApplied],
+    conflicts: result.conflicts,
+    warnings: result.warnings,
+  };
 }
 
 /** Reset last_verified_at to `today` on the named pantry rows. Returns verified + missing. */

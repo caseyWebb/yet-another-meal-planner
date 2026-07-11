@@ -495,7 +495,7 @@ describe("grocery power (member-app-grocery)", () => {
 describe("pantry area", () => {
   it("reads, applies row ops, and verify stamps today", async () => {
     const { env, d1 } = memberEnv({
-      pantry: [{ tenant: "casey", name: "Jasmine rice", normalized_name: "jasmine rice", quantity: "2 lb", category: "grain", prepared_from: null, added_at: "2026-06-01", last_verified_at: "2026-06-01", notes: null }],
+      pantry: [{ tenant: "casey", name: "Jasmine rice", normalized_name: "jasmine rice", quantity: "2 lb", category: "grains", prepared_from: null, added_at: "2026-06-01", last_verified_at: "2026-06-01", notes: null }],
     });
     const cookie = await loggedIn(env);
     const read = await get(env, "/api/pantry", cookie);
@@ -514,6 +514,61 @@ describe("pantry area", () => {
     const row = d1.tables.pantry.find((r) => r.normalized_name === "jasmine rice")!;
     expect(row.last_verified_at).toMatch(/^\d{4}-\d{2}-\d{2}$/);
     expect(row.last_verified_at).not.toBe("2026-06-01");
+  });
+
+  it("GET /api/pantry filters by location; items carry both orthogonal fields", async () => {
+    const { env } = memberEnv({
+      pantry: [
+        { tenant: "casey", name: "Peas", normalized_name: "peas", quantity: "1 bag", category: "frozen", location: "freezer", prepared_from: null, added_at: "2026-06-01", last_verified_at: "2026-06-01", notes: null },
+        { tenant: "casey", name: "Milk", normalized_name: "milk", quantity: "full", category: "dairy", location: "fridge", prepared_from: null, added_at: "2026-06-01", last_verified_at: "2026-06-01", notes: null },
+      ],
+    });
+    const cookie = await loggedIn(env);
+    const res = await get(env, "/api/pantry?location=freezer", cookie);
+    const { items } = (await res.json()) as { items: { name: string; category?: string; location?: string }[] };
+    expect(items.map((i) => i.name)).toEqual(["Peas"]);
+    expect(items[0]).toMatchObject({ category: "frozen", location: "freezer" });
+  });
+
+  it("POST /api/pantry/ops dispose has parity with the tool (waste event, warnings, validation_failed)", async () => {
+    const { env, d1 } = memberEnv({
+      pantry: [
+        { tenant: "casey", name: "Cilantro", normalized_name: "cilantro", quantity: "1 bunch", category: "produce", location: "fridge", prepared_from: null, added_at: "2026-06-01", last_verified_at: "2026-06-01", notes: null },
+      ],
+      waste_events: [],
+    });
+    const cookie = await loggedIn(env);
+
+    // Shape violation → 400 validation_failed, nothing written (the shared apply path).
+    const bad = await send(env, "POST", "/api/pantry/ops", cookie, {
+      operations: [{ op: "dispose", name: "cilantro", disposition: "waste" }],
+    });
+    expect(bad.status).toBe(400);
+    expect(((await bad.json()) as { error: string }).error).toBe("validation_failed");
+    expect(d1.tables.pantry).toHaveLength(1);
+
+    // A client-minted event_id dispose applies once and converges on replay.
+    const op = { op: "dispose", name: "cilantro", disposition: "waste", reason: "spoiled", event_id: "01JAPPKEY", occurred_at: "2026-07-01" };
+    const first = await send(env, "POST", "/api/pantry/ops", cookie, { operations: [op] });
+    expect(first.status).toBe(200);
+    const firstOut = (await first.json()) as { applied: unknown[] };
+    expect(firstOut.applied).toContainEqual({ op: "dispose", name: "cilantro", disposition: "waste" });
+    expect(d1.tables.pantry).toHaveLength(0);
+    expect(d1.tables.waste_events).toHaveLength(1);
+    expect(d1.tables.waste_events[0]).toMatchObject({ tenant: "casey", id: "01JAPPKEY", department: "produce", occurred_at: "2026-07-01" });
+
+    const replay = await send(env, "POST", "/api/pantry/ops", cookie, { operations: [op] });
+    const replayOut = (await replay.json()) as { applied: unknown[]; conflicts: unknown[] };
+    expect(replayOut.applied).toContainEqual({ op: "dispose", name: "cilantro", disposition: "waste" });
+    expect(replayOut.conflicts).toHaveLength(0);
+    expect(d1.tables.waste_events).toHaveLength(1); // exactly one event under the minted id
+
+    // An off-vocab category add rides through with a warnings entry (accepted-and-dropped).
+    const warned = await send(env, "POST", "/api/pantry/ops", cookie, {
+      operations: [{ op: "add", item: { name: "Mystery", category: "other" } }],
+    });
+    const warnedOut = (await warned.json()) as { warnings?: { field: string }[] };
+    expect(warnedOut.warnings).toContainEqual(expect.objectContaining({ field: "category" }));
   });
 });
 

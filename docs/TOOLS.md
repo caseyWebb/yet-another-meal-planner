@@ -33,6 +33,10 @@ warnings: [{ key, reason, superseded_by }]
 | Tool | Deprecated form | Converts to | Reason |
 |---|---|---|---|
 | `update_preferences` | a `brands` family as a flat rank list (`[]` / `["A","B"]`) | `{ tiers: [], any_brand: true }` / `{ tiers: [["A"],["B"]], any_brand: false }` | `deprecated_shape` |
+| `update_pantry` | an item `category` of `pantry` \| `fridge` \| `freezer` \| `spices` (the retired location-flavored values) | `location: pantry/fridge/freezer/spice_rack`, `category` left unset | `deprecated_shape` |
+| `read_pantry` | a `category` filter of `pantry` \| `fridge` \| `freezer` \| `spices` | the corresponding `location` filter (`spices` → `spice_rack`) | `deprecated_shape` |
+
+`update_pantry`'s shims report per-operation — its `warnings` entries are `{ op, name, field, reason }` (the operation-report shape its `applied`/`conflicts` already use) rather than the `{ key, reason, superseded_by }` patch shape. Any *other* off-vocabulary `category` value on an `update_pantry` add is **accepted-and-dropped** under the same posture: the op applies, `category` stores NULL (uncategorized — the background classifier fills it), and a `warnings` entry reports the drop — never a rejection, so a stale writer keeps working while its data converges.
 
 ---
 
@@ -267,24 +271,29 @@ Read the **group's** notes and favorites for a recipe — the collaborative-cook
 Read pantry items, optionally filtered.
 
 **Params:**
-- `filter` (object, optional): `{ category?, prepared_only?, stale_only? }`
+- `filter` (object, optional): `{ category?, location?, prepared_only?, stale_only? }`
 
 **Returns:**
-- `{ items: [...] }` — array of pantry items per schema
+- `{ items: [...] }` — array of pantry items per schema; each item carries the orthogonal `category` (food taxonomy) and `location` (where it's kept) fields, either of which may be absent
 
-**Notes:** `category` and `prepared_only` are deterministic from pantry data. `stale_only` returns a structured `{ error: "unsupported" }`: freshness is an LLM-judged, conversational concern (it depends on storage, whether a package was opened, and visual inspection) rather than something the tool can compute. There is no shelf-life table backing it — the curated `guidance/ingredient_storage/` tree (see `list_guidance` / `read_guidance`) informs put-away advice rather than gating staleness.
+**Notes:** `category` filters on the controlled food taxonomy (`produce | dairy | meat | seafood | grains | bakery | canned | condiments | oils | spices | baking | frozen | snacks | beverages`); `location` filters on the kitchen location vocabulary (`fridge | freezer | pantry | spice_rack | counter | cabinet`); both plus `prepared_only` are deterministic from pantry data. An absent `category` means not-yet-classified — treat it as uncategorized, never an error (the background `ingredient-category` pass fills it). For one deprecation window, a legacy location-flavored `category` filter value (`pantry | fridge | freezer | spices`) is mapped onto the corresponding `location` filter (the deprecation convention above) so cached-plugin reads keep working across the vocabulary split. `stale_only` returns a structured `{ error: "unsupported" }`: freshness is an LLM-judged, conversational concern (it depends on storage, whether a package was opened, and visual inspection) rather than something the tool can compute. There is no shelf-life table backing it — the curated `guidance/ingredient_storage/` tree (see `list_guidance` / `read_guidance`) informs put-away advice rather than gating staleness.
 
 ### `update_pantry(operations)`
 
-Apply pantry updates from conversational messages.
+Apply pantry updates from conversational messages — adds/merges, verification stamps, plain corrective removes, and removal-as-disposition (`dispose`), the waste-telemetry capture point.
 
 **Params:**
-- `operations` (array): `[{ op: "add" | "remove" | "verify", item: ..., ... }]`
+- `operations` (array): `[{ op: "add" | "remove" | "verify" | "dispose", item?, name?, disposition?, reason?, event_id?, occurred_at? }]`
+  - `add` (upsert-merge) / `verify` take an `item` object / `name`; items carry two orthogonal controlled fields — `category`, the food taxonomy (`produce | dairy | meat | seafood | grains | bakery | canned | condiments | oils | spices | baking | frozen | snacks | beverages`), and `location`, where it's kept (`fridge | freezer | pantry | spice_rack | counter | cabinet`) — plus the loose `quantity`, `prepared_from`, and an optional freeform `notes` string. Omit `category` to let the background classifier derive it: NULL reads as uncategorized, never an error.
+  - `remove` is a plain correction/cleanup delete and records **nothing** — mistakes and stale-row cleanup are not waste.
+  - `dispose` — `{ op: "dispose", name, disposition: "used" | "waste", reason?, event_id?, occurred_at? }` — removes the row when food actually leaves the kitchen. `used` (consumed) is pure removal recording nothing today. `waste` additionally persists exactly one `waste_events` row; `reason` is then required, exactly one of `spoiled | moldy | over_ripe | expired | freezer_burned | stale | forgot | bought_too_much | never_opened | other`.
+  - `event_id` (dispose, optional): a client-minted idempotency key (1–64 chars of `[A-Za-z0-9_-]`; the member app mints a ULID at tap time). A replayed dispose with the same id reports applied and writes nothing — exactly one event ever exists under it. Omitted, the server mints one.
+  - `occurred_at` (dispose, optional): ISO date (`YYYY-MM-DD`) the toss happened, so an offline toss replayed later records the right day; defaults to today.
 
 **Returns:**
-- `{ applied: [...], conflicts: [...] }` — D1-backed, no `commit_sha`
+- `{ applied: [...], conflicts: [...], warnings?: [...] }` — D1-backed, no `commit_sha`. `applied` entries for dispose carry `{ op, name, disposition }`; `warnings` (`{ op, name, field, reason }`) reports D21 conversions/drops per the deprecation convention above, omitted when empty.
 
-**Notes:** Conflicts surface when remove targets aren't found. The agent should ask the user how to resolve. Pantry state is D1-backed (the `pantry` table) — no git commit. Each item may carry an optional freeform `notes` string alongside its structured fields.
+**Notes:** Write validation runs in the shared apply path, so this tool and `POST /api/pantry/ops` enforce identical rules: an off-vocabulary `location` is a per-op **conflict**, never a silent write; a legacy location-flavored `category` (`pantry|fridge|freezer|spices`) is transposed onto `location` for one deprecation window; any other off-vocabulary `category` is accepted-and-dropped with a `warnings` entry. Shape violations (missing disposition, waste without/with an unknown reason, malformed `event_id` or `occurred_at`) are a whole-call `validation_failed`; semantic misses (a remove/dispose/verify whose target isn't present) are per-op conflicts — the agent should ask the user how to resolve. **Disposition never asks or accepts a dollar value** — the op has no value/price/cost field, and the event's value is derived later from purchase history (band 4), so never prompt the member for what an item cost. A waste event's analytics `department` is stamped at capture from the item's identity — a `prepared_from` (leftover) row stamps `leftovers`; otherwise the row's in-vocabulary category, else the ingredient-identity memo, else NULL-pending (filled once by the `ingredient-category` cron, never rewritten). Pantry state is D1-backed (the `pantry` + `waste_events` tables) — no git commit.
 
 ### `update_kitchen(operations)`
 

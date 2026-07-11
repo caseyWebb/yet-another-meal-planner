@@ -102,6 +102,43 @@ export async function readAliases(env: Env): Promise<Record<string, string>> {
   return (await readResolver(env)).toId;
 }
 
+/**
+ * The identity category memo, resolved for the given stored keys (pantry `normalized_name`s /
+ * waste-event `item_id`s): key → the identity funnel's category (`ingredient_identity.category`
+ * — the 14-value food taxonomy or `household`; design D6). Resolution follows the funnel —
+ * key as an identity id (else an alias variant) → representative-resolved survivor → category,
+ * with the survivor's own value preferred and a merged member's filling in (the `search_term`/
+ * `display_name` precedence). One wholesale batched read (like `readResolver`); keys with no
+ * memo are simply absent from the map (NULL = pending, converged by the `ingredient-category`
+ * cron). This is the ONE deterministic item→department derivation source (D17) — the pantry
+ * autofill, the waste-event stamp, and the sibling spend capture all read through here.
+ */
+export async function readIngredientCategoryMemo(env: Env, keys: string[]): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  if (keys.length === 0) return out;
+  const d = db(env);
+  const [identities, aliases] = await Promise.all([
+    d.all<{ id: string; representative: string | null; category: string | null }>(
+      "SELECT id, representative, category FROM ingredient_identity",
+    ),
+    d.all<{ variant: string; id: string }>("SELECT variant, id FROM ingredient_alias"),
+  ]);
+  const resolve = representativeResolver(identities);
+  const ids = new Set(identities.map((r) => r.id));
+  const aliasTo = new Map(aliases.map((a) => [a.variant, a.id]));
+  const categories: Record<string, string> = {};
+  for (const r of identities) {
+    const surv = resolve(r.id);
+    if (r.category && (r.id === surv || !(surv in categories))) categories[surv] = r.category;
+  }
+  for (const key of keys) {
+    const id = ids.has(key) ? key : (aliasTo.get(key) ?? key);
+    const category = categories[resolve(id)];
+    if (category) out.set(key, category);
+  }
+  return out;
+}
+
 // --- IngredientContext: the single consumption funnel (design D9) -------------
 // One accessor loaded once per request/tick that centralizes the whole ingredient
 // pipeline so a consumer doesn't re-wire "load resolver → normalize → enqueue-on-miss

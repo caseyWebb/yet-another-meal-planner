@@ -386,13 +386,19 @@ export function registerWriteTools(
     "update_pantry",
     {
       description:
-        "Apply pantry add/remove/verify operations. `add` is an upsert: re-adding an existing name merges into it (overlay incoming fields, preserve added_at, refresh last_verified_at) rather than duplicating; the result includes merged:true when this happens. Returns what was applied and any conflicts (e.g. a remove whose target isn't present).",
+        "Apply pantry add/remove/verify/dispose operations. `add` is an upsert: re-adding an existing name merges into it (overlay incoming fields, preserve added_at, refresh last_verified_at) rather than duplicating; the result includes merged:true when this happens. " +
+        "Items carry two orthogonal fields: `category`, the food taxonomy (produce | dairy | meat | seafood | grains | bakery | canned | condiments | oils | spices | baking | frozen | snacks | beverages), and `location`, where it's kept (fridge | freezer | pantry | spice_rack | counter | cabinet). Omit category to let the background classifier derive it — NULL reads as uncategorized, never an error. An off-vocabulary location is a conflict, never a silent write; an off-vocabulary category is accepted with the field dropped and a warning (legacy values pantry|fridge|freezer|spices are transposed onto location for one deprecation window). " +
+        "`remove` is a plain correction/cleanup delete and records nothing. When food actually leaves the kitchen, use `dispose`: { op:'dispose', name, disposition: 'used'|'waste', reason?, event_id?, occurred_at? } removes the row, and 'waste' also records a waste event for the waste analyzer — reason is required for waste, exactly one of spoiled | moldy | over_ripe | expired | freezer_burned | stale | forgot | bought_too_much | never_opened | other. Disposition NEVER asks or accepts a dollar value — the event's value is derived later from purchase history, so never prompt the member for what an item cost. The event's analytics department is stamped at capture from the item's identity (a prepared/leftover row stamps 'leftovers'). `event_id` is an optional client-minted idempotency key — a replayed dispose with the same id converges to one event; omit it and the server mints one. `occurred_at` (YYYY-MM-DD) backdates the toss; default today. 'used' records nothing today (pure removal). Returns applied + conflicts + warnings (e.g. a remove/dispose whose target isn't present is a conflict).",
       inputSchema: {
         operations: z.array(
           z.object({
-            op: z.enum(["add", "remove", "verify"]),
+            op: z.enum(["add", "remove", "verify", "dispose"]),
             item: z.record(z.string(), z.unknown()).optional(),
             name: z.string().optional(),
+            disposition: z.enum(["used", "waste"]).optional(),
+            reason: z.string().optional(),
+            event_id: z.string().optional(),
+            occurred_at: z.string().optional(),
           }),
         ),
       },
@@ -400,7 +406,11 @@ export function registerWriteTools(
     ({ operations }) =>
       runTool(async () => {
         const result = await applyPantryRowOps(env, username, operations, today());
-        return { applied: result.applied, conflicts: result.conflicts };
+        return {
+          applied: result.applied,
+          conflicts: result.conflicts,
+          ...(result.warnings.length > 0 ? { warnings: result.warnings } : {}),
+        };
       }),
   );
 

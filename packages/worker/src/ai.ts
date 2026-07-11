@@ -34,6 +34,7 @@ export type AiActivity =
   | "confirm-match"
   | "title-clean"
   | "ingredient-confirm"
+  | "ingredient-category"
   | "nightvibe-name"
   // embeddings (bge-base) — cheap/batched/cached; input-length token estimate
   | "embed-recipe"

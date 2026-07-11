@@ -144,7 +144,7 @@ describe("reconcileGroceryPantryKeys (driver)", () => {
           name: "scallions",
           normalized_name: "scallions",
           quantity: "partial",
-          category: "fridge",
+          category: "produce",
           prepared_from: null,
           added_at: "2026-06-01",
           last_verified_at: "2026-06-10",
@@ -156,6 +156,51 @@ describe("reconcileGroceryPantryKeys (driver)", () => {
     expect(res.pantry_rekeyed).toBe(1);
     expect(tables.pantry.map((r) => r.normalized_name)).toEqual(["green onion"]);
     expect(tables.pantry[0].quantity).toBe("partial");
+  });
+
+  it("a re-keyed pantry row keeps its location AND display_name (carry-through, incl. the collision merge)", async () => {
+    const { env, tables } = seed(
+      [],
+      [
+        {
+          tenant: "t1",
+          name: "scallions",
+          normalized_name: "scallions",
+          display_name: "Scallions",
+          quantity: "partial",
+          category: null,
+          location: "fridge",
+          prepared_from: null,
+          added_at: "2026-06-01",
+          last_verified_at: "2026-06-10",
+          notes: null,
+        },
+        // A colliding surface form with the fields the first row lacks — the merge takes
+        // the first non-NULL of each.
+        {
+          tenant: "t1",
+          name: "green onions",
+          normalized_name: "green onions",
+          display_name: null,
+          quantity: null,
+          category: "produce",
+          location: null,
+          prepared_from: null,
+          added_at: "2026-06-05",
+          last_verified_at: null,
+          notes: null,
+        },
+      ],
+    );
+    const res = await reconcileGroceryPantryKeys(env);
+    expect(res.pantry_rekeyed).toBe(1);
+    expect(tables.pantry).toHaveLength(1);
+    expect(tables.pantry[0]).toMatchObject({
+      normalized_name: "green onion",
+      display_name: "Scallions",
+      location: "fridge",
+      category: "produce",
+    });
   });
 });
 

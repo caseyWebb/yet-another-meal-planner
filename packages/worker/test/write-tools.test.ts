@@ -4,7 +4,7 @@ import {
   readyToEatManager,
   registerWriteTools,
 } from "../src/write-tools.js";
-import { applyPantryOperations, markVerified, type PantryItem } from "../src/pantry-write.js";
+import { applyPantryOperations, markVerified, pantryOperationShapeError, type PantryItem } from "../src/pantry-write.js";
 import { ToolError } from "../src/errors.js";
 import { serializeMarkdown } from "../src/serialize.js";
 import { validateFile } from "../src/validate.js";
@@ -41,6 +41,7 @@ function fakeD1(slugs: string[]): FakeStore {
     kitchen_equipment: [],
     ready_to_eat: [],
     pantry: [],
+    waste_events: [],
     ingredient_identity: [],
     ingredient_alias: [],
     novel_ingredient_terms: [],
@@ -99,7 +100,9 @@ function fakeD1(slugs: string[]): FakeStore {
                     ? ["variant"]
                     : table === "ingredient_identity"
                       ? ["id"]
-                      : ["tenant", "normalized_name"];
+                      : table === "waste_events"
+                        ? ["tenant", "id"]
+                        : ["tenant", "normalized_name"];
       const idx = tables[table].findIndex((r) => pk.every((k) => r[k] === row[k]));
       if (idx >= 0 && /ON CONFLICT/i.test(sql)) {
         tables[table][idx] = { ...tables[table][idx], ...row };
@@ -351,7 +354,7 @@ describe("applyPantryOperations", () => {
     expect(eggs.last_verified_at).toBe("2026-06-09");
   });
 
-  it("adds with a top-level name and merges item fields", () => {
+  it("adds with a top-level name and merges item fields (an off-vocab category is dropped with a warning)", () => {
     const res = applyPantryOperations(
       items,
       [{ op: "add", name: "garlic", item: { category: "aromatics", note: "staple" } }],
@@ -360,7 +363,12 @@ describe("applyPantryOperations", () => {
     expect(res.conflicts).toHaveLength(0);
     expect(res.applied).toEqual([{ op: "add", name: "garlic" }]);
     const garlic = res.items.find((i) => i.name === "garlic")!;
-    expect(garlic).toMatchObject({ name: "garlic", category: "aromatics", note: "staple", added_at: "2026-06-09" });
+    expect(garlic).toMatchObject({ name: "garlic", note: "staple", added_at: "2026-06-09" });
+    // "aromatics" is off the food taxonomy: accepted-and-dropped, never a rejection (D21).
+    expect(garlic.category).toBeUndefined();
+    expect(res.warnings).toContainEqual(
+      expect.objectContaining({ op: "add", name: "garlic", field: "category" }),
+    );
   });
 
   it("conflicts only when no name is resolvable from either location", () => {
@@ -469,6 +477,145 @@ describe("applyPantryOperations", () => {
   });
 });
 
+describe("applyPantryOperations — dispose + vocabulary validation (pantry-disposition-foundations)", () => {
+  const base = (): PantryItem[] => [
+    {
+      name: "cilantro",
+      normalized_name: "cilantro",
+      quantity: "1 bunch",
+      category: "produce",
+      location: "fridge",
+      prepared_from: null,
+      added_at: "2026-06-01",
+    },
+    {
+      name: "cooked rice",
+      normalized_name: "cooked rice",
+      quantity: "partial",
+      prepared_from: "salmon-with-rice",
+    },
+  ];
+
+  it("dispose used removes the row and drafts NO waste event", () => {
+    const res = applyPantryOperations(base(), [{ op: "dispose", name: "cilantro", disposition: "used" }], "2026-07-01");
+    expect(res.applied).toEqual([{ op: "dispose", name: "cilantro", disposition: "used" }]);
+    expect(res.items.map((i) => i.name)).toEqual(["cooked rice"]);
+    expect(res.wasteEvents).toHaveLength(0);
+  });
+
+  it("dispose waste removes the row and drafts one event with the row's snapshot", () => {
+    const res = applyPantryOperations(
+      base(),
+      [{ op: "dispose", name: "cilantro", disposition: "waste", reason: "over_ripe", occurred_at: "2026-06-30" }],
+      "2026-07-01",
+    );
+    expect(res.applied).toEqual([{ op: "dispose", name: "cilantro", disposition: "waste" }]);
+    expect(res.wasteEvents).toEqual([
+      {
+        name: "cilantro",
+        item_id: "cilantro",
+        prepared_from: null,
+        quantity: "1 bunch",
+        category: "produce",
+        reason: "over_ripe",
+        occurred_at: "2026-06-30",
+      },
+    ]);
+  });
+
+  it("a disposed leftover's draft carries prepared_from (the leftovers stamp input)", () => {
+    const res = applyPantryOperations(
+      base(),
+      [{ op: "dispose", name: "cooked rice", disposition: "waste", reason: "forgot" }],
+      "2026-07-01",
+    );
+    expect(res.wasteEvents[0]).toMatchObject({ item_id: "cooked rice", prepared_from: "salmon-with-rice" });
+  });
+
+  it("dispose of an absent row is a per-op conflict", () => {
+    const res = applyPantryOperations(base(), [{ op: "dispose", name: "ghost", disposition: "waste", reason: "forgot" }], "2026-07-01");
+    expect(res.applied).toHaveLength(0);
+    expect(res.conflicts).toContainEqual({ op: "dispose", name: "ghost", reason: "no pantry item with that name" });
+  });
+
+  it("shape violations are signaled by pantryOperationShapeError (validation_failed, not conflicts)", () => {
+    expect(pantryOperationShapeError({ op: "dispose", name: "x" }, 0)).toMatch(/disposition/);
+    expect(pantryOperationShapeError({ op: "dispose", name: "x", disposition: "waste" }, 0)).toMatch(/reason/);
+    expect(pantryOperationShapeError({ op: "dispose", name: "x", disposition: "waste", reason: "vibes" }, 0)).toMatch(/reason/);
+    expect(
+      pantryOperationShapeError({ op: "dispose", name: "x", disposition: "waste", reason: "forgot", event_id: "bad id!" }, 0),
+    ).toMatch(/event_id/);
+    expect(
+      pantryOperationShapeError({ op: "dispose", name: "x", disposition: "waste", reason: "forgot", occurred_at: "June 30" }, 0),
+    ).toMatch(/occurred_at/);
+    // Well-shaped ops (dispose and non-dispose) pass.
+    expect(
+      pantryOperationShapeError(
+        { op: "dispose", name: "x", disposition: "waste", reason: "forgot", event_id: "01JXYZ", occurred_at: "2026-06-30" },
+        0,
+      ),
+    ).toBeNull();
+    expect(pantryOperationShapeError({ op: "dispose", name: "x", disposition: "used" }, 0)).toBeNull();
+    expect(pantryOperationShapeError({ op: "add", item: { name: "x" } }, 0)).toBeNull();
+  });
+
+  it("an off-vocabulary location is a per-op conflict, never a silent write", () => {
+    const res = applyPantryOperations(base(), [{ op: "add", item: { name: "peas", location: "garage" } }], "2026-07-01");
+    expect(res.applied).toHaveLength(0);
+    expect(res.conflicts).toContainEqual(
+      expect.objectContaining({ op: "add", name: "peas", reason: expect.stringContaining("location") }),
+    );
+    expect(res.items.find((i) => i.name === "peas")).toBeUndefined();
+  });
+
+  it("a legacy location-flavored category transposes onto location for the deprecation window", () => {
+    const res = applyPantryOperations(base(), [{ op: "add", item: { name: "peas", category: "freezer" } }], "2026-07-01");
+    expect(res.applied).toEqual([{ op: "add", name: "peas" }]);
+    const peas = res.items.find((i) => i.name === "peas")!;
+    expect(peas.location).toBe("freezer");
+    expect(peas.category).toBeUndefined();
+    expect(res.warnings).toContainEqual(expect.objectContaining({ op: "add", name: "peas", field: "category" }));
+    // "spices" is ALSO a 14-vocab food category — the vocab check wins on WRITE (D7's
+    // ordering), so it stores as the category; only the READ filter maps it onto location.
+    const res2 = applyPantryOperations(base(), [{ op: "add", item: { name: "cumin", category: "spices" } }], "2026-07-01");
+    const cumin = res2.items.find((i) => i.name === "cumin")!;
+    expect(cumin.category).toBe("spices");
+    expect(cumin.location).toBeUndefined();
+  });
+
+  it("an in-vocabulary category and location are stored as given", () => {
+    const res = applyPantryOperations(
+      base(),
+      [{ op: "add", item: { name: "flour", category: "baking", location: "cabinet" } }],
+      "2026-07-01",
+    );
+    expect(res.warnings).toHaveLength(0);
+    expect(res.items.find((i) => i.name === "flour")).toMatchObject({ category: "baking", location: "cabinet" });
+  });
+
+  it("an off-vocabulary category is accepted-and-dropped with a warning (the shipped app's 'other')", () => {
+    const res = applyPantryOperations(base(), [{ op: "add", item: { name: "peas", category: "other" } }], "2026-07-01");
+    expect(res.applied).toEqual([{ op: "add", name: "peas" }]);
+    const peas = res.items.find((i) => i.name === "peas")!;
+    expect(peas.category).toBeUndefined();
+    expect(peas.location).toBeUndefined();
+    expect(res.warnings).toContainEqual(
+      expect.objectContaining({ op: "add", name: "peas", field: "category", reason: expect.stringContaining("off-vocabulary") }),
+    );
+  });
+
+  it("a dropped category on a merge preserves the existing row's category", () => {
+    const res = applyPantryOperations(
+      base(),
+      [{ op: "add", item: { name: "cilantro", category: "other", quantity: "2 bunches" } }],
+      "2026-07-01",
+    );
+    const cilantro = res.items.find((i) => i.name === "cilantro")!;
+    expect(cilantro.category).toBe("produce"); // the bad incoming value never clobbers
+    expect(cilantro.quantity).toBe("2 bunches");
+  });
+});
+
 describe("markVerified", () => {
   const items: PantryItem[] = [{ name: "milk", last_verified_at: "2026-06-01" }];
 
@@ -530,7 +677,7 @@ describe("update_aliases (D1-backed)", () => {
 });
 
 describe("update_pantry / mark_pantry_verified (D1-backed)", () => {
-  it("update_pantry add inserts a pantry row, no commit_sha", async () => {
+  it("update_pantry add inserts a pantry row, no commit_sha (a legacy category transposes onto location)", async () => {
     const d1 = fakeD1([]);
     const handlers = collectTools(storeWith({}), "everett", d1.env);
     const res = await handlers.get("update_pantry")!({
@@ -539,13 +686,55 @@ describe("update_pantry / mark_pantry_verified (D1-backed)", () => {
     const out = JSON.parse(res.content[0].text) as {
       applied: { op: string; name: string }[];
       conflicts: unknown[];
+      warnings?: { op: string; name: string; field: string }[];
       commit_sha?: string;
     };
     expect(out.applied).toContainEqual({ op: "add", name: "butter" });
     expect(out.conflicts).toHaveLength(0);
     expect(out.commit_sha).toBeUndefined(); // D1-backed: no git commit
+    // The D21 shim: "fridge" is a legacy location-flavored category — transposed onto
+    // `location`, category stored NULL, flagged in `warnings`.
+    expect(out.warnings).toContainEqual(expect.objectContaining({ op: "add", name: "butter", field: "category" }));
     expect(d1.tables.pantry).toHaveLength(1);
-    expect(d1.tables.pantry[0]).toMatchObject({ tenant: "everett", name: "butter", category: "fridge", normalized_name: "butter" });
+    expect(d1.tables.pantry[0]).toMatchObject({
+      tenant: "everett",
+      name: "butter",
+      location: "fridge",
+      category: null,
+      normalized_name: "butter",
+    });
+  });
+
+  it("update_pantry dispose(waste) removes the row and returns applied; missing reason is validation_failed", async () => {
+    const d1 = fakeD1([]);
+    d1.tables.pantry.push({
+      tenant: "everett",
+      name: "cilantro",
+      normalized_name: "cilantro",
+      quantity: "1 bunch",
+      category: "produce",
+      location: "fridge",
+      prepared_from: null,
+      added_at: "2026-06-01",
+      last_verified_at: "2026-06-01",
+      notes: null,
+    });
+    const handlers = collectTools(storeWith({}), "everett", d1.env);
+    const res = await handlers.get("update_pantry")!({
+      operations: [{ op: "dispose", name: "cilantro", disposition: "waste", reason: "over_ripe" }],
+    });
+    const out = JSON.parse(res.content[0].text) as { applied: unknown[]; conflicts: unknown[] };
+    expect(out.applied).toContainEqual({ op: "dispose", name: "cilantro", disposition: "waste" });
+    expect(d1.tables.pantry).toHaveLength(0);
+    expect(d1.tables.waste_events).toHaveLength(1);
+    expect(d1.tables.waste_events[0]).toMatchObject({ tenant: "everett", item_id: "cilantro", department: "produce", reason: "over_ripe" });
+
+    // Shape violation: waste without a reason is a whole-call validation_failed, nothing written.
+    const bad = await handlers.get("update_pantry")!({
+      operations: [{ op: "dispose", name: "ghost", disposition: "waste" }],
+    });
+    const err = JSON.parse(bad.content[0].text) as { error?: string };
+    expect(err.error).toBe("validation_failed");
   });
 
   it("update_pantry add works for a single minimal op (name only)", async () => {

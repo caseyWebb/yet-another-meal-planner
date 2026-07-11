@@ -11,7 +11,7 @@ the repo root; worker code lives in `packages/worker/`.
 
 ## 1. Migration (design D2, fixtures §8)
 
-- [ ] 1.1 New `packages/worker/migrations/d1/NNNN_pantry_location_disposition.sql` (next free
+- [x] 1.1 New `packages/worker/migrations/d1/NNNN_pantry_location_disposition.sql` (next free
   number — `0049` as of planning; production has applied through `0048`): `ALTER TABLE pantry
   ADD COLUMN location TEXT;` + `CREATE INDEX idx_pantry_location ON pantry(tenant, location);`
   + the `waste_events` table and `idx_waste_events_when(tenant, occurred_at)` exactly per
@@ -22,13 +22,13 @@ the repo root; worker code lives in `packages/worker/`.
   baking→baking, canned goods→canned, dairy→dairy, produce→produce, grain|pasta→grains,
   meat→meat, bread→bakery; ELSE NULL). Header comment names design.md §8's fixture table as
   the ground truth.
-- [ ] 1.2 Verify locally: `npx wrangler d1 migrations apply DB --local`, seed rows covering
+- [x] 1.2 Verify locally: `npx wrangler d1 migrations apply DB --local`, seed rows covering
   every design-D2 mapping row plus an unmapped free-text value, and assert the remap output
   with `wrangler d1 execute DB --local` SELECTs (the §8 F1 shape at local scale).
 
 ## 2. Vocabulary + department module (design D1, D5)
 
-- [ ] 2.1 New `packages/worker/src/department.ts`: `PANTRY_LOCATIONS`, `PANTRY_CATEGORIES`,
+- [x] 2.1 New `packages/worker/src/department.ts`: `PANTRY_LOCATIONS`, `PANTRY_CATEGORIES`,
   `WASTE_REASONS`, `DEPARTMENTS` (= categories ∪ `household` ∪ `leftovers`),
   `LEGACY_CATEGORY_TO_LOCATION` (`pantry→pantry, fridge→fridge, freezer→freezer,
   spices→spice_rack` — the ongoing D21 shim set, NOT the migration's wider one-time map), and
@@ -39,7 +39,7 @@ the repo root; worker code lives in `packages/worker/`.
 
 ## 3. The dispose operation (design D3, D4, D7)
 
-- [ ] 3.1 `packages/worker/src/pantry-write.ts`: extend `PantryOperation` with
+- [x] 3.1 `packages/worker/src/pantry-write.ts`: extend `PantryOperation` with
   `op: "dispose"` + `disposition`, `reason`, `event_id`, `occurred_at`; extend
   `applyPantryOperations` to treat an applied dispose as a remove plus a returned
   **waste-event draft** (`{ id?, name, item_id-from-normalize, prepared_from, quantity,
@@ -49,7 +49,7 @@ the repo root; worker code lives in `packages/worker/`.
   validation that must be `validation_failed` (missing disposition, waste without/with
   unknown reason, malformed event_id `[A-Za-z0-9_-]{1,64}`, malformed `YYYY-MM-DD`) is
   signaled distinctly from per-op conflicts so wrappers can throw `ToolError`.
-- [ ] 3.2 `packages/worker/src/session-db.ts`: `PantryRow`/`pantryItemOf`/`readPantry`
+- [x] 3.2 `packages/worker/src/session-db.ts`: `PantryRow`/`pantryItemOf`/`readPantry`
   SELECT/`pantryUpsertStmt` gain `location` (and the read filter gains `location`; the
   `category` filter maps legacy values onto location per design D7); new
   `wasteEventInsertStmt` (`INSERT INTO waste_events … ON CONFLICT(tenant, id) DO NOTHING`);
@@ -58,14 +58,14 @@ the repo root; worker code lives in `packages/worker/`.
   rule), stamp `department` via `stampDepartment` (memo lookup: row `normalized_name` →
   alias/identity → representative → `category`, one batched read), stamp `created_at`,
   default `occurred_at`, and batch the DELETE + INSERT with the other statements.
-- [ ] 3.3 `packages/worker/src/grocery-pantry-reconcile.ts`: carry `location` through
+- [x] 3.3 `packages/worker/src/grocery-pantry-reconcile.ts`: carry `location` through
   `PantryRekeyRow`, the SELECT, the row mapper, and the merge (first non-NULL, like
   `category`); fix the same path dropping `display_name` today (row type, SELECT, mapper,
   merge — grounding observation, one line each).
 
 ## 4. Tool + /api surfaces (design D3, D7; TOOLS.md text direction)
 
-- [ ] 4.1 `packages/worker/src/write-tools.ts` `update_pantry`: zod op enum gains
+- [x] 4.1 `packages/worker/src/write-tools.ts` `update_pantry`: zod op enum gains
   `"dispose"` + optional `disposition` (`z.enum(["used","waste"])`), `reason`, `event_id`,
   `occurred_at`; result includes `warnings` when present. Replace the description with the
   full contract (tool descriptions own guarantees — Appendix C): upsert-merge sentence stays;
@@ -89,14 +89,14 @@ the repo root; worker code lives in `packages/worker/`.
   idempotency key — a replayed dispose with the same id converges to one event; omit it and
   the server mints one. `occurred_at` (YYYY-MM-DD) backdates the toss; default today.
   'used' records nothing today (pure removal). Returns applied + conflicts + warnings."
-- [ ] 4.2 `packages/worker/src/tools.ts` `read_pantry`: `pantryFilterShape` gains `location`;
+- [x] 4.2 `packages/worker/src/tools.ts` `read_pantry`: `pantryFilterShape` gains `location`;
   wire the filter through; description gains — "Items carry orthogonal `category` (food
   taxonomy) and `location` (fridge | freezer | pantry | spice_rack | counter | cabinet)
   fields; filter on either. Legacy location-flavored `category` values
   (pantry|fridge|freezer|spices) are treated as a `location` filter for one deprecation
   window. Absent category means not-yet-classified — treat as uncategorized, never an error."
   (`stale_only` text unchanged.)
-- [ ] 4.3 `packages/worker/src/api/pantry.ts`: `OPS` gains `dispose`; pass through
+- [x] 4.3 `packages/worker/src/api/pantry.ts`: `OPS` gains `dispose`; pass through
   `disposition`/`reason`/`event_id`/`occurred_at` with the same shape validation
   (`ToolError("validation_failed", …)`); `GET /pantry` gains the `location` query filter.
   No new route — no `run_worker_first` change (existing `/api/*` coverage). The app-side
@@ -104,9 +104,9 @@ the repo root; worker code lives in `packages/worker/`.
 
 ## 5. The ingredient-category job (design D6)
 
-- [ ] 5.1 `packages/worker/src/ai.ts`: add `"ingredient-category"` to `AiActivity` (text-gen
+- [x] 5.1 `packages/worker/src/ai.ts`: add `"ingredient-category"` to `AiActivity` (text-gen
   group).
-- [ ] 5.2 New `packages/worker/src/ingredient-category.ts` (`runCategoryJob`/
+- [x] 5.2 New `packages/worker/src/ingredient-category.ts` (`runCategoryJob`/
   `buildCategoryDeps`, job name `ingredient-category`): phase 1 — select up to
   `CATEGORY_BATCHES(2) × CATEGORY_BATCH_SIZE(40)` rows
   `WHERE representative IS NULL AND concrete = 1 AND category IS NULL`, batch-classify
@@ -117,7 +117,7 @@ the repo root; worker code lives in `packages/worker/`.
   phase 3 — fill NULL `waste_events.department` from the memo via `item_id` (any memo value).
   All phases bounded + idempotent; `writeJobHealth` + `writeJobRun` with a tenant-clean
   summary ({classified, pantry_filled, events_stamped, backlog}); self-terminating no-op runs.
-- [ ] 5.3 `packages/worker/src/index.ts` `scheduled()`: add `runCategoryJob` to the phase-1
+- [x] 5.3 `packages/worker/src/index.ts` `scheduled()`: add `runCategoryJob` to the phase-1
   `Promise.allSettled` group (independent of the recipe pipeline; internal env.AI/D1 budget;
   comment noting it trails `runNormalizeJob` by construction — a brand-new identity
   classifies next tick). Update the spine comment. **Serial surface** — coordinate per the
@@ -125,43 +125,43 @@ the repo root; worker code lives in `packages/worker/`.
 
 ## 6. Tests (fake-d1 idiom; `aubr test` from `packages/worker/`)
 
-- [ ] 6.1 `test/pantry-write.test.ts` (or the existing suite home): dispose used = remove +
+- [x] 6.1 `test/pantry-write.test.ts` (or the existing suite home): dispose used = remove +
   no draft; dispose waste = remove + draft with reason/occurred_at; waste without reason /
   unknown reason / bad event_id / bad date → the validation signal; off-vocab location
   conflict; legacy category transposition; off-vocab category drop + warning.
-- [ ] 6.2 `test/session-db.test.ts`: location round-trips through upsert/read + location
+- [x] 6.2 `test/session-db.test.ts`: location round-trips through upsert/read + location
   filter + legacy category filter mapping; dispose batch deletes row and inserts event;
   replayed event_id short-circuits to applied with exactly one row; server-minted id when
   absent; department stamping precedence (prepared_from → leftovers; row category; memo via
   alias; NULL pending); `warnings` surfaced through `applyPantryRowOps`.
-- [ ] 6.3 `test/write-tools.test.ts` + `test/session.test.ts` (api): update_pantry dispose
+- [x] 6.3 `test/write-tools.test.ts` + `test/session.test.ts` (api): update_pantry dispose
   passthrough returns applied/conflicts/warnings and `validation_failed` on shape errors;
   `GET /api/pantry?location=` filter; POST /pantry/ops dispose parity with the tool.
-- [ ] 6.4 New `test/ingredient-category.test.ts`: classify writes only in-vocab answers and
+- [x] 6.4 New `test/ingredient-category.test.ts`: classify writes only in-vocab answers and
   defers failures; pantry fill skips non-NULL and `household`; event stamp fills NULL only,
   never rewrites; no-op run when backlog empty (job summary counts).
-- [ ] 6.5 `test/grocery-pantry-reconcile.test.ts`: re-keyed rows keep `location` (+
+- [x] 6.5 `test/grocery-pantry-reconcile.test.ts`: re-keyed rows keep `location` (+
   `display_name`).
 
 ## 7. Docs lockstep (same pass — no drift, current-state voice)
 
-- [ ] 7.1 `docs/TOOLS.md`: rewrite the `read_pantry` / `update_pantry` sections to the 4.1/4.2
+- [x] 7.1 `docs/TOOLS.md`: rewrite the `read_pantry` / `update_pantry` sections to the 4.1/4.2
   contracts (params incl. dispose fields, returns incl. `warnings`, the never-asks-value
   guarantee, the deprecation-window shims, the department stamp). `mark_pantry_verified`
   untouched.
-- [ ] 7.2 `docs/SCHEMAS.md`: pantry section — `location` column + both vocabularies + NULL
+- [x] 7.2 `docs/SCHEMAS.md`: pantry section — `location` column + both vocabularies + NULL
   semantics + `idx_pantry_location`; new `waste_events` section (design D4 DDL, example rows,
   the department dimension = category vocab ∪ household ∪ leftovers, capture-stamp +
   pending-fill rule, PK-includes-tenant rationale, no value column — band 4); ingredient
   registry section gains the `category` memo column; the `AiActivity` list gains
   `ingredient-category`.
-- [ ] 7.3 `docs/ARCHITECTURE.md`: cron-job list gains the `ingredient-category` pass (one
+- [x] 7.3 `docs/ARCHITECTURE.md`: cron-job list gains the `ingredient-category` pass (one
   line, capture→retrieve→narrow framing: classify once per identity, stamp deterministically
   at capture).
 
 ## 8. Validation + acceptance
 
-- [ ] 8.1 `aubr typecheck` + `aubr test` green; `openspec validate
+- [x] 8.1 `aubr typecheck` + `aubr test` green; `openspec validate
   "pantry-disposition-foundations"` passes (invoke the openspec binary with THIS worktree as
   cwd — the `~/.local/bin` shims cd into whichever worktree ran session-start last).
 - [ ] 8.2 Post-deploy production verification (read-only `wrangler d1 execute grocery-mcp
@@ -169,3 +169,5 @@ the repo root; worker code lives in `packages/worker/`.
   fridge 32 / spice_rack 84 / NULL 109; category: 176 mapped per table, NULL 160, zero legacy
   survivors), F2/F3 convergence + backlog drain via `job_runs` for `ingredient-category`
   (798 → 0), F4 first-disposition checks when real events exist. Record results on the PR.
+  *(Deliberately open at implementation time — runs AFTER the deploy; the F1 remap was
+  verified locally against the full 22-value §8 distribution, exact counts matched.)*

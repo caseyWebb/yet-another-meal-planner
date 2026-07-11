@@ -19,6 +19,7 @@ export interface FakeD1 {
 
 const PK: Record<string, string[]> = {
   pantry: ["tenant", "normalized_name"],
+  waste_events: ["tenant", "id"],
   meal_plan: ["tenant", "recipe"],
   grocery_list: ["tenant", "normalized_name"],
   cooking_log: ["id"],
@@ -87,6 +88,7 @@ export function fakeD1(
 ): FakeD1 {
   const tables: Record<string, Record<string, unknown>[]> = {
     pantry: [],
+    waste_events: [],
     meal_plan: [],
     grocery_list: [],
     job_health: [],
@@ -108,7 +110,12 @@ export function fakeD1(
       out = out.filter((r) => r[col] === binds[n - 1]);
     };
     if (/category = \?2/i.test(sql)) eq("category", 2);
+    if (/\blocation = \?2/i.test(sql)) eq("location", 2);
+    if (/\blocation = \?3/i.test(sql)) eq("location", 3);
     if (/prepared_from IS NOT NULL/i.test(sql)) out = out.filter((r) => r.prepared_from != null);
+    // Pending-classification scans (ingredient-category phases 2/3).
+    if (/\bcategory IS NULL/i.test(sql)) out = out.filter((r) => r.category == null);
+    if (/\bdepartment IS NULL/i.test(sql)) out = out.filter((r) => r.department == null);
     if (/status = \?2/i.test(sql)) eq("status", 2);
     if (/\brecipe = \?1/i.test(sql)) eq("recipe", 1);
     if (/\brecipe = \?2/i.test(sql)) eq("recipe", 2);

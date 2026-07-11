@@ -378,6 +378,7 @@ const searchSpecShape = {
 
 const pantryFilterShape = {
   category: z.string().optional(),
+  location: z.string().optional(),
   prepared_only: z.boolean().optional(),
   stale_only: z.boolean().optional(),
 };
@@ -749,7 +750,7 @@ export function buildServer(env: Env, tenant: Tenant, origin?: string): McpServe
     "read_pantry",
     {
       description:
-        "Read pantry items. Supports category and prepared_only filters. stale_only is unsupported: freshness is judged conversationally (it depends on storage, whether a package was opened, and visual inspection), not computed by the tool.",
+        "Read pantry items. Items carry orthogonal `category` (food taxonomy) and `location` (fridge | freezer | pantry | spice_rack | counter | cabinet) fields; filter on either, plus prepared_only. Legacy location-flavored `category` values (pantry|fridge|freezer|spices) are treated as a `location` filter for one deprecation window. Absent category means not-yet-classified — treat as uncategorized, never an error. stale_only is unsupported: freshness is judged conversationally (it depends on storage, whether a package was opened, and visual inspection), not computed by the tool.",
       inputSchema: { filter: z.object(pantryFilterShape).optional() },
     },
     ({ filter }) =>
@@ -762,6 +763,7 @@ export function buildServer(env: Env, tenant: Tenant, origin?: string): McpServe
         }
         const items = await readPantry(env, tenant.id, {
           category: filter?.category,
+          location: filter?.location,
           preparedOnly: filter?.prepared_only,
         });
         return { items };

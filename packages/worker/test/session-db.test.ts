@@ -21,20 +21,44 @@ import { fakeD1 } from "./fake-d1.js";
 const TODAY = "2026-06-24";
 
 describe("pantry → D1 rows", () => {
-  it("read_pantry filters by category and prepared as WHERE clauses", async () => {
+  it("read_pantry filters by category, location, and prepared as WHERE clauses", async () => {
     const { env } = fakeD1({
       tables: {
         pantry: [
-          { tenant: "everett", name: "Milk", normalized_name: "milk", category: "fridge", prepared_from: null },
-          { tenant: "everett", name: "Garlic", normalized_name: "garlic", category: "pantry", prepared_from: null },
-          { tenant: "everett", name: "Sofrito", normalized_name: "sofrito", category: "fridge", prepared_from: "batch" },
-          { tenant: "other", name: "Eggs", normalized_name: "eggs", category: "fridge", prepared_from: null },
+          { tenant: "everett", name: "Milk", normalized_name: "milk", category: "dairy", location: "fridge", prepared_from: null },
+          { tenant: "everett", name: "Garlic", normalized_name: "garlic", category: "produce", location: "pantry", prepared_from: null },
+          { tenant: "everett", name: "Sofrito", normalized_name: "sofrito", category: null, location: "fridge", prepared_from: "batch" },
+          { tenant: "other", name: "Eggs", normalized_name: "eggs", category: "dairy", location: "fridge", prepared_from: null },
         ],
       },
     });
     expect((await readPantry(env, "everett")).map((i) => i.name).sort()).toEqual(["Garlic", "Milk", "Sofrito"]);
-    expect((await readPantry(env, "everett", { category: "fridge" })).map((i) => i.name).sort()).toEqual(["Milk", "Sofrito"]);
+    expect((await readPantry(env, "everett", { category: "dairy" })).map((i) => i.name)).toEqual(["Milk"]);
+    expect((await readPantry(env, "everett", { location: "fridge" })).map((i) => i.name).sort()).toEqual(["Milk", "Sofrito"]);
     expect((await readPantry(env, "everett", { preparedOnly: true })).map((i) => i.name)).toEqual(["Sofrito"]);
+    // Items include both orthogonal fields (either may be absent — NULL reads as unassigned).
+    const milk = (await readPantry(env, "everett")).find((i) => i.name === "Milk")!;
+    expect(milk).toMatchObject({ category: "dairy", location: "fridge" });
+  });
+
+  it("a legacy location-flavored category filter maps onto the location filter (D21 window)", async () => {
+    const { env } = fakeD1({
+      tables: {
+        pantry: [
+          { tenant: "everett", name: "Peas", normalized_name: "peas", category: "frozen", location: "freezer", prepared_from: null },
+          { tenant: "everett", name: "Milk", normalized_name: "milk", category: "dairy", location: "fridge", prepared_from: null },
+        ],
+      },
+    });
+    // category:"freezer" is no longer a category value — behaves as location:"freezer".
+    expect((await readPantry(env, "everett", { category: "freezer" })).map((i) => i.name)).toEqual(["Peas"]);
+    // "spices" maps onto spice_rack, not a category equality.
+    const spiced = fakeD1({
+      tables: {
+        pantry: [{ tenant: "everett", name: "Cumin", normalized_name: "cumin", category: "spices", location: "spice_rack", prepared_from: null }],
+      },
+    });
+    expect((await readPantry(spiced.env, "everett", { category: "spices" })).map((i) => i.name)).toEqual(["Cumin"]);
   });
 
   it("add upserts one row (merge: keep added_at, refresh last_verified_at, merged:true)", async () => {
@@ -54,12 +78,33 @@ describe("pantry → D1 rows", () => {
     expect(milk.last_verified_at).toBe(TODAY); // refreshed
   });
 
-  it("add inserts a new row when the normalized name is absent", async () => {
+  it("add inserts a new row when the normalized name is absent (legacy category → location)", async () => {
     const { env, tables } = fakeD1();
     const res = await applyPantryRowOps(env, "everett", [{ op: "add", item: { name: "Butter", category: "fridge" } }], TODAY);
     expect(res.applied).toEqual([{ op: "add", name: "Butter" }]);
+    expect(res.warnings).toContainEqual(expect.objectContaining({ op: "add", name: "Butter", field: "category" }));
     expect(tables.pantry).toHaveLength(1);
-    expect(tables.pantry[0]).toMatchObject({ tenant: "everett", normalized_name: "butter", category: "fridge", added_at: TODAY });
+    expect(tables.pantry[0]).toMatchObject({
+      tenant: "everett",
+      normalized_name: "butter",
+      category: null,
+      location: "fridge",
+      added_at: TODAY,
+    });
+  });
+
+  it("location round-trips through the upsert and read", async () => {
+    const { env } = fakeD1();
+    await applyPantryRowOps(
+      env,
+      "everett",
+      [{ op: "add", item: { name: "Flour", category: "baking", location: "cabinet" } }],
+      TODAY,
+    );
+    const items = await readPantry(env, "everett");
+    expect(items[0]).toMatchObject({ name: "Flour", category: "baking", location: "cabinet" });
+    expect((await readPantry(env, "everett", { location: "cabinet" })).map((i) => i.name)).toEqual(["Flour"]);
+    expect(await readPantry(env, "everett", { location: "fridge" })).toEqual([]);
   });
 
   it("remove deletes the row; a missing remove conflicts and writes nothing", async () => {
@@ -109,6 +154,179 @@ describe("pantry → D1 rows", () => {
     await applyPantryRowOps(env, "everett", [{ op: "add", item: { name: "Scallions" } }], TODAY);
     expect(tables.pantry).toHaveLength(1);
     expect(tables.pantry[0]).toMatchObject({ name: "Scallions", normalized_name: "green onion" });
+  });
+
+  it("dispose(waste) deletes the row and inserts one waste event in the same batch", async () => {
+    const { env, tables, batches } = fakeD1({
+      tables: {
+        pantry: [
+          { tenant: "everett", name: "Cilantro", normalized_name: "cilantro", quantity: "1 bunch", category: "produce", location: "fridge", prepared_from: null },
+        ],
+      },
+    });
+    const res = await applyPantryRowOps(
+      env,
+      "everett",
+      [{ op: "dispose", name: "cilantro", disposition: "waste", reason: "over_ripe", occurred_at: "2026-06-20" }],
+      TODAY,
+    );
+    expect(res.applied).toEqual([{ op: "dispose", name: "cilantro", disposition: "waste" }]);
+    expect(tables.pantry).toHaveLength(0);
+    expect(tables.waste_events).toHaveLength(1);
+    const event = tables.waste_events[0];
+    expect(event).toMatchObject({
+      tenant: "everett",
+      name: "Cilantro",
+      item_id: "cilantro",
+      department: "produce", // the row's in-vocab category (D5 step 2)
+      reason: "over_ripe",
+      occurred_at: "2026-06-20",
+    });
+    expect(String(event.id)).toMatch(/^[A-Za-z0-9_-]{1,64}$/); // server-minted when absent
+    expect(String(event.created_at)).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    // The DELETE and the INSERT ride ONE batch (atomic — design D3).
+    const last = batches[batches.length - 1];
+    expect(last.some((s) => /DELETE FROM pantry/.test(s.sql))).toBe(true);
+    expect(last.some((s) => /INSERT INTO waste_events/.test(s.sql))).toBe(true);
+  });
+
+  it("dispose(used) is pure removal — no waste event", async () => {
+    const { env, tables } = fakeD1({
+      tables: {
+        pantry: [{ tenant: "everett", name: "Eggs", normalized_name: "eggs", prepared_from: null }],
+      },
+    });
+    const res = await applyPantryRowOps(env, "everett", [{ op: "dispose", name: "eggs", disposition: "used" }], TODAY);
+    expect(res.applied).toEqual([{ op: "dispose", name: "eggs", disposition: "used" }]);
+    expect(tables.pantry).toHaveLength(0);
+    expect(tables.waste_events).toHaveLength(0);
+  });
+
+  it("a replayed event_id short-circuits to applied with exactly one event row and NO row write", async () => {
+    const { env, tables } = fakeD1({
+      tables: {
+        pantry: [{ tenant: "everett", name: "Cilantro", normalized_name: "cilantro", category: "produce", prepared_from: null }],
+      },
+    });
+    const op = { op: "dispose" as const, name: "cilantro", disposition: "waste" as const, reason: "forgot", event_id: "01JREPLAY", occurred_at: "2026-06-20" };
+    const first = await applyPantryRowOps(env, "everett", [op], TODAY);
+    expect(first.applied).toEqual([{ op: "dispose", name: "cilantro", disposition: "waste" }]);
+    expect(tables.waste_events).toHaveLength(1);
+    expect(tables.waste_events[0].id).toBe("01JREPLAY");
+
+    // Replay after the row is gone: applied (never a conflict), still exactly one event.
+    const replay = await applyPantryRowOps(env, "everett", [op], TODAY);
+    expect(replay.applied).toEqual([{ op: "dispose", name: "cilantro", disposition: "waste" }]);
+    expect(replay.conflicts).toHaveLength(0);
+    expect(tables.waste_events).toHaveLength(1);
+
+    // Replay after the item was RE-ADDED: the new row must not be deleted by the stale replay.
+    await applyPantryRowOps(env, "everett", [{ op: "add", item: { name: "Cilantro" } }], TODAY);
+    expect(tables.pantry).toHaveLength(1);
+    const replay2 = await applyPantryRowOps(env, "everett", [op], TODAY);
+    expect(replay2.applied).toEqual([{ op: "dispose", name: "cilantro", disposition: "waste" }]);
+    expect(tables.pantry).toHaveLength(1); // untouched
+    expect(tables.waste_events).toHaveLength(1);
+  });
+
+  it("a waste dispose of an absent row with an UNKNOWN event_id stays a per-op conflict", async () => {
+    const { env, tables } = fakeD1();
+    const res = await applyPantryRowOps(
+      env,
+      "everett",
+      [{ op: "dispose", name: "ghost", disposition: "waste", reason: "forgot", event_id: "01JNEVER" }],
+      TODAY,
+    );
+    expect(res.applied).toHaveLength(0);
+    expect(res.conflicts).toContainEqual({ op: "dispose", name: "ghost", reason: "no pantry item with that name" });
+    expect(tables.waste_events).toHaveLength(0);
+  });
+
+  it("shape violations are a whole-call validation_failed ToolError (shared tool + /api posture)", async () => {
+    const { env, tables } = fakeD1({
+      tables: { pantry: [{ tenant: "everett", name: "Milk", normalized_name: "milk", prepared_from: null }] },
+    });
+    await expect(
+      applyPantryRowOps(env, "everett", [{ op: "dispose", name: "milk" }], TODAY),
+    ).rejects.toMatchObject({ code: "validation_failed" });
+    await expect(
+      applyPantryRowOps(env, "everett", [{ op: "dispose", name: "milk", disposition: "waste", reason: "not-a-reason" }], TODAY),
+    ).rejects.toMatchObject({ code: "validation_failed" });
+    await expect(
+      applyPantryRowOps(
+        env,
+        "everett",
+        [{ op: "dispose", name: "milk", disposition: "waste", reason: "forgot", event_id: "bad id!" }],
+        TODAY,
+      ),
+    ).rejects.toMatchObject({ code: "validation_failed" });
+    await expect(
+      applyPantryRowOps(
+        env,
+        "everett",
+        [{ op: "dispose", name: "milk", disposition: "waste", reason: "forgot", occurred_at: "20-06-2026" }],
+        TODAY,
+      ),
+    ).rejects.toMatchObject({ code: "validation_failed" });
+    expect(tables.pantry).toHaveLength(1); // nothing written on any of them
+    expect(tables.waste_events).toHaveLength(0);
+  });
+
+  it("department stamping precedence: leftovers → row category → identity memo → NULL pending", async () => {
+    const { env, tables } = fakeD1({
+      tables: {
+        pantry: [
+          // 1. prepared_from wins regardless of category.
+          { tenant: "everett", name: "Cooked rice", normalized_name: "cooked rice", category: "grains", prepared_from: "salmon-with-rice" },
+          // 2. else the row's in-vocab category.
+          { tenant: "everett", name: "Cheddar", normalized_name: "cheddar", category: "dairy", prepared_from: null },
+          // 3. else the identity memo (the stored canonical key resolved through the funnel).
+          { tenant: "everett", name: "Scallions", normalized_name: "green onion", category: null, prepared_from: null },
+          // 4. else NULL = pending (the cron fills it).
+          { tenant: "everett", name: "Mystery jar", normalized_name: "mystery jar", category: null, prepared_from: null },
+        ],
+        ingredient_identity: [
+          { id: "green onion", base: "green onion", representative: null, category: "produce" },
+        ],
+        // The dispose NAME arrives as a different surface form; the funnel resolves it
+        // onto the stored key, and the memo reads that key's identity category.
+        ingredient_alias: [{ variant: "green onions", id: "green onion" }],
+        novel_ingredient_terms: [],
+      },
+    });
+    await applyPantryRowOps(
+      env,
+      "everett",
+      [
+        { op: "dispose", name: "cooked rice", disposition: "waste", reason: "forgot" },
+        { op: "dispose", name: "cheddar", disposition: "waste", reason: "moldy" },
+        { op: "dispose", name: "green onions", disposition: "waste", reason: "spoiled" },
+        { op: "dispose", name: "mystery jar", disposition: "waste", reason: "expired" },
+      ],
+      TODAY,
+    );
+    const byItem = new Map(tables.waste_events.map((e) => [e.item_id, e]));
+    expect(byItem.get("cooked rice")!.department).toBe("leftovers");
+    expect(byItem.get("cheddar")!.department).toBe("dairy");
+    expect(byItem.get("green onion")!.department).toBe("produce");
+    expect(byItem.get("mystery jar")!.department).toBeNull(); // pending — never a guess
+  });
+
+  it("warnings surface through applyPantryRowOps and occurred_at defaults to today", async () => {
+    const { env, tables } = fakeD1({
+      tables: { pantry: [{ tenant: "everett", name: "Basil", normalized_name: "basil", prepared_from: null }] },
+    });
+    const res = await applyPantryRowOps(
+      env,
+      "everett",
+      [
+        { op: "add", item: { name: "Mystery", category: "weird stuff" } },
+        { op: "dispose", name: "basil", disposition: "waste", reason: "spoiled" },
+      ],
+      TODAY,
+    );
+    expect(res.warnings).toContainEqual(expect.objectContaining({ op: "add", name: "Mystery", field: "category" }));
+    expect(tables.waste_events[0].occurred_at).toBe(TODAY);
   });
 
   it("a novel food pantry add captures the term into novel_ingredient_terms", async () => {
