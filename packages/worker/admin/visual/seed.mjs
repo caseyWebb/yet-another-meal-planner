@@ -114,6 +114,13 @@ export const SEED = {
       ladder: { term: "butter", tiers: [["Kerrygold"], ["store brand"]] },
       dontCare: { term: "yellow_onion" },
     },
+    // The unified cookbook browse (cookbook-unified-browse): the filter-bar fixtures —
+    // `noTime` has NO time_total (an active time cap must exclude it, honestly), and
+    // the italian trio is what `cuisine=italian` narrows the corpus to.
+    cookbook: {
+      noTime: "viz-pickled-onions",
+      italian: ["viz-beef-ragu", "viz-cacio-pepe", "viz-garlic-bread"],
+    },
     // The propose flow (member-app-propose D12): the shared seed keeps the PALETTE empty
     // (production's first render — the profile + propose empty states assert it), and
     // pre-plants everything the propose specs' SELF-PROVISIONED palette needs to fill a
@@ -361,14 +368,20 @@ export function d1Statements(now) {
     ["viz-spinach-curry", "Spinach Coconut Curry", "vegetarian", "indian", 45, null, '["cozy"]', '["coconut milk","chickpeas"]', '["baby spinach"]', null, null],
     ["viz-cacio-pepe", "Cacio e Pepe", null, "italian", 30, null, '["fast"]', '["pasta","pecorino"]', null, null, null],
     ["viz-garlic-bread", "Garlic Bread", null, "italian", 15, null, '["side"]', '["bread","butter"]', null, null, null],
+    // NO time_total (the cookbook filter bar's honest-time fixture: an unknown-time
+    // recipe fails any active time cap) — a course SIDE so no suggestion surface
+    // (propose pools, trending, picked-for-you) ever volunteers it as a meal.
+    ["viz-pickled-onions", "Quick Pickled Onions", null, "mexican", null, null, '["condiment"]', '["red onion","vinegar"]', null, null, null],
   ];
+  /** Corpus sides (course ["side"]) — everything else stays course NULL (unclassified). */
+  const sideSlugs = new Set(["viz-garlic-bread", "viz-pickled-onions"]);
   stmts.push(`DELETE FROM recipes WHERE slug IN (${proposeRecipes.map((r) => q(r[0])).join(", ")});`);
   stmts.push(
     "INSERT INTO recipes (slug, title, protein, cuisine, time_total, source_url, tags, ingredients_key, perishable_ingredients, pairs_with, course, ingredients_full) VALUES " +
       proposeRecipes
         .map(
           ([slug, title, protein, cuisine, time, source, tags, keys, perishable, pairs, full]) =>
-            `(${q(slug)}, ${q(title)}, ${protein ? q(protein) : "NULL"}, ${q(cuisine)}, ${time}, ${source ? q(source) : "NULL"}, ${q(tags)}, ${q(keys)}, ${perishable ? q(perishable) : "NULL"}, ${pairs ? q(pairs) : "NULL"}, ${slug === "viz-garlic-bread" ? q('["side"]') : "NULL"}, ${full ? q(full) : "NULL"})`,
+            `(${q(slug)}, ${q(title)}, ${protein ? q(protein) : "NULL"}, ${q(cuisine)}, ${time ?? "NULL"}, ${source ? q(source) : "NULL"}, ${q(tags)}, ${q(keys)}, ${perishable ? q(perishable) : "NULL"}, ${pairs ? q(pairs) : "NULL"}, ${sideSlugs.has(slug) ? q('["side"]') : "NULL"}, ${full ? q(full) : "NULL"})`,
         )
         .join(", ") +
       ";",

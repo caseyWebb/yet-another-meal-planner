@@ -14,7 +14,17 @@ import {
 import { useOverlay, usePlan, type Hit } from "../lib/data";
 import { usePlanOps, useSetFavorite } from "../lib/mutations";
 
-export function RecipeRow({ recipe, annotation }: { recipe: Hit; annotation?: React.ReactNode }) {
+export function RecipeRow({
+  recipe,
+  annotation,
+  promoBadge,
+}: {
+  recipe: Hit;
+  annotation?: React.ReactNode;
+  /** The promoted panel's uppercase reason badge ("Just Added" / "Trending" /
+   *  "Picked for You") — absent on ordinary rows. */
+  promoBadge?: string;
+}) {
   const overlay = useOverlay();
   const plan = usePlan();
   const planOps = usePlanOps();
@@ -38,10 +48,15 @@ export function RecipeRow({ recipe, annotation }: { recipe: Hit; annotation?: Re
   return (
     <li className="rrow" data-testid="recipe-row" data-slug={recipe.slug}>
       <Link className="rrow-link" to="/recipe/$slug" params={{ slug: recipe.slug }}>
+        {promoBadge ? (
+          <span className="rpromo" data-testid="reason-badge">
+            {promoBadge}
+          </span>
+        ) : null}
         <span className="rtitle">{recipe.title}</span>
         {recipe.description ? <span className="rdesc">{recipe.description}</span> : null}
         <span className="rfacets">
-          <RecipeFacets protein={recipe.protein} cuisine={recipe.cuisine} />
+          <RecipeFacets protein={recipe.protein} cuisine={recipe.cuisine} timeTotal={recipe.time_total} />
           {annotation ?? null}
         </span>
       </Link>
@@ -50,7 +65,7 @@ export function RecipeRow({ recipe, annotation }: { recipe: Hit; annotation?: Re
           type="button"
           className={`plan-btn${planned ? " on" : ""}`}
           aria-pressed={planned}
-          title={planned ? "In meal plan — remove" : "Add to meal plan"}
+          title={planned ? "On your “Want To Cook” list — remove" : "Add to my “Want To Cook” list"}
           data-testid="row-plan-toggle"
           onClick={onPlanToggle}
         >

@@ -81,7 +81,7 @@ export function Crumbs(props: {
 }
 
 /** One facet chip; `kind="protein"` gets the accent treatment. */
-export function FacetChip(props: { kind?: "protein"; children: React.ReactNode }) {
+export function FacetChip(props: { kind?: "protein" | "time"; children: React.ReactNode }) {
   return (
     <span className="facet" data-kind={props.kind}>
       {props.children}
@@ -89,12 +89,19 @@ export function FacetChip(props: { kind?: "protein"; children: React.ReactNode }
   );
 }
 
-/** The recipe facet pair (protein accent + cuisine) the list rows and details share. */
-export function RecipeFacets(props: { protein?: string | null; cuisine?: string | null }) {
+/** The recipe facet chips (protein accent + cuisine + optional "{n} min" time) the
+ *  list rows and details share. `timeTotal` renders only when numeric — an unknown
+ *  time gets no chip, never a fabricated one. */
+export function RecipeFacets(props: {
+  protein?: string | null;
+  cuisine?: string | null;
+  timeTotal?: number | null;
+}) {
   return (
     <>
       {props.protein ? <FacetChip kind="protein">{props.protein}</FacetChip> : null}
       {props.cuisine ? <FacetChip>{props.cuisine}</FacetChip> : null}
+      {typeof props.timeTotal === "number" ? <FacetChip kind="time">{props.timeTotal} min</FacetChip> : null}
     </>
   );
 }

@@ -58,6 +58,8 @@ export interface Hit {
   description: string | null;
   protein: string | null;
   cuisine: string | null;
+  /** Total minutes, or null when unauthored — an active time filter excludes null. */
+  time_total: number | null;
 }
 
 export interface RecipeDetail {
@@ -184,7 +186,7 @@ export function useNewForMe() {
     queryKey: ["cookbook", "new-for-me"],
     staleTime: STALE_MS,
     queryFn: async () =>
-      jsonOf<{ recipes: (Hit & { time_total: number | null; discovered_at: string | null })[] }>(
+      jsonOf<{ recipes: (Hit & { discovered_at: string | null })[] }>(
         await api.api.cookbook["new-for-me"].$get(),
       ),
   });
@@ -280,7 +282,6 @@ export function useToBuy(enrich = false) {
 
 /** Trending (group-wide, counts only, min-signal-guarded — empty on sparse history). */
 export interface TrendingRecipe extends Hit {
-  time_total: number | null;
   cooks: number;
   cooks_by: number;
   last_cooked: string;
@@ -300,9 +301,7 @@ export function usePickedForYou() {
     queryKey: ["cookbook", "picked-for-you"],
     staleTime: STALE_MS,
     queryFn: async () =>
-      jsonOf<{ recipes: (Hit & { time_total: number | null })[] }>(
-        await api.api.cookbook["picked-for-you"].$get(),
-      ),
+      jsonOf<{ recipes: Hit[] }>(await api.api.cookbook["picked-for-you"].$get()),
   });
 }
 

@@ -3,7 +3,6 @@
 ## Purpose
 
 Keyword search for the open, anonymous `/cookbook` browse site: a deterministic, field-weighted ranker over the indexed recipe metadata, exposed both as a server-rendered `?q=` page (the no-JS fallback) and a JSON endpoint that a debounced, first-party client script renders in place — under a Content-Security-Policy that keeps the untrusted recipe-body render script-free.
-
 ## Requirements
 ### Requirement: Cookbook search entry point
 
@@ -132,4 +131,27 @@ The recipe-body page `/cookbook/<slug>`, which renders untrusted author/agent ma
 
 - **WHEN** a recipe title or description contains an inline `<script>` and is shown on the search page
 - **THEN** the value is rendered inert (escaped / as text) and the CSP would block inline script execution regardless
+
+### Requirement: Result rows carry the compact facet fields
+
+The keyword ranker's compact result row SHALL carry the compact facet fields — the
+shape shared by the anonymous `/cookbook/search` JSON endpoint and the member app's
+cookbook index/search reads: `slug`, `title`, `description`, `protein`, `cuisine`, and `time_total`
+(minutes, or `null` when the recipe has no authored total time — never fabricated), so
+list surfaces can render facet and time chips and apply client-side facet filters
+without a second read. This is additive: ranking, ordering, the no-JS fallback, and the
+Content-Security-Policy posture are unchanged.
+
+#### Scenario: A hit row carries its time facet
+
+- **WHEN** a recipe with `time_total: 25` is returned by the search endpoint or the
+  member cookbook index read
+- **THEN** its row carries `time_total: 25` alongside `slug`/`title`/`description`/
+  `protein`/`cuisine`
+
+#### Scenario: Missing time is null, never invented
+
+- **WHEN** a recipe has no `time_total` in the index
+- **THEN** its row carries `time_total: null` and downstream time filters treat it as
+  failing any time cap
 

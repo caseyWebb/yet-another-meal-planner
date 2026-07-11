@@ -118,12 +118,18 @@ describe("toHit", () => {
   });
 
   it("carries the compact render fields, coercing non-strings to null", () => {
-    expect(toHit({ slug: "s", title: "T", description: "D", protein: "fish", cuisine: 7 })).toEqual({
+    expect(toHit({ slug: "s", title: "T", description: "D", protein: "fish", cuisine: 7, time_total: 25 })).toEqual({
       slug: "s",
       title: "T",
       description: "D",
       protein: "fish",
       cuisine: null,
+      time_total: 25,
     });
+  });
+
+  it("carries time_total as null when unauthored or non-numeric — never fabricated", () => {
+    expect(toHit({ slug: "s" }).time_total).toBeNull();
+    expect(toHit({ slug: "s", time_total: "25" }).time_total).toBeNull();
   });
 });
