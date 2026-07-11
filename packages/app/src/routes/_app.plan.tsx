@@ -18,7 +18,7 @@ import {
   PageHead,
   toast,
 } from "@yamp/ui";
-import { useIndex, usePlan, type PlannedRow } from "../lib/data";
+import { useIndex, usePlan, mintRowId, type PlannedRow } from "../lib/data";
 import { usePlanOps } from "../lib/mutations";
 
 export const Route = createFileRoute("/_app/plan")({
@@ -47,8 +47,9 @@ function PlanPage() {
 
   function addRecipe(slug: string) {
     // Fire-and-forget registry mutation: offline it queues (the pill explains);
-    // failures toast through the registered defaults.
-    planOps.mutate({ ops: [{ op: "add", recipe: slug }] }, { onSuccess: () => toast("Added to meal plan") });
+    // failures toast through the registered defaults. The client-minted ULID is the
+    // class (b) replay key — a redelivered add updates the same row, never duplicates.
+    planOps.mutate({ ops: [{ op: "add", id: mintRowId(), recipe: slug }] }, { onSuccess: () => toast("Added to meal plan") });
   }
 
   const actions = (
@@ -115,13 +116,16 @@ function PlanRow({ row, titleOf }: { row: PlannedRow; titleOf: (slug: string) =>
   const [addingSide, setAddingSide] = React.useState(false);
   const sides = row.sides ?? [];
 
-  // Every edit is a `set` (D3): sides replace wholesale; planned_for null clears.
+  // Every edit is a `set` addressed by the ROW ID (D26-final — the row-level address;
+  // slug-addressed ops keep their defined fan-out but the page always holds the id):
+  // sides replace wholesale; planned_for null clears.
   function set(patch: { planned_for?: string | null; sides?: string[] }) {
-    planOps.mutate({ ops: [{ op: "set", recipe: row.recipe, ...patch }] });
+    planOps.mutate({ ops: [{ op: "set", id: row.id, ...patch }] });
   }
 
   function remove() {
-    planOps.mutate({ ops: [{ op: "remove", recipe: row.recipe }] });
+    // Remove-by-id is idempotent (removed: 0|1) — the replay-safe class (b) delete.
+    planOps.mutate({ ops: [{ op: "remove", id: row.id }] });
   }
 
   return (

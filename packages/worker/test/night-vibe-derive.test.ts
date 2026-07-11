@@ -99,7 +99,7 @@ describe("deriveArchetypes", () => {
   // Fake namer: name a cluster from its first description (deterministic, no model).
   const deps = {
     name: async ({ descriptions }: { descriptions: string[]; cadence_days: number | null }) =>
-      descriptions.length ? { vibe: descriptions[0], cadence_days: null } : null,
+      descriptions.length ? { vibe: descriptions[0], cadence_days: null, meal: "dinner" as const } : null,
   };
 
   it("names each surviving cluster into an add_vibe candidate", async () => {
@@ -127,7 +127,7 @@ describe("deriveArchetypes", () => {
   it("threads a successful weather-bucket classification through to the candidate", async () => {
     const bucketedDeps = {
       name: async ({ descriptions }: { descriptions: string[]; cadence_days: number | null }) =>
-        descriptions.length ? { vibe: descriptions[0], cadence_days: null, weather_affinity: ["grill" as const] } : null,
+        descriptions.length ? { vibe: descriptions[0], cadence_days: null, meal: "dinner" as const, weather_affinity: ["grill" as const] } : null,
     };
     const out = await deriveArchetypes(items, [], 7, bucketedDeps, { k: 2, minClusterSize: 2 });
     expect(out.length).toBeGreaterThan(0);
@@ -144,7 +144,7 @@ describe("deriveArchetypes", () => {
   it("a bucket classification never affects the vibe phrase itself", async () => {
     const bucketedDeps = {
       name: async ({ descriptions }: { descriptions: string[]; cadence_days: number | null }) =>
-        descriptions.length ? { vibe: descriptions[0], cadence_days: null, weather_affinity: ["wet" as const] } : null,
+        descriptions.length ? { vibe: descriptions[0], cadence_days: null, meal: "dinner" as const, weather_affinity: ["wet" as const] } : null,
     };
     const withoutBucket = await deriveArchetypes(items, [], 7, deps, { k: 2, minClusterSize: 2 });
     const withBucket = await deriveArchetypes(items, [], 7, bucketedDeps, { k: 2, minClusterSize: 2 });

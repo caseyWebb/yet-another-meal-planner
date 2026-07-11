@@ -23,12 +23,17 @@ export function proposalId(kind: string, target: string, payload?: Record<string
 }
 
 /** Coerce an untrusted (operator) `add_vibe` payload into a well-typed NightVibe, dropping
- *  wrong-typed fields, or null when it lacks a usable id/vibe. */
+ *  wrong-typed fields, or null when it lacks a usable id/vibe. The payload's `meal` (set by
+ *  every producer — the derivation cron, the pref-retirement seed pass, the reconcile tiers)
+ *  is written onto the created vibe; absent/invalid defaults `'dinner'`. */
 function sanitizeNightVibe(p: Record<string, unknown>): NightVibe | null {
   if (typeof p.id !== "string" || !p.id || typeof p.vibe !== "string" || !p.vibe) return null;
   const strArr = (v: unknown): string[] | undefined =>
     Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : undefined;
   const vibe: NightVibe = { id: p.id, vibe: p.vibe };
+  vibe.meal = p.meal === "breakfast" || p.meal === "lunch" || p.meal === "dinner" ? p.meal : "dinner";
+  const members = strArr(p.members)?.filter((m) => m.length > 0);
+  if (members && members.length) vibe.members = [...new Set(members)];
   if (typeof p.cadence_days === "number") vibe.cadence_days = p.cadence_days;
   if (typeof p.pinned === "boolean") vibe.pinned = p.pinned;
   if (typeof p.base_weight === "number") vibe.base_weight = p.base_weight;
@@ -111,6 +116,34 @@ export async function readProposals(env: Env, tenant: string, status?: PendingPr
 export async function getProposal(env: Env, id: string, tenant: string): Promise<PendingProposal | null> {
   const row = await db(env).first<ProposalRow>(`SELECT ${COLS} FROM pending_proposals WHERE id = ?1 AND tenant = ?2`, id, tenant);
   return row ? decode(row) : null;
+}
+
+/** The idempotent enqueue as a PREPARED STATEMENT (stable id → INSERT OR IGNORE), for callers
+ *  that must land the enqueue atomically WITH other writes in one `batch` — the pref-retirement
+ *  seed pass batches its enqueues with the column-NULLing convergence write. */
+export function enqueueProposalStmt(
+  env: Env,
+  tenant: string,
+  draft: ProposalDraft,
+  producer: string,
+  nowIso: string,
+): { id: string; stmt: D1PreparedStatement } {
+  const id = proposalId(draft.kind, draft.target, draft.payload);
+  const stmt = db(env).prepare(
+    "INSERT OR IGNORE INTO pending_proposals (id, tenant, kind, target, payload, rationale, evidence, status, producer, created_at) " +
+      "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+    id,
+    tenant,
+    draft.kind,
+    draft.target,
+    JSON.stringify(draft.payload),
+    draft.rationale,
+    JSON.stringify(draft.evidence),
+    "pending",
+    producer,
+    nowIso,
+  );
+  return { id, stmt };
 }
 
 /** Idempotent enqueue (stable id → INSERT OR IGNORE): re-drafting a live/decided proposal is a

@@ -23,7 +23,7 @@ const PK: Record<string, string[]> = {
   order_sends: ["id"],
   order_send_lines: ["send_id", "line_key"],
   spend_events: ["send_id", "line_key"],
-  meal_plan: ["tenant", "recipe"],
+  meal_plan: ["tenant", "id"],
   grocery_list: ["tenant", "normalized_name"],
   cooking_log: ["id"],
   tenant_activity: ["tenant"],
@@ -182,6 +182,18 @@ export function fakeD1(
     if (/\btype = \?3/i.test(sql)) eq("type", 3);
     if (/\brecipe = \?4/i.test(sql)) eq("recipe", 4);
     if (/\bname = \?4/i.test(sql)) eq("name", 4);
+    // The dedupe identity's meal leg: `meal IS ?5` — SQLite's null-safe equality, so a
+    // NULL meal matches NULL only (never a mealed row, and vice versa).
+    if (/\bmeal IS \?5/i.test(sql)) out = out.filter((r) => (r.meal ?? null) === (binds[4] ?? null));
+    // Meal-scoped vibe-vector reads (readNightVibeVectors with a meal): the JOIN onto
+    // night_vibes is emulated by filtering derived rows to same-meal vibe ids (an
+    // un-mealed fixture row reads as dinner, mirroring the column default).
+    if (/JOIN night_vibes v/i.test(sql) && /v\.meal = \?2/i.test(sql)) {
+      out = out.filter((r) => {
+        const v = (tables.night_vibes ?? []).find((nv) => nv.tenant === r.tenant && nv.id === r.id);
+        return (((v?.meal as string | undefined) ?? "dinner")) === binds[1];
+      });
+    }
     if (/\bid = \?2/i.test(sql)) eq("id", 2);
     // Attributed notes: privacy rule (private=0 OR author=?2), and self-scoped
     // findOwnNote (author=?2 AND created_at=?3).

@@ -23,7 +23,16 @@ export interface RetrospectiveResult {
   recipes_cooked: { recipe: string; count: number; dates: string[] }[];
   protein_mix: Record<string, number>;
   cuisine_mix: Record<string, number>;
-  cadence: { cooks: number; weeks: number; cooks_per_week: number };
+  cadence: {
+    cooks: number;
+    weeks: number;
+    cooks_per_week: number;
+    /** Cooks per meal over rows whose `meal` is set (recipe + ad_hoc, in-window). */
+    by_meal: { breakfast: number; lunch: number; dinner: number; project: number };
+    /** In-window cooks whose `meal` is NULL (pre-meal-dimension rows; counted in the
+     *  overall figure, reported unknown — never fabricated). */
+    meal_unknown: number;
+  };
   cook_vs_convenience: { cooked: number; convenience: number };
   ready_to_eat_favorites: { name: string; count: number }[];
   underused: {
@@ -140,6 +149,8 @@ export function retrospective(
   const favorites: Map<string, number> = new Map();
   let cooked = 0;
   let convenience = 0;
+  const by_meal = { breakfast: 0, lunch: 0, dinner: 0, project: 0 };
+  let meal_unknown = 0;
 
   for (const e of inWindow) {
     // protein/cuisine are already resolved on the entry (recipe-derived for recipe
@@ -156,8 +167,11 @@ export function retrospective(
       convenience++;
       if (e.name) favorites.set(e.name, (favorites.get(e.name) ?? 0) + 1);
     } else {
-      // recipe + ad_hoc are cooking events
+      // recipe + ad_hoc are cooking events. The meal-aware split: rows with a meal
+      // count under it; NULL-meal rows land in meal_unknown (still in `cooked`).
       cooked++;
+      if (e.meal && e.meal in by_meal) by_meal[e.meal]++;
+      else meal_unknown++;
     }
   }
 
@@ -234,7 +248,7 @@ export function retrospective(
     recipes_cooked,
     protein_mix,
     cuisine_mix,
-    cadence: { cooks: cooked, weeks: Math.round(weeks * 100) / 100, cooks_per_week },
+    cadence: { cooks: cooked, weeks: Math.round(weeks * 100) / 100, cooks_per_week, by_meal, meal_unknown },
     cook_vs_convenience: { cooked, convenience },
     ready_to_eat_favorites,
     underused,

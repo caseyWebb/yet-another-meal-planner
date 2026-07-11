@@ -24,7 +24,7 @@ import {
   type ProposeSlotView,
   type SlotPanel,
 } from "@yamp/ui";
-import { useIndex, usePlan, useProfile, useVibes, type PlanOp } from "../lib/data";
+import { useIndex, usePlan, useProfile, useVibes, type PlanOp, mintRowId } from "../lib/data";
 import { usePlanOps } from "../lib/mutations";
 import { useOnline } from "../lib/online";
 import {
@@ -202,9 +202,17 @@ function ProposePage() {
         toast("Those are already in your plan");
       } else {
         const dates = nextOpenDates(existing, fresh.length);
+        // Each filled slot maps to an `add` op carrying a CLIENT-MINTED ULID row id (the
+        // class (b) replay key), the slot's `meal`, and its vibe provenance. The commit
+        // NEVER sets `duplicate` — the op layer's slug-global coalesce makes "commit
+        // updates an existing row rather than duplicating" structural (D26-final); a
+        // coalescing add returns the SURVIVING row's id (the band-2/3 mutation registry
+        // rebinds on it).
         const ops: PlanOp[] = fresh.map((s, i) => ({
           op: "add",
+          id: mintRowId(),
           recipe: s.payload.main!.slug,
+          meal: s.payload.meal,
           from_vibe: s.payload.vibe_id,
           sides: s.payload.sides.map((x) => x.title),
           planned_for: dates[i],

@@ -24,6 +24,7 @@ import { slugify } from "./discovery.js";
 import { addStockup } from "./stockup.js";
 import { updateStaples } from "./staples.js";
 import {
+  applyRetiredKeyShim,
   convertLegacyBrandRanks,
   mergePatch,
   rejectUnknownPatchKeys,
@@ -201,6 +202,14 @@ export async function applyPreferencesPatch(
   tenant: string,
   patch: Record<string, unknown>,
 ): Promise<{ updated: "preferences"; warnings?: DeprecationWarning[] }> {
+  // Stage 0 (D21, one deprecation window, BEFORE rejectUnknownPatchKeys): retired keys
+  // (lunch_strategy / ready_to_eat_default_action) are accepted-and-dropped — never
+  // validation_failed, never the nest-under-custom hint, nothing written — and
+  // `default_cooking_nights: N` is aliased onto cadence.dinner (the frozen column is
+  // never written). Each conversion lands in `warnings`.
+  const shim = applyRetiredKeyShim(patch);
+  patch = shim.patch;
+
   // Stage 1: reject unknown top-level patch keys (authorship-time signal).
   rejectUnknownPatchKeys(patch);
 
@@ -216,7 +225,7 @@ export async function applyPreferencesPatch(
   //   with a `warnings` entry steering the stale caller to `{ tiers, any_brand }`.
   //   When the window closes, drop this conversion — validatePreferences then rejects
   //   an array value as `malformed_data` like any other type error.
-  const warnings: DeprecationWarning[] = [];
+  const warnings: DeprecationWarning[] = [...shim.warnings];
   let brandsPatch: Record<string, unknown> | undefined;
   let novelIds: string[] = [];
   if (patch.brands !== null && patch.brands !== undefined && typeof patch.brands === "object" && !Array.isArray(patch.brands)) {
@@ -260,15 +269,15 @@ export async function applyPreferencesPatch(
   // merged object, so the patch is the only place the delete intent survives), but an
   // UPSERT writes the MERGED family value — a partial family patch (`{ any_brand: true }`)
   // must not clobber the stored sibling field.
+  // The frozen columns (`default_cooking_nights`, `lunch_strategy`,
+  // `ready_to_eat_default_action`) are DELIBERATELY absent: no writer post-0052 — the
+  // scalar stays readable for the cadence fallback, the retired pair converges to NULL
+  // via the pref-retirement cron, and all three drop at window close.
   const stmts: D1PreparedStatement[] = [];
   const profileFields: Record<string, unknown> = {
-    default_cooking_nights:
-      "default_cooking_nights" in merged ? merged.default_cooking_nights : null,
+    cadence: "cadence" in merged ? JSON.stringify(merged.cadence) : null,
     planning_cadence_days:
       "planning_cadence_days" in merged ? merged.planning_cadence_days : null,
-    lunch_strategy: "lunch_strategy" in merged ? merged.lunch_strategy : null,
-    ready_to_eat_default_action:
-      "ready_to_eat_default_action" in merged ? merged.ready_to_eat_default_action : null,
     weekly_budget: "weekly_budget" in merged ? merged.weekly_budget : null,
     stores: "stores" in merged ? JSON.stringify(merged.stores) : null,
     dietary: "dietary" in merged ? JSON.stringify(merged.dietary) : null,
@@ -580,7 +589,7 @@ export function registerWriteTools(
     "update_preferences",
     {
       description:
-        "Edit the caller's grocery preferences with a deep merge-patch (RFC 7396): keys present in `patch` set/overwrite, a key set to null is DELETED, nested objects merge to any depth, and arrays replace wholesale. Only the keys you touch change — a partial patch never clobbers siblings (e.g. patching stores.preferred_location keeps stores.primary), so you do NOT need to re-send the whole object. Defined top-level keys: default_cooking_nights (number — cooking nights WITHIN the planning window, not per week), planning_cadence_days (positive number — how far out the caller plans/shops, in days; drives propose_meal_plan's weather horizon and vibe-recurrence caps; unset falls back to a 7-day window), lunch_strategy (leftovers|buy|mixed), ready_to_eat_default_action (opt-in|auto-add), weekly_budget (number ≥ 0 — the household's weekly grocery budget in dollars; unset or 0 means no budget line; null deletes it), stores ({primary, preferred_location, location_zip}), brands (map of ingredient-family term → tier object { tiers: string[][], any_brand: boolean } — `tiers` is an ordered ladder tried top tier first, brands in one tier are equally fine so the cheapest wins; `any_brand: true` means when the tiers (if any) are exhausted, take the cheapest acceptable instead of asking, so { any_brand: true } alone is the standing don't-care; an absent family = ask; null = clear back to ambiguous — the empty { tiers: [], any_brand: false } is rejected. A partial family patch merges into the stored family, e.g. { brands: { butter: { any_brand: true } } } keeps butter's tiers. For one deprecation window a legacy flat rank list still converts: [] → any-brand, a ranked list → one singleton tier per rank, flagged in the return's `warnings`), dietary ({avoid[], limit[]}), rotation ({resurface_after_days, novelty_boost} — tunes the semantic-search freshness re-rank: how many days until a cooked recipe rotates back in, and how hard never-cooked recipes are boosted; both positive numbers). Anything else nests under `custom`; an unknown top-level key is rejected (use custom). Returns { updated: 'preferences' }, plus `warnings` ([{ key, reason, superseded_by }]) when part of the patch was accepted under a deprecated shape and converted.",
+        "Edit the caller's grocery preferences with a deep merge-patch (RFC 7396): keys present in `patch` set/overwrite, a key set to null is DELETED, nested objects merge to any depth, and arrays replace wholesale. Only the keys you touch change — a partial patch never clobbers siblings (e.g. patching stores.preferred_location keeps stores.primary, and { cadence: { lunch: 2 } } sets lunch only), so you do NOT need to re-send the whole object. Defined top-level keys: cadence (the per-meal planning frequency map { breakfast?, lunch?, dinner? }, each an integer weekly count 0-7, merged PER KEY: { cadence: { dinner: null } } clears one meal, cadence: null clears the map; drives propose_meal_plan's per-meal slot counts), planning_cadence_days (positive number — how far out the caller plans/shops, in days; drives propose_meal_plan's weather horizon and vibe-recurrence caps; unset falls back to a 7-day window), weekly_budget (number ≥ 0 — the household's weekly grocery budget in dollars; unset or 0 means no budget line; null deletes it), stores ({primary, preferred_location, location_zip}), brands (map of ingredient-family term → tier object { tiers: string[][], any_brand: boolean } — `tiers` is an ordered ladder tried top tier first, brands in one tier are equally fine so the cheapest wins; `any_brand: true` means when the tiers (if any) are exhausted, take the cheapest acceptable instead of asking, so { any_brand: true } alone is the standing don't-care; an absent family = ask; null = clear back to ambiguous — the empty { tiers: [], any_brand: false } is rejected. A partial family patch merges into the stored family, e.g. { brands: { butter: { any_brand: true } } } keeps butter's tiers. For one deprecation window a legacy flat rank list still converts: [] → any-brand, a ranked list → one singleton tier per rank, flagged in the return's `warnings`), dietary ({avoid[], limit[]}), rotation ({resurface_after_days, novelty_boost} — tunes the semantic-search freshness re-rank: how many days until a cooked recipe rotates back in, and how hard never-cooked recipes are boosted; both positive numbers). Anything else nests under `custom`; an unknown top-level key is rejected (use custom). For one deprecation window: `default_cooking_nights: N` is accepted as an ALIAS merged onto cadence.dinner (breakfast/lunch preserved; the legacy column is never written), and the RETIRED keys `lunch_strategy` / `ready_to_eat_default_action` are accepted and DROPPED — nothing stored, never an error (meal vibes supersede them; capture that intent as lunch/dinner meal vibes instead). Both come back flagged in `warnings`. Returns { updated: 'preferences' }, plus `warnings` ([{ key, reason, superseded_by }]) when part of the patch was accepted under a deprecated form and converted or dropped.",
       inputSchema: { patch: z.record(z.string(), z.unknown()) },
     },
     ({ patch }) => runTool(() => applyPreferencesPatch(env, username, patch)),

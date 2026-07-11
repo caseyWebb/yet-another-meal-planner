@@ -27,6 +27,7 @@ interface ProfileRow {
   taste: string | null;
   diet_principles: string | null;
   default_cooking_nights: number | null;
+  cadence: string | null;
   planning_cadence_days: number | null;
   lunch_strategy: string | null;
   ready_to_eat_default_action: string | null;
@@ -108,7 +109,11 @@ function assemblePreferences(
   // none of the preference-bearing fields (a bare taste/diet/kitchen-only profile).
   if (row === null) return null;
   const prefs: Preferences = {};
+  // `default_cooking_nights` is FROZEN (no writer post-0052): it stays in the raw read
+  // for the cadence read-fallback and drops with the window-close cleanup migration.
   if (row.default_cooking_nights != null) prefs.default_cooking_nights = row.default_cooking_nights;
+  const cadence = asObject(parseJson(row.cadence));
+  if (cadence) prefs.cadence = cadence;
   if (row.planning_cadence_days != null) prefs.planning_cadence_days = row.planning_cadence_days;
   if (row.lunch_strategy != null) prefs.lunch_strategy = row.lunch_strategy;
   if (row.ready_to_eat_default_action != null)
@@ -138,7 +143,7 @@ function assemblePreferences(
 // --- reads -------------------------------------------------------------------
 
 const PROFILE_SELECT =
-  "SELECT tenant, taste, diet_principles, default_cooking_nights, planning_cadence_days, lunch_strategy, " +
+  "SELECT tenant, taste, diet_principles, default_cooking_nights, cadence, planning_cadence_days, lunch_strategy, " +
   "ready_to_eat_default_action, weekly_budget, stores, dietary, rotation, custom, kitchen_notes, " +
   "freezer_capacity_estimate, retrospective_prefs FROM profile WHERE tenant = ?1";
 
@@ -331,10 +336,8 @@ export async function readProfile(env: Env, tenant: string): Promise<AssembledPr
 const SCALAR_PROFILE_COLUMNS = [
   "taste",
   "diet_principles",
-  "default_cooking_nights",
+  "cadence",
   "planning_cadence_days",
-  "lunch_strategy",
-  "ready_to_eat_default_action",
   "weekly_budget",
   "stores",
   "dietary",

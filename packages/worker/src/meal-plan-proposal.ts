@@ -46,9 +46,15 @@ export interface ProposedMain {
   score: number;
 }
 
+/** The meals an engine slot can carry — never `project` (projects are not planner-shaped). */
+export type ProposeMeal = "breakfast" | "lunch" | "dinner";
+
 /** One shaped-and-filled slot. `main: null` is an EXPLICIT empty slot (never silently dropped). */
 export interface ProposedSlot {
   vibe_id: string | null;
+  /** Which meal this slot fills (breakfast → lunch → dinner ordering in the returned plan;
+   *  locks and new-for-me force-placements are dinner slots by construction). */
+  meal: ProposeMeal;
   reason: "pinned" | "new_for_me" | "overdue" | "sampled" | "locked";
   main: ProposedMain | null;
   empty_reason?: string;
@@ -106,8 +112,9 @@ export interface ProposalResult {
 
 /** The fully-loaded, pure inputs the compose needs (assembled by the tool). */
 export interface ProposalCtx {
-  /** Level-1 sampled slots to fill (from `sampleWeek`), in fill order. */
-  slots: WeekSlot[];
+  /** Level-1 sampled slots to fill (from the per-meal `sampleWeek` passes), in fill
+   *  order, each tagged with its meal. */
+  slots: (WeekSlot & { meal: ProposeMeal })[];
   /** Each vibe's ranked candidate pool (Level-2), by vibe id. */
   poolByVibe: Map<string, DiversifyCandidate[]>;
   /** Locked picks the caller pinned — pre-seeded into the diversify state and returned first. */
@@ -201,11 +208,11 @@ export function assembleProposal(ctx: ProposalCtx): ProposalResult {
   for (const lc of locked) {
     const claimed = admit(state, lc, p);
     perishBySlug.set(lc.slug, lc.perishable_ingredients ?? []);
-    chosen.push({ vibe_id: null, reason: "locked", main: mainOf(lc, ctx.frontmatterBySlug.get(lc.slug)), ...noSwap(), sides: [], uses_perishables: claimed, flags: {}, why: ["locked"] });
+    chosen.push({ vibe_id: null, meal: "dinner", reason: "locked", main: mainOf(lc, ctx.frontmatterBySlug.get(lc.slug)), ...noSwap(), sides: [], uses_perishables: claimed, flags: {}, why: ["locked"] });
   }
   // Unresolved locks become explicit empty locked slots (never silently dropped).
   for (const raw of ctx.lockedUnresolved ?? []) {
-    chosen.push({ vibe_id: null, reason: "locked", main: null, empty_reason: `locked recipe '${raw}' is unavailable (unknown, unembedded, or rejected)`, ...noSwap(), sides: [], uses_perishables: [], flags: {}, why: [] });
+    chosen.push({ vibe_id: null, meal: "dinner", reason: "locked", main: null, empty_reason: `locked recipe '${raw}' is unavailable (unknown, unembedded, or rejected)`, ...noSwap(), sides: [], uses_perishables: [], flags: {}, why: [] });
   }
 
   // New-for-me discoveries the scheduler force-placed (converge D3): admitted up-front ALONGSIDE
@@ -215,7 +222,7 @@ export function assembleProposal(ctx: ProposalCtx): ProposalResult {
   for (const nfm of ctx.newForMe ?? []) {
     const claimed = admit(state, nfm, p);
     perishBySlug.set(nfm.slug, nfm.perishable_ingredients ?? []);
-    chosen.push({ vibe_id: null, reason: "new_for_me", main: mainOf(nfm, ctx.frontmatterBySlug.get(nfm.slug)), ...noSwap(), sides: [], uses_perishables: claimed, flags: {}, why: ["new to you"] });
+    chosen.push({ vibe_id: null, meal: "dinner", reason: "new_for_me", main: mainOf(nfm, ctx.frontmatterBySlug.get(nfm.slug)), ...noSwap(), sides: [], uses_perishables: claimed, flags: {}, why: ["new to you"] });
   }
 
   // Recipe pins admit up-front ALONGSIDE the locks (D3): a fixed pick shapes the whole
@@ -244,7 +251,7 @@ export function assembleProposal(ctx: ProposalCtx): ProposalResult {
     if (pin && !pinConsumed.has(slot.id)) {
       pinConsumed.add(slot.id);
       perishBySlug.set(pin.slug, pin.perishable_ingredients ?? []);
-      chosen.push({ vibe_id: slot.id, reason: slot.reason, main: mainOf(pin, ctx.frontmatterBySlug.get(pin.slug)), ...noSwap(), ...marks, recipe_pinned: true, sides: [], uses_perishables: pinClaims.get(slot.id) ?? [], flags: {}, why: ["your pick", ...why] });
+      chosen.push({ vibe_id: slot.id, meal: slot.meal, reason: slot.reason, main: mainOf(pin, ctx.frontmatterBySlug.get(pin.slug)), ...noSwap(), ...marks, recipe_pinned: true, sides: [], uses_perishables: pinClaims.get(slot.id) ?? [], flags: {}, why: ["your pick", ...why] });
       continue;
     }
     // An unresolvable pin surfaces as an explicit empty slot (lock-style, never dropped);
@@ -252,7 +259,7 @@ export function assembleProposal(ctx: ProposalCtx): ProposalResult {
     const rawPin = ctx.pinnedUnresolvedByVibe?.get(slot.id);
     if (rawPin !== undefined && !pinConsumed.has(slot.id)) {
       pinConsumed.add(slot.id);
-      chosen.push({ vibe_id: slot.id, reason: slot.reason, main: null, empty_reason: `pinned recipe '${rawPin}' is unavailable (unknown, unembedded, rejected, or excluded)`, ...noSwap(), ...marks, sides: [], uses_perishables: [], flags: {}, why });
+      chosen.push({ vibe_id: slot.id, meal: slot.meal, reason: slot.reason, main: null, empty_reason: `pinned recipe '${rawPin}' is unavailable (unknown, unembedded, rejected, or excluded)`, ...noSwap(), ...marks, sides: [], uses_perishables: [], flags: {}, why });
       continue;
     }
 
@@ -260,18 +267,18 @@ export function assembleProposal(ctx: ProposalCtx): ProposalResult {
     // on planner-picked mains only (a pinned main was the member's choice, not weather's).
     if (slot.category) why.push(`fits this window's ${slot.category} weather`);
     if (pool.length === 0) {
-      chosen.push({ vibe_id: slot.id, reason: slot.reason, main: null, empty_reason: "no retrievable candidate for this vibe", ...noSwap(), ...marks, sides: [], uses_perishables: [], flags: {}, why });
+      chosen.push({ vibe_id: slot.id, meal: slot.meal, reason: slot.reason, main: null, empty_reason: "no retrievable candidate for this vibe", ...noSwap(), ...marks, sides: [], uses_perishables: [], flags: {}, why });
       continue;
     }
     const norm = normalizeScores(pool);
     const pick = selectOne(pool, state, p, norm, jitter);
     if (!pick) {
-      chosen.push({ vibe_id: slot.id, reason: slot.reason, main: null, empty_reason: "no candidate cleared the variety caps", ...noSwap(), ...marks, sides: [], uses_perishables: [], flags: {}, why });
+      chosen.push({ vibe_id: slot.id, meal: slot.meal, reason: slot.reason, main: null, empty_reason: "no candidate cleared the variety caps", ...noSwap(), ...marks, sides: [], uses_perishables: [], flags: {}, why });
       continue;
     }
     // The pick is a lite `DiversifiedPick`; its resolved perishables live on its pool candidate.
     perishBySlug.set(pick.slug, pool.find((c) => c.slug === pick.slug)?.perishable_ingredients ?? []);
-    chosen.push({ vibe_id: slot.id, reason: slot.reason, main: mainOf(pick, ctx.frontmatterBySlug.get(pick.slug)), ...noSwap(), ...marks, sides: [], uses_perishables: pick.claimed, flags: {}, why });
+    chosen.push({ vibe_id: slot.id, meal: slot.meal, reason: slot.reason, main: mainOf(pick, ctx.frontmatterBySlug.get(pick.slug)), ...noSwap(), ...marks, sides: [], uses_perishables: pick.claimed, flags: {}, why });
   }
 
   // Alternates (D3): per vibe slot, from its ALREADY-COMPUTED ranked pool minus the week's

@@ -6,7 +6,7 @@ import {
   readPantryNames,
   readMealPlan,
   applyMealPlanRowOps,
-  mealPlanDeleteStmt,
+  mealPlanDeleteByIdStmt,
   readGroceryList,
   readGroceryListReified,
   addGroceryRow,
@@ -344,18 +344,18 @@ describe("meal plan → D1 rows", () => {
   it("read returns rows with parsed sides", async () => {
     const { env } = fakeD1({
       tables: { meal_plan: [
-        { tenant: "everett", recipe: "salmon", planned_for: "2026-06-25", sides: JSON.stringify(["rice"]) },
-        { tenant: "everett", recipe: "tacos", planned_for: null, sides: null },
+        { tenant: "everett", id: "mp-salmon-001", recipe: "salmon", meal: "dinner", planned_for: "2026-06-25", sides: JSON.stringify(["rice"]) },
+        { tenant: "everett", id: "mp-tacos-0001", recipe: "tacos", meal: "dinner", planned_for: null, sides: null },
       ] },
     });
     const plan = await readMealPlan(env, "everett");
-    expect(plan).toContainEqual({ recipe: "salmon", planned_for: "2026-06-25", sides: ["rice"] });
-    expect(plan).toContainEqual({ recipe: "tacos", planned_for: null });
+    expect(plan).toContainEqual({ id: "mp-salmon-001", recipe: "salmon", meal: "dinner", planned_for: "2026-06-25", sides: ["rice"] });
+    expect(plan).toContainEqual({ id: "mp-tacos-0001", recipe: "tacos", meal: "dinner", planned_for: null });
   });
 
   it("add upserts by recipe; remove deletes; missing remove conflicts", async () => {
     const { env, tables } = fakeD1({
-      tables: { meal_plan: [{ tenant: "everett", recipe: "salmon", planned_for: "2026-06-10", sides: null }] },
+      tables: { meal_plan: [{ tenant: "everett", id: "mp-salmon-001", recipe: "salmon", meal: "dinner", planned_for: "2026-06-10", sides: null }] },
     });
     const res = await applyMealPlanRowOps(env, "everett", [
       { op: "add", recipe: "salmon", planned_for: "2026-06-12", sides: ["broccoli"] },
@@ -371,17 +371,17 @@ describe("meal plan → D1 rows", () => {
 
   it("remove drops the row", async () => {
     const { env, tables } = fakeD1({
-      tables: { meal_plan: [{ tenant: "everett", recipe: "salmon", planned_for: null, sides: null }] },
+      tables: { meal_plan: [{ tenant: "everett", id: "mp-salmon-001", recipe: "salmon", meal: "dinner", planned_for: null, sides: null }] },
     });
     await applyMealPlanRowOps(env, "everett", [{ op: "remove", recipe: "salmon" }]);
     expect(tables.meal_plan).toHaveLength(0);
   });
 
-  it("mealPlanDeleteStmt builds a tenant+recipe delete", async () => {
+  it("mealPlanDeleteByIdStmt builds a tenant+id delete", async () => {
     const { env, tables } = fakeD1({
-      tables: { meal_plan: [{ tenant: "everett", recipe: "salmon", planned_for: null, sides: null }] },
+      tables: { meal_plan: [{ tenant: "everett", id: "mp-salmon-001", recipe: "salmon", meal: "dinner", planned_for: null, sides: null }] },
     });
-    await env.DB.batch([mealPlanDeleteStmt(env, "everett", "salmon")]);
+    await env.DB.batch([mealPlanDeleteByIdStmt(env, "everett", "mp-salmon-001")]);
     expect(tables.meal_plan).toHaveLength(0);
   });
 });
@@ -389,12 +389,12 @@ describe("meal plan → D1 rows", () => {
 describe("meal plan set → D1 rows", () => {
   it("a set persists via the upsert and preserves from_vibe", async () => {
     const { env, tables } = fakeD1({
-      tables: { meal_plan: [{ tenant: "everett", recipe: "miso-salmon", planned_for: "2026-06-12", sides: '["white rice","roasted broccoli"]', from_vibe: "weeknight-fish" }] },
+      tables: { meal_plan: [{ tenant: "everett", id: "mp-miso-00001", recipe: "miso-salmon", meal: "dinner", planned_for: "2026-06-12", sides: '["white rice","roasted broccoli"]', from_vibe: "weeknight-fish" }] },
     });
     const res = await applyMealPlanRowOps(env, "everett", [
       { op: "set", recipe: "miso-salmon", sides: ["white rice"], planned_for: null },
     ]);
-    expect(res.applied).toEqual([{ op: "set", recipe: "miso-salmon" }]);
+    expect(res.applied).toEqual([{ op: "set", id: "mp-miso-00001", recipe: "miso-salmon", meal: "dinner" }]);
     const row = tables.meal_plan[0];
     expect(row.planned_for).toBeNull();
     expect(JSON.parse(row.sides as string)).toEqual(["white rice"]);

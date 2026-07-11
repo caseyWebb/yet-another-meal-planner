@@ -89,6 +89,10 @@ interface Vibe {
   vibe: string;
   facets?: Record<string, unknown>;
   vec?: number[];
+  /** Which meal's palette this vibe samples into (row default: dinner). */
+  meal?: string;
+  /** D29-final member assignment (JSON on the row; absent = everyone). */
+  members?: string[];
 }
 
 /** Assemble the op's env: fakeD1 domain tables + embed-cache KV + a spy AI binding that
@@ -107,6 +111,8 @@ function proposeEnv(
         tenant: TENANT.id,
         id: v.id,
         vibe: v.vibe,
+        meal: v.meal ?? "dinner",
+        members: v.members ? JSON.stringify(v.members) : null,
         facets: v.facets ? JSON.stringify(v.facets) : null,
         cadence_days: null,
         pinned: 0,
@@ -752,5 +758,173 @@ describe("new-for-me discovery seeds thread through the op (converge D3)", () =>
     // ghost-recipe is unresolvable, salmon-rice is excluded → both dropped, week identical to base.
     expect(dropped.plan.some((s) => s.reason === "new_for_me")).toBe(false);
     expect(dropped).toEqual(base);
+  });
+});
+
+
+// ── The meal dimension (meal-dimension-foundations): per-meal shape, the nights alias,
+// vibe-meal binding, the breakfast course gate, the engine no-duplicates invariant, and
+// the D29-final attendance contract (band-1 singleton degeneracy + fail-opens). ─────────
+
+const LUNCH_VIBE: Vibe = { id: "lunch-bowl", vibe: "a bright lunch bowl", vec: axis([4, 1]), meal: "lunch" };
+const BREAKFAST_VIBE: Vibe = { id: "morning-eggs", vibe: "a lazy morning egg dish", vec: axis([5, 1]), meal: "breakfast" };
+
+describe("runProposeMealPlan — per-meal shape (meals map + nights alias)", () => {
+  it("shapes each meal's slots from that meal's palette, flat and meal-ordered, with per-meal diagnostics", async () => {
+    const { env, ai } = proposeEnv([SEAFOOD, COMFORT, LUNCH_VIBE]);
+    const r = await runProposeMealPlan(env, TENANT, { meals: { lunch: 1, dinner: 2 }, seed: 7 }, stubDeps(env));
+    expect(ai).not.toHaveBeenCalled();
+    expect(r.plan).toHaveLength(3);
+    expect(r.plan.map((s) => s.meal)).toEqual(["lunch", "dinner", "dinner"]);
+    expect(r.plan[0].vibe_id).toBe("lunch-bowl"); // only the lunch palette fills lunch slots
+    expect(r.diagnostics.meals).toEqual({
+      breakfast: { requested: 0, filled: 0, empty: 0 },
+      lunch: { requested: 1, filled: 1, empty: 0 },
+      dinner: { requested: 2, filled: 2, empty: 0 },
+    });
+    expect(r.diagnostics.nights).toBe(2); // the dinner alias, one deprecation window
+  });
+
+  it("nights is the window-scoped dinner alias — equivalent alone, IGNORED when meals is supplied", async () => {
+    const { env } = proposeEnv([SEAFOOD, COMFORT]);
+    const viaNights = await runProposeMealPlan(env, TENANT, { nights: 2, seed: 7 }, stubDeps(env));
+    const viaMeals = await runProposeMealPlan(env, TENANT, { meals: { dinner: 2 }, seed: 7 }, stubDeps(env));
+    expect(viaMeals.plan).toEqual(viaNights.plan);
+    const both = await runProposeMealPlan(env, TENANT, { nights: 9, meals: { dinner: 2 }, seed: 7 }, stubDeps(env));
+    expect(both.plan).toEqual(viaMeals.plan); // nights ignored, no error
+  });
+
+  it("counts default from the stored cadence map (per-meal), then the frozen scalar for dinner", async () => {
+    const { env } = proposeEnv([SEAFOOD, COMFORT, LUNCH_VIBE], {
+      profile: { cadence: JSON.stringify({ breakfast: 0, lunch: 1, dinner: 1 }) },
+    });
+    const r = await runProposeMealPlan(env, TENANT, { seed: 7 }, stubDeps(env));
+    expect(r.diagnostics.meals.lunch).toMatchObject({ requested: 1 });
+    expect(r.diagnostics.meals.dinner).toMatchObject({ requested: 1 });
+    expect(r.diagnostics.meals.breakfast).toMatchObject({ requested: 0 });
+    // Legacy fallback: no cadence map → dinner from default_cooking_nights.
+    const { env: legacy } = proposeEnv([SEAFOOD, COMFORT], { profile: { default_cooking_nights: 2 } });
+    const r2 = await runProposeMealPlan(legacy, TENANT, { seed: 7 }, stubDeps(legacy));
+    expect(r2.diagnostics.meals.dinner.requested).toBe(2);
+    expect(r2.diagnostics.meals.lunch.requested).toBe(0);
+  });
+
+  it("an empty meal palette yields EXPLICIT empty slots (no_palette_for_meal) + an escape note — never a cross-palette fallback", async () => {
+    const { env } = proposeEnv([SEAFOOD, COMFORT]); // dinner vibes only
+    const r = await runProposeMealPlan(env, TENANT, { meals: { lunch: 2, dinner: 2 }, seed: 7 }, stubDeps(env));
+    const lunchSlots = r.plan.filter((s) => s.meal === "lunch");
+    expect(lunchSlots).toHaveLength(2);
+    for (const s of lunchSlots) {
+      expect(s.main).toBeNull();
+      expect(s.empty_reason).toBe("no_palette_for_meal");
+    }
+    expect(r.plan.filter((s) => s.meal === "dinner" && s.main)).toHaveLength(2);
+    expect(r.notes?.some((n) => n.includes("add_meal_vibe") && n.includes("lunch"))).toBe(true);
+    expect(r.diagnostics.meals.lunch).toEqual({ requested: 2, filled: 0, empty: 2 });
+  });
+
+  it("an ephemeral vibe set authors slots WITH meals (entry meal defaults dinner)", async () => {
+    const { env } = proposeEnv([], {
+      phraseVecs: { "a bright lunch bowl": axis([4, 1]), "cozy comfort food": axis([1, 1]) },
+    });
+    const r = await runProposeMealPlan(
+      env,
+      TENANT,
+      { seed: 7, ephemeral_vibes: [{ vibe: "a bright lunch bowl", meal: "lunch" }, { vibe: "cozy comfort food" }] },
+      stubDeps(env),
+    );
+    expect(r.plan.map((s) => s.meal)).toEqual(["lunch", "dinner"]);
+    expect(r.diagnostics.meals.lunch.requested).toBe(1);
+  });
+});
+
+describe("runProposeMealPlan — the meal-aware course gate", () => {
+  const GATED: RecipeFixture[] = [
+    { slug: "beef-ragu", title: "Beef Ragu", protein: "beef", cuisine: "italian", time_total: 60, vec: axis([5, 0.9]), course: ["main"] },
+    { slug: "shakshuka", title: "Shakshuka", protein: "egg", cuisine: "mediterranean", time_total: 30, vec: axis([5, 1]), course: ["breakfast"] },
+    { slug: "mystery-dish", title: "Mystery Dish", protein: "egg", cuisine: "american", time_total: 20, vec: axis([5, 0.8]) }, // unclassified
+  ];
+
+  it("a breakfast slot admits breakfast + unclassified (fail-open) and excludes dinner mains", async () => {
+    const { env } = proposeEnv([BREAKFAST_VIBE], { corpus: GATED });
+    const r = await runProposeMealPlan(env, TENANT, { meals: { breakfast: 1, dinner: 0 }, seed: 7 }, stubDeps(env));
+    const slot = r.plan[0];
+    expect(slot.meal).toBe("breakfast");
+    const pool = [slot.main?.slug, ...slot.alternates.map((a) => a.slug)].filter(Boolean);
+    expect(pool).not.toContain("beef-ragu");
+    expect(pool).toContain("shakshuka");
+    expect(pool).toContain("mystery-dish");
+  });
+
+  it("dinner slots keep the main-or-empty gate (the breakfast dish is excluded there)", async () => {
+    const { env } = proposeEnv([SEAFOOD], { corpus: GATED });
+    const r = await runProposeMealPlan(env, TENANT, { meals: { dinner: 1 }, seed: 7 }, stubDeps(env));
+    const slot = r.plan[0];
+    const pool = [slot.main?.slug, ...slot.alternates.map((a) => a.slug)].filter(Boolean);
+    expect(pool).not.toContain("shakshuka");
+  });
+});
+
+describe("runProposeMealPlan — the engine no-duplicates invariant (cross-meal)", () => {
+  it("one recipe appears at most once per proposal even when two meals' pools both rank it highest", async () => {
+    // One unclassified recipe passes BOTH meal gates and tops both pools; a weaker
+    // second candidate exists so the other slot can resolve differently.
+    const NARROW: RecipeFixture[] = [
+      { slug: "star-dish", title: "Star Dish", protein: "egg", cuisine: "american", time_total: 20, vec: axis([6, 1]) },
+      { slug: "runner-up", title: "Runner Up", protein: "chicken", cuisine: "american", time_total: 30, vec: axis([6, 0.7]) },
+    ];
+    const { env } = proposeEnv(
+      [{ ...BREAKFAST_VIBE, vec: axis([6, 1]) }, { id: "dinner-night", vibe: "the same craving at night", vec: axis([6, 1]) }],
+      { corpus: NARROW },
+    );
+    const r = await runProposeMealPlan(env, TENANT, { meals: { breakfast: 1, dinner: 1 }, seed: 7 }, stubDeps(env));
+    const mains = r.plan.map((s) => s.main?.slug).filter(Boolean);
+    expect(new Set(mains).size).toBe(mains.length); // no recipe twice
+    expect(mains.sort()).toEqual(["runner-up", "star-dish"]);
+  });
+});
+
+describe("runProposeMealPlan — attendance (D29-final, band-1 singleton)", () => {
+  it("always returns diagnostics.attendance; the band-1 degeneracy ranks as the whole (singleton) household", async () => {
+    const { env } = proposeEnv([SEAFOOD, COMFORT]);
+    const bare = await runProposeMealPlan(env, TENANT, BASE, stubDeps(env));
+    expect(bare.diagnostics.attendance).toEqual({ effective: ["casey"], ignored: [] });
+    const away = await runProposeMealPlan(env, TENANT, { ...BASE, attendance: { away: ["the-kids"] } }, stubDeps(env));
+    expect(away.diagnostics.attendance.effective).toEqual(["casey"]);
+    expect(away.diagnostics.attendance.ignored).toEqual(["the-kids"]);
+    // Ranking is byte-for-byte today's — the attendance param changed nothing.
+    expect(away.plan).toEqual(bare.plan);
+  });
+
+  it("an only-list resolving to nobody fails OPEN to the full roster with a note", async () => {
+    const { env } = proposeEnv([SEAFOOD, COMFORT]);
+    const r = await runProposeMealPlan(env, TENANT, { ...BASE, attendance: { only: ["a-stranger"] } }, stubDeps(env));
+    expect(r.diagnostics.attendance.effective).toEqual(["casey"]);
+    expect(r.diagnostics.attendance.notes?.length).toBeGreaterThan(0);
+    expect(r.diagnostics.filled).toBe(2); // never a plan for nobody
+  });
+
+  it("both away and only is a structured validation_failed", async () => {
+    const { env } = proposeEnv([SEAFOOD, COMFORT]);
+    await expect(
+      runProposeMealPlan(env, TENANT, { ...BASE, attendance: { away: ["x"], only: ["y"] } }, stubDeps(env)),
+    ).rejects.toMatchObject({ code: "validation_failed" });
+  });
+
+  it("a vibe whose members are all unresolvable contributes as everyone (stale fail-open, noted)", async () => {
+    const { env } = proposeEnv([
+      { ...SEAFOOD, members: ["someone-gone"] },
+      COMFORT,
+    ]);
+    const r = await runProposeMealPlan(env, TENANT, BASE, stubDeps(env));
+    expect(r.plan.some((s) => s.vibe_id === "seafood-night")).toBe(true); // never silently deleted
+    expect(r.diagnostics.attendance.notes?.some((n) => n.includes("seafood-night"))).toBe(true);
+  });
+
+  it("a vibe assigned to the (present) tenant contributes as before", async () => {
+    const { env } = proposeEnv([{ ...SEAFOOD, members: ["casey"] }, COMFORT]);
+    const r = await runProposeMealPlan(env, TENANT, BASE, stubDeps(env));
+    expect(r.plan.some((s) => s.vibe_id === "seafood-night")).toBe(true);
+    expect(r.diagnostics.attendance.notes).toBeUndefined();
   });
 });

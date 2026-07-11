@@ -35,7 +35,15 @@ import {
   type PantryApplyResult,
   type WasteEventDraft,
 } from "./pantry-write.js";
-import { applyMealPlanOps, type PlannedItem, type MealPlanOp } from "./meal-plan.js";
+import {
+  applyMealPlanOps,
+  orderPlanned,
+  type PlannedRow,
+  type MealPlanOp,
+  type AppliedPlanOp,
+  type PlanOpConflict,
+} from "./meal-plan.js";
+import { ulid } from "./ids.js";
 import {
   addToGroceryList,
   updateGroceryItem,
@@ -400,74 +408,81 @@ export async function readPantryNames(env: Env, tenant: string): Promise<Set<str
 // === Meal plan ===============================================================
 
 interface MealPlanRow {
+  id: string;
   recipe: string;
+  meal: string;
   planned_for: string | null;
   sides: string | null;
   from_vibe: string | null;
 }
 
-function plannedItemOf(r: MealPlanRow): PlannedItem {
-  const item: PlannedItem = { recipe: r.recipe, planned_for: r.planned_for ?? null };
+function plannedRowOf(r: MealPlanRow): PlannedRow {
+  const item: PlannedRow = {
+    id: r.id,
+    recipe: r.recipe,
+    meal: (r.meal as PlannedRow["meal"]) ?? "dinner",
+    planned_for: r.planned_for ?? null,
+  };
   const sides = parseJsonArray(r.sides);
   if (sides.length) item.sides = sides;
   if (r.from_vibe) item.from_vibe = r.from_vibe;
   return item;
 }
 
-/** Read the caller's meal-plan rows. */
-export async function readMealPlan(env: Env, tenant: string): Promise<PlannedItem[]> {
+/** Read the caller's meal-plan rows, in the read_meal_plan ORDERING GUARANTEE: dated
+ *  rows by `(planned_for, breakfast < lunch < dinner)`, then undated rows grouped by
+ *  meal, then projects last; ties by `id ASC` (arbitrary-but-deterministic). */
+export async function readMealPlan(env: Env, tenant: string): Promise<PlannedRow[]> {
   const rows = await db(env).all<MealPlanRow>(
-    "SELECT recipe, planned_for, sides, from_vibe FROM meal_plan WHERE tenant = ?1",
+    "SELECT id, recipe, meal, planned_for, sides, from_vibe FROM meal_plan WHERE tenant = ?1",
     tenant,
   );
-  return rows.map(plannedItemOf);
+  return orderPlanned(rows.map(plannedRowOf));
 }
 
-/** An UPSERT statement for one meal-plan row (upsert by recipe slug, with sides JSON). */
-function mealPlanUpsertStmt(env: Env, tenant: string, item: PlannedItem): D1PreparedStatement {
+/** An UPSERT statement for one meal-plan row (keyed on `(tenant, id)` — D26-final). */
+function mealPlanUpsertStmt(env: Env, tenant: string, item: PlannedRow): D1PreparedStatement {
   const sides = item.sides && item.sides.length ? JSON.stringify(item.sides) : null;
   return db(env).prepare(
-    "INSERT INTO meal_plan (tenant, recipe, planned_for, sides, from_vibe) VALUES (?1, ?2, ?3, ?4, ?5) " +
-      "ON CONFLICT(tenant, recipe) DO UPDATE SET planned_for = excluded.planned_for, sides = excluded.sides, from_vibe = excluded.from_vibe",
+    "INSERT INTO meal_plan (tenant, id, recipe, meal, planned_for, sides, from_vibe) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) " +
+      "ON CONFLICT(tenant, id) DO UPDATE SET recipe = excluded.recipe, meal = excluded.meal, " +
+      "planned_for = excluded.planned_for, sides = excluded.sides, from_vibe = excluded.from_vibe",
     tenant,
+    item.id,
     item.recipe,
+    item.meal,
     item.planned_for ?? null,
     sides,
     item.from_vibe ?? null,
   );
 }
 
-/** A DELETE statement for one meal-plan recipe (exposed for log_cooked's transaction). */
-export function mealPlanDeleteStmt(env: Env, tenant: string, recipe: string): D1PreparedStatement {
-  return db(env).prepare("DELETE FROM meal_plan WHERE tenant = ?1 AND LOWER(recipe) = LOWER(?2)", tenant, recipe);
+/** A DELETE for one meal-plan row by its id — log_cooked's transactional clear deletes
+ *  exactly the row the deterministic clear order selected (a concurrent delete makes it
+ *  a no-op — safe). */
+export function mealPlanDeleteByIdStmt(env: Env, tenant: string, id: string): D1PreparedStatement {
+  return db(env).prepare("DELETE FROM meal_plan WHERE tenant = ?1 AND id = ?2", tenant, id);
 }
 
 /**
- * Apply meal-plan add/remove/set ops as row statements (add/set = upsert by recipe;
- * remove = DELETE). Reads current rows, runs the pure `applyMealPlanOps`, emits
- * per-op rows — the upsert writes the full row, so `set` (replace-wholesale sides,
- * explicit planned_for clear, preserved from_vibe) is pure op-plumbing here.
+ * Apply meal-plan add/remove/set ops as row statements over per-slot identity: reads
+ * current rows, runs the pure `applyMealPlanOps` (the D26-final resolution order —
+ * id replay → `duplicate: true` → slug-global coalesce; remove split idempotency;
+ * set unique-or-candidates; project constraints), and emits one UPSERT per touched
+ * row + one DELETE per removed id in a single batch. New ids are server-minted ULIDs
+ * when the caller supplied none.
  */
 export async function applyMealPlanRowOps(
   env: Env,
   tenant: string,
   ops: MealPlanOp[],
-): Promise<{ applied: { op: MealPlanOp["op"]; recipe: string }[]; conflicts: { op: MealPlanOp["op"]; recipe: string; reason: string }[] }> {
+): Promise<{ applied: AppliedPlanOp[]; conflicts: PlanOpConflict[] }> {
   const current = await readMealPlan(env, tenant);
-  const result = applyMealPlanOps(current, ops);
-  const byRecipe = new Map(result.items.map((it) => [it.recipe.toLowerCase(), it]));
-
-  const stmts: D1PreparedStatement[] = [];
-  for (const a of result.applied) {
-    if (a.op === "remove") {
-      // applyMealPlanOps drops every row whose slug matches case-insensitively; the
-      // recipe stored may differ in case, so delete by the op's recipe value.
-      stmts.push(mealPlanDeleteStmt(env, tenant, a.recipe));
-    } else {
-      const item = byRecipe.get(a.recipe.toLowerCase());
-      if (item) stmts.push(mealPlanUpsertStmt(env, tenant, item));
-    }
-  }
+  const result = applyMealPlanOps(current, ops, ulid);
+  const stmts: D1PreparedStatement[] = [
+    ...result.deletes.map((id) => mealPlanDeleteByIdStmt(env, tenant, id)),
+    ...result.upserts.map((row) => mealPlanUpsertStmt(env, tenant, row)),
+  ];
   if (stmts.length > 0) await db(env).batch(stmts);
   return { applied: result.applied, conflicts: result.conflicts };
 }

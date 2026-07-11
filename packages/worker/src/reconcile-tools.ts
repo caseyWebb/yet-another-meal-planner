@@ -66,7 +66,7 @@ export function registerReconcileTools(server: McpServer, env: Env, tenant: Tena
     "list_proposals",
     {
       description:
-        "List the caller's PENDING reconciliation proposals — suggested profile edits (e.g. prune a night vibe you never cook, stretch a cadence you keep deferring) that reconcile your stated palette against what you actually cook. The OPERATOR's queue may also carry corpus-curation `merge_recipes` proposals (the scheduled dup-scan's near-duplicate pairs: payload { slugs, titles, cosine, shared_ingredients, jaccard, detector }) — those are review requests, not diffs. Read-only; confirm with confirm_proposal. Returns { proposals: [{ id, kind, target, rationale, payload, evidence, producer }] }.",
+        "List the caller's PENDING reconciliation proposals — suggested profile edits (e.g. prune a meal vibe you never cook, stretch a cadence you keep deferring) that reconcile your stated palette against what you actually cook. The OPERATOR's queue may also carry corpus-curation `merge_recipes` proposals (the scheduled dup-scan's near-duplicate pairs: payload { slugs, titles, cosine, shared_ingredients, jaccard, detector }) — those are review requests, not diffs. Read-only; confirm with confirm_proposal. Returns { proposals: [{ id, kind, target, rationale, payload, evidence, producer }] }.",
       inputSchema: {},
     },
     () =>
@@ -80,7 +80,7 @@ export function registerReconcileTools(server: McpServer, env: Env, tenant: Tena
     "confirm_proposal",
     {
       description:
-        "Confirm a reconciliation proposal by id. For the profile kinds, `accept: true` applies the diff to your palette (prune/adjust/add a night vibe) and marks it accepted; `accept: false` rejects it (recorded as a signal — the same proposal is never re-surfaced). For a `merge_recipes` proposal (operator corpus curation), accept records the decision ONLY — it writes nothing to the corpus; the merge itself must be performed FIRST via the corpus write tools (fold what's worth keeping into the survivor with update_recipe, then mark the duplicate `duplicate_of: <survivor-slug>`), and only then confirmed (merge-then-accept). Rejecting a merge_recipes proposal keeps both recipes forever. Unknown id → not_found; an already-resolved id → conflict (nothing changes — the earlier resolution stands). Returns { id, status, applied? }.",
+        "Confirm a reconciliation proposal by id. For the profile kinds, `accept: true` applies the diff to your palette (prune/adjust/add a meal vibe — an add_vibe payload's `meal` lands on the created vibe) and marks it accepted; `accept: false` rejects it (recorded as a signal — the same proposal is never re-surfaced). For a `merge_recipes` proposal (operator corpus curation), accept records the decision ONLY — it writes nothing to the corpus; the merge itself must be performed FIRST via the corpus write tools (fold what's worth keeping into the survivor with update_recipe, then mark the duplicate `duplicate_of: <survivor-slug>`), and only then confirmed (merge-then-accept). Rejecting a merge_recipes proposal keeps both recipes forever. Unknown id → not_found; an already-resolved id → conflict (nothing changes — the earlier resolution stands). Returns { id, status, applied? }.",
       inputSchema: { id: z.string().min(1), accept: z.boolean() },
     },
     ({ id, accept }) => runTool(() => resolveProposal(env, tenant.id, id, accept)),

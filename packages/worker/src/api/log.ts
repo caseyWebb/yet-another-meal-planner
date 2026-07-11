@@ -1,7 +1,9 @@
 // The `log` area (member-app-core): the bounded most-recent-first cooking-log read
 // (D4), the log-a-cook write through the SAME shared `logCooked` op the MCP tool uses
-// — with route-level dedupe ON, so a replayed mutation cannot double-log (D8) — and
-// the tenant-scoped delete-by-id member correction. Session-gated per route.
+// — with route-level dedupe ON keyed on `(date, meal, type, recipe|name)` (a NULL meal
+// matches NULL only; this is cooking_log DEDUPE identity only, never plan-row
+// identity), so a replayed mutation cannot double-log (D8) — and the tenant-scoped
+// delete-by-id member correction. Session-gated per route.
 
 import { Hono } from "hono";
 import { ToolError } from "../errors.js";
@@ -12,6 +14,7 @@ import { readCookingLog, deleteCookingLogRow } from "../cooking-tools.js";
 import { logCooked, type LogCookedInput } from "../cooking-write.js";
 
 const TYPES = new Set(["recipe", "ready_to_eat", "ad_hoc"]);
+const MEALS = new Set(["breakfast", "lunch", "dinner", "project"]);
 
 export const logArea = new Hono<ApiEnv>()
   .get("/log", requireSession, async (c) => {
@@ -39,6 +42,18 @@ export const logArea = new Hono<ApiEnv>()
         if (typeof v !== "string") throw new ToolError("validation_failed", `${key} must be a string`);
         input[key] = v;
       }
+    }
+    if (body.meal !== undefined) {
+      if (typeof body.meal !== "string" || !MEALS.has(body.meal)) {
+        throw new ToolError("validation_failed", "meal must be breakfast | lunch | dinner | project");
+      }
+      input.meal = body.meal as LogCookedInput["meal"];
+    }
+    if (body.plan_row_id !== undefined) {
+      if (typeof body.plan_row_id !== "string" || !body.plan_row_id) {
+        throw new ToolError("validation_failed", "plan_row_id must be a row id string");
+      }
+      input.plan_row_id = body.plan_row_id;
     }
     const result = await logCooked(c.env, tenant.id, input, { dedupe: true });
     return c.json(result);

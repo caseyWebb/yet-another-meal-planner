@@ -10,6 +10,12 @@
 export const COOKING_LOG_TYPES = ["recipe", "ready_to_eat", "ad_hoc"] as const;
 export type CookingLogType = (typeof COOKING_LOG_TYPES)[number];
 
+/** The closed meal set on log rows. NULLABLE — an absent meal means "unknown / not a
+ *  meal" (stories/02 Q2: `type` and `meal` are orthogonal axes; there is no fourth
+ *  "other" value — a baked loaf logs `{ type: 'ad_hoc' }` with no meal). */
+export const COOKING_LOG_MEALS = ["breakfast", "lunch", "dinner", "project"] as const;
+export type CookingLogMeal = (typeof COOKING_LOG_MEALS)[number];
+
 export interface CookingLogEntry {
   date: string;
   type: CookingLogType;
@@ -20,6 +26,9 @@ export interface CookingLogEntry {
   /** Optional inline dimensions for non-recipe entries. */
   protein?: string;
   cuisine?: string;
+  /** Which meal this event was; absent = NULL = "unknown / not a meal". Valid on all
+   *  types (cooking a planned project logs `{ type: 'recipe', meal: 'project' }`). */
+  meal?: CookingLogMeal;
 }
 
 const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -40,6 +49,9 @@ export function validateNewEntry(entry: CookingLogEntry): string | null {
     if (!entry.recipe) return "cooking-log recipe entry is missing `recipe` (slug)";
   } else if (!entry.name) {
     return `cooking-log ${entry.type} entry is missing \`name\``;
+  }
+  if (entry.meal !== undefined && !COOKING_LOG_MEALS.includes(entry.meal)) {
+    return `cooking-log entry has an invalid meal: ${JSON.stringify(entry.meal)}`;
   }
   return null;
 }
