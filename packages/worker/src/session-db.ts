@@ -717,6 +717,10 @@ export async function updateGroceryRow(
     // The purchase assertion: materialize the linked snapshot verbatim (idempotent —
     // a replayed assertion is rejected by the W3 guard before it ever reaches here,
     // and the writer's (send_id, line_key) PK absorbs any race the guard misses).
+    // Runs after the row write: if this throws on a storage blip the row is already
+    // ordered+linked and a retry of status:"ordered" dead-ends on the transition guard,
+    // so the event is only recoverable by re-listing first — an accepted telemetry-only
+    // loss (no phantom spend), visible as an ordered row with no event.
     await recordPurchaseAssertion(env, tenant, [{ sendId: existing.sent_in, lineKey }], today);
   } else if (leavingOrdered && existing.sent_in) {
     // Re-listing an ordered row voids its events — never deletes them.
@@ -806,6 +810,10 @@ export async function readGroceryKeyIndex(
  * events via the one shared writer — verbatim copy, idempotent on `(send_id, line_key)`,
  * so a replayed mark-placed converges. A row with no linkage advances without writing
  * spend (nothing was snapshotted for it).
+ *
+ * Status-agnostic by design: callers MUST filter to `in_cart` rows — re-advancing an
+ * already-`ordered` row restamps its `ordered_at` (the event materialize itself stays
+ * idempotent either way).
  */
 export async function advanceOrderedRows(
   env: Env,

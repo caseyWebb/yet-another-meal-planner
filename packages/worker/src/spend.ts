@@ -172,6 +172,8 @@ interface SnapshotLineRow {
  * linkage, or whose snapshot line is missing (a degraded send), are skipped — a
  * purchase assertion never fabricates a price. Called ONLY from the shared status ops
  * (`updateGroceryRow`, `advanceOrderedRows`); no tool or route writes spend directly.
+ * `recorded` counts MATCHED snapshot lines, not new inserts — a fully-replayed
+ * assertion still reports every matched line even though ON CONFLICT inserted nothing.
  */
 export async function recordPurchaseAssertion(
   env: Env,
