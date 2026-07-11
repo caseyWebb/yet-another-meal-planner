@@ -236,6 +236,16 @@ jobs:
               echo "</details>"
             done
           } > /tmp/comment.md
+          # The screenshots are pushed and the artifact uploaded; the sticky comment is
+          # reporting, not the gate. If the PR is already closed/merged (and possibly
+          # locked — comments 403 on a locked thread) by the time this suite finishes,
+          # skip the upsert with a warning instead of failing the job. On an OPEN PR an
+          # upsert failure still fails loudly — that's a real publish regression.
+          read -r STATE LOCKED < <(gh api "repos/$REPO/pulls/$PR" --jq '"\(.state) \(.locked)"')
+          if [ "$STATE" != "open" ] || [ "$LOCKED" = "true" ]; then
+            echo "::warning::PR #$PR is $STATE (locked=$LOCKED) — screenshots pushed to $BRANCH; skipping the sticky comment."
+            exit 0
+          fi
           find_comment() {
             gh api "repos/$REPO/issues/$PR/comments" --paginate \
               --jq "[.[] | select(.body | startswith(\"$MARKER\"))][0].id // empty"
@@ -375,6 +385,13 @@ jobs:
               echo "</details>"
             done
           } > /tmp/comment.md
+          # Same closed/locked degrade as the admin-ui publish step above: the comment is
+          # reporting, not the gate — skip with a warning on a non-open or locked PR.
+          read -r STATE LOCKED < <(gh api "repos/$REPO/pulls/$PR" --jq '"\(.state) \(.locked)"')
+          if [ "$STATE" != "open" ] || [ "$LOCKED" = "true" ]; then
+            echo "::warning::PR #$PR is $STATE (locked=$LOCKED) — screenshots pushed to $BRANCH; skipping the sticky comment."
+            exit 0
+          fi
           find_comment() {
             gh api "repos/$REPO/issues/$PR/comments" --paginate \
               --jq "[.[] | select(.body | startswith(\"$MARKER\"))][0].id // empty"
