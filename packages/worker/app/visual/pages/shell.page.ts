@@ -59,6 +59,12 @@ export class ShellPage extends AppPage {
     await this.page.locator(".sb-link", { hasText: label }).click();
   }
 
+  /** The live count badge on a nav entry (`.sb-count`) — absent (zero matches) when the
+   *  count is zero and no badge renders (sidebar-live-counts). */
+  navBadge(label: string): Locator {
+    return this.page.locator(".sb-link", { hasText: label }).locator(".sb-count");
+  }
+
   /** The sidebar's Connect-to-Claude CTA opens the guided modal (connect-modal). */
   async openConnectModal(): Promise<void> {
     await this.page.getByTestId("connect-claude-cta").click();
