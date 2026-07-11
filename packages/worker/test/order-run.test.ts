@@ -4,7 +4,13 @@
 // writes nothing, `underived` rides the result, and the unchanged-baseline guarantee
 // (no plan + no new params ⇒ exactly the pre-extraction tool behavior).
 import { describe, it, expect } from "vitest";
-import { runPlaceOrder, type OrderWiring, type PlaceOrderInput } from "../src/order-tools.js";
+import {
+  runPlaceOrder,
+  buildKrogerSendSnapshot,
+  type OrderWiring,
+  type PlaceOrderInput,
+  type SnapshotContext,
+} from "../src/order-tools.js";
 import { computeToBuy, placeOrder, type PlaceOrderDeps } from "../src/order.js";
 import { addGroceryRow, readGroceryList, readPantryNames } from "../src/session-db.js";
 import { ingredientContext } from "../src/corpus-db.js";
@@ -352,5 +358,140 @@ describe("runPlaceOrder — SKU-cache aisle capture (member-app-differentiators 
         last_used: isoToday(),
       }),
     ]);
+  });
+});
+
+describe("runPlaceOrder — the send-record snapshot (spend-telemetry)", () => {
+  function seedIdentity(h: SqliteEnv, id: string, category: string | null): void {
+    h.raw
+      .prepare("INSERT INTO ingredient_identity (id, base, category) VALUES (?, ?, ?)")
+      .run(id, id.split("::")[0], category);
+  }
+
+  it("preview writes no send record", async () => {
+    const h = sqliteEnv([T]);
+    await addGroceryRow(h.env, T, { name: "chicken" }, TODAY);
+    await run(h, { preview: true }, fakeWiring());
+    expect(h.rows("order_sends")).toHaveLength(0);
+    expect(h.rows("order_send_lines")).toHaveLength(0);
+  });
+
+  it("a rolled-back flush (cart failure) leaves no phantom send and no linkage", async () => {
+    const h = sqliteEnv([T]);
+    await addGroceryRow(h.env, T, { name: "chicken" }, TODAY);
+    // No Kroger link → cartAdd throws reauth_required AFTER the advance+snapshot batch;
+    // the rollback deletes the send record alongside its row compensation.
+    const result = await run(h, {}, fakeWiring());
+    expect(result.cart.code).toBe("reauth_required");
+    expect(result.list).toMatchObject({ advanced: false, rolled_back: true });
+    expect(result.send.recorded).toBe(false);
+    expect(result.send.error).toContain("rolled back");
+    expect(h.rows("order_sends")).toHaveLength(0);
+    expect(h.rows("order_send_lines")).toHaveLength(0);
+    expect(h.rows<{ status: string; sent_in: string | null }>("grocery_list")[0]).toMatchObject({
+      status: "active",
+      sent_in: null,
+    });
+  });
+
+  it("a snapshot-build failure (location resolve) degrades to a bare advance — send honest, flush intact", async () => {
+    const h = sqliteEnv([T]);
+    await addGroceryRow(h.env, T, { name: "chicken" }, TODAY);
+    const wiring = fakeWiring({
+      getLocationId: async () => {
+        throw new Error("no location resolvable");
+      },
+    });
+    const result = await run(h, {}, wiring);
+    // The advance still ran (bare); the send reports the failure honestly.
+    expect(result.send.recorded).toBe(false);
+    expect(result.send.error).toContain("no location resolvable");
+    expect(h.rows("order_sends")).toHaveLength(0);
+    // The cart write still failed (no Kroger link) and rolled the bare advance back —
+    // groceries were never blocked by telemetry.
+    expect(result.cart.code).toBe("reauth_required");
+    expect(h.rows<{ status: string }>("grocery_list")[0].status).toBe("active");
+  });
+
+  it("buildKrogerSendSnapshot maps provenance across the four line origins (design D6)", async () => {
+    const h = sqliteEnv([T]);
+    seedIdentity(h, "chicken", "meat");
+    const ctx: SnapshotContext = {
+      getLocationId: async () => "loc-1",
+      toBuyByKey: new Map([
+        ["chicken", { name: "chicken", key: "chicken", quantity: 1, for_recipes: [], assumed_quantity: true }],
+        ["black beans", { name: "black beans", key: "black beans", quantity: 1, for_recipes: [], assumed_quantity: true }],
+        ["parsley", { name: "parsley", key: "parsley", quantity: 1, for_recipes: ["side"], assumed_quantity: true }],
+        ["gum", { name: "gum", key: "gum", quantity: 1, for_recipes: [], assumed_quantity: true }],
+      ]),
+      storedByKey: new Map([["chicken", { kind: "grocery", domain: "grocery" }]]),
+      storedKeys: new Set(["chicken"]), // a stored ad_hoc list row
+      planKeys: new Set(["black beans"]), // a server-derived plan need
+      // parsley: a menu_needs side carrying for_recipes; gum: a bare caller extra.
+    };
+    const line = (key: string) => ({
+      name: key,
+      key,
+      sku: `SKU-${key}`,
+      brand: "B",
+      size: null,
+      quantity: 1,
+      assumed_quantity: true,
+      price: { regular: 2, promo: 0 },
+      on_sale: false,
+    });
+    const { send, snapLines } = await buildKrogerSendSnapshot(
+      h.env,
+      T,
+      [line("chicken"), line("black beans"), line("parsley"), line("gum")],
+      ctx,
+    );
+    expect(send).toMatchObject({ store: "kroger", locationId: "loc-1", fulfillment: "kroger_online", orderListId: null });
+    const byKey = Object.fromEntries(snapLines.map((l) => [l.lineKey, l.provenance]));
+    expect(byKey).toEqual({ chicken: "planned", "black beans": "planned", parsley: "planned", gum: "impulse" });
+  });
+
+  it("buildKrogerSendSnapshot stamps departments: household immediate, memo hit, cold id NULL-pending", async () => {
+    const h = sqliteEnv([T]);
+    seedIdentity(h, "tomatillos", "produce"); // memoized
+    // "brand new thing" has no identity row — cold, pending.
+    const ctx: SnapshotContext = {
+      getLocationId: async () => "loc-1",
+      toBuyByKey: new Map(),
+      storedByKey: new Map([
+        ["paper towels", { kind: "household", domain: "grocery" }],
+        ["2x4 lumber", { kind: "grocery", domain: "home-improvement" }],
+      ]),
+      storedKeys: new Set(["paper towels", "2x4 lumber", "tomatillos", "brand new thing"]),
+      planKeys: new Set(),
+    };
+    const line = (key: string) => ({
+      name: key,
+      key,
+      sku: `SKU-${key}`,
+      brand: "B",
+      size: null,
+      quantity: 1,
+      assumed_quantity: true,
+      price: { regular: 4.99, promo: 3.99 },
+      on_sale: true,
+    });
+    const { snapLines } = await buildKrogerSendSnapshot(
+      h.env,
+      T,
+      [line("paper towels"), line("2x4 lumber"), line("tomatillos"), line("brand new thing")],
+      ctx,
+    );
+    const byKey = Object.fromEntries(snapLines.map((l) => [l.lineKey, l.department]));
+    expect(byKey).toEqual({
+      "paper towels": "household", // kind override — immediate, never pending
+      "2x4 lumber": "household", // non-grocery domain — the SCHEMAS.md fixture row
+      tomatillos: "produce", // identity memo hit
+      "brand new thing": null, // cold id — NULL = pending classification
+    });
+    // The quote fields ride the resolution: effective price is the promo when on sale.
+    expect(snapLines[2].unitPrice).toBe(3.99);
+    expect(snapLines[2].savings).toBe(1.0);
+    expect(snapLines[2].estimated).toBe(0);
   });
 });

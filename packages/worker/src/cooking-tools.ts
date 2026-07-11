@@ -15,6 +15,7 @@ import { db } from "./db.js";
 import type { CookingLogEntry } from "./cooking-log.js";
 import { type MealPlanOp } from "./meal-plan.js";
 import { retrospective, type RetrospectiveResult, type RetroConfig } from "./retrospective.js";
+import { readSpendSection, type SpendSection } from "./spend.js";
 import { loadRecipeIndex } from "./recipe-index.js";
 import { mergeOverlay, type Overlay } from "./overlay.js";
 import { readOverlay, readPreferences } from "./profile-db.js";
@@ -40,12 +41,16 @@ interface CookingLogJoinRow {
  * inline columns. The recipe index + the caller's overlay + the derived last_cooked
  * are merged into an effective index for the `underused` metric (non-rejected recipes
  * not cooked in the window — reject is per-tenant, so it must be overlay-merged).
+ * The `spend` section (spend-telemetry) rides the result: a household-scoped read-only
+ * aggregate over non-voided spend events (trailing 4 ISO weeks, independent of `period`
+ * like `underused`), the awaiting-mark-placed count, and the weekly budget — plain SQL,
+ * no LLM in the read path.
  */
 export async function loadRetrospective(
   env: Env,
   username: string,
   period: string,
-): Promise<RetrospectiveResult> {
+): Promise<RetrospectiveResult & { spend: SpendSection }> {
   const rows = await db(env).all<CookingLogJoinRow>(
     "SELECT cl.type AS type, cl.date AS date, cl.recipe AS recipe, cl.name AS name, " +
       "COALESCE(cl.protein, r.protein) AS protein, COALESCE(cl.cuisine, r.cuisine) AS cuisine " +
@@ -98,7 +103,8 @@ export async function loadRetrospective(
     revealedMinCooks: num(retroPrefs.revealed_min_cooks),
   };
 
-  return retrospective(entries, effective, period, new Date(), retroConfig);
+  const spend = await readSpendSection(env, username);
+  return { ...retrospective(entries, effective, period, new Date(), retroConfig), spend };
 }
 
 /** One member-facing cooking-log row (the web log page's read, member-app-core D4). */
@@ -224,7 +230,7 @@ export function registerCookingTools(
     "retrospective",
     {
       description:
-        "Aggregate cooking history over a period from the cooking log. period accepts 'Nd' (e.g. '30d'), 'week', 'month', 'quarter', 'year', or 'all', and scopes recipes_cooked, protein_mix, cuisine_mix (non-recipe entries counted via inline dims; missing → 'unknown'), cadence (cooks/week, recipe+ad_hoc only), cook_vs_convenience (cooked vs ready_to_eat), and ready_to_eat_favorites (frequency-ranked). underused is INDEPENDENT of period: loved recipes — the caller's favorites PLUS revealed favorites (cooked ≥3× in the trailing 12 months) — that have gone stale (never cooked, or not cooked in a FIXED 30 days) and are in season now; rejected recipes are excluded. Each underused item carries why ('favorite' | 'revealed') and cook_count (all-time), is sorted stalest-first, and is capped at 15; underused_count is the pre-cap qualifying total.",
+        "Aggregate cooking history over a period from the cooking log. period accepts 'Nd' (e.g. '30d'), 'week', 'month', 'quarter', 'year', or 'all', and scopes recipes_cooked, protein_mix, cuisine_mix (non-recipe entries counted via inline dims; missing → 'unknown'), cadence (cooks/week, recipe+ad_hoc only), cook_vs_convenience (cooked vs ready_to_eat), and ready_to_eat_favorites (frequency-ranked). underused is INDEPENDENT of period: loved recipes — the caller's favorites PLUS revealed favorites (cooked ≥3× in the trailing 12 months) — that have gone stale (never cooked, or not cooked in a FIXED 30 days) and are in season now; rejected recipes are excluded. Each underused item carries why ('favorite' | 'revealed') and cook_count (all-time), is sorted stalest-first, and is capped at 15; underused_count is the pre-cap qualifying total. `spend` is the household's read-only grocery-spend section, ALSO independent of period: the trailing 4 ISO weeks (Monday starts, newest last) as { week_start, total, savings, events, estimated } over recorded (non-voided) spend events — send-time quotes recorded when an order's placement was asserted — plus weekly_budget (the preference, null when unset) and awaiting_mark_placed (items sent to a cart whose order was never marked placed: they are NEVER auto-counted as spend — surface them and ask, don't assume).",
       inputSchema: { period: z.string().optional() },
     },
     ({ period }) => runTool(() => loadRetrospective(env, username, period ?? "month")),

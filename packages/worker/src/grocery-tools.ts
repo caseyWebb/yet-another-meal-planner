@@ -66,7 +66,7 @@ export function registerGroceryListTools(
     "update_grocery_list",
     {
       description:
-        "Patch an existing grocery-list item by name. `domain` (default 'grocery') is the store-type the item is bought at — set it to re-file an item onto a different store's in-store walk. `status` lifecycle guarantee: `active ⇄ in_cart` is freely writable in both directions (and an `ordered` item may be re-listed back to `active`, e.g. a canceled order); `status: \"ordered\"` is accepted ONLY as the user-asserted \"I placed the order\" advance on an item currently `in_cart` — that write stamps `ordered_at` — and ANY other write of `ordered` returns a structured `validation_failed` (with the attempted `{from, to}` transition) and changes nothing.",
+        "Patch an existing grocery-list item by name. `domain` (default 'grocery') is the store-type the item is bought at — set it to re-file an item onto a different store's in-store walk. `status` lifecycle guarantee: `active ⇄ in_cart` is freely writable in both directions (and an `ordered` item may be re-listed back to `active`, e.g. a canceled order); `status: \"ordered\"` is accepted ONLY as the user-asserted \"I placed the order\" advance on an item currently `in_cart` — that write stamps `ordered_at` — and ANY other write of `ordered` returns a structured `validation_failed` (with the attempted `{from, to}` transition) and changes nothing. SPEND guarantee: the legal `in_cart → ordered` advance is the PURCHASE ASSERTION — it records the order's spend from the flush's send-time snapshot (verbatim, exactly once; no live re-pricing). An item you manually moved `active → in_cart` has no snapshot, so marking it `ordered` records nothing. Re-listing an `ordered` item back to `active`/`in_cart` VOIDS its recorded spend (a canceled order never counts); moving `in_cart → active` records nothing and drops the item out of its pending order.",
       inputSchema: {
         name: z.string(),
         quantity: z.string().optional(),
@@ -88,7 +88,8 @@ export function registerGroceryListTools(
   server.registerTool(
     "remove_from_grocery_list",
     {
-      description: "Remove an item from the grocery list by name.",
+      description:
+        "Remove an item from the grocery list by name. A removal NEVER records spend — it is not a purchase assertion (it is also how a changed mind leaves the list). To record a purchase for an item still `in_cart`, advance it to `ordered` via update_grocery_list BEFORE removing it.",
       inputSchema: { name: z.string() },
     },
     ({ name }) =>

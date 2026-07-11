@@ -66,6 +66,7 @@ export const DEFINED_PREFERENCE_KEYS = [
   "planning_cadence_days",
   "lunch_strategy",
   "ready_to_eat_default_action",
+  "weekly_budget",
   "stores",
   "brands",
   "dietary",
@@ -146,6 +147,12 @@ export function validatePreferences(merged: Record<string, unknown>): void {
       fail(
         `ready_to_eat_default_action must be one of ${READY_TO_EAT_ACTIONS.join(" | ")} (got ${JSON.stringify(v)})`,
       );
+    }
+  }
+  if ("weekly_budget" in merged) {
+    const v = merged.weekly_budget;
+    if (typeof v !== "number" || !Number.isFinite(v) || v < 0) {
+      fail(`weekly_budget must be a number >= 0, in dollars per week (got ${JSON.stringify(v)})`);
     }
   }
   if ("stores" in merged) {

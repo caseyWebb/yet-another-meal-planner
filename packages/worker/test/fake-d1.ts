@@ -20,6 +20,9 @@ export interface FakeD1 {
 const PK: Record<string, string[]> = {
   pantry: ["tenant", "normalized_name"],
   waste_events: ["tenant", "id"],
+  order_sends: ["id"],
+  order_send_lines: ["send_id", "line_key"],
+  spend_events: ["send_id", "line_key"],
   meal_plan: ["tenant", "recipe"],
   grocery_list: ["tenant", "normalized_name"],
   cooking_log: ["id"],
