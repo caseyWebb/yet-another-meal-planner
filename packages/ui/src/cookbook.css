@@ -617,7 +617,19 @@ ul.recipes > li:last-child { border-bottom: 0; }
 .brand-cat-add .input { flex: 1; }
 .brand-cat-add [data-slot="button"] svg { width: 0.8rem; height: 0.8rem; }
 
-/* ── night-vibe palette + reconcile queue (app-propose.css, the P1 slice) ── */
+/* ── planning card: per-meal cadence steppers + weekly-budget control ─────── */
+.cadence-row { display: flex; flex-direction: column; gap: 0.55rem; }
+.cadence-item { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
+.cadence-meal { font-family: var(--font-mono); font-size: var(--text-xs); text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted-foreground); min-width: 4.75rem; }
+.budget-input { position: relative; display: flex; align-items: center; max-width: 12rem; }
+.budget-input .budget-prefix { position: absolute; left: 0.7rem; font-size: var(--text-sm); color: var(--muted-foreground); pointer-events: none; }
+.budget-input .input { padding-left: 1.5rem; padding-right: 2rem; width: 100%; font-variant-numeric: tabular-nums; }
+.budget-input .budget-clear { position: absolute; right: 0.4rem; display: inline-flex; align-items: center; justify-content: center; width: 1.4rem; height: 1.4rem; border: 0; background: transparent; color: var(--muted-foreground); border-radius: 999px; cursor: pointer; font-size: 1.05rem; line-height: 1; -webkit-appearance: none; appearance: none; }
+.budget-input .budget-clear:hover { color: var(--foreground); background: color-mix(in oklch, var(--foreground) 10%, transparent); }
+.prof-help { margin: 0.3rem 0 0; font-size: var(--text-xs); color: var(--muted-foreground); line-height: 1.45; }
+.prof-help.budget-off { font-style: italic; }
+
+/* ── meal-vibe palette + inline suggestions (app-propose.css, the P1 slice) ── */
 .palette-plain { display: flex; flex-direction: column; gap: 1rem; }
 .palette-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
 .palette-head h3 { display: flex; align-items: center; gap: 0.45rem; font-size: var(--text-base); font-weight: 600; }
@@ -659,6 +671,47 @@ ul.recipes > li:last-child { border-bottom: 0; }
 .wxchip { height: 1.5rem; padding: 0 0.55rem; border-radius: 2rem; border: 1px solid var(--border); background: var(--background); color: var(--muted-foreground); font: inherit; font-size: var(--text-xs); cursor: pointer; text-transform: capitalize; }
 .wxchip.on { border-color: color-mix(in oklch, var(--primary) 50%, var(--border)); background: color-mix(in oklch, var(--primary) 14%, transparent); color: var(--brand); font-weight: 500; }
 
+/* meal grouping */
+.vibe-group { display: flex; flex-direction: column; gap: 0.6rem; }
+.vibe-group + .vibe-group { margin-top: 1.3rem; }
+.vibe-group-h { font-family: var(--font-mono); font-size: var(--text-xs); text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted-foreground); font-weight: 700; margin: 0 0 0.2rem; }
+.vibe-group-empty { margin: 0.2rem 0 0; font-size: var(--text-sm); color: var(--muted-foreground); opacity: 0.7; }
+
+/* pinned indicator (design-requests #4) — a mode chip beside the name, no added height */
+.vibe-pin { display: inline-flex; align-items: center; gap: 0.25rem; flex: 0 0 auto; font-size: 0.6rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: var(--brand); padding: 0.12rem 0.5rem 0.12rem 0.4rem; border-radius: 2rem; background: color-mix(in oklch, var(--primary) 13%, transparent); border: 1px solid color-mix(in oklch, var(--primary) 32%, var(--border)); }
+.vibe-pin svg { width: 0.72rem; height: 0.72rem; flex: 0 0 auto; }
+/* pinned rows de-emphasize the debt meter (it doesn't drive their placement) */
+.vibe-row.pinned .vibe-debt { opacity: 0.3; }
+.vibe-row.pinned .vibe-cadence { color: color-mix(in oklch, var(--muted-foreground) 70%, transparent); }
+
+/* member-assignment layout — reserved for band 5 (gated behind showWho, hidden this band) */
+.vibe-who { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem; }
+.who-chip { display: inline-flex; align-items: center; gap: 0.4rem; height: 1.95rem; padding: 0 0.65rem 0 0.32rem; border: 1px solid var(--border); border-radius: 999px; background: transparent; color: var(--muted-foreground); font: inherit; font-size: var(--text-xs); font-weight: 600; cursor: pointer; -webkit-appearance: none; appearance: none; }
+.who-chip.everyone { padding: 0 0.75rem; }
+.who-chip:hover { border-color: color-mix(in oklch, var(--brand) 45%, var(--border)); color: var(--foreground); }
+.who-chip[aria-pressed="true"] { border-color: var(--primary); background: color-mix(in oklch, var(--primary) 12%, transparent); color: var(--foreground); }
+.who-ava { width: 1.4rem; height: 1.4rem; border-radius: 999px; display: inline-flex; align-items: center; justify-content: center; font-size: 0.6rem; font-weight: 700; background: color-mix(in oklch, var(--primary) 18%, var(--card)); color: var(--brand); flex: 0 0 auto; }
+.vibe-who-help { margin: 0.4rem 0 0; font-size: var(--text-xs); color: var(--muted-foreground); }
+.vibe-who-tag { display: inline-flex; align-items: center; gap: 0.32rem; flex: 0 0 auto; font-size: 0.62rem; font-weight: 600; color: var(--muted-foreground); padding: 0.1rem 0.5rem 0.1rem 0.22rem; border-radius: 2rem; border: 1px solid var(--border); background: var(--card); }
+.vibe-who-tag .who-stack { display: inline-flex; }
+.vibe-who-tag .who-ava-sm { width: 1.15rem; height: 1.15rem; border-radius: 999px; display: inline-flex; align-items: center; justify-content: center; font-size: 0.55rem; font-weight: 700; background: color-mix(in oklch, var(--primary) 18%, var(--card)); color: var(--brand); box-shadow: 0 0 0 1.5px var(--card); }
+.vibe-who-tag .who-ava-sm + .who-ava-sm { margin-left: -0.42rem; }
+
+/* inline suggestions (replace the standalone reconcile queue) */
+.vibe-wand { color: var(--brand); }
+.vibe-suggest { margin-top: 0.6rem; margin-bottom: 0.15rem; padding: 0.7rem 0.85rem; border: 1px solid color-mix(in oklch, var(--primary) 32%, var(--border)); background: color-mix(in oklch, var(--primary) 6%, var(--card)); border-radius: var(--radius-md); }
+.vibe-suggest-cap { display: flex; align-items: center; gap: 0.4rem; font-family: var(--font-mono); font-size: var(--text-xs); text-transform: uppercase; letter-spacing: 0.07em; color: var(--brand); font-weight: 600; }
+.vibe-suggest-cap svg { width: 0.85rem; height: 0.85rem; }
+.vibe-suggest p { margin: 0.4rem 0 0.65rem; font-size: var(--text-sm); line-height: 1.5; }
+.vibe-suggest-actions { display: flex; gap: 0.5rem; }
+.vibe-add-suggest { display: flex; align-items: center; justify-content: space-between; gap: 0.85rem; padding: 0.7rem 0.85rem; border: 1px dashed color-mix(in oklch, var(--primary) 40%, var(--border)); border-radius: var(--radius-lg); background: color-mix(in oklch, var(--primary) 5%, var(--card)); }
+.vibe-add-suggest .vas-main { min-width: 0; }
+.vibe-add-suggest .vas-title { display: flex; align-items: center; gap: 0.4rem; font-size: var(--text-sm); font-weight: 600; }
+.vibe-add-suggest .vas-title svg { color: var(--brand); flex: 0 0 auto; width: 0.9rem; height: 0.9rem; }
+.vibe-add-suggest .vas-why { font-size: var(--text-xs); color: var(--muted-foreground); margin-top: 0.25rem; line-height: 1.45; }
+.vibe-add-suggest .vas-actions { display: flex; gap: 0.4rem; flex: 0 0 auto; }
+.vibe-add-suggest .vas-actions [data-slot="button"] svg { width: 0.8rem; height: 0.8rem; }
+
 .vibe-edit { display: flex; flex-direction: column; gap: 0.7rem; margin-top: 0.85rem; padding-top: 0.85rem; border-top: 1px dashed var(--border); }
 .vibe-name-in { height: 2.4rem; font-size: var(--text-sm); }
 .vibe-edit-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(8.5rem, 1fr)); gap: 0.6rem; }
@@ -668,17 +721,6 @@ ul.recipes > li:last-child { border-bottom: 0; }
 .vibe-edit-actions { display: flex; align-items: center; justify-content: space-between; gap: 0.6rem; flex-wrap: wrap; }
 .vibe-edit-btns { display: inline-flex; gap: 0.4rem; }
 .vibe-edit-actions [data-slot="button"] svg { width: 0.85rem; height: 0.85rem; }
-
-.rec-panel { border: 1px solid color-mix(in oklch, var(--primary) 35%, var(--border)); background: color-mix(in oklch, var(--primary) 6%, transparent); border-radius: var(--radius-lg); padding: 0.9rem 1rem 1rem; }
-.rec-head h4 { display: flex; align-items: center; gap: 0.4rem; font-size: var(--text-sm); font-weight: 600; }
-.rec-head h4 svg { width: 0.95rem; height: 0.95rem; color: var(--brand); }
-.rec-head p { margin-top: 0.2rem; color: var(--muted-foreground); font-size: var(--text-xs); max-width: 40rem; line-height: 1.5; }
-.rec-list { list-style: none; margin: 0.8rem 0 0; padding: 0; display: flex; flex-direction: column; gap: 0.6rem; }
-.rec-row { display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap; padding: 0.7rem 0.85rem; border-radius: var(--radius-md); background: var(--card); box-shadow: 0 0 0 1px color-mix(in oklch, var(--foreground) 7%, transparent); }
-.rec-main { min-width: 14rem; flex: 1; }
-.rec-title { font-size: var(--text-sm); font-weight: 600; }
-.rec-why { margin-top: 0.2rem; font-size: var(--text-xs); color: var(--muted-foreground); line-height: 1.5; }
-.rec-actions { display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; }
 
 /* ── the propose flow (app-propose.css, the P2 slice) ────────────────────── */
 .palette-foot { display: flex; justify-content: flex-end; padding-top: 0.25rem; }

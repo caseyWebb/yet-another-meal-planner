@@ -94,6 +94,9 @@ export interface NoteRemoveVars {
 
 export interface VibeAddVars {
   vibe: string;
+  /** Which meal's palette (breakfast | lunch | dinner) — the add form's first field.
+   *  Omitted defaults 'dinner' server-side. */
+  meal?: "breakfast" | "lunch" | "dinner";
   facets: Record<string, unknown>;
   cadence_days: number;
   pinned: boolean;

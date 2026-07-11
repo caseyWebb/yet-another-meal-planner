@@ -2,12 +2,19 @@
 // area's ops. Taste — the DERIVED read (retrospective + favorites) beside the
 // taste / dietary-principles markdown editors (class (a), If-Match with the
 // rebase-on-412 flow) and the read-only owned-equipment card (D10: the mock's
-// "Kitchen & household" free-text has no backing field). Preferences — planning
-// knobs, SINGLE-select lunch strategy over the real vocab, dietary token fields,
-// store + ZIP, the Preferred-brands tier card (per-family { tiers, any_brand }
-// objects, family-scoped patches), all via the merge-patch op under If-Match.
-// Night vibes — the palette (production vocabulary, D11), the reconciliation queue
-// (kind-specific actions, D12), and the job-health-gated suggest trigger (D7).
+// "Kitchen & household" free-text has no backing field). Preferences — the Planning
+// card's per-meal cadence steppers (0–7, `patch({cadence:{[meal]:n}})`) and the
+// weekly-budget control (clearing writes `weekly_budget:null`; never 0-means-off),
+// resurface/novelty sliders, dietary token fields, store + ZIP, and the
+// Preferred-brands tier card (per-family { tiers, any_brand } objects, family-scoped
+// patches), all via the merge-patch op under If-Match. Meal vibes — the meal-grouped
+// palette (production vocabulary, D11), the pinned indicator (design-requests #4), the
+// member-assignment layout reserved for band 5 (gated behind `SHOW_WHO`, hidden this
+// band), and inline suggestions (D8): the standalone reconcile queue dissolved into
+// row-attached wands (adjust_cadence / prune_vibe) + per-meal-group footer cards
+// (add_vibe), all confirmed through `confirm_proposal`; `merge_recipes` never surfaces.
+// No TOOLS/SCHEMAS/D1 delta — band 1 shipped every backing surface (cadence, weekly_budget,
+// meal/members on vibes, the proposals feed).
 import * as React from "react";
 import { Link, createFileRoute } from "@tanstack/react-router";
 import { useQueryClient, type QueryClient } from "@tanstack/react-query";
@@ -26,7 +33,6 @@ import {
   IconX,
   NativeSelect,
   PageHead,
-  SegmentedControl,
   Textarea,
   ToggleChip,
   TokenField,
@@ -62,7 +68,7 @@ function ProfilePage() {
   const tabs: [Tab, string][] = [
     ["taste", "Taste profile"],
     ["prefs", "Preferences"],
-    ["vibes", "Night vibes"],
+    ["vibes", "Meal vibes"],
   ];
 
   return (
@@ -375,16 +381,23 @@ async function patchPreferences(qc: QueryClient, patch: Record<string, unknown>)
 
 const AVOID_BASE = ["shellfish", "pork", "cilantro", "mushrooms", "blue cheese"];
 const LIMIT_BASE = ["red meat", "added sugar", "dairy", "fried food"];
-const LUNCH = ["leftovers", "buy", "mixed"] as const;
+
+/** The per-meal cadence steppers' meals, in weekly order (breakfast → dinner). */
+const CADENCE_MEALS = [
+  ["breakfast", "Breakfast"],
+  ["lunch", "Lunch"],
+  ["dinner", "Dinner"],
+] as const;
 
 function PrefsTab() {
   const profile = useProfile();
   const qc = useQueryClient();
   const prefs = (profile.data?.preferences ?? {}) as Record<string, unknown>;
 
-  const nights = typeof prefs.default_cooking_nights === "number" ? String(prefs.default_cooking_nights) : null;
-  const lunch = typeof prefs.lunch_strategy === "string" ? prefs.lunch_strategy : null;
-  const rte = typeof prefs.ready_to_eat_default_action === "string" ? prefs.ready_to_eat_default_action : null;
+  // The server always exports `cadence` as a { breakfast, lunch, dinner } map (the
+  // read-time derivation fills it when unset), so read straight through.
+  const cadence = (prefs.cadence ?? {}) as Record<string, unknown>;
+  const budget = typeof prefs.weekly_budget === "number" ? prefs.weekly_budget : null;
   const rotation = (prefs.rotation ?? {}) as Record<string, unknown>;
   const dietary = (prefs.dietary ?? {}) as { avoid?: string[]; limit?: string[] };
   const stores = (prefs.stores ?? {}) as Record<string, unknown>;
@@ -399,49 +412,60 @@ function PrefsTab() {
           <h3>Planning</h3>
         </header>
         <section className="prof-fields">
+          {/* Per-meal weekly cadence (0–7 each) — a per-key merge patch. NOT the mock's
+              richer "typical week" per-night grid (that needs unshipped storage). */}
           <div className="prof-field">
-            <label>Cooking nights per week</label>
-            <SegmentedControl
-              name="default_cooking_nights"
-              value={nights as "2" | "3" | "4" | "5" | null}
-              options={["2", "3", "4", "5"] as const}
-              onChange={(v) => patch({ default_cooking_nights: Number(v) })}
-            />
+            <label>Weekly cadence</label>
+            <div className="cadence-row">
+              {CADENCE_MEALS.map(([meal, label]) => {
+                const n = typeof cadence[meal] === "number" ? (cadence[meal] as number) : 0;
+                return (
+                  <div className="cadence-item" data-testid="cadence-item" data-meal={meal} key={meal}>
+                    <span className="cadence-meal">{label}</span>
+                    <div className="nights-step">
+                      <button
+                        type="button"
+                        className="step-btn"
+                        data-testid="cadence-dec"
+                        aria-label={`One fewer ${label.toLowerCase()} per week`}
+                        disabled={n <= 0}
+                        onClick={() => patch({ cadence: { [meal]: n - 1 } })}
+                      >
+                        −
+                      </button>
+                      <span className="nights-n" data-testid="cadence-n">
+                        {n}
+                      </span>
+                      <button
+                        type="button"
+                        className="step-btn"
+                        data-testid="cadence-inc"
+                        aria-label={`One more ${label.toLowerCase()} per week`}
+                        disabled={n >= 7}
+                        onClick={() => patch({ cadence: { [meal]: n + 1 } })}
+                      >
+                        +
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
           </div>
           <div className="prof-field">
-            <label>Lunch strategy</label>
-            <SegmentedControl
-              name="lunch_strategy"
-              value={lunch as (typeof LUNCH)[number] | null}
-              options={LUNCH}
-              onChange={(v) => patch({ lunch_strategy: v })}
+            <label>
+              Resurface recipes after <span className="muted">({String(rotation.resurface_after_days ?? "default")}d)</span>
+            </label>
+            <input
+              type="range"
+              className="input"
+              min={14}
+              max={60}
+              step={1}
+              defaultValue={typeof rotation.resurface_after_days === "number" ? rotation.resurface_after_days : 30}
+              onMouseUp={(e) => patch({ rotation: { resurface_after_days: Number((e.target as HTMLInputElement).value) } })}
+              onTouchEnd={(e) => patch({ rotation: { resurface_after_days: Number((e.target as HTMLInputElement).value) } })}
             />
-          </div>
-          <div className="prof-field">
-            <label>Ready-to-eat items</label>
-            <SegmentedControl
-              name="ready_to_eat_default_action"
-              value={rte as "opt-in" | "auto-add" | null}
-              options={["opt-in", "auto-add"] as const}
-              onChange={(v) => patch({ ready_to_eat_default_action: v })}
-            />
-          </div>
-          <div className="prof-field">
-            <label>Resurface recipes after</label>
-            <NativeSelect
-              className="select"
-              value={String(rotation.resurface_after_days ?? "")}
-              onChange={(e) => patch({ rotation: { resurface_after_days: Number(e.target.value) } })}
-            >
-              <option value="" disabled>
-                pick…
-              </option>
-              {[21, 30, 45].map((d) => (
-                <option key={d} value={d}>
-                  {d} days
-                </option>
-              ))}
-            </NativeSelect>
           </div>
           <div className="prof-field">
             <label>
@@ -458,6 +482,9 @@ function PrefsTab() {
               onTouchEnd={(e) => patch({ rotation: { novelty_boost: Number((e.target as HTMLInputElement).value) } })}
             />
           </div>
+          {/* Weekly budget (design-requests #3): unset is first-class — clearing writes
+              `weekly_budget: null` (deletes the key), never 0-means-off. Placed last. */}
+          <BudgetField stored={budget} onPatch={patch} />
         </section>
       </section>
 
@@ -521,6 +548,71 @@ function PrefsTab() {
       </section>
 
       <BrandsCard brands={brands} onPatch={(brandsPatch) => patch({ brands: brandsPatch })} />
+    </div>
+  );
+}
+
+/**
+ * The weekly-budget control (design-requests #3): unset is a first-class state, not a 0.
+ * Clearing the field (or emptying it) writes `weekly_budget: null` — the merge-patch DELETE
+ * — so the Spend retrospective's budget line simply doesn't render; a numeric value writes
+ * `Math.max(0, Math.round(n))`, formatted back on blur. Local draft seeded once from the
+ * stored value (the parent re-renders on patch, but a reload remounts with the fresh read).
+ */
+function BudgetField({ stored, onPatch }: { stored: number | null; onPatch: (p: Record<string, unknown>) => void }) {
+  const [draft, setDraft] = React.useState(stored != null ? String(stored) : "");
+  const isSet = draft.trim() !== "";
+
+  function commit() {
+    const t = draft.trim();
+    if (t === "") {
+      setDraft("");
+      onPatch({ weekly_budget: null });
+      return;
+    }
+    const n = Number(t);
+    if (!Number.isFinite(n)) {
+      // Non-numeric input reverts to the stored value rather than writing garbage.
+      setDraft(stored != null ? String(stored) : "");
+      return;
+    }
+    const v = Math.max(0, Math.round(n));
+    setDraft(String(v));
+    onPatch({ weekly_budget: v });
+  }
+
+  function clear() {
+    setDraft("");
+    onPatch({ weekly_budget: null });
+  }
+
+  return (
+    <div className="prof-field" data-testid="budget-field">
+      <label>Weekly grocery budget</label>
+      <div className="budget-input">
+        <span className="budget-prefix">$</span>
+        <input
+          className="input"
+          inputMode="decimal"
+          placeholder="No budget"
+          aria-label="Weekly grocery budget in dollars"
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={commit}
+        />
+        {isSet ? (
+          <button type="button" className="budget-clear" title="Clear budget" aria-label="Clear budget" onClick={clear}>
+            ×
+          </button>
+        ) : null}
+      </div>
+      {isSet ? (
+        <p className="prof-help">Drawn on your Spend retrospective — weeks over budget get flagged.</p>
+      ) : (
+        <p className="prof-help budget-off" data-testid="budget-off">
+          No budget set — the budget line simply won't render.
+        </p>
+      )}
     </div>
   );
 }
@@ -835,13 +927,38 @@ function BrandsCard(props: {
   );
 }
 
-// === Night vibes tab ==============================================================
+// === Meal vibes tab ===============================================================
 
 const WEATHER_VOCAB = ["grill", "cold-comfort", "wet"] as const;
 const SEASONS = ["spring", "summer", "fall", "winter"] as const;
 const CUISINES = ["japanese", "indian", "chinese", "french", "american", "korean", "thai", "italian", "vietnamese", "mediterranean"];
 const PROTEINS = ["fish", "chicken", "beef", "pork", "shellfish", "egg", "tofu", "vegetarian", "vegan"];
 const CADENCES = [7, 10, 14, 21, 30, 45];
+
+/** The closed meal set a vibe carries, in weekly order — the grouping + the add form's
+ *  Meal select. */
+const VIBE_MEALS = [
+  ["breakfast", "Breakfast"],
+  ["lunch", "Lunch"],
+  ["dinner", "Dinner"],
+] as const;
+type VibeMeal = (typeof VIBE_MEALS)[number][0];
+
+/** Member assignment (design-requests #6, D29) is band 5's wiring — the full layout ships
+ *  here but stays gated behind this flag (there is no member roster in the member app
+ *  pre-band-5, so no stub roster renders). Typed `boolean` so the gated JSX still checks. */
+const SHOW_WHO: boolean = false;
+
+function mealOf(v: unknown): VibeMeal {
+  return v === "breakfast" || v === "lunch" || v === "dinner" ? v : "dinner";
+}
+
+/** The row-attached suggestion's Apply label (adjust_cadence names the target cadence). */
+function suggestApplyLabel(p: ProposalRow): string {
+  if (p.kind === "prune_vibe") return "Retire";
+  const days = typeof p.payload.cadence_days === "number" ? p.payload.cadence_days : null;
+  return days ? `Adjust to ${days}d` : "Adjust";
+}
 
 function statusOf(v: VibeRow): { k: "overdue" | "due" | "soon" | "ok"; label: string; d: number } {
   const cadence = v.cadence_days ?? null;
@@ -860,53 +977,47 @@ function VibesTab() {
   const vibes = useVibes();
   const proposals = useProposals();
   const qc = useQueryClient();
-  const online = useOnline();
   const [adding, setAdding] = React.useState(false);
 
-  async function suggest() {
-    // The trigger is RETIRED (D8/D20 — the cron carries generation): the route answers a
-    // pinned 410 { error: "gone" } for one deprecation window, so this shipped button
-    // fails explicably until band 2's profile/vibes slice removes it.
-    const res = await api.api.vibes.suggest.$post({ json: {} }).catch(() => null);
-    if (res?.status === 410) {
-      toast("Vibe suggestions now arrive automatically — this button has retired");
-      return;
-    }
-    toast("Couldn't get suggestions — try again");
-  }
-
   const rows = vibes.data?.vibes ?? [];
+  // D8: merge_recipes NEVER surfaces on the member vibes tab (corpus curation stays
+  // agent-side) — filter it out entirely before anything renders.
+  const props = (proposals.data?.proposals ?? []).filter((p) => p.kind !== "merge_recipes");
+
+  // Inline suggestions (the standalone queue dissolved): adjust_cadence / prune_vibe are
+  // row-attached, joined to a palette row by proposal.target === vibe.vibe (the phrase);
+  // add_vibe becomes a per-meal-group footer card, grouped by its payload meal. The phrase
+  // join is safe because vibe phrases are unique within a palette; a proposal whose target
+  // matches no current row renders nowhere (adjusting a vanished vibe is moot).
+  const rowSuggest = new Map<string, ProposalRow>();
+  const addSuggest: Record<VibeMeal, ProposalRow[]> = { breakfast: [], lunch: [], dinner: [] };
+  for (const p of props) {
+    if ((p.kind === "adjust_cadence" || p.kind === "prune_vibe") && p.target && !rowSuggest.has(p.target)) {
+      rowSuggest.set(p.target, p);
+    } else if (p.kind === "add_vibe") {
+      addSuggest[mealOf(p.payload.meal)].push(p);
+    }
+  }
+  const anythingToShow = rows.length > 0 || props.length > 0;
+
   return (
     <section className="palette-plain" data-testid="vibes-tab">
       <header className="palette-head">
         <div>
           <h3>
-            <IconSparkle /> Night-vibe palette
+            <IconSparkle /> Meal-vibe palette
           </h3>
           <p>
-            The <em>shapes</em> of your week — archetypes you repeat, not exact meals. Each is a saved search with a
-            cadence; the planner samples them by weather and how overdue they are.
+            The <em>shapes</em> of your week — repeatable meal ideas across breakfast, lunch, and dinner, not exact
+            recipes. Each is a saved search with a cadence; the planner samples them by weather and how overdue they are.
           </p>
         </div>
         <div className="palette-head-actions">
-          {/* Suggest is ONLINE-ONLY (D5): a gated trigger, never queued or replayed. */}
-          <Button
-            variant="outline"
-            size="sm"
-            data-testid="vibe-suggest"
-            disabled={!online}
-            title={online ? undefined : "You're offline — suggestions need the server"}
-            onClick={suggest}
-          >
-            <IconSparkle /> Suggest from your cooking
-          </Button>
           <Button variant="outline" size="sm" data-testid="vibe-add-open" onClick={() => setAdding(true)}>
             <IconPlus /> Add a vibe
           </Button>
         </div>
       </header>
-
-      <ReconcileQueue proposals={proposals.data?.proposals ?? []} />
 
       {adding ? (
         <div className="vibe-row adding" data-testid="vibe-add-form">
@@ -921,11 +1032,30 @@ function VibesTab() {
       ) : null}
 
       <div className="vibe-list" data-testid="vibe-list">
-        {rows.length ? (
-          rows.map((v) => <VibeRowView key={v.id} vibe={v} />)
+        {anythingToShow ? (
+          VIBE_MEALS.map(([meal, label]) => {
+            const mrows = rows.filter((v) => mealOf(v.meal) === meal);
+            const adds = addSuggest[meal];
+            return (
+              <div className="vibe-group" data-testid="vibe-group" data-meal={meal} key={meal}>
+                <h4 className="vibe-group-h">{label}</h4>
+                {mrows.map((v) => (
+                  <VibeRowView key={v.id} vibe={v} suggestion={rowSuggest.get(v.vibe)} />
+                ))}
+                {!mrows.length ? (
+                  <p className="vibe-group-empty" data-testid="vibe-group-empty">
+                    No {meal} vibes yet.
+                  </p>
+                ) : null}
+                {adds.map((p) => (
+                  <AddSuggestCard key={p.id} proposal={p} />
+                ))}
+              </div>
+            );
+          })
         ) : (
           <p className="muted-line" data-testid="palette-empty">
-            No night vibes yet. Add one to shape your weekly proposals — or let the suggestions above seed it.
+            No meal vibes yet. Add one to shape your weekly proposals — or let the suggestions above seed it.
           </p>
         )}
       </div>
@@ -942,101 +1072,110 @@ function VibesTab() {
   );
 }
 
-/** D12: kind-specific actions only — no synthetic action without a backing op. */
-function actionLabel(p: ProposalRow): string {
-  if (p.kind === "add_vibe") return "Add vibe";
-  if (p.kind === "prune_vibe") return "Retire";
-  const days = typeof p.payload.cadence_days === "number" ? p.payload.cadence_days : null;
-  return days ? `Adjust to ${days}d` : "Adjust";
-}
-
-function proposalTitle(p: ProposalRow): string {
-  if (p.kind === "merge_recipes") {
-    // Corpus curation (recipe-dedup): name BOTH recipes from the payload.
-    const titles = Array.isArray(p.payload.titles) ? p.payload.titles.filter((t): t is string => typeof t === "string") : [];
-    return titles.length === 2 ? `Merge “${titles[0]}” & “${titles[1]}”?` : `Merge ${p.target ?? p.id}?`;
-  }
-  const vibe = typeof p.payload.vibe === "string" ? p.payload.vibe : p.target ?? p.id;
-  if (p.kind === "add_vibe") return `Add “${vibe}”`;
-  if (p.kind === "prune_vibe") return `Retire “${p.target ?? vibe}”`;
-  return `Adjust “${p.target ?? vibe}”`;
-}
-
-function ReconcileQueue({ proposals }: { proposals: ProposalRow[] }) {
+/** A per-meal-group footer card for an `add_vibe` proposal (D8 inline suggestions). Add
+ *  upserts the vibe into the palette; Dismiss records a durable rejection — both through
+ *  the existing `confirm_proposal` registry mutation. */
+function AddSuggestCard({ proposal }: { proposal: ProposalRow }) {
   const confirmMutation = useProposalConfirm();
-  if (!proposals.length) return null;
+  const vibe = typeof proposal.payload.vibe === "string" ? proposal.payload.vibe : proposal.target ?? "this vibe";
 
-  function confirm(id: string, accept: boolean) {
-    // Registry mutation: 409 (already resolved elsewhere) counts as converged inside
-    // the registered mutationFn; a replay the server rejects toasts via the defaults.
-    confirmMutation.mutate(
-      { id, accept },
-      { onSuccess: () => (accept ? toast("Palette updated") : undefined) },
-    );
+  function confirm(accept: boolean) {
+    // 409 (already resolved elsewhere) is converged inside the registered mutationFn.
+    confirmMutation.mutate({ id: proposal.id, accept }, { onSuccess: () => (accept ? toast("Added to your palette") : undefined) });
   }
 
   return (
-    <div className="rec-panel" data-testid="reconcile-queue">
-      <header className="rec-head">
-        <h4>
-          <IconSparkle /> Suggestions from your cooking
-        </h4>
-        <p>
-          Where your palette (what you said) and your cooking log (what you did) have drifted apart. Confirm to update
-          your palette.
-        </p>
-      </header>
-      <ul className="rec-list">
-        {proposals.map((p) => (
-          <li className="rec-row" key={p.id} data-testid="proposal-row" data-kind={p.kind}>
-            <div className="rec-main">
-              <div className="rec-title">{proposalTitle(p)}</div>
-              {p.rationale ? <p className="rec-why">{p.rationale}</p> : null}
-              {p.kind === "merge_recipes" ? (
-                <p className="rec-why" data-testid="merge-chat-hint">
-                  Merging happens with your agent in chat — dismiss to keep both recipes.
-                </p>
-              ) : null}
-            </div>
-            <div className="rec-actions">
-              {/* D12: no synthetic action without a backing op — the app has no merge
-                  operation, so a merge_recipes row offers Dismiss only (confirm-reject);
-                  accept's meaning ("the merge was performed") exists only in chat. */}
-              {p.kind !== "merge_recipes" ? (
-                <Button size="sm" data-testid="proposal-accept" onClick={() => confirm(p.id, true)}>
-                  {p.kind === "add_vibe" ? <IconPlus /> : p.kind === "prune_vibe" ? <IconTrash /> : null}
-                  {actionLabel(p)}
-                </Button>
-              ) : null}
-              <Button size="sm" variant="ghost" data-testid="proposal-dismiss" onClick={() => confirm(p.id, false)}>
-                Dismiss
-              </Button>
-            </div>
-          </li>
-        ))}
-      </ul>
+    <div className="vibe-add-suggest" data-testid="vibe-add-suggest" data-kind="add_vibe">
+      <div className="vas-main">
+        <div className="vas-title">
+          <IconSparkle />
+          <span>Add “{vibe}”?</span>
+        </div>
+        {proposal.rationale ? <div className="vas-why">{proposal.rationale}</div> : null}
+      </div>
+      <div className="vas-actions">
+        <Button size="sm" data-testid="add-suggest-add" onClick={() => confirm(true)}>
+          <IconPlus /> Add
+        </Button>
+        <Button size="sm" variant="ghost" data-testid="add-suggest-dismiss" onClick={() => confirm(false)}>
+          Dismiss
+        </Button>
+      </div>
     </div>
   );
 }
 
-function VibeRowView({ vibe }: { vibe: VibeRow }) {
+/** A small pin glyph for the pinned indicator (no `IconPin` in @yamp/ui). */
+function PinGlyph() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M12 17v5" />
+      <path d="M9 10.8a2 2 0 0 1-1.1 1.8l-1.8.9A2 2 0 0 0 5 15.2V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.8a2 2 0 0 0-1.1-1.7l-1.8-.9A2 2 0 0 1 15 10.8V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z" />
+    </svg>
+  );
+}
+
+function VibeRowView({ vibe, suggestion }: { vibe: VibeRow; suggestion?: ProposalRow }) {
   const qc = useQueryClient();
   const online = useOnline();
+  const confirmMutation = useProposalConfirm();
   const [editing, setEditing] = React.useState(false);
+  const [suggestOpen, setSuggestOpen] = React.useState(false);
   const st = statusOf(vibe);
   const meter = (Math.min(st.d, 2) / 2) * 100;
   const f = vibe.facets ?? {};
+  const pinned = Boolean(vibe.pinned);
+  const members = vibe.members ?? [];
+
+  function confirmSuggestion(accept: boolean) {
+    if (!suggestion) return;
+    confirmMutation.mutate({ id: suggestion.id, accept }, { onSuccess: () => (accept ? toast("Palette updated") : undefined) });
+  }
 
   return (
-    <div className="vibe-row" data-testid="vibe-row" data-vibe={vibe.id}>
+    <div className={`vibe-row${pinned ? " pinned" : ""}`} data-testid="vibe-row" data-vibe={vibe.id}>
       <div className="vibe-top">
         <div className="vibe-headline">
           <span className="vibe-name">{vibe.vibe}</span>
+          {pinned ? (
+            <span
+              className="vibe-pin"
+              data-testid="vibe-pin"
+              title="Pinned — the planner places this every week, regardless of cadence debt"
+            >
+              <PinGlyph /> Pinned
+            </span>
+          ) : null}
           <span className="vibe-status" data-k={st.k}>
             {st.label}
           </span>
+          {/* Member-assignment row tag — reserved for band 5 (hidden this band). */}
+          {SHOW_WHO && members.length ? (
+            <span className="vibe-who-tag" title={`For ${members.join(", ")} — only planned when they're eating that week`}>
+              <span className="who-stack">
+                {members.map((m) => (
+                  <span className="who-ava-sm" key={m}>
+                    {m.slice(0, 1).toUpperCase()}
+                  </span>
+                ))}
+              </span>
+              {members.join(", ")}
+            </span>
+          ) : null}
         </div>
         <div className="vibe-row-actions">
+          {suggestion ? (
+            <button
+              type="button"
+              className="icon-btn vibe-wand"
+              data-testid="vibe-wand"
+              title="Suggestion from your cooking"
+              aria-label="Suggestion from your cooking"
+              onClick={() => setSuggestOpen((o) => !o)}
+            >
+              <IconSparkle />
+            </button>
+          ) : null}
           <button
             type="button"
             className="icon-btn"
@@ -1049,6 +1188,23 @@ function VibeRowView({ vibe }: { vibe: VibeRow }) {
           </button>
         </div>
       </div>
+      {suggestion && suggestOpen ? (
+        <div className="vibe-suggest" data-testid="vibe-suggest" data-kind={suggestion.kind}>
+          <div className="vibe-suggest-cap">
+            <IconSparkle /> Suggestion from your cooking
+          </div>
+          {suggestion.rationale ? <p>{suggestion.rationale}</p> : null}
+          <div className="vibe-suggest-actions">
+            <Button size="sm" data-testid="suggest-apply" onClick={() => confirmSuggestion(true)}>
+              {suggestion.kind === "prune_vibe" ? <IconTrash /> : null}
+              {suggestApplyLabel(suggestion)}
+            </Button>
+            <Button size="sm" variant="ghost" data-testid="suggest-dismiss" onClick={() => confirmSuggestion(false)}>
+              Dismiss
+            </Button>
+          </div>
+        </div>
+      ) : null}
       <div className="vibe-meta">
         {typeof f.cuisine === "string" ? <span className="facet">{f.cuisine}</span> : null}
         {typeof f.protein === "string" ? (
@@ -1109,6 +1265,7 @@ function VibeForm(props: { vibe?: VibeRow; onDone: () => Promise<void>; onCancel
   const v = props.vibe;
   const f = v?.facets ?? {};
   const [text, setText] = React.useState(v?.vibe ?? "");
+  const [meal, setMeal] = React.useState<VibeMeal>(mealOf(v?.meal));
   const [cuisine, setCuisine] = React.useState(typeof f.cuisine === "string" ? f.cuisine : "");
   const [protein, setProtein] = React.useState(typeof f.protein === "string" ? f.protein : "");
   const [maxTime, setMaxTime] = React.useState(typeof f.max_time_total === "number" ? String(f.max_time_total) : "");
@@ -1124,6 +1281,7 @@ function VibeForm(props: { vibe?: VibeRow; onDone: () => Promise<void>; onCancel
     if (maxTime) facets.max_time_total = Number(maxTime);
     return {
       vibe: text.trim(),
+      meal,
       facets,
       cadence_days: Number(cadence),
       pinned,
@@ -1169,13 +1327,23 @@ function VibeForm(props: { vibe?: VibeRow; onDone: () => Promise<void>; onCancel
     <form className="vibe-edit" onSubmit={save} data-testid="vibe-form">
       <input
         className="input vibe-name-in"
-        placeholder="Describe the night — “Sunday sauce”, “fast noodles”…"
+        placeholder="Describe the meal — “Sunday sauce”, “savory eggs”…"
         autoComplete="off"
         aria-label="Vibe"
         value={text}
         onChange={(e) => setText(e.target.value)}
       />
       <div className="vibe-edit-grid">
+        <label className="vibe-edit-f">
+          <span>Meal</span>
+          <NativeSelect className="select" aria-label="Meal" value={meal} onChange={(e) => setMeal(mealOf(e.target.value))}>
+            {VIBE_MEALS.map(([m, label]) => (
+              <option key={m} value={m}>
+                {label}
+              </option>
+            ))}
+          </NativeSelect>
+        </label>
         <label className="vibe-edit-f">
           <span>Cuisine</span>
           <NativeSelect className="select" value={cuisine} onChange={(e) => setCuisine(e.target.value)}>
@@ -1256,6 +1424,19 @@ function VibeForm(props: { vibe?: VibeRow; onDone: () => Promise<void>; onCancel
           intent)
         </label>
       </div>
+      {/* "Who's it for" (design-requests #6, D29) — the full layout ships here but is gated
+          behind SHOW_WHO; band 5 wires the roster + flips the flag. No stub roster renders. */}
+      {SHOW_WHO ? (
+        <div className="vibe-wx">
+          <span className="vibe-wx-label">Who's it for</span>
+          <div className="vibe-who">
+            <button type="button" className="who-chip everyone" aria-pressed={true}>
+              Everyone
+            </button>
+          </div>
+          <p className="vibe-who-help">Only planned when they're eating that week.</p>
+        </div>
+      ) : null}
       <div className="vibe-edit-actions">
         {v ? (
           <Button type="button" variant="ghost" size="sm" data-testid="vibe-delete" onClick={remove}>

@@ -135,6 +135,12 @@ export interface LogRow {
 export interface VibeRow {
   id: string;
   vibe: string;
+  /** Which meal's palette this vibe samples into (default 'dinner'; the server always
+   *  returns it). Backs the meal-grouped list. */
+  meal?: "breakfast" | "lunch" | "dinner";
+  /** Assigned household members (band-1 field; the assignment UI is reserved for band 5,
+   *  so this rides through unread this band). Absent/empty = everyone. */
+  members?: string[];
   facets?: Record<string, unknown>;
   cadence_days?: number | null;
   pinned?: boolean;

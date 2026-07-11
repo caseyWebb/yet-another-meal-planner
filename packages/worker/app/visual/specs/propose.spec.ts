@@ -2,9 +2,10 @@
 // endpoint, with ZERO model calls — every proposal computes from the seed's synthetic
 // vectors, and the freeform spec's phrase is a pre-warmed query-embedding-cache HIT
 // (an uncached embed would hit the absent local Workers AI and fail the request, so
-// the no-model guarantee is self-enforcing). The shared seed keeps the palette empty
-// (production's first render — asserted first); the flow specs then self-provision
-// the two seeded-vector vibes through the member API.
+// the no-model guarantee is self-enforcing). The shared seed provisions a meal-vibe
+// palette (profile-planning-and-vibes-ui), so these flow specs control it explicitly:
+// wipePalette() for the empty-palette assertion first, then self-provision the two
+// seeded-vector vibes through the member API.
 import { test, expect } from "../fixtures";
 import { SEED } from "../../../admin/visual/seed.mjs";
 

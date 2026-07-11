@@ -1,9 +1,10 @@
-// Profile (member-app-core 7.10–7.12): the derived taste read, the class (a)
-// markdown editor's 412 REBASE flow (a competing writer forces the notice; saving
-// again applies), the preferences merge-patch knobs, and the meal-vibes tab —
-// empty palette + pending queue (production's observed state), kind-specific
-// confirm/dismiss, and the retired suggest trigger (the route answers a pinned
-// 410; the shipped button explains itself instead of failing opaquely).
+// Profile (member-app-core + profile-planning-and-vibes-ui): the derived taste read, the
+// class (a) markdown editor's 412 REBASE flow (a competing writer forces the notice; saving
+// again applies), the preferences merge-patch knobs — the Planning card's per-meal cadence
+// steppers and the weekly-budget control (clearing writes UNSET, never 0) — and the
+// meal-vibe palette: meal-grouped rows with the pinned indicator, plus inline suggestions
+// (row-attached wands + per-meal-group footer cards) that replaced the standalone
+// reconciliation queue. merge_recipes never surfaces on the member vibes tab.
 import { test, expect } from "../fixtures";
 import { SEED } from "../../../admin/visual/seed.mjs";
 
@@ -32,73 +33,126 @@ test("a lost class (a) race 412s, surfaces the rebase notice, and the retry appl
   await profilePage.expectTasteView("My edit, drafted while someone else saved.");
 });
 
-test("preferences knobs persist through the merge-patch (reload keeps the value)", async ({
+test("per-meal cadence steppers persist through the merge-patch (reload keeps the value)", async ({
   profilePage,
 }) => {
   await profilePage.openTab("prefs");
-  await profilePage.setCookingNights(4);
-  await profilePage.expectCookingNights(4);
+  // The seed's cadence map { breakfast: 2, lunch: 1, dinner: 4 }.
+  await profilePage.expectCadence("breakfast", 2);
+  await profilePage.expectCadence("dinner", 4);
+  // Bumping ONE meal is a per-key merge — the others survive.
+  await profilePage.setCadence("breakfast", 1);
+  await profilePage.expectCadence("breakfast", 3);
   await profilePage.goto();
   await profilePage.openTab("prefs");
-  await profilePage.expectCookingNights(4);
+  await profilePage.expectCadence("breakfast", 3);
+  await profilePage.expectCadence("dinner", 4); // untouched by the breakfast patch
   await profilePage.captureForReview("profile-prefs");
 });
 
-test("night vibes: empty palette + pending queue; accept applies, dismiss retires", async ({
+test("the weekly budget sets, then clears to UNSET (a clear writes null, never 0)", async ({
   profilePage,
 }) => {
-  await profilePage.openTab("vibes");
-  await profilePage.expectPaletteEmpty(); // production's first render
-  await expect(profilePage.proposalRows()).toHaveCount(4);
-  await profilePage.captureForReview("profile-vibes-queue");
-
-  // Accept an add_vibe: the vibe lands in the palette and leaves the queue for good.
-  await profilePage.acceptProposal(SEED.app.proposals.addA.vibe);
-  await expect(profilePage.proposalRows()).toHaveCount(3);
-  await expect(profilePage.vibeRows()).toHaveCount(1);
-
-  // Dismiss is durable: the proposal leaves and the palette is untouched.
-  await profilePage.dismissProposal(SEED.app.proposals.addB.vibe);
-  await expect(profilePage.proposalRows()).toHaveCount(2);
-  await expect(profilePage.vibeRows()).toHaveCount(1);
-
-  // Reload: the dismissed proposal never re-surfaces (recorded status, stable id).
+  await profilePage.openTab("prefs");
+  await profilePage.expectBudget(95); // the seeded budget
+  await profilePage.setBudget(120);
   await profilePage.goto();
-  await profilePage.openTab("vibes");
-  await expect(profilePage.proposalRows()).toHaveCount(2);
+  await profilePage.openTab("prefs");
+  await profilePage.expectBudget(120);
+
+  // Clearing is a first-class UNSET (weekly_budget: null) — NOT a 0. A reload proves it:
+  // an unset budget renders the empty field + the "no budget line" helper; a 0 would show
+  // "0" with no helper.
+  await profilePage.clearBudget();
+  await profilePage.expectBudgetUnset();
+  await profilePage.goto();
+  await profilePage.openTab("prefs");
+  await profilePage.expectBudgetUnset();
 });
 
-test("a merge_recipes proposal renders the pair honestly — Dismiss only, no accept button", async ({
+test("the preferences tab offers no retired lunch-strategy / ready-to-eat control", async ({
+  profilePage,
+}) => {
+  await profilePage.openTab("prefs");
+  await expect(profilePage.prefsTab()).toBeVisible();
+  // The retired preferences (D8/D21; meal vibes subsume them) render no control.
+  await expect(profilePage.retiredSeg("lunch_strategy")).toHaveCount(0);
+  await expect(profilePage.retiredSeg("ready_to_eat_default_action")).toHaveCount(0);
+  await expect(profilePage.pageText("Lunch strategy")).toHaveCount(0);
+  await expect(profilePage.pageText("Ready-to-eat items")).toHaveCount(0);
+});
+
+test("meal vibes group by meal, and the pinned indicator marks pinned rows (de-emphasizing debt)", async ({
+  profilePage,
+}) => {
+  const V = SEED.app.vibes;
+  await profilePage.openTab("vibes");
+
+  // Each seeded vibe renders inside its own meal group.
+  await profilePage.expectVibeInGroup("breakfast", V.eggs.vibe);
+  await profilePage.expectVibeInGroup("breakfast", V.toast.vibe);
+  await profilePage.expectVibeInGroup("lunch", V.bowl.vibe);
+  await profilePage.expectVibeInGroup("dinner", V.sauce.vibe);
+
+  // Pinned rows carry the indicator; unpinned rows do not.
+  await profilePage.expectPinned("breakfast", V.eggs.vibe);
+  await profilePage.expectNotPinned("breakfast", V.toast.vibe);
+  await profilePage.expectPinned("dinner", V.sauce.vibe);
+  await profilePage.expectNotPinned("dinner", V.stir.vibe);
+
+  // A pinned row carries the `pinned` class (the de-emphasized debt meter rides it).
+  await expect(profilePage.vibeInGroup("dinner", V.sauce.vibe)).toHaveClass(/pinned/);
+  await profilePage.captureForReview("profile-vibes");
+});
+
+test("an inline add_vibe suggestion adds the vibe into its meal group and leaves the queue", async ({
+  profilePage,
+}) => {
+  const addA = SEED.app.proposals.addA; // add_vibe, meal: dinner
+  await profilePage.openTab("vibes");
+
+  // The dinner group carries the add_vibe footer card; adding upserts the vibe.
+  await expect(profilePage.addSuggestCard("dinner")).toBeVisible();
+  await profilePage.addGroupSuggestion("dinner");
+  await profilePage.expectVibeInGroup("dinner", addA.vibe);
+  await expect(profilePage.addSuggestCard("dinner")).toHaveCount(0);
+
+  // Durable: a reload keeps the vibe and never re-surfaces the resolved proposal.
+  await profilePage.goto();
+  await profilePage.openTab("vibes");
+  await profilePage.expectVibeInGroup("dinner", addA.vibe);
+  await expect(profilePage.addSuggestCard("dinner")).toHaveCount(0);
+});
+
+test("an inline adjust_cadence suggestion applies to its palette row and resolves", async ({
+  profilePage,
+}) => {
+  const adjust = SEED.app.proposals.adjust; // targets the lunch "big grain bowl", → 21d
+  const bowl = SEED.app.vibes.bowl;
+  await profilePage.openTab("vibes");
+
+  // The lunch bowl row carries a wand; opening it reveals the suggestion; applying it
+  // upserts the row's cadence and resolves the proposal.
+  await profilePage.openRowSuggestion(bowl.vibe);
+  await expect(profilePage.vibeRow(bowl.vibe).getByTestId("vibe-suggest")).toBeVisible();
+  await profilePage.applyRowSuggestion(bowl.vibe);
+
+  // The proposal is resolved (the wand is gone), and the row now reads its new cadence.
+  await expect(profilePage.vibeRow(bowl.vibe).getByTestId("vibe-wand")).toHaveCount(0);
+  await expect(profilePage.vibeRow(bowl.vibe)).toContainText(`every ${adjust.cadence_days} days`);
+});
+
+test("no merge_recipes proposal ever surfaces on the member vibes tab", async ({
   profilePage,
 }) => {
   const merge = SEED.app.proposals.merge;
   await profilePage.openTab("vibes");
-  const row = profilePage.proposal(merge.titles[0]);
-  // The pair title names BOTH recipes; the rationale and the chat hint render; and per
-  // the kind-specific-actions rule the app offers NO accept/merge button for this kind
-  // (the merge itself is agent-guided in chat — accept's meaning only exists there).
-  await expect(row).toContainText(merge.titles[0]);
-  await expect(row).toContainText(merge.titles[1]);
-  await expect(row).toContainText("look like the same dish");
-  await expect(profilePage.mergeChatHint()).toBeVisible();
-  await expect(profilePage.proposalAccept(merge.titles[0])).toHaveCount(0);
-  await profilePage.captureForReview("profile-merge-proposal");
-
-  // Dismiss (confirm-reject, replay-safe like every proposal confirm) resolves it durably.
-  await profilePage.dismissProposal(merge.titles[0]);
-  await expect(row).toHaveCount(0);
-  await profilePage.goto();
-  await profilePage.openTab("vibes");
-  await expect(profilePage.proposal(merge.titles[0])).toHaveCount(0);
-  await expect(profilePage.proposalRows()).toHaveCount(1); // only the prune remains
-});
-
-test("the suggest trigger surfaces its retirement (the route answers a pinned 410)", async ({
-  profilePage,
-}) => {
-  await profilePage.openTab("vibes");
-  await profilePage.suggest();
-  await profilePage.expectToast("Vibe suggestions now arrive automatically");
+  await expect(profilePage.vibesTab()).toBeVisible();
+  // The dup-scan merge is chat-guided (D8) — it renders nowhere on this tab: no title, no
+  // rationale, no accept/dismiss surface for it.
+  await expect(profilePage.pageText(merge.titles[0])).toHaveCount(0);
+  await expect(profilePage.pageText(merge.titles[1])).toHaveCount(0);
+  await expect(profilePage.pageText("look like the same dish")).toHaveCount(0);
 });
 
 // --- the Preferred-brands tier card (brand-tier model) -----------------------------

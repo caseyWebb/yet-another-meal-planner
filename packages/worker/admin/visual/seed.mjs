@@ -91,12 +91,31 @@ export const SEED = {
       household: "paper towels",
       inCart: "olive oil",
     },
+    // The seeded meal-vibe palette (profile-planning-and-vibes-ui): six vibes spanning
+    // breakfast/lunch/dinner, one pinned + one unpinned per meal group — the grouping,
+    // pinned-indicator, and inline-suggestion coverage. Distinct ids from every from_vibe
+    // fixture (`plan.fromVibe.vibeId`) so the meal-plan page's unresolved-provenance
+    // assertion still holds. Wiped/re-provisioned by the propose specs (order-independent).
+    vibes: {
+      eggs: { id: "viz-vibe-eggs", meal: "breakfast", vibe: "savory weekday eggs", pinned: true },
+      toast: { id: "viz-vibe-toast", meal: "breakfast", vibe: "quick avocado toast", pinned: false },
+      bowl: { id: "viz-vibe-bowl", meal: "lunch", vibe: "a big grain bowl", pinned: true },
+      wrap: { id: "viz-vibe-wrap", meal: "lunch", vibe: "a packed lunch wrap", pinned: false },
+      sauce: { id: "viz-vibe-sauce", meal: "dinner", vibe: "sunday sauce", pinned: true },
+      stir: { id: "viz-vibe-stir", meal: "dinner", vibe: "fast weeknight stir-fry", pinned: false },
+    },
+    // Pending reconciliation proposals rendered INLINE (D8): add_vibe → per-meal-group
+    // footer cards (grouped by payload.meal); adjust_cadence / prune_vibe → row-attached
+    // wands joined to a palette row by `target === vibe.vibe` (the phrase) — so their
+    // `target` is the seeded vibe's TEXT while `vibeId` carries the id the confirm apply
+    // keys on. merge_recipes never surfaces on the member vibes tab (absence asserted).
     proposals: {
-      addA: { id: "viz-prop-add-a", vibe: "cozy weeknight noodles" },
-      addB: { id: "viz-prop-add-b", vibe: "a bright citrusy salad night" },
-      prune: { id: "viz-prop-prune", target: "forgotten-stir-fry" },
-      // A dup-scan merge_recipes pair (recipe-dedup): Dismiss-only in the app — the
-      // merge itself is chat-guided, so no accept button renders for this kind.
+      addA: { id: "viz-prop-add-a", vibe: "cozy weeknight noodles", meal: "dinner" },
+      addB: { id: "viz-prop-add-b", vibe: "a bright citrusy salad night", meal: "lunch" },
+      adjust: { id: "viz-prop-adjust", target: "a big grain bowl", vibeId: "viz-vibe-bowl", cadence_days: 21 },
+      prune: { id: "viz-prop-prune", target: "fast weeknight stir-fry", vibeId: "viz-vibe-stir" },
+      // A dup-scan merge_recipes pair (recipe-dedup): filtered OUT of the member vibes tab
+      // entirely — the merge is chat-guided, so it renders nowhere here (absence asserted).
       merge: {
         id: "viz-prop-merge",
         target: "fresh-pasta+homemade-pasta-dough",
@@ -614,15 +633,34 @@ export function d1Statements(now) {
       ].join(", ") +
       ";",
   );
-  // The palette starts EMPTY (production's observed first render) with a pending backlog.
+  // The seeded meal-vibe palette (profile-planning-and-vibes-ui): six vibes across the
+  // three meals, one pinned + one unpinned per group, anchored ~20 days back so the
+  // cadence-debt meter renders. members NULL (assignment is band 5).
+  const vb = app.vibes;
+  const vibeRows = [vb.eggs, vb.toast, vb.bowl, vb.wrap, vb.sauce, vb.stir];
+  const vibeCadence = { "viz-vibe-eggs": 7, "viz-vibe-toast": 10, "viz-vibe-bowl": 14, "viz-vibe-wrap": 14, "viz-vibe-sauce": 21, "viz-vibe-stir": 30 };
   stmts.push(`DELETE FROM night_vibes WHERE tenant = ${q(members.active)};`);
+  stmts.push(
+    "INSERT INTO night_vibes (tenant, id, vibe, meal, members, facets, cadence_days, pinned, base_weight, weather_affinity, weather_antipathy, season, created_at, updated_at) VALUES " +
+      vibeRows
+        .map(
+          (r) =>
+            `(${q(members.active)}, ${q(r.id)}, ${q(r.vibe)}, ${q(r.meal)}, NULL, '{}', ${vibeCadence[r.id]}, ${r.pinned ? 1 : 0}, NULL, '[]', '[]', '[]', ${q(iso(now - 20 * DAY))}, ${q(iso(now - 20 * DAY))})`,
+        )
+        .join(", ") +
+      ";",
+  );
+  // The pending backlog: two add_vibe (group footer cards), one adjust_cadence + one
+  // prune_vibe (row-attached, target = the seeded vibe phrase; payload.id = the vibe id
+  // the confirm apply keys on), and one merge_recipes (never surfaces on the member tab).
   stmts.push(`DELETE FROM pending_proposals WHERE tenant = ${q(members.active)};`);
   const prop = app.proposals;
   stmts.push(
     "INSERT INTO pending_proposals (id, tenant, kind, target, payload, rationale, evidence, status, producer, created_at) VALUES " +
-      `(${q(prop.addA.id)}, ${q(members.active)}, 'add_vibe', 'cozy-noodles', ${q(JSON.stringify({ id: "cozy-noodles", vibe: prop.addA.vibe, cadence_days: 10 }))}, 'You keep cooking dishes like this — set a night aside for it?', '{}', 'pending', 'edge', ${q(iso(now - 3 * DAY))}), ` +
-      `(${q(prop.addB.id)}, ${q(members.active)}, 'add_vibe', 'citrus-salad', ${q(JSON.stringify({ id: "citrus-salad", vibe: prop.addB.vibe, cadence_days: 14 }))}, 'Three bright salads in two weeks — make it a rotation slot?', '{}', 'pending', 'edge', ${q(iso(now - 2 * DAY))}), ` +
-      `(${q(prop.prune.id)}, ${q(members.active)}, 'prune_vibe', ${q(prop.prune.target)}, ${q(JSON.stringify({ id: prop.prune.target }))}, 'Added months ago and never cooked from — retire it?', '{}', 'pending', 'edge', ${q(iso(now - 1 * DAY))}), ` +
+      `(${q(prop.addA.id)}, ${q(members.active)}, 'add_vibe', 'viz-vibe-noodles', ${q(JSON.stringify({ id: "viz-vibe-noodles", vibe: prop.addA.vibe, meal: prop.addA.meal, cadence_days: 10 }))}, 'You keep cooking dishes like this — set a night aside for it?', '{}', 'pending', 'edge', ${q(iso(now - 3 * DAY))}), ` +
+      `(${q(prop.addB.id)}, ${q(members.active)}, 'add_vibe', 'viz-vibe-citrus', ${q(JSON.stringify({ id: "viz-vibe-citrus", vibe: prop.addB.vibe, meal: prop.addB.meal, cadence_days: 14 }))}, 'Three bright salads in two weeks — make it a rotation slot?', '{}', 'pending', 'edge', ${q(iso(now - 2 * DAY))}), ` +
+      `(${q(prop.adjust.id)}, ${q(members.active)}, 'adjust_cadence', ${q(prop.adjust.target)}, ${q(JSON.stringify({ id: prop.adjust.vibeId, cadence_days: prop.adjust.cadence_days }))}, 'You cook this more often than its cadence — tighten it to every 21 days?', '{}', 'pending', 'edge', ${q(iso(now - 1.5 * DAY))}), ` +
+      `(${q(prop.prune.id)}, ${q(members.active)}, 'prune_vibe', ${q(prop.prune.target)}, ${q(JSON.stringify({ id: prop.prune.vibeId }))}, 'Added months ago and never cooked from — retire it?', '{}', 'pending', 'edge', ${q(iso(now - 1 * DAY))}), ` +
       `(${q(prop.merge.id)}, ${q(members.active)}, 'merge_recipes', ${q(prop.merge.target)}, ${q(JSON.stringify({ slugs: prop.merge.target.split("+"), titles: prop.merge.titles, cosine: 0.767, shared_ingredients: ["eggs", "flour"], jaccard: 0.67, detector: "corroborated" }))}, ${q(prop.merge.rationale)}, '{}', 'pending', 'dup-scan', ${q(iso(now - 0.5 * DAY))});`,
   );
   // A shared community note from the pending member (the detail page's group half).
@@ -662,9 +700,11 @@ export function d1Statements(now) {
   );
   // The profile row + one ranked brand (taste markdown, planning knobs, stores, dietary).
   stmts.push(`DELETE FROM profile WHERE tenant = ${q(members.active)};`);
+  // `cadence` is the per-meal weekly map the Planning card's steppers render + patch;
+  // `weekly_budget` (dollars/week) backs the budget control's set/clear coverage.
   stmts.push(
-    "INSERT INTO profile (tenant, taste, diet_principles, default_cooking_nights, lunch_strategy, ready_to_eat_default_action, stores, dietary, rotation) VALUES " +
-      `(${q(members.active)}, ${q(`**${app.tasteLead}** — weeknights lean Asian, weekends get a project.`)}, ${q("- Keep shellfish off the table\n- Go easy on red meat")}, 3, NULL, 'opt-in', ${q(JSON.stringify({ primary: "kroger", preferred_location: app.differentiators.location }))}, ${q(JSON.stringify({ avoid: ["shellfish"], limit: ["red meat"] }))}, ${q(JSON.stringify({ resurface_after_days: 30, novelty_boost: 0.2 }))});`,
+    "INSERT INTO profile (tenant, taste, diet_principles, default_cooking_nights, lunch_strategy, ready_to_eat_default_action, stores, dietary, rotation, cadence, weekly_budget) VALUES " +
+      `(${q(members.active)}, ${q(`**${app.tasteLead}** — weeknights lean Asian, weekends get a project.`)}, ${q("- Keep shellfish off the table\n- Go easy on red meat")}, 3, NULL, 'opt-in', ${q(JSON.stringify({ primary: "kroger", preferred_location: app.differentiators.location }))}, ${q(JSON.stringify({ avoid: ["shellfish"], limit: ["red meat"] }))}, ${q(JSON.stringify({ resurface_after_days: 30, novelty_boost: 0.2 }))}, ${q(JSON.stringify({ breakfast: 2, lunch: 1, dinner: 4 }))}, 95);`,
   );
   stmts.push(`DELETE FROM brand_prefs WHERE tenant = ${q(members.active)};`);
   stmts.push(

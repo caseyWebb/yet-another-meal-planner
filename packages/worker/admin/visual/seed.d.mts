@@ -69,10 +69,23 @@ export interface SeedLiterals {
       readonly household: string;
       readonly inCart: string;
     };
+    /** The seeded meal-vibe palette (profile-planning-and-vibes-ui): six vibes across
+     *  breakfast/lunch/dinner, one pinned + one unpinned per group. */
+    readonly vibes: Readonly<
+      Record<
+        "eggs" | "toast" | "bowl" | "wrap" | "sauce" | "stir",
+        { readonly id: string; readonly meal: "breakfast" | "lunch" | "dinner"; readonly vibe: string; readonly pinned: boolean }
+      >
+    >;
+    /** The pending reconciliation backlog rendered inline (profile-planning-and-vibes-ui):
+     *  add_vibe group-footer cards, an adjust_cadence + prune_vibe row-attached pair (their
+     *  `target` is the seeded vibe phrase; `vibeId` the id the confirm apply keys on), and a
+     *  merge_recipes pair that never surfaces on the member vibes tab. */
     readonly proposals: {
-      readonly addA: { readonly id: string; readonly vibe: string };
-      readonly addB: { readonly id: string; readonly vibe: string };
-      readonly prune: { readonly id: string; readonly target: string };
+      readonly addA: { readonly id: string; readonly vibe: string; readonly meal: "breakfast" | "lunch" | "dinner" };
+      readonly addB: { readonly id: string; readonly vibe: string; readonly meal: "breakfast" | "lunch" | "dinner" };
+      readonly adjust: { readonly id: string; readonly target: string; readonly vibeId: string; readonly cadence_days: number };
+      readonly prune: { readonly id: string; readonly target: string; readonly vibeId: string };
       readonly merge: {
         readonly id: string;
         readonly target: string;
