@@ -209,16 +209,20 @@ SHALL NOT carry a Favorites nav entry — the cookbook tab row is the one entry 
 ### Requirement: Meal plan page over row-level ops
 
 The meal plan page SHALL read the tenant's planned rows and mutate them through the existing
-row-level ops keyed by recipe slug: add (upsert, preserving the new-for-me watermark stamp on
-add exactly as the MCP tool does), remove, schedule and **unschedule** a night, and add and
-**remove** open-world sides (the latter two via the `set` op added to `update_meal_plan` in
-this change). Slot provenance (`from_vibe`) SHALL be preserved across page edits.
+row-level ops keyed by the **plan-row id** (client-mintable ULID; the class (b) replay key), with
+slug-addressed ops keeping their defined fan-out (remove-by-slug drops all matching rows;
+set-by-slug requires a unique match or returns candidates — the `meal-planning` capability): add
+(id-keyed, preserving the new-for-me watermark stamp on add exactly as the MCP tool does),
+remove, schedule and **unschedule** a slot, and add and **remove** open-world sides (via the
+`set` op). Slot provenance (`from_vibe`) and the row's `meal` SHALL be preserved across page
+edits unless explicitly changed.
 
 #### Scenario: Page edits preserve provenance and the watermark
 
 - **WHEN** a member reschedules a vibe-proposed row or edits its sides from the plan page
-- **THEN** the row's `from_vibe` is unchanged, and when a member adds a recipe the new-for-me
-  watermark advances exactly as an agent-side `update_meal_plan` add would
+- **THEN** the edit addresses the row by its id, the row's `from_vibe` and `meal` are unchanged,
+  and when a member adds a recipe the new-for-me watermark advances exactly as an agent-side
+  `update_meal_plan` add would
 
 ### Requirement: Grocery page over the guarded list ops
 
@@ -271,18 +275,14 @@ mutation cannot double-log, and SHALL support deleting one of the caller's own e
 ### Requirement: Profile page over the assembled profile
 
 The profile page SHALL read the assembled profile (including the member's Kroger link state),
-SHALL edit structured preferences via the existing merge-patch operation (single-select
-`lunch_strategy` over the real vocabulary; dietary avoid/limit; rotation; stores), SHALL
-provide the **Preferred-brands management card** editing brand tiers per product family —
-per-family cards showing ordered tiers of equivalent brands, tier chips movable with ▲/▼
-where moving past the edge creates a new tier (and a tier emptied by moves or removals
-collapses), a per-tier add-brand input, an add-fallback-tier action, a per-family
-"Any brand — cheapest wins" toggle, remove-family, and an add-family form — each edit
-writing a family-scoped merge-patch of the canonical tier object (`{ tiers, any_brand }`;
-remove-family writes `null`), SHALL edit the `taste` and `diet_principles` markdown fields,
+SHALL edit structured preferences via the existing merge-patch operation (dietary avoid/limit;
+rotation; stores; ranked brands), SHALL edit the `taste` and `diet_principles` markdown fields,
 SHALL render the derived taste read from the existing retrospective aggregation, and SHALL
-obtain the Kroger consent URL from the existing builder. All whole-document writes on this
-page are conditional (see the write-classes requirement).
+obtain the Kroger consent URL from the existing builder. There is no `lunch_strategy` control —
+the preference is retired (D8/D21; meal vibes subsume it); the per-meal cadence and vibes
+editing surfaces are band 2's `profile-planning-and-vibes-ui` slice, the D25(2) coupling
+obligation that follows this change. All whole-document writes on this page are conditional
+(see the write-classes requirement).
 
 #### Scenario: The derived taste read is the retrospective
 
@@ -290,18 +290,12 @@ page are conditional (see the write-classes requirement).
 - **THEN** the cuisine/protein mixes and cadence come from the existing retrospective operation
   over the real cooking log — no new aggregation is introduced
 
-#### Scenario: Moving a brand chip past the edge creates a tier
+#### Scenario: No retired-preference control renders
 
-- **WHEN** a member presses ▲ on a brand chip already in the family's top tier
-- **THEN** a new top tier containing only that brand is created, and the family is written as a
-  family-scoped merge-patch of the full tier object under the page's conditional write, leaving
-  other families untouched
-
-#### Scenario: The any-brand toggle is a partial family patch
-
-- **WHEN** a member turns "Any brand — cheapest wins" on for a family that has tiers
-- **THEN** the write patches `{ any_brand: true }` for that family only and the family's tiers
-  are preserved
+- **WHEN** the profile page's preferences tab renders
+- **THEN** it offers no `lunch_strategy` or ready-to-eat default-action control — those
+  preferences are retired, and their successors (per-meal cadence, meal vibes) land with the
+  band-2 profile/vibes UI slice
 
 ### Requirement: Night-vibe palette page uses the production vocabulary
 
@@ -350,34 +344,20 @@ SHALL render large backlogs sanely (production shows dozens of pending proposals
 - **THEN** the row names both recipes and shows the rationale, points the merge itself at the
   chat surface, and offers only Dismiss — no accept/merge button is rendered for it
 
-### Requirement: The vibe-suggest trigger is gated by derivation job health
-
-The app's vibe-suggestion trigger SHALL check the archetype-derivation job's recorded health
-before running derivation: when the last run was healthy and within the derivation interval
-(~20 hours, the cron's own constant), it SHALL return a throttled response **without invoking
-any model**, so a member-tappable button cannot spend `env.AI` unboundedly. When stale or
-unhealthy, it SHALL run the existing on-demand derivation, which enqueues proposals into the
-same pending queue the page lists.
-
-#### Scenario: A fresh derivation throttles the button
-
-- **WHEN** a member taps suggest while the archetype-derive job's last healthy run is within the
-  interval
-- **THEN** the endpoint returns a throttled result with no model call, and the UI surfaces the
-  quiet throttled state
-
 ### Requirement: Write endpoints are classified for the two-writer posture
 
 Every member write endpoint SHALL be classified and implemented as exactly one of: **(a)** a
 whole-document write requiring `If-Match` (preferences merge-patch, the profile markdown
 fields, vibe edits) — a stale precondition returns 412 with a structured `conflict` body and
 the SPA refetches, rebases, and re-presents; or **(b)** an idempotent upsert or delete keyed on
-a canonical id (grocery and pantry rows by canonical ingredient id, plan rows by recipe slug,
-favorites by slug with an explicit boolean, notes by author + slug + client-minted
-`created_at`, log rows by dedupe identity or id, proposal confirms by proposal id) — replayable
-last-write-wins with **no** `If-Match`, so offline mutation replay never fails on a stale row
-snapshot. The classification table in this change's design SHALL be normative; conditional
-reads (`If-None-Match` → 304) and ETags come from the shared middleware with no schema change.
+a canonical id (grocery and pantry rows by canonical ingredient id, **plan rows by the
+client-minted plan-row id — slug-addressed ops keep their defined fan-out**, favorites by slug
+with an explicit boolean, notes by author + slug + client-minted `created_at`, log rows by the
+`(date, meal, type, recipe|name)` dedupe identity or id, proposal confirms by proposal id) —
+replayable last-write-wins with **no** `If-Match`, so offline mutation replay never fails on a
+stale row snapshot. The classification table in this change's design SHALL be normative;
+conditional reads (`If-None-Match` → 304) and ETags come from the shared middleware with no
+schema change.
 
 #### Scenario: A lost class (a) race is surfaced, not clobbered
 
@@ -485,4 +465,32 @@ SHALL fall back to "your operator".
   `operator: { name: null, repo: null }`
 - **THEN** the marketplace steps show ask-your-operator copy with no copyable command,
   no fabricated slug appears anywhere, and the remaining steps render unchanged
+
+### Requirement: The retired vibe-suggest route returns a pinned 410 stub for one deprecation window
+
+For one deprecation window, `POST /api/vibes/suggest` SHALL remain registered and SHALL return —
+pinned to the member-API route-level error convention (`c.json({ error: <literal>, message },
+status)`, the `csrf_rejected`/`rate_limited` family; explicitly NOT a `src/errors.ts` `ToolError`
+code) —
+
+```ts
+return c.json({ error: "gone" as const,
+  message: "Vibe suggestions now arrive automatically; this trigger was retired." }, 410);
+```
+
+so the deployed SPA's shipped suggest button fails *explicably* — never the SPA-shell/404 trap —
+and it SHALL invoke no derivation and no model. The stub is a docs/TOOLS.md Deprecations row; the
+window-close cleanup change (`remove-meal-dimension-shims`) removes it, and the worker route tests
+and the app suite's suggest coverage assert the stub while it lives.
+
+#### Scenario: The shipped button fails explicably, without model spend
+
+- **WHEN** a member on the deployed SPA taps the suggest button during the deprecation window
+- **THEN** the route answers `410` with the structured `{ error: "gone", message }` body, runs no
+  derivation, and touches no `env.AI`
+
+#### Scenario: After the window the route falls to the normal 404
+
+- **WHEN** the window-close cleanup removes the stub and the path is requested
+- **THEN** it is answered by the standard unknown-API 404, never the SPA shell
 

@@ -13,8 +13,8 @@ function cand(
 ): DiversifyCandidate {
   return { slug, title: slug, protein, cuisine, course: ["main"], time_total: 30, score, embedding, perishable_ingredients: perishable, ingredients_key: [] };
 }
-function slot(id: string, reason: WeekSlot["reason"] = "sampled"): WeekSlot {
-  return { id, reason, debt: 0, weight: 1 };
+function slot(id: string, reason: WeekSlot["reason"] = "sampled"): WeekSlot & { meal: "dinner" } {
+  return { id, reason, debt: 0, weight: 1, meal: "dinner" };
 }
 function embMap(...cs: DiversifyCandidate[]): Map<string, number[]> {
   return new Map(cs.map((c) => [c.slug, c.embedding]));

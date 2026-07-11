@@ -62,10 +62,8 @@ export function canonicalBrandValue(value: Record<string, unknown>): BrandTierPr
 
 /** The defined top-level preference keys (everything else nests under `custom`). */
 export const DEFINED_PREFERENCE_KEYS = [
-  "default_cooking_nights",
+  "cadence",
   "planning_cadence_days",
-  "lunch_strategy",
-  "ready_to_eat_default_action",
   "weekly_budget",
   "stores",
   "brands",
@@ -74,11 +72,71 @@ export const DEFINED_PREFERENCE_KEYS = [
   "custom",
 ] as const;
 
-const LUNCH_STRATEGIES = ["leftovers", "buy", "mixed"];
-const READY_TO_EAT_ACTIONS = ["opt-in", "auto-add"];
+/**
+ * Retired preference keys (D21/D8: meal vibes subsume them), checked BEFORE
+ * `rejectUnknownPatchKeys` for one deprecation window: the key is ACCEPTED AND
+ * DROPPED — not validated, not written, not routed to `custom`, never
+ * `validation_failed`, never the nest-under-`custom` hint (a stale agent must not
+ * shadow the migration) — with a `warnings` entry steering the caller. The stored
+ * columns converge to NULL via the pref-retirement seed pass (src/pref-retirement.ts).
+ * After the window closes this list empties and the keys fall through to the generic
+ * unknown-key rejection like any other unknown key.
+ */
+export const RETIRED_PREFERENCE_KEYS = ["lunch_strategy", "ready_to_eat_default_action"] as const;
+
+/** The per-meal cadence map's keys (weekly counts, 0–7 each). */
+export const CADENCE_MEALS = ["breakfast", "lunch", "dinner"] as const;
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
   return v !== null && typeof v === "object" && !Array.isArray(v);
+}
+
+/** The per-meal cadence map (weekly counts). */
+export interface CadenceMap {
+  breakfast?: number;
+  lunch?: number;
+  dinner?: number;
+}
+
+/**
+ * One meal's EFFECTIVE cadence count — the read-side default chain shared by the
+ * propose op and the profile export: the stored `cadence[meal]` when present, else
+ * the read-time derivation (`dinner`: the frozen `default_cooking_nights ?? 5`;
+ * `breakfast`/`lunch`: 0).
+ */
+export function effectiveCadenceCount(
+  prefs: Record<string, unknown> | null,
+  meal: (typeof CADENCE_MEALS)[number],
+): number {
+  const stored = isPlainObject(prefs?.cadence) ? (prefs.cadence as Record<string, unknown>) : null;
+  const v = stored?.[meal];
+  if (typeof v === "number" && Number.isFinite(v)) return v;
+  if (meal !== "dinner") return 0;
+  const legacy = prefs?.default_cooking_nights;
+  return typeof legacy === "number" && Number.isFinite(legacy) ? legacy : 5;
+}
+
+/**
+ * Shape the stored preferences for the PROFILE EXPORT (`read_user_profile` /
+ * `GET /api/profile`) — pure, read-side only (never a merge base):
+ *   - `cadence` is the stored map, or (when absent) the read-time derivation
+ *     `{ breakfast: 0, lunch: 0, dinner: default_cooking_nights ?? 5 }`;
+ *   - `default_cooking_nights` stays exported for one deprecation window as a DERIVED
+ *     MIRROR of the effective `cadence.dinner` (read-path skew protection);
+ *   - the retired `lunch_strategy` / `ready_to_eat_default_action` are dropped NOW.
+ */
+export function exportPreferences(prefs: Record<string, unknown> | null): Record<string, unknown> | null {
+  if (prefs === null) return null;
+  const out: Record<string, unknown> = { ...prefs };
+  for (const key of RETIRED_PREFERENCE_KEYS) delete out[key];
+  const stored = isPlainObject(prefs.cadence) ? (prefs.cadence as CadenceMap) : null;
+  out.cadence = stored ?? {
+    breakfast: 0,
+    lunch: 0,
+    dinner: effectiveCadenceCount(prefs, "dinner"),
+  };
+  out.default_cooking_nights = effectiveCadenceCount(prefs, "dinner");
+  return out;
 }
 
 /**
@@ -114,6 +172,45 @@ export function rejectUnknownPatchKeys(patch: Record<string, unknown>): void {
 }
 
 /**
+ * The one-window retired-key + legacy-alias shim (D21), applied to the PATCH before
+ * `rejectUnknownPatchKeys`. Returns a cleaned patch plus the `warnings` entries:
+ *   - a RETIRED key (`lunch_strategy` / `ready_to_eat_default_action`) is accepted and
+ *     dropped — nothing validated, nothing written — with a `reason: "retired"` entry;
+ *   - `default_cooking_nights: N` (validated int 0–7) is ALIASED onto `cadence.dinner`
+ *     — merged per-key so a patch-supplied breakfast/lunch survives, and NEVER written
+ *     to the frozen `default_cooking_nights` column — with a `reason: "aliased"` entry.
+ * After the window: the shim empties and both fall through to unknown-key rejection.
+ */
+export function applyRetiredKeyShim(patch: Record<string, unknown>): {
+  patch: Record<string, unknown>;
+  warnings: DeprecationWarning[];
+} {
+  const warnings: DeprecationWarning[] = [];
+  const out: Record<string, unknown> = { ...patch };
+  for (const key of RETIRED_PREFERENCE_KEYS) {
+    if (key in out) {
+      delete out[key];
+      warnings.push({ key, reason: "retired", superseded_by: "meal vibes" });
+    }
+  }
+  if ("default_cooking_nights" in out) {
+    const v = out.default_cooking_nights;
+    delete out.default_cooking_nights;
+    if (typeof v !== "number" || !Number.isInteger(v) || v < 0 || v > 7) {
+      throw new ToolError(
+        "validation_failed",
+        `default_cooking_nights (deprecated alias of cadence.dinner) must be an integer 0-7 (got ${JSON.stringify(v)})`,
+      );
+    }
+    // Merge as cadence.dinner — an explicit patch-supplied cadence.dinner wins.
+    const cadencePatch = isPlainObject(out.cadence) ? (out.cadence as Record<string, unknown>) : {};
+    out.cadence = { dinner: v, ...cadencePatch };
+    warnings.push({ key: "default_cooking_nights", reason: "aliased", superseded_by: "cadence.dinner" });
+  }
+  return { patch: out, warnings };
+}
+
+/**
  * Validate the merged preferences' types. Throws `malformed_data` on any type error
  * (so the caller stores nothing). Defined keys are type-checked; `custom` must be an
  * object; absent keys are fine.
@@ -123,30 +220,24 @@ export function validatePreferences(merged: Record<string, unknown>): void {
     throw new ToolError("malformed_data", message);
   };
 
-  if ("default_cooking_nights" in merged) {
-    const v = merged.default_cooking_nights;
-    if (typeof v !== "number" || !Number.isFinite(v)) {
-      fail(`default_cooking_nights must be a number (got ${JSON.stringify(v)})`);
+  if ("cadence" in merged) {
+    const cadence = merged.cadence;
+    if (!isPlainObject(cadence)) {
+      fail(`cadence must be a per-meal map { breakfast?, lunch?, dinner? } (got ${JSON.stringify(cadence)})`);
+    }
+    for (const [k, val] of Object.entries(cadence as Record<string, unknown>)) {
+      if (!(CADENCE_MEALS as readonly string[]).includes(k)) {
+        fail(`cadence.${k} is not a meal — cadence carries only ${CADENCE_MEALS.join("/")}`);
+      }
+      if (typeof val !== "number" || !Number.isInteger(val) || val < 0 || val > 7) {
+        fail(`cadence.${k} must be an integer weekly count 0-7 (got ${JSON.stringify(val)})`);
+      }
     }
   }
   if ("planning_cadence_days" in merged) {
     const v = merged.planning_cadence_days;
     if (typeof v !== "number" || !Number.isFinite(v) || v <= 0) {
       fail(`planning_cadence_days must be a positive number (got ${JSON.stringify(v)})`);
-    }
-  }
-  if ("lunch_strategy" in merged) {
-    const v = merged.lunch_strategy;
-    if (typeof v !== "string" || !LUNCH_STRATEGIES.includes(v)) {
-      fail(`lunch_strategy must be one of ${LUNCH_STRATEGIES.join(" | ")} (got ${JSON.stringify(v)})`);
-    }
-  }
-  if ("ready_to_eat_default_action" in merged) {
-    const v = merged.ready_to_eat_default_action;
-    if (typeof v !== "string" || !READY_TO_EAT_ACTIONS.includes(v)) {
-      fail(
-        `ready_to_eat_default_action must be one of ${READY_TO_EAT_ACTIONS.join(" | ")} (got ${JSON.stringify(v)})`,
-      );
     }
   }
   if ("weekly_budget" in merged) {

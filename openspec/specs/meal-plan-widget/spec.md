@@ -5,12 +5,12 @@ TBD - created by archiving change converge-meal-planning-surfaces. Update Purpos
 ## Requirements
 ### Requirement: Dedicated propose-display tool
 
-The Worker SHALL expose a widget-bearing MCP tool that renders a `propose_meal_plan` result as an inline interactive card. The tool SHALL reuse the shared planner operation (`runProposeMealPlan`) and SHALL NOT alter the contract of `propose_meal_plan`, which remains a plain data-returning tool. The tool result SHALL carry `_meta.ui.resourceUri` referencing `ui://plan/propose`, a `structuredContent` payload matching a shared `@yamp/contract` type (the propose result: slots with mains/alternates/sides, variety, uncovered-at-risk, diagnostics), and a text `content` fallback rendering the proposal. Failures SHALL be returned as structured errors, not thrown.
+The Worker SHALL expose a widget-bearing MCP tool that renders a `propose_meal_plan` result as an inline interactive card. The tool SHALL reuse the shared planner operation (`runProposeMealPlan`) — including the per-meal `meals` counts map and the `attendance` input (the `meal-plan-proposal` capability) — and SHALL NOT alter the contract of `propose_meal_plan`, which remains a plain data-returning tool. The tool result SHALL carry `_meta.ui.resourceUri` referencing `ui://plan/propose`, a `structuredContent` payload matching the shared `@yamp/contract` `ProposeCardData` type — a **flat, meal-ordered** slot list (breakfast → lunch → dinner, position-stable within meal) in which each slot carries its **`meal`**, with the `request` echo carrying `meals` and `attendance` — and a text `content` fallback rendering the proposal. This change reshapes the **data contract only**; no widget UI work ships with it (the widget rendering of meals is band 2's `plan-your-week-widget`). Failures SHALL be returned as structured errors, not thrown.
 
-#### Scenario: Displaying a proposed week
+#### Scenario: Displaying a proposed multi-meal week
 
-- **WHEN** the propose widget tool is invoked for a planning window
-- **THEN** the result carries `_meta.ui.resourceUri` equal to `ui://plan/propose`, a `structuredContent` payload of the propose result's display fields, and a text `content` fallback listing the proposed nights
+- **WHEN** the propose widget tool is invoked with `meals: { breakfast: 2, dinner: 4 }`
+- **THEN** the result carries `_meta.ui.resourceUri` equal to `ui://plan/propose` and a `structuredContent` payload whose slots each carry their `meal`, ordered breakfast → lunch → dinner, with the request echo carrying `meals` (and `attendance` when supplied), plus a text `content` fallback listing the proposed slots
 
 #### Scenario: A failure is a structured error
 
@@ -19,12 +19,12 @@ The Worker SHALL expose a widget-bearing MCP tool that renders a `propose_meal_p
 
 ### Requirement: Widget-initiated iteration re-invokes the stateless op
 
-The widget's controls (nights, variety, lock / swap / exclude, per-slot vibe override, re-roll) SHALL iterate by re-invoking the **stateless** propose operation client-side, so refinement costs no additional frontier-model turn. Because `runProposeMealPlan` is deterministic given its request body (the `meal-plan-proposal` capability), the widget replays the adjusted request and re-renders from the new result — the same client-side session-replay guarantee the member web app relies on. When a host cannot support widget-initiated re-invocation, the widget SHALL degrade to the rendered text `content` fallback of the initial proposal rather than failing.
+The widget's controls SHALL iterate by re-invoking the **stateless** propose operation client-side, so refinement costs no additional frontier-model turn. The widget-initiated control set is the D8/D20 shared-component enumeration: **per-meal slot counts, the swap menu (from the returned alternates), facet chips, per-slot vibe override, sides editing, and commit** — the cut dials (slot lock/exclude controls, the adventurousness slider, protein-want chips, the freeform phrase input, global reroll, the weather strip) are member-surface control removals only and do not appear in the widget either; the underlying **tool params** (`lock`, `exclude`, `nudges`, `freeform`, `seed`) are retained unchanged, and swap/session replay are implemented atop lock/pin/exclude in the replayed request. Because `runProposeMealPlan` is deterministic given its request body (the `meal-plan-proposal` capability), the widget replays the adjusted request and re-renders from the new result — the same client-side session-replay guarantee the member web app relies on. When a host cannot support widget-initiated re-invocation, the widget SHALL degrade to the rendered text `content` fallback of the initial proposal rather than failing.
 
-#### Scenario: A dial change re-renders without a model turn
+#### Scenario: A control change re-renders without a model turn
 
-- **WHEN** the member locks a slot or bumps the seed in the widget
-- **THEN** the widget re-invokes the stateless propose op with the adjusted request and re-renders, spending no frontier-model turn
+- **WHEN** the member adjusts a per-meal count or swaps a slot from its alternates in the widget
+- **THEN** the widget re-invokes the stateless propose op with the adjusted request (expressed via the retained tool params) and re-renders, spending no frontier-model turn
 
 #### Scenario: A host without callbacks degrades to the render
 

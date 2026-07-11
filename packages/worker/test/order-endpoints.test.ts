@@ -156,7 +156,7 @@ describe("/satellite/order/list (pull-list)", () => {
       .prepare("INSERT INTO ingredient_identity (id, base, detail, representative, display_name, source) VALUES (?, ?, NULL, NULL, ?, 'auto')")
       .run("sage", "sage", "Fresh sage");
     h.raw.prepare("INSERT INTO recipes (slug, title, ingredients_full) VALUES (?, ?, ?)").run("slaw", "slaw", JSON.stringify(["cabbage::color-red"]));
-    h.raw.prepare("INSERT INTO meal_plan (tenant, recipe, planned_for) VALUES ('casey', ?, NULL)").run("slaw");
+    h.raw.prepare("INSERT INTO meal_plan (tenant, id, recipe, planned_for) VALUES ('casey', lower(hex(randomblob(16))), ?, NULL)").run("slaw");
     await addGroceryRow(env, "casey", { name: "sage", kind: "other" }, TODAY); // non-food, name === normalizeName === "sage"
 
     const body = await pullList(env, secret);
@@ -178,7 +178,7 @@ describe("/satellite/order/list (plan-derived needs, member-app-grocery D4)", ()
   function seedPlanned(env: Env, raw: SqliteEnv["raw"], recipe: string, full: string[] | null): void {
     void env;
     raw.prepare("INSERT INTO recipes (slug, title, ingredients_full) VALUES (?, ?, ?)").run(recipe, recipe, full ? JSON.stringify(full) : null);
-    raw.prepare("INSERT INTO meal_plan (tenant, recipe, planned_for) VALUES ('casey', ?, NULL)").run(recipe);
+    raw.prepare("INSERT INTO meal_plan (tenant, id, recipe, planned_for) VALUES ('casey', lower(hex(randomblob(16))), ?, NULL)").run(recipe);
   }
 
   it("unions the plan's derived needs into the pull-list with canonical item_ids + for_recipes, and reports underived", async () => {
@@ -300,7 +300,7 @@ describe("/satellite/order/receipt (issued-set-authoritative reconciliation)", (
     const { secret } = await mintIngestKey(env, "casey-box", NOW, "casey");
     await setStores(env, "casey", { primary: "target", fulfillment: "satellite" });
     raw.prepare("INSERT INTO recipes (slug, title, ingredients_full) VALUES (?, ?, ?)").run("honey-mustard-salmon", "honey-mustard-salmon", JSON.stringify(["salmon"]));
-    raw.prepare("INSERT INTO meal_plan (tenant, recipe, planned_for) VALUES ('casey', ?, NULL)").run("honey-mustard-salmon");
+    raw.prepare("INSERT INTO meal_plan (tenant, id, recipe, planned_for) VALUES ('casey', lower(hex(randomblob(16))), ?, NULL)").run("honey-mustard-salmon");
     const list = await pullList(env, secret);
     expect(list.items.map((i) => i.item_id)).toEqual(["salmon"]);
     expect(await statusOf(env, "casey", "salmon")).toBeUndefined(); // truly virtual — no row minted

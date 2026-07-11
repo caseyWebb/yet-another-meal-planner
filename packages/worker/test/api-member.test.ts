@@ -296,7 +296,7 @@ describe("plan area", () => {
   it("ops flow through the watermark composition; set persists a side removal + date clear", async () => {
     const { env, d1 } = memberEnv({
       meal_plan: [
-        { tenant: "casey", recipe: "tacos", planned_for: "2026-07-10", sides: '["rice","beans"]', from_vibe: "weeknight" },
+        { tenant: "casey", id: "mp-tacos-0001", recipe: "tacos", meal: "dinner", planned_for: "2026-07-10", sides: '["rice","beans"]', from_vibe: "weeknight" },
       ],
     });
     const cookie = await loggedIn(env);
@@ -304,7 +304,7 @@ describe("plan area", () => {
       ops: [{ op: "set", recipe: "tacos", sides: ["rice"], planned_for: null }],
     });
     expect(res.status).toBe(200);
-    expect(((await res.json()) as { applied: unknown[] }).applied).toEqual([{ op: "set", recipe: "tacos" }]);
+    expect(((await res.json()) as { applied: unknown[] }).applied).toEqual([{ op: "set", id: "mp-tacos-0001", recipe: "tacos", meal: "dinner" }]);
     const row = d1.tables.meal_plan[0];
     expect(row.planned_for).toBeNull();
     expect(JSON.parse(row.sides as string)).toEqual(["rice"]);
@@ -606,22 +606,22 @@ describe("profile area", () => {
     const { env, d1 } = memberEnv();
     const cookie = await loggedIn(env);
 
-    const bare = await send(env, "PATCH", "/api/profile/preferences", cookie, { patch: { default_cooking_nights: 4 } });
+    const bare = await send(env, "PATCH", "/api/profile/preferences", cookie, { patch: { cadence: { dinner: 4 } } });
     expect(bare.status).toBe(412);
     expect(((await bare.json()) as { error: string }).error).toBe("conflict");
     expect(d1.tables.profile).toHaveLength(0); // nothing stored
 
     const read = await get(env, "/api/profile/preferences", cookie);
     const etag = read.headers.get("etag")!;
-    const ok = await send(env, "PATCH", "/api/profile/preferences", cookie, { patch: { default_cooking_nights: 4 } }, { "If-Match": etag });
+    const ok = await send(env, "PATCH", "/api/profile/preferences", cookie, { patch: { cadence: { dinner: 4 } } }, { "If-Match": etag });
     expect(ok.status).toBe(200);
-    expect(((await ok.json()) as { preferences: { default_cooking_nights: number } }).preferences.default_cooking_nights).toBe(4);
+    expect(((await ok.json()) as { preferences: { cadence: { dinner: number } } }).preferences.cadence.dinner).toBe(4);
     expect(ok.headers.get("etag")).toMatch(/^W\//); // the fresh representation rides back
 
     // The old ETag is now stale — a raced second writer is refused, not clobbered.
-    const stale = await send(env, "PATCH", "/api/profile/preferences", cookie, { patch: { default_cooking_nights: 2 } }, { "If-Match": etag });
+    const stale = await send(env, "PATCH", "/api/profile/preferences", cookie, { patch: { cadence: { dinner: 2 } } }, { "If-Match": etag });
     expect(stale.status).toBe(412);
-    expect(d1.tables.profile[0].default_cooking_nights).toBe(4);
+    expect(JSON.parse(d1.tables.profile[0].cadence as string)).toEqual({ dinner: 4 });
   });
 
   it("taste PUT replaces the whole markdown field under If-Match", async () => {
@@ -704,33 +704,28 @@ describe("vibes area", () => {
     expect(d1.tables.night_vibes).toHaveLength(1);
   });
 
-  it("suggest gate: a fresh healthy archetype-derive run throttles WITHOUT running derivation", async () => {
-    const now = Date.now();
+  it("the retired suggest trigger answers the pinned 410 stub — no derivation, no model (D8/D20)", async () => {
     const { env } = memberEnv({
-      job_health: [{ name: "archetype-derive", ok: 1, last_run_at: now - 60_000, summary: "{}" }],
+      // Even a stale job-health record changes nothing: the trigger is retired outright.
+      job_health: [{ name: "archetype-derive", ok: 1, last_run_at: Date.now() - 30 * 60 * 60 * 1000, summary: "{}" }],
     });
     const cookie = await loggedIn(env);
     vi.mocked(runDerivation).mockClear();
     const res = await send(env, "POST", "/api/vibes/suggest", cookie, {});
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as { throttled: boolean; retry_after_ms?: number };
-    expect(body.throttled).toBe(true);
-    expect(body.retry_after_ms).toBeGreaterThan(0);
+    expect(res.status).toBe(410);
+    // Pinned to the member-API route-level error convention ({ error: <literal>, message }),
+    // NOT a src/errors.ts ToolError code.
+    expect(await res.json()).toEqual({
+      error: "gone",
+      message: "Vibe suggestions now arrive automatically; this trigger was retired.",
+    });
     expect(runDerivation).not.toHaveBeenCalled();
   });
 
-  it("suggest gate: a stale last run lets derivation run (proposals land in the queue)", async () => {
-    const now = Date.now();
-    const { env } = memberEnv({
-      job_health: [{ name: "archetype-derive", ok: 1, last_run_at: now - 30 * 60 * 60 * 1000, summary: "{}" }],
-    });
-    const cookie = await loggedIn(env);
-    vi.mocked(runDerivation).mockClear();
-    const res = await send(env, "POST", "/api/vibes/suggest", cookie, {});
-    const body = (await res.json()) as { throttled: boolean; enqueued?: number };
-    expect(body.throttled).toBe(false);
-    expect(body.enqueued).toBe(1);
-    expect(runDerivation).toHaveBeenCalledTimes(1);
+  it("the 410 stub still requires a session (the gate outranks the stub)", async () => {
+    const { env } = memberEnv();
+    const res = await send(env, "POST", "/api/vibes/suggest", "", {});
+    expect(res.status).toBe(401);
   });
 });
 

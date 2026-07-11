@@ -6,10 +6,22 @@
 import { db } from "./db.js";
 import type { Env } from "./env.js";
 
-/** A night vibe as the palette + scheduler see it (the row, decoded). */
+/** The closed meal set a vibe can carry — projects are never vibe-driven. */
+export type VibeMeal = "breakfast" | "lunch" | "dinner";
+
+export const VIBE_MEALS: readonly VibeMeal[] = ["breakfast", "lunch", "dinner"];
+
+/** A meal vibe as the palette + scheduler see it (the row, decoded — stored in the
+ *  `night_vibes` table, which deliberately keeps its name; only the tool family
+ *  renamed to `meal_vibe`, D21). */
 export interface NightVibe {
   id: string;
   vibe: string;
+  /** Which meal's palette this vibe samples into (default 'dinner'; settable, never null). */
+  meal?: VibeMeal;
+  /** Member handles this vibe applies to (D29-final); NULL/absent = everyone. Opaque
+   *  strings, deduped, stored verbatim — no band-5 schema dependency. */
+  members?: string[];
   /** Optional hard-gate facets for the slot's retrieval (the same `search_recipes` facets). */
   facets?: Record<string, unknown>;
   /** Target cadence period in days; null/absent = no cadence pressure (occasional). */
@@ -18,7 +30,8 @@ export interface NightVibe {
   pinned?: boolean;
   /** Base sampling weight before debt/weather (null → 1). */
   base_weight?: number | null;
-  /** Weather meal_vibes that favor this vibe. */
+  /** Weather meal_vibes that favor this vibe (dinner-scoped in allocation; preserved
+   *  but inert on a non-dinner vibe). */
   weather_affinity?: string[];
   /** Weather meal_vibes that suppress it. */
   weather_antipathy?: string[];
@@ -31,6 +44,8 @@ export interface NightVibe {
 interface NightVibeRow {
   id: string;
   vibe: string;
+  meal: string | null;
+  members: string | null;
   facets: string | null;
   cadence_days: number | null;
   pinned: number;
@@ -53,7 +68,13 @@ function parseJsonArray(raw: string | null): string[] | undefined {
 }
 
 function decodeVibe(row: NightVibeRow): NightVibe {
-  const out: NightVibe = { id: row.id, vibe: row.vibe };
+  const out: NightVibe = {
+    id: row.id,
+    vibe: row.vibe,
+    meal: (VIBE_MEALS as readonly string[]).includes(row.meal ?? "") ? (row.meal as VibeMeal) : "dinner",
+  };
+  const members = parseJsonArray(row.members);
+  if (members && members.length) out.members = members;
   if (row.facets) {
     try {
       const f = JSON.parse(row.facets);
@@ -75,10 +96,10 @@ function decodeVibe(row: NightVibeRow): NightVibe {
   return out;
 }
 
-/** Every night vibe in the caller's palette, id-ordered. */
+/** Every meal vibe in the caller's palette, id-ordered. */
 export async function readNightVibes(env: Env, tenant: string): Promise<NightVibe[]> {
   const rows = await db(env).all<NightVibeRow>(
-    "SELECT id, vibe, facets, cadence_days, pinned, base_weight, weather_affinity, weather_antipathy, season, created_at " +
+    "SELECT id, vibe, meal, members, facets, cadence_days, pinned, base_weight, weather_affinity, weather_antipathy, season, created_at " +
       "FROM night_vibes WHERE tenant = ?1 ORDER BY id",
     tenant,
   );
@@ -86,23 +107,27 @@ export async function readNightVibes(env: Env, tenant: string): Promise<NightVib
 }
 
 const UPSERT_SQL =
-  "INSERT INTO night_vibes (tenant, id, vibe, facets, cadence_days, pinned, base_weight, weather_affinity, weather_antipathy, season, created_at, updated_at) " +
-  "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11) " +
-  "ON CONFLICT(tenant, id) DO UPDATE SET vibe = excluded.vibe, facets = excluded.facets, cadence_days = excluded.cadence_days, " +
+  "INSERT INTO night_vibes (tenant, id, vibe, meal, members, facets, cadence_days, pinned, base_weight, weather_affinity, weather_antipathy, season, created_at, updated_at) " +
+  "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?13) " +
+  "ON CONFLICT(tenant, id) DO UPDATE SET vibe = excluded.vibe, meal = excluded.meal, members = excluded.members, " +
+  "facets = excluded.facets, cadence_days = excluded.cadence_days, " +
   "pinned = excluded.pinned, base_weight = excluded.base_weight, weather_affinity = excluded.weather_affinity, " +
   "weather_antipathy = excluded.weather_antipathy, season = excluded.season, updated_at = excluded.updated_at";
 
 const jsonOrNull = (v: unknown): string | null =>
   v == null || (Array.isArray(v) && v.length === 0) ? null : JSON.stringify(v);
 
-/** Insert or update one night vibe (keyed by `(tenant, id)`). Returns nothing; the embedding
- *  reconciles on the next cron tick from the new `vibe` text (hash-gated). */
+/** Insert or update one meal vibe (keyed by `(tenant, id)`). Returns nothing; the embedding
+ *  reconciles on the next cron tick from the new `vibe` text (hash-gated — a meal/members
+ *  change alone re-embeds NOTHING, the hash covers the phrase). */
 export async function upsertNightVibe(env: Env, tenant: string, vibe: NightVibe, nowIso: string): Promise<void> {
   await db(env).run(
     UPSERT_SQL,
     tenant,
     vibe.id,
     vibe.vibe,
+    vibe.meal ?? "dinner",
+    jsonOrNull(vibe.members),
     jsonOrNull(vibe.facets),
     vibe.cadence_days ?? null,
     vibe.pinned ? 1 : 0,
@@ -233,13 +258,24 @@ export async function readCookedDatesByRecipe(env: Env, tenant: string): Promise
   return map;
 }
 
-/** The caller's night-vibe vectors (vibe id → embedding), skipping NULL/garbage rows —
- *  the Level-2 fill's query vectors. An unembedded vibe is simply absent (not-yet-indexed). */
-export async function readNightVibeVectors(env: Env, tenant: string): Promise<Map<string, number[]>> {
-  const rows = await db(env).all<{ id: string; embedding: string | null }>(
-    "SELECT id, embedding FROM night_vibe_derived WHERE tenant = ?1 AND embedding IS NOT NULL",
-    tenant,
-  );
+/** The caller's meal-vibe vectors (vibe id → embedding), skipping NULL/garbage rows —
+ *  the Level-2 fill's query vectors. An unembedded vibe is simply absent (not-yet-indexed).
+ *  An optional `meal` scopes the read to vibes of that meal (the cook-time attribution's
+ *  meal-scoping; a meal no vibe carries — e.g. 'project' — yields an empty map). */
+export async function readNightVibeVectors(env: Env, tenant: string, meal?: string): Promise<Map<string, number[]>> {
+  const rows =
+    meal === undefined
+      ? await db(env).all<{ id: string; embedding: string | null }>(
+          "SELECT id, embedding FROM night_vibe_derived WHERE tenant = ?1 AND embedding IS NOT NULL",
+          tenant,
+        )
+      : await db(env).all<{ id: string; embedding: string | null }>(
+          "SELECT d.id AS id, d.embedding AS embedding FROM night_vibe_derived d " +
+            "JOIN night_vibes v ON v.tenant = d.tenant AND v.id = d.id " +
+            "WHERE d.tenant = ?1 AND d.embedding IS NOT NULL AND v.meal = ?2",
+          tenant,
+          meal,
+        );
   const map = new Map<string, number[]>();
   for (const { id, embedding } of rows) {
     if (!embedding) continue;

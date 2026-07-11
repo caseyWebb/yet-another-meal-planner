@@ -41,7 +41,7 @@
 **Band 1 — foundations with no UI dependencies.** Coupling rule (D25(2)): a migration retiring a preference shape the shipped profile/vibes pages edit ships with, or is immediately followed by, its member-UI update.
 
 ## meal-dimension-foundations
-- **Delivers**: `meal: breakfast|lunch|dinner|project` across plan/log/vibes/cadence; D26-final per-slot plan-row identity (client-mintable ULID PK, planner-no-duplicates, slug-op fan-out, meal-aware `log_cooked` clear); `night_vibe`→`meal_vibe` rename + retired-key shims (D21 one-window aliases); caller-neutral attendance-aware propose contract (D29-final: union hard floor, blended soft profile); suggest-vibes cron producer. Schema + tool contracts + propose engine — no UI.
+- **Delivers**: `meal: breakfast|lunch|dinner|project` across plan/log/vibes/cadence; D26-final per-slot plan-row identity (client-mintable ULID PK, planner-no-duplicates, slug-op fan-out, meal-aware `log_cooked` clear); `night_vibe`→`meal_vibe` rename + retired-key shims (D21 one-window aliases); caller-neutral attendance-aware propose contract (D29-final: union hard floor, blended soft profile); suggest-vibes cron producer; the D8 lunch-strategy/RTE → seeded-vibes value migration as pipeline convergence (pre-migration production rows = fixtures, D21). Schema + tool contracts + propose engine — no UI.
 - **Reads**: stories/02 in full (incl. open qs 2–4 — resolve in proposal); D8, D20, D21, D26-final, D29-final; pages/03 §2 (blessed move/re-tag semantics); Appendix A "Renamed"/"Changed" tool lines.
 - **Deltas**: night-vibe-palette, planning-cadence, weather-bucket-planning, meal-plan-proposal, meal-planning, menu-generation, cooking-history, meal-plan-widget, member-app-propose, member-app-core, profile-reconciliation, night-vibe-archetype-derivation (Appendix B band 1).
 - **Spikes**: production D1 shapes — existing plan/vibe/preference rows are the D21/D26 migration acceptance fixtures.
@@ -98,7 +98,7 @@
 - **Design dependency**: design-requests #5 (attendance control — design-first per D29-final).
 
 ## profile-planning-and-vibes-ui
-- **Delivers**: Page 09 Planning card (per-meal cadence steppers, resurface/novelty sliders, weekly-budget control) + page 10 Meal vibes tab (meal grouping, inline suggestions replacing the queue, pinned indicator). Carries the D8 lunch-strategy/RTE → seeded-vibes value migration as pipeline convergence (pre-migration production rows = fixtures, D21). Sequenced immediately after `meal-dimension-foundations` (D25(2)).
+- **Delivers**: Page 09 Planning card (per-meal cadence steppers, resurface/novelty sliders, weekly-budget control) + page 10 Meal vibes tab (meal grouping, inline suggestions replacing the queue, pinned indicator) — the member-UI half of D25(2)'s coupling for the preference shapes `meal-dimension-foundations` retired (its D8 value migration lands there). Sequenced immediately after `meal-dimension-foundations` (D25(2)).
 - **Reads**: pages/09 §1–3, pages/10 §2–3; D8, D21, D25(2).
 - **Deltas**: member-app-core (profile surfaces + queue removal if not yet landed); TOOLS update_preferences + vibe family surfaces.
 - **Serial-surface collisions**: member-app-core siblings; update_preferences shared with band-1 changes.

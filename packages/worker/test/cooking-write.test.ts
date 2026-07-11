@@ -30,8 +30,8 @@ describe("log_cooked (D1, transactional meal-plan clear)", () => {
       recipes: ["miso-salmon"],
       tables: {
         meal_plan: [
-          { tenant: "everett", recipe: "miso-salmon", planned_for: null, sides: null },
-          { tenant: "everett", recipe: "tacos", planned_for: null, sides: null },
+          { tenant: "everett", id: "mp-miso-00001", recipe: "miso-salmon", meal: "dinner", planned_for: null, sides: null },
+          { tenant: "everett", id: "mp-tacos-0001", recipe: "tacos", meal: "dinner", planned_for: null, sides: null },
         ],
       },
     });
@@ -47,9 +47,10 @@ describe("log_cooked (D1, transactional meal-plan clear)", () => {
     expect(batch).toHaveLength(2);
     expect(batch[0].sql).toMatch(/INSERT INTO cooking_log/);
     // Trailing null is satisfied_vibe (this planned row carried no from_vibe).
-    expect(batch[0].binds).toEqual(["everett", "2026-06-20", "recipe", "miso-salmon", null, null, null, null]);
+    expect(batch[0].binds).toEqual(["everett", "2026-06-20", "recipe", "miso-salmon", null, null, null, null, null]);
     expect(batch[1].sql).toMatch(/DELETE FROM meal_plan/);
-    expect(batch[1].binds).toEqual(["everett", "miso-salmon"]);
+    // The clear deletes by the row's id — the deterministic clear order selected it.
+    expect(batch[1].binds).toEqual(["everett", "mp-miso-00001"]);
 
     // The cooked recipe was removed; the other remains.
     expect(d1.tables.meal_plan.map((r) => r.recipe)).toEqual(["tacos"]);
@@ -59,13 +60,13 @@ describe("log_cooked (D1, transactional meal-plan clear)", () => {
     const d1: FakeD1 = fakeD1({
       recipes: ["miso-salmon"],
       tables: {
-        meal_plan: [{ tenant: "everett", recipe: "miso-salmon", planned_for: null, sides: null, from_vibe: "weeknight-fish" }],
+        meal_plan: [{ tenant: "everett", id: "mp-miso-00001", recipe: "miso-salmon", meal: "dinner", planned_for: null, sides: null, from_vibe: "weeknight-fish" }],
       },
     });
     const handlers = collect(d1.env, "everett");
     await handlers.get("log_cooked")!({ type: "recipe", recipe: "miso-salmon", date: "2026-06-22" });
     // satisfied_vibe (8th bind) carries the planned row's from_vibe.
-    expect(d1.batches[0][0].binds).toEqual(["everett", "2026-06-22", "recipe", "miso-salmon", null, null, null, "weeknight-fish"]);
+    expect(d1.batches[0][0].binds).toEqual(["everett", "2026-06-22", "recipe", "miso-salmon", null, null, null, null, "weeknight-fish"]);
   });
 
   it("defaults date to today when omitted", async () => {
@@ -94,7 +95,7 @@ describe("log_cooked (D1, transactional meal-plan clear)", () => {
     expect(out.logged).toMatchObject({ type: "ready_to_eat", name: "frozen lasagna" });
     const batch = d1.batches[0];
     expect(batch).toHaveLength(1);
-    expect(batch[0].binds).toEqual(["everett", "2026-06-21", "ready_to_eat", null, "frozen lasagna", "beef", null, null]);
+    expect(batch[0].binds).toEqual(["everett", "2026-06-21", "ready_to_eat", null, "frozen lasagna", "beef", null, null, null]);
   });
 
   it("rejects a non-recipe entry with no name (validation_failed)", async () => {
@@ -172,7 +173,7 @@ describe("logCooked — cook-time vibe satisfaction (D4, real SQLite)", () => {
       run("INSERT INTO night_vibes (tenant, id, vibe) VALUES (?, ?, ?)", TENANT, v.id, v.id.replace(/-/g, " "));
       if (v.vec) run("INSERT INTO night_vibe_derived (tenant, id, embedding) VALUES (?, ?, ?)", TENANT, v.id, JSON.stringify(v.vec));
     }
-    if (opts.fromVibe) run("INSERT INTO meal_plan (tenant, recipe, from_vibe) VALUES (?, ?, ?)", TENANT, RECIPE, opts.fromVibe);
+    if (opts.fromVibe) run("INSERT INTO meal_plan (tenant, id, recipe, from_vibe) VALUES (?, lower(hex(randomblob(16))), ?, ?)", TENANT, RECIPE, opts.fromVibe);
     return {
       s,
       sat: () =>
@@ -279,5 +280,157 @@ describe("logCooked — cook-time vibe satisfaction (D4, real SQLite)", () => {
     const { s, sat } = seed({ recipeVec: null, vibes: [{ id: "aimed", vec: [1, 0, 0] }] });
     await cook(s);
     expect(sat()).toHaveLength(0);
+  });
+});
+
+
+// ── The deterministic clear order + meal-scoped attribution, over REAL SQLite ─────────
+
+describe("logCooked — the deterministic clear order (D26-final, real SQLite)", () => {
+  const T = "casey";
+
+  function harness() {
+    const h = sqliteEnv();
+    h.raw.prepare("INSERT INTO recipes (slug, title) VALUES ('miso-salmon', 'Miso Salmon')").run();
+    h.raw.prepare("INSERT INTO recipes (slug, title) VALUES ('sourdough', 'Sourdough')").run();
+    return h;
+  }
+  function seedRow(h: ReturnType<typeof sqliteEnv>, id: string, recipe: string, opts: { meal?: string; planned_for?: string | null; from_vibe?: string | null } = {}): void {
+    h.raw
+      .prepare("INSERT INTO meal_plan (tenant, id, recipe, meal, planned_for, from_vibe) VALUES (?, ?, ?, ?, ?, ?)")
+      .run(T, id, recipe, opts.meal ?? "dinner", opts.planned_for ?? null, opts.from_vibe ?? null);
+  }
+  function planIds(h: ReturnType<typeof sqliteEnv>): string[] {
+    return (h.raw.prepare("SELECT id FROM meal_plan ORDER BY id").all() as { id: string }[]).map((r) => r.id);
+  }
+
+  it("step 1: a supplied plan_row_id clears exactly that row, returned in cleared_plan_row", async () => {
+    const h = harness();
+    seedRow(h, "row-aaaaaaaaaa", "miso-salmon", { planned_for: "2026-07-15" });
+    seedRow(h, "row-bbbbbbbbbb", "miso-salmon");
+    const r = await logCooked(h.env, T, { type: "recipe", recipe: "miso-salmon", plan_row_id: "row-bbbbbbbbbb" });
+    expect(r.cleared_plan_row).toEqual({ id: "row-bbbbbbbbbb", recipe: "miso-salmon", meal: "dinner", planned_for: null });
+    expect(planIds(h)).toEqual(["row-aaaaaaaaaa"]);
+  });
+
+  it("step 1: a plan_row_id holding a DIFFERENT recipe is a structured conflict — NO log written", async () => {
+    const h = harness();
+    seedRow(h, "row-aaaaaaaaaa", "sourdough");
+    await expect(logCooked(h.env, T, { type: "recipe", recipe: "miso-salmon", plan_row_id: "row-aaaaaaaaaa" })).rejects.toMatchObject({
+      code: "conflict",
+    });
+    expect((h.raw.prepare("SELECT COUNT(*) AS n FROM cooking_log").get() as { n: number }).n).toBe(0);
+    expect(planIds(h)).toEqual(["row-aaaaaaaaaa"]); // untouched
+  });
+
+  it("step 1: a STALE plan_row_id logs WITHOUT clearing and never falls through to a surviving duplicate", async () => {
+    const h = harness();
+    seedRow(h, "row-bbbbbbbbbb", "miso-salmon"); // the surviving explicit duplicate
+    const r = await logCooked(h.env, T, { type: "recipe", recipe: "miso-salmon", plan_row_id: "row-gone-00000" });
+    expect(r.cleared_plan_row).toBeNull();
+    expect(r.note).toContain("row-gone-00000");
+    expect((h.raw.prepare("SELECT COUNT(*) AS n FROM cooking_log").get() as { n: number }).n).toBe(1); // still logged
+    expect(planIds(h)).toEqual(["row-bbbbbbbbbb"]); // the duplicate survives
+  });
+
+  it("step 2: the exact (recipe, meal, date) triple clears that slot; the other meal's row survives", async () => {
+    const h = harness();
+    seedRow(h, "row-tue-lunch", "miso-salmon", { meal: "lunch", planned_for: "2026-07-14" });
+    seedRow(h, "row-thu-dinnr", "miso-salmon", { meal: "dinner", planned_for: "2026-07-16" });
+    const r = await logCooked(h.env, T, { type: "recipe", recipe: "miso-salmon", meal: "lunch", date: "2026-07-14" });
+    expect(r.cleared_plan_row?.id).toBe("row-tue-lunch");
+    expect(planIds(h)).toEqual(["row-thu-dinnr"]);
+  });
+
+  it("step 3: the earliest-due fallback (planned_for ASC NULLS LAST, id ASC) never consumes a project row", async () => {
+    const h = harness();
+    seedRow(h, "row-undated-1", "sourdough");
+    seedRow(h, "row-project-1", "sourdough", { meal: "project" });
+    const r = await logCooked(h.env, T, { type: "recipe", recipe: "sourdough" });
+    expect(r.cleared_plan_row?.id).toBe("row-undated-1");
+    expect(planIds(h)).toEqual(["row-project-1"]); // the project survives
+    // Only an entry whose meal IS 'project' may clear the project row.
+    const r2 = await logCooked(h.env, T, { type: "recipe", recipe: "sourdough", meal: "project" });
+    expect(r2.cleared_plan_row?.id).toBe("row-project-1");
+    expect(r2.logged.meal).toBe("project");
+  });
+
+  it("step 3: a 'project' cook clears the PROJECT row even when a same-slug dated dinner is due sooner", async () => {
+    // The exact grill failure scenario: 'sourdough' planned as both an (undated, op-enforced)
+    // project row AND a dated dinner row. earliest-due orders planned_for ASC NULLS LAST, so the
+    // dated dinner sorts ahead of the undated project — the fallback must NOT admit it for a
+    // project cook, or it silently deletes the future dinner and leaves the finished bake planned.
+    const h = harness();
+    seedRow(h, "row-project-1", "sourdough", { meal: "project" });
+    seedRow(h, "row-dinner-01", "sourdough", { meal: "dinner", planned_for: "2026-07-15" });
+    const r = await logCooked(h.env, T, { type: "recipe", recipe: "sourdough", meal: "project", date: "2026-07-20" });
+    expect(r.cleared_plan_row?.id).toBe("row-project-1"); // the project row, not the sooner-due dinner
+    expect(planIds(h)).toEqual(["row-dinner-01"]); // the dated dinner slot survives
+  });
+
+  it("one cook clears ONE row — an explicit duplicate survives the first cook (earliest-due picked)", async () => {
+    const h = harness();
+    seedRow(h, "row-bbbbbbbbbb", "miso-salmon", { planned_for: "2026-07-16" });
+    seedRow(h, "row-aaaaaaaaaa", "miso-salmon", { planned_for: "2026-07-14" });
+    const r = await logCooked(h.env, T, { type: "recipe", recipe: "miso-salmon" });
+    expect(r.cleared_plan_row?.id).toBe("row-aaaaaaaaaa"); // earliest planned_for
+    expect(planIds(h)).toEqual(["row-bbbbbbbbbb"]);
+  });
+
+  it("step 4: no match → no clear (an off-plan cook), cleared_plan_row: null", async () => {
+    const h = harness();
+    const r = await logCooked(h.env, T, { type: "recipe", recipe: "miso-salmon" });
+    expect(r.cleared_plan_row).toBeNull();
+    expect((h.raw.prepare("SELECT meal FROM cooking_log").get() as { meal: string | null }).meal).toBeNull();
+  });
+
+  it("the from_vibe prior is read from THE ROW ACTUALLY CLEARED, never a slug-global pick", async () => {
+    const h = harness();
+    seedRow(h, "row-aaaaaaaaaa", "miso-salmon", { planned_for: "2026-07-14", from_vibe: "vibe-earliest" });
+    seedRow(h, "row-bbbbbbbbbb", "miso-salmon", { planned_for: "2026-07-16", from_vibe: "vibe-later" });
+    const r = await logCooked(h.env, T, { type: "recipe", recipe: "miso-salmon", plan_row_id: "row-bbbbbbbbbb" });
+    expect(r.cleared_plan_row?.id).toBe("row-bbbbbbbbbb");
+    const logged = h.raw.prepare("SELECT satisfied_vibe FROM cooking_log").get() as { satisfied_vibe: string | null };
+    expect(logged.satisfied_vibe).toBe("vibe-later");
+    // The other row's provenance is untouched for its own future cook.
+    const rest = h.raw.prepare("SELECT from_vibe FROM meal_plan").get() as { from_vibe: string | null };
+    expect(rest.from_vibe).toBe("vibe-earliest");
+  });
+
+  it("route dedupe identity is (date, meal, type, recipe|name): a NULL meal matches NULL only", async () => {
+    const h = harness();
+    const lunch = await logCooked(h.env, T, { type: "recipe", recipe: "miso-salmon", meal: "lunch", date: "2026-07-14" }, { dedupe: true });
+    expect(lunch.deduped).toBeUndefined();
+    // Same date + recipe, DIFFERENT meal → a distinct identity, not a replay.
+    const dinner = await logCooked(h.env, T, { type: "recipe", recipe: "miso-salmon", meal: "dinner", date: "2026-07-14" }, { dedupe: true });
+    expect(dinner.deduped).toBeUndefined();
+    // The exact tuple replayed → deduped, nothing inserted.
+    const replay = await logCooked(h.env, T, { type: "recipe", recipe: "miso-salmon", meal: "lunch", date: "2026-07-14" }, { dedupe: true });
+    expect(replay.deduped).toBe(true);
+    // A meal-less entry is its own identity too (NULL matches NULL only).
+    const bare = await logCooked(h.env, T, { type: "recipe", recipe: "miso-salmon", date: "2026-07-14" }, { dedupe: true });
+    expect(bare.deduped).toBeUndefined();
+    const bareReplay = await logCooked(h.env, T, { type: "recipe", recipe: "miso-salmon", date: "2026-07-14" }, { dedupe: true });
+    expect(bareReplay.deduped).toBe(true);
+    expect((h.raw.prepare("SELECT COUNT(*) AS n FROM cooking_log").get() as { n: number }).n).toBe(3);
+  });
+
+  it("vibe attribution is MEAL-SCOPED: a lunch cook cosine-matches lunch vibes only; a meal-less cook matches all", async () => {
+    const h = harness();
+    const vec = JSON.stringify([1, 0, 0]);
+    h.raw.prepare("INSERT INTO recipe_derived (slug, embedding) VALUES ('miso-salmon', ?)").run(vec);
+    h.raw.prepare("INSERT INTO night_vibes (tenant, id, vibe, meal) VALUES (?, 'lunch-vibe', 'a bright lunch', 'lunch')").run(T);
+    h.raw.prepare("INSERT INTO night_vibes (tenant, id, vibe, meal) VALUES (?, 'dinner-vibe', 'a bright dinner', 'dinner')").run(T);
+    h.raw.prepare("INSERT INTO night_vibe_derived (tenant, id, embedding) VALUES (?, 'lunch-vibe', ?)").run(T, vec);
+    h.raw.prepare("INSERT INTO night_vibe_derived (tenant, id, embedding) VALUES (?, 'dinner-vibe', ?)").run(T, vec);
+
+    await logCooked(h.env, T, { type: "recipe", recipe: "miso-salmon", meal: "lunch", date: "2026-07-14" });
+    const lunchSat = h.raw.prepare("SELECT vibe_id FROM vibe_satisfaction ORDER BY vibe_id").all() as { vibe_id: string }[];
+    expect(lunchSat.map((r) => r.vibe_id)).toEqual(["lunch-vibe"]); // the dinner vibe is out of scope
+
+    // A meal-less entry matches ALL vibes (fail-open — the pre-meal behavior).
+    await logCooked(h.env, T, { type: "recipe", recipe: "miso-salmon", date: "2026-07-15" });
+    const allSat = h.raw.prepare("SELECT vibe_id FROM vibe_satisfaction WHERE date = '2026-07-15' ORDER BY vibe_id").all() as { vibe_id: string }[];
+    expect(allSat.map((r) => r.vibe_id)).toEqual(["dinner-vibe", "lunch-vibe"]);
   });
 });

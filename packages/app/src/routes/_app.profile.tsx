@@ -864,19 +864,15 @@ function VibesTab() {
   const [adding, setAdding] = React.useState(false);
 
   async function suggest() {
+    // The trigger is RETIRED (D8/D20 — the cron carries generation): the route answers a
+    // pinned 410 { error: "gone" } for one deprecation window, so this shipped button
+    // fails explicably until band 2's profile/vibes slice removes it.
     const res = await api.api.vibes.suggest.$post({ json: {} }).catch(() => null);
-    if (!res?.ok) {
-      toast("Couldn't get suggestions — try again");
+    if (res?.status === 410) {
+      toast("Vibe suggestions now arrive automatically — this button has retired");
       return;
     }
-    const body = (await res.json()) as { throttled: boolean; enqueued?: number };
-    if (body.throttled) {
-      // The quiet throttled state (D7): the derivation ran recently — nothing to spend.
-      toast("Suggestions are fresh — check back tomorrow");
-    } else {
-      toast(body.enqueued ? `${body.enqueued} new suggestion${body.enqueued === 1 ? "" : "s"}` : "No new suggestions right now");
-      await qc.invalidateQueries({ queryKey: ["proposals"] });
-    }
+    toast("Couldn't get suggestions — try again");
   }
 
   const rows = vibes.data?.vibes ?? [];

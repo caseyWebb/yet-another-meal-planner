@@ -23,8 +23,9 @@ import { readOverlay } from "./profile-db.js";
 import { readCookedDatesByRecipe, readNightVibeVectors, readNightVibes } from "./night-vibe-db.js";
 import { deriveArchetypes, type TasteItem, type DerivedArchetype } from "./night-vibe-derive.js";
 import { nameCluster, starterVibesFromTaste } from "./night-vibe-naming.js";
+import { aliasDescription } from "./night-vibe-tools.js";
 import { enqueueProposal, readProposals, supersedeProposals, type PendingProposal } from "./reconcile-db.js";
-import { planQueueConvergence, filterCandidates, type PendingVibeProposal } from "./night-vibe-dedupe.js";
+import { planQueueConvergence, filterCandidates, type PendingVibeProposal, type MealVector } from "./night-vibe-dedupe.js";
 import { embedTextsCached } from "./embedding.js";
 import type { ProposalDraft } from "./reconcile-signals.js";
 import { directoryFromEnv } from "./tenant.js";
@@ -100,23 +101,31 @@ export async function runDerivation(
     if (candidates.length) source = "clusters";
   }
   if (candidates.length === 0 && existingVibes.length === 0) {
+    // Cold-start starters are DINNER vibes — taste notes carry no per-meal signal, and
+    // the system never fabricates one.
     const starters = await starterVibesFromTaste(env, profile.taste, trigger);
-    candidates = starters.slice(0, maxSuggestions).map((s) => ({ id: s.id, vibe: s.vibe, cadence_days: null, evidence: { member_slugs: [], size: 0 } }));
+    candidates = starters.slice(0, maxSuggestions).map((s) => ({ id: s.id, vibe: s.vibe, cadence_days: null, meal: "dinner" as const, evidence: { member_slugs: [], size: 0 } }));
     if (candidates.length) source = "cold_start";
   }
 
-  // Load the member's pending + rejected `add_vibe` proposals — the phrase-space dedup basis (D3).
+  // Load the member's pending + rejected `add_vibe` proposals — the (meal, phrase-space)
+  // dedup basis (D3). A proposal payload lacking `meal` predates the meal dimension and
+  // converges as `dinner`.
   const [pendingRows, rejectedRows] = await Promise.all([
     readProposals(env, tenant, "pending"),
     readProposals(env, tenant, "rejected"),
   ]);
   const vibePhrase = (p: PendingProposal): string | null =>
     p.kind === "add_vibe" && typeof p.payload.vibe === "string" && p.payload.vibe.trim() ? p.payload.vibe : null;
+  const vibeMeal = (p: PendingProposal): string | undefined =>
+    typeof p.payload.meal === "string" ? p.payload.meal : undefined;
   const pendingVibes: PendingVibeProposal[] = pendingRows
     .map((p) => ({ p, vibe: vibePhrase(p) }))
     .filter((x): x is { p: PendingProposal; vibe: string } => x.vibe !== null)
-    .map(({ p, vibe }) => ({ id: p.id, vibe, created_at: p.created_at }));
-  const rejectedPhrases = rejectedRows.map(vibePhrase).filter((v): v is string => v !== null);
+    .map(({ p, vibe }) => ({ id: p.id, vibe, meal: vibeMeal(p), created_at: p.created_at }));
+  const rejectedVibes = rejectedRows
+    .map((p) => ({ vibe: vibePhrase(p), meal: vibeMeal(p) }))
+    .filter((x): x is { vibe: string; meal: string | undefined } => x.vibe !== null);
   // Palette vibes not yet reconciled into `night_vibe_derived` (the confirm→derive race) — embed
   // their phrase this pass so a just-confirmed vibe still dedupes.
   const missingPaletteVibes = existingVibes.filter((v) => !paletteVecs.has(v.id) && typeof v.vibe === "string" && v.vibe.trim());
@@ -126,7 +135,7 @@ export async function runDerivation(
   const toEmbed = [
     ...new Set([
       ...pendingVibes.map((p) => p.vibe),
-      ...rejectedPhrases,
+      ...rejectedVibes.map((r) => r.vibe),
       ...candidates.map((c) => c.vibe),
       ...missingPaletteVibes.map((v) => v.vibe),
     ]),
@@ -135,22 +144,33 @@ export async function runDerivation(
   const vecOf = new Map<string, number[]>();
   toEmbed.forEach((t, i) => vecOf.set(t, embedded[i]));
 
-  // Palette basis = stored palette phrase vectors ∪ freshly-embedded missing-palette phrases.
-  const paletteBasis = [...paletteVecs.values(), ...missingPaletteVibes.map((v) => vecOf.get(v.vibe)!)];
-  const rejectedVecs = rejectedPhrases.map((p) => vecOf.get(p)!);
+  // Palette basis = stored palette phrase vectors ∪ freshly-embedded missing-palette phrases,
+  // each carrying its vibe's meal (the convergence key is (meal, phrase-space)).
+  const mealById = new Map(existingVibes.map((v) => [v.id, v.meal]));
+  const paletteBasis: MealVector[] = [
+    ...[...paletteVecs.entries()].map(([id, vec]) => ({ meal: mealById.get(id), vec })),
+    ...missingPaletteVibes.map((v) => ({ meal: v.meal, vec: vecOf.get(v.vibe)! })),
+  ];
+  const rejectedVecs: MealVector[] = rejectedVibes
+    .filter((r) => vecOf.has(r.vibe))
+    .map((r) => ({ meal: r.meal, vec: vecOf.get(r.vibe)! }));
 
   // Converge the accumulated pending queue (D4): supersede near-dups onto the earliest representative
   // of each group. Runs even when no new candidates survive — convergence can't depend on new material.
   const plan = planQueueConvergence(pendingVibes, { paletteVecs: paletteBasis, rejectedVecs }, vecOf);
   const superseded = await supersedeProposals(env, tenant, plan.superseded.map((s) => s.id), nowIso);
 
-  // Filter candidates against palette ∪ rejected ∪ surviving pending representatives ∪ kept-in-run (D1).
-  const repVecs = plan.representatives.map((r) => vecOf.get(r.vibe)!).filter((v): v is number[] => Array.isArray(v));
-  const basisVecs = [...paletteBasis, ...rejectedVecs, ...repVecs];
+  // Filter candidates against palette ∪ rejected ∪ surviving pending representatives ∪ kept-in-run
+  // (D1) — all under the (meal, phrase-space) key.
+  const repVecs: MealVector[] = plan.representatives
+    .filter((r) => vecOf.has(r.vibe))
+    .map((r) => ({ meal: r.meal, vec: vecOf.get(r.vibe)! }));
+  const basisVecs: MealVector[] = [...paletteBasis, ...rejectedVecs, ...repVecs];
   const kept = filterCandidates(candidates, basisVecs, vecOf);
 
   // Enqueue each survivor as an add_vibe proposal (skip ones whose id already names a palette vibe;
-  // the queue's stable id makes re-drafting idempotent).
+  // the queue's stable id makes re-drafting idempotent). The payload carries the vibe's `meal` so
+  // the confirm apply shelves it onto the right palette.
   let enqueued = 0;
   for (const c of kept) {
     if (existingIds.has(c.id)) continue;
@@ -161,6 +181,7 @@ export async function runDerivation(
         id: c.id,
         vibe: c.vibe,
         cadence_days: c.cadence_days,
+        meal: c.meal,
         ...(c.weather_affinity ? { weather_affinity: c.weather_affinity } : {}),
       },
       rationale: rationaleFor(c, source),
@@ -225,25 +246,32 @@ function rationaleFor(c: DerivedArchetype, source: DerivationResult["source"]): 
 }
 
 export function registerSuggestNightVibesTool(server: McpServer, env: Env, tenant: Tenant): void {
+  const schema = {
+    max_suggestions: z.number().int().positive().max(8).optional(),
+    seed: z.number().int().optional(),
+  };
+  const handler = ({ max_suggestions, seed }: { max_suggestions?: number; seed?: number }) =>
+    runTool(async () => {
+      const resolvedSeed = seed ?? Number(new Date().toISOString().slice(0, 10).replace(/-/g, ""));
+      const result = await runDerivation(env, tenant.id, resolvedSeed, max_suggestions ?? DEFAULT_MAX_SUGGESTIONS, "request");
+      const note =
+        result.source === "none"
+          ? "no taste-space to derive from yet — cook a few meals or favorite some recipes, then try again"
+          : undefined;
+      return note ? { ...result, note } : result;
+    });
   server.registerTool(
-    "suggest_night_vibes",
+    "suggest_meal_vibes",
     {
       description:
-        "Derive candidate NIGHT VIBES for the caller from what they actually like and cook — cluster their favorites + cook history into archetypes, name each (a small model), infer a cadence from the observed cook interval, and drop any near-duplicate of a palette vibe, a pending or rejected suggestion, or another candidate this run (phrase-space dedup). With too little history AND an empty palette, falls back to starter vibes from their taste notes; a member who already has a palette but too little history to cluster is derived nothing (source `none`). Each surviving candidate is ENQUEUED as an `add_vibe` proposal the caller confirms via confirm_proposal — this tool NEVER writes the palette. It also converges the caller's already-accumulated pending near-duplicates onto one suggestion each (the rest resolved `superseded`, dropped from the queue). Use at onboarding to seed an empty palette, or any time to grow it. Returns { candidates, enqueued, superseded, source }.",
-      inputSchema: {
-        max_suggestions: z.number().int().positive().max(8).optional(),
-        seed: z.number().int().optional(),
-      },
+        "Derive candidate MEAL VIBES for the caller from what they actually like and cook — cluster their favorites + cook history into archetypes, name each and classify its meal (breakfast | lunch | dinner) in one small-model call, infer a cadence from the observed cook interval, and drop any near-duplicate of a palette vibe, a pending or rejected suggestion, or another candidate this run (dedup keyed on (meal, phrase-space) — the same phrase in a different meal is not a duplicate). With too little history AND an empty palette, falls back to starter vibes from their taste notes (starters are dinner vibes — taste notes carry no per-meal signal). A member who already has a palette but too little history to cluster is derived nothing (source `none`). Each surviving candidate is ENQUEUED as an `add_vibe` proposal (its payload carrying the vibe's `meal`) the caller confirms via confirm_proposal — this tool NEVER writes the palette. It also converges the caller's already-accumulated pending near-duplicates onto one suggestion each (the rest resolved `superseded`, dropped from the queue). Use at onboarding to seed an empty palette — especially to seed lunch/breakfast vibes when those cadences are nonzero — or any time to grow it. Returns { candidates, enqueued, superseded, source }.",
+      inputSchema: schema,
     },
-    ({ max_suggestions, seed }) =>
-      runTool(async () => {
-        const resolvedSeed = seed ?? Number(new Date().toISOString().slice(0, 10).replace(/-/g, ""));
-        const result = await runDerivation(env, tenant.id, resolvedSeed, max_suggestions ?? DEFAULT_MAX_SUGGESTIONS, "request");
-        const note =
-          result.source === "none"
-            ? "no taste-space to derive from yet — cook a few meals or favorite some recipes, then try again"
-            : undefined;
-        return note ? { ...result, note } : result;
-      }),
+    handler,
+  );
+  server.registerTool(
+    "suggest_night_vibes",
+    { description: aliasDescription("suggest_meal_vibes"), inputSchema: schema },
+    handler,
   );
 }

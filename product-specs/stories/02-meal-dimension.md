@@ -84,9 +84,20 @@ meal column. This story defines the shared dimension so each page change compose
 1. ~~Are `breakfast|lunch|dinner` the closed set, or does the plan need the mock's
    separate projects section to stay the escape hatch for everything else?~~ — decided
    (D26): closed set + projects; projects are `meal='project'` plan rows, not meals.
-2. Log rows for non-meal events (baking a loaf): does the log composer need a fourth
-   "other" meal value, or do projects log through a different path?
-3. Does per-meal cadence drive vibe-cadence debt normalization (a lunch vibe "every 7
-   days" in a 3-lunches-a-week household), or stay orthogonal as today?
-4. Weather-bucket allocation currently spans "nights" — does it apply to breakfasts and
-   lunches too (grill-weather lunches?) or dinner-only?
+2. ~~Log rows for non-meal events (baking a loaf): does the log composer need a fourth
+   "other" meal value, or do projects log through a different path?~~ — decided
+   (meal-dimension-foundations): no fourth value; `cooking_log.meal` is nullable and NULL
+   means "not a meal / unknown" (a baked loaf is `{type:'ad_hoc', meal: null}` — `type` and
+   `meal` are orthogonal). A planned project cook logs `{type:'recipe', meal:'project'}`,
+   which routes the deterministic clear at the project row.
+3. ~~Does per-meal cadence drive vibe-cadence debt normalization (a lunch vibe "every 7
+   days" in a 3-lunches-a-week household), or stay orthogonal as today?~~ — decided
+   (meal-dimension-foundations): orthogonal, as today. `cadence_days` stays absolute days
+   and debt math is unchanged; per-meal counts shape slot *supply*, debt ranks *within* a
+   meal's sampling, and `occurrenceCap` handles window-relative repeatability. An
+   unfittable vibe stays maximally overdue and wins the next available slot.
+4. ~~Weather-bucket allocation currently spans "nights" — does it apply to breakfasts and
+   lunches too (grill-weather lunches?) or dinner-only?~~ — decided
+   (meal-dimension-foundations): dinner-only. Quotas run in the dinner pass; breakfast/
+   lunch never carry `weather_category`; non-dinner stored affinities are preserved but
+   inert; the suggest cron discards bucket labels for non-dinner clusters.

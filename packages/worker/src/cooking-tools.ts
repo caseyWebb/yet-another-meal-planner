@@ -31,6 +31,7 @@ interface CookingLogJoinRow {
   name: string | null;
   protein: string | null;
   cuisine: string | null;
+  meal: string | null;
 }
 
 /**
@@ -52,7 +53,7 @@ export async function loadRetrospective(
   period: string,
 ): Promise<RetrospectiveResult & { spend: SpendSection }> {
   const rows = await db(env).all<CookingLogJoinRow>(
-    "SELECT cl.type AS type, cl.date AS date, cl.recipe AS recipe, cl.name AS name, " +
+    "SELECT cl.type AS type, cl.date AS date, cl.recipe AS recipe, cl.name AS name, cl.meal AS meal, " +
       "COALESCE(cl.protein, r.protein) AS protein, COALESCE(cl.cuisine, r.cuisine) AS cuisine " +
       "FROM cooking_log cl LEFT JOIN recipes r ON cl.recipe = r.slug " +
       "WHERE cl.tenant = ?1",
@@ -65,6 +66,7 @@ export async function loadRetrospective(
     if (row.name) entry.name = row.name;
     if (row.protein) entry.protein = row.protein;
     if (row.cuisine) entry.cuisine = row.cuisine;
+    if (row.meal) entry.meal = row.meal as CookingLogEntry["meal"];
     return entry;
   });
 
@@ -118,6 +120,8 @@ export interface CookingLogListRow {
   title: string | null;
   protein: string | null;
   cuisine: string | null;
+  /** Which meal this event was; NULL = unknown / not a meal (pre-meal rows stay NULL). */
+  meal: string | null;
 }
 
 /** The member log read's bound: at most this many rows per call (clamped). */
@@ -138,7 +142,7 @@ export async function readCookingLog(
 ): Promise<CookingLogListRow[]> {
   const limit = Math.max(1, Math.min(opts.limit ?? COOKING_LOG_DEFAULT_LIMIT, COOKING_LOG_MAX_LIMIT));
   return db(env).all<CookingLogListRow>(
-    "SELECT cl.id AS id, cl.date AS date, cl.type AS type, cl.recipe AS recipe, cl.name AS name, " +
+    "SELECT cl.id AS id, cl.date AS date, cl.type AS type, cl.recipe AS recipe, cl.name AS name, cl.meal AS meal, " +
       "r.title AS title, COALESCE(cl.protein, r.protein) AS protein, COALESCE(cl.cuisine, r.cuisine) AS cuisine " +
       "FROM cooking_log cl LEFT JOIN recipes r ON cl.recipe = r.slug " +
       "WHERE cl.tenant = ?1 ORDER BY cl.date DESC, cl.id DESC LIMIT ?2",
@@ -192,7 +196,7 @@ export function registerCookingTools(
     "read_meal_plan",
     {
       description:
-        "Return the current meal plan: the recipes committed to cook next (transient cook intent). Use at session start to resume — surface DUE rows (planned_for on/before today, or unset) and ask which were cooked.",
+        "Return the current meal plan: the slots committed to cook next (transient cook intent). Returns { planned: [{ id, recipe, meal, planned_for, sides?, from_vibe? }] } — a FLAT ordered array (grouped-by-meal is an ORDERING guarantee, not nesting): dated rows first by (planned_for, breakfast < lunch < dinner), then undated rows grouped by meal, then meal='project' rows last, with ties broken by id ASC (an arbitrary-but-deterministic tiebreak — never read meaning into an id). Each row's `id` is THE address for row-level edits (update_meal_plan set/remove by id, log_cooked's plan_row_id) and the offline-replay key; a recipe may legitimately occupy several rows (explicit duplication). Use at session start to resume — surface DUE rows (planned_for on/before today, or unset) and ask which were cooked.",
       inputSchema: {},
     },
     () =>
@@ -206,12 +210,15 @@ export function registerCookingTools(
     "update_meal_plan",
     {
       description:
-        "Add, remove, or edit planned meal entries. `add` upserts by recipe slug (updating planned_for, MERGING sides union-style, and setting the optional `from_vibe` slot provenance). `remove` drops every row for the slug. `set` edits an EXISTING row with replace semantics (a set on a recipe with no planned row is reported as a per-op conflict): a supplied `sides` array replaces the row's sides WHOLESALE (an empty array removes them all — the only way to remove a side); a supplied `planned_for` sets the date and an EXPLICIT `planned_for: null` clears it (unschedules the night); `from_vibe` is preserved unless supplied. Call `remove` after logging a cooked meal to drop it from the plan. Returns { applied, conflicts } with no commit_sha (D1-backed).",
+        "Add, remove, or edit planned rows — SLOT-grain, keyed by opaque row `id` (client-mintable; the offline-replay key). Each row carries `meal` (breakfast | lunch | dinner | project; default dinner). `add` resolves deterministically: (1) a supplied `id` that already exists REPLAYS as an update of that row (sides unioned, planned_for/meal/from_vibe set when supplied; an id holding a DIFFERENT recipe is a per-op conflict) — so redelivering the same op never duplicates; (2) else `duplicate: true` INSERTS a second row for an already-planned recipe — the ONE way to plan a recipe twice, never any other spelling; (3) else the add COALESCES onto the recipe's existing row slug-globally across ALL meals (case-insensitive): no row → insert; exactly one → update it (a supplied `meal` MOVES the row between meals; the response reports the SURVIVING row's id with coalesced: true — adopt that id, your supplied one is discarded); more than one (explicit duplicates exist) → a per-op conflict carrying `candidates` [{ id, meal, planned_for, sides? }] — re-issue by id or with duplicate: true, never an auto-pick. `remove` takes EXACTLY ONE of `id` or `recipe`: by id it is IDEMPOTENT (applied with removed: 0|1 — a missing id is never a conflict, replay-safe); by recipe slug (optionally narrowed by `meal`) it deletes ALL matching rows (applied with removed: N and the ids; zero matches is a conflict). `set` addresses by `id` (must exist; may change ANY field including `recipe` — the swap-in-slot — and `meal`) or by slug (optionally narrowed by `meal`; requires a UNIQUE match — several matches return the `candidates` conflict; a slug-addressed set cannot change `recipe`): a supplied `sides` array replaces the row's sides WHOLESALE (an empty array removes them all — the only way to remove a side); a supplied `planned_for` sets the date and an EXPLICIT `planned_for: null` clears it (unschedules); `from_vibe` supplied sets (null clears), absent preserves. PROJECT rows (meal: 'project' — bakes, preserves, big batch cooking) carry NO date and NO sides: an op that would produce a dated or sided project row is a per-op conflict ('project rows carry no date or sides'); a `set` moving a row to project may itself pass planned_for: null and sides: [] to satisfy that. Cooking is logged with log_cooked (which clears its own row) — call `remove` only to drop an ABANDONED plan. Returns { applied, conflicts } with no commit_sha (D1-backed); applied entries carry the row id acted on.",
       inputSchema: {
         ops: z.array(
           z.object({
             op: z.enum(["add", "remove", "set"]),
-            recipe: z.string(),
+            id: z.string().optional(),
+            recipe: z.string().optional(),
+            meal: z.enum(["breakfast", "lunch", "dinner", "project"]).optional(),
+            duplicate: z.boolean().optional(),
             planned_for: z.string().nullable().optional(),
             sides: z.array(z.string()).optional(),
             from_vibe: z.string().nullable().optional(),
@@ -230,7 +237,7 @@ export function registerCookingTools(
     "retrospective",
     {
       description:
-        "Aggregate cooking history over a period from the cooking log. period accepts 'Nd' (e.g. '30d'), 'week', 'month', 'quarter', 'year', or 'all', and scopes recipes_cooked, protein_mix, cuisine_mix (non-recipe entries counted via inline dims; missing → 'unknown'), cadence (cooks/week, recipe+ad_hoc only), cook_vs_convenience (cooked vs ready_to_eat), and ready_to_eat_favorites (frequency-ranked). underused is INDEPENDENT of period: loved recipes — the caller's favorites PLUS revealed favorites (cooked ≥3× in the trailing 12 months) — that have gone stale (never cooked, or not cooked in a FIXED 30 days) and are in season now; rejected recipes are excluded. Each underused item carries why ('favorite' | 'revealed') and cook_count (all-time), is sorted stalest-first, and is capped at 15; underused_count is the pre-cap qualifying total. `spend` is the household's read-only grocery-spend section, ALSO independent of period: the trailing 4 ISO weeks (Monday starts, newest last) as { week_start, total, savings, events, estimated } over recorded (non-voided) spend events — send-time quotes recorded when an order's placement was asserted — plus weekly_budget (the preference, null when unset) and awaiting_mark_placed (items sent to a cart whose order was never marked placed: they are NEVER auto-counted as spend — surface them and ask, don't assume).",
+        "Aggregate cooking history over a period from the cooking log. period accepts 'Nd' (e.g. '30d'), 'week', 'month', 'quarter', 'year', or 'all', and scopes recipes_cooked, protein_mix, cuisine_mix (non-recipe entries counted via inline dims; missing → 'unknown'), cadence (cooks/week, recipe+ad_hoc only — MEAL-AWARE: `by_meal` counts cooks per breakfast/lunch/dinner/project over rows whose meal is set, and `meal_unknown` counts NULL-meal rows, which still count in the overall figure — a meal is never fabricated for them), cook_vs_convenience (cooked vs ready_to_eat), and ready_to_eat_favorites (frequency-ranked). underused is INDEPENDENT of period: loved recipes — the caller's favorites PLUS revealed favorites (cooked ≥3× in the trailing 12 months) — that have gone stale (never cooked, or not cooked in a FIXED 30 days) and are in season now; rejected recipes are excluded. Each underused item carries why ('favorite' | 'revealed') and cook_count (all-time), is sorted stalest-first, and is capped at 15; underused_count is the pre-cap qualifying total. `spend` is the household's read-only grocery-spend section, ALSO independent of period: the trailing 4 ISO weeks (Monday starts, newest last) as { week_start, total, savings, events, estimated } over recorded (non-voided) spend events — send-time quotes recorded when an order's placement was asserted — plus weekly_budget (the preference, null when unset) and awaiting_mark_placed (items sent to a cart whose order was never marked placed: they are NEVER auto-counted as spend — surface them and ask, don't assume).",
       inputSchema: { period: z.string().optional() },
     },
     ({ period }) => runTool(() => loadRetrospective(env, username, period ?? "month")),

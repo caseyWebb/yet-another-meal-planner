@@ -419,7 +419,7 @@ export function d1Statements(now) {
   );
   stmts.push(`DELETE FROM meal_plan WHERE tenant = ${q(members.active)};`);
   stmts.push(
-    `INSERT INTO meal_plan (tenant, recipe, planned_for, sides) VALUES (${q(members.active)}, ${q(recipe.slug)}, ${q(day(now + 2 * DAY))}, '[]');`,
+    `INSERT INTO meal_plan (tenant, id, recipe, meal, planned_for, sides) VALUES (${q(members.active)}, 'pw-seed-plan-row-1', ${q(recipe.slug)}, 'dinner', ${q(day(now + 2 * DAY))}, '[]');`,
   );
   stmts.push(`DELETE FROM pantry WHERE tenant = ${q(members.active)};`);
   stmts.push(

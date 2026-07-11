@@ -43,6 +43,9 @@ export type ProposeCardSide = { slug: string; title: string };
  *  the propose op's `ProposedSlot` field-for-field so a re-invocation result hydrates identically. */
 export type ProposeCardSlot = {
   vibe_id: string | null;
+  /** Which meal this slot fills — the plan is FLAT and meal-ordered (breakfast →
+   *  lunch → dinner, position-stable within each meal). */
+  meal: "breakfast" | "lunch" | "dinner";
   reason: "pinned" | "new_for_me" | "overdue" | "sampled" | "locked";
   main: ProposeCardMain | null;
   empty_reason?: string;
@@ -89,7 +92,12 @@ export type ProposeCardRequestSlot = {
  *  an adjusted copy against the stateless propose op on every dial change (no model turn). The
  *  palette-flow subset the member web app's `POST /api/propose` session serializes. */
 export type ProposeCardRequest = {
+  /** Deprecation-window alias of `meals.dinner` (the widget's dial replay still keys on it). */
   nights: number;
+  /** The per-meal slot counts the request resolved to. */
+  meals?: { breakfast?: number; lunch?: number; dinner?: number };
+  /** The attendance input, echoed when supplied (exactly one of away/only). */
+  attendance?: { away?: string[]; only?: string[] };
   seed: number;
   /** `nudges.variety` (0–1); the adventurousness slider. */
   variety: number;
@@ -108,13 +116,21 @@ export type ProposeCardData = {
   diagnostics: {
     seed: number;
     lambda: number;
+    /** The dinner alias of `meals.dinner.requested` (one deprecation window). */
     nights: number;
     filled: number;
     empty: number;
     rolled_over?: string[];
+    /** Per-meal requested/filled/empty. */
+    meals?: Record<string, { requested: number; filled: number; empty: number }>;
+    /** The effective eating set + dropped unknown handles (D29-final), always present
+     *  on the op's result. */
+    attendance?: { effective: string[]; ignored: string[]; notes?: string[] };
   };
   /** Present only on the empty-palette short-circuit (an add-a-vibe nudge). */
   note?: string;
+  /** Empty-meal escape nudges (e.g. a requested meal with no palette of its own). */
+  notes?: string[];
   /** The request that produced `plan`; the widget's dials replay an adjusted copy. */
   request: ProposeCardRequest;
   /** vibe id → its phrase, so each slot renders its vibe name (the result carries only the id). */

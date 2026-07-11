@@ -196,9 +196,15 @@ export interface DerivedArchetype {
   id: string;
   vibe: string;
   cadence_days: number | null;
+  /** The naming pass's meal classification (parsed strictly, fail-closed 'dinner') —
+   *  written into the `add_vibe` proposal payload so the confirm apply shelves the
+   *  vibe onto the right meal's palette. */
+  meal: "breakfast" | "lunch" | "dinner";
   /** Discrete weather bucket membership from the naming pass's classification (weather-bucket-
    *  planning) — a one-element category array, or absent when neutral/unclassified (bucketless,
-   *  fail-soft default). Written verbatim into the `add_vibe` proposal's `weather_affinity`. */
+   *  fail-soft default) or when the cluster classified NON-DINNER (weather is dinner-only; the
+   *  label is discarded, never stored dead). Written verbatim into the `add_vibe` proposal's
+   *  `weather_affinity`. */
   weather_affinity?: WeatherCategory[];
   /** Which member recipes formed this cluster + its size (proposal evidence). */
   evidence: { member_slugs: string[]; size: number };
@@ -207,11 +213,11 @@ export interface DerivedArchetype {
 /** The naming step, injected so the orchestration is testable without `env.AI`. */
 export interface DeriveDeps {
   /** Name a cluster from its members' descriptions + the inferred cadence (and classify its
-   *  weather bucket in the same call), or null to skip it. */
+   *  weather bucket and meal in the same call), or null to skip it. */
   name(input: {
     descriptions: string[];
     cadence_days: number | null;
-  }): Promise<{ vibe: string; cadence_days: number | null; weather_affinity?: WeatherCategory[] } | null>;
+  }): Promise<{ vibe: string; cadence_days: number | null; meal: "breakfast" | "lunch" | "dinner"; weather_affinity?: WeatherCategory[] } | null>;
 }
 
 /**
@@ -245,10 +251,14 @@ export async function deriveArchetypes(
       id,
       vibe,
       cadence_days: named?.cadence_days ?? cl.cadence_days,
+      // The namer parses the meal strictly and fails closed to 'dinner' itself; the
+      // ?? here only covers a fake namer that predates the meal line.
+      meal: named?.meal ?? "dinner",
       evidence: { member_slugs: cl.members.map((m) => m.slug), size: cl.members.length },
     };
     // Fail-soft: a missing/neutral classification simply omits weather_affinity → bucketless,
-    // never blocks the derived vibe itself from being proposed.
+    // never blocks the derived vibe itself from being proposed. (The namer already discards
+    // the bucket for non-dinner clusters — weather is dinner-only.)
     if (named?.weather_affinity && named.weather_affinity.length > 0) archetype.weather_affinity = named.weather_affinity;
     out.push(archetype);
   }

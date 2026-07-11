@@ -52,12 +52,12 @@ describe("assembleUserProfile — night-vibe palette (data-read-tools D5)", () =
 
     const profile = await assembleUserProfile(env, "casey");
 
-    expect(profile.night_vibes).toHaveLength(2);
-    const pasta = profile.night_vibes.find((v) => v.id === "weeknight-pasta")!;
+    expect(profile.meal_vibes).toHaveLength(2);
+    const pasta = profile.meal_vibes.find((v) => v.id === "weeknight-pasta")!;
     expect(pasta.last_satisfied).toBe(daysAgoIso(100));
     expect(pasta.status).toBe("overdue");
 
-    const project = profile.night_vibes.find((v) => v.id === "project-cook")!;
+    const project = profile.meal_vibes.find((v) => v.id === "project-cook")!;
     expect(project.last_satisfied).toBeNull();
     expect(project.status).toBe("ok");
 
@@ -67,14 +67,14 @@ describe("assembleUserProfile — night-vibe palette (data-read-tools D5)", () =
 
   it("lists 'vibes' in missing[] for an empty palette and omits it for a non-empty one", async () => {
     const empty = await assembleUserProfile(fakeD1({}).env, "ghost");
-    expect(empty.night_vibes).toEqual([]);
+    expect(empty.meal_vibes).toEqual([]);
     expect(empty.missing).toContain("vibes");
 
     const seeded = await assembleUserProfile(
       fakeD1({ tables: { night_vibes: [vibeRow("taco-tuesday", { cadence_days: 7 })] } }).env,
       "casey",
     );
-    expect(seeded.night_vibes).toHaveLength(1);
+    expect(seeded.meal_vibes).toHaveLength(1);
     expect(seeded.missing).not.toContain("vibes");
   });
 });

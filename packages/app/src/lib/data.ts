@@ -77,7 +77,11 @@ export interface NoteRow {
 }
 
 export interface PlannedRow {
+  /** The opaque plan-row id — THE address for row-level edits and the class (b)
+   *  offline-replay key (client-mintable ULID; never parsed or meaningfully sorted). */
+  id: string;
   recipe: string;
+  meal: "breakfast" | "lunch" | "dinner" | "project";
   planned_for?: string | null;
   sides?: string[];
   from_vibe?: string | null;
@@ -383,10 +387,33 @@ export function useProposals() {
 
 export interface PlanOp {
   op: "add" | "remove" | "set";
-  recipe: string;
+  /** add: a client-minted idempotency key (ULID); set/remove: the exact row address. */
+  id?: string;
+  recipe?: string;
+  meal?: "breakfast" | "lunch" | "dinner" | "project";
+  /** add only — THE one wire spelling of explicit duplication (the commit NEVER sets it). */
+  duplicate?: boolean;
   planned_for?: string | null;
   sides?: string[];
   from_vibe?: string | null;
+}
+
+/** Crockford base32 (the ULID alphabet). */
+const ULID_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+
+/** Mint a client-side ULID — the plan-row id the commit's add ops carry (the class (b)
+ *  replay key; the same mint shape as the Worker's src/ids.ts). */
+export function mintRowId(now: number = Date.now()): string {
+  let t = now;
+  let time = "";
+  for (let i = 0; i < 10; i++) {
+    time = ULID_ALPHABET[t % 32] + time;
+    t = Math.floor(t / 32);
+  }
+  const rand = crypto.getRandomValues(new Uint8Array(16));
+  let out = time;
+  for (let i = 0; i < 16; i++) out += ULID_ALPHABET[rand[i] & 31];
+  return out;
 }
 
 /** A read whose response ETag feeds a class (a) If-Match write. */

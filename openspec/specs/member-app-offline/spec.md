@@ -96,17 +96,13 @@ client-registered defaults and plain-JSON variables — so that a write made whi
 pauses instead of failing, persists across a reload, and replays when connectivity returns
 (automatically on reconnect, and via resume-after-restore on the next launch). The class (b)
 set is the two-writer table's idempotent, canonical-id-keyed upserts and deletes: grocery
-add/set/remove, pantry ops and verify (including the `location` and `category` fields riding
-the pantry upsert), pantry dispose, favorite set, plan ops, log add and delete, note
-add/edit/remove, vibe create/delete, proposal confirm. Pantry dispose is keyed on its
-**client-minted waste `event_id`** (DECISIONS.md D15): the app mints a ULID and stamps
-`occurred_at` at tap time, so a replayed waste disposition converges to exactly one waste
-event recorded on the day it happened, and a replayed `used` disposition converges as an
-idempotent delete. Replays SHALL be serial and SHALL reuse the registered defaults (optimistic
-update, error surfacing, settle-time invalidation). A replay the server rejects SHALL surface
-to the member (structured-error toast) and reconcile the cache by refetch — never retry
-forever, never silently drop. Offline, class (b) surfaces SHALL remain fully interactive with
-optimistic state where the page renders the written row.
+add/set/remove, pantry ops and verify, favorite set, plan ops (keyed by the client-minted
+plan-row id), log add and delete, note add/edit/remove, vibe create/delete, proposal confirm.
+Replays SHALL be serial and SHALL reuse the registered defaults (optimistic update, error
+surfacing, settle-time invalidation). A replay the server rejects SHALL surface to the member
+(structured-error toast) and reconcile the cache by refetch — never retry forever, never
+silently drop. Offline, class (b) surfaces SHALL remain fully interactive with optimistic
+state where the page renders the written row.
 
 #### Scenario: Offline check-offs replay on reconnect
 
@@ -128,14 +124,6 @@ optimistic state where the page renders the written row.
   proposal already resolved)
 - **THEN** the member sees the structured-error message, the affected queries are refetched
   to the server's truth, and the mutation is not retried indefinitely
-
-#### Scenario: An offline waste disposition replays without double-counting
-
-- **WHEN** a member marks an item as waste while offline (the app minting the event id and
-  stamping the occurrence date at tap time) and the queued mutation is later delivered more
-  than once
-- **THEN** the server records exactly one waste event under the minted id, dated to the tap
-  day, and every delivery reports success to the replayer
 
 ### Requirement: Online-only surfaces are unreplayable by construction
 

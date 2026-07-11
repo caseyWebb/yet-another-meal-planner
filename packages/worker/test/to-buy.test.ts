@@ -23,7 +23,7 @@ function seedRecipe(h: SqliteEnv, slug: string, full: string[] | null): void {
 
 function seedPlan(h: SqliteEnv, recipe: string, sides: string[] = []): void {
   h.raw
-    .prepare("INSERT INTO meal_plan (tenant, recipe, planned_for, sides) VALUES (?, ?, NULL, ?)")
+    .prepare("INSERT INTO meal_plan (tenant, id, recipe, planned_for, sides) VALUES (?, lower(hex(randomblob(16))), ?, NULL, ?)")
     .run(T, recipe, JSON.stringify(sides));
 }
 

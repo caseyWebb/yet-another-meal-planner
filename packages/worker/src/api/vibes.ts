@@ -1,59 +1,63 @@
-// The `vibes` area (member-app-core): the night-vibe palette (production vocabulary,
+// The `vibes` area (member-app-core): the meal-vibe palette (production vocabulary,
 // D11 — reads merge the log-derived last_satisfied; the row itself stores none), vibe
 // CRUD through the shared add/patch ops (edit is class (a) under If-Match; create and
 // delete are class (b) keyed on the slugified id), the reconciliation queue
-// (pending proposals + the shared confirm op, D12), and the job-health-gated suggest
-// trigger (D7 — fresh-and-healthy answers throttled WITHOUT touching env.AI).
-// Session-gated per route. Static /vibes/proposals + /vibes/suggest are registered
-// before /vibes/:id so the param route never swallows them.
+// (pending proposals + the shared confirm op, D12), and the RETIRED suggest trigger:
+// for one deprecation window POST /vibes/suggest is a pinned 410 stub (D8/D20 — the
+// cron carries generation; the shipped SPA's button fails explicably, never the
+// SPA-shell/404 trap, and no derivation or model runs). Session-gated per route.
+// Static /vibes/proposals + /vibes/suggest are registered before /vibes/:id so the
+// param route never swallows them.
 
 import { Hono } from "hono";
 import { ToolError } from "../errors.js";
 import { requireSession, type ApiEnv } from "../session.js";
 import { jsonWithEtag, requireIfMatch } from "./etag.js";
 import { jsonBody } from "./middleware.js";
-import { readNightVibes, readVibeLastSatisfied, deleteNightVibe, type NightVibe } from "../night-vibe-db.js";
+import { readNightVibes, readVibeLastSatisfied, deleteNightVibe, type NightVibe, type VibeMeal } from "../night-vibe-db.js";
 import { addNightVibe, patchNightVibe, type NightVibeMeta } from "../night-vibe-tools.js";
 import { readProposals } from "../reconcile-db.js";
 import { resolveProposal } from "../reconcile-tools.js";
-import { readJobHealth } from "../health.js";
-import { runDerivation, DERIVE_INTERVAL_MS, DEFAULT_MAX_SUGGESTIONS } from "../night-vibe-suggest.js";
 
 const WEATHER_VIBES = new Set(["grill", "cold-comfort", "wet", "soup", "comfort", "grill-friendly", "light", "no-grill"]);
 const SEASONS = new Set(["spring", "summer", "fall", "winter"]);
+const MEALS = new Set(["breakfast", "lunch", "dinner"]);
 
 /** Boundary-validate the vibe metadata fields shared by create + edit (D11 vocabulary). */
 function coerceMeta(o: Record<string, unknown>): NightVibeMeta {
   const meta: NightVibeMeta = {};
   if (o.facets !== undefined) {
-    if (o.facets === null || typeof o.facets !== "object" || Array.isArray(o.facets)) {
-      throw new ToolError("validation_failed", "facets must be an object");
+    if (o.facets === null) {
+      meta.facets = null; // explicit-null clearing
+    } else if (typeof o.facets !== "object" || Array.isArray(o.facets)) {
+      throw new ToolError("validation_failed", "facets must be an object (or null to clear)");
+    } else {
+      meta.facets = o.facets as Record<string, unknown>;
     }
-    meta.facets = o.facets as Record<string, unknown>;
   }
-  if (o.cadence_days !== undefined && o.cadence_days !== null) {
-    if (typeof o.cadence_days !== "number" || !Number.isInteger(o.cadence_days) || o.cadence_days <= 0) {
-      throw new ToolError("validation_failed", "cadence_days must be a positive integer");
+  if (o.cadence_days !== undefined) {
+    if (o.cadence_days !== null && (typeof o.cadence_days !== "number" || !Number.isInteger(o.cadence_days) || o.cadence_days <= 0)) {
+      throw new ToolError("validation_failed", "cadence_days must be a positive integer (or null to clear)");
     }
-    meta.cadence_days = o.cadence_days;
+    meta.cadence_days = o.cadence_days as number | null;
   }
   if (o.pinned !== undefined) {
     if (typeof o.pinned !== "boolean") throw new ToolError("validation_failed", "pinned must be a boolean");
     meta.pinned = o.pinned;
   }
-  if (o.base_weight !== undefined && o.base_weight !== null) {
-    if (typeof o.base_weight !== "number" || !(o.base_weight > 0)) {
-      throw new ToolError("validation_failed", "base_weight must be a positive number");
+  if (o.base_weight !== undefined) {
+    if (o.base_weight !== null && (typeof o.base_weight !== "number" || !(o.base_weight > 0))) {
+      throw new ToolError("validation_failed", "base_weight must be a positive number (or null to clear)");
     }
-    meta.base_weight = o.base_weight;
+    meta.base_weight = o.base_weight as number | null;
   }
   for (const key of ["weather_affinity", "weather_antipathy"] as const) {
     const v = o[key];
     if (v === undefined) continue;
-    if (!Array.isArray(v) || v.some((t) => typeof t !== "string" || !WEATHER_VIBES.has(t))) {
-      throw new ToolError("validation_failed", `${key} must be an array of grill | cold-comfort | wet (or legacy) tags`);
+    if (v !== null && (!Array.isArray(v) || v.some((t) => typeof t !== "string" || !WEATHER_VIBES.has(t)))) {
+      throw new ToolError("validation_failed", `${key} must be an array of grill | cold-comfort | wet (or legacy) tags (or null to clear)`);
     }
-    meta[key] = v as string[];
+    meta[key] = v as string[] | null;
   }
   if (o.season !== undefined) {
     if (!Array.isArray(o.season) || o.season.some((t) => typeof t !== "string" || !SEASONS.has(t))) {
@@ -61,7 +65,22 @@ function coerceMeta(o: Record<string, unknown>): NightVibeMeta {
     }
     meta.season = o.season as string[];
   }
+  if (o.members !== undefined) {
+    if (o.members !== null && (!Array.isArray(o.members) || o.members.some((m) => typeof m !== "string" || !m))) {
+      throw new ToolError("validation_failed", "members must be an array of non-empty member handles (or null to clear)");
+    }
+    meta.members = o.members as string[] | null;
+  }
   return meta;
+}
+
+/** Boundary-validate the optional `meal` (settable, never null — the closed vibe set). */
+function coerceMeal(o: Record<string, unknown>): VibeMeal | undefined {
+  if (o.meal === undefined) return undefined;
+  if (typeof o.meal !== "string" || !MEALS.has(o.meal)) {
+    throw new ToolError("validation_failed", "meal must be breakfast | lunch | dinner");
+  }
+  return o.meal as VibeMeal;
 }
 
 /** One palette-page row: the stored vibe + its log-derived last-satisfied date. */
@@ -96,22 +115,17 @@ export const vibesArea = new Hono<ApiEnv>()
     const result = await resolveProposal(c.env, tenant.id, c.req.param("id"), body.accept);
     return c.json(result);
   })
-  // The gated suggest trigger (D7): a healthy archetype-derive run within the cron's
-  // own interval answers throttled WITHOUT running derivation (no env.AI spend);
-  // stale/unhealthy runs the bounded on-demand derivation (proposals land in the queue).
-  .post("/vibes/suggest", requireSession, async (c) => {
-    const tenant = c.get("tenant");
-    const now = Date.now();
-    const last = await readJobHealth(c.env, "archetype-derive").catch(() => null);
-    if (last && last.ok && now - last.last_run_at < DERIVE_INTERVAL_MS) {
-      return c.json({
-        throttled: true as const,
-        retry_after_ms: Math.max(0, DERIVE_INTERVAL_MS - (now - last.last_run_at)),
-      });
-    }
-    const seed = Number(new Date(now).toISOString().slice(0, 10).replace(/-/g, ""));
-    const { candidates, enqueued, superseded, source } = await runDerivation(c.env, tenant.id, seed, DEFAULT_MAX_SUGGESTIONS, "request");
-    return c.json({ throttled: false as const, candidates, enqueued, superseded, source });
+  // RETIRED (D8/D20 — the cron carries generation): the member-tappable suggest trigger
+  // is cut. For one deprecation window the route stays registered as a pinned 410 stub —
+  // the member-API route-level error convention (`c.json({ error: <literal>, message },
+  // status)`, the csrf_rejected/rate_limited family; NOT a src/errors.ts ToolError code) —
+  // so the deployed SPA's shipped button fails EXPLICABLY, never the SPA-shell/404 trap,
+  // and no derivation and no model runs. Band 2's profile/vibes UI removes the button;
+  // the window-close cleanup change removes this stub (the path then falls to the normal
+  // unknown-API 404).
+  .post("/vibes/suggest", requireSession, (c) => {
+    return c.json({ error: "gone" as const,
+      message: "Vibe suggestions now arrive automatically; this trigger was retired." }, 410);
   })
   // One raw vibe row — the class (a) representation the PATCH preconditions on
   // (derived fields excluded: a cook would spuriously fail an unrelated edit).
@@ -131,7 +145,7 @@ export const vibesArea = new Hono<ApiEnv>()
       throw new ToolError("validation_failed", "vibe must be a non-empty phrase");
     }
     const id = body.id !== undefined ? String(body.id) : undefined;
-    const result = await addNightVibe(c.env, tenant.id, { vibe: body.vibe, id, ...coerceMeta(body) });
+    const result = await addNightVibe(c.env, tenant.id, { vibe: body.vibe, id, meal: coerceMeal(body), ...coerceMeta(body) });
     return c.json(result);
   })
   // Edit — class (a): requires If-Match against the raw-row representation (plan §6).
@@ -139,7 +153,9 @@ export const vibesArea = new Hono<ApiEnv>()
     const tenant = c.get("tenant");
     const id = c.req.param("id");
     const body = await jsonBody<Record<string, unknown>>(c);
-    const patch: { vibe?: string } & NightVibeMeta = coerceMeta(body);
+    const patch: { vibe?: string; meal?: VibeMeal } & NightVibeMeta = coerceMeta(body);
+    const meal = coerceMeal(body);
+    if (meal !== undefined) patch.meal = meal;
     if (body.vibe !== undefined) {
       if (typeof body.vibe !== "string" || !body.vibe.trim()) {
         throw new ToolError("validation_failed", "vibe must be a non-empty phrase");

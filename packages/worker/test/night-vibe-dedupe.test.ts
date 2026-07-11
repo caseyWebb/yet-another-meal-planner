@@ -11,18 +11,22 @@ function axis(i: number): number[] {
   v[i] = 1;
   return v;
 }
-function pending(id: string, vibe: string, created_at: string): PendingVibeProposal {
-  return { id, vibe, created_at };
+function pending(id: string, vibe: string, created_at: string, meal?: string): PendingVibeProposal {
+  return meal === undefined ? { id, vibe, created_at } : { id, vibe, created_at, meal };
 }
-function candidate(vibe: string): DerivedArchetype {
-  return { id: vibe, vibe, cadence_days: null, evidence: { member_slugs: [], size: 0 } };
+function candidate(vibe: string, meal: "breakfast" | "lunch" | "dinner" = "dinner"): DerivedArchetype {
+  return { id: vibe, vibe, cadence_days: null, meal, evidence: { member_slugs: [], size: 0 } };
+}
+/** A dinner-mealed basis vector (the pre-meal rows' default). */
+function mv(vec: number[], meal?: string) {
+  return meal === undefined ? { vec } : { meal, vec };
 }
 
 describe("planQueueConvergence", () => {
   it("supersedes a pending proposal covered by a palette vibe", () => {
     const p = [pending("p1", "a spicy seafood dinner", "2026-07-01T00:00:00Z")];
     const vecOf = new Map([["a spicy seafood dinner", axis(0)]]);
-    const plan = planQueueConvergence(p, { paletteVecs: [axis(0)], rejectedVecs: [] }, vecOf);
+    const plan = planQueueConvergence(p, { paletteVecs: [mv(axis(0))], rejectedVecs: [] }, vecOf);
     expect(plan.superseded).toEqual([{ id: "p1", coveredBy: "palette" }]);
     expect(plan.representatives).toEqual([]);
   });
@@ -30,7 +34,7 @@ describe("planQueueConvergence", () => {
   it("supersedes a pending proposal covered by a rejected proposal (not palette)", () => {
     const p = [pending("p1", "a fiery seafood skillet", "2026-07-01T00:00:00Z")];
     const vecOf = new Map([["a fiery seafood skillet", axis(6)]]);
-    const plan = planQueueConvergence(p, { paletteVecs: [axis(0)], rejectedVecs: [axis(6)] }, vecOf);
+    const plan = planQueueConvergence(p, { paletteVecs: [mv(axis(0))], rejectedVecs: [mv(axis(6))] }, vecOf);
     expect(plan.superseded).toEqual([{ id: "p1", coveredBy: "rejected" }]);
   });
 
@@ -47,7 +51,7 @@ describe("planQueueConvergence", () => {
     ]);
     const plan = planQueueConvergence(p, { paletteVecs: [], rejectedVecs: [] }, vecOf);
     // earliest created_at wins; "a" and "c" tie on time → lowest id ("a") is the representative.
-    expect(plan.representatives).toEqual([{ id: "a", vibe: "a cozy comfort food dinner" }]);
+    expect(plan.representatives).toEqual([{ id: "a", vibe: "a cozy comfort food dinner", meal: "dinner" }]);
     expect(plan.superseded.map((s) => s.id).sort()).toEqual(["b", "c"]);
     for (const s of plan.superseded) expect(s.coveredBy).toBe("a");
   });
@@ -84,9 +88,9 @@ describe("planQueueConvergence", () => {
 
   it("keeps a pending proposal whose phrase has no vector rather than collapsing it", () => {
     const p = [pending("p1", "no vector here", "2026-07-01T00:00:00Z")];
-    const plan = planQueueConvergence(p, { paletteVecs: [axis(0)], rejectedVecs: [] }, new Map());
+    const plan = planQueueConvergence(p, { paletteVecs: [mv(axis(0))], rejectedVecs: [] }, new Map());
     expect(plan.superseded).toEqual([]);
-    expect(plan.representatives).toEqual([{ id: "p1", vibe: "no vector here" }]);
+    expect(plan.representatives).toEqual([{ id: "p1", vibe: "no vector here", meal: "dinner" }]);
   });
 
   // A production-shaped fixture distilled from design.md's casey rows: 10 pending → 4 reps.
@@ -114,7 +118,7 @@ describe("planQueueConvergence", () => {
     const vecOf = new Map(rows.map(([, vibe, dim]) => [vibe, axis(dim)] as const));
     const plan = planQueueConvergence(
       p,
-      { paletteVecs: [axis(0), axis(5)], rejectedVecs: [axis(6)] },
+      { paletteVecs: [mv(axis(0)), mv(axis(5))], rejectedVecs: [mv(axis(6))] },
       vecOf,
     );
     expect(plan.representatives.map((r) => r.id).sort()).toEqual([
@@ -141,7 +145,7 @@ describe("filterCandidates", () => {
       ["near palette", axis(0)],
       ["orthogonal one", axis(3)],
     ]);
-    const kept = filterCandidates(cands, [axis(0), axis(1)], vecOf);
+    const kept = filterCandidates(cands, [mv(axis(0)), mv(axis(1))], vecOf);
     expect(kept.map((c) => c.vibe)).toEqual(["orthogonal one"]);
   });
 
@@ -158,7 +162,7 @@ describe("filterCandidates", () => {
 
   it("keeps a candidate whose phrase has no vector", () => {
     const cands = [candidate("no vector")];
-    const kept = filterCandidates(cands, [axis(0)], new Map());
+    const kept = filterCandidates(cands, [mv(axis(0))], new Map());
     expect(kept).toHaveLength(1);
   });
 
@@ -167,9 +171,9 @@ describe("filterCandidates", () => {
     // and 0.84 (< 0.85 keeps).
     const base = [1, 0, 0, 0, 0, 0, 0, 0];
     const at = (cos: number): number[] => [cos, Math.sqrt(1 - cos * cos), 0, 0, 0, 0, 0, 0];
-    const drop = filterCandidates([candidate("hot")], [base], new Map([["hot", at(0.86)]]));
+    const drop = filterCandidates([candidate("hot")], [mv(base)], new Map([["hot", at(0.86)]]));
     expect(drop).toHaveLength(0);
-    const keep = filterCandidates([candidate("warm")], [base], new Map([["warm", at(0.84)]]));
+    const keep = filterCandidates([candidate("warm")], [mv(base)], new Map([["warm", at(0.84)]]));
     expect(keep).toHaveLength(1);
   });
 });

@@ -27,7 +27,7 @@ function seedRecipe(h: SqliteEnv, slug: string, full: string[] | null): void {
 }
 
 function seedPlan(h: SqliteEnv, recipe: string): void {
-  h.raw.prepare("INSERT INTO meal_plan (tenant, recipe, planned_for) VALUES (?, ?, NULL)").run(T, recipe);
+  h.raw.prepare("INSERT INTO meal_plan (tenant, id, recipe, planned_for) VALUES (?, lower(hex(randomblob(16))), ?, NULL)").run(T, recipe);
 }
 
 /** Fake wiring: every name resolves confidently; SKUs are name-derived (assertable). */

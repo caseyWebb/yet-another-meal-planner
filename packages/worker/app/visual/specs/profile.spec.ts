@@ -1,9 +1,9 @@
 // Profile (member-app-core 7.10–7.12): the derived taste read, the class (a)
 // markdown editor's 412 REBASE flow (a competing writer forces the notice; saving
-// again applies), the preferences merge-patch knobs, and the night-vibes tab —
+// again applies), the preferences merge-patch knobs, and the meal-vibes tab —
 // empty palette + pending queue (production's observed state), kind-specific
-// confirm/dismiss, and the quiet throttled suggest state (the seeded
-// archetype-derive health is fresh, so the gate answers throttled).
+// confirm/dismiss, and the retired suggest trigger (the route answers a pinned
+// 410; the shipped button explains itself instead of failing opaquely).
 import { test, expect } from "../fixtures";
 import { SEED } from "../../../admin/visual/seed.mjs";
 
@@ -93,12 +93,12 @@ test("a merge_recipes proposal renders the pair honestly — Dismiss only, no ac
   await expect(profilePage.proposalRows()).toHaveCount(1); // only the prune remains
 });
 
-test("the suggest trigger surfaces the quiet throttled state (fresh job health)", async ({
+test("the suggest trigger surfaces its retirement (the route answers a pinned 410)", async ({
   profilePage,
 }) => {
   await profilePage.openTab("vibes");
   await profilePage.suggest();
-  await profilePage.expectToast("Suggestions are fresh");
+  await profilePage.expectToast("Vibe suggestions now arrive automatically");
 });
 
 // --- the Preferred-brands tier card (brand-tier model) -----------------------------

@@ -20,19 +20,28 @@ interface TextGenResponse {
 }
 
 // The naming call also classifies the cluster's discrete weather BUCKET (weather-bucket-planning)
-// in the SAME generation — no second model call. Reply shape: the vibe phrase on line 1, the
-// bucket label on line 2 (one of the categories below, or "neutral" for bucketless).
+// and its MEAL (meal-vibe-archetype-derivation) in the SAME generation — no second or third model
+// call. Reply shape: the vibe phrase on line 1, the bucket label on line 2 (one of the categories
+// below, or "neutral" for bucketless), the meal label on line 3 (breakfast | lunch | dinner).
 const BUCKET_LABELS = [...WEATHER_BUCKETS, "neutral"] as const;
 
+/** The closed meal set a derived vibe can carry (never `project` — not vibe-driven). */
+export const MEAL_LABELS = ["breakfast", "lunch", "dinner"] as const;
+export type MealLabel = (typeof MEAL_LABELS)[number];
+
 const CLUSTER_SYSTEM =
-  `You name a group of related recipes as a single 'night vibe' — a short craving-aligned phrase a home cook would recognize as a kind of dinner they make (e.g. 'a simple weeknight Italian pasta', 'a bright, quick fish dish', 'a slow weekend braise'). Base it strictly on the recipes shown; do not invent a cuisine or mood they don't share.\n\n` +
+  `You name a group of related recipes as a single 'meal vibe' — a short craving-aligned phrase a home cook would recognize as a kind of meal they make (e.g. 'a simple weeknight Italian pasta', 'a bright, quick fish dish', 'a slow weekend braise'). Base it strictly on the recipes shown; do not invent a cuisine or mood they don't share.\n\n` +
   `Then classify the group's weather character into exactly one label: ${BUCKET_LABELS.join(" | ")}. Use "grill" for hot-weather/outdoor-cooking dishes, "cold-comfort" for cold-weather soups/stews/braises, "wet" for rainy-day comfort dishes that avoid outdoor cooking, and "neutral" when the group has no strong weather lean.\n\n` +
-  `Reply with EXACTLY two lines: line 1 is the vibe phrase (3-8 words, no quotes, no trailing punctuation); line 2 is the weather label alone.`;
+  `Then classify which MEAL the group belongs to, exactly one label: ${MEAL_LABELS.join(" | ")}. Use "breakfast" for morning dishes (eggs, pancakes, oats), "lunch" for midday-style light meals (sandwiches, grain bowls, wraps), and "dinner" for everything else — when in doubt, "dinner".\n\n` +
+  `Reply with EXACTLY three lines: line 1 is the vibe phrase (3-8 words, no quotes, no trailing punctuation); line 2 is the weather label alone; line 3 is the meal label alone.`;
 
 /**
- * Name one cluster into a night-vibe phrase + discrete weather bucket from its members'
- * descriptions, in a SINGLE generation call. Returns the phrase, the (unchanged) inferred
- * cadence, and `weather_affinity` (a one-element category array, or `undefined` when
+ * Name one cluster into a meal-vibe phrase + discrete weather bucket + meal from its members'
+ * descriptions, in a SINGLE generation call (same call as before — one more reply line, no new
+ * AI spend). Returns the phrase, the (unchanged) inferred cadence, the `meal` (parsed strictly,
+ * FAIL-CLOSED to `'dinner'` — a misclassification costs a mis-shelved suggestion the member
+ * retags, never a crash or a dropped suggestion), and `weather_affinity` (a one-element category
+ * array — DISCARDED for a non-dinner classification, weather is dinner-only; or `undefined` when
  * bucketless/neutral) — or null on an empty/failed generation (fail soft — the caller skips this
  * candidate). At most a handful of descriptions are sent to keep the prompt small.
  */
@@ -40,10 +49,10 @@ export async function nameCluster(
   env: Env,
   input: { descriptions: string[]; cadence_days: number | null },
   trigger: AiTrigger = "cron",
-): Promise<{ vibe: string; cadence_days: number | null; weather_affinity?: WeatherCategory[] } | null> {
+): Promise<{ vibe: string; cadence_days: number | null; meal: MealLabel; weather_affinity?: WeatherCategory[] } | null> {
   const sample = input.descriptions.slice(0, 6);
   if (sample.length === 0) return null;
-  const user = `These recipes are all in one group a member cooks:\n${sample.map((d) => `- ${d}`).join("\n")}\n\nName the vibe, then classify its weather label.`;
+  const user = `These recipes are all in one group a member cooks:\n${sample.map((d) => `- ${d}`).join("\n")}\n\nName the vibe, then classify its weather label, then its meal label.`;
   let res: TextGenResponse;
   try {
     res = await runAi<TextGenResponse>(
@@ -55,7 +64,7 @@ export async function nameCluster(
           { role: "system", content: CLUSTER_SYSTEM },
           { role: "user", content: user },
         ],
-        max_tokens: 32,
+        max_tokens: 40,
         temperature: 0.3,
       },
     );
@@ -66,12 +75,29 @@ export async function nameCluster(
   const vibe = cleanPhrase(lines[0]);
   if (!vibe) return null;
   const bucket = parseBucketLabel(lines[1]);
-  const out: { vibe: string; cadence_days: number | null; weather_affinity?: WeatherCategory[] } = {
+  const meal = parseMealLabel(lines[2]);
+  const out: { vibe: string; cadence_days: number | null; meal: MealLabel; weather_affinity?: WeatherCategory[] } = {
     vibe,
     cadence_days: input.cadence_days,
+    meal,
   };
-  if (bucket) out.weather_affinity = [bucket];
+  // Weather is dinner-only (stories/02 Q4): a non-dinner cluster's bucket label is
+  // DISCARDED — never store dead data.
+  if (bucket && meal === "dinner") out.weather_affinity = [bucket];
   return out;
+}
+
+/** Parse a meal-classification line strictly against the closed set, FAIL-CLOSED to
+ *  `'dinner'` on a missing, invalid, or unparseable label (mirrors `parseBucketLabel`;
+ *  the suggestion is neither dropped nor an error — the member retags a mis-shelf). */
+export function parseMealLabel(raw: string | undefined): MealLabel {
+  if (typeof raw !== "string") return "dinner";
+  const cleaned = raw
+    .trim()
+    .toLowerCase()
+    .replace(/^["']|["']$/g, "")
+    .replace(/[.!?,;:]+$/, "");
+  return (MEAL_LABELS as readonly string[]).includes(cleaned) ? (cleaned as MealLabel) : "dinner";
 }
 
 /** Parse a bucket-classification line into a `WeatherCategory`, or null when the line is

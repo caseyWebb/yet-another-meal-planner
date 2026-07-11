@@ -61,6 +61,7 @@ import {
   type AssembledProfile,
   type Preferences,
 } from "./profile-db.js";
+import { exportPreferences } from "./preferences.js";
 import { db } from "./db.js";
 import { readNightVibePalette, type ProfilePaletteVibe } from "./night-vibe-db.js";
 import { registerCookingWriteTools } from "./cooking-write.js";
@@ -289,10 +290,11 @@ export async function resolveTenantForecast(env: Env, tenant: string, days = 7):
 export interface UserProfilePayload extends AssembledProfile {
   initialized: boolean;
   missing: string[];
-  /** The caller's night-vibe palette — each saved vibe plus its derived `last_satisfied` and
-   *  cadence status (data-read-tools D5), so session start reads the revealed-preference rhythm
-   *  as the basis for shaping a plan. */
-  night_vibes: ProfilePaletteVibe[];
+  /** The caller's meal-vibe palette — each saved vibe plus its `meal`, its `members`
+   *  when set, and its derived `last_satisfied`/cadence status (data-read-tools D5), so
+   *  session start reads the revealed-preference rhythm as the basis for shaping a plan.
+   *  (The `missing[]` onboarding label stays `"vibes"`.) */
+  meal_vibes: ProfilePaletteVibe[];
 }
 
 /**
@@ -322,7 +324,8 @@ export async function assembleUserProfile(env: Env, tenant: string): Promise<Use
     ["equipment", profile.kitchen.owned.length ? profile.kitchen : null],
     ["ready-to-eat", profile.ready_to_eat],
     ["stockup", profile.stockup],
-    // An empty palette is an onboarding gap `suggest_night_vibes` fills (data-read-tools D5).
+    // An empty palette is an onboarding gap `suggest_meal_vibes` fills (data-read-tools D5).
+    // The area label deliberately stays "vibes" across the meal-vibe rename.
     ["vibes", nightVibes.length ? nightVibes : null],
   ];
 
@@ -335,14 +338,18 @@ export async function assembleUserProfile(env: Env, tenant: string): Promise<Use
   return {
     initialized,
     missing,
-    preferences: profile.preferences,
+    // The EXPORT shaping (one deprecation window): `cadence` always present (stored map,
+    // else the read-time derivation), `default_cooking_nights` mirrored from the
+    // effective cadence.dinner, and the retired lunch_strategy/ready_to_eat_default_action
+    // dropped now (meal vibes supersede them).
+    preferences: exportPreferences(profile.preferences),
     taste: profile.taste,
     diet_principles: profile.diet_principles,
     kitchen: profile.kitchen,
     staples: profile.staples,
     ready_to_eat: profile.ready_to_eat,
     stockup: profile.stockup,
-    night_vibes: nightVibes,
+    meal_vibes: nightVibes,
   };
 }
 
@@ -774,7 +781,7 @@ export function buildServer(env: Env, tenant: Tenant, origin?: string): McpServe
     "read_user_profile",
     {
       description:
-        "Return the caller's full grocery profile in one call, including initialization status. `initialized` is true once preferences are present; `missing` lists onboarding-area keys still absent (store, taste, diet, equipment, ready-to-eat, stockup, vibes) — empty when fully set up. Profile fields: preferences (parsed), taste narrative (markdown), diet principles (markdown), kitchen inventory (owned equipment slugs + notes), staples list, ready-to-eat catalog items, stockup watchlist, and night_vibes (the palette — each saved vibe plus its derived last_satisfied and cadence status: overdue|due|soon|ok, the revealed-preference rhythm). Absent fields return null or empty. Use this at the start of every session — on initialized:false, run configure-yamp-profile first.",
+        "Return the caller's full grocery profile in one call, including initialization status. `initialized` is true once preferences are present; `missing` lists onboarding-area keys still absent (store, taste, diet, equipment, ready-to-eat, stockup, vibes) — empty when fully set up. Profile fields: preferences (parsed; `preferences.cadence` is the per-meal planning-frequency map { breakfast, lunch, dinner } — the stored map, or a derivation from the legacy nights count when unset; `default_cooking_nights` remains exported for one deprecation window as a derived MIRROR of cadence.dinner — prefer cadence), taste narrative (markdown), diet principles (markdown), kitchen inventory (owned equipment slugs + notes), staples list, ready-to-eat catalog items, stockup watchlist, and meal_vibes (the palette — each saved vibe plus its `meal`, its `members` when set, and its derived last_satisfied and cadence status: overdue|due|soon|ok, the revealed-preference rhythm). Absent fields return null or empty. Use this at the start of every session — on initialized:false, run configure-yamp-profile first.",
       inputSchema: {},
     },
     () => runTool(() => assembleUserProfile(env, tenant.id)),

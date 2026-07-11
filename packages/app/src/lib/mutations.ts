@@ -508,7 +508,7 @@ export function useSetFavorite() {
   return useMutation<void, ApiError, FavoriteVars>({ mutationKey: ["overlay", "favorite"] });
 }
 
-/** Row-level plan ops (class (b), keyed by recipe slug). */
+/** Row-level plan ops (class (b), keyed by the client-minted plan-row id). */
 export function usePlanOps() {
   return useMutation<void, ApiError, PlanOpsVars>({ mutationKey: ["plan", "ops"] });
 }

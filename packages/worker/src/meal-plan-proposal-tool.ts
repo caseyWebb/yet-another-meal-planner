@@ -27,7 +27,16 @@ import { fetchWeatherForecast, deriveCategory, type WeatherCategory } from "./we
 import { readNightVibes, readNightVibeVectors, readVibeLastSatisfied, type NightVibe } from "./night-vibe-db.js";
 import { debt, sampleWeek, DEFAULT_CADENCE_PARAMS, type NightVibeSpec, type NewForMeSeed, type WeekSlot } from "./night-vibe-schedule.js";
 import { facetsSchema } from "./night-vibe-tools.js";
-import { assembleProposal, type ProposalCtx, type ProposalResult } from "./meal-plan-proposal.js";
+import { assembleProposal, type ProposalCtx, type ProposalResult, type ProposeMeal, type ProposedSlot } from "./meal-plan-proposal.js";
+import { effectiveCadenceCount } from "./preferences.js";
+import {
+  householdRoster,
+  resolveAttendance,
+  unionHardConstraints,
+  blendTasteProfiles,
+  vibeParticipates,
+  type AttendanceInput,
+} from "./household.js";
 import type { DiversifyCandidate, DiversifyParams } from "./diversify.js";
 import { readPantry } from "./session-db.js";
 import { deriveAtRiskDemand } from "./use-it-up.js";
@@ -77,17 +86,35 @@ export interface ProposeNudges {
   proteins?: string[];
 }
 
-/** One Claude-authored EPHEMERAL vibe (converge D2): the same primitive as a saved night vibe (a
- *  `vibe` phrase + optional hard-gate `facets`) but with no cadence history and no persistence —
- *  it shapes the week for a single request only. */
+/** One Claude-authored EPHEMERAL vibe (converge D2): the same primitive as a saved meal vibe (a
+ *  `vibe` phrase + optional hard-gate `facets` + a `meal`, default dinner) but with no cadence
+ *  history and no persistence — it shapes the week for a single request only, authoring slots
+ *  WITH meals. */
 export interface ProposeEphemeralVibe {
   vibe: string;
   facets?: Record<string, unknown>;
+  meal?: ProposeMeal;
+}
+
+/** The per-meal slot-count request: each an integer 0–14, PER-WINDOW (not week-scaled —
+ *  parity with the prior `nights`; the planning window bounds recurrence caps, not counts).
+ *  An absent meal falls through the default chain: stored `cadence[meal]` → the read-time
+ *  derivation (dinner: `default_cooking_nights ?? 5`; breakfast/lunch: 0). */
+export interface ProposeMealsInput {
+  breakfast?: number;
+  lunch?: number;
+  dinner?: number;
 }
 
 /** The full propose request — the MCP tool's input and the `POST /api/propose` body. */
 export interface ProposeInput {
+  /** Deprecation-window alias for `meals.dinner = N`; IGNORED (without error) when
+   *  `meals` is supplied. */
   nights?: number;
+  meals?: ProposeMealsInput;
+  /** Attendance (D29-final): exactly one of `away`/`only`; unknown handles are dropped
+   *  and echoed in diagnostics; an empty effective set fails open to the full roster. */
+  attendance?: AttendanceInput;
   seed?: number;
   lock?: string[];
   exclude?: string[];
@@ -107,16 +134,37 @@ export interface ProposeInput {
   new_for_me?: string[];
 }
 
+/** One meal's requested/filled/empty diagnostics. */
+export interface MealDiagnostics {
+  requested: number;
+  filled: number;
+  empty: number;
+}
+
+/** The attendance diagnostics, ALWAYS returned: the effective eating set, the dropped
+ *  unknown handles, and any fail-open notes (empty effective set, stale vibe members). */
+export interface AttendanceDiagnostics {
+  effective: string[];
+  ignored: string[];
+  notes?: string[];
+}
+
 /** The op's result: the assembled proposal + the schedule's rollover diagnostics
- *  (`rolled_over` absent only on the empty-palette short-circuit, which carries `note`). */
+ *  (`rolled_over` absent only on the empty-palette short-circuit, which carries `note`).
+ *  `diagnostics.nights` is kept for one deprecation window as the DINNER alias of
+ *  `diagnostics.meals.dinner.requested`. `notes` carries the empty-meal escape nudges. */
 export interface ProposeResult extends Omit<ProposalResult, "diagnostics"> {
-  diagnostics: ProposalResult["diagnostics"] & { rolled_over?: string[] };
+  diagnostics: ProposalResult["diagnostics"] & {
+    rolled_over?: string[];
+    meals: Record<ProposeMeal, MealDiagnostics>;
+    attendance: AttendanceDiagnostics;
+  };
   note?: string;
+  notes?: string[];
 }
 
 /** Per-slot recall: how many candidates to rank before the cross-slot diversify narrows. */
 const POOL_K = 24;
-const DEFAULT_NIGHTS = 5;
 /** Fallback planning window (days) when the caller has no `planning_cadence_days` set. */
 const DEFAULT_PLANNING_WINDOW_DAYS = 7;
 /** The freeform phrase's rank-nudge weight — the `favoriteWeight` scale, deliberately
@@ -137,7 +185,21 @@ function num(v: unknown): number | null {
 /** The propose input's zod shape — the MCP tool's `inputSchema` AND the `/api/propose`
  *  body validator (one contract, D7: the tool and the endpoint accept the same request). */
 export const PROPOSE_INPUT_SHAPE = {
+  // `nights` is the one-window alias of `meals.dinner` (ignored when `meals` is supplied).
   nights: z.number().int().positive().max(14).optional(),
+  meals: z
+    .object({
+      breakfast: z.number().int().min(0).max(14).optional(),
+      lunch: z.number().int().min(0).max(14).optional(),
+      dinner: z.number().int().min(0).max(14).optional(),
+    })
+    .optional(),
+  attendance: z
+    .object({
+      away: z.array(z.string()).optional(),
+      only: z.array(z.string()).optional(),
+    })
+    .optional(),
   seed: z.number().int().optional(),
   lock: z.array(z.string()).optional(),
   exclude: z.array(z.string()).optional(),
@@ -162,13 +224,15 @@ export const PROPOSE_INPUT_SHAPE = {
       }),
     )
     .optional(),
-  // A Claude-authored ephemeral vibe set (converge D2) — the same `{ vibe, facets }` primitive as
-  // a saved night vibe, reusing the vibe facet gate. Present → it shapes the week (see below).
+  // A Claude-authored ephemeral vibe set (converge D2) — the same `{ vibe, facets, meal }`
+  // primitive as a saved meal vibe, reusing the vibe facet gate. Present → it shapes the week
+  // (see below), authoring slots WITH meals (`meal` defaults dinner).
   ephemeral_vibes: z
     .array(
       z.object({
         vibe: z.string(),
         facets: facetsSchema,
+        meal: z.enum(["breakfast", "lunch", "dinner"]).optional(),
       }),
     )
     .optional(),
@@ -182,13 +246,21 @@ export const PROPOSE_INPUT_SHAPE = {
  * the MCP wrapper converts via `runTool`, the route via the shared error middleware.
  */
 export async function runProposeMealPlan(env: Env, tenant: Tenant, input: ProposeInput, deps: ProposeDeps): Promise<ProposeResult> {
-  const { nights, seed, lock, exclude, boost_ingredients, nudges, slots, ephemeral_vibes, new_for_me } = input;
+  const { nights, meals, attendance, seed, lock, exclude, boost_ingredients, nudges, slots, ephemeral_vibes, new_for_me } = input;
   const now = new Date();
   const resolvedSeed = seed ?? Number(now.toISOString().slice(0, 10).replace(/-/g, ""));
   const excludeSet = new Set((exclude ?? []).map((s) => s.toLowerCase()));
   // D2: a Claude-authored ephemeral vibe set (non-blank entries) shapes the week directly,
   // bypassing palette cadence sampling. An agent with intent can propose even on an empty palette.
   const ephemeral = (ephemeral_vibes ?? []).filter((e) => typeof e.vibe === "string" && e.vibe.trim());
+
+  // The household seam (D29-final): one roster read, attendance resolved with fully-defined
+  // fail-opens (validation of the exactly-one shape fires BEFORE any heavy load). Band-1
+  // degeneracy: the roster is the singleton [tenant], so no handle is recognizable and every
+  // call ranks as the whole household — today's ranking, observably.
+  const roster = await householdRoster(env, tenant.id);
+  const att = resolveAttendance(roster, attendance);
+  const attendanceNotes: string[] = [...att.notes];
 
   const [index, overlay, lastCooked, owned, embeddings, prefs, operatorConfig, ctx, palette, vibeVectors, lastSatisfied, pantry] =
     await Promise.all([
@@ -208,31 +280,78 @@ export async function runProposeMealPlan(env: Env, tenant: Tenant, input: Propos
       readPantry(env, tenant.id).catch(() => []),
     ]);
 
-  const nightCount = nights ?? num((prefs as Record<string, unknown> | null)?.default_cooking_nights) ?? DEFAULT_NIGHTS;
-  // The planning WINDOW is a separate knob from the night count: it's how far out the
+  // Per-meal slot counts (per-window, not week-scaled): explicit `meals` → stored
+  // `cadence[meal]` → the read-time derivation. `nights` stays for one window as the
+  // dinner alias, IGNORED (without error) when `meals` is supplied.
+  const countFor = (meal: ProposeMeal): number => {
+    if (meals !== undefined) {
+      const v = meals[meal];
+      if (typeof v === "number") return v;
+      return effectiveCadenceCount(prefs as Record<string, unknown> | null, meal);
+    }
+    if (meal === "dinner" && typeof nights === "number") return nights;
+    return effectiveCadenceCount(prefs as Record<string, unknown> | null, meal);
+  };
+  const counts: Record<ProposeMeal, number> = {
+    breakfast: countFor("breakfast"),
+    lunch: countFor("lunch"),
+    dinner: countFor("dinner"),
+  };
+  // The planning WINDOW is a separate knob from the counts: it's how far out the
   // caller plans/shops (planning_cadence_days), driving the weather horizon and the
-  // vibe-recurrence caps below — a longer window does NOT by itself mean more cooking
-  // nights (default_cooking_nights already resolved that, above, independent of window).
+  // vibe-recurrence caps below — a longer window does NOT by itself mean more slots
+  // per window (the cadence map already resolved that, above, independent of window).
   const window = num((prefs as Record<string, unknown> | null)?.planning_cadence_days) ?? DEFAULT_PLANNING_WINDOW_DAYS;
 
+  const attendanceDiag = (): { effective: string[]; ignored: string[]; notes?: string[] } => ({
+    effective: att.effective,
+    ignored: att.ignored,
+    ...(attendanceNotes.length ? { notes: attendanceNotes } : {}),
+  });
+  const emptyMealsDiag = (): Record<ProposeMeal, MealDiagnostics> => ({
+    breakfast: { requested: counts.breakfast, filled: 0, empty: 0 },
+    lunch: { requested: counts.lunch, filled: 0, empty: 0 },
+    dinner: { requested: counts.dinner, filled: 0, empty: 0 },
+  });
+
   if (palette.length === 0 && ephemeral.length === 0) {
-    return { plan: [], variety: { distinct_proteins: 0, distinct_cuisines: 0, mean_pairwise_sim: 0, max_pairwise_sim: 0 }, uncovered_at_risk: [], diagnostics: { seed: resolvedSeed, lambda: 0, nights: nightCount, filled: 0, empty: 0 }, note: "no night vibes in the palette — add some with add_night_vibe, or pass an ephemeral_vibes set, then propose again" };
+    return {
+      plan: [],
+      variety: { distinct_proteins: 0, distinct_cuisines: 0, mean_pairwise_sim: 0, max_pairwise_sim: 0 },
+      uncovered_at_risk: [],
+      diagnostics: { seed: resolvedSeed, lambda: 0, nights: counts.dinner, filled: 0, empty: 0, meals: emptyMealsDiag(), attendance: attendanceDiag() },
+      note: "no meal vibes in the palette — add some with add_meal_vibe, or pass an ephemeral_vibes set, then propose again",
+    };
   }
+
+  // The household HARD FLOOR (D29-final): the union of every roster member's hard
+  // constraints — computed over the singleton profile in band 1 (identity), and NEVER
+  // varied by attendance (an absent member's rejects still gate).
+  const memberRejects = new Set<string>();
+  for (const [slug, row] of Object.entries(overlay)) if (row?.reject) memberRejects.add(slug);
+  const hardFloor = unionHardConstraints([{ memberId: tenant.id, rejects: memberRejects, dietaryAvoid: [] }]);
 
   // Effective per-tenant index: merge overlay (favorite/reject) + cooking-log last_cooked
-  // so the reject + makeability gates see the caller's view (as search_recipes does).
+  // so the reject + makeability gates see the caller's view (as search_recipes does) —
+  // with the reject flag forced from the household union (identity in band 1).
   const effective: RecipeIndex = {};
   for (const [slug, entry] of Object.entries(index)) {
-    effective[slug] = { ...mergeOverlay(entry, overlay[slug], lastCooked.get(slug)), slug };
+    const merged = { ...mergeOverlay(entry, overlay[slug], lastCooked.get(slug)), slug };
+    if (hardFloor.rejects.has(slug)) (merged as Record<string, unknown>).reject = true;
+    effective[slug] = merged;
   }
 
-  const favoriteVecs: number[][] = [];
+  // The household SOFT BLEND: favorite anchors blended with uniform weights over the
+  // effective eating set — the singleton profile makes this an identity blend (today's
+  // ranking byte-for-byte); band 5 grows the loader, not this call shape.
+  const memberFavoriteVecs: number[][] = [];
   for (const [slug, row] of Object.entries(overlay)) {
     if (row?.favorite) {
       const vec = embeddings.get(slug);
-      if (vec) favoriteVecs.push(vec);
+      if (vec) memberFavoriteVecs.push(vec);
     }
   }
+  const favoriteVecs = blendTasteProfiles([{ memberId: tenant.id, favoriteVecs: memberFavoriteVecs }], att.effective);
   const rankParams = resolveRankParams(prefs, operatorConfig ?? undefined);
   const boostItems = ctx.resolveNames(boost_ingredients);
   const diversifyParams: Partial<DiversifyParams> = {};
@@ -289,7 +408,10 @@ export async function runProposeMealPlan(env: Env, tenant: Tenant, input: Propos
     if (cand) locked.push(cand);
     else lockedUnresolved.push(raw);
   }
-  const nightsToFill = Math.max(0, nightCount - lockList.length);
+  // Locks (and new_for_me force-placements) are DINNER slots — a lock is "cook this
+  // this week" intent, dinner-shaped by construction; per-meal pinning goes through
+  // `slots[].recipe` or an `ephemeral_vibes[].meal` entry plus a pin.
+  const dinnerToFill = Math.max(0, counts.dinner - lockList.length);
 
   // Per-slot constraints keyed by PALETTE vibe id (D2). First entry per vibe wins (deterministic);
   // a constraint whose vibe isn't a slot this week is INERT (no effect, no error) — so with an
@@ -306,18 +428,25 @@ export async function runProposeMealPlan(env: Env, tenant: Tenant, input: Propos
   // directly, or the saved palette is scheduled by `sampleWeek` (cadence-debt × weather + D3
   // new-for-me). The single cache-gated embed batch (freeform + ephemeral phrases OR sampled
   // slot-override phrases) is made inside the chosen path — still at most ONE AI call per request.
-  const shapeSlots: WeekSlot[] = [];
+  const shapeSlots: (WeekSlot & { meal: ProposeMeal })[] = [];
   const vibeForSlot = new Map<string, NightVibe>();
   const queryVecBySlot = new Map<string, number[]>();
   const overriddenVibes = new Set<string>();
-  let rolledOver: string[] = [];
+  const rolledOver: string[] = [];
   const placedNewForMe: DiversifyCandidate[] = [];
   let freeformVec: number[] | null = null;
+  /** Explicit empty slots for a meal with count > 0 but ZERO vibes of that meal —
+   *  appended to the plan after assembly, never a silent fallback into another
+   *  meal's palette. `notes` names the escapes. */
+  const emptyMealSlots: ProposedSlot[] = [];
+  const notes: string[] = [];
+  const ENGINE_MEALS: readonly ProposeMeal[] = ["breakfast", "lunch", "dinner"];
 
   if (ephemeral.length > 0) {
-    // Ephemeral path (D2): each authored entry IS a slot — a synthetic vibe (phrase + facets),
-    // its phrase embedded like an override and facet-gated like any slot. Palette cadence
-    // sampling is bypassed for this request; palette-keyed `slots[]` constraints are inert.
+    // Ephemeral path (D2): each authored entry IS a slot — a synthetic vibe (phrase + facets +
+    // meal, default dinner), its phrase embedded like an override and facet-gated like any slot.
+    // Palette cadence sampling is bypassed for this request; palette-keyed `slots[]` constraints
+    // are inert, and the `meals` counts don't apply (the authored set IS the week's slots).
     const phrases = ephemeral.map((e) => e.vibe.trim());
     const embedInputs = [...(freeform ? [freeform] : []), ...phrases];
     const embedded =
@@ -325,17 +454,31 @@ export async function runProposeMealPlan(env: Env, tenant: Tenant, input: Propos
     freeformVec = freeform ? embedded[0] : null;
     ephemeral.forEach((e, i) => {
       const id = `ephemeral-${i}`;
-      shapeSlots.push({ id, reason: "sampled", debt: 0, weight: 0 });
-      vibeForSlot.set(id, { id, vibe: e.vibe.trim(), facets: e.facets });
+      shapeSlots.push({ id, reason: "sampled", debt: 0, weight: 0, meal: e.meal ?? "dinner" });
+      vibeForSlot.set(id, { id, vibe: e.vibe.trim(), facets: e.facets ?? undefined, meal: e.meal ?? "dinner" });
       queryVecBySlot.set(id, embedded[(freeform ? 1 : 0) + i]);
     });
   } else {
-    // Palette path: sample the saved palette by cadence-debt × weather, with the D3 new-for-me
-    // force-placement tier. New-for-me seeds resolve against the index for their recipe candidate
-    // and their weather-bucket membership (the recipe's `tags`); an unresolvable / excluded /
-    // already-locked / duplicate seed is dropped (soft priority — it simply doesn't claim a slot).
-    const debtByVibe = new Map<string, number>();
+    // Palette path: partition the palette by meal (after the D29-final participation
+    // filter) and sample EACH MEAL's slots from that meal's vibes with that meal's
+    // count, cadence-debt-weighted as today. Weather quotas apply to the DINNER pass
+    // only (stories/02 Q4): the non-dinner passes see a neutral all-`mild` histogram
+    // (empty dayCategories) AND meal-stripped weather affinities, so a stored affinity
+    // on a non-dinner vibe is preserved-but-inert and the quota machinery degenerates
+    // cleanly to cadence-debt-only sampling rather than forking the code path.
+
+    // The vibe-contribution rule: an assigned vibe participates only when its members
+    // intersect the effective eating set; NULL = everyone; all-unresolvable members
+    // fail OPEN to everyone with a diagnostics note (never silently deleted).
+    const participating: NightVibe[] = [];
     for (const v of palette) {
+      const p = vibeParticipates(v.members, att.effective, roster);
+      if (p.stale) attendanceNotes.push(`vibe '${v.id}' names no recognizable member — treating it as everyone's`);
+      if (p.participates) participating.push(v);
+    }
+
+    const debtByVibe = new Map<string, number>();
+    for (const v of participating) {
       debtByVibe.set(v.id, v.cadence_days ? debt(lastSatisfied.get(v.id) ?? null, v.cadence_days, now) : 0);
     }
     const lockedSlugs = new Set(locked.map((c) => c.slug));
@@ -355,40 +498,107 @@ export async function runProposeMealPlan(env: Env, tenant: Tenant, input: Propos
     // Each day collapses to exactly ONE discrete category (never a flattened union) —
     // `sampleWeek` histograms this mix into quotas itself (capped at its own reliability
     // horizon), so no additional bounding happens here beyond the fetch's own day count.
-    const weather = await fetchWeatherForecast(resolveZip(prefs), window).catch(() => null);
+    // Fetched only when a dinner pass will run — the only pass weather shapes.
+    const weather = dinnerToFill > 0 ? await fetchWeatherForecast(resolveZip(prefs), window).catch(() => null) : null;
     const dayCategories: WeatherCategory[] =
       weather && "forecast" in weather ? weather.forecast.map((d) => deriveCategory(d.meal_vibes, d.condition)) : [];
-    const specs: NightVibeSpec[] = palette.map((v) => ({
-      id: v.id,
-      base_weight: v.base_weight ?? undefined,
-      pinned: v.pinned,
-      weather_affinity: v.weather_affinity,
-      weather_antipathy: v.weather_antipathy,
-      cadence_days: v.cadence_days,
-    }));
-    const shape = sampleWeek(specs, dayCategories, debtByVibe, nightsToFill, resolvedSeed, DEFAULT_CADENCE_PARAMS, window, newForMeSeeds);
-    rolledOver = shape.rolledOver;
-    const paletteById = new Map(palette.map((v) => [v.id, v]));
+    const paletteById = new Map(participating.map((v) => [v.id, v]));
 
-    // Split the scheduler's slots: a new-for-me force-placement resolves to its standalone recipe
-    // candidate (emitted by assembleProposal as a vibe-less slot); the rest are palette vibe slots.
-    const vibeSlots: WeekSlot[] = [];
-    for (const s of shape.slots) {
-      if (s.reason === "new_for_me") {
-        const cand = newForMeCandBySlug.get(s.id);
-        if (cand) placedNewForMe.push(cand);
+    const vibeSlots: (WeekSlot & { meal: ProposeMeal })[] = [];
+    for (const meal of ENGINE_MEALS) {
+      const count = meal === "dinner" ? dinnerToFill : counts[meal];
+      // New-for-me force-placement is DINNER-only; carry the seeds through every branch so an
+      // accepted discovery is never silently dropped when the dinner pass is short-circuited.
+      const seeds = meal === "dinner" ? newForMeSeeds : [];
+      if (count <= 0) {
+        // No free slots for this meal (a dinner fully consumed by locks) — the accepted
+        // discoveries have nowhere to land, so roll them over rather than drop them.
+        for (const s of seeds) rolledOver.push(s.id);
         continue;
       }
-      vibeSlots.push(s);
+      const mealVibes = participating.filter((v) => (v.meal ?? "dinner") === meal);
+      if (mealVibes.length === 0) {
+        // VIBE-MEAL BINDING: a requested meal with no palette of its own yields
+        // EXPLICIT empty slots + an escape note — never a cross-palette fallback.
+        // Force-placement is vibe-INDEPENDENT, though: an accepted new_for_me discovery
+        // still claims a free dinner slot here (sampleWeek over an EMPTY palette — the same
+        // quota/rollover machinery as the normal pass), and only the LEFTOVER slots stay empty.
+        let placedHere = 0;
+        if (seeds.length > 0) {
+          const shape = sampleWeek([], meal === "dinner" ? dayCategories : [], debtByVibe, count, resolvedSeed, DEFAULT_CADENCE_PARAMS, window, seeds);
+          rolledOver.push(...shape.rolledOver);
+          for (const s of shape.slots) {
+            if (s.reason !== "new_for_me") continue;
+            const cand = newForMeCandBySlug.get(s.id);
+            if (cand) placedNewForMe.push(cand);
+            placedHere++;
+          }
+        }
+        for (let i = 0; i < count - placedHere; i++) {
+          emptyMealSlots.push({
+            vibe_id: null,
+            meal,
+            reason: "sampled",
+            main: null,
+            empty_reason: "no_palette_for_meal",
+            alternates: [],
+            alt_similar: null,
+            alt_different: null,
+            sides: [],
+            uses_perishables: [],
+            flags: {},
+            why: [],
+          });
+        }
+        // Flag the missing palette only when empty slots actually remain — a week whose free
+        // dinner slots were entirely claimed by discoveries has nothing left to escape.
+        if (count - placedHere > 0) {
+          notes.push(
+            `no ${meal} vibes in the palette — add one with add_meal_vibe (meal: "${meal}"), or author an ephemeral_vibes entry carrying meal: "${meal}"`,
+          );
+        }
+        continue;
+      }
+      const specs: NightVibeSpec[] = mealVibes.map((v) => ({
+        id: v.id,
+        base_weight: v.base_weight ?? undefined,
+        pinned: v.pinned,
+        // Weather is dinner-scoped: stripping the affinity from non-dinner specs keeps a
+        // stored value preserved-but-INERT in allocation (a bucketless vibe fills any slot).
+        weather_affinity: meal === "dinner" ? v.weather_affinity : undefined,
+        weather_antipathy: meal === "dinner" ? v.weather_antipathy : undefined,
+        cadence_days: v.cadence_days,
+      }));
+      const shape = sampleWeek(
+        specs,
+        meal === "dinner" ? dayCategories : [],
+        debtByVibe,
+        count,
+        resolvedSeed,
+        DEFAULT_CADENCE_PARAMS,
+        window,
+        seeds,
+      );
+      rolledOver.push(...shape.rolledOver);
+      for (const s of shape.slots) {
+        // A new-for-me force-placement (dinner pass only) resolves to its standalone
+        // recipe candidate (emitted by assembleProposal as a vibe-less dinner slot).
+        if (s.reason === "new_for_me") {
+          const cand = newForMeCandBySlug.get(s.id);
+          if (cand) placedNewForMe.push(cand);
+          continue;
+        }
+        vibeSlots.push({ ...s, meal });
+      }
     }
 
     // Request-time embeds (D5): the freeform phrase + every SAMPLED slot's vibe-override phrase,
     // in ONE cache-gated batched call. A request with no such text makes NO AI call.
-    const sampledVibeIds = new Set(vibeSlots.map((s) => s.id));
+    const sampledVibeIdSet = new Set(vibeSlots.map((s) => s.id));
     const overrideTexts: { id: string; text: string }[] = [];
     for (const [id, c] of constraintByVibe) {
       const text = c.vibe?.trim();
-      if (text && sampledVibeIds.has(id)) overrideTexts.push({ id, text });
+      if (text && sampledVibeIdSet.has(id)) overrideTexts.push({ id, text });
     }
     const embedInputs = [...(freeform ? [freeform] : []), ...overrideTexts.map((o) => o.text)];
     const embedded =
@@ -426,7 +636,7 @@ export async function runProposeMealPlan(env: Env, tenant: Tenant, input: Propos
       poolByVibe.set(slot.id, []); // unembedded / missing → explicit empty slot
       continue;
     }
-    poolByVibe.set(slot.id, buildPool(effective, vibe, queryVec, embeddings, lastCooked, favoriteVecs, rankParams, now, owned, ctx, excludeSet, nudges?.max_time_total, constraintByVibe.get(slot.id), freeformNudge, proteinWants));
+    poolByVibe.set(slot.id, buildPool(effective, vibe, slot.meal, queryVec, embeddings, lastCooked, favoriteVecs, rankParams, now, owned, ctx, excludeSet, nudges?.max_time_total, constraintByVibe.get(slot.id), freeformNudge, proteinWants));
     // Only pinned slots get a scheduling why-chip; an overdue placement already reads as
     // its `reason` — no member-facing badge (the slot's why[] may legitimately be empty).
     if (slot.reason === "pinned") whyByVibe.set(slot.id, [`your regular “${vibe.vibe}”`]);
@@ -454,10 +664,11 @@ export async function runProposeMealPlan(env: Env, tenant: Tenant, input: Propos
     locked,
     lockedUnresolved,
     newForMe: placedNewForMe,
-    // The palette path reports the REQUESTED nights (honest under-fill diagnostics). The ephemeral
-    // path's slot count is the authored set (not `nights`), so leave requestedNights unset and let
-    // diagnostics.nights fall through to the actual slot count — keeping it in step with plan.length.
-    requestedNights: ephemeral.length > 0 ? undefined : nightCount,
+    // The palette path reports the REQUESTED dinner count (honest under-fill diagnostics;
+    // `diagnostics.nights` stays the DINNER alias for one window). The ephemeral path's slot
+    // count is the authored set, so leave requestedNights unset and let diagnostics.nights
+    // fall through to the actual slot count — keeping it in step with plan.length.
+    requestedNights: ephemeral.length > 0 ? undefined : counts.dinner,
     frontmatterBySlug,
     embeddingBySlug: embeddings,
     atRiskDemand,
@@ -488,7 +699,44 @@ export async function runProposeMealPlan(env: Env, tenant: Tenant, input: Propos
       slot.why.push(`the ${slot.main.protein} you asked for`);
     }
   }
-  return { ...result, diagnostics: { ...result.diagnostics, rolled_over: rolledOver } };
+  // Append the empty-meal explicit slots (a requested meal with no palette of its own),
+  // then present the FLAT plan in meal order — breakfast → lunch → dinner, position-
+  // stable within each meal (a stable sort; selection order above is unaffected).
+  const MEAL_POS: Record<ProposeMeal, number> = { breakfast: 0, lunch: 1, dinner: 2 };
+  const plan = [...result.plan, ...emptyMealSlots].sort((a, b) => MEAL_POS[a.meal] - MEAL_POS[b.meal]);
+
+  // Per-meal diagnostics: requested (the resolved counts; for the ephemeral path, the
+  // authored entries per meal) / filled / empty over the returned plan.
+  const requestedFor = (meal: ProposeMeal): number => {
+    if (ephemeral.length > 0) return ephemeral.filter((e) => (e.meal ?? "dinner") === meal).length;
+    return counts[meal];
+  };
+  const mealsDiag = {} as Record<ProposeMeal, MealDiagnostics>;
+  for (const meal of ["breakfast", "lunch", "dinner"] as const) {
+    const ofMeal = plan.filter((sl) => sl.meal === meal);
+    mealsDiag[meal] = {
+      requested: requestedFor(meal),
+      filled: ofMeal.filter((sl) => sl.main !== null).length,
+      empty: ofMeal.filter((sl) => sl.main === null).length,
+    };
+  }
+
+  const out: ProposeResult = {
+    ...result,
+    plan,
+    diagnostics: {
+      ...result.diagnostics,
+      // Recount over the final plan (the empty-meal slots joined after assembly).
+      nights: mealsDiag.dinner.requested,
+      filled: plan.filter((sl) => sl.main !== null).length,
+      empty: plan.filter((sl) => sl.main === null).length,
+      rolled_over: rolledOver,
+      meals: mealsDiag,
+      attendance: attendanceDiag(),
+    },
+  };
+  if (notes.length) out.notes = notes;
+  return out;
 }
 
 export function registerProposeMealPlanTool(server: McpServer, env: Env, tenant: Tenant, deps: ProposeDeps): void {
@@ -496,11 +744,21 @@ export function registerProposeMealPlanTool(server: McpServer, env: Env, tenant:
     "propose_meal_plan",
     {
       description:
-        "Propose a week of dinners from the caller's NIGHT-VIBE PALETTE, deterministically and statelessly. Two levels: (1) SHAPE — sample `nights` night-vibe slots weighted by cadence-debt (overdue vibes surface) and weather; (2) FILL — retrieve each slot's vibe by meaning and select a VARIED main (MMR + protein/cuisine caps across the week, not the top-3 lookalikes). Each slot's pool is COURSE-GATED to meal candidates by default: only recipes whose course includes `main` — or is empty (fail-open: not-yet-classified is never hidden) — are volunteered, so a component/side (a pasta dough, a sauce) never fills a dinner slot and never appears among the alternates; a vibe authored with an explicit `facets.course` (breakfast-for-dinner) suppresses the default for its slot, and `lock`s/`slots[].recipe` pins are exempt (an explicit caller choice is honored regardless of course). A vibe whose entire pool the gate empties returns the existing explicit empty slot (no alternates) — pin a recipe or give the vibe a `course` facet to escape. Does HOLISTIC use-it-up automatically: derives the caller's at-risk perishables from their PANTRY and spreads them across the week's mains (a multi-serving item can be used across two recipes), subordinate to vibe relevance and the hard gate — no param needed. Composes rung-1 `pairs_with` corpus sides, flags single-use perishable waste + meal-prep + novelty, and returns per-main `why` + `uses_perishables` (what each main actually uses up). Iterate by re-calling with `lock` (keep these recipes anywhere in the week, as vibe-less locked slots — resolved case-insensitively, respecting your rejects; a lock that's unknown, not-yet-embedded, or rejected comes back as an explicit empty locked slot), `exclude` (swap these out — an excluded recipe never appears in a pool, an alternate, or a pin), `boost_ingredients` (OVERRIDE — extra items to definitely use up, unioned with the pantry-derived set), `nudges`, `slots`, and a `seed` (change it for 'give me another week'). `new_for_me` = accepted new-for-me discovery slugs (from list_new_for_me), in priority order: each resolvable one is FORCE-PLACED into the week (below your pinned vibes, above overdue ones) within its weather bucket, seeding the plan rather than competing on cadence — an unresolvable/excluded/already-locked one is simply dropped. `ephemeral_vibes` = an ordered set of authored `{ vibe, facets }` (the same primitive as a saved night vibe, just for this one request): when present it SHAPES the week directly — its entries become the slots (each phrase embedded + facet-gated like a per-slot vibe override), REPLACING the saved-palette cadence sampling for this request (it does NOT bypass the hard gate or the diversify pass, and palette-keyed `slots`/`new_for_me` inputs are inert while it drives). Distill intent into it for a rich request; omit it to let the palette shape a bare 'plan my week'. `nudges`: max_time_total, variety strength (clamped so it can't collapse relevance), `proteins` (week-level SOFT protein boost — reorders, never gates) and `freeform` (a phrase like 'more soup, lighter dinners' — embedded and applied to every slot's ranking as a bounded additive term, never a gate; a main it materially matches says so in `why`). `slots` = per-vibe-slot constraints keyed by vibe_id (inert if that vibe isn't sampled this week): `protein`/`cuisine` facet pins narrowing that night's gate, `max_time_total` (a number caps that night; EXPLICIT null lifts the vibe's own cap — precedence: slot pin > nudges.max_time_total > vibe facet), `vibe` (a typed phrase replacing that slot's query vector — gate + identity unchanged, slot returns vibe_override: true; also fills a fresh not-yet-embedded vibe), and `recipe` (pin that exact recipe INTO the slot keeping its vibe identity + `from_vibe` provenance — the swap-in-place primitive; slot returns recipe_pinned: true, and an unresolvable pin comes back as an explicit empty slot). Each vibe slot also returns swap material from its already-ranked pool: `alternates` (top remaining candidates, week-deduped), `alt_similar` (nearest to the chosen main), `alt_different` (best different-cuisine) — all gate survivors; empty slots keep their alternates as the escape hatch. A slot placed by a non-mild weather quota carries `weather_category` and a weather-fit `why`. Makes at most ONE batched Workers AI embedding call per request — only for `nudges.freeform`/`slots[].vibe`/`ephemeral_vibes[].vibe` text not already in the query-embedding cache; a request with no such text makes NO AI call (every other vector is cron-captured). NO writes (persist a chosen plan with update_meal_plan, threading each main's vibe id as `from_vibe`). Returns { plan, variety, uncovered_at_risk, diagnostics }; `uncovered_at_risk` names at-risk items the plan couldn't use, and an unfillable slot is returned as an explicit empty slot, never dropped.",
+        "Propose a week of meals from the caller's MEAL-VIBE PALETTE, deterministically and statelessly. Two levels, run PER MEAL: (1) SHAPE — the palette partitions by `meal` and each meal's slots are sampled from that meal's vibes, weighted by cadence-debt (overdue vibes surface); weather quotas shape the DINNER pass only (breakfast/lunch sample on cadence-debt alone — a weather affinity stored on a non-dinner vibe is inert); (2) FILL — retrieve each slot's vibe by meaning and select a VARIED main in ONE shared compose pass across all meals (MMR + protein/cuisine caps span the whole week, and the engine emits one recipe AT MOST ONCE per proposal across all meals — explicit locks/pins are the only duplication). Slot counts come from `meals` ({ breakfast?, lunch?, dinner? }, each 0-14, PER-WINDOW not week-scaled), defaulting per meal to the stored cadence map, then (dinner) the legacy nights count or 5 — `nights` remains a deprecated alias of meals.dinner and is ignored when `meals` is supplied. A meal requested with count > 0 but NO vibes of that meal returns explicit empty slots with empty_reason 'no_palette_for_meal' plus a note naming the escapes (add_meal_vibe with that meal, or an ephemeral_vibes entry carrying `meal`) — never a silent fallback into another meal's palette. `attendance` ({ away: [...] } OR { only: [...] }, exactly one — both is validation_failed) narrows SOFT ranking to who's eating: unknown handles are dropped (never errors) and echoed in diagnostics.attendance.ignored, an empty effective set fails open to the whole household, and the HARD floor (dietary gates, rejects) never moves with attendance — an absent member's hard constraints still apply. A vibe assigned to `members` contributes only when one of them is eating (a members list naming nobody recognizable contributes as everyone, noted in diagnostics). Each slot's pool is COURSE-GATED by its meal: dinner/lunch volunteer recipes whose course includes `main` — or is empty (fail-open: not-yet-classified is never hidden) — and breakfast slots gate on course includes `breakfast` or empty, so a dinner main never fills a breakfast slot; a vibe authored with an explicit `facets.course` (breakfast-for-dinner) suppresses the default for its slot, and `lock`s/`slots[].recipe` pins are exempt (an explicit caller choice is honored regardless of course). Does HOLISTIC use-it-up automatically: derives the caller's at-risk perishables from their PANTRY and spreads them across the week's mains, subordinate to vibe relevance and the hard gate — no param needed. Composes rung-1 `pairs_with` corpus sides, flags single-use perishable waste + meal-prep + novelty, and returns per-main `why` + `uses_perishables`. Iterate by re-calling with `lock` (keep these recipes in the week as vibe-less locked DINNER slots — resolved case-insensitively, respecting your rejects; a lock that's unknown, not-yet-embedded, or rejected comes back as an explicit empty locked slot), `exclude` (swap these out — an excluded recipe never appears in a pool, an alternate, or a pin), `boost_ingredients` (OVERRIDE — extra items to definitely use up, unioned with the pantry-derived set), `nudges`, `slots`, and a `seed` (change it for 'give me another week'). `new_for_me` = accepted new-for-me discovery slugs (from list_new_for_me), in priority order: each resolvable one is FORCE-PLACED as a dinner slot (below your pinned vibes, above overdue ones) within its weather bucket — an unresolvable/excluded/already-locked one is simply dropped. `ephemeral_vibes` = an ordered set of authored `{ vibe, facets, meal? }` (the same primitive as a saved meal vibe, just for this one request; `meal` defaults dinner): when present it SHAPES the week directly — its entries become the slots WITH their meals (each phrase embedded + facet-gated like a per-slot vibe override), REPLACING the saved-palette cadence sampling for this request (it does NOT bypass the hard gate or the diversify pass, and palette-keyed `slots`/`new_for_me` inputs are inert while it drives). Distill intent into it for a rich request; omit it to let the palette shape a bare 'plan my week'. `nudges`: max_time_total, variety strength (clamped so it can't collapse relevance), `proteins` (week-level SOFT protein boost — reorders, never gates) and `freeform` (a phrase like 'more soup, lighter dinners' — embedded and applied to every slot's ranking as a bounded additive term, never a gate; a main it materially matches says so in `why`). `slots` = per-vibe-slot constraints keyed by vibe_id (inert if that vibe isn't sampled this week): `protein`/`cuisine` facet pins narrowing that slot's gate, `max_time_total` (a number caps that slot; EXPLICIT null lifts the vibe's own cap — precedence: slot pin > nudges.max_time_total > vibe facet), `vibe` (a typed phrase replacing that slot's query vector — gate + identity unchanged, slot returns vibe_override: true; also fills a fresh not-yet-embedded vibe), and `recipe` (pin that exact recipe INTO the slot keeping its vibe identity + `from_vibe` provenance — the swap-in-place primitive; slot returns recipe_pinned: true, and an unresolvable pin comes back as an explicit empty slot). Each vibe slot also returns swap material from its already-ranked pool: `alternates` (top remaining candidates, week-deduped), `alt_similar` (nearest to the chosen main), `alt_different` (best different-cuisine) — all gate survivors; empty slots keep their alternates as the escape hatch. A slot placed by a non-mild weather quota carries `weather_category` and a weather-fit `why`. Makes at most ONE batched Workers AI embedding call per request — only for `nudges.freeform`/`slots[].vibe`/`ephemeral_vibes[].vibe` text not already in the query-embedding cache; a request with no such text makes NO AI call (every other vector is cron-captured). NO writes (persist a chosen plan with update_meal_plan, threading each slot's `meal` and its vibe id as `from_vibe`). Returns { plan, variety, uncovered_at_risk, diagnostics, notes? }: `plan` is FLAT and meal-ordered (breakfast then lunch then dinner, position-stable within each meal), each slot carrying its `meal`; `diagnostics.meals` reports per-meal { requested, filled, empty } (diagnostics.nights stays the dinner alias for one window) and `diagnostics.attendance` always reports { effective, ignored }; `uncovered_at_risk` names at-risk items the plan couldn't use, and an unfillable slot is returned as an explicit empty slot, never dropped.",
       inputSchema: PROPOSE_INPUT_SHAPE,
     },
     (input) => runTool(() => runProposeMealPlan(env, tenant, input, deps)),
   );
+}
+
+/** Breakfast's meal-default course gate: `course` includes `breakfast`, or is EMPTY
+ *  (the same fail-open as the main gate — a not-yet-classified recipe is unknown, not
+ *  known-non-breakfast, so an unclassified corpus still proposes). */
+function isBreakfastCourse(course: unknown): boolean {
+  const courses = (Array.isArray(course) ? course : course != null ? [course] : []).map((c) =>
+    String(c).trim().toLowerCase(),
+  );
+  return courses.length === 0 || courses.includes("breakfast");
 }
 
 /** Rank one vibe's facet-gated survivors into a diversify pool. `queryVec` is the vibe's
@@ -508,12 +766,16 @@ export function registerProposeMealPlanTool(server: McpServer, env: Env, tenant:
  *  facet gate with precedence slot pin > global `maxTime` nudge > vibe facet (a `null`
  *  per-slot time cap LIFTS the vibe's own); `nudge`/`proteinWants` are the bounded
  *  additive rank terms (they reorder gate survivors, never admit past the gate). The
- *  survivors are additionally course-gated to MEAL candidates (`isMealCourse`) unless the
- *  effective facet set carries an explicit `course`, so a component/side never fills a
- *  dinner slot by default — and, by construction, never appears among the alternates. */
+ *  survivors are additionally course-gated BY THE SLOT'S MEAL: dinner and lunch slots
+ *  keep the `main`-or-empty fail-open gate (`isMealCourse`); breakfast slots gate on
+ *  `course` includes `breakfast` or empty (`isBreakfastCourse`) — keeping breakfast
+ *  pools from filling with dinner mains. An explicit `course` on the effective facet
+ *  set suppresses the default, so a component/side never fills a slot by default —
+ *  and, by construction, never appears among the alternates. */
 function buildPool(
   effective: RecipeIndex,
   vibe: NightVibe,
+  slotMeal: ProposeMeal,
   queryVec: number[],
   embeddings: Map<string, number[]>,
   lastCooked: Map<string, string>,
@@ -539,14 +801,18 @@ function buildPool(
     else if (typeof pins.max_time_total === "number") (facets as Record<string, unknown>).max_time_total = pins.max_time_total;
   }
   let survivors = filterRecipes(effective, facets, now, owned).filter((s) => !excludeSet.has(s.slug.toLowerCase()));
-  // The default MEAL gate: the pool volunteers only meal candidates — course includes
-  // `main`, or is empty (fail-open: not-yet-classified is unknown, never hidden). An
-  // explicit `course` on the effective facet set (the vibe's escape hatch, e.g. a
-  // breakfast-for-dinner vibe) suppresses the default — that slot gates by containment
-  // alone, exactly as above. Locks and `slots[].recipe` pins resolve OUTSIDE this pool
+  // The default MEAL-AWARE course gate: the pool volunteers only the slot's meal's
+  // candidates — dinner/lunch: course includes `main`, or is empty (fail-open:
+  // not-yet-classified is unknown, never hidden); breakfast: course includes
+  // `breakfast`, or is empty (the same fail-open) — so a dinner main never fills a
+  // breakfast slot and a component/side never fills any slot by default. An explicit
+  // `course` on the effective facet set (the vibe's escape hatch, e.g. a breakfast-
+  // for-dinner vibe) suppresses the default — that slot gates by containment alone,
+  // exactly as above. Locks and `slots[].recipe` pins resolve OUTSIDE this pool
   // (resolveCandidate), so an explicit caller choice is never vetoed by course.
   if ((facets as Record<string, unknown>).course === undefined) {
-    survivors = survivors.filter((s) => isMealCourse(s.frontmatter.course));
+    const gate = slotMeal === "breakfast" ? isBreakfastCourse : isMealCourse;
+    survivors = survivors.filter((s) => gate(s.frontmatter.course));
   }
   const cands: SearchCandidate[] = [];
   for (const s of survivors) {
