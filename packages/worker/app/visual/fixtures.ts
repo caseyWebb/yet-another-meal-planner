@@ -13,7 +13,7 @@ import { RecipePage } from "./pages/recipe.page";
 import { PlanPage } from "./pages/plan.page";
 import { GroceryPage } from "./pages/grocery.page";
 import { PantryPage } from "./pages/pantry.page";
-import { LogPage } from "./pages/log.page";
+import { RetrospectivePage } from "./pages/retrospective.page";
 import { ProfilePage } from "./pages/profile.page";
 import { ProposePage } from "./pages/propose.page";
 import { SEED } from "../../admin/visual/seed.mjs";
@@ -28,7 +28,7 @@ interface AppFixtures {
   planPage: PlanPage;
   groceryPage: GroceryPage;
   pantryPage: PantryPage;
-  logPage: LogPage;
+  retrospectivePage: RetrospectivePage;
   profilePage: ProfilePage;
   proposePage: ProposePage;
   /** Log in as the seeded member (lands on /). Most authed specs start here. */
@@ -57,7 +57,7 @@ export const test = base.extend<AppFixtures>({
   planPage: async ({ page }, use) => use(new PlanPage(page)),
   groceryPage: async ({ page }, use) => use(new GroceryPage(page)),
   pantryPage: async ({ page }, use) => use(new PantryPage(page)),
-  logPage: async ({ page }, use) => use(new LogPage(page)),
+  retrospectivePage: async ({ page }, use) => use(new RetrospectivePage(page)),
   profilePage: async ({ page }, use) => use(new ProfilePage(page)),
   proposePage: async ({ page }, use) => use(new ProposePage(page)),
   asMember: async ({ page, context }, use) => {

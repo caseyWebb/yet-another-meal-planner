@@ -61,6 +61,8 @@ export interface PlanOpsVars {
 
 export interface LogAddVars {
   type: "recipe" | "ready_to_eat" | "ad_hoc";
+  /** Which meal this cook was; POST /api/log validates and stores it (omitted = NULL). */
+  meal?: "breakfast" | "lunch" | "dinner" | "project";
   recipe?: string;
   name?: string;
   date: string;

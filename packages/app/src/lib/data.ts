@@ -120,6 +120,8 @@ export interface LogRow {
   id: number;
   date: string;
   type: "recipe" | "ready_to_eat" | "ad_hoc";
+  /** Which meal this cook was; null = "unknown / not a meal" (pre-meal-dimension rows). */
+  meal: "breakfast" | "lunch" | "dinner" | "project" | null;
   recipe: string | null;
   name: string | null;
   title: string | null;

@@ -12,7 +12,7 @@ import { RecipePage } from "./pages/recipe.page";
 import { PlanPage } from "./pages/plan.page";
 import { GroceryPage } from "./pages/grocery.page";
 import { PantryPage } from "./pages/pantry.page";
-import { LogPage } from "./pages/log.page";
+import { RetrospectivePage } from "./pages/retrospective.page";
 import { ProfilePage } from "./pages/profile.page";
 import { ProposePage } from "./pages/propose.page";
 import { SEED } from "../../admin/visual/seed.mjs";
@@ -36,7 +36,7 @@ export const AREAS: readonly RegisteredArea[] = [
   { area: "plan", authed: true, make: (p) => new PlanPage(p) },
   { area: "grocery", authed: true, make: (p) => new GroceryPage(p) },
   { area: "pantry", authed: true, make: (p) => new PantryPage(p) },
-  { area: "log", authed: true, make: (p) => new LogPage(p) },
+  { area: "retrospective", authed: true, make: (p) => new RetrospectivePage(p) },
   { area: "profile", authed: true, make: (p) => new ProfilePage(p) },
   { area: "propose", authed: true, make: (p) => new ProposePage(p) },
 ];

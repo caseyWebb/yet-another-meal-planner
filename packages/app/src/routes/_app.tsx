@@ -101,7 +101,7 @@ const NAV = [
   { to: "/plan", label: "Meal plan", icon: IconCalendar, count: "plan" },
   { to: "/grocery", label: "Grocery list", icon: IconCart, count: "grocery" },
   { to: "/pantry", label: "Pantry", icon: IconPantry, count: null },
-  { to: "/log", label: "Cooking log", icon: IconClock, count: null },
+  { to: "/retrospective", label: "Retrospective", icon: IconClock, count: null },
 ] as const;
 
 /** The shell's offline indicator (member-app-offline D10): driven by the SAME

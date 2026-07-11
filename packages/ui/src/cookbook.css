@@ -433,12 +433,24 @@ ul.recipes > li:last-child { border-bottom: 0; }
 .verify-section .pantry-item:last-child { border-bottom: 0; }
 .verify-section .pantry-item [data-slot="button"] svg { width: 0.85rem; height: 0.85rem; }
 
-/* ── cooking log ─────────────────────────────────────────────────────────── */
-.log-list { margin-top: 0.5rem; }
-.log-row { display: grid; grid-template-columns: 7rem 1fr auto; align-items: center; gap: 0.9rem; padding: 0.75rem 0.25rem; border-bottom: 1px solid var(--border); }
-.log-date { font-size: var(--text-xs); color: var(--muted-foreground); }
-.log-title { font-size: var(--text-sm); font-weight: 500; }
-.log-title:hover:not(.plain) { color: var(--link); }
+/* ── retrospective · cooking log ─────────────────────────────────────────── */
+.log-composer { border: 1px solid var(--border); border-radius: var(--radius-xl, 0.9rem); background: var(--card); padding: 1rem 1.1rem; margin-bottom: 1.6rem; display: flex; flex-direction: column; gap: 0.7rem; }
+.log-composer-cap { display: flex; align-items: center; gap: 0.4rem; font-family: var(--font-mono); font-size: var(--text-xs); text-transform: uppercase; letter-spacing: 0.07em; color: var(--brand); font-weight: 600; }
+.log-composer-cap svg { width: 0.85rem; height: 0.85rem; }
+.log-composer-row { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; }
+.log-composer-row .select, .log-composer-row .input { height: 2.1rem; }
+.log-what { flex: 1 1 14rem; min-width: 0; width: auto; }
+.log-date-in { width: auto; flex: 0 0 auto; }
+.log-days { display: flex; flex-direction: column; gap: 1.3rem; }
+.log-day-head { display: flex; align-items: baseline; gap: 0.6rem; margin-bottom: 0.55rem; }
+.log-day-rel { font-size: var(--text-sm); font-weight: 700; }
+.log-day-sub { font-family: var(--font-mono); font-size: var(--text-xs); color: var(--muted-foreground); text-transform: uppercase; letter-spacing: 0.06em; }
+.log-day-entries { display: flex; flex-direction: column; }
+.log-entry { display: grid; grid-template-columns: 6.5rem 1fr auto; gap: 0.75rem; align-items: center; padding: 0.7rem 0.9rem; border-top: 1px solid var(--border); }
+.log-entry:first-child { border-top: 0; }
+.log-meal { justify-self: start; display: inline-flex; align-items: center; font-size: 0.66rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.07em; color: var(--brand); white-space: nowrap; font-family: var(--font-mono); }
+.log-entry-main { min-width: 0; }
+.log-entry-title { font-size: var(--text-sm); font-weight: 500; }
 .log-facets { display: flex; flex-wrap: wrap; align-items: center; gap: 0.35rem; margin-top: 0.3rem; }
 .log-type { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted-foreground); border: 1px solid var(--border); border-radius: 2rem; padding: 0.05rem 0.45rem; }
 

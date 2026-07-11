@@ -14,6 +14,7 @@ import { Route as LoginRouteImport } from './routes/login'
 import { Route as ConnectRouteImport } from './routes/connect'
 import { Route as AppRouteImport } from './routes/_app'
 import { Route as AppIndexRouteImport } from './routes/_app.index'
+import { Route as AppRetrospectiveRouteImport } from './routes/_app.retrospective'
 import { Route as AppProposeRouteImport } from './routes/_app.propose'
 import { Route as AppProfileRouteImport } from './routes/_app.profile'
 import { Route as AppPlanRouteImport } from './routes/_app.plan'
@@ -45,6 +46,11 @@ const AppRoute = AppRouteImport.update({
 const AppIndexRoute = AppIndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppRetrospectiveRoute = AppRetrospectiveRouteImport.update({
+  id: '/retrospective',
+  path: '/retrospective',
   getParentRoute: () => AppRoute,
 } as any)
 const AppProposeRoute = AppProposeRouteImport.update({
@@ -100,6 +106,7 @@ export interface FileRoutesByFullPath {
   '/plan': typeof AppPlanRoute
   '/profile': typeof AppProfileRoute
   '/propose': typeof AppProposeRoute
+  '/retrospective': typeof AppRetrospectiveRoute
   '/recipe/$slug': typeof AppRecipeSlugRoute
 }
 export interface FileRoutesByTo {
@@ -113,6 +120,7 @@ export interface FileRoutesByTo {
   '/plan': typeof AppPlanRoute
   '/profile': typeof AppProfileRoute
   '/propose': typeof AppProposeRoute
+  '/retrospective': typeof AppRetrospectiveRoute
   '/': typeof AppIndexRoute
   '/recipe/$slug': typeof AppRecipeSlugRoute
 }
@@ -129,6 +137,7 @@ export interface FileRoutesById {
   '/_app/plan': typeof AppPlanRoute
   '/_app/profile': typeof AppProfileRoute
   '/_app/propose': typeof AppProposeRoute
+  '/_app/retrospective': typeof AppRetrospectiveRoute
   '/_app/': typeof AppIndexRoute
   '/_app/recipe/$slug': typeof AppRecipeSlugRoute
 }
@@ -146,6 +155,7 @@ export interface FileRouteTypes {
     | '/plan'
     | '/profile'
     | '/propose'
+    | '/retrospective'
     | '/recipe/$slug'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -159,6 +169,7 @@ export interface FileRouteTypes {
     | '/plan'
     | '/profile'
     | '/propose'
+    | '/retrospective'
     | '/'
     | '/recipe/$slug'
   id:
@@ -174,6 +185,7 @@ export interface FileRouteTypes {
     | '/_app/plan'
     | '/_app/profile'
     | '/_app/propose'
+    | '/_app/retrospective'
     | '/_app/'
     | '/_app/recipe/$slug'
   fileRoutesById: FileRoutesById
@@ -220,6 +232,13 @@ declare module '@tanstack/react-router' {
       path: '/'
       fullPath: '/'
       preLoaderRoute: typeof AppIndexRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/retrospective': {
+      id: '/_app/retrospective'
+      path: '/retrospective'
+      fullPath: '/retrospective'
+      preLoaderRoute: typeof AppRetrospectiveRouteImport
       parentRoute: typeof AppRoute
     }
     '/_app/propose': {
@@ -289,6 +308,7 @@ interface AppRouteChildren {
   AppPlanRoute: typeof AppPlanRoute
   AppProfileRoute: typeof AppProfileRoute
   AppProposeRoute: typeof AppProposeRoute
+  AppRetrospectiveRoute: typeof AppRetrospectiveRoute
   AppIndexRoute: typeof AppIndexRoute
   AppRecipeSlugRoute: typeof AppRecipeSlugRoute
 }
@@ -301,6 +321,7 @@ const AppRouteChildren: AppRouteChildren = {
   AppPlanRoute: AppPlanRoute,
   AppProfileRoute: AppProfileRoute,
   AppProposeRoute: AppProposeRoute,
+  AppRetrospectiveRoute: AppRetrospectiveRoute,
   AppIndexRoute: AppIndexRoute,
   AppRecipeSlugRoute: AppRecipeSlugRoute,
 }
