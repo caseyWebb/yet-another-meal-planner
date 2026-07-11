@@ -68,6 +68,61 @@ export class ProfilePage extends AppPage {
     ).toHaveText(String(n));
   }
 
+  // --- prefs tab: the Preferred-brands tier card ----------------------------------
+
+  brandFamily(term: string): Locator {
+    return this.page.locator(`[data-testid="brand-family"][data-term="${term}"]`);
+  }
+
+  /** The family's tier boxes, in ladder order (a trailing draft tier included). */
+  brandTiers(term: string): Locator {
+    return this.brandFamily(term).getByTestId("brand-tier");
+  }
+
+  brandChip(term: string, brand: string): Locator {
+    return this.brandFamily(term).locator(`[data-testid="brand-chip"][data-brand="${brand}"]`);
+  }
+
+  async moveBrand(term: string, brand: string, dir: "up" | "down"): Promise<void> {
+    await this.brandChip(term, brand).getByLabel(`Move ${brand} ${dir} a tier`).click();
+  }
+
+  async expectTierBrands(term: string, tierIndex: number, brands: string[]): Promise<void> {
+    const chips = this.brandTiers(term).nth(tierIndex).getByTestId("brand-chip");
+    await expect(chips).toHaveCount(brands.length);
+    for (const b of brands) {
+      await expect(this.brandTiers(term).nth(tierIndex).locator(`[data-brand="${b}"]`)).toBeVisible();
+    }
+  }
+
+  async addBrandToTier(term: string, tierIndex: number, brand: string): Promise<void> {
+    const input = this.brandTiers(term).nth(tierIndex).getByLabel("Add brand to this tier");
+    await input.fill(brand);
+    await input.press("Enter");
+  }
+
+  anyBrandToggle(term: string): Locator {
+    return this.brandFamily(term).getByTestId("brand-any-toggle");
+  }
+
+  async toggleAnyBrand(term: string): Promise<void> {
+    await this.anyBrandToggle(term).click();
+  }
+
+  async expectAnyBrand(term: string, on: boolean): Promise<void> {
+    await expect(this.anyBrandToggle(term)).toHaveAttribute("aria-pressed", String(on));
+  }
+
+  async removeBrandFamily(term: string): Promise<void> {
+    await this.brandFamily(term).getByTestId("brand-family-remove").click();
+  }
+
+  async addBrandFamily(cat: string): Promise<void> {
+    const form = this.page.getByTestId("brand-family-add");
+    await form.getByLabel("New category").fill(cat);
+    await form.getByRole("button", { name: "Add category" }).click();
+  }
+
   // --- vibes tab: palette + queue + suggest --------------------------------------
 
   proposalRows(): Locator {

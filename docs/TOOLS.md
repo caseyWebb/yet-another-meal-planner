@@ -16,6 +16,24 @@ The complete tool surface exposed by `yamp` to Claude. Each tool encodes a deter
 
 **No raw building blocks exposed.** No `kroger_raw_search`, no `github_raw_write`, no `cart_add_by_name`. These would let the LLM bypass the deterministic pipelines.
 
+## Deprecation convention (`warnings` on the return)
+
+The plugin lags the Worker (Worker-first deploy, async marketplace re-pull, mid-conversation cached skills), so a renamed/retired parameter key or a changed value shape ships with a **one-deprecation-window shim**: the old form is **accepted and converted** to the current model (never dropped, never bounced with an error — a stale agent's write must succeed and steer), and the tool's success return carries a `warnings` array flagging each conversion:
+
+```
+warnings: [{ key, reason, superseded_by }]
+```
+
+- `key` — the parameter path that arrived in the deprecated form (e.g. `brands.butter`).
+- `reason` — why it was converted (e.g. `deprecated_shape` for a value-shape change).
+- `superseded_by` — the current form to use instead.
+
+`warnings` is additive on a success return and omitted when empty. After the window (once the matching plugin version has been published for one window), the old form is rejected as `malformed_data` like any other type error. Active shims:
+
+| Tool | Deprecated form | Converts to | Reason |
+|---|---|---|---|
+| `update_preferences` | a `brands` family as a flat rank list (`[]` / `["A","B"]`) | `{ tiers: [], any_brand: true }` / `{ tiers: [["A"],["B"]], any_brand: false }` | `deprecated_shape` |
+
 ---
 
 ## Recipe tools
@@ -693,11 +711,11 @@ Run the full 7-step matching pipeline. Returns a confident match, narrowed candi
 - `context` (object, optional): `{ recipe_slug, dietary, quantity_hint }`
 - `bypass_cache` (boolean, optional): force re-resolution, skipping the cache hit — for when a cached SKU doesn't fit the recipe context (cached generic, recipe wants organic).
 
-**Confidence rule:** confident when a cache hit OR a defined `preferences` `[brands]` entry resolves it (including `[]` = "don't care, cheapest acceptable"); otherwise ambiguous. Cache hits are revalidated for current price + curbside/delivery availability before being returned.
+**Confidence rule:** confident when a cache hit OR a defined `preferences` `brands` family resolves it (including the any-brand don't-care = "cheapest acceptable"); otherwise ambiguous. The matcher consumes the stored tier ladder flattened into rank order (the `readBrandPrefs` projection). Cache hits are revalidated for current price + curbside/delivery availability before being returned.
 
 **Shared, location-tagged cache.** The SKU cache (D1 `sku_cache` table, shared corpus) stores mappings resolved by *any* member, warming it for everyone (a network effect). Each entry is tagged with the `location_id` it was resolved at. On lookup, an entry tagged with the caller's own location is tried first, but **every** candidate is revalidated against the caller's `preferred_location` before use — a cross-location entry that isn't carried at the caller's store falls through to a fresh search (so a shared cache can never serve an unavailable SKU). A cross-location hit that *does* revalidate returns `reason: "shared cache hit (revalidated at your store)"`.
 
-**Identity relevance (near-hard).** Beyond curbside/delivery availability, a second near-hard constraint guards *which product*: each candidate is scored by how many query tokens appear in its description/categories, and a confident pick may only come from the **top relevance tier**. So `"anaheim peppers"` resolves to the Fresh Anaheim Peppers PLU, not a cheaper unrelated item that merely shows up in Kroger's results; and `[]` "don't care" picks the cheapest *matching* candidate, never the cheapest unrelated one. If nothing in the pool shares a query token, the tool returns `ambiguous` rather than confidently guessing. (Brand/dietary remain soft preferences — this constraint is about identity, not preference.)
+**Identity relevance (near-hard).** Beyond curbside/delivery availability, a second near-hard constraint guards *which product*: each candidate is scored by how many query tokens appear in its description/categories, and a confident pick may only come from the **top relevance tier**. So `"anaheim peppers"` resolves to the Fresh Anaheim Peppers PLU, not a cheaper unrelated item that merely shows up in Kroger's results; and an any-brand "don't care" picks the cheapest *matching* candidate, never the cheapest unrelated one. If nothing in the pool shares a query token, the tool returns `ambiguous` rather than confidently guessing. (Brand/dietary remain soft preferences — this constraint is about identity, not preference.)
 
 **Returns (confident match):**
 ```
@@ -731,7 +749,7 @@ Run the full 7-step matching pipeline. Returns a confident match, narrowed candi
 }
 ```
 
-**Notes:** When ambiguous, the LLM picks from conversational context or asks the user; a standing "don't care" answer is recorded as `[]` in `preferences` `[brands]`. On `unavailable`, the LLM enumerates substitute candidates from world knowledge and resolves each (surfacing the alternatives for confirmation) — the matcher never substitutes itself. All resolutions feed back into the D1 SKU cache.
+**Notes:** When ambiguous, the LLM picks from conversational context or asks the user; a standing "don't care" answer is recorded as `{ any_brand: true }` on the family in `preferences.brands` (via `update_preferences`). On `unavailable`, the LLM enumerates substitute candidates from world knowledge and resolves each (surfacing the alternatives for confirmation) — the matcher never substitutes itself. All resolutions feed back into the D1 SKU cache.
 
 ### `compare_unit_price(items)`
 
@@ -864,7 +882,11 @@ Read the caller's full per-tenant profile, assembled from the D1 profile tables 
   initialized:     boolean,          // true once preferences field is non-empty
   missing:         string[],         // onboarding areas still absent: subset of
                                      //   ["store","taste","diet","equipment","ready-to-eat","stockup","vibes"]
-  preferences:     { ... } | null,   // parsed preferences object (TOML)
+  preferences:     { ... } | null,   // the assembled preferences object; each brands entry
+                                     //   is the canonical tier object { tiers: string[][],
+                                     //   any_brand: boolean } with BOTH fields always present
+                                     //   (a don't-care family reads { tiers: [], any_brand:
+                                     //   true }) — never a bare array
   taste:           string | null,    // taste-profile narrative (markdown)
   diet_principles: string | null,    // diet-principles narrative (markdown)
   kitchen:         { owned: [...], notes: {...} },  // equipment inventory (empty when absent)
@@ -886,13 +908,14 @@ Read the caller's full per-tenant profile, assembled from the D1 profile tables 
 Write user-curated config. `update_taste`/`update_diet_principles` are content-faithful (write the supplied full markdown to the D1 `profile` row, no `commit_sha`). `update_aliases` **upserts** variant→canonical-id ingredient mappings into the shared **ingredient identity graph** (`ingredient_alias` + `ingredient_identity`, where the matcher's resolver reads them) as **human** edits (`source='human'`, which the auto capture cron never overwrites), keyed by lowercased variant — add/edit, no removal (`{ updated }`, no `commit_sha`). The cron grows the same store automatically, so a manual alias is rarely needed — reserve it for a synonym the cron hasn't bridged. The same tool also curates node **display labels**: an optional `display_names` map (canonical id → human label) writes each as a `source='human'` `display_name` on the identity node — the curated label read surfaces render, distinct from the id (the join key) and `search_term` (the Kroger phrase), and never downgraded by the auto cron. **`update_preferences` is a deep merge-patch**, not a whole-object write. **These should only be called when the user explicitly directs an edit.**
 
 **Params:**
-- `update_preferences`: `patch` (object, required) — a **JSON Merge Patch (RFC 7396)** over the caller's preferences: a present key sets/overwrites, `null` deletes, nested objects merge to **any depth**, arrays replace wholesale. Only the keys you touch change — a partial patch never clobbers siblings, so you do **not** re-send the whole object. Defined top-level keys: `default_cooking_nights` (number — cooking nights within the planning window), `planning_cadence_days` (positive number — how far out the caller plans/shops, in days; drives `propose_meal_plan`'s weather horizon and vibe-recurrence caps, unset falls back to a 7-day window), `lunch_strategy` (`leftovers`|`buy`|`mixed`), `ready_to_eat_default_action` (`opt-in`|`auto-add`), `stores` (`{primary, preferred_location, location_zip}`), `brands` (map of term → ranked brand list; `[]` = don't-care/cheapest, `null` = clear back to ambiguous), `dietary` (`{avoid[], limit[]}`), `rotation` (`{resurface_after_days, novelty_boost}` — tunes the `search_recipes` freshness re-rank; both positive numbers). Anything else nests under `custom`; an unknown top-level key returns `validation_failed` (nest it under `custom`). A type-invalid merged result returns `malformed_data` and stores nothing. Applied atomically to the D1 `profile` row + `brand_prefs` rows.
+- `update_preferences`: `patch` (object, required) — a **JSON Merge Patch (RFC 7396)** over the caller's preferences: a present key sets/overwrites, `null` deletes, nested objects merge to **any depth**, arrays replace wholesale. Only the keys you touch change — a partial patch never clobbers siblings, so you do **not** re-send the whole object. Defined top-level keys: `default_cooking_nights` (number — cooking nights within the planning window), `planning_cadence_days` (positive number — how far out the caller plans/shops, in days; drives `propose_meal_plan`'s weather horizon and vibe-recurrence caps, unset falls back to a 7-day window), `lunch_strategy` (`leftovers`|`buy`|`mixed`), `ready_to_eat_default_action` (`opt-in`|`auto-add`), `stores` (`{primary, preferred_location, location_zip}`), `brands` (map of ingredient-family term → **tier object** `{ tiers?: string[][], any_brand?: boolean }` — `tiers` is an ordered ladder: the top tier is tried first, brands within a tier are equally acceptable (cheapest wins), later tiers are fallbacks; `any_brand: true` = when the tiers (if any) are exhausted, take the cheapest acceptable instead of asking, so `{ any_brand: true }` alone is the standing don't-care; family absent = ambiguous/ask; `null` = clear back to ambiguous. A family value is itself merged, so a partial patch like `{ any_brand: true }` preserves the stored tiers; a brand may appear in only one tier of a family, and the all-empty `{ tiers: [], any_brand: false }` is rejected — `null` is the way to clear. For **one deprecation window** a legacy flat rank list is accepted and converted — see the deprecation convention above), `dietary` (`{avoid[], limit[]}`), `rotation` (`{resurface_after_days, novelty_boost}` — tunes the `search_recipes` freshness re-rank; both positive numbers). Anything else nests under `custom`; an unknown top-level key returns `validation_failed` (nest it under `custom`). A type-invalid merged result returns `malformed_data` and stores nothing. Applied atomically to the D1 `profile` row + `brand_prefs` rows.
 - `update_taste` / `update_diet_principles`: `content` (string, required) — the complete new field text
 - `update_aliases`: `aliases` (object, required) — a map of variant → canonical id, e.g. `{ "EVOO": "olive oil" }`; each is upserted by lowercased variant as a human edit
 - `update_aliases`: `display_names` (object, optional) — a map of **canonical id → human label**, e.g. `{ "cabbage::color-red": "Red cabbage" }`; each is written onto the identity node as a human `display_name` (`source='human'`)
 
 **Returns:**
-- `update_preferences` / `update_taste` / `update_diet_principles`: `{ updated: "<field>" }` — D1-backed, no `commit_sha`
+- `update_preferences`: `{ updated: "preferences" }`, plus `warnings` (`[{ key, reason, superseded_by }]`, the deprecation convention above) when part of the patch arrived in a deprecated form and was converted — D1-backed, no `commit_sha`
+- `update_taste` / `update_diet_principles`: `{ updated: "<field>" }` — D1-backed, no `commit_sha`
 - `update_aliases`: `{ updated }` — count upserted; D1-backed, no `commit_sha`
 
 ---

@@ -12,7 +12,7 @@ import { z } from "zod";
 import type { Env } from "./env.js";
 import { db } from "./db.js";
 import { type CorpusStore, readCorpusFile } from "./corpus-store.js";
-import { addAliases, ingredientContext } from "./corpus-db.js";
+import { addAliases, enqueueNovelTerms, ingredientContext } from "./corpus-db.js";
 import { brandKey } from "./matching.js";
 import { parseMarkdown } from "./parse.js";
 import { serializeMarkdown } from "./serialize.js";
@@ -24,9 +24,11 @@ import { slugify } from "./discovery.js";
 import { addStockup } from "./stockup.js";
 import { updateStaples } from "./staples.js";
 import {
+  convertLegacyBrandRanks,
   mergePatch,
   rejectUnknownPatchKeys,
   validatePreferences,
+  type DeprecationWarning,
 } from "./preferences.js";
 import {
   readProfile,
@@ -190,24 +192,74 @@ export const PROFILE_MARKDOWN_FIELDS = {
  * reject-unknown-keys + RFC 7396 merge-patch + result validation + the atomic
  * profile-columns/brands batch. Called by the MCP tool and the member API's
  * `PATCH /api/profile/preferences`. Throws structured `validation_failed` /
- * `malformed_data`; stores nothing on failure.
+ * `malformed_data`; stores nothing on failure. A success return may carry
+ * `warnings` (the D21 deprecation convention): entries for patch values that were
+ * accepted under a deprecated shape and converted.
  */
 export async function applyPreferencesPatch(
   env: Env,
   tenant: string,
   patch: Record<string, unknown>,
-): Promise<{ updated: "preferences" }> {
+): Promise<{ updated: "preferences"; warnings?: DeprecationWarning[] }> {
   // Stage 1: reject unknown top-level patch keys (authorship-time signal).
   rejectUnknownPatchKeys(patch);
+
+  // Stage 1b: normalize the brands patch BEFORE the merge, so patch keys land on the
+  // stored keys and a legacy value converts ahead of validation.
+  // - Key each family on the matcher's lookup form — brandKey(canonical id) — so a
+  //   write lands on the SAME key the matcher reads (`deps.brands[brandKey(normalizeIngredient(x))]`)
+  //   AND a partial family patch merges into the stored family instead of forking a
+  //   sibling key. A raw multi-word term ("ground beef") otherwise stored as
+  //   "ground beef" but was read as "ground_beef" — a silent miss.
+  // - One-window deprecated-shape shim (D21): a legacy `string[]` value is
+  //   accepted-and-converted by the migration mapping (never dropped, never bounced),
+  //   with a `warnings` entry steering the stale caller to `{ tiers, any_brand }`.
+  //   When the window closes, drop this conversion — validatePreferences then rejects
+  //   an array value as `malformed_data` like any other type error.
+  const warnings: DeprecationWarning[] = [];
+  let brandsPatch: Record<string, unknown> | undefined;
+  let novelIds: string[] = [];
+  if (patch.brands !== null && patch.brands !== undefined && typeof patch.brands === "object" && !Array.isArray(patch.brands)) {
+    // Resolve-only (capture: false): this runs BEFORE validation, and a rejected
+    // patch must store nothing — including novel-term queue rows. The write-path
+    // capture happens after validation passes (below).
+    const ctx = await ingredientContext(env, { capture: false });
+    brandsPatch = {};
+    const resolvedIds: string[] = [];
+    for (const [term, value] of Object.entries(patch.brands as Record<string, unknown>)) {
+      const id = ctx.resolve(term);
+      resolvedIds.push(id);
+      const key = brandKey(id);
+      if (Array.isArray(value) && value.every((s) => typeof s === "string")) {
+        brandsPatch[key] = convertLegacyBrandRanks(value as string[]);
+        warnings.push({
+          key: `brands.${term}`,
+          reason: "deprecated_shape",
+          superseded_by: "{ tiers, any_brand }",
+        });
+      } else {
+        brandsPatch[key] = value;
+      }
+    }
+    patch = { ...patch, brands: brandsPatch };
+    novelIds = [...new Set(resolvedIds.filter((id) => id && !ctx.resolver.ids.has(id)))];
+  }
+
   // Stage 2: deep-merge over the current preferences; validate the result's types.
   const current = (await readPreferences(env, tenant)) ?? {};
   const merged = mergePatch(current, patch) as Record<string, unknown>;
   validatePreferences(merged);
 
-  // Stage 3: apply atomically (one batch). Scalar/JSON columns come from the
-  // MERGED result; brands tri-state comes from the PATCH (value → UPSERT,
-  // [] → UPSERT empty, null → DELETE — the merged object has already dropped a
-  // null'd brand, so the patch is the only place the delete intent survives).
+  // The patch survived validation — NOW capture its novel ingredient terms for the
+  // graph (the write-path capture, deferred past validation so a rejected patch
+  // enqueues nothing). enqueueNovelTerms is best-effort and never throws.
+  if (novelIds.length > 0) await enqueueNovelTerms(env, novelIds);
+
+  // Stage 3: apply atomically (one batch). Scalar/JSON columns come from the MERGED
+  // result. Brands rows: the terms come from the PATCH (a `null` vanishes from the
+  // merged object, so the patch is the only place the delete intent survives), but an
+  // UPSERT writes the MERGED family value — a partial family patch (`{ any_brand: true }`)
+  // must not clobber the stored sibling field.
   const stmts: D1PreparedStatement[] = [];
   const profileFields: Record<string, unknown> = {
     default_cooking_nights:
@@ -225,20 +277,14 @@ export async function applyPreferencesPatch(
   const profileStmt = profileUpsertStmt(env, tenant, profileFields);
   if (profileStmt) stmts.push(profileStmt);
 
-  const brandsPatch = patch.brands;
-  if (brandsPatch !== null && brandsPatch !== undefined && typeof brandsPatch === "object") {
-    // Key each brand-pref row on the matcher's lookup form — brandKey(canonical id) — so a
-    // write lands on the SAME key the matcher reads (`deps.brands[brandKey(normalizeIngredient(x))]`).
-    // A raw multi-word term ("ground beef") otherwise stored as "ground beef" but was read as
-    // "ground_beef" — a silent miss. resolve() also captures the (ingredient) term for the graph.
-    const ctx = await ingredientContext(env);
-    for (const [term, value] of Object.entries(brandsPatch as Record<string, unknown>)) {
-      const key = brandKey(ctx.resolve(term));
-      stmts.push(brandStmt(env, tenant, key, value === null ? null : (value as unknown[])));
+  if (brandsPatch) {
+    const mergedBrands = (merged.brands ?? {}) as Record<string, Record<string, unknown>>;
+    for (const [key, value] of Object.entries(brandsPatch)) {
+      stmts.push(brandStmt(env, tenant, key, value === null ? null : mergedBrands[key]));
     }
   }
   if (stmts.length > 0) await db(env).batch(stmts);
-  return { updated: "preferences" };
+  return warnings.length > 0 ? { updated: "preferences", warnings } : { updated: "preferences" };
 }
 // --- registration ------------------------------------------------------------
 
@@ -523,7 +569,7 @@ export function registerWriteTools(
     "update_preferences",
     {
       description:
-        "Edit the caller's grocery preferences with a deep merge-patch (RFC 7396): keys present in `patch` set/overwrite, a key set to null is DELETED, nested objects merge to any depth, and arrays replace wholesale. Only the keys you touch change — a partial patch never clobbers siblings (e.g. patching stores.preferred_location keeps stores.primary), so you do NOT need to re-send the whole object. Defined top-level keys: default_cooking_nights (number — cooking nights WITHIN the planning window, not per week), planning_cadence_days (positive number — how far out the caller plans/shops, in days; drives propose_meal_plan's weather horizon and vibe-recurrence caps; unset falls back to a 7-day window), lunch_strategy (leftovers|buy|mixed), ready_to_eat_default_action (opt-in|auto-add), stores ({primary, preferred_location, location_zip}), brands (map of term → ranked brand list; [] = don't-care/cheapest, null = clear back to ambiguous), dietary ({avoid[], limit[]}), rotation ({resurface_after_days, novelty_boost} — tunes the semantic-search freshness re-rank: how many days until a cooked recipe rotates back in, and how hard never-cooked recipes are boosted; both positive numbers). Anything else nests under `custom`; an unknown top-level key is rejected (use custom). Returns { updated: 'preferences' }.",
+        "Edit the caller's grocery preferences with a deep merge-patch (RFC 7396): keys present in `patch` set/overwrite, a key set to null is DELETED, nested objects merge to any depth, and arrays replace wholesale. Only the keys you touch change — a partial patch never clobbers siblings (e.g. patching stores.preferred_location keeps stores.primary), so you do NOT need to re-send the whole object. Defined top-level keys: default_cooking_nights (number — cooking nights WITHIN the planning window, not per week), planning_cadence_days (positive number — how far out the caller plans/shops, in days; drives propose_meal_plan's weather horizon and vibe-recurrence caps; unset falls back to a 7-day window), lunch_strategy (leftovers|buy|mixed), ready_to_eat_default_action (opt-in|auto-add), stores ({primary, preferred_location, location_zip}), brands (map of ingredient-family term → tier object { tiers: string[][], any_brand: boolean } — `tiers` is an ordered ladder tried top tier first, brands in one tier are equally fine so the cheapest wins; `any_brand: true` means when the tiers (if any) are exhausted, take the cheapest acceptable instead of asking, so { any_brand: true } alone is the standing don't-care; an absent family = ask; null = clear back to ambiguous — the empty { tiers: [], any_brand: false } is rejected. A partial family patch merges into the stored family, e.g. { brands: { butter: { any_brand: true } } } keeps butter's tiers. For one deprecation window a legacy flat rank list still converts: [] → any-brand, a ranked list → one singleton tier per rank, flagged in the return's `warnings`), dietary ({avoid[], limit[]}), rotation ({resurface_after_days, novelty_boost} — tunes the semantic-search freshness re-rank: how many days until a cooked recipe rotates back in, and how hard never-cooked recipes are boosted; both positive numbers). Anything else nests under `custom`; an unknown top-level key is rejected (use custom). Returns { updated: 'preferences' }, plus `warnings` ([{ key, reason, superseded_by }]) when part of the patch was accepted under a deprecated shape and converted.",
       inputSchema: { patch: z.record(z.string(), z.unknown()) },
     },
     ({ patch }) => runTool(() => applyPreferencesPatch(env, username, patch)),

@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
+  convertLegacyBrandRanks,
   mergePatch,
   rejectUnknownPatchKeys,
   validatePreferences,
@@ -21,14 +22,29 @@ describe("mergePatch (RFC 7396)", () => {
   });
 
   it("replaces arrays wholesale", () => {
-    expect(mergePatch({ brands: { oil: ["A", "B"] } }, { brands: { oil: ["C"] } })).toEqual({
-      brands: { oil: ["C"] },
+    expect(
+      mergePatch({ brands: { oil: { tiers: [["A"], ["B"]] } } }, { brands: { oil: { tiers: [["C"]] } } }),
+    ).toEqual({
+      brands: { oil: { tiers: [["C"]] } },
     });
   });
 
   it("a null leaf inside a nested merge deletes that leaf", () => {
-    expect(mergePatch({ brands: { a: ["x"], b: ["y"] } }, { brands: { b: null } })).toEqual({
-      brands: { a: ["x"] },
+    expect(
+      mergePatch({ brands: { a: { tiers: [["x"]] }, b: { tiers: [["y"]] } } }, { brands: { b: null } }),
+    ).toEqual({
+      brands: { a: { tiers: [["x"]] } },
+    });
+  });
+
+  it("a partial brands family patch merges into the stored family (sibling field preserved)", () => {
+    expect(
+      mergePatch(
+        { brands: { butter: { tiers: [["Challenge"], ["Kerrygold"]], any_brand: false } } },
+        { brands: { butter: { any_brand: true } } },
+      ),
+    ).toEqual({
+      brands: { butter: { tiers: [["Challenge"], ["Kerrygold"]], any_brand: true } },
     });
   });
 
@@ -67,7 +83,11 @@ describe("validatePreferences", () => {
         lunch_strategy: "leftovers",
         ready_to_eat_default_action: "opt-in",
         stores: { primary: "kroger", preferred_location: "Kroger - 76104" },
-        brands: { olive_oil: ["Cobram"], yellow_onion: [] },
+        brands: {
+          olive_oil: { tiers: [["Cobram", "California Olive Ranch"], ["Cento"]], any_brand: false },
+          yellow_onion: { tiers: [], any_brand: true },
+          butter: { tiers: [["Challenge"]] }, // any_brand may be absent on a patch value
+        },
         dietary: { avoid: [], limit: ["cilantro"] },
         custom: { spice: "high" },
       }),
@@ -98,11 +118,61 @@ describe("validatePreferences", () => {
     expect(() => validatePreferences({ planning_cadence_days: "weekly" })).toThrowError(/planning_cadence_days/);
   });
 
-  it("rejects brands that aren't term → string[]", () => {
-    expect(() => validatePreferences({ brands: { oil: "Cobram" } })).toThrow();
+  it("rejects a brands family that isn't a tier object", () => {
+    expect(() => validatePreferences({ brands: { oil: "Cobram" } })).toThrowError(/tier object/);
+    // Post-window, a legacy flat rank list is a plain type error (the write path's
+    // one-window shim converts it BEFORE the merged result reaches validation).
+    expect(() => validatePreferences({ brands: { oil: ["Cobram"] } })).toThrowError(/tier object/);
+  });
+
+  it("rejects a brand appearing in more than one tier (case-insensitive), naming it", () => {
+    expect(() =>
+      validatePreferences({ brands: { butter: { tiers: [["Kerrygold"], ["kerrygold", "Plugra"]] } } }),
+    ).toThrowError(/kerrygold/i);
+  });
+
+  it("rejects an empty tier and empty/non-string brand names", () => {
+    expect(() => validatePreferences({ brands: { butter: { tiers: [[]] } } })).toThrowError(/non-empty/);
+    expect(() => validatePreferences({ brands: { butter: { tiers: [[""]] } } })).toThrowError(/non-empty/);
+    expect(() => validatePreferences({ brands: { butter: { tiers: [[42]] } } })).toThrow();
+  });
+
+  it("rejects the all-empty family value toward null", () => {
+    expect(() =>
+      validatePreferences({ brands: { butter: { tiers: [], any_brand: false } } }),
+    ).toThrowError(/null/);
+    expect(() => validatePreferences({ brands: { butter: {} } })).toThrowError(/null/);
+  });
+
+  it("rejects a non-boolean any_brand and an unknown family field", () => {
+    expect(() =>
+      validatePreferences({ brands: { butter: { tiers: [["Challenge"]], any_brand: "yes" } } }),
+    ).toThrowError(/any_brand/);
+    expect(() =>
+      validatePreferences({ brands: { butter: { tires: [["Challenge"]] } } }),
+    ).toThrowError(/tires/);
   });
 
   it("rejects a non-object custom", () => {
     expect(() => validatePreferences({ custom: "stuff" })).toThrow();
+  });
+});
+
+describe("convertLegacyBrandRanks (the one-window deprecated-shape mapping)", () => {
+  it("maps [] to the don't-care state", () => {
+    expect(convertLegacyBrandRanks([])).toEqual({ tiers: [], any_brand: true });
+  });
+
+  it("maps each rank to its own singleton tier, in order (the migration fixtures)", () => {
+    // The production brand_prefs population at migration time (design.md D2).
+    expect(convertLegacyBrandRanks(["Challenge", "Tillamook", "Kerrygold"])).toEqual({
+      tiers: [["Challenge"], ["Tillamook"], ["Kerrygold"]],
+      any_brand: false,
+    });
+    expect(convertLegacyBrandRanks(["DeLallo", "Muir Glen", "Cento"])).toEqual({
+      tiers: [["DeLallo"], ["Muir Glen"], ["Cento"]],
+      any_brand: false,
+    });
+    expect(convertLegacyBrandRanks(["Viva"])).toEqual({ tiers: [["Viva"]], any_brand: false });
   });
 });

@@ -4,7 +4,8 @@
 // rebase-on-412 flow) and the read-only owned-equipment card (D10: the mock's
 // "Kitchen & household" free-text has no backing field). Preferences — planning
 // knobs, SINGLE-select lunch strategy over the real vocab, dietary token fields,
-// store + ZIP, ranked brands, all via the merge-patch op under If-Match.
+// store + ZIP, the Preferred-brands tier card (per-family { tiers, any_brand }
+// objects, family-scoped patches), all via the merge-patch op under If-Match.
 // Night vibes — the palette (production vocabulary, D11), the reconciliation queue
 // (kind-specific actions, D12), and the job-health-gated suggest trigger (D7).
 import * as React from "react";
@@ -14,6 +15,7 @@ import {
   Button,
   Combobox,
   IconClock,
+  IconDollarSign,
   IconPencil,
   IconPlus,
   IconSparkle,
@@ -386,7 +388,7 @@ function PrefsTab() {
   const rotation = (prefs.rotation ?? {}) as Record<string, unknown>;
   const dietary = (prefs.dietary ?? {}) as { avoid?: string[]; limit?: string[] };
   const stores = (prefs.stores ?? {}) as Record<string, unknown>;
-  const brands = (prefs.brands ?? {}) as Record<string, string[]>;
+  const brands = (prefs.brands ?? {}) as Record<string, BrandTierValue>;
 
   const patch = (p: Record<string, unknown>) => void patchPreferences(qc, p);
 
@@ -515,9 +517,10 @@ function PrefsTab() {
               />
             </div>
           </div>
-          <BrandsField brands={brands} onPatch={(brandsPatch) => patch({ brands: brandsPatch })} />
         </section>
       </section>
+
+      <BrandsCard brands={brands} onPatch={(brandsPatch) => patch({ brands: brandsPatch })} />
     </div>
   );
 }
@@ -551,83 +554,284 @@ function DietField(props: {
   );
 }
 
-function BrandsField(props: { brands: Record<string, string[]>; onPatch: (p: Record<string, unknown>) => void }) {
+// === Preferred-brands management card =============================================
+
+/** A `preferences.brands` family as the API serves it: the canonical tier object
+ *  ({ tiers, any_brand }, both fields present on a read). */
+type BrandTierValue = { tiers?: string[][]; any_brand?: boolean };
+
+function ordinal(n: number): string {
+  const s = ["th", "st", "nd", "rd"];
+  const v = n % 100;
+  return n + (s[(v - 20) % 10] || s[v] || s[0]);
+}
+
+/**
+ * The Preferred-brands management card (brand-tier model): per-family cards of
+ * ordered tiers — brands in one tier are equally fine (cheapest wins), earlier tiers
+ * are tried first, and the per-family "Any brand" toggle makes exhaustion fall back
+ * to cheapest instead of asking. Every edit is a FAMILY-SCOPED merge-patch of the
+ * canonical tier object over the page's If-Match PATCH (`{ brands: { term: value } }`;
+ * remove-family writes `null`; the any-brand toggle patches `{ any_brand }` alone so
+ * the stored tiers are preserved by the merge). A brand-new family and a trailing
+ * "+ Add a fallback tier" are LOCAL drafts until their first brand lands — the
+ * storage model has no empty tiers and no all-empty family.
+ */
+function BrandsCard(props: {
+  brands: Record<string, BrandTierValue>;
+  onPatch: (p: Record<string, unknown>) => void;
+}) {
   const [cat, setCat] = React.useState("");
-  const [brand, setBrand] = React.useState("");
+  // Locally-drafted families (added here, no brand written yet) and per-family
+  // trailing draft tiers. Keyed by the term as rendered; cleared on first write
+  // (the server echoes the family back under its normalized key).
+  const [drafts, setDrafts] = React.useState<string[]>([]);
+  const [pending, setPending] = React.useState<Record<string, boolean>>({});
 
-  function move(term: string, name: string, dir: -1 | 1) {
-    const ranks = [...(props.brands[term] ?? [])];
-    const i = ranks.indexOf(name);
-    const j = i + dir;
-    if (i < 0 || j < 0 || j >= ranks.length) return;
-    [ranks[i], ranks[j]] = [ranks[j], ranks[i]];
-    props.onPatch({ [term]: ranks });
+  const families: [string, BrandTierValue][] = [
+    ...Object.entries(props.brands),
+    ...drafts.filter((t) => !(t in props.brands)).map((t): [string, BrandTierValue] => [t, {}]),
+  ];
+
+  const clearLocal = (term: string) => {
+    setDrafts((d) => d.filter((t) => t !== term));
+    setPending((p) => ({ ...p, [term]: false }));
+  };
+
+  /** Persist a family's tier structure: collapse emptied tiers; an all-empty,
+   *  non-any family clears to `null` (back to ambiguous). */
+  function writeTiers(term: string, tiers: string[][], anyBrand: boolean) {
+    const kept = tiers.filter((t) => t.length > 0);
+    clearLocal(term);
+    if (kept.length === 0 && !anyBrand) props.onPatch({ [term]: null });
+    else props.onPatch({ [term]: { tiers: kept, any_brand: anyBrand } });
   }
 
-  function remove(term: string, name: string | null) {
-    const ranks = (props.brands[term] ?? []).filter((b) => b !== name);
-    // Dropping the last ranked brand clears the term entirely (null = back to ambiguous).
-    props.onPatch({ [term]: name === null || ranks.length === 0 ? null : ranks });
+  function moveBrand(term: string, tierIdx: number, name: string, dir: -1 | 1) {
+    const v = props.brands[term] ?? {};
+    const tiers = (v.tiers ?? []).map((t) => [...t]);
+    if (!tiers[tierIdx]?.includes(name)) return;
+    tiers[tierIdx] = tiers[tierIdx].filter((b) => b !== name);
+    const j = tierIdx + dir;
+    // Past-edge creates a new tier of its own (pages/09 §2); mid-ladder joins the
+    // neighbor tier.
+    if (j < 0) tiers.unshift([name]);
+    else if (j >= tiers.length) tiers.push([name]);
+    else tiers[j] = [...tiers[j], name];
+    const next = tiers.filter((t) => t.length > 0);
+    if (JSON.stringify(next) === JSON.stringify(v.tiers ?? [])) return; // no-op move (alone at the edge)
+    writeTiers(term, next, v.any_brand === true);
   }
 
-  function add(e: React.FormEvent) {
+  function removeBrand(term: string, tierIdx: number, name: string) {
+    const v = props.brands[term] ?? {};
+    const tiers = (v.tiers ?? []).map((t, i) => (i === tierIdx ? t.filter((b) => b !== name) : [...t]));
+    writeTiers(term, tiers, v.any_brand === true);
+  }
+
+  function addBrand(term: string, tierIdx: number, raw: string) {
+    const name = raw.trim();
+    if (!name) return;
+    const v = props.brands[term] ?? {};
+    const tiers = (v.tiers ?? []).map((t) => [...t]);
+    if (tiers.some((t) => t.some((b) => b.toLowerCase() === name.toLowerCase()))) {
+      toast(`${name} is already in this family's tiers`);
+      return;
+    }
+    if (tierIdx >= tiers.length) tiers.push([name]); // the trailing draft tier
+    else tiers[tierIdx] = [...tiers[tierIdx], name];
+    // "Set brand preferences" on a don't-care family: the first brand replaces the
+    // pure any-brand state with a ladder (a family that ALREADY had tiers keeps its
+    // any-brand terminal fallback).
+    const hadTiers = (v.tiers ?? []).length > 0;
+    writeTiers(term, tiers, v.any_brand === true && hadTiers);
+  }
+
+  function toggleAny(term: string, on: boolean) {
+    const v = props.brands[term];
+    if (!v) {
+      // A drafted family: its first write. On = the standing don't-care.
+      clearLocal(term);
+      if (on) props.onPatch({ [term]: { tiers: [], any_brand: true } });
+      return;
+    }
+    if (!on && (v.tiers ?? []).length === 0) {
+      // Nothing to fall back on — the all-empty state is unrepresentable, so open
+      // the tier editor instead of writing ({ tiers: [], any_brand: false } is
+      // rejected by the API; the family stays don't-care until a brand lands).
+      setPending((p) => ({ ...p, [term]: true }));
+      return;
+    }
+    // Partial family patch — the stored tiers are preserved by the merge.
+    props.onPatch({ [term]: { any_brand: on } });
+  }
+
+  function addFamily(e: React.FormEvent) {
     e.preventDefault();
     const term = cat.trim().toLowerCase();
     if (!term) return;
-    const ranks = [...(props.brands[term] ?? [])];
-    if (brand.trim()) ranks.push(brand.trim());
-    props.onPatch({ [term]: ranks });
+    if (term in props.brands || drafts.includes(term)) {
+      toast("That category is already here");
+      return;
+    }
+    setDrafts((d) => [...d, term]);
+    setPending((p) => ({ ...p, [term]: true }));
     setCat("");
-    setBrand("");
   }
 
   return (
-    <div className="prof-field prof-field-full" data-testid="brands-field">
-      <label>
-        Preferred brands <span className="muted">— ranked; the agent tries #1 first</span>
-      </label>
-      <div className="brand-list">
-        {Object.entries(props.brands).map(([term, ranks]) => {
-          const items: (string | null)[] = ranks.length ? ranks : [null];
-          const ranked = items.length > 1;
-          return (
-            <div className="brand-row" key={term}>
-              <span className="brand-cat">{term}</span>
-              <ol className="brand-rank">
-                {items.map((b, i) => (
-                  <li className="brand-chip" key={b ?? "any"}>
-                    {ranked ? <span className="brand-rank-n">{i + 1}</span> : null}
-                    <span className="brand-val">{b ?? <span className="muted">any</span>}</span>
-                    <span className="brand-ctrls">
-                      {ranked && b ? (
-                        <>
-                          <button type="button" className="brand-ctrl" title="More preferred" aria-label="Rank up" disabled={i === 0} onClick={() => move(term, b, -1)}>
-                            <IconUp />
-                          </button>
-                          <button type="button" className="brand-ctrl" title="Less preferred" aria-label="Rank down" disabled={i === items.length - 1} onClick={() => move(term, b, 1)}>
-                            <IconDown />
-                          </button>
-                        </>
-                      ) : null}
-                      <button type="button" className="brand-x" title="Remove" onClick={() => remove(term, b)}>
-                        <IconX />
-                      </button>
+    <section className="card prof-card prof-card-wide rounded-xl border bg-card p-6" data-testid="brands-card">
+      <header>
+        <h3>Preferred brands</h3>
+        <p>
+          Grouped into tiers — <strong>yamp</strong> tries your top tier first, then falls back. Brands in the same
+          tier are equally fine, so the cheapest wins. “Any brand” lets price always decide.
+        </p>
+      </header>
+      <section className="prof-fields">
+        <div className="brand-list">
+          {families.map(([term, v]) => {
+            const tiers = v.tiers ?? [];
+            const any = v.any_brand === true;
+            const draftTier = pending[term] === true;
+            const shownTiers: string[][] = draftTier ? [...tiers, []] : tiers;
+            return (
+              <div className="brand-cat-card" key={term} data-testid="brand-family" data-term={term}>
+                <div className="brand-cat-head">
+                  <span className="brand-cat-name">{term.replace(/_/g, " ")}</span>
+                  <div className="brand-cat-head-actions">
+                    <button
+                      type="button"
+                      className="brand-any-toggle"
+                      aria-pressed={any}
+                      data-testid="brand-any-toggle"
+                      onClick={() => toggleAny(term, !any)}
+                    >
+                      Any brand
+                    </button>
+                    <button
+                      type="button"
+                      className="icon-btn"
+                      title="Remove category"
+                      aria-label={`Remove ${term.replace(/_/g, " ")}`}
+                      data-testid="brand-family-remove"
+                      onClick={() => {
+                        clearLocal(term);
+                        if (term in props.brands) props.onPatch({ [term]: null });
+                      }}
+                    >
+                      <IconTrash />
+                    </button>
+                  </div>
+                </div>
+                {shownTiers.length ? (
+                  <div className="brand-tiers">
+                    {shownTiers.map((tier, ti) => (
+                      // biome-ignore lint/suspicious/noArrayIndexKey: tiers have no identity beyond position
+                      <div className="brand-tier" key={ti} data-testid="brand-tier">
+                        <div className="brand-tier-head">
+                          <span className="brand-tier-label">{ordinal(ti + 1)} choice</span>
+                          {tier.length > 1 ? <span className="brand-tier-note">either works — cheapest wins</span> : null}
+                        </div>
+                        <div className="brand-tier-chips">
+                          {tier.map((b) => (
+                            <span className="brand-chip2" key={b} data-testid="brand-chip" data-brand={b}>
+                              <span>{b}</span>
+                              <span className="brand-chip2-ctrls">
+                                <button
+                                  type="button"
+                                  title="Prefer more (higher tier)"
+                                  aria-label={`Move ${b} up a tier`}
+                                  onClick={() => moveBrand(term, ti, b, -1)}
+                                >
+                                  <IconUp />
+                                </button>
+                                <button
+                                  type="button"
+                                  title="Prefer less (lower tier)"
+                                  aria-label={`Move ${b} down a tier`}
+                                  onClick={() => moveBrand(term, ti, b, 1)}
+                                >
+                                  <IconDown />
+                                </button>
+                                <button
+                                  type="button"
+                                  title="Remove"
+                                  aria-label={`Remove ${b}`}
+                                  onClick={() => removeBrand(term, ti, b)}
+                                >
+                                  <IconX />
+                                </button>
+                              </span>
+                            </span>
+                          ))}
+                          <form
+                            className="brand-chip-add"
+                            onSubmit={(e) => {
+                              e.preventDefault();
+                              const input = (e.target as HTMLFormElement).elements.namedItem("brand") as HTMLInputElement;
+                              addBrand(term, ti, input.value);
+                              input.value = "";
+                            }}
+                          >
+                            <input
+                              name="brand"
+                              className="input"
+                              placeholder="add brand…"
+                              autoComplete="off"
+                              aria-label="Add brand to this tier"
+                            />
+                          </form>
+                        </div>
+                      </div>
+                    ))}
+                    <button
+                      type="button"
+                      className="brand-add-tier"
+                      data-testid="brand-add-tier"
+                      disabled={draftTier}
+                      onClick={() => setPending((p) => ({ ...p, [term]: true }))}
+                    >
+                      <IconPlus /> Add a fallback tier
+                    </button>
+                  </div>
+                ) : null}
+                {any ? (
+                  <div className="brand-any-state" data-testid="brand-any-state">
+                    <span className="brand-any-badge">
+                      <IconDollarSign /> Any brand — cheapest wins
                     </span>
-                  </li>
-                ))}
-              </ol>
-            </div>
-          );
-        })}
-        <form className="brand-add" onSubmit={add}>
-          <input className="input brand-in-cat" placeholder="category" autoComplete="off" aria-label="Brand category" value={cat} onChange={(e) => setCat(e.target.value)} />
-          <input className="input brand-in-name" placeholder="brand" autoComplete="off" aria-label="Brand" value={brand} onChange={(e) => setBrand(e.target.value)} />
-          <Button size="icon" className="size-7" type="submit" title="Add brand" aria-label="Add brand">
-            <IconPlus />
-          </Button>
-        </form>
-      </div>
-    </div>
+                    {tiers.length === 0 && !draftTier ? (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        data-testid="brand-set-prefs"
+                        onClick={() => setPending((p) => ({ ...p, [term]: true }))}
+                      >
+                        Set brand preferences
+                      </Button>
+                    ) : null}
+                  </div>
+                ) : null}
+              </div>
+            );
+          })}
+          <form className="brand-cat-add" onSubmit={addFamily} data-testid="brand-family-add">
+            <input
+              className="input"
+              placeholder="Add a category — e.g. coffee, eggs, tortillas"
+              autoComplete="off"
+              aria-label="New category"
+              value={cat}
+              onChange={(e) => setCat(e.target.value)}
+            />
+            <Button size="sm" type="submit">
+              <IconPlus /> Add category
+            </Button>
+          </form>
+        </div>
+      </section>
+    </section>
   );
 }
 

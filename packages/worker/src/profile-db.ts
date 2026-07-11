@@ -9,10 +9,11 @@
 // Reads assemble objects identical to what the agent saw from the old KV bundle;
 // writes mutate rows (UPSERT/DELETE), using `batch` for multi-row atomicity. The
 // preferences merge-patch (RFC 7396) lands here: scalar/JSON columns on `profile`,
-// brands tri-state on `brand_prefs` (value → UPSERT, `null` → DELETE).
+// brands tri-state on `brand_prefs` (tier-object value → UPSERT, `null` → DELETE).
 
 import type { Env } from "./env.js";
 import { db } from "./db.js";
+import { canonicalBrandValue, type BrandTierPref } from "./preferences.js";
 import { normalizeName } from "./grocery.js";
 import type { OverlayRow } from "./overlay.js";
 import type { StaplesItem } from "./staples.js";
@@ -72,15 +73,35 @@ export interface AssembledProfile {
 
 // --- preferences assembly ----------------------------------------------------
 
+/** A `brand_prefs` row as the D1 driver returns it. */
+interface BrandPrefRow {
+  term: string;
+  tiers: string;
+  any_brand: number;
+}
+
+/**
+ * A stored `brand_prefs` row as the canonical tier object (BOTH fields always
+ * present). A malformed/non-array `tiers` value is tolerated as don't-care —
+ * mirroring the shipped tolerant JSON parse, and never surfacing the one
+ * unrepresentable all-empty state.
+ */
+function brandRowToTierPref(row: { tiers: string; any_brand: number }): BrandTierPref {
+  const parsed = parseJson(row.tiers);
+  if (!Array.isArray(parsed)) return { tiers: [], any_brand: true };
+  return { tiers: parsed as string[][], any_brand: Boolean(row.any_brand) };
+}
+
 /**
  * Reconstruct the preferences object from the `profile` row + `brand_prefs` rows.
  * Returns null when there is no profile row (no preferences set up). Defined scalar
  * keys are included only when non-null; `stores`/`dietary`/`custom` come from their
- * JSON columns; `brands` is rebuilt as term→ranks from the child table.
+ * JSON columns; `brands` is rebuilt from the child table as term → canonical
+ * `{ tiers, any_brand }` (never a bare array).
  */
 function assemblePreferences(
   row: ProfileRow | null,
-  brands: { term: string; ranks: string }[],
+  brands: BrandPrefRow[],
 ): Preferences | null {
   // No preferences exist when there is no profile row at all, OR the row carries
   // none of the preference-bearing fields (a bare taste/diet/kitchen-only profile).
@@ -103,9 +124,8 @@ function assemblePreferences(
   if (custom) prefs.custom = custom;
   if (brands.length > 0) {
     const map: Record<string, unknown> = {};
-    for (const { term, ranks } of brands) {
-      const parsed = parseJson(ranks);
-      map[term] = Array.isArray(parsed) ? parsed : [];
+    for (const row of brands) {
+      map[row.term] = brandRowToTierPref(row);
     }
     prefs.brands = map;
   }
@@ -124,25 +144,48 @@ const PROFILE_SELECT =
 export async function readPreferences(env: Env, tenant: string): Promise<Preferences | null> {
   const [row, brands] = await Promise.all([
     db(env).first<ProfileRow>(PROFILE_SELECT, tenant),
-    db(env).all<{ term: string; ranks: string }>(
-      "SELECT term, ranks FROM brand_prefs WHERE tenant = ?1 ORDER BY term",
+    db(env).all<BrandPrefRow>(
+      "SELECT term, tiers, any_brand FROM brand_prefs WHERE tenant = ?1 ORDER BY term",
       tenant,
     ),
   ]);
   return assemblePreferences(row, brands);
 }
 
-/** The caller's brand preferences (term → rank list), for the matcher. */
-export async function readBrandPrefs(env: Env, tenant: string): Promise<Record<string, string[]>> {
-  const rows = await db(env).all<{ term: string; ranks: string }>(
-    "SELECT term, ranks FROM brand_prefs WHERE tenant = ?1",
+/** The caller's brand preferences as the tier model (term → { tiers, any_brand }). */
+export async function readBrandTiers(env: Env, tenant: string): Promise<Record<string, BrandTierPref>> {
+  const rows = await db(env).all<BrandPrefRow>(
+    "SELECT term, tiers, any_brand FROM brand_prefs WHERE tenant = ?1",
     tenant,
   );
+  const out: Record<string, BrandTierPref> = {};
+  for (const row of rows) out[row.term] = brandRowToTierPref(row);
+  return out;
+}
+
+/**
+ * Project one family's tier object onto the flat ranked list the matcher's confidence
+ * gate consumes: tiers flatten in tier order (within a tier, stored order); don't-care
+ * (`{ tiers: [], any_brand: true }`) projects to `[]`. Pure — shared by readBrandPrefs
+ * and the matcher tests.
+ */
+export function projectBrandTiers(pref: BrandTierPref): string[] {
+  return pref.tiers.flat();
+}
+
+/**
+ * The caller's brand preferences (term → rank list), for the matcher — the INTERIM
+ * projection of the stored tier model onto the flat shape `src/matching.ts` step 6
+ * consumes (via `src/tools.ts` `resolve()`). For singleton tiers the flattening is
+ * byte-identical to the pre-tier ranked lists; a multi-brand tier degrades to ordered
+ * ranks and `any_brand` alongside non-empty tiers degrades to exhausted-ladder/ask.
+ * Band 3's `order-review-rework` moves the matcher onto tiers natively and retires
+ * this projection.
+ */
+export async function readBrandPrefs(env: Env, tenant: string): Promise<Record<string, string[]>> {
+  const tiers = await readBrandTiers(env, tenant);
   const out: Record<string, string[]> = {};
-  for (const { term, ranks } of rows) {
-    const parsed = parseJson(ranks);
-    out[term] = Array.isArray(parsed) ? (parsed as string[]) : [];
-  }
+  for (const [term, pref] of Object.entries(tiers)) out[term] = projectBrandTiers(pref);
   return out;
 }
 
@@ -250,8 +293,8 @@ export async function readFreezerEstimate(env: Env, tenant: string): Promise<str
 export async function readProfile(env: Env, tenant: string): Promise<AssembledProfile> {
   const [profileRow, brands, owned, staples, ready, stockupItems] = await Promise.all([
     db(env).first<ProfileRow>(PROFILE_SELECT, tenant),
-    db(env).all<{ term: string; ranks: string }>(
-      "SELECT term, ranks FROM brand_prefs WHERE tenant = ?1",
+    db(env).all<BrandPrefRow>(
+      "SELECT term, tiers, any_brand FROM brand_prefs WHERE tenant = ?1",
       tenant,
     ),
     readOwnedEquipment(env, tenant),
@@ -333,26 +376,31 @@ export async function setProfileFields(
   if (stmt) await db(env).batch([stmt]);
 }
 
-/** UPSERT/DELETE a brand_prefs row. ranks=null DELETEs (back to ambiguous). */
+/**
+ * UPSERT/DELETE a brand_prefs row. `value=null` DELETEs (back to ambiguous); a value
+ * is canonicalized (both fields) and written to the `tiers` + `any_brand` columns.
+ */
 export function brandStmt(
   env: Env,
   tenant: string,
   term: string,
-  ranks: unknown[] | null,
+  value: Record<string, unknown> | null,
 ): D1PreparedStatement {
-  if (ranks === null) {
+  if (value === null) {
     return db(env).prepare(
       "DELETE FROM brand_prefs WHERE tenant = ?1 AND term = ?2",
       tenant,
       term,
     );
   }
+  const canonical = canonicalBrandValue(value);
   return db(env).prepare(
-    "INSERT INTO brand_prefs (tenant, term, ranks) VALUES (?1, ?2, ?3) " +
-      "ON CONFLICT(tenant, term) DO UPDATE SET ranks = excluded.ranks",
+    "INSERT INTO brand_prefs (tenant, term, tiers, any_brand) VALUES (?1, ?2, ?3, ?4) " +
+      "ON CONFLICT(tenant, term) DO UPDATE SET tiers = excluded.tiers, any_brand = excluded.any_brand",
     tenant,
     term,
-    JSON.stringify(ranks),
+    JSON.stringify(canonical.tiers),
+    canonical.any_brand ? 1 : 0,
   );
 }
 
