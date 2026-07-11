@@ -20,9 +20,10 @@ import {
   RerollButton,
   SlotCard,
   VarietyBar,
+  proposePanelOf,
+  proposeSlotToView,
   toast,
   type ProposeSlotView,
-  type SlotPanel,
 } from "@yamp/ui";
 import { useIndex, usePlan, useProfile, useVibes, type PlanOp, mintRowId } from "../lib/data";
 import { usePlanOps } from "../lib/mutations";
@@ -180,7 +181,10 @@ function ProposePage() {
   const data = propose.data;
   const slots: { payload: ProposeSlotPayload; view: ProposeSlotView }[] = (data?.plan ?? [])
     .filter((s) => s.vibe_id !== null)
-    .map((s, i) => ({ payload: s, view: toView(s, i, session, paletteById) }));
+    .map((s, i) => ({
+      payload: s,
+      view: proposeSlotToView(s, i, session, { getVibeLabel: (vibeId) => paletteById.get(vibeId)?.vibe }),
+    }));
 
   const filled = slots.filter((s) => s.payload.main);
   const mainProteins = new Map<string, number>();
@@ -254,7 +258,7 @@ function ProposePage() {
           <SlotCard
             key={view.key}
             slot={view}
-            panel={panelOf(openPanel, view.key)}
+            panel={proposePanelOf(openPanel, view.key)}
             onPanel={(p) => setOpenPanel(p ? `${view.key}|${p}` : null)}
             proteins={proteins}
             cuisines={cuisines}
@@ -331,46 +335,4 @@ function ProposePage() {
       </div>
     </div>
   );
-}
-
-function panelOf(open: string | null, key: string): SlotPanel {
-  if (!open || !open.startsWith(`${key}|`)) return null;
-  return open.slice(key.length + 1) as SlotPanel;
-}
-
-/** Map one endpoint slot + the session's pins onto the card's view shape. */
-function toView(
-  s: ProposeSlotPayload,
-  index: number,
-  session: ProposeSession,
-  paletteById: Map<string, { vibe: string }>,
-): ProposeSlotView {
-  const vibeId = s.vibe_id!;
-  const override = session.slotVibe[vibeId];
-  const flags: ProposeSlotView["flags"] = [];
-  if (s.flags.waste?.length) flags.push({ type: "waste", label: `Single-use: ${s.flags.waste.join(", ")}` });
-  if (s.flags.meal_prep) flags.push({ type: "meal-prep", label: "Meal-preps well" });
-  if (s.flags.no_corpus_side) flags.push({ type: "side", label: "No corpus side — add your own" });
-  return {
-    key: `${vibeId}:${index}`,
-    vibeId,
-    vibeLabel: override ?? paletteById.get(vibeId)?.vibe ?? vibeId,
-    vibeEdited: !!override,
-    weatherCategory: s.weather_category ?? null,
-    main: s.main,
-    emptyReason: s.empty_reason ?? null,
-    locked: !!s.main && session.locked[vibeId] === s.main.slug,
-    pinnedProtein: session.slotProtein[vibeId] ?? null,
-    pinnedCuisine: session.slotCuisine[vibeId] ?? null,
-    timePin: {
-      explicit: vibeId in session.slotMaxTime,
-      value: session.slotMaxTime[vibeId] ?? null,
-    },
-    why: s.why,
-    sides: s.sides.map((x) => x.title),
-    flags,
-    alternates: s.alternates,
-    altSimilar: s.alt_similar,
-    altDifferent: s.alt_different,
-  };
 }

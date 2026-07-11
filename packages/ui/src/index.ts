@@ -42,6 +42,18 @@ export {
   type ProposeSlotView,
   type SlotPanel,
 } from "./components/propose";
+export {
+  buildProposeRequest,
+  dateSeed,
+  defaultProposeSession,
+  proposePanelOf,
+  proposeSessionFromRequest,
+  proposeSlotToView,
+  type ProposeRequest,
+  type ProposeRequestSlot,
+  type ProposeSession,
+  type ProposeSessionRequest,
+} from "./propose-orchestration";
 export { Combobox, type ComboOption } from "./components/combobox";
 export { Toaster, toast } from "./components/toast";
 export * from "./components/icons";

@@ -9,53 +9,20 @@
 // plan-ops mutation (`applyPlanOps`) with `from_vibe` provenance and client-assigned
 // open dates (D8).
 import { useQuery, keepPreviousData } from "@tanstack/react-query";
+import {
+  buildProposeRequest as buildRequest,
+  dateSeed,
+  defaultProposeSession as defaultSession,
+  type ProposeRequest,
+  type ProposeRequestSlot as RequestSlot,
+  type ProposeSession,
+} from "@yamp/ui";
 import { api, apiError } from "./api";
 import type { PlannedRow } from "./data";
 
 const SESSION_KEY = "yamp:propose-session";
 
-/** The mock's `proposeSession` shape, kept faithfully (D7). All keys are vibe ids. */
-export interface ProposeSession {
-  seed: number;
-  nights: number;
-  /** `nudges.variety` (0–1); the adventurousness slider's value. */
-  variety: number;
-  proteinWants: string[];
-  freeform: string;
-  /** Lock: keep THIS pick on THIS night (identity-preserving `slots[].recipe`). */
-  locked: Record<string, string>;
-  /** Swap/pick-list overrides — also `slots[].recipe`; `locked` wins when both exist. */
-  overrides: Record<string, string>;
-  excluded: string[];
-  slotProtein: Record<string, string>;
-  slotCuisine: Record<string, string>;
-  /** Explicit per-night time cap; `null` = the member's "Any time" (lifts the vibe's cap). */
-  slotMaxTime: Record<string, number | null>;
-  /** Per-night typed phrase / palette preset (`slots[].vibe`). */
-  slotVibe: Record<string, string>;
-}
-
-/** The default seed: today's date, matching the tool's own no-seed default. */
-export function dateSeed(): number {
-  return Number(new Date().toISOString().slice(0, 10).replace(/-/g, ""));
-}
-
-export function defaultSession(nights: number): ProposeSession {
-  return {
-    seed: dateSeed(),
-    nights: Math.min(6, Math.max(2, nights)),
-    variety: 0.4,
-    proteinWants: [],
-    freeform: "",
-    locked: {},
-    overrides: {},
-    excluded: [],
-    slotProtein: {},
-    slotCuisine: {},
-    slotMaxTime: {},
-    slotVibe: {},
-  };
-}
+export { buildRequest, dateSeed, defaultSession, type ProposeRequest, type ProposeSession, type RequestSlot };
 
 export function loadSession(): ProposeSession | null {
   try {
@@ -75,60 +42,6 @@ export function saveSession(session: ProposeSession | null): void {
   } catch {
     // private-mode storage failures are fine — the session just won't survive a reload
   }
-}
-
-/** One request-body slot constraint (mirrors the endpoint's `slots[]` shape). */
-export interface RequestSlot {
-  vibe_id: string;
-  protein?: string;
-  cuisine?: string;
-  max_time_total?: number | null;
-  vibe?: string;
-  recipe?: string;
-}
-
-export interface ProposeRequest {
-  nights: number;
-  seed: number;
-  exclude?: string[];
-  nudges?: { variety?: number; freeform?: string; proteins?: string[] };
-  slots?: RequestSlot[];
-}
-
-/**
- * Serialize the session into the canonical request body (D7's request mapping): UI
- * lock / swap / pick-list → identity-preserving `slots[].recipe` (never the tool's
- * vibe-detaching `lock` array), facet chips → `slots[].{protein,cuisine,max_time_total}`,
- * the vibe panel → `slots[].vibe`, "not this one" → `exclude`, the slider →
- * `nudges.variety`, the phrase box → `nudges.freeform`. Slot ids are sorted so the
- * serialized request (the query key) is canonical for one set of choices.
- */
-export function buildRequest(s: ProposeSession): ProposeRequest {
-  const ids = new Set<string>([
-    ...Object.keys(s.locked),
-    ...Object.keys(s.overrides),
-    ...Object.keys(s.slotProtein),
-    ...Object.keys(s.slotCuisine),
-    ...Object.keys(s.slotMaxTime),
-    ...Object.keys(s.slotVibe),
-  ]);
-  const slots: RequestSlot[] = [...ids].sort().map((id) => {
-    const slot: RequestSlot = { vibe_id: id };
-    if (s.slotProtein[id]) slot.protein = s.slotProtein[id];
-    if (s.slotCuisine[id]) slot.cuisine = s.slotCuisine[id];
-    if (id in s.slotMaxTime) slot.max_time_total = s.slotMaxTime[id];
-    if (s.slotVibe[id]) slot.vibe = s.slotVibe[id];
-    const pick = s.locked[id] ?? s.overrides[id];
-    if (pick) slot.recipe = pick;
-    return slot;
-  });
-  const nudges: ProposeRequest["nudges"] = { variety: s.variety };
-  if (s.freeform.trim()) nudges.freeform = s.freeform.trim();
-  if (s.proteinWants.length) nudges.proteins = [...s.proteinWants].sort();
-  const req: ProposeRequest = { nights: s.nights, seed: s.seed, nudges };
-  if (s.excluded.length) req.exclude = [...s.excluded].sort();
-  if (slots.length) req.slots = slots;
-  return req;
 }
 
 /** The endpoint's response, inferred end-to-end from the Worker's composed app type. */

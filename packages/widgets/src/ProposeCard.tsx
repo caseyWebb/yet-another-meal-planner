@@ -16,113 +16,25 @@
 // `content` fallback is the floor below that).
 import * as React from "react";
 import type { App } from "@modelcontextprotocol/ext-apps";
-import type { ProposeCardData, ProposeCardSlot } from "@yamp/contract";
+import type { ProposeCardData } from "@yamp/contract";
 import {
+  buildProposeRequest,
   IconSparkle,
   NightsStepper,
   NudgeBar,
+  proposePanelOf,
+  proposeSessionFromRequest,
+  proposeSlotToView,
   RerollButton,
   SlotCard,
   VarietyBar,
   type ProposeSlotView,
-  type SlotPanel,
+  type ProposeSession,
 } from "@yamp/ui";
 
 /** The result-portion of ProposeCardData — what a `propose_meal_plan` re-invocation returns (the
  *  op's `ProposeResult`), merged back over the held render context on each dial change. */
 type ProposeResultLike = Pick<ProposeCardData, "plan" | "variety" | "uncovered_at_risk" | "diagnostics" | "note">;
-
-/** The client session (the member app's `ProposeSession`, faithfully): every key is a vibe id. */
-interface Session {
-  seed: number;
-  nights: number;
-  variety: number;
-  proteinWants: string[];
-  freeform: string;
-  locked: Record<string, string>;
-  overrides: Record<string, string>;
-  excluded: string[];
-  slotProtein: Record<string, string>;
-  slotCuisine: Record<string, string>;
-  slotMaxTime: Record<string, number | null>;
-  slotVibe: Record<string, string>;
-}
-
-interface RequestSlot {
-  vibe_id: string;
-  protein?: string;
-  cuisine?: string;
-  max_time_total?: number | null;
-  vibe?: string;
-  recipe?: string;
-}
-interface ProposeReq {
-  nights: number;
-  seed: number;
-  exclude?: string[];
-  nudges?: { variety?: number; freeform?: string; proteins?: string[] };
-  slots?: RequestSlot[];
-}
-
-/** Seed the session from the request that produced the initial week, so a re-roll / stepper starts
- *  from the exact plan the caller sees (and any agent-supplied slot pins are reflected). */
-function initSession(req: ProposeCardData["request"]): Session {
-  const s: Session = {
-    seed: req.seed,
-    nights: req.nights,
-    variety: req.variety,
-    proteinWants: req.proteins,
-    freeform: req.freeform,
-    locked: {},
-    overrides: {},
-    excluded: req.exclude,
-    slotProtein: {},
-    slotCuisine: {},
-    slotMaxTime: {},
-    slotVibe: {},
-  };
-  for (const slot of req.slots) {
-    if (slot.protein) s.slotProtein[slot.vibe_id] = slot.protein;
-    if (slot.cuisine) s.slotCuisine[slot.vibe_id] = slot.cuisine;
-    if (slot.max_time_total !== undefined) s.slotMaxTime[slot.vibe_id] = slot.max_time_total;
-    if (slot.vibe) s.slotVibe[slot.vibe_id] = slot.vibe;
-    if (slot.recipe) s.overrides[slot.vibe_id] = slot.recipe;
-  }
-  return s;
-}
-
-/** Serialize the session into the canonical propose request (the member app's `buildRequest`): UI
- *  lock / swap / pick-list → identity-preserving `slots[].recipe`, facet chips →
- *  `slots[].{protein,cuisine,max_time_total}`, the vibe panel → `slots[].vibe`, "not this one" →
- *  `exclude`, the slider → `nudges.variety`, the phrase box → `nudges.freeform`. Slot ids sorted so
- *  the same choices always serialize identically (the op is deterministic on its body). */
-function buildRequest(s: Session): ProposeReq {
-  const ids = new Set<string>([
-    ...Object.keys(s.locked),
-    ...Object.keys(s.overrides),
-    ...Object.keys(s.slotProtein),
-    ...Object.keys(s.slotCuisine),
-    ...Object.keys(s.slotMaxTime),
-    ...Object.keys(s.slotVibe),
-  ]);
-  const slots: RequestSlot[] = [...ids].sort().map((id) => {
-    const slot: RequestSlot = { vibe_id: id };
-    if (s.slotProtein[id]) slot.protein = s.slotProtein[id];
-    if (s.slotCuisine[id]) slot.cuisine = s.slotCuisine[id];
-    if (id in s.slotMaxTime) slot.max_time_total = s.slotMaxTime[id];
-    if (s.slotVibe[id]) slot.vibe = s.slotVibe[id];
-    const pick = s.locked[id] ?? s.overrides[id];
-    if (pick) slot.recipe = pick;
-    return slot;
-  });
-  const nudges: ProposeReq["nudges"] = { variety: s.variety };
-  if (s.freeform.trim()) nudges.freeform = s.freeform.trim();
-  if (s.proteinWants.length) nudges.proteins = [...s.proteinWants].sort();
-  const req: ProposeReq = { nights: s.nights, seed: s.seed, nudges };
-  if (s.excluded.length) req.exclude = [...s.excluded].sort();
-  if (slots.length) req.slots = slots;
-  return req;
-}
 
 /** The host-proxied tool-call result shape, taken from the ext-apps client so no direct SDK
  *  dependency is needed (the widget package only depends on `@modelcontextprotocol/ext-apps`). */
@@ -144,47 +56,11 @@ function parseProposeResult(res: CallResult): ProposeResultLike | null {
   }
 }
 
-/** Map one endpoint slot + the session's pins onto the card's view shape (the member app's `toView`). */
-function toView(s: ProposeCardSlot, index: number, session: Session, vibeLabels: Record<string, string>): ProposeSlotView {
-  const vibeId = s.vibe_id as string;
-  const override = session.slotVibe[vibeId];
-  const flags: ProposeSlotView["flags"] = [];
-  if (s.flags.waste?.length) flags.push({ type: "waste", label: `Single-use: ${s.flags.waste.join(", ")}` });
-  if (s.flags.meal_prep) flags.push({ type: "meal-prep", label: "Meal-preps well" });
-  if (s.flags.no_corpus_side) flags.push({ type: "side", label: "No corpus side — add your own" });
-  return {
-    key: `${vibeId}:${index}`,
-    vibeId,
-    // A palette / ephemeral slot resolves its phrase from vibeLabels (ephemeral ids are labeled
-    // there too); a vibe-less slot (new_for_me / caller lock → null id) gets the text-fallback name.
-    vibeLabel: override ?? (s.vibe_id ? (vibeLabels[s.vibe_id] ?? s.vibe_id) : s.reason === "new_for_me" ? "new to you" : "your pick"),
-    vibeEdited: !!override,
-    weatherCategory: s.weather_category ?? null,
-    main: s.main,
-    emptyReason: s.empty_reason ?? null,
-    locked: !!s.main && session.locked[vibeId] === s.main.slug,
-    pinnedProtein: session.slotProtein[vibeId] ?? null,
-    pinnedCuisine: session.slotCuisine[vibeId] ?? null,
-    timePin: { explicit: vibeId in session.slotMaxTime, value: session.slotMaxTime[vibeId] ?? null },
-    why: s.why,
-    sides: s.sides.map((x) => x.title),
-    flags,
-    alternates: s.alternates,
-    altSimilar: s.alt_similar,
-    altDifferent: s.alt_different,
-  };
-}
-
-function panelOf(open: string | null, key: string): SlotPanel {
-  if (!open || !open.startsWith(`${key}|`)) return null;
-  return open.slice(key.length + 1) as SlotPanel;
-}
-
 export function ProposeCard({ app, data }: { app: App; data: ProposeCardData }) {
   // The result-portion is held and refreshed on iteration; the render context (vibe labels, facet
   // universes, presets) is stable within a session, so it stays as the initial `data`.
   const [render, setRender] = React.useState<ProposeResultLike>(data);
-  const [session, setSession] = React.useState<Session>(() => initSession(data.request));
+  const [session, setSession] = React.useState<ProposeSession>(() => proposeSessionFromRequest(data.request));
   const [openPanel, setOpenPanel] = React.useState<string | null>(null);
   const [busy, setBusy] = React.useState(false);
   // A monotonic request token: racing dial changes each bump it, and only the LATEST in-flight
@@ -205,18 +81,21 @@ export function ProposeCard({ app, data }: { app: App; data: ProposeCardData }) 
 
   /** Apply a session patch and (when iterable) replay it against the stateless op. `session` is the
    *  current render's state — a dial change is a discrete user event, so it is never stale here. */
-  const update = (patch: (s: Session) => Session): void => {
+  const update = (patch: (s: ProposeSession) => ProposeSession): void => {
     const next = patch(session);
     setSession(next);
     void rerun(next);
   };
 
-  async function rerun(next: Session): Promise<void> {
+  async function rerun(next: ProposeSession): Promise<void> {
     if (!canIterate) return;
     const seq = ++seqRef.current;
     setBusy(true);
     try {
-      const res = await app.callServerTool({ name: "propose_meal_plan", arguments: buildRequest(next) as unknown as Record<string, unknown> });
+      const res = await app.callServerTool({
+        name: "propose_meal_plan",
+        arguments: buildProposeRequest(next) as unknown as Record<string, unknown>,
+      });
       const result = parseProposeResult(res);
       // On a host/transport hiccup keep the current week rendered rather than blanking the card;
       // ignore a reply that a newer dial change has already superseded (stale-week guard).
@@ -260,7 +139,13 @@ export function ProposeCard({ app, data }: { app: App; data: ProposeCardData }) 
     if (s.main?.cuisine) mainCuisines.add(s.main.cuisine);
   }
 
-  const views = slots.map((s, i) => ({ payload: s, view: toView(s, i, session, data.vibeLabels) }));
+  const views = slots.map((s, i) => ({
+    payload: s,
+    view: proposeSlotToView(s, i, session, {
+      vibeLabels: data.vibeLabels,
+      nullVibeLabel: (slot) => (slot.reason === "new_for_me" ? "new to you" : "your pick"),
+    }),
+  }));
 
   return (
     <div className="plan-propose-widget" data-widget="plan-propose" data-testid="propose-card">
@@ -305,7 +190,7 @@ export function ProposeCard({ app, data }: { app: App; data: ProposeCardData }) 
             <SlotCard
               key={view.key}
               slot={view}
-              panel={panelOf(openPanel, view.key)}
+              panel={proposePanelOf(openPanel, view.key)}
               onPanel={(p) => setOpenPanel(p ? `${view.key}|${p}` : null)}
               proteins={data.proteins}
               cuisines={data.cuisines}
@@ -349,7 +234,7 @@ export function ProposeCard({ app, data }: { app: App; data: ProposeCardData }) 
               onFacetPick={(kind, value) =>
                 update((s) => {
                   const field = kind === "protein" ? "slotProtein" : "slotCuisine";
-                  const next = { ...s, [field]: { ...s[field] } } as Session;
+                  const next = { ...s, [field]: { ...s[field] } } as ProposeSession;
                   if (value === null) delete next[field][view.vibeId];
                   else next[field][view.vibeId] = value;
                   return next;
