@@ -12,6 +12,25 @@ export class ProfilePage extends AppPage {
   readonly path = "/profile";
   readonly area = "profile";
 
+  /**
+   * Navigate/reload and WAIT for the assembled-profile read (`GET /api/profile`) to settle
+   * before returning. The prefs controls seed their local draft from the loaded value ON
+   * MOUNT — the weekly-budget field most visibly — so opening the prefs tab before the
+   * profile query resolves renders a stale-empty control that never re-syncs. Gating each
+   * navigation on the real read (not a fixed wait) makes every reload deterministic, so a
+   * set→reload→assert round-trip can't race the load (which otherwise fails the attempt AND
+   * poisons its retry, since the write already landed). Matches the assembled read exactly —
+   * `/api/profile`, not its `/api/profile/*` sub-resources.
+   */
+  async goto(path: string = this.path): Promise<void> {
+    await Promise.all([
+      this.page.waitForResponse(
+        (r) => r.request().method() === "GET" && r.url().split("?")[0].endsWith("/api/profile"),
+      ),
+      this.page.goto(path),
+    ]);
+  }
+
   async landmark(): Promise<void> {
     await expect(this.page.getByTestId("profile-page")).toBeVisible();
     await expect(this.page.getByTestId("taste-tab")).toBeVisible(); // the default tab
@@ -61,14 +80,41 @@ export class ProfilePage extends AppPage {
 
   // --- prefs tab: per-meal cadence steppers + weekly-budget control -------------
 
+  /**
+   * Run `trigger` (a blur/click that commits a preferences knob) and RESOLVE ONLY once
+   * the merge-patch has landed server-side — the succeeding `PATCH /api/profile/preferences`.
+   * The prefs controls save on blur/click through an unawaited If-Match merge-patch, so a
+   * caller that reloads immediately would otherwise race the write (a stale reload, and — since
+   * the write DID land — a poisoned Playwright retry sharing this D1). The control rebases on a
+   * 412 (a fresh GET + retry), so we wait for the OK PATCH, not merely the first response.
+   * A genuine save signal — never a fixed wait.
+   */
+  private async awaitPreferencesSave(trigger: () => Promise<void>): Promise<void> {
+    await Promise.all([
+      this.page.waitForResponse(
+        (r) =>
+          r.request().method() === "PATCH" &&
+          r.url().includes("/api/profile/preferences") &&
+          r.ok(),
+      ),
+      trigger(),
+    ]);
+  }
+
   cadenceItem(meal: Meal): Locator {
     return this.page.locator(`[data-testid="cadence-item"][data-meal="${meal}"]`);
   }
 
-  /** Nudge a meal's weekly cadence by `delta` steps (+ increments, − decrements). */
+  /** Nudge a meal's weekly cadence by `delta` steps (+ increments, − decrements). Each
+   *  step is its own merge-patch; wait for each to land so a later reload can't race it. */
   async setCadence(meal: Meal, delta: number): Promise<void> {
     const btn = this.cadenceItem(meal).getByTestId(delta > 0 ? "cadence-inc" : "cadence-dec");
-    for (let i = 0; i < Math.abs(delta); i++) await btn.click();
+    for (let i = 0; i < Math.abs(delta); i++) await this.awaitPreferencesSave(() => btn.click());
+  }
+
+  /** The meal's current weekly-cadence number (for an idempotent reset to a known value). */
+  async cadenceValue(meal: Meal): Promise<number> {
+    return Number(await this.cadenceItem(meal).getByTestId("cadence-n").textContent());
   }
 
   async expectCadence(meal: Meal, n: number): Promise<void> {
@@ -99,11 +145,12 @@ export class ProfilePage extends AppPage {
 
   async setBudget(n: number): Promise<void> {
     await this.budgetInput().fill(String(n));
-    await this.budgetInput().blur();
+    // Blur commits the value through the unawaited merge-patch; wait for the write to land.
+    await this.awaitPreferencesSave(() => this.budgetInput().blur());
   }
 
   async clearBudget(): Promise<void> {
-    await this.budgetField().getByLabel("Clear budget").click();
+    await this.awaitPreferencesSave(() => this.budgetField().getByLabel("Clear budget").click());
   }
 
   async expectBudget(n: number): Promise<void> {

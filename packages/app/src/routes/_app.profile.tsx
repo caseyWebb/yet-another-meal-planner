@@ -561,6 +561,15 @@ function PrefsTab() {
  */
 function BudgetField({ stored, onPatch }: { stored: number | null; onPatch: (p: Record<string, unknown>) => void }) {
   const [draft, setDraft] = React.useState(stored != null ? String(stored) : "");
+  // The draft seeds from `stored` on mount — but a mount that RACES the profile read (a
+  // reload that lands this control before the `["profile"]` query resolves) would seed from a
+  // null value and then never reflect the loaded budget. Sync the draft whenever the server
+  // value changes: refetches here only follow a committed patch, so this reflects the fresh
+  // read (and the "reload remounts with the fresh read" invariant this control assumes) without
+  // ever clobbering in-progress typing (no background poll moves `stored` mid-edit).
+  React.useEffect(() => {
+    setDraft(stored != null ? String(stored) : "");
+  }, [stored]);
   const isSet = draft.trim() !== "";
 
   function commit() {
