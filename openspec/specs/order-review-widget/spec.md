@@ -1,7 +1,7 @@
 # order-review-widget Specification
 
 ## Purpose
-TBD - created by archiving change order-review-rework. Update Purpose after archive.
+Define the versioned, stateless Order Review projection and the single shared controller/component used by member and MCP hosts, including staged choices, fresh revalidation, bounded recovery search, narrow brand saving, honest send outcomes, D18/D19 bridge behavior, and safe close-to-Grocery semantics.
 ## Requirements
 ### Requirement: OrderReviewData is a versioned stateless preview
 

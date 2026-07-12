@@ -1177,6 +1177,11 @@ The order-time flush — the **only** tool that writes a Kroger cart. Resolves t
   preview:          bool                                    // resolve + report only; no cart write, no commits
 }
 ```
+The review form is the mutually exclusive shape
+`{ stage: { skipped, quantities, selections, impulses, saved_brands }, preview_fingerprint,
+cleared_cart_ack }`. Each selection is `{ line_key, sku, source, divergence? }`; each impulse is
+`{ key, label, sku? }`. The server rejects duplicate keys/markers and selections that were not
+issued for that exact line and current fingerprint.
 All sections optional. With no args it flushes the current to-buy set (list ∪ derived plan needs − pantry). Package counts (`quantities` and `menu_needs[].quantity`) must be positive integers ≤ 99 — a fractional, zero, or oversized value is rejected before any cart write (`place_order` is the only tool that writes a real Kroger cart).
 
 **Returns:**
@@ -1185,7 +1190,7 @@ All sections optional. With no args it flushes the current to-buy set (list ∪ 
   resolved:  [{ name, sku, brand, size, quantity, assumed_quantity, price?, on_sale?, aisleLocation? }],  // assumed_quantity: qty defaulted to 1; price/on_sale/aisleLocation: fresh at resolution
   checkpoint:[{ name, kind: "ambiguous"|"unavailable", candidates?, message }],
   partials:  [{ name, for_recipes }],
-  sku_cache: { committed, error? },
+  sku_cache: { committed, inserted?: [line_key], updated?: [line_key], unchanged?: [line_key], error? },
   cart:      { written, count?, error?, code? },   // code carries reauth_required etc.
   list:      { advanced, rolled_back?, error? },   // D1-backed (no commit_sha); see partial-failure honesty below
   send:      { recorded, id?, error? },            // the send-record snapshot (spend telemetry); honest independent reporting
