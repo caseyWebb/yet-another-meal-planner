@@ -176,6 +176,9 @@ export function makeCommitSkuCache(env: Env, getLocationId: () => Promise<string
         aisle_description: aisle ? aisle.description : null,
         aisle_side: aisle?.side ?? null,
         aisle_captured_at: capturedAt,
+        price_regular: m.price?.regular ?? null,
+        price_promo: m.price?.promo ?? null,
+        price_captured_at: m.price ? stamp : null,
       });
       (prior ? updated : inserted).push(m.ingredient);
     }

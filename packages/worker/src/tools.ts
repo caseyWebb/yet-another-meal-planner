@@ -36,6 +36,8 @@ import { registerRecipeCardWidget } from "./recipe-card-widget.js";
 import { registerMealPlanWidget } from "./meal-plan-widget.js";
 import { registerGroceryWidget } from "./grocery-widget.js";
 import { registerOrderReviewWidget } from "./order-review-widget.js";
+import { ShopCommitRequestSchema } from "@yamp/contract";
+import { commitCheckedShop } from "./shop-commit.js";
 import { filterRecipes, type RecipeIndex } from "./recipes.js";
 import { loadRecipeIndex, loadRecipeEmbeddings, recipeDescription } from "./recipe-index.js";
 import { readReconcileErrors } from "./recipe-projection.js";
@@ -1054,6 +1056,16 @@ export function buildServer(env: Env, tenant: Tenant, origin?: string): McpServe
       inputSchema: { enrich: z.boolean().optional() },
     },
     (input) => runTool(() => computeToBuyView(env, tenant.id, { enrich: input.enrich === true })),
+  );
+
+  server.registerTool(
+    "commit_shop",
+    {
+      description:
+        "Complete an in-store or manual shop through the receipt-backed shared operation. Before calling, mark every confirmed pick with set_grocery_checked, sweep unmatched lines, then read the fresh checked snapshot. Supply one client-minted ULID for the trip, the exact sorted eligible checked keys, snapshot_version, and original occurred_at. A replay of the identical request returns the immutable receipt; changed payload or checked-set races return structured outcomes and never partially receive, restock, spend, or delete.",
+      inputSchema: ShopCommitRequestSchema.shape,
+    },
+    (input) => runTool(() => commitCheckedShop(env, tenant.id, input)),
   );
 
   // suggest_substitutions — the alternatives-only substitution read (inline-

@@ -116,6 +116,27 @@ export {
   type GroceryModelContext,
 } from "./grocery.js";
 export {
+  AisleMapStateSchema,
+  AisleMapSummarySchema,
+  AisleMapEntrySchema,
+  AisleMapDocumentSchema,
+  AisleMapWriteSchema,
+  ShopCommitRequestSchema,
+  ShopReceiptLineSchema,
+  ShopReceiptSchema,
+  type AisleMapState,
+  type AisleMapSummary,
+  type AisleMapEntry,
+  type AisleMapDocument,
+  type AisleMapWrite,
+  type ShopCommitRequest,
+  type ShopReceiptLine,
+  type ShopReceipt,
+  type ShopCommitResult,
+  type OfflineWalkRouteGroup,
+  type OfflineWalkContext,
+} from "./shop.js";
+export {
   KNOWN_ORDER_REVIEW_CONTRACT_VERSION,
   ORDER_REVIEW_CONTRACT_FLOOR,
   ORDER_REVIEW_CONTRACT_CEILING,

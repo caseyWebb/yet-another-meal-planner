@@ -1,6 +1,8 @@
 import { z } from "zod";
 
-export const KNOWN_GROCERY_CONTRACT_VERSION = 1;
+import type { OfflineWalkContext } from "./shop.js";
+
+export const KNOWN_GROCERY_CONTRACT_VERSION = 2;
 export const GROCERY_CONTRACT_FLOOR = 1;
 export const GROCERY_CONTRACT_CEILING = KNOWN_GROCERY_CONTRACT_VERSION;
 
@@ -97,6 +99,7 @@ export const GroceryListDataSchema = z.object({
   underived: z.array(z.string()),
   location: z.object({ id: z.string() }).nullable(),
   flyer_as_of: z.string().nullable(),
+  walk_context: z.custom<OfflineWalkContext>().nullable().optional(),
   counts: z.object({
     to_buy: z.number().int().nonnegative(),
     checked: z.number().int().nonnegative(),

@@ -250,6 +250,12 @@ export function validatePreferences(merged: Record<string, unknown>): void {
     const stores = merged.stores;
     if (!isPlainObject(stores)) fail(`stores must be an object (got ${JSON.stringify(stores)})`);
     for (const [k, val] of Object.entries(stores as Record<string, unknown>)) {
+      if (k === "nicknames") {
+        if (!isPlainObject(val) || Object.values(val).some((nickname) => typeof nickname !== "string" || !nickname.trim())) {
+          fail(`stores.nicknames must be a slug-to-nonempty-string object (got ${JSON.stringify(val)})`);
+        }
+        continue;
+      }
       if (typeof val !== "string") fail(`stores.${k} must be a string (got ${JSON.stringify(val)})`);
     }
   }

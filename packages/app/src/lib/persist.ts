@@ -59,6 +59,7 @@ export const REGISTERED_MUTATION_KEYS: readonly (readonly string[])[] = [
   ["grocery", "substitution"],
   ["grocery", "relist"],
   ["grocery", "pantry-verify"],
+  ["grocery", "shop-commit"],
   ["pantry", "ops"],
   ["pantry", "verify"],
   ["overlay", "favorite"],
@@ -132,6 +133,33 @@ export const queryClient = new QueryClient();
 
 const TENANT_STAMP_KEY = "yamp:tenant";
 const PROPOSE_SESSION_KEY = "yamp:propose-session";
+const WALK_SESSION_KEY = "yamp:store-walk";
+
+export interface LocalWalkSession {
+  session_id: string;
+  tenant_stamp: string;
+  store_slug: string;
+  started_at: string;
+  current_group: string | null;
+  state: "active" | "paused" | "pending_commit";
+}
+
+export function readLocalWalk(): LocalWalkSession | null {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(WALK_SESSION_KEY) ?? "null") as Partial<LocalWalkSession> | null;
+    const tenant = readTenantStamp();
+    return parsed && parsed.tenant_stamp === tenant && typeof parsed.session_id === "string" && typeof parsed.store_slug === "string"
+      ? parsed as LocalWalkSession : null;
+  } catch { return null; }
+}
+
+export function writeLocalWalk(value: LocalWalkSession): void {
+  try { localStorage.setItem(WALK_SESSION_KEY, JSON.stringify(value)); } catch { /* offline navigation degrades to this tab */ }
+}
+
+export function clearLocalWalk(sessionId?: string): void {
+  try { const current = readLocalWalk(); if (!sessionId || current?.session_id === sessionId) localStorage.removeItem(WALK_SESSION_KEY); } catch { /* unavailable */ }
+}
 
 /** The stamped tenant id — a boot/display hint ONLY, never an authority: every online
  *  request is authorized by the server-side session, not by this. */
@@ -170,6 +198,7 @@ export async function purgeLocalMemberData(): Promise<void> {
   try {
     localStorage.removeItem(TENANT_STAMP_KEY);
     localStorage.removeItem(PROPOSE_SESSION_KEY);
+    localStorage.removeItem(WALK_SESSION_KEY);
   } catch {
     // storage unavailable — nothing stamped to purge
   }

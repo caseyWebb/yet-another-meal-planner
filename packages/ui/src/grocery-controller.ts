@@ -1,4 +1,4 @@
-import type { GroceryLine, GroceryListData } from "@yamp/contract";
+import type { GroceryLine, GroceryListData, OfflineWalkContext } from "@yamp/contract";
 
 export type GroceryGrouping = "department" | "recipe";
 export interface GroceryGroup {
@@ -119,6 +119,23 @@ export interface GroceryControllerState {
 
 export function createGroceryController(data: GroceryListData): GroceryControllerState {
   return { data, grouping: "department", pending: [], conflict: null, confirmation: null };
+}
+
+export interface GroceryWalkProjection {
+  total: number;
+  checked: number;
+  groups: { id: string; label: string; warning: "stale_map" | null; complete: boolean; lines: GroceryLine[] }[];
+  current_group: string | null;
+}
+
+export function projectGroceryWalk(data: GroceryListData, context: OfflineWalkContext): GroceryWalkProjection {
+  const byKey = new Map(data.lines.filter((line) => line.domain === context.domain).map((line) => [line.key, line]));
+  const groups = context.groups.map((group) => {
+    const lines = group.line_keys.flatMap((key) => { const line = byKey.get(key); return line ? [line] : []; });
+    return { id: group.id, label: group.label, warning: group.warning, complete: lines.length > 0 && lines.every((line) => line.checked_at != null), lines };
+  }).filter((group) => group.lines.length > 0);
+  const all = groups.flatMap((group) => group.lines);
+  return { total: all.length, checked: all.filter((line) => line.checked_at != null).length, groups, current_group: groups.find((group) => !group.complete)?.id ?? null };
 }
 
 export function groceryActionKey(action: GroceryAction): string {

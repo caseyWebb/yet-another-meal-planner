@@ -38,6 +38,7 @@ import {
   IconDown,
   IconX,
   NativeSelect,
+  Input,
   PageHead,
   Textarea,
   ToggleChip,
@@ -53,6 +54,7 @@ import {
   useOverlay,
   useIndex,
   useVibes,
+  useAisleMap,
   type ProposalRow,
   type VibeRow,
   type StoreAdapterProjection,
@@ -670,8 +672,10 @@ function OfflineStorePanel({
           {adapter.stores.map((store) => (
             <li key={store.slug} data-testid="offline-store" data-store-slug={store.slug}>
               <span>
-                <strong>{store.name}</strong>{store.label ? ` · ${store.label}` : ""}
+                <strong>{store.display_name}</strong>
+                {store.display_name !== store.shared_name ? <small>{store.nickname ? "Household nickname" : "Store label"} · shared store: {store.shared_name}</small> : null}
                 {store.address ? <small>{store.address}</small> : null}
+                <small>{store.aisle_map.state === "mapped" ? `${store.aisle_map.aisle_count} aisles mapped` : store.aisle_map.state === "stale" ? `Map may be out of date · ${store.aisle_map.aisle_count} aisles` : "Map not set up"}</small>
               </span>
               {store.selected ? (
                 <span className="store-selected">Selected</span>
@@ -691,8 +695,39 @@ function OfflineStorePanel({
       ) : (
         <p className="muted">No Offline grocery stores are registered yet.</p>
       )}
+      {adapter.stores.find((store) => store.selected) ? <OfflineStoreDetails store={adapter.stores.find((store) => store.selected)!} online={online} qc={qc} /> : null}
     </section>
   );
+}
+
+function OfflineStoreDetails({ store, online, qc }: { store: StoreAdapterProjection["adapters"]["offline"]["stores"][number]; online: boolean; qc: QueryClient }) {
+  const map = useAisleMap(store.slug);
+  const [nickname, setNickname] = React.useState(store.nickname ?? "");
+  const [entries, setEntries] = React.useState<Array<{ aisle_id: string; label: string; sections: string; visibility: "shared" | "private" }>>([]);
+  const [saving, setSaving] = React.useState(false);
+  React.useEffect(() => { if (map.data) setEntries(map.data.mine.map((entry) => ({ aisle_id: entry.aisle_id, label: entry.label, sections: entry.sections.join(", "), visibility: entry.visibility }))); }, [map.data]);
+  const saveMap = async () => {
+    if (!map.data || !online) return;
+    setSaving(true);
+    try {
+      const res = await appFetch(`/api/stores/${encodeURIComponent(store.slug)}/aisle-map`, { method: "PUT", headers: { "Content-Type": "application/json", "If-Match": map.data.etag }, body: JSON.stringify({ entries: entries.map((entry) => ({ ...entry, sections: entry.sections.split(",").map((s) => s.trim()).filter(Boolean) })) }) });
+      if (res.status === 412) { const fresh = await res.json(); qc.setQueryData(["aisle-map", store.slug], fresh); toast("The community map changed. Review the fresh map before saving again."); return; }
+      if (!res.ok) throw await apiError(res);
+      qc.setQueryData(["aisle-map", store.slug], await res.json());
+      await Promise.all([qc.invalidateQueries({ queryKey: ["store-adapters"] }), qc.invalidateQueries({ queryKey: ["grocery"] })]);
+      toast("Aisle map saved");
+    } catch (error) { toast(error instanceof Error ? error.message : "Couldn't save the aisle map"); }
+    finally { setSaving(false); }
+  };
+  return <section className="offline-store-details" aria-label={`${store.display_name} details`}>
+    <h3>Household name</h3><p className="muted">Shared identity: {store.shared_name}{store.address ? ` · ${store.address}` : ""}</p>
+    <div className="inline-fields"><Input aria-label="Household store nickname" value={nickname} onChange={(event) => setNickname(event.target.value)} placeholder="Optional private nickname" disabled={!online} /><Button variant="outline" disabled={!online || nickname.trim() === (store.nickname ?? "")} onClick={() => void patchPreferences(qc, { stores: { nicknames: { [store.slug]: nickname.trim() || null } } }, true)}>Save nickname</Button></div>
+    <h3>Community map</h3>
+    {map.data ? <><p>{map.data.summary.state === "unknown" ? "No shared aisle map yet." : map.data.summary.state === "stale" ? "Map may be out of date." : `${map.data.summary.aisle_count} mapped aisles.`}</p><ul>{map.data.effective.map((entry) => <li key={entry.aisle_id}><strong>Aisle {entry.label}</strong> · {entry.sections.join(", ")}</li>)}</ul>
+      <div className="aisle-editor"><h3>Your map contribution</h3>{entries.length === 0 && map.data.effective.length ? <Button variant="outline" disabled={!online} onClick={() => setEntries(map.data!.effective.map((entry) => ({ aisle_id: entry.aisle_id, label: entry.label, sections: entry.sections.join(", "), visibility: "shared" })))}>Use current map as a starting point</Button> : null}
+      {entries.map((entry, index) => <div className="aisle-editor-row" key={`${entry.aisle_id}-${index}`}><Input aria-label={`Aisle ${index + 1} label`} value={entry.label} onChange={(event) => setEntries((cur) => cur.map((row, i) => i === index ? { ...row, label: event.target.value, aisle_id: event.target.value } : row))} /><Input aria-label={`Aisle ${index + 1} sections`} value={entry.sections} onChange={(event) => setEntries((cur) => cur.map((row, i) => i === index ? { ...row, sections: event.target.value } : row))} /><NativeSelect aria-label={`Aisle ${index + 1} visibility`} value={entry.visibility} onChange={(event) => setEntries((cur) => cur.map((row, i) => i === index ? { ...row, visibility: event.target.value as "shared" | "private" } : row))}><option value="shared">Shared</option><option value="private">Private</option></NativeSelect><Button variant="ghost" onClick={() => setEntries((cur) => cur.filter((_, i) => i !== index))}>Remove</Button></div>)}
+      <div className="inline-fields"><Button variant="outline" disabled={!online} onClick={() => setEntries((cur) => [...cur, { aisle_id: String(cur.length + 1), label: String(cur.length + 1), sections: "", visibility: "shared" }])}>Add aisle</Button><Button disabled={!online || saving} title={!online ? "Reconnect to edit the map" : undefined} onClick={() => void saveMap()}>{saving ? "Saving…" : "Save your map"}</Button></div>{!online ? <p className="muted">Reconnect to save nickname or map changes. These edits are never queued.</p> : null}</div></> : <p>Loading aisle map…</p>}
+  </section>;
 }
 
 function KrogerLocationModal({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {

@@ -21,7 +21,9 @@ import { api, apiError, type ApiError } from "./api";
 import { REGISTERED_MUTATION_KEYS } from "./persist";
 import type { GroceryRow, Overlay, PantryRow, PlanOp, PlanOpsResult, ToBuyView } from "./data";
 import { projectGroceryAction } from "@yamp/ui";
-import type { GroceryListData } from "@yamp/contract";
+import type { GroceryListData, ShopCommitRequest, ShopCommitResult } from "@yamp/contract";
+import { appFetch } from "./api";
+import { clearLocalWalk } from "./persist";
 
 // --- variable shapes (plain JSON — they persist to IndexedDB and replay) -----------
 
@@ -102,6 +104,8 @@ export interface GroceryPantryVerifyVars {
   key: string;
   snapshot_version: string;
 }
+export type ShopCommitVars = ShopCommitRequest;
+export type ShopCommitSuccess = Extract<ShopCommitResult, { outcome: "committed" | "replayed" }>;
 
 export interface FavoriteVars {
   slug: string;
@@ -609,6 +613,30 @@ function registryRows(qc: QueryClient): RegistryRow[] {
       },
     },
     {
+      key: ["grocery", "shop-commit"],
+      defaults: {
+        mutationFn: async (vars: ShopCommitVars): Promise<ShopCommitSuccess> => {
+          const res = await appFetch("/api/grocery/shop-commit", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(vars) });
+          const body = await res.json() as ShopCommitResult;
+          if (!res.ok) {
+            const outcome = body.outcome;
+            throw { error: outcome, message: outcome === "checked_set_changed" ? "The checked list changed. Review it before finishing." : "This trip id was already used with different items.", context: body } satisfies ApiError;
+          }
+          return body as ShopCommitSuccess;
+        },
+        onSuccess: (result: ShopCommitSuccess) => {
+          qc.setQueryData(["grocery", "view"], result.snapshot);
+          clearLocalWalk(result.receipt.session_id);
+        },
+        onError: (err: ApiError) => {
+          const snapshot = err.context?.snapshot as GroceryListData | undefined;
+          if (snapshot) qc.setQueryData(["grocery", "view"], snapshot);
+          toast(messageOf(err, "Couldn't finish the shop"));
+        },
+        onSettled: () => Promise.all([qc.invalidateQueries({ queryKey: ["grocery"] }), qc.invalidateQueries({ queryKey: ["pantry"] })]),
+      },
+    },
+    {
       key: ["pantry", "ops"],
       defaults: {
         mutationFn: async (vars: PantryOpsVars) => okOrThrow(await api.api.pantry.ops.$post({ json: vars })),
@@ -881,6 +909,10 @@ export function useGroceryPantryVerify() {
   return useMutation<GroceryListData, ApiError, GroceryPantryVerifyVars>({
     mutationKey: ["grocery", "pantry-verify"],
   });
+}
+
+export function useShopCommit() {
+  return useMutation<ShopCommitSuccess, ApiError, ShopCommitVars>({ mutationKey: ["grocery", "shop-commit"] });
 }
 
 export function usePantryOps() {

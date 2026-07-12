@@ -32,6 +32,9 @@ export interface CachedMapping {
   aisle?: AisleLocation;
   /** ISO date the placement was last captured. */
   aisleCapturedAt?: string;
+  priceRegular?: number;
+  pricePromo?: number;
+  priceCapturedAt?: string;
 }
 
 export interface MatchContext {

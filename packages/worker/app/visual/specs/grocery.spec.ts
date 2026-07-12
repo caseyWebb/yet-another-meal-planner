@@ -464,8 +464,8 @@ test("unknown-newer fixture remains readable when rendered by the shared compone
 	groceryPage,
 }) => {
 	const fixture = {
-		contract_version: 2,
-		snapshot_version: "unknown-newer-v2",
+		contract_version: 3,
+		snapshot_version: "unknown-newer-v3",
 		as_of: "2026-07-12T12:00:00Z",
 		lines: [
 			{

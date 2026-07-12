@@ -11,7 +11,7 @@
 
 import { Hono } from "hono";
 import { z } from "zod";
-import { OrderReviewDataSchema, OrderReviewStageSchema } from "@yamp/contract";
+import { OrderReviewDataSchema, OrderReviewStageSchema, ShopCommitRequestSchema } from "@yamp/contract";
 import { ToolError } from "../errors.js";
 import { requireSession, type ApiEnv } from "../session.js";
 import { jsonWithEtag } from "./etag.js";
@@ -36,6 +36,7 @@ import {
   markGrocerySendPlaced,
   GroceryCheckedInputSchema, GroceryCoverageInputSchema, GroceryVerifyInputSchema, GrocerySubstitutionInputSchema, GroceryRelistInputSchema, GroceryMarkPlacedInputSchema,
 } from "../grocery-operations.js";
+import { commitCheckedShop } from "../shop-commit.js";
 
 const KINDS = new Set(["grocery", "household", "other"]);
 const SOURCES = new Set(["ad_hoc", "menu", "pantry_low", "stockup"]);
@@ -135,6 +136,12 @@ export const groceryArea = new Hono<ApiEnv>()
     const tenant = c.get("tenant");
     const body = mutationBody(GroceryMarkPlacedInputSchema, await jsonBody<unknown>(c));
     return c.json(await markGrocerySendPlaced(c.env, tenant.id, body));
+  })
+  .post("/grocery/shop-commit", requireSession, async (c) => {
+    const tenant = c.get("tenant");
+    const body = mutationBody(ShopCommitRequestSchema, await jsonBody<unknown>(c));
+    const result = await commitCheckedShop(c.env, tenant.id, body);
+    return c.json(result, result.outcome === "checked_set_changed" || result.outcome === "idempotency_conflict" ? 409 : 200);
   })
   .get("/grocery", requireSession, async (c) => {
     const tenant = c.get("tenant");

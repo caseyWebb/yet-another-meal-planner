@@ -45,6 +45,10 @@ export interface SatellitesStoreAdapter {
 export interface OfflineStoreSummary {
   slug: string;
   name: string;
+  shared_name: string;
+  nickname: string | null;
+  display_name: string;
+  aisle_map: import("@yamp/contract").AisleMapSummary;
   label?: string;
   address?: string;
   selected: boolean;
@@ -61,7 +65,7 @@ export interface StoreLauncherEntry {
   id: string;
   adapter: StoreLauncherAdapter;
   mode: StoreLauncherMode;
-  store: { slug: string; name: string } | null;
+  store: { slug: string; name: string; shared_name?: string; domain?: string; aisle_map?: import("@yamp/contract").AisleMapSummary } | null;
   enabled: boolean;
   disabled_reason: StoreLauncherDisabledReason;
 }

@@ -1608,6 +1608,9 @@ interface SkuRow {
   aisle_description: string | null;
   aisle_side: string | null;
   aisle_captured_at: string | null;
+  price_regular: number | null;
+  price_promo: number | null;
+  price_captured_at: string | null;
 }
 
 /**
@@ -1619,7 +1622,7 @@ interface SkuRow {
  */
 export async function readSkuCache(env: Env): Promise<CachedMapping[]> {
   const rows = await db(env).all<SkuRow>(
-    "SELECT ingredient, location_id, sku, brand, size, aisle_number, aisle_description, aisle_side, aisle_captured_at FROM sku_cache",
+    "SELECT ingredient, location_id, sku, brand, size, aisle_number, aisle_description, aisle_side, aisle_captured_at, price_regular, price_promo, price_captured_at FROM sku_cache",
   );
   return rows.map((r) => {
     const m: CachedMapping = { ingredient: r.ingredient, sku: r.sku };
@@ -1634,6 +1637,9 @@ export async function readSkuCache(env: Env): Promise<CachedMapping[]> {
       };
     }
     if (r.aisle_captured_at != null) m.aisleCapturedAt = r.aisle_captured_at;
+    if (r.price_regular != null) m.priceRegular = r.price_regular;
+    if (r.price_promo != null) m.pricePromo = r.price_promo;
+    if (r.price_captured_at != null) m.priceCapturedAt = r.price_captured_at;
     return m;
   });
 }
@@ -1652,6 +1658,9 @@ export interface NewSkuMapping {
   aisle_description?: string | null;
   aisle_side?: string | null;
   aisle_captured_at?: string | null;
+  price_regular?: number | null;
+  price_promo?: number | null;
+  price_captured_at?: string | null;
 }
 
 /**
@@ -1667,12 +1676,13 @@ export async function upsertSkuMappings(env: Env, mappings: NewSkuMapping[]): Pr
     if (!m.ingredient || !m.sku) continue;
     stmts.push(
       d.prepare(
-        "INSERT INTO sku_cache (ingredient, location_id, sku, brand, size, last_used, aisle_number, aisle_description, aisle_side, aisle_captured_at) " +
-          "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10) " +
+        "INSERT INTO sku_cache (ingredient, location_id, sku, brand, size, last_used, aisle_number, aisle_description, aisle_side, aisle_captured_at,price_regular,price_promo,price_captured_at) " +
+          "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,?11,?12,?13) " +
           "ON CONFLICT(ingredient, location_id) DO UPDATE SET " +
           "sku = excluded.sku, brand = excluded.brand, size = excluded.size, last_used = excluded.last_used, " +
           "aisle_number = excluded.aisle_number, aisle_description = excluded.aisle_description, " +
-          "aisle_side = excluded.aisle_side, aisle_captured_at = excluded.aisle_captured_at",
+          "aisle_side = excluded.aisle_side, aisle_captured_at = excluded.aisle_captured_at, " +
+          "price_regular=excluded.price_regular,price_promo=excluded.price_promo,price_captured_at=excluded.price_captured_at",
         m.ingredient,
         m.locationId ?? "",
         m.sku,
@@ -1683,6 +1693,9 @@ export async function upsertSkuMappings(env: Env, mappings: NewSkuMapping[]): Pr
         m.aisle_description ?? null,
         m.aisle_side ?? null,
         m.aisle_captured_at ?? null,
+        m.price_regular ?? null,
+        m.price_promo ?? null,
+        m.price_captured_at ?? null,
       ),
     );
   }
@@ -2060,6 +2073,7 @@ const noteSubjectCol = (table: NoteTable): "recipe" | "store" =>
 function attributedNoteOf(r: {
   author: string;
   created_at: string | null;
+  updated_at?: string | null;
   body: string;
   tags: string | null;
   private: number | null;
@@ -2088,11 +2102,12 @@ async function readNotes(
   const rows = await db(env).all<{
     author: string;
     created_at: string | null;
+    updated_at: string | null;
     body: string;
     tags: string | null;
     private: number | null;
   }>(
-    `SELECT author, body, tags, private, created_at FROM ${table} ` +
+    `SELECT author, body, tags, private, created_at${table === "store_notes" ? ", updated_at" : ", NULL AS updated_at"} FROM ${table} ` +
       `WHERE ${col} = ?1 AND (private = 0 OR author = ?2)`,
     subject,
     caller,
@@ -2120,8 +2135,8 @@ async function insertNote(
   const col = noteSubjectCol(table);
   const id = `${author} ${subject} ${note.created_at}`;
   await db(env).run(
-    `INSERT INTO ${table} (id, ${col}, author, body, tags, private, created_at) ` +
-      "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+    `INSERT INTO ${table} (id, ${col}, author, body, tags, private, created_at${table === "store_notes" ? ", updated_at" : ""}) ` +
+      `VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7${table === "store_notes" ? ", ?7" : ""})`,
     id,
     subject,
     author,
@@ -2163,11 +2178,12 @@ async function findOwnNote(
     id: string;
     author: string;
     created_at: string | null;
+    updated_at: string | null;
     body: string;
     tags: string | null;
     private: number | null;
   }>(
-    `SELECT id, author, body, tags, private, created_at FROM ${table} ` +
+    `SELECT id, author, body, tags, private, created_at${table === "store_notes" ? ", updated_at" : ", NULL AS updated_at"} FROM ${table} ` +
       `WHERE ${col} = ?1 AND author = ?2 AND created_at = ?3`,
     subject,
     author,
@@ -2192,11 +2208,12 @@ async function updateOwnNote(
   const tags = patch.tags ?? existing.tags;
   const priv = patch.private ?? existing.private;
   await db(env).run(
-    `UPDATE ${table} SET body = ?1, tags = ?2, private = ?3 WHERE id = ?4`,
+    `UPDATE ${table} SET body = ?1, tags = ?2, private = ?3${table === "store_notes" ? ", updated_at = ?5" : ""} WHERE id = ?4`,
     body,
     JSON.stringify(tags),
     priv ? 1 : 0,
     existing.id,
+    ...(table === "store_notes" ? [new Date().toISOString()] : []),
   );
   return true;
 }

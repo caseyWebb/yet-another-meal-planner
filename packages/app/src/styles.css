@@ -66,3 +66,21 @@
 @media (max-width: 640px) {
   .store-launcher-head, .store-launcher li { align-items: stretch; flex-direction: column; }
 }
+
+.offline-store-details { margin-top: 1rem; display: grid; gap: .75rem; border-top: 1px solid var(--border); padding-top: 1rem; }
+.inline-fields, .aisle-editor-row { display: flex; gap: .5rem; align-items: center; }
+.aisle-editor { display: grid; gap: .65rem; }
+.aisle-editor-row > :nth-child(2) { flex: 1 1 auto; }
+.grocery-walk { display: grid; gap: 1rem; max-width: 52rem; margin: 0 auto; padding-bottom: 5rem; }
+.walk-head { display: grid; gap: .75rem; position: sticky; top: 0; z-index: 5; background: var(--background); padding: 1rem 0; }
+.walk-head h1 { margin: 0; }
+.walk-groups { display: grid; gap: .75rem; }
+.walk-group { border: 1px solid var(--border); border-radius: .8rem; background: var(--card); padding: .75rem; }
+.walk-group.active { border-color: var(--primary); box-shadow: 0 0 0 1px var(--primary); }
+.walk-group-title { width: 100%; display: flex; justify-content: space-between; border: 0; background: transparent; color: inherit; font: inherit; font-weight: 700; cursor: pointer; }
+.walk-group ul { list-style: none; margin: .5rem 0 0; padding: 0; }
+.walk-group li label { display: grid; grid-template-columns: auto 1fr auto; gap: .75rem; align-items: center; min-height: 3rem; border-top: 1px solid var(--border); }
+.walk-group li label.checked span { text-decoration: line-through; color: var(--muted-foreground); }
+.walk-footer { position: fixed; bottom: 0; right: 0; left: var(--sidebar-w, 15rem); display: flex; justify-content: flex-end; gap: .75rem; border-top: 1px solid var(--border); background: var(--background); padding: .75rem 2rem; z-index: 10; }
+.walk-pending, .walk-receipt { border: 1px solid var(--primary); border-radius: .8rem; padding: 1rem; background: var(--card); }
+@media (max-width: 640px) { .inline-fields, .aisle-editor-row { align-items: stretch; flex-direction: column; } .walk-footer { left: 0; } }

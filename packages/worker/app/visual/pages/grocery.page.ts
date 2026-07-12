@@ -18,6 +18,12 @@ export class GroceryPage extends AppPage {
 	async launch(id: string): Promise<void> {
 		await this.launcherEntry(id).getByRole("button").click();
 	}
+	walk(): Locator { return this.page.getByTestId("grocery-walk"); }
+	walkGroup(id: string): Locator { return this.walk().locator(`[data-testid="walk-group"][data-group="${id}"]`); }
+	async startWalk(id: string): Promise<void> { await this.launcherEntry(id).getByRole("button", { name: /Start walk|Resume walk/ }).click(); }
+	async finishWalk(): Promise<void> { await this.walk().getByRole("button", { name: "Finish", exact: true }).click(); }
+	async confirmFinish(): Promise<void> { await this.page.getByRole("dialog", { name: "Finish this shop?" }).getByRole("button", { name: /Finish/ }).click(); }
+	async pauseWalk(): Promise<void> { await this.walk().getByRole("button", { name: "Pause" }).click(); }
 
 	item(keyOrName: string): Locator {
 		return this.page

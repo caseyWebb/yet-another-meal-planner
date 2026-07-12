@@ -435,7 +435,7 @@ Surface **`inStore: false` items up front** before starting the walk: "These ite
 
 Order items by aisle number (ascending) — captured placements and `kroger_prices` aisles interleave into one walk; a store note's `location` pin still **wins** over either for its item. Items with no aisle from any source go at the end as **"location unknown"** (grouped by department when the placement carries one). Apply cold-chain sequencing on top: if frozen/refrigerated aisles fall mid-store, pull those items into a final "grab these on your way out" group and say so.
 
-Hands-free / voice-first, **one aisle at a time**, I advance with "got it" / "next". At each aisle, announce the aisle number and description, then the items to grab there. As we reach an aisle, if something there has **purchasing** guidance (which canned tomatoes, which olive oil), weave the non-obvious tip in following the **Picking what to buy** guidance — at the shelf, where I'm choosing.
+Hands-free / voice-first, **one aisle at a time**, I advance with "got it" / "next". Mint and retain one ULID `session_id` for the whole trip. Every confirmed "got it" immediately calls `set_grocery_checked` for that canonical key; checked truth lives on the grocery row, never in a separate remembered list. At each aisle, announce the aisle number and description, then the items to grab there. As we reach an aisle, if something there has **purchasing** guidance (which canned tomatoes, which olive oil), weave the non-obvious tip in following the **Picking what to buy** guidance — at the shelf, where I'm choosing.
 
 Handle **"can't find it"** by disambiguating gently before any write:
 - **Sold out** — transient, no note.
@@ -454,7 +454,7 @@ add_store_note(slug, "Aisle <N>: <item name>", tags: ["location"])
 
 #### 5. Complete → received
 
-Before wrapping up, sweep the list for anything we never ticked off — "you've still got harissa and flour on the list; did we pass those, or want to double back?" Then, when done, picked items go straight `active → received` — **no `in_cart`/`ordered` stage**. Persist it with the granular tools: remove the picked **explicit rows** with `remove_from_grocery_list` (one per item, awaited) and — **for `grocery`-kind items only** — restock the pantry in one `update_pantry({ operations: [...] })`; `household`/`other` never touch the pantry. A picked **plan-derived** line has **no row to remove** — don't hunt for one; its pantry restock is what clears it from the next derivation. Then offer a couple of storage tips for fresh perishables just received, following the **Putting groceries away** guidance.
+Before wrapping up, sweep the fresh checked-aware list for anything we never ticked off — "you've still got harissa and flour on the list; did we pass those, or want to double back?" After confirmation, call `commit_shop` once with the retained `session_id`, `mode:"store_walk"`, store slug, the exact sorted eligible checked keys, fresh `snapshot_version`, and the trip occurrence time. Never reproduce its remove/restock/spend steps with granular tools. A checked-set or idempotency conflict means review the fresh result; do not broaden the request automatically. Only after the durable receipt returns, offer storage tips for its fresh grocery perishables following **Putting groceries away**.
 <!-- /resource -->
 
 <!-- resource: references/satellite-cartfill.md -->
@@ -512,7 +512,7 @@ Only write on my confirmation — never silently. And as we reach an item that h
 
 #### 8. Complete → received
 
-Before wrapping up, sweep the list for anything we never ticked off — "you've still got harissa and flour on the list; did we pass those, or want to double back?" — so I don't check out missing something. Then, when I'm done, picked items go straight `active → received` — **no `in_cart`/`ordered` stage**. Persist it with the granular tools: remove the picked **explicit rows** with `remove_from_grocery_list` (one per item, awaited) and — **for `grocery`-kind items only** — restock the pantry in one `update_pantry({ operations: [...] })`; `household`/`other` never touch the pantry. A picked **plan-derived** line has **no row to remove** — its pantry restock is what clears it from the next derivation. Then, for the fresh perishables just received, offer a couple of storage tips following the **Putting groceries away** guidance.
+Before wrapping up, apply every confirmed voice pick through `set_grocery_checked`, then sweep the fresh list for anything never ticked off. Complete only with one `commit_shop` exact-set request using the trip's retained ULID; never loop remove/restock operations. Resolve a returned conflict by reviewing the fresh checked set. After its durable receipt, offer storage tips for the fresh grocery perishables.
 <!-- /resource -->
 
 <!-- resource: references/map-store.md -->
@@ -540,7 +540,7 @@ When an aisle's sections cover something on my list, remind me to grab it ("this
 
 #### 5. Complete → received
 
-Before wrapping up, sweep the list for anything we never matched to an aisle — "you've still got harissa and flour unticked; did we pass those, or should we double back?" — a skipped aisle often hides here. Then, when we're done, picked items go straight `active → received` — **no `in_cart`/`ordered` stage**. Persist it with the granular tools: remove the picked items with `remove_from_grocery_list` (one per item, awaited — they share the list blob) and — **for `grocery`-kind items only** — restock the pantry in one `update_pantry({ operations: [...] })`; `household`/`other` never touch the pantry. Then, for the fresh perishables just received, offer a couple of storage tips following the **Putting groceries away** guidance.
+Before wrapping up, write each confirmed pick with `set_grocery_checked` and sweep the fresh list for anything never matched to an aisle. Complete only through `commit_shop` with the retained trip ULID and exact checked set; do not manually remove or restock. Offer storage tips only after its receipt.
 <!-- /resource -->
 
 ### Configure grocery profile

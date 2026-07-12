@@ -4,6 +4,8 @@ import { db } from "./db.js";
 import { computeToBuyProjection } from "./to-buy.js";
 import { emptyIngredientContext, ingredientContext } from "./corpus-db.js";
 import { readStaples } from "./profile-db.js";
+import { loadStoreAdapterProjection } from "./store-adapters.js";
+import { readAisleMap, routeOfflineLines } from "./aisle-map.js";
 
 interface SendReadRow {
   send_id: string;
@@ -156,6 +158,21 @@ export async function readGrocerySnapshot(env: Env, tenant: string, now = new Da
     ...(line.substitutes ? { substitutes: line.substitutes } : {}),
   });
   const lines = [...view.to_buy, ...view.checked].map(toLine).sort((a, b) => a.key.localeCompare(b.key));
+  const adapters = await loadStoreAdapterProjection(env, tenant);
+  const selectedOffline = adapters.adapters.offline.stores.find((store) => store.selected) ?? null;
+  const walk_context = selectedOffline ? await (async () => {
+    const map = await readAisleMap(env, selectedOffline.slug, tenant, now);
+    const eligible = lines.filter((line) => line.domain === (adapters.launcher.find((entry) => entry.id === `offline:${selectedOffline.slug}`)?.store?.domain ?? "grocery"));
+    return {
+      store_slug: selectedOffline.slug,
+      shared_name: selectedOffline.shared_name,
+      display_name: selectedOffline.display_name,
+      domain: adapters.launcher.find((entry) => entry.id === `offline:${selectedOffline.slug}`)?.store?.domain ?? "grocery",
+      aisle_map: map.summary,
+      groups: await routeOfflineLines(env, tenant, selectedOffline.slug, eligible, map),
+      observed_at: map.summary.as_of,
+    };
+  })() : null;
   const pantry_covered = view.pantry_covered.map((line) => ({
     key: line.key ?? line.name,
     name: line.name,
@@ -179,6 +196,7 @@ export async function readGrocerySnapshot(env: Env, tenant: string, now = new Da
     underived: [...view.underived].sort(),
     location: view.location ?? null,
     flyer_as_of: view.flyer_as_of ?? null,
+    walk_context,
     counts: {
       to_buy: view.to_buy.length,
       checked: view.checked.length,

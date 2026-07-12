@@ -14,6 +14,7 @@ import type {
   StoreAdapterProjection,
   StoreLauncherEntry,
 } from "./store-adapter-shapes.js";
+import { readAisleMap } from "./aisle-map.js";
 
 function stringField(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value : null;
@@ -32,6 +33,8 @@ export async function loadStoreAdapterProjection(env: Env, tenantId: string): Pr
   const primary = stringField(storesPref.primary);
   const fulfillment = stringField(storesPref.fulfillment);
   const preferredLocation = stringField(storesPref.preferred_location);
+  const nicknameValues = storesPref.nicknames && typeof storesPref.nicknames === "object" && !Array.isArray(storesPref.nicknames)
+    ? storesPref.nicknames as Record<string, unknown> : {};
   const preferred: KrogerLocation | null = preferredLocation
     ? {
         location_id: preferredLocation,
@@ -47,12 +50,15 @@ export async function loadStoreAdapterProjection(env: Env, tenantId: string): Pr
   const satelliteSelected = fulfillment === "satellite" && primary !== null;
   const offlineSelected = primary !== null && primary !== "kroger" && !satelliteSelected;
   const selectedRow = offlineSelected ? groceryRows.find((row) => row.slug === primary) ?? null : null;
-  const offlineStores: OfflineStoreSummary[] = groceryRows.map((row) => ({
-    slug: row.slug,
-    name: row.name,
-    ...(row.label ? { label: row.label } : {}),
-    ...(row.address ? { address: row.address } : {}),
-    selected: row.slug === selectedRow?.slug,
+  const offlineStores: OfflineStoreSummary[] = await Promise.all(groceryRows.map(async (row) => {
+    const nickname = stringField(nicknameValues[row.slug]);
+    const aisle_map = (await readAisleMap(env, row.slug, tenantId)).summary;
+    return {
+      slug: row.slug, name: row.name, shared_name: row.name, nickname,
+      display_name: nickname ?? row.label ?? row.name, aisle_map,
+      ...(row.label ? { label: row.label } : {}), ...(row.address ? { address: row.address } : {}),
+      selected: row.slug === selectedRow?.slug,
+    };
   }));
   const satelliteRow = satelliteSelected ? groceryRows.find((row) => row.slug === primary) ?? null : null;
 
@@ -79,13 +85,14 @@ export async function loadStoreAdapterProjection(env: Env, tenantId: string): Pr
     });
   }
   if (selectedRow) {
+    const projected = offlineStores.find((row) => row.slug === selectedRow.slug)!;
     launcher.push({
       id: `offline:${selectedRow.slug}`,
       adapter: "offline",
       mode: "store_walk",
-      store: { slug: selectedRow.slug, name: selectedRow.name },
-      enabled: false,
-      disabled_reason: "store_walk_unavailable",
+      store: { slug: selectedRow.slug, name: projected.display_name, shared_name: selectedRow.name, domain: selectedRow.domain, aisle_map: projected.aisle_map },
+      enabled: true,
+      disabled_reason: null,
     });
   }
 

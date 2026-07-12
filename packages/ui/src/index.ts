@@ -108,6 +108,7 @@ export {
 } from "./cook-controller";
 export { CookMode, type CookModeProps } from "./components/cook-mode";
 export { GroceryList, type GroceryListProps } from "./components/grocery-list";
+export { GroceryWalk } from "./components/grocery-walk";
 export { OrderReview, type OrderReviewProps } from "./components/order-review";
 export {
   createOrderReviewController,
@@ -131,6 +132,7 @@ export {
 } from "./order-review-bridge";
 export {
   createGroceryController,
+  projectGroceryWalk,
   groceryActionKey,
   groupGroceryLines,
   orderedRecipeAttribution,

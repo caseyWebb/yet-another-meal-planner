@@ -10,6 +10,9 @@ vi.mock("../src/profile-db.js", () => ({
 vi.mock("../src/corpus-db.js", () => ({
   listStoreRows: vi.fn(async () => stores),
 }));
+vi.mock("../src/aisle-map.js", () => ({
+  readAisleMap: vi.fn(async (_env, slug: string) => ({ store_slug: slug, effective: [], mine: [], etag: '"map"', summary: { state: "unknown", aisle_count: 0, as_of: null } })),
+}));
 
 import { loadStoreAdapterProjection } from "../src/store-adapters.js";
 
@@ -77,7 +80,7 @@ describe("store adapter projection", () => {
     expect(out.adapters.offline.stores.map((s) => s.slug)).toEqual(["aldi", "target"]);
     expect(out.adapters.offline.stores.find((s) => s.slug === "target")?.selected).toBe(true);
     expect(out.launcher).toEqual([
-      expect.objectContaining({ id: "offline:target", mode: "store_walk", enabled: false }),
+      expect.objectContaining({ id: "offline:target", mode: "store_walk", enabled: true }),
     ]);
 
     preferences = { stores: { primary: "deleted-store" } };

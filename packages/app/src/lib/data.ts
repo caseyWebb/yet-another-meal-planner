@@ -25,6 +25,7 @@ import type {
   SiblingSuggestion,
 } from "@yamp/worker/order-shapes";
 import type { GroceryListData } from "@yamp/contract";
+import type { AisleMapDocument } from "@yamp/contract";
 import type { StoreAdapterProjection } from "@yamp/worker/store-adapter-shapes";
 
 export type {
@@ -413,6 +414,15 @@ export function useStoreAdapters() {
     queryKey: ["store-adapters"],
     staleTime: STALE_MS,
     queryFn: async () => jsonOf<StoreAdapterProjection>(await appFetch("/api/profile/store-adapters")),
+  });
+}
+
+export function useAisleMap(slug: string | null) {
+  return useQuery({
+    queryKey: ["aisle-map", slug],
+    enabled: slug !== null,
+    staleTime: STALE_MS,
+    queryFn: async () => jsonOf<AisleMapDocument>(await appFetch(`/api/stores/${encodeURIComponent(slug!)}/aisle-map`)),
   });
 }
 

@@ -21,6 +21,8 @@ import {
   loadStoreAdapterProjection,
   searchKrogerLocations,
 } from "../store-adapters.js";
+import { AisleMapWriteSchema } from "@yamp/contract";
+import { readAisleMap, reconcileAisleMap } from "../aisle-map.js";
 
 /** The markdown field's conditional-write representation (what its GET serves). */
 async function markdownDoc(
@@ -93,6 +95,22 @@ export const profileArea = new Hono<ApiEnv>()
   .get("/profile/store-adapters", requireSession, async (c) => {
     const tenant = c.get("tenant");
     return c.json(await loadStoreAdapterProjection(c.env, tenant.id));
+  })
+  .get("/stores/:slug/aisle-map", requireSession, async (c) => {
+    const tenant = c.get("tenant");
+    const map = await readAisleMap(c.env, c.req.param("slug"), tenant.id);
+    c.header("ETag", map.etag);
+    return c.json(map);
+  })
+  .put("/stores/:slug/aisle-map", requireSession, async (c) => {
+    const tenant = c.get("tenant");
+    const expected = c.req.header("If-Match");
+    if (!expected) throw new ToolError("validation_failed", "If-Match is required");
+    const parsed = AisleMapWriteSchema.safeParse(await jsonBody<unknown>(c));
+    if (!parsed.success) throw new ToolError("validation_failed", parsed.error.issues[0]?.message ?? "Invalid aisle map");
+    const result = await reconcileAisleMap(c.env, c.req.param("slug"), tenant.id, expected, parsed.data);
+    c.header("ETag", result.map.etag);
+    return c.json(result.map, result.status === "conflict" ? 412 : 200);
   })
   .get("/profile/kroger-locations", requireSession, async (c) => {
     return c.json(await searchKrogerLocations(c.env, c.req.query("zip") ?? ""));

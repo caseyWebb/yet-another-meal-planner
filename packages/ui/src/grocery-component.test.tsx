@@ -99,7 +99,7 @@ describe("shared Grocery component", () => {
   });
 
   it("renders a real unknown-newer widget fixture read-only", () => {
-    const fixture = { ...data, contract_version: 2, snapshot_version: "unknown-newer-v2" };
+    const fixture = { ...data, contract_version: 3, snapshot_version: "unknown-newer-v3" };
     const bridge = {
       callServerTool: async () => ({ structuredContent: { snapshot: fixture } }),
       updateModelContext: async () => undefined,

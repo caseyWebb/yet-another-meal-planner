@@ -44,7 +44,7 @@ describe("Grocery MCP bridge", () => {
   it("gates versions, hydration, and the capability ladder", () => {
     expect(
       resolveGroceryCapabilities({
-        contractVersion: 2,
+        contractVersion: 3,
         serverTools: true,
         updateModelContext: true,
         message: true,
@@ -80,10 +80,10 @@ describe("Grocery MCP bridge", () => {
     ).toBe("delegate");
   });
 
-  it("degrades a v1 spawning payload when the hydrated current snapshot is unknown v2", () => {
+  it("degrades a v1 spawning payload when the hydrated current snapshot is unknown v3", () => {
     expect(
       resolveHydratedGroceryCapabilities({
-        currentContractVersion: 2,
+        currentContractVersion: 3,
         serverTools: true,
         updateModelContext: true,
         message: true,

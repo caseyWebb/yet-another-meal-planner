@@ -5,6 +5,7 @@ import {
   Button,
   EmptyState,
   GroceryList,
+  GroceryWalk,
   PageHead,
   type GroceryAction,
   type GroceryHostAdapter,
@@ -18,11 +19,14 @@ import {
   useGroceryRelist,
   useGroceryRemove,
   useGrocerySubstitution,
+  useShopCommit,
 } from "../lib/mutations";
-import { useGrocerySnapshot, useStoreAdapters, type StoreAdapterProjection } from "../lib/data";
+import { mintRowId, useGrocerySnapshot, useStoreAdapters, type StoreAdapterProjection } from "../lib/data";
 import { useOnline } from "../lib/online";
 import { api, apiError } from "../lib/api";
 import { MemberOrderReview } from "../components/member-order-review";
+import { readLocalWalk, readTenantStamp, writeLocalWalk, type LocalWalkSession } from "../lib/persist";
+import type { ShopReceipt } from "@yamp/contract";
 
 export const Route = createFileRoute("/_app/grocery")({ component: GroceryPage });
 
@@ -38,6 +42,10 @@ function GroceryPage() {
   const relist = useGroceryRelist();
   const remove = useGroceryRemove();
   const verify = useGroceryPantryVerify();
+  const shopCommit = useShopCommit();
+  const [walk, setWalk] = React.useState<LocalWalkSession | null>(() => readLocalWalk());
+  const [receipt, setReceipt] = React.useState<ShopReceipt | null>(null);
+  const [walkConflict, setWalkConflict] = React.useState<string | null>(null);
   const [orderOpen, setOrderOpen] = React.useState(false);
   const orderLauncherRef = React.useRef<HTMLButtonElement>(null);
   const closeOrder = React.useCallback(() => {
@@ -45,6 +53,21 @@ function GroceryPage() {
     requestAnimationFrame(() => orderLauncherRef.current?.focus());
   }, []);
   const contractSupported = groceryContractSupport(snapshot.data?.contract_version) === "supported";
+
+  const setWalkUrl = React.useCallback((session: LocalWalkSession | null) => {
+    const url = new URL(window.location.href);
+    if (session?.state === "active" || session?.state === "pending_commit") {
+      url.searchParams.set("mode", "walk"); url.searchParams.set("walk", session.session_id); url.searchParams.set("store", session.store_slug);
+    } else { url.searchParams.delete("mode"); url.searchParams.delete("walk"); url.searchParams.delete("store"); }
+    window.history.replaceState(null, "", `${url.pathname}${url.search}`);
+  }, []);
+  const startWalk = React.useCallback((storeSlug: string) => {
+    const current = readLocalWalk();
+    const session: LocalWalkSession = current?.store_slug === storeSlug
+      ? { ...current, state: "active" }
+      : { session_id: mintRowId(), tenant_stamp: readTenantStamp() ?? "", store_slug: storeSlug, started_at: new Date().toISOString(), current_group: null, state: "active" };
+    writeLocalWalk(session); setWalk(session); setReceipt(null); setWalkConflict(null); setWalkUrl(session);
+  }, [setWalkUrl]);
 
   const fresh = React.useCallback(async (): Promise<GroceryListData> => {
     const result = await snapshot.refetch();
@@ -153,15 +176,34 @@ function GroceryPage() {
       </div>
     );
 
+  const walkContext = snapshot.data.walk_context;
+  if (walk && walkContext && walk.store_slug === walkContext.store_slug && (walk.state === "active" || walk.state === "pending_commit")) {
+    return <div data-testid="grocery-page"><GroceryWalk
+      data={snapshot.data} context={walkContext} online={online} pendingCommit={walk.state === "pending_commit" || shopCommit.isPending}
+      receipt={receipt} conflict={walkConflict}
+      onCheck={(line, value) => checked.mutate({ key: line.key, checked: value, expected_row_version: line.row_version, snapshot_version: snapshot.data.snapshot_version, occurred_at: new Date().toISOString() })}
+      onPause={() => { const paused = { ...walk, state: "paused" as const }; writeLocalWalk(paused); setWalk(paused); setWalkUrl(null); }}
+      onFinish={(keys) => {
+        const pending = { ...walk, state: "pending_commit" as const }; writeLocalWalk(pending); setWalk(pending);
+        shopCommit.mutate({ session_id: walk.session_id, mode: "store_walk", store_slug: walk.store_slug, expected_checked_keys: keys, snapshot_version: snapshot.data.snapshot_version, occurred_at: new Date().toISOString() }, {
+          onSuccess: (result) => { setReceipt(result.receipt); setWalkUrl(null); },
+          onError: (error) => { const fresh = readLocalWalk(); if (fresh) { const active = { ...fresh, state: "active" as const }; writeLocalWalk(active); setWalk(active); } setWalkConflict(error.message); },
+        });
+      }}
+    /></div>;
+  }
+
   return (
     <div data-testid="grocery-page">
       <PageHead title="Grocery list" sub="Check off the store walk without changing online-cart state." />
       <StoreLauncher
-        entries={adapters.data?.launcher ?? []}
+        entries={adapters.data?.launcher ?? (snapshot.data.walk_context ? [{ id: `offline:${snapshot.data.walk_context.store_slug}`, adapter: "offline", mode: "store_walk", store: { slug: snapshot.data.walk_context.store_slug, name: snapshot.data.walk_context.display_name, shared_name: snapshot.data.walk_context.shared_name, domain: snapshot.data.walk_context.domain, aisle_map: snapshot.data.walk_context.aisle_map }, enabled: true, disabled_reason: null }] : [])}
         online={online}
         orderOpen={orderOpen}
         launcherRef={orderLauncherRef}
         onOrder={() => setOrderOpen((open) => !open)}
+        onWalk={startWalk}
+        pausedWalk={walk?.state === "paused" ? walk : null}
       />
       {orderOpen ? (
         <MemberOrderReview onClose={closeOrder} />
@@ -181,12 +223,16 @@ function StoreLauncher({
   orderOpen,
   launcherRef,
   onOrder,
+  onWalk,
+  pausedWalk,
 }: {
   entries: StoreAdapterProjection["launcher"];
   online: boolean;
   orderOpen: boolean;
   launcherRef: React.RefObject<HTMLButtonElement | null>;
   onOrder(): void;
+  onWalk(storeSlug: string): void;
+  pausedWalk: LocalWalkSession | null;
 }) {
   const reason = (entry: StoreAdapterProjection["launcher"][number]) => {
     if (entry.disabled_reason === "connect_kroger") return "Connect Kroger in Profile first.";
@@ -204,7 +250,7 @@ function StoreLauncher({
       {entries.length ? (
         <ul>
           {entries.map((entry) => {
-            const actionable = entry.enabled && entry.mode === "online_order" && online;
+            const actionable = entry.enabled && (entry.mode === "store_walk" || (entry.mode === "online_order" && online));
             return (
               <li
                 key={entry.id}
@@ -225,9 +271,9 @@ function StoreLauncher({
                   aria-controls={entry.mode === "online_order" ? "grocery-order-review" : undefined}
                   disabled={!actionable}
                   title={!online ? "Reconnect for store actions" : entry.enabled ? undefined : reason(entry)}
-                  onClick={actionable ? onOrder : undefined}
+                  onClick={actionable ? entry.mode === "store_walk" && entry.store ? () => onWalk(entry.store!.slug) : onOrder : undefined}
                 >
-                  {entry.enabled ? entry.mode === "online_order" && orderOpen ? "Close" : "Open" : reason(entry)}
+                  {entry.enabled ? entry.mode === "store_walk" ? pausedWalk?.store_slug === entry.store?.slug ? "Resume walk" : "Start walk" : entry.mode === "online_order" && orderOpen ? "Close" : "Open" : reason(entry)}
                 </Button>
               </li>
             );

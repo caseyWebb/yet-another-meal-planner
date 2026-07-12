@@ -152,6 +152,10 @@ describe("effectiveCadenceCount / exportPreferences (the read-side chain)", () =
 });
 
 describe("validatePreferences", () => {
+  it("accepts household Offline nicknames while rejecting non-string values", () => {
+    expect(() => validatePreferences({ stores: { primary: "market", nicknames: { market: "The close store" } } })).not.toThrow();
+    expect(() => validatePreferences({ stores: { nicknames: { market: 42 } } })).toThrow(/stores.nicknames/);
+  });
   it("accepts a fully-typed object", () => {
     expect(() =>
       validatePreferences({

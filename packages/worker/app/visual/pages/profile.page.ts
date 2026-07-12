@@ -352,6 +352,11 @@ export class ProfilePage extends AppPage {
     await this.awaitPreferencesSave(() => this.offlineStore(slug).getByRole("button", { name: "Use this store" }).click());
   }
 
+  offlineDetails(): Locator { return this.storePanel("offline").locator(".offline-store-details"); }
+  nicknameInput(): Locator { return this.offlineDetails().getByLabel("Household store nickname"); }
+  aisleContribution(): Locator { return this.offlineDetails().locator(".aisle-editor"); }
+  async adoptCommunityMap(): Promise<void> { await this.aisleContribution().getByRole("button", { name: "Use current map as a starting point" }).click(); }
+
   async disconnectKroger(): Promise<void> {
     await this.storePanel("kroger").getByRole("button", { name: "Disconnect" }).click();
   }

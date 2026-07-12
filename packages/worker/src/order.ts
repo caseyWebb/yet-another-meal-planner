@@ -170,6 +170,7 @@ export interface NewMapping {
   locationId?: string;
   /** The resolved candidate's aisle placement, when Kroger reported one (D5). */
   aisleLocation?: AisleLocation | null;
+  price?: { regular: number; promo: number };
 }
 
 export interface SkuCacheCommitReceipt {
@@ -287,6 +288,7 @@ function toMapping(line: ResolvedLine, normalize: (name: string) => string): New
     // Aisle capture (D5): the resolution's placement rides the mapping so the commit
     // can refresh a cached row whose placement moved.
     aisleLocation: line.aisleLocation ?? null,
+    price: line.price,
   };
 }
 

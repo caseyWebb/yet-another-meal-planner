@@ -31,6 +31,32 @@
 
 import type { Env } from "./env.js";
 import { db } from "./db.js";
+import type { ShopReceiptLine } from "@yamp/contract";
+
+/** Shop-completion arm of the one spend writer. The immutable receipt line is the
+ * source; deterministic send/line keys make a response-loss replay a no-op. */
+export function shopReceiptSpendStatements(
+  env: Env,
+  tenant: string,
+  sessionId: string,
+  mode: "store_walk" | "manual_shop",
+  store: string | null,
+  occurredAt: string,
+  lines: ShopReceiptLine[],
+  gate: { requestHash: string },
+): D1PreparedStatement[] {
+  const d = db(env);
+  const sendId = `shop:${tenant}:${sessionId}`;
+  return lines.filter((line) => line.domain === "grocery").map((line) => d.prepare(
+    "INSERT INTO spend_events (send_id,line_key,tenant,occurred_on,name,sku,quantity,unit_price,amount,savings,estimated,department,provenance,store,fulfillment,voided_at) " +
+      "SELECT ?1,?2,?3,?4,?5,NULL,?6,?7,?8,?9,1,?10,?11,?12,?13,NULL " +
+      "WHERE EXISTS (SELECT 1 FROM shop_commits WHERE tenant=?3 AND session_id=?14 AND request_hash=?15) " +
+      "ON CONFLICT(send_id,line_key) DO NOTHING",
+    sendId, line.key, tenant, occurredAt.slice(0, 10), line.name, line.purchase_count,
+    line.unit_price, line.amount, line.savings, line.department, line.provenance,
+    store ?? "manual", mode, sessionId, gate.requestHash,
+  ));
+}
 
 /** One send record — the flush-level identity of a snapshot. */
 export interface SendSnapshot {
