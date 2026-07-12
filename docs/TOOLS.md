@@ -759,7 +759,7 @@ Run the full 7-step matching pipeline. Returns a confident match, narrowed candi
 - `context` (object, optional): `{ recipe_slug, dietary, quantity_hint }`
 - `bypass_cache` (boolean, optional): force re-resolution, skipping the cache hit — for when a cached SKU doesn't fit the recipe context (cached generic, recipe wants organic).
 
-**Confidence rule:** confident when a cache hit OR a defined `preferences` `brands` family resolves it (including the any-brand don't-care = "cheapest acceptable"); otherwise ambiguous. The matcher consumes the stored tier ladder flattened into rank order (the `readBrandPrefs` projection). Cache hits are revalidated for current price + curbside/delivery availability before being returned.
+**Confidence rule:** confident when a revalidated cache hit or a native `preferences.brands` family resolves it; otherwise ambiguous. The matcher tries tiers in order, treats every brand within the first available tier as an equal peer, and lets the quantity-aware price core choose among those peers. If every tier is exhausted, `any_brand:true` is the terminal cheapest-acceptable fallback; `any_brand:false` asks. Cache hits are revalidated for current price + curbside/delivery availability before being returned.
 
 **Shared, location-tagged cache.** The SKU cache (D1 `sku_cache` table, shared corpus) stores mappings resolved by *any* member, warming it for everyone (a network effect). Each entry is tagged with the `location_id` it was resolved at. On lookup, an entry tagged with the caller's own location is tried first, but **every** candidate is revalidated against the caller's `preferred_location` before use — a cross-location entry that isn't carried at the caller's store falls through to a fresh search (so a shared cache can never serve an unavailable SKU). A cross-location hit that *does* revalidate returns `reason: "shared cache hit (revalidated at your store)"`.
 
@@ -774,7 +774,7 @@ Run the full 7-step matching pipeline. Returns a confident match, narrowed candi
   size: "16.9 fl oz",
   price: { regular: 8.99, promo: 0 },
   on_sale: false,
-  reason: "cache hit" | "preferred brand match" | "don't-care: cheapest acceptable" | etc.
+  reason: "cache hit" | "brand tier 1" | "any-brand fallback" | etc.
 }
 ```
 
@@ -1120,7 +1120,41 @@ Add, remove, or edit planned rows — **slot grain**, keyed by opaque row **`id`
 
 ## Order placement
 
+### `display_order_review()` and app-callable review operations
+
+`display_order_review()` returns `_meta.ui.resourceUri = "ui://order/review"`, versioned
+`OrderReviewData`, and equivalent plain text. The payload is first-paint-only: both member and MCP
+hosts perform an empty-stage `read_order_review` before enabling controls. The disposable
+`OrderReviewStage` carries skips, assumed quantities, selected SKUs with explicit selection source,
+bare impulse entries, and verified-brand markers; it never carries a trusted price or credential.
+
+`read_order_review(stage?)`, `search_order_broader(line_key, preview_fingerprint)`,
+`search_order_catalog(line_key, preview_fingerprint, query)`, and
+`save_order_brand_preference(family_key, line_key, brand, expected_family_fingerprint,
+preview_fingerprint)` are app-callable operations. Preview and search are write-free. Broader search
+uses at most three distinct direct factual-ancestor/base/search-term rungs and returns at most twelve
+fulfillable products with factual divergence. Manual search accepts 2–80 characters, performs one
+current-location query, and returns at most twenty fulfillable products with modality facts. Brand
+save is the sole pre-send write: it joins a current same-identity brand to tier 1, removes its
+case-insensitive duplicates below, sets `any_brand:false`, and uses the family fingerprint for an
+atomic stale conflict without touching another family.
+
 ### `place_order(payload)`
+
+The member/widget review send form is `{ stage, preview_fingerprint, cleared_cart_ack }`. Immediately
+before any write, the operation rebuilds current list/plan/pantry/store/brand/availability/quote facts,
+compares the opaque fingerprint, and runs a final guard over the exact resolution pass. Drift returns
+`review_changed` with a refreshed preview and categorized divergence; an uncleared stale cart returns
+`cart_clearance_required`. Both are zero-write. The agent compatibility form (`menu_needs`,
+`quantities`, `include_partials`, `overrides`, `exclude`, `preview`) remains accepted during its
+documented compatibility window.
+
+On commit, send snapshot plus list advance precede the additive Kroger cart call. Cart failure is
+compensated and never calls the SKU-cache writer. Only `cart.written:true` compares/upserts learned
+mappings, returning exact `inserted`, `updated`, and `unchanged` canonical keys; cache failure never
+rolls back groceries. A successful review result independently reports list/rollback, cart, send id
+and persisted D16 item/total/savings truth, cache changes, freshly verified tier-1 brands, and every
+left-off line. Prices remain quotes and the result never claims checkout.
 
 The order-time flush — the **only** tool that writes a Kroger cart. Resolves the whole to-buy set against *current* Kroger availability, writes the cart (`PUT /v1/cart/add`), and caches learned ingredient→SKU mappings to the shared SKU cache. Backed by the Kroger `authorization_code` + PKCE user-context client and the KV-backed rotating refresh token.
 
@@ -1143,6 +1177,11 @@ The order-time flush — the **only** tool that writes a Kroger cart. Resolves t
   preview:          bool                                    // resolve + report only; no cart write, no commits
 }
 ```
+The review form is the mutually exclusive shape
+`{ stage: { skipped, quantities, selections, impulses, saved_brands }, preview_fingerprint,
+cleared_cart_ack }`. Each selection is `{ line_key, sku, source, divergence? }`; each impulse is
+`{ key, label, sku? }`. The server rejects duplicate keys/markers and selections that were not
+issued for that exact line and current fingerprint.
 All sections optional. With no args it flushes the current to-buy set (list ∪ derived plan needs − pantry). Package counts (`quantities` and `menu_needs[].quantity`) must be positive integers ≤ 99 — a fractional, zero, or oversized value is rejected before any cart write (`place_order` is the only tool that writes a real Kroger cart).
 
 **Returns:**
@@ -1151,7 +1190,7 @@ All sections optional. With no args it flushes the current to-buy set (list ∪ 
   resolved:  [{ name, sku, brand, size, quantity, assumed_quantity, price?, on_sale?, aisleLocation? }],  // assumed_quantity: qty defaulted to 1; price/on_sale/aisleLocation: fresh at resolution
   checkpoint:[{ name, kind: "ambiguous"|"unavailable", candidates?, message }],
   partials:  [{ name, for_recipes }],
-  sku_cache: { committed, error? },
+  sku_cache: { committed, inserted?: [line_key], updated?: [line_key], unchanged?: [line_key], error? },
   cart:      { written, count?, error?, code? },   // code carries reauth_required etc.
   list:      { advanced, rolled_back?, error? },   // D1-backed (no commit_sha); see partial-failure honesty below
   send:      { recorded, id?, error? },            // the send-record snapshot (spend telemetry); honest independent reporting
@@ -1162,12 +1201,12 @@ All sections optional. With no args it flushes the current to-buy set (list ∪ 
 
 **Send record (spend telemetry):** a real (non-preview) flush persists a **send record** — one `order_sends` row plus one `order_send_lines` row per resolved line, carrying the pick (`sku`/`brand`/`size`), package quantity, the resolution-time `regular`/`promo`/`on_sale` prices with the effective `unit_price` and derived sale `savings`, the canonical `department` stamp (NULL while its ingredient is pending classification), and a deterministic `provenance` (`planned` for a line from the stored list, the server-derived plan needs, or one carrying `for_recipes`; `impulse` for a bare caller extra) — written **in the same D1 batch as the in-cart advance**, with each advanced row linked to it (`sent_in`). These prices are **send-time quotes** by definition: the cart write carries only SKU + quantity, so fulfillment may differ (weight-priced items, lapsed/appeared promos) and no reconciliation source exists. The snapshot materializes into spend events only when the user asserts the order was placed (the `in_cart → ordered` advance — see [`update_grocery_list`](#update_grocery_listname-patch)); a rolled-back cart write **deletes** the send record (no phantom order), and a snapshot-build failure never blocks the flush — rows advance without a linkage and `send` reports `{ recorded: false, error }`. Preview writes no send record. See `docs/SCHEMAS.md` (spend telemetry) for the row shapes.
 
-**Partial-failure honesty (double-add-safe write order):** the SKU-cache commit is **independent best-effort** (a pure hint); the advance/cart pair is ordered so a retry can never double-add. Order: commit the cache → advance the list to `in_cart` *before* the cart write → write the cart. The ordering exists because `PUT /v1/cart/add` is **additive and unreadable**: items left `active` after a successful cart write would be silently re-bought by a retry (costs money), whereas items marked `in_cart` without a cart write are a *visible* under-buy (the stale-cart reminder and the human checkout surface them) that a retry never compounds. The legs report honestly:
+**Partial-failure honesty (double-add-safe write order):** the advance/cart pair is ordered so a retry can never double-add, and learning follows confirmed cart acceptance. Order: advance the list plus send snapshot to `in_cart` → write the cart → compare/upsert the SKU cache. The ordering exists because `PUT /v1/cart/add` is **additive and unreadable**: items left `active` after a successful cart write would be silently re-bought by a retry (costs money), whereas items marked `in_cart` without a cart write are a *visible* under-buy that a retry never compounds. The legs report honestly:
 - **Advance fails** → the cart write is **skipped entirely**: `list: { advanced: false, error }`, `cart: { written: false, error }` — nothing was carted, the whole order is safe to retry.
-- **Cart write fails** → the advance is **undone exactly**: pre-existing rows roll back to `active`, and rows the advance itself inserted (menu-plan-derived lines with no stored row) are **deleted** rather than stranded as never-listed active items — `list: { advanced: false, rolled_back: true }`. Retryable, no silent drop, and the cart is **never** reported populated.
+- **Cart write fails** → the advance is **undone exactly**, the cache writer is not called, and zero mappings are claimed learned: pre-existing rows roll back to `active`, and rows the advance itself inserted are deleted — `list: { advanced: false, rolled_back: true }`. Retryable, no silent drop, and the cart is never reported populated.
 - **The rollback itself fails** → `list: { advanced: true, rolled_back: false, error }` — the items are marked `in_cart` with **no** cart write. A retried `place_order` will **not** re-add them (`in_cart` is excluded from the to-buy set); recover via `update_grocery_list` (set them back to `active`) or let the stale-cart flow surface them.
 
-A cache-commit failure after a successful cart just re-resolves next time. If the cart write fails because the Kroger refresh token was rejected, `cart.code` is `reauth_required` — call [`kroger_login_url`](#kroger_login_url) and give the member the returned link to re-authorize (see `docs/SELF_HOSTING.md`).
+A cache-commit failure after a successful cart reports exact zero learned plus the error and re-resolves next time; it never rolls groceries back. If the cart write fails because the Kroger refresh token was rejected, `cart.code` is `reauth_required` — call [`kroger_login_url`](#kroger_login_url) and give the member the returned link to re-authorize (see `docs/SELF_HOSTING.md`).
 
 **Mapping commit (refresh-on-difference, aisle capture):** the SKU-cache commit covers **every** resolved line — cache-hit lines included, whose revalidation carries fresh data — and each mapping carries the resolved product's **aisle placement** (`aisle_number`/`aisle_description`/`aisle_side`, stamped `aisle_captured_at`) when Kroger reports one. A key already cached is skipped **only when its learned fields (SKU, brand, size, aisle) are identical**; a differing row is refreshed in place (with `last_used`), so mappings and placements **converge organically with each order** instead of freezing at first capture. The captured placements feed [`read_to_buy`](#read_to_buyenrich)'s enriched read and the in-store walk.
 

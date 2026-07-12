@@ -30,7 +30,7 @@ import { writeStoreRollup, KROGER_STORE } from "./flyer-warm.js";
 import type { FlyerItem } from "./matching.js";
 import type { KvStore } from "./kroger-user.js";
 import { validateSale } from "./sale-intake.js";
-import { advanceInCartRows, readGroceryKeyIndex, isoDay, type SendBatch } from "./session-db.js";
+import { advanceInCartRows, finalizeInCartClaim, readGroceryKeyIndex, isoDay, type SendBatch } from "./session-db.js";
 import { readIngredientCategoryMemo } from "./corpus-db.js";
 import { departmentForGroceryLine } from "./department.js";
 import { snapshotStatements, type SnapshotLine } from "./spend.js";
@@ -518,7 +518,11 @@ export async function intakeObservations(
           const msg = e instanceof Error ? e.message : String(e);
           console.error("[order-intake] send snapshot build failed (advancing without telemetry):", msg);
         }
-        await advanceInCartRows(env, orderList.tenant, advanceLines, isoDay(now), send);
+        const advance = await advanceInCartRows(env, orderList.tenant, advanceLines, isoDay(now), send);
+        // The satellite receipt proves that the external cart write succeeded. Bare
+        // snapshot-degraded advances can release their temporary ownership token here;
+        // real send ids remain linked for later spend materialization.
+        await finalizeInCartClaim(env, orderList.tenant, advanceLines, advance.claimId);
       }
     }
     await markOrderListReceived(env, orderList.id, now);

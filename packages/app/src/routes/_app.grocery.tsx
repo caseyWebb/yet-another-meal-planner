@@ -22,7 +22,7 @@ import {
 import { useGrocerySnapshot, useStoreAdapters, type StoreAdapterProjection } from "../lib/data";
 import { useOnline } from "../lib/online";
 import { api, apiError } from "../lib/api";
-import { OrderPanel } from "../components/order-panel";
+import { MemberOrderReview } from "../components/member-order-review";
 
 export const Route = createFileRoute("/_app/grocery")({ component: GroceryPage });
 
@@ -164,7 +164,7 @@ function GroceryPage() {
         onOrder={() => setOrderOpen((open) => !open)}
       />
       {orderOpen ? (
-        <OrderPanel inCartCount={snapshot.data.counts.in_carts} onClose={closeOrder} />
+        <MemberOrderReview onClose={closeOrder} />
       ) : null}
       <GroceryList
         data={snapshot.data}

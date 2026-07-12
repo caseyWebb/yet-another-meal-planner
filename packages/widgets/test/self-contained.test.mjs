@@ -23,6 +23,7 @@ const WIDGETS = [
   { file: "recipe-card.html", marker: "recipe-card-widget" },
   { file: "plan-propose.html", marker: "plan-propose-widget" },
   { file: "grocery-list.html", marker: "grocery-list-widget" },
+  { file: "order-review.html", marker: "order-review-widget" },
 ];
 
 for (const { file, marker } of WIDGETS) {

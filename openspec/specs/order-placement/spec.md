@@ -58,43 +58,23 @@ Both passes SHALL be skipped for an empty catalog. Items added here are picked u
 
 ### Requirement: Write the Kroger cart and persist learned mappings
 
-For the resolved set, `place_order` SHALL add items to the Kroger cart via `PUT /v1/cart/add`
-and SHALL upsert learned ingredient→SKU mappings to the D1 `sku_cache` table. Each committed
-mapping SHALL carry the resolved candidate's aisle placement (`aisle_number` /
-`aisle_description` / `aisle_side`, with a capture timestamp) when the Kroger product response
-provides one. The commit SHALL cover **every** resolved line — including lines resolved from
-the cache, whose revalidation carries fresh placement data — and SHALL skip a line only when
-its already-cached row is identical across the learned fields (SKU, brand, size, aisle);
-a differing row SHALL be refreshed in place, so placements and mappings converge organically
-with each order rather than freezing at first capture. The cart write and the SKU-cache upsert
-SHALL be **independent best-effort** operations — neither is transactional with the other, and
-a failure of one SHALL NOT corrupt the other. `place_order` SHALL return honest partial status
-and SHALL NOT report a populated cart when the cart write failed.
+For the freshly revalidated resolved set, `place_order` SHALL first advance/materialize the lines with their D16 send record, then add them to the Kroger cart via `PUT /v1/cart/add`, and only when `cart.written:true` SHALL it compare/upsert learned ingredient→SKU mappings in D1 `sku_cache`. Each mapping SHALL carry the resolved candidate's aisle placement when Kroger provides one. The post-cart cache commit SHALL cover every sent line, including cache hits whose revalidation carries fresh placement, and SHALL report exact `inserted`, `updated`, and `unchanged` line keys; an identical learned row SHALL not be rewritten. When cart write fails, the operation SHALL run its existing list/send compensation and SHALL NOT invoke the cache writer. Cart success and cache success remain independent best-effort outcomes: a cache failure SHALL not roll back groceries, and the result SHALL report it honestly.
 
-#### Scenario: Resolved items added and mappings cached
+#### Scenario: Successful send teaches exact changed mappings
+- **WHEN** the cart write succeeds and one mapping is new, one changes placement, and one is identical
+- **THEN** the cache result reports those keys under inserted, updated, and unchanged respectively, and only the first two rows are written
 
-- **WHEN** the resolved set is non-empty and the cart write succeeds
-- **THEN** the items are added via `PUT /v1/cart/add` and the SKU mappings — with any
-  available aisle placement — are upserted to the D1 `sku_cache` table
+#### Scenario: Failed cart never teaches
+- **WHEN** list advance succeeds but the Kroger cart write fails and compensation runs
+- **THEN** no SKU-cache commit is attempted and the outcome reports zero learned mappings
 
-#### Scenario: A cache-hit line refreshes its placement
+#### Scenario: Cache failure never costs the sent groceries
+- **WHEN** the cart write succeeds but the subsequent cache commit fails
+- **THEN** sent rows and their send record remain in cart, the result reports the cache error and no claimed learned mappings, and the cart is not rolled back
 
-- **WHEN** a line resolves from an existing `sku_cache` row whose stored aisle data is absent
-  or differs from the revalidated product's current `aisleLocation`
-- **THEN** the commit upserts that row in place with the fresh placement (and `last_used`),
-  rather than skipping it because the key was already cached
-
-#### Scenario: An identical mapping is not rewritten
-
-- **WHEN** a line resolves from a cached row whose SKU, brand, size, and aisle all match the
-  fresh resolution
-- **THEN** the commit skips that row — no write churn for unchanged mappings
-
-#### Scenario: Honest partial failure
-
-- **WHEN** the SKU-cache commit succeeds but the cart write fails (or vice versa)
-- **THEN** `place_order` reports the true status of each operation and never claims the cart
-  is populated when it is not
+#### Scenario: A cache-hit line refreshes its placement after send
+- **WHEN** a sent line resolved from a cache row whose aisle differs from the revalidated product
+- **THEN** the post-cart cache commit updates its placement and reports that line as updated
 
 ### Requirement: Order lifecycle with user-asserted transitions
 
@@ -207,32 +187,23 @@ When the pantry holds a **partial** of an ingredient the plan needs, the agent S
 
 ### Requirement: The order flush persists a send-record snapshot
 
-A non-preview `place_order` flush with a non-empty resolved set SHALL persist the send record (see `spend-telemetry`) **in the same D1 batch as the in-cart advance**: one `order_sends` row (`store: "kroger"`, the resolved `location_id`, `fulfillment: "kroger_online"`) and one `order_send_lines` row per resolved line, carrying each line's fresh resolution prices (`regular`/`promo`/`on_sale`, effective `unit_price`, `savings` derived from the same `deriveSavings` single source), the pick (`sku`/`brand`/`size`), package `quantity`, the `department` stamp (via the shared `src/department.ts` grocery-line derivation: deterministic `household` overrides immediately, memoized categories, NULL while pending — see `spend-telemetry`), `provenance`, and `for_recipes` — and each advanced grocery row SHALL be stamped with the send's id (`sent_in`). The provenance mapping SHALL be deterministic: `planned` when the line's key came from a stored `grocery_list` row or the server-derived plan needs, or its merged `for_recipes` is non-empty; `impulse` for a caller-supplied `menu_needs` extra with no recipe attribution. Preview resolves and reports without writing a send record, exactly as it writes nothing else. On a cart-write failure the rollback SHALL delete the send record and lines alongside its existing row compensation (a failed cart write means nothing was sent; no phantom order survives). Building the snapshot SHALL be honest-best-effort: a snapshot-build failure degrades to advancing without a send — reported in the result's `send` field (`{ recorded, id?, error? }`), never failing the flush or the cart write. `place_order`'s tool description and result SHALL state the send-record side effect.
+A non-preview `place_order` flush with a non-empty freshly revalidated set SHALL persist the send record in the same D1 batch as its in-cart advance: one `order_sends` row plus one immutable `order_send_lines` row per resolved line, carrying fresh price/pick/quantity/department/provenance/recipe fields defined by `spend-telemetry`, and each advanced row SHALL carry the send id. The provenance mapping SHALL be deterministic: `planned` for stored list rows, server-derived plan needs, or recipe-attributed supplements; `impulse` for a bare review-added extra. A resolved review impulse SHALL be materialized directly as an `in_cart` grocery row by this shared advance and SHALL not require a prior UI list write. Skipped, undecided, unavailable, revalidation-failed, and cart-failed review impulses SHALL leave no active grocery row. Preview/search SHALL write no send record or impulse row. Cart-write rollback SHALL remove advance-inserted rows and the send record as today. Snapshot-build failure SHALL remain honest best-effort and SHALL never block groceries.
 
-#### Scenario: The flush snapshots atomically with the advance
+#### Scenario: Sent impulse snapshots through the shared operation
+- **WHEN** a member stages a bare extra during review and its final revalidated SKU reaches the Kroger cart
+- **THEN** the shared advance materializes it in cart with the send link and snapshots its line with `provenance:impulse`
 
-- **WHEN** `place_order` flushes resolved lines and the advance batch succeeds
-- **THEN** the send record and its per-line snapshot exist, each advanced row carries `sent_in` = the send id, and the result reports `send: { recorded: true, id }`
+#### Scenario: Left-off impulse leaves no list residue
+- **WHEN** a staged impulse is skipped, unresolved, unavailable, or fails final revalidation
+- **THEN** it creates no grocery row, send line, SKU-cache mapping, or spend event
 
-#### Scenario: Preview writes no send record
+#### Scenario: Preview writes no impulse or send state
+- **WHEN** the same staged impulse is previewed or searched repeatedly
+- **THEN** no grocery/send/cache state changes
 
-- **WHEN** `place_order` runs with `preview: true`
-- **THEN** no send record, send lines, or `sent_in` stamps are written — identical to preview's existing write-nothing guarantee
-
-#### Scenario: A rolled-back cart write leaves no phantom send
-
-- **WHEN** the cart write fails and the advance is rolled back
-- **THEN** the send record and its lines are deleted in the same compensation, and the affected rows carry no `sent_in`
-
-#### Scenario: Provenance is mapped deterministically
-
-- **WHEN** a flush resolves a stored `ad_hoc` list row, a plan-derived need, a `menu_needs` side carrying `for_recipes`, and a bare `menu_needs` extra
-- **THEN** the first three snapshot as `planned` and the bare extra as `impulse`
-
-#### Scenario: Telemetry failure never costs the groceries
-
-- **WHEN** building the snapshot fails (e.g. the department memo read errors)
-- **THEN** the flush proceeds — rows advance without a send linkage, the cart is written, and the result reports `send: { recorded: false, error }`
+#### Scenario: Provenance remains planned for existing intent
+- **WHEN** a stored ad-hoc row, plan need, or recipe-attributed supplement is sent beside a review-added bare extra
+- **THEN** the first three snapshot as planned and only the bare extra snapshots as impulse
 
 ### Requirement: A send-wide purchase assertion is exact and atomic
 
@@ -277,3 +248,35 @@ The shared `relist_grocery_send_line` operation SHALL accept nullable `send_id`,
 #### Scenario: Null cannot escape a current open-send line membership
 - **WHEN** Back to list supplies a null send id for a row with matching `order_send_lines` membership in its current unplaced tenant send
 - **THEN** relist conflicts without moving the row or writing spend
+
+### Requirement: Final send compares a complete preview fingerprint
+
+The order-review send path SHALL accept the complete plain-JSON stage, the rendered `preview_fingerprint`, and cleared-cart acknowledgement. Immediately before any D1 or cart write, it SHALL rerun current to-buy derivation, location resolution, brand reads, matching/search and every selected-SKU availability/price check, and recompute the fingerprint over all commit-relevant state. A mismatch SHALL return `review_changed` with a refreshed preview and categorized divergences and SHALL write nothing. When prior in-cart rows require the cleared-cart gate, false acknowledgement SHALL return `cart_clearance_required` and write nothing.
+
+#### Scenario: Price or availability drift blocks the send
+- **WHEN** a selected SKU price changes or becomes unavailable after the rendered preview
+- **THEN** final send returns the refreshed review with price/availability divergence and performs no advance, cart, cache, send-record, or brand write
+
+#### Scenario: Grocery membership drift blocks the send
+- **WHEN** another member changes the to-buy set after preview
+- **THEN** the fingerprint differs, the response names list divergence, and the member must confirm the refreshed set
+
+#### Scenario: Matching fingerprint proceeds with fresh facts
+- **WHEN** all recomputed commit-relevant facts match the fingerprint and the clearance gate is satisfied
+- **THEN** the operation commits the freshly revalidated resolved set through the shared advance/cart/cache sequence
+
+### Requirement: Final send returns an honest discriminated result
+
+The review send result SHALL distinguish `review_changed`, structured pre-write failure, `send_failed`, and `sent`. It SHALL report list advance/rollback, cart write/count, send-record id or snapshot error, exact cache mapping changes or error, verified saved-brand markers, and every left-off line with `skipped | undecided | unavailable | revalidation_failed | underived` reason. A `sent` result's item count, estimated total and flyer savings SHALL be read from its persisted D16 send lines by send id; when no send snapshot was recorded, those values SHALL be unavailable with the error rather than copied from preview. Only a cart-written result SHALL enter the confirmed state.
+
+#### Scenario: Partial failure is described step by step
+- **WHEN** the cart succeeds, the send snapshot exists, and cache commit fails
+- **THEN** the result confirms cart/list/send totals, reports cache failure and zero learned mappings, and lists every left-off line independently
+
+#### Scenario: Snapshot failure does not fabricate totals
+- **WHEN** cart/list succeed but D16 snapshot recording degraded
+- **THEN** the result confirms the cart count while estimated total/flyer savings are unavailable and no preview totals are substituted
+
+#### Scenario: Saved brands are verified, not trusted from the client
+- **WHEN** the stage names a family/brand as saved
+- **THEN** the result includes it only if a fresh preference read finds that brand in tier 1 with `any_brand:false`

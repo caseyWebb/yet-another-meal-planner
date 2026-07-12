@@ -30,9 +30,11 @@ const confident = (sku: string): MatchResult => ({
   resolved: true,
   sku,
   brand: "Kroger",
+  description: "Kroger item",
   size: "1 ct",
   price: { regular: 1, promo: 0 },
   on_sale: false,
+  fulfillment: { curbside: true, delivery: true },
   reason: "test",
 });
 
@@ -236,7 +238,7 @@ function makeDeps(
     /** The advance receipt placeOrder handed to rollbackInCart (receipt threading). */
     rollbackAdvance: null as { inserted: string[]; sendId?: string } | null,
   };
-  const fulfillable: RevalidatedSku = { brand: "Kroger", size: null, price: { regular: 1, promo: 0 }, on_sale: false };
+  const fulfillable: RevalidatedSku = { brand: "Kroger", description: "Kroger item", size: null, price: { regular: 1, promo: 0 }, on_sale: false, fulfillment: { curbside: true, delivery: true } };
   const deps: PlaceOrderDeps = {
     resolve: async (name) => resolutions[name.toLowerCase()] ?? unavailable,
     revalidateSku: async (sku) => {
@@ -252,7 +254,7 @@ function makeDeps(
       calls.order.push("sku");
       calls.mappings = mappings;
       if (opts.skuCacheThrows) throw new Error("commit failed");
-      return "sku-sha";
+      return { inserted: mappings.map((mapping) => mapping.ingredient), updated: [], unchanged: [] };
     },
     cartAdd: async (lines) => {
       calls.cart++;
@@ -290,12 +292,12 @@ describe("placeOrder", () => {
 
     expect(res.resolved.map((r) => r.sku)).toEqual(["S1", "S2"]);
     expect(res.checkpoint).toEqual([]);
-    expect(res.sku_cache).toEqual({ committed: true });
+    expect(res.sku_cache).toMatchObject({ committed: true, inserted: ["milk", "eggs"], updated: [], unchanged: [] });
     expect(res.cart).toEqual({ written: true, count: 2 });
     expect(res.list).toEqual({ advanced: true });
     expect(calls).toMatchObject({ sku: 1, cart: 1, advance: 1, rollback: 0 });
     // The double-add guard: the in_cart advance strictly precedes the cart write.
-    expect(calls.order).toEqual(["sku", "advance", "cart"]);
+    expect(calls.order).toEqual(["advance", "cart", "sku"]);
   });
 
   it("caches the learned mapping under the line's CANONICAL key (the stored normalized_name), not the display name", async () => {
@@ -336,7 +338,7 @@ describe("placeOrder", () => {
     expect(calls.cartLines).toHaveLength(1);
   });
 
-  it("honest partial: cart fails but cache committed → cart not reported populated, advance rolled back", async () => {
+  it("honest partial: cart failure never teaches and the advance is rolled back", async () => {
     const { deps, calls } = makeDeps(
       { milk: confident("S1") },
       // milk is a menu-derived line with no stored row — the advance minted it.
@@ -344,7 +346,8 @@ describe("placeOrder", () => {
     );
     const res = await placeOrder(deps, toBuy("milk"));
 
-    expect(res.sku_cache.committed).toBe(true);
+    expect(res.sku_cache.committed).toBe(false);
+    expect(calls.sku).toBe(0);
     expect(res.cart.written).toBe(false);
     expect(res.cart.error).toContain("upstream 503");
     // The pre-write advance is rolled back to active (items stay retryable).
@@ -374,7 +377,7 @@ describe("placeOrder", () => {
     );
     const res = await placeOrder(deps, toBuy("milk"));
 
-    expect(calls.order).toEqual(["sku", "advance", "cart", "rollback"]);
+    expect(calls.order).toEqual(["advance", "cart", "rollback"]);
     expect(res.cart.written).toBe(false);
     // Items are marked in_cart with NO cart write — visible to the agent, and a
     // retried order won't re-add them (in_cart is filtered from computeToBuy).
@@ -390,7 +393,7 @@ describe("placeOrder", () => {
       resolve: async () => confident("S1"),
       revalidateSku: async () => null,
       normalize: (name) => normalizeIngredient(name, {}),
-      commitSkuCache: async () => null,
+      commitSkuCache: async () => ({ inserted: [], updated: [], unchanged: [] }),
       cartAdd: async () => {
         cartAdds++;
         if (cartFails) throw new Error("kroger 503");
@@ -431,7 +434,7 @@ describe("placeOrder", () => {
       resolve: async (name) => confident(name === "milk" ? "S1" : "S2"),
       revalidateSku: async () => null,
       normalize: (name) => normalizeIngredient(name, {}),
-      commitSkuCache: async () => null,
+      commitSkuCache: async () => ({ inserted: [], updated: [], unchanged: [] }),
       cartAdd: async () => {
         throw new Error("kroger 503");
       },
@@ -495,7 +498,7 @@ describe("placeOrder", () => {
   it("applies overrides without re-resolving, carting the forced SKU with FRESH revalidated price/on_sale", async () => {
     const { deps, calls } = makeDeps(
       { cheese: ambiguous },
-      { revalidations: { PICK: { brand: "Tillamook", size: "8 oz", price: { regular: 5, promo: 3.5 }, on_sale: true } } },
+      { revalidations: { PICK: { brand: "Tillamook", description: "Tillamook Cheese", size: "8 oz", price: { regular: 5, promo: 3.5 }, on_sale: true, fulfillment: { curbside: true, delivery: true } } } },
     );
     const overrides = new Map([["cheese", { sku: "PICK", brand: "stale", size: "stale" }]]);
     const res = await placeOrder(deps, toBuy("cheese"), { overrides });
@@ -508,11 +511,13 @@ describe("placeOrder", () => {
         key: "cheese",
         sku: "PICK",
         brand: "Tillamook",
+        description: "Tillamook Cheese",
         size: "8 oz",
         quantity: 1,
         assumed_quantity: true,
         price: { regular: 5, promo: 3.5 },
         on_sale: true,
+        fulfillment: { curbside: true, delivery: true },
         aisleLocation: null,
       },
     ]);
@@ -535,7 +540,7 @@ describe("placeOrder", () => {
   it("surfaces a lapsed promo on the resolved line (on_sale:false) rather than dropping it", async () => {
     const { deps, calls } = makeDeps(
       {},
-      { revalidations: { LAPSED: { brand: "Kroger", size: "1 lb", price: { regular: 8, promo: 0 }, on_sale: false } } },
+      { revalidations: { LAPSED: { brand: "Kroger", description: "Kroger Trout", size: "1 lb", price: { regular: 8, promo: 0 }, on_sale: false, fulfillment: { curbside: true, delivery: true } } } },
     );
     const overrides = new Map([["trout", { sku: "LAPSED" }]]);
     const res = await placeOrder(deps, toBuy("trout"), { overrides });
@@ -570,8 +575,16 @@ describe("placeOrder", () => {
 
   it("does nothing to the cart when there is nothing resolved", async () => {
     const { deps, calls } = makeDeps({ saffron: unavailable });
-    const res = await placeOrder(deps, toBuy("saffron"));
+    let compared = false;
+    const res = await placeOrder(deps, toBuy("saffron"), {
+      beforeCommit: (resolved, checkpoint) => {
+        compared = true;
+        expect(resolved).toEqual([]);
+        expect(checkpoint).toHaveLength(1);
+      },
+    });
     expect(res.checkpoint).toHaveLength(1);
+    expect(compared).toBe(true);
     expect(calls).toMatchObject({ sku: 0, cart: 0, advance: 0 });
   });
 });
@@ -592,7 +605,7 @@ describe("placeOrder — the send record's honest reporting (spend-telemetry)", 
     // Telemetry never costs the member their groceries: advance + cart both landed.
     expect(res.list).toEqual({ advanced: true });
     expect(res.cart.written).toBe(true);
-    expect(calls.order).toEqual(["sku", "advance", "cart"]);
+    expect(calls.order).toEqual(["advance", "cart", "sku"]);
     expect(res.send).toEqual({ recorded: false, error: "department memo read failed" });
   });
 

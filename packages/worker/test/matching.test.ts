@@ -15,13 +15,6 @@ import {
 import type { KrogerCandidate } from "../src/kroger.js";
 import { fakeD1 } from "./fake-d1.js";
 import { readResolver } from "../src/corpus-db.js";
-import { projectBrandTiers } from "../src/profile-db.js";
-import type { BrandTierPref } from "../src/preferences.js";
-
-/** Build the matcher's flat `brands` input from stored tier objects (readBrandPrefs). */
-function projectAll(tiers: Record<string, BrandTierPref>): Record<string, string[]> {
-  return Object.fromEntries(Object.entries(tiers).map(([term, pref]) => [term, projectBrandTiers(pref)]));
-}
 
 function cand(overrides: Partial<KrogerCandidate> & { productId: string }): KrogerCandidate {
   return {
@@ -178,7 +171,7 @@ describe("matchIngredient — qualified id search term", () => {
     const deps = makeDeps({
       aliases: { "80/20 ground beef": "ground beef::fat-80-20" },
       searchTerms: { "ground beef::fat-80-20": "80/20 ground beef" },
-      brands: { "ground_beef::fat-80-20": [] }, // don't-care → resolves confidently
+      brands: { "ground_beef::fat-80-20": { tiers: [], any_brand: true } },
       search: async (term: string) => {
         searchedFor = term;
         return [beef];
@@ -230,7 +223,7 @@ describe("matchIngredient — cache lookup + revalidation", () => {
     const dead = cand({ productId: "S1", fulfillment: { curbside: false, delivery: false, inStore: false } });
     const searchHit = cand({ productId: "S2", brand: "Store", description: "Store Olive Oil", price: { regular: 3.0, promo: 0 } });
     const deps = makeDeps({
-      brands: { olive_oil: [] }, // don't-care so re-resolution is confident
+      brands: { olive_oil: { tiers: [], any_brand: true } },
       cache: [{ ingredient: "olive oil", sku: "S1" }],
       byId: { S1: dead },
       search: async () => [searchHit],
@@ -241,7 +234,7 @@ describe("matchIngredient — cache lookup + revalidation", () => {
 
   it("bypass_cache skips the cache and runs full search", async () => {
     const deps = makeDeps({
-      brands: { olive_oil: [] },
+      brands: { olive_oil: { tiers: [], any_brand: true } },
       cache: [{ ingredient: "olive oil", sku: "S1" }],
       byId: { S1: cand({ productId: "S1" }) },
       search: async () => [cand({ productId: "S2", description: "Olive Oil", price: { regular: 4, promo: 0 } })],
@@ -293,7 +286,7 @@ describe("matchIngredient — shared, location-tagged cache (D7/§7.1)", () => {
     const searchHit = cand({ productId: "Y", description: "Olive Oil", price: { regular: 3, promo: 0 } });
     const deps = makeDeps({
       locationId: "L2",
-      brands: { olive_oil: [] }, // don't-care → re-resolution is confident
+      brands: { olive_oil: { tiers: [], any_brand: true } },
       cache: [{ ingredient: "olive oil", sku: "X", locationId: "L1" }],
       byId: { X: dead },
       search: async () => [searchHit],
@@ -344,19 +337,19 @@ describe("matchIngredient — confidence gate", () => {
 
   it("empty list [] → confident cheapest acceptable", async () => {
     const deps = makeDeps({
-      brands: { yellow_onion: [] },
+      brands: { yellow_onion: { tiers: [], any_brand: true } },
       search: async () => [
         cand({ productId: "cheap", description: "Yellow Onion", size: "2 lb", price: { regular: 1.5, promo: 0 } }),
         cand({ productId: "pricey", description: "Yellow Onion", size: "2 lb", price: { regular: 3.0, promo: 0 } }),
       ],
     });
     const res = await matchIngredient(deps, "yellow onion");
-    expect(res).toMatchObject({ resolved: true, sku: "cheap", reason: "don't-care: cheapest acceptable" });
+    expect(res).toMatchObject({ resolved: true, sku: "cheap", reason: "any-brand fallback" });
   });
 
   it("commodity sizing picks smallest package covering the quantity_hint", async () => {
     const deps = makeDeps({
-      brands: { rice: [] },
+      brands: { rice: { tiers: [], any_brand: true } },
       search: async () => [
         cand({ productId: "small", description: "White Rice", size: "1 lb", price: { regular: 2, promo: 0 } }),
         cand({ productId: "mid", description: "White Rice", size: "3 lb", price: { regular: 5, promo: 0 } }),
@@ -369,33 +362,29 @@ describe("matchIngredient — confidence gate", () => {
 
   it("ranked list honored by order (highest-ranked available brand wins)", async () => {
     const deps = makeDeps({
-      brands: { olive_oil: ["Brand A", "Brand B"] },
+      brands: { olive_oil: { tiers: [["Brand A"], ["Brand B"]], any_brand: false } },
       search: async () => [
         cand({ productId: "b", brand: "Brand B", description: "Brand B Olive Oil", price: { regular: 5, promo: 0 } }),
         cand({ productId: "a", brand: "Brand A", description: "Brand A Olive Oil", price: { regular: 9, promo: 0 } }),
       ],
     });
     const res = await matchIngredient(deps, "olive oil");
-    expect(res).toMatchObject({ resolved: true, sku: "a", reason: "preferred brand match" });
+    expect(res).toMatchObject({ resolved: true, sku: "a", reason: "brand tier 1" });
   });
 
   it("non-empty list whose brands are all unavailable → ambiguous", async () => {
     const deps = makeDeps({
-      brands: { olive_oil: ["Brand A", "Brand B"] },
+      brands: { olive_oil: { tiers: [["Brand A"], ["Brand B"]], any_brand: false } },
       search: async () => [cand({ productId: "c", brand: "Brand C", description: "Brand C Olive Oil", price: { regular: 5, promo: 0 } })],
     });
     const res = await matchIngredient(deps, "olive oil");
     expect(res).toMatchObject({ resolved: false, ambiguous: true });
   });
 
-  // The stored brand model is tiers ({ tiers, any_brand }); the matcher consumes the
-  // readBrandPrefs PROJECTION (flatten in tier order; don't-care → []) until band 3's
-  // order-review-rework moves it onto tiers natively. Feeding the gate through the
-  // projection pins that behavior over migrated data is unchanged by construction.
-  describe("fed from the brand-tier projection", () => {
+  describe("native brand tiers", () => {
     it("absent family → ambiguous", async () => {
       const deps = makeDeps({
-        brands: projectAll({}),
+        brands: {},
         search: async () => [
           cand({ productId: "A", brand: "Brand A", description: "Olive Oil", price: { regular: 5, promo: 0 } }),
           cand({ productId: "B", brand: "Brand B", description: "Olive Oil", price: { regular: 6, promo: 0 } }),
@@ -407,26 +396,26 @@ describe("matchIngredient — confidence gate", () => {
 
     it("don't-care ({ tiers: [], any_brand: true }) → confident cheapest acceptable", async () => {
       const deps = makeDeps({
-        brands: projectAll({ yellow_onion: { tiers: [], any_brand: true } }),
+        brands: { yellow_onion: { tiers: [], any_brand: true } },
         search: async () => [
           cand({ productId: "cheap", description: "Yellow Onion", size: "2 lb", price: { regular: 1.5, promo: 0 } }),
           cand({ productId: "pricey", description: "Yellow Onion", size: "2 lb", price: { regular: 3.0, promo: 0 } }),
         ],
       });
       const res = await matchIngredient(deps, "yellow onion");
-      expect(res).toMatchObject({ resolved: true, sku: "cheap", reason: "don't-care: cheapest acceptable" });
+      expect(res).toMatchObject({ resolved: true, sku: "cheap", reason: "any-brand fallback" });
     });
 
     it("singleton tiers project to the ranked ladder (highest tier available wins)", async () => {
       const deps = makeDeps({
-        brands: projectAll({ olive_oil: { tiers: [["Brand A"], ["Brand B"]], any_brand: false } }),
+        brands: { olive_oil: { tiers: [["Brand A"], ["Brand B"]], any_brand: false } },
         search: async () => [
           cand({ productId: "b", brand: "Brand B", description: "Brand B Olive Oil", price: { regular: 5, promo: 0 } }),
           cand({ productId: "a", brand: "Brand A", description: "Brand A Olive Oil", price: { regular: 9, promo: 0 } }),
         ],
       });
       const res = await matchIngredient(deps, "olive oil");
-      expect(res).toMatchObject({ resolved: true, sku: "a", reason: "preferred brand match" });
+      expect(res).toMatchObject({ resolved: true, sku: "a", reason: "brand tier 1" });
     });
   });
 });
@@ -434,7 +423,7 @@ describe("matchIngredient — confidence gate", () => {
 describe("matchIngredient — availability + scoring", () => {
   it("nothing fulfillable → unavailable, no substitution", async () => {
     const deps = makeDeps({
-      brands: { salmon: [] },
+      brands: { salmon: { tiers: [], any_brand: true } },
       search: async () => [cand({ productId: "x", fulfillment: { curbside: false, delivery: false, inStore: false } })],
     });
     const res = await matchIngredient(deps, "salmon");
@@ -447,7 +436,7 @@ describe("matchIngredient — availability + scoring", () => {
 
   it("a missing preferred brand does not empty the candidate set (routes to ambiguous)", async () => {
     const deps = makeDeps({
-      brands: { butter: ["Kerrygold"] },
+      brands: { butter: { tiers: [["Kerrygold"]], any_brand: false } },
       search: async () => [
         cand({ productId: "store", brand: "Kroger", description: "Kroger Butter", price: { regular: 3, promo: 0 } }),
         cand({ productId: "land", brand: "Land O Lakes", description: "Land O Lakes Butter", price: { regular: 4, promo: 0 } }),
@@ -471,7 +460,7 @@ describe("matchIngredient — identity relevance gate", () => {
   ];
 
   it("don't-care confidently picks the matching variety, not the cheaper unrelated item", async () => {
-    const deps = makeDeps({ brands: { anaheim_peppers: [] }, search: async () => anaheimPool() });
+    const deps = makeDeps({ brands: { anaheim_peppers: { tiers: [], any_brand: true } }, search: async () => anaheimPool() });
     const res = await matchIngredient(deps, "anaheim peppers");
     // 4677 ($2.69, relevance 2) wins over cheaper beans/salsa ($1.39–1.49, relevance 0).
     expect(res).toMatchObject({ resolved: true, sku: "0000000004677" });
@@ -488,14 +477,14 @@ describe("matchIngredient — identity relevance gate", () => {
 
   it("zero token overlap with a don't-care entry degrades to ambiguous, never confident-wrong", async () => {
     // Query shares no token with any candidate description → maxRelevance 0.
-    const deps = makeDeps({ brands: { tofu: [] }, search: async () => anaheimPool() });
+    const deps = makeDeps({ brands: { tofu: { tiers: [], any_brand: true } }, search: async () => anaheimPool() });
     const res = await matchIngredient(deps, "tofu");
     expect(res).toMatchObject({ resolved: false, ambiguous: true });
   });
 
   it("generic single-token query ties all matches at the top tier; price decides", async () => {
     const deps = makeDeps({
-      brands: { peppers: [] },
+      brands: { peppers: { tiers: [], any_brand: true } },
       search: async () => [
         cand({ productId: "anaheim", description: "Fresh Anaheim Peppers", price: { regular: 2.69, promo: 0 } }),
         cand({ productId: "jalapeno", description: "Fresh Jalapeno Peppers", price: { regular: 1.89, promo: 0 } }),
@@ -538,7 +527,7 @@ describe("matchIngredient — display_name is not a matcher input (reify-ingredi
       // Exactly the tool's wiring (tools.ts): aliases + searchTerms, NOT displayNames.
       aliases: resolver.toId,
       searchTerms: resolver.searchTerms,
-      brands: { "ground_beef::fat-80-20": [] }, // brand key derives from the canonical id, not display
+      brands: { "ground_beef::fat-80-20": { tiers: [], any_brand: true } },
       search: async (term: string) => {
         searchedFor = term;
         return [beef];
@@ -607,11 +596,11 @@ describe("aisleLocation pass-through (member-app-differentiators D5)", () => {
 
   it("a search-pick confident match carries its candidate's aisleLocation (null when absent)", async () => {
     const withAisle = cand({ productId: "A", description: "whole milk", size: "1 gal", price: { regular: 3, promo: 0 }, aisleLocation: AISLE });
-    const res = await matchIngredient(makeDeps({ search: async () => [withAisle], brands: { milk: [] } }), "milk");
+    const res = await matchIngredient(makeDeps({ search: async () => [withAisle], brands: { milk: { tiers: [], any_brand: true } } }), "milk");
     expect(res).toMatchObject({ resolved: true, sku: "A", aisleLocation: AISLE });
 
     const noAisle = cand({ productId: "B", description: "whole milk", size: "1 gal", price: { regular: 3, promo: 0 } });
-    const res2 = await matchIngredient(makeDeps({ search: async () => [noAisle], brands: { milk: [] } }), "milk");
+    const res2 = await matchIngredient(makeDeps({ search: async () => [noAisle], brands: { milk: { tiers: [], any_brand: true } } }), "milk");
     expect(res2).toMatchObject({ resolved: true, sku: "B", aisleLocation: null });
   });
 });

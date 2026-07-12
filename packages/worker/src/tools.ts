@@ -35,6 +35,7 @@ import { registerCookingTools } from "./cooking-tools.js";
 import { registerRecipeCardWidget } from "./recipe-card-widget.js";
 import { registerMealPlanWidget } from "./meal-plan-widget.js";
 import { registerGroceryWidget } from "./grocery-widget.js";
+import { registerOrderReviewWidget } from "./order-review-widget.js";
 import { filterRecipes, type RecipeIndex } from "./recipes.js";
 import { loadRecipeIndex, loadRecipeEmbeddings, recipeDescription } from "./recipe-index.js";
 import { readReconcileErrors } from "./recipe-projection.js";
@@ -58,7 +59,7 @@ import {
   readPreferences,
   readOverlay,
   readOwnedEquipment,
-  readBrandPrefs,
+  readBrandTiers,
   type AssembledProfile,
   type Preferences,
 } from "./profile-db.js";
@@ -160,7 +161,7 @@ export function buildProposeDeps(env: Env, tenant: string): ProposeDeps {
  * closures across its tools; the member API's `POST /api/grocery/order` builds one per
  * request.
  */
-export function buildOrderWiring(env: Env, tenant: string): OrderWiring {
+export function buildOrderWiring(env: Env, tenant: string, options: { capture?: boolean } = {}): OrderWiring {
   const kroger = createKrogerClient(env);
 
   let prefsP: Promise<Preferences> | null = null;
@@ -190,7 +191,7 @@ export function buildOrderWiring(env: Env, tenant: string): OrderWiring {
     })());
 
   let ctxP: Promise<IngredientContext> | null = null;
-  const getIngredientContext = (): Promise<IngredientContext> => (ctxP ??= ingredientContext(env));
+  const getIngredientContext = (): Promise<IngredientContext> => (ctxP ??= ingredientContext(env, { capture: options.capture !== false }));
 
   /** Run the resolve-only matcher for one ingredient with the shared deps. */
   async function resolve(
@@ -199,7 +200,7 @@ export function buildOrderWiring(env: Env, tenant: string): OrderWiring {
     bypassCache = false,
   ): Promise<MatchResult> {
     const locationId = await getLocationId();
-    const brands = await readBrandPrefs(env, tenant);
+    const brands = await readBrandTiers(env, tenant);
     const ctx = await getIngredientContext();
     const cache: CachedMapping[] = await readSkuCache(env);
     // Capture a novel surface form for the cron (best-effort, non-blocking; the hot path
@@ -234,9 +235,11 @@ export function buildOrderWiring(env: Env, tenant: string): OrderWiring {
     if (!fresh || !isFulfillable(fresh)) return null;
     return {
       brand: fresh.brand,
+      description: fresh.description,
       size: fresh.size,
       price: fresh.price,
       on_sale: isOnSale(fresh),
+      fulfillment: { curbside: fresh.fulfillment.curbside, delivery: fresh.fulfillment.delivery },
       aisleLocation: fresh.aisleLocation,
     };
   }
@@ -1006,6 +1009,7 @@ export function buildServer(env: Env, tenant: Tenant, origin?: string): McpServe
   // as propose_meal_plan (one contract); the widget HTML is read from the ASSETS binding.
   registerMealPlanWidget(server, env, tenant, proposeDeps);
   registerGroceryWidget(server, env, tenant.id);
+  registerOrderReviewWidget(server, env, tenant.id, buildOrderWiring(env, tenant.id, { capture: false }));
 
   // Profile reconciliation: member confirm (list_/confirm_proposal) + operator-gated
   // cross-tenant surface (reconcile_read_signals / reconcile_enqueue_proposal).

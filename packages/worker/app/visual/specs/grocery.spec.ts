@@ -41,14 +41,49 @@ test("the launcher remains driven by the shared store-adapter projection", async
 	await groceryPage.captureForReview("grocery-store-launcher");
 });
 
-test("the order review is a labelled expanded disclosure", async ({ groceryPage }) => {
+test("the order review is a labelled expanded disclosure", async ({
+	groceryPage,
+	page,
+}) => {
+	await page.route("**/api/grocery/order/review", (route) => {
+		expect(route.request().headers()["x-app-csrf"]).toBe("1");
+		return route.fulfill({
+			json: {
+				contract_version: 1,
+				preview_fingerprint: "fixture",
+				grocery_snapshot_version: "fixture",
+				as_of: "2026-07-12T12:00:00Z",
+				store: { name: "Kroger", location_id: "1" },
+				quote_disclaimer: "Current quote",
+				stale_cart_count: 0,
+				cleared_cart_ack_required: false,
+				matched: [],
+				decisions: [],
+				left_off: [],
+				underived: [],
+				counts: { going_to_cart: 0, needs_decision: 0, left_off: 0 },
+				estimated_total: null,
+				flyer_savings: null,
+				stage: {
+					skipped: [],
+					quantities: {},
+					selections: [],
+					impulses: [],
+					saved_brands: [],
+				},
+			},
+		});
+	});
 	const launcher = groceryPage.page.getByTestId("order-open");
 	await expect(launcher).toHaveAttribute("aria-expanded", "false");
-	await expect(launcher).toHaveAttribute("aria-controls", "grocery-order-review");
+	await expect(launcher).toHaveAttribute(
+		"aria-controls",
+		"grocery-order-review",
+	);
 
 	await launcher.click();
 	await expect(launcher).toHaveAttribute("aria-expanded", "true");
-	const review = groceryPage.page.getByRole("region", { name: "Kroger order" });
+	const review = groceryPage.page.getByRole("region", { name: "Order review" });
 	await expect(review).toHaveAttribute("id", "grocery-order-review");
 	await expect(review).toBeVisible();
 	await launcher.click();
@@ -61,6 +96,220 @@ test("the order review is a labelled expanded disclosure", async ({ groceryPage 
 	await expect(launcher).toHaveAttribute("aria-expanded", "false");
 	await expect(review).toHaveCount(0);
 	await expect(launcher).toBeFocused();
+});
+
+test("order review projects staged choices and latches a failed send with exact partial steps", async ({
+	groceryPage,
+	page,
+}) => {
+	const milk = {
+		sku: "milk-1",
+		brand: "A",
+		description: "Whole milk",
+		size: "1 gal",
+		price: { regular: 4, promo: 3 },
+		on_sale: true,
+		fulfillment: { curbside: true, delivery: true },
+	};
+	const bread = {
+		sku: "bread-1",
+		brand: "B",
+		description: "Wheat bread",
+		size: "20 oz",
+		price: { regular: 5, promo: 5 },
+		on_sale: false,
+		fulfillment: { curbside: true, delivery: false },
+	};
+	const preview = {
+		contract_version: 1,
+		preview_fingerprint: "stage-fixture",
+		grocery_snapshot_version: "grocery-fixture",
+		as_of: "2026-07-12T12:00:00Z",
+		store: { name: "Kroger Oak", location_id: "1" },
+		quote_disclaimer: "Current send-time estimate",
+		stale_cart_count: 2,
+		cleared_cart_ack_required: true,
+		matched: [
+			{
+				line_key: "milk",
+				name: "milk",
+				display_name: "Milk",
+				quantity: 1,
+				assumed_quantity: true,
+				for_recipes: [],
+				provenance: "planned",
+				selected: milk,
+				selection_source: "matched",
+				options: [{ ...milk, sku: "milk-2", description: "Featured milk" }],
+				featured_swap: { ...milk, sku: "milk-2", description: "Featured milk" },
+				family_key: "milk",
+				family_fingerprint: "fm",
+			},
+		],
+		decisions: [
+			{
+				line_key: "bread",
+				name: "bread",
+				display_name: "Bread",
+				quantity: 1,
+				assumed_quantity: false,
+				for_recipes: [],
+				provenance: "planned",
+				kind: "choose_one",
+				candidates: [bread],
+				family_key: "bread",
+				family_fingerprint: "fb",
+				can_save_brand: true,
+				can_search_broader: false,
+				can_search_manual: false,
+			},
+		],
+		left_off: [],
+		underived: [],
+		counts: { going_to_cart: 1, needs_decision: 1, left_off: 1 },
+		estimated_total: 3,
+		flyer_savings: 1,
+		stage: {
+			skipped: [],
+			quantities: {},
+			selections: [],
+			impulses: [],
+			saved_brands: [],
+		},
+	};
+	let sends = 0;
+	await page.route("**/api/grocery/order/review", async (route) => {
+		expect(route.request().headers()["x-app-csrf"]).toBe("1");
+		const body = route.request().postDataJSON() as {
+			stage?: typeof preview.stage;
+		};
+		await route.fulfill({
+			json: { ...preview, stage: body.stage ?? preview.stage },
+		});
+	});
+	await page.route("**/api/grocery/order", async (route) => {
+		sends += 1;
+		expect(route.request().headers()["x-app-csrf"]).toBe("1");
+		await page.waitForTimeout(100);
+		await route.fulfill({
+			json: {
+				status: "send_failed",
+				steps: {
+					list: {
+						advanced: true,
+						rolled_back: false,
+						error: "rollback unavailable",
+					},
+					cart: {
+						written: false,
+						error: "Kroger authorization expired",
+						code: "reauth_required",
+					},
+					send: { recorded: false, error: "rolled back" },
+					cache: {
+						committed: false,
+						inserted: [],
+						updated: [],
+						unchanged: [],
+						error: "cart was not written",
+					},
+				},
+				left_off: [{ line_key: "bread", name: "Bread", reason: "undecided" }],
+				verified_saved_brands: [],
+			},
+		});
+	});
+	await groceryPage.page.getByTestId("order-open").click();
+	const review = page.getByRole("region", { name: "Order review" });
+	await expect(
+		review.getByText(/Featured swap:.*Featured milk/),
+	).toBeVisible();
+	await expect(review.getByLabel("Search catalog for bread")).toHaveCount(0);
+	await expect(
+		review.getByRole("button", { name: "Send to Kroger" }),
+	).toBeDisabled();
+	await review.getByLabel("B Wheat bread · 20 oz").check();
+	await review
+		.getByLabel("I've cleared the old Kroger cart (2 prior items)")
+		.check();
+	const send = review.getByRole("button", { name: "Send to Kroger" });
+	await expect(send).toBeEnabled();
+	await send.dblclick();
+	await expect(review.getByTestId("order-review-failed-steps")).toContainText(
+		"rollback did not complete",
+	);
+	await expect(review.getByTestId("order-review-failed-steps")).toContainText(
+		"Kroger authorization expired",
+	);
+	expect(sends).toBe(1);
+	await groceryPage.captureForReview("order-review-partial-failure");
+});
+
+test("unknown-newer order review remains readable and locks every staged control", async ({
+	groceryPage,
+	page,
+}) => {
+	await page.route("**/api/grocery/order/review", (route) =>
+		route.fulfill({
+			json: {
+				contract_version: 2,
+				preview_fingerprint: "future",
+				grocery_snapshot_version: "future-g",
+				as_of: "2026-07-12T12:00:00Z",
+				store: { name: "Future Kroger", location_id: "1" },
+				quote_disclaimer: "Saved quote",
+				stale_cart_count: 0,
+				cleared_cart_ack_required: false,
+				matched: [
+					{
+						line_key: "milk",
+						name: "milk",
+						quantity: 1,
+						assumed_quantity: true,
+						for_recipes: [],
+						provenance: "planned",
+						selected: {
+							sku: "1",
+							brand: "A",
+							description: "Milk",
+							size: null,
+							price: { regular: 3, promo: 3 },
+							on_sale: false,
+							fulfillment: { curbside: true, delivery: true },
+						},
+						selection_source: "matched",
+						options: [],
+						family_key: "milk",
+						family_fingerprint: "f",
+					},
+				],
+				decisions: [],
+				left_off: [],
+				underived: [],
+				counts: { going_to_cart: 1, needs_decision: 0, left_off: 0 },
+				estimated_total: 3,
+				flyer_savings: 0,
+				stage: {
+					skipped: [],
+					quantities: {},
+					selections: [],
+					impulses: [],
+					saved_brands: [],
+				},
+				future_field: true,
+			},
+		}),
+	);
+	await groceryPage.page.getByTestId("order-open").click();
+	const review = page.getByRole("region", { name: "Order review" });
+	await expect(review).toContainText("read-only");
+	await expect(review.getByRole("button", { name: "Skip" })).toBeDisabled();
+	await expect(
+		review.getByRole("button", { name: "Send to Kroger" }),
+	).toBeDisabled();
+	await expect(
+		review.getByRole("button", { name: "Add to this order" }),
+	).toBeDisabled();
 });
 
 test("checking is durable and never changes cart status", async ({
@@ -255,9 +504,7 @@ test("unknown-newer fixture remains readable when rendered by the shared compone
 	await expect(
 		groceryPage.item("Future milk").getByRole("checkbox"),
 	).toBeDisabled();
-	await expect(
-		groceryPage.page.getByLabel("Add grocery item"),
-	).toBeDisabled();
+	await expect(groceryPage.page.getByLabel("Add grocery item")).toBeDisabled();
 	await groceryPage.setViewport(390, 844);
 	await groceryPage.captureForReview("grocery-mobile");
 });

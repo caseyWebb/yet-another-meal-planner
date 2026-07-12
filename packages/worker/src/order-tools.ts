@@ -8,9 +8,10 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import { OrderReviewDataSchema, OrderReviewStageSchema } from "@yamp/contract";
 import type { Env } from "./env.js";
 import type { KrogerCandidate } from "./kroger.js";
-import { runTool } from "./errors.js";
+import { runTool, ToolError } from "./errors.js";
 import {
   upsertSkuMappings,
   readSkuCache,
@@ -31,6 +32,7 @@ import {
   type PlaceOrderDeps,
   type ResolvedLine,
   type RevalidatedSku,
+  type SkuCacheCommitReceipt,
   type ToBuyItem,
 } from "./order.js";
 import type { PlaceOrderInput, PlaceOrderOutcome } from "./order-shapes.js";
@@ -45,6 +47,7 @@ import {
   readPantryNames,
   advanceInCartRows,
   rollbackInCartRows,
+  finalizeInCartClaim,
   mintEventId,
   type SendBatch,
 } from "./session-db.js";
@@ -76,6 +79,8 @@ export interface OrderWiring {
   search(term: string): Promise<KrogerCandidate[]>;
   /** Raw product revalidation at the resolved location (fresh price/fulfillment/aisle). */
   productById(sku: string): Promise<KrogerCandidate | null>;
+  /** Injectable cart boundary for deterministic tests; production omits it. */
+  cartAdd?(lines: ResolvedLine[]): Promise<void>;
 }
 
 /** The learned fields the commit compares for its identical-skip (D5): SKU, brand, and
@@ -122,11 +127,12 @@ interface PriorLearned {
  * never overwrites a stored placement with NULL — it either skips (same SKU/brand/size)
  * or, on a genuine change, carries the prior row's placement forward. Only a PRESENT
  * fresh placement ever overwrites a stored one. The SKU cache is shared corpus — no
- * tenant column. Returns null (D1 has no commit sha).
+ * tenant column. Returns an exact inserted/updated/unchanged receipt; there is no
+ * repository commit SHA because D1 is the authoritative store.
  */
-function makeCommitSkuCache(env: Env, getLocationId: () => Promise<string>) {
-  return async (mappings: NewMapping[]): Promise<string | null> => {
-    if (mappings.length === 0) return null;
+export function makeCommitSkuCache(env: Env, getLocationId: () => Promise<string>) {
+  return async (mappings: NewMapping[]): Promise<SkuCacheCommitReceipt> => {
+    if (mappings.length === 0) return { inserted: [], updated: [], unchanged: [] };
     const locationId = await getLocationId();
     const existing = await readSkuCache(env);
     const have = new Map<string, PriorLearned>(
@@ -137,6 +143,9 @@ function makeCommitSkuCache(env: Env, getLocationId: () => Promise<string>) {
     );
     const stamp = today();
     const toWrite: NewSkuMapping[] = [];
+    const inserted: string[] = [];
+    const updated: string[] = [];
+    const unchanged: string[] = [];
     for (const m of mappings) {
       const key = `${m.ingredient}\0${locationId}`;
       const prior = have.get(key);
@@ -147,7 +156,10 @@ function makeCommitSkuCache(env: Env, getLocationId: () => Promise<string>) {
       const fresh = learnedFieldsKey({ sku: m.sku, brand: m.brand, size: m.size, aisle: m.aisleLocation }, compareAisle);
       const priorKey = prior && learnedFieldsKey(prior, compareAisle);
       // Identical learned fields → no write churn; a differing row upserts in place.
-      if (priorKey === fresh) continue;
+      if (priorKey === fresh) {
+        unchanged.push(m.ingredient);
+        continue;
+      }
       // A present fresh placement wins outright; otherwise carry the prior row's
       // placement forward (if any) rather than clearing it.
       const aisle = m.aisleLocation ?? prior?.aisle ?? null;
@@ -165,9 +177,23 @@ function makeCommitSkuCache(env: Env, getLocationId: () => Promise<string>) {
         aisle_side: aisle?.side ?? null,
         aisle_captured_at: capturedAt,
       });
+      (prior ? updated : inserted).push(m.ingredient);
     }
     if (toWrite.length > 0) await upsertSkuMappings(env, toWrite);
-    return null;
+    // Receipts describe authoritative post-write state, not the optimistic pre-read.
+    // A concurrent writer that wins after our comparison is surfaced as a cache
+    // conflict; callers report the cache leg failed without overstating learning.
+    if (toWrite.length > 0) {
+      const after = new Map((await readSkuCache(env)).map((m) => [`${m.ingredient}\0${m.locationId ?? ""}`, m]));
+      for (const intended of toWrite) {
+        const actual = after.get(`${intended.ingredient}\0${locationId}`);
+        if (!actual || actual.sku !== intended.sku || (actual.brand ?? undefined) !== intended.brand || (actual.size ?? undefined) !== intended.size ||
+          (actual.aisle?.number ?? null) !== intended.aisle_number || (actual.aisle?.description ?? null) !== intended.aisle_description || (actual.aisle?.side ?? null) !== intended.aisle_side) {
+          throw new ToolError("conflict", `SKU cache changed concurrently for ${intended.ingredient}`);
+        }
+      }
+    }
+    return { inserted, updated, unchanged };
   };
 }
 
@@ -279,7 +305,13 @@ function makeAdvanceInCart(env: Env, username: string, snapshotCtx?: SnapshotCon
  *  deleted alongside (no phantom order survives a failed cart write). */
 function makeRollbackInCart(env: Env, username: string) {
   return async (lines: ResolvedLine[], advance: InCartAdvance): Promise<void> => {
-    await rollbackInCartRows(env, username, lines, advance.inserted, advance.sendId);
+    await rollbackInCartRows(env, username, lines, advance.inserted, advance.sendId, advance.claimId);
+  };
+}
+
+function makeFinalizeInCart(env: Env, username: string) {
+  return async (lines: ResolvedLine[], advance: InCartAdvance): Promise<void> => {
+    if (advance.claimId) await finalizeInCartClaim(env, username, lines, advance.claimId);
   };
 }
 
@@ -298,6 +330,7 @@ export async function runPlaceOrder(
   tenantId: string,
   input: PlaceOrderInput,
   wiring: OrderWiring,
+  execution: { beforeCommit?(resolved: ResolvedLine[], checkpoint: import("./order-shapes.js").CheckpointLine[]): Promise<void> | void } = {},
 ): Promise<PlaceOrderOutcome> {
   const kv = env.KROGER_KV as unknown as KvStore;
   const userClient = createKrogerUserClient(env, kv, tenantId);
@@ -308,7 +341,9 @@ export async function runPlaceOrder(
   const pantryNames = await readPantryNames(env, tenantId);
   // The canonical-id normalizer for the SKU-cache write key — same funnel the matcher
   // keys its cache read on, so a learned mapping stores under the key it's looked up by.
-  const ingredientCtx = await ingredientContext(env);
+  // Preview is a strict read: even normalization's best-effort novel-term enqueue is
+  // disabled. A real send may capture after the member commits the intent.
+  const ingredientCtx = await ingredientContext(env, { capture: input.preview !== true });
 
   // Server-side plan derivation (D4): the same `deriveMenuNeeds` the to-buy view reads,
   // unioned with caller `menu_needs` — supplements (open-world side ingredients,
@@ -371,21 +406,23 @@ export async function runPlaceOrder(
     revalidateSku: (sku) => wiring.revalidateSku(sku),
     normalize: (name) => normalizeIngredient(name, ingredientCtx.resolver.toId),
     commitSkuCache,
-    cartAdd: async (cartLines) => {
+    cartAdd: wiring.cartAdd ?? (async (cartLines) => {
       try {
         await userClient.addToCart(cartLines.map((l) => ({ upc: l.sku, quantity: l.quantity })));
       } catch (e) {
         throw toToolError(e);
       }
-    },
+    }),
     advanceInCart,
     rollbackInCart,
+    finalizeInCart: makeFinalizeInCart(env, tenantId),
   };
 
   const result = await placeOrder(deps, lines, {
     overrides,
     preview: input.preview,
     resolveKey: (n) => ingredientCtx.resolve(n),
+    beforeCommit: execution.beforeCommit,
   });
   return { ...result, partials, underived: derived.underived };
 }
@@ -417,6 +454,10 @@ export const PLACE_ORDER_INPUT_SHAPE = {
   overrides: z.array(z.object(overrideShape)).optional(),
   exclude: z.array(z.string()).optional(),
   preview: z.boolean().optional(),
+  stage: OrderReviewStageSchema.optional(),
+  preview_fingerprint: z.string().optional(),
+  cleared_cart_ack: z.boolean().optional(),
+  rendered_preview: OrderReviewDataSchema.optional(),
 };
 
 export function registerOrderTools(
@@ -431,7 +472,19 @@ export function registerOrderTools(
       description:
         "Order-time flush: resolve the WHOLE to-buy set against current Kroger availability, write the cart (PUT /v1/cart/add), and cache learned SKU mappings to the shared SKU cache. The to-buy set is the active grocery list ∪ the MEAL PLAN'S OWN INGREDIENT NEEDS − pantry on-hand, joined on canonical ingredient ids: the tool derives the plan's needs SERVER-SIDE from each planned recipe's derived full ingredient list — do NOT hand-expand planned recipes into `menu_needs`. `menu_needs` is for SUPPLEMENTS only (open-world side ingredients, spontaneous extras); passing an item the plan already derives (or the list already holds) is harmless — the canonical-id union merges duplicates into one line, never a double-buy. Planned recipes whose ingredient list is not yet derived are returned in `underived` (their items are NOT in the set — compensate explicitly rather than assuming they were bought). `exclude: [names]` drops lines from the to-buy set BEFORE resolution — an order-scoped opt-out (a derived line has no row to remove); it persists nowhere beyond this call. Ambiguous/unavailable items return as a single `checkpoint` (NOT added) for the user to disposition; pantry overlaps return as `partials` to prompt on (confirm via `include_partials`). Resolved items advance to status:in_cart BEFORE the cart write and are rolled back to active if the cart write fails (retryable); if the rollback itself fails, `list` reports `{ advanced: true, rolled_back: false }` — those items are marked in_cart with NO cart write (a visible under-buy), and a retried place_order will NOT re-add them. `overrides: [{ name, sku, brand?, size? }]` forces a specific SKU for a line — to disposition an ambiguous/unavailable item OR to lock a SKU you verified (e.g. an on-sale one from `kroger_prices`); a forced SKU bypasses the matcher but is still revalidated for current availability and returned with FRESH price/on_sale, and one that has gone unavailable is checkpointed rather than carted. NOTE: overrides pin the SKU, not the price — the cart write carries only SKU + quantity, so whether a sale price realizes is Kroger's call at fulfillment (against possibly-stale flyer data). Resolved lines carry `price`/`on_sale` so you can spot a lapsed deal at preview. SKU-cache commit and cart write are independent best-effort — partial status is reported honestly; the cart is never reported populated when its write failed (check `cart.code` for `reauth_required`). A real (non-preview) flush also persists a SEND RECORD — a per-line snapshot of the resolved picks and their resolution-time prices (send-time QUOTES: the cart write carries only SKU + quantity, so fulfillment may differ) — written atomically with the list advance and reported in `send` ({ recorded, id?, error? }); it is the spend-telemetry source materialized when the user later asserts the order was placed (the `in_cart → ordered` advance). A rolled-back cart write deletes it (no phantom order), and a snapshot failure never blocks the flush — `send.recorded: false` with the reason, rows advance without telemetry. The mapping commit covers EVERY resolved line (cache hits included) and carries each resolved product's aisle placement when Kroger reports one; an already-cached row is skipped only when its learned fields (SKU/brand/size/aisle) are identical, otherwise refreshed in place — mappings and placements converge with each order (feeding read_to_buy's enrich walk). The ONLY tool that writes a Kroger cart. Default buy = 1 package per item; set a count via `menu_needs[].quantity` (or the `quantities` map, which overrides it). Lines that defaulted to 1 are returned with `assumed_quantity: true`. preview=true resolves and reports without writing anything.",
       inputSchema: PLACE_ORDER_INPUT_SHAPE,
+      _meta: { ui: { visibility: ["model", "app"] } },
     },
-    (input) => runTool(() => runPlaceOrder(env, tenantId, input, wiring)),
+    (input) => runTool(async () => {
+      if (input.preview_fingerprint) {
+        const { sendOrderReview } = await import("./order-review.js");
+        return sendOrderReview(env, tenantId, {
+          stage: input.stage,
+          preview_fingerprint: input.preview_fingerprint,
+          cleared_cart_ack: input.cleared_cart_ack ?? false,
+          rendered_preview: input.rendered_preview,
+        }, { wiring });
+      }
+      return runPlaceOrder(env, tenantId, input, wiring);
+    }),
   );
 }

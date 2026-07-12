@@ -13,6 +13,7 @@ import {
   updateGroceryRow,
   removeGroceryRow,
   advanceInCartRows,
+  finalizeInCartClaim,
   rollbackInCartRows,
   advanceOrderedRows,
   type SendBatch,
@@ -127,10 +128,12 @@ describe("snapshot at send — the advance batch", () => {
     expect(h.rows("order_send_lines")).toHaveLength(0);
   });
 
-  it("a bare advance (no send) stamps no linkage — a degraded flush never manufactures one", async () => {
+  it("a finalized bare advance leaves no linkage — a degraded flush never manufactures one", async () => {
     const h = sqliteEnv([T]);
     await addGroceryRow(h.env, T, { name: "chicken" }, TODAY);
-    await advanceInCartRows(h.env, T, [{ name: "chicken", key: "chicken" }], TODAY);
+    const lines = [{ name: "chicken", key: "chicken" }];
+    const advance = await advanceInCartRows(h.env, T, lines, TODAY);
+    await finalizeInCartClaim(h.env, T, lines, advance.claimId);
     expect(h.rows<{ status: string; sent_in: string | null }>("grocery_list")[0]).toMatchObject({
       status: "in_cart",
       sent_in: null,

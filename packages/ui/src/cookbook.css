@@ -484,6 +484,39 @@ ul.recipes > li:last-child { border-bottom: 0; }
 .dark .order-result-row.fail { color: #f0b45f; }
 .order-empty { margin-top: 0.9rem; color: var(--muted-foreground); font-size: var(--text-sm); }
 
+/* Shared stateless Order Review (member + MCP). */
+.order-review { border: 1px solid color-mix(in oklch, var(--primary) 35%, var(--border)); background: color-mix(in oklch, var(--primary) 5%, var(--card)); border-radius: var(--radius-lg); padding: 1rem 1.1rem; margin-bottom: 1.5rem; display: grid; gap: .9rem; }
+.order-review > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; }
+.order-review > header h2 { font-size: var(--text-lg); font-weight: 650; }
+.order-review > header p, .order-review-disclaimer { color: var(--muted-foreground); font-size: var(--text-sm); }
+.order-review-tiles { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .55rem; }
+.order-review-tiles > div { border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--card); padding: .65rem .75rem; display: grid; }
+.order-review-tiles strong { font-size: var(--text-lg); }
+.order-review-tiles span { color: var(--muted-foreground); font-size: var(--text-xs); }
+.order-review-warning { display: flex; align-items: center; gap: .5rem; padding: .65rem .75rem; border-radius: var(--radius-md); color: #9a5b0b; border: 1px solid color-mix(in oklch, #d9931f 45%, var(--border)); background: color-mix(in oklch, #d9931f 10%, transparent); }
+.dark .order-review-warning { color: #f0b45f; }
+.order-review > h3 { margin-top: .15rem; font-size: var(--text-sm); font-weight: 650; text-transform: uppercase; letter-spacing: .04em; }
+.order-review > ul { list-style: none; margin: 0; padding: 0; display: grid; gap: .6rem; }
+.order-review > ul > li { display: grid; grid-template-columns: minmax(8rem, 1fr) minmax(12rem, 2fr) auto; align-items: center; gap: .45rem .75rem; padding: .75rem; border: 1px solid var(--border); background: var(--card); border-radius: var(--radius-md); }
+.order-review > ul > li > strong { text-transform: capitalize; }
+.order-review > ul > li > span { color: var(--muted-foreground); font-size: var(--text-sm); }
+.order-review fieldset { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: .45rem .8rem; border: 0; padding: .5rem 0 0; margin: 0; }
+.order-review fieldset legend { width: 100%; font-size: var(--text-xs); font-weight: 600; color: var(--muted-foreground); }
+.order-review fieldset label, .order-review > ul > li > label { display: flex; align-items: center; gap: .35rem; font-size: var(--text-sm); }
+.order-review > ul > li > div { grid-column: 1 / -1; display: flex; align-items: center; justify-content: space-between; gap: .5rem; flex-wrap: wrap; }
+.order-review > ul > li > p { grid-column: 1 / -1; color: var(--muted-foreground); font-size: var(--text-sm); }
+.order-review > ul > li > .input, .order-review > ul > li > label { grid-column: 1 / -1; }
+.order-review > form { display: flex; align-items: end; gap: .55rem; padding-top: .25rem; }
+.order-review > form label { flex: 1; display: grid; gap: .3rem; font-size: var(--text-sm); font-weight: 600; }
+.order-review-footer { position: sticky; bottom: .5rem; z-index: 5; display: flex; align-items: center; justify-content: space-between; gap: 1rem; border: 1px solid var(--border); border-radius: var(--radius-md); background: color-mix(in oklch, var(--card) 92%, transparent); box-shadow: 0 8px 24px color-mix(in oklch, var(--foreground) 10%, transparent); padding: .7rem .8rem; backdrop-filter: blur(8px); }
+.order-review[data-testid="order-review-confirmed"] ol { display: grid; gap: .4rem; padding-left: 1.4rem; }
+.order-review[data-testid="order-review-confirmed"] p { color: var(--muted-foreground); }
+@media (max-width: 640px) {
+  .order-review-tiles { grid-template-columns: 1fr; }
+  .order-review > ul > li { grid-template-columns: 1fr; }
+  .order-review > form, .order-review-footer { align-items: stretch; flex-direction: column; }
+}
+
 /* ── pantry ──────────────────────────────────────────────────────────────── */
 .pantry-group { margin-bottom: 0.5rem; }
 .pantry-group .group-h { text-transform: capitalize; }

@@ -41,16 +41,19 @@ function fakeWiring(overrides: Partial<OrderWiring> = {}): OrderWiring & { resol
         resolved: true,
         sku: `SKU-${name.toLowerCase()}`,
         brand: "Store Brand",
+        description: name,
         size: null,
         price: { regular: 2.5, promo: 0 },
         on_sale: false,
+        fulfillment: { curbside: true, delivery: true },
         reason: "test",
       };
     },
-    revalidateSku: async () => ({ brand: "Store Brand", size: null, price: { regular: 2.5, promo: 2.0 }, on_sale: true }),
+    revalidateSku: async () => ({ brand: "Store Brand", description: "Store Brand item", size: null, price: { regular: 2.5, promo: 2.0 }, on_sale: true, fulfillment: { curbside: true, delivery: true } }),
     getLocationId: async () => "loc-1",
     search: async () => [],
     productById: async () => null,
+    cartAdd: async () => {},
     ...overrides,
   };
 }
@@ -136,14 +139,14 @@ describe("runPlaceOrder — commit paths", () => {
   it("reports the cart honestly when no Kroger link exists (reauth_required), list NOT advanced", async () => {
     const h = sqliteEnv([T]);
     await addGroceryRow(h.env, T, { name: "olive oil" }, TODAY);
-    const result = await run(h, {}, fakeWiring());
+    const result = await run(h, {}, fakeWiring({ cartAdd: undefined }));
     // No stored refresh token → the user client throws ReauthRequiredError before any fetch.
     expect(result.cart.written).toBe(false);
     expect(result.cart.code).toBe("reauth_required");
     expect(result.list.advanced).toBe(false);
-    // SKU-cache commit is independent best-effort and DID land (with the wiring's location).
-    expect(result.sku_cache.committed).toBe(true);
-    expect(h.rows<{ location_id: string }>("sku_cache")[0].location_id).toBe("loc-1");
+    // A failed cart never teaches.
+    expect(result.sku_cache.committed).toBe(false);
+    expect(h.rows("sku_cache")).toHaveLength(0);
     // The row stays active to retry next order.
     expect(h.rows<{ status: string }>("grocery_list")[0].status).toBe("active");
   });
@@ -176,7 +179,7 @@ describe("runPlaceOrder — unchanged baseline (no plan, no new params)", () => 
       resolve: (name) => fakeWiring().resolve(name),
       revalidateSku: async () => null,
       normalize: (n) => n,
-      commitSkuCache: async () => null,
+      commitSkuCache: async () => ({ inserted: [], updated: [], unchanged: [] }),
       cartAdd: async () => {},
       advanceInCart: async () => ({ inserted: [] }),
       rollbackInCart: async () => {},
@@ -233,9 +236,11 @@ describe("runPlaceOrder — SKU-cache aisle capture (member-app-differentiators 
         resolved: true,
         sku: `SKU-${name.toLowerCase()}`,
         brand: "Store Brand",
+        description: name,
         size: null,
         price: { regular: 2.5, promo: 0 },
         on_sale: false,
+        fulfillment: { curbside: true, delivery: true },
         reason: "cache hit (revalidated)",
         aisleLocation: AISLE,
       }),
@@ -265,9 +270,11 @@ describe("runPlaceOrder — SKU-cache aisle capture (member-app-differentiators 
         resolved: true,
         sku: `SKU-${name.toLowerCase()}`,
         brand: "Store Brand",
+        description: name,
         size: "1 lb",
         price: { regular: 9, promo: 0 },
         on_sale: false,
+        fulfillment: { curbside: true, delivery: true },
         reason: "test",
         aisleLocation: { number: "15", description: "Seafood" },
       }),
@@ -338,9 +345,11 @@ describe("runPlaceOrder — SKU-cache aisle capture (member-app-differentiators 
         resolved: true,
         sku: "SKU-new-brand", // the SKU genuinely changed
         brand: "New Brand",
+        description: "New Brand olive oil",
         size: null,
         price: { regular: 3.5, promo: 0 },
         on_sale: false,
+        fulfillment: { curbside: true, delivery: true },
         reason: "test",
         // no aisleLocation — the fresh response carried no placement
       }),
@@ -381,7 +390,7 @@ describe("runPlaceOrder — the send-record snapshot (spend-telemetry)", () => {
     await addGroceryRow(h.env, T, { name: "chicken" }, TODAY);
     // No Kroger link → cartAdd throws reauth_required AFTER the advance+snapshot batch;
     // the rollback deletes the send record alongside its row compensation.
-    const result = await run(h, {}, fakeWiring());
+    const result = await run(h, {}, fakeWiring({ cartAdd: undefined }));
     expect(result.cart.code).toBe("reauth_required");
     expect(result.list).toMatchObject({ advanced: false, rolled_back: true });
     expect(result.send.recorded).toBe(false);
@@ -398,6 +407,7 @@ describe("runPlaceOrder — the send-record snapshot (spend-telemetry)", () => {
     const h = sqliteEnv([T]);
     await addGroceryRow(h.env, T, { name: "chicken" }, TODAY);
     const wiring = fakeWiring({
+      cartAdd: undefined,
       getLocationId: async () => {
         throw new Error("no location resolvable");
       },
@@ -434,11 +444,13 @@ describe("runPlaceOrder — the send-record snapshot (spend-telemetry)", () => {
       key,
       sku: `SKU-${key}`,
       brand: "B",
+      description: key,
       size: null,
       quantity: 1,
       assumed_quantity: true,
       price: { regular: 2, promo: 0 },
       on_sale: false,
+      fulfillment: { curbside: true, delivery: true },
     });
     const { send, snapLines } = await buildKrogerSendSnapshot(
       h.env,
@@ -470,11 +482,13 @@ describe("runPlaceOrder — the send-record snapshot (spend-telemetry)", () => {
       key,
       sku: `SKU-${key}`,
       brand: "B",
+      description: key,
       size: null,
       quantity: 1,
       assumed_quantity: true,
       price: { regular: 4.99, promo: 3.99 },
       on_sale: true,
+      fulfillment: { curbside: true, delivery: true },
     });
     const { snapLines } = await buildKrogerSendSnapshot(
       h.env,

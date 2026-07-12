@@ -21,6 +21,7 @@ export interface AisleLocation {
 export interface CandidateView {
   sku: string;
   brand: string;
+  description: string;
   size: string | null;
   price: { regular: number; promo: number };
   on_sale: boolean;
@@ -30,6 +31,8 @@ export interface CandidateView {
 
 export interface ResolvedLine {
   name: string;
+  /** Exact provider product description; never synthesized from the grocery line. */
+  description: string;
   /**
    * The line's canonical dedup/join key — the `grocery_list.normalized_name` this line advances under
    * (reify-ingredient-display-names Move C): carried from the to-buy line's `key` so advance/rollback
@@ -48,12 +51,14 @@ export interface ResolvedLine {
   price?: { regular: number; promo: number };
   /** Whether the resolved SKU is on sale at resolution (lets the agent spot a lapsed deal). */
   on_sale?: boolean;
+  fulfillment: { curbside: boolean; delivery: boolean };
   /** The resolved product's aisle placement at the caller's location, when Kroger
    *  reports one — threaded into the SKU-cache commit's aisle capture (D5). */
   aisleLocation?: AisleLocation | null;
 }
 
 export interface CheckpointLine {
+  key?: string;
   name: string;
   kind: "ambiguous" | "unavailable";
   candidates?: CandidateView[];
@@ -69,7 +74,7 @@ export interface PartialItem {
 export interface PlaceOrderResult {
   resolved: ResolvedLine[];
   checkpoint: CheckpointLine[];
-  sku_cache: { committed: boolean; error?: string };
+  sku_cache: { committed: boolean; inserted?: string[]; updated?: string[]; unchanged?: string[]; error?: string };
   cart: { written: boolean; count?: number; error?: string; code?: string };
   /** The list advance runs BEFORE the cart write (double-add guard). On a cart
    *  failure the advance is rolled back to `active` (`rolled_back: true`); a failed

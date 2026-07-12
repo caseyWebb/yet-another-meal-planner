@@ -170,32 +170,6 @@ export async function readBrandTiers(env: Env, tenant: string): Promise<Record<s
   return out;
 }
 
-/**
- * Project one family's tier object onto the flat ranked list the matcher's confidence
- * gate consumes: tiers flatten in tier order (within a tier, stored order); don't-care
- * (`{ tiers: [], any_brand: true }`) projects to `[]`. Pure — shared by readBrandPrefs
- * and the matcher tests.
- */
-export function projectBrandTiers(pref: BrandTierPref): string[] {
-  return pref.tiers.flat();
-}
-
-/**
- * The caller's brand preferences (term → rank list), for the matcher — the INTERIM
- * projection of the stored tier model onto the flat shape `src/matching.ts` step 6
- * consumes (via `src/tools.ts` `resolve()`). For singleton tiers the flattening is
- * byte-identical to the pre-tier ranked lists; a multi-brand tier degrades to ordered
- * ranks and `any_brand` alongside non-empty tiers degrades to exhausted-ladder/ask.
- * Band 3's `order-review-rework` moves the matcher onto tiers natively and retires
- * this projection.
- */
-export async function readBrandPrefs(env: Env, tenant: string): Promise<Record<string, string[]>> {
-  const tiers = await readBrandTiers(env, tenant);
-  const out: Record<string, string[]> = {};
-  for (const [term, pref] of Object.entries(tiers)) out[term] = projectBrandTiers(pref);
-  return out;
-}
-
 /** The caller's owned equipment slugs (the makeability gate's left operand). */
 export async function readOwnedEquipment(env: Env, tenant: string): Promise<string[]> {
   const rows = await db(env).all<{ slug: string }>(

@@ -1,179 +1,284 @@
 import { test, expect } from "../fixtures";
 import type { Page } from "@playwright/test";
-import type { GroceryListData } from "../../../../contract/src/grocery";
-import type { PlaceOrderInput, PlaceOrderOutcome } from "../../../src/order-shapes.js";
+import type {
+	OrderReviewData,
+	OrderReviewSendResult,
+} from "../../../../contract/src/order-review";
 
-const base: GroceryListData = {
-  contract_version: 1, snapshot_version: "orders-v1", as_of: "2026-07-12T12:00:00Z",
-  lines: [], to_buy: [], pantry_covered: [], underived: [], location: null, flyer_as_of: null,
-  counts: { to_buy: 0, checked: 0, in_carts: 2, recipes: 0 },
-  in_cart_groups: [{
-    send_id: "send-1", store: "Kroger", location_id: "1", fulfillment: "kroger_online",
-    sent_at: "2026-07-10T12:00:00Z", placed_at: null, awaiting_confirmation: true,
-    estimated_total: 8, flyer_savings: 1, can_mark_placed: true,
-    lines: [
-      { key: "milk", name: "Milk", quantity: 1, row_version: 2, unit_price: 4, savings: 1 },
-      { key: "eggs", name: "Eggs", quantity: 1, row_version: 3, unit_price: 4, savings: 0 },
-    ],
-  }],
+const product = (
+	sku: string,
+	brand: string,
+	description: string,
+	price: number,
+) => ({
+	sku,
+	brand,
+	description,
+	size: "12 oz",
+	price: { regular: price, promo: 0 },
+	on_sale: false,
+	fulfillment: { curbside: true, delivery: true },
+});
+
+function review(overrides: Partial<OrderReviewData> = {}): OrderReviewData {
+	return {
+		contract_version: 1,
+		preview_fingerprint: "sha256:preview-1",
+		grocery_snapshot_version: "sha256:grocery-1",
+		as_of: "2026-07-12T12:00:00Z",
+		store: { name: "Kroger · West 7th", location_id: "L1" },
+		quote_disclaimer: "Current Kroger quotes; fulfillment may differ.",
+		stale_cart_count: 0,
+		cleared_cart_ack_required: false,
+		matched: [
+			{
+				line_key: "salmon",
+				name: "salmon",
+				quantity: 1,
+				assumed_quantity: true,
+				for_recipes: ["miso-salmon"],
+				provenance: "planned",
+				selected: product("SALMON-1", "Kroger", "Atlantic Salmon", 8),
+				selection_source: "matched",
+				options: [product("SALMON-2", "Simple Truth", "Atlantic Salmon", 10)],
+				family_key: "salmon",
+				family_fingerprint: "sha256:salmon",
+			},
+			{
+				line_key: "rice",
+				name: "rice",
+				quantity: 2,
+				assumed_quantity: false,
+				for_recipes: [],
+				provenance: "planned",
+				selected: product("RICE-1", "Kroger", "Long Grain Rice", 4),
+				selection_source: "matched",
+				options: [],
+				family_key: "rice",
+				family_fingerprint: "sha256:rice",
+			},
+		],
+		decisions: [
+			{
+				line_key: "mustard",
+				name: "mustard",
+				quantity: 1,
+				assumed_quantity: true,
+				for_recipes: [],
+				provenance: "planned",
+				kind: "choose_one",
+				candidates: [
+					product("MUSTARD-1", "Maille", "Dijon Mustard", 5),
+					product("MUSTARD-2", "Kroger", "Dijon Mustard", 3),
+				],
+				family_key: "mustard",
+				family_fingerprint: "sha256:mustard",
+				can_save_brand: true,
+				can_search_broader: false,
+				can_search_manual: true,
+			},
+		],
+		left_off: [{ line_key: "mustard", name: "mustard", reason: "undecided" }],
+		underived: ["mystery-stew"],
+		counts: { going_to_cart: 2, needs_decision: 1, left_off: 2 },
+		estimated_total: 16,
+		flyer_savings: null,
+		stage: {
+			skipped: [],
+			quantities: {},
+			selections: [],
+			impulses: [],
+			saved_brands: [],
+		},
+		...overrides,
+	};
+}
+
+const sent: OrderReviewSendResult = {
+	status: "sent",
+	steps: {
+		list: { advanced: true },
+		cart: { written: true, count: 3 },
+		send: {
+			recorded: true,
+			id: "send-review",
+			item_count: 3,
+			estimated_total: 20,
+			flyer_savings: 2,
+		},
+		cache: {
+			committed: true,
+			inserted: ["salmon"],
+			updated: ["mustard"],
+			unchanged: ["rice"],
+		},
+	},
+	left_off: [
+		{ line_key: "mystery-stew", name: "mystery-stew", reason: "underived" },
+	],
+	verified_saved_brands: [{ family_key: "mustard", brand: "Kroger" }],
 };
 
-test.beforeEach(async ({ asMember }) => { await asMember(); });
-
-test("Back to list removes only the selected send line", async ({ groceryPage, page }) => {
-  let current = base;
-  await page.route("**/api/grocery/view", (route) => route.fulfill({ json: current }));
-  await page.route("**/api/grocery/relist", (route) => {
-    current = {
-    ...base, snapshot_version: "orders-v2",
-    lines: [{ key: "milk", name: "Milk", quantity: 1, kind: "grocery", domain: "grocery", origin: "list", checked_at: null, row_version: 3, updated_at: "2026-07-12T12:01:00Z", for_recipes: [] }],
-    to_buy: ["milk"], counts: { ...base.counts, to_buy: 1, in_carts: 1 },
-    in_cart_groups: [{ ...base.in_cart_groups[0], lines: [base.in_cart_groups[0].lines[1]] }],
-    };
-    return route.fulfill({ json: { snapshot: current } });
-  });
-  await groceryPage.goto(); await groceryPage.landmark();
-  await groceryPage.cartItem("milk").getByRole("button", { name: "Back to list" }).click();
-  await expect(groceryPage.item("milk")).toBeVisible();
-  await expect(groceryPage.cartItem("eggs")).toBeVisible();
-});
-
-test("exact mark-placed conflicts replace the stale snapshot and stay honest", async ({ groceryPage, page }) => {
-  await page.route("**/api/grocery/view", (route) => route.fulfill({ json: base }));
-  await page.route("**/api/grocery/mark-placed", (route) => route.fulfill({
-    status: 409, contentType: "application/json",
-    body: JSON.stringify({ error: "conflict", message: "Send membership changed", snapshot: { ...base, snapshot_version: "orders-current", in_cart_groups: [{ ...base.in_cart_groups[0], lines: [base.in_cart_groups[0].lines[1]] }], counts: { ...base.counts, in_carts: 1 } } }),
-  }));
-  await groceryPage.goto(); await groceryPage.landmark();
-  await page.getByRole("button", { name: "Mark order placed" }).click();
-  await expect(page.getByRole("alert")).toContainText("Send membership changed");
-  await expect(groceryPage.cartItem("milk")).toHaveCount(0);
-  await expect(groceryPage.cartItem("eggs")).toBeVisible();
-});
-
-test("exact mark-placed succeeds through the live Worker and advances the seeded send", async ({ groceryPage }) => {
-  await groceryPage.goto(); await groceryPage.landmark();
-  const olive = groceryPage.cartItem("olive oil");
-  await expect(olive).toBeVisible();
-  await olive.locator("xpath=ancestor::*[@data-testid='grocery-cart-group']").getByRole("button", { name: "Mark order placed" }).click();
-  await expect(olive).toHaveCount(0);
-  await expect.poll(() => groceryPage.rowStatus("olive oil")).toBe("ordered");
-});
-
-function outcome(overrides: Partial<PlaceOrderOutcome>): PlaceOrderOutcome {
-  return {
-    resolved: [], checkpoint: [], sku_cache: { committed: false }, cart: { written: false },
-    list: { advanced: false }, send: { recorded: false }, preview: true, partials: [], underived: [],
-    ...overrides,
-  };
+async function fixtureRoutes(page: Page, initial = review()) {
+	const sink: { previews: unknown[]; send?: unknown } = { previews: [] };
+	await page.route("**/api/grocery/order/review", async (route) => {
+		const body = route.request().postDataJSON() as {
+			stage?: OrderReviewData["stage"];
+		};
+		sink.previews.push(body);
+		await route.fulfill({
+			json: { ...initial, stage: body.stage ?? initial.stage },
+		});
+	});
+	await page.route("**/api/grocery/order/search", async (route) => {
+		const body = route.request().postDataJSON() as {
+			mode: "broader" | "manual";
+			line_key: string;
+			query?: string;
+		};
+		await route.fulfill({
+			json: {
+				contract_version: 1,
+				preview_fingerprint: initial.preview_fingerprint,
+				line_key: body.line_key,
+				query: body.query ?? "condiment",
+				mode: body.mode,
+				candidates: [
+					{
+						...product("SEARCH-1", "Kroger", "Spicy Brown Mustard", 3.5),
+						divergence: {
+							rung: body.mode === "manual" ? "manual" : "general",
+							requested_label: body.line_key,
+							searched_label: body.query ?? "condiment",
+							missing_constraints: [],
+							candidate_terms: ["spicy", "brown"],
+						},
+					},
+				],
+			},
+		});
+	});
+	await page.route("**/api/grocery/order/brand", (route) =>
+		route.fulfill({
+			json: {
+				status: "saved",
+				family_key: "mustard",
+				brand: "Kroger",
+				family: { tiers: [["Kroger"]], any_brand: false },
+				family_fingerprint: "sha256:mustard-saved",
+				changed: true,
+			},
+		}),
+	);
+	await page.route("**/api/grocery/order", async (route) => {
+		sink.send = route.request().postDataJSON();
+		await route.fulfill({ json: sent });
+	});
+	return sink;
 }
 
-function resolvedLine(name: string, overrides: Partial<PlaceOrderOutcome["resolved"][number]> = {}) {
-  return {
-    name, key: name, sku: `000${name.length}`, brand: "Store Brand", size: "12 oz", quantity: 1,
-    assumed_quantity: false, price: { regular: 3.5, promo: 0 }, on_sale: false, ...overrides,
-  };
-}
-
-async function interceptOrder(
-  page: Page,
-  fixtures: { preview: PlaceOrderOutcome; commit?: PlaceOrderOutcome },
-  sink: { commitBody?: PlaceOrderInput } = {},
-) {
-  await page.route("**/api/grocery/order", async (route) => {
-    const body = (route.request().postDataJSON() ?? {}) as PlaceOrderInput;
-    if (body.preview) return route.fulfill({ json: fixtures.preview });
-    sink.commitBody = body;
-    return route.fulfill({ json: fixtures.commit ?? fixtures.preview });
-  });
-  return sink;
-}
-
-test("typed preview commits and reports the cart and list writes independently", async ({ page, groceryPage }) => {
-  await groceryPage.deactivateInCart();
-  const preview = outcome({
-    resolved: [resolvedLine("olive oil"), resolvedLine("scallions", { on_sale: true, price: { regular: 2.5, promo: 1.9 } })],
-  });
-  const commit = outcome({ ...preview, preview: false, sku_cache: { committed: true }, cart: { written: true, count: 2 }, list: { advanced: true } });
-  const sink = await interceptOrder(page, { preview, commit });
-  await groceryPage.goto(); await groceryPage.landmark(); await groceryPage.openOrder();
-  await expect(groceryPage.orderLine("olive oil")).toBeVisible();
-  await expect(groceryPage.orderLine("scallions")).toContainText("on sale");
-  await expect(groceryPage.staleWarning()).toHaveCount(0);
-  await groceryPage.commitOrder();
-  await expect(groceryPage.resultCart()).toContainText("2 items sent to the Kroger cart");
-  await expect(groceryPage.resultList()).toContainText("moved to the In cart group");
-  await expect(groceryPage.resultSend()).toContainText("No sent quote was recorded");
-  await expect(groceryPage.resultSkuCache()).toContainText("Product matches were saved");
-  expect(sink.commitBody?.preview).toBeUndefined();
+test.beforeEach(async ({ asMember, groceryPage }) => {
+	await asMember();
+	await groceryPage.deactivateInCart();
 });
 
-test("checkpoint, partial confirmation, quantity, override, and exclusion ride the commit", async ({ page, groceryPage }) => {
-  await groceryPage.deactivateInCart();
-  const preview = outcome({
-    resolved: [resolvedLine("salmon", { assumed_quantity: true }), resolvedLine("rice")],
-    checkpoint: [{ name: "mustard", kind: "ambiguous", message: "several plausible products", candidates: [
-      { sku: "0001", brand: "Maille", size: "7 oz", price: { regular: 4.2, promo: 0 }, on_sale: false, fulfillment: { curbside: true, delivery: true } },
-      { sku: "0002", brand: "Store Brand", size: "8 oz", price: { regular: 2.1, promo: 0 }, on_sale: false, fulfillment: { curbside: true, delivery: false } },
-    ] }],
-    partials: [{ name: "baby spinach", for_recipes: ["viz-miso-salmon"] }], underived: ["viz-beef-ragu"],
-  });
-  const commit = outcome({ preview: false, resolved: preview.resolved, cart: { written: true, count: 3 }, list: { advanced: true }, sku_cache: { committed: true } });
-  const sink = await interceptOrder(page, { preview, commit });
-  await groceryPage.goto(); await groceryPage.landmark(); await groceryPage.openOrder();
-  await expect(page.getByTestId("order-underived")).toContainText("viz-beef-ragu");
-  await groceryPage.setLineQty("salmon", 3);
-  await groceryPage.excludeLine("rice");
-  await groceryPage.pickCandidate("mustard", "0002");
-  await groceryPage.confirmPartial("baby spinach");
-  await groceryPage.commitOrder();
-  expect(sink.commitBody?.quantities).toEqual({ salmon: 3 });
-  expect(sink.commitBody?.exclude).toEqual(["rice"]);
-  expect(sink.commitBody?.overrides).toEqual([{ name: "mustard", sku: "0002" }]);
-  expect(sink.commitBody?.include_partials).toEqual(["baby spinach"]);
+test("shared review stages quantity, skip, choice, brand save, search, and impulse before an honest confirmation", async ({
+	page,
+	groceryPage,
+}) => {
+	const sink = await fixtureRoutes(page);
+	await groceryPage.goto();
+	await groceryPage.landmark();
+	await groceryPage.openOrder();
+	const surface = page.getByTestId("order-review");
+	await expect(surface).toContainText("Kroger · West 7th");
+	await expect(surface.getByText("Quantity 2")).toBeVisible();
+	await surface.getByLabel(/Simple Truth Atlantic Salmon/).check();
+	await surface.getByRole("button", { name: "Increase salmon" }).click();
+	await surface.getByRole("button", { name: "Skip" }).first().click();
+	await surface.getByLabel(/Kroger Dijon Mustard/).check();
+	await surface
+		.getByRole("button", { name: "Save preferred brand" })
+		.last()
+		.click();
+	await surface.getByLabel("Search catalog for mustard").fill("spicy mustard");
+	await surface.getByRole("button", { name: "Search catalog" }).click();
+	await expect(surface.getByText(/Spicy Brown Mustard/)).toBeVisible();
+	await surface.getByLabel("Add something").fill("sparkling water");
+	await surface.getByRole("button", { name: "Add to this order" }).click();
+	await groceryPage.captureForReview("order-review-decisions");
+	await surface.getByRole("button", { name: "Send to Kroger" }).click();
+	await expect(page.getByTestId("order-review-confirmed")).toContainText(
+		"Checkout is still yours",
+	);
+	await expect(page.getByTestId("order-review-confirmed")).toContainText(
+		"2 store matches learned",
+	);
+	await groceryPage.captureForReview("order-review-confirmed");
+	expect(sink.send).toMatchObject({
+		preview_fingerprint: "sha256:preview-1",
+		cleared_cart_ack: false,
+	});
+	expect(
+		(sink.send as { stage: { impulses: unknown[] } }).stage.impulses,
+	).toHaveLength(1);
+	await page.getByRole("button", { name: "Back to grocery" }).click();
+	await expect(page.getByTestId("order-review-confirmed")).toHaveCount(0);
 });
 
-test("failed cart write stays honest and offers Kroger reauthentication", async ({ page, groceryPage }) => {
-  await groceryPage.deactivateInCart();
-  const preview = outcome({ resolved: [resolvedLine("olive oil")] });
-  const commit = outcome({ preview: false, resolved: preview.resolved, sku_cache: { committed: true }, cart: { written: false, code: "reauth_required", error: "Kroger refresh token rejected" }, list: { advanced: false } });
-  await interceptOrder(page, { preview, commit });
-  await groceryPage.goto(); await groceryPage.landmark(); await groceryPage.openOrder(); await groceryPage.commitOrder();
-  await expect(groceryPage.resultCart()).toContainText("NOT written");
-  await expect(groceryPage.resultCart()).not.toContainText("sent to the Kroger cart");
-  await expect(groceryPage.resultCart()).toContainText("stay on your to-buy list");
-  await expect(groceryPage.relinkButton()).toBeVisible();
-  await expect(groceryPage.resultList()).toContainText("not advanced");
-  await expect(groceryPage.resultSend()).toContainText("No sent quote was recorded");
-  await expect(groceryPage.resultSkuCache()).toContainText("Product matches were saved");
+test("stale cart gate and review_changed require explicit reconfirmation", async ({
+	page,
+	groceryPage,
+}) => {
+	const initial = review({
+		stale_cart_count: 2,
+		cleared_cart_ack_required: true,
+	});
+	let sends = 0;
+	await fixtureRoutes(page, initial);
+	await page.unroute("**/api/grocery/order");
+	await page.route("**/api/grocery/order", async (route) => {
+		sends += 1;
+		await route.fulfill({
+			json:
+				sends === 1
+					? {
+							status: "review_changed",
+							preview: { ...initial, preview_fingerprint: "sha256:preview-2" },
+							divergences: [
+								{
+									category: "price",
+									line_key: "salmon",
+									message: "salmon changed price",
+								},
+							],
+						}
+					: sent,
+		});
+	});
+	await groceryPage.goto();
+	await groceryPage.landmark();
+	await groceryPage.openOrder();
+	const surface = page.getByTestId("order-review");
+	await expect(
+		surface.getByRole("button", { name: "Send to Kroger" }),
+	).toBeDisabled();
+	await surface.getByLabel("I've cleared the old Kroger cart").check();
+	await surface.getByRole("button", { name: "Send to Kroger" }).click();
+	await expect(surface.getByRole("alert")).toContainText("review changed");
+	await surface.getByRole("button", { name: "Send to Kroger" }).click();
+	await expect(page.getByTestId("order-review-confirmed")).toBeVisible();
 });
 
-test("reports a failed rollback, surviving send quote, and SKU-cache failure independently", async ({ page, groceryPage }) => {
-  await groceryPage.deactivateInCart();
-  const preview = outcome({ resolved: [resolvedLine("olive oil")] });
-  const commit = outcome({
-    preview: false,
-    resolved: preview.resolved,
-    cart: { written: false, error: "cart unavailable" },
-    list: { advanced: true, rolled_back: false, error: "rollback unavailable" },
-    send: { recorded: true, id: "send-survivor" },
-    sku_cache: { committed: false, error: "cache unavailable" },
-  });
-  await interceptOrder(page, { preview, commit });
-  await groceryPage.goto(); await groceryPage.landmark(); await groceryPage.openOrder(); await groceryPage.commitOrder();
-  await expect(groceryPage.resultCart()).toContainText("list still says In cart");
-  await expect(groceryPage.resultCart()).not.toContainText("stay on your to-buy list");
-  await expect(groceryPage.resultList()).toContainText("marked In cart even though the cart was not written");
-  await expect(groceryPage.resultSend()).toContainText("recorded as send-survivor");
-  await expect(groceryPage.resultSkuCache()).toContainText("cache unavailable");
-});
-
-test("stale cart state gates commit until explicitly acknowledged", async ({ page, groceryPage }) => {
-  await page.route("**/api/grocery/view", (route) => route.fulfill({ json: base }));
-  await interceptOrder(page, { preview: outcome({ resolved: [resolvedLine("olive oil")] }) });
-  await groceryPage.goto(); await groceryPage.landmark(); await groceryPage.openOrder();
-  await expect(groceryPage.staleWarning()).toContainText("never confirmed placed");
-  await expect(groceryPage.commitButton()).toBeDisabled();
-  await groceryPage.ackStaleCart();
-  await expect(groceryPage.commitButton()).toBeEnabled();
+test("offline review is explicit and never queues a send", async ({
+	page,
+	groceryPage,
+	context,
+}) => {
+	await groceryPage.goto();
+	await groceryPage.landmark();
+	await expect(page.getByTestId("order-open")).toBeVisible();
+	await context.setOffline(true);
+	await page.evaluate("window.dispatchEvent(new Event('offline'))");
+	await expect(page.getByTestId("order-open")).toBeDisabled();
 });

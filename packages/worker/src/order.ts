@@ -172,6 +172,12 @@ export interface NewMapping {
   aisleLocation?: AisleLocation | null;
 }
 
+export interface SkuCacheCommitReceipt {
+  inserted: string[];
+  updated: string[];
+  unchanged: string[];
+}
+
 /** Caller-supplied force of a specific SKU for a line — to disposition a
  *  previously-ambiguous/unavailable item, or to lock a SKU the agent verified
  *  (e.g. an on-sale one). The forced SKU is revalidated before it reaches the cart. */
@@ -184,9 +190,11 @@ export interface Override {
 /** Fresh state of a forced-override SKU after one availability + price recheck. */
 export interface RevalidatedSku {
   brand: string;
+  description: string;
   size: string | null;
   price: { regular: number; promo: number };
   on_sale: boolean;
+  fulfillment: { curbside: boolean; delivery: boolean };
   /** The revalidated product's aisle placement, when Kroger reported one (D5). */
   aisleLocation?: AisleLocation | null;
 }
@@ -209,8 +217,8 @@ export interface PlaceOrderDeps {
    * resolution, so this is normalize-only.
    */
   normalize(name: string): string;
-  /** Commit SKU-cache appends; returns the commit sha, or null when nothing was new. Throws on failure. */
-  commitSkuCache(mappings: NewMapping[]): Promise<string | null>;
+  /** Compare/upsert learned mappings and report exact line-key dispositions. */
+  commitSkuCache(mappings: NewMapping[]): Promise<SkuCacheCommitReceipt>;
   /** Write the resolved lines to the Kroger cart. Throws on failure. */
   cartAdd(lines: ResolvedLine[]): Promise<void>;
   /** Advance the resolved lines to status:in_cart in the grocery list (D1-backed),
@@ -221,6 +229,8 @@ export interface PlaceOrderDeps {
    *  rows flip back to status:active; rows the advance INSERTED (per the receipt) are
    *  deleted rather than stranded as never-listed active items. Throws on failure. */
   rollbackInCart(lines: ResolvedLine[], advance: InCartAdvance): Promise<void>;
+  /** Clear a temporary bare-advance ownership token after cart success. */
+  finalizeInCart?(lines: ResolvedLine[], advance: InCartAdvance): Promise<void>;
 }
 
 /** The advanceInCart receipt: which canonical keys the advance INSERTED (vs updated) —
@@ -230,6 +240,7 @@ export interface PlaceOrderDeps {
  *  advance proceeded bare: telemetry never costs the member their groceries). */
 export interface InCartAdvance {
   inserted: string[];
+  claimId?: string;
   sendId?: string;
   sendError?: string;
 }
@@ -249,6 +260,8 @@ export interface PlaceOrderOptions {
    * an un-threaded caller keeps today's behavior.
    */
   resolveKey?: (n: string) => string;
+  /** Last pre-write comparison over this exact resolution pass. Throwing aborts all writes. */
+  beforeCommit?(resolved: ResolvedLine[], checkpoint: CheckpointLine[]): Promise<void> | void;
 }
 
 function msg(e: unknown): string {
@@ -310,6 +323,7 @@ export async function placeOrder(
         const fresh = await deps.revalidateSku(ov.sku);
         if (!fresh) {
           const checkpoint: CheckpointLine = {
+            key: item.key,
             name: item.name,
             kind: "unavailable",
             message: "forced SKU is no longer fulfillable via curbside or delivery",
@@ -318,6 +332,7 @@ export async function placeOrder(
         }
         const line: ResolvedLine = {
           name: item.name,
+          description: fresh.description,
           key: item.key,
           sku: ov.sku,
           brand: fresh.brand || ov.brand || "",
@@ -326,6 +341,7 @@ export async function placeOrder(
           assumed_quantity: item.assumed_quantity,
           price: fresh.price,
           on_sale: fresh.on_sale,
+          fulfillment: fresh.fulfillment,
           aisleLocation: fresh.aisleLocation ?? null,
         };
         return { item, line };
@@ -347,6 +363,7 @@ export async function placeOrder(
     if (r.resolved) {
       resolved.push({
         name: item.name,
+        description: r.description,
         key: item.key,
         sku: r.sku,
         brand: r.brand,
@@ -355,12 +372,13 @@ export async function placeOrder(
         assumed_quantity: item.assumed_quantity,
         price: r.price,
         on_sale: r.on_sale,
+        fulfillment: r.fulfillment,
         aisleLocation: r.aisleLocation ?? null,
       });
     } else if ("ambiguous" in r) {
-      checkpoint.push({ name: item.name, kind: "ambiguous", candidates: r.candidates, message: r.reason });
+      checkpoint.push({ key: item.key, name: item.name, kind: "ambiguous", candidates: r.candidates, message: r.reason });
     } else {
-      checkpoint.push({ name: item.name, kind: "unavailable", message: r.message });
+      checkpoint.push({ key: item.key, name: item.name, kind: "unavailable", message: r.message });
     }
   }
 
@@ -374,18 +392,11 @@ export async function placeOrder(
     preview,
   };
 
-  if (preview || resolved.length === 0) return result;
+  if (preview) return result;
+  await options.beforeCommit?.(resolved, checkpoint);
+  if (resolved.length === 0) return result;
 
-  // 1. SKU-cache append first — a pure hint, so committing it before the cart
-  //    means a cart failure leaves the repo correct and the cart retryable.
-  try {
-    await deps.commitSkuCache(resolved.map((l) => toMapping(l, deps.normalize)));
-    result.sku_cache = { committed: true };
-  } catch (e) {
-    result.sku_cache = { committed: false, error: msg(e) };
-  }
-
-  // 2. Advance the list to in_cart BEFORE the cart write. Failure ordering is
+  // 1. Advance the list to in_cart BEFORE the cart write. Failure ordering is
   //    deliberate: an under-buy (items marked in_cart that never reached the cart)
   //    is visible and self-healing, while the inverse — items left `active` after
   //    a cart write — makes a retried order double-add to the ADDITIVE, unreadable
@@ -410,7 +421,7 @@ export async function placeOrder(
     return result;
   }
 
-  // 3. Cart write. On failure, undo the advance (pre-existing rows back to
+  // 2. Cart write. On failure, undo the advance (pre-existing rows back to
   //    `active`, advance-inserted rows deleted — per the receipt) so the next
   //    order retries them. If the ROLLBACK itself fails, do NOT throw: report
   //    { advanced: true, rolled_back: false } — the items are marked in_cart
@@ -434,6 +445,25 @@ export async function placeOrder(
       // Rollback failed: the send remains alongside the stranded in_cart rows (the
       // existing visible under-buy posture) — result.send keeps reporting it.
     }
+    return result;
+  }
+
+  // A temporary claim cleanup happens only after Kroger accepted the additive cart.
+  // It is bookkeeping: failure must never roll rows back or describe the cart as
+  // failed, which would make a retry double-add products Kroger already accepted.
+  try {
+    await deps.finalizeInCart?.(resolved, advance);
+  } catch (e) {
+    result.list = { advanced: true, error: `order claim cleanup failed after cart success: ${msg(e)}` };
+  }
+
+  // 3. Learning happens only after Kroger accepted the cart. A cart failure never
+  // teaches a mapping; a cache failure never rolls groceries back.
+  try {
+    const receipt = await deps.commitSkuCache(resolved.map((line) => toMapping(line, deps.normalize)));
+    result.sku_cache = { committed: true, ...receipt };
+  } catch (e) {
+    result.sku_cache = { committed: false, inserted: [], updated: [], unchanged: [], error: msg(e) };
   }
 
   return result;

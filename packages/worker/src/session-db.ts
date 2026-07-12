@@ -579,17 +579,19 @@ export function groceryUpsertStmt(
   tenant: string,
   item: GroceryItem,
   resolve: (n: string) => string,
+  claim?: { expectedActiveVersion: number | null; token: string },
 ): D1PreparedStatement {
   return db(env).prepare(
     "INSERT INTO grocery_list (tenant, name, normalized_name, quantity, kind, domain, status, " +
       "source, for_recipes, note, added_at, ordered_at, display_name, sent_in, checked_at, row_version, updated_at) " +
       "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17) " +
-      "ON CONFLICT(tenant, normalized_name) DO UPDATE SET " +
+      (claim?.expectedActiveVersion === null ? "ON CONFLICT(tenant, normalized_name) DO NOTHING" : "ON CONFLICT(tenant, normalized_name) DO UPDATE SET " +
       "name = excluded.name, quantity = excluded.quantity, kind = excluded.kind, " +
       "domain = excluded.domain, status = excluded.status, source = excluded.source, " +
       "for_recipes = excluded.for_recipes, note = excluded.note, ordered_at = excluded.ordered_at, " +
       "display_name = excluded.display_name, sent_in = excluded.sent_in, " +
-      "decision_owner_token = NULL, row_version = grocery_list.row_version + 1, updated_at = ?18",
+      "decision_owner_token = NULL, row_version = grocery_list.row_version + 1, updated_at = ?18" +
+      (claim ? " WHERE grocery_list.status = 'active' AND grocery_list.row_version = ?19" : "")),
     tenant,
     item.name,
     // Persist the STORED key the item carries (add-by-id rows key on the given id, which is NOT
@@ -611,7 +613,8 @@ export function groceryUpsertStmt(
     item.checked_at ?? null,
     item.row_version ?? 1,
     item.updated_at ?? new Date().toISOString(),
-    new Date().toISOString(),
+    ...(claim?.expectedActiveVersion === null ? [] : [claim?.token ?? new Date().toISOString()]),
+    ...(claim?.expectedActiveVersion != null ? [claim.expectedActiveVersion] : []),
   );
 }
 
@@ -871,7 +874,8 @@ export async function advanceOrderedRows(
 /** The send-record rider an order-flush advance composes into its batch (spend-telemetry):
  *  the send id stamps each advanced row's `sent_in`, and the snapshot statements
  *  (`snapshotStatements(...)`) land in the SAME batch — the send exists iff the advance
- *  succeeded. Absent (a bare advance), rows advance with no linkage and no snapshot. */
+ *  succeeded. A bare advance uses a temporary ownership token until its caller confirms
+ *  the external cart write succeeded; it never creates a durable send snapshot. */
 export interface SendBatch {
   id: string;
   statements: D1PreparedStatement[];
@@ -886,8 +890,8 @@ export interface SendBatch {
  *
  * With a `send` rider the advance is a SNAPSHOT-WRITING advance (spend-telemetry): the
  * send-record statements join this same atomic batch and every advanced row is stamped
- * `sent_in = send.id`. Without one, `sent_in` is left as-is (a bare advance stamps
- * nothing — a manual or degraded advance never manufactures a linkage).
+ * `sent_in = send.id`. Without one, the advance stamps a temporary ownership token
+ * that the caller finalizes after the external cart write succeeds.
  */
 export async function advanceInCartRows(
   env: Env,
@@ -895,7 +899,7 @@ export async function advanceInCartRows(
   lines: { name: string; key?: string }[],
   today: string,
   send?: SendBatch,
-): Promise<{ inserted: string[] }> {
+): Promise<{ inserted: string[]; claimId: string }> {
   const ctx = await ingredientContext(env).catch(() => emptyIngredientContext(env));
   const current = await readGroceryList(env, tenant);
   // Advanced lines are resolved grocery purchases (food) — key existing rows by their STORED
@@ -906,6 +910,8 @@ export async function advanceInCartRows(
   const byKey = new Map(current.map((it) => [storedGroceryKey(it, ctx.resolve), it]));
   const stmts: D1PreparedStatement[] = send ? [...send.statements] : [];
   const inserted: string[] = [];
+  const claimId = send?.id ?? `order-claim:${crypto.randomUUID()}`;
+  const claimedKeys: string[] = [];
   for (const line of lines) {
     const key = line.key ?? ctx.resolve(line.name);
     const existing = byKey.get(key);
@@ -925,12 +931,44 @@ export async function advanceInCartRows(
           note: null,
           added_at: today,
           ordered_at: null,
-          sent_in: send?.id ?? null,
+          sent_in: claimId,
         };
-    stmts.push(groceryUpsertStmt(env, tenant, next, ctx.resolve));
+    next.sent_in = claimId;
+    claimedKeys.push(key);
+    stmts.push(groceryUpsertStmt(env, tenant, next, ctx.resolve,
+      { expectedActiveVersion: existing ? existing.row_version ?? 1 : null, token: new Date().toISOString() }));
   }
   if (stmts.length > 0) await db(env).batch(stmts);
-  return { inserted };
+  // D1 serializes the conditional claims in the batch. A competing confirmation that
+  // read the same active version performs a zero-row update; only our unique token can
+  // prove this advance owns every line before any additive cart call.
+  for (const key of claimedKeys) {
+    const claimed = await db(env).first<{ sent_in: string | null }>(
+      "SELECT sent_in FROM grocery_list WHERE tenant=?1 AND normalized_name=?2 AND status='in_cart'", tenant, key,
+    );
+    if (claimed?.sent_in !== claimId) {
+      // A multi-line request can win only its non-overlapping rows. Compensate every
+      // row this token did win before rejecting, otherwise that subset is stranded
+      // in_cart even though no additive cart write occurred. Ownership predicates in
+      // rollbackInCartRows keep this from touching a concurrent winner's rows.
+      await rollbackInCartRows(env, tenant, lines, inserted, send?.id, claimId);
+      throw new ToolError("conflict", "order review changed while claiming grocery lines");
+    }
+  }
+  return { inserted, claimId };
+}
+
+export async function finalizeInCartClaim(env: Env, tenant: string, lines: { name: string; key?: string }[], claimId: string): Promise<void> {
+  if (!claimId.startsWith("order-claim:")) return;
+  const ctx = await ingredientContext(env, { capture: false }).catch(() => emptyIngredientContext(env));
+  for (const line of lines) {
+    const key = line.key ?? ctx.resolve(line.name);
+    const result = await db(env).run(
+      "UPDATE grocery_list SET sent_in=NULL, row_version=row_version+1, updated_at=?1 WHERE tenant=?2 AND normalized_name=?3 AND status='in_cart' AND sent_in=?4",
+      new Date().toISOString(), tenant, key, claimId,
+    );
+    if (result.changes !== 1) throw new ToolError("conflict", "order claim changed before finalization");
+  }
 }
 
 /**
@@ -953,22 +991,35 @@ export async function rollbackInCartRows(
   lines: { name: string; key?: string }[],
   inserted: string[] = [],
   sendId?: string,
+  claimId?: string,
 ): Promise<void> {
   const ctx = await ingredientContext(env).catch(() => emptyIngredientContext(env));
-  const current = await readGroceryList(env, tenant);
+  if (!claimId) {
+    const current = await readGroceryList(env, tenant);
+    const byKey = new Map(current.map((item) => [storedGroceryKey(item, ctx.resolve), item]));
+    const insertedKeys = new Set(inserted);
+    const stmts: D1PreparedStatement[] = sendId ? deleteSendStatements(env, sendId) : [];
+    for (const line of lines) {
+      const key = line.key ?? ctx.resolve(line.name);
+      const existing = byKey.get(key);
+      if (!existing || existing.status !== "in_cart") continue;
+      stmts.push(insertedKeys.has(key)
+        ? db(env).prepare("DELETE FROM grocery_list WHERE tenant = ?1 AND normalized_name = ?2", tenant, key)
+        : groceryUpsertStmt(env, tenant, { ...existing, status: "active", sent_in: null }, ctx.resolve));
+    }
+    if (stmts.length > 0) await db(env).batch(stmts);
+    return;
+  }
   // Key existing rows by their STORED `normalized_name`, mirroring the advance this compensates —
   // look up by the line's explicit stored key (place_order's `ResolvedLine.key`) or resolve(name).
-  const byKey = new Map(current.map((it) => [storedGroceryKey(it, ctx.resolve), it]));
   const insertedKeys = new Set(inserted);
   const stmts: D1PreparedStatement[] = sendId ? deleteSendStatements(env, sendId) : [];
   for (const line of lines) {
     const key = line.key ?? ctx.resolve(line.name);
-    const existing = byKey.get(key);
-    if (!existing || existing.status !== "in_cart") continue;
     stmts.push(
       insertedKeys.has(key)
-        ? db(env).prepare("DELETE FROM grocery_list WHERE tenant = ?1 AND normalized_name = ?2", tenant, key)
-        : groceryUpsertStmt(env, tenant, { ...existing, status: "active", sent_in: null }, ctx.resolve),
+        ? db(env).prepare("DELETE FROM grocery_list WHERE tenant=?1 AND normalized_name=?2 AND status='in_cart'" + (claimId ? " AND sent_in=?3" : ""), tenant, key, ...(claimId ? [claimId] : []))
+        : db(env).prepare("UPDATE grocery_list SET status='active', sent_in=NULL, row_version=row_version+1, updated_at=?1 WHERE tenant=?2 AND normalized_name=?3 AND status='in_cart'" + (claimId ? " AND sent_in=?4" : ""), new Date().toISOString(), tenant, key, ...(claimId ? [claimId] : [])),
     );
   }
   if (stmts.length > 0) await db(env).batch(stmts);
