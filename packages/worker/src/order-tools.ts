@@ -126,7 +126,8 @@ interface PriorLearned {
  * never overwrites a stored placement with NULL — it either skips (same SKU/brand/size)
  * or, on a genuine change, carries the prior row's placement forward. Only a PRESENT
  * fresh placement ever overwrites a stored one. The SKU cache is shared corpus — no
- * tenant column. Returns null (D1 has no commit sha).
+ * tenant column. Returns an exact inserted/updated/unchanged receipt; there is no
+ * repository commit SHA because D1 is the authoritative store.
  */
 export function makeCommitSkuCache(env: Env, getLocationId: () => Promise<string>) {
   return async (mappings: NewMapping[]): Promise<SkuCacheCommitReceipt> => {

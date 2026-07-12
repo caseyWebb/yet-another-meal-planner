@@ -17,7 +17,10 @@ export function orderReviewText(review: Awaited<ReturnType<typeof readOrderRevie
     ...review.matched.map((line) => `- ${line.display_name ?? line.name}: ${line.selected.brand} ${line.selected.description}, quantity ${line.quantity}`),
     ...review.decisions.map((line) => `- ${line.name}: ${line.kind === "choose_one" ? "choose one" : "unavailable"}`),
   ];
+  if (review.cleared_cart_ack_required) lines.push(`${review.stale_cart_count} item${review.stale_cart_count === 1 ? "" : "s"} from an earlier send require cart-clearance acknowledgement.`);
   if (review.estimated_total != null) lines.push(`Current estimated total: $${review.estimated_total.toFixed(2)}.`);
+  if (review.flyer_savings != null) lines.push(`Current flyer savings: $${review.flyer_savings.toFixed(2)}.`);
+  if (review.left_off.length) lines.push("Left off:", ...review.left_off.map((line) => `- ${line.name}: ${line.reason}`));
   lines.push(review.quote_disclaimer);
   return lines.join("\n");
 }
