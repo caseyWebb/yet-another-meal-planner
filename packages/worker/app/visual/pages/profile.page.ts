@@ -5,6 +5,7 @@
 // wands and per-meal-group footer cards, which replaced the standalone reconciliation queue).
 import { expect } from "@playwright/test";
 import { AppPage, type Locator } from "./base.page";
+import { SEED } from "../../../admin/visual/seed.mjs";
 
 type Meal = "breakfast" | "lunch" | "dinner";
 
@@ -38,6 +39,45 @@ export class ProfilePage extends AppPage {
 
   async openTab(tab: "taste" | "prefs" | "vibes"): Promise<void> {
     await this.page.getByTestId(`profile-tab-${tab}`).click();
+  }
+
+  /**
+   * Reset casey's mutable PREFERENCES — the per-meal cadence, the weekly budget, and the
+   * brand-tier families — to the exact seed via a DIRECT, AWAITED merge-patch through the
+   * browser session (mirrors `competingTasteWrite`: fresh GET for the ETag, PATCH under
+   * If-Match + the CSRF header, assert 200). It writes through the API, never the optimistic
+   * UI (steppers/toggles read a stale display and race the server reconcile — the exact
+   * defect that let a failed attempt poison its retry). Deterministic BY CONSTRUCTION: one
+   * awaited write, no optimistic UI, no reload race, no reconcile. Wired as the prefs specs'
+   * `beforeEach` so every run — first attempt, Playwright retry, `--repeat-each` iteration —
+   * starts from the identical seed and a poisoned prior run cannot leak forward. Seed values
+   * mirror `admin/visual/seed.mjs` (profile.cadence / profile.weekly_budget / SEED.app.brands).
+   */
+  async resetPrefs(): Promise<void> {
+    const ladder = SEED.app.brands.ladder; // butter → [["Kerrygold"], ["store brand"]], any_brand off
+    const dontCare = SEED.app.brands.dontCare; // yellow_onion → any-brand
+    const patch = {
+      cadence: { breakfast: 2, lunch: 1, dinner: 4 }, // seed.mjs profile.cadence
+      weekly_budget: 95, // seed.mjs profile.weekly_budget
+      brands: {
+        [ladder.term]: { tiers: ladder.tiers, any_brand: false },
+        [dontCare.term]: { tiers: [], any_brand: true },
+        // The remove-family spec adds a "pasta" family; a merge-patch `null` deletes it (a
+        // no-op when it was never added), so a retry starts from the seed's two families only.
+        pasta: null,
+      },
+    };
+    const status = await this.page.evaluate(async (p: Record<string, unknown>) => {
+      const read = await fetch("/api/profile/preferences");
+      const etag = read.headers.get("etag") ?? "";
+      const res = await fetch("/api/profile/preferences", {
+        method: "PATCH",
+        headers: { "content-type": "application/json", "X-App-Csrf": "1", "If-Match": etag },
+        body: JSON.stringify({ patch: p }),
+      });
+      return res.status;
+    }, patch);
+    if (status !== 200) throw new Error(`prefs reset failed (${status})`);
   }
 
   // --- taste tab: the class (a) markdown editors -----------------------------
@@ -110,11 +150,6 @@ export class ProfilePage extends AppPage {
   async setCadence(meal: Meal, delta: number): Promise<void> {
     const btn = this.cadenceItem(meal).getByTestId(delta > 0 ? "cadence-inc" : "cadence-dec");
     for (let i = 0; i < Math.abs(delta); i++) await this.awaitPreferencesSave(() => btn.click());
-  }
-
-  /** The meal's current weekly-cadence number (for an idempotent reset to a known value). */
-  async cadenceValue(meal: Meal): Promise<number> {
-    return Number(await this.cadenceItem(meal).getByTestId("cadence-n").textContent());
   }
 
   async expectCadence(meal: Meal, n: number): Promise<void> {
@@ -258,7 +293,11 @@ export class ProfilePage extends AppPage {
   }
 
   async applyRowSuggestion(text: string): Promise<void> {
-    await this.vibeRow(text).getByTestId("suggest-apply").click();
+    // Applying confirms the proposal server-side; wait for that write so a following reload
+    // can't race it. Proposals aren't API-resettable (no member endpoint recreates a seeded
+    // proposal), so this determinism is what keeps the spec retry-safe — a first attempt that
+    // can't flake never resolves the proposal out from under its own retry.
+    await this.awaitProposalConfirm(() => this.vibeRow(text).getByTestId("suggest-apply").click());
   }
 
   async dismissRowSuggestion(text: string): Promise<void> {
@@ -271,11 +310,30 @@ export class ProfilePage extends AppPage {
   }
 
   async addGroupSuggestion(meal: Meal): Promise<void> {
-    await this.addSuggestCard(meal).getByTestId("add-suggest-add").click();
+    // Confirms the add_vibe proposal server-side; wait for that write so the spec's reload
+    // (which asserts the vibe persisted) can't race it — and so a first attempt can't flake
+    // and resolve the (non-API-resettable) proposal out from under its retry.
+    await this.awaitProposalConfirm(() => this.addSuggestCard(meal).getByTestId("add-suggest-add").click());
   }
 
   async dismissGroupSuggestion(meal: Meal): Promise<void> {
     await this.addSuggestCard(meal).getByTestId("add-suggest-dismiss").click();
+  }
+
+  /** Run `trigger` (a proposal-apply/add click) and resolve only once the confirm write —
+   *  `POST /api/vibes/proposals/:id/confirm` — has landed ok, so a following reload/assertion
+   *  can't race the optimistic mutation. A real save signal, never a fixed wait. */
+  private async awaitProposalConfirm(trigger: () => Promise<void>): Promise<void> {
+    await Promise.all([
+      this.page.waitForResponse(
+        (r) =>
+          r.request().method() === "POST" &&
+          r.url().includes("/api/vibes/proposals/") &&
+          r.url().endsWith("/confirm") &&
+          r.ok(),
+      ),
+      trigger(),
+    ]);
   }
 
   vibesTab(): Locator {

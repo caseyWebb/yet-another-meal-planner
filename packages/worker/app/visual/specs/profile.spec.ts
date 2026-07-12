@@ -10,6 +10,11 @@ import { SEED } from "../../../admin/visual/seed.mjs";
 
 test.beforeEach(async ({ asMember, profilePage }) => {
   await asMember();
+  // Reset the mutable prefs (cadence, weekly budget, brand tiers) to the exact seed via a
+  // DIRECT, AWAITED API write BEFORE loading the page — deterministic by construction, so
+  // every attempt/retry/repeat starts from an identical baseline and a poisoned prior run
+  // (a mutating spec that failed mid-way, leaving D1 off-seed) cannot leak into the next.
+  await profilePage.resetPrefs();
   await profilePage.goto();
   await profilePage.landmark();
 });
@@ -37,13 +42,8 @@ test("per-meal cadence steppers persist through the merge-patch (reload keeps th
   profilePage,
 }) => {
   await profilePage.openTab("prefs");
-  // Idempotent start: this test mutates breakfast and Playwright's retry (and --repeat-each)
-  // reuse this server-side D1, so a prior attempt/iteration may have left breakfast off its
-  // seeded 2. Reset it to the seed deterministically first (setCadence waits for each merge-
-  // patch to land) so the assertions below hold regardless of where any prior run ended.
-  const bf = await profilePage.cadenceValue("breakfast");
-  if (bf !== 2) await profilePage.setCadence("breakfast", 2 - bf);
-  // The seed's cadence map { breakfast: 2, lunch: 1, dinner: 4 }.
+  // The seed's cadence map { breakfast: 2, lunch: 1, dinner: 4 } (the beforeEach direct-API
+  // reset re-establishes it, so this holds on every attempt/retry regardless of a prior run).
   await profilePage.expectCadence("breakfast", 2);
   await profilePage.expectCadence("dinner", 4);
   // Bumping ONE meal is a per-key merge — the others survive.
@@ -54,22 +54,15 @@ test("per-meal cadence steppers persist through the merge-patch (reload keeps th
   await profilePage.expectCadence("breakfast", 3);
   await profilePage.expectCadence("dinner", 4); // untouched by the breakfast patch
   await profilePage.captureForReview("profile-prefs");
-  // Restore the seed so a repeated run (or the next spec) sees the canonical { breakfast: 2 }.
-  await profilePage.setCadence("breakfast", -1);
 });
 
 test("the weekly budget sets, then clears to UNSET (a clear writes null, never 0)", async ({
   profilePage,
 }) => {
   await profilePage.openTab("prefs");
-  // Idempotent start: this test ends UNSET and Playwright's retry (and --repeat-each) reuse
-  // this server-side D1, so a prior attempt/iteration may have left the budget at 120 or
-  // unset. Establish the seeded 95 deterministically first (setBudget waits for the merge-
-  // patch to land) so a poisoned prior state can't fail the round-trip assertions below.
-  await profilePage.setBudget(95);
-  await profilePage.goto();
-  await profilePage.openTab("prefs");
-  await profilePage.expectBudget(95); // the seeded budget, re-established above
+  // The seeded budget is 95 (the beforeEach direct-API reset re-establishes it, so this holds
+  // on every attempt/retry even though this test ends UNSET).
+  await profilePage.expectBudget(95);
   await profilePage.setBudget(120);
   await profilePage.goto();
   await profilePage.openTab("prefs");
