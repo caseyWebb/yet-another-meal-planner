@@ -190,9 +190,11 @@ export interface Override {
 /** Fresh state of a forced-override SKU after one availability + price recheck. */
 export interface RevalidatedSku {
   brand: string;
+  description: string;
   size: string | null;
   price: { regular: number; promo: number };
   on_sale: boolean;
+  fulfillment: { curbside: boolean; delivery: boolean };
   /** The revalidated product's aisle placement, when Kroger reported one (D5). */
   aisleLocation?: AisleLocation | null;
 }
@@ -327,6 +329,7 @@ export async function placeOrder(
         }
         const line: ResolvedLine = {
           name: item.name,
+          description: fresh.description,
           key: item.key,
           sku: ov.sku,
           brand: fresh.brand || ov.brand || "",
@@ -335,6 +338,7 @@ export async function placeOrder(
           assumed_quantity: item.assumed_quantity,
           price: fresh.price,
           on_sale: fresh.on_sale,
+          fulfillment: fresh.fulfillment,
           aisleLocation: fresh.aisleLocation ?? null,
         };
         return { item, line };
@@ -356,6 +360,7 @@ export async function placeOrder(
     if (r.resolved) {
       resolved.push({
         name: item.name,
+        description: r.description,
         key: item.key,
         sku: r.sku,
         brand: r.brand,
@@ -364,6 +369,7 @@ export async function placeOrder(
         assumed_quantity: item.assumed_quantity,
         price: r.price,
         on_sale: r.on_sale,
+        fulfillment: r.fulfillment,
         aisleLocation: r.aisleLocation ?? null,
       });
     } else if ("ambiguous" in r) {

@@ -1,6 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { registerAppResource, registerAppTool, RESOURCE_MIME_TYPE } from "@modelcontextprotocol/ext-apps/server";
-import { OrderReviewStageSchema } from "@yamp/contract";
+import { CatalogSearchResultSchema, OrderReviewDataSchema, OrderReviewStageSchema } from "@yamp/contract";
 import { z } from "zod";
 import type { Env } from "./env.js";
 import { ToolError, fail } from "./errors.js";
@@ -22,11 +22,13 @@ export function orderReviewText(review: Awaited<ReturnType<typeof readOrderRevie
   return lines.join("\n");
 }
 
-async function result(body: () => Promise<unknown>) {
+async function result(body: () => Promise<unknown>, kind: "review" | "search" | "receipt" = "receipt") {
   try {
     const value = await body();
-    const review = value as Awaited<ReturnType<typeof readOrderReview>>;
-    return { structuredContent: value as Record<string, unknown>, content: [{ type: "text" as const, text: "contract_version" in review ? orderReviewText(review) : JSON.stringify(value) }] };
+    if (kind === "review") OrderReviewDataSchema.parse(value);
+    if (kind === "search") CatalogSearchResultSchema.parse(value);
+    const text = kind === "review" ? orderReviewText(value as Awaited<ReturnType<typeof readOrderReview>>) : JSON.stringify(value);
+    return { structuredContent: value as Record<string, unknown>, content: [{ type: "text" as const, text }] };
   } catch (error) {
     if (error instanceof ToolError) return fail(error.toShape());
     return fail({ error: "upstream_unavailable", message: error instanceof Error ? error.message : String(error) });
@@ -47,21 +49,21 @@ export function registerOrderReviewWidget(server: McpServer, env: Env, tenant: s
   registerAppTool(server, "display_order_review", {
     title: "Display order review", description: "Render a fresh Kroger order review. Prices are quotes and unresolved choices require member confirmation.",
     inputSchema: {}, _meta: { ui: { resourceUri: ORDER_REVIEW_WIDGET_URI } },
-  }, async () => ({ ...(await result(() => readOrderReview(env, tenant, undefined, deps))), _meta: { ui: { resourceUri: ORDER_REVIEW_WIDGET_URI } } }));
+  }, async () => ({ ...(await result(() => readOrderReview(env, tenant, undefined, deps), "review")), _meta: { ui: { resourceUri: ORDER_REVIEW_WIDGET_URI } } }));
   registerAppTool(server, "read_order_review", {
     title: "Read order review", description: "App-callable empty or staged review re-preview.", inputSchema: { stage: OrderReviewStageSchema.optional() },
     _meta: { ui: { visibility: ["app"] } },
-  }, async ({ stage }) => result(() => readOrderReview(env, tenant, stage, deps)));
+  }, async ({ stage }) => result(() => readOrderReview(env, tenant, stage, deps), "review"));
   registerAppTool(server, "search_order_broader", {
     title: "Search broader", description: "App-callable bounded factual broader search.",
     inputSchema: { line_key: z.string(), preview_fingerprint: z.string(), stage: OrderReviewStageSchema.optional() }, _meta: { ui: { visibility: ["app"] } },
-  }, async ({ line_key, preview_fingerprint, stage }) => result(() => searchOrderBroader(env, tenant, line_key, preview_fingerprint, stage, deps)));
+  }, async ({ line_key, preview_fingerprint, stage }) => result(() => searchOrderBroader(env, tenant, line_key, preview_fingerprint, stage, deps), "search"));
   registerAppTool(server, "search_order_catalog", {
     title: "Search Kroger catalog", description: "App-callable bounded manual catalog search.",
     inputSchema: { line_key: z.string(), preview_fingerprint: z.string(), stage: OrderReviewStageSchema.optional(), query: z.string().min(2).max(80) }, _meta: { ui: { visibility: ["app"] } },
-  }, async ({ line_key, preview_fingerprint, stage, query }) => result(() => searchOrderCatalog(env, tenant, line_key, preview_fingerprint, stage, query, deps)));
+  }, async ({ line_key, preview_fingerprint, stage, query }) => result(() => searchOrderCatalog(env, tenant, line_key, preview_fingerprint, stage, query, deps), "search"));
   registerAppTool(server, "save_order_brand_preference", {
     title: "Save preferred brand", description: "App-callable narrow family preference merge.",
-    inputSchema: { family_key: z.string(), line_key: z.string(), brand: z.string(), expected_family_fingerprint: z.string(), preview_fingerprint: z.string() }, _meta: { ui: { visibility: ["app"] } },
+    inputSchema: { family_key: z.string(), line_key: z.string(), brand: z.string(), expected_family_fingerprint: z.string(), preview_fingerprint: z.string(), stage: OrderReviewStageSchema }, _meta: { ui: { visibility: ["app"] } },
   }, async (input) => result(() => saveOrderReviewBrand(env, tenant, input, deps)));
 }

@@ -33,7 +33,7 @@ describe("Order Review shared contract", () => {
       store: { name: "Kroger", location_id: "L1" }, quote_disclaimer: "quote", stale_cart_count: 0, cleared_cart_ack_required: false,
       matched: [], decisions: [], left_off: [], underived: [], counts: { going_to_cart: 0, needs_decision: 0, left_off: 0 },
       estimated_total: null, flyer_savings: null,
-      stage: { ...emptyOrderReviewStage(), selections: [{ line_key: "milk", sku: "1", source: "manual", price: 0.01 }] },
+      stage: { ...emptyOrderReviewStage(), selections: [{ line_key: "milk", sku: "1", source: "manual", divergence: { rung: "manual", requested_label: "milk", searched_label: "milk", missing_constraints: [], candidate_terms: [] }, price: 0.01 }] },
     };
     const parsed = OrderReviewDataSchema.parse(review);
     expect(parsed.stage.selections[0]).not.toHaveProperty("price");

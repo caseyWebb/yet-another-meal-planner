@@ -15,16 +15,42 @@ import { db } from "./db.js";
 import { ToolError } from "./errors.js";
 import { isFulfillable, isOnSale, relevanceScore } from "./matching.js";
 import type { KrogerCandidate } from "./kroger.js";
-import { readBrandTiers } from "./profile-db.js";
+import { readBrandTiers, readPreferences } from "./profile-db.js";
+import { KROGER_STORE } from "./flyer-warm.js";
 import { readGrocerySnapshot } from "./grocery-snapshot.js";
 import { runPlaceOrder, type OrderWiring } from "./order-tools.js";
 import type { PlaceOrderOutcome, ResolvedLine } from "./order-shapes.js";
 import type { BrandTierPref } from "./preferences.js";
+import { parseSize } from "./unit-price.js";
 
 export interface OrderReviewDeps { wiring: OrderWiring }
 
+export async function requireKrogerOrderReview(env: Env, tenant: string): Promise<void> {
+  const stores = (await readPreferences(env, tenant))?.stores as Record<string, unknown> | undefined;
+  const primary = typeof stores?.primary === "string" && stores.primary.trim()
+    ? stores.primary.trim().toLowerCase() : KROGER_STORE;
+  if (primary === KROGER_STORE) return;
+  const fulfillment = typeof stores?.fulfillment === "string" ? stores.fulfillment : null;
+  throw new ToolError("unsupported", fulfillment === "satellite"
+    ? "the primary store is satellite-fulfilled — the cart is filled by the satellite helper, not a Kroger order"
+    : "the primary store is a walk store — shop it as an in-store walk, not a Kroger order",
+  { primary, flow: fulfillment === "satellite" ? "satellite-cart-fill" : "in-store-walk" });
+}
+
 function effectivePrice(candidate: KrogerCandidate): number {
   return isOnSale(candidate) ? candidate.price.promo : candidate.price.regular;
+}
+
+function compareCatalogCandidates(a: KrogerCandidate, b: KrogerCandidate): number {
+  const sale = Number(isOnSale(b)) - Number(isOnSale(a));
+  if (sale) return sale;
+  const as = a.size ? parseSize(a.size) : null;
+  const bs = b.size ? parseSize(b.size) : null;
+  if (as && bs && as.dimension === bs.dimension) {
+    const unit = effectivePrice(a) / as.quantity - effectivePrice(b) / bs.quantity;
+    if (unit) return unit;
+  }
+  return effectivePrice(a) - effectivePrice(b) || a.productId.localeCompare(b.productId);
 }
 
 function product(candidate: KrogerCandidate): OrderReviewProduct {
@@ -42,9 +68,9 @@ function product(candidate: KrogerCandidate): OrderReviewProduct {
 
 function fromResolved(line: ResolvedLine): OrderReviewProduct {
   return {
-    sku: line.sku, brand: line.brand, description: line.name, size: line.size,
+    sku: line.sku, brand: line.brand, description: line.description, size: line.size,
     price: line.price ?? { regular: 0, promo: 0 }, on_sale: line.on_sale ?? false,
-    fulfillment: { curbside: true, delivery: true }, ...(line.aisleLocation ? { aisle: line.aisleLocation } : {}),
+    fulfillment: line.fulfillment, ...(line.aisleLocation ? { aisle: line.aisleLocation } : {}),
   };
 }
 
@@ -84,17 +110,18 @@ async function sameIdentityOptions(wiring: OrderWiring, line: ResolvedLine): Pro
   const max = candidates.length ? Math.max(...candidates.map((candidate) => relevanceScore(candidate, words))) : 0;
   return candidates
     .filter((candidate) => max > 0 && relevanceScore(candidate, words) === max && candidate.productId !== line.sku)
-    .sort((a, b) => Number(isOnSale(b)) - Number(isOnSale(a)) || effectivePrice(a) - effectivePrice(b) || a.productId.localeCompare(b.productId))
+    .sort(compareCatalogCandidates)
     .slice(0, 12).map(product);
 }
 
 /** Shared write-free member/MCP preview. */
-export async function readOrderReview(
+async function readOrderReviewUnchecked(
   env: Env,
   tenant: string,
   stageValue: unknown,
   deps: OrderReviewDeps,
 ): Promise<OrderReviewData> {
+  await requireKrogerOrderReview(env, tenant);
   const stage = normalizedStage(stageValue);
   const [grocery, brands, outcome, locationId] = await Promise.all([
     readGrocerySnapshot(env, tenant), readBrandTiers(env, tenant),
@@ -126,9 +153,7 @@ export async function readOrderReview(
       line_key: key, name: line.name, quantity: stage.quantities[key] ?? 1, assumed_quantity: stage.quantities[key] == null,
       for_recipes: groceryByKey.get(key)?.for_recipes ?? [], provenance: groceryByKey.has(key) ? "planned" as const : "impulse" as const,
       kind: line.kind === "ambiguous" ? "choose_one" as const : "unavailable" as const,
-      candidates: (line.candidates ?? []).map((candidate) => ({
-        ...candidate, description: line.name, fulfillment: candidate.fulfillment,
-      })),
+      candidates: line.candidates ?? [],
       family_key: internalKey, family_fingerprint: await familyFingerprint(family), can_save_brand: !impulse && line.kind === "ambiguous",
       can_search_broader: line.kind === "unavailable", can_search_manual: true,
     };
@@ -156,6 +181,51 @@ export async function readOrderReview(
     estimated_total: matched.length ? Math.round(total * 100) / 100 : null,
     flyer_savings: savings > 0 ? Math.round(savings * 100) / 100 : null, stage,
   };
+}
+
+async function authorizeStageSelections(
+  env: Env, stage: OrderReviewStage, baseline: OrderReviewData, deps: OrderReviewDeps,
+): Promise<void> {
+  const lines = new Map([...baseline.matched, ...baseline.decisions].map((line) => [line.line_key, line]));
+  const impulses = new Set(stage.impulses.map((impulse) => impulse.key));
+  for (const selection of stage.selections) {
+    const line = lines.get(selection.line_key);
+    if (!line && !impulses.has(selection.line_key)) throw new ToolError("validation_failed", `unknown review line_key: ${selection.line_key}`);
+    let issued = false;
+    if (selection.source === "same_identity" && line) {
+      const candidates = "selected" in line ? [line.selected, ...line.options] : line.candidates;
+      issued = candidates.some((candidate) => candidate.sku === selection.sku);
+    } else if (selection.source === "broader" && line && "kind" in line && line.kind === "unavailable" && selection.divergence?.rung !== "manual") {
+      const ladder = await buildBroaderLadder(env, line.family_key);
+      for (const rung of ladder) {
+        const phrase = rung.search_term ?? rung.display_name ?? rung.id.replaceAll("_", " ");
+        const found = (await deps.wiring.search(phrase)).filter(isFulfillable);
+        if (!found.length) continue;
+        issued = found.slice(0, 12).some((candidate) => candidate.productId === selection.sku);
+        break;
+      }
+    } else if ((selection.source === "manual" || selection.source === "impulse") && selection.divergence?.rung === "manual") {
+      const query = selection.divergence.searched_label.trim();
+      if (query.length >= 2 && query.length <= 80) issued = (await deps.wiring.search(query)).filter(isFulfillable).slice(0, 20).some((candidate) => candidate.productId === selection.sku);
+    }
+    if (!issued) throw new ToolError("validation_failed", `SKU ${selection.sku} was not issued for ${selection.line_key}`);
+  }
+  for (const impulse of stage.impulses.filter((item) => item.sku)) {
+    if (stage.selections.some((selection) => selection.line_key === impulse.key && selection.sku === impulse.sku)) continue;
+    throw new ToolError("validation_failed", `impulse SKU ${impulse.sku} requires an authorized manual selection`);
+  }
+}
+
+/** Shared write-free member/MCP preview with stateless server-evidence validation. */
+export async function readOrderReview(
+  env: Env, tenant: string, stageValue: unknown, deps: OrderReviewDeps,
+): Promise<OrderReviewData> {
+  const stage = normalizedStage(stageValue);
+  if (stage.selections.length || stage.impulses.some((impulse) => impulse.sku)) {
+    const baseline = await readOrderReviewUnchecked(env, tenant, emptyOrderReviewStage(), deps);
+    await authorizeStageSelections(env, stage, baseline, deps);
+  }
+  return readOrderReviewUnchecked(env, tenant, stage, deps);
 }
 
 export function compareOrderReviews(previous: OrderReviewData, current: OrderReviewData) {
@@ -224,9 +294,15 @@ export async function sendOrderReview(
   input: { stage: unknown; preview_fingerprint: string; cleared_cart_ack: boolean; rendered_preview?: OrderReviewData },
   deps: OrderReviewDeps,
 ): Promise<OrderReviewSendResult> {
+  await requireKrogerOrderReview(env, tenant);
   const stage = normalizedStage(input.stage);
   const current = await readOrderReview(env, tenant, stage, deps);
-  if (current.preview_fingerprint !== input.preview_fingerprint) {
+  // A host may stage locally from an empty-stage authoritative preview. Accept that
+  // exact baseline fingerprint while applying the complete posted stage; any external
+  // list/store/price/preference drift changes the freshly recomputed baseline too.
+  const baseline = stage.skipped.length || Object.keys(stage.quantities).length || stage.selections.length || stage.impulses.length || stage.saved_brands.length
+    ? await readOrderReview(env, tenant, emptyOrderReviewStage(), deps) : current;
+  if (current.preview_fingerprint !== input.preview_fingerprint && baseline.preview_fingerprint !== input.preview_fingerprint) {
     return { status: "review_changed", preview: current, divergences: input.rendered_preview ? compareOrderReviews(input.rendered_preview, current) : [{ category: "availability", message: "Current order facts changed." }] };
   }
   if (current.cleared_cart_ack_required && !input.cleared_cart_ack) return { status: "cart_clearance_required", preview: current };
@@ -251,6 +327,10 @@ export async function sendOrderReview(
     throw error;
   }
   const steps = sendSteps(outcome);
+  if (!outcome.list.advanced && outcome.list.error?.includes("order review changed while claiming")) {
+    const refreshed = await readOrderReview(env, tenant, stage, deps);
+    return { status: "review_changed", preview: refreshed, divergences: compareOrderReviews(current, refreshed) };
+  }
   if (outcome.send.recorded && outcome.send.id) {
     const summary = await persistedSendSummary(env, tenant, outcome.send.id);
     if (summary) steps.send = { ...steps.send, ...summary };
@@ -269,6 +349,7 @@ export async function saveOrderBrandPreference(
   env: Env, tenant: string,
   input: { family_key: string; brand: string; expected_family_fingerprint: string },
 ): Promise<BrandSaveReceipt> {
+  await requireKrogerOrderReview(env, tenant);
   const familyKey = input.family_key.trim(); const brand = input.brand.trim();
   if (!familyKey || !brand) throw new ToolError("validation_failed", "family_key and brand are required");
   const current = (await readBrandTiers(env, tenant))[familyKey] ?? null;
@@ -309,15 +390,20 @@ export async function saveOrderBrandPreference(
  * same-identity review line under the supplied current preview fingerprint. */
 export async function saveOrderReviewBrand(
   env: Env, tenant: string,
-  input: { family_key: string; line_key: string; brand: string; expected_family_fingerprint: string; preview_fingerprint: string },
+  input: { family_key: string; line_key: string; brand: string; expected_family_fingerprint: string; preview_fingerprint: string; stage: unknown },
   deps: OrderReviewDeps,
 ): Promise<BrandSaveReceipt> {
-  const review = await readOrderReview(env, tenant, undefined, deps);
-  if (review.preview_fingerprint !== input.preview_fingerprint)
+  const stage = normalizedStage(input.stage);
+  const review = await readOrderReview(env, tenant, stage, deps);
+  const baseline = await readOrderReview(env, tenant, emptyOrderReviewStage(), deps);
+  if (review.preview_fingerprint !== input.preview_fingerprint && baseline.preview_fingerprint !== input.preview_fingerprint)
     return { status: "conflict", family_key: input.family_key, family: (await readBrandTiers(env, tenant))[input.family_key] ?? null, family_fingerprint: await familyFingerprint((await readBrandTiers(env, tenant))[input.family_key] ?? null) };
   const line = [...review.matched, ...review.decisions].find((candidate) => candidate.line_key === input.line_key && candidate.family_key === input.family_key);
+  const allowedSource = line && "selected" in line
+    ? line.selection_source === "matched" || line.selection_source === "same_identity"
+    : line?.kind === "choose_one" && line.can_save_brand;
   const brands = line && "selected" in line ? [line.selected, ...line.options] : line?.candidates ?? [];
-  if (!line || !brands.some((candidate) => candidate.brand.trim().toLowerCase() === input.brand.trim().toLowerCase()))
+  if (!line || !allowedSource || !brands.some((candidate) => candidate.brand.trim().toLowerCase() === input.brand.trim().toLowerCase()))
     throw new ToolError("validation_failed", "brand must be a current same-identity review candidate");
   return saveOrderBrandPreference(env, tenant, input);
 }
@@ -331,8 +417,11 @@ export async function buildBroaderLadder(env: Env, requested: string): Promise<L
   if (!node) return [];
   const survivor = node.representative ?? node.id;
   const ancestors = await db(env).all<LadderRow>(
-    "SELECT i.id, i.display_name, i.search_term, e.kind FROM ingredient_edge e JOIN ingredient_identity i ON i.id=e.dst " +
-      "WHERE e.src=?1 AND e.kind IN ('general','containment') AND i.concrete=1 ORDER BY CASE e.kind WHEN 'general' THEN 0 ELSE 1 END, i.id",
+    "SELECT COALESCE(r.id,i.id) AS id, COALESCE(r.display_name,i.display_name) AS display_name, " +
+      "COALESCE(r.search_term,i.search_term) AS search_term, e.kind FROM ingredient_edge e " +
+      "JOIN ingredient_identity i ON i.id=e.dst LEFT JOIN ingredient_identity r ON r.id=i.representative " +
+      "WHERE e.src=?1 AND e.kind IN ('general','containment') AND COALESCE(r.concrete,i.concrete)=1 " +
+      "ORDER BY CASE e.kind WHEN 'general' THEN 0 ELSE 1 END, COALESCE(r.id,i.id)",
     survivor,
   );
   const rows: LadderRow[] = [...ancestors];
@@ -352,6 +441,7 @@ export async function buildBroaderLadder(env: Env, requested: string): Promise<L
 export async function searchOrderBroader(
   env: Env, tenant: string, lineKey: string, previewFingerprint: string, stage: unknown, deps: OrderReviewDeps,
 ): Promise<CatalogSearchResult> {
+  await requireKrogerOrderReview(env, tenant);
   const review = await readOrderReview(env, tenant, stage, deps);
   if (review.preview_fingerprint !== previewFingerprint) throw new ToolError("conflict", "order review changed; refresh before searching");
   if (!review.decisions.some((line) => line.line_key === lineKey && line.kind === "unavailable"))
@@ -362,7 +452,7 @@ export async function searchOrderBroader(
     const found = (await deps.wiring.search(phrase)).filter(isFulfillable);
     if (!found.length) continue;
     const tokens = phrase.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
-    const candidates = found.sort((a, b) => relevanceScore(b, tokens) - relevanceScore(a, tokens) || Number(isOnSale(b)) - Number(isOnSale(a)) || effectivePrice(a) - effectivePrice(b) || a.productId.localeCompare(b.productId)).slice(0, 12)
+    const candidates = found.sort((a, b) => relevanceScore(b, tokens) - relevanceScore(a, tokens) || compareCatalogCandidates(a, b)).slice(0, 12)
       .map((candidate) => ({ ...product(candidate), divergence: { rung: rung.kind ?? (rung.id === lineKey ? "search_term" as const : "base" as const), requested_label: lineKey, searched_label: phrase, ...(rung.kind ? { relation: rung.kind } : {}), missing_constraints: lineKey.split(/[_: -]+/).filter((token) => token.length > 2 && !`${candidate.description} ${candidate.categories.join(" ")}`.toLowerCase().includes(token.toLowerCase())), candidate_terms: candidate.description.toLowerCase().split(/[^a-z0-9]+/).filter((token) => token.length > 3).slice(0, 5) } }));
     return { contract_version: KNOWN_ORDER_REVIEW_CONTRACT_VERSION, preview_fingerprint: previewFingerprint, line_key: lineKey, query: phrase, mode: "broader", candidates };
   }
@@ -370,6 +460,7 @@ export async function searchOrderBroader(
 }
 
 export async function searchOrderCatalog(env: Env, tenant: string, lineKey: string, previewFingerprint: string, stageValue: unknown, queryValue: string, deps: OrderReviewDeps): Promise<CatalogSearchResult> {
+  await requireKrogerOrderReview(env, tenant);
   const query = queryValue.trim();
   if (query.length < 2 || query.length > 80) throw new ToolError("validation_failed", "query must be 2–80 characters");
   const stage = normalizedStage(stageValue);
@@ -379,7 +470,7 @@ export async function searchOrderCatalog(env: Env, tenant: string, lineKey: stri
   if (!known) throw new ToolError("validation_failed", "line_key must name a current review or staged impulse line");
   const tokens = query.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
   const candidates = (await deps.wiring.search(query)).filter(isFulfillable)
-    .sort((a, b) => relevanceScore(b, tokens) - relevanceScore(a, tokens) || Number(isOnSale(b)) - Number(isOnSale(a)) || effectivePrice(a) - effectivePrice(b) || a.productId.localeCompare(b.productId))
+    .sort((a, b) => relevanceScore(b, tokens) - relevanceScore(a, tokens) || compareCatalogCandidates(a, b))
     .slice(0, 20).map((candidate) => ({ ...product(candidate), divergence: { rung: "manual" as const, requested_label: lineKey, searched_label: query, missing_constraints: [], candidate_terms: candidate.description.toLowerCase().split(/[^a-z0-9]+/).filter((token) => token.length > 3).slice(0, 5) } }));
   return { contract_version: KNOWN_ORDER_REVIEW_CONTRACT_VERSION, preview_fingerprint: previewFingerprint, line_key: lineKey, query, mode: "manual", candidates };
 }

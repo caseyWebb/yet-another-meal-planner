@@ -37,6 +37,26 @@ export const OrderReviewStageSchema = z.object({
   selections: z.array(StageSelectionSchema).default([]),
   impulses: z.array(ImpulseSchema).default([]),
   saved_brands: z.array(SavedBrandMarkerSchema).default([]),
+}).superRefine((stage, ctx) => {
+  const unique = (values: string[], path: (string | number)[]) => {
+    const seen = new Set<string>();
+    values.forEach((value, index) => {
+      const normalized = value.trim().toLowerCase();
+      if (seen.has(normalized)) ctx.addIssue({ code: "custom", path: [...path, index], message: "duplicate key" });
+      seen.add(normalized);
+    });
+  };
+  unique(stage.skipped, ["skipped"]);
+  unique(stage.selections.map((selection) => selection.line_key), ["selections"]);
+  unique(stage.impulses.map((impulse) => impulse.key), ["impulses"]);
+  unique(stage.impulses.map((impulse) => impulse.label), ["impulses"]);
+  unique(stage.saved_brands.map((marker) => `${marker.family_key}\u0000${marker.brand}`), ["saved_brands"]);
+  for (const [index, selection] of stage.selections.entries()) {
+    if ((selection.source === "broader" || selection.source === "manual") && !selection.divergence)
+      ctx.addIssue({ code: "custom", path: ["selections", index, "divergence"], message: `${selection.source} selections require server search evidence` });
+    if (selection.source === "same_identity" && selection.divergence)
+      ctx.addIssue({ code: "custom", path: ["selections", index, "divergence"], message: "same-identity selections cannot carry divergence" });
+  }
 });
 
 const BaseLineSchema = z.object({

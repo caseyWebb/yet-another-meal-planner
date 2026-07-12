@@ -12,8 +12,8 @@ function candidate(productId: string, brand = "Kroger", price = 2): KrogerCandid
 }
 function wiring(overrides: Partial<OrderWiring> = {}): OrderWiring {
   return {
-    resolve: async () => ({ resolved: true, sku: "MILK-1", brand: "Kroger", size: "1 gal", price: { regular: 2, promo: 0 }, on_sale: false, reason: "test", aisleLocation: { number: "4", description: "Dairy" } }),
-    revalidateSku: async (sku) => sku === "MILK-1" ? { brand: "Kroger", size: "1 gal", price: { regular: 2, promo: 0 }, on_sale: false, aisleLocation: { number: "4", description: "Dairy" } } : null,
+    resolve: async () => ({ resolved: true, sku: "MILK-1", brand: "Kroger", description: "Whole Milk", size: "1 gal", price: { regular: 2, promo: 0 }, on_sale: false, fulfillment: { curbside: true, delivery: true }, reason: "test", aisleLocation: { number: "4", description: "Dairy" } }),
+    revalidateSku: async (sku) => sku === "MILK-1" ? { brand: "Kroger", description: "Whole Milk", size: "1 gal", price: { regular: 2, promo: 0 }, on_sale: false, fulfillment: { curbside: true, delivery: true }, aisleLocation: { number: "4", description: "Dairy" } } : null,
     getLocationId: async () => "L1", search: async () => [candidate("MILK-1"), candidate("MILK-2", "Organic", 4)],
     productById: async (sku) => sku === "MILK-1" ? candidate(sku) : null, cartAdd: async () => {}, ...overrides,
   };
@@ -27,10 +27,7 @@ describe("Order Review shared operations", () => {
     const preview = await readOrderReview(h.env, T, emptyOrderReviewStage(), deps);
     expect(preview.matched).toHaveLength(1);
     expect(h.rows("order_sends")).toHaveLength(0);
-    const changed = await sendOrderReview(h.env, T, { stage: { ...emptyOrderReviewStage(), skipped: ["milk"] }, preview_fingerprint: preview.preview_fingerprint, cleared_cart_ack: true, rendered_preview: preview }, deps);
-    expect(changed.status).toBe("review_changed");
-    expect(h.rows("order_sends")).toHaveLength(0);
-    const sent = await sendOrderReview(h.env, T, { stage: emptyOrderReviewStage(), preview_fingerprint: preview.preview_fingerprint, cleared_cart_ack: true }, deps);
+    const sent = await sendOrderReview(h.env, T, { stage: { ...emptyOrderReviewStage(), quantities: { milk: 2 } }, preview_fingerprint: preview.preview_fingerprint, cleared_cart_ack: true, rendered_preview: preview }, deps);
     expect(sent.status).toBe("sent");
     expect(h.rows("order_sends")).toHaveLength(1);
     expect(h.rows("sku_cache")).toHaveLength(1);
@@ -69,5 +66,48 @@ describe("Order Review shared operations", () => {
     expect(result.candidates.every((item) => item.fulfillment.curbside || item.fulfillment.delivery)).toBe(true);
     expect(h.rows("sku_cache")).toHaveLength(0);
     await expect(searchOrderCatalog(h.env, T, "milk", "x", emptyOrderReviewStage(), "x", deps)).rejects.toMatchObject({ code: "validation_failed" });
+  });
+
+  it("rejects unknown lines and SKUs not issued by the server", async () => {
+    const h = sqliteEnv([T]);
+    await addGroceryRow(h.env, T, { name: "milk" }, "2026-07-12");
+    const deps = { wiring: wiring() };
+    const preview = await readOrderReview(h.env, T, emptyOrderReviewStage(), deps);
+    await expect(readOrderReview(h.env, T, {
+      ...emptyOrderReviewStage(),
+      selections: [{ line_key: "unknown", sku: "EVIL", source: "manual", divergence: { rung: "manual", requested_label: "unknown", searched_label: "milk", missing_constraints: [], candidate_terms: [] } }],
+    }, deps)).rejects.toMatchObject({ code: "validation_failed" });
+    await expect(readOrderReview(h.env, T, {
+      ...emptyOrderReviewStage(),
+      selections: [{ line_key: "milk", sku: "EVIL", source: "manual", divergence: { rung: "manual", requested_label: "milk", searched_label: "milk", missing_constraints: [], candidate_terms: [] } }],
+    }, deps)).rejects.toMatchObject({ code: "validation_failed" });
+    expect((await readOrderReview(h.env, T, emptyOrderReviewStage(), deps)).preview_fingerprint).toBe(preview.preview_fingerprint);
+  });
+
+  it("atomically claims rows so concurrent confirms call the additive cart once", async () => {
+    const h = sqliteEnv([T]);
+    await addGroceryRow(h.env, T, { name: "milk" }, "2026-07-12");
+    let release!: () => void;
+    let entered!: () => void;
+    const enteredP = new Promise<void>((resolve) => { entered = resolve; });
+    const releaseP = new Promise<void>((resolve) => { release = resolve; });
+    let carts = 0;
+    const deps = { wiring: wiring({ cartAdd: async () => { carts += 1; entered(); await releaseP; } }) };
+    const preview = await readOrderReview(h.env, T, emptyOrderReviewStage(), deps);
+    const firstP = sendOrderReview(h.env, T, { stage: emptyOrderReviewStage(), preview_fingerprint: preview.preview_fingerprint, cleared_cart_ack: true }, deps);
+    await enteredP;
+    const second = await sendOrderReview(h.env, T, { stage: emptyOrderReviewStage(), preview_fingerprint: preview.preview_fingerprint, cleared_cart_ack: true }, deps);
+    release();
+    const first = await firstP;
+    expect(first.status).toBe("sent");
+    expect(second.status).toBe("review_changed");
+    expect(carts).toBe(1);
+    expect(h.rows("order_sends")).toHaveLength(1);
+  });
+
+  it("gates review operations when the primary store is not Kroger", async () => {
+    const h = sqliteEnv([T]);
+    h.raw.prepare("INSERT INTO profile (tenant, stores) VALUES (?, ?)").run(T, JSON.stringify({ primary: "target", fulfillment: "walk" }));
+    await expect(readOrderReview(h.env, T, emptyOrderReviewStage(), { wiring: wiring() })).rejects.toMatchObject({ code: "unsupported" });
   });
 });

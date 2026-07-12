@@ -579,17 +579,19 @@ export function groceryUpsertStmt(
   tenant: string,
   item: GroceryItem,
   resolve: (n: string) => string,
+  claim?: { expectedActiveVersion: number | null; token: string },
 ): D1PreparedStatement {
   return db(env).prepare(
     "INSERT INTO grocery_list (tenant, name, normalized_name, quantity, kind, domain, status, " +
       "source, for_recipes, note, added_at, ordered_at, display_name, sent_in, checked_at, row_version, updated_at) " +
       "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17) " +
-      "ON CONFLICT(tenant, normalized_name) DO UPDATE SET " +
+      (claim?.expectedActiveVersion === null ? "ON CONFLICT(tenant, normalized_name) DO NOTHING" : "ON CONFLICT(tenant, normalized_name) DO UPDATE SET " +
       "name = excluded.name, quantity = excluded.quantity, kind = excluded.kind, " +
       "domain = excluded.domain, status = excluded.status, source = excluded.source, " +
       "for_recipes = excluded.for_recipes, note = excluded.note, ordered_at = excluded.ordered_at, " +
       "display_name = excluded.display_name, sent_in = excluded.sent_in, " +
-      "decision_owner_token = NULL, row_version = grocery_list.row_version + 1, updated_at = ?18",
+      "decision_owner_token = NULL, row_version = grocery_list.row_version + 1, updated_at = ?18" +
+      (claim ? " WHERE grocery_list.status = 'active' AND grocery_list.row_version = ?19" : "")),
     tenant,
     item.name,
     // Persist the STORED key the item carries (add-by-id rows key on the given id, which is NOT
@@ -611,7 +613,8 @@ export function groceryUpsertStmt(
     item.checked_at ?? null,
     item.row_version ?? 1,
     item.updated_at ?? new Date().toISOString(),
-    new Date().toISOString(),
+    ...(claim?.expectedActiveVersion === null ? [] : [claim?.token ?? new Date().toISOString()]),
+    ...(claim?.expectedActiveVersion != null ? [claim.expectedActiveVersion] : []),
   );
 }
 
@@ -906,6 +909,7 @@ export async function advanceInCartRows(
   const byKey = new Map(current.map((it) => [storedGroceryKey(it, ctx.resolve), it]));
   const stmts: D1PreparedStatement[] = send ? [...send.statements] : [];
   const inserted: string[] = [];
+  const claimedKeys: string[] = [];
   for (const line of lines) {
     const key = line.key ?? ctx.resolve(line.name);
     const existing = byKey.get(key);
@@ -927,9 +931,23 @@ export async function advanceInCartRows(
           ordered_at: null,
           sent_in: send?.id ?? null,
         };
-    stmts.push(groceryUpsertStmt(env, tenant, next, ctx.resolve));
+    claimedKeys.push(key);
+    stmts.push(groceryUpsertStmt(env, tenant, next, ctx.resolve,
+      { expectedActiveVersion: existing ? existing.row_version ?? 1 : null, token: new Date().toISOString() }));
   }
   if (stmts.length > 0) await db(env).batch(stmts);
+  // D1 serializes the conditional claims in the batch. A competing confirmation that
+  // read the same active version performs a zero-row update; only our unique token can
+  // prove this advance owns every line before any additive cart call.
+  for (const key of send ? claimedKeys : []) {
+    const claimed = await db(env).first<{ sent_in: string | null }>(
+      "SELECT sent_in FROM grocery_list WHERE tenant=?1 AND normalized_name=?2 AND status='in_cart'", tenant, key,
+    );
+    if (claimed?.sent_in !== send!.id) {
+      if (send?.id) await db(env).batch(deleteSendStatements(env, send.id));
+      throw new ToolError("conflict", "order review changed while claiming grocery lines");
+    }
+  }
   return { inserted };
 }
 

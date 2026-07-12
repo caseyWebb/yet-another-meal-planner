@@ -11,7 +11,7 @@ import { z } from "zod";
 import { OrderReviewStageSchema } from "@yamp/contract";
 import type { Env } from "./env.js";
 import type { KrogerCandidate } from "./kroger.js";
-import { runTool } from "./errors.js";
+import { runTool, ToolError } from "./errors.js";
 import {
   upsertSkuMappings,
   readSkuCache,
@@ -178,6 +178,19 @@ export function makeCommitSkuCache(env: Env, getLocationId: () => Promise<string
       (prior ? updated : inserted).push(m.ingredient);
     }
     if (toWrite.length > 0) await upsertSkuMappings(env, toWrite);
+    // Receipts describe authoritative post-write state, not the optimistic pre-read.
+    // A concurrent writer that wins after our comparison is surfaced as a cache
+    // conflict; callers report the cache leg failed without overstating learning.
+    if (toWrite.length > 0) {
+      const after = new Map((await readSkuCache(env)).map((m) => [`${m.ingredient}\0${m.locationId ?? ""}`, m]));
+      for (const intended of toWrite) {
+        const actual = after.get(`${intended.ingredient}\0${locationId}`);
+        if (!actual || actual.sku !== intended.sku || (actual.brand ?? undefined) !== intended.brand || (actual.size ?? undefined) !== intended.size ||
+          (actual.aisle?.number ?? null) !== intended.aisle_number || (actual.aisle?.description ?? null) !== intended.aisle_description || (actual.aisle?.side ?? null) !== intended.aisle_side) {
+          throw new ToolError("conflict", `SKU cache changed concurrently for ${intended.ingredient}`);
+        }
+      }
+    }
     return { inserted, updated, unchanged };
   };
 }

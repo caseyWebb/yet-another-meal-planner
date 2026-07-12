@@ -66,9 +66,11 @@ export interface ConfidentMatch {
   resolved: true;
   sku: string;
   brand: string;
+  description: string;
   size: string | null;
   price: { regular: number; promo: number };
   on_sale: boolean;
+  fulfillment: { curbside: boolean; delivery: boolean };
   reason: string;
   /** The picked candidate's aisle placement at the resolved location, passed through
    *  from the Kroger response (member-app-differentiators D5). Additive — no scoring
@@ -302,6 +304,7 @@ function toCandidateView(c: KrogerCandidate): CandidateView {
   const view: CandidateView = {
     sku: c.productId,
     brand: c.brand,
+    description: c.description,
     size: c.size,
     price: c.price,
     on_sale: isOnSale(c),
@@ -366,9 +369,11 @@ function confident(c: KrogerCandidate, reason: string): ConfidentMatch {
     resolved: true,
     sku: c.productId,
     brand: c.brand,
+    description: c.description,
     size: c.size,
     price: c.price,
     on_sale: isOnSale(c),
+    fulfillment: { curbside: c.fulfillment.curbside, delivery: c.fulfillment.delivery },
     reason,
     aisleLocation: c.aisleLocation,
   };

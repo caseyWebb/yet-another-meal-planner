@@ -30,9 +30,11 @@ const confident = (sku: string): MatchResult => ({
   resolved: true,
   sku,
   brand: "Kroger",
+  description: "Kroger item",
   size: "1 ct",
   price: { regular: 1, promo: 0 },
   on_sale: false,
+  fulfillment: { curbside: true, delivery: true },
   reason: "test",
 });
 
@@ -236,7 +238,7 @@ function makeDeps(
     /** The advance receipt placeOrder handed to rollbackInCart (receipt threading). */
     rollbackAdvance: null as { inserted: string[]; sendId?: string } | null,
   };
-  const fulfillable: RevalidatedSku = { brand: "Kroger", size: null, price: { regular: 1, promo: 0 }, on_sale: false };
+  const fulfillable: RevalidatedSku = { brand: "Kroger", description: "Kroger item", size: null, price: { regular: 1, promo: 0 }, on_sale: false, fulfillment: { curbside: true, delivery: true } };
   const deps: PlaceOrderDeps = {
     resolve: async (name) => resolutions[name.toLowerCase()] ?? unavailable,
     revalidateSku: async (sku) => {
@@ -496,7 +498,7 @@ describe("placeOrder", () => {
   it("applies overrides without re-resolving, carting the forced SKU with FRESH revalidated price/on_sale", async () => {
     const { deps, calls } = makeDeps(
       { cheese: ambiguous },
-      { revalidations: { PICK: { brand: "Tillamook", size: "8 oz", price: { regular: 5, promo: 3.5 }, on_sale: true } } },
+      { revalidations: { PICK: { brand: "Tillamook", description: "Tillamook Cheese", size: "8 oz", price: { regular: 5, promo: 3.5 }, on_sale: true, fulfillment: { curbside: true, delivery: true } } } },
     );
     const overrides = new Map([["cheese", { sku: "PICK", brand: "stale", size: "stale" }]]);
     const res = await placeOrder(deps, toBuy("cheese"), { overrides });
@@ -509,11 +511,13 @@ describe("placeOrder", () => {
         key: "cheese",
         sku: "PICK",
         brand: "Tillamook",
+        description: "Tillamook Cheese",
         size: "8 oz",
         quantity: 1,
         assumed_quantity: true,
         price: { regular: 5, promo: 3.5 },
         on_sale: true,
+        fulfillment: { curbside: true, delivery: true },
         aisleLocation: null,
       },
     ]);
@@ -536,7 +540,7 @@ describe("placeOrder", () => {
   it("surfaces a lapsed promo on the resolved line (on_sale:false) rather than dropping it", async () => {
     const { deps, calls } = makeDeps(
       {},
-      { revalidations: { LAPSED: { brand: "Kroger", size: "1 lb", price: { regular: 8, promo: 0 }, on_sale: false } } },
+      { revalidations: { LAPSED: { brand: "Kroger", description: "Kroger Trout", size: "1 lb", price: { regular: 8, promo: 0 }, on_sale: false, fulfillment: { curbside: true, delivery: true } } } },
     );
     const overrides = new Map([["trout", { sku: "LAPSED" }]]);
     const res = await placeOrder(deps, toBuy("trout"), { overrides });
