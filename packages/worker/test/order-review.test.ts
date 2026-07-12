@@ -3,7 +3,7 @@ import { emptyOrderReviewStage } from "@yamp/contract";
 import type { KrogerCandidate } from "../src/kroger.js";
 import { readOrderReview, saveOrderBrandPreference, searchOrderCatalog, sendOrderReview } from "../src/order-review.js";
 import type { OrderWiring } from "../src/order-tools.js";
-import { addGroceryRow } from "../src/session-db.js";
+import { addGroceryRow, advanceInCartRows, finalizeInCartClaim, rollbackInCartRows } from "../src/session-db.js";
 import { sqliteEnv } from "./sqlite-d1.js";
 
 const T = "casey";
@@ -105,6 +105,17 @@ describe("Order Review shared operations", () => {
     expect(second.status).toBe("review_changed");
     expect(carts).toBe(1);
     expect(h.rows("order_sends")).toHaveLength(1);
+  });
+
+  it("claims snapshot-degraded bare advances and makes rollback ownership-safe", async () => {
+    const h = sqliteEnv([T]);
+    await addGroceryRow(h.env, T, { name: "milk" }, "2026-07-12");
+    const first = await advanceInCartRows(h.env, T, [{ name: "milk", key: "milk" }], "2026-07-12");
+    await expect(advanceInCartRows(h.env, T, [{ name: "milk", key: "milk" }], "2026-07-12")).rejects.toMatchObject({ code: "conflict" });
+    await rollbackInCartRows(h.env, T, [{ name: "milk", key: "milk" }], [], undefined, "order-claim:not-owner");
+    expect(h.rows<{ status: string; sent_in: string }>("grocery_list")[0]).toMatchObject({ status: "in_cart", sent_in: first.claimId });
+    await finalizeInCartClaim(h.env, T, [{ name: "milk", key: "milk" }], first.claimId);
+    expect(h.rows<{ status: string; sent_in: string | null }>("grocery_list")[0]).toMatchObject({ status: "in_cart", sent_in: null });
   });
 
   it("gates review operations when the primary store is not Kroger", async () => {

@@ -47,6 +47,7 @@ import {
   readPantryNames,
   advanceInCartRows,
   rollbackInCartRows,
+  finalizeInCartClaim,
   mintEventId,
   type SendBatch,
 } from "./session-db.js";
@@ -304,7 +305,13 @@ function makeAdvanceInCart(env: Env, username: string, snapshotCtx?: SnapshotCon
  *  deleted alongside (no phantom order survives a failed cart write). */
 function makeRollbackInCart(env: Env, username: string) {
   return async (lines: ResolvedLine[], advance: InCartAdvance): Promise<void> => {
-    await rollbackInCartRows(env, username, lines, advance.inserted, advance.sendId);
+    await rollbackInCartRows(env, username, lines, advance.inserted, advance.sendId, advance.claimId);
+  };
+}
+
+function makeFinalizeInCart(env: Env, username: string) {
+  return async (lines: ResolvedLine[], advance: InCartAdvance): Promise<void> => {
+    if (advance.claimId) await finalizeInCartClaim(env, username, lines, advance.claimId);
   };
 }
 
@@ -408,6 +415,7 @@ export async function runPlaceOrder(
     }),
     advanceInCart,
     rollbackInCart,
+    finalizeInCart: makeFinalizeInCart(env, tenantId),
   };
 
   const result = await placeOrder(deps, lines, {

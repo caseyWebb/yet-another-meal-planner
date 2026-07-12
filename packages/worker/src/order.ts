@@ -229,6 +229,8 @@ export interface PlaceOrderDeps {
    *  rows flip back to status:active; rows the advance INSERTED (per the receipt) are
    *  deleted rather than stranded as never-listed active items. Throws on failure. */
   rollbackInCart(lines: ResolvedLine[], advance: InCartAdvance): Promise<void>;
+  /** Clear a temporary bare-advance ownership token after cart success. */
+  finalizeInCart?(lines: ResolvedLine[], advance: InCartAdvance): Promise<void>;
 }
 
 /** The advanceInCart receipt: which canonical keys the advance INSERTED (vs updated) —
@@ -238,6 +240,7 @@ export interface PlaceOrderDeps {
  *  advance proceeded bare: telemetry never costs the member their groceries). */
 export interface InCartAdvance {
   inserted: string[];
+  claimId?: string;
   sendId?: string;
   sendError?: string;
 }
@@ -442,6 +445,15 @@ export async function placeOrder(
       // existing visible under-buy posture) — result.send keeps reporting it.
     }
     return result;
+  }
+
+  // A temporary claim cleanup happens only after Kroger accepted the additive cart.
+  // It is bookkeeping: failure must never roll rows back or describe the cart as
+  // failed, which would make a retry double-add products Kroger already accepted.
+  try {
+    await deps.finalizeInCart?.(resolved, advance);
+  } catch (e) {
+    result.list = { advanced: true, error: `order claim cleanup failed after cart success: ${msg(e)}` };
   }
 
   // 3. Learning happens only after Kroger accepted the cart. A cart failure never
