@@ -51,10 +51,16 @@ test("the order review is a labelled expanded disclosure", async ({ groceryPage 
 	const review = groceryPage.page.getByRole("region", { name: "Kroger order" });
 	await expect(review).toHaveAttribute("id", "grocery-order-review");
 	await expect(review).toBeVisible();
+	await launcher.click();
+	await expect(launcher).toHaveAttribute("aria-expanded", "false");
+	await expect(review).toHaveCount(0);
 
+	await launcher.click();
+	await expect(review).toBeVisible();
 	await review.getByRole("button", { name: "Close order review" }).click();
 	await expect(launcher).toHaveAttribute("aria-expanded", "false");
 	await expect(review).toHaveCount(0);
+	await expect(launcher).toBeFocused();
 });
 
 test("checking is durable and never changes cart status", async ({

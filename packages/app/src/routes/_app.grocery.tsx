@@ -39,6 +39,11 @@ function GroceryPage() {
   const remove = useGroceryRemove();
   const verify = useGroceryPantryVerify();
   const [orderOpen, setOrderOpen] = React.useState(false);
+  const orderLauncherRef = React.useRef<HTMLButtonElement>(null);
+  const closeOrder = React.useCallback(() => {
+    setOrderOpen(false);
+    requestAnimationFrame(() => orderLauncherRef.current?.focus());
+  }, []);
   const contractSupported = groceryContractSupport(snapshot.data?.contract_version) === "supported";
 
   const fresh = React.useCallback(async (): Promise<GroceryListData> => {
@@ -155,10 +160,11 @@ function GroceryPage() {
         entries={adapters.data?.launcher ?? []}
         online={online}
         orderOpen={orderOpen}
-        onOrder={() => setOrderOpen(true)}
+        launcherRef={orderLauncherRef}
+        onOrder={() => setOrderOpen((open) => !open)}
       />
       {orderOpen ? (
-        <OrderPanel inCartCount={snapshot.data.counts.in_carts} onClose={() => setOrderOpen(false)} />
+        <OrderPanel inCartCount={snapshot.data.counts.in_carts} onClose={closeOrder} />
       ) : null}
       <GroceryList
         data={snapshot.data}
@@ -173,11 +179,13 @@ function StoreLauncher({
   entries,
   online,
   orderOpen,
+  launcherRef,
   onOrder,
 }: {
   entries: StoreAdapterProjection["launcher"];
   online: boolean;
   orderOpen: boolean;
+  launcherRef: React.RefObject<HTMLButtonElement | null>;
   onOrder(): void;
 }) {
   const reason = (entry: StoreAdapterProjection["launcher"][number]) => {
@@ -212,13 +220,14 @@ function StoreLauncher({
                   size="sm"
                   variant={actionable ? "default" : "outline"}
                   data-testid={entry.mode === "online_order" ? "order-open" : undefined}
+                  ref={entry.mode === "online_order" ? launcherRef : undefined}
                   aria-expanded={entry.mode === "online_order" ? orderOpen : undefined}
                   aria-controls={entry.mode === "online_order" ? "grocery-order-review" : undefined}
                   disabled={!actionable}
                   title={!online ? "Reconnect for store actions" : entry.enabled ? undefined : reason(entry)}
                   onClick={actionable ? onOrder : undefined}
                 >
-                  {entry.enabled ? "Open" : reason(entry)}
+                  {entry.enabled ? entry.mode === "online_order" && orderOpen ? "Close" : "Open" : reason(entry)}
                 </Button>
               </li>
             );

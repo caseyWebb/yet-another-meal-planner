@@ -21,7 +21,7 @@ const data: GroceryListData = {
   flyer_as_of: null,
   counts: { to_buy: 0, checked: 0, in_carts: 0, recipes: 0 },
 };
-function bridge(result: Record<string, unknown> = { structuredContent: { snapshot: data } }) {
+function bridge(result: Record<string, unknown> = { structuredContent: { snapshot: data, outcome: "checked milk" } }) {
   const calls: unknown[] = [];
   const contexts: unknown[] = [];
   const messages: unknown[] = [];
@@ -147,6 +147,19 @@ describe("Grocery MCP bridge", () => {
     expect(b.contexts).toHaveLength(0);
     expect(b.messages).toHaveLength(0);
     expect(grocerySnapshotFromBridge({ structuredContent: { contract_version: 99 } })).toBeNull();
+  });
+
+  it.each([undefined, "", 42])("rejects a successful-looking mutation with invalid outcome %s", async (outcome) => {
+    const b = bridge({ structuredContent: { snapshot: data, ...(outcome === undefined ? {} : { outcome }) } });
+    const adapter = createGroceryBridgeAdapter(b.value, { mode: "interactive", contractSupported: true });
+    await expect(adapter.mutate({
+      kind: "mark_placed",
+      send_id: "s1",
+      expected_line_keys: ["milk"],
+      snapshot_version: "v",
+    })).rejects.toThrow("no valid grocery mutation outcome");
+    expect(b.contexts).toHaveLength(0);
+    expect(b.messages).toHaveLength(0);
   });
 
   it("preserves a structured MCP conflict snapshot for controller replacement", async () => {

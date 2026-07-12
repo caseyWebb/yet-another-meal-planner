@@ -30,15 +30,36 @@ Rows SHALL show check/strike-through, quantity, stable recipe attribution, note,
 
 ### Requirement: The order UI renders dispositions and honest partial results
 
-The order dialog SHALL lead with the stale-cart warning when the view's `in_cart` section is non-empty. Preview SHALL render each disposition surface: checkpoint items with their candidate lists, pantry partials, assumed-quantity lines, and per-line exclusion. After commit the UI SHALL report the cart, list, send-snapshot, and SKU-cache writes independently and honestly. It SHALL never present the cart as populated when `cart.written` is false; a `reauth_required` cart failure SHALL render the Kroger re-link affordance; and list state SHALL be described from the returned list/rollback result rather than inferred from cart intent. The in-cart group SHALL offer the user-asserted order-placed advance through `mark_grocery_send_placed`, supplying the exact rendered send membership and snapshot version. The existing per-row `status:"ordered"` transition remains compatible for agent and satellite callers, but the member whole-send UI SHALL use the exact batch assertion so it cannot partially advance a send.
+The order dialog SHALL lead with the stale-cart warning when the view's `in_cart` section is
+non-empty (the cart API is write-only — the member clears the store cart manually). Preview
+SHALL render each disposition surface: checkpoint items with their candidate lists (choice →
+commit `overrides`), pantry partials (confirm → `include_partials`), assumed-quantity lines
+(count → `quantities`), and per-line exclusion (→ `exclude`). After commit the UI SHALL report
+the cart, list, send-snapshot, and SKU-cache writes independently and honestly: it SHALL never present the cart as populated when
+`cart.written` is false; a `reauth_required` cart failure SHALL render the Kroger re-link
+affordance over the existing login-url read; lines the cart took SHALL show as advanced to
+in-cart. The in-cart group SHALL offer the user-asserted "order placed" advance through
+`mark_grocery_send_placed`, supplying the exact rendered send membership and snapshot version.
+The existing per-row `status: "ordered"` transition remains compatible for agent and satellite
+callers, but the member whole-send UI SHALL use the atomic batch assertion so it cannot partially
+advance a send.
+
+#### Scenario: A checkpoint item is dispositioned, not dropped
+
+- **WHEN** preview returns an ambiguous item with candidates
+- **THEN** the dialog renders the candidates for choice and the commit carries the chosen SKU
+  as an override; an undispositioned checkpoint item is simply not carted, and the UI says so
 
 #### Scenario: A failed cart write is reported truthfully
-- **WHEN** commit returns `cart.written:false` with `code:"reauth_required"`
-- **THEN** the UI reports cart, list, send, and SKU-cache outcomes independently, shows items as still to-buy only when the list never advanced or rollback succeeded, calls out surviving in-cart state when rollback failed, and offers the Kroger re-link flow
+
+- **WHEN** commit returns `cart.written: false` with `code: "reauth_required"`
+- **THEN** the UI does not claim the cart is populated, reports the list/send/SKU-cache outcomes independently, shows the items as still to-buy only when the list never advanced or rollback succeeded, calls out a surviving In-cart state when rollback failed, and offers the Kroger re-link flow
 
 #### Scenario: Mark order placed advances the exact send atomically
-- **WHEN** the member asserts the order was placed on an in-cart send group
-- **THEN** the batch operation advances exactly that send's rendered membership and conflicts without a partial write when membership changed
+
+- **WHEN** the member asserts the order was placed on the in-cart group
+- **THEN** the batch operation advances exactly that send's rendered `in_cart` membership to
+  `ordered`, stamps `ordered_at`, and conflicts without a partial write when membership changed
 
 ## ADDED Requirements
 

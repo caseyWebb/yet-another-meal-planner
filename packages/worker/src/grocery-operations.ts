@@ -272,7 +272,7 @@ export async function relistGrocerySendLine(
     ? openLink == null
     : row.sent_in === input.send_id && openLink != null;
   if (row.status !== "in_cart" || !linkageMatches || row.row_version !== input.expected_row_version) {
-    conflict("The send membership changed; review the current cart group.", before);
+    conflict("The send membership changed; review the current cart group.", await readGrocerySnapshot(env, tenant));
   }
   const now = new Date().toISOString();
   const result = input.send_id === null
@@ -311,8 +311,8 @@ export async function markGrocerySendPlaced(
   );
   const actual = members.map((row) => row.normalized_name);
   const expected = [...new Set(input.expected_line_keys)].sort();
-  if (actual.length === 0) throw new ToolError("validation_failed", "A send with zero current lines cannot be placed.");
   if (JSON.stringify(actual) !== JSON.stringify(expected)) conflict("The send's line membership changed.", await readGrocerySnapshot(env, tenant));
+  if (actual.length === 0) throw new ToolError("validation_failed", "A send with zero current lines cannot be placed.");
   const occurred = input.occurred_at ?? new Date().toISOString();
   const occurredDay = occurred.slice(0, 10);
   const token = crypto.randomUUID();

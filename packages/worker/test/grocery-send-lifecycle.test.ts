@@ -87,6 +87,60 @@ describe("send-scoped grocery lifecycle", () => {
     });
   });
 
+  it("conflicts with a fresh snapshot when the final member is relisted before validation", async () => {
+    const h = sqliteEnv([T]); await sent(h, ["milk"]);
+    const before = await readGrocerySnapshot(h.env, T);
+    const originalPrepare = h.env.DB.prepare.bind(h.env.DB); let raced = false;
+    h.env.DB.prepare = ((sql: string) => {
+      const statement = originalPrepare(sql);
+      if (!raced && sql.includes("SELECT normalized_name FROM grocery_list WHERE tenant=?1 AND status='in_cart' AND sent_in=?2")) {
+        const originalAll = statement.all.bind(statement);
+        statement.all = (async <R>() => {
+          raced = true;
+          h.raw.prepare("UPDATE grocery_list SET status='active',sent_in=NULL,row_version=row_version+1 WHERE tenant=? AND normalized_name='milk'").run(T);
+          return originalAll<R>();
+        }) as typeof statement.all;
+      }
+      return statement;
+    }) as typeof h.env.DB.prepare;
+    await expect(markGrocerySendPlaced(h.env, T, {
+      send_id: "s1",
+      expected_line_keys: ["milk"],
+      snapshot_version: before.snapshot_version,
+    })).rejects.toMatchObject({
+      code: "conflict",
+      context: { snapshot: { to_buy: expect.arrayContaining(["milk"]), in_cart_groups: [] } },
+    });
+  });
+
+  it("re-reads after an open-link check races send placement", async () => {
+    const h = sqliteEnv([T]); await sent(h, ["milk"]);
+    const before = await readGrocerySnapshot(h.env, T);
+    const line = before.in_cart_groups[0].lines[0];
+    const originalPrepare = h.env.DB.prepare.bind(h.env.DB); let raced = false;
+    h.env.DB.prepare = ((sql: string) => {
+      const statement = originalPrepare(sql);
+      if (!raced && sql.includes("SELECT s.id FROM order_sends s JOIN order_send_lines")) {
+        const originalFirst = statement.first.bind(statement);
+        statement.first = (async <R>() => {
+          raced = true;
+          h.raw.prepare("UPDATE order_sends SET placed_at='2026-07-12T12:00:00Z' WHERE tenant=? AND id='s1'").run(T);
+          h.raw.prepare("UPDATE grocery_list SET status='ordered',ordered_at='2026-07-12',row_version=row_version+1 WHERE tenant=? AND normalized_name='milk'").run(T);
+          return originalFirst<R>();
+        }) as typeof statement.first;
+      }
+      return statement;
+    }) as typeof h.env.DB.prepare;
+    await expect(relistGrocerySendLine(h.env, T, {
+      send_id: "s1",
+      line_key: "milk",
+      expected_row_version: line.row_version,
+    })).rejects.toMatchObject({
+      code: "conflict",
+      context: { snapshot: { in_cart_groups: [], lines: [] } },
+    });
+  });
+
   it("serializes a concurrent relist against the exact placement claim", async () => {
     const h = sqliteEnv([T]); await sent(h, ["milk"]);
     const before = await readGrocerySnapshot(h.env, T); const line = before.in_cart_groups[0].lines[0];

@@ -154,19 +154,10 @@ function callFor(action: GroceryAction): { name: string; arguments: Record<strin
   }
 }
 
-function outcomeFromBridge(result: GroceryBridgeResult, fallback: string): string {
+function outcomeFromBridge(result: GroceryBridgeResult): string | null {
   const structured = recordOf(result.structuredContent);
   if (typeof structured?.outcome === "string" && structured.outcome.trim()) return structured.outcome;
-  const text = result.content?.find((item) => item.type === "text")?.text;
-  if (text) {
-    try {
-      const body = recordOf(JSON.parse(text));
-      if (typeof body?.outcome === "string" && body.outcome.trim()) return body.outcome;
-    } catch {
-      /* The structured channel owns mutation outcomes; plain fallback text is not reinterpreted. */
-    }
-  }
-  return fallback;
+  return null;
 }
 
 function outcomeKind(action: GroceryAction): NonNullable<GroceryModelContext["outcome"]>["kind"] {
@@ -202,7 +193,8 @@ export function createGroceryBridgeAdapter(
         throw new Error(
           result.isError ? "The grocery action failed" : "The server returned no current grocery snapshot",
         );
-      const actualOutcome = outcomeFromBridge(result, action.kind);
+      const actualOutcome = outcomeFromBridge(result);
+      if (!actualOutcome) throw new Error("The server returned no valid grocery mutation outcome");
       const context: GroceryModelContext = {
         ...snapshot,
         action_summary: action.kind,
