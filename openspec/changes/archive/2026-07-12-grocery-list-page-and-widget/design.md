@@ -88,7 +88,7 @@ Household rows remain first-class, grouped Household and excluded from recipe at
 
 ### 6. Pantry freshness and decisions are server-derived
 
-Move the category staleness/“worth a look” thresholds out of the route constants into one pure Worker/shared table used by `read_to_buy`, pantry reads, and the Grocery snapshot. `read_pantry(stale_only)` keeps its public stance but delegates classification to the same helper. Each covered line carries `freshness: covered | worth_a_look` and the reason/date.
+Move the category staleness/“worth a look” thresholds out of the route constants into one pure Worker table used internally by `read_to_buy` and the Grocery snapshot. `read_pantry(stale_only)` keeps its existing public structured-unsupported stance because public pantry freshness requires conversational context. Each Grocery covered line carries `freshness: covered | worth_a_look` and the reason/date.
 
 **Still good** calls `mark_pantry_verified`, re-reads, and mirrors the full snapshot. **Buy anyway** atomically materializes the canonical row as `source:'pantry_low'` with a note that it overrode coverage and records a buy-anyway decision so that pantry subtraction does not immediately hide it; Undo removes that decision/materialization under the same edited-row safety rule as substitution. Pure section collapse is local-only.
 

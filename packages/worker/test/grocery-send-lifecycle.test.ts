@@ -53,4 +53,17 @@ describe("send-scoped grocery lifecycle", () => {
     const fresh = await readGrocerySnapshot(h.env, T);
     await expect(markGrocerySendPlaced(h.env, T, { send_id: "empty", expected_line_keys: [], snapshot_version: fresh.snapshot_version })).rejects.toMatchObject({ code: "validation_failed" });
   });
+
+  it("serializes a concurrent relist against the exact placement claim", async () => {
+    const h = sqliteEnv([T]); await sent(h, ["milk"]);
+    const before = await readGrocerySnapshot(h.env, T); const line = before.in_cart_groups[0].lines[0];
+    const results = await Promise.allSettled([
+      markGrocerySendPlaced(h.env, T, { send_id: "s1", expected_line_keys: ["milk"], snapshot_version: before.snapshot_version }),
+      relistGrocerySendLine(h.env, T, { send_id: "s1", line_key: "milk", expected_row_version: line.row_version }),
+    ]);
+    expect(results.some((result) => result.status === "fulfilled")).toBe(true);
+    const row = h.rows("grocery_list")[0]; const send = h.rows("order_sends")[0];
+    if (send.placed_at) { expect(row.status).toBe("ordered"); expect(h.rows("spend_events")).toHaveLength(1); }
+    else { expect(row.status).toBe("active"); expect(h.rows("spend_events")).toHaveLength(0); }
+  });
 });

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { GroceryListData } from "@yamp/contract";
 import { GroceryList } from "./components/grocery-list";
+import { createGroceryBridgeAdapter, resolveGroceryCapabilities, type GroceryBridge } from "./grocery-bridge";
 
 const data: GroceryListData = {
   contract_version: 1,
@@ -95,5 +96,36 @@ describe("shared Grocery component", () => {
     );
     expect(html).toContain('data-host-mode="readonly"');
     expect(html).toContain("disabled");
+  });
+
+  it("renders a real unknown-newer widget fixture read-only", () => {
+    const fixture = { ...data, contract_version: 2, snapshot_version: "unknown-newer-v2" };
+    const bridge = {
+      callServerTool: async () => ({ structuredContent: { snapshot: fixture } }),
+      updateModelContext: async () => undefined,
+      sendMessage: async () => undefined,
+    } satisfies GroceryBridge;
+    const capabilities = resolveGroceryCapabilities({
+      contractVersion: fixture.contract_version,
+      serverTools: true,
+      updateModelContext: true,
+      message: true,
+      hydrated: true,
+    });
+    const html = renderToStaticMarkup(
+      <GroceryList data={fixture} adapter={createGroceryBridgeAdapter(bridge, capabilities)} />,
+    );
+    expect(html).toContain('data-host-mode="readonly"');
+    expect(html).toContain("Milk");
+    expect(html).toContain("disabled");
+  });
+
+  it("renders each send as an accessible collapsible disclosure", () => {
+    const html = renderToStaticMarkup(
+      <GroceryList data={data} adapter={{ mode: "interactive", mutate: async () => data }} />,
+    );
+    expect(html).toContain("<details");
+    expect(html).toContain("<summary");
+    expect(html).toContain('aria-label="Kroger cart, 1 items"');
   });
 });

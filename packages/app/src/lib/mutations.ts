@@ -255,6 +255,38 @@ function registryRows(qc: QueryClient): RegistryRow[] {
               return { ...cur, to_buy: [...cur.to_buy, line] };
             });
           }
+          qc.setQueryData<GroceryListData>(["grocery", "view"], (cur) => {
+            if (!cur) return cur;
+            const key = norm(vars.name);
+            const found = cur.lines.find((line) => norm(line.name) === key);
+            if (found)
+              return {
+                ...cur,
+                lines: cur.lines.map((line) =>
+                  line === found ? { ...line, origin: line.origin === "plan" ? "both" : line.origin } : line,
+                ),
+              };
+            const line: GroceryListData["lines"][number] = {
+              key,
+              name: vars.name,
+              quantity: vars.quantity ?? "1",
+              kind: "grocery",
+              domain: "grocery",
+              origin: "list",
+              checked_at: null,
+              row_version: 1,
+              updated_at: new Date().toISOString(),
+              note: vars.note ?? null,
+              for_recipes: vars.for_recipes ?? [],
+            };
+            const to_buy = [...cur.to_buy, key];
+            return {
+              ...cur,
+              lines: [...cur.lines, line],
+              to_buy,
+              counts: { ...cur.counts, to_buy: to_buy.length },
+            };
+          });
         },
         onError: (err: unknown) => toast(messageOf(err, "Couldn't add the item — try again")),
         onSettled: () => qc.invalidateQueries({ queryKey: ["grocery"] }),
@@ -322,6 +354,28 @@ function registryRows(qc: QueryClient): RegistryRow[] {
                 : cur,
             );
           }
+          qc.setQueryData<GroceryListData>(["grocery", "view"], (cur) => {
+            if (!cur) return cur;
+            const target = cur.lines.find((line) => norm(line.name) === norm(vars.name));
+            if (!target) return cur;
+            const keep = target.origin === "both";
+            const lines = keep
+              ? cur.lines.map((line) =>
+                  line === target ? { ...line, origin: "plan" as const, row_version: 0 } : line,
+                )
+              : cur.lines.filter((line) => line !== target);
+            const to_buy = keep ? cur.to_buy : cur.to_buy.filter((key) => key !== target.key);
+            return {
+              ...cur,
+              lines,
+              to_buy,
+              counts: {
+                ...cur.counts,
+                to_buy: to_buy.length,
+                checked: lines.filter((line) => line.checked_at != null).length,
+              },
+            };
+          });
         },
         onError: (err: unknown) => toast(messageOf(err, "Couldn't remove the item — try again")),
         onSettled: () => qc.invalidateQueries({ queryKey: ["grocery"] }),
@@ -381,12 +435,54 @@ function registryRows(qc: QueryClient): RegistryRow[] {
         },
         onMutate: (vars: GroceryCoverageVars) =>
           qc.setQueryData<GroceryListData>(["grocery", "view"], (cur) =>
-            cur && vars.enabled
-              ? {
-                  ...cur,
-                  pantry_covered: cur.pantry_covered.filter((line) => line.key !== vars.key),
-                  to_buy: [...new Set([...cur.to_buy, vars.key])],
-                }
+            cur
+              ? vars.enabled
+                ? {
+                    ...cur,
+                    pantry_covered: cur.pantry_covered.filter((line) => line.key !== vars.key),
+                    lines: cur.lines.some((line) => line.key === vars.key)
+                      ? cur.lines
+                      : [
+                          ...cur.lines,
+                          {
+                            key: vars.key,
+                            name:
+                              vars.name ??
+                              cur.pantry_covered.find((line) => line.key === vars.key)?.name ??
+                              vars.key,
+                            quantity: 1,
+                            kind: "grocery",
+                            domain: "grocery",
+                            origin: "list",
+                            checked_at: null,
+                            row_version: 1,
+                            updated_at: new Date().toISOString(),
+                            for_recipes:
+                              cur.pantry_covered.find((line) => line.key === vars.key)?.for_recipes ?? [],
+                          },
+                        ],
+                    to_buy: [...new Set([...cur.to_buy, vars.key])],
+                    counts: { ...cur.counts, to_buy: new Set([...cur.to_buy, vars.key]).size },
+                  }
+                : {
+                    ...cur,
+                    lines: cur.lines.filter((line) => line.key !== vars.key),
+                    to_buy: cur.to_buy.filter((key) => key !== vars.key),
+                    pantry_covered: cur.pantry_covered.some((line) => line.key === vars.key)
+                      ? cur.pantry_covered
+                      : [
+                          ...cur.pantry_covered,
+                          {
+                            key: vars.key,
+                            name: vars.name ?? vars.key,
+                            for_recipes: [],
+                            freshness: "covered",
+                            on_hand: {},
+                            buy_anyway: false,
+                          },
+                        ],
+                    counts: { ...cur.counts, to_buy: cur.to_buy.filter((key) => key !== vars.key).length },
+                  }
               : cur,
           ),
         onSuccess: (snapshot: GroceryListData) => qc.setQueryData(["grocery", "view"], snapshot),
@@ -408,12 +504,33 @@ function registryRows(qc: QueryClient): RegistryRow[] {
         },
         onMutate: (vars: GrocerySubstitutionVars) =>
           qc.setQueryData<GroceryListData>(["grocery", "view"], (cur) =>
-            cur && !vars.undo
-              ? {
-                  ...cur,
-                  lines: cur.lines.filter((line) => line.key !== vars.original_key),
-                  to_buy: cur.to_buy.filter((key) => key !== vars.original_key),
-                }
+            cur
+              ? !vars.undo
+                ? {
+                    ...cur,
+                    lines: [
+                      ...cur.lines.filter(
+                        (line) => line.key !== vars.original_key && line.key !== vars.replacement_key,
+                      ),
+                      {
+                        ...(cur.lines.find((line) => line.key === vars.original_key) ?? {
+                          quantity: 1,
+                          kind: "grocery",
+                          domain: "grocery",
+                          origin: "list",
+                          checked_at: null,
+                          row_version: 0,
+                          updated_at: null,
+                          for_recipes: [],
+                        }),
+                        key: vars.replacement_key,
+                        name: vars.replacement_name,
+                        row_version: 1,
+                      },
+                    ],
+                    to_buy: [...cur.to_buy.filter((key) => key !== vars.original_key), vars.replacement_key],
+                  }
+                : cur
               : cur,
           ),
         onSuccess: (snapshot: GroceryListData) => qc.setQueryData(["grocery", "view"], snapshot),
@@ -434,6 +551,33 @@ function registryRows(qc: QueryClient): RegistryRow[] {
             if (!cur) return cur;
             return {
               ...cur,
+              lines: [
+                ...cur.lines,
+                ...cur.in_cart_groups.flatMap((group) =>
+                  group.send_id === vars.send_id
+                    ? group.lines
+                        .filter((line) => line.key === vars.line_key)
+                        .map((line) => ({
+                          key: line.key,
+                          name: line.name,
+                          quantity: line.quantity,
+                          kind: "grocery" as const,
+                          domain: "grocery",
+                          origin: "list" as const,
+                          checked_at: null,
+                          row_version: line.row_version + 1,
+                          updated_at: new Date().toISOString(),
+                          for_recipes: [],
+                        }))
+                    : [],
+                ),
+              ],
+              to_buy: [...new Set([...cur.to_buy, vars.line_key])],
+              counts: {
+                ...cur.counts,
+                to_buy: new Set([...cur.to_buy, vars.line_key]).size,
+                in_carts: Math.max(0, cur.counts.in_carts - 1),
+              },
               in_cart_groups: cur.in_cart_groups.map((group) =>
                 group.send_id === vars.send_id
                   ? { ...group, lines: group.lines.filter((line) => line.key !== vars.line_key) }

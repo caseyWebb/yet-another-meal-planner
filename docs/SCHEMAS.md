@@ -491,6 +491,7 @@ fulfillment   TEXT  -- 'kroger_online' | 'satellite'
 order_list_id TEXT  -- satellite correlation; NULL on the Kroger path
 created_at    TEXT  -- ISO 8601
 placed_at     TEXT  -- nullable ISO timestamp of the exact batch purchase assertion; old/unplaced sends stay NULL
+placement_token TEXT -- nullable internal claim token; gates every row/spend effect in the atomic placement batch
 
 -- D1 order_send_lines table — one row per sent line. PRIMARY KEY (send_id, line_key); insert-or-ignore (a snapshot is never rewritten).
 send_id       TEXT     -- -> order_sends.id
@@ -510,11 +511,20 @@ department    TEXT     -- D17 stamp (below); NULL ONLY while pending classificat
 provenance    TEXT     -- 'planned' | 'impulse' (below)
 for_recipes   TEXT     -- JSON array
 
--- grocery_substitution_decisions: tenant/original-key decision truth. The replacement key,
--- attribution signature, created-row flag/version, decision row_version, and timestamps make
--- invalidation and edited-replacement-safe Undo deterministic.
--- grocery_coverage_decisions: tenant/line-key Buy-anyway truth with the same created-row safety
--- metadata, so pantry subtraction cannot hide the promoted row and Undo preserves later edits.
+-- grocery_substitution_decisions — PRIMARY KEY (tenant, original_key).
+tenant TEXT; original_key TEXT; replacement_key TEXT
+attribution_signature TEXT -- canonical JSON of date/id/slug attribution; invalidates when plan relations change
+created_replacement INTEGER -- 1 only when acceptance created the replacement row
+replacement_version INTEGER -- created row version used by edited-row-safe Undo
+row_version INTEGER; created_at TEXT; updated_at TEXT
+-- idx_grocery_substitution_replacement on (tenant, replacement_key).
+
+-- grocery_coverage_decisions — PRIMARY KEY (tenant, line_key).
+tenant TEXT; line_key TEXT
+created_row INTEGER -- 1 only when Buy anyway materialized the pantry-low row
+created_row_version INTEGER -- created row version used by edited-row-safe Undo
+row_version INTEGER; created_at TEXT; updated_at TEXT
+-- idx_grocery_coverage_updated on (tenant, updated_at).
 
 -- D1 spend_events table — one row per asserted purchase line, copied VERBATIM from its snapshot line.
 -- PRIMARY KEY (send_id, line_key) — the idempotency key; insert-or-ignore, so a replayed assertion converges.

@@ -73,6 +73,16 @@ const SendGroupSchema = z.object({
   lines: z.array(SendLineSchema),
 });
 
+const SubstitutionDecisionSchema = z.object({
+  original_key: z.string().min(1), replacement_key: z.string().min(1), attribution_signature: z.string(),
+  created_replacement: z.boolean(), replacement_version: z.number().int().nullable(), row_version: z.number().int().positive(),
+  created_at: z.string(), updated_at: z.string(),
+});
+const CoverageDecisionSchema = z.object({
+  line_key: z.string().min(1), created_row: z.boolean(), created_row_version: z.number().int().nullable(),
+  row_version: z.number().int().positive(), created_at: z.string(), updated_at: z.string(),
+});
+
 export const GroceryListDataSchema = z.object({
   contract_version: z.number().int(),
   snapshot_version: z.string(),
@@ -80,6 +90,8 @@ export const GroceryListDataSchema = z.object({
   lines: z.array(GroceryLineSchema),
   to_buy: z.array(z.string()),
   pantry_covered: z.array(PantryCoveredSchema),
+  substitution_decisions: z.array(SubstitutionDecisionSchema).optional(),
+  coverage_decisions: z.array(CoverageDecisionSchema).optional(),
   in_cart_groups: z.array(SendGroupSchema),
   underived: z.array(z.string()),
   location: z.object({ id: z.string() }).nullable(),

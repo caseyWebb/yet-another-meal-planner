@@ -227,7 +227,7 @@ The system SHALL persist an accepted cross-ingredient substitution keyed by tena
 
 ### Requirement: Pantry buy-anyway overrides coverage explicitly
 
-The pantry freshness classifier SHALL use one shared category threshold table consumed by `read_to_buy`, the Grocery snapshot, and `read_pantry` stale filtering. A covered line SHALL carry `covered` or `worth_a_look`. Still good SHALL use the shared pantry-verify write. Buy anyway SHALL atomically materialize the canonical line as `source:"pantry_low"` and persist a coverage override so pantry subtraction does not immediately hide it; Undo SHALL clear the override and safely remove only an untouched row created by the decision.
+The pantry freshness classifier SHALL use one shared category threshold table consumed internally by `read_to_buy` and the Grocery snapshot. The public `read_pantry(stale_only)` contract remains structured `unsupported`, because its broader freshness claim requires conversational storage/open-package/inspection context. A Grocery covered line SHALL carry `covered` or `worth_a_look`. Still good SHALL use the shared pantry-verify write. Buy anyway SHALL atomically materialize the canonical line as `source:"pantry_low"` and persist a coverage override so pantry subtraction does not immediately hide it; Undo SHALL clear the override and safely remove only an untouched row created by the decision.
 
 #### Scenario: Still good refreshes all consumers
 - **WHEN** a worth-a-look pantry line is marked Still good
@@ -236,4 +236,3 @@ The pantry freshness classifier SHALL use one shared category threshold table co
 #### Scenario: Buy anyway appears in to-buy
 - **WHEN** a covered ingredient is promoted with Buy anyway
 - **THEN** it appears in `to_buy` as a pantry-low explicit row despite the pantry entry
-

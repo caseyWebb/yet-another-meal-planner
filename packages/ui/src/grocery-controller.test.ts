@@ -47,4 +47,21 @@ describe("grocery grouping selectors", () => {
     expect(groups.map((g) => g.label)).toEqual(["early", "No recipe"]);
     expect(groups.flatMap((g) => g.lines.map((x) => x.key))).toEqual(["onion", "salt"]);
   });
+
+  it("orders recipe groups by planned date then plan id rather than alphabetically", () => {
+    const groups = groupGroceryLines(
+      [
+        line("later-alpha", {
+          for_recipes: ["alpha"],
+          recipe_attribution: [{ slug: "alpha", planned_for: "2026-07-14", plan_id: "a" }],
+        }),
+        line("early-zulu", {
+          for_recipes: ["zulu"],
+          recipe_attribution: [{ slug: "zulu", planned_for: "2026-07-13", plan_id: "z" }],
+        }),
+      ],
+      "recipe",
+    );
+    expect(groups.map((group) => group.label)).toEqual(["zulu", "alpha"]);
+  });
 });

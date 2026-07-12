@@ -9,6 +9,7 @@ ALTER TABLE grocery_list ADD COLUMN updated_at TEXT;
 -- A send is immutable history once written. `placed_at` records the exact, idempotent
 -- household purchase assertion; NULL means the send is still awaiting confirmation.
 ALTER TABLE order_sends ADD COLUMN placed_at TEXT;
+ALTER TABLE order_sends ADD COLUMN placement_token TEXT;
 
 CREATE TABLE grocery_substitution_decisions (
   tenant                 TEXT NOT NULL,

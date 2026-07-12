@@ -6,7 +6,6 @@ import {
   EmptyState,
   GroceryList,
   PageHead,
-  toast,
   type GroceryAction,
   type GroceryHostAdapter,
 } from "@yamp/ui";
@@ -23,6 +22,7 @@ import {
 import { useGrocerySnapshot, useStoreAdapters, type StoreAdapterProjection } from "../lib/data";
 import { useOnline } from "../lib/online";
 import { api, apiError } from "../lib/api";
+import { OrderPanel } from "../components/order-panel";
 
 export const Route = createFileRoute("/_app/grocery")({ component: GroceryPage });
 
@@ -58,7 +58,12 @@ function GroceryPage() {
             await add.mutateAsync({ name: action.name });
             return fresh();
           case "checked":
-            return checked.mutateAsync(action);
+            return checked.mutateAsync({
+              key: action.key,
+              checked: action.checked,
+              expected_row_version: action.expected_row_version,
+              snapshot_version: action.snapshot_version,
+            });
           case "remove": {
             const line = current.lines.find((item) => item.key === action.key);
             if (!line) return current;
@@ -73,7 +78,13 @@ function GroceryPage() {
             });
           case "mark_placed": {
             if (!online) throw new Error("Reconnect before confirming a purchase");
-            const res = await api.api.grocery["mark-placed"].$post({ json: action });
+            const res = await api.api.grocery["mark-placed"].$post({
+              json: {
+                send_id: action.send_id,
+                expected_line_keys: action.expected_line_keys,
+                snapshot_version: action.snapshot_version,
+              },
+            });
             if (!res.ok) throw await apiError(res);
             return ((await res.json()) as { snapshot: GroceryListData }).snapshot;
           }
@@ -136,7 +147,7 @@ function GroceryPage() {
         onOrder={() => setOrderOpen(true)}
       />
       {orderOpen ? (
-        <OrderSheet onClose={() => setOrderOpen(false)} onSettled={() => void snapshot.refetch()} />
+        <OrderPanel inCartCount={snapshot.data.counts.in_carts} onClose={() => setOrderOpen(false)} />
       ) : null}
       <GroceryList
         data={snapshot.data}
@@ -201,54 +212,6 @@ function StoreLauncher({
       ) : (
         <p className="muted">Configure a store adapter in Profile, or shop manually below.</p>
       )}
-    </section>
-  );
-}
-
-function OrderSheet({ onClose, onSettled }: { onClose(): void; onSettled(): void }) {
-  const [preview, setPreview] = React.useState<Record<string, unknown> | null>(null);
-  const [busy, setBusy] = React.useState(false);
-  const run = async (commit: boolean) => {
-    setBusy(true);
-    try {
-      const res = await api.api.grocery.order.$post({ json: { preview: !commit } });
-      if (!res.ok) throw await apiError(res);
-      const body = (await res.json()) as Record<string, unknown>;
-      setPreview(body);
-      if (commit) {
-        toast("Sent to your store cart for review");
-        onSettled();
-        onClose();
-      }
-    } catch (error) {
-      toast(error instanceof Error ? error.message : "Couldn't prepare the order");
-    } finally {
-      setBusy(false);
-    }
-  };
-  React.useEffect(() => {
-    void run(false);
-  }, []);
-  const resolved = Array.isArray(preview?.resolved) ? preview.resolved.length : 0;
-  const checkpoint = Array.isArray(preview?.checkpoint) ? preview.checkpoint.length : 0;
-  return (
-    <section
-      className="grocery-order-sheet"
-      role="dialog"
-      aria-label="Order review"
-      data-testid="order-panel"
-    >
-      <h2>Order review</h2>
-      <p>
-        {preview ? `${resolved} ready · ${checkpoint} need attention` : "Building a current store quote…"}
-      </p>
-      <p className="muted">Prices shown here are current pre-send quotes, never final fulfillment prices.</p>
-      <Button variant="ghost" onClick={onClose}>
-        Cancel
-      </Button>{" "}
-      <Button disabled={busy || !preview || checkpoint > 0} onClick={() => void run(true)}>
-        Send to cart
-      </Button>
     </section>
   );
 }

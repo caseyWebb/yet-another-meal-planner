@@ -117,6 +117,7 @@ export interface ToBuyViewLine {
   quantity: number;
   assumed_quantity: boolean;
   for_recipes: string[];
+  recipe_attribution?: { slug: string; planned_for?: string | null; plan_id?: string }[];
   /** `list` = an explicit row the plan does not need; `plan` = a virtual (derived) line
    *  with no stored row; `both` = a stored row the plan also needs (a materialization). */
   origin: "list" | "plan" | "both";

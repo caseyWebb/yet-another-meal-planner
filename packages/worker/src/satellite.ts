@@ -38,7 +38,7 @@ import { readPreferences } from "./profile-db.js";
 import { readGroceryList, readPantryNames, readGroceryKeyIndex, advanceOrderedRows, isoDay } from "./session-db.js";
 import { isFoodItem, storedGroceryKey } from "./grocery.js";
 import { computeToBuy } from "./order.js";
-import { deriveMenuNeeds, dropInFlightNeeds } from "./to-buy.js";
+import { deriveMenuNeeds, dropInFlightNeeds, readGroceryDecisionInputs } from "./to-buy.js";
 import { ingredientContext } from "./corpus-db.js";
 import { KROGER_STORE } from "./flyer-warm.js";
 import { ToolError } from "./errors.js";
@@ -280,11 +280,14 @@ export async function handleOrderList(request: Request, env: Env, now: number = 
     // An in-flight (in_cart/ordered) row suppresses its derived need — a re-pulled list
     // must not re-issue a line the last fill already carted.
     const needs = dropInFlightNeeds(derived.needs, list, (n) => ctx.resolve(n));
+    const decisions = await readGroceryDecisionInputs(env, tenant, needs, list, (n) => ctx.resolve(n));
     const { to_buy, partials } = computeToBuy({
       list,
       menuNeeds: needs,
       pantryNames,
       resolve: (n) => ctx.resolve(n),
+      suppressedKeys: decisions.suppressedKeys,
+      includePartials: decisions.includePartials,
     });
     // `item_id` is the line's stored `normalized_name` (`computeToBuy`'s food-guarded `key`), NOT a
     // re-derived `resolve(name)` — the latter diverges for a non-food row (household/other or a

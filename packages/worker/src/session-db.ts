@@ -26,7 +26,6 @@ import {
 import { validateCanonicalId } from "./ingredient-normalize.js";
 import { stampDepartment, PANTRY_CATEGORIES, LEGACY_CATEGORY_TO_LOCATION } from "./department.js";
 import { recordPurchaseAssertion, voidSpendEvents, deleteSendStatements } from "./spend.js";
-import { classifyPantryFreshness } from "./pantry-freshness.js";
 import {
   applyPantryOperations,
   markVerified,
@@ -110,7 +109,6 @@ export interface PantryFilter {
   category?: string;
   location?: string;
   preparedOnly?: boolean;
-  staleOnly?: boolean;
 }
 
 /** Read the caller's pantry rows, with optional category / location / prepared filters (WHERE).
@@ -143,13 +141,7 @@ export async function readPantry(env: Env, tenant: string, filter: PantryFilter 
     sql += " AND prepared_from IS NOT NULL";
   }
   const rows = await db(env).all<PantryRow>(sql, ...binds);
-  const items = rows.map(pantryItemOf);
-  return filter.staleOnly
-    ? items.filter((item) => classifyPantryFreshness(
-        typeof item.category === "string" ? item.category : undefined,
-        typeof item.last_verified_at === "string" ? item.last_verified_at : undefined,
-      ).freshness === "worth_a_look")
-    : items;
+  return rows.map(pantryItemOf);
 }
 
 /** An UPSERT statement for one pantry item (merge rule: keep added_at, overlay rest). Pantry
@@ -596,7 +588,7 @@ export function groceryUpsertStmt(
       "domain = excluded.domain, status = excluded.status, source = excluded.source, " +
       "for_recipes = excluded.for_recipes, note = excluded.note, ordered_at = excluded.ordered_at, " +
       "display_name = excluded.display_name, sent_in = excluded.sent_in, checked_at = excluded.checked_at, " +
-      "row_version = grocery_list.row_version + 1, updated_at = excluded.updated_at",
+      "row_version = grocery_list.row_version + 1, updated_at = ?18",
     tenant,
     item.name,
     // Persist the STORED key the item carries (add-by-id rows key on the given id, which is NOT
@@ -618,6 +610,7 @@ export function groceryUpsertStmt(
     item.checked_at ?? null,
     item.row_version ?? 1,
     item.updated_at ?? new Date().toISOString(),
+    new Date().toISOString(),
   );
 }
 

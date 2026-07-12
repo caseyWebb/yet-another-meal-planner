@@ -5,6 +5,19 @@ import { ToolError } from "./errors.js";
 import { readGroceryList, markPantryVerifiedRows } from "./session-db.js";
 import { readGrocerySnapshot } from "./grocery-snapshot.js";
 import { purchaseAssertionStatements } from "./spend.js";
+import { attributionSignature } from "./to-buy.js";
+import { ingredientContext } from "./corpus-db.js";
+import { z } from "zod";
+
+const Key = z.string().trim().min(1).max(240);
+const SnapshotVersion = z.string().regex(/^sha256:[a-f0-9]{64}$/);
+const IsoTimestamp = z.string().datetime({ offset: true });
+export const GroceryCheckedInputSchema = z.object({ key: Key, checked: z.boolean(), expected_row_version: z.number().int().nonnegative(), snapshot_version: SnapshotVersion, occurred_at: IsoTimestamp.optional() }).strict();
+export const GroceryCoverageInputSchema = z.object({ key: Key, enabled: z.boolean(), name: z.string().trim().min(1).max(240).optional(), snapshot_version: SnapshotVersion }).strict();
+export const GroceryVerifyInputSchema = z.object({ key: Key, snapshot_version: SnapshotVersion }).strict();
+export const GrocerySubstitutionInputSchema = z.object({ original_key: Key, replacement_key: Key.optional(), replacement_name: z.string().trim().min(1).max(240).optional(), snapshot_version: SnapshotVersion, undo: z.boolean().optional() }).strict().superRefine((value, ctx) => { if (!value.undo && (!value.replacement_key || !value.replacement_name)) ctx.addIssue({ code: "custom", message: "replacement_key and replacement_name are required unless undo=true" }); });
+export const GroceryRelistInputSchema = z.object({ send_id: Key, line_key: Key, expected_row_version: z.number().int().positive() }).strict();
+export const GroceryMarkPlacedInputSchema = z.object({ send_id: Key, expected_line_keys: z.array(Key).min(1).max(500).refine((keys) => new Set(keys).size === keys.length, "expected_line_keys must be unique"), snapshot_version: SnapshotVersion, occurred_at: IsoTimestamp.optional() }).strict();
 
 export interface GroceryMutationResult { status: "ok"; snapshot: GroceryListData; outcome?: string }
 
@@ -77,9 +90,15 @@ export async function acceptGrocerySubstitution(
   tenant: string,
   input: { original_key: string; replacement_key: string; replacement_name: string; snapshot_version: string },
 ): Promise<GroceryMutationResult> {
+  const prior = await db(env).first<{ replacement_key: string }>("SELECT replacement_key FROM grocery_substitution_decisions WHERE tenant=?1 AND original_key=?2", tenant, input.original_key);
+  if (prior?.replacement_key === input.replacement_key) return { status: "ok", snapshot: await readGrocerySnapshot(env, tenant), outcome: "already substituted" };
   const current = await requireSnapshot(env, tenant, input.snapshot_version);
   const original = current.lines.find((line) => line.key === input.original_key);
   if (!original) throw new ToolError("not_found", "The original grocery line is no longer shopping state.");
+  const ctx = await ingredientContext(env, { capture: false });
+  if (!input.replacement_key.trim() || !input.replacement_name.trim() || ctx.resolve(input.replacement_name) !== input.replacement_key) {
+    throw new ToolError("validation_failed", "replacement_key must be the canonical live survivor for replacement_name.");
+  }
   const existing = (await readGroceryList(env, tenant)).find((row) => row.normalized_name === input.replacement_key);
   const now = new Date().toISOString();
   const created = existing ? 0 : 1;
@@ -94,7 +113,7 @@ export async function acceptGrocerySubstitution(
   statements.push(db(env).prepare(
     "INSERT INTO grocery_substitution_decisions (tenant,original_key,replacement_key,attribution_signature,created_replacement,replacement_version,row_version,created_at,updated_at) " +
       "VALUES (?1,?2,?3,?4,?5,?6,1,?7,?7) ON CONFLICT(tenant,original_key) DO UPDATE SET replacement_key=excluded.replacement_key, attribution_signature=excluded.attribution_signature, created_replacement=excluded.created_replacement, replacement_version=excluded.replacement_version, row_version=grocery_substitution_decisions.row_version+1, updated_at=excluded.updated_at",
-    tenant, input.original_key, input.replacement_key, JSON.stringify(original.for_recipes), created, existing?.row_version ?? 1, now,
+    tenant, input.original_key, input.replacement_key, attributionSignature({ for_recipes: original.for_recipes, recipe_attribution: original.recipe_attribution }), created, existing?.row_version ?? 1, now,
   ));
   await db(env).batch(statements);
   return { status: "ok", snapshot: await readGrocerySnapshot(env, tenant), outcome: "substituted" };
@@ -105,12 +124,12 @@ export async function undoGrocerySubstitution(
   tenant: string,
   input: { original_key: string; snapshot_version: string },
 ): Promise<GroceryMutationResult> {
-  await requireSnapshot(env, tenant, input.snapshot_version);
   const decision = await db(env).first<{ replacement_key: string; created_replacement: number; replacement_version: number | null }>(
     "SELECT replacement_key, created_replacement, replacement_version FROM grocery_substitution_decisions WHERE tenant=?1 AND original_key=?2",
     tenant, input.original_key,
   );
   if (!decision) return { status: "ok", snapshot: await readGrocerySnapshot(env, tenant) };
+  await requireSnapshot(env, tenant, input.snapshot_version);
   const stmts = [db(env).prepare("DELETE FROM grocery_substitution_decisions WHERE tenant=?1 AND original_key=?2", tenant, input.original_key)];
   let outcome = "original restored; replacement preserved";
   if (decision.created_replacement && decision.replacement_version != null) {
@@ -126,13 +145,14 @@ export async function setGroceryBuyAnyway(
   tenant: string,
   input: { key: string; enabled: boolean; name?: string; snapshot_version: string },
 ): Promise<GroceryMutationResult> {
-  const current = await requireSnapshot(env, tenant, input.snapshot_version);
-  const covered = current.pantry_covered.find((line) => line.key === input.key);
   const decision = await db(env).first<{ created_row: number; created_row_version: number | null }>(
     "SELECT created_row, created_row_version FROM grocery_coverage_decisions WHERE tenant=?1 AND line_key=?2", tenant, input.key,
   );
+  if ((input.enabled && decision) || (!input.enabled && !decision)) return { status: "ok", snapshot: await readGrocerySnapshot(env, tenant), outcome: input.enabled ? "already buy anyway" : "already undone" };
+  const current = await requireSnapshot(env, tenant, input.snapshot_version);
+  const covered = current.pantry_covered.find((line) => line.key === input.key);
   if (!input.enabled) {
-    if (!decision) return { status: "ok", snapshot: current };
+    if (!decision) return { status: "ok", snapshot: current, outcome: "already undone" };
     const stmts = [db(env).prepare("DELETE FROM grocery_coverage_decisions WHERE tenant=?1 AND line_key=?2", tenant, input.key)];
     if (decision.created_row && decision.created_row_version != null) stmts.push(db(env).prepare("DELETE FROM grocery_list WHERE tenant=?1 AND normalized_name=?2 AND row_version=?3", tenant, input.key, decision.created_row_version));
     await db(env).batch(stmts);
@@ -180,7 +200,8 @@ export async function relistGrocerySendLine(
   const now = new Date().toISOString();
   const result = await db(env).run(
     "UPDATE grocery_list SET status='active', sent_in=NULL, row_version=row_version+1, updated_at=?1 " +
-      "WHERE tenant=?2 AND normalized_name=?3 AND status='in_cart' AND sent_in=?4 AND row_version=?5",
+      "WHERE tenant=?2 AND normalized_name=?3 AND status='in_cart' AND sent_in=?4 AND row_version=?5 " +
+      "AND EXISTS (SELECT 1 FROM order_sends WHERE tenant=?2 AND id=?4 AND placed_at IS NULL)",
     now, tenant, input.line_key, input.send_id, input.expected_row_version,
   );
   if (result.changes !== 1) conflict("The send membership changed while relisting.", await readGrocerySnapshot(env, tenant));
@@ -209,19 +230,28 @@ export async function markGrocerySendPlaced(
   if (JSON.stringify(actual) !== JSON.stringify(expected)) conflict("The send's line membership changed.", current);
   const occurred = input.occurred_at ?? new Date().toISOString();
   const occurredDay = occurred.slice(0, 10);
+  const token = crypto.randomUUID();
   const spend = await purchaseAssertionStatements(
-    env, tenant, actual.map((lineKey) => ({ sendId: input.send_id, lineKey })), occurredDay,
+    env, tenant, actual.map((lineKey) => ({ sendId: input.send_id, lineKey })), occurredDay, { placementToken: token },
   );
-  const statements = actual.map((key) => db(env).prepare(
+  const placeholders = expected.map((_, index) => `?${index + 6}`).join(",");
+  const statements: D1PreparedStatement[] = [db(env).prepare(
+    "UPDATE order_sends SET placed_at=?1, placement_token=?2 WHERE tenant=?3 AND id=?4 AND placed_at IS NULL " +
+      "AND (SELECT COUNT(*) FROM grocery_list WHERE tenant=?3 AND status='in_cart' AND sent_in=?4)=?5 " +
+      `AND NOT EXISTS (SELECT 1 FROM grocery_list WHERE tenant=?3 AND status='in_cart' AND sent_in=?4 AND normalized_name NOT IN (${placeholders}))`,
+    occurred, token, tenant, input.send_id, expected.length, ...expected,
+  )];
+  statements.push(...actual.map((key) => db(env).prepare(
     "UPDATE grocery_list SET status='ordered', ordered_at=?1, row_version=row_version+1, updated_at=?2 " +
-      "WHERE tenant=?3 AND normalized_name=?4 AND status='in_cart' AND sent_in=?5",
-    occurredDay, occurred, tenant, key, input.send_id,
-  ));
+      "WHERE tenant=?3 AND normalized_name=?4 AND status='in_cart' AND sent_in=?5 " +
+      "AND EXISTS (SELECT 1 FROM order_sends WHERE tenant=?3 AND id=?5 AND placement_token=?6)",
+    occurredDay, occurred, tenant, key, input.send_id, token,
+  )));
   statements.push(...spend.statements);
-  statements.push(db(env).prepare(
-    "UPDATE order_sends SET placed_at=?1 WHERE tenant=?2 AND id=?3 AND placed_at IS NULL",
-    occurred, tenant, input.send_id,
-  ));
   await db(env).batch(statements);
+  const claimed = await db(env).first<{ placement_token: string | null }>("SELECT placement_token FROM order_sends WHERE tenant=?1 AND id=?2", tenant, input.send_id);
+  if (claimed?.placement_token !== token) return { status: "ok", snapshot: await readGrocerySnapshot(env, tenant), outcome: "already placed" };
+  const verified = await db(env).first<{ count: number }>("SELECT COUNT(*) AS count FROM grocery_list WHERE tenant=?1 AND sent_in=?2 AND status='ordered'", tenant, input.send_id);
+  if (verified?.count !== actual.length) throw new ToolError("storage_error", "The send placement transaction did not advance every claimed line.");
   return { status: "ok", snapshot: await readGrocerySnapshot(env, tenant), outcome: `placed ${actual.length} lines` };
 }

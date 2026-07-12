@@ -1128,4 +1128,18 @@ describe("grocery area — canonical snapshot and checked route", () => {
     expect(error.error).toBe("conflict");
     expect(error.snapshot.lines.length).toBeGreaterThan(0);
   });
+
+  it("rejects malformed grocery mutation bodies with validation_failed", async () => {
+    const { env } = await groceryEnv(); const cookie = await loggedIn(env);
+    for (const [path, body] of [
+      ["checked", { key: "", checked: "yes", expected_row_version: -1, snapshot_version: "stale" }],
+      ["substitution", { original_key: "milk", snapshot_version: "stale" }],
+      ["coverage", { key: "milk", enabled: true, snapshot_version: "stale" }],
+      ["relist", { send_id: "s", line_key: "milk", expected_row_version: 0 }],
+      ["mark-placed", { send_id: "s", expected_line_keys: ["milk", "milk"], snapshot_version: "stale" }],
+    ] as const) {
+      const response = await send(env, "POST", `/api/grocery/${path}`, cookie, body);
+      expect(response.status).toBe(400); expect((await response.json() as { error: string }).error).toBe("validation_failed");
+    }
+  });
 });

@@ -180,6 +180,7 @@ export async function purchaseAssertionStatements(
   tenant: string,
   rows: AssertedRow[],
   occurredOn: string,
+  gate?: { placementToken: string },
 ): Promise<{ statements: D1PreparedStatement[]; recorded: number }> {
   if (rows.length === 0) return { statements: [], recorded: 0 };
   const d = db(env);
@@ -212,7 +213,7 @@ export async function purchaseAssertionStatements(
         d.prepare(
           "INSERT INTO spend_events (send_id, line_key, tenant, occurred_on, name, sku, quantity, " +
             "unit_price, amount, savings, estimated, department, provenance, store, fulfillment, voided_at) " +
-            "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, NULL) " +
+            `SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, NULL${gate ? " WHERE EXISTS (SELECT 1 FROM order_sends WHERE id=?1 AND tenant=?3 AND placement_token=?16)" : ""} ` +
             "ON CONFLICT(send_id, line_key) DO NOTHING",
           l.send_id,
           l.line_key,
@@ -229,6 +230,7 @@ export async function purchaseAssertionStatements(
           l.provenance,
           l.store,
           l.fulfillment,
+          ...(gate ? [gate.placementToken] : []),
         ),
       );
       recorded++;

@@ -51,6 +51,26 @@ describe("grocery decisions", () => {
     expect(h.rows("grocery_list").some((r) => r.normalized_name === "oat milk")).toBe(true);
   });
 
+  it("converges response-lost decision replays before stale snapshot checks", async () => {
+    const h = sqliteEnv([T]); plan(h, "milk");
+    const before = await readGrocerySnapshot(h.env, T);
+    await acceptGrocerySubstitution(h.env, T, { original_key: "milk", replacement_key: "oat milk", replacement_name: "Oat milk", snapshot_version: before.snapshot_version });
+    const replay = await acceptGrocerySubstitution(h.env, T, { original_key: "milk", replacement_key: "oat milk", replacement_name: "Oat milk", snapshot_version: before.snapshot_version });
+    expect(replay.outcome).toBe("already substituted");
+    expect(h.rows("grocery_substitution_decisions")[0]).toMatchObject({ created_replacement: 1, row_version: 1 });
+    await undoGrocerySubstitution(h.env, T, { original_key: "milk", snapshot_version: replay.snapshot.snapshot_version });
+    h.raw.prepare("INSERT INTO pantry (tenant,name,normalized_name,category,added_at,last_verified_at) VALUES (?,'Milk','milk','dairy','2026-07-01','2026-07-12')").run(T);
+    const coveredSnapshot = await readGrocerySnapshot(h.env, T);
+    const covered = coveredSnapshot.pantry_covered[0];
+    const bought = await setGroceryBuyAnyway(h.env, T, { key: covered.key, enabled: true, snapshot_version: coveredSnapshot.snapshot_version });
+    const coverageReplay = await setGroceryBuyAnyway(h.env, T, { key: covered.key, enabled: true, snapshot_version: coveredSnapshot.snapshot_version });
+    expect(coverageReplay.outcome).toBe("already buy anyway");
+    expect(h.rows("grocery_coverage_decisions")[0]).toMatchObject({ created_row: 1, row_version: 1 });
+    await setGroceryBuyAnyway(h.env, T, { key: covered.key, enabled: false, snapshot_version: bought.snapshot.snapshot_version });
+    const undoReplay = await setGroceryBuyAnyway(h.env, T, { key: covered.key, enabled: false, snapshot_version: bought.snapshot.snapshot_version });
+    expect(undoReplay.outcome).toBe("already undone");
+  });
+
   it("Buy anyway overrides coverage; Still good refreshes freshness", async () => {
     const h = sqliteEnv([T]); plan(h, "milk");
     h.raw.prepare("INSERT INTO pantry (tenant,name,normalized_name,category,added_at,last_verified_at) VALUES (?,'Milk','milk','dairy','2026-06-01','2026-06-01')").run(T);

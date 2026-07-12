@@ -80,8 +80,26 @@ export function groupGroceryLines(lines: GroceryLine[], grouping: GroceryGroupin
     .sort(
       (a, b) =>
         (a.label === "No recipe" ? 1 : 0) - (b.label === "No recipe" ? 1 : 0) ||
+        recipeGroupOrder(a).localeCompare(recipeGroupOrder(b)) ||
         a.label.localeCompare(b.label),
     );
+}
+
+function recipeGroupOrder(group: GroceryGroup): string {
+  if (group.label === "No recipe") return "9999-99-99\uffff";
+  const attrs: { slug: string; planned_for?: string | null; plan_id?: string }[] = group.lines.flatMap(
+    (line) => line.recipe_attribution ?? line.for_recipes.map((slug) => ({ slug })),
+  );
+  const matching = attrs
+    .filter((item) => item.slug === group.label)
+    .sort(
+      (a, b) =>
+        (a.planned_for ?? "9999-99-99").localeCompare(b.planned_for ?? "9999-99-99") ||
+        (a.plan_id ?? "").localeCompare(b.plan_id ?? "") ||
+        a.slug.localeCompare(b.slug),
+    );
+  const first = matching[0];
+  return `${first?.planned_for ?? "9999-99-99"}\u0000${first?.plan_id ?? ""}\u0000${group.label}`;
 }
 
 export interface GroceryControllerState {
@@ -96,24 +114,27 @@ export function createGroceryController(data: GroceryListData): GroceryControlle
   return { data, grouping: "department", pending: [], conflict: null, confirmation: null };
 }
 
+export function groceryActionKey(action: GroceryAction): string {
+  return "key" in action
+    ? action.key
+    : "original_key" in action
+      ? action.original_key
+      : "send_id" in action
+        ? action.send_id
+        : action.name;
+}
+
 export async function runGroceryAction(
   state: GroceryControllerState,
   adapter: GroceryHostAdapter,
   action: GroceryAction,
 ): Promise<GroceryControllerState> {
-  if (adapter.mode === "readonly") return state;
+  const key = groceryActionKey(action);
+  if (adapter.mode === "readonly") return { ...state, pending: state.pending.filter((p) => p !== key) };
   if (adapter.mode === "delegate") {
     await adapter.delegate?.(action);
-    return state;
+    return { ...state, pending: state.pending.filter((p) => p !== key) };
   }
-  const key =
-    "key" in action
-      ? action.key
-      : "original_key" in action
-        ? action.original_key
-        : "send_id" in action
-          ? action.send_id
-          : action.name;
   try {
     const data = await adapter.mutate(action);
     return {

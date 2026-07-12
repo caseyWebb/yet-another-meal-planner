@@ -32,6 +32,7 @@ import {
   verifyGroceryPantry,
   relistGrocerySendLine,
   markGrocerySendPlaced,
+  GroceryCheckedInputSchema, GroceryCoverageInputSchema, GroceryVerifyInputSchema, GrocerySubstitutionInputSchema, GroceryRelistInputSchema, GroceryMarkPlacedInputSchema,
 } from "../grocery-operations.js";
 
 const KINDS = new Set(["grocery", "household", "other"]);
@@ -48,6 +49,11 @@ const substitutionsInput = z.object({
   names: z.array(z.string()).optional(),
   max_lines: z.number().int().positive().optional(),
 });
+function mutationBody<T>(schema: z.ZodType<T>, value: unknown): T {
+  const parsed = schema.safeParse(value);
+  if (!parsed.success) { const issue = parsed.error.issues[0]; throw new ToolError("validation_failed", `${issue?.path.join(".") || "body"}: ${issue?.message ?? "invalid"}`); }
+  return parsed.data;
+}
 
 function str(v: unknown): string | undefined {
   return typeof v === "string" ? v : undefined;
@@ -90,34 +96,34 @@ export const groceryArea = new Hono<ApiEnv>()
   })
   .post("/grocery/checked", requireSession, async (c) => {
     const tenant = c.get("tenant");
-    const body = await jsonBody<{ key: string; checked: boolean; expected_row_version: number; snapshot_version: string; occurred_at?: string }>(c);
+    const body = mutationBody(GroceryCheckedInputSchema, await jsonBody<unknown>(c));
     return c.json(await setGroceryChecked(c.env, tenant.id, body));
   })
   .post("/grocery/substitution", requireSession, async (c) => {
     const tenant = c.get("tenant");
-    const body = await jsonBody<{ original_key: string; replacement_key: string; replacement_name: string; snapshot_version: string; undo?: boolean }>(c);
+    const body = mutationBody(GrocerySubstitutionInputSchema, await jsonBody<unknown>(c));
     return c.json(body.undo
       ? await undoGrocerySubstitution(c.env, tenant.id, body)
-      : await acceptGrocerySubstitution(c.env, tenant.id, body));
+      : await acceptGrocerySubstitution(c.env, tenant.id, { ...body, replacement_key: body.replacement_key!, replacement_name: body.replacement_name! }));
   })
   .post("/grocery/coverage", requireSession, async (c) => {
     const tenant = c.get("tenant");
-    const body = await jsonBody<{ key: string; enabled: boolean; name?: string; snapshot_version: string }>(c);
+    const body = mutationBody(GroceryCoverageInputSchema, await jsonBody<unknown>(c));
     return c.json(await setGroceryBuyAnyway(c.env, tenant.id, body));
   })
   .post("/grocery/pantry-verify", requireSession, async (c) => {
     const tenant = c.get("tenant");
-    const body = await jsonBody<{ key: string; snapshot_version: string }>(c);
+    const body = mutationBody(GroceryVerifyInputSchema, await jsonBody<unknown>(c));
     return c.json(await verifyGroceryPantry(c.env, tenant.id, body));
   })
   .post("/grocery/relist", requireSession, async (c) => {
     const tenant = c.get("tenant");
-    const body = await jsonBody<{ send_id: string; line_key: string; expected_row_version: number }>(c);
+    const body = mutationBody(GroceryRelistInputSchema, await jsonBody<unknown>(c));
     return c.json(await relistGrocerySendLine(c.env, tenant.id, body));
   })
   .post("/grocery/mark-placed", requireSession, async (c) => {
     const tenant = c.get("tenant");
-    const body = await jsonBody<{ send_id: string; expected_line_keys: string[]; snapshot_version: string; occurred_at?: string }>(c);
+    const body = mutationBody(GroceryMarkPlacedInputSchema, await jsonBody<unknown>(c));
     return c.json(await markGrocerySendPlaced(c.env, tenant.id, body));
   })
   .get("/grocery", requireSession, async (c) => {

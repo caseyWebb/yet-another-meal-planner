@@ -98,6 +98,24 @@ describe("deriveMenuNeeds", () => {
   });
 });
 
+describe("to-buy snapshot freshness", () => {
+  it("returns an opaque digest on plain and enriched reads and changes with row state", async () => {
+    const h = sqliteEnv([T]);
+    await addGroceryRow(h.env, T, { name: "Milk" }, TODAY);
+    const plain = await computeToBuyView(h.env, T);
+    const enriched = await computeToBuyView(h.env, T, { enrich: true });
+    expect(plain.snapshot_version).toMatch(/^sha256:[a-f0-9]{64}$/);
+    expect(enriched.snapshot_version).toMatch(/^sha256:[a-f0-9]{64}$/);
+    await updateGroceryRow(h.env, T, "Milk", { note: "two cartons" });
+    expect((await computeToBuyView(h.env, T)).snapshot_version).not.toBe(plain.snapshot_version);
+  });
+  it("propagates decision storage failures instead of silently changing shopping truth", async () => {
+    const h = sqliteEnv([T]);
+    h.raw.exec("DROP TABLE grocery_substitution_decisions");
+    await expect(computeToBuyView(h.env, T)).rejects.toMatchObject({ code: "storage_error" });
+  });
+});
+
 describe("computeToBuyView", () => {
   it("partitions lines into origin plan / list / both and unions for_recipes on both", async () => {
     const h = sqliteEnv([T]);
@@ -378,6 +396,7 @@ describe("computeToBuyView — enrich (member-app-differentiators D6, generalize
         pantry_covered: [],
         in_cart: [],
         underived: [],
+        snapshot_version: expect.stringMatching(/^sha256:/),
       },
     );
   });

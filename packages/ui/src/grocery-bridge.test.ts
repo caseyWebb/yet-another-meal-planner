@@ -58,7 +58,7 @@ describe("Grocery MCP bridge", () => {
         message: true,
         hydrated: false,
       }).mode,
-    ).toBe("delegate");
+    ).toBe("readonly");
     expect(
       resolveGroceryCapabilities({
         contractVersion: 1,
@@ -118,5 +118,37 @@ describe("Grocery MCP bridge", () => {
     expect(b.contexts).toHaveLength(0);
     expect(b.messages).toHaveLength(0);
     expect(grocerySnapshotFromBridge({ structuredContent: { contract_version: 99 } })).toBeNull();
+  });
+
+  it("preserves a structured MCP conflict snapshot for controller replacement", async () => {
+    const current = { ...data, snapshot_version: "current" };
+    const b = bridge({
+      isError: true,
+      structuredContent: { error: "conflict", message: "The row changed", context: { snapshot: current } },
+    });
+    const adapter = createGroceryBridgeAdapter(b.value, { mode: "interactive", contractSupported: true });
+    await expect(adapter.mutate({ kind: "add", name: "milk" })).rejects.toMatchObject({
+      message: "The row changed",
+      context: { snapshot: { snapshot_version: "current" } },
+    });
+    expect(b.contexts).toHaveLength(0);
+  });
+
+  it("delegates with an explicit action message only for an outset host without tools", async () => {
+    const b = bridge();
+    const adapter = createGroceryBridgeAdapter(b.value, { mode: "delegate", contractSupported: true });
+    await adapter.delegate?.({
+      kind: "substitute",
+      original_key: "milk",
+      replacement_key: "oat-milk",
+      replacement_name: "Oat milk",
+      snapshot_version: "v",
+    });
+    expect(b.messages).toEqual([
+      {
+        role: "user",
+        content: [{ type: "text", text: "Please substitute Oat milk for milk on my grocery list." }],
+      },
+    ]);
   });
 });

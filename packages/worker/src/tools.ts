@@ -758,16 +758,16 @@ export function buildServer(env: Env, tenant: Tenant, origin?: string): McpServe
     "read_pantry",
     {
       description:
-        "Read pantry items. Items carry orthogonal `category` (food taxonomy) and `location` fields; filter on either, plus prepared_only. `stale_only` applies the same category-tier verification classifier used by the grocery snapshot and to-buy coverage; it means worth a look, never a claim that food is bad.",
+        "Read pantry items. Items carry orthogonal `category` (food taxonomy) and `location` fields; filter on either, plus prepared_only. stale_only remains unsupported because public freshness claims require conversational context.",
       inputSchema: { filter: z.object(pantryFilterShape).optional() },
     },
     ({ filter }) =>
       runTool(async () => {
+        if (filter?.stale_only) throw new ToolError("unsupported", "stale_only is not computable: freshness is a conversational concern requiring storage/open-package/inspection context.");
         const items = await readPantry(env, tenant.id, {
           category: filter?.category,
           location: filter?.location,
           preparedOnly: filter?.prepared_only,
-          staleOnly: filter?.stale_only,
         });
         return { items };
       }),

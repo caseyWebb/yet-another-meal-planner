@@ -8,7 +8,7 @@
 
 - [x] 2.1 Refactor the shared to-buy operation to compute shopping, checked, and unchecked-to-buy partitions under `(active list UNION plan needs) MINUS pantry MINUS substitution suppressions`; cover virtual, both-origin, checked, in-flight, household, and plan-removal fixtures.
 - [x] 2.2 Implement stable recipe attribution/order and presentation placement section/aisle sort keys for Department and Recipe grouping, including Household, Not mapped, and No recipe fallbacks; add pure selector tests.
-- [x] 2.3 Move pantry freshness thresholds to one shared classifier used by to-buy, pantry stale reads, and grocery snapshots; cover category tiers and verification convergence.
+- [x] 2.3 Move pantry freshness thresholds to one shared internal classifier used by to-buy and grocery snapshots while retaining `read_pantry(stale_only)` as structured unsupported; cover category tiers and verification convergence.
 - [x] 2.4 Implement `readGrocerySnapshot` with grouped current sends, immutable persisted quote totals/savings, unlinked-in-cart degradation, header counts, underived data, canonical serialization, and opaque `snapshot_version`; test endpoint/tool parity and digest changes for every source class.
 
 ## 3. Checked, pantry, and substitution operations

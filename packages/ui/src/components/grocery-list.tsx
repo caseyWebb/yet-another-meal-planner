@@ -2,9 +2,10 @@ import * as React from "react";
 import type { GroceryListData, GroceryLine } from "@yamp/contract";
 import { Button } from "./button";
 import { Input } from "./input";
-import { Card, CardContent, CardHeader, CardTitle } from "./card";
+import { Card, CardContent } from "./card";
 import {
   createGroceryController,
+  groceryActionKey,
   groupGroceryLines,
   runGroceryAction,
   type GroceryAction,
@@ -21,22 +22,50 @@ export interface GroceryListProps {
 export function GroceryList({ data, adapter, onDataChange }: GroceryListProps) {
   const [state, setState] = React.useState(() => createGroceryController(data));
   const [add, setAdd] = React.useState("");
-  React.useEffect(() => setState((current) => ({ ...current, data })), [data]);
+  const stateRef = React.useRef(state);
+  const queueRef = React.useRef(Promise.resolve());
+  const pendingRef = React.useRef(new Set<string>());
+  React.useEffect(() => {
+    setState((current) => {
+      const next = { ...current, data };
+      stateRef.current = next;
+      return next;
+    });
+  }, [data]);
   const act = React.useCallback(
-    async (action: GroceryAction) => {
-      setState((current) => ({
-        ...current,
-        pending: [...current.pending, "key" in action ? action.key : action.kind],
-      }));
-      const next = await runGroceryAction(state, adapter, action);
-      setState(next);
-      onDataChange?.(next.data);
+    (action: GroceryAction) => {
+      const key = groceryActionKey(action);
+      if (pendingRef.current.has(key)) return;
+      pendingRef.current.add(key);
+      setState((current) => {
+        const next = { ...current, pending: [...current.pending, key] };
+        stateRef.current = next;
+        return next;
+      });
+      queueRef.current = queueRef.current
+        .catch(() => undefined)
+        .then(async () => {
+          try {
+            const next = await runGroceryAction(stateRef.current, adapter, action);
+            stateRef.current = next;
+            setState(next);
+            onDataChange?.(next.data);
+          } finally {
+            pendingRef.current.delete(key);
+            setState((current) => {
+              if (!current.pending.includes(key)) return current;
+              const next = { ...current, pending: current.pending.filter((item) => item !== key) };
+              stateRef.current = next;
+              return next;
+            });
+          }
+        });
     },
-    [adapter, onDataChange, state],
+    [adapter, onDataChange],
   );
   const grouping = state.grouping;
   const groups = groupGroceryLines(state.data.lines, grouping);
-  const disabled = adapter.mode === "readonly";
+  const disabled = adapter.mode === "readonly" || state.pending.length > 0;
   return (
     <section className="grocery-shared" data-testid="shared-grocery-list" data-host-mode={adapter.mode}>
       <div className="grocery-stats" aria-label="Grocery status">
@@ -81,6 +110,51 @@ export function GroceryList({ data, adapter, onDataChange }: GroceryListProps) {
           </section>
         ))}
       </div>
+      {state.data.substitution_decisions?.length || state.data.coverage_decisions?.length ? (
+        <section className="grocery-decisions" aria-label="Saved grocery decisions">
+          <h2>Saved decisions</h2>
+          <ul>
+            {(state.data.substitution_decisions ?? []).map((decision) => (
+              <li key={`sub-${decision.original_key}`}>
+                Using {decision.replacement_key} instead of {decision.original_key}{" "}
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  disabled={disabled}
+                  onClick={() =>
+                    void act({
+                      kind: "substitute_undo",
+                      original_key: decision.original_key,
+                      snapshot_version: state.data.snapshot_version,
+                    })
+                  }
+                >
+                  Undo
+                </Button>
+              </li>
+            ))}
+            {(state.data.coverage_decisions ?? []).map((decision) => (
+              <li key={`coverage-${decision.line_key}`}>
+                Buying {decision.line_key} despite pantry coverage{" "}
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  disabled={disabled}
+                  onClick={() =>
+                    void act({
+                      kind: "pantry_undo",
+                      key: decision.line_key,
+                      snapshot_version: state.data.snapshot_version,
+                    })
+                  }
+                >
+                  Undo
+                </Button>
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
       <form
         className="grocery-add"
         onSubmit={(event) => {
@@ -109,75 +183,83 @@ export function GroceryList({ data, adapter, onDataChange }: GroceryListProps) {
       ) : null}
       <div className="grocery-carts">
         {state.data.in_cart_groups.map((group, index) => (
-          <Card key={group.send_id ?? `unlinked-${index}`} data-testid="grocery-cart-group">
-            <CardHeader>
-              <CardTitle>
+          <details
+            key={group.send_id ?? `unlinked-${index}`}
+            className="grocery-cart-group"
+            data-testid="grocery-cart-group"
+            open
+          >
+            <summary aria-label={`${group.store ?? "Unlinked"} cart, ${group.lines.length} items`}>
+              <span className="grocery-cart-title">
                 {group.store ? `In your ${group.store} cart` : "In cart — no send record"}
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <p>
-                {group.sent_at
-                  ? `Sent ${new Date(group.sent_at).toLocaleString()}`
-                  : "No linked send history"}{" "}
-                · {group.lines.length} items
-              </p>
-              {group.awaiting_confirmation ? <p className="muted">Awaiting confirmation</p> : null}
-              {group.estimated_total != null ? (
+              </span>
+              <small>{group.lines.length} items</small>
+            </summary>
+            <Card>
+              <CardContent>
                 <p>
-                  <strong>Sent estimate ${group.estimated_total.toFixed(2)}</strong>
-                  {group.flyer_savings && group.flyer_savings > 0
-                    ? ` · $${group.flyer_savings.toFixed(2)} flyer savings`
-                    : ""}
+                  {group.sent_at
+                    ? `Sent ${new Date(group.sent_at).toLocaleString()}`
+                    : "No linked send history"}{" "}
+                  · {group.lines.length} items
                 </p>
-              ) : null}
-              {group.estimated_total != null ? (
-                <p className="muted">Send-time quote, not a final fulfillment price.</p>
-              ) : null}
-              <ul>
-                {group.lines.map((line) => (
-                  <li key={line.key} data-testid="grocery-cart-line" data-key={line.key}>
-                    <span>
-                      {line.name} · {line.quantity}
-                    </span>
-                    {group.send_id ? (
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        disabled={disabled}
-                        onClick={() =>
-                          void act({
-                            kind: "relist",
-                            send_id: group.send_id!,
-                            key: line.key,
-                            expected_row_version: line.row_version,
-                          })
-                        }
-                      >
-                        Back to list
-                      </Button>
-                    ) : null}
-                  </li>
-                ))}
-              </ul>
-              {group.send_id && group.can_mark_placed ? (
-                <Button
-                  disabled={disabled || adapter.online === false}
-                  title={adapter.online === false ? "Reconnect to confirm this purchase" : undefined}
-                  onClick={() =>
-                    void act({
-                      kind: "mark_placed",
-                      send_id: group.send_id!,
-                      expected_line_keys: group.lines.map((line) => line.key).sort(),
-                      snapshot_version: state.data.snapshot_version,
-                    })
-                  }
-                >
-                  Mark order placed
-                </Button>
-              ) : null}
-            </CardContent>
-          </Card>
+                {group.awaiting_confirmation ? <p className="muted">Awaiting confirmation</p> : null}
+                {group.estimated_total != null ? (
+                  <p>
+                    <strong>Sent estimate ${group.estimated_total.toFixed(2)}</strong>
+                    {group.flyer_savings && group.flyer_savings > 0
+                      ? ` · $${group.flyer_savings.toFixed(2)} flyer savings`
+                      : ""}
+                  </p>
+                ) : null}
+                {group.estimated_total != null ? (
+                  <p className="muted">Send-time quote, not a final fulfillment price.</p>
+                ) : null}
+                <ul>
+                  {group.lines.map((line) => (
+                    <li key={line.key} data-testid="grocery-cart-line" data-key={line.key}>
+                      <span>
+                        {line.name} · {line.quantity}
+                      </span>
+                      {group.send_id ? (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          disabled={disabled}
+                          onClick={() =>
+                            void act({
+                              kind: "relist",
+                              send_id: group.send_id!,
+                              key: line.key,
+                              expected_row_version: line.row_version,
+                            })
+                          }
+                        >
+                          Back to list
+                        </Button>
+                      ) : null}
+                    </li>
+                  ))}
+                </ul>
+                {group.send_id && group.can_mark_placed ? (
+                  <Button
+                    disabled={disabled || adapter.online === false}
+                    title={adapter.online === false ? "Reconnect to confirm this purchase" : undefined}
+                    onClick={() =>
+                      void act({
+                        kind: "mark_placed",
+                        send_id: group.send_id!,
+                        expected_line_keys: group.lines.map((line) => line.key).sort(),
+                        snapshot_version: state.data.snapshot_version,
+                      })
+                    }
+                  >
+                    Mark order placed
+                  </Button>
+                ) : null}
+              </CardContent>
+            </Card>
+          </details>
         ))}
       </div>
       {state.data.pantry_covered.length ? (

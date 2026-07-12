@@ -2,6 +2,8 @@ import { KNOWN_GROCERY_CONTRACT_VERSION, type GroceryListData, type GroceryLine,
 import type { Env } from "./env.js";
 import { db } from "./db.js";
 import { computeToBuyView } from "./to-buy.js";
+import { readGroceryDecisionInputs } from "./to-buy.js";
+import { readGroceryList } from "./session-db.js";
 
 interface SendReadRow {
   send_id: string;
@@ -87,12 +89,13 @@ async function sendGroups(env: Env, tenant: string, asOf: Date): Promise<Grocery
       flyer_savings: quote?.saved ? n(quote.savings) : null,
       can_mark_placed: g.lines.length > 0,
     };
-  });
+  }).filter((group) => group.lines.length > 0);
 }
 
 /** Authoritative, tenant-scoped state behind the member route and MCP app. */
 export async function readGrocerySnapshot(env: Env, tenant: string, now = new Date()): Promise<GroceryListData> {
   const view = await computeToBuyView(env, tenant, { enrich: true });
+  const decisions = await readGroceryDecisionInputs(env, tenant, [], await readGroceryList(env, tenant), (name) => name);
   const linked = await sendGroups(env, tenant, now);
   const linkedKeys = new Set(linked.flatMap((g) => g.lines.map((l) => l.key)));
   const unlinked = view.in_cart.filter((line) => !line.key || !linkedKeys.has(line.key));
@@ -133,7 +136,7 @@ export async function readGrocerySnapshot(env: Env, tenant: string, now = new Da
     updated_at: line.updated_at ?? null,
     ...(line.note !== undefined ? { note: line.note } : {}),
     for_recipes: line.for_recipes,
-    recipe_attribution: line.for_recipes.map((slug) => ({ slug })),
+    recipe_attribution: line.recipe_attribution ?? line.for_recipes.map((slug) => ({ slug })),
     placement: line.placement
       ? {
           ...(line.placement.aisle_description || line.placement.department_label
@@ -161,6 +164,8 @@ export async function readGrocerySnapshot(env: Env, tenant: string, now = new Da
     lines,
     to_buy: view.to_buy.map((line) => line.key),
     pantry_covered,
+    substitution_decisions: decisions.substitutions.map((row) => ({ ...row, created_replacement: Boolean(row.created_replacement) })),
+    coverage_decisions: decisions.coverage.map((row) => ({ ...row, created_row: Boolean(row.created_row) })),
     in_cart_groups,
     underived: view.underived,
     location: view.location ?? null,

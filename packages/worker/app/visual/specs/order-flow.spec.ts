@@ -1,5 +1,7 @@
 import { test, expect } from "../fixtures";
+import type { Page } from "@playwright/test";
 import type { GroceryListData } from "../../../../contract/src/grocery";
+import type { PlaceOrderInput, PlaceOrderOutcome } from "../../../src/order-shapes.js";
 
 const base: GroceryListData = {
   contract_version: 1, snapshot_version: "orders-v1", as_of: "2026-07-12T12:00:00Z",
@@ -47,4 +49,101 @@ test("exact mark-placed conflicts replace the stale snapshot and stay honest", a
   await expect(page.getByRole("alert")).toContainText("Send membership changed");
   await expect(groceryPage.cartItem("milk")).toHaveCount(0);
   await expect(groceryPage.cartItem("eggs")).toBeVisible();
+});
+
+function outcome(overrides: Partial<PlaceOrderOutcome>): PlaceOrderOutcome {
+  return {
+    resolved: [], checkpoint: [], sku_cache: { committed: false }, cart: { written: false },
+    list: { advanced: false }, send: { recorded: false }, preview: true, partials: [], underived: [],
+    ...overrides,
+  };
+}
+
+function resolvedLine(name: string, overrides: Partial<PlaceOrderOutcome["resolved"][number]> = {}) {
+  return {
+    name, key: name, sku: `000${name.length}`, brand: "Store Brand", size: "12 oz", quantity: 1,
+    assumed_quantity: false, price: { regular: 3.5, promo: 0 }, on_sale: false, ...overrides,
+  };
+}
+
+async function interceptOrder(
+  page: Page,
+  fixtures: { preview: PlaceOrderOutcome; commit?: PlaceOrderOutcome },
+  sink: { commitBody?: PlaceOrderInput } = {},
+) {
+  await page.route("**/api/grocery/order", async (route) => {
+    const body = (route.request().postDataJSON() ?? {}) as PlaceOrderInput;
+    if (body.preview) return route.fulfill({ json: fixtures.preview });
+    sink.commitBody = body;
+    return route.fulfill({ json: fixtures.commit ?? fixtures.preview });
+  });
+  return sink;
+}
+
+test("typed preview commits and reports the cart and list writes independently", async ({ page, groceryPage }) => {
+  await groceryPage.deactivateInCart();
+  const preview = outcome({
+    resolved: [resolvedLine("olive oil"), resolvedLine("scallions", { on_sale: true, price: { regular: 2.5, promo: 1.9 } })],
+  });
+  const commit = outcome({ ...preview, preview: false, sku_cache: { committed: true }, cart: { written: true, count: 2 }, list: { advanced: true } });
+  const sink = await interceptOrder(page, { preview, commit });
+  await groceryPage.goto(); await groceryPage.landmark(); await groceryPage.openOrder();
+  await expect(groceryPage.orderLine("olive oil")).toBeVisible();
+  await expect(groceryPage.orderLine("scallions")).toContainText("on sale");
+  await expect(groceryPage.staleWarning()).toHaveCount(0);
+  await groceryPage.commitOrder();
+  await expect(groceryPage.resultCart()).toContainText("2 items sent to the Kroger cart");
+  await expect(groceryPage.resultList()).toContainText("moved to the In cart group");
+  expect(sink.commitBody?.preview).toBeUndefined();
+});
+
+test("checkpoint, partial confirmation, quantity, override, and exclusion ride the commit", async ({ page, groceryPage }) => {
+  await groceryPage.deactivateInCart();
+  const preview = outcome({
+    resolved: [resolvedLine("salmon", { assumed_quantity: true }), resolvedLine("rice")],
+    checkpoint: [{ name: "mustard", kind: "ambiguous", message: "several plausible products", candidates: [
+      { sku: "0001", brand: "Maille", size: "7 oz", price: { regular: 4.2, promo: 0 }, on_sale: false, fulfillment: { curbside: true, delivery: true } },
+      { sku: "0002", brand: "Store Brand", size: "8 oz", price: { regular: 2.1, promo: 0 }, on_sale: false, fulfillment: { curbside: true, delivery: false } },
+    ] }],
+    partials: [{ name: "baby spinach", for_recipes: ["viz-miso-salmon"] }], underived: ["viz-beef-ragu"],
+  });
+  const commit = outcome({ preview: false, resolved: preview.resolved, cart: { written: true, count: 3 }, list: { advanced: true }, sku_cache: { committed: true } });
+  const sink = await interceptOrder(page, { preview, commit });
+  await groceryPage.goto(); await groceryPage.landmark(); await groceryPage.openOrder();
+  await expect(page.getByTestId("order-underived")).toContainText("viz-beef-ragu");
+  await groceryPage.setLineQty("salmon", 3);
+  await groceryPage.excludeLine("rice");
+  await groceryPage.pickCandidate("mustard", "0002");
+  await groceryPage.confirmPartial("baby spinach");
+  await groceryPage.commitOrder();
+  expect(sink.commitBody?.quantities).toEqual({ salmon: 3 });
+  expect(sink.commitBody?.exclude).toEqual(["rice"]);
+  expect(sink.commitBody?.overrides).toEqual([{ name: "mustard", sku: "0002" }]);
+  expect(sink.commitBody?.include_partials).toEqual(["baby spinach"]);
+});
+
+test("failed cart write stays honest and offers Kroger reauthentication", async ({ page, groceryPage }) => {
+  await groceryPage.deactivateInCart();
+  const preview = outcome({ resolved: [resolvedLine("olive oil")] });
+  const commit = outcome({ preview: false, resolved: preview.resolved, sku_cache: { committed: true }, cart: { written: false, code: "reauth_required", error: "Kroger refresh token rejected" }, list: { advanced: false } });
+  await interceptOrder(page, { preview, commit });
+  await groceryPage.goto(); await groceryPage.landmark(); await groceryPage.openOrder(); await groceryPage.commitOrder();
+  await expect(groceryPage.resultCart()).toContainText("NOT written");
+  await expect(groceryPage.resultCart()).not.toContainText("sent to the Kroger cart");
+  await expect(groceryPage.resultCart()).toContainText("stay on your to-buy list");
+  await expect(groceryPage.relinkButton()).toBeVisible();
+  await expect(groceryPage.resultList()).toContainText("not advanced");
+});
+
+test("stale cart state gates commit until explicitly acknowledged", async ({ page, groceryPage }) => {
+  await groceryPage.deactivateInCart();
+  await groceryPage.addRow("stale probe");
+  await groceryPage.setRowStatus("stale probe", "in_cart");
+  await interceptOrder(page, { preview: outcome({ resolved: [resolvedLine("olive oil")] }) });
+  await groceryPage.goto(); await groceryPage.landmark(); await groceryPage.openOrder();
+  await expect(groceryPage.staleWarning()).toContainText("never confirmed placed");
+  await expect(groceryPage.commitButton()).toBeDisabled();
+  await groceryPage.ackStaleCart();
+  await expect(groceryPage.commitButton()).toBeEnabled();
+  await groceryPage.removeRow("stale probe");
 });

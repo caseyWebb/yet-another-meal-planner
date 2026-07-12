@@ -44,6 +44,7 @@ export interface ToBuyItem {
    * a non-food row and for an add-by-id row whose `name` is a display, not the id.
    */
   key: string;
+  recipe_attribution?: { slug: string; planned_for?: string | null; plan_id?: string }[];
 }
 
 export interface ToBuyResult {
@@ -58,6 +59,7 @@ export interface MenuNeed {
   name: string;
   quantity?: number;
   for_recipes?: string[];
+  recipe_attribution?: { slug: string; planned_for?: string | null; plan_id?: string }[];
 }
 
 export interface ComputeToBuyInput {
@@ -93,7 +95,7 @@ export function computeToBuy(input: ComputeToBuyInput): ToBuyResult {
   // Accumulate by the resolved key (canonical id for food) so list + menu needs dedupe
   // across surface forms. `needQty` is the package count carried on a menu need (max across
   // merges); the separate `quantities` map overrides it below.
-  const merged = new Map<string, { name: string; for_recipes: string[]; needQty?: number; checked: boolean }>();
+  const merged = new Map<string, { name: string; for_recipes: string[]; recipe_attribution: { slug: string; planned_for?: string | null; plan_id?: string }[]; needQty?: number; checked: boolean }>();
 
   for (const it of input.list) {
     if (it.status !== "active") continue;
@@ -102,7 +104,7 @@ export function computeToBuy(input: ComputeToBuyInput): ToBuyResult {
     // display still keys on its id, and a typed food row's stored key is byte-identical to
     // `groceryKey(name,…)`. `entry.name` stays the display so surfaces render it natively.
     const key = storedGroceryKey(it, resolve);
-    const entry = merged.get(key) ?? { name: it.name, for_recipes: [], checked: false };
+    const entry = merged.get(key) ?? { name: it.name, for_recipes: [], recipe_attribution: [], checked: false };
     entry.checked = entry.checked || it.checked_at != null;
     entry.for_recipes = [...new Set([...entry.for_recipes, ...it.for_recipes])];
     merged.set(key, entry);
@@ -111,8 +113,12 @@ export function computeToBuy(input: ComputeToBuyInput): ToBuyResult {
   for (const need of input.menuNeeds ?? []) {
     // Menu needs are recipe ingredients = food → resolve to the canonical id.
     const key = resolve(need.name);
-    const entry = merged.get(key) ?? { name: need.name, for_recipes: [], checked: false };
+    const entry = merged.get(key) ?? { name: need.name, for_recipes: [], recipe_attribution: [], checked: false };
     entry.for_recipes = [...new Set([...entry.for_recipes, ...(need.for_recipes ?? [])])];
+    for (const attribution of need.recipe_attribution ?? []) {
+      if (!entry.recipe_attribution.some((a) => a.slug === attribution.slug && a.plan_id === attribution.plan_id)) entry.recipe_attribution.push(attribution);
+    }
+    entry.recipe_attribution.sort((a, b) => (a.planned_for ?? "9999-99-99").localeCompare(b.planned_for ?? "9999-99-99") || (a.plan_id ?? "").localeCompare(b.plan_id ?? "") || a.slug.localeCompare(b.slug));
     // Honor a per-need package count; take the max when several needs merge.
     if (need.quantity != null && need.quantity > 0) {
       entry.needQty = entry.needQty != null ? Math.max(entry.needQty, need.quantity) : need.quantity;
@@ -144,6 +150,7 @@ export function computeToBuy(input: ComputeToBuyInput): ToBuyResult {
       // The merge key IS the stored `normalized_name` (`storedGroceryKey` for a list row, resolve(need)
       // for a plan need) — the canonical id the pull-list issues and advance/cache key on.
       key,
+      ...(entry.recipe_attribution.length ? { recipe_attribution: entry.recipe_attribution } : {}),
     };
     (entry.checked ? checked : to_buy).push(line);
   }
