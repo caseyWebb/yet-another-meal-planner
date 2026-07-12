@@ -29,6 +29,13 @@ CREATE TABLE aisle_map_reconcile_claims (
   PRIMARY KEY (tenant, store_slug)
 );
 
+CREATE TABLE aisle_map_reconcile_receipts (
+  token TEXT PRIMARY KEY,
+  tenant TEXT NOT NULL,
+  store_slug TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
 CREATE TABLE shop_commit_lines (
   tenant TEXT NOT NULL,
   session_id TEXT NOT NULL,

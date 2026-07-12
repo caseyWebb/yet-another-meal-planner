@@ -7,6 +7,7 @@ import {
   type GroceryPantryVerifyVars,
   type GroceryRelistVars,
   type GrocerySubstitutionVars,
+  type ShopCommitVars,
 } from "./mutations";
 
 const line = (key: string, patch: Partial<GroceryLine> = {}): GroceryLine => ({
@@ -121,6 +122,43 @@ describe("persisted grocery mutation defaults", () => {
       snapshot_version: "v1",
     });
     expect(sent.map((body) => body.snapshot_version)).toEqual(["v1", "v2"]);
+  });
+
+  it("rebases an offline shop commit at execution after preceding checked writes", async () => {
+    const qc = client(snapshot("v1"));
+    let sent: Record<string, unknown> | undefined;
+    vi.stubGlobal("fetch", vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      sent = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      return new Response(JSON.stringify({ outcome: "committed", receipt: { session_id: "trip", mode: "manual_shop", store_slug: null, domain: "grocery", occurred_at: "2026-07-12T12:00:00Z", committed_at: "2026-07-12T12:01:00Z", lines: [], totals: { items: 0, priced: 0, amount: 0, savings: 0 } }, snapshot: snapshot("v3") }), { status: 200, headers: { "content-type": "application/json" } });
+    }));
+    qc.setQueryData(["grocery", "view"], snapshot("v2"));
+    const mutation = qc.getMutationDefaults(["grocery", "shop-commit"]) as unknown as { mutationFn(vars: ShopCommitVars): Promise<unknown> };
+    await mutation.mutationFn({ session_id: "trip", mode: "manual_shop", store_slug: null, expected_checked_keys: ["milk"], snapshot_version: "v1", occurred_at: "2026-07-12T12:00:00Z" });
+    expect(sent?.snapshot_version).toBe("v2");
+    expect(sent?.expected_checked_keys).toEqual(["milk"]);
+  });
+
+  it("converges a restored walk session in mutation defaults even without the Grocery route", () => {
+    const values = new Map<string, string>([
+      ["yamp:tenant", "shopper"],
+      ["yamp:store-walk", JSON.stringify({ session_id: "trip", tenant_stamp: "shopper", store_slug: "market", started_at: "2026-07-12T12:00:00Z", current_group: null, state: "pending_commit" })],
+    ]);
+    vi.stubGlobal("localStorage", { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => values.set(key, value), removeItem: (key: string) => values.delete(key) });
+    const qc = client(snapshot("v1"));
+    const mutation = qc.getMutationDefaults(["grocery", "shop-commit"]) as unknown as {
+      onError(error: { error: string; message: string; context: { snapshot: GroceryListData } }, vars: ShopCommitVars): void;
+      onSuccess(result: { outcome: "committed"; receipt: { session_id: string }; snapshot: GroceryListData }): void;
+    };
+    const vars: ShopCommitVars = { session_id: "trip", mode: "store_walk", store_slug: "market", expected_checked_keys: ["milk"], snapshot_version: "v1", occurred_at: "2026-07-12T12:00:00Z" };
+    mutation.onError({ error: "network_error", message: "Response lost", context: { snapshot: snapshot("v1") } }, vars);
+    expect(JSON.parse(values.get("yamp:store-walk") ?? "null")).toMatchObject({ state: "pending_commit", commit: { session_id: "trip", occurred_at: "2026-07-12T12:00:00Z", expected_checked_keys: ["milk"] } });
+    mutation.onError({ error: "checked_set_changed", message: "Changed", context: { snapshot: snapshot("v2") } }, vars);
+    expect(JSON.parse(values.get("yamp:store-walk") ?? "null")).toMatchObject({ session_id: "trip", state: "active" });
+    expect(JSON.parse(values.get("yamp:store-walk") ?? "null").commit).toBeUndefined();
+    expect(qc.getQueryData(["grocery", "shop-outcome", "trip"])).toMatchObject({ status: "error", vars: { session_id: "trip" } });
+    mutation.onSuccess({ outcome: "committed", receipt: { session_id: "trip" }, snapshot: snapshot("v3") });
+    expect(values.has("yamp:store-walk")).toBe(false);
+    expect(qc.getQueryData(["grocery", "shop-outcome", "trip"])).toMatchObject({ status: "success" });
   });
 
   it.each([

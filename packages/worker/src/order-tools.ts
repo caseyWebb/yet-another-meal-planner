@@ -113,6 +113,9 @@ interface PriorLearned {
   size?: string;
   aisle: { number: string; description: string; side?: string } | null;
   aisleCapturedAt: string | null;
+  priceRegular: number | null;
+  pricePromo: number | null;
+  priceCapturedAt: string | null;
 }
 
 /**
@@ -138,7 +141,7 @@ export function makeCommitSkuCache(env: Env, getLocationId: () => Promise<string
     const have = new Map<string, PriorLearned>(
       existing.map((m) => [
         `${m.ingredient}\0${m.locationId ?? ""}`,
-        { sku: m.sku, brand: m.brand, size: m.size, aisle: m.aisle ?? null, aisleCapturedAt: m.aisleCapturedAt ?? null },
+        { sku: m.sku, brand: m.brand, size: m.size, aisle: m.aisle ?? null, aisleCapturedAt: m.aisleCapturedAt ?? null, priceRegular: m.priceRegular ?? null, pricePromo: m.pricePromo ?? null, priceCapturedAt: m.priceCapturedAt ?? null },
       ]),
     );
     const stamp = today();
@@ -155,16 +158,16 @@ export function makeCommitSkuCache(env: Env, getLocationId: () => Promise<string
       const compareAisle = m.aisleLocation != null;
       const fresh = learnedFieldsKey({ sku: m.sku, brand: m.brand, size: m.size, aisle: m.aisleLocation }, compareAisle);
       const priorKey = prior && learnedFieldsKey(prior, compareAisle);
-      // Identical learned fields → no write churn; a differing row upserts in place.
-      if (priorKey === fresh) {
-        unchanged.push(m.ingredient);
-        continue;
-      }
+      const priceChanged = m.price != null && (prior?.priceRegular !== m.price.regular || prior?.pricePromo !== (m.price.promo ?? null) || prior.priceCapturedAt !== stamp);
+      // Identical learned fields still refresh an observed price and its capture date;
+      // the receipt remains "unchanged" because no learned mapping changed.
+      if (priorKey === fresh) unchanged.push(m.ingredient);
       // A present fresh placement wins outright; otherwise carry the prior row's
       // placement forward (if any) rather than clearing it.
       const aisle = m.aisleLocation ?? prior?.aisle ?? null;
       const capturedAt = m.aisleLocation ? stamp : (prior?.aisle ? prior.aisleCapturedAt : null);
-      have.set(key, { sku: m.sku, brand: m.brand, size: m.size, aisle, aisleCapturedAt: capturedAt });
+      if (priorKey === fresh && !priceChanged) continue;
+      have.set(key, { sku: m.sku, brand: m.brand, size: m.size, aisle, aisleCapturedAt: capturedAt, priceRegular: m.price?.regular ?? prior?.priceRegular ?? null, pricePromo: m.price?.promo ?? prior?.pricePromo ?? null, priceCapturedAt: m.price ? stamp : prior?.priceCapturedAt ?? null });
       toWrite.push({
         ingredient: m.ingredient,
         sku: m.sku,
@@ -176,11 +179,11 @@ export function makeCommitSkuCache(env: Env, getLocationId: () => Promise<string
         aisle_description: aisle ? aisle.description : null,
         aisle_side: aisle?.side ?? null,
         aisle_captured_at: capturedAt,
-        price_regular: m.price?.regular ?? null,
-        price_promo: m.price?.promo ?? null,
-        price_captured_at: m.price ? stamp : null,
+        price_regular: m.price?.regular ?? prior?.priceRegular ?? null,
+        price_promo: m.price?.promo ?? prior?.pricePromo ?? null,
+        price_captured_at: m.price ? stamp : prior?.priceCapturedAt ?? null,
       });
-      (prior ? updated : inserted).push(m.ingredient);
+      if (priorKey !== fresh) (prior ? updated : inserted).push(m.ingredient);
     }
     if (toWrite.length > 0) await upsertSkuMappings(env, toWrite);
     // Receipts describe authoritative post-write state, not the optimistic pre-read.
@@ -191,7 +194,8 @@ export function makeCommitSkuCache(env: Env, getLocationId: () => Promise<string
       for (const intended of toWrite) {
         const actual = after.get(`${intended.ingredient}\0${locationId}`);
         if (!actual || actual.sku !== intended.sku || (actual.brand ?? undefined) !== intended.brand || (actual.size ?? undefined) !== intended.size ||
-          (actual.aisle?.number ?? null) !== intended.aisle_number || (actual.aisle?.description ?? null) !== intended.aisle_description || (actual.aisle?.side ?? null) !== intended.aisle_side) {
+          (actual.aisle?.number ?? null) !== intended.aisle_number || (actual.aisle?.description ?? null) !== intended.aisle_description || (actual.aisle?.side ?? null) !== intended.aisle_side ||
+          (actual.priceRegular ?? null) !== (intended.price_regular ?? null) || (actual.pricePromo ?? null) !== (intended.price_promo ?? null) || (actual.priceCapturedAt ?? null) !== (intended.price_captured_at ?? null)) {
           throw new ToolError("conflict", `SKU cache changed concurrently for ${intended.ingredient}`);
         }
       }

@@ -17,6 +17,7 @@ import { QueryClient } from "@tanstack/react-query";
 import type { Mutation, Query } from "@tanstack/react-query";
 import type { PersistedClient, Persister } from "@tanstack/react-query-persist-client";
 import { del, get, set } from "idb-keyval";
+import type { ShopCommitRequest } from "@yamp/contract";
 
 /** The one IndexedDB key (idb-keyval's default store) the dehydrated client lives under. */
 export const IDB_CACHE_KEY = "yamp-query-cache";
@@ -142,6 +143,8 @@ export interface LocalWalkSession {
   started_at: string;
   current_group: string | null;
   state: "active" | "paused" | "pending_commit";
+  /** Frozen logical completion request retained until a durable receipt is adopted. */
+  commit?: ShopCommitRequest;
 }
 
 export function readLocalWalk(): LocalWalkSession | null {

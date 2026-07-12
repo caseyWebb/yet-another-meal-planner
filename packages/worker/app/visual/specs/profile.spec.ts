@@ -115,6 +115,39 @@ test("the Store card exposes four honest adapter tabs from one projection", asyn
   await profilePage.captureForReview("profile-store-adapters-mobile");
 });
 
+test("Offline aisle drafts keep identity/order and survive an ETag conflict for comparison", async ({ profilePage, page }) => {
+  const store = SEED.app.storeAdapters.offline[0]!;
+  const original = { store_slug: store.slug, effective: [{ aisle_id: "1", label: "1", order: 1, sections: ["produce"], visibility: "shared", observed_at: "2026-07-01", note_id: "shared-1" }, { aisle_id: "2", label: "2", order: 2, sections: ["dairy"], visibility: "shared", observed_at: "2026-07-01", note_id: "shared-2" }], mine: [], summary: { state: "mapped", aisle_count: 2, as_of: "2026-07-01" }, etag: '"old"' };
+  const fresh = { ...original, effective: [{ ...original.effective[0]!, sections: ["fresh produce"] }, original.effective[1]!], etag: '"fresh"' };
+  let putCount = 0;
+  let finalWrite: { headers: Record<string, string>; body: { entries: Array<{ visibility: string; label: string }> } } | null = null;
+  await page.route(`**/api/stores/${store.slug}/aisle-map`, async (route) => {
+    if (route.request().method() === "GET") return route.fulfill({ json: original });
+    putCount++;
+    if (putCount === 1) return route.fulfill({ status: 412, json: fresh });
+    finalWrite = { headers: route.request().headers(), body: route.request().postDataJSON() as { entries: Array<{ visibility: string; label: string }> } };
+    return route.fulfill({ json: { ...fresh, mine: finalWrite.body.entries.map((entry, index) => ({ aisle_id: entry.label, label: entry.label, order: index + 1, sections: ["draft"], visibility: entry.visibility, observed_at: "2026-07-12", note_id: `mine-${index}` })), etag: '"saved"' } });
+  });
+  await profilePage.openTab("prefs"); await profilePage.openStoreTab("offline"); await profilePage.selectOfflineStore(store.slug);
+  await expect(profilePage.offlineDetails()).toContainText("Shared identity");
+  await expect(profilePage.nicknameInput()).toBeVisible();
+  await profilePage.adoptCommunityMap();
+  const first = profilePage.aisleContribution().getByLabel("Aisle 1 label");
+  await first.fill("Draft one");
+  await profilePage.aisleContribution().getByLabel("Aisle 1 visibility").selectOption("private");
+  await profilePage.aisleContribution().getByLabel("Move aisle 2 up").click();
+  await profilePage.aisleContribution().getByRole("button", { name: "Save your map" }).click();
+  await expect(profilePage.aisleContribution().getByRole("alert")).toContainText('Fresh community version ("fresh")');
+  await expect(profilePage.aisleContribution().getByLabel("Aisle 2 label")).toHaveValue("Draft one");
+  await profilePage.aisleContribution().getByRole("button", { name: "Keep your draft and use fresh version" }).click();
+  await profilePage.aisleContribution().getByRole("button", { name: "Save your map" }).click();
+  expect(finalWrite).not.toBeNull();
+  const written = finalWrite as unknown as { headers: Record<string, string>; body: { entries: Array<{ visibility: string; label: string }> } };
+  expect(written.headers["if-match"]).toBe('"fresh"');
+  expect(written.body.entries.map((entry) => entry.label)).toEqual(["2", "Draft one"]);
+  expect(written.body.entries[1]?.visibility).toBe("private");
+});
+
 test("the Kroger picker selects one exact provider result and cancel/empty/error never write", async ({ profilePage }) => {
   const adapters = SEED.app.storeAdapters;
   await profilePage.routeKrogerLocations({ locations: adapters.search });

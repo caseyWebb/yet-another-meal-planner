@@ -43,18 +43,18 @@ export function shopReceiptSpendStatements(
   store: string | null,
   occurredAt: string,
   lines: ShopReceiptLine[],
-  gate: { requestHash: string },
+  gate: { requestHash: string; claimToken: string },
 ): D1PreparedStatement[] {
   const d = db(env);
   const sendId = `shop:${tenant}:${sessionId}`;
   return lines.filter((line) => line.domain === "grocery").map((line) => d.prepare(
-    "INSERT INTO spend_events (send_id,line_key,tenant,occurred_on,name,sku,quantity,unit_price,amount,savings,estimated,department,provenance,store,fulfillment,voided_at) " +
-      "SELECT ?1,?2,?3,?4,?5,NULL,?6,?7,?8,?9,1,?10,?11,?12,?13,NULL " +
-      "WHERE EXISTS (SELECT 1 FROM shop_commits WHERE tenant=?3 AND session_id=?14 AND request_hash=?15) " +
+    "INSERT INTO spend_events (send_id,line_key,tenant,occurred_on,name,sku,quantity,unit_price,amount,savings,estimated,department,provenance,store,fulfillment,voided_at,price_source) " +
+      "SELECT ?1,?2,?3,?4,?5,NULL,?6,?7,?8,?9,1,?10,?11,?12,?13,NULL,?16 " +
+      "WHERE EXISTS (SELECT 1 FROM shop_commits WHERE tenant=?3 AND session_id=?14 AND request_hash=?15 AND claim_token=?17) " +
       "ON CONFLICT(send_id,line_key) DO NOTHING",
     sendId, line.key, tenant, occurredAt.slice(0, 10), line.name, line.purchase_count,
     line.unit_price, line.amount, line.savings, line.department, line.provenance,
-    store ?? "manual", mode, sessionId, gate.requestHash,
+    store ?? "manual", mode, sessionId, gate.requestHash, line.price_source, gate.claimToken,
   ));
 }
 

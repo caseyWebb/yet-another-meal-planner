@@ -37,4 +37,51 @@ describe("aisle map projection and owned reconcile", () => {
     const groups = await routeOfflineLines(h.env, "alice", "market", [line("bananas"), line("apples", "produce"), line("ice cream", "frozen"), line("soap", "pro")], map);
     expect(groups.map((group) => [group.id, group.line_keys])).toEqual([["aisle:2", ["bananas", "apples"]], ["cold-last", ["ice cream"]], ["unmapped", ["soap"]]]);
   });
+
+  it("rejects a layout race atomically and recovers an abandoned claim lease", async () => {
+    const h = sqliteEnv(["alice", "bob"]);
+    h.raw.prepare("INSERT INTO stores (slug,name,domain) VALUES ('market','Market','grocery')").run();
+    const initial = await readAisleMap(h.env, "market", "alice");
+    const originalBatch = h.env.DB.batch.bind(h.env.DB);
+    let raced = false;
+    h.env.DB.batch = async (statements) => {
+      if (!raced) {
+        raced = true;
+        h.raw.prepare("INSERT INTO store_notes (id,store,author,body,tags,private,created_at,updated_at) VALUES ('race','market','bob','Aisle 8: dairy','[\"layout\"]',0,'2026-07-12','2026-07-12')").run();
+      }
+      return originalBatch(statements);
+    };
+    const conflict = await reconcileAisleMap(h.env, "market", "alice", initial.etag, { entries: [{ aisle_id: "2", label: "2", sections: ["produce"], visibility: "shared" }] });
+    expect(conflict.status).toBe("conflict");
+    expect(h.rows<{ author: string }>("store_notes").map((row) => row.author)).toEqual(["bob"]);
+
+    h.env.DB.batch = originalBatch;
+    h.raw.prepare("INSERT INTO aisle_map_reconcile_claims (tenant,store_slug,token,created_at) VALUES ('alice','market','active',?)").run(new Date().toISOString());
+    const fresh = await readAisleMap(h.env, "market", "alice");
+    const blocked = await reconcileAisleMap(h.env, "market", "alice", fresh.etag, { entries: [{ aisle_id: "2", label: "2", sections: ["produce"], visibility: "shared" }] });
+    expect(blocked.status).toBe("conflict");
+    expect(h.rows<{ token: string }>("aisle_map_reconcile_claims")[0]?.token).toBe("active");
+    h.raw.prepare("UPDATE aisle_map_reconcile_claims SET token='abandoned',created_at='2020-01-01'").run();
+    const recovered = await reconcileAisleMap(h.env, "market", "alice", fresh.etag, { entries: [{ aisle_id: "2", label: "2", sections: ["produce"], visibility: "shared" }] });
+    expect(recovered.status).toBe("ok");
+    expect(h.rows("aisle_map_reconcile_claims")).toHaveLength(0);
+  });
+
+  it("updates the same newest duplicate it preserves and uses newest visible location corrections", async () => {
+    const h = sqliteEnv(["alice", "bob"]);
+    h.raw.prepare("INSERT INTO stores (slug,name,domain) VALUES ('market','Market','grocery')").run();
+    const insert = h.raw.prepare("INSERT INTO store_notes (id,store,author,body,tags,private,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)");
+    insert.run("z-old-id", "market", "alice", "Aisle 2: old", '["layout"]', 0, "2025-01-01", "2025-01-01");
+    insert.run("a-new-id", "market", "alice", "Aisle 2: newer", '["layout"]', 0, "2026-01-01", "2026-01-01");
+    insert.run("loc-old", "market", "alice", "bananas: Aisle 2", '["location"]', 0, "2025-01-01", "2025-01-01");
+    insert.run("loc-new", "market", "bob", "bananas: Aisle 9", '["location"]', 0, "2026-01-01", "2026-01-01");
+    insert.run("loc-private", "market", "bob", "bananas: Aisle 7", '["location"]', 1, "2027-01-01", "2027-01-01");
+    const before = await readAisleMap(h.env, "market", "alice");
+    await reconcileAisleMap(h.env, "market", "alice", before.etag, { entries: [{ aisle_id: "2", label: "2", sections: ["updated"], visibility: "shared" }, { aisle_id: "9", label: "9", sections: ["bulk"], visibility: "shared" }] });
+    const layouts = h.rows<{ id: string; body: string }>("store_notes").filter((row) => row.id === "z-old-id" || row.id === "a-new-id");
+    expect(layouts).toEqual([expect.objectContaining({ id: "a-new-id", body: "Aisle 2: updated" })]);
+    const line: GroceryLine = { key: "bananas", name: "bananas", quantity: "1", kind: "grocery", domain: "grocery", origin: "list", checked_at: null, row_version: 1, updated_at: null, for_recipes: [], placement: null };
+    const map = await readAisleMap(h.env, "market", "alice");
+    expect((await routeOfflineLines(h.env, "alice", "market", [line], map))[0]).toMatchObject({ id: "aisle:9", placement_source: "location_note" });
+  });
 });

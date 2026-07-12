@@ -289,9 +289,11 @@ Walk mode SHALL replace the normal page header with store display name, `N of M`
 
 ### Requirement: Finish has review, queued, receipt, and conflict states
 
-Finish SHALL open a confirmation sheet showing checked/total counts, that unchecked items stay listed, verified pantry-restock semantics, and estimated-spend caveat. It SHALL freeze the exact checked keys, Grocery snapshot version, session id, and occurred-at in one commit payload. Online success SHALL render/adopt the durable receipt and authoritative snapshot, clear the local session, and exit walk mode.
+Finish SHALL open a confirmation sheet showing checked/total counts, that unchecked items stay listed, verified pantry-restock semantics, and estimated-spend caveat. It SHALL freeze the exact checked keys, session id, store/mode, and occurred-at as the immutable logical request, and capture the rendered Grocery snapshot version as its initial delivery precondition. Online success SHALL render/adopt the durable receipt and authoritative snapshot, clear the local session, and exit walk mode.
 
-Offline confirmation SHALL queue that immutable payload, set local state `pending_commit`, prevent edits to its captured lines, and show "Finishing when online" while retaining visibly pending checked rows rather than pretending they were consumed. Replay success SHALL adopt its receipt/snapshot and clear the session. A checked-set or idempotency conflict SHALL restore review/walk with fresh state and an actionable message; the app SHALL NOT broaden/retry the set automatically.
+Offline confirmation SHALL queue those immutable logical fields, set local state `pending_commit`, prevent edits to its captured lines, and show "Finishing when online" while retaining visibly pending checked rows rather than pretending they were consumed. After earlier queued checks settle, execution SHALL replace only the delivery snapshot precondition with the latest authoritative cached version; it SHALL NOT broaden the frozen keys or change session/store/time. Replay success SHALL adopt its receipt/snapshot and clear the session. A checked-set or idempotency conflict SHALL restore review/walk with fresh state and an actionable message; the app SHALL NOT broaden/retry the set automatically.
+
+A generic transport failure SHALL retain the frozen request in `pending_commit` and expose an explicit Retry finish action that redelivers it independently of the current rendered checked rows. This SHALL recover a durable receipt when the server committed but its response was lost; it SHALL NOT mint a new event time or require the consumed rows to remain visible.
 
 #### Scenario: Unchecked items remain after finish
 - **WHEN** a member confirms 14 checked of 23 and commit succeeds

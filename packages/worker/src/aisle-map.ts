@@ -76,7 +76,10 @@ function entryCmp(a: AisleMapEntry, b: AisleMapEntry): number {
   return (a.order == null ? 1 : 0) - (b.order == null ? 1 : 0) || (a.order ?? 0) - (b.order ?? 0) || a.label.localeCompare(b.label) || a.aisle_id.localeCompare(b.aisle_id);
 }
 
-export async function readAisleMap(env: Env, storeSlug: string, viewerTenant: string, now = new Date()): Promise<AisleMapDocument> {
+function noteRecency(row: StoreNoteRow): string { return row.updated_at ?? row.created_at ?? ""; }
+function newestNote(a: StoreNoteRow, b: StoreNoteRow): number { return noteRecency(b).localeCompare(noteRecency(a)) || b.id.localeCompare(a.id); }
+
+async function readAisleMapSnapshot(env: Env, storeSlug: string, viewerTenant: string, now = new Date()): Promise<{ map: AisleMapDocument; visibleLayout: StoreNoteRow[] }> {
   if (!(await readStoreRow(env, storeSlug))) throw new ToolError("not_found", `Unknown store: ${storeSlug}`);
   const rows = await db(env).all<StoreNoteRow>(
     "SELECT id,author,body,tags,private,created_at,updated_at FROM store_notes WHERE store=?1 AND (private=0 OR author=?2) ORDER BY id",
@@ -94,11 +97,16 @@ export async function readAisleMap(env: Env, storeSlug: string, viewerTenant: st
   const as_of = effective.reduce<string | null>((latest, entry) => !latest || entry.observed_at > latest ? entry.observed_at : latest, null);
   const state = effective.length === 0 ? "unknown" : as_of && now.getTime() - Date.parse(as_of) > AISLE_MAP_STALE_MS ? "stale" : "mapped";
   const etag = `"${await digest(participating.map((row) => ({ id: row.id, body: row.body, tags: tagsOf(row.tags), private: row.private === 1, recency: row.updated_at ?? row.created_at ?? "" })))}"`;
-  return { store_slug: storeSlug, effective, mine, summary: { state, aisle_count: effective.length, as_of }, etag };
+  return { map: { store_slug: storeSlug, effective, mine, summary: { state, aisle_count: effective.length, as_of }, etag }, visibleLayout: participating };
+}
+
+export async function readAisleMap(env: Env, storeSlug: string, viewerTenant: string, now = new Date()): Promise<AisleMapDocument> {
+  return (await readAisleMapSnapshot(env, storeSlug, viewerTenant, now)).map;
 }
 
 export async function reconcileAisleMap(env: Env, storeSlug: string, tenant: string, expectedEtag: string, input: AisleMapWrite): Promise<{ status: "ok" | "conflict"; map: AisleMapDocument }> {
-  const current = await readAisleMap(env, storeSlug, tenant);
+  const snapshot = await readAisleMapSnapshot(env, storeSlug, tenant);
+  const current = snapshot.map;
   if (current.etag !== expectedEtag) return { status: "conflict", map: current };
   const wanted = new Map<string, AisleMapWrite["entries"][number]>();
   for (const raw of input.entries) {
@@ -108,32 +116,32 @@ export async function reconcileAisleMap(env: Env, storeSlug: string, tenant: str
     if (!sections.length) throw new ToolError("validation_failed", `Aisle ${raw.label} needs at least one section`);
     wanted.set(aisle_id, { ...raw, aisle_id, sections });
   }
-  const ownRows = await db(env).all<StoreNoteRow>("SELECT id,author,body,tags,private,created_at,updated_at FROM store_notes WHERE store=?1 AND author=?2 ORDER BY id", storeSlug, tenant);
-  const visibleLayout = await db(env).all<StoreNoteRow>("SELECT id,author,body,tags,private,created_at,updated_at FROM store_notes WHERE store=?1 AND (private=0 OR author=?2) AND EXISTS (SELECT 1 FROM json_each(COALESCE(tags,'[]')) WHERE value='layout') ORDER BY id", storeSlug, tenant);
-  const ownLayout = ownRows.filter((row) => tagsOf(row.tags).includes("layout"));
+  const visibleLayout = snapshot.visibleLayout;
+  const ownLayout = visibleLayout.filter((row) => row.author === tenant);
   const byAisle = new Map<string, StoreNoteRow[]>();
   for (const row of ownLayout) {
     const parsed = parseLayoutNote(row.body);
     if (parsed) byAisle.set(parsed.aisle_id, [...(byAisle.get(parsed.aisle_id) ?? []), row]);
   }
   const now = new Date().toISOString();
+  const leaseCutoff = new Date(Date.parse(now) - 60_000).toISOString();
   const token = crypto.randomUUID();
   const expectedRows = JSON.stringify(visibleLayout.map((row) => ({ id: row.id, author: row.author, body: row.body, tags: row.tags, private: row.private, created_at: row.created_at, updated_at: row.updated_at })));
   const currentRowsSql = "(SELECT COALESCE(json_group_array(json_object('id',id,'author',author,'body',body,'tags',tags,'private',private,'created_at',created_at,'updated_at',updated_at)),'[]') FROM (SELECT id,author,body,tags,private,created_at,updated_at FROM store_notes WHERE store=?1 AND (private=0 OR author=?2) AND EXISTS (SELECT 1 FROM json_each(COALESCE(tags,'[]')) WHERE value='layout') ORDER BY id))";
   const claimExists = "EXISTS (SELECT 1 FROM aisle_map_reconcile_claims WHERE tenant=?2 AND store_slug=?1 AND token=?3)";
   const stmts: D1PreparedStatement[] = [db(env).prepare(
-    `INSERT INTO aisle_map_reconcile_claims (tenant,store_slug,token,created_at) SELECT ?2,?1,?3,?4 WHERE ${currentRowsSql}=?5 ON CONFLICT(tenant,store_slug) DO NOTHING`,
-    storeSlug, tenant, token, now, expectedRows,
+    `INSERT INTO aisle_map_reconcile_claims (tenant,store_slug,token,created_at) SELECT ?2,?1,?3,?4 WHERE ${currentRowsSql}=?5 ON CONFLICT(tenant,store_slug) DO UPDATE SET token=excluded.token,created_at=excluded.created_at WHERE aisle_map_reconcile_claims.created_at<?6`,
+    storeSlug, tenant, token, now, expectedRows, leaseCutoff,
   )];
   for (const row of ownLayout) {
     const parsed = parseLayoutNote(row.body);
     const group = parsed ? byAisle.get(parsed.aisle_id) ?? [] : [];
-    const survivor = group.sort((a, b) => (b.updated_at ?? b.created_at ?? "").localeCompare(a.updated_at ?? a.created_at ?? "") || b.id.localeCompare(a.id))[0];
+    const survivor = group.sort(newestNote)[0];
     if (!parsed || !wanted.has(parsed.aisle_id) || row.id !== survivor?.id) stmts.push(db(env).prepare(`DELETE FROM store_notes WHERE id=?4 AND author=?2 AND ${claimExists}`, storeSlug, tenant, token, row.id));
   }
   let sequence = 0;
   for (const [aisleId, entry] of wanted) {
-    const existing = (byAisle.get(aisleId) ?? []).sort((a, b) => b.id.localeCompare(a.id))[0];
+    const existing = (byAisle.get(aisleId) ?? []).sort(newestNote)[0];
     const body = serializeLayoutNote(entry);
     if (existing) {
       if (existing.body !== body || (existing.private === 1) !== (entry.visibility === "private")) stmts.push(db(env).prepare(`UPDATE store_notes SET body=?4,tags='[\"layout\"]',private=?5,updated_at=?6 WHERE id=?7 AND author=?2 AND ${claimExists}`, storeSlug, tenant, token, body, entry.visibility === "private" ? 1 : 0, now, existing.id));
@@ -142,11 +150,13 @@ export async function reconcileAisleMap(env: Env, storeSlug: string, tenant: str
       stmts.push(db(env).prepare(`INSERT INTO store_notes (id,store,author,body,tags,private,created_at,updated_at) SELECT ?4,?1,?2,?5,'[\"layout\"]',?6,?7,?7 WHERE ${claimExists}`, storeSlug, tenant, token, `${tenant} ${storeSlug} ${created}`, body, entry.visibility === "private" ? 1 : 0, created));
     }
   }
+  stmts.push(db(env).prepare(`INSERT INTO aisle_map_reconcile_receipts (token,tenant,store_slug,created_at) SELECT ?3,?2,?1,?4 WHERE ${claimExists}`, storeSlug, tenant, token, now));
+  stmts.push(db(env).prepare("DELETE FROM aisle_map_reconcile_claims WHERE tenant=?2 AND store_slug=?1 AND token=?3", storeSlug, tenant, token));
   await db(env).batch(stmts);
-  const claimed = await db(env).first<{ token: string }>("SELECT token FROM aisle_map_reconcile_claims WHERE tenant=?1 AND store_slug=?2", tenant, storeSlug);
-  if (claimed?.token === token) await db(env).run("DELETE FROM aisle_map_reconcile_claims WHERE tenant=?1 AND store_slug=?2 AND token=?3", tenant, storeSlug, token);
+  const receipt = await db(env).first<{ token: string }>("SELECT token FROM aisle_map_reconcile_receipts WHERE token=?1", token);
+  if (receipt) await db(env).run("DELETE FROM aisle_map_reconcile_receipts WHERE token=?1", token);
   const map = await readAisleMap(env, storeSlug, tenant);
-  return claimed?.token === token ? { status: "ok", map } : { status: "conflict", map };
+  return receipt ? { status: "ok", map } : { status: "conflict", map };
 }
 
 function norm(value: string): string { return value.trim().toLocaleLowerCase().replace(/[^a-z0-9]+/g, " ").trim(); }
@@ -154,7 +164,14 @@ function isCold(line: GroceryLine): boolean { const section = norm(line.placemen
 
 export async function routeOfflineLines(env: Env, tenant: string, storeSlug: string, lines: GroceryLine[], map: AisleMapDocument): Promise<OfflineWalkRouteGroup[]> {
   const notes = await db(env).all<StoreNoteRow>("SELECT id,author,body,tags,private,created_at,updated_at FROM store_notes WHERE store=?1 AND (private=0 OR author=?2)", storeSlug, tenant);
-  const locations = notes.filter((n) => tagsOf(n.tags).includes("location")).map((n) => parseLocationNote(n.body)).filter((x): x is NonNullable<ReturnType<typeof parseLocationNote>> => x !== null);
+  const locationWinners = new Map<string, { location: NonNullable<ReturnType<typeof parseLocationNote>>; row: StoreNoteRow }>();
+  for (const row of notes.filter((n) => tagsOf(n.tags).includes("location"))) {
+    const location = parseLocationNote(row.body);
+    if (!location) continue;
+    const prior = locationWinners.get(location.item);
+    if (!prior || newestNote(row, prior.row) < 0) locationWinners.set(location.item, { location, row });
+  }
+  const locations = [...locationWinners.values()].map(({ location }) => location);
   const sections = new Map<string, AisleMapEntry>();
   for (const aisle of map.effective) for (const section of aisle.sections) sections.set(norm(section), aisle);
   const grouped = new Map<string, OfflineWalkRouteGroup>();

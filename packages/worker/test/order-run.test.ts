@@ -215,15 +215,15 @@ describe("runPlaceOrder — SKU-cache aisle capture (member-app-differentiators 
       .run(...Object.values(row));
   }
 
-  it("skips an already-cached row whose learned fields (SKU/brand/size/aisle) are identical", async () => {
+  it("keeps an identical learned mapping classified unchanged while refreshing its observed price", async () => {
     const h = sqliteEnv([T]);
     await addGroceryRow(h.env, T, { name: "olive oil" }, TODAY);
     seedSkuRow(h); // identical to what the fake wiring resolves (no aisle either side)
     const result = await run(h, {}, fakeWiring());
     expect(result.sku_cache.committed).toBe(true);
-    // No write churn: the row is untouched (last_used keeps its old stamp).
+    expect(result.sku_cache.unchanged).toEqual(["olive oil"]);
     expect(h.rows<{ last_used: string }>("sku_cache")).toEqual([
-      expect.objectContaining({ ingredient: "olive oil", sku: "SKU-olive oil", last_used: "2026-01-01" }),
+      expect.objectContaining({ ingredient: "olive oil", sku: "SKU-olive oil", last_used: isoToday(), price_regular: 2.5, price_promo: 0, price_captured_at: isoToday() }),
     ]);
   });
 
@@ -326,7 +326,10 @@ describe("runPlaceOrder — SKU-cache aisle capture (member-app-differentiators 
         aisle_description: AISLE.description,
         aisle_side: AISLE.side,
         aisle_captured_at: "2026-01-01",
-        last_used: "2026-01-01", // untouched — no write happened
+        last_used: isoToday(),
+        price_regular: 2.5,
+        price_promo: 0,
+        price_captured_at: isoToday(),
       }),
     ]);
   });

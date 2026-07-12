@@ -37,4 +37,9 @@ describe("GroceryWalk", () => {
     expect(html).not.toContain("Pantry covers");
     expect(html).not.toContain("Add an item");
   });
+
+  it("offers an explicit retry while a frozen finish request is pending", () => {
+    const html = renderToStaticMarkup(<GroceryWalk data={data} context={context} online pendingCommit receipt={null} conflict="Connection lost after finishing." onCheck={() => {}} onPause={() => {}} onFinish={() => {}} onRetry={() => {}} />);
+    expect(html).toContain("Retry finish");
+  });
 });

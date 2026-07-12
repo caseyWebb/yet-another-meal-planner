@@ -63,6 +63,7 @@ import { useProposalConfirm, useVibeAdd, useVibeRemove } from "../lib/mutations"
 import { useOnline } from "../lib/online";
 import { mdToHtml } from "../lib/md";
 import { capitalize, daysSince, relAge } from "../lib/format";
+import type { AisleMapDocument } from "@yamp/contract";
 
 export const Route = createFileRoute("/_app/profile")({
   component: ProfilePage,
@@ -695,7 +696,7 @@ function OfflineStorePanel({
       ) : (
         <p className="muted">No Offline grocery stores are registered yet.</p>
       )}
-      {adapter.stores.find((store) => store.selected) ? <OfflineStoreDetails store={adapter.stores.find((store) => store.selected)!} online={online} qc={qc} /> : null}
+      {adapter.stores.find((store) => store.selected) ? <OfflineStoreDetails key={adapter.stores.find((store) => store.selected)!.slug} store={adapter.stores.find((store) => store.selected)!} online={online} qc={qc} /> : null}
     </section>
   );
 }
@@ -703,17 +704,24 @@ function OfflineStorePanel({
 function OfflineStoreDetails({ store, online, qc }: { store: StoreAdapterProjection["adapters"]["offline"]["stores"][number]; online: boolean; qc: QueryClient }) {
   const map = useAisleMap(store.slug);
   const [nickname, setNickname] = React.useState(store.nickname ?? "");
-  const [entries, setEntries] = React.useState<Array<{ aisle_id: string; label: string; sections: string; visibility: "shared" | "private" }>>([]);
+  type Draft = { client_id: string; aisle_id: string; label: string; sections: string; visibility: "shared" | "private" };
+  const draftsOf = React.useCallback((entries: AisleMapDocument["mine"] | AisleMapDocument["effective"], visibility?: "shared") => entries.map((entry) => ({ client_id: crypto.randomUUID(), aisle_id: entry.aisle_id, label: entry.label, sections: entry.sections.join(", "), visibility: visibility ?? entry.visibility })), []);
+  const [entries, setEntries] = React.useState<Draft[]>([]);
+  const [loadedEtag, setLoadedEtag] = React.useState<string | null>(null);
+  const [comparison, setComparison] = React.useState<AisleMapDocument | null>(null);
+  const [dirty, setDirty] = React.useState(false);
   const [saving, setSaving] = React.useState(false);
-  React.useEffect(() => { if (map.data) setEntries(map.data.mine.map((entry) => ({ aisle_id: entry.aisle_id, label: entry.label, sections: entry.sections.join(", "), visibility: entry.visibility }))); }, [map.data]);
+  React.useEffect(() => { if (map.data && loadedEtag === null) { setEntries(draftsOf(map.data.mine)); setLoadedEtag(map.data.etag); } }, [draftsOf, loadedEtag, map.data]);
+  const changeEntries = (fn: (current: Draft[]) => Draft[]) => { setEntries(fn); setDirty(true); };
   const saveMap = async () => {
-    if (!map.data || !online) return;
+    if (!map.data || !loadedEtag || !online) return;
     setSaving(true);
     try {
-      const res = await appFetch(`/api/stores/${encodeURIComponent(store.slug)}/aisle-map`, { method: "PUT", headers: { "Content-Type": "application/json", "If-Match": map.data.etag }, body: JSON.stringify({ entries: entries.map((entry) => ({ ...entry, sections: entry.sections.split(",").map((s) => s.trim()).filter(Boolean) })) }) });
-      if (res.status === 412) { const fresh = await res.json(); qc.setQueryData(["aisle-map", store.slug], fresh); toast("The community map changed. Review the fresh map before saving again."); return; }
+      const res = await appFetch(`/api/stores/${encodeURIComponent(store.slug)}/aisle-map`, { method: "PUT", headers: { "Content-Type": "application/json", "If-Match": loadedEtag }, body: JSON.stringify({ entries: entries.map(({ client_id: _clientId, ...entry }) => ({ ...entry, sections: entry.sections.split(",").map((s) => s.trim()).filter(Boolean) })) }) });
+      if (res.status === 412) { const fresh = await res.json() as AisleMapDocument; setComparison(fresh); qc.setQueryData(["aisle-map", store.slug], fresh); toast("The community map changed. Your draft is preserved for comparison."); return; }
       if (!res.ok) throw await apiError(res);
-      qc.setQueryData(["aisle-map", store.slug], await res.json());
+      const saved = await res.json() as AisleMapDocument;
+      qc.setQueryData(["aisle-map", store.slug], saved); setEntries(draftsOf(saved.mine)); setLoadedEtag(saved.etag); setComparison(null); setDirty(false);
       await Promise.all([qc.invalidateQueries({ queryKey: ["store-adapters"] }), qc.invalidateQueries({ queryKey: ["grocery"] })]);
       toast("Aisle map saved");
     } catch (error) { toast(error instanceof Error ? error.message : "Couldn't save the aisle map"); }
@@ -724,9 +732,10 @@ function OfflineStoreDetails({ store, online, qc }: { store: StoreAdapterProject
     <div className="inline-fields"><Input aria-label="Household store nickname" value={nickname} onChange={(event) => setNickname(event.target.value)} placeholder="Optional private nickname" disabled={!online} /><Button variant="outline" disabled={!online || nickname.trim() === (store.nickname ?? "")} onClick={() => void patchPreferences(qc, { stores: { nicknames: { [store.slug]: nickname.trim() || null } } }, true)}>Save nickname</Button></div>
     <h3>Community map</h3>
     {map.data ? <><p>{map.data.summary.state === "unknown" ? "No shared aisle map yet." : map.data.summary.state === "stale" ? "Map may be out of date." : `${map.data.summary.aisle_count} mapped aisles.`}</p><ul>{map.data.effective.map((entry) => <li key={entry.aisle_id}><strong>Aisle {entry.label}</strong> · {entry.sections.join(", ")}</li>)}</ul>
-      <div className="aisle-editor"><h3>Your map contribution</h3>{entries.length === 0 && map.data.effective.length ? <Button variant="outline" disabled={!online} onClick={() => setEntries(map.data!.effective.map((entry) => ({ aisle_id: entry.aisle_id, label: entry.label, sections: entry.sections.join(", "), visibility: "shared" })))}>Use current map as a starting point</Button> : null}
-      {entries.map((entry, index) => <div className="aisle-editor-row" key={`${entry.aisle_id}-${index}`}><Input aria-label={`Aisle ${index + 1} label`} value={entry.label} onChange={(event) => setEntries((cur) => cur.map((row, i) => i === index ? { ...row, label: event.target.value, aisle_id: event.target.value } : row))} /><Input aria-label={`Aisle ${index + 1} sections`} value={entry.sections} onChange={(event) => setEntries((cur) => cur.map((row, i) => i === index ? { ...row, sections: event.target.value } : row))} /><NativeSelect aria-label={`Aisle ${index + 1} visibility`} value={entry.visibility} onChange={(event) => setEntries((cur) => cur.map((row, i) => i === index ? { ...row, visibility: event.target.value as "shared" | "private" } : row))}><option value="shared">Shared</option><option value="private">Private</option></NativeSelect><Button variant="ghost" onClick={() => setEntries((cur) => cur.filter((_, i) => i !== index))}>Remove</Button></div>)}
-      <div className="inline-fields"><Button variant="outline" disabled={!online} onClick={() => setEntries((cur) => [...cur, { aisle_id: String(cur.length + 1), label: String(cur.length + 1), sections: "", visibility: "shared" }])}>Add aisle</Button><Button disabled={!online || saving} title={!online ? "Reconnect to edit the map" : undefined} onClick={() => void saveMap()}>{saving ? "Saving…" : "Save your map"}</Button></div>{!online ? <p className="muted">Reconnect to save nickname or map changes. These edits are never queued.</p> : null}</div></> : <p>Loading aisle map…</p>}
+      <div className="aisle-editor"><h3>Your map contribution</h3>{entries.length === 0 && map.data.effective.length ? <Button variant="outline" disabled={!online} onClick={() => { setEntries(draftsOf(map.data!.effective, "shared")); setDirty(true); }}>Use current map as a starting point</Button> : null}
+      {comparison ? <aside role="alert"><strong>Fresh community version ({comparison.etag})</strong><ul>{comparison.effective.map((entry) => <li key={entry.aisle_id}>Aisle {entry.label} · {entry.sections.join(", ")}</li>)}</ul><div className="inline-fields"><Button variant="outline" onClick={() => { setLoadedEtag(comparison.etag); setComparison(null); }}>Keep your draft and use fresh version</Button><Button variant="ghost" onClick={() => { setEntries(draftsOf(comparison.mine)); setLoadedEtag(comparison.etag); setComparison(null); setDirty(false); }}>Replace draft with fresh contribution</Button></div></aside> : null}
+      {entries.map((entry, index) => <div className="aisle-editor-row" key={entry.client_id}><Input aria-label={`Aisle ${index + 1} label`} value={entry.label} onChange={(event) => changeEntries((cur) => cur.map((row) => row.client_id === entry.client_id ? { ...row, label: event.target.value, aisle_id: event.target.value } : row))} /><Input aria-label={`Aisle ${index + 1} sections`} value={entry.sections} onChange={(event) => changeEntries((cur) => cur.map((row) => row.client_id === entry.client_id ? { ...row, sections: event.target.value } : row))} /><NativeSelect aria-label={`Aisle ${index + 1} visibility`} value={entry.visibility} onChange={(event) => changeEntries((cur) => cur.map((row) => row.client_id === entry.client_id ? { ...row, visibility: event.target.value as "shared" | "private" } : row))}><option value="shared">Shared</option><option value="private">Private</option></NativeSelect><Button variant="ghost" aria-label={`Move aisle ${index + 1} up`} disabled={index === 0} onClick={() => changeEntries((cur) => { const next = [...cur]; [next[index - 1], next[index]] = [next[index]!, next[index - 1]!]; return next; })}><IconUp /></Button><Button variant="ghost" aria-label={`Move aisle ${index + 1} down`} disabled={index === entries.length - 1} onClick={() => changeEntries((cur) => { const next = [...cur]; [next[index], next[index + 1]] = [next[index + 1]!, next[index]!]; return next; })}><IconDown /></Button><Button variant="ghost" onClick={() => changeEntries((cur) => cur.filter((row) => row.client_id !== entry.client_id))}>Remove</Button></div>)}
+      <div className="inline-fields"><Button variant="outline" disabled={!online} onClick={() => changeEntries((cur) => [...cur, { client_id: crypto.randomUUID(), aisle_id: String(cur.length + 1), label: String(cur.length + 1), sections: "", visibility: "shared" }])}>Add aisle</Button><Button disabled={!online || saving || !dirty || comparison !== null} title={!online ? "Reconnect to edit the map" : comparison ? "Resolve the fresh-map comparison first" : undefined} onClick={() => void saveMap()}>{saving ? "Saving…" : "Save your map"}</Button></div>{!online ? <p className="muted">Reconnect to save nickname or map changes. These edits are never queued.</p> : null}</div></> : <p>Loading aisle map…</p>}
   </section>;
 }
 

@@ -13,6 +13,7 @@ import { becomeControlled } from "../sw";
 
 const ITEM_A = "offline croissants";
 const ITEM_B = "offline batteries";
+const ITEM_SHOP = "offline receipt oranges";
 
 test("airplane mode opens the grocery list from the persisted cache; offline check-offs replay on reconnect — including across an offline reload", async ({
   asMember,
@@ -106,4 +107,48 @@ test("adapter truth and class-(a) store actions never persist, queue, or auto-fi
   await expect.poll(() => page.evaluate(() => navigator.onLine)).toBe(true);
   expect(adapterActions).toBe(0);
   expect((await persistedSnapshot(page)).pausedMutationKeys).toEqual([]);
+});
+
+test("offline store-walk Finish survives reload and adopts its receipt after ordered replay away from Grocery", async ({ asMember, groceryPage, page, context }) => {
+  await asMember();
+  const previousStores = await page.evaluate(async () => {
+    const body = await (await fetch("/api/profile/preferences")).json() as { preferences?: { stores?: Record<string, unknown> }; stores?: Record<string, unknown> };
+    return body.preferences?.stores ?? body.stores ?? {};
+  });
+  await groceryPage.setStores({ primary: "aldi-north", fulfillment: null });
+  const previouslyChecked = await page.evaluate(async () => {
+    let current = await (await fetch("/api/grocery/view")).json() as { snapshot_version: string; lines: Array<{ key: string; checked_at: string | null; row_version: number }> };
+    const keys = current.lines.filter((line) => line.checked_at != null).map((line) => line.key);
+    for (const line of current.lines.filter((row) => row.checked_at != null)) {
+      const res = await fetch("/api/grocery/checked", { method: "POST", headers: { "content-type": "application/json", "X-App-Csrf": "1" }, body: JSON.stringify({ key: line.key, checked: false, expected_row_version: line.row_version, snapshot_version: current.snapshot_version }) });
+      current = ((await res.json()) as { snapshot: typeof current }).snapshot;
+    }
+    return keys;
+  });
+  await groceryPage.addRow(ITEM_SHOP);
+  await groceryPage.goto(); await groceryPage.landmark(); await becomeControlled(page); await groceryPage.landmark();
+  await groceryPage.startWalk("offline:aldi-north");
+  await waitForPersistedQuery(page, "grocery");
+  await expect.poll(() => persistedGroceryNames(page)).toContain(ITEM_SHOP);
+  await context.setOffline(true);
+  const shopCheck = groceryPage.walk().getByRole("checkbox", { name: ITEM_SHOP });
+  await shopCheck.click(); await expect(shopCheck).toBeChecked();
+  await groceryPage.finishWalk(); await groceryPage.confirmFinish();
+  await waitForPersistedMutations(page, 2);
+  await page.reload({ waitUntil: "domcontentloaded" }); await groceryPage.landmark();
+  await expect(groceryPage.walk()).toContainText("Finishing when online");
+  await page.goto("/profile", { waitUntil: "domcontentloaded" });
+  await context.setOffline(false);
+  await expect.poll(() => groceryPage.rowStatus(ITEM_SHOP), { timeout: 20_000 }).toBeUndefined();
+  await groceryPage.goto(); await groceryPage.landmark();
+  await expect(page.getByTestId("shop-receipt-summary")).toContainText("Store walk finished");
+  await page.evaluate(async ({ item, restore }) => {
+    await fetch("/api/pantry/ops", { method: "POST", headers: { "content-type": "application/json", "X-App-Csrf": "1" }, body: JSON.stringify({ operations: [{ op: "remove", name: item }] }) });
+    for (const key of restore) {
+      const current = await (await fetch("/api/grocery/view")).json() as { snapshot_version: string; lines: Array<{ key: string; row_version: number }> };
+      const line = current.lines.find((row) => row.key === key);
+      if (line) await fetch("/api/grocery/checked", { method: "POST", headers: { "content-type": "application/json", "X-App-Csrf": "1" }, body: JSON.stringify({ key, checked: true, expected_row_version: line.row_version, snapshot_version: current.snapshot_version }) });
+    }
+  }, { item: ITEM_SHOP, restore: previouslyChecked });
+  await groceryPage.setStores(previousStores);
 });

@@ -5,9 +5,10 @@ import { Button } from "./button";
 import { Progress } from "./progress";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "./dialog";
 
-export function GroceryWalk({ data, context, online, pendingCommit, receipt, conflict, onCheck, onPause, onFinish }: {
+export function GroceryWalk({ data, context, online, pendingCommit, receipt, conflict, onCheck, onPause, onFinish, onRetry }: {
   data: GroceryListData; context: OfflineWalkContext; online: boolean; pendingCommit: boolean; receipt: ShopReceipt | null; conflict: string | null;
   onCheck(line: GroceryLine, checked: boolean): void; onPause(): void; onFinish(keys: string[]): void;
+  onRetry?(): void;
 }) {
   const projection = projectGroceryWalk(data, context);
   const [review, setReview] = React.useState(false);
@@ -19,7 +20,7 @@ export function GroceryWalk({ data, context, online, pendingCommit, receipt, con
     {!online ? <p className="muted" role="status">Offline — changes will sync</p> : null}
     {context.aisle_map.state === "stale" ? <p role="note">Map may be out of date.</p> : null}
     {conflict ? <p role="alert">{conflict}</p> : null}
-    {pendingCommit ? <p className="walk-pending" role="status">Finishing when online. Checked items stay visible until the receipt arrives.</p> : null}
+    {pendingCommit ? <div className="walk-pending" role="status"><p>Finishing when online. Checked items stay visible until the receipt arrives.</p>{onRetry ? <Button size="sm" onClick={onRetry}>Retry finish</Button> : null}</div> : null}
     <div className="walk-groups">{projection.groups.map((group) => {
       const open = !group.complete || group.id === projection.current_group || opened.includes(group.id);
       return <section key={group.id} className={group.id === projection.current_group ? "walk-group active" : "walk-group"} data-testid="walk-group" data-group={group.id}>

@@ -2,7 +2,7 @@
 
 ### Requirement: Shop completion queues as an ordered class-(b) receipt write
 
-The member app SHALL register shop commit under one stable mutation key with plain-JSON variables. The client-minted `session_id`, exact checked keys, snapshot version, and occurred-at SHALL be captured once, persisted across reload, and delivered serially after all earlier checked-state mutations for that walk. Reconnect/restore MAY replay the identical payload, relying on the durable receipt for exactly-once effects. The mutation and local walk record SHALL be tenant-stamped and removed by the existing logout/identity-change purge.
+The member app SHALL register shop commit under one stable mutation key with plain-JSON variables. The client-minted `session_id`, exact checked keys, store/mode, and occurred-at SHALL be captured once and persisted across reload as the immutable logical request, both with the queued mutation and in the pending local walk record until a durable receipt is adopted. Its captured snapshot version is an initial delivery precondition; after all earlier checked-state mutations for that walk settle, execution SHALL replace only that precondition with the latest authoritative cached version. Reconnect/restore or response-loss retry SHALL replay the identical logical request, relying on the durable receipt for exactly-once effects. The mutation and local walk record SHALL be tenant-stamped and removed by the existing logout/identity-change purge.
 
 #### Scenario: Offline checks replay before finish
 - **WHEN** a member checks several rows and confirms Finish offline
@@ -10,7 +10,7 @@ The member app SHALL register shop commit under one stable mutation key with pla
 
 #### Scenario: Reload preserves pending finish
 - **WHEN** the app closes after queueing Finish offline and later launches online as the same member
-- **THEN** the identical payload resumes and resolves to one receipt without minting a new session id or event time
+- **THEN** the identical logical request resumes with a delivery-time snapshot precondition and resolves to one receipt without minting a new session id, key set, store, or event time
 
 #### Scenario: Identity purge drops another member's walk
 - **WHEN** a different household signs in on a device with a pending walk
