@@ -149,9 +149,9 @@ The **classify pass**'s home for each recipe's **derived descriptive facets** (m
 
 ## display_recipe structuredContent (RecipeCardData, `@yamp/contract`)
 
-The wire shape the `display_recipe` tool returns as its result's `structuredContent`, and the shape the bespoke `ui://recipe/card` widget hydrates its read-only render from (recipe-card-widget). Defined once in the runtime-agnostic `@yamp/contract` package (`packages/contract/src/recipe-card.ts`) so the Worker (workerd) that produces it and the browser widget that consumes it share **one** definition and cannot drift. It is a **read projection** of a recipe read — `read_recipe`'s reader (`readRecipeDetail`) yields the overlay-merged frontmatter + markdown body, mapped onto the display fields the card shows. Not stored: it is assembled per call, never persisted. The card is read-only, so it carries no servings/steps data (that is `recipe_display_v0`'s lane; see [`TOOLS.md`](TOOLS.md)).
+The wire shape the `display_recipe` tool returns as its result's `structuredContent`, and the shape the bespoke `ui://recipe/card` widget hydrates from (recipe-card-widget). Defined once in the runtime-agnostic `@yamp/contract` package (`packages/contract/src/recipe-card.ts`) so the Worker (workerd) that produces it and the browser widget that consumes it share **one** definition and cannot drift. It is a **read projection** of a recipe read — `read_recipe`'s reader (`readRecipeDetail`) yields the overlay-merged frontmatter + markdown body, mapped onto the display fields the card shows. Not stored: it is assembled per call, never persisted. The card is the conversation's guided-cook surface (D32): it carries cook mode plus the `favorite`/`log_cooked` writes it performs through the MCP Apps bridge (see [`TOOLS.md`](TOOLS.md)).
 
-- `contract_version` (number, optional) — the payload's contract version (D19), stamped by the Worker (`KNOWN_RECIPE_CONTRACT_VERSION`, currently `1`). A widget on an older build renders **read-only** when this exceeds the version it knows; `undefined` reads as `1`. Versioned **independently** of `ProposeCardData`; additive-only within a major.
+- `contract_version` (number, optional) — the payload's contract version (D19), stamped by the Worker (`KNOWN_RECIPE_CONTRACT_VERSION`, currently `2`). A widget on an older build renders **read-only** when this exceeds the version it knows; `undefined` reads as `1`. Versioned **independently** of `ProposeCardData`; additive-only within a major (v2 added the optional `cook` block).
 - `slug` (string) — the recipe's slug (its stable corpus id).
 - `title` (string) — display title (falls back to the slug when the frontmatter has none).
 - `description` (string, optional) — the AI-derived ~1–2 sentence summary, merged from `recipe_derived` at read time; absent until first generated.
@@ -162,8 +162,12 @@ The wire shape the `display_recipe` tool returns as its result's `structuredCont
 - `cuisine` (string | null, optional) — cuisine facet (Tier B), or `null`.
 - `course` (string[], optional) — open-vocabulary dish-type facets (Tier B), when present.
 - `requires_equipment` (string[], optional) — the `EQUIPMENT_VOCAB` slugs the recipe truly requires, when present.
-- `favorite` (boolean, optional) — the caller's `favorite` overlay mark (merged from the per-tenant `overlay` table).
+- `favorite` (boolean, optional) — the caller's `favorite` overlay mark (merged from the per-tenant `overlay` table). The widget re-hydrates this via `read_recipe` at boot before enabling writes (D19).
 - `body` (string) — the recipe's markdown body (Ingredients/Instructions), rendered escape-first in the card.
+- `cook` (`CookModeData`, optional) — the structured cook-mode data (D32), when a skill supplies it. Absent for a plain `display_recipe`; the widget then parses `body` client-side (`@yamp/ui`'s `parseCookBody`) to the same shape, so every card is cook-capable. Shape:
+  - `base_servings` (number | null, optional) — the serving count the amounts are stated at. Carried for provenance; v1 renders no serving-scale control.
+  - `ingredients` (`{ id, text, group? }[]`) — the mise-en-place lines; `id` is the `{id}`-token key, `group` an optional authored ingredient subsection.
+  - `steps` (`{ title?, content, timer_seconds? }[]`) — the ordered prep+cook steps; `title` is the step header / timer label, `content` the prose (with `{id}` ingredient tokens), `timer_seconds` set on steps that involve a wait.
 
 ## display_meal_plan structuredContent (ProposeCardData, `@yamp/contract`)
 

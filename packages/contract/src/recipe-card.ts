@@ -8,13 +8,34 @@
 // A pure type — no runtime, no workerd/Node/DOM API. Fields mirror the recipe frontmatter
 // vocabulary (docs/SCHEMAS.md): the hard-gate `dietary`, the Tier-B `protein`/`cuisine`/
 // `course`/`tags`, `requires_equipment`, `time_total`, plus the caller's `favorite` overlay
-// and the derived `description`. The card is READ-ONLY, so there is no servings/steps data.
+// and the derived `description`. The optional `cook` block (D32) carries the structured
+// mise/step data guided cook mode walks; when absent, the host derives it client-side by
+// parsing `body` (the no-skill annotation path), so every card is cook-capable.
 
 /** The RecipeCardData contract version this build understands (D19). A monotonic int, starting
  *  at 1; additive-only within a major. A widget hydrating a payload whose `contract_version`
  *  exceeds this renders READ-ONLY rather than mis-parsing a newer shape. Versioned INDEPENDENTLY
- *  of `ProposeCardData` (propose-card.ts). Bump when a field is added/changed. */
-export const KNOWN_RECIPE_CONTRACT_VERSION = 1;
+ *  of `ProposeCardData` (propose-card.ts). Bump when a field is added/changed. Version 2 (D32)
+ *  added the optional `cook` block. */
+export const KNOWN_RECIPE_CONTRACT_VERSION = 2;
+
+/** The structured cook-mode data (D32) the guided cook walk steps through: mise-en-place
+ *  ingredients and an ordered step list with per-step titles and timers. The skill supplies this
+ *  as `display_recipe`'s `structuredContent.cook`; when absent, the host parses `body` client-side
+ *  (`@yamp/ui`'s `parseCookBody`) to the SAME shape — one component, two supply paths. Step
+ *  `content` may carry `{id}` / `{id|surface}` ingredient-reference tokens keyed by an
+ *  ingredient's `id` (an on-hover quantity tooltip; unmatched tokens render as plain text). */
+export type CookModeData = {
+  /** The serving count the ingredient amounts are stated at, when known. Carried for provenance;
+   *  v1 renders no serving-scale control (D32/Q4), so the component reads but does not act on it. */
+  base_servings?: number | null;
+  /** The mise-en-place ingredient lines, each with a stable `id` (the interpolation-token key) and
+   *  an optional `group` (an authored ingredient subsection, e.g. "For the sauce"). */
+  ingredients: { id: string; text: string; group?: string }[];
+  /** The ordered prep+cook steps. `title` is the step header / timer label; `content` is the step
+   *  prose (with any `{id}` ingredient tokens); `timer_seconds` is set on steps that involve a wait. */
+  steps: { title?: string; content: string; timer_seconds?: number | null }[];
+};
 
 // A `type` (not `interface`) so the Worker can pass a `RecipeCardData` directly as an MCP
 // tool result's `structuredContent` (typed `Record<string, unknown>`) — object-literal type
@@ -47,4 +68,7 @@ export type RecipeCardData = {
   favorite?: boolean;
   /** The recipe's markdown body (Ingredients/Instructions), rendered escape-first in the card. */
   body: string;
+  /** The structured cook-mode data (D32), when the skill supplies it. Absent for a plain
+   *  `display_recipe`; the host then parses `body` client-side to the same shape. Additive (v2). */
+  cook?: CookModeData;
 }

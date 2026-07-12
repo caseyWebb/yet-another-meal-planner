@@ -1,8 +1,12 @@
 // The bespoke in-chat recipe card (recipe-card-widget): the `display_recipe` MCP tool and
 // the `ui://recipe/card` MCP Apps resource it references. This is the reusable pattern the
 // diagnostic spike proved out — the canonical ext-apps `App`-client bridge, no capability
-// gating, and the widget HTML served over `resources/read` (no new HTTP route) — graduated
-// into the first real widget.
+// gating, and the widget HTML served over `resources/read` (no new HTTP route).
+//
+// The card is a WRITING widget (D18/D32): beyond rendering the recipe it carries guided cook mode
+// (mise → steps → done) and the two persistent writes it owns — `toggle_favorite` and `log_cooked`
+// — through the D18 bridge. The Worker stamps `contract_version` and optionally the structured
+// `cook` block; the client parses `body` when `cook` is absent, so every card is cook-capable (D32).
 //
 // The single self-contained widget HTML is built by `packages/widgets` into the Worker's
 // merged static-assets root (`assets/widgets/recipe-card.html`) and read at runtime through
@@ -14,7 +18,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { registerAppResource, registerAppTool, RESOURCE_MIME_TYPE } from "@modelcontextprotocol/ext-apps/server";
 import { z } from "zod";
-import { KNOWN_RECIPE_CONTRACT_VERSION, type RecipeCardData } from "@yamp/contract";
+import { KNOWN_RECIPE_CONTRACT_VERSION, type CookModeData, type RecipeCardData } from "@yamp/contract";
 import type { Env } from "./env.js";
 import { ToolError, fail } from "./errors.js";
 
@@ -31,8 +35,10 @@ const WIDGET_ASSET_URL = "https://assets.local/widgets/recipe-card.html";
  */
 export const WIDGET_MARKER = "recipe-card-widget";
 
-/** The overlay-merged recipe read `display_recipe` renders (the `readRecipeDetail` shape). */
-type RecipeDetail = { slug: string; frontmatter: Record<string, unknown>; body: string };
+/** The overlay-merged recipe read `display_recipe` renders (the `readRecipeDetail` shape). `cook`
+ *  is optional: the reader supplies it only when a skill has authored structured cook-mode data;
+ *  absent, the widget parses `body` client-side (`@yamp/ui`'s `parseCookBody`) to the same shape. */
+type RecipeDetail = { slug: string; frontmatter: Record<string, unknown>; body: string; cook?: CookModeData };
 
 /** Reader injected by the caller (`buildServer` binds env + tenant), keeping this module off the tools.ts cycle. */
 export type ReadRecipe = (slug: string) => Promise<RecipeDetail>;
@@ -62,6 +68,9 @@ export function toRecipeCardData(detail: RecipeDetail): RecipeCardData {
     requires_equipment: fm.requires_equipment == null ? undefined : asStringArray(fm.requires_equipment),
     favorite: Boolean(fm.favorite),
     body: detail.body,
+    // Pass the structured cook block through when the reader supplies it (the skill path, D32);
+    // otherwise the widget derives it from `body` client-side, so every card is cook-capable.
+    ...(detail.cook ? { cook: detail.cook } : {}),
   };
 }
 
@@ -91,7 +100,7 @@ export function registerRecipeCardWidget(server: McpServer, env: Env, readRecipe
     server,
     "Recipe Card",
     RECIPE_CARD_URI,
-    { description: "The bespoke in-chat recipe card (read-only): title, facets, time/dietary, and the recipe body." },
+    { description: "The bespoke in-chat recipe card: title, facets, time/dietary, the recipe body, and guided cook mode with favorite/log-cooked controls." },
     async () => {
       const res = await env.ASSETS.fetch(new Request(WIDGET_ASSET_URL));
       if (!res.ok) {
@@ -113,7 +122,7 @@ export function registerRecipeCardWidget(server: McpServer, env: Env, readRecipe
     {
       title: "Display recipe",
       description:
-        "Render a recipe as an inline, branded card in the conversation. Use this when the member wants to SEE a recipe (not when you are only reading it to reason — use read_recipe for that). Takes a recipe `slug`; returns a widget-bearing result: `_meta.ui.resourceUri` points at the ui://recipe/card view, `structuredContent` carries the recipe's title, facets, time/dietary, and markdown body, and `content` is a plain-text rendering hosts that cannot render the widget fall back to. Read-only — it shows the recipe but offers no servings-scaling or step timers. An unknown slug returns a structured not_found error.",
+        "Render a recipe as an inline, branded card in the conversation. Use this when the member wants to SEE a recipe (not when you are only reading it to reason — use read_recipe for that). Also the conversation's guided-cook surface: the card carries a Start Cooking mode (mise-en-place check-off, step-by-step navigation, per-step timers) that reads its steps from the recipe body, plus favorite and log-cooked controls the widget writes back through the app bridge (toggle_favorite / log_cooked). Takes a recipe `slug`; returns a widget-bearing result: `_meta.ui.resourceUri` points at the ui://recipe/card view, `structuredContent` carries the recipe's title, facets, time/dietary, markdown body, and `contract_version` (and the structured `cook` block when a skill supplies one), and `content` is a plain-text rendering hosts that cannot render the widget fall back to. An unknown slug returns a structured not_found error.",
       inputSchema: { slug: z.string() },
       _meta: { ui: { resourceUri: RECIPE_CARD_URI } },
     },

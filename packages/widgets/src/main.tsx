@@ -24,12 +24,15 @@ const rootEl = document.getElementById("root");
 if (rootEl) {
   applyDefaultTheme();
   const root = createRoot(rootEl);
+  // The card is a WRITING widget now (D18/D32), so the `App` instance is handed in — its cook mode
+  // and favorite/log controls call server tools + push model context through the host bridge.
+  const app = new App({ name: "recipe-card", version: "1.0.0" }, {}, { autoResize: true });
 
   function render(recipe: RecipeCardData | null): void {
     root.render(
       <StrictMode>
         {recipe ? (
-          <RecipeCard recipe={recipe} />
+          <RecipeCard app={app} recipe={recipe} />
         ) : (
           <p className="muted-line" data-testid="recipe-loading">
             Loading recipe…
@@ -40,8 +43,6 @@ if (rootEl) {
   }
 
   render(null);
-
-  const app = new App({ name: "recipe-card", version: "1.0.0" }, {}, { autoResize: true });
 
   // Hydrate from the tool result's structuredContent. Set BEFORE connect() so a
   // tool-result delivered during the handshake is not dropped.

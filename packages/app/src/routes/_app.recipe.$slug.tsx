@@ -7,6 +7,7 @@ import * as React from "react";
 import { Link, createFileRoute, useLoaderData } from "@tanstack/react-router";
 import {
   Button,
+  CookMode,
   Crumbs,
   EmptyState,
   IconBack,
@@ -23,6 +24,7 @@ import {
   Input,
   RecipeFacets,
   Textarea,
+  parseCookBody,
   toast,
 } from "@yamp/ui";
 import {
@@ -43,7 +45,7 @@ import {
 } from "../lib/mutations";
 import { RecipeList } from "../components/recipe-list";
 import { mdToHtml } from "../lib/md";
-import { relAge, isoToday } from "../lib/format";
+import { relAge, localToday } from "../lib/format";
 
 export const Route = createFileRoute("/_app/recipe/$slug")({
   component: RecipeDetailPage,
@@ -59,6 +61,17 @@ function RecipeDetailPage() {
   const notes = useNotes(slug);
   const overlay = useOverlay();
   const plan = usePlan();
+
+  // Guided cook mode (recipe-card-cook-mode, D32/D20): the member page mounts the SAME shared
+  // presentational `<CookMode>` step machine the in-chat widget uses. The member's persistent writes
+  // (favorite / log-cooked / add-to-plan) stay on their existing class (b) RQ mutations below —
+  // fire-and-forget with optimistic UI + offline replay — NOT the widget's bridge write controller
+  // (that path exists only for the MCP-Apps host, and awaiting a paused offline mutation would hang).
+  // Cook data is parsed from the body client-side (the no-skill path) — the entry appears only when
+  // the body yields steps.
+  const [cooking, setCooking] = React.useState(false);
+  const cook = React.useMemo(() => parseCookBody(recipe.data?.body ?? ""), [recipe.data?.body]);
+  const canCook = cook.steps.length > 0;
 
   if (recipe.isError) {
     return (
@@ -103,7 +116,7 @@ function RecipeDetailPage() {
     // Registry mutation: the defaults invalidate log/plan/vibes on settle (a cook
     // clears its planned row and advances last_satisfied).
     logAdd.mutate(
-      { type: "recipe", recipe: slug, date: isoToday() },
+      { type: "recipe", recipe: slug, date: localToday() },
       { onSuccess: () => toast("Logged as cooked") },
     );
   }
@@ -151,35 +164,49 @@ function RecipeDetailPage() {
             </a>
           </p>
         ) : null}
-        <div className="action-row">
-          <Button asChild data-testid="cook-with-claude">
-            <a
-              href={`https://claude.ai/new?q=${encodeURIComponent(`/cook ${slug}`)}`}
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              <IconSparkles /> Cook with Claude
-            </a>
-          </Button>
-          <Button variant="outline" disabled={planned} data-testid="detail-plan" onClick={onAddToPlan}>
-            <IconCalendar /> {planned ? "In meal plan" : "Add to meal plan"}
-          </Button>
-          <Button variant="ghost" data-testid="detail-log" onClick={onLogCooked}>
-            <IconCheck /> Log as cooked
-          </Button>
-        </div>
+        {cooking && canCook ? (
+          <CookMode cook={cook} title={title} onExit={() => setCooking(false)} />
+        ) : (
+          <>
+            <div className="action-row">
+              {canCook ? (
+                <Button data-testid="start-cooking" onClick={() => setCooking(true)}>
+                  <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    <path d="M5 3l14 9-14 9V3z" />
+                  </svg>{" "}
+                  Start Cooking
+                </Button>
+              ) : null}
+              <Button asChild variant="outline" data-testid="cook-with-claude">
+                <a
+                  href={`https://claude.ai/new?q=${encodeURIComponent(`/cook ${slug}`)}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  <IconSparkles /> Cook with Claude
+                </a>
+              </Button>
+              <Button variant="outline" disabled={planned} data-testid="detail-plan" onClick={onAddToPlan}>
+                <IconCalendar /> {planned ? "In meal plan" : "Add to meal plan"}
+              </Button>
+              <Button variant="ghost" data-testid="detail-log" onClick={onLogCooked}>
+                <IconCheck /> Log as cooked
+              </Button>
+            </div>
 
-        {/* Escape-first markdown render (lib/md.ts) — authored corpus text, no raw HTML. */}
-        <div className="prose" data-testid="recipe-body" dangerouslySetInnerHTML={{ __html: mdToHtml(recipe.data.body) }} />
+            {/* Escape-first markdown render (lib/md.ts) — authored corpus text, no raw HTML. */}
+            <div className="prose" data-testid="recipe-body" dangerouslySetInnerHTML={{ __html: mdToHtml(recipe.data.body) }} />
 
-        <NotesSection slug={slug} notes={notes.data?.notes ?? []} />
+            <NotesSection slug={slug} notes={notes.data?.notes ?? []} />
 
-        {similar.data && similar.data.similar.length > 0 ? (
-          <section className="similar" data-testid="similar-recipes">
-            <h2>Similar recipes</h2>
-            <RecipeList recipes={similar.data.similar} />
-          </section>
-        ) : null}
+            {similar.data && similar.data.similar.length > 0 ? (
+              <section className="similar" data-testid="similar-recipes">
+                <h2>Similar recipes</h2>
+                <RecipeList recipes={similar.data.similar} />
+              </section>
+            ) : null}
+          </>
+        )}
       </article>
     </div>
   );

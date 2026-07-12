@@ -91,7 +91,7 @@ export {
   type PantryCategory,
   type WasteReason,
 } from "./pantry.js";
-export { KNOWN_RECIPE_CONTRACT_VERSION, type RecipeCardData } from "./recipe-card.js";
+export { KNOWN_RECIPE_CONTRACT_VERSION, type CookModeData, type RecipeCardData } from "./recipe-card.js";
 export {
   KNOWN_PROPOSE_CONTRACT_VERSION,
   type ProposeCardData,

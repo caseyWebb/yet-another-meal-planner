@@ -116,7 +116,12 @@ cookbook); and the group-aggregated notes for the recipe — the caller's own no
 private ones) editable and deletable, other members' shared notes read-only, per the existing
 privacy rule. Anything conversational SHALL deep-link out to Claude (a link to
 `claude.ai/new` prefilled with the cook command and slug) — the app SHALL NOT embed a model or
-make any model call for the detail page.
+make any model call for the detail page. The page SHALL ALSO offer an in-app "Start Cooking" entry
+that mounts the SAME shared guided cook-mode component the in-chat recipe card uses (mise-en-place
+check-off, step-by-step navigation with a progress indicator, and per-step timers), when the recipe
+body yields steps; its step data is parsed from the body client-side. This in-app cook mode is
+presentational — its check-offs and timers are client-local — and it sits alongside, not replacing,
+the Cook-with-Claude deep link and the existing favorite / add-to-plan / log-as-cooked controls.
 
 #### Scenario: Detail is assembled from existing ops
 
@@ -136,6 +141,13 @@ make any model call for the detail page.
 - **WHEN** a member taps "Cook with Claude"
 - **THEN** the app opens the Claude deep link for the recipe and issues no model request of its
   own
+
+#### Scenario: In-app cook mode walks the recipe without a model call
+
+- **WHEN** a member taps "Start Cooking" on a recipe whose body yields steps
+- **THEN** the page mounts the shared cook-mode component and walks the mise-en-place, steps, and
+  completion locally, making no model call, while the deep link and existing favorite/log/plan
+  controls remain available
 
 ### Requirement: Favorites are an explicit idempotent set
 
