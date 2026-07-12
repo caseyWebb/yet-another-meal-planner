@@ -252,7 +252,7 @@ function makeDeps(
       calls.order.push("sku");
       calls.mappings = mappings;
       if (opts.skuCacheThrows) throw new Error("commit failed");
-      return "sku-sha";
+      return { inserted: mappings.map((mapping) => mapping.ingredient), updated: [], unchanged: [] };
     },
     cartAdd: async (lines) => {
       calls.cart++;
@@ -290,12 +290,12 @@ describe("placeOrder", () => {
 
     expect(res.resolved.map((r) => r.sku)).toEqual(["S1", "S2"]);
     expect(res.checkpoint).toEqual([]);
-    expect(res.sku_cache).toEqual({ committed: true });
+    expect(res.sku_cache).toMatchObject({ committed: true, inserted: ["milk", "eggs"], updated: [], unchanged: [] });
     expect(res.cart).toEqual({ written: true, count: 2 });
     expect(res.list).toEqual({ advanced: true });
     expect(calls).toMatchObject({ sku: 1, cart: 1, advance: 1, rollback: 0 });
     // The double-add guard: the in_cart advance strictly precedes the cart write.
-    expect(calls.order).toEqual(["sku", "advance", "cart"]);
+    expect(calls.order).toEqual(["advance", "cart", "sku"]);
   });
 
   it("caches the learned mapping under the line's CANONICAL key (the stored normalized_name), not the display name", async () => {
@@ -336,7 +336,7 @@ describe("placeOrder", () => {
     expect(calls.cartLines).toHaveLength(1);
   });
 
-  it("honest partial: cart fails but cache committed → cart not reported populated, advance rolled back", async () => {
+  it("honest partial: cart failure never teaches and the advance is rolled back", async () => {
     const { deps, calls } = makeDeps(
       { milk: confident("S1") },
       // milk is a menu-derived line with no stored row — the advance minted it.
@@ -344,7 +344,8 @@ describe("placeOrder", () => {
     );
     const res = await placeOrder(deps, toBuy("milk"));
 
-    expect(res.sku_cache.committed).toBe(true);
+    expect(res.sku_cache.committed).toBe(false);
+    expect(calls.sku).toBe(0);
     expect(res.cart.written).toBe(false);
     expect(res.cart.error).toContain("upstream 503");
     // The pre-write advance is rolled back to active (items stay retryable).
@@ -374,7 +375,7 @@ describe("placeOrder", () => {
     );
     const res = await placeOrder(deps, toBuy("milk"));
 
-    expect(calls.order).toEqual(["sku", "advance", "cart", "rollback"]);
+    expect(calls.order).toEqual(["advance", "cart", "rollback"]);
     expect(res.cart.written).toBe(false);
     // Items are marked in_cart with NO cart write — visible to the agent, and a
     // retried order won't re-add them (in_cart is filtered from computeToBuy).
@@ -390,7 +391,7 @@ describe("placeOrder", () => {
       resolve: async () => confident("S1"),
       revalidateSku: async () => null,
       normalize: (name) => normalizeIngredient(name, {}),
-      commitSkuCache: async () => null,
+      commitSkuCache: async () => ({ inserted: [], updated: [], unchanged: [] }),
       cartAdd: async () => {
         cartAdds++;
         if (cartFails) throw new Error("kroger 503");
@@ -431,7 +432,7 @@ describe("placeOrder", () => {
       resolve: async (name) => confident(name === "milk" ? "S1" : "S2"),
       revalidateSku: async () => null,
       normalize: (name) => normalizeIngredient(name, {}),
-      commitSkuCache: async () => null,
+      commitSkuCache: async () => ({ inserted: [], updated: [], unchanged: [] }),
       cartAdd: async () => {
         throw new Error("kroger 503");
       },
@@ -592,7 +593,7 @@ describe("placeOrder — the send record's honest reporting (spend-telemetry)", 
     // Telemetry never costs the member their groceries: advance + cart both landed.
     expect(res.list).toEqual({ advanced: true });
     expect(res.cart.written).toBe(true);
-    expect(calls.order).toEqual(["sku", "advance", "cart"]);
+    expect(calls.order).toEqual(["advance", "cart", "sku"]);
     expect(res.send).toEqual({ recorded: false, error: "department memo read failed" });
   });
 

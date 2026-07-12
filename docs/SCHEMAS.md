@@ -570,6 +570,28 @@ key is a member of the household's staples list. `GroceryModelContext` extends t
 an action summary/outcome; hosts publish the full context, never an event delta. A spawning payload is
 render-only and must be re-hydrated before writes.
 
+### `OrderReviewData` and disposable stage
+
+`@yamp/contract` independently versions the stateless Order Review wire/model contract. Version 1
+carries `preview_fingerprint`, `grocery_snapshot_version`, current store and quote disclaimer,
+stale-cart gate, matched and decision lines, transient estimate/savings, categorized left-offs,
+underived recipes, counts, and the normalized `OrderReviewStage`. Matched products carry fresh
+selection source, fulfillment, prices/promotions, options, and family fingerprint. Search responses
+carry bounded products plus structured requested/searched identity divergence and modality facts.
+
+The stage is plain JSON and persists nowhere: skipped line keys, assumed package quantities,
+line-key/SKU selections with `same_identity | broader | manual | impulse` source, bare impulse labels,
+and saved-brand verification markers. It has no prices. `OrderReviewModelContext` publishes the full
+preview, complete stage, save receipts, current outcome, and action summary after every MCP
+interaction. `OrderReviewSendResult` is discriminated as `review_changed`,
+`cart_clearance_required`, `preflight_failed`, `send_failed`, or `sent`; only `sent` may drive the
+confirmed screen, and its totals/savings are read by send id from immutable `order_send_lines`.
+
+No review-session table exists. A successfully resolved bare review extra is materialized directly
+as an `in_cart` row in the existing advance batch and its immutable send line uses
+`provenance='impulse'`. Previewed, skipped, unresolved, revalidation-failed, or compensated extras
+leave no grocery row, mapping, send line, or spend event.
+
 ## cooking_log (D1 table)
 
 The durable, append-only **cooking** log (not an eating log), stored as a per-tenant D1 `cooking_log` table. One row per cooking event or at-home convenience meal. **Eating out is never logged**, and **leftovers of an already-logged cook are not re-logged** (one cook that feeds several meals is one row). This is the trend spine `retrospective` reads, and the source `last_cooked` is **derived** from it by query: `last_cooked` for a recipe == `MAX(date)` over the caller's `type='recipe'` rows for that slug. Written via the `log_cooked` tool (not user-curated config). Schema: `migrations/d1/0003_cooking_log.sql`.
@@ -845,7 +867,7 @@ Example rows (`brand_prefs`):
 | Preference ladder | non-empty `tiers` | earlier tiers first; within a tier, equally fine — cheapest wins |
 | Ladder + never-ask fallback | non-empty `tiers`, `any_brand: 1` | exhausted ladder → cheapest acceptable instead of asking |
 
-"Any brand" is a per-family **flag**, not a tier and not an absence — collapsing it into absence would delete the ask state, and a sentinel tier would put magic values in data. Exactly one representation exists per state: `{ tiers: [], any_brand: 0 }` expresses nothing and is rejected on write (`null` clears the family). Keys are the canonical id with spaces as underscores (`extra virgin olive oil` → resolve via the ingredient identity graph → `olive oil` → key `olive_oil`), unchanged by the tier model. The matcher consumes the ladder through the `readBrandPrefs` projection (tiers flattened in order; don't-care → `[]`), so an exhausted ladder without `any_brand` falls back to ambiguous.
+"Any brand" is a per-family **flag**, not a tier and not an absence — collapsing it into absence would delete the ask state, and a sentinel tier would put magic values in data. Exactly one representation exists per state: `{ tiers: [], any_brand: 0 }` expresses nothing and is rejected on write (`null` clears the family). Keys are the canonical id with spaces as underscores (`extra virgin olive oil` → resolve via the ingredient identity graph → `olive oil` → key `olive_oil`), unchanged by the tier model. The matcher consumes the native family object: tiers remain ordered, peers remain equal, and `any_brand` applies only after the tier ladder is exhausted.
 
 **`[stores].primary` is the fulfillment mode** (in-store-fulfillment). It is either the literal `kroger` (online mode — the agent flushes the grocery list with `place_order`, using `preferred_location` for the Kroger API) **or** a mapped store slug from `stores/` (walk mode — the agent runs the in-store walk for that store instead). The agent picks the flush from the resolved mode and SHALL NOT assume Kroger. Mode is a property of the **preference/trip, not the chain** — a store can be online-capable and/or walk-capable. **Naming a store for one trip** ("I'm going to the West 7th Tom Thumb") overrides the standing `primary` for that trip only, without rewriting it. An unknown store-slug `primary` is **not a hard failure** (preferences is parse-only curated config) — the agent resolves it conversationally (offer to map the store, or fall back to online). `preferred_location` stays meaningful in walk mode too (it still drives Kroger pricing for sale checks).
 
@@ -1854,7 +1876,7 @@ Example rows:
 
 ## sku_cache (D1, shared corpus)
 
-Machine-maintained SKU cache in the **shared corpus** (`sku_cache` table) — a mapping resolved by any member warms it for everyone. Written by `place_order` as the matching pipeline resolves ingredients. Each entry is **tagged with the `location_id`** it was resolved at. Keys converge to the canonical ingredient id on the cron: the `sku-cache-rekey` reconcile resolves every `ingredient` key through the current alias/representative chain each tick and re-keys rows whose resolution differs — on a (canonical, location) collision the row with the newer `last_used` wins whole. Keys that resolve to nothing (non-food or never-captured terms) stay as-is; the re-key has no capture side effect.
+Machine-maintained SKU cache in the **shared corpus** (`sku_cache` table) — a mapping resolved by any member warms it for everyone. `place_order` compares/upserts it only after the Kroger cart write succeeds; preview, search, and a failed cart never teach. Each entry is **tagged with the `location_id`** it was resolved at. Keys converge to the canonical ingredient id on the cron: the `sku-cache-rekey` reconcile resolves every `ingredient` key through the current alias/representative chain each tick and re-keys rows whose resolution differs — on a (canonical, location) collision the row with the newer `last_used` wins whole. Keys that resolve to nothing (non-food or never-captured terms) stay as-is; the re-key has no capture side effect.
 
 ```sql
 -- D1 sku_cache table (migrations/d1/0006_shared_corpus.sql + 0041_sku_cache_aisle.sql)

@@ -3,7 +3,6 @@ import {
   readProfile,
   readPreferences,
   readOverlay,
-  readBrandPrefs,
   readBrandTiers,
   brandStmt,
   setOverlay,
@@ -171,35 +170,6 @@ describe("readBrandTiers", () => {
       olive_oil: { tiers: [["A", "B"], ["C"]], any_brand: false },
       onion: { tiers: [], any_brand: true },
     });
-  });
-});
-
-describe("readBrandPrefs (the matcher-facing projection)", () => {
-  it("flattens singleton tiers byte-identical to the legacy ranked lists", async () => {
-    // The migrated production fixtures (design.md D2): each legacy rank became its
-    // own tier, so the projection reproduces the pre-migration lists exactly.
-    const { env } = fakeD1({
-      brand_prefs: [
-        { tenant: "everett", term: "butter", tiers: '[["Challenge"],["Tillamook"],["Kerrygold"]]', any_brand: 0 },
-        { tenant: "everett", term: "canned_tomatoes", tiers: '[["DeLallo"],["Muir Glen"],["Cento"]]', any_brand: 0 },
-        { tenant: "everett", term: "paper_towels", tiers: '[["Viva"]]', any_brand: 0 },
-      ],
-    });
-    expect(await readBrandPrefs(env, "everett")).toEqual({
-      butter: ["Challenge", "Tillamook", "Kerrygold"],
-      canned_tomatoes: ["DeLallo", "Muir Glen", "Cento"],
-      paper_towels: ["Viva"],
-    });
-  });
-
-  it("flattens a multi-brand tier in tier order, and don't-care to []", async () => {
-    const { env } = fakeD1({
-      brand_prefs: [
-        { tenant: "everett", term: "olive_oil", tiers: '[["A","B"],["C"]]', any_brand: 0 },
-        { tenant: "everett", term: "onion", tiers: "[]", any_brand: 1 },
-      ],
-    });
-    expect(await readBrandPrefs(env, "everett")).toEqual({ olive_oil: ["A", "B", "C"], onion: [] });
   });
 });
 

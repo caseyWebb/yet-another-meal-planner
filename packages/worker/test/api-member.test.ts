@@ -478,8 +478,8 @@ describe("grocery power (member-app-grocery)", () => {
     expect(body.cart.code).toBe("reauth_required");
     expect(body.list.advanced).toBe(false);
     expect(d1.tables.grocery_list.find((r) => r.name === "chicken")!.status).toBe("active");
-    // The SKU-cache commit is independent best-effort and landed.
-    expect(body.sku_cache.committed).toBe(true);
+    // A failed cart never teaches.
+    expect(body.sku_cache.committed).toBe(false);
   });
 
   it("refuses a non-Kroger primary with a structured unsupported naming the right flow (nothing resolved)", async () => {

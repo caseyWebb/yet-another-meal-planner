@@ -54,6 +54,7 @@ export interface ResolvedLine {
 }
 
 export interface CheckpointLine {
+  key?: string;
   name: string;
   kind: "ambiguous" | "unavailable";
   candidates?: CandidateView[];
@@ -69,7 +70,7 @@ export interface PartialItem {
 export interface PlaceOrderResult {
   resolved: ResolvedLine[];
   checkpoint: CheckpointLine[];
-  sku_cache: { committed: boolean; error?: string };
+  sku_cache: { committed: boolean; inserted?: string[]; updated?: string[]; unchanged?: string[]; error?: string };
   cart: { written: boolean; count?: number; error?: string; code?: string };
   /** The list advance runs BEFORE the cart write (double-add guard). On a cart
    *  failure the advance is rolled back to `active` (`rolled_back: true`); a failed

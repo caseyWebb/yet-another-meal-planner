@@ -11,6 +11,7 @@
 
 import { Hono } from "hono";
 import { z } from "zod";
+import { OrderReviewStageSchema } from "@yamp/contract";
 import { ToolError } from "../errors.js";
 import { requireSession, type ApiEnv } from "../session.js";
 import { jsonWithEtag } from "./etag.js";
@@ -24,6 +25,7 @@ import { readPreferences } from "../profile-db.js";
 import { KROGER_STORE } from "../flyer-warm.js";
 import type { GroceryAddInput, GroceryUpdateInput } from "../grocery.js";
 import { readGrocerySnapshot } from "../grocery-snapshot.js";
+import { readOrderReview, saveOrderReviewBrand, searchOrderBroader, searchOrderCatalog, sendOrderReview } from "../order-review.js";
 import {
   acceptGrocerySubstitution,
   setGroceryBuyAnyway,
@@ -43,6 +45,14 @@ const MEMBER_STATUSES = new Set(["active", "in_cart", "ordered"]);
 
 /** The order route validates the tool's EXACT input shape (one contract, D7). */
 const orderInput = z.object(PLACE_ORDER_INPUT_SHAPE);
+const orderReviewInput = z.object({ stage: OrderReviewStageSchema.optional() });
+const orderSearchInput = z.object({
+  mode: z.enum(["broader", "manual"]), line_key: z.string().min(1), preview_fingerprint: z.string().min(1), stage: OrderReviewStageSchema.optional(), query: z.string().optional(),
+});
+const orderBrandInput = z.object({ family_key: z.string().min(1), line_key: z.string().min(1), brand: z.string().min(1), expected_family_fingerprint: z.string().min(1), preview_fingerprint: z.string().min(1) });
+const orderReviewSendInput = z.object({
+  stage: OrderReviewStageSchema, preview_fingerprint: z.string().min(1), cleared_cart_ack: z.boolean(),
+});
 
 /** The substitutions route validates the tool's exact input shape (one contract, D1). */
 const substitutionsInput = z.object({
@@ -162,6 +172,24 @@ export const groceryArea = new Hono<ApiEnv>()
     const result = await suggestSubstitutions(c.env, tenant.id, parsed.data, buildOrderWiring(c.env, tenant.id));
     return c.json(result);
   })
+  .post("/grocery/order/review", requireSession, async (c) => {
+    const tenant = c.get("tenant");
+    const parsed = mutationBody(orderReviewInput, await jsonBody<unknown>(c));
+    return c.json(await readOrderReview(c.env, tenant.id, parsed.stage, { wiring: buildOrderWiring(c.env, tenant.id) }));
+  })
+  .post("/grocery/order/search", requireSession, async (c) => {
+    const tenant = c.get("tenant");
+    const parsed = mutationBody(orderSearchInput, await jsonBody<unknown>(c));
+    const deps = { wiring: buildOrderWiring(c.env, tenant.id) };
+    return c.json(parsed.mode === "broader"
+      ? await searchOrderBroader(c.env, tenant.id, parsed.line_key, parsed.preview_fingerprint, parsed.stage, deps)
+      : await searchOrderCatalog(c.env, tenant.id, parsed.line_key, parsed.preview_fingerprint, parsed.stage, parsed.query ?? "", deps));
+  })
+  .post("/grocery/order/brand", requireSession, async (c) => {
+    const tenant = c.get("tenant");
+    const parsed = mutationBody(orderBrandInput, await jsonBody<unknown>(c));
+    return c.json(await saveOrderReviewBrand(c.env, tenant.id, parsed, { wiring: buildOrderWiring(c.env, tenant.id) }));
+  })
   // The order flow (D7): the place_order op behind the tool's exact input/result shape.
   // Preview and commit are the same endpoint discriminated by `preview` (the op's own
   // contract). Gated to Kroger-online fulfillment BEFORE any resolution — a non-Kroger
@@ -169,7 +197,16 @@ export const groceryArea = new Hono<ApiEnv>()
   // pull-list's 409-with-direction precedent), never a cart write.
   .post("/grocery/order", requireSession, async (c) => {
     const tenant = c.get("tenant");
-    const parsed = orderInput.safeParse(await jsonBody<unknown>(c));
+    const raw = await jsonBody<unknown>(c);
+    const reviewParsed = orderReviewSendInput.safeParse(raw);
+    const parsed = orderInput.safeParse(raw);
+    if (!reviewParsed.success && !parsed.success) {
+      const issue = reviewParsed.error.issues[0] ?? parsed.error.issues[0];
+      throw new ToolError("validation_failed", `${issue?.path.join(".") || "body"}: ${issue?.message ?? "invalid"}`);
+    }
+    if (reviewParsed.success) {
+      return c.json(await sendOrderReview(c.env, tenant.id, reviewParsed.data, { wiring: buildOrderWiring(c.env, tenant.id) }));
+    }
     if (!parsed.success) {
       const issue = parsed.error.issues[0];
       throw new ToolError("validation_failed", `${issue?.path.join(".") || "body"}: ${issue?.message ?? "invalid"}`);

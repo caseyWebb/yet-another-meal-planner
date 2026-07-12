@@ -41,14 +41,21 @@ test("the launcher remains driven by the shared store-adapter projection", async
 	await groceryPage.captureForReview("grocery-store-launcher");
 });
 
-test("the order review is a labelled expanded disclosure", async ({ groceryPage }) => {
+test("the order review is a labelled expanded disclosure", async ({ groceryPage, page }) => {
+	await page.route("**/api/grocery/order/review", (route) => route.fulfill({ json: {
+		contract_version: 1, preview_fingerprint: "fixture", grocery_snapshot_version: "fixture", as_of: "2026-07-12T12:00:00Z",
+		store: { name: "Kroger", location_id: "1" }, quote_disclaimer: "Current quote", stale_cart_count: 0,
+		cleared_cart_ack_required: false, matched: [], decisions: [], left_off: [], underived: [],
+		counts: { going_to_cart: 0, needs_decision: 0, left_off: 0 }, estimated_total: null, flyer_savings: null,
+		stage: { skipped: [], quantities: {}, selections: [], impulses: [], saved_brands: [] },
+	} }));
 	const launcher = groceryPage.page.getByTestId("order-open");
 	await expect(launcher).toHaveAttribute("aria-expanded", "false");
 	await expect(launcher).toHaveAttribute("aria-controls", "grocery-order-review");
 
 	await launcher.click();
 	await expect(launcher).toHaveAttribute("aria-expanded", "true");
-	const review = groceryPage.page.getByRole("region", { name: "Kroger order" });
+	const review = groceryPage.page.getByRole("region", { name: "Order review" });
 	await expect(review).toHaveAttribute("id", "grocery-order-review");
 	await expect(review).toBeVisible();
 	await launcher.click();

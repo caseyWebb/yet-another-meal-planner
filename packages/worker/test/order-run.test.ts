@@ -51,6 +51,7 @@ function fakeWiring(overrides: Partial<OrderWiring> = {}): OrderWiring & { resol
     getLocationId: async () => "loc-1",
     search: async () => [],
     productById: async () => null,
+    cartAdd: async () => {},
     ...overrides,
   };
 }
@@ -136,14 +137,14 @@ describe("runPlaceOrder — commit paths", () => {
   it("reports the cart honestly when no Kroger link exists (reauth_required), list NOT advanced", async () => {
     const h = sqliteEnv([T]);
     await addGroceryRow(h.env, T, { name: "olive oil" }, TODAY);
-    const result = await run(h, {}, fakeWiring());
+    const result = await run(h, {}, fakeWiring({ cartAdd: undefined }));
     // No stored refresh token → the user client throws ReauthRequiredError before any fetch.
     expect(result.cart.written).toBe(false);
     expect(result.cart.code).toBe("reauth_required");
     expect(result.list.advanced).toBe(false);
-    // SKU-cache commit is independent best-effort and DID land (with the wiring's location).
-    expect(result.sku_cache.committed).toBe(true);
-    expect(h.rows<{ location_id: string }>("sku_cache")[0].location_id).toBe("loc-1");
+    // A failed cart never teaches.
+    expect(result.sku_cache.committed).toBe(false);
+    expect(h.rows("sku_cache")).toHaveLength(0);
     // The row stays active to retry next order.
     expect(h.rows<{ status: string }>("grocery_list")[0].status).toBe("active");
   });
@@ -176,7 +177,7 @@ describe("runPlaceOrder — unchanged baseline (no plan, no new params)", () => 
       resolve: (name) => fakeWiring().resolve(name),
       revalidateSku: async () => null,
       normalize: (n) => n,
-      commitSkuCache: async () => null,
+      commitSkuCache: async () => ({ inserted: [], updated: [], unchanged: [] }),
       cartAdd: async () => {},
       advanceInCart: async () => ({ inserted: [] }),
       rollbackInCart: async () => {},
@@ -381,7 +382,7 @@ describe("runPlaceOrder — the send-record snapshot (spend-telemetry)", () => {
     await addGroceryRow(h.env, T, { name: "chicken" }, TODAY);
     // No Kroger link → cartAdd throws reauth_required AFTER the advance+snapshot batch;
     // the rollback deletes the send record alongside its row compensation.
-    const result = await run(h, {}, fakeWiring());
+    const result = await run(h, {}, fakeWiring({ cartAdd: undefined }));
     expect(result.cart.code).toBe("reauth_required");
     expect(result.list).toMatchObject({ advanced: false, rolled_back: true });
     expect(result.send.recorded).toBe(false);
@@ -398,6 +399,7 @@ describe("runPlaceOrder — the send-record snapshot (spend-telemetry)", () => {
     const h = sqliteEnv([T]);
     await addGroceryRow(h.env, T, { name: "chicken" }, TODAY);
     const wiring = fakeWiring({
+      cartAdd: undefined,
       getLocationId: async () => {
         throw new Error("no location resolvable");
       },

@@ -17,6 +17,7 @@
 import type { KrogerCandidate } from "./kroger.js";
 import { compareUnitPrice, parseSize, type UnitPriceItem } from "./unit-price.js";
 import type { AisleLocation, CandidateView } from "./order-shapes.js";
+import type { BrandTierPref } from "./preferences.js";
 
 /** A cached SKU mapping from the shared D1 `sku_cache` table. */
 export interface CachedMapping {
@@ -53,8 +54,8 @@ export interface MatchDeps {
    * searches as-is. Optional so unit tests can omit it.
    */
   searchTerms?: Record<string, string>;
-  /** `preferences` `[brands]` (key → ranked list; `[]` = don't-care). */
-  brands: Record<string, string[]>;
+  /** Native family preferences. Tiers are ordered; peers within a tier are equal. */
+  brands: Record<string, BrandTierPref>;
   /** The shared D1 `sku_cache` mappings (location-tagged, D7). */
   cache: CachedMapping[];
   /** The caller's resolved preferred locationId — drives same-location cache preference (D7). */
@@ -296,16 +297,6 @@ export function relevanceScore(c: KrogerCandidate, queryTokens: string[]): numbe
   return score;
 }
 
-/** Index of the highest-ranked (lowest index) listed brand the candidate matches, or -1. */
-function brandRank(c: KrogerCandidate, brands: string[]): number {
-  const b = c.brand.toLowerCase();
-  for (let i = 0; i < brands.length; i++) {
-    const wanted = brands[i].toLowerCase();
-    if (b === wanted || b.includes(wanted) || wanted.includes(b)) return i;
-  }
-  return -1;
-}
-
 /** Build a candidate view for the ambiguous shape, attaching a unit price when parseable. */
 function toCandidateView(c: KrogerCandidate): CandidateView {
   const view: CandidateView = {
@@ -476,7 +467,7 @@ export async function matchIngredient(
   const topTier =
     maxRelevance > 0 ? fulfillable.filter((c) => relevanceScore(c, queryTokens) === maxRelevance) : [];
 
-  // Step 6 — confidence gate driven by the tri-state `[brands]` entry.
+  // Step 6 — confidence gate driven by the native tier family.
   const brandsPref = deps.brands[key];
 
   // Absent key, no cache → ambiguous (ask). (D5)
@@ -495,28 +486,25 @@ export async function matchIngredient(
     );
   }
 
-  // `[]` → don't care, auto-pick cheapest acceptable — within the top tier. (D5)
-  if (brandsPref.length === 0) {
-    const pick = commodityPick(topTier, context.quantity_hint);
-    return confident(pick, "don't-care: cheapest acceptable");
+  // First available tier wins. Brands in one tier are peers; package-aware price
+  // selection decides between them, never their stored order.
+  for (let index = 0; index < brandsPref.tiers.length; index += 1) {
+    const peers = new Set(brandsPref.tiers[index].map((brand) => brand.trim().toLowerCase()));
+    const available = topTier.filter((candidate) => peers.has(candidate.brand.trim().toLowerCase()));
+    if (available.length > 0) {
+      return confident(commodityPick(available, context.quantity_hint), `brand tier ${index + 1}`);
+    }
   }
 
-  // Non-empty ranked list → highest-ranked available brand wins, among the top
-  // relevance tier; tiebreak within it.
-  const ranked = topTier
-    .map((c) => ({ c, rank: brandRank(c, brandsPref) }))
-    .filter((x) => x.rank >= 0);
-  if (ranked.length > 0) {
-    const bestRank = Math.min(...ranked.map((x) => x.rank));
-    const sameBrand = ranked.filter((x) => x.rank === bestRank).map((x) => x.c);
-    return confident(tiebreak(sameBrand), "preferred brand match");
+  // any_brand is a terminal fallback after every tier is exhausted.
+  if (brandsPref.any_brand) {
+    return confident(commodityPick(topTier, context.quantity_hint), "any-brand fallback");
   }
 
-  // Listed brands all unavailable (within the relevant tier) → ambiguous. (D5)
   return ambiguous(
     fulfillable,
     dietary,
     queryTokens,
-    "preferred brand(s) unavailable; choose from these or say 'don't care'",
+    "preferred brand tiers unavailable; choose from these or explicitly allow any brand",
   );
 }
