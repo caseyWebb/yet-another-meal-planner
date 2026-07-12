@@ -10,7 +10,7 @@
 // needs no Access bypass (nothing here touches /admin pages).
 
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SEED, d1Statements, kvEntries } from "../../admin/visual/seed.mjs";
@@ -31,6 +31,53 @@ sh("npx", ["wrangler", "d1", "execute", "DB", "--local", "--command", d1Statemen
 for (const [binding, key, value] of kvEntries()) {
   sh("npx", ["wrangler", "kv", "key", "put", key, value, "--binding", binding, "--local"]);
 }
+
+// Deterministic member session for the app-ui suite (app-ui-suite-deterministic-auth):
+// mint the session SERVER-SIDE and hand it to Playwright as storageState, so the `authed`
+// project's specs start pre-authenticated and issue ZERO login HTTP — no per-test UI login,
+// no pressure on `POST /api/session`'s 10/min/IP limiter. The record mirrors exactly what
+// `createSession` writes (src/session.ts): `session:<token>` in TENANT_KV holds the member's
+// tenant, read back by `requireSession`. `tenant:<active>` is already seeded by kvEntries
+// above, so the allowlist re-check `resolveTenant` runs resolves. Written to the SAME local
+// `.wrangler/state` the running `wrangler dev` below reads (identical `kv key put --local`).
+const SESSION_TTL_S = 90 * 24 * 60 * 60; // ~90d — mirrors session.ts SESSION_TTL_S
+const APP_SESSION_TOKEN = `pw-app-session-${SEED.members.active}`;
+sh("npx", [
+  "wrangler",
+  "kv",
+  "key",
+  "put",
+  `session:${APP_SESSION_TOKEN}`,
+  JSON.stringify({ tenant: SEED.members.active, created_at: now, refreshed_at: now }),
+  "--binding",
+  "TENANT_KV",
+  "--local",
+]);
+// The Playwright storageState the `authed` project loads: the `__Host-session` cookie
+// carrying the token above, with the EXACT attributes `setSessionCookie` sets (src/session.ts:
+// Path=/, Secure, HttpOnly, SameSite=Lax). Chromium treats 127.0.0.1 as a trustworthy origin,
+// so the __Host- cookie rides under `wrangler dev`. Gitignored + regenerated every run — never
+// committed and never published as a CI artifact.
+const authDir = join("app", "visual", ".auth");
+mkdirSync(authDir, { recursive: true });
+writeFileSync(
+  join(authDir, `${SEED.members.active}.json`),
+  JSON.stringify({
+    cookies: [
+      {
+        name: "__Host-session",
+        value: APP_SESSION_TOKEN,
+        domain: "127.0.0.1",
+        path: "/",
+        httpOnly: true,
+        secure: true,
+        sameSite: "Lax",
+        expires: Math.floor(now / 1000) + SESSION_TTL_S,
+      },
+    ],
+    origins: [],
+  }),
+);
 // The recipe BODY lives in the R2 corpus (readRecipeDetail reads recipes/<slug>.md) —
 // put the seeded recipe's markdown into the local bucket so the detail page renders.
 // App-suite-only: the admin suite keeps its empty-corpus posture (D1-only "orphaned").

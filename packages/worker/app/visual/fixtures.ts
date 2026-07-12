@@ -3,7 +3,7 @@
 // from here — never from @playwright/test directly and never constructing page objects
 // inline — so route/selector knowledge stays in the objects (the admin harness's exact
 // organization).
-import { test as base, expect, type Cookie } from "@playwright/test";
+import { test as base, expect } from "@playwright/test";
 import { LoginPage } from "./pages/login.page";
 import { SignupPage } from "./pages/signup.page";
 import { ShellPage } from "./pages/shell.page";
@@ -31,12 +31,9 @@ interface AppFixtures {
   retrospectivePage: RetrospectivePage;
   profilePage: ProfilePage;
   proposePage: ProposePage;
-  /** Log in as the seeded member (lands on /). Most authed specs start here. */
+  /** Enter the app as the seeded member (lands on /). Most authed specs start here. */
   asMember: () => Promise<void>;
 }
-
-/** The member session cookie, minted once per worker and replayed (see asMember). */
-let memberCookies: Cookie[] | null = null;
 
 export const test = base.extend<AppFixtures>({
   // The entry stylesheet @imports the design system's webfont; the harness runs
@@ -60,26 +57,15 @@ export const test = base.extend<AppFixtures>({
   retrospectivePage: async ({ page }, use) => use(new RetrospectivePage(page)),
   profilePage: async ({ page }, use) => use(new ProfilePage(page)),
   proposePage: async ({ page }, use) => use(new ProposePage(page)),
-  asMember: async ({ page, context }, use) => {
+  asMember: async ({ page }, use) => {
     await use(async () => {
-      // ONE UI login per worker, then the session cookie is replayed — the login
-      // limiter allows 10/min/IP and a fast suite logging in per test would trip it.
-      if (memberCookies) {
-        await context.addCookies(memberCookies);
-        await page.goto("/");
-        await new ShellPage(page).landmark();
-      } else {
-        const login = new LoginPage(page);
-        await login.goto();
-        await login.login(SEED.invite);
-        // A bootstrap-code login now lands on the first-run passkey enrollment nudge
-        // (webauthn-passkey-auth 8.2); the harness declines it to reach the app shell.
-        await login.skipEnroll();
-        // Reach the shell FIRST — the session cookie only exists once the login
-        // response landed; capturing on click races Set-Cookie and caches nothing.
-        await new ShellPage(page).landmark();
-        memberCookies = await context.cookies();
-      }
+      // The `authed` project pre-authenticates the context via storageState (the
+      // server-side session seeded in app/visual/setup.mjs), so entering the app is a
+      // plain navigation — ZERO login HTTP, no per-test UI login, no 10/min limiter
+      // pressure. The real login/enrollment UI keeps its dedicated coverage in the
+      // `noauth` project's login/signup/passkey specs.
+      await page.goto("/");
+      await new ShellPage(page).landmark();
     });
   },
 });

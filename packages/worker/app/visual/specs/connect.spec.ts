@@ -26,8 +26,12 @@ test("a signed-in member approves a pending cross-device connection", async ({
 
 test("an unauthenticated /connect visit is parked at login, preserving the ref", async ({
   page,
+  context,
   loginPage,
 }) => {
+  // This spec runs in the pre-authenticated `authed` project; drop the seeded session
+  // cookie so the gate genuinely sees an unauthenticated visitor.
+  await context.clearCookies();
   await page.goto(`/connect?authz=${SEED.connect.viewRef}`);
   await loginPage.landmark();
   // The return path round-trips (url-encoded) so the member lands back on the SAME pending

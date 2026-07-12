@@ -11,6 +11,11 @@ assets/
 admin/visual/.results/
 app/visual/.results/
 
+# The app-ui suite's server-side member session, written as a Playwright storageState by
+# app/visual/setup.mjs (app-ui-suite-deterministic-auth). Regenerated every run — never
+# committed and never published as a CI artifact.
+app/visual/.auth/
+
 # Authoring vault: vendored community-plugin binaries (fetched on demand, sha256-verified),
 # and the packaged distributable zip — kept out of the repo.
 vault/.obsidian/plugins/*/main.js

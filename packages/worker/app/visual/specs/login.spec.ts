@@ -30,8 +30,11 @@ test("the seeded invite code lands on the authenticated shell, and a reload keep
   await shellPage.expectSignedInAs(SEED.members.active);
 });
 
-test("the account menu shows the member's Kroger link badge", async ({ asMember, shellPage }) => {
-  await asMember();
+test("the account menu shows the member's Kroger link badge", async ({ loginPage, shellPage }) => {
+  await loginPage.goto();
+  await loginPage.login(SEED.invite);
+  await loginPage.skipEnroll();
+  await shellPage.landmark();
   await shellPage.openAccountMenu();
   await shellPage.expectKrogerBadge(true); // the seed links the active member
 });
@@ -103,7 +106,6 @@ test("logout leaves no member data at rest (member-app-offline D9)", async ({ lo
 // item NEVER surfacing in B's grocery list, this is the strongest guarantee obtainable
 // here: however the timing falls, the write is never misattributed to the new tenant.
 test("a different-tenant login closes the cross-tenant replay window (member-app-offline D9)", async ({
-  asMember,
   groceryPage,
   loginPage,
   shellPage,
@@ -111,7 +113,12 @@ test("a different-tenant login closes the cross-tenant replay window (member-app
   context,
 }) => {
   const LEAK_ITEM = "replay-guard-canned-beans";
-  await asMember(); // member A ("casey") — stamps the device via the _app loader's whoami
+  // Member A ("casey") via a REAL invite login — stamps the device via the whoami boot check.
+  // This spec runs in the logged-out `noauth` project, so it establishes its own session.
+  await loginPage.goto();
+  await loginPage.login(SEED.invite);
+  await loginPage.skipEnroll();
+  await shellPage.landmark();
   const aCookie = (await context.cookies()).find((c) => c.name === "__Host-session")?.value;
   expect(aCookie).toBeTruthy();
 
