@@ -11,7 +11,7 @@
 
 import { Hono } from "hono";
 import { z } from "zod";
-import { OrderReviewStageSchema } from "@yamp/contract";
+import { OrderReviewDataSchema, OrderReviewStageSchema } from "@yamp/contract";
 import { ToolError } from "../errors.js";
 import { requireSession, type ApiEnv } from "../session.js";
 import { jsonWithEtag } from "./etag.js";
@@ -51,7 +51,7 @@ const orderSearchInput = z.object({
 });
 const orderBrandInput = z.object({ family_key: z.string().min(1), line_key: z.string().min(1), brand: z.string().min(1), expected_family_fingerprint: z.string().min(1), preview_fingerprint: z.string().min(1), stage: OrderReviewStageSchema });
 const orderReviewSendInput = z.object({
-  stage: OrderReviewStageSchema, preview_fingerprint: z.string().min(1), cleared_cart_ack: z.boolean(),
+  stage: OrderReviewStageSchema, preview_fingerprint: z.string().min(1), cleared_cart_ack: z.boolean(), rendered_preview: OrderReviewDataSchema.optional(),
 });
 
 /** The substitutions route validates the tool's exact input shape (one contract, D1). */

@@ -8,7 +8,7 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { OrderReviewStageSchema } from "@yamp/contract";
+import { OrderReviewDataSchema, OrderReviewStageSchema } from "@yamp/contract";
 import type { Env } from "./env.js";
 import type { KrogerCandidate } from "./kroger.js";
 import { runTool, ToolError } from "./errors.js";
@@ -449,6 +449,7 @@ export const PLACE_ORDER_INPUT_SHAPE = {
   stage: OrderReviewStageSchema.optional(),
   preview_fingerprint: z.string().optional(),
   cleared_cart_ack: z.boolean().optional(),
+  rendered_preview: OrderReviewDataSchema.optional(),
 };
 
 export function registerOrderTools(
@@ -472,6 +473,7 @@ export function registerOrderTools(
           stage: input.stage,
           preview_fingerprint: input.preview_fingerprint,
           cleared_cart_ack: input.cleared_cart_ack ?? false,
+          rendered_preview: input.rendered_preview,
         }, { wiring });
       }
       return runPlaceOrder(env, tenantId, input, wiring);
