@@ -472,6 +472,18 @@ export function OrderReview({ data, adapter, onDataChange }: OrderReviewProps) {
           </ul>
         </>
       ) : null}
+      {projection.left_off_lines.length ? (
+        <section aria-labelledby="order-review-left-off-title">
+          <h3 id="order-review-left-off-title">Staying to-buy</h3>
+          <ul>
+            {projection.left_off_lines.map((line) => (
+              <li key={`${line.line_key}:${line.reason}`}>
+                {line.name} — {line.reason.replaceAll("_", " ")}
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
       <form
         onSubmit={(event) => {
           event.preventDefault();

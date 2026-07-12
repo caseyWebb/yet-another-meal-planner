@@ -86,6 +86,8 @@ describe("shared Order Review component", () => {
     expect(html).toContain("read-only");
     expect(html).toContain("Featured swap");
     expect(html).toContain("3 prior items");
+    expect(html).toContain("Staying to-buy");
+    expect(html).toContain("bread — unavailable");
     expect(html).not.toContain("Search catalog for bread");
     expect((html.match(/disabled/g) ?? []).length).toBeGreaterThan(6);
     expect((html.match(/name=\"choice-milk\"/g) ?? []).length).toBe(2);
