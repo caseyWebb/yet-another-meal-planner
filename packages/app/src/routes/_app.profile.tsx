@@ -556,7 +556,7 @@ function StoreCard() {
     const res = await api.api.profile["kroger-login-url"].$get().catch(() => null);
     if (!res?.ok) return void toast("Couldn't start Kroger connection — try again");
     const { url } = (await res.json()) as { url: string };
-    window.open(url, "_blank", "noopener");
+    window.location.assign(url);
   }
 
   async function disconnect() {
@@ -703,22 +703,52 @@ function KrogerLocationModal({ open, onOpenChange }: { open: boolean; onOpenChan
   >([]);
   const [state, setState] = React.useState<"idle" | "loading" | "empty" | "error">("idle");
   const [message, setMessage] = React.useState("");
+  const searchGeneration = React.useRef(0);
+  const searchAbort = React.useRef<AbortController | null>(null);
+
+  React.useEffect(() => {
+    if (open) return;
+    searchGeneration.current++;
+    searchAbort.current?.abort();
+    searchAbort.current = null;
+  }, [open]);
+  React.useEffect(
+    () => () => {
+      searchGeneration.current++;
+      searchAbort.current?.abort();
+    },
+    [],
+  );
 
   async function search(event: React.FormEvent) {
     event.preventDefault();
+    const generation = ++searchGeneration.current;
+    searchAbort.current?.abort();
+    searchAbort.current = null;
+    setLocations([]);
+    setMessage("");
     if (!/^\d{5}$/.test(zip)) {
       setState("error");
       setMessage("Enter exactly five ZIP digits.");
       return;
     }
+    const controller = new AbortController();
+    searchAbort.current = controller;
     setState("loading");
-    const res = await appFetch(`/api/profile/kroger-locations?zip=${encodeURIComponent(zip)}`).catch(() => null);
+    const res = await appFetch(`/api/profile/kroger-locations?zip=${encodeURIComponent(zip)}`, {
+      signal: controller.signal,
+    }).catch(() => null);
+    if (generation !== searchGeneration.current) return;
     if (!res?.ok) {
+      setLocations([]);
+      const errorMessage = res ? (await apiError(res)).message : "Search failed — try again.";
+      if (generation !== searchGeneration.current) return;
       setState("error");
-      setMessage(res ? (await apiError(res)).message : "Search failed — try again.");
+      setMessage(errorMessage);
       return;
     }
     const body = (await res.json()) as { locations: (typeof locations)[number][] };
+    if (generation !== searchGeneration.current) return;
     setLocations(body.locations);
     setState(body.locations.length ? "idle" : "empty");
   }
@@ -752,7 +782,7 @@ function KrogerLocationModal({ open, onOpenChange }: { open: boolean; onOpenChan
           <label htmlFor="kroger-location-zip">ZIP code</label>
           <div>
             <input id="kroger-location-zip" className="input" inputMode="numeric" maxLength={5} value={zip} onChange={(event) => setZip(event.target.value)} />
-            <Button type="submit" disabled={state === "loading"}>{state === "loading" ? "Searching…" : "Search"}</Button>
+            <Button type="submit">{state === "loading" ? "Searching…" : "Search"}</Button>
           </div>
         </form>
         {state === "empty" ? <p data-testid="kroger-location-empty">No Kroger locations were returned for that ZIP.</p> : null}

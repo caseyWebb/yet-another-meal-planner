@@ -143,7 +143,46 @@ test("the Kroger picker selects one exact provider result and cancel/empty/error
   await profilePage.openKrogerPicker();
   await profilePage.searchKrogerZip("76109");
   await expect(profilePage.krogerModal().getByTestId("kroger-location-error")).toContainText("Kroger is unavailable");
+  await expect(profilePage.krogerModal().getByTestId("kroger-location-result")).toHaveCount(0);
   await profilePage.cancelKrogerPicker();
+});
+
+test("a later Kroger search wins when an earlier response finishes last", async ({ profilePage }) => {
+  const first = { locations: [{ location_id: "first", name: "Old result", address: "1 First St", zip: "76109" }] };
+  const second = { locations: [{ location_id: "second", name: "New result", address: "2 Second St", zip: "76116" }] };
+  await profilePage.routeOverlappingKrogerLocations("76109", first, "76116", second);
+  await profilePage.openTab("prefs");
+  await profilePage.openKrogerPicker();
+  await profilePage.submitKrogerZipWithEnter("76109");
+  await profilePage.submitKrogerZipWithEnter("76116");
+  await expect(profilePage.krogerModal().getByText("New result")).toBeVisible();
+  await expect(profilePage.krogerModal().getByText("Old result")).toHaveCount(0);
+});
+
+test("Kroger connect follows the minted URL in the same window", async ({ profilePage, page }) => {
+  await profilePage.routeKrogerConnect("/profile?connected=1");
+  await profilePage.openTab("prefs");
+  await profilePage.connectKroger();
+  await expect(page).toHaveURL(/\/profile\?connected=1$/);
+});
+
+test("disconnect refreshes the Store card and grocery launcher without mutating the list", async ({
+  profilePage,
+  groceryPage,
+}) => {
+  await profilePage.routeDisconnectProjection();
+  await profilePage.goto();
+  await profilePage.openTab("prefs");
+  const before = await profilePage.grocerySnapshot();
+  await expect(profilePage.storePanel("kroger")).toContainText("Connected");
+
+  await profilePage.disconnectKroger();
+  await expect(profilePage.storePanel("kroger")).toContainText("Not connected");
+  await groceryPage.goto();
+  await groceryPage.landmark();
+  await expect(groceryPage.launcherEntry("kroger")).toContainText("Connect Kroger in Profile first");
+  await expect(groceryPage.launcherEntry("kroger").getByRole("button")).toBeDisabled();
+  expect(await profilePage.grocerySnapshot()).toEqual(before);
 });
 
 test("legacy/missing Offline preferences remain visible without silent replacement", async ({ profilePage }) => {

@@ -3,7 +3,7 @@
 // (merge-patch knobs — per-meal cadence steppers + the weekly-budget control), and meal vibes
 // (the meal-grouped palette with the pinned indicator + inline suggestions — row-attached
 // wands and per-meal-group footer cards, which replaced the standalone reconciliation queue).
-import { expect } from "@playwright/test";
+import { expect, type Route } from "@playwright/test";
 import { AppPage, type Locator } from "./base.page";
 import { SEED } from "../../../admin/visual/seed.mjs";
 
@@ -234,6 +234,11 @@ export class ProfilePage extends AppPage {
     await this.krogerModal().getByRole("button", { name: "Search" }).click();
   }
 
+  async submitKrogerZipWithEnter(zip: string): Promise<void> {
+    await this.krogerModal().getByLabel("ZIP code").fill(zip);
+    await this.krogerModal().getByLabel("ZIP code").press("Enter");
+  }
+
   async chooseKrogerLocation(locationId: string): Promise<void> {
     await this.awaitPreferencesSave(() =>
       this.krogerModal().locator(`[data-testid="kroger-location-result"][data-location-id="${locationId}"]`).click(),
@@ -255,6 +260,74 @@ export class ProfilePage extends AppPage {
 
   async clearKrogerLocationsRoute(): Promise<void> {
     await this.page.unroute("**/api/profile/kroger-locations?zip=*");
+  }
+
+  async routeOverlappingKrogerLocations(
+    firstZip: string,
+    first: { locations: readonly { location_id: string; name: string; address: string; zip: string }[] },
+    secondZip: string,
+    second: { locations: readonly { location_id: string; name: string; address: string; zip: string }[] },
+  ): Promise<void> {
+    let firstRoute: Route | null = null;
+    await this.page.route("**/api/profile/kroger-locations?zip=*", async (route) => {
+      const encodedZip = route.request().url().match(/[?&]zip=([^&]+)/)?.[1];
+      const zip = encodedZip === undefined ? null : decodeURIComponent(encodedZip);
+      if (zip === firstZip) {
+        firstRoute = route;
+        return;
+      }
+      if (zip === secondZip) {
+        await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(second) });
+        await firstRoute?.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(first) }).catch(() => {});
+        return;
+      }
+      await route.fallback();
+    });
+  }
+
+  async routeKrogerConnect(url: string): Promise<void> {
+    await this.page.route("**/api/profile/kroger-login-url", (route) =>
+      route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ url }) }),
+    );
+  }
+
+  async connectKroger(): Promise<void> {
+    await this.storePanel("kroger").getByRole("button", { name: /^(Connect|Reconnect)$/ }).click();
+  }
+
+  async routeDisconnectProjection(): Promise<void> {
+    let linked = true;
+    const kroger = SEED.app.storeAdapters.kroger;
+    await this.page.route("**/api/profile/store-adapters", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          adapters: {
+            kroger: { kind: "kroger", linked, preferred: { location_id: kroger.locationId, name: kroger.name, address: kroger.address, zip: kroger.zip } },
+            instacart: { kind: "instacart", state: "coming_soon" },
+            satellites: { kind: "satellites", state: "freshness_unavailable", stores: [] },
+            offline: { kind: "offline", stores: [], selected_slug: null, selection_unavailable: false },
+          },
+          launcher: [{
+            id: "kroger",
+            adapter: "kroger",
+            mode: "online_order",
+            store: { slug: kroger.locationId, name: kroger.name },
+            enabled: linked,
+            disabled_reason: linked ? null : "connect_kroger",
+          }],
+        }),
+      }),
+    );
+    await this.page.route("**/api/profile/kroger-connection", (route) => {
+      linked = false;
+      return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ linked: false }) });
+    });
+  }
+
+  async grocerySnapshot(): Promise<unknown> {
+    return this.page.evaluate(async () => (await fetch("/api/grocery")).json());
   }
 
   async setStores(stores: Record<string, unknown>): Promise<void> {

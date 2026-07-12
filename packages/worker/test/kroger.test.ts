@@ -72,11 +72,18 @@ describe("Kroger client", () => {
         : json({ data: [
             { locationId: "bad", name: "Bad ZIP", address: { addressLine1: "1 Main", zipCode: "76x04" } },
             { locationId: "missing", name: "Missing ZIP", address: { addressLine1: "2 Main" } },
+            { locationId: "suffix", name: "Bad suffix", address: { addressLine1: "3 Main", zipCode: "76104oops" } },
+            { locationId: "plus-four", name: "ZIP+4", address: { addressLine1: "4 Main", zipCode: "76109-1234" } },
           ] })) as unknown as typeof fetch;
     const k = createKrogerClient(env, { fetch: fetchMock, cache: freshCache(), now: () => 1000, sleep: async () => {} });
     const locations = await k.locationsNearZip("76104");
-    expect(locations.map((location) => location.zip)).toEqual(["76104", "76104"]);
-    expect(locations.map((location) => location.address)).toEqual(["1 Main, 76104", "2 Main, 76104"]);
+    expect(locations.map((location) => location.zip)).toEqual(["76104", "76104", "76104", "76109"]);
+    expect(locations.map((location) => location.address)).toEqual([
+      "1 Main, 76104",
+      "2 Main, 76104",
+      "3 Main, 76104",
+      "4 Main, 76109",
+    ]);
   });
 
   it("mints one client_credentials token and reuses it across calls", async () => {

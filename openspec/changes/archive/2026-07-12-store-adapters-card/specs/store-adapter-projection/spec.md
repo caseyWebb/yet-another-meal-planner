@@ -77,7 +77,7 @@ Both login-URL minting and disconnect SHALL be online-only direct operations out
 
 ### Requirement: Satellite adapters degrade closed until per-store freshness exists
 
-Until the D22 satellite-reported per-store session-freshness boolean ships, the projection SHALL represent a configured satellite store with `session_fresh: null`, adapter state `freshness_unavailable`, and a disabled `satellite_cart_fill` launcher entry whose reason is `satellite_freshness_unavailable`. It SHALL NOT infer retailer-session freshness from node push recency, sale scans, order-list history, ingest-key use, or any other Worker-visible liveness signal. The summary SHALL link to the Satellites surface and authoring guidance without exposing or accepting a helper URL/token.
+Until the D22 satellite-reported per-store session-freshness boolean ships, the projection SHALL represent a configured satellite store with `session_fresh: null`, adapter state `freshness_unavailable`, and a disabled `satellite_cart_fill` launcher entry whose reason is `satellite_freshness_unavailable`. It SHALL NOT infer retailer-session freshness from node push recency, sale scans, order-list history, ingest-key use, or any other Worker-visible liveness signal. Until a member Satellites route ships, the summary SHALL state that management is unavailable and link only to authoring guidance; it SHALL NOT expose a no-op member-surface link, helper URL, or session token.
 
 #### Scenario: A live node is not mistaken for a fresh retailer session
 

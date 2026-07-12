@@ -483,7 +483,7 @@ The Preferences tab's **Planning card** SHALL expose the household planning knob
 
 The retired `lunch_strategy` and `ready_to_eat_default_action` preferences (D8/D21; per-meal cadence and meal vibes subsume them) SHALL have no control.
 
-The Preferences tab's **Store card** SHALL render adapter tabs in the stable order Kroger / Instacart / Satellites / Offline. Kroger SHALL show projection-backed connection state and preferred name/address, Connect/Reconnect via the existing login-URL endpoint, online-only Disconnect, and a gear-triggered modal that submits a ZIP search, presents all bounded nearest-first results, and conditionally writes the selected exact location. Satellites SHALL show the projection's secret-free read-only summary and links to the Satellites tab and adapter-authoring guide. Offline SHALL list the existing grocery stores and allow standing selection, without implementing store CRUD or the aisle-map editor in this change. Instacart SHALL be a non-interactive coming-later placeholder.
+The Preferences tab's **Store card** SHALL render adapter tabs in the stable order Kroger / Instacart / Satellites / Offline. Kroger SHALL show projection-backed connection state and preferred name/address, Connect/Reconnect via the existing login-URL endpoint, online-only Disconnect, and a gear-triggered modal that submits a ZIP search, presents all bounded nearest-first results, and conditionally writes the selected exact location. Satellites SHALL show the projection's secret-free read-only unavailable summary and the adapter-authoring guide only until a real member Satellites route ships; it SHALL NOT render a no-op member-surface link. Offline SHALL list the existing grocery stores and allow standing selection, without implementing store CRUD or the aisle-map editor in this change. Instacart SHALL be a non-interactive coming-later placeholder.
 
 #### Scenario: The derived taste read is the retrospective
 
@@ -801,4 +801,3 @@ until band 5 wires it.
 - **WHEN** the palette holds a pinned vibe and an unpinned vibe in the same meal group
 - **THEN** the pinned row shows the pin indicator beside its name and de-emphasizes its
   cadence-debt meter, and the unpinned row shows no pin indicator
-

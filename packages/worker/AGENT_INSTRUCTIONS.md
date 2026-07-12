@@ -369,7 +369,7 @@ Read `read_to_buy({ enrich: true })` and `read_user_profile()` in parallel — `
 
 Surface `underived` up front in any branch — those planned recipes' items are NOT in the set. **Walk the substitute hints here too, at list review, before any branch-specific work:** a sibling flagged `in_pantry` means I may already have a stand-in and might not need to buy the line at all; an `on_sale_hint` sibling names a substitute that's on sale — cite its real price, not a bare claim. The tool proposes and *names* each relation — whether it actually fits the dish is **yours** to judge, grounded in its data; skip weak ones rather than reciting them. What I accept maps onto the existing writes right away: on an **explicit** row, `add_to_grocery_list` (note the swap) + `remove_from_grocery_list`; on a **plan-derived** row, materialize the sibling with `add_to_grocery_list` now, and — for a Kroger-online flush — stage an order-scoped `exclude` of the original to carry onto `place_order` at step 5 (the plan still lists it; nothing is suppressed until the flush runs). A branch with no cart flush (walk, in-store, satellite) has nothing to stage — just don't pick up the original at the shelf, same as any planned item I decide to skip this trip. What I decline, drop without comment.
 
-Always offer a ready-to-eat / heat-and-eat option before the branch-specific flush, including when the configured catalog is empty; never add one without my explicit yes. A catalog or sale result makes the offer specific, but its absence never turns the offer into an automatic write.
+**One ready-to-eat offer, here for every branch.** Ask whether I want a heat-and-eat / grab-and-go option and wait for explicit confirmation before adding anything. With a configured catalog, make the offer specific by suggesting a low/out favorite; for a Kroger trip, an on-sale discovery may also make it specific. With an empty catalog, make a generic offer instead. Only on my explicit yes, add the chosen item to the grocery list (or `stockup.toml` for a conditional bulk buy). Do not prompt again inside the selected branch.
 
 Then detect which branch to run:
 
@@ -387,11 +387,6 @@ Then detect which branch to run:
 This branch runs when my fulfillment mode is Kroger online. It may happen in the same sitting as a menu request or days later.
 
 1. **Stale-cart check first.** If the view's `in_cart` section is non-empty — items from a prior order never confirmed `ordered` — remind me to clear the Kroger cart manually before proceeding (silently flushing again double-adds). Wait for my acknowledgment.
-
-2. **Ready-to-eat adds — always offer, never auto-add.** Ask whether I want a heat-and-eat / grab-and-go option for this order and wait for explicit confirmation before adding anything. If I've set up a ready-to-eat catalog, make the offer specific:
-   - **Restock favorites.** Cross-reference `retrospective`'s `ready_to_eat_favorites` against pantry on-hand — for a favorite that's low/out, *suggest* a restock ("you're out of the frozen lasagna you keep reaching for — add it?").
-   - **On-sale discovery.** Scan `kroger_flyer` for on-sale heat-and-eat / grab-and-go items not already in my catalog, and draft 1–2 worthwhile ones via `add_draft_ready_to_eat` (`source: "kroger-flyer"`).
-   With an empty catalog, make a generic offer instead ("want a heat-and-eat option on this trip?"). Only on my explicit yes, add the chosen item to the grocery list (or to `stockup.toml` for a conditional bulk buy) so the resolve/preview below picks it up.
 
 3. **Resolve and preview.** Call `place_order(preview=true)` — the tool derives the **meal plan's own ingredient needs server-side** (the same set `read_to_buy` showed), so do **not** hand-expand planned recipes into `menu_needs`; pass `menu_needs` only for true supplements (an open-world side's ingredients not yet captured, a spontaneous "also grab…" — a duplicate of a derived/listed item is harmless, it merges). Surface, as one batch, anything that needs my decision before writing:
    - `checkpoint` items (`ambiguous` → pick from candidates; `unavailable` → enumerate a few sensible Kroger alternatives yourself from world knowledge and resolve each via `match_ingredient_to_kroger_sku` / `kroger_prices`, then let me pick). Don't add these unilaterally.
@@ -486,14 +481,6 @@ If I named one for this trip ("the West 7th Tom Thumb"), use it — that overrid
 #### 2. Filter to the store's domain
 
 Show only the `to_buy` lines for this trip's category — a `grocery` run excludes `home-improvement`-tagged items; a Lowe's run shows **only** those. (Item `domain` is set when it's captured; default `grocery` — plan-derived lines are food and therefore `grocery`-domain by construction.)
-
-#### 3. Ready-to-eat adds — always offer, never auto-add
-
-Before grouping, ask whether I want a heat-and-eat item for the trip and wait for explicit confirmation before adding anything. If I've set up a catalog, make the offer specific:
-- **Restock favorites** (any grocery trip). Cross-reference `retrospective`'s `ready_to_eat_favorites` against pantry on-hand — a favorite that's low/out is a *suggest* ("you're low on the frozen lasagna you keep grabbing — want it on the list?").
-- **On-sale discovery** (Kroger store only — it needs flyer data). For an Offline store there's no flyer — skip discovery.
-
-With an empty catalog, make a generic offer instead. Only on my explicit yes, add the chosen item to the grocery list so it falls into the grouping below.
 
 #### 4. Group it — department vs aisle (graceful degradation)
 

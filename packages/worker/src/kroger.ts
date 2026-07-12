@@ -261,7 +261,10 @@ export function createKrogerClient(env: Env, opts: KrogerClientOptions = {}): Kr
       const line = typeof address.addressLine1 === "string" ? address.addressLine1 : "";
       const city = typeof address.city === "string" ? address.city : "";
       const state = typeof address.state === "string" ? address.state : "";
-      const providerZip = typeof address.zipCode === "string" ? address.zipCode.trim().match(/^(\d{5})(?:\D|$)/)?.[1] : undefined;
+      const providerZip =
+        typeof address.zipCode === "string"
+          ? address.zipCode.trim().match(/^(\d{5})(?:-\d{4})?$/)?.[1]
+          : undefined;
       const zipCode = providerZip ?? zip;
       const locality = [city, state].filter(Boolean).join(", ");
       return [{ location_id: locationId, name, address: [line, locality, zipCode].filter(Boolean).join(", "), zip: zipCode }];
