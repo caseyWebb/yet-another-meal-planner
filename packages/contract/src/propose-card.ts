@@ -16,6 +16,12 @@
 // MCP tool result's `structuredContent` (a typed `Record<string, unknown>`) — an object-literal
 // type alias is assignable to an index-signature target; a named interface is not.
 
+/** The ProposeCardData contract version this build understands (D19). A monotonic int, starting
+ *  at 1; additive-only within a major. A widget hydrating a payload whose `contract_version`
+ *  exceeds this renders READ-ONLY rather than mis-parsing a newer shape. Versioned INDEPENDENTLY
+ *  of `RecipeCardData` (recipe-card.ts). Bump when a field is added/changed. */
+export const KNOWN_PROPOSE_CONTRACT_VERSION = 1;
+
 /** A compact swap candidate (one row of a slot's ranked pool). */
 export type ProposeCardAlt = {
   slug: string;
@@ -108,6 +114,9 @@ export type ProposeCardRequest = {
 };
 
 export type ProposeCardData = {
+  /** The payload's contract version (D19), stamped by the Worker. `undefined` reads as 1. A
+   *  widget on an older build renders READ-ONLY when this exceeds its `KNOWN_PROPOSE_CONTRACT_VERSION`. */
+  contract_version?: number;
   /** The proposed slots (one card per night). */
   plan: ProposeCardSlot[];
   variety: ProposeCardVariety;

@@ -10,10 +10,19 @@
 // `course`/`tags`, `requires_equipment`, `time_total`, plus the caller's `favorite` overlay
 // and the derived `description`. The card is READ-ONLY, so there is no servings/steps data.
 
+/** The RecipeCardData contract version this build understands (D19). A monotonic int, starting
+ *  at 1; additive-only within a major. A widget hydrating a payload whose `contract_version`
+ *  exceeds this renders READ-ONLY rather than mis-parsing a newer shape. Versioned INDEPENDENTLY
+ *  of `ProposeCardData` (propose-card.ts). Bump when a field is added/changed. */
+export const KNOWN_RECIPE_CONTRACT_VERSION = 1;
+
 // A `type` (not `interface`) so the Worker can pass a `RecipeCardData` directly as an MCP
 // tool result's `structuredContent` (typed `Record<string, unknown>`) — object-literal type
 // aliases are assignable to an index-signature target; a named interface is not.
 export type RecipeCardData = {
+  /** The payload's contract version (D19), stamped by the Worker. `undefined` reads as 1. A
+   *  widget on an older build renders READ-ONLY when this exceeds its `KNOWN_RECIPE_CONTRACT_VERSION`. */
+  contract_version?: number;
   /** The recipe's slug (its stable id in the corpus). */
   slug: string;
   /** Display title (falls back to the slug if the frontmatter has none). */

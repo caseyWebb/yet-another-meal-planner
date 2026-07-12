@@ -1,11 +1,12 @@
-// Propose-flow primitives (member-app-propose 5.1), transcribed from the design
-// bundle's app-propose-ui.js markup + app-propose.css: nights stepper, nudge bar
-// (adventurousness slider, protein-want chips, the 400 ms-debounced freeform input),
-// variety bar + commit, and the slot card with its head actions, facet chips +
-// popovers, swap menu, pick list, vibe panel, why / side / flag chips, and the
-// empty-slot state with clearable pins. Presentational:
-// the page owns the client propose session and every callback; nothing here holds
-// server state. Router-agnostic (slot titles render through `renderTitle`).
+// Propose-flow primitives (member-app-propose / shared-propose-orchestration), transcribed from
+// the design bundle's app-propose-ui.js markup + app-propose.css and cut to the D8/D20 shared
+// control set: per-meal steppers, variety bar + commit, and the slot card with its swap menu,
+// facet chips + popovers, pick list, per-slot vibe panel, sides EDITING, and why / flag chips,
+// plus the empty-slot state with clearable pins. The D8 cuts (adventurousness slider, protein
+// wants, freeform phrase, global re-roll, per-slot lock + exclude) are absent from this shared
+// surface — the same component on both hosts (D20). Presentational: the controller owns the
+// client propose session and every callback; nothing here holds server state. Router-agnostic
+// (slot titles render through `renderTitle`).
 import * as React from "react";
 import { Button } from "./button";
 import {
@@ -13,13 +14,10 @@ import {
   IconBack,
   IconCalendar,
   IconCheck,
-  IconDice,
-  IconLock,
   IconPencil,
   IconSearch,
   IconSparkle,
   IconSwap,
-  IconUnlock,
   IconX,
 } from "./icons";
 
@@ -66,7 +64,7 @@ export interface ProposeSlotView {
 }
 
 /** Which in-card panel is open (one at a time, page-owned). */
-export type SlotPanel = "swap" | "list" | "vibe" | "facet-protein" | "facet-cuisine" | "facet-time" | null;
+export type SlotPanel = "swap" | "list" | "vibe" | "sides" | "facet-protein" | "facet-cuisine" | "facet-time" | null;
 
 /** The mock's time tiers for the per-night cap popover. */
 export const TIME_TIERS: { value: number; label: string }[] = [
@@ -78,28 +76,33 @@ export const TIME_TIERS: { value: number; label: string }[] = [
 
 // ── controls row ────────────────────────────────────────────────────────────
 
-export function NightsStepper(props: { value: number; min: number; max: number; onChange: (n: number) => void }) {
+/** One meal's slot-count stepper. */
+export const MEAL_KEYS = ["breakfast", "lunch", "dinner"] as const;
+export type MealKey = (typeof MEAL_KEYS)[number];
+
+function MealStep(props: { meal: MealKey; value: number; min: number; max: number; onChange: (n: number) => void }) {
+  const label = props.meal.charAt(0).toUpperCase() + props.meal.slice(1);
   return (
-    <div className="nights-step">
-      <span className="nudge-label">Nights</span>
+    <div className="nights-step" data-meal={props.meal}>
+      <span className="nudge-label">{label}</span>
       <button
         type="button"
         className="step-btn"
-        aria-label="Fewer nights"
-        data-testid="nights-dec"
+        aria-label={`Fewer ${props.meal}`}
+        data-testid={`meals-${props.meal}-dec`}
         disabled={props.value <= props.min}
         onClick={() => props.onChange(Math.max(props.min, props.value - 1))}
       >
         −
       </button>
-      <span className="nights-n" data-testid="nights-n">
+      <span className="nights-n" data-testid={`meals-${props.meal}-n`}>
         {props.value}
       </span>
       <button
         type="button"
         className="step-btn"
-        aria-label="More nights"
-        data-testid="nights-inc"
+        aria-label={`More ${props.meal}`}
+        data-testid={`meals-${props.meal}-inc`}
         disabled={props.value >= props.max}
         onClick={() => props.onChange(Math.min(props.max, props.value + 1))}
       >
@@ -109,80 +112,28 @@ export function NightsStepper(props: { value: number; min: number; max: number; 
   );
 }
 
-/** The nudge bar: adventurousness ↔ the variety nudge, week-level protein wants, and
- *  the freeform phrase (debounced 400 ms — the mock's cadence — so typing doesn't
- *  re-query per keystroke). */
-export function NudgeBar(props: {
-  variety: number;
-  onVariety: (v: number) => void;
-  proteins: string[];
-  proteinWants: string[];
-  onToggleProtein: (p: string) => void;
-  freeform: string;
-  onFreeform: (text: string) => void;
+/** The per-meal steppers (D20 shared control set): one stepper per breakfast / lunch / dinner —
+ *  the request's `meals` map. Replaces the single "Nights" stepper. All three are SYMMETRIC and
+ *  open at 0 (0–6); the old 2-floor was an artifact of the single-"Nights" control. A 0/0/0 week
+ *  degrades to the empty state with commit disabled. */
+export function MealsStepper(props: {
+  meals: { breakfast: number; lunch: number; dinner: number };
+  max?: number;
+  onChange: (meal: MealKey, n: number) => void;
 }) {
-  const [draft, setDraft] = React.useState(props.freeform);
-  const timer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
-  // An external reset (Start over / commit) clears the input.
-  React.useEffect(() => setDraft(props.freeform), [props.freeform]);
-  const emit = (value: string) => {
-    setDraft(value);
-    if (timer.current) clearTimeout(timer.current);
-    timer.current = setTimeout(() => props.onFreeform(value), 400);
-  };
+  const max = props.max ?? 6;
   return (
-    <div className="nudges">
-      <div className="nudge">
-        <span className="nudge-label">How adventurous?</span>
-        <div className="nudge-slider">
-          <span className="muted small">stick to hits</span>
-          <input
-            type="range"
-            className="input"
-            min={0}
-            max={1}
-            step={0.1}
-            value={props.variety}
-            aria-label="How adventurous"
-            data-testid="nudge-variety"
-            onChange={(e) => props.onVariety(Number(e.target.value))}
-          />
-          <span className="muted small">mix it up</span>
-        </div>
-      </div>
-      <div className="nudge">
-        <span className="nudge-label">
-          Proteins you want this week <span className="muted">— optional</span>
-        </span>
-        <div className="chip-toggle">
-          {props.proteins.map((p) => (
-            <button
-              key={p}
-              type="button"
-              className={`chip-tog${props.proteinWants.includes(p) ? " on" : ""}`}
-              aria-pressed={props.proteinWants.includes(p)}
-              data-testid={`protein-want-${p}`}
-              onClick={() => props.onToggleProtein(p)}
-            >
-              {p}
-            </button>
-          ))}
-        </div>
-      </div>
-      <div className="nudge nudge-wide">
-        <span className="nudge-label">
-          In your own words <span className="muted">— optional</span>
-        </span>
-        <input
-          className="input"
-          type="text"
-          value={draft}
-          placeholder="e.g. more soup, lighter dinners, use up the salmon…"
-          aria-label="In your own words"
-          data-testid="nudge-freeform"
-          onChange={(e) => emit(e.target.value)}
+    <div className="meals-stepper" data-testid="meals-stepper">
+      {MEAL_KEYS.map((meal) => (
+        <MealStep
+          key={meal}
+          meal={meal}
+          value={props.meals[meal]}
+          min={0}
+          max={max}
+          onChange={(n) => props.onChange(meal, n)}
         />
-      </div>
+      ))}
     </div>
   );
 }
@@ -331,14 +282,14 @@ export function SlotCard(props: {
   cuisines: string[];
   palettePresets: string[];
   renderTitle: (slug: string, title: string) => React.ReactNode;
-  onLockToggle: () => void;
   onSwapTo: (slug: string) => void;
-  onExclude: () => void;
   onFacetPick: (kind: "protein" | "cuisine", value: string | null) => void;
   /** number = cap this night; null = explicit "Any time"; undefined (clear) = follow the vibe. */
   onTimePick: (value: number | null | undefined) => void;
   onVibeApply: (text: string) => void;
   onVibeReset: () => void;
+  /** Sides editing (D20): replace this slot's side titles WHOLESALE. Absent = sides read-only. */
+  onSidesChange?: (sides: string[]) => void;
 }) {
   const s = props.slot;
   const toggle = (panel: SlotPanel) => props.onPanel(props.panel === panel ? null : panel);
@@ -550,20 +501,8 @@ export function SlotCard(props: {
           ) : null}
         </div>
         <div className="slot-actions">
-          <button
-            type="button"
-            className={`slot-btn${s.locked ? " on" : ""}`}
-            data-testid="slot-lock"
-            title={s.locked ? "Unlock — let re-roll change it" : "Keep this one when I re-roll"}
-            onClick={props.onLockToggle}
-          >
-            {s.locked ? <IconLock /> : <IconUnlock />}
-          </button>
           <button type="button" className={`slot-btn${props.panel === "swap" ? " on" : ""}`} data-testid="slot-swap" title="Swap this pick" onClick={() => toggle("swap")}>
             <IconSwap />
-          </button>
-          <button type="button" className="slot-btn" data-testid="slot-exclude" title="Not this one — remove and refill" onClick={props.onExclude}>
-            <IconX />
           </button>
         </div>
       </div>
@@ -579,16 +518,39 @@ export function SlotCard(props: {
         ))}
       </div>
       <div className="slot-footer">
-        <div className="slot-sides">
+        <div className="slot-sides" data-testid="slot-sides">
           {s.sides.length ? (
             s.sides.map((x) => (
               <span className="side-chip" key={x}>
                 {x}
+                {props.onSidesChange ? (
+                  <span
+                    className="side-x"
+                    role="button"
+                    aria-label={`Remove side ${x}`}
+                    title="Remove side"
+                    data-testid="slot-side-remove"
+                    onClick={() => props.onSidesChange!(s.sides.filter((y) => y !== x))}
+                  >
+                    <IconX />
+                  </span>
+                ) : null}
               </span>
             ))
           ) : (
             <span className="muted small">no side</span>
           )}
+          {props.onSidesChange ? (
+            <button
+              type="button"
+              className="side-add"
+              data-testid="slot-side-add"
+              title="Add a side"
+              onClick={() => toggle("sides")}
+            >
+              + side
+            </button>
+          ) : null}
         </div>
         <div className="slot-flags">
           {s.flags.map((f) => (
@@ -602,7 +564,76 @@ export function SlotCard(props: {
       {swapMenu}
       {props.panel === "list" ? pickList("Pick a recipe for this vibe") : null}
       {vibePanel}
+      {props.panel === "sides" && props.onSidesChange ? (
+        <SidesEditor
+          sides={s.sides}
+          onChange={props.onSidesChange}
+          onClose={() => props.onPanel(null)}
+        />
+      ) : null}
     </article>
+  );
+}
+
+/** The sides-editing panel (D20): add a free-text side, or remove one from the chip row. A sides
+ *  edit refines the already-proposed week WITHOUT a re-query (decision 1) — the controller routes
+ *  it through the context-only channel. */
+function SidesEditor(props: { sides: string[]; onChange: (sides: string[]) => void; onClose: () => void }) {
+  const [text, setText] = React.useState("");
+  const add = () => {
+    const t = text.trim();
+    if (!t || props.sides.some((s) => s.toLowerCase() === t.toLowerCase())) return;
+    props.onChange([...props.sides, t]);
+    setText("");
+  };
+  return (
+    <div className="slot-sides-edit" data-testid="slot-sides-edit">
+      <div className="slot-alts-head">Edit this night’s sides</div>
+      <form
+        className="slot-vibe-form"
+        onSubmit={(e) => {
+          e.preventDefault();
+          add();
+        }}
+      >
+        <input
+          className="input slot-vibe-in"
+          value={text}
+          placeholder="Add a side…"
+          autoComplete="off"
+          spellCheck={false}
+          aria-label="Add a side"
+          data-testid="slot-side-input"
+          onChange={(e) => setText(e.target.value)}
+        />
+        <Button type="submit" size="sm" data-testid="slot-side-apply">
+          Add
+        </Button>
+      </form>
+      {props.sides.length ? (
+        <div className="slot-side-list">
+          {props.sides.map((x) => (
+            <span className="side-chip" key={x}>
+              {x}
+              <span
+                className="side-x"
+                role="button"
+                aria-label={`Remove side ${x}`}
+                title="Remove side"
+                onClick={() => props.onChange(props.sides.filter((y) => y !== x))}
+              >
+                <IconX />
+              </span>
+            </span>
+          ))}
+        </div>
+      ) : (
+        <p className="muted small">No sides yet — add one above.</p>
+      )}
+      <button type="button" className="slot-vibe-reset" data-testid="slot-sides-close" onClick={props.onClose}>
+        <IconBack /> Done
+      </button>
+    </div>
   );
 }
 
@@ -674,14 +705,5 @@ function VibePanel(props: {
         </button>
       ) : null}
     </div>
-  );
-}
-
-/** The re-roll control (seed + 1 — the page owns the seed). */
-export function RerollButton(props: { onClick: () => void; disabled?: boolean }) {
-  return (
-    <Button type="button" variant="outline" data-testid="propose-reroll" disabled={props.disabled} onClick={props.onClick}>
-      <IconDice /> Re-roll
-    </Button>
   );
 }

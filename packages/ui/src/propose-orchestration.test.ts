@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildProposeRequest,
   defaultProposeSession,
+  PROPOSE_SESSION_VERSION,
   proposePanelOf,
   proposeSessionFromRequest,
   proposeSlotToView,
@@ -9,8 +10,11 @@ import {
 } from "./propose-orchestration";
 
 const baseSession: ProposeSession = {
+  v: PROPOSE_SESSION_VERSION,
   seed: 20260711,
   nights: 4,
+  meals: { breakfast: 1, lunch: 0, dinner: 4 },
+  attendance: { away: ["kiddo"], only: [] },
   variety: 0.7,
   proteinWants: ["tofu", "chicken"],
   freeform: "  bright dinners  ",
@@ -21,12 +25,14 @@ const baseSession: ProposeSession = {
   slotCuisine: { vibe_a: "thai" },
   slotMaxTime: { vibe_b: null, vibe_c: 30 },
   slotVibe: { vibe_c: "weeknight fish" },
+  slotSides: { vibe_a: ["rice", "greens"] },
 };
 
 describe("propose orchestration", () => {
-  it("serializes sessions into canonical propose requests", () => {
+  it("serializes sessions into canonical propose requests (per-meal counts + round-trip attendance)", () => {
     expect(buildProposeRequest(baseSession)).toEqual({
-      nights: 4,
+      meals: { breakfast: 1, lunch: 0, dinner: 4 },
+      attendance: { away: ["kiddo"] },
       seed: 20260711,
       exclude: ["alfredo", "ziti"],
       nudges: { variety: 0.7, freeform: "bright dinners", proteins: ["chicken", "tofu"] },
@@ -38,11 +44,20 @@ describe("propose orchestration", () => {
     });
   });
 
-  it("hydrates widget request echoes back into session state", () => {
+  it("omits attendance when neither away nor only is set", () => {
+    const s = defaultProposeSession(3, 5);
+    const req = buildProposeRequest(s);
+    expect(req.attendance).toBeUndefined();
+    expect(req.meals).toEqual({ breakfast: 0, lunch: 0, dinner: 3 });
+  });
+
+  it("hydrates widget request echoes back into session state (meals + attendance)", () => {
     expect(
       proposeSessionFromRequest({
         seed: 9,
         nights: 3,
+        meals: { breakfast: 2, lunch: 1, dinner: 3 },
+        attendance: { away: ["grandma"] },
         variety: 0.2,
         proteins: ["beans"],
         freeform: "cheap",
@@ -54,6 +69,8 @@ describe("propose orchestration", () => {
     ).toMatchObject({
       seed: 9,
       nights: 3,
+      meals: { breakfast: 2, lunch: 1, dinner: 3 },
+      attendance: { away: ["grandma"], only: [] },
       variety: 0.2,
       proteinWants: ["beans"],
       freeform: "cheap",
@@ -110,6 +127,27 @@ describe("propose orchestration", () => {
         { type: "side", label: "No corpus side — add your own" },
       ],
     });
+  });
+
+  it("prefers an edited sides override over the proposed sides", () => {
+    const session = defaultProposeSession(3, 1);
+    session.slotSides.vibe_a = ["quinoa", "slaw"];
+    expect(
+      proposeSlotToView(
+        {
+          vibe_id: "vibe_a",
+          main: { slug: "m", title: "M", description: null, protein: null, cuisine: null, time_total: null },
+          sides: [{ title: "Rice" }],
+          flags: {},
+          why: [],
+          alternates: [],
+          alt_similar: null,
+          alt_different: null,
+        },
+        0,
+        session,
+      ).sides,
+    ).toEqual(["quinoa", "slaw"]);
   });
 
   it("keeps null-vibe widget labels and panel parsing host-compatible", () => {
