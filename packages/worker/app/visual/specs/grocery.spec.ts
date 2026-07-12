@@ -41,6 +41,22 @@ test("the launcher remains driven by the shared store-adapter projection", async
 	await groceryPage.captureForReview("grocery-store-launcher");
 });
 
+test("the order review is a labelled expanded disclosure", async ({ groceryPage }) => {
+	const launcher = groceryPage.page.getByTestId("order-open");
+	await expect(launcher).toHaveAttribute("aria-expanded", "false");
+	await expect(launcher).toHaveAttribute("aria-controls", "grocery-order-review");
+
+	await launcher.click();
+	await expect(launcher).toHaveAttribute("aria-expanded", "true");
+	const review = groceryPage.page.getByRole("region", { name: "Kroger order" });
+	await expect(review).toHaveAttribute("id", "grocery-order-review");
+	await expect(review).toBeVisible();
+
+	await review.getByRole("button", { name: "Close order review" }).click();
+	await expect(launcher).toHaveAttribute("aria-expanded", "false");
+	await expect(review).toHaveCount(0);
+});
+
 test("checking is durable and never changes cart status", async ({
 	groceryPage,
 }) => {

@@ -42,7 +42,7 @@ describe("readGrocerySnapshot", () => {
     const base = await readGrocerySnapshot(h.env, T, NOW);
     const text = grocerySnapshotText({
       ...base,
-      lines: [{ key: "beans", name: "Beans", quantity: "2 cans", kind: "grocery", domain: "grocery", origin: "both", checked_at: null, row_version: 1, updated_at: NOW.toISOString(), note: "low sodium", staple: true, for_recipes: ["chili"], recipe_attribution: [{ slug: "chili", planned_for: "2026-07-14", plan_id: "p1" }], placement: { section: "Canned goods", aisle_number: "5" }, substitutes: [{ id: "lentils", label: "Lentils", relation: { role: "sibling", via: "legumes" }, in_pantry: true, on_sale_hint: { price: { promo: 1.79 } } }] }],
+      lines: [{ key: "beans", name: "Beans", quantity: "2 cans", kind: "grocery", domain: "grocery", origin: "both", checked_at: null, row_version: 1, updated_at: NOW.toISOString(), note: "low sodium", staple: true, for_recipes: ["chili"], recipe_attribution: [{ slug: "chili", planned_for: "2026-07-14", plan_id: "p1" }], placement: { section: "Canned goods", aisle_number: "5" }, substitutes: [{ id: "lentils", label: "Lentils", relation: { role: "sibling", via: "legumes", via_label: "Legumes & pulses" }, in_pantry: true, on_sale_hint: { price: { promo: 1.79 } } }] }],
       pantry_covered: [{ key: "onion", name: "Onion", for_recipes: ["soup"], freshness: "worth_a_look", on_hand: {}, buy_anyway: false }],
       substitution_decisions: [{ original_key: "milk", replacement_key: "oat milk", attribution_signature: "sig", created_replacement: true, replacement_version: 1, row_version: 1, created_at: NOW.toISOString(), updated_at: NOW.toISOString() }],
       coverage_decisions: [{ line_key: "onion", created_row: true, created_row_version: 1, row_version: 1, created_at: NOW.toISOString(), updated_at: NOW.toISOString() }],
@@ -51,7 +51,7 @@ describe("readGrocerySnapshot", () => {
       counts: { ...base.counts, in_carts: 1 },
     });
     expect(text).toContain("Pantry covers: Onion (worth a look)");
-    expect(text).toContain("○ Beans (2 cans) [Staple] — low sodium [for: chili] [Canned goods, aisle 5] [try: Lentils (sibling via legumes) (pantry) ($1.79 promo)]");
+    expect(text).toContain("○ Beans (2 cans) [Staple] — low sodium [for: chili] [Canned goods, aisle 5] [try: Lentils (same family · via Legumes & pulses) (pantry) ($1.79 promo)]");
     expect(text).toContain("Decision: use oat milk instead of milk");
     expect(text).toContain("Decision: buy onion despite pantry coverage");
     expect(text).toContain("Underived recipes: stew");

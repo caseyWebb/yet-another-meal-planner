@@ -25,7 +25,7 @@ The system SHALL define independently versioned `GroceryListData` in `@yamp/cont
 
 ### Requirement: The MCP Grocery widget follows D18 and D19
 
-The MCP adapter SHALL render the spawning payload for first paint, check the grocery contract floor/ceiling, probe host capabilities, and re-hydrate via the app-callable snapshot read before enabling writes. Every persistent action SHALL call its deterministic Worker tool under the grant, replace local state with the returned authoritative snapshot, and immediately publish the FULL `GroceryModelContext` via `ui/update-model-context`, never an event delta and never debounced. Check/add/remove/pantry/swap/relist SHALL not request a model turn; successful Mark order placed SHALL additionally send one `ui/message`. A failed or resolved-`isError` tool call SHALL send neither success context nor a completion message.
+The MCP adapter SHALL render the spawning payload for first paint, check the grocery contract floor/ceiling, probe host capabilities, and re-hydrate via the app-callable snapshot read before enabling writes. Every persistent action SHALL call its deterministic Worker tool under the grant, replace local state with the returned authoritative snapshot, and immediately publish the FULL `GroceryModelContext` via `ui/update-model-context`, never an event delta and never debounced. The context outcome SHALL preserve the operation's returned outcome and classify the action accurately, rather than synthesizing success from the requested intent. Check/add/remove/pantry/swap/relist SHALL not request a model turn; successful Mark order placed SHALL additionally send one `ui/message` carrying that same actual outcome. A failed or resolved-`isError` tool call SHALL send neither success context nor a completion message.
 
 #### Scenario: Boot re-hydrate gates mutations
 - **WHEN** a cached widget opens from old structured content
@@ -37,7 +37,15 @@ The MCP adapter SHALL render the spawning payload for first paint, check the gro
 
 #### Scenario: Mark placed writes, mirrors, and announces
 - **WHEN** Mark order placed succeeds for a send group
-- **THEN** the widget performs the batch tool call, publishes the returned full snapshot, and then sends one completion message naming the placed send outcome
+- **THEN** the widget performs the batch tool call, publishes the returned full snapshot and exact operation outcome, and then sends one completion message carrying that same placed-send outcome
+
+#### Scenario: Replay reports the operation's completed outcome
+- **WHEN** a completed whole-send assertion is replayed and the operation reports the prior completion without advancing rows
+- **THEN** both model context and the completion message report that returned outcome rather than claiming a new placement
+
+#### Scenario: Non-placement actions publish their exact outcomes
+- **WHEN** add, remove, pantry, substitution, check, or relist succeeds with an operation-specific outcome
+- **THEN** the full model context classifies that action correctly and carries the returned outcome without sending a completion message
 
 #### Scenario: Failure is never announced as success
 - **WHEN** a bridge tool resolves with `isError` or a structured conflict

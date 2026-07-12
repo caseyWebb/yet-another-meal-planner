@@ -26,7 +26,7 @@ Once a send is stamped placed, replay of the same send assertion SHALL return th
 
 ### Requirement: Back to list is linkage-guarded and writes no spend
 
-The shared `relist_grocery_send_line` operation SHALL accept nullable `send_id`, canonical `line_key`, and `expected_row_version`, and SHALL conditionally perform only `in_cart → active`. A non-null send SHALL match the row's current linkage and a current unplaced tenant-owned send. A null send SHALL match only a row proven not to belong to any current unplaced tenant send, including a row whose `sent_in` is null, dangling, linked to an already placed send, or otherwise unmatched to an open send. It SHALL clear `sent_in`, retain the row's quantity, write no spend, and leave any historical send snapshot immutable. A stale row version or linkage to a current unplaced send SHALL return conflict without a write. Ordered-row relist/void behavior remains governed by the existing lifecycle and is not exposed as Back to list in an in-cart group.
+The shared `relist_grocery_send_line` operation SHALL accept nullable `send_id`, canonical `line_key`, and `expected_row_version`, and SHALL conditionally perform only `in_cart → active`. A non-null send SHALL match the row's current linkage and the line's current `order_send_lines` membership in an unplaced tenant-owned send. A null send SHALL match only a row that the Grocery snapshot projects into its synthetic unlinked group because no current unplaced send has matching `order_send_lines` membership for that row, including a null or dangling linkage, an already-placed send, or an open send missing that line. It SHALL clear `sent_in`, retain the row's quantity, write no spend, and leave any historical send snapshot immutable. A stale row version or mismatched current open-send line membership SHALL return conflict without a write. Ordered-row relist/void behavior remains governed by the existing lifecycle and is not exposed as Back to list in an in-cart group.
 
 #### Scenario: One line returns to active
 - **WHEN** Back to list succeeds for one unplaced send line
@@ -36,10 +36,10 @@ The shared `relist_grocery_send_line` operation SHALL accept nullable `send_id`,
 - **WHEN** the row changed after the caller rendered it
 - **THEN** relist returns conflict and leaves the newer state intact
 
-#### Scenario: A cart row outside every open send returns to the list
-- **WHEN** Back to list supplies a null send id for an `in_cart` row whose linkage is absent, dangling, already placed, or otherwise does not resolve to a current unplaced tenant send
+#### Scenario: A cart row outside every open-send line membership returns to the list
+- **WHEN** Back to list supplies a null send id for an `in_cart` row whose linkage is absent, dangling, already placed, or points to an open send that has no matching `order_send_lines` member
 - **THEN** only that row becomes active, its quantity is retained, and no spend event is written
 
-#### Scenario: Null cannot escape a current open send
-- **WHEN** Back to list supplies a null send id for a row linked to a current unplaced tenant send
+#### Scenario: Null cannot escape a current open-send line membership
+- **WHEN** Back to list supplies a null send id for a row with matching `order_send_lines` membership in its current unplaced tenant send
 - **THEN** relist conflicts without moving the row or writing spend

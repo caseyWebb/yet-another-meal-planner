@@ -86,17 +86,30 @@ export function OrderPanel({ inCartCount, onClose }: { inCartCount: number; onCl
 
   const commitArmed = inCartCount === 0 || cartAcknowledged;
   return (
-    <section className="order-panel" role="dialog" aria-label="Order review" data-testid="order-panel">
+    <section
+      id="grocery-order-review"
+      className="order-panel"
+      role="region"
+      aria-labelledby="grocery-order-review-heading"
+      data-testid="order-panel"
+    >
       <header className="order-head">
         <div>
-          <h2>
+          <h2 id="grocery-order-review-heading">
             <IconCart /> Kroger order
           </h2>
           <p>
             Review what an order would buy right now, sort out the flagged items, then send it to your cart.
           </p>
         </div>
-        <button className="icon-btn" data-testid="order-close" title="Close" onClick={onClose}>
+        <button
+          type="button"
+          className="icon-btn"
+          data-testid="order-close"
+          aria-label="Close order review"
+          title="Close order review"
+          onClick={onClose}
+        >
           <IconX />
         </button>
       </header>

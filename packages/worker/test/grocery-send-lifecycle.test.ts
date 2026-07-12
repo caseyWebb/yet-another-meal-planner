@@ -54,6 +54,39 @@ describe("send-scoped grocery lifecycle", () => {
     await expect(markGrocerySendPlaced(h.env, T, { send_id: "empty", expected_line_keys: [], snapshot_version: fresh.snapshot_version })).rejects.toMatchObject({ code: "validation_failed" });
   });
 
+  it("returns the authoritative post-race snapshot for a membership conflict", async () => {
+    const h = sqliteEnv([T]); await sent(h);
+    const before = await readGrocerySnapshot(h.env, T);
+    const originalPrepare = h.env.DB.prepare.bind(h.env.DB); let raced = false;
+    h.env.DB.prepare = ((sql: string) => {
+      const statement = originalPrepare(sql);
+      if (!raced && sql.includes("SELECT normalized_name FROM grocery_list WHERE tenant=?1 AND status='in_cart' AND sent_in=?2")) {
+        const originalAll = statement.all.bind(statement);
+        statement.all = (async <R>() => {
+          const rows = await originalAll<R>();
+          raced = true;
+          h.raw.prepare("UPDATE grocery_list SET sent_in=NULL WHERE tenant=? AND normalized_name='milk'").run(T);
+          return rows;
+        }) as typeof statement.all;
+      }
+      return statement;
+    }) as typeof h.env.DB.prepare;
+    await expect(markGrocerySendPlaced(h.env, T, {
+      send_id: "s1",
+      expected_line_keys: ["milk"],
+      snapshot_version: before.snapshot_version,
+    })).rejects.toMatchObject({
+      code: "conflict",
+      context: {
+        snapshot: {
+          in_cart_groups: expect.arrayContaining([
+            expect.objectContaining({ send_id: null, lines: [expect.objectContaining({ key: "milk" })] }),
+          ]),
+        },
+      },
+    });
+  });
+
   it("serializes a concurrent relist against the exact placement claim", async () => {
     const h = sqliteEnv([T]); await sent(h, ["milk"]);
     const before = await readGrocerySnapshot(h.env, T); const line = before.in_cart_groups[0].lines[0];
@@ -96,14 +129,15 @@ describe("send-scoped grocery lifecycle", () => {
     expect(result.snapshot.to_buy).toContain("manual"); expect(h.rows("spend_events")).toHaveLength(0);
   });
 
-  it.each(["dangling", "placed"] as const)("re-lists a %s non-open send link from the unlinked group", async (kind) => {
+  it.each(["dangling", "placed", "open_missing_line"] as const)("re-lists a %s non-open send membership from the unlinked group", async (kind) => {
     const h = sqliteEnv([T]);
     await addGroceryRow(h.env, T, { name: "manual" }, "2026-07-12");
     await updateGroceryRow(h.env, T, "manual", { status: "in_cart" });
-    if (kind === "placed") {
-      h.raw.prepare("INSERT INTO order_sends (id,tenant,store,fulfillment,created_at,placed_at) VALUES ('closed',?,'kroger','kroger_online','2026-07-11','2026-07-12')").run(T);
+    if (kind !== "dangling") {
+      h.raw.prepare("INSERT INTO order_sends (id,tenant,store,fulfillment,created_at,placed_at) VALUES (?,?, 'kroger','kroger_online','2026-07-11',?)").run(kind === "placed" ? "closed" : "open", T, kind === "placed" ? "2026-07-12" : null);
     }
-    h.raw.prepare("UPDATE grocery_list SET sent_in=? WHERE tenant=? AND normalized_name='manual'").run(kind === "placed" ? "closed" : "missing", T);
+    const sentIn = kind === "placed" ? "closed" : kind === "open_missing_line" ? "open" : "missing";
+    h.raw.prepare("UPDATE grocery_list SET sent_in=? WHERE tenant=? AND normalized_name='manual'").run(sentIn, T);
     const before = await readGrocerySnapshot(h.env, T);
     const group = before.in_cart_groups.find((candidate) => candidate.send_id === null)!;
     expect(group.lines.map((line) => line.key)).toContain("manual");

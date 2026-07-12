@@ -200,15 +200,24 @@ export function grocerySnapshotText(data: GroceryListData): string {
         id?: unknown;
         label?: unknown;
         in_pantry?: unknown;
-        relation?: { role?: unknown; via?: unknown };
+        relation?: { role?: unknown; via?: unknown; via_label?: unknown };
         on_sale_hint?: { price?: { promo?: unknown } };
       };
       const label = typeof row.label === "string" ? row.label : typeof row.id === "string" ? row.id : null;
       const role = typeof row.relation?.role === "string" ? row.relation.role : null;
-      const via = typeof row.relation?.via === "string" ? row.relation.via : null;
+      const via = typeof row.relation?.via_label === "string"
+        ? row.relation.via_label
+        : typeof row.relation?.via === "string"
+          ? row.relation.via
+          : null;
+      const relationship = role === "sibling"
+        ? `same family${via ? ` · via ${via}` : ""}`
+        : role === "satisfies"
+          ? "can stand in"
+          : null;
       const promo = typeof row.on_sale_hint?.price?.promo === "number" ? row.on_sale_hint.price.promo : null;
       return label
-        ? [`${label}${role ? ` (${role}${via ? ` via ${via}` : ""})` : ""}${row.in_pantry ? " (pantry)" : ""}${promo == null ? "" : ` ($${promo.toFixed(2)} promo)`}`]
+        ? [`${label}${relationship ? ` (${relationship})` : ""}${row.in_pantry ? " (pantry)" : ""}${promo == null ? "" : ` ($${promo.toFixed(2)} promo)`}`]
         : [];
     });
     return `${line.checked_at ? "✓" : "○"} ${line.display_name ?? line.name} (${line.quantity}${line.assumed_quantity ? " assumed" : ""})${line.staple ? " [Staple]" : ""}${line.note ? ` — ${line.note}` : ""}${recipes.length ? ` [for: ${recipes.join(", ")}]` : ""}${placement ? ` [${placement}]` : ""}${substitutes.length ? ` [try: ${substitutes.join(", ")}]` : ""}`;

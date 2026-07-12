@@ -153,9 +153,10 @@ export function registerGroceryWidget(
 			_meta: { ui: { visibility: ["app"] } },
 		},
 		async ({ name }) =>
-			resultOf(env, tenant, () =>
-				addGroceryRow(env, tenant, { name }, isoDay(Date.now())),
-			),
+			resultOf(env, tenant, async () => {
+				const added = await addGroceryRow(env, tenant, { name }, isoDay(Date.now()));
+				return { ...added, outcome: `${added.merged ? "merged" : "added"} ${added.item.name}` };
+			}),
 	);
 	registerAppTool(
 		server,
@@ -171,7 +172,9 @@ export function registerGroceryWidget(
 				const row = (await readGroceryList(env, tenant)).find(
 					(item) => item.normalized_name === key,
 				);
-				if (row) await removeGroceryRow(env, tenant, row.name);
+				if (!row) return { outcome: `already absent: ${key}` };
+				await removeGroceryRow(env, tenant, row.name);
+				return { outcome: `removed ${row.name}` };
 			}),
 	);
 	registerAppTool(

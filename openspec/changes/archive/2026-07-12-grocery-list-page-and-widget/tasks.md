@@ -21,7 +21,7 @@
 
 ## 4. Exact in-cart send lifecycle
 
-- [x] 4.1 Implement nullable-linkage Back to list with row-version/linkage guards for current open sends and rows proven outside every open send (absent, dangling, placed, or unmatched linkage), quantity retention, immutable snapshot retention, no-spend guarantees, and idempotent offline replay tests.
+- [x] 4.1 Implement nullable-linkage Back to list with row-version/linkage guards for exact current open-send `order_send_lines` membership and rows projected outside it (absent, dangling, placed, or open-send-without-line linkage), quantity retention, immutable snapshot retention, no-spend guarantees, and idempotent offline replay tests.
 - [x] 4.2 Implement atomic `mark_grocery_send_placed` membership validation, exact batch `in_cart → ordered`, `placed_at`, and D16 writer invocation; cover mismatch all-or-nothing, cross-tenant/send rejection, failed claim, zero-line rejection, completed replay outcomes, and no re-pricing.
 - [x] 4.3 Add member API and app-callable MCP adapters for relist and mark-placed, keep mark-placed out of the offline mutation allowlist, and retain documented compatibility for per-row `update_grocery_list` assertions.
 

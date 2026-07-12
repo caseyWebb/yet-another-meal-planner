@@ -111,6 +111,18 @@ describe("grocery widget MCP wiring", () => {
 		});
 	});
 
+	it("reports actual add/merge and remove/absent outcomes through registered Worker tools", async () => {
+		const e = env();
+		await withServer(server(e), async (client) => {
+			const call = async (name: string, arguments_: Record<string, unknown>) =>
+				(await client.callTool({ name, arguments: arguments_ })).structuredContent as { outcome?: string };
+			expect(await call("grocery_add", { name: "milk" })).toMatchObject({ outcome: "added milk" });
+			expect(await call("grocery_add", { name: "milk" })).toMatchObject({ outcome: "merged milk" });
+			expect(await call("grocery_remove", { key: "milk" })).toMatchObject({ outcome: "removed milk" });
+			expect(await call("grocery_remove", { key: "milk" })).toMatchObject({ outcome: "already absent: milk" });
+		});
+	});
+
 	it("rejects a marker-less SPA fallback", async () => {
 		await withServer(
 			server(env("<!DOCTYPE html><title>member app</title>")),

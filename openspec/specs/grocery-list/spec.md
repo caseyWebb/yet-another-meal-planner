@@ -235,7 +235,7 @@ The system SHALL persist an accepted cross-ingredient substitution keyed by tena
 
 ### Requirement: Pantry buy-anyway overrides coverage explicitly
 
-The pantry freshness classifier SHALL use one shared category threshold table consumed internally by `read_to_buy` and the Grocery snapshot. The public `read_pantry(stale_only)` contract remains structured `unsupported`, because its broader freshness claim requires conversational storage/open-package/inspection context. A Grocery covered line SHALL carry `covered` or `worth_a_look`. Still good SHALL use the shared pantry-verify write. Buy anyway SHALL atomically materialize the canonical line as `source:"pantry_low"` and persist a coverage override so pantry subtraction does not immediately hide it. Creation ownership SHALL be stamped atomically, and Undo SHALL compare-and-swap the observed decision before removing only an untouched row owned by that decision.
+The pantry freshness classifier SHALL use one shared category threshold table consumed internally by `read_to_buy` and the Grocery snapshot. The public `read_pantry(stale_only)` contract remains structured `unsupported`, because its broader freshness claim requires conversational storage/open-package/inspection context. A Grocery covered line SHALL carry `covered` or `worth_a_look`. Still good SHALL use the shared pantry-verify write. Buy anyway SHALL atomically materialize or reactivate the canonical line as `source:"pantry_low"` and persist a coverage override so pantry subtraction does not immediately hide it. Creation ownership SHALL be stamped atomically rather than inferred before the write. Undo SHALL compare-and-swap the observed decision before clearing the override and SHALL remove only an untouched row owned by that decision; an independently created or subsequently edited row SHALL survive.
 
 #### Scenario: Still good refreshes all consumers
 - **WHEN** a worth-a-look pantry line is marked Still good
@@ -244,3 +244,11 @@ The pantry freshness classifier SHALL use one shared category threshold table co
 #### Scenario: Buy anyway appears in to-buy
 - **WHEN** a covered ingredient is promoted with Buy anyway
 - **THEN** it appears in `to_buy` as a pantry-low explicit row despite the pantry entry
+
+#### Scenario: Pantry Undo preserves a row the decision does not own
+- **WHEN** an ordinary add wins the row insert while Buy anyway is in flight, or the materialized row is independently edited before Undo
+- **THEN** Undo clears only the claimed coverage decision and preserves the grocery row
+
+#### Scenario: Newer pantry decision survives stale Undo
+- **WHEN** the coverage decision changes after Undo reads it but before Undo claims it
+- **THEN** Undo conflicts with a fresh snapshot and deletes neither the newer decision nor its row

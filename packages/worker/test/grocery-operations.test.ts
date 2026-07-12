@@ -66,6 +66,31 @@ describe("grocery checked operation", () => {
     expect(raced).toBe(true);
     expect(result.snapshot.lines.find((line) => line.key === "milk")).toMatchObject({ checked_at: "2026-07-12T12:00:00Z", row_version: 2 });
   });
+
+  it("returns the authoritative post-race snapshot for a checked row-version conflict", async () => {
+    const h = sqliteEnv([T]);
+    await addGroceryRow(h.env, T, { name: "milk" }, "2026-07-12");
+    h.raw.prepare("UPDATE grocery_list SET note='first newer note',row_version=2 WHERE tenant=? AND normalized_name='milk'").run(T);
+    const originalPrepare = h.env.DB.prepare.bind(h.env.DB); let listReads = 0;
+    h.env.DB.prepare = ((sql: string) => {
+      const statement = originalPrepare(sql);
+      if (sql.includes("FROM grocery_list WHERE tenant = ?1")) {
+        const originalAll = statement.all.bind(statement);
+        statement.all = (async <R>() => {
+          listReads += 1;
+          if (listReads === 2) {
+            h.raw.prepare("UPDATE grocery_list SET note='newest note',row_version=3 WHERE tenant=? AND normalized_name='milk'").run(T);
+          }
+          return originalAll<R>();
+        }) as typeof statement.all;
+      }
+      return statement;
+    }) as typeof h.env.DB.prepare;
+    await expect(setGroceryChecked(h.env, T, { key: "milk", checked: true, expected_row_version: 1, snapshot_version: "sha256:" + "0".repeat(64) })).rejects.toMatchObject({
+      code: "conflict",
+      context: { snapshot: { lines: [expect.objectContaining({ key: "milk", note: "newest note", row_version: 3 })] } },
+    });
+  });
 });
 
 describe("grocery decisions", () => {

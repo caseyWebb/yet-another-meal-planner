@@ -44,7 +44,7 @@ export async function setGroceryChecked(
   const already = existing ? (existing.checked_at != null) === input.checked : !input.checked;
   if (already) return { status: "ok", snapshot: await readGrocerySnapshot(env, tenant) };
   if (existing && (existing.row_version ?? 1) !== input.expected_row_version) {
-    conflict("This grocery line changed on another device.", current);
+    conflict("This grocery line changed on another device.", await readGrocerySnapshot(env, tenant));
   }
   if (!existing && !input.checked) return { status: "ok", snapshot: current };
   if (!existing && (!rendered || rendered.origin !== "plan")) {
@@ -264,8 +264,9 @@ export async function relistGrocerySendLine(
   const openLink = row.sent_in == null
     ? null
     : await db(env).first<{ id: string }>(
-      "SELECT id FROM order_sends WHERE tenant=?1 AND id=?2 AND placed_at IS NULL",
-      tenant, row.sent_in,
+      "SELECT s.id FROM order_sends s JOIN order_send_lines l ON l.send_id=s.id AND l.line_key=?3 " +
+        "WHERE s.tenant=?1 AND s.id=?2 AND s.placed_at IS NULL",
+      tenant, row.sent_in, input.line_key,
     );
   const linkageMatches = input.send_id === null
     ? openLink == null
@@ -278,7 +279,8 @@ export async function relistGrocerySendLine(
     ? await db(env).run(
       "UPDATE grocery_list SET status='active', sent_in=NULL, row_version=row_version+1, updated_at=?1 " +
         "WHERE tenant=?2 AND normalized_name=?3 AND status='in_cart' AND row_version=?4 " +
-        "AND (sent_in IS NULL OR NOT EXISTS (SELECT 1 FROM order_sends WHERE tenant=?2 AND id=grocery_list.sent_in AND placed_at IS NULL))",
+        "AND (sent_in IS NULL OR NOT EXISTS (SELECT 1 FROM order_sends s JOIN order_send_lines l ON l.send_id=s.id " +
+        "WHERE s.tenant=?2 AND s.id=grocery_list.sent_in AND s.placed_at IS NULL AND l.line_key=grocery_list.normalized_name))",
       now, tenant, input.line_key, input.expected_row_version,
     )
     : await db(env).run(
@@ -310,7 +312,7 @@ export async function markGrocerySendPlaced(
   const actual = members.map((row) => row.normalized_name);
   const expected = [...new Set(input.expected_line_keys)].sort();
   if (actual.length === 0) throw new ToolError("validation_failed", "A send with zero current lines cannot be placed.");
-  if (JSON.stringify(actual) !== JSON.stringify(expected)) conflict("The send's line membership changed.", current);
+  if (JSON.stringify(actual) !== JSON.stringify(expected)) conflict("The send's line membership changed.", await readGrocerySnapshot(env, tenant));
   const occurred = input.occurred_at ?? new Date().toISOString();
   const occurredDay = occurred.slice(0, 10);
   const token = crypto.randomUUID();

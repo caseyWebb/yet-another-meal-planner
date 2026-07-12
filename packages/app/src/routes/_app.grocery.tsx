@@ -154,6 +154,7 @@ function GroceryPage() {
       <StoreLauncher
         entries={adapters.data?.launcher ?? []}
         online={online}
+        orderOpen={orderOpen}
         onOrder={() => setOrderOpen(true)}
       />
       {orderOpen ? (
@@ -171,10 +172,12 @@ function GroceryPage() {
 function StoreLauncher({
   entries,
   online,
+  orderOpen,
   onOrder,
 }: {
   entries: StoreAdapterProjection["launcher"];
   online: boolean;
+  orderOpen: boolean;
   onOrder(): void;
 }) {
   const reason = (entry: StoreAdapterProjection["launcher"][number]) => {
@@ -209,6 +212,8 @@ function StoreLauncher({
                   size="sm"
                   variant={actionable ? "default" : "outline"}
                   data-testid={entry.mode === "online_order" ? "order-open" : undefined}
+                  aria-expanded={entry.mode === "online_order" ? orderOpen : undefined}
+                  aria-controls={entry.mode === "online_order" ? "grocery-order-review" : undefined}
                   disabled={!actionable}
                   title={!online ? "Reconnect for store actions" : entry.enabled ? undefined : reason(entry)}
                   onClick={actionable ? onOrder : undefined}
