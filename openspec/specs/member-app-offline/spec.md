@@ -91,52 +91,29 @@ request is still authorized by the server-side session, never by the stamp.
 
 ### Requirement: Class (b) writes queue offline and replay on reconnect
 
-The app SHALL issue every class (b) write as a registered mutation — a `mutationKey` with
-client-registered defaults and plain-JSON variables — so that a write made while offline
-pauses instead of failing, persists across a reload, and replays when connectivity returns
-(automatically on reconnect, and via resume-after-restore on the next launch). The class (b)
-set is the two-writer table's idempotent, canonical-id-keyed upserts and deletes: grocery
-add/set/remove, pantry ops and verify (including the `location` and `category` fields riding
-the pantry upsert), **pantry dispose** (keyed on its client-minted waste `event_id`; the app
-mints a ULID and stamps `occurred_at` at tap time, so a replayed waste disposition converges to
-exactly one waste event recorded on the day it happened, and a replayed `used` disposition
-converges as an idempotent delete), favorite set, plan ops (keyed by the client-minted
-plan-row id), log add and delete, note add/edit/remove, vibe create/delete, proposal confirm.
-Both the disposition write and the multi-item add batch ride the already-registered
-`["pantry","ops"]` key — no new mutation key is introduced. Replays SHALL be serial and SHALL
-reuse the registered defaults (optimistic update, error surfacing, settle-time invalidation). A
-replay the server rejects SHALL surface to the member (structured-error toast) and reconcile the
-cache by refetch — never retry forever, never silently drop. Offline, class (b) surfaces SHALL
-remain fully interactive with optimistic state where the page renders the written row.
+The app SHALL issue every class (b) write as a registered mutation — a `mutationKey` with client-registered defaults and plain-JSON variables — so that a write made while offline pauses instead of failing, persists across a reload, and replays when connectivity returns (automatically on reconnect, and via resume-after-restore on the next launch). The class (b) set is the two-writer table's idempotent, canonical-id-keyed upserts and deletes: grocery add/set/remove and **check/uncheck** (a narrow canonical-key operation that atomically materializes a virtual plan line before checking it and never changes `status`), grocery Buy-anyway and substitution decision upserts/deletes, send-scoped line relist, pantry ops and verify (including the `location` and `category` fields riding the pantry upsert), **pantry dispose** (keyed on its client-minted waste `event_id`; the app mints a ULID and stamps `occurred_at` at tap time, so replay converges), favorite set, plan ops (keyed by the client-minted plan-row id), log add/delete, note add/edit/remove, vibe create/delete, and proposal confirm. Both pantry disposition and multi-item add use the existing pantry-ops key.
 
-#### Scenario: Offline check-offs replay on reconnect
+Replays SHALL be serial and reuse registered defaults (optimistic update, error surfacing, settle-time invalidation). A repeated check delivery whose desired state already holds SHALL succeed idempotently. An opposing stale check/uncheck SHALL not overwrite a newer row version; it SHALL surface a structured conflict and replace optimistic state with the returned authoritative snapshot. Offline, class-(b) surfaces SHALL remain interactive with optimistic state where the page renders the written row. MCP-host writes remain online-only.
 
-- **WHEN** a member checks off grocery items while offline and connectivity later returns
-- **THEN** each check-off was rendered optimistically at tap time, was queued as a paused
-  mutation, and replays on reconnect so the server's rows reach `in_cart` — converging even
-  if a check-off is delivered more than once
+#### Scenario: Offline check-offs replay to checked_at
+- **WHEN** a member checks grocery items while offline and connectivity later returns
+- **THEN** each check is rendered optimistically, queues as a paused canonical-key mutation, and replays so the server rows gain `checked_at` while remaining `status:"active"`
+
+#### Scenario: Virtual check materializes exactly once
+- **WHEN** the same queued check for a virtual plan line is restored and delivered more than once
+- **THEN** one `source:"menu"` row exists under the canonical key and it is checked, with no duplicate or `in_cart` transition
 
 #### Scenario: A queued write survives an offline reload
+- **WHEN** a member makes a class-(b) write offline, closes and relaunches offline, and later reconnects
+- **THEN** the persisted mutation is restored, rebound to its registered function, and replayed successfully
 
-- **WHEN** a member makes a class (b) write offline, the app is closed and relaunched still
-  offline, and connectivity then returns
-- **THEN** the persisted paused mutation is restored with its variables, re-bound to its
-  registered default function, and replayed successfully on reconnect
-
-#### Scenario: A rejected replay is surfaced, not looped
-
-- **WHEN** a queued mutation replays and the server answers with a structured error (e.g. a
-  proposal already resolved)
-- **THEN** the member sees the structured-error message, the affected queries are refetched
-  to the server's truth, and the mutation is not retried indefinitely
+#### Scenario: Opposing stale replay is surfaced
+- **WHEN** a queued uncheck replays after another member made a newer check-state change
+- **THEN** the stale write is not retried forever or silently applied; the member sees the conflict and the cache reconciles to server truth
 
 #### Scenario: An offline waste disposition replays without double-counting
-
-- **WHEN** a member marks an item as waste while offline (the app minting the event id and
-  stamping the occurrence date at tap time) and the queued mutation is later delivered more
-  than once
-- **THEN** the server records exactly one waste event under the minted id, dated to the tap
-  day, and every delivery reports success to the replayer
+- **WHEN** a member records waste offline with a client-minted event id and the mutation is later delivered more than once
+- **THEN** exactly one waste event is recorded on the stamped occurrence day
 
 ### Requirement: Online-only surfaces are unreplayable by construction
 
@@ -290,4 +267,12 @@ network request of its own.
   persisted cache
 - **THEN** the sidebar meal-plan and grocery badges render from that persisted data with no
   network request
+
+### Requirement: Grocery purchase assertions and MCP writes remain online-only
+
+The mutation persistence allowlist SHALL exclude mark-send-placed and all MCP-host writes. Offline Mark order placed SHALL be disabled or fail fast with a reconnect hint, and no reconnect SHALL auto-fire an old purchase assertion. MCP hosts SHALL never persist or replay bridge mutations.
+
+#### Scenario: Reconnect cannot place an order automatically
+- **WHEN** a member taps Mark order placed without connectivity and reconnects later
+- **THEN** no queued assertion exists and the send remains awaiting explicit confirmation
 

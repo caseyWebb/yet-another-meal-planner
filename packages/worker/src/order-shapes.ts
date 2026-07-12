@@ -117,6 +117,7 @@ export interface ToBuyViewLine {
   quantity: number;
   assumed_quantity: boolean;
   for_recipes: string[];
+  recipe_attribution?: { slug: string; planned_for?: string | null; plan_id?: string }[];
   /** `list` = an explicit row the plan does not need; `plan` = a virtual (derived) line
    *  with no stored row; `both` = a stored row the plan also needs (a materialization). */
   origin: "list" | "plan" | "both";
@@ -145,6 +146,9 @@ export interface ToBuyViewLine {
    *  omitted, for a line with no graph neighbors — honest sparsity, not a fabricated
    *  hint). ABSENT on the default read (byte-identical). */
   substitutes?: SiblingSuggestion[];
+  checked_at?: string | null;
+  row_version?: number;
+  updated_at?: string | null;
 }
 
 /** A to-buy line's placement on the aisle-enriched read (member-app-differentiators D6). */
@@ -164,6 +168,7 @@ export interface LinePlacement {
 
 /** A need the pantry cancels, joined with the pantry row's verify metadata. */
 export interface PantryCoveredLine {
+  key?: string;
   name: string;
   for_recipes: string[];
   on_hand: { quantity?: string; category?: string; last_verified_at?: string };
@@ -172,21 +177,29 @@ export interface PantryCoveredLine {
    *  `displayName(key) ?? name`. The app renders `display_name ?? name`. ABSENT on the
    *  default read (byte-identical). */
   display_name?: string;
+  freshness?: "covered" | "worth_a_look";
+  freshness_reason?: string;
+  buy_anyway?: boolean;
 }
 
 /** A stored `in_cart` row — the deterministic stale-cart signal. */
 export interface InCartLine {
+  key?: string;
   name: string;
   added_at: string;
   /** Enriched read only (reify-ingredient-display-names): the stored row's reified label
    *  (`display_name ?? name` — an in_cart line is always a stored row). The app renders
    *  `display_name ?? name`. ABSENT on the default read (byte-identical). */
   display_name?: string;
+  row_version?: number;
+  sent_in?: string | null;
+  quantity?: string;
 }
 
 /** The derived to-buy view (identical from the tool and the endpoint). */
 export interface ToBuyView {
   to_buy: ToBuyViewLine[];
+  checked: ToBuyViewLine[];
   pantry_covered: PantryCoveredLine[];
   in_cart: InCartLine[];
   underived: string[];
@@ -199,6 +212,7 @@ export interface ToBuyView {
    *  (ISO 8601) — null when no rollup was used (cold cache, suppressed staleness, or
    *  no resolvable store). ABSENT on the default read (byte-identical). */
   flyer_as_of?: string | null;
+  snapshot_version?: string;
 }
 
 // --- the substitution read (member-app-differentiators D1–D3) ----------------------

@@ -24,6 +24,7 @@ import type {
   SubstitutionAlternative,
   SiblingSuggestion,
 } from "@yamp/worker/order-shapes";
+import type { GroceryListData } from "@yamp/contract";
 import type { StoreAdapterProjection } from "@yamp/worker/store-adapter-shapes";
 
 export type {
@@ -103,6 +104,9 @@ export interface GroceryRow {
   note: string | null;
   added_at: string;
   ordered_at: string | null;
+  checked_at?: string | null;
+  row_version?: number;
+  updated_at?: string | null;
 }
 
 // The derived to-buy view (member-app-grocery D1) — the shape GET /api/grocery/to-buy
@@ -285,6 +289,15 @@ export function useGrocery() {
   });
 }
 
+export function useGrocerySnapshot() {
+  return useQuery({
+    queryKey: ["grocery", "view"],
+    staleTime: STALE_MS,
+    gcTime: PERSIST_GC_MS,
+    queryFn: async () => jsonOf<GroceryListData>(await api.api.grocery.view.$get()),
+  });
+}
+
 export function useToBuy(enrich = false) {
   return useQuery({
     // The enrich param is part of the representation (D12): its own cache entry,
@@ -350,8 +363,7 @@ export function usePickedForYou() {
   return useQuery({
     queryKey: ["cookbook", "picked-for-you"],
     staleTime: STALE_MS,
-    queryFn: async () =>
-      jsonOf<{ recipes: Hit[] }>(await api.api.cookbook["picked-for-you"].$get()),
+    queryFn: async () => jsonOf<{ recipes: Hit[] }>(await api.api.cookbook["picked-for-you"].$get()),
   });
 }
 
@@ -400,8 +412,7 @@ export function useStoreAdapters() {
   return useQuery({
     queryKey: ["store-adapters"],
     staleTime: STALE_MS,
-    queryFn: async () =>
-      jsonOf<StoreAdapterProjection>(await appFetch("/api/profile/store-adapters")),
+    queryFn: async () => jsonOf<StoreAdapterProjection>(await appFetch("/api/profile/store-adapters")),
   });
 }
 
@@ -482,7 +493,9 @@ export function mintRowId(now: number = Date.now()): string {
 }
 
 /** A read whose response ETag feeds a class (a) If-Match write. */
-export async function readWithEtag<T>(res: Response & { json(): Promise<unknown> }): Promise<{ value: T; etag: string }> {
+export async function readWithEtag<T>(
+  res: Response & { json(): Promise<unknown> },
+): Promise<{ value: T; etag: string }> {
   if (!res.ok) throw await apiError(res);
   return { value: (await res.json()) as T, etag: res.headers.get("etag") ?? "" };
 }

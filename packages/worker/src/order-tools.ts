@@ -38,7 +38,7 @@ import type { PlaceOrderInput, PlaceOrderOutcome } from "./order-shapes.js";
 // The op's input/outcome shapes live in the leaf order-shapes.ts (member-app-grocery D9
 // — the app harness types its order fixtures against them); re-exported unchanged.
 export type { PlaceOrderInput, PlaceOrderOutcome } from "./order-shapes.js";
-import { deriveMenuNeeds, dropInFlightNeeds } from "./to-buy.js";
+import { deriveMenuNeeds, dropInFlightNeeds, readGroceryDecisionInputs } from "./to-buy.js";
 import { createKrogerUserClient, toToolError, type KvStore } from "./kroger-user.js";
 import {
   readGroceryList,
@@ -329,6 +329,8 @@ export async function runPlaceOrder(
     quantities[ingredientCtx.resolve(k)] = v;
   }
   const includePartials = new Set((input.include_partials ?? []).map((n) => ingredientCtx.resolve(n)));
+  const decisions = await readGroceryDecisionInputs(env, tenantId, planNeeds, list, (n) => ingredientCtx.resolve(n));
+  for (const key of decisions.includePartials) includePartials.add(key);
 
   const { to_buy, partials } = computeToBuy({
     list,
@@ -336,6 +338,7 @@ export async function runPlaceOrder(
     pantryNames,
     quantities,
     includePartials,
+    suppressedKeys: decisions.suppressedKeys,
     resolve: (n) => ingredientCtx.resolve(n),
   });
 

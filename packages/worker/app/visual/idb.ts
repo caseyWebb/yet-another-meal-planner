@@ -88,11 +88,12 @@ export async function persistedGroceryNames(page: Page): Promise<string[]> {
     const client = value as
       | { clientState?: { queries?: { queryKey: unknown[]; state: { data?: unknown } }[] } }
       | undefined;
-    const grocery = client?.clientState?.queries?.find(
-      (q) => q.queryKey.length === 1 && q.queryKey[0] === "grocery",
-    );
-    const data = grocery?.state.data as { items?: { name: string }[] } | undefined;
-    return (data?.items ?? []).map((i) => i.name);
+    const queries = client?.clientState?.queries ?? [];
+    const grocery = queries.find((q) => q.queryKey.length === 1 && q.queryKey[0] === "grocery");
+    const view = queries.find((q) => q.queryKey[0] === "grocery" && q.queryKey[1] === "view");
+    const raw = grocery?.state.data as { items?: { name: string }[] } | undefined;
+    const snapshot = view?.state.data as { lines?: { name: string }[] } | undefined;
+    return [...(raw?.items ?? []), ...(snapshot?.lines ?? [])].map((i) => i.name);
   });
 }
 

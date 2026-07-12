@@ -25,6 +25,8 @@ const PK: Record<string, string[]> = {
   spend_events: ["send_id", "line_key"],
   meal_plan: ["tenant", "id"],
   grocery_list: ["tenant", "normalized_name"],
+  grocery_substitution_decisions: ["tenant", "original_key"],
+  grocery_coverage_decisions: ["tenant", "line_key"],
   cooking_log: ["id"],
   tenant_activity: ["tenant"],
   // shared-corpus (d1-shared-corpus)
@@ -94,6 +96,8 @@ export function fakeD1(
     waste_events: [],
     meal_plan: [],
     grocery_list: [],
+    grocery_substitution_decisions: [],
+    grocery_coverage_decisions: [],
     job_health: [],
     ...(init.tables ?? {}),
   };

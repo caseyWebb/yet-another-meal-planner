@@ -129,7 +129,9 @@ test("empty signals promote nothing: no favorites drops the pick; sparse history
   // generic picks (the endpoint's honest-empty posture). Reload after the write so
   // the panel derives from a fresh server read (the invalidation path is not what
   // this spec certifies).
-  await cookbookPage.ensureFavorite(SEED.recipe.slug, false);
+  // Provision server truth directly: this test owns recommendation derivation, while
+  // the optimistic favorite-button path has dedicated coverage above.
+  await cookbookPage.provisionFavorite(SEED.recipe.slug, false);
   await cookbookPage.goto();
   await expect(cookbookPage.reasonBadge(SEED.recipe.slug)).toHaveText("Trending");
   await expect(cookbookPage.anyReasonBadges()).toHaveCount(1);
@@ -146,7 +148,8 @@ test("empty signals promote nothing: no favorites drops the pick; sparse history
   // Restore the seeded cooks + favorite for the specs that follow.
   await cookbookPage.logCooks(removed);
   await cookbookPage.goto();
-  await cookbookPage.ensureFavorite(SEED.recipe.slug, true);
+  await cookbookPage.provisionFavorite(SEED.recipe.slug, true);
+  await cookbookPage.goto();
   await expect(cookbookPage.trendingChip(SEED.recipe.slug)).toBeVisible();
 });
 

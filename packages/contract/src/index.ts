@@ -103,3 +103,15 @@ export {
   type ProposeCardRequest,
   type ProposeCardRequestSlot,
 } from "./propose-card.js";
+export {
+  KNOWN_GROCERY_CONTRACT_VERSION,
+  GROCERY_CONTRACT_FLOOR,
+  GROCERY_CONTRACT_CEILING,
+  GroceryListDataSchema,
+  parseGroceryListData,
+  groceryContractSupport,
+  type GroceryListData,
+  type GroceryLine,
+  type GrocerySendGroup,
+  type GroceryModelContext,
+} from "./grocery.js";

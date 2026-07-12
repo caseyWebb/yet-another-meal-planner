@@ -34,6 +34,7 @@ import { registerStoreTools } from "./stores-tools.js";
 import { registerCookingTools } from "./cooking-tools.js";
 import { registerRecipeCardWidget } from "./recipe-card-widget.js";
 import { registerMealPlanWidget } from "./meal-plan-widget.js";
+import { registerGroceryWidget } from "./grocery-widget.js";
 import { filterRecipes, type RecipeIndex } from "./recipes.js";
 import { loadRecipeIndex, loadRecipeEmbeddings, recipeDescription } from "./recipe-index.js";
 import { readReconcileErrors } from "./recipe-projection.js";
@@ -757,17 +758,12 @@ export function buildServer(env: Env, tenant: Tenant, origin?: string): McpServe
     "read_pantry",
     {
       description:
-        "Read pantry items. Items carry orthogonal `category` (food taxonomy) and `location` (fridge | freezer | pantry | spice_rack | counter | cabinet) fields; filter on either, plus prepared_only. Legacy location-flavored `category` values (pantry|fridge|freezer|spices) are treated as a `location` filter for one deprecation window. Absent category means not-yet-classified — treat as uncategorized, never an error. stale_only is unsupported: freshness is judged conversationally (it depends on storage, whether a package was opened, and visual inspection), not computed by the tool.",
+        "Read pantry items. Items carry orthogonal `category` (food taxonomy) and `location` fields; filter on either, plus prepared_only. stale_only remains unsupported because public freshness claims require conversational context.",
       inputSchema: { filter: z.object(pantryFilterShape).optional() },
     },
     ({ filter }) =>
       runTool(async () => {
-        if (filter?.stale_only) {
-          throw new ToolError(
-            "unsupported",
-            "stale_only is not computable: freshness is an LLM-judged, conversational concern (storage, open packages, visual inspection), not a function of the repo data.",
-          );
-        }
+        if (filter?.stale_only) throw new ToolError("unsupported", "stale_only is not computable: freshness is a conversational concern requiring storage/open-package/inspection context.");
         const items = await readPantry(env, tenant.id, {
           category: filter?.category,
           location: filter?.location,
@@ -1009,6 +1005,7 @@ export function buildServer(env: Env, tenant: Tenant, origin?: string): McpServe
   // tool + the `ui://plan/propose` MCP Apps resource. Reuses the SAME shared propose op + deps
   // as propose_meal_plan (one contract); the widget HTML is read from the ASSETS binding.
   registerMealPlanWidget(server, env, tenant, proposeDeps);
+  registerGroceryWidget(server, env, tenant.id);
 
   // Profile reconciliation: member confirm (list_/confirm_proposal) + operator-gated
   // cross-tenant surface (reconcile_read_signals / reconcile_enqueue_proposal).
@@ -1049,7 +1046,7 @@ export function buildServer(env: Env, tenant: Tenant, origin?: string): McpServe
     "read_to_buy",
     {
       description:
-        "The DERIVED to-buy view: what an order placed right now would buy — the active grocery list ∪ the meal plan's ingredient needs − pantry on-hand, joined on canonical ingredient ids. This is the SAME set algebra `place_order` flushes, so \"what would we buy?\" has one answer; use it as the shop-time read (read_grocery_list returns only the stored rows and misses the plan's derived needs). READ-ONLY and cheap: zero Kroger calls, zero AI calls, and it writes nothing — derived lines exist only in this read; the plan is their source of truth (editing the plan changes the next read with no sync step). Returns { to_buy, pantry_covered, in_cart, underived }. `to_buy` lines carry `origin`: \"list\" (an explicit row the plan doesn't need), \"plan\" (a VIRTUAL line derived from a planned recipe — no stored row exists; add_to_grocery_list materializes/pins it under the same canonical `key` if the user edits it), or \"both\" (a stored row the plan also needs, merged with unioned `for_recipes`); derived lines default to quantity 1 with `assumed_quantity: true` (derivation is presence-only). `pantry_covered` lists the needs the pantry cancels — the same set `place_order` would return as `partials` — each with the pantry row's quantity/category/last_verified_at so you can nudge verification (\"still good?\") instead of silently skipping. `in_cart` is the current in-cart rows (the stale-cart signal: non-empty at order time means a prior order was never confirmed placed — remind the user to clear the store cart). `underived` names planned recipes whose full ingredient list is not yet derived — their items are NOT in `to_buy` (never silently dropped); offer to add them explicitly. Optional `enrich: true` — the ONLY parameter — turns on ONE Locations resolve that pays for BOTH per-line `placement` (captured `aisle_number`/`aisle_description`/`aisle_side` from the shared SKU cache at the caller's Kroger location, learned from past orders; plus a `department` derived from the ingredient identity graph when no aisle is captured) AND per-line `substitutes` — cross-ingredient hints from a depth-1 walk over the persisted ingredient identity graph, each LABELED with its relation (`satisfies` = the graph says it can be used where the line's ingredient is requested; `sibling` = co-variant under a shared parent, named in `via`; `generalization` = the base form), annotated `in_pantry` (already on hand — often the best swap) and `on_sale_hint` (the primary store's warmed flyer rollup at the default sale floor; no live price check — verify with kroger_prices before promising a price). It also adds a top-level `location: { id } | null` naming the store the placements are for, and `flyer_as_of` (ISO, or null) for the hint's freshness. This is READ-ONLY like the default read: acting on a substitute hint reuses the existing writes (add the replacement + remove the row, or a plan-derived virtual line's materialize-add + an order-scoped `place_order` `exclude`) — nothing here writes anything. Use it for the Kroger in-store walk and whenever you want substitute hints alongside the list. The default read's zero-Kroger guarantee is UNCHANGED; `enrich` costs at most one Kroger Locations resolve (label → locationId) and ZERO product searches — with no resolvable Kroger location (walk/satellite primary), placements carry `department` only, `location` is null, and `substitutes[].in_pantry` (pure D1) plus a satellite store's label-keyed `on_sale_hint` are still served. Placements and substitutes start sparse and converge as orders run / the identity graph grows — an absent one is honest \"unknown\" or \"nothing to suggest\", not an error.",
+        "The checked-aware derived shopping view: (active list UNION plan needs) MINUS pantry coverage MINUS active substitution suppressions, partitioned into unchecked `to_buy` and durable `checked`. Only `to_buy` can enter an online cart; checked never means in_cart. Returns row freshness, pantry freshness/decision state, in-cart linkage, underived recipes, and opaque snapshot_version. Optional enrich adds store placement and relation-labeled substitute hints with at most one location resolve and zero product searches.",
       inputSchema: { enrich: z.boolean().optional() },
     },
     (input) => runTool(() => computeToBuyView(env, tenant.id, { enrich: input.enrich === true })),

@@ -451,6 +451,10 @@ note             TEXT  -- one-off brand request, occasion, or NULL
 added_at         TEXT  -- ISO date (required)
 ordered_at       TEXT  -- ISO date set when status → ordered; else NULL
 sent_in          TEXT  -- INTERNAL: the order_sends id whose flush advanced this row's in-flight cart state (0051); NULL otherwise
+checked_at       TEXT  -- nullable ISO check-off timestamp; deliberately orthogonal to status
+row_version      INTEGER -- starts at 1 and advances on every grocery-row mutation
+updated_at       TEXT  -- nullable ISO timestamp for legacy rows; latest row mutation thereafter
+decision_owner_token TEXT -- internal proof that a decision created this row; cleared by ordinary upserts
 ```
 
 Example rows:
@@ -470,6 +474,7 @@ Example rows:
 - `name` and `normalized_name` are stored separately: an **add-by-id** row (e.g. an accepted sibling swap) stores the human display as `name` ("Red cabbage") and the canonical id as `normalized_name` (`cabbage::color-red`); the set-algebra keys on the stored `normalized_name`, so every surface renders `name` natively. The rendered human label is: the row's explicit `display_name` override when set; else, for an **id-named** row (its `name` equals its `normalized_name` — a **legacy** row from before this capability, or a **plan-derived** virtual line), the identity node's label (its `display_name`, else the `base (detail)` synthesis), resolved at read so it converges as the node is backfilled (a legacy row heals with no row edit); else the stored `name`. `display_name` is nullable and rarely populated — the highest-precedence override, not the primary label source. A merge keeps the surviving row's `name`/`display_name`, never adopting the incoming surface form.
 - Lifecycle: `active → in_cart → ordered` + the terminal **receive action**. The `status` **enum is only `active | in_cart | ordered`** — `received` is not a stored status but the receive *action* (the row is removed and, for `grocery`-kind items, the pantry restocked), identical across every fulfillment mode. `place_order` and the satellite receipt write the `active → in_cart` advance; `ordered` is reached by the **user-asserted** "I placed the order" advance (the `update_grocery_list` tool or the member app's mark-order-placed, both through the shared W3 transition guard — legal only from `in_cart`, stamping `ordered_at`) and by the satellite receipt's optional `mark_placed` re-post (`advanceOrderedRows`). Any status write that leaves `ordered` clears `ordered_at`.
 - **`sent_in` is internal send-record linkage** (spend telemetry, below): stamped ONLY by the two snapshot-writing order-flush advances (`place_order`, the satellite receipt) — never by a manual `active → in_cart` write, and never accepted as a caller-writable field on any tool or HTTP surface (the write boundaries have no such field; a supplied value is dropped). It rides reads harmlessly. Cleared when the row leaves its in-flight send without a purchase assertion (`in_cart → active`, the cart-write rollback, re-listing an `ordered` row); kept across `in_cart → ordered`, where the shared writer materializes the linked snapshot line as a spend event.
+- **`checked_at` is not a cart state.** It partitions active shopping into unchecked `to_buy` and durable checked lines. Checking a virtual plan need atomically materializes a `source: menu` row. Old rows read unchecked at `row_version: 1`; every later row mutation advances the version and `updated_at`.
 - **The to-buy set is a derived read, not rows.** The order-time set — `active` rows ∪ the meal plan's derived ingredient needs (each planned recipe's projected `ingredients_full`) − pantry on-hand, on canonical ids — is computed at read time by one shared operation (`read_to_buy` / `GET /api/grocery/to-buy`, the same algebra `place_order` flushes and the satellite pull-list serves). Plan needs are **never materialized into rows automatically**; an explicit `source: "menu"` row is a **materialization** (a derived need pinned/edited, or an open-world side's ingredients) and merges with the derived need under the same canonical id. A derived need whose row is in flight (`in_cart`/`ordered`) is suppressed from to-buy until received or re-listed.
 - **The enriched read's `substitutes[]` is derived, never stored.** With `enrich`/`?enrich=1`, each to-buy line additionally carries a `substitutes[]` array alongside its `placement` (see `sku_cache` below for the placement columns) — cross-ingredient hints computed fresh on every call from three already-persisted sources: a depth-1 walk over the `ingredient_edge` graph (the ingredient identity section below), an `in_pantry` join against the pantry table above (a row exists for the sibling's resolved id — no location needed), and, once the primary store resolves, an `on_sale_hint` match against that store's warmed flyer rollup (the flyer cache section below) — `{ sku, description, price: { regular, promo }, savings }`. Each entry also carries its relation label — `{ role: "satisfies" | "sibling" | "generalization", kind: "general" | "containment" | "membership", via? }` — naming how the walk reached it. Nothing here is written to a table: a line's `substitutes[]` is recomputed from the identity graph, pantry, and flyer rollup's current state on every enriched call, so it converges automatically as those sources change (a new edge, a pantry edit, a re-warmed flyer) with no reconcile of its own. The view's `flyer_as_of` is that rollup's own `as_of` (the flyer cache section below), surfaced alongside the hints it fed. See `docs/TOOLS.md`'s `read_to_buy` for the full shape and precedence.
 
@@ -486,6 +491,8 @@ location_id   TEXT  -- resolved Kroger locationId; the order-list's (nullable)
 fulfillment   TEXT  -- 'kroger_online' | 'satellite'
 order_list_id TEXT  -- satellite correlation; NULL on the Kroger path
 created_at    TEXT  -- ISO 8601
+placed_at     TEXT  -- nullable ISO timestamp of the exact batch purchase assertion; old/unplaced sends stay NULL
+placement_token TEXT -- nullable internal claim token; gates every row/spend effect in the atomic placement batch
 
 -- D1 order_send_lines table — one row per sent line. PRIMARY KEY (send_id, line_key); insert-or-ignore (a snapshot is never rewritten).
 send_id       TEXT     -- -> order_sends.id
@@ -504,6 +511,23 @@ estimated     INTEGER  -- 1 = fallback-priced; send-path quotes are 0
 department    TEXT     -- D17 stamp (below); NULL ONLY while pending classification
 provenance    TEXT     -- 'planned' | 'impulse' (below)
 for_recipes   TEXT     -- JSON array
+
+-- grocery_substitution_decisions — PRIMARY KEY (tenant, original_key).
+tenant TEXT; original_key TEXT; replacement_key TEXT
+attribution_signature TEXT -- canonical JSON of date/id/slug attribution; invalidates when plan relations change
+created_replacement INTEGER -- 1 only when acceptance created the replacement row
+replacement_version INTEGER -- created row version used by edited-row-safe Undo
+row_version INTEGER; created_at TEXT; updated_at TEXT; operation_token TEXT -- internal conditional-claim token
+ownership_token TEXT -- matches the created row's decision_owner_token; NULL means Undo cannot delete the row
+-- idx_grocery_substitution_replacement on (tenant, replacement_key).
+
+-- grocery_coverage_decisions — PRIMARY KEY (tenant, line_key).
+tenant TEXT; line_key TEXT
+created_row INTEGER -- 1 only when Buy anyway materialized the pantry-low row
+created_row_version INTEGER -- created row version used by edited-row-safe Undo
+row_version INTEGER; created_at TEXT; updated_at TEXT; operation_token TEXT -- internal conditional-claim token
+ownership_token TEXT -- matches the created row's decision_owner_token; NULL means Undo cannot delete the row
+-- idx_grocery_coverage_updated on (tenant, updated_at).
 
 -- D1 spend_events table — one row per asserted purchase line, copied VERBATIM from its snapshot line.
 -- PRIMARY KEY (send_id, line_key) — the idempotency key; insert-or-ignore, so a replayed assertion converges.
@@ -533,6 +557,18 @@ voided_at   TEXT     -- set when the row was re-listed after ordering (voided, n
 - **`provenance` mapping (deterministic, computed at flush):** `planned` when the line's key came from a stored `grocery_list` row or the server-derived plan needs, **or** its merged `for_recipes` is non-empty (an open-world side passed via `menu_needs` is plan work); `impulse` for a caller-supplied `menu_needs` extra with no recipe attribution. Satellite pull-list lines are `planned` by construction (list ∪ plan only).
 - **Negative rules (enforced in the shared operations):** a row leaving `in_cart` without an assertion (re-listed `active`, removed, rolled back) writes no spend and drops its linkage; the shared removal operation **never** writes spend; a manually-moved `active → in_cart` row has no linkage, so asserting it writes nothing; re-listing an `ordered` row **voids** its events (`voided_at`, never a delete); never-marked orders surface as *awaiting mark-placed* (the `retrospective` spend section) and are never auto-counted.
 - **The last-paid read:** `idx_spend_events_item` serves the per-household "what did we last pay for X" memo — the latest non-voided priced event per `line_key`, a tenant-scoped **query, not a table**, never cross-household.
+- Send rows and lines are immutable send-time quote history. Relisting clears only current grocery membership; it never rewrites snapshot prices. `placed_at` is placement truth and drives D16 materialization. Analytics `department` classifies spend and is distinct from the grocery UI's store-placement `section`/aisle presentation.
+
+### `GroceryListData` wire snapshot
+
+`@yamp/contract` independently versions the dual-host grocery snapshot. Version 1 carries
+`contract_version`, opaque `snapshot_version`, `as_of`, the complete active/checked `lines`,
+unchecked `to_buy` canonical keys, pantry coverage and decisions, current send groups with persisted
+quote totals/savings, underived recipes, location/flyer freshness, and header counts. Narrow line/send
+freshness rides the corresponding objects. A shopping line carries `staple: true` when its canonical
+key is a member of the household's staples list. `GroceryModelContext` extends the complete snapshot with
+an action summary/outcome; hosts publish the full context, never an event delta. A spawning payload is
+render-only and must be re-hydrated before writes.
 
 ## cooking_log (D1 table)
 

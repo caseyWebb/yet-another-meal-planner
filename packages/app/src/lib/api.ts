@@ -69,14 +69,26 @@ export const api = hc<MemberApi>("/", { fetch: appFetch });
 export interface ApiError {
   error: string;
   message: string;
+  context?: Record<string, unknown>;
 }
 
 /** Parse a failed response's structured error, degrading to a generic shape. (Structural
  *  param: hc's ClientResponse and the global Response both satisfy it.) */
 export async function apiError(res: { status: number; json(): Promise<unknown> }): Promise<ApiError> {
   try {
-    const body = (await res.json()) as Partial<ApiError>;
-    if (typeof body?.error === "string") return { error: body.error, message: body.message ?? "" };
+    const body = (await res.json()) as Partial<ApiError> & Record<string, unknown>;
+    if (typeof body?.error === "string") {
+      const { error, message, context, ...details } = body;
+      const merged = {
+        ...details,
+        ...(context && typeof context === "object" ? (context as Record<string, unknown>) : {}),
+      };
+      return {
+        error,
+        message: typeof message === "string" ? message : "",
+        ...(Object.keys(merged).length ? { context: merged } : {}),
+      };
+    }
   } catch {
     // fall through
   }

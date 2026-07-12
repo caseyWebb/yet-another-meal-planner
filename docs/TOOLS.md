@@ -467,14 +467,14 @@ The grocery list is the SKU-free buy list for the next order (D1-backed, `grocer
 
 ### `read_grocery_list()`
 
-Return the current buy list — the **stored rows only** (all statuses). This does **not** include the meal plan's derived ingredient needs: for any shop-time read (what would an order buy, a store walk, the stale-cart check) use [`read_to_buy`](#read_to_buyenrich) instead. Use this read when the raw rows themselves are the subject (status/source/note edits, the receive flow).
+Return the current buy list — the **stored rows only** (all statuses). Rows include nullable `checked_at`, integer `row_version`, `updated_at`, and internal `sent_in`. Checked is a durable shop check-off and is orthogonal to `status`; it never means `in_cart`. This does **not** include virtual meal-plan needs: use [`read_to_buy`](#read_to-buyenrich) for shop-time state and `display_grocery_list` when the member asks to see the interactive list.
 
 **Returns:**
 - `{ items: [...] }`
 
 ### `read_to_buy(enrich?)`
 
-The **derived to-buy view** — what an order placed right now would buy: the `active` grocery list ∪ the **meal plan's derived ingredient needs** (each planned recipe's derived `ingredients_full`) − pantry on-hand, joined on canonical ingredient ids. This is the **same set algebra `place_order` flushes** (and the satellite pull-list serves), so "what would we buy?" has one answer on every surface. One shared operation with the member app's `GET /api/grocery/to-buy` (`?enrich=1` for the enriched variant).
+The **derived to-buy view** partitions `shopping = (active list ∪ plan needs) − pantry coverage − active substitution suppressions` into unchecked `to_buy` and durable `checked`. `place_order`, order preview, satellites, and sidebar counts consume only `to_buy`; checked rows remain visible but cannot enter a cart. One shared operation backs the member endpoint and adds opaque `snapshot_version` freshness.
 
 **Guarantees:** read-only and cheap — the default read makes **zero Kroger calls, zero AI calls, and writes nothing** (derived lines exist only in the read; no reconcile or cron materializes them into rows). The plan is the derived lines' source of truth: editing the plan changes the next read with no sync step. The optional **`enrich: true`** variant turns on **one** Kroger Locations resolve (label → locationId, `kroger_flyer`'s posture) that pays for **both** per-line aisle `placement` and per-line `substitutes` under that single resolve — **zero product searches** either way; the default read is byte-identical to the pre-param shape.
 
@@ -491,11 +491,14 @@ The **derived to-buy view** — what an order placed right now would buy: the `a
                   //               via?, via_label?, weight?, qualifier? },
                   //               // via_label: curated label for via; weight/qualifier: substitution role only
                   //   in_pantry, on_sale_hint?: { sku, description, price: { regular, promo }, savings } }]
-  pantry_covered:[{ name, for_recipes, on_hand: { quantity?, category?, last_verified_at? }, display_name? }],
-  in_cart:       [{ name, added_at, display_name? }],
+  checked:       [{ ...to_buy line, checked_at, row_version, updated_at }],
+  pantry_covered:[{ key, name, for_recipes, freshness: "covered"|"worth_a_look",
+                    freshness_reason?, buy_anyway, on_hand, display_name? }],
+  in_cart:       [{ key, name, added_at, row_version, sent_in, display_name? }],
   underived:     ["<slug>", ...],
   location?:     { id } | null,      // enrich only: the store the placements/hints are for
-  flyer_as_of?:  ISO | null          // enrich only: freshness of the warmed flyer rollup behind on_sale_hint
+  flyer_as_of?:  ISO | null,         // enrich only: freshness of warmed flyer hints
+  snapshot_version: "<opaque digest>"
 }
 ```
 
@@ -587,6 +590,17 @@ Remove an item by name.
 **A removal never writes spend.** A remove is not a purchase assertion — it is also how a changed mind leaves the list — so the shared removal operation records nothing and any send linkage dies with the row (the guarantee is the operation's, independent of any skill). To record a purchase for an item still `in_cart` (a collapsed "picked up" that skipped the mark-placed step), advance it to `ordered` via `update_grocery_list` **before** removing it.
 
 **Notes:** Promoting a low/out pantry item onto the list is a **prompted** decision (record `source: "pantry_low"`), never automatic. Removing a **materialized** (`source: "menu"`) row while its recipe stays planned un-pins, it doesn't un-plan — the ingredient re-derives as a virtual to-buy line on the next `read_to_buy`. The lifecycle past `active` (`in_cart` → `ordered` → the terminal receive action) is driven by `place_order` and the user-asserted transitions — see [`place_order`](#place_orderpayload) below.
+
+### Grocery snapshot and exact mutation tools
+
+- `display_grocery_list()` returns `_meta.ui.resourceUri = "ui://grocery/list"`, versioned `GroceryListData`, and equivalent plain text. Use it for “show me my grocery list.” The spawning payload is render-only; the widget re-hydrates before writes.
+- `read_grocery_snapshot()` is the app-callable authoritative boot read with grouped sends, immutable persisted sent estimates/savings, and honest unlinked-cart degradation.
+- `set_grocery_checked(key, checked, expected_row_version, snapshot_version, occurred_at?)` changes only checked/concurrency fields. A virtual check atomically materializes `source: "menu"`; identical replay succeeds and opposing stale state returns `conflict` with the current snapshot.
+- `set_grocery_buy_anyway` / `verify_grocery_pantry` persist Buy-anyway/Undo or Still-good verification. `set_grocery_substitution` persists accept/Undo with attribution invalidation and edited-row-safe cleanup.
+- `relist_grocery_send_line(send_id, line_key, expected_row_version)` performs guarded `in_cart → active`, clears linkage, retains immutable history, and writes no spend. A non-null `send_id` must name the row's current open send and matching `order_send_lines` membership. Null is accepted only when no current open send has matching line membership, including an unlinked, dangling, already-placed, or open-send-without-line linkage—the same rows the snapshot places in its synthetic unlinked group.
+- `mark_grocery_send_placed(send_id, expected_line_keys, snapshot_version)` validates exact membership and atomically advances the send, stamps `placed_at`, and materializes the D16 quote without re-pricing. It is online-only. Per-row `update_grocery_list(status:"ordered")` remains compatible, but whole-send assertions prefer this batch tool.
+
+Every shared mutation returns the full authoritative post-write snapshot. Send estimates are send-time quotes, never final fulfillment prices; pre-send flyer hints are not persisted totals. MCP writes immediately publish full `GroceryModelContext`; only successful mark-placed sends a completion message.
 
 ---
 

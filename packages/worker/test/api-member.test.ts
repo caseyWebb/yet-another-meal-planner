@@ -187,11 +187,18 @@ const MEMBER_ENDPOINTS: [string, string][] = [
   ["GET", "/api/plan"],
   ["POST", "/api/plan/ops"],
   ["GET", "/api/grocery"],
+  ["GET", "/api/grocery/view"],
   ["GET", "/api/grocery/to-buy"],
   ["GET", "/api/grocery/to-buy?enrich=1"],
   ["POST", "/api/grocery/order"],
   ["POST", "/api/grocery/substitutions"],
   ["POST", "/api/grocery/items"],
+  ["POST", "/api/grocery/checked"],
+  ["POST", "/api/grocery/substitution"],
+  ["POST", "/api/grocery/coverage"],
+  ["POST", "/api/grocery/pantry-verify"],
+  ["POST", "/api/grocery/relist"],
+  ["POST", "/api/grocery/mark-placed"],
   ["PATCH", "/api/grocery/items/milk"],
   ["DELETE", "/api/grocery/items/milk"],
   ["GET", "/api/pantry"],
@@ -1081,5 +1088,58 @@ describe("grocery area — spend rides the shared status op (route-level)", () =
       sent_in: null,
       note: "hi",
     });
+  });
+});
+
+describe("grocery area — canonical snapshot and checked route", () => {
+  async function groceryEnv() {
+    const h = sqliteEnv(["casey"]);
+    await h.env.TENANT_KV.put("invite:GOODCODE", "casey");
+    return { h, env: { ...(h.env as object), TOOL_AE: { writeDataPoint: () => {} } } as Env };
+  }
+
+  it("GET view and checked POST share the authoritative snapshot, including duplicate delivery", async () => {
+    const { h, env } = await groceryEnv();
+    await addGroceryRow(env, "casey", { name: "Milk" }, "2026-07-12");
+    const cookie = await loggedIn(env);
+    const beforeRes = await get(env, "/api/grocery/view", cookie);
+    expect(beforeRes.status).toBe(200);
+    const before = await beforeRes.json() as { snapshot_version: string; lines: { key: string; row_version: number }[] };
+    const vars = { key: "milk", checked: true, expected_row_version: before.lines[0].row_version, snapshot_version: before.snapshot_version, occurred_at: "2026-07-12T12:00:00Z" };
+    const checked = await send(env, "POST", "/api/grocery/checked", cookie, vars);
+    expect(checked.status).toBe(200);
+    const body = await checked.json() as { snapshot: { to_buy: string[]; lines: { key: string; checked_at: string | null }[] } };
+    expect(body.snapshot.to_buy).not.toContain("milk");
+    expect(body.snapshot.lines.find((line) => line.key === "milk")?.checked_at).toBe(vars.occurred_at);
+    const replay = await send(env, "POST", "/api/grocery/checked", cookie, vars);
+    expect(replay.status).toBe(200);
+    expect(h.rows("grocery_list")).toHaveLength(1);
+  });
+
+  it("opposing stale checked state returns 409 with the full current snapshot", async () => {
+    const { env } = await groceryEnv();
+    await addGroceryRow(env, "casey", { name: "Milk" }, "2026-07-12");
+    const cookie = await loggedIn(env);
+    const before = await (await get(env, "/api/grocery/view", cookie)).json() as { snapshot_version: string };
+    await send(env, "POST", "/api/grocery/checked", cookie, { key: "milk", checked: true, expected_row_version: 1, snapshot_version: before.snapshot_version });
+    const stale = await send(env, "POST", "/api/grocery/checked", cookie, { key: "milk", checked: false, expected_row_version: 1, snapshot_version: before.snapshot_version });
+    expect(stale.status).toBe(409);
+    const error = await stale.json() as { error: string; snapshot: { snapshot_version: string; lines: unknown[] } };
+    expect(error.error).toBe("conflict");
+    expect(error.snapshot.lines.length).toBeGreaterThan(0);
+  });
+
+  it("rejects malformed grocery mutation bodies with validation_failed", async () => {
+    const { env } = await groceryEnv(); const cookie = await loggedIn(env);
+    for (const [path, body] of [
+      ["checked", { key: "", checked: "yes", expected_row_version: -1, snapshot_version: "stale" }],
+      ["substitution", { original_key: "milk", snapshot_version: "stale" }],
+      ["coverage", { key: "milk", enabled: true, snapshot_version: "stale" }],
+      ["relist", { send_id: "s", line_key: "milk", expected_row_version: 0 }],
+      ["mark-placed", { send_id: "s", expected_line_keys: ["milk", "milk"], snapshot_version: "stale" }],
+    ] as const) {
+      const response = await send(env, "POST", `/api/grocery/${path}`, cookie, body);
+      expect(response.status).toBe(400); expect((await response.json() as { error: string }).error).toBe("validation_failed");
+    }
   });
 });

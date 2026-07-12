@@ -9,9 +9,9 @@
     "node": ">=22"
   },
   "scripts": {
-    "build": "WIDGET=recipe-card vite build && WIDGET=plan-propose WIDGET_KEEP=1 vite build",
+    "build": "WIDGET=recipe-card vite build && WIDGET=plan-propose WIDGET_KEEP=1 vite build && WIDGET=grocery-list WIDGET_KEEP=1 vite build",
     "typecheck": "tsc --noEmit",
-    "test": "WIDGET=recipe-card vite build && WIDGET=plan-propose WIDGET_KEEP=1 vite build && node --test test/self-contained.test.mjs",
+    "test": "WIDGET=recipe-card vite build && WIDGET=plan-propose WIDGET_KEEP=1 vite build && WIDGET=grocery-list WIDGET_KEEP=1 vite build && node --test test/self-contained.test.mjs",
     "lint": "oxlint src",
     "format": "biome format --write src"
   },

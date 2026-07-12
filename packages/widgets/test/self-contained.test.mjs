@@ -22,6 +22,7 @@ const widgetsDir = path.resolve(here, "../../worker/assets/widgets");
 const WIDGETS = [
   { file: "recipe-card.html", marker: "recipe-card-widget" },
   { file: "plan-propose.html", marker: "plan-propose-widget" },
+  { file: "grocery-list.html", marker: "grocery-list-widget" },
 ];
 
 for (const { file, marker } of WIDGETS) {

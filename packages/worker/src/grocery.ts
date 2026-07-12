@@ -52,6 +52,12 @@ export interface GroceryItem {
    * guarded `in_cart → ordered` advance materializes spend events from it.
    */
   sent_in?: string | null;
+  /** Durable shop check-off, deliberately orthogonal to `status`. */
+  checked_at?: string | null;
+  /** Advances for every mutation of this canonical row. */
+  row_version?: number;
+  /** ISO timestamp of the latest row mutation. */
+  updated_at?: string | null;
 }
 
 /** Input for adding an item; everything is optional with sensible defaults, but at least one of

@@ -231,4 +231,17 @@ export class CookbookPage extends AppPage {
     }
     await this.expectFavorited(slug, target);
   }
+
+  /** Deterministic fixture setup for recommendation tests. Those tests assert the
+   * derived panel, not the favorite button's optimistic path (covered separately). */
+  async provisionFavorite(slug: string, favorite: boolean): Promise<void> {
+    await this.page.evaluate(async ({ slug, favorite }) => {
+      const response = await fetch("/api/overlay/favorite", {
+        method: "PUT",
+        headers: { "content-type": "application/json", "X-App-Csrf": "1" },
+        body: JSON.stringify({ slug, favorite }),
+      });
+      if (!response.ok) throw new Error(`favorite fixture write failed (${response.status})`);
+    }, { slug, favorite });
+  }
 }

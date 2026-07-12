@@ -29,7 +29,7 @@
     "dev:admin": "node scripts/dev-admin.mjs",
     "deploy": "aube --filter @yamp/worker run deploy",
     "typecheck": "aube --recursive run typecheck",
-    "test": "aube --filter @yamp/worker --filter @yamp/satellite --filter @yamp/admin-app --filter @yamp/widgets --filter @yamp/ui run test",
+    "test": "aube --filter @yamp/worker --filter @yamp/satellite --filter @yamp/admin-app --filter @yamp/app --filter @yamp/widgets --filter @yamp/ui run test",
     "test:tooling": "aube --filter @yamp/worker run test:tooling",
     "test:admin": "aube --filter @yamp/worker run test:admin",
     "test:app": "aube --filter @yamp/worker run test:app",

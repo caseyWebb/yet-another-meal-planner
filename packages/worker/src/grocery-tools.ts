@@ -28,7 +28,7 @@ export function registerGroceryListTools(
     "read_grocery_list",
     {
       description:
-        "Return the current grocery list — the STORED rows only (the SKU-free buy list's explicit entries, all statuses). This does NOT include the meal plan's derived ingredient needs: for any shop-time read (what would an order buy, a store walk, a stale-cart check) use `read_to_buy`, which computes list ∪ plan needs − pantry on-hand. Use this read when you need the raw stored rows themselves (row status/source/note edits, receive/remove flows).",
+        "Return STORED grocery rows only (all statuses), including checked_at, row_version, updated_at, and internal sent_in. Checked is a durable shop mark orthogonal to status — it never means in_cart. For virtual plan needs and the checked-aware shopping partition use read_to_buy; when the member wants to see the interactive list use display_grocery_list.",
       inputSchema: {},
     },
     () =>
@@ -66,7 +66,7 @@ export function registerGroceryListTools(
     "update_grocery_list",
     {
       description:
-        "Patch an existing grocery-list item by name. `domain` (default 'grocery') is the store-type the item is bought at — set it to re-file an item onto a different store's in-store walk. `status` lifecycle guarantee: `active ⇄ in_cart` is freely writable in both directions (and an `ordered` item may be re-listed back to `active`, e.g. a canceled order); `status: \"ordered\"` is accepted ONLY as the user-asserted \"I placed the order\" advance on an item currently `in_cart` — that write stamps `ordered_at` — and ANY other write of `ordered` returns a structured `validation_failed` (with the attempted `{from, to}` transition) and changes nothing. SPEND guarantee: the legal `in_cart → ordered` advance is the PURCHASE ASSERTION — it records the order's spend from the flush's send-time snapshot (verbatim, exactly once; no live re-pricing). An item you manually moved `active → in_cart` has no snapshot, so marking it `ordered` records nothing. Re-listing an `ordered` item back to `active`/`in_cart` VOIDS its recorded spend (a canceled order never counts); moving `in_cart → active` records nothing and drops the item out of its pending order.",
+        "Patch an existing grocery-list item by name. Every mutation advances row_version/updated_at and preserves checked_at unless the narrow checked tool changes it. Status is orthogonal to checked. `status: ordered` is accepted only as the compatible per-row in_cart purchase assertion; when a send id is available prefer mark_grocery_send_placed for an exact atomic whole-send assertion. Spend copies the persisted send-time quote verbatim and is never re-priced.",
       inputSchema: {
         name: z.string(),
         quantity: z.string().optional(),

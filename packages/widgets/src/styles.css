@@ -24,3 +24,17 @@ body {
   color: var(--foreground);
   font-family: var(--font-sans);
 }
+
+.grocery-shared { display: grid; gap: 1rem; padding: 1rem; }
+.grocery-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: .5rem; }
+.grocery-stats > div { border: 1px solid var(--border); border-radius: .65rem; padding: .65rem; }
+.grocery-stats strong, .grocery-stats span { display: block; }
+.grocery-grouping, .grocery-add { display: flex; gap: .5rem; }
+.grocery-grouping label { display: inline-flex; align-items: center; gap: .35rem; min-height: 2rem; padding: 0 .75rem; border: 1px solid var(--border); border-radius: var(--radius-md); cursor: pointer; }
+.grocery-grouping label.selected { color: var(--primary-foreground); background: var(--primary); border-color: var(--primary); }
+.grocery-grouping input { accent-color: currentColor; }
+.grocery-groups ul, .grocery-carts ul, .grocery-pantry ul { list-style: none; margin: 0; padding: 0; }
+.grocery-groups li, .grocery-carts li, .grocery-pantry li { border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; gap: .5rem; padding: .55rem 0; flex-wrap: wrap; }
+.grocery-groups label { display: flex; gap: .5rem; font-weight: 600; }
+.grocery-groups .checked { text-decoration: line-through; color: var(--muted-foreground); }
+.grocery-carts { display: grid; gap: .75rem; }

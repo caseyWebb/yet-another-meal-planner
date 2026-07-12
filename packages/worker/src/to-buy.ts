@@ -31,6 +31,8 @@ import type { KvStore } from "./kroger-user.js";
 import { annotateSubstitutes } from "./substitute-annotator.js";
 import { MIN_FLYER_DISCOUNT, type CachedMapping } from "./matching.js";
 import type { ToBuyViewLine, PantryCoveredLine, InCartLine, LinePlacement, ToBuyView } from "./order-shapes.js";
+import { classifyPantryFreshness } from "./pantry-freshness.js";
+import { db } from "./db.js";
 
 // The view's line shapes live in the leaf order-shapes.ts (member-app-grocery D9 — the
 // app imports them directly instead of hand-mirroring); re-exported so every existing
@@ -45,6 +47,57 @@ export interface DerivedMenuNeeds {
   underived: string[];
 }
 
+export interface GroceryDecisionInputs {
+  suppressedKeys: Set<string>;
+  includePartials: Set<string>;
+  substitutions: { original_key: string; replacement_key: string; attribution_signature: string; created_replacement: number; replacement_version: number | null; row_version: number; created_at: string; updated_at: string }[];
+  coverage: { line_key: string; created_row: number; created_row_version: number | null; row_version: number; created_at: string; updated_at: string }[];
+}
+
+export function attributionSignature(need: Pick<MenuNeed, "for_recipes" | "recipe_attribution">): string {
+  const detailed = [...(need.recipe_attribution ?? [])].sort((a, b) => (a.planned_for ?? "9999-99-99").localeCompare(b.planned_for ?? "9999-99-99") || (a.plan_id ?? "").localeCompare(b.plan_id ?? "") || a.slug.localeCompare(b.slug));
+  return JSON.stringify(detailed.length ? detailed : [...new Set(need.for_recipes ?? [])].sort().map((slug) => ({ slug })));
+}
+
+export async function readGroceryDecisionInputs(env: Env, tenant: string, needs: MenuNeed[], list: GroceryItem[], resolve: (name: string) => string): Promise<GroceryDecisionInputs> {
+  const [substitutions, coverage] = await Promise.all([
+    db(env).all<GroceryDecisionInputs["substitutions"][number]>("SELECT original_key,replacement_key,attribution_signature,created_replacement,replacement_version,row_version,created_at,updated_at FROM grocery_substitution_decisions WHERE tenant=?1 ORDER BY original_key", tenant),
+    db(env).all<GroceryDecisionInputs["coverage"][number]>("SELECT line_key,created_row,created_row_version,row_version,created_at,updated_at FROM grocery_coverage_decisions WHERE tenant=?1 ORDER BY line_key", tenant),
+  ]);
+  const merged = new Map<string, MenuNeed>();
+  for (const need of needs) {
+    const key = resolve(need.name); const prior = merged.get(key) ?? { name: need.name, for_recipes: [], recipe_attribution: [] };
+    prior.for_recipes = [...new Set([...(prior.for_recipes ?? []), ...(need.for_recipes ?? [])])];
+    prior.recipe_attribution = [...(prior.recipe_attribution ?? []), ...(need.recipe_attribution ?? [])];
+    merged.set(key, prior);
+  }
+  for (const row of list.filter((item) => item.status === "active")) {
+    const key = storedGroceryKey(row, resolve);
+    if (!merged.has(key)) merged.set(key, { name: row.name, for_recipes: row.for_recipes });
+  }
+  const activeSubstitutions = substitutions.filter(
+    (decision) =>
+      merged.has(decision.original_key) &&
+      attributionSignature(merged.get(decision.original_key)!) === decision.attribution_signature,
+  );
+  return {
+    substitutions: activeSubstitutions,
+    coverage,
+    suppressedKeys: new Set(activeSubstitutions.map((decision) => decision.original_key)),
+    includePartials: new Set(coverage.map((d) => d.line_key)),
+  };
+}
+
+export async function readGroceryAttributionSignature(env: Env, tenant: string, key: string): Promise<string | null> {
+  const [list, derived, ctx] = await Promise.all([readGroceryList(env, tenant), deriveMenuNeeds(env, tenant), ingredientContext(env, { capture: false })]);
+  const relevant = derived.needs.filter((need) => ctx.resolve(need.name) === key);
+  const merged: MenuNeed = { name: key, for_recipes: [], recipe_attribution: [] };
+  for (const need of relevant) { merged.for_recipes = [...new Set([...(merged.for_recipes ?? []), ...(need.for_recipes ?? [])])]; merged.recipe_attribution!.push(...(need.recipe_attribution ?? [])); }
+  const stored = list.find((row) => storedGroceryKey(row, ctx.resolve) === key && row.status === "active");
+  if (stored) merged.for_recipes = [...new Set([...(merged.for_recipes ?? []), ...stored.for_recipes])];
+  return relevant.length || stored ? attributionSignature(merged) : null;
+}
+
 /**
  * Derive the meal plan's ingredient needs from the projected `ingredients_full` facets:
  * one `MenuNeed { name, for_recipes }` per canonical ingredient id, merged across the
@@ -53,7 +106,10 @@ export interface DerivedMenuNeeds {
  * no quantities are derived.
  */
 export async function deriveMenuNeeds(env: Env, tenant: string): Promise<DerivedMenuNeeds> {
-  const planned = await readMealPlan(env, tenant);
+  const planned = (await readMealPlan(env, tenant)).sort((a, b) =>
+    (a.planned_for ?? "9999-99-99").localeCompare(b.planned_for ?? "9999-99-99") ||
+    String(a.id ?? "").localeCompare(String(b.id ?? "")) || a.recipe.localeCompare(b.recipe),
+  );
   if (planned.length === 0) return { needs: [], underived: [] };
 
   const slugs = [...new Set(planned.map((p) => p.recipe))];
@@ -61,15 +117,17 @@ export async function deriveMenuNeeds(env: Env, tenant: string): Promise<Derived
 
   const needsByName = new Map<string, MenuNeed>();
   const underived: string[] = [];
-  for (const slug of slugs) {
+  for (const row of planned) {
+    const slug = row.recipe;
     const list = fullBySlug.get(slug);
     if (!list || list.length === 0) {
       underived.push(slug);
       continue;
     }
     for (const name of list) {
-      const need = needsByName.get(name) ?? { name, for_recipes: [] };
+      const need = needsByName.get(name) ?? { name, for_recipes: [], recipe_attribution: [] };
       if (!need.for_recipes!.includes(slug)) need.for_recipes!.push(slug);
+      if (!need.recipe_attribution!.some((a) => a.plan_id === row.id)) need.recipe_attribution!.push({ slug, planned_for: row.planned_for ?? null, plan_id: row.id });
       needsByName.set(name, need);
     }
   }
@@ -123,11 +181,11 @@ export function dropInFlightNeeds(
  * label) means placements carry `department` only, while `substitutes[].in_pantry`
  * (pure D1) and a satellite store's label-keyed `on_sale_hint` are still served.
  */
-export async function computeToBuyView(
+export async function computeToBuyProjection(
   env: Env,
   tenant: string,
   opts: { enrich?: boolean } = {},
-): Promise<ToBuyView> {
+): Promise<{ view: ToBuyView; decisions: GroceryDecisionInputs }> {
   // Resolve-only context (capture OFF) — a read never enqueues; degrade to the empty
   // context (cleaned passthrough) rather than failing the view on a resolver-read blip.
   const [list, pantryByKey, ctx, derived] = await Promise.all([
@@ -141,11 +199,14 @@ export async function computeToBuyView(
   // being bought; it reappears via the in_cart section, not as a to-buy line.
   const needs = dropInFlightNeeds(derived.needs, list, resolve);
 
-  const { to_buy, partials } = computeToBuy({
+  const decisions = await readGroceryDecisionInputs(env, tenant, needs, list, resolve);
+  const { to_buy, checked, partials } = computeToBuy({
     list,
     menuNeeds: needs,
     pantryNames: new Set(pantryByKey.keys()),
     resolve,
+    suppressedKeys: decisions.suppressedKeys,
+    includePartials: decisions.includePartials,
   });
 
   // Post-partition (computeToBuy itself is unchanged): a line whose key matches a stored
@@ -167,12 +228,30 @@ export async function computeToBuyView(
       quantity: line.quantity,
       assumed_quantity: line.assumed_quantity,
       for_recipes: line.for_recipes,
+      ...(line.recipe_attribution ? { recipe_attribution: line.recipe_attribution } : {}),
       origin: stored ? (inPlan ? "both" : "list") : "plan",
       key: line.key,
       // A derived (virtual) line is a recipe ingredient — food by construction.
       kind: stored?.kind ?? "grocery",
       domain: stored?.domain ?? "grocery",
       ...(stored?.note != null ? { note: stored.note } : {}),
+      checked_at: stored?.checked_at ?? null,
+      row_version: stored?.row_version ?? 0,
+      updated_at: stored?.updated_at ?? null,
+    };
+  });
+  const checkedLines: ToBuyViewLine[] = checked.map((line) => {
+    const stored = storedByKey.get(line.key);
+    const inPlan = planKeys.has(line.key);
+    return {
+      ...line,
+      origin: stored ? (inPlan ? "both" : "list") : "plan",
+      kind: stored?.kind ?? "grocery",
+      domain: stored?.domain ?? "grocery",
+      ...(stored?.note != null ? { note: stored.note } : {}),
+      checked_at: stored?.checked_at ?? null,
+      row_version: stored?.row_version ?? 0,
+      updated_at: stored?.updated_at ?? null,
     };
   });
 
@@ -181,24 +260,60 @@ export async function computeToBuyView(
   // fall back to the plain normalizeName for the non-food edge.
   const pantry_covered: PantryCoveredLine[] = partials.map((p) => {
     const meta = pantryByKey.get(resolve(p.name)) ?? pantryByKey.get(normalizeName(p.name));
+    const freshness = classifyPantryFreshness(meta?.category, meta?.last_verified_at);
     return {
+      key: resolve(p.name),
       name: p.name,
+      ...(meta?.display_name ? { display_name: meta.display_name } : {}),
       for_recipes: p.for_recipes,
       on_hand: {
         ...(meta?.quantity != null ? { quantity: meta.quantity } : {}),
         ...(meta?.category != null ? { category: meta.category } : {}),
         ...(meta?.last_verified_at != null ? { last_verified_at: meta.last_verified_at } : {}),
       },
+      freshness: freshness.freshness,
+      ...(freshness.reason ? { freshness_reason: freshness.reason } : {}),
+      buy_anyway: false,
     };
   });
 
   const in_cart: InCartLine[] = list
     .filter((it) => it.status === "in_cart")
-    .map((it) => ({ name: it.name, added_at: it.added_at }));
+    .map((it) => ({ name: it.name, key: storedGroceryKey(it, resolve), added_at: it.added_at, row_version: it.row_version ?? 1, sent_in: it.sent_in ?? null, quantity: it.quantity }));
 
-  const view: ToBuyView = { to_buy: lines, pantry_covered, in_cart, underived: derived.underived };
-  if (!opts.enrich) return view; // the default read: byte-identical, zero Kroger
-  return enrichView(env, tenant, view, ctx, storedByKey, list);
+  const view: ToBuyView = { to_buy: lines, checked: checkedLines, pantry_covered, in_cart, underived: [...new Set(derived.underived)] };
+  const result = opts.enrich ? await enrichView(env, tenant, view, ctx, storedByKey, list) : view;
+  const ordered: ToBuyView = {
+    ...result,
+    to_buy: [...result.to_buy].map(sortAttribution).sort((a, b) => a.key.localeCompare(b.key)),
+    checked: [...result.checked].map(sortAttribution).sort((a, b) => a.key.localeCompare(b.key)),
+    pantry_covered: [...result.pantry_covered].map((line) => ({ ...line, for_recipes: [...line.for_recipes].sort() })).sort((a, b) => (a.key ?? a.name).localeCompare(b.key ?? b.name)),
+    in_cart: [...result.in_cart].sort((a, b) => (a.key ?? a.name).localeCompare(b.key ?? b.name)),
+    underived: [...new Set(result.underived)].sort(),
+  };
+  return { view: { ...ordered, snapshot_version: await toBuyDigest(ordered) }, decisions };
+}
+
+export async function computeToBuyView(
+  env: Env,
+  tenant: string,
+  opts: { enrich?: boolean } = {},
+): Promise<ToBuyView> {
+  return (await computeToBuyProjection(env, tenant, opts)).view;
+}
+
+function sortAttribution<T extends ToBuyViewLine>(line: T): T {
+  return { ...line, for_recipes: [...line.for_recipes].sort(), ...(line.recipe_attribution ? { recipe_attribution: [...line.recipe_attribution].sort((a, b) => (a.planned_for ?? "9999-99-99").localeCompare(b.planned_for ?? "9999-99-99") || (a.plan_id ?? "").localeCompare(b.plan_id ?? "") || a.slug.localeCompare(b.slug)) } : {}), ...(line.substitutes ? { substitutes: [...line.substitutes].sort((a, b) => a.id.localeCompare(b.id)) } : {}) };
+}
+
+function stable(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stable).join(",")}]`;
+  if (value && typeof value === "object") { const row = value as Record<string, unknown>; return `{${Object.keys(row).sort().map((key) => `${JSON.stringify(key)}:${stable(row[key])}`).join(",")}}`; }
+  return JSON.stringify(value);
+}
+async function toBuyDigest(view: ToBuyView): Promise<string> {
+  const bytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(stable(view)));
+  return `sha256:${[...new Uint8Array(bytes)].map((x) => x.toString(16).padStart(2, "0")).join("")}`;
 }
 
 /** Precedence for the graph-derived department fallback (D6): membership parents are
@@ -277,7 +392,7 @@ async function enrichView(
   const saleItems = rollup ? filterByMinSavings(rollup.items, MIN_FLYER_DISCOUNT) : [];
   const flyer_as_of = rollup ? new Date(rollup.as_of).toISOString() : null;
 
-  const keys = view.to_buy.map((l) => l.key);
+  const keys = [...view.to_buy, ...view.checked].map((l) => l.key);
   const [cache, neighborsByKey, pantry] = await Promise.all([
     locationId !== null ? readSkuCache(env) : Promise.resolve([] as CachedMapping[]),
     readIdentityNeighbors(env, keys),
@@ -288,7 +403,7 @@ async function enrichView(
   // one identity-graph scan for the whole enriched view, not two.
   const substitutesByKey = await annotateSubstitutes(env, keys, { pantry, saleItems, ctx, neighborsByKey });
 
-  const to_buy = view.to_buy.map((line) => {
+  const enrichShoppingLine = (line: ToBuyViewLine): ToBuyViewLine => {
     const placement: LinePlacement = {};
     const row = placementRow(cache, line.key, locationId);
     if (row?.aisle) {
@@ -326,7 +441,9 @@ async function enrichView(
       placement: Object.keys(placement).length > 0 ? placement : null,
       substitutes: substitutesByKey.get(line.key) ?? [],
     };
-  });
+  };
+  const to_buy = view.to_buy.map(enrichShoppingLine);
+  const checked = view.checked.map(enrichShoppingLine);
 
   // Reify pantry_covered + in_cart with the SAME unified rule. A covered line's key is its resolved
   // name (food need); an active stored row that backs it supplies an override, else an id-named line
@@ -336,7 +453,7 @@ async function enrichView(
     const key = ctx.resolve(line.name);
     const stored = storedByKey.get(key);
     const foodIdNamed = line.name === key && (stored ? isFoodItem(stored.kind, stored.domain) : true);
-    const display_name = stored?.display_name ?? (foodIdNamed ? ctx.idLabel(key) : line.name);
+    const display_name = line.display_name ?? stored?.display_name ?? (foodIdNamed ? ctx.idLabel(key) : line.name);
     return { ...line, display_name };
   });
   const inCartByName = new Map(list.filter((it) => it.status === "in_cart").map((it) => [it.name, it] as const));
@@ -351,6 +468,7 @@ async function enrichView(
   return {
     ...view,
     to_buy,
+    checked,
     pantry_covered,
     in_cart,
     location: locationId !== null ? { id: locationId } : null,

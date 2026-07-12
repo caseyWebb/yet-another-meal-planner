@@ -45,28 +45,29 @@ test("airplane mode opens the grocery list from the persisted cache; offline che
   await expect(groceryPage.item(ITEM_A)).toBeVisible(); // rendered from IndexedDB
   await groceryPage.captureForReview("grocery-offline");
 
-  // ── Leg 2: an offline check-off is optimistic + queued, and replays on reconnect. ──
-  await groceryPage.toggleCart(ITEM_A);
-  await groceryPage.expectInCartGroup(ITEM_A); // optimistic truth at tap time
+  // ── Leg 2: an offline check is optimistic + queued, and replays on reconnect. ──
+  await groceryPage.toggleChecked(ITEM_A);
+  await expect(groceryPage.item(ITEM_A)).toHaveAttribute("data-checked", "true");
   expect(await page.evaluate(() => navigator.onLine)).toBe(false); // still offline: nothing hit the server
   await context.setOffline(false);
-  // The paused mutation resumes; the server's row reaches in_cart (browser-fetch read).
-  await expect.poll(() => groceryPage.rowStatus(ITEM_A)).toBe("in_cart");
+  // The paused mutation resumes; checking never changes cart lifecycle status.
+  await expect.poll(() => groceryPage.rowChecked(ITEM_A)).toBe(true);
+  expect(await groceryPage.rowStatus(ITEM_A)).toBe("active");
   await expect(shellPage.offlinePill()).toHaveCount(0); // the indicator clears on reconnect
 
   // ── Leg 3: a queued write SURVIVES an offline reload and replays after restore. ──
   await context.setOffline(true);
-  await groceryPage.toggleCart(ITEM_B);
-  await groceryPage.expectInCartGroup(ITEM_B);
+  await groceryPage.toggleChecked(ITEM_B);
+  await expect(groceryPage.item(ITEM_B)).toHaveAttribute("data-checked", "true");
   // Poll until the paused mutation itself is AT REST (same throttle as the queries).
   await waitForPersistedMutations(page, 1);
   await page.reload({ waitUntil: "domcontentloaded" }); // still offline: shell from precache…
   await groceryPage.landmark();
-  await groceryPage.expectInCartGroup(ITEM_B); // …optimistic state restored with the snapshot
+  await expect(groceryPage.item(ITEM_B)).toHaveAttribute("data-checked", "true"); // …optimistic state restored with the snapshot
   await context.setOffline(false);
   // resume-after-restore re-binds the persisted variables to the registered default
   // and replays; the server-visible row converges.
-  await expect.poll(() => groceryPage.rowStatus(ITEM_B)).toBe("in_cart");
+  await expect.poll(() => groceryPage.rowChecked(ITEM_B)).toBe(true);
 
   // Leave the seeded state for the later specs (sequential suite).
   await groceryPage.removeRow(ITEM_A);

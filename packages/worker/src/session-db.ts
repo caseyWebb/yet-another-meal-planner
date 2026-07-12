@@ -372,6 +372,7 @@ export async function markPantryVerifiedRows(
 /** One pantry row's verify metadata, keyed for the to-buy view's coverage join. */
 export interface PantryMeta {
   name: string;
+  display_name: string | null;
   quantity: string | null;
   category: string | null;
   last_verified_at: string | null;
@@ -385,13 +386,13 @@ export interface PantryMeta {
  */
 export async function readPantryByKey(env: Env, tenant: string): Promise<Map<string, PantryMeta>> {
   const rows = await db(env).all<{ name: string; normalized_name: string } & Omit<PantryMeta, "name">>(
-    "SELECT name, normalized_name, quantity, category, last_verified_at FROM pantry WHERE tenant = ?1",
+    "SELECT name, normalized_name, display_name, quantity, category, last_verified_at FROM pantry WHERE tenant = ?1",
     tenant,
   );
   return new Map(
     rows.map((r) => [
       r.normalized_name,
-      { name: r.name, quantity: r.quantity, category: r.category, last_verified_at: r.last_verified_at },
+      { name: r.name, display_name: r.display_name, quantity: r.quantity, category: r.category, last_verified_at: r.last_verified_at },
     ]),
   );
 }
@@ -503,6 +504,9 @@ interface GroceryRow {
   added_at: string | null;
   ordered_at: string | null;
   sent_in: string | null;
+  checked_at: string | null;
+  row_version: number | null;
+  updated_at: string | null;
 }
 
 function groceryItemOf(r: GroceryRow): GroceryItem {
@@ -520,12 +524,15 @@ function groceryItemOf(r: GroceryRow): GroceryItem {
     added_at: r.added_at ?? "",
     ordered_at: r.ordered_at ?? null,
     sent_in: r.sent_in ?? null,
+    checked_at: r.checked_at ?? null,
+    row_version: r.row_version ?? 1,
+    updated_at: r.updated_at ?? null,
   };
 }
 
 const GROCERY_SELECT =
   "SELECT name, normalized_name, display_name, quantity, kind, domain, status, source, for_recipes, note, " +
-  "added_at, ordered_at, sent_in FROM grocery_list WHERE tenant = ?1";
+  "added_at, ordered_at, sent_in, checked_at, row_version, updated_at FROM grocery_list WHERE tenant = ?1";
 
 /** Read the caller's grocery-list rows, with an optional status filter (WHERE). */
 export async function readGroceryList(env: Env, tenant: string, status?: string): Promise<GroceryItem[]> {
@@ -575,13 +582,14 @@ export function groceryUpsertStmt(
 ): D1PreparedStatement {
   return db(env).prepare(
     "INSERT INTO grocery_list (tenant, name, normalized_name, quantity, kind, domain, status, " +
-      "source, for_recipes, note, added_at, ordered_at, display_name, sent_in) " +
-      "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14) " +
+      "source, for_recipes, note, added_at, ordered_at, display_name, sent_in, checked_at, row_version, updated_at) " +
+      "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17) " +
       "ON CONFLICT(tenant, normalized_name) DO UPDATE SET " +
       "name = excluded.name, quantity = excluded.quantity, kind = excluded.kind, " +
       "domain = excluded.domain, status = excluded.status, source = excluded.source, " +
       "for_recipes = excluded.for_recipes, note = excluded.note, ordered_at = excluded.ordered_at, " +
-      "display_name = excluded.display_name, sent_in = excluded.sent_in",
+      "display_name = excluded.display_name, sent_in = excluded.sent_in, " +
+      "decision_owner_token = NULL, row_version = grocery_list.row_version + 1, updated_at = ?18",
     tenant,
     item.name,
     // Persist the STORED key the item carries (add-by-id rows key on the given id, which is NOT
@@ -600,6 +608,10 @@ export function groceryUpsertStmt(
     // The internal send linkage rides the in-memory item (stamped/cleared only by the
     // order-flush and status-transition ops — no tool/route input reaches it).
     item.sent_in ?? null,
+    item.checked_at ?? null,
+    item.row_version ?? 1,
+    item.updated_at ?? new Date().toISOString(),
+    new Date().toISOString(),
   );
 }
 

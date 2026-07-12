@@ -98,6 +98,24 @@ describe("deriveMenuNeeds", () => {
   });
 });
 
+describe("to-buy snapshot freshness", () => {
+  it("returns an opaque digest on plain and enriched reads and changes with row state", async () => {
+    const h = sqliteEnv([T]);
+    await addGroceryRow(h.env, T, { name: "Milk" }, TODAY);
+    const plain = await computeToBuyView(h.env, T);
+    const enriched = await computeToBuyView(h.env, T, { enrich: true });
+    expect(plain.snapshot_version).toMatch(/^sha256:[a-f0-9]{64}$/);
+    expect(enriched.snapshot_version).toMatch(/^sha256:[a-f0-9]{64}$/);
+    await updateGroceryRow(h.env, T, "Milk", { note: "two cartons" });
+    expect((await computeToBuyView(h.env, T)).snapshot_version).not.toBe(plain.snapshot_version);
+  });
+  it("propagates decision storage failures instead of silently changing shopping truth", async () => {
+    const h = sqliteEnv([T]);
+    h.raw.exec("DROP TABLE grocery_substitution_decisions");
+    await expect(computeToBuyView(h.env, T)).rejects.toMatchObject({ code: "storage_error" });
+  });
+});
+
 describe("computeToBuyView", () => {
   it("partitions lines into origin plan / list / both and unions for_recipes on both", async () => {
     const h = sqliteEnv([T]);
@@ -192,7 +210,7 @@ describe("computeToBuyView", () => {
     await addGroceryRow(h.env, T, { name: "salt" }, TODAY);
 
     const view = await computeToBuyView(h.env, T);
-    expect(view.in_cart).toEqual([{ name: "olive oil", added_at: TODAY }]);
+    expect(view.in_cart).toEqual([{ name: "olive oil", key: "olive oil", added_at: TODAY, row_version: 2, sent_in: null, quantity: "1" }]);
     expect(view.to_buy.map((l) => l.name)).toEqual(["salt"]);
   });
 
@@ -351,14 +369,14 @@ describe("computeToBuyView — enrich (member-app-differentiators D6, generalize
     await (h.env.KROGER_KV as unknown as { put(k: string, v: string): Promise<void> }).put(key, JSON.stringify(rollup));
   }
 
-  it("the DEFAULT read is byte-identical — no placement, no location key, no Kroger read", async () => {
+  it("the DEFAULT read carries concurrency/check state but no placement, location, or Kroger read", async () => {
     const h = sqliteEnv([T]);
     seedProfile(h, { primary: "kroger", preferred_location: "03500520" });
     await addGroceryRow(h.env, T, { name: "flour" }, TODAY);
     seedSkuAisle(h, "flour", "03500520", { number: "12", description: "Baking" });
     const view = await computeToBuyView(h.env, T);
-    expect(JSON.stringify(view)).toBe(
-      JSON.stringify({
+    expect(view).toEqual(
+      {
         to_buy: [
           {
             name: "flour",
@@ -369,12 +387,17 @@ describe("computeToBuyView — enrich (member-app-differentiators D6, generalize
             key: "flour",
             kind: "grocery",
             domain: "grocery",
+            checked_at: null,
+            row_version: 1,
+            updated_at: expect.any(String),
           },
         ],
+        checked: [],
         pantry_covered: [],
         in_cart: [],
         underived: [],
-      }),
+        snapshot_version: expect.stringMatching(/^sha256:/),
+      },
     );
   });
 
@@ -400,6 +423,25 @@ describe("computeToBuyView — enrich (member-app-differentiators D6, generalize
     });
     // No sku row, no graph parent → an honest null placement (never a fake aisle).
     expect(byKey.get("saffron")!.placement).toBeNull();
+  });
+
+  it("checking a line changes only its partition, not enrichment or non-food display guards", async () => {
+    const h = sqliteEnv([T]);
+    seedProfile(h, { primary: "kroger", preferred_location: "03500520" });
+    seedDeptGraph(h);
+    seedNode(h, "paper towels", "Graph-owned label");
+    await addGroceryRow(h.env, T, { name: "flour" }, TODAY);
+    await addGroceryRow(h.env, T, { name: "paper towels", kind: "household" }, TODAY);
+    seedSkuAisle(h, "flour", "03500520", { number: "12", description: "Baking" });
+    const unchecked = await computeToBuyView(h.env, T, { enrich: true });
+    const before = new Map(unchecked.to_buy.map((line) => [line.key, line]));
+    h.raw.prepare("UPDATE grocery_list SET checked_at='2026-07-12T12:00:00Z',row_version=row_version+1 WHERE tenant=?").run(T);
+    const checked = await computeToBuyView(h.env, T, { enrich: true });
+    const after = new Map(checked.checked.map((line) => [line.key, line]));
+    expect(after.get("flour")?.placement).toEqual(before.get("flour")?.placement);
+    expect(after.get("flour")?.display_name).toBe(before.get("flour")?.display_name);
+    expect(after.get("flour")?.substitutes).toEqual(before.get("flour")?.substitutes);
+    expect(after.get("paper towels")?.display_name).toBe("paper towels");
   });
 
   it("the legacy untagged '' row is the fallback when no location-tagged row exists", async () => {
@@ -440,7 +482,7 @@ describe("computeToBuyView — enrich (member-app-differentiators D6, generalize
 
     const view = await computeToBuyView(h.env, T, { enrich: true });
     const line = view.to_buy.find((l) => l.key === "cabbage::type-napa")!;
-    expect(line.substitutes?.map((s) => s.id)).toEqual(["cabbage::color-green", "cabbage::color-red", "cabbage"]);
+    expect(line.substitutes?.map((s) => s.id)).toEqual(["cabbage", "cabbage::color-green", "cabbage::color-red"]);
     expect(line.substitutes?.find((s) => s.id === "cabbage::color-red")!.in_pantry).toBe(true);
     expect(line.substitutes?.find((s) => s.id === "cabbage::color-green")!.on_sale_hint).toMatchObject({ sku: "K1" });
     expect(line.substitutes?.find((s) => s.id === "cabbage")!.in_pantry).toBe(false);

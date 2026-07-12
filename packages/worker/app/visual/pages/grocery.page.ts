@@ -1,393 +1,250 @@
-// Grocery (member-app-core 7.7 + member-app-grocery, refactored by inline-
-// substitution-hints): the derived to-buy view (virtual rows with plan attribution,
-// pantry coverage + verify nudges, materialize-on-pin, the underived notice) — each
-// row's INLINE substitute hints (siblings + in_pantry/on_sale_hint pills, a per-row
-// accept/dismiss, live against the seeded Worker — no panel) — the P1 stored-row
-// interactions (category groups, bottom add-row, explicit in-cart set, remove, Clear
-// purchased), the order panel (preview → disposition → commit, plus its same-identity
-// alternative rows fetched at preview time; driven via route interception in the order
-// specs), and the user-asserted Mark order placed advance. Also owns the API-level
-// plan/list provisioning the specs use (the propose page object's pattern) so each
-// spec pins its own exact derivation inputs.
 import { expect } from "@playwright/test";
 import { AppPage, type Locator } from "./base.page";
 
 export class GroceryPage extends AppPage {
-  readonly path = "/grocery";
-  readonly area = "grocery";
-
-  async landmark(): Promise<void> {
-    await expect(this.page.getByTestId("grocery-page")).toBeVisible();
-  }
-
-  launcher(): Locator {
-    return this.page.getByTestId("store-launcher");
-  }
-
-  launcherEntry(id: string): Locator {
-    return this.launcher().locator(`[data-testid="store-launcher-entry"][data-launcher-id="${id}"]`);
-  }
-
-  async launch(id: string): Promise<void> {
-    await this.launcherEntry(id).getByRole("button").click();
-  }
-
-  // --- provisioning (through the browser's session fetch) -----------------------
-
-  /** Converge the meal plan to EXACTLY these recipes (the derivation's input). */
-  async setPlan(recipes: string[]): Promise<void> {
-    await this.page.evaluate(async (want: string[]) => {
-      const res = await fetch("/api/plan");
-      const { planned } = (await res.json()) as { planned: { recipe: string }[] };
-      const ops: unknown[] = [];
-      for (const p of planned) if (!want.includes(p.recipe)) ops.push({ op: "remove", recipe: p.recipe });
-      for (const r of want) if (!planned.some((p) => p.recipe === r)) ops.push({ op: "add", recipe: r });
-      if (!ops.length) return;
-      await fetch("/api/plan/ops", {
-        method: "POST",
-        headers: { "content-type": "application/json", "X-App-Csrf": "1" },
-        body: JSON.stringify({ ops }),
-      });
-    }, recipes);
-  }
-
-  /** Remove a grocery row by name through the real API (spec cleanup/provisioning). */
-  async removeRow(name: string): Promise<void> {
-    await this.page.evaluate(async (n: string) => {
-      await fetch(`/api/grocery/items/${encodeURIComponent(n)}`, { method: "DELETE", headers: { "X-App-Csrf": "1" } });
-    }, name);
-  }
-
-  /** Add a grocery row through the real API (spec provisioning). */
-  async addRow(name: string, extra: Record<string, unknown> = {}): Promise<void> {
-    await this.page.evaluate(
-      async (input: Record<string, unknown>) => {
-        await fetch("/api/grocery/items", {
-          method: "POST",
-          headers: { "content-type": "application/json", "X-App-Csrf": "1" },
-          body: JSON.stringify(input),
-        });
-      },
-      { name, ...extra },
-    );
-  }
-
-  /** Set a row's status through the real API (in_cart provisioning for the order specs). */
-  async setRowStatus(name: string, status: "active" | "in_cart"): Promise<void> {
-    await this.page.evaluate(
-      async ([n, s]: [string, string]) => {
-        await fetch(`/api/grocery/items/${encodeURIComponent(n)}`, {
-          method: "PATCH",
-          headers: { "content-type": "application/json", "X-App-Csrf": "1" },
-          body: JSON.stringify({ status: s }),
-        });
-      },
-      [name, status] as [string, string],
-    );
-  }
-
-  /** Return every in_cart row to active (a clean stale-cart slate for the order specs). */
-  async deactivateInCart(): Promise<void> {
-    await this.page.evaluate(async () => {
-      const res = await fetch("/api/grocery");
-      const { items } = (await res.json()) as { items: { name: string; status: string }[] };
-      for (const it of items) {
-        if (it.status !== "in_cart") continue;
-        await fetch(`/api/grocery/items/${encodeURIComponent(it.name)}`, {
-          method: "PATCH",
-          headers: { "content-type": "application/json", "X-App-Csrf": "1" },
-          body: JSON.stringify({ status: "active" }),
-        });
-      }
-    });
-  }
-
-  /** A row's stored status via the API list read (undefined when absent). Matches the query
-   *  against EITHER the stored `name` or the canonical `normalized_name`, so an add-by-id row
-   *  (whose `name` is the display label and `normalized_name` is the id) is found by its id. */
-  async rowStatus(name: string): Promise<string | undefined> {
-    return this.page.evaluate(async (n: string) => {
-      const res = await fetch("/api/grocery");
-      const { items } = (await res.json()) as { items: { name: string; normalized_name?: string; status: string }[] };
-      const k = n.toLowerCase();
-      return items.find((i) => i.name.toLowerCase() === k || i.normalized_name?.toLowerCase() === k)?.status;
-    }, name);
-  }
-
-  /** A row's full stored shape via the API list read (undefined when absent) — the reified
-   *  split the display-name change asserts on: `name` (surface form / stored label),
-   *  `normalized_name` (canonical dedup key), `display_name` (curated label, may be null).
-   *  Matches EITHER `name` or `normalized_name` so an add-by-id row is found by its canonical id. */
-  async row(
-    name: string,
-  ): Promise<{ name: string; normalized_name?: string; display_name: string | null; status: string } | undefined> {
-    return this.page.evaluate(async (n: string) => {
-      const res = await fetch("/api/grocery");
-      const { items } = (await res.json()) as {
-        items: { name: string; normalized_name?: string; display_name: string | null; status: string }[];
-      };
-      const k = n.toLowerCase();
-      return items.find((i) => i.name.toLowerCase() === k || i.normalized_name?.toLowerCase() === k);
-    }, name);
-  }
-
-  // --- the to-buy list -----------------------------------------------------------
-
-  /** A to-buy line (category groups only — the in-cart group renders the same name
-   *  separately during transitions, so the two locators stay strict-mode disjoint). */
-  item(name: string): Locator {
-    return this.page.locator(
-      `[data-testid^="grocery-group-"] [data-testid="grocery-item"][data-name="${name}"]`,
-    );
-  }
-
-  /** Any rendering of the name — to-buy or in-cart (absence assertions). */
-  anyItem(name: string): Locator {
-    return this.page.locator(`[data-testid="grocery-item"][data-name="${name}"]`);
-  }
-
-  /** The in-cart group's rendering of a row. */
-  inCartItem(name: string): Locator {
-    return this.page
-      .getByTestId("grocery-in-cart")
-      .locator(`[data-testid="grocery-item"][data-name="${name}"]`);
-  }
-
-  /** Move an in-cart row back to the list (the explicit set's other direction). */
-  async uncart(name: string): Promise<void> {
-    await this.inCartItem(name).getByTestId("cart-toggle").click();
-  }
-
-  async expectOrigin(name: string, origin: "list" | "plan" | "both"): Promise<void> {
-    await expect(this.item(name)).toHaveAttribute("data-origin", origin);
-  }
-
-  /** The "from your plan" cue on a virtual row. */
-  originCue(name: string): Locator {
-    return this.item(name).getByTestId("origin-plan");
-  }
-
-  /** Pin (materialize) a virtual row — the D6 edit path. */
-  async pin(name: string): Promise<void> {
-    await this.item(name).getByTestId("grocery-pin").click();
-  }
-
-  async toggleCart(name: string): Promise<void> {
-    await this.item(name).getByTestId("cart-toggle").click();
-  }
-
-  async expectInCartGroup(name: string): Promise<void> {
-    await expect(this.inCartItem(name)).toBeVisible();
-  }
-
-  async expectInCategoryGroup(name: string, kind: "grocery" | "household" | "other"): Promise<void> {
-    await expect(
-      this.page.getByTestId(`grocery-group-${kind}`).locator(`[data-testid="grocery-item"][data-name="${name}"]`),
-    ).toBeVisible();
-  }
-
-  async addItem(name: string, qty?: string): Promise<void> {
-    await this.page.getByLabel("Item name").fill(name);
-    if (qty) await this.page.getByLabel("Quantity").fill(qty);
-    await this.page.getByLabel("Item name").press("Enter");
-  }
-
-  async clearPurchased(): Promise<void> {
-    await this.page.getByTestId("clear-purchased").click();
-  }
-
-  async markOrderPlaced(): Promise<void> {
-    await this.page.getByTestId("mark-order-placed").click();
-  }
-
-  underivedNotice(): Locator {
-    return this.page.getByTestId("grocery-underived");
-  }
-
-  // --- pantry coverage -----------------------------------------------------------
-
-  coveredItem(name: string): Locator {
-    return this.page.locator(`[data-testid="pantry-have-item"][data-name="${name}"]`);
-  }
-
-  staleFlag(name: string): Locator {
-    return this.coveredItem(name).getByTestId("ph-stale-flag");
-  }
-
-  async verifyCovered(name: string): Promise<void> {
-    await this.coveredItem(name).getByTestId("ph-verify").click();
-  }
-
-  async buyFresh(name: string): Promise<void> {
-    await this.coveredItem(name).getByTestId("ph-buy").click();
-  }
-
-  // --- the order panel -----------------------------------------------------------
-
-  async openOrder(): Promise<void> {
-    await this.page.getByTestId("order-open").click();
-  }
-
-  orderPanel(): Locator {
-    return this.page.getByTestId("order-panel");
-  }
-
-  orderLine(name: string): Locator {
-    return this.page.locator(`[data-testid="order-line"][data-name="${name}"]`);
-  }
-
-  /** The order dialog's same-identity alternative row for a resolved line
-   *  (inline-substitution-hints D5) — scoped to the dialog so it never collides with
-   *  the underlying to-buy list's own inline hint rows (`subRow`), which share the
-   *  same testids and stay mounted behind the dialog. */
-  orderSubRow(name: string): Locator {
-    return this.orderPanel().locator(`[data-testid="subs-row"][data-for="${name}"]`);
-  }
-
-  async excludeLine(name: string): Promise<void> {
-    await this.orderLine(name).getByTestId("order-exclude").click();
-  }
-
-  async setLineQty(name: string, qty: number): Promise<void> {
-    await this.orderLine(name).getByTestId("order-qty").locator("input").fill(String(qty));
-  }
-
-  checkpointItem(name: string): Locator {
-    return this.page.locator(`[data-testid="order-checkpoint-item"][data-name="${name}"]`);
-  }
-
-  async pickCandidate(name: string, sku: string): Promise<void> {
-    await this.checkpointItem(name).locator(`[data-testid="order-cand"][data-sku="${sku}"]`).check();
-  }
-
-  partialRow(name: string): Locator {
-    return this.page.locator(`[data-testid="order-partial"][data-name="${name}"]`);
-  }
-
-  async confirmPartial(name: string): Promise<void> {
-    await this.partialRow(name).getByTestId("order-partial-confirm").check();
-  }
-
-  staleWarning(): Locator {
-    return this.page.getByTestId("order-stale-warning");
-  }
-
-  async ackStaleCart(): Promise<void> {
-    await this.page.getByTestId("order-stale-ack").check();
-  }
-
-  commitButton(): Locator {
-    return this.page.getByTestId("order-commit");
-  }
-
-  async commitOrder(): Promise<void> {
-    await this.commitButton().click();
-  }
-
-  resultCart(): Locator {
-    return this.page.getByTestId("order-result-cart");
-  }
-
-  resultList(): Locator {
-    return this.page.getByTestId("order-result-list");
-  }
-
-  relinkButton(): Locator {
-    return this.page.getByTestId("order-relink");
-  }
-
-  // --- inline substitute hints on the to-buy list (inline-substitution-hints D6/D7) --
-  // Cross-ingredient sibling hints render INLINE on their to-buy row (no panel) —
-  // scoped through `item(name)` so a row's own hints never collide with the order
-  // dialog's alternative rows (`orderSubRow`, below), which reuse the same testids.
-
-  /** A to-buy line's inline substitute-hint row(s) — one per `substitutes[]` entry. */
-  subRows(name: string): Locator {
-    return this.item(name).locator('[data-testid="subs-row"]');
-  }
-
-  /** The first (commonly only) inline hint row for a to-buy line. */
-  subRow(name: string): Locator {
-    return this.subRows(name).first();
-  }
-
-  /** A hint row's offered swap target label (`sib.label` — the identity node's curated
-   *  display via `labelOf`, reify-ingredient-display-names). No data-testid on the span,
-   *  so this scopes to its class within the row. */
-  subLabel(row: Locator): Locator {
-    return row.locator(".subs-to");
-  }
-
-  async acceptSub(row: Locator): Promise<void> {
-    await row.getByTestId("subs-accept").click();
-  }
-
-  async dismissSub(row: Locator): Promise<void> {
-    await row.getByTestId("subs-dismiss").click();
-  }
-
-  // --- the grouping toggle + aisle groups (member-app-differentiators 5.3) --------
-
-  async setGroupMode(mode: "category" | "aisle"): Promise<void> {
-    await this.page
-      .getByTestId("group-mode")
-      .locator("button", { hasText: mode === "aisle" ? "Aisle" : "Category" })
-      .click();
-  }
-
-  aisleGroup(number: string): Locator {
-    return this.page.getByTestId(`grocery-group-aisle-${number}`);
-  }
-
-  /** Every numeric aisle group (the no-location degradation asserts none render). */
-  aisleGroups(): Locator {
-    return this.page.locator('[data-testid^="grocery-group-aisle-"]');
-  }
-
-  /** A graph-derived department group (the no-location fallback tier). */
-  deptGroup(department: string): Locator {
-    return this.page.getByTestId(`grocery-group-dept-${department}`);
-  }
-
-  /** A kind bucket (the final fallback tier — same testids as category mode). */
-  kindGroup(kind: "grocery" | "household" | "other"): Locator {
-    return this.page.getByTestId(`grocery-group-${kind}`);
-  }
-
-  unknownGroup(): Locator {
-    return this.page.getByTestId("grocery-group-unknown");
-  }
-
-  /** A department sub-group inside the "Aisle unknown" bucket. */
-  unknownDept(label: string): Locator {
-    return this.unknownGroup().locator(`[data-testid="grocery-subgroup"][data-dept="${label}"]`);
-  }
-
-  /** Patch the profile's stores block through the real class-(a) preferences write. */
-  async setStores(stores: Record<string, unknown>): Promise<void> {
-    await this.page.evaluate(async (s: Record<string, unknown>) => {
-      const res = await fetch("/api/profile/preferences");
-      const etag = res.headers.get("etag") ?? "";
-      await fetch("/api/profile/preferences", {
-        method: "PATCH",
-        headers: { "content-type": "application/json", "X-App-Csrf": "1", "If-Match": etag },
-        body: JSON.stringify({ patch: { stores: s } }),
-      });
-    }, stores);
-  }
-
-  /** The W3 boundary check, through the BROWSER's session-authenticated fetch
-   *  (the __Host- session cookie only rides browser requests — Playwright's
-   *  request context refuses Secure cookies over http). */
-  async attemptOrderedWrite(name: string): Promise<{ status: number; error: string; ordered_at: string | null }> {
-    return this.page.evaluate(async (itemName: string) => {
-      const res = await fetch(`/api/grocery/items/${encodeURIComponent(itemName)}`, {
-        method: "PATCH",
-        headers: { "content-type": "application/json", "X-App-Csrf": "1" },
-        body: JSON.stringify({ status: "ordered" }),
-      });
-      const body = (await res.json()) as { error?: string; item?: { ordered_at: string | null } };
-      return { status: res.status, error: body.error ?? "", ordered_at: body.item?.ordered_at ?? null };
-    }, name);
-  }
+	readonly path = "/grocery";
+	readonly area = "grocery";
+	async landmark(): Promise<void> {
+		await expect(this.page.getByTestId("grocery-page")).toBeVisible();
+	}
+	launcher(): Locator {
+		return this.page.getByTestId("store-launcher");
+	}
+	launcherEntry(id: string): Locator {
+		return this.launcher().locator(
+			`[data-testid="store-launcher-entry"][data-launcher-id="${id}"]`,
+		);
+	}
+	async launch(id: string): Promise<void> {
+		await this.launcherEntry(id).getByRole("button").click();
+	}
+
+	item(keyOrName: string): Locator {
+		return this.page
+			.locator(
+				`[data-testid="grocery-line"][data-key="${keyOrName}"], [data-testid="grocery-line"][data-name="${keyOrName}"]`,
+			)
+			.first();
+	}
+	anyItem(keyOrName: string): Locator {
+		return this.page.locator(
+			`[data-testid="grocery-line"][data-key="${keyOrName}"], [data-testid="grocery-line"][data-name="${keyOrName}"], [data-testid="grocery-cart-line"][data-key="${keyOrName}"]`,
+		);
+	}
+	cartItem(key: string): Locator {
+		return this.page.locator(
+			`[data-testid="grocery-cart-line"][data-key="${key}"]`,
+		);
+	}
+	coveredItem(key: string): Locator {
+		return this.page.locator(
+			`[data-testid="grocery-pantry-line"][data-key="${key}"]`,
+		);
+	}
+	substitutionHint(keyOrName: string, substituteId?: string): Locator {
+		return this.item(keyOrName).locator(
+			`[data-testid="grocery-substitute"]${substituteId ? `[data-substitute-id="${substituteId}"]` : ""}`,
+		);
+	}
+	async toggleChecked(keyOrName: string): Promise<void> {
+		await this.item(keyOrName).getByRole("checkbox").click();
+	}
+	async setGroupMode(mode: "Department" | "Recipe"): Promise<void> {
+		await this.page
+			.getByRole("radiogroup", { name: "Group grocery list" })
+			.getByRole("radio", { name: mode })
+			.click();
+	}
+	group(label: string): Locator {
+		return this.page.locator(
+			`[data-testid="grocery-group"][data-group="${label}"]`,
+		);
+	}
+	cartGroups(): Locator {
+		return this.page.getByTestId("grocery-cart-group");
+	}
+	async addItem(name: string): Promise<void> {
+		await this.page.getByLabel("Add grocery item").fill(name);
+		await this.page.getByLabel("Add grocery item").press("Enter");
+	}
+
+	async addRow(
+		name: string,
+		extra: Record<string, unknown> = {},
+	): Promise<void> {
+		await this.page.evaluate(
+			async (input) => {
+				await fetch("/api/grocery/items", {
+					method: "POST",
+					headers: { "content-type": "application/json", "X-App-Csrf": "1" },
+					body: JSON.stringify(input),
+				});
+			},
+			{ name, ...extra },
+		);
+	}
+	async setPlan(recipes: string[]): Promise<void> {
+		await this.page.evaluate(async (want) => {
+			const { planned } = (await (await fetch("/api/plan")).json()) as {
+				planned: { id: string; recipe: string }[];
+			};
+			const ops: unknown[] = planned
+				.filter((row) => !want.includes(row.recipe))
+				.map((row) => ({ op: "remove", id: row.id }));
+			for (const recipe of want)
+				if (!planned.some((row) => row.recipe === recipe))
+					ops.push({ op: "add", recipe });
+			if (ops.length)
+				await fetch("/api/plan/ops", {
+					method: "POST",
+					headers: { "content-type": "application/json", "X-App-Csrf": "1" },
+					body: JSON.stringify({ ops }),
+				});
+		}, recipes);
+	}
+	async removeRow(name: string): Promise<void> {
+		await this.page.evaluate(async (n) => {
+			await fetch(`/api/grocery/items/${encodeURIComponent(n)}`, {
+				method: "DELETE",
+				headers: { "X-App-Csrf": "1" },
+			});
+		}, name);
+	}
+	async setRowStatus(
+		name: string,
+		status: "active" | "in_cart",
+	): Promise<void> {
+		await this.page.evaluate(
+			async ([n, s]) => {
+				await fetch(`/api/grocery/items/${encodeURIComponent(n)}`, {
+					method: "PATCH",
+					headers: { "content-type": "application/json", "X-App-Csrf": "1" },
+					body: JSON.stringify({ status: s }),
+				});
+			},
+			[name, status],
+		);
+	}
+	async deactivateInCart(): Promise<void> {
+		await this.page.evaluate(async () => {
+			const { items } = (await (await fetch("/api/grocery")).json()) as {
+				items: { name: string; status: string }[];
+			};
+			for (const item of items)
+				if (item.status === "in_cart")
+					await fetch(`/api/grocery/items/${encodeURIComponent(item.name)}`, {
+						method: "PATCH",
+						headers: { "content-type": "application/json", "X-App-Csrf": "1" },
+						body: JSON.stringify({ status: "active" }),
+					});
+		});
+	}
+	async row(name: string): Promise<Record<string, unknown> | undefined> {
+		return this.page.evaluate(async (n) => {
+			const { items } = (await (await fetch("/api/grocery")).json()) as {
+				items: Record<string, unknown>[];
+			};
+			return items.find(
+				(item) =>
+					String(item.name).toLowerCase() === n.toLowerCase() ||
+					String(item.normalized_name).toLowerCase() === n.toLowerCase(),
+			);
+		}, name);
+	}
+	async rowStatus(name: string): Promise<string | undefined> {
+		return (await this.row(name))?.status as string | undefined;
+	}
+	async rowChecked(name: string): Promise<boolean | undefined> {
+		const row = await this.row(name);
+		return row ? row.checked_at != null : undefined;
+	}
+	async setStores(stores: Record<string, unknown>): Promise<void> {
+		await this.page.evaluate(async (s) => {
+			const res = await fetch("/api/profile/preferences");
+			const etag = res.headers.get("etag") ?? "";
+			await fetch("/api/profile/preferences", {
+				method: "PATCH",
+				headers: {
+					"content-type": "application/json",
+					"X-App-Csrf": "1",
+					"If-Match": etag,
+				},
+				body: JSON.stringify({ patch: { stores: s } }),
+			});
+		}, stores);
+	}
+
+	async openOrder(): Promise<void> {
+		await this.page.getByTestId("order-open").click();
+	}
+	orderPanel(): Locator {
+		return this.page.getByTestId("order-panel");
+	}
+	orderLine(name: string): Locator {
+		return this.orderPanel().locator(
+			`[data-testid="order-line"][data-name="${name}"]`,
+		);
+	}
+	orderSubRow(name: string): Locator {
+		return this.orderPanel().locator(
+			`[data-testid="subs-row"][data-for="${name}"]`,
+		);
+	}
+	async acceptOrderSub(name: string): Promise<void> {
+		await this.orderSubRow(name).getByTestId("subs-accept").click();
+	}
+	async excludeLine(name: string): Promise<void> {
+		await this.orderLine(name).getByTestId("order-exclude").click();
+	}
+	async setLineQty(name: string, quantity: number): Promise<void> {
+		await this.orderLine(name)
+			.getByTestId("order-qty")
+			.locator("input")
+			.fill(String(quantity));
+	}
+	checkpointItem(name: string): Locator {
+		return this.orderPanel().locator(
+			`[data-testid="order-checkpoint-item"][data-name="${name}"]`,
+		);
+	}
+	async pickCandidate(name: string, sku: string): Promise<void> {
+		await this.checkpointItem(name)
+			.locator(`[data-testid="order-cand"][data-sku="${sku}"]`)
+			.check();
+	}
+	partialRow(name: string): Locator {
+		return this.orderPanel().locator(
+			`[data-testid="order-partial"][data-name="${name}"]`,
+		);
+	}
+	async confirmPartial(name: string): Promise<void> {
+		await this.partialRow(name).getByTestId("order-partial-confirm").check();
+	}
+	staleWarning(): Locator {
+		return this.page.getByTestId("order-stale-warning");
+	}
+	async ackStaleCart(): Promise<void> {
+		await this.page.getByTestId("order-stale-ack").check();
+	}
+	commitButton(): Locator {
+		return this.page.getByTestId("order-commit");
+	}
+	async commitOrder(): Promise<void> {
+		await this.commitButton().click();
+	}
+	resultCart(): Locator {
+		return this.page.getByTestId("order-result-cart");
+	}
+	resultList(): Locator {
+		return this.page.getByTestId("order-result-list");
+	}
+	resultSend(): Locator {
+		return this.page.getByTestId("order-result-send");
+	}
+	resultSkuCache(): Locator {
+		return this.page.getByTestId("order-result-sku-cache");
+	}
+	relinkButton(): Locator {
+		return this.page.getByTestId("order-relink");
+	}
 }

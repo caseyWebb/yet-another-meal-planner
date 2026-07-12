@@ -23,6 +23,17 @@ import { buildOrderWiring } from "../tools.js";
 import { readPreferences } from "../profile-db.js";
 import { KROGER_STORE } from "../flyer-warm.js";
 import type { GroceryAddInput, GroceryUpdateInput } from "../grocery.js";
+import { readGrocerySnapshot } from "../grocery-snapshot.js";
+import {
+  acceptGrocerySubstitution,
+  setGroceryBuyAnyway,
+  setGroceryChecked,
+  undoGrocerySubstitution,
+  verifyGroceryPantry,
+  relistGrocerySendLine,
+  markGrocerySendPlaced,
+  GroceryCheckedInputSchema, GroceryCoverageInputSchema, GroceryVerifyInputSchema, GrocerySubstitutionInputSchema, GroceryRelistInputSchema, GroceryMarkPlacedInputSchema,
+} from "../grocery-operations.js";
 
 const KINDS = new Set(["grocery", "household", "other"]);
 const SOURCES = new Set(["ad_hoc", "menu", "pantry_low", "stockup"]);
@@ -38,6 +49,11 @@ const substitutionsInput = z.object({
   names: z.array(z.string()).optional(),
   max_lines: z.number().int().positive().optional(),
 });
+function mutationBody<T>(schema: z.ZodType<T>, value: unknown): T {
+  const parsed = schema.safeParse(value);
+  if (!parsed.success) { const issue = parsed.error.issues[0]; throw new ToolError("validation_failed", `${issue?.path.join(".") || "body"}: ${issue?.message ?? "invalid"}`); }
+  return parsed.data;
+}
 
 function str(v: unknown): string | undefined {
   return typeof v === "string" ? v : undefined;
@@ -74,6 +90,42 @@ function coerceCommon(o: Record<string, unknown>): GroceryUpdateInput {
 }
 
 export const groceryArea = new Hono<ApiEnv>()
+  .get("/grocery/view", requireSession, async (c) => {
+    const tenant = c.get("tenant");
+    return jsonWithEtag(c, await readGrocerySnapshot(c.env, tenant.id));
+  })
+  .post("/grocery/checked", requireSession, async (c) => {
+    const tenant = c.get("tenant");
+    const body = mutationBody(GroceryCheckedInputSchema, await jsonBody<unknown>(c));
+    return c.json(await setGroceryChecked(c.env, tenant.id, body));
+  })
+  .post("/grocery/substitution", requireSession, async (c) => {
+    const tenant = c.get("tenant");
+    const body = mutationBody(GrocerySubstitutionInputSchema, await jsonBody<unknown>(c));
+    return c.json(body.undo
+      ? await undoGrocerySubstitution(c.env, tenant.id, body)
+      : await acceptGrocerySubstitution(c.env, tenant.id, { ...body, replacement_key: body.replacement_key!, replacement_name: body.replacement_name! }));
+  })
+  .post("/grocery/coverage", requireSession, async (c) => {
+    const tenant = c.get("tenant");
+    const body = mutationBody(GroceryCoverageInputSchema, await jsonBody<unknown>(c));
+    return c.json(await setGroceryBuyAnyway(c.env, tenant.id, body));
+  })
+  .post("/grocery/pantry-verify", requireSession, async (c) => {
+    const tenant = c.get("tenant");
+    const body = mutationBody(GroceryVerifyInputSchema, await jsonBody<unknown>(c));
+    return c.json(await verifyGroceryPantry(c.env, tenant.id, body));
+  })
+  .post("/grocery/relist", requireSession, async (c) => {
+    const tenant = c.get("tenant");
+    const body = mutationBody(GroceryRelistInputSchema, await jsonBody<unknown>(c));
+    return c.json(await relistGrocerySendLine(c.env, tenant.id, body));
+  })
+  .post("/grocery/mark-placed", requireSession, async (c) => {
+    const tenant = c.get("tenant");
+    const body = mutationBody(GroceryMarkPlacedInputSchema, await jsonBody<unknown>(c));
+    return c.json(await markGrocerySendPlaced(c.env, tenant.id, body));
+  })
   .get("/grocery", requireSession, async (c) => {
     const tenant = c.get("tenant");
     const items = await readGroceryListReified(c.env, tenant.id);

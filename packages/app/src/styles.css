@@ -30,6 +30,27 @@
 .kroger-location-results button { width: 100%; border: 1px solid var(--border); border-radius: .65rem; background: var(--card); color: inherit; padding: .8rem; text-align: left; cursor: pointer; }
 .kroger-location-results button:hover, .kroger-location-results button:focus-visible { border-color: var(--primary); outline: 2px solid color-mix(in srgb, var(--primary) 35%, transparent); outline-offset: 2px; }
 
+.grocery-shared { display: grid; gap: 1.25rem; }
+.grocery-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .75rem; }
+.grocery-stats > div { border: 1px solid var(--border); border-radius: .75rem; padding: .75rem 1rem; background: var(--card); }
+.grocery-stats strong { display: block; font-size: 1.4rem; }
+.grocery-stats span { color: var(--muted-foreground); font-size: .8rem; }
+.grocery-grouping { display: flex; gap: .5rem; }
+.grocery-grouping label { display: inline-flex; align-items: center; gap: .35rem; min-height: 2rem; padding: 0 .75rem; border: 1px solid var(--border); border-radius: var(--radius-md); cursor: pointer; font-size: var(--text-sm); }
+.grocery-grouping label.selected { color: var(--primary-foreground); background: var(--primary); border-color: var(--primary); }
+.grocery-grouping input { accent-color: currentColor; }
+.grocery-groups section > h2, .grocery-pantry > h2 { margin: 1rem 0 .35rem; font-size: .9rem; text-transform: uppercase; letter-spacing: .05em; }
+.grocery-groups h2 small { color: var(--muted-foreground); }
+.grocery-groups ul, .grocery-carts ul, .grocery-pantry ul { list-style: none; padding: 0; margin: 0; }
+.grocery-groups li, .grocery-carts li, .grocery-pantry li { display: flex; align-items: center; justify-content: space-between; gap: .75rem; border-bottom: 1px solid var(--border); padding: .65rem 0; flex-wrap: wrap; }
+.grocery-groups li label { display: flex; align-items: center; gap: .65rem; font-weight: 600; }
+.grocery-groups .checked { text-decoration: line-through; color: var(--muted-foreground); }
+.grocery-add { display: flex; gap: .5rem; }
+.grocery-carts { display: grid; gap: .75rem; }
+.grocery-conflict { border: 1px solid var(--destructive); border-radius: .5rem; padding: .75rem; }
+.grocery-underived, .grocery-confirmation { color: var(--muted-foreground); }
+.grocery-order-sheet { border: 1px solid var(--border); border-radius: .75rem; padding: 1rem; background: var(--card); margin-bottom: 1rem; }
+
 @media (max-width: 640px) {
   .store-summary, .offline-store-list li { align-items: stretch; flex-direction: column; }
   .store-actions { justify-content: stretch; }

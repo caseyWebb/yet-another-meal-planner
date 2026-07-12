@@ -657,6 +657,22 @@ export function d1Statements(now) {
       ].join(", ") +
       ";",
   );
+  // One real unplaced send powers the member app's Worker-backed exact mark-placed
+  // scenario. The conflict case remains route-mocked; this row proves the successful
+  // button path reaches D1, advances the exact membership, and records spend.
+  const appSend = "viz-app-send-unplaced";
+  stmts.push(`DELETE FROM spend_events WHERE tenant = ${q(members.active)} AND send_id = ${q(appSend)};`);
+  stmts.push(`DELETE FROM order_send_lines WHERE send_id = ${q(appSend)};`);
+  stmts.push(`DELETE FROM order_sends WHERE id = ${q(appSend)};`);
+  stmts.push(
+    `INSERT INTO order_sends (id, tenant, store, location_id, fulfillment, order_list_id, created_at) VALUES (${q(appSend)}, ${q(members.active)}, 'kroger', 'viz-kroger-location', 'kroger_online', NULL, ${q(iso(now - 4 * DAY))});`,
+  );
+  stmts.push(
+    `INSERT INTO order_send_lines (send_id, line_key, name, sku, brand, size, quantity, price_regular, price_promo, on_sale, unit_price, savings, estimated, department, provenance, for_recipes) VALUES (${q(appSend)}, ${q(app.grocery.inCart)}, ${q(app.grocery.inCart)}, 'viz-olive-sku', 'Store Brand', '16 fl oz', 1, 8, 6, 1, 6, 2, 0, 'pantry', 'impulse', '[]');`,
+  );
+  stmts.push(
+    `UPDATE grocery_list SET sent_in = ${q(appSend)} WHERE tenant = ${q(members.active)} AND normalized_name = ${q(app.grocery.inCart)};`,
+  );
   // The seeded meal-vibe palette (profile-planning-and-vibes-ui): six vibes across the
   // three meals, one pinned + one unpinned per group, anchored ~20 days back so the
   // cadence-debt meter renders. members NULL (assignment is band 5).

@@ -11,7 +11,7 @@ import type { Locator, Page } from "@playwright/test";
 const SCREENSHOT_DIR = "app/visual/.screenshots";
 
 export abstract class AppPage {
-  constructor(protected readonly page: Page) {}
+  constructor(readonly page: Page) {}
 
   /** The area's route (subclasses define; the registry's smoke loop uses it). */
   abstract readonly path: string;

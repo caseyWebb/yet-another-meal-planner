@@ -1,9 +1,3 @@
-// Grocery (member-app-core 7.7 + member-app-grocery 6.2): the P1 stored-row flows
-// (category groups, explicit in-cart set, Clear purchased, add-row) now rendered from
-// the DERIVED to-buy view, plus the view itself LIVE against the seeded Worker —
-// virtual rows with plan attribution, the canonical-id both-merge, pantry coverage with
-// the stale-verify nudge, materialize-on-pin (and un-pin re-derives), the underived
-// notice — and the widened W3 boundary (ordered accepted ONLY as the in_cart advance).
 import { test, expect } from "../fixtures";
 import { SEED } from "../../../admin/visual/seed.mjs";
 
@@ -11,198 +5,259 @@ const G = SEED.app.grocery;
 const TB = SEED.app.toBuy;
 
 test.beforeEach(async ({ asMember, groceryPage }) => {
-  await asMember();
-  await groceryPage.goto();
-  await groceryPage.landmark();
+	await asMember();
+	await groceryPage.goto();
+	await groceryPage.landmark();
 });
 
-test("items group by category; household goods sit apart from groceries", async ({ groceryPage }) => {
-  await groceryPage.expectInCategoryGroup(G.active[0], "grocery");
-  await groceryPage.expectInCategoryGroup(G.household, "household");
-  await groceryPage.expectInCartGroup(G.inCart); // the seeded in_cart row
-});
-
-test("the launcher uses the shared projection: enabled Kroger, no Instacart", async ({ groceryPage }) => {
-  const kroger = SEED.app.storeAdapters.kroger;
-  await expect(groceryPage.launcherEntry("kroger")).toContainText(kroger.name);
-  await expect(groceryPage.launcherEntry("kroger").getByTestId("order-open")).toBeEnabled();
-  await expect(groceryPage.launcher()).not.toContainText("Instacart");
-  await groceryPage.captureForReview("grocery-store-launcher");
-  await groceryPage.setViewport(390, 844);
-  await groceryPage.captureForReview("grocery-store-launcher-mobile");
-});
-
-test("Satellite and Offline launcher modes degrade honestly and never mutate the list", async ({ groceryPage }) => {
-  const before = await groceryPage.rowStatus(G.active[0]);
-  const satellite = SEED.app.storeAdapters.offline[0];
-  await groceryPage.setStores({ primary: satellite.slug, fulfillment: "satellite" });
-  await groceryPage.goto();
-  await expect(groceryPage.launcherEntry(`satellite:${satellite.slug}`)).toContainText("Session freshness is unavailable");
-  await expect(groceryPage.launcherEntry(`satellite:${satellite.slug}`).getByRole("button")).toBeDisabled();
-  await expect(groceryPage.launcher()).not.toContainText("Instacart");
-
-  await groceryPage.setStores({ primary: satellite.slug, fulfillment: null });
-  await groceryPage.goto();
-  await expect(groceryPage.launcherEntry(`offline:${satellite.slug}`)).toContainText(satellite.name);
-  await expect(groceryPage.launcherEntry(`offline:${satellite.slug}`).getByRole("button")).toBeDisabled();
-  expect(await groceryPage.rowStatus(G.active[0])).toBe(before);
-  await groceryPage.setStores({ primary: "kroger", preferred_location: SEED.app.storeAdapters.kroger.locationId });
-});
-
-test("the in-cart control is an explicit set, both directions", async ({ groceryPage }) => {
-  await groceryPage.toggleCart(G.active[1]);
-  await groceryPage.expectInCartGroup(G.active[1]);
-  await groceryPage.uncart(G.active[1]); // back to the list
-  await groceryPage.expectInCategoryGroup(G.active[1], "grocery");
-});
-
-test("virtual rows derive from the plan with attribution; a stored row the plan needs reads both", async ({
-  groceryPage,
+test("the shared page uses Department/Recipe and keeps household lines first-class", async ({
+	groceryPage,
 }) => {
-  await groceryPage.setPlan([TB.planned]);
-  await groceryPage.goto();
-  // A derived-only line: no grocery row exists, yet it renders — from the plan.
-  await groceryPage.expectOrigin(TB.virtual, "plan");
-  await expect(groceryPage.originCue(TB.virtual)).toBeVisible();
-  await expect(groceryPage.item(TB.virtual).locator(".g-for")).toContainText(TB.planned);
-  // No remove on a virtual row (D6) — only the pin affordance.
-  await expect(groceryPage.item(TB.virtual).getByTestId("grocery-remove")).toHaveCount(0);
-  await expect(groceryPage.item(TB.virtual).getByTestId("grocery-pin")).toBeVisible();
-  // The seeded active row the plan also needs merged on the canonical id: ONE line, both.
-  await groceryPage.expectOrigin(TB.both, "both");
-  await expect(groceryPage.item(TB.both)).toHaveCount(1);
-  await groceryPage.captureForReview("grocery-derived-view");
+	await expect(
+		groceryPage.page.getByRole("radio", { name: "Department" }),
+	).toBeVisible();
+	await expect(
+		groceryPage.page.getByRole("radio", { name: "Recipe" }),
+	).toBeVisible();
+	await expect(
+		groceryPage.page.getByText("Category", { exact: true }),
+	).toHaveCount(0);
+	await expect(groceryPage.group("Household")).toContainText(G.household);
+	await groceryPage.captureForReview("grocery-department-list");
+	await groceryPage.setGroupMode("Recipe");
+	await expect(groceryPage.group("No recipe")).toBeVisible();
 });
 
-test("pantry coverage renders with the stale-verify nudge and the buy-fresh materialize", async ({
-  groceryPage,
+test("the launcher remains driven by the shared store-adapter projection", async ({
+	groceryPage,
 }) => {
-  await groceryPage.setPlan([TB.planned]);
-  await groceryPage.goto();
-  // The stale-verified perishable covering a derived need sits in Already-in-your-pantry
-  // (NOT in to-buy), flagged with the unchecked duration + both actions.
-  await expect(groceryPage.coveredItem(TB.covered)).toBeVisible();
-  await expect(groceryPage.item(TB.covered)).toHaveCount(0);
-  await expect(groceryPage.staleFlag(TB.covered)).toContainText(/\d+d unchecked/);
-  await expect(groceryPage.coveredItem(TB.covered).getByTestId("ph-verify")).toBeVisible();
-  await groceryPage.captureForReview("grocery-pantry-have");
-  // Buy fresh MATERIALIZES the item onto the list (the pantry still covers it in the
-  // view — order-time partials confirm the buy); verifying stays the pantry spec's flow
-  // (this spec must not stamp the seeded row, which pantry.spec asserts is still stale).
-  await groceryPage.buyFresh(TB.covered);
-  await expect.poll(() => groceryPage.rowStatus(TB.covered)).toBe("active");
-  await groceryPage.removeRow(TB.covered); // leave the seeded state for later specs
+	await expect(groceryPage.launcherEntry("kroger")).toContainText(
+		SEED.app.storeAdapters.kroger.name,
+	);
+	await expect(
+		groceryPage.launcherEntry("kroger").getByRole("button"),
+	).toBeEnabled();
+	await expect(groceryPage.launcher()).not.toContainText("Instacart");
+	await groceryPage.captureForReview("grocery-store-launcher");
 });
 
-test("pinning a virtual row materializes it (origin both); removing the row re-derives it", async ({
-  groceryPage,
+test("the order review is a labelled expanded disclosure", async ({ groceryPage }) => {
+	const launcher = groceryPage.page.getByTestId("order-open");
+	await expect(launcher).toHaveAttribute("aria-expanded", "false");
+	await expect(launcher).toHaveAttribute("aria-controls", "grocery-order-review");
+
+	await launcher.click();
+	await expect(launcher).toHaveAttribute("aria-expanded", "true");
+	const review = groceryPage.page.getByRole("region", { name: "Kroger order" });
+	await expect(review).toHaveAttribute("id", "grocery-order-review");
+	await expect(review).toBeVisible();
+	await launcher.click();
+	await expect(launcher).toHaveAttribute("aria-expanded", "false");
+	await expect(review).toHaveCount(0);
+
+	await launcher.click();
+	await expect(review).toBeVisible();
+	await review.getByRole("button", { name: "Close order review" }).click();
+	await expect(launcher).toHaveAttribute("aria-expanded", "false");
+	await expect(review).toHaveCount(0);
+	await expect(launcher).toBeFocused();
+});
+
+test("checking is durable and never changes cart status", async ({
+	groceryPage,
 }) => {
-  await groceryPage.setPlan([TB.planned]);
-  await groceryPage.goto();
-  await groceryPage.pin(TB.virtual);
-  await groceryPage.expectOrigin(TB.virtual, "both"); // merged under the same canonical id
-  await expect.poll(() => groceryPage.rowStatus(TB.virtual)).toBe("active");
-  // Un-pinning (removing the materialized row) un-pins, not un-plans (D6): the next
-  // read derives the line again as a virtual row.
-  await groceryPage.removeRow(TB.virtual);
-  await groceryPage.goto();
-  await groceryPage.expectOrigin(TB.virtual, "plan");
+	const name = G.active[0];
+	await groceryPage.toggleChecked(name);
+	await expect(groceryPage.item(name)).toHaveAttribute("data-checked", "true");
+	await expect.poll(() => groceryPage.rowChecked(name)).toBe(true);
+	expect(await groceryPage.rowStatus(name)).toBe("active");
+	await groceryPage.toggleChecked(name);
 });
 
-test("an underived planned recipe surfaces as the quiet notice, never silently dropped", async ({
-  groceryPage,
+test("a virtual plan line materializes exactly once when checked", async ({
+	groceryPage,
 }) => {
-  await groceryPage.setPlan([TB.planned, TB.underived]);
-  await groceryPage.goto();
-  await expect(groceryPage.underivedNotice()).toContainText(TB.underived);
-  await groceryPage.setPlan([TB.planned]); // restore
-  await groceryPage.goto();
-  await expect(groceryPage.underivedNotice()).toHaveCount(0);
+	await groceryPage.setPlan([TB.planned]);
+	await groceryPage.goto();
+	await expect(groceryPage.item(TB.virtual)).toHaveAttribute(
+		"data-origin",
+		"plan",
+	);
+	await groceryPage.toggleChecked(TB.virtual);
+	await expect.poll(() => groceryPage.rowChecked(TB.virtual)).toBe(true);
+	await groceryPage.goto();
+	await expect(groceryPage.item(TB.virtual)).toHaveAttribute(
+		"data-origin",
+		"both",
+	);
+	await groceryPage.removeRow(TB.virtual);
 });
 
-test("Clear purchased removes each in_cart row (received is terminal removal)", async ({
-  groceryPage,
+test("two sends render separately with persisted quote honesty, aging, household and unlinked states", async ({
+	groceryPage,
 }) => {
-  await groceryPage.clearPurchased();
-  await expect(groceryPage.anyItem(G.inCart)).toHaveCount(0);
+	const fixture = {
+		contract_version: 1,
+		snapshot_version: "fixture",
+		as_of: "2026-07-12T12:00:00Z",
+		lines: [
+			{
+				key: "paper towels",
+				name: "Paper towels",
+				quantity: "1",
+				kind: "household",
+				domain: "grocery",
+				origin: "list",
+				checked_at: null,
+				row_version: 1,
+				updated_at: null,
+				for_recipes: [],
+			},
+		],
+		to_buy: ["paper towels"],
+		pantry_covered: [],
+		underived: ["mystery-stew"],
+		location: null,
+		flyer_as_of: null,
+		in_cart_groups: [
+			{
+				send_id: "old",
+				store: "Kroger",
+				location_id: "1",
+				fulfillment: "kroger_online",
+				sent_at: "2026-07-08T00:00:00Z",
+				placed_at: null,
+				awaiting_confirmation: true,
+				estimated_total: 12.5,
+				flyer_savings: 2.25,
+				can_mark_placed: true,
+				lines: [
+					{
+						key: "milk",
+						name: "Milk",
+						quantity: 1,
+						row_version: 2,
+						unit_price: 4,
+						savings: 1,
+					},
+				],
+			},
+			{
+				send_id: "new",
+				store: "Target",
+				location_id: null,
+				fulfillment: "satellite",
+				sent_at: "2026-07-12T10:00:00Z",
+				placed_at: null,
+				awaiting_confirmation: false,
+				estimated_total: 8,
+				flyer_savings: 0,
+				can_mark_placed: true,
+				lines: [
+					{
+						key: "eggs",
+						name: "Eggs",
+						quantity: 1,
+						row_version: 2,
+						unit_price: 8,
+						savings: 0,
+					},
+				],
+			},
+			{
+				send_id: null,
+				store: null,
+				location_id: null,
+				fulfillment: null,
+				sent_at: null,
+				placed_at: null,
+				awaiting_confirmation: false,
+				estimated_total: null,
+				flyer_savings: null,
+				can_mark_placed: false,
+				lines: [
+					{
+						key: "manual",
+						name: "Manual item",
+						quantity: 1,
+						row_version: 1,
+						unit_price: null,
+						savings: null,
+					},
+				],
+			},
+		],
+		counts: { to_buy: 1, checked: 0, in_carts: 3, recipes: 0 },
+	};
+	await groceryPage.page.route("**/api/grocery/view", (route) =>
+		route.fulfill({ json: fixture }),
+	);
+	await groceryPage.goto();
+	await expect(groceryPage.cartGroups()).toHaveCount(3);
+	await expect(
+		groceryPage.page.getByText("Sent estimate $12.50"),
+	).toBeVisible();
+	await expect(
+		groceryPage.page
+			.getByText(/Send-time quote, not a final fulfillment price/)
+			.first(),
+	).toBeVisible();
+	await expect(
+		groceryPage.page.getByText("Awaiting confirmation"),
+	).toBeVisible();
+	await expect(
+		groceryPage.page.getByText("In cart — no send record"),
+	).toBeVisible();
+	await groceryPage.captureForReview("grocery-two-send-groups");
 });
 
-test("the bottom add-row appends an item into its category group", async ({ groceryPage }) => {
-  await groceryPage.addItem("halloumi", "2 blocks");
-  await groceryPage.expectInCategoryGroup("halloumi", "grocery");
-  await groceryPage.captureForReview("grocery-after-add");
-});
-
-test("W3: ordered is refused from active and accepted only as the in_cart advance", async ({
-  groceryPage,
+test("unknown-newer fixture remains readable when rendered by the shared component", async ({
+	groceryPage,
 }) => {
-  await groceryPage.addRow("w3 probe");
-  await groceryPage.goto();
-  // Straight to ordered from active: the shared W3 guard rejects it (the boundary now
-  // allows the VALUE — mark-order-placed — but never the transition).
-  const fromActive = await groceryPage.attemptOrderedWrite("w3 probe");
-  expect(fromActive.status).toBe(400);
-  expect(fromActive.error).toBe("validation_failed");
-  // From in_cart, the user-asserted advance succeeds and stamps ordered_at.
-  await groceryPage.toggleCart("w3 probe");
-  await groceryPage.expectInCartGroup("w3 probe");
-  const fromInCart = await groceryPage.attemptOrderedWrite("w3 probe");
-  expect(fromInCart.status).toBe(200);
-  expect(fromInCart.ordered_at).toMatch(/^\d{4}-\d{2}-\d{2}$/);
-  await groceryPage.removeRow("w3 probe"); // cleanup
-});
-
-// ── Aisle grouping (member-app-differentiators 5.3/D6), LIVE against the seeded
-// Worker: captured sku_cache placements at the seeded default preferred_location (a
-// pre-resolved bare id — no whitespace, no live Kroger network), the honest "Aisle
-// unknown" bucket with department sub-groups, and the no-location degradation.
-
-const DIFF = SEED.app.differentiators;
-
-test("aisle mode walks captured placements and collects the rest under an honest Aisle unknown", async ({
-  groceryPage,
-}) => {
-  await groceryPage.setPlan([TB.planned]);
-  await groceryPage.goto();
-  await groceryPage.setGroupMode("aisle");
-  // Captured placements order the list by real aisle numbers…
-  await expect(groceryPage.aisleGroup(DIFF.aisles.produce.number)).toContainText(
-    `Aisle ${DIFF.aisles.produce.number} · ${DIFF.aisles.produce.description}`,
-  );
-  await expect(
-    groceryPage.aisleGroup(DIFF.aisles.produce.number).locator(`[data-testid="grocery-item"][data-name="${TB.both}"]`),
-  ).toBeVisible(); // the scallions row keys under green-onion — the captured produce aisle
-  await expect(
-    groceryPage
-      .aisleGroup(DIFF.aisles.meat.number)
-      .locator(`[data-testid="grocery-item"][data-name="${DIFF.aisles.meat.ingredient}"]`),
-  ).toBeVisible();
-  // …and uncaptured lines land in the labeled bucket — never a fabricated number.
-  await expect(groceryPage.unknownGroup()).toContainText("Aisle unknown");
-  await expect(
-    groceryPage.unknownGroup().locator(`[data-testid="grocery-item"][data-name="${G.active[2]}"]`),
-  ).toBeVisible(); // coconut milk: no placement, no department
-  await expect(
-    groceryPage.unknownDept("Home goods").locator(`[data-testid="grocery-item"][data-name="${G.household}"]`),
-  ).toBeVisible(); // the kind fallback sub-group
-  await groceryPage.captureForReview("grocery-aisle-grouping");
-  // Category mode is one toggle away, unchanged from the shipped page.
-  await groceryPage.setGroupMode("category");
-  await groceryPage.expectInCategoryGroup(G.active[0], "grocery");
-});
-
-test("aisle mode with no resolvable location degrades to departments/categories — no error, no picker", async ({
-  groceryPage,
-}) => {
-  // A walk-store primary has no deterministic placement source (D6/D10): no store
-  // picker exists, and grouping falls back honestly.
-  await groceryPage.setStores({ primary: "aldi" });
-  await groceryPage.goto();
-  await groceryPage.setGroupMode("aisle");
-  await expect(groceryPage.aisleGroups()).toHaveCount(0);
-  // The seeded green-onion membership edge (allium) yields a department tier; the
-  // household row keeps its kind bucket.
-  await expect(groceryPage.deptGroup("allium")).toBeVisible();
-  await expect(groceryPage.kindGroup("household")).toBeVisible();
-  await groceryPage.setStores({ primary: "kroger" }); // restore
+	const fixture = {
+		contract_version: 2,
+		snapshot_version: "unknown-newer-v2",
+		as_of: "2026-07-12T12:00:00Z",
+		lines: [
+			{
+				key: "future milk",
+				name: "Future milk",
+				quantity: 1,
+				kind: "grocery",
+				domain: "grocery",
+				origin: "list",
+				checked_at: null,
+				row_version: 1,
+				updated_at: null,
+				for_recipes: [],
+			},
+		],
+		to_buy: ["future milk"],
+		pantry_covered: [],
+		in_cart_groups: [],
+		underived: [],
+		location: null,
+		flyer_as_of: null,
+		counts: { to_buy: 1, checked: 0, in_carts: 0, recipes: 0 },
+		future_widget_field: { preserved: true },
+	};
+	await groceryPage.page.route("**/api/grocery/view", (route) =>
+		route.fulfill({ json: fixture }),
+	);
+	await groceryPage.goto();
+	await expect(
+		groceryPage.page.getByTestId("shared-grocery-list"),
+	).toBeVisible();
+	await expect(groceryPage.item("Future milk")).toBeVisible();
+	await expect(
+		groceryPage.page.getByTestId("shared-grocery-list"),
+	).toHaveAttribute("data-host-mode", "readonly");
+	await expect(
+		groceryPage.item("Future milk").getByRole("checkbox"),
+	).toBeDisabled();
+	await expect(
+		groceryPage.page.getByLabel("Add grocery item"),
+	).toBeDisabled();
+	await groceryPage.setViewport(390, 844);
+	await groceryPage.captureForReview("grocery-mobile");
 });
