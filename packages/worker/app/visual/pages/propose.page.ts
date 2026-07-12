@@ -1,10 +1,11 @@
-// Plan your week (member-app-propose): the propose flow's page object — the intro /
-// empty-palette states, the controls row (nights, nudges, freeform), slot-card
-// interactions (lock, swap, exclude, facet pins, pick list), and commit. Also owns
-// the API-level palette provisioning the specs use:
-// the SHARED seed keeps the palette deliberately empty (production's first render),
-// so the propose specs create their own vibes through the real member API — against
-// vibe ids whose cron-shaped derived vectors the seed pre-planted (D12).
+// Plan your week (member-app-propose / shared-propose-orchestration): the propose flow's page
+// object — the intro / empty-palette states, the controls row (per-meal steppers), slot-card
+// interactions (swap, facet pins, pick list, per-slot vibe, sides editing), and commit. The
+// D8/D20-cut controls (re-roll, per-slot lock + exclude, adventurousness, protein wants, freeform)
+// are gone from the shared surface. Also owns the API-level palette provisioning the specs use:
+// the SHARED seed keeps the palette deliberately empty (production's first render), so the propose
+// specs create their own vibes through the real member API — against vibe ids whose cron-shaped
+// derived vectors the seed pre-planted (D12).
 import { expect } from "@playwright/test";
 import { AppPage, type Locator } from "./base.page";
 import { SEED } from "../../../admin/visual/seed.mjs";
@@ -62,7 +63,7 @@ export class ProposePage extends AppPage {
     );
   }
 
-  /** The plan rows as the API serves them — the commit spec's `from_vibe` assertion. */
+  /** The plan rows as the API serves them — the commit spec's `from_vibe` / sides assertions. */
   async readPlan(): Promise<{ recipe: string; planned_for?: string | null; sides?: string[]; from_vibe?: string | null }[]> {
     return this.page.evaluate(async () => {
       const res = await fetch("/api/plan");
@@ -101,18 +102,19 @@ export class ProposePage extends AppPage {
     await this.page.getByTestId("propose-start").click();
   }
 
-  async reroll(): Promise<void> {
-    await this.page.getByTestId("propose-reroll").click();
+  async reset(): Promise<void> {
+    await this.page.getByTestId("propose-reset").click();
   }
 
-  async setNights(n: number): Promise<void> {
-    const current = Number(await this.page.getByTestId("nights-n").innerText());
-    const btn = n > current ? "nights-inc" : "nights-dec";
+  /** Bump a meal's slot count via its per-meal stepper (D20 shared control). */
+  async setMeal(meal: "breakfast" | "lunch" | "dinner", n: number): Promise<void> {
+    const current = Number(await this.page.getByTestId(`meals-${meal}-n`).innerText());
+    const btn = n > current ? `meals-${meal}-inc` : `meals-${meal}-dec`;
     for (let i = 0; i < Math.abs(n - current); i++) await this.page.getByTestId(btn).click();
   }
 
-  async typeFreeform(text: string): Promise<void> {
-    await this.page.getByTestId("nudge-freeform").fill(text);
+  mealStepper(meal: "breakfast" | "lunch" | "dinner"): Locator {
+    return this.page.getByTestId(`meals-${meal}-n`);
   }
 
   // --- slots ----------------------------------------------------------------------
@@ -148,14 +150,6 @@ export class ProposePage extends AppPage {
     );
     await action();
     await settled;
-  }
-
-  async lock(vibeId: string): Promise<void> {
-    await this.slot(vibeId).getByTestId("slot-lock").click();
-  }
-
-  async exclude(vibeId: string): Promise<void> {
-    await this.slot(vibeId).getByTestId("slot-exclude").click();
   }
 
   async openSwapMenu(vibeId: string): Promise<void> {
@@ -195,6 +189,17 @@ export class ProposePage extends AppPage {
 
   async expectWhy(vibeId: string, text: string | RegExp): Promise<void> {
     await expect(this.slot(vibeId).getByTestId("slot-why")).toContainText(text);
+  }
+
+  /** Add a free-text side to a slot (sides editing — a local refinement, NO re-query). */
+  async addSide(vibeId: string, title: string): Promise<void> {
+    await this.slot(vibeId).getByTestId("slot-side-add").click();
+    await this.slot(vibeId).getByTestId("slot-side-input").fill(title);
+    await this.slot(vibeId).getByTestId("slot-side-apply").click();
+  }
+
+  slotSides(vibeId: string): Locator {
+    return this.slot(vibeId).getByTestId("slot-sides");
   }
 
   varietyBar(): Locator {

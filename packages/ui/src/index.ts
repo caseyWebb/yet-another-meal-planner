@@ -32,12 +32,12 @@ export {
 } from "./components/page";
 export { SegmentedControl, ToggleChip, TokenField } from "./components/controls";
 export {
-  NightsStepper,
-  NudgeBar,
-  RerollButton,
+  MealsStepper,
+  MEAL_KEYS,
   SlotCard,
   TIME_TIERS,
   VarietyBar,
+  type MealKey,
   type ProposeAlt,
   type ProposeSlotView,
   type SlotPanel,
@@ -46,14 +46,42 @@ export {
   buildProposeRequest,
   dateSeed,
   defaultProposeSession,
+  PROPOSE_SESSION_VERSION,
   proposePanelOf,
   proposeSessionFromRequest,
   proposeSlotToView,
+  type ProposeAttendance,
+  type ProposeMeals,
   type ProposeRequest,
   type ProposeRequestSlot,
   type ProposeSession,
   type ProposeSessionRequest,
 } from "./propose-orchestration";
+export {
+  createBridgeAdapter,
+  isRoundTrippable,
+  mintRowId,
+  nextOpenDates,
+  packPlanCommitOps,
+  parseProposeResult,
+  resolveProposeCapabilities,
+  useProposeController,
+  type BridgeToolResult,
+  type PlanCommitOp,
+  type ProposeBridge,
+  type ProposeCapabilities,
+  type ProposeCapabilityInputs,
+  type ProposeCommitOutcome,
+  type ProposeCommitSlot,
+  type ProposeController,
+  type ProposeControllerContext,
+  type ProposeControllerResult,
+  type ProposeControllerSlot,
+  type ProposeHostAdapter,
+  type ProposeSlotEntry,
+  type ProposeSummary,
+  type UseProposeControllerOptions,
+} from "./propose-controller";
 export { Combobox, type ComboOption } from "./components/combobox";
 export { Toaster, toast } from "./components/toast";
 export * from "./components/icons";

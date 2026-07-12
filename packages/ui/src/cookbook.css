@@ -947,3 +947,15 @@ ul.recipes > li:last-child { border-bottom: 0; }
   .taste-read { border-right: 0; border-bottom: 1px solid var(--border); padding-right: 0; padding-bottom: 1.25rem; }
   .page-head { align-items: flex-start; }
 }
+
+/* Per-meal steppers + sides editing (shared-propose-orchestration, D20). MealsStepper reuses the
+   nights-step furniture per breakfast/lunch/dinner; sides editing reuses the side-chip + vibe-panel
+   idiom, so no bespoke visual language is introduced. */
+.meals-stepper { display: flex; align-items: center; gap: 1.1rem; flex-wrap: wrap; }
+.side-x { display: inline-flex; align-items: center; justify-content: center; cursor: pointer; color: var(--muted-foreground); border-radius: 2rem; }
+.side-x:hover { color: var(--foreground); }
+.side-x svg { width: 0.7rem; height: 0.7rem; }
+.side-add { display: inline-flex; align-items: center; height: 1.4rem; padding: 0 0.55rem; border-radius: 2rem; background: none; border: 1px dashed var(--border); font-size: var(--text-xs); color: var(--muted-foreground); cursor: pointer; font: inherit; }
+.side-add:hover { color: var(--foreground); border-color: var(--foreground); }
+.slot-sides-edit { margin-top: 0.5rem; padding-top: 0.7rem; border-top: 1px dashed var(--border); display: flex; flex-direction: column; gap: 0.55rem; }
+.slot-side-list { display: flex; flex-wrap: wrap; gap: 0.35rem; }

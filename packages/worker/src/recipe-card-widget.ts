@@ -14,7 +14,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { registerAppResource, registerAppTool, RESOURCE_MIME_TYPE } from "@modelcontextprotocol/ext-apps/server";
 import { z } from "zod";
-import type { RecipeCardData } from "@yamp/contract";
+import { KNOWN_RECIPE_CONTRACT_VERSION, type RecipeCardData } from "@yamp/contract";
 import type { Env } from "./env.js";
 import { ToolError, fail } from "./errors.js";
 
@@ -49,6 +49,7 @@ function asStringArray(v: unknown): string[] {
 export function toRecipeCardData(detail: RecipeDetail): RecipeCardData {
   const fm = detail.frontmatter;
   return {
+    contract_version: KNOWN_RECIPE_CONTRACT_VERSION,
     slug: detail.slug,
     title: asString(fm.title) ?? detail.slug,
     description: asString(fm.description),

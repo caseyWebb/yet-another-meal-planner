@@ -1,13 +1,12 @@
-// Plan your week (member-app-propose 6.2–6.5, D7/D8/D11): the design bundle's propose
-// flow over the stateless `POST /api/propose`. The intro and empty-palette states, the
-// controls row (nights 2–6, adventurousness ↔ `nudges.variety`, protein wants, the
-// debounced freeform phrase), the variety bar + commit, and one card per slot with
-// lock / swap / exclude / facet pins / vibe override. The forecast shapes the proposal
-// server-side only (slots carry `weather_category`); no client forecast display.
-// Every change updates the client-side session (localStorage) and re-queries;
-// the previous week stays rendered (dimmed) until the next one lands. Commit maps
-// filled slots onto P1's plan ops with `from_vibe` + client-assigned open dates, then
-// clears the session and lands on the plan page.
+// Plan your week (member-app-propose / shared-propose-orchestration, D8/D20): the design
+// bundle's propose flow over the stateless `POST /api/propose`, as a THIN adapter over the shared
+// `useProposeController`. The intro and empty-palette states, the controls row (per-meal
+// steppers), the variety bar + commit, and one card per slot with swap / facet pins / vibe
+// override / sides editing. The D8-cut controls (adventurousness, protein wants, freeform,
+// re-roll, per-slot lock + exclude) are absent from the shared surface. The controller re-queries
+// on every request-changing edit; a sides edit refines the already-proposed week without a
+// re-query. Commit maps filled slots onto P1's plan ops with `from_vibe` + client-assigned open
+// dates, then clears the session and lands on the plan page.
 import * as React from "react";
 import { Link, createFileRoute, useNavigate } from "@tanstack/react-router";
 import {
@@ -15,28 +14,23 @@ import {
   Crumbs,
   EmptyState,
   IconSparkle,
-  NightsStepper,
-  NudgeBar,
-  RerollButton,
+  MealsStepper,
   SlotCard,
   VarietyBar,
   proposePanelOf,
-  proposeSlotToView,
   toast,
-  type ProposeSlotView,
+  useProposeController,
+  type ProposeHostAdapter,
 } from "@yamp/ui";
 import { useIndex, usePlan, useProfile, useVibes, type PlanOp, mintRowId } from "../lib/data";
 import { usePlanOps } from "../lib/mutations";
 import { useOnline } from "../lib/online";
 import {
-  buildRequest,
   defaultSession,
+  fetchPropose,
   loadSession,
   nextOpenDates,
   saveSession,
-  usePropose,
-  type ProposeSession,
-  type ProposeSlotPayload,
 } from "../lib/propose";
 
 export const Route = createFileRoute("/_app/propose")({
@@ -52,26 +46,12 @@ function ProposePage() {
   const online = useOnline();
   const navigate = useNavigate();
 
-  const [session, setSessionState] = React.useState<ProposeSession | null>(loadSession);
   const [openPanel, setOpenPanel] = React.useState<string | null>(null);
-  const [committing, setCommitting] = React.useState(false);
-
-  const setSession = (next: ProposeSession | null) => {
-    setSessionState(next);
-    saveSession(next);
-  };
+  const [initialSession] = React.useState(loadSession);
 
   const prefs = (profile.data?.preferences ?? {}) as Record<string, unknown>;
   const defaultNights =
     typeof prefs.default_cooking_nights === "number" ? prefs.default_cooking_nights : 3;
-
-  /** Every dial auto-starts the session (the mock's startPropose) and re-queries live. */
-  const update = (patch: (s: ProposeSession) => ProposeSession) => {
-    setSession(patch(session ?? defaultSession(defaultNights)));
-  };
-
-  const request = session ? buildRequest(session) : null;
-  const propose = usePropose(request);
 
   const palette = vibes.data?.vibes ?? [];
   const paletteById = new Map(palette.map((v) => [v.id, v]));
@@ -80,6 +60,58 @@ function ProposePage() {
   const recipes = index.data?.recipes ?? [];
   const proteins = [...new Set(recipes.map((r) => r.protein).filter((p): p is string => !!p))].sort();
   const cuisines = [...new Set(recipes.map((r) => r.cuisine).filter((c): c is string => !!c))].sort();
+
+  // The member adapter: iterate is the stateless POST; there is no MCP bridge, so no syncContext;
+  // commit routes through P1's class (b) plan-ops path and lands on the plan page.
+  const adapter: ProposeHostAdapter = {
+    capabilities: { canIterate: true, canCommit: online },
+    iterate: (request) => fetchPropose(request),
+    async commit(week) {
+      try {
+        const existing = plan.data?.planned ?? [];
+        const inPlan = new Set(existing.map((r) => r.recipe.toLowerCase()));
+        const fresh = week.filter((s) => !inPlan.has(s.slug.toLowerCase()));
+        if (fresh.length === 0) {
+          toast("Those are already in your plan");
+          await navigate({ to: "/plan" });
+          return { committed: false, reset: true };
+        }
+        const dates = nextOpenDates(existing, fresh.length);
+        // Each filled slot maps to an `add` op carrying a CLIENT-MINTED ULID row id (the class (b)
+        // replay key), the slot's `meal`, its edited sides, and its vibe provenance. The commit
+        // NEVER sets `duplicate` — the op layer's slug-global coalesce makes "commit updates an
+        // existing row rather than duplicating" structural (D26-final).
+        const ops: PlanOp[] = fresh.map((s, i) => ({
+          op: "add",
+          id: mintRowId(),
+          recipe: s.slug,
+          meal: s.meal,
+          from_vibe: s.from_vibe,
+          sides: s.sides,
+          planned_for: dates[i],
+        }));
+        await planOps.mutateAsync({ ops });
+        const skipped = week.length - fresh.length;
+        toast(
+          `Committed ${fresh.length} night${fresh.length === 1 ? "" : "s"} to your meal plan${skipped ? ` — ${skipped} already there` : ""}`,
+        );
+        await navigate({ to: "/plan" });
+        return { committed: true, reset: true };
+      } catch {
+        toast("Couldn't commit the week — try again");
+        return { committed: false };
+      }
+    },
+  };
+
+  const controller = useProposeController({
+    adapter,
+    context: { getVibeLabel: (vibeId) => paletteById.get(vibeId)?.vibe },
+    initialSession,
+    iterateOnMount: true,
+    onSessionChange: saveSession,
+    defaultNights,
+  });
 
   const crumbs = (
     <Crumbs
@@ -96,7 +128,7 @@ function ProposePage() {
     </header>
   );
 
-  // ── the empty-palette state: planning starts from night vibes ─────────────
+  // ── the empty-palette state: planning starts from meal vibes ─────────────
   if (vibes.data && palette.length === 0) {
     return (
       <div data-testid="propose-page">
@@ -105,7 +137,7 @@ function ProposePage() {
         <EmptyState
           testId="propose-empty-palette"
           title="Your palette is empty"
-          sub="Planning starts from your night vibes — the kinds of dinners you cook. Add a few in your profile first."
+          sub="Planning starts from your meal vibes — the kinds of meals you cook. Add a few in your profile first."
           icon={<IconSparkle />}
           action={
             <Button asChild>
@@ -119,49 +151,28 @@ function ProposePage() {
     );
   }
 
-  const display = session ?? defaultSession(defaultNights);
+  const displayMeals = controller.session?.meals ?? defaultSession(defaultNights).meals;
   const controls = (
     <section className="propose-controls" data-testid="propose-controls">
       <div className="pc-row">
-        <NightsStepper value={display.nights} min={2} max={6} onChange={(n) => update((s) => ({ ...s, nights: n }))} />
+        <MealsStepper meals={displayMeals} onChange={(meal, n) => controller.setMeal(meal, n)} />
         <div className="pc-actions">
-          {session ? (
-            <>
-              {/* Propose is an online query (D5): re-rolling needs the server. */}
-              <RerollButton disabled={!online} onClick={() => update((s) => ({ ...s, seed: s.seed + 1 }))} />
-              <Button variant="outline" data-testid="propose-reset" onClick={() => setSession(null)}>
-                Start over
-              </Button>
-            </>
+          {controller.session ? (
+            <Button variant="outline" data-testid="propose-reset" onClick={() => controller.reset()}>
+              Start over
+            </Button>
           ) : (
-            <Button data-testid="propose-start" onClick={() => update((s) => s)}>
+            <Button data-testid="propose-start" onClick={() => controller.start()}>
               <IconSparkle /> Propose a week
             </Button>
           )}
         </div>
       </div>
-      <NudgeBar
-        variety={display.variety}
-        onVariety={(v) => update((s) => ({ ...s, variety: v }))}
-        proteins={proteins}
-        proteinWants={display.proteinWants}
-        onToggleProtein={(p) =>
-          update((s) => ({
-            ...s,
-            proteinWants: s.proteinWants.includes(p) ? s.proteinWants.filter((x) => x !== p) : [...s.proteinWants, p],
-          }))
-        }
-        freeform={display.freeform}
-        onFreeform={(text) => {
-          // Only a real change re-queries (the debounced input fires on mount too).
-          if (text !== (session?.freeform ?? "")) update((s) => ({ ...s, freeform: text }));
-        }}
-      />
     </section>
   );
 
   // ── the intro state: dials set, nothing proposed yet ──────────────────────
-  if (!session) {
+  if (!controller.session) {
     return (
       <div data-testid="propose-page">
         {crumbs}
@@ -169,91 +180,33 @@ function ProposePage() {
         {controls}
         <div className="propose-intro" data-testid="propose-intro">
           <p>
-            <IconSparkle /> Set the dials above, then propose a week — picked from the kinds of dinners you cook,
-            spread out so it doesn’t feel samey, with the weather taken into account. Tweak any dial and the week
-            updates live. Nothing’s added to your plan until you say so.
+            <IconSparkle /> Set how many of each meal you want above, then propose a week — picked from the kinds of
+            meals you cook, spread out so it doesn’t feel samey, with the weather taken into account. Tweak any night
+            and the week updates live. Nothing’s added to your plan until you say so.
           </p>
         </div>
       </div>
     );
   }
 
-  const data = propose.data;
-  const slots: { payload: ProposeSlotPayload; view: ProposeSlotView }[] = (data?.plan ?? [])
-    .filter((s) => s.vibe_id !== null)
-    .map((s, i) => ({
-      payload: s,
-      view: proposeSlotToView(s, i, session, { getVibeLabel: (vibeId) => paletteById.get(vibeId)?.vibe }),
-    }));
-
-  const filled = slots.filter((s) => s.payload.main);
-  const mainProteins = new Map<string, number>();
-  const mainCuisines = new Set<string>();
-  for (const s of filled) {
-    const m = s.payload.main!;
-    if (m.protein) mainProteins.set(m.protein, (mainProteins.get(m.protein) ?? 0) + 1);
-    if (m.cuisine) mainCuisines.add(m.cuisine);
-  }
-
-  async function commit() {
-    if (!data) return;
-    setCommitting(true);
-    try {
-      const existing = plan.data?.planned ?? [];
-      const inPlan = new Set(existing.map((r) => r.recipe.toLowerCase()));
-      const fresh = filled.filter((s) => !inPlan.has(s.payload.main!.slug.toLowerCase()));
-      if (fresh.length === 0) {
-        toast("Those are already in your plan");
-      } else {
-        const dates = nextOpenDates(existing, fresh.length);
-        // Each filled slot maps to an `add` op carrying a CLIENT-MINTED ULID row id (the
-        // class (b) replay key), the slot's `meal`, and its vibe provenance. The commit
-        // NEVER sets `duplicate` — the op layer's slug-global coalesce makes "commit
-        // updates an existing row rather than duplicating" structural (D26-final); a
-        // coalescing add returns the SURVIVING row's id (the band-2/3 mutation registry
-        // rebinds on it).
-        const ops: PlanOp[] = fresh.map((s, i) => ({
-          op: "add",
-          id: mintRowId(),
-          recipe: s.payload.main!.slug,
-          meal: s.payload.meal,
-          from_vibe: s.payload.vibe_id,
-          sides: s.payload.sides.map((x) => x.title),
-          planned_for: dates[i],
-        }));
-        // The commit is P1's class (b) plan-ops registry mutation; awaiting settle is
-        // fine here — the propose flow itself is online-only, so the commit runs live.
-        await planOps.mutateAsync({ ops });
-        const skipped = filled.length - fresh.length;
-        toast(
-          `Committed ${fresh.length} night${fresh.length === 1 ? "" : "s"} to your meal plan${skipped ? ` — ${skipped} already there` : ""}`,
-        );
-      }
-      setSession(null);
-      await navigate({ to: "/plan" });
-    } catch {
-      toast("Couldn't commit the week — try again");
-    } finally {
-      setCommitting(false);
-    }
-  }
+  const slots = controller.slots.filter(({ payload }) => payload.vibe_id !== null);
 
   return (
     <div data-testid="propose-page">
       {crumbs}
       {head}
       {controls}
-      {data ? (
+      {controller.result ? (
         <VarietyBar
-          nights={filled.length}
-          cuisines={mainCuisines.size}
-          proteins={mainProteins.size}
-          proteinHist={[...mainProteins.entries()].sort((a, b) => b[1] - a[1])}
-          onCommit={() => void commit()}
-          committing={committing}
+          nights={controller.summary.filled}
+          cuisines={controller.summary.cuisines}
+          proteins={controller.summary.proteins}
+          proteinHist={controller.summary.proteinHist}
+          onCommit={() => void controller.commit()}
+          committing={controller.busy || !online}
         />
       ) : null}
-      <div className="slot-list" data-testid="slot-list" data-stale={propose.isPlaceholderData ? "true" : undefined}>
+      <div className="slot-list" data-testid="slot-list" data-stale={controller.busy ? "true" : undefined}>
         {slots.map(({ view }) => (
           <SlotCard
             key={view.key}
@@ -268,68 +221,12 @@ function ProposePage() {
                 {title}
               </Link>
             )}
-            onLockToggle={() =>
-              update((s) => {
-                const next = { ...s, locked: { ...s.locked }, overrides: { ...s.overrides } };
-                if (next.locked[view.vibeId]) {
-                  delete next.locked[view.vibeId];
-                  delete next.overrides[view.vibeId]; // unlock frees the night entirely
-                } else if (view.main) {
-                  next.locked[view.vibeId] = view.main.slug;
-                  delete next.overrides[view.vibeId];
-                }
-                return next;
-              })
-            }
-            onSwapTo={(slug) =>
-              update((s) => {
-                const next = { ...s, locked: { ...s.locked }, overrides: { ...s.overrides, [view.vibeId]: slug } };
-                delete next.locked[view.vibeId];
-                return next;
-              })
-            }
-            onExclude={() =>
-              update((s) => {
-                if (!view.main) return s;
-                const slug = view.main.slug;
-                const next = {
-                  ...s,
-                  excluded: s.excluded.includes(slug) ? s.excluded : [...s.excluded, slug],
-                  locked: { ...s.locked },
-                  overrides: { ...s.overrides },
-                };
-                delete next.locked[view.vibeId]; // "not this one" clears the slot's pin (D7)
-                delete next.overrides[view.vibeId];
-                return next;
-              })
-            }
-            onFacetPick={(kind, value) =>
-              update((s) => {
-                const field = kind === "protein" ? "slotProtein" : "slotCuisine";
-                const next = { ...s, [field]: { ...s[field] } } as ProposeSession;
-                if (value === null) delete next[field][view.vibeId];
-                else next[field][view.vibeId] = value;
-                return next;
-              })
-            }
-            onTimePick={(value) =>
-              update((s) => {
-                const next = { ...s, slotMaxTime: { ...s.slotMaxTime } };
-                if (value === undefined) delete next.slotMaxTime[view.vibeId];
-                else next.slotMaxTime[view.vibeId] = value; // number caps; null = "Any time"
-                return next;
-              })
-            }
-            onVibeApply={(text) =>
-              update((s) => ({ ...s, slotVibe: { ...s.slotVibe, [view.vibeId]: text } }))
-            }
-            onVibeReset={() =>
-              update((s) => {
-                const next = { ...s, slotVibe: { ...s.slotVibe } };
-                delete next.slotVibe[view.vibeId];
-                return next;
-              })
-            }
+            onSwapTo={(slug) => controller.swapTo(view.vibeId, slug)}
+            onFacetPick={(kind, value) => controller.pickFacet(view.vibeId, kind, value)}
+            onTimePick={(value) => controller.pickTime(view.vibeId, value)}
+            onVibeApply={(text) => controller.applyVibe(view.vibeId, text)}
+            onVibeReset={() => controller.resetVibe(view.vibeId)}
+            onSidesChange={(sides) => controller.editSides(view.vibeId, sides)}
           />
         ))}
       </div>
