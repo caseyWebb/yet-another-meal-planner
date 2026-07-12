@@ -24,9 +24,11 @@ describe("Order Review shared operations", () => {
     const h = sqliteEnv([T]);
     await addGroceryRow(h.env, T, { name: "milk" }, "2026-07-12");
     const deps = { wiring: wiring() };
+    const captureRowsBefore = h.rows("novel_ingredient_terms").length;
     const preview = await readOrderReview(h.env, T, emptyOrderReviewStage(), deps);
     expect(preview.matched).toHaveLength(1);
     expect(h.rows("order_sends")).toHaveLength(0);
+    expect(h.rows("novel_ingredient_terms")).toHaveLength(captureRowsBefore);
     const sent = await sendOrderReview(h.env, T, { stage: { ...emptyOrderReviewStage(), quantities: { milk: 2 } }, preview_fingerprint: preview.preview_fingerprint, cleared_cart_ack: true, rendered_preview: preview }, deps);
     expect(sent.status).toBe("sent");
     expect(h.rows("order_sends")).toHaveLength(1);

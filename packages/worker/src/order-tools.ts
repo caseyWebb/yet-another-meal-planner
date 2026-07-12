@@ -333,7 +333,9 @@ export async function runPlaceOrder(
   const pantryNames = await readPantryNames(env, tenantId);
   // The canonical-id normalizer for the SKU-cache write key — same funnel the matcher
   // keys its cache read on, so a learned mapping stores under the key it's looked up by.
-  const ingredientCtx = await ingredientContext(env);
+  // Preview is a strict read: even normalization's best-effort novel-term enqueue is
+  // disabled. A real send may capture after the member commits the intent.
+  const ingredientCtx = await ingredientContext(env, { capture: input.preview !== true });
 
   // Server-side plan derivation (D4): the same `deriveMenuNeeds` the to-buy view reads,
   // unioned with caller `menu_needs` — supplements (open-world side ingredients,
