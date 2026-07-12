@@ -20,6 +20,7 @@ import { toast } from "@yamp/ui";
 import { api, apiError, type ApiError } from "./api";
 import { REGISTERED_MUTATION_KEYS } from "./persist";
 import type { GroceryRow, Overlay, PantryRow, PlanOp, PlanOpsResult, ToBuyView } from "./data";
+import { projectGroceryAction } from "@yamp/ui";
 import type { GroceryListData } from "@yamp/contract";
 
 // --- variable shapes (plain JSON — they persist to IndexedDB and replay) -----------
@@ -95,6 +96,11 @@ export interface PantryOpsVars {
 
 export interface PantryVerifyVars {
   items: string[];
+}
+
+export interface GroceryPantryVerifyVars {
+  key: string;
+  snapshot_version: string;
 }
 
 export interface FavoriteVars {
@@ -183,6 +189,15 @@ interface RegistryRow {
 type MutationDefaults = Parameters<QueryClient["setMutationDefaults"]>[1];
 
 const norm = (name: string) => name.trim().toLowerCase();
+
+/**
+ * Snapshot versions guard the aggregate grocery projection, while queued writes are scoped and
+ * replay serially. The preceding write's authoritative response is therefore the correct base for
+ * the next independent target, rather than the version captured when several offline taps occurred.
+ */
+function latestGroceryVersion(qc: QueryClient, captured: string): string {
+  return qc.getQueryData<GroceryListData>(["grocery", "view"])?.snapshot_version ?? captured;
+}
 
 /** Optimistically drop a name from both to-buy view variants (enriched + plain). */
 function dropToBuyLine(qc: QueryClient, name: string): void {
@@ -387,7 +402,9 @@ function registryRows(qc: QueryClient): RegistryRow[] {
       key: ["grocery", "checked"],
       defaults: {
         mutationFn: async (vars: GroceryCheckedVars): Promise<GroceryListData> => {
-          const res = await api.api.grocery.checked.$post({ json: vars });
+          const res = await api.api.grocery.checked.$post({
+            json: { ...vars, snapshot_version: latestGroceryVersion(qc, vars.snapshot_version) },
+          });
           if (!res.ok) throw await apiError(res);
           return ((await res.json()) as { snapshot: GroceryListData }).snapshot;
         },
@@ -431,60 +448,20 @@ function registryRows(qc: QueryClient): RegistryRow[] {
       key: ["grocery", "coverage"],
       defaults: {
         mutationFn: async (vars: GroceryCoverageVars): Promise<GroceryListData> => {
-          const res = await api.api.grocery.coverage.$post({ json: vars });
+          const res = await api.api.grocery.coverage.$post({
+            json: { ...vars, snapshot_version: latestGroceryVersion(qc, vars.snapshot_version) },
+          });
           if (!res.ok) throw await apiError(res);
           return ((await res.json()) as { snapshot: GroceryListData }).snapshot;
         },
         onMutate: (vars: GroceryCoverageVars) =>
           qc.setQueryData<GroceryListData>(["grocery", "view"], (cur) =>
             cur
-              ? vars.enabled
-                ? {
-                    ...cur,
-                    pantry_covered: cur.pantry_covered.filter((line) => line.key !== vars.key),
-                    lines: cur.lines.some((line) => line.key === vars.key)
-                      ? cur.lines
-                      : [
-                          ...cur.lines,
-                          {
-                            key: vars.key,
-                            name:
-                              vars.name ??
-                              cur.pantry_covered.find((line) => line.key === vars.key)?.name ??
-                              vars.key,
-                            quantity: 1,
-                            kind: "grocery",
-                            domain: "grocery",
-                            origin: "list",
-                            checked_at: null,
-                            row_version: 1,
-                            updated_at: new Date().toISOString(),
-                            for_recipes:
-                              cur.pantry_covered.find((line) => line.key === vars.key)?.for_recipes ?? [],
-                          },
-                        ],
-                    to_buy: [...new Set([...cur.to_buy, vars.key])],
-                    counts: { ...cur.counts, to_buy: new Set([...cur.to_buy, vars.key]).size },
-                  }
-                : {
-                    ...cur,
-                    lines: cur.lines.filter((line) => line.key !== vars.key),
-                    to_buy: cur.to_buy.filter((key) => key !== vars.key),
-                    pantry_covered: cur.pantry_covered.some((line) => line.key === vars.key)
-                      ? cur.pantry_covered
-                      : [
-                          ...cur.pantry_covered,
-                          {
-                            key: vars.key,
-                            name: vars.name ?? vars.key,
-                            for_recipes: [],
-                            freshness: "covered",
-                            on_hand: {},
-                            buy_anyway: false,
-                          },
-                        ],
-                    counts: { ...cur.counts, to_buy: cur.to_buy.filter((key) => key !== vars.key).length },
-                  }
+              ? projectGroceryAction(cur, {
+                  kind: vars.enabled ? "pantry_buy_anyway" : "pantry_undo",
+                  key: vars.key,
+                  snapshot_version: vars.snapshot_version,
+                })
               : cur,
           ),
         onSuccess: (snapshot: GroceryListData) => qc.setQueryData(["grocery", "view"], snapshot),
@@ -500,39 +477,31 @@ function registryRows(qc: QueryClient): RegistryRow[] {
       key: ["grocery", "substitution"],
       defaults: {
         mutationFn: async (vars: GrocerySubstitutionVars): Promise<GroceryListData> => {
-          const res = await api.api.grocery.substitution.$post({ json: vars });
+          const res = await api.api.grocery.substitution.$post({
+            json: { ...vars, snapshot_version: latestGroceryVersion(qc, vars.snapshot_version) },
+          });
           if (!res.ok) throw await apiError(res);
           return ((await res.json()) as { snapshot: GroceryListData }).snapshot;
         },
         onMutate: (vars: GrocerySubstitutionVars) =>
           qc.setQueryData<GroceryListData>(["grocery", "view"], (cur) =>
             cur
-              ? !vars.undo
-                ? {
-                    ...cur,
-                    lines: [
-                      ...cur.lines.filter(
-                        (line) => line.key !== vars.original_key && line.key !== vars.replacement_key,
-                      ),
-                      {
-                        ...(cur.lines.find((line) => line.key === vars.original_key) ?? {
-                          quantity: 1,
-                          kind: "grocery",
-                          domain: "grocery",
-                          origin: "list",
-                          checked_at: null,
-                          row_version: 0,
-                          updated_at: null,
-                          for_recipes: [],
-                        }),
-                        key: vars.replacement_key,
-                        name: vars.replacement_name,
-                        row_version: 1,
+              ? projectGroceryAction(
+                  cur,
+                  vars.undo
+                    ? {
+                        kind: "substitute_undo",
+                        original_key: vars.original_key,
+                        snapshot_version: vars.snapshot_version,
+                      }
+                    : {
+                        kind: "substitute",
+                        original_key: vars.original_key,
+                        replacement_key: vars.replacement_key,
+                        replacement_name: vars.replacement_name,
+                        snapshot_version: vars.snapshot_version,
                       },
-                    ],
-                    to_buy: [...cur.to_buy.filter((key) => key !== vars.original_key), vars.replacement_key],
-                  }
-                : cur
+                )
               : cur,
           ),
         onSuccess: (snapshot: GroceryListData) => qc.setQueryData(["grocery", "view"], snapshot),
@@ -580,11 +549,13 @@ function registryRows(qc: QueryClient): RegistryRow[] {
                 to_buy: new Set([...cur.to_buy, vars.line_key]).size,
                 in_carts: Math.max(0, cur.counts.in_carts - 1),
               },
-              in_cart_groups: cur.in_cart_groups.map((group) =>
-                group.send_id === vars.send_id
-                  ? { ...group, lines: group.lines.filter((line) => line.key !== vars.line_key) }
-                  : group,
-              ),
+              in_cart_groups: cur.in_cart_groups
+                .map((group) =>
+                  group.send_id === vars.send_id
+                    ? { ...group, lines: group.lines.filter((line) => line.key !== vars.line_key) }
+                    : group,
+                )
+                .filter((group) => group.lines.length > 0),
             };
           }),
         onSuccess: (snapshot: GroceryListData) => qc.setQueryData(["grocery", "view"], snapshot),
@@ -594,6 +565,39 @@ function registryRows(qc: QueryClient): RegistryRow[] {
           toast(messageOf(err, "Couldn't return the item to the list"));
         },
         onSettled: () => qc.invalidateQueries({ queryKey: ["grocery"] }),
+      },
+    },
+    {
+      key: ["grocery", "pantry-verify"],
+      defaults: {
+        mutationFn: async (vars: GroceryPantryVerifyVars): Promise<GroceryListData> => {
+          const res = await api.api.grocery["pantry-verify"].$post({
+            json: { ...vars, snapshot_version: latestGroceryVersion(qc, vars.snapshot_version) },
+          });
+          if (!res.ok) throw await apiError(res);
+          return ((await res.json()) as { snapshot: GroceryListData }).snapshot;
+        },
+        onMutate: (vars: GroceryPantryVerifyVars) =>
+          qc.setQueryData<GroceryListData>(["grocery", "view"], (cur) =>
+            cur
+              ? projectGroceryAction(cur, {
+                  kind: "pantry_verify",
+                  key: vars.key,
+                  snapshot_version: vars.snapshot_version,
+                })
+              : cur,
+          ),
+        onSuccess: (snapshot: GroceryListData) => qc.setQueryData(["grocery", "view"], snapshot),
+        onError: (err: ApiError) => {
+          const snapshot = err.context?.snapshot as GroceryListData | undefined;
+          if (snapshot) qc.setQueryData(["grocery", "view"], snapshot);
+          toast(messageOf(err, "Couldn't verify the pantry item"));
+        },
+        onSettled: () =>
+          Promise.all([
+            qc.invalidateQueries({ queryKey: ["grocery"] }),
+            qc.invalidateQueries({ queryKey: ["pantry"] }),
+          ]),
       },
     },
     {
@@ -863,6 +867,12 @@ export function useGrocerySubstitution() {
 }
 export function useGroceryRelist() {
   return useMutation<GroceryListData, ApiError, GroceryRelistVars>({ mutationKey: ["grocery", "relist"] });
+}
+
+export function useGroceryPantryVerify() {
+  return useMutation<GroceryListData, ApiError, GroceryPantryVerifyVars>({
+    mutationKey: ["grocery", "pantry-verify"],
+  });
 }
 
 export function usePantryOps() {

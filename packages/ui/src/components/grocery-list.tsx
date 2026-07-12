@@ -86,10 +86,12 @@ export function GroceryList({ data, adapter, onDataChange }: GroceryListProps) {
           {state.conflict}
         </p>
       ) : null}
-      <div className="grocery-grouping" role="group" aria-label="Group grocery list">
+      <div className="grocery-grouping" role="radiogroup" aria-label="Group grocery list">
         {(["department", "recipe"] as GroceryGrouping[]).map((mode) => (
           <Button
             key={mode}
+            role="radio"
+            aria-checked={grouping === mode}
             size="sm"
             variant={grouping === mode ? "default" : "outline"}
             onClick={() => setState((cur) => ({ ...cur, grouping: mode }))}
@@ -406,6 +408,11 @@ function ShoppingLine({
           }
         />
         <span className={checked ? "checked" : ""}>{line.display_name ?? line.name}</span>
+        {line.staple ? (
+          <span className="grocery-staple" data-testid="grocery-staple">
+            Staple
+          </span>
+        ) : null}
       </label>
       <span>
         {line.quantity}

@@ -155,12 +155,14 @@ non-empty (the cart API is write-only — the member clears the store cart manua
 SHALL render each disposition surface: checkpoint items with their candidate lists (choice →
 commit `overrides`), pantry partials (confirm → `include_partials`), assumed-quantity lines
 (count → `quantities`), and per-line exclusion (→ `exclude`). After commit the UI SHALL report
-each write independently and honestly: it SHALL never present the cart as populated when
+the cart, list, send-snapshot, and SKU-cache writes independently and honestly: it SHALL never present the cart as populated when
 `cart.written` is false; a `reauth_required` cart failure SHALL render the Kroger re-link
 affordance over the existing login-url read; lines the cart took SHALL show as advanced to
-in-cart. The in-cart group SHALL offer the user-asserted "order placed" advance — the member
-route accepting `status: "ordered"` — enforced by the shared transition guard (legal only from
-`in_cart`, stamping `ordered_at`).
+in-cart. The in-cart group SHALL offer the user-asserted "order placed" advance through
+`mark_grocery_send_placed`, supplying the exact rendered send membership and snapshot version.
+The existing per-row `status: "ordered"` transition remains compatible for agent and satellite
+callers, but the member whole-send UI SHALL use the atomic batch assertion so it cannot partially
+advance a send.
 
 #### Scenario: A checkpoint item is dispositioned, not dropped
 
@@ -171,15 +173,13 @@ route accepting `status: "ordered"` — enforced by the shared transition guard 
 #### Scenario: A failed cart write is reported truthfully
 
 - **WHEN** commit returns `cart.written: false` with `code: "reauth_required"`
-- **THEN** the UI does not claim the cart is populated, shows the items as still to-buy, and
-  offers the Kroger re-link flow
+- **THEN** the UI does not claim the cart is populated, reports the list/send/SKU-cache outcomes independently, shows the items as still to-buy only when the list never advanced or rollback succeeded, calls out a surviving In-cart state when rollback failed, and offers the Kroger re-link flow
 
-#### Scenario: Mark order placed advances only from in_cart
+#### Scenario: Mark order placed advances the exact send atomically
 
 - **WHEN** the member asserts the order was placed on the in-cart group
-- **THEN** each item advances `in_cart → ordered` with `ordered_at` stamped via the guarded
-  shared operation, and an attempt against a non-`in_cart` row is rejected with the structured
-  transition error
+- **THEN** the batch operation advances exactly that send's rendered `in_cart` membership to
+  `ordered`, stamps `ordered_at`, and conflicts without a partial write when membership changed
 
 ### Requirement: Grocery-power UI coverage runs without Kroger credentials
 
@@ -220,10 +220,10 @@ The member grocery surfaces SHALL render a human label from stored/curated data,
 - **WHEN** the enriched to-buy view is read and a line carries substitute siblings and an aisle/department grouping
 - **THEN** the sibling label, the relation target, and the department heading render curated human labels (via the node `display_name`) rather than bare canonical ids
 
-#### Scenario: The default read_to_buy is unchanged
+#### Scenario: The default read_to_buy remains backward-compatible with additive grocery freshness
 
 - **WHEN** the same tenant reads `read_to_buy` and `GET /api/grocery/to-buy` (default, non-enriched) with unchanged underlying data
-- **THEN** both return the same lines via the same shared operation, with no new field on the default line and each `to_buy[].name` sourced exactly as before
+- **THEN** both return the same lines via the same shared operation, each `to_buy[].name` is sourced exactly as before, and the additive checked/concurrency fields plus aggregate `snapshot_version` follow the canonical grocery freshness contract without requiring enriched placement or substitution fields
 
 ### Requirement: The grocery launcher is a projection of configured store adapters
 
@@ -276,4 +276,3 @@ The member Grocery adapter SHALL register check/uncheck (including atomic virtua
 #### Scenario: Mark placed cannot queue
 - **WHEN** a member is offline with an in-cart send visible
 - **THEN** Mark order placed is disabled with an offline hint and no mutation-cache record is created
-

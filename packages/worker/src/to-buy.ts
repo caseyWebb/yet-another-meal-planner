@@ -75,10 +75,15 @@ export async function readGroceryDecisionInputs(env: Env, tenant: string, needs:
     const key = storedGroceryKey(row, resolve);
     if (!merged.has(key)) merged.set(key, { name: row.name, for_recipes: row.for_recipes });
   }
+  const activeSubstitutions = substitutions.filter(
+    (decision) =>
+      merged.has(decision.original_key) &&
+      attributionSignature(merged.get(decision.original_key)!) === decision.attribution_signature,
+  );
   return {
-    substitutions,
+    substitutions: activeSubstitutions,
     coverage,
-    suppressedKeys: new Set(substitutions.filter((d) => merged.has(d.original_key) && attributionSignature(merged.get(d.original_key)!) === d.attribution_signature).map((d) => d.original_key)),
+    suppressedKeys: new Set(activeSubstitutions.map((decision) => decision.original_key)),
     includePartials: new Set(coverage.map((d) => d.line_key)),
   };
 }
@@ -390,7 +395,7 @@ async function enrichView(
   // one identity-graph scan for the whole enriched view, not two.
   const substitutesByKey = await annotateSubstitutes(env, keys, { pantry, saleItems, ctx, neighborsByKey });
 
-  const to_buy = view.to_buy.map((line) => {
+  const enrichShoppingLine = (line: ToBuyViewLine): ToBuyViewLine => {
     const placement: LinePlacement = {};
     const row = placementRow(cache, line.key, locationId);
     if (row?.aisle) {
@@ -428,17 +433,9 @@ async function enrichView(
       placement: Object.keys(placement).length > 0 ? placement : null,
       substitutes: substitutesByKey.get(line.key) ?? [],
     };
-  });
-  const checked = view.checked.map((line) => {
-    const stored = storedByKey.get(line.key);
-    const row = placementRow(cache, line.key, locationId);
-    const placement: LinePlacement = {};
-    if (row?.aisle?.number) placement.aisle_number = row.aisle.number;
-    if (row?.aisle?.description) placement.aisle_description = row.aisle.description;
-    if (row?.aisle?.side !== undefined) placement.aisle_side = row.aisle.side;
-    const display_name = stored?.display_name ?? (line.name === line.key ? ctx.idLabel(line.key) : line.name);
-    return { ...line, display_name, placement: Object.keys(placement).length ? placement : null, substitutes: substitutesByKey.get(line.key) ?? [] };
-  });
+  };
+  const to_buy = view.to_buy.map(enrichShoppingLine);
+  const checked = view.checked.map(enrichShoppingLine);
 
   // Reify pantry_covered + in_cart with the SAME unified rule. A covered line's key is its resolved
   // name (food need); an active stored row that backs it supplies an override, else an id-named line

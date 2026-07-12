@@ -454,6 +454,7 @@ sent_in          TEXT  -- INTERNAL: the order_sends id whose flush advanced this
 checked_at       TEXT  -- nullable ISO check-off timestamp; deliberately orthogonal to status
 row_version      INTEGER -- starts at 1 and advances on every grocery-row mutation
 updated_at       TEXT  -- nullable ISO timestamp for legacy rows; latest row mutation thereafter
+decision_owner_token TEXT -- internal proof that a decision created this row; cleared by ordinary upserts
 ```
 
 Example rows:
@@ -517,6 +518,7 @@ attribution_signature TEXT -- canonical JSON of date/id/slug attribution; invali
 created_replacement INTEGER -- 1 only when acceptance created the replacement row
 replacement_version INTEGER -- created row version used by edited-row-safe Undo
 row_version INTEGER; created_at TEXT; updated_at TEXT; operation_token TEXT -- internal conditional-claim token
+ownership_token TEXT -- matches the created row's decision_owner_token; NULL means Undo cannot delete the row
 -- idx_grocery_substitution_replacement on (tenant, replacement_key).
 
 -- grocery_coverage_decisions — PRIMARY KEY (tenant, line_key).
@@ -524,6 +526,7 @@ tenant TEXT; line_key TEXT
 created_row INTEGER -- 1 only when Buy anyway materialized the pantry-low row
 created_row_version INTEGER -- created row version used by edited-row-safe Undo
 row_version INTEGER; created_at TEXT; updated_at TEXT; operation_token TEXT -- internal conditional-claim token
+ownership_token TEXT -- matches the created row's decision_owner_token; NULL means Undo cannot delete the row
 -- idx_grocery_coverage_updated on (tenant, updated_at).
 
 -- D1 spend_events table — one row per asserted purchase line, copied VERBATIM from its snapshot line.
@@ -562,7 +565,8 @@ voided_at   TEXT     -- set when the row was re-listed after ordering (voided, n
 `contract_version`, opaque `snapshot_version`, `as_of`, the complete active/checked `lines`,
 unchecked `to_buy` canonical keys, pantry coverage and decisions, current send groups with persisted
 quote totals/savings, underived recipes, location/flyer freshness, and header counts. Narrow line/send
-freshness rides the corresponding objects. `GroceryModelContext` extends the complete snapshot with
+freshness rides the corresponding objects. A shopping line carries `staple: true` when its canonical
+key is a member of the household's staples list. `GroceryModelContext` extends the complete snapshot with
 an action summary/outcome; hosts publish the full context, never an event delta. A spawning payload is
 render-only and must be re-hydrated before writes.
 

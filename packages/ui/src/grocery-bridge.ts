@@ -169,6 +169,21 @@ function outcomeFromBridge(result: GroceryBridgeResult, fallback: string): strin
   return fallback;
 }
 
+function outcomeKind(action: GroceryAction): NonNullable<GroceryModelContext["outcome"]>["kind"] {
+  switch (action.kind) {
+    case "add": return "added";
+    case "remove": return "removed";
+    case "checked": return "checked";
+    case "pantry_verify":
+    case "pantry_buy_anyway":
+    case "pantry_undo": return "pantry";
+    case "substitute":
+    case "substitute_undo": return "substitution";
+    case "relist": return "relisted";
+    case "mark_placed": return "placed";
+  }
+}
+
 export function createGroceryBridgeAdapter(
   bridge: GroceryBridge,
   capabilities: GroceryCapabilities,
@@ -192,16 +207,7 @@ export function createGroceryBridgeAdapter(
         ...snapshot,
         action_summary: action.kind,
         outcome: {
-          kind:
-            action.kind === "mark_placed"
-              ? "placed"
-              : action.kind === "relist"
-                ? "relisted"
-                : action.kind === "checked"
-                  ? "checked"
-                  : action.kind.startsWith("pantry")
-                    ? "pantry"
-                    : "substitution",
+          kind: outcomeKind(action),
           message: actualOutcome,
         },
       };

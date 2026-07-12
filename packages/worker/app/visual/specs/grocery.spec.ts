@@ -14,10 +14,10 @@ test("the shared page uses Department/Recipe and keeps household lines first-cla
 	groceryPage,
 }) => {
 	await expect(
-		groceryPage.page.getByRole("button", { name: "Department" }),
+		groceryPage.page.getByRole("radio", { name: "Department" }),
 	).toBeVisible();
 	await expect(
-		groceryPage.page.getByRole("button", { name: "Recipe" }),
+		groceryPage.page.getByRole("radio", { name: "Recipe" }),
 	).toBeVisible();
 	await expect(
 		groceryPage.page.getByText("Category", { exact: true }),

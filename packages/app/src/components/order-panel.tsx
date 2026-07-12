@@ -411,6 +411,7 @@ function OrderPreview(props: PreviewProps) {
 
 function OrderResult({ result, onRelink }: { result: OrderOutcome; onRelink(): void }) {
   const count = result.cart.count ?? result.resolved.length;
+  const listStayedToBuy = !result.list.advanced || result.list.rolled_back === true;
   return (
     <div className="order-result" data-testid="order-result">
       <div
@@ -430,7 +431,9 @@ function OrderResult({ result, onRelink }: { result: OrderOutcome; onRelink(): v
               : result.cart.error
                 ? ` — ${result.cart.error}`
                 : "."}{" "}
-            The items stay on your to-buy list.
+            {listStayedToBuy
+              ? " The items stay on your to-buy list."
+              : " The list still says In cart, so do not retry until that state is reconciled."}
             {result.cart.code === "reauth_required" ? (
               <>
                 {" "}
@@ -443,11 +446,31 @@ function OrderResult({ result, onRelink }: { result: OrderOutcome; onRelink(): v
         )}
       </div>
       <div className={`order-result-row ${result.list.advanced ? "ok" : ""}`} data-testid="order-result-list">
-        {result.list.advanced ? <IconCheck /> : <IconAlert />}
+        {result.list.advanced && result.cart.written ? <IconCheck /> : <IconAlert />}
         <span>
-          {result.list.advanced
+          {result.list.advanced && result.cart.written
             ? "The carted items moved to the In cart group."
-            : "The list was not advanced — nothing is marked in-cart."}
+            : result.list.advanced
+              ? `The list is marked In cart even though the cart was not written${result.list.error ? ` — ${result.list.error}` : "."}`
+              : result.list.rolled_back
+                ? "The list advance was rolled back — the items remain to-buy."
+                : `The list was not advanced — nothing is marked in-cart${result.list.error ? ` — ${result.list.error}` : "."}`}
+        </span>
+      </div>
+      <div className={`order-result-row ${result.send.recorded ? "ok" : ""}`} data-testid="order-result-send">
+        {result.send.recorded ? <IconCheck /> : <IconAlert />}
+        <span>
+          {result.send.recorded
+            ? `The sent quote was recorded${result.send.id ? ` as ${result.send.id}` : ""}.`
+            : `No sent quote was recorded${result.send.error ? ` — ${result.send.error}` : "."}`}
+        </span>
+      </div>
+      <div className={`order-result-row ${result.sku_cache.committed ? "ok" : ""}`} data-testid="order-result-sku-cache">
+        {result.sku_cache.committed ? <IconCheck /> : <IconAlert />}
+        <span>
+          {result.sku_cache.committed
+            ? "Product matches were saved for future orders."
+            : `Product matches were not saved${result.sku_cache.error ? ` — ${result.sku_cache.error}` : "."}`}
         </span>
       </div>
       {result.checkpoint.length ? (

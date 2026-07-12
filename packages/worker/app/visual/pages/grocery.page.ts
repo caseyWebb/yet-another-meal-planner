@@ -51,8 +51,8 @@ export class GroceryPage extends AppPage {
 	}
 	async setGroupMode(mode: "Department" | "Recipe"): Promise<void> {
 		await this.page
-			.getByRole("group", { name: "Group grocery list" })
-			.getByRole("button", { name: mode })
+			.getByRole("radiogroup", { name: "Group grocery list" })
+			.getByRole("radio", { name: mode })
 			.click();
 	}
 	group(label: string): Locator {
@@ -237,6 +237,12 @@ export class GroceryPage extends AppPage {
 	}
 	resultList(): Locator {
 		return this.page.getByTestId("order-result-list");
+	}
+	resultSend(): Locator {
+		return this.page.getByTestId("order-result-send");
+	}
+	resultSkuCache(): Locator {
+		return this.page.getByTestId("order-result-sku-cache");
 	}
 	relinkButton(): Locator {
 		return this.page.getByTestId("order-relink");

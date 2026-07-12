@@ -14,10 +14,10 @@ import {
   useGroceryAdd,
   useGroceryChecked,
   useGroceryCoverage,
+  useGroceryPantryVerify,
   useGroceryRelist,
   useGroceryRemove,
   useGrocerySubstitution,
-  usePantryVerify,
 } from "../lib/mutations";
 import { useGrocerySnapshot, useStoreAdapters, type StoreAdapterProjection } from "../lib/data";
 import { useOnline } from "../lib/online";
@@ -37,7 +37,7 @@ function GroceryPage() {
   const substitution = useGrocerySubstitution();
   const relist = useGroceryRelist();
   const remove = useGroceryRemove();
-  const verify = usePantryVerify();
+  const verify = useGroceryPantryVerify();
   const [orderOpen, setOrderOpen] = React.useState(false);
 
   const fresh = React.useCallback(async (): Promise<GroceryListData> => {
@@ -89,8 +89,7 @@ function GroceryPage() {
             return ((await res.json()) as { snapshot: GroceryListData }).snapshot;
           }
           case "pantry_verify":
-            await verify.mutateAsync({ items: [action.key] });
-            return fresh();
+            return verify.mutateAsync({ key: action.key, snapshot_version: action.snapshot_version });
           case "pantry_buy_anyway":
             return coverage.mutateAsync({
               key: action.key,

@@ -42,17 +42,29 @@ describe("readGrocerySnapshot", () => {
     const base = await readGrocerySnapshot(h.env, T, NOW);
     const text = grocerySnapshotText({
       ...base,
+      lines: [{ key: "beans", name: "Beans", quantity: "2 cans", kind: "grocery", domain: "grocery", origin: "both", checked_at: null, row_version: 1, updated_at: NOW.toISOString(), note: "low sodium", staple: true, for_recipes: ["chili"], recipe_attribution: [{ slug: "chili", planned_for: "2026-07-14", plan_id: "p1" }], placement: { section: "Canned goods", aisle_number: "5" }, substitutes: [{ id: "lentils", label: "Lentils", in_pantry: true }] }],
       pantry_covered: [{ key: "onion", name: "Onion", for_recipes: ["soup"], freshness: "worth_a_look", on_hand: {}, buy_anyway: false }],
       substitution_decisions: [{ original_key: "milk", replacement_key: "oat milk", attribution_signature: "sig", created_replacement: true, replacement_version: 1, row_version: 1, created_at: NOW.toISOString(), updated_at: NOW.toISOString() }],
       coverage_decisions: [{ line_key: "onion", created_row: true, created_row_version: 1, row_version: 1, created_at: NOW.toISOString(), updated_at: NOW.toISOString() }],
       underived: ["stew"],
-      in_cart_groups: [{ send_id: null, store: null, location_id: null, fulfillment: null, sent_at: null, placed_at: null, awaiting_confirmation: false, estimated_total: null, flyer_savings: null, can_mark_placed: false, lines: [{ key: "rice", name: "Rice", quantity: "3 bags", row_version: 2, unit_price: null, savings: null }] }],
+      in_cart_groups: [{ send_id: "s1", store: "Kroger", location_id: "1", fulfillment: "kroger_online", sent_at: "2026-07-08T09:30:00Z", placed_at: null, awaiting_confirmation: true, estimated_total: 12, flyer_savings: 2.5, can_mark_placed: true, lines: [{ key: "rice", name: "Rice", quantity: "3 bags", row_version: 2, unit_price: 4, savings: 2.5 }] }],
       counts: { ...base.counts, in_carts: 1 },
     });
     expect(text).toContain("Pantry covers: Onion (worth a look)");
+    expect(text).toContain("○ Beans (2 cans) [Staple] — low sodium [for: chili] [Canned goods, aisle 5] [try: Lentils (pantry)]");
     expect(text).toContain("Decision: use oat milk instead of milk");
     expect(text).toContain("Decision: buy onion despite pantry coverage");
     expect(text).toContain("Underived recipes: stew");
-    expect(text).toContain("Unlinked cart: 1 item\n  - Rice (3 bags)");
+    expect(text).toContain("Kroger: 1 item, sent 2026-07-08T09:30:00Z, awaiting confirmation, sent estimate $12.00, flyer savings $2.50\n  - Rice (3 bags)");
+  });
+
+  it("marks shopping lines that belong to the household staples list", async () => {
+    const h = sqliteEnv([T]);
+    await addGroceryRow(h.env, T, { name: "olive oil" }, "2026-07-12");
+    await addGroceryRow(h.env, T, { name: "lemons" }, "2026-07-12");
+    h.raw.prepare("INSERT INTO staples (tenant,name,normalized_name,perishable) VALUES (?,'Olive oil','olive oil',0)").run(T);
+    const snapshot = await readGrocerySnapshot(h.env, T, NOW);
+    expect(snapshot.lines.find((line) => line.key === "olive oil")?.staple).toBe(true);
+    expect(snapshot.lines.find((line) => line.key === "lemons")?.staple).toBeUndefined();
   });
 });

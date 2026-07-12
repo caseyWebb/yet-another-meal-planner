@@ -20,6 +20,7 @@ const GroceryLineSchema = z.object({
   domain: z.string(),
   origin: z.enum(["list", "plan", "both"]),
   source: z.enum(["ad_hoc", "menu", "pantry_low", "stockup"]).optional(),
+  staple: z.boolean().optional(),
   status: z.enum(["active", "in_cart", "ordered"]).optional(),
   checked_at: z.string().nullable(),
   row_version: z.number().int().nonnegative(),
@@ -110,7 +111,7 @@ export type GrocerySendGroup = z.infer<typeof SendGroupSchema>;
 
 export interface GroceryModelContext extends GroceryListData {
   action_summary: string;
-  outcome?: { kind: "checked" | "pantry" | "substitution" | "relisted" | "placed"; message: string };
+  outcome?: { kind: "added" | "removed" | "checked" | "pantry" | "substitution" | "relisted" | "placed"; message: string };
 }
 
 export function parseGroceryListData(value: unknown): GroceryListData {

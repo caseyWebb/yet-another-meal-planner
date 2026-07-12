@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
-import { fireEvent, render, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import type { GroceryListData } from "@yamp/contract";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { GroceryList } from "./components/grocery-list";
 import { type GroceryAction, groceryActionKey } from "./grocery-controller";
 
@@ -30,7 +30,34 @@ const data: GroceryListData = {
   counts: { to_buy: 2, checked: 0, in_carts: 0, recipes: 0 },
 };
 
+afterEach(cleanup);
+
 describe("GroceryList interaction serialization", () => {
+  it("exposes grouping as a single-select radio group", () => {
+    const view = render(<GroceryList data={data} adapter={{ mode: "interactive", mutate: vi.fn() }} />);
+    const group = view.getByRole("radiogroup", { name: "Group grocery list" });
+    const department = view.getByRole("radio", { name: "Department" });
+    const recipe = view.getByRole("radio", { name: "Recipe" });
+    expect(group.contains(department)).toBe(true);
+    expect(department.getAttribute("aria-checked")).toBe("true");
+    expect(recipe.getAttribute("aria-checked")).toBe("false");
+    fireEvent.click(recipe);
+    expect(recipe.getAttribute("aria-checked")).toBe("true");
+    expect(department.getAttribute("aria-checked")).toBe("false");
+  });
+
+  it("visibly labels staple lines", () => {
+    const withStaple: GroceryListData = {
+      ...data,
+      lines: data.lines.map((item) => (item.key === "milk" ? { ...item, staple: true } : item)),
+    };
+    const view = render(
+      <GroceryList data={withStaple} adapter={{ mode: "interactive", mutate: vi.fn() }} />,
+    );
+    const milk = view.container.querySelector('[data-testid="grocery-line"][data-key="milk"]');
+    expect(milk?.querySelector('[data-testid="grocery-staple"]')?.textContent).toBe("Staple");
+  });
+
   it("starts independent targets immediately while suppressing a pending target duplicate", async () => {
     let release!: () => void;
     const first = new Promise<void>((resolve) => {

@@ -171,8 +171,11 @@ export function projectGroceryAction(data: GroceryListData, action: GroceryActio
         row_version: 1,
         created_at: data.as_of,
         updated_at: data.as_of,
+        // Optimistic-only replay aid. The server decision schema ignores this extra field, while
+        // persisted query state retains enough presentation truth to undo before reconnecting.
+        optimistic_original: original,
       },
-    ];
+    ] as typeof substitutions;
     if (original && !replacement) {
       lines = [
         ...lines,
@@ -191,6 +194,12 @@ export function projectGroceryAction(data: GroceryListData, action: GroceryActio
     if (!toBuy.includes(action.replacement_key)) toBuy = [...toBuy, action.replacement_key];
   } else if (action.kind === "substitute_undo") {
     const decision = substitutions.find((item) => item.original_key === action.original_key);
+    const replacementBeforeUndo = decision
+      ? lines.find((line) => line.key === decision.replacement_key)
+      : undefined;
+    const optimisticOriginal = (
+      decision as (typeof decision & { optimistic_original?: GroceryLine }) | undefined
+    )?.optimistic_original;
     substitutions = substitutions.filter((item) => item.original_key !== action.original_key);
     if (decision?.created_replacement) {
       lines = lines.filter(
@@ -201,6 +210,38 @@ export function projectGroceryAction(data: GroceryListData, action: GroceryActio
       );
       if (!lines.some((line) => line.key === decision.replacement_key))
         toBuy = toBuy.filter((key) => key !== decision.replacement_key);
+    }
+    const restoredOriginal =
+      optimisticOriginal ??
+      (decision && replacementBeforeUndo
+        ? {
+            ...replacementBeforeUndo,
+            key: action.original_key,
+            name: action.original_key,
+            display_name: undefined,
+            checked_at: null,
+            row_version: 0,
+          }
+        : undefined);
+    if (restoredOriginal && !lines.some((line) => line.key === action.original_key)) {
+      lines = [...lines, restoredOriginal];
+      if (restoredOriginal.checked_at == null && !toBuy.includes(action.original_key))
+        toBuy = [...toBuy, action.original_key];
+    }
+  } else if (action.kind === "pantry_verify") {
+    const verifiedAt = data.as_of.slice(0, 10);
+    const covered = data.pantry_covered.map((line) =>
+      line.key === action.key
+        ? {
+            ...line,
+            freshness: "covered" as const,
+            freshness_reason: "Verified still good",
+            on_hand: { ...line.on_hand, last_verified_at: verifiedAt },
+          }
+        : line,
+    );
+    if (covered.some((line, index) => line !== data.pantry_covered[index])) {
+      return { ...data, pantry_covered: covered };
     }
   } else if (action.kind === "pantry_buy_anyway") {
     // Record only the decision. The server response supplies the canonical materialized row.

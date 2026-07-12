@@ -58,6 +58,7 @@ export const REGISTERED_MUTATION_KEYS: readonly (readonly string[])[] = [
   ["grocery", "coverage"],
   ["grocery", "substitution"],
   ["grocery", "relist"],
+  ["grocery", "pantry-verify"],
   ["pantry", "ops"],
   ["pantry", "verify"],
   ["overlay", "favorite"],

@@ -425,6 +425,25 @@ describe("computeToBuyView — enrich (member-app-differentiators D6, generalize
     expect(byKey.get("saffron")!.placement).toBeNull();
   });
 
+  it("checking a line changes only its partition, not enrichment or non-food display guards", async () => {
+    const h = sqliteEnv([T]);
+    seedProfile(h, { primary: "kroger", preferred_location: "03500520" });
+    seedDeptGraph(h);
+    seedNode(h, "paper towels", "Graph-owned label");
+    await addGroceryRow(h.env, T, { name: "flour" }, TODAY);
+    await addGroceryRow(h.env, T, { name: "paper towels", kind: "household" }, TODAY);
+    seedSkuAisle(h, "flour", "03500520", { number: "12", description: "Baking" });
+    const unchecked = await computeToBuyView(h.env, T, { enrich: true });
+    const before = new Map(unchecked.to_buy.map((line) => [line.key, line]));
+    h.raw.prepare("UPDATE grocery_list SET checked_at='2026-07-12T12:00:00Z',row_version=row_version+1 WHERE tenant=?").run(T);
+    const checked = await computeToBuyView(h.env, T, { enrich: true });
+    const after = new Map(checked.checked.map((line) => [line.key, line]));
+    expect(after.get("flour")?.placement).toEqual(before.get("flour")?.placement);
+    expect(after.get("flour")?.display_name).toBe(before.get("flour")?.display_name);
+    expect(after.get("flour")?.substitutes).toEqual(before.get("flour")?.substitutes);
+    expect(after.get("paper towels")?.display_name).toBe("paper towels");
+  });
+
   it("the legacy untagged '' row is the fallback when no location-tagged row exists", async () => {
     const h = sqliteEnv([T]);
     seedProfile(h, { primary: "kroger", preferred_location: "03500520" });

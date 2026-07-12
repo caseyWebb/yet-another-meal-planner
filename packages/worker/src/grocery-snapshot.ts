@@ -4,6 +4,8 @@ import { db } from "./db.js";
 import { computeToBuyView } from "./to-buy.js";
 import { readGroceryDecisionInputs } from "./to-buy.js";
 import { readGroceryList } from "./session-db.js";
+import { emptyIngredientContext, ingredientContext } from "./corpus-db.js";
+import { readStaples } from "./profile-db.js";
 
 interface SendReadRow {
   send_id: string;
@@ -95,7 +97,13 @@ async function sendGroups(env: Env, tenant: string, asOf: Date): Promise<Grocery
 /** Authoritative, tenant-scoped state behind the member route and MCP app. */
 export async function readGrocerySnapshot(env: Env, tenant: string, now = new Date()): Promise<GroceryListData> {
   const view = await computeToBuyView(env, tenant, { enrich: true });
-  const decisions = await readGroceryDecisionInputs(env, tenant, [], await readGroceryList(env, tenant), (name) => name);
+  const [storedList, staples, stapleContext] = await Promise.all([
+    readGroceryList(env, tenant),
+    readStaples(env, tenant),
+    ingredientContext(env, { capture: false }).catch(() => emptyIngredientContext(env)),
+  ]);
+  const stapleKeys = new Set(staples.map((item) => stapleContext.resolve(item.name)));
+  const decisions = await readGroceryDecisionInputs(env, tenant, [], storedList, (name) => name);
   const linked = await sendGroups(env, tenant, now);
   const linkedKeys = new Set(linked.flatMap((g) => g.lines.map((l) => l.key)));
   const unlinked = view.in_cart.filter((line) => !line.key || !linkedKeys.has(line.key));
@@ -135,6 +143,7 @@ export async function readGrocerySnapshot(env: Env, tenant: string, now = new Da
     row_version: line.row_version ?? 0,
     updated_at: line.updated_at ?? null,
     ...(line.note !== undefined ? { note: line.note } : {}),
+    ...(stapleKeys.has(line.key) ? { staple: true } : {}),
     for_recipes: line.for_recipes,
     recipe_attribution: line.recipe_attribution ?? line.for_recipes.map((slug) => ({ slug })),
     placement: line.placement
@@ -183,14 +192,25 @@ export async function readGrocerySnapshot(env: Env, tenant: string, now = new Da
 }
 
 export function grocerySnapshotText(data: GroceryListData): string {
-  const lines = data.lines.map((line) => `${line.checked_at ? "✓" : "○"} ${line.display_name ?? line.name} (${line.quantity})`);
-  const pantry = data.pantry_covered.map((line) => `Pantry covers: ${line.display_name ?? line.name}${line.freshness === "worth_a_look" ? " (worth a look)" : ""}`);
+  const lines = data.lines.map((line) => {
+    const recipes = line.recipe_attribution?.map((item) => item.slug) ?? line.for_recipes;
+    const placement = [line.placement?.section, line.placement?.aisle_number ? `aisle ${line.placement.aisle_number}` : null]
+      .filter(Boolean).join(", ");
+    const substitutes = (line.substitutes ?? []).flatMap((candidate) => {
+      if (!candidate || typeof candidate !== "object") return [];
+      const row = candidate as { id?: unknown; label?: unknown; in_pantry?: unknown; on_sale_hint?: unknown };
+      const label = typeof row.label === "string" ? row.label : typeof row.id === "string" ? row.id : null;
+      return label ? [`${label}${row.in_pantry ? " (pantry)" : ""}${row.on_sale_hint ? " (sale)" : ""}`] : [];
+    });
+    return `${line.checked_at ? "✓" : "○"} ${line.display_name ?? line.name} (${line.quantity}${line.assumed_quantity ? " assumed" : ""})${line.staple ? " [Staple]" : ""}${line.note ? ` — ${line.note}` : ""}${recipes.length ? ` [for: ${recipes.join(", ")}]` : ""}${placement ? ` [${placement}]` : ""}${substitutes.length ? ` [try: ${substitutes.join(", ")}]` : ""}`;
+  });
+  const pantry = data.pantry_covered.map((line) => `Pantry covers: ${line.display_name ?? line.name}${line.freshness === "worth_a_look" ? ` (worth a look${line.freshness_reason ? `: ${line.freshness_reason}` : ""})` : ""}${line.for_recipes.length ? ` [for: ${line.for_recipes.join(", ")}]` : ""}`);
   const decisions = [
     ...(data.substitution_decisions ?? []).map((d) => `Decision: use ${d.replacement_key} instead of ${d.original_key}`),
     ...(data.coverage_decisions ?? []).map((d) => `Decision: buy ${d.line_key} despite pantry coverage`),
   ];
   const carts = data.in_cart_groups.flatMap((g) => [
-    `${g.store ?? "Unlinked cart"}: ${g.lines.length} item${g.lines.length === 1 ? "" : "s"}${g.estimated_total == null ? "" : `, sent estimate $${Number(g.estimated_total).toFixed(2)}`}`,
+    `${g.store ?? "Unlinked cart"}: ${g.lines.length} item${g.lines.length === 1 ? "" : "s"}${g.sent_at == null ? "" : `, sent ${g.sent_at}`}${g.awaiting_confirmation ? ", awaiting confirmation" : ""}${g.estimated_total == null ? "" : `, sent estimate $${Number(g.estimated_total).toFixed(2)}`}${g.flyer_savings == null || g.flyer_savings <= 0 ? "" : `, flyer savings $${Number(g.flyer_savings).toFixed(2)}`}`,
     ...g.lines.map((line) => `  - ${line.name} (${line.quantity})`),
   ]);
   const underived = data.underived.length ? [`Underived recipes: ${data.underived.join(", ")}`] : [];

@@ -246,6 +246,14 @@ test("a live sibling swap materializes the curated label and Undo restores the o
 		.getByRole("button", { name: "Swap in" })
 		.click();
 	await expect(groceryPage.item(siblingId)).toContainText(siblingLabel);
+	await expect
+		.poll(async () =>
+			page.evaluate(async (key) => {
+				const snapshot = (await (await fetch("/api/grocery/view")).json()) as GroceryListData;
+				return snapshot.lines.some((line) => line.key === key);
+			}, siblingId),
+		)
+		.toBe(true);
 	const materialized = await page.evaluate(async (key) => {
 		const snapshot = (await (await fetch("/api/grocery/view")).json()) as GroceryListData;
 		return snapshot.lines.find((line) => line.key === key);

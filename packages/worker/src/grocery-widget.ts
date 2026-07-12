@@ -52,8 +52,13 @@ async function resultOf(
 						}
 					).snapshot
 				: await readGrocerySnapshot(env, tenant);
+		const outcome =
+			value && typeof value === "object" && "outcome" in value &&
+			typeof (value as { outcome?: unknown }).outcome === "string"
+				? (value as { outcome: string }).outcome
+				: undefined;
 		return {
-			structuredContent: { snapshot },
+			structuredContent: { snapshot, ...(outcome ? { outcome } : {}) },
 			content: [{ type: "text" as const, text: grocerySnapshotText(snapshot) }],
 		};
 	} catch (error) {

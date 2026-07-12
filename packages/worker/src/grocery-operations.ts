@@ -91,6 +91,9 @@ export async function acceptGrocerySubstitution(
   tenant: string,
   input: { original_key: string; replacement_key: string; replacement_name: string; snapshot_version: string },
 ): Promise<GroceryMutationResult> {
+  if (input.replacement_key === input.original_key) {
+    throw new ToolError("validation_failed", "A grocery substitution must use a different canonical key.");
+  }
   const prior = await db(env).first<{ replacement_key: string; attribution_signature: string }>("SELECT replacement_key,attribution_signature FROM grocery_substitution_decisions WHERE tenant=?1 AND original_key=?2", tenant, input.original_key);
   const currentSignature = await readGroceryAttributionSignature(env, tenant, input.original_key);
   if (prior?.replacement_key === input.replacement_key && currentSignature === prior.attribution_signature) return { status: "ok", snapshot: await readGrocerySnapshot(env, tenant), outcome: "already substituted" };
@@ -101,19 +104,36 @@ export async function acceptGrocerySubstitution(
   if (!input.replacement_name.trim() || validateCanonicalId(input.replacement_key) !== input.replacement_key || !ctx.resolver.ids.has(input.replacement_key)) {
     throw new ToolError("validation_failed", "replacement_key must be a canonical live survivor; replacement_name is presentation only.");
   }
-  const existing = (await readGroceryList(env, tenant)).find((row) => row.normalized_name === input.replacement_key);
   const now = new Date().toISOString();
-  const created = existing ? 0 : 1; const signature = attributionSignature({ for_recipes: original.for_recipes, recipe_attribution: original.recipe_attribution }); const token = crypto.randomUUID();
+  const signature = attributionSignature({ for_recipes: original.for_recipes, recipe_attribution: original.recipe_attribution }); const token = crypto.randomUUID();
   const statements = [db(env).prepare(
-    "INSERT INTO grocery_substitution_decisions (tenant,original_key,replacement_key,attribution_signature,created_replacement,replacement_version,row_version,created_at,updated_at,operation_token) " +
-      "VALUES (?1,?2,?3,?4,?5,?6,1,?7,?7,?8) ON CONFLICT(tenant,original_key) DO UPDATE SET attribution_signature=excluded.attribution_signature,row_version=grocery_substitution_decisions.row_version+1,updated_at=excluded.updated_at,operation_token=excluded.operation_token " +
+    "INSERT INTO grocery_substitution_decisions (tenant,original_key,replacement_key,attribution_signature,created_replacement,replacement_version,row_version,created_at,updated_at,operation_token,ownership_token) " +
+      "VALUES (?1,?2,?3,?4,0,NULL,1,?5,?5,?6,NULL) ON CONFLICT(tenant,original_key) DO UPDATE SET attribution_signature=excluded.attribution_signature,row_version=grocery_substitution_decisions.row_version+1,updated_at=excluded.updated_at,operation_token=excluded.operation_token " +
       "WHERE grocery_substitution_decisions.replacement_key=excluded.replacement_key",
-    tenant, input.original_key, input.replacement_key, signature, created, existing?.row_version ?? 1, now, token,
+    tenant, input.original_key, input.replacement_key, signature, now, token,
   )];
-  if (!existing) statements.push(db(env).prepare(
-    "INSERT INTO grocery_list (tenant,name,normalized_name,quantity,kind,domain,status,source,for_recipes,note,added_at,checked_at,row_version,updated_at) " +
-      "SELECT ?1,?2,?3,?4,?5,?6,'active','menu',?7,NULL,?8,NULL,1,?9 WHERE EXISTS (SELECT 1 FROM grocery_substitution_decisions WHERE tenant=?1 AND original_key=?10 AND operation_token=?11) ON CONFLICT(tenant,normalized_name) DO NOTHING",
-    tenant, input.replacement_name, input.replacement_key, String(original.quantity), original.kind, original.domain, JSON.stringify(original.for_recipes), now.slice(0, 10), now, input.original_key, token,
+  statements.push(db(env).prepare(
+    "UPDATE spend_events SET voided_at=?1 WHERE tenant=?2 AND line_key=?3 AND voided_at IS NULL " +
+      "AND EXISTS (SELECT 1 FROM grocery_list WHERE tenant=?2 AND normalized_name=?3 AND status='ordered') " +
+      "AND EXISTS (SELECT 1 FROM grocery_substitution_decisions WHERE tenant=?2 AND original_key=?4 AND operation_token=?5)",
+    now, tenant, input.replacement_key, input.original_key, token,
+  ));
+  statements.push(db(env).prepare(
+    "INSERT INTO grocery_list (tenant,name,normalized_name,quantity,kind,domain,status,source,for_recipes,note,added_at,ordered_at,sent_in,checked_at,row_version,updated_at,decision_owner_token) " +
+      "SELECT ?1,?2,?3,?4,?5,?6,'active','menu',?7,NULL,?8,NULL,NULL,NULL,1,?9,?10 " +
+      "WHERE EXISTS (SELECT 1 FROM grocery_substitution_decisions WHERE tenant=?1 AND original_key=?11 AND operation_token=?10) " +
+      "ON CONFLICT(tenant,normalized_name) DO UPDATE SET status='active',ordered_at=NULL,sent_in=NULL," +
+      "for_recipes=COALESCE((SELECT json_group_array(value) FROM (SELECT value FROM json_each(COALESCE(grocery_list.for_recipes,'[]')) UNION SELECT value FROM json_each(excluded.for_recipes) ORDER BY value)),'[]')," +
+      "row_version=grocery_list.row_version+1,updated_at=excluded.updated_at",
+    tenant, input.replacement_name, input.replacement_key, String(original.quantity), original.kind, original.domain, JSON.stringify(original.for_recipes), now.slice(0, 10), now, token, input.original_key,
+  ));
+  statements.push(db(env).prepare(
+    "UPDATE grocery_substitution_decisions SET " +
+      "ownership_token=(SELECT decision_owner_token FROM grocery_list WHERE tenant=?1 AND normalized_name=?2 AND decision_owner_token IN (COALESCE(grocery_substitution_decisions.ownership_token,''),?3))," +
+      "created_replacement=CASE WHEN EXISTS (SELECT 1 FROM grocery_list WHERE tenant=?1 AND normalized_name=?2 AND decision_owner_token IN (COALESCE(grocery_substitution_decisions.ownership_token,''),?3)) THEN 1 ELSE 0 END," +
+      "replacement_version=(SELECT row_version FROM grocery_list WHERE tenant=?1 AND normalized_name=?2 AND decision_owner_token IN (COALESCE(grocery_substitution_decisions.ownership_token,''),?3)) " +
+      "WHERE tenant=?1 AND original_key=?4 AND operation_token=?3",
+    tenant, input.replacement_key, token, input.original_key,
   ));
   await db(env).batch(statements);
   const claimed = await db(env).first<{ replacement_key: string; attribution_signature: string; operation_token: string | null }>("SELECT replacement_key,attribution_signature,operation_token FROM grocery_substitution_decisions WHERE tenant=?1 AND original_key=?2", tenant, input.original_key);
@@ -126,20 +146,31 @@ export async function undoGrocerySubstitution(
   tenant: string,
   input: { original_key: string; snapshot_version: string },
 ): Promise<GroceryMutationResult> {
-  const decision = await db(env).first<{ replacement_key: string; created_replacement: number; replacement_version: number | null }>(
-    "SELECT replacement_key, created_replacement, replacement_version FROM grocery_substitution_decisions WHERE tenant=?1 AND original_key=?2",
+  const decision = await db(env).first<{ replacement_key: string; created_replacement: number; replacement_version: number | null; row_version: number; operation_token: string | null; ownership_token: string | null }>(
+    "SELECT replacement_key,created_replacement,replacement_version,row_version,operation_token,ownership_token FROM grocery_substitution_decisions WHERE tenant=?1 AND original_key=?2",
     tenant, input.original_key,
   );
   if (!decision) return { status: "ok", snapshot: await readGrocerySnapshot(env, tenant) };
   await requireSnapshot(env, tenant, input.snapshot_version);
-  const stmts = [db(env).prepare("DELETE FROM grocery_substitution_decisions WHERE tenant=?1 AND original_key=?2", tenant, input.original_key)];
+  const claim = crypto.randomUUID();
+  const stmts = [db(env).prepare(
+    "UPDATE grocery_substitution_decisions SET operation_token=?1 WHERE tenant=?2 AND original_key=?3 AND row_version=?4 AND operation_token IS ?5",
+    claim, tenant, input.original_key, decision.row_version, decision.operation_token,
+  )];
   let outcome = "original restored; replacement preserved";
-  if (decision.created_replacement && decision.replacement_version != null) {
-    stmts.push(db(env).prepare("DELETE FROM grocery_list WHERE tenant=?1 AND normalized_name=?2 AND row_version=?3", tenant, decision.replacement_key, decision.replacement_version));
+  if (decision.created_replacement && decision.replacement_version != null && decision.ownership_token) {
+    stmts.push(db(env).prepare(
+      "DELETE FROM grocery_list WHERE tenant=?1 AND normalized_name=?2 AND row_version=?3 AND decision_owner_token=?4 " +
+        "AND EXISTS (SELECT 1 FROM grocery_substitution_decisions WHERE tenant=?1 AND original_key=?5 AND operation_token=?6)",
+      tenant, decision.replacement_key, decision.replacement_version, decision.ownership_token, input.original_key, claim,
+    ));
     outcome = "original restored; untouched replacement removed";
   }
+  stmts.push(db(env).prepare("DELETE FROM grocery_substitution_decisions WHERE tenant=?1 AND original_key=?2 AND operation_token=?3", tenant, input.original_key, claim));
   await db(env).batch(stmts);
-  if (decision.created_replacement && decision.replacement_version != null) {
+  const survivorDecision = await db(env).first<{ row_version: number }>("SELECT row_version FROM grocery_substitution_decisions WHERE tenant=?1 AND original_key=?2", tenant, input.original_key);
+  if (survivorDecision) conflict("The substitution changed while Undo was applying.", await readGrocerySnapshot(env, tenant));
+  if (decision.created_replacement && decision.replacement_version != null && decision.ownership_token) {
     const survivor = await db(env).first<{ row_version: number }>("SELECT row_version FROM grocery_list WHERE tenant=?1 AND normalized_name=?2", tenant, decision.replacement_key);
     if (survivor) outcome = "original restored; replacement preserved";
   }
@@ -151,31 +182,59 @@ export async function setGroceryBuyAnyway(
   tenant: string,
   input: { key: string; enabled: boolean; name?: string; snapshot_version: string },
 ): Promise<GroceryMutationResult> {
-  const decision = await db(env).first<{ created_row: number; created_row_version: number | null }>(
-    "SELECT created_row, created_row_version FROM grocery_coverage_decisions WHERE tenant=?1 AND line_key=?2", tenant, input.key,
+  const decision = await db(env).first<{ created_row: number; created_row_version: number | null; row_version: number; operation_token: string | null; ownership_token: string | null }>(
+    "SELECT created_row,created_row_version,row_version,operation_token,ownership_token FROM grocery_coverage_decisions WHERE tenant=?1 AND line_key=?2", tenant, input.key,
   );
   if ((input.enabled && decision) || (!input.enabled && !decision)) return { status: "ok", snapshot: await readGrocerySnapshot(env, tenant), outcome: input.enabled ? "already buy anyway" : "already undone" };
   const current = await requireSnapshot(env, tenant, input.snapshot_version);
   const covered = current.pantry_covered.find((line) => line.key === input.key);
   if (!input.enabled) {
     if (!decision) return { status: "ok", snapshot: current, outcome: "already undone" };
-    const stmts = [db(env).prepare("DELETE FROM grocery_coverage_decisions WHERE tenant=?1 AND line_key=?2", tenant, input.key)];
-    if (decision.created_row && decision.created_row_version != null) stmts.push(db(env).prepare("DELETE FROM grocery_list WHERE tenant=?1 AND normalized_name=?2 AND row_version=?3", tenant, input.key, decision.created_row_version));
+    const claim = crypto.randomUUID();
+    const stmts = [db(env).prepare(
+      "UPDATE grocery_coverage_decisions SET operation_token=?1 WHERE tenant=?2 AND line_key=?3 AND row_version=?4 AND operation_token IS ?5",
+      claim, tenant, input.key, decision.row_version, decision.operation_token,
+    )];
+    if (decision.created_row && decision.created_row_version != null && decision.ownership_token) stmts.push(db(env).prepare(
+      "DELETE FROM grocery_list WHERE tenant=?1 AND normalized_name=?2 AND row_version=?3 AND decision_owner_token=?4 " +
+        "AND EXISTS (SELECT 1 FROM grocery_coverage_decisions WHERE tenant=?1 AND line_key=?2 AND operation_token=?5)",
+      tenant, input.key, decision.created_row_version, decision.ownership_token, claim,
+    ));
+    stmts.push(db(env).prepare("DELETE FROM grocery_coverage_decisions WHERE tenant=?1 AND line_key=?2 AND operation_token=?3", tenant, input.key, claim));
     await db(env).batch(stmts);
+    const survivor = await db(env).first<{ row_version: number }>("SELECT row_version FROM grocery_coverage_decisions WHERE tenant=?1 AND line_key=?2", tenant, input.key);
+    if (survivor) conflict("The pantry decision changed while Undo was applying.", await readGrocerySnapshot(env, tenant));
     return { status: "ok", snapshot: await readGrocerySnapshot(env, tenant), outcome: "buy-anyway undone" };
   }
   if (!covered) throw new ToolError("not_found", "The pantry no longer covers this grocery line.");
-  const existing = (await readGroceryList(env, tenant)).find((row) => row.normalized_name === input.key);
   const now = new Date().toISOString(); const token = crypto.randomUUID();
   const stmts = [db(env).prepare(
-    "INSERT INTO grocery_coverage_decisions (tenant,line_key,created_row,created_row_version,row_version,created_at,updated_at,operation_token) VALUES (?1,?2,?3,?4,1,?5,?5,?6) " +
+    "INSERT INTO grocery_coverage_decisions (tenant,line_key,created_row,created_row_version,row_version,created_at,updated_at,operation_token,ownership_token) VALUES (?1,?2,0,NULL,1,?3,?3,?4,NULL) " +
       "ON CONFLICT(tenant,line_key) DO UPDATE SET operation_token=excluded.operation_token WHERE grocery_coverage_decisions.line_key=excluded.line_key",
-    tenant, input.key, existing ? 0 : 1, existing?.row_version ?? 1, now, token,
+    tenant, input.key, now, token,
   )];
-  if (!existing) stmts.push(db(env).prepare(
-    "INSERT INTO grocery_list (tenant,name,normalized_name,quantity,kind,domain,status,source,for_recipes,note,added_at,checked_at,row_version,updated_at) " +
-      "SELECT ?1,?2,?3,'1','grocery','grocery','active','pantry_low',?4,'Bought despite pantry coverage',?5,NULL,1,?6 WHERE EXISTS (SELECT 1 FROM grocery_coverage_decisions WHERE tenant=?1 AND line_key=?3 AND operation_token=?7) ON CONFLICT(tenant,normalized_name) DO NOTHING",
+  stmts.push(db(env).prepare(
+    "UPDATE spend_events SET voided_at=?1 WHERE tenant=?2 AND line_key=?3 AND voided_at IS NULL " +
+      "AND EXISTS (SELECT 1 FROM grocery_list WHERE tenant=?2 AND normalized_name=?3 AND status='ordered') " +
+      "AND EXISTS (SELECT 1 FROM grocery_coverage_decisions WHERE tenant=?2 AND line_key=?3 AND operation_token=?4)",
+    now, tenant, input.key, token,
+  ));
+  stmts.push(db(env).prepare(
+    "INSERT INTO grocery_list (tenant,name,normalized_name,quantity,kind,domain,status,source,for_recipes,note,added_at,ordered_at,sent_in,checked_at,row_version,updated_at,decision_owner_token) " +
+      "SELECT ?1,?2,?3,'1','grocery','grocery','active','pantry_low',?4,'Bought despite pantry coverage',?5,NULL,NULL,NULL,1,?6,?7 " +
+      "WHERE EXISTS (SELECT 1 FROM grocery_coverage_decisions WHERE tenant=?1 AND line_key=?3 AND operation_token=?7) " +
+      "ON CONFLICT(tenant,normalized_name) DO UPDATE SET status='active',ordered_at=NULL,sent_in=NULL," +
+      "for_recipes=COALESCE((SELECT json_group_array(value) FROM (SELECT value FROM json_each(COALESCE(grocery_list.for_recipes,'[]')) UNION SELECT value FROM json_each(excluded.for_recipes) ORDER BY value)),'[]')," +
+      "row_version=grocery_list.row_version+1,updated_at=excluded.updated_at",
     tenant, covered.display_name ?? covered.name, input.key, JSON.stringify(covered.for_recipes), now.slice(0, 10), now, token,
+  ));
+  stmts.push(db(env).prepare(
+    "UPDATE grocery_coverage_decisions SET " +
+      "ownership_token=(SELECT decision_owner_token FROM grocery_list WHERE tenant=?1 AND normalized_name=?2 AND decision_owner_token IN (COALESCE(grocery_coverage_decisions.ownership_token,''),?3))," +
+      "created_row=CASE WHEN EXISTS (SELECT 1 FROM grocery_list WHERE tenant=?1 AND normalized_name=?2 AND decision_owner_token IN (COALESCE(grocery_coverage_decisions.ownership_token,''),?3)) THEN 1 ELSE 0 END," +
+      "created_row_version=(SELECT row_version FROM grocery_list WHERE tenant=?1 AND normalized_name=?2 AND decision_owner_token IN (COALESCE(grocery_coverage_decisions.ownership_token,''),?3)) " +
+      "WHERE tenant=?1 AND line_key=?2 AND operation_token=?3",
+    tenant, input.key, token,
   ));
   await db(env).batch(stmts);
   return { status: "ok", snapshot: await readGrocerySnapshot(env, tenant), outcome: "buy anyway" };

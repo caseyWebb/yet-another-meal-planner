@@ -111,6 +111,16 @@ describe("Grocery MCP bridge", () => {
     });
   });
 
+  it.each([
+    [{ kind: "add", name: "milk" } as const, "added", "added milk"],
+    [{ kind: "remove", key: "milk" } as const, "removed", "removed milk"],
+  ])("maps %s to its own model-context outcome", async (action, kind, message) => {
+    const b = bridge({ structuredContent: { snapshot: data, outcome: message } });
+    const adapter = createGroceryBridgeAdapter(b.value, { mode: "interactive", contractSupported: true });
+    await adapter.mutate(action);
+    expect(b.contexts[0]).toMatchObject({ structuredContent: { outcome: { kind, message } } });
+  });
+
   it("mark placed mirrors then sends exactly one completion message", async () => {
     const b = bridge({ structuredContent: { snapshot: data, outcome: "already placed; no rows advanced" } });
     const adapter = createGroceryBridgeAdapter(b.value, { mode: "interactive", contractSupported: true });

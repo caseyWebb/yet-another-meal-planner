@@ -589,7 +589,7 @@ export function groceryUpsertStmt(
       "domain = excluded.domain, status = excluded.status, source = excluded.source, " +
       "for_recipes = excluded.for_recipes, note = excluded.note, ordered_at = excluded.ordered_at, " +
       "display_name = excluded.display_name, sent_in = excluded.sent_in, " +
-      "row_version = grocery_list.row_version + 1, updated_at = ?18",
+      "decision_owner_token = NULL, row_version = grocery_list.row_version + 1, updated_at = ?18",
     tenant,
     item.name,
     // Persist the STORED key the item carries (add-by-id rows key on the given id, which is NOT

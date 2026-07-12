@@ -7,6 +7,7 @@ import {
 	registerGroceryWidget,
 } from "../src/grocery-widget.js";
 import { readGrocerySnapshot } from "../src/grocery-snapshot.js";
+import { addGroceryRow } from "../src/session-db.js";
 import type { Env } from "../src/env.js";
 import { sqliteEnv } from "./sqlite-d1.js";
 import { withServer } from "./tool-harness.js";
@@ -85,6 +86,28 @@ describe("grocery widget MCP wiring", () => {
 			expect((await readGrocerySnapshot(e, T)).snapshot_version).toBe(
 				card.snapshot_version,
 			);
+		});
+	});
+
+	it("preserves a mutation's operation outcome beside its authoritative snapshot", async () => {
+		const e = env();
+		await addGroceryRow(e, T, { name: "milk" }, "2026-07-12");
+		const before = await readGrocerySnapshot(e, T);
+		const milk = before.lines.find((line) => line.key === "milk")!;
+		await withServer(server(e), async (client) => {
+			const result = await client.callTool({
+				name: "set_grocery_checked",
+				arguments: {
+					key: "milk",
+					checked: true,
+					expected_row_version: milk.row_version,
+					snapshot_version: before.snapshot_version,
+				},
+			});
+			expect(result.structuredContent).toMatchObject({
+				outcome: "checked",
+				snapshot: { lines: [expect.objectContaining({ key: "milk", checked_at: expect.any(String) })] },
+			});
 		});
 	});
 

@@ -215,7 +215,7 @@ Raw stored-row reads SHALL return `checked_at`, `row_version`, and `updated_at`.
 
 ### Requirement: Accepted grocery substitutions persist independently of host state
 
-The system SHALL persist an accepted cross-ingredient substitution keyed by tenant and original canonical key, carrying the replacement key, the original stable recipe-attribution signature, concurrency metadata, and whether the operation created the replacement row. Accept SHALL atomically materialize/upsert the replacement and suppress the original from shopping/to-buy; Undo SHALL remove suppression and SHALL remove the replacement only if it was created by that decision and has not since been independently edited. A changed recipe-attribution signature SHALL invalidate suppression. Keep original and section collapse SHALL remain pure view state.
+The system SHALL persist an accepted cross-ingredient substitution keyed by tenant and original canonical key, carrying the replacement key, the original stable recipe-attribution signature, concurrency metadata, and whether the operation created the replacement row. The replacement SHALL differ from the original. Accept SHALL atomically materialize or reactivate the replacement, merge the original recipe attribution without replacing independent row fields, and suppress the original from shopping/to-buy. Creation ownership SHALL be proven by an atomic server stamp rather than a pre-write observation, so a racing ordinary add is never deleted by Undo. Undo SHALL compare-and-swap the observed decision before clearing suppression and SHALL remove the replacement only if the same decision created it and it has not since been independently edited. A changed recipe-attribution signature SHALL invalidate both suppression and the rendered active decision. Keep original and section collapse SHALL remain pure view state.
 
 #### Scenario: Virtual substitution survives widget reopen
 - **WHEN** a member swaps a replacement for a virtual plan line and later reopens the widget
@@ -225,9 +225,17 @@ The system SHALL persist an accepted cross-ingredient substitution keyed by tena
 - **WHEN** a replacement created by a substitution is subsequently edited and the member undoes the substitution
 - **THEN** the original returns but the edited replacement is not deleted
 
+#### Scenario: Racing ordinary add owns its row
+- **WHEN** an ordinary add wins the replacement-row insert while substitution acceptance is in flight
+- **THEN** the decision records no creation ownership and Undo preserves the ordinary row
+
+#### Scenario: Newer substitution survives stale Undo
+- **WHEN** the decision changes after Undo reads it but before Undo claims it
+- **THEN** Undo conflicts with a fresh snapshot and deletes neither the newer decision nor its row
+
 ### Requirement: Pantry buy-anyway overrides coverage explicitly
 
-The pantry freshness classifier SHALL use one shared category threshold table consumed internally by `read_to_buy` and the Grocery snapshot. The public `read_pantry(stale_only)` contract remains structured `unsupported`, because its broader freshness claim requires conversational storage/open-package/inspection context. A Grocery covered line SHALL carry `covered` or `worth_a_look`. Still good SHALL use the shared pantry-verify write. Buy anyway SHALL atomically materialize the canonical line as `source:"pantry_low"` and persist a coverage override so pantry subtraction does not immediately hide it; Undo SHALL clear the override and safely remove only an untouched row created by the decision.
+The pantry freshness classifier SHALL use one shared category threshold table consumed internally by `read_to_buy` and the Grocery snapshot. The public `read_pantry(stale_only)` contract remains structured `unsupported`, because its broader freshness claim requires conversational storage/open-package/inspection context. A Grocery covered line SHALL carry `covered` or `worth_a_look`. Still good SHALL use the shared pantry-verify write. Buy anyway SHALL atomically materialize the canonical line as `source:"pantry_low"` and persist a coverage override so pantry subtraction does not immediately hide it. Creation ownership SHALL be stamped atomically, and Undo SHALL compare-and-swap the observed decision before removing only an untouched row owned by that decision.
 
 #### Scenario: Still good refreshes all consumers
 - **WHEN** a worth-a-look pantry line is marked Still good

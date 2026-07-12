@@ -48,6 +48,28 @@ describe("grocery checked operation", () => {
 });
 
 describe("grocery decisions", () => {
+  it("rejects a self-substitution without writing a decision", async () => {
+    const h = sqliteEnv([T]); plan(h, "milk");
+    const before = await readGrocerySnapshot(h.env, T);
+    await expect(acceptGrocerySubstitution(h.env, T, { original_key: "milk", replacement_key: "milk", replacement_name: "Milk", snapshot_version: before.snapshot_version })).rejects.toMatchObject({ code: "validation_failed" });
+    expect(h.rows("grocery_substitution_decisions")).toHaveLength(0);
+  });
+
+  it.each(["active", "in_cart"] as const)("merges attribution into an existing %s replacement without clobbering independent fields", async (status) => {
+    const h = sqliteEnv([T]); plan(h, "milk"); replacements(h);
+    await addGroceryRow(h.env, T, { name: "Oat milk", for_recipes: ["latte"], quantity: "2", note: "barista" }, "2026-07-12");
+    if (status === "in_cart") await updateGroceryRow(h.env, T, "Oat milk", { status: "in_cart" });
+    h.raw.prepare("UPDATE grocery_list SET checked_at='2026-07-12T10:00:00Z' WHERE tenant=? AND normalized_name='oat milk'").run(T);
+    const prior = h.rows<{ row_version: number }>("grocery_list")[0].row_version;
+    const before = await readGrocerySnapshot(h.env, T);
+    await acceptGrocerySubstitution(h.env, T, { original_key: "milk", replacement_key: "oat milk", replacement_name: "Oat milk", snapshot_version: before.snapshot_version });
+    const row = h.rows<{ status: string; quantity: string; note: string; checked_at: string; for_recipes: string; row_version: number }>("grocery_list")[0];
+    expect(row).toMatchObject({ status: "active", quantity: "2", note: "barista", checked_at: "2026-07-12T10:00:00Z" });
+    expect(JSON.parse(row.for_recipes)).toEqual(["latte", "soup"]);
+    expect(row.row_version).toBe(prior + 1);
+    expect(h.rows("grocery_substitution_decisions")[0]).toMatchObject({ created_replacement: 0, ownership_token: null });
+  });
+
   it("persists substitution suppression and Undo preserves an edited replacement", async () => {
     const h = sqliteEnv([T]); plan(h, "milk"); replacements(h);
     const before = await readGrocerySnapshot(h.env, T);
@@ -100,10 +122,41 @@ describe("grocery decisions", () => {
     h.raw.prepare("INSERT INTO recipes (slug,title,ingredients_full) VALUES ('latte','Latte','[\"milk\"]')").run();
     h.raw.prepare("INSERT INTO meal_plan (tenant,id,recipe,meal,planned_for) VALUES (?,'p2','latte','breakfast','2026-07-14')").run(T);
     snap = await readGrocerySnapshot(h.env, T);
+    expect(snap.substitution_decisions).toEqual([]);
+    expect(snap.to_buy).toContain("milk");
     const before = h.rows<{ attribution_signature: string; row_version: number }>("grocery_substitution_decisions")[0];
     await acceptGrocerySubstitution(h.env, T, { original_key: "milk", replacement_key: "oat milk", replacement_name: "Oat milk", snapshot_version: snap.snapshot_version });
     const after = h.rows<{ attribution_signature: string; row_version: number }>("grocery_substitution_decisions")[0];
     expect(after.attribution_signature).not.toBe(before.attribution_signature); expect(after.row_version).toBeGreaterThan(before.row_version);
+  });
+
+  it("does not claim ownership when an ordinary add wins the substitution creation race", async () => {
+    const h = sqliteEnv([T]); plan(h, "milk"); replacements(h); const before = await readGrocerySnapshot(h.env, T);
+    const originalBatch = h.env.DB.batch.bind(h.env.DB); let intercepted = false;
+    h.env.DB.batch = (async (statements: D1PreparedStatement[]) => {
+      if (!intercepted) {
+        intercepted = true;
+        h.raw.prepare("INSERT INTO grocery_list (tenant,name,normalized_name,quantity,kind,domain,status,source,for_recipes,note,added_at,row_version) VALUES (?,'Oat milk','oat milk','4','grocery','grocery','active','ad_hoc','[]','mine','2026-07-12',1)").run(T);
+      }
+      return originalBatch(statements);
+    }) as D1Database["batch"];
+    const accepted = await acceptGrocerySubstitution(h.env, T, { original_key: "milk", replacement_key: "oat milk", replacement_name: "Oat milk", snapshot_version: before.snapshot_version });
+    expect(h.rows("grocery_substitution_decisions")[0]).toMatchObject({ created_replacement: 0, ownership_token: null });
+    await undoGrocerySubstitution(h.env, T, { original_key: "milk", snapshot_version: accepted.snapshot.snapshot_version });
+    expect(h.rows<{ note: string }>("grocery_list")[0].note).toBe("mine");
+  });
+
+  it("CAS-protects substitution Undo from erasing a newer decision", async () => {
+    const h = sqliteEnv([T]); plan(h, "milk"); replacements(h); let snap = await readGrocerySnapshot(h.env, T);
+    snap = (await acceptGrocerySubstitution(h.env, T, { original_key: "milk", replacement_key: "oat milk", replacement_name: "Oat milk", snapshot_version: snap.snapshot_version })).snapshot;
+    const originalBatch = h.env.DB.batch.bind(h.env.DB); let intercepted = false;
+    h.env.DB.batch = (async (statements: D1PreparedStatement[]) => {
+      if (!intercepted) { intercepted = true; h.raw.prepare("UPDATE grocery_substitution_decisions SET row_version=row_version+1,operation_token='newer' WHERE tenant=? AND original_key='milk'").run(T); }
+      return originalBatch(statements);
+    }) as D1Database["batch"];
+    await expect(undoGrocerySubstitution(h.env, T, { original_key: "milk", snapshot_version: snap.snapshot_version })).rejects.toMatchObject({ code: "conflict" });
+    expect(h.rows("grocery_substitution_decisions")).toHaveLength(1);
+    expect(h.rows("grocery_list")).toHaveLength(1);
   });
 
   it("serializes identical and different concurrent substitution accepts without orphan rows", async () => {
@@ -140,5 +193,31 @@ describe("grocery decisions", () => {
       setGroceryBuyAnyway(h.env, T, { key: "milk", enabled: true, snapshot_version: before.snapshot_version }),
     ]);
     expect(results).toHaveLength(2); expect(h.rows("grocery_coverage_decisions")).toHaveLength(1); expect(h.rows("grocery_list")).toHaveLength(1);
+  });
+
+  it("does not claim ownership when an ordinary add wins the Buy-anyway creation race", async () => {
+    const h = sqliteEnv([T]); plan(h, "milk"); h.raw.prepare("INSERT INTO pantry (tenant,name,normalized_name,category,added_at,last_verified_at) VALUES (?,'Milk','milk','dairy','2026-07-01','2026-07-12')").run(T);
+    const before = await readGrocerySnapshot(h.env, T); const originalBatch = h.env.DB.batch.bind(h.env.DB); let intercepted = false;
+    h.env.DB.batch = (async (statements: D1PreparedStatement[]) => {
+      if (!intercepted) { intercepted = true; h.raw.prepare("INSERT INTO grocery_list (tenant,name,normalized_name,quantity,kind,domain,status,source,for_recipes,note,added_at,row_version) VALUES (?,'Milk','milk','2','grocery','grocery','active','ad_hoc','[]','mine','2026-07-12',1)").run(T); }
+      return originalBatch(statements);
+    }) as D1Database["batch"];
+    const bought = await setGroceryBuyAnyway(h.env, T, { key: "milk", enabled: true, snapshot_version: before.snapshot_version });
+    expect(h.rows("grocery_coverage_decisions")[0]).toMatchObject({ created_row: 0, ownership_token: null });
+    await setGroceryBuyAnyway(h.env, T, { key: "milk", enabled: false, snapshot_version: bought.snapshot.snapshot_version });
+    expect(h.rows<{ note: string }>("grocery_list")[0].note).toBe("mine");
+  });
+
+  it("CAS-protects Buy-anyway Undo from erasing a newer decision", async () => {
+    const h = sqliteEnv([T]); plan(h, "milk"); h.raw.prepare("INSERT INTO pantry (tenant,name,normalized_name,category,added_at,last_verified_at) VALUES (?,'Milk','milk','dairy','2026-07-01','2026-07-12')").run(T);
+    let snap = await readGrocerySnapshot(h.env, T); snap = (await setGroceryBuyAnyway(h.env, T, { key: "milk", enabled: true, snapshot_version: snap.snapshot_version })).snapshot;
+    const originalBatch = h.env.DB.batch.bind(h.env.DB); let intercepted = false;
+    h.env.DB.batch = (async (statements: D1PreparedStatement[]) => {
+      if (!intercepted) { intercepted = true; h.raw.prepare("UPDATE grocery_coverage_decisions SET row_version=row_version+1,operation_token='newer' WHERE tenant=? AND line_key='milk'").run(T); }
+      return originalBatch(statements);
+    }) as D1Database["batch"];
+    await expect(setGroceryBuyAnyway(h.env, T, { key: "milk", enabled: false, snapshot_version: snap.snapshot_version })).rejects.toMatchObject({ code: "conflict" });
+    expect(h.rows("grocery_coverage_decisions")).toHaveLength(1);
+    expect(h.rows("grocery_list")).toHaveLength(1);
   });
 });

@@ -95,6 +95,89 @@ const snapshot = (lines: GroceryLine[], patch: Partial<GroceryListData> = {}): G
 });
 
 describe("grocery optimistic decision projections", () => {
+  it("persists enough substitution decision state to undo an offline accept", () => {
+    const before = snapshot([line("milk", { name: "Milk", display_name: "Milk" })]);
+    const accepted = projectGroceryAction(before, {
+      kind: "substitute",
+      original_key: "milk",
+      replacement_key: "oat-milk",
+      replacement_name: "Oat milk",
+      snapshot_version: "v1",
+    });
+    expect(accepted.lines.map((item) => item.key)).toEqual(["oat-milk"]);
+    expect(accepted.substitution_decisions).toHaveLength(1);
+
+    const undone = projectGroceryAction(accepted, {
+      kind: "substitute_undo",
+      original_key: "milk",
+      snapshot_version: "v1",
+    });
+    expect(undone.lines).toEqual([before.lines[0]]);
+    expect(undone.to_buy).toEqual(["milk"]);
+    expect(undone.substitution_decisions).toEqual([]);
+  });
+
+  it("restores an original projection when Undo starts from an authoritative accepted snapshot", () => {
+    const accepted = snapshot([line("oat-milk", { name: "Oat milk" })], {
+      to_buy: ["oat-milk"],
+      substitution_decisions: [
+        {
+          original_key: "milk",
+          replacement_key: "oat-milk",
+          attribution_signature: "plan-a",
+          created_replacement: true,
+          replacement_version: 1,
+          row_version: 1,
+          created_at: "2026-07-12",
+          updated_at: "2026-07-12",
+        },
+      ],
+    });
+    const undone = projectGroceryAction(accepted, {
+      kind: "substitute_undo",
+      original_key: "milk",
+      snapshot_version: "v1",
+    });
+    expect(undone.lines.map((item) => item.key)).toEqual(["milk"]);
+    expect(undone.to_buy).toEqual(["milk"]);
+    expect(undone.substitution_decisions).toEqual([]);
+  });
+
+  it("projects Still good onto the exact covered pantry key", () => {
+    const before = snapshot([], {
+      pantry_covered: [
+        {
+          key: "milk",
+          name: "Milk",
+          for_recipes: [],
+          freshness: "worth_a_look",
+          freshness_reason: "Old verification",
+          on_hand: { last_verified_at: "2026-06-01" },
+          buy_anyway: false,
+        },
+        {
+          key: "eggs",
+          name: "Eggs",
+          for_recipes: [],
+          freshness: "worth_a_look",
+          on_hand: { last_verified_at: "2026-06-02" },
+          buy_anyway: false,
+        },
+      ],
+    });
+    const after = projectGroceryAction(before, {
+      kind: "pantry_verify",
+      key: "milk",
+      snapshot_version: "v1",
+    });
+    expect(after.pantry_covered[0]).toMatchObject({
+      key: "milk",
+      freshness: "covered",
+      on_hand: { last_verified_at: "2026-07-12" },
+    });
+    expect(after.pantry_covered[1]).toEqual(before.pantry_covered[1]);
+  });
+
   it("reuses an existing replacement and preserves it when undoing", () => {
     const before = snapshot([line("milk"), line("oat-milk", { row_version: 7 })]);
     const accepted = projectGroceryAction(before, {
@@ -114,7 +197,7 @@ describe("grocery optimistic decision projections", () => {
       original_key: "milk",
       snapshot_version: "v1",
     });
-    expect(undone.lines.map((item) => item.key)).toEqual(["oat-milk"]);
+    expect(undone.lines.map((item) => item.key)).toEqual(["oat-milk", "milk"]);
   });
 
   it("hides an existing buy-anyway row on undo without fabricating a pantry GroceryLine", () => {
