@@ -100,9 +100,9 @@ pairs_with: []
 
 ## Instructions
 
-1. Whisk the miso glaze.
-2. Broil the salmon until lacquered.
-3. Serve over rice.
+1. **Whisk the glaze:** Whisk the miso glaze.
+2. **Broil:** Broil the salmon for 8 minutes until lacquered.
+3. **Serve:** Serve over rice.
 `;
 const tmp = mkdtempSync(join(tmpdir(), "app-seed-"));
 const mdPath = join(tmp, "recipe.md");

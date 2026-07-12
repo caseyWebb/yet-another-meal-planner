@@ -60,4 +60,68 @@ export class RecipePage extends AppPage {
   async logAsCooked(): Promise<void> {
     await this.page.getByTestId("detail-log").click();
   }
+
+  // ── Guided cook mode (recipe-card-cook-mode, D32) ──────────────────────────────────
+  startCookingButton() {
+    return this.page.getByTestId("start-cooking");
+  }
+
+  async startCooking(): Promise<void> {
+    await this.startCookingButton().click();
+    await expect(this.page.getByTestId("cook-mise")).toBeVisible();
+  }
+
+  async toggleMiseItem(index = 0): Promise<void> {
+    await this.page.getByTestId("cook-check").nth(index).click();
+  }
+
+  async expectMiseCount(text: string): Promise<void> {
+    await expect(this.page.getByTestId("cook-mise-count")).toHaveText(text);
+  }
+
+  /** Progress-bar fraction (0–1) — asserts the step nav actually advances the bar. */
+  async progressFraction(): Promise<number> {
+    const w = await this.page
+      .getByTestId("cook-progress")
+      .evaluate((el) => (el as unknown as { style: { width: string } }).style.width);
+    return parseFloat(w) / 100;
+  }
+
+  async startStepping(): Promise<void> {
+    await this.page.getByTestId("cook-start").click();
+    await expect(this.page.getByTestId("cook-step")).toBeVisible();
+  }
+
+  async nextStep(): Promise<void> {
+    await this.page.getByTestId("cook-next").click();
+  }
+
+  async prevStep(): Promise<void> {
+    await this.page.getByTestId("cook-back").click();
+  }
+
+  async expectStepBody(text: string): Promise<void> {
+    await expect(this.page.getByTestId("cook-step-body")).toContainText(text);
+  }
+
+  timer() {
+    return this.page.getByTestId("cook-timer");
+  }
+
+  async armTimer(): Promise<void> {
+    await this.page.getByTestId("cook-timer-toggle").click();
+  }
+
+  timerDisplay() {
+    return this.page.getByTestId("cook-timer-display");
+  }
+
+  async expectDone(): Promise<void> {
+    await expect(this.page.getByTestId("cook-done")).toBeVisible();
+    await expect(this.page.getByTestId("cook-done")).toContainText("Plated up");
+  }
+
+  async exitCook(): Promise<void> {
+    await this.page.getByTestId("cook-exit").click();
+  }
 }
