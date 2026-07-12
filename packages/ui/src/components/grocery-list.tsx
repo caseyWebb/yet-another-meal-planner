@@ -1,17 +1,19 @@
+import type { GroceryLine, GroceryListData } from "@yamp/contract";
 import * as React from "react";
-import type { GroceryListData, GroceryLine } from "@yamp/contract";
-import { Button } from "./button";
-import { Input } from "./input";
-import { Card, CardContent } from "./card";
 import {
   createGroceryController,
-  groceryActionKey,
-  groupGroceryLines,
-  runGroceryAction,
   type GroceryAction,
   type GroceryGrouping,
   type GroceryHostAdapter,
+  groceryActionKey,
+  groupGroceryLines,
+  orderedRecipeAttribution,
+  projectGroceryAction,
+  runGroceryAction,
 } from "../grocery-controller";
+import { Button } from "./button";
+import { Card, CardContent } from "./card";
+import { Input } from "./input";
 
 export interface GroceryListProps {
   data: GroceryListData;
@@ -23,11 +25,12 @@ export function GroceryList({ data, adapter, onDataChange }: GroceryListProps) {
   const [state, setState] = React.useState(() => createGroceryController(data));
   const [add, setAdd] = React.useState("");
   const stateRef = React.useRef(state);
-  const queueRef = React.useRef(Promise.resolve());
-  const pendingRef = React.useRef(new Set<string>());
+  const pendingRef = React.useRef(new Map<string, GroceryAction>());
   React.useEffect(() => {
     setState((current) => {
-      const next = { ...current, data };
+      let projected = data;
+      for (const pending of pendingRef.current.values()) projected = projectGroceryAction(projected, pending);
+      const next = { ...current, data: projected };
       stateRef.current = next;
       return next;
     });
@@ -36,36 +39,41 @@ export function GroceryList({ data, adapter, onDataChange }: GroceryListProps) {
     (action: GroceryAction) => {
       const key = groceryActionKey(action);
       if (pendingRef.current.has(key)) return;
-      pendingRef.current.add(key);
-      setState((current) => {
-        const next = { ...current, pending: [...current.pending, key] };
-        stateRef.current = next;
-        return next;
-      });
-      queueRef.current = queueRef.current
-        .catch(() => undefined)
-        .then(async () => {
-          try {
-            const next = await runGroceryAction(stateRef.current, adapter, action);
-            stateRef.current = next;
-            setState(next);
-            onDataChange?.(next.data);
-          } finally {
-            pendingRef.current.delete(key);
-            setState((current) => {
-              if (!current.pending.includes(key)) return current;
-              const next = { ...current, pending: current.pending.filter((item) => item !== key) };
-              stateRef.current = next;
-              return next;
-            });
-          }
+      pendingRef.current.set(key, action);
+      const current = stateRef.current;
+      const submitted = {
+        ...current,
+        data: projectGroceryAction(current.data, action),
+        pending: [...current.pending, key],
+      };
+      stateRef.current = submitted;
+      setState(submitted);
+      void (async () => {
+        const result = await runGroceryAction({ ...submitted, data: current.data }, adapter, action);
+        pendingRef.current.delete(key);
+        setState((current) => {
+          let projected = result.data;
+          for (const pending of pendingRef.current.values())
+            projected = projectGroceryAction(projected, pending);
+          const next = {
+            ...current,
+            data: projected,
+            pending: current.pending.filter((item) => item !== key),
+            conflict: result.conflict,
+            confirmation: result.confirmation,
+          };
+          stateRef.current = next;
+          return next;
         });
+        onDataChange?.(result.data);
+      })();
     },
     [adapter, onDataChange],
   );
   const grouping = state.grouping;
   const groups = groupGroceryLines(state.data.lines, grouping);
-  const disabled = adapter.mode === "readonly" || state.pending.length > 0;
+  const readonly = adapter.mode === "readonly";
+  const isPending = (action: GroceryAction): boolean => state.pending.includes(groceryActionKey(action));
   return (
     <section className="grocery-shared" data-testid="shared-grocery-list" data-host-mode={adapter.mode}>
       <div className="grocery-stats" aria-label="Grocery status">
@@ -102,7 +110,8 @@ export function GroceryList({ data, adapter, onDataChange }: GroceryListProps) {
                   key={line.key}
                   line={line}
                   snapshotVersion={state.data.snapshot_version}
-                  disabled={disabled}
+                  readonly={readonly}
+                  pending={state.pending.includes(`line:${line.key}`)}
                   onAction={act}
                 />
               ))}
@@ -120,7 +129,7 @@ export function GroceryList({ data, adapter, onDataChange }: GroceryListProps) {
                 <Button
                   size="sm"
                   variant="ghost"
-                  disabled={disabled}
+                  disabled={readonly || state.pending.includes(`line:${decision.original_key}`)}
                   onClick={() =>
                     void act({
                       kind: "substitute_undo",
@@ -139,7 +148,7 @@ export function GroceryList({ data, adapter, onDataChange }: GroceryListProps) {
                 <Button
                   size="sm"
                   variant="ghost"
-                  disabled={disabled}
+                  disabled={readonly || state.pending.includes(`line:${decision.line_key}`)}
                   onClick={() =>
                     void act({
                       kind: "pantry_undo",
@@ -170,9 +179,12 @@ export function GroceryList({ data, adapter, onDataChange }: GroceryListProps) {
           placeholder="Add an item"
           value={add}
           onChange={(e) => setAdd(e.target.value)}
-          disabled={disabled}
+          disabled={readonly}
         />
-        <Button type="submit" disabled={disabled || !add.trim()}>
+        <Button
+          type="submit"
+          disabled={readonly || !add.trim() || isPending({ kind: "add", name: add.trim() })}
+        >
           Add
         </Button>
       </form>
@@ -221,29 +233,29 @@ export function GroceryList({ data, adapter, onDataChange }: GroceryListProps) {
                       <span>
                         {line.name} · {line.quantity}
                       </span>
-                      {group.send_id ? (
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          disabled={disabled}
-                          onClick={() =>
-                            void act({
-                              kind: "relist",
-                              send_id: group.send_id!,
-                              key: line.key,
-                              expected_row_version: line.row_version,
-                            })
-                          }
-                        >
-                          Back to list
-                        </Button>
-                      ) : null}
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        disabled={readonly || state.pending.includes(`send:${group.send_id}`)}
+                        onClick={() =>
+                          void act({
+                            kind: "relist",
+                            send_id: group.send_id,
+                            key: line.key,
+                            expected_row_version: line.row_version,
+                          })
+                        }
+                      >
+                        Back to list
+                      </Button>
                     </li>
                   ))}
                 </ul>
                 {group.send_id && group.can_mark_placed ? (
                   <Button
-                    disabled={disabled || adapter.online === false}
+                    disabled={
+                      readonly || state.pending.includes(`send:${group.send_id}`) || adapter.online === false
+                    }
                     title={adapter.online === false ? "Reconnect to confirm this purchase" : undefined}
                     onClick={() =>
                       void act({
@@ -276,7 +288,7 @@ export function GroceryList({ data, adapter, onDataChange }: GroceryListProps) {
                   <Button
                     size="sm"
                     variant="outline"
-                    disabled={disabled}
+                    disabled={readonly || state.pending.includes(`line:${line.key}`)}
                     onClick={() =>
                       void act({
                         kind: "pantry_verify",
@@ -290,7 +302,7 @@ export function GroceryList({ data, adapter, onDataChange }: GroceryListProps) {
                   <Button
                     size="sm"
                     variant="ghost"
-                    disabled={disabled}
+                    disabled={readonly || state.pending.includes(`line:${line.key}`)}
                     onClick={() =>
                       void act({
                         kind: "pantry_buy_anyway",
@@ -356,16 +368,20 @@ function Stat({ label, value }: { label: string; value: number }) {
 function ShoppingLine({
   line,
   snapshotVersion,
-  disabled,
+  readonly,
+  pending,
   onAction,
 }: {
   line: GroceryLine;
   snapshotVersion: string;
-  disabled: boolean;
+  readonly: boolean;
+  pending: boolean;
   onAction(action: GroceryAction): void;
 }) {
   const checked = line.checked_at != null;
-  const firstRecipe = line.for_recipes[0];
+  const recipes = orderedRecipeAttribution(line);
+  const firstRecipe = recipes[0]?.slug;
+  const [dismissedSubstitutes, setDismissedSubstitutes] = React.useState<Set<string>>(() => new Set());
   return (
     <li
       data-testid="grocery-line"
@@ -378,7 +394,7 @@ function ShoppingLine({
         <input
           type="checkbox"
           checked={checked}
-          disabled={disabled}
+          disabled={readonly || pending}
           onChange={(e) =>
             onAction({
               kind: "checked",
@@ -399,7 +415,7 @@ function ShoppingLine({
           <>
             {" "}
             · <a href={`/recipe/${firstRecipe}`}>{firstRecipe}</a>
-            {line.for_recipes.length > 1 ? ` +${line.for_recipes.length - 1}` : ""}
+            {recipes.length > 1 ? ` +${recipes.length - 1}` : ""}
           </>
         ) : (
           ""
@@ -409,21 +425,44 @@ function ShoppingLine({
         <Button
           size="sm"
           variant="ghost"
-          disabled={disabled}
+          disabled={readonly || pending}
           onClick={() => onAction({ kind: "remove", key: line.key })}
         >
           Remove
         </Button>
       ) : null}
-      {(line.substitutes ?? []).slice(0, 1).map((candidate) => {
-        const c = candidate as { id?: string; label?: string };
-        return c.id && c.label ? (
-          <span className="grocery-substitute" key={c.id}>
-            Try {c.label}?{" "}
+      {(line.substitutes ?? []).map((candidate) => {
+        const c = candidate as {
+          id?: string;
+          label?: string;
+          relation?: { role?: string; via?: string; via_label?: string };
+          in_pantry?: boolean;
+          on_sale_hint?: { price?: { promo?: number } };
+        };
+        if (!c.id || !c.label || dismissedSubstitutes.has(c.id)) return null;
+        const via = c.relation?.via_label ?? c.relation?.via;
+        const relation =
+          c.relation?.role === "sibling"
+            ? `same family${via ? ` · via ${via}` : ""}`
+            : c.relation?.role === "satisfies"
+              ? "can stand in"
+              : null;
+        return (
+          <span
+            className="grocery-substitute"
+            data-testid="grocery-substitute"
+            data-substitute-id={c.id}
+            key={c.id}
+          >
+            Try {c.label}? {relation ? <span data-testid="subs-relation">{relation}</span> : null}{" "}
+            {c.in_pantry ? <span data-testid="subs-pantry-hit">in your pantry</span> : null}{" "}
+            {typeof c.on_sale_hint?.price?.promo === "number" ? (
+              <span data-testid="subs-sale-hint">${c.on_sale_hint.price.promo.toFixed(2)} at your store</span>
+            ) : null}{" "}
             <Button
               size="sm"
               variant="outline"
-              disabled={disabled}
+              disabled={readonly || pending}
               onClick={() =>
                 onAction({
                   kind: "substitute",
@@ -436,8 +475,16 @@ function ShoppingLine({
             >
               Swap in
             </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              disabled={readonly || pending}
+              onClick={() => setDismissedSubstitutes((current) => new Set(current).add(c.id!))}
+            >
+              Keep original
+            </Button>
           </span>
-        ) : null;
+        );
       })}
     </li>
   );

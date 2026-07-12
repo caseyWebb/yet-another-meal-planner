@@ -21,6 +21,7 @@ CREATE TABLE grocery_substitution_decisions (
   row_version            INTEGER NOT NULL DEFAULT 1,
   created_at              TEXT NOT NULL,
   updated_at              TEXT NOT NULL,
+  operation_token         TEXT,
   PRIMARY KEY (tenant, original_key)
 );
 CREATE INDEX idx_grocery_substitution_replacement
@@ -34,6 +35,7 @@ CREATE TABLE grocery_coverage_decisions (
   row_version          INTEGER NOT NULL DEFAULT 1,
   created_at            TEXT NOT NULL,
   updated_at            TEXT NOT NULL,
+  operation_token       TEXT,
   PRIMARY KEY (tenant, line_key)
 );
 CREATE INDEX idx_grocery_coverage_updated

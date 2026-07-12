@@ -83,6 +83,16 @@ export async function readGroceryDecisionInputs(env: Env, tenant: string, needs:
   };
 }
 
+export async function readGroceryAttributionSignature(env: Env, tenant: string, key: string): Promise<string | null> {
+  const [list, derived, ctx] = await Promise.all([readGroceryList(env, tenant), deriveMenuNeeds(env, tenant), ingredientContext(env, { capture: false })]);
+  const relevant = derived.needs.filter((need) => ctx.resolve(need.name) === key);
+  const merged: MenuNeed = { name: key, for_recipes: [], recipe_attribution: [] };
+  for (const need of relevant) { merged.for_recipes = [...new Set([...(merged.for_recipes ?? []), ...(need.for_recipes ?? [])])]; merged.recipe_attribution!.push(...(need.recipe_attribution ?? [])); }
+  const stored = list.find((row) => storedGroceryKey(row, ctx.resolve) === key && row.status === "active");
+  if (stored) merged.for_recipes = [...new Set([...(merged.for_recipes ?? []), ...stored.for_recipes])];
+  return relevant.length || stored ? attributionSignature(merged) : null;
+}
+
 /**
  * Derive the meal plan's ingredient needs from the projected `ingredients_full` facets:
  * one `MenuNeed { name, for_recipes }` per canonical ingredient id, merged across the
@@ -249,6 +259,7 @@ export async function computeToBuyView(
     return {
       key: resolve(p.name),
       name: p.name,
+      ...(meta?.display_name ? { display_name: meta.display_name } : {}),
       for_recipes: p.for_recipes,
       on_hand: {
         ...(meta?.quantity != null ? { quantity: meta.quantity } : {}),
@@ -263,11 +274,23 @@ export async function computeToBuyView(
 
   const in_cart: InCartLine[] = list
     .filter((it) => it.status === "in_cart")
-    .map((it) => ({ name: it.name, key: storedGroceryKey(it, resolve), added_at: it.added_at, row_version: it.row_version ?? 1, sent_in: it.sent_in ?? null }));
+    .map((it) => ({ name: it.name, key: storedGroceryKey(it, resolve), added_at: it.added_at, row_version: it.row_version ?? 1, sent_in: it.sent_in ?? null, quantity: it.quantity }));
 
   const view: ToBuyView = { to_buy: lines, checked: checkedLines, pantry_covered, in_cart, underived: [...new Set(derived.underived)] };
   const result = opts.enrich ? await enrichView(env, tenant, view, ctx, storedByKey, list) : view;
-  return { ...result, snapshot_version: await toBuyDigest(result) };
+  const ordered: ToBuyView = {
+    ...result,
+    to_buy: [...result.to_buy].map(sortAttribution).sort((a, b) => a.key.localeCompare(b.key)),
+    checked: [...result.checked].map(sortAttribution).sort((a, b) => a.key.localeCompare(b.key)),
+    pantry_covered: [...result.pantry_covered].map((line) => ({ ...line, for_recipes: [...line.for_recipes].sort() })).sort((a, b) => (a.key ?? a.name).localeCompare(b.key ?? b.name)),
+    in_cart: [...result.in_cart].sort((a, b) => (a.key ?? a.name).localeCompare(b.key ?? b.name)),
+    underived: [...new Set(result.underived)].sort(),
+  };
+  return { ...ordered, snapshot_version: await toBuyDigest(ordered) };
+}
+
+function sortAttribution<T extends ToBuyViewLine>(line: T): T {
+  return { ...line, for_recipes: [...line.for_recipes].sort(), ...(line.recipe_attribution ? { recipe_attribution: [...line.recipe_attribution].sort((a, b) => (a.planned_for ?? "9999-99-99").localeCompare(b.planned_for ?? "9999-99-99") || (a.plan_id ?? "").localeCompare(b.plan_id ?? "") || a.slug.localeCompare(b.slug)) } : {}), ...(line.substitutes ? { substitutes: [...line.substitutes].sort((a, b) => a.id.localeCompare(b.id)) } : {}) };
 }
 
 function stable(value: unknown): string {
@@ -425,7 +448,7 @@ async function enrichView(
     const key = ctx.resolve(line.name);
     const stored = storedByKey.get(key);
     const foodIdNamed = line.name === key && (stored ? isFoodItem(stored.kind, stored.domain) : true);
-    const display_name = stored?.display_name ?? (foodIdNamed ? ctx.idLabel(key) : line.name);
+    const display_name = line.display_name ?? stored?.display_name ?? (foodIdNamed ? ctx.idLabel(key) : line.name);
     return { ...line, display_name };
   });
   const inCartByName = new Map(list.filter((it) => it.status === "in_cart").map((it) => [it.name, it] as const));

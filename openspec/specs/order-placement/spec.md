@@ -258,9 +258,9 @@ Once a send is stamped placed, replay of the same send assertion SHALL return th
 - **WHEN** a completed send assertion is replayed after later state changes
 - **THEN** it reports the prior completion without changing current rows or spend events
 
-### Requirement: Back to list is send-scoped and writes no spend
+### Requirement: Back to list is linkage-guarded and writes no spend
 
-The shared `relist_grocery_send_line` operation SHALL accept `send_id`, canonical `line_key`, and `expected_row_version`, and SHALL conditionally perform only `in_cart → active` for a row currently linked to that send. It SHALL clear `sent_in`, write no spend, and leave the historical send snapshot immutable. A stale row version or mismatched send SHALL return conflict without a write. Ordered-row relist/void behavior remains governed by the existing lifecycle and is not exposed as Back to list in an in-cart group.
+The shared `relist_grocery_send_line` operation SHALL accept nullable `send_id`, canonical `line_key`, and `expected_row_version`, and SHALL conditionally perform only `in_cart → active`. A non-null send SHALL match the row's current linkage; a null send SHALL match only an unlinked row. It SHALL clear `sent_in`, write no spend, and leave any historical send snapshot immutable. A stale row version or mismatched linkage SHALL return conflict without a write. Ordered-row relist/void behavior remains governed by the existing lifecycle and is not exposed as Back to list in an in-cart group.
 
 #### Scenario: One line returns to active
 - **WHEN** Back to list succeeds for one unplaced send line
@@ -270,3 +270,6 @@ The shared `relist_grocery_send_line` operation SHALL accept `send_id`, canonica
 - **WHEN** the row changed after the caller rendered it
 - **THEN** relist returns conflict and leaves the newer state intact
 
+#### Scenario: An unlinked cart row returns to the list
+- **WHEN** Back to list supplies a null send id for an unlinked `in_cart` row
+- **THEN** only that row becomes active, its quantity is retained, and no spend event is written

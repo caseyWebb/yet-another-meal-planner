@@ -1,10 +1,11 @@
-import { describe, expect, it } from "vitest";
 import type { GroceryListData } from "@yamp/contract";
+import { describe, expect, it } from "vitest";
 import {
   createGroceryBridgeAdapter,
+  type GroceryBridge,
   grocerySnapshotFromBridge,
   resolveGroceryCapabilities,
-  type GroceryBridge,
+  resolveHydratedGroceryCapabilities,
 } from "./grocery-bridge";
 
 const data: GroceryListData = {
@@ -79,6 +80,18 @@ describe("Grocery MCP bridge", () => {
     ).toBe("delegate");
   });
 
+  it("degrades a v1 spawning payload when the hydrated current snapshot is unknown v2", () => {
+    expect(
+      resolveHydratedGroceryCapabilities({
+        currentContractVersion: 2,
+        serverTools: true,
+        updateModelContext: true,
+        message: true,
+        hydrated: true,
+      }),
+    ).toEqual({ mode: "readonly", contractSupported: false });
+  });
+
   it("a check calls its tool and mirrors full context without a message", async () => {
     const b = bridge();
     const adapter = createGroceryBridgeAdapter(b.value, { mode: "interactive", contractSupported: true });
@@ -99,7 +112,7 @@ describe("Grocery MCP bridge", () => {
   });
 
   it("mark placed mirrors then sends exactly one completion message", async () => {
-    const b = bridge();
+    const b = bridge({ structuredContent: { snapshot: data, outcome: "already placed; no rows advanced" } });
     const adapter = createGroceryBridgeAdapter(b.value, { mode: "interactive", contractSupported: true });
     await adapter.mutate({
       kind: "mark_placed",
@@ -109,6 +122,12 @@ describe("Grocery MCP bridge", () => {
     });
     expect(b.contexts).toHaveLength(1);
     expect(b.messages).toHaveLength(1);
+    expect(b.contexts[0]).toMatchObject({
+      structuredContent: { outcome: { kind: "placed", message: "already placed; no rows advanced" } },
+    });
+    expect(b.messages[0]).toMatchObject({
+      content: [{ text: "Grocery send s1: already placed; no rows advanced." }],
+    });
   });
 
   it("isError and malformed results never publish success", async () => {

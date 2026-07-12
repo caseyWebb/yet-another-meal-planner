@@ -110,7 +110,10 @@ export { CookMode, type CookModeProps } from "./components/cook-mode";
 export { GroceryList, type GroceryListProps } from "./components/grocery-list";
 export {
   createGroceryController,
+  groceryActionKey,
   groupGroceryLines,
+  orderedRecipeAttribution,
+  projectGroceryAction,
   runGroceryAction,
   type GroceryAction,
   type GroceryControllerState,
@@ -122,6 +125,7 @@ export {
   createGroceryBridgeAdapter,
   grocerySnapshotFromBridge,
   resolveGroceryCapabilities,
+  resolveHydratedGroceryCapabilities,
   type GroceryBridge,
   type GroceryBridgeResult,
   type GroceryCapabilities,

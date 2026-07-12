@@ -1,8 +1,8 @@
 import {
-  groceryContractSupport,
-  parseGroceryListData,
   type GroceryListData,
   type GroceryModelContext,
+  groceryContractSupport,
+  parseGroceryListData,
 } from "@yamp/contract";
 import type { GroceryAction, GroceryHostAdapter } from "./grocery-controller";
 
@@ -36,6 +36,23 @@ export function resolveGroceryCapabilities(input: {
   // that can boot directly stays read-only while boot is pending or after boot fails.
   if (!input.serverTools && input.message) return { mode: "delegate", contractSupported };
   return { mode: "readonly", contractSupported };
+}
+
+/** Re-evaluate compatibility from the boot snapshot, never from stale spawning content. */
+export function resolveHydratedGroceryCapabilities(input: {
+  currentContractVersion: unknown;
+  serverTools: boolean;
+  updateModelContext: boolean;
+  message: boolean;
+  hydrated: boolean;
+}): GroceryCapabilities {
+  return resolveGroceryCapabilities({
+    contractVersion: input.currentContractVersion,
+    serverTools: input.serverTools,
+    updateModelContext: input.updateModelContext,
+    message: input.message,
+    hydrated: input.hydrated,
+  });
 }
 
 export function grocerySnapshotFromBridge(result: GroceryBridgeResult): GroceryListData | null {
@@ -137,6 +154,21 @@ function callFor(action: GroceryAction): { name: string; arguments: Record<strin
   }
 }
 
+function outcomeFromBridge(result: GroceryBridgeResult, fallback: string): string {
+  const structured = recordOf(result.structuredContent);
+  if (typeof structured?.outcome === "string" && structured.outcome.trim()) return structured.outcome;
+  const text = result.content?.find((item) => item.type === "text")?.text;
+  if (text) {
+    try {
+      const body = recordOf(JSON.parse(text));
+      if (typeof body?.outcome === "string" && body.outcome.trim()) return body.outcome;
+    } catch {
+      /* The structured channel owns mutation outcomes; plain fallback text is not reinterpreted. */
+    }
+  }
+  return fallback;
+}
+
 export function createGroceryBridgeAdapter(
   bridge: GroceryBridge,
   capabilities: GroceryCapabilities,
@@ -155,6 +187,7 @@ export function createGroceryBridgeAdapter(
         throw new Error(
           result.isError ? "The grocery action failed" : "The server returned no current grocery snapshot",
         );
+      const actualOutcome = outcomeFromBridge(result, action.kind);
       const context: GroceryModelContext = {
         ...snapshot,
         action_summary: action.kind,
@@ -169,14 +202,14 @@ export function createGroceryBridgeAdapter(
                   : action.kind.startsWith("pantry")
                     ? "pantry"
                     : "substitution",
-          message: action.kind,
+          message: actualOutcome,
         },
       };
       await bridge.updateModelContext({ structuredContent: context as unknown as Record<string, unknown> });
       if (action.kind === "mark_placed")
         await bridge.sendMessage({
           role: "user",
-          content: [{ type: "text", text: `The ${action.send_id} grocery send was marked placed.` }],
+          content: [{ type: "text", text: `Grocery send ${action.send_id}: ${actualOutcome}.` }],
         });
       return snapshot;
     },

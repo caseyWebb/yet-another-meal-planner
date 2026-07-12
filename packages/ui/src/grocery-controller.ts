@@ -10,7 +10,7 @@ export type GroceryAction =
   | { kind: "add"; name: string }
   | { kind: "checked"; key: string; checked: boolean; expected_row_version: number; snapshot_version: string }
   | { kind: "remove"; key: string }
-  | { kind: "relist"; send_id: string; key: string; expected_row_version: number }
+  | { kind: "relist"; send_id: string | null; key: string; expected_row_version: number }
   | { kind: "mark_placed"; send_id: string; expected_line_keys: string[]; snapshot_version: string }
   | { kind: "pantry_verify"; key: string; snapshot_version: string }
   | { kind: "pantry_buy_anyway" | "pantry_undo"; key: string; snapshot_version: string }
@@ -41,6 +41,21 @@ const lineCmp = (a: GroceryLine, b: GroceryLine): number =>
   labelOf(a).localeCompare(labelOf(b)) ||
   a.key.localeCompare(b.key);
 
+export function orderedRecipeAttribution(
+  line: GroceryLine,
+): { slug: string; planned_for?: string | null; plan_id?: string }[] {
+  const attribution: { slug: string; planned_for?: string | null; plan_id?: string }[] =
+    line.recipe_attribution ?? line.for_recipes.map((slug) => ({ slug }));
+  return [...attribution]
+    .filter((item, index, values) => values.findIndex((candidate) => candidate.slug === item.slug) === index)
+    .sort(
+      (a, b) =>
+        (a.planned_for ?? "9999-99-99").localeCompare(b.planned_for ?? "9999-99-99") ||
+        (a.plan_id ?? "").localeCompare(b.plan_id ?? "") ||
+        a.slug.localeCompare(b.slug),
+    );
+}
+
 export function groupGroceryLines(lines: GroceryLine[], grouping: GroceryGrouping): GroceryGroup[] {
   const groups = new Map<string, GroceryLine[]>();
   if (grouping === "department") {
@@ -63,15 +78,7 @@ export function groupGroceryLines(lines: GroceryLine[], grouping: GroceryGroupin
       );
   }
   for (const line of lines) {
-    const ordered: { slug: string; planned_for?: string | null; plan_id?: string }[] = [
-      ...(line.recipe_attribution ?? line.for_recipes.map((slug) => ({ slug }))),
-    ];
-    ordered.sort(
-      (a, b) =>
-        (a.planned_for ?? "9999-99-99").localeCompare(b.planned_for ?? "9999-99-99") ||
-        (a.plan_id ?? "").localeCompare(b.plan_id ?? "") ||
-        a.slug.localeCompare(b.slug),
-    );
+    const ordered = orderedRecipeAttribution(line);
     const label = ordered[0]?.slug ?? "No recipe";
     groups.set(label, [...(groups.get(label) ?? []), line]);
   }
@@ -115,13 +122,124 @@ export function createGroceryController(data: GroceryListData): GroceryControlle
 }
 
 export function groceryActionKey(action: GroceryAction): string {
-  return "key" in action
-    ? action.key
-    : "original_key" in action
-      ? action.original_key
-      : "send_id" in action
-        ? action.send_id
-        : action.name;
+  if (action.kind === "add") return `add:${action.name.trim().toLocaleLowerCase()}`;
+  if (action.kind === "mark_placed" || action.kind === "relist") return `send:${action.send_id}`;
+  return `line:${"key" in action ? action.key : action.original_key}`;
+}
+
+function recount(data: GroceryListData, lines: GroceryLine[], toBuy: string[]): GroceryListData["counts"] {
+  return {
+    ...data.counts,
+    to_buy: toBuy.length,
+    checked: lines.filter((line) => line.checked_at != null).length,
+    recipes: new Set(lines.flatMap((line) => line.for_recipes)).size,
+  };
+}
+
+/**
+ * Immediate, reversible presentation while an authoritative mutation is in flight. Decision
+ * provenance controls whether an undo may remove a replacement/materialized row. Pantry-covered
+ * records deliberately are not fabricated into GroceryLine values: that projection lacks kind,
+ * quantity, row-version and placement truth and waits for the returned snapshot instead.
+ */
+export function projectGroceryAction(data: GroceryListData, action: GroceryAction): GroceryListData {
+  let lines = data.lines;
+  let toBuy = data.to_buy;
+  let substitutions = data.substitution_decisions ?? [];
+  let coverage = data.coverage_decisions ?? [];
+
+  if (action.kind === "checked") {
+    lines = lines.map((line) =>
+      line.key === action.key ? { ...line, checked_at: action.checked ? data.as_of : null } : line,
+    );
+    toBuy = action.checked
+      ? toBuy.filter((key) => key !== action.key)
+      : lines.some((line) => line.key === action.key) && !toBuy.includes(action.key)
+        ? [...toBuy, action.key]
+        : toBuy;
+  } else if (action.kind === "substitute") {
+    const original = lines.find((line) => line.key === action.original_key);
+    const replacement = lines.find((line) => line.key === action.replacement_key);
+    substitutions = [
+      ...substitutions.filter((decision) => decision.original_key !== action.original_key),
+      {
+        original_key: action.original_key,
+        replacement_key: action.replacement_key,
+        attribution_signature: "pending",
+        created_replacement: !replacement,
+        replacement_version: replacement?.row_version ?? 1,
+        row_version: 1,
+        created_at: data.as_of,
+        updated_at: data.as_of,
+      },
+    ];
+    if (original && !replacement) {
+      lines = [
+        ...lines,
+        {
+          ...original,
+          key: action.replacement_key,
+          name: action.replacement_name,
+          display_name: action.replacement_name,
+          checked_at: null,
+          row_version: 1,
+        },
+      ];
+    }
+    lines = lines.filter((line) => line.key !== action.original_key);
+    toBuy = toBuy.filter((key) => key !== action.original_key);
+    if (!toBuy.includes(action.replacement_key)) toBuy = [...toBuy, action.replacement_key];
+  } else if (action.kind === "substitute_undo") {
+    const decision = substitutions.find((item) => item.original_key === action.original_key);
+    substitutions = substitutions.filter((item) => item.original_key !== action.original_key);
+    if (decision?.created_replacement) {
+      lines = lines.filter(
+        (line) =>
+          line.key !== decision.replacement_key ||
+          decision.replacement_version == null ||
+          line.row_version !== decision.replacement_version,
+      );
+      if (!lines.some((line) => line.key === decision.replacement_key))
+        toBuy = toBuy.filter((key) => key !== decision.replacement_key);
+    }
+  } else if (action.kind === "pantry_buy_anyway") {
+    // Record only the decision. The server response supplies the canonical materialized row.
+    coverage = coverage.some((decision) => decision.line_key === action.key)
+      ? coverage
+      : [
+          ...coverage,
+          {
+            line_key: action.key,
+            created_row: true,
+            created_row_version: null,
+            row_version: 1,
+            created_at: data.as_of,
+            updated_at: data.as_of,
+          },
+        ];
+  } else if (action.kind === "pantry_undo") {
+    coverage = coverage.filter((item) => item.line_key !== action.key);
+    // Restored pantry subtraction hides both an existing explicit row and a row that this decision
+    // materialized. The server decides whether storage may be deleted; the projection only hides it.
+    lines = lines.filter((line) => line.key !== action.key);
+    toBuy = toBuy.filter((key) => key !== action.key);
+  }
+
+  if (
+    lines === data.lines &&
+    toBuy === data.to_buy &&
+    substitutions === (data.substitution_decisions ?? []) &&
+    coverage === (data.coverage_decisions ?? [])
+  )
+    return data;
+  return {
+    ...data,
+    lines,
+    to_buy: toBuy,
+    substitution_decisions: substitutions,
+    coverage_decisions: coverage,
+    counts: recount(data, lines, toBuy),
+  };
 }
 
 export async function runGroceryAction(

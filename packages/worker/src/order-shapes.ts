@@ -193,6 +193,7 @@ export interface InCartLine {
   display_name?: string;
   row_version?: number;
   sent_in?: string | null;
+  quantity?: string;
 }
 
 /** The derived to-buy view (identical from the tool and the endpoint). */

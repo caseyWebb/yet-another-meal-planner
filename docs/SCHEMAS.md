@@ -516,14 +516,14 @@ tenant TEXT; original_key TEXT; replacement_key TEXT
 attribution_signature TEXT -- canonical JSON of date/id/slug attribution; invalidates when plan relations change
 created_replacement INTEGER -- 1 only when acceptance created the replacement row
 replacement_version INTEGER -- created row version used by edited-row-safe Undo
-row_version INTEGER; created_at TEXT; updated_at TEXT
+row_version INTEGER; created_at TEXT; updated_at TEXT; operation_token TEXT -- internal conditional-claim token
 -- idx_grocery_substitution_replacement on (tenant, replacement_key).
 
 -- grocery_coverage_decisions — PRIMARY KEY (tenant, line_key).
 tenant TEXT; line_key TEXT
 created_row INTEGER -- 1 only when Buy anyway materialized the pantry-low row
 created_row_version INTEGER -- created row version used by edited-row-safe Undo
-row_version INTEGER; created_at TEXT; updated_at TEXT
+row_version INTEGER; created_at TEXT; updated_at TEXT; operation_token TEXT -- internal conditional-claim token
 -- idx_grocery_coverage_updated on (tenant, updated_at).
 
 -- D1 spend_events table — one row per asserted purchase line, copied VERBATIM from its snapshot line.

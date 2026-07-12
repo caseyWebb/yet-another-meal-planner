@@ -53,7 +53,7 @@ const PantryCoveredSchema = z.object({
 const SendLineSchema = z.object({
   key: z.string(),
   name: z.string(),
-  quantity: z.number(),
+  quantity: z.union([z.string(), z.number()]),
   row_version: z.number().int().nonnegative(),
   unit_price: z.number().nullable(),
   savings: z.number().nullable(),

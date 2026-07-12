@@ -115,7 +115,7 @@ export async function readGrocerySnapshot(env: Env, tenant: string, now = new Da
       lines: unlinked.map((line) => ({
         key: line.key ?? line.name,
         name: line.display_name ?? line.name,
-        quantity: 1,
+        quantity: line.quantity ?? "1",
         row_version: line.row_version ?? 1,
         unit_price: null,
         savings: null,
@@ -148,7 +148,7 @@ export async function readGrocerySnapshot(env: Env, tenant: string, now = new Da
       : null,
     ...(line.substitutes ? { substitutes: line.substitutes } : {}),
   });
-  const lines = [...view.to_buy, ...view.checked].map(toLine);
+  const lines = [...view.to_buy, ...view.checked].map(toLine).sort((a, b) => a.key.localeCompare(b.key));
   const pantry_covered = view.pantry_covered.map((line) => ({
     key: line.key ?? line.name,
     name: line.name,
@@ -158,16 +158,18 @@ export async function readGrocerySnapshot(env: Env, tenant: string, now = new Da
     ...(line.freshness_reason ? { freshness_reason: line.freshness_reason } : {}),
     on_hand: line.on_hand,
     buy_anyway: line.buy_anyway ?? false,
-  }));
+  })).sort((a, b) => a.key.localeCompare(b.key));
+  for (const group of in_cart_groups) group.lines.sort((a, b) => a.key.localeCompare(b.key));
+  in_cart_groups.sort((a, b) => (a.sent_at ?? "9999").localeCompare(b.sent_at ?? "9999") || (a.send_id ?? "~").localeCompare(b.send_id ?? "~"));
   const stable = {
     contract_version: KNOWN_GROCERY_CONTRACT_VERSION,
     lines,
-    to_buy: view.to_buy.map((line) => line.key),
+    to_buy: view.to_buy.map((line) => line.key).sort(),
     pantry_covered,
     substitution_decisions: decisions.substitutions.map((row) => ({ ...row, created_replacement: Boolean(row.created_replacement) })),
     coverage_decisions: decisions.coverage.map((row) => ({ ...row, created_row: Boolean(row.created_row) })),
     in_cart_groups,
-    underived: view.underived,
+    underived: [...view.underived].sort(),
     location: view.location ?? null,
     flyer_as_of: view.flyer_as_of ?? null,
     counts: {
@@ -182,6 +184,15 @@ export async function readGrocerySnapshot(env: Env, tenant: string, now = new Da
 
 export function grocerySnapshotText(data: GroceryListData): string {
   const lines = data.lines.map((line) => `${line.checked_at ? "✓" : "○"} ${line.display_name ?? line.name} (${line.quantity})`);
-  const carts = data.in_cart_groups.map((g) => `${g.store ?? "Unlinked cart"}: ${g.lines.length} item${g.lines.length === 1 ? "" : "s"}${g.estimated_total == null ? "" : `, sent estimate $${g.estimated_total.toFixed(2)}`}`);
-  return [`Grocery list: ${data.counts.to_buy} to buy, ${data.counts.checked} checked, ${data.counts.in_carts} in carts.`, ...lines, ...carts, "Send prices are quotes, not final fulfillment prices."].join("\n");
+  const pantry = data.pantry_covered.map((line) => `Pantry covers: ${line.display_name ?? line.name}${line.freshness === "worth_a_look" ? " (worth a look)" : ""}`);
+  const decisions = [
+    ...(data.substitution_decisions ?? []).map((d) => `Decision: use ${d.replacement_key} instead of ${d.original_key}`),
+    ...(data.coverage_decisions ?? []).map((d) => `Decision: buy ${d.line_key} despite pantry coverage`),
+  ];
+  const carts = data.in_cart_groups.flatMap((g) => [
+    `${g.store ?? "Unlinked cart"}: ${g.lines.length} item${g.lines.length === 1 ? "" : "s"}${g.estimated_total == null ? "" : `, sent estimate $${Number(g.estimated_total).toFixed(2)}`}`,
+    ...g.lines.map((line) => `  - ${line.name} (${line.quantity})`),
+  ]);
+  const underived = data.underived.length ? [`Underived recipes: ${data.underived.join(", ")}`] : [];
+  return [`Grocery list: ${data.counts.to_buy} to buy, ${data.counts.checked} checked, ${data.counts.in_carts} in carts.`, ...lines, ...pantry, ...decisions, ...underived, ...carts, "Send prices are quotes, not final fulfillment prices."].join("\n");
 }

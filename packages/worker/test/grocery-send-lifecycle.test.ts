@@ -66,4 +66,33 @@ describe("send-scoped grocery lifecycle", () => {
     if (send.placed_at) { expect(row.status).toBe("ordered"); expect(h.rows("spend_events")).toHaveLength(1); }
     else { expect(row.status).toBe("active"); expect(h.rows("spend_events")).toHaveLength(0); }
   });
+
+  it("returns conflict when its conditional claim loses and the send is still unplaced", async () => {
+    const h = sqliteEnv([T]); await sent(h, ["milk"]); const before = await readGrocerySnapshot(h.env, T);
+    const originalBatch = h.env.DB.batch.bind(h.env.DB); let intercepted = false;
+    h.env.DB.batch = (async (statements) => {
+      if (!intercepted) { intercepted = true; h.raw.prepare("UPDATE grocery_list SET sent_in=NULL WHERE tenant=? AND normalized_name='milk'").run(T); }
+      return originalBatch(statements);
+    }) as typeof h.env.DB.batch;
+    await expect(markGrocerySendPlaced(h.env, T, { send_id: "s1", expected_line_keys: ["milk"], snapshot_version: before.snapshot_version })).rejects.toMatchObject({ code: "conflict" });
+    expect(h.rows<{ placed_at: string | null }>("order_sends")[0].placed_at).toBeNull();
+    expect(h.rows("spend_events")).toHaveLength(0);
+  });
+
+  it("verifies only keys claimed by this batch when the send has a prior legal ordered row", async () => {
+    const h = sqliteEnv([T]); await sent(h);
+    h.raw.prepare("UPDATE grocery_list SET status='ordered', ordered_at='2026-07-11' WHERE tenant=? AND normalized_name='eggs'").run(T);
+    const before = await readGrocerySnapshot(h.env, T);
+    const result = await markGrocerySendPlaced(h.env, T, { send_id: "s1", expected_line_keys: ["milk"], snapshot_version: before.snapshot_version });
+    expect(result.outcome).toContain("1 lines");
+    expect(h.rows<{ status: string }>("grocery_list").every((row) => row.status === "ordered")).toBe(true);
+  });
+
+  it("re-lists an unlinked in-cart row without a send assertion", async () => {
+    const h = sqliteEnv([T]); await addGroceryRow(h.env, T, { name: "manual", quantity: "3" }, "2026-07-12"); await updateGroceryRow(h.env, T, "manual", { status: "in_cart" });
+    const before = await readGrocerySnapshot(h.env, T); const line = before.in_cart_groups.find((group) => group.send_id === null)!.lines[0];
+    expect(line.quantity).toBe("3");
+    const result = await relistGrocerySendLine(h.env, T, { send_id: null, line_key: "manual", expected_row_version: line.row_version });
+    expect(result.snapshot.to_buy).toContain("manual"); expect(h.rows("spend_events")).toHaveLength(0);
+  });
 });

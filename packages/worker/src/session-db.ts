@@ -372,6 +372,7 @@ export async function markPantryVerifiedRows(
 /** One pantry row's verify metadata, keyed for the to-buy view's coverage join. */
 export interface PantryMeta {
   name: string;
+  display_name: string | null;
   quantity: string | null;
   category: string | null;
   last_verified_at: string | null;
@@ -385,13 +386,13 @@ export interface PantryMeta {
  */
 export async function readPantryByKey(env: Env, tenant: string): Promise<Map<string, PantryMeta>> {
   const rows = await db(env).all<{ name: string; normalized_name: string } & Omit<PantryMeta, "name">>(
-    "SELECT name, normalized_name, quantity, category, last_verified_at FROM pantry WHERE tenant = ?1",
+    "SELECT name, normalized_name, display_name, quantity, category, last_verified_at FROM pantry WHERE tenant = ?1",
     tenant,
   );
   return new Map(
     rows.map((r) => [
       r.normalized_name,
-      { name: r.name, quantity: r.quantity, category: r.category, last_verified_at: r.last_verified_at },
+      { name: r.name, display_name: r.display_name, quantity: r.quantity, category: r.category, last_verified_at: r.last_verified_at },
     ]),
   );
 }
@@ -587,7 +588,7 @@ export function groceryUpsertStmt(
       "name = excluded.name, quantity = excluded.quantity, kind = excluded.kind, " +
       "domain = excluded.domain, status = excluded.status, source = excluded.source, " +
       "for_recipes = excluded.for_recipes, note = excluded.note, ordered_at = excluded.ordered_at, " +
-      "display_name = excluded.display_name, sent_in = excluded.sent_in, checked_at = excluded.checked_at, " +
+      "display_name = excluded.display_name, sent_in = excluded.sent_in, " +
       "row_version = grocery_list.row_version + 1, updated_at = ?18",
     tenant,
     item.name,

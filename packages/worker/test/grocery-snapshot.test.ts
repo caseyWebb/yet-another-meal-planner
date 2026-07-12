@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { readGrocerySnapshot } from "../src/grocery-snapshot.js";
+import { grocerySnapshotText, readGrocerySnapshot } from "../src/grocery-snapshot.js";
 import { addGroceryRow, updateGroceryRow } from "../src/session-db.js";
 import { sqliteEnv } from "./sqlite-d1.js";
 
@@ -35,5 +35,24 @@ describe("readGrocerySnapshot", () => {
     await updateGroceryRow(h.env, T, "salt", { status: "in_cart" });
     versions.push((await readGrocerySnapshot(h.env, T, NOW)).snapshot_version);
     for (let i = 1; i < versions.length; i++) expect(versions[i]).not.toBe(versions[i - 1]);
+  });
+
+  it("keeps pantry, decisions, underived recipes, and cart membership in the plain-text fallback", async () => {
+    const h = sqliteEnv([T]);
+    const base = await readGrocerySnapshot(h.env, T, NOW);
+    const text = grocerySnapshotText({
+      ...base,
+      pantry_covered: [{ key: "onion", name: "Onion", for_recipes: ["soup"], freshness: "worth_a_look", on_hand: {}, buy_anyway: false }],
+      substitution_decisions: [{ original_key: "milk", replacement_key: "oat milk", attribution_signature: "sig", created_replacement: true, replacement_version: 1, row_version: 1, created_at: NOW.toISOString(), updated_at: NOW.toISOString() }],
+      coverage_decisions: [{ line_key: "onion", created_row: true, created_row_version: 1, row_version: 1, created_at: NOW.toISOString(), updated_at: NOW.toISOString() }],
+      underived: ["stew"],
+      in_cart_groups: [{ send_id: null, store: null, location_id: null, fulfillment: null, sent_at: null, placed_at: null, awaiting_confirmation: false, estimated_total: null, flyer_savings: null, can_mark_placed: false, lines: [{ key: "rice", name: "Rice", quantity: "3 bags", row_version: 2, unit_price: null, savings: null }] }],
+      counts: { ...base.counts, in_carts: 1 },
+    });
+    expect(text).toContain("Pantry covers: Onion (worth a look)");
+    expect(text).toContain("Decision: use oat milk instead of milk");
+    expect(text).toContain("Decision: buy onion despite pantry coverage");
+    expect(text).toContain("Underived recipes: stew");
+    expect(text).toContain("Unlinked cart: 1 item\n  - Rice (3 bags)");
   });
 });

@@ -1,6 +1,6 @@
+import type { GroceryLine, GroceryListData } from "@yamp/contract";
 import { describe, expect, it } from "vitest";
-import type { GroceryLine } from "@yamp/contract";
-import { groupGroceryLines } from "./grocery-controller";
+import { groupGroceryLines, orderedRecipeAttribution, projectGroceryAction } from "./grocery-controller";
 
 const line = (key: string, patch: Partial<GroceryLine> = {}): GroceryLine => ({
   key,
@@ -63,5 +63,80 @@ describe("grocery grouping selectors", () => {
       "recipe",
     );
     expect(groups.map((group) => group.label)).toEqual(["zulu", "alpha"]);
+  });
+
+  it("uses the same sorted selector for the primary recipe and +N attribution", () => {
+    const subject = line("onion", {
+      for_recipes: ["late", "early", "early"],
+      recipe_attribution: [
+        { slug: "late", planned_for: "2026-07-14", plan_id: "b" },
+        { slug: "early", planned_for: "2026-07-13", plan_id: "a" },
+        { slug: "early", planned_for: "2026-07-13", plan_id: "a" },
+      ],
+    });
+    expect(orderedRecipeAttribution(subject).map((item) => item.slug)).toEqual(["early", "late"]);
+    expect(groupGroceryLines([subject], "recipe")[0]?.label).toBe("early");
+  });
+});
+
+const snapshot = (lines: GroceryLine[], patch: Partial<GroceryListData> = {}): GroceryListData => ({
+  contract_version: 1,
+  snapshot_version: "v1",
+  as_of: "2026-07-12T12:00:00Z",
+  lines,
+  to_buy: lines.filter((item) => item.checked_at == null).map((item) => item.key),
+  pantry_covered: [],
+  in_cart_groups: [],
+  underived: [],
+  location: null,
+  flyer_as_of: null,
+  counts: { to_buy: lines.length, checked: 0, in_carts: 0, recipes: 0 },
+  ...patch,
+});
+
+describe("grocery optimistic decision projections", () => {
+  it("reuses an existing replacement and preserves it when undoing", () => {
+    const before = snapshot([line("milk"), line("oat-milk", { row_version: 7 })]);
+    const accepted = projectGroceryAction(before, {
+      kind: "substitute",
+      original_key: "milk",
+      replacement_key: "oat-milk",
+      replacement_name: "Oat milk",
+      snapshot_version: "v1",
+    });
+    expect(accepted.lines.map((item) => item.key)).toEqual(["oat-milk"]);
+    expect(accepted.substitution_decisions?.[0]).toMatchObject({
+      created_replacement: false,
+      replacement_version: 7,
+    });
+    const undone = projectGroceryAction(accepted, {
+      kind: "substitute_undo",
+      original_key: "milk",
+      snapshot_version: "v1",
+    });
+    expect(undone.lines.map((item) => item.key)).toEqual(["oat-milk"]);
+  });
+
+  it("hides an existing buy-anyway row on undo without fabricating a pantry GroceryLine", () => {
+    const before = snapshot([line("onion", { row_version: 5 })], {
+      coverage_decisions: [
+        {
+          line_key: "onion",
+          created_row: false,
+          created_row_version: 5,
+          row_version: 1,
+          created_at: "2026-07-12",
+          updated_at: "2026-07-12",
+        },
+      ],
+    });
+    const undone = projectGroceryAction(before, {
+      kind: "pantry_undo",
+      key: "onion",
+      snapshot_version: "v1",
+    });
+    expect(undone.lines).toEqual([]);
+    expect(undone.pantry_covered).toEqual([]);
+    expect(undone.coverage_decisions).toEqual([]);
   });
 });

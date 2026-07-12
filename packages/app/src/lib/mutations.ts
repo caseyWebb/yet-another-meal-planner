@@ -55,15 +55,17 @@ export interface GroceryCoverageVars {
   name?: string;
   snapshot_version: string;
 }
-export interface GrocerySubstitutionVars {
-  original_key: string;
-  replacement_key: string;
-  replacement_name: string;
-  snapshot_version: string;
-  undo?: boolean;
-}
+export type GrocerySubstitutionVars =
+  | {
+      original_key: string;
+      replacement_key: string;
+      replacement_name: string;
+      snapshot_version: string;
+      undo?: false;
+    }
+  | { original_key: string; snapshot_version: string; undo: true };
 export interface GroceryRelistVars {
-  send_id: string;
+  send_id: string | null;
   line_key: string;
   expected_row_version: number;
 }

@@ -1,9 +1,9 @@
 // @vitest-environment jsdom
 import { fireEvent, render, waitFor } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
 import type { GroceryListData } from "@yamp/contract";
+import { describe, expect, it, vi } from "vitest";
 import { GroceryList } from "./components/grocery-list";
-import { groceryActionKey, type GroceryAction } from "./grocery-controller";
+import { type GroceryAction, groceryActionKey } from "./grocery-controller";
 
 const data: GroceryListData = {
   contract_version: 1,
@@ -31,7 +31,7 @@ const data: GroceryListData = {
 };
 
 describe("GroceryList interaction serialization", () => {
-  it("starts one write at a time and suppresses a duplicate while pending", async () => {
+  it("starts independent targets immediately while suppressing a pending target duplicate", async () => {
     let release!: () => void;
     const first = new Promise<void>((resolve) => {
       release = resolve;
@@ -47,12 +47,56 @@ describe("GroceryList interaction serialization", () => {
     fireEvent.click(boxes[0]);
     fireEvent.click(boxes[1]);
 
-    await waitFor(() => expect(mutate).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(mutate).toHaveBeenCalledTimes(2));
+    expect((boxes[0] as HTMLInputElement).checked).toBe(true);
     expect((boxes[0] as HTMLInputElement).disabled).toBe(true);
-    expect((boxes[1] as HTMLInputElement).disabled).toBe(true);
+    expect((boxes[1] as HTMLInputElement).disabled).toBe(false);
     release();
     await waitFor(() => expect((boxes[0] as HTMLInputElement).disabled).toBe(false));
     expect(mutate).toHaveBeenCalledTimes(2);
-    expect(mutate.mock.calls.map(([action]) => groceryActionKey(action))).toEqual(["eggs", "milk"]);
+    expect(mutate.mock.calls.map(([action]) => groceryActionKey(action))).toEqual(["line:eggs", "line:milk"]);
+  });
+
+  it("gates destructive actions for one send without disabling unrelated rows", async () => {
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const withSend: GroceryListData = {
+      ...data,
+      in_cart_groups: [
+        {
+          send_id: "send-1",
+          store: "Kroger",
+          location_id: "1",
+          fulfillment: "kroger_online",
+          sent_at: "2026-07-12T12:00:00Z",
+          placed_at: null,
+          awaiting_confirmation: false,
+          estimated_total: 4,
+          flyer_savings: null,
+          can_mark_placed: true,
+          lines: [{ key: "bread", name: "Bread", quantity: 1, row_version: 2, unit_price: 4, savings: null }],
+        },
+      ],
+      counts: { ...data.counts, in_carts: 1 },
+    };
+    const mutate = vi.fn(async () => {
+      await pending;
+      return withSend;
+    });
+    const view = render(<GroceryList data={withSend} adapter={{ mode: "interactive", mutate }} />);
+
+    fireEvent.click(view.getByRole("button", { name: "Back to list" }));
+    await waitFor(() => expect(mutate).toHaveBeenCalledTimes(1));
+    expect((view.getByRole("button", { name: "Back to list" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((view.getByRole("button", { name: "Mark order placed" }) as HTMLButtonElement).disabled).toBe(
+      true,
+    );
+    expect((view.getAllByRole("checkbox")[0] as HTMLInputElement).disabled).toBe(false);
+    release();
+    await waitFor(() =>
+      expect((view.getByRole("button", { name: "Back to list" }) as HTMLButtonElement).disabled).toBe(false),
+    );
   });
 });

@@ -1,8 +1,8 @@
-import { describe, expect, it } from "vitest";
-import { renderToStaticMarkup } from "react-dom/server";
 import type { GroceryListData } from "@yamp/contract";
+import { renderToStaticMarkup } from "react-dom/server";
+import { describe, expect, it } from "vitest";
 import { GroceryList } from "./components/grocery-list";
-import { createGroceryBridgeAdapter, resolveGroceryCapabilities, type GroceryBridge } from "./grocery-bridge";
+import { createGroceryBridgeAdapter, type GroceryBridge, resolveGroceryCapabilities } from "./grocery-bridge";
 
 const data: GroceryListData = {
   contract_version: 1,
@@ -127,5 +127,28 @@ describe("shared Grocery component", () => {
     expect(html).toContain("<details");
     expect(html).toContain("<summary");
     expect(html).toContain('aria-label="Kroger cart, 1 items"');
+  });
+
+  it("renders the primary recipe and +N from the same sorted attribution", () => {
+    const fixture = {
+      ...data,
+      lines: [
+        {
+          ...data.lines[0]!,
+          for_recipes: ["late", "early", "early"],
+          recipe_attribution: [
+            { slug: "late", planned_for: "2026-07-14", plan_id: "b" },
+            { slug: "early", planned_for: "2026-07-13", plan_id: "a" },
+            { slug: "early", planned_for: "2026-07-13", plan_id: "a" },
+          ],
+        },
+      ],
+    };
+    const html = renderToStaticMarkup(
+      <GroceryList data={fixture} adapter={{ mode: "interactive", mutate: async () => fixture }} />,
+    );
+    expect(html).toContain('href="/recipe/early"');
+    expect(html).toContain(" +1");
+    expect(html).not.toContain('href="/recipe/late"');
   });
 });

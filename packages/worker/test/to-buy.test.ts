@@ -210,7 +210,7 @@ describe("computeToBuyView", () => {
     await addGroceryRow(h.env, T, { name: "salt" }, TODAY);
 
     const view = await computeToBuyView(h.env, T);
-    expect(view.in_cart).toEqual([{ name: "olive oil", key: "olive oil", added_at: TODAY, row_version: 2, sent_in: null }]);
+    expect(view.in_cart).toEqual([{ name: "olive oil", key: "olive oil", added_at: TODAY, row_version: 2, sent_in: null, quantity: "1" }]);
     expect(view.to_buy.map((l) => l.name)).toEqual(["salt"]);
   });
 
@@ -463,7 +463,7 @@ describe("computeToBuyView — enrich (member-app-differentiators D6, generalize
 
     const view = await computeToBuyView(h.env, T, { enrich: true });
     const line = view.to_buy.find((l) => l.key === "cabbage::type-napa")!;
-    expect(line.substitutes?.map((s) => s.id)).toEqual(["cabbage::color-green", "cabbage::color-red", "cabbage"]);
+    expect(line.substitutes?.map((s) => s.id)).toEqual(["cabbage", "cabbage::color-green", "cabbage::color-red"]);
     expect(line.substitutes?.find((s) => s.id === "cabbage::color-red")!.in_pantry).toBe(true);
     expect(line.substitutes?.find((s) => s.id === "cabbage::color-green")!.on_sale_hint).toMatchObject({ sku: "K1" });
     expect(line.substitutes?.find((s) => s.id === "cabbage")!.in_pantry).toBe(false);

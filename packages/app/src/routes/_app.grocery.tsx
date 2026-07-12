@@ -113,8 +113,6 @@ function GroceryPage() {
           case "substitute_undo":
             return substitution.mutateAsync({
               original_key: action.original_key,
-              replacement_key: "",
-              replacement_name: "",
               snapshot_version: action.snapshot_version,
               undo: true,
             });
