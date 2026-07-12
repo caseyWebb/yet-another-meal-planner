@@ -874,7 +874,8 @@ export async function advanceOrderedRows(
 /** The send-record rider an order-flush advance composes into its batch (spend-telemetry):
  *  the send id stamps each advanced row's `sent_in`, and the snapshot statements
  *  (`snapshotStatements(...)`) land in the SAME batch — the send exists iff the advance
- *  succeeded. Absent (a bare advance), rows advance with no linkage and no snapshot. */
+ *  succeeded. A bare advance uses a temporary ownership token until its caller confirms
+ *  the external cart write succeeded; it never creates a durable send snapshot. */
 export interface SendBatch {
   id: string;
   statements: D1PreparedStatement[];
@@ -889,8 +890,8 @@ export interface SendBatch {
  *
  * With a `send` rider the advance is a SNAPSHOT-WRITING advance (spend-telemetry): the
  * send-record statements join this same atomic batch and every advanced row is stamped
- * `sent_in = send.id`. Without one, `sent_in` is left as-is (a bare advance stamps
- * nothing — a manual or degraded advance never manufactures a linkage).
+ * `sent_in = send.id`. Without one, the advance stamps a temporary ownership token
+ * that the caller finalizes after the external cart write succeeds.
  */
 export async function advanceInCartRows(
   env: Env,

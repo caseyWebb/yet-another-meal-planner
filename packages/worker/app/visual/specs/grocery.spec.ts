@@ -190,7 +190,7 @@ test("order review projects staged choices and latches a failed send with exact 
 	await page.route("**/api/grocery/order", async (route) => {
 		sends += 1;
 		expect(route.request().headers()["x-app-csrf"]).toBe("1");
-		await new Promise((resolve) => setTimeout(resolve, 100));
+		await page.waitForTimeout(100);
 		await route.fulfill({
 			json: {
 				status: "send_failed",
