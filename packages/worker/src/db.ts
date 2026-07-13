@@ -104,3 +104,30 @@ export function db(env: Env): Db {
     },
   };
 }
+
+export interface InstacartLinkRow {
+  tenant: string;
+  content_hash: string;
+  url: string;
+  expires_at: string;
+  created_at: string;
+}
+
+export function readInstacartLink(env: Env, tenant: string, contentHash: string): Promise<InstacartLinkRow | null> {
+  return db(env).first<InstacartLinkRow>(
+    "SELECT tenant, content_hash, url, expires_at, created_at FROM instacart_links WHERE tenant = ?1 AND content_hash = ?2",
+    tenant, contentHash,
+  );
+}
+
+export async function upsertInstacartLink(env: Env, row: InstacartLinkRow): Promise<void> {
+  await db(env).run(
+    "INSERT INTO instacart_links (tenant, content_hash, url, expires_at, created_at) VALUES (?1, ?2, ?3, ?4, ?5) " +
+      "ON CONFLICT(tenant, content_hash) DO UPDATE SET url = excluded.url, expires_at = excluded.expires_at, created_at = excluded.created_at",
+    row.tenant, row.content_hash, row.url, row.expires_at, row.created_at,
+  );
+}
+
+export async function deleteExpiredInstacartLinks(env: Env, tenant: string, before: string): Promise<void> {
+  await db(env).run("DELETE FROM instacart_links WHERE tenant = ?1 AND expires_at <= ?2", tenant, before);
+}

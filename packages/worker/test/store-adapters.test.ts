@@ -89,7 +89,7 @@ describe("store adapter projection", () => {
     expect(out.launcher).toEqual([]);
   });
 
-  it("degrades a configured Satellite closed and never emits Instacart", async () => {
+  it("degrades a configured Satellite closed and omits unconfigured Instacart", async () => {
     preferences = { stores: { primary: "target", fulfillment: "satellite" } };
     const out = await loadStoreAdapterProjection(envWithRefresh(false), "alice");
     expect(out.adapters.satellites.stores).toEqual([{ slug: "target", name: "Target", session_fresh: null }]);
@@ -101,6 +101,16 @@ describe("store adapter projection", () => {
       }),
     ]);
     expect(out.launcher.some((entry) => (entry.adapter as string) === "instacart")).toBe(false);
+  });
+
+  it("projects only secret-free Instacart availability and launcher state", async () => {
+    const env = envWithRefresh(false);
+    env.INSTACART_API_KEY = "instacart-secret";
+    env.INSTACART_API_ENV = "development";
+    const out = await loadStoreAdapterProjection(env, "alice");
+    expect(out.adapters.instacart).toEqual({ kind: "instacart", available: true });
+    expect(out.launcher).toContainEqual(expect.objectContaining({ id: "instacart", adapter: "instacart", mode: "marketplace_handoff", enabled: true }));
+    expect(JSON.stringify(out)).not.toContain("instacart-secret");
   });
 
   it("keeps launcher ordering deterministic", async () => {

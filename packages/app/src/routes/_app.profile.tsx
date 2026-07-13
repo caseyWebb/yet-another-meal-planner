@@ -630,8 +630,11 @@ function StoreCard() {
       ) : null}
       {adapters && tab === "instacart" ? (
         <section className="store-panel" role="tabpanel" data-testid="store-panel-instacart">
-          <strong>Coming later</strong>
-          <p>Instacart account linking and retailer availability are not available yet.</p>
+          <strong>{adapters.instacart.available ? "Available" : "Not configured"}</strong>
+          <p>{adapters.instacart.available
+            ? "Shop from Grocery by opening an Instacart Marketplace page. You choose a retailer and review matches there."
+            : "Your operator can enable an Instacart Marketplace handoff with an approved API key."}</p>
+          <p className="muted">Yamp does not link an Instacart account, choose a retailer, fill a cart, or observe checkout.</p>
         </section>
       ) : null}
       {adapters && tab === "satellites" ? (

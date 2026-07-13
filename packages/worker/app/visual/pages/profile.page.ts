@@ -305,7 +305,7 @@ export class ProfilePage extends AppPage {
         body: JSON.stringify({
           adapters: {
             kroger: { kind: "kroger", linked, preferred: { location_id: kroger.locationId, name: kroger.name, address: kroger.address, zip: kroger.zip } },
-            instacart: { kind: "instacart", state: "coming_soon" },
+            instacart: { kind: "instacart", available: false },
             satellites: { kind: "satellites", state: "freshness_unavailable", stores: [] },
             offline: { kind: "offline", stores: [], selected_slug: null, selection_unavailable: false },
           },

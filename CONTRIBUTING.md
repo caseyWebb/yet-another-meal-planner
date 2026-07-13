@@ -152,6 +152,28 @@ gpg --armor --export-secret-keys "$KEYID" | base64 -w0   # → set as GPG_SIGNIN
 
 Use an email verified on your GitHub account. There is no encrypted secrets store yet — environment variables are visible to anyone who can edit the environment — so use a **dedicated, revocable** signing key, not your primary one.
 
+## Optional Instacart development smoke
+
+The adapter is disabled by default. Copy the empty Instacart entries from
+`packages/worker/.dev.vars.example`, supply a development API key only in the gitignored
+`packages/worker/.dev.vars`, and keep `INSTACART_API_ENV=development`. The default suite
+uses injected fixtures and makes no live request even when a key happens to be exported:
+the live smoke additionally requires the explicit `INSTACART_LIVE=1` opt-in.
+
+To run it, load the gitignored file into the current shell without putting the key on a
+command line, then opt in for that one invocation:
+
+```bash
+set -a
+. packages/worker/.dev.vars
+set +a
+INSTACART_LIVE=1 aubr test packages/worker/test/instacart.live.test.ts
+```
+
+The smoke validates only that the official development origin returns an HTTPS
+Instacart Marketplace URL. Production keys require Instacart's external review; see
+`docs/SELF_HOSTING.md` before selecting `production`.
+
 ## Opening a pull request
 
 Every PR is prefilled from [`.github/pull_request_template.md`](.github/pull_request_template.md): a short **What & why** plus a **considerations checklist** drawn from the rules above (docs in lockstep, the tool/skill boundary, D1 via `src/db.ts`, the `merge-wrangler-config.mjs` allowlist, migrations, `plugin/` regen, OpenSpec sync, no-secrets, admin-UI Playwright coverage). Each item is a *consideration* — checking it means "I weighed this," and the not-applicable case is folded into the wording, so every box is honestly checkable on every PR. **Fill the What & why and check every box.** This applies to PRs the repo's own agent opens too — leaving the template unfilled blocks the PR.

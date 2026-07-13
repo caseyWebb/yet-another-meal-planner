@@ -15,6 +15,8 @@ export class GroceryPage extends AppPage {
 			`[data-testid="store-launcher-entry"][data-launcher-id="${id}"]`,
 		);
 	}
+	instacartCta(): Locator { return this.page.getByTestId("instacart-cta"); }
+	instacartStatus(): Locator { return this.page.getByTestId("instacart-status"); }
 	async launch(id: string): Promise<void> {
 		await this.launcherEntry(id).getByRole("button").click();
 	}

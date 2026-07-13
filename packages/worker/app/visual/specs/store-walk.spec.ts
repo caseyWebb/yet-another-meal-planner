@@ -19,7 +19,7 @@ const base = {
 test("Offline store walk progresses, pauses/resumes, and finishes through one receipt", async ({ asMember, page, groceryPage }) => {
   await asMember();
   let snapshot: typeof base = JSON.parse(JSON.stringify(base)) as typeof base;
-  await page.route("**/api/profile/store-adapters", (route) => route.fulfill({ json: { adapters: { kroger: { kind: "kroger", linked: false, preferred: null }, instacart: { kind: "instacart", state: "coming_soon" }, satellites: { kind: "satellites", state: "freshness_unavailable", stores: [] }, offline: { kind: "offline", stores: [], selected_slug: "market", selection_unavailable: false } }, launcher: [{ id: "offline:market", adapter: "offline", mode: "store_walk", store: { slug: "market", name: "The close store", shared_name: "Market", domain: "grocery", aisle_map: base.walk_context.aisle_map }, enabled: true, disabled_reason: null }] } }));
+  await page.route("**/api/profile/store-adapters", (route) => route.fulfill({ json: { adapters: { kroger: { kind: "kroger", linked: false, preferred: null }, instacart: { kind: "instacart", available: false }, satellites: { kind: "satellites", state: "freshness_unavailable", stores: [] }, offline: { kind: "offline", stores: [], selected_slug: "market", selection_unavailable: false } }, launcher: [{ id: "offline:market", adapter: "offline", mode: "store_walk", store: { slug: "market", name: "The close store", shared_name: "Market", domain: "grocery", aisle_map: base.walk_context.aisle_map }, enabled: true, disabled_reason: null }] } }));
   await page.route("**/api/grocery/view", (route) => route.fulfill({ json: snapshot }));
   await page.route("**/api/grocery/checked", async (route) => {
     const body = route.request().postDataJSON() as { key: string; checked: boolean };
@@ -46,7 +46,7 @@ test("Offline store walk progresses, pauses/resumes, and finishes through one re
 
 test("manual shop remains available without an adapter and uses the frozen checked set", async ({ asMember, page, groceryPage }) => {
   await asMember();
-  await page.route("**/api/profile/store-adapters", (route) => route.fulfill({ json: { adapters: { kroger: { kind: "kroger", linked: false, preferred: null }, instacart: { kind: "instacart", state: "coming_soon" }, satellites: { kind: "satellites", state: "freshness_unavailable", stores: [] }, offline: { kind: "offline", stores: [], selected_slug: null, selection_unavailable: false } }, launcher: [] } }));
+  await page.route("**/api/profile/store-adapters", (route) => route.fulfill({ json: { adapters: { kroger: { kind: "kroger", linked: false, preferred: null }, instacart: { kind: "instacart", available: false }, satellites: { kind: "satellites", state: "freshness_unavailable", stores: [] }, offline: { kind: "offline", stores: [], selected_slug: null, selection_unavailable: false } }, launcher: [] } }));
   await page.route("**/api/grocery/view", (route) => route.fulfill({ json: { ...base, walk_context: null } }));
   let request: { mode: string; store_slug: string | null; expected_checked_keys: string[] } | null = null;
   await page.route("**/api/grocery/shop-commit", async (route) => {
@@ -65,7 +65,7 @@ test("manual shop remains available without an adapter and uses the frozen check
 test("an unknown map still starts as an explicit Not mapped walk", async ({ asMember, page, groceryPage }) => {
   await asMember();
   const unknown = { ...base, walk_context: { ...base.walk_context, aisle_map: { state: "unknown" as const, aisle_count: 0, as_of: null }, observed_at: null, groups: [{ id: "unmapped", label: "Anywhere / Not mapped", placement_source: "unmapped" as const, line_keys: base.lines.map((line) => line.key), warning: null }] } };
-  await page.route("**/api/profile/store-adapters", (route) => route.fulfill({ json: { adapters: { kroger: { kind: "kroger", linked: false, preferred: null }, instacart: { kind: "instacart", state: "coming_soon" }, satellites: { kind: "satellites", state: "freshness_unavailable", stores: [] }, offline: { kind: "offline", stores: [], selected_slug: "market", selection_unavailable: false } }, launcher: [{ id: "offline:market", adapter: "offline", mode: "store_walk", store: { slug: "market", name: "The close store", shared_name: "Market", domain: "grocery", aisle_map: unknown.walk_context.aisle_map }, enabled: true, disabled_reason: null }] } }));
+  await page.route("**/api/profile/store-adapters", (route) => route.fulfill({ json: { adapters: { kroger: { kind: "kroger", linked: false, preferred: null }, instacart: { kind: "instacart", available: false }, satellites: { kind: "satellites", state: "freshness_unavailable", stores: [] }, offline: { kind: "offline", stores: [], selected_slug: "market", selection_unavailable: false } }, launcher: [{ id: "offline:market", adapter: "offline", mode: "store_walk", store: { slug: "market", name: "The close store", shared_name: "Market", domain: "grocery", aisle_map: unknown.walk_context.aisle_map }, enabled: true, disabled_reason: null }] } }));
   await page.route("**/api/grocery/view", (route) => route.fulfill({ json: unknown }));
   await groceryPage.goto(); await groceryPage.landmark(); await groceryPage.startWalk("offline:market");
   await expect(groceryPage.walkGroup("unmapped")).toContainText("Anywhere / Not mapped");
@@ -74,7 +74,7 @@ test("an unknown map still starts as an explicit Not mapped walk", async ({ asMe
 
 test("a shop conflict restores the walk with fresh actionable state", async ({ asMember, page, groceryPage }) => {
   await asMember();
-  const adapters = { adapters: { kroger: { kind: "kroger", linked: false, preferred: null }, instacart: { kind: "instacart", state: "coming_soon" }, satellites: { kind: "satellites", state: "freshness_unavailable", stores: [] }, offline: { kind: "offline", stores: [], selected_slug: "market", selection_unavailable: false } }, launcher: [{ id: "offline:market", adapter: "offline", mode: "store_walk", store: { slug: "market", name: "The close store", shared_name: "Market", domain: "grocery", aisle_map: base.walk_context.aisle_map }, enabled: true, disabled_reason: null }] };
+  const adapters = { adapters: { kroger: { kind: "kroger", linked: false, preferred: null }, instacart: { kind: "instacart", available: false }, satellites: { kind: "satellites", state: "freshness_unavailable", stores: [] }, offline: { kind: "offline", stores: [], selected_slug: "market", selection_unavailable: false } }, launcher: [{ id: "offline:market", adapter: "offline", mode: "store_walk", store: { slug: "market", name: "The close store", shared_name: "Market", domain: "grocery", aisle_map: base.walk_context.aisle_map }, enabled: true, disabled_reason: null }] };
 	await page.route("**/api/profile/store-adapters", (route) => route.fulfill({ json: adapters }));
 	await page.route("**/api/grocery/view", (route) => route.fulfill({ json: base }));
   await page.route("**/api/grocery/shop-commit", (route) => route.fulfill({ status: 409, json: { outcome: "checked_set_changed", current_checked_keys: ["apples", "milk"], snapshot: { ...base, snapshot_version: `sha256:${"3".repeat(64)}`, lines: base.lines.map((line) => line.key === "milk" ? { ...line, checked_at: "2026-07-12T12:03:00Z", row_version: 2 } : line) } } }));
@@ -87,7 +87,7 @@ test("a shop conflict restores the walk with fresh actionable state", async ({ a
 
 test("a lost store-walk response retries the identical logical request and adopts the receipt", async ({ asMember, page, groceryPage }) => {
 	await asMember();
-	const adapters = { adapters: { kroger: { kind: "kroger", linked: false, preferred: null }, instacart: { kind: "instacart", state: "coming_soon" }, satellites: { kind: "satellites", state: "freshness_unavailable", stores: [] }, offline: { kind: "offline", stores: [], selected_slug: "market", selection_unavailable: false } }, launcher: [{ id: "offline:market", adapter: "offline", mode: "store_walk", store: { slug: "market", name: "The close store", shared_name: "Market", domain: "grocery", aisle_map: base.walk_context.aisle_map }, enabled: true, disabled_reason: null }] };
+	const adapters = { adapters: { kroger: { kind: "kroger", linked: false, preferred: null }, instacart: { kind: "instacart", available: false }, satellites: { kind: "satellites", state: "freshness_unavailable", stores: [] }, offline: { kind: "offline", stores: [], selected_slug: "market", selection_unavailable: false } }, launcher: [{ id: "offline:market", adapter: "offline", mode: "store_walk", store: { slug: "market", name: "The close store", shared_name: "Market", domain: "grocery", aisle_map: base.walk_context.aisle_map }, enabled: true, disabled_reason: null }] };
 	const afterCommit = { ...base, snapshot_version: `sha256:${"4".repeat(64)}`, lines: base.lines.filter((line) => line.checked_at == null), counts: { ...base.counts, checked: 0 } };
 	let durable = false;
 	await page.route("**/api/profile/store-adapters", (route) => route.fulfill({ json: adapters }));

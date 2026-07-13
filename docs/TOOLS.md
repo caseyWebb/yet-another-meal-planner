@@ -1293,6 +1293,22 @@ Behind the per-tenant gate; a pure D1 write — no GitHub. Driven by the agent's
 
 ---
 
+## `create_instacart_handoff`
+
+Creates or reuses an Instacart Marketplace shopping-list page for the caller's current
+derived to-buy set. No parameters. Returns one of:
+
+- `ready`: `url`, `expires_at`, `reused`, `item_count`, `underived`, and
+  `destination:"instacart_marketplace"`;
+- `empty`: `item_count:0` and `underived`;
+- `unavailable`: `code:"not_configured"`;
+- `error`: closed `code` (`invalid_request | unauthorized | forbidden | rate_limited |
+  upstream_unavailable | invalid_response`) and `retryable`.
+
+This tool creates a review handoff only. It never chooses a retailer, matches a product,
+fills or reads a cart, places an order, advances grocery rows, records sends/spend, or
+claims checkout. It makes no external request when operator configuration is absent.
+
 ## Harness-provided widgets (NOT MCP tools)
 
 These are **claude.ai built-ins**, not part of `yamp`. They are exposed by the Claude.ai harness, are invisible to the Worker, and appear in the agent's tool set only where the harness exposes them. A skill that uses one MUST guard on its presence and degrade when it is absent — see the guided `cook` flow in [`AGENT_INSTRUCTIONS.md`](../AGENT_INSTRUCTIONS.md). They are documented here so the contract a skill encodes has a single anchor, not because they belong to this surface.

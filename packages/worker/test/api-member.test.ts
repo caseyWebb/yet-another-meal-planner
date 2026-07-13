@@ -191,6 +191,7 @@ const MEMBER_ENDPOINTS: [string, string][] = [
   ["GET", "/api/grocery/to-buy"],
   ["GET", "/api/grocery/to-buy?enrich=1"],
   ["POST", "/api/grocery/order"],
+  ["POST", "/api/grocery/instacart"],
   ["POST", "/api/grocery/substitutions"],
   ["POST", "/api/grocery/items"],
   ["POST", "/api/grocery/checked"],
@@ -601,6 +602,18 @@ describe("log area", () => {
     const del = await send(env, "DELETE", `/api/log/${id}`, cookie);
     expect(((await del.json()) as { removed: boolean }).removed).toBe(true);
     expect(d1.tables.cooking_log).toHaveLength(0);
+  });
+});
+
+describe("Instacart member transport", () => {
+  it("is session-gated and degrades before storage or egress when unconfigured", async () => {
+    const { env } = memberEnv();
+    const cookie = await loggedIn(env);
+    const fetcher = vi.fn(); vi.stubGlobal("fetch", fetcher);
+    const response = await send(env, "POST", "/api/grocery/instacart", cookie);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ status: "unavailable", code: "not_configured" });
+    expect(fetcher).not.toHaveBeenCalled();
   });
 });
 

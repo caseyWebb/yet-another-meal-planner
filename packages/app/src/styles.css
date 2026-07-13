@@ -63,6 +63,12 @@
 .store-launcher ul { display: grid; gap: .55rem; margin: 0; padding: 0; list-style: none; }
 .store-launcher li { display: flex; align-items: center; justify-content: space-between; gap: 1rem; border-top: 1px solid var(--border); padding-top: .55rem; }
 .store-launcher li small { display: block; color: var(--muted-foreground); text-transform: capitalize; }
+.instacart-cta { min-height: 46px; height: 46px; border: 0; border-radius: 29.5px; padding: 0 18px; display: inline-flex; align-items: center; justify-content: center; gap: 10px; background: #003d29; color: #faf1e5; font: inherit; font-weight: 700; white-space: nowrap; cursor: pointer; }
+.instacart-cta img { width: auto; height: 22px; flex: 0 0 auto; }
+.instacart-cta:disabled { cursor: not-allowed; }
+.instacart-cta:focus-visible { outline: 3px solid #ff7009; outline-offset: 2px; }
+.instacart-preflight { display: flex; align-items: flex-start; gap: .4rem; max-width: 34rem; margin-top: .45rem; color: var(--foreground); font-size: .85rem; line-height: 1.35; }
+.instacart-preflight input { margin-top: .15rem; flex: 0 0 auto; }
 @media (max-width: 640px) {
   .store-launcher-head, .store-launcher li { align-items: stretch; flex-direction: column; }
 }

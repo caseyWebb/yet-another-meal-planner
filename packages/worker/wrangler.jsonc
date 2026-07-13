@@ -5,6 +5,7 @@
 	//   wrangler secret put KROGER_CLIENT_SECRET
 	//   wrangler secret put KROGER_OAUTH_CLIENT_ID      (optional)
 	//   wrangler secret put KROGER_OAUTH_CLIENT_SECRET  (optional)
+	//   wrangler secret put INSTACART_API_KEY           (optional Marketplace handoff)
 	//   wrangler secret put NTFY_URL                    (optional; Worker-side failure push to an ntfy topic)
 	//   wrangler secret put NTFY_TOKEN                  (optional; bearer for a protected ntfy topic)
 	"name": "yamp",
@@ -18,7 +19,9 @@
 	// No code-level `vars`: the authored corpus moved to R2 (no GitHub App / data repo),
 	// so there are no global non-secret vars to deploy. Operator-owned vars (if any) come
 	// from the operator's data-repo config via the deploy merge; the maintainer's are
-	// never propagated. Local `wrangler dev` reads `.dev.vars` (gitignored).
+	// never propagated. Optional operator var INSTACART_API_ENV selects only
+	// `development` or `production`; use production only after Instacart activates the
+	// reviewed production key. Local `wrangler dev` reads `.dev.vars` (gitignored).
 	// KV (ephemeral infra).
 	// 
 	// KROGER_KV:

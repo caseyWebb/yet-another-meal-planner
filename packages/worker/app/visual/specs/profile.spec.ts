@@ -98,7 +98,9 @@ test("the Store card exposes four honest adapter tabs from one projection", asyn
   await expect(profilePage.storePanel("kroger")).toContainText(adapters.kroger.address);
 
   await profilePage.openStoreTab("instacart");
-  await expect(profilePage.storePanel("instacart")).toContainText("Coming later");
+  await expect(profilePage.storePanel("instacart")).toContainText("Not configured");
+  await expect(profilePage.storePanel("instacart")).toContainText("Marketplace handoff");
+  await expect(profilePage.storePanel("instacart")).toContainText("does not link an Instacart account");
   await expect(profilePage.storePanel("instacart").getByRole("button")).toHaveCount(0);
 
   await profilePage.openStoreTab("satellites");

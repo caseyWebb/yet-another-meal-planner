@@ -15,10 +15,11 @@ carries its own connection state and preferred store/retailer.
 - **Kroger** (exists): OAuth link, preferred store picked by ZIP search (mock adds a
   picker modal with distance — the locations API exists). Connect/disconnect and
   last-synced meta move into member UI (Preferences + Account tabs both show state).
-- **Instacart** (new): account link, preferred retailer by ZIP (delivery-ETA metadata),
-  "40+ retailers, no satellite required". Entirely new integration — treat as its own
-  change; the UI contract is what the mockup fixes. The grocery order launcher gets an
-  "Order with Instacart" retailer-picker entry.
+- **Instacart**: optional operator-authenticated Marketplace handoff. Yamp maps the
+  current derived to-buy set to a reusable shopping-list page; the member chooses a
+  retailer and reviews/adds items on Instacart. There is no member account link,
+  preferred retailer, retailer override, price/ETA, callback, cart read/write, or
+  checkout telemetry.
 - **Satellites** (exists, agent/operator-side): per-store cart-fill via home node
   (`satellite-order-cart-fill`). Preferences shows a read-only summary (session fresh /
   scanning / re-run login) linking to the Satellites tab (pages/12); the grocery order
@@ -35,8 +36,9 @@ carries its own connection state and preferred store/retailer.
 
 ## 2. Fulfillment paths over the adapters
 
-- **Online order** — the Order Review flow (pages/05 §order). Kroger today; Instacart
-  later. Ends at "sent to cart, you check out" (never completes purchase).
+- **Online order** — the Kroger Order Review flow (pages/05 §order), ending at "sent to
+  cart, you check out". Instacart is a separate Marketplace handoff and never reports a
+  cart or lifecycle transition.
 - **Store walk** — the member-facing walk (pages/05 §walk). List reframed in store-route
   order (departments sorted by aisle), check-off as you go, ends in "Log a manual shop"
   semantics (checked → purchased → spend events, story 03). The agent-guided voice walk
@@ -63,18 +65,16 @@ carries its own connection state and preferred store/retailer.
   presentation-only — never the analytics dimension (D17).
 - Spend telemetry rides story 03 §1's op-anchored contract: fulfillment path + store
   provenance come from the shared op's context, not per-surface wiring (D16).
-- Instacart launcher entry: one-click to the standing preferred retailer, with a
-  secondary "choose another retailer…" per-trip override that never rewrites the
-  preference (the in-store-fulfillment one-trip rule). Pages 05/09 spec the same
-  control.
+- Instacart launcher entry: a branded `Shop on Instacart` action. Retailer selection
+  happens after navigation on Instacart Marketplace; no retailer is stored or sent.
 - Satellites (D22): the cart-fill helper URL and session token never leave the satellite
   host; the launcher's disabled state keys off the satellite-reported per-store
   session-freshness observation.
 
 ## 4. Open questions
 
-1. Instacart integration feasibility/scope (API availability, auth model, cart handoff) —
-   needs a spike before proposal; the mockup only fixes the UX contract.
+1. ~~Instacart feasibility/scope~~ — decided by the official-doc spike: operator Bearer
+   API key plus shopping-list link handoff, with no member OAuth or cart/order contract.
 2. ~~Offline aisle-map sharing: per-household only, or pooled per real-world store?~~ —
    decided: aisle maps pool per shared `stores` registry slug; the map editor edits
    `layout` store notes on the shared row ("community-mapped" = existing shared-notes

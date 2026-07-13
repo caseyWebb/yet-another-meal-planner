@@ -240,6 +240,35 @@ Passkeys are the durable member credential on both member surfaces; the invite c
 
 **Recovery (`rotate()`).** `rotate()` (admin **Members** → rotate) mints a fresh single-use bootstrap that is valid **regardless of the grace flag**. It is the recovery path for a member who **lost every enrolled device**, and the way to **admit a member who never enrolled** after you turned grace off: they redeem the rotated code once at `/login` solely to enroll a (new) passkey, which consumes it. The code is shown once in the Access-gated panel and never logged, exactly like onboarding.
 
+## Optional Instacart Marketplace handoff
+
+Instacart is disabled unless both settings are present. For local/staging development,
+place `INSTACART_API_ENV=development` and your development key in the gitignored
+`packages/worker/.dev.vars`. For a deployment, keep the selector in the operator data
+repo's `wrangler.jsonc` `vars` and set the secret out of band:
+
+```bash
+wrangler secret put INSTACART_API_KEY
+```
+
+The optional development smoke is fail-closed too: exporting a key alone is not enough;
+it runs only with `INSTACART_LIVE=1`. Follow the credential-loading command in
+`CONTRIBUTING.md`. Default tests never contact Instacart.
+
+Production enablement is an operator checklist performed after this code ships:
+
+1. Run the development integration and record the compliant `Shop on Instacart` CTA
+   redirecting to a generated test shopping-list page.
+2. Give Instacart the demo and generated landing-page URL with the production-key request.
+3. Wait until Instacart explicitly activates the production key; repository completion
+   does not imply this happened.
+4. Set the activated secret, change the operator-owned selector to
+   `INSTACART_API_ENV=production`, deploy, and verify one generated HTTPS Instacart URL.
+
+Do not select `production` before activation. Removing either setting hides the CTA and
+makes both transports return `not_configured`; Kroger, satellites, walks, and manual
+shopping remain unchanged.
+
 ## Known unknowns / caveats
 
 - **Kroger Acceptable-Use** (unverified): the public tier's clause on serving non-owner users wasn't confirmable (JS-rendered docs). Low blast radius at friend-group scale; skim the policy (or email Kroger dev support) before inviting non-owner friends.

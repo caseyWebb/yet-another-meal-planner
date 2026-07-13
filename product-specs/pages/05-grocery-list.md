@@ -107,9 +107,11 @@ complete purchase) / "Moved to 'In cart' on your list" / "**Learned N store matc
 stayed on your to-buy list". Order summary box; "Back to review" (mock allows freely —
 define post-send semantics vs double-add).
 
-**Non-Kroger launchers** (story 04): split-button menu — Order with Instacart
-(one-click to the standing preferred retailer + a secondary "choose another retailer…"
-per-trip override that never rewrites the preference — story 04 §3), satellite stores
+**Non-Kroger launchers** (story 04): a branded **Shop on Instacart** action calls
+`POST /api/grocery/instacart` and hands the current to-buy set to an Instacart
+Marketplace page, where the member chooses a retailer and reviews/adds items; there is
+no preferred retailer, per-trip override, cart/order claim, or lifecycle transition. The
+launcher also includes satellite stores
 ("Satellite" badge; disabled "re-run login", keyed off the satellite-reported session
 freshness — D22), **Log a manual shop · N checked** (reads `checked_at` and applies
 receive + spend to member-checked rows only, never rows `place_order` or a satellite

@@ -7,6 +7,12 @@
 import type { OAuthHelpers } from "@cloudflare/workers-oauth-provider";
 
 export interface Env {
+  // --- Instacart Marketplace handoff. OPTIONAL operator configuration. ---
+  /** Instacart Developer Platform API key. Secret; set with `wrangler secret`. */
+  INSTACART_API_KEY?: string;
+  /** Fixed API environment selector. Both this and the key are required. */
+  INSTACART_API_ENV?: "development" | "production" | string;
+
   // --- Kroger client_credentials (search/flyer/prices). App-level, shared. ---
   /** Kroger Developer (public tier) client_credentials client ID. Secret. */
   KROGER_CLIENT_ID: string;

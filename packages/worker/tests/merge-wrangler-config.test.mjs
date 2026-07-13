@@ -158,6 +158,16 @@ test("vars are the operator's only — the maintainer's vars never leak", () => 
   assert.ok(!JSON.stringify(out).includes("139471207"));
 });
 
+test("Instacart environment stays operator-owned and no maintainer key or default propagates", () => {
+  const out = mergeWranglerConfig(
+    { ...code, vars: { ...code.vars, INSTACART_API_ENV: "production", INSTACART_API_KEY: "never-copy" } },
+    { ...operator, vars: { ...operator.vars, INSTACART_API_ENV: "development" } },
+  );
+  assert.equal(out.vars.INSTACART_API_ENV, "development");
+  assert.equal(out.vars.INSTACART_API_KEY, undefined);
+  assert.equal(Object.hasOwn(out, "secrets"), false);
+});
+
 test("KV: operator id wins and the code repo's id never appears", () => {
   const out = mergeWranglerConfig(code, {
     ...operator,

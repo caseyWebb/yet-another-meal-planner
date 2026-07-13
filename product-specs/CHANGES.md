@@ -151,10 +151,10 @@
 - **Serial-surface collisions**: launcher shared with `grocery-list-page-and-widget`; pages/09 surface with `profile-planning-and-vibes-ui`.
 
 ## instacart-adapter
-- **Delivers**: The Instacart integration — account link (OAuth callback nested under existing `/oauth/*`, no new run_worker_first entry), preferred retailer by ZIP, launcher entry + per-trip retailer override (never rewrites the preference), post-spike flush sibling of `place_order`.
-- **Reads**: stories/04 §1–3 (q1); pages/09 §2; D7; 00-overview §Routing (4), Appendix A.
-- **Deltas**: ARCHITECTURE adapter model incl. Instacart; TOOLS new flush tool; order-placement if the send path forks.
-- **Spikes**: Instacart API feasibility — availability, auth model, cart handoff (D7: REQUIRED before its proposal).
+- **Delivers**: Optional operator API-key integration that creates/reuses an Instacart Marketplace shopping-list page from the current derived to-buy set. The member chooses a retailer, reviews matches, adds items, and checks out on Instacart. It is a handoff, never an account link, cart flush/read, order, or spend signal.
+- **Reads**: stories/04 §1–3; pages/09 §2; D7; the durable official-doc spike.
+- **Deltas**: ARCHITECTURE adapter model; TOOLS `create_instacart_handoff`; SCHEMAS tenant-scoped link cache; member grocery launcher.
+- **Spikes**: complete — current Developer Platform supports operator Bearer API keys and `products_link`; it does not expose member OAuth, retailer targeting, price/ETA, cart state, callback, or checkout telemetry.
 - **Serial-surface collisions**: order-placement/launcher with `order-review-rework`.
 
 ---

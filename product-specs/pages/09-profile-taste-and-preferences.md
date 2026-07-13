@@ -37,10 +37,9 @@ tweak).
 
 **Store card** (story 04): adapter tabs **Kroger / Instacart / Satellites / Offline**.
 Kroger: Connected chip, preferred store (name + address) with gear → **store-modal**
-(ZIP search, distance-sorted results, select), Disconnect / Connect. Instacart (new):
-account, preferred retailer (delivery-ETA metadata) via the same modal, connect flow —
-the preferred retailer is the standing preference the grocery launcher projects, with a
-per-trip "choose another retailer…" override that never rewrites it (story 04 §3).
+(ZIP search, distance-sorted results, select), Disconnect / Connect. Instacart reports
+only operator-configured availability and points to the Grocery Marketplace handoff;
+there is no member account, retailer preference/override, price, availability, or ETA.
 Satellites: read-only per-store adapter summary (state chips: Session fresh / Scanning /
 Re-run login — session freshness comes from the satellite-reported observation, D22)
 linking to the Satellites tab + "Authoring store adapters →" doc link.
@@ -68,7 +67,7 @@ tier). Order review's "Save as preferred brand" and "don't care" write here (pag
 | Lunch strategy / RTE action | **cut (decided, D8)** (map to vibes) |
 | Sliders, dietary tokens | exists |
 | Adapter-tabbed store card, store picker modal | **new** |
-| Instacart adapter | **new** (decided D7; spike first — story 04) |
+| Instacart adapter | **operator-configured Marketplace handoff** (D7) |
 | Offline stores + aisle-map editor | **new UI** over the existing stores surface (D6) |
 | Brand tiers + Any brand | **new data model** (tri-state semantics exist) |
 | Weekly budget | **new** (story 03; add to this tab) |
@@ -79,8 +78,7 @@ tier). Order review's "Save as preferred brand" and "don't care" write here (pag
    brand (new tier 1? join tier 1?).
 2. Kroger "Connected" toggle in prefs vs the existing OAuth flow — reuse
    `kroger_login_url`; Disconnect semantics (drop refresh token).
-3. Store-modal search behavior (debounce, radius, result count); Instacart retailer
-   source.
+3. Store-modal search behavior (debounce, radius, result count) for Kroger.
 4. ~~Offline-store data owner~~ — decided (D6): the existing stores surface. Remaining:
    aisle-map sharing scope (story 04 q2).
 5. ~~Where old `lunch_strategy`/`rte_action` values migrate; what stale agents see.~~ —

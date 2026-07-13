@@ -37,6 +37,7 @@ import {
   GroceryCheckedInputSchema, GroceryCoverageInputSchema, GroceryVerifyInputSchema, GrocerySubstitutionInputSchema, GroceryRelistInputSchema, GroceryMarkPlacedInputSchema,
 } from "../grocery-operations.js";
 import { commitCheckedShop } from "../shop-commit.js";
+import { createInstacartHandoff } from "../instacart.js";
 
 const KINDS = new Set(["grocery", "household", "other"]);
 const SOURCES = new Set(["ad_hoc", "menu", "pantry_low", "stockup"]);
@@ -101,6 +102,10 @@ function coerceCommon(o: Record<string, unknown>): GroceryUpdateInput {
 }
 
 export const groceryArea = new Hono<ApiEnv>()
+  .post("/grocery/instacart", requireSession, async (c) => {
+    const tenant = c.get("tenant");
+    return c.json(await createInstacartHandoff(c.env, tenant.id));
+  })
   .get("/grocery/view", requireSession, async (c) => {
     const tenant = c.get("tenant");
     return jsonWithEtag(c, await readGrocerySnapshot(c.env, tenant.id));

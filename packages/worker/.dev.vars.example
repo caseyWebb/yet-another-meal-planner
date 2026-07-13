@@ -54,3 +54,7 @@ ADMIN_DEV_BYPASS="1"
 # here only to see templated copy in local dev. Unset, the modal shows generic copy.
 # OPERATOR_NAME="casey"
 # MARKETPLACE_REPO="you/yet-another-meal-planner-deployment"
+# Optional Instacart Marketplace handoff. Both are required; without them it is disabled.
+# Get a development key from Instacart Developer Platform. Never commit a real key.
+INSTACART_API_KEY=
+INSTACART_API_ENV=development

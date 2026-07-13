@@ -3,12 +3,13 @@
 // no environment bindings, database code, or credentials.
 
 export type StoreAdapterKind = "kroger" | "instacart" | "satellites" | "offline";
-export type StoreLauncherAdapter = "kroger" | "satellite" | "offline";
-export type StoreLauncherMode = "online_order" | "satellite_cart_fill" | "store_walk";
+export type StoreLauncherAdapter = "kroger" | "instacart" | "satellite" | "offline";
+export type StoreLauncherMode = "online_order" | "marketplace_handoff" | "satellite_cart_fill" | "store_walk";
 export type StoreLauncherDisabledReason =
   | "connect_kroger"
   | "choose_kroger_store"
   | "satellite_freshness_unavailable"
+  | "instacart_unavailable"
   | "store_walk_unavailable"
   | null;
 
@@ -27,7 +28,7 @@ export interface KrogerStoreAdapter {
 
 export interface InstacartStoreAdapter {
   kind: "instacart";
-  state: "coming_soon";
+  available: boolean;
 }
 
 export interface SatelliteStoreSummary {

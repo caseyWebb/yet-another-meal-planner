@@ -122,9 +122,8 @@ bug).
    need one.
 2. **Export** — GET under `/api/*`: covered; no out-of-band signed URLs (D33).
 3. **Recovery-email verification/magic link** — SPA route + `/api`: no entry.
-4. **Instacart OAuth callback** — Worker-owned; nest under the existing `/oauth/*` (e.g.
-   `/oauth/instacart/callback`) so no new entry; anywhere else requires a same-change
-   entry + app-suite passthrough spec.
+4. **Instacart handoff** — session-gated `POST /api/grocery/instacart`; no OAuth callback
+   or new `run_worker_first` entry.
 5. **Widget resources** — MCP `resources/read`, never HTTP routes.
 6. **Satellite helper freshness observation** — rides `/satellite/*`: covered (D22).
 7. **Feed probe, walk/manual-shop, people, satellites member surfaces** — all `/api/*`:
@@ -143,7 +142,7 @@ Each band's proposal starts from this; every tool line lands in docs/TOOLS.md in
 same pass.
 
 **New tools**: `display_grocery_list`, `display_order_review` (D18/D19); post-spike
-Instacart flush sibling of `place_order` (D7).
+`create_instacart_handoff` Marketplace-link operation (D7), explicitly not a flush or order.
 
 **Renamed with alias window (D21)**: the `night_vibe` family → `meal_vibe` family; each
 vibe gains `meal`; `update_night_vibe` needs explicit-null field-clearing for the inline
@@ -173,7 +172,8 @@ internals change with brand tiers), `compare_unit_price`, guidance tools, weathe
 
 **New /api endpoints**: retrospective spend/waste aggregates; pantry disposition;
 grocery check-off/manual-shop/walk-completion (D28); grocery manual/broader search;
-kroger login-url + disconnect; instacart connect/retailers (post-spike); people
+kroger login-url + disconnect; Instacart Marketplace handoff (`POST
+/api/grocery/instacart`, no connect/retailer endpoint); people
 aggregate + requests CRUD + members (remove, nickname) + invites (mint/revoke); signup
 join-link fork; discovery aggregate + feed test + follow/unfollow + add-feed; satellites
 aggregate + key mint/revoke + disconnect + quarantine/resume + cart-fill meta (D22
@@ -201,7 +201,8 @@ incomplete.
 - **Band 3**: TOOLS.md (place_order, update_grocery_list, read_to_buy, matcher
   confidence, store tools copy, new display tools); SCHEMAS.md (grocery checked_at, send
   records, sku_cache, widget payload contracts); ARCHITECTURE.md (Kroger pipeline +
-  flush branches + adapter model incl. Instacart); deltas: member-app-grocery,
+  fulfillment branches + Instacart Marketplace handoff adapter); deltas: member-app-core,
+  store-adapter-projection, member-app-grocery,
   ingredient-matching, order-placement, in-store-fulfillment, grocery-list,
   member-app-offline (checked_at re-wording per D28 + online-only surfaces).
 - **Band 4**: SCHEMAS.md event tables + avoidability derivation; ARCHITECTURE.md cron
@@ -232,8 +233,10 @@ before merging a band that retires them.
   cooked/log flow (meal param); vibe-palette skills (meal-vibe naming).
 - **Band 3**: shop-groceries (RTE default action gone — always offer, never auto-add;
   receive/"I placed the order" choreography routes through the D16 shared ops; "offline
-  store" naming per D6); put-away/pantry flow (location field; waste-reason capture on
-  spoilage mentions).
+  store" naming per D6; an **explicit Instacart request for this trip** routes to the
+  Marketplace-link handoff and never becomes the default for a generic order, Kroger
+  flush, satellite fill, or walk); put-away/pantry flow (location field; waste-reason
+  capture on spoilage mentions).
 - **Band 4**: retrospective skill acts on spend/waste aggregates, reads only.
 - **Band 5**: session-start profile read carries household members + nicknames; notes
   flows mention tiers (D30).

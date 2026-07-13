@@ -38,6 +38,7 @@ import { registerGroceryWidget } from "./grocery-widget.js";
 import { registerOrderReviewWidget } from "./order-review-widget.js";
 import { ShopCommitRequestSchema } from "@yamp/contract";
 import { commitCheckedShop } from "./shop-commit.js";
+import { registerInstacartTool } from "./instacart-tool.js";
 import { filterRecipes, type RecipeIndex } from "./recipes.js";
 import { loadRecipeIndex, loadRecipeEmbeddings, recipeDescription } from "./recipe-index.js";
 import { readReconcileErrors } from "./recipe-projection.js";
@@ -1057,6 +1058,8 @@ export function buildServer(env: Env, tenant: Tenant, origin?: string): McpServe
     },
     (input) => runTool(() => computeToBuyView(env, tenant.id, { enrich: input.enrich === true })),
   );
+
+  registerInstacartTool(server, env, tenant.id);
 
   server.registerTool(
     "commit_shop",

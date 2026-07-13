@@ -885,7 +885,18 @@ For Kroger, `preferred_location` remains a string and stores the exact provider 
 
 ### Member store-adapter projection (secret-free wire)
 
-`GET /api/profile/store-adapters` returns the household projection assembled by `loadStoreAdapterProjection`: `adapters.kroger` (`linked` plus the exact preferred identity or null), the `instacart.state="coming_soon"` placeholder, `adapters.satellites` with configured stores and `session_fresh:null` under `state="freshness_unavailable"`, `adapters.offline` from grocery-domain rows in the shared `stores` registry, and ordered `launcher[]` entries. Launcher entries carry stable `adapter` (`kroger | satellite | offline`), `mode` (`online_order | satellite_cart_fill | store_walk`), `enabled`, and `disabled_reason` discriminants. The payload contains no OAuth token, refresh token, helper URL, or helper token.
+`GET /api/profile/store-adapters` returns the household projection assembled by `loadStoreAdapterProjection`: `adapters.kroger` (`linked` plus the exact preferred identity or null), secret-free `adapters.instacart.available`, `adapters.satellites` with configured stores and `session_fresh:null` under `state="freshness_unavailable"`, `adapters.offline` from grocery-domain rows in the shared `stores` registry, and ordered `launcher[]` entries. Launcher entries carry stable `adapter` (`kroger | instacart | satellite | offline`), `mode` (`online_order | marketplace_handoff | satellite_cart_fill | store_walk`), `enabled`, and `disabled_reason` discriminants. The payload contains no API key, OAuth token, refresh token, helper URL, or helper token.
+
+### `instacart_links`
+
+Tenant-scoped cache keyed by `(tenant, content_hash)`, with HTTPS `url`, `expires_at`,
+and `created_at`. `content_hash` is SHA-256 over a versioned canonical serialization of
+every `products_link` request field; tenant remains a mandatory SQL key rather than hash
+material. Expiry cleanup is opportunistic and indexed by `expires_at`.
+
+`POST /api/grocery/instacart` and MCP `create_instacart_handoff` return the same
+`InstacartHandoffResult` discriminated union documented in `docs/TOOLS.md`. A ready URL
+is a Marketplace page, not cart/order/lifecycle/spend state.
 
 ## ingredient identity (shared corpus, D1)
 

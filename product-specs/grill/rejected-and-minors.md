@@ -189,7 +189,7 @@ All 32 minors were accepted and folded into the spec set: either directly into D
 
 ### Consistency
 
-1. **Instacart: launcher retailer-picker vs single preferred retailer.** Story 04/page 05 gave the launcher a per-order retailer picker while page 09 fixes one preferred retailer. Resolved by the existing per-trip-override doctrine: one-click default to the standing retailer, secondary "choose another retailer…" for that order only. Spec patch (story 04 §3).
+1. **Instacart retailer targeting.** Superseded by the required feasibility spike: `products_link` cannot target a retailer, so yamp stores no Instacart retailer preference or override. The member chooses a retailer on Instacart Marketplace after handoff (story 04 §3).
 2. **Sidebar badge definitions unowned.** No spec defined the grocery count; plan was half-defined. Resolved in the overview: grocery = derived to-buy count minus checked/in-flight; plan = meal rows only (projects excluded); people = pending inbound requests. Spec patch.
 3. **Recipe Card 'kitchen location' vocab disagrees with pantry locations.** Widget said Produce/Spice drawer; page 06 defines six locations. Resolved: one vocab (page 06's), widget groups by actual pantry-row location else a deterministic category→default-location map. Spec patch.
 4. **Propose session shape still carries cut controls' fields.** Resolved: the cuts are member-UI-only — the shared op keeps variety/protein-wants/freeform for the agent; the member session drops them; member-app-propose deltas per D8/D20. Spec patch (page 04 §2).
@@ -238,7 +238,7 @@ All 32 minors were accepted and folded into the spec set: either directly into D
 
 27. **update_feeds needs auto-follow semantics.** Under follow-gated relevance, agent-added feeds would be orphaned; update_feeds records the adding member as a follower (FEED-1 in the reference inventory). Spec patch + TOOLS.md same pass.
 28. **Three pantry-staleness rules across surfaces.** One staleness-threshold table (per category class, verify-queue and worth-a-look tiers) in the shared pantry op, consumed by both pages and read_to_buy. Spec patch.
-29. **run_worker_first + deploy-merge placement table.** Per-band routing placements enumerated (zero new entries needed if each band follows them; Instacart callback nests under /oauth/*); the D9 flag's config channel flagged against the merge allowlist. Attached to 00-overview.
+29. **run_worker_first + deploy-merge placement table.** Per-band routing placements enumerated. Instacart uses the existing `/api/*` path and introduces no callback or new entry; the D9 flag's config channel is checked against the merge allowlist. Attached to 00-overview.
 30. **Reference inventory: complete MCP tool delta + new /api endpoint list.** The full enumerated tool/param/endpoint delta the spec set implies, so each band starts from the inventory instead of rediscovering it. Attached to 00-overview's sequencing.
 31. **Per-band docs/spec lockstep map.** The same-pass TOOLS.md/SCHEMAS.md/ARCHITECTURE.md + openspec-delta checklist each band owes; a band PR missing a listed delta is incomplete. Attached to 00-overview.
 32. **Persona/skills impact map.** The AGENT_INSTRUCTIONS.md edits each band owes (plugin republish rides the deploy); guarantees live in tool descriptions, choreography in skills; retired-preference-key greps before merge. Attached to 00-overview.

@@ -15,6 +15,7 @@ import type {
   StoreLauncherEntry,
 } from "./store-adapter-shapes.js";
 import { readAisleMap } from "./aisle-map.js";
+import { getInstacartConfig } from "./instacart.js";
 
 function stringField(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value : null;
@@ -63,6 +64,7 @@ export async function loadStoreAdapterProjection(env: Env, tenantId: string): Pr
   const satelliteRow = satelliteSelected ? groceryRows.find((row) => row.slug === primary) ?? null : null;
 
   const launcher: StoreLauncherEntry[] = [];
+  const instacartAvailable = getInstacartConfig(env) !== null;
   const linked = refreshToken !== null;
   if (primary === "kroger" || linked || preferred !== null) {
     launcher.push({
@@ -95,11 +97,14 @@ export async function loadStoreAdapterProjection(env: Env, tenantId: string): Pr
       disabled_reason: null,
     });
   }
+  if (instacartAvailable) {
+    launcher.push({ id: "instacart", adapter: "instacart", mode: "marketplace_handoff", store: null, enabled: true, disabled_reason: null });
+  }
 
   return {
     adapters: {
       kroger: { kind: "kroger", linked, preferred },
-      instacart: { kind: "instacart", state: "coming_soon" },
+      instacart: { kind: "instacart", available: instacartAvailable },
       satellites: {
         kind: "satellites",
         state: "freshness_unavailable",

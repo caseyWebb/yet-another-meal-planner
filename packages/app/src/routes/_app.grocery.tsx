@@ -29,7 +29,8 @@ import {
 } from "../lib/mutations";
 import { mintRowId, useGrocerySnapshot, useStoreAdapters, type StoreAdapterProjection } from "../lib/data";
 import { useOnline } from "../lib/online";
-import { api, apiError } from "../lib/api";
+import { api, apiError, appFetch } from "../lib/api";
+import type { InstacartHandoffResult } from "@yamp/worker/instacart-shapes";
 import { MemberOrderReview } from "../components/member-order-review";
 import { readLocalWalk, readTenantStamp, writeLocalWalk, type LocalWalkSession } from "../lib/persist";
 import type { ShopCommitRequest, ShopCommitResult, ShopReceipt } from "@yamp/contract";
@@ -240,6 +241,8 @@ function GroceryPage() {
       <PageHead title="Grocery list" sub="Check off the store walk without changing online-cart state." />
       <StoreLauncher
         entries={adapters.data?.launcher ?? (snapshot.data.walk_context ? [{ id: `offline:${snapshot.data.walk_context.store_slug}`, adapter: "offline", mode: "store_walk", store: { slug: snapshot.data.walk_context.store_slug, name: snapshot.data.walk_context.display_name, shared_name: snapshot.data.walk_context.shared_name, domain: snapshot.data.walk_context.domain, aisle_map: snapshot.data.walk_context.aisle_map }, enabled: true, disabled_reason: null }] : [])}
+        snapshotKey={JSON.stringify(snapshot.data)}
+        underived={snapshot.data.underived}
         online={online}
         orderOpen={orderOpen}
         launcherRef={orderLauncherRef}
@@ -270,6 +273,8 @@ function GroceryPage() {
 
 function StoreLauncher({
   entries,
+  snapshotKey,
+  underived,
   online,
   orderOpen,
   launcherRef,
@@ -279,6 +284,8 @@ function StoreLauncher({
   pausedWalk,
 }: {
   entries: StoreAdapterProjection["launcher"];
+  snapshotKey: string;
+  underived: string[];
   online: boolean;
   orderOpen: boolean;
   launcherRef: React.RefObject<HTMLButtonElement | null>;
@@ -287,11 +294,89 @@ function StoreLauncher({
   onManual(): void;
   pausedWalk: LocalWalkSession | null;
 }) {
+  const [instacartBusy, setInstacartBusy] = React.useState(false);
+  const [instacartMessage, setInstacartMessage] = React.useState<string | null>(null);
+  const [responseUnderived, setResponseUnderived] = React.useState<string[] | null>(null);
+  const [confirmedUnderivedSignature, setConfirmedUnderivedSignature] = React.useState<string | null>(null);
+  const instacartRequestRef = React.useRef<AbortController | null>(null);
+  const instacartProjectionKey = (() => {
+    const entry = entries.find((candidate) => candidate.mode === "marketplace_handoff");
+    return entry ? `${entry.enabled}:${entry.disabled_reason ?? "ready"}` : "absent";
+  })();
+  const snapshotKeyRef = React.useRef(snapshotKey);
+  const instacartProjectionKeyRef = React.useRef(instacartProjectionKey);
+  snapshotKeyRef.current = snapshotKey;
+  instacartProjectionKeyRef.current = instacartProjectionKey;
+  const incompleteRecipes = [...new Set(responseUnderived ?? underived)].sort();
+  const incompleteSignature = JSON.stringify(incompleteRecipes);
+  React.useEffect(() => {
+    instacartRequestRef.current?.abort();
+    instacartRequestRef.current = null;
+    setInstacartBusy(false);
+    setInstacartMessage(null);
+    setResponseUnderived(null);
+    setConfirmedUnderivedSignature(null);
+    return () => {
+      instacartRequestRef.current?.abort();
+      instacartRequestRef.current = null;
+    };
+  }, [snapshotKey, instacartProjectionKey]);
+  const shopInstacart = async () => {
+    const startingSnapshotKey = snapshotKey;
+    const startingProjectionKey = instacartProjectionKey;
+    const startingUnderivedSignature = incompleteSignature;
+    const controller = new AbortController();
+    instacartRequestRef.current?.abort();
+    instacartRequestRef.current = controller;
+    setInstacartBusy(true); setInstacartMessage(null);
+    try {
+      const response = await appFetch("/api/grocery/instacart", { method: "POST", signal: controller.signal });
+      if (!response.ok) throw await apiError(response);
+      const result = await response.json() as InstacartHandoffResult;
+      if (controller.signal.aborted || snapshotKeyRef.current !== startingSnapshotKey || instacartProjectionKeyRef.current !== startingProjectionKey) return;
+      if (result.status === "ready") {
+        const authoritativeUnderived = [...new Set(result.underived)].sort();
+        const authoritativeSignature = JSON.stringify(authoritativeUnderived);
+        if (authoritativeSignature !== startingUnderivedSignature) {
+          setResponseUnderived(authoritativeUnderived);
+          setConfirmedUnderivedSignature(null);
+          setInstacartMessage(authoritativeUnderived.length
+            ? "The missing recipe details changed. Confirm the updated warning before creating an Instacart shopping page."
+            : "Recipe completeness changed. Try creating the Instacart shopping page again.");
+        } else if (authoritativeUnderived.length && confirmedUnderivedSignature !== authoritativeSignature) {
+          setResponseUnderived(authoritativeUnderived);
+          setConfirmedUnderivedSignature(null);
+          setInstacartMessage("Some planned recipes still need ingredient details. Confirm the warning before creating an Instacart shopping page.");
+        } else window.location.assign(result.url);
+      } else if (result.status === "empty") {
+        setInstacartMessage(result.underived.length ? "Nothing is ready to send yet; some planned recipes still need ingredient details." : "Your to-buy list is empty.");
+      } else if (result.status === "unavailable") {
+        setInstacartMessage("Instacart is not configured right now. Refresh or ask your operator.");
+      } else {
+        const messages = {
+          invalid_request: "Instacart could not build this shopping page.", unauthorized: "The Instacart key is not authorized.",
+          forbidden: "Instacart has not allowed this operation.", rate_limited: "Instacart is busy. Try again shortly.",
+          upstream_unavailable: "Instacart is temporarily unavailable. Try again.", invalid_response: "Instacart returned an unusable shopping link.",
+        } as const;
+        setInstacartMessage(messages[result.code]);
+      }
+    } catch {
+      if (!controller.signal.aborted && snapshotKeyRef.current === startingSnapshotKey && instacartProjectionKeyRef.current === startingProjectionKey) {
+        setInstacartMessage("Could not reach Instacart. Reconnect and try again.");
+      }
+    } finally {
+      if (instacartRequestRef.current === controller) {
+        instacartRequestRef.current = null;
+        setInstacartBusy(false);
+      }
+    }
+  };
   const reason = (entry: StoreAdapterProjection["launcher"][number]) => {
     if (entry.disabled_reason === "connect_kroger") return "Connect Kroger in Profile first.";
     if (entry.disabled_reason === "choose_kroger_store") return "Choose a Kroger store in Profile first.";
     if (entry.disabled_reason === "satellite_freshness_unavailable")
       return "Reopen after the satellite reports.";
+    if (entry.disabled_reason === "instacart_unavailable") return "Instacart is not configured.";
     return "This shopping path is not available yet.";
   };
   return (
@@ -304,6 +389,32 @@ function StoreLauncher({
         <ul>
           {entries.map((entry) => {
             const actionable = entry.enabled && (entry.mode === "store_walk" || (entry.mode === "online_order" && online));
+            if (entry.mode === "marketplace_handoff") {
+              const confirmationRequired = incompleteRecipes.length > 0 && confirmedUnderivedSignature !== incompleteSignature;
+              return (
+                <li key={entry.id} data-testid="store-launcher-entry" data-launcher-id="instacart" data-mode={entry.mode}>
+                  <span>
+                    <strong>Instacart Marketplace</strong>
+                    <small>Choose a retailer, review matches, add items, and check out on Instacart.</small>
+                    {incompleteRecipes.length ? (
+                      <label className="instacart-preflight" data-testid="instacart-preflight">
+                        <input
+                          type="checkbox"
+                          data-testid="instacart-incomplete-confirm"
+                          checked={confirmedUnderivedSignature === incompleteSignature}
+                          onChange={(event) => setConfirmedUnderivedSignature(event.currentTarget.checked ? incompleteSignature : null)}
+                        />
+                        I understand {incompleteRecipes.length} planned recipe{incompleteRecipes.length === 1 ? " is" : "s are"} missing ingredient details, so this Instacart page may be incomplete.
+                      </label>
+                    ) : null}
+                  </span>
+                  <button className="instacart-cta" data-testid="instacart-cta" disabled={!entry.enabled || !online || instacartBusy || confirmationRequired} aria-busy={instacartBusy} title={!entry.enabled ? reason(entry) : !online ? "Reconnect for store actions" : confirmationRequired ? "Confirm the incomplete recipe warning first." : undefined} onClick={entry.enabled && !confirmationRequired ? () => void shopInstacart() : undefined}>
+                    <img src="/brands/instacart-carrot.svg" alt="" />
+                    Shop on Instacart
+                  </button>
+                </li>
+              );
+            }
             return (
               <li
                 key={entry.id}
@@ -335,6 +446,7 @@ function StoreLauncher({
       ) : (
         <p className="muted">Configure a store adapter in Profile, or shop manually below.</p>
       )}
+      {instacartBusy || instacartMessage ? <p className="muted" role="status" data-testid="instacart-status">{instacartBusy ? "Creating an Instacart shopping page…" : instacartMessage}</p> : null}
       <Button variant="outline" onClick={onManual}>Log a manual shop</Button>
     </section>
   );
