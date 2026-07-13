@@ -9,6 +9,7 @@ export type StoreLauncherDisabledReason =
   | "connect_kroger"
   | "choose_kroger_store"
   | "satellite_freshness_unavailable"
+  | "instacart_unavailable"
   | "store_walk_unavailable"
   | null;
 

@@ -25,6 +25,7 @@ When I ask to **show or open the grocery list**, call `display_grocery_list` so 
 Capture buy-intent onto the **grocery list** continuously, as it comes up; **flush it once**, at order time. The flush has **several forms**, picked by my fulfillment mode (`preferences.stores`) — **don't assume Kroger**:
 
 - **Kroger online** (`primary: kroger`) — open `display_order_review`, confirm ambiguous brand and broader/manual choices with me, then use its fingerprinted `place_order` send. Prices are current quotes, not guarantees.
+- **Instacart Marketplace** (**only when I explicitly ask for Instacart for this trip**) — call `create_instacart_handoff`, then send me its review URL. This never fills a cart, places an order, or advances the grocery lifecycle; do not infer it from my standing store preference.
 - **Kroger in-store** — walk with API-driven aisle ordering.
 - **In-store walk** (`primary` is a store slug, *not* marked satellite-fulfilled) — turn the list into a shopping list grouped for that store and walk it. Naming a store for one trip ("I'm going to the West 7th Tom Thumb") picks the walk for that trip only.
 - **Satellite cart-fill** (`primary` is a store slug marked `fulfillment: "satellite"`) — that store has no Worker-side API, so instead of a walk or `place_order`, tell me to open my **local cart-fill helper** and refresh. The helper fills that store's cart and **stops at its review page** — I finish checkout myself in the store's own UI. A store-slug primary *without* the `fulfillment: "satellite"` marker stays the in-store walk above — don't reroute it.
@@ -365,7 +366,7 @@ Call `retrospective(period)` and summarize the patterns that matter: protein/cui
 
 <!-- skill: shop-groceries
 needs: cart
-description: Flush the grocery list — the deliberate act distinct from capturing intent. Use for "place the order", "I'm headed to the store", "give me a shopping list", "I'm walking Central Market", "send it to my cart", "go ahead and order". Detects the fulfillment mode and runs the right branch: Kroger online cart flush, Kroger in-store API-ordered walk, mapped-store walk, or map-and-walk. The only path that writes the cart or transitions list items to received. -->
+description: Flush the grocery list — the deliberate act distinct from capturing intent. Use for "place the order", "I'm headed to the store", "give me a shopping list", "I'm walking Central Market", "shop on Instacart", "send it to my cart", "go ahead and order". Detects explicit Instacart trip intent or the configured fulfillment mode and runs the right handoff, cart, or walk branch. -->
 
 Read `read_to_buy({ enrich: true })` and `read_user_profile()` in parallel — `read_to_buy` is the shop-time read (the active list ∪ the meal plan's derived needs − pantry on-hand, the same set every flush resolves; `read_grocery_list` shows only the stored rows and would miss the plan); the profile's preferences field drives branch detection. `enrich` costs at most one Kroger Locations resolve and zero product searches, and pays for two things on every line at once: aisle `placement` where a store resolves, and `substitutes[]` — relation-labeled cross-ingredient siblings from the identity graph, each flagged `in_pantry` and/or `on_sale_hint` — plus `flyer_as_of` on the view. This runs the same way in **every** branch, walk and satellite included: with no resolvable Kroger location the read still serves `in_pantry` hits and label-keyed `on_sale_hint`s at zero Kroger cost, just without aisle placement.
 
@@ -377,11 +378,42 @@ Then detect which branch to run:
 
 | Signal | Branch |
 |---|---|
+| I explicitly ask to use Instacart for this trip | **Instacart Marketplace handoff** — `create_instacart_handoff`; this explicit signal wins over the standing primary store |
 | `primary = "kroger"` and no store named for this trip | **Kroger online** — `place_order` flush |
 | `primary = "kroger"` and I named a specific Kroger store, or I say "in-store" / "walking the Kroger" | **Kroger in-store** — API aisle ordering |
 | `primary` is a store slug marked `fulfillment: "satellite"` (from `read_user_profile()`) | **Satellite cart-fill** — point me at my local cart-fill helper; no `place_order`, no walk list |
 | `primary` is an Offline store slug (not satellite-marked), or I named an Offline store | **In-store walk** — layout/notes aisle ordering |
 | Walking a store we've never mapped and I want to record it | **Map + walk** — concurrent map-and-shop |
+
+<!-- resource: references/instacart-marketplace.md -->
+# Instacart Marketplace — external review handoff
+
+Run this branch **only when I explicitly ask for Instacart for this trip**. Instacart is
+not a saved household fulfillment preference, so availability alone never reroutes a
+generic “place the order,” Kroger trip, satellite fill, or store walk. Conversely, an
+explicit Instacart request must not fall through into `place_order` or a walk even when
+my standing primary store is Kroger or Offline.
+
+1. **Create the page once.** Call `create_instacart_handoff()` with no arguments. It uses
+   the same current derived unchecked to-buy set as the opening review. Do not call
+   `place_order`, build a walk, choose a retailer, or try to translate lines into Kroger
+   products.
+2. **Keep incomplete plans visible.** If either the opening `read_to_buy` or the handoff
+   result reports `underived`, name those recipes and warn that their ingredients are
+   absent from the Marketplace page. Offer to capture their ingredients explicitly only
+   with my approval; never imply the page is complete.
+3. **Report the discriminated result exactly.** On `ready`, give me the URL and say it is
+   an Instacart Marketplace shopping-list page ready for **my review**: I choose a
+   retailer, review matches, add items, and check out there. On `empty`, say there is
+   nothing to hand off. On `not_configured` or a structured error, state the safe reason
+   and invite an explicit retry only when `retryable` is true.
+4. **Stop at the handoff boundary.** Creating, reusing, or opening the URL proves none of
+   product matching, carting, checkout, ordering, or purchase. Never say “sent to cart”
+   or “order placed”; never advance rows, stamp `sent_in`, write a send/spend event,
+   restock pantry, or infer later lifecycle from the URL. A later purchase/receipt claim
+   must come from the member through an existing explicit fulfillment flow, not from this
+   handoff.
+<!-- /resource -->
 
 <!-- resource: references/kroger-online.md -->
 # Kroger Online — cart flush

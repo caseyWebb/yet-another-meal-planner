@@ -36,8 +36,27 @@ describe("Instacart configuration and request client", () => {
     const call = fetcher.mock.calls[0] as unknown as [string, RequestInit]; const [url, init] = call;
     expect(url).toBe(`${INSTACART_ORIGINS.development}/idp/v1/products/products_link`);
     expect(init.headers).toEqual({ Accept: "application/json", "Content-Type": "application/json", Authorization: "Bearer secret" });
+    expect(init.redirect).toBe("error");
     expect(JSON.parse(init.body as string)).toEqual({ title: "Yamp grocery list", link_type: "shopping_list", expires_in: 30, line_items: [{ name: "Eggs", display_text: "Eggs", line_item_measurements: [{ quantity: 3, unit: "package" }] }] });
     expect(init.body).not.toMatch(/retailer|sku|product|upc|price|aisle|brand|filter|"unit"\s*:\s*"(?!package)|"quantity"\s*:\s*3\s*,\s*"name"/i);
+  });
+
+  it("refuses redirects instead of forwarding the Bearer POST", async () => {
+    const fetcher = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      expect(init?.redirect).toBe("error");
+      throw new TypeError("redirect mode is error");
+    });
+    const client = createInstacartClient({ apiKey: "key", environment: "development", origin: INSTACART_ORIGINS.development }, fetcher as typeof fetch);
+    await expect(client.create(buildInstacartPayload(view()))).resolves.toEqual({ ok: false, code: "upstream_unavailable", retryable: true });
+    expect(fetcher).toHaveBeenCalledOnce();
+  });
+
+  it("canonicalizes non-ASCII keys by deterministic code units", () => {
+    const payload = buildInstacartPayload(view([
+      { key: "éclair", name: "e acute" }, { key: "zebra", name: "z" },
+      { key: "äpfel", name: "a umlaut" }, { key: "apple", name: "a" },
+    ]));
+    expect(payload.line_items.map((line) => line.name)).toEqual(["a", "z", "a umlaut", "e acute"]);
   });
 
   it.each([[400, "invalid_request", false], [401, "unauthorized", false], [403, "forbidden", false], [429, "rate_limited", true], [503, "upstream_unavailable", true]] as const)("maps %s without exposing raw bodies", async (status, code, retryable) => {
@@ -119,5 +138,12 @@ describe("createInstacartHandoff", () => {
     await createInstacartHandoff(h.env, "alice", deps(view(), { create: async () => ({ ok: false, code: "upstream_unavailable", retryable: true }) }));
     const after = JSON.stringify({ grocery: h.rows("grocery_list"), sends: h.rows("order_sends"), lines: h.rows("order_send_lines"), spend: h.rows("spend_events"), pantry: h.rows("pantry") });
     expect(after).toBe(before);
+  });
+
+  it("rejects an invalid URL from an injected client before cache or return", async () => {
+    const h = sqliteEnv(); configured(h.env);
+    const result = await createInstacartHandoff(h.env, "alice", deps(view(), { create: async () => ({ ok: true, url: "https://instacart.com.evil.test/steal" }) }));
+    expect(result).toEqual({ status: "error", code: "invalid_response", retryable: false });
+    expect(h.rows("instacart_links")).toEqual([]);
   });
 });

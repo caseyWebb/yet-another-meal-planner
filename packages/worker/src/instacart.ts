@@ -38,9 +38,14 @@ function packageQuantity(line: ToBuyViewLine): number {
   return Number.isFinite(n) && n > 0 ? n : 1;
 }
 
+/** Locale-independent UTF-16 code-unit order, matching canonical JSON construction. */
+export function compareCodeUnits(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
 export function buildInstacartPayload(view: ToBuyView): InstacartPayload {
   const line_items = [...view.to_buy]
-    .sort((a, b) => a.key.localeCompare(b.key))
+    .sort((a, b) => compareCodeUnits(a.key, b.key))
     .map((line) => ({
       name: line.name.trim(),
       display_text: (line.display_name ?? line.name).trim(),
@@ -77,6 +82,9 @@ export function createInstacartClient(config: InstacartConfig, fetcher: typeof f
           method: "POST",
           headers: { Accept: "application/json", "Content-Type": "application/json", Authorization: `Bearer ${config.apiKey}` },
           body: JSON.stringify(payload), signal: controller.signal,
+          // A redirected POST would forward the Bearer token and request body. Refuse
+          // redirects at fetch itself; the two permitted origins are compile-time fixed.
+          redirect: "error",
         });
         if (!response.ok) {
           if (response.status === 400) return { ok: false, code: "invalid_request", retryable: false };
@@ -108,7 +116,7 @@ export async function createInstacartHandoff(env: Env, tenant: string, deps: Ins
   const config = getInstacartConfig(env);
   if (!config) return { status: "unavailable", code: "not_configured" };
   const view = await (deps.readToBuy ?? ((e, t) => computeToBuyView(e, t)))(env, tenant);
-  const underived = [...view.underived].sort();
+  const underived = [...view.underived].sort(compareCodeUnits);
   if (view.to_buy.length === 0) return { status: "empty", item_count: 0, underived };
   const payload = buildInstacartPayload(view);
   const contentHash = await hashInstacartPayload(payload);
@@ -120,6 +128,9 @@ export async function createInstacartHandoff(env: Env, tenant: string, deps: Ins
   }
   const created = await (deps.client ?? createInstacartClient(config)).create(payload);
   if (!created.ok) return { status: "error", code: created.code, retryable: created.retryable };
+  // Injection is a testability seam, not a trust boundary bypass. Revalidate every
+  // successful client result before it can be cached or returned.
+  if (!validMarketplaceUrl(created.url)) return { status: "error", code: "invalid_response", retryable: false };
   const createdAt = now.toISOString();
   const expiresAt = new Date(now.getTime() + LINK_DAYS * 86_400_000).toISOString();
   await upsertInstacartLink(env, { tenant, content_hash: contentHash, url: created.url, expires_at: expiresAt, created_at: createdAt });

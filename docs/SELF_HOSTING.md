@@ -251,6 +251,10 @@ repo's `wrangler.jsonc` `vars` and set the secret out of band:
 wrangler secret put INSTACART_API_KEY
 ```
 
+The optional development smoke is fail-closed too: exporting a key alone is not enough;
+it runs only with `INSTACART_LIVE=1`. Follow the credential-loading command in
+`CONTRIBUTING.md`. Default tests never contact Instacart.
+
 Production enablement is an operator checklist performed after this code ships:
 
 1. Run the development integration and record the compliant `Shop on Instacart` CTA

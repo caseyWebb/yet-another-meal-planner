@@ -172,7 +172,8 @@ internals change with brand tiers), `compare_unit_price`, guidance tools, weathe
 
 **New /api endpoints**: retrospective spend/waste aggregates; pantry disposition;
 grocery check-off/manual-shop/walk-completion (D28); grocery manual/broader search;
-kroger login-url + disconnect; instacart connect/retailers (post-spike); people
+kroger login-url + disconnect; Instacart Marketplace handoff (`POST
+/api/grocery/instacart`, no connect/retailer endpoint); people
 aggregate + requests CRUD + members (remove, nickname) + invites (mint/revoke); signup
 join-link fork; discovery aggregate + feed test + follow/unfollow + add-feed; satellites
 aggregate + key mint/revoke + disconnect + quarantine/resume + cart-fill meta (D22
@@ -200,7 +201,8 @@ incomplete.
 - **Band 3**: TOOLS.md (place_order, update_grocery_list, read_to_buy, matcher
   confidence, store tools copy, new display tools); SCHEMAS.md (grocery checked_at, send
   records, sku_cache, widget payload contracts); ARCHITECTURE.md (Kroger pipeline +
-  flush branches + adapter model incl. Instacart); deltas: member-app-grocery,
+  fulfillment branches + Instacart Marketplace handoff adapter); deltas: member-app-core,
+  store-adapter-projection, member-app-grocery,
   ingredient-matching, order-placement, in-store-fulfillment, grocery-list,
   member-app-offline (checked_at re-wording per D28 + online-only surfaces).
 - **Band 4**: SCHEMAS.md event tables + avoidability derivation; ARCHITECTURE.md cron

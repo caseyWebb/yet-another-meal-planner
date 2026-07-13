@@ -22,6 +22,8 @@ Yamp needs an Instacart fulfillment option, but the feasibility spike invalidate
 
 ### Modified Capabilities
 
+- `member-app-core`: Replace the non-interactive coming-later Instacart Store tab with the shared projection's secret-free configured/not-configured availability, without member account or retailer controls.
+- `store-adapter-projection`: Add secret-free Instacart availability and the configured-only `marketplace_handoff` launcher entry to the one shared adapter projection.
 - `member-app-grocery`: Add the configured-only branded launcher CTA and thin Instacart handoff endpoint without changing the Kroger order preview/commit flow.
 - `order-placement`: Define that an Instacart Marketplace handoff is not an order/cart flush and causes no grocery lifecycle, send-record, or spend transition.
 

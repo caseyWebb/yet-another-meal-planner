@@ -156,11 +156,23 @@ Use an email verified on your GitHub account. There is no encrypted secrets stor
 
 The adapter is disabled by default. Copy the empty Instacart entries from
 `packages/worker/.dev.vars.example`, supply a development API key only in the gitignored
-`.dev.vars`, and keep `INSTACART_API_ENV=development`. The default suite uses injected
-fixtures and makes no live request. With credentials present, run the opt-in
-`packages/worker/test/instacart.live.test.ts` smoke; it validates only that the official
-development origin returns an HTTPS Instacart Marketplace URL. Production keys require
-Instacart's external review; see `docs/SELF_HOSTING.md` before selecting `production`.
+`packages/worker/.dev.vars`, and keep `INSTACART_API_ENV=development`. The default suite
+uses injected fixtures and makes no live request even when a key happens to be exported:
+the live smoke additionally requires the explicit `INSTACART_LIVE=1` opt-in.
+
+To run it, load the gitignored file into the current shell without putting the key on a
+command line, then opt in for that one invocation:
+
+```bash
+set -a
+. packages/worker/.dev.vars
+set +a
+INSTACART_LIVE=1 aubr test packages/worker/test/instacart.live.test.ts
+```
+
+The smoke validates only that the official development origin returns an HTTPS
+Instacart Marketplace URL. Production keys require Instacart's external review; see
+`docs/SELF_HOSTING.md` before selecting `production`.
 
 ## Opening a pull request
 
