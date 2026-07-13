@@ -296,8 +296,8 @@ function StoreLauncher({
 }) {
   const [instacartBusy, setInstacartBusy] = React.useState(false);
   const [instacartMessage, setInstacartMessage] = React.useState<string | null>(null);
-  const [responseUnderived, setResponseUnderived] = React.useState<string[]>([]);
-  const [instacartIncompleteConfirmed, setInstacartIncompleteConfirmed] = React.useState(false);
+  const [responseUnderived, setResponseUnderived] = React.useState<string[] | null>(null);
+  const [confirmedUnderivedSignature, setConfirmedUnderivedSignature] = React.useState<string | null>(null);
   const instacartRequestRef = React.useRef<AbortController | null>(null);
   const instacartProjectionKey = (() => {
     const entry = entries.find((candidate) => candidate.mode === "marketplace_handoff");
@@ -307,18 +307,24 @@ function StoreLauncher({
   const instacartProjectionKeyRef = React.useRef(instacartProjectionKey);
   snapshotKeyRef.current = snapshotKey;
   instacartProjectionKeyRef.current = instacartProjectionKey;
-  const incompleteRecipes = [...new Set([...underived, ...responseUnderived])];
+  const incompleteRecipes = [...new Set(responseUnderived ?? underived)].sort();
+  const incompleteSignature = JSON.stringify(incompleteRecipes);
   React.useEffect(() => {
     instacartRequestRef.current?.abort();
     instacartRequestRef.current = null;
     setInstacartBusy(false);
     setInstacartMessage(null);
-    setResponseUnderived([]);
-    setInstacartIncompleteConfirmed(false);
+    setResponseUnderived(null);
+    setConfirmedUnderivedSignature(null);
+    return () => {
+      instacartRequestRef.current?.abort();
+      instacartRequestRef.current = null;
+    };
   }, [snapshotKey, instacartProjectionKey]);
   const shopInstacart = async () => {
     const startingSnapshotKey = snapshotKey;
     const startingProjectionKey = instacartProjectionKey;
+    const startingUnderivedSignature = incompleteSignature;
     const controller = new AbortController();
     instacartRequestRef.current?.abort();
     instacartRequestRef.current = controller;
@@ -329,9 +335,17 @@ function StoreLauncher({
       const result = await response.json() as InstacartHandoffResult;
       if (controller.signal.aborted || snapshotKeyRef.current !== startingSnapshotKey || instacartProjectionKeyRef.current !== startingProjectionKey) return;
       if (result.status === "ready") {
-        if (result.underived.length && !instacartIncompleteConfirmed) {
-          setResponseUnderived(result.underived);
-          setInstacartIncompleteConfirmed(false);
+        const authoritativeUnderived = [...new Set(result.underived)].sort();
+        const authoritativeSignature = JSON.stringify(authoritativeUnderived);
+        if (authoritativeSignature !== startingUnderivedSignature) {
+          setResponseUnderived(authoritativeUnderived);
+          setConfirmedUnderivedSignature(null);
+          setInstacartMessage(authoritativeUnderived.length
+            ? "The missing recipe details changed. Confirm the updated warning before creating an Instacart shopping page."
+            : "Recipe completeness changed. Try creating the Instacart shopping page again.");
+        } else if (authoritativeUnderived.length && confirmedUnderivedSignature !== authoritativeSignature) {
+          setResponseUnderived(authoritativeUnderived);
+          setConfirmedUnderivedSignature(null);
           setInstacartMessage("Some planned recipes still need ingredient details. Confirm the warning before creating an Instacart shopping page.");
         } else window.location.assign(result.url);
       } else if (result.status === "empty") {
@@ -376,7 +390,7 @@ function StoreLauncher({
           {entries.map((entry) => {
             const actionable = entry.enabled && (entry.mode === "store_walk" || (entry.mode === "online_order" && online));
             if (entry.mode === "marketplace_handoff") {
-              const confirmationRequired = incompleteRecipes.length > 0 && !instacartIncompleteConfirmed;
+              const confirmationRequired = incompleteRecipes.length > 0 && confirmedUnderivedSignature !== incompleteSignature;
               return (
                 <li key={entry.id} data-testid="store-launcher-entry" data-launcher-id="instacart" data-mode={entry.mode}>
                   <span>
@@ -387,8 +401,8 @@ function StoreLauncher({
                         <input
                           type="checkbox"
                           data-testid="instacart-incomplete-confirm"
-                          checked={instacartIncompleteConfirmed}
-                          onChange={(event) => setInstacartIncompleteConfirmed(event.currentTarget.checked)}
+                          checked={confirmedUnderivedSignature === incompleteSignature}
+                          onChange={(event) => setConfirmedUnderivedSignature(event.currentTarget.checked ? incompleteSignature : null)}
                         />
                         I understand {incompleteRecipes.length} planned recipe{incompleteRecipes.length === 1 ? " is" : "s are"} missing ingredient details, so this Instacart page may be incomplete.
                       </label>

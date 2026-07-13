@@ -309,7 +309,7 @@ A generic transport failure SHALL retain the frozen request in `pending_commit` 
 
 ### Requirement: The grocery launcher offers an honest branded Instacart Marketplace handoff
 
-The grocery launcher's configured-adapter projection SHALL include a `Shop on Instacart` CTA only when the deployment reports the Instacart adapter configured. The CTA SHALL comply with Instacart's approved production design and copy contract: exact approved text, 46px height, 29.5px radius, an unmodified 22px full-color official logo, and an approved theme/color set. When the current grocery snapshot has underived planned recipes, the launcher SHALL present that incomplete-page warning and require explicit confirmation before enabling the branded CTA; the CTA SHALL remain the sole action that requests and opens the handoff. Activating it SHALL call `POST /api/grocery/instacart` and, on a `ready` result, open the returned HTTPS Instacart Marketplace URL as external navigation. If the grocery snapshot or adapter projection changes while that request is in flight, the launcher SHALL abort or discard the response and SHALL NOT navigate to its stale URL. The surrounding copy SHALL say that the member chooses a retailer, reviews matches, adds products, and checks out on Instacart; it SHALL NOT promise a preferred/targeted retailer, prices, availability, delivery timing, cart mutation, checkout, or order success. The Instacart action SHALL remain separate from the Kroger order-review dialog and online-only.
+The grocery launcher's configured-adapter projection SHALL include a `Shop on Instacart` CTA only when the deployment reports the Instacart adapter configured. The CTA SHALL comply with Instacart's approved production design and copy contract: exact approved text, 46px height, 29.5px radius, an unmodified 22px full-color official logo, and an approved theme/color set. When the current grocery snapshot has underived planned recipes, the launcher SHALL present that incomplete-page warning and require explicit confirmation before enabling the branded CTA; confirmation SHALL bind to the deterministic sorted exact underived-slug set, and any different authoritative set returned by the handoff SHALL replace the warning and require fresh confirmation rather than navigate. The CTA SHALL remain the sole action that requests and opens the handoff. Activating it SHALL call `POST /api/grocery/instacart` and, on a `ready` result, open the returned HTTPS Instacart Marketplace URL as external navigation. If the grocery snapshot or adapter projection changes while that request is in flight, or if the launcher unmounts, the launcher SHALL abort or discard the response and SHALL NOT navigate to its stale URL. The surrounding copy SHALL say that the member chooses a retailer, reviews matches, adds products, and checks out on Instacart; it SHALL NOT promise a preferred/targeted retailer, prices, availability, delivery timing, cart mutation, checkout, or order success. The Instacart action SHALL remain separate from the Kroger order-review dialog and online-only.
 
 #### Scenario: Configured launcher shows the approved CTA
 
@@ -336,6 +336,16 @@ The grocery launcher's configured-adapter projection SHALL include a `Shop on In
 - **WHEN** the grocery snapshot or Instacart adapter projection changes while a handoff request is in flight
 - **THEN** the launcher cancels or discards that response, clears its busy state, remains on the grocery page, and never opens the returned stale URL
 
+#### Scenario: Authoritative incomplete set requires exact fresh confirmation
+
+- **WHEN** the member confirmed one sorted underived-slug set and the ready handoff returns a different set
+- **THEN** the launcher replaces the warning with the authoritative set, clears confirmation, remains on the grocery page, and requires confirmation of that exact set before another handoff can navigate
+
+#### Scenario: Leaving grocery cancels a stale handoff
+
+- **WHEN** the member navigates to another SPA route while a handoff request is in flight
+- **THEN** unmounting the launcher cancels or discards that response and releasing it cannot redirect away from the route the member chose
+
 #### Scenario: Empty, incomplete, and error results are honest
 
 - **WHEN** the handoff returns `empty`, non-empty `underived`, `not_configured`, or a structured upstream error
@@ -343,7 +353,7 @@ The grocery launcher's configured-adapter projection SHALL include a `Shop on In
 
 ### Requirement: Instacart launcher coverage uses typed fixtures and exact state assertions
 
-The member-app Playwright suite SHALL cover configured and unconfigured launcher projection, approved CTA copy/geometry/logo/theme, preflight confirmation for underived snapshots, a ready external navigation, cancellation of a held request after a snapshot mutation, empty/underived results, and each structured degradation class using fixtures typed against the shared operation result. The default suite SHALL make no Instacart network request and require no API key.
+The member-app Playwright suite SHALL cover configured and unconfigured launcher projection, approved CTA copy/geometry/logo/theme, exact-set preflight confirmation and authoritative underived-set mismatch, a ready external navigation, cancellation of held requests after a snapshot mutation and after SPA navigation unmount, empty/underived results, and each structured degradation class using fixtures typed against the shared operation result. The default suite SHALL make no Instacart network request and require no API key.
 
 #### Scenario: App suite exercises the handoff without credentials
 

@@ -128,6 +128,57 @@ test("an in-flight Instacart handoff cannot navigate after the grocery snapshot 
 	expect(calls).toBe(1);
 });
 
+test("an in-flight Instacart handoff cannot redirect after SPA navigation unmounts the launcher", async ({ groceryPage, shellPage, page }) => {
+	await enableInstacart(page);
+	await setSnapshotUnderived(page, []);
+	const result: InstacartHandoffResult = { status: "ready", url: "https://www.instacart.com/store/yamp-unmounted", expires_at: "2026-08-11T12:00:00Z", reused: false, item_count: 2, underived: [], destination: "instacart_marketplace" };
+	let calls = 0;
+	let responseSettled = false;
+	let release!: () => void;
+	const held = new Promise<void>((resolve) => { release = resolve; });
+	await page.route("**/api/grocery/instacart", async (route) => {
+		calls += 1;
+		await held;
+		await route.fulfill({ json: result }).catch(() => undefined);
+		responseSettled = true;
+	});
+	await page.route(result.url, (route) => route.fulfill({ contentType: "text/html", body: "<title>Unmounted Instacart handoff</title>" }));
+	await page.reload(); await groceryPage.landmark();
+	await groceryPage.instacartCta().click();
+	await expect(groceryPage.instacartCta()).toHaveAttribute("aria-busy", "true");
+	await shellPage.navTo("Cookbook");
+	await expect(page).toHaveURL(/\/$/);
+	await expect(groceryPage.launcher()).toHaveCount(0);
+	release();
+	await expect.poll(() => responseSettled).toBe(true);
+	await expect(page).toHaveURL(/\/$/);
+	expect(calls).toBe(1);
+});
+
+for (const authoritativeUnderived of [["missing-recipe", "second-missing-recipe"], ["replacement-missing-recipe"]]) {
+	test(`an Instacart authoritative ${authoritativeUnderived.length}-slug mismatch requires confirmation of the exact new underived set`, async ({ groceryPage, page }) => {
+		await enableInstacart(page);
+		await setSnapshotUnderived(page, ["missing-recipe"]);
+		const result: InstacartHandoffResult = { status: "ready", url: `https://www.instacart.com/store/yamp-mismatch-${authoritativeUnderived.length}`, expires_at: "2026-08-11T12:00:00Z", reused: false, item_count: 2, underived: [...authoritativeUnderived], destination: "instacart_marketplace" };
+		let calls = 0;
+		await page.route("**/api/grocery/instacart", (route) => { calls += 1; return route.fulfill({ json: result }); });
+		await page.route(result.url, (route) => route.fulfill({ contentType: "text/html", body: "<title>Updated Instacart handoff</title>" }));
+		await page.reload(); await groceryPage.landmark();
+		await page.getByTestId("instacart-incomplete-confirm").check();
+		await groceryPage.instacartCta().click();
+		await expect(page).toHaveURL(/\/grocery$/);
+		await expect(groceryPage.instacartStatus()).toContainText("missing recipe details changed");
+		await expect(page.getByTestId("instacart-incomplete-confirm")).not.toBeChecked();
+		await expect(page.getByTestId("instacart-preflight")).toContainText(`${authoritativeUnderived.length} planned recipe${authoritativeUnderived.length === 1 ? " is" : "s are"} missing ingredient details`);
+		await expect(groceryPage.instacartCta()).toBeDisabled();
+		expect(calls).toBe(1);
+		await page.getByTestId("instacart-incomplete-confirm").check();
+		await groceryPage.instacartCta().click();
+		await expect(page).toHaveURL(result.url);
+		expect(calls).toBe(2);
+	});
+}
+
 test("a disabled Instacart projection is inert and makes no request", async ({ groceryPage, page }) => {
 	await enableInstacart(page, false);
 	let calls = 0; await page.route("**/api/grocery/instacart", (route) => { calls += 1; return route.fulfill({ json: { status: "unavailable", code: "not_configured" } }); });
