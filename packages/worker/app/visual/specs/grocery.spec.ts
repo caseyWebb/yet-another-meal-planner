@@ -55,9 +55,10 @@ test("the launcher remains driven by the shared store-adapter projection", async
 test("configured Instacart keeps exact CTA branding through loading and uses a real same-tab handoff after an underived warning", async ({ groceryPage, page }) => {
 	await enableInstacart(page);
 	const result: InstacartHandoffResult = { status: "ready", url: "https://www.instacart.com/store/yamp-test", expires_at: "2026-08-11T12:00:00Z", reused: false, item_count: 2, underived: ["missing-recipe"], destination: "instacart_marketplace" };
+	let apiCalls = 0;
 	let release!: () => void;
 	const held = new Promise<void>((resolve) => { release = resolve; });
-	await page.route("**/api/grocery/instacart", async (route) => { await held; await route.fulfill({ json: result }); });
+	await page.route("**/api/grocery/instacart", async (route) => { apiCalls += 1; await held; await route.fulfill({ json: result }); });
 	await page.route(result.url, (route) => route.fulfill({ contentType: "text/html", body: "<title>Instacart handoff fixture</title>" }));
 	await page.reload(); await groceryPage.landmark();
 	const cta = groceryPage.instacartCta();
@@ -69,14 +70,32 @@ test("configured Instacart keeps exact CTA branding through loading and uses a r
 	await expect(groceryPage.launcherEntry("instacart")).toContainText("Choose a retailer, review matches, add items, and check out on Instacart.");
 	await cta.click();
 	await expect(cta).toHaveText("Shop on Instacart"); await expect(cta).toHaveAttribute("aria-busy", "true");
+	await expect(cta).toHaveCSS("background-color", "rgb(0, 61, 41)"); await expect(cta).toHaveCSS("color", "rgb(250, 241, 229)"); await expect(cta).toHaveCSS("opacity", "1");
 	await expect(groceryPage.instacartStatus()).toHaveText("Creating an Instacart shopping page…");
 	release();
 	await expect(groceryPage.instacartStatus()).toContainText("missing ingredient details");
+	await expect(page.getByTestId("instacart-continue")).toBeVisible(); expect(apiCalls).toBe(1);
 	await expect(page).toHaveURL(/\/grocery$/);
 	await expect(groceryPage.launcherEntry("instacart")).not.toContainText(/cart populated|order placed|savings|delivery/i);
 	await groceryPage.captureForReview("grocery-instacart-launcher");
+	await groceryPage.addItem("pending invalidation item");
+	await expect(groceryPage.item("pending invalidation item")).toBeVisible();
+	await expect(page.getByTestId("instacart-continue")).toHaveCount(0);
 	await cta.click();
+	await expect(page.getByTestId("instacart-continue")).toBeVisible(); expect(apiCalls).toBe(2);
+	await page.getByTestId("instacart-continue").click();
 	await expect(page).toHaveURL(result.url);
+});
+
+test("complete Instacart ready navigates same-tab in one click and one API request", async ({ groceryPage, page }) => {
+	await enableInstacart(page);
+	const result: InstacartHandoffResult = { status: "ready", url: "https://www.instacart.com/store/yamp-complete", expires_at: "2026-08-11T12:00:00Z", reused: false, item_count: 2, underived: [], destination: "instacart_marketplace" };
+	let calls = 0;
+	await page.route("**/api/grocery/instacart", (route) => { calls += 1; return route.fulfill({ json: result }); });
+	await page.route(result.url, (route) => route.fulfill({ contentType: "text/html", body: "<title>Complete Instacart handoff</title>" }));
+	await page.reload(); await groceryPage.landmark();
+	await groceryPage.instacartCta().click();
+	await expect(page).toHaveURL(result.url); expect(calls).toBe(1);
 });
 
 test("a disabled Instacart projection is inert and makes no request", async ({ groceryPage, page }) => {
@@ -85,6 +104,7 @@ test("a disabled Instacart projection is inert and makes no request", async ({ g
 	await page.reload(); await groceryPage.landmark();
 	await expect(groceryPage.instacartCta()).toBeDisabled();
 	await expect(groceryPage.instacartCta()).toHaveAttribute("title", "Instacart is not configured.");
+	await expect(groceryPage.instacartCta()).toHaveCSS("background-color", "rgb(0, 61, 41)"); await expect(groceryPage.instacartCta()).toHaveCSS("color", "rgb(250, 241, 229)"); await expect(groceryPage.instacartCta()).toHaveCSS("opacity", "1");
 	expect(calls).toBe(0);
 });
 

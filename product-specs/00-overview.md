@@ -233,8 +233,10 @@ before merging a band that retires them.
   cooked/log flow (meal param); vibe-palette skills (meal-vibe naming).
 - **Band 3**: shop-groceries (RTE default action gone — always offer, never auto-add;
   receive/"I placed the order" choreography routes through the D16 shared ops; "offline
-  store" naming per D6); put-away/pantry flow (location field; waste-reason capture on
-  spoilage mentions).
+  store" naming per D6; an **explicit Instacart request for this trip** routes to the
+  Marketplace-link handoff and never becomes the default for a generic order, Kroger
+  flush, satellite fill, or walk); put-away/pantry flow (location field; waste-reason
+  capture on spoilage mentions).
 - **Band 4**: retrospective skill acts on spend/waste aggregates, reads only.
 - **Band 5**: session-start profile read carries household members + nicknames; notes
   flows mention tiers (D30).

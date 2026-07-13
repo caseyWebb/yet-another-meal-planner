@@ -46,3 +46,4 @@
 - [x] 7.2 Run `aubr typecheck`, `aubr test`, and `aubr test:tooling`.
 - [x] 7.3 Run `aubr test:app`, review the generated grocery/launcher screenshots, and fix any visual or interaction regression.
 - [x] 7.4 Run `mise exec -- openspec validate instacart-adapter` and resolve every validation error before review.
+- [x] 7.5 Add the explicit-only Instacart Marketplace branch to `AGENT_INSTRUCTIONS.md`, bump the satellite contract version, and run the plugin build/check so generated skills route explicit Instacart intent without changing grocery lifecycle.

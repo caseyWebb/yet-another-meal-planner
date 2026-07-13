@@ -241,6 +241,7 @@ function GroceryPage() {
       <PageHead title="Grocery list" sub="Check off the store walk without changing online-cart state." />
       <StoreLauncher
         entries={adapters.data?.launcher ?? (snapshot.data.walk_context ? [{ id: `offline:${snapshot.data.walk_context.store_slug}`, adapter: "offline", mode: "store_walk", store: { slug: snapshot.data.walk_context.store_slug, name: snapshot.data.walk_context.display_name, shared_name: snapshot.data.walk_context.shared_name, domain: snapshot.data.walk_context.domain, aisle_map: snapshot.data.walk_context.aisle_map }, enabled: true, disabled_reason: null }] : [])}
+        snapshotVersion={snapshot.data.snapshot_version}
         online={online}
         orderOpen={orderOpen}
         launcherRef={orderLauncherRef}
@@ -271,6 +272,7 @@ function GroceryPage() {
 
 function StoreLauncher({
   entries,
+  snapshotVersion,
   online,
   orderOpen,
   launcherRef,
@@ -280,6 +282,7 @@ function StoreLauncher({
   pausedWalk,
 }: {
   entries: StoreAdapterProjection["launcher"];
+  snapshotVersion: string;
   online: boolean;
   orderOpen: boolean;
   launcherRef: React.RefObject<HTMLButtonElement | null>;
@@ -291,11 +294,15 @@ function StoreLauncher({
   const [instacartBusy, setInstacartBusy] = React.useState(false);
   const [instacartMessage, setInstacartMessage] = React.useState<string | null>(null);
   const [pendingInstacartUrl, setPendingInstacartUrl] = React.useState<string | null>(null);
+  const instacartProjectionKey = (() => {
+    const entry = entries.find((candidate) => candidate.mode === "marketplace_handoff");
+    return entry ? `${entry.enabled}:${entry.disabled_reason ?? "ready"}` : "absent";
+  })();
+  React.useEffect(() => {
+    setPendingInstacartUrl(null);
+    setInstacartMessage(null);
+  }, [snapshotVersion, instacartProjectionKey]);
   const shopInstacart = async () => {
-    if (pendingInstacartUrl) {
-      window.location.assign(pendingInstacartUrl);
-      return;
-    }
     setInstacartBusy(true); setInstacartMessage(null);
     try {
       const response = await appFetch("/api/grocery/instacart", { method: "POST" });
@@ -304,7 +311,7 @@ function StoreLauncher({
       if (result.status === "ready") {
         if (result.underived.length) {
           setPendingInstacartUrl(result.url);
-          setInstacartMessage(`The page is ready, but ${result.underived.length} planned recipe${result.underived.length === 1 ? " is" : "s are"} still missing ingredient details. Choose Shop on Instacart again to continue.`);
+          setInstacartMessage(`The page is ready, but ${result.underived.length} planned recipe${result.underived.length === 1 ? " is" : "s are"} still missing ingredient details. Review that gap before continuing.`);
         } else window.location.assign(result.url);
       } else if (result.status === "empty") {
         setInstacartMessage(result.underived.length ? "Nothing is ready to send yet; some planned recipes still need ingredient details." : "Your to-buy list is empty.");
@@ -382,6 +389,7 @@ function StoreLauncher({
         <p className="muted">Configure a store adapter in Profile, or shop manually below.</p>
       )}
       {instacartBusy || instacartMessage ? <p className="muted" role="status" data-testid="instacart-status">{instacartBusy ? "Creating an Instacart shopping page…" : instacartMessage}</p> : null}
+      {pendingInstacartUrl && !instacartBusy ? <Button size="sm" variant="outline" data-testid="instacart-continue" onClick={() => { const url = pendingInstacartUrl; setPendingInstacartUrl(null); window.location.assign(url); }}>Continue to Instacart</Button> : null}
       <Button variant="outline" onClick={onManual}>Log a manual shop</Button>
     </section>
   );
