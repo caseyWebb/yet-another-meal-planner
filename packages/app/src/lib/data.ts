@@ -6,7 +6,7 @@
 // (the row tests on the Worker side pin that); class (a) writes ride If-Match
 // helpers with the rebase-on-412 loop.
 import { useQuery } from "@tanstack/react-query";
-import { api, apiError, appFetch } from "./api";
+import { api, apiError, appFetch, type ApiError } from "./api";
 import { GC_TIME_MS } from "./persist";
 import type {
   ToBuyViewLine as ToBuyLine,
@@ -27,6 +27,10 @@ import type {
 import type { GroceryListData } from "@yamp/contract";
 import type { AisleMapDocument } from "@yamp/contract";
 import type { StoreAdapterProjection } from "@yamp/worker/store-adapter-shapes";
+import type {
+  SpendAnalyzer,
+  SpendRange,
+} from "@yamp/worker/spend-shapes";
 
 export type {
   ToBuyLine,
@@ -45,6 +49,13 @@ export type {
   SiblingSuggestion,
   StoreAdapterProjection,
 };
+export type {
+  CoverageStatus as SpendCoverageStatus,
+  SpendAnalyzer,
+  SpendBreakdown,
+  SpendRange,
+  SpendWeek,
+} from "@yamp/worker/spend-shapes";
 
 /** Plan §6 posture: near-live reads, no long client cache. */
 const STALE_MS = 15_000;
@@ -438,6 +449,20 @@ export function useRetrospective(period = "quarter") {
         cuisine_mix?: Record<string, number>;
         cadence?: { cooks_per_week?: number };
       }>(await api.api.profile.retrospective.$get({ query: { period } })),
+  });
+}
+
+/** Online-only Spend analyzer read. Its range is part of the representation and it
+ * stays outside the persistence allowlist by construction. */
+export function useSpendAnalyzer(range: SpendRange, enabled: boolean) {
+  return useQuery<SpendAnalyzer, ApiError>({
+    queryKey: ["retrospective", "spend", range],
+    enabled,
+    staleTime: 60_000,
+    refetchOnMount: "always",
+    retry: false,
+    queryFn: async () =>
+      jsonOf<SpendAnalyzer>(await api.api.retrospective.spend.$get({ query: { range } })),
   });
 }
 

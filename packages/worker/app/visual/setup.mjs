@@ -42,17 +42,23 @@ for (const [binding, key, value] of kvEntries()) {
 // `.wrangler/state` the running `wrangler dev` below reads (identical `kv key put --local`).
 const SESSION_TTL_S = 90 * 24 * 60 * 60; // ~90d — mirrors session.ts SESSION_TTL_S
 const APP_SESSION_TOKEN = `pw-app-session-${SEED.members.active}`;
-sh("npx", [
-  "wrangler",
-  "kv",
-  "key",
-  "put",
-  `session:${APP_SESSION_TOKEN}`,
-  JSON.stringify({ tenant: SEED.members.active, created_at: now, refreshed_at: now }),
-  "--binding",
-  "TENANT_KV",
-  "--local",
-]);
+const SPEND_SESSION_TOKEN = `pw-app-session-${SEED.app.spend.fixtureTenant}`;
+for (const [token, tenant] of [
+  [APP_SESSION_TOKEN, SEED.members.active],
+  [SPEND_SESSION_TOKEN, SEED.app.spend.fixtureTenant],
+]) {
+  sh("npx", [
+    "wrangler",
+    "kv",
+    "key",
+    "put",
+    `session:${token}`,
+    JSON.stringify({ tenant, created_at: now, refreshed_at: now }),
+    "--binding",
+    "TENANT_KV",
+    "--local",
+  ]);
+}
 // The Playwright storageState the `authed` project loads: the `__Host-session` cookie
 // carrying the token above, with the EXACT attributes `setSessionCookie` sets (src/session.ts:
 // Path=/, Secure, HttpOnly, SameSite=Lax). Chromium treats 127.0.0.1 as a trustworthy origin,

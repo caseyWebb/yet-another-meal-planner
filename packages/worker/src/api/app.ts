@@ -19,6 +19,7 @@ import { groceryArea } from "./grocery.js";
 import { pantryArea } from "./pantry.js";
 import { logArea } from "./log.js";
 import { profileArea } from "./profile.js";
+import { retrospectiveArea } from "./retrospective.js";
 import { vibesArea } from "./vibes.js";
 import { proposeArea } from "./propose.js";
 import { appBuild, buildHeader, csrfGuard, onApiError, usagePoint } from "./middleware.js";
@@ -52,6 +53,7 @@ const routes = app
   .route("/", pantryArea)
   .route("/", logArea)
   .route("/", profileArea)
+  .route("/", retrospectiveArea)
   .route("/", vibesArea)
   // The propose flow (member-app-propose): the stateless propose POST + the weather GET.
   .route("/", proposeArea);

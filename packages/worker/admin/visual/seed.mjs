@@ -91,6 +91,14 @@ export const SEED = {
       household: "paper towels",
       inCart: "olive oil",
     },
+    spend: {
+      fixtureTenant: "pat",
+      budget: 95,
+      awaiting: 1,
+      totals: { "4w": 174, "8w": 234, "12w": 264 },
+      events: { "4w": 4, "8w": 8, "12w": 9 },
+      topDriver: { key: "chicken-thighs", name: "Chicken thighs", amount: 110 },
+    },
     // The seeded meal-vibe palette (profile-planning-and-vibes-ui): six vibes spanning
     // breakfast/lunch/dinner, one pinned + one unpinned per meal group — the grouping,
     // pinned-indicator, and inline-suggestion coverage. Distinct ids from every from_vibe
@@ -285,6 +293,11 @@ function embedCacheKey(text) {
 export function d1Statements(now) {
   const iso = (ms) => new Date(ms).toISOString();
   const day = (ms) => iso(ms).slice(0, 10);
+  const weekDay = (weeksAgo) => {
+    const value = new Date(`${day(now)}T00:00:00.000Z`);
+    value.setUTCDate(value.getUTCDate() - ((value.getUTCDay() + 6) % 7) - weeksAgo * 7);
+    return value.toISOString().slice(0, 10);
+  };
   const { members, recipe, discovery, normalize, jobs, groupCode } = SEED;
   const stmts = [];
 
@@ -460,8 +473,9 @@ export function d1Statements(now) {
     `INSERT INTO cooking_log (tenant, date, type, recipe, name) VALUES` +
       ` (${q(members.active)}, ${q(day(now - 1 * DAY))}, 'recipe', ${q(recipe.slug)}, NULL),` +
       ` (${q(members.active)}, ${q(day(now - 3 * DAY))}, 'recipe', ${q(recipe.slug)}, NULL),` +
-      // The pending member's cook (member-app-differentiators D11): the seeded recipe
-      // crosses the trending min-signal guard GROUP-WIDE (3 cooks, 2 distinct tenants),
+      // The pending member's cook (member-app-differentiators D11) also supplies the
+      // isolated Spend browser fixture's one qualifying-cook denominator. The seeded
+      // recipe crosses the trending min-signal guard GROUP-WIDE (3 cooks, 2 tenants),
       // and stays below it (1 cook, 1 tenant) once the active member deletes their own
       // rows — the browse spec's empty-state provisioning.
       ` (${q(members.pending)}, ${q(day(now - 2 * DAY))}, 'recipe', ${q(recipe.slug)}, NULL),` +
@@ -673,6 +687,59 @@ export function d1Statements(now) {
   stmts.push(
     `UPDATE grocery_list SET sent_in = ${q(appSend)} WHERE tenant = ${q(members.active)} AND normalized_name = ${q(app.grocery.inCart)};`,
   );
+  // Retrospective Spend: immutable current-window facts across 4w/8w/12w, with exact
+  // captured departments/stores/provenance. These rows exercise the real analyzer/API;
+  // the separate unplaced send above supplies awaiting_mark_placed without entering spend.
+  const spendRows = [
+    ["chicken-thighs", "Chicken thighs", 0, 110, 4, "meat", "planned", "kroger"],
+    ["milk", "Whole milk", 1, 18, 1, "dairy", "planned", "kroger"],
+    ["salmon", "Salmon fillets", 2, 32, 0, "seafood", "impulse", "aldi-north"],
+    // Keep the oldest 4w and 8w facts one bucket inside their range. If setup begins
+    // just before a UTC Monday and the request lands just after it, totals/counts stay
+    // fixed even though every fact moves one relative ISO-week older.
+    ["bread", "Sourdough bread", 2, 14, 0, "bakery", "planned", "kroger"],
+    ["apples", "Honeycrisp apples", 4, 22, 2, "produce", "impulse", "kroger"],
+    ["peas", "Frozen peas", 5, 16, 0, "frozen", "planned", "aldi-north"],
+    ["coffee", "Cold brew", 6, 10, 0, "beverages", "planned", "kroger"],
+    ["foil", "Aluminum foil", 6, 12, 0, "household", "impulse", "kroger"],
+    ["rice", "Jasmine rice", 10, 30, 1, "pantry", "planned", "aldi-north"],
+  ];
+  stmts.push(`DELETE FROM spend_events WHERE tenant = ${q(members.active)} AND send_id LIKE 'viz-retro-spend-%';`);
+  stmts.push(
+    "INSERT INTO spend_events (send_id,line_key,tenant,occurred_on,name,sku,quantity,unit_price,amount,savings,estimated,department,provenance,store,fulfillment,voided_at) VALUES " +
+      spendRows.map(([key, name, weeksAgo, amount, savings, department, provenance, store], index) =>
+        `(${q(`viz-retro-spend-${index}`)},${q(key)},${q(members.active)},${q(weekDay(weeksAgo))},${q(name)},NULL,1,${amount},${amount},${savings},0,${q(department)},${q(provenance)},${q(store)},'kroger_online',NULL)`,
+      ).join(",") +
+      ";",
+  );
+  // A pristine, different-tenant Spend oracle for the retrospective browser specs.
+  // Other member-app flows mutate casey's cart/spend history cumulatively; pat has a
+  // dedicated real session, profile budget, immutable spend facts, cooking denominator,
+  // and one real unplaced send. IDs include the tenant because send/line keys are global.
+  const spendFixtureTenant = app.spend.fixtureTenant;
+  const spendFixtureSend = "viz-retro-spend-pat-awaiting";
+  const spendFixtureLine = "pat-awaiting-oats";
+  stmts.push(`DELETE FROM spend_events WHERE tenant = ${q(spendFixtureTenant)};`);
+  stmts.push(`DELETE FROM grocery_list WHERE tenant = ${q(spendFixtureTenant)};`);
+  stmts.push(`DELETE FROM order_send_lines WHERE send_id = ${q(spendFixtureSend)};`);
+  stmts.push(`DELETE FROM order_sends WHERE id = ${q(spendFixtureSend)};`);
+  stmts.push(
+    `INSERT INTO order_sends (id, tenant, store, location_id, fulfillment, order_list_id, created_at) VALUES (${q(spendFixtureSend)}, ${q(spendFixtureTenant)}, 'kroger', 'viz-spend-pat-location', 'kroger_online', NULL, ${q(iso(now - 4 * DAY))});`,
+  );
+  stmts.push(
+    `INSERT INTO order_send_lines (send_id, line_key, name, sku, brand, size, quantity, price_regular, price_promo, on_sale, unit_price, savings, estimated, department, provenance, for_recipes) VALUES (${q(spendFixtureSend)}, ${q(spendFixtureLine)}, 'Rolled oats', 'viz-pat-oats-sku', 'Store Brand', '18 oz', 1, 5, 4, 1, 4, 1, 0, 'pantry', 'planned', '[]');`,
+  );
+  stmts.push(
+    "INSERT INTO grocery_list (tenant, name, normalized_name, quantity, kind, domain, status, source, for_recipes, note, added_at, ordered_at, sent_in) VALUES " +
+      `(${q(spendFixtureTenant)}, 'Rolled oats', ${q(spendFixtureLine)}, '1', 'grocery', 'grocery', 'in_cart', 'stockup', '[]', NULL, ${q(day(now - 4 * DAY))}, NULL, ${q(spendFixtureSend)});`,
+  );
+  stmts.push(
+    "INSERT INTO spend_events (send_id,line_key,tenant,occurred_on,name,sku,quantity,unit_price,amount,savings,estimated,department,provenance,store,fulfillment,voided_at) VALUES " +
+      spendRows.map(([key, name, weeksAgo, amount, savings, department, provenance, store], index) =>
+        `(${q(`viz-retro-spend-pat-${index}`)},${q(key)},${q(spendFixtureTenant)},${q(weekDay(weeksAgo))},${q(name)},NULL,1,${amount},${amount},${savings},0,${q(department)},${q(provenance)},${q(store)},'kroger_online',NULL)`,
+      ).join(",") +
+      ";",
+  );
   // The seeded meal-vibe palette (profile-planning-and-vibes-ui): six vibes across the
   // three meals, one pinned + one unpinned per group, anchored ~20 days back so the
   // cadence-debt meter renders. members NULL (assignment is band 5).
@@ -739,12 +806,15 @@ export function d1Statements(now) {
       `(${q(members.active)}, ${q(pv.comfort.id)}, ${q(embedVec([[2, 0.8], [3, 0.4], [5, 0.4]]))});`,
   );
   // The profile row + one ranked brand (taste markdown, planning knobs, stores, dietary).
-  stmts.push(`DELETE FROM profile WHERE tenant = ${q(members.active)};`);
+  stmts.push(`DELETE FROM profile WHERE tenant IN (${q(members.active)}, ${q(spendFixtureTenant)});`);
   // `cadence` is the per-meal weekly map the Planning card's steppers render + patch;
   // `weekly_budget` (dollars/week) backs the budget control's set/clear coverage.
   stmts.push(
     "INSERT INTO profile (tenant, taste, diet_principles, default_cooking_nights, lunch_strategy, ready_to_eat_default_action, stores, dietary, rotation, cadence, weekly_budget) VALUES " +
-      `(${q(members.active)}, ${q(`**${app.tasteLead}** — weeknights lean Asian, weekends get a project.`)}, ${q("- Keep shellfish off the table\n- Go easy on red meat")}, 3, NULL, 'opt-in', ${q(JSON.stringify({ primary: "kroger", preferred_location: app.storeAdapters.kroger.locationId, preferred_location_name: app.storeAdapters.kroger.name, preferred_location_address: app.storeAdapters.kroger.address, location_zip: app.storeAdapters.kroger.zip }))}, ${q(JSON.stringify({ avoid: ["shellfish"], limit: ["red meat"] }))}, ${q(JSON.stringify({ resurface_after_days: 30, novelty_boost: 0.2 }))}, ${q(JSON.stringify({ breakfast: 2, lunch: 1, dinner: 4 }))}, 95);`,
+      `(${q(members.active)}, ${q(`**${app.tasteLead}** — weeknights lean Asian, weekends get a project.`)}, ${q("- Keep shellfish off the table\n- Go easy on red meat")}, 3, NULL, 'opt-in', ${q(JSON.stringify({ primary: "kroger", preferred_location: app.storeAdapters.kroger.locationId, preferred_location_name: app.storeAdapters.kroger.name, preferred_location_address: app.storeAdapters.kroger.address, location_zip: app.storeAdapters.kroger.zip }))}, ${q(JSON.stringify({ avoid: ["shellfish"], limit: ["red meat"] }))}, ${q(JSON.stringify({ resurface_after_days: 30, novelty_boost: 0.2 }))}, ${q(JSON.stringify({ breakfast: 2, lunch: 1, dinner: 4 }))}, ${app.spend.budget});`,
+  );
+  stmts.push(
+    `INSERT INTO profile (tenant, weekly_budget) VALUES (${q(spendFixtureTenant)}, ${app.spend.budget});`,
   );
   stmts.push(`DELETE FROM stores WHERE slug IN (${app.storeAdapters.offline.map((store) => q(store.slug)).join(", ")}, 'hardware-store');`);
   stmts.push(

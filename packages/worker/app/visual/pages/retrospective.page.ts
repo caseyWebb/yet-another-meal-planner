@@ -1,7 +1,8 @@
 // Retrospective (member-app-core, retrospective-shell): the renamed cooking-log destination,
 // now a tabbed shell whose default Cooking log tab carries the meal-aware composer (meal +
 // source segments, backdating) and a day-grouped, meal-tagged list. The page object owns the
-// tab switches and the composer flow so specs never address the markup directly.
+// tab switches, Spend semantics/ranges/review captures, and composer flow so specs never
+// address production markup directly.
 import { expect } from "@playwright/test";
 import { AppPage, type Locator } from "./base.page";
 
@@ -24,6 +25,72 @@ export class RetrospectivePage extends AppPage {
 
   async selectTab(key: "log" | "spend" | "waste"): Promise<void> {
     await this.tab(key).click();
+  }
+
+  panel(key: "log" | "spend" | "waste"): Locator {
+    return this.page.locator(`#retro-panel-${key}`);
+  }
+
+  spendRange(range: "4w" | "8w" | "12w"): Locator {
+    return this.page.getByRole("group", { name: "Spend range" }).getByRole("button", {
+      name: `${range.slice(0, -1)} weeks`,
+      exact: true,
+    });
+  }
+
+  async selectSpendRange(range: "4w" | "8w" | "12w"): Promise<void> {
+    await this.spendRange(range).click();
+  }
+
+  spendKpi(key: "total" | "average" | "meal" | "trend"): Locator {
+    return this.page.getByTestId(`spend-kpi-${key}`);
+  }
+
+  spendWeeks(): Locator {
+    return this.page.getByTestId("spend-week");
+  }
+
+  spendAwaiting(): Locator {
+    return this.page.getByTestId("spend-awaiting");
+  }
+
+  spendInsight(): Locator {
+    return this.page.getByTestId("spend-insight");
+  }
+
+  spendState(state: "empty" | "unavailable" | "partial" | "complete"): Locator {
+    return this.page.getByTestId(`spend-state-${state}`);
+  }
+
+  spendLoading(): Locator {
+    return this.page.getByTestId("spend-loading");
+  }
+
+  spendError(): Locator {
+    return this.page.getByTestId("spend-error");
+  }
+
+  async retrySpend(): Promise<void> {
+    await this.page.getByRole("button", { name: "Retry spend analysis" }).click();
+  }
+
+  async pressTabKey(key: "ArrowLeft" | "ArrowRight" | "Home" | "End"): Promise<void> {
+    await this.page.keyboard.press(key);
+  }
+
+  async captureSpendDesktop(): Promise<void> {
+    await this.setViewport(1100, 900);
+    await this.captureForReview("retro-spend-desktop");
+  }
+
+  async captureSpendTall(): Promise<void> {
+    await this.setViewport(760, 1100);
+    await this.captureForReview("retro-spend-tall");
+  }
+
+  async captureSpendNarrow(): Promise<void> {
+    await this.setViewport(390, 844);
+    await this.captureForReview("retro-spend-narrow");
   }
 
   /** The day-section relative headers ("Today", "Yesterday", "Wed Jul 8"). */

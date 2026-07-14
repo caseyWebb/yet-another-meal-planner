@@ -1033,12 +1033,13 @@ Create or **refine** a single guidance memory. Gated by a **writable-domain allo
 
 ## Retrospective / analysis tools
 
-### `retrospective(period)`
+### `retrospective(period, spend_range?)`
 
 Aggregate **real** cooking history from the D1 `cooking_log` table over a period, joining `type=recipe` rows to the `recipes` table for protein/cuisine (a `cooking_log LEFT JOIN recipes` + COALESCE).
 
 **Params:**
 - `period` (string, optional, default `"month"`): `"Nd"` (e.g. `"30d"`) | `"week"` | `"month"` | `"quarter"` | `"year"` | `"all"`.
+- `spend_range` (string, optional, default `"4w"`): `"4w" | "8w" | "12w"`. It scopes only `spend`; `period` independently scopes cooking history.
 
 **Returns:**
 ```
@@ -1055,17 +1056,58 @@ Aggregate **real** cooking history from the D1 `cooking_log` table over a period
   ready_to_eat_favorites: [{ name, count }],            // frequency-ranked; feeds menu-flow restock suggestions
   underused:        [{ slug, title, last_cooked, why, cook_count }],  // loved & quiet & in-season; ≤15, stalest first
   underused_count:  <number>,                           // total qualifying before the 15-item cap
-  spend: {                                              // household grocery spend (spend telemetry); independent of period
-    weekly_budget:        <number> | null,              // the preference (dollars/week); null when unset
-    weeks: [{ week_start, total, savings, events, estimated }],  // trailing 4 ISO weeks (Monday starts), newest last
-    awaiting_mark_placed: <number>                      // in_cart items sent to a cart, order never marked placed
+  spend: {                                              // shared SpendAnalyzer; independent of period
+    range: "4w" | "8w" | "12w",
+    as_of, selected_start, selected_end, prior_start, prior_end,  // inclusive YYYY-MM-DD UTC bounds
+    status: "empty" | "unavailable" | "partial" | "complete",
+    coverage: {
+      monetary: { status, event_count, priced_event_count, unpriced_event_count,
+                  estimated_event_count, known_amount },
+      department: { status, event_count, classified_event_count, pending_event_count },
+      savings: { status, event_count, known_event_count, unknown_event_count, known_savings }
+    },
+    weekly_budget: <number> | null,                     // positive dollars/week, else null
+    weeks: [{                                           // exactly N ISO-Monday buckets, oldest first
+      week_start, week_end, through, is_partial,
+      total, savings, events, estimated, status,
+      monetary_coverage, department_coverage, savings_coverage,
+      over_budget: true | false | null
+    }],
+    awaiting_mark_placed: <number>,                     // current sent in_cart rows; never spend
+    kpis: {
+      total_spend: { amount: <number> | null, status },
+      average_per_week: { amount: <number> | null, status },
+      cost_per_meal: { amount: <number> | null, known_numerator, meal_count, status,
+                       reason: null | "zero_meals" | "numerator_unavailable" },
+      trend: { percent: <number> | null, current_known_amount, prior_known_amount,
+               status: "available" | "unavailable",
+               reason: null | "current_incomplete" | "prior_incomplete" | "prior_zero" }
+    },
+    breakdowns: {
+      department: { known_denominator, status, items: [{ key, label, amount, event_count,
+                    priced_event_count, unpriced_event_count, percentage }] },
+      store:      { known_denominator, status, items: [/* same item shape */] },
+      provenance: { known_denominator, status, items: [/* same item shape */] }
+    },
+    top_drivers: { cap: 6, total_count, items: [{ key, name,
+      department: { key, label } | null, amount, event_count, priced_event_count,
+      unpriced_event_count, percentage }] },
+    insight: <string>                                   // deterministic server template
   }
 }
 ```
 
 **Notes:** `last_cooked` is derived (see `log_cooked`) — `MAX(date)` over the caller's `type=recipe` rows. **`underused` is independent of `period`**: it surfaces **loved** recipes — `favorite === true` (declared) **or** cooked **≥3× in the trailing 12 months** (revealed) — that are **stale** (`last_cooked` null, or older than a **fixed 30 days**) and **in season** now (the recipe's `season` is `[]`/year-round or includes the current Northern-hemisphere season; matched case-insensitively with `autumn`≡`fall`). Rejected recipes are excluded. `why` is `"favorite"` or `"revealed"`; `cook_count` is the all-time cook count (for the revival nudge). The list is sorted never-cooked-first then oldest `last_cooked` and capped at 15 — `underused_count` reports how many qualified. Eating out is never logged; leftovers of an already-logged cook are not re-logged.
 
-**`spend` is read-only, household-scoped, and independent of `period`** (a fixed trailing window, like `underused`): plain SQL over recorded, non-voided **spend events** — send-time quotes materialized when an order's placement was asserted (see [`place_order`](#place_orderpayload) / [`update_grocery_list`](#update_grocery_listname-patch)). `total`/`savings` sum priced events per ISO week (`estimated` counts fallback-priced events — band-3 capture paths; order-flush quotes are never estimated); `weekly_budget` echoes the preference (`null`/`0` = no budget line — readers hide it); `awaiting_mark_placed` counts `in_cart` items carrying a send linkage whose order was never asserted — surface those and ask, never auto-count them as spend. No MCP tool writes spend events; the agent influences spend only through the shared order/list operations.
+**`spend` is read-only, household-scoped, bounded, and independent of `period`.** `spend_range` maps to N=4/8/12 UTC ISO-Monday buckets including the current partial week. Spend facts are bounded from the matched prior range's start through `as_of`; selected cooking rows are bounded from `selected_start` through `as_of`; future facts are excluded. The prior range has the same elapsed weekday shape shifted back N weeks. Profile budget and the current awaiting count are tenant-scoped current-state reads. Every source uses the authenticated identity's tenant; no input can select a tenant.
+
+All currency reduction rounds each stored decimal once to integer cents. Monetary coverage is empty with no events, unavailable with no priced events, partial with any unpriced or estimated event, and complete otherwise. Department and savings coverage apply the analogous captured-value rules; a pending department remains absent from breakdown items and never becomes a synthetic “Not mapped” group. Overall status is empty with no events, unavailable when money is unavailable, partial when money is partial or department coverage is incomplete, and complete otherwise. Numeric legacy totals are known subtotals and must be presented with their coverage.
+
+`average_per_week` divides known spend by all N buckets without partial-week proration. Cost per meal divides the known eligible numerator by every in-range `recipe` or `ad_hoc` cooking row (all meal values, including `project` and legacy null); it excludes `ready_to_eat`, never infers servings, and excludes only capture-stamped `household` and `beverages` from its numerator. Total spend still includes those departments. Trend compares the selected interval with its matched prior interval and is unavailable for incomplete inputs or a zero prior denominator. A positive weekly budget yields `over_budget:true` as soon as known spend exceeds it, `null` while missing value could change an otherwise-below result, and `false` only for complete known value; an absent/non-positive budget normalizes to null.
+
+Department, store, and provenance breakdowns use immutable captured keys only. Items sort by known amount descending then raw key ascending; department percentages use classified known spend, while store/provenance use total known spend. Top drivers group by captured `line_key`, include priced groups only, count event rows rather than quantity, select name and department together from the latest `(occurred_on, send_id)` row, sort by amount descending then event count descending then key ascending, and cap at six after reporting `total_count`. Insight selection is the fixed server template ladder; no LLM, random choice, or client reclassification participates. Reads filter voided events and perform no mutation, cache fill, queue action, schema migration, scheduled aggregation, or analyzer cron. No MCP tool writes spend events.
+
+**Member API adapter:** authenticated `GET /api/retrospective/spend?range=4w|8w|12w` returns the same `SpendAnalyzer` body through the normal ETag helper. The API and member UI default a missing range to `8w`; an invalid value returns HTTP 400 `{ "error": "validation_failed", "message": "range must be 4w | 8w | 12w" }`. The MCP tool and legacy profile retrospective surface default to `4w` for compatibility.
 
 ### `log_cooked(entry)`
 

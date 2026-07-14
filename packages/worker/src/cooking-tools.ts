@@ -15,7 +15,7 @@ import { db } from "./db.js";
 import type { CookingLogEntry } from "./cooking-log.js";
 import { type MealPlanOp } from "./meal-plan.js";
 import { retrospective, type RetrospectiveResult, type RetroConfig } from "./retrospective.js";
-import { readSpendSection, type SpendSection } from "./spend.js";
+import { readSpendAnalyzer, type SpendAnalyzer, type SpendRange } from "./spend.js";
 import { loadRecipeIndex } from "./recipe-index.js";
 import { mergeOverlay, type Overlay } from "./overlay.js";
 import { readOverlay, readPreferences } from "./profile-db.js";
@@ -42,16 +42,16 @@ interface CookingLogJoinRow {
  * inline columns. The recipe index + the caller's overlay + the derived last_cooked
  * are merged into an effective index for the `underused` metric (non-rejected recipes
  * not cooked in the window — reject is per-tenant, so it must be overlay-merged).
- * The `spend` section (spend-telemetry) rides the result: a household-scoped read-only
- * aggregate over non-voided spend events (trailing 4 ISO weeks, independent of `period`
- * like `underused`), the awaiting-mark-placed count, and the weekly budget — plain SQL,
- * no LLM in the read path.
+ * The `spend` section (spend-telemetry) rides the result: the shared household-scoped,
+ * bounded, read-only analyzer over non-voided captured facts. Its range is independent
+ * of cooking `period` and defaults to the compatible four weeks.
  */
 export async function loadRetrospective(
   env: Env,
   username: string,
   period: string,
-): Promise<RetrospectiveResult & { spend: SpendSection }> {
+  spendRange: SpendRange = "4w",
+): Promise<RetrospectiveResult & { spend: SpendAnalyzer }> {
   const rows = await db(env).all<CookingLogJoinRow>(
     "SELECT cl.type AS type, cl.date AS date, cl.recipe AS recipe, cl.name AS name, cl.meal AS meal, " +
       "COALESCE(cl.protein, r.protein) AS protein, COALESCE(cl.cuisine, r.cuisine) AS cuisine " +
@@ -105,7 +105,7 @@ export async function loadRetrospective(
     revealedMinCooks: num(retroPrefs.revealed_min_cooks),
   };
 
-  const spend = await readSpendSection(env, username);
+  const spend = await readSpendAnalyzer(env, username, spendRange);
   return { ...retrospective(entries, effective, period, new Date(), retroConfig), spend };
 }
 
@@ -237,9 +237,12 @@ export function registerCookingTools(
     "retrospective",
     {
       description:
-        "Aggregate cooking history over a period from the cooking log. period accepts 'Nd' (e.g. '30d'), 'week', 'month', 'quarter', 'year', or 'all', and scopes recipes_cooked, protein_mix, cuisine_mix (non-recipe entries counted via inline dims; missing → 'unknown'), cadence (cooks/week, recipe+ad_hoc only — MEAL-AWARE: `by_meal` counts cooks per breakfast/lunch/dinner/project over rows whose meal is set, and `meal_unknown` counts NULL-meal rows, which still count in the overall figure — a meal is never fabricated for them), cook_vs_convenience (cooked vs ready_to_eat), and ready_to_eat_favorites (frequency-ranked). underused is INDEPENDENT of period: loved recipes — the caller's favorites PLUS revealed favorites (cooked ≥3× in the trailing 12 months) — that have gone stale (never cooked, or not cooked in a FIXED 30 days) and are in season now; rejected recipes are excluded. Each underused item carries why ('favorite' | 'revealed') and cook_count (all-time), is sorted stalest-first, and is capped at 15; underused_count is the pre-cap qualifying total. `spend` is the household's read-only grocery-spend section, ALSO independent of period: the trailing 4 ISO weeks (Monday starts, newest last) as { week_start, total, savings, events, estimated } over recorded (non-voided) spend events — send-time quotes recorded when an order's placement was asserted — plus weekly_budget (the preference, null when unset) and awaiting_mark_placed (items sent to a cart whose order was never marked placed: they are NEVER auto-counted as spend — surface them and ask, don't assume).",
-      inputSchema: { period: z.string().optional() },
+        "Aggregate cooking history over a period from the cooking log. `period` accepts 'Nd' (e.g. '30d'), 'week', 'month', 'quarter', 'year', or 'all', and scopes `recipes_cooked`, `protein_mix`, `cuisine_mix` (non-recipe entries count through inline dimensions; missing dimensions bucket under `unknown`), meal-aware `cadence` (`cooks_per_week` counts recipe + ad_hoc only; `by_meal` counts breakfast/lunch/dinner/project rows whose meal is set; `meal_unknown` counts NULL-meal rows, which remain in the overall figure and are never assigned a fabricated meal), `cook_vs_convenience`, and frequency-ranked `ready_to_eat_favorites`. `underused` is independent of period: loved recipes — the caller's favorites plus revealed favorites cooked at least 3 times in the trailing 12 months — that are never cooked or stale for a fixed 30 days and in season now; rejected recipes are excluded. Each underused item carries `why` (`favorite` or `revealed`) and all-time `cook_count`, sorts stalest-first, and the list is capped at 15 while `underused_count` reports the pre-cap total. Optional `spend_range` independently accepts `4w`, `8w`, or `12w` (default `4w`). `spend` is the household's read-only Spend analyzer, independent of cooking period: bounded UTC ISO-Monday windows over captured non-voided facts with coverage-aware totals, weekly buckets, cost per meal, matched trend, budget comparisons, captured department/store/planned-vs-impulse breakdowns, deterministic top drivers and insight, plus `awaiting_mark_placed`. Treat partial or unavailable values as such; never infer missing spend, and never count awaiting rows as spend. This tool is read-only and no Spend-write tool exists.",
+      inputSchema: {
+        period: z.string().optional(),
+        spend_range: z.enum(["4w", "8w", "12w"]).optional(),
+      },
     },
-    ({ period }) => runTool(() => loadRetrospective(env, username, period ?? "month")),
+    ({ period, spend_range }) => runTool(() => loadRetrospective(env, username, period ?? "month", spend_range ?? "4w")),
   );
 }

@@ -216,6 +216,7 @@ const MEMBER_ENDPOINTS: [string, string][] = [
   ["GET", "/api/profile/diet-principles"],
   ["PUT", "/api/profile/diet-principles"],
   ["GET", "/api/profile/retrospective"],
+  ["GET", "/api/retrospective/spend"],
   ["GET", "/api/profile/kroger-login-url"],
   ["GET", "/api/profile/store-adapters"],
   ["GET", "/api/profile/kroger-locations?zip=76104"],
@@ -1042,6 +1043,128 @@ import { addGroceryRow, advanceInCartRows } from "../src/session-db.js";
 import { snapshotStatements } from "../src/spend.js";
 
 const send2 = send;
+
+describe("retrospective area — shared Spend analyzer adapter", () => {
+  async function retrospectiveEnv(tenants: string[] = ["casey"]) {
+    const h = sqliteEnv(tenants);
+    await h.env.TENANT_KV.put("invite:GOODCODE", "casey");
+    const env = { ...(h.env as object), TOOL_AE: { writeDataPoint: () => {} } } as unknown as Env;
+    return { h, env };
+  }
+
+  function seedSpend(
+    h: ReturnType<typeof sqliteEnv>,
+    over: { tenant?: string; send?: string; line?: string; amount?: number | null; date?: string } = {},
+  ): void {
+    const tenant = over.tenant ?? "casey";
+    const line = over.line ?? "milk";
+    const sendId = over.send ?? `S-${tenant}-${line}`;
+    const amount = over.amount === undefined ? 12 : over.amount;
+    h.raw.prepare(
+      "INSERT INTO spend_events (send_id,line_key,tenant,occurred_on,name,sku,quantity,unit_price,amount,savings,estimated,department,provenance,store,fulfillment,voided_at) " +
+        "VALUES (?,?,?,?,?,NULL,1,?,?,0,0,'dairy','planned','kroger','kroger_online',NULL)",
+    ).run(sendId, line, tenant, over.date ?? new Date().toISOString().slice(0, 10), line, amount, amount);
+  }
+
+  it("defaults to 8w, accepts explicit ranges, and returns the direct shared object with ETag/304", async () => {
+    const { h, env } = await retrospectiveEnv();
+    seedSpend(h);
+    const cookie = await loggedIn(env);
+
+    const defaultResponse = await get(env, "/api/retrospective/spend", cookie);
+    expect(defaultResponse.status).toBe(200);
+    expect(defaultResponse.headers.get("etag")).toMatch(/^W\//);
+    const defaultBody = await defaultResponse.json() as { range: string; weeks: unknown[]; status: string };
+    expect(defaultBody).toMatchObject({ range: "8w", status: "complete" });
+    expect(defaultBody.weeks).toHaveLength(8);
+
+    const explicit = await get(env, "/api/retrospective/spend?range=12w", cookie);
+    const explicitBody = await explicit.json() as { range: string; weeks: unknown[] };
+    expect(explicitBody.range).toBe("12w");
+    expect(explicitBody.weeks).toHaveLength(12);
+
+    const etag = defaultResponse.headers.get("etag")!;
+    const notModified = await get(env, "/api/retrospective/spend", cookie, { "If-None-Match": etag });
+    expect(notModified.status).toBe(304);
+    expect(await notModified.text()).toBe("");
+    expect(notModified.headers.get("etag")).toBe(etag);
+  });
+
+  it("rejects invalid range with the exact structured body", async () => {
+    const { env } = await retrospectiveEnv();
+    const cookie = await loggedIn(env);
+    const response = await get(env, "/api/retrospective/spend?range=quarter", cookie);
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({
+      error: "validation_failed",
+      message: "range must be 4w | 8w | 12w",
+    });
+  });
+
+  it("uses only session identity and repeats deterministically without side effects", async () => {
+    const { h, env } = await retrospectiveEnv(["casey", "everett"]);
+    seedSpend(h, { tenant: "casey", line: "casey", amount: 12 });
+    seedSpend(h, { tenant: "everett", line: "everett", amount: 900 });
+    h.raw.prepare("INSERT INTO profile (tenant, weekly_budget) VALUES (?, ?)").run("casey", 75);
+    h.raw.prepare("INSERT INTO profile (tenant, weekly_budget) VALUES (?, ?)").run("everett", 999);
+    h.raw.prepare(
+      "INSERT INTO cooking_log (tenant,date,type,recipe,meal) VALUES (?,?,?,?,?)",
+    ).run("casey", new Date().toISOString().slice(0, 10), "recipe", "stew", "dinner");
+    h.raw.prepare(
+      "INSERT INTO cooking_log (tenant,date,type,recipe,meal) VALUES (?,?,?,?,?)",
+    ).run("everett", new Date().toISOString().slice(0, 10), "recipe", "other", "dinner");
+    const cookie = await loggedIn(env);
+    const before = {
+      spend: h.rows("spend_events"),
+      cooking: h.rows("cooking_log"),
+      profile: h.rows("profile"),
+    };
+
+    const first = await get(
+      env,
+      "/api/retrospective/spend?range=4w&tenant=everett",
+      cookie,
+      { "X-Tenant": "everett" },
+    );
+    const firstBody = await first.json() as {
+      range: string;
+      weekly_budget: number;
+      coverage: { monetary: { event_count: number; known_amount: number } };
+      kpis: { cost_per_meal: { meal_count: number; amount: number } };
+      top_drivers: { items: { key: string }[] };
+    };
+    expect(firstBody).toMatchObject({
+      range: "4w",
+      weekly_budget: 75,
+      coverage: { monetary: { event_count: 1, known_amount: 12 } },
+      kpis: { cost_per_meal: { meal_count: 1, amount: 12 } },
+    });
+    expect(firstBody.top_drivers.items.map((item) => item.key)).toEqual(["casey"]);
+
+    const secondBody = await (await get(env, "/api/retrospective/spend?range=4w", cookie)).json();
+    expect(secondBody).toEqual(firstBody);
+    expect({
+      spend: h.rows("spend_events"),
+      cooking: h.rows("cooking_log"),
+      profile: h.rows("profile"),
+    }).toEqual(before);
+  });
+
+  it("keeps profile retrospective on the compatible 4w shared Spend shape", async () => {
+    const { h, env } = await retrospectiveEnv();
+    seedSpend(h, { amount: 18 });
+    const cookie = await loggedIn(env);
+    const dedicated = await (await get(env, "/api/retrospective/spend?range=4w", cookie)).json();
+    const profile = await (await get(env, "/api/profile/retrospective?period=all", cookie)).json() as {
+      period: string;
+      spend: unknown;
+      recipes_cooked: unknown[];
+    };
+    expect(profile.period).toBe("all");
+    expect(profile.recipes_cooked).toEqual([]);
+    expect(profile.spend).toEqual(dedicated);
+  });
+});
 
 describe("grocery area — spend rides the shared status op (route-level)", () => {
   async function spendEnv() {

@@ -24,6 +24,7 @@ import {
   deleteSendStatements,
   recordPurchaseAssertion,
   voidSpendEvents,
+  readSpendAnalyzer,
   readSpendSection,
   type SendSnapshot,
   type SnapshotLine,
@@ -412,8 +413,8 @@ describe("readSpendSection — the retrospective spend read", () => {
     const s = await readSpendSection(h.env, T, NOW);
     expect(s.weekly_budget).toBe(95);
     expect(s.weeks.map((w) => w.week_start)).toEqual(["2026-06-15", "2026-06-22", "2026-06-29", "2026-07-06"]);
-    expect(s.weeks[3]).toEqual({ week_start: "2026-07-06", total: 30, savings: 1.5, events: 2, estimated: 0 });
-    expect(s.weeks[2]).toEqual({ week_start: "2026-06-29", total: 12, savings: 0, events: 1, estimated: 1 });
+    expect(s.weeks[3]).toMatchObject({ week_start: "2026-07-06", total: 30, savings: 1.5, events: 2, estimated: 0 });
+    expect(s.weeks[2]).toMatchObject({ week_start: "2026-06-29", total: 12, savings: 0, events: 1, estimated: 1 });
     expect(s.weeks[0].events).toBe(0);
   });
 
@@ -448,5 +449,516 @@ describe("readSpendSection — the retrospective spend read", () => {
     expect(res.spend.weeks).toHaveLength(4);
     expect(res.spend.weeks.reduce((n, w) => n + w.total, 0)).toBe(15);
     expect(res.period).toBe("month"); // the existing aggregation is untouched
+  });
+});
+
+describe("readSpendAnalyzer — bounded production reader", () => {
+  const NOW = new Date("2026-07-15T18:30:00.000Z"); // Wednesday in UTC
+
+  function seedAnalyzerEvent(h: SqliteEnv, over: Record<string, unknown> = {}): void {
+    const lineKey = String(over.line_key ?? "item");
+    const row = {
+      send_id: `S-${lineKey}`,
+      line_key: lineKey,
+      tenant: T,
+      occurred_on: "2026-07-14",
+      name: lineKey,
+      sku: null,
+      quantity: 1,
+      unit_price: 5,
+      amount: 5,
+      savings: 0,
+      estimated: 0,
+      department: "produce",
+      provenance: "planned",
+      store: "kroger",
+      fulfillment: "kroger_online",
+      voided_at: null,
+      ...over,
+    };
+    h.raw.prepare(
+      "INSERT INTO spend_events (send_id, line_key, tenant, occurred_on, name, sku, quantity, unit_price, amount, savings, estimated, department, provenance, store, fulfillment, voided_at) " +
+        "VALUES (:send_id, :line_key, :tenant, :occurred_on, :name, :sku, :quantity, :unit_price, :amount, :savings, :estimated, :department, :provenance, :store, :fulfillment, :voided_at)",
+    ).run(row as never);
+  }
+
+  function seedCooking(
+    h: SqliteEnv,
+    over: { tenant?: string; date?: string; type?: string; recipe?: string | null; name?: string | null; meal?: string | null } = {},
+  ): void {
+    const row = {
+      tenant: T,
+      date: "2026-07-14",
+      type: "recipe",
+      recipe: "stew",
+      name: null,
+      meal: "dinner",
+      ...over,
+    };
+    h.raw.prepare(
+      "INSERT INTO cooking_log (tenant, date, type, recipe, name, meal) " +
+        "VALUES (:tenant, :date, :type, :recipe, :name, :meal)",
+    ).run(row as never);
+  }
+
+  async function seedAwaiting(h: SqliteEnv, tenant: string, key: string): Promise<void> {
+    await addGroceryRow(h.env, tenant, { name: key }, TODAY);
+    const send: SendBatch = {
+      id: `AWAIT-${tenant}-${key}`,
+      statements: snapshotStatements(h.env, {
+        ...sendOf(h, `AWAIT-${tenant}-${key}`),
+        tenant,
+      }, [lineOf(key, { name: key })]),
+    };
+    await advanceInCartRows(h.env, tenant, [{ name: key, key }], TODAY, send);
+  }
+
+  it("derives every UTC ISO-week range, matched prior shape, and Sunday completion", async () => {
+    const h = sqliteEnv([T]);
+    const expected = {
+      "4w": { selected: "2026-06-22", prior: "2026-05-25", priorEnd: "2026-06-17", count: 4 },
+      "8w": { selected: "2026-05-25", prior: "2026-03-30", priorEnd: "2026-05-20", count: 8 },
+      "12w": { selected: "2026-04-27", prior: "2026-02-02", priorEnd: "2026-04-22", count: 12 },
+    } as const;
+
+    for (const range of ["4w", "8w", "12w"] as const) {
+      const result = await readSpendAnalyzer(h.env, T, range, NOW);
+      expect(result).toMatchObject({
+        range,
+        as_of: "2026-07-15",
+        selected_start: expected[range].selected,
+        selected_end: "2026-07-15",
+        prior_start: expected[range].prior,
+        prior_end: expected[range].priorEnd,
+      });
+      expect(result.weeks).toHaveLength(expected[range].count);
+      expect(result.weeks.map((week) => week.week_start)).toEqual(
+        [...result.weeks.map((week) => week.week_start)].sort(),
+      );
+      expect(result.weeks.at(-1)).toMatchObject({
+        week_start: "2026-07-13",
+        week_end: "2026-07-19",
+        through: "2026-07-15",
+        is_partial: true,
+      });
+    }
+
+    const sunday = await readSpendAnalyzer(h.env, T, "4w", new Date("2026-07-19T23:59:59.000Z"));
+    expect(sunday.weeks.at(-1)).toMatchObject({
+      week_start: "2026-07-13",
+      week_end: "2026-07-19",
+      through: "2026-07-19",
+      is_partial: false,
+    });
+  });
+
+  it("bounds selected, prior, future, and cooking facts on both sides", async () => {
+    const h = sqliteEnv([T]);
+    seedAnalyzerEvent(h, { send_id: "CURRENT", line_key: "current", occurred_on: "2026-07-15", amount: 60 });
+    seedAnalyzerEvent(h, { send_id: "SELECTED-START", line_key: "selected-start", occurred_on: "2026-05-25", amount: 20 });
+    seedAnalyzerEvent(h, { send_id: "PRIOR-END", line_key: "prior-end", occurred_on: "2026-05-20", amount: 50 });
+    seedAnalyzerEvent(h, { send_id: "PRIOR-START", line_key: "prior-start", occurred_on: "2026-03-30", amount: 30 });
+    seedAnalyzerEvent(h, { send_id: "BEFORE", line_key: "before", occurred_on: "2026-03-29", amount: 999 });
+    seedAnalyzerEvent(h, { send_id: "FUTURE", line_key: "future", occurred_on: "2026-07-16", amount: 999 });
+    seedCooking(h, { date: "2026-05-25", type: "recipe", recipe: "a", meal: "breakfast" });
+    seedCooking(h, { date: "2026-07-15", type: "ad_hoc", recipe: null, name: "b", meal: "project" });
+    seedCooking(h, { date: "2026-05-24", type: "recipe", recipe: "before" });
+    seedCooking(h, { date: "2026-07-16", type: "recipe", recipe: "future" });
+    seedCooking(h, { date: "2026-07-14", type: "ready_to_eat", recipe: null, name: "ready" });
+
+    const result = await readSpendAnalyzer(h.env, T, "8w", NOW);
+    expect(result.coverage.monetary).toMatchObject({ event_count: 2, known_amount: 80, status: "complete" });
+    expect(result.kpis.trend).toEqual({
+      percent: 0,
+      current_known_amount: 80,
+      prior_known_amount: 80,
+      status: "available",
+      reason: null,
+    });
+    expect(result.kpis.cost_per_meal).toMatchObject({ meal_count: 2, known_numerator: 80, amount: 40 });
+    expect(result.top_drivers.items.map((driver) => driver.key)).toEqual(["current", "selected-start"]);
+  });
+
+  it("isolates spend, cooking, budget, and awaiting facts by resolved tenant", async () => {
+    const h = sqliteEnv([T, "everett"]);
+    h.raw.prepare("INSERT INTO profile (tenant, weekly_budget) VALUES (?, ?)").run(T, 95);
+    h.raw.prepare("INSERT INTO profile (tenant, weekly_budget) VALUES (?, ?)").run("everett", 500);
+    seedAnalyzerEvent(h, { send_id: "CASEY", line_key: "casey", amount: 24 });
+    seedAnalyzerEvent(h, { send_id: "EVERETT", line_key: "everett", tenant: "everett", amount: 700 });
+    seedCooking(h, { tenant: T, recipe: "casey-meal" });
+    seedCooking(h, { tenant: "everett", recipe: "everett-meal" });
+    await seedAwaiting(h, T, "casey-awaiting");
+    await seedAwaiting(h, "everett", "everett-awaiting");
+
+    const result = await readSpendAnalyzer(h.env, T, "4w", NOW);
+    expect(result.weekly_budget).toBe(95);
+    expect(result.coverage.monetary).toMatchObject({ event_count: 1, known_amount: 24 });
+    expect(result.kpis.cost_per_meal).toMatchObject({ meal_count: 1, amount: 24 });
+    expect(result.awaiting_mark_placed).toBe(1);
+    expect(result.top_drivers.items.map((driver) => driver.key)).toEqual(["casey"]);
+  });
+
+  it("distinguishes empty, unavailable, and per-week mixed coverage without fabricating values", async () => {
+    const empty = sqliteEnv([T]);
+    const emptyResult = await readSpendAnalyzer(empty.env, T, "4w", NOW);
+    expect(emptyResult.status).toBe("empty");
+    expect(emptyResult.coverage).toEqual({
+      monetary: {
+        status: "empty", event_count: 0, priced_event_count: 0, unpriced_event_count: 0,
+        estimated_event_count: 0, known_amount: 0,
+      },
+      department: {
+        status: "empty", event_count: 0, classified_event_count: 0, pending_event_count: 0,
+      },
+      savings: {
+        status: "empty", event_count: 0, known_event_count: 0, unknown_event_count: 0, known_savings: 0,
+      },
+    });
+    expect(emptyResult.kpis.total_spend).toEqual({ amount: 0, status: "empty" });
+    expect(emptyResult.kpis.average_per_week).toEqual({ amount: 0, status: "empty" });
+    expect(emptyResult.insight).toBe("No recorded spend in this range.");
+
+    const unavailable = sqliteEnv([T]);
+    seedAnalyzerEvent(unavailable, {
+      send_id: "NO-PRICE", line_key: "no-price", amount: null, unit_price: null, savings: null, department: null,
+    });
+    const unavailableResult = await readSpendAnalyzer(unavailable.env, T, "4w", NOW);
+    expect(unavailableResult.status).toBe("unavailable");
+    expect(unavailableResult.coverage.monetary).toMatchObject({
+      event_count: 1, priced_event_count: 0, unpriced_event_count: 1, known_amount: 0,
+    });
+    expect(unavailableResult.kpis.total_spend).toEqual({ amount: null, status: "unavailable" });
+    expect(unavailableResult.insight).toBe(
+      "Spend is unavailable because none of the recorded purchases in this range has a usable price.",
+    );
+
+    const mixed = sqliteEnv([T]);
+    seedAnalyzerEvent(mixed, {
+      send_id: "EXACT", line_key: "exact", occurred_on: "2026-07-07", amount: 1.006, savings: 0.504,
+    });
+    seedAnalyzerEvent(mixed, {
+      send_id: "EST", line_key: "estimated", occurred_on: "2026-07-08", amount: 2.004, savings: 0.506, estimated: 1,
+    });
+    seedAnalyzerEvent(mixed, {
+      send_id: "MISSING", line_key: "missing", occurred_on: "2026-07-14", amount: null, unit_price: null,
+      savings: null, department: null,
+    });
+    seedAnalyzerEvent(mixed, {
+      send_id: "VOID", line_key: "void", occurred_on: "2026-07-14", amount: 500,
+      voided_at: "2026-07-15T00:00:00.000Z",
+    });
+    const mixedResult = await readSpendAnalyzer(mixed.env, T, "4w", NOW);
+    expect(mixedResult.status).toBe("partial");
+    expect(mixedResult.coverage.monetary).toEqual({
+      status: "partial", event_count: 3, priced_event_count: 2, unpriced_event_count: 1,
+      estimated_event_count: 1, known_amount: 3.01,
+    });
+    expect(mixedResult.coverage.department).toEqual({
+      status: "partial", event_count: 3, classified_event_count: 2, pending_event_count: 1,
+    });
+    expect(mixedResult.coverage.savings).toEqual({
+      status: "partial", event_count: 3, known_event_count: 2, unknown_event_count: 1, known_savings: 1.01,
+    });
+    expect(mixedResult.weeks.find((week) => week.week_start === "2026-07-06")?.monetary_coverage.status).toBe("partial");
+    expect(mixedResult.weeks.at(-1)?.monetary_coverage.status).toBe("unavailable");
+    expect(mixedResult.insight).toBe(
+      "Known spend is incomplete: 1 purchase had no usable price, 1 purchase used an estimated price, and 1 purchase is awaiting department classification.",
+    );
+  });
+
+  it("uses the exact cooking denominator, D17 numerator exclusions, averages, and budget tri-state", async () => {
+    const h = sqliteEnv([T]);
+    h.raw.prepare("INSERT INTO profile (tenant, weekly_budget) VALUES (?, ?)").run(T, 25);
+    seedAnalyzerEvent(h, { send_id: "PRODUCE", line_key: "produce", amount: 20, department: "produce" });
+    seedAnalyzerEvent(h, { send_id: "BEV", line_key: "beverages", amount: 8, department: "beverages" });
+    seedAnalyzerEvent(h, { send_id: "HOME", line_key: "household", amount: 12, department: "household" });
+    seedCooking(h, { recipe: "breakfast", meal: "breakfast" });
+    seedCooking(h, { type: "ad_hoc", recipe: null, name: "dinner", meal: "dinner" });
+    seedCooking(h, { recipe: "project", meal: "project" });
+    seedCooking(h, { recipe: "legacy", meal: null });
+    seedCooking(h, { type: "ready_to_eat", recipe: null, name: "ready", meal: "lunch" });
+
+    const result = await readSpendAnalyzer(h.env, T, "8w", NOW);
+    expect(result.kpis.total_spend).toEqual({ amount: 40, status: "complete" });
+    expect(result.kpis.average_per_week).toEqual({ amount: 5, status: "complete" });
+    expect(result.kpis.cost_per_meal).toEqual({
+      amount: 5,
+      known_numerator: 20,
+      meal_count: 4,
+      status: "complete",
+      reason: null,
+    });
+    expect(result.weeks.at(-1)?.over_budget).toBe(true);
+
+    const partial = sqliteEnv([T]);
+    partial.raw.prepare("INSERT INTO profile (tenant, weekly_budget) VALUES (?, ?)").run(T, 95);
+    seedAnalyzerEvent(partial, { send_id: "KNOWN", line_key: "known", amount: 100, department: "produce" });
+    seedAnalyzerEvent(partial, { send_id: "UNKNOWN", line_key: "unknown", amount: null, unit_price: null, department: "produce" });
+    seedCooking(partial);
+    const partialResult = await readSpendAnalyzer(partial.env, T, "4w", NOW);
+    expect(partialResult.weeks.at(-1)?.over_budget).toBe(true);
+    expect(partialResult.kpis.cost_per_meal).toMatchObject({
+      amount: 100, known_numerator: 100, status: "partial", reason: null,
+    });
+
+    const below = sqliteEnv([T]);
+    below.raw.prepare("INSERT INTO profile (tenant, weekly_budget) VALUES (?, ?)").run(T, 95);
+    seedAnalyzerEvent(below, { send_id: "KNOWN", line_key: "known", amount: 20 });
+    seedAnalyzerEvent(below, { send_id: "UNKNOWN", line_key: "unknown", amount: null, unit_price: null });
+    expect((await readSpendAnalyzer(below.env, T, "4w", NOW)).weeks.at(-1)?.over_budget).toBeNull();
+
+    const hidden = sqliteEnv([T]);
+    hidden.raw.prepare("INSERT INTO profile (tenant, weekly_budget) VALUES (?, ?)").run(T, 0);
+    seedAnalyzerEvent(hidden, { send_id: "KNOWN", line_key: "known", amount: 20 });
+    const hiddenResult = await readSpendAnalyzer(hidden.env, T, "4w", NOW);
+    expect(hiddenResult.weekly_budget).toBeNull();
+    expect(hiddenResult.weeks.every((week) => week.over_budget === null)).toBe(true);
+
+    const completeBelow = sqliteEnv([T]);
+    completeBelow.raw.prepare("INSERT INTO profile (tenant, weekly_budget) VALUES (?, ?)").run(T, 95);
+    seedAnalyzerEvent(completeBelow, { send_id: "KNOWN", line_key: "known", amount: 20 });
+    expect((await readSpendAnalyzer(completeBelow.env, T, "4w", NOW)).weeks.at(-1)?.over_budget).toBe(false);
+  });
+
+  it("reports exact zero, unavailable, partial, and zero-meal cost numerator states", async () => {
+    const excluded = sqliteEnv([T]);
+    seedAnalyzerEvent(excluded, { send_id: "BEV", line_key: "bev", amount: 8, department: "beverages" });
+    seedAnalyzerEvent(excluded, { send_id: "HOME", line_key: "home", amount: 12, department: "household" });
+    seedCooking(excluded);
+    expect((await readSpendAnalyzer(excluded.env, T, "4w", NOW)).kpis.cost_per_meal).toEqual({
+      amount: 0, known_numerator: 0, meal_count: 1, status: "complete", reason: null,
+    });
+
+    const pending = sqliteEnv([T]);
+    seedAnalyzerEvent(pending, { send_id: "PENDING", line_key: "pending", amount: 10, department: null });
+    seedCooking(pending);
+    expect((await readSpendAnalyzer(pending.env, T, "4w", NOW)).kpis.cost_per_meal).toEqual({
+      amount: null, known_numerator: 0, meal_count: 1, status: "unavailable", reason: "numerator_unavailable",
+    });
+
+    const estimated = sqliteEnv([T]);
+    seedAnalyzerEvent(estimated, { send_id: "EST", line_key: "estimated", amount: 10, estimated: 1 });
+    seedCooking(estimated);
+    expect((await readSpendAnalyzer(estimated.env, T, "4w", NOW)).kpis.cost_per_meal).toEqual({
+      amount: 10, known_numerator: 10, meal_count: 1, status: "partial", reason: null,
+    });
+
+    const noMeals = sqliteEnv([T]);
+    seedAnalyzerEvent(noMeals, { send_id: "FOOD", line_key: "food", amount: 10 });
+    expect((await readSpendAnalyzer(noMeals.env, T, "4w", NOW)).kpis.cost_per_meal).toEqual({
+      amount: null, known_numerator: 10, meal_count: 0, status: "unavailable", reason: "zero_meals",
+    });
+
+    const empty = sqliteEnv([T]);
+    seedCooking(empty);
+    expect((await readSpendAnalyzer(empty.env, T, "4w", NOW)).kpis.cost_per_meal).toEqual({
+      amount: 0, known_numerator: 0, meal_count: 1, status: "empty", reason: null,
+    });
+  });
+
+  it("applies deterministic trend reason precedence and exact negative one hundred", async () => {
+    const currentIncomplete = sqliteEnv([T]);
+    seedAnalyzerEvent(currentIncomplete, { send_id: "CURRENT", line_key: "current", amount: null, unit_price: null });
+    seedAnalyzerEvent(currentIncomplete, {
+      send_id: "PRIOR", line_key: "prior", occurred_on: "2026-06-10", amount: null, unit_price: null,
+    });
+    expect((await readSpendAnalyzer(currentIncomplete.env, T, "4w", NOW)).kpis.trend.reason).toBe("current_incomplete");
+
+    const priorIncomplete = sqliteEnv([T]);
+    seedAnalyzerEvent(priorIncomplete, { send_id: "CURRENT", line_key: "current", amount: 10 });
+    seedAnalyzerEvent(priorIncomplete, {
+      send_id: "PRIOR", line_key: "prior", occurred_on: "2026-06-10", amount: null, unit_price: null,
+    });
+    expect((await readSpendAnalyzer(priorIncomplete.env, T, "4w", NOW)).kpis.trend.reason).toBe("prior_incomplete");
+
+    const priorZero = sqliteEnv([T]);
+    seedAnalyzerEvent(priorZero, { send_id: "CURRENT", line_key: "current", amount: 10 });
+    expect((await readSpendAnalyzer(priorZero.env, T, "4w", NOW)).kpis.trend.reason).toBe("prior_zero");
+
+    const currentZero = sqliteEnv([T]);
+    seedAnalyzerEvent(currentZero, { send_id: "PRIOR", line_key: "prior", occurred_on: "2026-06-10", amount: 50 });
+    expect((await readSpendAnalyzer(currentZero.env, T, "4w", NOW)).kpis.trend).toEqual({
+      percent: -100,
+      current_known_amount: 0,
+      prior_known_amount: 50,
+      status: "available",
+      reason: null,
+    });
+  });
+
+  it("groups only captured classification keys and applies every stable tie-break", async () => {
+    const h = sqliteEnv([T]);
+    seedAnalyzerEvent(h, {
+      send_id: "A", line_key: "repeat", occurred_on: "2026-07-07", name: "Old name", amount: 10,
+      department: "produce", store: "store_one", provenance: "planned", quantity: 99,
+    });
+    seedAnalyzerEvent(h, {
+      send_id: "B", line_key: "repeat", occurred_on: "2026-07-14", name: "Latest lower send", amount: 5,
+      department: "bakery", store: "store_one", provenance: "planned",
+    });
+    seedAnalyzerEvent(h, {
+      send_id: "Z", line_key: "repeat", occurred_on: "2026-07-14", name: "Latest winner", amount: null,
+      unit_price: null, department: null, store: "store_two", provenance: "impulse",
+    });
+    seedAnalyzerEvent(h, {
+      send_id: "DAIRY", line_key: "dairy-only", amount: null, unit_price: null,
+      department: "dairy_and_eggs", store: "store_two", provenance: "impulse",
+    });
+    seedAnalyzerEvent(h, {
+      send_id: "NULL-DEPT", line_key: "pending", amount: 5, department: null,
+      store: "store_two", provenance: "impulse",
+    });
+    for (const [index, key] of ["aa", "ab", "ac", "ad", "ae", "af", "ag"].entries()) {
+      seedAnalyzerEvent(h, {
+        send_id: `CAP-${key}`, line_key: key, occurred_on: "2026-07-10", amount: index < 2 ? 4 : 1,
+        department: index % 2 === 0 ? "bakery" : "produce", store: "store_one", provenance: "planned",
+      });
+    }
+
+    const result = await readSpendAnalyzer(h.env, T, "4w", NOW);
+    expect(result.breakdowns.department.items.some((item) => item.key === "Not mapped")).toBe(false);
+    expect(result.breakdowns.department.items.find((item) => item.key === "dairy_and_eggs")).toMatchObject({
+      label: "Dairy And Eggs", amount: 0, event_count: 1, priced_event_count: 0, unpriced_event_count: 1,
+      percentage: 0,
+    });
+    expect(result.breakdowns.department.known_denominator).toBe(28);
+    expect(result.breakdowns.store.known_denominator).toBe(33);
+    expect(result.breakdowns.provenance.known_denominator).toBe(33);
+    expect(result.breakdowns.department.items.slice(0, 2).map((item) => item.key)).toEqual(["produce", "bakery"]);
+    expect(result.breakdowns.store.items.map((item) => item.key)).toEqual(["store_one", "store_two"]);
+    expect(result.breakdowns.department.items[0].percentage).toBe(57.1);
+    expect(result.breakdowns.store.items[0].percentage).toBe(84.8);
+
+    expect(result.top_drivers.cap).toBe(6);
+    expect(result.top_drivers.total_count).toBe(9);
+    expect(result.top_drivers.items).toHaveLength(6);
+    expect(result.top_drivers.items[0]).toMatchObject({
+      key: "repeat",
+      name: "Latest winner",
+      department: null,
+      amount: 15,
+      event_count: 3,
+      priced_event_count: 2,
+      unpriced_event_count: 1,
+      percentage: 45.5,
+    });
+    expect(result.top_drivers.items.slice(2, 4).map((driver) => driver.key)).toEqual(["aa", "ab"]);
+
+    const unknownOnly = sqliteEnv([T]);
+    seedAnalyzerEvent(unknownOnly, {
+      send_id: "UNKNOWN", line_key: "unknown", amount: null, unit_price: null,
+      department: "frozen", store: "raw_store-key", provenance: "impulse",
+    });
+    const unknownResult = await readSpendAnalyzer(unknownOnly.env, T, "4w", NOW);
+    expect(unknownResult.breakdowns.department.items[0]).toMatchObject({
+      key: "frozen", amount: 0, percentage: null,
+    });
+    expect(unknownResult.breakdowns.store.items[0]).toMatchObject({
+      key: "raw_store-key", label: "Raw Store Key", amount: 0, percentage: null,
+    });
+    expect(unknownResult.top_drivers).toEqual({ cap: 6, total_count: 0, items: [] });
+  });
+
+  it("uses plural partial-insight grammar in the fixed clause order", async () => {
+    const h = sqliteEnv([T]);
+    for (const key of ["unpriced-a", "unpriced-b"]) {
+      seedAnalyzerEvent(h, { send_id: `S-${key}`, line_key: key, amount: null, unit_price: null });
+    }
+    for (const key of ["estimated-a", "estimated-b"]) {
+      seedAnalyzerEvent(h, { send_id: `S-${key}`, line_key: key, amount: 2, estimated: 1 });
+    }
+    for (const key of ["pending-a", "pending-b"]) {
+      seedAnalyzerEvent(h, { send_id: `S-${key}`, line_key: key, amount: 3, department: null });
+    }
+    expect((await readSpendAnalyzer(h.env, T, "4w", NOW)).insight).toBe(
+      "Known spend is incomplete: 2 purchases had no usable price, 2 purchases used an estimated price, and 2 purchases are awaiting department classification.",
+    );
+  });
+
+  it("selects exact complete insight clauses for higher, lower, unchanged, and unavailable trend", async () => {
+    function complete(current: number, prior: number | null): SqliteEnv {
+      const h = sqliteEnv([T]);
+      seedAnalyzerEvent(h, {
+        send_id: "CURRENT-A", line_key: "current-a", amount: current / 2,
+        department: "bakery", provenance: "planned",
+      });
+      seedAnalyzerEvent(h, {
+        send_id: "CURRENT-B", line_key: "current-b", amount: current / 2,
+        department: "produce", provenance: "impulse",
+      });
+      if (prior != null) {
+        seedAnalyzerEvent(h, {
+          send_id: "PRIOR", line_key: "prior", occurred_on: "2026-06-10", amount: prior,
+          department: "produce", provenance: "planned",
+        });
+      }
+      return h;
+    }
+
+    expect((await readSpendAnalyzer(complete(100, 50).env, T, "4w", NOW)).insight).toBe(
+      "Bakery was the largest department at $50.00. Planned purchases were 50.0% of known spend; impulse purchases were 50.0%. Spend was 100.0% higher than the matched prior range.",
+    );
+    expect((await readSpendAnalyzer(complete(50, 100).env, T, "4w", NOW)).insight).toContain(
+      "Spend was 50.0% lower than the matched prior range.",
+    );
+    expect((await readSpendAnalyzer(complete(50, 50).env, T, "4w", NOW)).insight).toContain(
+      "Spend was unchanged from the matched prior range.",
+    );
+    const unavailableTrend = await readSpendAnalyzer(complete(50, null).env, T, "4w", NOW);
+    expect(unavailableTrend.insight).toBe(
+      "Bakery was the largest department at $25.00. Planned purchases were 50.0% of known spend; impulse purchases were 50.0%.",
+    );
+
+    const awaiting = complete(50, 50);
+    const insightBefore = (await readSpendAnalyzer(awaiting.env, T, "4w", NOW)).insight;
+    await seedAwaiting(awaiting, T, "awaiting-insight");
+    const withAwaiting = await readSpendAnalyzer(awaiting.env, T, "4w", NOW);
+    expect(withAwaiting.awaiting_mark_placed).toBe(1);
+    expect(withAwaiting.insight).toBe(insightBefore);
+  });
+
+  it("converges on late, replayed, voided, and independently committed facts without analyzer DDL or writes", async () => {
+    const h = sqliteEnv([T]);
+    const schemaBefore = h.raw.prepare(
+      "SELECT type, name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name",
+    ).all();
+    const first = await readSpendAnalyzer(h.env, T, "4w", NOW);
+    expect(first.status).toBe("empty");
+
+    await db(h.env).batch(snapshotStatements(h.env, sendOf(h, "LATE"), [
+      lineOf("late", { name: "Late", quantity: 1, unitPrice: 12, department: "produce" }),
+    ]));
+    await recordPurchaseAssertion(h.env, T, [{ sendId: "LATE", lineKey: "late" }], "2026-07-01");
+    await recordPurchaseAssertion(h.env, T, [{ sendId: "LATE", lineKey: "late" }], "2026-07-01");
+    const afterLate = await readSpendAnalyzer(h.env, T, "4w", NOW);
+    expect(afterLate.coverage.monetary).toMatchObject({ event_count: 1, known_amount: 12 });
+    expect(h.rows("spend_events")).toHaveLength(1);
+
+    const stateBeforeRepeat = {
+      events: h.rows("spend_events"),
+      cooking: h.rows("cooking_log"),
+      grocery: h.rows("grocery_list"),
+    };
+    expect(await readSpendAnalyzer(h.env, T, "4w", NOW)).toEqual(afterLate);
+    expect({
+      events: h.rows("spend_events"),
+      cooking: h.rows("cooking_log"),
+      grocery: h.rows("grocery_list"),
+    }).toEqual(stateBeforeRepeat);
+
+    seedCooking(h, { date: "2026-07-01", recipe: "late-meal" });
+    expect((await readSpendAnalyzer(h.env, T, "4w", NOW)).kpis.cost_per_meal.amount).toBe(12);
+    h.raw.prepare("INSERT INTO profile (tenant, weekly_budget) VALUES (?, ?)").run(T, 10);
+    expect((await readSpendAnalyzer(h.env, T, "4w", NOW)).weekly_budget).toBe(10);
+    await seedAwaiting(h, T, "pending-placement");
+    expect((await readSpendAnalyzer(h.env, T, "4w", NOW)).awaiting_mark_placed).toBe(1);
+
+    await voidSpendEvents(h.env, T, [{ sendId: "LATE", lineKey: "late" }]);
+    expect((await readSpendAnalyzer(h.env, T, "4w", NOW)).status).toBe("empty");
+    const schemaAfter = h.raw.prepare(
+      "SELECT type, name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name",
+    ).all();
+    expect(schemaAfter).toEqual(schemaBefore);
+    expect(h.raw.prepare("SELECT COUNT(*) AS n FROM spend_events").get()).toEqual({ n: 1 });
   });
 });

@@ -21,9 +21,9 @@
 //     (`voided_at` stamp, never a delete — keep-forever retention; reads filter
 //     voided events out).
 //
-//   readSpendSection — the retrospective's read-only spend aggregate (trailing 4 ISO
-//     weeks over non-voided events + the awaiting-mark-placed count + the weekly
-//     budget). Plain SQL + arithmetic; no LLM in the read path.
+//   readSpendAnalyzer — the retrospective's read-only 4/8/12-week UTC ISO aggregate
+//     over non-voided events, qualifying cooking rows, the awaiting-mark-placed count,
+//     and weekly budget. Plain bounded SQL + arithmetic; no LLM or analyzer cron.
 //
 // All D1 access goes through src/db.ts (structured `storage_error`, never a raw throw
 // toward tools). Reads are tenant-scoped: `order_send_lines` carries no tenant column,
@@ -31,7 +31,38 @@
 
 import type { Env } from "./env.js";
 import { db } from "./db.js";
+import { COST_PER_MEAL_EXCLUDED } from "./department.js";
 import type { ShopReceiptLine } from "@yamp/contract";
+import type {
+  BreakdownItem,
+  ClassificationCoverage,
+  CostPerMealKpi,
+  CoverageStatus,
+  MonetaryCoverage,
+  SavingsCoverage,
+  SpendAnalyzer,
+  SpendBreakdown,
+  SpendDriver,
+  SpendRange,
+  SpendWeek,
+  TrendKpi,
+} from "./spend-shapes.js";
+
+export type {
+  BreakdownItem,
+  ClassificationCoverage,
+  CostPerMealKpi,
+  CoverageStatus,
+  MonetaryCoverage,
+  MoneyKpi,
+  SavingsCoverage,
+  SpendAnalyzer,
+  SpendBreakdown,
+  SpendDriver,
+  SpendRange,
+  SpendWeek,
+  TrendKpi,
+} from "./spend-shapes.js";
 
 /** Shop-completion arm of the one spend writer. The immutable receipt line is the
  * source; deterministic send/line keys make a response-loss replay a no-op. */
@@ -297,67 +328,318 @@ export async function voidSpendEvents(env: Env, tenant: string, rows: AssertedRo
   await d.batch(stmts);
 }
 
-// --- the retrospective spend read (design D8) ---------------------------------------
+// --- the bounded retrospective spend read (Band 4) ---------------------------------
 
-/** One trailing ISO week's aggregate over non-voided spend events. */
-export interface SpendWeek {
-  /** The week's Monday (ISO date). */
-  week_start: string;
-  /** Sum of non-null `amount` (cents-rounded). */
-  total: number;
-  /** Sum of non-null `savings` (cents-rounded). */
-  savings: number;
-  /** Non-voided events in the week. */
-  events: number;
-  /** Of those, how many are fallback-priced (`estimated = 1`). */
+export const SPEND_RANGE_WEEKS: Readonly<Record<SpendRange, 4 | 8 | 12>> = {
+  "4w": 4,
+  "8w": 8,
+  "12w": 12,
+};
+export const SPEND_DRIVER_CAP = 6 as const;
+export const SPEND_INSIGHT_TEMPLATES = {
+  empty: "No recorded spend in this range.",
+  unavailable: "Spend is unavailable because none of the recorded purchases in this range has a usable price.",
+  partialPrefix: "Known spend is incomplete: ",
+} as const;
+
+/** Backward-compatible name for the retrospective's Spend object. */
+export type SpendSection = SpendAnalyzer;
+
+interface SpendEventRow {
+  send_id: string;
+  line_key: string;
+  occurred_on: string;
+  name: string;
+  amount: number | null;
+  savings: number | null;
   estimated: number;
+  department: string | null;
+  provenance: string;
+  store: string;
 }
 
-/** The retrospective's read-only spend section (band 1; band 4's analyzer extends it). */
-export interface SpendSection {
-  weekly_budget: number | null;
-  /** Trailing 4 ISO weeks (Monday starts), newest last. */
-  weeks: SpendWeek[];
-  /** Current `in_cart` rows carrying a send linkage — D16's "awaiting mark-placed"
-   *  surface: sent but never user-asserted, never auto-counted as spend. */
-  awaiting_mark_placed: number;
+interface SpendBounds {
+  asOf: string;
+  selectedStart: string;
+  priorStart: string;
+  priorEnd: string;
+  starts: string[];
 }
 
-/** The Monday (ISO date) of the ISO week containing `d` (UTC). */
-function isoWeekStart(d: Date): string {
-  const day = d.getUTCDay(); // 0 = Sunday
-  const monday = new Date(d);
-  monday.setUTCDate(monday.getUTCDate() - ((day + 6) % 7));
-  return monday.toISOString().slice(0, 10);
+function addUtcDays(isoDate: string, days: number): string {
+  const value = new Date(`${isoDate}T00:00:00.000Z`);
+  value.setUTCDate(value.getUTCDate() + days);
+  return value.toISOString().slice(0, 10);
+}
+
+/** The Monday (ISO date) of the ISO week containing an ISO date. */
+function isoWeekStart(isoDate: string): string {
+  const value = new Date(`${isoDate}T00:00:00.000Z`);
+  return addUtcDays(isoDate, -((value.getUTCDay() + 6) % 7));
+}
+
+function spendBounds(range: SpendRange, now: Date): SpendBounds {
+  const asOf = now.toISOString().slice(0, 10);
+  const count = SPEND_RANGE_WEEKS[range];
+  const currentStart = isoWeekStart(asOf);
+  const selectedStart = addUtcDays(currentStart, -(count - 1) * 7);
+  const priorStart = addUtcDays(selectedStart, -count * 7);
+  const priorEnd = addUtcDays(asOf, -count * 7);
+  const starts = Array.from({ length: count }, (_, index) => addUtcDays(selectedStart, index * 7));
+  return { asOf, selectedStart, priorStart, priorEnd, starts };
+}
+
+function toCents(value: number): number {
+  return Math.round(value * 100);
+}
+
+function fromCents(cents: number): number {
+  return cents / 100;
+}
+
+function roundCurrency(value: number): number {
+  return fromCents(toCents(value));
+}
+
+function roundPercent(value: number): number {
+  return Math.round(value * 10) / 10;
+}
+
+function compareRawKeys(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
+function presentationLabel(key: string): string {
+  return key
+    .split(/[_-]+/)
+    .map((word) => `${word.slice(0, 1).toUpperCase()}${word.slice(1).toLowerCase()}`)
+    .join(" ");
+}
+
+function monetaryCoverage(rows: SpendEventRow[]): MonetaryCoverage {
+  let priced = 0;
+  let unpriced = 0;
+  let estimated = 0;
+  let knownCents = 0;
+  for (const row of rows) {
+    if (row.amount == null) unpriced++;
+    else {
+      priced++;
+      knownCents += toCents(row.amount);
+    }
+    if (row.estimated) estimated++;
+  }
+  const status: CoverageStatus = rows.length === 0
+    ? "empty"
+    : priced === 0
+      ? "unavailable"
+      : unpriced > 0 || estimated > 0
+        ? "partial"
+        : "complete";
+  return {
+    status,
+    event_count: rows.length,
+    priced_event_count: priced,
+    unpriced_event_count: unpriced,
+    estimated_event_count: estimated,
+    known_amount: fromCents(knownCents),
+  };
+}
+
+function departmentCoverage(rows: SpendEventRow[]): ClassificationCoverage {
+  const classified = rows.filter((row) => row.department != null).length;
+  const pending = rows.length - classified;
+  const status: CoverageStatus = rows.length === 0
+    ? "empty"
+    : classified === 0
+      ? "unavailable"
+      : pending > 0
+        ? "partial"
+        : "complete";
+  return {
+    status,
+    event_count: rows.length,
+    classified_event_count: classified,
+    pending_event_count: pending,
+  };
+}
+
+function savingsCoverage(rows: SpendEventRow[]): SavingsCoverage {
+  let known = 0;
+  let knownCents = 0;
+  for (const row of rows) {
+    if (row.savings != null) {
+      known++;
+      knownCents += toCents(row.savings);
+    }
+  }
+  const unknown = rows.length - known;
+  const status: CoverageStatus = rows.length === 0
+    ? "empty"
+    : known === 0
+      ? "unavailable"
+      : unknown > 0
+        ? "partial"
+        : "complete";
+  return {
+    status,
+    event_count: rows.length,
+    known_event_count: known,
+    unknown_event_count: unknown,
+    known_savings: fromCents(knownCents),
+  };
+}
+
+function overallStatus(monetary: MonetaryCoverage, department: ClassificationCoverage): CoverageStatus {
+  if (monetary.event_count === 0) return "empty";
+  if (monetary.status === "unavailable") return "unavailable";
+  if (monetary.status === "partial" || department.status !== "complete") return "partial";
+  return "complete";
+}
+
+function makeBreakdown(
+  rows: SpendEventRow[],
+  keyFor: (row: SpendEventRow) => string | null,
+  knownDenominatorCents: number,
+  status: CoverageStatus,
+): SpendBreakdown {
+  const groups = new Map<string, { amountCents: number; events: number; priced: number; unpriced: number }>();
+  for (const row of rows) {
+    const key = keyFor(row);
+    if (key == null) continue;
+    const group = groups.get(key) ?? { amountCents: 0, events: 0, priced: 0, unpriced: 0 };
+    group.events++;
+    if (row.amount == null) group.unpriced++;
+    else {
+      group.priced++;
+      group.amountCents += toCents(row.amount);
+    }
+    groups.set(key, group);
+  }
+  const items = [...groups.entries()].map(([key, group]): BreakdownItem => ({
+    key,
+    label: presentationLabel(key),
+    amount: fromCents(group.amountCents),
+    event_count: group.events,
+    priced_event_count: group.priced,
+    unpriced_event_count: group.unpriced,
+    percentage: knownDenominatorCents === 0 ? null : roundPercent(group.amountCents / knownDenominatorCents * 100),
+  })).sort((a, b) => b.amount - a.amount || compareRawKeys(a.key, b.key));
+  return { known_denominator: fromCents(knownDenominatorCents), status, items };
+}
+
+function topDrivers(rows: SpendEventRow[], knownDenominatorCents: number): SpendAnalyzer["top_drivers"] {
+  const groups = new Map<string, {
+    amountCents: number;
+    events: number;
+    priced: number;
+    unpriced: number;
+    representative: SpendEventRow;
+  }>();
+  for (const row of rows) {
+    const prior = groups.get(row.line_key);
+    const later = prior == null || row.occurred_on > prior.representative.occurred_on ||
+      (row.occurred_on === prior.representative.occurred_on && row.send_id > prior.representative.send_id);
+    const group = prior ?? { amountCents: 0, events: 0, priced: 0, unpriced: 0, representative: row };
+    group.events++;
+    if (row.amount == null) group.unpriced++;
+    else {
+      group.priced++;
+      group.amountCents += toCents(row.amount);
+    }
+    if (later) group.representative = row;
+    groups.set(row.line_key, group);
+  }
+  const eligible = [...groups.entries()].filter(([, group]) => group.priced > 0);
+  const items = eligible.map(([key, group]): SpendDriver => ({
+    key,
+    name: group.representative.name,
+    department: group.representative.department == null
+      ? null
+      : { key: group.representative.department, label: presentationLabel(group.representative.department) },
+    amount: fromCents(group.amountCents),
+    event_count: group.events,
+    priced_event_count: group.priced,
+    unpriced_event_count: group.unpriced,
+    percentage: knownDenominatorCents === 0 ? null : roundPercent(group.amountCents / knownDenominatorCents * 100),
+  })).sort((a, b) => b.amount - a.amount || b.event_count - a.event_count || compareRawKeys(a.key, b.key));
+  return { cap: SPEND_DRIVER_CAP, total_count: eligible.length, items: items.slice(0, SPEND_DRIVER_CAP) };
+}
+
+function joinInsightClauses(clauses: string[]): string {
+  if (clauses.length <= 1) return clauses[0] ?? "";
+  if (clauses.length === 2) return `${clauses[0]} and ${clauses[1]}`;
+  return `${clauses.slice(0, -1).join(", ")}, and ${clauses.at(-1)}`;
+}
+
+function insightFor(
+  status: CoverageStatus,
+  monetary: MonetaryCoverage,
+  department: ClassificationCoverage,
+  departmentBreakdown: SpendBreakdown,
+  provenanceBreakdown: SpendBreakdown,
+  trend: TrendKpi,
+): string {
+  if (status === "empty") return SPEND_INSIGHT_TEMPLATES.empty;
+  if (monetary.status === "unavailable") return SPEND_INSIGHT_TEMPLATES.unavailable;
+  if (status === "partial") {
+    const clauses: string[] = [];
+    if (monetary.unpriced_event_count > 0) {
+      clauses.push(`${monetary.unpriced_event_count} ${monetary.unpriced_event_count === 1 ? "purchase had" : "purchases had"} no usable price`);
+    }
+    if (monetary.estimated_event_count > 0) {
+      clauses.push(`${monetary.estimated_event_count} ${monetary.estimated_event_count === 1 ? "purchase used" : "purchases used"} an estimated price`);
+    }
+    if (department.pending_event_count > 0) {
+      clauses.push(`${department.pending_event_count} ${department.pending_event_count === 1 ? "purchase is" : "purchases are"} awaiting department classification`);
+    }
+    return `${SPEND_INSIGHT_TEMPLATES.partialPrefix}${joinInsightClauses(clauses)}.`;
+  }
+
+  const topDepartment = departmentBreakdown.items[0]!;
+  let insight = `${topDepartment.label} was the largest department at $${topDepartment.amount.toFixed(2)}.`;
+  if (monetary.known_amount > 0) {
+    const planned = provenanceBreakdown.items.find((item) => item.key === "planned")?.percentage ?? 0;
+    const impulse = provenanceBreakdown.items.find((item) => item.key === "impulse")?.percentage ?? 0;
+    insight += ` Planned purchases were ${planned.toFixed(1)}% of known spend; impulse purchases were ${impulse.toFixed(1)}%.`;
+  }
+  if (trend.status === "available") {
+    if (trend.percent! > 0) insight += ` Spend was ${trend.percent!.toFixed(1)}% higher than the matched prior range.`;
+    else if (trend.percent! < 0) insight += ` Spend was ${Math.abs(trend.percent!).toFixed(1)}% lower than the matched prior range.`;
+    else insight += " Spend was unchanged from the matched prior range.";
+  }
+  return insight;
 }
 
 /**
- * Compute the household's spend section: the trailing 4 ISO weeks' totals over
- * non-voided events (weeks always present, zeroed when empty; newest last), the
- * caller's `weekly_budget` (null when unset), and the awaiting-mark-placed count.
- * Independent of the retrospective `period` (a fixed trailing window, like `underused`).
+ * Compute one tenant's bounded Spend analyzer over immutable captured facts. All four
+ * reads are tenant-scoped; date-bearing history has inclusive lower and upper bounds.
+ * Reduction is deterministic and has no write, cache, queue, or scheduled side effect.
  */
-export async function readSpendSection(env: Env, tenant: string, now: Date = new Date()): Promise<SpendSection> {
+export async function readSpendAnalyzer(
+  env: Env,
+  tenant: string,
+  range: SpendRange,
+  now: Date = new Date(),
+): Promise<SpendAnalyzer> {
   const d = db(env);
-
-  // The 4 week buckets, oldest → newest.
-  const starts: string[] = [];
-  for (let i = 3; i >= 0; i--) {
-    const ref = new Date(now);
-    ref.setUTCDate(ref.getUTCDate() - i * 7);
-    starts.push(isoWeekStart(ref));
-  }
-  const weeks = new Map<string, SpendWeek>(
-    starts.map((week_start) => [week_start, { week_start, total: 0, savings: 0, events: 0, estimated: 0 }]),
-  );
-
-  const [profileRow, events, awaiting] = await Promise.all([
+  const bounds = spendBounds(range, now);
+  const [profileRow, allEvents, mealRow, awaiting] = await Promise.all([
     d.first<{ weekly_budget: number | null }>("SELECT weekly_budget FROM profile WHERE tenant = ?1", tenant),
-    d.all<{ occurred_on: string; amount: number | null; savings: number | null; estimated: number }>(
-      "SELECT occurred_on, amount, savings, estimated FROM spend_events " +
-        "WHERE tenant = ?1 AND voided_at IS NULL AND occurred_on >= ?2",
+    d.all<SpendEventRow>(
+      "SELECT send_id, line_key, occurred_on, name, amount, savings, estimated, department, provenance, store " +
+        "FROM spend_events WHERE tenant = ?1 AND voided_at IS NULL AND occurred_on >= ?2 AND occurred_on <= ?3 " +
+        "ORDER BY occurred_on ASC, send_id ASC, line_key ASC",
       tenant,
-      starts[0],
+      bounds.priorStart,
+      bounds.asOf,
+    ),
+    d.first<{ n: number }>(
+      "SELECT COUNT(*) AS n FROM cooking_log " +
+        "WHERE tenant = ?1 AND date >= ?2 AND date <= ?3 AND type IN ('recipe', 'ad_hoc')",
+      tenant,
+      bounds.selectedStart,
+      bounds.asOf,
     ),
     d.first<{ n: number }>(
       "SELECT COUNT(*) AS n FROM grocery_list WHERE tenant = ?1 AND status = 'in_cart' AND sent_in IS NOT NULL",
@@ -365,18 +647,173 @@ export async function readSpendSection(env: Env, tenant: string, now: Date = new
     ),
   ]);
 
-  for (const e of events) {
-    const bucket = weeks.get(isoWeekStart(new Date(`${e.occurred_on}T00:00:00Z`)));
-    if (!bucket) continue; // an occurred_on beyond the newest Monday can't exist (occurred_on <= now)
-    bucket.events++;
-    if (e.amount != null) bucket.total = Math.round((bucket.total + e.amount) * 100) / 100;
-    if (e.savings != null) bucket.savings = Math.round((bucket.savings + e.savings) * 100) / 100;
-    if (e.estimated) bucket.estimated++;
+  const selected = allEvents.filter((row) => row.occurred_on >= bounds.selectedStart);
+  const prior = allEvents.filter((row) => row.occurred_on <= bounds.priorEnd);
+  const monetary = monetaryCoverage(selected);
+  const department = departmentCoverage(selected);
+  const savings = savingsCoverage(selected);
+  const status = overallStatus(monetary, department);
+  const priorMonetary = monetaryCoverage(prior);
+  const weeklyBudget = profileRow?.weekly_budget != null && profileRow.weekly_budget > 0
+    ? roundCurrency(profileRow.weekly_budget)
+    : null;
+
+  const weeks = bounds.starts.map((weekStart): SpendWeek => {
+    const weekEnd = addUtcDays(weekStart, 6);
+    const through = weekEnd < bounds.asOf ? weekEnd : bounds.asOf;
+    const rows = selected.filter((row) => row.occurred_on >= weekStart && row.occurred_on <= through);
+    const weekMonetary = monetaryCoverage(rows);
+    const weekDepartment = departmentCoverage(rows);
+    const weekSavings = savingsCoverage(rows);
+    const overBudget = weeklyBudget == null
+      ? null
+      : toCents(weekMonetary.known_amount) > toCents(weeklyBudget)
+        ? true
+        : weekMonetary.status === "partial" || weekMonetary.status === "unavailable"
+          ? null
+          : false;
+    return {
+      week_start: weekStart,
+      total: weekMonetary.known_amount,
+      savings: weekSavings.known_savings,
+      events: rows.length,
+      estimated: weekMonetary.estimated_event_count,
+      week_end: weekEnd,
+      through,
+      is_partial: through < weekEnd,
+      status: overallStatus(weekMonetary, weekDepartment),
+      monetary_coverage: weekMonetary,
+      department_coverage: weekDepartment,
+      savings_coverage: weekSavings,
+      over_budget: overBudget,
+    };
+  });
+
+  const currentIncomplete = monetary.status === "partial" || monetary.status === "unavailable";
+  const priorIncomplete = priorMonetary.status === "partial" || priorMonetary.status === "unavailable";
+  let trend: TrendKpi;
+  if (currentIncomplete) {
+    trend = {
+      percent: null,
+      current_known_amount: monetary.known_amount,
+      prior_known_amount: priorMonetary.known_amount,
+      status: "unavailable",
+      reason: "current_incomplete",
+    };
+  } else if (priorIncomplete) {
+    trend = {
+      percent: null,
+      current_known_amount: monetary.known_amount,
+      prior_known_amount: priorMonetary.known_amount,
+      status: "unavailable",
+      reason: "prior_incomplete",
+    };
+  } else if (priorMonetary.known_amount === 0) {
+    trend = {
+      percent: null,
+      current_known_amount: monetary.known_amount,
+      prior_known_amount: 0,
+      status: "unavailable",
+      reason: "prior_zero",
+    };
+  } else {
+    trend = {
+      percent: roundPercent((monetary.known_amount - priorMonetary.known_amount) / priorMonetary.known_amount * 100),
+      current_known_amount: monetary.known_amount,
+      prior_known_amount: priorMonetary.known_amount,
+      status: "available",
+      reason: null,
+    };
   }
 
-  return {
-    weekly_budget: profileRow?.weekly_budget ?? null,
-    weeks: starts.map((s) => weeks.get(s)!),
+  const eligible = selected.filter((row) =>
+    row.department != null && !(COST_PER_MEAL_EXCLUDED as readonly string[]).includes(row.department));
+  const knownNumeratorCents = eligible.reduce(
+    (sum, row) => sum + (row.amount == null ? 0 : toCents(row.amount)),
+    0,
+  );
+  const hasPricedEligible = eligible.some((row) => row.amount != null);
+  const numeratorIncomplete = selected.some((row) => row.department == null) ||
+    eligible.some((row) => row.amount == null || Boolean(row.estimated));
+  const numeratorStatus: CoverageStatus = selected.length === 0
+    ? "empty"
+    : numeratorIncomplete
+      ? hasPricedEligible ? "partial" : "unavailable"
+      : "complete";
+  const mealCount = mealRow?.n ?? 0;
+  let costPerMeal: CostPerMealKpi;
+  if (mealCount === 0) {
+    costPerMeal = {
+      amount: null,
+      known_numerator: fromCents(knownNumeratorCents),
+      meal_count: 0,
+      status: "unavailable",
+      reason: "zero_meals",
+    };
+  } else if (numeratorStatus === "unavailable") {
+    costPerMeal = {
+      amount: null,
+      known_numerator: fromCents(knownNumeratorCents),
+      meal_count: mealCount,
+      status: "unavailable",
+      reason: "numerator_unavailable",
+    };
+  } else {
+    costPerMeal = {
+      amount: roundCurrency(fromCents(knownNumeratorCents) / mealCount),
+      known_numerator: fromCents(knownNumeratorCents),
+      meal_count: mealCount,
+      status: numeratorStatus,
+      reason: null,
+    };
+  }
+
+  const totalKnownCents = toCents(monetary.known_amount);
+  const classifiedKnownCents = selected.reduce(
+    (sum, row) => sum + (row.department != null && row.amount != null ? toCents(row.amount) : 0),
+    0,
+  );
+  const departmentBreakdown = makeBreakdown(selected, (row) => row.department, classifiedKnownCents, status);
+  const storeBreakdown = makeBreakdown(selected, (row) => row.store, totalKnownCents, monetary.status);
+  const provenanceBreakdown = makeBreakdown(selected, (row) => row.provenance, totalKnownCents, monetary.status);
+
+  const analyzer: SpendAnalyzer = {
+    range,
+    as_of: bounds.asOf,
+    selected_start: bounds.selectedStart,
+    selected_end: bounds.asOf,
+    prior_start: bounds.priorStart,
+    prior_end: bounds.priorEnd,
+    status,
+    coverage: { monetary, department, savings },
+    weekly_budget: weeklyBudget,
+    weeks,
     awaiting_mark_placed: awaiting?.n ?? 0,
+    kpis: {
+      total_spend: {
+        amount: monetary.status === "unavailable" ? null : monetary.known_amount,
+        status: monetary.status,
+      },
+      average_per_week: {
+        amount: monetary.status === "unavailable" ? null : roundCurrency(monetary.known_amount / SPEND_RANGE_WEEKS[range]),
+        status: monetary.status,
+      },
+      cost_per_meal: costPerMeal,
+      trend,
+    },
+    breakdowns: {
+      department: departmentBreakdown,
+      store: storeBreakdown,
+      provenance: provenanceBreakdown,
+    },
+    top_drivers: topDrivers(selected, totalKnownCents),
+    insight: "",
   };
+  analyzer.insight = insightFor(status, monetary, department, departmentBreakdown, provenanceBreakdown, trend);
+  return analyzer;
+}
+
+/** Compatible four-week adapter; all aggregation delegates to `readSpendAnalyzer`. */
+export function readSpendSection(env: Env, tenant: string, now: Date = new Date()): Promise<SpendSection> {
+  return readSpendAnalyzer(env, tenant, "4w", now);
 }

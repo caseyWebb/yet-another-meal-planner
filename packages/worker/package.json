@@ -12,6 +12,7 @@
     "./api": "./src/api/app.ts",
     "./admin-api": "./src/admin/app.ts",
     "./order-shapes": "./src/order-shapes.ts",
+    "./spend-shapes": "./src/spend-shapes.ts",
     "./store-adapter-shapes": "./src/store-adapter-shapes.ts",
     "./instacart": "./src/instacart.ts",
     "./instacart-shapes": "./src/instacart-shapes.ts"

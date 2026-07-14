@@ -69,6 +69,15 @@ export interface SeedLiterals {
       readonly household: string;
       readonly inCart: string;
     };
+    readonly spend: {
+      /** Different-tenant, session-backed pristine oracle used only by Spend browser cases. */
+      readonly fixtureTenant: string;
+      readonly budget: number;
+      readonly awaiting: number;
+      readonly totals: Readonly<Record<"4w" | "8w" | "12w", number>>;
+      readonly events: Readonly<Record<"4w" | "8w" | "12w", number>>;
+      readonly topDriver: { readonly key: string; readonly name: string; readonly amount: number };
+    };
     /** The seeded meal-vibe palette (profile-planning-and-vibes-ui): six vibes across
      *  breakfast/lunch/dinner, one pinned + one unpinned per group. */
     readonly vibes: Readonly<

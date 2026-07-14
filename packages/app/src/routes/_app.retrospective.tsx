@@ -4,8 +4,8 @@
 // `/api/log` meal field, and the meal-aware `retrospective` tool): a composer with a meal
 // segmented control (defaulting by time of day) and a source control (From cookbook → recipe,
 // Something else → ad_hoc — the mock's "Leftovers" source is deliberately dropped, the log is
-// a cooking log not an eating log), plus a day-grouped, meal-tagged list. The Spend and Waste
-// analyzers themselves are band 4 — their tabs render a placeholder here.
+// a cooking log not an eating log), plus a day-grouped, meal-tagged list. Band 4 replaces only
+// the Spend placeholder with the shared bounded analyzer; Waste remains its existing placeholder.
 import * as React from "react";
 import { Link, createFileRoute, stripSearchParams } from "@tanstack/react-router";
 import type { SearchSchemaInput } from "@tanstack/react-router";
@@ -20,15 +20,29 @@ import {
   SegmentedControl,
   toast,
 } from "@yamp/ui";
-import { useIndex, useLog, type LogRow } from "../lib/data";
+import {
+  useIndex,
+  useLog,
+  useSpendAnalyzer,
+  type LogRow,
+  type SpendAnalyzer,
+  type SpendBreakdown,
+  type SpendCoverageStatus,
+  type SpendRange,
+  type SpendWeek,
+} from "../lib/data";
 import { useLogAdd, useLogRemove } from "../lib/mutations";
 import { fmtDay, isoToday } from "../lib/format";
 
 type Tab = "log" | "spend" | "waste";
+const SPEND_RANGES: SpendRange[] = ["4w", "8w", "12w"];
 
 export const Route = createFileRoute("/_app/retrospective")({
-  validateSearch: (s: { tab?: string } & SearchSchemaInput): { tab: Tab } => ({
+  validateSearch: (s: { tab?: string; range?: string } & SearchSchemaInput): { tab: Tab; range: SpendRange | undefined } => ({
     tab: s.tab === "spend" ? "spend" : s.tab === "waste" ? "waste" : "log",
+    // Explicitly overwrite an invalid raw value: parent search is merged into this
+    // route's validated search, so omission would leave the invalid value visible.
+    range: SPEND_RANGES.includes(s.range as SpendRange) ? s.range as SpendRange : undefined,
   }),
   // The Cooking-log default is the bare URL — strip it so `/retrospective` stays clean.
   search: { middlewares: [stripSearchParams({ tab: "log" as const })] },
@@ -42,41 +56,394 @@ const TABS: { key: Tab; label: string }[] = [
 ];
 
 function RetrospectivePage() {
-  const { tab } = Route.useSearch();
+  const { tab, range } = Route.useSearch();
   const navigate = Route.useNavigate();
+  const tabRefs = React.useRef<Record<Tab, HTMLButtonElement | null>>({ log: null, spend: null, waste: null });
+
+  React.useEffect(() => {
+    if (tab !== "spend" || range !== undefined) return;
+    void navigate({
+      replace: true,
+      search: (previous) => ({ ...previous, tab: "spend", range: "8w" }),
+    });
+  }, [navigate, range, tab]);
+
+  function selectTab(next: Tab, focus = false) {
+    void navigate({ search: (previous) => ({ ...previous, tab: next }) });
+    if (focus) tabRefs.current[next]?.focus();
+  }
+
+  function onTabKeyDown(event: React.KeyboardEvent<HTMLButtonElement>, index: number) {
+    let next: number | null = null;
+    if (event.key === "ArrowRight") next = (index + 1) % TABS.length;
+    else if (event.key === "ArrowLeft") next = (index - 1 + TABS.length) % TABS.length;
+    else if (event.key === "Home") next = 0;
+    else if (event.key === "End") next = TABS.length - 1;
+    if (next == null) return;
+    event.preventDefault();
+    selectTab(TABS[next].key, true);
+  }
 
   return (
     <div data-testid="retro-page">
       <PageHead title="Retrospective" sub="Look back at what you cooked — and what it cost." />
-      <nav className="prof-tabs" role="tablist" aria-label="Retrospective">
-        {TABS.map((t) => (
+      <nav className="prof-tabs retrospective-tabs" role="tablist" aria-label="Retrospective">
+        {TABS.map((t, index) => (
           <button
             key={t.key}
+            id={`retro-tab-${t.key}`}
+            ref={(node) => { tabRefs.current[t.key] = node; }}
             type="button"
             role="tab"
             aria-selected={tab === t.key}
+            aria-controls={`retro-panel-${t.key}`}
+            tabIndex={tab === t.key ? 0 : -1}
             className={`prof-tab${tab === t.key ? " on" : ""}`}
             data-testid={`retro-tab-${t.key}`}
-            onClick={() => void navigate({ search: (prev) => ({ ...prev, tab: t.key }) })}
+            onClick={() => selectTab(t.key)}
+            onKeyDown={(event) => onTabKeyDown(event, index)}
           >
             {t.label}
           </button>
         ))}
       </nav>
-      <div className="prof-tabpanel" role="tabpanel">
-        {tab === "log" ? (
-          <CookingLogTab />
-        ) : (
-          <div data-testid={`${tab}-page`}>
-            <EmptyState
-              title="Coming soon"
-              sub={tab === "spend" ? "Your spend analysis will show up here." : "Your waste analysis will show up here."}
-            />
+      <section
+        id="retro-panel-log"
+        className="prof-tabpanel"
+        role="tabpanel"
+        aria-labelledby="retro-tab-log"
+        hidden={tab !== "log"}
+      >
+        {tab === "log" ? <CookingLogTab /> : null}
+      </section>
+      <section
+        id="retro-panel-spend"
+        className="prof-tabpanel"
+        role="tabpanel"
+        aria-labelledby="retro-tab-spend"
+        hidden={tab !== "spend"}
+      >
+        {tab === "spend" ? (
+          <SpendAnalyzerTab
+            range={range ?? "8w"}
+            enabled={range !== undefined}
+            onRange={(next) => void navigate({ search: (previous) => ({ ...previous, tab: "spend", range: next }) })}
+          />
+        ) : null}
+      </section>
+      <section
+        id="retro-panel-waste"
+        className="prof-tabpanel"
+        role="tabpanel"
+        aria-labelledby="retro-tab-waste"
+        hidden={tab !== "waste"}
+      >
+        {tab === "waste" ? (
+          <div data-testid="waste-page">
+            <EmptyState title="Coming soon" sub="Your waste analysis will show up here." />
           </div>
-        )}
-      </div>
+        ) : null}
+      </section>
     </div>
   );
+}
+
+function SpendAnalyzerTab(props: {
+  range: SpendRange;
+  enabled: boolean;
+  onRange: (range: SpendRange) => void;
+}) {
+  const query = useSpendAnalyzer(props.range, props.enabled);
+  return (
+    <div className="spend-panel" data-testid="spend-page">
+      <div className="spend-toolbar">
+        <div>
+          <h2>Household spend</h2>
+          <p>{props.range.slice(0, -1)} weeks · UTC weeks start Monday</p>
+        </div>
+        <div className="spend-range" role="group" aria-label="Spend range">
+          {SPEND_RANGES.map((range) => (
+            <button
+              key={range}
+              type="button"
+              aria-pressed={props.range === range}
+              onClick={() => props.onRange(range)}
+            >
+              {range.slice(0, -1)} weeks
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {!props.enabled || query.isPending ? (
+        <div className="spend-state" role="status" data-testid="spend-loading">
+          Loading spend analysis…
+        </div>
+      ) : query.isError ? (
+        <div className="spend-state spend-state-error" role="alert" data-testid="spend-error">
+          <h3>Spend analysis couldn’t load</h3>
+          <p>{query.error.message || "The request failed."}</p>
+          <Button size="sm" type="button" onClick={() => void query.refetch()}>Retry spend analysis</Button>
+        </div>
+      ) : query.data ? (
+        <SpendResult result={query.data} />
+      ) : null}
+    </div>
+  );
+}
+
+function SpendResult({ result }: { result: SpendAnalyzer }) {
+  const empty = result.status === "empty";
+  const unavailable = result.status === "unavailable";
+  return (
+    <div className="spend-result" data-status={result.status}>
+      <div className={`spend-state spend-state-${result.status}`} data-testid={`spend-state-${result.status}`}>
+        {empty ? (
+          <>
+            <h3>No recorded spend</h3>
+            <p>No non-voided purchases were recorded from {fmtSpendDay(result.selected_start)} through {fmtSpendDay(result.selected_end)}.</p>
+          </>
+        ) : unavailable ? (
+          <>
+            <h3>Spend is unavailable</h3>
+            <p>{result.coverage.monetary.event_count} recorded {plural(result.coverage.monetary.event_count, "purchase has", "purchases have")} no usable price.</p>
+          </>
+        ) : result.status === "partial" ? (
+          <>
+            <h3>Known spend is incomplete</h3>
+            <CoverageEvidence result={result} />
+          </>
+        ) : (
+          <>
+            <h3>Complete captured spend</h3>
+            <p>{fmtSpendDay(result.selected_start)}–{fmtSpendDay(result.selected_end)} · through {fmtSpendDay(result.as_of)} UTC</p>
+          </>
+        )}
+      </div>
+
+      {result.awaiting_mark_placed > 0 ? (
+        <aside className="spend-awaiting" aria-label="Awaiting placement" data-testid="spend-awaiting">
+          <strong>{result.awaiting_mark_placed} {plural(result.awaiting_mark_placed, "item is", "items are")} awaiting “mark placed.”</strong>
+          <span>These sent cart items are not counted as spend.</span>
+        </aside>
+      ) : null}
+
+      {!empty && !unavailable ? <SpendKpis result={result} /> : null}
+      {!empty ? <SpendWeeks result={result} /> : null}
+      {!empty && !unavailable ? (
+        <>
+          <SpendBreakdowns result={result} />
+          <SpendDrivers result={result} />
+        </>
+      ) : null}
+      <aside className="spend-insight" aria-label="Spend insight" data-testid="spend-insight">
+        <span>Insight</span>
+        <p>{result.insight}</p>
+      </aside>
+    </div>
+  );
+}
+
+function CoverageEvidence({ result }: { result: SpendAnalyzer }) {
+  const evidence = [
+    result.coverage.monetary.unpriced_event_count > 0
+      ? `${result.coverage.monetary.unpriced_event_count} ${plural(result.coverage.monetary.unpriced_event_count, "purchase has", "purchases have")} no usable price`
+      : null,
+    result.coverage.monetary.estimated_event_count > 0
+      ? `${result.coverage.monetary.estimated_event_count} ${plural(result.coverage.monetary.estimated_event_count, "purchase uses", "purchases use")} an estimated price`
+      : null,
+    result.coverage.department.pending_event_count > 0
+      ? `${result.coverage.department.pending_event_count} ${plural(result.coverage.department.pending_event_count, "purchase awaits", "purchases await")} department classification`
+      : null,
+  ].filter((item): item is string => item != null);
+  return <ul className="spend-evidence">{evidence.map((item) => <li key={item}>{item}</li>)}</ul>;
+}
+
+function SpendKpis({ result }: { result: SpendAnalyzer }) {
+  const total = result.kpis.total_spend;
+  const average = result.kpis.average_per_week;
+  const cost = result.kpis.cost_per_meal;
+  const trend = result.kpis.trend;
+  return (
+    <dl className="spend-kpis" aria-label="Spend key metrics">
+      <Kpi label="Total spend" value={moneyKpi(total.amount, result.status)} detail={coverageLabel(result.status)} testId="spend-kpi-total" />
+      <Kpi label="Average per week" value={moneyKpi(average.amount, result.status)} detail={`${result.weeks.length} selected buckets`} testId="spend-kpi-average" />
+      <Kpi
+        label="Cost per meal"
+        value={cost.amount == null ? "Unavailable" : moneyKpi(cost.amount, cost.status)}
+        detail={cost.reason === "zero_meals"
+          ? "No qualifying cooking events"
+          : cost.reason === "numerator_unavailable"
+            ? "Spend numerator unavailable"
+            : `${cost.meal_count} qualifying ${plural(cost.meal_count, "cook", "cooks")}`}
+        testId="spend-kpi-meal"
+      />
+      <Kpi
+        label="Matched trend"
+        value={trend.status === "available" ? trendLabel(trend.percent!) : "Unavailable"}
+        detail={trend.status === "available" ? "Against the matched prior range" : trendReason(trend.reason)}
+        testId="spend-kpi-trend"
+      />
+    </dl>
+  );
+}
+
+function Kpi(props: { label: string; value: string; detail: string; testId: string }) {
+  return (
+    <div className="spend-kpi" data-testid={props.testId}>
+      <dt>{props.label}</dt>
+      <dd>{props.value}</dd>
+      <span>{props.detail}</span>
+    </div>
+  );
+}
+
+function SpendWeeks({ result }: { result: SpendAnalyzer }) {
+  const max = Math.max(1, result.weekly_budget ?? 0, ...result.weeks.map((week) => week.total));
+  return (
+    <section className="spend-section" aria-labelledby="spend-weeks-heading">
+      <div className="spend-section-head">
+        <div>
+          <h3 id="spend-weeks-heading">Weekly spend</h3>
+          <p>Chronological known amounts, oldest to newest.</p>
+        </div>
+        {result.weekly_budget == null ? null : (
+          <span className="spend-budget" data-testid="spend-budget">Budget {money(result.weekly_budget)} / week</span>
+        )}
+      </div>
+      <div className="spend-chart-scroll" role="region" aria-label="Weekly spend chart" tabIndex={0}>
+        <ol className="spend-weeks" data-testid="spend-weeks" data-range={result.range}>
+          {result.weeks.map((week) => (
+            <SpendWeekItem key={week.week_start} week={week} max={max} budget={result.weekly_budget} />
+          ))}
+        </ol>
+      </div>
+    </section>
+  );
+}
+
+function SpendWeekItem({ week, max, budget }: { week: SpendWeek; max: number; budget: number | null }) {
+  const scaledHeight = week.total / max * 100;
+  const height = `${budget == null ? Math.max(week.total > 0 ? 8 : 0, scaledHeight) : scaledHeight}%`;
+  return (
+    <li className="spend-week" data-testid="spend-week" data-week={week.week_start}>
+      <div className="spend-bar-wrap" aria-hidden="true">
+        {budget == null ? null : <span className="spend-budget-line" style={{ bottom: `${Math.min(100, budget / max * 100)}%` }} />}
+        <span className={`spend-bar spend-bar-${week.status}`} style={{ height }} />
+      </div>
+      <strong>{fmtSpendDay(week.week_start)}</strong>
+      <span className="spend-week-value">{weekAmount(week)}</span>
+      <span className="spend-week-coverage">{weekCoverage(week)}</span>
+      {budget == null ? null : <span className="spend-week-budget">{budgetComparison(week.over_budget, week.through)}</span>}
+    </li>
+  );
+}
+
+function SpendBreakdowns({ result }: { result: SpendAnalyzer }) {
+  return (
+    <div className="spend-breakdown-grid">
+      <Breakdown title="By department" breakdown={result.breakdowns.department} displayStatus={result.status} testId="spend-breakdown-department" />
+      <Breakdown title="By store" breakdown={result.breakdowns.store} displayStatus={result.status} testId="spend-breakdown-store" />
+      <Breakdown title="Planned vs impulse" breakdown={result.breakdowns.provenance} displayStatus={result.status} testId="spend-breakdown-provenance" />
+    </div>
+  );
+}
+
+function Breakdown({ title, breakdown, displayStatus, testId }: { title: string; breakdown: SpendBreakdown; displayStatus: SpendCoverageStatus; testId: string }) {
+  return (
+    <section className="spend-breakdown" data-testid={testId}>
+      <h3>{title}</h3>
+      {breakdown.items.length === 0 ? <p className="spend-muted">No classified groups available.</p> : (
+        <ul>
+          {breakdown.items.map((item) => (
+            <li key={item.key}>
+              <span><strong>{item.label}</strong><small>{item.event_count} {plural(item.event_count, "purchase", "purchases")}</small></span>
+              <span><strong>{moneyKpi(item.amount, displayStatus)}</strong><small>{item.percentage == null ? "Percentage unavailable" : `${item.percentage.toFixed(1)}%`}</small></span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+function SpendDrivers({ result }: { result: SpendAnalyzer }) {
+  if (result.top_drivers.items.length === 0) return null;
+  return (
+    <section className="spend-section spend-drivers" aria-labelledby="spend-drivers-heading" data-testid="spend-drivers">
+      <div className="spend-section-head">
+        <div>
+          <h3 id="spend-drivers-heading">Top drivers</h3>
+          <p>Showing {result.top_drivers.items.length} of {result.top_drivers.total_count} priced line groups.</p>
+        </div>
+      </div>
+      <ol>
+        {result.top_drivers.items.map((driver) => (
+          <li key={driver.key}>
+            <span><strong>{driver.name}</strong><small>{driver.department?.label ?? "Department pending"} · {driver.event_count} {plural(driver.event_count, "purchase", "purchases")}</small></span>
+            <span><strong>{moneyKpi(driver.amount, result.status)}</strong><small>{driver.percentage == null ? "Percentage unavailable" : `${driver.percentage.toFixed(1)}% of known spend`}</small></span>
+          </li>
+        ))}
+      </ol>
+    </section>
+  );
+}
+
+function money(value: number): string {
+  return `$${value.toFixed(2)}`;
+}
+
+function moneyKpi(value: number | null, status: SpendCoverageStatus): string {
+  if (value == null) return "Unavailable";
+  return `${status === "partial" ? "Known " : ""}${money(value)}`;
+}
+
+function coverageLabel(status: SpendCoverageStatus): string {
+  return status === "partial" ? "Known subtotal; coverage incomplete" : status === "complete" ? "Complete captured coverage" : status;
+}
+
+function trendLabel(percent: number): string {
+  if (percent === 0) return "Unchanged";
+  return `${Math.abs(percent).toFixed(1)}% ${percent > 0 ? "higher" : "lower"}`;
+}
+
+function trendReason(reason: SpendAnalyzer["kpis"]["trend"]["reason"]): string {
+  if (reason === "current_incomplete") return "Current price coverage incomplete";
+  if (reason === "prior_incomplete") return "Prior price coverage incomplete";
+  return "No positive prior denominator";
+}
+
+function weekAmount(week: SpendWeek): string {
+  if (week.monetary_coverage.status === "unavailable") return "Price unavailable";
+  return moneyKpi(week.total, week.status);
+}
+
+function weekCoverage(week: SpendWeek): string {
+  if (week.status === "empty") return "No recorded purchases";
+  if (week.monetary_coverage.status === "unavailable") {
+    return `${week.events} ${plural(week.events, "purchase", "purchases")}; no usable price`;
+  }
+  const details = [`${week.events} ${plural(week.events, "purchase", "purchases")}`];
+  if (week.monetary_coverage.unpriced_event_count > 0) details.push(`${week.monetary_coverage.unpriced_event_count} unpriced`);
+  if (week.monetary_coverage.estimated_event_count > 0) details.push(`${week.monetary_coverage.estimated_event_count} estimated`);
+  if (week.department_coverage.pending_event_count > 0) details.push(`${week.department_coverage.pending_event_count} department pending`);
+  if (week.is_partial) details.push(`through ${fmtSpendDay(week.through)}`);
+  return details.join(" · ");
+}
+
+function budgetComparison(over: boolean | null, through: string): string {
+  if (over === true) return `Over budget through ${fmtSpendDay(through)}`;
+  if (over === false) return `Within budget through ${fmtSpendDay(through)}`;
+  return "Budget comparison unavailable";
+}
+
+function fmtSpendDay(value: string): string {
+  return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", timeZone: "UTC" })
+    .format(new Date(`${value}T00:00:00.000Z`));
+}
+
+function plural(count: number, one: string, many: string): string {
+  return count === 1 ? one : many;
 }
 
 const MEALS = ["breakfast", "lunch", "dinner"] as const;
