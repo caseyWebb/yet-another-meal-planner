@@ -358,7 +358,7 @@ interface SpendEventRow {
   store: string;
 }
 
-interface SpendBounds {
+export interface SpendBounds {
   asOf: string;
   selectedStart: string;
   priorStart: string;
@@ -366,7 +366,7 @@ interface SpendBounds {
   starts: string[];
 }
 
-function addUtcDays(isoDate: string, days: number): string {
+export function addUtcDays(isoDate: string, days: number): string {
   const value = new Date(`${isoDate}T00:00:00.000Z`);
   value.setUTCDate(value.getUTCDate() + days);
   return value.toISOString().slice(0, 10);
@@ -378,7 +378,7 @@ function isoWeekStart(isoDate: string): string {
   return addUtcDays(isoDate, -((value.getUTCDay() + 6) % 7));
 }
 
-function spendBounds(range: SpendRange, now: Date): SpendBounds {
+export function spendBounds(range: SpendRange, now: Date): SpendBounds {
   const asOf = now.toISOString().slice(0, 10);
   const count = SPEND_RANGE_WEEKS[range];
   const currentStart = isoWeekStart(asOf);
@@ -389,11 +389,11 @@ function spendBounds(range: SpendRange, now: Date): SpendBounds {
   return { asOf, selectedStart, priorStart, priorEnd, starts };
 }
 
-function toCents(value: number): number {
+export function toCents(value: number): number {
   return Math.round(value * 100);
 }
 
-function fromCents(cents: number): number {
+export function fromCents(cents: number): number {
   return cents / 100;
 }
 
@@ -401,15 +401,15 @@ function roundCurrency(value: number): number {
   return fromCents(toCents(value));
 }
 
-function roundPercent(value: number): number {
+export function roundPercent(value: number): number {
   return Math.round(value * 10) / 10;
 }
 
-function compareRawKeys(a: string, b: string): number {
+export function compareRawKeys(a: string, b: string): number {
   return a < b ? -1 : a > b ? 1 : 0;
 }
 
-function presentationLabel(key: string): string {
+export function presentationLabel(key: string): string {
   return key
     .split(/[_-]+/)
     .map((word) => `${word.slice(0, 1).toUpperCase()}${word.slice(1).toLowerCase()}`)

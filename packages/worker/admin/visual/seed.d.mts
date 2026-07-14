@@ -78,6 +78,16 @@ export interface SeedLiterals {
       readonly events: Readonly<Record<"4w" | "8w" | "12w", number>>;
       readonly topDriver: { readonly key: string; readonly name: string; readonly amount: number };
     };
+    readonly waste: {
+      /** Different-tenant, session-backed pristine oracle used by the real Waste case. */
+      readonly fixtureTenant: string;
+      readonly amounts: Readonly<Record<"4w" | "8w" | "12w", number>>;
+      readonly events: Readonly<Record<"4w" | "8w" | "12w", number>>;
+      readonly rates: Readonly<Record<"4w" | "8w" | "12w", number>>;
+      readonly topItem: { readonly key: string; readonly name: string; readonly amount: number };
+      readonly leftover: { readonly key: string; readonly name: string };
+      readonly insight8w: string;
+    };
     /** The seeded meal-vibe palette (profile-planning-and-vibes-ui): six vibes across
      *  breakfast/lunch/dinner, one pinned + one unpinned per group. */
     readonly vibes: Readonly<

@@ -31,6 +31,10 @@ import type {
   SpendAnalyzer,
   SpendRange,
 } from "@yamp/worker/spend-shapes";
+import type {
+  WasteAnalyzer,
+  WasteRange,
+} from "@yamp/worker/waste-shapes";
 
 export type {
   ToBuyLine,
@@ -56,6 +60,16 @@ export type {
   SpendRange,
   SpendWeek,
 } from "@yamp/worker/spend-shapes";
+export type {
+  Avoidability,
+  WasteAnalyzer,
+  WasteBreakdown,
+  WasteBreakdownItem,
+  WasteItemGroup,
+  WasteItemStatus,
+  WasteRange,
+  WasteWeek,
+} from "@yamp/worker/waste-shapes";
 
 /** Plan §6 posture: near-live reads, no long client cache. */
 const STALE_MS = 15_000;
@@ -463,6 +477,21 @@ export function useSpendAnalyzer(range: SpendRange, enabled: boolean) {
     retry: false,
     queryFn: async () =>
       jsonOf<SpendAnalyzer>(await api.api.retrospective.spend.$get({ query: { range } })),
+  });
+}
+
+/** Online-only Waste analyzer read. The shared range is part of the representation,
+ * current avoidability policy is selected server-side, and this key intentionally
+ * stays outside the persistence allowlist. */
+export function useWasteAnalyzer(range: WasteRange, enabled: boolean) {
+  return useQuery<WasteAnalyzer, ApiError>({
+    queryKey: ["retrospective", "waste", range],
+    enabled,
+    staleTime: 60_000,
+    refetchOnMount: "always",
+    retry: false,
+    queryFn: async () =>
+      jsonOf<WasteAnalyzer>(await api.api.retrospective.waste.$get({ query: { range } })),
   });
 }
 

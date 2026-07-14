@@ -9,6 +9,11 @@ import type {
   SpendAnalyzer,
   SpendRange,
 } from "../../../src/spend-shapes";
+import type {
+  WasteAnalyzer,
+  WasteRange,
+  WasteWeek,
+} from "../../../src/waste-shapes";
 
 function addDays(value: string, days: number): string {
   const date = new Date(`${value}T00:00:00.000Z`);
@@ -143,6 +148,20 @@ async function switchToSpendFixture(context: BrowserContext, page: Page): Promis
   await page.getByTestId("retro-page").waitFor();
 }
 
+async function switchToWasteFixture(context: BrowserContext, page: Page): Promise<void> {
+  await context.addCookies([{
+    name: "__Host-session",
+    value: `pw-app-session-${SEED.app.waste.fixtureTenant}`,
+    domain: "127.0.0.1",
+    path: "/",
+    httpOnly: true,
+    secure: true,
+    sameSite: "Lax",
+  }]);
+  await page.goto("/retrospective");
+  await page.getByTestId("retro-page").waitFor();
+}
+
 async function readFixedRealSpend(page: Page, range: SpendRange): Promise<SpendAnalyzer> {
   const response = await page.evaluate(async (selectedRange) => {
     const fetched = await fetch(`/api/retrospective/spend?range=${selectedRange}`);
@@ -169,6 +188,93 @@ async function expectFixedRealSpendUiState(
   await expect(retrospectivePage.spendInsight().locator("p")).toHaveText(FIXED_SPEND[range].insight);
   await expect(retrospectivePage.spendAwaiting()).toContainText('1 item is awaiting “mark placed.”');
   await expect(retrospectivePage.spendAwaiting()).toContainText("These sent cart items are not counted as spend.");
+}
+
+async function readFixedRealWaste(page: Page, range: WasteRange): Promise<WasteAnalyzer> {
+  const response = await page.evaluate(async (selectedRange) => {
+    const fetched = await fetch(`/api/retrospective/waste?range=${selectedRange}`);
+    if (!fetched.ok) throw new Error(`Waste fixture read failed (${fetched.status})`);
+    return fetched.json() as Promise<WasteAnalyzer>;
+  }, range);
+
+  expect(response.range).toBe(range);
+  expect(response.status).toBe("complete");
+  expect(response.weeks).toHaveLength(Number(range.slice(0, -1)));
+  expect(response.coverage.monetary).toMatchObject({
+    status: "complete",
+    event_count: SEED.app.waste.events[range],
+    priced_event_count: SEED.app.waste.events[range],
+    unpriced_event_count: 0,
+    estimated_event_count: 0,
+    known_amount: SEED.app.waste.amounts[range],
+  });
+  expect(response.kpis.tossed_value).toEqual({ amount: SEED.app.waste.amounts[range], status: "complete" });
+  expect(response.kpis.items_binned.count).toBe(SEED.app.waste.events[range]);
+  expect(response.kpis.waste_rate).toMatchObject({
+    percent: SEED.app.waste.rates[range],
+    known_waste_amount: SEED.app.waste.amounts[range],
+    status: "available",
+    reason: null,
+  });
+  expect(response.avoidability_mapping).toEqual({
+    version: "waste-avoidability-v1",
+    current_version: "waste-avoidability-v1",
+    is_current: true,
+  });
+
+  if (range === "8w") {
+    expect(response.kpis.items_binned.per_week).toBe(0.8);
+    expect(response.kpis.waste_rate.qualifying_spend_amount).toBe(222);
+    expect(response.kpis.trend).toEqual({
+      percent: 533.3,
+      current_known_amount: 190,
+      prior_known_amount: 30,
+      status: "available",
+      reason: null,
+    });
+    expect(response.breakdowns.department).toMatchObject({
+      count_denominator: 6,
+      known_amount_denominator: 190,
+      classification_coverage: { status: "complete", classified_event_count: 6, pending_event_count: 0 },
+    });
+    expect(response.breakdowns.department.items.map((item) => item.key)).toEqual([
+      "meat", "produce", "dairy", "frozen", "leftovers", "beverages",
+    ]);
+    expect(response.breakdowns.reason.items[0]).toMatchObject({
+      key: "bought_too_much", label: "Bought Too Much", event_count: 1, amount: 110,
+    });
+    expect(response.breakdowns.avoidability.items).toEqual([
+      expect.objectContaining({ key: "avoidable", label: "Avoidable", event_count: 3, amount: 140, amount_percentage: 73.7 }),
+      expect.objectContaining({ key: "hard_to_avoid", label: "Hard to avoid", event_count: 3, amount: 50, amount_percentage: 26.3 }),
+    ]);
+    expect(response.most_wasted).toMatchObject({ cap: 6, total_count: 6 });
+    expect(response.most_wasted.items[0]).toMatchObject(SEED.app.waste.topItem);
+    expect(response.most_wasted.items.find((item) => item.key === SEED.app.waste.leftover.key)).toMatchObject({
+      name: SEED.app.waste.leftover.name,
+      department: { key: "leftovers", label: "Leftovers" },
+    });
+    expect(response.insight).toBe(SEED.app.waste.insight8w);
+  }
+
+  return response;
+}
+
+async function expectFixedRealWasteUiState(
+  retrospectivePage: {
+    wasteState: (state: SpendCoverageStatus) => Locator;
+    wasteKpi: (key: "tossed" | "items" | "rate" | "trend") => Locator;
+    wasteWeeks: () => Locator;
+    wasteInsight: () => Locator;
+  },
+  range: WasteRange,
+): Promise<void> {
+  await expect(retrospectivePage.wasteState("complete")).toContainText("Last-paid estimate");
+  await expect(retrospectivePage.wasteKpi("tossed")).toContainText(`$${SEED.app.waste.amounts[range].toFixed(2)}`);
+  await expect(retrospectivePage.wasteKpi("tossed")).toContainText("Last-paid estimate");
+  await expect(retrospectivePage.wasteKpi("items")).toContainText(String(SEED.app.waste.events[range]));
+  await expect(retrospectivePage.wasteKpi("rate")).toContainText(`${SEED.app.waste.rates[range].toFixed(1)}%`);
+  await expect(retrospectivePage.wasteKpi("rate")).toHaveClass(/waste-kpi-rate-alert/);
+  await expect(retrospectivePage.wasteWeeks()).toHaveCount(Number(range.slice(0, -1)));
 }
 
 /** A typed wire fixture for presentation-only states. It contains no aggregate reducer;
@@ -389,6 +495,357 @@ function departmentPendingFixture(): SpendAnalyzer {
   };
 }
 
+// Presentation-only Waste payloads. They are fixed production-wire objects, not an
+// analyzer or expected-value oracle; the populated correctness proof above reads the
+// real seeded endpoint. Interception only holds states that one stable seed cannot show.
+const EMPTY_WASTE_MONETARY: WasteAnalyzer["coverage"]["monetary"] = {
+  status: "empty", event_count: 0, priced_event_count: 0,
+  unpriced_event_count: 0, estimated_event_count: 0, known_amount: 0,
+};
+const EMPTY_WASTE_DEPARTMENT: WasteAnalyzer["coverage"]["department"] = {
+  status: "empty", event_count: 0, classified_event_count: 0, pending_event_count: 0,
+};
+const EMPTY_WASTE_BREAKDOWN: WasteAnalyzer["breakdowns"]["department"] = {
+  count_denominator: 0,
+  known_amount_denominator: 0,
+  classification_coverage: EMPTY_WASTE_DEPARTMENT,
+  monetary_coverage: EMPTY_WASTE_MONETARY,
+  items: [],
+};
+
+function emptyWasteWeek(
+  weekStart: string,
+  weekEnd: string,
+  through = weekEnd,
+  isPartial = false,
+): WasteWeek {
+  return {
+    week_start: weekStart,
+    week_end: weekEnd,
+    through,
+    is_partial: isPartial,
+    events: 0,
+    amount: 0,
+    status: "empty",
+    monetary_coverage: EMPTY_WASTE_MONETARY,
+    department_coverage: EMPTY_WASTE_DEPARTMENT,
+  };
+}
+
+const EMPTY_WASTE_WEEKS: WasteWeek[] = [
+  emptyWasteWeek("2026-05-25", "2026-05-31"),
+  emptyWasteWeek("2026-06-01", "2026-06-07"),
+  emptyWasteWeek("2026-06-08", "2026-06-14"),
+  emptyWasteWeek("2026-06-15", "2026-06-21"),
+  emptyWasteWeek("2026-06-22", "2026-06-28"),
+  emptyWasteWeek("2026-06-29", "2026-07-05"),
+  emptyWasteWeek("2026-07-06", "2026-07-12"),
+  emptyWasteWeek("2026-07-13", "2026-07-19", "2026-07-15", true),
+];
+
+const EMPTY_WASTE: WasteAnalyzer = {
+  range: "8w",
+  as_of: "2026-07-15",
+  selected_start: "2026-05-25",
+  selected_end: "2026-07-15",
+  prior_start: "2026-03-30",
+  prior_end: "2026-05-20",
+  status: "empty",
+  avoidability_mapping: {
+    version: "waste-avoidability-v1",
+    current_version: "waste-avoidability-v1",
+    is_current: true,
+  },
+  coverage: { monetary: EMPTY_WASTE_MONETARY, department: EMPTY_WASTE_DEPARTMENT },
+  weeks: EMPTY_WASTE_WEEKS,
+  kpis: {
+    tossed_value: { amount: 0, status: "empty" },
+    items_binned: { count: 0, per_week: 0 },
+    waste_rate: {
+      percent: null,
+      known_waste_amount: 0,
+      qualifying_spend_amount: 0,
+      status: "unavailable",
+      reason: "zero_denominator",
+      spend_coverage: {
+        status: "empty", spend_event_count: 0, qualifying_event_count: 0,
+        excluded_household_event_count: 0, pending_department_event_count: 0,
+        priced_event_count: 0, unpriced_event_count: 0, estimated_event_count: 0,
+        known_amount: 0,
+      },
+    },
+    trend: {
+      percent: null, current_known_amount: 0, prior_known_amount: 0,
+      status: "unavailable", reason: "prior_zero",
+    },
+  },
+  breakdowns: {
+    department: EMPTY_WASTE_BREAKDOWN,
+    reason: EMPTY_WASTE_BREAKDOWN,
+    avoidability: EMPTY_WASTE_BREAKDOWN,
+  },
+  most_wasted: { cap: 6, total_count: 0, items: [] },
+  insight: "No recorded waste in this range.",
+};
+
+const PARTIAL_WASTE_MONETARY: WasteAnalyzer["coverage"]["monetary"] = {
+  status: "partial", event_count: 3, priced_event_count: 2,
+  unpriced_event_count: 1, estimated_event_count: 1, known_amount: 12,
+};
+const PARTIAL_WASTE_DEPARTMENT: WasteAnalyzer["coverage"]["department"] = {
+  status: "partial", event_count: 3, classified_event_count: 2, pending_event_count: 1,
+};
+const PARTIAL_WASTE: WasteAnalyzer = {
+  ...EMPTY_WASTE,
+  status: "partial",
+  coverage: { monetary: PARTIAL_WASTE_MONETARY, department: PARTIAL_WASTE_DEPARTMENT },
+  weeks: [
+    ...EMPTY_WASTE_WEEKS.slice(0, -1),
+    {
+      week_start: "2026-07-13", week_end: "2026-07-19", through: "2026-07-15", is_partial: true,
+      events: 3, amount: 12, status: "partial",
+      monetary_coverage: PARTIAL_WASTE_MONETARY,
+      department_coverage: PARTIAL_WASTE_DEPARTMENT,
+    },
+  ],
+  kpis: {
+    tossed_value: { amount: 12, status: "partial" },
+    items_binned: { count: 3, per_week: 0.4 },
+    waste_rate: {
+      percent: null, known_waste_amount: 12, qualifying_spend_amount: 88,
+      status: "unavailable", reason: "waste_incomplete",
+      spend_coverage: {
+        status: "complete", spend_event_count: 4, qualifying_event_count: 4,
+        excluded_household_event_count: 0, pending_department_event_count: 0,
+        priced_event_count: 4, unpriced_event_count: 0, estimated_event_count: 0,
+        known_amount: 88,
+      },
+    },
+    trend: {
+      percent: null, current_known_amount: 12, prior_known_amount: 10,
+      status: "unavailable", reason: "current_incomplete",
+    },
+  },
+  breakdowns: {
+    department: {
+      count_denominator: 2,
+      known_amount_denominator: 12,
+      classification_coverage: PARTIAL_WASTE_DEPARTMENT,
+      monetary_coverage: {
+        status: "partial", event_count: 2, priced_event_count: 2,
+        unpriced_event_count: 0, estimated_event_count: 1, known_amount: 12,
+      },
+      items: [
+        { key: "produce", label: "Produce", event_count: 1, valued_event_count: 1, unvalued_event_count: 0, estimated_event_count: 0, amount: 8, count_percentage: 50, amount_percentage: 66.7 },
+        { key: "dairy", label: "Dairy", event_count: 1, valued_event_count: 1, unvalued_event_count: 0, estimated_event_count: 1, amount: 4, count_percentage: 50, amount_percentage: 33.3 },
+      ],
+    },
+    reason: {
+      count_denominator: 3,
+      known_amount_denominator: 12,
+      classification_coverage: { status: "complete", event_count: 3, classified_event_count: 3, pending_event_count: 0 },
+      monetary_coverage: PARTIAL_WASTE_MONETARY,
+      items: [
+        { key: "spoiled", label: "Spoiled", event_count: 1, valued_event_count: 1, unvalued_event_count: 0, estimated_event_count: 0, amount: 8, count_percentage: 33.3, amount_percentage: 66.7 },
+        { key: "expired", label: "Expired", event_count: 1, valued_event_count: 1, unvalued_event_count: 0, estimated_event_count: 1, amount: 4, count_percentage: 33.3, amount_percentage: 33.3 },
+        { key: "forgot", label: "Forgot", event_count: 1, valued_event_count: 0, unvalued_event_count: 1, estimated_event_count: 0, amount: null, count_percentage: 33.3, amount_percentage: 0 },
+      ],
+    },
+    avoidability: {
+      count_denominator: 3,
+      known_amount_denominator: 12,
+      classification_coverage: { status: "complete", event_count: 3, classified_event_count: 3, pending_event_count: 0 },
+      monetary_coverage: PARTIAL_WASTE_MONETARY,
+      items: [
+        { key: "hard_to_avoid", label: "Hard to avoid", event_count: 2, valued_event_count: 2, unvalued_event_count: 0, estimated_event_count: 1, amount: 12, count_percentage: 66.7, amount_percentage: 100 },
+        { key: "avoidable", label: "Avoidable", event_count: 1, valued_event_count: 0, unvalued_event_count: 1, estimated_event_count: 0, amount: null, count_percentage: 33.3, amount_percentage: 0 },
+      ],
+    },
+  },
+  most_wasted: {
+    cap: 6,
+    total_count: 3,
+    items: [
+      { key: "apples", name: "Apples", department: { key: "produce", label: "Produce" }, event_count: 1, valued_event_count: 1, unvalued_event_count: 0, estimated_event_count: 0, amount: 8, amount_percentage: 66.7, status: "complete" },
+      { key: "yogurt", name: "Yogurt", department: { key: "dairy", label: "Dairy" }, event_count: 1, valued_event_count: 1, unvalued_event_count: 0, estimated_event_count: 1, amount: 4, amount_percentage: 33.3, status: "partial" },
+      { key: "herbs", name: "Mystery herbs", department: null, event_count: 1, valued_event_count: 0, unvalued_event_count: 1, estimated_event_count: 0, amount: null, amount_percentage: 0, status: "unavailable" },
+    ],
+  },
+  insight: "Known waste value is incomplete: 1 tossed item had no matching last-paid price and 1 tossed item used an estimated last-paid price.",
+};
+
+const UNAVAILABLE_WASTE_MONETARY: WasteAnalyzer["coverage"]["monetary"] = {
+  status: "unavailable", event_count: 2, priced_event_count: 0,
+  unpriced_event_count: 2, estimated_event_count: 0, known_amount: 0,
+};
+const UNAVAILABLE_WASTE_DEPARTMENT: WasteAnalyzer["coverage"]["department"] = {
+  status: "complete", event_count: 2, classified_event_count: 2, pending_event_count: 0,
+};
+const UNAVAILABLE_WASTE: WasteAnalyzer = {
+  ...EMPTY_WASTE,
+  status: "unavailable",
+  coverage: { monetary: UNAVAILABLE_WASTE_MONETARY, department: UNAVAILABLE_WASTE_DEPARTMENT },
+  weeks: [
+    ...EMPTY_WASTE_WEEKS.slice(0, -1),
+    {
+      week_start: "2026-07-13", week_end: "2026-07-19", through: "2026-07-15", is_partial: true,
+      events: 2, amount: null, status: "unavailable",
+      monetary_coverage: UNAVAILABLE_WASTE_MONETARY,
+      department_coverage: UNAVAILABLE_WASTE_DEPARTMENT,
+    },
+  ],
+  kpis: {
+    tossed_value: { amount: null, status: "unavailable" },
+    items_binned: { count: 2, per_week: 0.3 },
+    waste_rate: {
+      percent: null, known_waste_amount: 0, qualifying_spend_amount: 0,
+      status: "unavailable", reason: "waste_incomplete",
+      spend_coverage: {
+        status: "unavailable", spend_event_count: 2, qualifying_event_count: 2,
+        excluded_household_event_count: 0, pending_department_event_count: 0,
+        priced_event_count: 0, unpriced_event_count: 2, estimated_event_count: 0,
+        known_amount: 0,
+      },
+    },
+    trend: {
+      percent: null, current_known_amount: 0, prior_known_amount: 12,
+      status: "unavailable", reason: "current_incomplete",
+    },
+  },
+  breakdowns: {
+    department: {
+      count_denominator: 2, known_amount_denominator: 0,
+      classification_coverage: UNAVAILABLE_WASTE_DEPARTMENT,
+      monetary_coverage: UNAVAILABLE_WASTE_MONETARY,
+      items: [
+        { key: "produce", label: "Produce", event_count: 1, valued_event_count: 0, unvalued_event_count: 1, estimated_event_count: 0, amount: null, count_percentage: 50, amount_percentage: null },
+        { key: "dairy", label: "Dairy", event_count: 1, valued_event_count: 0, unvalued_event_count: 1, estimated_event_count: 0, amount: null, count_percentage: 50, amount_percentage: null },
+      ],
+    },
+    reason: {
+      count_denominator: 2, known_amount_denominator: 0,
+      classification_coverage: UNAVAILABLE_WASTE_DEPARTMENT,
+      monetary_coverage: UNAVAILABLE_WASTE_MONETARY,
+      items: [
+        { key: "forgot", label: "Forgot", event_count: 1, valued_event_count: 0, unvalued_event_count: 1, estimated_event_count: 0, amount: null, count_percentage: 50, amount_percentage: null },
+        { key: "spoiled", label: "Spoiled", event_count: 1, valued_event_count: 0, unvalued_event_count: 1, estimated_event_count: 0, amount: null, count_percentage: 50, amount_percentage: null },
+      ],
+    },
+    avoidability: {
+      count_denominator: 2, known_amount_denominator: 0,
+      classification_coverage: UNAVAILABLE_WASTE_DEPARTMENT,
+      monetary_coverage: UNAVAILABLE_WASTE_MONETARY,
+      items: [
+        { key: "avoidable", label: "Avoidable", event_count: 1, valued_event_count: 0, unvalued_event_count: 1, estimated_event_count: 0, amount: null, count_percentage: 50, amount_percentage: null },
+        { key: "hard_to_avoid", label: "Hard to avoid", event_count: 1, valued_event_count: 0, unvalued_event_count: 1, estimated_event_count: 0, amount: null, count_percentage: 50, amount_percentage: null },
+      ],
+    },
+  },
+  most_wasted: {
+    cap: 6,
+    total_count: 2,
+    items: [
+      { key: "apples", name: "Apples", department: { key: "produce", label: "Produce" }, event_count: 1, valued_event_count: 0, unvalued_event_count: 1, estimated_event_count: 0, amount: null, amount_percentage: null, status: "unavailable" },
+      { key: "milk", name: "Milk", department: { key: "dairy", label: "Dairy" }, event_count: 1, valued_event_count: 0, unvalued_event_count: 1, estimated_event_count: 0, amount: null, amount_percentage: null, status: "unavailable" },
+    ],
+  },
+  insight: "Waste value is unavailable because none of the recorded tosses in this range has a matching last-paid price.",
+};
+
+const COMPLETE_WASTE_MONETARY: WasteAnalyzer["coverage"]["monetary"] = {
+  status: "complete", event_count: 2, priced_event_count: 2,
+  unpriced_event_count: 0, estimated_event_count: 0, known_amount: 20,
+};
+const PENDING_WASTE_DEPARTMENT: WasteAnalyzer["coverage"]["department"] = {
+  status: "partial", event_count: 2, classified_event_count: 1, pending_event_count: 1,
+};
+const PENDING_DEPARTMENT_WASTE: WasteAnalyzer = {
+  ...EMPTY_WASTE,
+  status: "complete",
+  coverage: { monetary: COMPLETE_WASTE_MONETARY, department: PENDING_WASTE_DEPARTMENT },
+  weeks: [
+    ...EMPTY_WASTE_WEEKS.slice(0, -1),
+    {
+      week_start: "2026-07-13", week_end: "2026-07-19", through: "2026-07-15", is_partial: true,
+      events: 2, amount: 20, status: "complete",
+      monetary_coverage: COMPLETE_WASTE_MONETARY,
+      department_coverage: PENDING_WASTE_DEPARTMENT,
+    },
+  ],
+  kpis: {
+    tossed_value: { amount: 20, status: "complete" },
+    items_binned: { count: 2, per_week: 0.3 },
+    waste_rate: {
+      percent: null, known_waste_amount: 20, qualifying_spend_amount: 80,
+      status: "unavailable", reason: "spend_incomplete",
+      spend_coverage: {
+        status: "partial", spend_event_count: 4, qualifying_event_count: 3,
+        excluded_household_event_count: 0, pending_department_event_count: 1,
+        priced_event_count: 3, unpriced_event_count: 0, estimated_event_count: 0,
+        known_amount: 80,
+      },
+    },
+    trend: {
+      percent: 25, current_known_amount: 20, prior_known_amount: 16,
+      status: "available", reason: null,
+    },
+  },
+  breakdowns: {
+    department: {
+      count_denominator: 1, known_amount_denominator: 12,
+      classification_coverage: PENDING_WASTE_DEPARTMENT,
+      monetary_coverage: {
+        status: "complete", event_count: 1, priced_event_count: 1,
+        unpriced_event_count: 0, estimated_event_count: 0, known_amount: 12,
+      },
+      items: [
+        { key: "produce", label: "Produce", event_count: 1, valued_event_count: 1, unvalued_event_count: 0, estimated_event_count: 0, amount: 12, count_percentage: 100, amount_percentage: 100 },
+      ],
+    },
+    reason: {
+      count_denominator: 2, known_amount_denominator: 20,
+      classification_coverage: { status: "complete", event_count: 2, classified_event_count: 2, pending_event_count: 0 },
+      monetary_coverage: COMPLETE_WASTE_MONETARY,
+      items: [
+        { key: "spoiled", label: "Spoiled", event_count: 1, valued_event_count: 1, unvalued_event_count: 0, estimated_event_count: 0, amount: 12, count_percentage: 50, amount_percentage: 60 },
+        { key: "forgot", label: "Forgot", event_count: 1, valued_event_count: 1, unvalued_event_count: 0, estimated_event_count: 0, amount: 8, count_percentage: 50, amount_percentage: 40 },
+      ],
+    },
+    avoidability: {
+      count_denominator: 2, known_amount_denominator: 20,
+      classification_coverage: { status: "complete", event_count: 2, classified_event_count: 2, pending_event_count: 0 },
+      monetary_coverage: COMPLETE_WASTE_MONETARY,
+      items: [
+        { key: "hard_to_avoid", label: "Hard to avoid", event_count: 1, valued_event_count: 1, unvalued_event_count: 0, estimated_event_count: 0, amount: 12, count_percentage: 50, amount_percentage: 60 },
+        { key: "avoidable", label: "Avoidable", event_count: 1, valued_event_count: 1, unvalued_event_count: 0, estimated_event_count: 0, amount: 8, count_percentage: 50, amount_percentage: 40 },
+      ],
+    },
+  },
+  most_wasted: {
+    cap: 6,
+    total_count: 2,
+    items: [
+      { key: "apples", name: "Apples", department: { key: "produce", label: "Produce" }, event_count: 1, valued_event_count: 1, unvalued_event_count: 0, estimated_event_count: 0, amount: 12, amount_percentage: 60, status: "complete" },
+      { key: "cereal", name: "Cereal", department: null, event_count: 1, valued_event_count: 1, unvalued_event_count: 0, estimated_event_count: 0, amount: 8, amount_percentage: 40, status: "complete" },
+    ],
+  },
+  insight: "Spoiled was the leading waste reason by known value with 1 tossed item; avoidable waste represented 40.0% of known waste value.",
+};
+
+const PRIOR_INCOMPLETE_WASTE: WasteAnalyzer = {
+  ...PENDING_DEPARTMENT_WASTE,
+  kpis: {
+    ...PENDING_DEPARTMENT_WASTE.kpis,
+    trend: {
+      percent: null,
+      current_known_amount: 20,
+      prior_known_amount: 8,
+      status: "unavailable",
+      reason: "prior_incomplete",
+    },
+  },
+};
+
 test.beforeEach(async ({ asMember, retrospectivePage }) => {
   await asMember();
   await retrospectivePage.goto();
@@ -420,8 +877,8 @@ test("the shell defaults to Cooking log and switches tabs via the URL", async ({
 
   await retrospectivePage.selectTab("waste");
   await expect(page).toHaveURL(/tab=waste/);
-  await expect(page.getByTestId("waste-page")).toBeVisible();
-  await expect(page.getByTestId("waste-page")).toContainText("Your waste analysis will show up here.");
+  await expect(retrospectivePage.wastePanel()).toBeVisible();
+  await expect(retrospectivePage.wasteHeading()).toBeVisible();
 });
 
 test("the real seeded Spend analyzer canonicalizes 8w, changes ranges, and remains readable responsively", async ({ context, page, retrospectivePage }) => {
@@ -429,7 +886,7 @@ test("the real seeded Spend analyzer canonicalizes 8w, changes ranges, and remai
   await retrospectivePage.selectTab("spend");
   await expect(page).toHaveURL(/range=8w/);
   await expect(retrospectivePage.spendRange("8w")).toHaveAttribute("aria-pressed", "true");
-  await expect(page.getByRole("group", { name: "Spend range" }).locator('[aria-pressed="true"]')).toHaveCount(1);
+  await expect(retrospectivePage.analyzerRangeGroup().locator('[aria-pressed="true"]')).toHaveCount(1);
   await readFixedRealSpend(page, "8w");
   await expectFixedRealSpendUiState(retrospectivePage, "8w");
   await expect(retrospectivePage.spendWeeks()).toHaveCount(8);
@@ -464,6 +921,105 @@ test("the real seeded Spend analyzer canonicalizes 8w, changes ranges, and remai
   expect(await overflowsHorizontally(chart)).toBe(true);
   await expect(retrospectivePage.tab("waste")).toBeInViewport({ ratio: 1 });
   await expect(retrospectivePage.spendWeeks().first()).toContainText(/\$|Price unavailable/);
+});
+
+test("the signed-in real Waste analyzer presents returned facts, shared ranges, semantics, and responsive captures", async ({ context, page, retrospectivePage }) => {
+  await switchToWasteFixture(context, page);
+  await retrospectivePage.selectTab("waste");
+  await expect(page).toHaveURL(/tab=waste.*range=8w|range=8w.*tab=waste/);
+  await expect(retrospectivePage.wasteRange("8w")).toHaveAttribute("aria-pressed", "true");
+  await expect(retrospectivePage.analyzerRangeGroup().locator('[aria-pressed="true"]')).toHaveCount(1);
+
+  await readFixedRealWaste(page, "8w");
+  await expectFixedRealWasteUiState(retrospectivePage, "8w");
+  await expect(retrospectivePage.wasteKpi("items")).toContainText("0.8 items per selected week");
+  await expect(retrospectivePage.wasteKpi("rate")).toContainText("Waste last-paid estimate $190.00");
+  await expect(retrospectivePage.wasteKpi("rate")).toContainText("Recorded grocery spend $222.00");
+  await expect(retrospectivePage.wasteKpi("trend")).toContainText("533.3% higher");
+  await expect(retrospectivePage.wasteKpi("trend")).toContainText("Prior last-paid estimate $30.00");
+  await expect(retrospectivePage.wasteBreakdown("department")).toContainText("Count denominator: 6 tosses");
+  await expect(retrospectivePage.wasteBreakdown("department")).toContainText("Meat");
+  await expect(retrospectivePage.wasteBreakdown("department")).toContainText("Leftovers");
+  await expect(retrospectivePage.wasteBreakdown("reason")).toContainText("Bought Too Much");
+  await expect(retrospectivePage.wasteBreakdown("avoidability")).toContainText("Avoidable");
+  await expect(retrospectivePage.wasteBreakdown("avoidability")).toContainText("73.7%");
+  await expect(retrospectivePage.wasteItems()).toContainText(SEED.app.waste.topItem.name);
+  await expect(retrospectivePage.wasteItems()).toContainText(SEED.app.waste.leftover.name);
+  await expect(retrospectivePage.wasteItems()).toContainText("Leftovers · tossed 1×");
+  await expect(retrospectivePage.wasteInsight().locator("p")).toHaveText(SEED.app.waste.insight8w);
+  await expect(retrospectivePage.wasteWeeks().first()).toContainText(/toss|tosses/);
+  await expect(retrospectivePage.wasteWeeksRegion()).toHaveAttribute("tabindex", "0");
+  await expect(retrospectivePage.wasteBarGeometry().first()).toHaveAttribute("aria-hidden", "true");
+
+  await retrospectivePage.wasteRange("4w").focus();
+  await page.keyboard.press("Enter");
+  await expect(page).toHaveURL(/range=4w/);
+  await readFixedRealWaste(page, "4w");
+  await expectFixedRealWasteUiState(retrospectivePage, "4w");
+
+  await retrospectivePage.selectWasteRange("12w");
+  await expect(page).toHaveURL(/range=12w/);
+  await readFixedRealWaste(page, "12w");
+  await expectFixedRealWasteUiState(retrospectivePage, "12w");
+  await expect(retrospectivePage.wasteKpi("trend")).toContainText("Reason: prior_zero");
+
+  await retrospectivePage.selectTab("spend");
+  await expect(retrospectivePage.spendRange("12w")).toHaveAttribute("aria-pressed", "true");
+  await expectFixedRealSpendUiState(retrospectivePage, "12w");
+  await retrospectivePage.tab("spend").focus();
+  await retrospectivePage.pressTabKey("ArrowRight");
+  await expect(retrospectivePage.tab("waste")).toBeFocused();
+  await expect(retrospectivePage.wasteRange("12w")).toHaveAttribute("aria-pressed", "true");
+
+  await retrospectivePage.selectWasteRange("8w");
+  await expectFixedRealWasteUiState(retrospectivePage, "8w");
+  await retrospectivePage.captureWasteDesktop();
+  expect(await overflowsHorizontally(retrospectivePage.wasteWeeksRegion())).toBe(false);
+  await retrospectivePage.captureWasteTall();
+  expect(await overflowsHorizontally(retrospectivePage.wasteWeeksRegion())).toBe(true);
+  await retrospectivePage.captureWasteNarrow();
+  expect(await overflowsHorizontally(retrospectivePage.wasteWeeksRegion())).toBe(true);
+  await expect(retrospectivePage.tab("waste")).toBeInViewport({ ratio: 1 });
+  await expect(retrospectivePage.wasteWeeks().last()).toContainText(/Last-paid estimate|No recorded tosses/);
+  await retrospectivePage.wasteWeeksRegion().scrollIntoViewIfNeeded();
+  await retrospectivePage.wasteWeeksRegion().evaluate((node) => {
+    const element = node as unknown as { scrollLeft: number; scrollWidth: number };
+    element.scrollLeft = element.scrollWidth;
+  });
+  await expect(retrospectivePage.wasteWeeks().last()).toBeInViewport({ ratio: 0.5 });
+  await retrospectivePage.wasteItems().scrollIntoViewIfNeeded();
+  await expect(retrospectivePage.wasteItems()).toBeInViewport({ ratio: 0.5 });
+  await retrospectivePage.wasteInsight().scrollIntoViewIfNeeded();
+  await expect(retrospectivePage.wasteInsight()).toBeInViewport({ ratio: 0.5 });
+});
+
+test("Waste canonicalization and active-only requests retain the shared range", async ({ context, page, retrospectivePage }) => {
+  await switchToWasteFixture(context, page);
+  const wasteRanges: string[] = [];
+  page.on("request", (request) => {
+    if (!request.url().includes("/api/retrospective/waste?")) return;
+    wasteRanges.push(request.url().match(/[?&]range=([^&]+)/)?.[1] ?? "missing");
+  });
+
+  await page.goto("/retrospective?tab=waste&range=invalid");
+  await expect(page).toHaveURL(/tab=waste.*range=8w|range=8w.*tab=waste/);
+  await expectFixedRealWasteUiState(retrospectivePage, "8w");
+  expect(wasteRanges).toEqual(["8w"]);
+
+  await retrospectivePage.selectTab("log");
+  await expect(retrospectivePage.panel("log")).toBeVisible();
+  expect(wasteRanges).toEqual(["8w"]);
+
+  await retrospectivePage.selectTab("spend");
+  await retrospectivePage.selectSpendRange("4w");
+  await expectFixedRealSpendUiState(retrospectivePage, "4w");
+  expect(wasteRanges).toEqual(["8w"]);
+
+  const activation = page.waitForRequest((request) => request.url().includes("/api/retrospective/waste?range=4w"));
+  await retrospectivePage.selectTab("waste");
+  await activation;
+  await expectFixedRealWasteUiState(retrospectivePage, "4w");
+  expect(wasteRanges).toEqual(["8w", "4w"]);
 });
 
 async function overflowsHorizontally(locator: Locator): Promise<boolean> {
@@ -723,6 +1279,104 @@ test("budget bars preserve within-budget truth at mixed scales", async ({ page, 
   expect(budgetBottom).toBe(5);
   expect(spendHeight).toBe(1);
   expect(spendHeight).toBeLessThan(budgetBottom);
+});
+
+test("Waste loading, structured error retry, and exact empty presentation stay distinct", async ({ page, retrospectivePage }) => {
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  await page.route("**/api/retrospective/waste?*", async (route) => {
+    await held;
+    await route.fulfill({ json: EMPTY_WASTE });
+  });
+  await page.goto("/retrospective?tab=waste&range=8w");
+  await expect(retrospectivePage.wasteLoading()).toHaveRole("status");
+  await expect(retrospectivePage.wasteLoading()).toHaveText("Loading waste analysis…");
+  release();
+  await expect(retrospectivePage.wasteState("empty")).toContainText("No recorded waste");
+  await expect(retrospectivePage.wasteKpi("items")).toContainText("0");
+  await expect(retrospectivePage.wasteKpi("tossed")).toHaveCount(0);
+  await expect(retrospectivePage.wasteBreakdown("department")).toHaveCount(0);
+  await expect(retrospectivePage.wasteWeeks()).toHaveCount(8);
+  await expect(retrospectivePage.wasteInsight()).toContainText("No recorded waste in this range.");
+  await page.unroute("**/api/retrospective/waste?*");
+
+  let calls = 0;
+  await page.route("**/api/retrospective/waste?*", async (route) => {
+    calls++;
+    if (calls === 1) {
+      await route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({ error: "storage_error", message: "Seeded Waste read failed." }),
+      });
+      return;
+    }
+    await route.fulfill({ json: EMPTY_WASTE });
+  });
+  await page.goto("/retrospective?tab=waste&range=8w");
+  await expect(retrospectivePage.wasteError()).toHaveRole("alert");
+  await expect(retrospectivePage.wasteError()).toContainText("Seeded Waste read failed.");
+  await retrospectivePage.retryWaste();
+  await expect(retrospectivePage.wasteState("empty")).toBeVisible();
+  expect(calls).toBe(2);
+});
+
+test("typed Waste presentation states preserve unavailable and partial evidence", async ({ page, retrospectivePage }) => {
+  await page.route("**/api/retrospective/waste?*", (route) => route.fulfill({ json: UNAVAILABLE_WASTE }));
+  await page.goto("/retrospective?tab=waste&range=8w");
+  await expect(retrospectivePage.wasteState("unavailable")).toContainText("Last-paid value unavailable");
+  await expect(retrospectivePage.wasteKpi("tossed")).toContainText("Unavailable");
+  await expect(retrospectivePage.wasteKpi("tossed")).not.toContainText("$0.00");
+  await expect(retrospectivePage.wasteKpi("rate")).toContainText("Waste last-paid value unavailable");
+  await expect(retrospectivePage.wasteKpi("rate")).toContainText("Recorded grocery spend unavailable");
+  await expect(retrospectivePage.wasteKpi("rate")).not.toContainText("$0.00");
+  await expect(retrospectivePage.wasteKpi("items")).toContainText("2");
+  await expect(retrospectivePage.wasteBreakdown("reason")).toContainText("Forgot");
+  await expect(retrospectivePage.wasteBreakdown("reason")).toContainText("1 unmatched");
+  await expect(retrospectivePage.wasteItems()).toContainText("Last-paid value unavailable");
+  await expect(retrospectivePage.wasteKpi("rate")).not.toHaveClass(/waste-kpi-rate-alert/);
+  await page.unroute("**/api/retrospective/waste?*");
+
+  await page.route("**/api/retrospective/waste?*", (route) => route.fulfill({ json: PARTIAL_WASTE }));
+  await page.goto("/retrospective?tab=waste&range=8w");
+  await expect(retrospectivePage.wasteState("partial")).toContainText("Known last-paid estimate");
+  await expect(retrospectivePage.wasteState("partial")).toContainText("1 toss has no matching last-paid price");
+  await expect(retrospectivePage.wasteState("partial")).toContainText("1 toss uses an estimated last-paid price");
+  await expect(retrospectivePage.wasteKpi("tossed")).toContainText("$12.00");
+  await expect(retrospectivePage.wasteKpi("tossed")).toContainText("1 unmatched · 1 estimated");
+  await expect(retrospectivePage.wasteWeeks().last()).toContainText("Known last-paid estimate $12.00");
+  await expect(retrospectivePage.wasteWeeks().last()).toContainText("1 unmatched · 1 estimated");
+  await expect(retrospectivePage.wasteBreakdown("reason")).toContainText("1 valued · 0 unmatched · 1 estimated");
+  await expect(retrospectivePage.wasteBreakdown("reason")).toContainText("Last-paid value unavailable");
+  await expect(retrospectivePage.wasteItems()).toContainText("Known last-paid estimate $4.00");
+  await expect(retrospectivePage.wasteItems()).toContainText("Last-paid value unavailable");
+  await expect(retrospectivePage.wasteKpi("rate")).toContainText("Reason: waste_incomplete");
+  await expect(retrospectivePage.wasteKpi("rate")).not.toHaveClass(/waste-kpi-rate-alert/);
+});
+
+test("pending Waste department stays orthogonal to complete money and prior trend evidence is not invented", async ({ page, retrospectivePage }) => {
+  await page.route("**/api/retrospective/waste?*", (route) => route.fulfill({ json: PENDING_DEPARTMENT_WASTE }));
+  await page.goto("/retrospective?tab=waste&range=8w");
+  await expect(retrospectivePage.wasteState("complete")).toContainText("Last-paid estimate");
+  await expect(retrospectivePage.wasteState("partial")).toHaveCount(0);
+  await expect(retrospectivePage.wasteDepartmentCoverage()).toContainText("Department classification incomplete");
+  await expect(retrospectivePage.wasteDepartmentCoverage()).toContainText("Waste money remains labelled last-paid estimate");
+  await expect(retrospectivePage.wasteKpi("tossed")).toContainText("Last-paid estimate");
+  await expect(retrospectivePage.wasteKpi("tossed")).not.toContainText("Known last-paid estimate");
+  await expect(retrospectivePage.wasteBreakdown("department")).toContainText("1 classified, 1 pending");
+  await expect(retrospectivePage.wasteItems()).toContainText("Department pending · tossed 1×");
+  await expect(retrospectivePage.wasteKpi("rate")).toContainText("Reason: spend_incomplete");
+  await expect(retrospectivePage.wasteKpi("rate")).toContainText("Known recorded grocery spend $80.00");
+  await expect(retrospectivePage.wasteKpi("rate")).toContainText("1 department pending");
+  await expect(retrospectivePage.wasteKpi("rate")).not.toHaveClass(/waste-kpi-rate-alert/);
+  await page.unroute("**/api/retrospective/waste?*");
+
+  await page.route("**/api/retrospective/waste?*", (route) => route.fulfill({ json: PRIOR_INCOMPLETE_WASTE }));
+  await page.goto("/retrospective?tab=waste&range=8w");
+  await expect(retrospectivePage.wasteKpi("trend")).toContainText("Reason: prior_incomplete");
+  await expect(retrospectivePage.wasteKpi("trend")).toContainText("Current last-paid estimate $20.00");
+  await expect(retrospectivePage.wasteKpi("trend")).toContainText("Prior last-paid estimate $8.00");
+  await expect(retrospectivePage.wasteKpi("trend")).not.toContainText(/prior (unmatched|estimated)/i);
 });
 
 test("'Something else' logs a meal-tagged non-recipe row; meal persists", async ({ page, retrospectivePage }) => {

@@ -99,6 +99,19 @@ export const SEED = {
       events: { "4w": 4, "8w": 8, "12w": 9 },
       topDriver: { key: "chicken-thighs", name: "Chicken thighs", amount: 110 },
     },
+    // Retrospective Waste uses Pat as the pristine real-endpoint oracle so unrelated
+    // member flows can mutate Casey's cart, pantry, and waste history without changing
+    // the primary browser proof. Casey separately carries estimated + unmatched events
+    // for sparse-money presentation coverage through production storage.
+    waste: {
+      fixtureTenant: "pat",
+      amounts: { "4w": 142, "8w": 190, "12w": 220 },
+      events: { "4w": 3, "8w": 6, "12w": 7 },
+      rates: { "4w": 44.9, "8w": 46.1, "12w": 46.6 },
+      topItem: { key: "chicken-thighs", name: "Chicken thighs", amount: 110 },
+      leftover: { key: "bread", name: "Sourdough bread" },
+      insight8w: "Meat accounted for the most waste at $110.00; Bought Too Much was the leading reason by known waste value with 1 tossed item; avoidable waste represented 73.7% of known waste value.",
+    },
     // The seeded meal-vibe palette (profile-planning-and-vibes-ui): six vibes spanning
     // breakfast/lunch/dinner, one pinned + one unpinned per meal group — the grouping,
     // pinned-indicator, and inline-suggestion coverage. Distinct ids from every from_vibe
@@ -712,6 +725,14 @@ export function d1Statements(now) {
       ).join(",") +
       ";",
   );
+  // Casey's sparse Waste-money facts: one estimated last-paid match and one toss with
+  // no eligible household price. This production fact is deliberately outside Pat's
+  // pristine complete-data oracle.
+  stmts.push(`DELETE FROM spend_events WHERE tenant = ${q(members.active)} AND send_id = 'viz-retro-spend-waste-estimated';`);
+  stmts.push(
+    "INSERT INTO spend_events (send_id,line_key,tenant,occurred_on,name,sku,quantity,unit_price,amount,savings,estimated,department,provenance,store,fulfillment,voided_at) VALUES " +
+      `('viz-retro-spend-waste-estimated','yogurt',${q(members.active)},${q(weekDay(1))},'Greek yogurt',NULL,1,4,4,0,1,'dairy','planned','kroger','kroger_online',NULL);`,
+  );
   // A pristine, different-tenant Spend oracle for the retrospective browser specs.
   // Other member-app flows mutate casey's cart/spend history cumulatively; pat has a
   // dedicated real session, profile budget, immutable spend facts, cooking denominator,
@@ -737,6 +758,30 @@ export function d1Statements(now) {
     "INSERT INTO spend_events (send_id,line_key,tenant,occurred_on,name,sku,quantity,unit_price,amount,savings,estimated,department,provenance,store,fulfillment,voided_at) VALUES " +
       spendRows.map(([key, name, weeksAgo, amount, savings, department, provenance, store], index) =>
         `(${q(`viz-retro-spend-pat-${index}`)},${q(key)},${q(spendFixtureTenant)},${q(weekDay(weeksAgo))},${q(name)},NULL,1,${amount},${amount},${savings},0,${q(department)},${q(provenance)},${q(store)},'kroger_online',NULL)`,
+      ).join(",") +
+      ";",
+  );
+  // Retrospective Waste: Pat's current 8w is complete and rate-available, with sparse
+  // chronological weeks, effective Leftovers, both avoidability classes, six item
+  // groups, and a positive exact matched-prior value. The same facts remain useful for
+  // 4w/12w range changes. Casey's rows preserve unmatched + estimated sparse money.
+  const wasteRows = [
+    [spendFixtureTenant, "viz-retro-waste-pat-0", "Chicken thighs", "chicken-thighs", null, "meat", "bought_too_much", 0],
+    [spendFixtureTenant, "viz-retro-waste-pat-1", "Whole milk", "milk", null, "dairy", "spoiled", 1],
+    [spendFixtureTenant, "viz-retro-waste-pat-2", "Sourdough bread", "bread", "viz-toast-leftovers", "bakery", "forgot", 2],
+    [spendFixtureTenant, "viz-retro-waste-pat-3", "Honeycrisp apples", "apples", null, "produce", "over_ripe", 4],
+    [spendFixtureTenant, "viz-retro-waste-pat-4", "Frozen peas", "peas", null, "frozen", "freezer_burned", 5],
+    [spendFixtureTenant, "viz-retro-waste-pat-5", "Cold brew", "coffee", null, "beverages", "expired", 6],
+    [spendFixtureTenant, "viz-retro-waste-pat-prior", "Jasmine rice", "rice", null, "pantry", "stale", 10],
+    [members.active, "viz-retro-waste-casey-exact", "Honeycrisp apples", "apples", null, "produce", "over_ripe", 4],
+    [members.active, "viz-retro-waste-casey-estimated", "Greek yogurt", "yogurt", null, "dairy", "expired", 1],
+    [members.active, "viz-retro-waste-casey-unmatched", "Mystery herbs", "mystery-herbs", null, null, "forgot", 0],
+  ];
+  stmts.push(`DELETE FROM waste_events WHERE id LIKE 'viz-retro-waste-%';`);
+  stmts.push(
+    "INSERT INTO waste_events (tenant,id,name,item_id,prepared_from,quantity,department,reason,occurred_at,created_at) VALUES " +
+      wasteRows.map(([tenant, id, name, itemId, preparedFrom, department, reason, weeksAgo]) =>
+        `(${q(tenant)},${q(id)},${q(name)},${q(itemId)},${preparedFrom == null ? "NULL" : q(preparedFrom)},'1',${department == null ? "NULL" : q(department)},${q(reason)},${q(weekDay(weeksAgo))},${q(iso(now - Number(weeksAgo) * 7 * DAY))})`,
       ).join(",") +
       ";",
   );

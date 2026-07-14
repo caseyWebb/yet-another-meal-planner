@@ -1,8 +1,8 @@
 // Retrospective (member-app-core, retrospective-shell): the renamed cooking-log destination,
 // now a tabbed shell whose default Cooking log tab carries the meal-aware composer (meal +
 // source segments, backdating) and a day-grouped, meal-tagged list. The page object owns the
-// tab switches, Spend semantics/ranges/review captures, and composer flow so specs never
-// address production markup directly.
+// tab switches, shared analyzer ranges, Spend/Waste semantics and review captures, and
+// composer flow so specs never address production markup directly.
 import { expect } from "@playwright/test";
 import { AppPage, type Locator } from "./base.page";
 
@@ -31,15 +31,35 @@ export class RetrospectivePage extends AppPage {
     return this.page.locator(`#retro-panel-${key}`);
   }
 
-  spendRange(range: "4w" | "8w" | "12w"): Locator {
-    return this.page.getByRole("group", { name: "Spend range" }).getByRole("button", {
+  analyzerRangeGroup(): Locator {
+    return this.page.getByRole("group", { name: "Analysis range" });
+  }
+
+  analyzerRange(range: "4w" | "8w" | "12w"): Locator {
+    return this.analyzerRangeGroup().getByRole("button", {
       name: `${range.slice(0, -1)} weeks`,
       exact: true,
     });
   }
 
+  spendRange(range: "4w" | "8w" | "12w"): Locator {
+    return this.analyzerRange(range);
+  }
+
+  wasteRange(range: "4w" | "8w" | "12w"): Locator {
+    return this.analyzerRange(range);
+  }
+
+  async selectAnalyzerRange(range: "4w" | "8w" | "12w"): Promise<void> {
+    await this.analyzerRange(range).click();
+  }
+
   async selectSpendRange(range: "4w" | "8w" | "12w"): Promise<void> {
-    await this.spendRange(range).click();
+    await this.selectAnalyzerRange(range);
+  }
+
+  async selectWasteRange(range: "4w" | "8w" | "12w"): Promise<void> {
+    await this.selectAnalyzerRange(range);
   }
 
   spendKpi(key: "total" | "average" | "meal" | "trend"): Locator {
@@ -74,6 +94,62 @@ export class RetrospectivePage extends AppPage {
     await this.page.getByRole("button", { name: "Retry spend analysis" }).click();
   }
 
+  wastePanel(): Locator {
+    return this.page.getByTestId("waste-page");
+  }
+
+  wasteHeading(): Locator {
+    return this.wastePanel().getByRole("heading", { name: "Household waste" });
+  }
+
+  wasteKpi(key: "tossed" | "items" | "rate" | "trend"): Locator {
+    return this.page.getByTestId(`waste-kpi-${key}`);
+  }
+
+  wasteWeeks(): Locator {
+    return this.page.getByTestId("waste-week");
+  }
+
+  wasteWeeksRegion(): Locator {
+    return this.page.getByRole("region", { name: "Weekly waste chart" });
+  }
+
+  wasteBarGeometry(): Locator {
+    return this.wasteWeeks().locator(".waste-bar-wrap");
+  }
+
+  wasteBreakdown(key: "department" | "reason" | "avoidability"): Locator {
+    return this.page.getByTestId(`waste-breakdown-${key}`);
+  }
+
+  wasteItems(): Locator {
+    return this.page.getByTestId("waste-most-wasted");
+  }
+
+  wasteInsight(): Locator {
+    return this.page.getByTestId("waste-insight");
+  }
+
+  wasteDepartmentCoverage(): Locator {
+    return this.page.getByTestId("waste-department-coverage");
+  }
+
+  wasteState(state: "empty" | "unavailable" | "partial" | "complete"): Locator {
+    return this.page.getByTestId(`waste-state-${state}`);
+  }
+
+  wasteLoading(): Locator {
+    return this.page.getByTestId("waste-loading");
+  }
+
+  wasteError(): Locator {
+    return this.page.getByTestId("waste-error");
+  }
+
+  async retryWaste(): Promise<void> {
+    await this.page.getByRole("button", { name: "Retry waste analysis" }).click();
+  }
+
   async pressTabKey(key: "ArrowLeft" | "ArrowRight" | "Home" | "End"): Promise<void> {
     await this.page.keyboard.press(key);
   }
@@ -91,6 +167,21 @@ export class RetrospectivePage extends AppPage {
   async captureSpendNarrow(): Promise<void> {
     await this.setViewport(390, 844);
     await this.captureForReview("retro-spend-narrow");
+  }
+
+  async captureWasteDesktop(): Promise<void> {
+    await this.setViewport(1100, 900);
+    await this.captureForReview("retro-waste-desktop");
+  }
+
+  async captureWasteTall(): Promise<void> {
+    await this.setViewport(760, 1100);
+    await this.captureForReview("retro-waste-tall");
+  }
+
+  async captureWasteNarrow(): Promise<void> {
+    await this.setViewport(390, 844);
+    await this.captureForReview("retro-waste-narrow");
   }
 
   /** The day-section relative headers ("Today", "Yesterday", "Wed Jul 8"). */

@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { loadRetrospective, registerCookingTools } from "../src/cooking-tools.js";
 import { readSpendAnalyzer } from "../src/spend.js";
+import { readWasteAnalyzer } from "../src/waste-analyzer.js";
 import type { Env } from "../src/env.js";
 import { sqliteEnv } from "./sqlite-d1.js";
 import { invokeTool, withServer } from "./tool-harness.js";
@@ -100,7 +101,7 @@ describe("loadRetrospective — D1 cooking_log + recipe index", () => {
   });
 });
 
-describe("retrospective MCP Spend adapter", () => {
+describe("retrospective MCP Spend and Waste adapters", () => {
   function seedSpend(
     h: ReturnType<typeof sqliteEnv>,
     tenant: string,
@@ -113,10 +114,27 @@ describe("retrospective MCP Spend adapter", () => {
     ).run(sendId, sendId.toLowerCase(), tenant, new Date().toISOString().slice(0, 10), sendId, amount, amount);
   }
 
-  it("registers optional spend_range, preserves cooking period, and exposes no Spend writer", async () => {
+  function seedWaste(
+    h: ReturnType<typeof sqliteEnv>,
+    tenant: string,
+    id: string,
+    item: string,
+    reason: string,
+  ): void {
+    const today = new Date().toISOString().slice(0, 10);
+    h.raw.prepare(
+      "INSERT INTO waste_events " +
+        "(tenant,id,name,item_id,prepared_from,quantity,department,reason,occurred_at,created_at) " +
+        "VALUES (?,?,?,?,NULL,'1','produce',?,?,?)",
+    ).run(tenant, id, item, item, reason, today, `${today}T12:00:00.000Z`);
+  }
+
+  it("registers independent Spend/Waste inputs, preserves cooking, and exposes no analyzer writer", async () => {
     const h = sqliteEnv(["everett", "casey"]);
     seedSpend(h, "everett", "OWN", 24);
     seedSpend(h, "casey", "OTHER", 900);
+    seedWaste(h, "everett", "W-OWN", "own", "forgot");
+    seedWaste(h, "casey", "W-OTHER", "other", "spoiled");
     h.raw.prepare(
       "INSERT INTO cooking_log (tenant,date,type,recipe,meal) VALUES (?,?,?,?,?)",
     ).run("everett", new Date().toISOString().slice(0, 10), "recipe", "stew", "dinner");
@@ -124,6 +142,7 @@ describe("retrospective MCP Spend adapter", () => {
     registerCookingTools(server, h.env, "everett");
     const stateBefore = {
       spend: h.rows("spend_events"),
+      waste: h.rows("waste_events"),
       cooking: h.rows("cooking_log"),
     };
 
@@ -138,41 +157,117 @@ describe("retrospective MCP Spend adapter", () => {
       expect(retrospectiveTool.description).toMatch(/why.*favorite.*revealed.*all-time.*cook_count.*stalest-first.*capped at 15.*underused_count.*pre-cap/is);
       expect(retrospectiveTool.description).toMatch(/spend_range.*4w.*8w.*12w/is);
       expect(retrospectiveTool.description).toMatch(/Spend analyzer.*independent of cooking period.*UTC ISO-Monday.*coverage-aware totals.*awaiting_mark_placed/is);
+      expect(retrospectiveTool.description).toMatch(/waste_range.*4w.*8w.*12w.*default.*4w/is);
+      expect(retrospectiveTool.description).toMatch(/waste_mapping_version.*immutable avoidability mapping.*default current/is);
+      expect(retrospectiveTool.description).toMatch(/Waste analyzer.*captured Waste.*last-paid Spend history.*coverage.*weekly buckets.*KPIs.*breakdowns.*most-wasted.*insight/is);
       expect(retrospectiveTool.description).toMatch(/read-only/is);
       expect(tools.some((tool) => /spend/i.test(tool.name))).toBe(false);
+      expect(tools.some((tool) => /waste/i.test(tool.name))).toBe(false);
+      const properties = (retrospectiveTool.inputSchema as {
+        properties?: Record<string, unknown>;
+      }).properties ?? {};
+      expect(Object.keys(properties)).toEqual(expect.arrayContaining([
+        "period",
+        "spend_range",
+        "waste_range",
+        "waste_mapping_version",
+      ]));
+      expect(properties).not.toHaveProperty("range");
+      expect(properties).not.toHaveProperty("mapping_version");
 
       const omitted = await invokeTool(client, "retrospective", { period: "week" });
       expect(omitted.isError).toBe(false);
       const omittedResult = omitted.result as {
         period: string;
         spend: { range: string; weeks: unknown[]; coverage: { monetary: { known_amount: number } } };
+        waste: {
+          range: string;
+          weeks: unknown[];
+          coverage: { monetary: { event_count: number; known_amount: number } };
+          avoidability_mapping: { version: string; current_version: string; is_current: boolean };
+        };
       };
       expect(omittedResult.period).toBe("week");
       expect(omittedResult.spend.range).toBe("4w");
       expect(omittedResult.spend.weeks).toHaveLength(4);
       expect(omittedResult.spend.coverage.monetary.known_amount).toBe(24);
+      expect(omittedResult.waste).toMatchObject({
+        range: "4w",
+        coverage: { monetary: { event_count: 1, known_amount: 24 } },
+        avoidability_mapping: {
+          version: "waste-avoidability-v1",
+          current_version: "waste-avoidability-v1",
+          is_current: true,
+        },
+      });
+      expect(omittedResult.waste.weeks).toHaveLength(4);
+      expect(omittedResult.waste).toEqual(await readWasteAnalyzer(h.env, "everett", "4w"));
 
-      const explicit = await invokeTool(client, "retrospective", { period: "all", spend_range: "12w" });
+      const explicit = await invokeTool(client, "retrospective", {
+        period: "all",
+        spend_range: "12w",
+        waste_range: "8w",
+        waste_mapping_version: "waste-avoidability-v1",
+      });
       expect(explicit.isError).toBe(false);
-      const explicitResult = explicit.result as { period: string; spend: Awaited<ReturnType<typeof readSpendAnalyzer>> };
+      const explicitResult = explicit.result as {
+        period: string;
+        spend: Awaited<ReturnType<typeof readSpendAnalyzer>>;
+        waste: Awaited<ReturnType<typeof readWasteAnalyzer>>;
+      };
       expect(explicitResult.period).toBe("all");
       expect(explicitResult.spend.range).toBe("12w");
       expect(explicitResult.spend.weeks).toHaveLength(12);
       expect(explicitResult.spend).toEqual(await readSpendAnalyzer(h.env, "everett", "12w"));
+      expect(explicitResult.waste.range).toBe("8w");
+      expect(explicitResult.waste.weeks).toHaveLength(8);
+      expect(explicitResult.waste).toEqual(
+        await readWasteAnalyzer(h.env, "everett", "8w", "waste-avoidability-v1"),
+      );
+
+      const twelveWeekWaste = await invokeTool(client, "retrospective", {
+        period: "month",
+        spend_range: "4w",
+        waste_range: "12w",
+      });
+      expect(twelveWeekWaste.isError).toBe(false);
+      expect(twelveWeekWaste.result).toMatchObject({
+        period: "month",
+        spend: { range: "4w", weeks: expect.any(Array) },
+        waste: { range: "12w", weeks: expect.any(Array) },
+      });
+      expect((twelveWeekWaste.result as { spend: { weeks: unknown[] }; waste: { weeks: unknown[] } }).spend.weeks).toHaveLength(4);
+      expect((twelveWeekWaste.result as { spend: { weeks: unknown[] }; waste: { weeks: unknown[] } }).waste.weeks).toHaveLength(12);
 
       const invalid = await invokeTool(client, "retrospective", { spend_range: "quarter" });
       expect(invalid).toMatchObject({ isError: true, result: { error: "validation_failed" } });
+
+      const invalidWasteRange = await invokeTool(client, "retrospective", { waste_range: "quarter" });
+      expect(invalidWasteRange).toMatchObject({ isError: true, result: { error: "validation_failed" } });
+
+      const unknownMapping = await invokeTool(client, "retrospective", {
+        waste_mapping_version: "waste-avoidability-unknown",
+      });
+      expect(unknownMapping).toMatchObject({
+        isError: true,
+        result: {
+          error: "validation_failed",
+          message: "unsupported waste avoidability mapping version; supported versions: waste-avoidability-v1",
+        },
+      });
     });
 
     expect({
       spend: h.rows("spend_events"),
+      waste: h.rows("waste_events"),
       cooking: h.rows("cooking_log"),
     }).toEqual(stateBefore);
   });
 
-  it("keeps direct and profile-style callers on the compatible four-week default", async () => {
+  it("keeps direct and profile-style callers on compatible four-week Spend/Waste defaults", async () => {
     const h = sqliteEnv(["everett"]);
     seedSpend(h, "everett", "OWN", 18);
+    seedWaste(h, "everett", "W-OWN", "own", "forgot");
     const result = await loadRetrospective(h.env, "everett", "month");
     expect(result.period).toBe("month");
     expect(result.spend.range).toBe("4w");
@@ -183,6 +278,17 @@ describe("retrospective MCP Spend adapter", () => {
       weeks: expect.arrayContaining([
         expect.objectContaining({ total: 18, savings: 0, events: 1, estimated: 0 }),
       ]),
+    });
+    expect(result.waste.range).toBe("4w");
+    expect(result.waste).toEqual(await readWasteAnalyzer(h.env, "everett", "4w"));
+    expect(result.waste).toMatchObject({
+      status: "complete",
+      coverage: { monetary: { event_count: 1, known_amount: 18 } },
+      avoidability_mapping: {
+        version: "waste-avoidability-v1",
+        current_version: "waste-avoidability-v1",
+        is_current: true,
+      },
     });
   });
 });

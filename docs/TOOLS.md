@@ -1033,13 +1033,15 @@ Create or **refine** a single guidance memory. Gated by a **writable-domain allo
 
 ## Retrospective / analysis tools
 
-### `retrospective(period, spend_range?)`
+### `retrospective(period, spend_range?, waste_range?, waste_mapping_version?)`
 
-Aggregate **real** cooking history from the D1 `cooking_log` table over a period, joining `type=recipe` rows to the `recipes` table for protein/cuisine (a `cooking_log LEFT JOIN recipes` + COALESCE).
+Aggregate **real** cooking history from the D1 `cooking_log` table over a period, joining `type=recipe` rows to the `recipes` table for protein/cuisine (a `cooking_log LEFT JOIN recipes` + COALESCE), and return the household's independent read-only Spend and Waste analyzers.
 
 **Params:**
 - `period` (string, optional, default `"month"`): `"Nd"` (e.g. `"30d"`) | `"week"` | `"month"` | `"quarter"` | `"year"` | `"all"`.
 - `spend_range` (string, optional, default `"4w"`): `"4w" | "8w" | "12w"`. It scopes only `spend`; `period` independently scopes cooking history.
+- `waste_range` (string, optional, default `"4w"`): `"4w" | "8w" | "12w"`. It scopes only `waste`; cooking `period` and `spend_range` remain independent.
+- `waste_mapping_version` (string, optional, default current): selects a supported immutable Waste avoidability mapping. The current and only supported name is `"waste-avoidability-v1"`; an unsupported name returns `validation_failed` with `unsupported waste avoidability mapping version; supported versions: waste-avoidability-v1` rather than silently falling back.
 
 **Returns:**
 ```
@@ -1093,6 +1095,50 @@ Aggregate **real** cooking history from the D1 `cooking_log` table over a period
       department: { key, label } | null, amount, event_count, priced_event_count,
       unpriced_event_count, percentage }] },
     insight: <string>                                   // deterministic server template
+  },
+  waste: {                                              // shared WasteAnalyzer; independent of period/spend
+    range: "4w" | "8w" | "12w",
+    as_of, selected_start, selected_end, prior_start, prior_end,  // inclusive YYYY-MM-DD UTC bounds
+    status: "empty" | "unavailable" | "partial" | "complete", // selected monetary status
+    avoidability_mapping: { version, current_version, is_current },
+    coverage: {
+      monetary: { status, event_count, priced_event_count, unpriced_event_count,
+                  estimated_event_count, known_amount },
+      department: { status, event_count, classified_event_count, pending_event_count }
+    },
+    weeks: [{                                           // exactly N ISO-Monday buckets, oldest first
+      week_start, week_end, through, is_partial, events,
+      amount: <number> | null, status, monetary_coverage, department_coverage
+    }],
+    kpis: {
+      tossed_value: { amount: <number> | null, status },
+      items_binned: { count, per_week },
+      waste_rate: {
+        percent: <number> | null, known_waste_amount, qualifying_spend_amount,
+        status: "available" | "unavailable",
+        reason: null | "waste_incomplete" | "spend_incomplete" | "zero_denominator",
+        spend_coverage: { status, spend_event_count, qualifying_event_count,
+          excluded_household_event_count, pending_department_event_count,
+          priced_event_count, unpriced_event_count, estimated_event_count, known_amount }
+      },
+      trend: { percent: <number> | null, current_known_amount, prior_known_amount,
+               status: "available" | "unavailable",
+               reason: null | "current_incomplete" | "prior_incomplete" | "prior_zero" }
+    },
+    breakdowns: {
+      department: { count_denominator, known_amount_denominator,
+                    classification_coverage, monetary_coverage, items },
+      reason:      { /* same container */ },
+      avoidability:{ /* same container */ }
+      // each item: { key, label, event_count, valued_event_count,
+      //   unvalued_event_count, estimated_event_count, amount,
+      //   count_percentage, amount_percentage }
+    },
+    most_wasted: { cap: 6, total_count, items: [{ key, name,
+      department: { key, label } | null, event_count, valued_event_count,
+      unvalued_event_count, estimated_event_count, amount, amount_percentage,
+      status: "unavailable" | "partial" | "complete" }] },
+    insight: <string>                                   // exact deterministic server template
   }
 }
 ```
@@ -1107,7 +1153,17 @@ All currency reduction rounds each stored decimal once to integer cents. Monetar
 
 Department, store, and provenance breakdowns use immutable captured keys only. Items sort by known amount descending then raw key ascending; department percentages use classified known spend, while store/provenance use total known spend. Top drivers group by captured `line_key`, include priced groups only, count event rows rather than quantity, select name and department together from the latest `(occurred_on, send_id)` row, sort by amount descending then event count descending then key ascending, and cap at six after reporting `total_count`. Insight selection is the fixed server template ladder; no LLM, random choice, or client reclassification participates. Reads filter voided events and perform no mutation, cache fill, queue action, schema migration, scheduled aggregation, or analyzer cron. No MCP tool writes spend events.
 
-**Member API adapter:** authenticated `GET /api/retrospective/spend?range=4w|8w|12w` returns the same `SpendAnalyzer` body through the normal ETag helper. The API and member UI default a missing range to `8w`; an invalid value returns HTTP 400 `{ "error": "validation_failed", "message": "range must be 4w | 8w | 12w" }`. The MCP tool and legacy profile retrospective surface default to `4w` for compatibility.
+**`waste` is read-only, household-scoped, bounded, and independent of both cooking and Spend.** `waste_range` maps to N=4/8/12 UTC ISO-Monday buckets, including the current partial week, and the matched prior interval has the same elapsed shape. The largest request reads Waste only from `prior_start` through `as_of` (at most 24 weeks), performs tenant/item/date-bounded last-paid seeks, and reads qualifying Spend only from `selected_start` through `as_of`; future facts are excluded. Authentication supplies the tenant before analysis, every read is tenant-predicated, and no MCP or HTTP input can select a household.
+
+Waste value is one last-paid **estimate** per persisted toss: the latest same-tenant, non-voided, priced `spend_events.unit_price` for the same canonical item on or before the toss, with date then send-id tie-breaking. Missing history stays unavailable; estimated matches stay known but partial; zero is known. Waste quantity, Spend package quantity/amount, member input, pantry, catalog, flyer, recipe allocation, store quote, cross-tenant history, and heuristics never fill or multiply a value. `prepared_from` makes the effective read-time department `leftovers`; otherwise the capture-stamped department is used, and NULL remains pending. Avoidability is the selected immutable reason-only five/five mapping, echoed by `avoidability_mapping` and never written to an event.
+
+Waste monetary status is `empty` with no events, `unavailable` with events but no matched price, `partial` with any unmatched or estimated event, and `complete` when every event has a non-estimated match. Empty exposes zero, unavailable exposes NULL value, and partial/complete expose the known subtotal. Department coverage is separate: pending classification never changes top-level or Tossed monetary status. Counts are exact persisted event counts; `items_binned.per_week` divides by all N calendar buckets. Trend is available only for exact current/prior money and positive prior value; otherwise the returned reason follows `current_incomplete`, `prior_incomplete`, then `prior_zero` precedence. The contract intentionally returns no prior coverage counts.
+
+Waste rate is known Tossed last-paid value divided by qualifying recorded grocery Spend plus that Waste value. Qualifying Spend sums selected non-voided captured `amount` rows except `household`; `beverages` remains included. Pending, unpriced, or estimated qualifying input makes its coverage incomplete. Rate reasons follow `waste_incomplete`, `spend_incomplete`, then `zero_denominator`. Waste-derived dollars are last-paid estimates; `qualifying_spend_amount` is recorded/captured grocery Spend, never a per-toss estimate.
+
+Department breakdown count and known-money denominators cover only effectively classified events; pending events remain in classification coverage and never become `Not mapped`. Reason and avoidability denominators cover all selected events and all selected known Waste value. Every sparse group remains visible, including an unvalued group with NULL amount. Breakdown items sort by known amount descending, event count descending, then canonical key ascending. Most-wasted items group canonical item id, count every row, keep valued groups before unvalued-only groups, apply the documented amount/count/key tie-breakers, choose the latest `(occurred_at, id)` representative, report the pre-cap `total_count`, and cap at six. Weeks remain chronological. The returned `insight` is the exact server-authored string; consumers relay it and the returned ordering without recomputation or invented advice.
+
+The MCP and profile retrospective results carry the same direct `WasteAnalyzer` object. MCP accepts only the distinct `waste_range` / `waste_mapping_version` names and defaults to `4w` / current. Profile retrospective exposes no Waste selector and also uses `4w` / current. **Member API adapters:** authenticated `GET /api/retrospective/spend?range=4w|8w|12w` returns the shared Spend body; authenticated `GET /api/retrospective/waste?range=4w|8w|12w&mapping_version=<name>` returns the shared Waste body. Both use the normal private/no-cache ETag/304 helper and default a missing HTTP range to `8w`; invalid range returns HTTP 400 `{ "error": "validation_failed", "message": "range must be 4w | 8w | 12w" }`. HTTP uses exactly `mapping_version`, not the MCP-only `waste_mapping_version`; omission selects current, and an unsupported name returns the exact mapping error above. Both GETs resolve tenant only from the session and are deterministic and side-effect-free. No MCP or HTTP Waste writer exists, and reads perform no capture, correction, classification fill, cache persistence, model call, queue action, migration, scheduled aggregation, or analyzer cron.
 
 ### `log_cooked(entry)`
 

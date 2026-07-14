@@ -639,6 +639,30 @@ ul.recipes > li:last-child { border-bottom: 0; }
 .spend-insight > span { color: var(--brand); font-family: var(--font-mono); font-size: 0.67rem; font-weight: 650; text-transform: uppercase; letter-spacing: 0.07em; }
 .spend-insight p { margin: 0.25rem 0 0; font-size: var(--text-sm); line-height: 1.5; }
 
+/* Waste reuses the Retrospective analyzer furniture above while keeping every
+   last-paid/recorded-spend distinction and sparse-data cue visible in text. */
+.waste-state-partial { border-color: color-mix(in oklch, var(--primary) 35%, var(--border)); background: color-mix(in oklch, var(--primary) 5%, var(--card)); }
+.waste-state-unavailable { border-style: dashed; }
+.waste-department-note { display: flex; align-items: baseline; justify-content: space-between; gap: 0.4rem 1rem; flex-wrap: wrap; border: 1px solid color-mix(in oklch, #d9931f 38%, var(--border)); border-radius: var(--radius-md); padding: 0.65rem 0.8rem; background: color-mix(in oklch, #d9931f 7%, var(--card)); font-size: var(--text-xs); }
+.waste-department-note strong { color: var(--foreground); }
+.waste-department-note span { color: var(--muted-foreground); }
+.waste-kpis-empty { grid-template-columns: minmax(0, 1fr); max-width: 12rem; }
+.waste-kpi-detail { display: grid; gap: 0.12rem; }
+.waste-kpi-detail > span { display: block; }
+.waste-kpi-rate-alert { border-color: color-mix(in oklch, #c02626 55%, var(--border)); background: color-mix(in oklch, #c02626 7%, var(--card)); }
+.waste-kpi-rate-alert dt, .waste-kpi-rate-alert dd { color: #b42323; }
+.dark .waste-kpi-rate-alert dt, .dark .waste-kpi-rate-alert dd { color: #ff8b8b; }
+.waste-weeks { height: 17rem; }
+.waste-bar { background: color-mix(in oklch, var(--primary) 78%, #8a4d20); }
+.waste-bar-partial { background: repeating-linear-gradient(135deg, var(--primary) 0 5px, color-mix(in oklch, var(--primary) 55%, var(--card)) 5px 9px); }
+.waste-bar-unavailable { height: 3px !important; background: var(--muted-foreground); opacity: 0.45; }
+.waste-bar-empty { height: 0 !important; }
+.waste-week-count { color: var(--muted-foreground); font-size: 0.68rem; }
+.waste-week-value { line-height: 1.35; }
+.waste-breakdown-summary { margin: 0.45rem 0 0; color: var(--muted-foreground); font-size: 0.66rem; line-height: 1.45; }
+.waste-breakdown ul { margin-top: 0.7rem; }
+.waste-most-wasted small { max-width: 16rem; }
+
 @media (min-width: 821px) {
   .spend-weeks[data-range="4w"] { grid-auto-flow: row; grid-template-columns: repeat(4, minmax(0, 1fr)); min-width: 100%; }
   .spend-weeks[data-range="8w"] { grid-auto-flow: row; grid-template-columns: repeat(8, minmax(0, 1fr)); min-width: 100%; }
@@ -647,6 +671,7 @@ ul.recipes > li:last-child { border-bottom: 0; }
 @media (max-width: 820px) {
   .spend-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .spend-breakdown-grid { grid-template-columns: 1fr; }
+  .waste-kpis-empty { grid-template-columns: minmax(0, 1fr); }
 }
 
 @media (max-width: 560px) {
@@ -658,6 +683,7 @@ ul.recipes > li:last-child { border-bottom: 0; }
   .spend-kpis { grid-template-columns: 1fr; }
   .spend-drivers ol { grid-template-columns: 1fr; }
   .spend-weeks { min-width: 42rem; }
+  .waste-department-note { align-items: flex-start; flex-direction: column; }
 }
 
 /* ── profile ─────────────────────────────────────────────────────────────── */

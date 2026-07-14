@@ -4,8 +4,8 @@
 // `/api/log` meal field, and the meal-aware `retrospective` tool): a composer with a meal
 // segmented control (defaulting by time of day) and a source control (From cookbook → recipe,
 // Something else → ad_hoc — the mock's "Leftovers" source is deliberately dropped, the log is
-// a cooking log not an eating log), plus a day-grouped, meal-tagged list. Band 4 replaces only
-// the Spend placeholder with the shared bounded analyzer; Waste remains its existing placeholder.
+// a cooking log not an eating log), plus a day-grouped, meal-tagged list. Spend and Waste render
+// their distinct bounded analyzers through one canonical URL-backed range control.
 import * as React from "react";
 import { Link, createFileRoute, stripSearchParams } from "@tanstack/react-router";
 import type { SearchSchemaInput } from "@tanstack/react-router";
@@ -24,25 +24,31 @@ import {
   useIndex,
   useLog,
   useSpendAnalyzer,
+  useWasteAnalyzer,
   type LogRow,
   type SpendAnalyzer,
   type SpendBreakdown,
   type SpendCoverageStatus,
   type SpendRange,
   type SpendWeek,
+  type WasteAnalyzer,
+  type WasteBreakdown,
+  type WasteItemGroup,
+  type WasteRange,
+  type WasteWeek,
 } from "../lib/data";
 import { useLogAdd, useLogRemove } from "../lib/mutations";
 import { fmtDay, isoToday } from "../lib/format";
 
 type Tab = "log" | "spend" | "waste";
-const SPEND_RANGES: SpendRange[] = ["4w", "8w", "12w"];
+const ANALYZER_RANGES: SpendRange[] = ["4w", "8w", "12w"];
 
 export const Route = createFileRoute("/_app/retrospective")({
   validateSearch: (s: { tab?: string; range?: string } & SearchSchemaInput): { tab: Tab; range: SpendRange | undefined } => ({
     tab: s.tab === "spend" ? "spend" : s.tab === "waste" ? "waste" : "log",
     // Explicitly overwrite an invalid raw value: parent search is merged into this
     // route's validated search, so omission would leave the invalid value visible.
-    range: SPEND_RANGES.includes(s.range as SpendRange) ? s.range as SpendRange : undefined,
+    range: ANALYZER_RANGES.includes(s.range as SpendRange) ? s.range as SpendRange : undefined,
   }),
   // The Cooking-log default is the bare URL — strip it so `/retrospective` stays clean.
   search: { middlewares: [stripSearchParams({ tab: "log" as const })] },
@@ -61,10 +67,10 @@ function RetrospectivePage() {
   const tabRefs = React.useRef<Record<Tab, HTMLButtonElement | null>>({ log: null, spend: null, waste: null });
 
   React.useEffect(() => {
-    if (tab !== "spend" || range !== undefined) return;
+    if ((tab !== "spend" && tab !== "waste") || range !== undefined) return;
     void navigate({
       replace: true,
-      search: (previous) => ({ ...previous, tab: "spend", range: "8w" }),
+      search: (previous) => ({ ...previous, tab, range: "8w" }),
     });
   }, [navigate, range, tab]);
 
@@ -139,9 +145,11 @@ function RetrospectivePage() {
         hidden={tab !== "waste"}
       >
         {tab === "waste" ? (
-          <div data-testid="waste-page">
-            <EmptyState title="Coming soon" sub="Your waste analysis will show up here." />
-          </div>
+          <WasteAnalyzerTab
+            range={(range ?? "8w") as WasteRange}
+            enabled={range !== undefined}
+            onRange={(next) => void navigate({ search: (previous) => ({ ...previous, tab: "waste", range: next }) })}
+          />
         ) : null}
       </section>
     </div>
@@ -161,18 +169,7 @@ function SpendAnalyzerTab(props: {
           <h2>Household spend</h2>
           <p>{props.range.slice(0, -1)} weeks · UTC weeks start Monday</p>
         </div>
-        <div className="spend-range" role="group" aria-label="Spend range">
-          {SPEND_RANGES.map((range) => (
-            <button
-              key={range}
-              type="button"
-              aria-pressed={props.range === range}
-              onClick={() => props.onRange(range)}
-            >
-              {range.slice(0, -1)} weeks
-            </button>
-          ))}
-        </div>
+        <AnalysisRangeControl range={props.range} onRange={props.onRange} />
       </div>
 
       {!props.enabled || query.isPending ? (
@@ -188,6 +185,26 @@ function SpendAnalyzerTab(props: {
       ) : query.data ? (
         <SpendResult result={query.data} />
       ) : null}
+    </div>
+  );
+}
+
+function AnalysisRangeControl(props: {
+  range: SpendRange;
+  onRange: (range: SpendRange) => void;
+}) {
+  return (
+    <div className="spend-range" role="group" aria-label="Analysis range">
+      {ANALYZER_RANGES.map((range) => (
+        <button
+          key={range}
+          type="button"
+          aria-pressed={props.range === range}
+          onClick={() => props.onRange(range)}
+        >
+          {range.slice(0, -1)} weeks
+        </button>
+      ))}
     </div>
   );
 }
@@ -387,6 +404,376 @@ function SpendDrivers({ result }: { result: SpendAnalyzer }) {
       </ol>
     </section>
   );
+}
+
+function WasteAnalyzerTab(props: {
+  range: WasteRange;
+  enabled: boolean;
+  onRange: (range: WasteRange) => void;
+}) {
+  const query = useWasteAnalyzer(props.range, props.enabled);
+  return (
+    <div className="spend-panel waste-panel" data-testid="waste-page">
+      <div className="spend-toolbar waste-toolbar">
+        <div>
+          <h2>Household waste</h2>
+          <p>{props.range.slice(0, -1)} weeks · UTC weeks start Monday</p>
+        </div>
+        <AnalysisRangeControl range={props.range} onRange={props.onRange} />
+      </div>
+
+      {!props.enabled || query.isPending ? (
+        <div className="spend-state waste-state" role="status" data-testid="waste-loading">
+          Loading waste analysis…
+        </div>
+      ) : query.isError ? (
+        <div className="spend-state spend-state-error waste-state" role="alert" data-testid="waste-error">
+          <h3>Waste analysis couldn’t load</h3>
+          <p>{query.error.message}</p>
+          <Button size="sm" type="button" onClick={() => void query.refetch()}>Retry waste analysis</Button>
+        </div>
+      ) : (
+        <WasteResult result={query.data} />
+      )}
+    </div>
+  );
+}
+
+function WasteResult({ result }: { result: WasteAnalyzer }) {
+  const empty = result.status === "empty";
+  return (
+    <div className="spend-result waste-result" data-status={result.status}>
+      <div
+        className={`spend-state waste-state waste-state-${result.status}`}
+        data-testid={`waste-state-${result.status}`}
+      >
+        {empty ? (
+          <>
+            <h3>No recorded waste</h3>
+            <p>No tosses were recorded from {fmtSpendDay(result.selected_start)} through {fmtSpendDay(result.selected_end)}.</p>
+          </>
+        ) : result.status === "unavailable" ? (
+          <>
+            <h3>Last-paid value unavailable</h3>
+            <p>{result.coverage.monetary.event_count} recorded {plural(result.coverage.monetary.event_count, "toss has", "tosses have")} no matching last-paid price.</p>
+          </>
+        ) : result.status === "partial" ? (
+          <>
+            <h3>Known last-paid estimate</h3>
+            <WasteCoverageEvidence coverage={result.coverage.monetary} />
+          </>
+        ) : (
+          <>
+            <h3>Last-paid estimate</h3>
+            <p>{fmtSpendDay(result.selected_start)}–{fmtSpendDay(result.selected_end)} · through {fmtSpendDay(result.as_of)} UTC</p>
+          </>
+        )}
+      </div>
+
+      {result.coverage.department.pending_event_count > 0 ? (
+        <aside className="waste-department-note" aria-label="Waste department coverage" data-testid="waste-department-coverage">
+          <strong>{result.coverage.department.classified_event_count === 0 ? "Department classification unavailable" : "Department classification incomplete"}</strong>
+          <span>
+            {result.coverage.department.classified_event_count} of {result.coverage.department.event_count} {plural(result.coverage.department.event_count, "toss is", "tosses are")} classified; {result.coverage.department.pending_event_count} pending. Waste money remains labelled {wasteMoneyLabel(result.status).toLowerCase()}.
+          </span>
+        </aside>
+      ) : null}
+
+      {empty ? <WasteEmptyCount result={result} /> : <WasteKpis result={result} />}
+      <WasteWeeks result={result} />
+      {!empty ? (
+        <>
+          <WasteBreakdowns result={result} />
+          <WasteMostWasted result={result} />
+        </>
+      ) : null}
+      <aside className="spend-insight waste-insight" aria-label="Waste insight" data-testid="waste-insight">
+        <span>Insight</span>
+        <p>{result.insight}</p>
+      </aside>
+    </div>
+  );
+}
+
+function WasteCoverageEvidence({ coverage }: { coverage: WasteAnalyzer["coverage"]["monetary"] }) {
+  return (
+    <ul className="spend-evidence waste-evidence">
+      {coverage.unpriced_event_count > 0 ? (
+        <li>{coverage.unpriced_event_count} {plural(coverage.unpriced_event_count, "toss has", "tosses have")} no matching last-paid price</li>
+      ) : null}
+      {coverage.estimated_event_count > 0 ? (
+        <li>{coverage.estimated_event_count} {plural(coverage.estimated_event_count, "toss uses", "tosses use")} an estimated last-paid price</li>
+      ) : null}
+    </ul>
+  );
+}
+
+function WasteEmptyCount({ result }: { result: WasteAnalyzer }) {
+  return (
+    <dl className="spend-kpis waste-kpis waste-kpis-empty" aria-label="Waste key metrics">
+      <WasteKpi
+        label="Items binned"
+        value={String(result.kpis.items_binned.count)}
+        detail={`${result.kpis.items_binned.per_week.toFixed(1)} items per selected week`}
+        testId="waste-kpi-items"
+      />
+    </dl>
+  );
+}
+
+function WasteKpis({ result }: { result: WasteAnalyzer }) {
+  const tossed = result.kpis.tossed_value;
+  const items = result.kpis.items_binned;
+  const rate = result.kpis.waste_rate;
+  const trend = result.kpis.trend;
+  const rateHigh = rate.status === "available" && rate.percent != null && rate.percent >= 10;
+  return (
+    <dl className="spend-kpis waste-kpis" aria-label="Waste key metrics">
+      <WasteKpi
+        label="Tossed value"
+        value={tossed.amount == null ? "Unavailable" : money(tossed.amount)}
+        detail={`${wasteMoneyLabel(tossed.status)}${wasteEvidenceSuffix(result.coverage.monetary)}`}
+        testId="waste-kpi-tossed"
+      />
+      <WasteKpi
+        label="Items binned"
+        value={String(items.count)}
+        detail={`${items.per_week.toFixed(1)} items per selected week`}
+        testId="waste-kpi-items"
+      />
+      <WasteKpi
+        label="Waste rate"
+        value={rate.status === "available" && rate.percent != null ? `${rate.percent.toFixed(1)}%` : "Unavailable"}
+        detail={
+          <>
+            {rate.status === "unavailable" ? <span>Reason: {rate.reason}</span> : <span>Available returned rate</span>}
+            <span>{wasteRateAmountText(result.coverage.monetary.status, rate.known_waste_amount)} · {qualifyingSpendAmountText(rate.spend_coverage)}</span>
+            <span>{qualifyingSpendEvidence(rate.spend_coverage)}</span>
+          </>
+        }
+        testId="waste-kpi-rate"
+        alert={rateHigh}
+      />
+      <WasteKpi
+        label="Waste trend"
+        value={trend.status === "available" && trend.percent != null ? trendLabel(trend.percent) : "Unavailable"}
+        detail={
+          <>
+            {trend.status === "unavailable" ? <span>Reason: {trend.reason}</span> : <span>Against the matched prior range</span>}
+            <span>Current last-paid estimate {money(trend.current_known_amount)} · Prior last-paid estimate {money(trend.prior_known_amount)}</span>
+          </>
+        }
+        testId="waste-kpi-trend"
+      />
+    </dl>
+  );
+}
+
+function WasteKpi(props: {
+  label: string;
+  value: string;
+  detail: React.ReactNode;
+  testId: string;
+  alert?: boolean;
+}) {
+  return (
+    <div className={`spend-kpi waste-kpi${props.alert ? " waste-kpi-rate-alert" : ""}`} data-testid={props.testId}>
+      <dt>{props.label}</dt>
+      <dd>{props.value}</dd>
+      <span className="waste-kpi-detail">{props.detail}</span>
+    </div>
+  );
+}
+
+function WasteWeeks({ result }: { result: WasteAnalyzer }) {
+  const max = Math.max(1, ...result.weeks.map((week) => week.amount ?? 0));
+  return (
+    <section className="spend-section waste-section" aria-labelledby="waste-weeks-heading">
+      <div className="spend-section-head">
+        <div>
+          <h3 id="waste-weeks-heading">Weekly waste</h3>
+          <p>Chronological toss counts and spend-history last-paid estimates, oldest to newest.</p>
+        </div>
+      </div>
+      <div className="spend-chart-scroll waste-chart-scroll" role="region" aria-label="Weekly waste chart" tabIndex={0}>
+        <ol className="spend-weeks waste-weeks" data-testid="waste-weeks" data-range={result.range}>
+          {result.weeks.map((week) => (
+            <WasteWeekItem key={week.week_start} week={week} max={max} />
+          ))}
+        </ol>
+      </div>
+    </section>
+  );
+}
+
+function WasteWeekItem({ week, max }: { week: WasteWeek; max: number }) {
+  const scaledHeight = week.amount == null ? 0 : week.amount / max * 100;
+  const height = week.amount == null ? "3px" : `${Math.max(week.amount > 0 ? 8 : 0, scaledHeight)}%`;
+  const details = [
+    `${coverageName(week.monetary_coverage.status)} monetary coverage`,
+    ...wasteEvidenceParts(week.monetary_coverage),
+    week.department_coverage.pending_event_count > 0 ? `${week.department_coverage.pending_event_count} department pending` : null,
+    week.is_partial ? `through ${fmtSpendDay(week.through)}` : null,
+  ].filter((value): value is string => value != null);
+  return (
+    <li className="spend-week waste-week" data-testid="waste-week" data-week={week.week_start}>
+      <div className="spend-bar-wrap waste-bar-wrap" aria-hidden="true">
+        <span className={`spend-bar waste-bar waste-bar-${week.status}`} style={{ height }} />
+      </div>
+      <strong>{fmtSpendDay(week.week_start)}</strong>
+      <span className="waste-week-count">{week.events} {plural(week.events, "toss", "tosses")}</span>
+      <span className="spend-week-value waste-week-value">{wasteAmountText(week.amount, week.status)}</span>
+      <span className="spend-week-coverage waste-week-coverage">{details.join(" · ")}</span>
+    </li>
+  );
+}
+
+function WasteBreakdowns({ result }: { result: WasteAnalyzer }) {
+  return (
+    <div className="spend-breakdown-grid waste-breakdown-grid">
+      <WasteBreakdownView title="By department" breakdown={result.breakdowns.department} testId="waste-breakdown-department" />
+      <WasteBreakdownView title="By reason" breakdown={result.breakdowns.reason} testId="waste-breakdown-reason" />
+      <WasteBreakdownView title="By avoidability" breakdown={result.breakdowns.avoidability} testId="waste-breakdown-avoidability" />
+    </div>
+  );
+}
+
+function WasteBreakdownView(props: { title: string; breakdown: WasteBreakdown; testId: string }) {
+  const { breakdown } = props;
+  return (
+    <section className="spend-breakdown waste-breakdown" data-testid={props.testId}>
+      <h3>{props.title}</h3>
+      <p className="waste-breakdown-summary">
+        Count denominator: {breakdown.count_denominator} {plural(breakdown.count_denominator, "toss", "tosses")} · {knownDenominatorText(breakdown)}. Classification: {classificationEvidence(breakdown.classification_coverage)}. Money: {monetaryEvidence(breakdown.monetary_coverage)}.
+      </p>
+      {breakdown.items.length === 0 ? <p className="spend-muted">No classified groups available.</p> : (
+        <ul>
+          {breakdown.items.map((item) => (
+            <li key={item.key}>
+              <span>
+                <strong>{item.label}</strong>
+                <small>{item.event_count} {plural(item.event_count, "toss", "tosses")} · {item.valued_event_count} valued · {item.unvalued_event_count} unmatched · {item.estimated_event_count} estimated</small>
+              </span>
+              <span>
+                <strong>{wasteGroupAmount(item.amount, item.unvalued_event_count, item.estimated_event_count)}</strong>
+                <small>Count share {percentText(item.count_percentage)} · Amount share {percentText(item.amount_percentage)}</small>
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+function WasteMostWasted({ result }: { result: WasteAnalyzer }) {
+  if (result.most_wasted.items.length === 0) return null;
+  return (
+    <section className="spend-section spend-drivers waste-most-wasted" aria-labelledby="waste-items-heading" data-testid="waste-most-wasted">
+      <div className="spend-section-head">
+        <div>
+          <h3 id="waste-items-heading">Most wasted items</h3>
+          <p>Showing {result.most_wasted.items.length} of {result.most_wasted.total_count} tossed item groups.</p>
+        </div>
+      </div>
+      <ol>
+        {result.most_wasted.items.map((item) => <WasteItemRow key={item.key} item={item} />)}
+      </ol>
+    </section>
+  );
+}
+
+function WasteItemRow({ item }: { item: WasteItemGroup }) {
+  return (
+    <li>
+      <span>
+        <strong>{item.name}</strong>
+        <small>{item.department?.label ?? "Department pending"} · tossed {item.event_count}×</small>
+      </span>
+      <span>
+        <strong>{wasteGroupAmount(item.amount, item.unvalued_event_count, item.estimated_event_count)}</strong>
+        <small>{item.amount_percentage == null ? "Amount share unavailable" : `${item.amount_percentage.toFixed(1)}% of known last-paid value`} · {item.valued_event_count} valued · {item.unvalued_event_count} unmatched · {item.estimated_event_count} estimated</small>
+      </span>
+    </li>
+  );
+}
+
+function wasteMoneyLabel(status: SpendCoverageStatus): string {
+  if (status === "empty") return "No recorded waste";
+  if (status === "unavailable") return "Last-paid value unavailable";
+  if (status === "partial") return "Known last-paid estimate";
+  return "Last-paid estimate";
+}
+
+function wasteRateAmountText(status: SpendCoverageStatus, amount: number): string {
+  if (status === "empty") return "No recorded Waste";
+  if (status === "unavailable") return "Waste last-paid value unavailable";
+  return `${status === "partial" ? "Known Waste last-paid estimate" : "Waste last-paid estimate"} ${money(amount)}`;
+}
+
+function wasteEvidenceParts(coverage: WasteAnalyzer["coverage"]["monetary"]): string[] {
+  const details: string[] = [];
+  if (coverage.unpriced_event_count > 0) details.push(`${coverage.unpriced_event_count} unmatched`);
+  if (coverage.estimated_event_count > 0) details.push(`${coverage.estimated_event_count} estimated`);
+  return details;
+}
+
+function wasteEvidenceSuffix(coverage: WasteAnalyzer["coverage"]["monetary"]): string {
+  const details = wasteEvidenceParts(coverage);
+  return details.length > 0 ? ` · ${details.join(" · ")}` : "";
+}
+
+function qualifyingSpendEvidence(coverage: WasteAnalyzer["kpis"]["waste_rate"]["spend_coverage"]): string {
+  const details = [
+    `${coverageName(coverage.status)} recorded-spend coverage`,
+    `${coverage.qualifying_event_count} qualifying`,
+    `${coverage.excluded_household_event_count} household excluded`,
+    coverage.pending_department_event_count > 0 ? `${coverage.pending_department_event_count} department pending` : null,
+    coverage.unpriced_event_count > 0 ? `${coverage.unpriced_event_count} unpriced` : null,
+    coverage.estimated_event_count > 0 ? `${coverage.estimated_event_count} estimated` : null,
+  ].filter((value): value is string => value != null);
+  return details.join(" · ");
+}
+
+function qualifyingSpendAmountText(coverage: WasteAnalyzer["kpis"]["waste_rate"]["spend_coverage"]): string {
+  if (coverage.status === "empty") return "No qualifying recorded grocery spend";
+  if (coverage.status === "unavailable") return "Recorded grocery spend unavailable";
+  if (coverage.status === "partial") return `Known recorded grocery spend ${money(coverage.known_amount)}`;
+  return `Recorded grocery spend ${money(coverage.known_amount)}`;
+}
+
+function wasteAmountText(amount: number | null, status: SpendCoverageStatus): string {
+  if (status === "empty") return "No recorded tosses";
+  if (amount == null) return "Last-paid value unavailable";
+  return `${status === "partial" ? "Known last-paid estimate" : "Last-paid estimate"} ${money(amount)}`;
+}
+
+function wasteGroupAmount(amount: number | null, unmatched: number, estimated: number): string {
+  if (amount == null) return "Last-paid value unavailable";
+  return `${unmatched > 0 || estimated > 0 ? "Known last-paid estimate" : "Last-paid estimate"} ${money(amount)}`;
+}
+
+function knownDenominatorText(breakdown: WasteBreakdown): string {
+  if (breakdown.monetary_coverage.event_count > 0 && breakdown.monetary_coverage.priced_event_count === 0) {
+    return "known last-paid denominator unavailable";
+  }
+  return `known last-paid denominator ${money(breakdown.known_amount_denominator)}`;
+}
+
+function classificationEvidence(coverage: WasteBreakdown["classification_coverage"]): string {
+  return `${coverageName(coverage.status)} (${coverage.classified_event_count} classified, ${coverage.pending_event_count} pending)`;
+}
+
+function monetaryEvidence(coverage: WasteBreakdown["monetary_coverage"]): string {
+  return `${coverageName(coverage.status)} (${coverage.priced_event_count} valued, ${coverage.unpriced_event_count} unmatched, ${coverage.estimated_event_count} estimated)`;
+}
+
+function coverageName(status: SpendCoverageStatus): string {
+  return status.charAt(0).toUpperCase() + status.slice(1);
+}
+
+function percentText(value: number | null): string {
+  return value == null ? "unavailable" : `${value.toFixed(1)}%`;
 }
 
 function money(value: number): string {

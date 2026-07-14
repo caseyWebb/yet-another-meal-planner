@@ -217,6 +217,7 @@ const MEMBER_ENDPOINTS: [string, string][] = [
   ["PUT", "/api/profile/diet-principles"],
   ["GET", "/api/profile/retrospective"],
   ["GET", "/api/retrospective/spend"],
+  ["GET", "/api/retrospective/waste"],
   ["GET", "/api/profile/kroger-login-url"],
   ["GET", "/api/profile/store-adapters"],
   ["GET", "/api/profile/kroger-locations?zip=76104"],
@@ -1041,10 +1042,11 @@ describe("differentiators (member-app-differentiators)", () => {
 import { sqliteEnv } from "./sqlite-d1.js";
 import { addGroceryRow, advanceInCartRows } from "../src/session-db.js";
 import { snapshotStatements } from "../src/spend.js";
+import { readWasteAnalyzer } from "../src/waste-analyzer.js";
 
 const send2 = send;
 
-describe("retrospective area — shared Spend analyzer adapter", () => {
+describe("retrospective area — shared Spend and Waste analyzer adapters", () => {
   async function retrospectiveEnv(tenants: string[] = ["casey"]) {
     const h = sqliteEnv(tenants);
     await h.env.TENANT_KV.put("invite:GOODCODE", "casey");
@@ -1064,6 +1066,27 @@ describe("retrospective area — shared Spend analyzer adapter", () => {
       "INSERT INTO spend_events (send_id,line_key,tenant,occurred_on,name,sku,quantity,unit_price,amount,savings,estimated,department,provenance,store,fulfillment,voided_at) " +
         "VALUES (?,?,?,?,?,NULL,1,?,?,0,0,'dairy','planned','kroger','kroger_online',NULL)",
     ).run(sendId, line, tenant, over.date ?? new Date().toISOString().slice(0, 10), line, amount, amount);
+  }
+
+  function seedWaste(
+    h: ReturnType<typeof sqliteEnv>,
+    over: { tenant?: string; id?: string; item?: string; reason?: string; date?: string } = {},
+  ): void {
+    const tenant = over.tenant ?? "casey";
+    const item = over.item ?? "milk";
+    h.raw.prepare(
+      "INSERT INTO waste_events " +
+        "(tenant,id,name,item_id,prepared_from,quantity,department,reason,occurred_at,created_at) " +
+        "VALUES (?,?,?,?,NULL,'1','dairy',?,?,?)",
+    ).run(
+      tenant,
+      over.id ?? `W-${tenant}-${item}`,
+      item,
+      item,
+      over.reason ?? "spoiled",
+      over.date ?? new Date().toISOString().slice(0, 10),
+      "2026-07-14T12:00:00.000Z",
+    );
   }
 
   it("defaults to 8w, accepts explicit ranges, and returns the direct shared object with ETag/304", async () => {
@@ -1090,6 +1113,49 @@ describe("retrospective area — shared Spend analyzer adapter", () => {
     expect(notModified.headers.get("etag")).toBe(etag);
   });
 
+  it("serves the direct Waste object with 8w/current defaults, every range, named replay, and ETag/304", async () => {
+    const { h, env } = await retrospectiveEnv();
+    seedSpend(h, { line: "waste-item", amount: 7 });
+    seedWaste(h, { item: "waste-item", reason: "forgot" });
+    const cookie = await loggedIn(env);
+
+    const defaultResponse = await get(env, "/api/retrospective/waste", cookie);
+    expect(defaultResponse.status).toBe(200);
+    expect(defaultResponse.headers.get("etag")).toMatch(/^W\//);
+    expect(defaultResponse.headers.get("cache-control")).toBe("private, no-cache");
+    const defaultBody = await defaultResponse.json();
+    expect(defaultBody).toEqual(await readWasteAnalyzer(h.env, "casey", "8w"));
+    expect(defaultBody).toMatchObject({
+      range: "8w",
+      status: "complete",
+      avoidability_mapping: {
+        version: "waste-avoidability-v1",
+        current_version: "waste-avoidability-v1",
+        is_current: true,
+      },
+      coverage: { monetary: { event_count: 1, known_amount: 7 } },
+    });
+
+    for (const range of ["4w", "8w", "12w"] as const) {
+      const response = await get(
+        env,
+        `/api/retrospective/waste?range=${range}&mapping_version=waste-avoidability-v1`,
+        cookie,
+      );
+      expect(response.status, range).toBe(200);
+      const body = await response.json();
+      expect(body).toEqual(await readWasteAnalyzer(h.env, "casey", range, "waste-avoidability-v1"));
+      expect((body as { weeks: unknown[] }).weeks).toHaveLength(Number.parseInt(range, 10));
+    }
+
+    const etag = defaultResponse.headers.get("etag")!;
+    const notModified = await get(env, "/api/retrospective/waste", cookie, { "If-None-Match": etag });
+    expect(notModified.status).toBe(304);
+    expect(await notModified.text()).toBe("");
+    expect(notModified.headers.get("etag")).toBe(etag);
+    expect(notModified.headers.get("cache-control")).toBe("private, no-cache");
+  });
+
   it("rejects invalid range with the exact structured body", async () => {
     const { env } = await retrospectiveEnv();
     const cookie = await loggedIn(env);
@@ -1098,6 +1164,43 @@ describe("retrospective area — shared Spend analyzer adapter", () => {
     expect(await response.json()).toEqual({
       error: "validation_failed",
       message: "range must be 4w | 8w | 12w",
+    });
+  });
+
+  it("uses only HTTP mapping_version and returns both exact Waste validation errors", async () => {
+    const { env } = await retrospectiveEnv();
+    const cookie = await loggedIn(env);
+
+    const invalidRange = await get(env, "/api/retrospective/waste?range=quarter", cookie);
+    expect(invalidRange.status).toBe(400);
+    expect(await invalidRange.json()).toEqual({
+      error: "validation_failed",
+      message: "range must be 4w | 8w | 12w",
+    });
+
+    const unknownMapping = await get(
+      env,
+      "/api/retrospective/waste?mapping_version=waste-avoidability-unknown",
+      cookie,
+    );
+    expect(unknownMapping.status).toBe(400);
+    expect(await unknownMapping.json()).toEqual({
+      error: "validation_failed",
+      message: "unsupported waste avoidability mapping version; supported versions: waste-avoidability-v1",
+    });
+
+    const mcpOnlyName = await get(
+      env,
+      "/api/retrospective/waste?waste_mapping_version=waste-avoidability-unknown",
+      cookie,
+    );
+    expect(mcpOnlyName.status).toBe(200);
+    expect(await mcpOnlyName.json()).toMatchObject({
+      avoidability_mapping: {
+        version: "waste-avoidability-v1",
+        current_version: "waste-avoidability-v1",
+        is_current: true,
+      },
     });
   });
 
@@ -1150,19 +1253,74 @@ describe("retrospective area — shared Spend analyzer adapter", () => {
     }).toEqual(before);
   });
 
+  it("keeps Waste tenant-bound and deterministic despite public tenant-like overrides", async () => {
+    const { h, env } = await retrospectiveEnv(["casey", "everett"]);
+    seedSpend(h, { tenant: "casey", line: "casey-waste", amount: 6 });
+    seedWaste(h, { tenant: "casey", id: "W-casey", item: "casey-waste", reason: "forgot" });
+    seedSpend(h, { tenant: "everett", line: "everett-waste", amount: 900 });
+    seedWaste(h, { tenant: "everett", id: "W-everett", item: "everett-waste", reason: "spoiled" });
+    const cookie = await loggedIn(env);
+    const before = {
+      waste: h.rows("waste_events"),
+      spend: h.rows("spend_events"),
+      cooking: h.rows("cooking_log"),
+      profile: h.rows("profile"),
+    };
+
+    const first = await get(
+      env,
+      "/api/retrospective/waste?range=4w&tenant=everett&timezone=Pacific%2FAuckland",
+      cookie,
+      { "X-Tenant": "everett" },
+    );
+    expect(first.status).toBe(200);
+    const firstBody = await first.json() as Awaited<ReturnType<typeof readWasteAnalyzer>>;
+    expect(firstBody).toEqual(await readWasteAnalyzer(h.env, "casey", "4w"));
+    expect(firstBody.coverage.monetary).toMatchObject({
+      event_count: 1,
+      known_amount: 6,
+    });
+    expect(firstBody.most_wasted.items.map((item) => item.key)).toEqual(["casey-waste"]);
+
+    const secondBody = await (await get(env, "/api/retrospective/waste?range=4w", cookie)).json();
+    expect(secondBody).toEqual(firstBody);
+    expect({
+      waste: h.rows("waste_events"),
+      spend: h.rows("spend_events"),
+      cooking: h.rows("cooking_log"),
+      profile: h.rows("profile"),
+    }).toEqual(before);
+  });
+
   it("keeps profile retrospective on the compatible 4w shared Spend shape", async () => {
     const { h, env } = await retrospectiveEnv();
     seedSpend(h, { amount: 18 });
+    seedWaste(h, { item: "milk", reason: "forgot" });
     const cookie = await loggedIn(env);
     const dedicated = await (await get(env, "/api/retrospective/spend?range=4w", cookie)).json();
-    const profile = await (await get(env, "/api/profile/retrospective?period=all", cookie)).json() as {
+    const dedicatedWaste = await (await get(
+      env,
+      "/api/retrospective/waste?range=4w&mapping_version=waste-avoidability-v1",
+      cookie,
+    )).json();
+    const profile = await (await get(
+      env,
+      "/api/profile/retrospective?period=all&waste_range=12w&mapping_version=waste-avoidability-unknown",
+      cookie,
+    )).json() as {
       period: string;
       spend: unknown;
+      waste: { range: string; avoidability_mapping: { version: string } };
       recipes_cooked: unknown[];
     };
     expect(profile.period).toBe("all");
     expect(profile.recipes_cooked).toEqual([]);
     expect(profile.spend).toEqual(dedicated);
+    expect(profile.waste).toEqual(dedicatedWaste);
+    expect(profile.waste).toMatchObject({
+      range: "4w",
+      avoidability_mapping: { version: "waste-avoidability-v1" },
+    });
   });
 });
 
