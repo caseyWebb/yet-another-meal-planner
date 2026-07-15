@@ -70,25 +70,6 @@ Every MCP request SHALL be resolved to a `(tenantId, memberId)` pair from its be
 - **WHEN** an MCP request arrives with a token whose grant names a member that has been removed from the `members` table while the tenant remains allowlisted and holds other member rows
 - **THEN** the member-liveness check fails, the Worker returns a structured `unauthorized` response, and no tool runs — even though the grant record still exists in the OAuth store
 
-### Requirement: Tenant data isolation and GitHub App installation tokens
-
-Per-tenant data isolation SHALL be enforced in D1: every per-tenant table carries a `tenant` column, and the MCP server instance is constructed for the resolved tenant so each query is scoped to that tenant — a tool resolved for one tenant cannot read or write another tenant's rows. Repo reads and writes — the **shared** recipe corpus (`recipes/*.md`) plus shared reference markdown, the only data the Worker keeps in GitHub — SHALL be authenticated with a short-lived **GitHub App installation token** minted on demand from the App's credentials, scoped to the installation covering the data repository; there is no per-tenant repo subtree, because personal and operational state lives in D1, not in GitHub. The Worker SHALL resolve **which installation covers the data repository at runtime** from the App's installations (`GET /app/installations`, authenticated with the App JWT), caching the resolved installation id; it SHALL NOT require a hand-configured installation id. The Worker SHALL NOT use a personal access token for repo access, and no per-tenant long-lived user PAT SHALL be stored. Installation tokens SHALL be treated as ephemeral (re-minted on expiry).
-
-#### Scenario: Per-tenant writes are isolated in D1; recipe writes use a scoped installation token
-
-- **WHEN** a tool for tenant A persists a change to A's personal state, or commits a shared recipe
-- **THEN** A's personal state is written to D1 scoped to tenant A's rows (never another tenant's), and a shared-recipe commit uses a GitHub App installation token covering the data repo (never a PAT)
-
-#### Scenario: No PAT
-
-- **WHEN** the Worker configuration and secrets are inspected
-- **THEN** repo access is via the GitHub App (id + private key), with no repo-wide PAT and no stored per-user PAT
-
-#### Scenario: Installation id is resolved from the App, not hand-configured
-
-- **WHEN** the Worker needs an installation token and no installation id is configured
-- **THEN** it lists the App's installations with the App JWT, selects the one covering the data repo, caches the id, and mints the token — requiring no `GITHUB_INSTALLATION_ID` var
-
 ### Requirement: Per-tenant Kroger refresh-token storage
 
 The Worker SHALL store each tenant's Kroger refresh token under a per-tenant KV key (e.g. `kroger:refresh:<tenant>`), and SHALL resolve the Kroger user context for a cart write from the requesting tenant's key. One tenant's Kroger authorization SHALL be independent of every other tenant's. The Kroger read-side (`client_credentials`) credentials remain a single app-level secret shared by all tenants.
@@ -183,4 +164,23 @@ Every tenant-creation path SHALL mint the founding member in the same flow that 
 
 - **WHEN** a member row is inserted whose handle collides with any existing member's handle
 - **THEN** the insert fails on the unique index and no duplicate handle ever exists
+
+### Requirement: Tenant (household) data isolation
+
+Per-tenant data isolation SHALL be enforced in D1 with the tenant as the **household** boundary: every per-tenant table carries a `tenant` column, the MCP server instance and the `/api` session context are constructed for the resolved `(tenantId, memberId)` pair, and each query is scoped to that tenant — a tool or route resolved for one household cannot read or write another household's rows. The member is attribution within the household, never an isolation boundary of its own. Shared corpus content (R2 recipe/guidance markdown and the D1 projections derived from it) is deployment-shared by construction and crosses household boundaries ONLY through the defined visibility lens and aggregate reads (the `shared-corpus` capability); data derived from household behavior (cook activity, favorites, prices paid, follows) is memoized within its owning household and crosses households exclusively through those same lenses/aggregates. The Worker SHALL hold no GitHub credentials and make no GitHub API call on any data path: the authored corpus lives in R2 and operational state in D1/KV.
+
+#### Scenario: Household writes are isolated in D1
+
+- **WHEN** a tool for household A persists a change to A's state
+- **THEN** the write is scoped to tenant A's rows and can never touch another household's rows
+
+#### Scenario: Cross-household reads go through the lens
+
+- **WHEN** a read surface exposes another household's recipe or cook activity to a member of household A
+- **THEN** it does so only through the visibility lens or a defined counts-only aggregate — never by raw cross-tenant query reuse
+
+#### Scenario: No GitHub credential exists
+
+- **WHEN** the Worker's configuration, secrets, and data paths are inspected
+- **THEN** there is no GitHub App, installation token, or PAT, and no data path performs a GitHub API call
 
