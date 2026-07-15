@@ -72,6 +72,11 @@ Recipe visibility SHALL be an overlay over one monolithic corpus, never segmenta
 - **WHEN** the lens evaluates a SaaS viewer's friend clause before any friendships feature exists
 - **THEN** the named friend-relation provider returns the empty relation and only own and curated imports grant visibility, and no consumer carries its own friendship logic
 
+#### Scenario: Household purge removes the household's grants
+
+- **WHEN** the operator purges a household (the `recipe_imports` table joins the household-purge table set; member-revoke deliberately does NOT touch it — the household keeps its recipes when one member leaves)
+- **THEN** every `recipe_imports` row for that tenant is deleted, recipes visible to others only through the purged household's grants leave their lenses, and corpus rows and shared derived artifacts are not deleted
+
 ### Requirement: One lens enforcement point serves every corpus read surface
 
 Visibility SHALL resolve at ONE shared enforcement point — a single Worker module owning the lens predicate for whole-index reads and point reads — through which every corpus read consumer resolves visibility; per-surface reimplementation is a defect class. The enumerated consumers: `search_recipes` (membership and ranked modes), `read_recipe`/`display_recipe`, `read_recipe_notes`, `list_new_for_me`, the propose candidate pools, similar-recipes, trending and picked-for-you, the member cookbook `/api` reads, the anonymous `/cookbook` routes, and `recipe_site_url`. The whole-index read SHALL require an explicit viewer (member or anonymous) so no consumer can read the corpus without choosing a lens position. Derivation pipelines (index projection, embedding reconcile, facet classification, dup-scan) SHALL remain corpus-wide — derived artifacts are identity-keyed and computed once regardless of visibility — and are not lens consumers.

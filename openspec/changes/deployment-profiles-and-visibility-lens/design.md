@@ -15,7 +15,7 @@ Current corpus reality (verified in code during planning):
 
 **Design authorization**: no Claude Design export exists for design requests #10 (household curated-hide setting) and #11 (cookbook cold-start states). The user has authorized a local design for design requests #10 and #11 for this change (the `offline-stores-and-store-walk` / `grocery-list-page-and-widget` precedent), under the constraint: stay as close to the current design export as possible, mimic existing styles, and use existing shared UI primitives. The request prompts in `product-specs/design-requests.md` are the briefs; Decision 9 below encodes them, and tasks carry Playwright/screenshot obligations.
 
-**Ratification order**: DECISIONS.md's ratifications block wins — D13-amendment (household curated hide ships) supersedes D13's "household-level hide defaults to no" reading; D26/D29/D30-final are context only here.
+**Ratification order**: DECISIONS.md's ratifications block wins — D13-amendment ships the household-level curated hide as a setting (the default stays "show"; the amendment adds the capability D13's base text declined); D26/D29/D30-final are context only here.
 
 ## Goals / Non-Goals
 

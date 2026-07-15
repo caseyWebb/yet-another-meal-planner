@@ -2,6 +2,7 @@
 
 - [ ] 1.1 Add `packages/worker/migrations/d1/0059_recipe_imports.sql`: `recipe_imports(recipe, tenant, member NOT NULL, via, imported_at, PRIMARY KEY (recipe, tenant))` + `idx_recipe_imports_tenant`; `ALTER TABLE discovery_matches ADD COLUMN member TEXT` with `UPDATE discovery_matches SET member = tenant WHERE member IS NULL` backfill; `ALTER TABLE operator_config ADD COLUMN deployment_profile TEXT CHECK (deployment_profile IN ('self-hosted','saas'))` and `ADD COLUMN curated_source_url TEXT`; `ALTER TABLE profile ADD COLUMN curated_hide INTEGER`. (0058 belongs to member-identity-split; do not reuse 0018/0045/0047-style duplicate numbers.)
 - [ ] 1.2 Extend the migration-chain test to cover 0059 (fresh apply + re-apply idempotence + discovery_matches backfill correctness under the founding-member invariant).
+- [ ] 1.3 Enroll `recipe_imports` in `TENANT_TABLES` (`src/admin.ts`) so household-purge deletes the household's grant rows; member-revoke must NOT touch `recipe_imports` (the household keeps its recipes). Tests: purge clears the tenant's grants (and out-of-lens visibility follows); member-revoke leaves them; the curated tenant's rows are unreachable by both (it is never a real tenant).
 
 ## 2. Deployment-profile channel and flip guards
 
