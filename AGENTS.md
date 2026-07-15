@@ -80,8 +80,8 @@ Multi-tenancy is a D1 column. Identity is an operator-issued invite code resolvi
 - A new Worker-owned HTTP route ships with its `run_worker_first` entry in `wrangler.jsonc`.
 - Keep contract docs in lockstep: tool param/return changes update `docs/TOOLS.md`; data-file/D1 shape changes update `docs/SCHEMAS.md`; architecture changes update `docs/ARCHITECTURE.md`.
 - Living docs describe current state, not history. Do not narrate "used to" or "now" in `README.md`, `CONTRIBUTING.md`, `AGENTS.md`, `CLAUDE.md`, or `docs/`.
-- Tools never touch `env.DB` directly; go through `src/db.ts`.
-- D1 schema changes ship a new `migrations/d1/NNNN_name.sql`.
+- Tools never touch `env.DB` directly; go through `packages/worker/src/db.ts`.
+- D1 schema changes ship a new `packages/worker/migrations/d1/NNNN_name.sql`.
 - Tool descriptions own what the tool does, params/returns, and guarantees. Skills own when to call tools and how to act on results.
 - Deploy auto-kicks from `main` and runs in the data repo. This public repo holds no Actions secrets.
 - The deploy merges wrangler configs via an allowlist in `scripts/merge-wrangler-config.mjs`; new binding types must be added explicitly.
