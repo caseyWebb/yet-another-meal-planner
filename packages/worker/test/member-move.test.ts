@@ -229,6 +229,48 @@ describe("household-accept with dissolution (end-to-end)", () => {
     );
   });
 
+  it("a mid-dissolution failure leaves the old tenant FULLY intact and the invitation retryable", async () => {
+    const h = sqliteEnv(["casey", "bob"]);
+    const d = db(h.env);
+    h.raw.prepare("INSERT INTO operator_config (id, deployment_profile) VALUES (1, 'saas')").run();
+    await insertFoundingMember(d, "casey", NOW);
+    await insertFoundingMember(d, "bob", NOW);
+    h.raw.prepare("INSERT INTO pantry (tenant, name, normalized_name) VALUES ('bob', 'rice', 'rice')").run();
+    h.raw
+      .prepare("INSERT OR IGNORE INTO recipe_imports (recipe, tenant, member, via, imported_at) VALUES ('bobs-own', 'bob', 'bob', 'agent', '2026-01-01')")
+      .run();
+    await db(h.env).run("INSERT INTO tenants (id, created_at, via_code) VALUES ('bob', 1, NULL)");
+
+    await sendRequest(h.env, { id: "casey", member: "casey" }, { tier: "household", handle: "bob" }, NOW);
+    const invitation = (await listInbox(d, "bob", "bob"))[0];
+
+    // Inject a failure into the dissolution batch's FIRST statement (the members
+    // re-tenant) — the whole move+dissolve batch must roll back as one.
+    h.raw.exec("CREATE TRIGGER fail_move BEFORE UPDATE ON members BEGIN SELECT RAISE(ABORT, 'injected'); END");
+    await expect(
+      acceptRequest(h.env, { id: "bob", member: "bob" }, invitation.id, { confirm: true }, NOW + 1),
+    ).rejects.toMatchObject({ code: "storage_error" });
+
+    // NOTHING dissolved: bob is still bob's (sole, live) member, household state and
+    // grants untouched, registry + allowlist intact — no zero-member zombie tenant.
+    expect(h.rows("members")).toContainEqual(expect.objectContaining({ id: "bob", tenant: "bob" }));
+    expect(h.rows("pantry")).toHaveLength(1);
+    expect(h.rows("recipe_imports")).toContainEqual(expect.objectContaining({ recipe: "bobs-own", tenant: "bob" }));
+    expect(h.rows("tenants").map((r) => (r as { id: string }).id)).toContain("bob");
+    expect(await h.env.TENANT_KV.get("tenant:bob")).not.toBeNull();
+    // …and the invitation was REVERTED to pending (never consumed without the move).
+    expect(await listInbox(d, "bob", "bob")).toHaveLength(1);
+
+    // Clear the fault: the SAME invitation accepts cleanly (retryable end-to-end).
+    h.raw.exec("DROP TRIGGER fail_move");
+    expect(await acceptRequest(h.env, { id: "bob", member: "bob" }, invitation.id, { confirm: true }, NOW + 2)).toEqual(
+      { kind: "ok" },
+    );
+    expect(h.rows("members")).toContainEqual(expect.objectContaining({ id: "bob", tenant: "casey" }));
+    expect(h.rows("pantry")).toHaveLength(0);
+    expect(await h.env.TENANT_KV.get("tenant:bob")).toBeNull();
+  });
+
   it("a member of a multi-member household is refused with the leave-first pointer", async () => {
     const h = sqliteEnv(["casey", "pat"]);
     const d = db(h.env);

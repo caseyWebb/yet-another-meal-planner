@@ -69,23 +69,40 @@ export const NOT_CARRIED_OVER = [
 /** The re-connect line every move flow states (grants do not survive a move). */
 export const RECONNECT_NOTE = "Your Claude.ai connection must be re-connected after the move.";
 
+/** The move manifest's D1 arms, as prepared statements — the ONE spelling shared by
+ *  `moveMember` (its own batch) and `absorbSoleMemberHousehold` (folded into the
+ *  dissolution batch so move + dissolve commit atomically together). */
+function moveStatements(d: ReturnType<typeof db>, member: MemberRow, toTenant: string): D1PreparedStatement[] {
+  return [
+    d.prepare("UPDATE members SET tenant = ?2 WHERE id = ?1", member.id, toTenant),
+    d.prepare(
+      "UPDATE webauthn_credentials SET tenant = ?3 WHERE tenant = ?2 AND member = ?1",
+      member.id,
+      member.tenant,
+      toTenant,
+    ),
+    d.prepare("UPDATE nicknames SET tenant = ?2 WHERE viewer_member = ?1", member.id, toTenant),
+  ];
+}
+
+/** The move's KV fixups, run AFTER the D1 commit: live sessions re-keyed, the member's
+ *  outstanding bootstrap invites deleted. A KV-only partial failure is benign — a
+ *  session the scan missed is dead anyway (the resolver's `(id, tenant)` pairing
+ *  rejects it, never serving the old household's context). */
+async function moveKvFixups(env: Env, member: MemberRow, fromTenant: string, toTenant: string): Promise<void> {
+  await rekeySessionsFor(env.TENANT_KV, fromTenant, member.id, toTenant);
+  await deleteInvitesForMember(env.TENANT_KV, fromTenant, member.id);
+}
+
 /**
  * Relocate one member `fromTenant` → `toTenant` per the manifest. Refuses to move a
- * tenant's LAST member unless `allowLastMember` (household-accept dissolution retires
- * the tenant in the same flow) and refuses a destination at the size bound. The D1 arms
- * run as ONE batch; the KV fixups (sessions, bootstrap invites) follow — a session this
- * scan missed is dead anyway (the resolver's `(id, tenant)` pairing rejects it, never
- * serving the old household's context).
+ * tenant's LAST member (household-accept dissolution has its own path) and refuses a
+ * destination at the size bound. The D1 arms run as ONE batch; the KV fixups follow.
  */
-export async function moveMember(
-  env: Env,
-  member: MemberRow,
-  toTenant: string,
-  opts: { allowLastMember?: boolean } = {},
-): Promise<void> {
+export async function moveMember(env: Env, member: MemberRow, toTenant: string): Promise<void> {
   const d = db(env);
   const fromTenant = member.tenant;
-  if (!opts.allowLastMember && (await countMembers(d, fromTenant)) <= 1) {
+  if ((await countMembers(d, fromTenant)) <= 1) {
     throw new ToolError(
       "conflict",
       "You're the last member of your household — accept into another household (which dissolves this one) or ask your operator to remove it",
@@ -97,18 +114,8 @@ export async function moveMember(
       `That household is full (max ${HOUSEHOLD_MAX_MEMBERS} members)`,
     );
   }
-  await d.batch([
-    d.prepare("UPDATE members SET tenant = ?2 WHERE id = ?1", member.id, toTenant),
-    d.prepare(
-      "UPDATE webauthn_credentials SET tenant = ?3 WHERE tenant = ?2 AND member = ?1",
-      member.id,
-      fromTenant,
-      toTenant,
-    ),
-    d.prepare("UPDATE nicknames SET tenant = ?2 WHERE viewer_member = ?1", member.id, toTenant),
-  ]);
-  await rekeySessionsFor(env.TENANT_KV, fromTenant, member.id, toTenant);
-  await deleteInvitesForMember(env.TENANT_KV, fromTenant, member.id);
+  await d.batch(moveStatements(d, member, toTenant));
+  await moveKvFixups(env, member, fromTenant, toTenant);
 }
 
 /**
@@ -175,6 +182,8 @@ export async function claimSpawnTenantId(env: Env, handle: string, now: number):
  */
 export async function moveIntoSpawn(env: Env, member: MemberRow, now: number): Promise<{ tenant: string }> {
   const d = db(env);
+  // The floor refusal runs BEFORE the spawn id is claimed, so a refused leave/evict
+  // never burns a registry row for the handle.
   if ((await countMembers(d, member.tenant)) <= 1) {
     throw new ToolError(
       "conflict",
@@ -182,7 +191,15 @@ export async function moveIntoSpawn(env: Env, member: MemberRow, now: number): P
     );
   }
   const spawned = await claimSpawnTenantId(env, member.handle, now);
-  await moveMember(env, member, spawned);
+  try {
+    await moveMember(env, member, spawned);
+  } catch (e) {
+    // A raced refusal (e.g. another member left concurrently, tripping the floor):
+    // release the just-claimed registry row — nothing else references it yet (the
+    // allowlist entry is only written below, after the move commits).
+    await d.run("DELETE FROM tenants WHERE id = ?1", spawned).catch(() => {});
+    throw e;
+  }
   await env.TENANT_KV.put(`${TENANT_PREFIX}${spawned}`, JSON.stringify({ id: spawned }));
   return { tenant: spawned };
 }
@@ -214,14 +231,19 @@ export async function absorbSoleMemberHousehold(
       "You're in a household with other members — leave your household first, then accept",
     );
   }
-  // (2) The move itself (allowLastMember: this flow retires the old tenant).
-  await moveMember(env, member, destTenant, { allowLastMember: true });
+  if ((await countMembers(d, destTenant)) >= HOUSEHOLD_MAX_MEMBERS) {
+    throw new ToolError("conflict", `That household is full (max ${HOUSEHOLD_MAX_MEMBERS} members)`);
+  }
 
-  // (3) + (4) One atomic batch: grant re-key, then the revoke-shaped household sweep.
-  // The member-scoped rows (members, webauthn_credentials, viewer nicknames) already
-  // carry the new tenant, so the `tenant = old` sweeps are no-ops for them by
-  // construction — no member-scoped exclusion list to maintain.
+  // (2)+(3)+(4) ONE atomic batch — the whole relational move + dissolution commits or
+  // nothing does. A partial dissolve would otherwise strand a zero-member allowlisted
+  // zombie tenant with an un-merged cookbook (the invariant an allowlisted household
+  // always has a member). Ordering inside the batch is load-bearing: the move
+  // statements run FIRST (re-tenanting the mover's rows so the `tenant = old` sweeps
+  // are no-ops for them by construction), then the grant re-key reads `recipe_imports`
+  // BEFORE its sweep deletes the old rows.
   await d.batch([
+    ...moveStatements(d, member, destTenant),
     d.prepare(
       "INSERT OR IGNORE INTO recipe_imports (recipe, tenant, member, via, imported_at) " +
         "SELECT recipe, ?2, member, via, imported_at FROM recipe_imports WHERE tenant = ?1",
@@ -246,8 +268,12 @@ export async function absorbSoleMemberHousehold(
     d.prepare("DELETE FROM tenants WHERE id = ?1", oldTenant),
   ]);
 
-  // (5) Retirement lock-out: the allowlist entry, remaining bootstrap invites, the
-  // Kroger refresh token. The mover's sessions were re-keyed by the move itself.
+  // (5) The KV tail, after the D1 commit: session re-key + the mover's bootstrap
+  // invites (the move fixups), then the retirement lock-out — allowlist entry, any
+  // remaining invites, the Kroger refresh token. A KV-only partial failure leaves at
+  // worst a stale allowlist entry that no session or member row resolves to (the
+  // resolver's member-liveness check holds the line), retryable by operator purge.
+  await moveKvFixups(env, member, oldTenant, destTenant);
   await env.TENANT_KV.delete(`${TENANT_PREFIX}${oldTenant}`);
   await deleteInvitesFor(env.TENANT_KV, oldTenant);
   await (env.KROGER_KV as unknown as KvStore).delete(`${KROGER_REFRESH_PREFIX}${oldTenant}`);

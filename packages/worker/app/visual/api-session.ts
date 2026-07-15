@@ -33,13 +33,41 @@ async function contextFromLogin(
   });
 }
 
-/** An API session for a seeded identity via its invite code. */
+/** An API session for a seeded identity via its invite code. NEVER call this with the
+ *  ACTIVE member's invite: passkey.spec's first enrollment CONSUMES every invite
+ *  resolving to that member (consume-on-first-enrollment), so on a fresh state dir the
+ *  code is dead by the time the authed project runs — use `activeMemberContext`. */
 export async function memberLogin(baseURL: string, inviteCode: string): Promise<APIRequestContext> {
   const login = await apiRequest.newContext({ baseURL, extraHTTPHeaders: { "CF-Connecting-IP": uniqueIp() } });
   const res = await login.post("/api/session", { headers: CSRF, data: { invite_code: inviteCode } });
   const ctx = await contextFromLogin(baseURL, res);
   await login.dispose();
   return ctx;
+}
+
+/**
+ * An API session for the SEEDED ACTIVE MEMBER (casey), from the same deterministic
+ * server-side session setup.mjs mints for the browser storageState — no login HTTP, no
+ * dependence on the consumable invite code, order-independent (app-ui-suite-
+ * deterministic-auth). The cookie rides an explicit header (the Secure-cookie/http
+ * jar limitation above); setup seeds the session into BOTH servers' KV, so this works
+ * against the default and saas baseURLs alike.
+ */
+export async function activeMemberContext(baseURL: string): Promise<APIRequestContext> {
+  // Load the storageState through Playwright itself (the harness tsconfig carries no
+  // node types, so no node:fs here) and lift the cookie into an explicit header.
+  const probe = await apiRequest.newContext({
+    baseURL,
+    storageState: `app/visual/.auth/${SEED.members.active}.json`,
+  });
+  const state = await probe.storageState();
+  await probe.dispose();
+  const token = state.cookies.find((c) => c.name === "__Host-session")?.value;
+  if (!token) throw new Error("no seeded session cookie in the storageState file");
+  return apiRequest.newContext({
+    baseURL,
+    extraHTTPHeaders: { cookie: `__Host-session=${token}`, "CF-Connecting-IP": uniqueIp() },
+  });
 }
 
 /**

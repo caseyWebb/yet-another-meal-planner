@@ -7,7 +7,7 @@
 // token is only ever READ (GETs never consume).
 import { test, expect } from "../fixtures";
 import { SEED } from "../../../admin/visual/seed.mjs";
-import { CSRF, memberLogin } from "../api-session";
+import { CSRF, activeMemberContext } from "../api-session";
 
 const PEOPLE = SEED.app.people;
 
@@ -35,7 +35,7 @@ test("signed-out redemption: choose a handle, join the household, land on the en
   baseURL,
 }) => {
   // Mint a fresh single-use link through the inviter's API session.
-  const casey = await memberLogin(baseURL!, SEED.invite);
+  const casey = await activeMemberContext(baseURL!);
   const mintRes = await casey.post("/api/people/invites", { headers: CSRF, data: { tier: "household" } });
   expect(mintRes.status(), await mintRes.text()).toBe(200);
   const mint = (await mintRes.json()) as { token: string };
@@ -60,7 +60,7 @@ test("signed-out redemption: choose a handle, join the household, land on the en
 
   // Converge: evict the member this run created (per-run-unique handles would otherwise
   // fill casey's 8-member cap across local re-runs against a reused state dir).
-  const janitor = await memberLogin(baseURL!, SEED.invite);
+  const janitor = await activeMemberContext(baseURL!);
   const aggregate = (await (await janitor.get("/api/people")).json()) as {
     members: { id: string; handle: string }[];
   };

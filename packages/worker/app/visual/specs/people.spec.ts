@@ -8,7 +8,7 @@
 import { request as apiRequest, type APIRequestContext } from "@playwright/test";
 import { test, expect } from "../fixtures";
 import { SEED } from "../../../admin/visual/seed.mjs";
-import { CSRF, memberLogin, freshSender, uniqueIp } from "../api-session";
+import { CSRF, activeMemberContext, freshSender, uniqueIp } from "../api-session";
 
 const PEOPLE = SEED.app.people;
 
@@ -43,7 +43,7 @@ test("self-hosted variant: household carries the page; no friend surface renders
 test("nickname edit, the live hint example, and the empty-save clear", async ({ peoplePage, baseURL }) => {
   // Converge: clear every alias casey holds (earlier specs/runs may have seeded some —
   // e.g. a join redemption's display name).
-  const casey = await memberLogin(baseURL!, SEED.invite);
+  const casey = await activeMemberContext(baseURL!);
   const aggregate = (await (await casey.get("/api/people")).json()) as {
     members: { id: string; nickname: string | null }[];
     friends: { member: { id: string }; nickname: string | null }[];
@@ -148,7 +148,7 @@ test("awaiting rows read 'Request sent' with cancel; remove works via confirm on
 }) => {
   // Self-provision a removable third member: mint a household link as casey and redeem
   // it signed-out with a per-run-unique handle (re-run safe).
-  const casey = await memberLogin(baseURL!, SEED.invite);
+  const casey = await activeMemberContext(baseURL!);
   const mintRes = await casey.post("/api/people/invites", { headers: CSRF, data: { tier: "household" } });
   expect(mintRes.status(), await mintRes.text()).toBe(200);
   const mint = (await mintRes.json()) as { token: string };

@@ -241,11 +241,21 @@ export async function acceptRequest(
   if (r.tier === "friend") {
     if (!(await friendTierEnabled(env))) return { kind: "profile_disabled" };
     if (r.to_tenant !== actor.id) return { kind: "not_found" };
+    // Claim-then-do with a refund (the join.ts idiom): the one-winner claim serializes
+    // racing resolutions, and a failure minting the edge REVERTS the claim so the
+    // request stays pending and retryable — an accept must never consume the request
+    // without delivering the relationship.
     if (!(await resolveRequest(d, r.id, "accepted", now))) return { kind: "not_found" };
-    await insertFriendship(d, r.from_tenant, r.to_tenant, r.from_member, now);
+    try {
+      await insertFriendship(d, r.from_tenant, r.to_tenant, r.from_member, now);
+    } catch (e) {
+      await revertAcceptClaim(d, r.id).catch(() => {}); // best-effort; the original error surfaces
+      throw e;
+    }
     // Nickname seeds (Decision 6): the sender's self-introduction seeds every accepting-
     // household viewer without an existing alias for them; the acceptor's optional
-    // display_name seeds the sender's household symmetrically.
+    // display_name seeds the sender's household symmetrically. (Best-effort tail — the
+    // relationship is already committed; a seed failure never un-accepts.)
     if (r.display_name) await seedNicknames(env, r.to_tenant, r.from_member, r.display_name, now);
     const acceptorName = (opts.display_name ?? "").trim().slice(0, DISPLAY_NAME_MAX_CHARS);
     if (acceptorName) await seedNicknames(env, r.from_tenant, actor.member, acceptorName, now);
@@ -269,16 +279,33 @@ export async function acceptRequest(
   if (!opts.confirm) {
     return { kind: "confirm_required", not_carried_over: NOT_CARRIED_OVER, reconnect: RECONNECT_NOTE };
   }
+  // Claim, then move — and REVERT the claim if the move fails (a storage hiccup or the
+  // size-bound losing a race against a concurrent join must leave the invitation
+  // pending and retryable, never consumed-without-moving).
   if (!(await resolveRequest(d, r.id, "accepted", now))) return { kind: "not_found" };
-  await absorbSoleMemberHousehold(env, mover, r.from_tenant, now);
+  try {
+    await absorbSoleMemberHousehold(env, mover, r.from_tenant, now);
+  } catch (e) {
+    await revertAcceptClaim(d, r.id).catch(() => {}); // best-effort; the original error surfaces
+    throw e;
+  }
   // Seeds: the inviter's self-introduction for the mover's view; the mover's optional
-  // display_name for every destination viewer.
+  // display_name for every destination viewer. (Best-effort tail — the move committed.)
   if (r.display_name) {
     await seedNicknames(env, r.from_tenant, r.from_member, r.display_name, now, { onlyViewer: mover.id });
   }
   const moverName = (opts.display_name ?? "").trim().slice(0, DISPLAY_NAME_MAX_CHARS);
   if (moverName) await seedNicknames(env, r.from_tenant, mover.id, moverName, now);
   return { kind: "ok" };
+}
+
+/** Roll an accept's one-winner claim back to `pending` (only ever from the claim's own
+ *  failure path — the guarded WHERE keeps it from reviving anything else). */
+async function revertAcceptClaim(d: ReturnType<typeof db>, id: string): Promise<void> {
+  await d.run(
+    "UPDATE social_requests SET state = 'pending', resolved_at = NULL WHERE id = ?1 AND state = 'accepted'",
+    id,
+  );
 }
 
 /**

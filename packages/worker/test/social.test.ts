@@ -284,6 +284,27 @@ describe("friendships and the live lens", () => {
   });
 });
 
+describe("accept failure atomicity", () => {
+  it("a friend accept whose edge mint fails reverts the claim — the request stays pending and retryable", async () => {
+    const w = await world();
+    await sendRequest(w.h.env, w.casey, { tier: "friend", handle: "pat" }, NOW);
+    const pending = (await listInbox(db(w.h.env), "pat", "pat"))[0];
+
+    w.h.raw.exec("CREATE TRIGGER fail_edge BEFORE INSERT ON friendships BEGIN SELECT RAISE(ABORT, 'injected'); END");
+    await expect(acceptRequest(w.h.env, w.pat, pending.id, {}, NOW + 1)).rejects.toMatchObject({
+      code: "storage_error",
+    });
+    // The claim was reverted: the row is pending again, in every member's inbox, and
+    // no half-made edge exists.
+    expect(await listInbox(db(w.h.env), "pat", "pat")).toHaveLength(1);
+    expect(await friendshipExists(db(w.h.env), "casey", "pat")).toBe(false);
+
+    w.h.raw.exec("DROP TRIGGER fail_edge");
+    expect(await acceptRequest(w.h.env, w.pat, pending.id, {}, NOW + 2)).toEqual({ kind: "ok" });
+    expect(await friendshipExists(db(w.h.env), "casey", "pat")).toBe(true);
+  });
+});
+
 describe("request scoping", () => {
   it("a household invitation is visible ONLY to the invitee, and only their accept acts", async () => {
     const w = await world();

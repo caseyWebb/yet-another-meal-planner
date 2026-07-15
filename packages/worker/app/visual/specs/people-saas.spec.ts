@@ -6,7 +6,7 @@
 // (zero shared grants — lens-inert) proves the section renders from durable state.
 import { test, expect } from "../fixtures";
 import { SEED } from "../../../admin/visual/seed.mjs";
-import { CSRF, memberLogin } from "../api-session";
+import { CSRF, memberLogin, activeMemberContext } from "../api-session";
 
 const PEOPLE = SEED.app.people;
 
@@ -33,7 +33,7 @@ test("friend request: tier badge + note render; accept shows the seed moment and
 }) => {
   const zoe = await memberLogin(baseURL!, PEOPLE.requester.invite);
   // Converge from any earlier run: sever the edge and clear zoe's outgoing rows.
-  const casey = await memberLogin(baseURL!, SEED.invite);
+  const casey = await activeMemberContext(baseURL!);
   await casey.delete(`/api/people/friends/${PEOPLE.requester.tenant}`, { headers: CSRF });
   const zoeView = (await (await zoe.get("/api/people")).json()) as { awaiting: { requests: { id: string }[] } };
   for (const r of zoeView.awaiting.requests) await zoe.post(`/api/people/requests/${r.id}/cancel`, { headers: CSRF });
