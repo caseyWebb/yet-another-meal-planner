@@ -509,8 +509,12 @@ export async function rotate(
 /**
  * HOUSEHOLD PURGE — revoke a whole tenant: remove the allowlist entry + every invite
  * mapping + the per-tenant Kroger refresh token + every web session, and purge the
- * per-tenant D1 rows (every TENANT_TABLE, `members` included, plus the members'
- * attributed AUTHOR_TABLES rows) in one batch. After this the household's
+ * per-tenant D1 rows (every TENANT_TABLE, `members` included, plus the FOUNDING
+ * member's attributed AUTHOR_TABLES rows — `author = ?1` binds the tenant id, which
+ * covers every author while households are single-member; once the People change
+ * mints non-founding members (ULID author values) this batch must delete
+ * AUTHOR_TABLES via the member-set subquery BEFORE the `members` delete, or their
+ * rows orphan) in one batch. After this the household's
  * previously-issued tokens no longer resolve (the allowlist re-check fails), even
  * though they may still exist in the OAuth store — and its session cookies no longer
  * authenticate (the session middleware's allowlist re-check locks them out even
