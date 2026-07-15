@@ -178,6 +178,19 @@ export const SEED = {
       },
     },
     note: { body: "Swapped honey for the brown sugar — better glaze.", tag: "tweak" },
+    // The People page fixtures (households-friends-and-people-page). Casey's household
+    // gains a deterministic SECOND member (nickname mechanics + the admin roster's
+    // multi-member group); `requester` (zoe) is a third loggable identity whose API
+    // session the people specs use to SELF-PROVISION inbound requests (re-run safe);
+    // `friend` (wren) is a SaaS-only seeded friendship edge whose household owns ZERO
+    // recipe_imports rows, so the saas cookbook lens assertions are untouched; the
+    // invite token backs the /join landing (GET only — reads never consume it).
+    people: {
+      secondMember: { id: "viz-member-sam", handle: "sam_j" },
+      requester: { tenant: "zoe", handle: "zoe", invite: "PW-APP-INVITE-3" },
+      friend: { tenant: "wren", handle: "wren" },
+      inviteToken: "viz-join-token",
+    },
     tasteLead: "Big on bold heat and acid",
     // Brand-tier fixtures (brand-tier model): one ladder of singleton tiers (the
     // migrated-production shape) and one don't-care family, for the Preferred-brands
@@ -1013,6 +1026,43 @@ export function d1Statements(now) {
   // singleton row was never written).
   stmts.push(`UPDATE operator_config SET deployment_profile = NULL, curated_source_url = NULL WHERE id = 1;`);
 
+  // --- People (households-friends-and-people-page): deterministic member rows (the lazy
+  // convergence guard would mint casey/pat on first resolution anyway; seeding them keeps
+  // the roster + social fixtures independent of request order), casey's second member,
+  // the requester identity (zoe), the friend household's founding member (wren — the
+  // SaaS-only edge itself rides saasD1Statements), and a live household invite link for
+  // the /join landing. The people specs SELF-PROVISION requests through the real API.
+  const people = SEED.app.people;
+  stmts.push(
+    `DELETE FROM members WHERE id IN (${q(members.active)}, ${q(members.pending)}, ${q(people.secondMember.id)}, ${q(people.requester.tenant)}, ${q(people.friend.tenant)});`,
+  );
+  // Heal residue from prior runs' self-provisioned joins (per-run-unique handles): casey's
+  // household must reboot at exactly its two seeded members or the 8-member cap eventually
+  // refuses the join specs on a long-lived local state dir.
+  stmts.push(
+    `DELETE FROM members WHERE tenant = ${q(members.active)} AND id NOT IN (${q(members.active)}, ${q(people.secondMember.id)});`,
+  );
+  stmts.push(
+    "INSERT INTO members (id, tenant, handle, created_at) VALUES " +
+      `(${q(members.active)}, ${q(members.active)}, ${q(members.active)}, ${now - 90 * DAY}), ` +
+      `(${q(members.pending)}, ${q(members.pending)}, ${q(members.pending)}, ${now - 60 * DAY}), ` +
+      `(${q(people.secondMember.id)}, ${q(members.active)}, ${q(people.secondMember.handle)}, ${now - 12 * DAY}), ` +
+      `(${q(people.requester.tenant)}, ${q(people.requester.tenant)}, ${q(people.requester.handle)}, ${now - 30 * DAY}), ` +
+      `(${q(people.friend.tenant)}, ${q(people.friend.tenant)}, ${q(people.friend.handle)}, ${now - 30 * DAY});`,
+  );
+  stmts.push(`DELETE FROM member_invites WHERE token = ${q(people.inviteToken)};`);
+  stmts.push(
+    "INSERT INTO member_invites (token, tenant, inviter_member, tier, created_at, expires_at, revoked_at, redeemed_at, redeemed_by) VALUES " +
+      `(${q(people.inviteToken)}, ${q(members.active)}, ${q(members.active)}, 'household', ${now - 1 * DAY}, ${now + 13 * DAY}, NULL, NULL, NULL);`,
+  );
+  // The specs' social writes are self-provisioned and self-cleaned; wipe any residue a
+  // prior interrupted run left so re-runs converge. (The saas overlay re-seeds the wren
+  // friendship after this.)
+  stmts.push(`DELETE FROM social_requests;`);
+  stmts.push(`DELETE FROM blocks;`);
+  stmts.push(`DELETE FROM friendships;`);
+  stmts.push(`DELETE FROM nicknames WHERE viewer_member IN (${q(members.active)}, ${q(people.secondMember.id)});`);
+
   return stmts;
 }
 
@@ -1025,8 +1075,15 @@ export function d1Statements(now) {
  * out of lens). Idempotent upsert (the singleton row may or may not exist).
  */
 export function saasD1Statements() {
+  const people = SEED.app.people;
   return [
     `INSERT INTO operator_config (id, deployment_profile) VALUES (1, 'saas') ON CONFLICT(id) DO UPDATE SET deployment_profile = 'saas';`,
+    // The seeded friendship (households-friends-and-people-page): casey ↔ wren. Wren's
+    // household owns ZERO recipe_imports rows, so the saas lens assertions (curated-only
+    // cookbook for casey) hold unchanged while the FRIENDS section renders a real edge.
+    // Canonically ordered pair ('casey' < 'wren' — the CHECK enforces it).
+    `INSERT OR IGNORE INTO friendships (tenant_a, tenant_b, requested_by, created_at) VALUES ` +
+      `('casey', ${q(people.friend.tenant)}, ${q(people.friend.tenant)}, ${Date.now() - 5 * DAY});`,
   ];
 }
 
@@ -1040,6 +1097,10 @@ export function kvEntries() {
     ["TENANT_KV", `tenant:${members.pending}`, JSON.stringify({ id: members.pending })],
     ["TENANT_KV", `invite:${SEED.invite}`, members.active],
     ["TENANT_KV", `invite:${SEED.inviteAlt}`, members.pending],
+    // The people specs' requester identity (households-friends-and-people-page): a third
+    // loggable member whose API session self-provisions inbound requests.
+    ["TENANT_KV", `tenant:${SEED.app.people.requester.tenant}`, JSON.stringify({ id: SEED.app.people.requester.tenant })],
+    ["TENANT_KV", `invite:${SEED.app.people.requester.invite}`, SEED.app.people.requester.tenant],
     // Two pending cross-device approval refs (webauthn-passkey-auth): the connect screen's
     // viewApproval reads clientName/code/status; `oauth` is any non-empty string (the
     // /authorize completion path isn't exercised in the app suite). Independent refs so

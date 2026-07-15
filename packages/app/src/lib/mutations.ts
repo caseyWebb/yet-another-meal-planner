@@ -170,6 +170,13 @@ export interface ProposalConfirmVars {
   accept: boolean;
 }
 
+export interface NicknameSetVars {
+  /** The target member id — with the session's viewer, the canonical replay key. */
+  member: string;
+  /** Empty string = the empty-save clear (the keyed delete). */
+  nickname: string;
+}
+
 // --- shared plumbing ----------------------------------------------------------------
 
 async function okOrThrow(res: { ok: boolean; status: number; json(): Promise<unknown> }): Promise<void> {
@@ -861,6 +868,38 @@ function registryRows(qc: QueryClient): RegistryRow[] {
       },
     },
     {
+      key: ["people", "nickname"],
+      defaults: {
+        mutationFn: async ({ member, nickname }: NicknameSetVars) =>
+          okOrThrow(
+            await appFetch(`/api/people/nicknames/${encodeURIComponent(member)}`, {
+              method: "PUT",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ nickname }),
+            }),
+          ),
+        onMutate: (vars: NicknameSetVars) => {
+          // Optimistic: the People page stays interactive across a connectivity drop —
+          // the edited alias (or its clearing) renders immediately on members + friends.
+          qc.setQueryData<import("./data").PeoplePayload>(["people"], (cur) =>
+            cur
+              ? {
+                  ...cur,
+                  members: cur.members.map((m) =>
+                    m.id === vars.member ? { ...m, nickname: vars.nickname.trim() || null } : m,
+                  ),
+                  friends: cur.friends.map((f) =>
+                    f.member.id === vars.member ? { ...f, nickname: vars.nickname.trim() || null } : f,
+                  ),
+                }
+              : cur,
+          );
+        },
+        onError: (err: unknown) => toast(messageOf(err, "Couldn't save the nickname — try again")),
+        onSettled: () => qc.invalidateQueries({ queryKey: ["people"] }),
+      },
+    },
+    {
       key: ["proposals", "confirm"],
       defaults: {
         mutationFn: async ({ id, accept }: ProposalConfirmVars) => {
@@ -1003,4 +1042,9 @@ export function useVibeRemove() {
 
 export function useProposalConfirm() {
   return useMutation<void, ApiError, ProposalConfirmVars>({ mutationKey: ["proposals", "confirm"] });
+}
+
+/** Nickname upsert / empty-save clear — the People page's ONE class (b) write. */
+export function useNicknameSet() {
+  return useMutation<void, ApiError, NicknameSetVars>({ mutationKey: ["people", "nickname"] });
 }

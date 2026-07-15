@@ -51,7 +51,7 @@ export const profileArea = new Hono<ApiEnv>()
   .get("/profile", requireSession, async (c) => {
     const tenant = c.get("tenant");
     const [profile, refresh] = await Promise.all([
-      assembleUserProfile(c.env, tenant.id),
+      assembleUserProfile(c.env, tenant.id, tenant.member),
       (c.env.KROGER_KV as unknown as KvStore).get(refreshKeyFor(tenant.id)),
     ]);
     return jsonWithEtag(c, { ...profile, kroger: { linked: refresh !== null } });

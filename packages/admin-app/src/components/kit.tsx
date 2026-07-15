@@ -55,11 +55,21 @@ type DotState = "ok" | "fail" | "never" | "muted";
 export const Dot = ({ state }: { state: DotState }) => <span className={`dot ${state}`} />;
 
 /** The shared Badge with the SSR kit's string-variant vocabulary. */
-export const Badge = ({ variant = "default", children }: { variant?: string; children?: Child }) => (
+export const Badge = ({
+  variant = "default",
+  children,
+  testId,
+}: {
+  variant?: string;
+  children?: Child;
+  /** Optional harness hook (rendered as data-testid). */
+  testId?: string;
+}) => (
   <UiBadge
     variant={
       variant === "secondary" || variant === "destructive" || variant === "outline" ? variant : "default"
     }
+    data-testid={testId}
   >
     {children}
   </UiBadge>

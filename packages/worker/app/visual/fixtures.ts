@@ -16,6 +16,7 @@ import { PantryPage } from "./pages/pantry.page";
 import { RetrospectivePage } from "./pages/retrospective.page";
 import { ProfilePage } from "./pages/profile.page";
 import { ProposePage } from "./pages/propose.page";
+import { PeoplePage } from "./pages/people.page";
 import { SEED } from "../../admin/visual/seed.mjs";
 
 interface AppFixtures {
@@ -31,6 +32,7 @@ interface AppFixtures {
   retrospectivePage: RetrospectivePage;
   profilePage: ProfilePage;
   proposePage: ProposePage;
+  peoplePage: PeoplePage;
   /** Enter the app as the seeded member (lands on /). Most authed specs start here. */
   asMember: () => Promise<void>;
 }
@@ -57,6 +59,7 @@ export const test = base.extend<AppFixtures>({
   retrospectivePage: async ({ page }, use) => use(new RetrospectivePage(page)),
   profilePage: async ({ page }, use) => use(new ProfilePage(page)),
   proposePage: async ({ page }, use) => use(new ProposePage(page)),
+  peoplePage: async ({ page }, use) => use(new PeoplePage(page)),
   asMember: async ({ page }, use) => {
     await use(async () => {
       // The `authed` project pre-authenticates the context via storageState (the

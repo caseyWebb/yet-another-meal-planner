@@ -1,9 +1,12 @@
-// The Members screen (operator-admin SPA): the roster + stat tiles + the invite dialog +
-// per-row actions, ported from the SSR page (pages/members.tsx) and its island
-// (client/members.tsx). One primary query (tenantsQuery) and ONE mutation whose variables
-// are the island's `Op` union — `isPending` + `variables` ARE the ActionState, so
-// one-at-a-time stays structural (src/admin/CLAUDE.md discipline). The once-shown invite /
-// Kroger-consent banner keeps the island's `Banner` union (one field, two variants).
+// The Members screen (operator-admin SPA): the roster GROUPED BY HOUSEHOLD + stat tiles
+// + the invite dialog + split household/member action menus (households-friends-and-
+// people-page). One primary query (tenantsQuery) and ONE mutation whose variables are
+// the `Op` union — `isPending` + `variables` ARE the ActionState, so one-at-a-time
+// stays structural (src/admin/CLAUDE.md discipline). Household-level actions (Kroger
+// link, Purge household) live on the group; member-level actions (Rotate invite,
+// Revoke member) live on member rows. Single-member households — the common case —
+// render COMPACTLY: one row carrying both affordance sets, whose destructive action is
+// "Revoke access" mapping to household purge (the API's last-member refusal, mirrored).
 import * as React from "react";
 import { Link } from "@tanstack/react-router";
 import { useQuery, useMutation } from "@tanstack/react-query";
@@ -35,6 +38,7 @@ import { InviteCodesScreen } from "./invite-codes";
 import { Button, Badge, ErrorBanner, StatCardGrid, StatCard } from "../components/kit";
 import {
   UsersIcon,
+  HomeIcon,
   CheckCircleIcon,
   ClockIcon,
   LinkIcon,
@@ -44,23 +48,26 @@ import {
   UserPlusIcon,
 } from "../components/icons";
 
+type MemberRow = TenantRow["members"][number];
+
 // The "show once" banner: either freshly-minted invite credentials or a single-use Kroger
 // consent link for a member. One field, two variants — so the two banners can't both be set
-// in contradictory ways (the island's `Banner` type, verbatim).
+// in contradictory ways.
 type Banner =
   | { kind: "invite"; username: string; invite_code: string; connector_url: string }
   | { kind: "kroger"; username: string; url: string };
 
 // The one in-flight mutation's identity — the useMutation's `variables`, so the busy op and
-// its target can never contradict (the island's `Op` union; onboard carries its username
-// because the mutationFn needs it).
+// its target can never contradict. `rotate` optionally targets a non-founding member;
+// `revokeMember` is the single-member half of the split lifecycle, `revoke` the purge.
 type Op =
   | { kind: "onboard"; username: string }
-  | { kind: "rotate"; id: string }
+  | { kind: "rotate"; id: string; member?: string }
   | { kind: "kroger"; id: string }
-  | { kind: "revoke"; id: string };
+  | { kind: "revoke"; id: string }
+  | { kind: "revokeMember"; id: string; member: string };
 
-/** Run one member op; returns the banner to show (revoke mints nothing). */
+/** Run one lifecycle op; returns the banner to show (the revokes mint nothing). */
 async function runOp(op: Op): Promise<Banner | null> {
   switch (op.kind) {
     case "onboard": {
@@ -68,7 +75,10 @@ async function runOp(op: Op): Promise<Banner | null> {
       return { kind: "invite", username: data.username, invite_code: data.invite_code, connector_url: data.connector_url };
     }
     case "rotate": {
-      const data = await unwrap(api.admin.api.tenants[":id"].rotate.$post({ param: { id: op.id } }));
+      // Built as a variable (the hc idiom): the route reads its optional body directly,
+      // so the typed client's args carry no `json` member.
+      const args = { param: { id: op.id }, json: op.member ? { member: op.member } : {} };
+      const data = await unwrap(api.admin.api.tenants[":id"].rotate.$post(args));
       return { kind: "invite", username: data.username, invite_code: data.invite_code, connector_url: data.connector_url };
     }
     case "kroger": {
@@ -79,13 +89,18 @@ async function runOp(op: Op): Promise<Banner | null> {
       await unwrap(api.admin.api.tenants[":id"].$delete({ param: { id: op.id } }));
       return null;
     }
+    case "revokeMember": {
+      await unwrap(
+        api.admin.api.tenants[":id"].members[":member"].$delete({ param: { id: op.id, member: op.member } }),
+      );
+      return null;
+    }
     default:
       return assertNever(op);
   }
 }
 
-/** Coarse relative age with the roster's week/month buckets (the island's helper — the lib
- *  `relAge` caps at days, and the roster's meta line keeps its exact vocabulary). */
+/** Coarse relative age with the roster's week/month buckets. */
 function rosterAge(deltaMs: number): string {
   const s = Math.max(0, Math.floor(deltaMs / 1000));
   if (s < 60) return "just now";
@@ -97,25 +112,36 @@ function rosterAge(deltaMs: number): string {
   return `${Math.floor(d / 30)}mo ago`;
 }
 
-/** The roster's activity meta line: cooked/favorites + last-active age for an active member,
- *  invited age for a pending one (no activity counts to show yet). */
+/** The household activity meta line: cooked/favorites + last-active age for an active
+ *  household, invited age for a pending one. */
 function metaLine(m: TenantRow, now: number): string {
   if (m.status === "active") {
     const active = m.lastActive != null ? `active ${rosterAge(now - m.lastActive)}` : "active";
     return `${m.cooked} recipes cooked · ${m.favorites} favorites · ${active}`;
   }
-  // A pending member has no first-seen yet; joined doubles as "invited" until they connect.
   return m.joined != null ? `Invited ${rosterAge(now - m.joined)} · awaiting Claude.ai connection` : "Awaiting Claude.ai connection";
 }
 
-function counts(members: TenantRow[]) {
+/** How many member rows a household renders (a pre-split tenant may have zero member
+ *  rows until its lazy convergence — it still IS one member operationally). */
+function memberCountOf(t: TenantRow): number {
+  return Math.max(1, t.members.length);
+}
+
+function counts(tenants: TenantRow[]) {
   return {
-    total: members.length,
-    active: members.filter((m) => m.status === "active").length,
-    pending: members.filter((m) => m.status === "pending").length,
-    kroger: members.filter((m) => m.kroger === "linked").length,
+    households: tenants.length,
+    members: tenants.reduce((n, t) => n + memberCountOf(t), 0),
+    active: tenants.filter((t) => t.status === "active").length,
+    pending: tenants.filter((t) => t.status === "pending").length,
+    kroger: tenants.filter((t) => t.kroger === "linked").length,
   };
 }
+
+/** The pending revoke confirmation's target — purge (whole household) or one member. */
+type RevokeTarget =
+  | { kind: "purge"; row: TenantRow }
+  | { kind: "member"; tenant: string; member: MemberRow };
 
 /** One once-shown credential line: label + mono value + a clipboard copy button. */
 const MintedRow = ({ label, value }: { label: string; value: string }) => (
@@ -134,26 +160,14 @@ const MintedRow = ({ label, value }: { label: string; value: string }) => (
 );
 
 // A per-row actions menu (shared Radix DropdownMenu). `modal={false}` because a row actions
-// menu must not trap the page: a modal Radix menu sets `pointer-events: none` on <body> so only
-// the menu is interactive, and that lock is not reliably lifted on close — leaving the whole page
-// click-dead. Non-modal is the right posture here and sidesteps the body-lock entirely (outside
-// clicks still dismiss the menu; they now also pass through to whatever was clicked, which is fine
-// for a row menu). The trigger's click is prevented/stopped so opening the menu never also
-// navigates the row's wrapping link; the menu content renders in a portal, outside the link.
-function RowMenu({
-  m,
-  busy,
-  busyOp,
-  onRotate,
-  onKrogerLink,
-  onRevoke,
+// menu must not trap the page (the Radix body pointer-events lock); the trigger's click is
+// prevented/stopped so opening the menu never also navigates a wrapping row link.
+function ActionsMenu({
+  label,
+  children,
 }: {
-  m: TenantRow;
-  busy: boolean;
-  busyOp: Op | null;
-  onRotate: () => void;
-  onKrogerLink: () => void;
-  onRevoke: () => void;
+  label: string;
+  children: React.ReactNode;
 }) {
   return (
     <DropdownMenu modal={false}>
@@ -161,7 +175,7 @@ function RowMenu({
         <Button
           variant="ghost"
           size="icon"
-          aria-label="Member actions"
+          aria-label={label}
           onClick={(e) => {
             e.preventDefault();
             e.stopPropagation();
@@ -170,78 +184,176 @@ function RowMenu({
           <MoreIcon size={16} />
         </Button>
       </DropdownMenuTrigger>
-      {/* The row is a <Link>; a menu-item click bubbles up the REACT tree (Radix portals the
-          content in the DOM, but synthetic events still propagate to React ancestors) and would
-          trigger the row's navigation. Stop it here so Rotate/Revoke run without leaving the page —
-          the trigger button guards its own click the same way. */}
       <DropdownMenuContent align="end" onClick={(e) => e.stopPropagation()}>
-        <DropdownMenuItem disabled={busy} onSelect={onRotate}>
-          <KeyIcon size={13} /> {busyOp?.kind === "rotate" && busyOp.id === m.id ? "Rotating…" : "Rotate invite"}
-        </DropdownMenuItem>
-        {m.status === "active" ? (
-          <DropdownMenuItem disabled={busy} onSelect={onKrogerLink}>
-            <LinkIcon size={13} />{" "}
-            {busyOp?.kind === "kroger" && busyOp.id === m.id ? "Minting…" : m.kroger === "linked" ? "Re-link Kroger" : "Link Kroger"}
-          </DropdownMenuItem>
-        ) : null}
-        <DropdownMenuItem variant="destructive" disabled={busy} onSelect={onRevoke}>
-          <TrashIcon size={13} />{" "}
-          {busyOp?.kind === "revoke" && busyOp.id === m.id ? "Revoking…" : m.status === "pending" ? "Revoke invite" : "Revoke access"}
-        </DropdownMenuItem>
+        {children}
       </DropdownMenuContent>
     </DropdownMenu>
   );
 }
 
-function RosterRow({
-  m,
+/** A SINGLE-MEMBER household: one compact row carrying both the household and member
+ *  affordances, so the regrouping adds no noise until a second member exists. Its
+ *  destructive action is Revoke access = household purge (the last-member routing). */
+function CompactHouseholdRow({
+  t,
   now,
   busy,
   busyOp,
-  onRotate,
-  onKrogerLink,
+  act,
   onRevoke,
 }: {
-  m: TenantRow;
+  t: TenantRow;
   now: number;
   busy: boolean;
   busyOp: Op | null;
-  onRotate: () => void;
-  onKrogerLink: () => void;
-  onRevoke: () => void;
+  act: (op: Op) => void;
+  onRevoke: (target: RevokeTarget) => void;
 }) {
   return (
-    <Link className="item-link" to="/members/$id" params={{ id: m.id }}>
-      <div className="item item-outline">
+    <Link className="item-link" to="/members/$id" params={{ id: t.id }}>
+      <div className="item item-outline" data-testid="household-row" data-household={t.id}>
         <figure className="item-media avatar avatar-lg" aria-hidden="true">
-          {m.id.slice(0, 2).toUpperCase()}
+          {t.id.slice(0, 2).toUpperCase()}
         </figure>
         <section className="item-body">
           <div className="item-title member-head">
-            {`@${m.id}`}
-            {m.owner ? <Badge variant="secondary">owner</Badge> : null}
+            {`@${t.id}`}
+            {t.owner ? <Badge variant="secondary">owner</Badge> : null}
           </div>
-          <div className="item-desc">{metaLine(m, now)}</div>
+          <div className="item-desc">{metaLine(t, now)}</div>
         </section>
         <aside className="item-actions">
-          {m.kroger === "linked" ? (
+          {t.kroger === "linked" ? (
             <Badge variant="secondary">
               <LinkIcon size={11} /> kroger
             </Badge>
           ) : null}
-          <Badge variant={m.status === "active" ? "secondary" : "outline"}>{m.status}</Badge>
-          <RowMenu m={m} busy={busy} busyOp={busyOp} onRotate={onRotate} onKrogerLink={onKrogerLink} onRevoke={onRevoke} />
+          <Badge variant={t.status === "active" ? "secondary" : "outline"}>{t.status}</Badge>
+          <ActionsMenu label="Member actions">
+            <DropdownMenuItem disabled={busy} onSelect={() => act({ kind: "rotate", id: t.id })}>
+              <KeyIcon size={13} /> {busyOp?.kind === "rotate" && busyOp.id === t.id ? "Rotating…" : "Rotate invite"}
+            </DropdownMenuItem>
+            {t.status === "active" ? (
+              <DropdownMenuItem disabled={busy} onSelect={() => act({ kind: "kroger", id: t.id })}>
+                <LinkIcon size={13} />{" "}
+                {busyOp?.kind === "kroger" && busyOp.id === t.id ? "Minting…" : t.kroger === "linked" ? "Re-link Kroger" : "Link Kroger"}
+              </DropdownMenuItem>
+            ) : null}
+            {/* The only member's destructive action routes to household purge. */}
+            <DropdownMenuItem variant="destructive" disabled={busy} onSelect={() => onRevoke({ kind: "purge", row: t })}>
+              <TrashIcon size={13} />{" "}
+              {busyOp?.kind === "revoke" && busyOp.id === t.id ? "Revoking…" : t.status === "pending" ? "Revoke invite" : "Revoke access"}
+            </DropdownMenuItem>
+          </ActionsMenu>
         </aside>
       </div>
     </Link>
   );
 }
 
-function MembersView({ members }: { members: TenantRow[] }) {
+/** A MULTI-MEMBER household group: the household header row (id, member count, badges,
+ *  household-level actions) over its member rows (each with member-level actions). */
+function HouseholdGroup({
+  t,
+  now,
+  busy,
+  busyOp,
+  act,
+  onRevoke,
+}: {
+  t: TenantRow;
+  now: number;
+  busy: boolean;
+  busyOp: Op | null;
+  act: (op: Op) => void;
+  onRevoke: (target: RevokeTarget) => void;
+}) {
+  return (
+    <div className="household-group" data-testid="household-group" data-household={t.id}>
+      <Link className="item-link" to="/members/$id" params={{ id: t.id }}>
+        <div className="item item-outline" data-testid="household-row" data-household={t.id}>
+          <figure className="item-media avatar avatar-lg" aria-hidden="true">
+            {t.id.slice(0, 2).toUpperCase()}
+          </figure>
+          <section className="item-body">
+            <div className="item-title member-head">
+              {`@${t.id}`}
+              {t.owner ? <Badge variant="secondary">owner</Badge> : null}
+              <Badge variant="outline" testId="household-count">
+                {memberCountOf(t)} members
+              </Badge>
+            </div>
+            <div className="item-desc">{metaLine(t, now)}</div>
+          </section>
+          <aside className="item-actions">
+            {t.kroger === "linked" ? (
+              <Badge variant="secondary">
+                <LinkIcon size={11} /> kroger
+              </Badge>
+            ) : null}
+            <Badge variant={t.status === "active" ? "secondary" : "outline"}>{t.status}</Badge>
+            <ActionsMenu label="Household actions">
+              {t.status === "active" ? (
+                <DropdownMenuItem disabled={busy} onSelect={() => act({ kind: "kroger", id: t.id })}>
+                  <LinkIcon size={13} />{" "}
+                  {busyOp?.kind === "kroger" && busyOp.id === t.id ? "Minting…" : t.kroger === "linked" ? "Re-link Kroger" : "Link Kroger"}
+                </DropdownMenuItem>
+              ) : null}
+              <DropdownMenuItem variant="destructive" disabled={busy} onSelect={() => onRevoke({ kind: "purge", row: t })}>
+                <TrashIcon size={13} /> {busyOp?.kind === "revoke" && busyOp.id === t.id ? "Purging…" : "Purge household"}
+              </DropdownMenuItem>
+            </ActionsMenu>
+          </aside>
+        </div>
+      </Link>
+      <div className="household-members">
+        {t.members.map((m) => (
+          <div className="item" data-testid="member-row" data-member={m.handle} key={m.id}>
+            <figure className="item-media avatar" aria-hidden="true">
+              {m.handle.slice(0, 2).toUpperCase()}
+            </figure>
+            <section className="item-body">
+              <div className="item-title member-head">{`@${m.handle}`}</div>
+              <div className="item-desc">
+                {m.founding ? metaLine(t, now) : `joined ${rosterAge(now - m.joined)}`}
+              </div>
+            </section>
+            <aside className="item-actions">
+              <Badge variant={m.founding && t.status === "pending" ? "outline" : "secondary"}>
+                {m.founding && t.status === "pending" ? "pending" : "active"}
+              </Badge>
+              <ActionsMenu label="Member actions">
+                <DropdownMenuItem
+                  disabled={busy}
+                  onSelect={() => act({ kind: "rotate", id: t.id, ...(m.founding ? {} : { member: m.id }) })}
+                >
+                  <KeyIcon size={13} />{" "}
+                  {busyOp?.kind === "rotate" && busyOp.id === t.id && (busyOp.member ?? t.id) === (m.founding ? t.id : m.id)
+                    ? "Rotating…"
+                    : "Rotate invite"}
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  variant="destructive"
+                  disabled={busy}
+                  onSelect={() => onRevoke({ kind: "member", tenant: t.id, member: m })}
+                >
+                  <TrashIcon size={13} />{" "}
+                  {busyOp?.kind === "revokeMember" && busyOp.member === m.id ? "Revoking…" : "Revoke member"}
+                </DropdownMenuItem>
+              </ActionsMenu>
+            </aside>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function MembersView({ tenants }: { tenants: TenantRow[] }) {
   const [dialogOpen, setDialogOpen] = React.useState(false);
   const [username, setUsername] = React.useState("");
   const [banner, setBanner] = React.useState<Banner | null>(null);
-  const [revokeTarget, setRevokeTarget] = React.useState<TenantRow | null>(null);
+  const [revokeTarget, setRevokeTarget] = React.useState<RevokeTarget | null>(null);
   const [now] = React.useState(() => Date.now());
 
   const action = useMutation({
@@ -257,12 +369,14 @@ function MembersView({ members }: { members: TenantRow[] }) {
   });
   const busy = action.isPending;
   const busyOp = action.isPending ? action.variables : null;
-  const c = counts(members);
+  const act = (op: Op) => action.mutate(op);
+  const c = counts(tenants);
 
   return (
     <div>
       <StatCardGrid>
-        <StatCard icon={<UsersIcon size={15} />} label="Members" value={c.total} />
+        <StatCard icon={<HomeIcon size={15} />} label="Households" value={c.households} />
+        <StatCard icon={<UsersIcon size={15} />} label="Members" value={c.members} />
         <StatCard icon={<CheckCircleIcon size={15} />} label="Active" value={c.active} />
         <StatCard icon={<ClockIcon size={15} />} label="Pending" value={c.pending} />
         <StatCard icon={<LinkIcon size={15} />} label="Kroger linked" value={c.kroger} />
@@ -302,22 +416,17 @@ function MembersView({ members }: { members: TenantRow[] }) {
         </Button>
       </div>
 
-      {members.length === 0 ? (
+      {tenants.length === 0 ? (
         <p className="muted">No members yet.</p>
       ) : (
         <div className="item-group">
-          {members.map((m) => (
-            <RosterRow
-              key={m.id}
-              m={m}
-              now={now}
-              busy={busy}
-              busyOp={busyOp}
-              onRotate={() => action.mutate({ kind: "rotate", id: m.id })}
-              onKrogerLink={() => action.mutate({ kind: "kroger", id: m.id })}
-              onRevoke={() => setRevokeTarget(m)}
-            />
-          ))}
+          {tenants.map((t) =>
+            t.members.length > 1 ? (
+              <HouseholdGroup key={t.id} t={t} now={now} busy={busy} busyOp={busyOp} act={act} onRevoke={setRevokeTarget} />
+            ) : (
+              <CompactHouseholdRow key={t.id} t={t} now={now} busy={busy} busyOp={busyOp} act={act} onRevoke={setRevokeTarget} />
+            ),
+          )}
         </div>
       )}
 
@@ -340,11 +449,13 @@ function MembersView({ members }: { members: TenantRow[] }) {
               <Input
                 id="invite-username"
                 type="text"
-                placeholder="friend-handle"
+                placeholder="friend_handle"
                 value={username}
                 onChange={(e) => setUsername(e.currentTarget.value)}
               />
-              <p className="muted small">Their tenant id — lowercase, no spaces. No email is sent.</p>
+              <p className="muted small">
+                Their tenant id — 3–20 lowercase letters, numbers, underscores. No email is sent.
+              </p>
             </div>
             <DialogFooter>
               <Button type="button" variant="outline" size="sm" onClick={() => setDialogOpen(false)}>
@@ -361,22 +472,32 @@ function MembersView({ members }: { members: TenantRow[] }) {
       <AlertDialog open={revokeTarget !== null} onOpenChange={(open) => !open && setRevokeTarget(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Revoke member</AlertDialogTitle>
+            <AlertDialogTitle>{revokeTarget?.kind === "member" ? "Revoke member" : "Purge household"}</AlertDialogTitle>
             <AlertDialogDescription>
-              {revokeTarget?.status === "pending"
-                ? `This removes @${revokeTarget?.id ?? ""} from the allowlist — their invite code stops working immediately.`
-                : `This removes @${revokeTarget?.id ?? ""} from the allowlist — their Claude.ai connector loses access immediately.`}
+              {revokeTarget?.kind === "member"
+                ? `This removes @${revokeTarget.member.handle} from @${revokeTarget.tenant}'s household — their passkeys, sessions, notes, and social rows go with them; the household and its other members stay.`
+                : revokeTarget?.row.status === "pending"
+                  ? `This removes @${revokeTarget?.row.id ?? ""} from the allowlist — their invite code stops working immediately.`
+                  : `This removes @${revokeTarget?.row.id ?? ""}'s whole household — every member, their data, and their social graph. Their Claude.ai connectors lose access immediately.`}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction
               onClick={() => {
-                if (revokeTarget) action.mutate({ kind: "revoke", id: revokeTarget.id });
+                if (revokeTarget?.kind === "member") {
+                  action.mutate({ kind: "revokeMember", id: revokeTarget.tenant, member: revokeTarget.member.id });
+                } else if (revokeTarget) {
+                  action.mutate({ kind: "revoke", id: revokeTarget.row.id });
+                }
                 setRevokeTarget(null);
               }}
             >
-              {revokeTarget?.status === "pending" ? "Revoke invite" : "Revoke access"}
+              {revokeTarget?.kind === "member"
+                ? "Revoke member"
+                : revokeTarget?.row.status === "pending"
+                  ? "Revoke invite"
+                  : "Revoke access"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -411,7 +532,7 @@ function RosterTab(): React.ReactElement {
     case "error":
       return <ErrorBanner message={apiErrorOf(q.error)?.message ?? String(q.error)} />;
     case "success":
-      return <MembersView members={q.data.tenants} />;
+      return <MembersView tenants={q.data.tenants} />;
     default:
       return assertNever(q);
   }

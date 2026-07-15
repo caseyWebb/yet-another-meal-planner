@@ -1,16 +1,8 @@
 import { describe, it, expect } from "vitest";
 import { handleAuthorize, handleAuthorizeStatus } from "../src/authorize.js";
 import { mintApproval, approveApproval } from "../src/connect-approval.js";
+import { sqliteEnv } from "./sqlite-d1.js";
 import type { Env } from "../src/env.js";
-
-function memKv(initial: Record<string, string> = {}): KVNamespace {
-  const m = new Map(Object.entries(initial));
-  return {
-    async get(key: string) { return m.get(key) ?? null; },
-    async put(key: string, value: string) { m.set(key, value); },
-    async delete(key: string) { m.delete(key); },
-  } as unknown as KVNamespace;
-}
 
 const OAUTH_REQ = {
   responseType: "code",
@@ -22,11 +14,17 @@ const OAUTH_REQ = {
   codeChallengeMethod: "S256",
 };
 
-/** A fake env whose OAUTH_PROVIDER records completeAuthorization calls. */
+/**
+ * A fake env whose OAUTH_PROVIDER records completeAuthorization calls. Backed by a
+ * real-SQLite D1: both completion sites are gated through `resolveIdentity`
+ * (households-friends-and-people-page 7.1b), so the surface reads the `members` table
+ * (the lazy convergence guard mints founding members for the legacy fixtures here).
+ */
 function fakeEnv(kv: Record<string, string> = {}) {
   const completeCalls: Array<{ userId: string; props: unknown }> = [];
+  const h = sqliteEnv();
   const env = {
-    TENANT_KV: memKv(kv),
+    ...(h.env as unknown as Record<string, unknown>),
     OAUTH_PROVIDER: {
       parseAuthRequest: async () => ({ ...OAUTH_REQ }),
       lookupClient: async (clientId: string) => ({ clientId, clientName: "Claude" }),
@@ -36,7 +34,8 @@ function fakeEnv(kv: Record<string, string> = {}) {
       },
     },
   } as unknown as Env;
-  return { env, completeCalls };
+  for (const [k, v] of Object.entries(kv)) void env.TENANT_KV.put(k, v); // memKv sets synchronously
+  return { env, completeCalls, raw: h.raw };
 }
 
 const oauthReqB64 = btoa(JSON.stringify(OAUTH_REQ));
@@ -101,10 +100,12 @@ describe("handleAuthorize — cross-device approval + grace-gated invite fallbac
   });
 
   it("POST binds a member-addressed bootstrap invite's pair into the grant props", async () => {
-    const { env, completeCalls } = fakeEnv({
+    const { env, completeCalls, raw } = fakeEnv({
       "invite:BOOT": JSON.stringify({ v: 1, tenant: "alice", member: "m2", single_use: true, expires_at: 0 }),
       "tenant:alice": JSON.stringify({ id: "alice" }),
     });
+    // The member-liveness gate (7.1b): a non-founding member must exist as a row.
+    raw.prepare("INSERT INTO members (id, tenant, handle, created_at) VALUES ('m2', 'alice', 'm2', 1)").run();
     const res = await handleAuthorize(postForm({ invite_code: "BOOT", oauth_req: oauthReqB64 }), env);
     expect(res.status).toBe(302);
     expect(completeCalls[0].userId).toBe("alice"); // still the tenant (roster contract)
@@ -135,7 +136,7 @@ describe("handleAuthorizeStatus — cross-device poll", () => {
   const statusReq = (ref: string) => new Request(`https://worker.example/authorize/status?authz=${ref}`);
 
   it("stays pending until approved, then completes the grant EXACTLY once", async () => {
-    const { env, completeCalls } = fakeEnv();
+    const { env, completeCalls } = fakeEnv({ "tenant:casey": JSON.stringify({ id: "casey" }) });
     const { ref } = await mintApproval(env, oauthReqB64, "Claude");
 
     const pending = await (await handleAuthorizeStatus(statusReq(ref), env)).json();
@@ -160,7 +161,7 @@ describe("handleAuthorizeStatus — cross-device poll", () => {
   });
 
   it("a PRE-SPLIT approved authz record (no member) completes as the founding member", async () => {
-    const { env, completeCalls } = fakeEnv();
+    const { env, completeCalls } = fakeEnv({ "tenant:casey": JSON.stringify({ id: "casey" }) });
     await env.TENANT_KV.put(
       "authz:legacy",
       JSON.stringify({ oauth: oauthReqB64, clientName: "Claude", code: "ABC234", status: "approved", tenant: "casey" }),

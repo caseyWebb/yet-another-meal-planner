@@ -103,6 +103,13 @@ export const IconAlert = icon(
 export const IconSparkle = icon(
   <path d="M12 3v4M12 17v4M3 12h4M17 12h4M5.6 5.6l2.8 2.8M15.6 15.6l2.8 2.8M18.4 5.6l-2.8 2.8M8.4 15.6l-2.8 2.8" />,
 );
+export const IconUsers = icon(
+  <>
+    <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" />
+    <circle cx="9" cy="7" r="4" />
+    <path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75" />
+  </>,
+);
 export const IconCopy = icon(
   <>
     <rect x="9" y="9" width="13" height="13" rx="2" />

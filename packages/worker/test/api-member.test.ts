@@ -231,6 +231,22 @@ const MEMBER_ENDPOINTS: [string, string][] = [
   ["POST", "/api/vibes/proposals/p1/confirm"],
   ["POST", "/api/vibes/suggest"],
   ["POST", "/api/propose"],
+  // The People area (households-friends-and-people-page). `/api/join/:token` is
+  // deliberately PUBLIC (the signup fork) and is not listed here.
+  ["GET", "/api/people"],
+  ["POST", "/api/people/lookup"],
+  ["POST", "/api/people/requests"],
+  ["POST", "/api/people/requests/r1/accept"],
+  ["POST", "/api/people/requests/r1/decline"],
+  ["POST", "/api/people/requests/r1/cancel"],
+  ["POST", "/api/people/blocks"],
+  ["DELETE", "/api/people/blocks"],
+  ["DELETE", "/api/people/friends/pat"],
+  ["PUT", "/api/people/nicknames/m1"],
+  ["POST", "/api/people/invites"],
+  ["DELETE", "/api/people/invites/tok"],
+  ["POST", "/api/people/leave"],
+  ["POST", "/api/people/members/m1/remove"],
 ];
 
 describe("session gating (requireSession is PER-ROUTE — none may be forgotten)", () => {

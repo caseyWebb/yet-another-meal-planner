@@ -73,6 +73,11 @@ export const REGISTERED_MUTATION_KEYS: readonly (readonly string[])[] = [
   ["vibes", "add"],
   ["vibes", "remove"],
   ["proposals", "confirm"],
+  // Nickname upsert/empty-clear (households-friends-and-people-page, D15 deliberate
+  // classification): idempotent, canonical-key `(viewer, target)` upsert/delete with no
+  // external effect — a queued edit replays safely. Every OTHER People action (requests,
+  // accepts, blocks, invites, join, leave, remove) is online-only and stays out.
+  ["people", "nickname"],
 ];
 
 const REGISTERED_KEY_SET = new Set(REGISTERED_MUTATION_KEYS.map((k) => JSON.stringify(k)));

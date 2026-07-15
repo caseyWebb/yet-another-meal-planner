@@ -1617,3 +1617,10 @@ html.dark {
 .access-overlay-card { background: var(--c-surface); border: 1px solid var(--border); border-radius: var(--radius-lg); box-shadow: var(--shadow-lg); max-width: 26rem; padding: 1.5rem 1.75rem; }
 /* Screen-level load / failure states (query pending/error branches). */
 .screen-loading { color: var(--c-soft); font-size: .85rem; padding: 2.5rem 0; text-align: center; }
+
+/* The roster's household grouping (households-friends-and-people-page): a multi-member
+   household renders its header row over indented member rows; single-member households
+   keep the compact one-row rendering, so the regroup adds no noise until member #2. */
+.household-group { display: flex; flex-direction: column; gap: .35rem; }
+.household-members { display: flex; flex-direction: column; gap: .35rem; margin-left: 2.25rem; padding-left: .75rem; border-left: 2px solid var(--border); }
+.household-members .item { border: 1px solid var(--border); border-radius: var(--radius-md); }

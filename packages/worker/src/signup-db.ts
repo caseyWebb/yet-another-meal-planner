@@ -132,6 +132,21 @@ export async function redeemGroupInvite(
   return { kind: "ok" };
 }
 
+/**
+ * Atomically claim a brand-new tenant id in the registry WITHOUT a group code — the
+ * uniqueness gate the friend-tier invite-link redemption and the member-move spawn use
+ * (the same ON CONFLICT idiom as redeemGroupInvite's phase 2: exactly one racer for a
+ * name gets `true`). `viaCode` is NULL — these tenants come from no group code.
+ */
+export async function claimTenant(env: Env, id: string, now: number): Promise<boolean> {
+  const res = await db(env).run(
+    `INSERT INTO tenants(id, created_at, via_code) VALUES(?1, ?2, NULL) ON CONFLICT(id) DO NOTHING`,
+    id,
+    now,
+  );
+  return res.changes === 1;
+}
+
 /** Whether a tenant id already exists in the D1 registry. */
 export async function tenantExists(env: Env, id: string): Promise<boolean> {
   const row = await db(env).first<{ one: number }>(`SELECT 1 AS one FROM tenants WHERE id = ?1`, id);

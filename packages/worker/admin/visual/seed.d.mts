@@ -118,6 +118,16 @@ export interface SeedLiterals {
       };
     };
     readonly note: { readonly body: string; readonly tag: string };
+    /** People fixtures (households-friends-and-people-page): casey's deterministic second
+     *  member, the requester identity the specs log in as to self-provision inbound
+     *  requests, the SaaS-only friend household (zero shared grants — lens-inert), and
+     *  the live household invite link the /join landing reads. */
+    readonly people: {
+      readonly secondMember: { readonly id: string; readonly handle: string };
+      readonly requester: { readonly tenant: string; readonly handle: string; readonly invite: string };
+      readonly friend: { readonly tenant: string; readonly handle: string };
+      readonly inviteToken: string;
+    };
     readonly tasteLead: string;
     /** Brand-tier fixtures (brand-tier model): the Preferred-brands card's seeded
      *  ladder (singleton tiers, the migrated-production shape) and don't-care family. */

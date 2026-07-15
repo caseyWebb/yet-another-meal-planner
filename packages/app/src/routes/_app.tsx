@@ -17,6 +17,7 @@ import {
   IconPantry,
   IconSparkle,
   IconSun,
+  IconUsers,
   Button,
   toast,
 } from "@yamp/ui";
@@ -112,6 +113,10 @@ const NAV = [
   { to: "/plan", label: "Meal plan", icon: IconCalendar, count: "plan" },
   { to: "/grocery", label: "Grocery list", icon: IconCart, count: "grocery" },
   { to: "/pantry", label: "Pantry", icon: IconPantry, count: null },
+  // The People badge counts ACTIONABLE PENDING INBOUND requests — the same rows the
+  // page's inbox renders, from the same aggregate read (the shared-derivation rule).
+  // The mock's friend-count badge is a recorded defect, deliberately not reproduced.
+  { to: "/people", label: "People", icon: IconUsers, count: "people" },
   { to: "/retrospective", label: "Retrospective", icon: IconClock, count: null },
 ] as const;
 

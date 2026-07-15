@@ -31,11 +31,12 @@ const localChromium = process.env.PW_CHROMIUM_PATH;
 
 // The dedicated real-auth-UI specs run in the logged-out `noauth` project; every other spec
 // runs pre-authenticated in `authed`. Kept in one place so the two projects stay complements.
-const REAL_AUTH_UI_SPECS = ["**/login.spec.ts", "**/signup.spec.ts", "**/passkey.spec.ts"];
-// The SaaS-variant specs (cookbook cold-start, curated tier, browse lens) run in their own
-// project against the saas server — authed via the same storageState (cookies are
-// host-scoped, so the seeded session cookie rides on both ports).
-const SAAS_SPECS = ["**/cookbook-saas.spec.ts"];
+// join.spec.ts belongs here too: `/join/:token` serves signed-out visitors (the signup fork).
+const REAL_AUTH_UI_SPECS = ["**/login.spec.ts", "**/signup.spec.ts", "**/passkey.spec.ts", "**/join.spec.ts"];
+// The SaaS-variant specs (cookbook cold-start, curated tier, browse lens, the People page's
+// full variant) run in their own project against the saas server — authed via the same
+// storageState (cookies are host-scoped, so the seeded session cookie rides on both ports).
+const SAAS_SPECS = ["**/cookbook-saas.spec.ts", "**/people-saas.spec.ts"];
 // The storageState the `authed` project loads, written by setup.mjs. Resolved relative to
 // this config's directory (packages/worker), the same cwd setup.mjs writes it from.
 const AUTHED_STORAGE_STATE = `app/visual/.auth/${SEED.members.active}.json`;

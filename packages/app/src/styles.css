@@ -90,3 +90,49 @@
 .walk-footer { position: fixed; bottom: 0; right: 0; left: var(--sidebar-w, 15rem); display: flex; justify-content: flex-end; gap: .75rem; border-top: 1px solid var(--border); background: var(--background); padding: .75rem 2rem; z-index: 10; }
 .walk-pending, .walk-receipt { border: 1px solid var(--primary); border-radius: .8rem; padding: 1rem; background: var(--card); }
 @media (max-width: 640px) { .inline-fields, .aisle-editor-row { align-items: stretch; flex-direction: column; } .walk-footer { left: 0; } }
+
+/* People (households-friends-and-people-page): household/friends roster, requests inbox,
+   the nickname hint, and the find/invite adders. The self-hosted variant reuses the same
+   classes with `.people-body-solo` promoting the hint beside HOUSEHOLD on wide viewports. */
+.people-body { display: grid; gap: 1.25rem; max-width: 52rem; }
+.people-main { display: grid; gap: 1.5rem; min-width: 0; }
+.people-section { display: grid; gap: .6rem; }
+.people-section-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
+.people-section-head p { margin: .1rem 0 0; font-size: .875rem; }
+.people-list { display: grid; }
+.people-item { position: relative; display: flex; align-items: center; gap: .7rem; padding: .7rem .25rem; border-bottom: 1px solid var(--border); }
+.people-item:last-child { border-bottom: 0; }
+.people-item-main { flex: 1 1 auto; min-width: 0; display: grid; gap: .15rem; }
+.people-item-name { display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; }
+.people-item-sub { font-size: .82rem; }
+.people-item-actions { display: flex; align-items: center; gap: .4rem; flex: 0 0 auto; }
+.people-dim { color: var(--muted-foreground); }
+.people-note { margin: .25rem 0 0; padding: .35rem .6rem; border-left: 3px solid var(--border); color: var(--muted-foreground); font-size: .85rem; font-style: italic; }
+.people-avatar { display: inline-flex; align-items: center; justify-content: center; width: 2.1rem; height: 2.1rem; border-radius: 50%; border: 0; color: #fff; font-weight: 700; flex: 0 0 auto; cursor: default; }
+button.people-avatar { cursor: pointer; }
+.people-avatar-dim { background: var(--muted); color: var(--muted-foreground); }
+.people-avatar-dim svg { width: 1rem; height: 1rem; }
+.people-avatar-host { position: relative; flex: 0 0 auto; }
+.people-avatar-pop { position: absolute; top: calc(100% + 4px); left: 0; z-index: 30; display: flex; gap: .35rem; padding: .4rem; background: var(--popover, var(--card)); border: 1px solid var(--border); border-radius: var(--radius-md); box-shadow: 0 4px 12px -6px color-mix(in oklch, var(--foreground) 22%, transparent); }
+.people-avatar-swatch { width: 1.4rem; height: 1.4rem; border-radius: 50%; border: 1px solid var(--border); cursor: pointer; }
+.people-link { border: 0; background: transparent; padding: 0; color: var(--muted-foreground); font: inherit; font-size: .82rem; text-decoration: underline; cursor: pointer; }
+.people-link:hover { color: var(--foreground); }
+.people-nick-edit { display: inline-flex; align-items: center; gap: .35rem; }
+.people-nick-edit input { height: 2rem; width: 11rem; }
+.people-adder { display: grid; gap: .5rem; justify-items: end; }
+.people-adder-buttons { display: inline-flex; gap: .4rem; }
+.people-pop { border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--card); padding: .6rem; min-width: 18rem; display: grid; gap: .5rem; }
+.people-pop-row { display: grid; gap: .5rem; }
+.people-pop-found { display: grid; gap: .5rem; }
+.people-pop p { margin: 0; font-size: .85rem; }
+.people-hint { border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--card); padding: .9rem 1rem; align-self: start; }
+.people-hint h3 { margin: 0 0 .35rem; font-size: .9rem; }
+.people-hint p { margin: 0; font-size: .85rem; color: var(--muted-foreground); line-height: 1.45; }
+.people-manifest ul { margin: .35rem 0; padding-left: 1.2rem; font-size: .875rem; }
+.people-manifest p { margin: .25rem 0; font-size: .875rem; }
+.people-seed { display: grid; gap: .35rem; font-size: .82rem; color: var(--muted-foreground); }
+@media (min-width: 900px) {
+  /* SaaS: the hint trails the columns; self-hosted: HOUSEHOLD carries the page with the
+     hint promoted to a side-by-side arrangement (design request #12). */
+  .people-body-solo { grid-template-columns: minmax(0, 2fr) minmax(14rem, 1fr); align-items: start; }
+}

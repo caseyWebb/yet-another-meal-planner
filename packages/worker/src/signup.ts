@@ -6,7 +6,7 @@
 
 import { directoryFromEnv, normalizeTenantId } from "./tenant.js";
 import { getSignupInvite, redeemGroupInvite, registerExistingTenant } from "./signup-db.js";
-import { insertFoundingMember } from "./members-db.js";
+import { insertFoundingMember, isValidHandle, HANDLE_GRAMMAR_MESSAGE } from "./members-db.js";
 import { db } from "./db.js";
 import type { Env } from "./env.js";
 
@@ -18,11 +18,12 @@ export type SignupOutcome =
   | { kind: "code_unusable" }
   | { kind: "invalid_username"; message: string };
 
-// 2–31 chars, canonical lowercase: a letter/digit start then letters/digits/hyphen/underscore.
-const USERNAME_RE = /^[a-z0-9][a-z0-9_-]{1,30}$/;
-
+/** Every NEW username validates the ONE product handle grammar (`HANDLE_RE`,
+ *  src/members-db.ts) — a chosen username becomes the tenant id AND the founding
+ *  handle, so tightening here is what stops the grandfather class regrowing.
+ *  Everything already issued is grandfathered (no read-path validation anywhere). */
 export function isValidUsername(id: string): boolean {
-  return USERNAME_RE.test(id);
+  return isValidHandle(id);
 }
 
 /**
@@ -40,10 +41,7 @@ export async function redeemGroupCode(
   const id = normalizeTenantId(rawUsername ?? "");
   if (!id) return { kind: "invalid_username", message: "Choose a username" };
   if (!isValidUsername(id)) {
-    return {
-      kind: "invalid_username",
-      message: "Usernames are 2–31 characters: lowercase letters, numbers, hyphens, underscores",
-    };
+    return { kind: "invalid_username", message: HANDLE_GRAMMAR_MESSAGE };
   }
 
   if (!code) return { kind: "code_unusable" };
@@ -72,12 +70,23 @@ export async function redeemGroupCode(
   const outcome = await redeemGroupInvite(env, code, id, now);
   if (outcome.kind !== "ok") return outcome;
 
-  // The D1 claim won — mint the founding member (id = handle = the claimed username) in the
-  // same flow, then write the KV allowlist entry, mirroring onboard() (src/admin.ts). Member
-  // before allowlist so an allowlisted tenant always has its member row (fails under-granting).
+  // The D1 claim won — finish minting the tenant. NO friendship edge: a group code has
+  // no inviter household to befriend (the edge belongs to the friend-invite path only).
+  await finalizeNewTenant(env, id, now);
+  return { kind: "ok", tenant: id };
+}
+
+/**
+ * The tenant-creation CORE shared by every tenant-creating signup path (group codes
+ * above, the friend-tier invite-link redemption in src/api/join.ts): mint the founding
+ * member (id = handle = the claimed username), then write the KV allowlist entry,
+ * mirroring onboard() (src/admin.ts). Member before allowlist so an allowlisted tenant
+ * always has its member row (fails under-granting). The caller has already WON the D1
+ * registry claim for `id` (redeemGroupInvite / claimTenant) and mints the session after.
+ */
+export async function finalizeNewTenant(env: Env, id: string, now: number): Promise<void> {
   await insertFoundingMember(db(env), id, now);
   await env.TENANT_KV.put(`${TENANT_PREFIX}${id}`, JSON.stringify({ id }));
-  return { kind: "ok", tenant: id };
 }
 
 /**

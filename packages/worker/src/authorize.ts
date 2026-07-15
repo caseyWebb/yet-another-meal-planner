@@ -15,7 +15,13 @@
 import { renderSVG } from "uqr";
 import type { AuthRequest } from "@cloudflare/workers-oauth-provider";
 import type { Env } from "./env.js";
-import { resolveInvite, inviteAccepted, inviteGraceEnabled, normalizeTenantId } from "./tenant.js";
+import {
+  resolveInvite,
+  inviteAccepted,
+  inviteGraceEnabled,
+  resolveIdentity,
+  directoryFromEnv,
+} from "./tenant.js";
 import { mintApproval, claimApproved, viewApproval } from "./connect-approval.js";
 
 const ESC: Record<string, string> = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
@@ -117,15 +123,21 @@ export async function handleAuthorize(request: Request, env: Env): Promise<Respo
     }
 
     const inv = await resolveInvite(env.TENANT_KV, code);
-    if (!inv || !inviteAccepted(inv, env)) {
-      // Uniform for unknown / expired / grace-rejected legacy code — never distinguish. Only re-show
-      // the legacy form while grace is on (GET hides it once grace is off; keep POST consistent).
+    // The shared identity resolver gates completion (allowlist re-check + member
+    // liveness): a revoked member's lingering invite mapping must not mint even a dead
+    // grant — parity with the `/api` login path. Same uniform failure as a bad code.
+    const resolved = inv && inviteAccepted(inv, env)
+      ? await resolveIdentity(env, inv.tenant, inv.member, directoryFromEnv(env))
+      : null;
+    if (!resolved || "error" in resolved) {
+      // Uniform for unknown / expired / grace-rejected / revoked-member code — never distinguish.
+      // Only re-show the legacy form while grace is on (GET hides it once grace is off; keep POST consistent).
       const body = inviteGraceEnabled(env)
         ? legacyInviteForm(b64, "That invite code isn't valid. Check it and try again.")
         : `<p class="err">That invite code isn't valid. Restart the connection.</p>`;
       return page(`<h1>Connect to yamp</h1>` + body, 400);
     }
-    const tenantId = normalizeTenantId(inv.tenant);
+    const tenantId = resolved.id;
     const { redirectTo } = await env.OAUTH_PROVIDER.completeAuthorization({
       request: oauthReqInfo,
       // userId stays the TENANT id (the roster's grant:<userId>:* scan contract); the
@@ -133,7 +145,7 @@ export async function handleAuthorize(request: Request, env: Env): Promise<Respo
       userId: tenantId,
       scope: oauthReqInfo.scope,
       metadata: { label: tenantId },
-      props: { tenantId, memberId: inv.member },
+      props: { tenantId, memberId: resolved.member },
     });
     return Response.redirect(redirectTo, 302);
   }
@@ -164,7 +176,12 @@ export async function handleAuthorizeStatus(request: Request, env: Env): Promise
   } catch {
     return json({ status: "expired" });
   }
-  const tenantId = normalizeTenantId(claimed.tenant);
+  // The shared identity resolver gates completion here too: an approval bound to a
+  // member who was revoked (or moved households) between approving and this claim must
+  // not mint a grant. Uniform `expired` — no oracle for why.
+  const resolved = await resolveIdentity(env, claimed.tenant, claimed.member, directoryFromEnv(env));
+  if ("error" in resolved) return json({ status: "expired" });
+  const tenantId = resolved.id;
   const { redirectTo } = await env.OAUTH_PROVIDER.completeAuthorization({
     request: oauthReqInfo,
     // userId stays the TENANT id (the roster's grant:<userId>:* scan contract); the
@@ -172,7 +189,7 @@ export async function handleAuthorizeStatus(request: Request, env: Env): Promise
     userId: tenantId,
     scope: oauthReqInfo.scope,
     metadata: { label: tenantId },
-    props: { tenantId, memberId: claimed.member },
+    props: { tenantId, memberId: resolved.member },
   });
   return json({ status: "approved", redirect: redirectTo });
 }

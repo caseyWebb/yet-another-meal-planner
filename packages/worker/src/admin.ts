@@ -32,7 +32,14 @@ import {
 import { buildKrogerConsentUrl } from "./oauth.js";
 import { KROGER_REFRESH_PREFIX, type KvStore } from "./kroger-user.js";
 import { SESSION_PREFIX } from "./session.js";
-import { getMember, countMembers, insertFoundingMember } from "./members-db.js";
+import {
+  getMember,
+  countMembers,
+  insertFoundingMember,
+  isValidHandle,
+  HANDLE_GRAMMAR_MESSAGE,
+} from "./members-db.js";
+import { tenantSocialPurgeStatements, memberSocialRevokeStatements } from "./social-db.js";
 import {
   createSignupInvite,
   listSignupInvites,
@@ -76,6 +83,13 @@ export const TENANT_TABLES = [
   // shared corpus rows + derived artifacts stay). Member-revoke deliberately does NOT
   // touch recipe_imports — the household keeps its recipes when one member leaves.
   "recipe_imports",
+  // The tenant-keyed social tables (migration 0060). Their CROSS-direction rows —
+  // friendships/requests as either party, nicknames targeting this household's members,
+  // blocks recorded against it — are cleared by tenantSocialPurgeStatements
+  // (src/social-db.ts) in the same purge batch.
+  "member_invites", // invite links this household minted
+  "nicknames", // aliases this household's members set (tenant = the viewer's household)
+  "blocks", // suppression records this household minted
 ] as const;
 export const AUTHOR_TABLES = ["recipe_notes", "store_notes"] as const;
 
@@ -246,24 +260,39 @@ export function adminPosture(env: Env): AdminPosture {
 
 // --- Member lifecycle operations (pure over AdminDeps) ----------------------
 
-/** One member's roster row — operational status only, never per-tenant domain data. */
+/** One member row inside a household group (the roster's regrouped shape). */
+export interface RosterMemberRow {
+  id: string;
+  handle: string;
+  /** Member-row creation (epoch ms) — the "joined <age>" meta. */
+  joined: number;
+  /** Whether this is the household's founding member (id = tenant id). */
+  founding: boolean;
+}
+
+/** One HOUSEHOLD's roster row — operational status only, never per-tenant domain data.
+ *  Status/Kroger/activity are household-level facts (grants and the Kroger link are
+ *  tenant-scoped); `members` carries the household's member rows for the grouped view. */
 export interface TenantRosterRow {
   id: string;
   /** True iff `id === env.OWNER_TENANT_ID`. Unset env -> no member is owner. */
   owner: boolean;
-  /** `active` once the member has a persisted OAuth grant (completed the Claude.ai
+  /** `active` once the household has a persisted OAuth grant (completed the Claude.ai
    *  connection at least once); `pending` until then, or again if the grant is revoked. */
   status: "active" | "pending";
-  /** Whether a Kroger refresh token exists for this member (`kroger:refresh:<id>` in KROGER_KV). */
+  /** Whether a Kroger refresh token exists for this household (`kroger:refresh:<id>`). */
   kroger: "linked" | "unlinked";
-  /** First-seen epoch ms (≈ onboarding/first connection), or null for a pending member. */
+  /** First-seen epoch ms (≈ onboarding/first connection), or null for a pending household. */
   joined: number | null;
-  /** Most recent best-effort activity touch (epoch ms), or null for a pending member. */
+  /** Most recent best-effort activity touch (epoch ms), or null for a pending household. */
   lastActive: number | null;
   /** COUNT(*) over cooking_log for this tenant. */
   cooked: number;
   /** COUNT(*) over overlay WHERE favorite = 1 for this tenant. */
   favorites: number;
+  /** The household's members (founding first). Empty only for a pre-split tenant the
+   *  lazy convergence guard hasn't touched yet — rendered as the compact founding row. */
+  members: RosterMemberRow[];
 }
 
 /** The `@cloudflare/workers-oauth-provider` grant-key prefix — see `oauthGrantTenantIds`. */
@@ -326,7 +355,7 @@ export async function oauthGrantTenantIds(kv: KvStore): Promise<Set<string>> {
 export async function listTenants(env: Env, deps: AdminDeps): Promise<{ tenants: TenantRosterRow[] }> {
   const ids = [...(await kvTenantStore(deps.tenantKv).list())].sort();
 
-  const [activityRows, connectedIds, krogerKeys, cookedRows, favoriteRows] = await Promise.all([
+  const [activityRows, connectedIds, krogerKeys, cookedRows, favoriteRows, memberRows] = await Promise.all([
     deps.db.all<{ tenant: string; first_seen_at: number; last_seen_at: number }>(
       "SELECT tenant, first_seen_at, last_seen_at FROM tenant_activity",
     ),
@@ -336,9 +365,20 @@ export async function listTenants(env: Env, deps: AdminDeps): Promise<{ tenants:
     deps.db.all<{ tenant: string; n: number }>(
       "SELECT tenant, COUNT(*) AS n FROM overlay WHERE favorite = 1 GROUP BY tenant",
     ),
+    // The household grouping (households-friends-and-people-page): every member row in
+    // one read, founding first then join order — no N+1 per household.
+    deps.db.all<{ id: string; tenant: string; handle: string; created_at: number }>(
+      "SELECT id, tenant, handle, created_at FROM members ORDER BY (id = tenant) DESC, created_at ASC, id ASC",
+    ),
   ]);
 
   const activityById = new Map(activityRows.map((r) => [r.tenant, r]));
+  const membersById = new Map<string, RosterMemberRow[]>();
+  for (const m of memberRows) {
+    const list = membersById.get(m.tenant) ?? [];
+    list.push({ id: m.id, handle: m.handle, joined: m.created_at, founding: m.id === m.tenant });
+    membersById.set(m.tenant, list);
+  }
   const krogerLinked = new Set(krogerKeys.map((name) => name.slice(KROGER_REFRESH_PREFIX.length)));
   const cookedById = new Map(cookedRows.map((r) => [r.tenant, r.n]));
   const favoritesById = new Map(favoriteRows.map((r) => [r.tenant, r.n]));
@@ -355,6 +395,7 @@ export async function listTenants(env: Env, deps: AdminDeps): Promise<{ tenants:
       lastActive: activity?.last_seen_at ?? null,
       cooked: cookedById.get(id) ?? 0,
       favorites: favoritesById.get(id) ?? 0,
+      members: membersById.get(id) ?? [],
     };
   });
   return { tenants };
@@ -376,11 +417,12 @@ async function listAllKeys(kv: KvStore, prefix: string): Promise<string[]> {
 /**
  * The ONE D2-aware identity a stored credential-adjacent KV record resolves to: its
  * canonical tenant plus its member, with an absent member defaulting to the founding
- * member (`member = tenant`). Shared by the invite and session scans below so
- * household-purge (match by tenant) and member-revoke (match by tenant AND member)
- * can never disagree about which member a legacy record belongs to.
+ * member (`member = tenant`). Shared by the invite and session scans below — and by the
+ * member-move session re-key (src/member-move.ts) — so household-purge (match by
+ * tenant), member-revoke (match by tenant AND member), and a move can never disagree
+ * about which member a legacy record belongs to.
  */
-function resolvedPairOf(record: { tenant?: unknown; member?: unknown }): { tenant: string; member: string } | null {
+export function resolvedPairOf(record: { tenant?: unknown; member?: unknown }): { tenant: string; member: string } | null {
   if (typeof record.tenant !== "string" || !record.tenant) return null;
   const tenant = normalizeTenantId(record.tenant);
   return { tenant, member: typeof record.member === "string" && record.member ? record.member : tenant };
@@ -463,6 +505,12 @@ export async function onboard(
 ): Promise<{ username: string; invite_code: string }> {
   const id = normalizeTenantId(username);
   if (!id) throw new ToolError("validation_failed", "A username is required");
+  // Every NEW mint validates the ONE product handle grammar (households-friends-and-
+  // people-page Decision 2) — existing tenants are grandfathered and unaffected (there
+  // is no read-path validation anywhere; this gate only stops the class regrowing).
+  if (!isValidHandle(id)) {
+    throw new ToolError("validation_failed", HANDLE_GRAMMAR_MESSAGE);
+  }
   const code = (inviteCode ?? "").trim() || deps.randomCode();
   const now = Date.now();
   // Claim the id in the strongly-consistent D1 registry (self-service-signup) so a concurrent
@@ -514,17 +562,15 @@ export async function rotate(
 /**
  * HOUSEHOLD PURGE — revoke a whole tenant: remove the allowlist entry + every invite
  * mapping + the per-tenant Kroger refresh token + every web session, and purge the
- * per-tenant D1 rows (every TENANT_TABLE, `members` included, plus the FOUNDING
- * member's attributed AUTHOR_TABLES rows — `author = ?1` binds the tenant id, which
- * covers every author while households are single-member; once the People change
- * mints non-founding members (ULID author values) this batch must delete
- * AUTHOR_TABLES via the member-set subquery BEFORE the `members` delete, or their
- * rows orphan) in one batch. After this the household's
- * previously-issued tokens no longer resolve (the allowlist re-check fails), even
- * though they may still exist in the OAuth store — and its session cookies no longer
- * authenticate (the session middleware's allowlist re-check locks them out even
- * before this purge runs; the purge removes the records). The single-member half of
- * the split lifecycle is `revokeMember` below.
+ * per-tenant D1 rows (every TENANT_TABLE, `members` included, plus the members'
+ * attributed AUTHOR_TABLES rows — deleted via the member-set subquery, ORDERED BEFORE
+ * the `members` delete so non-founding authors' notes never orphan) and the household's
+ * social rows in BOTH directions (tenantSocialPurgeStatements) in one batch. After this
+ * the household's previously-issued tokens no longer resolve (the allowlist re-check
+ * fails), even though they may still exist in the OAuth store — and its session cookies
+ * no longer authenticate (the session middleware's allowlist re-check locks them out
+ * even before this purge runs; the purge removes the records). The single-member half
+ * of the split lifecycle is `revokeMember` below.
  */
 export async function revoke(
   deps: AdminDeps,
@@ -537,8 +583,13 @@ export async function revoke(
   // consistently present and the whole revoke safe to retry — rather than locking them
   // off the allowlist while their rows linger orphaned.
   const stmts = [
+    // Member-set subqueries FIRST (cross-direction social rows + attributed notes read
+    // the `members` table, which this same batch is about to clear).
+    ...tenantSocialPurgeStatements(deps.db, id),
+    ...AUTHOR_TABLES.map((t) =>
+      deps.db.prepare(`DELETE FROM ${t} WHERE author IN (SELECT id FROM members WHERE tenant = ?1)`, id),
+    ),
     ...TENANT_TABLES.map((t) => deps.db.prepare(`DELETE FROM ${t} WHERE tenant = ?1`, id)),
-    ...AUTHOR_TABLES.map((t) => deps.db.prepare(`DELETE FROM ${t} WHERE author = ?1`, id)),
     // The tenant uniqueness registry keys on `id`, not `tenant` — freeing the username so it
     // can be re-onboarded or re-claimed (the KV allowlist entry is dropped just below).
     deps.db.prepare(`DELETE FROM tenants WHERE id = ?1`, id),
@@ -557,14 +608,21 @@ export async function revoke(
 /**
  * MEMBER REVOKE — remove ONE member without disturbing the household: the `members` row,
  * the member's enrolled passkeys, their attributed AUTHOR_TABLES rows (`author = member`),
- * every web session resolving to that member, and every invite resolving to that member
- * (both scans D2-aware: a pre-split record with no member field belongs to the founding
+ * their social rows (memberSocialRevokeStatements: nicknames set/targeting, outgoing
+ * requests cancelled, minted invite links revoked, `blocked_member` records), every web
+ * session resolving to that member, and every invite resolving to that member (both
+ * scans D2-aware: a pre-split record with no member field belongs to the founding
  * member). It does NOT touch the allowlist entry, the `tenants` registry row, the Kroger
  * refresh token, or any household-scoped per-tenant table. The member's outstanding MCP
  * grants die via the resolver's member-liveness check — the same posture household purge
  * takes toward the OAuth store. Revoking a tenant's LAST member is refused (structured
  * `conflict` naming household purge): an allowlisted household with zero members is a
- * half-revoked zombie no flow expects.
+ * half-revoked zombie no flow expects. The refusal is enforced INSIDE the batch, not
+ * just by the count pre-check: the `members` delete is conditional on another member
+ * row surviving it, and every other statement fires only when that delete actually
+ * removed the row — so two concurrent revokes of a household's last two members can
+ * never race the count into a zero-member tenant (one wins; the loser no-ops and
+ * reports the conflict).
  */
 export async function revokeMember(
   deps: AdminDeps,
@@ -578,19 +636,40 @@ export async function revokeMember(
   if (!(await getMember(deps.db, target, id))) {
     throw new ToolError("not_found", `No member ${target} in ${id}`);
   }
-  if ((await countMembers(deps.db, id)) <= 1) {
-    throw new ToolError(
+  const lastMemberRefusal = () =>
+    new ToolError(
       "conflict",
       `${target} is the last member of ${id} — revoke the household instead (household purge)`,
     );
-  }
-  // Member-scoped D1 rows FIRST (same retry-safe ordering as household purge): the member
-  // row, their passkeys, their authored notes — one transactional batch.
+  if ((await countMembers(deps.db, id)) <= 1) throw lastMemberRefusal();
+  // Member-scoped D1 rows in one transactional batch (same retry-safe ordering as
+  // household purge). The members delete is CONDITIONAL (another row must remain), and
+  // the cleanup statements are guarded on the row actually being gone — the in-batch
+  // half of the last-member refusal.
+  const gone = `NOT EXISTS (SELECT 1 FROM members WHERE id = ?2)`;
   await deps.db.batch([
-    deps.db.prepare(`DELETE FROM members WHERE tenant = ?1 AND id = ?2`, id, target),
-    deps.db.prepare(`DELETE FROM webauthn_credentials WHERE tenant = ?1 AND member = ?2`, id, target),
-    ...AUTHOR_TABLES.map((t) => deps.db.prepare(`DELETE FROM ${t} WHERE author = ?1`, target)),
+    deps.db.prepare(
+      `DELETE FROM members WHERE tenant = ?1 AND id = ?2 ` +
+        `AND EXISTS (SELECT 1 FROM members WHERE tenant = ?1 AND id <> ?2)`,
+      id,
+      target,
+    ),
+    deps.db.prepare(
+      `DELETE FROM webauthn_credentials WHERE tenant = ?1 AND member = ?2 AND ${gone}`,
+      id,
+      target,
+    ),
+    ...AUTHOR_TABLES.map((t) =>
+      deps.db.prepare(
+        `DELETE FROM ${t} WHERE author = ?1 AND NOT EXISTS (SELECT 1 FROM members WHERE id = ?1)`,
+        target,
+      ),
+    ),
+    ...memberSocialRevokeStatements(deps.db, target, Date.now()),
   ]);
+  // Did the conditional delete fire? A surviving row means this call lost the
+  // last-two-members race — the batch degenerated to a no-op; report the refusal.
+  if (await getMember(deps.db, target, id)) throw lastMemberRefusal();
   // Then the lock-out: the member's invites and sessions. (Even a session this scan missed
   // is dead: the resolver's member-liveness check now fails on every surface.)
   const invitesRemoved = await deleteInvitesForMember(deps.tenantKv, id, target);

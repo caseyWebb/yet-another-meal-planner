@@ -60,17 +60,23 @@ export function memberViewer(tenant: string, member: string = tenant): Viewer {
 /**
  * THE FRIEND-RELATION SEAM (D11): the one named provider of the viewer household's
  * friend households, consumed by the lens predicate, the trending aggregation, and the
- * group-signal reads. Contract for the `households-friends-and-people-page` change that
- * fills it in: return the tenants joined to `tenant` by SYMMETRIC, ACCEPTED-only
- * friendship edges (never pending/blocked), keyed by tenant id, excluding `tenant`
- * itself and the curated tenant. Until the `friendships` table ships this is the EMPTY
- * relation — under SaaS only own and curated imports grant visibility. The self-hosted
- * all-to-all arm never calls this (it needs no enumeration — see `lensGrantWhere`).
+ * group-signal reads. Contract: return the tenants joined to `tenant` by SYMMETRIC,
+ * ACCEPTED-only friendship edges (never pending/blocked), keyed by tenant id, excluding
+ * `tenant` itself and the curated tenant. The `friendships` table satisfies it by
+ * construction (households-friends-and-people-page): a row exists only for an ACCEPTED
+ * edge (pending state lives in `social_requests`), stored once as a canonically ordered
+ * pair whose CHECK makes self-edges unrepresentable, and the curated tenant can never
+ * be a party (it has no members and no signup path). Both UNION arms are indexed (the
+ * PK prefix and `idx_friendships_b`). The self-hosted all-to-all arm never calls this
+ * (it needs no enumeration — see `lensGrantWhere`).
  */
 export async function friendHouseholds(env: Env, tenant: string): Promise<string[]> {
-  void env;
-  void tenant;
-  return [];
+  const rows = await db(env).all<{ friend: string }>(
+    "SELECT tenant_b AS friend FROM friendships WHERE tenant_a = ?1 " +
+      "UNION SELECT tenant_a AS friend FROM friendships WHERE tenant_b = ?1",
+    tenant,
+  );
+  return rows.map((r) => r.friend);
 }
 
 /** The household-level curated-tier hide (D13-amendment): `profile.curated_hide`.

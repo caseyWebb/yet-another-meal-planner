@@ -223,6 +223,65 @@ export interface ProfilePayload {
   kroger: { linked: boolean };
 }
 
+// --- the People aggregate (households-friends-and-people-page) ----------------------
+
+export type PeopleTier = "household" | "friend";
+
+export interface PeopleMember {
+  id: string;
+  handle: string;
+  you: boolean;
+  /** The VIEWER's own alias only (null when unset) — never anyone else's. */
+  nickname: string | null;
+  joined_at: number;
+}
+
+export interface PeopleFriend {
+  tenant: string;
+  member: { id: string; handle: string };
+  nickname: string | null;
+  /** "N shared" (D27): the friend household's cookbook size. */
+  shared: number;
+  since: number;
+}
+
+export interface PeopleInboxRow {
+  id: string;
+  tier: PeopleTier;
+  /** The sending member (opaque id) — the accept flow's nickname-seed edit targets it. */
+  from_member: string;
+  from_handle: string;
+  display_name: string | null;
+  note: string | null;
+  created_at: number;
+}
+
+export interface PeopleAwaitingRow {
+  /** Deliberately NO state field: pending/declined/swallowed are indistinguishable
+   *  by construction (D24 — the requester's row reads "Request sent" forever). */
+  id: string;
+  tier: PeopleTier;
+  to_handle: string;
+  created_at: number;
+}
+
+export interface PeopleInviteRow {
+  token: string;
+  tier: PeopleTier;
+  created_at: number;
+  expires_at: number;
+}
+
+export interface PeoplePayload {
+  profile: "self-hosted" | "saas";
+  members: PeopleMember[];
+  friends: PeopleFriend[];
+  inbox: PeopleInboxRow[];
+  awaiting: { requests: PeopleAwaitingRow[]; invites: PeopleInviteRow[] };
+  blocked: { tier: PeopleTier; tenant: string; handle: string | null; created_at: number }[];
+  household_max: number;
+}
+
 async function jsonOf<T>(res: { ok: boolean; status: number; json(): Promise<unknown> }): Promise<T> {
   if (!res.ok) throw await apiError(res);
   return (await res.json()) as T;
@@ -365,13 +424,30 @@ export function useToBuy(enrich = false) {
  *  skipping the enrichment's Locations resolve. It still derives the full to-buy view
  *  (plan-derived needs included) on every session — the deliberate cost of the badge
  *  equalling what the grocery page shows, rather than a lighter raw-list count. */
-export function useSidebarCounts(): { plan: number; grocery: number } {
+export function useSidebarCounts(): { plan: number; grocery: number; people: number } {
   const plan = usePlan();
   const toBuy = useToBuy(false);
+  const people = usePeople();
   return {
     plan: plan.data?.planned.filter((r) => r.meal !== "project").length ?? 0,
     grocery: toBuy.data?.to_buy.length ?? 0,
+    // Actionable pending inbound requests — the exact rows the People inbox renders
+    // (swallowed/resolved rows never reach the aggregate). The people read is NOT on
+    // the persistence allowlist, so after an offline relaunch the badge is simply
+    // absent until connectivity returns (never stale).
+    people: people.data?.inbox.length ?? 0,
   };
+}
+
+/** The People aggregate — the ONE read the page AND the sidebar badge derive from.
+ *  Deliberately outside the persistence allowlist (social data stays out of the
+ *  offline store; member-app-offline). */
+export function usePeople() {
+  return useQuery({
+    queryKey: ["people"],
+    staleTime: STALE_MS,
+    queryFn: async () => jsonOf<PeoplePayload>(await appFetch("/api/people")),
+  });
 }
 
 /** Trending (group-wide, counts only, min-signal-guarded — empty on sparse history). */

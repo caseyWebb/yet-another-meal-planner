@@ -14,6 +14,7 @@ import { Route as LoginRouteImport } from './routes/login'
 import { Route as ConnectRouteImport } from './routes/connect'
 import { Route as AppRouteImport } from './routes/_app'
 import { Route as AppIndexRouteImport } from './routes/_app.index'
+import { Route as JoinTokenRouteImport } from './routes/join.$token'
 import { Route as AppRetrospectiveRouteImport } from './routes/_app.retrospective'
 import { Route as AppProposeRouteImport } from './routes/_app.propose'
 import { Route as AppProfileRouteImport } from './routes/_app.profile'
@@ -48,6 +49,11 @@ const AppIndexRoute = AppIndexRouteImport.update({
   id: '/',
   path: '/',
   getParentRoute: () => AppRoute,
+} as any)
+const JoinTokenRoute = JoinTokenRouteImport.update({
+  id: '/join/$token',
+  path: '/join/$token',
+  getParentRoute: () => rootRouteImport,
 } as any)
 const AppRetrospectiveRoute = AppRetrospectiveRouteImport.update({
   id: '/retrospective',
@@ -114,6 +120,7 @@ export interface FileRoutesByFullPath {
   '/profile': typeof AppProfileRoute
   '/propose': typeof AppProposeRoute
   '/retrospective': typeof AppRetrospectiveRoute
+  '/join/$token': typeof JoinTokenRoute
   '/recipe/$slug': typeof AppRecipeSlugRoute
 }
 export interface FileRoutesByTo {
@@ -129,6 +136,7 @@ export interface FileRoutesByTo {
   '/profile': typeof AppProfileRoute
   '/propose': typeof AppProposeRoute
   '/retrospective': typeof AppRetrospectiveRoute
+  '/join/$token': typeof JoinTokenRoute
   '/': typeof AppIndexRoute
   '/recipe/$slug': typeof AppRecipeSlugRoute
 }
@@ -147,6 +155,7 @@ export interface FileRoutesById {
   '/_app/profile': typeof AppProfileRoute
   '/_app/propose': typeof AppProposeRoute
   '/_app/retrospective': typeof AppRetrospectiveRoute
+  '/join/$token': typeof JoinTokenRoute
   '/_app/': typeof AppIndexRoute
   '/_app/recipe/$slug': typeof AppRecipeSlugRoute
 }
@@ -166,6 +175,7 @@ export interface FileRouteTypes {
     | '/profile'
     | '/propose'
     | '/retrospective'
+    | '/join/$token'
     | '/recipe/$slug'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -181,6 +191,7 @@ export interface FileRouteTypes {
     | '/profile'
     | '/propose'
     | '/retrospective'
+    | '/join/$token'
     | '/'
     | '/recipe/$slug'
   id:
@@ -198,6 +209,7 @@ export interface FileRouteTypes {
     | '/_app/profile'
     | '/_app/propose'
     | '/_app/retrospective'
+    | '/join/$token'
     | '/_app/'
     | '/_app/recipe/$slug'
   fileRoutesById: FileRoutesById
@@ -207,6 +219,7 @@ export interface RootRouteChildren {
   ConnectRoute: typeof ConnectRoute
   LoginRoute: typeof LoginRoute
   SignupRoute: typeof SignupRoute
+  JoinTokenRoute: typeof JoinTokenRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -245,6 +258,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/'
       preLoaderRoute: typeof AppIndexRouteImport
       parentRoute: typeof AppRoute
+    }
+    '/join/$token': {
+      id: '/join/$token'
+      path: '/join/$token'
+      fullPath: '/join/$token'
+      preLoaderRoute: typeof JoinTokenRouteImport
+      parentRoute: typeof rootRouteImport
     }
     '/_app/retrospective': {
       id: '/_app/retrospective'
@@ -354,6 +374,7 @@ const rootRouteChildren: RootRouteChildren = {
   ConnectRoute: ConnectRoute,
   LoginRoute: LoginRoute,
   SignupRoute: SignupRoute,
+  JoinTokenRoute: JoinTokenRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

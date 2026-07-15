@@ -125,7 +125,14 @@ export function registerApiRoutes(app: Hono<{ Bindings: Env }, BlankSchema, "/ad
         return c.json({ ...result, connector_url: connectorUrl(c.req.url) });
       })
       .post("/api/tenants/:id/rotate", async (c) => {
-        const result = await rotate(adminDeps(c.env), decodeURIComponent(c.req.param("id")));
+        // Optional member targeting (households-friends-and-people-page): a non-founding
+        // member's rotate mints a bootstrap resolving to THEIR (tenant, member) pair.
+        const body = await c.req.json<{ member?: string }>().catch(() => ({}) as { member?: string });
+        const result = await rotate(
+          adminDeps(c.env),
+          decodeURIComponent(c.req.param("id")),
+          typeof body.member === "string" && body.member ? body.member : undefined,
+        );
         return c.json({ ...result, connector_url: connectorUrl(c.req.url) });
       })
       // Mint a single-use Kroger consent link for an allowlisted member (for one with no /mcp session yet).
@@ -137,9 +144,9 @@ export function registerApiRoutes(app: Hono<{ Bindings: Env }, BlankSchema, "/ad
         return c.json(await revoke(adminDeps(c.env), decodeURIComponent(c.req.param("id"))));
       })
       // Member revoke (member-identity-split): remove ONE member — their row, passkeys,
-      // sessions, invites, authored notes — leaving the household intact; refuses the last
-      // member (structured `conflict` directing the operator to household purge). No admin
-      // UI consumes this yet (every household has one member until the People change).
+      // sessions, invites, authored notes, and social rows — leaving the household intact;
+      // refuses the last member (structured `conflict` directing the operator to household
+      // purge). Surfaced by the roster's member-level actions menu.
       .delete("/api/tenants/:id/members/:member", async (c) =>
         c.json(
           await revokeMember(

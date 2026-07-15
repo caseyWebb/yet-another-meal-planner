@@ -972,10 +972,22 @@ Read the caller's full per-tenant profile, assembled from the D1 profile tables 
                                      //   when absent (also joins `missing` under the unchanged
                                      //   "vibes" label). The revealed-preference rhythm read at
                                      //   session start — a prior for shaping a plan, not a cage.
+  household: {                       // the caller's household roster (social-graph)
+    members: [{
+      handle:    string,             //   the member's @handle (the stable key for
+                                     //   "away"/"only" attendance and chat references)
+      nickname:  string | null,      //   the CALLING member's own alias for them — see
+                                     //   the privacy guarantee below; null when unset
+      you:       boolean,            //   marks the calling member's own row
+      joined_at: number              //   epoch ms the member row was created
+    }]
+  }
 }
 ```
 
 **Notes:** The single call for session start, meal-plan pre-pass, and configure-yamp-profile. On `initialized: false`, run the `configure-yamp-profile` flow first; use `missing` to skip areas already done. D1-backed (assembled from the per-tenant profile tables) — a missing profile returns all fields null/empty. Kitchen `owned` is the array of `EQUIPMENT_VOCAB` slugs that **gate** recipe makeability; an **absent/empty** `owned` makes the gate a no-op (everything shows).
+
+**Household + nickname privacy (guaranteed):** `household.members` lists every member of the caller's household, and `nickname` carries ONLY the calling member's own per-viewer alias (set on the member app's People page; `null` when unset). The tool **never** returns a nickname set *by* anyone else or *for* the caller — aliases are private to the viewer who set them, and no member surface or export discloses an alias to its subject or to a third member. Handles are the stable keys: resolve chat references ("Mom and Grandma are coming to town") through this block, and pass `handle` values to attendance (`away`/`only`).
 
 ### `update_preferences(patch)` / `update_taste(content)` / `update_diet_principles(content)` / `update_aliases(aliases)`
 

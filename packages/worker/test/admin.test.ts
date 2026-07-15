@@ -343,7 +343,7 @@ describe("listTenants", () => {
     await krogerKv.put("kroger:refresh:casey", "tok");
     const { tenants } = await listTenants(env({ OWNER_TENANT_ID: "casey" }), deps);
     expect(tenants).toEqual([
-      { id: "casey", owner: true, status: "active", kroger: "linked", joined: 1000, lastActive: 2000, cooked: 5, favorites: 2 },
+      { id: "casey", owner: true, status: "active", kroger: "linked", joined: 1000, lastActive: 2000, cooked: 5, favorites: 2, members: [] },
     ]);
   });
 });
@@ -479,7 +479,13 @@ describe("revoke", () => {
     expect(batches).toHaveLength(1);
     const sqls = batches[0].map((s) => s.sql);
     for (const t of TENANT_TABLES) expect(sqls).toContain(`DELETE FROM ${t} WHERE tenant = ?1`);
-    for (const t of AUTHOR_TABLES) expect(sqls).toContain(`DELETE FROM ${t} WHERE author = ?1`);
+    // AUTHOR_TABLES delete via the member-set subquery, ORDERED BEFORE the members
+    // delete (non-founding ULID authors must not orphan — households-friends 7.1b).
+    for (const t of AUTHOR_TABLES) {
+      const sql = `DELETE FROM ${t} WHERE author IN (SELECT id FROM members WHERE tenant = ?1)`;
+      expect(sqls).toContain(sql);
+      expect(sqls.indexOf(sql)).toBeLessThan(sqls.indexOf("DELETE FROM members WHERE tenant = ?1"));
+    }
     expect(batches[0].every((s) => s.binds[0] === "casey")).toBe(true);
   });
 
@@ -673,7 +679,7 @@ describe("handleAdmin (routing + gate)", () => {
     const res = await handleAdmin(new Request("http://localhost/admin/api/tenants"), env);
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({
-      tenants: [{ id: "bob", owner: false, status: "pending", kroger: "unlinked", joined: null, lastActive: null, cooked: 0, favorites: 0 }],
+      tenants: [{ id: "bob", owner: false, status: "pending", kroger: "unlinked", joined: null, lastActive: null, cooked: 0, favorites: 0, members: [] }],
     });
   });
 

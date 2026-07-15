@@ -69,6 +69,8 @@ import {
 } from "./profile-db.js";
 import { exportPreferences } from "./preferences.js";
 import { db } from "./db.js";
+import { listMembers } from "./members-db.js";
+import { listNicknamesByViewer } from "./social-db.js";
 import { readNightVibePalette, type ProfilePaletteVibe } from "./night-vibe-db.js";
 import { registerCookingWriteTools } from "./cooking-write.js";
 import { createKrogerClient, type KrogerCandidate } from "./kroger.js";
@@ -303,6 +305,16 @@ export async function resolveTenantForecast(env: Env, tenant: string, days = 7):
   return fetchWeatherForecast(zip, days);
 }
 
+/** One household member in the profile export. `nickname` is the CALLING member's own
+ *  alias only (null when unset) — never an alias set by or for anyone else, and never a
+ *  self-nickname (D33's rule: aliases are private to the viewer who set them). */
+export interface HouseholdMemberExport {
+  handle: string;
+  nickname: string | null;
+  you: boolean;
+  joined_at: number;
+}
+
 /** The `read_user_profile` payload: the assembled profile + initialization status. */
 export interface UserProfilePayload extends AssembledProfile {
   initialized: boolean;
@@ -312,18 +324,35 @@ export interface UserProfilePayload extends AssembledProfile {
    *  session start reads the revealed-preference rhythm as the basis for shaping a plan.
    *  (The `missing[]` onboarding label stays `"vibes"`.) */
   meal_vibes: ProfilePaletteVibe[];
+  /** The caller's household roster + THEIR OWN nicknames (households-friends-and-
+   *  people-page): the session-start read resolves "Mom and Grandma" style references
+   *  from this; handles are the stable keys. */
+  household: { members: HouseholdMemberExport[] };
 }
 
 /**
  * The `read_user_profile` assembly as a shared operation (member-app-core D2):
- * `readProfile` + the `initialized`/`missing` computation. Called by the MCP tool and
- * the member API's `GET /api/profile`.
+ * `readProfile` + the `initialized`/`missing` computation + the household block.
+ * Called by the MCP tool and the member API's `GET /api/profile`. `member` is the
+ * CALLING member (nickname privacy is per-viewer); it defaults to the founding member
+ * for legacy call shapes.
  */
-export async function assembleUserProfile(env: Env, tenant: string): Promise<UserProfilePayload> {
-  const [profile, nightVibes] = await Promise.all([
+export async function assembleUserProfile(env: Env, tenant: string, member: string = tenant): Promise<UserProfilePayload> {
+  const [profile, nightVibes, householdRows, nicknameRows] = await Promise.all([
     readProfile(env, tenant),
     readNightVibePalette(env, tenant, new Date()),
+    listMembers(db(env), tenant),
+    listNicknamesByViewer(db(env), member),
   ]);
+  const nicknameOf = new Map(nicknameRows.map((r) => [r.target_member, r.nickname]));
+  const household = {
+    members: householdRows.map((m) => ({
+      handle: m.handle,
+      nickname: m.id === member ? null : (nicknameOf.get(m.id) ?? null),
+      you: m.id === member,
+      joined_at: m.created_at,
+    })),
+  };
 
   // Each onboarding area maps to a structured field; an area is "missing"
   // when its field is empty (null preferences/markdown, empty list/inventory).
@@ -367,6 +396,7 @@ export async function assembleUserProfile(env: Env, tenant: string): Promise<Use
     ready_to_eat: profile.ready_to_eat,
     stockup: profile.stockup,
     meal_vibes: nightVibes,
+    household,
   };
 }
 
@@ -812,7 +842,7 @@ export function buildServer(env: Env, tenant: Tenant, origin?: string): McpServe
         "Return the caller's full grocery profile in one call, including initialization status. `initialized` is true once preferences are present; `missing` lists onboarding-area keys still absent (store, taste, diet, equipment, ready-to-eat, stockup, vibes) — empty when fully set up. Profile fields: preferences (parsed; `preferences.cadence` is the per-meal planning-frequency map { breakfast, lunch, dinner } — the stored map, or a derivation from the legacy nights count when unset; `default_cooking_nights` remains exported for one deprecation window as a derived MIRROR of cadence.dinner — prefer cadence), taste narrative (markdown), diet principles (markdown), kitchen inventory (owned equipment slugs + notes), staples list, ready-to-eat catalog items, stockup watchlist, and meal_vibes (the palette — each saved vibe plus its `meal`, its `members` when set, and its derived last_satisfied and cadence status: overdue|due|soon|ok, the revealed-preference rhythm). Absent fields return null or empty. Use this at the start of every session — on initialized:false, run configure-yamp-profile first.",
       inputSchema: {},
     },
-    () => runTool(() => assembleUserProfile(env, tenant.id)),
+    () => runTool(() => assembleUserProfile(env, tenant.id, tenant.member)),
   );
 
   server.registerTool(

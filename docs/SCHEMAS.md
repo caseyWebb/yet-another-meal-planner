@@ -1233,6 +1233,8 @@ This KV bootstrap path is one of **two, deliberately separate, invite systems**.
 
 The self-service-signup store (multi-use group invite codes), all in D1 via `src/signup-db.ts` (never `env.DB` directly). Distinct from the KV `invite:<code>` bootstrap path above: a group code **creates** a tenant, a bootstrap code **resolves** one. An operator mints a group code with a **cap** (max redemptions) and an optional **expiry** + **label**; a friend redeems it at `POST /api/signup` under a chosen username, which atomically creates a new isolated tenant. Redemption is web-app-only (never the MCP `/authorize` surface). Migration `0047_self_service_signup`.
 
+**The invite-kind trio** — three deliberately separate kinds, distinguished by authority and effect, sharing **no namespace and no redemption path** (each path rejects the foreign kinds uniformly): the KV `invite:<code>` **bootstrap** (operator-minted; RESOLVES an existing `(tenant, member)` for login/enrollment), the D1 **group invite code** here (operator-minted; CREATES a standalone tenant, capped, no social edge), and the D1 **`member_invites` link** (member-minted; creates a RELATIONSHIP — household membership or a friendship — and an account when the redeemer has none; see its own section).
+
 - **`tenants`** — the FIRST strongly-consistent registry of tenant ids, keyed by the canonical lowercase id (`PRIMARY KEY`), the **uniqueness authority** for self-service username claims. A claim does `INSERT … ON CONFLICT(id) DO NOTHING` and wins iff first; the KV `tenant:<id>` allowlist entry (still the hot-path resolution authority) is written only after the claim wins. `via_code` is the group code that created the tenant, or `NULL` for an operator-onboarded member. Existing tenants are backfilled here idempotently on the `scheduled()` reconcile (`backfillTenantRegistry`, `src/signup.ts`). Purged (by `id`) on member revocation.
 - **`signup_invites`** — the group codes. `used` is bumped by a guarded `UPDATE … WHERE used < max_redemptions AND (expires_at IS NULL OR expires_at > ?) AND revoked_at IS NULL` — a single serialized statement that is the **atomic cap gate**, so the cap is never exceeded under concurrency. Revoking sets `revoked_at` (halts further signups; accounts already created are untouched). Operator-owned, NOT per-tenant — never purged on member revoke.
 - **`signup_redemptions`** — provenance: one row per created tenant linking it to the code it came from (`idx_signup_redemptions_code`, `idx_signup_redemptions_tenant`). In the per-tenant `TENANT_TABLES` purge, so member revocation deletes a member's rows.
@@ -1262,11 +1264,11 @@ created_at INTEGER  -- epoch ms
 
 ## members (D1 `members` table)
 
-The member-identity substrate (multi-tenancy): one row per member within a tenant (household). The **tenant is the isolation boundary; the member is attribution within it** — every per-request identity resolves to a `(tenant, member)` pair before any tool or route runs. Every tenant has a **founding member whose id and handle equal the canonical tenant id**, so every credential value issued before the member-identity split (grant props, session records, WebAuthn user handles, invite mappings, note-author values) is already a valid member id — zero re-keying, by construction. Read/written only through `src/members-db.ts` over `src/db.ts` (never `env.DB` directly). Migration `0058_member_identity`.
+The member-identity substrate (multi-tenancy): one row per member within a tenant (household). The **tenant is the isolation boundary; the member is attribution within it** — every per-request identity resolves to a `(tenant, member)` pair before any tool or route runs. Every tenant created by onboarding or a tenant-creating signup path has a **founding member whose id and handle equal the canonical tenant id**, so every credential value issued before the member-identity split (grant props, session records, WebAuthn user handles, invite mappings, note-author values) is already a valid member id — zero re-keying, by construction. A tenant **spawned by the member-move primitive** (leave-household / eviction) is instead founded by the moving member, who keeps their existing id and handle (member ids never change — WebAuthn user handles are burned into authenticators). Read/written only through `src/members-db.ts` over `src/db.ts` (never `env.DB` directly). Migration `0058_member_identity`.
 
-- **Minting:** every tenant-creation path writes the founding member in the same flow — operator onboarding (`onboard()`), group-code self-service redemption (`redeemGroupCode`), the migration's idempotent seed over the `tenants` registry, and a **lazy convergence guard** at identity resolution that mints the founding row only when the presented member id equals the tenant id AND the tenant has zero member rows (healing a KV-allowlisted tenant the registry missed; under any other condition a missing member row is a structured `unauthorized`).
-- **Handles** are deployment-unique (`idx_members_handle`, a unique index). Founding handles are tenant ids verbatim, grandfathered even where they fall outside the product handle grammar; handle minting/rename rules for non-founding members belong to later changes.
-- **Lifecycle:** in the household-purge `TENANT_TABLES` batch (all rows for the tenant); member-revoke deletes one row — refused for a tenant's last member.
+- **Minting:** every tenant-creation path writes the founding member in the same flow — operator onboarding (`onboard()`), group-code self-service redemption (`redeemGroupCode`), friend-tier invite-link redemption (`/api/join`), the member-move spawn, the migration's idempotent seed over the `tenants` registry, and a **lazy convergence guard** at identity resolution that mints the founding row only when the presented member id equals the tenant id AND the tenant has zero member rows (healing a KV-allowlisted tenant the registry missed; under any other condition a missing member row is a structured `unauthorized`). **Non-founding members** are minted with server-generated ULID ids and a member-chosen handle (household-tier invitation accepts and join-link redemptions), bounded by the household size cap (`HOUSEHOLD_MAX_MEMBERS`, 8).
+- **Handles** are deployment-unique (`idx_members_handle`, a unique index). Every NEW handle or username mint — join-link and invitation handles, self-service usernames, operator-onboarded usernames — validates the ONE product handle grammar `^[a-z0-9_]{3,20}$` (`HANDLE_RE`, `src/members-db.ts`). Everything already issued is grandfathered verbatim, including values outside the grammar (no read-path validation anywhere); machine-suffixed spawned-tenant ids (`<handle>-2`, `-3`, …) use a hyphen deliberately outside the grammar so they can never collide with a future mint. Handle rename rules belong to later changes.
+- **Lifecycle:** in the household-purge `TENANT_TABLES` batch (all rows for the tenant); member-revoke deletes one row — refused for a tenant's last member, in-batch as well as up front.
 
 ```sql
 -- D1 members table. PRIMARY KEY (id); UNIQUE idx_members_handle on (handle);
@@ -1275,6 +1277,82 @@ id         TEXT     -- opaque member id; founding member: equals the tenant id
 tenant     TEXT     -- owning household (isolation column)
 handle     TEXT     -- deployment-unique display key; founding: equals the tenant id
 created_at INTEGER  -- epoch ms
+```
+
+## friendships (D1 `friendships` table)
+
+The symmetric, accepted-only tenant↔tenant edge relation (social-graph) — the data source of the visibility lens's friend seam (`friendHouseholds`, `src/visibility.ts`). Each edge is stored **once** as a canonically ordered pair (`tenant_a < tenant_b`, CHECK-enforced), so duplicates and self-edges are unrepresentable. **Accepted-only by construction:** pending state lives in `social_requests`, never here — a row here IS an accepted friendship, and severing (unfriend / friend-tier block / purge) is a plain delete that hides both cookbooks on the next lens read. Read/written through `src/social-db.ts` over `src/db.ts`. Migration `0060_households_social`.
+
+```sql
+-- PRIMARY KEY (tenant_a, tenant_b); CHECK (tenant_a < tenant_b); idx_friendships_b on (tenant_b).
+tenant_a     TEXT     -- lexicographically LOWER tenant id
+tenant_b     TEXT     -- lexicographically HIGHER tenant id
+requested_by TEXT     -- member id that sent the originating request
+created_at   INTEGER  -- epoch ms
+```
+
+## social_requests (D1 `social_requests` table)
+
+Household/friend request rows (social-graph), append-then-resolve. `tier` is `household` (an INVITATION into the sender's household, addressed to the invitee personally) or `friend` (addressed to the target household — any member may act). The requester's view derives from state: **`pending`, `declined`, and `swallowed` all render "Request sent"** (D24's invisible decline), the standing outgoing cap counts all three, and no read ever distinguishes them to the requester. `swallowed` rows (an active 30-day decline cooldown or a household-wide block match at send time, or a block minted over a pending row) reach **no inbox** and their `note`/`display_name` are never delivered. A declined pair's cooldown anchor is its `resolved_at`; cancelling keeps a declined row's anchor (state `cancelled`, `resolved_at` preserved) and nulls it for cancelled pending/swallowed rows, so the cooldown probe reads `declined` rows plus `cancelled` rows with a non-null `resolved_at`.
+
+```sql
+-- PRIMARY KEY (id) — a ULID. idx_social_requests_to on (to_tenant, state);
+-- idx_social_requests_from on (from_tenant, state).
+id           TEXT     -- ULID
+tier         TEXT     -- 'household' | 'friend'
+from_tenant  TEXT     -- sending household
+from_member  TEXT     -- sending member
+to_tenant    TEXT     -- target household (friend tier); invitee's household at send time
+to_member    TEXT     -- the looked-up member; household tier: the invitee (personal)
+note         TEXT     -- inert plain text, <= 200 chars; rendered quoted, never interpreted
+display_name TEXT     -- sender-supplied self-introduction (the nickname seed)
+state        TEXT     -- 'pending' | 'accepted' | 'declined' | 'cancelled' | 'swallowed'
+created_at   INTEGER  -- epoch ms
+resolved_at  INTEGER  -- epoch ms; a declined row's value is the pair's cooldown anchor
+```
+
+## member_invites (D1 `member_invites` table)
+
+Member-minted invite links (social-graph) — the **third invite kind** (see the trio note under *Group invite codes*). Single-use, 14-day expiry, per-invite `inviter_member` + `tier`; the link is `<origin>/join/<token>`. Redemption claims the token **atomically with what it creates** (a guarded UPDATE — one winner; a downstream handle/username collision refunds the claim, the group-code idiom). Unknown, expired, revoked, and already-redeemed tokens are **indistinguishable** on `/api/join` (one uniform `invalid_or_expired` — cancel = revocation, oracle-free), and a blocked party's redemption consumes the token and creates nothing, behind the same uniform state. Friend-tier mints are refused under the self-hosted profile.
+
+```sql
+-- PRIMARY KEY (token) — >= 128 random bits, base64url. idx_member_invites_tenant on (tenant).
+token          TEXT     -- the bearer token (unguessable, never logged)
+tenant         TEXT     -- inviter household (isolation column)
+inviter_member TEXT     -- the minting member
+tier           TEXT     -- 'household' | 'friend'
+created_at     INTEGER  -- epoch ms
+expires_at     INTEGER  -- epoch ms (mint: created_at + 14 days)
+revoked_at     INTEGER  -- epoch ms; NULL = live (cancel = revoke)
+redeemed_at    INTEGER  -- epoch ms; NULL = unredeemed (single-use claim stamp)
+redeemed_by    TEXT     -- resulting member id (household) or tenant id (friend)
+```
+
+## nicknames (D1 `nicknames` table)
+
+Per-viewer, **others-only** aliases (social-graph): one row per `(viewer_member, target_member)`, writable only by the viewer, never disclosed to the named member or any third member on any surface (a member's export includes nicknames they SET, never nicknames set FOR them). Empty-save clears (row delete); the canonical pair key makes the member app's offline replay converge. Seeded from a newcomer's self-supplied `display_name` when a relationship forms (only for viewers without an existing alias — seeds are ordinary editable rows). `tenant` is the VIEWER's household (isolation/purge column; re-keyed when the viewer moves households). Targets may be any live member of the deployment.
+
+```sql
+-- PRIMARY KEY (viewer_member, target_member); idx_nicknames_tenant on (tenant).
+tenant        TEXT     -- the VIEWER's household (isolation column)
+viewer_member TEXT     -- who set the alias (the only member who ever sees it)
+target_member TEXT     -- who it names (never told)
+nickname      TEXT     -- <= 40 chars plain text
+updated_at    INTEGER  -- epoch ms
+```
+
+## blocks (D1 `blocks` table)
+
+Directional, tier-scoped suppression records (social-graph, D24). Minted by one member from an inbox row, an awaiting-response row, or a friend row — but **evaluated household-wide** (one member's block binds the household). A matching block makes the counterparty's future requests of that tier silently swallow, swallows their existing pending inbox rows at mint time, severs the friendship when minted from a friend row, and makes their invite-link redemptions consume-and-create-nothing. Household-tier blocks record `blocked_member` and match by member id (the protection follows the person across member-moves); friend-tier blocks match by tenant. Block records stay with the household that minted them when the minter later moves. Silent-swallow subsumes mute — no separate mute exists; unblock is a plain delete that retroactively delivers nothing.
+
+```sql
+-- PRIMARY KEY (tenant, tier, blocked_tenant).
+tenant          TEXT     -- blocking household (isolation column)
+blocking_member TEXT     -- the member who clicked (audit; evaluation is household-wide)
+tier            TEXT     -- the tier this record suppresses ('household' | 'friend')
+blocked_tenant  TEXT     -- counterparty household at mint time
+blocked_member  TEXT     -- set for household-tier blocks (follows the person); NULL for friend
+created_at      INTEGER  -- epoch ms
 ```
 
 ## WebAuthn ceremony state (KV, not a repo file)
@@ -1394,8 +1472,8 @@ The operator admin panel (operator-admin) is a **Hono** app at `/admin` — serv
 - `POST /admin/api/tenants` `{ username, invite_code? }` → `{ username, invite_code, connector_url }` — onboard; writes `tenant:<id>`, the founding `members` row (id and handle = the canonical tenant id), and `invite:<code>` resolving to that `(tenant, member)` pair (generates the code when omitted). `connector_url` is `<origin>/mcp`.
 - `POST /admin/api/tenants/<id>/rotate` → `{ username, invite_code, connector_url }` — mint a new code, delete the member's prior `invite:*` mapping(s). Member-addressed with the founding member as the default (the endpoint passes only the tenant id); allowlist, member row, + per-tenant data untouched. Errors `not_found` if the member is absent.
 - `POST /admin/api/tenants/<id>/kroger-login` → `{ url }` — mint a single-use Kroger consent link bound to an allowlisted member (the same nonce the `kroger_login_url` MCP tool mints, allowlist-rechecked via `resolveTenant`), so the operator can link a member who has no `/mcp` session yet. The nonce rides only in the returned `url` and is never logged; `not_found` for a non-member.
-- `DELETE /admin/api/tenants/<id>` → `{ username, revoked: true, invites_removed, sessions_removed }` — **household purge**: remove `tenant:<id>` + every `invite:*`/`session:*` resolving to the tenant + `kroger:refresh:<id>`, and purge the per-tenant D1 tables (`members` included) + the founding member's attributed notes (`author = <tenant id>` — every author value while households are single-member) through `src/db.ts`. The household's issued tokens stop resolving (allowlist re-check fails).
-- `DELETE /admin/api/tenants/<id>/members/<member>` → `{ username, member, revoked: true, invites_removed, sessions_removed }` — **member revoke**: delete one member's `members` row, `webauthn_credentials` rows, attributed notes (`author = member`), and every `session:*`/`invite:*` resolving to that member (a pre-split record with no member field belongs to the founding member) — leaving the allowlist entry, `tenants` registry row, Kroger token, and household tables untouched. The member's grants/sessions stop resolving via the shared resolver's member-liveness check. Refused (`conflict`) for a tenant's last member — household purge is the applicable operation.
+- `DELETE /admin/api/tenants/<id>` → `{ username, revoked: true, invites_removed, sessions_removed }` — **household purge**: remove `tenant:<id>` + every `invite:*`/`session:*` resolving to the tenant + `kroger:refresh:<id>`, and purge the per-tenant D1 tables (`members` included) + all members' attributed notes (`author IN` the household's member set, deleted before the `members` rows so non-founding authors never orphan) + the household's social rows in **both directions** (`friendships` and `social_requests` as either party, its `member_invites`, `nicknames` it holds and nicknames targeting its members, `blocks` it minted and blocks recorded against it or its members) through `src/db.ts`. The household's issued tokens stop resolving (allowlist re-check fails).
+- `DELETE /admin/api/tenants/<id>/members/<member>` → `{ username, member, revoked: true, invites_removed, sessions_removed }` — **member revoke**: delete one member's `members` row, `webauthn_credentials` rows, attributed notes (`author = member`), their social rows (nicknames set and targeting them; outgoing `social_requests` cancelled; minted `member_invites` revoked; `blocked_member` block records), and every `session:*`/`invite:*` resolving to that member (a pre-split record with no member field belongs to the founding member) — leaving the allowlist entry, `tenants` registry row, Kroger token, and household tables untouched. The member's grants/sessions stop resolving via the shared resolver's member-liveness check. Refused (`conflict`) for a tenant's last member — enforced inside the delete batch too (a concurrent last-two-members race can never produce a zero-member allowlisted tenant); household purge is the applicable operation.
 
 **Usage dashboards** (SSR at `/admin/usage`, rendered in-process from `src/usage.ts` — no JSON route): each view renders either `{ configured: false }` (when `CF_ACCOUNT_ID`/`CF_ANALYTICS_TOKEN` is unset, shown as a setup card) or the configured shape below; an upstream/transport failure degrades to that area's error card.
 

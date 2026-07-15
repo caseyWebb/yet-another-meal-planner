@@ -15,6 +15,7 @@ import { PantryPage } from "./pages/pantry.page";
 import { RetrospectivePage } from "./pages/retrospective.page";
 import { ProfilePage } from "./pages/profile.page";
 import { ProposePage } from "./pages/propose.page";
+import { PeoplePage } from "./pages/people.page";
 import { SEED } from "../../admin/visual/seed.mjs";
 
 export interface RegisteredArea {
@@ -39,4 +40,5 @@ export const AREAS: readonly RegisteredArea[] = [
   { area: "retrospective", authed: true, make: (p) => new RetrospectivePage(p) },
   { area: "profile", authed: true, make: (p) => new ProfilePage(p) },
   { area: "propose", authed: true, make: (p) => new ProposePage(p) },
+  { area: "people", authed: true, make: (p) => new PeoplePage(p) },
 ];

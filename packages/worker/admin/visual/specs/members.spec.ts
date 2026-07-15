@@ -46,14 +46,16 @@ test("revoke opens its confirm dialog from the row menu without navigating away"
   await membersPage.goto();
   await membersPage.openRowMenu(SEED.members.pending);
   await membersPage.expectNotPointerLocked(); // the non-modal menu doesn't lock the page
-  await membersPage.menuItem("Revoke invite").click(); // pending member → "Revoke invite"
-  await expect(membersPage.revokeDialog()).toBeVisible();
+  // pat is a single-member household: its only destructive action ROUTES TO PURGE
+  // (the last-member rule) — labeled "Revoke invite" while pending.
+  await membersPage.menuItem("Revoke invite").click();
+  await expect(membersPage.revokeDialog("Purge household")).toBeVisible();
   await expect(page).toHaveURL(/\/admin\/members$/);
   await membersPage.captureForReview("members-revoke");
   // Closing the confirm dialog must leave the page interactive — the dropdown→AlertDialog handoff
   // is where overlapping-layer pointer-events leaks historically surface. (Cancel, not confirm, so
   // the destructive revoke never runs against the shared seed.)
-  await membersPage.revokeDialog().getByRole("button", { name: "Cancel" }).click();
-  await expect(membersPage.revokeDialog()).toBeHidden();
+  await membersPage.revokeDialog("Purge household").getByRole("button", { name: "Cancel" }).click();
+  await expect(membersPage.revokeDialog("Purge household")).toBeHidden();
   await membersPage.expectNotPointerLocked();
 });

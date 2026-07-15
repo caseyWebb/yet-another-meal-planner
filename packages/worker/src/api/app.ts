@@ -11,7 +11,9 @@ import { Hono } from "hono";
 import type { ApiEnv } from "../session.js";
 import { sessionArea } from "./session.js";
 import { signupArea } from "./signup.js";
+import { joinArea } from "./join.js";
 import { passkeyArea } from "./passkey.js";
+import { peopleArea } from "./people.js";
 import { cookbookArea } from "./cookbook.js";
 import { overlayArea } from "./overlay.js";
 import { planArea } from "./plan.js";
@@ -43,8 +45,12 @@ const routes = app
   .route("/", sessionArea)
   // Self-service signup: redeem a group invite code + chosen username → new tenant + session.
   .route("/", signupArea)
+  // Member invite-link redemption (`/join/:token`'s reads/writes — the signup fork).
+  .route("/", joinArea)
   // Passkey ceremonies + cross-device connect approval (passkey-auth).
   .route("/", passkeyArea)
+  // The People page (social-graph): household, friends, requests, nicknames, invites.
+  .route("/", peopleArea)
   // The member core (member-app-core): every area session-gated per route.
   .route("/", cookbookArea)
   .route("/", overlayArea)
