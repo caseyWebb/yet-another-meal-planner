@@ -13,6 +13,8 @@
 // within this file share the saas D1), so order and retries stay deterministic.
 import { test, expect } from "../fixtures";
 import { SEED } from "../../../admin/visual/seed.mjs";
+import { RecipePage } from "../pages/recipe.page";
+import { ShellPage } from "../pages/shell.page";
 
 const LENS = SEED.app.lens;
 
@@ -135,4 +137,37 @@ test("explicit dismiss persists for the household across reload and never return
   await cookbookPage.goto();
   await cookbookPage.landmark();
   await expect(cookbookPage.onboardingPanel()).toBeVisible();
+});
+
+test("note composer: a curated (anonymously-visible) recipe carries the full Public copy", async ({ page }) => {
+  // The active member's saas lens holds the curated tier — curated recipes ARE the
+  // anonymous position under SaaS, so `anonymously_visible` is true and Public
+  // states the full audience.
+  const recipePage = new RecipePage(page, LENS.curated[0]);
+  await recipePage.goto();
+  await recipePage.landmark();
+  await recipePage.selectComposerTier("public");
+  await recipePage.expectTierDescription("including the public cookbook site");
+});
+
+test.describe("note composer: the reduced Public copy on a household-only recipe", () => {
+  // A genuinely logged-out context: the pending household's member signs in with the
+  // second deterministic invite (never consumed in the saas server — passkey.spec
+  // only runs against the default one).
+  test.use({ storageState: { cookies: [], origins: [] } });
+
+  test("a recipe off the anonymous site states the note won't reach it", async ({ page, loginPage }) => {
+    await loginPage.goto();
+    await loginPage.login(SEED.inviteAlt);
+    await new ShellPage(page).landmark();
+    // The pending household owns this import; the anonymous lens (curated-only under
+    // SaaS) does not include it — `anonymously_visible: false`.
+    const recipePage = new RecipePage(page, LENS.outOfLens);
+    await recipePage.goto();
+    await recipePage.landmark();
+    await recipePage.expectComposerTierSelected("friends");
+    await recipePage.selectComposerTier("public");
+    await recipePage.expectTierDescription("it isn't on the public site, so this note won't be either");
+    await recipePage.captureForReview("recipe-note-public-copy-reduced");
+  });
 });

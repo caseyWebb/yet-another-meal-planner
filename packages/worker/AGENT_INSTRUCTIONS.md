@@ -288,7 +288,7 @@ Every other recipe is simply available by default — there's no "activate" step
 needs: corpus
 description: Capture a personal tweak or observation on a recipe as an attributed note. Use for "next time I'd cut the sugar", "I subbed gochujang for the sriracha and it was better", "note that this needs a squeeze of lime", "leave a note that the group should try it cold". Writes an attributed note — never edits the shared recipe body/frontmatter. -->
 
-1. Call `add_recipe_note(slug, body, tags?, private?)`. `body` is the tweak/observation in my words. Use `tags` like `["tweak"]` or `["observation"]` when it helps. Notes default to **shared** with the group; pass `private: true` only when I say it's just for me ("note for myself…").
+1. Call `add_recipe_note(slug, body, tags?, tier?)`. `body` is the tweak/observation in my words. Use `tags` like `["tweak"]` or `["observation"]` when it helps. Notes default to the **friends** tier — my household and our friend households can see them. Pass `tier: "private"` only when I say it's just for me ("note for myself…"); pass `tier: "public"` only when I ask to put it on the public cookbook ("share this note publicly…") — a public note reaches the public site only where the recipe itself is publicly visible, and otherwise stays with everyone who can see the recipe.
 2. Only a genuine "this is now a different dish" warrants an actual new recipe — offer `create_recipe` (a personal recipe in my subtree) for that, not a note.
 3. Confirm what you noted.
 

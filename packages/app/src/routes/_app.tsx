@@ -31,7 +31,10 @@ import { purgeLocalMemberData, readTenantStamp, writeTenantStamp } from "../lib/
 
 export const Route = createFileRoute("/_app")({
   loader: async (): Promise<{
-    tenant: { id: string };
+    /** The resolved identity pair from whoami. `member` is the acting member id
+     *  (attribution — the own/community notes split keys on it); it equals `id` for
+     *  founding members and degrades to `id` offline / under deploy skew. */
+    tenant: { id: string; member: string };
     /** The deployment profile from whoami — gates the SaaS-only surfaces (cookbook
      *  cold-start, the Preferences curated-collection card). Offline/skew degrades to
      *  "self-hosted": the gated surfaces simply don't render. */
@@ -46,7 +49,8 @@ export const Route = createFileRoute("/_app")({
       // its own member's data (D9). The operator config isn't stamped: the
       // connect modal degrades to generic copy offline.
       const stamped = readTenantStamp();
-      if (stamped) return { tenant: { id: stamped }, profile: "self-hosted", operator: { name: null, repo: null } };
+      if (stamped)
+        return { tenant: { id: stamped, member: stamped }, profile: "self-hosted", operator: { name: null, repo: null } };
       throw redirect({ to: "/login" });
     }
     if (res.status === 401) {
@@ -57,15 +61,16 @@ export const Route = createFileRoute("/_app")({
     }
     if (!res.ok) throw new Error(`whoami failed (${res.status})`);
     const data = (await res.json()) as {
-      tenant: { id: string };
+      tenant: { id: string; member?: string };
       profile?: "self-hosted" | "saas";
       operator: OperatorInfo;
     };
     writeTenantStamp(data.tenant.id);
     // Defensive: a pre-change Worker (deploy skew) omits `operator`/`profile` — degrade
     // to generic copy / the self-hosted default rather than throwing or over-gating.
+    // `member` falls back to the tenant id (exact for founding members).
     return {
-      tenant: data.tenant,
+      tenant: { id: data.tenant.id, member: data.tenant.member ?? data.tenant.id },
       profile: data.profile === "saas" ? "saas" : "self-hosted",
       operator: data.operator ?? { name: null, repo: null },
     };

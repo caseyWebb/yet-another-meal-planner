@@ -105,11 +105,18 @@ export interface RecipeDetail {
   body: string;
 }
 
+/** A recipe note's visibility tier (note-visibility-tiers, D30-final). */
+export type NoteTier = "public" | "friends" | "private";
+
 export interface NoteRow {
   author: string;
+  /** The author's display handle (joined server-side; falls back to the author id). */
+  handle: string;
   created_at: string;
   body: string;
   tags: string[];
+  tier: NoteTier;
+  /** Deprecated: derived server-side (`tier === 'private'`); key off `tier`. */
   private: boolean;
 }
 
@@ -346,9 +353,14 @@ export function useNotes(slug: string) {
     queryKey: ["cookbook", "notes", slug],
     staleTime: STALE_MS,
     queryFn: async () =>
-      jsonOf<{ slug: string; notes: NoteRow[]; favorites: { author: string }[] }>(
-        await api.api.cookbook.recipes[":slug"].notes.$get({ param: { slug } }),
-      ),
+      jsonOf<{
+        slug: string;
+        notes: NoteRow[];
+        favorites: { author: string }[];
+        /** Whether the recipe is on the anonymous public cookbook — drives the
+         *  composer's conditional Public copy. Absent on a pre-tier Worker (skew). */
+        anonymously_visible?: boolean;
+      }>(await api.api.cookbook.recipes[":slug"].notes.$get({ param: { slug } })),
   });
 }
 

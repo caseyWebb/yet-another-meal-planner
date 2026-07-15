@@ -88,6 +88,59 @@ test("notes: add an own note (client-minted identity), then delete it", async ({
   await recipePage.expectNoOwnNotes();
 });
 
+test("notes composer: Friends pre-selected, switching tiers swaps the audience copy", async ({ recipePage }) => {
+  await recipePage.goto();
+  // Friends is the default — never a neutral control (design request #9).
+  await recipePage.expectComposerTierSelected("friends");
+  await recipePage.expectTierDescription("Your household and friends can see this");
+  await recipePage.selectComposerTier("private");
+  await recipePage.expectTierDescription("Only you");
+  // Self-hosted: the seeded recipe IS on the public site, so Public carries the full copy.
+  await recipePage.selectComposerTier("public");
+  await recipePage.expectTierDescription("including the public cookbook site");
+  await recipePage.captureForReview("recipe-note-composer-tiers");
+});
+
+test("notes: per-tier chips — lock on private, globe on public, friends unmarked", async ({ recipePage }) => {
+  await recipePage.goto();
+  await recipePage.addNote("Just for me.", { tier: "private" });
+  await recipePage.expectOwnNote("Just for me.");
+  await expect(recipePage.tierChips("own-notes", "private")).toHaveCount(1);
+  await recipePage.addNote("For the whole cookbook.", { tier: "public" });
+  await recipePage.expectOwnNote("For the whole cookbook.");
+  await expect(recipePage.tierChips("own-notes", "public")).toHaveCount(1);
+  await recipePage.addNote("Default audience.");
+  await recipePage.expectOwnNote("Default audience.");
+  // Friends renders unmarked: still exactly one lock + one globe across three notes.
+  await expect(recipePage.tierChips("own-notes", "private")).toHaveCount(1);
+  await expect(recipePage.tierChips("own-notes", "public")).toHaveCount(1);
+  await recipePage.captureForReview("recipe-note-tier-chips");
+  await recipePage.deleteAllOwnNotes();
+  await recipePage.expectNoOwnNotes();
+});
+
+test("notes: the edit state re-tiers on the same idempotent write", async ({ recipePage }) => {
+  await recipePage.goto();
+  await recipePage.addNote("Started as friends.");
+  await recipePage.expectOwnNote("Started as friends.");
+  await expect(recipePage.tierChips("own-notes", "private")).toHaveCount(0);
+  // The edit control is seeded with the note's current tier, then re-tiers to private.
+  await recipePage.editFirstOwnNote({ tier: "private" });
+  await expect(recipePage.tierChips("own-notes", "private")).toHaveCount(1);
+  // Re-open: the control is seeded with the NEW tier.
+  await recipePage.page.getByTestId("note-edit").first().click();
+  await recipePage.expectEditTierSelected("private");
+  await recipePage.page.getByTestId("note-edit-form").getByRole("button", { name: "Cancel" }).click();
+  await recipePage.deleteAllOwnNotes();
+  await recipePage.expectNoOwnNotes();
+});
+
+test("notes: community notes are handle-attributed", async ({ recipePage }) => {
+  await recipePage.goto();
+  await recipePage.expectCommunityNote(SEED.app.note.body);
+  await recipePage.expectCommunityHandle(SEED.members.pending);
+});
+
 test("favorite is an explicit set that shows up in the favorites view", async ({
   cookbookPage,
 }) => {

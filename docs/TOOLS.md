@@ -225,28 +225,30 @@ Write a **new** recipe to the **shared corpus** (one canonical copy, read by eve
 
 Notes are the **spin-capture mechanism**: a tweak or observation is an *attributed note*, never an edit to shared recipe content. The canonical recipe stays canonical; "sub gochujang, cut the sugar" lives as a note. This is what makes a shared corpus safe — only a genuine "different dish" warrants a personal-recipe fork. Notes are stored in the D1 `recipe_notes` table (attributed by `author` column), so authorship is structural, not a spoofable field.
 
-### `add_recipe_note(slug, body, tags?, private?)`
+### `add_recipe_note(slug, body, tags?, tier?, private?)`
 
-Append an attributed note to a recipe (shared or personal) in the caller's notes. **Append-mostly** — prior notes are retained, never overwritten; shared content is never touched.
+Append an attributed note to a recipe (shared or personal) in the caller's notes. **Append-mostly** — prior notes are retained, never overwritten; shared content is never touched. **Lens-gated**: only recipes inside the caller's visibility lens are writable — an out-of-lens slug returns the identical `not_found` a nonexistent slug does.
 
 **Params:**
 - `slug` (string, required) — the recipe the note is about.
 - `body` (string, required) — free-form markdown (the tweak/observation).
 - `tags` (array of strings, optional) — e.g. `["tweak"]`, `["observation"]`.
-- `private` (boolean, optional) — default `false` (shared with the group). A `private` note is visible only to its author.
+- `tier` (`"public" | "friends" | "private"`, optional) — the note's visibility tier, default **`friends`**. `friends` = the author's household plus its friend households (everyone on a self-hosted deployment); `private` = the authoring member only; `public` = anyone who can see the recipe, including the anonymous `/cookbook` site where (and only where) the recipe itself is anonymously visible.
+- `private` (boolean, optional, **deprecated**) — the pre-tier alias, kept for stale plugin bundles: `true` → `tier: "private"`, `false` → `tier: "friends"`. `tier` wins when both are passed.
 
 **Returns:**
-- `{ slug, author, created_at }` — D1-backed, no `commit_sha`
+- `{ slug, author, created_at, tier }` — D1-backed, no `commit_sha`
 
 **Errors (structured):**
 - `{ error: "validation_failed" }` — malformed slug or empty body.
+- `{ error: "not_found" }` — slug outside the caller's lens (or nonexistent — indistinguishable).
 
-### `update_recipe_note(slug, created_at, body?, tags?, private?)`
+### `update_recipe_note(slug, created_at, body?, tags?, tier?, private?)`
 
-Edit one of the caller's **own** notes, addressed by its `created_at` (from `add_recipe_note` / `read_recipe_notes`). Only the fields passed change; `created_at` is the immutable key. **Self-scoped** — it can only touch a note the caller authored. Shared recipe content and other tenants' notes are untouched. (Relaxes the append-only posture for your own notes.)
+Edit one of the caller's **own** notes, addressed by its `created_at` (from `add_recipe_note` / `read_recipe_notes`). Only the fields passed change; `created_at` is the immutable key. Passing `tier` **re-tiers** the note — this is the tier-change surface (no separate op), and visibility is a live lens: the change applies on the very next read. The deprecated `private` alias maps as on `add_recipe_note`. **Self-scoped** — it can only touch a note the caller authored, so it stays writable even for a recipe that has left the caller's lens (an author can always privatize or fix their own note). Shared recipe content and other members' notes are untouched.
 
 **Returns:**
-- `{ slug, author, created_at }` — D1-backed, no `commit_sha`
+- `{ slug, author, created_at, tier }` — D1-backed, no `commit_sha`
 
 **Errors (structured):**
 - `{ error: "validation_failed" }` — malformed slug or empty body.
@@ -264,7 +266,7 @@ Delete one of the caller's **own** notes, addressed by its `created_at`. Self-sc
 
 ### `read_recipe_notes(slug)`
 
-Read the **group's** notes and favorites for a recipe — the collaborative-cookbook view. Aggregated at read time across the households inside the caller's visibility lens (every household under the self-hosted profile; the caller's own plus friend households under SaaS).
+Read the notes and favorites for a recipe — the collaborative-cookbook view. Notes follow the **visibility tiers**; favorites aggregate at read time across the households inside the caller's visibility lens (every household under the self-hosted profile; the caller's own plus friend households under SaaS).
 
 **Params:**
 - `slug` (string, required)
@@ -273,12 +275,12 @@ Read the **group's** notes and favorites for a recipe — the collaborative-cook
 ```
 {
   slug,
-  notes:     [{ author, created_at, body, tags, private }], // ordered by timestamp
-  favorites: [{ author }]                                   // one per member who favorited it
+  notes:     [{ author, handle, created_at, body, tags, tier, private }], // ordered by timestamp
+  favorites: [{ author }]                                                 // one per member who favorited it
 }
 ```
 
-**Notes:** The read is **lens-gated**: a recipe outside the caller's lens returns the identical structured `not_found` a nonexistent slug does — notes are unreachable for a recipe the caller can't see. The caller sees their **own** private notes plus **everyone's shared** notes (within the lens); another member's `private` note is never returned. `favorites` is the group signal — `favorites.length` is the favorite count. Surface it ("favorited by two others") before recommending a recipe the caller hasn't tried.
+**Notes:** The read is **lens-gated**: a recipe outside the caller's lens returns the identical structured `not_found` a nonexistent slug does — notes are unreachable for a recipe the caller can't see. Within a visible recipe the tier rules decide per note: the caller's **own** notes at every tier; **`friends`** notes whose author's household is the caller's own or a friend household (everyone under self-hosted — the pre-tier shared behavior); **`public`** notes from **any** household, even one outside the caller's lens (e.g. a public note on a curated recipe). Another member's `private` note is never returned. Visibility is a **live lens**: a new or severed friendship, or a re-tiered note, changes the very next read — nothing is materialized. `handle` is the author's display handle (joined from the members registry; the author id doubles as the founding handle). `private` is **deprecated** — derived (`tier === "private"`), kept one band for stale readers; key off `tier`. `favorites` is the group signal — `favorites.length` is the favorite count. Surface it ("favorited by two others") before recommending a recipe the caller hasn't tried.
 
 ---
 

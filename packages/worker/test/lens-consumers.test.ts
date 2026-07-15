@@ -150,7 +150,7 @@ describe("read_recipe_notes — lens gate before any note disclosure", () => {
     await insertFoundingMember(db(h.env), A, 1000);
     await insertFoundingMember(db(h.env), B, 2000);
     // A shared note on the hidden recipe — it must never be disclosed to A.
-    await insertRecipeNote(h.env, "hidden-dish", B, { created_at: "2026-06-01", body: "secret spin", tags: [], private: false });
+    await insertRecipeNote(h.env, "hidden-dish", B, { created_at: "2026-06-01", body: "secret spin", tags: [], tier: "friends" });
     const server = notesServer(h, CALLER);
     const [hidden, missing] = await withServer(server, async (c) => [
       await invokeTool(c, "read_recipe_notes", { slug: "hidden-dish" }),
@@ -174,20 +174,20 @@ describe("read_recipe_notes — lens gate before any note disclosure", () => {
     grant(h, "shared-dish", B);
     await insertFoundingMember(db(h.env), A, 1000);
     await insertFoundingMember(db(h.env), B, 2000);
-    await insertRecipeNote(h.env, "shared-dish", B, { created_at: "2026-06-01", body: "pat's shared tip", tags: [], private: false });
+    await insertRecipeNote(h.env, "shared-dish", B, { created_at: "2026-06-01", body: "pat's shared tip", tags: [], tier: "friends" });
     h.raw.exec("INSERT INTO overlay (tenant, recipe, favorite) VALUES ('pat', 'shared-dish', 1)");
 
     // Self-hosted (default profile): the lens households are "everyone" — B contributes.
     const lensAll = await lensHouseholds(h.env, A);
     expect(lensAll).toBeNull();
-    expect((await readRecipeNotes(h.env, "shared-dish", A, lensAll)).map((n) => n.body)).toEqual(["pat's shared tip"]);
+    expect((await readRecipeNotes(h.env, "shared-dish", { member: A, tenant: A })).map((n) => n.body)).toEqual(["pat's shared tip"]);
     expect(await groupFavorites(h.env, "shared-dish", [A, B])).toEqual([{ author: B }]);
 
     // SaaS: the lens is A's household only — B's note and favorite vanish from the aggregate.
     setProfile(h, "saas");
     const lensOwn = await lensHouseholds(h.env, A);
     expect(lensOwn).toEqual([A]);
-    expect(await readRecipeNotes(h.env, "shared-dish", A, lensOwn)).toEqual([]);
+    expect(await readRecipeNotes(h.env, "shared-dish", { member: A, tenant: A })).toEqual([]);
     expect(await groupFavorites(h.env, "shared-dish", lensOwn!)).toEqual([]);
   });
 });

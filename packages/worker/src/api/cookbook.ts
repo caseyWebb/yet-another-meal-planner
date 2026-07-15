@@ -23,6 +23,7 @@ import {
   memberViewer,
   visibleSlugProvenance,
   lensHouseholds,
+  ANONYMOUS,
   type Viewer,
   type Provenance,
 } from "../visibility.js";
@@ -31,8 +32,10 @@ import {
   insertRecipeNote,
   updateRecipeNote,
   removeRecipeNote,
+  hasOwnRecipeNote,
+  type NoteTier,
 } from "../corpus-db.js";
-import { groupFavorites } from "../notes-tools.js";
+import { groupFavorites, resolveNoteTier } from "../notes-tools.js";
 import { directoryFromEnv } from "../tenant.js";
 import type { RecipeIndex, IndexedRecipe } from "../recipes.js";
 
@@ -51,6 +54,14 @@ async function loadIndex(env: Parameters<typeof loadRecipeIndex>[0], viewer: Vie
 
 function requireSlug(slug: string): void {
   if (!SLUG_RE.test(slug)) throw new ToolError("not_found", `Unknown recipe slug: ${slug}`, { slug });
+}
+
+/** Enum-validate a note-tier body field: absent → undefined; anything else must be one
+ *  of the three tiers (a typo'd tier must never silently default an audience). */
+function parseTier(value: unknown, slug: string): NoteTier | undefined {
+  if (value === undefined) return undefined;
+  if (value === "public" || value === "friends" || value === "private") return value;
+  throw new ToolError("validation_failed", "tier must be one of 'public', 'friends', 'private'", { slug });
 }
 
 /** The lens gate for slug-addressed reads: out-of-lens and nonexistent slugs take the
@@ -158,29 +169,36 @@ export const cookbookArea = new Hono<ApiEnv>()
       .map(toHit);
     return jsonWithEtag(c, { slug, similar });
   })
-  // Group notes + favorites for a recipe (the privacy rule lives in the op). Lens-bound:
-  // unreachable for an out-of-lens slug (the identical not_found), and the group signal
-  // aggregates over the caller's LENS households only (every household under
-  // self-hosted — today's read; own + friend-seam households under SaaS).
+  // Group notes + favorites for a recipe (the tier rules live in the op). Lens-bound:
+  // unreachable for an out-of-lens slug (the identical not_found). Notes are
+  // tier-filtered in the op's one query; favorites aggregate over the caller's LENS
+  // households only (every household under self-hosted — today's read; own +
+  // friend-seam households under SaaS). `anonymously_visible` is the composer's datum
+  // for the conditional Public copy — one anonymous point query on the lens.
   .get("/cookbook/recipes/:slug/notes", requireSession, async (c) => {
     const tenant = c.get("tenant");
     const slug = c.req.param("slug");
     await requireVisible(c.env, memberViewer(tenant.id, tenant.member), slug);
     const lens = await lensHouseholds(c.env, tenant.id);
     const ids = lens ?? (await directoryFromEnv(c.env).list());
-    const [notes, favorites] = await Promise.all([
-      readRecipeNotes(c.env, slug, tenant.member, lens),
+    const [notes, favorites, anonymouslyVisible] = await Promise.all([
+      readRecipeNotes(c.env, slug, { member: tenant.member, tenant: tenant.id }),
       groupFavorites(c.env, slug, ids),
+      isVisible(c.env, ANONYMOUS, slug),
     ]);
-    return jsonWithEtag(c, { slug, notes, favorites });
+    return jsonWithEtag(c, { slug, notes, favorites, anonymously_visible: anonymouslyVisible });
   })
   // Note add — class (b): identity is (author, slug, CLIENT-minted created_at), so a
   // replayed delivery finds its row and converges (deduped) instead of duplicating.
+  // Author is the resolved MEMBER (attribution, member-identity-split D8); creation is
+  // lens-gated (a member only annotates recipes they can see — out-of-lens and
+  // nonexistent slugs take the identical not_found). `tier` sets the audience
+  // (default 'friends'); the legacy `private` boolean is the deprecated alias.
   .post("/cookbook/recipes/:slug/notes", requireSession, async (c) => {
     const tenant = c.get("tenant");
     const slug = c.req.param("slug");
     if (!SLUG_RE.test(slug)) throw new ToolError("validation_failed", `Invalid recipe slug: ${slug}`, { slug });
-    const body = await jsonBody<{ body?: unknown; tags?: unknown; private?: unknown; created_at?: unknown }>(c);
+    const body = await jsonBody<{ body?: unknown; tags?: unknown; tier?: unknown; private?: unknown; created_at?: unknown }>(c);
     const text = typeof body.body === "string" ? body.body : "";
     if (!text.trim()) throw new ToolError("validation_failed", "note body must not be empty", { slug });
     const createdAt = typeof body.created_at === "string" ? body.created_at : "";
@@ -188,45 +206,51 @@ export const cookbookArea = new Hono<ApiEnv>()
       throw new ToolError("validation_failed", "created_at must be a client-minted ISO timestamp", { slug });
     }
     const tags = Array.isArray(body.tags) ? body.tags.filter((t): t is string => typeof t === "string") : [];
-    const isPrivate = body.private === true;
-    const existing = await readRecipeNotes(c.env, slug, tenant.id);
-    if (existing.some((n) => n.author === tenant.id && n.created_at === createdAt)) {
-      return c.json({ slug, author: tenant.id, created_at: createdAt, deduped: true });
+    const tier = resolveNoteTier(parseTier(body.tier, slug), body.private === true ? true : undefined) ?? "friends";
+    if (!(await isVisible(c.env, memberViewer(tenant.id, tenant.member), slug))) {
+      throw new ToolError("not_found", `Unknown recipe slug: ${slug}`, { slug });
     }
-    await insertRecipeNote(c.env, slug, tenant.id, {
+    if (await hasOwnRecipeNote(c.env, slug, tenant.member, createdAt)) {
+      return c.json({ slug, author: tenant.member, created_at: createdAt, tier, deduped: true });
+    }
+    await insertRecipeNote(c.env, slug, tenant.member, {
       created_at: createdAt,
       body: text,
       tags,
-      private: isPrivate,
+      tier,
     });
-    return c.json({ slug, author: tenant.id, created_at: createdAt });
+    return c.json({ slug, author: tenant.member, created_at: createdAt, tier });
   })
-  // Note edit — author-scoped by construction (the op only ever touches the caller's own).
+  // Note edit — author-scoped by construction (the op only ever touches the caller's
+  // own row), so it stays UNGATED by the lens: an author can always re-tier (e.g.
+  // privatize) or fix their own note even after the recipe leaves their lens (a
+  // friendship sever) — no oracle, no new annotation. Passing `tier` re-tiers.
   .patch("/cookbook/recipes/:slug/notes/:created_at", requireSession, async (c) => {
     const tenant = c.get("tenant");
     const slug = c.req.param("slug");
     const createdAt = c.req.param("created_at");
     if (!SLUG_RE.test(slug)) throw new ToolError("validation_failed", `Invalid recipe slug: ${slug}`, { slug });
-    const body = await jsonBody<{ body?: unknown; tags?: unknown; private?: unknown }>(c);
+    const body = await jsonBody<{ body?: unknown; tags?: unknown; tier?: unknown; private?: unknown }>(c);
     if (typeof body.body === "string" && !body.body.trim()) {
       throw new ToolError("validation_failed", "note body must not be empty", { slug });
     }
-    const found = await updateRecipeNote(c.env, slug, tenant.id, createdAt, {
+    const tier = await updateRecipeNote(c.env, slug, tenant.member, createdAt, {
       body: typeof body.body === "string" ? body.body : undefined,
       tags: Array.isArray(body.tags) ? body.tags.filter((t): t is string => typeof t === "string") : undefined,
-      private: typeof body.private === "boolean" ? body.private : undefined,
+      tier: resolveNoteTier(parseTier(body.tier, slug), typeof body.private === "boolean" ? body.private : undefined),
     });
-    if (!found) {
+    if (tier === null) {
       throw new ToolError("not_found", `No note of yours on ${slug} with that created_at`, { slug, created_at: createdAt });
     }
-    return c.json({ slug, author: tenant.id, created_at: createdAt });
+    return c.json({ slug, author: tenant.member, created_at: createdAt, tier });
   })
   // Note delete — class (b): a second delivery finds nothing and reports converged.
+  // Self-scoped like the edit, and ungated for the same reason.
   .delete("/cookbook/recipes/:slug/notes/:created_at", requireSession, async (c) => {
     const tenant = c.get("tenant");
     const slug = c.req.param("slug");
     const createdAt = c.req.param("created_at");
     if (!SLUG_RE.test(slug)) throw new ToolError("validation_failed", `Invalid recipe slug: ${slug}`, { slug });
-    const removed = await removeRecipeNote(c.env, slug, tenant.id, createdAt);
+    const removed = await removeRecipeNote(c.env, slug, tenant.member, createdAt);
     return c.json({ slug, created_at: createdAt, removed });
   });

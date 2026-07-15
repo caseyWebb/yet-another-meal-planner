@@ -19,7 +19,7 @@ import { useMutation, type QueryClient } from "@tanstack/react-query";
 import { toast } from "@yamp/ui";
 import { api, apiError, type ApiError } from "./api";
 import { REGISTERED_MUTATION_KEYS } from "./persist";
-import type { GroceryRow, Overlay, PantryRow, PlanOp, PlanOpsResult, ToBuyView } from "./data";
+import type { GroceryRow, NoteTier, Overlay, PantryRow, PlanOp, PlanOpsResult, ToBuyView } from "./data";
 import { projectGroceryAction } from "@yamp/ui";
 import type { GroceryListData, ShopCommitRequest, ShopCommitResult } from "@yamp/contract";
 import { appFetch } from "./api";
@@ -133,7 +133,8 @@ export interface NoteAddVars {
   slug: string;
   body: string;
   tags: string[];
-  private: boolean;
+  /** Visibility tier (note-visibility-tiers) — the composer always sets one. */
+  tier: NoteTier;
   /** Client-minted — the idempotency key (D8): a replayed delivery upserts, not duplicates. */
   created_at: string;
 }
@@ -142,6 +143,8 @@ export interface NoteEditVars {
   slug: string;
   created_at: string;
   body: string;
+  /** Re-tiers the note when passed (rides the same idempotent note-edit write). */
+  tier?: NoteTier;
 }
 
 export interface NoteRemoveVars {
@@ -824,8 +827,8 @@ function registryRows(qc: QueryClient): RegistryRow[] {
     {
       key: ["notes", "edit"],
       defaults: {
-        mutationFn: async ({ slug, created_at, body }: NoteEditVars) => {
-          const args = { param: { slug, created_at }, json: { body } };
+        mutationFn: async ({ slug, created_at, body, tier }: NoteEditVars) => {
+          const args = { param: { slug, created_at }, json: { body, tier } };
           return okOrThrow(await api.api.cookbook.recipes[":slug"].notes[":created_at"].$patch(args));
         },
         onError: (err: unknown) => toast(messageOf(err, "Couldn't save the note — try again")),

@@ -229,9 +229,26 @@ export function fakeD1(
       });
     }
     if (/\bid = \?2/i.test(sql)) eq("id", 2);
+    // Recipe-note tiers (note-visibility-tiers): the fake only ever sees the
+    // SELF-HOSTED member shape (no operator_config row → self-hosted → the friends arm
+    // is `1 = 1`), where the predicate reduces to own-notes OR effective-tier ≠
+    // 'private'; and the anonymous public-only read. The effective tier mirrors the
+    // read SQL's COALESCE (NULL tier heals via the private mapping). The REAL SQL
+    // semantics (SaaS friend seam, members join) are exercised on migrated SQLite.
+    const effTier = (r: Record<string, unknown>): string =>
+      r.tier === "public" || r.tier === "friends" || r.tier === "private"
+        ? (r.tier as string)
+        : r.private === 1
+          ? "private"
+          : "friends";
+    if (/COALESCE\(n\.tier,/i.test(sql) && /= 'public'\s*$/i.test(sql.trim())) {
+      out = out.filter((r) => effTier(r) === "public");
+    } else if (/n\.author = \?2 OR COALESCE\(n\.tier,/i.test(sql)) {
+      out = out.filter((r) => r.author === binds[1] || effTier(r) !== "private");
+    }
     // Attributed notes: privacy rule (private=0 OR author=?2), and self-scoped
     // findOwnNote (author=?2 AND created_at=?3).
-    if (/\(private = 0 OR author = \?2\)/i.test(sql)) {
+    else if (/\(private = 0 OR author = \?2\)/i.test(sql)) {
       out = out.filter((r) => r.private === 0 || r.author === binds[1]);
     } else if (/\bauthor = \?2/i.test(sql)) {
       eq("author", 2);

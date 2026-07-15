@@ -1,10 +1,12 @@
 // Recipe-note + store-note tools (recipe-notes / in-store-fulfillment, §8/D6). Notes
-// are attributed annotations on a recipe or a store. After slice 6 they live in the D1
-// `recipe_notes` / `store_notes` tables (not per-tenant GitHub files): author is the
-// caller (an `author` column), `private` an owner-only flag. Reads are ONE query with
-// the privacy rule applied (private=0 OR author=caller) — the caller's own private
-// notes plus everyone's shared notes — replacing the per-tenant directory scan. For
-// recipes, the notes query is joined with the slice-4 overlay-ratings query so
+// are attributed annotations on a recipe or a store, living in the D1 `recipe_notes` /
+// `store_notes` tables (not per-tenant GitHub files): author is the caller (an
+// `author` column, never a spoofable input). Recipe notes carry a visibility `tier`
+// (public | friends | private, D30-final; the legacy `private` boolean stays accepted
+// as a deprecated alias for stale plugin bundles); store notes keep the binary
+// `private` flag. Reads are ONE query with the visibility rule applied in SQL —
+// tier-filtered and members-joined for recipes, own-private + group-shared for stores.
+// For recipes, the notes query is joined with the slice-4 overlay-ratings query so
 // read_recipe_notes is fully D1 (notes + ratings).
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -23,6 +25,7 @@ import {
   insertStoreNote,
   updateStoreNote,
   removeStoreNote,
+  type NoteTier,
 } from "./corpus-db.js";
 
 const SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
@@ -30,6 +33,21 @@ const SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 function nowIso(): string {
   return new Date().toISOString();
 }
+
+/**
+ * The tier/alias resolution rule (D30-final): `tier` is the contract; the legacy
+ * `private` boolean is a deprecated alias (`true` → 'private', `false` → 'friends')
+ * kept so stale plugin bundles retain today's exact semantics. `tier` wins when both
+ * are passed. Undefined when neither is given — the caller supplies its own default
+ * ('friends' on add; unchanged on update).
+ */
+export function resolveNoteTier(tier: NoteTier | undefined, isPrivate: boolean | undefined): NoteTier | undefined {
+  if (tier !== undefined) return tier;
+  if (isPrivate === undefined) return undefined;
+  return isPrivate ? "private" : "friends";
+}
+
+const TIER_ENUM = z.enum(["public", "friends", "private"]);
 
 /** The group-favorites half of read_recipe_notes: the overlay table, scoped to the
  *  group. The favorite cutover replaced the per-rating list with the members who
@@ -70,15 +88,16 @@ export function registerNoteTools(
     "add_recipe_note",
     {
       description:
-        "Append an attributed note to a recipe (shared or personal) — the spin-capture mechanism (D6). Use this for tweaks/observations ('subbed gochujang for sriracha, better') instead of editing shared recipe content. Append-mostly: prior notes are retained. Author is you. Set private=true to keep a note to yourself; default is shared with the group. Optional tags (e.g. 'tweak', 'observation').",
+        "Append an attributed note to a recipe (shared or personal) — the spin-capture mechanism (D6). Use this for tweaks/observations ('subbed gochujang for sriracha, better') instead of editing shared recipe content. Append-mostly: prior notes are retained. Author is you. Only recipes inside your visibility lens are writable — a slug outside it returns the same not_found an unknown slug does. `tier` sets the note's audience and is LIVE (re-tiering or a friendship change applies on the very next read): 'friends' (the default) = your household plus friend households (everyone on a self-hosted deployment); 'private' = only you, ever; 'public' = anyone who can see the recipe, including the anonymous public cookbook site where (and only where) the recipe itself is publicly visible. The legacy `private` boolean is a deprecated alias (true → tier 'private', false → 'friends'); `tier` wins if both are passed. Optional tags (e.g. 'tweak', 'observation').",
       inputSchema: {
         slug: z.string(),
         body: z.string(),
         tags: z.array(z.string()).optional(),
+        tier: TIER_ENUM.optional(),
         private: z.boolean().optional(),
       },
     },
-    ({ slug, body, tags, private: isPrivate }) =>
+    ({ slug, body, tags, tier, private: isPrivate }) =>
       runTool(async () => {
         if (!SLUG_RE.test(slug)) {
           throw new ToolError("validation_failed", `Invalid recipe slug: ${slug}`, { slug });
@@ -86,14 +105,21 @@ export function registerNoteTools(
         if (!body.trim()) {
           throw new ToolError("validation_failed", "note body must not be empty", { slug });
         }
+        // Write-side lens gate (lens-review carry-in): a member only annotates recipes
+        // they can see. Out-of-lens and nonexistent slugs take the IDENTICAL not_found
+        // the read path produces — no existence disclosure, no orphan rows.
+        if (!(await isVisible(env, memberViewer(tenant.id, tenant.member), slug))) {
+          throw new ToolError("not_found", `Unknown recipe slug: ${slug}`, { slug });
+        }
         const created_at = nowIso();
+        const resolved = resolveNoteTier(tier, isPrivate) ?? "friends";
         await insertRecipeNote(env, slug, memberId, {
           created_at,
           body,
           tags: tags ?? [],
-          private: isPrivate ?? false,
+          tier: resolved,
         });
-        return { slug, author: memberId, created_at };
+        return { slug, author: memberId, created_at, tier: resolved };
       }),
   );
 
@@ -101,7 +127,7 @@ export function registerNoteTools(
     "read_recipe_notes",
     {
       description:
-        "Read the notes and favorites for a recipe INSIDE YOUR VISIBILITY LENS — the collaborative cookbook view. Returns { notes: [{ author, created_at, body, tags, private }], favorites: [{ author }] }, aggregated across the households in your lens (your own household, friend households, and — on a self-hosted deployment — everyone). You see your own private notes plus their shared notes; other people's private notes are never shown, and households outside your lens contribute nothing. A recipe outside your lens returns the same not_found an unknown slug does. `favorites` is the group signal — surface it ('favorited by 2 others') before recommending a recipe someone hasn't tried.",
+        "Read the notes and favorites for a recipe INSIDE YOUR VISIBILITY LENS — the collaborative cookbook view. Returns { notes: [{ author, handle, created_at, body, tags, tier, private }], favorites: [{ author }] }. Notes follow the visibility tiers, computed LIVE at read time (a new or severed friendship, or a re-tiered note, changes the very next read): you always see your OWN notes at every tier; 'friends' notes from your household and friend households (everyone on a self-hosted deployment); and 'public' notes from anyone — a public note on a recipe you can see is visible even when its author's household is outside your lens. Another member's 'private' note is never shown. `handle` is the author's display handle; `private` is a deprecated derived field (tier === 'private'). A recipe outside your lens returns the same not_found an unknown slug does. `favorites` aggregates over your lens households only — it is the group signal; surface it ('favorited by 2 others') before recommending a recipe someone hasn't tried.",
       inputSchema: { slug: z.string() },
     },
     ({ slug }) =>
@@ -115,12 +141,13 @@ export function registerNoteTools(
         if (!(await isVisible(env, memberViewer(tenant.id, tenant.member), slug))) {
           throw new ToolError("not_found", `Unknown recipe slug: ${slug}`, { slug });
         }
-        // The aggregation set is the caller's LENS households: null (self-hosted) means
-        // every allowlisted household — today's read; under SaaS it is own + friends.
+        // Favorites aggregate over the caller's LENS households: null (self-hosted)
+        // means every allowlisted household — today's read; under SaaS own + friends.
+        // The notes read applies the TIER rules itself (one query over the same seam).
         const lens = await lensHouseholds(env, tenant.id);
         const ids = lens ?? (await directory.list());
         const [notes, favorites] = await Promise.all([
-          readRecipeNotes(env, slug, memberId, lens),
+          readRecipeNotes(env, slug, { member: memberId, tenant: tenant.id }),
           groupFavorites(env, slug, ids),
         ]);
         return { slug, notes, favorites };
@@ -131,16 +158,17 @@ export function registerNoteTools(
     "update_recipe_note",
     {
       description:
-        "Edit one of YOUR OWN recipe notes, addressed by its created_at (from add_recipe_note / read_recipe_notes). Only the fields you pass change (body / tags / private); created_at is the immutable key. Self-scoped: it can only ever touch a note you authored — a created_at that matches only someone else's note returns not_found. Use it to fix a typo or refine an observation instead of stacking a correcting note.",
+        "Edit one of YOUR OWN recipe notes, addressed by its created_at (from add_recipe_note / read_recipe_notes). Only the fields you pass change (body / tags / tier); created_at is the immutable key. Passing `tier` re-tiers the note — this IS the tier-change surface, and it applies on the very next read ('public' = anyone who can see the recipe incl. the public cookbook site where the recipe is publicly visible; 'friends' = your household + friend households; 'private' = only you). The legacy `private` boolean is a deprecated alias (true → 'private', false → 'friends'); `tier` wins if both are passed. Self-scoped: it can only ever touch a note you authored — a created_at that matches only someone else's note returns not_found. Use it to fix a typo or refine an observation instead of stacking a correcting note.",
       inputSchema: {
         slug: z.string(),
         created_at: z.string(),
         body: z.string().optional(),
         tags: z.array(z.string()).optional(),
+        tier: TIER_ENUM.optional(),
         private: z.boolean().optional(),
       },
     },
-    ({ slug, created_at, body, tags, private: isPrivate }) =>
+    ({ slug, created_at, body, tags, tier, private: isPrivate }) =>
       runTool(async () => {
         if (!SLUG_RE.test(slug)) {
           throw new ToolError("validation_failed", `Invalid recipe slug: ${slug}`, { slug });
@@ -148,15 +176,15 @@ export function registerNoteTools(
         if (body !== undefined && !body.trim()) {
           throw new ToolError("validation_failed", "note body must not be empty", { slug });
         }
-        const found = await updateRecipeNote(env, slug, memberId, created_at, {
+        const resultTier = await updateRecipeNote(env, slug, memberId, created_at, {
           body,
           tags,
-          private: isPrivate,
+          tier: resolveNoteTier(tier, isPrivate),
         });
-        if (!found) {
+        if (resultTier === null) {
           throw new ToolError("not_found", `No note of yours on ${slug} with that created_at`, { slug, created_at });
         }
-        return { slug, author: memberId, created_at };
+        return { slug, author: memberId, created_at, tier: resultTier };
       }),
   );
 

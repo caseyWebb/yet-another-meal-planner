@@ -31,11 +31,15 @@ const RECIPE_MD = [
 function envWith(opts: {
   recipeRows?: Record<string, unknown>[];
   embeddingRows?: { slug: string; embedding: string }[];
+  /** Raw `recipe_notes` rows for the public-notes read; the fake applies the query's
+   *  public-tier scoping itself (the REAL SQL semantics live in notes.test.ts). */
+  notesRows?: Record<string, unknown>[];
   files?: Record<string, string>;
   failEmbeddings?: boolean;
 }): Env {
   const recipeRows = opts.recipeRows ?? [];
   const embeddingRows = opts.embeddingRows ?? [];
+  const notesRows = opts.notesRows ?? [];
   // Every fixture recipe (index rows, R2 bodies, embedded slugs) is GRANTED — the
   // converged post-attachment state, so the anonymous self-hosted lens passes the whole
   // fixture corpus (today's public site, the D9 promise these tests pin).
@@ -49,6 +53,7 @@ function envWith(opts: {
   const makeStmt = (sql: string) => {
     const isEmbeddings = /embedding IS NOT NULL/i.test(sql);
     const isLens = /FROM recipe_imports/i.test(sql);
+    const isNotes = /FROM recipe_notes/i.test(sql);
     let binds: unknown[] = [];
     const stmt = {
       bind: (...v: unknown[]) => {
@@ -58,6 +63,14 @@ function envWith(opts: {
       all: async () => {
         if (isEmbeddings && opts.failEmbeddings) throw new Error("embeddings unavailable");
         if (isLens) return { results: [...granted].map((recipe) => ({ recipe })) };
+        if (isNotes) {
+          // Mirror the anonymous read's WHERE: recipe-scoped, public tier only.
+          return {
+            results: notesRows.filter(
+              (n) => n.recipe === binds[0] && (n.tier ?? (n.private === 1 ? "private" : "friends")) === "public",
+            ),
+          };
+        }
         return { results: isEmbeddings ? embeddingRows : recipeRows };
       },
       first: async () => {
@@ -392,5 +405,84 @@ describe("handleCookbook similar recipes", () => {
     expect(html).toContain("/cookbook/evil");
     expect(html).not.toMatch(/<script>alert\(1\)<\/script>/); // never injected raw
     expect(html).toContain("&lt;script&gt;alert(1)&lt;/script&gt;"); // rendered escaped
+  });
+});
+
+describe("handleCookbook public-tier notes (note-visibility-tiers)", () => {
+  const noteRow = (over: Record<string, unknown>): Record<string, unknown> => ({
+    id: "n",
+    recipe: "miso-salmon",
+    author: "casey",
+    handle: null,
+    body: "Broil one extra minute.",
+    tags: "[]",
+    private: 0,
+    tier: "public",
+    created_at: "2026-06-01T00:00:00.000Z",
+    ...over,
+  });
+
+  it("renders a public note handle-attributed on an anonymously-visible recipe", async () => {
+    const env = envWith({
+      files: { "recipes/miso-salmon.md": RECIPE_MD },
+      notesRows: [noteRow({ body: "Broil one extra minute.", tags: '["tweak"]' })],
+    });
+    const html = await (await handleCookbook(get("/cookbook/miso-salmon"), env)).text();
+    expect(html).toContain('<section class="pubnotes">');
+    expect(html).toContain("@casey");
+    expect(html).toContain("Broil one extra minute.");
+    expect(html).toContain('<span class="chip">tweak</span>');
+  });
+
+  it("renders no notes section when only friends/private notes exist (tier-scoped query)", async () => {
+    const env = envWith({
+      files: { "recipes/miso-salmon.md": RECIPE_MD },
+      notesRows: [
+        noteRow({ id: "n1", tier: "friends", body: "friends only" }),
+        noteRow({ id: "n2", tier: "private", private: 1, body: "private note" }),
+        // A NULL-tier rollback-window row maps to friends — also excluded.
+        noteRow({ id: "n3", tier: null, private: 0, body: "legacy shared" }),
+      ],
+    });
+    const html = await (await handleCookbook(get("/cookbook/miso-salmon"), env)).text();
+    expect(html).not.toContain('<section class="pubnotes">');
+    expect(html).not.toContain("friends only");
+    expect(html).not.toContain("private note");
+    expect(html).not.toContain("legacy shared");
+  });
+
+  it("neutralizes a script-bearing public note body (raw HTML dropped) and escapes hostile handles/tags", async () => {
+    const env = envWith({
+      files: { "recipes/miso-salmon.md": RECIPE_MD },
+      notesRows: [
+        noteRow({
+          body: "<script>alert(1)</script>\n\n<img src=x onerror=alert(2)>\n\n*fine emphasis*",
+          handle: "<b>evil</b>",
+          tags: '["<i>tag</i>"]',
+        }),
+      ],
+    });
+    const res = await handleCookbook(get("/cookbook/miso-salmon"), env);
+    const html = await res.text();
+    expect(html).not.toContain("<script>alert(1)</script>");
+    expect(html).not.toContain("onerror=");
+    expect(html).toContain("<em>fine emphasis</em>"); // markdown still renders
+    expect(html).not.toContain("<b>evil</b>");
+    expect(html).toContain("@&lt;b&gt;evil&lt;/b&gt;");
+    expect(html).not.toContain("<i>tag</i>");
+    // The strict no-script CSP is untouched on the notes-bearing page.
+    expect(res.headers.get("content-security-policy")).toBe(
+      "default-src 'none'; style-src 'unsafe-inline'; img-src https: data:; base-uri 'none'",
+    );
+  });
+
+  it("a public note on a non-anonymously-visible recipe produces no page at all (lens 404 unchanged)", async () => {
+    const env = envWith({
+      files: { "recipes/miso-salmon.md": RECIPE_MD },
+      notesRows: [noteRow({ recipe: "hidden-dish", body: "public but unreachable" })],
+    });
+    const res = await handleCookbook(get("/cookbook/hidden-dish"), env);
+    expect(res.status).toBe(404);
+    expect(await res.text()).not.toContain("public but unreachable");
   });
 });
